@@ -8,10 +8,15 @@ Built on the open-source [PGenerator](https://github.com/Biasiolo/PGenerator) by
 
 ### How to Flash the Image
 
-1. Download the base PGenerator 1.6 `.img` file (or the latest full image release).
+1. Download the latest full image release (`PGenerator_Plus.img.zip`) from the GitHub Releases page and extract the `.img` file.
 2. Use a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to flash the `.img` file to a microSD card (minimum 8GB).
 3. Insert the microSD card into your Raspberry Pi and power it on.
-4. Connect the Pi to your network via Ethernet, or connect to its default WiFi Access Point (`PGenerator` / `PGenerator`).
+4. Connect to the Pi using one of the following methods:
+   - **Bluetooth PAN:** First connect to the Bluetooth device on your computer, then join its PAN in Windows settings.
+   - **Wired PAN:** Connect an Ethernet cable directly between your device and the Pi.
+   - **Wired LAN:** Connect the Pi to your local network router or switch via Ethernet.
+   - **Wireless PAN:** Connect your device to the Pi's default WiFi Access Point (SSID: `PGenerator`, Password: `PGenerator`).
+   - **Wireless LAN:** Connect the Pi to your existing WiFi network (can be configured via the Web UI after using one of the other methods).
 5. Access the web UI at `http://pgenerator.local` or the device's IP address.
 
 ### How to Update (OTA)
