@@ -69,7 +69,9 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 
 **1. Calman (Portrait Displays)**
 - **Protocol:** SpectraCal Unified Pattern Generator Control Interface (Port `2100`)
-- **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
+- **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` (or `Portrait Displays` in some versions) → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
+  - *Calman Note:* Calman has the ability to directly control the AVI and DRM InfoFrame information based on what is selected in the Calman Source Settings tab.
+  - *Deprecation Notice:* Portrait Displays removed the UPGCI protocol from Calman "Home" licenses starting with version 5.15.x (the 2024 releases) to push users toward their own generator hardware. There is no official add-on to re-enable it for Home users. If calibration with PGenerator is required, you must either remain on Calman 5.14.x or older, upgrade to a professional license tier (Calman Video Pro or higher), or use alternative software (like ColourSpace or HCFR).
 
 **2. ColourSpace / LightSpace CMS**
 - **Protocol:** XML Network Calibration Protocol (Port `85`)
