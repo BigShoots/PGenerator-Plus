@@ -1,0 +1,70 @@
+#!/bin/sh
+INIT_NAME="PGenerator"
+PROGRAM_NAME="PGenerator"
+PROGRAM_DAEMON_SOCKET="/usr/sbin/PGeneratord.pl"
+PROGRAM_CLIENT_SERIAL="/usr/bin/PGenerator_serial.pl"
+PROGRAM_DAEMON_VIDEO="/usr/sbin/PGeneratord"
+PROGRAM_CLIENT_CMD="/usr/bin/PGenerator_cmd.pl"
+PGENERATOR_USER_GROUP="pgenerator"
+PGENERATOR_MOUNT_POINT_DIR="/var/lib/PGenerator/running"
+PGENERATOR_MOUNT_POINT_NAME="PGeneratorTmpFs"
+PGENERATOR_TMPFS_SIZE="20M"
+PGENERATOR_PID_DIR="/var/run/PGenerator"
+DEVICES_VIDEO="/dev/vhci /dev/vchiq"
+PERL="/usr/bin/perl"
+FB0_BLANK_FILE="/sys/class/graphics/fb0/blank"
+
+case "$1" in
+    start)
+        echo -n "Starting $PROGRAM_NAME..."
+        if [ ! -d "$PGENERATOR_PID_DIR" ]; then
+         mkdir $PGENERATOR_PID_DIR
+        fi
+        if ! mountpoint -q $PGENERATOR_MOUNT_POINT_DIR ;then
+         mount -t tmpfs -o user,mode=0770,size=$PGENERATOR_TMPFS_SIZE,uid=$PGENERATOR_USER_GROUP,gid=$PGENERATOR_USER_GROUP $PGENERATOR_MOUNT_POINT_NAME $PGENERATOR_MOUNT_POINT_DIR
+        fi
+        if [ -e "/dev/dri/card0" ];then
+         mknod /dev/dri/renderD128 c 226 128 2>/dev/null
+        fi
+        chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP -R $PGENERATOR_PID_DIR
+        chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $DEVICES_VIDEO 2>/dev/null
+        chmod 660 /dev/cec* 2>/dev/null
+        chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP /dev/cec* 2>/dev/null
+        setcap cap_net_bind_service=+ep $PERL
+        setsid sudo -u $PGENERATOR_USER_GROUP $PROGRAM_DAEMON_SOCKET
+        setcap cap_net_bind_service=-ep $PERL
+        if [ -e "$FB0_BLANK_FILE" ]; then
+         echo 1 > $FB0_BLANK_FILE
+        fi
+        $PROGRAM_CLIENT_SERIAL &
+        # CEC: wake TV and select input on boot
+        if [ -x "/usr/sbin/pgenerator-cec" ] && [ -e "/dev/cec0" ]; then
+         /usr/sbin/pgenerator-cec wake >/dev/null 2>&1 &
+        fi
+        echo "done"
+    ;;
+
+    stop)
+        echo -n "Stopping $PROGRAM_NAME..."
+        /usr/bin/pkill -9 -f $PROGRAM_DAEMON_SOCKET 2>/dev/null
+        /usr/bin/pkill -9 -f $PROGRAM_DAEMON_VIDEO 2>/dev/null
+        /usr/bin/pkill -9 -f $PROGRAM_CLIENT_CMD 2>/dev/null
+        /usr/bin/pkill -9 -f $PROGRAM_CLIENT_SERIAL 2>/dev/null
+        umount $PGENERATOR_MOUNT_POINT_DIR 2>/dev/null
+        chown root.root $DEVICES_VIDEO 2>/dev/null
+        if [ -e "$FB0_BLANK_FILE" ]; then
+         echo 0 > $FB0_BLANK_FILE
+        fi
+        echo "done"
+    ;;
+
+    restart)
+        $0 stop
+        $0 start
+     ;;
+
+    *)
+        echo "Usage: /etc/init.d/$INIT_NAME {start|stop|restart}" >&2
+        exit 1
+    ;;
+esac

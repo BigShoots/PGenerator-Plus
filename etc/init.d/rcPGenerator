@@ -1,0 +1,283 @@
+#!/bin/sh
+#
+# Variables
+#
+PROGRAM_NAME="rcPGenerator"
+INIT_NAME="rcPGenerator"
+DEFAULT_FILE="/etc/default/rcPGenerator"
+SCALING_GOVERNOR="performance"
+BOOT_PARTITION=$(blkid -L BOOT_PG)
+DHCPD_FILE="/etc/dhcp/dhcpd.conf"
+AP_NET="10.10.10"
+USB_NET="10.10.12"
+DIRECT_NET="10.10.13"
+MAC_ADDRESS_USB="3E:3D:8C:17:B2:DF"
+
+. $DEFAULT_FILE
+
+MAX_UPTIME_FOR_DIRECTLAN=$(/bin/grep ^MAX_UPTIME_FOR_DIRECTLAN /usr/lib/dhcpcd-hooks/99-PGeneratorDirectLan.conf|/bin/sed -e "s/.*=//")
+SUBNET=$(grep AP_NET /etc/default/rcPGenerator |awk -F . '{print $2}')
+
+#
+# Function
+#
+rc_PGenerator_start () { 
+ PROJECT="RPI3"
+ MODEL=$(cat /proc/device-tree/model)
+ if [[ $MODEL =~ "Pi 2" ]];then
+  PROJECT="RPI2"
+ fi
+ # Start Patch for RPI 3 Model B Plus to fix bluetooth mac address 
+ if [[ $MODEL =~ "3 Model B Plus" ]];then
+  SERIAL=$(cat /proc/cpuinfo|grep ^Serial|grep -o '.\{6\}$')
+  BT_MACADDRESS=$(echo B8:27:EB:$(printf "%02x" $(( 0x${SERIAL:0:2} ^0xAA))):$(printf "%02x" $(( 0x${SERIAL:2:2} ^0xAA))):$(printf "%02x" $(( 0x${SERIAL:4:2} ^0xAA))))
+ fi
+ # End Patch for RPI 3 Model B Plus to fix bluetooth mac address 
+ if [ "$1" == "start" ]; then
+
+  # Suppress kernel console messages so splash and wizard stay clean.
+  # cmdline.txt has "quiet loglevel=1" for early boot; this catches
+  # anything that starts printing after modules finish loading.
+  dmesg -n 1 2>/dev/null
+
+  # Show boot splash on framebuffer (replaces GPU rainbow gradient)
+  SPLASH_FB="/usr/share/PGenerator/splash.fb"
+  if [ -f "$SPLASH_FB" ] && [ -c /dev/fb0 ]; then
+   # Clear any residual boot text from tty1 before writing splash
+   printf '\033[2J\033[H' > /dev/tty1 2>/dev/null
+   cat "$SPLASH_FB" > /dev/fb0 2>/dev/null
+  fi
+
+  # Redirect all script output to a log file so nothing appears on
+  # the console framebuffer and overwrites the splash or wizard.
+  exec > /tmp/rcPGenerator.log 2>&1
+
+  # First Boot
+  FIRST_BOOT_FILE="/etc/BiasiLinux/BiasiLinux.FirstBoot"
+  WIZARD_SCRIPT="/usr/sbin/pgenerator-wizard.sh"
+  if [ -f "$FIRST_BOOT_FILE" ]; then
+   # resize
+   /usr/bin/resize_PGenerator_disk
+   # generate unique id
+   SYSTEM_INFO_FILE="/etc/BiasiLinux/system_info"
+   ID_NEW_STRING="SYSTEM_ID"
+   ID_TO_CREATE=$(grep "^\"$ID_NEW_STRING\"" $SYSTEM_INFO_FILE)
+   if [ -z "$ID_TO_CREATE" ];then
+    CPU_INFO=$(cat /proc/cpuinfo |egrep "Hardware|Revision|Serial"|sed -e "s/.*: //")
+    cpu_array=(${CPU_INFO// / })
+    CPU_HW=${cpu_array[0]}
+    CPU_REV=${cpu_array[1]}
+    CPU_SERIAL=${cpu_array[2]}
+    UUID="$CPU_HW-$CPU_REV-$CPU_SERIAL-"$(uuidgen)
+    perl -p -i -e "s/^ID=\"$ID_NEW_STRING\"/ID=\"$UUID\"/" $SYSTEM_INFO_FILE
+   fi
+   # delete first boot file
+   /bin/rm $FIRST_BOOT_FILE
+  fi
+ 
+  # mount swap and disk
+  swapon -a
+  mount -a
+  
+  # start for bluetooth
+  rmmod btusb
+  modprobe btusb
+  # end for bluetooth
+ 
+  if [[ $MODEL =~ "Pi Zero" ]] || [[ $MODEL =~ "Pi 4" ]];then
+   modprobe libcomposite
+ 
+   # START Linux
+   cd /sys/kernel/config/usb_gadget/
+   mkdir -p PGenerator
+   cd PGenerator
+   echo 0x1d6b > idVendor
+   echo 0x0104 > idProduct
+   echo 0x0100 > bcdDevice
+   echo 0x0200 > bcdUSB
+   mkdir -p strings/0x408
+   echo "111111111111111" > strings/0x408/serialnumber
+   echo "RB8" > strings/0x408/manufacturer
+   echo "PGenerator ECM" > strings/0x408/product
+   mkdir -p configs/c.1/strings/0x408 
+   echo "Config 1: ECM network" > configs/c.1/strings/0x408/configuration
+   mkdir -p functions/acm.usb0
+   ln -s functions/acm.usb0 configs/c.1/
+   mkdir -p functions/ecm.usb0
+   ln -s functions/ecm.usb0 configs/c.1/
+   mkdir -p functions/mass_storage.usb0
+   echo 1 > functions/mass_storage.usb0/stall
+   echo 0 > functions/mass_storage.usb0/lun.0/cdrom
+   echo 0 > functions/mass_storage.usb0/lun.0/ro
+   echo 0 > functions/mass_storage.usb0/lun.0/nofua
+   echo $BOOT_PARTITION > functions/mass_storage.usb0/lun.0/file
+   ln -s functions/mass_storage.usb0 configs/c.1/
+   ls /sys/class/udc > UDC
+   #kill -1 1
+   ifconfig usb0 hw ether $MAC_ADDRESS_USB
+   ifconfig usb0 $USB_NET".1" netmask 255.255.255.0 up
+   # END Linux
+ 
+   /bin/sleep 5
+   n_packets=$(ifconfig usb0|grep "RX packets:0 ")
+   if [ -n "$n_packets" ]; then
+    echo "No connection established: clean and retry with rndis" > /dev/kmsg
+    # START Clean
+    cd /sys/kernel/config/usb_gadget/
+    cd PGenerator
+    echo "" > UDC
+    rm configs/c.1/rndis.usb0
+    rm configs/c.1/ecm.usb0
+    rm configs/c.1/acm.usb0
+    rm configs/c.1/ncm.usb0
+    rm configs/c.1/mass_storage.usb0
+    rmdir configs/c.1/strings/0x408/
+    rmdir configs/c.1/
+    rmdir functions/rndis.usb0/
+    rmdir functions/ecm.usb0
+    rmdir functions/acm.usb0
+    rmdir functions/ncm.usb0
+    rmdir functions/mass_storage.usb0
+    rmdir strings/0x408/
+    cd /sys/kernel/config/usb_gadget/
+    rmdir PGenerator
+    # End Clean
+
+    # START Windows
+    cd /sys/kernel/config/usb_gadget/
+    mkdir -p PGenerator
+    cd PGenerator
+    echo 0x1d6b > idVendor
+    echo 0x0104> idProduct
+    echo "0x3066" > bcdDevice
+    mkdir -p strings/0x408
+    echo "111111111111111" > strings/0x408/serialnumber
+    echo "RB8" > strings/0x408/manufacturer
+    echo "PGenerator RNDIS" > strings/0x408/product
+    mkdir -p configs/c.1/strings/0x408
+    echo "0x80" > configs/c.1/bmAttributes
+    echo "Config 1: RNDIS network" > configs/c.1/strings/0x408/configuration
+    echo "1" > os_desc/use
+    echo "0xcd" > os_desc/b_vendor_code
+    echo "MSFT100" > os_desc/qw_sign
+    mkdir -p functions/rndis.usb0
+    echo "RNDIS" > functions/rndis.usb0/os_desc/interface.rndis/compatible_id
+    echo "5162001" > functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id
+    ln -s functions/rndis.usb0 configs/c.1
+    mkdir functions/mass_storage.usb0
+    echo 1 > functions/mass_storage.usb0/stall
+    echo 0 > functions/mass_storage.usb0/lun.0/cdrom
+    echo 0 > functions/mass_storage.usb0/lun.0/ro
+    echo 0 > functions/mass_storage.usb0/lun.0/nofua
+    echo $BOOT_PARTITION > functions/mass_storage.usb0/lun.0/file
+    ln -s functions/mass_storage.usb0 configs/c.1
+    ln -s configs/c.1 os_desc
+    ls /sys/class/udc > UDC
+    ifconfig usb0 hw ether $MAC_ADDRESS_USB
+    ifconfig usb0 $USB_NET".1" netmask 255.255.255.0 up
+    # END Windows
+   fi
+  fi
+
+  # START RPI2 wifi
+  if [ $PROJECT == "RPI2" ];then
+   if ifconfig ap0 &>/dev/null; then
+    ifconfig ap0 $AP_NET".1" netmask 255.255.255.0
+    ifconfig wlan0 0 0
+    perl -p -i -e "s/interface=.*/interface=ap0/" /etc/hostapd/hostapd.conf
+    /etc/init.d/wpa_supplicant start
+   else
+    ifconfig wlan0 $AP_NET".1" netmask 255.255.255.0
+    perl -p -i -e "s/interface=.*/interface=wlan0/" /etc/hostapd/hostapd.conf
+   fi
+   /etc/init.d/hostapd start
+  fi
+  # END RPI2 wifi
+ 
+  if [ $PROJECT == "RPI3" ];then
+   # start for bluetooth
+   #btattach -B /dev/ttyAMA0 -P bcm -S 921600 &
+   hciattach /dev/ttyAMA0 bcm43xx 921600 flow - $BT_MACADDRESS
+   # end for bluetooth
+ 
+   # start for wifi
+   # Reload WiFi modules so cfg80211 loads regulatory.db for 5GHz support.
+   # cfg80211 loads the db once at module init; if it was loaded before
+   # regulatory.db was installed, reloading picks up the new file.
+   if [ -f /lib/firmware/regulatory.db ]; then
+    rmmod brcmfmac 2>/dev/null; rmmod cfg80211 2>/dev/null
+    modprobe cfg80211; modprobe brcmfmac
+    sleep 2
+   fi
+   iw dev wlan0 set power_save off
+   iw dev wlan0 interface add ap0 type __ap
+   if [ $? == 0 ]; then
+    iw dev ap0 set power_save off
+    perl -p -i -e "s/interface=.*/interface=ap0/" /etc/hostapd/hostapd.conf
+    ifconfig ap0 $AP_NET".1" netmask 255.255.255.0
+    ifconfig wlan0 0 0
+    /etc/init.d/hostapd restart
+    /etc/init.d/wpa_supplicant restart
+   else
+    perl -p -i -e "s/interface=.*/interface=wlan0/" /etc/hostapd/hostapd.conf
+   fi
+   # end for wifi
+  fi
+
+  # scaling governor mode
+  /bin/echo $SCALING_GOVERNOR > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+ 
+ fi
+
+ # create dhcpd file
+ cp -pr $DHCPD_FILE.rcPGenerator $DHCPD_FILE
+ perl -p -i -e "s/10.(\d+).(\d+).(\d+)(.*)(_NET|_RANGE|_ROUTER)/10.$SUBNET.\2.\3\4\5/g" $DHCPD_FILE
+ perl -p -i -e "s/10.(\d+).(\d+).(\d+);(.*)(_RANGE)/10.$SUBNET.\2.\3;\4\5/g" $DHCPD_FILE
+
+ # Clean dhcp,dhcpd leases and recreate files
+ rm /var/lib/dhcp/dhcpd.leases*;
+ echo -n > /var/lib/dhcp/dhcpd.leases
+
+ # dhcp
+ /etc/init.d/dhcp restart
+
+ # Setup wizard disabled — PGenerator+ starts directly.
+ # Configuration is handled via the web UI instead.
+ # WIZARD_SHOWN_FILE="/tmp/.pgenerator_wizard_shown"
+ # if [ -x "$WIZARD_SCRIPT" ] && [ ! -f "$WIZARD_SHOWN_FILE" ]; then
+ #  /usr/bin/setsid -c sh -c 'TERM=linux exec /usr/sbin/pgenerator-wizard.sh' </dev/tty2 >/dev/tty2 2>&1
+ #  touch "$WIZARD_SHOWN_FILE"
+ # fi
+
+ # PGenerator 
+ /etc/init.d/PGenerator restart
+
+ # Kill DirectLan connection after 5 minutes
+ bash -c "/bin/sleep $MAX_UPTIME_FOR_DIRECTLAN && /usr/bin/pkill -9 -f /var/run/dhcpd-DirectLan.pid" &
+
+ # At the end a sync
+ /bin/sync
+}
+
+#
+# Init
+#
+case "$1" in
+    start)
+        rc_PGenerator_start $1
+    ;;
+
+    stop)
+        echo "Stop function not implemented"
+    ;;
+
+    restart)
+        $0 stop
+        $0 start
+     ;;
+
+    *)
+        echo "Usage: /etc/init.d/$INIT_NAME {start|stop|restart}" >&2
+        exit 1
+    ;;
+esac
