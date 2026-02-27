@@ -88,48 +88,52 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 
 ### Web UI Dashboard
 
-A single-page settings dashboard served on **port 80**, accessible from any browser at the device's IP or `pgenerator.local`.
+PGenerator+ features a responsive, mobile-friendly single-page settings dashboard served on **port 80**. Access it from any browser at `http://pgenerator.local` or using the device's IP address.
 
-**Settings & Controls:**
-- Signal mode selection (SDR / HDR10 / HLG / Dolby Vision)
-- Output resolution picker (auto-detected from display EDID via `modetest`)
-- Color format, colorimetry, bit depth, quantization range
-- Full HDR10 DRM InfoFrame metadata (EOTF, primaries, luminance, MaxCLL/MaxFALL)
-- Dolby Vision settings (LL/Standard, color space, metadata type, interface)
-- Apply & Restart bar — contextual, appears only when settings have changed
+<p align="center">
+  <img src="screenshots/webui_dashboard.png" alt="PGenerator+ Web UI Dashboard" width="800"/>
+</p>
 
-**Test Patterns:**
-- Full-field colors: white, black, red, green, blue, cyan, magenta, yellow, 50% gray
-- Grayscale ramps & steps (2–10% increments)
-- Window pattern (18% screen area, centered)
-- Overscan border
-- Color bars
-- Saturation sweeps (25% / 50% / 75% for each primary and secondary)
-- Generic RGB patch with configurable patch size (10% / 18% / 25% / 50% / 100%)
+The UI is divided into drag-and-drop functional cards that save your layout preferences locally.
 
-**Device Info:**
-- Hostname, resolution, uptime, CPU temperature
-- All network interfaces with IPs (Ethernet, WiFi, WiFi AP, Bluetooth PAN)
-- WiFi connection details (SSID, band, frequency, signal strength)
-- Connected calibration software detection
-- Live latency indicator with color-coded response time
+#### Device Information
+Monitor the real-time health and connectivity of your PGenerator+:
+- **System Metrics:** Uptime, CPU temperature, and active HDMI output resolution.
+- **Network Interfaces:** View all assigned IP addresses (Ethernet, WiFi, WiFi AP, and Bluetooth PAN).
+- **WiFi Status:** Detailed metrics on the current wireless network connection including SSID, band, and signal strength.
+- **Calibration Status:** Auto-detects and displays when calibration software (like Calman or ColourSpace) is actively connected.
+- **Latency Indicator:** Live ping response time to the device with a color-coded status.
 
-**Network Management:**
-- WiFi client — scan & connect to networks
-- WiFi Access Point — configure SSID & password (reachable at 10.10.10.1)
+#### HDMI Signal Settings
+Complete control over the HDMI output parameters, InfoFrames, and DRMs without needing to use terminal commands:
+- **Signal Mode:** Instantly switch between SDR, HDR10, HLG, and Dolby Vision.
+- **Custom Resolutions:** Auto-detects available modes from the connected display's EDID.
+- **Base Video Parameters:** Configure Color Format (RGB/YCbCr), Colorimetry (BT.709/BT.2020), Bit Depth (8/10/12-bit), and Quantization Range (Full/Limited).
+- **HDR10 Metadata:** When HDR10 is active, take full control over the DRM InfoFrame (EOTF, Mastering Primaries, Max/Min Luma, MaxCLL, and MaxFALL).
+- **Dolby Vision Metadata:** For Dolby Vision modes, select between Low Latency (LLDV) or Standard modes, and configure specific DOVI Interface, Color Space, and Metadata details.
 
-**HDMI-CEC:**
-- TV power status display
-- Wake / On / Input / Standby controls
+#### Manual Pattern Injection
+A full suite of test patterns that can be manually injected on-screen for spot-checking and fast visual validation.
+- **Solid Colors:** White, Black, Red, Green, Blue, Cyan, Magenta, Yellow, and generic Grays.
+- **Ramps & Steps:** Grayscale ramps and varying steps (2% to 10% increments).
+- **Calibration Checks:** Window patterns, Overscan borders, and Color Bars.
+- **Custom RGB Patch:** Enter specific RGB triplets and pick a patch size (10%, 18%, 25%, 50%, or 100%) to instantly display a custom color window.
 
-**HDMI Infoframes:**
-- Live readout of AVI and DRM InfoFrame hex data from the HDMI output
-- Decoded human-readable fields (color format, quantization, colorimetry, VIC, EOTF, luminance)
+#### InfoFrame Decoder
+Troubleshoot your display chain by reading exactly what InfoFrames the Raspberry Pi is writing to the HDMI port:
+- Live readout of active AVI and DRM InfoFrame hex data.
+- Decoded human-readable translation of the current signal flags (colorimetry, VIC, EOTF, and luminance).
 
-**UI Features:**
-- Dark theme with responsive layout (desktop + mobile)
-- Drag-and-drop widget reordering with persistent layout (localStorage)
-- Toast notifications for all actions
+#### HDMI-CEC TV Control
+Direct display control using HDMI-CEC:
+- **TV Power Status:** Indicates if the TV is detected and turned On/Standby.
+- **Actions:** Wake, Turn On, Send to Standby, or force the TV to switch to the Active Input.
+
+#### System & Updates
+Manage the device directly from the interface:
+- **Network Management:** Configure the active WiFi client connection or manage the local WiFi Access Point (reachable at `10.10.10.1`).
+- **Power Options:** Restart the PGenerator backend service or safely reboot the entire Raspberry Pi.
+- **OTA Updates:** Check GitHub for new PGenerator+ releases, view changelogs, and sequentially download/extract updates with a single click.
 
 ### mDNS / Bonjour
 
