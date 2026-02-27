@@ -61,14 +61,24 @@ The Raspberry Pi 4's KMS driver is used to set HDMI InfoFrames directly:
 
 ### Calibration Software Compatibility
 
-PGenerator+ acts as a TCP-controlled pattern generator, compatible with:
+PGenerator+ acts as a TCP-controlled pattern generator, compatible with many major calibration software packages.
 
-- **LightSpace CMS** — XML-based calibration protocol (port 85)
-- **Calman / Portrait Displays** — Calman protocol (port 2100)
-- **HCFR** — rectangle-based pattern commands
-- **DeviceControl** — UDP discovery + TCP pattern control
+**1. Calman (Portrait Displays)**
+- **Protocol:** SpectraCal Unified Pattern Generator Control Interface (Port `2100`)
+- **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
 
-Calibration software discovers the device automatically via UDP broadcast on port 1977 (`"Who is a PGenerator"` → `"I am a PGenerator <hostname>"`), or by entering the IP address directly.
+**2. ColourSpace / LightSpace CMS**
+- **Protocol:** XML Network Calibration Protocol (Port `85`)
+- **How to Connect:** Open **Hardware Options** → Hardware: `Network` (or `PGenerator` if listed). Enter the PGenerator's IP address in the Network Address field and click Connect.
+
+**3. HCFR**
+- **Protocol:** Network Pattern Generator Commands (Port `85`)
+- **How to Connect:** Go to **Measures** > **Generator** > **Configure** → Select `Network` from the dropdown and enter the PGenerator's IP address.
+
+**4. DeviceControl**
+- **Protocol:** UDP discovery + TCP pattern control
+
+*Device Discovery:* Calibration software can often discover the device automatically via UDP broadcast on port `1977` (`"Who is a PGenerator"` → `"I am a PGenerator <hostname>"`), allowing you to select your device from a list instead of entering the IP address manually.
 
 ### Web UI Dashboard
 
