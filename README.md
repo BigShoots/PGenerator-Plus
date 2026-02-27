@@ -266,12 +266,11 @@ usr/
 
 ## Hardware Requirements
 
-- **Raspberry Pi 4** (or Pi 400) — required for HDR/DV and KMS driver support
-- **BiasiLinux** distribution (custom Raspberry Pi OS)
+- **Raspberry Pi 4** (or Pi 400) **Highly Recommended** — required for HDR10/DV and KMS driver support, and necessary to comfortably handle the overhead of the added local services (Web UI, active API calls, mDNS, etc.).
 - HDMI connection to target display
-- Network connection (Ethernet, WiFi, or WiFi AP mode)
+- Network connection (Ethernet, WiFi, Bluetooth, or WiFi AP mode)
 
-Older Pi models work for SDR-only output.
+*Note: While older Raspberry Pi models may theoretically boot the image and output SDR, they are not supported or recommended for PGenerator+ due to resource constraints.*
 
 ---
 
