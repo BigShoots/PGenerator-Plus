@@ -9,8 +9,8 @@ Built on the open-source [PGenerator](https://github.com/Biasiolo/PGenerator) by
 ### How to Flash the Image
 
 1. Download the latest full image release (`PGenerator_Plus.img.zip`) from the GitHub Releases page and extract the `.img` file.
-2. Use a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to flash the `.img` file to a microSD card (minimum 8GB).
-3. Insert the microSD card into your Raspberry Pi and power it on.
+2. Use a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to flash the `.img` file to a microSD card or USB flash drive (minimum 8GB).
+3. Insert the microSD card or USB flash drive into your Raspberry Pi and power it on.
 4. Connect to the Pi using one of the following methods:
    - **Bluetooth PAN:** First connect to the Bluetooth device on your computer, then join its PAN in Windows settings.
    - **Wired PAN:** Connect an Ethernet cable directly between your device and the Pi.
