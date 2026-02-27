@@ -1,0 +1,367 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# pgenerator-cec — Minimal CEC control for PGenerator+
+#
+# Uses Linux CEC ioctl API via /dev/cecN to send CEC commands.
+# Supports: status, on (TV power on), off (standby), as (active source), wake
+#
+# Usage: pgenerator-cec <status|on|off|as|wake> [/dev/cecN]
+#
+
+import struct, os, sys, fcntl, array, time, errno
+
+# ─── ioctl number helpers (ARM 32-bit) ───
+def _IOC(d, t, nr, sz):
+    return (d << 30) | (sz << 16) | (t << 8) | nr
+def _IOR(t, nr, sz):  return _IOC(2, t, nr, sz)
+def _IOW(t, nr, sz):  return _IOC(1, t, nr, sz)
+def _IOWR(t, nr, sz): return _IOC(3, t, nr, sz)
+
+# ─── CEC magic byte is 0x61 ('a') — from linux/cec.h ───
+M = 0x61
+
+# ─── Struct sizes (kernel 5.10, ARM 32-bit) ───
+CEC_CAPS_SZ      = 76   # driver[32] + name[32] + u32*3
+CEC_MSG_SZ       = 56   # u64*2 + u32*4 + u8[16] + u8*7 + pad
+CEC_LOG_ADDRS_SZ = 92   # see kernel include/uapi/linux/cec.h
+
+# ─── CEC ioctl numbers ───
+CEC_ADAP_G_CAPS      = _IOWR(M, 0, CEC_CAPS_SZ)
+CEC_ADAP_G_PHYS_ADDR = _IOR(M, 1, 2)
+CEC_ADAP_G_LOG_ADDRS = _IOR(M, 3, CEC_LOG_ADDRS_SZ)
+CEC_ADAP_S_LOG_ADDRS = _IOWR(M, 4, CEC_LOG_ADDRS_SZ)
+CEC_TRANSMIT         = _IOWR(M, 5, CEC_MSG_SZ)
+CEC_RECEIVE          = _IOWR(M, 6, CEC_MSG_SZ)
+CEC_S_MODE           = _IOW(M, 9, 4)
+
+# ─── CEC opcodes ───
+CEC_MSG_IMAGE_VIEW_ON  = 0x04
+CEC_MSG_STANDBY        = 0x36
+CEC_MSG_ACTIVE_SOURCE       = 0x82
+CEC_MSG_GIVE_DEVICE_POWER   = 0x8F
+CEC_MSG_REPORT_POWER_STATUS = 0x90
+
+# ─── CEC addresses ───
+CEC_LOG_ADDR_TV           = 0
+CEC_LOG_ADDR_UNREGISTERED = 15
+CEC_LOG_ADDR_BROADCAST    = 15
+
+# ─── CEC TX status bits ───
+CEC_TX_STATUS_OK        = 0x01
+CEC_TX_STATUS_NACK      = 0x04
+CEC_TX_STATUS_ERROR     = 0x10
+CEC_TX_STATUS_MAX_RETRIES = 0x20
+
+# ─── CEC mode ───
+CEC_MODE_INITIATOR      = 0x01
+CEC_MODE_EXCL_INITIATOR = 0x02
+
+# ─── CEC capability bits ───
+CEC_CAP_PHYS_ADDR  = 0x01
+CEC_CAP_LOG_ADDRS  = 0x02
+CEC_CAP_TRANSMIT   = 0x04
+
+
+def do_ioctl(fd, req, buf):
+    """Perform ioctl, return True on success."""
+    try:
+        fcntl.ioctl(fd, req, buf)
+        return True
+    except IOError:
+        return False
+
+def get_caps(fd):
+    """Get CEC adapter capabilities."""
+    buf = array.array('B', [0] * CEC_CAPS_SZ)
+    if not do_ioctl(fd, CEC_ADAP_G_CAPS, buf):
+        return None
+    data = buf.tostring()
+    driver = data[0:32].split(b'\x00')[0]
+    name = data[32:64].split(b'\x00')[0]
+    avail_la, caps, ver = struct.unpack_from('<III', data, 64)
+    return {'driver': driver, 'name': name, 'avail_la': avail_la,
+            'caps': caps, 'version': ver}
+
+def get_phys_addr(fd):
+    """Get physical address as u16."""
+    buf = array.array('B', [0xFF, 0xFF])
+    if not do_ioctl(fd, CEC_ADAP_G_PHYS_ADDR, buf):
+        return 0xFFFF
+    return struct.unpack('<H', buf.tostring())[0]
+
+def get_log_addrs(fd):
+    """Get current logical addresses."""
+    buf = array.array('B', [0] * CEC_LOG_ADDRS_SZ)
+    if not do_ioctl(fd, CEC_ADAP_G_LOG_ADDRS, buf):
+        return None
+    addrs = [buf[i] for i in range(4)]
+    mask = buf[4] | (buf[5] << 8)
+    cec_ver = buf[6]
+    num = buf[7]
+    osd = buf[16:31].tostring().split(b'\x00')[0]
+    return {'log_addr': addrs, 'mask': mask, 'cec_version': cec_ver,
+            'num_log_addrs': num, 'osd_name': osd}
+
+def claim_log_addr(fd):
+    """Try to claim a logical address. Tries RECORD, PLAYBACK, TUNER types."""
+    types = [
+        # (primary_device_type, log_addr_type, all_device_types)
+        (1, 1, 0x02),   # RECORD   → candidates 1, 2, 9
+        (4, 4, 0x08),   # PLAYBACK → candidates 4, 8, 11
+        (3, 3, 0x04),   # TUNER    → candidates 3, 6, 7, 10
+        (5, 5, 0x40),   # SPECIFIC → candidate 14
+    ]
+    for pdt, lat, adt in types:
+        # Clear existing
+        clr = array.array('B', [0] * CEC_LOG_ADDRS_SZ)
+        do_ioctl(fd, CEC_ADAP_S_LOG_ADDRS, clr)
+        time.sleep(0.1)
+
+        # Set mode to exclusive initiator
+        mode = array.array('B', [0] * 4)
+        struct.pack_into('<I', mode, 0, CEC_MODE_EXCL_INITIATOR)
+        do_ioctl(fd, CEC_S_MODE, mode)
+
+        # Claim
+        buf = array.array('B', [0] * CEC_LOG_ADDRS_SZ)
+        buf[0] = 0xFF; buf[1] = 0xFF; buf[2] = 0xFF; buf[3] = 0xFF
+        buf[6] = 5     # CEC version 1.4
+        buf[7] = 1     # 1 logical addr
+        buf[8] = 0xFF; buf[9] = 0xFF; buf[10] = 0xFF; buf[11] = 0x00
+        osd = [ord(c) for c in 'PGenerator']
+        for i, v in enumerate(osd):
+            buf[16 + i] = v
+        buf[31] = pdt
+        buf[35] = lat
+        buf[39] = adt
+
+        if do_ioctl(fd, CEC_ADAP_S_LOG_ADDRS, buf):
+            addr = buf[0]
+            if addr != 0xFF:
+                return addr
+    return 0xFF
+
+def transmit(fd, src, dst, opcode, params=None):
+    """Send a CEC message. Returns tx_status byte or None on ioctl error."""
+    if params is None:
+        params = []
+    msg = array.array('B', [0] * CEC_MSG_SZ)
+    # Build message: header + opcode + params
+    hdr = ((src & 0x0F) << 4) | (dst & 0x0F)
+    msg_len = 2 + len(params)
+    struct.pack_into('<I', msg, 16, msg_len)     # len
+    struct.pack_into('<I', msg, 20, 1500)        # timeout ms
+    msg[32] = hdr
+    msg[33] = opcode
+    for i, b in enumerate(params):
+        msg[34 + i] = b
+    try:
+        fcntl.ioctl(fd, CEC_TRANSMIT, msg)
+    except IOError as e:
+        # ENONET (64) = adapter has no logical address
+        # Try re-claiming before giving up on broadcast
+        if e.errno == 64 and dst == CEC_LOG_ADDR_BROADCAST:
+            claimed = claim_log_addr(fd)
+            if claimed != 0xFF:
+                src = claimed
+                msg[32] = ((src & 0x0F) << 4) | (dst & 0x0F)
+                try:
+                    fcntl.ioctl(fd, CEC_TRANSMIT, msg)
+                    return msg[50]
+                except IOError:
+                    pass
+            # Last resort: send to TV (0) instead of broadcast
+            msg[32] = ((src & 0x0F) << 4) | CEC_LOG_ADDR_TV
+            try:
+                fcntl.ioctl(fd, CEC_TRANSMIT, msg)
+                return msg[50]
+            except IOError:
+                return None
+        return None
+    return msg[50]
+
+def transmit_retry(fd, src, dst, opcode, params=None, retries=2):
+    """Transmit with retries on failure."""
+    for attempt in range(retries + 1):
+        st = transmit(fd, src, dst, opcode, params)
+        if st is not None and (st & CEC_TX_STATUS_OK):
+            return st
+        if attempt < retries:
+            time.sleep(0.3)
+    return st
+
+def query_power_status(fd, src):
+    """Send Give Device Power Status to TV and wait for reply.
+    Returns power status string or None on failure."""
+    POWER_NAMES = {0: 'on', 1: 'standby', 2: 'standby-to-on', 3: 'on-to-standby'}
+    msg = array.array('B', [0] * CEC_MSG_SZ)
+    hdr = ((src & 0x0F) << 4) | CEC_LOG_ADDR_TV
+    struct.pack_into('<I', msg, 16, 2)       # len = header + opcode
+    struct.pack_into('<I', msg, 20, 2000)    # timeout ms
+    msg[32] = hdr
+    msg[33] = CEC_MSG_GIVE_DEVICE_POWER
+    # reply field at byte 48: set to expected reply opcode so kernel waits
+    msg[48] = CEC_MSG_REPORT_POWER_STATUS
+    try:
+        fcntl.ioctl(fd, CEC_TRANSMIT, msg)
+    except IOError:
+        return None
+    tx_status = msg[50]
+    if not (tx_status & CEC_TX_STATUS_OK):
+        return None
+    # Check rx_status at byte 49
+    rx_status = msg[49]
+    if rx_status & 0x01:  # CEC_RX_STATUS_OK
+        # Reply received — re-read len and msg content
+        rx_len = struct.unpack_from('<I', msg, 16)[0]
+        if rx_len >= 2 and msg[33] == CEC_MSG_REPORT_POWER_STATUS:
+            ps = msg[34]
+            return POWER_NAMES.get(ps, 'unknown(%d)' % ps)
+    return None
+
+def phys_str(phys):
+    """Format physical address as N.N.N.N"""
+    return '%d.%d.%d.%d' % ((phys >> 12) & 0xF, (phys >> 8) & 0xF,
+                             (phys >> 4) & 0xF, phys & 0xF)
+
+def cap_names(caps):
+    """Return list of capability names."""
+    names = []
+    flags = [
+        (0x01, 'PHYS_ADDR'), (0x02, 'LOG_ADDRS'), (0x04, 'TRANSMIT'),
+        (0x08, 'PASSTHROUGH'), (0x10, 'RC'), (0x20, 'MONITOR_ALL'),
+        (0x40, 'NEEDS_HPD'), (0x80, 'MONITOR_PIN'), (0x100, 'CONNECTOR_INFO')
+    ]
+    for bit, name in flags:
+        if caps & bit:
+            names.append(name)
+    return names
+
+
+def main():
+    cmd = 'status'
+    dev = '/dev/cec0'
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1].lower()
+    if len(sys.argv) > 2:
+        dev = sys.argv[2]
+
+    try:
+        fd = os.open(dev, os.O_RDWR)
+    except OSError as e:
+        sys.stderr.write('Cannot open %s: %s\n' % (dev, str(e)))
+        sys.exit(1)
+
+    caps = get_caps(fd)
+    if not caps:
+        sys.stderr.write('Cannot get CEC capabilities\n')
+        os.close(fd)
+        sys.exit(1)
+
+    if not (caps['caps'] & CEC_CAP_TRANSMIT):
+        sys.stderr.write('CEC adapter does not support transmit\n')
+        os.close(fd)
+        sys.exit(1)
+
+    phys = get_phys_addr(fd)
+    la = get_log_addrs(fd)
+
+    if cmd in ('status', 'power'):
+        print('driver:    %s' % caps['driver'])
+        print('adapter:   %s' % caps['name'])
+        cn = cap_names(caps['caps'])
+        print('caps:      0x%x (%s)' % (caps['caps'], ' | '.join(cn)))
+        print('phys_addr: %s' % phys_str(phys))
+        if la:
+            addrs_str = ', '.join(['%d' % la['log_addr'][i]
+                                   for i in range(la['num_log_addrs'])])
+            print('log_addrs: %d [%s] (mask=0x%x)' % (
+                la['num_log_addrs'], addrs_str, la['mask']))
+            if la['osd_name']:
+                print('osd_name:  %s' % la['osd_name'])
+        else:
+            print('log_addrs: unable to read')
+        # Query TV power status
+        src = CEC_LOG_ADDR_UNREGISTERED
+        if la and la['mask'] != 0:
+            for i in range(la['num_log_addrs']):
+                if la['log_addr'][i] != 0xFF:
+                    src = la['log_addr'][i]
+                    break
+        if src == CEC_LOG_ADDR_UNREGISTERED:
+            claimed = claim_log_addr(fd)
+            if claimed != 0xFF:
+                src = claimed
+        ps = query_power_status(fd, src)
+        print('tv_power:  %s' % (ps if ps else 'unknown'))
+        os.close(fd)
+        sys.exit(0)
+
+    # ── Get or claim a logical address ──
+    src = CEC_LOG_ADDR_UNREGISTERED
+    if la and la['mask'] != 0:
+        # Already have a valid address
+        for i in range(la['num_log_addrs']):
+            if la['log_addr'][i] != 0xFF:
+                src = la['log_addr'][i]
+                break
+    if src == CEC_LOG_ADDR_UNREGISTERED:
+        claimed = claim_log_addr(fd)
+        if claimed != 0xFF:
+            src = claimed
+
+    # ── Execute command ──
+    if cmd == 'on':
+        st = transmit_retry(fd, src, CEC_LOG_ADDR_TV, CEC_MSG_IMAGE_VIEW_ON)
+        if st and (st & CEC_TX_STATUS_OK):
+            print('OK')
+        else:
+            print('FAILED')
+
+    elif cmd == 'off':
+        st = transmit_retry(fd, src, CEC_LOG_ADDR_BROADCAST, CEC_MSG_STANDBY)
+        if st and (st & CEC_TX_STATUS_OK):
+            print('OK')
+        else:
+            print('FAILED')
+
+    elif cmd == 'as':
+        phys_hi = (phys >> 8) & 0xFF
+        phys_lo = phys & 0xFF
+        st = transmit_retry(fd, src, CEC_LOG_ADDR_BROADCAST,
+                            CEC_MSG_ACTIVE_SOURCE, [phys_hi, phys_lo])
+        if st and (st & CEC_TX_STATUS_OK):
+            print('OK')
+        else:
+            print('FAILED')
+
+    elif cmd == 'wake':
+        # Image View On to wake TV + Active Source to select input
+        ok = True
+        st = transmit_retry(fd, src, CEC_LOG_ADDR_TV, CEC_MSG_IMAGE_VIEW_ON)
+        if not st or not (st & CEC_TX_STATUS_OK):
+            ok = False
+        time.sleep(0.5)
+        phys_hi = (phys >> 8) & 0xFF
+        phys_lo = phys & 0xFF
+        st2 = transmit_retry(fd, src, CEC_LOG_ADDR_BROADCAST,
+                             CEC_MSG_ACTIVE_SOURCE, [phys_hi, phys_lo])
+        if not st2 or not (st2 & CEC_TX_STATUS_OK):
+            ok = False
+        print('OK' if ok else 'PARTIAL')
+
+    else:
+        print('Usage: %s <status|on|off|as|wake> [/dev/cecN]' % sys.argv[0])
+        print('  status  show CEC adapter info')
+        print('  on      power on TV (Image View On)')
+        print('  off     standby all devices')
+        print('  as      set this device as active source')
+        print('  wake    power on TV + set active source')
+        os.close(fd)
+        sys.exit(1)
+
+    os.close(fd)
+
+if __name__ == '__main__':
+    main()

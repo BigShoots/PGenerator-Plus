@@ -1,0 +1,8 @@
+###############################################################
+# Allow outgoing traffic on local-only interfaces             #
+# (BT PAN, WiFi AP, USB gadget) so the Pi can respond to     #
+# ARP, ICMP, and initiate connections on these networks.      #
+###############################################################
+iptables -I OUTPUT -o bnep -j ACCEPT
+iptables -I OUTPUT -o ap0 -j ACCEPT
+iptables -I OUTPUT -o usb0 -j ACCEPT

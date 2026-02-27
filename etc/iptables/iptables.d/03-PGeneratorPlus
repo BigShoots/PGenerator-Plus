@@ -1,0 +1,2 @@
+# PGenerator+ — allow outbound HTTPS for GitHub OTA updates
+iptables -I OUTPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT

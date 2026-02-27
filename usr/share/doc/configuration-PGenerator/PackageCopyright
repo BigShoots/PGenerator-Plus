@@ -1,0 +1,15 @@
+configuration-PGenerator - Configuration for PGnerator
+
+This program is under licenses founded in the following files:
+
+COPYING
+README
+
+License files can be found in:
+- /usr/share/doc/configuration-PGenerator/ of the distro
+- BiasiLinux/licenses/ of the metadata package
+- /usr/share/doc/common-software-licenses/ of the distro when software license is one ot those present in that dir
+
+In any case before copy, distribute and/or modify any part of this software we suggest
+to get source package and read all legal notices present (also in header of the source files)
+
