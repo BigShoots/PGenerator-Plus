@@ -571,50 +571,118 @@ sub webui_pattern (@) {
  $name=~s/[^a-zA-Z0-9_ -]//g;
  my $w=$w_s || 1920; my $h=$h_s || 1080;
  my $pat="";
- # White Clipping — near-white patches (235-255 in 5-step increments)
+ # White Clipping — 9 near-white bars on 85% gray (AVS HD 709 style)
+ # All bars should be individually visible when contrast is set correctly
  if($name eq "white_clipping") {
-  my @levels=(235,240,245,250,255);
+  my @levels=(230,234,238,242,246,250,253,254,255);
   my $cols=scalar @levels;
-  my $pw=int($w/$cols);
-  $pat.="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
+  my $bg_v=int(255*0.85);
+  my $bar_w=int($w*0.8/$cols);
+  my $gap=int($w*0.005);
+  my $start_x=int($w*0.1);
+  my $bar_top=int($h*0.15);
+  my $bar_h=int($h*0.7);
+  my $ref_v=int(255*0.5);
+  # 85% gray background
+  $pat.="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$bg_v,$bg_v,$bg_v\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
+  # 9 ascending near-white bars
   for(my $i=0;$i<$cols;$i++){
    my $v=$levels[$i];
-   my $x=$i*$pw;
-   $pat.="DRAW=RECTANGLE\nDIM=$pw,$h\nRGB=$v,$v,$v\nBG=0,0,0\nPOSITION=$x,0\nEND=1\n";
+   my $x=$start_x+$i*$bar_w+$gap;
+   $pat.="DRAW=RECTANGLE\nDIM=".($bar_w-$gap*2).",$bar_h\nRGB=$v,$v,$v\nBG=0,0,0\nPOSITION=$x,$bar_top\nEND=1\n";
   }
+  # 50% gray reference strip below bars
+  my $ref_y=$bar_top+$bar_h+int($h*0.02);
+  my $ref_h=int($h*0.04);
+  $pat.="DRAW=RECTANGLE\nDIM=".int($w*0.6).",$ref_h\nRGB=$ref_v,$ref_v,$ref_v\nBG=0,0,0\nPOSITION=".int($w*0.2).",$ref_y\nEND=1\n";
  }
- # Black Clipping — near-black patches (0-20 in 5-step increments)
+ # Black Clipping / PLUGE — below-black through +10% (ITU-R BT.814 style)
+ # Below-black bar should be invisible; +2% bar barely visible
  elsif($name eq "black_clipping") {
-  my @levels=(0,5,10,15,20);
+  my $bg_v=int(255*0.05);
+  my @levels=(0,$bg_v,int(255*0.02),int(255*0.04),int(255*0.06),int(255*0.08),int(255*0.10));
+  # First bar is below-black (clamped at 0 for full range)
+  $levels[0]=0;  # below reference black
+  $levels[1]=0;  # reference black
   my $cols=scalar @levels;
-  my $pw=int($w/$cols);
-  $pat.="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
+  my $bar_w=int($w*0.7/$cols);
+  my $gap=int($w*0.005);
+  my $start_x=int($w*0.15);
+  my $bar_top=int($h*0.2);
+  my $bar_h=int($h*0.6);
+  # Dark gray background (~5%)
+  $pat.="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$bg_v,$bg_v,$bg_v\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
   for(my $i=0;$i<$cols;$i++){
    my $v=$levels[$i];
-   my $x=$i*$pw;
-   $pat.="DRAW=RECTANGLE\nDIM=$pw,$h\nRGB=$v,$v,$v\nBG=0,0,0\nPOSITION=$x,0\nEND=1\n";
+   my $x=$start_x+$i*$bar_w+$gap;
+   $pat.="DRAW=RECTANGLE\nDIM=".($bar_w-$gap*2).",$bar_h\nRGB=$v,$v,$v\nBG=0,0,0\nPOSITION=$x,$bar_top\nEND=1\n";
   }
+  # Red-tinted marker above below-black bar
+  my $mk_y=$bar_top-int($h*0.04);
+  my $mk_h=int($h*0.02);
+  my $mk_x=$start_x+$gap;
+  $pat.="DRAW=RECTANGLE\nDIM=".($bar_w-$gap*2).",$mk_h\nRGB=51,0,0\nBG=0,0,0\nPOSITION=$mk_x,$mk_y\nEND=1\n";
+  # Gray marker above reference black bar
+  $mk_x=$start_x+$bar_w+$gap;
+  $pat.="DRAW=RECTANGLE\nDIM=".($bar_w-$gap*2).",$mk_h\nRGB=51,51,51\nBG=0,0,0\nPOSITION=$mk_x,$mk_y\nEND=1\n";
  }
- # Color Bars — SMPTE-style 8 vertical bars
+ # Color Bars — 75% Rec.709 SMPTE-style with PLUGE bottom section
  elsif($name eq "color_bars") {
-  my @bars=("192,192,192","192,192,0","0,192,192","0,192,0","192,0,192","192,0,0","0,0,192","0,0,0");
-  my $cols=scalar @bars;
+  my $l75=int(255*0.75);
+  my @top_bars=("$l75,$l75,$l75","$l75,$l75,0","0,$l75,$l75","0,$l75,0","$l75,0,$l75","$l75,0,0","0,0,$l75");
+  my @rev_bars=("0,0,$l75","0,0,0","$l75,0,$l75","0,0,0","0,$l75,$l75","0,0,0","$l75,$l75,$l75");
+  my $cols=scalar @top_bars;
   my $pw=int($w/$cols);
+  my $split_y=int($h*0.75);
+  my $mid_h=int($h*0.075);
+  # Black background
   $pat.="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
+  # Top 75%: color bars
   for(my $i=0;$i<$cols;$i++){
    my $x=$i*$pw;
-   $pat.="DRAW=RECTANGLE\nDIM=$pw,$h\nRGB=$bars[$i]\nBG=0,0,0\nPOSITION=$x,0\nEND=1\n";
+   $pat.="DRAW=RECTANGLE\nDIM=$pw,$split_y\nRGB=$top_bars[$i]\nBG=0,0,0\nPOSITION=$x,0\nEND=1\n";
   }
- }
- # Gray Ramp — 11 steps from 0 to 255
- elsif($name eq "gray_ramp") {
-  my $steps=11;
-  my $pw=int($w/$steps);
-  $pat.="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
-  for(my $i=0;$i<$steps;$i++){
-   my $v=int($i*255/($steps-1));
+  # Middle strip: reverse order
+  for(my $i=0;$i<$cols;$i++){
    my $x=$i*$pw;
-   $pat.="DRAW=RECTANGLE\nDIM=$pw,$h\nRGB=$v,$v,$v\nBG=0,0,0\nPOSITION=$x,0\nEND=1\n";
+   $pat.="DRAW=RECTANGLE\nDIM=$pw,$mid_h\nRGB=$rev_bars[$i]\nBG=0,0,0\nPOSITION=$x,$split_y\nEND=1\n";
+  }
+  # Bottom section: PLUGE (left third), 100% white (middle), black (right)
+  my $bot_y=$split_y+$mid_h;
+  my $bot_h=$h-$bot_y;
+  my $third_w=int($w/3);
+  my $pluge_w=int($third_w/3);
+  # PLUGE: below-black, reference black, above-black
+  my $above_v=int(255*0.04);
+  $pat.="DRAW=RECTANGLE\nDIM=$pluge_w,$bot_h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,$bot_y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$pluge_w,$bot_h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=$pluge_w,$bot_y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$pluge_w,$bot_h\nRGB=$above_v,$above_v,$above_v\nBG=0,0,0\nPOSITION=".($pluge_w*2).",$bot_y\nEND=1\n";
+  # 100% white middle third
+  $pat.="DRAW=RECTANGLE\nDIM=$third_w,$bot_h\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$third_w,$bot_y\nEND=1\n";
+  # Black right third (already background)
+ }
+ # Gray Ramp — 32 fine steps from black to white (top) + 11 IRE steps (bottom)
+ elsif($name eq "gray_ramp") {
+  my $ramp_steps=32;
+  my $ramp_pw=int($w/$ramp_steps);
+  my $ramp_h=int($h*0.6);
+  # Black background
+  $pat.="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
+  # Top: 32-step fine ramp
+  for(my $i=0;$i<$ramp_steps;$i++){
+   my $v=int($i*255/($ramp_steps-1));
+   my $x=$i*$ramp_pw;
+   $pat.="DRAW=RECTANGLE\nDIM=$ramp_pw,$ramp_h\nRGB=$v,$v,$v\nBG=0,0,0\nPOSITION=$x,0\nEND=1\n";
+  }
+  # Bottom: 11 stepped bars (0% to 100% in 10% increments)
+  my $step_steps=11;
+  my $step_pw=int($w/$step_steps);
+  my $step_top=int($h*0.65);
+  my $step_h=$h-$step_top;
+  for(my $i=0;$i<$step_steps;$i++){
+   my $v=int($i*255/($step_steps-1));
+   my $x=$i*$step_pw;
+   $pat.="DRAW=RECTANGLE\nDIM=$step_pw,$step_h\nRGB=$v,$v,$v\nBG=0,0,0\nPOSITION=$x,$step_top\nEND=1\n";
   }
  }
  # Full field solid colors
@@ -635,16 +703,50 @@ sub webui_pattern (@) {
   $pat ="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
   $pat.="DRAW=RECTANGLE\nDIM=$ww,$wh\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$wx,$wy\nEND=1\n";
  }
- # Overscan — 2px white border on black
+ # Overscan — borders at 0%, 2.5%, 5% with corner brackets and crosshair
  elsif($name eq "overscan") {
   my $bw=2;
+  my $g=76; my $g2=128;
+  # Black background
   $pat ="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
+  # 0% border (screen edge) — white
   $pat.="DRAW=RECTANGLE\nDIM=$w,$bw\nRGB=255,255,255\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
-  my $by=$h-$bw;
-  $pat.="DRAW=RECTANGLE\nDIM=$w,$bw\nRGB=255,255,255\nBG=0,0,0\nPOSITION=0,$by\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$w,$bw\nRGB=255,255,255\nBG=0,0,0\nPOSITION=0,".($h-$bw)."\nEND=1\n";
   $pat.="DRAW=RECTANGLE\nDIM=$bw,$h\nRGB=255,255,255\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
-  my $rx=$w-$bw;
-  $pat.="DRAW=RECTANGLE\nDIM=$bw,$h\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$rx,0\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$bw,$h\nRGB=255,255,255\nBG=0,0,0\nPOSITION=".($w-$bw).",0\nEND=1\n";
+  # 5% border — dark gray
+  my $m5x=int($w*0.05); my $m5y=int($h*0.05);
+  my $inner5w=$w-$m5x*2; my $inner5h=$h-$m5y*2;
+  $pat.="DRAW=RECTANGLE\nDIM=$inner5w,$bw\nRGB=$g,$g,$g\nBG=0,0,0\nPOSITION=$m5x,$m5y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$inner5w,$bw\nRGB=$g,$g,$g\nBG=0,0,0\nPOSITION=$m5x,".($h-$m5y-$bw)."\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$bw,$inner5h\nRGB=$g,$g,$g\nBG=0,0,0\nPOSITION=$m5x,$m5y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$bw,$inner5h\nRGB=$g,$g,$g\nBG=0,0,0\nPOSITION=".($w-$m5x-$bw).",$m5y\nEND=1\n";
+  # 2.5% border — mid gray
+  my $m25x=int($w*0.025); my $m25y=int($h*0.025);
+  my $inner25w=$w-$m25x*2; my $inner25h=$h-$m25y*2;
+  $pat.="DRAW=RECTANGLE\nDIM=$inner25w,$bw\nRGB=$g2,$g2,$g2\nBG=0,0,0\nPOSITION=$m25x,$m25y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$inner25w,$bw\nRGB=$g2,$g2,$g2\nBG=0,0,0\nPOSITION=$m25x,".($h-$m25y-$bw)."\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$bw,$inner25h\nRGB=$g2,$g2,$g2\nBG=0,0,0\nPOSITION=$m25x,$m25y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$bw,$inner25h\nRGB=$g2,$g2,$g2\nBG=0,0,0\nPOSITION=".($w-$m25x-$bw).",$m25y\nEND=1\n";
+  # Center crosshair — white
+  my $cross_len=int($w*0.075); my $cross_t=2;
+  my $cx=int($w/2); my $cy=int($h/2);
+  $pat.="DRAW=RECTANGLE\nDIM=".($cross_len*2).",$cross_t\nRGB=255,255,255\nBG=0,0,0\nPOSITION=".($cx-$cross_len).",".($cy-int($cross_t/2))."\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$cross_t,".($cross_len*2)."\nRGB=255,255,255\nBG=0,0,0\nPOSITION=".($cx-int($cross_t/2)).",".($cy-$cross_len)."\nEND=1\n";
+  # Corner L-brackets at 5% mark — white
+  my $cm=int($w*0.04); my $ct=3;
+  # Top-left
+  $pat.="DRAW=RECTANGLE\nDIM=$cm,$ct\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$m5x,$m5y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$ct,$cm\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$m5x,$m5y\nEND=1\n";
+  # Top-right
+  $pat.="DRAW=RECTANGLE\nDIM=$cm,$ct\nRGB=255,255,255\nBG=0,0,0\nPOSITION=".($w-$m5x-$cm).",$m5y\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$ct,$cm\nRGB=255,255,255\nBG=0,0,0\nPOSITION=".($w-$m5x-$ct).",$m5y\nEND=1\n";
+  # Bottom-left
+  $pat.="DRAW=RECTANGLE\nDIM=$cm,$ct\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$m5x,".($h-$m5y-$ct)."\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$ct,$cm\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$m5x,".($h-$m5y-$cm)."\nEND=1\n";
+  # Bottom-right
+  $pat.="DRAW=RECTANGLE\nDIM=$cm,$ct\nRGB=255,255,255\nBG=0,0,0\nPOSITION=".($w-$m5x-$cm).",".($h-$m5y-$ct)."\nEND=1\n";
+  $pat.="DRAW=RECTANGLE\nDIM=$ct,$cm\nRGB=255,255,255\nBG=0,0,0\nPOSITION=".($w-$m5x-$ct).",".($h-$m5y-$cm)."\nEND=1\n";
  }
  # Generic patch — takes r,g,b,size params from JSON body
  elsif($name eq "patch") {
@@ -974,12 +1076,13 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
   <div class="pat-section">
    <div class="pat-section-title" onclick="toggleSection(this)">Diagnostic</div>
    <div class="pat-content">
+    <div style="font-size:.65rem;color:var(--text2);margin-bottom:6px;line-height:1.4">Visual setup patterns for display calibration. Use these to verify your display&#39;s basic picture settings before running a full calibration.</div>
     <div class="pat-grid">
-     <button class="pat-btn" onclick="showPattern('white_clipping')">White Clipping</button>
-     <button class="pat-btn" onclick="showPattern('black_clipping')">Black Clipping</button>
-     <button class="pat-btn" onclick="showPattern('color_bars')">Color Bars</button>
-     <button class="pat-btn" onclick="showPattern('gray_ramp')">Gray Ramp</button>
-     <button class="pat-btn" onclick="showPattern('overscan')">Overscan</button>
+     <button class="pat-btn" onclick="showPattern('white_clipping')" title="Adjust Contrast/White Level: 9 vertical bars from 90% to 100% white on an 85% gray background. Reduce contrast until all bars are individually visible.">White Clipping<span style="display:block;font-size:.55rem;color:var(--text2)">Set Contrast &mdash; all 9 near-white bars visible</span></button>
+     <button class="pat-btn" onclick="showPattern('black_clipping')" title="Adjust Brightness/Black Level (PLUGE): 7 bars from below-black through +10%. Raise brightness until the leftmost (below-black) bar just disappears while the +2% bar remains barely visible.">Black Clipping<span style="display:block;font-size:.55rem;color:var(--text2)">Set Brightness &mdash; below-black invisible, +2% barely visible</span></button>
+     <button class="pat-btn" onclick="showPattern('color_bars')" title="SMPTE-style 75% Rec.709 color bars: top section has 7 bars. Bottom has reverse-order strip, PLUGE section, and 100% white reference.">Color Bars<span style="display:block;font-size:.55rem;color:var(--text2)">75% Rec.709 bars + PLUGE section</span></button>
+     <button class="pat-btn" onclick="showPattern('gray_ramp')" title="Top: 32-step fine gradient from black to white. Bottom: 11 stepped bars at 0% to 100% in 10% increments. Verify smooth gamma and no banding.">Gray Ramp<span style="display:block;font-size:.55rem;color:var(--text2)">32-step gradient + 11 IRE steps</span></button>
+     <button class="pat-btn" onclick="showPattern('overscan')" title="Border lines at 0%, 2.5%, and 5% from screen edges with corner brackets and center crosshair. All lines should be visible.">Overscan<span style="display:block;font-size:.55rem;color:var(--text2)">Borders at 0% / 2.5% / 5% &mdash; all must be visible</span></button>
     </div>
    </div>
   </div>
