@@ -1,6 +1,0 @@
-#!/bin/bash
-###############################################################################
-# pgenerator-wizard — Convenience wrapper to launch the setup wizard
-# Place at /usr/bin/pgenerator-wizard (in PATH)
-###############################################################################
-exec /usr/sbin/pgenerator-wizard.sh "$@"
