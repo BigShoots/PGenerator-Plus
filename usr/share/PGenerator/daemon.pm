@@ -332,6 +332,8 @@ sub pattern_daemon {
       my ($conf_key,$conf_val)=@_;
       &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
       $pgenerator_conf{$conf_key}="$conf_val";
+      # Keep bits_default in sync so patterns use the correct bit depth
+      $bits_default=int($conf_val) if($conf_key eq "max_bpc" && $conf_val > 0);
       $calman_settings_dirty=1;
       &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
      };
@@ -732,12 +734,18 @@ sub pattern_daemon {
      #
      # RGB Pattern Commands (original Calman wire protocol)
      # RGB_B:R,G,B,BG  RGB_S:R,G,B,SIZE  RGB_A:R,G,B
+     # Calman sends 10-bit values (0-1023); scale to match bits_default
      #
      if($type =~/RGB_/) {
       @el_cmd=split(",",$pattern_cmd);
-      $r=int($el_cmd[0]/1024*256);
-      $g=int($el_cmd[1]/1024*256);
-      $b=int($el_cmd[2]/1024*256);
+      my $calman_max=1023;
+      my $target_max=($bits_default == 10) ? 1023 : ($bits_default == 12) ? 4095 : 255;
+      $r=int($el_cmd[0]/$calman_max*$target_max+0.5);
+      $g=int($el_cmd[1]/$calman_max*$target_max+0.5);
+      $b=int($el_cmd[2]/$calman_max*$target_max+0.5);
+      $r=$target_max if($r > $target_max);
+      $g=$target_max if($g > $target_max);
+      $b=$target_max if($b > $target_max);
       if($calman_special_pattern{$key} ne "" &&  -f "$pattern_templates/$calman_special_pattern{$key}") {
        $response=&get_pattern("TESTTEMPLATE","$calman_special_pattern{$key}","","TESTTEMPLATE:$calman_special_pattern{$key}");
        &send_key_to_client($connection,$response);
@@ -746,9 +754,10 @@ sub pattern_daemon {
       }
       # Apply any pending display mode settings before showing pattern
       $calman_apply->();
-      # RGB_B: 4th field is background grey level (10-bit, scale to 8-bit)
+      # RGB_B: 4th field is background grey level (10-bit, scale to target bits)
       if($type =~/RGB_B/) {
-       my $bg_val=int($el_cmd[3]/1024*256);
+       my $bg_val=int($el_cmd[3]/$calman_max*$target_max+0.5);
+       $bg_val=$target_max if($bg_val > $target_max);
        $calman_bg="$bg_val,$bg_val,$bg_val";
        &clean_pattern_files();
        &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$calman_bg","calman");

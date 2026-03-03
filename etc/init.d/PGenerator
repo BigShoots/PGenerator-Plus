@@ -30,6 +30,8 @@ case "$1" in
         chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $DEVICES_VIDEO 2>/dev/null
         chmod 660 /dev/cec* 2>/dev/null
         chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP /dev/cec* 2>/dev/null
+        # Allow PGeneratord (via drm_override.so) to write HDMI CSC registers
+        chmod 0666 /dev/mem 2>/dev/null
         setcap cap_net_bind_service=+ep $PERL
         setsid sudo -u $PGENERATOR_USER_GROUP $PROGRAM_DAEMON_SOCKET
         setcap cap_net_bind_service=-ep $PERL

@@ -1,3 +1,8 @@
 *.img
+*.img.gz
 *.zip
 *.tar.gz
+*.so
+tools/dv_helper
+tools/read_csc
+usr/lib/scdc_tool

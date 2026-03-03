@@ -44,6 +44,37 @@ sub auto_select_4k_mode (@) {
 }
 
 ###############################################
+#  Apply DRM Connector Properties (KMS only)  #
+###############################################
+sub apply_drm_properties (@) {
+ return if(!$is_kms);
+ # Find connected HDMI connector ID
+ my $connector_id="";
+ open(MT,"$modetest -c 2>/dev/null|");
+ while(<MT>) {
+  if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
+   $connector_id=$1;
+   last;
+  }
+ }
+ close(MT);
+ return if($connector_id eq "");
+ # Set max bpc — the binary fails to apply this property
+ my $max_bpc=$pgenerator_conf{"max_bpc"};
+ if($max_bpc ne "" && $max_bpc > 0) {
+  system("$modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
+  &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
+ }
+ # Reset output format — kernel retains previous value across binary
+ # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
+ # fallback that sticks even after switching back to 8bpc RGB.
+ my $color_fmt=$pgenerator_conf{"color_format"};
+ $color_fmt=0 if($color_fmt eq "");
+ system("$modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
+ &log("DRM: Set output format=$color_fmt on connector $connector_id");
+}
+
+###############################################
 #       Pattern Generator Start Function      #
 ###############################################
 sub pattern_generator_start(@) {
@@ -52,12 +83,15 @@ sub pattern_generator_start(@) {
  symlink("running/operations.txt","$var_dir/operations.txt") if(!-l "$var_dir/operations.txt");
  mkdir("$var_dir/running/tmp") if(!-d "$var_dir/running/tmp");
  &auto_select_4k_mode();
+ &apply_drm_properties();
  &get_hdmi_info();
- my $pg_bin = $pattern_generator;
- if($pgenerator_conf{"dv_status"} eq "1" && -f "$pattern_generator.dv") {
-  $pg_bin = "$pattern_generator.dv";
- }
- system("$pg_bin $w_s $h_s &>/dev/null &");
+ # Use Mesa EGL (not Broadcom) on KMS — Broadcom EGL needs dispmanx/VCHIQ
+ # which is unavailable with vc4-kms-v3d. LD_LIBRARY_PATH=/usr/lib forces
+ # Mesa libEGL.so + libGLESv2.so so the binary uses DRM/GBM rendering.
+ # LD_PRELOAD overrides DRM property calls to fix max_bpc setting.
+ # drm_override.so also blocks DOVI metadata when dv_status=0.
+ # Send stderr to log for drm_override diagnostics.
+ system("LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $pattern_generator $w_s $h_s >/dev/null 2>/tmp/drm_override.log &");
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
 }
@@ -576,6 +610,8 @@ sub get_cmd_generic(@) {
   if($el_response[0] && $el_response[1] && ($w_s != $el_response[0] || $h_s != $el_response[1])) {
    $w_s=$el_response[0];
    $h_s=$el_response[1];
+   $max_x=$w_s;
+   $max_y=$h_s;
    &pattern_generator_stop();
    &pattern_generator_start();
   }
@@ -761,6 +797,8 @@ sub get_hdmi_info() {
  if($w_s_t && $h_s_t) {
   $w_s=$w_s_t;
   $h_s=$h_s_t;
+  $max_x=$w_s;
+  $max_y=$h_s;
  }
  return $response;
 }

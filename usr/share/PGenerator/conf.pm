@@ -54,6 +54,8 @@ sub get_conf (@) {
  $device_model.=" (KMS)" if($is_rpi_4 && $is_kms);
  # End for RPI p4
  &get_pgenerator_conf();
+ # Sync bits_default from config (so patterns use the configured bit depth)
+ $bits_default=int($pgenerator_conf{"max_bpc"}) if($pgenerator_conf{"max_bpc"} > 0);
 }
 
 ###############################################

@@ -35,7 +35,7 @@ rc_PGenerator_start () {
  # End Patch for RPI 3 Model B Plus to fix bluetooth mac address 
  if [ "$1" == "start" ]; then
 
-  # Suppress kernel console messages so splash and wizard stay clean.
+  # Suppress kernel console messages so splash stays clean.
   # cmdline.txt has "quiet loglevel=1" for early boot; this catches
   # anything that starts printing after modules finish loading.
   dmesg -n 1 2>/dev/null
@@ -49,12 +49,11 @@ rc_PGenerator_start () {
   fi
 
   # Redirect all script output to a log file so nothing appears on
-  # the console framebuffer and overwrites the splash or wizard.
+  # the console framebuffer and overwrites the splash.
   exec > /tmp/rcPGenerator.log 2>&1
 
   # First Boot
   FIRST_BOOT_FILE="/etc/BiasiLinux/BiasiLinux.FirstBoot"
-  WIZARD_SCRIPT="/usr/sbin/pgenerator-wizard.sh"
   if [ -f "$FIRST_BOOT_FILE" ]; then
    # resize
    /usr/bin/resize_PGenerator_disk
@@ -240,14 +239,6 @@ rc_PGenerator_start () {
 
  # dhcp
  /etc/init.d/dhcp restart
-
- # Setup wizard disabled — PGenerator+ starts directly.
- # Configuration is handled via the web UI instead.
- # WIZARD_SHOWN_FILE="/tmp/.pgenerator_wizard_shown"
- # if [ -x "$WIZARD_SCRIPT" ] && [ ! -f "$WIZARD_SHOWN_FILE" ]; then
- #  /usr/bin/setsid -c sh -c 'TERM=linux exec /usr/sbin/pgenerator-wizard.sh' </dev/tty2 >/dev/tty2 2>&1
- #  touch "$WIZARD_SHOWN_FILE"
- # fi
 
  # PGenerator 
  /etc/init.d/PGenerator restart
