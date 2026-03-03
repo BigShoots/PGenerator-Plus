@@ -46,6 +46,7 @@ sub create_pattern_file (@) {
   ($min_rgb,$max_rgb)=(0,1023) if($bits == 10);
  }
  $bits=$bits_default if($bits eq "");
+ $max_rgb=(1 << $bits) - 1 if($bits > 8);
  for(@el_rgb) {
   return if($_ < $min_rgb || $_ > $max_rgb);
   $new_rgb.=int($_).",";
@@ -55,14 +56,7 @@ sub create_pattern_file (@) {
  $new_rgb=~s/,$//;
  $options="TEXT";
  $options="IMAGE" if($draw eq "IMAGE");
- if(!$scaling_disabled) {
-  my $scaled_w=&round_val((split(",",$dim))[0]*($w_s/$max_x));
-  my $scaled_h=&round_val((split(",",$dim))[1]*($h_s/$max_y));
-  # Cap to display dimensions — prevents oversized patterns and negative positions
-  $scaled_w=$w_s if($scaled_w > $w_s);
-  $scaled_h=$h_s if($scaled_h > $h_s);
-  $dim="$scaled_w,$scaled_h";
- }
+ $dim=&round_val((split(",",$dim))[0]*($w_s/$max_x)).",".&round_val((split(",",$dim))[1]*($h_s/$max_y)) if(!$scaling_disabled);
  # calculate and check the position
  $position=&get_position($dim,$draw,$position,$scaling_disabled);
  @num_sep=split(",",$position);
@@ -412,11 +406,7 @@ sub get_pattern (@) {
   if($_=~/^DIM=(.*)/) {
    $dim=$1;
    if(!$scaling_disabled) {
-    my $scaled_w=&round_val((split(",",$dim))[0]*($w_s/$max_x));
-    my $scaled_h=&round_val((split(",",$dim))[1]*($h_s/$max_y));
-    $scaled_w=$w_s if($scaled_w > $w_s);
-    $scaled_h=$h_s if($scaled_h > $h_s);
-    $dim="$scaled_w,$scaled_h";
+    $dim=&round_val((split(",",$dim))[0]*($w_s/$max_x)).",".&round_val((split(",",$dim))[1]*($h_s/$max_y));
    }
    $_="DIM=$dim\n";
    @num_dim=split(",",$dim);
