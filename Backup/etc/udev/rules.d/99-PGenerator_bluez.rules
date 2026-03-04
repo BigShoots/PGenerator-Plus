@@ -1,0 +1,2 @@
+# Bluetooth Configuration
+ACTION=="add", KERNEL=="hci[0-9]*", RUN+="/usr/bin/PGenerator_bluez.sh add %k"
