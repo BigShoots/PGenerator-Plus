@@ -1,0 +1,178 @@
+#!/bin/sh
+#
+# pgenerator-update — PGenerator+ OTA update via GitHub Releases
+#
+# Usage:
+#   pgenerator-update check          — check for new version, print JSON
+#   pgenerator-update apply          — download and apply latest release
+#   pgenerator-update version        — print current version
+#
+# Update stream: https://github.com/BigShoots/PGenerator/releases
+#
+# Release assets are tar.gz archives containing files in FHS layout:
+#   usr/share/PGenerator/*.pm
+#   usr/sbin/pgenerator-*
+#   usr/bin/*
+#   etc/PGenerator/*
+#   etc/udev/rules.d/*
+#
+# The archive is extracted over / so paths must match the installed layout.
+#
+
+set -euo pipefail
+
+GITHUB_REPO="BigShoots/PGenerator-Plus"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+VERSION_FILE="/usr/share/PGenerator/version.pm"
+UPDATE_DIR="/var/lib/PGenerator/updates"
+UPDATE_LOG="/var/log/PGenerator/update.log"
+CURL_OPTS="-s --connect-timeout 10 --max-time 60"
+
+# ── Read current version from version.pm ──
+get_current_version() {
+ grep '^\$version=' "$VERSION_FILE" 2>/dev/null | sed 's/.*="\([^"]*\)".*/\1/'
+}
+
+# ── Fetch latest release info from GitHub ──
+get_latest_release() {
+ curl $CURL_OPTS -H "Accept: application/vnd.github.v3+json" "$GITHUB_API" 2>/dev/null
+}
+
+# ── Compare semver: returns 0 if $1 > $2 ──
+version_gt() {
+ # Strip leading 'v' if present
+ local a=$(echo "$1" | sed 's/^v//')
+ local b=$(echo "$2" | sed 's/^v//')
+ # Compare using sort -V
+ [ "$a" != "$b" ] && [ "$(printf '%s\n%s' "$a" "$b" | sort -V | tail -1)" = "$a" ]
+}
+
+# ── Log with timestamp ──
+log_msg() {
+ local ts=$(date '+%Y-%m-%d %H:%M:%S')
+ echo "[$ts] $*" >> "$UPDATE_LOG" 2>/dev/null
+ echo "$*"
+}
+
+cmd="${1:-help}"
+
+case "$cmd" in
+
+ version)
+  echo "$(get_current_version)"
+  ;;
+
+ check)
+  current=$(get_current_version)
+  release_json=$(get_latest_release)
+  if [ -z "$release_json" ]; then
+   echo "{\"status\":\"error\",\"message\":\"Cannot reach GitHub\"}"
+   exit 1
+  fi
+
+  # Check for API error (e.g. no releases yet)
+  if echo "$release_json" | grep -q '"Not Found"'; then
+   echo "{\"status\":\"ok\",\"current\":\"$current\",\"latest\":\"$current\",\"update_available\":false,\"published\":\"\",\"changelog\":\"No releases published yet.\",\"asset_url\":\"\"}"
+   exit 0
+  fi
+
+  # Parse tag_name (version), body (changelog), tarball asset URL
+  latest=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | sed 's/^v//')
+  changelog=$(echo "$release_json" | grep '"body"' | head -1 | sed 's/.*"body"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/' | sed 's/\\n/\n/g' | head -c 500)
+  published=$(echo "$release_json" | grep '"published_at"' | head -1 | sed 's/.*"published_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+  # Find the .tar.gz asset download URL
+  asset_url=$(echo "$release_json" | grep '"browser_download_url"' | grep '\.tar\.gz' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+  if [ -z "$latest" ]; then
+   echo "{\"status\":\"error\",\"message\":\"Cannot parse release info\"}"
+   exit 1
+  fi
+
+  if version_gt "$latest" "$current"; then
+   update_available="true"
+  else
+   update_available="false"
+  fi
+
+  # Escape quotes in changelog for JSON
+  changelog_escaped=$(echo "$changelog" | sed 's/"/\\"/g' | tr '\n' ' ')
+
+  echo "{\"status\":\"ok\",\"current\":\"$current\",\"latest\":\"$latest\",\"update_available\":$update_available,\"published\":\"$published\",\"changelog\":\"$changelog_escaped\",\"asset_url\":\"$asset_url\"}"
+  ;;
+
+ apply)
+  current=$(get_current_version)
+  log_msg "Update check started (current: $current)"
+
+  release_json=$(get_latest_release)
+  if [ -z "$release_json" ]; then
+   log_msg "ERROR: Cannot reach GitHub"
+   echo "ERROR: Cannot reach GitHub"
+   exit 1
+  fi
+
+  latest=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | sed 's/^v//')
+  asset_url=$(echo "$release_json" | grep '"browser_download_url"' | grep '\.tar\.gz' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+  if ! version_gt "$latest" "$current"; then
+   log_msg "Already up to date ($current)"
+   echo "Already up to date ($current)"
+   exit 0
+  fi
+
+  if [ -z "$asset_url" ]; then
+   log_msg "ERROR: No .tar.gz asset found in release $latest"
+   echo "ERROR: No .tar.gz asset found in release"
+   exit 1
+  fi
+
+  log_msg "Downloading $latest from $asset_url"
+  mkdir -p "$UPDATE_DIR"
+  tarball="$UPDATE_DIR/pgenerator-plus-${latest}.tar.gz"
+  curl $CURL_OPTS -L -o "$tarball" "$asset_url"
+
+  if [ ! -s "$tarball" ]; then
+   log_msg "ERROR: Download failed or empty file"
+   echo "ERROR: Download failed"
+   exit 1
+  fi
+
+  # Stop PGenerator before applying
+  log_msg "Stopping PGenerator..."
+  /etc/init.d/PGenerator stop 2>/dev/null || true
+  sleep 2
+
+  # Extract over root filesystem
+  log_msg "Extracting update..."
+  cd /
+  tar xzf "$tarball" 2>&1 | tee -a "$UPDATE_LOG"
+
+  # Ensure scripts are executable
+  chmod +x /usr/sbin/pgenerator-* 2>/dev/null || true
+  chmod +x /usr/sbin/PGeneratord* 2>/dev/null || true
+  chmod +x /usr/bin/PGenerator_*.pl 2>/dev/null || true
+  chmod +x /usr/bin/pgenerator-* 2>/dev/null || true
+
+  # Post-install setup
+  ln -sf /etc/init.d/ntpdate /etc/rc2.d/S97ntpdate 2>/dev/null || true
+
+  # Clean up
+  rm -f "$tarball"
+  sync
+
+  log_msg "Update to $latest complete — restarting..."
+  /etc/init.d/PGenerator start 2>/dev/null &
+
+  echo "OK: Updated to $latest"
+  ;;
+
+ *)
+  echo "Usage: pgenerator-update {check|apply|version}"
+  echo ""
+  echo "  check    — Check for available updates"
+  echo "  apply    — Download and install latest update"
+  echo "  version  — Show current version"
+  exit 1
+  ;;
+esac

@@ -1,0 +1,70 @@
+###################################################
+#                    License                      #
+###################################################
+This software is under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 3 of the License (See File COPYING)
+
+However it uses other external packages and then please check the licenses about the
+required packages (see list below)
+
+This software is compatible only with Distro BiasiLinux and Raspberry Device
+
+###################################################
+#                    Requirements                 #
+###################################################
+- PGeneratorDisplayMirror:
+  raspberry-firmware
+  glibc
+
+- /etc/init.d/PGenerator
+  bash
+  coreutils
+  libcap  
+  procps
+  sudo
+  perl
+  util-linux
+
+- PGeneratord:
+  gst1-plugins-base
+  gstreamer1
+  udev
+  glibc
+  fontconfig
+  freetype
+  openssl
+  cairo
+  glib
+  libX11
+  FreeImage
+  boost
+  raspberry-firmware
+  gcc
+  libiconv
+  pcre
+  libpng
+  zlib
+  expat
+  pixman
+  libxcb
+  libXrender
+  libXext
+  libXau
+  libXdmcp
+
+- PGeneratord.pl:
+  perl
+  libwww-perl
+  URI 
+  coreutils
+  bluez
+  ImageMagick
+  omxplayer
+  sudo
+
+- PGenerator_cmd.pl
+  sysvinit
+  iptables
+  wpa_supplicant
+  biasilinuxutils
+  device-bootloader

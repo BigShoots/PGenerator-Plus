@@ -1,0 +1,97 @@
+#!/usr/bin/python
+#
+# PGenerator Bluetooth auto-pair agent
+# Registers as the default BlueZ agent with NoInputNoOutput capability
+# so that incoming pairing requests are accepted automatically (Just Works).
+#
+
+from __future__ import absolute_import, print_function, unicode_literals
+
+import sys
+import dbus
+import dbus.service
+import dbus.mainloop.glib
+
+try:
+ from gi.repository import GObject
+ mainloop_class = GObject.MainLoop
+except ImportError:
+ import gobject
+ mainloop_class = gobject.MainLoop
+
+BUS_NAME = "org.bluez"
+AGENT_IFACE = "org.bluez.Agent1"
+AGENT_MGR_IFACE = "org.bluez.AgentManager1"
+AGENT_PATH = "/pgenerator/agent"
+CAPABILITY = "NoInputNoOutput"
+
+def trust_device(path):
+ """Mark a device as trusted so PAN/services auto-connect"""
+ try:
+  bus = dbus.SystemBus()
+  props = dbus.Interface(
+   bus.get_object(BUS_NAME, path),
+   "org.freedesktop.DBus.Properties"
+  )
+  props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+ except Exception:
+  pass
+
+class AutoPairAgent(dbus.service.Object):
+ @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
+ def Release(self):
+  pass
+
+ @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
+ def AuthorizeService(self, device, uuid):
+  trust_device(device)
+  return
+
+ @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
+ def RequestPinCode(self, device):
+  trust_device(device)
+  return "0000"
+
+ @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="u")
+ def RequestPasskey(self, device):
+  trust_device(device)
+  return dbus.UInt32(0)
+
+ @dbus.service.method(AGENT_IFACE, in_signature="ouq", out_signature="")
+ def DisplayPasskey(self, device, passkey, entered):
+  return
+
+ @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
+ def DisplayPinCode(self, device, pincode):
+  return
+
+ @dbus.service.method(AGENT_IFACE, in_signature="ou", out_signature="")
+ def RequestConfirmation(self, device, passkey):
+  trust_device(device)
+  return
+
+ @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="")
+ def RequestAuthorization(self, device):
+  trust_device(device)
+  return
+
+ @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
+ def Cancel(self):
+  pass
+
+if __name__ == "__main__":
+ dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+ bus = dbus.SystemBus()
+
+ agent = AutoPairAgent(bus, AGENT_PATH)
+
+ mgr = dbus.Interface(
+  bus.get_object(BUS_NAME, "/org/bluez"),
+  AGENT_MGR_IFACE
+ )
+
+ mgr.RegisterAgent(AGENT_PATH, CAPABILITY)
+ mgr.RequestDefaultAgent(AGENT_PATH)
+
+ mainloop = mainloop_class()
+ mainloop.run()

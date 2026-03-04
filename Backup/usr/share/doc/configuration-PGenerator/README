@@ -1,0 +1,59 @@
+###################################################
+#                    License                      #
+###################################################
+This software is under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 3 of the License (See File COPYING)
+
+However it uses other external packages and then please check the licenses about the
+required packages (see list below)
+
+This software is compatible only with Distro BiasiLinux and Raspberry Device
+
+###################################################
+#                    Requirements                 #
+###################################################
+- /etc/init.d/rcPGenerator
+  bash
+  coreutils
+  perl
+  util-linux
+  module-init-tools
+  net-tools
+  wireless-tools
+  procps
+  hostapd
+  wpa_supplicant
+  bluez
+  sed
+  grep
+
+- The configuration/pairing of the device for Bluetooth PAN:
+  udev
+
+- The configuration of network:
+  net-tools
+  dhcpcd
+
+- The configuration of firewall:
+  iptables
+  grep
+
+- The configuration of scheduling:
+  cronie
+
+- /usr/bin/PGenerator_bluez.sh (used by udev)
+  bash
+  bluez 
+  dhcp
+  dbus
+  grep
+
+- /usr/bin/resize_PGenerator_disk
+  bash
+  coreutils 
+  parted
+  e2fsprogs
+  perl
+  util-linux
+  grep
+  sed
