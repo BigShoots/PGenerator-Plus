@@ -342,7 +342,7 @@ sub pattern_daemon {
      #
      my $calman_apply = sub {
       if($calman_settings_dirty) {
-       &log("Calman: applying pending settings (restarting pattern generator)");
+       &log("Calman APPLY: restarting PGeneratord (max_bpc=$pgenerator_conf{'max_bpc'} quant=$pgenerator_conf{'rgb_quant_range'} bits_default=$bits_default)");
        &pattern_generator_stop();
        &pattern_generator_start();
        $calman_settings_dirty=0;
@@ -582,6 +582,8 @@ sub pattern_daemon {
      }
      #
      # BITD — Bit depth per channel
+     # Sets max_bpc in config (C binary reads it for DRM connector property)
+     # and syncs bits_default so pattern values match the link depth.
      #
      if($type eq "BITD") {
       my $bitd_val=int($pattern_cmd);
@@ -776,7 +778,7 @@ sub pattern_daemon {
         &send_key_to_client($connection,"");
         last;
        }
-       # windowed pattern - calculate dimensions from percentage
+       # windowed pattern — calculate dimensions from percentage
        my $sqrt_val=sqrt($win_pct/100);
        my $win_w=int($sqrt_val*$max_x);
        my $win_h=int($sqrt_val*$max_y);
