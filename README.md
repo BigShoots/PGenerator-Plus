@@ -70,7 +70,8 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 **1. Calman (Portrait Displays)**
 - **Protocol:** SpectraCal Unified Pattern Generator Control Interface (Port `2100`)
 - **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` (or `Portrait Displays` in some versions) → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
-  - *Calman Note:* Calman has the ability to directly control the AVI and DRM InfoFrame information based on what is selected in the Calman Source Settings tab.
+  - *Calman Control:* When connected via UPGCI, Calman can directly command the PGenerator to switch between SDR, HDR10, HLG, and Dolby Vision signal modes, set the EOTF, colorimetry, color format, quantization range, mastering display metadata, and other InfoFrame parameters — all from the Calman Source Settings tab. PGenerator executes these commands in real time, eliminating the need to manually configure the signal on the device.
+  - *10-bit Support (PGenerator+ Enhancement):* PGenerator+ extends the original 8-bit Calman protocol with automatic 10-bit pattern support. When Calman sends HDR commands that set `max_bpc=10`, PGenerator+ scales the incoming 10-bit pattern values to match the active link bit depth and writes native 10-bit values to the renderer. This means HDR10 calibration runs at full 10-bit precision end-to-end, without the quantization loss of converting to 8-bit.
   - *Deprecation Notice:* Portrait Displays removed the UPGCI protocol from Calman "Home" licenses starting with version 5.15.x (the 2024 releases) to push users toward their own generator hardware. There is no official add-on to re-enable it for Home users. If calibration with PGenerator is required, you must either remain on Calman 5.14.x or older, upgrade to a professional license tier (Calman Video Pro or higher), or use alternative software (like ColourSpace or HCFR).
 
 **2. ColourSpace / LightSpace CMS**
@@ -246,7 +247,7 @@ usr/
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.0.1`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.1.1`) and product name (`PGenerator+`) |
 
 ---
 
@@ -313,7 +314,7 @@ All endpoints are served on port 80. Responses are JSON.
 
 PGenerator+ is built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto, licensed under the GNU General Public License v3.0. The original project provides the core pattern generation engine, TCP protocol handling, and C/C++ renderer binary.
 
-PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDNS discovery, HDMI-CEC control, OTA updates via GitHub Releases, and various stability improvements.
+PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDNS discovery, HDMI-CEC control, OTA updates via GitHub Releases, Calman 10-bit pattern support, automatic bit depth management for HDR/SDR mode switching, and various stability improvements.
 
 ---
 
