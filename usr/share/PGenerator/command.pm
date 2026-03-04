@@ -59,15 +59,10 @@ sub apply_drm_properties (@) {
  }
  close(MT);
  return if($connector_id eq "");
- # Set max bpc — the binary fails to apply this property
- my $max_bpc=$pgenerator_conf{"max_bpc"};
- if($max_bpc ne "" && $max_bpc > 0) {
-  system("$modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
-  &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
- }
- # Reset output format — kernel retains previous value across binary
- # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
- # fallback that sticks even after switching back to 8bpc RGB.
+ # Note: max_bpc is NOT set here — the C binary reads max_bpc from
+ # PGenerator.conf and sets the DRM connector property itself.
+ # Reset output format to match config (default RGB).  The kernel may
+ # retain a previous YCbCr fallback across binary restarts.
  my $color_fmt=$pgenerator_conf{"color_format"};
  $color_fmt=0 if($color_fmt eq "");
  system("$modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
@@ -88,10 +83,7 @@ sub pattern_generator_start(@) {
  # Use Mesa EGL (not Broadcom) on KMS — Broadcom EGL needs dispmanx/VCHIQ
  # which is unavailable with vc4-kms-v3d. LD_LIBRARY_PATH=/usr/lib forces
  # Mesa libEGL.so + libGLESv2.so so the binary uses DRM/GBM rendering.
- # LD_PRELOAD overrides DRM property calls to fix max_bpc setting.
- # drm_override.so also blocks DOVI metadata when dv_status=0.
- # Send stderr to log for drm_override diagnostics.
- system("LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $pattern_generator $w_s $h_s >/dev/null 2>/tmp/drm_override.log &");
+ system("LD_LIBRARY_PATH=/usr/lib $pattern_generator $w_s $h_s >/dev/null 2>/tmp/pgeneratord.log &");
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
 }

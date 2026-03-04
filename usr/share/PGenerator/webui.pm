@@ -1047,14 +1047,6 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
     </select>
    </div>
    <div class="field">
-    <label>Bit Depth</label>
-    <select id="max_bpc">
-     <option value="8">8-bit</option>
-     <option value="10">10-bit</option>
-     <option value="12">12-bit</option>
-    </select>
-   </div>
-   <div class="field">
     <label>Color Format</label>
     <select id="color_format">
      <option value="0">RGB</option>
@@ -1342,7 +1334,6 @@ async function loadConfig(){
   sm=(config.eotf==='3')?'hlg':'hdr10';
  }
  setVal('signal_mode',sm);
- setVal('max_bpc',config.max_bpc||'8');
  setVal('color_format',config.color_format||'0');
  setVal('colorimetry',config.colorimetry||'0');
  setVal('eotf',config.eotf||'0');
@@ -1365,7 +1356,7 @@ function getVal(id){const el=document.getElementById(id);return el?el.value:'';}
 function captureSettings(){
  return JSON.stringify({
   mode_idx:getVal('mode_idx'),signal_mode:getVal('signal_mode'),
-  max_bpc:getVal('max_bpc'),color_format:getVal('color_format'),
+  color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),
   eotf:getVal('eotf'),primaries:getVal('primaries'),
   max_luma:document.getElementById('max_luma').value,
@@ -1388,15 +1379,15 @@ function updateModeVisibility(){
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
 }
 
-['mode_idx','signal_mode','max_bpc','color_format','colorimetry',
+['mode_idx','signal_mode','color_format','colorimetry',
  'eotf','primaries','dv_map_mode','dv_interface'].forEach(function(id){
  document.getElementById(id).addEventListener('change',checkSettingsChanged);
 });
 ['max_luma','min_luma','max_cll','max_fall'].forEach(function(id){
  document.getElementById(id).addEventListener('input',checkSettingsChanged);
 });
-// Re-filter dropdowns when mode, bit depth, or color format changes
-['mode_idx','max_bpc','color_format'].forEach(function(id){
+// Re-filter dropdowns when mode or color format changes
+['mode_idx','color_format'].forEach(function(id){
  document.getElementById(id).addEventListener('change',updateDropdowns);
 });
 document.getElementById('signal_mode').addEventListener('change',function(){
@@ -1405,7 +1396,6 @@ document.getElementById('signal_mode').addEventListener('change',function(){
  checkSettingsChanged();
  const sm=this.value;
  // Set sensible EOTF/colorimetry/primaries defaults per mode.
- // Do NOT override max_bpc — user controls bit depth independently.
  if(sm==='sdr'){setVal('eotf','0');setVal('colorimetry','2');}
  else if(sm==='hdr10'){setVal('eotf','2');setVal('colorimetry','9');setVal('primaries','1');}
  else if(sm==='hlg'){setVal('eotf','3');setVal('colorimetry','9');setVal('primaries','1');}
@@ -1429,9 +1419,12 @@ async function loadCapabilities(){
  caps=await fetchJSON('/api/capabilities');
 }
 
-// Determine which color formats are valid for a given mode + bit depth
-function getValidFormats(modeIdx,bpc){
+// Determine which color formats are valid for a given mode
+// Bit depth is handled automatically by the binary (8-bit default, 10-bit when
+// calibration software requests it via protocol).  UI always validates at 8bpc.
+function getValidFormats(modeIdx){
  if(!caps)return [0,1,2,3]; // fallback: all formats
+ const bpc=8;
  const mode=modes.find(m=>String(m.idx)===String(modeIdx));
  const clock=mode?mode.clock:148500; // default 1080p60 if unknown
  const maxTmds=caps.max_tmds*1000; // MHz to kHz
@@ -1463,45 +1456,10 @@ function getValidFormats(modeIdx,bpc){
  return valid;
 }
 
-// Determine which bit depths are valid for a given mode + color format
-function getValidBpc(modeIdx,fmt){
- if(!caps)return [8,10,12];
- const mode=modes.find(m=>String(m.idx)===String(modeIdx));
- const clock=mode?mode.clock:148500;
- const maxTmds=caps.max_tmds*1000;
- const res=mode?mode.resolution:'1920x1080';
- const hz=mode?Math.round(parseFloat(mode.refresh)):60;
- const vic420Key=res+'@'+hz;
- const has420=caps.vic_420&&caps.vic_420.indexOf(vic420Key)>=0;
- const valid=[];
-
- [8,10,12].forEach(function(bpc){
-  let ok=false;
-  if(fmt===0){ // RGB
-   ok=(bpc===8)||(bpc===10&&caps.dc_30bit)||(bpc===12&&caps.dc_36bit);
-   if(ok) ok=(bpc===8?clock:clock*bpc/8)<=maxTmds;
-  }else if(fmt===1){ // YCbCr 4:4:4
-   ok=caps.has_ycbcr444&&((bpc===8)||(bpc===10&&caps.dc_30bit&&caps.dc_y444)||(bpc===12&&caps.dc_36bit&&caps.dc_y444));
-   if(ok) ok=(bpc===8?clock:clock*bpc/8)<=maxTmds;
-  }else if(fmt===2){ // YCbCr 4:2:2 — only accurate at 10-bit
-   ok=caps.has_ycbcr422&&bpc===10&&clock<=maxTmds;
-  }else if(fmt===3){ // YCbCr 4:2:0
-   if(!has420){ok=false;}
-   else{
-    ok=(bpc===8)||(bpc===10&&caps.dc_420_10bit)||(bpc===12&&caps.dc_420_12bit);
-    if(ok) ok=Math.ceil(clock/2*(bpc/8))<=maxTmds;
-   }
-  }
-  if(ok) valid.push(bpc);
- });
- return valid;
-}
-
 // Update the dropdowns to only show valid options
 function updateDropdowns(){
  if(!caps||!modes.length)return;
  const modeIdx=getVal('mode_idx');
- const curBpc=parseInt(getVal('max_bpc'))||8;
  const curFmt=parseInt(getVal('color_format'))||0;
  const sm=getVal('signal_mode');
 
@@ -1512,18 +1470,15 @@ function updateDropdowns(){
 
  // In DV mode, color format is forced to RGB
  const fmtSel=document.getElementById('color_format');
- const bpcSel=document.getElementById('max_bpc');
  if(sm==='dv'){
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!=='0';o.style.display=o.value==='0'?'':'none';});
   fmtSel.value='0';
-  // All bit depths valid for DV (12-bit recommended)
-  Array.from(bpcSel.options).forEach(function(o){o.disabled=false;o.style.display='';});
   checkSettingsChanged();
   return;
  }
 
- // Color format filtering based on current mode + bpc
- const validFmts=getValidFormats(modeIdx,curBpc);
+ // Color format filtering based on current mode (8-bit UI default)
+ const validFmts=getValidFormats(modeIdx);
  Array.from(fmtSel.options).forEach(function(o){
   const v=parseInt(o.value);
   o.disabled=validFmts.indexOf(v)<0;
@@ -1532,19 +1487,6 @@ function updateDropdowns(){
  // If current format is no longer valid, switch to first valid
  if(validFmts.indexOf(curFmt)<0&&validFmts.length>0){
   fmtSel.value=String(validFmts[0]);
- }
-
- // Bit depth filtering based on current mode + format
- const activeFmt=parseInt(getVal('color_format'))||0;
- const validBpc=getValidBpc(modeIdx,activeFmt);
- Array.from(bpcSel.options).forEach(function(o){
-  const v=parseInt(o.value);
-  o.disabled=validBpc.indexOf(v)<0;
-  o.style.display=validBpc.indexOf(v)>=0?'':'none';
- });
- // If current bpc is no longer valid, switch to first valid
- if(validBpc.indexOf(curBpc)<0&&validBpc.length>0){
-  bpcSel.value=String(validBpc[0]);
  }
  checkSettingsChanged();
 }
@@ -1720,7 +1662,6 @@ buildCalPatterns();
 
 function resetDefaults(){
  setVal('signal_mode','sdr');
- setVal('max_bpc','8');
  setVal('color_format','0');
  setVal('colorimetry','2');
  setVal('eotf','0');
@@ -1741,7 +1682,6 @@ async function applySettings(){
  const sm=getVal('signal_mode');
  const changes={
   mode_idx:getVal('mode_idx'),
-  max_bpc:getVal('max_bpc'),
   color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),
  };
