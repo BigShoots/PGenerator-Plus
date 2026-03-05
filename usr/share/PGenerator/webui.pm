@@ -653,14 +653,47 @@ sub webui_infoframes_json (@) {
 
 sub webui_cec (@) {
  my $cmd=shift;
- my $cec_bin="/usr/sbin/pgenerator-cec";
+ my $cec_bin="/usr/bin/pgcec";
  if(!-x $cec_bin) {
-  return '{"status":"error","message":"CEC tool not found"}';
+  return '{"status":"error","message":"CEC tool not installed"}';
  }
- # Validate command
- if($cmd!~/^(status|power|on|off|as|wake)$/) {
+ # Map legacy commands and validate
+ my %cmd_map=("wake"=>"on","as"=>"active");
+ $cmd=$cmd_map{$cmd} if(exists $cmd_map{$cmd});
+ if($cmd!~/^(status|power|on|off|active|inactive|volup|voldown|mute|input|scan)$/) {
   return '{"status":"error","message":"Invalid CEC command: '.$cmd.'"}';
  }
+ # scan returns JSON directly from pgcec scan-json
+ if($cmd eq "scan") {
+  my $json=`$cec_bin scan-json 2>/dev/null`;
+  my $rc=$?>>8;
+  chomp($json);
+  if($rc == 0 && $json=~/^\{/) {
+   return "{\"status\":\"ok\",\"data\":$json}";
+  } else {
+   $json=~s/"/\\"/g;
+   return "{\"status\":\"error\",\"message\":\"Scan failed\",\"output\":\"$json\"}";
+  }
+ }
+ # status returns structured JSON
+ if($cmd eq "status") {
+  my $power=`$cec_bin power 2>/dev/null`;
+  chomp($power);
+  my $st=`$cec_bin status 2>/dev/null`;
+  my $rc=$?>>8;
+  my ($phys,$log,$osd,$driver)=("","","","");
+  foreach my $line (split(/\n/,$st)) {
+   if($line=~/^physical_addr:\s*(.+)/) { $phys=$1; }
+   if($line=~/^logical_addr:\s*(.+)/) { $log=$1; }
+   if($line=~/^osd_name:\s*(.+)/) { $osd=$1; }
+   if($line=~/^driver:\s*(.+)/) { $driver=$1; }
+  }
+  $power=~s/"/\\"/g;
+  $osd=~s/"/\\"/g;
+  $driver=~s/"/\\"/g;
+  return "{\"status\":\"ok\",\"tv_power\":\"$power\",\"phys_addr\":\"$phys\",\"log_addr\":\"$log\",\"osd_name\":\"$osd\",\"driver\":\"$driver\"}";
+ }
+ # action commands
  my $output=`$cec_bin $cmd 2>&1`;
  my $rc=$?>>8;
  $output=~s/"/\\"/g;
@@ -1023,6 +1056,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
   <div class="status-bar">
    <span title="" id="statusWrap"><span class="status-dot" id="statusDot"></span><span id="statusText">...</span></span>
    <span id="tempDisplay"></span>
+   <span id="calStatusWrap" title="No calibration software connected"><span class="status-dot" id="calDot" style="background:var(--text2)"></span><span id="calStatusText" style="color:var(--text2)">No SW</span></span>
   </div>
  </div>
 </div>
@@ -1044,6 +1078,14 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
      <option value="hdr10">HDR10 (PQ)</option>
      <option value="hlg">HLG</option>
      <option value="dv">Dolby Vision</option>
+    </select>
+   </div>
+   <div class="field">
+    <label>Bit Depth</label>
+    <select id="max_bpc">
+     <option value="8">8-bit</option>
+     <option value="10">10-bit</option>
+     <option value="12">12-bit</option>
     </select>
    </div>
    <div class="field">
@@ -1118,13 +1160,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
      <option value="1">Absolute</option>
     </select>
    </div>
-   <div class="field">
-    <label>Interface</label>
-    <select id="dv_interface">
-     <option value="0">Standard</option>
-     <option value="1">Low-Latency</option>
-    </select>
-   </div>
+   <input type="hidden" id="dv_interface" value="1">
   </div>
  </div>
 
@@ -1229,12 +1265,23 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
    <span id="cecStatus" style="font-size:.85rem;color:var(--text2)">Checking...</span>
   </div>
-  <div class="btn-row">
-   <button class="btn btn-sm btn-success" onclick="cecCmd('wake')">Wake TV</button>
-   <button class="btn btn-sm btn-secondary" onclick="cecCmd('on')">On</button>
-   <button class="btn btn-sm btn-secondary" onclick="cecCmd('as')">Input</button>
-   <button class="btn btn-sm btn-danger" onclick="cecCmd('off')">Standby</button>
+  <div class="btn-row" style="margin-bottom:8px">
+   <button class="btn btn-sm btn-success" onclick="cecCmd('on')" title="Wake TV and switch to PGenerator input">&#9654; Power On</button>
+   <button class="btn btn-sm btn-danger" onclick="cecCmd('off')" title="Put TV in standby">&#9724; Standby</button>
+   <button class="btn btn-sm btn-secondary" onclick="cecCmd('active')" title="Switch TV to PGenerator HDMI input">&#8594; Switch Input</button>
   </div>
+  <div class="btn-row" style="margin-bottom:8px">
+   <button class="btn btn-sm btn-secondary" onclick="cecCmd('volup')" title="Volume Up">&#128266;+</button>
+   <button class="btn btn-sm btn-secondary" onclick="cecCmd('voldown')" title="Volume Down">&#128264;-</button>
+   <button class="btn btn-sm btn-secondary" onclick="cecCmd('mute')" title="Toggle Mute">&#128263; Mute</button>
+  </div>
+  <details style="margin-top:4px">
+   <summary style="cursor:pointer;font-size:.85rem;color:var(--text2)">CEC Bus Devices</summary>
+   <div id="cecDevices" style="font-size:.8rem;margin-top:6px;color:var(--text2)">
+    <button class="btn btn-sm btn-secondary" onclick="cecScan()" style="margin-bottom:6px">Scan CEC Bus</button>
+    <div id="cecDeviceList">Not scanned yet</div>
+   </div>
+  </details>
  </div>
 
  <!-- WiFi AP (PAN) -->
@@ -1334,6 +1381,7 @@ async function loadConfig(){
   sm=(config.eotf==='3')?'hlg':'hdr10';
  }
  setVal('signal_mode',sm);
+ setVal('max_bpc',config.max_bpc||'8');
  setVal('color_format',config.color_format||'0');
  setVal('colorimetry',config.colorimetry||'0');
  setVal('eotf',config.eotf||'0');
@@ -1344,7 +1392,6 @@ async function loadConfig(){
  document.getElementById('max_fall').value=config.max_fall||'400';
  // DV settings
  setVal('dv_map_mode',config.dv_map_mode||'2');
- setVal('dv_interface',config.dv_interface||'1');
  updateModeVisibility();
  updateDropdowns();
  window._savedConfig=captureSettings();
@@ -1356,15 +1403,14 @@ function getVal(id){const el=document.getElementById(id);return el?el.value:'';}
 function captureSettings(){
  return JSON.stringify({
   mode_idx:getVal('mode_idx'),signal_mode:getVal('signal_mode'),
-  color_format:getVal('color_format'),
+  max_bpc:getVal('max_bpc'),color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),
   eotf:getVal('eotf'),primaries:getVal('primaries'),
   max_luma:document.getElementById('max_luma').value,
   min_luma:document.getElementById('min_luma').value,
   max_cll:document.getElementById('max_cll').value,
   max_fall:document.getElementById('max_fall').value,
-  dv_map_mode:getVal('dv_map_mode'),
-  dv_interface:getVal('dv_interface')
+  dv_map_mode:getVal('dv_map_mode')
  });
 }
 function checkSettingsChanged(){
@@ -1379,15 +1425,15 @@ function updateModeVisibility(){
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
 }
 
-['mode_idx','signal_mode','color_format','colorimetry',
- 'eotf','primaries','dv_map_mode','dv_interface'].forEach(function(id){
+['mode_idx','signal_mode','max_bpc','color_format','colorimetry',
+ 'eotf','primaries','dv_map_mode'].forEach(function(id){
  document.getElementById(id).addEventListener('change',checkSettingsChanged);
 });
 ['max_luma','min_luma','max_cll','max_fall'].forEach(function(id){
  document.getElementById(id).addEventListener('input',checkSettingsChanged);
 });
-// Re-filter dropdowns when mode or color format changes
-['mode_idx','color_format'].forEach(function(id){
+// Re-filter dropdowns when mode, bit depth, or color format changes
+['mode_idx','max_bpc','color_format'].forEach(function(id){
  document.getElementById(id).addEventListener('change',updateDropdowns);
 });
 document.getElementById('signal_mode').addEventListener('change',function(){
@@ -1396,6 +1442,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
  checkSettingsChanged();
  const sm=this.value;
  // Set sensible EOTF/colorimetry/primaries defaults per mode.
+ // Do NOT override max_bpc — user controls bit depth independently.
  if(sm==='sdr'){setVal('eotf','0');setVal('colorimetry','2');}
  else if(sm==='hdr10'){setVal('eotf','2');setVal('colorimetry','9');setVal('primaries','1');}
  else if(sm==='hlg'){setVal('eotf','3');setVal('colorimetry','9');setVal('primaries','1');}
@@ -1419,12 +1466,9 @@ async function loadCapabilities(){
  caps=await fetchJSON('/api/capabilities');
 }
 
-// Determine which color formats are valid for a given mode
-// Bit depth is handled automatically by the binary (8-bit default, 10-bit when
-// calibration software requests it via protocol).  UI always validates at 8bpc.
-function getValidFormats(modeIdx){
+// Determine which color formats are valid for a given mode + bit depth
+function getValidFormats(modeIdx,bpc){
  if(!caps)return [0,1,2,3]; // fallback: all formats
- const bpc=8;
  const mode=modes.find(m=>String(m.idx)===String(modeIdx));
  const clock=mode?mode.clock:148500; // default 1080p60 if unknown
  const maxTmds=caps.max_tmds*1000; // MHz to kHz
@@ -1442,10 +1486,8 @@ function getValidFormats(modeIdx){
  const y444_ok=caps.has_ycbcr444&&((bpc===8)||(bpc===10&&caps.dc_30bit&&caps.dc_y444)||(bpc===12&&caps.dc_36bit&&caps.dc_y444));
  if(y444_ok&&(bpc===8?clock:clock*bpc/8)<=maxTmds) valid.push(1);
 
- // YCbCr 4:2:2 (format 2) — only accurate at 10-bit.
- // Per original PG docs: "YCbCr 422 mode is only accurate when using
- // 10 bit input commands" so restrict to 10bpc only.
- if(caps.has_ycbcr422&&bpc===10&&clock<=maxTmds) valid.push(2);
+ // YCbCr 4:2:2 (format 2) — always carries up to 12bpc in 8bpc bandwidth
+ if(caps.has_ycbcr422&&clock<=maxTmds) valid.push(2);
 
  // YCbCr 4:2:0 (format 3) — only for modes in 4:2:0 VIC map
  if(has420){
@@ -1456,10 +1498,45 @@ function getValidFormats(modeIdx){
  return valid;
 }
 
+// Determine which bit depths are valid for a given mode + color format
+function getValidBpc(modeIdx,fmt){
+ if(!caps)return [8,10,12];
+ const mode=modes.find(m=>String(m.idx)===String(modeIdx));
+ const clock=mode?mode.clock:148500;
+ const maxTmds=caps.max_tmds*1000;
+ const res=mode?mode.resolution:'1920x1080';
+ const hz=mode?Math.round(parseFloat(mode.refresh)):60;
+ const vic420Key=res+'@'+hz;
+ const has420=caps.vic_420&&caps.vic_420.indexOf(vic420Key)>=0;
+ const valid=[];
+
+ [8,10,12].forEach(function(bpc){
+  let ok=false;
+  if(fmt===0){ // RGB
+   ok=(bpc===8)||(bpc===10&&caps.dc_30bit)||(bpc===12&&caps.dc_36bit);
+   if(ok) ok=(bpc===8?clock:clock*bpc/8)<=maxTmds;
+  }else if(fmt===1){ // YCbCr 4:4:4
+   ok=caps.has_ycbcr444&&((bpc===8)||(bpc===10&&caps.dc_30bit&&caps.dc_y444)||(bpc===12&&caps.dc_36bit&&caps.dc_y444));
+   if(ok) ok=(bpc===8?clock:clock*bpc/8)<=maxTmds;
+  }else if(fmt===2){ // YCbCr 4:2:2
+   ok=caps.has_ycbcr422&&clock<=maxTmds;
+  }else if(fmt===3){ // YCbCr 4:2:0
+   if(!has420){ok=false;}
+   else{
+    ok=(bpc===8)||(bpc===10&&caps.dc_420_10bit)||(bpc===12&&caps.dc_420_12bit);
+    if(ok) ok=Math.ceil(clock/2*(bpc/8))<=maxTmds;
+   }
+  }
+  if(ok) valid.push(bpc);
+ });
+ return valid;
+}
+
 // Update the dropdowns to only show valid options
 function updateDropdowns(){
  if(!caps||!modes.length)return;
  const modeIdx=getVal('mode_idx');
+ const curBpc=parseInt(getVal('max_bpc'))||8;
  const curFmt=parseInt(getVal('color_format'))||0;
  const sm=getVal('signal_mode');
 
@@ -1470,15 +1547,18 @@ function updateDropdowns(){
 
  // In DV mode, color format is forced to RGB
  const fmtSel=document.getElementById('color_format');
+ const bpcSel=document.getElementById('max_bpc');
  if(sm==='dv'){
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!=='0';o.style.display=o.value==='0'?'':'none';});
   fmtSel.value='0';
+  // All bit depths valid for DV (12-bit recommended)
+  Array.from(bpcSel.options).forEach(function(o){o.disabled=false;o.style.display='';});
   checkSettingsChanged();
   return;
  }
 
- // Color format filtering based on current mode (8-bit UI default)
- const validFmts=getValidFormats(modeIdx);
+ // Color format filtering based on current mode + bpc
+ const validFmts=getValidFormats(modeIdx,curBpc);
  Array.from(fmtSel.options).forEach(function(o){
   const v=parseInt(o.value);
   o.disabled=validFmts.indexOf(v)<0;
@@ -1487,6 +1567,19 @@ function updateDropdowns(){
  // If current format is no longer valid, switch to first valid
  if(validFmts.indexOf(curFmt)<0&&validFmts.length>0){
   fmtSel.value=String(validFmts[0]);
+ }
+
+ // Bit depth filtering based on current mode + format
+ const activeFmt=parseInt(getVal('color_format'))||0;
+ const validBpc=getValidBpc(modeIdx,activeFmt);
+ Array.from(bpcSel.options).forEach(function(o){
+  const v=parseInt(o.value);
+  o.disabled=validBpc.indexOf(v)<0;
+  o.style.display=validBpc.indexOf(v)>=0?'':'none';
+ });
+ // If current bpc is no longer valid, switch to first valid
+ if(validBpc.indexOf(curBpc)<0&&validBpc.length>0){
+  bpcSel.value=String(validBpc[0]);
  }
  checkSettingsChanged();
 }
@@ -1536,8 +1629,20 @@ async function loadInfo(){
   if(info.wifi.band) addInfo(g,'WiFi Band',info.wifi.band+' ('+info.wifi.freq+' MHz)');
   if(info.wifi.signal) addInfo(g,'WiFi Signal',info.wifi.signal+' dBm');
  }
+ // Update top-bar calibration indicator
+ const calWrap=document.getElementById('calStatusWrap');
+ const calDot=document.getElementById('calDot');
+ const calText=document.getElementById('calStatusText');
  if(info.calibration && info.calibration.connected){
-  addInfo(g,'Calibration SW',info.calibration.software+' ('+info.calibration.ip+')');
+  calDot.style.background='#4caf50';
+  calText.style.color='';
+  calText.textContent=info.calibration.software||'Connected';
+  calWrap.title=(info.calibration.software||'Calibration')+' ('+info.calibration.ip+')';
+ }else{
+  calDot.style.background='var(--text2)';
+  calText.style.color='var(--text2)';
+  calText.textContent='No SW';
+  calWrap.title='No calibration software connected';
  }
  // Auto-refresh config when calibration software is connected
  if(info.calibration && info.calibration.connected && !window._calmanPoll){
@@ -1662,6 +1767,7 @@ buildCalPatterns();
 
 function resetDefaults(){
  setVal('signal_mode','sdr');
+ setVal('max_bpc','8');
  setVal('color_format','0');
  setVal('colorimetry','2');
  setVal('eotf','0');
@@ -1671,7 +1777,6 @@ function resetDefaults(){
  document.getElementById('max_cll').value='1000';
  document.getElementById('max_fall').value='400';
  setVal('dv_map_mode','2');
- setVal('dv_interface','1');
  updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
@@ -1682,6 +1787,7 @@ async function applySettings(){
  const sm=getVal('signal_mode');
  const changes={
   mode_idx:getVal('mode_idx'),
+  max_bpc:getVal('max_bpc'),
   color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),
  };
@@ -1778,8 +1884,40 @@ async function cecCmd(cmd){
  const r=await fetchJSON('/api/cec/'+cmd);
  if(r){
   if(r.status==='ok') toast('CEC: '+cmd+' OK');
-  else toast('CEC error','err');
-  setTimeout(loadCecStatus,cmd==='wake'?2000:500);
+  else toast('CEC: '+(r.message||r.output||'error'),'err');
+  const delay=(cmd==='on')?2500:500;
+  setTimeout(loadCecStatus,delay);
+ }
+}
+
+async function cecScan(){
+ const el=document.getElementById('cecDeviceList');
+ el.innerHTML='Scanning... (may take 15-30s)';
+ const r=await fetchJSON('/api/cec/scan');
+ if(r&&r.status==='ok'&&r.data&&r.data.devices){
+  const devs=r.data.devices;
+  if(devs.length===0){el.innerHTML='No devices found';return;}
+  const typeNames={0:'TV',1:'Recording',3:'Tuner',4:'Playback',5:'Audio System'};
+  const pwrNames={0:'On',1:'Standby',2:'Powering On',3:'Powering Off'};
+  let html='<table style="width:100%;border-collapse:collapse;font-size:.8rem">';
+  html+='<tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:2px 6px">Device</th><th style="text-align:left;padding:2px 6px">Type</th><th style="text-align:left;padding:2px 6px">Address</th><th style="text-align:left;padding:2px 6px">Power</th></tr>';
+  devs.forEach(d=>{
+   const name=d.name||('Device '+d.addr);
+   const type=typeNames[d.type]||(d.type!==undefined?'Type '+d.type:'');
+   const pwr=pwrNames[d.power]||(d.power!==undefined?''+d.power:'?');
+   const pwrColor=d.power===0?'#4caf50':d.power===1?'var(--orange)':'var(--text2)';
+   html+='<tr style="border-bottom:1px solid var(--border)">';
+   html+='<td style="padding:2px 6px">'+name+'</td>';
+   html+='<td style="padding:2px 6px">'+type+'</td>';
+   html+='<td style="padding:2px 6px">'+(d.phys||'')+'</td>';
+   html+='<td style="padding:2px 6px;color:'+pwrColor+'">'+pwr+'</td>';
+   html+='</tr>';
+  });
+  html+='</table>';
+  html+='<div style="margin-top:4px;color:var(--text2)">PGenerator: '+r.data.self.phys+' (logical '+r.data.self.log+')</div>';
+  el.innerHTML=html;
+ }else{
+  el.innerHTML='Scan failed: '+(r&&r.message?r.message:'unknown error');
  }
 }
 
@@ -1787,26 +1925,18 @@ async function loadCecStatus(){
  const r=await fetchJSON('/api/cec/status');
  const el=document.getElementById('cecStatus');
  if(r&&r.status==='ok'){
-  const raw=(r.output||'');
-  const lines=raw.split('\n');
-  const pwrColors={on:'#4caf50',standby:'var(--orange)','standby-to-on':'var(--orange)','on-to-standby':'var(--orange)',unknown:'var(--text2)'};
-  const pwrLabels={on:'On',standby:'Standby','standby-to-on':'Waking Up','on-to-standby':'Going to Standby',unknown:'Unknown'};
-  let pwr='unknown';let tvName='';
-  lines.forEach(l=>{
-   let m=l.match(/^tv_power:\s*(.+)/);if(m)pwr=m[1].trim();
-   m=l.match(/^tv_name:\s*(.+)/);if(m)tvName=m[1].trim();
-  });
+  const pwr=r.tv_power||'unknown';
+  const pwrColors={on:'#4caf50',standby:'var(--orange)','powering-on':'var(--orange)','powering-off':'var(--orange)',unknown:'var(--text2)'};
+  const pwrLabels={on:'On',standby:'Standby','powering-on':'Waking Up','powering-off':'Going to Standby',unknown:'Unknown'};
   const c=pwrColors[pwr]||'var(--text2)';
   const lbl=pwrLabels[pwr]||pwr;
-  let html='TV Power: <span style="color:'+c+';font-weight:600">'+lbl+'</span>';
-  if(tvName) html+=' &mdash; '+tvName;
+  let html='TV: <span style="color:'+c+';font-weight:600">'+lbl+'</span>';
+  if(r.phys_addr) html+=' &bull; HDMI '+r.phys_addr;
   el.innerHTML=html;
-  if(pwr==='unknown'&&raw){el.title=raw;}
  }else{
   const msg=(r&&r.message)?r.message:'Not available';
   el.innerHTML='CEC: '+msg;
   el.style.color='var(--text2)';
-  if(r&&r.output)el.title=r.output;
  }
 }
 
