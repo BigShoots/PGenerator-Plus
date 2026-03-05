@@ -242,7 +242,7 @@ sub webui_http (@) {
     my $len=length($r);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
     close($client);
-    system("$reboot &");
+    &sudo("REBOOT");
     return;
    }
    elsif($path eq "/api/modes") {
