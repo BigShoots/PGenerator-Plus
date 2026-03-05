@@ -48,43 +48,30 @@ sub auto_select_4k_mode (@) {
 ###############################################
 sub apply_drm_properties (@) {
  return if(!$is_kms);
- # Use the drm_hdr_set helper to pre-configure DRM connector properties
- # BEFORE the renderer binary starts and grabs DRM master.
- #
- # The helper sets:
- #  - max_bpc         (bit depth for HDMI link)
- #  - Colorimetry     (BT.2020 / BT.709 etc.)
- #  - HDR_OUTPUT_METADATA (if HDR is active and a CRTC is attached)
- #
- # This reduces the number of HDMI re-negotiations when the binary does
- # its multi-step atomic commit during startup, which can lock up some
- # TVs (notably LG C-series) during SDR→HDR transitions.
- my $ret=system("python /usr/sbin/drm_hdr_set.py $pattern_conf 2>/tmp/drm_hdr_set.log");
- if($ret == 0) {
-  open(DHS,"/tmp/drm_hdr_set.log");
-  while(<DHS>) { chomp; &log("$_"); }
-  close(DHS);
- } else {
-  &log("DRM: drm_hdr_set.py failed ($ret), falling back to modetest");
-  # Fallback: find connector and set max_bpc via modetest
-  my $connector_id="";
-  open(MT,"$modetest -c 2>/dev/null|");
-  while(<MT>) {
-   if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
-    $connector_id=$1;
-    last;
-   }
-  }
-  close(MT);
-  if($connector_id ne "") {
-   my $max_bpc=int($pgenerator_conf{"max_bpc"} || 8);
-   system("$modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
-   &log("DRM: Set max_bpc=$max_bpc on connector $connector_id (fallback)");
+ # Find connected HDMI connector ID
+ my $connector_id="";
+ open(MT,"$modetest -c 2>/dev/null|");
+ while(<MT>) {
+  if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
+   $connector_id=$1;
+   last;
   }
  }
- # Note: output format (color_format) and HDR_OUTPUT_METADATA blob
- # are handled by the PGeneratord binary after it takes DRM master.
- # Setting output format here would turn the splash green (RGB as YCbCr).
+ close(MT);
+ return if($connector_id eq "");
+ # Set max bpc — the binary fails to apply this property
+ my $max_bpc=$pgenerator_conf{"max_bpc"};
+ if($max_bpc ne "" && $max_bpc > 0) {
+  system("$modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
+  &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
+ }
+ # Reset output format — kernel retains previous value across binary
+ # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
+ # fallback that sticks even after switching back to 8bpc RGB.
+ my $color_fmt=$pgenerator_conf{"color_format"};
+ $color_fmt=0 if($color_fmt eq "");
+ system("$modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
+ &log("DRM: Set output format=$color_fmt on connector $connector_id");
 }
 
 ###############################################
@@ -97,18 +84,18 @@ sub pattern_generator_start(@) {
  mkdir("$var_dir/running/tmp") if(!-d "$var_dir/running/tmp");
  &auto_select_4k_mode();
  &apply_drm_properties();
- # Give the TV time to stabilize after DRM property changes.
- # Some TVs (LG C-series) lock up if the signal transitions too quickly
- # from SDR→HDR or between different HDMI modes.
- if($pgenerator_conf{"is_hdr"} eq "1" || $pgenerator_conf{"eotf"} > 0) {
-  &log("DRM: HDR mode — pausing 2s for TV HDMI receiver to stabilize");
-  sleep(2);
- }
  &get_hdmi_info();
+ # Select binary: PGeneratord.dv for Dolby Vision when dv_status=1
+ my $binary=$pattern_generator;
+ if($pgenerator_conf{"dv_status"} eq "1" && -x "${pattern_generator}.dv") {
+  $binary="${pattern_generator}.dv";
+  &log("Using Dolby Vision binary: $binary");
+ }
  # Use Mesa EGL (not Broadcom) on KMS — Broadcom EGL needs dispmanx/VCHIQ
  # which is unavailable with vc4-kms-v3d. LD_LIBRARY_PATH=/usr/lib forces
  # Mesa libEGL.so + libGLESv2.so so the binary uses DRM/GBM rendering.
- system("LD_LIBRARY_PATH=/usr/lib $pattern_generator $w_s $h_s >/dev/null 2>/tmp/pgeneratord.log &");
+ # LD_PRELOAD overrides DRM property calls to fix max_bpc setting.
+ system("LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
 }
@@ -120,9 +107,16 @@ sub pattern_generator_stop {
  my $pid = "";
  &video_program_stop("$program_video_to_kill");
  &process_pid("$pattern_generator","kill");
+ # Also kill the .dv variant in case we're switching modes
+ &process_pid("${pattern_generator}.dv","kill") if(-x "${pattern_generator}.dv");
  usleep(500000);
  while(($pid=&process_pid("$pattern_generator","get"))) {
   &process_pid("$pattern_generator","kill");
+  usleep(500000);
+ }
+ # Ensure .dv variant is also gone
+ while(-x "${pattern_generator}.dv" && ($pid=&process_pid("${pattern_generator}.dv","get"))) {
+  &process_pid("${pattern_generator}.dv","kill");
   usleep(500000);
  }
  &clean_files();

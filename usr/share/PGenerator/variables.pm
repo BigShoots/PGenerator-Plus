@@ -203,7 +203,6 @@ $calman_special_pattern{$start_cmd_string_calman."RGB_S:0940,0940,0940,018"}=$pa
 $calman_special_pattern{$start_cmd_string_calman."RGB_S:0064,0064,0064,018"}=$pattern_calman4;
 
 $calman_bg="0,0,0";
-$calman_bits="";
 $calman_settings_dirty=0;
 $calman_win_size=10;
 $calibration_client_ip="";
@@ -268,10 +267,12 @@ share($last_pattern_requested_by);
 
 share($doing_wifi_scan);
 
-share($calman_bits);
 share($calman_settings_dirty);
 share($calman_win_size);
 share($calibration_client_ip);
 share($calibration_client_software);
+
+$webui_info_cache="";
+$webui_info_cache_time=0;
 
 return 1;
