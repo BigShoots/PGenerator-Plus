@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-GITHUB_REPO="BigShoots/PGenerator-Plus"
+GITHUB_REPO="BigShoots/PGenerator"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 VERSION_FILE="/usr/share/PGenerator/version.pm"
 UPDATE_DIR="/var/lib/PGenerator/updates"
@@ -153,9 +153,6 @@ case "$cmd" in
   chmod +x /usr/sbin/PGeneratord* 2>/dev/null || true
   chmod +x /usr/bin/PGenerator_*.pl 2>/dev/null || true
   chmod +x /usr/bin/pgenerator-* 2>/dev/null || true
-
-  # Post-install setup
-  ln -sf /etc/init.d/ntpdate /etc/rc2.d/S97ntpdate 2>/dev/null || true
 
   # Clean up
   rm -f "$tarball"
