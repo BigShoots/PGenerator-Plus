@@ -55,11 +55,10 @@ You can also trigger updates via SSH (`root` / `PGenerator!!$`):
 | **HDR10** | Static HDR with PQ (ST.2084) EOTF, 10-bit, full DRM InfoFrame metadata |
 | **HLG** | Hybrid Log-Gamma for broadcast HDR, 10-bit |
 | **Dolby Vision (Low Latency)** | LLDV with RPU metadata, 12-bit — recommended for DV calibration |
-| **Dolby Vision (Standard)** | TV-led / display-managed DV processing, 12-bit |
 
 The Raspberry Pi 4's KMS driver is used to set HDMI InfoFrames directly:
 
-- **AVI InfoFrame** — color format (RGB / YCbCr 4:4:4 / 4:2:2), colorimetry (BT.709 / BT.2020), quantization range (Full / Limited), bit depth
+- **AVI InfoFrame** — color format (RGB / YCbCr 4:4:4 / 4:2:2), colorimetry (BT.709 / BT.2020), bit depth
 - **DRM InfoFrame** — EOTF, mastering display primaries (Rec.2020 / P3), luminance (max/min), MaxCLL, MaxFALL
 - **Dolby Vision** — DOVI output metadata blob via a dedicated binary (`PGeneratord.dv`) that detects DV capability from the display's EDID VSVDB
 
@@ -70,7 +69,7 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 **1. Calman (Portrait Displays)**
 - **Protocol:** SpectraCal Unified Pattern Generator Control Interface (Port `2100`)
 - **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` (or `Portrait Displays` in some versions) → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
-  - *Calman Control:* When connected via UPGCI, Calman can directly command the PGenerator to switch between SDR, HDR10, HLG, and Dolby Vision signal modes, set the EOTF, colorimetry, color format, quantization range, mastering display metadata, and other InfoFrame parameters — all from the Calman Source Settings tab. PGenerator executes these commands in real time, eliminating the need to manually configure the signal on the device.
+  - *Calman Control:* When connected via UPGCI, Calman can directly command the PGenerator to switch between SDR, HDR10 and HLG signal modes, set the EOTF, colorimetry, color format, mastering display metadata, and other InfoFrame parameters — all from the Calman Source Settings tab. PGenerator executes these commands in real time, eliminating the need to manually configure the signal on the device.
   - *10-bit Support (PGenerator+ Enhancement):* PGenerator+ extends the original 8-bit Calman protocol with automatic 10-bit pattern support. When Calman sends HDR commands that set `max_bpc=10`, PGenerator+ scales the incoming 10-bit pattern values to match the active link bit depth and writes native 10-bit values to the renderer. This means HDR10 calibration runs at full 10-bit precision end-to-end, without the quantization loss of converting to 8-bit.
   - *Deprecation Notice:* Portrait Displays removed the UPGCI protocol from Calman "Home" licenses starting with version 5.15.x (the 2024 releases) to push users toward their own generator hardware. There is no official add-on to re-enable it for Home users. If calibration with PGenerator is required, you must either remain on Calman 5.14.x or older, upgrade to a professional license tier (Calman Video Pro or higher), or use alternative software (like ColourSpace or HCFR).
 
@@ -109,9 +108,9 @@ Monitor the real-time health and connectivity of your PGenerator+:
 Complete control over the HDMI output parameters, InfoFrames, and DRMs without needing to use terminal commands:
 - **Signal Mode:** Instantly switch between SDR, HDR10, HLG, and Dolby Vision.
 - **Custom Resolutions:** Auto-detects available modes from the connected display's EDID.
-- **Base Video Parameters:** Configure Color Format (RGB/YCbCr), Colorimetry (BT.709/BT.2020), Bit Depth (8/10/12-bit), and Quantization Range (Full/Limited).
+- **Base Video Parameters:** Configure Color Format (RGB/YCbCr), Colorimetry (BT.709/BT.2020), and Bit Depth (8/10/12-bit).
 - **HDR10 Metadata:** When HDR10 is active, take full control over the DRM InfoFrame (EOTF, Mastering Primaries, Max/Min Luma, MaxCLL, and MaxFALL).
-- **Dolby Vision Metadata:** For Dolby Vision modes, select between Low Latency (LLDV) or Standard modes, and configure specific DOVI Interface, Color Space, and Metadata details.
+- **Dolby Vision Metadata:** For Dolby Vision modes, select between Low Latency (LLDV) and configure specific DOVI Interface, Color Space, and Metadata details.
 
 #### Manual Pattern Injection
 A full suite of test patterns that can be manually injected on-screen for spot-checking and fast visual validation.
