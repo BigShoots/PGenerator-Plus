@@ -1498,16 +1498,32 @@ function updateModeVisibility(){
  document.getElementById(id).addEventListener('change',updateDropdowns);
 });
 document.getElementById('signal_mode').addEventListener('change',function(){
+ const sm=this.value;
+ // Set sensible defaults per mode. Users can still adjust the fields after
+ // switching modes, but picking the mode should land on a working baseline.
+ if(sm==='sdr'){
+  setVal('eotf','0');
+  setVal('colorimetry','2');
+  setVal('max_bpc','8');
+ }else if(sm==='hdr10'){
+  setVal('eotf','2');
+  setVal('colorimetry','9');
+  setVal('primaries','1');
+  setVal('max_bpc','10');
+ }else if(sm==='hlg'){
+  setVal('eotf','3');
+  setVal('colorimetry','9');
+  setVal('primaries','1');
+  setVal('max_bpc','10');
+ }else if(sm==='dv'){
+  setVal('color_format','0');
+  setVal('colorimetry','9');
+  setVal('primaries','1');
+  setVal('max_bpc','12');
+ }
  updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
- const sm=this.value;
- // Set sensible EOTF/colorimetry/primaries defaults per mode.
- // Do NOT override max_bpc — user controls bit depth independently.
- if(sm==='sdr'){setVal('eotf','0');setVal('colorimetry','2');}
- else if(sm==='hdr10'){setVal('eotf','2');setVal('colorimetry','9');setVal('primaries','1');}
- else if(sm==='hlg'){setVal('eotf','3');setVal('colorimetry','9');setVal('primaries','1');}
- else if(sm==='dv'){setVal('colorimetry','9');}
 });
 
 async function loadModes(){
