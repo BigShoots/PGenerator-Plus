@@ -56,6 +56,7 @@ do "log.pm"           || die "Error";
 do "pattern.pm"       || die "Error";
 do "daemon.pm"        || die "Error";
 do "client.pm"        || die "Error";
+do "resolve.pm"       || die "Error";
 do "discovery.pm"     || die "Error";
 do "webui.pm"         || die "Error";
 do "bash.pm"          || die "Error";

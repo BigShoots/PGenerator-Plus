@@ -1,2 +1,6 @@
 # PGenerator+ — allow outbound HTTPS for GitHub OTA updates
 iptables -I OUTPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT
+# PGenerator+ — allow outbound Resolve protocol (CalMAN/HCFR client connection)
+iptables -I OUTPUT -m state --state NEW -p tcp --dport 20002 -j ACCEPT
+# PGenerator+ — allow outbound UDP for network discovery response
+iptables -I OUTPUT -m state --state NEW -p udp --sport 3529 -j ACCEPT
