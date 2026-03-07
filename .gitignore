@@ -2,6 +2,7 @@
 *.img.gz
 *.zip
 *.tar.gz
+*.7z.*
 *.so
 tools/dv_helper
 tools/read_csc

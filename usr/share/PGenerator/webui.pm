@@ -307,6 +307,23 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/resolve/connect" && $method eq "POST") {
+    my $result=&webui_resolve_connect($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/resolve/disconnect" && $method eq "POST") {
+    my $result=&webui_resolve_disconnect();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/resolve/status") {
+    my $connected=($calibration_client_software eq "Resolve") ? "true" : "false";
+    my $ip=$calibration_client_ip||"";
+    my $result="{\"connected\":$connected,\"ip\":\"$ip\"}";
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/pattern" && $method eq "POST") {
     my $result=&webui_pattern($body);
     my $len=length($result);
@@ -384,8 +401,7 @@ sub webui_apply_config (@) {
   next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
   &sudo("SET_PGENERATOR_CONF",$k,$changes{$k});
   $pgenerator_conf{$k}=$changes{$k};
-  # Keep bits_default in sync so patterns use the correct bit depth
-  $bits_default=int($changes{$k}) if($k eq "max_bpc" && $changes{$k} > 0);
+  # Note: bits_default is NOT synced to max_bpc — EGL surface is always 8bpc
   $need_restart=1 if($restart_keys{$k});
  }
  if($need_restart) {
@@ -703,6 +719,30 @@ sub webui_cec (@) {
  } else {
   return "{\"status\":\"error\",\"output\":\"$output\"}";
  }
+}
+
+###############################################
+#        Resolve Connect / Disconnect         #
+###############################################
+sub webui_resolve_connect (@) {
+ my $body=shift;
+ my ($ip)=$body=~/"ip"\s*:\s*"([^"]+)"/;
+ my ($port)=$body=~/"port"\s*:\s*(\d+)/;
+ $port=$port_resolve if(!$port);
+ return '{"status":"error","message":"Missing ip"}' if(!$ip);
+ $ip=~s/[^0-9\.]//g;
+ return '{"status":"error","message":"Invalid IP"}' if($ip!~/^\d+\.\d+\.\d+\.\d+$/);
+ &resolve_trigger_connect($ip,$port);
+ return "{\"status\":\"ok\",\"message\":\"Connecting to $ip:$port\"}";
+}
+
+sub webui_resolve_disconnect (@) {
+ # Setting request IP to a special value that the thread recognizes as disconnect
+ # Actually, we just kill the TCP connection by setting a flag
+ # For now, the simplest approach: write to the shared var to signal disconnect
+ $calibration_client_ip="";
+ $calibration_client_software="";
+ return '{"status":"ok","message":"Disconnect requested"}';
 }
 
 sub webui_pattern (@) {
@@ -1237,6 +1277,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
  <!-- WiFi Client -->
  <div class="card" data-widget="wifi" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>WiFi Client</h2>
+  <div class="info-grid" id="wifiStatus" style="margin-bottom:8px"></div>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="scanWifi()">Scan Networks</button>
   </div>
@@ -1282,6 +1323,26 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
     <div id="cecDeviceList">Not scanned yet</div>
    </div>
   </details>
+ </div>
+
+ <!-- Resolve Protocol -->
+ <div class="card" data-widget="resolve" draggable="true">
+  <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
+  <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect to CalMAN / HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
+  <div class="grid">
+   <div class="field">
+    <label>Calibration PC IP</label>
+    <input type="text" id="resolveIp" placeholder="192.168.1.x">
+   </div>
+   <div class="field">
+    <label>Port</label>
+    <input type="number" id="resolvePort" value="20002" min="1" max="65535">
+   </div>
+  </div>
+  <div class="btn-row" style="margin-top:8px">
+   <button class="btn btn-sm btn-success" id="resolveConnectBtn" onclick="resolveConnect()">&#9654; Connect</button>
+   <button class="btn btn-sm btn-danger" id="resolveDisconnectBtn" onclick="resolveDisconnect()" style="display:none">&#9724; Disconnect</button>
+  </div>
  </div>
 
  <!-- WiFi AP (PAN) -->
@@ -1625,9 +1686,14 @@ async function loadInfo(){
   });
  }
  if(info.wifi && info.wifi.state==='COMPLETED' && info.wifi.ssid){
-  addInfo(g,'WiFi Network',info.wifi.ssid);
-  if(info.wifi.band) addInfo(g,'WiFi Band',info.wifi.band+' ('+info.wifi.freq+' MHz)');
-  if(info.wifi.signal) addInfo(g,'WiFi Signal',info.wifi.signal+' dBm');
+  const ws=document.getElementById('wifiStatus');
+  ws.innerHTML='';
+  addInfo(ws,'Network',info.wifi.ssid);
+  if(info.wifi.band) addInfo(ws,'Band',info.wifi.band+' ('+info.wifi.freq+' MHz)');
+  if(info.wifi.signal) addInfo(ws,'Signal',info.wifi.signal+' dBm');
+ }else{
+  const ws=document.getElementById('wifiStatus');
+  ws.innerHTML='<div style="font-size:.8rem;color:var(--text2)">Not connected</div>';
  }
  // Update top-bar calibration indicator
  const calWrap=document.getElementById('calStatusWrap');
@@ -1650,9 +1716,25 @@ async function loadInfo(){
  } else if((!info.calibration || !info.calibration.connected) && window._calmanPoll){
   clearInterval(window._calmanPoll); window._calmanPoll=null;
  }
-}
-
-function addInfo(g,label,value){
+ // Update Resolve card status
+ const rBadge=document.getElementById('resolveStatusBadge');
+ const rConn=document.getElementById('resolveConnectBtn');
+ const rDisc=document.getElementById('resolveDisconnectBtn');
+ if(rBadge){
+  const isResolve=info.calibration&&info.calibration.connected&&info.calibration.software==='Resolve';
+  if(isResolve){
+   rBadge.textContent='Connected ('+info.calibration.ip+')';
+   rBadge.style.background='var(--green)';
+   rConn.style.display='none';
+   rDisc.style.display='';
+  }else{
+   rBadge.textContent='Disconnected';
+   rBadge.style.background='var(--text2)';
+   rConn.style.display='';
+   rDisc.style.display='none';
+  }
+ }
+}function addInfo(g,label,value){
  const d=document.createElement('div');d.className='info-item';
  d.innerHTML='<div class="label">'+label+'</div><div class="value">'+value+'</div>';
  g.appendChild(d);
@@ -1957,6 +2039,21 @@ async function applyAP(){
   headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password})});
  if(r&&r.status==='ok') toast('AP settings saved — reconnect to new SSID');
  else toast(r&&r.error?r.error:'AP apply failed','err');
+}
+
+async function resolveConnect(){
+ const ip=document.getElementById('resolveIp').value.trim();
+ const port=parseInt(document.getElementById('resolvePort').value)||20002;
+ if(!ip||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){toast('Enter a valid IP address','err');return;}
+ const r=await fetchJSON('/api/resolve/connect',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,port})});
+ if(r&&r.status==='ok'){toast('Connecting to '+ip+':'+port+'...');setTimeout(loadInfo,2000);}
+ else toast(r&&r.message?r.message:'Connect failed','err');
+}
+async function resolveDisconnect(){
+ const r=await fetchJSON('/api/resolve/disconnect',{method:'POST'});
+ if(r&&r.status==='ok'){toast('Disconnected');setTimeout(loadInfo,500);}
+ else toast('Disconnect failed','err');
 }
 
 async function loadInfoframes(){

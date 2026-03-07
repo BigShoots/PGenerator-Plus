@@ -110,6 +110,10 @@ $img_height=72;
 $status="Alive";
 
 $port_server_calman=2100;
+$port_resolve=20002;
+$port_rpc=2101;
+$port_rpc_discovery=3529;
+$port_rpc_response=3530;
 
 $w_s=1920;
 $h_s=1080;
@@ -271,6 +275,12 @@ share($calman_settings_dirty);
 share($calman_win_size);
 share($calibration_client_ip);
 share($calibration_client_software);
+share(%rpc_client);
+
+$resolve_request_ip="";
+$resolve_request_port="";
+share($resolve_request_ip);
+share($resolve_request_port);
 
 $webui_info_cache="";
 $webui_info_cache_time=0;

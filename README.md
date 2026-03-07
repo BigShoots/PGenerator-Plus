@@ -71,6 +71,7 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 - **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` (or `Portrait Displays` in some versions) → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
   - *Calman Control:* When connected via UPGCI, Calman can directly command the PGenerator to switch between SDR, HDR10 and HLG signal modes, set the EOTF, colorimetry, color format, mastering display metadata, and other InfoFrame parameters — all from the Calman Source Settings tab. PGenerator executes these commands in real time, eliminating the need to manually configure the signal on the device.
   - *10-bit Support (PGenerator+ Enhancement):* PGenerator+ extends the original 8-bit Calman protocol with automatic 10-bit pattern support. When Calman sends HDR commands that set `max_bpc=10`, PGenerator+ scales the incoming 10-bit pattern values to match the active link bit depth and writes native 10-bit values to the renderer. This means HDR10 calibration runs at full 10-bit precision end-to-end, without the quantization loss of converting to 8-bit.
+  - *Dolby Vision (PGenerator+ Enhancement):* Calman's DV commands (`CONF_DV`, `DSMD:DOLBYVISION`, `21_HDR_MetadataMode`) now correctly switch to RGB Low-Latency Dolby Vision with 12-bit HDMI link, BT.2020 colorimetry, and the DV binary — matching the Web UI's manual DV configuration.
   - *Deprecation Notice:* Portrait Displays removed the UPGCI protocol from Calman "Home" licenses starting with version 5.15.x (the 2024 releases) to push users toward their own generator hardware. There is no official add-on to re-enable it for Home users. If calibration with PGenerator is required, you must either remain on Calman 5.14.x or older, upgrade to a professional license tier (Calman Video Pro or higher), or use alternative software (like ColourSpace or HCFR).
 
 **2. ColourSpace / LightSpace CMS**
@@ -81,7 +82,12 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 - **Protocol:** Network Pattern Generator Commands (Port `85`)
 - **How to Connect:** Go to **Measures** > **Generator** > **Configure** → Select `Network` from the dropdown and enter the PGenerator's IP address.
 
-**4. DeviceControl**
+**4. Resolve Protocol (CalMAN/HCFR/DisplayCAL)**
+- **Protocol:** XML Calibration Protocol (Port `20002`) — PGenerator+ acts as a *client*, connecting outbound to calibration software. This is useful when the calibration PC cannot reach the PGenerator directly (e.g., different subnets).
+- **How to Connect:** In the PGenerator+ Web UI, find the **Resolve Protocol** card, enter the calibration PC's IP address and port, and click **Connect**. PGenerator+ will establish a TCP connection and begin accepting XML-encoded pattern commands.
+- **Windows Redirect Helper:** For CalMAN workflows that expect a local Resolve connection, use the included `tools/PGenerator-Resolve-Redirect.bat` to set up a Windows port proxy that forwards CalMAN's local port 20002 to the PGenerator's IP.
+
+**5. DeviceControl**
 - **Protocol:** UDP discovery + TCP pattern control
 
 *Device Discovery:* Calibration software can often discover the device automatically via UDP broadcast on port `1977` (`"Who is a PGenerator"` → `"I am a PGenerator <hostname>"`), allowing you to select your device from a list instead of entering the IP address manually.
@@ -172,12 +178,14 @@ Hardware init: USB gadget, WiFi AP, Bluetooth, DHCP
 Daemon: PGeneratord.pl (Perl TCP server)
   ├─ TCP port 85   — LightSpace / pattern protocol
   ├─ TCP port 2100 — Calman protocol
+  ├─ TCP port 2101 — RPC service
   ├─ TCP port 80   — Web UI (HTTP + JSON API)
   ├─ UDP port 5353 — mDNS responder
   ├─ UDP port 1977 — Device discovery
+  ├─ UDP port 3529 — RPC discovery
   ├─ Spawns PGeneratord (C/C++ renderer, reads operations.txt)
   │    └─ PGeneratord.dv variant for Dolby Vision
-  └─ Threads: main loop, device info, UDP discovery (x2), HTTP, mDNS
+  └─ Threads: main loop, device info, UDP discovery (x3), Resolve client, HTTP, mDNS
 ```
 
 ### IPC
@@ -224,6 +232,7 @@ usr/
     pattern.pm                   # Pattern file creation, LUT, scaling
     command.pm                   # System commands (HDMI, temp, WiFi, process mgmt)
     client.pm                    # LightSpace / Calman protocol handling
+    resolve.pm                   # Resolve calibration XML protocol (client mode)
     discovery.pm                 # UDP broadcast discovery responder
     webui.pm                     # Web UI: HTTP server, JSON API, HTML/CSS/JS SPA
     conf.pm                      # Configuration file parser
@@ -242,11 +251,12 @@ usr/
 | [pattern.pm](usr/share/PGenerator/pattern.pm) | Pattern DSL file creation, LUT application, resolution scaling |
 | [command.pm](usr/share/PGenerator/command.pm) | HDMI mode detection (KMS/modetest), 4K auto-select, process management |
 | [client.pm](usr/share/PGenerator/client.pm) | LightSpace XML protocol, Calman protocol handling |
-| [discovery.pm](usr/share/PGenerator/discovery.pm) | UDP broadcast discovery for DeviceControl and LightSpace |
+| [resolve.pm](usr/share/PGenerator/resolve.pm) | Resolve calibration XML protocol (outbound client to CalMAN/HCFR/DisplayCAL) |
+| [discovery.pm](usr/share/PGenerator/discovery.pm) | UDP broadcast discovery for DeviceControl, LightSpace, and RPC |
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.1.1`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.0.4`) and product name (`PGenerator+`) |
 
 ---
 
@@ -306,6 +316,9 @@ All endpoints are served on port 80. Responses are JSON.
 | GET | `/api/cec/status` | HDMI-CEC TV power status |
 | GET | `/api/cec/{cmd}` | Send CEC command (wake, on, off, as) |
 | POST | `/api/pattern` | Display a test pattern (JSON: name, r, g, b, size) |
+| POST | `/api/resolve/connect` | Connect to Resolve calibration server (JSON: ip, port) |
+| POST | `/api/resolve/disconnect` | Disconnect from Resolve server |
+| GET | `/api/resolve/status` | Resolve connection status |
 
 ---
 
