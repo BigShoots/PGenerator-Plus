@@ -113,6 +113,8 @@ static uint32_t output_fmt_prop_id = 0;
 static uint64_t output_fmt_override = 0;
 static int output_fmt_found = 0;
 static uint32_t colorimetry_prop_id = 0;
+static uint64_t colorimetry_override = 0;
+static int colorimetry_found = 0;
 static uint32_t dovi_meta_prop_id = 0;
 static int dv_status = 0;
 static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
@@ -131,6 +133,7 @@ static int first_modeset_done = 0;      /* track first ALLOW_MODESET commit */
 static uint64_t last_output_fmt = (uint64_t)-1;
 static uint64_t last_max_bpc = (uint64_t)-1;
 static uint64_t last_colorimetry = (uint64_t)-1;
+static uint64_t last_dovi = (uint64_t)-1;
 static uint32_t suppressed_commits = 0;
 
 /* ---- Logging to file ---- */
@@ -198,6 +201,17 @@ static void read_config(void) {
             dv_interface = (p[13] - '0');
         }
         if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
+            p[4] == 'r' && p[5] == 'i' && p[6] == 'm' && p[7] == 'e' &&
+            p[8] == 't' && p[9] == 'r' && p[10] == 'y' && p[11] == '=') {
+            char *v = p + 12;
+            colorimetry_override = 0;
+            while (*v >= '0' && *v <= '9') {
+                colorimetry_override = colorimetry_override * 10 + (*v - '0');
+                v++;
+            }
+            colorimetry_found = 1;
+        }
+        if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
             p[4] == 'r' && p[5] == '_' && p[6] == 'f' && p[7] == 'o' &&
             p[8] == 'r' && p[9] == 'm' && p[10] == 'a' && p[11] == 't' &&
             p[12] == '=') {
@@ -224,6 +238,13 @@ static void read_config(void) {
         char num[24];
         itoa_simple(output_fmt_override, num);
         write_log("DRM_OVERRIDE: config color_format=");
+        write_log(num);
+        write_log("\n");
+    }
+    if (colorimetry_found) {
+        char num[24];
+        itoa_simple(colorimetry_override, num);
+        write_log("DRM_OVERRIDE: config colorimetry=");
         write_log(num);
         write_log("\n");
     }
@@ -276,6 +297,21 @@ static void override_output_fmt(uint64_t *value, const char *source) {
     }
 }
 
+static void override_colorimetry(uint64_t *value, const char *source) {
+    if (colorimetry_prop_id && colorimetry_found && *value != colorimetry_override) {
+        char old_val[24], new_val[24];
+        itoa_simple(*value, old_val);
+        itoa_simple(colorimetry_override, new_val);
+        write_log("DRM_OVERRIDE: Colorimetry ");
+        write_log(old_val);
+        write_log(" -> ");
+        write_log(new_val);
+        if (source) { write_log(" ("); write_log(source); write_log(")"); }
+        write_log("\n");
+        *value = colorimetry_override;
+    }
+}
+
 /*
  * Check if a property ID is one we track for redundancy suppression.
  */
@@ -283,6 +319,7 @@ static int is_tracked_prop(uint32_t prop_id) {
     if (max_bpc_prop_id && prop_id == max_bpc_prop_id) return 1;
     if (output_fmt_prop_id && prop_id == output_fmt_prop_id) return 1;
     if (colorimetry_prop_id && prop_id == colorimetry_prop_id) return 1;
+    if (dv_status == 1 && dovi_meta_prop_id && prop_id == dovi_meta_prop_id) return 1;
     return 0;
 }
 
@@ -307,6 +344,11 @@ static int should_suppress(uint32_t prop_id, uint64_t value) {
         last_colorimetry = value;
         return 0;
     }
+    if (dovi_meta_prop_id && prop_id == dovi_meta_prop_id) {
+        if (value == last_dovi) return 1;
+        last_dovi = value;
+        return 0;
+    }
     return 0;
 }
 
@@ -325,9 +367,10 @@ static uint32_t create_dovi_blob(int fd) {
     if (dovi_blob_id) return dovi_blob_id;
 
     uint8_t metadata[12] = {
-        0x00, 0x00, 0x00, 0x00,
+        0x46, 0xD0, 0x00, 0x00, /* Dolby OUI 00-D0-46 (LE u32) → frame.oui */
         0x01,  /* always Low-Latency — RPi4 can't do Standard DV */
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01,  /* DV version (vc4 requires == 1 to write VSIF) */
+        0x00, 0x00, 0x00, 0x00, 0x00,
         0xb6
     };
 
@@ -485,7 +528,40 @@ static int inject_dovi_into_commit(int fd, struct drm_mode_atomic *atomic) {
         itoa_simple(connector_id, num);
         write_log("DRM_OVERRIDE: injected DOVI blob into commit on connector ");
         write_log(num);
-        write_log("\n");
+        write_log(" (objs=");
+        itoa_simple(new_count_objs, num);
+        write_log(num);
+        write_log(", flags=0x");
+        {
+            char hex[12];
+            uint32_t f = atomic->flags;
+            for (int h = 7; h >= 0; h--)
+                hex[7-h] = "0123456789abcdef"[(f >> (h*4)) & 0xF];
+            hex[8] = 0;
+            write_log(hex);
+        }
+        write_log(")\n");
+        /* Dump all props in final commit */
+        uint32_t pidx = 0;
+        for (uint32_t oi = 0; oi < new_count_objs; oi++) {
+            itoa_simple(inj_objs[oi], num);
+            write_log("  obj=");
+            write_log(num);
+            write_log(" props=");
+            itoa_simple(inj_count_props[oi], num);
+            write_log(num);
+            write_log(": ");
+            for (uint32_t pi = 0; pi < inj_count_props[oi]; pi++) {
+                itoa_simple(inj_props[pidx + pi], num);
+                write_log(num);
+                write_log("=");
+                itoa_simple((uint32_t)inj_values[pidx + pi], num);
+                write_log(num);
+                write_log(" ");
+            }
+            write_log("\n");
+            pidx += inj_count_props[oi];
+        }
     }
     return 1;
 }
@@ -575,12 +651,14 @@ int ioctl(int fd, unsigned long request, ...) {
             found_conn: ;
         }
 
-        /* Pass 1: Apply value overrides (max_bpc, output_format, DOVI) */
+        /* Pass 1: Apply value overrides (max_bpc, output_format, Colorimetry, DOVI) */
         for (i = 0; i < total; i++) {
             if (max_bpc_prop_id && props[i] == max_bpc_prop_id)
                 override_max_bpc(&values[i], "atomic");
             if (output_fmt_prop_id && props[i] == output_fmt_prop_id)
                 override_output_fmt(&values[i], "atomic");
+            if (colorimetry_prop_id && props[i] == colorimetry_prop_id)
+                override_colorimetry(&values[i], "atomic");
             if (dovi_meta_prop_id && props[i] == dovi_meta_prop_id
                 && dv_status == 0 && values[i] != 0) {
                 char old_val[24];
@@ -589,6 +667,13 @@ int ioctl(int fd, unsigned long request, ...) {
                 write_log(old_val);
                 write_log(" -> 0\n");
                 values[i] = 0;
+            }
+            /* When DV is active, replace binary's DOVI value with our blob
+             * so subsequent commits don't clear the injected metadata */
+            if (dovi_meta_prop_id && props[i] == dovi_meta_prop_id
+                && dv_status == 1 && dovi_blob_id
+                && values[i] != dovi_blob_id) {
+                values[i] = dovi_blob_id;
             }
         }
 
@@ -673,6 +758,31 @@ int ioctl(int fd, unsigned long request, ...) {
 
         long atomic_ret = raw_ioctl(fd, request, arg);
 
+        /* Log return for DOVI-related commits */
+        if (dovi_injected && atomic_ret != 0) {
+            char num[24];
+            itoa_simple((uint32_t)(-(int)atomic_ret), num);
+            write_log("DRM_OVERRIDE: atomic commit returned -");
+            write_log(num);
+            write_log(" (flags=0x");
+            {
+                char hex[12];
+                uint32_t f = atomic->flags;
+                for (int h = 7; h >= 0; h--) {
+                    hex[7-h] = "0123456789abcdef"[(f >> (h*4)) & 0xF];
+                }
+                hex[8] = 0;
+                write_log(hex);
+            }
+            write_log(", objs=");
+            {
+                char num2[24];
+                itoa_simple(atomic->count_objs, num2);
+                write_log(num2);
+            }
+            write_log(")\n");
+        }
+
         return atomic_ret;
     }
 
@@ -684,6 +794,8 @@ int ioctl(int fd, unsigned long request, ...) {
             override_max_bpc(&sp->value, "setprop_conn");
         if (output_fmt_prop_id && sp->prop_id == output_fmt_prop_id)
             override_output_fmt(&sp->value, "setprop_conn");
+        if (colorimetry_prop_id && sp->prop_id == colorimetry_prop_id)
+            override_colorimetry(&sp->value, "setprop_conn");
     }
 
     /* Intercept DRM_IOCTL_MODE_OBJ_SETPROPERTY (generic object, 0xBA) */
@@ -694,11 +806,17 @@ int ioctl(int fd, unsigned long request, ...) {
             override_max_bpc(&sp->value, "setprop_obj");
         if (output_fmt_prop_id && sp->prop_id == output_fmt_prop_id)
             override_output_fmt(&sp->value, "setprop_obj");
+        if (colorimetry_prop_id && sp->prop_id == colorimetry_prop_id)
+            override_colorimetry(&sp->value, "setprop_obj");
         if (dovi_meta_prop_id && sp->prop_id == dovi_meta_prop_id && dv_status == 0) {
             if (sp->value != 0) {
                 write_log("DRM_OVERRIDE: blocking DOVI blob (dv_status=0, setprop_obj)\n");
                 sp->value = 0;
             }
+        }
+        if (dovi_meta_prop_id && sp->prop_id == dovi_meta_prop_id
+            && dv_status == 1 && dovi_blob_id && sp->value != dovi_blob_id) {
+            sp->value = dovi_blob_id;
         }
     }
 

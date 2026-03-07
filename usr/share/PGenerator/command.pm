@@ -72,6 +72,18 @@ sub apply_drm_properties (@) {
  $color_fmt=0 if($color_fmt eq "");
  system("$modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
+ # Set quantization range (enums: Default=0 Limited=1 Full=2)
+ my $quant_range=$pgenerator_conf{"rgb_quant_range"};
+ if($quant_range ne "") {
+  system("$modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
+  &log("DRM: Set rgb quant range=$quant_range on connector $connector_id");
+ }
+ # Set Colorimetry (enums: Default=0, BT.2020_YCC=2, BT.2020_RGB=9, etc.)
+ my $colorimetry=$pgenerator_conf{"colorimetry"};
+ if($colorimetry ne "" && $colorimetry > 0) {
+  system("$modetest -w '$connector_id:Colorimetry:$colorimetry' 2>/dev/null");
+  &log("DRM: Set Colorimetry=$colorimetry on connector $connector_id");
+ }
 }
 
 ###############################################
@@ -85,11 +97,15 @@ sub pattern_generator_start(@) {
  &auto_select_4k_mode();
  &apply_drm_properties();
  &get_hdmi_info();
- # Select binary: PGeneratord.dv for Dolby Vision when dv_status=1
+ # Select the DV binary when dv_status=1 — the .dv binary has native DOVI
+ # metadata support that triggers DV mode on compatible TVs.
+ # drm_override.so (LD_PRELOAD) provides additional overrides for max_bpc,
+ # Colorimetry, output_format, and keeps the DOVI blob alive on subsequent
+ # atomic commits.
  my $binary=$pattern_generator;
- if($pgenerator_conf{"dv_status"} eq "1" && -x "${pattern_generator}.dv") {
+ if($pgenerator_conf{"dv_status"} eq "1" && -f "${pattern_generator}.dv") {
   $binary="${pattern_generator}.dv";
-  &log("Using Dolby Vision binary: $binary");
+  &log("DV mode: using $binary (drm_override provides property overrides)");
  }
  # Use Mesa EGL (not Broadcom) on KMS — Broadcom EGL needs dispmanx/VCHIQ
  # which is unavailable with vc4-kms-v3d. LD_LIBRARY_PATH=/usr/lib forces

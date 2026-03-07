@@ -66,4 +66,33 @@ sub discovery_lightspace (@) {
  }
 }
 
+###############################################
+#           RPC Discovery                     #
+###############################################
+sub discovery_rpc (@) {
+ my $message = "";
+ my $socket_server = IO::Socket::INET->new(
+  LocalPort => $port_rpc_discovery,
+  Proto => 'udp',
+  Broadcast => 1,
+  ReuseAddr => 1,
+ );
+ if(!$socket_server) {
+  &log("RPC discovery: bind failed on port $port_rpc_discovery: $!");
+  return;
+ }
+ while (1) {
+  $socket_server->recv($message, 1024);
+  next if(-f $discoverable_disabled_file);
+  my $caller_ip = $socket_server->peerhost();
+  next if(!$caller_ip);
+  my $hostname = &read_from_file($hostname_file);
+  chomp($hostname);
+  $hostname = substr($hostname, 0, 24);
+  my $response = pack("a24 v v", $hostname, $port_rpc, $port_rpc);
+  my $dest = Socket::sockaddr_in($port_rpc_response, Socket::inet_aton($caller_ip));
+  CORE::send($socket_server, $response, 0, $dest);
+ }
+}
+
 return 1;
