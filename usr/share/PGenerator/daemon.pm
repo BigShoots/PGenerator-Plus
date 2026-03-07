@@ -442,7 +442,7 @@ sub pattern_daemon {
     # tunneling on the wire.
     #
     my $calman_set_dv_rgb = sub {
-     my $dv_metadata = shift;
+     my ($dv_map_mode,$dv_metadata)=@_;
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("is_ll_dovi","1");
@@ -453,13 +453,15 @@ sub pattern_daemon {
      $calman_save_setting->("colorimetry","9");
      $calman_save_setting->("primaries","1");
      $calman_save_setting->("max_bpc","12");
+     $calman_save_setting->("dv_map_mode","$dv_map_mode") if(defined $dv_map_mode && $dv_map_mode ne "");
      $calman_save_setting->("dv_metadata","$dv_metadata") if(defined $dv_metadata && $dv_metadata ne "");
     };
-     #
-     # HDR_ENABLE — Calman proprietary HDR toggle
-     # HDR_ENABLE:True → prepare for HDR (CONF_HDR follows with details)
-     # HDR_ENABLE:False → switch to SDR
-     #
+
+    #
+    # HDR_ENABLE — Calman proprietary HDR toggle
+    # HDR_ENABLE:True → prepare for HDR (CONF_HDR follows with details)
+    # HDR_ENABLE:False → switch to SDR
+    #
      if($type eq "HDR_ENABLE") {
       if($pattern_cmd =~/^False$/i) {
        &log("Calman: HDR_ENABLE=False — switching to SDR");
@@ -590,7 +592,8 @@ sub pattern_daemon {
        $need_restart=1;
       }
       if($pattern_cmd =~/^DOLBYVISION$/i || $pattern_cmd =~/^DV$/i) {
-       $calman_set_dv_rgb->("1");
+       # Generic DV enable — preserve current map mode (Absolute/Relative).
+       $calman_set_dv_rgb->("","1");
        $need_restart=1;
       }
       if($need_restart) {
@@ -620,8 +623,19 @@ sub pattern_daemon {
        $calman_save_setting->("colorimetry","2");
        $calman_save_setting->("max_bpc","8");
       } elsif($mm_val >= 1 && $mm_val <= 4) {
-       # Dolby Vision modes — keep CalMAN on the same RGB LLDV path the Web UI uses.
-       $calman_set_dv_rgb->("$mm_val");
+       # Dolby Vision modes — the renderer consumes dv_map_mode for Absolute
+       # / Relative, not dv_metadata.  Keep dv_metadata in sync for logging and
+       # compatibility, but switch the real renderer key here.
+       if($mm_val == 3) {
+        $calman_set_dv_rgb->("1","3"); # Absolute
+       } elsif($mm_val == 4) {
+        $calman_set_dv_rgb->("2","4"); # Relative
+       } else {
+        # 1=RGB tunneling, 2=Perceptual. Preserve current map mode because the
+        # renderer only exposes Absolute/Relative via dv_map_mode.
+        $calman_set_dv_rgb->("","$mm_val");
+        &log("Calman: 21_HDR_MetadataMode=$mm_val requested — preserving dv_map_mode=$pgenerator_conf{'dv_map_mode'}");
+       }
       }
       &send_key_to_client($connection,"");
       last;
@@ -1023,19 +1037,27 @@ sub pattern_daemon {
      #
      # CONF_DV — Dolby Vision mode configuration
      # PERCEPTUAL / ABSOLUTE / RELATIVE
-     # Switches to DV binary and sets DV metadata mode
+      # Switches to DV binary and updates the renderer map mode
      #
      if($type eq "CONF_DV") {
       my $dv_mode=uc($pattern_cmd);
       $dv_mode=~s/^\s+|\s+$//g;
       &log("Calman: CONF_DV=$dv_mode");
       if($dv_mode eq "PERCEPTUAL" || $dv_mode eq "ABSOLUTE" || $dv_mode eq "RELATIVE") {
-       # Map CalMAN DV mode to dv_map_mode
-       # 2=DV_Perceptual, 3=DV_Absolute, 4=DV_Relative (matches 21_HDR_MetadataMode enum)
-       my $mm=3;
-       $mm=2 if($dv_mode eq "PERCEPTUAL");
-       $mm=4 if($dv_mode eq "RELATIVE");
-        $calman_set_dv_rgb->("$mm");
+         # The renderer switches between Absolute and Relative via dv_map_mode:
+         #   1 = Absolute
+         #   2 = Relative
+         # Preserve the incoming CalMAN enum in dv_metadata for visibility.
+         if($dv_mode eq "ABSOLUTE") {
+          $calman_set_dv_rgb->("1","3");
+         } elsif($dv_mode eq "RELATIVE") {
+          $calman_set_dv_rgb->("2","4");
+         } else {
+          # Perceptual has no distinct dv_map_mode in the renderer. Keep the
+          # existing Absolute/Relative selection and record the CalMAN request.
+          $calman_set_dv_rgb->("","2");
+          &log("Calman: CONF_DV=PERCEPTUAL requested — preserving dv_map_mode=$pgenerator_conf{'dv_map_mode'}");
+         }
        # Apply immediately — must restart with DV binary
        $calman_apply->();
       } else {
