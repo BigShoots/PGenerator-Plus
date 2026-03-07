@@ -32,6 +32,8 @@ sub fork_pattern_daemon (@) {
   threads->create(\&device_info)->detach();
   threads->create(\&discovery_devicecontrol)->detach();
   threads->create(\&discovery_lightspace)->detach();
+  threads->create(\&discovery_rpc)->detach();
+  threads->create(\&resolve_connection_thread)->detach();
   threads->create(\&webui_http)->detach();
   threads->create(\&webui_mdns)->detach();
   &pattern_daemon();
@@ -67,8 +69,9 @@ sub pattern_daemon {
  ############################
  $server=&create_socket_daemon($socket_id,$pgenerator_conf{"ip_pattern"},$pgenerator_conf{"port_pattern"}); # server classic
  $server_calman=&create_socket_daemon($socket_id,$pgenerator_conf{"ip_pattern"},$port_server_calman);       # server for Calman unified pattern generator control interface
+ $server_rpc=&create_socket_daemon($socket_id,$pgenerator_conf{"ip_pattern"},$port_rpc);                    # RPC service
  $select = IO::Select->new();
- $select->add($server,$server_calman);
+ $select->add($server,$server_calman,$server_rpc);
 
  ############################
  #                          #
@@ -78,7 +81,7 @@ sub pattern_daemon {
  while ($select->count()) {
   my @ready = $select->can_read();
   foreach my $connection (@ready) {
-   if ($connection == $server || $connection == $server_calman) {
+   if ($connection == $server || $connection == $server_calman || $connection == $server_rpc) {
     ############################
     #                          #
     #      Accept Request      #
@@ -92,6 +95,7 @@ sub pattern_daemon {
     $client_address=$client_socket->peerhost();
     $client_port=$client_socket->peerport();
     $client_ip{$client_socket}=$client_address;
+    $rpc_client{$client_socket}=1 if($connection == $server_rpc);
     $select->add($client_socket);
     &stats("connections",1);
     #&send_key_to_client($client_socket,$banner);
@@ -117,7 +121,7 @@ sub pattern_daemon {
     # INIT:1.2
     #
     $calman{$connection}=0;
-    if($key =~/$end_cmd_string_calman$/) {
+    if($key =~/$end_cmd_string_calman$/ || $rpc_client{$connection}) {
      $calman{$connection}=1;
      $calibration_client_ip=$client_ip{$connection} || $client_address;
      $calibration_client_software="Calman";
@@ -296,12 +300,17 @@ sub pattern_daemon {
       $sn=~s/\s+//g;
       $sn="PGenerator" if($sn eq "");
       &log("Calman: SN request, returning $sn");
-      &send_key_to_client($connection,$sn);
+      if($rpc_client{$connection}) {
+       eval { $connection->send("$sn"); };
+       &close_connection($connection) if($@);
+      } else {
+       &send_key_to_client($connection,$sn);
+      }
       last;
      }
      if($clean_key eq "CAP") {
-      # Capabilities — report HDR + window size + bit depth support
-      my $caps="HDR,CONF_HDR,SIZE,BITDEPTH,COLORSPACE,RANGE";
+      # Capabilities — report HDR, DV, window size, bit depth, colorspace, range
+      my $caps="HDR,DOLBYVISION,CONF_HDR,SIZE,BITDEPTH,COLORSPACE,RANGE";
       &log("Calman: CAP request, returning $caps");
       &send_key_to_client($connection,$caps);
       last;
@@ -309,6 +318,83 @@ sub pattern_daemon {
      if($clean_key eq "ENABLE PATTERNS" || $clean_key eq "ENABLEPATTERNS") {
       &log("Calman: ENABLE PATTERNS acknowledged");
       &send_key_to_client($connection,"");
+      last;
+     }
+     if($clean_key eq "DISABLE PATTERNS" || $clean_key eq "DISABLEPATTERNS") {
+      &log("Calman: DISABLE PATTERNS acknowledged");
+      &send_key_to_client($connection,"");
+      last;
+     }
+     if($clean_key eq "FIRMWARE") {
+      &log("Calman: FIRMWARE request, returning $version");
+      if($rpc_client{$connection}) {
+       eval { $connection->send("$version"); };
+       &close_connection($connection) if($@);
+      } else {
+       &send_key_to_client($connection,"");
+      }
+      last;
+     }
+     if($clean_key eq "STATUS") {
+      my $status_caps="STATUS,CONF_FORMAT,CONF_HDR,CONF_LEVEL,CONF_DV,HDR_ENABLE,IMAGE,PUSH,RGB_S,RGB_B,RGB_A,SPECIALTY,UPDATE,YCC_A,YCC_B,YCC_S";
+      &log("Calman: STATUS request, returning $status_caps");
+      if($rpc_client{$connection}) {
+       eval { $connection->send("$status_caps"); };
+       &close_connection($connection) if($@);
+      } else {
+       &send_key_to_client($connection,"");
+      }
+      last;
+     }
+     if($clean_key eq "SHUTDOWN" || $clean_key eq "QUIT") {
+      &log("Calman: $clean_key received, closing connection");
+      $calibration_client_ip="";
+      $calibration_client_software="";
+      &send_key_to_client($connection,"");
+      &close_connection($connection);
+      last;
+     }
+     if($clean_key eq "UPDATE") {
+      &log("Calman: UPDATE acknowledged");
+      &send_key_to_client($connection,"");
+      last;
+     }
+     if($clean_key eq "IS_ALIVE" || $clean_key eq "ISALIVE") {
+      &log("Calman: IS_ALIVE acknowledged");
+      &send_key_to_client($connection,"");
+      last;
+     }
+     if($clean_key eq "GET_SETTINGS") {
+      # Return current resolution/format/range/bits settings
+      # CalMAN parses fields: Resolution, Refresh, 1_FORMAT, Range, Bits, Dolby
+      my $cur_res="${w_s}x${h_s}";
+      my $cur_refresh="60";
+      my $cur_format="RGB 8-bit";
+      my $cur_range="Full";
+      my $cur_bits=$pgenerator_conf{"max_bpc"} || "8";
+      my $cur_dolby=($pgenerator_conf{"dv_status"} eq "1") ? "On" : "Off";
+      # Parse current mode for refresh rate
+      if($preferred_mode =~/(\d+)\[.*\s([\d.]+)Hz/) {
+       $cur_refresh=int($2);
+      }
+      # Build color format string from config
+      my $cf=$pgenerator_conf{"color_format"} || "0";
+      if($cf eq "0")    { $cur_format="RGB $cur_bits-bit"; }
+      elsif($cf eq "1") { $cur_format="YCbCr 444 $cur_bits-bit"; }
+      elsif($cf eq "2") { $cur_format="YCbCr 422 $cur_bits-bit"; }
+      elsif($cf eq "3") { $cur_format="YCbCr 420 $cur_bits-bit"; }
+      # Build range string from config
+      my $rq=$pgenerator_conf{"rgb_quant_range"} || "0";
+      $cur_range="Limited" if($rq eq "1");
+      $cur_range="Full"    if($rq eq "2");
+      my $settings="Resolution=$cur_res,Refresh=$cur_refresh,1_FORMAT=$cur_format,Range=$cur_range,Bits=$cur_bits,Dolby=$cur_dolby";
+      &log("Calman: GET_SETTINGS returning: $settings");
+      if($rpc_client{$connection}) {
+       eval { $connection->send("$settings"); };
+       &close_connection($connection) if($@);
+      } else {
+       &send_key_to_client($connection,"");
+      }
       last;
      }
     }
@@ -332,8 +418,9 @@ sub pattern_daemon {
       my ($conf_key,$conf_val)=@_;
       &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
       $pgenerator_conf{$conf_key}="$conf_val";
-      # Keep bits_default in sync so patterns use the correct bit depth
-      $bits_default=int($conf_val) if($conf_key eq "max_bpc" && $conf_val > 0);
+      # Note: bits_default is NOT synced to max_bpc — the EGL surface is always
+      # 8bpc (AR24/ARGB8888), so pattern rendering stays 8-bit.  max_bpc only
+      # controls the HDMI link depth; the kernel upscales 8-bit FB to 10/12-bit.
       $calman_settings_dirty=1;
       &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
      };
@@ -348,6 +435,26 @@ sub pattern_daemon {
        $calman_settings_dirty=0;
       }
      };
+    #
+    # Helper: align CalMAN DV mode with the existing RGB LLDV path used by
+    # the Web UI / legacy DeviceControl profiles. The renderer stays 8-bit,
+    # while max_bpc=12 requests a 12-bit HDMI link for Dolby Vision RGB
+    # tunneling on the wire.
+    #
+    my $calman_set_dv_rgb = sub {
+     my $dv_metadata = shift;
+     $calman_save_setting->("is_sdr","0");
+     $calman_save_setting->("is_hdr","1");
+     $calman_save_setting->("is_ll_dovi","1");
+     $calman_save_setting->("is_std_dovi","1");
+     $calman_save_setting->("dv_status","1");
+     $calman_save_setting->("dv_interface","1");
+     $calman_save_setting->("color_format","0");
+     $calman_save_setting->("colorimetry","9");
+     $calman_save_setting->("primaries","1");
+     $calman_save_setting->("max_bpc","12");
+     $calman_save_setting->("dv_metadata","$dv_metadata") if(defined $dv_metadata && $dv_metadata ne "");
+    };
      #
      # HDR_ENABLE — Calman proprietary HDR toggle
      # HDR_ENABLE:True → prepare for HDR (CONF_HDR follows with details)
@@ -362,6 +469,7 @@ sub pattern_daemon {
        $calman_save_setting->("is_std_dovi","0");
        $calman_save_setting->("dv_status","0");
        $calman_save_setting->("eotf","0");
+       $calman_save_setting->("color_format","0");
        $calman_save_setting->("colorimetry","2");
        $calman_save_setting->("max_bpc","8");
        # Apply immediately — DRM properties must change now, not on next pattern
@@ -450,6 +558,7 @@ sub pattern_daemon {
        $calman_save_setting->("is_std_dovi","0");
        $calman_save_setting->("dv_status","0");
        $calman_save_setting->("eotf","0");
+       $calman_save_setting->("color_format","0");
        $calman_save_setting->("colorimetry","2");
        $calman_save_setting->("max_bpc","8");
        $need_restart=1;
@@ -461,6 +570,7 @@ sub pattern_daemon {
        $calman_save_setting->("is_std_dovi","0");
        $calman_save_setting->("dv_status","0");
        $calman_save_setting->("eotf","2");
+       $calman_save_setting->("color_format","0");
        $calman_save_setting->("colorimetry","9");
        $calman_save_setting->("primaries","1");
        $calman_save_setting->("max_bpc","10");
@@ -473,19 +583,14 @@ sub pattern_daemon {
        $calman_save_setting->("is_std_dovi","0");
        $calman_save_setting->("dv_status","0");
        $calman_save_setting->("eotf","3");
+       $calman_save_setting->("color_format","0");
        $calman_save_setting->("colorimetry","9");
        $calman_save_setting->("primaries","1");
        $calman_save_setting->("max_bpc","10");
        $need_restart=1;
       }
       if($pattern_cmd =~/^DOLBYVISION$/i || $pattern_cmd =~/^DV$/i) {
-       $calman_save_setting->("is_sdr","0");
-       $calman_save_setting->("is_hdr","0");
-       $calman_save_setting->("is_ll_dovi","1");
-       $calman_save_setting->("is_std_dovi","0");
-       $calman_save_setting->("dv_status","1");
-       $calman_save_setting->("colorimetry","9");
-       $calman_save_setting->("max_bpc","12");
+       $calman_set_dv_rgb->("1");
        $need_restart=1;
       }
       if($need_restart) {
@@ -511,18 +616,12 @@ sub pattern_daemon {
        $calman_save_setting->("is_std_dovi","0");
        $calman_save_setting->("dv_status","0");
        $calman_save_setting->("eotf","0");
+       $calman_save_setting->("color_format","0");
        $calman_save_setting->("colorimetry","2");
        $calman_save_setting->("max_bpc","8");
       } elsif($mm_val >= 1 && $mm_val <= 4) {
-       # Dolby Vision modes
-       $calman_save_setting->("is_sdr","0");
-       $calman_save_setting->("is_hdr","0");
-       $calman_save_setting->("is_ll_dovi","1");
-       $calman_save_setting->("is_std_dovi","0");
-       $calman_save_setting->("dv_status","1");
-       $calman_save_setting->("dv_metadata","$mm_val");
-       $calman_save_setting->("colorimetry","9");
-       $calman_save_setting->("max_bpc","12");
+       # Dolby Vision modes — keep CalMAN on the same RGB LLDV path the Web UI uses.
+       $calman_set_dv_rgb->("$mm_val");
       }
       &send_key_to_client($connection,"");
       last;
@@ -742,12 +841,14 @@ sub pattern_daemon {
       @el_cmd=split(",",$pattern_cmd);
       my $calman_max=1023;
       my $target_max=($bits_default == 10) ? 1023 : ($bits_default == 12) ? 4095 : 255;
+      &log("Calman PATTERN: type=$type raw=$el_cmd[0],$el_cmd[1],$el_cmd[2] bits_default=$bits_default target_max=$target_max");
       $r=int($el_cmd[0]/$calman_max*$target_max+0.5);
       $g=int($el_cmd[1]/$calman_max*$target_max+0.5);
       $b=int($el_cmd[2]/$calman_max*$target_max+0.5);
       $r=$target_max if($r > $target_max);
       $g=$target_max if($g > $target_max);
       $b=$target_max if($b > $target_max);
+      &log("Calman PATTERN: scaled=$r,$g,$b bg=$calman_bg max_bpc=$pgenerator_conf{'max_bpc'}");
       if($calman_special_pattern{$key} ne "" &&  -f "$pattern_templates/$calman_special_pattern{$key}") {
        $response=&get_pattern("TESTTEMPLATE","$calman_special_pattern{$key}","","TESTTEMPLATE:$calman_special_pattern{$key}");
        &send_key_to_client($connection,$response);
@@ -790,6 +891,195 @@ sub pattern_daemon {
       # Default fallback (e.g. RGB_A)
       &clean_pattern_files();
       &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$calman_bg","calman");
+     }
+     #
+     # CONF_FORMAT — Resolution/format configuration
+     # Parses resolution string (e.g. "1080p60", "720p50") and switches
+     # the HDMI output mode via modetest mode index
+     #
+     if($type eq "CONF_FORMAT") {
+      my $fmt=$pattern_cmd;
+      $fmt=~s/^\s+|\s+$//g;
+      &log("Calman: CONF_FORMAT=$fmt");
+      # Parse resolution string: <height><p|i><rate> e.g. 1080p60, 720p50, 480i30
+      # Also accept WxH format: 1920x1080p60, 1920x1080p 60, 3840x2160p30
+      my ($req_w,$req_h,$req_ip,$req_rate);
+      if($fmt =~/^(\d+)x(\d+)\s*(p|i)\s*(\d+)/i) {
+       $req_w=int($1);
+       $req_h=int($2);
+       $req_ip=lc($3);
+       $req_rate=int($4);
+      } elsif($fmt =~/^(\d+)\s*(p|i)\s*(\d+)/i) {
+       $req_h=int($1);
+       $req_ip=lc($2);
+       $req_rate=int($3);
+       # Standard TV widths for each height (prefer these over non-standard like 4096x2160)
+       my %std_w=(2160=>3840,1080=>1920,720=>1280,576=>720,480=>720);
+       $req_w=$std_w{$req_h} if(exists $std_w{$req_h});
+      }
+      if($req_h && $req_rate) {
+       # Scan modetest for matching mode
+       my $best_idx=-1;
+       my $best_score=0;
+       open(my $mt_fh,"$modetest 2>/dev/null|");
+       my $mt_connected=0;
+       while(my $ml=<$mt_fh>) {
+        $mt_connected=1 if($ml =~/\s+connected/);
+        next if(!$mt_connected);
+        # Mode line: #idx WxH[i] rate ... flags ...; type: ...
+        next if($ml !~/^\s*#(\d+)\s+(\d+)x(\d+)(i?)\s+([\d.]+)\s+.*type:\s*(.*)/);
+        my ($m_idx,$m_w,$m_h,$m_i,$m_rate,$m_type)=($1,int($2),int($3),$4,$5,$6);
+        # Match height
+        next if($m_h != $req_h);
+        # Match interlaced/progressive
+        my $m_ip=($m_i eq "i") ? "i" : "p";
+        next if($m_ip ne $req_ip);
+        # Match refresh rate (CalMAN uses integer: 59=59.94, 60=60.00, 23=23.98, 24=24.00)
+        next if(int($m_rate) != $req_rate);
+        # Score: exact width match > standard width > any width; userdef > preferred > driver
+        my $score=0;
+        $score+=100 if($req_w && $m_w == $req_w);
+        $score+=10  if($m_type =~/userdef/);
+        $score+=5   if($m_type =~/preferred/);
+        $score+=1;
+        if($score > $best_score) {
+         $best_idx=$m_idx;
+         $best_score=$score;
+        }
+       }
+       close($mt_fh);
+       if($best_idx >= 0) {
+        &log("Calman: CONF_FORMAT matched mode_idx=$best_idx for ${req_h}${req_ip}${req_rate}");
+        &pgenerator_cmd("SET_MODE:$best_idx");
+        # Update cached resolution
+        &get_hdmi_info();
+       } else {
+        &log("Calman: CONF_FORMAT no matching mode for ${req_h}${req_ip}${req_rate}");
+       }
+      } else {
+       &log("Calman: CONF_FORMAT unrecognized format: $fmt");
+      }
+      &send_key_to_client($connection,"");
+      last;
+     }
+     #
+     # CONF_LEVEL — Level/gamma/range/bitdepth configuration
+     # Handles: "Bits N", "Range X", "Format X", "Gamma-HDR", "Gamma-SDR"
+     #
+     if($type eq "CONF_LEVEL") {
+      my $cl=$pattern_cmd;
+      $cl=~s/^\s+|\s+$//g;
+      if($cl =~/^Bits\s+(\d+)/i) {
+       my $bd=int($1);
+       if($bd == 8 || $bd == 10 || $bd == 12) {
+        $calman_save_setting->("max_bpc","$bd");
+       }
+       # Apply immediately — DRM max_bpc must change now
+       $calman_apply->();
+      } elsif($cl =~/^Range\s+(.*)/i) {
+       my $rv=lc($1);
+       if($rv =~/full/) {
+        $calman_save_setting->("rgb_quant_range","2");
+       } elsif($rv =~/limit/) {
+        $calman_save_setting->("rgb_quant_range","1");
+       } else {
+        $calman_save_setting->("rgb_quant_range","0");
+       }
+       # Apply immediately — DRM range must change now
+       $calman_apply->();
+      } elsif($cl =~/^Format\s+(.*)/i) {
+       my $fv=$1;
+       my $colf_val="0";
+       $colf_val="1" if($fv =~/444/i);
+       $colf_val="2" if($fv =~/422/i);
+       $colf_val="3" if($fv =~/420/i);
+       $calman_save_setting->("color_format","$colf_val");
+       # Extract bit depth from format string (e.g. "YCC444_10", "RGB 8-bit")
+       if($fv =~/_(\d+)$/ || $fv =~/(\d+)-bit/i) {
+        my $fmt_bits=int($1);
+        $calman_save_setting->("max_bpc","$fmt_bits") if($fmt_bits == 8 || $fmt_bits == 10 || $fmt_bits == 12);
+       }
+       # Apply immediately — DRM output format must change now
+       $calman_apply->();
+      } elsif($cl =~/^Gamma-HDR$/i) {
+       $calman_save_setting->("is_sdr","0");
+       $calman_save_setting->("is_hdr","1");
+       $calman_save_setting->("eotf","2");
+       $calman_save_setting->("colorimetry","9");
+       $calman_save_setting->("max_bpc","10");
+      } elsif($cl =~/^Gamma-SDR$/i) {
+       $calman_save_setting->("is_sdr","1");
+       $calman_save_setting->("is_hdr","0");
+       $calman_save_setting->("eotf","0");
+       $calman_save_setting->("colorimetry","2");
+       $calman_save_setting->("max_bpc","8");
+      } else {
+       &log("Calman: unknown CONF_LEVEL param: $cl");
+      }
+      &log("Calman: CONF_LEVEL=$cl");
+      &send_key_to_client($connection,"");
+      last;
+     }
+     #
+     # CONF_DV — Dolby Vision mode configuration
+     # PERCEPTUAL / ABSOLUTE / RELATIVE
+     # Switches to DV binary and sets DV metadata mode
+     #
+     if($type eq "CONF_DV") {
+      my $dv_mode=uc($pattern_cmd);
+      $dv_mode=~s/^\s+|\s+$//g;
+      &log("Calman: CONF_DV=$dv_mode");
+      if($dv_mode eq "PERCEPTUAL" || $dv_mode eq "ABSOLUTE" || $dv_mode eq "RELATIVE") {
+       # Map CalMAN DV mode to dv_map_mode
+       # 2=DV_Perceptual, 3=DV_Absolute, 4=DV_Relative (matches 21_HDR_MetadataMode enum)
+       my $mm=3;
+       $mm=2 if($dv_mode eq "PERCEPTUAL");
+       $mm=4 if($dv_mode eq "RELATIVE");
+        $calman_set_dv_rgb->("$mm");
+       # Apply immediately — must restart with DV binary
+       $calman_apply->();
+      } else {
+       &log("Calman: CONF_DV unknown mode: $dv_mode");
+      }
+      &send_key_to_client($connection,"");
+      last;
+     }
+     #
+     # SPECIALTY — Specialty pattern display
+     #
+     if($type eq "SPECIALTY") {
+      &log("Calman: SPECIALTY=$pattern_cmd");
+      $calman_apply->();
+      &clean_pattern_files();
+      my $sp_name=uc($pattern_cmd);
+      $sp_name=~s/^\s+|\s+$//g;
+      if($sp_name eq "BRIGHTNESS") {
+       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"20,20,20","$calman_bg","","","",1,"calman");
+      } elsif($sp_name eq "CONTRAST") {
+       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"235,235,235","$calman_bg","","","",1,"calman");
+      } elsif($sp_name eq "ALIGNMENT" || $sp_name eq "OVERSCAN") {
+        # White border frame pattern for alignment/overscan check
+        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"0,0,0","0,0,0","","","",1,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,2",100,"255,255,255","","0,0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,2",100,"255,255,255","","0,".($h_s-2),"","",0,"calman");
+        &create_pattern_file("RECTANGLE","2,$h_s",100,"255,255,255","","0,0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","2,$h_s",100,"255,255,255","","".($w_s-2).",0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","2,$h_s",100,"255,255,255","","".(int($w_s/2)-1).",0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,2",100,"255,255,255","","0,".(int($h_s/2)-1),"","",0,"calman");
+      } else {
+       &log("Calman: unknown specialty pattern: $sp_name");
+       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"128,128,128","$calman_bg","","","",1,"calman");
+      }
+      &send_key_to_client($connection,"");
+      last;
+     }
+     #
+     # UPDATE — Force display refresh
+     #
+     if($type eq "UPDATE") {
+      &log("Calman: UPDATE=$pattern_cmd (acknowledged)");
+      &send_key_to_client($connection,"");
+      last;
      }
      # If we reach here, the command type was not handled by any specific block
      &log("Calman UNHANDLED command: type=$type cmd=$pattern_cmd");
@@ -1065,6 +1355,7 @@ sub close_connection {
  $calman{$connection}=0;
  $cmd{$connection}="";
  delete $client_ip{$connection};
+ delete $rpc_client{$connection};
  #$connection->send("");
  $select->remove($connection);
  eval { $connection->close(); };
