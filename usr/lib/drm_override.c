@@ -623,6 +623,8 @@ int ioctl(int fd, unsigned long request, ...) {
         uint32_t *count_props = (uint32_t *)(uintptr_t)atomic->count_props_ptr;
         uint32_t *props = (uint32_t *)(uintptr_t)atomic->props_ptr;
         uint64_t *values = (uint64_t *)(uintptr_t)atomic->prop_values_ptr;
+        int is_test = (atomic->flags & DRM_MODE_ATOMIC_TEST_ONLY) != 0;
+        int dovi_changed = 0;
 
         uint32_t total = 0, i;
         for (i = 0; i < atomic->count_objs; i++)
@@ -667,6 +669,7 @@ int ioctl(int fd, unsigned long request, ...) {
                 write_log(old_val);
                 write_log(" -> 0\n");
                 values[i] = 0;
+                dovi_changed = 1;
             }
             /* When DV is active, replace binary's DOVI value with our blob
              * so subsequent commits don't clear the injected metadata */
@@ -674,7 +677,18 @@ int ioctl(int fd, unsigned long request, ...) {
                 && dv_status == 1 && dovi_blob_id
                 && values[i] != dovi_blob_id) {
                 values[i] = dovi_blob_id;
+                dovi_changed = 1;
             }
+        }
+
+        /* The vc4 driver only reliably re-programs the Vendor Specific
+         * InfoFrame when the atomic commit is allowed to modeset.  Without
+         * this, switching away from DV can leave the TV stuck in DV even
+         * though the connector property was changed to 0. */
+        if (!is_test && dovi_changed
+            && !(atomic->flags & DRM_MODE_ATOMIC_ALLOW_MODESET)) {
+            atomic->flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+            write_log("DRM_OVERRIDE: forcing ALLOW_MODESET for DOVI metadata change\n");
         }
 
         /*
@@ -687,8 +701,6 @@ int ioctl(int fd, unsigned long request, ...) {
          *
          * Skip for TEST_ONLY commits (hypothetical checks).
          */
-        int is_test = (atomic->flags & DRM_MODE_ATOMIC_TEST_ONLY) != 0;
-
         if (!is_test && total > 0) {
             uint32_t read_idx = 0;
             uint32_t write_idx = 0;
