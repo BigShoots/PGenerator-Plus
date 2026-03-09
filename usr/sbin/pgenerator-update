@@ -7,7 +7,7 @@
 #   pgenerator-update apply          — download and apply latest release
 #   pgenerator-update version        — print current version
 #
-# Update stream: https://github.com/BigShoots/PGenerator/releases
+# Update stream: https://github.com/BigShoots/PGenerator-Plus/releases
 #
 # Release assets are tar.gz archives containing files in FHS layout:
 #   usr/share/PGenerator/*.pm
@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-GITHUB_REPO="BigShoots/PGenerator"
+GITHUB_REPO="BigShoots/PGenerator-Plus"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 VERSION_FILE="/usr/share/PGenerator/version.pm"
 UPDATE_DIR="/var/lib/PGenerator/updates"
