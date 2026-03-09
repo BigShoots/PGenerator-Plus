@@ -54,9 +54,12 @@ sub get_conf (@) {
  $device_model.=" (KMS)" if($is_rpi_4 && $is_kms);
  # End for RPI p4
  &get_pgenerator_conf();
- # Note: bits_default is NOT synced to max_bpc — the EGL surface is always
- # 8bpc (AR24/ARGB8888), so pattern rendering stays 8-bit.  max_bpc only
- # controls the HDMI link depth; the kernel upscales 8-bit FB to 10/12-bit.
+ # Keep pattern/control bit depth aligned with configured HDMI output depth
+ # so protocol paths preserve 10/12-bit values unless output is explicitly
+ # set to 8-bit.  The legacy renderer path may still quantize internally,
+ # but the daemon/template layer should use the selected output range.
+ my $conf_bits=int($pgenerator_conf{"max_bpc"} || 8);
+ $bits_default=$conf_bits if($conf_bits == 8 || $conf_bits == 10 || $conf_bits == 12);
 }
 
 ###############################################
