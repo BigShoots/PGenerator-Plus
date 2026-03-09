@@ -418,9 +418,9 @@ sub pattern_daemon {
       my ($conf_key,$conf_val)=@_;
       &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
       $pgenerator_conf{$conf_key}="$conf_val";
-      # Note: bits_default is NOT synced to max_bpc — the EGL surface is always
-      # 8bpc (AR24/ARGB8888), so pattern rendering stays 8-bit.  max_bpc only
-      # controls the HDMI link depth; the kernel upscales 8-bit FB to 10/12-bit.
+      # Keep pattern/control bit depth aligned with HDMI output bit depth so
+      # incoming protocol values are only reduced to 8-bit when output is 8-bit.
+      $bits_default=int($conf_val) if($conf_key eq "max_bpc" && ($conf_val == 8 || $conf_val == 10 || $conf_val == 12));
       $calman_settings_dirty=1;
       &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
      };
@@ -825,12 +825,17 @@ sub pattern_daemon {
       my $cr_b=int($el_cmd[2]);
       my $cr_tenBit=int($el_cmd[3]);
       my $cr_size=int($el_cmd[4]);
-      # Convert 10-bit to 8-bit if needed
-      if($cr_tenBit) {
-       $cr_r=int($cr_r/1024*256);
-       $cr_g=int($cr_g/1024*256);
-       $cr_b=int($cr_b/1024*256);
-      }
+      my $target_bits=int($bits_default || 8);
+      my $target_max=($target_bits == 10) ? 1023 : ($target_bits == 12) ? 4095 : 255;
+      my $input_max=$cr_tenBit ? 1023 : 255;
+      # Scale CommandRGB to the current output bit depth.  Only reduce to 8-bit
+      # when output is explicitly configured for 8bpc.
+      $cr_r=int($cr_r/$input_max*$target_max+0.5) if($input_max != $target_max);
+      $cr_g=int($cr_g/$input_max*$target_max+0.5) if($input_max != $target_max);
+      $cr_b=int($cr_b/$input_max*$target_max+0.5) if($input_max != $target_max);
+      $cr_r=$target_max if($cr_r > $target_max);
+      $cr_g=$target_max if($cr_g > $target_max);
+      $cr_b=$target_max if($cr_b > $target_max);
       $cr_size=$calman_win_size if(!$cr_size || $cr_size < 1);
       # Apply any pending settings before showing pattern
       $calman_apply->();
@@ -849,7 +854,7 @@ sub pattern_daemon {
      #
      # RGB Pattern Commands (original Calman wire protocol)
      # RGB_B:R,G,B,BG  RGB_S:R,G,B,SIZE  RGB_A:R,G,B
-     # Calman sends 10-bit values (0-1023); scale to match bits_default
+      # Calman sends 10-bit values (0-1023); scale to the current output depth
      #
      if($type =~/RGB_/) {
       @el_cmd=split(",",$pattern_cmd);

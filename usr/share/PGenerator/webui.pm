@@ -12,6 +12,55 @@
 #
 
 ###############################################
+#             mDNS Route Helpers              #
+###############################################
+sub webui_mdns_routes (@) {
+ my @routes;
+ my $route_out=`ip -o -4 route show scope link 2>/dev/null`;
+ foreach my $line (split(/\n/,$route_out)) {
+  next if($line =~ /\blinkdown\b/);
+  if($line =~ /^(\d+\.\d+\.\d+\.\d+)\/(\d+)\s+dev\s+(\S+).*?\bsrc\s+(\d+\.\d+\.\d+\.\d+)/) {
+    my $network=$1;
+    my $prefix=int($2);
+    my $iface=$3;
+    my $ip=$4;
+    my $ifindex=&read_from_file("/sys/class/net/$iface/ifindex");
+  $ifindex=~s/\s+//g;
+  $ifindex=int($ifindex||0);
+    push @routes,{ network => $network, prefix => $prefix, iface => $iface, ip => $ip, ifindex => $ifindex };
+  }
+ }
+ return @routes;
+}
+
+sub webui_mdns_match_prefix (@) {
+ my $ip=shift;
+ my $network=shift;
+ my $prefix=int(shift);
+ my $mask=0;
+ return 0 if($ip eq "" || $network eq "" || $prefix < 0 || $prefix > 32);
+ $mask=((0xFFFFFFFF << (32 - $prefix)) & 0xFFFFFFFF) if($prefix > 0);
+ return ((unpack("N",Socket::inet_aton($ip)) & $mask) == (unpack("N",Socket::inet_aton($network)) & $mask)) ? 1 : 0;
+}
+
+sub webui_mdns_best_ip (@) {
+ my $querier_ip=shift;
+ my @routes=&webui_mdns_routes();
+ foreach my $route (@routes) {
+  return $route->{ip} if(&webui_mdns_match_prefix($querier_ip,$route->{network},$route->{prefix}));
+ }
+ my $default_route=`ip -o -4 route show default 2>/dev/null`;
+ if($default_route =~ /\bdev\s+(\S+)/) {
+  my $default_iface=$1;
+  foreach my $route (@routes) {
+   return $route->{ip} if($route->{iface} eq $default_iface);
+  }
+ }
+ return $routes[0]->{ip} if(@routes);
+ return "";
+}
+
+###############################################
 #              mDNS Responder                 #
 ###############################################
 sub webui_mdns (@) {
@@ -30,11 +79,24 @@ sub webui_mdns (@) {
  bind($sock, Socket::sockaddr_in($MDNS_PORT, Socket::INADDR_ANY))
   || do { &log("mDNS: bind failed: $!"); return; };
 
- # Join multicast group on all interfaces
- my $mreq = Socket::inet_aton($MDNS_ADDR) . Socket::INADDR_ANY;
+ # Join multicast group on each active IPv4 interface so queries work across
+ # Wi-Fi client, AP mode, Bluetooth PAN, USB gadget, etc.
  my $IP_ADD_MEMBERSHIP=eval { Socket::IP_ADD_MEMBERSHIP() } || 35; # 35 on Linux
- setsockopt($sock, 0, $IP_ADD_MEMBERSHIP, $mreq)
-  || do { &log("mDNS: multicast join failed: $!"); };
+ my $IPPROTO_IP=eval { Socket::IPPROTO_IP() } || 0;
+ my @mdns_routes=&webui_mdns_routes();
+ foreach my $route (@mdns_routes) {
+  my $joined=0;
+  if($route->{ifindex} > 0) {
+   my $mreqn=pack("a4 a4 i",Socket::inet_aton($MDNS_ADDR),pack("N",0),$route->{ifindex});
+   $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreqn) ? 1 : 0;
+  }
+  if(!$joined) {
+   my $mreq = Socket::inet_aton($MDNS_ADDR) . Socket::inet_aton($route->{ip});
+   $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreq) ? 1 : 0;
+  }
+  &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $!") if(!$joined);
+ }
+ &log("mDNS: no active IPv4 interfaces found for multicast join") if(!@mdns_routes);
 
  &log("mDNS: responder started for $mdns_hostname.local on port $MDNS_PORT");
 
@@ -69,28 +131,10 @@ sub webui_mdns (@) {
   # Respond to A record queries for pgenerator.local
   next unless(lc($qname) eq "$mdns_hostname.local" && ($qtype == 1 || $qtype == 255));
 
-  # Get our IP addresses with subnet masks
-  my @ifaces;
-  my $ifdata=`ip -4 addr show 2>/dev/null`;
-  while($ifdata=~/inet\s+(\d+\.\d+\.\d+\.\d+)\/(\d+)/g) {
-   next if($1 eq "127.0.0.1");
-   push @ifaces, { ip => $1, prefix => $2 };
-  }
-
-  # Find the best IP to respond with by matching querier's subnet
+  # Find the best IP to respond with by matching the querier against active
+  # scope-link routes.  This avoids returning a link-down or wrong-interface IP.
   my $querier_ip=Socket::inet_ntoa($qaddr);
-  my $best_ip="";
-  foreach my $iface (@ifaces) {
-   my $mask = (0xFFFFFFFF << (32 - $iface->{prefix})) & 0xFFFFFFFF;
-   my $net_a = unpack("N", Socket::inet_aton($iface->{ip})) & $mask;
-   my $net_q = unpack("N", Socket::inet_aton($querier_ip)) & $mask;
-   if($net_a == $net_q) {
-    $best_ip=$iface->{ip};
-    last;
-   }
-  }
-  # Fallback to first non-loopback IP if no subnet match
-  $best_ip=$ifaces[0]->{ip} if($best_ip eq "" && @ifaces);
+  my $best_ip=&webui_mdns_best_ip($querier_ip);
   next if($best_ip eq "");
 
   # Build mDNS response with single A record
@@ -108,7 +152,9 @@ sub webui_mdns (@) {
   $resp.=pack("n",4);             # RDLENGTH=4
   $resp.=Socket::inet_aton($best_ip); # RDATA=IP
 
-  # Send to multicast group
+  # Send to multicast group from the selected interface
+  my $IP_MULTICAST_IF=eval { Socket::IP_MULTICAST_IF() } || 32;
+  setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_IF, Socket::inet_aton($best_ip));
   my $mcast_dest=Socket::sockaddr_in($MDNS_PORT, Socket::inet_aton($MDNS_ADDR));
   send($sock, $resp, 0, $mcast_dest);
 
@@ -401,7 +447,9 @@ sub webui_apply_config (@) {
   next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
   &sudo("SET_PGENERATOR_CONF",$k,$changes{$k});
   $pgenerator_conf{$k}=$changes{$k};
-  # Note: bits_default is NOT synced to max_bpc — EGL surface is always 8bpc
+  # Keep manual patterns aligned with configured output bit depth so protocol
+  # and Web UI paths use the same numeric range.
+  $bits_default=int($changes{$k}) if($k eq "max_bpc" && ($changes{$k} == 8 || $changes{$k} == 10 || $changes{$k} == 12));
   $need_restart=1 if($restart_keys{$k});
  }
  if($need_restart) {
@@ -1427,13 +1475,35 @@ function toast(msg,err){
  setTimeout(()=>t.className='toast',3000);
 }
 
+let _pingFailCount=0;
+
 async function fetchJSON(url,opts){
- try{const r=await fetch(API+url,opts);return await r.json();}
- catch(e){toast('Connection error','err');return null;}
+ const req=Object.assign({},opts||{});
+ const quiet=!!req._quiet;
+ const timeoutMs=req._timeoutMs||8000;
+ delete req._quiet;
+ delete req._timeoutMs;
+ let timer=null;
+ if(!req.signal){
+  const controller=new AbortController();
+  req.signal=controller.signal;
+  timer=setTimeout(()=>controller.abort(),timeoutMs);
+ }
+ try{
+  const r=await fetch(API+url,req);
+  return await r.json();
+ }
+ catch(e){
+  if(!quiet)toast('Connection error','err');
+  return null;
+ }
+ finally{
+  if(timer)clearTimeout(timer);
+ }
 }
 
-async function loadConfig(){
- config=await fetchJSON('/api/config');
+async function loadConfig(quiet){
+ config=await fetchJSON('/api/config',{_quiet:!!quiet,_timeoutMs:10000});
  if(!config)return;
  // Derive signal mode from flags
  let sm='sdr';
@@ -1526,8 +1596,8 @@ document.getElementById('signal_mode').addEventListener('change',function(){
  checkSettingsChanged();
 });
 
-async function loadModes(){
- modes=await fetchJSON('/api/modes');
+async function loadModes(quiet){
+ modes=await fetchJSON('/api/modes',{_quiet:!!quiet,_timeoutMs:10000});
  if(!modes)return;
  const sel=document.getElementById('mode_idx');
  sel.innerHTML='';
@@ -1539,8 +1609,8 @@ async function loadModes(){
  if(config.mode_idx)sel.value=config.mode_idx;
 }
 
-async function loadCapabilities(){
- caps=await fetchJSON('/api/capabilities');
+async function loadCapabilities(quiet){
+ caps=await fetchJSON('/api/capabilities',{_quiet:!!quiet,_timeoutMs:10000});
 }
 
 // Determine which color formats are valid for a given mode + bit depth
@@ -1667,7 +1737,15 @@ async function checkPing(){
   const r=await fetch(API+'/api/ping',{signal:AbortSignal.timeout(5000)});
   if(!r.ok) throw new Error(r.status);
   await r.json();
+  _pingFailCount=0;
  }catch(e){
+  _pingFailCount++;
+  if(_pingFailCount<2){
+   document.getElementById('statusDot').style.background='var(--orange)';
+   document.getElementById('statusText').textContent='Retry';
+   document.getElementById('statusWrap').title='Transient timeout';
+   return;
+  }
   document.getElementById('statusDot').style.background='var(--red)';
   document.getElementById('statusText').textContent='Offline';
   document.getElementById('statusWrap').title='No response';
@@ -1681,8 +1759,8 @@ async function checkPing(){
  document.getElementById('statusWrap').title='Response time: '+latency+'ms';
 }
 
-async function loadInfo(){
- const info=await fetchJSON('/api/info');
+async function loadInfo(quiet){
+ const info=await fetchJSON('/api/info',{_quiet:!!quiet,_timeoutMs:10000});
  if(!info) return;
  document.getElementById('tempDisplay').textContent=info.temperature?info.temperature+'\u00B0C':'';
  if(info.version){
@@ -1728,7 +1806,7 @@ async function loadInfo(){
  }
  // Auto-refresh config when calibration software is connected
  if(info.calibration && info.calibration.connected && !window._calmanPoll){
-  window._calmanPoll=setInterval(loadConfig,10000);
+  window._calmanPoll=setInterval(()=>loadConfig(true),10000);
  } else if((!info.calibration || !info.calibration.connected) && window._calmanPoll){
   clearInterval(window._calmanPoll); window._calmanPoll=null;
  }
@@ -2020,7 +2098,7 @@ async function cecScan(){
 }
 
 async function loadCecStatus(){
- const r=await fetchJSON('/api/cec/status');
+ const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:12000});
  const el=document.getElementById('cecStatus');
  if(r&&r.status==='ok'){
   const pwr=r.tv_power||'unknown';
@@ -2039,7 +2117,7 @@ async function loadCecStatus(){
 }
 
 async function loadAP(){
- const r=await fetchJSON('/api/wifi/ap');
+ const r=await fetchJSON('/api/wifi/ap',{_quiet:true,_timeoutMs:10000});
  if(r&&r.status==='ok'){
   document.getElementById('apSsid').value=r.ssid||'';
   document.getElementById('apPass').value=r.password||'';
@@ -2073,7 +2151,7 @@ async function resolveDisconnect(){
 }
 
 async function loadInfoframes(){
- const r=await fetchJSON('/api/infoframes');
+ const r=await fetchJSON('/api/infoframes',{_quiet:true,_timeoutMs:10000});
  if(!r||r.status!=='ok') return;
  const ae=document.getElementById('aviIF');
  const ad=document.getElementById('aviDecoded');
@@ -2172,7 +2250,7 @@ async function loadInfoframes(){
 
 async function checkUpdate(){
  document.getElementById('updateStatus').textContent='Checking...';
- const r=await fetchJSON('/api/update/check');
+ const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:15000});
  if(!r||r.status==='error'){
   document.getElementById('updateStatus').textContent=r?r.message:'Check failed — no internet?';
   return;
@@ -2220,18 +2298,18 @@ async function applyUpdate(){
 
 // Init
 (async()=>{
- await loadConfig();
- await loadModes();
- await loadCapabilities();
+ await loadConfig(true);
+ await loadModes(true);
+ await loadCapabilities(true);
  updateDropdowns();
  await checkPing();
- await loadInfo();
- loadCecStatus();
- loadAP();
- loadInfoframes();
- checkUpdate();
+ await loadInfo(true);
+ setTimeout(()=>loadCecStatus(),500);
+ setTimeout(()=>loadAP(),1000);
+ setTimeout(()=>loadInfoframes(),1500);
+ setTimeout(()=>checkUpdate(),2500);
  setInterval(checkPing,10000);
- setInterval(loadInfo,30000);
+ setInterval(()=>loadInfo(true),30000);
 })();
 </script>
 </body>

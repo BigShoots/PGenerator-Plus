@@ -256,7 +256,7 @@ usr/
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.0.4`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.0.5`) and product name (`PGenerator+`) |
 
 ---
 
