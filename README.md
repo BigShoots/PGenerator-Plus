@@ -140,7 +140,7 @@ Complete control over the HDMI output parameters, InfoFrames, and DRMs without n
 - **Custom Resolutions:** Auto-detects available modes from the connected display's EDID.
 - **Base Video Parameters:** Configure Color Format (RGB/YCbCr), Colorimetry (BT.709/BT.2020), and Bit Depth (8/10/12-bit).
 - **HDR10 Metadata:** When HDR10 is active, take full control over the DRM InfoFrame (EOTF, Mastering Primaries, Max/Min Luma, MaxCLL, and MaxFALL).
-- **Dolby Vision Metadata:** For Dolby Vision modes, select between Low Latency (LLDV) and configure specific DOVI Interface, Color Space, and Metadata details.
+- **Dolby Vision Metadata:** Dolby Vision Low Latency (LLDV) is supported, configure specific DOVI Interface, Color Space, and Metadata details.
 
 #### Manual Pattern Injection
 A full suite of test patterns that can be manually injected on-screen for spot-checking and fast visual validation.
