@@ -103,7 +103,9 @@ Plus adds `apply_drm_properties()` before spawning the binary and `LD_PRELOAD=dr
 - **HDR control:** HDR_ENABLE, CONF_HDR, DSMD, EOTF/HDR_EOTF, PRIM/HDR_PRIMARIES
 - **Signal settings:** BITD, COLF, QRNG, CLSP, MAXL, MINL, MAXCLL, MAXFALL
 - **Pattern control:** CommandRGB, SetRange, 10_SIZE, 11_APL, 303_UPDATE/APPLY
-- **Window sizing:** RGB_S with variable percentage, RGB_B with background color
+- **Window sizing:** RGB_S direct percentage windows, RGB_B manual gray surround, RGB_A explicit foreground/background/window payloads
+- **Calman session handling:** resets APL/window/background state on INIT, TERM, QUIT/SHUTDOWN, and disconnect so stale Calman state does not leak between sessions
+- **RPC support:** raw RPC clients on port 2101 receive real CAP / STATUS responses and can use `CommandRGB` without STX/ETX framing
 - **DV mode:** 21_HDR_MetadataMode for Dolby Vision sub-modes
 
 ### Infrastructure

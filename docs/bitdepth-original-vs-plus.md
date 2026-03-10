@@ -154,6 +154,7 @@ The PDF exists and is valid, but text extraction is not available from current t
 
 - `drm_override` reads `max_bpc`, `dv_status`, `color_format` from config and overrides DRM property calls:
   - [../usr/lib/drm_override.c#L391-L460](../usr/lib/drm_override.c#L391-L460)
+- Preserves renderer-provided `DOVI_OUTPUT_METADATA` blobs when DV is enabled. A fixed fallback blob is only used before the renderer has ever supplied its own DOVI blob in that process lifetime; once the renderer does, later commits that omit the property are left alone so the renderer-selected DV mode is not clobbered.
 - Explicitly blocks `DOVI_OUTPUT_METADATA` when `dv_status=0`:
   - [../usr/lib/drm_override.c#L570-L620](../usr/lib/drm_override.c#L570-L620)
 

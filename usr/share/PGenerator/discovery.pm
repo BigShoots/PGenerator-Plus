@@ -18,6 +18,18 @@
 #
 
 ###############################################
+#           Discovery Name                    #
+###############################################
+sub discovery_name (@) {
+ my $hostname=&read_from_file($hostname_file);
+ chomp($hostname);
+ $hostname=~s/^\s+|\s+$//g;
+ my $name=$hostname;
+ $name=$version_plus if($name eq "" || lc($name) eq "pgenerator");
+ return substr($name,0,24);
+}
+
+###############################################
 #           DeviceControl Discovery           #
 ###############################################
 sub discovery_devicecontrol (@) {
@@ -30,7 +42,7 @@ sub discovery_devicecontrol (@) {
  while (1) { 
   $socket_server->recv($message, 1024);
   if(!-f $discoverable_disabled_file && $message=~/$message_discovery_devicecontrol/) {
-   $reply_discovery=$reply_discovery_devicecontrol." ".&read_from_file($hostname_file);
+     $reply_discovery=$reply_discovery_devicecontrol." ".&discovery_name();
    $socket_server->send($reply_discovery) if(!-f $discoverable_disabled_file && $message=~/$message_discovery_devicecontrol/);
   }
  }
@@ -86,10 +98,7 @@ sub discovery_rpc (@) {
   next if(-f $discoverable_disabled_file);
   my $caller_ip = $socket_server->peerhost();
   next if(!$caller_ip);
-  my $hostname = &read_from_file($hostname_file);
-  chomp($hostname);
-  $hostname = substr($hostname, 0, 24);
-  my $response = pack("a24 v v", $hostname, $port_rpc, $port_rpc);
+    my $response = pack("a24 v v", &discovery_name(), $port_rpc, $port_rpc);
   my $dest = Socket::sockaddr_in($port_rpc_response, Socket::inet_aton($caller_ip));
   CORE::send($socket_server, $response, 0, $dest);
  }
