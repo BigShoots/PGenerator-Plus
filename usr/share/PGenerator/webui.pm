@@ -447,11 +447,9 @@ sub webui_apply_config (@) {
   next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
   &sudo("SET_PGENERATOR_CONF",$k,$changes{$k});
   $pgenerator_conf{$k}=$changes{$k};
-  # Keep manual patterns aligned with configured output bit depth so protocol
-  # and Web UI paths use the same numeric range.
-  $bits_default=int($changes{$k}) if($k eq "max_bpc" && ($changes{$k} == 8 || $changes{$k} == 10 || $changes{$k} == 12));
   $need_restart=1 if($restart_keys{$k});
  }
+ &sync_pattern_bits_default() if(%changes);
  if($need_restart) {
   &pattern_generator_stop();
   &pattern_generator_start();
@@ -2250,7 +2248,7 @@ async function loadInfoframes(){
 
 async function checkUpdate(){
  document.getElementById('updateStatus').textContent='Checking...';
- const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:15000});
+ const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:70000});
  if(!r||r.status==='error'){
   document.getElementById('updateStatus').textContent=r?r.message:'Check failed — no internet?';
   return;

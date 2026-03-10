@@ -12,8 +12,8 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
 
 ### How to Flash the Image
 
-1. Download the latest full image release (`PGenerator_Plus.img.zip`) from the GitHub Releases page and extract the `.img` file.
-2. Use a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to flash the `.img` file to a microSD card or USB flash drive (minimum 8GB).
+1. Download the latest full image release parts (`PGenerator_Plus_vX.Y.Z.img.7z.001` and `.002`) from the GitHub Releases page and place both files in the same folder.
+2. Extract the first part with [7-Zip](https://www.7-zip.org/) to reconstruct the full `.img` file, then flash it with a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to a microSD card or USB flash drive (minimum 8GB).
 3. Insert the microSD card or USB flash drive into your Raspberry Pi and power it on.
 4. Connect to the Pi using one of the following methods:
    - **Bluetooth PAN:** First connect to the Bluetooth device on your computer, then join its PAN in Windows settings.
@@ -71,7 +71,12 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 - **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` (or `Portrait Displays` in some versions) → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
   - *Calman Control:* When connected via UPGCI, Calman can directly command the PGenerator to switch between SDR, HDR10 and HLG signal modes, set the EOTF, colorimetry, color format, mastering display metadata, and other InfoFrame parameters — all from the Calman Source Settings tab. PGenerator executes these commands in real time, eliminating the need to manually configure the signal on the device.
   - *10-bit Support (PGenerator+ Enhancement):* PGenerator+ extends the original 8-bit Calman protocol with automatic 10-bit pattern support. When Calman sends HDR commands that set `max_bpc=10`, PGenerator+ scales the incoming 10-bit pattern values to match the active link bit depth and writes native 10-bit values to the renderer. This means HDR10 calibration runs at full 10-bit precision end-to-end, without the quantization loss of converting to 8-bit.
+  - *Real Pi Pattern Semantics:* Current Calman builds may use both the newer `CommandRGB` / `10_SIZE` / `11_APL` controls and the legacy `RGB_S` / `RGB_A` wire commands for window and APL selections. PGenerator+ now handles both paths on the Raspberry Pi: `RGB_S` is treated as a direct window-size command, `RGB_A` honors explicit foreground/background/window payloads, and `CommandRGB` supports the G1-style size-token APL behavior.
+  - *APL Support:* `11_APL` is now stored and applied on the Pi, so preset and custom G1-style APL tokens generate the intended gray-surround background for windowed patterns instead of being acknowledged and ignored.
+  - *State Safety:* Calman pattern state is reset on `INIT`, `TERM`, `QUIT`/`SHUTDOWN`, and disconnect so APL or manual background settings cannot leak into the next session.
   - *Dolby Vision (PGenerator+ Enhancement):* Calman's DV commands (`CONF_DV`, `DSMD:DOLBYVISION`, `21_HDR_MetadataMode`) now correctly switch to RGB Low-Latency Dolby Vision with 12-bit HDMI link, BT.2020 colorimetry, and the DV binary — matching the Web UI's manual DV configuration.
+  - *Dolby Vision Runtime Safety:* The DRM override now preserves renderer-owned DOVI metadata blobs, keeps Absolute/Relative DV source-mapping selections intact, and forces DV pattern values to stay on the renderer's expected 8-bit numeric path while the HDMI link remains 12bpc.
+  - *Protocol Notes:* See [docs/calman-pi-behavior.md](docs/calman-pi-behavior.md) for the Pi-validated Calman wire behavior, including RPC (`2101`) support and the exact meaning of `RGB_S`, `RGB_A`, `RGB_B`, `10_SIZE`, `11_APL`, and `CommandRGB`.
   - *Deprecation Notice:* Portrait Displays removed the UPGCI protocol from Calman "Home" licenses starting with version 5.15.x (the 2024 releases) to push users toward their own generator hardware. There is no official add-on to re-enable it for Home users. If calibration with PGenerator is required, you must either remain on Calman 5.14.x or older, upgrade to a professional license tier (Calman Video Pro or higher), or use alternative software (like ColourSpace or HCFR).
 
 **2. ColourSpace / LightSpace CMS**
@@ -90,7 +95,7 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 **5. DeviceControl**
 - **Protocol:** UDP discovery + TCP pattern control
 
-*Device Discovery:* Calibration software can often discover the device automatically via UDP broadcast on port `1977` (`"Who is a PGenerator"` → `"I am a PGenerator <hostname>"`), allowing you to select your device from a list instead of entering the IP address manually.
+*Device Discovery:* Calibration software can often discover the device automatically via UDP broadcast on port `1977` (`"Who is a PGenerator"` → `"I am a PGenerator <name>"`), allowing you to select your device from a list instead of entering the IP address manually. On PGenerator+, the advertised discovery name defaults to `PGenerator+` when the system hostname is still the stock `pgenerator` value.
 
 ### Web UI Dashboard
 
@@ -256,7 +261,7 @@ usr/
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.0.5`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.1.1`) and product name (`PGenerator+`) |
 
 ---
 
@@ -279,7 +284,8 @@ usr/
 | `is_hdr` / `is_sdr` | `0` / `1` | Signal mode flags |
 | `is_ll_dovi` / `is_std_dovi` | `0` / `1` | Dolby Vision mode flags |
 | `dv_interface` | `0`=Standard, `1`=Low Latency | DV interface type |
-| `dv_metadata` | `0`=Type 1, `1`=Type 4 | DV metadata type |
+| `dv_map_mode` | `1`=Absolute, `2`=Relative | DV source-mapping mode used by the current `.dv` renderer |
+| `dv_metadata` | `2`=Perceptual, `3`=Absolute, `4`=Relative | Calman metadata-mode bookkeeping; the current `.dv` renderer uses `dv_map_mode` for live source mapping |
 | `dv_color_space` | `0`=YCbCr422, `1`=RGB444, `2`=YCbCr444 | DV color space |
 
 ---
@@ -326,7 +332,7 @@ All endpoints are served on port 80. Responses are JSON.
 
 PGenerator+ is built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto, licensed under the GNU General Public License v3.0. The original project provides the core pattern generation engine, TCP protocol handling, and C/C++ renderer binary.
 
-PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDNS discovery, HDMI-CEC control, OTA updates via GitHub Releases, Calman 10-bit pattern support, automatic bit depth management for HDR/SDR mode switching, and various stability improvements.
+PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDNS discovery, HDMI-CEC control, OTA updates via GitHub Releases, Calman 10-bit pattern support, validated Pi-side Calman window/APL handling (`RGB_S`, `RGB_A`, `CommandRGB`, `10_SIZE`, `11_APL`), Dolby Vision renderer-blob preservation with corrected Absolute/Relative handling, stock-hostname discovery branding as `PGenerator+`, automatic bit depth management for HDR/SDR mode switching, and various stability improvements.
 
 ---
 

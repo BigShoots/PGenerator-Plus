@@ -54,11 +54,23 @@ sub get_conf (@) {
  $device_model.=" (KMS)" if($is_rpi_4 && $is_kms);
  # End for RPI p4
  &get_pgenerator_conf();
- # Keep pattern/control bit depth aligned with configured HDMI output depth
- # so protocol paths preserve 10/12-bit values unless output is explicitly
- # set to 8-bit.  The legacy renderer path may still quantize internally,
- # but the daemon/template layer should use the selected output range.
+ &sync_pattern_bits_default();
+}
+
+###############################################
+#     Sync Pattern Bit-Depth Function         #
+###############################################
+sub sync_pattern_bits_default (@) {
  my $conf_bits=int($pgenerator_conf{"max_bpc"} || 8);
+ # The Dolby Vision renderer (`PGeneratord.dv`) still consumes 8-bit pattern
+ # values even though the HDMI link itself is driven at 12bpc for LLDV RGB
+ # tunneling.  Keep the daemon/template layer at 8-bit in DV mode so low
+ # grey full-field patches are not written as 12-bit values and clipped to
+ # white by the renderer.
+ if(int($pgenerator_conf{"dv_status"} || 0) == 1) {
+  $bits_default=8;
+  return;
+ }
  $bits_default=$conf_bits if($conf_bits == 8 || $conf_bits == 10 || $conf_bits == 12);
 }
 
