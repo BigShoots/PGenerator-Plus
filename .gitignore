@@ -4,6 +4,8 @@
 *.tar.gz
 *.7z.*
 *.so
+Backup/
+docs/
 tools/dv_helper
 tools/read_csc
 usr/lib/scdc_tool
