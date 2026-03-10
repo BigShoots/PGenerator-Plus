@@ -21,12 +21,13 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
 <img src="screenshots/add_bluetooth_device.png" alt="Add bt Device"/>
 <img src="screenshots/add_device.png" alt="Add bt Device 2"/>
 <img src="screenshots/select_bluetooth.png" alt="Add bt Device 3"/>
-<img src="screenshots/select_pgenerator.png" alt="Add bt Device 3"/>
-     3. Join its PAN in Windows settings.
-<img src="screenshots/add_bluetooth_device.png" alt="Add bt Device"/>
+<img src="screenshots/select_pgenerator.png" alt="Add bt Device 4"/>
+     2. Join its PAN in Windows settings.
+<img src="screenshots/join_bt_pan.png" alt="Join bt PAN"/>
    - **Wired PAN:** Connect an Ethernet cable directly between your device and the Pi.
    - **Wired LAN:** Connect the Pi to your local network router or switch via Ethernet.
    - **Wireless PAN:** Connect your device to the Pi's default WiFi Access Point (SSID: `PGenerator`, Password: `PGenerator`).
+<img src="screenshots/join_wifi_pan.png" alt="Join WIFI PAN"/>
    - **Wireless LAN:** Connect the Pi to your existing WiFi network (can be configured via the Web UI after using one of the other methods).
 5. Access the web UI at `http://pgenerator.local` or the device's IP address.
 
