@@ -20,10 +20,10 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
      1. First connect to the Bluetooth device on your computer.
 
         <p align="left">
-          <img src="screenshots/add_bluetooth_device.png" alt="Add Bluetooth device" width="180"/>
-          <img src="screenshots/add_device.png" alt="Confirm device addition" width="180"/>
-          <img src="screenshots/select_bluetooth.png" alt="Select Bluetooth" width="180"/>
-          <img src="screenshots/select_pgenerator.png" alt="Select PGenerator" width="180"/>
+          <img src="screenshots/add_bluetooth_device.png" alt="Add Bluetooth device" width="240"/>
+          <img src="screenshots/add_device.png" alt="Confirm device addition" width="240"/>
+          <img src="screenshots/select_bluetooth.png" alt="Select Bluetooth" width="240"/>
+          <img src="screenshots/select_pgenerator.png" alt="Select PGenerator" width="240"/>
         </p>
 
      2. Join its PAN in Windows settings.
