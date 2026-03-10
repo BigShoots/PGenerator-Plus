@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # pgenerator-update — PGenerator+ OTA update via GitHub Releases
 #
@@ -21,37 +21,119 @@
 
 set -euo pipefail
 
-GITHUB_REPO="BigShoots/PGenerator-Plus"
+GITHUB_REPO="${GITHUB_REPO:-BigShoots/PGenerator-Plus}"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
-VERSION_FILE="/usr/share/PGenerator/version.pm"
-UPDATE_DIR="/var/lib/PGenerator/updates"
-UPDATE_LOG="/var/log/PGenerator/update.log"
-CURL_OPTS="-s --connect-timeout 10 --max-time 60"
+VERSION_FILE="${VERSION_FILE:-/usr/share/PGenerator/version.pm}"
+UPDATE_DIR="${UPDATE_DIR:-/var/lib/PGenerator/updates}"
+UPDATE_LOG="${UPDATE_LOG:-/var/log/PGenerator/update.log}"
+CURL_OPTS="-s -L --connect-timeout 10 --max-time 60"
+GITHUB_ACCEPT="Accept: application/vnd.github.v3+json"
+GITHUB_UA="User-Agent: PGenerator-Plus-Updater"
 
 # ── Read current version from version.pm ──
 get_current_version() {
  grep '^\$version=' "$VERSION_FILE" 2>/dev/null | sed 's/.*="\([^"]*\)".*/\1/'
 }
 
+# ── Log with timestamp ──
+log_msg() {
+ local ts
+ ts=$(date '+%Y-%m-%d %H:%M:%S')
+ mkdir -p "$(dirname "$UPDATE_LOG")" 2>/dev/null || true
+ echo "[$ts] $*" >> "$UPDATE_LOG" 2>/dev/null || true
+ echo "$*"
+}
+
+# ── Pi images may boot without a valid RTC-backed clock ──
+clock_seems_invalid() {
+ local year
+ year=$(date -u +%Y 2>/dev/null || echo 0)
+ [ "$year" -lt 2024 ]
+}
+
+sync_clock() {
+ local server
+ for server in pool.ntp.org time.google.com time.cloudflare.com; do
+  if command -v ntpdate >/dev/null 2>&1 && ntpdate -ub "$server" >/dev/null 2>&1; then
+   return 0
+  fi
+  if command -v sntp >/dev/null 2>&1 && sntp -sS "$server" >/dev/null 2>&1; then
+   return 0
+  fi
+  if command -v ntpd >/dev/null 2>&1 && ntpd -qn -p "$server" >/dev/null 2>&1; then
+   return 0
+  fi
+ done
+ return 1
+}
+
+ensure_valid_clock() {
+ if ! clock_seems_invalid; then
+  return 0
+ fi
+ log_msg "System clock appears invalid; attempting NTP sync..."
+ if sync_clock; then
+  log_msg "System clock synced: $(date -u '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null)"
+  return 0
+ fi
+ log_msg "Clock sync failed; GitHub TLS validation may not work"
+ return 1
+}
+
 # ── Fetch latest release info from GitHub ──
 get_latest_release() {
- curl $CURL_OPTS -H "Accept: application/vnd.github.v3+json" "$GITHUB_API" 2>/dev/null
+ ensure_valid_clock >/dev/null 2>&1 || true
+ curl $CURL_OPTS -H "$GITHUB_ACCEPT" -H "$GITHUB_UA" "$GITHUB_API" 2>/dev/null || true
+}
+
+# ── JSON-escape a scalar for Web UI / API responses ──
+json_escape() {
+ printf '%s' "$1" | perl -MJSON::PP -e 'local $/; my $s=<>; print JSON::PP->new->allow_nonref->encode($s);'
+}
+
+# ── Extract a field from the GitHub release JSON ──
+release_field() {
+ local key="$1"
+ printf '%s' "$release_json" | perl -MJSON::PP -e '
+  use JSON::PP qw(decode_json);
+  my $key = shift;
+  local $/;
+  my $json = <STDIN>;
+  my $rel = eval { decode_json($json) };
+  exit 1 if(!$rel || ref($rel) ne "HASH");
+  my $value = "";
+  if($key eq "asset_url") {
+   if(ref($rel->{assets}) eq "ARRAY") {
+    for my $asset (@{$rel->{assets}}) {
+     next if(ref($asset) ne "HASH");
+     my $url = $asset->{browser_download_url} // "";
+     my $name = $asset->{name} // "";
+     next if($url !~ /\.tar\.gz$/i);
+     if($name =~ /pgenerator[-_]?plus.*\.tar\.gz/i) {
+      $value = $url;
+      last;
+     }
+     $value = $url if($value eq "");
+    }
+   }
+  } elsif($key eq "body") {
+   $value = $rel->{body} // "";
+   $value =~ s/\r\n/\n/g;
+   $value =~ s/\r/\n/g;
+   $value = substr($value,0,500);
+  } else {
+   $value = $rel->{$key} // "";
+  }
+  print $value;
+ ' "$key"
 }
 
 # ── Compare semver: returns 0 if $1 > $2 ──
 version_gt() {
- # Strip leading 'v' if present
- local a=$(echo "$1" | sed 's/^v//')
- local b=$(echo "$2" | sed 's/^v//')
- # Compare using sort -V
+ local a b
+ a=$(echo "$1" | sed 's/^v//')
+ b=$(echo "$2" | sed 's/^v//')
  [ "$a" != "$b" ] && [ "$(printf '%s\n%s' "$a" "$b" | sort -V | tail -1)" = "$a" ]
-}
-
-# ── Log with timestamp ──
-log_msg() {
- local ts=$(date '+%Y-%m-%d %H:%M:%S')
- echo "[$ts] $*" >> "$UPDATE_LOG" 2>/dev/null
- echo "$*"
 }
 
 cmd="${1:-help}"
@@ -66,39 +148,43 @@ case "$cmd" in
   current=$(get_current_version)
   release_json=$(get_latest_release)
   if [ -z "$release_json" ]; then
-   echo "{\"status\":\"error\",\"message\":\"Cannot reach GitHub\"}"
+   printf '{"status":"error","message":%s}\n' "$(json_escape "Cannot reach GitHub")"
    exit 1
   fi
 
-  # Check for API error (e.g. no releases yet)
-  if echo "$release_json" | grep -q '"Not Found"'; then
-   echo "{\"status\":\"ok\",\"current\":\"$current\",\"latest\":\"$current\",\"update_available\":false,\"published\":\"\",\"changelog\":\"No releases published yet.\",\"asset_url\":\"\"}"
+  latest=$(release_field tag_name 2>/dev/null | sed 's/^v//')
+  message=$(release_field message 2>/dev/null || true)
+  published=$(release_field published_at 2>/dev/null || true)
+  changelog=$(release_field body 2>/dev/null || true)
+  asset_url=$(release_field asset_url 2>/dev/null || true)
+
+  if [ -z "$latest" ] && [ "$message" = "Not Found" ]; then
+   printf '{"status":"ok","current":%s,"latest":%s,"update_available":false,"published":"","changelog":%s,"asset_url":""}\n' \
+    "$(json_escape "$current")" \
+    "$(json_escape "$current")" \
+    "$(json_escape "No releases published yet.")"
    exit 0
   fi
 
-  # Parse tag_name (version), body (changelog), tarball asset URL
-  latest=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | sed 's/^v//')
-  changelog=$(echo "$release_json" | grep '"body"' | head -1 | sed 's/.*"body"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/' | sed 's/\\n/\n/g' | head -c 500)
-  published=$(echo "$release_json" | grep '"published_at"' | head -1 | sed 's/.*"published_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-
-  # Find the .tar.gz asset download URL
-  asset_url=$(echo "$release_json" | grep '"browser_download_url"' | grep '\.tar\.gz' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-
   if [ -z "$latest" ]; then
-   echo "{\"status\":\"error\",\"message\":\"Cannot parse release info\"}"
+   [ -z "$message" ] && message="Cannot parse release info"
+   printf '{"status":"error","message":%s}\n' "$(json_escape "$message")"
    exit 1
   fi
 
   if version_gt "$latest" "$current"; then
-   update_available="true"
+   update_available=true
   else
-   update_available="false"
+   update_available=false
   fi
 
-  # Escape quotes in changelog for JSON
-  changelog_escaped=$(echo "$changelog" | sed 's/"/\\"/g' | tr '\n' ' ')
-
-  echo "{\"status\":\"ok\",\"current\":\"$current\",\"latest\":\"$latest\",\"update_available\":$update_available,\"published\":\"$published\",\"changelog\":\"$changelog_escaped\",\"asset_url\":\"$asset_url\"}"
+  printf '{"status":"ok","current":%s,"latest":%s,"update_available":%s,"published":%s,"changelog":%s,"asset_url":%s}\n' \
+   "$(json_escape "$current")" \
+   "$(json_escape "$latest")" \
+   "$update_available" \
+   "$(json_escape "$published")" \
+   "$(json_escape "$changelog")" \
+   "$(json_escape "$asset_url")"
   ;;
 
  apply)
@@ -112,8 +198,16 @@ case "$cmd" in
    exit 1
   fi
 
-  latest=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | sed 's/^v//')
-  asset_url=$(echo "$release_json" | grep '"browser_download_url"' | grep '\.tar\.gz' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  latest=$(release_field tag_name 2>/dev/null | sed 's/^v//')
+  asset_url=$(release_field asset_url 2>/dev/null || true)
+  message=$(release_field message 2>/dev/null || true)
+
+  if [ -z "$latest" ]; then
+   [ -z "$message" ] && message="Cannot parse release info"
+   log_msg "ERROR: $message"
+   echo "ERROR: $message"
+   exit 1
+  fi
 
   if ! version_gt "$latest" "$current"; then
    log_msg "Already up to date ($current)"
@@ -130,7 +224,11 @@ case "$cmd" in
   log_msg "Downloading $latest from $asset_url"
   mkdir -p "$UPDATE_DIR"
   tarball="$UPDATE_DIR/pgenerator-plus-${latest}.tar.gz"
-  curl $CURL_OPTS -L -o "$tarball" "$asset_url"
+  if ! curl -f $CURL_OPTS -H "$GITHUB_UA" -o "$tarball" "$asset_url" 2>/dev/null; then
+   log_msg "ERROR: Download failed"
+   echo "ERROR: Download failed"
+   exit 1
+  fi
 
   if [ ! -s "$tarball" ]; then
    log_msg "ERROR: Download failed or empty file"
@@ -138,23 +236,26 @@ case "$cmd" in
    exit 1
   fi
 
-  # Stop PGenerator before applying
+  if ! tar tzf "$tarball" >/dev/null 2>&1; then
+   log_msg "ERROR: Downloaded asset is not a valid tar.gz archive"
+   echo "ERROR: Invalid update archive"
+   rm -f "$tarball"
+   exit 1
+  fi
+
   log_msg "Stopping PGenerator..."
   /etc/init.d/PGenerator stop 2>/dev/null || true
   sleep 2
 
-  # Extract over root filesystem
   log_msg "Extracting update..."
   cd /
   tar xzf "$tarball" 2>&1 | tee -a "$UPDATE_LOG"
 
-  # Ensure scripts are executable
   chmod +x /usr/sbin/pgenerator-* 2>/dev/null || true
   chmod +x /usr/sbin/PGeneratord* 2>/dev/null || true
   chmod +x /usr/bin/PGenerator_*.pl 2>/dev/null || true
   chmod +x /usr/bin/pgenerator-* 2>/dev/null || true
 
-  # Clean up
   rm -f "$tarball"
   sync
 

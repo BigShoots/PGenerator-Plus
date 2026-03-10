@@ -10,12 +10,11 @@
  * DRM_IOCTL_MODE_OBJ_SETPROPERTY calls to override values from
  * PGenerator.conf.
  *
- * DOLBY VISION INJECTION:
- * PGeneratord.dv detects the DOVI_OUTPUT_METADATA property and DV VSVDB in
- * the EDID but has a bug — it never creates the metadata blob.  When
- * dv_status=1 this library creates the blob itself (12 bytes matching the
- * kernel's expected format) and issues a follow-up atomic commit with
- * DRM_MODE_ATOMIC_ALLOW_MODESET to trigger the DV Vendor Specific InfoFrame.
+ * DOLBY VISION BLOB HANDLING:
+ * The current PGeneratord.dv already creates DOVI_OUTPUT_METADATA blobs when
+ * DV is enabled. Preserve those renderer-provided blobs whenever they are
+ * present in an atomic commit. This library only falls back to a fixed blob
+ * when a DV commit omits the property entirely.
  *
  * REDUNDANCY SUPPRESSION:
  * PGeneratord re-submits connector properties (output_format, max_bpc,
@@ -121,10 +120,12 @@ static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
 static int conf_read = 0;
 
 /* DOVI blob injection state */
-static uint32_t dovi_blob_id = 0;       /* blob created by us */
-static int dovi_injected = 0;           /* 1 after successful injection */
+static uint32_t dovi_blob_id = 0;       /* fallback blob created by us */
+static int dovi_injected = 0;           /* 1 after successful fallback injection */
 static uint32_t connector_id = 0;       /* discovered from atomic commits */
 static int first_modeset_done = 0;      /* track first ALLOW_MODESET commit */
+static int dovi_passthrough_logged = 0; /* log renderer-owned DOVI once */
+static int renderer_dovi_seen = 0;      /* renderer supplied DOVI at least once */
 
 /*
  * Redundancy suppression -- track last-committed values.
@@ -353,11 +354,14 @@ static int should_suppress(uint32_t prop_id, uint64_t value) {
 }
 
 /*
- * Create the DOVI_OUTPUT_METADATA blob (one-time).
+ * Create the fallback DOVI_OUTPUT_METADATA blob (one-time).
  * Returns blob_id, or 0 on failure.
  *
- * The 12-byte blob format matches what the vc4 kernel driver expects
- * for drm_hdmi_infoframe_set_dovi_source_metadata():
+ * The 12-byte blob format matches the legacy low-latency blob previously
+ * synthesized here. Keep it only as a last-resort fallback for commits that
+ * omit DOVI_OUTPUT_METADATA entirely.
+ *
+ * For drm_hdmi_infoframe_set_dovi_source_metadata():
  *   bytes 0-3: header (zeroes)
  *   byte 4:   low_latency flag (0=Standard, 1=LL)
  *   bytes 5-10: reserved (zeroes)
@@ -421,9 +425,6 @@ static uint64_t inj_values[MAX_ATOMIC_PROPS];
 static int inject_dovi_into_commit(int fd, struct drm_mode_atomic *atomic) {
     if (!dovi_meta_prop_id || !connector_id) return 0;
 
-    uint32_t blob = create_dovi_blob(fd);
-    if (!blob) return 0;
-
     uint32_t *orig_objs = (uint32_t *)(uintptr_t)atomic->objs_ptr;
     uint32_t *orig_cnts = (uint32_t *)(uintptr_t)atomic->count_props_ptr;
     uint32_t *orig_props = (uint32_t *)(uintptr_t)atomic->props_ptr;
@@ -446,25 +447,21 @@ static int inject_dovi_into_commit(int fd, struct drm_mode_atomic *atomic) {
             /* Check if DOVI already in this object's props */
             for (uint32_t j = 0; j < orig_cnts[obj]; j++) {
                 if (orig_props[prop_offset + j] == dovi_meta_prop_id) {
-                    /* Always replace binary's DOVI with our blob */
-                    orig_values[prop_offset + j] = (uint64_t)blob;
-                    /* ALLOW_MODESET is required for kernel to process DV metadata */
-                    atomic->flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
-                    if (!dovi_injected) {
-                        char num[24];
-                        itoa_simple(blob, num);
-                        write_log("DRM_OVERRIDE: DOVI blob ");
-                        write_log(num);
-                        write_log(" injected into commit\n");
+                    renderer_dovi_seen = 1;
+                    if (!dovi_passthrough_logged) {
+                        write_log("DRM_OVERRIDE: renderer provided DOVI blob, leaving commit unchanged\n");
+                        dovi_passthrough_logged = 1;
                     }
-                    dovi_injected = 1;
-                    return 1;
+                    return 0;
                 }
             }
             break;
         }
         prop_offset += orig_cnts[obj];
     }
+
+    uint32_t blob = create_dovi_blob(fd);
+    if (!blob) return 0;
 
     /* Copy arrays and inject DOVI */
     uint32_t new_total = total + 1;
@@ -671,14 +668,6 @@ int ioctl(int fd, unsigned long request, ...) {
                 values[i] = 0;
                 dovi_changed = 1;
             }
-            /* When DV is active, replace binary's DOVI value with our blob
-             * so subsequent commits don't clear the injected metadata */
-            if (dovi_meta_prop_id && props[i] == dovi_meta_prop_id
-                && dv_status == 1 && dovi_blob_id
-                && values[i] != dovi_blob_id) {
-                values[i] = dovi_blob_id;
-                dovi_changed = 1;
-            }
         }
 
         /* The vc4 driver only reliably re-programs the Vendor Specific
@@ -759,11 +748,11 @@ int ioctl(int fd, unsigned long request, ...) {
         }
 
         /*
-         * DOVI injection: before the binary's atomic commit goes to
-         * the kernel, inject DOVI_OUTPUT_METADATA into the commit's
-         * property arrays so it's part of the SAME commit as mode/CRTC.
+         * DOVI fallback injection: before the atomic commit goes to the
+         * kernel, synthesize DOVI_OUTPUT_METADATA only if the renderer did
+         * not already include it in this commit.
          */
-        if (!is_test && dv_status == 1 && !dovi_injected
+        if (!is_test && dv_status == 1 && !dovi_injected && !renderer_dovi_seen
             && dovi_meta_prop_id && connector_id) {
             inject_dovi_into_commit(fd, atomic);
         }
