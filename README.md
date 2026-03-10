@@ -17,23 +17,29 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
 3. Insert the microSD card or USB flash drive into your Raspberry Pi and power it on.
 4. Connect to the Pi using one of the following methods:
    - **Bluetooth PAN:**
-     1. First connect to the Bluetooth device on your computer
-<p align="left">
-<img src="screenshots/add_bluetooth_device.png" alt="Add bt Device"/>
-<img src="screenshots/add_device.png" alt="Add bt Device 2"/>
-<img src="screenshots/select_bluetooth.png" alt="Add bt Device 3"/>
-<img src="screenshots/select_pgenerator.png" alt="Add bt Device 4"/>
-</p>
-     3. Join its PAN in Windows settings.
-<p align="left">
-<img src="screenshots/join_bt_pan.png" alt="Join bt PAN"/>
-</p>
+     1. First connect to the Bluetooth device on your computer.
+
+        <p align="left">
+          <img src="screenshots/add_bluetooth_device.png" alt="Add Bluetooth device" width="180"/>
+          <img src="screenshots/add_device.png" alt="Confirm device addition" width="180"/>
+          <img src="screenshots/select_bluetooth.png" alt="Select Bluetooth" width="180"/>
+          <img src="screenshots/select_pgenerator.png" alt="Select PGenerator" width="180"/>
+        </p>
+
+     2. Join its PAN in Windows settings.
+
+        <p align="left">
+          <img src="screenshots/join_bt_pan.png" alt="Join Bluetooth PAN" width="240"/>
+        </p>
+
    - **Wired PAN:** Connect an Ethernet cable directly between your device and the Pi.
    - **Wired LAN:** Connect the Pi to your local network router or switch via Ethernet.
    - **Wireless PAN:** Connect your device to the Pi's default WiFi Access Point (SSID: `PGenerator`, Password: `PGenerator`).
-<p align="left">
-<img src="screenshots/join_wifi_pan.png" alt="Join WIFI PAN"/>
-</p>
+
+     <p align="left">
+       <img src="screenshots/join_wifi_pan.png" alt="Join WiFi PAN" width="240"/>
+     </p>
+
    - **Wireless LAN:** Connect the Pi to your existing WiFi network (can be configured via the Web UI after using one of the other methods).
 5. Access the web UI at `http://pgenerator.local` or the device's IP address.
 
