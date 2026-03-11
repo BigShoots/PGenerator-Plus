@@ -1,7 +1,7 @@
 # PGenerator+
 
 <p align="center">
-  <img src="Pgen+_Logo_black_slim.png" alt="PGenerator+ Logo" width="720"/>
+  <img src="Pgen+_Logo_black_bg_slim.png" alt="PGenerator+ Logo" width="720"/>
 </p>
 
 A Raspberry Pi–based HDMI test pattern generator for display calibration. PGenerator+ outputs precision color patches and test patterns over HDMI — including HDR10, HLG, and Dolby Vision — controlled remotely by calibration software over TCP/IP.
