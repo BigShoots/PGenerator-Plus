@@ -86,6 +86,7 @@ $0=basename($0)." $action";
 &wifi_scan()              if($action eq "WIFI_SCAN");
 &wifi_set_country()       if($action eq "WIFI_SET_COUNTRY");
 &wifi_apply_conf()        if($action eq "WIFI_APPLYCONF");
+&wifi_disconnect()        if($action eq "WIFI_DISCONNECT");
 &wifi_ap_apply_conf()     if($action eq "WIFI_AP_APPLYCONF");
 &open_iptables_for_ls()   if($action eq "OPEN_IPTABLES_FOR_LS");
 &set_pgenerator_conf()    if($action eq "SET_PGENERATOR_CONF");
@@ -211,6 +212,18 @@ sub wifi_apply_conf (@) {
  system("$wpa_cli -i $interface enable_network 0 &>/dev/null");
  system("$wpa_cli -i $interface save_config &>/dev/null");
  print $response;
+}
+
+###############################################
+#           Wifi Disconnect function          #
+###############################################
+sub wifi_disconnect (@) {
+ my $response = "";
+ $interface=$ARGV[1];
+ $interface=~s/ //g;
+ return if($interface eq "");
+ system("$wpa_cli -i $interface disconnect &>/dev/null");
+ print "OK";
 }
 
 ###############################################

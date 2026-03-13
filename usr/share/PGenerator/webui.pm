@@ -11,6 +11,8 @@
 #   webui_mdns()  — mDNS responder (port 5353, multicast 224.0.0.251)
 #
 
+BEGIN { require bytes; }
+
 ###############################################
 #             mDNS Route Helpers              #
 ###############################################
@@ -60,6 +62,40 @@ sub webui_mdns_best_ip (@) {
  return "";
 }
 
+sub webui_mdns_read_name (@) {
+ my $buf=shift;
+ my $offset=int(shift);
+ my $name="";
+ my $next_offset=$offset;
+ my $jumped=0;
+ my $jumps_left=10;
+
+ while($offset < length($buf)) {
+  my $len=ord(substr($buf,$offset,1));
+  if(($len & 0xC0) == 0xC0) {
+   return ("",$next_offset,0) if($offset + 1 >= length($buf) || $jumps_left <= 0);
+   my $ptr=(($len & 0x3F) << 8) | ord(substr($buf,$offset + 1,1));
+   $next_offset=$offset + 2 if(!$jumped);
+   $offset=$ptr;
+   $jumped=1;
+   $jumps_left--;
+   next;
+  }
+  if($len == 0) {
+   $next_offset=$offset + 1 if(!$jumped);
+   return ($name,$next_offset,1);
+  }
+  $offset++;
+  return ("",$next_offset,0) if($offset + $len > length($buf));
+  $name.="." if($name ne "");
+  $name.=substr($buf,$offset,$len);
+  $offset+=$len;
+  $next_offset=$offset if(!$jumped);
+ }
+
+ return ("",$next_offset,0);
+}
+
 ###############################################
 #              mDNS Responder                 #
 ###############################################
@@ -83,6 +119,8 @@ sub webui_mdns (@) {
  # Wi-Fi client, AP mode, Bluetooth PAN, USB gadget, etc.
  my $IP_ADD_MEMBERSHIP=eval { Socket::IP_ADD_MEMBERSHIP() } || 35; # 35 on Linux
  my $IPPROTO_IP=eval { Socket::IPPROTO_IP() } || 0;
+ my $IP_MULTICAST_TTL=eval { Socket::IP_MULTICAST_TTL() } || 33;
+ my $IP_TTL=eval { Socket::IP_TTL() } || 2;
  my @mdns_routes=&webui_mdns_routes();
  foreach my $route (@mdns_routes) {
   my $joined=0;
@@ -96,6 +134,8 @@ sub webui_mdns (@) {
   }
   &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $!") if(!$joined);
  }
+ setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_TTL, pack("C",255));
+ setsockopt($sock, $IPPROTO_IP, $IP_TTL, pack("I",255));
  &log("mDNS: no active IPv4 interfaces found for multicast join") if(!@mdns_routes);
 
  &log("mDNS: responder started for $mdns_hostname.local on port $MDNS_PORT");
@@ -113,46 +153,42 @@ sub webui_mdns (@) {
   next if($flags & 0x8000);
   next if($qdcount < 1);
 
-  # Parse first question
   my $offset=12;
-  my $qname="";
-  while($offset < length($buf)) {
-   my $len=ord(substr($buf,$offset,1));
-   last if($len == 0);
-   $offset++;
-   $qname.="." if($qname ne "");
-   $qname.=substr($buf,$offset,$len);
-   $offset+=$len;
+  my $matched=0;
+  for(my $i=0;$i<$qdcount;$i++) {
+   my ($qname,$next_offset,$ok)=&webui_mdns_read_name($buf,$offset);
+   last if(!$ok);
+   $offset=$next_offset;
+   last if($offset + 4 > length($buf));
+   my ($qtype,$qclass)=unpack("nn",substr($buf,$offset,4));
+   $offset+=4;
+   if(lc($qname) eq "$mdns_hostname.local" && ($qclass & 0x7FFF) == 1 && ($qtype == 1 || $qtype == 255)) {
+    $matched=1;
+    last;
+   }
   }
-  $offset++; # skip null terminator
-  next if($offset+4 > length($buf));
-  my ($qtype,$qclass)=unpack("nn",substr($buf,$offset,4));
 
-  # Respond to A record queries for pgenerator.local
-  next unless(lc($qname) eq "$mdns_hostname.local" && ($qtype == 1 || $qtype == 255));
+  # Respond to A record queries for pgenerator.local, even when bundled with
+  # compressed AAAA questions in the same packet.
+  next if(!$matched);
 
-  # Find the best IP to respond with by matching the querier against active
-  # scope-link routes.  This avoids returning a link-down or wrong-interface IP.
   my $querier_ip=Socket::inet_ntoa($qaddr);
   my $best_ip=&webui_mdns_best_ip($querier_ip);
   next if($best_ip eq "");
 
-  # Build mDNS response with single A record
   my $resp=pack("n",0);           # ID=0 for mDNS
   $resp.=pack("n",0x8400);        # flags: QR=1, AA=1
-  $resp.=pack("nnnn",0,1,0,0);    # 0 questions, 1 answer, 0 auth, 0 additional
+  $resp.=pack("nnnn",0,1,0,0);
 
-  # Encode name
-  foreach my $label (split(/\./,$qname)) {
+  foreach my $label (split(/\./,"$mdns_hostname.local")) {
    $resp.=pack("C",length($label)).$label;
   }
-  $resp.=pack("C",0);             # null terminator
-  $resp.=pack("nn",1,0x8001);     # type=A, class=IN+cache-flush
-  $resp.=pack("N",120);           # TTL=120s
-  $resp.=pack("n",4);             # RDLENGTH=4
-  $resp.=Socket::inet_aton($best_ip); # RDATA=IP
+  $resp.=pack("C",0);
+  $resp.=pack("nn",1,0x8001);
+  $resp.=pack("N",120);
+  $resp.=pack("n",4);
+  $resp.=Socket::inet_aton($best_ip);
 
-  # Send to multicast group from the selected interface
   my $IP_MULTICAST_IF=eval { Socket::IP_MULTICAST_IF() } || 32;
   setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_IF, Socket::inet_aton($best_ip));
   my $mcast_dest=Socket::sockaddr_in($MDNS_PORT, Socket::inet_aton($MDNS_ADDR));
@@ -219,7 +255,12 @@ sub webui_http (@) {
    my $body="";
    if($req=~/Content-Length:\s*(\d+)/i) {
     my $cl=$1;
-    read($client,$body,$cl);
+    while(length($body) < $cl) {
+     my $chunk="";
+     my $read_bytes=read($client,$chunk,$cl-length($body));
+     last if(!defined $read_bytes || $read_bytes <= 0);
+     $body.=$chunk;
+    }
    }
 
    my ($method,$path)=$req=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
@@ -258,9 +299,15 @@ sub webui_http (@) {
     }
     elsif($method eq "POST") {
      # Apply config changes
-     my $result=&webui_apply_config($body);
+     my ($result,$need_restart)=&webui_apply_config($body);
      my $len=length($result);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+     if($need_restart) {
+      close($client);
+      undef $client;
+      &pattern_generator_stop();
+      &pattern_generator_start();
+     }
     }
    }
    elsif($path eq "/api/ping") {
@@ -288,7 +335,9 @@ sub webui_http (@) {
     my $len=length($r);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
     close($client);
-    &sudo("REBOOT");
+    undef $client;
+    my $cmd_b64=encode_base64("REBOOT","");
+    system("(sleep 2 && PG_CMD=\"$cmd_b64\" sudo -E /usr/bin/PGenerator_cmd.pl) &");
     return;
    }
    elsif($path eq "/api/modes") {
@@ -315,6 +364,14 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+  elsif($path eq "/api/wifi/disconnect" && $method eq "POST") {
+   my $result='{"status":"ok","message":"Disconnecting WiFi client"}';
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   close($client);
+   undef $client;
+   &sudo("WIFI_DISCONNECT","wlan0");
+  }
    elsif($path eq "/api/wifi/ap" && $method eq "GET") {
     my $json=&webui_wifi_ap_json();
     my $len=length($json);
@@ -438,6 +495,18 @@ sub webui_apply_config (@) {
  while($body=~/"(\w+)"\s*:\s*"([^"]*)"/g) {
   $changes{$1}=$2;
  }
+ my %effective=%pgenerator_conf;
+ foreach my $k (keys %changes) {
+  $effective{$k}=$changes{$k};
+ }
+ my $dv_on=int($effective{"dv_status"} || 0);
+ $dv_on=1 if(int($effective{"is_ll_dovi"} || 0) || int($effective{"is_std_dovi"} || 0));
+ if($dv_on) {
+  $changes{"max_bpc"}="12";
+  $changes{"color_format"}="0";
+  $changes{"colorimetry"}="9";
+  $changes{"primaries"}="1";
+ }
  # Keys that require pattern generator restart
  my %restart_keys=map{$_=>1} qw(mode_idx eotf is_hdr is_sdr colorimetry primaries
   min_luma max_luma max_cll max_fall color_format max_bpc
@@ -450,11 +519,8 @@ sub webui_apply_config (@) {
   $need_restart=1 if($restart_keys{$k});
  }
  &sync_pattern_bits_default() if(%changes);
- if($need_restart) {
-  &pattern_generator_stop();
-  &pattern_generator_start();
- }
- return '{"status":"ok","restart":'.($need_restart ? 'true' : 'false').'}';
+ my $result='{"status":"ok","restart":'.($need_restart ? 'true' : 'false').'}';
+ return wantarray ? ($result,$need_restart) : $result;
 }
 
 sub webui_info_json (@) {
@@ -791,191 +857,602 @@ sub webui_resolve_disconnect (@) {
  return '{"status":"ok","message":"Disconnect requested"}';
 }
 
+sub webui_pattern_target_max (@) {
+ my $bits=int($bits_default || 8);
+ return 1023 if($bits == 10);
+ return 4095 if($bits == 12);
+ return 255;
+}
+
+sub webui_pattern_scale_value (@) {
+ my $value=int(shift);
+ my $input_max=int(shift);
+ my $target_max=&webui_pattern_target_max();
+ my %bit_depth_for_max=(255 => 8, 1023 => 10, 4095 => 12);
+ $input_max=255 if($input_max <= 0);
+ $value=0 if($value < 0);
+ $value=$input_max if($value > $input_max);
+ return $value if($input_max == $target_max);
+ if($bit_depth_for_max{$input_max} && $bit_depth_for_max{$target_max}) {
+  my $src_bits=$bit_depth_for_max{$input_max};
+  my $dst_bits=$bit_depth_for_max{$target_max};
+  return $target_max if($value >= $input_max);
+  return $value << ($dst_bits - $src_bits) if($dst_bits > $src_bits);
+  return $value >> ($src_bits - $dst_bits) if($dst_bits < $src_bits);
+ }
+ return int($value/$input_max*$target_max + 0.5);
+}
+
+sub webui_pattern_scale_triplet (@) {
+ my $r=shift;
+ my $g=shift;
+ my $b=shift;
+ my $input_max=int(shift);
+ $input_max=255 if($input_max <= 0);
+ return &webui_pattern_scale_value($r,$input_max).",".&webui_pattern_scale_value($g,$input_max).",".&webui_pattern_scale_value($b,$input_max);
+}
+
+sub webui_pattern_signal_mode (@) {
+ my $body="".shift;
+ my ($signal_mode)=$body=~/"signal_mode"\s*:\s*"([^"]+)"/;
+ $signal_mode=lc($signal_mode || "");
+ $signal_mode=~s/[^a-z0-9]//g;
+ if($signal_mode eq "") {
+  if(int($pgenerator_conf{"dv_status"} || 0) == 1 || int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 || int($pgenerator_conf{"is_std_dovi"} || 0) == 1) {
+   return "dv";
+  }
+  if(int($pgenerator_conf{"is_hdr"} || 0) == 1) {
+   return (int($pgenerator_conf{"eotf"} || 0) == 3) ? "hlg" : "hdr10";
+  }
+  return "sdr";
+ }
+ return $signal_mode;
+}
+
+sub webui_pattern_max_luma (@) {
+ my $body="".shift;
+ my ($max_luma)=$body=~/"max_luma"\s*:\s*"?([0-9.]+)"?/;
+ $max_luma=$pgenerator_conf{"max_luma"} if(!defined $max_luma || $max_luma eq "");
+ $max_luma=1000 if(!defined $max_luma || $max_luma eq "" || $max_luma <= 0);
+ $max_luma=10000 if($max_luma > 10000);
+ return $max_luma + 0;
+}
+
+sub webui_pattern_is_pq_mode (@) {
+ my $signal_mode=lc(shift || "");
+ return 1 if($signal_mode eq "hdr10" || $signal_mode eq "dv");
+ return 0;
+}
+
+sub webui_pattern_pq_encode_normalized (@) {
+ my $nits=shift;
+ $nits=0 if($nits < 0);
+ $nits=10000 if($nits > 10000);
+ return 0 if($nits <= 0);
+ my $l=$nits/10000;
+ my $m1=2610/16384;
+ my $m2=2523/32;
+ my $c1=3424/4096;
+ my $c2=2413/128;
+ my $c3=2392/128;
+ my $p=$l**$m1;
+ return (($c1 + $c2*$p)/(1 + $c3*$p))**$m2;
+}
+
+sub webui_pattern_peak_code (@) {
+ my $max_code=int(shift);
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ $max_code=255 if($max_code <= 0);
+ return $max_code if(!&webui_pattern_is_pq_mode($signal_mode));
+ return int(&webui_pattern_pq_encode_normalized($max_luma)*$max_code + 0.5);
+}
+
+sub webui_pattern_peak_byte (@) {
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ return &webui_pattern_peak_code(255,$signal_mode,$max_luma);
+}
+
+sub webui_pattern_legacy_byte (@) {
+ my $value=int(shift);
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ $value=0 if($value < 0);
+ $value=255 if($value > 255);
+ return $value if(!&webui_pattern_is_pq_mode($signal_mode));
+ my $peak_byte=&webui_pattern_peak_byte($signal_mode,$max_luma);
+ return int($value*$peak_byte/255 + 0.5);
+}
+
+sub webui_pattern_image_new (@) {
+ my $w=int(shift);
+ my $h=int(shift);
+ my $r=int(shift);
+ my $g=int(shift);
+ my $b=int(shift);
+ my $pixel=pack("C3",$r,$g,$b);
+ return {"w" => $w, "h" => $h, "buf" => $pixel x ($w*$h)};
+}
+
+sub webui_pattern_write_all (@) {
+ use bytes;
+ my $fh=shift;
+ my $buf=shift;
+ my $len=length($buf);
+ my $off=0;
+ while($off < $len) {
+  my $written=syswrite($fh,$buf,$len-$off,$off);
+  return 0 if(!defined $written || $written <= 0);
+  $off+=$written;
+ }
+ return 1;
+}
+
+sub webui_pattern_image_rect (@) {
+ my $image=shift;
+ my $x1=int(shift);
+ my $y1=int(shift);
+ my $x2=int(shift);
+ my $y2=int(shift);
+ my $r=int(shift);
+ my $g=int(shift);
+ my $b=int(shift);
+ return if(!$image);
+ $x1=0 if($x1 < 0);
+ $y1=0 if($y1 < 0);
+ $x2=$image->{"w"}-1 if($x2 >= $image->{"w"});
+ $y2=$image->{"h"}-1 if($y2 >= $image->{"h"});
+ return if($x2 < $x1 || $y2 < $y1);
+ my $row=(pack("C3",$r,$g,$b)) x ($x2-$x1+1);
+ my $row_len=bytes::length($row);
+ for(my $y=$y1;$y<=$y2;$y++) {
+  bytes::substr($image->{"buf"},($y*$image->{"w"}+$x1)*3,$row_len,$row);
+ }
+}
+
+sub webui_pattern_image_box (@) {
+ my $image=shift;
+ my $x1=int(shift);
+ my $y1=int(shift);
+ my $x2=int(shift);
+ my $y2=int(shift);
+ my $t=int(shift);
+ my $r=int(shift);
+ my $g=int(shift);
+ my $b=int(shift);
+ $t=1 if($t < 1);
+ &webui_pattern_image_rect($image,$x1,$y1,$x2,$y1+$t-1,$r,$g,$b);
+ &webui_pattern_image_rect($image,$x1,$y2-$t+1,$x2,$y2,$r,$g,$b);
+ &webui_pattern_image_rect($image,$x1,$y1,$x1+$t-1,$y2,$r,$g,$b);
+ &webui_pattern_image_rect($image,$x2-$t+1,$y1,$x2,$y2,$r,$g,$b);
+}
+
+sub webui_pattern_digit_rows (@) {
+ my $char=shift;
+ my %font=(
+  "0" => ["111","101","101","101","111"],
+  "1" => ["010","110","010","010","111"],
+  "2" => ["111","001","111","100","111"],
+  "3" => ["111","001","111","001","111"],
+  "4" => ["101","101","111","001","001"],
+  "5" => ["111","100","111","001","111"],
+  "6" => ["111","100","111","101","111"],
+  "7" => ["111","001","001","001","001"],
+  "8" => ["111","101","111","101","111"],
+  "9" => ["111","101","111","001","111"],
+  "-" => ["000","000","111","000","000"],
+  " " => ["000","000","000","000","000"],
+ );
+ return $font{$char} if(exists $font{$char});
+ return $font{" "};
+}
+
+sub webui_pattern_text_width (@) {
+ my $text="".shift;
+ my $scale=int(shift);
+ my $chars=length($text);
+ $scale=1 if($scale < 1);
+ return 0 if($chars <= 0);
+ return $chars*3*$scale + ($chars-1)*$scale;
+}
+
+sub webui_pattern_image_char (@) {
+ my $image=shift;
+ my $char=shift;
+ my $x=int(shift);
+ my $y=int(shift);
+ my $scale=int(shift);
+ my $r=int(shift);
+ my $g=int(shift);
+ my $b=int(shift);
+ $scale=1 if($scale < 1);
+ my $rows=&webui_pattern_digit_rows($char);
+ for(my $row=0;$row<scalar(@$rows);$row++) {
+  my $pattern=$rows->[$row];
+  for(my $col=0;$col<length($pattern);$col++) {
+   next if(substr($pattern,$col,1) ne "1");
+   &webui_pattern_image_rect(
+    $image,
+    $x+$col*$scale,
+    $y+$row*$scale,
+    $x+(($col+1)*$scale)-1,
+    $y+(($row+1)*$scale)-1,
+    $r,$g,$b
+   );
+  }
+ }
+}
+
+sub webui_pattern_image_text (@) {
+ my $image=shift;
+ my $text="".shift;
+ my $x=int(shift);
+ my $y=int(shift);
+ my $scale=int(shift);
+ my $r=int(shift);
+ my $g=int(shift);
+ my $b=int(shift);
+ my $cursor=$x;
+ for(my $i=0;$i<length($text);$i++) {
+  my $char=substr($text,$i,1);
+  &webui_pattern_image_char($image,$char,$cursor,$y,$scale,$r,$g,$b);
+  $cursor+=3*$scale+$scale;
+ }
+}
+
+sub webui_pattern_image_text_center (@) {
+ my $image=shift;
+ my $text="".shift;
+ my $x1=int(shift);
+ my $x2=int(shift);
+ my $y=int(shift);
+ my $scale=int(shift);
+ my $r=int(shift);
+ my $g=int(shift);
+ my $b=int(shift);
+ my $text_w=&webui_pattern_text_width($text,$scale);
+ my $x=$x1+int((($x2-$x1+1)-$text_w)/2);
+ $x=$x1 if($x < $x1);
+ &webui_pattern_image_text($image,$text,$x,$y,$scale,$r,$g,$b);
+}
+
+sub webui_pattern_image_save (@) {
+ my $image=shift;
+ my $file=shift;
+ return 0 if(!$image || $file eq "");
+ my $buf=$image->{"buf"};
+ utf8::downgrade($buf,1);
+ if($file=~/\.png$/i) {
+  return 0 if(!$convert || !-x $convert);
+  unlink($file);
+  return 0 if(!open(my $fh,"|-",$convert,"-size",$image->{"w"}."x".$image->{"h"},"-depth","8","rgb:-","PNG24:$file"));
+  binmode($fh);
+  return 0 if(!&webui_pattern_write_all($fh,$buf));
+  return (close($fh) && -f $file) ? 1 : 0;
+ }
+ return 0 if(!open(my $fh,">",$file));
+ binmode($fh);
+ return 0 if(!&webui_pattern_write_all($fh,"P6\n".$image->{"w"}." ".$image->{"h"}."\n255\n"));
+ return 0 if(!&webui_pattern_write_all($fh,$buf));
+ close($fh);
+ return 1;
+}
+
+sub webui_pattern_label_scale (@) {
+ my $h=int(shift);
+ my $scale=int($h/270);
+ $scale=2 if($scale < 2);
+ $scale=7 if($scale > 7);
+ return $scale;
+}
+
+sub webui_pattern_diag_image_file (@) {
+ my $name=lc("".shift);
+ $name=~s/[^a-z0-9_]+/_/g;
+ $name="diag" if($name eq "");
+ my $base="$var_dir/running/webui_pattern_".$name;
+ return "$base.png" if($convert && -x $convert);
+ return "$var_dir/tmp/webui_pattern_".$name.".ppm";
+}
+
+sub webui_pattern_effective_bits (@) {
+ my $draw=shift;
+ # Diagnostic IMAGE patterns are generated as 8-bit PNG/PPM assets.  Keep the
+ # pattern header at 8-bit even on HDR links so the renderer stays on its
+ # stable 8-bit IMAGE decode path.
+ return 8 if($draw eq "IMAGE");
+ my $bits=int($bits_default || 8);
+ return 8 if($bits != 10 && $bits != 12);
+ return $bits;
+}
+
+sub webui_pattern_image_pattern (@) {
+ my $w=int(shift);
+ my $h=int(shift);
+ my $img=shift;
+ return "DRAW=IMAGE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nIMAGE=$img\nEND=1\n";
+}
+
+sub webui_pattern_render_white_clipping (@) {
+ my $file=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ my $image=&webui_pattern_image_new($w,$h,0,0,0);
+ my @levels=(232,234,236,238,240,242,244,246,248,250,252,254,255);
+ my @labels=@levels;
+ my $panel_x=int($w*0.06);
+ my $panel_y=int($h*0.15);
+ my $panel_w=$w-$panel_x*2;
+ my $panel_h=int($h*0.52);
+ my $footer_y=$panel_y+$panel_h+int($h*0.045);
+ my $footer_h=int($h*0.11);
+ my $panel_bg=235;
+ my $frame_t=int($h/360);
+ my $gap=int($panel_w/(scalar(@levels)*10));
+ my $scale=&webui_pattern_label_scale($h);
+ my $bar_y1=$panel_y+int($panel_h*0.10);
+ my $bar_y2=$panel_y+$panel_h-int($panel_h*0.10)-1;
+ $frame_t=2 if($frame_t < 2);
+ $gap=2 if($gap < 2);
+ $panel_bg=&webui_pattern_legacy_byte($panel_bg,$signal_mode,$max_luma);
+ @levels=map { &webui_pattern_legacy_byte($_,$signal_mode,$max_luma) } @levels;
+ &webui_pattern_image_rect($image,$panel_x,$panel_y,$panel_x+$panel_w-1,$panel_y+$panel_h-1,$panel_bg,$panel_bg,$panel_bg);
+ &webui_pattern_image_box($image,$panel_x,$panel_y,$panel_x+$panel_w-1,$panel_y+$panel_h-1,$frame_t,96,96,96);
+ &webui_pattern_image_rect($image,$panel_x,$footer_y,$panel_x+$panel_w-1,$footer_y+$footer_h-1,0,0,0);
+ &webui_pattern_image_box($image,$panel_x,$footer_y,$panel_x+$panel_w-1,$footer_y+$footer_h-1,$frame_t,48,48,48);
+ for(my $i=0;$i<scalar(@levels);$i++) {
+  my $slot_x1=$panel_x+int($i*$panel_w/scalar(@levels));
+  my $slot_x2=$panel_x+int((($i+1)*$panel_w)/scalar(@levels))-1;
+  $slot_x2=$panel_x+$panel_w-1 if($i == scalar(@levels)-1);
+  my $x1=$slot_x1+$gap;
+  my $x2=$slot_x2-$gap;
+  my $v=$levels[$i];
+  my $label=$labels[$i];
+  $x1=$slot_x1 if($x1 > $x2);
+  $x2=$slot_x2 if($x2 < $x1);
+  &webui_pattern_image_rect($image,$x1,$bar_y1,$x2,$bar_y2,$v,$v,$v);
+  &webui_pattern_image_text_center($image,$label,$slot_x1,$slot_x2,$footer_y+int(($footer_h-5*$scale)/2),$scale,255,255,255);
+ }
+ return &webui_pattern_image_save($image,$file);
+}
+
+sub webui_pattern_render_black_clipping (@) {
+ my $file=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ my $image=&webui_pattern_image_new($w,$h,0,0,0);
+ my @levels=(2,4,6,8,10,12,14,16,18,20,22,24,25);
+ my @labels=@levels;
+ my $panel_x=int($w*0.06);
+ my $panel_y=int($h*0.18);
+ my $panel_w=$w-$panel_x*2;
+ my $panel_h=int($h*0.48);
+ my $footer_y=$panel_y+$panel_h+int($h*0.05);
+ my $footer_h=int($h*0.11);
+ my $frame_t=int($h/360);
+ my $gap=int($panel_w/(scalar(@levels)*10));
+ my $scale=&webui_pattern_label_scale($h);
+ my $bar_y1=$panel_y+int($panel_h*0.08);
+ my $bar_y2=$panel_y+$panel_h-int($panel_h*0.08)-1;
+ $frame_t=2 if($frame_t < 2);
+ $gap=2 if($gap < 2);
+ @levels=map { &webui_pattern_legacy_byte($_,$signal_mode,$max_luma) } @levels;
+ &webui_pattern_image_box($image,$panel_x,$panel_y,$panel_x+$panel_w-1,$panel_y+$panel_h-1,$frame_t,56,56,56);
+ &webui_pattern_image_rect($image,$panel_x,$footer_y,$panel_x+$panel_w-1,$footer_y+$footer_h-1,0,0,0);
+ &webui_pattern_image_box($image,$panel_x,$footer_y,$panel_x+$panel_w-1,$footer_y+$footer_h-1,$frame_t,48,48,48);
+ for(my $i=0;$i<scalar(@levels);$i++) {
+  my $slot_x1=$panel_x+int($i*$panel_w/scalar(@levels));
+  my $slot_x2=$panel_x+int((($i+1)*$panel_w)/scalar(@levels))-1;
+  $slot_x2=$panel_x+$panel_w-1 if($i == scalar(@levels)-1);
+  my $x1=$slot_x1+$gap;
+  my $x2=$slot_x2-$gap;
+  my $v=$levels[$i];
+  my $label=$labels[$i];
+  $x1=$slot_x1 if($x1 > $x2);
+  $x2=$slot_x2 if($x2 < $x1);
+  &webui_pattern_image_rect($image,$x1,$bar_y1,$x2,$bar_y2,$v,$v,$v);
+  &webui_pattern_image_text_center($image,$label,$slot_x1,$slot_x2,$footer_y+int(($footer_h-5*$scale)/2),$scale,220,220,220);
+ }
+ return &webui_pattern_image_save($image,$file);
+}
+
+sub webui_pattern_render_color_bars (@) {
+ my $file=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ my $image=&webui_pattern_image_new($w,$h,0,0,0);
+ my $l75=&webui_pattern_legacy_byte(int(255*0.75),$signal_mode,$max_luma);
+ my @top=(
+  [$l75,$l75,$l75],
+  [$l75,$l75,0],
+  [0,$l75,$l75],
+  [0,$l75,0],
+  [$l75,0,$l75],
+  [$l75,0,0],
+  [0,0,$l75],
+ );
+ my @mid=(
+  [0,0,$l75],
+  [0,0,0],
+  [$l75,0,$l75],
+  [0,0,0],
+  [0,$l75,$l75],
+  [0,0,0],
+  [$l75,$l75,$l75],
+ );
+ my $top_h=int($h*0.67);
+ my $mid_y=$top_h;
+ my $mid_h=int($h*0.08);
+ my $bottom_y=$mid_y+$mid_h;
+ for(my $i=0;$i<7;$i++) {
+  my $x1=int($i*$w/7);
+  my $x2=int((($i+1)*$w)/7)-1;
+  $x2=$w-1 if($i == 6);
+  &webui_pattern_image_rect($image,$x1,0,$x2,$top_h-1,@{$top[$i]});
+  &webui_pattern_image_rect($image,$x1,$mid_y,$x2,$mid_y+$mid_h-1,@{$mid[$i]});
+ }
+ my $pluge_y1=$bottom_y+int(($h-$bottom_y)*0.18);
+ my $pluge_y2=$h-int(($h-$bottom_y)*0.18)-1;
+ my $pluge_x=int($w*0.08);
+ my $pluge_gap=int($w*0.01);
+ my $pluge_w=int($w*0.08);
+ my @pluge=(0,8,16,25);
+ $pluge_gap=2 if($pluge_gap < 2);
+ $pluge_w=20 if($pluge_w < 20);
+ for(my $i=0;$i<scalar(@pluge);$i++) {
+  my $x1=$pluge_x+$i*($pluge_w+$pluge_gap);
+  my $x2=$x1+$pluge_w-1;
+  my $v=&webui_pattern_legacy_byte($pluge[$i],$signal_mode,$max_luma);
+  &webui_pattern_image_rect($image,$x1,$pluge_y1,$x2,$pluge_y2,$v,$v,$v);
+ }
+ my $white_x1=int($w*0.39);
+ my $white_x2=int($w*0.61)-1;
+ my $white_ref=&webui_pattern_peak_byte($signal_mode,$max_luma);
+ &webui_pattern_image_rect($image,$white_x1,$bottom_y,$white_x2,$h-1,$white_ref,$white_ref,$white_ref);
+ return &webui_pattern_image_save($image,$file);
+}
+
+sub webui_pattern_render_gray_ramp (@) {
+ my $file=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ my $image=&webui_pattern_image_new($w,$h,0,0,0);
+ my $peak_byte=&webui_pattern_peak_byte($signal_mode,$max_luma);
+ my $ramp_h=int($h*0.68);
+ my $row="";
+ for(my $x=0;$x<$w;$x++) {
+  my $v=int($x*$peak_byte/($w-1) + 0.5);
+  $row.=pack("C3",$v,$v,$v);
+ }
+ my $row_len=bytes::length($row);
+ for(my $y=0;$y<$ramp_h;$y++) {
+  bytes::substr($image->{"buf"},$y*$row_len,$row_len,$row);
+ }
+ my $step_y=$ramp_h+int($h*0.05);
+ my $steps=11;
+ if($step_y < $h) {
+  for(my $i=0;$i<$steps;$i++) {
+   my $x1=int($i*$w/$steps);
+   my $x2=int((($i+1)*$w)/$steps)-1;
+   my $v=int($i*$peak_byte/($steps-1) + 0.5);
+   $x2=$w-1 if($i == $steps-1);
+   &webui_pattern_image_rect($image,$x1,$step_y,$x2,$h-1,$v,$v,$v);
+  }
+ }
+ return &webui_pattern_image_save($image,$file);
+}
+
+sub webui_pattern_render_overscan (@) {
+ my $file=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $image=&webui_pattern_image_new($w,$h,0,0,0);
+ my $bw=int($h/360);
+ my $m25x=int($w*0.025);
+ my $m25y=int($h*0.025);
+ my $m5x=int($w*0.05);
+ my $m5y=int($h*0.05);
+ my $min_dim=($w < $h) ? $w : $h;
+ my $cross=int($min_dim*0.08);
+ my $bracket=int($min_dim*0.04);
+ my $cx=int($w/2);
+ my $cy=int($h/2);
+ $bw=2 if($bw < 2);
+ $bracket=20 if($bracket < 20);
+ &webui_pattern_image_box($image,0,0,$w-1,$h-1,$bw,255,255,255);
+ &webui_pattern_image_box($image,$m25x,$m25y,$w-$m25x-1,$h-$m25y-1,$bw,160,160,160);
+ &webui_pattern_image_box($image,$m5x,$m5y,$w-$m5x-1,$h-$m5y-1,$bw,96,96,96);
+ &webui_pattern_image_rect($image,$cx-$cross,$cy-int($bw/2),$cx+$cross-1,$cy+int(($bw-1)/2),255,255,255);
+ &webui_pattern_image_rect($image,$cx-int($bw/2),$cy-$cross,$cx+int(($bw-1)/2),$cy+$cross-1,255,255,255);
+ &webui_pattern_image_rect($image,$m5x,$m5y,$m5x+$bracket-1,$m5y+$bw-1,255,255,255);
+ &webui_pattern_image_rect($image,$m5x,$m5y,$m5x+$bw-1,$m5y+$bracket-1,255,255,255);
+ &webui_pattern_image_rect($image,$w-$m5x-$bracket,$m5y,$w-$m5x-1,$m5y+$bw-1,255,255,255);
+ &webui_pattern_image_rect($image,$w-$m5x-$bw,$m5y,$w-$m5x-1,$m5y+$bracket-1,255,255,255);
+ &webui_pattern_image_rect($image,$m5x,$h-$m5y-$bw,$m5x+$bracket-1,$h-$m5y-1,255,255,255);
+ &webui_pattern_image_rect($image,$m5x,$h-$m5y-$bracket,$m5x+$bw-1,$h-$m5y-1,255,255,255);
+ &webui_pattern_image_rect($image,$w-$m5x-$bracket,$h-$m5y-$bw,$w-$m5x-1,$h-$m5y-1,255,255,255);
+ &webui_pattern_image_rect($image,$w-$m5x-$bw,$h-$m5y-$bracket,$w-$m5x-1,$h-$m5y-1,255,255,255);
+ return &webui_pattern_image_save($image,$file);
+}
+
 sub webui_pattern (@) {
  my $body=shift;
  my ($name)=$body=~/"name"\s*:\s*"([^"]+)"/;
  return '{"status":"error","message":"Missing pattern name"}' if(!$name);
  $name=~s/[^a-zA-Z0-9_ -]//g;
+ my $signal_mode=&webui_pattern_signal_mode($body);
+ my $max_luma=&webui_pattern_max_luma($body);
  my $w=$w_s || 1920; my $h=$h_s || 1080;
- my $pat=""; my $img="$var_dir/running/webui_pattern.ppm";
- # Complex patterns use ImageMagick to composite into a PPM image (DRAW=IMAGE),
+ my $pat=""; my $img=&webui_pattern_diag_image_file($name); my $pat_bits=&webui_pattern_effective_bits("");
+ my $white_rgb=&webui_pattern_scale_triplet(255,255,255,255);
+ my $black_rgb=&webui_pattern_scale_triplet(0,0,0,255);
+ my $red_rgb=&webui_pattern_scale_triplet(255,0,0,255);
+ my $green_rgb=&webui_pattern_scale_triplet(0,255,0,255);
+ my $blue_rgb=&webui_pattern_scale_triplet(0,0,255,255);
+ my $cyan_rgb=&webui_pattern_scale_triplet(0,255,255,255);
+ my $magenta_rgb=&webui_pattern_scale_triplet(255,0,255,255);
+ my $yellow_rgb=&webui_pattern_scale_triplet(255,255,0,255);
+ my $gray50_rgb=&webui_pattern_scale_triplet(128,128,128,255);
+ # Complex patterns are rendered directly into a temporary image (DRAW=IMAGE),
  # because PGeneratord clears the entire frame for each DRAW=RECTANGLE entry.
+ # Prefer PNG for renderer compatibility; fall back to raw PPM only if convert
+ # is unavailable on the target system.
  #
- # White Clipping — 9 near-white bars on 85% gray (AVS HD 709 style)
- # All bars should be individually visible when contrast is set correctly
+ # White Clipping — near-white bar plate with labeled 232-255 bars on a 235 field
  if($name eq "white_clipping") {
-  my @levels=(230,234,238,242,246,250,253,254,255);
-  my $cols=scalar @levels;
-  my $bg_v=int(255*0.85);
-  my $bar_w=int($w*0.8/$cols);
-  my $gap=int($w*0.005);
-  my $start_x=int($w*0.1);
-  my $bar_top=int($h*0.15);
-  my $bar_h=int($h*0.7);
-  my $ref_v=int(255*0.5);
-  my $cmd="convert -size ${w}x${h} -depth 8 xc:\'rgb($bg_v,$bg_v,$bg_v)\'";
-  for(my $i=0;$i<$cols;$i++){
-   my $v=$levels[$i];
-   my $x=$start_x+$i*$bar_w+$gap;
-   my $x2=$x+($bar_w-$gap*2)-1;
-   my $y2=$bar_top+$bar_h-1;
-   $cmd.=" -fill \'rgb($v,$v,$v)\' -draw \'rectangle $x,$bar_top $x2,$y2\'";
-  }
-  my $ref_y=$bar_top+$bar_h+int($h*0.02);
-  my $ref_h=int($h*0.04);
-  my $ref_x=int($w*0.2);
-  $cmd.=" -fill \'rgb($ref_v,$ref_v,$ref_v)\' -draw \'rectangle $ref_x,$ref_y ".($ref_x+int($w*0.6)-1).",".($ref_y+$ref_h-1)."\'";
-  system("$cmd $img");
-  $pat="DRAW=IMAGE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nIMAGE=$img\nEND=1\n";
+  return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_white_clipping($img,$w,$h,$signal_mode,$max_luma));
+  $pat=&webui_pattern_image_pattern($w,$h,$img);
+  $pat_bits=&webui_pattern_effective_bits("IMAGE");
  }
- # Black Clipping / PLUGE — below-black through +10% (ITU-R BT.814 style)
- # Below-black bar should be invisible; +2% bar barely visible
+ # Black Clipping — near-black bar plate with labeled 2-25 bars on black
  elsif($name eq "black_clipping") {
-  my $bg_v=int(255*0.05);
-  my @levels=(0,0,int(255*0.02),int(255*0.04),int(255*0.06),int(255*0.08),int(255*0.10));
-  my $cols=scalar @levels;
-  my $bar_w=int($w*0.7/$cols);
-  my $gap=int($w*0.005);
-  my $start_x=int($w*0.15);
-  my $bar_top=int($h*0.2);
-  my $bar_h=int($h*0.6);
-  my $cmd="convert -size ${w}x${h} -depth 8 xc:\'rgb($bg_v,$bg_v,$bg_v)\'";
-  for(my $i=0;$i<$cols;$i++){
-   my $v=$levels[$i];
-   my $x=$start_x+$i*$bar_w+$gap;
-   my $x2=$x+($bar_w-$gap*2)-1;
-   my $y2=$bar_top+$bar_h-1;
-   $cmd.=" -fill \'rgb($v,$v,$v)\' -draw \'rectangle $x,$bar_top $x2,$y2\'";
-  }
-  my $mk_y=$bar_top-int($h*0.04);
-  my $mk_h=int($h*0.02);
-  my $mk_x=$start_x+$gap;
-  my $mk_x2=$mk_x+($bar_w-$gap*2)-1;
-  my $mk_y2=$mk_y+$mk_h-1;
-  $cmd.=" -fill \'rgb(51,0,0)\' -draw \'rectangle $mk_x,$mk_y $mk_x2,$mk_y2\'";
-  $mk_x=$start_x+$bar_w+$gap;
-  $mk_x2=$mk_x+($bar_w-$gap*2)-1;
-  $cmd.=" -fill \'rgb(51,51,51)\' -draw \'rectangle $mk_x,$mk_y $mk_x2,$mk_y2\'";
-  system("$cmd $img");
-  $pat="DRAW=IMAGE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nIMAGE=$img\nEND=1\n";
+  return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_black_clipping($img,$w,$h,$signal_mode,$max_luma));
+  $pat=&webui_pattern_image_pattern($w,$h,$img);
+  $pat_bits=&webui_pattern_effective_bits("IMAGE");
  }
- # Color Bars — 75% Rec.709 SMPTE-style with PLUGE bottom section
+ # Color Bars — 75% Rec.709 bars with a bottom PLUGE/reference section
  elsif($name eq "color_bars") {
-  my $l75=int(255*0.75);
-  my @top_r=($l75,$l75,0,0,$l75,$l75,0);
-  my @top_g=($l75,$l75,$l75,$l75,0,0,0);
-  my @top_b=($l75,0,$l75,0,$l75,0,$l75);
-  my @rev_r=(0,0,$l75,0,0,0,$l75);
-  my @rev_g=(0,0,0,0,$l75,0,$l75);
-  my @rev_b=($l75,0,$l75,0,$l75,0,$l75);
-  my $cols=7;
-  my $pw=int($w/$cols);
-  my $split_y=int($h*0.75);
-  my $mid_h=int($h*0.075);
-  my $cmd="convert -size ${w}x${h} -depth 8 xc:black";
-  for(my $i=0;$i<$cols;$i++){
-   my $x1=$i*$pw;
-   my $x2=($i==$cols-1) ? $w-1 : ($i+1)*$pw-1;
-   $cmd.=" -fill \'rgb($top_r[$i],$top_g[$i],$top_b[$i])\' -draw \'rectangle $x1,0 $x2,".($split_y-1)."\'";
-  }
-  for(my $i=0;$i<$cols;$i++){
-   my $x1=$i*$pw;
-   my $x2=($i==$cols-1) ? $w-1 : ($i+1)*$pw-1;
-   $cmd.=" -fill \'rgb($rev_r[$i],$rev_g[$i],$rev_b[$i])\' -draw \'rectangle $x1,$split_y $x2,".($split_y+$mid_h-1)."\'";
-  }
-  my $bot_y=$split_y+$mid_h;
-  my $third_w=int($w/3);
-  my $pluge_w=int($third_w/3);
-  my $above_v=int(255*0.04);
-  $cmd.=" -fill \'rgb(0,0,0)\' -draw \'rectangle 0,$bot_y ".($pluge_w-1).",".($h-1)."\'";
-  $cmd.=" -fill \'rgb(0,0,0)\' -draw \'rectangle $pluge_w,$bot_y ".($pluge_w*2-1).",".($h-1)."\'";
-  $cmd.=" -fill \'rgb($above_v,$above_v,$above_v)\' -draw \'rectangle ".($pluge_w*2).",$bot_y ".($pluge_w*3-1).",".($h-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle $third_w,$bot_y ".($third_w*2-1).",".($h-1)."\'";
-  system("$cmd $img");
-  $pat="DRAW=IMAGE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nIMAGE=$img\nEND=1\n";
+  return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_color_bars($img,$w,$h,$signal_mode,$max_luma));
+  $pat=&webui_pattern_image_pattern($w,$h,$img);
+  $pat_bits=&webui_pattern_effective_bits("IMAGE");
  }
- # Gray Ramp — 32 fine steps from black to white (top) + 11 IRE steps (bottom)
+ # Gray Ramp — smooth top gradient with 11 stepped bars underneath
  elsif($name eq "gray_ramp") {
-  my $ramp_steps=32;
-  my $ramp_pw=int($w/$ramp_steps);
-  my $ramp_h=int($h*0.6);
-  my $cmd="convert -size ${w}x${h} -depth 8 xc:black";
-  for(my $i=0;$i<$ramp_steps;$i++){
-   my $v=int($i*255/($ramp_steps-1));
-   my $x1=$i*$ramp_pw;
-   my $x2=($i==$ramp_steps-1) ? $w-1 : ($i+1)*$ramp_pw-1;
-   $cmd.=" -fill \'rgb($v,$v,$v)\' -draw \'rectangle $x1,0 $x2,".($ramp_h-1)."\'";
-  }
-  my $step_steps=11;
-  my $step_pw=int($w/$step_steps);
-  my $step_top=int($h*0.65);
-  for(my $i=0;$i<$step_steps;$i++){
-   my $v=int($i*255/($step_steps-1));
-   my $x1=$i*$step_pw;
-   my $x2=($i==$step_steps-1) ? $w-1 : ($i+1)*$step_pw-1;
-   $cmd.=" -fill \'rgb($v,$v,$v)\' -draw \'rectangle $x1,$step_top $x2,".($h-1)."\'";
-  }
-  system("$cmd $img");
-  $pat="DRAW=IMAGE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nIMAGE=$img\nEND=1\n";
+  return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_gray_ramp($img,$w,$h,$signal_mode,$max_luma));
+  $pat=&webui_pattern_image_pattern($w,$h,$img);
+  $pat_bits=&webui_pattern_effective_bits("IMAGE");
  }
  # Full field solid colors
- elsif($name eq "white")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=255,255,255\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
- elsif($name eq "black")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
- elsif($name eq "red")     { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=255,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
- elsif($name eq "green")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,255,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
- elsif($name eq "blue")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,255\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
- elsif($name eq "cyan")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,255,255\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
- elsif($name eq "magenta") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=255,0,255\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
- elsif($name eq "yellow")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=255,255,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "white")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$white_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "black")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$black_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "red")     { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$red_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "green")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$green_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "blue")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$blue_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "cyan")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$cyan_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "magenta") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$magenta_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "yellow")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$yellow_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
  # 50% Gray
- elsif($name eq "gray50")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=128,128,128\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
+   elsif($name eq "gray50")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$gray50_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
  # Window pattern — centered white window on black (18% of screen area)
  elsif($name eq "window") {
   my $s=sqrt(0.18); my $ww=int($w*$s); my $wh=int($h*$s);
   my $wx=int(($w-$ww)/2); my $wy=int(($h-$wh)/2);
-  $pat="DRAW=RECTANGLE\nDIM=$ww,$wh\nRGB=255,255,255\nBG=0,0,0\nPOSITION=$wx,$wy\nEND=1\n";
+    $pat="DRAW=RECTANGLE\nDIM=$ww,$wh\nRGB=$white_rgb\nBG=$black_rgb\nPOSITION=$wx,$wy\nEND=1\n";
  }
  # Overscan — borders at 0%, 2.5%, 5% with corner brackets and crosshair
  elsif($name eq "overscan") {
-  my $bw=2;
-  my $g=76; my $g2=128;
-  my $cmd="convert -size ${w}x${h} -depth 8 xc:black";
-  # 0% border (screen edge) — white
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle 0,0 ".($w-1).",".($bw-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle 0,".($h-$bw)." ".($w-1).",".($h-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle 0,0 ".($bw-1).",".($h-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle ".($w-$bw).",0 ".($w-1).",".($h-1)."\'";
-  # 5% border — dark gray
-  my $m5x=int($w*0.05); my $m5y=int($h*0.05);
-  my $inner5w=$w-$m5x*2; my $inner5h=$h-$m5y*2;
-  $cmd.=" -fill \'rgb($g,$g,$g)\' -draw \'rectangle $m5x,$m5y ".($m5x+$inner5w-1).",".($m5y+$bw-1)."\'";
-  $cmd.=" -fill \'rgb($g,$g,$g)\' -draw \'rectangle $m5x,".($h-$m5y-$bw)." ".($m5x+$inner5w-1).",".($h-$m5y-1)."\'";
-  $cmd.=" -fill \'rgb($g,$g,$g)\' -draw \'rectangle $m5x,$m5y ".($m5x+$bw-1).",".($m5y+$inner5h-1)."\'";
-  $cmd.=" -fill \'rgb($g,$g,$g)\' -draw \'rectangle ".($w-$m5x-$bw).",$m5y ".($w-$m5x-1).",".($m5y+$inner5h-1)."\'";
-  # 2.5% border — mid gray
-  my $m25x=int($w*0.025); my $m25y=int($h*0.025);
-  my $inner25w=$w-$m25x*2; my $inner25h=$h-$m25y*2;
-  $cmd.=" -fill \'rgb($g2,$g2,$g2)\' -draw \'rectangle $m25x,$m25y ".($m25x+$inner25w-1).",".($m25y+$bw-1)."\'";
-  $cmd.=" -fill \'rgb($g2,$g2,$g2)\' -draw \'rectangle $m25x,".($h-$m25y-$bw)." ".($m25x+$inner25w-1).",".($h-$m25y-1)."\'";
-  $cmd.=" -fill \'rgb($g2,$g2,$g2)\' -draw \'rectangle $m25x,$m25y ".($m25x+$bw-1).",".($m25y+$inner25h-1)."\'";
-  $cmd.=" -fill \'rgb($g2,$g2,$g2)\' -draw \'rectangle ".($w-$m25x-$bw).",$m25y ".($w-$m25x-1).",".($m25y+$inner25h-1)."\'";
-  # Center crosshair — white
-  my $cross_len=int($w*0.075); my $cross_t=2;
-  my $cx=int($w/2); my $cy=int($h/2);
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle ".($cx-$cross_len).",".($cy-int($cross_t/2))." ".($cx+$cross_len-1).",".($cy+int($cross_t/2)-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle ".($cx-int($cross_t/2)).",".($cy-$cross_len)." ".($cx+int($cross_t/2)-1).",".($cy+$cross_len-1)."\'";
-  # Corner L-brackets at 5% mark — white
-  my $cm=int($w*0.04); my $ct=3;
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle $m5x,$m5y ".($m5x+$cm-1).",".($m5y+$ct-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle $m5x,$m5y ".($m5x+$ct-1).",".($m5y+$cm-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle ".($w-$m5x-$cm).",$m5y ".($w-$m5x-1).",".($m5y+$ct-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle ".($w-$m5x-$ct).",$m5y ".($w-$m5x-1).",".($m5y+$cm-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle $m5x,".($h-$m5y-$ct)." ".($m5x+$cm-1).",".($h-$m5y-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle $m5x,".($h-$m5y-$cm)." ".($m5x+$ct-1).",".($h-$m5y-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle ".($w-$m5x-$cm).",".($h-$m5y-$ct)." ".($w-$m5x-1).",".($h-$m5y-1)."\'";
-  $cmd.=" -fill \'rgb(255,255,255)\' -draw \'rectangle ".($w-$m5x-$ct).",".($h-$m5y-$cm)." ".($w-$m5x-1).",".($h-$m5y-1)."\'";
-  system("$cmd $img");
-  $pat="DRAW=IMAGE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nIMAGE=$img\nEND=1\n";
+  return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_overscan($img,$w,$h));
+  $pat=&webui_pattern_image_pattern($w,$h,$img);
+  $pat_bits=&webui_pattern_effective_bits("IMAGE");
  }
  # Generic patch — takes r,g,b,size params from JSON body
  elsif($name eq "patch") {
@@ -983,26 +1460,32 @@ sub webui_pattern (@) {
   my ($pg)=$body=~/"g"\s*:\s*(\d+)/; $pg=0 if(!defined $pg);
   my ($pb)=$body=~/"b"\s*:\s*(\d+)/; $pb=0 if(!defined $pb);
   my ($sz)=$body=~/"size"\s*:\s*(\d+)/; $sz=100 if(!defined $sz);
-  $pr=255 if($pr>255); $pg=255 if($pg>255); $pb=255 if($pb>255);
+  my $input_max=255;
+  my $target_max=&webui_pattern_target_max();
+  $input_max=$target_max if($pr > 255 || $pg > 255 || $pb > 255);
+  $pr=&webui_pattern_scale_value($pr,$input_max);
+  $pg=&webui_pattern_scale_value($pg,$input_max);
+  $pb=&webui_pattern_scale_value($pb,$input_max);
   if($sz>=100) {
-   $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$pr,$pg,$pb\nBG=0,0,0\nPOSITION=0,0\nEND=1\n";
+   $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$pr,$pg,$pb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n";
   } else {
    my $s=sqrt($sz/100); my $pw=int($w*$s); my $ph=int($h*$s);
    my $px=int(($w-$pw)/2); my $py=int(($h-$ph)/2);
-   $pat="DRAW=RECTANGLE\nDIM=$pw,$ph\nRGB=$pr,$pg,$pb\nBG=0,0,0\nPOSITION=$px,$py\nEND=1\n";
+   $pat="DRAW=RECTANGLE\nDIM=$pw,$ph\nRGB=$pr,$pg,$pb\nBG=$black_rgb\nPOSITION=$px,$py\nEND=1\n";
   }
  }
  # Stop — full black (idle)
- elsif($name eq "stop") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nEND=1\n"; }
+ elsif($name eq "stop") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$black_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
  else {
   return '{"status":"error","message":"Unknown pattern: '.$name.'"}';
  }
  # Write the pattern
- $pat="PATTERN_NAME=$name\nBITS=$bits_default\n".$pat."FRAME=$frame_default\n";
+ $pat="PATTERN_NAME=$name\nBITS=$pat_bits\n".$pat."FRAME=$frame_default\n";
  open(my $fh,">","$command_file.tmp");
  print $fh $pat;
  close($fh);
  rename("$command_file.tmp","$command_file");
+ &create_return_file();
  return '{"status":"ok","pattern":"'.$name.'"}';
 }
 
@@ -1266,11 +1749,11 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
    <div class="pat-content">
     <div style="font-size:.65rem;color:var(--text2);margin-bottom:6px;line-height:1.4">Visual setup patterns for display calibration. Use these to verify your display&#39;s basic picture settings before running a full calibration.</div>
     <div class="pat-grid">
-     <button class="pat-btn" onclick="showPattern('white_clipping')">White Clipping</button>
-     <button class="pat-btn" onclick="showPattern('black_clipping')">Black Clipping</button>
-     <button class="pat-btn" onclick="showPattern('color_bars')">Color Bars</button>
-     <button class="pat-btn" onclick="showPattern('gray_ramp')">Gray Ramp</button>
-     <button class="pat-btn" onclick="showPattern('overscan')">Overscan</button>
+    <button class="pat-btn" onclick="showPattern('white_clipping',event)">White Clipping</button>
+    <button class="pat-btn" onclick="showPattern('black_clipping',event)">Black Clipping</button>
+    <button class="pat-btn" onclick="showPattern('color_bars',event)">Color Bars</button>
+    <button class="pat-btn" onclick="showPattern('gray_ramp',event)">Gray Ramp</button>
+    <button class="pat-btn" onclick="showPattern('overscan',event)">Overscan</button>
     </div>
     <div id="diagInfo" style="font-size:.7rem;color:var(--text2);margin-top:8px;padding:8px 10px;background:#0d0d15;border-radius:6px;line-height:1.5;display:none"></div>
    </div>
@@ -1326,6 +1809,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
   <div class="info-grid" id="wifiStatus" style="margin-bottom:8px"></div>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="scanWifi()">Scan Networks</button>
+     <button class="btn btn-sm btn-danger" id="wifiDisconnectBtn" onclick="disconnectWifi()" style="display:none">Disconnect</button>
   </div>
   <div id="wifiList" class="wifi-list"></div>
   <div id="wifiConnect" class="hidden" style="margin-top:8px">
@@ -1501,14 +1985,22 @@ async function fetchJSON(url,opts){
 }
 
 async function loadConfig(quiet){
- config=await fetchJSON('/api/config',{_quiet:!!quiet,_timeoutMs:10000});
- if(!config)return;
+ if(quiet&&shouldPauseAutoRefresh()) return;
+ const loadedConfig=await fetchJSON('/api/config',{_quiet:!!quiet,_timeoutMs:10000});
+ if(!loadedConfig)return;
+ applyConfigState(loadedConfig);
+}
+
+function applyConfigState(nextConfig){
+ config=nextConfig;
+ window._remoteConfigSnapshot=JSON.stringify(nextConfig);
  // Derive signal mode from flags
  let sm='sdr';
  if(config.dv_status==='1'||config.is_ll_dovi==='1'||config.is_std_dovi==='1') sm='dv';
  else if(config.is_hdr==='1'){
   sm=(config.eotf==='3')?'hlg':'hdr10';
  }
+ setVal('mode_idx',config.mode_idx||'');
  setVal('signal_mode',sm);
  setVal('max_bpc',config.max_bpc||'8');
  setVal('color_format',config.color_format||'0');
@@ -1521,9 +2013,31 @@ async function loadConfig(quiet){
  document.getElementById('max_fall').value=config.max_fall||'400';
  // DV settings
  setVal('dv_map_mode',config.dv_map_mode||'2');
+ if(sm==='dv'){
+  setVal('max_bpc','12');
+  setVal('color_format','0');
+  setVal('colorimetry','9');
+  setVal('primaries','1');
+ }
  updateModeVisibility();
  updateDropdowns();
- window._savedConfig=captureSettings();
+ refreshSavedSettingsSnapshot();
+}
+
+async function syncRemoteConfig(){
+ if(shouldPauseAutoRefresh()||window._configSyncBusy) return;
+ window._configSyncBusy=true;
+ try{
+  const remoteConfig=await fetchJSON('/api/config',{_quiet:true,_timeoutMs:10000});
+  if(!remoteConfig)return;
+  const remoteSnapshot=JSON.stringify(remoteConfig);
+  if(!window._remoteConfigSnapshot||remoteSnapshot!==window._remoteConfigSnapshot){
+   applyConfigState(remoteConfig);
+  }
+ }
+ finally{
+  window._configSyncBusy=false;
+ }
 }
 
 function setVal(id,v){const el=document.getElementById(id);if(el)el.value=v;}
@@ -1542,6 +2056,28 @@ function captureSettings(){
   dv_map_mode:getVal('dv_map_mode')
  });
 }
+
+function refreshSavedSettingsSnapshot(){
+ window._savedConfig=captureSettings();
+ checkSettingsChanged();
+}
+
+function hasUnsavedSettings(){
+ if(!window._savedConfig)return false;
+ return captureSettings()!==window._savedConfig;
+}
+
+function isSettingsFieldActive(){
+ const el=document.activeElement;
+ if(!el||!el.id)return false;
+ return ['mode_idx','signal_mode','max_bpc','color_format','colorimetry',
+  'eotf','primaries','dv_map_mode','max_luma','min_luma','max_cll','max_fall'].includes(el.id);
+}
+
+function shouldPauseAutoRefresh(){
+ return isSettingsFieldActive()||hasUnsavedSettings();
+}
+
 function checkSettingsChanged(){
  if(!window._savedConfig)return;
  var changed=captureSettings()!==window._savedConfig;
@@ -1696,8 +2232,9 @@ function updateDropdowns(){
  if(sm==='dv'){
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!=='0';o.style.display=o.value==='0'?'':'none';});
   fmtSel.value='0';
-  // All bit depths valid for DV (12-bit recommended)
-  Array.from(bpcSel.options).forEach(function(o){o.disabled=false;o.style.display='';});
+  // Dolby Vision RGB tunneling uses a 12-bit HDMI link.
+  Array.from(bpcSel.options).forEach(function(o){o.disabled=o.value!=='12';o.style.display=o.value==='12'?'':'none';});
+  bpcSel.value='12';
   checkSettingsChanged();
   return;
  }
@@ -1730,6 +2267,7 @@ function updateDropdowns(){
 }
 
 async function checkPing(){
+ if(shouldPauseAutoRefresh()) return;
  const t0=performance.now();
  try{
   const r=await fetch(API+'/api/ping',{signal:AbortSignal.timeout(5000)});
@@ -1758,6 +2296,7 @@ async function checkPing(){
 }
 
 async function loadInfo(quiet){
+ if(quiet&&shouldPauseAutoRefresh()) return;
  const info=await fetchJSON('/api/info',{_quiet:!!quiet,_timeoutMs:10000});
  if(!info) return;
  document.getElementById('tempDisplay').textContent=info.temperature?info.temperature+'\u00B0C':'';
@@ -1777,15 +2316,18 @@ async function loadInfo(quiet){
    addInfo(g,name,ip);
   });
  }
+ const wifiDisconnectBtn=document.getElementById('wifiDisconnectBtn');
  if(info.wifi && info.wifi.state==='COMPLETED' && info.wifi.ssid){
   const ws=document.getElementById('wifiStatus');
   ws.innerHTML='';
   addInfo(ws,'Network',info.wifi.ssid);
   if(info.wifi.band) addInfo(ws,'Band',info.wifi.band+' ('+info.wifi.freq+' MHz)');
   if(info.wifi.signal) addInfo(ws,'Signal',info.wifi.signal+' dBm');
+  if(wifiDisconnectBtn) wifiDisconnectBtn.style.display='';
  }else{
   const ws=document.getElementById('wifiStatus');
   ws.innerHTML='<div style="font-size:.8rem;color:var(--text2)">Not connected</div>';
+  if(wifiDisconnectBtn) wifiDisconnectBtn.style.display='none';
  }
  // Update top-bar calibration indicator
  const calWrap=document.getElementById('calStatusWrap');
@@ -1801,12 +2343,6 @@ async function loadInfo(quiet){
   calText.style.color='var(--text2)';
   calText.textContent='No SW';
   calWrap.title='No calibration software connected';
- }
- // Auto-refresh config when calibration software is connected
- if(info.calibration && info.calibration.connected && !window._calmanPoll){
-  window._calmanPoll=setInterval(()=>loadConfig(true),10000);
- } else if((!info.calibration || !info.calibration.connected) && window._calmanPoll){
-  clearInterval(window._calmanPoll); window._calmanPoll=null;
  }
  // Update Resolve card status
  const rBadge=document.getElementById('resolveStatusBadge');
@@ -1838,11 +2374,11 @@ function formatUptime(s){
 }
 
 const DIAG_DESCRIPTIONS={
- white_clipping:'<b>White Clipping (Contrast)</b> &mdash; 9 vertical bars from 90% to 100% white on an 85% gray background. Reduce your TV\u2019s Contrast/White Level until all 9 bars are individually visible.',
- black_clipping:'<b>Black Clipping / PLUGE (Brightness)</b> &mdash; 7 bars from below-black through +10% on a 5% gray background. Raise Brightness until the leftmost below-black bar just disappears while the +2% bar remains barely visible.',
- color_bars:'<b>Color Bars</b> &mdash; SMPTE-style 75% Rec.709 color bars. Top section has 7 primary/secondary bars. Bottom has a reverse-order reference strip, PLUGE blacks, and 100% white.',
- gray_ramp:'<b>Gray Ramp</b> &mdash; Top: 32-step fine gradient from black to white. Bottom: 11 stepped bars at 0% to 100% in 10% increments. Check for smooth transitions and no banding.',
- overscan:'<b>Overscan</b> &mdash; Border lines at 0%, 2.5%, and 5% from screen edges with corner L-brackets and center crosshair. All lines should be visible &mdash; if not, disable overscan in your TV settings.',
+ white_clipping:'<b>White Clipping (Contrast)</b> &mdash; Labeled near-white bars from 232 to 255 on a reference-white field. Set HDMI output to RGB, then lower Contrast/White Level until the 236+ bars separate cleanly and 255 is not clipped into the background.',
+ black_clipping:'<b>Black Clipping / PLUGE (Brightness)</b> &mdash; Labeled near-black bars from 2 to 25 on black. Set HDMI output to RGB, then raise Brightness until the first few bars above black become barely visible without turning the whole background gray.',
+ color_bars:'<b>Color Bars</b> &mdash; 75% Rec.709 bars with a mid reference strip and a bottom PLUGE/white section for quick color and level checks. Use this pattern with HDMI output set to RGB.',
+ gray_ramp:'<b>Gray Ramp</b> &mdash; Smooth black-to-white ramp across the top with 11 stepped gray bars underneath. Use HDMI RGB output and check for smooth transitions, neutral grayscale, and no banding.',
+ overscan:'<b>Overscan</b> &mdash; Border lines at 0%, 2.5%, and 5% from screen edges with corner L-brackets and center crosshair. Use HDMI RGB output, and all lines should be visible &mdash; if not, disable overscan in your TV settings.',
 };
 let activePattern=null;
 function clearActive(){document.querySelectorAll('.pat-btn').forEach(b=>b.classList.remove('active'));activePattern=null;}
@@ -1851,14 +2387,15 @@ function updateDiagInfo(name){
  if(el&&DIAG_DESCRIPTIONS[name]){el.innerHTML=DIAG_DESCRIPTIONS[name];el.style.display='';}
  else if(el){el.style.display='none';}
 }
-async function showPattern(name){
+async function showPattern(name,ev){
  if(activePattern===name){stopPattern();return;}
  clearActive();
- event.currentTarget.classList.add('active');
+ if(ev&&ev.currentTarget)ev.currentTarget.classList.add('active');
  activePattern=name;
  updateDiagInfo(name);
  const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({name:name})});
+  body:JSON.stringify({name:name,signal_mode:getVal('signal_mode'),
+   max_luma:document.getElementById('max_luma').value})});
  if(r&&r.status==='ok') toast('Pattern: '+name.replace(/_/g,' '));
  else toast(r?r.message:'Pattern error',true);
 }
@@ -1881,23 +2418,59 @@ async function stopPattern(){
  if(r&&r.status==='ok') toast('Pattern stopped');
 }
 function toggleSection(el){el.parentElement.classList.toggle('collapsed');}
+function getPatternTargetMax(){
+ const sm=getVal('signal_mode');
+ if(sm==='dv')return 255;
+ const bits=parseInt(getVal('max_bpc')||'8',10);
+ if(bits>=12)return 4095;
+ if(bits>=10)return 1023;
+ return 255;
+}
+function isPqStimulusMode(){
+ const sm=getVal('signal_mode');
+ return sm==='hdr10'||sm==='dv';
+}
+function clampNum(v,min,max){
+ v=parseFloat(v);
+ if(isNaN(v))v=min;
+ if(v<min)return min;
+ if(v>max)return max;
+ return v;
+}
+function pqEncodeNormalized(nits){
+ const l=clampNum(nits,0,10000)/10000;
+ if(l<=0)return 0;
+ const m1=2610/16384,m2=2523/32,c1=3424/4096,c2=2413/128,c3=2392/128;
+ const p=Math.pow(l,m1);
+ return Math.pow((c1+c2*p)/(1+c3*p),m2);
+}
+function getPatternPeakCode(){
+ const maxCode=getPatternTargetMax();
+ if(isPqStimulusMode()){
+  const peak=clampNum(document.getElementById('max_luma').value||1000,0,10000);
+  return Math.round(pqEncodeNormalized(peak)*maxCode);
+ }
+ return maxCode;
+}
+function stimulusPercentToCode(percent){
+ const pct=clampNum(percent,0,100);
+ return Math.round(getPatternPeakCode()*pct/100);
+}
 function buildCalPatterns(){
  var gs10=document.getElementById('gs10grid');
  var gs20=document.getElementById('gs20grid');
  [0,10,20,30,40,50,60,70,80,90,100].forEach(function(l){
-  var v=Math.round(l*255/100);
   var b=document.createElement('button');
   b.className='pat-btn pat-btn-sm';
   b.textContent=l+'%';
-  b.onclick=function(ev){showPatch('gs_'+l,v,v,v,ev);};
+  b.onclick=function(ev){var v=stimulusPercentToCode(l);showPatch('gs_'+l,v,v,v,ev);};
   gs10.appendChild(b);
  });
  for(var l=0;l<=100;l+=5){
-  var v=Math.round(l*255/100);
   var b=document.createElement('button');
   b.className='pat-btn pat-btn-sm';
   b.textContent=l+'%';
-  b.onclick=(function(ll,vv){return function(ev){showPatch('gs_'+ll,vv,vv,vv,ev);};})(l,v);
+  b.onclick=(function(ll){return function(ev){var v=stimulusPercentToCode(ll);showPatch('gs_'+ll,v,v,v,ev);};})(l);
   gs20.appendChild(b);
  }
  var colors=[{n:'red',c:'#f44',ch:[1,0,0]},{n:'green',c:'var(--green)',ch:[0,1,0]},{n:'blue',c:'#5b7fff',ch:[0,0,1]},
@@ -1907,17 +2480,19 @@ function buildCalPatterns(){
  var ccAll=colors.concat([{n:'white',c:'#fff',ch:[1,1,1]},{n:'50% gray',c:'var(--text2)',ch:[0.5,0.5,0.5]},{n:'black',c:'var(--text)',ch:[0,0,0]}]);
  ccAll.forEach(function(co){
   [75,100].forEach(function(lv){
-   var v=Math.round(lv*255/100);
-   var r=Math.round(co.ch[0]*v),g=Math.round(co.ch[1]*v),b2=Math.round(co.ch[2]*v);
    var btn=document.createElement('button');
    btn.className='pat-btn';
    var label=co.n.charAt(0).toUpperCase()+co.n.slice(1);
    btn.innerHTML='<span style="color:'+co.c+'">'+label+'</span>';
-   btn.onclick=function(ev){showPatch('cc_'+co.n.replace(/\s+/g,'')+'_'+lv,r,g,b2,ev);};
+   btn.onclick=function(ev){
+    var r=stimulusPercentToCode(lv*co.ch[0]),g=stimulusPercentToCode(lv*co.ch[1]),b2=stimulusPercentToCode(lv*co.ch[2]);
+    showPatch('cc_'+co.n.replace(/\s+/g,'')+'_'+lv,r,g,b2,ev);
+   };
    (lv===75?cc75:cc100).appendChild(btn);
   });
  });
  var satDiv=document.getElementById('satGrid');
+ var satStimulus=75;
  colors.forEach(function(co){
   var row=document.createElement('div');row.className='sat-row';
   var lbl=document.createElement('span');lbl.className='sat-label';lbl.style.color=co.c;
@@ -1925,12 +2500,14 @@ function buildCalPatterns(){
   row.appendChild(lbl);
   var btns=document.createElement('div');btns.className='sat-btns';
   [25,50,75,100].forEach(function(s){
-   var off=Math.round(255*(1-s/100));
-   var r=co.ch[0]?255:off,g=co.ch[1]?255:off,b2=co.ch[2]?255:off;
    var btn=document.createElement('button');
    btn.className='pat-btn pat-btn-sm';
    btn.textContent=s+'%';
-   btn.onclick=function(ev){showPatch('sat_'+co.n+'_'+s,r,g,b2,ev);};
+   btn.onclick=function(ev){
+    var off=satStimulus*(1-s/100);
+    var r=stimulusPercentToCode(co.ch[0]?satStimulus:off),g=stimulusPercentToCode(co.ch[1]?satStimulus:off),b2=stimulusPercentToCode(co.ch[2]?satStimulus:off);
+    showPatch('sat_'+co.n+'_'+s,r,g,b2,ev);
+   };
    btns.appendChild(btn);
   });
   row.appendChild(btns);
@@ -1979,7 +2556,7 @@ async function applySettings(){
  }else if(sm==='dv'){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
    is_ll_dovi:'1',is_std_dovi:'1',
-   dv_status:'1',primaries:'1',color_format:'0',
+   dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'12',
    dv_interface:getVal('dv_interface'),
    dv_map_mode:getVal('dv_map_mode')});
  }
@@ -1988,7 +2565,6 @@ async function applySettings(){
  if(r&&r.status==='ok'){
   toast('Applying settings...');
   document.getElementById('applyBar').style.display='none';
-  await fetchJSON('/api/restart',{method:'POST'});
   setTimeout(()=>{loadConfig().then(()=>updateDropdowns());loadInfo();toast('Settings applied');},3000);
  }else toast('Failed to apply','err');
 }
@@ -2052,6 +2628,24 @@ async function connectWifi(){
   },1500);
  }else toast('Connection failed','err');
  btn.disabled=false;btn.textContent='Connect';
+}
+
+async function disconnectWifi(){
+ const btn=document.getElementById('wifiDisconnectBtn');
+ if(btn) btn.disabled=true;
+ if(!window.confirm('Disconnect the current WiFi client connection?')){
+  if(btn) btn.disabled=false;
+  return;
+ }
+ const r=await fetchJSON('/api/wifi/disconnect',{method:'POST'});
+ if(r&&r.status==='ok'){
+  toast('Disconnecting WiFi...');
+  hideWifiForm();
+  setTimeout(()=>{loadInfo();if(btn) btn.disabled=false;},1500);
+ }else{
+  toast('WiFi disconnect failed','err');
+  if(btn) btn.disabled=false;
+ }
 }
 
 async function cecCmd(cmd){
@@ -2296,9 +2890,9 @@ async function applyUpdate(){
 
 // Init
 (async()=>{
- await loadConfig(true);
  await loadModes(true);
  await loadCapabilities(true);
+ await loadConfig(true);
  updateDropdowns();
  await checkPing();
  await loadInfo(true);
@@ -2306,8 +2900,9 @@ async function applyUpdate(){
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadInfoframes(),1500);
  setTimeout(()=>checkUpdate(),2500);
- setInterval(checkPing,10000);
- setInterval(()=>loadInfo(true),30000);
+ setInterval(checkPing,20000);
+ setInterval(syncRemoteConfig,10000);
+ setInterval(()=>loadInfo(true),60000);
 })();
 </script>
 </body>

@@ -46,8 +46,46 @@ sub auto_select_4k_mode (@) {
 ###############################################
 #  Apply DRM Connector Properties (KMS only)  #
 ###############################################
+sub kms_connector_has_property(@) {
+ my $prop_name=shift;
+ return 0 if(!$is_kms || $prop_name eq "");
+ open(MT_PROP,"$modetest -c 2>/dev/null|");
+ while(<MT_PROP>) {
+  if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
+   close(MT_PROP);
+   return 1;
+  }
+ }
+ close(MT_PROP);
+ return 0;
+}
+
+sub map_kms_colorspace(@) {
+ my $colorimetry=shift;
+ my $color_fmt=shift;
+ $color_fmt=0 if($color_fmt eq "");
+ return 0 if($colorimetry eq "" || $colorimetry == 0);
+ return 0 if($colorimetry == 2 && $color_fmt == 0);
+ return 2 if($colorimetry == 2);
+ return 9 if($colorimetry == 9 && $color_fmt == 0);
+ return 10 if($colorimetry == 9);
+ return $colorimetry;
+}
+
+sub map_broadcast_rgb(@) {
+ my $quant_range=shift;
+ return 0 if($quant_range eq "");
+ return 2 if($quant_range == 1);
+ return 1 if($quant_range == 2);
+ return 0;
+}
+
+###############################################
+#  Apply DRM Connector Properties (KMS only)  #
+###############################################
 sub apply_drm_properties (@) {
  return if(!$is_kms);
+ my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
  # Find connected HDMI connector ID
  my $connector_id="";
  open(MT,"$modetest -c 2>/dev/null|");
@@ -61,6 +99,7 @@ sub apply_drm_properties (@) {
  return if($connector_id eq "");
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
+ $max_bpc=12 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
   system("$modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
@@ -69,6 +108,7 @@ sub apply_drm_properties (@) {
  # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
+ $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
  system("$modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
@@ -76,14 +116,32 @@ sub apply_drm_properties (@) {
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
  if($quant_range ne "") {
   system("$modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
-  &log("DRM: Set rgb quant range=$quant_range on connector $connector_id");
+  my $broadcast_rgb=&map_broadcast_rgb($quant_range);
+  system("$modetest -w '$connector_id:Broadcast RGB:$broadcast_rgb' 2>/dev/null");
+  &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
  }
- # Set Colorimetry (enums: Default=0, BT.2020_YCC=2, BT.2020_RGB=9, etc.)
+ # Set colorimetry / colorspace.
+ # Older vc4 exposes "Colorimetry" while Bookworm exposes "Colorspace".
  my $colorimetry=$pgenerator_conf{"colorimetry"};
+ $colorimetry=9 if($is_dv);
  if($colorimetry ne "" && $colorimetry > 0) {
+  my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
   system("$modetest -w '$connector_id:Colorimetry:$colorimetry' 2>/dev/null");
-  &log("DRM: Set Colorimetry=$colorimetry on connector $connector_id");
+  system("$modetest -w '$connector_id:Colorspace:$colorspace' 2>/dev/null");
+  &log("DRM: Set Colorimetry=$colorimetry / Colorspace=$colorspace on connector $connector_id");
  }
+}
+
+sub apply_hdr_metadata_helper (@) {
+ my $helper="/usr/bin/pgsethdr";
+ return if(!$is_kms || !-x $helper);
+ my $output=`$helper 2>&1`;
+ chomp($output);
+ if($? != 0) {
+  &log("DRM: pgsethdr failed".($output ne "" ? " — $output" : ""));
+  return;
+ }
+ &log("DRM: $output") if($output ne "");
 }
 
 ###############################################
@@ -91,27 +149,44 @@ sub apply_drm_properties (@) {
 ###############################################
 sub pattern_generator_start(@) {
  my $no_clean_files = shift;
+ my $use_drm_override=1;
+ my $has_dovi_metadata=1;
  &clean_files() if(!$no_clean_files);
  symlink("running/operations.txt","$var_dir/operations.txt") if(!-l "$var_dir/operations.txt");
  mkdir("$var_dir/running/tmp") if(!-d "$var_dir/running/tmp");
  &auto_select_4k_mode();
  &apply_drm_properties();
  &get_hdmi_info();
+ if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry")) {
+  $use_drm_override=0;
+  &log("DRM: Colorspace-based kernel detected; starting renderer without drm_override.so");
+ }
+ if($is_kms && !&kms_connector_has_property("DOVI_OUTPUT_METADATA")) {
+  $has_dovi_metadata=0;
+ }
  # Select the DV binary when dv_status=1 — the .dv binary has native DOVI
  # metadata support that triggers DV mode on compatible TVs.
  # drm_override.so (LD_PRELOAD) provides additional overrides for max_bpc,
  # Colorimetry, output_format, and keeps the DOVI blob alive on subsequent
  # atomic commits.
  my $binary=$pattern_generator;
- if($pgenerator_conf{"dv_status"} eq "1" && -f "${pattern_generator}.dv") {
+ if($pgenerator_conf{"dv_status"} eq "1" && -f "${pattern_generator}.dv" && $has_dovi_metadata) {
   $binary="${pattern_generator}.dv";
   &log("DV mode: using $binary (drm_override provides property overrides)");
+ } elsif($pgenerator_conf{"dv_status"} eq "1" && !$has_dovi_metadata) {
+  &log("DV mode requested but DOVI_OUTPUT_METADATA is unavailable on this kernel; falling back to $binary");
  }
  # Use Mesa EGL (not Broadcom) on KMS — Broadcom EGL needs dispmanx/VCHIQ
  # which is unavailable with vc4-kms-v3d. LD_LIBRARY_PATH=/usr/lib forces
  # Mesa libEGL.so + libGLESv2.so so the binary uses DRM/GBM rendering.
  # LD_PRELOAD overrides DRM property calls to fix max_bpc setting.
- system("LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+ if($use_drm_override) {
+  system("LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+ } else {
+  system("LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+ }
+ usleep(250000);
+ &apply_hdr_metadata_helper();
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
 }
