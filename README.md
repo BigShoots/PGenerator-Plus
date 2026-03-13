@@ -43,6 +43,30 @@ You can also trigger updates via SSH (`root` / `PGenerator!!$`):
 /usr/sbin/pgenerator-update apply
 ```
 
+### Build Your Own Image (Bring Your Own BiasiLinux Base)
+
+If you want to assemble your own PGenerator+ image locally, use the included overlay builder:
+
+```bash
+sudo ./tools/build_pgenerator_plus_image.sh \
+  --base-image /path/to/compatible-biasilinux-pgenerator.img \
+  --output ./build/PGenerator_Plus_custom.img
+```
+
+What the script does:
+
+1. Copies your base image to a new output image.
+2. Mounts the Linux root partition from that copied image.
+3. Overlays this repository's `etc/`, `usr/`, `var/`, and `lib/` trees onto it.
+4. Leaves you with a bootable image that uses the repo's current PGenerator+ files and shipped prebuilt renderer binaries.
+
+Important limitations:
+
+- This is an overlay build, not a full from-scratch distro build.
+- The base image must already be a compatible BiasiLinux/PGenerator image with the expected distro dependencies, `pgenerator` account, and sudoers setup.
+- The `PGeneratord` and `PGeneratord.dv` binaries are prebuilt and are taken from this repository as-is.
+- The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
+
 ---
 
 ## Features
