@@ -10,7 +10,6 @@
 #   webui_http()  — HTTP server (port 80)
 #   webui_mdns()  — mDNS responder (port 5353, multicast 224.0.0.251)
 #
-
 ###############################################
 #             mDNS Route Helpers              #
 ###############################################
@@ -178,6 +177,12 @@ my $_CEC_CACHE_TTL=30;
 
 my $_caps_cache="";
 my $_caps_cache_time=0;
+my $_stats_cache="";
+my $_stats_cache_time=0;
+my $_STATS_CACHE_TTL=2;
+my $_stats_cpu_total=0;
+my $_stats_cpu_idle=0;
+my $_stats_cpu_last=0;
 
 sub webui_http (@) {
  $SIG{PIPE}='IGNORE';
@@ -276,6 +281,15 @@ sub webui_http (@) {
     my $len=length($_info_cache);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$_info_cache";
    }
+  elsif($path eq "/api/stats") {
+   my $now=time();
+   if(!$_stats_cache || ($now - $_stats_cache_time) >= $_STATS_CACHE_TTL) {
+    $_stats_cache=&webui_stats_json();
+    $_stats_cache_time=$now;
+   }
+   my $len=length($_stats_cache);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$_stats_cache";
+  }
    elsif($path eq "/api/restart") {
     &pattern_generator_stop();
     &pattern_generator_start();
@@ -506,6 +520,68 @@ sub webui_info_json (@) {
  my $cal_sw=$calibration_client_software; $cal_sw=~s/"/\\"/g;
  my $cal_conn=($cal_ip ne "")?"true":"false";
  return "{\"hostname\":\"$hostname\",\"version\":\"$ver\",\"temperature\":\"$temp\",\"uptime\":\"$uptime\",\"resolution\":\"$resolution\",\"interfaces\":$ip_json,\"wifi\":{\"ssid\":\"$wifi_ssid\",\"freq\":\"$wifi_freq\",\"band\":\"$wifi_band\",\"signal\":\"$wifi_signal\",\"state\":\"$wifi_state\"},\"calibration\":{\"connected\":$cal_conn,\"ip\":\"$cal_ip\",\"software\":\"$cal_sw\"}}";
+}
+
+sub webui_cpu_snapshot (@) {
+ my $stat=&read_from_file("/proc/stat");
+ foreach my $line (split(/\n/,$stat)) {
+  next if($line !~ /^cpu\s+/);
+  my @fields=split(/\s+/,$line);
+  shift @fields;
+  my $total=0;
+  $total+=$_ for(@fields);
+  my $idle=int($fields[3]||0)+int($fields[4]||0);
+  return ($total,$idle);
+ }
+ return (0,0);
+}
+
+sub webui_stats_json (@) {
+ my ($cpu_total,$cpu_idle)=&webui_cpu_snapshot();
+ if($_stats_cpu_total <= 0 || $cpu_total <= $_stats_cpu_total) {
+  $_stats_cpu_total=$cpu_total;
+  $_stats_cpu_idle=$cpu_idle;
+  select(undef,undef,undef,0.1);
+  ($cpu_total,$cpu_idle)=&webui_cpu_snapshot();
+ }
+
+ my $cpu_percent=int($_stats_cpu_last||0);
+ my $delta_total=$cpu_total-$_stats_cpu_total;
+ my $delta_idle=$cpu_idle-$_stats_cpu_idle;
+ if($delta_total > 0) {
+  $cpu_percent=int((100*(($delta_total-$delta_idle)/$delta_total))+0.5);
+  $cpu_percent=0 if($cpu_percent < 0);
+  $cpu_percent=100 if($cpu_percent > 100);
+  $_stats_cpu_last=$cpu_percent;
+ }
+ $_stats_cpu_total=$cpu_total;
+ $_stats_cpu_idle=$cpu_idle;
+
+ my ($mem_total_kb,$mem_avail_kb,$mem_free_kb)=(0,0,0);
+ foreach my $line (split(/\n/,&read_from_file($mem_info_file))) {
+  $mem_total_kb=$1 if($line =~ /^MemTotal:\s+(\d+)/);
+  $mem_avail_kb=$1 if($line =~ /^MemAvailable:\s+(\d+)/);
+  $mem_free_kb=$1 if($line =~ /^MemFree:\s+(\d+)/);
+ }
+ $mem_avail_kb=$mem_free_kb if($mem_avail_kb <= 0);
+ my $mem_used_kb=$mem_total_kb-$mem_avail_kb;
+ $mem_used_kb=0 if($mem_used_kb < 0);
+ my $mem_percent=($mem_total_kb > 0) ? int((100*$mem_used_kb/$mem_total_kb)+0.5) : 0;
+ my $mem_used_mb=int($mem_used_kb/1024);
+ my $mem_total_mb=int($mem_total_kb/1024);
+ my $mem_avail_mb=int($mem_avail_kb/1024);
+
+ my $freq_raw=&read_from_file($scaling_freq_file);
+ $freq_raw=~s/\s+//g;
+ my $cpu_freq_mhz=($freq_raw =~ /^\d+$/) ? int($freq_raw/1000) : 0;
+
+ my $load_avg=&read_from_file($load_avg_file);
+ my ($load_1,$load_5,$load_15)=split(/\s+/,$load_avg);
+ $load_1="" if(!defined $load_1);
+ $load_5="" if(!defined $load_5);
+ $load_15="" if(!defined $load_15);
+
+ return "{\"cpu_percent\":$cpu_percent,\"cpu_freq_mhz\":$cpu_freq_mhz,\"memory_percent\":$mem_percent,\"memory_used_mb\":$mem_used_mb,\"memory_total_mb\":$mem_total_mb,\"memory_available_mb\":$mem_avail_mb,\"load_1\":\"$load_1\",\"load_5\":\"$load_5\",\"load_15\":\"$load_15\"}";
 }
 
 sub webui_modes_json (@) {
@@ -1074,10 +1150,18 @@ padding:10px 16px;border-radius:6px;font-size:.85rem;opacity:0;transform:transla
 transition:all .3s;z-index:999;pointer-events:none}
 .toast.show{opacity:1;transform:translateY(0)}
 .toast.error{background:var(--red)}
-.info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}
-.info-item{background:#0d0d15;padding:8px;border-radius:6px}
+.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:6px}
+.info-item{background:#0d0d15;padding:8px;border-radius:6px;min-width:0}
 .info-item .label{font-size:.6rem;color:var(--text2);text-transform:uppercase}
-.info-item .value{font-size:.85rem;margin-top:1px;word-break:break-all}
+.info-item .value{font-size:.82rem;margin-top:1px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:normal;overflow-wrap:normal}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px}
+.stat-card{background:#0d0d15;padding:8px;border-radius:8px}
+.stat-label{font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px}
+.stat-value{font-size:1.05rem;font-weight:700;margin:3px 0 4px}
+.stat-value.warn{color:#ffeb3b}.stat-value.hot{color:var(--orange)}.stat-value.bad{color:var(--red)}
+.stat-sub{font-size:.68rem;color:var(--text2);line-height:1.3}
+.meter{height:5px;background:#1d1d29;border-radius:999px;overflow:hidden;margin-bottom:4px}
+.meter-fill{height:100%;width:0;background:linear-gradient(135deg,var(--accent),var(--accent2));transition:width .35s ease}
 .wifi-list{max-height:150px;overflow-y:auto;margin:6px 0}
 .wifi-item{display:flex;justify-content:space-between;align-items:center;
 padding:6px 10px;border-radius:5px;cursor:pointer;transition:background .2s}
@@ -1315,8 +1399,22 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
  </div>
 
  <!-- Device Info -->
- <div class="card" data-widget="info" draggable="true">
+ <div class="card span2" data-widget="info" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Device Info</h2>
+  <div class="stat-grid" style="margin-bottom:8px">
+   <div class="stat-card">
+    <div class="stat-label">CPU Usage</div>
+    <div class="stat-value" id="cpuUsageValue">--%</div>
+    <div class="meter"><div class="meter-fill" id="cpuUsageBar"></div></div>
+    <div class="stat-sub" id="cpuUsageSub">--</div>
+   </div>
+   <div class="stat-card">
+    <div class="stat-label">Memory Usage</div>
+    <div class="stat-value" id="memUsageValue">--%</div>
+    <div class="meter"><div class="meter-fill" id="memUsageBar"></div></div>
+    <div class="stat-sub" id="memUsageSub">--</div>
+   </div>
+  </div>
   <div class="info-grid" id="infoGrid"></div>
  </div>
 
@@ -1346,6 +1444,25 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
   </div>
  </div>
 
+ <!-- WiFi AP (PAN) -->
+ <div class="card" data-widget="ap" draggable="true">
+  <h2><span class="drag-handle">&#9776;</span>WiFi Access Point</h2>
+  <div class="grid">
+   <div class="field">
+    <label>SSID</label>
+    <input type="text" id="apSsid" placeholder="PGenerator">
+   </div>
+   <div class="field">
+    <label>Password</label>
+    <input type="text" id="apPass" placeholder="Min 8 characters">
+   </div>
+  </div>
+  <div class="btn-row" style="margin-top:8px">
+   <button class="btn btn-sm btn-primary" onclick="applyAP()">Save AP Settings</button>
+  </div>
+  <div style="margin-top:6px;font-size:.7rem;color:var(--text2)">Connect to this AP at 10.10.10.1</div>
+ </div>
+
  <!-- HDMI-CEC TV Control -->
  <div class="card" data-widget="cec" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>HDMI-CEC</h2>
@@ -1371,44 +1488,25 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
   </details>
  </div>
 
- <!-- Resolve Protocol -->
- <div class="card" data-widget="resolve" draggable="true">
-  <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
-  <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect to CalMAN / HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
-  <div class="grid">
-   <div class="field">
-    <label>Calibration PC IP</label>
-    <input type="text" id="resolveIp" placeholder="192.168.1.x">
+   <!-- Resolve Protocol -->
+   <div class="card" data-widget="resolve" draggable="true">
+    <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
+    <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect to CalMAN / HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
+    <div class="grid">
+     <div class="field">
+      <label>Calibration PC IP</label>
+      <input type="text" id="resolveIp" placeholder="192.168.1.x">
+     </div>
+     <div class="field">
+      <label>Port</label>
+      <input type="number" id="resolvePort" value="20002" min="1" max="65535">
+     </div>
+    </div>
+    <div class="btn-row" style="margin-top:8px">
+     <button class="btn btn-sm btn-success" id="resolveConnectBtn" onclick="resolveConnect()">&#9654; Connect</button>
+     <button class="btn btn-sm btn-danger" id="resolveDisconnectBtn" onclick="resolveDisconnect()" style="display:none">&#9724; Disconnect</button>
+    </div>
    </div>
-   <div class="field">
-    <label>Port</label>
-    <input type="number" id="resolvePort" value="20002" min="1" max="65535">
-   </div>
-  </div>
-  <div class="btn-row" style="margin-top:8px">
-   <button class="btn btn-sm btn-success" id="resolveConnectBtn" onclick="resolveConnect()">&#9654; Connect</button>
-   <button class="btn btn-sm btn-danger" id="resolveDisconnectBtn" onclick="resolveDisconnect()" style="display:none">&#9724; Disconnect</button>
-  </div>
- </div>
-
- <!-- WiFi AP (PAN) -->
- <div class="card" data-widget="ap" draggable="true">
-  <h2><span class="drag-handle">&#9776;</span>WiFi Access Point</h2>
-  <div class="grid">
-   <div class="field">
-    <label>SSID</label>
-    <input type="text" id="apSsid" placeholder="PGenerator">
-   </div>
-   <div class="field">
-    <label>Password</label>
-    <input type="text" id="apPass" placeholder="Min 8 characters">
-   </div>
-  </div>
-  <div class="btn-row" style="margin-top:8px">
-   <button class="btn btn-sm btn-primary" onclick="applyAP()">Save AP Settings</button>
-  </div>
-  <div style="margin-top:6px;font-size:.7rem;color:var(--text2)">Connect to this AP at 10.10.10.1</div>
- </div>
 
  <!-- HDMI Infoframes -->
  <div class="card span2" data-widget="infoframes" draggable="true">
@@ -1826,9 +1924,50 @@ async function loadInfo(quiet){
    rDisc.style.display='none';
   }
  }
-}function addInfo(g,label,value){
+}
+function statToneClass(pct){
+ pct=Number(pct)||0;
+ if(pct>=90)return' bad';
+ if(pct>=75)return' hot';
+ if(pct>=60)return' warn';
+ return'';
+}
+function setMeter(id,pct){
+ const el=document.getElementById(id);
+ if(el)el.style.width=Math.max(0,Math.min(100,Number(pct)||0))+'%';
+}
+async function loadStats(quiet){
+ const stats=await fetchJSON('/api/stats',{_quiet:!!quiet,_timeoutMs:5000});
+ if(!stats)return;
+ const cpuPct=Number(stats.cpu_percent),memPct=Number(stats.memory_percent);
+ const cpuVal=document.getElementById('cpuUsageValue');
+ const memVal=document.getElementById('memUsageValue');
+ if(cpuVal){
+  cpuVal.className='stat-value'+statToneClass(cpuPct);
+  cpuVal.textContent=isNaN(cpuPct)?'--%':cpuPct+'%';
+ }
+ if(memVal){
+  memVal.className='stat-value'+statToneClass(memPct);
+  memVal.textContent=isNaN(memPct)?'--%':memPct+'%';
+ }
+ setMeter('cpuUsageBar',cpuPct);
+ setMeter('memUsageBar',memPct);
+ const cpuBits=[];
+ if(stats.cpu_freq_mhz)cpuBits.push(stats.cpu_freq_mhz+' MHz');
+ if(stats.load_1)cpuBits.push('LA '+stats.load_1);
+ document.getElementById('cpuUsageSub').textContent=cpuBits.join(' • ')||'--';
+ let memText='--';
+ if(stats.memory_total_mb){
+  memText=stats.memory_used_mb+' / '+stats.memory_total_mb+' MB';
+  if(stats.memory_available_mb)memText+=' • Avail '+stats.memory_available_mb+' MB';
+ }
+ document.getElementById('memUsageSub').textContent=memText;
+}
+function addInfo(g,label,value){
  const d=document.createElement('div');d.className='info-item';
- d.innerHTML='<div class="label">'+label+'</div><div class="value">'+value+'</div>';
+ const l=document.createElement('div');l.className='label';l.textContent=label;
+ const v=document.createElement('div');v.className='value';v.textContent=value==null?'':String(value);v.title=v.textContent;
+ d.appendChild(l);d.appendChild(v);
  g.appendChild(d);
 }
 function formatUptime(s){
@@ -2202,14 +2341,15 @@ async function loadInfoframes(){
 (function(){
  const dash=document.querySelector('.dashboard');
  const widgets=()=>[...dash.querySelectorAll('[data-widget]')];
+ const WIDGET_ORDER_KEY='pg_widget_order_v5';
  let dragEl=null;
  function saveOrder(){
   const order=widgets().map(w=>w.dataset.widget);
-  localStorage.setItem('pg_widget_order',JSON.stringify(order));
+  localStorage.setItem(WIDGET_ORDER_KEY,JSON.stringify(order));
  }
  function restoreOrder(){
   try{
-   const order=JSON.parse(localStorage.getItem('pg_widget_order'));
+  const order=JSON.parse(localStorage.getItem(WIDGET_ORDER_KEY));
    if(!order||!Array.isArray(order))return;
    const map={};widgets().forEach(w=>{map[w.dataset.widget]=w;});
    const end=dash.querySelector('.toast')||null;
@@ -2301,12 +2441,14 @@ async function applyUpdate(){
  await loadCapabilities(true);
  updateDropdowns();
  await checkPing();
+ await loadStats(true);
  await loadInfo(true);
  setTimeout(()=>loadCecStatus(),500);
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadInfoframes(),1500);
  setTimeout(()=>checkUpdate(),2500);
  setInterval(checkPing,10000);
+ setInterval(()=>loadStats(true),3000);
  setInterval(()=>loadInfo(true),30000);
 })();
 </script>
