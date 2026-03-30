@@ -55,6 +55,39 @@ sub calman_apl_levels (@) {
  return (0,$full_max,$full_max,"full");
 }
 
+sub calman_target_max (@) {
+ my $bits=int($bits_default || 8);
+ return 1023 if($bits == 10);
+ return 4095 if($bits == 12);
+ return 255;
+}
+
+sub calman_scale_value (@) {
+ my $value=int(shift);
+ my $input_max=int(shift);
+ my $target_max=&calman_target_max();
+ my %bit_depth_for_max=(255 => 8, 1023 => 10, 4095 => 12);
+ $input_max=255 if($input_max <= 0);
+ $value=0 if($value < 0);
+ $value=$input_max if($value > $input_max);
+ return $value if($input_max == $target_max);
+ if($bit_depth_for_max{$input_max} && $bit_depth_for_max{$target_max}) {
+  my $src_bits=$bit_depth_for_max{$input_max};
+  my $dst_bits=$bit_depth_for_max{$target_max};
+  return $target_max if($value >= $input_max);
+  return $value << ($dst_bits - $src_bits) if($dst_bits > $src_bits);
+  return $value >> ($src_bits - $dst_bits) if($dst_bits < $src_bits);
+ }
+ return int($value/$input_max*$target_max + 0.5);
+}
+
+sub calman_scale_triplet_8bit (@) {
+ my $r=shift;
+ my $g=shift;
+ my $b=shift;
+ return &calman_scale_value($r,255).",".&calman_scale_value($g,255).",".&calman_scale_value($b,255);
+}
+
 sub calman_apl_bg (@) {
  my $rgb=shift;
  my $win_pct=shift;
@@ -942,17 +975,13 @@ sub pattern_daemon {
       my $cr_b=int($el_cmd[2]);
       my $cr_tenBit=int($el_cmd[3]);
       my $cr_size=int($el_cmd[4]);
-      my $target_bits=int($bits_default || 8);
-      my $target_max=($target_bits == 10) ? 1023 : ($target_bits == 12) ? 4095 : 255;
+        my $target_max=&calman_target_max();
       my $input_max=$cr_tenBit ? 1023 : 255;
       # Scale CommandRGB to the current output bit depth.  Only reduce to 8-bit
       # when output is explicitly configured for 8bpc.
-      $cr_r=int($cr_r/$input_max*$target_max+0.5) if($input_max != $target_max);
-      $cr_g=int($cr_g/$input_max*$target_max+0.5) if($input_max != $target_max);
-      $cr_b=int($cr_b/$input_max*$target_max+0.5) if($input_max != $target_max);
-      $cr_r=$target_max if($cr_r > $target_max);
-      $cr_g=$target_max if($cr_g > $target_max);
-      $cr_b=$target_max if($cr_b > $target_max);
+        $cr_r=&calman_scale_value($cr_r,$input_max);
+        $cr_g=&calman_scale_value($cr_g,$input_max);
+        $cr_b=&calman_scale_value($cr_b,$input_max);
         my ($cr_size_effective,$cr_bg)=&calman_commandrgb_window("$cr_r,$cr_g,$cr_b",$cr_size,"CommandRGB");
       # Apply any pending settings before showing pattern
       $calman_apply->();
@@ -976,14 +1005,11 @@ sub pattern_daemon {
      if($type =~/RGB_/) {
       @el_cmd=split(",",$pattern_cmd);
       my $calman_max=1023;
-      my $target_max=($bits_default == 10) ? 1023 : ($bits_default == 12) ? 4095 : 255;
+        my $target_max=&calman_target_max();
       &log("Calman PATTERN: type=$type raw=$el_cmd[0],$el_cmd[1],$el_cmd[2] bits_default=$bits_default target_max=$target_max");
-      $r=int($el_cmd[0]/$calman_max*$target_max+0.5);
-      $g=int($el_cmd[1]/$calman_max*$target_max+0.5);
-      $b=int($el_cmd[2]/$calman_max*$target_max+0.5);
-      $r=$target_max if($r > $target_max);
-      $g=$target_max if($g > $target_max);
-      $b=$target_max if($b > $target_max);
+        $r=&calman_scale_value($el_cmd[0],$calman_max);
+        $g=&calman_scale_value($el_cmd[1],$calman_max);
+        $b=&calman_scale_value($el_cmd[2],$calman_max);
       &log("Calman PATTERN: scaled=$r,$g,$b bg=$calman_bg max_bpc=$pgenerator_conf{'max_bpc'}");
       if($calman_special_pattern{$key} ne "" &&  -f "$pattern_templates/$calman_special_pattern{$key}") {
        $response=&get_pattern("TESTTEMPLATE","$calman_special_pattern{$key}","","TESTTEMPLATE:$calman_special_pattern{$key}");
@@ -995,8 +1021,7 @@ sub pattern_daemon {
       $calman_apply->();
       # RGB_B: 4th field is background grey level (10-bit, scale to target bits)
       if($type =~/RGB_B/) {
-       my $bg_val=int($el_cmd[3]/$calman_max*$target_max+0.5);
-       $bg_val=$target_max if($bg_val > $target_max);
+        my $bg_val=&calman_scale_value($el_cmd[3],$calman_max);
         $calman_apl_enabled=0;
        $calman_bg="$bg_val,$bg_val,$bg_val";
        &clean_pattern_files();
@@ -1034,12 +1059,9 @@ sub pattern_daemon {
        my $win_pct=$calman_win_size;
        my $effective_bg=$calman_bg;
        if(scalar(@el_cmd) >= 7) {
-        my $bg_r=int($el_cmd[3]/$calman_max*$target_max+0.5);
-        my $bg_g=int($el_cmd[4]/$calman_max*$target_max+0.5);
-        my $bg_b=int($el_cmd[5]/$calman_max*$target_max+0.5);
-        $bg_r=$target_max if($bg_r > $target_max);
-        $bg_g=$target_max if($bg_g > $target_max);
-        $bg_b=$target_max if($bg_b > $target_max);
+        my $bg_r=&calman_scale_value($el_cmd[3],$calman_max);
+        my $bg_g=&calman_scale_value($el_cmd[4],$calman_max);
+        my $bg_b=&calman_scale_value($el_cmd[5],$calman_max);
         $effective_bg="$bg_r,$bg_g,$bg_b";
         $win_pct=int($el_cmd[6]);
        } elsif(scalar(@el_cmd) >= 4) {
@@ -1238,22 +1260,27 @@ sub pattern_daemon {
       &clean_pattern_files();
       my $sp_name=uc($pattern_cmd);
       $sp_name=~s/^\s+|\s+$//g;
+      my $black_rgb=&calman_scale_triplet_8bit(0,0,0);
+      my $white_rgb=&calman_scale_triplet_8bit(255,255,255);
+      my $gray20_rgb=&calman_scale_triplet_8bit(20,20,20);
+      my $gray128_rgb=&calman_scale_triplet_8bit(128,128,128);
+      my $gray235_rgb=&calman_scale_triplet_8bit(235,235,235);
       if($sp_name eq "BRIGHTNESS") {
-       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"20,20,20","$calman_bg","","","",1,"calman");
+       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray20_rgb","$calman_bg","","","",1,"calman");
       } elsif($sp_name eq "CONTRAST") {
-       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"235,235,235","$calman_bg","","","",1,"calman");
+       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray235_rgb","$calman_bg","","","",1,"calman");
       } elsif($sp_name eq "ALIGNMENT" || $sp_name eq "OVERSCAN") {
         # White border frame pattern for alignment/overscan check
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"0,0,0","0,0,0","","","",1,"calman");
-        &create_pattern_file("RECTANGLE","$w_s,2",100,"255,255,255","","0,0","","",0,"calman");
-        &create_pattern_file("RECTANGLE","$w_s,2",100,"255,255,255","","0,".($h_s-2),"","",0,"calman");
-        &create_pattern_file("RECTANGLE","2,$h_s",100,"255,255,255","","0,0","","",0,"calman");
-        &create_pattern_file("RECTANGLE","2,$h_s",100,"255,255,255","","".($w_s-2).",0","","",0,"calman");
-        &create_pattern_file("RECTANGLE","2,$h_s",100,"255,255,255","","".(int($w_s/2)-1).",0","","",0,"calman");
-        &create_pattern_file("RECTANGLE","$w_s,2",100,"255,255,255","","0,".(int($h_s/2)-1),"","",0,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$black_rgb","$black_rgb","","","",1,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,2",100,"$white_rgb","","0,0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,2",100,"$white_rgb","","0,".($h_s-2),"","",0,"calman");
+        &create_pattern_file("RECTANGLE","2,$h_s",100,"$white_rgb","","0,0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","2,$h_s",100,"$white_rgb","","".($w_s-2).",0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","2,$h_s",100,"$white_rgb","","".(int($w_s/2)-1).",0","","",0,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,2",100,"$white_rgb","","0,".(int($h_s/2)-1),"","",0,"calman");
       } else {
        &log("Calman: unknown specialty pattern: $sp_name");
-       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"128,128,128","$calman_bg","","","",1,"calman");
+       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman");
       }
       &send_key_to_client($connection,"");
       last;
