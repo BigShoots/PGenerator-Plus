@@ -345,6 +345,26 @@ sub webui_http (@) {
     my $len=length($r);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
    }
+   elsif($path eq "/api/submit_logs" && $method eq "POST") {
+    my $tmp=&webui_create_logs_bundle();
+    if(!$tmp || !-f $tmp) {
+     my $r='{"status":"error","message":"Could not create log bundle"}';
+     my $len=length($r);
+     print $client "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
+    } else {
+     if(open(my $fh,"<:raw",$tmp)) {
+      my $size=-s $tmp;
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\nContent-Disposition: attachment; filename=\"pg_logs.tgz\"\r\nContent-Length: $size\r\n$cors\r\n";
+      while(read($fh,my $buf,16384)){ print $client $buf; }
+      close($fh);
+     } else {
+      my $r='{"status":"error","message":"Failed to read bundle"}';
+      my $len=length($r);
+      print $client "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
+     }
+     unlink $tmp;
+    }
+   }
    elsif($path eq "/api/reboot") {
     my $r='{"status":"ok","message":"Rebooting..."}';
     my $len=length($r);
@@ -587,6 +607,28 @@ sub webui_info_json (@) {
  my $cal_sw=$calibration_client_software; $cal_sw=~s/"/\\"/g;
  my $cal_conn=($cal_ip ne "")?"true":"false";
  return "{\"hostname\":\"$hostname\",\"version\":\"$ver\",\"temperature\":\"$temp\",\"uptime\":\"$uptime\",\"resolution\":\"$resolution\",\"interfaces\":$ip_json,\"wifi\":{\"ssid\":\"$wifi_ssid\",\"freq\":\"$wifi_freq\",\"band\":\"$wifi_band\",\"signal\":\"$wifi_signal\",\"state\":\"$wifi_state\"},\"calibration\":{\"connected\":$cal_conn,\"ip\":\"$cal_ip\",\"software\":\"$cal_sw\"}}";
+}
+
+sub webui_create_logs_bundle (@) {
+ my $ts=time();
+ my $tmp="/tmp/pg_logs_${ts}.tgz";
+ my $d="/tmp/pg_logcollect_$$";
+ system("rm -rf $d; mkdir -p $d");
+ system("grep -i PGeneratord /var/log/syslog* /var/log/messages* 2>/dev/null | tail -n 2000 > $d/syslog.txt 2>/dev/null || true");
+ system("tail -n 2000 /var/log/daemon.log >> $d/syslog.txt 2>/dev/null || true");
+ system("ps aux > $d/ps.txt 2>/dev/null || true");
+ my $pid=`ps aux | awk '/[P]Generatord/ {print \$2; exit}'`; chomp($pid);
+ if($pid) { system("ls -l /proc/$pid/fd > $d/fd.txt 2>/dev/null || true"); }
+ system("find /var/lib/PGenerator -name '*.info' -exec cp {} $d/ \\; 2>/dev/null || true");
+ system("cp /etc/PGenerator/PGenerator.conf $d/PGenerator.conf 2>/dev/null || true");
+ system("ip addr > $d/ip_addr.txt 2>/dev/null || true");
+ system("ip route > $d/ip_route.txt 2>/dev/null || true");
+ system("dmesg | tail -200 > $d/dmesg.txt 2>/dev/null || true");
+ system("cat /proc/version > $d/kernel.txt 2>/dev/null || true");
+ system("uptime > $d/uptime.txt 2>/dev/null || true");
+ system("tar czf $tmp -C $d . 2>/dev/null");
+ system("rm -rf $d");
+ return (-f $tmp) ? $tmp : "";
 }
 
 sub webui_cpu_snapshot (@) {
@@ -2026,6 +2068,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
    <div class="btn-row" style="margin-top:10px">
     <button class="btn btn-sm btn-secondary" onclick="checkUpdate()">Check for Updates</button>
     <button class="btn btn-sm btn-success" id="applyUpdateBtn" style="display:none" onclick="applyUpdate()">Install Update</button>
+    <button class="btn btn-sm btn-secondary" id="submitLogsBtn" onclick="submitLogs()" title="Download a diagnostic log bundle">&#128230; Submit Logs</button>
    </div>
    <div id="updateStatus" style="margin-top:6px;font-size:.7rem;color:var(--text2)"></div>
   </div>
@@ -3026,6 +3069,26 @@ async function applyUpdate(){
   document.getElementById('updateStatus').textContent=r?r.message:'Update failed';
   document.getElementById('applyUpdateBtn').disabled=false;
  }
+}
+async function submitLogs(){
+ const btn=document.getElementById('submitLogsBtn');
+ btn.disabled=true;btn.textContent='Collecting...';
+ try{
+  const res=await fetch('/api/submit_logs',{method:'POST'});
+  if(res.ok&&res.headers.get('Content-Type')==='application/gzip'){
+   const blob=await res.blob();
+   const a=document.createElement('a');
+   a.href=URL.createObjectURL(blob);
+   a.download='pg_logs.tgz';
+   document.body.appendChild(a);a.click();a.remove();
+   URL.revokeObjectURL(a.href);
+   toast('Log bundle downloaded');
+  }else{
+   const j=await res.json().catch(()=>null);
+   toast(j?j.message:'Failed to collect logs','error');
+  }
+ }catch(e){toast('Error: '+e.message,'error');}
+ btn.disabled=false;btn.innerHTML='&#128230; Submit Logs';
 }
 
 // Init
