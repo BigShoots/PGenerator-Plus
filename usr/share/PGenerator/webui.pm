@@ -1080,8 +1080,14 @@ sub webui_pattern_legacy_byte (@) {
  $value=0 if($value < 0);
  $value=255 if($value > 255);
  return $value if(!&webui_pattern_is_pq_mode($signal_mode));
- my $peak_byte=&webui_pattern_peak_byte($signal_mode,$max_luma);
- return int($value*$peak_byte/255 + 0.5);
+ return 0 if($value == 0);
+ # Gamma 2.4 decode to linear light, scale to max_luma nits, PQ encode.
+ # The old linear mapping (value*peak/255) crushed blacks because PQ is
+ # perceptual — a linear fraction of PQ codes does not correspond to a
+ # linear fraction of perceived brightness.
+ my $linear=($value/255.0)**2.4;
+ my $nits=$linear*$max_luma;
+ return int(&webui_pattern_pq_encode_normalized($nits)*255 + 0.5);
 }
 
 sub webui_pattern_image_new (@) {
@@ -2741,7 +2747,8 @@ async function applySettings(){
    is_ll_dovi:'1',is_std_dovi:'1',
    dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'12',
    dv_interface:getVal('dv_interface'),
-   dv_map_mode:getVal('dv_map_mode')});
+   dv_map_mode:getVal('dv_map_mode'),
+   dv_metadata:getVal('dv_map_mode')==='1'?'3':'2'});
  }
  const r=await fetchJSON('/api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(changes)});
