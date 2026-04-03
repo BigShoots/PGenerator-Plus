@@ -3097,9 +3097,10 @@ async function submitLogs(){
  await loadModes(true);
  await loadCapabilities(true);
  updateDropdowns();
+ refreshSavedSettingsSnapshot();
  await checkPing();
  await loadStats(true);
- await loadInfo(true);
+ await loadInfo();
  setTimeout(()=>loadCecStatus(),500);
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadInfoframes(),1500);
