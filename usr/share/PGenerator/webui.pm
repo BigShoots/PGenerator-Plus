@@ -1081,11 +1081,12 @@ sub webui_pattern_legacy_byte (@) {
  $value=255 if($value > 255);
  return $value if(!&webui_pattern_is_pq_mode($signal_mode));
  return 0 if($value == 0);
- # Gamma 2.4 decode to linear light, scale to max_luma nits, PQ encode.
+ # Gamma 2.2 decode to linear light, scale to max_luma nits, PQ encode.
+ # Calman sends DV patterns assuming gamma 2.2 encoding, so we match that.
  # The old linear mapping (value*peak/255) crushed blacks because PQ is
  # perceptual — a linear fraction of PQ codes does not correspond to a
  # linear fraction of perceived brightness.
- my $linear=($value/255.0)**2.4;
+ my $linear=($value/255.0)**2.2;
  my $nits=$linear*$max_luma;
  return int(&webui_pattern_pq_encode_normalized($nits)*255 + 0.5);
 }
