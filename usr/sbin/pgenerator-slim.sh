@@ -341,6 +341,13 @@ echo "  [REMOVE] Shell history"
 rm -f "$ROOTFS"/etc/ssh/ssh_host_*_key* 2>/dev/null || true
 echo "  [REMOVE] SSH host keys (will regenerate on boot)"
 
+# 5e. Strip saved WiFi networks (passwords) from wpa_supplicant.conf
+WPA_CONF="$ROOTFS/etc/wpa_supplicant/wpa_supplicant.conf"
+if [ -f "$WPA_CONF" ]; then
+    sed -i '/^network={/,/^}/d' "$WPA_CONF"
+    echo "  [REMOVE] Saved WiFi networks from wpa_supplicant.conf"
+fi
+
 ###############################################################################
 echo ""
 echo "--- Phase 6: Zero free space (for better compression) ---"
