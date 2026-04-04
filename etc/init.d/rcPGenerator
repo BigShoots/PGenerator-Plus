@@ -240,6 +240,13 @@ rc_PGenerator_start () {
  # dhcp
  /etc/init.d/dhcp restart
 
+ # Remove broken default route via eth0 link-local.  dhcpcd assigns IPv4LL
+ # (169.254.x.x) when no DHCP server answers, and its default route
+ # (metric 50) can override the working wlan0 gateway (metric 100).
+ # Ensure the -G (nogateway) flag is set in /etc/network/network.d/eth0;
+ # this cleanup catches any route that slipped through before PGenerator.
+ ip route del default dev eth0 2>/dev/null || true
+
  # PGenerator 
  /etc/init.d/PGenerator restart
 
