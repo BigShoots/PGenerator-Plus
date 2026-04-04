@@ -339,11 +339,13 @@ sub webui_http (@) {
    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$_stats_cache";
   }
    elsif($path eq "/api/restart") {
-    &pattern_generator_stop();
-    &pattern_generator_start();
     my $r='{"status":"ok","message":"Pattern generator restarted"}';
     my $len=length($r);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
+    close($client);
+    undef $client;
+    &pattern_generator_stop();
+    &pattern_generator_start();
    }
    elsif($path eq "/api/submit_logs" && $method eq "POST") {
     my $tmp=&webui_create_logs_bundle();
@@ -468,7 +470,9 @@ sub webui_http (@) {
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/update/check") {
-    my $result=&sudo("BASH_CMD", "PGPLUS_CHECK");
+    # Run update check with a 15s cap to avoid blocking HTTP thread
+    my @args_b64=map { encode_base64($_,"") } ("BASH_CMD","PGPLUS_CHECK");
+    my $result=`timeout 15 env $pg_cmd_env="@args_b64" $sudo_cmd 2>/dev/null`;
     chomp($result);
     $result='{"status":"error","message":"Update check failed"}' if($result eq "" || $result!~/^\{/);
     my $len=length($result);
@@ -565,7 +569,7 @@ sub webui_info_json (@) {
  $temp=~s/[^\d.]//g;
  my $uptime=&read_from_file($uptime_file);
  ($uptime)=$uptime=~/^([\d.]+)/;
- my $ip_info=`ip -4 addr show 2>/dev/null`;
+ my $ip_info=`timeout 3 ip -4 addr show 2>/dev/null`;
  my @ips;
  while($ip_info=~/inet\s+([\d.\/]+)\s.*?(\S+)\s*$/gm) {
   my ($addr,$iface)=($1,$2);
@@ -589,7 +593,7 @@ sub webui_info_json (@) {
  my $wifi_freq="";
  my $wifi_signal="";
  my $wifi_state="";
- my $wifi_status=&sudo("GET_WIFI_STATUS","wlan0");
+ my $wifi_status=`timeout 3 wpa_cli -i wlan0 status 2>/dev/null`;
  foreach my $wline (split(/\n/,$wifi_status)) {
   if($wline=~/^ssid\s*=\s*(.*)/) { $wifi_ssid=$1; }
   if($wline=~/^freq\s*=\s*(\d+)/) { $wifi_freq=$1; }
@@ -600,7 +604,7 @@ sub webui_info_json (@) {
  if($wifi_freq=~/^\d+$/) {
   $wifi_band=($wifi_freq>=5000)?"5 GHz":"2.4 GHz";
  }
- my $iw_out=`iw dev wlan0 station dump 2>/dev/null`;
+ my $iw_out=`timeout 3 iw dev wlan0 station dump 2>/dev/null`;
  if($iw_out=~/signal:\s*(-?\d+)/){ $wifi_signal=$1; }
 
  my $cal_ip=$calibration_client_ip; $cal_ip=~s/"/\\"/g;
@@ -695,7 +699,7 @@ sub webui_stats_json (@) {
 
 sub webui_modes_json (@) {
  my @modes;
- my $output=`$modetest -c 2>/dev/null`;
+ my $output=`timeout 5 $modetest -c 2>/dev/null`;
  # Parse modes from modetest output — capture index, resolution, refresh, and pixel clock (kHz)
  while($output=~/^\s*#(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+/gm) {
   my ($idx,$res,$hz,$clock)=($1,$2,$3,$4);
@@ -731,7 +735,7 @@ sub webui_capabilities_json (@) {
  my %vic_420; # "WxH@HZi" => 1
 
  if($edid_path ne "" && -e $edid_path) {
-  my $e=`$edidparser $edid_path 2>/dev/null`;
+  my $e=`timeout 5 $edidparser $edid_path 2>/dev/null`;
 
   # Base color format support (CTA header)
   $has_444=1 if($e=~/Supports YCbCr 4:4:4/);
@@ -862,7 +866,7 @@ sub webui_wifi_ap_apply (@) {
 }
 
 sub webui_wifi_status_json (@) {
- my $status=&sudo("GET_WIFI_STATUS","wlan0");
+ my $status=`timeout 3 wpa_cli -i wlan0 status 2>/dev/null`;
  my %info;
  foreach my $line (split(/\n/,$status)) {
   if($line=~/^(\w+)\s*=\s*(.*)/) { $info{$1}=$2; }
@@ -875,7 +879,7 @@ sub webui_wifi_status_json (@) {
  my $bssid=$info{bssid}||"";
  # Get signal strength via iw
  my $signal="";
- my $iw_out=`iw dev wlan0 station dump 2>/dev/null`;
+ my $iw_out=`timeout 3 iw dev wlan0 station dump 2>/dev/null`;
  if($iw_out=~/signal:\s*(-?\d+)/){ $signal=$1; }
  my $band="";
  if($freq=~/^\d+$/) {
@@ -885,7 +889,7 @@ sub webui_wifi_status_json (@) {
 }
 
 sub webui_infoframes_json (@) {
- my $dmesg=`/bin/dmesg 2>/dev/null`;
+ my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
  my ($avi_hex,$drm_hex)=("","");
  foreach my $line (split(/\n/,$dmesg)) {
   if($line=~/AVI IF:\s*(.+)/) { $avi_hex=$1; }
@@ -912,7 +916,7 @@ sub webui_cec (@) {
  }
  # scan returns JSON directly from pgcec scan-json
  if($cmd eq "scan") {
-  my $json=`$cec_bin scan-json 2>/dev/null`;
+  my $json=`timeout 8 $cec_bin scan-json 2>/dev/null`;
   my $rc=$?>>8;
   chomp($json);
   if($rc == 0 && $json=~/^\{/) {
@@ -924,9 +928,9 @@ sub webui_cec (@) {
  }
  # status returns structured JSON
  if($cmd eq "status") {
-  my $power=`$cec_bin power 2>/dev/null`;
+  my $power=`timeout 5 $cec_bin power 2>/dev/null`;
   chomp($power);
-  my $st=`$cec_bin status 2>/dev/null`;
+  my $st=`timeout 5 $cec_bin status 2>/dev/null`;
   my $rc=$?>>8;
   my ($phys,$log,$osd,$driver)=("","","","");
   foreach my $line (split(/\n/,$st)) {
@@ -941,7 +945,7 @@ sub webui_cec (@) {
   return "{\"status\":\"ok\",\"tv_power\":\"$power\",\"phys_addr\":\"$phys\",\"log_addr\":\"$log\",\"osd_name\":\"$osd\",\"driver\":\"$driver\"}";
  }
  # action commands
- my $output=`$cec_bin $cmd 2>&1`;
+ my $output=`timeout 5 $cec_bin $cmd 2>&1`;
  my $rc=$?>>8;
  $output=~s/"/\\"/g;
  $output=~s/\n/\\n/g;
@@ -2419,13 +2423,13 @@ async function checkPing(){
  if(shouldPauseAutoRefresh()) return;
  const t0=performance.now();
  try{
-  const r=await fetch(API+'/api/ping',{signal:AbortSignal.timeout(5000)});
+  const r=await fetch(API+'/api/ping',{signal:AbortSignal.timeout(8000)});
   if(!r.ok) throw new Error(r.status);
   await r.json();
   _pingFailCount=0;
  }catch(e){
   _pingFailCount++;
-  if(_pingFailCount<2){
+  if(_pingFailCount<3){
    document.getElementById('statusDot').style.background='var(--orange)';
    document.getElementById('statusText').textContent='Retry';
    document.getElementById('statusWrap').title='Transient timeout';
@@ -2881,7 +2885,7 @@ async function cecScan(){
 }
 
 async function loadCecStatus(){
- const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:12000});
+ const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:8000});
  const el=document.getElementById('cecStatus');
  if(r&&r.status==='ok'){
   const pwr=r.tv_power||'unknown';
@@ -3032,8 +3036,9 @@ async function loadInfoframes(){
 })();
 
 async function checkUpdate(){
+ _updateChecked=true;
  document.getElementById('updateStatus').textContent='Checking...';
- const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:70000});
+ const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:20000});
  if(!r||r.status==='error'){
   document.getElementById('updateStatus').textContent=r?r.message:'Check failed — no internet?';
   return;
@@ -3055,9 +3060,11 @@ async function checkUpdate(){
   document.getElementById('updateStatus').textContent='You are running the latest version.';
  }
 }
+let _updateChecked=false;
 function showUpdateCard(){
  document.getElementById('updateCard').style.display='';
  document.getElementById('updateCard').scrollIntoView({behavior:'smooth'});
+ if(!_updateChecked) checkUpdate();
 }
 async function applyUpdate(){
  if(!confirm('Install update now? PGenerator will restart.'))return;
@@ -3112,7 +3119,7 @@ async function submitLogs(){
  setTimeout(()=>loadCecStatus(),500);
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadInfoframes(),1500);
- setTimeout(()=>checkUpdate(),2500);
+ setTimeout(()=>checkUpdate(),60000);
  setInterval(checkPing,10000);
  setInterval(()=>loadStats(true),3000);
  setInterval(syncRemoteConfig,10000);
