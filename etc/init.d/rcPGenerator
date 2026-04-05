@@ -15,7 +15,6 @@ MAC_ADDRESS_USB="3E:3D:8C:17:B2:DF"
 
 . $DEFAULT_FILE
 
-MAX_UPTIME_FOR_DIRECTLAN=$(/bin/grep ^MAX_UPTIME_FOR_DIRECTLAN /usr/lib/dhcpcd-hooks/99-PGeneratorDirectLan.conf|/bin/sed -e "s/.*=//")
 SUBNET=$(grep AP_NET /etc/default/rcPGenerator |awk -F . '{print $2}')
 
 #
@@ -249,9 +248,6 @@ rc_PGenerator_start () {
 
  # PGenerator 
  /etc/init.d/PGenerator restart
-
- # Kill DirectLan connection after 5 minutes
- bash -c "/bin/sleep $MAX_UPTIME_FOR_DIRECTLAN && /usr/bin/pkill -9 -f /var/run/dhcpd-DirectLan.pid" &
 
  # At the end a sync
  /bin/sync
