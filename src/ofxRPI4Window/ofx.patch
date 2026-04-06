@@ -1,0 +1,512 @@
+Only in /opt/openFrameworks/addons: obj
+Only in /opt/openFrameworks/addons: ofxAvCodec
+Only in /opt/openFrameworks/addons: ofxDSHapVideoPlayer
+Only in /opt/openFrameworks/addons: ofxFFmpeg
+Only in /opt/openFrameworks/addons: ofxFFmpegUtils
+Only in /opt/openFrameworks/addons: ofxHPVPlayer
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/addons/ofxOpenCv/addon_config.mk /opt/openFrameworks/addons/ofxOpenCv/addon_config.mk
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/addons/ofxOpenCv/addon_config.mk	2021-03-24 13:26:20.000000000 -0600
++++ /opt/openFrameworks/addons/ofxOpenCv/addon_config.mk	2021-08-08 17:42:37.629884678 -0600
+@@ -61,7 +61,7 @@
+ 	# ADDON_LIBS_EXCLUDE =
+ 
+ linux64:
+-    ADDON_PKG_CONFIG_LIBRARIES = opencv4 harfbuzz
++    ADDON_PKG_CONFIG_LIBRARIES = opencv harfbuzz
+ 	ADDON_LIBS_EXCLUDE = libs/opencv/%
+ 	ADDON_INCLUDES_EXCLUDE = libs/opencv
+ 	ADDON_INCLUDES_EXCLUDE += libs/opencv/%
+@@ -79,13 +79,13 @@
+ 	ADDON_INCLUDES_EXCLUDE += libs/opencv/%
+ 
+ linuxarmv7l:
+-	ADDON_PKG_CONFIG_LIBRARIES = opencv4
++	ADDON_PKG_CONFIG_LIBRARIES = opencv
+ 	ADDON_LIBS_EXCLUDE = libs/opencv/%
+ 	ADDON_INCLUDES_EXCLUDE = libs/opencv
+ 	ADDON_INCLUDES_EXCLUDE += libs/opencv/%
+ 
+ msys2:
+-	ADDON_PKG_CONFIG_LIBRARIES = opencv4
++	ADDON_PKG_CONFIG_LIBRARIES = opencv
+ 	ADDON_LIBS_EXCLUDE = libs/opencv/%
+ 	ADDON_INCLUDES_EXCLUDE = libs/opencv
+ 	ADDON_INCLUDES_EXCLUDE += libs/opencv/%
+Only in /opt/openFrameworks/addons/ofxPoco: libs
+Only in /opt/openFrameworks/addons: ofxRPI4Window
+Only in /opt/openFrameworks/addons: ofxRPI4Window.tar.gz
+Only in /opt/openFrameworks/addons: ofxTinyEXR
+Only in /opt/openFrameworks/addons: ofxVideoRecorder
+Only in /opt/openFrameworks/apps/projectGenerator/commandLine/bin: libs
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/apps/projectGenerator/commandLine/config.make /opt/openFrameworks/apps/projectGenerator/commandLine/config.make
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/apps/projectGenerator/commandLine/config.make	2021-03-24 13:26:25.000000000 -0600
++++ /opt/openFrameworks/apps/projectGenerator/commandLine/config.make	2021-09-14 14:46:15.000000000 -0600
+@@ -79,7 +79,7 @@
+ # add a runtime path to search for those shared libraries, since they aren't 
+ # incorporated directly into the final executable application binary.
+ # TODO: should this be a default setting?
+-# PROJECT_LDFLAGS=-Wl,-rpath=./libs
++PROJECT_LDFLAGS=-Wl,-rpath=./bin/libs/lib
+ 
+ ################################################################################
+ # PROJECT DEFINES
+Only in /opt/openFrameworks/apps/projectGenerator/commandLine: obj
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/apps/projectGenerator/commandLine/src/main.cpp /opt/openFrameworks/apps/projectGenerator/commandLine/src/main.cpp
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/apps/projectGenerator/commandLine/src/main.cpp	2021-03-24 13:26:25.000000000 -0600
++++ /opt/openFrameworks/apps/projectGenerator/commandLine/src/main.cpp	2021-08-08 17:42:37.259884678 -0600
+@@ -1,6 +1,12 @@
+ #include "ofMain.h"
++//#ifdef TARGET_OS_LINUX
++    // these are set by X.h and clash with optionsparser types
++    #undef None
++    #undef Bool
++//#endif
+ #include "optionparser.h"
+ #include "defines.h"
++
+ enum  optionIndex { UNKNOWN, HELP, PLUS, RECURSIVE, LISTTEMPLATES, PLATFORMS, ADDONS, OFPATH, VERBOSE, TEMPLATE, DRYRUN, SRCEXTERNAL, VERSION};
+ 
+ constexpr option::Descriptor usage[] =
+Only in /opt/openFrameworks/examples/3d/3DModelLoaderExample: obj
+Only in /opt/openFrameworks/examples/3d/3DPrimitivesExample: obj
+Only in /opt/openFrameworks/examples/3d/advanced3dExample: obj
+Only in /opt/openFrameworks/examples/3d/assimpExample: obj
+Only in /opt/openFrameworks/examples/3d/cameraLensOffsetExample: obj
+Only in /opt/openFrameworks/examples/3d/cameraParentingExample: obj
+Only in /opt/openFrameworks/examples/3d/cameraRibbonExample/bin: cameraRibbonExample
+Only in /opt/openFrameworks/examples/3d/cameraRibbonExample: obj
+Only in /opt/openFrameworks/examples/3d/easyCamExample: obj
+Only in /opt/openFrameworks/examples/3d/meshFromCameraExample/bin: meshFromCameraExample
+Only in /opt/openFrameworks/examples/3d/meshFromCameraExample: obj
+Only in /opt/openFrameworks/examples/3d/normalsExample/bin: normalsExample
+Only in /opt/openFrameworks/examples/3d/normalsExample: obj
+Only in /opt/openFrameworks/examples/3d/ofBoxExample/bin: ofBoxExample
+Only in /opt/openFrameworks/examples/3d/ofBoxExample: obj
+Only in /opt/openFrameworks/examples/3d/ofNodeExample: obj
+Only in /opt/openFrameworks/examples/3d/orientationExample/bin: orientationExample
+Only in /opt/openFrameworks/examples/3d/orientationExample: obj
+Only in /opt/openFrameworks/examples/3d/pointCloudExample/bin: pointCloudExample
+Only in /opt/openFrameworks/examples/3d/pointCloudExample: obj
+Only in /opt/openFrameworks/examples/3d/pointPickerExample/bin: pointPickerExample
+Only in /opt/openFrameworks/examples/3d/pointPickerExample: obj
+Only in /opt/openFrameworks/examples/3d/quaternionArcballExample/bin: quaternionArcballExample
+Only in /opt/openFrameworks/examples/3d/quaternionArcballExample: obj
+Only in /opt/openFrameworks/examples/3d/quaternionLatLongExample/bin: quaternionLatLongExample
+Only in /opt/openFrameworks/examples/3d/quaternionLatLongExample: obj
+Only in /opt/openFrameworks/examples/communication/firmataExample/bin: firmataExample
+Only in /opt/openFrameworks/examples/communication/firmataExample: obj
+Only in /opt/openFrameworks/examples/communication/networkTcpClientExample/bin: networkTcpClientExample
+Only in /opt/openFrameworks/examples/communication/networkTcpClientExample: obj
+Only in /opt/openFrameworks/examples/communication/networkTcpServerExample/bin: networkTcpServerExample
+Only in /opt/openFrameworks/examples/communication/networkTcpServerExample: obj
+Only in /opt/openFrameworks/examples/communication/networkUdpReceiverExample/bin: networkUdpReceiverExample
+Only in /opt/openFrameworks/examples/communication/networkUdpReceiverExample: obj
+Only in /opt/openFrameworks/examples/communication/networkUdpSenderExample/bin: networkUdpSenderExample
+Only in /opt/openFrameworks/examples/communication/networkUdpSenderExample: obj
+Only in /opt/openFrameworks/examples/communication/oscChatSystemExample/bin: oscChatSystemExample
+Only in /opt/openFrameworks/examples/communication/oscChatSystemExample: obj
+Only in /opt/openFrameworks/examples/communication/oscReceiveExample/bin: oscReceiveExample
+Only in /opt/openFrameworks/examples/communication/oscReceiveExample: obj
+Only in /opt/openFrameworks/examples/communication/oscSenderExample/bin: oscSenderExample
+Only in /opt/openFrameworks/examples/communication/oscSenderExample: obj
+Only in /opt/openFrameworks/examples/communication/serialExample: obj
+Only in /opt/openFrameworks/examples/gl/areaLightExample/bin: areaLightExample
+Only in /opt/openFrameworks/examples/gl/areaLightExample: obj
+Only in /opt/openFrameworks/examples/graphics/colorExample/bin: colorExample
+Only in /opt/openFrameworks/examples/graphics/colorExample: obj
+Only in /opt/openFrameworks/examples/graphics/graphicsExample/bin: graphicsExample
+Only in /opt/openFrameworks/examples/graphics/graphicsExample: obj
+Only in /opt/openFrameworks/examples/graphics/polygonExample/bin: log.txt
+Only in /opt/openFrameworks/examples/graphics/polygonExample/bin: polygonExample
+Only in /opt/openFrameworks/examples/graphics/polygonExample: log.txt
+Only in /opt/openFrameworks/examples/graphics/polygonExample: obj
+Only in /opt/openFrameworks/examples/graphics/polygonExample: test
+Only in /opt/openFrameworks/examples/graphics/polygonExample: test.cpp
+Only in /opt/openFrameworks/libs: include
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/app/ofAppRunner.cpp /opt/openFrameworks/libs/openFrameworks/app/ofAppRunner.cpp
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/app/ofAppRunner.cpp	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworks/app/ofAppRunner.cpp	2021-08-16 18:58:18.000000000 -0600
+@@ -28,6 +28,7 @@
+ 	//special case so we preserve supplied settngs
+ 	//TODO: remove me when we remove the ofAppGLFWWindow setters.
+ 	//--------------------------------------
++#if 0
+ 	void ofSetupOpenGL(shared_ptr<ofAppGLFWWindow> windowPtr, int w, int h, ofWindowMode screenMode){
+ 		ofInit();
+ 		auto settings = windowPtr->getSettings();
+@@ -37,6 +38,7 @@
+ 		windowPtr->setup(settings);
+ 	}
+ #endif
++#endif
+ 
+ #ifdef TARGET_LINUX
+ #include "ofGstUtils.h"
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/gl/ofFbo.cpp /opt/openFrameworks/libs/openFrameworks/gl/ofFbo.cpp
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/gl/ofFbo.cpp	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworks/gl/ofFbo.cpp	2021-08-24 12:09:22.000000000 -0600
+@@ -711,6 +711,21 @@
+ #ifdef TARGET_ANDROID
+ 	ofAddListener(ofxAndroidEvents().reloadGL,this,&ofFbo::reloadFbo);
+ #endif
++
++
++  ofLog() <<      settings.width;                 
++  ofLog() <<        settings.height;                    
++   ofLog() <<  std::hex <<     settings.internalformat;            
++    ofLog() <<      settings.numSamples;                
++    ofLog() << std::hex <<     settings.useDepth;                 
++    ofLog() <<      settings.useStencil;               
++     ofLog() <<     settings.depthStencilAsTexture;     
++      ofLog() <<  std::hex <<  settings.textureTarget;              
++     ofLog() <<  std::hex <<   settings.depthStencilInternalFormat; 
++     ofLog() <<   std::hex <<  settings.minFilter;                 
++       ofLog() <<   std::hex <<  settings.maxFilter;                 
++      ofLog() <<  std::hex <<  settings.wrapModeHorizontal;        
++      ofLog() <<  std::hex <<  settings.wrapModeVertical;           
+ }
+ 
+ //--------------------------------------------------------------
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/gl/ofGLUtils.cpp /opt/openFrameworks/libs/openFrameworks/gl/ofGLUtils.cpp
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/gl/ofGLUtils.cpp	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworks/gl/ofGLUtils.cpp	2021-10-07 14:15:48.000000000 -0600
+@@ -10,7 +10,7 @@
+ #include "ofPixels.h"
+ #include "ofLog.h"
+ #include "ofGraphicsConstants.h"
+-
++#include <GLES3/gl3.h>
+ using namespace std;
+ 
+ //---------------------------------
+@@ -50,7 +50,15 @@
+ 
+ //---------------------------------
+ int ofGetGLInternalFormat(const ofPixels& pixels) {
+-	return ofGetGLInternalFormatFromPixelFormat(pixels.getPixelFormat());
++	//return GL_SRGB8;//ofGetGLInternalFormatFromPixelFormat(pixels.getPixelFormat());
++		switch(pixels.getNumChannels()) {
++		case 3: return GL_SRGB8;
++		case 4: return GL_SRGB8_ALPHA8;
++		case 2:
++			return GL_LUMINANCE_ALPHA;
++		default:
++			return GL_LUMINANCE;
++	}
+ }
+ 
+ //---------------------------------
+@@ -107,8 +115,10 @@
+ #else
+ 	ofLogWarning("ofGLUtils") << "ofGetGLInternalFormat(): float textures not supported in OpenGL ES";
+ 	switch(pixels.getNumChannels()) {
+-		case 3: return GL_RGB;
+-		case 4: return GL_RGBA;
++//		case 3: return GL_RGB;
++case 3: return GL_RGB32F;
++//		case 4: return GL_RGBA;
++	case 4: return GL_RGBA32F;
+ 		case 2:
+ 			return GL_LUMINANCE_ALPHA;
+ 		default:
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/gl/ofTexture.cpp /opt/openFrameworks/libs/openFrameworks/gl/ofTexture.cpp
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/gl/ofTexture.cpp	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworks/gl/ofTexture.cpp	2021-08-24 20:02:22.000000000 -0600
+@@ -6,7 +6,7 @@
+ #include "ofBufferObject.h"
+ #include "ofMesh.h"
+ #include <map>
+-
++#include <GLES3/gl3.h>
+ #ifdef TARGET_ANDROID
+ #include "ofAppAndroidWindow.h"
+ #endif
+@@ -473,6 +473,30 @@
+ 				glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+ 			}
+ 		#endif
++#if 0 //HDR HACK
++	glEnable(GL_DEPTH_TEST);  
++    // configure floating point framebuffer
++    // ------------------------------------
++    unsigned int hdrFBO;
++    glGenFramebuffers(1, &hdrFBO);
++    // create depth buffer (renderbuffer)
++    unsigned int rboDepth;
++    glGenRenderbuffers(1, &rboDepth);
++    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
++    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, (GLint)texData.tex_w, (GLint)texData.tex_h);
++	
++    // attach buffers
++    glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texData.textureTarget, (GLuint )texData.textureID, 0);
++    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
++GLenum DrawBuffers[1] = {GL_COLOR_ATTACHMENT0};
++glDrawBuffers(1, DrawBuffers);
++    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
++        std::cout << "Framebuffer not complete!" << std::endl;	
++	    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++#endif	
++	
++	
+ 		glBindTexture(texData.textureTarget,0);
+ 	}
+ 
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/sound/ofRtAudioSoundStream.cpp /opt/openFrameworks/libs/openFrameworks/sound/ofRtAudioSoundStream.cpp
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/sound/ofRtAudioSoundStream.cpp	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworks/sound/ofRtAudioSoundStream.cpp	2021-09-17 11:17:17.000000000 -0600
+@@ -1,9 +1,10 @@
++#include "RtAudio.h"
+ #include "ofRtAudioSoundStream.h"
+ #include "ofMath.h"
+ #include "ofUtils.h"
+ #include "ofAppRunner.h"
+ #include "ofLog.h"
+-#include "RtAudio.h"
++
+ 
+ using namespace std;
+ 
+@@ -176,9 +177,13 @@
+ 	outputBuffer.setSampleRate(settings.sampleRate);
+ 	inputBuffer.setSampleRate(settings.sampleRate);
+ 	unsigned int bufferSize = settings.bufferSize;
++  //unsigned int bufferFrames = 512;
++
+ 	try {
+-		audio->openStream((settings.numOutputChannels > 0) ? &outputParameters : nullptr, (settings.numInputChannels > 0) ? &inputParameters : nullptr, RTAUDIO_FLOAT32,
+-			settings.sampleRate, &bufferSize, &rtAudioCallback, this, &options);
++	//	audio->openStream((settings.numOutputChannels > 0) ? &outputParameters : nullptr, (settings.numInputChannels > 0) ? &inputParameters : nullptr, RTAUDIO_FLOAT32,
++	//		settings.sampleRate, &bufferSize, &rtAudioCallback, this, &options);
++	//	audio->openStream((settings.numOutputChannels > 0) ? &outputParameters : nullptr, (settings.numInputChannels > 0) ? &inputParameters : nullptr, RTAUDIO_FLOAT32,
++	//		settings.sampleRate, &bufferFrames, &rtAudioCallback, this, &options, NULL);
+ 		audio->startStream();
+ 	}
+ 	catch (std::exception &error) {
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/sound/ofRtAudioSoundStream.h /opt/openFrameworks/libs/openFrameworks/sound/ofRtAudioSoundStream.h
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworks/sound/ofRtAudioSoundStream.h	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworks/sound/ofRtAudioSoundStream.h	2021-09-17 10:42:26.000000000 -0600
+@@ -35,8 +35,8 @@
+ 
+ private:
+ 	long unsigned long tickCount;
+-	std::shared_ptr<RtAudio>	audio;
+-
++	std::shared_ptr<RtAudio>  audio;
++//RtAudio *audio;
+ 	ofSoundBuffer inputBuffer;
+ 	ofSoundBuffer outputBuffer;
+ 	ofSoundStreamSettings settings;
+Only in /opt/openFrameworks/libs/openFrameworksCompiled/lib/linuxarmv7l: libopenFrameworksDebug.a
+Only in /opt/openFrameworks/libs/openFrameworksCompiled/lib/linuxarmv7l: obj
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworksCompiled/project/linuxarmv7l/config.linuxarmv7l.default.mk /opt/openFrameworks/libs/openFrameworksCompiled/project/linuxarmv7l/config.linuxarmv7l.default.mk
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworksCompiled/project/linuxarmv7l/config.linuxarmv7l.default.mk	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworksCompiled/project/linuxarmv7l/config.linuxarmv7l.default.mk	2021-08-24 22:10:25.000000000 -0600
+@@ -27,7 +27,30 @@
+ 
+ include $(OF_SHARED_MAKEFILES_PATH)/config.linux.common.mk
+ 
++#USE_GLFW_WINDOW = 1
++USE_ATOMIC = 1
+ 
++ifdef USE_GLFW_WINDOW
++	PLATFORM_DEFINES += TARGET_GLFW_WINDOW
++endif
++
++# defines used inside openFrameworks libs.
++#PLATFORM_DEFINES += TARGET_RASPBERRY_PI
++#
++# TODO many of these are not relevant to openFrameworks (were just pasted from hello_pi examples)
++# from raspberry pi examples
++PLATFORM_DEFINES += STANDALONE
++PLATFORM_DEFINES += PIC
++PLATFORM_DEFINES += _REENTRANT
++PLATFORM_DEFINES += _LARGEFILE64_SOURCE
++PLATFORM_DEFINES += _FILE_OFFSET_BITS=64
++PLATFORM_DEFINES += __STDC_CONSTANT_MACROS
++PLATFORM_DEFINES += __STDC_LIMIT_MACROS
++PLATFORM_DEFINES += TARGET_POSIX
++#PLATFORM_DEFINES += HAVE_LIBOPENMAX=2
++#PLATFORM_DEFINES += OMX
++#PLATFORM_DEFINES += OMX_SKIP64BIT
++#PLATFORM_DEFINES += USE_EXTERNAL_OMX
+ ################################################################################
+ # PLATFORM CFLAGS
+ #   This is a list of fully qualified CFLAGS required when compiling for this
+@@ -38,38 +61,58 @@
+ #   Note: Leave a leading space when adding list items with the += operator
+ ################################################################################
+ 
+-PLATFORM_CFLAGS += -march=armv7
+-PLATFORM_CFLAGS += -mtune=cortex-a8
+-PLATFORM_CFLAGS += -mfpu=neon
++PLATFORM_CFLAGS += -mcpu=cortex-a72
++#PLATFORM_CFLAGS += -march=armv7
++#PLATFORM_CFLAGS += -mtune=cortex-a8
++#PLATFORM_CFLAGS += -mtune=cortex-a72
++#PLATFORM_CFLAGS += -mfpu=neon
++PLATFORM_CFLAGS += -mfpu=neon-fp-armv8
+ PLATFORM_CFLAGS += -mfloat-abi=hard
+ PLATFORM_CFLAGS += -fPIC
+ PLATFORM_CFLAGS += -ftree-vectorize
+ PLATFORM_CFLAGS += -Wno-psabi
+ PLATFORM_CFLAGS += -pipe
+ 
++
+ ################################################################################
+ # PLATFORM LIBRARIES
+-# These are library names/paths that are platform specific and are specified
+-# using names or paths. The library flag (i.e. -l) is prefixed automatically.
++#   These are library names/paths that are platform specific and are specified
++#   using names or paths.  The library flag (i.e. -l) is prefixed automatically.
+ #
+-# PLATFORM_LIBRARIES are libraries that can be found in the library search
+-# paths.
+-# PLATFORM_STATIC_LIBRARIES is a list of required static libraries.
+-# PLATFORM_SHARED_LIBRARIES is a list of required shared libraries.
+-# PLATFORM_PKG_CONFIG_LIBRARIES is a list of required libraries that are
+-# under system control and are easily accesible via the package
+-# configuration utility (i.e. pkg-config)
++#   PLATFORM_LIBRARIES are libraries that can be found in the library search
++#       paths.
++#   PLATFORM_STATIC_LIBRARIES is a list of required static libraries.
++#   PLATFORM_SHARED_LIBRARIES is a list of required shared libraries.
++#   PLATFORM_PKG_CONFIG_LIBRARIES is a list of required libraries that are
++#       under system control and are easily accesible via the package
++#       configuration utility (i.e. pkg-config)
+ #
+-# See the helpfile for the -l flag here for more information:
+-# http://gcc.gnu.org/onlinedocs/gcc/Link-Options.html
++#   See the helpfile for the -l flag here for more information:
++#       http://gcc.gnu.org/onlinedocs/gcc/Link-Options.html
+ #
+-# Note: Leave a leading space when adding list items with the += operator
++#   Note: Leave a leading space when adding list items with the += operator
+ ################################################################################
++ 
++ifdef USE_GLFW_WINDOW
++	PLATFORM_PKG_CONFIG_LIBRARIES += gl
++	PLATFORM_PKG_CONFIG_LIBRARIES += glu
++	PLATFORM_PKG_CONFIG_LIBRARIES += glew
++	PLATFORM_LIBRARIES += glfw
++endif
+ 
+ PLATFORM_PKG_CONFIG_LIBRARIES += glesv1_cm
+ PLATFORM_PKG_CONFIG_LIBRARIES += glesv2
+ PLATFORM_PKG_CONFIG_LIBRARIES += egl
+ 
++#PLATFORM_LIBRARIES += openmaxil
++PLATFORM_LIBRARIES += pcre
++PLATFORM_LIBRARIES += rt
++
++
++
++ifdef USE_ATOMIC
++	PLATFORM_LDFLAGS += -latomic
++endif 
+ 
+ ################################################################################
+ # PLATFORM CORE EXCLUSIONS
+@@ -87,7 +130,12 @@
+ #   Note: Leave a leading space when adding list items with the += operator
+ ################################################################################
+ 
+-PLATFORM_CORE_EXCLUSIONS += $(OF_LIBS_PATH)/openFrameworks/sound/ofFmodSoundPlayer.cpp
++#ifndef USE_GLFW_WINDOW
++#	PLATFORM_CORE_EXCLUSIONS += $(OF_LIBS_PATH)/openFrameworks/app/ofAppGLFWWindow.cpp
++#else
++#	PLATFORM_CORE_EXCLUSIONS += $(OF_LIBS_PATH)/openFrameworks/app/ofAppEGLWindow.cpp
++#endif
++    PLATFORM_CORE_EXCLUSIONS += $(OF_LIBS_PATH)/openFrameworks/sound/ofFmodSoundPlayer.cpp
+ 
+ ifeq ($(CROSS_COMPILING),1)
+ 
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworksCompiled/project/makefileCommon/compile.core.mk /opt/openFrameworks/libs/openFrameworksCompiled/project/makefileCommon/compile.core.mk
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworksCompiled/project/makefileCommon/compile.core.mk	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworksCompiled/project/makefileCommon/compile.core.mk	2021-09-16 10:52:07.000000000 -0600
+@@ -237,17 +237,17 @@
+ $(OF_CORE_OBJ_OUTPUT_PATH)%.o: $(OF_ROOT)/%.cpp $(OF_CORE_OBJ_OUTPUT_PATH).compiler_flags
+ 	@echo "Compiling" $<
+ 	@mkdir -p $(@D)
+-	$(CXX) $(OPTIMIZATION_CFLAGS) $(CFLAGS) $(CXXFLAGS) -MMD -MP -MF $(OF_CORE_OBJ_OUTPUT_PATH)$*.d -MT$(OF_CORE_OBJ_OUTPUT_PATH)$*.o -o $@ -c $<
++	$(CXX) $(OPTIMIZATION_CFLAGS) $(CFLAGS) $(CXXFLAGS) -MMD -MP -MF $(OF_CORE_OBJ_OUTPUT_PATH)$*.d -MT $(OF_CORE_OBJ_OUTPUT_PATH)$*.o -o $@ -c $<
+ 
+ $(OF_CORE_OBJ_OUTPUT_PATH)%.o: $(OF_ROOT)/%.mm $(OF_CORE_OBJ_OUTPUT_PATH).compiler_flags
+ 	@echo "Compiling" $<
+ 	@mkdir -p $(@D)
+-	$(CXX) $(OPTIMIZATION_CFLAGS) $(CFLAGS) $(CXXFLAGS) -MMD -MP -MF $(OF_CORE_OBJ_OUTPUT_PATH)$*.d -MT$(OF_CORE_OBJ_OUTPUT_PATH)$*.o -o $@ -c $<
++	$(CXX) $(OPTIMIZATION_CFLAGS) $(CFLAGS) $(CXXFLAGS) -MMD -MP -MF $(OF_CORE_OBJ_OUTPUT_PATH)$*.d -MT $(OF_CORE_OBJ_OUTPUT_PATH)$*.o -o $@ -c $<
+ 
+ $(OF_CORE_OBJ_OUTPUT_PATH)%.o: $(OF_ROOT)/%.m $(OF_CORE_OBJ_OUTPUT_PATH).compiler_flags
+ 	@echo "Compiling" $<
+ 	@mkdir -p $(@D)
+-	$(CC) $(OPTIMIZATION_CFLAGS) $(CFLAGS) $(CXXFLAGS) -MMD -MP -MF $(OF_CORE_OBJ_OUTPUT_PATH)$*.d -MT$(OF_CORE_OBJ_OUTPUT_PATH)$*.o -o $@ -c $<
++	$(CC) $(OPTIMIZATION_CFLAGS) $(CFLAGS) $(CXXFLAGS) -MMD -MP -MF $(OF_CORE_OBJ_OUTPUT_PATH)$*.d -MT $(OF_CORE_OBJ_OUTPUT_PATH)$*.o -o $@ -c $<
+ 
+ # this target does the linking of the library
+ # $(TARGET) : $(OF_CORE_OBJ_FILES) means that each of the items in the
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworksCompiled/project/makefileCommon/config.linux.common.mk /opt/openFrameworks/libs/openFrameworksCompiled/project/makefileCommon/config.linux.common.mk
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/libs/openFrameworksCompiled/project/makefileCommon/config.linux.common.mk	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/libs/openFrameworksCompiled/project/makefileCommon/config.linux.common.mk	2021-08-23 14:12:51.000000000 -0600
+@@ -178,6 +178,17 @@
+ endif
+ 
+ 
++PLATFORM_CFLAGS = -Wall -Werror=return-type -DGCC_HAS_REGEX -D_GLIBCXX_USE_CXX11_ABI=0
++PLATFORM_CXXFLAGS = -Wall -Werror=return-type -std=c++17 -DGCC_HAS_REGEX
++
++ifdef MAKEFILE_DEBUG
++   $(info GCC_MAJOR_EQ_4=$(GCC_MAJOR_EQ_4))
++   $(info GCC_MAJOR_GT_4=$(GCC_MAJOR_GT_4))
++   $(info GCC_MINOR_GTEQ_7=$(GCC_MINOR_GTEQ_7))
++   $(info GCC_MINOR_GTEQ_9=$(GCC_MINOR_GTEQ_9))
++   $(info PLATFORM_CFLAGS=$(PLATFORM_CFLAGS))
++   $(info PLATFORM_CXXFLAGS=$(PLATFORM_CXXFLAGS))
++endif
+ ################################################################################
+ # PLATFORM LDFLAGS
+ #   This is a list of fully qualified LDFLAGS required when linking for this
+@@ -285,7 +296,7 @@
+ #   Note: Leave a leading space when adding list items with the += operator
+ ################################################################################
+ 
+-PLATFORM_HEADER_SEARCH_PATHS =
++PLATFORM_HEADER_SEARCH_PATHS = 
+ 
+ ################################################################################
+ # PLATFORM LIBRARIES
+@@ -306,7 +317,7 @@
+ #   Note: Leave a leading space when adding list items with the += operator
+ ################################################################################
+ 
+-PLATFORM_LIBRARIES =
++PLATFORM_LIBRARIES = 
+ 
+ ifneq ($(LINUX_ARM),1)
+ 	PLATFORM_LIBRARIES += glut
+@@ -426,7 +437,7 @@
+ #   Note: Leave a leading space when adding list items with the += operator
+ ################################################################################
+ 
+-PLATFORM_LIBRARY_SEARCH_PATHS =
++#PLATFORM_LIBRARY_SEARCH_PATHS = /opt/mesa_21/lib
+ 
+ ################################################################################
+ # PLATFORM FRAMEWORKS
+Only in /opt/openFrameworks/libs: poco
+Only in /opt/orig/of_v0.11.2_linuxarmv7l_release: ofx.diff
+Only in /opt/openFrameworks/scripts: apothecary
+Only in /opt/openFrameworks/scripts/linux/archlinux_armv7: rtaudio-armv7hf.tar.bz2
+Only in /opt/openFrameworks/scripts/linux/archlinux_armv7: usr
+diff -ur /opt/orig/of_v0.11.2_linuxarmv7l_release/scripts/linux/compilePG.sh /opt/openFrameworks/scripts/linux/compilePG.sh
+--- /opt/orig/of_v0.11.2_linuxarmv7l_release/scripts/linux/compilePG.sh	2021-03-24 13:26:21.000000000 -0600
++++ /opt/openFrameworks/scripts/linux/compilePG.sh	2021-09-14 13:40:41.000000000 -0600
+@@ -4,7 +4,7 @@
+ 
+ OF_ROOT=$(cd $(dirname $0)/../..; pwd -P)
+ 
+-make Release -C ${OF_ROOT}/apps/projectGenerator/commandLine
++make Debug -C ${OF_ROOT}/apps/projectGenerator/commandLine
+ ret=$?
+ if [ $ret -ne 0 ]; then
+   echo "There has been a problem compiling the command line projectGenerator."
