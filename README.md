@@ -87,6 +87,95 @@ Important limitations:
 - The `PGeneratord` and `PGeneratord.dv` binaries are prebuilt and are taken from this repository as-is.
 - The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
 
+### Building the Renderer Binary from Source
+
+The `PGeneratord` pattern renderer is a C++ application built on [openFrameworks](https://openframeworks.cc/) 0.11.2 with a custom DRM/KMS window addon for HDR and Dolby Vision HDMI output. The source is in the `src/` directory.
+
+#### Source Layout
+
+```
+src/
+  pattern_generator/             # Main PGeneratord application (openFrameworks project)
+    src/
+      main.cpp                   # Entry point — config parsing, Pi/distro checks, window setup
+      ofApp.cpp                  # Render loop — reads operations.txt, draws patterns, DV metadata
+      ofApp.h                    # Application class header
+      rgb2ycbcr.h                # RGB ↔ YCbCr color space conversion
+    Makefile                     # openFrameworks project makefile
+    addons.make                  # Lists the ofxRPI4Window addon dependency
+    config.make                  # Project-specific build config (defaults)
+  ofxRPI4Window/                 # DRM/KMS window addon (fork of jvcleave/ofxRPI4Window)
+    src/
+      ofxRPI4Window.cpp          # DRM atomic modesetting, EGL/GBM, HDR/DV infoframes
+      ofxRPI4Window.h            # Window class header
+      igt_edid.h                 # EDID parsing helpers
+    addon_config.mk              # openFrameworks addon build config
+    patchOF.sh                   # Script to patch openFrameworks for ofxRPI4Window support
+    ofx.patch                    # openFrameworks patch
+    drm_vc4.patch                # VC4 DRM driver patch
+    mesa_hdr.patch               # Mesa HDR support patch
+  PGeneratorDisplayMirror.c      # Standalone display mirror utility (VideoCore/bcm_host)
+  Makefile                       # Top-level Makefile for PGeneratorDisplayMirror
+  Makefile.include               # Shared compiler/linker flags (VideoCore, SDL, OMX)
+  COPYING                        # GPLv3 license
+```
+
+#### Prerequisites
+
+The binary must be built **natively on a Raspberry Pi 4** running BiasiLinux with the following installed:
+
+- **openFrameworks 0.11.2** — installed at `/opt/openFrameworks`
+- **Build tools** — `make`, `gcc`/`g++` (GCC 4.9.4+ or 7.x)
+- **Libraries** — `libdrm-dev`, `libgbm-dev`, `libgles2-mesa-dev`, `libegl1-mesa-dev`, `libgstreamer1.0-dev`, `libboost-filesystem-dev`, `libfreeimage-dev`, `libcairo2-dev`, `libcurl4-openssl-dev`, `libfontconfig1-dev`, `liburiparser-dev`
+- **VideoCore** — `/opt/vc/` (Raspberry Pi GPU libraries, included in BiasiLinux)
+
+#### Patching openFrameworks
+
+The ofxRPI4Window addon requires patching openFrameworks to disable the default GLFW window system:
+
+```bash
+cd /opt/openFrameworks/addons
+# Copy or symlink the addon
+cp -r /path/to/PGenerator-Plus/src/ofxRPI4Window ofxRPI4Window
+
+# Apply the patches
+cd ofxRPI4Window
+chmod +x patchOF.sh
+./patchOF.sh  # Select option 1 to enable ofxRPI4Window
+```
+
+#### Building PGeneratord
+
+```bash
+cd /path/to/PGenerator-Plus/src/pattern_generator
+make
+```
+
+The compiled binary will be at `src/pattern_generator/bin/PGeneratord`. Copy it to `/usr/sbin/PGeneratord` on the target system (the `.dv` variant is the same binary — just copy it as both names):
+
+```bash
+sudo cp bin/PGeneratord /usr/sbin/PGeneratord
+sudo cp bin/PGeneratord /usr/sbin/PGeneratord.dv
+```
+
+#### Building PGeneratorDisplayMirror (optional)
+
+The display mirror utility is a standalone VideoCore program:
+
+```bash
+cd /path/to/PGenerator-Plus/src
+make
+```
+
+#### Architecture Notes
+
+- The binary reads pattern descriptions from `/var/lib/PGenerator/operations.txt` (written by the Perl daemon) and renders them via OpenGL ES 3.0 through DRM/KMS.
+- `PGeneratord` and `PGeneratord.dv` are **identical binaries**. The DV code path is selected at runtime based on `dv_status`, `is_ll_dovi`, and `is_std_dovi` in `/etc/PGenerator/PGenerator.conf`.
+- HDR10 output uses the `HDR_OUTPUT_METADATA` DRM connector property; Dolby Vision uses `DOVI_OUTPUT_METADATA`.
+- The binary verifies it is running on BiasiLinux + Raspberry Pi at startup (9-point filesystem check).
+- Original source: [BigShoots/PGenerator_Source](https://github.com/BigShoots/PGenerator_Source) (`pgen_dovi_latest` branch) by Riccardo Biasiotto, GPLv3.
+- DRM/KMS addon: [docdude/ofxRPI4WindowHDR](https://github.com/docdude/ofxRPI4WindowHDR) (`ofxRPI4Window_dovi_latest` branch), forked from [jvcleave/ofxRPI4Window](https://github.com/jvcleave/ofxRPI4Window).
+
 ---
 
 ## Features
@@ -263,6 +352,10 @@ The daemon runs as the `pgenerator` user. Privileged operations (config writes, 
 ## Project Structure
 
 ```
+src/
+  pattern_generator/             # PGeneratord renderer source (C++/openFrameworks)
+  ofxRPI4Window/                 # DRM/KMS window addon with HDR/DV support
+  PGeneratorDisplayMirror.c      # Display mirror utility
 etc/
   init.d/PGenerator              # Init script (service start/stop)
   PGenerator/PGenerator.conf     # Configuration (key=value)
