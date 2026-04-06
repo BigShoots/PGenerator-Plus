@@ -1,0 +1,599 @@
+diff --git a/meson.build b/meson.build
+index 2c4bee4..745a1fd 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1920,6 +1920,11 @@ if with_platform_wayland
+     dep_wl_protocols.get_pkgconfig_variable('pkgdatadir'), 'unstable',
+     'linux-dmabuf', 'linux-dmabuf-unstable-v1.xml'
+   )
++    wayland_color_management_xml = join_paths(
++    dep_wl_protocols.get_pkgconfig_variable('pkgdatadir'), 'unstable',
++    'color-management', 'color-management-unstable-v1.xml'
++  )
++
+   pre_args += ['-DHAVE_WAYLAND_PLATFORM', '-DWL_HIDE_DEPRECATED']
+ endif
+ 
+diff --git a/src/broadcom/cle/meson.build b/src/broadcom/cle/meson.build
+index 4cab2b3..a8ee312 100644
+--- a/src/broadcom/cle/meson.build
++++ b/src/broadcom/cle/meson.build
+@@ -64,6 +64,7 @@ libbroadcom_cle = static_library(
+   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_broadcom],
+   c_args : [no_override_init_args, expat_args],
+   gnu_symbol_visibility : 'hidden',
++#   gnu_symbol_visibility : 'default',
+   dependencies : [dep_libdrm, dep_valgrind, dep_expat, dep_zlib],
+   build_by_default : false,
+ )
+diff --git a/src/drm-shim/device.c b/src/drm-shim/device.c
+index a70189c..4d3f17e 100644
+--- a/src/drm-shim/device.c
++++ b/src/drm-shim/device.c
+@@ -47,11 +47,11 @@
+ #ifndef HAVE_MEMFD_CREATE
+ #include <sys/syscall.h>
+ 
+-static inline int
+-memfd_create(const char *name, unsigned int flags)
+-{
+-   return syscall(SYS_memfd_create, name, flags);
+-}
++//static inline int
++//memfd_create(const char *name, unsigned int flags)
++//{
++//   return syscall(SYS_memfd_create, name, flags);
++//}
+ #endif
+ 
+ /* Global state for the shim shared between libc, core, and driver. */
+diff --git a/src/drm-shim/drm_shim.c b/src/drm-shim/drm_shim.c
+index 9566d42..c1575a2 100644
+--- a/src/drm-shim/drm_shim.c
++++ b/src/drm-shim/drm_shim.c
+@@ -705,5 +705,5 @@ mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
+ 
+    return real_mmap(addr, length, prot, flags, fd, offset);
+ }
+-PUBLIC void *mmap64(void*, size_t, int, int, int, off_t)
+-   __attribute__((alias("mmap")));
++//PUBLIC void *mmap64(void*, size_t, int, int, int, off_t)
++  // __attribute__((alias("mmap")));
+diff --git a/src/egl/drivers/dri2/egl_dri2.c b/src/egl/drivers/dri2/egl_dri2.c
+index 99b0557..29d012d 100644
+--- a/src/egl/drivers/dri2/egl_dri2.c
++++ b/src/egl/drivers/dri2/egl_dri2.c
+@@ -921,6 +921,19 @@ dri2_setup_screen(_EGLDisplay *disp)
+                                    __DRI2_RENDERER_HAS_FRAMEBUFFER_SRGB))
+       disp->Extensions.KHR_gl_colorspace = EGL_TRUE;
+ 
++   /* FIXME */
++   if (disp->Extensions.KHR_gl_colorspace) {
++      disp->Extensions.EXT_gl_colorspace_bt2020_linear = EGL_TRUE;
++      disp->Extensions.EXT_gl_colorspace_bt2020_pq = EGL_TRUE;
++      disp->Extensions.EXT_gl_colorspace_display_p3 = EGL_TRUE;
++      disp->Extensions.EXT_gl_colorspace_display_p3_linear = EGL_TRUE;
++      disp->Extensions.EXT_gl_colorspace_scrgb = EGL_TRUE;
++      disp->Extensions.EXT_gl_colorspace_scrgb_linear = EGL_TRUE;
++
++      disp->Extensions.EXT_surface_SMPTE2086_metadata = EGL_TRUE;
++      disp->Extensions.EXT_surface_CTA861_3_metadata = EGL_TRUE;
++   }
++
+    if (dri2_dpy->image_driver ||
+        (dri2_dpy->dri2 && dri2_dpy->dri2->base.version >= 3) ||
+        (dri2_dpy->swrast && dri2_dpy->swrast->base.version >= 3)) {
+diff --git a/src/egl/drivers/dri2/egl_dri2.h b/src/egl/drivers/dri2/egl_dri2.h
+index 6a7eede..cb4b9e2 100644
+--- a/src/egl/drivers/dri2/egl_dri2.h
++++ b/src/egl/drivers/dri2/egl_dri2.h
+@@ -217,7 +217,7 @@ struct dri2_egl_display
+ #endif
+ 
+    char                     *driver_name;
+-
++   struct zwp_color_manager_v1 *drm_color_manager;
+    const __DRIextension    **loader_extensions;
+    const __DRIextension    **driver_extensions;
+ 
+@@ -245,6 +245,7 @@ struct dri2_egl_display
+    struct wl_event_queue    *wl_queue;
+    struct zwp_linux_dmabuf_v1 *wl_dmabuf;
+    struct u_vector          *wl_modifiers;
++   struct zwp_color_manager_v1 *wl_color_manager;
+    bool                      authenticated;
+    BITSET_DECLARE(formats, EGL_DRI2_MAX_FORMATS);
+    uint32_t                  capabilities;
+diff --git a/src/egl/drivers/dri2/platform_drm.c b/src/egl/drivers/dri2/platform_drm.c
+index 2b32943..968f085 100644
+--- a/src/egl/drivers/dri2/platform_drm.c
++++ b/src/egl/drivers/dri2/platform_drm.c
+@@ -137,6 +137,22 @@ dri2_drm_config_is_compatible(struct dri2_egl_display *dri2_dpy,
+    return true;
+ }
+ 
++static bool hdr_metadata_is_valid(const struct _egl_hdr_metadata *metadata)
++{
++   return metadata->display_primary_r.x != EGL_DONT_CARE &&
++      metadata->display_primary_r.y != EGL_DONT_CARE &&
++      metadata->display_primary_g.x != EGL_DONT_CARE &&
++      metadata->display_primary_g.y != EGL_DONT_CARE &&
++      metadata->display_primary_b.x != EGL_DONT_CARE &&
++      metadata->display_primary_b.y != EGL_DONT_CARE &&
++      metadata->white_point.x != EGL_DONT_CARE &&
++      metadata->white_point.y != EGL_DONT_CARE &&
++      metadata->max_luminance != EGL_DONT_CARE &&
++      metadata->min_luminance != EGL_DONT_CARE &&
++      metadata->max_cll != EGL_DONT_CARE &&
++      metadata->max_fall != EGL_DONT_CARE;
++}
++
+ static _EGLSurface *
+ dri2_drm_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                                void *native_surface, const EGLint *attrib_list)
+@@ -176,6 +192,24 @@ dri2_drm_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
+    dri2_surf->base.Width =  surf->base.v0.width;
+    dri2_surf->base.Height = surf->base.v0.height;
+    surf->dri_private = dri2_surf;
++#if 0
++   struct _egl_hdr_metadata metadata = dri2_surf->base.HdrMetadata;
++
++      if (!hdr_metadata_is_valid(&metadata)) {
++		  _eglError(EGL_BAD_MATCH, "Unsupported HDR metadata configuration");
++         goto cleanup_surf;
++      }
++      /* the EGL extension doesn't match CTA 861.3 :( */
++      metadata.max_luminance =
++         metadata.max_luminance * 65535 / 50000;
++      metadata.min_luminance =
++         metadata.min_luminance * 65535 / 50000 / 10000;
++      metadata.max_cll =
++         metadata.max_cll * 65535 / 50000;
++      metadata.max_fall =
++         metadata.max_fall * 65535 / 50000;
++   
++#endif
+ 
+    if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf->gbm_surf))
+       goto cleanup_surf;
+diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
+index cfff0ad..bae8ca5 100644
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
+@@ -45,11 +45,15 @@
+ #include "util/u_vector.h"
+ #include "util/anon_file.h"
+ #include "eglglobals.h"
++#include "EGL/egl.h"
++
+ 
+ #include <wayland-egl-backend.h>
+ #include <wayland-client.h>
+ #include "wayland-drm-client-protocol.h"
+ #include "linux-dmabuf-unstable-v1-client-protocol.h"
++#include "color-management-unstable-v1-client-protocol.h"
++
+ 
+ /*
+  * The index of entries in this table is used as a bitmask in
+@@ -297,6 +301,116 @@ get_wl_surface_proxy(struct wl_egl_window *window)
+    return wl_proxy_create_wrapper(window->surface);
+ }
+ 
++/* Map EGL color spaces to Wayland color spaces */
++struct egl_colorspace {
++   EGLenum colorspace;
++   enum zwp_color_manager_v1_chromaticity_names chromaticity;
++   enum zwp_color_manager_v1_eotf_names transfer_func;
++   enum zwp_color_manager_v1_whitepoint_names whitepoint;
++};
++
++// TODO look up actual white points and confirm the mappings here
++static const struct egl_colorspace colorspaces[] = {
++   {
++      .colorspace = EGL_GL_COLORSPACE_LINEAR_KHR,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_BT709,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_LINEAR,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++   {
++      .colorspace = EGL_GL_COLORSPACE_SRGB_KHR,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_BT709,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_SRGB,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++   {
++      .colorspace = EGL_GL_COLORSPACE_DISPLAY_P3_EXT,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_DISPLAYP3,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_SRGB,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++   {
++      .colorspace = EGL_GL_COLORSPACE_DISPLAY_P3_LINEAR_EXT,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_DISPLAYP3,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_LINEAR,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++   {
++      .colorspace = EGL_GL_COLORSPACE_BT2020_LINEAR_EXT,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_BT2020,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_LINEAR,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++   {
++      .colorspace = EGL_GL_COLORSPACE_BT2020_PQ_EXT,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_BT2020,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_LINEAR,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++   {
++      .colorspace = EGL_GL_COLORSPACE_SCRGB_EXT,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_BT709,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_SRGB,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++   {
++      .colorspace = EGL_GL_COLORSPACE_SCRGB_LINEAR_EXT,
++      .chromaticity = ZWP_COLOR_MANAGER_V1_CHROMATICITY_NAMES_BT709,
++      .transfer_func = ZWP_COLOR_MANAGER_V1_EOTF_NAMES_LINEAR,
++      .whitepoint = ZWP_COLOR_MANAGER_V1_WHITEPOINT_NAMES_D65,
++   },
++};
++
++static const struct egl_colorspace *
++get_colorspace(EGLenum colorspace)
++{
++   int i;
++
++   for (i = 0; i < ARRAY_SIZE(colorspaces); i++) {
++      if (colorspaces[i].colorspace == colorspace)
++         return &colorspaces[i];
++   }
++   return NULL;
++}
++
++static bool hdr_metadata_is_valid(const struct _egl_hdr_metadata *metadata)
++{
++   return metadata->display_primary_r.x != EGL_DONT_CARE &&
++      metadata->display_primary_r.y != EGL_DONT_CARE &&
++      metadata->display_primary_g.x != EGL_DONT_CARE &&
++      metadata->display_primary_g.y != EGL_DONT_CARE &&
++      metadata->display_primary_b.x != EGL_DONT_CARE &&
++      metadata->display_primary_b.y != EGL_DONT_CARE &&
++      metadata->white_point.x != EGL_DONT_CARE &&
++      metadata->max_luminance != EGL_DONT_CARE &&
++      metadata->min_luminance != EGL_DONT_CARE &&
++      metadata->max_cll != EGL_DONT_CARE &&
++      metadata->max_fall != EGL_DONT_CARE;
++}
++
++static void color_space_created(void *data,
++			struct zwp_color_space_creator_v1 *zwp_color_space_creator_v1,
++			struct zwp_color_space_v1 *id) {
++      struct zwp_color_management_surface_v1 *cm_surface = data;
++      zwp_color_management_surface_v1_set_color_space(
++         cm_surface,
++         id,
++         ZWP_COLOR_MANAGEMENT_SURFACE_V1_RENDER_INTENT_PERCEPTUAL);
++}
++
++// TODO obviously need to handle errors
++static void color_space_error(void *data,
++		      struct zwp_color_space_creator_v1 *zwp_color_space_creator_v1,
++		      uint32_t error) {
++
++}
++
++const struct zwp_color_space_creator_v1_listener color_space_creator_callbacks = {
++   .created = color_space_created,
++   .error = color_space_error,
++};
++
++
+ /**
+  * Called via eglCreateWindowSurface(), drv->CreateWindowSurface().
+  */
+@@ -384,6 +498,50 @@ dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
+    wl_proxy_set_queue((struct wl_proxy *)dri2_surf->wl_surface_wrapper,
+                       dri2_surf->wl_queue);
+ 
++   if (dri2_dpy->wl_color_manager) {
++      struct zwp_color_management_surface_v1 *cm_surface;
++      struct zwp_color_space_creator_v1 *color_space;
++      const struct egl_colorspace *cs =
++         get_colorspace(dri2_surf->base.GLColorspace);
++      if (!cs)
++         goto cleanup_dpy_wrapper;
++
++      color_space = zwp_color_manager_v1_create_color_space_from_names(
++         dri2_dpy->wl_color_manager,
++         cs->transfer_func,
++         cs->chromaticity,
++         cs->whitepoint);
++      cm_surface = zwp_color_manager_v1_get_color_management_surface(dri2_dpy->wl_color_manager, window->surface);
++      zwp_color_space_creator_v1_add_listener(color_space, &color_space_creator_callbacks, cm_surface);
++      // TODO do we need to flush the queue with wl_display_roundtrip_queue();
++   }
++
++   if (dri2_dpy->wl_color_manager) {
++      struct _egl_hdr_metadata metadata =
++         dri2_surf->base.HdrMetadata;
++      const struct egl_colorspace *cs;
++
++      cs = get_colorspace(dri2_surf->base.GLColorspace);
++      if (!cs)
++         goto cleanup_dpy_wrapper;
++
++      if (!hdr_metadata_is_valid(&metadata))
++         goto cleanup_dpy_wrapper;
++
++      /* the EGL extension doesn't match CTA 861.3 :( */
++      metadata.max_luminance =
++         metadata.max_luminance * 65535 / 50000;
++      metadata.min_luminance =
++         metadata.min_luminance * 65535 / 50000 / 10000;
++      metadata.max_cll =
++         metadata.max_cll * 65535 / 50000;
++      metadata.max_fall =
++         metadata.max_fall * 65535 / 50000;
++
++      // This is where we'd send the HDR metadata to wayland, but you can't do that.
++   }
++
++
+    dri2_surf->wl_win = window;
+    dri2_surf->wl_win->driver_private = dri2_surf;
+    dri2_surf->wl_win->destroy_window_callback = destroy_window_callback;
+@@ -1336,7 +1494,13 @@ registry_handle_global_drm(void *data, struct wl_registry *registry,
+                           MIN2(version, 3));
+       zwp_linux_dmabuf_v1_add_listener(dri2_dpy->wl_dmabuf, &dmabuf_listener,
+                                        dri2_dpy);
++   } else if (strcmp(interface, "zwp_color_manager_v1") == 0 && version >= 1) {
++      dri2_dpy->wl_color_manager =
++         wl_registry_bind(registry, name, &zwp_color_manager_v1_interface,
++                          MIN2(version, 1));
+    }
++
++
+ }
+ 
+ static void
+@@ -2107,6 +2271,8 @@ dri2_teardown_wayland(struct dri2_egl_display *dri2_dpy)
+       wl_drm_destroy(dri2_dpy->wl_drm);
+    if (dri2_dpy->wl_dmabuf)
+       zwp_linux_dmabuf_v1_destroy(dri2_dpy->wl_dmabuf);
++   if (dri2_dpy->wl_color_manager)
++      zwp_color_manager_v1_destroy(dri2_dpy->wl_color_manager);
+    if (dri2_dpy->wl_shm)
+       wl_shm_destroy(dri2_dpy->wl_shm);
+    if (dri2_dpy->wl_registry)
+diff --git a/src/egl/main/eglapi.c b/src/egl/main/eglapi.c
+index 17e36af..8f02e9a 100644
+--- a/src/egl/main/eglapi.c
++++ b/src/egl/main/eglapi.c
+@@ -499,6 +499,12 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
+ 
+    _EGL_CHECK_EXTENSION(EXT_buffer_age);
+    _EGL_CHECK_EXTENSION(EXT_create_context_robustness);
++   _EGL_CHECK_EXTENSION(EXT_gl_colorspace_bt2020_linear);
++   _EGL_CHECK_EXTENSION(EXT_gl_colorspace_bt2020_pq);
++   _EGL_CHECK_EXTENSION(EXT_gl_colorspace_display_p3);
++   _EGL_CHECK_EXTENSION(EXT_gl_colorspace_display_p3_linear);
++   _EGL_CHECK_EXTENSION(EXT_gl_colorspace_scrgb);
++   _EGL_CHECK_EXTENSION(EXT_gl_colorspace_scrgb_linear);
+    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import);
+    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import_modifiers);
+    _EGL_CHECK_EXTENSION(EXT_protected_surface);
+diff --git a/src/egl/main/egldisplay.h b/src/egl/main/egldisplay.h
+index 4d2afbc..3c8ee72 100644
+--- a/src/egl/main/egldisplay.h
++++ b/src/egl/main/egldisplay.h
+@@ -104,6 +104,12 @@ struct _egl_extensions
+ 
+    EGLBoolean EXT_buffer_age;
+    EGLBoolean EXT_create_context_robustness;
++   EGLBoolean EXT_gl_colorspace_bt2020_linear;
++   EGLBoolean EXT_gl_colorspace_bt2020_pq;
++   EGLBoolean EXT_gl_colorspace_display_p3;
++   EGLBoolean EXT_gl_colorspace_display_p3_linear;
++   EGLBoolean EXT_gl_colorspace_scrgb;
++   EGLBoolean EXT_gl_colorspace_scrgb_linear;
+    EGLBoolean EXT_image_dma_buf_import;
+    EGLBoolean EXT_image_dma_buf_import_modifiers;
+    EGLBoolean EXT_pixel_format_float;
+diff --git a/src/egl/main/eglsurface.c b/src/egl/main/eglsurface.c
+index aee5217..40f5b09 100644
+--- a/src/egl/main/eglsurface.c
++++ b/src/egl/main/eglsurface.c
+@@ -78,6 +78,42 @@ _eglParseSurfaceAttribList(_EGLSurface *surf, const EGLint *attrib_list)
+             break;
+          }
+          switch (val) {
++         case EGL_GL_COLORSPACE_BT2020_LINEAR_EXT:
++            if (!disp->Extensions.EXT_gl_colorspace_bt2020_linear) {
++               err = EGL_BAD_MATCH;
++               break;
++            }
++            break;
++         case EGL_GL_COLORSPACE_BT2020_PQ_EXT:
++            if (!disp->Extensions.EXT_gl_colorspace_bt2020_pq) {
++               err = EGL_BAD_MATCH;
++               break;
++            }
++            break;
++         case EGL_GL_COLORSPACE_DISPLAY_P3_EXT:
++            if (!disp->Extensions.EXT_gl_colorspace_display_p3) {
++               err = EGL_BAD_MATCH;
++               break;
++            }
++            break;
++         case EGL_GL_COLORSPACE_DISPLAY_P3_LINEAR_EXT:
++            if (!disp->Extensions.EXT_gl_colorspace_display_p3_linear) {
++               err = EGL_BAD_MATCH;
++               break;
++            }
++            break;
++         case EGL_GL_COLORSPACE_SCRGB_EXT:
++            if (!disp->Extensions.EXT_gl_colorspace_scrgb) {
++               err = EGL_BAD_MATCH;
++               break;
++            }
++            break;
++         case EGL_GL_COLORSPACE_SCRGB_LINEAR_EXT:
++            if (!disp->Extensions.EXT_gl_colorspace_scrgb_linear) {
++               err = EGL_BAD_MATCH;
++               break;
++            }
++            break;
+          case EGL_GL_COLORSPACE_SRGB_KHR:
+          case EGL_GL_COLORSPACE_LINEAR_KHR:
+             break;
+diff --git a/src/egl/meson.build b/src/egl/meson.build
+index ab8f4e1..b12b7fb 100644
+--- a/src/egl/meson.build
++++ b/src/egl/meson.build
+@@ -119,6 +119,8 @@ if with_dri2
+     files_egl += [
+       linux_dmabuf_unstable_v1_protocol_c,
+       linux_dmabuf_unstable_v1_client_protocol_h,
++      wayland_color_management_protocol_c,
++      wayland_color_management_client_protocol_h,
+       wayland_drm_client_protocol_h,
+     ]
+     incs_for_egl += include_directories('wayland/wayland-drm')
+diff --git a/src/egl/wayland/wayland-drm/meson.build b/src/egl/wayland/wayland-drm/meson.build
+index b4782a0..8b58a01 100644
+--- a/src/egl/wayland/wayland-drm/meson.build
++++ b/src/egl/wayland/wayland-drm/meson.build
+@@ -34,6 +34,20 @@ wayland_drm_client_protocol_h = custom_target(
+   command : [prog_wl_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+ )
+ 
++wayland_color_management_protocol_c = custom_target(
++  'color-management-unstable-v1-protocol.c',
++  input : wayland_color_management_xml,
++  output : 'color-management-unstable-v1-protocol.c',
++  command : [prog_wl_scanner, 'code', '@INPUT@', '@OUTPUT@'],
++)
++
++wayland_color_management_client_protocol_h = custom_target(
++  'color-management-unstable-v1-client-protocol.h',
++  input : wayland_color_management_xml,
++  output : 'color-management-unstable-v1-client-protocol.h',
++  command : [prog_wl_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
++)
++
+ wayland_drm_server_protocol_h = custom_target(
+   'wayland-drm-server-protocol.h',
+   input : 'wayland-drm.xml',
+@@ -43,12 +57,15 @@ wayland_drm_server_protocol_h = custom_target(
+ 
+ libwayland_drm = static_library(
+   'wayland_drm',
+-  ['wayland-drm.c', wayland_drm_protocol_c, wayland_drm_server_protocol_h],
++  ['wayland-drm.c', wayland_drm_protocol_c,
++    wayland_color_management_protocol_c,
++    wayland_drm_server_protocol_h],
+   gnu_symbol_visibility : 'hidden',
+   dependencies : [dep_wayland_server],
+   build_by_default : false,
+ )
+ 
++
+ # linux-dmabuf isn't part of wayland-drm, but this happens to be the only
+ # place which is a) guaranteed to be built when building either or both
+ # of EGL and Vulkan WSI, and b) guaranteed to be included before both,
+diff --git a/src/gallium/drivers/v3d/v3dx_format_table.c b/src/gallium/drivers/v3d/v3dx_format_table.c
+index d2dab33..cdd7737 100644
+--- a/src/gallium/drivers/v3d/v3dx_format_table.c
++++ b/src/gallium/drivers/v3d/v3dx_format_table.c
+@@ -70,6 +70,11 @@ static const struct v3d_format format_table[] = {
+         FORMAT(R8G8B8A8_SNORM,    NO,           RGBA8_SNORM, SWIZ_XYZW, 16, 0),
+         FORMAT(R8G8B8X8_SNORM,    NO,           RGBA8_SNORM, SWIZ_XYZ1, 16, 0),
+         FORMAT(R10G10B10A2_UNORM, RGB10_A2,     RGB10_A2,    SWIZ_XYZW, 16, 0),
++		FORMAT(A2B10G10R10_UNORM,  RGB10_A2,     RGB10_A2,    SWIZ_XYZW, 16, 0), //hack
++	        FORMAT(R10G10B10X2_UNORM, RGB10_A2,     RGB10_A2,    SWIZ_XYZ1, 16, 0), //hack
++	        FORMAT(B10G10R10A2_UNORM, RGB10_A2,     RGB10_A2,    SWIZ_ZYXW, 16, 0), //hack
++	        FORMAT(B10G10R10X2_UNORM, RGB10_A2,     RGB10_A2,    SWIZ_ZYX1, 16, 0), //hack
++
+         FORMAT(R10G10B10A2_UINT,  RGB10_A2UI,   RGB10_A2UI,  SWIZ_XYZW, 16, 0),
+ 
+         FORMAT(A4B4G4R4_UNORM,    ABGR4444,     RGBA4,       SWIZ_XYZW, 16, 0),
+diff --git a/src/gbm/main/gbm.h b/src/gbm/main/gbm.h
+index 2531fb5..0a0db08 100644
+--- a/src/gbm/main/gbm.h
++++ b/src/gbm/main/gbm.h
+@@ -242,13 +242,58 @@ enum gbm_bo_flags {
+     */
+    GBM_BO_USE_LINEAR = (1 << 4),
+    /**
+-    * Buffer is protected, i.e. encrypted and not readable by CPU or any
+-    * other non-secure / non-trusted components nor by non-trusted OpenGL,
+-    * OpenCL, and Vulkan applications.
++    * The buffer will be used as a texture that will be sampled from.
+     */
+-   GBM_BO_USE_PROTECTED = (1 << 5),
++   GBM_BO_USE_TEXTURING    = (1 << 5),
++   /**
++    * The buffer will be written to by a camera subsystem.
++    */
++   GBM_BO_USE_CAMERA_WRITE = (1 << 6),
++   /**
++    * The buffer will be read from by a camera subsystem.
++    */
++   GBM_BO_USE_CAMERA_READ = (1 << 7),
++   /**
++    * Buffer inaccessible to unprivileged users.
++    */
++   GBM_BO_USE_PROTECTED = (1 << 8),
++   /**
++    * These flags specify the frequency of software access. These flags do not
++    * guarantee the buffer is linear, but do guarantee gbm_bo_map(..) will
++    * present a linear view.
++    */
++   GBM_BO_USE_SW_READ_OFTEN = (1 << 9),
++   GBM_BO_USE_SW_READ_RARELY = (1 << 10),
++   GBM_BO_USE_SW_WRITE_OFTEN = (1 << 11),
++   GBM_BO_USE_SW_WRITE_RARELY = (1 << 12),
++   /**
++    * The buffer will be written by a video decode accelerator.
++    */
++   GBM_BO_USE_HW_VIDEO_DECODER = (1 << 13),
++   /**
++    * The buffer will be read by a video encode accelerator.
++    */
++   GBM_BO_USE_HW_VIDEO_ENCODER = (1 << 14),
++
++   /**
++    * If this flag is set, no backing memory will be allocated for the
++    * created buffer. The metadata of the buffer (e.g. size) can be
++    * queried, and the values will be equal to a buffer allocated with
++    * the same same arguments minus this flag. However, any methods
++    * which would otherwise access the underlying buffer will fail.
++    */
++   GBM_TEST_ALLOC = (1 << 15),
++
++   /**
++    * The buffer will be used for front buffer rendering.  On some
++    * platforms this may (for example) disable framebuffer compression
++    * to avoid problems with compression flags data being out of sync
++    * with pixel data.
++    */
++   GBM_BO_USE_FRONT_RENDERING = (1 << 16),
+ };
+ 
++
+ int
+ gbm_device_get_fd(struct gbm_device *gbm);
+ 
+diff --git a/src/util/format/meson.build b/src/util/format/meson.build
+index b51608f..74f7acd 100644
+--- a/src/util/format/meson.build
++++ b/src/util/format/meson.build
+@@ -60,5 +60,6 @@ libmesa_format = static_library(
+   dependencies : [dep_m, dep_valgrind],
+   c_args : [c_msvc_compat_args],
+   gnu_symbol_visibility : 'hidden',
++#   gnu_symbol_visibility : 'default',
+   build_by_default : false
+ )
