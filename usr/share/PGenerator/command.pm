@@ -114,6 +114,7 @@ sub apply_drm_properties (@) {
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
+ $quant_range=2 if($is_dv);
  if($quant_range ne "") {
   system("$modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
