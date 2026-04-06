@@ -263,8 +263,12 @@ sub load_new_pattern_file (@) {
 #             Create Return File              #
 ###############################################
 sub create_return_file (@) {
- open(FILE,">$var_dir/running/return");
- close(FILE);
+ my $rf="$var_dir/running/return";
+ if(open(my $rfh,">",$rf)) {
+  close($rfh);
+ } else {
+  &log("ERROR: cannot create return file $rf: $!");
+ }
 }
 
 ###############################################
