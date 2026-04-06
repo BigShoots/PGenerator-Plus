@@ -556,6 +556,7 @@ sub webui_apply_config (@) {
   $changes{"color_format"}="0";
   $changes{"colorimetry"}="9";
   $changes{"primaries"}="1";
+  $changes{"rgb_quant_range"}="2";
   # DV 12-bit RGB tunneling needs 1.5× the pixel clock — reject modes that
   # exceed HDMI 2.0 TMDS bandwidth (600 MHz) to avoid green-screen artifacts.
   if(defined $changes{"mode_idx"} && $changes{"mode_idx"} ne "") {
@@ -572,7 +573,7 @@ sub webui_apply_config (@) {
  }
  # Keys that require pattern generator restart
  my %restart_keys=map{$_=>1} qw(mode_idx eotf is_hdr is_sdr colorimetry primaries
-  min_luma max_luma max_cll max_fall color_format max_bpc
+  min_luma max_luma max_cll max_fall color_format max_bpc rgb_quant_range
   dv_status is_ll_dovi is_std_dovi dv_interface dv_metadata dv_color_space dv_map_mode);
 
  foreach my $k (sort keys %changes) {
@@ -2814,6 +2815,7 @@ async function applySettings(){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
    is_ll_dovi:'1',is_std_dovi:'1',
    dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'12',
+   rgb_quant_range:'2',
    dv_interface:getVal('dv_interface'),
    dv_map_mode:getVal('dv_map_mode'),
    dv_metadata:getVal('dv_map_mode')==='1'?'3':'2'});
