@@ -586,6 +586,19 @@ sub webui_apply_config (@) {
  return wantarray ? ($result,$need_restart) : $result;
 }
 
+sub webui_hdmi_connected (@) {
+ foreach my $port ($hdmi_2,$hdmi_1) {
+  foreach my $card (0..3) {
+   my $p="/sys/class/drm/card${card}-${port}";
+   if(-d $p) {
+    my $st=`cat $p/status 2>/dev/null`; chomp $st;
+    return 1 if($st eq "connected");
+   }
+  }
+ }
+ return 0;
+}
+
 sub webui_info_json (@) {
  my $hostname=&read_from_file($hostname_file);
  $hostname=~s/\s+//g;
@@ -604,7 +617,7 @@ sub webui_info_json (@) {
  my $ver=$version;
 
  # Current resolution
- my $resolution="unknown";
+ my $resolution="No display";
  if($hdmi_info=~/(\d+)x(\d+)\s*\@\s*([\d.]+)/) {
   my $hz=int($3+0.5);
   $resolution="${1}x${2}\@${hz}Hz";
@@ -723,6 +736,7 @@ sub webui_stats_json (@) {
 
 sub webui_modes_json (@) {
  my @modes;
+ return "[]" if(!&webui_hdmi_connected());
  my $output=`timeout 5 $modetest -c 2>/dev/null`;
  # Parse modes from modetest output — capture index, resolution, refresh, and pixel clock (kHz)
  while($output=~/^\s*#(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+/gm) {
@@ -952,6 +966,9 @@ sub webui_cec (@) {
  }
  # status returns structured JSON
  if($cmd eq "status") {
+  if(!&webui_hdmi_connected()) {
+   return '{"status":"ok","tv_power":"unknown","phys_addr":"","log_addr":"","osd_name":"","driver":""}';
+  }
   my $power=`timeout 5 $cec_bin power 2>/dev/null`;
   chomp($power);
   my $st=`timeout 5 $cec_bin status 2>/dev/null`;
@@ -1614,9 +1631,10 @@ sub webui_pattern (@) {
   my ($pg)=$body=~/"g"\s*:\s*(\d+)/; $pg=0 if(!defined $pg);
   my ($pb)=$body=~/"b"\s*:\s*(\d+)/; $pb=0 if(!defined $pb);
   my ($sz)=$body=~/"size"\s*:\s*(\d+)/; $sz=100 if(!defined $sz);
-  my $input_max=255;
+  my ($imax)=$body=~/"input_max"\s*:\s*(\d+)/;
+  my $input_max=$imax ? int($imax) : 255;
   my $target_max=&webui_pattern_target_max();
-  $input_max=$target_max if($pr > 255 || $pg > 255 || $pb > 255);
+  $input_max=$target_max if(!$imax && ($pr > 255 || $pg > 255 || $pb > 255));
   $pr=&webui_pattern_scale_value($pr,$input_max);
   $pg=&webui_pattern_scale_value($pg,$input_max);
   $pb=&webui_pattern_scale_value($pb,$input_max);
@@ -2645,7 +2663,7 @@ async function showPatch(id,pr,pg,pb,ev){
  if(ev&&ev.currentTarget)ev.currentTarget.classList.add('active');
  activePattern=id;
  const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({name:'patch',r:pr,g:pg,b:pb,size:sz})});
+  body:JSON.stringify({name:'patch',r:pr,g:pg,b:pb,size:sz,input_max:getPatternTargetMax()})});
  if(r&&r.status==='ok') toast(id.replace(/_/g,' '));
  else toast(r?r.message:'Pattern error',true);
 }
@@ -3171,13 +3189,10 @@ async function submitLogs(){
 // Init
 (async()=>{
  await loadConfig(true);
- await loadModes(true);
- await loadCapabilities(true);
+ await Promise.all([loadModes(true),loadCapabilities(true)]);
  updateDropdowns();
  refreshSavedSettingsSnapshot();
- await checkPing();
- await loadStats(true);
- await loadInfo();
+ await Promise.all([checkPing(),loadStats(true),loadInfo()]);
  setTimeout(()=>loadCecStatus(),500);
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadInfoframes(),1500);
