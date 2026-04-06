@@ -342,10 +342,13 @@ rm -f "$ROOTFS"/etc/ssh/ssh_host_*_key* 2>/dev/null || true
 echo "  [REMOVE] SSH host keys (will regenerate on boot)"
 
 # 5e. Strip saved WiFi networks (passwords) from wpa_supplicant.conf
+#     and ensure ctrl_interface allows pgenerator user access for WebUI.
 WPA_CONF="$ROOTFS/etc/wpa_supplicant/wpa_supplicant.conf"
 if [ -f "$WPA_CONF" ]; then
     sed -i '/^network={/,/^}/d' "$WPA_CONF"
     echo "  [REMOVE] Saved WiFi networks from wpa_supplicant.conf"
+    sed -i 's|^ctrl_interface=.*|ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=pgenerator|' "$WPA_CONF"
+    echo "  [FIX] ctrl_interface GROUP=pgenerator for WebUI wpa_cli access"
 fi
 
 ###############################################################################

@@ -198,6 +198,13 @@ rc_PGenerator_start () {
    hciattach /dev/ttyAMA0 bcm43xx 921600 flow - $BT_MACADDRESS
    # end for bluetooth
  
+   # Ensure wpa_supplicant control socket is accessible by pgenerator user
+   # so the WebUI daemon can query WiFi status via wpa_cli.
+   WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
+   if [ -f "$WPA_CONF" ] && ! grep -q 'GROUP=pgenerator' "$WPA_CONF"; then
+    sed -i 's|^ctrl_interface=.*|ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=pgenerator|' "$WPA_CONF"
+   fi
+
    # start for wifi
    # Reload WiFi modules so cfg80211 loads regulatory.db for 5GHz support.
    # cfg80211 loads the db once at module init; if it was loaded before
