@@ -229,7 +229,7 @@ sub webui_http (@) {
   LocalHost => "0.0.0.0",
   LocalPort => $http_port,
   Proto     => 'tcp',
-  Listen    => 10,
+  Listen    => 128,
   ReuseAddr => 1,
  );
  if(!$http_server) {
@@ -239,7 +239,7 @@ sub webui_http (@) {
    LocalHost => "0.0.0.0",
    LocalPort => $http_port,
    Proto     => 'tcp',
-   Listen    => 10,
+   Listen    => 128,
    ReuseAddr => 1,
   ) || do { &log("WebUI: failed to bind port $http_port: $!"); return; };
  }
@@ -249,8 +249,9 @@ sub webui_http (@) {
   my $client=$http_server->accept();
   next if(!$client);
   eval {
-   # Per-socket read timeout (thread-safe, unlike alarm/SIGALRM which is process-wide)
-   setsockopt($client, Socket::SOL_SOCKET(), Socket::SO_RCVTIMEO(), pack('l!l!', 10, 0));
+   # Per-socket read/write timeout (thread-safe, unlike alarm/SIGALRM which is process-wide)
+   setsockopt($client, Socket::SOL_SOCKET(), Socket::SO_RCVTIMEO(), pack('l!l!', 5, 0));
+   setsockopt($client, Socket::SOL_SOCKET(), Socket::SO_SNDTIMEO(), pack('l!l!', 5, 0));
    # Read request
    my $req="";
    while(my $line=<$client>) {
@@ -274,7 +275,7 @@ sub webui_http (@) {
    &log("WebUI: $method $path");
 
    # CORS headers for API
-   my $cors="Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n";
+   my $cors="Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n";
 
    if($method eq "OPTIONS") {
     print $client "HTTP/1.1 204 No Content\r\n$cors\r\n";
@@ -375,7 +376,6 @@ sub webui_http (@) {
     undef $client;
     my $cmd_b64=encode_base64("REBOOT","");
     system("(sleep 2 && PG_CMD=\"$cmd_b64\" sudo -E /usr/bin/PGenerator_cmd.pl) &");
-    return;
    }
    elsif($path eq "/api/modes") {
     my $json=&webui_modes_json();
@@ -408,6 +408,14 @@ sub webui_http (@) {
    close($client);
    undef $client;
    &sudo("WIFI_DISCONNECT","wlan0");
+  }
+  elsif($path eq "/api/wifi/forget" && $method eq "POST") {
+   my $result='{"status":"ok","message":"Forgetting WiFi network"}';
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   close($client);
+   undef $client;
+   &sudo("WIFI_FORGET","wlan0");
   }
    elsif($path eq "/api/wifi/ap" && $method eq "GET") {
     my $json=&webui_wifi_ap_json();
@@ -470,9 +478,9 @@ sub webui_http (@) {
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/update/check") {
-    # Run update check with a 15s cap to avoid blocking HTTP thread
+    # Run update check with a 10s cap to avoid blocking HTTP thread
     my @args_b64=map { encode_base64($_,"") } ("BASH_CMD","PGPLUS_CHECK");
-    my $result=`timeout 15 env $pg_cmd_env="@args_b64" $sudo_cmd 2>/dev/null`;
+    my $result=`timeout 10 env $pg_cmd_env="@args_b64" $sudo_cmd 2>/dev/null`;
     chomp($result);
     $result='{"status":"error","message":"Update check failed"}' if($result eq "" || $result!~/^\{/);
     my $len=length($result);
@@ -483,9 +491,9 @@ sub webui_http (@) {
     my $len=length($r);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
     close($client);
+    undef $client;
     my $cmd_b64=encode_base64("BASH_CMD","")." ".encode_base64("PGPLUS_APPLY","");
     system("(sleep 2 && PG_CMD=\"$cmd_b64\" sudo -E /usr/bin/PGenerator_cmd.pl) &");
-    return;
    }
    else {
     my $msg="404 Not Found";
@@ -495,7 +503,10 @@ sub webui_http (@) {
   if($@) {
    &log("WebUI: request error: $@");
   }
-  eval { close($client); };
+  if($client) {
+   eval { shutdown($client, 2); };
+   eval { close($client); };
+  }
  }
 }
 
@@ -545,6 +556,19 @@ sub webui_apply_config (@) {
   $changes{"color_format"}="0";
   $changes{"colorimetry"}="9";
   $changes{"primaries"}="1";
+  # DV 12-bit RGB tunneling needs 1.5× the pixel clock — reject modes that
+  # exceed HDMI 2.0 TMDS bandwidth (600 MHz) to avoid green-screen artifacts.
+  if(defined $changes{"mode_idx"} && $changes{"mode_idx"} ne "") {
+   my $mode_clk=0;
+   my $mt=`timeout 5 $modetest -c 2>/dev/null`;
+   if($mt=~/^\s*#$changes{"mode_idx"}\s+\S+\s+[\d.]+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+/m) {
+    $mode_clk=$1;
+   }
+   if($mode_clk > 0 && $mode_clk * 1.5 > 600000) {
+    my $result='{"status":"error","message":"This resolution exceeds HDMI bandwidth for Dolby Vision (12-bit RGB tunneling). Use 4K@30Hz or lower."}';
+    return wantarray ? ($result,0) : $result;
+   }
+  }
  }
  # Keys that require pattern generator restart
  my %restart_keys=map{$_=>1} qw(mode_idx eotf is_hdr is_sdr colorimetry primaries
@@ -1962,6 +1986,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="scanWifi()">Scan Networks</button>
      <button class="btn btn-sm btn-danger" id="wifiDisconnectBtn" onclick="disconnectWifi()" style="display:none">Disconnect</button>
+     <button class="btn btn-sm btn-danger" id="wifiForgetBtn" onclick="forgetWifi()" style="display:none">Forget</button>
   </div>
   <div id="wifiList" class="wifi-list"></div>
   <div id="wifiConnect" class="hidden" style="margin-top:8px">
@@ -2382,15 +2407,31 @@ function updateDropdowns(){
  // In DV mode, color format is forced to RGB
  const fmtSel=document.getElementById('color_format');
  const bpcSel=document.getElementById('max_bpc');
+ const modeSel=document.getElementById('mode_idx');
  if(sm==='dv'){
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!=='0';o.style.display=o.value==='0'?'':'none';});
   fmtSel.value='0';
   // Dolby Vision RGB tunneling uses a 12-bit HDMI link.
   Array.from(bpcSel.options).forEach(function(o){o.disabled=o.value!=='12';o.style.display=o.value==='12'?'':'none';});
   bpcSel.value='12';
+  // DV 12-bit RGB tunneling needs clock*1.5 bandwidth — disable modes that exceed TMDS limit
+  const maxTmds=caps.max_tmds?caps.max_tmds*1000:600000;
+  let curModeValid=false;
+  Array.from(modeSel.options).forEach(function(o){
+   const m=modes.find(x=>String(x.idx)===o.value);
+   const ok=m?(m.clock*1.5<=maxTmds):true;
+   o.disabled=!ok;o.style.display=ok?'':'none';
+   if(ok&&o.value===modeIdx)curModeValid=true;
+  });
+  if(!curModeValid){
+   const first=Array.from(modeSel.options).find(o=>!o.disabled);
+   if(first)modeSel.value=first.value;
+  }
   checkSettingsChanged();
   return;
  }
+ // Non-DV: re-enable all mode options
+ Array.from(modeSel.options).forEach(function(o){o.disabled=false;o.style.display='';});
 
  // Color format filtering based on current mode + bpc
  const validFmts=getValidFormats(modeIdx,curBpc);
@@ -2477,10 +2518,14 @@ async function loadInfo(quiet){
   if(info.wifi.band) addInfo(ws,'Band',info.wifi.band+' ('+info.wifi.freq+' MHz)');
   if(info.wifi.signal) addInfo(ws,'Signal',info.wifi.signal+' dBm');
   if(wifiDisconnectBtn) wifiDisconnectBtn.style.display='';
+  const wifiForgetBtn=document.getElementById('wifiForgetBtn');
+  if(wifiForgetBtn) wifiForgetBtn.style.display='';
  }else{
   const ws=document.getElementById('wifiStatus');
   ws.innerHTML='<div style="font-size:.8rem;color:var(--text2)">Not connected</div>';
   if(wifiDisconnectBtn) wifiDisconnectBtn.style.display='none';
+  const wifiForgetBtn=document.getElementById('wifiForgetBtn');
+  if(wifiForgetBtn) wifiForgetBtn.style.display='none';
  }
  // Update top-bar calibration indicator
  const calWrap=document.getElementById('calStatusWrap');
@@ -2761,7 +2806,7 @@ async function applySettings(){
   toast('Applying settings...');
   document.getElementById('applyBar').style.display='none';
   setTimeout(()=>{loadConfig().then(()=>updateDropdowns());loadInfo();toast('Settings applied');},3000);
- }else toast('Failed to apply','err');
+ }else toast(r&&r.message?r.message:'Failed to apply','err');
 }
 
 async function rebootDevice(){
@@ -2839,6 +2884,23 @@ async function disconnectWifi(){
   setTimeout(()=>{loadInfo();if(btn) btn.disabled=false;},1500);
  }else{
   toast('WiFi disconnect failed','err');
+  if(btn) btn.disabled=false;
+ }
+}
+async function forgetWifi(){
+ const btn=document.getElementById('wifiForgetBtn');
+ if(btn) btn.disabled=true;
+ if(!window.confirm('Forget WiFi network? Stored credentials will be deleted and WiFi will not reconnect on reboot.')){
+  if(btn) btn.disabled=false;
+  return;
+ }
+ const r=await fetchJSON('/api/wifi/forget',{method:'POST'});
+ if(r&&r.status==='ok'){
+  toast('WiFi network forgotten');
+  hideWifiForm();
+  setTimeout(()=>{loadInfo();if(btn) btn.disabled=false;},1500);
+ }else{
+  toast('WiFi forget failed','err');
   if(btn) btn.disabled=false;
  }
 }
@@ -3038,7 +3100,7 @@ async function loadInfoframes(){
 async function checkUpdate(){
  _updateChecked=true;
  document.getElementById('updateStatus').textContent='Checking...';
- const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:20000});
+ const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:15000});
  if(!r||r.status==='error'){
   document.getElementById('updateStatus').textContent=r?r.message:'Check failed — no internet?';
   return;

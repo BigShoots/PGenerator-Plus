@@ -53,14 +53,14 @@ clock_seems_invalid() {
 
 sync_clock() {
  local server
- for server in pool.ntp.org time.google.com time.cloudflare.com; do
-  if command -v ntpdate >/dev/null 2>&1 && ntpdate -ub "$server" >/dev/null 2>&1; then
+ for server in pool.ntp.org time.google.com; do
+  if command -v ntpdate >/dev/null 2>&1 && timeout 3 ntpdate -ub "$server" >/dev/null 2>&1; then
    return 0
   fi
-  if command -v sntp >/dev/null 2>&1 && sntp -sS "$server" >/dev/null 2>&1; then
+  if command -v sntp >/dev/null 2>&1 && timeout 3 sntp -sS "$server" >/dev/null 2>&1; then
    return 0
   fi
-  if command -v ntpd >/dev/null 2>&1 && ntpd -qn -p "$server" >/dev/null 2>&1; then
+  if command -v ntpd >/dev/null 2>&1 && timeout 3 ntpd -qn -p "$server" >/dev/null 2>&1; then
    return 0
   fi
  done
