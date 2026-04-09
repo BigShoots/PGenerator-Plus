@@ -305,6 +305,10 @@ sub pgenerator_cmd (@) {
  &sudo("SET_DTOVERLAY","$1")         if($cmd =~/SET_DTOVERLAY:(.*)/);
  &sudo("SET_BOOT_CONFIG","$1")       if($cmd =~/SET_BOOT_CONFIG:(.*)/);
  &sudo("SET_GPU_MEMORY","$1")        if($cmd =~/SET_GPU_MEMORY:(.*)/);
+ &sudo("SET_CMA_MEMORY","$1")        if($cmd =~/SET_CMA_MEMORY:(.*)/);
+ if($cmd =~/SET_BOOT_MEMORY:(\d+),(\w+)/) {
+  &sudo("SET_BOOT_MEMORY",$1,$2);
+ }
  &sudo("SET_OUTPUT_RANGE","$1")      if($cmd =~/SET_OUTPUT_RANGE:(.*)/);
  if($cmd =~/SET_DISCOVERABLE:(.*)/) {
   unlink("$info_dir/GET_DISCOVERABLE.info");
@@ -691,6 +695,19 @@ sub get_cmd_generic(@) {
   chomp($response=<CMD_VCGENCMD>);
   close(CMD_VCGENCMD);
   $response=~s/gpu=//g;
+ }
+ if($cmd eq "GET_BOOT_MEMORY") {
+  my $gpu="64";
+  my $cma="default";
+  if(open(my $fh,"<",$bootloader_file)) {
+   while(<$fh>) {
+    chomp;
+    $gpu=$1 if(/^gpu_mem=(\d+)/);
+    $cma=$1 if(/dtoverlay=vc4-kms-v3d,cma-(\d+)/);
+   }
+   close($fh);
+  }
+  $response="$gpu,$cma";
  }
  if($cmd eq "GET_CORE_VOLTAGE") {
   open(CMD_VCGENCMD,"$vcgencmd measure_volts core|");
