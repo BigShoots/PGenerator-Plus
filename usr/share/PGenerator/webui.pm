@@ -495,6 +495,34 @@ sub webui_http (@) {
     my $cmd_b64=encode_base64("BASH_CMD","")." ".encode_base64("PGPLUS_APPLY","");
     system("(sleep 2 && PG_CMD=\"$cmd_b64\" sudo -E /usr/bin/PGenerator_cmd.pl) &");
    }
+   elsif($path eq "/api/boot/memory") {
+    if($method eq "GET") {
+     my $gpu_mem=&pgenerator_cmd("GET_GPU_MEMORY");
+     chomp($gpu_mem);
+     $gpu_mem=~s/M$//;
+     $gpu_mem||="64";
+     my $json="{\"gpu_mem\":\"$gpu_mem\"}";
+     my $len=length($json);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$json";
+    }
+    elsif($method eq "POST") {
+     my $gpu_val;
+     $gpu_val=$1 if($body=~/"gpu_mem"\s*:\s*"(\d+)"/);
+     if($gpu_val && $gpu_val=~/^(64|128|192|256)$/) {
+      my $r="{\"status\":\"ok\",\"message\":\"GPU memory set to ${gpu_val}MB. Rebooting...\"}";
+      my $len=length($r);
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
+      close($client);
+      undef $client;
+      my $cmd_b64=encode_base64("SET_GPU_MEMORY","")." ".encode_base64("$gpu_val","");
+      system("(sleep 2 && PG_CMD=\"$cmd_b64\" sudo -E /usr/bin/PGenerator_cmd.pl) &");
+     } else {
+      my $r='{"status":"error","message":"Invalid GPU memory value"}';
+      my $len=length($r);
+      print $client "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
+     }
+    }
+   }
    else {
     my $msg="404 Not Found";
     print $client "HTTP/1.1 404 Not Found\r\nContent-Length: ".length($msg)."\r\n\r\n$msg";
@@ -648,7 +676,13 @@ sub webui_info_json (@) {
  my $cal_ip=$calibration_client_ip; $cal_ip=~s/"/\\"/g;
  my $cal_sw=$calibration_client_software; $cal_sw=~s/"/\\"/g;
  my $cal_conn=($cal_ip ne "")?"true":"false";
- return "{\"hostname\":\"$hostname\",\"version\":\"$ver\",\"temperature\":\"$temp\",\"uptime\":\"$uptime\",\"resolution\":\"$resolution\",\"interfaces\":$ip_json,\"wifi\":{\"ssid\":\"$wifi_ssid\",\"freq\":\"$wifi_freq\",\"band\":\"$wifi_band\",\"signal\":\"$wifi_signal\",\"state\":\"$wifi_state\"},\"calibration\":{\"connected\":$cal_conn,\"ip\":\"$cal_ip\",\"software\":\"$cal_sw\"}}";
+ my $meminfo=&read_from_file("/proc/meminfo");
+ my $total_ram="";
+ if($meminfo=~/MemTotal:\s*(\d+)/) { $total_ram=int($1/1024); }
+ my $gpu_mem=&pgenerator_cmd("GET_GPU_MEMORY");
+ chomp($gpu_mem);
+ $gpu_mem=~s/\s//g;
+ return "{\"hostname\":\"$hostname\",\"version\":\"$ver\",\"temperature\":\"$temp\",\"uptime\":\"$uptime\",\"resolution\":\"$resolution\",\"interfaces\":$ip_json,\"wifi\":{\"ssid\":\"$wifi_ssid\",\"freq\":\"$wifi_freq\",\"band\":\"$wifi_band\",\"signal\":\"$wifi_signal\",\"state\":\"$wifi_state\"},\"calibration\":{\"connected\":$cal_conn,\"ip\":\"$cal_ip\",\"software\":\"$cal_sw\"},\"total_ram\":\"$total_ram\",\"gpu_mem\":\"$gpu_mem\"}";
 }
 
 sub webui_create_logs_bundle (@) {
@@ -2091,13 +2125,13 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
  </div>
 
  <!-- HDMI Infoframes -->
- <div class="card span2" data-widget="infoframes" draggable="true">
+ <div class="card" data-widget="infoframes" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>HDMI Infoframes</h2>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="loadInfoframes()">Refresh</button>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-   <div>
+  <div>
+   <div style="margin-bottom:10px">
     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">AVI InfoFrame</div>
     <div id="aviIF" class="if-hex">-</div>
     <div id="aviDecoded" class="if-decoded"></div>
@@ -2108,6 +2142,27 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
     <div id="drmDecoded" class="if-decoded"></div>
    </div>
   </div>
+ </div>
+
+ <!-- GPU Memory -->
+ <div class="card" data-widget="gpu_memory" draggable="true">
+  <h2><span class="drag-handle">&#9776;</span>GPU Memory</h2>
+  <div class="info-grid" id="gpuMemInfo" style="margin-bottom:8px"></div>
+  <div class="grid">
+   <div class="field">
+    <label>GPU Memory Allocation</label>
+    <select id="gpu_mem">
+     <option value="64">64 MB</option>
+     <option value="128">128 MB</option>
+     <option value="192">192 MB</option>
+     <option value="256">256 MB</option>
+    </select>
+   </div>
+  </div>
+  <div class="btn-row" style="margin-top:10px">
+   <button class="btn btn-sm btn-success" onclick="applyMemory()">Apply &amp; Reboot</button>
+  </div>
+  <div style="margin-top:6px;font-size:.7rem;color:var(--text2)">Changes require a reboot. Increase if calibration software reports insufficient GPU memory.</div>
  </div>
 
  <!-- Software Update -->
@@ -2486,7 +2541,9 @@ async function checkPing(){
   const r=await fetch(API+'/api/ping',{signal:AbortSignal.timeout(8000)});
   if(!r.ok) throw new Error(r.status);
   await r.json();
+  const wasOffline=_pingFailCount>=3;
   _pingFailCount=0;
+  if(wasOffline){loadInfo();loadMemory();}
  }catch(e){
   _pingFailCount++;
   if(_pingFailCount<3){
@@ -2523,6 +2580,13 @@ async function loadInfo(quiet){
  addInfo(g,'Resolution',info.resolution);
  addInfo(g,'Uptime',formatUptime(info.uptime));
  addInfo(g,'Temp',info.temperature+'\u00B0C');
+ if(info.total_ram) addInfo(g,'RAM',info.total_ram+'MB');
+ if(info.gpu_mem) addInfo(g,'GPU Mem',info.gpu_mem);
+ // Update GPU Memory card readout
+ if(info.gpu_mem){
+  const gi=document.getElementById('gpuMemInfo');
+  if(gi){gi.innerHTML='';addInfo(gi,'Current',info.gpu_mem);}
+ }
  if(info.interfaces){
   Object.entries(info.interfaces).forEach(([iface,ip])=>{
    const name=IFACE_NAMES[iface]||iface;
@@ -2832,6 +2896,26 @@ async function applySettings(){
 async function rebootDevice(){
  toast('Rebooting device...');
  await fetchJSON('/api/reboot',{method:'POST'});
+}
+
+async function loadMemory(){
+ const m=await fetchJSON('/api/boot/memory',{_quiet:true});
+ if(!m)return;
+ setVal('gpu_mem',m.gpu_mem||'64');
+ const g=document.getElementById('gpuMemInfo');
+ if(g){
+  g.innerHTML='';
+  addInfo(g,'Current',m.gpu_mem+'MB');
+ }
+}
+
+async function applyMemory(){
+ const gpu=getVal('gpu_mem');
+ if(!confirm('Set GPU memory to '+gpu+'MB and reboot?'))return;
+ const r=await fetchJSON('/api/boot/memory',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({gpu_mem:gpu})});
+ if(r&&r.status==='ok') toast(r.message);
+ else toast(r&&r.message?r.message:'Failed to apply','err');
 }
 
 async function scanWifi(){
@@ -3195,6 +3279,7 @@ async function submitLogs(){
  updateDropdowns();
  refreshSavedSettingsSnapshot();
  await Promise.all([checkPing(),loadStats(true),loadInfo()]);
+ loadMemory();
  setTimeout(()=>loadCecStatus(),500);
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadInfoframes(),1500);

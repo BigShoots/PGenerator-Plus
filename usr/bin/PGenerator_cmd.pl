@@ -73,6 +73,8 @@ $0=basename($0)." $action";
 &reboot()                 if($action eq "REBOOT");
 &halt()                   if($action eq "HALT");
 &set_gpu_memory()         if($action eq "SET_GPU_MEMORY");
+&set_cma_memory()         if($action eq "SET_CMA_MEMORY");
+&set_boot_memory()        if($action eq "SET_BOOT_MEMORY");
 &set_dtoverlay()          if($action eq "SET_DTOVERLAY");
 &set_boot_config()        if($action eq "SET_BOOT_CONFIG");
 &set_refresh()            if($action eq "SET_REFRESH");
@@ -325,6 +327,61 @@ sub set_gpu_memory(@) {
  if($g_mem =~/^64$|^128$|^192$|^256$/) {
   my $content=&read_from_file($bootloader_file);
   $content=~s/\ngpu_mem=.*/\ngpu_mem=$g_mem/;
+  &write_file("$bootloader_file.tmp",$bootloader_file,$content);
+  &apply_bootloader();
+ }
+}
+
+###############################################
+#         Set CMA Memory function             #
+###############################################
+sub set_cma_memory(@) {
+ my $cma_val=$ARGV[1];
+ # validation: 128, 256, 384, 512, or default (remove cma param)
+ if($cma_val =~/^default$|^128$|^256$|^384$|^512$/) {
+  my $content=&read_from_file($bootloader_file);
+  if($cma_val eq "default") {
+   $content=~s/dtoverlay=vc4-kms-v3d,cma-\d+/dtoverlay=vc4-kms-v3d/;
+  } else {
+   if($content=~/dtoverlay=vc4-kms-v3d,cma-\d+/) {
+    $content=~s/dtoverlay=vc4-kms-v3d,cma-\d+/dtoverlay=vc4-kms-v3d,cma-$cma_val/;
+   } elsif($content=~/dtoverlay=vc4-kms-v3d/) {
+    $content=~s/dtoverlay=vc4-kms-v3d/dtoverlay=vc4-kms-v3d,cma-$cma_val/;
+   }
+  }
+  &write_file("$bootloader_file.tmp",$bootloader_file,$content);
+  &apply_bootloader();
+ }
+}
+
+###############################################
+#       Set Boot Memory function              #
+#  Sets gpu_mem and CMA in one operation      #
+###############################################
+sub set_boot_memory(@) {
+ my $gpu_val=$ARGV[1];
+ my $cma_val=$ARGV[2];
+ my $changed=0;
+ my $content=&read_from_file($bootloader_file);
+ # Set gpu_mem
+ if($gpu_val =~/^64$|^128$|^192$|^256$/) {
+  $content=~s/\ngpu_mem=.*/\ngpu_mem=$gpu_val/;
+  $changed=1;
+ }
+ # Set CMA overlay parameter
+ if($cma_val =~/^default$|^128$|^256$|^384$|^512$/) {
+  if($cma_val eq "default") {
+   $content=~s/dtoverlay=vc4-kms-v3d,cma-\d+/dtoverlay=vc4-kms-v3d/;
+  } else {
+   if($content=~/dtoverlay=vc4-kms-v3d,cma-\d+/) {
+    $content=~s/dtoverlay=vc4-kms-v3d,cma-\d+/dtoverlay=vc4-kms-v3d,cma-$cma_val/;
+   } elsif($content=~/dtoverlay=vc4-kms-v3d/) {
+    $content=~s/dtoverlay=vc4-kms-v3d/dtoverlay=vc4-kms-v3d,cma-$cma_val/;
+   }
+  }
+  $changed=1;
+ }
+ if($changed) {
   &write_file("$bootloader_file.tmp",$bootloader_file,$content);
   &apply_bootloader();
  }
