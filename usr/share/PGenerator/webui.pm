@@ -103,6 +103,7 @@ sub webui_mdns (@) {
  my $MDNS_ADDR="224.0.0.251";
  my $MDNS_PORT=5353;
  my $mdns_hostname="pgenerator";
+ my $MDNS_REJOIN_INTERVAL=30; # seconds between multicast re-join checks
 
  # Create UDP socket bound to mDNS port
  socket(my $sock, Socket::PF_INET, Socket::SOCK_DGRAM, getprotobyname('udp'))
@@ -115,32 +116,63 @@ sub webui_mdns (@) {
  bind($sock, Socket::sockaddr_in($MDNS_PORT, Socket::INADDR_ANY))
   || do { &log("mDNS: bind failed: $!"); return; };
 
- # Join multicast group on each active IPv4 interface so queries work across
- # Wi-Fi client, AP mode, Bluetooth PAN, USB gadget, etc.
  my $IP_ADD_MEMBERSHIP=eval { Socket::IP_ADD_MEMBERSHIP() } || 35; # 35 on Linux
+ my $IP_DROP_MEMBERSHIP=eval { Socket::IP_DROP_MEMBERSHIP() } || 36;
  my $IPPROTO_IP=eval { Socket::IPPROTO_IP() } || 0;
  my $IP_MULTICAST_TTL=eval { Socket::IP_MULTICAST_TTL() } || 33;
  my $IP_TTL=eval { Socket::IP_TTL() } || 2;
- my @mdns_routes=&webui_mdns_routes();
- foreach my $route (@mdns_routes) {
-  my $joined=0;
-  if($route->{ifindex} > 0) {
-   my $mreqn=pack("a4 a4 i",Socket::inet_aton($MDNS_ADDR),pack("N",0),$route->{ifindex});
-   $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreqn) ? 1 : 0;
-  }
-  if(!$joined) {
-   my $mreq = Socket::inet_aton($MDNS_ADDR) . Socket::inet_aton($route->{ip});
-   $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreq) ? 1 : 0;
-  }
-  &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $!") if(!$joined);
- }
  setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_TTL, pack("C",255));
  setsockopt($sock, $IPPROTO_IP, $IP_TTL, pack("I",255));
- &log("mDNS: no active IPv4 interfaces found for multicast join") if(!@mdns_routes);
+
+ # Join multicast group on each active IPv4 interface so queries work across
+ # Wi-Fi client, AP mode, Bluetooth PAN, USB gadget, etc.
+ # Track joined interfaces so we can re-join after hotplug events.
+ my %mdns_joined; # key="iface:ip" value=1
+ my $mdns_join_time=0;
+
+ my $mdns_rejoin=sub {
+  my @routes=&webui_mdns_routes();
+  my %current;
+  foreach my $route (@routes) {
+   my $key="$route->{iface}:$route->{ip}";
+   $current{$key}=1;
+   next if($mdns_joined{$key});
+   my $joined=0;
+   if($route->{ifindex} > 0) {
+    my $mreqn=pack("a4 a4 i",Socket::inet_aton($MDNS_ADDR),pack("N",0),$route->{ifindex});
+    $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreqn) ? 1 : 0;
+   }
+   if(!$joined) {
+    my $mreq = Socket::inet_aton($MDNS_ADDR) . Socket::inet_aton($route->{ip});
+    $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreq) ? 1 : 0;
+   }
+   if($joined) {
+    $mdns_joined{$key}=1;
+    &log("mDNS: joined multicast on $route->{iface} ($route->{ip})");
+   } else {
+    &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $!");
+   }
+  }
+  # Drop stale memberships for interfaces that disappeared
+  foreach my $key (keys %mdns_joined) {
+   next if($current{$key});
+   delete $mdns_joined{$key};
+  }
+  &log("mDNS: no active IPv4 interfaces found for multicast join") if(!@routes && !keys %mdns_joined);
+  $mdns_join_time=time();
+ };
+ $mdns_rejoin->();
 
  &log("mDNS: responder started for $mdns_hostname.local on port $MDNS_PORT");
 
+ my $sel=IO::Select->new($sock);
  while(1) {
+  # Re-join multicast groups periodically to handle hotplug
+  if(time() - $mdns_join_time >= $MDNS_REJOIN_INTERVAL) {
+   $mdns_rejoin->();
+  }
+  my @ready=$sel->can_read($MDNS_REJOIN_INTERVAL);
+  next if(!@ready);
   my $buf="";
   my $from=recv($sock, $buf, 4096, 0);
   next if(!defined $from);
@@ -357,7 +389,8 @@ sub webui_http (@) {
     } else {
      if(open(my $fh,"<:raw",$tmp)) {
       my $size=-s $tmp;
-      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\nContent-Disposition: attachment; filename=\"pg_logs.tgz\"\r\nContent-Length: $size\r\n$cors\r\n";
+      my $fname="PGenerator_diag_${version}.txt";
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: $size\r\n$cors\r\n";
       while(read($fh,my $buf,16384)){ print $client $buf; }
       close($fh);
      } else {
@@ -687,23 +720,112 @@ sub webui_info_json (@) {
 
 sub webui_create_logs_bundle (@) {
  my $ts=time();
- my $tmp="/tmp/pg_logs_${ts}.tgz";
- my $d="/tmp/pg_logcollect_$$";
- system("rm -rf $d; mkdir -p $d");
- system("grep -i PGeneratord /var/log/syslog* /var/log/messages* 2>/dev/null | tail -n 2000 > $d/syslog.txt 2>/dev/null || true");
- system("tail -n 2000 /var/log/daemon.log >> $d/syslog.txt 2>/dev/null || true");
- system("ps aux > $d/ps.txt 2>/dev/null || true");
+ my $tmp="/tmp/pg_diag_${ts}.txt";
+ my $hostname=`hostname 2>/dev/null`; chomp($hostname);
+ my @out;
+ push @out, "=" x 72;
+ push @out, "  PGenerator+ Diagnostic Report";
+ push @out, "  Host: $hostname   Version: $version   Date: ".`date -u '+%Y-%m-%d %H:%M:%S UTC'`;
+ chomp($out[$#out]);
+ push @out, "=" x 72;
+
+ # System info
+ push @out, "", "--- System Info ---";
+ push @out, `uptime 2>/dev/null`; chomp($out[$#out]);
+ push @out, `cat /proc/version 2>/dev/null`; chomp($out[$#out]);
+ my $model=`cat /proc/device-tree/model 2>/dev/null`; chomp($model);
+ push @out, "Model: $model" if($model);
+ my $mem=`grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null`; chomp($mem);
+ push @out, $mem;
+ my $gpu_mem=&pgenerator_cmd("GET_GPU_MEMORY"); chomp($gpu_mem);
+ push @out, "GPU Memory: $gpu_mem";
+
+ # PGenerator config
+ push @out, "", "--- PGenerator.conf ---";
+ push @out, `cat /etc/PGenerator/PGenerator.conf 2>/dev/null`;
+ chomp($out[$#out]);
+
+ # Network
+ push @out, "", "--- Network Interfaces ---";
+ push @out, `ip -br addr show 2>/dev/null`; chomp($out[$#out]);
+ push @out, "", "--- Routes ---";
+ push @out, `ip route show 2>/dev/null`; chomp($out[$#out]);
+ push @out, "", "--- DNS (resolv.conf) ---";
+ push @out, `cat /etc/resolv.conf 2>/dev/null`; chomp($out[$#out]);
+ push @out, "", "--- WiFi Status ---";
+ push @out, `timeout 3 wpa_cli -i wlan0 status 2>/dev/null`; chomp($out[$#out]);
+
+ # HDMI / Display
+ push @out, "", "--- HDMI Mode ---";
+ push @out, `timeout 5 $modetest -c 2>/dev/null | head -80`; chomp($out[$#out]);
+ push @out, "", "--- EDID ---";
+ my $edid_hex=`timeout 5 cat /sys/class/drm/card?-HDMI-A-1/edid 2>/dev/null | xxd -p 2>/dev/null`;
+ chomp($edid_hex);
+ if($edid_hex) {
+  push @out, $edid_hex;
+  push @out, "", "--- EDID Decoded ---";
+  push @out, `timeout 5 edid-decode /sys/class/drm/card?-HDMI-A-1/edid 2>&1`;
+  chomp($out[$#out]);
+ } else {
+  push @out, "(no EDID — display not connected)";
+ }
+
+ # Infoframes
+ push @out, "", "--- HDMI Infoframes (dmesg) ---";
+ my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
+ my ($avi_hex,$drm_hex)=("","");
+ foreach my $line (split(/\n/,$dmesg)) {
+  if($line=~/AVI IF:\s*(.+)/) { $avi_hex=$1; }
+  if($line=~/DRM IF:\s*(.+)/) { $drm_hex=$1; }
+ }
+ push @out, "AVI: $avi_hex" if($avi_hex);
+ push @out, "DRM: $drm_hex" if($drm_hex);
+ push @out, "(none found)" if(!$avi_hex && !$drm_hex);
+
+ # Operations file
+ push @out, "", "--- operations.txt ---";
+ push @out, `cat /var/lib/PGenerator/operations.txt 2>/dev/null`; chomp($out[$#out]);
+
+ # Processes
+ push @out, "", "--- Processes (PGenerator) ---";
+ push @out, `ps aux | grep -E 'PGenerator|dhcpcd|dhclient|wpa_|hostapd' | grep -v grep 2>/dev/null`;
+ chomp($out[$#out]);
+
+ # File descriptors
  my $pid=`ps aux | awk '/[P]Generatord/ {print \$2; exit}'`; chomp($pid);
- if($pid) { system("ls -l /proc/$pid/fd > $d/fd.txt 2>/dev/null || true"); }
- system("find /var/lib/PGenerator -name '*.info' -exec cp {} $d/ \\; 2>/dev/null || true");
- system("cp /etc/PGenerator/PGenerator.conf $d/PGenerator.conf 2>/dev/null || true");
- system("ip addr > $d/ip_addr.txt 2>/dev/null || true");
- system("ip route > $d/ip_route.txt 2>/dev/null || true");
- system("dmesg | tail -200 > $d/dmesg.txt 2>/dev/null || true");
- system("cat /proc/version > $d/kernel.txt 2>/dev/null || true");
- system("uptime > $d/uptime.txt 2>/dev/null || true");
- system("tar czf $tmp -C $d . 2>/dev/null");
- system("rm -rf $d");
+ if($pid) {
+  push @out, "", "--- PGeneratord FDs (pid $pid) ---";
+  push @out, `ls -l /proc/$pid/fd 2>/dev/null`; chomp($out[$#out]);
+ }
+
+ # Info cache files
+ push @out, "", "--- Info Cache ---";
+ my @infos=glob("/var/lib/PGenerator/running/*.info");
+ foreach my $f (@infos) {
+  my $name=$f; $name=~s|.*/||;
+  my $content=`cat $f 2>/dev/null`; chomp($content);
+  push @out, "$name: $content";
+ }
+
+ # Syslog (PGenerator entries)
+ push @out, "", "--- Syslog (last 500 PGenerator lines) ---";
+ push @out, `grep -i PGeneratord /var/log/syslog* /var/log/messages* 2>/dev/null | tail -n 500`;
+ chomp($out[$#out]);
+ push @out, `tail -n 200 /var/log/daemon.log 2>/dev/null`; chomp($out[$#out]);
+
+ # dmesg tail
+ push @out, "", "--- dmesg (last 200 lines) ---";
+ push @out, `dmesg | tail -200 2>/dev/null`; chomp($out[$#out]);
+
+ push @out, "", "=" x 72;
+ push @out, "  End of diagnostic report";
+ push @out, "=" x 72, "";
+
+ my $text=join("\n",@out);
+ if(open(my $fh,">:raw",$tmp)) {
+  print $fh $text;
+  close($fh);
+ }
  return (-f $tmp) ? $tmp : "";
 }
 
@@ -3256,14 +3378,17 @@ async function submitLogs(){
  btn.disabled=true;btn.textContent='Collecting...';
  try{
   const res=await fetch('/api/submit_logs',{method:'POST'});
-  if(res.ok&&res.headers.get('Content-Type')==='application/gzip'){
+  if(res.ok){
    const blob=await res.blob();
+   const cd=res.headers.get('Content-Disposition')||'';
+   const m=cd.match(/filename="([^"]+)"/);
+   const fname=m?m[1]:'PGenerator_diag.txt';
    const a=document.createElement('a');
    a.href=URL.createObjectURL(blob);
-   a.download='pg_logs.tgz';
+   a.download=fname;
    document.body.appendChild(a);a.click();a.remove();
    URL.revokeObjectURL(a.href);
-   toast('Log bundle downloaded');
+   toast('Diagnostic report downloaded');
   }else{
    const j=await res.json().catch(()=>null);
    toast(j?j.message:'Failed to collect logs','error');
