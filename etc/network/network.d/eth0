@@ -1,1 +1,1 @@
-dhcpcd --metric 50 -M -G -b eth0
+dhcpcd --metric 50 -M -b eth0
