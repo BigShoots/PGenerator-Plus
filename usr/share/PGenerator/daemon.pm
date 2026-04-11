@@ -88,6 +88,33 @@ sub calman_scale_triplet_8bit (@) {
  return &calman_scale_value($r,255).",".&calman_scale_value($g,255).",".&calman_scale_value($b,255);
 }
 
+sub calman_expand_limited_value (@) {
+ my $value=int(shift);
+ my $range_mode=int($pgenerator_conf{"rgb_quant_range"} || 0);
+ return $value if($range_mode != 1);
+ # Only expand for RGB — YCbCr uses limited range natively
+ my $color_fmt=int($pgenerator_conf{"color_format"} || 0);
+ return $value if($color_fmt != 0);
+ my $bits=int($bits_default || 8);
+ my $shift=$bits - 8;
+ my $limited_min=16 << $shift;
+ my $limited_span=219 << $shift;
+ my $full_max=(1 << $bits) - 1;
+ return 0 if($value <= $limited_min);
+ return $full_max if($value >= $limited_min + $limited_span);
+ return int(($value - $limited_min) * $full_max / $limited_span + 0.5);
+}
+
+sub calman_expand_limited_triplet (@) {
+ my $rgb=shift;
+ my $range_mode=int($pgenerator_conf{"rgb_quant_range"} || 0);
+ return $rgb if($range_mode != 1);
+ my $color_fmt=int($pgenerator_conf{"color_format"} || 0);
+ return $rgb if($color_fmt != 0);
+ my ($r,$g,$b)=split(",",$rgb);
+ return &calman_expand_limited_value($r).",".&calman_expand_limited_value($g).",".&calman_expand_limited_value($b);
+}
+
 sub calman_apl_bg (@) {
  my $rgb=shift;
  my $win_pct=shift;
@@ -984,16 +1011,19 @@ sub pattern_daemon {
         $cr_g=&calman_scale_value($cr_g,$input_max);
         $cr_b=&calman_scale_value($cr_b,$input_max);
         my ($cr_size_effective,$cr_bg)=&calman_commandrgb_window("$cr_r,$cr_g,$cr_b",$cr_size,"CommandRGB");
+      # Expand limited-range values to full range — GPU handles compression via DRM rgb_quant_range
+      my $cr_rgb=&calman_expand_limited_triplet("$cr_r,$cr_g,$cr_b");
+      $cr_bg=&calman_expand_limited_triplet($cr_bg);
       # Apply any pending settings before showing pattern
       $calman_apply->();
       &clean_pattern_files();
         if($cr_size_effective >= 100) {
-       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_r,$cr_g,$cr_b","$cr_bg","","","",1,"calman");
+       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_rgb","$cr_bg","","","",1,"calman");
       } else {
          my $sqrt_val=sqrt($cr_size_effective/100);
        my $win_w=int($sqrt_val*$max_x);
        my $win_h=int($sqrt_val*$max_y);
-       &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$cr_r,$cr_g,$cr_b","$cr_bg","$position_default","","",1,"calman");
+       &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$cr_rgb","$cr_bg","$position_default","","",1,"calman");
       }
       &send_key_to_client($connection,"");
       last;
@@ -1025,8 +1055,10 @@ sub pattern_daemon {
         my $bg_val=&calman_scale_value($el_cmd[3],$calman_max);
         $calman_apl_enabled=0;
        $calman_bg="$bg_val,$bg_val,$bg_val";
+       my $fg_ex=&calman_expand_limited_triplet("$r,$g,$b");
+       my $bg_ex=&calman_expand_limited_triplet($calman_bg);
        &clean_pattern_files();
-       &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$calman_bg","calman");
+       &get_pattern($test_template_command,$pattern_dynamic,"$fg_ex;$bg_ex","calman");
        &send_key_to_client($connection,"");
        last;
       }
@@ -1037,12 +1069,14 @@ sub pattern_daemon {
         $win_pct=100 if($win_pct > 100);
        $calman_win_size=$win_pct if($win_pct > 0);
         my $effective_bg=$calman_bg;
+       my $fg_ex=&calman_expand_limited_triplet("$r,$g,$b");
+       $effective_bg=&calman_expand_limited_triplet($effective_bg);
         &log("Calman: RGB_S direct window size=$win_pct% bg=$effective_bg");
        # full field pattern
        if($win_pct >= 100) {
         $pname_file="FullField";
         &clean_pattern_files();
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$fg_ex","$effective_bg","","","",1,"calman");
         &send_key_to_client($connection,"");
         last;
        }
@@ -1051,7 +1085,7 @@ sub pattern_daemon {
        my $win_w=int($sqrt_val*$max_x);
        my $win_h=int($sqrt_val*$max_y);
        &clean_pattern_files();
-       &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman");
+       &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$fg_ex","$effective_bg","$position_default","","",1,"calman");
        &send_key_to_client($connection,"");
        last;
       }
@@ -1071,11 +1105,13 @@ sub pattern_daemon {
        $win_pct=$calman_win_size if($win_pct < 1);
        $win_pct=100 if($win_pct > 100);
        $calman_win_size=$win_pct if($win_pct > 0);
+       my $fg_ex=&calman_expand_limited_triplet("$r,$g,$b");
+       $effective_bg=&calman_expand_limited_triplet($effective_bg);
        &log("Calman: RGB_A explicit bg=$effective_bg size=$win_pct%");
        if($win_pct >= 100) {
         $pname_file="FullField";
         &clean_pattern_files();
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman");
+        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$fg_ex","$effective_bg","","","",1,"calman");
         &send_key_to_client($connection,"");
         last;
        }
@@ -1083,14 +1119,16 @@ sub pattern_daemon {
        my $win_w=int($sqrt_val*$max_x);
        my $win_h=int($sqrt_val*$max_y);
        &clean_pattern_files();
-       &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman");
+       &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$fg_ex","$effective_bg","$position_default","","",1,"calman");
        &send_key_to_client($connection,"");
        last;
       }
       # Default fallback
       my $effective_bg=&calman_apl_bg("$r,$g,$b",$calman_win_size,$type);
+      my $fg_ex=&calman_expand_limited_triplet("$r,$g,$b");
+      $effective_bg=&calman_expand_limited_triplet($effective_bg);
       &clean_pattern_files();
-      &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$effective_bg","calman");
+      &get_pattern($test_template_command,$pattern_dynamic,"$fg_ex;$effective_bg","calman");
      }
      #
      # CONF_FORMAT — Resolution/format configuration
@@ -1198,6 +1236,9 @@ sub pattern_daemon {
        if($fv =~/_(\d+)$/ || $fv =~/(\d+)-bit/i) {
         my $fmt_bits=int($1);
         $calman_save_setting->("max_bpc","$fmt_bits") if($fmt_bits == 8 || $fmt_bits == 10 || $fmt_bits == 12);
+       } else {
+        # No bit depth suffix (e.g. "RGB", "YCC420") — default to 8bpc
+        $calman_save_setting->("max_bpc","8");
        }
        # Apply immediately — DRM output format must change now
        $calman_apply->();
