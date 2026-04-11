@@ -661,6 +661,32 @@ sub webui_hdmi_connected (@) {
  return 0;
 }
 
+sub webui_hdmi_port_status (@) {
+ my %ports;
+ foreach my $port ($hdmi_1,$hdmi_2) {
+  foreach my $card (0..3) {
+   my $p="/sys/class/drm/card${card}-${port}";
+   if(-d $p) {
+    my $st=`cat $p/status 2>/dev/null`; chomp $st;
+    $ports{$port}=$st if($st ne "");
+    last;
+   }
+  }
+ }
+ # Preferred port: HDMI-A-1 (closest to USB-C on Pi 4, furthest on Pi 400)
+ my $preferred=$hdmi_1;
+ my $pref_ok=($ports{$preferred} eq "connected") ? 1 : 0;
+ my $wrong_port=0;
+ if(!$pref_ok) {
+  foreach my $port (keys %ports) {
+   $wrong_port=1 if($port ne $preferred && $ports{$port} eq "connected");
+  }
+ }
+ my $p1_st=$ports{$hdmi_1} || "absent";
+ my $p2_st=$ports{$hdmi_2} || "absent";
+ return "{\"preferred\":\"$preferred\",\"correct\":".($pref_ok?"true":"false").",\"wrong_port\":".($wrong_port?"true":"false").",\"ports\":{\"HDMI-A-1\":\"$p1_st\",\"HDMI-A-2\":\"$p2_st\"}}";
+}
+
 sub webui_info_json (@) {
  my $hostname=&read_from_file($hostname_file);
  $hostname=~s/\s+//g;
@@ -715,7 +741,8 @@ sub webui_info_json (@) {
  my $gpu_mem=&pgenerator_cmd("GET_GPU_MEMORY");
  chomp($gpu_mem);
  $gpu_mem=~s/\s//g;
- return "{\"hostname\":\"$hostname\",\"version\":\"$ver\",\"temperature\":\"$temp\",\"uptime\":\"$uptime\",\"resolution\":\"$resolution\",\"interfaces\":$ip_json,\"wifi\":{\"ssid\":\"$wifi_ssid\",\"freq\":\"$wifi_freq\",\"band\":\"$wifi_band\",\"signal\":\"$wifi_signal\",\"state\":\"$wifi_state\"},\"calibration\":{\"connected\":$cal_conn,\"ip\":\"$cal_ip\",\"software\":\"$cal_sw\"},\"total_ram\":\"$total_ram\",\"gpu_mem\":\"$gpu_mem\"}";
+ my $hdmi_port_json=&webui_hdmi_port_status();
+ return "{\"hostname\":\"$hostname\",\"version\":\"$ver\",\"temperature\":\"$temp\",\"uptime\":\"$uptime\",\"resolution\":\"$resolution\",\"interfaces\":$ip_json,\"wifi\":{\"ssid\":\"$wifi_ssid\",\"freq\":\"$wifi_freq\",\"band\":\"$wifi_band\",\"signal\":\"$wifi_signal\",\"state\":\"$wifi_state\"},\"calibration\":{\"connected\":$cal_conn,\"ip\":\"$cal_ip\",\"software\":\"$cal_sw\"},\"total_ram\":\"$total_ram\",\"gpu_mem\":\"$gpu_mem\",\"hdmi_port\":$hdmi_port_json}";
 }
 
 sub webui_create_logs_bundle (@) {
@@ -1945,9 +1972,45 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .card.span2{grid-column:span 1}.grid3{grid-template-columns:1fr 1fr}}
 @media(max-width:480px){.grid{grid-template-columns:1fr}
 .hdr-actions{flex-wrap:wrap}.header{padding:2px 12px}.dashboard{padding:8px}}
+#hdmiOverlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+background:rgba(0,0,0,.75);z-index:9999;justify-content:center;align-items:center;
+backdrop-filter:blur(4px)}
+#hdmiOverlay.active{display:flex}
+#hdmiOverlay .hdmi-box{background:var(--card);border:1px solid #ff6b35;border-radius:14px;
+padding:32px 36px;max-width:480px;width:90%;text-align:center;position:relative;
+box-shadow:0 8px 32px rgba(255,107,53,.2)}
+#hdmiOverlay .hdmi-box h2{color:#ff6b35;font-size:1.3rem;margin-bottom:12px;
+display:flex;align-items:center;justify-content:center;gap:8px}
+#hdmiOverlay .hdmi-box p{color:var(--text);font-size:.9rem;line-height:1.5;margin-bottom:20px}
+#hdmiOverlay .hdmi-box .hdmi-port{font-weight:700;color:var(--accent)}
+#hdmiOverlay .hdmi-actions{display:flex;justify-content:space-between;align-items:center}
+#hdmiOverlay .hdmi-dismiss{padding:10px 24px;background:var(--accent);color:#fff;border:none;
+border-radius:8px;cursor:pointer;font-size:.85rem;font-weight:600}
+#hdmiOverlay .hdmi-dismiss:hover{filter:brightness(1.15)}
+#hdmiOverlay .hdmi-ignore{color:var(--text2);background:none;border:none;cursor:pointer;
+font-size:.75rem;text-decoration:underline;opacity:.6}
+#hdmiOverlay .hdmi-ignore:hover{opacity:1}
+#hdmiWarnBadge{display:none;color:#e53935;font-size:.75rem;font-weight:700;
+cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
+.hdmi-note{color:var(--text2);font-size:.8rem;line-height:1.4;margin-bottom:16px;font-style:italic}
+.hdmi-downtime{color:var(--text2);font-size:.75rem;margin-top:12px;opacity:.8}
 </style>
 </head>
 <body>
+
+<div id="hdmiOverlay">
+ <div class="hdmi-box">
+  <h2>&#9888; Wrong HDMI Port</h2>
+  <p>Your HDMI cable is plugged into the wrong port.<br>
+  <span class="hdmi-port" id="hdmiPreferred">HDMI-A-1</span> is required.
+  Output format, bit depth, and quantization range settings will not work on the secondary port.</p>
+  <div class="hdmi-actions">
+   <button class="hdmi-ignore" onclick="hdmiIgnore()">Ignore</button>
+   <button class="hdmi-dismiss" id="hdmiRecheckBtn" onclick="hdmiRecheck()">I've switched &mdash; Recheck</button>
+  </div>
+  <p class="hdmi-downtime">The web interface will be unavailable for ~15 seconds while the display reconnects.</p>
+ </div>
+</div>
 
 <div class="header">
  <div class="logo">
@@ -1963,6 +2026,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
    <span title="" id="statusWrap"><span class="status-dot" id="statusDot"></span><span id="statusText">...</span></span>
    <span id="tempDisplay"></span>
    <span id="calStatusWrap" title="No calibration software connected"><span class="status-dot" id="calDot" style="background:var(--text2)"></span><span id="calStatusText" style="color:var(--text2)">No SW</span></span>
+   <span id="hdmiWarnBadge" onclick="hdmiShowOverlay()" title="HDMI cable is on the wrong port">&#9888; Wrong HDMI Port</span>
   </div>
  </div>
 </div>
@@ -2765,7 +2829,60 @@ async function loadInfo(quiet){
    rDisc.style.display='none';
   }
  }
+ // HDMI port check
+ if(info.hdmi_port) updateHdmiPortWarning(info.hdmi_port);
 }
+
+let _hdmiIgnored=false;
+function updateHdmiPortWarning(hp){
+ const overlay=document.getElementById('hdmiOverlay');
+ const badge=document.getElementById('hdmiWarnBadge');
+ const prefSpan=document.getElementById('hdmiPreferred');
+ if(prefSpan) prefSpan.textContent=hp.preferred;
+ if(hp.wrong_port){
+  badge.style.display='inline';
+  if(!_hdmiIgnored) overlay.classList.add('active');
+ }else{
+  badge.style.display='none';
+  overlay.classList.remove('active');
+ }
+}
+function hdmiIgnore(){
+ _hdmiIgnored=true;
+ document.getElementById('hdmiOverlay').classList.remove('active');
+}
+async function hdmiRecheck(){
+ const btn=document.getElementById('hdmiRecheckBtn');
+ btn.disabled=true;btn.textContent='Checking\u2026';
+ let ok=false;
+ for(let i=0;i<20;i++){
+  try{
+   const info=await fetchJSON('/api/info',{_timeoutMs:5000});
+   if(info&&info.hdmi_port){
+    if(!info.hdmi_port.wrong_port){
+     btn.textContent='Restarting display\u2026';
+     // Restart pattern generator so it re-targets the correct connector
+     await fetchJSON('/api/restart',{_timeoutMs:10000}).catch(function(){});
+     _hdmiIgnored=false;
+     document.getElementById('hdmiOverlay').classList.remove('active');
+     document.getElementById('hdmiWarnBadge').style.display='none';
+     toast('Correct port detected \u2014 display restarted');loadInfo();ok=true;break;
+    }else{
+     toast('Still on wrong port \u2014 please switch to '+info.hdmi_port.preferred,'error');
+     ok=true;break;
+    }
+   }
+  }catch(e){}
+  await new Promise(r=>setTimeout(r,2000));
+ }
+ btn.disabled=false;btn.textContent="I've switched \u2014 Recheck";
+ if(!ok) toast('Could not reconnect \u2014 try refreshing the page','error');
+}
+function hdmiShowOverlay(){
+ _hdmiIgnored=false;
+ document.getElementById('hdmiOverlay').classList.add('active');
+}
+
 function statToneClass(pct){
  pct=Number(pct)||0;
  if(pct>=90)return' bad';
