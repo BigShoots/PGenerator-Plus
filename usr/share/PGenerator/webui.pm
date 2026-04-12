@@ -2074,6 +2074,14 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
      <option value="9">BT.2020</option>
     </select>
    </div>
+   <div class="field">
+    <label>Range</label>
+    <select id="rgb_quant_range">
+     <option value="0">Default</option>
+     <option value="1">Limited (16-235)</option>
+     <option value="2">Full (0-255)</option>
+    </select>
+   </div>
   </div>
  </div>
 
@@ -2443,6 +2451,7 @@ function applyConfigState(nextConfig){
  setVal('max_bpc',config.max_bpc||'8');
  setVal('color_format',config.color_format||'0');
  setVal('colorimetry',config.colorimetry||'0');
+ setVal('rgb_quant_range',config.rgb_quant_range||'0');
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
  document.getElementById('max_luma').value=config.max_luma||'1000';
@@ -2456,6 +2465,7 @@ function applyConfigState(nextConfig){
   setVal('color_format','0');
   setVal('colorimetry','9');
   setVal('primaries','1');
+  setVal('rgb_quant_range','2');
  }
  updateModeVisibility();
  updateDropdowns();
@@ -2485,7 +2495,7 @@ function captureSettings(){
  return JSON.stringify({
   mode_idx:getVal('mode_idx'),signal_mode:getVal('signal_mode'),
   max_bpc:getVal('max_bpc'),color_format:getVal('color_format'),
-  colorimetry:getVal('colorimetry'),
+  colorimetry:getVal('colorimetry'),rgb_quant_range:getVal('rgb_quant_range'),
   eotf:getVal('eotf'),primaries:getVal('primaries'),
   max_luma:document.getElementById('max_luma').value,
   min_luma:document.getElementById('min_luma').value,
@@ -2508,7 +2518,7 @@ function hasUnsavedSettings(){
 function isSettingsFieldActive(){
  const el=document.activeElement;
  if(!el||!el.id)return false;
- return ['mode_idx','signal_mode','max_bpc','color_format','colorimetry',
+ return ['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
   'eotf','primaries','dv_map_mode','max_luma','min_luma','max_cll','max_fall'].includes(el.id);
 }
 
@@ -2528,7 +2538,7 @@ function updateModeVisibility(){
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
 }
 
-['mode_idx','signal_mode','max_bpc','color_format','colorimetry',
+['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
  'eotf','primaries','dv_map_mode'].forEach(function(id){
  document.getElementById(id).addEventListener('change',checkSettingsChanged);
 });
@@ -2562,6 +2572,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('colorimetry','9');
   setVal('primaries','1');
   setVal('max_bpc','12');
+  setVal('rgb_quant_range','2');
  }
  updateModeVisibility();
  updateDropdowns();
@@ -2674,6 +2685,10 @@ function updateDropdowns(){
   // Dolby Vision RGB tunneling uses a 12-bit HDMI link.
   Array.from(bpcSel.options).forEach(function(o){o.disabled=o.value!=='12';o.style.display=o.value==='12'?'':'none';});
   bpcSel.value='12';
+  // DV requires Full range
+  const rngSel=document.getElementById('rgb_quant_range');
+  Array.from(rngSel.options).forEach(function(o){o.disabled=o.value!=='2';o.style.display=o.value==='2'?'':'none';});
+  rngSel.value='2';
   // DV 12-bit RGB tunneling needs clock*1.5 bandwidth — disable modes that exceed TMDS limit
   const maxTmds=caps.max_tmds?caps.max_tmds*1000:600000;
   let curModeValid=false;
@@ -2692,6 +2707,9 @@ function updateDropdowns(){
  }
  // Non-DV: re-enable all mode options
  Array.from(modeSel.options).forEach(function(o){o.disabled=false;o.style.display='';});
+ // Re-enable all range options
+ const rngSel=document.getElementById('rgb_quant_range');
+ Array.from(rngSel.options).forEach(function(o){o.disabled=false;o.style.display='';});
 
  // Color format filtering based on current mode + bpc
  const validFmts=getValidFormats(modeIdx,curBpc);
@@ -3082,6 +3100,7 @@ function resetDefaults(){
  setVal('max_bpc','8');
  setVal('color_format','0');
  setVal('colorimetry','2');
+ setVal('rgb_quant_range','2');
  setVal('eotf','0');
  setVal('primaries','0');
  document.getElementById('max_luma').value='1000';
@@ -3102,6 +3121,7 @@ async function applySettings(){
   max_bpc:getVal('max_bpc'),
   color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),
+  rgb_quant_range:getVal('rgb_quant_range'),
  };
  if(sm==='sdr'){
   Object.assign(changes,{is_sdr:'1',is_hdr:'0',eotf:'0',
@@ -3123,6 +3143,8 @@ async function applySettings(){
    dv_map_mode:getVal('dv_map_mode'),
    dv_metadata:getVal('dv_map_mode')==='1'?'3':'2'});
  }
+ clearActive();
+ var di=document.getElementById('diagInfo');if(di)di.style.display='none';
  const r=await fetchJSON('/api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(changes)});
  if(r&&r.status==='ok'){
