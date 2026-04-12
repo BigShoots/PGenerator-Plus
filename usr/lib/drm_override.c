@@ -5,7 +5,8 @@
  * dependency issues (Pi has glibc 2.21, dlsym needs 2.34).
  *
  * Monitors DRM_IOCTL_MODE_GETPROPERTY to discover property IDs for
- * "max bpc", "output format", and "DOVI_OUTPUT_METADATA", then modifies
+ * "max bpc", "output format", "Colorimetry", "rgb quant range", and
+ * "DOVI_OUTPUT_METADATA", then modifies
  * DRM_IOCTL_MODE_ATOMIC, DRM_IOCTL_MODE_SETPROPERTY, and
  * DRM_IOCTL_MODE_OBJ_SETPROPERTY calls to override values from
  * PGenerator.conf.
@@ -114,6 +115,9 @@ static int output_fmt_found = 0;
 static uint32_t colorimetry_prop_id = 0;
 static uint64_t colorimetry_override = 0;
 static int colorimetry_found = 0;
+static uint32_t rgb_qr_prop_id = 0;
+static uint64_t rgb_qr_override = 0;
+static int rgb_qr_found = 0;
 static uint32_t dovi_meta_prop_id = 0;
 static int dv_status = 0;
 static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
@@ -134,6 +138,7 @@ static int renderer_dovi_seen = 0;      /* renderer supplied DOVI at least once 
 static uint64_t last_output_fmt = (uint64_t)-1;
 static uint64_t last_max_bpc = (uint64_t)-1;
 static uint64_t last_colorimetry = (uint64_t)-1;
+static uint64_t last_rgb_qr = (uint64_t)-1;
 static uint64_t last_dovi = (uint64_t)-1;
 static uint32_t suppressed_commits = 0;
 
@@ -212,6 +217,18 @@ static void read_config(void) {
             }
             colorimetry_found = 1;
         }
+        if (p[0] == 'r' && p[1] == 'g' && p[2] == 'b' && p[3] == '_' &&
+            p[4] == 'q' && p[5] == 'u' && p[6] == 'a' && p[7] == 'n' &&
+            p[8] == 't' && p[9] == '_' && p[10] == 'r' && p[11] == 'a' &&
+            p[12] == 'n' && p[13] == 'g' && p[14] == 'e' && p[15] == '=') {
+            char *v = p + 16;
+            rgb_qr_override = 0;
+            while (*v >= '0' && *v <= '9') {
+                rgb_qr_override = rgb_qr_override * 10 + (*v - '0');
+                v++;
+            }
+            rgb_qr_found = 1;
+        }
         if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
             p[4] == 'r' && p[5] == '_' && p[6] == 'f' && p[7] == 'o' &&
             p[8] == 'r' && p[9] == 'm' && p[10] == 'a' && p[11] == 't' &&
@@ -246,6 +263,13 @@ static void read_config(void) {
         char num[24];
         itoa_simple(colorimetry_override, num);
         write_log("DRM_OVERRIDE: config colorimetry=");
+        write_log(num);
+        write_log("\n");
+    }
+    if (rgb_qr_found) {
+        char num[24];
+        itoa_simple(rgb_qr_override, num);
+        write_log("DRM_OVERRIDE: config rgb_quant_range=");
         write_log(num);
         write_log("\n");
     }
@@ -313,6 +337,21 @@ static void override_colorimetry(uint64_t *value, const char *source) {
     }
 }
 
+static void override_rgb_qr(uint64_t *value, const char *source) {
+    if (rgb_qr_prop_id && rgb_qr_found && *value != rgb_qr_override) {
+        char old_val[24], new_val[24];
+        itoa_simple(*value, old_val);
+        itoa_simple(rgb_qr_override, new_val);
+        write_log("DRM_OVERRIDE: rgb_quant_range ");
+        write_log(old_val);
+        write_log(" -> ");
+        write_log(new_val);
+        if (source) { write_log(" ("); write_log(source); write_log(")"); }
+        write_log("\n");
+        *value = rgb_qr_override;
+    }
+}
+
 /*
  * Check if a property ID is one we track for redundancy suppression.
  */
@@ -320,6 +359,7 @@ static int is_tracked_prop(uint32_t prop_id) {
     if (max_bpc_prop_id && prop_id == max_bpc_prop_id) return 1;
     if (output_fmt_prop_id && prop_id == output_fmt_prop_id) return 1;
     if (colorimetry_prop_id && prop_id == colorimetry_prop_id) return 1;
+    if (rgb_qr_prop_id && prop_id == rgb_qr_prop_id) return 1;
     if (dv_status == 1 && dovi_meta_prop_id && prop_id == dovi_meta_prop_id) return 1;
     return 0;
 }
@@ -343,6 +383,11 @@ static int should_suppress(uint32_t prop_id, uint64_t value) {
     if (colorimetry_prop_id && prop_id == colorimetry_prop_id) {
         if (value == last_colorimetry) return 1;
         last_colorimetry = value;
+        return 0;
+    }
+    if (rgb_qr_prop_id && prop_id == rgb_qr_prop_id) {
+        if (value == last_rgb_qr) return 1;
+        last_rgb_qr = value;
         return 0;
     }
     if (dovi_meta_prop_id && prop_id == dovi_meta_prop_id) {
@@ -601,6 +646,14 @@ int ioctl(int fd, unsigned long request, ...) {
                 write_log(num);
                 write_log("\n");
             }
+            if (strcmp(prop->name, "rgb quant range") == 0) {
+                rgb_qr_prop_id = prop->prop_id;
+                char num[24];
+                itoa_simple(prop->prop_id, num);
+                write_log("DRM_OVERRIDE: found rgb_quant_range prop_id=");
+                write_log(num);
+                write_log("\n");
+            }
             if (strcmp(prop->name, "DOVI_OUTPUT_METADATA") == 0) {
                 dovi_meta_prop_id = prop->prop_id;
                 char num[24];
@@ -658,6 +711,8 @@ int ioctl(int fd, unsigned long request, ...) {
                 override_output_fmt(&values[i], "atomic");
             if (colorimetry_prop_id && props[i] == colorimetry_prop_id)
                 override_colorimetry(&values[i], "atomic");
+            if (rgb_qr_prop_id && props[i] == rgb_qr_prop_id)
+                override_rgb_qr(&values[i], "atomic");
             if (dovi_meta_prop_id && props[i] == dovi_meta_prop_id
                 && dv_status == 0 && values[i] != 0) {
                 char old_val[24];
@@ -797,6 +852,8 @@ int ioctl(int fd, unsigned long request, ...) {
             override_output_fmt(&sp->value, "setprop_conn");
         if (colorimetry_prop_id && sp->prop_id == colorimetry_prop_id)
             override_colorimetry(&sp->value, "setprop_conn");
+        if (rgb_qr_prop_id && sp->prop_id == rgb_qr_prop_id)
+            override_rgb_qr(&sp->value, "setprop_conn");
     }
 
     /* Intercept DRM_IOCTL_MODE_OBJ_SETPROPERTY (generic object, 0xBA) */
@@ -809,6 +866,8 @@ int ioctl(int fd, unsigned long request, ...) {
             override_output_fmt(&sp->value, "setprop_obj");
         if (colorimetry_prop_id && sp->prop_id == colorimetry_prop_id)
             override_colorimetry(&sp->value, "setprop_obj");
+        if (rgb_qr_prop_id && sp->prop_id == rgb_qr_prop_id)
+            override_rgb_qr(&sp->value, "setprop_obj");
         if (dovi_meta_prop_id && sp->prop_id == dovi_meta_prop_id && dv_status == 0) {
             if (sp->value != 0) {
                 write_log("DRM_OVERRIDE: blocking DOVI blob (dv_status=0, setprop_obj)\n");
