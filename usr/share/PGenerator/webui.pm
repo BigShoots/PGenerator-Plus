@@ -6159,7 +6159,6 @@ function meterResetSeriesButtons(){
  document.querySelectorAll('#meterSeriesBtnRow button').forEach(b=>{
   b.classList.remove('btn-primary');b.classList.add('btn-secondary');
  });
- meterActiveSeriesKey=null;
 }
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
 function meterBuildStepsJS(type,points){
@@ -6195,6 +6194,11 @@ function meterBuildStepsJS(type,points){
 function meterSelectSeries(type,points){
  meterStopContinuous();
  if(meterSeriesRunning) meterStop();
+ const key=type+'-'+points;
+ if(meterActiveSeriesKey===key&&meterReadings&&meterReadings.length>0){
+  meterUpdateReadButtons();
+  return;
+ }
  // From this point the UI is operating on a local selection, not a
  // recovered shared series snapshot.
  meterSharedSeriesId=null;
@@ -6208,7 +6212,6 @@ function meterSelectSeries(type,points){
  meterLastChartCount=0;
  // Highlight the clicked button
  meterResetSeriesButtons();
- const key=type+'-'+points;
  meterActiveSeriesKey=key;
  const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+key+'"]');
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
