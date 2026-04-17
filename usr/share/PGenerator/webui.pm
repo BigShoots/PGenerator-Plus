@@ -3418,15 +3418,15 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
       </label>
      </div>
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px" id="chartDeltaELabel">&Delta;E CIELUV</div>
-     <canvas id="chartDeltaE" width="800" height="132" style="width:100%;height:132px;background:#0d0d15;border-radius:6px"></canvas>
+     <canvas id="chartDeltaE" width="800" height="158" style="width:100%;height:158px;background:#0d0d15;border-radius:6px"></canvas>
     </div>
     <div style="margin-bottom:10px">
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px" id="chartDeltaE2000Label">&Delta;E 2000 (CIEDE2000)</div>
-     <canvas id="chartDeltaE2000" width="800" height="132" style="width:100%;height:132px;background:#0d0d15;border-radius:6px"></canvas>
+     <canvas id="chartDeltaE2000" width="800" height="158" style="width:100%;height:158px;background:#0d0d15;border-radius:6px"></canvas>
     </div>
     <div style="margin-bottom:10px">
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px" id="chartGammaValueLabel">Gamma</div>
-     <canvas id="chartGammaValue" width="800" height="132" style="width:100%;height:132px;background:#0d0d15;border-radius:6px"></canvas>
+     <canvas id="chartGammaValue" width="800" height="158" style="width:100%;height:158px;background:#0d0d15;border-radius:6px"></canvas>
     </div>
     <div id="chartTooltip" style="display:none;position:fixed;pointer-events:none;z-index:9999;background:rgba(13,13,21,0.95);border:1px solid #555;border-radius:5px;padding:6px 10px;font-size:12px;color:#ddd;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
@@ -3915,6 +3915,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
  applyMeterTargetGammaDefault();
  updateModeVisibility();
  updateDropdowns();
+ meterRefreshActiveSeriesCharts();
  checkSettingsChanged();
 });
 
@@ -5457,6 +5458,8 @@ function targetGammaValue(){
 }
 
 function meterChartSignalMode(){
+ const liveSel=(document.getElementById('signal_mode')||{}).value;
+ if(liveSel) return liveSel;
  if(config&&config.dv_status==='1') return 'dv';
  if(config&&config.is_hdr==='1') return (config.eotf==='3')?'hlg':'hdr10';
  return 'sdr';
@@ -6583,6 +6586,7 @@ function drawAllChartsPreset(sortedSteps){
   drawRGBChartPreset(gsSteps);
   drawDeltaEPreset(gsSteps);
   drawDeltaE2000Preset(gsSteps);
+  drawGammaValuePreset(gsSteps);
   drawEOTFPreset(gsSteps);
   drawGammaPreset(gsSteps);
  } else {
@@ -8522,7 +8526,7 @@ async function loadMeterSettings(){
  document.getElementById(id).addEventListener('change',saveMeterSettings);
 });
 
-document.getElementById('meterTargetGamut').addEventListener('change',()=>{
+function meterRefreshActiveSeriesCharts(){
  if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning) return;
  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
  const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -8536,6 +8540,14 @@ document.getElementById('meterTargetGamut').addEventListener('change',()=>{
  } else {
   drawAllChartsPreset(sortedSteps);
  }
+}
+
+document.getElementById('meterTargetGamut').addEventListener('change',()=>{
+ meterRefreshActiveSeriesCharts();
+});
+
+document.getElementById('meterTargetGamma').addEventListener('change',()=>{
+ meterRefreshActiveSeriesCharts();
 });
 
 // Init
