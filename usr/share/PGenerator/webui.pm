@@ -3293,8 +3293,8 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
    <div class="field">
     <label>Target Colorspace</label>
     <select id="meterTargetGamut">
-     <option value="auto" selected>Auto (match signal)</option>
-     <option value="bt709">BT.709</option>
+     <option value="auto">Auto (match signal)</option>
+     <option value="bt709" selected>BT.709</option>
      <option value="bt2020">BT.2020</option>
      <option value="p3d65">DCI-P3 / D65</option>
     </select>
@@ -3766,6 +3766,7 @@ function applyConfigState(nextConfig){
  setVal('rgb_quant_range',config.rgb_quant_range||'0');
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
+ applyMeterTargetGamutDefault(false);
  document.getElementById('max_luma').value=config.max_luma||'1000';
  document.getElementById('min_luma').value=config.min_luma||'0.005';
  document.getElementById('max_cll').value=config.max_cll||'1000';
@@ -3862,6 +3863,17 @@ function updateModeVisibility(){
  document.getElementById(id).addEventListener('change',updateDropdowns);
 });
 
+function meterDefaultTargetGamutForMode(){
+ const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
+ return sm==='sdr' ? 'bt709' : 'p3d65';
+}
+
+function applyMeterTargetGamutDefault(force){
+ const g=document.getElementById('meterTargetGamut');
+ if(!g) return;
+ if(force || !g.value || g.value==='auto') g.value=meterDefaultTargetGamutForMode();
+}
+
 function applyMeterTargetGammaDefault(){
  const g=document.getElementById('meterTargetGamma');
  const sm=document.getElementById('signal_mode').value;
@@ -3899,6 +3911,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('max_bpc','12');
   setVal('rgb_quant_range','2');
  }
+ applyMeterTargetGamutDefault(true);
  applyMeterTargetGammaDefault();
  updateModeVisibility();
  updateDropdowns();
@@ -8491,6 +8504,7 @@ async function loadMeterSettings(){
  if(!s||!s.display_type) return;
  if(s.display_type) document.getElementById('meterDisplayType').value=s.display_type;
  if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
+ applyMeterTargetGamutDefault(false);
  if(s.delay) document.getElementById('meterDelay').value=s.delay;
  if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
  if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
