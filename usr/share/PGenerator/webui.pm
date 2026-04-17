@@ -774,25 +774,27 @@ sub webui_meter_session_stop (@) {
 
 sub webui_meter_session_start (@) {
  my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config)=@_;
- # Persist the config the daemon should advertise (used for change detection).
- if(open(my $fh,">",$_meter_session_config_file)) { print $fh $config; close($fh); }
- # Launch detached as root. The daemon writes its own PID file once it grabs
- # the lock; we wait for the FIFO to appear before returning.
+ # Start from a clean slate. Only the session daemon itself should write the
+ # advertised config file once it has actually grabbed the lock and is ready.
+ unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
+ # Launch detached as root. The daemon writes its own PID/config files once it
+ # grabs the lock; wait for all of that to happen before reporting success.
  my $aio_flag=$disable_aio ? "1" : "0";
  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' </dev/null >/dev/null 2>&1 &");
  my $waited=0;
- while($waited < 200 && ! -p $_meter_session_fifo) {
+ while($waited < 300) {
+  last if(-p $_meter_session_fifo && &webui_meter_session_alive() && &webui_meter_session_config_matches($config));
   Time::HiRes::sleep(0.1);
   $waited++;
   # If the daemon died early (init failure), the read result file will
-  # contain a status:error — surface that quickly instead of waiting 20 s.
+  # contain a status:error — surface that quickly instead of waiting.
   if(-f $_meter_read_file) {
    my $check="";
    if(open(my $fh,"<",$_meter_read_file)) { local $/; $check=<$fh>; close($fh); }
    last if($check=~/"status"\s*:\s*"error"/);
   }
  }
- return -p $_meter_session_fifo ? 1 : 0;
+ return (-p $_meter_session_fifo && &webui_meter_session_config_matches($config)) ? 1 : 0;
 }
 
 sub webui_meter_read (@) {
@@ -8335,7 +8337,7 @@ async function meterClearResults(){
 
 // Display type → gamma auto-selection + custom CCSS panel
 let customCcssFile=null;
-loadMeterCcssOptions();
+let meterCcssOptionsPromise=loadMeterCcssOptions();
 document.getElementById('meterDisplayType').addEventListener('change',function(){
  const v=this.value;
  applyMeterTargetGammaDefault();
@@ -8526,8 +8528,12 @@ async function loadMeterCcssOptions(){
   opt.textContent=item.label+(f.source==='custom'?' (custom)':'');
   grp.appendChild(opt);
  });
- // restore previous selection if still present
- if(prev) sel.value=prev;
+ // restore previous or pending selection if still present
+ const restore=sel.dataset.pendingValue||prev;
+ if(restore){
+  sel.value=restore;
+  if(sel.value===restore) delete sel.dataset.pendingValue;
+ }
 }
 
 function getMeterPatchSize(){
@@ -8582,9 +8588,15 @@ function saveMeterSettings(){
   body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
 }
 async function loadMeterSettings(){
+ if(meterCcssOptionsPromise) await meterCcssOptionsPromise;
  const s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000});
  if(!s||!s.display_type) return;
- if(s.display_type) document.getElementById('meterDisplayType').value=s.display_type;
+ if(s.display_type){
+  const sel=document.getElementById('meterDisplayType');
+  sel.dataset.pendingValue=s.display_type;
+  sel.value=s.display_type;
+  if(sel.value===s.display_type) delete sel.dataset.pendingValue;
+ }
  if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
  applyMeterTargetGamutDefault(false);
  if(s.delay) document.getElementById('meterDelay').value=s.delay;
