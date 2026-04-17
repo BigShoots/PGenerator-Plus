@@ -1,0 +1,6 @@
+Cmnd_Alias PGENERATOR_CMD = /usr/bin/PGenerator_cmd.pl
+Cmnd_Alias PGENERATOR_METER = /bin/bash /usr/bin/spotread_wrapper.sh *, /bin/bash /usr/bin/meter_series.sh *, /bin/bash /usr/bin/meter_session.sh *, /bin/bash /usr/bin/meter_usb_reset.sh
+Cmnd_Alias PGENERATOR_KILL = /usr/bin/pkill *
+pgenerator ALL = (root) NOPASSWD:SETENV: PGENERATOR_CMD
+pgenerator ALL = (root) NOPASSWD: PGENERATOR_METER
+pgenerator ALL = (root) NOPASSWD: PGENERATOR_KILL

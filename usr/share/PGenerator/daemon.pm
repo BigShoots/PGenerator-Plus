@@ -217,7 +217,8 @@ sub pattern_daemon {
  #                          #
  ############################
  while ($select->count()) {
-  my @ready = $select->can_read();
+  my @ready = $select->can_read(5);
+  next if(!@ready);
   foreach my $connection (@ready) {
    if ($connection == $server || $connection == $server_calman || $connection == $server_rpc) {
     ############################
@@ -230,10 +231,12 @@ sub pattern_daemon {
      &log("Accept failed: $!");
      next;
     }
+    $client_socket->setsockopt(SOL_SOCKET, SO_RCVTIMEO, pack('l!l!', 30, 0));
     $client_address=$client_socket->peerhost();
     $client_port=$client_socket->peerport();
     $client_ip{$client_socket}=$client_address;
     $rpc_client{$client_socket}=1 if($connection == $server_rpc);
+    $hcfr_client{$client_socket}=0;
     $select->add($client_socket);
     &stats("connections",1);
     #&send_key_to_client($client_socket,$banner);
@@ -863,6 +866,8 @@ sub pattern_daemon {
       $colf_val="2" if($pattern_cmd =~/YCBCR422|YUV422|422/i);
       $colf_val="3" if($pattern_cmd =~/YCBCR420|YUV420|420/i);
       $calman_save_setting->("color_format","$colf_val");
+      # Apply immediately — DRM output format must change now
+      $calman_apply->();
       &send_key_to_client($connection,"");
       last;
      }
@@ -875,6 +880,8 @@ sub pattern_daemon {
       $qrng_val="2" if($pattern_cmd =~/^FULL$/i);
       $qrng_val="1" if($pattern_cmd =~/^LIMITED$/i);
       $calman_save_setting->("rgb_quant_range","$qrng_val");
+      # Apply immediately — DRM range must change now
+      $calman_apply->();
       &send_key_to_client($connection,"");
       last;
      }
@@ -930,6 +937,8 @@ sub pattern_daemon {
       } else {
        $calman_save_setting->("rgb_quant_range","2");  # full/PC
       }
+      # Apply immediately — DRM range must change now
+      $calman_apply->();
       &send_key_to_client($connection,"");
       last;
      }
@@ -1458,7 +1467,8 @@ sub pattern_daemon {
     #
     if($key=~/($test_template_command.*):(.*):(.*)/) {
      $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software="DeviceControl";
+     $calibration_client_software=($2 eq "HCFR")?"HCFR":"DeviceControl";
+     $hcfr_client{$connection}=1 if($2 eq "HCFR");
      $response=&get_pattern($1,$2,$3,"TESTTEMPLATE:$2");
      &send_key_to_client($connection,$response);
      &clean_pattern_files();
@@ -1471,7 +1481,7 @@ sub pattern_daemon {
     #
     if($key=~/$test_pattern_command:(.*):(.*):(.*):(.*):(.*):/) {
      $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software="DeviceControl";
+     $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
      $pname_file=$1;
      &clean_pattern_files();
      $response="$ok_response:".&create_pattern_file($2,$3,$4,"$5","","","","",1,"TESTPATTERN");
@@ -1504,7 +1514,7 @@ sub pattern_daemon {
     #
     if($key=~/$functions_command=(.*)/) {
      $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software="DeviceControl";
+     $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
      $command_found=1;
      my ($draw,$dim,$res,$functions)=split($separator,$1);
      $log_string="Received rgb triplet request command";
@@ -1521,7 +1531,7 @@ sub pattern_daemon {
     #
     if($key=~/$rgb_triplet_command=(.*)/) {
      $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software="DeviceControl";
+     $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
      $command_found=1;
      &clean_pattern_files();
      my ($draw,$dim,$res,$rgb,$bg,$position,$text)=split($separator,$1);
@@ -1600,6 +1610,7 @@ sub close_connection {
  $cmd{$connection}="";
  delete $client_ip{$connection};
  delete $rpc_client{$connection};
+ delete $hcfr_client{$connection};
  #$connection->send("");
  $select->remove($connection);
  eval { $connection->close(); };

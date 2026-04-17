@@ -280,6 +280,7 @@ share($calman_win_size);
 share($calibration_client_ip);
 share($calibration_client_software);
 share(%rpc_client);
+share(%hcfr_client);
 
 $resolve_request_ip="";
 $resolve_request_port="";

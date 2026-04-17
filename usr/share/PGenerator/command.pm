@@ -25,7 +25,7 @@ sub auto_select_4k_mode (@) {
  return if(!$is_kms);
  my $target_idx="";
  my $found_connector=0;
- open(CMD_MODETEST,"$modetest 2>/dev/null|");
+ open(CMD_MODETEST,"timeout 3 $modetest 2>/dev/null|");
  while(<CMD_MODETEST>) {
   $found_connector=1 if(/\s+connected/);
   next if(!$found_connector);
@@ -49,7 +49,7 @@ sub auto_select_4k_mode (@) {
 sub kms_connector_has_property(@) {
  my $prop_name=shift;
  return 0 if(!$is_kms || $prop_name eq "");
- open(MT_PROP,"$modetest -c 2>/dev/null|");
+ open(MT_PROP,"timeout 3 $modetest -c 2>/dev/null|");
  while(<MT_PROP>) {
   if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
    close(MT_PROP);
@@ -88,7 +88,7 @@ sub apply_drm_properties (@) {
  my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
  # Find connected HDMI connector ID
  my $connector_id="";
- open(MT,"$modetest -c 2>/dev/null|");
+ open(MT,"timeout 3 $modetest -c 2>/dev/null|");
  while(<MT>) {
   if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
    $connector_id=$1;
@@ -101,7 +101,7 @@ sub apply_drm_properties (@) {
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  $max_bpc=12 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
-  system("$modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
+  system("timeout 3 $modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
  }
  # Reset output format — kernel retains previous value across binary
@@ -110,15 +110,15 @@ sub apply_drm_properties (@) {
  my $color_fmt=$pgenerator_conf{"color_format"};
  $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- system("$modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
+ system("timeout 3 $modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
  $quant_range=2 if($is_dv);
  if($quant_range ne "") {
-  system("$modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
+  system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
-  system("$modetest -w '$connector_id:Broadcast RGB:$broadcast_rgb' 2>/dev/null");
+  system("timeout 3 $modetest -w '$connector_id:Broadcast RGB:$broadcast_rgb' 2>/dev/null");
   &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
  }
  # Set colorimetry / colorspace.
@@ -127,8 +127,8 @@ sub apply_drm_properties (@) {
  $colorimetry=9 if($is_dv);
  if($colorimetry ne "" && $colorimetry > 0) {
   my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
-  system("$modetest -w '$connector_id:Colorimetry:$colorimetry' 2>/dev/null");
-  system("$modetest -w '$connector_id:Colorspace:$colorspace' 2>/dev/null");
+  system("timeout 3 $modetest -w '$connector_id:Colorimetry:$colorimetry' 2>/dev/null");
+  system("timeout 3 $modetest -w '$connector_id:Colorspace:$colorspace' 2>/dev/null");
   &log("DRM: Set Colorimetry=$colorimetry / Colorspace=$colorspace on connector $connector_id");
  }
 }
@@ -136,7 +136,7 @@ sub apply_drm_properties (@) {
 sub apply_hdr_metadata_helper (@) {
  my $helper="/usr/bin/pgsethdr";
  return if(!$is_kms || !-x $helper);
- my $output=`$helper 2>&1`;
+ my $output=`timeout 5 $helper 2>&1`;
  chomp($output);
  if($? != 0) {
   &log("DRM: pgsethdr failed".($output ne "" ? " — $output" : ""));
@@ -349,7 +349,7 @@ sub pgenerator_cmd (@) {
  }
  if($cmd =~/(SET_MODE|SET_CEA_DMT):(.*)/) {
   if(!$is_kms && $tvservice_is_working) {
-   open(CMD_TVSERVICE,"$tvservice -e \"$2\" 2>/dev/null|");
+   open(CMD_TVSERVICE,"timeout 3 $tvservice -e \"$2\" 2>/dev/null|");
    $response=<CMD_TVSERVICE>;
    close(CMD_TVSERVICE);
    sleep(1);
@@ -374,7 +374,7 @@ sub pgenerator_cmd (@) {
  }
  if($cmd =~/SET_REFRESH:(.*)/) {
   if(!$is_kms && $tvservice_is_working) {
-   open(CMD_TVSERVICE,"$tvservice -e \"CEA $1\" 2>/dev/null|");
+   open(CMD_TVSERVICE,"timeout 3 $tvservice -e \"CEA $1\" 2>/dev/null|");
    $response=<CMD_TVSERVICE>;
    close(CMD_TVSERVICE);
    sleep(1);
@@ -420,25 +420,21 @@ sub get_dtoverlay () {
 ###############################################
 #                    GET CPU                  #
 ###############################################
+my $_cpu_idle_prev = 0;
+my $_cpu_total_prev = 0;
 sub get_cpu () {
- my $idle_old = 0;
- my $total_old = 0;
  open ($STAT,"/proc/stat");
- for($i=0;$i<2;$i++) {
-  seek ($STAT, Fcntl::SEEK_SET, 0);
-  while (<$STAT>) {
-   next unless ("$_" =~ m/^cpu\s+/);
-   my @cpu_time_info = split (/\s+/, "$_");
-   shift @cpu_time_info;
-   my $total = sum(@cpu_time_info);
-   my $idle = $cpu_time_info[3];
-   my $del_idle = $idle - $idle_old;
-   my $del_total = $total - $total_old;
-   $usage = 100 * (($del_total - $del_idle)/$del_total);
-   $idle_old = $idle;
-   $total_old = $total;
-  }
-  sleep(1) if($i==0);
+ while (<$STAT>) {
+  next unless ("$_" =~ m/^cpu\s+/);
+  my @cpu_time_info = split (/\s+/, "$_");
+  shift @cpu_time_info;
+  my $total = sum(@cpu_time_info);
+  my $idle = $cpu_time_info[3];
+  my $del_total = $total - $_cpu_total_prev;
+  my $del_idle = $idle - $_cpu_idle_prev;
+  $usage = ($del_total > 0) ? 100 * (($del_total - $del_idle)/$del_total) : 0;
+  $_cpu_idle_prev = $idle;
+  $_cpu_total_prev = $total;
  }
  close ($STAT);
  return int($usage)."%";
@@ -450,7 +446,7 @@ sub get_cpu () {
 sub get_all_ipmac () {
  %info_var=();
  my ($addr,$mac)="";
- open(CMD_IP,"ip a|");
+ open(CMD_IP,"timeout 3 ip a|");
  my $response=$none;
  while(<CMD_IP>) {
   my @field=split(" ",$_);
@@ -467,7 +463,7 @@ sub get_all_ipmac () {
    $addr=~s/\/.*//;
    $info_var{$int_name}{addr}=$addr;
    if($int_name eq "$bt_interface") {
-    open(CMD_BT,"$hcitool dev|");
+    open(CMD_BT,"timeout 3 $hcitool dev|");
     while(<CMD_BT>) {
      @row_response=split(" ",$_);
      $mac_bt=$row_response[1] if(/$hci_interface/);
@@ -491,7 +487,7 @@ sub get_ip (@) {
  my $interface = shift;
  my $response=$none;
  my $addr="";
- open(CMD_IP,"$ip addr show dev $interface|");
+ open(CMD_IP,"timeout 3 $ip addr show dev $interface|");
  while(<CMD_IP>) {
   if($_=~/inet (.*)\/(.*) /) {
   ($addr=$1)=~s/ //g;
@@ -510,7 +506,7 @@ sub get_mac (@) {
  my $interface = shift;
  my $response=$none;
  if($interface eq "$bt_interface") {
-  open(CMD_BT,"$hcitool dev|");
+  open(CMD_BT,"timeout 3 $hcitool dev|");
   while(<CMD_BT>) {
    @row_response=split(" ",$_);
    if(/$hci_interface/) {
@@ -521,7 +517,7 @@ sub get_mac (@) {
   close(CMD);
   return $none;
  }
- open(CMD_IP,"$ip addr show dev $interface|");
+ open(CMD_IP,"timeout 3 $ip addr show dev $interface|");
  while(<CMD_IP>) {
   if($_=~/link\/ether (.*) /) {
    ($mac=$1)=~s/ //g;
@@ -647,10 +643,10 @@ sub get_cmd_generic(@) {
  if($cmd =~/(^GET_EDID_INFO)/) {
   $response="";
   if(!$is_kms && $tvservice_is_working) {
-   open(TVSERVICE,"$tvservice -l 2>/dev/null|");
+   open(TVSERVICE,"timeout 3 $tvservice -l 2>/dev/null|");
    while(<TVSERVICE>) {
     next if(!/Display Number (\d+), type (.*)/);
-    system("$tvservice -v $1 -d $info_dir/GET_EDID_INFO_$1.tmp &>/dev/null");
+    system("timeout 3 $tvservice -v $1 -d $info_dir/GET_EDID_INFO_$1.tmp &>/dev/null");
     $response.="$2\n".&parse_edid("$info_dir/GET_EDID_INFO_$1.tmp")."\n\n";
    }
    close(TVSERVICE);
@@ -679,7 +675,7 @@ sub get_cmd_generic(@) {
   chomp($response);
  }
  if($cmd eq "FREE_DISK" || $cmd eq "GET_FREE_DISK") {
-  open(CMD_DF,"$df -kh|");
+  open(CMD_DF,"timeout 3 $df -kh|");
   while(<CMD_DF>) {
    @row_response=split(" ",$_);
    $response=$row_response[3] if(/\/$/);
@@ -691,7 +687,7 @@ sub get_cmd_generic(@) {
   $response=0 if(-f "$discoverable_disabled_file");
  }
  if($cmd eq "GET_GPU_MEMORY") {
-  open(CMD_VCGENCMD,"$vcgencmd get_mem gpu|");
+  open(CMD_VCGENCMD,"timeout 3 $vcgencmd get_mem gpu 2>/dev/null|");
   chomp($response=<CMD_VCGENCMD>);
   close(CMD_VCGENCMD);
   $response=~s/gpu=//g;
@@ -710,7 +706,7 @@ sub get_cmd_generic(@) {
   $response="$gpu,$cma";
  }
  if($cmd eq "GET_CORE_VOLTAGE") {
-  open(CMD_VCGENCMD,"$vcgencmd measure_volts core|");
+  open(CMD_VCGENCMD,"timeout 3 $vcgencmd measure_volts core 2>/dev/null|");
   chomp($response=<CMD_VCGENCMD>);
   close(CMD_VCGENCMD);
   $response=~s/volt=//g;
@@ -789,7 +785,7 @@ sub get_cmd_generic(@) {
  }
  if($cmd =~/^GET_DMESG/) {
   $response="";
-  open(DMESG,"$dmesg|");
+  open(DMESG,"timeout 3 $dmesg 2>/dev/null|");
   $response.=$_ while(<DMESG>);
   close(DMESG);
   $response=encode_base64($response,"");
@@ -824,30 +820,36 @@ sub sudo(@) {
  for(@_) { 
   push(@arg_base64,encode_base64($_,""));
  }
- return `$pg_cmd_env="@arg_base64" $sudo_cmd`;
+ return `$pg_cmd_env="@arg_base64" timeout 15 $sudo_cmd`;
 }
 
 ###############################################
 #              Sync function                  #
 ###############################################
 sub sync(@) {
- system("$sync");
+ system("timeout 3 $sync");
 }
 
 ###############################################
 #         Get Hdmi Info function              #
 ###############################################
+my $_hdmi_info_cache_time = 0;
 sub get_hdmi_info() {
+ # Cache for 3 seconds to avoid redundant modetest calls within the same info cycle
+ if(time() - $_hdmi_info_cache_time < 3 && $hdmi_info ne "") {
+  return $hdmi_info;
+ }
+ $_hdmi_info_cache_time = time();
  my ($response,$res_mode,$selected_mode,$userdef_mode,$range,$output,$ratio,$type)=("");
  my @field=();
  %hash_mode=();
  $preferred_mode="";
  $found=$found_range=$found_output=0;
  if(!$is_kms && $tvservice_is_working) {
-  open(CMD_TVSERVICE,"$tvservice -s 2>/dev/stdout|");
+  open(CMD_TVSERVICE,"timeout 3 $tvservice -s 2>/dev/stdout|");
   ($response=<CMD_TVSERVICE>)=~s/ x[0-9]\]/\]/;
   close(CMD_TVSERVICE);
-  open(CMD_TVSERVICE,"$tvservice -m CEA 2>/dev/null|");
+  open(CMD_TVSERVICE,"timeout 3 $tvservice -m CEA 2>/dev/null|");
   while(<CMD_TVSERVICE>) {
    next if(!/mode \d+/);
    /mode (\d+): (.*)/;
@@ -858,7 +860,7 @@ sub get_hdmi_info() {
    $hash_mode{"$1"}.="$res_mode\n";
   }
   close(CMD_TVSERVICE);
-  open(CMD_TVSERVICE,"$tvservice -m DMT 2>/dev/null|");
+  open(CMD_TVSERVICE,"timeout 3 $tvservice -m DMT 2>/dev/null|");
   while(<CMD_TVSERVICE>) {
    next if(!/mode \d+/);
    /mode (\d+): (.*)/;
@@ -870,7 +872,7 @@ sub get_hdmi_info() {
   close(CMD_TVSERVICE);
  # Start for RPI p4
  } else {
-  open(CMD_MODETEST,"$modetest 2>/dev/null|");
+  open(CMD_MODETEST,"timeout 3 $modetest 2>/dev/null|");
   while(<CMD_MODETEST>) { 
    $found=1           if(/\s+connected/);
    next               if(!$found);
@@ -943,7 +945,7 @@ sub parse_edid(@) {
  my $content="";
  my @arr_edid=();
  return $no_info_available if(!-e $file);
- open(CMD_PARSER,"$edidparser $file|");
+ open(CMD_PARSER,"timeout 3 $edidparser $file 2>/dev/null|");
  push(@arr_edid,$_) while(<CMD_PARSER>);
  close(CMD_PARSER);
  shift @arr_edid for 1..2;

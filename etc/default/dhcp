@@ -1,0 +1,6 @@
+# Interface list for dhcpd — only serve DHCP on internal networks.
+# bnep  = Bluetooth PAN bridge
+# ap0   = WiFi Access Point
+# usb0  = USB gadget (OTG)
+# Never bind to eth0 or wlan0 to avoid handing out addresses on the LAN.
+DAEMON_ARGUMENT="bnep ap0 usb0"

@@ -1,0 +1,35 @@
+#!/bin/sh
+PID_FILE="/var/run/dhcpd.pid"
+PID_NUMBER=`cat $PID_FILE 2>/dev/null`
+PROGRAM_NAME="dhcpd"
+INIT_NAME="dhcp"
+DHCP_CONF_FILE="/etc/dhcp/dhcpd.conf"
+PROGRAM_DAEMON="/sbin/dhcpd -cf $DHCP_CONF_FILE"
+DEFAULT_FILE="/etc/default/dhcp"
+
+. $DEFAULT_FILE
+
+case "$1" in
+    start)
+        echo -n "Starting $PROGRAM_NAME..."
+        $PROGRAM_DAEMON  $DAEMON_ARGUMENT &>/dev/null
+        echo "done"
+    ;;
+
+    stop)
+        echo -n "Stopping $PROGRAM_NAME..."
+        /bin/kill -9 $PID_NUMBER 2>/dev/null
+        /bin/rm $PID_FILE &>/dev/null
+        echo "done"
+    ;;
+
+    restart)
+        $0 stop
+        $0 start
+     ;;
+
+    *)
+        echo "Usage: /etc/init.d/$INIT_NAME {start|stop|restart}" >&2
+        exit 1
+    ;;
+esac
