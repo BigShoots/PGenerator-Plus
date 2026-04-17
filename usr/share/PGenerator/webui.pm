@@ -3439,10 +3439,27 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
    <div id="chartsColorWrap" style="display:none">
     <div style="margin-bottom:10px">
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">CIE 1931 Chromaticity</div>
-     <div style="display:flex;gap:10px;align-items:flex-start">
+     <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
       <canvas id="chartCIE" width="600" height="600" style="flex:1;min-width:0;max-width:450px;background:#0d0d15;border-radius:6px;aspect-ratio:1/1"></canvas>
-      <div id="colorReadingDetail" style="width:190px;flex-shrink:0;background:#0d0d15;border-radius:6px;padding:10px;font-size:11px;color:#888">
+      <div id="colorReadingDetail" style="width:190px;flex:0 0 190px;background:#0d0d15;border-radius:6px;padding:10px;font-size:11px;color:#888">
        <div id="colorDetailContent" style="text-align:center;padding:30px 0;color:#555">Select a color<br>to see details</div>
+      </div>
+      <div id="colorSeriesAveragesWrap" style="flex:1;min-width:260px;display:none">
+       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Series Averages</div>
+       <div style="overflow-x:auto;border-radius:6px;background:#0d0d15">
+        <table id="colorSeriesAveragesTable" style="width:100%;border-collapse:collapse;font-size:11px;color:#ccc;white-space:nowrap">
+         <thead><tr style="border-bottom:1px solid #333;color:#888;text-align:right">
+          <th style="text-align:left;padding:6px 8px">Group</th>
+          <th style="padding:6px 6px">n</th>
+          <th style="padding:6px 6px">Avg |&Delta;x|</th>
+          <th style="padding:6px 6px">Avg |&Delta;y|</th>
+          <th style="padding:6px 6px">Avg Y cd/m&sup2;</th>
+          <th style="padding:6px 6px">Avg &Delta;E 2000</th>
+          <th style="padding:6px 6px">Max &Delta;E 2000</th>
+         </tr></thead>
+         <tbody></tbody>
+        </table>
+       </div>
       </div>
      </div>
     </div>
@@ -3461,23 +3478,6 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
         <th style="padding:6px 6px">Y cd/m&sup2;</th>
         <th style="padding:6px 6px">&Delta;x</th><th style="padding:6px 6px">&Delta;y</th>
         <th style="padding:6px 6px">&Delta;E 2000</th>
-       </tr></thead>
-       <tbody></tbody>
-      </table>
-     </div>
-    </div>
-    <div id="colorSeriesAveragesWrap" style="margin-bottom:10px;display:none">
-     <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Series Averages</div>
-     <div style="overflow-x:auto;border-radius:6px;background:#0d0d15">
-      <table id="colorSeriesAveragesTable" style="width:100%;border-collapse:collapse;font-size:11px;color:#ccc;white-space:nowrap">
-       <thead><tr style="border-bottom:1px solid #333;color:#888;text-align:right">
-        <th style="text-align:left;padding:6px 8px">Group</th>
-        <th style="padding:6px 6px">n</th>
-        <th style="padding:6px 6px">Avg |&Delta;x|</th>
-        <th style="padding:6px 6px">Avg |&Delta;y|</th>
-        <th style="padding:6px 6px">Avg Y cd/m&sup2;</th>
-        <th style="padding:6px 6px">Avg &Delta;E 2000</th>
-        <th style="padding:6px 6px">Max &Delta;E 2000</th>
        </tr></thead>
        <tbody></tbody>
       </table>
