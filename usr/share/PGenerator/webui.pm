@@ -3262,8 +3262,8 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
     <label>Display Type</label>
     <select id="meterDisplayType">
      <optgroup label="Generic" id="meterDtGeneric">
-      <option value="oled_generic">Generic (WRGB OLED)</option>
-      <option value="qdoled">Generic (QD-OLED)</option>
+      <option value="oled_generic">WRGB OLED</option>
+      <option value="qdoled">QD-OLED</option>
       <option value="lcd_wled">LCD - White LED</option>
       <option value="lcd_rgbled">LCD - RGB LED</option>
       <option value="lcd_ccfl">LCD - CCFL</option>
@@ -5428,15 +5428,22 @@ function meterGreyTargetChartValue(ire,Lw,Lb,code){
 }
 
 function meterGreyTargetGamma(ire,Lw,Lb,code){
- const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():0);
+ const peak=(Lw>0)?Lw:100;
  if(!(peak>0) || !(ire>0)) return null;
+ const tgt=((document.getElementById('meterTargetGamma')||{}).value)||'2.2';
+ const signal=(code!=null)?meterSignalFractionFromCode(code):Math.max(0,Math.min(1,ire/100));
+ if(!(signal>0)) return null;
  let black=Lb||0;
- if(document.getElementById('meterTargetGamma').value==='bt1886' && !(black>0)){
-  const cfgBlack=parseFloat((config&&config.min_luma)||'0.005');
-  if(cfgBlack>0) black=cfgBlack;
+ if(tgt==='bt1886'){
+  if(!(black>0)){
+   const cfgBlack=parseFloat((config&&config.min_luma)||'0.005');
+   if(cfgBlack>0) black=cfgBlack;
+  }
+  return effectiveGamma(bt1886Eotf(signal,peak,black),peak,ire);
  }
- const tgtY=meterGreyTargetLuminance(ire,peak,black,code);
- return effectiveGamma(tgtY,peak,ire);
+ if(tgt==='srgb') return effectiveGamma(srgbEotf(signal)*peak,peak,ire);
+ const gamma=parseFloat(tgt);
+ return (gamma>0&&isFinite(gamma))?gamma:null;
 }
 
 function meterTargetGammaLabel(){
