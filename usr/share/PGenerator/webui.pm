@@ -5430,8 +5430,20 @@ function meterGreyTargetChartValue(ire,Lw,Lb,code){
 function meterGreyTargetGamma(ire,Lw,Lb,code){
  const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():0);
  if(!(peak>0) || !(ire>0)) return null;
- const tgtY=meterGreyTargetLuminance(ire,peak,Lb||0,code);
+ let black=Lb||0;
+ if(document.getElementById('meterTargetGamma').value==='bt1886' && !(black>0)){
+  const cfgBlack=parseFloat((config&&config.min_luma)||'0.005');
+  if(cfgBlack>0) black=cfgBlack;
+ }
+ const tgtY=meterGreyTargetLuminance(ire,peak,black,code);
  return effectiveGamma(tgtY,peak,ire);
+}
+
+function meterTargetGammaLabel(){
+ const sel=document.getElementById('meterTargetGamma');
+ if(!sel) return 'Gamma';
+ const opt=sel.options[sel.selectedIndex];
+ return opt&&opt.textContent?opt.textContent.trim():'Gamma';
 }
 
 function meterGreyTargetChartPoints(steps,Lw,Lb,scale){
@@ -6674,20 +6686,27 @@ function drawGammaValuePreset(gsSteps){
  if(!ctx) return;
  const lbl=document.getElementById('chartGammaValueLabel');
  if(lbl) lbl.textContent='Gamma';
- const tgt=targetGammaValue();
- let yMin=Math.max(1.0,Math.floor((tgt-0.5)*10)/10);
- let yMax=Math.min(4.0,Math.ceil((tgt+0.5)*10)/10);
- if(yMax-yMin<0.8){ const mid=(yMin+yMax)/2; yMin=Math.max(1.0,mid-0.4); yMax=Math.min(4.0,mid+0.4); }
+ const targetLabel=meterTargetGammaLabel();
+ const steps=(gsSteps||[]).filter(s=>(s.ire||0)>0);
+ const targetVals=steps.map(s=>meterGreyTargetGamma(s.ire,100,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
+ let yMin=Math.max(1.6,Math.floor((Math.min(...(targetVals.length?targetVals:[2.2]))-0.15)*10)/10);
+ let yMax=Math.min(2.8,Math.ceil((Math.max(...(targetVals.length?targetVals:[2.4]))+0.15)*10)/10);
+ if(yMax-yMin<0.6){ const mid=(yMin+yMax)/2; yMin=Math.max(1.6,mid-0.3); yMax=Math.min(2.8,mid+0.3); }
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:30,l:55},
   xSteps:gsSteps.length-1||1,ySteps:4,
   xLabel:(i)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
   yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2)
  });
- const ref=(tgt-yMin)/(yMax-yMin);
- drawDashedLine(ctx,chart,[[0,ref],[1,ref]],'#666');
- const pts=gsSteps.filter(s=>(s.ire||0)>0).map((s,idx,arr)=>[arr.length>1?idx/(arr.length-1):0.5,ref]);
- drawDots(ctx,chart,pts,'#33333380',3);
+ const tgtPts=[];
+ steps.forEach((s,idx)=>{
+  const g=meterGreyTargetGamma(s.ire,100,0,s.r_code!=null?s.r_code:s.r);
+  if(g!=null&&isFinite(g)) tgtPts.push([steps.length>1?idx/(steps.length-1):0.5,Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
+ });
+ if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
+ drawDots(ctx,chart,tgtPts,'#ffb74d',3);
+ ctx.fillStyle='#ffb74d';ctx.font='11px sans-serif';ctx.textAlign='right';
+ ctx.fillText('Target: '+targetLabel,chart.pad.l+chart.w,chart.pad.t-4);
 }
 
 function drawGammaValueChart(gs,allSteps,readingMap){
@@ -6695,6 +6714,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  if(!ctx) return;
  const lbl=document.getElementById('chartGammaValueLabel');
  if(lbl) lbl.textContent='Gamma';
+ const targetLabel=meterTargetGammaLabel();
  const sorted=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
  const white=sorted.find(r=>(r.ire||0)===100)||sorted[sorted.length-1];
  const Yw=white?(white.luminance||white.Y||0):0;
@@ -6718,11 +6738,15 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   const tg=meterGreyTargetGamma(step.ire,Yw,Lb,step.r_code!=null?step.r_code:step.r);
   if(tg!=null&&isFinite(tg)) targetMap[step.ire]=tg;
  });
- const allVals=[...Object.values(gammaMap),...Object.values(targetMap)].filter(v=>v!=null&&isFinite(v));
+ const measuredVals=Object.values(gammaMap).filter(v=>v!=null&&isFinite(v));
+ const targetVals=Object.values(targetMap).filter(v=>v!=null&&isFinite(v));
+ const allVals=[...measuredVals,...targetVals];
  if(allVals.length===0){ drawGammaValuePreset(xSteps); return; }
- let yMin=Math.max(1.0,Math.floor((Math.min(...allVals)-0.15)*10)/10);
- let yMax=Math.min(4.0,Math.ceil((Math.max(...allVals)+0.15)*10)/10);
- if(yMax-yMin<0.5){ const mid=(yMin+yMax)/2; yMin=Math.max(1.0,mid-0.25); yMax=Math.min(4.0,mid+0.25); }
+ let yMin=Math.max(1.6,Math.floor((Math.min(...measuredVals.length?measuredVals:allVals)-0.15)*10)/10);
+ let yMax=Math.min(2.8,Math.ceil((Math.max(...measuredVals.length?measuredVals:allVals)+0.15)*10)/10);
+ yMin=Math.min(yMin,1.9);
+ yMax=Math.max(yMax,2.5);
+ if(yMax-yMin<0.6){ const mid=(yMin+yMax)/2; yMin=Math.max(1.6,mid-0.3); yMax=Math.min(2.8,mid+0.3); }
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:30,l:55},
   xSteps:xSteps.length-1||1,ySteps:4,
@@ -6741,13 +6765,18 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   const mg=gammaMap[step.ire];
   if(mg!=null&&isFinite(mg)) mPts.push([x,Math.max(0,Math.min(1,(mg-yMin)/(yMax-yMin)))]);
  });
- if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#666');
- drawDots(ctx,chart,emptyPts,'#33333380',3);
+ if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
+ drawDots(ctx,chart,emptyPts,'#6d6d6d80',3);
+ drawDots(ctx,chart,tgtPts,'#ffb74d',2.5);
  if(mPts.length>1) drawLine(ctx,chart,mPts,'#7ecbff',2);
  drawDots(ctx,chart,mPts,'#7ecbff',3);
+ ctx.font='11px sans-serif';
+ ctx.textAlign='left';
+ ctx.fillStyle='#ffb74d';
+ ctx.fillText('Target: '+targetLabel,chart.pad.l,chart.pad.t-4);
  if(mPts.length>0){
-  const avg=Object.values(gammaMap).reduce((s,v)=>s+v,0)/Object.values(gammaMap).length;
-  ctx.fillStyle='#7ecbff';ctx.font='11px sans-serif';ctx.textAlign='right';
+  const avg=measuredVals.reduce((s,v)=>s+v,0)/measuredVals.length;
+  ctx.fillStyle='#7ecbff';ctx.textAlign='right';
   ctx.fillText('Avg: '+avg.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
  }
 }
