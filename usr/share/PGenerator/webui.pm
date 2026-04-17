@@ -7800,19 +7800,108 @@ function meterCloseReportDialog(){
 function meterCloneReportNodeHTML(el){
  if(!el) return '';
  const clone=el.cloneNode(true);
- const sourceCanvases=el.querySelectorAll('canvas');
- const cloneCanvases=clone.querySelectorAll('canvas');
+ const sourceCanvases=el.matches&&el.matches('canvas')?[el]:el.querySelectorAll('canvas');
+ const cloneCanvases=clone.matches&&clone.matches('canvas')?[clone]:clone.querySelectorAll('canvas');
  sourceCanvases.forEach((cv,i)=>{
   const cloneCv=cloneCanvases[i];
   if(!cloneCv) return;
   const img=document.createElement('img');
   try{ img.src=cv.toDataURL('image/png'); }catch(e){ img.src=''; }
-  img.style.cssText='width:100%;display:block;background:#0d0d15;border-radius:6px';
+  img.style.cssText='width:100%;display:block;background:#0d0d15;border-radius:8px';
   cloneCv.replaceWith(img);
  });
- clone.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
- clone.style.display='';
- return clone.outerHTML;
+ if(clone.querySelectorAll) clone.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
+ if(clone.style) clone.style.display='';
+ return clone.outerHTML||'';
+}
+
+function meterBuildReportChartCard(title,el){
+ if(!el) return '';
+ return '<div class="report-chart-card"><div class="report-chart-title">'+title+'</div>'+meterCloneReportNodeHTML(el)+'</div>';
+}
+
+function meterBuildReportSummaryCards(){
+ const valid=(meterReadings||[]).filter(rd=>meterReadingHasLuminance(rd));
+ if(valid.length===0) return '';
+ let cards=[];
+ if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
+  const gs=valid.filter(r=>r.r_code===r.g_code&&r.g_code===r.b_code).sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const white=gs.find(r=>(r.ire||0)===100)||meterWhiteReading||gs[gs.length-1];
+  const peak=white?(white.luminance||white.Y||0):0;
+  const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
+  const black=blacks.length?Math.min(...blacks):0;
+  let deVals=[];
+  if(white&&(white.Y||white.luminance)>0){
+   const Lw=white.luminance||white.Y;
+   const Lb=black||0;
+   gs.forEach(rd=>{
+    const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+    if(Y<=0){deVals.push(0);return;}
+    const ref=hcfrGreyRef(rd.ire, Y, Lw, Lb, meterIncludeLum(), rd.r_code);
+    const labM=xyzToLab(X,Y,Z,D65.X*ref.YWhite,ref.YWhite,D65.Z*ref.YWhite);
+    const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,D65.X*ref.YWhiteRef,ref.YWhiteRef,D65.Z*ref.YWhiteRef);
+    deVals.push(deltaE2000(labM,labR));
+   });
+  }
+  const avgDe=deVals.length?(deVals.reduce((s,v)=>s+v,0)/deVals.length):0;
+  const avgCct=gs.filter(r=>r.cct).length?(gs.filter(r=>r.cct).reduce((s,r)=>s+(r.cct||0),0)/gs.filter(r=>r.cct).length):null;
+  cards=[
+   {label:'Average ΔE 2000',value:isFinite(avgDe)?avgDe.toFixed(2):'--'},
+   {label:'Peak Luminance',value:isFinite(peak)?peak.toFixed(1)+' cd/m²':'--'},
+   {label:'Black Level',value:isFinite(black)?black.toFixed(3)+' cd/m²':'--'},
+   {label:'Average CCT',value:avgCct?Math.round(avgCct)+'K':'--'}
+  ];
+ } else {
+  const inclLum=meterIncludeLum();
+  const deVals=valid.map(rd=>meterColorDeltaE2000(rd,inclLum)).filter(v=>isFinite(v));
+  const avgDe=deVals.length?(deVals.reduce((s,v)=>s+v,0)/deVals.length):0;
+  const peak=Math.max(...valid.map(r=>r.Y!=null?r.Y:(r.luminance||0)),0);
+  const avgY=valid.length?(valid.reduce((s,r)=>s+(r.Y!=null?r.Y:(r.luminance||0)),0)/valid.length):0;
+  cards=[
+   {label:'Average ΔE 2000',value:isFinite(avgDe)?avgDe.toFixed(2):'--'},
+   {label:'Peak Luminance',value:isFinite(peak)?peak.toFixed(1)+' cd/m²':'--'},
+   {label:'Average Luminance',value:isFinite(avgY)?avgY.toFixed(1)+' cd/m²':'--'},
+   {label:'Readings',value:String(valid.length)}
+  ];
+ }
+ return '<div class="report-summary">'+cards.map(card=>'<div class="report-stat"><div class="report-stat-label">'+card.label+'</div><div class="report-stat-value">'+card.value+'</div></div>').join('')+'</div>';
+}
+
+function meterBuildGreyscaleReportTable(){
+ const gs=(meterReadings||[]).filter(r=>meterReadingHasLuminance(r)&&r.r_code===r.g_code&&r.g_code===r.b_code).sort((a,b)=>(a.ire||0)-(b.ire||0));
+ if(gs.length===0) return '';
+ const inclLum=meterIncludeLum();
+ const white=gs.find(r=>(r.ire||0)===100)||meterWhiteReading||gs[gs.length-1];
+ const Lw=white?(white.luminance||white.Y||0):0;
+ const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
+ const Lb=blacks.length?Math.min(...blacks):0;
+ let rows='';
+ gs.forEach(rd=>{
+  const bal=white?rgbBalance(rd,white,inclLum):{R:100,G:100,B:100};
+  const gamma=effectiveGamma(rd.luminance,white?(white.Y||white.luminance||rd.Y):rd.Y,rd.ire);
+  let de='--';
+  if(Lw>0 && (rd.Y||0)>0){
+   const ref=hcfrGreyRef(rd.ire, rd.Y||0, Lw, Lb, inclLum, rd.r_code);
+   const labM=xyzToLab(rd.X||0,rd.Y||0,rd.Z||0,D65.X*ref.YWhite,ref.YWhite,D65.Z*ref.YWhite);
+   const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,D65.X*ref.YWhiteRef,ref.YWhiteRef,D65.Z*ref.YWhiteRef);
+   de=deltaE2000(labM,labR).toFixed(2);
+  } else if((rd.Y||0)===0){
+   de='0.00';
+  }
+  rows+='<tr>'
+   +'<td>'+(rd.ire!=null?rd.ire+'%':'--')+'</td>'
+   +'<td>'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(2))+'</td>'
+   +'<td>'+(rd.x!=null?rd.x.toFixed(4):'--')+'</td>'
+   +'<td>'+(rd.y!=null?rd.y.toFixed(4):'--')+'</td>'
+   +'<td>'+(rd.cct?rd.cct+'K':'--')+'</td>'
+   +'<td>'+(gamma!=null&&isFinite(gamma)?gamma.toFixed(2):'--')+'</td>'
+   +'<td>'+bal.R.toFixed(1)+'</td>'
+   +'<td>'+bal.G.toFixed(1)+'</td>'
+   +'<td>'+bal.B.toFixed(1)+'</td>'
+   +'<td>'+de+'</td>'
+   +'</tr>';
+ });
+ return '<div class="report-table-card"><div class="report-table-title">Greyscale Measurements</div><div class="report-table-wrap"><table class="report-table"><thead><tr><th>Patch</th><th>Y cd/m²</th><th>x</th><th>y</th><th>CCT</th><th>Gamma</th><th>R%</th><th>G%</th><th>B%</th><th>ΔE 2000</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
 
 function meterBuildEmptySeriesReportSection(title){
@@ -7829,27 +7918,25 @@ function meterBuildCurrentSeriesReportSection(title){
  let html='<section class="report-section">';
  html+='<div class="report-section-title">'+title+'</div>';
  html+='<div class="report-section-meta">'+count+' readings captured</div>';
+ html+=meterBuildReportSummaryCards();
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
-  html+='<div class="report-grid">';
-  html+=meterCloneReportNodeHTML(document.getElementById('meterLiveReading'));
-  html+=meterCloneReportNodeHTML(document.getElementById('chartRGB')?.parentElement);
-  html+=meterCloneReportNodeHTML(document.getElementById('chartDeltaE')?.parentElement);
-  html+=meterCloneReportNodeHTML(document.getElementById('chartDeltaE2000')?.parentElement);
-  html+=meterCloneReportNodeHTML(document.getElementById('chartEOTF')?.parentElement);
-  html+=meterCloneReportNodeHTML(document.getElementById('chartGamma')?.parentElement);
+  html+='<div class="report-grid report-grid-charts">';
+  html+=meterBuildReportChartCard('RGB Balance',document.getElementById('chartRGB'));
+  html+=meterBuildReportChartCard(document.getElementById('chartDeltaELabel')?document.getElementById('chartDeltaELabel').textContent:'ΔE CIELUV',document.getElementById('chartDeltaE'));
+  html+=meterBuildReportChartCard(document.getElementById('chartDeltaE2000Label')?document.getElementById('chartDeltaE2000Label').textContent:'ΔE 2000',document.getElementById('chartDeltaE2000'));
+  html+=meterBuildReportChartCard('EOTF',document.getElementById('chartEOTF'));
+  html+=meterBuildReportChartCard('Luminance',document.getElementById('chartGamma'));
   html+='</div>';
+  html+=meterBuildGreyscaleReportTable();
  } else {
-  html+='<div class="report-grid">';
-  html+=meterCloneReportNodeHTML(document.getElementById('meterLiveReading'));
-  html+=meterCloneReportNodeHTML(document.getElementById('chartCIE')?.parentElement);
-  html+=meterCloneReportNodeHTML(document.getElementById('chartColorDE')?.parentElement);
+  html+='<div class="report-grid report-grid-charts">';
+  html+=meterBuildReportChartCard('CIE 1931 Chromaticity',document.getElementById('chartCIE'));
+  html+=meterBuildReportChartCard(document.getElementById('chartColorDELabel')?document.getElementById('chartColorDELabel').textContent:'ΔE 2000 (Color Accuracy)',document.getElementById('chartColorDE'));
   html+='</div>';
-  const detail=document.getElementById('colorReadingDetail');
-  if(detail) html+=meterCloneReportNodeHTML(detail);
   const avgWrap=document.getElementById('colorSeriesAveragesWrap');
-  if(avgWrap&&getComputedStyle(avgWrap).display!=='none') html+=meterCloneReportNodeHTML(avgWrap);
+  if(avgWrap&&getComputedStyle(avgWrap).display!=='none') html+='<div class="report-table-card">'+meterCloneReportNodeHTML(avgWrap)+'</div>';
   const tblWrap=document.getElementById('colorReadingsTableWrap');
-  if(tblWrap&&getComputedStyle(tblWrap).display!=='none') html+=meterCloneReportNodeHTML(tblWrap);
+  if(tblWrap&&getComputedStyle(tblWrap).display!=='none') html+='<div class="report-table-card">'+meterCloneReportNodeHTML(tblWrap)+'</div>';
  }
  html+='</section>';
  return html;
@@ -7858,19 +7945,34 @@ function meterBuildCurrentSeriesReportSection(title){
 function meterBuildReportDocument(sectionHtml){
  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PGenerator Measurement Report</title>'
  +'<style>'
- +'body{font-family:Arial,sans-serif;background:#0b1020;color:#e8ecf3;margin:0;padding:24px;} '
- +'.report-header{margin-bottom:18px;padding-bottom:10px;border-bottom:2px solid #2b3350;} '
- +'.report-title{font-size:24px;font-weight:700;margin-bottom:4px;} '
- +'.report-sub{font-size:12px;color:#9aa4bf;} '
- +'.report-section{margin:0 0 22px 0;padding:14px;background:#111522;border:1px solid #2d3348;border-radius:10px;page-break-inside:avoid;} '
- +'.report-section-title{font-size:18px;font-weight:700;margin-bottom:4px;} '
- +'.report-section-meta{font-size:12px;color:#9aa4bf;margin-bottom:10px;} '
- +'.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;align-items:start;} '
- +'.report-empty{padding:16px;border:1px dashed #4a5478;border-radius:8px;color:#bcc6df;background:#0d0d15;font-size:13px;} '
- +'canvas,img{max-width:100%;} table{width:100%;} @media print{body{background:#fff;color:#000;padding:0;} .report-section{border:1px solid #ccc;background:#fff;} .report-empty{background:#f7f7f7;color:#444;border-color:#bbb;} }'
- +'</style></head><body>'
+ +':root{color-scheme:light;} '
+ +'body{font-family:Inter,Segoe UI,Arial,sans-serif;background:#eef2f8;color:#162032;margin:0;padding:28px;} '
+ +'.report-shell{max-width:1200px;margin:0 auto;} '
+ +'.report-header{margin-bottom:20px;padding:20px 24px;background:linear-gradient(135deg,#13203b 0%,#1c325a 100%);color:#fff;border-radius:16px;box-shadow:0 8px 24px rgba(8,20,44,.14);} '
+ +'.report-title{font-size:28px;font-weight:800;letter-spacing:.2px;margin-bottom:4px;} '
+ +'.report-sub{font-size:12px;color:#d3dced;} '
+ +'.report-section{margin:0 0 22px 0;padding:18px;background:#fff;border:1px solid #d9e0ec;border-radius:16px;box-shadow:0 4px 16px rgba(15,23,42,.05);page-break-inside:avoid;} '
+ +'.report-section-title{font-size:20px;font-weight:800;margin-bottom:4px;color:#162032;} '
+ +'.report-section-meta{font-size:12px;color:#66748c;margin-bottom:14px;} '
+ +'.report-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px;} '
+ +'.report-stat{padding:12px 14px;border:1px solid #dde5f0;border-radius:12px;background:linear-gradient(180deg,#fbfcfe 0%,#f4f7fb 100%);} '
+ +'.report-stat-label{font-size:11px;font-weight:700;color:#6a7892;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;} '
+ +'.report-stat-value{font-size:20px;font-weight:800;color:#162032;} '
+ +'.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;align-items:start;} '
+ +'.report-chart-card,.report-table-card{margin-top:14px;padding:12px;border:1px solid #e0e7f1;border-radius:12px;background:#fafcff;} '
+ +'.report-grid-charts .report-chart-card{margin-top:0;} '
+ +'.report-chart-title,.report-table-title{font-size:12px;font-weight:800;color:#50607d;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;} '
+ +'.report-table-wrap{overflow-x:auto;} '
+ +'.report-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff;} '
+ +'.report-table th,.report-table td{padding:8px 10px;border-bottom:1px solid #e7edf5;text-align:right;} '
+ +'.report-table th:first-child,.report-table td:first-child{text-align:left;} '
+ +'.report-table th{background:#f4f7fb;color:#52627e;font-weight:800;} '
+ +'.report-empty{padding:16px;border:1px dashed #b8c5da;border-radius:12px;color:#61728e;background:#f7f9fc;font-size:13px;} '
+ +'img{max-width:100%;display:block;} table{width:100%;} '
+ +'@media print{body{background:#fff;padding:0;} .report-shell{max-width:none;} .report-header{box-shadow:none;} .report-section{box-shadow:none;border-color:#cfd7e3;} }'
+ +'</style></head><body><div class="report-shell">'
  +'<div class="report-header"><div class="report-title">PGenerator Measurement Report</div><div class="report-sub">Generated '+new Date().toLocaleString()+'</div></div>'
- +sectionHtml+'</body></html>';
+ +sectionHtml+'</div></body></html>';
 }
 
 async function meterGenerateReport(){
