@@ -3432,11 +3432,11 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
      <div>
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">EOTF</div>
-      <canvas id="chartEOTF" width="500" height="132" style="width:100%;height:132px;background:#0d0d15;border-radius:6px"></canvas>
+      <canvas id="chartEOTF" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
      </div>
      <div>
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Luminance</div>
-      <canvas id="chartGamma" width="500" height="132" style="width:100%;height:132px;background:#0d0d15;border-radius:6px"></canvas>
+      <canvas id="chartGamma" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
      </div>
     </div>
    </div>
