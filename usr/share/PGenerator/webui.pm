@@ -5661,7 +5661,10 @@ function meterIncludeLum(){
 //     Both measured and reference L* use the same peak normalization so ΔL*
 //     is the real luminance error against the tracking target.
 function hcfrGreyRef(ire, Ym, Lw, Lb, inclLum, code){
- const peak = meterChartIsHdr() ? meterChartHdrPeak() : (Lw>0 ? Lw : (Ym>0?Ym:1));
+ // Use the actual measured 100% white whenever it is available. Falling back
+ // to HDR metadata peak here causes the luminance-inclusive ΔE charts to
+ // overstate high-end greyscale errors after the gamma chart work.
+ const peak = (Lw>0) ? Lw : (meterChartIsHdr() ? meterChartHdrPeak() : (Ym>0?Ym:1));
  if(!inclLum){
   const vy = peak>0 ? Ym/peak : 0;
   return {
