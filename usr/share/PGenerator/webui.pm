@@ -7761,25 +7761,32 @@ function meterGetSeriesSnapshotByKey(key){
  const snap=meterSeriesCache[key];
  if(!snap||!snap.steps||snap.steps.length===0) return null;
  const readings=(snap.readings||[]).filter(rd=>meterReadingHasLuminance(rd));
- if(readings.length===0) return null;
  return {...snap,readings:readings};
 }
 
-function meterOpenReportDialog(){
- const items=[];
- const seen=new Set();
- [meterActiveSeriesKey,...Object.keys(meterSeriesCache||{})].forEach(key=>{
-  if(!key||seen.has(key)) return;
-  seen.add(key);
-  const snap=meterGetSeriesSnapshotByKey(key);
-  if(snap) items.push({key:key,label:meterSeriesLabelFromKey(key),count:snap.readings.length});
+function meterAllSeriesReportOptions(){
+ return [
+  {key:'greyscale-21',label:'Greyscale 21pt'},
+  {key:'greyscale-11',label:'Greyscale 11pt'},
+  {key:'colors-30',label:'Colors'},
+  {key:'saturations-24',label:'Sat Sweep'}
+ ].map(item=>{
+  const snap=meterGetSeriesSnapshotByKey(item.key);
+  const count=snap&&snap.readings?snap.readings.length:0;
+  return {...item,count:count,hasData:count>0};
  });
- if(items.length===0){toast('No series data available to report',true);return;}
+}
+
+function meterOpenReportDialog(){
+ if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ const items=meterAllSeriesReportOptions();
  const list=document.getElementById('meterReportSeriesList');
  list.innerHTML=items.map(item=>
   '<label style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#0d0d15;border:1px solid #262b3b;border-radius:6px;padding:8px 10px;cursor:pointer">'
   +'<span style="display:flex;align-items:center;gap:8px"><input type="checkbox" value="'+item.key+'" checked> '+item.label+'</span>'
-  +'<span style="font-size:.72rem;color:var(--text2)">'+item.count+' readings</span>'
+  +'<span style="font-size:.72rem;color:var(--text2)">'+(item.hasData?(item.count+' readings'):'No data yet')+'</span>'
   +'</label>'
  ).join('');
  document.getElementById('meterReportOverlay').style.display='flex';
@@ -7806,6 +7813,15 @@ function meterCloneReportNodeHTML(el){
  clone.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
  clone.style.display='';
  return clone.outerHTML;
+}
+
+function meterBuildEmptySeriesReportSection(title){
+ let html='<section class="report-section">';
+ html+='<div class="report-section-title">'+title+'</div>';
+ html+='<div class="report-section-meta">0 readings captured</div>';
+ html+='<div class="report-empty">No measurement data has been captured for this series yet.</div>';
+ html+='</section>';
+ return html;
 }
 
 function meterBuildCurrentSeriesReportSection(title){
@@ -7850,7 +7866,8 @@ function meterBuildReportDocument(sectionHtml){
  +'.report-section-title{font-size:18px;font-weight:700;margin-bottom:4px;} '
  +'.report-section-meta{font-size:12px;color:#9aa4bf;margin-bottom:10px;} '
  +'.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;align-items:start;} '
- +'canvas,img{max-width:100%;} table{width:100%;} @media print{body{background:#fff;color:#000;padding:0;} .report-section{border:1px solid #ccc;background:#fff;} }'
+ +'.report-empty{padding:16px;border:1px dashed #4a5478;border-radius:8px;color:#bcc6df;background:#0d0d15;font-size:13px;} '
+ +'canvas,img{max-width:100%;} table{width:100%;} @media print{body{background:#fff;color:#000;padding:0;} .report-section{border:1px solid #ccc;background:#fff;} .report-empty{background:#f7f7f7;color:#444;border-color:#bbb;} }'
  +'</style></head><body>'
  +'<div class="report-header"><div class="report-title">PGenerator Measurement Report</div><div class="report-sub">Generated '+new Date().toLocaleString()+'</div></div>'
  +sectionHtml+'</body></html>';
@@ -7876,7 +7893,10 @@ async function meterGenerateReport(){
  try{
   for(const key of selected){
    const snap=meterGetSeriesSnapshotByKey(key);
-   if(!snap) continue;
+   if(!snap||!snap.readings||snap.readings.length===0){
+    sectionHtml+=meterBuildEmptySeriesReportSection(meterSeriesLabelFromKey(key));
+    continue;
+   }
    meterRestoreSeriesFromCache(key);
    await new Promise(resolve=>requestAnimationFrame(resolve));
    sectionHtml+=meterBuildCurrentSeriesReportSection(meterSeriesLabelFromKey(key));
