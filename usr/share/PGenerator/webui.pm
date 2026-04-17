@@ -8000,9 +8000,10 @@ function meterCloneReportNodeHTML(el){
  return clone.outerHTML||'';
 }
 
-function meterBuildReportChartCard(title,el){
+function meterBuildReportChartCard(title,el,layoutClass){
  if(!el) return '';
- return '<div class="report-chart-card"><div class="report-chart-title">'+title+'</div>'+meterCloneReportNodeHTML(el)+'</div>';
+ const extra=layoutClass?(' '+layoutClass):'';
+ return '<div class="report-chart-card'+extra+'"><div class="report-chart-title">'+title+'</div>'+meterCloneReportNodeHTML(el)+'</div>';
 }
 
 function meterBuildReportSummaryCards(){
@@ -8106,12 +8107,12 @@ function meterBuildCurrentSeriesReportSection(title){
  html+=meterBuildReportSummaryCards();
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   html+='<div class="report-grid report-grid-charts">';
-  html+=meterBuildReportChartCard('RGB Balance',document.getElementById('chartRGB'));
-  html+=meterBuildReportChartCard(document.getElementById('chartDeltaELabel')?document.getElementById('chartDeltaELabel').textContent:'ΔE CIELUV',document.getElementById('chartDeltaE'));
-  html+=meterBuildReportChartCard(document.getElementById('chartDeltaE2000Label')?document.getElementById('chartDeltaE2000Label').textContent:'ΔE 2000',document.getElementById('chartDeltaE2000'));
-  html+=meterBuildReportChartCard(document.getElementById('chartGammaValueLabel')?document.getElementById('chartGammaValueLabel').textContent:'Gamma',document.getElementById('chartGammaValue'));
-  html+=meterBuildReportChartCard('EOTF',document.getElementById('chartEOTF'));
-  html+=meterBuildReportChartCard('Luminance',document.getElementById('chartGamma'));
+  html+=meterBuildReportChartCard('RGB Balance',document.getElementById('chartRGB'),'report-span-full');
+  html+=meterBuildReportChartCard(document.getElementById('chartDeltaELabel')?document.getElementById('chartDeltaELabel').textContent:'ΔE CIELUV',document.getElementById('chartDeltaE'),'report-span-full');
+  html+=meterBuildReportChartCard(document.getElementById('chartDeltaE2000Label')?document.getElementById('chartDeltaE2000Label').textContent:'ΔE 2000',document.getElementById('chartDeltaE2000'),'report-span-full');
+  html+=meterBuildReportChartCard(document.getElementById('chartGammaValueLabel')?document.getElementById('chartGammaValueLabel').textContent:'Gamma',document.getElementById('chartGammaValue'),'report-span-full');
+  html+=meterBuildReportChartCard('EOTF',document.getElementById('chartEOTF'),'report-span-half');
+  html+=meterBuildReportChartCard('Luminance',document.getElementById('chartGamma'),'report-span-half');
   html+='</div>';
   html+=meterBuildGreyscaleReportTable();
  } else {
@@ -8144,9 +8145,11 @@ function meterBuildReportDocument(sectionHtml){
  +'.report-stat{padding:12px 14px;border:1px solid #dde5f0;border-radius:12px;background:linear-gradient(180deg,#fbfcfe 0%,#f4f7fb 100%);} '
  +'.report-stat-label{font-size:11px;font-weight:700;color:#6a7892;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;} '
  +'.report-stat-value{font-size:20px;font-weight:800;color:#162032;} '
- +'.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;align-items:start;} '
+ +'.report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start;} '
  +'.report-chart-card,.report-table-card{margin-top:14px;padding:12px;border:1px solid #e0e7f1;border-radius:12px;background:#fafcff;} '
  +'.report-grid-charts .report-chart-card{margin-top:0;} '
+ +'.report-span-full{grid-column:1 / -1;} '
+ +'.report-span-half{grid-column:span 1;} '
  +'.report-chart-title,.report-table-title{font-size:12px;font-weight:800;color:#50607d;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;} '
  +'.report-table-wrap{overflow-x:auto;} '
  +'.report-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff;} '
@@ -8155,6 +8158,7 @@ function meterBuildReportDocument(sectionHtml){
  +'.report-table th{background:#f4f7fb;color:#52627e;font-weight:800;} '
  +'.report-empty{padding:16px;border:1px dashed #b8c5da;border-radius:12px;color:#61728e;background:#f7f9fc;font-size:13px;} '
  +'img{max-width:100%;display:block;} table{width:100%;} '
+ +'@media (max-width:900px){.report-grid{grid-template-columns:1fr;} .report-span-full,.report-span-half{grid-column:1 / -1;}} '
  +'@media print{body{background:#fff;padding:0;} .report-shell{max-width:none;} .report-header{box-shadow:none;} .report-section{box-shadow:none;border-color:#cfd7e3;} }'
  +'</style></head><body><div class="report-shell">'
  +'<div class="report-header"><div class="report-title">PGenerator Measurement Report</div><div class="report-sub">Generated '+new Date().toLocaleString()+'</div></div>'
