@@ -984,9 +984,9 @@ sub webui_meter_series_start (@) {
   my $span_code=($signal_range==1)?219:255;
     my $max_code=$min_code+$span_code;
     my %primaries=(
-     bt709=>{M=>[[3.2406,-1.5372,-0.4986],[-0.9689,1.8758,0.0415],[0.0557,-0.2040,1.0570]]},
-     bt2020=>{M=>[[1.7166511880,-0.3556707838,-0.2533662814],[-0.6666843518,1.6164812366,0.0157685458],[0.0176398574,-0.0427706133,0.9421031212]]},
-     p3d65=>{M=>[[2.4934969119,-0.9313836179,-0.4027107845],[-0.8294889696,1.7626640603,0.0236246858],[0.0358458302,-0.0761723893,0.9568845240]]}
+     bt709=>{M=>[[3.2406,-1.5372,-0.4986],[-0.9689,1.8758,0.0415],[0.0557,-0.2040,1.0570]],RGB_TO_XYZ=>[[0.4124564,0.3575761,0.1804375],[0.2126729,0.7151522,0.0721750],[0.0193339,0.1191920,0.9503041]]},
+     bt2020=>{M=>[[1.7166511880,-0.3556707838,-0.2533662814],[-0.6666843518,1.6164812366,0.0157685458],[0.0176398574,-0.0427706133,0.9421031212]],RGB_TO_XYZ=>[[0.6369580483,0.1446169036,0.1688809752],[0.2627002120,0.6779980715,0.0593017165],[0.0000000000,0.0280726930,1.0609850577]]},
+     p3d65=>{M=>[[2.4934969119,-0.9313836179,-0.4027107845],[-0.8294889696,1.7626640603,0.0236246858],[0.0358458302,-0.0761723893,0.9568845240]],RGB_TO_XYZ=>[[0.4865709486,0.2656676932,0.1982172852],[0.2289745641,0.6917385218,0.0792869141],[0.0000000000,0.0451133819,1.0439443689]]}
     );
     my $gamut_key="bt709";
     if($signal_mode eq "dv") {
@@ -998,19 +998,16 @@ sub webui_meter_series_start (@) {
     } elsif(int($pgenerator_conf{"primaries"} || 0) == 2) {
      $gamut_key="p3d65";
     }
-    my @MI=@{$primaries{$gamut_key}{M}};
+    my $container_key=$gamut_key;
+    my $target_key=$target_gamut ne "" ? $target_gamut : $container_key;
+    my @MI=@{$primaries{$container_key}{M}};
+    my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
     my $encode_linear=sub {
      my ($linear)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
      $linear=1 if($linear > 1);
      my $encoded=($signal_mode eq "hdr10") ? &webui_pattern_pq_encode_normalized($linear*100) : ($linear**(1/2.2));
      return int($min_code + $encoded*$span_code + .5);
-    };
-    my $encode_fullsat=sub {
-     my ($active)=@_;
-     return $min_code if(!$active);
-     return int($min_code + &webui_pattern_pq_encode_normalized(100)*$span_code + .5) if($signal_mode eq "hdr10");
-     return $max_code;
     };
     my @classic=(
      ["Gray 35","gray",0.35],
@@ -1064,18 +1061,31 @@ sub webui_meter_series_start (@) {
      push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\"}";
     }
     foreach my $sat (
-     ["100% Red",1,0,0],
-     ["100% Green",0,1,0],
-     ["100% Blue",0,0,1],
-     ["100% Cyan",0,1,1],
-     ["100% Magenta",1,0,1],
-     ["100% Yellow",1,1,0]
+     ["100% Red","Red",1,0,0],
+     ["100% Green","Green",0,1,0],
+     ["100% Blue","Blue",0,0,1],
+     ["100% Cyan","Cyan",0,1,1],
+     ["100% Magenta","Magenta",1,0,1],
+     ["100% Yellow","Yellow",1,1,0]
     ) {
-     my ($name,$r_on,$g_on,$b_on)=@$sat;
-     my $r=$encode_fullsat->($r_on);
-     my $g=$encode_fullsat->($g_on);
-     my $b=$encode_fullsat->($b_on);
-     push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\"}";
+     my ($name,$series_color,$r_mix,$g_mix,$b_mix)=@$sat;
+     my $mix_X=$RGB_TO_XYZ[0][0]*$r_mix+$RGB_TO_XYZ[0][1]*$g_mix+$RGB_TO_XYZ[0][2]*$b_mix;
+     my $mix_Y=$RGB_TO_XYZ[1][0]*$r_mix+$RGB_TO_XYZ[1][1]*$g_mix+$RGB_TO_XYZ[1][2]*$b_mix;
+     my $mix_Z=$RGB_TO_XYZ[2][0]*$r_mix+$RGB_TO_XYZ[2][1]*$g_mix+$RGB_TO_XYZ[2][2]*$b_mix;
+     my $mix_sum=$mix_X+$mix_Y+$mix_Z;
+     my $px=$mix_sum>0?$mix_X/$mix_sum:0.3127;
+     my $py=$mix_sum>0?$mix_Y/$mix_sum:0.329;
+     my $X=$px/$py; my $Y=1; my $Z=(1-$px-$py)/$py;
+     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
+     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
+     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
+     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
+     if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
+     my $r=$encode_linear->($rl);
+     my $g=$encode_linear->($gl);
+     my $b=$encode_linear->($bl);
+     push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"series_color\":\"$series_color\",\"sat_pct\":100}";
     }
  } elsif($type eq "saturations") {
   my $signal_mode=&webui_pattern_signal_mode("");
@@ -5015,6 +5025,17 @@ function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
  return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
 }
 
+function meterBuildFullGamutTargetLinearRgb(colorName){
+ const containerGamut=meterContainerGamut();
+ const endpoint=meterGamutColorEndpointXY(colorName);
+ const x=endpoint.x;
+ const y=endpoint.y;
+ if(y<=0) return [0,0,0];
+ const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,containerGamut.xyzToRgb);
+ const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
+ return coeffs.map(v=>Math.max(0,v/maxCoeff));
+}
+
 function meterSaturationTargetXYZ(colorName,satPercent){
  // Decode with the active signal container matrix because the patch RGB was
  // solved in that container to hit the selected target chromaticity.
@@ -5027,9 +5048,12 @@ function meterParseSaturationReading(reading){
  if(reading.series_color&&reading.sat_pct!=null){
   return {color:String(reading.series_color),sat:parseFloat(reading.sat_pct)||0};
  }
- const match=String(reading.name||'').match(/^(Red|Green|Blue|Cyan|Magenta|Yellow)\s+(\d+)%$/i);
- if(!match) return null;
- return {color:match[1],sat:parseFloat(match[2])||0};
+ const name=String(reading.name||'').trim();
+ let match=name.match(/^(Red|Green|Blue|Cyan|Magenta|Yellow)\s+(\d+)%$/i);
+ if(match) return {color:match[1],sat:parseFloat(match[2])||0};
+ match=name.match(/^(\d+)%\s+(Red|Green|Blue|Cyan|Magenta|Yellow)$/i);
+ if(match) return {color:match[2],sat:parseFloat(match[1])||0};
+ return null;
 }
 
 function meterDecodeColorTargetChannel(code){
@@ -5055,7 +5079,7 @@ function targetChromaticityXY(r,g,b){
 }
 
 function meterTargetXYZForReading(reading){
- const satInfo=(meterActiveSeriesType==='saturations')?meterParseSaturationReading(reading):null;
+ const satInfo=meterParseSaturationReading(reading);
  if(satInfo) return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  return targetColorXYZAbs(reading.r_code,reading.g_code,reading.b_code);
 }
@@ -5142,19 +5166,22 @@ function meterBuildColorCheckerStepsJS(){
   });
  });
  [
-  ['100% Red',1,0,0],
-  ['100% Green',0,1,0],
-  ['100% Blue',0,0,1],
-  ['100% Cyan',0,1,1],
-  ['100% Magenta',1,0,1],
-  ['100% Yellow',1,1,0]
- ].forEach(([name,rOn,gOn,bOn])=>{
+  ['100% Red','Red'],
+  ['100% Green','Green'],
+  ['100% Blue','Blue'],
+  ['100% Cyan','Cyan'],
+  ['100% Magenta','Magenta'],
+  ['100% Yellow','Yellow']
+ ].forEach(([name,colorName])=>{
+  const rgb=meterBuildFullGamutTargetLinearRgb(colorName);
   steps.push({
    ire:100,
-   r:meterEncodeColorCheckerFullSatChannel(rOn),
-   g:meterEncodeColorCheckerFullSatChannel(gOn),
-   b:meterEncodeColorCheckerFullSatChannel(bOn),
-   name:name
+   r:meterEncodeColorCheckerLinear(rgb[0]),
+   g:meterEncodeColorCheckerLinear(rgb[1]),
+   b:meterEncodeColorCheckerLinear(rgb[2]),
+   name:name,
+   series_color:colorName,
+   sat_pct:100
   });
  });
  return steps;
