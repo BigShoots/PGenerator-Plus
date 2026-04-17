@@ -4,7 +4,7 @@
   <img src="Pgen+_Logo_black_bg_slim.png" alt="PGenerator+ Logo" width="720"/>
 </p>
 
-A Raspberry Pi–based HDMI test pattern generator for display calibration. PGenerator+ outputs precision color patches and test patterns over HDMI — including HDR10, HLG, and Dolby Vision — controlled remotely by calibration software over TCP/IP.
+A Raspberry Pi–based HDMI test pattern generator for display calibration. PGenerator+ outputs precision color patches and test patterns over HDMI — including HDR10, HLG, and Dolby Vision — controlled remotely by calibration software over TCP/IP. Current releases also add a local web dashboard, OTA updates, and integrated meter-driven validation workflows using ArgyllCMS `spotread`.
 
 Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto.
 
@@ -85,6 +85,7 @@ Important limitations:
 - This is an overlay build, not a full from-scratch distro build.
 - The base image must already be a compatible BiasiLinux/PGenerator image with the expected distro dependencies, `pgenerator` account, and sudoers setup.
 - The `PGeneratord` and `PGeneratord.dv` binaries are prebuilt and are taken from this repository as-is.
+- Meter features depend on an installed ArgyllCMS `spotread` binary at `/usr/bin/spotread`; this repository contains the wrappers, CCSS assets, udev rules, and web integration, but not the upstream ArgyllCMS executable itself.
 - The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
 
 ### Building the Renderer Binary from Source
@@ -151,12 +152,13 @@ cd /path/to/PGenerator-Plus/src/pattern_generator
 make
 ```
 
-The compiled binary will be at `src/pattern_generator/bin/PGeneratord`. Copy it to `/usr/sbin/PGeneratord` on the target system (the `.dv` variant is the same binary — just copy it as both names):
+The compiled binary will be at `src/pattern_generator/bin/PGeneratord`. This is useful for renderer development and local validation on target hardware.
 
 ```bash
 sudo cp bin/PGeneratord /usr/sbin/PGeneratord
-sudo cp bin/PGeneratord /usr/sbin/PGeneratord.dv
 ```
+
+For packaged releases and overlay builds, this repository ships prebuilt `/usr/sbin/PGeneratord` and `/usr/sbin/PGeneratord.dv` binaries. Treat those shipped binaries as the authoritative runtime artifacts for PGenerator+ images.
 
 #### Building PGeneratorDisplayMirror (optional)
 
@@ -170,7 +172,7 @@ make
 #### Architecture Notes
 
 - The binary reads pattern descriptions from `/var/lib/PGenerator/operations.txt` (written by the Perl daemon) and renders them via OpenGL ES 3.0 through DRM/KMS.
-- `PGeneratord` and `PGeneratord.dv` are **identical binaries**. The DV code path is selected at runtime based on `dv_status`, `is_ll_dovi`, and `is_std_dovi` in `/etc/PGenerator/PGenerator.conf`.
+- The deployed image uses separate prebuilt `PGeneratord` and `PGeneratord.dv` runtime binaries, with `dv_status` selecting which one the Perl daemon launches.
 - HDR10 output uses the `HDR_OUTPUT_METADATA` DRM connector property; Dolby Vision uses `DOVI_OUTPUT_METADATA`.
 - The binary verifies it is running on BiasiLinux + Raspberry Pi at startup (9-point filesystem check).
 - Original source: [BigShoots/PGenerator_Source](https://github.com/BigShoots/PGenerator_Source) (`pgen_dovi_latest` branch) by Riccardo Biasiotto, GPLv3.
@@ -276,7 +278,26 @@ Direct display control using HDMI-CEC:
 Manage the device directly from the interface:
 - **Network Management:** Configure the active WiFi client connection or manage the local WiFi Access Point (reachable at `10.10.10.1`).
 - **Power Options:** Restart the PGenerator backend service or safely reboot the entire Raspberry Pi.
+- **Boot GPU Split:** Adjust the boot-time GPU memory split from the UI and trigger the required reboot.
 - **OTA Updates:** Check GitHub for new PGenerator+ releases, view changelogs, and sequentially download/extract updates with a single click.
+
+#### Meter & Measurements
+The current Web UI includes an integrated measurement workflow built around ArgyllCMS `spotread`:
+
+- **USB Meter Detection:** Detects supported colorimeters attached over USB and reports whether `spotread` is available.
+- **Persistent Read Sessions:** Uses a long-lived meter session so repeated reads avoid paying the full meter initialization cost every time.
+- **Interactive Measurements:** Supports both **Read Once** and **Continuous** live reading modes from the dashboard.
+- **Series Runs:** Built-in measurement series for **Greyscale 21pt**, **Greyscale 11pt**, **Colors 30**, and **Saturation Sweep 24**.
+- **Patch Controls:** Configurable settle delay, patch size, optional APL windows, refresh-rate override, OLED pattern insertion, and optional i1D3 AIO disable.
+- **On-Device Charts:** Displays live luminance, CCT, chromaticity, RGB balance, luminance tracking, and both CIELUV and CIEDE2000 Delta E charts in the browser.
+
+#### CCSS Profile Management
+Meter correction files are now part of the runtime:
+
+- **Bundled Library:** `/usr/share/PGenerator/ccss/` ships a large set of generic and display-specific CCSS profiles.
+- **Built-In Presets:** Quick display-type selections map to generic OLED, QD-OLED, LCD WLED/CCFL/WGCCFL/RGB LED, Plasma, Projector, and CRT defaults.
+- **Custom Profiles:** Upload `.ccss` files or compatible spectral `.csv` files from the Web UI.
+- **Custom Storage:** Uploaded profiles are stored under `/usr/share/PGenerator/ccss/custom/` and can be listed and deleted from the UI.
 
 ### mDNS / Bonjour
 
@@ -360,6 +381,8 @@ etc/
   init.d/PGenerator              # Init script (service start/stop)
   PGenerator/PGenerator.conf     # Configuration (key=value)
   PGenerator/lut.txt             # LUT color correction table
+  udev/rules.d/99-colorimeter.rules # USB permissions for supported meters
+  sudo/sudoers.d/PGenerator      # Allows meter helpers and privileged commands
 usr/
   sbin/
     PGeneratord.pl               # Main daemon (Perl, forks + threads)
@@ -368,6 +391,11 @@ usr/
     pgenerator-update            # OTA update script (GitHub Releases)
   bin/
     PGenerator_cmd.pl            # Privileged command handler (runs as root)
+    meter_session.sh             # Persistent spotread session for manual reads
+    meter_series.sh              # Background multi-patch measurement runner
+    meter_usb_reset.sh           # USB reset helper for stuck meter state
+    spotread_wrapper.sh          # Non-interactive spotread wrapper with JSON output
+    spotread_measure.py          # PTY-based spotread helper for single reads
   share/PGenerator/
     daemon.pm                    # TCP server, request routing, thread management
     pattern.pm                   # Pattern file creation, LUT, scaling
@@ -382,6 +410,7 @@ usr/
     info.pm                      # Device info collection
     log.pm                       # Logging
     file.pm                      # File utilities
+    ccss/                        # Bundled generic and display-specific CCSS profiles
 ```
 
 ### Key Modules
@@ -397,7 +426,14 @@ usr/
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.1.1`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.2.1`) and product name (`PGenerator+`) |
+
+### Meter Runtime Notes
+
+- Meter integration expects ArgyllCMS `spotread` at `/usr/bin/spotread`.
+- The Web UI launches meter helpers through sudo using the rules in `etc/sudo/sudoers.d/PGenerator`.
+- USB permissions for supported meter vendors are provided by `etc/udev/rules.d/99-colorimeter.rules`.
+- The repo includes wrapper scripts and profile assets; it does not vendor the upstream ArgyllCMS source tree.
 
 ---
 
@@ -440,6 +476,8 @@ usr/
 
 All endpoints are served on port 80. Responses are JSON.
 
+### Core API
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/ping` | Health check, returns `{"ok":1}` |
@@ -453,14 +491,37 @@ All endpoints are served on port 80. Responses are JSON.
 | GET | `/api/wifi/status` | WiFi connection status |
 | POST | `/api/wifi/connect` | Connect to WiFi (JSON: ssid, psk) |
 | GET | `/api/wifi/ap` | Get AP settings |
-| POST | `/api/wifi/ap` | Set AP SSID & password |
+| POST | `/api/wifi/ap` | Set AP SSID and password |
 | GET | `/api/infoframes` | Read AVI and DRM InfoFrame hex data from HDMI output |
 | GET | `/api/cec/status` | HDMI-CEC TV power status |
-| GET | `/api/cec/{cmd}` | Send CEC command (wake, on, off, as) |
-| POST | `/api/pattern` | Display a test pattern (JSON: name, r, g, b, size) |
-| POST | `/api/resolve/connect` | Connect to Resolve calibration server (JSON: ip, port) |
-| POST | `/api/resolve/disconnect` | Disconnect from Resolve server |
+| GET | `/api/cec/{cmd}` | Send CEC command (`wake`, `on`, `off`, `as`) |
+| POST | `/api/pattern` | Display a test pattern (JSON body with pattern name, RGB, and size) |
+| POST | `/api/resolve/connect` | Connect outbound to a Resolve-compatible calibration server |
+| POST | `/api/resolve/disconnect` | Disconnect Resolve client mode |
 | GET | `/api/resolve/status` | Resolve connection status |
+| GET | `/api/update/check` | Check GitHub Releases for a newer OTA package |
+| POST | `/api/update/apply` | Start OTA download and install |
+| GET | `/api/boot/memory` | Read current boot GPU memory split |
+| POST | `/api/boot/memory` | Set boot GPU memory split and reboot |
+
+### Meter & CCSS API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/meter/status` | Detect connected meter and `spotread` availability |
+| POST | `/api/meter/read` | Start a manual meter read using the current meter settings |
+| GET | `/api/meter/read/result` | Poll the latest single-read result |
+| POST | `/api/meter/series` | Start a greyscale, color, or saturation measurement series |
+| GET | `/api/meter/series/status` | Poll active series progress and collected readings |
+| POST | `/api/meter/stop` | Stop the active meter session or series |
+| POST | `/api/meter/clear` | Clear cached meter results in the UI/backend |
+| POST | `/api/meter/reset` | Force meter cleanup/reset when the USB session is stuck |
+| GET | `/api/meter/settings` | Load saved meter settings |
+| POST | `/api/meter/settings` | Save meter settings such as display type, delay, patch size, insertion, refresh rate, AIO mode, and CCSS selection |
+| GET | `/api/ccss/list` | List custom uploaded CCSS profiles |
+| GET | `/api/ccss/all` | List bundled and custom CCSS profiles with metadata |
+| POST | `/api/ccss/upload` | Upload a `.ccss` file or compatible spectral `.csv` for conversion/import |
+| POST | `/api/ccss/delete/{filename}` | Delete a custom uploaded CCSS profile |
 
 ---
 
@@ -468,7 +529,7 @@ All endpoints are served on port 80. Responses are JSON.
 
 PGenerator+ is built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto, licensed under the GNU General Public License v3.0. The original project provides the core pattern generation engine, TCP protocol handling, and C/C++ renderer binary.
 
-PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDNS discovery, HDMI-CEC control, OTA updates via GitHub Releases, Calman 10-bit pattern support, validated Pi-side Calman window/APL handling (`RGB_S`, `RGB_A`, `CommandRGB`, `10_SIZE`, `11_APL`), Dolby Vision renderer-blob preservation with corrected Absolute/Relative handling, stock-hostname discovery branding as `PGenerator+`, automatic bit depth management for HDR/SDR mode switching, and various stability improvements.
+PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDNS discovery, HDMI-CEC control, OTA updates via GitHub Releases, Calman 10-bit pattern support, validated Pi-side Calman window/APL handling (`RGB_S`, `RGB_A`, `CommandRGB`, `10_SIZE`, `11_APL`), outbound Resolve client mode, integrated meter workflows via ArgyllCMS `spotread`, bundled and custom CCSS profile management, stock-hostname discovery branding as `PGenerator+`, automatic bit depth management for HDR/SDR mode switching, and various stability improvements.
 
 ---
 
