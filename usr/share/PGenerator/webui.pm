@@ -940,6 +940,9 @@ sub webui_meter_series_start (@) {
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
+ my $target_gamut="";
+ $target_gamut=lc($1) if($body=~/"target_gamut"\s*:\s*"([A-Za-z0-9_]+)"/);
+ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65");
 
  # Cancel any running series and clean up
  &webui_meter_stop();
@@ -1111,9 +1114,12 @@ sub webui_meter_series_start (@) {
   } elsif(int($pgenerator_conf{"primaries"} || 0) == 2) {
    $gamut_key="p3d65";
   }
-  my $g=$primaries{$gamut_key};
-  my @MI=@{$g->{M}};
-  my @RGB_TO_XYZ=@{$g->{RGB_TO_XYZ}};
+  my $container_key=$gamut_key;
+  my $target_key=$target_gamut ne "" ? $target_gamut : $container_key;
+  my $g_target=$primaries{$target_key};
+  my $g_container=$primaries{$container_key};
+  my @MI=@{$g_container->{M}};
+  my @RGB_TO_XYZ=@{$g_target->{RGB_TO_XYZ}};
   foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
    my ($name,$r_mix,$g_mix,$b_mix)=@$color;
    my $mix_X=$RGB_TO_XYZ[0][0]*$r_mix+$RGB_TO_XYZ[0][1]*$g_mix+$RGB_TO_XYZ[0][2]*$b_mix;
@@ -1249,7 +1255,7 @@ my $_meter_settings_file="/tmp/meter_settings.json";
 sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys
- my %allowed=map {$_=>1} qw(display_type delay patch_size patch_insert disable_aio refresh_rate ccss_file);
+ my %allowed=map {$_=>1} qw(display_type target_gamut delay patch_size patch_insert disable_aio refresh_rate ccss_file);
  my $safe="{";
  my @parts;
  while($body=~/"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|\d+|true|false|null)/g) {
@@ -3275,6 +3281,15 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
     </label>
    </div>
    <div class="field">
+    <label>Target Colorspace</label>
+    <select id="meterTargetGamut">
+     <option value="auto" selected>Auto (match signal)</option>
+     <option value="bt709">BT.709</option>
+     <option value="bt2020">BT.2020</option>
+     <option value="p3d65">DCI-P3 / D65</option>
+    </select>
+   </div>
+   <div class="field">
     <label>Target Gamma</label>
     <select id="meterTargetGamma">
      <option value="bt1886">BT.1886 (2.4)</option>
@@ -4815,15 +4830,27 @@ const GAMUT_PRESETS={
 const M_XYZ_TO_RGB=GAMUT_PRESETS.bt709.xyzToRgb;
 const M_RGB_TO_XYZ=GAMUT_PRESETS.bt709.rgbToXyz;
 
-function meterActiveGamutKey(){
- // Honor the Primaries dropdown in all modes. HDR color/saturation targets
- // should follow the active container gamut so the browser-side targets match
- // the emitted sweep patches and the CIE/ΔE views stay internally consistent.
+function meterContainerGamutKey(){
  const prim=parseInt((config&&config.primaries)||'0',10);
  if(prim===2) return 'p3d65';
  if(prim===1) return 'bt2020';
  if(meterChartIsDv()) return 'p3d65';
  return 'bt709';
+}
+
+function meterSelectedTargetGamutKey(){
+ const el=document.getElementById('meterTargetGamut');
+ const val=String(el&&el.value||'auto').toLowerCase();
+ return /^(bt709|bt2020|p3d65)$/.test(val)?val:'';
+}
+
+function meterActiveGamutKey(){
+ const forced=meterSelectedTargetGamutKey();
+ return forced||meterContainerGamutKey();
+}
+
+function meterContainerGamut(){
+ return GAMUT_PRESETS[meterContainerGamutKey()]||GAMUT_PRESETS.bt709;
 }
 
 function meterActiveGamut(){
@@ -4972,28 +4999,27 @@ function meterGamutColorEndpointXY(colorName){
 }
 
 function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
- // Encode the patch in the active gamut/container so the browser-side target
- // generation matches the emitted sweep patches exactly. For HDR10 with
- // BT.2020 primaries that means a D65→Rec.2020 saturation ramp at the HDR
- // stimulus level, while measured 100% points may still land inside the
- // triangle when the display is gamut-limited.
- const gamut=meterActiveGamut();
+ // The selected target colorspace defines the intended endpoint chromaticity,
+ // but the actual RGB code values must still be solved in the active signal
+ // container gamut (for HDR10, usually BT.2020) so the emitted patch matches
+ // the intended target inside that container.
+ const containerGamut=meterContainerGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
  const endpoint=meterGamutColorEndpointXY(colorName);
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
  if(y<=0) return [0,0,0];
- const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,gamut.xyzToRgb);
+ const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,containerGamut.xyzToRgb);
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
  const level=meterSaturationStimulusLinearLevel();
  return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
 }
 
 function meterSaturationTargetXYZ(colorName,satPercent){
- // Decode in the same active gamut we encoded with so the target XYZ exactly
- // represents the intended D65-to-endpoint saturation chromaticity.
+ // Decode with the active signal container matrix because the patch RGB was
+ // solved in that container to hit the selected target chromaticity.
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
- return linRgbToXyz(rgb[0],rgb[1],rgb[2],meterActiveGamut().rgbToXyz);
+ return linRgbToXyz(rgb[0],rgb[1],rgb[2],meterContainerGamut().rgbToXyz);
 }
 
 function meterParseSaturationReading(reading){
@@ -7843,6 +7869,7 @@ async function deleteCustomCcss(filename){
 function saveMeterSettings(){
  const s={
   display_type:document.getElementById('meterDisplayType').value,
+  target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
   delay:document.getElementById('meterDelay').value,
   patch_size:document.getElementById('meterPatchSize').value,
   patch_insert:document.getElementById('meterPatchInsert').checked,
@@ -7857,6 +7884,7 @@ async function loadMeterSettings(){
  const s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000});
  if(!s||!s.display_type) return;
  if(s.display_type) document.getElementById('meterDisplayType').value=s.display_type;
+ if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
  if(s.delay) document.getElementById('meterDelay').value=s.delay;
  if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
  if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
@@ -7867,11 +7895,27 @@ async function loadMeterSettings(){
  applyMeterTargetGammaDefault();
 }
 // Add change listeners for auto-save
-['meterDisplayType','meterDelay','meterPatchSize','meterRefreshRate'].forEach(id=>{
+['meterDisplayType','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate'].forEach(id=>{
  document.getElementById(id).addEventListener('change',saveMeterSettings);
 });
 ['meterPatchInsert','meterDisableAIO'].forEach(id=>{
  document.getElementById(id).addEventListener('change',saveMeterSettings);
+});
+
+document.getElementById('meterTargetGamut').addEventListener('change',()=>{
+ if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning) return;
+ meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+ const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const done=new Set();
+ (meterReadings||[]).forEach(r=>{if(r.luminance!=null) done.add(meterStepNameKey(r));});
+ meterBuildPatchThumbs(sortedSteps,done,meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null);
+ if(meterReadings&&meterReadings.length){
+  const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  drawAllCharts(sorted);
+ } else {
+  drawAllChartsPreset(sortedSteps);
+ }
 });
 
 // Init
