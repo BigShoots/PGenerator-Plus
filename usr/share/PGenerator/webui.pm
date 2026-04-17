@@ -3486,10 +3486,31 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
    </div>
   </div>
 
-  <!-- Export / Clear -->
+  <!-- Export / Report -->
   <div class="btn-row" id="meterExportRow" style="display:none">
    <button class="btn btn-sm btn-secondary" onclick="meterExportCSV()">&#128190; Export CSV</button>
-   <button class="btn btn-sm btn-danger" onclick="meterClearResults()">Clear Chart Data</button>
+   <button class="btn btn-sm btn-secondary" onclick="meterOpenReportDialog()">&#128196; Generate Report</button>
+  </div>
+
+  <div id="meterReportOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:16px">
+   <div style="width:min(460px,96vw);background:#111522;border:1px solid #2d3348;border-radius:10px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.45)">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+     <div style="font-size:.95rem;font-weight:700;color:var(--text)">Generate Measurement Report</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseReportDialog()">Close</button>
+    </div>
+    <div style="font-size:.72rem;color:var(--text2);margin-bottom:8px">Choose which measured series to include and export as HTML or PDF.</div>
+    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;margin:10px 0 6px">Include Series Data</div>
+    <div id="meterReportSeriesList" style="display:grid;gap:6px;margin-bottom:12px"></div>
+    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;margin:10px 0 6px">Output Format</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+     <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="meterReportFormat" value="html" checked> HTML</label>
+     <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="meterReportFormat" value="pdf"> PDF</label>
+    </div>
+    <div class="btn-row" style="justify-content:flex-end;margin:0">
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseReportDialog()">Cancel</button>
+     <button class="btn btn-sm btn-primary" id="meterReportGenerateBtn" onclick="meterGenerateReport()">Generate</button>
+    </div>
+   </div>
   </div>
  </div>
 
@@ -7721,6 +7742,177 @@ function chartHandleClick(e,canvasId){
  }
  document.getElementById('meterProgress').style.display='';
  document.getElementById('meterProgressLabel').textContent=rd.ire+'%';
+}
+
+function meterSeriesLabelFromKey(key){
+ return {
+  'greyscale-21':'Greyscale 21pt',
+  'greyscale-11':'Greyscale 11pt',
+  'colors-30':'Colors',
+  'saturations-24':'Sat Sweep'
+ }[key]||String(key||'Series');
+}
+
+function meterGetSeriesSnapshotByKey(key){
+ if(!key) return null;
+ if(key===meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ const snap=meterSeriesCache[key];
+ if(!snap||!snap.steps||snap.steps.length===0) return null;
+ const readings=(snap.readings||[]).filter(rd=>meterReadingHasLuminance(rd));
+ if(readings.length===0) return null;
+ return {...snap,readings:readings};
+}
+
+function meterOpenReportDialog(){
+ const items=[];
+ const seen=new Set();
+ [meterActiveSeriesKey,...Object.keys(meterSeriesCache||{})].forEach(key=>{
+  if(!key||seen.has(key)) return;
+  seen.add(key);
+  const snap=meterGetSeriesSnapshotByKey(key);
+  if(snap) items.push({key:key,label:meterSeriesLabelFromKey(key),count:snap.readings.length});
+ });
+ if(items.length===0){toast('No series data available to report',true);return;}
+ const list=document.getElementById('meterReportSeriesList');
+ list.innerHTML=items.map(item=>
+  '<label style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#0d0d15;border:1px solid #262b3b;border-radius:6px;padding:8px 10px;cursor:pointer">'
+  +'<span style="display:flex;align-items:center;gap:8px"><input type="checkbox" value="'+item.key+'" checked> '+item.label+'</span>'
+  +'<span style="font-size:.72rem;color:var(--text2)">'+item.count+' readings</span>'
+  +'</label>'
+ ).join('');
+ document.getElementById('meterReportOverlay').style.display='flex';
+}
+
+function meterCloseReportDialog(){
+ const overlay=document.getElementById('meterReportOverlay');
+ if(overlay) overlay.style.display='none';
+}
+
+function meterCloneReportNodeHTML(el){
+ if(!el) return '';
+ const clone=el.cloneNode(true);
+ const sourceCanvases=el.querySelectorAll('canvas');
+ const cloneCanvases=clone.querySelectorAll('canvas');
+ sourceCanvases.forEach((cv,i)=>{
+  const cloneCv=cloneCanvases[i];
+  if(!cloneCv) return;
+  const img=document.createElement('img');
+  try{ img.src=cv.toDataURL('image/png'); }catch(e){ img.src=''; }
+  img.style.cssText='width:100%;display:block;background:#0d0d15;border-radius:6px';
+  cloneCv.replaceWith(img);
+ });
+ clone.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
+ clone.style.display='';
+ return clone.outerHTML;
+}
+
+function meterBuildCurrentSeriesReportSection(title){
+ const count=(meterReadings||[]).filter(rd=>meterReadingHasLuminance(rd)).length;
+ let html='<section class="report-section">';
+ html+='<div class="report-section-title">'+title+'</div>';
+ html+='<div class="report-section-meta">'+count+' readings captured</div>';
+ if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
+  html+='<div class="report-grid">';
+  html+=meterCloneReportNodeHTML(document.getElementById('meterLiveReading'));
+  html+=meterCloneReportNodeHTML(document.getElementById('chartRGB')?.parentElement);
+  html+=meterCloneReportNodeHTML(document.getElementById('chartDeltaE')?.parentElement);
+  html+=meterCloneReportNodeHTML(document.getElementById('chartDeltaE2000')?.parentElement);
+  html+=meterCloneReportNodeHTML(document.getElementById('chartEOTF')?.parentElement);
+  html+=meterCloneReportNodeHTML(document.getElementById('chartGamma')?.parentElement);
+  html+='</div>';
+ } else {
+  html+='<div class="report-grid">';
+  html+=meterCloneReportNodeHTML(document.getElementById('meterLiveReading'));
+  html+=meterCloneReportNodeHTML(document.getElementById('chartCIE')?.parentElement);
+  html+=meterCloneReportNodeHTML(document.getElementById('chartColorDE')?.parentElement);
+  html+='</div>';
+  const detail=document.getElementById('colorReadingDetail');
+  if(detail) html+=meterCloneReportNodeHTML(detail);
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap&&getComputedStyle(avgWrap).display!=='none') html+=meterCloneReportNodeHTML(avgWrap);
+  const tblWrap=document.getElementById('colorReadingsTableWrap');
+  if(tblWrap&&getComputedStyle(tblWrap).display!=='none') html+=meterCloneReportNodeHTML(tblWrap);
+ }
+ html+='</section>';
+ return html;
+}
+
+function meterBuildReportDocument(sectionHtml){
+ return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PGenerator Measurement Report</title>'
+ +'<style>'
+ +'body{font-family:Arial,sans-serif;background:#0b1020;color:#e8ecf3;margin:0;padding:24px;} '
+ +'.report-header{margin-bottom:18px;padding-bottom:10px;border-bottom:2px solid #2b3350;} '
+ +'.report-title{font-size:24px;font-weight:700;margin-bottom:4px;} '
+ +'.report-sub{font-size:12px;color:#9aa4bf;} '
+ +'.report-section{margin:0 0 22px 0;padding:14px;background:#111522;border:1px solid #2d3348;border-radius:10px;page-break-inside:avoid;} '
+ +'.report-section-title{font-size:18px;font-weight:700;margin-bottom:4px;} '
+ +'.report-section-meta{font-size:12px;color:#9aa4bf;margin-bottom:10px;} '
+ +'.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;align-items:start;} '
+ +'canvas,img{max-width:100%;} table{width:100%;} @media print{body{background:#fff;color:#000;padding:0;} .report-section{border:1px solid #ccc;background:#fff;} }'
+ +'</style></head><body>'
+ +'<div class="report-header"><div class="report-title">PGenerator Measurement Report</div><div class="report-sub">Generated '+new Date().toLocaleString()+'</div></div>'
+ +sectionHtml+'</body></html>';
+}
+
+async function meterGenerateReport(){
+ const selected=[...document.querySelectorAll('#meterReportSeriesList input[type="checkbox"]:checked')].map(x=>x.value);
+ if(selected.length===0){toast('Select at least one series to include',true);return;}
+ const format=(document.querySelector('input[name="meterReportFormat"]:checked')||{}).value||'html';
+ const btn=document.getElementById('meterReportGenerateBtn');
+ if(btn){btn.disabled=true;btn.textContent='Generating…';}
+ const restore={
+  key:meterActiveSeriesKey,
+  selectedName:_selectedColorReadingName,
+  pinned:_colorDetailPinned,
+  currentPatch:meterCurrentPatchStep?{...meterCurrentPatchStep}:null,
+  selectedThumb:meterSelectedThumbIre
+ };
+ if(restore.key&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ let sectionHtml='';
+ try{
+  for(const key of selected){
+   const snap=meterGetSeriesSnapshotByKey(key);
+   if(!snap) continue;
+   meterRestoreSeriesFromCache(key);
+   await new Promise(resolve=>requestAnimationFrame(resolve));
+   sectionHtml+=meterBuildCurrentSeriesReportSection(meterSeriesLabelFromKey(key));
+  }
+ } finally {
+  if(restore.key){
+   meterRestoreSeriesFromCache(restore.key);
+   if(restore.selectedName&&restore.pinned){
+    const sel=(meterReadings||[]).find(r=>r&&r.name===restore.selectedName);
+    if(sel) showColorReadingDetail(sel,{pin:true});
+   }
+   meterCurrentPatchStep=restore.currentPatch;
+   meterSelectedThumbIre=restore.selectedThumb;
+  }
+  if(btn){btn.disabled=false;btn.textContent='Generate';}
+ }
+ if(!sectionHtml){toast('No reportable series data found',true);return;}
+ const html=meterBuildReportDocument(sectionHtml);
+ meterCloseReportDialog();
+ if(format==='pdf'){
+  const win=window.open('','_blank');
+  if(!win){toast('Pop-up blocked — allow pop-ups to create PDF',true);return;}
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  setTimeout(()=>{win.focus();win.print();},400);
+  toast('Print dialog opened — choose Save as PDF');
+ } else {
+  const blob=new Blob([html],{type:'text/html'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='pgenerator_measurement_report.html';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  toast('HTML report downloaded');
+ }
 }
 
 function meterExportCSV(){
