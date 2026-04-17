@@ -1058,7 +1058,7 @@ sub webui_meter_series_start (@) {
      my $g=$encode_linear->($gl);
      my $b=$encode_linear->($bl);
      my $ire=int($Yn*100 + .5);
-     push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\"}";
+     push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$x,\"target_y\":$y,\"target_Yn\":$Yn}";
     }
     foreach my $sat (
      ["100% Red","Red",1,0,0],
@@ -5063,7 +5063,7 @@ function meterDecodeColorTargetChannel(code){
 }
 
 function targetColorXYZAbs(r,g,b){
- const gamut=meterActiveGamut();
+ const gamut=meterContainerGamut();
  return linRgbToXyz(
   meterDecodeColorTargetChannel(r),
   meterDecodeColorTargetChannel(g),
@@ -5079,6 +5079,16 @@ function targetChromaticityXY(r,g,b){
 }
 
 function meterTargetXYZForReading(reading){
+ if(!reading) return {X:0,Y:0,Z:0};
+ const tx=parseFloat(reading.target_x);
+ const ty=parseFloat(reading.target_y);
+ const tYn=parseFloat(reading.target_Yn);
+ if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
+  if(tYn<=0) return {X:0,Y:0,Z:0};
+  const refY=Math.max(1,meterColorReferenceNits());
+  const Y=tYn*refY;
+  return {X:(tx/ty)*Y,Y:Y,Z:((1-tx-ty)/ty)*Y};
+ }
  const satInfo=meterParseSaturationReading(reading);
  if(satInfo) return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  return targetColorXYZAbs(reading.r_code,reading.g_code,reading.b_code);
@@ -5137,7 +5147,7 @@ function meterBuildColorCheckerStepsJS(){
  const steps=[];
  const min=meterRangeMin();
  const max=min+meterRangeSpan();
- const gamut=meterActiveGamut();
+ const containerGamut=meterContainerGamut();
  steps.push({ire:100,r:max,g:max,b:max,name:'White'});
  steps.push({ire:0,r:min,g:min,b:min,name:'Black'});
  meterColorCheckerClassicSource().forEach(src=>{
@@ -5149,9 +5159,9 @@ function meterBuildColorCheckerStepsJS(){
   const X=(src.x/src.y)*src.Yn;
   const Y=src.Yn;
   const Z=((1-src.x-src.y)/src.y)*src.Yn;
-  let rl=gamut.xyzToRgb[0][0]*X+gamut.xyzToRgb[0][1]*Y+gamut.xyzToRgb[0][2]*Z;
-  let gl=gamut.xyzToRgb[1][0]*X+gamut.xyzToRgb[1][1]*Y+gamut.xyzToRgb[1][2]*Z;
-  let bl=gamut.xyzToRgb[2][0]*X+gamut.xyzToRgb[2][1]*Y+gamut.xyzToRgb[2][2]*Z;
+  let rl=containerGamut.xyzToRgb[0][0]*X+containerGamut.xyzToRgb[0][1]*Y+containerGamut.xyzToRgb[0][2]*Z;
+  let gl=containerGamut.xyzToRgb[1][0]*X+containerGamut.xyzToRgb[1][1]*Y+containerGamut.xyzToRgb[1][2]*Z;
+  let bl=containerGamut.xyzToRgb[2][0]*X+containerGamut.xyzToRgb[2][1]*Y+containerGamut.xyzToRgb[2][2]*Z;
   const mx=Math.max(rl,gl,bl);
   if(mx>1){rl/=mx;gl/=mx;bl/=mx;}
   rl=Math.max(0,rl);
@@ -5162,7 +5172,10 @@ function meterBuildColorCheckerStepsJS(){
    r:meterEncodeColorCheckerLinear(rl),
    g:meterEncodeColorCheckerLinear(gl),
    b:meterEncodeColorCheckerLinear(bl),
-   name:src.name
+   name:src.name,
+   target_x:src.x,
+   target_y:src.y,
+   target_Yn:src.Yn
   });
  });
  [
@@ -5769,6 +5782,29 @@ function meterRecoverSeries(s){
  meterUpdateReadButtons();
 }
 
+function meterStampReadingStepMeta(reading,step){
+ if(!reading||!step) return reading;
+ if(step.ire!=null) reading.ire=step.ire;
+ if(step.name!=null) reading.name=step.name;
+ if(step.r!=null) reading.r_code=step.r;
+ if(step.g!=null) reading.g_code=step.g;
+ if(step.b!=null) reading.b_code=step.b;
+ if(step.series_color!=null) reading.series_color=step.series_color;
+ if(step.sat_pct!=null) reading.sat_pct=step.sat_pct;
+ if(step.target_x!=null) reading.target_x=step.target_x;
+ if(step.target_y!=null) reading.target_y=step.target_y;
+ if(step.target_Yn!=null) reading.target_Yn=step.target_Yn;
+ return reading;
+}
+
+function meterAttachSeriesMeta(readings){
+ if(!Array.isArray(readings)||!meterSeriesSteps) return readings||[];
+ return readings.map(rd=>{
+  const step=meterSeriesSteps.find(s=>meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')&&Number(s.r||0)===Number(rd.r_code||0)&&Number(s.g||0)===Number(rd.g_code||0)&&Number(s.b||0)===Number(rd.b_code||0)));
+  return step?meterStampReadingStepMeta(rd,step):rd;
+ });
+}
+
 function updateLiveReading(reading){
  document.getElementById('meterLiveReading').style.display='';
  document.getElementById('meterLum').textContent=reading.luminance!=null?reading.luminance.toFixed(2):'--';
@@ -5888,11 +5924,7 @@ async function meterReadOnce(){
    updateLiveReading(rd);
    // If a series is loaded and a patch is selected, store reading in series results
    if(meterSeriesSteps&&requestedStep){
-    rd.ire=requestedStep.ire;
-    rd.name=requestedStep.name;
-    rd.r_code=requestedStep.r;
-    rd.g_code=requestedStep.g;
-    rd.b_code=requestedStep.b;
+    meterStampReadingStepMeta(rd,requestedStep);
     // Replace existing reading for this patch or add new
     const idx=meterReadings.findIndex(r=>r.ire===rd.ire&&r.r_code===rd.r_code&&r.g_code===rd.g_code&&r.b_code===rd.b_code);
     if(idx>=0) meterReadings[idx]=rd; else meterReadings.push(rd);
@@ -6005,11 +6037,7 @@ async function meterContinuousLoop(){
    updateLiveReading(rd);
    const stampStep=requestedStep;
    if(meterSeriesSteps&&stampStep){
-    rd.ire=stampStep.ire;
-    rd.name=stampStep.name;
-    rd.r_code=stampStep.r;
-    rd.g_code=stampStep.g;
-    rd.b_code=stampStep.b;
+    meterStampReadingStepMeta(rd,stampStep);
     const idx=meterReadings.findIndex(x=>x.ire===rd.ire&&x.r_code===rd.r_code&&x.g_code===rd.g_code&&x.b_code===rd.b_code);
     if(idx>=0) meterReadings[idx]=rd; else meterReadings.push(rd);
     const white=meterReadings.find(x=>x.ire===100&&x.r_code===x.g_code&&x.g_code===x.b_code);
@@ -6269,7 +6297,7 @@ async function meterPollSeries(){
  let currentIre=null;
 
  if(r.readings&&r.readings.length>0) {
-  meterReadings=r.readings;
+  meterReadings=meterAttachSeriesMeta(r.readings);
   // Only set white reference from actual 100% reading — never use
   // "brightest so far" during a running series, because that changes
   // every poll cycle and causes all ΔE / RGB balance values to shift.
