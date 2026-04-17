@@ -5192,19 +5192,75 @@ function meterStepNameKey(step){
  return step.name||(((step.ire!=null)?step.ire:'')+'-'+(step.r||0)+'-'+(step.g||0)+'-'+(step.b||0));
 }
 
-// Display color for a stimulus RGB triplet (handles saturation sweep mixed-channel values)
+function meterLinearToSrgbChannel(linear){
+ const c=Math.max(0,Math.min(1,linear||0));
+ return c<=0.0031308 ? 12.92*c : 1.055*Math.pow(c,1/2.4)-0.055;
+}
+
+function meterPreviewCssFromLinearRgb(rgb,normalize){
+ let vals=(rgb||[0,0,0]).map(v=>Number.isFinite(v)?Math.max(0,v):0);
+ const isGrey=Math.abs(vals[0]-vals[1])<1e-4&&Math.abs(vals[1]-vals[2])<1e-4;
+ const mx=Math.max(vals[0],vals[1],vals[2],0);
+ if(mx>0){
+  if(normalize&&!isGrey) vals=vals.map(v=>v/mx);
+  else if(mx>1) vals=vals.map(v=>v/mx);
+ }
+ const enc=vals.map(v=>Math.round(255*meterLinearToSrgbChannel(v)));
+ return 'rgb('+enc[0]+','+enc[1]+','+enc[2]+')';
+}
+
+function meterPreviewCssFromXYZ(X,Y,Z,normalize){
+ return meterPreviewCssFromLinearRgb(xyzToLinRgb(X,Y,Z,GAMUT_PRESETS.bt709.xyzToRgb),normalize!==false);
+}
+
+function meterSignalPreviewColor(r,g,b){
+ if(r==null||g==null||b==null) return '#aaa';
+ if(r===g&&g===b) return 'rgb('+r+','+g+','+b+')';
+ const xyz=linRgbToXyz(
+  meterDecodeSignalChannel(r),
+  meterDecodeSignalChannel(g),
+  meterDecodeSignalChannel(b),
+  meterContainerGamut().rgbToXyz
+ );
+ return meterPreviewCssFromXYZ(xyz.X,xyz.Y,xyz.Z,true);
+}
+
+function meterPreviewColorForReading(reading,mode){
+ if(!reading) return '#aaa';
+ if(mode==='measured'&&reading.X!=null&&reading.Y!=null&&reading.Z!=null&&reading.Y>0){
+  return meterPreviewCssFromXYZ(reading.X,reading.Y,reading.Z,true);
+ }
+ const target=meterTargetXYZForReading(reading);
+ if(target&&target.Y>0) return meterPreviewCssFromXYZ(target.X,target.Y,target.Z,true);
+ const r=reading.r_code!=null?reading.r_code:reading.r;
+ const g=reading.g_code!=null?reading.g_code:reading.g;
+ const b=reading.b_code!=null?reading.b_code:reading.b;
+ return meterSignalPreviewColor(r,g,b);
+}
+
+function meterPreviewColorForStep(step){
+ if(!step) return '#aaa';
+ return meterPreviewColorForReading({
+  r_code:step.r,
+  g_code:step.g,
+  b_code:step.b,
+  series_color:step.series_color,
+  sat_pct:step.sat_pct,
+  name:step.name
+ },'target');
+}
+
+function meterContrastTextColor(css){
+ const m=String(css||'').match(/\d+/g)||[];
+ if(m.length<3) return '#222';
+ const lum=0.299*parseInt(m[0],10)+0.587*parseInt(m[1],10)+0.114*parseInt(m[2],10);
+ return lum<145?'#eee':'#222';
+}
+
+// Display color for a stimulus RGB triplet using a browser-safe preview of the
+// actual emitted signal patch inside the current signal container.
 function stimulusColor(r,g,b){
- if(r===g&&g===b) return '#aaa';
- const mx=Math.max(r,g,b);
- if(mx<=0) return '#aaa';
- const rH=r>=mx,gH=g>=mx,bH=b>=mx;
- if(rH&&!gH&&!bH) return '#f44';
- if(!rH&&gH&&!bH) return '#4caf50';
- if(!rH&&!gH&&bH) return '#42a5f5';
- if(!rH&&gH&&bH) return '#26c6da';
- if(rH&&!gH&&bH) return '#ab47bc';
- if(rH&&gH&&!bH) return '#ffee58';
- return '#aaa';
+ return meterSignalPreviewColor(r,g,b);
 }
 
 // CIE 1931 spectral locus xy coordinates (5nm intervals, 380-700nm)
@@ -6299,8 +6355,8 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   sortedSteps.forEach(step=>{
    const thumb=document.createElement('div');
    const isGrey=step.r===step.g&&step.g===step.b;
-   const bgColor='rgb('+(step.r||0)+','+(step.g||0)+','+(step.b||0)+')';
-   const textColor=isGrey&&step.r<128?'#aaa':'#222';
+   const bgColor=meterPreviewColorForStep(step);
+   const textColor=meterContrastTextColor(bgColor);
    const label=isGrey?(step.ire+'%'):(step.name||'');
    thumb.style.cssText='flex:1;display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor;
    thumb.textContent=label;
@@ -6976,7 +7032,7 @@ function drawColorReadingsTable(readings){
   if(!rd.x||!rd.y||rd.Y<=0) return;
   const tgt=meterTargetChromaticityForReading(rd);
   const dx=rd.x-tgt.x, dy=rd.y-tgt.y;
-  const pc=stimulusColor(rd.r_code,rd.g_code,rd.b_code);
+  const pc=meterPreviewColorForReading(rd,'target');
   const de=meterColorDeltaE2000(rd,inclLum);
   deSum+=de;deCount++;
   const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
@@ -7025,7 +7081,7 @@ function drawColorSeriesAverages(readings,inclLum){
    const sat=meterParseSaturationReading(rd);
    key=sat&&sat.color?sat.color:(rd.name||'Other');
   }
-  if(!groups[key]){groups[key]={de:[],dx:[],dy:[],Y:[],color:stimulusColor(rd.r_code,rd.g_code,rd.b_code)};order.push(key);}
+  if(!groups[key]){groups[key]={de:[],dx:[],dy:[],Y:[],color:meterPreviewColorForReading(rd,'target')};order.push(key);}
   const tgt=meterTargetChromaticityForReading(rd);
   groups[key].de.push(meterColorDeltaE2000(rd,inclLum));
   groups[key].dx.push(Math.abs(rd.x-tgt.x));
@@ -7124,18 +7180,19 @@ function showColorReadingDetail(rd){
  _selectedColorReadingName=rd.name||null;
  const inclLum=meterIncludeLum();
  const tgt=meterTargetChromaticityForReading(rd);
- const pc=stimulusColor(rd.r_code,rd.g_code,rd.b_code);
+ const targetColor=meterPreviewColorForReading(rd,'target');
+ const measuredColor=meterPreviewColorForReading(rd,'measured');
  const dx=rd.x-tgt.x, dy=rd.y-tgt.y;
  const de=meterColorDeltaE2000(rd,inclLum);
  const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44';
  const dyCol=Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44';
  let h='<div style="margin-bottom:8px;text-align:center">';
- h+='<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:'+pc+';vertical-align:middle;margin-right:4px"></span>';
+ h+='<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:'+targetColor+';vertical-align:middle;margin-right:4px"></span>';
  h+='<span style="color:#eee;font-weight:600;font-size:12px">'+(rd.name||'')+'</span></div>';
  h+='<div style="display:flex;gap:6px;margin-bottom:8px;justify-content:center">';
- h+='<div style="text-align:center"><div style="width:36px;height:24px;border-radius:3px;border:1px solid #333;background:rgb('+rd.r_code+','+rd.g_code+','+rd.b_code+')"></div><div style="font-size:8px;color:#555;margin-top:1px">Target</div></div>';
- h+='<div style="text-align:center"><div style="width:36px;height:24px;border-radius:3px;border:1px solid #333;background:'+pc+'"></div><div style="font-size:8px;color:#555;margin-top:1px">Measured</div></div></div>';
+ h+='<div style="text-align:center"><div style="width:36px;height:24px;border-radius:3px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:8px;color:#555;margin-top:1px">Target</div></div>';
+ h+='<div style="text-align:center"><div style="width:36px;height:24px;border-radius:3px;border:1px solid #333;background:'+measuredColor+'"></div><div style="font-size:8px;color:#555;margin-top:1px">Measured</div></div></div>';
  h+='<table style="width:100%;font-size:10px;border-collapse:collapse">';
  h+='<tr><td style="padding:2px 0;color:#666">Target x</td><td style="text-align:right;padding:2px 0;color:#aaa">'+tgt.x.toFixed(4)+'</td></tr>';
  h+='<tr><td style="padding:2px 0;color:#666">Target y</td><td style="text-align:right;padding:2px 0;color:#aaa">'+tgt.y.toFixed(4)+'</td></tr>';
@@ -7313,14 +7370,15 @@ function drawCIEChart(readings){
   if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
   const tgt=meterTargetChromaticityForReading(rd);
   const mx=rd.x, my=rd.y;
-  const pc=stimulusColor(rd.r_code,rd.g_code,rd.b_code);
+  const targetColor=meterPreviewColorForReading(rd,'target');
+  const measuredColor=meterPreviewColorForReading(rd,'measured');
   // Error line
-  ctx.strokeStyle=pc+'60';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(toX(tgt.x),toY(tgt.y));ctx.lineTo(toX(mx),toY(my));ctx.stroke();
+  ctx.strokeStyle=targetColor+'60';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(toX(tgt.x),toY(tgt.y));ctx.lineTo(toX(mx),toY(my));ctx.stroke();
   // Target: hollow square (Calman style)
   const sq=6;
-  ctx.strokeStyle=pc;ctx.lineWidth=1.5;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
+  ctx.strokeStyle=targetColor;ctx.lineWidth=1.5;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
   // Measured: filled circle
-  ctx.fillStyle=pc;ctx.beginPath();
+  ctx.fillStyle=measuredColor;ctx.beginPath();
   ctx.arc(toX(mx),toY(my),4,0,Math.PI*2);
   ctx.fill();
  });
@@ -7365,7 +7423,7 @@ function drawCIEChartPreset(steps){
  // Target placeholders (squares — Calman style)
  steps.forEach(s=>{
   const tgt=(s.series_color&&s.sat_pct!=null)?meterTargetChromaticityForReading(s):targetChromaticityXY(s.r,s.g,s.b);
-  const pc=stimulusColor(s.r,s.g,s.b);
+  const pc=meterPreviewColorForStep(s);
   const sq=6;
   ctx.strokeStyle=pc+'80';ctx.lineWidth=1.5;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
  });
@@ -7380,7 +7438,7 @@ function drawColorDeltaE2000Chart(readings){
  const deData=[];
  readings.forEach(rd=>{
   if((rd.Y||0)<=0) return;
-  deData.push({name:rd.name||'',de:meterColorDeltaE2000(rd,inclLum),color:stimulusColor(rd.r_code,rd.g_code,rd.b_code)});
+  deData.push({name:rd.name||'',de:meterColorDeltaE2000(rd,inclLum),color:meterPreviewColorForReading(rd,'target')});
  });
  if(deData.length===0) return;
  const deValues=deData.map(d=>d.de);
