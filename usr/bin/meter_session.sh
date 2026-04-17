@@ -230,6 +230,14 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
     LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"
    fi
 
+   # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
+   # returns no measurable response. Report a valid 0.0 reading immediately.
+   if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" && "$IRE" -le 0 ]]; then
+    TS=$(date +%s)
+    write_state "{\"status\":\"complete\",\"readings\":[{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B}],\"count\":1}"
+    continue
+   fi
+
    # Trigger reading and wait for it
    PREV_COUNT=$(count_results)
    printf " " >&3
