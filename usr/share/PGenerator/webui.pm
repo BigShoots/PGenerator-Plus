@@ -6356,9 +6356,9 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
    const thumb=document.createElement('div');
    const isGrey=step.r===step.g&&step.g===step.b;
    const bgColor=meterPreviewColorForStep(step);
-   const textColor=meterContrastTextColor(bgColor);
+   const textColor='#222';
    const label=isGrey?(step.ire+'%'):(step.name||'');
-   thumb.style.cssText='flex:1;display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor;
+   thumb.style.cssText='flex:1;display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 2px';
    thumb.textContent=label;
    thumb.dataset.ire=step.ire;
    thumb.dataset.r=step.r;
@@ -7178,6 +7178,7 @@ function showColorReadingDetail(rd){
   return;
  }
  _selectedColorReadingName=rd.name||null;
+ updateLiveReading(rd);
  const inclLum=meterIncludeLum();
  const tgt=meterTargetChromaticityForReading(rd);
  const targetColor=meterPreviewColorForReading(rd,'target');
