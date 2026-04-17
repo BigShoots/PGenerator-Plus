@@ -4816,10 +4816,9 @@ const M_XYZ_TO_RGB=GAMUT_PRESETS.bt709.xyzToRgb;
 const M_RGB_TO_XYZ=GAMUT_PRESETS.bt709.rgbToXyz;
 
 function meterActiveGamutKey(){
- // Honor the Primaries dropdown in all modes. Previously HDR forced bt2020
- // regardless, which gave Rec.2020 sat-sweep targets even on P3-in-2020
- // workflows — Calman targets P3 primaries when the display can only reach
- // P3, producing much smaller ΔE than the Rec.2020-forced targets did.
+ // Honor the Primaries dropdown in all modes. HDR color/saturation targets
+ // should follow the active container gamut so the browser-side targets match
+ // the emitted sweep patches and the CIE/ΔE views stay internally consistent.
  const prim=parseInt((config&&config.primaries)||'0',10);
  if(prim===2) return 'p3d65';
  if(prim===1) return 'bt2020';
@@ -4973,6 +4972,11 @@ function meterGamutColorEndpointXY(colorName){
 }
 
 function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
+ // Encode the patch in the active gamut/container so the browser-side target
+ // generation matches the emitted sweep patches exactly. For HDR10 with
+ // BT.2020 primaries that means a D65→Rec.2020 saturation ramp at the HDR
+ // stimulus level, while measured 100% points may still land inside the
+ // triangle when the display is gamut-limited.
  const gamut=meterActiveGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
  const endpoint=meterGamutColorEndpointXY(colorName);
@@ -4986,6 +4990,8 @@ function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
 }
 
 function meterSaturationTargetXYZ(colorName,satPercent){
+ // Decode in the same active gamut we encoded with so the target XYZ exactly
+ // represents the intended D65-to-endpoint saturation chromaticity.
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
  return linRgbToXyz(rgb[0],rgb[1],rgb[2],meterActiveGamut().rgbToXyz);
 }
@@ -6335,6 +6341,8 @@ function drawAllChartsPreset(sortedSteps){
   drawColorDeltaE2000Preset(sortedSteps);
   const wrap=document.getElementById('colorReadingsTableWrap');
   if(wrap) wrap.style.display='none';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
   _selectedColorReadingName=null;
   showColorReadingDetail(null);
  }
@@ -6902,7 +6910,12 @@ function drawColorReadingsTable(readings){
  const wrap=document.getElementById('colorReadingsTableWrap');
  const tbody=document.querySelector('#colorReadingsTable tbody');
  if(!wrap||!tbody) return;
- if(!readings||readings.length===0){wrap.style.display='none';return;}
+ if(!readings||readings.length===0){
+  wrap.style.display='none';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  return;
+ }
  const inclLum=meterIncludeLum();
  let html='';
  let deSum=0,deCount=0;
@@ -7504,24 +7517,33 @@ function meterExportCSV(){
  const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
  const inclLum=meterIncludeLum();
  let csv='Step,Name,IRE,R_code,G_code,B_code,X,Y,Z,x,y,Luminance,CCT,Gamma,R_bal,G_bal,B_bal,dEuv,dE2000\n';
- const dEbyIRE={};
- const dE2kByIRE={};
- sorted.forEach(rd=>{
-  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
-  if(Y<=0){dEbyIRE[rd.ire||0]=0;dE2kByIRE[rd.ire||0]=0;return;} // true black: no chroma target
-    const ref=hcfrGreyRef(rd.ire||0,Y,Lw,Lb,inclLum,rd.r_code);
-  // CIE76 Luv chromaticity-weighted dE
-  dEbyIRE[rd.ire||0]=deltaELuvHCFR(X,Y,Z,ref.YWhite, ref.refX,ref.refY,ref.refZ,ref.YWhiteRef);
-  // CIEDE2000 on Lab
-  const labM=xyzToLab(X,Y,Z, D65.X*ref.YWhite, ref.YWhite, D65.Z*ref.YWhite);
-  const labR=xyzToLab(ref.refX,ref.refY,ref.refZ, D65.X*ref.YWhiteRef, ref.YWhiteRef, D65.Z*ref.YWhiteRef);
-  dE2kByIRE[rd.ire||0]=deltaE2000(labM,labR);
- });
+ // Helper: is this reading a neutral-grey patch (greyscale sweep) vs a chroma
+ // patch (colors / saturations)? Greyscale uses the hcfr greyRef path; chroma
+ // uses the per-color target so each patch gets its own ΔE instead of a
+ // single IRE-keyed value.
+ const isGrey=rd=>(rd.r_code||0)===(rd.g_code||0)&&(rd.g_code||0)===(rd.b_code||0);
  sorted.forEach((rd,i)=>{
+  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+  let dE=0,dE2k=0;
+  if(Y>0){
+   if(isGrey(rd)){
+    const ref=hcfrGreyRef(rd.ire||0,Y,Lw,Lb,inclLum,rd.r_code);
+    dE=deltaELuvHCFR(X,Y,Z,ref.YWhite, ref.refX,ref.refY,ref.refZ,ref.YWhiteRef);
+    const labM=xyzToLab(X,Y,Z, D65.X*ref.YWhite, ref.YWhite, D65.Z*ref.YWhite);
+    const labR=xyzToLab(ref.refX,ref.refY,ref.refZ, D65.X*ref.YWhiteRef, ref.YWhiteRef, D65.Z*ref.YWhiteRef);
+    dE2k=deltaE2000(labM,labR);
+   } else {
+      // Color / sat-sweep patch: use the per-patch target generated from the
+      // active gamut so export matches the live charts.
+    const tgt=meterTargetChromaticityForReading(rd);
+    const du=4*(rd.x||0)/(-2*(rd.x||0)+12*(rd.y||0)+3)-4*tgt.x/(-2*tgt.x+12*tgt.y+3);
+    const dv=9*(rd.y||0)/(-2*(rd.x||0)+12*(rd.y||0)+3)-9*tgt.y/(-2*tgt.x+12*tgt.y+3);
+    dE=Math.sqrt(du*du+dv*dv)*1000; // scaled u'v' distance — rough dEuv stand-in
+    dE2k=meterColorDeltaE2000(rd,inclLum);
+   }
+  }
   const g=effectiveGamma(rd.luminance,Lw,rd.ire);
   const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,inclLum):{R:100,G:100,B:100};
-  const dE=dEbyIRE[rd.ire||0]||0;
-  const dE2k=dE2kByIRE[rd.ire||0]||0;
   csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
