@@ -5241,14 +5241,15 @@ function meterSignalPreviewColor(r,g,b){
 
 function meterPreviewColorForReading(reading,mode){
  if(!reading) return '#aaa';
+ const r=reading.r_code!=null?reading.r_code:reading.r;
+ const g=reading.g_code!=null?reading.g_code:reading.g;
+ const b=reading.b_code!=null?reading.b_code:reading.b;
+ if(r!=null&&g!=null&&b!=null&&r===g&&g===b) return meterSignalPreviewColor(r,g,b);
  if(mode==='measured'&&reading.X!=null&&reading.Y!=null&&reading.Z!=null&&reading.Y>0){
   return meterPreviewCssFromXYZ(reading.X,reading.Y,reading.Z,true);
  }
  const target=meterTargetXYZForReading(reading);
  if(target&&target.Y>0) return meterPreviewCssFromXYZ(target.X,target.Y,target.Z,true);
- const r=reading.r_code!=null?reading.r_code:reading.r;
- const g=reading.g_code!=null?reading.g_code:reading.g;
- const b=reading.b_code!=null?reading.b_code:reading.b;
  return meterSignalPreviewColor(r,g,b);
 }
 
