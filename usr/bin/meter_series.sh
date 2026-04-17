@@ -279,6 +279,24 @@ EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (reading)","readings":[$READINGS]}
 EOJSON
 
+ # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
+ # has no usable meter response. Treat it as a valid 0.0 read immediately so
+ # the series continues instead of sitting through a timeout.
+ if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" && "$IRE" -le 0 ]]; then
+  TS=$(date +%s)
+  READING="{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B}"
+  if [[ $READING_COUNT -gt 0 ]]; then
+   READINGS="$READINGS,$READING"
+  else
+   READINGS="$READING"
+  fi
+  READING_COUNT=$((READING_COUNT + 1))
+  cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS]}
+EOJSON
+  continue
+ fi
+
  # Per-patch timeout
  if (( IRE <= 5 )); then
   READ_TIMEOUT=25
