@@ -6384,17 +6384,23 @@ let meterThumbsBuilt=false; // track if thumbnails are already built for current
 function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  const container=document.getElementById('meterPatchThumbs');
  if(!container) return;
- // Only rebuild if step count changed (new series)
- if(container.children.length!==sortedSteps.length){
+ const needsRebuild=(container.children.length!==sortedSteps.length)||sortedSteps.some((step,idx)=>{
+  const child=container.children[idx];
+  const isGrey=step.r===step.g&&step.g===step.b;
+  const label=isGrey?(step.ire+'%'):(step.name||'');
+  return !child||(child.dataset.key||'')!==meterStepNameKey(step)||(child.textContent||'')!==label;
+ });
+ if(needsRebuild){
   container.innerHTML='';
   meterThumbsBuilt=true;
   sortedSteps.forEach(step=>{
    const thumb=document.createElement('div');
    const isGrey=step.r===step.g&&step.g===step.b;
    const bgColor=meterPreviewColorForStep(step);
-   const textColor='#222';
+   const textColor=meterContrastTextColor(bgColor);
+   const textShadow=textColor==='#eee'?'0 1px 2px rgba(0,0,0,.75)':'0 1px 1px rgba(255,255,255,.18)';
    const label=isGrey?(step.ire+'%'):(step.name||'');
-   thumb.style.cssText='flex:1;display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 2px';
+   thumb.style.cssText='flex:1;display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 2px;text-shadow:'+textShadow;
    thumb.textContent=label;
    thumb.dataset.ire=step.ire;
    thumb.dataset.r=step.r;
