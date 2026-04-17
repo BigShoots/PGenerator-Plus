@@ -5841,7 +5841,7 @@ function meterRestoreSeriesFromCache(key){
 }
 
 function updateLiveReading(reading){
- if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_selectedColorReadingName&&Array.isArray(meterReadings)){
+ if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_colorDetailPinned&&_selectedColorReadingName&&Array.isArray(meterReadings)){
   const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName);
   if(selected) reading=selected;
  }
@@ -6625,10 +6625,12 @@ function drawAllCharts(readings){
    drawColorDeltaE2000Chart(cr);
    drawColorReadingsTable(cr);
    colorChartRegisterInteraction(cr);
-   // Re-show selected reading detail if any
-   if(_selectedColorReadingName){
+   if(_colorDetailPinned&&_selectedColorReadingName){
     const sel=cr.find(r=>r.name===_selectedColorReadingName);
-    if(sel) showColorReadingDetail(sel);
+    if(sel) showColorReadingDetail(sel,{pin:true});
+    else showColorReadingDetail(cr[cr.length-1],{pin:false});
+   } else {
+    showColorReadingDetail(cr[cr.length-1],{pin:false});
    }
   }
   return;
@@ -7260,15 +7262,19 @@ function getCIEGradient(chartW,chartH,pad){
 
 // Color reading detail box (beside CIE chart)
 let _selectedColorReadingName=null;
-function showColorReadingDetail(rd){
+let _colorDetailPinned=false;
+function showColorReadingDetail(rd,opts){
  const el=document.getElementById('colorDetailContent');
  if(!el) return;
  if(!rd){
   el.innerHTML='<div style="text-align:center;padding:30px 0;color:#555">Select a color<br>to see details</div>';
   _selectedColorReadingName=null;
+  _colorDetailPinned=false;
   return;
  }
+ const pin=!(opts&&opts.pin===false);
  _selectedColorReadingName=rd.name||null;
+ _colorDetailPinned=pin&&!!_selectedColorReadingName;
  updateLiveReading(rd);
  const inclLum=meterIncludeLum();
  const hasChroma=meterReadingHasChromaticity(rd);
