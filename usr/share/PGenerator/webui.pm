@@ -7937,19 +7937,30 @@ function meterCloseReportDialog(){
  if(overlay) overlay.style.display='none';
 }
 
+function meterReportCanvasImageHTML(cv){
+ if(!cv) return '';
+ const img=document.createElement('img');
+ try{ img.src=cv.toDataURL('image/png'); }catch(e){ img.src=''; }
+ img.alt='Chart image';
+ img.style.cssText='width:100%;display:block;background:#0d0d15;border-radius:8px';
+ return img.outerHTML;
+}
+
 function meterCloneReportNodeHTML(el){
  if(!el) return '';
+ if(el.matches&&el.matches('canvas')) return meterReportCanvasImageHTML(el);
  const clone=el.cloneNode(true);
- const sourceCanvases=el.matches&&el.matches('canvas')?[el]:el.querySelectorAll('canvas');
- const cloneCanvases=clone.matches&&clone.matches('canvas')?[clone]:clone.querySelectorAll('canvas');
+ const sourceCanvases=el.querySelectorAll('canvas');
+ const cloneCanvases=clone.querySelectorAll('canvas');
  sourceCanvases.forEach((cv,i)=>{
   const cloneCv=cloneCanvases[i];
   if(!cloneCv) return;
-  const img=document.createElement('img');
-  try{ img.src=cv.toDataURL('image/png'); }catch(e){ img.src=''; }
-  img.style.cssText='width:100%;display:block;background:#0d0d15;border-radius:8px';
-  cloneCv.replaceWith(img);
- });
+  const wrap=document.createElement('div');
+  wrap.innerHTML=meterReportCanvasImageHTML(cv);
+  const img=wrap.firstChild;
+  if(img) cloneCv.replaceWith(img);
+ }
+ );
  if(clone.querySelectorAll) clone.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
  if(clone.style) clone.style.display='';
  return clone.outerHTML||'';
