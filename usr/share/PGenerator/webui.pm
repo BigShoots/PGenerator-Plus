@@ -6172,7 +6172,7 @@ async function meterRunSeries(){
  const delay=parseInt(document.getElementById('meterDelay').value);
  const psize=getMeterPatchSize();
  const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,disable_aio:document.getElementById('meterDisableAIO').checked}),_timeoutMs:10000});
+  body:JSON.stringify({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,disable_aio:document.getElementById('meterDisableAIO').checked}),_timeoutMs:10000});
  if(!r||r.status!=='started'){
   toast(r&&r.message?r.message:'Failed to start series',true);
   meterSeriesRunning=false;
