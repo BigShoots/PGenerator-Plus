@@ -6688,6 +6688,37 @@ function drawGammaPreset(gsSteps){
  drawDots(ctx,chart,pts,'#33333380',3);
 }
 
+function drawGammaLegend(ctx,chart,targetLabel,avgText){
+ const y=chart.pad.t-4;
+ let x=chart.pad.l;
+ ctx.save();
+ ctx.font='11px sans-serif';
+ ctx.textAlign='left';
+ ctx.setLineDash([4,4]);
+ ctx.strokeStyle='#ffb74d';
+ ctx.lineWidth=2;
+ ctx.beginPath();
+ ctx.moveTo(x,y-3);
+ ctx.lineTo(x+18,y-3);
+ ctx.stroke();
+ ctx.setLineDash([]);
+ ctx.fillStyle='#ffb74d';
+ ctx.fillText('Target: '+targetLabel,x+24,y);
+ x+=132;
+ ctx.strokeStyle='#7ecbff';
+ ctx.beginPath();
+ ctx.moveTo(x,y-3);
+ ctx.lineTo(x+18,y-3);
+ ctx.stroke();
+ ctx.fillStyle='#7ecbff';
+ ctx.fillText('Measured',x+24,y);
+ if(avgText){
+  ctx.textAlign='right';
+  ctx.fillText(avgText,chart.pad.l+chart.w,y);
+ }
+ ctx.restore();
+}
+
 function drawGammaValuePreset(gsSteps){
  const ctx=getChartCtx('chartGammaValue');
  if(!ctx) return;
@@ -6712,8 +6743,7 @@ function drawGammaValuePreset(gsSteps){
  });
  if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
  drawDots(ctx,chart,tgtPts,'#ffb74d',3);
- ctx.fillStyle='#ffb74d';ctx.font='11px sans-serif';ctx.textAlign='right';
- ctx.fillText('Target: '+targetLabel,chart.pad.l+chart.w,chart.pad.t-4);
+ drawGammaLegend(ctx,chart,targetLabel,'');
 }
 
 function drawGammaValueChart(gs,allSteps,readingMap){
@@ -6777,15 +6807,12 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  drawDots(ctx,chart,tgtPts,'#ffb74d',2.5);
  if(mPts.length>1) drawLine(ctx,chart,mPts,'#7ecbff',2);
  drawDots(ctx,chart,mPts,'#7ecbff',3);
- ctx.font='11px sans-serif';
- ctx.textAlign='left';
- ctx.fillStyle='#ffb74d';
- ctx.fillText('Target: '+targetLabel,chart.pad.l,chart.pad.t-4);
+ let avgText='';
  if(mPts.length>0){
   const avg=measuredVals.reduce((s,v)=>s+v,0)/measuredVals.length;
-  ctx.fillStyle='#7ecbff';ctx.textAlign='right';
-  ctx.fillText('Avg: '+avg.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
+  avgText='Avg: '+avg.toFixed(2);
  }
+ drawGammaLegend(ctx,chart,targetLabel,avgText);
 }
 
 ///////////////////////////////////////////////
