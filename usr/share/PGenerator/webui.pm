@@ -5805,6 +5805,14 @@ function meterAttachSeriesMeta(readings){
  });
 }
 
+function meterReadingHasLuminance(rd){
+ return !!rd&&((rd.luminance!=null&&rd.luminance>=0)||(rd.Y!=null&&rd.Y>=0));
+}
+
+function meterReadingHasChromaticity(rd){
+ return !!rd&&rd.x!=null&&rd.y!=null&&rd.x>0&&rd.y>0;
+}
+
 function updateLiveReading(reading){
  document.getElementById('meterLiveReading').style.display='';
  document.getElementById('meterLum').textContent=reading.luminance!=null?reading.luminance.toFixed(2):'--';
@@ -7057,24 +7065,27 @@ function drawColorReadingsTable(readings){
  let html='';
  let deSum=0,deCount=0;
  readings.forEach(rd=>{
-  if(!rd.x||!rd.y||rd.Y<=0) return;
-  const tgt=meterTargetChromaticityForReading(rd);
-  const dx=rd.x-tgt.x, dy=rd.y-tgt.y;
+  if(!meterReadingHasLuminance(rd)) return;
+  const hasChroma=meterReadingHasChromaticity(rd);
+  const targetXYZ=meterTargetXYZForReading(rd);
+  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
+  const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
+  const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
   const pc=meterPreviewColorForReading(rd,'target');
   const de=meterColorDeltaE2000(rd,inclLum);
   deSum+=de;deCount++;
   const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
-  const dxCol=Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44';
-  const dyCol=Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44';
+  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
+  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
   html+='<tr data-name=\"'+(rd.name||'').replace(/"/g,'&quot;')+'\" style=\"border-bottom:1px solid #1a1a28;cursor:pointer\" onclick=\"colorTableRowClick(this)\">';
   html+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+pc+';vertical-align:middle;margin-right:5px"></span>'+(rd.name||'')+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+tgt.x.toFixed(4)+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+tgt.y.toFixed(4)+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right">'+rd.x.toFixed(4)+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right">'+rd.y.toFixed(4)+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right">'+(rd.Y||0).toFixed(1)+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right;color:'+dxCol+'">'+(dx>=0?'+':'')+dx.toFixed(4)+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right;color:'+dyCol+'">'+(dy>=0?'+':'')+dy.toFixed(4)+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.x.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.y.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.x.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.y.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;font-weight:600;color:'+deCol+'">'+de.toFixed(2)+'</td>';
   html+='</tr>';
  });
@@ -7098,7 +7109,7 @@ function drawColorSeriesAverages(readings,inclLum){
  const wrap=document.getElementById('colorSeriesAveragesWrap');
  const tbody=document.querySelector('#colorSeriesAveragesTable tbody');
  if(!wrap||!tbody) return;
- const valid=(readings||[]).filter(rd=>rd.x&&rd.y&&rd.Y>0);
+ const valid=(readings||[]).filter(rd=>meterReadingHasLuminance(rd));
  if(valid.length===0){wrap.style.display='none';return;}
  const isSat=(meterActiveSeriesType==='saturations');
  const groups={};
@@ -7110,11 +7121,13 @@ function drawColorSeriesAverages(readings,inclLum){
    key=sat&&sat.color?sat.color:(rd.name||'Other');
   }
   if(!groups[key]){groups[key]={de:[],dx:[],dy:[],Y:[],color:meterPreviewColorForReading(rd,'target')};order.push(key);}
-  const tgt=meterTargetChromaticityForReading(rd);
+  const tgt=meterReadingHasChromaticity(rd)?meterTargetChromaticityForReading(rd):null;
   groups[key].de.push(meterColorDeltaE2000(rd,inclLum));
-  groups[key].dx.push(Math.abs(rd.x-tgt.x));
-  groups[key].dy.push(Math.abs(rd.y-tgt.y));
-  groups[key].Y.push(rd.Y||0);
+  if(tgt){
+   groups[key].dx.push(Math.abs(rd.x-tgt.x));
+   groups[key].dy.push(Math.abs(rd.y-tgt.y));
+  }
+  groups[key].Y.push(rd.Y!=null?rd.Y:(rd.luminance||0));
  });
  const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0;
  const mx=a=>a.length?Math.max(...a):0;
@@ -7200,7 +7213,7 @@ let _selectedColorReadingName=null;
 function showColorReadingDetail(rd){
  const el=document.getElementById('colorDetailContent');
  if(!el) return;
- if(!rd||!rd.x||!rd.y){
+ if(!rd){
   el.innerHTML='<div style="text-align:center;padding:30px 0;color:#555">Select a color<br>to see details</div>';
   _selectedColorReadingName=null;
   return;
@@ -7208,14 +7221,17 @@ function showColorReadingDetail(rd){
  _selectedColorReadingName=rd.name||null;
  updateLiveReading(rd);
  const inclLum=meterIncludeLum();
- const tgt=meterTargetChromaticityForReading(rd);
+ const hasChroma=meterReadingHasChromaticity(rd);
+ const targetXYZ=meterTargetXYZForReading(rd);
+ const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
  const targetColor=meterPreviewColorForReading(rd,'target');
  const measuredColor=meterPreviewColorForReading(rd,'measured');
- const dx=rd.x-tgt.x, dy=rd.y-tgt.y;
+ const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
+ const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  const de=meterColorDeltaE2000(rd,inclLum);
  const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
- const dxCol=Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44';
- const dyCol=Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44';
+ const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
+ const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
  let h='<div style="margin-bottom:8px;text-align:center">';
  h+='<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:'+targetColor+';vertical-align:middle;margin-right:4px"></span>';
  h+='<span style="color:#eee;font-weight:600;font-size:12px">'+(rd.name||'')+'</span></div>';
@@ -7223,13 +7239,13 @@ function showColorReadingDetail(rd){
  h+='<div style="text-align:center"><div style="width:36px;height:24px;border-radius:3px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:8px;color:#555;margin-top:1px">Target</div></div>';
  h+='<div style="text-align:center"><div style="width:36px;height:24px;border-radius:3px;border:1px solid #333;background:'+measuredColor+'"></div><div style="font-size:8px;color:#555;margin-top:1px">Measured</div></div></div>';
  h+='<table style="width:100%;font-size:10px;border-collapse:collapse">';
- h+='<tr><td style="padding:2px 0;color:#666">Target x</td><td style="text-align:right;padding:2px 0;color:#aaa">'+tgt.x.toFixed(4)+'</td></tr>';
- h+='<tr><td style="padding:2px 0;color:#666">Target y</td><td style="text-align:right;padding:2px 0;color:#aaa">'+tgt.y.toFixed(4)+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:2px 0;color:#666">Meas. x</td><td style="text-align:right;padding:2px 0;color:#ccc">'+rd.x.toFixed(4)+'</td></tr>';
- h+='<tr><td style="padding:2px 0;color:#666">Meas. y</td><td style="text-align:right;padding:2px 0;color:#ccc">'+rd.y.toFixed(4)+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:2px 0;color:#666">Y cd/m\u00B2</td><td style="text-align:right;padding:2px 0;color:#ccc">'+(rd.Y||0).toFixed(1)+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:2px 0;color:#666">\u0394x</td><td style="text-align:right;padding:2px 0;color:'+dxCol+'">'+(dx>=0?'+':'')+dx.toFixed(4)+'</td></tr>';
- h+='<tr><td style="padding:2px 0;color:#666">\u0394y</td><td style="text-align:right;padding:2px 0;color:'+dyCol+'">'+(dy>=0?'+':'')+dy.toFixed(4)+'</td></tr>';
+ h+='<tr><td style="padding:2px 0;color:#666">Target x</td><td style="text-align:right;padding:2px 0;color:#aaa">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:2px 0;color:#666">Target y</td><td style="text-align:right;padding:2px 0;color:#aaa">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:2px 0;color:#666">Meas. x</td><td style="text-align:right;padding:2px 0;color:#ccc">'+(hasChroma?rd.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:2px 0;color:#666">Meas. y</td><td style="text-align:right;padding:2px 0;color:#ccc">'+(hasChroma?rd.y.toFixed(4):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:2px 0;color:#666">Y cd/m\u00B2</td><td style="text-align:right;padding:2px 0;color:#ccc">'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:2px 0;color:#666">\u0394x</td><td style="text-align:right;padding:2px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
+ h+='<tr><td style="padding:2px 0;color:#666">\u0394y</td><td style="text-align:right;padding:2px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:2px 0;color:#666;font-weight:600">\u0394E 2000</td><td style="text-align:right;padding:2px 0;color:'+deCol+';font-weight:700;font-size:13px">'+de.toFixed(2)+'</td></tr>';
  h+='</table>';
  el.innerHTML=h;
@@ -7293,7 +7309,7 @@ function colorChartRegisterInteraction(readings){
  if(deCanvas){
   const rect=deCanvas.getBoundingClientRect();
   const cW=rect.width;
-  const valid=readings.filter(rd=>rd.Y>0);
+  const valid=readings.filter(rd=>meterReadingHasLuminance(rd));
   const n=valid.length;
   if(n>0){
    const pad2={t:20,r:15,b:30,l:55};
@@ -7330,13 +7346,16 @@ function colorChartHandleHover(e,canvasId){
  const tip=document.getElementById('chartTooltip');
  if(!hit){tip.style.display='none';return;}
  const rd=hit.reading;
- const tgt=meterTargetChromaticityForReading(rd);
- const dx=rd.x-tgt.x, dy=rd.y-tgt.y;
+ const hasChroma=meterReadingHasChromaticity(rd);
+ const targetXYZ=meterTargetXYZForReading(rd);
+ const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
+ const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
+ const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  let html='<b>'+(rd.name||'')+'</b><br>';
- html+='Target: ('+tgt.x.toFixed(4)+', '+tgt.y.toFixed(4)+')<br>';
- html+='Measured: ('+rd.x.toFixed(4)+', '+rd.y.toFixed(4)+')<br>';
- html+='\u0394x: '+(dx>=0?'+':'')+dx.toFixed(4)+' &nbsp;\u0394y: '+(dy>=0?'+':'')+dy.toFixed(4)+'<br>';
- html+='Y: '+(rd.Y||0).toFixed(1)+' cd/m\u00B2';
+ html+='Target: '+(tgt?'('+tgt.x.toFixed(4)+', '+tgt.y.toFixed(4)+')':'--')+'<br>';
+ html+='Measured: '+(hasChroma?'('+rd.x.toFixed(4)+', '+rd.y.toFixed(4)+')':'--')+'<br>';
+ html+='\u0394x: '+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+' &nbsp;\u0394y: '+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'<br>';
+ html+='Y: '+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+' cd/m\u00B2';
  tip.innerHTML=html;
  tip.style.display='block';
  const tx=e.clientX+14, ty=e.clientY-10;
@@ -7466,7 +7485,7 @@ function drawColorDeltaE2000Chart(readings){
  if(lbl) lbl.textContent = inclLum ? 'ΔE 2000 (Color Accuracy + Luminance)' : 'ΔE 2000 (Color Accuracy, Chroma Only)';
  const deData=[];
  readings.forEach(rd=>{
-  if((rd.Y||0)<=0) return;
+  if(!meterReadingHasLuminance(rd)) return;
   deData.push({name:rd.name||'',de:meterColorDeltaE2000(rd,inclLum),color:meterPreviewColorForReading(rd,'target')});
  });
  if(deData.length===0) return;
