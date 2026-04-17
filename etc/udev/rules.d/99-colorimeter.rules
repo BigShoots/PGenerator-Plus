@@ -7,3 +7,5 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="0971", MODE="0666"
 SUBSYSTEM=="usb", ATTR{idVendor}=="085c", MODE="0666"
 # ColorVision Spyder
 SUBSYSTEM=="usb", ATTR{idVendor}=="04db", MODE="0666"
+# Sequel Chroma 5
+SUBSYSTEM=="usb", ATTR{idVendor}=="0670", MODE="0666"
