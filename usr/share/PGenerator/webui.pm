@@ -4788,6 +4788,7 @@ let meterSeriesPolling=null;
 let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
+let meterSeriesCache={};
 
 // D65 reference white chromaticity
 const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
@@ -5757,6 +5758,7 @@ function meterRecoverSeries(s){
  } else {
   drawAllChartsPreset(sortedSteps);
  }
+ meterCacheSeriesState(s.status||'complete');
  if(s.status==='running'){
   // Series is still running — start polling and show stop button
   meterSeriesRunning=true;
@@ -5813,7 +5815,36 @@ function meterReadingHasChromaticity(rd){
  return !!rd&&rd.x!=null&&rd.y!=null&&rd.x>0&&rd.y>0;
 }
 
+function meterCacheSeriesState(status){
+ if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
+ meterSeriesCache[meterActiveSeriesKey]={
+  type:meterActiveSeriesType,
+  points:meterActiveSeriesPoints,
+  steps:JSON.parse(JSON.stringify(meterSeriesSteps||[])),
+  readings:JSON.parse(JSON.stringify(meterReadings||[])),
+  status:status||(meterSeriesRunning?'running':'complete'),
+  series_id:meterSharedSeriesId||null
+ };
+}
+
+function meterRestoreSeriesFromCache(key){
+ const cached=meterSeriesCache[key];
+ if(!cached||!cached.steps||cached.steps.length===0) return false;
+ meterRecoverSeries({
+  series_id:cached.series_id||(cached.type+'_cached'),
+  status:cached.status||'complete',
+  total_steps:cached.steps.length,
+  steps:JSON.parse(JSON.stringify(cached.steps)),
+  readings:JSON.parse(JSON.stringify(cached.readings||[]))
+ });
+ return true;
+}
+
 function updateLiveReading(reading){
+ if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_selectedColorReadingName&&Array.isArray(meterReadings)){
+  const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName);
+  if(selected) reading=selected;
+ }
  document.getElementById('meterLiveReading').style.display='';
  document.getElementById('meterLum').textContent=reading.luminance!=null?reading.luminance.toFixed(2):'--';
  document.getElementById('meterCCT').textContent=reading.cct||'--';
@@ -5945,6 +5976,7 @@ async function meterReadOnce(){
     const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
     const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
     drawAllCharts(sorted);
+    meterCacheSeriesState('complete');
     const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
     meterBuildPatchThumbs(sortedSteps,completedIres,null);
    }
@@ -6055,6 +6087,7 @@ async function meterContinuousLoop(){
     const isColorL=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
     const sortedL=isColorL?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
     drawAllCharts(sortedL);
+    meterCacheSeriesState(meterContinuousActive?'running':'complete');
     const sortedStepsL=isColorL?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
     // Keep pulsing on whatever patch is CURRENTLY selected (user may have
     // clicked a different thumb while the read was in flight).
@@ -6199,6 +6232,13 @@ function meterSelectSeries(type,points){
   meterUpdateReadButtons();
   return;
  }
+ if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ if(meterRestoreSeriesFromCache(key)){
+  meterUpdateReadButtons();
+  return;
+ }
  // From this point the UI is operating on a local selection, not a
  // recovered shared series snapshot.
  meterSharedSeriesId=null;
@@ -6339,6 +6379,7 @@ async function meterPollSeries(){
    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
    const sorted=isColor?[...r.readings]:[...r.readings].sort((a,b)=>(a.ire||0)-(b.ire||0));
    drawAllCharts(sorted);
+   meterCacheSeriesState(r.status||'running');
   }
  }
 
@@ -7729,6 +7770,7 @@ function meterExportCSV(){
 let meterSharedSeriesId=null;
 
 function meterApplyClearedState(showToastMsg){
+ if(meterActiveSeriesKey) delete meterSeriesCache[meterActiveSeriesKey];
  meterReadings=[];
  meterWhiteReading=null;
  meterLastChartCount=0;
