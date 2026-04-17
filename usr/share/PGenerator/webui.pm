@@ -6236,6 +6236,12 @@ function meterSelectSeries(type,points){
  if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
   meterCacheSeriesState(meterSeriesRunning?'running':'complete');
  }
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ document.getElementById('meterLiveReading').style.display='none';
+ document.getElementById('meterProgress').style.display='none';
  if(meterRestoreSeriesFromCache(key)){
   meterUpdateReadButtons();
   return;
@@ -6246,8 +6252,6 @@ function meterSelectSeries(type,points){
  meterReadings=[];
  meterWhiteReading=null;
  meterSeriesSteps=null;
- meterCurrentPatchStep=null;
- meterSelectedThumbIre=null;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
  meterLastChartCount=0;
@@ -7783,6 +7787,8 @@ function meterApplyClearedState(showToastMsg){
  meterLastChartCount=0;
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
  document.getElementById('meterProgress').style.display='none';
  document.getElementById('meterLiveReading').style.display='none';
  document.getElementById('meterExportRow').style.display='none';
