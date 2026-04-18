@@ -116,12 +116,23 @@ while : ; do
 
  SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
-  # Honor CCSS file's DISPLAY_TYPE_REFRESH field to match HCFR behavior
-  CCSS_REFRESH=$(grep -i 'DISPLAY_TYPE_REFRESH' "$CCSS_FILE" 2>/dev/null | head -1)
+  # Read the actual DISPLAY_TYPE_REFRESH value line, not the KEYWORD declaration.
+  # If the field is missing, fall back to the CCSS metadata so OLED/Plasma/CRT
+  # profiles don't get treated like generic LCDs (or vice versa).
+  CCSS_REFRESH=$(grep -iE '^[[:space:]]*DISPLAY_TYPE_REFRESH[[:space:]]' "$CCSS_FILE" 2>/dev/null | head -1)
   if [[ "$CCSS_REFRESH" == *'"NO"'* ]]; then
    DISPLAY_TYPE="l"
   elif [[ "$CCSS_REFRESH" == *'"YES"'* ]]; then
    DISPLAY_TYPE="c"
+  else
+   CCSS_META=$(grep -iE '^[[:space:]]*(DISPLAY|TECHNOLOGY)[[:space:]]' "$CCSS_FILE" 2>/dev/null | tr '\n' ' ')
+   if [[ "$CCSS_META" =~ [Pp]rojector ]]; then
+    DISPLAY_TYPE="p"
+   elif [[ "$CCSS_META" =~ (OLED|Plasma|CRT) ]]; then
+    DISPLAY_TYPE="c"
+   else
+    DISPLAY_TYPE="l"
+   fi
   fi
   SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x"
  fi
