@@ -605,11 +605,12 @@ sub webui_http (@) {
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/update/check") {
-    # Run update check with a 10s cap to avoid blocking HTTP thread
+    # Allow more time here: the first check after boot may need DNS/TLS setup
+    # or a one-time clock sync before GitHub responds.
     my @args_b64=map { encode_base64($_,"") } ("BASH_CMD","PGPLUS_CHECK");
-    my $result=`timeout 10 env $pg_cmd_env="@args_b64" $sudo_cmd 2>/dev/null`;
+    my $result=`timeout 25 env $pg_cmd_env="@args_b64" $sudo_cmd 2>/dev/null`;
     chomp($result);
-    $result='{"status":"error","message":"Update check failed"}' if($result eq "" || $result!~/^\{/);
+    $result='{"status":"error","message":"Update check timed out — please try again in a few seconds"}' if($result eq "" || $result!~/^\{/);
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
@@ -5178,8 +5179,8 @@ async function loadInfoframes(){
 
 async function checkUpdate(){
  _updateChecked=true;
- document.getElementById('updateStatus').textContent='Checking...';
- const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:15000});
+ document.getElementById('updateStatus').textContent='Checking GitHub for updates...';
+ const r=await fetchJSON('/api/update/check',{_quiet:true,_timeoutMs:30000});
  if(!r||r.status==='error'){
   document.getElementById('updateStatus').textContent=r?r.message:'Check failed — no internet?';
   return;
