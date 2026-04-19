@@ -1,0 +1,109 @@
+name: Bug report
+description: Report a problem with PGenerator Plus
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue.
+
+        Please fill out the details below so the problem can be reproduced and fixed faster.
+
+  - type: input
+    id: version
+    attributes:
+      label: PGenerator Plus version
+      description: Example: 2.2.2
+      placeholder: 2.2.2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_type
+    attributes:
+      label: Installation type
+      options:
+        - Fresh image install
+        - OTA update
+        - Updated from an older version
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware details
+      description: Raspberry Pi model, display device, capture path, adapter, etc.
+      placeholder: Raspberry Pi 4B 2GB, LG C2, HDMI direct
+    validations:
+      required: true
+
+  - type: input
+    id: meter
+    attributes:
+      label: Meter used
+      description: If applicable
+      placeholder: i1Display Pro Plus
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Web UI
+        - Pattern output
+        - Meter detection / readings
+        - OTA update
+        - Network discovery / control
+        - Dolby Vision / HDR / HLG
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      placeholder: Describe the bug clearly and briefly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Change ...
+        3. Start ...
+        4. See error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: Describe the expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or extra context
+      description: Paste any console output, update log details, screenshots, or API responses here.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues first
+          required: true
+        - label: I included the version and hardware details above
+          required: true
