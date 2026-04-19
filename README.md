@@ -8,9 +8,9 @@ A Raspberry Pi–based HDMI test pattern generator for display calibration. PGen
 
 Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto.
 
-## v2.2.1 Highlights
+## v2.2.2 Highlights
 
-Version `2.2.1` adds direct meter integration and expands PGenerator+ from a network-controlled pattern generator into a simple Pi-hosted calibration tool. In this release, the device can drive patterns, talk directly to supported USB colorimeters, run on-device measurement series, and display live charts and Delta E results from the Web UI.
+Version `2.2.2` focuses on polish and reliability for the new on-device calibration workflow. This release improves meter chart math, thumbnail and plot interaction behavior, report layout, startup defaults, and general WebUI stability while keeping the integrated meter-driven workflow introduced in the 2.2.x series.
 
 ## Installation & Updates
 
@@ -89,7 +89,7 @@ Important limitations:
 - This is an overlay build, not a full from-scratch distro build.
 - The base image must already be a compatible BiasiLinux/PGenerator image with the expected distro dependencies, `pgenerator` account, and sudoers setup.
 - The `PGeneratord` and `PGeneratord.dv` binaries are prebuilt and are taken from this repository as-is.
-- The `2.2.1` image/runtime uses a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`; this repository now includes that runtime binary alongside the integration wrappers, CCSS assets, udev rules, and web integration rather than the upstream ArgyllCMS source tree.
+- The `2.2.2` image/runtime uses a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`; this repository now includes that runtime binary alongside the integration wrappers, CCSS assets, udev rules, and web integration rather than the upstream ArgyllCMS source tree.
 - Before publishing or flashing a test image, make sure transient runtime state is cleared so the image is fresh. In particular, do not ship old meter/session artifacts, and confirm [etc/PGenerator/PGenerator.conf](etc/PGenerator/PGenerator.conf) is back on the default SDR 1080p RGB 8-bit profile.
 - The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
 
@@ -290,14 +290,14 @@ Manage the device directly from the interface:
 The current Web UI includes an integrated measurement workflow built around ArgyllCMS `spotread`:
 
 - **USB Meter Detection:** Detects supported colorimeters attached over USB and reports whether `spotread` is available.
-- **Calibration Tool Workflow:** In `2.2.1`, PGenerator+ can be used as a simple calibration tool on the Pi itself, not just as a remote patch source.
+- **Calibration Tool Workflow:** In `2.2.2`, PGenerator+ can be used as a simple calibration tool on the Pi itself, not just as a remote patch source.
 - **Persistent Read Sessions:** Uses a long-lived meter session so repeated reads avoid paying the full meter initialization cost every time.
 - **Interactive Measurements:** Supports both **Read Once** and **Continuous** live reading modes from the dashboard.
 - **Series Runs:** Built-in measurement series for **Greyscale 21pt**, **Greyscale 11pt**, **Colors 30**, and **Saturation Sweep 24**.
 - **Patch Controls:** Configurable settle delay, patch size, optional APL windows, refresh-rate override, OLED pattern insertion, and optional i1D3 AIO disable.
 - **On-Device Charts:** Displays live luminance, CCT, chromaticity, RGB balance, luminance tracking, and both CIELUV and CIEDE2000 Delta E charts in the browser.
 - **Supported Colorimeters:** Calibrite/X-Rite i1Display Pro Plus, X-Rite i1 Pro, X-Rite i1 Display Pro / ColorMunki Display, Datacolor Spyder 5, Datacolor SpyderX, ColorVision Spyder, and Sequel Chroma 5.
-- **Included ArgyllCMS Runtime:** The `2.2.1` source tree and Pi image include a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`, with `spotread_wrapper.sh`, `spotread_measure.py`, `meter_session.sh`, and `meter_series.sh` providing the Pi-side automation layer.
+- **Included ArgyllCMS Runtime:** The `2.2.2` source tree and Pi image include a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`, with `spotread_wrapper.sh`, `spotread_measure.py`, `meter_session.sh`, and `meter_series.sh` providing the Pi-side automation layer.
 - **Driver Model:** Meter support uses the standard Linux USB/HID stack plus bundled udev permission rules; no extra proprietary driver packages or out-of-tree kernel modules are required.
 
 #### CCSS Profile Management
@@ -435,11 +435,11 @@ usr/
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.2.1`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.2.2`) and product name (`PGenerator+`) |
 
 ### Meter Runtime Notes
 
-- The `2.2.1` source tree and runtime include the prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`.
+- The `2.2.2` source tree and runtime include the prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`.
 - The Web UI launches meter helpers through sudo using the rules in `etc/sudo/sudoers.d/PGenerator`.
 - USB permissions for supported meter vendors are provided by `etc/udev/rules.d/99-colorimeter.rules`, including X-Rite/Calibrite, Datacolor, ColorVision, and Sequel devices.
 - Supported USB meter models are: Calibrite/X-Rite i1Display Pro Plus, X-Rite i1 Pro, X-Rite i1 Display Pro / ColorMunki Display, Datacolor Spyder 5, Datacolor SpyderX, ColorVision Spyder, and Sequel Chroma 5.
