@@ -7,7 +7,7 @@
 # patch series; this is the per-patch equivalent for ad-hoc reads.
 #
 # Usage:
-#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [idle_timeout]
+#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [idle_timeout]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
 #   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms]
@@ -26,7 +26,9 @@ DISPLAY_TYPE="${1:-l}"
 CCSS_FILE="${2:-}"
 REFRESH_RATE="${3:-}"
 DISABLE_AIO="${4:-0}"
-IDLE_TIMEOUT="${5:-300}"
+SIGNAL_MODE_DEFAULT="${5:-sdr}"
+MAX_LUMA_DEFAULT="${6:-1000}"
+IDLE_TIMEOUT="${7:-300}"
 
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
@@ -66,22 +68,24 @@ find_port() {
   local cached age
   cached=$(cat "$cache" 2>/dev/null)
   age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
-  if (( age < 1800 )) && [[ -n "$cached" ]]; then
+  if (( age < 1800 )) && [[ "$cached" =~ ^[0-9]+$ ]]; then
    echo "$cached"
    return
   fi
  fi
  local help_out
  help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
- local port_num="1"
+ local port_num=""
  while IFS= read -r line; do
   if [[ "$line" =~ ^[[:space:]]+([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/ ]]; then
    port_num="${BASH_REMATCH[1]}"
    break
   fi
  done <<< "$help_out"
- echo "$port_num" > "$cache"
- sleep 2
+ if [[ -n "$port_num" ]]; then
+  echo "$port_num" > "$cache"
+  sleep 2
+ fi
  echo "$port_num"
 }
 
@@ -134,7 +138,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-PORT_NUM=$(find_port)
+PORT_NUM=""
+for _try in 1 2 3; do
+ PORT_NUM=$(find_port)
+ [[ -n "$PORT_NUM" ]] && break
+ sleep 2
+done
+if [[ -z "$PORT_NUM" ]]; then
+ log "meter failed to enumerate during session startup"
+ write_state '{"status":"error","message":"Meter init failed"}'
+ exit 1
+fi
 OUTFILE="$TMPDIR/spotread_session_$$"
 CMDPIPE="$TMPDIR/spotread_cmd_$$"
 rm -f "$OUTFILE" "$CMDPIPE"
@@ -169,9 +183,10 @@ cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
 BG_PID=$!
 exec 3>"$CMDPIPE"
 
-# Wait for spotread prompt
+# Wait for spotread prompt. Allow up to 60 s on a cold boot so the first
+# manual read after a Pi restart doesn't fail during slow USB bring-up.
 WAITED=0
-while (( WAITED < 300 )); do
+while (( WAITED < 600 )); do
  grep -q "to take a reading:" "$OUTFILE" 2>/dev/null && break
  sleep 0.1
  WAITED=$((WAITED + 1))
@@ -183,31 +198,25 @@ if ! grep -q "to take a reading:" "$OUTFILE" 2>/dev/null; then
 fi
 log "spotread ready in $((WAITED / 10))s"
 
-# Refresh-rate calibration prompt (CRT/OLED). Display white, send space, wait.
-CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-if echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
- log "performing refresh-rate calibration"
- curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d '{"name":"patch","r":255,"g":255,"b":255,"size":100,"input_max":255}' >/dev/null 2>&1
- sleep 1.5
- INITIAL_PROMPTS=$(echo "$CLEAN_OUT" | grep -c "to take a reading:")
- printf " " >&3
- CAL_WAIT=0
- while (( CAL_WAIT < 300 )); do
-  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-  CUR_PROMPTS=$(echo "$CLEAN_OUT" | grep -c "to take a reading:")
-  (( CUR_PROMPTS > INITIAL_PROMPTS )) && break
-  sleep 0.1
-  CAL_WAIT=$((CAL_WAIT + 1))
- done
-fi
-
-# Setup command FIFO. Open both ends so 'read' won't return EOF when external
-# writers close their write end.
+# Set up the command FIFO immediately so the WebUI can see a live session and
+# queue a READ even if spotread spends a few seconds in one-time refresh calibration.
 rm -f "$CMD_FIFO"
 mkfifo "$CMD_FIFO"
 chmod 666 "$CMD_FIFO"
 exec 4<>"$CMD_FIFO"
+
+# Refresh-rate calibration prompt (CRT/OLED). Display white, send a key once,
+# then continue — some spotread builds redraw the same prompt instead of adding
+# a second prompt line, so waiting for the prompt count to increase can deadlock.
+CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+if echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+ log "performing refresh-rate calibration"
+ timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE_DEFAULT\",\"max_luma\":$MAX_LUMA_DEFAULT}" >/dev/null 2>&1 || true
+ sleep 2
+ printf " " >&3
+ sleep 2
+fi
 
 log "command loop ready"
 
@@ -217,12 +226,14 @@ LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE=""
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
   READ\ *)
-   # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS]
-   read -r _ R G B PSIZE IRE NAME SETTLE_MS <<< "$line"
+   # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA]
+   read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
    [[ -z "$SETTLE_MS" ]] && SETTLE_MS=0
+   [[ -z "$SIGNAL_MODE" ]] && SIGNAL_MODE="$SIGNAL_MODE_DEFAULT"
+   [[ -z "$MAX_LUMA" ]] && MAX_LUMA="$MAX_LUMA_DEFAULT"
 
    # Mark measuring so the polling endpoint knows a read is in flight.
    write_state '{"status":"measuring"}'
@@ -232,7 +243,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    # while still settling correctly when the user picks a different patch.
    if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" ]]; then
     curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-     -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PSIZE,\"input_max\":255}" >/dev/null 2>&1
+     -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PSIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
     if (( SETTLE_MS > 0 )); then
      SETTLE_SEC=$(awk "BEGIN{printf \"%.3f\", $SETTLE_MS/1000.0}")
      sleep "$SETTLE_SEC"
@@ -255,11 +266,19 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    (( IRE <= 5 )) && READ_TIMEOUT=25
    READ_START=$SECONDS
    GOT_RESULT=false
+   RETRIED_COMM=0
    while (( SECONDS - READ_START < READ_TIMEOUT )); do
     CUR_COUNT=$(count_results)
     if (( CUR_COUNT > PREV_COUNT )); then
      GOT_RESULT=true
      break
+    fi
+    CLEAN_NOW=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+    if [[ $RETRIED_COMM -eq 0 && "$CLEAN_NOW" == *"Spot read failed due to communication problem"* ]]; then
+     log "spotread communication problem during read - retrying once"
+     printf " " >&3
+     RETRIED_COMM=1
+     READ_TIMEOUT=$((READ_TIMEOUT + 15))
     fi
     sleep 0.1
    done
