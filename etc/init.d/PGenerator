@@ -17,6 +17,13 @@ FB0_BLANK_FILE="/sys/class/graphics/fb0/blank"
 case "$1" in
     start)
         echo -n "Starting $PROGRAM_NAME..."
+        # Self-heal privileged command access after OTA installs. If a prior
+        # archive left the sudoers include with the wrong mode/owner, meter
+        # detection, reboot, and update actions from the WebUI will fail.
+        chown root.root /etc/sudo /etc/sudo/sudoers.d /etc/sudo/sudoers.d/PGenerator 2>/dev/null
+        chmod 755 /etc/sudo /etc/sudo/sudoers.d 2>/dev/null
+        chmod 440 /etc/sudo/sudoers.d/PGenerator 2>/dev/null
+        chmod +x /usr/sbin/pgenerator-update /usr/bin/spotread /usr/bin/spotread_wrapper.sh /usr/bin/meter_session.sh /usr/bin/meter_series.sh 2>/dev/null
         if [ ! -d "$PGENERATOR_PID_DIR" ]; then
          mkdir $PGENERATOR_PID_DIR
         fi
