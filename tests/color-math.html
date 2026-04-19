@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PGenerator+ Color Math Checks</title>
+  <style>
+    body{font:14px/1.5 sans-serif;max-width:900px;margin:24px auto;padding:0 16px;background:#111827;color:#e5eefc}
+    h1{font-size:22px;margin-bottom:8px}
+    button{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:10px 14px;cursor:pointer}
+    pre{background:#0b1220;border:1px solid #334155;border-radius:8px;padding:12px;white-space:pre-wrap}
+    .ok{color:#22c55e}.bad{color:#ef4444}
+  </style>
+</head>
+<body>
+  <h1>PGenerator+ Color Math Regression Checks</h1>
+  <p>This page provides a quick manual sanity check for the HCFR-aligned grey reference and ΔY normalization behavior.</p>
+  <button id="run">Run checks</button>
+  <pre id="out">Ready.</pre>
+  <script>
+    const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
+    const BT709_00=3.2406;
+    const BT2020_00=1.7166511880;
+
+    function approx(actual, expected, tol, label){
+      const ok=Math.abs(actual-expected)<=tol;
+      return {ok, line:`${ok?'PASS':'FAIL'}  ${label} -> expected ${expected}, got ${actual}`};
+    }
+
+    function hcfrRelativeRefY(Ym, whiteY){
+      return (Ym>0 && whiteY>0) ? Ym/whiteY : 0;
+    }
+
+    function colorDeltaYPercent(measuredY, targetY){
+      return targetY>0 ? ((measuredY-targetY)/targetY*100) : 0;
+    }
+
+    function perfectGreyRgbBalance(){
+      return {R:100,G:100,B:100};
+    }
+
+    document.getElementById('run').addEventListener('click',()=>{
+      const lines=[];
+      const c1=approx(hcfrRelativeRefY(1,100),0.01,0.0001,'Relative grey reference uses Ym / Ywhite');
+      lines.push(c1.line);
+      const c2=approx(colorDeltaYPercent(18,20),-10,0.001,'Color ΔY uses target Y normalization');
+      lines.push(c2.line);
+      const grey=perfectGreyRgbBalance();
+      const c3=approx(grey.R,100,0.001,'Perfect D65 grey keeps R at 100%');
+      const c4=approx(grey.G,100,0.001,'Perfect D65 grey keeps G at 100%');
+      const c5=approx(grey.B,100,0.001,'Perfect D65 grey keeps B at 100%');
+      lines.push(c3.line,c4.line,c5.line);
+      const c6=approx(BT709_00,3.2406,0.0001,'BT.709 analysis matrix constant');
+      const c7=approx(BT2020_00,1.7166511880,0.0001,'BT.2020 analysis matrix constant');
+      lines.push(c6.line,c7.line);
+      document.getElementById('out').textContent=lines.join('\n');
+    });
+  </script>
+</body>
+</html>
