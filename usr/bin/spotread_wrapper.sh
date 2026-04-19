@@ -26,6 +26,14 @@ declare -A KNOWN_METERS=(
  ["0670:0001"]="Sequel Chroma 5"
 )
 
+ensure_runtime_exec() {
+ local f
+ for f in /usr/bin/spotread /usr/bin/spotread_wrapper.sh /usr/bin/meter_session.sh /usr/bin/meter_series.sh /usr/bin/spotread_measure.py; do
+  [[ -e "$f" ]] || continue
+  [[ -x "$f" ]] || chmod +x "$f" 2>/dev/null || true
+ done
+}
+
 kill_stale() {
  # Kill any stale spotread/script/wrapper processes from previous reads
  # Must run as root to kill root-owned processes
@@ -49,6 +57,7 @@ kill_stale() {
 }
 
 detect_meter() {
+ ensure_runtime_exec
  local found=false name="" usb_id="" port=""
  while IFS= read -r line; do
   local id
@@ -105,6 +114,7 @@ find_port() {
 }
 
 take_readings() {
+ ensure_runtime_exec
  local display_type="$1" count="$2" timeout_per="$3" ccss_file="$4"
  local port_num
  port_num=$(find_port)
