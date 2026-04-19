@@ -8,12 +8,6 @@ A Raspberry Pi–based HDMI test pattern generator for display calibration. PGen
 
 Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto.
 
-## Support the Project
-
-If you'd like to support ongoing development, you can buy me a coffee here:
-
-[☕ Buy Me a Coffee](https://buymeacoffee.com/bigshoots)
-
 ## v2.2.2 Highlights
 
 Version `2.2.2` focuses on polish and reliability for the new on-device calibration workflow. This release improves meter chart math, thumbnail and plot interaction behavior, report layout, startup defaults, and general WebUI stability while keeping the integrated meter-driven workflow introduced in the 2.2.x series.
@@ -549,6 +543,12 @@ PGenerator+ is built on [PGenerator](https://github.com/Biasiolo/PGenerator) by 
 PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDNS discovery, HDMI-CEC control, OTA updates via GitHub Releases, Calman 10-bit pattern support, validated Pi-side Calman window/APL handling (`RGB_S`, `RGB_A`, `CommandRGB`, `10_SIZE`, `11_APL`), outbound Resolve client mode, integrated meter workflows via ArgyllCMS `spotread`, bundled and custom CCSS profile management, stock-hostname discovery branding as `PGenerator+`, automatic bit depth management for HDR/SDR mode switching, and various stability improvements.
 
 ---
+
+## Support the Project
+
+If you'd like to support ongoing development, you can buy me a coffee here:
+
+[☕ Buy Me a Coffee](https://buymeacoffee.com/bigshoots)
 
 ## License
 
