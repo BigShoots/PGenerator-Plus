@@ -693,7 +693,7 @@ sub get_cmd_generic(@) {
   $response=~s/gpu=//g;
  }
  if($cmd eq "GET_BOOT_MEMORY") {
-  my $gpu="64";
+  my $gpu="128";
   my $cma="default";
   if(open(my $fh,"<",$bootloader_file)) {
    while(<$fh>) {
