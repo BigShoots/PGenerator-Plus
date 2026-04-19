@@ -97,6 +97,24 @@ sub webui_mdns_read_name (@) {
  return ("",$next_offset,0);
 }
 
+sub webui_mdns_build_a_response (@) {
+ my $mdns_hostname=shift;
+ my $best_ip=shift;
+ return "" if($mdns_hostname eq "" || $best_ip eq "");
+ my $resp=pack("n",0);           # ID=0 for mDNS
+ $resp.=pack("n",0x8400);        # flags: QR=1, AA=1
+ $resp.=pack("nnnn",0,1,0,0);
+ foreach my $label (split(/\./,"$mdns_hostname.local")) {
+  $resp.=pack("C",length($label)).$label;
+ }
+ $resp.=pack("C",0);
+ $resp.=pack("nn",1,0x8001);
+ $resp.=pack("N",120);
+ $resp.=pack("n",4);
+ $resp.=Socket::inet_aton($best_ip);
+ return $resp;
+}
+
 ###############################################
 #              mDNS Responder                 #
 ###############################################
@@ -150,6 +168,14 @@ sub webui_mdns (@) {
    if($joined) {
     $mdns_joined{$key}=1;
     &log("mDNS: joined multicast on $route->{iface} ($route->{ip})");
+    my $announce=&webui_mdns_build_a_response($mdns_hostname,$route->{ip});
+    if($announce ne "") {
+     my $IP_MULTICAST_IF=eval { Socket::IP_MULTICAST_IF() } || 32;
+     setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_IF, Socket::inet_aton($route->{ip}));
+     my $mcast_dest=Socket::sockaddr_in($MDNS_PORT, Socket::inet_aton($MDNS_ADDR));
+     send($sock, $announce, 0, $mcast_dest);
+     &log("mDNS: announced $mdns_hostname.local -> $route->{ip}");
+    }
    } else {
     &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $!");
    }
@@ -209,18 +235,8 @@ sub webui_mdns (@) {
   my $best_ip=&webui_mdns_best_ip($querier_ip);
   next if($best_ip eq "");
 
-  my $resp=pack("n",0);           # ID=0 for mDNS
-  $resp.=pack("n",0x8400);        # flags: QR=1, AA=1
-  $resp.=pack("nnnn",0,1,0,0);
-
-  foreach my $label (split(/\./,"$mdns_hostname.local")) {
-   $resp.=pack("C",length($label)).$label;
-  }
-  $resp.=pack("C",0);
-  $resp.=pack("nn",1,0x8001);
-  $resp.=pack("N",120);
-  $resp.=pack("n",4);
-  $resp.=Socket::inet_aton($best_ip);
+  my $resp=&webui_mdns_build_a_response($mdns_hostname,$best_ip);
+  next if($resp eq "");
 
   my $IP_MULTICAST_IF=eval { Socket::IP_MULTICAST_IF() } || 32;
   setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_IF, Socket::inet_aton($best_ip));
@@ -1408,6 +1424,10 @@ sub webui_meter_settings_load (@) {
  $peak=1000 if(!defined $peak || $peak eq "");
  my $min=$pgenerator_conf{"min_luma"};
  $min=0.005 if(!defined $min || $min eq "");
+ my $boot_id=`cat /proc/sys/kernel/random/boot_id 2>/dev/null`;
+ chomp($boot_id);
+ $boot_id=~s/[^A-Za-z0-9_-]//g;
+ $boot_id="boot_".time() if($boot_id eq "");
  foreach my $path ($_meter_settings_file, $_meter_settings_persist) {
   next unless(-f $path);
   my $json="";
@@ -1415,16 +1435,17 @@ sub webui_meter_settings_load (@) {
   if($json ne "" && $json=~/^\{/) {
    $json=~s/,?\s*"hdr_master_peak"\s*:\s*"[^"]*"//g;
    $json=~s/,?\s*"hdr_master_min"\s*:\s*"[^"]*"//g;
+   $json=~s/,?\s*"boot_id"\s*:\s*"[^"]*"//g;
    $json=~s/\{\s*,/\{/g;
    $json=~s/,\s*,/,/g;
    $json=~s/,\s*\}/}/g;
    $json=~s/\s*\}\s*$//;
    $json.="," if($json!~/\{\s*$/);
-   $json.="\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\"}";
+   $json.="\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\",\"boot_id\":\"$boot_id\"}";
    return $json;
   }
  }
- return "{\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\"}";
+ return "{\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\",\"boot_id\":\"$boot_id\"}";
 }
 
 ###############################################
@@ -4053,6 +4074,12 @@ async function loadConfig(quiet){
  applyConfigState(loadedConfig);
 }
 
+function normalizeColorimetryValue(value,signalMode){
+ const val=String(value==null?'':value);
+ if(val==='2'||val==='9') return val;
+ return signalMode==='sdr'?'2':'9';
+}
+
 function applyConfigState(nextConfig){
  config=nextConfig;
  window._remoteConfigSnapshot=JSON.stringify(nextConfig);
@@ -4066,7 +4093,7 @@ function applyConfigState(nextConfig){
  setVal('signal_mode',sm);
  setVal('max_bpc',config.max_bpc||'8');
  setVal('color_format',config.color_format||'0');
- setVal('colorimetry',config.colorimetry||'0');
+ setVal('colorimetry',normalizeColorimetryValue(config.colorimetry,sm));
  setVal('rgb_quant_range',config.rgb_quant_range||'0');
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
@@ -5157,22 +5184,52 @@ let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
 let meterSeriesCache={};
+let meterSeriesCacheBootId='';
+
+function meterSeriesCacheKey(name){
+ const scope=(meterSeriesCacheBootId&&String(meterSeriesCacheBootId).trim())?String(meterSeriesCacheBootId).trim():'global';
+ return 'pgen.meter.'+scope+'.'+name;
+}
+
+function meterSetSeriesCacheBootId(bootId){
+ bootId=(bootId==null?'':String(bootId)).replace(/[^A-Za-z0-9_-]/g,'');
+ if(!bootId) bootId='global';
+ if(meterSeriesCacheBootId===bootId) return;
+ meterSeriesCacheBootId=bootId;
+ meterSeriesCache={};
+ try{
+  const markerKey='pgen.meter.seriesCache.bootId';
+  const prev=localStorage.getItem(markerKey)||'';
+  if(prev!==bootId){
+   localStorage.removeItem('pgen.meter.seriesCache');
+   localStorage.removeItem('pgen.meter.lastSeriesKey');
+   Object.keys(localStorage).forEach(k=>{
+    if(k && k.indexOf('pgen.meter.')===0 && (k.endsWith('.seriesCache') || k.endsWith('.lastSeriesKey'))) {
+     localStorage.removeItem(k);
+    }
+   });
+  }
+  localStorage.setItem(markerKey,bootId);
+ }catch(e){}
+}
 
 function meterPersistSeriesCache(){
+ if(!meterSeriesCacheBootId) return;
  try{
-  localStorage.setItem('pgen.meter.seriesCache',JSON.stringify(meterSeriesCache||{}));
+  localStorage.setItem(meterSeriesCacheKey('seriesCache'),JSON.stringify(meterSeriesCache||{}));
   const keepKey=(meterActiveSeriesKey&&meterSeriesCache[meterActiveSeriesKey])?meterActiveSeriesKey:'';
-  if(keepKey) localStorage.setItem('pgen.meter.lastSeriesKey',keepKey);
+  if(keepKey) localStorage.setItem(meterSeriesCacheKey('lastSeriesKey'),keepKey);
   else {
-   const prev=localStorage.getItem('pgen.meter.lastSeriesKey')||'';
-   if(!prev || !meterSeriesCache[prev]) localStorage.removeItem('pgen.meter.lastSeriesKey');
+   const prev=localStorage.getItem(meterSeriesCacheKey('lastSeriesKey'))||'';
+   if(!prev || !meterSeriesCache[prev]) localStorage.removeItem(meterSeriesCacheKey('lastSeriesKey'));
   }
  }catch(e){}
 }
 
 function meterLoadSeriesCache(){
+ if(!meterSeriesCacheBootId) return;
  try{
-  const raw=localStorage.getItem('pgen.meter.seriesCache');
+  const raw=localStorage.getItem(meterSeriesCacheKey('seriesCache'));
   if(!raw) return;
   const parsed=JSON.parse(raw)||{};
   if(parsed&&typeof parsed==='object') meterSeriesCache=parsed;
@@ -5180,9 +5237,9 @@ function meterLoadSeriesCache(){
 }
 
 function meterRestoreLatestPersistedSeries(){
- if(meterActiveSeriesKey) return false;
+ if(!meterSeriesCacheBootId || meterActiveSeriesKey) return false;
  meterLoadSeriesCache();
- const lastKey=(function(){ try{return localStorage.getItem('pgen.meter.lastSeriesKey')||'';}catch(e){return '';} })();
+ const lastKey=(function(){ try{return localStorage.getItem(meterSeriesCacheKey('lastSeriesKey'))||'';}catch(e){return '';} })();
  if(lastKey && meterSeriesCache[lastKey]) return meterRestoreSeriesFromCache(lastKey);
  return false;
 }
@@ -9722,8 +9779,8 @@ function meterBuildCurrentSeriesReportSection(title){
   html+=meterBuildGreyscaleReportTable();
  } else {
   html+='<div class="report-grid report-grid-charts">';
-  html+=meterBuildReportChartCard('CIE 1931 Chromaticity',document.getElementById('chartCIE'));
-  html+=meterBuildReportChartCard(document.getElementById('chartColorDELabel')?document.getElementById('chartColorDELabel').textContent:'ΔE 2000 (Color Accuracy)',document.getElementById('chartColorDE'));
+  html+=meterBuildReportChartCard('CIE 1931 Chromaticity',document.getElementById('chartCIE'),'report-span-full');
+  html+=meterBuildReportChartCard(document.getElementById('chartColorDELabel')?document.getElementById('chartColorDELabel').textContent:'ΔE 2000 (Color Accuracy)',document.getElementById('chartColorDE'),'report-span-full');
   html+='</div>';
   const avgWrap=document.getElementById('colorSeriesAveragesWrap');
   if(avgWrap&&getComputedStyle(avgWrap).display!=='none') html+='<div class="report-table-card">'+meterCloneReportNodeHTML(avgWrap)+'</div>';
@@ -10233,13 +10290,14 @@ function saveMeterSettings(){
 }
 async function loadMeterSettings(){
  if(meterCcssOptionsPromise) await meterCcssOptionsPromise;
- const s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000});
+ const s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000})||{};
+ try{ meterSetSeriesCacheBootId(s.boot_id||''); }catch(e){}
  // Apply any locally-cached color prefs first — server values below will
  // overwrite them on first sync, but this keeps the UI warm during a brief
  // daemon outage.
  try{ meterLoadColorPrefs(); }catch(e){}
  try{ meterRestoreLatestPersistedSeries(); }catch(e){}
- if(!s||!s.display_type) return;
+ if(!s.display_type) return;
  const setVal=(id,val,def)=>{ if(val==null) return; const e=document.getElementById(id); if(!e) return; e.value=(val===''&&def!=null)?def:val; };
  const setChk=(id,val)=>{ if(val==null) return; const e=document.getElementById(id); if(!e) return; e.checked=(val===true||val==='1'||val===1); };
  if(s.display_type){
