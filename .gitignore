@@ -5,6 +5,7 @@
 *.7z.*
 *.so
 Backup/
+v2.1/
 docs/
 tools/dv_helper
 tools/read_csc
