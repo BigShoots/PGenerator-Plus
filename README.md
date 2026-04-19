@@ -90,6 +90,7 @@ Important limitations:
 - The base image must already be a compatible BiasiLinux/PGenerator image with the expected distro dependencies, `pgenerator` account, and sudoers setup.
 - The `PGeneratord` and `PGeneratord.dv` binaries are prebuilt and are taken from this repository as-is.
 - The `2.2.1` image/runtime uses a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`; this repository now includes that runtime binary alongside the integration wrappers, CCSS assets, udev rules, and web integration rather than the upstream ArgyllCMS source tree.
+- Before publishing or flashing a test image, make sure transient runtime state is cleared so the image is fresh. In particular, do not ship old meter/session artifacts, and confirm [etc/PGenerator/PGenerator.conf](etc/PGenerator/PGenerator.conf) is back on the default SDR 1080p RGB 8-bit profile.
 - The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
 
 ### Building the Renderer Binary from Source
