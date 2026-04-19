@@ -246,6 +246,14 @@ overlay_tree() {
  done
 }
 
+reset_runtime_state() {
+ log "Resetting transient runtime state for a fresh image"
+ rm -f "$ROOT_MOUNT/usr/share/PGenerator/meter_settings.json"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/running/tmp"
+ find "$ROOT_MOUNT/var/lib/PGenerator/running" -mindepth 1 -maxdepth 1 ! -name 'tmp' -exec rm -rf {} + 2>/dev/null || true
+ : > "$ROOT_MOUNT/var/lib/PGenerator/operations.txt"
+}
+
 finalize_image() {
  sync
  log "Build complete: $OUTPUT_IMAGE"
@@ -266,6 +274,7 @@ main() {
  mount_root_partition
  check_base_image
  overlay_tree
+ reset_runtime_state
  finalize_image
 }
 
