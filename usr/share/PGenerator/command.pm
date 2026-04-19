@@ -153,8 +153,15 @@ sub pattern_generator_start(@) {
  my $use_drm_override=1;
  my $has_dovi_metadata=1;
  &clean_files() if(!$no_clean_files);
- symlink("running/operations.txt","$var_dir/operations.txt") if(!-l "$var_dir/operations.txt");
  mkdir("$var_dir/running/tmp") if(!-d "$var_dir/running/tmp");
+ if(-e "$var_dir/operations.txt" && !-l "$var_dir/operations.txt") {
+  unlink("$var_dir/operations.txt");
+ }
+ symlink("running/operations.txt","$var_dir/operations.txt") if(!-e "$var_dir/operations.txt");
+ if(!-e "$command_file") {
+  open(OPS,">$command_file");
+  close(OPS);
+ }
  &auto_select_4k_mode();
  &apply_drm_properties();
  &get_hdmi_info();
