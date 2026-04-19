@@ -39,8 +39,10 @@ sub discovery_devicecontrol (@) {
                                               Broadcast=>1,
                                               Proto=>'udp'
  );
+ $socket_server->setsockopt(SOL_SOCKET, SO_RCVTIMEO, pack('l!l!', 5, 0)) if($socket_server);
  while (1) { 
   $socket_server->recv($message, 1024);
+  next if(!$message || $message eq "");
   if(!-f $discoverable_disabled_file && $message=~/$message_discovery_devicecontrol/) {
      $reply_discovery=$reply_discovery_devicecontrol." ".&discovery_name();
    $socket_server->send($reply_discovery) if(!-f $discoverable_disabled_file && $message=~/$message_discovery_devicecontrol/);
@@ -59,8 +61,10 @@ sub discovery_lightspace (@) {
                                               Broadcast=>1,
                                               Proto=>'udp'
  );
+ $socket_server->setsockopt(SOL_SOCKET, SO_RCVTIMEO, pack('l!l!', 5, 0)) if($socket_server);
  while (1) {
   $socket_server->recv($message, 1024);
+  next if(!$message || $message eq "");
   my ($all_ip,$ls_port)=$message=~/(.*):(.*)/;
   if(!-f $discoverable_disabled_file && $message=~/LS:/ && $ls_port ne "") {
    my $ip_ls=$socket_server->peerhost;
@@ -93,9 +97,11 @@ sub discovery_rpc (@) {
   &log("RPC discovery: bind failed on port $port_rpc_discovery: $!");
   return;
  }
+ $socket_server->setsockopt(SOL_SOCKET, SO_RCVTIMEO, pack('l!l!', 5, 0)) if($socket_server);
  while (1) {
   $socket_server->recv($message, 1024);
   next if(-f $discoverable_disabled_file);
+  next if(!$message || $message eq "");
   my $caller_ip = $socket_server->peerhost();
   next if(!$caller_ip);
     my $response = pack("a24 v v", &discovery_name(), $port_rpc, $port_rpc);
