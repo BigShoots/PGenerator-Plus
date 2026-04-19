@@ -24,11 +24,23 @@ case "$1" in
         chmod 755 /etc/sudo /etc/sudo/sudoers.d 2>/dev/null
         chmod 440 /etc/sudo/sudoers.d/PGenerator 2>/dev/null
         chmod +x /usr/sbin/pgenerator-update /usr/bin/spotread /usr/bin/spotread_wrapper.sh /usr/bin/meter_session.sh /usr/bin/meter_series.sh 2>/dev/null
+        if [ ! -d "/var/lib/PGenerator" ]; then
+         mkdir -p /var/lib/PGenerator
+        fi
         if [ ! -d "$PGENERATOR_PID_DIR" ]; then
          mkdir $PGENERATOR_PID_DIR
         fi
         if ! mountpoint -q $PGENERATOR_MOUNT_POINT_DIR ;then
          mount -t tmpfs -o user,mode=0770,size=$PGENERATOR_TMPFS_SIZE,uid=$PGENERATOR_USER_GROUP,gid=$PGENERATOR_USER_GROUP $PGENERATOR_MOUNT_POINT_NAME $PGENERATOR_MOUNT_POINT_DIR
+        fi
+        mkdir -p $PGENERATOR_MOUNT_POINT_DIR/tmp 2>/dev/null
+        touch $PGENERATOR_MOUNT_POINT_DIR/operations.txt 2>/dev/null
+        chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_MOUNT_POINT_DIR/operations.txt $PGENERATOR_MOUNT_POINT_DIR/tmp 2>/dev/null
+        if [ -e /var/lib/PGenerator/operations.txt ] && [ ! -L /var/lib/PGenerator/operations.txt ]; then
+         rm -f /var/lib/PGenerator/operations.txt
+        fi
+        if [ ! -L /var/lib/PGenerator/operations.txt ]; then
+         ln -sfn running/operations.txt /var/lib/PGenerator/operations.txt
         fi
         if [ -e "/dev/dri/card0" ];then
          mknod /dev/dri/renderD128 c 226 128 2>/dev/null
