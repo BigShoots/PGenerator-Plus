@@ -1,0 +1,63 @@
+name: Feature request
+description: Suggest an improvement for PGenerator Plus
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion.
+
+        Clear feature requests make it much easier to evaluate and plan improvements.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Feature summary
+      placeholder: Add support for ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Related area
+      options:
+        - Web UI
+        - Pattern generator
+        - Meter tools
+        - Calibration workflow
+        - OTA / updates
+        - Network / integrations
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      placeholder: Describe the current limitation or frustration.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: Describe how you would like it to work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: List any workarounds or alternative ideas.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Extra context
+      placeholder: Add examples, screenshots, or reference behavior from other tools.
