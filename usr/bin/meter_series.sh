@@ -16,6 +16,8 @@ CCSS_FILE="$7"
 PATCH_INSERT="${8:-0}"
 REFRESH_RATE="${9:-}"
 DISABLE_AIO="${10:-0}"
+SIGNAL_MODE="${11:-sdr}"
+MAX_LUMA="${12:-1000}"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
@@ -43,28 +45,36 @@ find_port() {
   local cached age
   cached=$(cat "$cache" 2>/dev/null)
   age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
-  if (( age < 1800 )) && [[ -n "$cached" ]]; then
+  if (( age < 1800 )) && [[ "$cached" =~ ^[0-9]+$ ]]; then
    echo "$cached"
    return
   fi
  fi
  local help_out
  help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
- local port_num="1"
+ local port_num=""
  while IFS= read -r line; do
   if [[ "$line" =~ ^[[:space:]]+([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/ ]]; then
    port_num="${BASH_REMATCH[1]}"
    break
   fi
  done <<< "$help_out"
- echo "$port_num" > "$cache"
- # Allow USB device to fully release after spotread -? probe
- sleep 2
+ if [[ -n "$port_num" ]]; then
+  echo "$port_num" > "$cache"
+  # Allow USB device to fully release after spotread -? probe
+  sleep 2
+ fi
  echo "$port_num"
 }
 
 TOTAL=$(get_step_count)
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
+
+# Publish an immediate startup state so the UI shows progress instead of
+# looking hung while spotread is performing its cold-start handshake.
+cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Initializing meter...","readings":[]}
+EOJSON
 
 # Full cleanup of any previous meter state. Called before starting a session
 # and again before any init retry. Kills every known meter process and
@@ -96,17 +106,31 @@ meter_full_cleanup() {
 # Initial cleanup
 meter_full_cleanup
 
-# Find meter port
-PORT_NUM=$(find_port)
-
-# Start persistent spotread session. If the first attempt fails to reach
-# the "to take a reading:" prompt within 30s we assume a stuck USB handle
-# or stale process is holding the meter; force a full cleanup and retry
-# once before reporting "Meter init failed".
+# Start persistent spotread session. A cold boot can take noticeably longer
+# to enumerate the USB meter and reach the "to take a reading:" prompt,
+# especially after a Pi restart, so allow a longer init window before we
+# declare failure and retry cleanup.
 INIT_ATTEMPT=0
-MAX_INIT_ATTEMPTS=2
+MAX_INIT_ATTEMPTS=3
 while : ; do
  INIT_ATTEMPT=$((INIT_ATTEMPT + 1))
+
+ PORT_NUM=$(find_port)
+ if [[ -z "$PORT_NUM" ]]; then
+  DBGOUT="Meter did not enumerate during initialization"
+  if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
+   cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Retrying meter connection...","readings":[]}
+EOJSON
+   meter_full_cleanup
+   sleep 2
+   continue
+  fi
+  cat > "$STATE_FILE" << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter init failed","debug":"$DBGOUT","readings":[]}
+EOJSON
+  exit 1
+ fi
 
  OUTFILE="$TMPDIR/spotread_series_$$"
  CMDPIPE="$TMPDIR/spotread_cmd_$$"
@@ -148,10 +172,16 @@ while : ; do
  BG_PID=$!
  exec 3>"$CMDPIPE"
 
- # Wait for spotread to be ready
+ # Wait for spotread to be ready. 120 x 0.5 s = 60 s, which avoids false
+ # "Meter init failed" errors right after a reboot when USB bring-up is slow.
+ # If the meter immediately reports a communications failure, stop waiting and
+ # fall into the retry path so the UI doesn't sit on Initializing meter.
  WAITED=0
- while (( WAITED < 30 )); do
+ while (( WAITED < 120 )); do
   if grep -q "to take a reading:" "$OUTFILE" 2>/dev/null; then
+   break
+  fi
+  if grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected" "$OUTFILE" 2>/dev/null; then
    break
   fi
   sleep 0.5
@@ -164,13 +194,16 @@ while : ; do
  fi
 
  # Failure path — tear down this attempt
- DBGOUT=$(head -c 200 "$OUTFILE" 2>/dev/null | tr '"' "'" | tr '\n' ' ' | tr '\r' ' ')
+ DBGOUT=$(head -c 400 "$OUTFILE" 2>/dev/null | tr '"' "'" | tr '\n' ' ' | tr '\r' ' ')
  printf "Q" >&3 2>/dev/null; exec 3>&- 2>/dev/null
  kill -9 "$BG_PID" 2>/dev/null; wait "$BG_PID" 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE"
 
  if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
-  # Force full cleanup and invalidate port cache before retrying
+  cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Retrying meter connection...","readings":[]}
+EOJSON
+  # Force full cleanup and invalidate port cache before retrying.
   meter_full_cleanup
   rm -f /tmp/spotread_port_cache 2>/dev/null
   pkill -9 -x spotread 2>/dev/null
@@ -187,27 +220,16 @@ EOJSON
  exit 1
 done
 
-# Refresh rate calibration: in CRT/OLED mode (-y c/r), spotread asks to read
-# an 80% white patch first. Display a bright white patch, send a space to satisfy
-# the calibration, then wait for the second "to take a reading:" prompt.
+# Refresh rate calibration: some spotread builds keep rewriting the same
+# prompt line instead of emitting a second prompt, so don't wait for the prompt
+# count to increase here or startup can deadlock.
 CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
 if echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
- # Display a white patch for calibration
- curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d '{"name":"patch","r":255,"g":255,"b":255,"size":100,"input_max":255}' >/dev/null 2>&1
+ timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1 || true
  sleep 2
- INITIAL_PROMPTS=$(echo "$CLEAN_OUT" | grep -c "to take a reading:")
  printf " " >&3
- CAL_WAIT=0
- while (( CAL_WAIT < 30 )); do
-  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-  CUR_PROMPTS=$(echo "$CLEAN_OUT" | grep -c "to take a reading:")
-  if (( CUR_PROMPTS > INITIAL_PROMPTS )); then
-   break
-  fi
-  sleep 0.5
-  CAL_WAIT=$((CAL_WAIT + 1))
- done
+ sleep 2
 fi
 
 # Helper: count result lines
@@ -270,13 +292,13 @@ EOJSON
  # ABL stabilization: flash mid-gray between patches
  if [[ "$PATCH_INSERT" == "1" ]] && (( i > 0 )); then
   curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-   -d "{\"name\":\"patch\",\"r\":64,\"g\":64,\"b\":64,\"size\":100,\"input_max\":255}" >/dev/null 2>&1
+   -d "{\"name\":\"patch\",\"r\":64,\"g\":64,\"b\":64,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
   sleep 1.5
  fi
 
  # Display pattern
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255}" >/dev/null 2>&1
+  -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
 
  # Settle delay — shorter for near-black
  if (( IRE <= 5 )); then
@@ -321,14 +343,22 @@ EOJSON
  PREV_COUNT=$(count_results)
  printf " " >&3
 
- # Wait for result
+ # Wait for result, retrying once if spotread reports a transient
+ # communication problem with the meter.
  READ_START=$SECONDS
  GOT_RESULT=false
+ RETRIED_COMM=0
  while (( SECONDS - READ_START < READ_TIMEOUT )); do
   CUR_COUNT=$(count_results)
   if (( CUR_COUNT > PREV_COUNT )); then
    GOT_RESULT=true
    break
+  fi
+  CLEAN_NOW=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+  if [[ $RETRIED_COMM -eq 0 && "$CLEAN_NOW" == *"Spot read failed due to communication problem"* ]]; then
+   printf " " >&3
+   RETRIED_COMM=1
+   READ_TIMEOUT=$((READ_TIMEOUT + 15))
   fi
   sleep 0.3
  done
