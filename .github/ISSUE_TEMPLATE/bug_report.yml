@@ -1,109 +1,107 @@
-name: Bug report
-description: Report a problem with PGenerator Plus
-labels:
-  - bug
+name: "Bug report"
+description: "Report a problem with PGenerator Plus"
+title: "[Bug]: "
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting an issue.
+        Thanks for taking the time to report a bug.
 
-        Please fill out the details below so the problem can be reproduced and fixed faster.
+        Please fill out the details below so the problem can be reproduced quickly.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Before submitting"
+      description: "Please confirm the following."
+      options:
+        - label: "I searched existing issues and did not find a duplicate"
+          required: true
 
   - type: input
     id: version
     attributes:
-      label: PGenerator Plus version
-      description: Example: 2.2.2
-      placeholder: 2.2.2
+      label: "PGenerator version"
+      description: "Example: 2.2.2"
+      placeholder: "2.2.2"
     validations:
       required: true
 
   - type: dropdown
     id: install_type
     attributes:
-      label: Installation type
+      label: "Install method"
       options:
-        - Fresh image install
-        - OTA update
-        - Updated from an older version
-        - Built from source
-        - Other
+        - "Fresh image install"
+        - "OTA update"
+        - "Updated from an older version"
+        - "Built from source"
+        - "Something else"
     validations:
       required: true
 
   - type: input
     id: hardware
     attributes:
-      label: Hardware details
-      description: Raspberry Pi model, display device, capture path, adapter, etc.
-      placeholder: Raspberry Pi 4B 2GB, LG C2, HDMI direct
+      label: "Hardware used"
+      description: "Raspberry Pi model, display, adapter, or signal chain"
+      placeholder: "Raspberry Pi 4B, LG C2, HDMI direct"
     validations:
       required: true
 
   - type: input
     id: meter
     attributes:
-      label: Meter used
-      description: If applicable
-      placeholder: i1Display Pro Plus
+      label: "Meter"
+      placeholder: "i1Display Pro Plus"
 
   - type: dropdown
     id: area
     attributes:
-      label: Affected area
+      label: "Affected area"
       options:
-        - Web UI
-        - Pattern output
-        - Meter detection / readings
-        - OTA update
-        - Network discovery / control
-        - Dolby Vision / HDR / HLG
-        - Other
+        - "Web UI"
+        - "Pattern output"
+        - "Meter detection or readings"
+        - "OTA update"
+        - "Network discovery or control"
+        - "HDR, HLG, or Dolby Vision"
+        - "Other"
     validations:
       required: true
 
   - type: textarea
-    id: summary
+    id: current_behavior
     attributes:
-      label: What happened?
-      placeholder: Describe the bug clearly and briefly.
+      label: "Current behavior"
+      placeholder: "Describe the bug clearly."
     validations:
       required: true
 
   - type: textarea
-    id: steps
+    id: expected_behavior
     attributes:
-      label: Steps to reproduce
+      label: "Expected behavior"
+      placeholder: "What should have happened instead?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: "Steps to reproduce"
       placeholder: |
         1. Open ...
         2. Change ...
         3. Start ...
-        4. See error ...
+        4. Observe the issue ...
     validations:
       required: true
 
   - type: textarea
-    id: expected
+    id: relevant_logs
     attributes:
-      label: What did you expect to happen?
-      placeholder: Describe the expected behavior.
-    validations:
-      required: true
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: Logs, screenshots, or extra context
-      description: Paste any console output, update log details, screenshots, or API responses here.
+      label: "Relevant log output"
+      description: "Paste console output, API responses, or extra notes here."
       render: shell
-
-  - type: checkboxes
-    id: checks
-    attributes:
-      label: Checklist
-      options:
-        - label: I searched existing issues first
-          required: true
-        - label: I included the version and hardware details above
-          required: true
