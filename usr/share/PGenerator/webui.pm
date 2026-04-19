@@ -12,6 +12,7 @@
 #
 
 BEGIN { require bytes; }
+use Time::HiRes ();
 
 ###############################################
 #             mDNS Route Helpers              #
@@ -96,6 +97,24 @@ sub webui_mdns_read_name (@) {
  return ("",$next_offset,0);
 }
 
+sub webui_mdns_build_a_response (@) {
+ my $mdns_hostname=shift;
+ my $best_ip=shift;
+ return "" if($mdns_hostname eq "" || $best_ip eq "");
+ my $resp=pack("n",0);           # ID=0 for mDNS
+ $resp.=pack("n",0x8400);        # flags: QR=1, AA=1
+ $resp.=pack("nnnn",0,1,0,0);
+ foreach my $label (split(/\./,"$mdns_hostname.local")) {
+  $resp.=pack("C",length($label)).$label;
+ }
+ $resp.=pack("C",0);
+ $resp.=pack("nn",1,0x8001);
+ $resp.=pack("N",120);
+ $resp.=pack("n",4);
+ $resp.=Socket::inet_aton($best_ip);
+ return $resp;
+}
+
 ###############################################
 #              mDNS Responder                 #
 ###############################################
@@ -149,6 +168,14 @@ sub webui_mdns (@) {
    if($joined) {
     $mdns_joined{$key}=1;
     &log("mDNS: joined multicast on $route->{iface} ($route->{ip})");
+    my $announce=&webui_mdns_build_a_response($mdns_hostname,$route->{ip});
+    if($announce ne "") {
+     my $IP_MULTICAST_IF=eval { Socket::IP_MULTICAST_IF() } || 32;
+     setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_IF, Socket::inet_aton($route->{ip}));
+     my $mcast_dest=Socket::sockaddr_in($MDNS_PORT, Socket::inet_aton($MDNS_ADDR));
+     send($sock, $announce, 0, $mcast_dest);
+     &log("mDNS: announced $mdns_hostname.local -> $route->{ip}");
+    }
    } else {
     &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $!");
    }
@@ -208,18 +235,8 @@ sub webui_mdns (@) {
   my $best_ip=&webui_mdns_best_ip($querier_ip);
   next if($best_ip eq "");
 
-  my $resp=pack("n",0);           # ID=0 for mDNS
-  $resp.=pack("n",0x8400);        # flags: QR=1, AA=1
-  $resp.=pack("nnnn",0,1,0,0);
-
-  foreach my $label (split(/\./,"$mdns_hostname.local")) {
-   $resp.=pack("C",length($label)).$label;
-  }
-  $resp.=pack("C",0);
-  $resp.=pack("nn",1,0x8001);
-  $resp.=pack("N",120);
-  $resp.=pack("n",4);
-  $resp.=Socket::inet_aton($best_ip);
+  my $resp=&webui_mdns_build_a_response($mdns_hostname,$best_ip);
+  next if($resp eq "");
 
   my $IP_MULTICAST_IF=eval { Socket::IP_MULTICAST_IF() } || 32;
   setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_IF, Socket::inet_aton($best_ip));
@@ -252,6 +269,83 @@ my $_STATS_CACHE_TTL=2;
 my $_stats_cpu_total=0;
 my $_stats_cpu_idle=0;
 my $_stats_cpu_last=0;
+
+# Meter state
+my $_meter_series_file="/tmp/meter_series.json";
+my $_meter_wrapper="/usr/bin/spotread_wrapper.sh";
+my $_meter_session="/usr/bin/meter_session.sh";
+my $_meter_read_file="/tmp/meter_read.json";
+my $_meter_session_pid_file="/tmp/meter_session.pid";
+my $_meter_session_fifo="/tmp/meter_session.cmd";
+my $_meter_session_config_file="/tmp/meter_session.config";
+my $_meter_last_read_time=0;
+my $_ccss_dir="/usr/share/PGenerator/ccss";
+my $_custom_ccss_dir="$var_dir/ccss/custom";
+my $_custom_ccss_legacy_dir="$_ccss_dir/custom";
+
+# Display technology map: key => [spotread_y_flag, ccss_filename]
+my $_dtype_info={
+ "lcd"          => ["l",""],
+ "oled"         => ["c",""],
+ "projector"    => ["p",""],
+ "oled_generic" => ["c","WRGB_OLED_LG.ccss"],
+ "qdoled"       => ["c","QD-OLED_Generic.ccss"],
+ "lcd_wled"     => ["l","WLEDFamily_07Feb11.ccss"],
+ "lcd_ccfl"     => ["l","CCFLFamily_07Feb11.ccss"],
+ "lcd_wgccfl"   => ["l","WGCCFLFamily_07Feb11.ccss"],
+ "lcd_rgbled"   => ["l","RGBLEDFamily_07Feb11.ccss"],
+ "plasma"       => ["c","PlasmaFamily_20Jul12.ccss"],
+ "projector_ccss"=>["p","ProjectorFamily_07Feb11.ccss"],
+ "crt"          => ["c","CRT.ccss"],
+ "l"            => ["l",""],
+ "c"            => ["c",""],
+ "p"            => ["p",""],
+};
+
+sub _resolve_ccss_yflag (@) {
+ my ($path)=@_;
+ return "l" if(!$path || !-f $path);
+ my $txt="";
+ if(open(my $fh,"<",$path)) {
+  local $/;
+  $txt=<$fh>;
+  close($fh);
+ }
+ if($txt =~ /^DISPLAY_TYPE_REFRESH\s+"YES"/mi) { return "c"; }
+ if($txt =~ /^DISPLAY_TYPE_REFRESH\s+"NO"/mi) {
+  return "p" if($txt =~ /^(?:DISPLAY|TECHNOLOGY)\s+"[^"]*projector/mi);
+  return "l";
+ }
+ return "p" if($txt =~ /^(?:DISPLAY|TECHNOLOGY)\s+"[^"]*projector/mi);
+ return "c" if($txt =~ /^(?:DISPLAY|TECHNOLOGY)\s+"[^"]*(?:oled|plasma|crt)/mi);
+ return "l";
+}
+
+sub resolve_display_type (@) {
+ my ($key)=@_;
+ # ccss_FILENAME or custom_FILENAME: look up a .ccss file in system or custom dirs
+ if($key=~/^(?:ccss|custom)_(.+)$/) {
+  my $fname=$1;
+  $fname=~s{\\}{/}g;
+  $fname=~s{^.*/}{}; # basename only; discard nested path / traversal attempts
+  # allow letters, digits, dot, underscore, dash, parentheses, spaces (ccss filenames include these)
+  $fname=~s/[^a-zA-Z0-9._\-()\[\] ]//g;
+  my $sys="$_ccss_dir/$fname";
+  my $cust="$_custom_ccss_dir/$fname";
+  my $legacy="$_custom_ccss_legacy_dir/$fname";
+  if(-f $sys)    { return (&_resolve_ccss_yflag($sys),$sys); }
+  if(-f $cust)   { return (&_resolve_ccss_yflag($cust),$cust); }
+  if(-f $legacy) { return (&_resolve_ccss_yflag($legacy),$legacy); }
+  return ("l","");
+ }
+ my $info=$_dtype_info->{lc($key)}||["l",""];
+ my $y_flag=$info->[0];
+ my $ccss_file=$info->[1]ne""?"$_ccss_dir/$info->[1]":"";
+ if($ccss_file ne "" && -f $ccss_file) {
+  $y_flag=&_resolve_ccss_yflag($ccss_file);
+ }
+ return ($y_flag,$ccss_file);
+}
 
 sub webui_http (@) {
  $SIG{PIPE}='IGNORE';
@@ -556,6 +650,86 @@ sub webui_http (@) {
      }
     }
    }
+   ###############################################
+   #           Meter API Endpoints               #
+   ###############################################
+   elsif($path eq "/api/meter/status") {
+    my $result=&webui_meter_status();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/read" && $method eq "POST") {
+    my $result=&webui_meter_read($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/read/result") {
+    my $result=&webui_meter_read_result();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/series" && $method eq "POST") {
+    my $result=&webui_meter_series_start($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/series/status") {
+    my $result=&webui_meter_series_status();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/stop" && $method eq "POST") {
+    my $result=&webui_meter_stop();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/clear" && $method eq "POST") {
+    my $result=&webui_meter_clear();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/reset" && $method eq "POST") {
+    my $result=&webui_meter_reset();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/settings") {
+    if($method eq "POST") {
+     my $result=&webui_meter_settings_save($body);
+     my $len=length($result);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+    } else {
+     my $result=&webui_meter_settings_load();
+     my $len=length($result);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+    }
+   }
+   elsif($path eq "/api/ccss/list") {
+    my $result=&webui_ccss_list();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/ccss/all") {
+    my $result=&webui_ccss_all();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/ccss/upload" && $method eq "POST") {
+    my $result=&webui_ccss_upload($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path=~/^\/api\/ccss\/delete\/(.+)/ && $method eq "POST") {
+    my $fname=$1;
+    my $result=&webui_ccss_delete($fname);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/ccss/validate" && $method eq "POST") {
+    my $result=&webui_ccss_validate($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    else {
     my $msg="404 Not Found";
     print $client "HTTP/1.1 404 Not Found\r\nContent-Length: ".length($msg)."\r\n\r\n$msg";
@@ -569,6 +743,1104 @@ sub webui_http (@) {
    eval { close($client); };
   }
  }
+}
+
+###############################################
+#         Meter API Functions                 #
+###############################################
+my $_meter_was_detected=0;
+my $_meter_boot_recovery_attempted=0;
+my $_meter_last_reset_time=0;
+my $_meter_last_seen_time=0;
+my $_meter_last_good_status='{"detected":false,"name":null,"usb_id":null,"port":null,"spotread_available":false}';
+
+sub webui_meter_status (@) {
+ my $json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
+ chomp($json);
+ $json='{"detected":false,"name":null,"usb_id":null,"port":null,"spotread_available":false}' if($json eq "" || $json!~/^\{/);
+ # Keep the last known-good detection through transient startup hiccups, but
+ # do not auto-reset USB here. Aggressive reset/re-enumeration from the status
+ # poller can knock an otherwise connected meter fully offline.
+ if($json=~/"detected"\s*:\s*true/) {
+  $_meter_was_detected=1;
+  $_meter_boot_recovery_attempted=0;
+  $_meter_last_seen_time=time();
+  $_meter_last_good_status=$json;
+  return $json;
+ }
+ my $series_running=`pgrep -f meter_series.sh 2>/dev/null`;
+ my $spotread_running=`pgrep -x spotread 2>/dev/null`;
+ my $session_alive=&webui_meter_session_alive();
+ my $busy=($series_running=~/\d/ || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
+ if($_meter_was_detected) {
+  my $age=time()-($_meter_last_seen_time||0);
+  if($busy || $age < 120) {
+   &log("WebUI: transient meter probe miss, keeping last known detection") if($busy || $age < 15);
+   return $_meter_last_good_status;
+  }
+ }
+ return $json;
+}
+
+sub webui_meter_session_alive (@) {
+ return 0 unless(-f $_meter_session_pid_file);
+ my $pid="";
+ if(open(my $fh,"<",$_meter_session_pid_file)) { local $/; $pid=<$fh>; close($fh); }
+ chomp $pid;
+ return 0 unless($pid=~/^\d+$/);
+ # The daemon runs as root but webui runs as the pgenerator user, so
+ # kill(0,$pid) fails with EPERM on a live daemon. Check /proc instead —
+ # /proc/$pid is readable by anyone on Linux.
+ return -d "/proc/$pid" ? $pid : 0;
+}
+
+sub webui_meter_session_config_matches (@) {
+ my ($want)=@_;
+ return 0 unless(-f $_meter_session_config_file);
+ my $cur="";
+ if(open(my $fh,"<",$_meter_session_config_file)) { local $/; $cur=<$fh>; close($fh); }
+ chomp $cur;
+ return $cur eq $want ? 1 : 0;
+}
+
+sub webui_meter_read_state_write (@) {
+ my ($json)=@_;
+ $json='{"status":"idle"}' if(!defined($json) || $json eq "");
+ if(open(my $fh,">",$_meter_read_file)) {
+  print $fh $json;
+  close($fh);
+  chmod(0666,$_meter_read_file);
+ }
+}
+
+sub webui_meter_session_stop (@) {
+ # Try graceful STOP via FIFO first (lets the daemon quit spotread cleanly).
+ if(-p $_meter_session_fifo) {
+  if(open(my $fh,">",$_meter_session_fifo)) { print $fh "STOP\n"; close($fh); }
+ }
+ # Wait briefly for the daemon to exit on its own.
+ my $waited=0;
+ while($waited < 20 && &webui_meter_session_alive()) {
+  Time::HiRes::sleep(0.1);
+  $waited++;
+ }
+ # Hard kill anything still hanging on.
+ if(&webui_meter_session_alive()) {
+  system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
+  system("sudo pkill -9 -x spotread 2>/dev/null");
+  Time::HiRes::sleep(0.2);
+ }
+ unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
+}
+
+sub webui_meter_session_start (@) {
+ my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma)=@_;
+ # Start from a clean slate. Only the session daemon itself should write the
+ # advertised config file once it has actually grabbed the lock and is ready.
+ unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
+ &webui_meter_read_state_write('{"status":"starting"}');
+ # Launch detached as root. The daemon writes its own PID/config files once it
+ # grabs the lock; wait for all of that to happen before reporting success.
+ my $aio_flag=$disable_aio ? "1" : "0";
+ $signal_mode=&webui_pattern_signal_mode("") if(!defined($signal_mode) || $signal_mode eq "");
+ $max_luma=&webui_pattern_max_luma("") if(!defined($max_luma) || $max_luma eq "");
+ my $started_at=time();
+ system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' </dev/null >/dev/null 2>&1 &");
+ my $waited=0;
+ # Some CCSS/meter combinations trigger spotread refresh calibration on first
+ # start and can legitimately take 35-45 seconds before the FIFO is ready.
+ while($waited < 900) {
+  last if(-p $_meter_session_fifo && &webui_meter_session_alive() && &webui_meter_session_config_matches($config));
+  Time::HiRes::sleep(0.1);
+  $waited++;
+  # If the daemon died early (init failure), the read result file will
+  # contain a status:error — surface that quickly instead of waiting.
+  if(-f $_meter_read_file) {
+   my $check="";
+   if(open(my $fh,"<",$_meter_read_file)) { local $/; $check=<$fh>; close($fh); }
+   my $mtime=(stat($_meter_read_file))[9] || 0;
+   last if($mtime >= $started_at && $check=~/"status"\s*:\s*"error"/);
+  }
+ }
+ return (-p $_meter_session_fifo && &webui_meter_session_config_matches($config)) ? 1 : 0;
+}
+
+sub webui_meter_read (@) {
+ my ($body)=@_;
+
+ # Refuse single reads while a series is actively running
+ if(-f $_meter_series_file) {
+  my $scheck="";
+  if(open(my $fh,"<",$_meter_series_file)) { local $/; $scheck=<$fh>; close($fh); }
+  if($scheck=~/"status"\s*:\s*"running"/) {
+   my $alive=`pgrep -f meter_series.sh 2>/dev/null`;
+   if($alive=~/\d/) {
+     &log("WebUI: manual meter read requested while series helper still running; stopping stale series first");
+     &webui_meter_stop();
+     select(undef,undef,undef,0.5);
+   }
+  }
+ }
+
+ # Debounce: coalesce accidental double-clicks. The session daemon serializes
+ # the actual reads, so this is purely a UI-side protection.
+ my $now=Time::HiRes::time();
+ if($now - $_meter_last_read_time < 0.25) {
+  return '{"status":"measuring"}';
+ }
+ $_meter_last_read_time=$now;
+
+ my $display_type_key="lcd";
+ $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
+ my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
+ my $refresh_rate="";
+ $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
+ my $disable_aio=0;
+ $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
+ my $patch_r="";
+ $patch_r=$1 if($body=~/"patch_r"\s*:\s*(\d+)/);
+ my $patch_g="";
+ $patch_g=$1 if($body=~/"patch_g"\s*:\s*(\d+)/);
+ my $patch_b="";
+ $patch_b=$1 if($body=~/"patch_b"\s*:\s*(\d+)/);
+ my $patch_size=10;
+ $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
+ my $delay_ms=2000;
+ $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
+ my $signal_mode=&webui_pattern_signal_mode($body);
+ my $max_luma=&webui_pattern_max_luma($body);
+ # Default to a 50% mid-grey patch when the caller didn't specify RGB —
+ # the persistent session always displays a patch before reading.
+ if($patch_r eq "" || $patch_g eq "" || $patch_b eq "") {
+  $patch_r=128; $patch_g=128; $patch_b=128;
+ }
+ my $patch_name="Manual";
+ my $patch_ire=0;
+ if($patch_r==$patch_g && $patch_g==$patch_b) {
+  $patch_ire=int(($patch_r/255)*100+0.5);
+  $patch_name="${patch_ire}pct";
+ }
+
+ # The session daemon starts spotread once and reuses it for every read.
+ # Restart only when the meter config (display type, ccss, refresh, AIO) changes
+ # or the daemon isn't running.
+ my $aio_flag=$disable_aio ? "1" : "0";
+ my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag";
+ my $alive=&webui_meter_session_alive();
+ my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
+ if($needs_restart) {
+  if($alive) {
+   &log("WebUI: meter session config changed, restarting daemon");
+   &webui_meter_session_stop();
+  } else {
+   # Belt-and-suspenders: clear any lingering spotread holding the meter.
+   system("sudo bash $_meter_wrapper --kill 2>/dev/null");
+   select(undef,undef,undef,0.2);
+  }
+  &webui_meter_read_state_write('{"status":"starting"}');
+  # If spotread decides it needs refresh calibration, it asks for an 80% white
+  # patch during startup. Show that patch now so the background session helper
+  # doesn't have to call back into the busy HTTP server and deadlock.
+  if($display_type eq "c" || $ccss_file ne "") {
+   &webui_pattern('{"name":"patch","r":204,"g":204,"b":204,"size":100,"input_max":255,"signal_mode":"'.$signal_mode.'","max_luma":'.$max_luma.'}');
+   select(undef,undef,undef,0.5);
+  }
+  &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio)");
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma)) {
+   &log("WebUI: meter session failed to start");
+   if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"error","message":"Meter session failed to start"}'; close($fh); }
+   return '{"status":"error","message":"Meter session failed to start"}';
+  }
+ }
+
+ # Mark measuring so the polling endpoint sees a fresh in-flight state and
+ # can't return the previous reading by mistake.
+ if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"measuring"}'; close($fh); }
+
+ # Send the READ command to the daemon. The settle delay is only applied
+ # by the daemon when the patch RGB actually changes — repeat reads on the
+ # same patch (Continuous mode) skip both the redisplay and the wait.
+ if(open(my $fh,">>",$_meter_session_fifo)) {
+  print $fh "READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma\n";
+  close($fh);
+ } else {
+  &log("WebUI: meter session FIFO open failed: $!");
+  return '{"status":"error","message":"Session FIFO unavailable"}';
+ }
+
+ return '{"status":"measuring"}';
+}
+
+sub webui_meter_read_result (@) {
+ if(-f $_meter_read_file) {
+  my $json="";
+  if(open(my $fh,"<",$_meter_read_file)) { local $/; $json=<$fh>; close($fh); }
+  chomp($json);
+  if($json ne "") {
+   if($json=~/measuring/ || $json=~/"status"\s*:\s*"running"/) {
+    my $age=time() - (stat($_meter_read_file))[9];
+    if($age > 90) {
+     return '{"status":"error","message":"Read timed out"}';
+    }
+    return '{"status":"measuring"}';
+   }
+   if($json=~/"status"\s*:\s*"complete"/) {
+    $json=~s/"status"\s*:\s*"complete"/"status":"ok"/;
+    return $json;
+   }
+   if($json=~/"status"\s*:\s*"cancelled"/) {
+    return '{"status":"error","message":"Read cancelled"}';
+   }
+   return $json;
+  }
+ }
+ return '{"status":"idle"}';
+}
+
+sub webui_meter_series_start (@) {
+ my ($body)=@_;
+ # Parse request
+ my $type="greyscale";
+ $type=$1 if($body=~/"type"\s*:\s*"(\w+)"/);
+ my $points=21;
+ $points=$1 if($body=~/"points"\s*:\s*(\d+)/);
+ my $display_type_key="lcd";
+ $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
+ my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
+ my $delay_ms=3000;
+ $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
+ my $patch_size=10;
+ $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
+ my $signal_range=0;
+ $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
+ my $series_color_format=0;
+ $series_color_format=$1 if($body=~/"color_format"\s*:\s*"?(\d+)"?/);
+ my $patch_insert=0;
+ $patch_insert=1 if($body=~/"patch_insert"\s*:\s*true/i);
+ my $refresh_rate="";
+ $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
+ my $disable_aio=0;
+ $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
+ my $target_gamut="";
+ $target_gamut=lc($1) if($body=~/"target_gamut"\s*:\s*"([A-Za-z0-9_]+)"/);
+ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65");
+ my $target_gamma="";
+ $target_gamma=lc($1) if($body=~/"target_gamma"\s*:\s*"([A-Za-z0-9_.\-]+)"/);
+ $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb");
+ # Stimulus must invert the display's target EOTF so the decoded linear on a
+ # tracking display lands on the target linear — otherwise chromaticities
+ # shift outward (measured appears oversaturated vs target xy).
+ my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
+ my $target_linear_to_signal=sub {
+  my ($v)=@_;
+  return 0 if(!defined $v || $v<=0);
+  $v=1 if($v>1);
+  if($target_gamma eq "srgb") {
+   return ($v<=0.0031308) ? 12.92*$v : 1.055*($v**(1/2.4))-0.055;
+  }
+  return $v**(1/$target_gamma_exp_resolved);
+ };
+ my $target_signal_to_linear=sub {
+  my ($v)=@_;
+  return 0 if(!defined $v || $v<=0);
+  $v=1 if($v>1);
+  if($target_gamma eq "srgb") {
+   return ($v<=0.04045) ? $v/12.92 : ((($v+0.055)/1.055)**2.4);
+  }
+  return $v**$target_gamma_exp_resolved;
+ };
+
+ # Cancel any running series and clean up
+ &webui_meter_stop();
+ # Brief pause to let killed processes release USB device
+ select(undef,undef,undef,0.5);
+
+ my $signal_mode=&webui_pattern_signal_mode($body);
+ my $max_luma=&webui_pattern_max_luma($body);
+ my $series_colorimetry=2;
+ $series_colorimetry=$1 if($body=~/"colorimetry"\s*:\s*"?(\d+)"?/);
+ $series_colorimetry=int($pgenerator_conf{"colorimetry"} || 2) if($series_colorimetry eq "");
+ my $series_primaries=0;
+ $series_primaries=$1 if($body=~/"primaries"\s*:\s*"?(\d+)"?/);
+ $series_primaries=int($pgenerator_conf{"primaries"} || 0) if($series_primaries eq "");
+ $series_color_format=int($pgenerator_conf{"color_format"} || 0) if($series_color_format eq "");
+ my $patch_limited=((int($signal_range)==1) && int($series_color_format)!=0) ? 1 : 0;
+
+ # Build step list as JSON array for the helper script
+ # Measurement order: WHITE first (reference), then 0%→95% ascending
+ my @steps;
+ my $dv_series=($signal_mode eq "dv") ? 1 : 0;
+ if($type eq "greyscale") {
+  my @ire_vals;
+  if($points==11) {
+   @ire_vals=(0,10,20,30,40,50,60,70,80,90,100);
+  } else {
+   @ire_vals=(0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
+  }
+  # 100% first (white reference), then 0%→95% ascending.
+  # Reading white first lets every subsequent ΔE be computed immediately
+  # and never change — HCFR achieves this with a pre-configured target
+  # luminance; we use the actual measured white instead.
+  my @ordered = (100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
+  my $lim=$patch_limited;
+  @steps=map {
+   my $v=$_;
+   my $c=0;
+   if($dv_series) {
+    my $stim=$v/100;
+    my $enc=$stim**(1/2.2);
+    $c=$lim ? int(16 + ($enc * 219) + .5) : int(($enc * 255) + .5);
+   } else {
+    my $level=int($v/100*219+.5);
+    $c=$lim?($level+16):int($level*255/219+.5);
+   }
+   "{\"ire\":$v,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"${v}%\"}";
+  } @ordered;
+ } elsif($type eq "colors") {
+  my $min_code=$patch_limited?16:0;
+  my $span_code=$patch_limited?219:255;
+    my $max_code=$min_code+$span_code;
+    my %primaries=(
+     bt709=>{M=>[[3.2406,-1.5372,-0.4986],[-0.9689,1.8758,0.0415],[0.0557,-0.2040,1.0570]],RGB_TO_XYZ=>[[0.4124564,0.3575761,0.1804375],[0.2126729,0.7151522,0.0721750],[0.0193339,0.1191920,0.9503041]]},
+     bt2020=>{M=>[[1.7166511880,-0.3556707838,-0.2533662814],[-0.6666843518,1.6164812366,0.0157685458],[0.0176398574,-0.0427706133,0.9421031212]],RGB_TO_XYZ=>[[0.6369580483,0.1446169036,0.1688809752],[0.2627002120,0.6779980715,0.0593017165],[0.0000000000,0.0280726930,1.0609850577]]},
+     p3d65=>{M=>[[2.4934969119,-0.9313836179,-0.4027107845],[-0.8294889696,1.7626640603,0.0236246858],[0.0358458302,-0.0761723893,0.9568845240]],RGB_TO_XYZ=>[[0.4865709486,0.2656676932,0.1982172852],[0.2289745641,0.6917385218,0.0792869141],[0.0000000000,0.0451133819,1.0439443689]]}
+    );
+    my $colorimetry=int($series_colorimetry);
+    my $primaries_idx=int($series_primaries);
+    my $container_key="bt709";
+    if($signal_mode eq "dv") {
+     # DV signal rides in a BT.2020 container (P3-D65 is only the mastering
+     # display / target gamut). Solving patch RGB against P3-D65 primaries
+     # made the display drive wider BT.2020 stimuli than intended, which
+     # showed up as oversaturated color measurements.
+     $container_key="bt2020";
+    } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+     $container_key="bt2020";
+    } elsif($colorimetry == 9) {
+     $container_key="bt2020";
+    }
+    my $auto_target_key=$container_key;
+    if($signal_mode eq "dv") {
+     $auto_target_key="p3d65";
+    } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+     $auto_target_key="p3d65" if($primaries_idx == 2 || $primaries_idx == 3);
+    }
+    my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
+    my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg") || ($signal_mode eq "dv")) ? $container_key : $target_key;
+    my @MI=@{$primaries{$solve_key}{M}};
+    my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
+    my $encode_linear=sub {
+     my ($linear)=@_;
+     $linear=0 if(!defined $linear || $linear < 0);
+     $linear=1 if($linear > 1);
+     my $encoded=($signal_mode eq "hdr10") ? &webui_pattern_pq_encode_normalized($linear*100) : (($signal_mode eq "dv") ? $linear**(1/2.2) : $target_linear_to_signal->($linear));
+     return int($min_code + $encoded*$span_code + .5);
+    };
+    my @classic=(
+     ["Gray 35","gray",0.35],
+     ["Gray 50","gray",0.50],
+     ["Gray 65","gray",0.65],
+     ["Gray 80","gray",0.80],
+     ["Dark Skin","xyYn",0.405119,0.36253,0.096774],
+     ["Light Skin","xyYn",0.379756,0.357031,0.353705],
+     ["Blue Sky","xyYn",0.249396,0.266854,0.18913],
+     ["Foliage","xyYn",0.338784,0.433265,0.132836],
+     ["Blue Flower","xyYn",0.267688,0.25314,0.235775],
+     ["Bluish Green","xyYn",0.261653,0.359045,0.425252],
+     ["Orange","xyYn",0.512087,0.410373,0.287229],
+     ["Purplish Blue","xyYn",0.213095,0.186377,0.115692],
+     ["Moderate Red","xyYn",0.461291,0.312073,0.187204],
+     ["Purple","xyYn",0.288075,0.217532,0.064716],
+     ["Yellow Green","xyYn",0.37852,0.496473,0.436288],
+     ["Orange Yellow","xyYn",0.473379,0.443246,0.433456],
+     ["Blue","xyYn",0.186955,0.133934,0.060722],
+     ["Green","xyYn",0.306493,0.495107,0.234403],
+     ["Red","xyYn",0.547377,0.317462,0.114731],
+     ["Yellow","xyYn",0.44792,0.475618,0.597462],
+     ["Magenta","xyYn",0.371346,0.24177,0.187509],
+     ["Cyan","xyYn",0.19619,0.266985,0.193415]
+    );
+    push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\"}";
+    push @steps, "{\"ire\":0,\"r\":$min_code,\"g\":$min_code,\"b\":$min_code,\"name\":\"Black\"}";
+    foreach my $src (@classic) {
+     my ($name,$kind,@vals)=@$src;
+     if($kind eq "gray") {
+      my $level=$vals[0];
+      my $code=$encode_linear->($level);
+      my $ire=int($level*100 + .5);
+      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\"}";
+      next;
+     }
+     my ($x,$y,$Yn)=@vals;
+     my $X=$x/$y*$Yn;
+     my $Y=$Yn;
+     my $Z=(1-$x-$y)/$y*$Yn;
+     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
+     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
+     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
+     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
+     if($mx>1){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
+     my $r=$encode_linear->($rl);
+     my $g=$encode_linear->($gl);
+     my $b=$encode_linear->($bl);
+     my $ire=int($Yn*100 + .5);
+     push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$x,\"target_y\":$y,\"target_Yn\":$Yn}";
+    }
+    foreach my $sat (
+     ["100% Red","Red",1,0,0],
+     ["100% Green","Green",0,1,0],
+     ["100% Blue","Blue",0,0,1],
+     ["100% Cyan","Cyan",0,1,1],
+     ["100% Magenta","Magenta",1,0,1],
+     ["100% Yellow","Yellow",1,1,0]
+    ) {
+     my ($name,$series_color,$r_mix,$g_mix,$b_mix)=@$sat;
+     my $mix_X=$RGB_TO_XYZ[0][0]*$r_mix+$RGB_TO_XYZ[0][1]*$g_mix+$RGB_TO_XYZ[0][2]*$b_mix;
+     my $mix_Y=$RGB_TO_XYZ[1][0]*$r_mix+$RGB_TO_XYZ[1][1]*$g_mix+$RGB_TO_XYZ[1][2]*$b_mix;
+     my $mix_Z=$RGB_TO_XYZ[2][0]*$r_mix+$RGB_TO_XYZ[2][1]*$g_mix+$RGB_TO_XYZ[2][2]*$b_mix;
+     my $mix_sum=$mix_X+$mix_Y+$mix_Z;
+     my $px=$mix_sum>0?$mix_X/$mix_sum:0.3127;
+     my $py=$mix_sum>0?$mix_Y/$mix_sum:0.329;
+     my $X=$px/$py; my $Y=1; my $Z=(1-$px-$py)/$py;
+     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
+     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
+     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
+     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
+     if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
+     my $r=$encode_linear->($rl);
+     my $g=$encode_linear->($gl);
+     my $b=$encode_linear->($bl);
+     push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"series_color\":\"$series_color\",\"sat_pct\":100}";
+    }
+ } elsif($type eq "saturations") {
+  my $min_code=$patch_limited?16:0;
+  my $span_code=$patch_limited?219:255;
+  my $encode_channel=sub {
+   my ($linear)=@_;
+   $linear=0 if(!defined $linear || $linear < 0);
+   $linear=1 if($linear > 1);
+   my $encoded=$linear;
+   if($signal_mode eq "hdr10") {
+      $encoded=&webui_pattern_pq_encode_normalized($linear*100);
+   } elsif($signal_mode eq "dv") {
+      $encoded=$linear**(1/2.2);
+   } else {
+      $encoded=$target_linear_to_signal->($linear);
+   }
+   return int($min_code + $encoded*$span_code + .5);
+  };
+  my $level_pct=($signal_mode eq "hdr10" || $signal_mode eq "dv") ? 50 : 75;
+  my $level_code=int($min_code + ($level_pct/100)*$span_code + .5);
+  my $level_signal=$span_code>0 ? (($level_code-$min_code)/$span_code) : 0;
+  my $level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($level_signal)/10000) : (($signal_mode eq "dv") ? ($level_signal**2.2) : $target_signal_to_linear->($level_signal));
+  my %primaries=(
+   bt709=>{R=>[0.64,0.33],G=>[0.30,0.60],B=>[0.15,0.06],M=>[[3.2406,-1.5372,-0.4986],[-0.9689,1.8758,0.0415],[0.0557,-0.2040,1.0570]],RGB_TO_XYZ=>[[0.4124564,0.3575761,0.1804375],[0.2126729,0.7151522,0.0721750],[0.0193339,0.1191920,0.9503041]]},
+   bt2020=>{R=>[0.708,0.292],G=>[0.170,0.797],B=>[0.131,0.046],M=>[[1.7166511880,-0.3556707838,-0.2533662814],[-0.6666843518,1.6164812366,0.0157685458],[0.0176398574,-0.0427706133,0.9421031212]],RGB_TO_XYZ=>[[0.6369580483,0.1446169036,0.1688809752],[0.2627002120,0.6779980715,0.0593017165],[0.0000000000,0.0280726930,1.0609850577]]},
+   p3d65=>{R=>[0.680,0.320],G=>[0.265,0.690],B=>[0.150,0.060],M=>[[2.4934969119,-0.9313836179,-0.4027107845],[-0.8294889696,1.7626640603,0.0236246858],[0.0358458302,-0.0761723893,0.9568845240]],RGB_TO_XYZ=>[[0.4865709486,0.2656676932,0.1982172852],[0.2289745641,0.6917385218,0.0792869141],[0.0000000000,0.0451133819,1.0439443689]]}
+  );
+  my $colorimetry=int($series_colorimetry);
+  my $primaries_idx=int($series_primaries);
+  my $container_key="bt709";
+  if($signal_mode eq "dv") {
+   # DV rides in a BT.2020 container — see colors series comment above.
+   $container_key="bt2020";
+  } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+   $container_key="bt2020";
+  } elsif($colorimetry == 9) {
+   $container_key="bt2020";
+  }
+  my $auto_target_key=$container_key;
+  if($signal_mode eq "dv") {
+   $auto_target_key="p3d65";
+  } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+   $auto_target_key="p3d65" if($primaries_idx == 2 || $primaries_idx == 3);
+  }
+  my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
+  my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg") || ($signal_mode eq "dv")) ? $container_key : $target_key;
+  my $g_target=$primaries{$target_key};
+  my $g_solve=$primaries{$solve_key};
+  my @MI=@{$g_solve->{M}};
+  my @RGB_TO_XYZ=@{$g_target->{RGB_TO_XYZ}};
+  foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
+   my ($name,$r_mix,$g_mix,$b_mix)=@$color;
+   my $mix_X=$RGB_TO_XYZ[0][0]*$r_mix+$RGB_TO_XYZ[0][1]*$g_mix+$RGB_TO_XYZ[0][2]*$b_mix;
+   my $mix_Y=$RGB_TO_XYZ[1][0]*$r_mix+$RGB_TO_XYZ[1][1]*$g_mix+$RGB_TO_XYZ[1][2]*$b_mix;
+   my $mix_Z=$RGB_TO_XYZ[2][0]*$r_mix+$RGB_TO_XYZ[2][1]*$g_mix+$RGB_TO_XYZ[2][2]*$b_mix;
+   my $mix_sum=$mix_X+$mix_Y+$mix_Z;
+   my $px=$mix_sum>0?$mix_X/$mix_sum:0.3127;
+   my $py=$mix_sum>0?$mix_Y/$mix_sum:0.329;
+   foreach my $sat (25,50,75,100) {
+    my $f=$sat/100;
+    my $tx=0.3127+$f*($px-0.3127); my $ty=0.329+$f*($py-0.329);
+    my $X=$tx/$ty; my $Y=1; my $Z=(1-$tx-$ty)/$ty;
+    my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
+    my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
+    my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
+    my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
+    if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+    $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
+    $rl*=$level_linear;$gl*=$level_linear;$bl*=$level_linear;
+    my $r=$signal_mode eq "hdr10" ? int($min_code + &webui_pattern_pq_encode_normalized($rl*10000)*$span_code + .5) : $encode_channel->($rl);
+    my $g=$signal_mode eq "hdr10" ? int($min_code + &webui_pattern_pq_encode_normalized($gl*10000)*$span_code + .5) : $encode_channel->($gl);
+    my $b=$signal_mode eq "hdr10" ? int($min_code + &webui_pattern_pq_encode_normalized($bl*10000)*$span_code + .5) : $encode_channel->($bl);
+    push @steps, "{\"ire\":$sat,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name $sat%\"}";
+   }
+  }
+ }
+
+ my $series_id="${type}_".time();
+ my $total=scalar(@steps);
+
+ # Write steps to temp file for helper script
+ my $steps_file="/tmp/meter_series_steps.json";
+ if(open(my $fh,">",$steps_file)) {
+  print $fh "[".join(",",@steps)."]";
+  close($fh);
+ }
+
+ # Write initial state
+ my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[]}";
+ if(open(my $fh,">",$_meter_series_file)) { print $fh $init_json; close($fh); }
+
+ # Launch series helper script in background (setsid to detach from daemon threads)
+ # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
+ system("setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' </dev/null >/dev/null 2>&1 &");
+
+ return "{\"status\":\"started\",\"series_id\":\"$series_id\",\"total_steps\":$total,\"steps\":[".join(",",@steps)."]}";
+}
+
+sub webui_meter_series_status (@) {
+ if(-f $_meter_series_file) {
+  my $json="";
+  if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
+  if($json ne "") {
+   # If status is "running", verify the process is still alive
+   if($json=~/"status"\s*:\s*"running"/) {
+    my $alive=`pgrep -f meter_series.sh 2>/dev/null`;
+    if($alive!~/\d/) {
+     # Process died — mark as error so client knows
+     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+     $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Process died unexpectedly"/;
+     if(open(my $wf,">",$_meter_series_file)) { print $wf $json; close($wf); }
+    }
+   }
+   # Include steps from steps file so any client can reconstruct the UI
+   if(-f "/tmp/meter_series_steps.json" && $json=~/"status"\s*:\s*"(running|complete|error|cancelled)"/) {
+    my $steps="";
+    if(open(my $sf,"<","/tmp/meter_series_steps.json")) { local $/; $steps=<$sf>; close($sf); }
+    if($steps ne "" && $json!~/"steps"/) {
+     $json=~s/\}$/,"steps":$steps}/;
+    }
+   }
+   return $json;
+  }
+ }
+ return '{"status":"idle"}';
+}
+
+sub webui_meter_stop (@) {
+ # Stop the persistent session daemon first (graceful, then force).
+ &webui_meter_session_stop() if(&webui_meter_session_alive());
+ # Kill any running spotread/meter processes (sudo required: they run as root)
+ system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
+ system("sudo pkill -9 -f 'meter_series.sh' 2>/dev/null");
+ system("sudo pkill -9 -f 'spotread_wrapper' 2>/dev/null");
+ system("sudo pkill -9 -x spotread 2>/dev/null");
+ system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
+ system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
+ # Mark state as cancelled (if still running)
+ if(-f $_meter_series_file) {
+  my $json="";
+  if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
+  if($json=~/"status"\s*:\s*"running"/) {
+   $json=~s/"status"\s*:\s*"running"/"status":"cancelled"/;
+   if(open(my $fh,">",$_meter_series_file)) { print $fh $json; close($fh); }
+  }
+ }
+ # Clean up stale temp files so new series starts fresh
+ unlink("/tmp/spotread_port_cache");
+ # Remove any leftover spotread pipes/output files
+ my @stale=glob("/tmp/spotread_series_* /tmp/spotread_cmd_*");
+ unlink(@stale) if @stale;
+ return '{"status":"ok","message":"Measurement stopped"}';
+}
+
+sub webui_meter_clear (@) {
+ &webui_meter_stop();
+ &webui_meter_read_state_write('{"status":"idle"}');
+ unlink("${_meter_read_file}.tmp");
+ unlink("/tmp/meter_series_steps.json");
+ unlink("/tmp/meter_read_steps.json");
+ my $stamp=time();
+ my $json="{\"status\":\"cleared\",\"timestamp\":$stamp,\"readings\":[]}";
+ if(open(my $fh,">",$_meter_series_file)) { print $fh $json; close($fh); }
+ return '{"status":"ok","message":"Chart data cleared"}';
+}
+
+sub webui_meter_reset (@) {
+ # Kill any spotread processes first
+ system("sudo bash $_meter_wrapper --kill 2>/dev/null");
+ select(undef,undef,undef,0.3);
+ # Reset USB hub via helper script (needs root for sysfs writes)
+ system("sudo /bin/bash /usr/bin/meter_usb_reset.sh 2>/dev/null");
+ select(undef,undef,undef,2);
+ # Clear stale port cache
+ unlink("/tmp/spotread_port_cache");
+ &log("WebUI: USB hub reset performed");
+ return '{"status":"ok","message":"USB reset performed"}';
+}
+
+my $_meter_settings_file="/tmp/meter_settings.json";
+# Persistent copy — reloaded on daemon start and mirrored whenever the
+# transient /tmp copy is written. Survives reboots.
+my $_meter_settings_persist="/usr/share/PGenerator/meter_settings.json";
+
+sub webui_meter_settings_save (@) {
+ my ($body)=@_;
+ # Validate: only allow known keys. New color-science keys are additive.
+ my %allowed=map {$_=>1} qw(
+  display_type target_gamut delay patch_size patch_insert disable_aio
+  refresh_rate ccss_file
+  grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
+  hdr_diffuse hdr_bt2390 incl_lum
+ );
+ my @parts;
+ while($body=~/"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
+  push @parts, "\"$1\":$2" if($allowed{$1});
+ }
+ my $safe="{".join(",",@parts)."}";
+ if(open(my $fh,">",$_meter_settings_file)) { print $fh $safe; close($fh); }
+ # Mirror to persistent location. Failures here are non-fatal — the /tmp
+ # copy is authoritative for the running session either way.
+ if(open(my $pf,">",$_meter_settings_persist)) { print $pf $safe; close($pf); }
+ return '{"status":"ok"}';
+}
+
+sub webui_meter_settings_load (@) {
+ my $peak=$pgenerator_conf{"max_luma"};
+ $peak=1000 if(!defined $peak || $peak eq "");
+ my $min=$pgenerator_conf{"min_luma"};
+ $min=0.005 if(!defined $min || $min eq "");
+ my $boot_id=`cat /proc/sys/kernel/random/boot_id 2>/dev/null`;
+ chomp($boot_id);
+ $boot_id=~s/[^A-Za-z0-9_-]//g;
+ $boot_id="boot_".time() if($boot_id eq "");
+ foreach my $path ($_meter_settings_file, $_meter_settings_persist) {
+  next unless(-f $path);
+  my $json="";
+  if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
+  if($json ne "" && $json=~/^\{/) {
+   $json=~s/,?\s*"hdr_master_peak"\s*:\s*"[^"]*"//g;
+   $json=~s/,?\s*"hdr_master_min"\s*:\s*"[^"]*"//g;
+   $json=~s/,?\s*"boot_id"\s*:\s*"[^"]*"//g;
+   $json=~s/\{\s*,/\{/g;
+   $json=~s/,\s*,/,/g;
+   $json=~s/,\s*\}/}/g;
+   $json=~s/\s*\}\s*$//;
+   $json.="," if($json!~/\{\s*$/);
+   $json.="\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\",\"boot_id\":\"$boot_id\"}";
+   return $json;
+  }
+ }
+ return "{\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\",\"boot_id\":\"$boot_id\"}";
+}
+
+###############################################
+#         Custom CCSS API Functions           #
+###############################################
+
+sub _webui_json_escape (@) {
+ my $s="".shift;
+ $s=~s/\\/\\\\/g;
+ $s=~s/"/\\"/g;
+ $s=~s/\r/\\r/g;
+ $s=~s/\n/\\n/g;
+ $s=~s/\t/\\t/g;
+ return $s;
+}
+
+sub _webui_ccss_meta (@) {
+ my ($path)=@_;
+ my %meta=(display=>"",technology=>"");
+ return \%meta if(!$path || !-f $path);
+ if(open(my $fh,"<",$path)) {
+  my $count=0;
+  while(my $line=<$fh>) {
+   $count++;
+   last if($count>80);
+   last if($line=~/^(?:BEGIN_DATA_FORMAT|BEGIN_DATA)\b/);
+   chomp($line);
+   $meta{display}=$1 if(!$meta{display} && $line=~/^DISPLAY\s+"([^"]*)"/i);
+   $meta{technology}=$1 if(!$meta{technology} && $line=~/^TECHNOLOGY\s+"([^"]*)"/i);
+  }
+  close($fh);
+ }
+ return \%meta;
+}
+
+sub webui_ccss_list (@) {
+ my @files;
+ my %seen;
+ foreach my $dir ($_custom_ccss_dir,$_custom_ccss_legacy_dir) {
+  next unless(-d $dir && opendir(my $dh, $dir));
+  while(my $f=readdir($dh)) {
+   next unless($f=~/\.ccss$/i);
+   next if($seen{lc $f}++);
+   push @files, "\"$f\"";
+  }
+  closedir($dh);
+ }
+ return '{"files":['.join(",",sort @files).']}';
+}
+
+sub webui_ccss_all (@) {
+ # Returns combined list of system + custom ccss files (alphabetical).
+ # Each entry: {"name":"...", "source":"system"|"custom", "display":"...", "technology":"..."}
+ my @out;
+ my %seen;
+ # System dir (excluding the 'custom' subdir)
+ if(-d $_ccss_dir && opendir(my $dh, $_ccss_dir)) {
+  while(my $f=readdir($dh)) {
+   next unless($f=~/\.ccss$/i);
+   next if($seen{lc $f}++);
+   my $meta=&_webui_ccss_meta("$_ccss_dir/$f");
+   my $e=&_webui_json_escape($f);
+   my $d=&_webui_json_escape($meta->{display});
+   my $t=&_webui_json_escape($meta->{technology});
+   push @out, [lc $f, "{\"name\":\"$e\",\"source\":\"system\",\"display\":\"$d\",\"technology\":\"$t\"}"];
+  }
+  closedir($dh);
+ }
+ foreach my $dir ($_custom_ccss_dir,$_custom_ccss_legacy_dir) {
+  next unless(-d $dir && opendir(my $dh, $dir));
+  while(my $f=readdir($dh)) {
+   next unless($f=~/\.ccss$/i);
+   next if($seen{lc $f}++);
+   my $meta=&_webui_ccss_meta("$dir/$f");
+   my $e=&_webui_json_escape($f);
+   my $d=&_webui_json_escape($meta->{display});
+   my $t=&_webui_json_escape($meta->{technology});
+   push @out, [lc $f, "{\"name\":\"$e\",\"source\":\"custom\",\"display\":\"$d\",\"technology\":\"$t\"}"];
+  }
+  closedir($dh);
+ }
+ my @sorted=map { $_->[1] } sort { $a->[0] cmp $b->[0] } @out;
+ return '{"files":['.join(",",@sorted).']}';
+}
+
+sub webui_ccss_upload (@) {
+ my ($body)=@_;
+ # Expect JSON: { name: "...", content: "base64...", filename: "..." }
+ my $name="";
+ $name=$1 if($body=~/"name"\s*:\s*"([^"]{1,80})"/);
+ my $content_b64="";
+ $content_b64=$1 if($body=~/"content"\s*:\s*"([^"]+)"/);
+ my $orig_filename="";
+ $orig_filename=$1 if($body=~/"filename"\s*:\s*"([^"]{1,200})"/);
+
+ if($name eq "" || $content_b64 eq "") {
+  return '{"status":"error","message":"Name and file content required"}';
+ }
+
+ # Sanitize name for filesystem use
+ my $safe_name=$name;
+ $safe_name=~s/[^a-zA-Z0-9._\- ]//g;
+ $safe_name=~s/\s+/_/g;
+ $safe_name=substr($safe_name,0,60) if(length($safe_name)>60);
+ $safe_name.=".ccss" unless($safe_name=~/\.ccss$/i);
+
+ my $raw=decode_base64($content_b64);
+ if(length($raw) < 10 || length($raw) > 5*1024*1024) {
+  return '{"status":"error","message":"Invalid file size"}';
+ }
+
+ # Create custom dir if needed. Use the writable runtime location under
+ # /var/lib/PGenerator so uploads work under the unprivileged daemon user.
+ if(!-d $_custom_ccss_dir) {
+  system("mkdir -p $_custom_ccss_dir >/dev/null 2>&1");
+ }
+ if(!-d $_custom_ccss_dir) {
+  return '{"status":"error","message":"Custom storage unavailable"}';
+ }
+
+ # Detect file type: CSV or CCSS
+ if($raw=~/^CCSS\s/) {
+  # Already a CCSS file — validate basic structure
+  if($raw!~/BEGIN_DATA/ || $raw!~/END_DATA/) {
+   return '{"status":"error","message":"Invalid CCSS file: missing data section"}';
+  }
+  my $out_path="$_custom_ccss_dir/$safe_name";
+  if(open(my $fh,">:raw",$out_path)) {
+   print $fh $raw;
+   close($fh);
+   &log("WebUI: custom CCSS uploaded: $safe_name");
+   return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"message\":\"CCSS profile saved\"}";
+  }
+  return '{"status":"error","message":"Failed to write file"}';
+ }
+
+ # Assume CSV — try to convert
+ my $ccss_content=&csv_to_ccss($raw,$name,$orig_filename);
+ if(!$ccss_content) {
+  return '{"status":"error","message":"Failed to parse CSV. Expected: wavelength,R,G,B,W columns (380-780nm)"}';
+ }
+
+ my $out_path="$_custom_ccss_dir/$safe_name";
+ if(open(my $fh,">",$out_path)) {
+  print $fh $ccss_content;
+  close($fh);
+  &log("WebUI: custom CCSS converted from CSV: $safe_name");
+  return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"message\":\"CSV converted to CCSS\"}";
+ }
+ return '{"status":"error","message":"Failed to write file"}';
+}
+
+sub webui_ccss_delete (@) {
+ my ($fname)=@_;
+ $fname=~s/[^a-zA-Z0-9._-]//g;
+ if($fname eq "" || $fname=~/\.\./) {
+  return '{"status":"error","message":"Invalid filename"}';
+ }
+ foreach my $path ("$_custom_ccss_dir/$fname","$_custom_ccss_legacy_dir/$fname") {
+  next unless(-f $path);
+  unlink($path);
+  &log("WebUI: custom CCSS deleted: $fname");
+  return '{"status":"ok","message":"Deleted"}';
+ }
+ return '{"status":"error","message":"File not found"}';
+}
+
+# CCSS dry-run validator. Parses the file header to confirm it looks like
+# a spectral-sample file, then optionally attempts a short spotread probe
+# to verify the active meter accepts the upload. Returns:
+#   {ok:true,  description:"…", technology:"…", display_type_refresh:"YES|NO", yflag:"l|c|p"}
+#   {ok:false, error:"…"}
+sub webui_ccss_validate (@) {
+ my ($body)=@_;
+ my $fname="";
+ $fname=$1 if($body=~/"ccss_file"\s*:\s*"([^"]+)"/);
+ # Strip any path components (guard against traversal) but keep just the
+ # basename so the resolver below can find it in either $_ccss_dir or
+ # $_ccss_dir/custom. Clients typically send "custom/foo.ccss".
+ $fname=~s{\\}{/}g;
+ $fname=~s{^.*/}{};
+ $fname=~s/[^a-zA-Z0-9._\-()\[\] ]//g;
+ return '{"ok":false,"error":"Missing or invalid ccss_file"}' if($fname eq "");
+ my $resolved="";
+ foreach my $base ($_ccss_dir,$_custom_ccss_dir,$_custom_ccss_legacy_dir) {
+  my $p="$base/$fname";
+  if(-f $p) { $resolved=$p; last; }
+ }
+ return '{"ok":false,"error":"File not found"}' if($resolved eq "");
+ my ($sz)=(-s $resolved);
+ return '{"ok":false,"error":"File is empty"}' if(!$sz || $sz<200);
+
+ my ($display,$technology,$refresh)=("","","");
+ my $has_spectral_format=0;
+ my $has_spectral_data=0;
+ if(open(my $fh,"<",$resolved)) {
+  my $count=0;
+  while(my $line=<$fh>) {
+   $count++;
+   # Some valid Argyll CCSS files have hundreds of SPEC_* header lines before
+   # BEGIN_DATA, so allow a much deeper scan before giving up.
+   last if($count>1200);
+   chomp($line);
+   $display=$1    if(!$display    && $line=~/^DISPLAY\s+"([^"]*)"/i);
+   $technology=$1 if(!$technology && $line=~/^TECHNOLOGY\s+"([^"]*)"/i);
+   $refresh=$1    if(!$refresh    && $line=~/^DISPLAY_TYPE_REFRESH\s+"([^"]*)"/i);
+   $has_spectral_format=1 if($line=~/^SPECTRAL_BANDS\b/);
+   $has_spectral_format=1 if($line=~/^BEGIN_DATA_FORMAT\b/ && !$has_spectral_format);
+   $has_spectral_data=1   if($line=~/^BEGIN_DATA\b/);
+   last if($has_spectral_data);
+  }
+  close($fh);
+ } else {
+  return '{"ok":false,"error":"Cannot open file for reading"}';
+ }
+ if(!$has_spectral_format || !$has_spectral_data) {
+  return '{"ok":false,"error":"Not a CCSS file (missing spectral bands or data section)"}';
+ }
+ my $yflag=&_resolve_ccss_yflag($resolved);
+ my $desc=$display ne "" ? $display : $fname;
+ my $r='{"ok":true'
+  .',"description":"'.&_webui_json_escape($desc).'"'
+  .',"technology":"'.&_webui_json_escape($technology).'"'
+  .',"display_type_refresh":"'.&_webui_json_escape($refresh).'"'
+  .',"yflag":"'.&_webui_json_escape($yflag).'"'
+  .',"path":"'.&_webui_json_escape($resolved).'"'
+  .'}';
+ return $r;
+}
+
+sub _webui_ccss_clean_name (@) {
+ my ($text)=@_;
+ $text="" if(!defined $text);
+ $text=~s/\.ccss$//i;
+ $text=~s/\.csv$//i;
+ $text=~s/_-_.*$//;
+ $text=~s/_/ /g;
+ $text=~s/\s+/ /g;
+ $text=~s/^\s+|\s+$//g;
+ return $text;
+}
+
+sub _webui_ccss_guess_meta (@) {
+ my ($profile_name,$orig_filename)=@_;
+ my $source=$profile_name ne "" ? $profile_name : $orig_filename;
+ my $base=&_webui_ccss_clean_name($source);
+ my $display=$base;
+ my $technology="";
+ if($base =~ /^(.*)\s+\(([^)]+)\)$/) {
+  $display=&_webui_ccss_clean_name($1);
+  $technology=&_webui_ccss_clean_name($2);
+ } elsif($base =~ /^(QD-OLED|WRGB OLED|RGB OLED|LCD|CRT|Plasma|Projector|White LED|RGB LED|CCFL|Wide Gamut CCFL|PFS Phosphor|RG Phosphor)\s+(.+)$/i) {
+  $display=&_webui_ccss_clean_name($2);
+  $technology=&_webui_ccss_clean_name($1);
+ }
+ $display=$profile_name if($display eq "" && $profile_name ne "");
+ return ($display,$technology);
+}
+
+sub csv_to_ccss (@) {
+ my ($csv_text,$profile_name,$orig_filename)=@_;
+ my @lines=split(/\r?\n/,$csv_text);
+ # Parse header to find columns
+ my $header=shift @lines;
+ return undef if(!$header);
+ my @cols=split(/[,\t]/,$header);
+ # Find wavelength and R/G/B/W columns (case-insensitive)
+ my ($wl_col,$r_col,$g_col,$b_col,$w_col)=(-1,-1,-1,-1,-1);
+ for(my $i=0;$i<scalar(@cols);$i++) {
+  my $c=lc($cols[$i]);
+  $c=~s/^\s+|\s+$//g;
+  $c=~s/^"(.*)"$/$1/;
+  if($c=~/^(wavelength|nm|lambda|wl)$/) { $wl_col=$i; }
+  elsif($c=~/^(red|r)$/) { $r_col=$i; }
+  elsif($c=~/^(green|g)$/) { $g_col=$i; }
+  elsif($c=~/^(blue|b)$/) { $b_col=$i; }
+  elsif($c=~/^(white|w)$/) { $w_col=$i; }
+ }
+ # If no header match, try numeric detection
+ if($wl_col<0) {
+  # Check if first column looks like wavelengths (380-780)
+  my @first_vals;
+  for my $line (@lines) {
+   my @v=split(/[,\t]/,$line);
+   if($v[0]=~/^\s*(\d+\.?\d*)/) { push @first_vals,$1; last if(scalar(@first_vals)>=3); }
+  }
+  if(@first_vals && $first_vals[0]>=300 && $first_vals[0]<=400) {
+   $wl_col=0;
+   if(scalar(@cols)>=5) { $r_col=1;$g_col=2;$b_col=3;$w_col=4; }
+   elsif(scalar(@cols)>=4) { $r_col=1;$g_col=2;$b_col=3; }
+   else { return undef; }
+  }
+ }
+ return undef if($wl_col<0 || $r_col<0 || $g_col<0 || $b_col<0);
+
+ # Parse data rows
+ my @data;
+ for my $line (@lines) {
+  next if($line=~/^\s*$/ || $line=~/^\s*#/);
+  my @v=split(/[,\t]/,$line);
+  my $wl=$v[$wl_col]; $wl=~s/[^\d.]//g;
+  next if($wl eq "" || $wl<300 || $wl>900);
+  my %row=(wl=>$wl+0);
+  for my $ch (["r",$r_col],["g",$g_col],["b",$b_col]) {
+   my $val=$v[$ch->[1]]||0; $val=~s/[^\d.eE\-+]//g; $val=($val+0);
+   $row{$ch->[0]}=$val;
+  }
+  if($w_col>=0 && defined $v[$w_col]) {
+   my $val=$v[$w_col]||0; $val=~s/[^\d.eE\-+]//g;
+   $row{w}=$val+0;
+  }
+  push @data,\%row;
+ }
+ return undef if(scalar(@data)<10);
+
+ # Interpolate/resample to 1nm from 380-780
+ my @resampled;
+ for(my $nm=380;$nm<=780;$nm++) {
+  my %pt=(wl=>$nm);
+  for my $ch ("r","g","b","w") {
+   next if($ch eq "w" && $w_col<0);
+   $pt{$ch}=&_interp_spectral(\@data,$ch,$nm);
+  }
+  push @resampled,\%pt;
+ }
+
+ # Determine number of sets (3 if no white, 4 if white)
+ my $has_white=($w_col>=0)?1:0;
+ my $num_sets=$has_white?4:3;
+
+ # Find spectral norm (max value across all channels and wavelengths)
+ my $norm=0;
+ for my $pt (@resampled) {
+  for my $ch ("r","g","b",($has_white?"w":())) {
+   $norm=$pt->{$ch} if($pt->{$ch}>$norm);
+  }
+ }
+ $norm=1 if($norm<=0);
+
+ # Build CCSS
+ my $bands=scalar(@resampled);
+ my $now_str=localtime();
+ my ($display_name,$technology_name)=&_webui_ccss_guess_meta($profile_name,$orig_filename);
+ my $ccss="CCSS   \n\n";
+ $ccss.="DESCRIPTOR \"$profile_name\"\n";
+ $ccss.="ORIGINATOR \"PGenerator+ csv2ccss converter\"\n";
+ $ccss.="CREATED \"$now_str\"\n";
+ $ccss.="DISPLAY \"$display_name\"\n";
+ $ccss.="TECHNOLOGY \"$technology_name\"\n" if($technology_name ne "");
+ $ccss.="KEYWORD \"DISPLAY_TYPE_REFRESH\"\n";
+ $ccss.="DISPLAY_TYPE_REFRESH \"NO\"\n";
+ $ccss.="REFERENCE \"User provided\"\n";
+ $ccss.="SPECTRAL_BANDS \"$bands\"\n";
+ $ccss.="SPECTRAL_START_NM \"380.000000\"\n";
+ $ccss.="SPECTRAL_END_NM \"780.000000\"\n";
+ $ccss.=sprintf("SPECTRAL_NORM \"%f\"\n",$norm);
+ $ccss.="\n";
+ $ccss.="NUMBER_OF_FIELDS ".($bands+1)."\n";
+ $ccss.="BEGIN_DATA_FORMAT\n";
+ $ccss.="SAMPLE_ID";
+ for(my $nm=380;$nm<=780;$nm++) { $ccss.=" SPEC_$nm"; }
+ $ccss.="\nEND_DATA_FORMAT\n\n";
+ $ccss.="NUMBER_OF_SETS $num_sets\n";
+ $ccss.="BEGIN_DATA\n";
+ # Write R, G, B (and optionally W) as separate rows
+ my @channels=("r","g","b");
+ push @channels,"w" if($has_white);
+ my $set_id=1;
+ for my $ch (@channels) {
+  $ccss.=$set_id;
+  for my $pt (@resampled) { $ccss.=sprintf(" %f",$pt->{$ch}); }
+  $ccss.="\n";
+  $set_id++;
+ }
+ $ccss.="END_DATA\n";
+ return $ccss;
+}
+
+sub _interp_spectral (@) {
+ my ($data,$ch,$target_nm)=@_;
+ # Find bracketing points
+ my $n=scalar(@$data);
+ return 0 if($n==0);
+ # Clamp to range
+ if($target_nm<=$data->[0]{wl}) { return $data->[0]{$ch}||0; }
+ if($target_nm>=$data->[$n-1]{wl}) { return $data->[$n-1]{$ch}||0; }
+ for(my $i=0;$i<$n-1;$i++) {
+  if($data->[$i]{wl}<=$target_nm && $data->[$i+1]{wl}>=$target_nm) {
+   my $t=($target_nm-$data->[$i]{wl})/($data->[$i+1]{wl}-$data->[$i]{wl});
+   my $v0=$data->[$i]{$ch}||0;
+   my $v1=$data->[$i+1]{$ch}||0;
+   return $v0+$t*($v1-$v0);
+  }
+ }
+ return 0;
 }
 
 ###############################################
@@ -694,11 +1966,17 @@ sub webui_info_json (@) {
  $temp=~s/[^\d.]//g;
  my $uptime=&read_from_file($uptime_file);
  ($uptime)=$uptime=~/^([\d.]+)/;
- my $ip_info=`timeout 3 ip -4 addr show 2>/dev/null`;
+
+ # Read network info from device_info cached .info files (non-blocking)
  my @ips;
- while($ip_info=~/inet\s+([\d.\/]+)\s.*?(\S+)\s*$/gm) {
-  my ($addr,$iface)=($1,$2);
-  next if($addr=~/^127\./);
+ my @ip_files=glob("$info_dir/GET_IP-*.info");
+ foreach my $f (@ip_files) {
+  my ($iface)=$f=~/GET_IP-(.+)\.info$/;
+  next if(!$iface || $iface eq "lo");
+  my $addr=&read_from_file($f);
+  chomp($addr);
+  next if(!$addr || $addr eq "N/A" || $addr eq "None" || $addr eq "");
+  $addr=~s/"/\\"/g;
   push @ips, "\"$iface\":\"$addr\"";
  }
  my $ip_json="{".join(",",@ips)."}";
@@ -713,24 +1991,25 @@ sub webui_info_json (@) {
   $resolution="${w_s}x${h_s}";
  }
 
- # Get WiFi connection info
+ # Read WiFi info from device_info cached .info file (non-blocking)
  my $wifi_ssid="";
  my $wifi_freq="";
  my $wifi_signal="";
  my $wifi_state="";
- my $wifi_status=`timeout 3 wpa_cli -i wlan0 status 2>/dev/null`;
- foreach my $wline (split(/\n/,$wifi_status)) {
-  if($wline=~/^ssid\s*=\s*(.*)/) { $wifi_ssid=$1; }
-  if($wline=~/^freq\s*=\s*(\d+)/) { $wifi_freq=$1; }
-  if($wline=~/^wpa_state\s*=\s*(.*)/) { $wifi_state=$1; }
+ my $wifi_cached=&read_from_file("$info_dir/GET_WIFI_STATUS.info");
+ if($wifi_cached) {
+  $wifi_cached=decode_base64($wifi_cached);
+  foreach my $wline (split(/\n/,$wifi_cached)) {
+   if($wline=~/^ssid\s*=\s*(.*)/) { $wifi_ssid=$1; }
+   if($wline=~/^freq\s*=\s*(\d+)/) { $wifi_freq=$1; }
+   if($wline=~/^wpa_state\s*=\s*(.*)/) { $wifi_state=$1; }
+  }
  }
  $wifi_ssid=~s/"/\\"/g;
  my $wifi_band="";
  if($wifi_freq=~/^\d+$/) {
   $wifi_band=($wifi_freq>=5000)?"5 GHz":"2.4 GHz";
  }
- my $iw_out=`timeout 3 iw dev wlan0 station dump 2>/dev/null`;
- if($iw_out=~/signal:\s*(-?\d+)/){ $wifi_signal=$1; }
 
  my $cal_ip=$calibration_client_ip; $cal_ip=~s/"/\\"/g;
  my $cal_sw=$calibration_client_software; $cal_sw=~s/"/\\"/g;
@@ -738,7 +2017,7 @@ sub webui_info_json (@) {
  my $meminfo=&read_from_file("/proc/meminfo");
  my $total_ram="";
  if($meminfo=~/MemTotal:\s*(\d+)/) { $total_ram=int($1/1024); }
- my $gpu_mem=&pgenerator_cmd("GET_GPU_MEMORY");
+ my $gpu_mem=&read_from_file("$info_dir/GET_GPU_MEMORY.info");
  chomp($gpu_mem);
  $gpu_mem=~s/\s//g;
  my $hdmi_port_json=&webui_hdmi_port_status();
@@ -1287,6 +2566,24 @@ sub webui_pattern_pq_encode_normalized (@) {
  return (($c1 + $c2*$p)/(1 + $c3*$p))**$m2;
 }
 
+sub webui_pattern_pq_decode_normalized (@) {
+ my $code=shift;
+ $code=0 if($code < 0);
+ $code=1 if($code > 1);
+ return 0 if($code <= 0);
+ my $m1=2610/16384;
+ my $m2=2523/32;
+ my $c1=3424/4096;
+ my $c2=2413/128;
+ my $c3=2392/128;
+ my $p=$code**(1/$m2);
+ my $num=$p-$c1;
+ $num=0 if($num < 0);
+ my $den=$c2-$c3*$p;
+ return 10000 if($den <= 0);
+ return 10000*(($num/$den)**(1/$m1));
+}
+
 sub webui_pattern_peak_code (@) {
  my $max_code=int(shift);
  my $signal_mode=shift;
@@ -1311,7 +2608,7 @@ sub webui_pattern_legacy_byte (@) {
  return $value if(!&webui_pattern_is_pq_mode($signal_mode));
  return 0 if($value == 0);
  # Gamma 2.2 decode to linear light, scale to max_luma nits, PQ encode.
- # the reference workflow sends DV patterns assuming gamma 2.2 encoding, so we match that.
+ # DV patterns use gamma 2.2 encoding, so we match that.
  # The old linear mapping (value*peak/255) crushed blacks because PQ is
  # perceptual — a linear fraction of PQ codes does not correspond to a
  # linear fraction of perceived brightness.
@@ -1835,6 +3132,10 @@ sub webui_pattern (@) {
  else {
   return '{"status":"error","message":"Unknown pattern: '.$name.'"}';
  }
+ # Ensure the C renderer binary is running (auto-start on first pattern)
+ if(&process_pid("$pattern_generator","get") eq "") {
+  &pattern_generator_start(1);
+ }
  # Write the pattern
  $pat="PATTERN_NAME=$name\nBITS=$pat_bits\n".$pat."FRAME=$frame_default\n";
  open(my $fh,">","$command_file.tmp");
@@ -1883,8 +3184,12 @@ transition:background .3s;cursor:default;position:relative}
 grid-template-columns:1fr 1fr;gap:12px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}
 .card h2{font-size:.95rem;margin-bottom:10px;color:var(--accent);
-display:flex;align-items:center;gap:6px}
+display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .card h2 .icon{font-size:1rem}
+.card h2::after{content:'\25BE';margin-left:auto;font-size:.8rem;color:var(--text2);transition:transform .2s}
+.card.collapsed h2{margin-bottom:0}
+.card.collapsed h2::after{transform:rotate(-90deg)}
+.card.collapsed > *:not(h2){display:none !important}
 .card.span2{grid-column:span 2}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
@@ -1893,9 +3198,12 @@ display:flex;align-items:center;gap:6px}
 .field select,.field input{background:#0d0d15;border:1px solid var(--border);color:var(--text);
 padding:6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:border .2s}
 .field select:focus,.field input:focus{border-color:var(--accent)}
-.field select{cursor:pointer;-webkit-appearance:none;appearance:none;
+.field select,.inline-select{cursor:pointer;-webkit-appearance:none;appearance:none;
 background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");
 background-repeat:no-repeat;background-position:right 8px center;padding-right:24px}
+.inline-select{background-color:#0d0d15;border:1px solid var(--border);color:var(--text);
+padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transition:border .2s;min-height:28px}
+.inline-select:focus{border-color:var(--accent)}
 .btn-row{display:flex;gap:6px;flex-wrap:wrap}
 .btn{padding:7px 14px;border:none;border-radius:6px;font-size:.8rem;cursor:pointer;
 font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap}
@@ -1908,6 +3216,8 @@ font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white
 .btn-secondary:hover{background:#3a3a4a}
 .btn-success{background:var(--green);color:#fff}
 .btn-success:hover{opacity:.9}
+.btn-coffee{background:#ffdd00;color:#111;border:1px solid rgba(0,0,0,.18)}
+.btn-coffee:hover{background:#ffd200;color:#111;transform:translateY(-1px)}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--green);color:#fff;
 padding:10px 16px;border-radius:6px;font-size:.85rem;opacity:0;transform:translateY(20px);
 transition:all .3s;z-index:999;pointer-events:none}
@@ -1966,6 +3276,18 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .drag-handle:hover{opacity:.7}
 .update-pulse{animation:updatePulse 2s ease-in-out infinite}
 @keyframes updatePulse{0%,100%{opacity:1}50%{opacity:.6}}
+@keyframes thumbPulse{0%,100%{box-shadow:0 0 0 3px #fff}50%{box-shadow:0 0 0 3px rgba(255,255,255,.25)}}
+#meterCard.meter-patterns-only #meterSettingsGrid,
+#meterCard.meter-patterns-only #meterLiveReading,
+#meterCard.meter-patterns-only #meterReadSeriesBtn,
+#meterCard.meter-patterns-only #meterCharts,
+#meterCard.meter-patterns-only #meterExportRow,
+#meterCard.meter-patterns-only #meterSeriesHeader,
+#meterCard.meter-patterns-only #meterReadOnce,
+#meterCard.meter-patterns-only #meterContinuous,
+#meterCard.meter-patterns-only #meterResetRow,
+#meterCard.meter-patterns-only #meterProgress,
+#meterCard.meter-patterns-only #meterStopBtn{display:none !important}
 [data-widget].drag-over{outline:2px dashed var(--accent);outline-offset:-2px}
 [data-widget].dragging{opacity:.4}
 @media(max-width:800px){.dashboard{grid-template-columns:1fr}
@@ -1994,6 +3316,11 @@ font-size:.75rem;text-decoration:underline;opacity:.6}
 cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
 .hdmi-note{color:var(--text2);font-size:.8rem;line-height:1.4;margin-bottom:16px;font-style:italic}
 .hdmi-downtime{color:var(--text2);font-size:.75rem;margin-top:12px;opacity:.8}
+.site-footer{max-width:1200px;margin:0 auto 18px;padding:0 12px}
+.site-footer-inner{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;
+display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.site-footer-note{font-size:.7rem;color:var(--text2);line-height:1.4;max-width:70%}
+@media(max-width:700px){.site-footer-note{max-width:100%}.site-footer-inner{justify-content:center;text-align:center}}
 </style>
 </head>
 <body>
@@ -2026,6 +3353,7 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
    <span title="" id="statusWrap"><span class="status-dot" id="statusDot"></span><span id="statusText">...</span></span>
    <span id="tempDisplay"></span>
    <span id="calStatusWrap" title="No calibration software connected"><span class="status-dot" id="calDot" style="background:var(--text2)"></span><span id="calStatusText" style="color:var(--text2)">No SW</span></span>
+   <span id="meterStatusWrap" style="display:none" title="Colorimeter"><span class="status-dot" id="meterDot" style="background:var(--text2)"></span><span id="meterStatusText" style="color:var(--text2)">Meter</span></span>
    <span id="hdmiWarnBadge" onclick="hdmiShowOverlay()" title="HDMI cable is on the wrong port">&#9888; Wrong HDMI Port</span>
   </div>
  </div>
@@ -2150,11 +3478,10 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
   </div>
  </div>
 
- <!-- Test Patterns -->
+ <!-- Diagnostic Patterns -->
  <div class="card span2" data-widget="patterns" draggable="true">
-  <h2><span class="drag-handle">&#9776;</span>Test Patterns</h2>
+  <h2><span class="drag-handle">&#9776;</span>Diagnostic Patterns</h2>
   <div class="pat-section">
-   <div class="pat-section-title" onclick="toggleSection(this)">Diagnostic</div>
    <div class="pat-content">
     <div style="font-size:.65rem;color:var(--text2);margin-bottom:6px;line-height:1.4">Visual setup patterns for display calibration. Use these to verify your display&#39;s basic picture settings before running a full calibration.</div>
     <div class="pat-grid">
@@ -2167,43 +3494,343 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
     <div id="diagInfo" style="font-size:.7rem;color:var(--text2);margin-top:8px;padding:8px 10px;background:#0d0d15;border-radius:6px;line-height:1.5;display:none"></div>
    </div>
   </div>
-  <div class="patch-size-bar">
-   <div class="field" style="flex:0 0 auto">
+
+ </div>
+
+ <!-- Meter & Measurements -->
+ <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
+  <h2 id="meterCardTitle"><span class="drag-handle">&#9776;</span>Test Patterns</h2>
+  <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
+   <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
+   <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
+  </div>
+  <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
+   <div class="field">
+    <label>Display Type</label>
+    <select id="meterDisplayType">
+     <optgroup label="Generic" id="meterDtGeneric">
+      <option value="oled_generic">WRGB OLED</option>
+      <option value="qdoled">QD-OLED</option>
+      <option value="lcd_wled">LCD - White LED</option>
+      <option value="lcd_rgbled">LCD - RGB LED</option>
+      <option value="lcd_ccfl">LCD - CCFL</option>
+      <option value="lcd_wgccfl">LCD - Wide Gamut CCFL</option>
+      <option value="plasma">Plasma</option>
+      <option value="projector_ccss">Projector</option>
+      <option value="crt">CRT</option>
+      <option value="lcd">None (no correction)</option>
+      <option value="custom">Custom CCSS...</option>
+     </optgroup>
+     <optgroup label="Display-specific CCSS" id="meterDtCcss"></optgroup>
+    </select>
+    <div id="customCcssPanel" style="display:none;margin-top:6px;padding:8px;background:#1a1a2e;border-radius:6px;border:1px solid #333">
+     <label style="font-size:.72rem;color:var(--text2);display:block;margin-bottom:4px">Upload CCSS or spectral CSV</label>
+     <input type="file" id="ccssFileInput" accept=".ccss,.csv" style="font-size:.72rem;width:100%;margin-bottom:6px">
+     <div style="display:flex;gap:6px;align-items:center">
+      <input type="text" id="ccssName" placeholder="Profile name" style="flex:1;font-size:.78rem;padding:3px 6px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
+      <button id="ccssUploadBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap;font-size:.72rem;padding:3px 10px" disabled>Upload</button>
+     </div>
+     <div id="ccssUploadStatus" style="font-size:.7rem;color:var(--text2);margin-top:4px"></div>
+     <div id="customCcssList" style="margin-top:6px"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:var(--text2);cursor:pointer;margin-top:4px" title="Insert a neutral patch between measurement patterns to stabilize OLED ABL">
+     <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
+    </label>
+   </div>
+   <div class="field">
+    <label>Target Colorspace</label>
+    <select id="meterTargetGamut">
+     <option value="auto">Auto (match signal)</option>
+     <option value="bt709" selected>BT.709</option>
+     <option value="bt2020">BT.2020</option>
+     <option value="p3d65">DCI-P3 / D65</option>
+    </select>
+   </div>
+   <div class="field">
+    <label>Target Gamma</label>
+    <select id="meterTargetGamma" onchange="meterOnGreyRefChange()">
+     <option value="bt1886">BT.1886 (2.4)</option>
+     <option value="2.2">Gamma 2.2</option>
+     <option value="2.4">Gamma 2.4</option>
+     <option value="srgb">sRGB</option>
+    </select>
+   </div>
+   <div class="field" id="meterHdrConfig" style="display:none">
+    <label>HDR Tone Mapping</label>
+    <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+     <label style="font-size:.68rem;color:var(--text2)" title="Diffuse white (reference SDR white in the HDR signal) in nits">
+      Diffuse <input id="meterHdrDiffuse" type="number" value="203" min="50" max="1000" step="1" style="width:70px" onchange="meterOnGreyRefChange()">
+     </label>
+     <label style="font-size:.68rem;color:var(--text2);cursor:pointer" title="Apply ITU-R BT.2390 tone-mapping from master peak to display peak">
+      <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
+     </label>
+    </div>
+   </div>
+   <div class="field">
+    <label>Settle Delay</label>
+    <select id="meterDelay">
+     <option value="1000">1 second</option>
+     <option value="2000" selected>2 seconds</option>
+     <option value="3000">3 seconds</option>
+     <option value="5000">5 seconds</option>
+     <option value="8000">8 seconds</option>
+    </select>
+   </div>
+   <div class="field">
     <label>Patch Size</label>
-    <select id="patchSize">
+    <select id="meterPatchSize">
+     <option value="2">2% Window</option>
+     <option value="5">5% Window</option>
      <option value="10">10% Window</option>
      <option value="18" selected>18% Window</option>
+     <option value="25">25% Window</option>
      <option value="50">50% Window</option>
-     <option value="100">Full Field</option>
+     <option value="75">75% Window</option>
+     <option value="100">100% Full Field</option>
+     <option disabled>─── APL ───</option>
+     <option value="apl_5">5% APL (window on black)</option>
+     <option value="apl_10">10% APL (window on black)</option>
+     <option value="apl_18">18% APL (window on grey)</option>
+     <option value="apl_25">25% APL (window on grey)</option>
+     <option value="apl_50">50% APL (window on grey)</option>
+    </select>
+   </div>
+   <div class="field">
+    <label>Refresh Rate</label>
+    <select id="meterRefreshRate">
+     <option value="" selected>Match Display Setting</option>
+     <option value="23.976">23.976 Hz</option>
+     <option value="24">24 Hz</option>
+     <option value="25">25 Hz</option>
+     <option value="29.97">29.97 Hz</option>
+     <option value="30">30 Hz</option>
+     <option value="50">50 Hz</option>
+     <option value="59.94">59.94 Hz</option>
+     <option value="60">60 Hz</option>
+     <option value="100">100 Hz</option>
+     <option value="120">120 Hz</option>
     </select>
    </div>
   </div>
-  <div class="pat-section collapsed">
-   <div class="pat-section-title" onclick="toggleSection(this)">Grayscale (10-Point)</div>
-   <div class="pat-content">
-    <div class="pat-grid-sm" id="gs10grid"></div>
+
+  <!-- Series Controls -->
+  <div id="meterSeriesHeader" style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px;padding-top:8px;border-top:1px solid var(--border)">Series Measurements</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
+   <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
+    <button class="btn btn-sm btn-secondary" data-series="greyscale-21" onclick="meterSelectSeries('greyscale',21)">Greyscale 21pt</button>
+    <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
+    <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">Colors</button>
+    <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
+   </div>
+   <div class="btn-row" id="meterReadBtnRow" style="margin:0">
+    <button class="btn btn-sm btn-danger" id="meterClearChartBtn" onclick="meterClearResults()" style="display:none">Clear Chart Data</button>
+    <button class="btn btn-sm btn-secondary" id="meterReadOnce" onclick="meterReadOnce()" style="display:none" disabled>&#9679; Read Once</button>
+    <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
+    <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
+    <button class="btn btn-sm btn-danger" id="meterStopBtn" onclick="meterStop()" style="display:none">&#9632; Stop</button>
    </div>
   </div>
-  <div class="pat-section collapsed">
-   <div class="pat-section-title" onclick="toggleSection(this)">Grayscale (20-Point)</div>
-   <div class="pat-content">
-    <div class="pat-grid-sm" id="gs20grid"></div>
-   </div>
-  </div>
-  <div class="pat-section collapsed">
-   <div class="pat-section-title" onclick="toggleSection(this)">Color Checker</div>
-   <div class="pat-content">
-    <div style="font-size:.6rem;color:var(--text2);margin-bottom:4px">75% Stimulus</div>
-    <div class="pat-grid" id="cc75grid"></div>
-    <div style="font-size:.6rem;color:var(--text2);margin:6px 0 4px">100% Stimulus</div>
-    <div class="pat-grid" id="cc100grid"></div>
-   </div>
-  </div>
-  <div class="pat-section collapsed">
-   <div class="pat-section-title" onclick="toggleSection(this)">Saturation Sweeps</div>
-   <div class="pat-content" id="satGrid"></div>
+  <div id="meterThumbsRow" style="display:none;margin-bottom:10px">
+   <div id="meterPatchThumbs" style="display:flex;gap:2px;width:100%"></div>
   </div>
 
+  <!-- Live Reading -->
+  <div id="meterLiveReading" style="display:none;margin-bottom:12px">
+   <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Live Reading</div>
+   <div style="background:#0d0d15;padding:10px;border-radius:6px">
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:.82rem">
+     <span>Luminance: <strong id="meterLum">--</strong> cd/m&sup2;</span>
+     <span>CCT: <strong id="meterCCT">--</strong>K</span>
+     <span>CIE x: <strong id="meterCIEx">--</strong></span>
+     <span>CIE y: <strong id="meterCIEy">--</strong></span>
+    </div>
+    <!-- Vertical live-RGB bars render inside the active chart (greyscale: left of RGB Balance; color/sat: right of CIE). -->
+    <canvas id="meterRGBCanvas" width="1" height="1" style="display:none"></canvas>
+   </div>
+  </div>
+
+  <!-- Series Status -->
+  <div id="meterProgress" style="display:none;margin-bottom:6px">
+   <div style="display:flex;justify-content:space-between;font-size:.75rem">
+    <span id="meterProgressLabel">Ready</span>
+   </div>
+  </div>
+
+  <!-- Charts Container -->
+  <div id="meterCharts" style="display:none">
+   <div id="chartsGreyscaleWrap">
+    <div style="margin-bottom:10px">
+     <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">RGB Balance</div>
+     <div style="display:flex;gap:8px;align-items:stretch">
+      <div style="flex:0 0 100px;width:100px;height:220px;background:#0d0d15;border-radius:6px;padding:6px;display:flex;flex-direction:column;box-sizing:border-box">
+       <div style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
+       <canvas id="meterRGBCanvasGrey" width="200" height="200" style="width:100%;flex:1;min-height:0;display:block"></canvas>
+      </div>
+      <canvas id="chartRGB" width="800" height="220" style="flex:1;min-width:0;height:220px;background:#0d0d15;border-radius:6px"></canvas>
+     </div>
+    </div>
+    <div style="margin-bottom:10px">
+     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none">
+       <input type="checkbox" id="meterIncludeLumError" onchange="meterOnGreyRefChange()" style="vertical-align:middle"> Include luminance error
+      </label>
+      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Grayscale reference mode: Absolute compares chromaticity only; EOTF includes luminance tracking error; Relative normalizes to the patch's relative luminance.">
+       Grey ref
+       <select id="meterGreyRefMode" class="inline-select" onchange="meterOnGreyRefChange()">
+        <option value="absolute">Absolute (chroma only)</option>
+        <option value="eotf">EOTF (with luminance)</option>
+        <option value="relative">Relative (perfect gamma)</option>
+       </select>
+      </label>
+      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Near-black luminance weighting: reduces over-sensitivity on very dark grayscale steps by scaling the luminance term before ΔE evaluation.">
+       Gray-world
+       <select id="meterGrayWorld" class="inline-select" onchange="meterOnGreyRefChange()">
+        <option value="1">Off</option>
+        <option value="0.15">Gray (0.15)</option>
+        <option value="0.05">Near-black (0.05)</option>
+       </select>
+      </label>
+      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="RGB balance method: Perceptual uses L* by channel; Chromaticity uses linear RGB normalized to the target white.">
+       RGB bal
+       <select id="meterRgbBalanceFormula" class="inline-select" onchange="meterOnGreyRefChange()">
+        <option value="calman">Perceptual</option>
+        <option value="hcfr">Chromaticity</option>
+       </select>
+      </label>
+      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Changes the greyscale ΔE calculation.">
+       Grey ΔE
+       <select id="meterDeltaEForm" class="inline-select" onchange="meterOnGreyRefChange()">
+        <option value="de2000">ΔE2000</option>
+        <option value="de94">ΔE94</option>
+        <option value="de76lab">ΔE76 (Lab)</option>
+        <option value="deluv76">ΔE76 (Luv)</option>
+        <option value="decmc">ΔE CMC(1:1)</option>
+        <option value="de2000_jnd">ΔE2000 JND</option>
+        <option value="auto">Auto (Luv grey / 2000 color)</option>
+       </select>
+      </label>
+     </div>
+     <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px" id="chartDeltaELabel">&Delta;E CIELUV</div>
+     <canvas id="chartDeltaE" width="800" height="180" style="width:100%;height:180px;background:#0d0d15;border-radius:6px"></canvas>
+    </div>
+    <div style="margin-bottom:10px">
+     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartGammaValueLabel">Gamma</div>
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto">
+       <input type="checkbox" id="meterPerChannelGamma" onchange="if(meterReadings&&meterReadings.length)drawAllCharts(meterReadings)" style="vertical-align:middle"> Per-channel γ
+      </label>
+     </div>
+     <canvas id="chartGammaValue" width="800" height="180" style="width:100%;height:180px;background:#0d0d15;border-radius:6px"></canvas>
+    </div>
+    <div id="chartTooltip" style="display:none;position:fixed;pointer-events:none;z-index:9999;background:rgba(13,13,21,0.95);border:1px solid #555;border-radius:5px;padding:6px 10px;font-size:12px;color:#ddd;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+     <div>
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">EOTF</div>
+      <canvas id="chartEOTF" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+     </div>
+     <div>
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Luminance</div>
+      <canvas id="chartGamma" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+     </div>
+    </div>
+   </div>
+   <div id="chartsColorWrap" style="display:none">
+    <div style="margin-bottom:10px">
+     <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">CIE 1931 Chromaticity</div>
+     <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+      <canvas id="chartCIE" width="600" height="600" style="flex:0 0 450px;width:450px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
+       <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
+       <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
+      </div>
+      <div id="meterXYYColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
+       <div style="font-size:.68rem;color:var(--text2);text-transform:none;letter-spacing:.06em;margin-bottom:8px;text-align:center">XyY</div>
+       <canvas id="meterXYYCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
+      </div>
+      <div id="colorReadingDetail" style="flex:0 0 205px;width:205px;height:450px;background:#0d0d15;border-radius:6px;padding:12px;font-size:12px;color:#888;box-sizing:border-box;overflow:auto">
+       <div id="colorDetailContent" style="text-align:center;padding:30px 0;color:#555">Select a color<br>to see details</div>
+      </div>
+     </div>
+    </div>
+    <div style="margin-bottom:10px">
+     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartColorDELabel">&Delta;E 2000 (Color Accuracy)</div>
+      <label id="meterColorDeltaEFormWrap" style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px;margin-left:auto" title="Changes the color and saturation-sweep ΔE calculation.">
+       Color ΔE
+       <select id="meterColorDeltaEForm" class="inline-select" onchange="meterOnGreyRefChange()">
+        <option value="de2000">ΔE2000</option>
+        <option value="de94">ΔE94</option>
+        <option value="de76lab">ΔE76 (Lab)</option>
+        <option value="deluv76">ΔE76 (Luv)</option>
+        <option value="decmc">ΔE CMC(1:1)</option>
+        <option value="de2000_jnd">ΔE2000 JND</option>
+       </select>
+      </label>
+     </div>
+     <canvas id="chartColorDE" width="800" height="180" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+    </div>
+    <div id="colorSeriesAveragesWrap" style="margin-bottom:10px;display:none">
+     <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Series Averages</div>
+     <div style="overflow-x:auto;border-radius:6px;background:#0d0d15">
+      <table id="colorSeriesAveragesTable" style="width:100%;border-collapse:collapse;font-size:11px;color:#ccc;white-space:nowrap">
+       <thead><tr style="border-bottom:1px solid #333;color:#888;text-align:right">
+        <th style="text-align:left;padding:6px 8px">Group</th>
+        <th style="padding:6px 6px">n</th>
+        <th style="padding:6px 6px">Avg &Delta;x</th>
+        <th style="padding:6px 6px">Avg &Delta;y</th>
+        <th style="padding:6px 6px">Avg Y cd/m&sup2;</th>
+        <th style="padding:6px 6px">Avg &Delta;E</th>
+        <th style="padding:6px 6px">Max &Delta;E</th>
+       </tr></thead>
+       <tbody></tbody>
+      </table>
+     </div>
+    </div>
+    <div id="colorReadingsTableWrap" style="margin-bottom:10px;display:none">
+     <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Color Readings</div>
+     <div style="overflow-x:auto;border-radius:6px;background:#0d0d15">
+      <table id="colorReadingsTable" style="width:100%;border-collapse:collapse;font-size:11px;color:#ccc;white-space:nowrap">
+       <thead><tr style="border-bottom:1px solid #333;color:#888;text-align:right">
+        <th style="text-align:left;padding:6px 8px">Color</th>
+        <th style="padding:6px 6px">Tgt x</th><th style="padding:6px 6px">Tgt y</th>
+        <th style="padding:6px 6px">x</th><th style="padding:6px 6px">y</th>
+        <th style="padding:6px 6px">Y cd/m&sup2;</th>
+        <th style="padding:6px 6px">&Delta;x</th><th style="padding:6px 6px">&Delta;y</th>
+        <th style="padding:6px 6px">&Delta;E 2000</th>
+       </tr></thead>
+       <tbody></tbody>
+      </table>
+     </div>
+    </div>
+   </div>
+  </div>
+
+  <!-- Export / Report -->
+  <div class="btn-row" id="meterExportRow" style="display:none">
+   <button class="btn btn-sm btn-secondary" onclick="meterExportCSV()">&#128190; Export CSV</button>
+   <button class="btn btn-sm btn-secondary" onclick="meterOpenReportDialog()">&#128196; Generate Report</button>
+  </div>
+
+  <div id="meterReportOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:16px">
+   <div style="width:min(460px,96vw);background:#111522;border:1px solid #2d3348;border-radius:10px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.45)">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+     <div style="font-size:.95rem;font-weight:700;color:var(--text)">Generate Measurement Report</div>
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseReportDialog()">Close</button>
+    </div>
+    <div style="font-size:.72rem;color:var(--text2);margin-bottom:8px">Choose which measured series to include and export as HTML or PDF.</div>
+    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;margin:10px 0 6px">Include Series Data</div>
+    <div id="meterReportSeriesList" style="display:grid;gap:6px;margin-bottom:12px"></div>
+    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;margin:10px 0 6px">Output Format</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+     <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="meterReportFormat" value="html" checked> HTML</label>
+     <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="meterReportFormat" value="pdf"> PDF</label>
+    </div>
+    <div class="btn-row" style="justify-content:flex-end;margin:0">
+     <button class="btn btn-sm btn-secondary" onclick="meterCloseReportDialog()">Cancel</button>
+     <button class="btn btn-sm btn-primary" id="meterReportGenerateBtn" onclick="meterGenerateReport()">Generate</button>
+    </div>
+   </div>
+  </div>
  </div>
 
  <!-- Device Info -->
@@ -2282,7 +3909,7 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
  <!-- Resolve Protocol -->
  <div class="card" data-widget="resolve" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
-  <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect to CalMAN / HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
+  <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect via HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
   <div class="grid">
    <div class="field">
     <label>Calibration PC IP</label>
@@ -2380,6 +4007,16 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
 
 </div>
 
+<div class="site-footer">
+ <div class="site-footer-inner">
+  <div class="site-footer-note">PGenerator+ is free software released under the GNU GPL. Provided as-is, without warranty. Support helps ongoing development.</div>
+  <div class="btn-row" style="margin-left:auto;justify-content:flex-end">
+   <a class="btn btn-sm btn-secondary" href="https://github.com/BigShoots/PGenerator-Plus" target="_blank" rel="noopener noreferrer">GitHub</a>
+   <a class="btn btn-sm btn-coffee" href="https://buymeacoffee.com/bigshoots" target="_blank" rel="noopener noreferrer">&#9749; Buy Me a Coffee</a>
+  </div>
+ </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -2437,6 +4074,12 @@ async function loadConfig(quiet){
  applyConfigState(loadedConfig);
 }
 
+function normalizeColorimetryValue(value,signalMode){
+ const val=String(value==null?'':value);
+ if(val==='2'||val==='9') return val;
+ return signalMode==='sdr'?'2':'9';
+}
+
 function applyConfigState(nextConfig){
  config=nextConfig;
  window._remoteConfigSnapshot=JSON.stringify(nextConfig);
@@ -2450,14 +4093,16 @@ function applyConfigState(nextConfig){
  setVal('signal_mode',sm);
  setVal('max_bpc',config.max_bpc||'8');
  setVal('color_format',config.color_format||'0');
- setVal('colorimetry',config.colorimetry||'0');
+ setVal('colorimetry',normalizeColorimetryValue(config.colorimetry,sm));
  setVal('rgb_quant_range',config.rgb_quant_range||'0');
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
+ applyMeterTargetGamutDefault(false);
  document.getElementById('max_luma').value=config.max_luma||'1000';
  document.getElementById('min_luma').value=config.min_luma||'0.005';
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
+ meterSyncHdrMetadata();
  // DV settings
  setVal('dv_map_mode',config.dv_map_mode||'2');
  if(sm==='dv'){
@@ -2490,6 +4135,18 @@ async function syncRemoteConfig(){
 
 function setVal(id,v){const el=document.getElementById(id);if(el)el.value=v;}
 function getVal(id){const el=document.getElementById(id);return el?el.value:'';}
+
+function meterSyncHdrMetadata(){
+ const topPeak=document.getElementById('max_luma');
+ const topMin=document.getElementById('min_luma');
+ const meterPeak=document.getElementById('meterHdrMasterPeak');
+ const meterMin=document.getElementById('meterHdrMasterMin');
+ if(!meterPeak||!meterMin) return;
+ const peakVal=(topPeak&&topPeak.value!=='')?topPeak.value:((config&&config.max_luma)||'1000');
+ const minVal=(topMin&&topMin.value!=='')?topMin.value:((config&&config.min_luma)||'0.005');
+ meterPeak.value=peakVal;
+ meterMin.value=minVal;
+}
 
 function captureSettings(){
  return JSON.stringify({
@@ -2545,10 +4202,44 @@ function updateModeVisibility(){
 ['max_luma','min_luma','max_cll','max_fall'].forEach(function(id){
  document.getElementById(id).addEventListener('input',checkSettingsChanged);
 });
+['max_luma','min_luma'].forEach(function(id){
+ const el=document.getElementById(id);
+ if(!el) return;
+ const sync=function(){
+  meterSyncHdrMetadata();
+  if(meterReadings&&meterReadings.length) meterOnGreyRefChange();
+ };
+ el.addEventListener('input',sync);
+ el.addEventListener('change',sync);
+});
 // Re-filter dropdowns when mode, bit depth, or color format changes
 ['mode_idx','max_bpc','color_format'].forEach(function(id){
  document.getElementById(id).addEventListener('change',updateDropdowns);
 });
+
+function meterDefaultTargetGamutForMode(){
+ const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
+ return sm==='sdr' ? 'bt709' : 'p3d65';
+}
+
+function applyMeterTargetGamutDefault(force){
+ const g=document.getElementById('meterTargetGamut');
+ if(!g) return;
+ if(force || !g.value || g.value==='auto') g.value=meterDefaultTargetGamutForMode();
+}
+
+function applyMeterTargetGammaDefault(){
+ const g=document.getElementById('meterTargetGamma');
+ const sm=document.getElementById('signal_mode').value;
+ const displayType=document.getElementById('meterDisplayType').value;
+ if(sm==='dv'){
+  g.value='2.2';
+  return;
+ }
+ if(displayType.startsWith('projector')) g.value='2.2';
+ else g.value='bt1886';
+}
+
 document.getElementById('signal_mode').addEventListener('change',function(){
  const sm=this.value;
  // Set sensible defaults per mode. Users can still adjust the fields after
@@ -2574,8 +4265,11 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('max_bpc','12');
   setVal('rgb_quant_range','2');
  }
+ applyMeterTargetGamutDefault(true);
+ applyMeterTargetGammaDefault();
  updateModeVisibility();
  updateDropdowns();
+ meterRefreshActiveSeriesCharts();
  checkSettingsChanged();
 });
 
@@ -2979,15 +4673,9 @@ async function showPattern(name,ev){
  else toast(r?r.message:'Pattern error',true);
 }
 async function showPatch(id,pr,pg,pb,ev){
- if(activePattern===id){stopPattern();return;}
- clearActive();
- var sz=parseInt(document.getElementById('patchSize').value);
- if(ev&&ev.currentTarget)ev.currentTarget.classList.add('active');
- activePattern=id;
- const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({name:'patch',r:pr,g:pg,b:pb,size:sz,input_max:getPatternTargetMax()})});
- if(r&&r.status==='ok') toast(id.replace(/_/g,' '));
- else toast(r?r.message:'Pattern error',true);
+ // Greyscale/color/saturation patches are now driven by the Meter & Measurements
+ // series readings card. This stub remains only so any legacy handler is a no-op.
+ if(ev&&ev.currentTarget)ev.currentTarget.classList.remove('active');
 }
 async function stopPattern(){
  clearActive();
@@ -3036,62 +4724,9 @@ function stimulusPercentToCode(percent){
  return Math.round(getPatternPeakCode()*pct/100);
 }
 function buildCalPatterns(){
- var gs10=document.getElementById('gs10grid');
- var gs20=document.getElementById('gs20grid');
- [0,10,20,30,40,50,60,70,80,90,100].forEach(function(l){
-  var b=document.createElement('button');
-  b.className='pat-btn pat-btn-sm';
-  b.textContent=l+'%';
-  b.onclick=function(ev){var v=stimulusPercentToCode(l);showPatch('gs_'+l,v,v,v,ev);};
-  gs10.appendChild(b);
- });
- for(var l=0;l<=100;l+=5){
-  var b=document.createElement('button');
-  b.className='pat-btn pat-btn-sm';
-  b.textContent=l+'%';
-  b.onclick=(function(ll){return function(ev){var v=stimulusPercentToCode(ll);showPatch('gs_'+ll,v,v,v,ev);};})(l);
-  gs20.appendChild(b);
- }
- var colors=[{n:'red',c:'#f44',ch:[1,0,0]},{n:'green',c:'var(--green)',ch:[0,1,0]},{n:'blue',c:'#5b7fff',ch:[0,0,1]},
-  {n:'cyan',c:'#0ff',ch:[0,1,1]},{n:'magenta',c:'#f0f',ch:[1,0,1]},{n:'yellow',c:'#ff0',ch:[1,1,0]}];
- var cc75=document.getElementById('cc75grid');
- var cc100=document.getElementById('cc100grid');
- var ccAll=colors.concat([{n:'white',c:'#fff',ch:[1,1,1]},{n:'50% gray',c:'var(--text2)',ch:[0.5,0.5,0.5]},{n:'black',c:'var(--text)',ch:[0,0,0]}]);
- ccAll.forEach(function(co){
-  [75,100].forEach(function(lv){
-   var btn=document.createElement('button');
-   btn.className='pat-btn';
-   var label=co.n.charAt(0).toUpperCase()+co.n.slice(1);
-   btn.innerHTML='<span style="color:'+co.c+'">'+label+'</span>';
-   btn.onclick=function(ev){
-    var r=stimulusPercentToCode(lv*co.ch[0]),g=stimulusPercentToCode(lv*co.ch[1]),b2=stimulusPercentToCode(lv*co.ch[2]);
-    showPatch('cc_'+co.n.replace(/\s+/g,'')+'_'+lv,r,g,b2,ev);
-   };
-   (lv===75?cc75:cc100).appendChild(btn);
-  });
- });
- var satDiv=document.getElementById('satGrid');
- var satStimulus=75;
- colors.forEach(function(co){
-  var row=document.createElement('div');row.className='sat-row';
-  var lbl=document.createElement('span');lbl.className='sat-label';lbl.style.color=co.c;
-  lbl.textContent=co.n.charAt(0).toUpperCase()+co.n.slice(1);
-  row.appendChild(lbl);
-  var btns=document.createElement('div');btns.className='sat-btns';
-  [25,50,75,100].forEach(function(s){
-   var btn=document.createElement('button');
-   btn.className='pat-btn pat-btn-sm';
-   btn.textContent=s+'%';
-   btn.onclick=function(ev){
-    var off=satStimulus*(1-s/100);
-    var r=stimulusPercentToCode(co.ch[0]?satStimulus:off),g=stimulusPercentToCode(co.ch[1]?satStimulus:off),b2=stimulusPercentToCode(co.ch[2]?satStimulus:off);
-    showPatch('sat_'+co.n+'_'+s,r,g,b2,ev);
-   };
-   btns.appendChild(btn);
-  });
-  row.appendChild(btns);
-  satDiv.appendChild(row);
- });
+ // Greyscale, Color Checker and Saturation Sweep grids were removed from the
+ // Test Patterns card — those series are now driven exclusively by the Meter
+ // & Measurements card. Kept as a no-op so the init call at module load works.
 }
 buildCalPatterns();
 
@@ -3536,14 +5171,5235 @@ async function submitLogs(){
  btn.disabled=false;btn.innerHTML='&#128230; Submit Logs';
 }
 
+///////////////////////////////////////////////
+//        Meter & Measurements JS            //
+///////////////////////////////////////////////
+let meterDetected=false;
+let meterStatusMisses=0;
+let meterLastKnownName='Meter';
+let meterContinuousActive=false;
+let meterContinuousTimer=null;
+let meterSeriesPolling=null;
+let meterReadings=[];
+let meterWhiteReading=null;
+let meterLastChartCount=0; // track reading count to skip redundant chart redraws
+let meterSeriesCache={};
+let meterSeriesCacheBootId='';
+
+function meterSeriesCacheKey(name){
+ const scope=(meterSeriesCacheBootId&&String(meterSeriesCacheBootId).trim())?String(meterSeriesCacheBootId).trim():'global';
+ return 'pgen.meter.'+scope+'.'+name;
+}
+
+function meterSetSeriesCacheBootId(bootId){
+ bootId=(bootId==null?'':String(bootId)).replace(/[^A-Za-z0-9_-]/g,'');
+ if(!bootId) bootId='global';
+ if(meterSeriesCacheBootId===bootId) return;
+ meterSeriesCacheBootId=bootId;
+ meterSeriesCache={};
+ try{
+  const markerKey='pgen.meter.seriesCache.bootId';
+  const prev=localStorage.getItem(markerKey)||'';
+  if(prev!==bootId){
+   localStorage.removeItem('pgen.meter.seriesCache');
+   localStorage.removeItem('pgen.meter.lastSeriesKey');
+   Object.keys(localStorage).forEach(k=>{
+    if(k && k.indexOf('pgen.meter.')===0 && (k.endsWith('.seriesCache') || k.endsWith('.lastSeriesKey'))) {
+     localStorage.removeItem(k);
+    }
+   });
+  }
+  localStorage.setItem(markerKey,bootId);
+ }catch(e){}
+}
+
+function meterPersistSeriesCache(){
+ if(!meterSeriesCacheBootId) return;
+ try{
+  localStorage.setItem(meterSeriesCacheKey('seriesCache'),JSON.stringify(meterSeriesCache||{}));
+  const keepKey=(meterActiveSeriesKey&&meterSeriesCache[meterActiveSeriesKey])?meterActiveSeriesKey:'';
+  if(keepKey) localStorage.setItem(meterSeriesCacheKey('lastSeriesKey'),keepKey);
+  else {
+   const prev=localStorage.getItem(meterSeriesCacheKey('lastSeriesKey'))||'';
+   if(!prev || !meterSeriesCache[prev]) localStorage.removeItem(meterSeriesCacheKey('lastSeriesKey'));
+  }
+ }catch(e){}
+}
+
+function meterLoadSeriesCache(){
+ if(!meterSeriesCacheBootId) return;
+ try{
+  const raw=localStorage.getItem(meterSeriesCacheKey('seriesCache'));
+  if(!raw) return;
+  const parsed=JSON.parse(raw)||{};
+  if(parsed&&typeof parsed==='object') meterSeriesCache=parsed;
+ }catch(e){}
+}
+
+function meterRestoreLatestPersistedSeries(){
+ if(!meterSeriesCacheBootId || meterActiveSeriesKey) return false;
+ meterLoadSeriesCache();
+ const lastKey=(function(){ try{return localStorage.getItem(meterSeriesCacheKey('lastSeriesKey'))||'';}catch(e){return '';} })();
+ if(lastKey && meterSeriesCache[lastKey]) return meterRestoreSeriesFromCache(lastKey);
+ return false;
+}
+
+// D65 reference white chromaticity
+const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
+
+const GAMUT_PRESETS={
+ bt709:{
+  label:'BT.709 / D65',
+  primaries:{R:{x:0.64,y:0.33},G:{x:0.30,y:0.60},B:{x:0.15,y:0.06}},
+  xyzToRgb:[
+   [3.2406,-1.5372,-0.4986],
+   [-0.9689,1.8758,0.0415],
+   [0.0557,-0.2040,1.0570]
+  ],
+  rgbToXyz:[
+   [0.4124564,0.3575761,0.1804375],
+   [0.2126729,0.7151522,0.0721750],
+   [0.0193339,0.1191920,0.9503041]
+  ]
+ },
+ bt2020:{
+  label:'BT.2020 / D65',
+  primaries:{R:{x:0.708,y:0.292},G:{x:0.170,y:0.797},B:{x:0.131,y:0.046}},
+  xyzToRgb:[
+   [1.7166511880,-0.3556707838,-0.2533662814],
+   [-0.6666843518,1.6164812366,0.0157685458],
+   [0.0176398574,-0.0427706133,0.9421031212]
+  ],
+  rgbToXyz:[
+   [0.6369580483,0.1446169036,0.1688809752],
+   [0.2627002120,0.6779980715,0.0593017165],
+   [0.0000000000,0.0280726930,1.0609850577]
+  ]
+ },
+ p3d65:{
+  label:'P3 / D65',
+  primaries:{R:{x:0.680,y:0.320},G:{x:0.265,y:0.690},B:{x:0.150,y:0.060}},
+  xyzToRgb:[
+   [2.4934969119,-0.9313836179,-0.4027107845],
+   [-0.8294889696,1.7626640603,0.0236246858],
+   [0.0358458302,-0.0761723893,0.9568845240]
+  ],
+  rgbToXyz:[
+   [0.4865709486,0.2656676932,0.1982172852],
+   [0.2289745641,0.6917385218,0.0792869141],
+   [0.0000000000,0.0451133819,1.0439443689]
+  ]
+ }
+};
+
+const M_XYZ_TO_RGB=GAMUT_PRESETS.bt709.xyzToRgb;
+const M_RGB_TO_XYZ=GAMUT_PRESETS.bt709.rgbToXyz;
+
+function meterSignalColorimetryGamutKey(){
+ // DV rides in a BT.2020 container (P3-D65 is mastering/target only). The
+ // stimulus-solve gamut follows the container so meter targets align with
+ // what the display actually decodes — otherwise color measurements come
+ // back oversaturated vs. the plotted target.
+ if(meterChartIsDv()) return 'bt2020';
+ if(meterChartIsPq() || meterChartSignalMode()==='hlg') return 'bt2020';
+ const el=document.getElementById('colorimetry');
+ const val=String((el&&el.value) || (config&&config.colorimetry) || '2');
+ return val==='9' ? 'bt2020' : 'bt709';
+}
+
+function meterAutoTargetGamutKey(){
+ if(meterChartIsDv()) return 'p3d65';
+ if(meterChartIsPq() || meterChartSignalMode()==='hlg'){
+  const primEl=document.getElementById('primaries');
+  const prim=parseInt((primEl&&primEl.value) || (config&&config.primaries) || '0',10);
+  if(prim===2 || prim===3) return 'p3d65';
+  return 'bt2020';
+ }
+ return meterSignalColorimetryGamutKey();
+}
+
+function meterContainerGamutKey(){
+ return meterSignalColorimetryGamutKey();
+}
+
+function meterSelectedTargetGamutKey(){
+ const el=document.getElementById('meterTargetGamut');
+ const val=String(el&&el.value||'auto').toLowerCase();
+ return /^(bt709|bt2020|p3d65)$/.test(val)?val:'';
+}
+
+function meterActiveGamutKey(){
+ const forced=meterSelectedTargetGamutKey();
+ return forced||meterAutoTargetGamutKey();
+}
+
+function meterContainerGamut(){
+ return GAMUT_PRESETS[meterContainerGamutKey()]||GAMUT_PRESETS.bt709;
+}
+
+function meterActiveGamut(){
+ return GAMUT_PRESETS[meterActiveGamutKey()]||GAMUT_PRESETS.bt709;
+}
+
+function meterStimulusSolveGamut(){
+ return (meterChartIsHdr()||meterChartIsDv()) ? meterContainerGamut() : meterActiveGamut();
+}
+
+function xyzToLinRgb(X,Y,Z,matrix){
+ const M=matrix||M_XYZ_TO_RGB;
+ return M.map(r=>r[0]*X+r[1]*Y+r[2]*Z);
+}
+
+function linRgbToXyz(R,G,B,matrix){
+ const M=matrix||M_RGB_TO_XYZ;
+ return {
+  X:M[0][0]*R+M[0][1]*G+M[0][2]*B,
+  Y:M[1][0]*R+M[1][1]*G+M[1][2]*B,
+  Z:M[2][0]*R+M[2][1]*G+M[2][2]*B
+ };
+}
+
+function meterIsLimitedRange(){
+ const rangeEl=document.getElementById('rgb_quant_range');
+ return !!(rangeEl&&rangeEl.value==='1');
+}
+
+function meterOutputIsRgb(){
+ const fmtEl=document.getElementById('color_format');
+ const val=String((fmtEl&&fmtEl.value) || (config&&config.color_format) || '0');
+ return val==='0';
+}
+
+function meterPatchUsesVideoRange(){
+ return meterIsLimitedRange() && !meterOutputIsRgb();
+}
+
+function meterRangeMin(){
+ return meterIsLimitedRange()?16:0;
+}
+
+function meterRangeSpan(){
+ return meterIsLimitedRange()?219:255;
+}
+
+function meterPatchRangeMin(){
+ return meterPatchUsesVideoRange()?16:0;
+}
+
+function meterPatchRangeSpan(){
+ return meterPatchUsesVideoRange()?219:255;
+}
+
+function meterSignalFractionFromCode(code){
+ const min=meterPatchRangeMin();
+ const span=meterPatchRangeSpan();
+ return Math.max(0,Math.min(1,((code||0)-min)/span));
+}
+
+function meterDecodeSignalChannel(code){
+ const norm=meterSignalFractionFromCode(code);
+ if(meterChartIsDv()) return Math.pow(norm,2.2);
+ if(meterChartIsPq()){
+  const peak=meterChartHdrPeak();
+  if(!(peak>0)) return norm;
+  return Math.max(0,Math.min(1,meterChartPqDecodeNormalized(norm)/peak));
+ }
+ return Math.pow(norm,2.4);
+}
+
+function meterEncodeSignalChannel(linear){
+ const min=meterRangeMin();
+ const span=meterRangeSpan();
+ const clamped=Math.max(0,Math.min(1,linear||0));
+ let encoded=clamped;
+ if(meterChartIsDv()) encoded=Math.pow(clamped,1/2.2);
+ else if(meterChartIsPq()){
+  const peak=meterChartHdrPeak();
+  const peakCode=meterChartPqEncodeNormalized(peak)||1;
+  encoded=meterChartPqEncodeNormalized(clamped*peak)/peakCode;
+ }
+ else encoded=Math.pow(clamped,1/2.4);
+ return Math.round(min+encoded*span);
+}
+
+function meterCodeFromSignalPercent(percent){
+ return Math.round(meterPatchRangeMin()+clampNum(percent,0,100)/100*meterPatchRangeSpan());
+}
+
+function meterActualSignalPercent(percent){
+ return meterSignalFractionFromCode(meterCodeFromSignalPercent(percent))*100;
+}
+
+function meterColorLevelPercent(){
+ return meterChartIsHdr()?50:75;
+}
+
+function meterColorReferenceNits(){
+ if(meterChartIsPq()&&!meterChartIsDv()) return meterChartHdrPeak();
+ const white=meterWhiteReading;
+ if(white&&white.Y>0) return white.Y;
+ if(meterChartIsHdr()) return meterChartHdrPeak();
+ return 100;
+}
+
+function meterColorLabWhite(){
+ const white=meterWhiteReading;
+ if(white&&white.X>0&&white.Y>0&&white.Z>0) return {X:white.X,Y:white.Y,Z:white.Z};
+ const refY=Math.max(1,meterColorReferenceNits());
+ return {X:D65.X*refY,Y:refY,Z:D65.Z*refY};
+}
+
+// Forward/inverse of the active SDR+DV target EOTF (BT.1886 / sRGB / pure
+// gamma). Sat-sweep and ColorChecker stimuli must encode with the inverse
+// of the EOTF the display is tracking so the decoded linear matches the
+// xy-linear target chromaticity. Encoding with a hardcoded 1/2.2 while the
+// display runs BT.1886 (γ≈2.4) drives the decoded G/B rails too low,
+// pushing measured chromaticities outward (the "slightly oversaturated"
+// look). For HDR10/PQ the caller short-circuits into the PQ path before
+// reaching these helpers.
+function meterTargetLinearToSignal(v){
+ const c=Math.max(0,Math.min(1,v||0));
+ if(c<=0) return 0;
+ // Dolby Vision tunnel always carries a γ=2.2 encoded stimulus — the target
+ // EOTF selector applies only to SDR signal modes.
+ if(meterChartIsDv()) return Math.pow(c,1/2.2);
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
+ if(sel==='srgb') return c<=0.0031308 ? 12.92*c : 1.055*Math.pow(c,1/2.4)-0.055;
+ const g=(sel==='bt1886')?2.4:(parseFloat(sel)||2.2);
+ return Math.pow(c,1/g);
+}
+function meterTargetSignalToLinear(v){
+ const c=Math.max(0,Math.min(1,v||0));
+ if(c<=0) return 0;
+ if(meterChartIsDv()) return Math.pow(c,2.2);
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
+ if(sel==='srgb') return c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055,2.4);
+ const g=(sel==='bt1886')?2.4:(parseFloat(sel)||2.2);
+ return Math.pow(c,g);
+}
+
+function meterEncodeColorCheckerLinear(linear){
+ const min=meterPatchRangeMin();
+ const span=meterPatchRangeSpan();
+ const clamped=Math.max(0,Math.min(1,linear||0));
+ if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*100)*span);
+ return Math.round(min+meterTargetLinearToSignal(clamped)*span);
+}
+
+function meterEncodeColorCheckerFullSatChannel(active){
+ const min=meterPatchRangeMin();
+ const span=meterPatchRangeSpan();
+ if(!active) return min;
+ if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
+ return min+span;
+}
+
+function meterEncodeSaturationLinear(linear){
+ const min=meterPatchRangeMin();
+ const span=meterPatchRangeSpan();
+ const clamped=Math.max(0,Math.min(1,linear||0));
+ if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
+ return Math.round(min+meterTargetLinearToSignal(clamped)*span);
+}
+
+function meterGamutStimulusLinearLevel(){
+ if(meterChartIsPq()&&!meterChartIsDv()) return 1;
+ return meterTargetSignalToLinear(meterColorLevelPercent()/100);
+}
+
+function meterSaturationStimulusLinearLevel(){
+ const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
+ if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
+ return meterTargetSignalToLinear(actualPercent);
+}
+
+function meterGamutColorEndpointRgb(colorName){
+ switch(String(colorName||'').toLowerCase()){
+  case 'red': return [1,0,0];
+  case 'green': return [0,1,0];
+  case 'blue': return [0,0,1];
+  case 'cyan': return [0,1,1];
+  case 'magenta': return [1,0,1];
+  case 'yellow': return [1,1,0];
+  default: return [1,1,1];
+ }
+}
+
+function meterGamutColorEndpointXY(colorName){
+ const gamut=meterActiveGamut();
+ const rgb=meterGamutColorEndpointRgb(colorName);
+ const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],gamut.rgbToXyz);
+ const sum=xyz.X+xyz.Y+xyz.Z;
+ return sum>0?{x:xyz.X/sum,y:xyz.Y/sum}:{x:D65.x,y:D65.y};
+}
+
+function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
+ // SDR calibration on real TVs expects the stimulus to be solved in the
+ // selected target gamut (usually BT.709). Only HDR/DV should stay locked to
+ // the transport container gamut.
+ const solveGamut=meterStimulusSolveGamut();
+ const sat=Math.max(0,Math.min(100,satPercent||0))/100;
+ const endpoint=meterGamutColorEndpointXY(colorName);
+ const x=D65.x+sat*(endpoint.x-D65.x);
+ const y=D65.y+sat*(endpoint.y-D65.y);
+ if(y<=0) return [0,0,0];
+ const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
+ const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
+ const level=meterSaturationStimulusLinearLevel();
+ return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
+}
+
+function meterBuildFullGamutTargetLinearRgb(colorName){
+ const solveGamut=meterStimulusSolveGamut();
+ const endpoint=meterGamutColorEndpointXY(colorName);
+ const x=endpoint.x;
+ const y=endpoint.y;
+ if(y<=0) return [0,0,0];
+ const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
+ const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
+ return coeffs.map(v=>Math.max(0,v/maxCoeff));
+}
+
+function meterSaturationTargetXYZ(colorName,satPercent){
+ const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
+ return linRgbToXyz(rgb[0],rgb[1],rgb[2],meterStimulusSolveGamut().rgbToXyz);
+}
+
+function meterParseSaturationReading(reading){
+ if(!reading) return null;
+ if(reading.series_color&&reading.sat_pct!=null){
+  return {color:String(reading.series_color),sat:parseFloat(reading.sat_pct)||0};
+ }
+ const name=String(reading.name||'').trim();
+ let match=name.match(/^(Red|Green|Blue|Cyan|Magenta|Yellow)\s+(\d+)%$/i);
+ if(match) return {color:match[1],sat:parseFloat(match[2])||0};
+ match=name.match(/^(\d+)%\s+(Red|Green|Blue|Cyan|Magenta|Yellow)$/i);
+ if(match) return {color:match[2],sat:parseFloat(match[1])||0};
+ return null;
+}
+
+function meterDecodeColorTargetChannel(code){
+ const norm=meterSignalFractionFromCode(code);
+ if(meterChartIsPq()&&!meterChartIsDv()) return Math.min(meterChartPqDecodeNormalized(norm),meterChartHdrPeak());
+ // SDR/DV: decode with the active target EOTF so the reconstructed target
+ // XYZ for r/g/b-code patches matches the chromaticity the display actually
+ // produces when tracking that EOTF (previously hardcoded γ=2.2).
+ return meterTargetSignalToLinear(norm)*meterColorReferenceNits();
+}
+
+function targetColorXYZAbs(r,g,b){
+ const gamut=meterStimulusSolveGamut();
+ return linRgbToXyz(
+  meterDecodeColorTargetChannel(r),
+  meterDecodeColorTargetChannel(g),
+  meterDecodeColorTargetChannel(b),
+  gamut.rgbToXyz
+ );
+}
+
+function targetChromaticityXY(r,g,b){
+ const xyz=targetColorXYZAbs(r,g,b);
+ const s=xyz.X+xyz.Y+xyz.Z;
+ return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:D65.x,y:D65.y};
+}
+
+function meterTargetXYZForReading(reading){
+ if(!reading) return {X:0,Y:0,Z:0};
+ const tx=parseFloat(reading.target_x);
+ const ty=parseFloat(reading.target_y);
+ const tYn=parseFloat(reading.target_Yn);
+ if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
+  if(tYn<=0) return {X:0,Y:0,Z:0};
+  const refY=Math.max(1,meterColorReferenceNits());
+  // Gamut-clip: ColorChecker patches such as Cyan lie outside BT.709. Solve
+  // target xy into linear RGB in the display's stimulus gamut, clamp negatives
+  // to zero (what the display actually emits), then recompute XYZ so ΔE is
+  // measured against the achievable target, not an unreachable chromaticity.
+  const gamut=meterStimulusSolveGamut();
+  const coeffs=xyzToLinRgb(tx/ty,1,(1-tx-ty)/ty,gamut.xyzToRgb);
+  let r=coeffs[0],g=coeffs[1],b=coeffs[2];
+  if(r<0||g<0||b<0){
+   if(r<0) r=0; if(g<0) g=0; if(b<0) b=0;
+   const clipped=linRgbToXyz(r,g,b,gamut.rgbToXyz);
+   const cs=clipped.X+clipped.Y+clipped.Z;
+   if(cs>0&&clipped.Y>0){
+    const cx=clipped.X/cs,cy=clipped.Y/cs;
+    const Y=tYn*refY;
+    return {X:(cx/cy)*Y,Y:Y,Z:((1-cx-cy)/cy)*Y};
+   }
+  }
+  const Y=tYn*refY;
+  return {X:(tx/ty)*Y,Y:Y,Z:((1-tx-ty)/ty)*Y};
+ }
+ const satInfo=meterParseSaturationReading(reading);
+ if(satInfo) return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
+ return targetColorXYZAbs(reading.r_code,reading.g_code,reading.b_code);
+}
+
+function meterTargetChromaticityForReading(reading){
+ const xyz=meterTargetXYZForReading(reading);
+ const s=xyz.X+xyz.Y+xyz.Z;
+ return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:D65.x,y:D65.y};
+}
+
+function meterColorDeltaTargetXYZ(reading,inclLum){
+ const xyz=meterTargetXYZForReading(reading);
+ if(inclLum||!reading||reading.Y==null||!(reading.Y>0)||!(xyz.Y>0)) return xyz;
+ const scale=reading.Y/xyz.Y;
+ return {X:xyz.X*scale,Y:reading.Y,Z:xyz.Z*scale};
+}
+
+function meterReadingUsesColorDeltaForm(reading){
+ if(!reading) return false;
+ if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations') return true;
+ const tx=parseFloat(reading.target_x);
+ const ty=parseFloat(reading.target_y);
+ const tYn=parseFloat(reading.target_Yn);
+ if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)) return true;
+ if(reading.series_color!=null||reading.sat_pct!=null) return true;
+ return false;
+}
+
+function meterColorDeltaEForm(){
+ const sel=document.getElementById('meterColorDeltaEForm');
+ if(sel && sel.value) return sel.value;
+ return 'de2000';
+}
+
+// Primary grayscale/color ΔE entry point. Greyscale uses the greyscale ΔE
+// selector; Colors and Sat Sweep use their dedicated Color ΔE selector.
+function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
+ if(!reading) return 0;
+ const useColorForm=meterReadingUsesColorDeltaForm(reading);
+ form = form || (useColorForm ? meterColorDeltaEForm() : meterDeltaEForm());
+ if(gwWeight==null) gwWeight = meterGrayWorldWeight();
+ if(!useColorForm && meterReadingIsGreyscale(reading) && (reading.Y||0)>0){
+  const white=(meterWhiteReading&&meterWhiteReading.Y>0)?meterWhiteReading:null;
+  const Lw=white?(white.luminance||white.Y||0):0;
+  const blacks=(Array.isArray(meterReadings)?meterReadings:[]).filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&r.luminance!=null);
+  const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+  const ref=hcfrGreyRef(reading.ire, reading.Y, Lw, Lb, modeOrIncl, reading.r_code, gwWeight);
+  const XnM=(ref.wxN||D65.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||D65.Z)*ref.YWhite;
+  const XnR=(ref.wxN||D65.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||D65.Z)*ref.YWhiteRef;
+  const labM=xyzToLab(reading.X||0,reading.Y||0,reading.Z||0,XnM,YnM,ZnM);
+  const labT=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
+  return meterDeltaE(labM,labT,form,{
+   isGrey:true,
+   Ym:reading.Y||0, Yref:ref.refY*ref.YWhiteRef,
+   X:reading.X||0, Y:reading.Y||0, Z:reading.Z||0, YWhite:ref.YWhite,
+   Xr:ref.refX*ref.YWhiteRef, Yr:ref.refY*ref.YWhiteRef, Zr:ref.refZ*ref.YWhiteRef,
+   YWhiteRef:ref.YWhiteRef
+  });
+ }
+ const wR=meterColorLabWhite();
+ const mode=meterResolveGreyRefMode(modeOrIncl);
+ const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
+ const labM=xyzToLab(reading.X||0,reading.Y||0,reading.Z||0,wR.X,wR.Y,wR.Z);
+ const labT=xyzToLab(target.X,target.Y,target.Z,wR.X,wR.Y,wR.Z);
+ return meterDeltaE(labM,labT,form,{
+  isGrey:false,
+  Ym:reading.Y||0, Yref:target.Y||0,
+  X:reading.X||0, Y:reading.Y||0, Z:reading.Z||0, YWhite:wR.Y,
+  Xr:target.X, Yr:target.Y, Zr:target.Z, YWhiteRef:wR.Y
+ });
+}
+
+// Computes both raw (luminance-inclusive) and luminance-compensated ΔE
+// for a single reading. Used so the chart/table can switch modes without
+// re-running the full pipeline per point.
+function meterColorDeltaE2000Pair(reading,form,gwWeight){
+ return {
+  raw: meterColorDeltaE2000(reading,'eotf',form,gwWeight),
+  lc:  meterColorDeltaE2000(reading,'absolute',form,gwWeight)
+ };
+}
+
+// Caches {raw, lc} ΔE pair on each reading under a key that encodes the
+// currently-selected form + gw weight. If the key matches a previous
+// compute the cached values are returned; otherwise the pair is
+// recomputed and stored. Callers use reading._dE_raw / reading._dE_lc.
+function meterEnsureDeltaECache(readings){
+ if(!Array.isArray(readings)) return;
+ const greyForm=meterDeltaEForm();
+ const colorForm=meterColorDeltaEForm();
+ const gw=meterGrayWorldWeight();
+ const key=greyForm+':'+colorForm+':'+gw;
+ readings.forEach(rd=>{
+  if(!rd) return;
+  if(rd._dE_cache_key===key) return;
+  const formForReading=meterReadingUsesColorDeltaForm(rd)?colorForm:greyForm;
+  const pair=meterColorDeltaE2000Pair(rd,formForReading,gw);
+  rd._dE_raw=pair.raw;
+  rd._dE_lc=pair.lc;
+  rd._dE_cache_key=key;
+ });
+}
+
+// Compute per-channel effective gamma for a single reading vs the active
+// measured white. Returns {r,g,b} of the effective gamma exponent per
+// channel. Values are null when a channel has non-positive linear Y or
+// when ire<=0.
+function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
+ if(!reading||!whiteReading||!(ire>0)) return {r:null,g:null,b:null};
+ const g=meterActiveGamut();
+ const rm=xyzToLinRgb(reading.X||0,reading.Y||0,reading.Z||0,g.xyzToRgb);
+ const rw=xyzToLinRgb(whiteReading.X||0,whiteReading.Y||0,whiteReading.Z||0,g.xyzToRgb);
+ const prevRgb=prevReading?xyzToLinRgb(prevReading.X||0,prevReading.Y||0,prevReading.Z||0,g.xyzToRgb):null;
+ const prevIre=prevReading?(prevReading.ire||0):null;
+ const exp=(m,w,pm)=>{
+  if(!(w>0)) return null;
+  if(ire>=100){
+   if(pm>0 && prevIre>0 && prevIre<100){
+    const gTop=Math.log(pm/w)/Math.log(prevIre/100);
+    return isFinite(gTop)?gTop:null;
+   }
+   return null;
+  }
+  if(!(m>0)) return null;
+  const gv=Math.log(m/w)/Math.log(ire/100);
+  return isFinite(gv)?gv:null;
+ };
+ return {
+  r:exp(rm[0],rw[0],prevRgb?prevRgb[0]:null),
+  g:exp(rm[1],rw[1],prevRgb?prevRgb[1]:null),
+  b:exp(rm[2],rw[2],prevRgb?prevRgb[2]:null)
+ };
+}
+
+function meterEnsureChannelGammaCache(readings){
+ if(!Array.isArray(readings)) return;
+ const white=(meterWhiteReading&&meterWhiteReading.Y>0)?meterWhiteReading:null;
+ const greys=readings.filter(rd=>rd&&meterReadingIsGreyscale(rd)).sort((a,b)=>(a.ire||0)-(b.ire||0));
+ greys.forEach((rd,idx)=>{
+  const prev=idx>0?greys[idx-1]:null;
+  rd._gamma_rgb=meterPerChannelGamma(rd,white,rd.ire||0,prev);
+ });
+}
+
+function meterColorCheckerClassicSource(){
+ return [
+  {name:'Gray 35',gray:0.35},
+  {name:'Gray 50',gray:0.50},
+  {name:'Gray 65',gray:0.65},
+  {name:'Gray 80',gray:0.80},
+  {name:'Dark Skin',x:0.405119,y:0.36253,Yn:0.096774},
+  {name:'Light Skin',x:0.379756,y:0.357031,Yn:0.353705},
+  {name:'Blue Sky',x:0.249396,y:0.266854,Yn:0.18913},
+  {name:'Foliage',x:0.338784,y:0.433265,Yn:0.132836},
+  {name:'Blue Flower',x:0.267688,y:0.25314,Yn:0.235775},
+  {name:'Bluish Green',x:0.261653,y:0.359045,Yn:0.425252},
+  {name:'Orange',x:0.512087,y:0.410373,Yn:0.287229},
+  {name:'Purplish Blue',x:0.213095,y:0.186377,Yn:0.115692},
+  {name:'Moderate Red',x:0.461291,y:0.312073,Yn:0.187204},
+  {name:'Purple',x:0.288075,y:0.217532,Yn:0.064716},
+  {name:'Yellow Green',x:0.37852,y:0.496473,Yn:0.436288},
+  {name:'Orange Yellow',x:0.473379,y:0.443246,Yn:0.433456},
+  {name:'Blue',x:0.186955,y:0.133934,Yn:0.060722},
+  {name:'Green',x:0.306493,y:0.495107,Yn:0.234403},
+  {name:'Red',x:0.547377,y:0.317462,Yn:0.114731},
+  {name:'Yellow',x:0.44792,y:0.475618,Yn:0.597462},
+  {name:'Magenta',x:0.371346,y:0.24177,Yn:0.187509},
+  {name:'Cyan',x:0.19619,y:0.266985,Yn:0.193415}
+ ];
+}
+
+function meterBuildColorCheckerStepsJS(){
+ const steps=[];
+ const min=meterPatchRangeMin();
+ const max=min+meterPatchRangeSpan();
+ const solveGamut=meterStimulusSolveGamut();
+ steps.push({ire:100,r:max,g:max,b:max,name:'White'});
+ steps.push({ire:0,r:min,g:min,b:min,name:'Black'});
+ meterColorCheckerClassicSource().forEach(src=>{
+  if(src.gray!=null){
+   const ire=Math.round(src.gray*100);
+   const code=meterEncodeColorCheckerLinear(src.gray);
+   steps.push({ire:ire,r:code,g:code,b:code,name:src.name});
+   return;
+  }
+  const X=(src.x/src.y)*src.Yn;
+  const Y=src.Yn;
+  const Z=((1-src.x-src.y)/src.y)*src.Yn;
+  let rl=solveGamut.xyzToRgb[0][0]*X+solveGamut.xyzToRgb[0][1]*Y+solveGamut.xyzToRgb[0][2]*Z;
+  let gl=solveGamut.xyzToRgb[1][0]*X+solveGamut.xyzToRgb[1][1]*Y+solveGamut.xyzToRgb[1][2]*Z;
+  let bl=solveGamut.xyzToRgb[2][0]*X+solveGamut.xyzToRgb[2][1]*Y+solveGamut.xyzToRgb[2][2]*Z;
+  const mx=Math.max(rl,gl,bl);
+  if(mx>1){rl/=mx;gl/=mx;bl/=mx;}
+  rl=Math.max(0,rl);
+  gl=Math.max(0,gl);
+  bl=Math.max(0,bl);
+  steps.push({
+   ire:Math.round(src.Yn*100),
+   r:meterEncodeColorCheckerLinear(rl),
+   g:meterEncodeColorCheckerLinear(gl),
+   b:meterEncodeColorCheckerLinear(bl),
+   name:src.name,
+   target_x:src.x,
+   target_y:src.y,
+   target_Yn:src.Yn
+  });
+ });
+ [
+  ['100% Red','Red'],
+  ['100% Green','Green'],
+  ['100% Blue','Blue'],
+  ['100% Cyan','Cyan'],
+  ['100% Magenta','Magenta'],
+  ['100% Yellow','Yellow']
+ ].forEach(([name,colorName])=>{
+  const rgb=meterBuildFullGamutTargetLinearRgb(colorName);
+  steps.push({
+   ire:100,
+   r:meterEncodeColorCheckerLinear(rgb[0]),
+   g:meterEncodeColorCheckerLinear(rgb[1]),
+   b:meterEncodeColorCheckerLinear(rgb[2]),
+   name:name,
+   series_color:colorName,
+   sat_pct:100
+  });
+ });
+ return steps;
+}
+
+function meterStepNameKey(step){
+ if(!step) return '';
+ return step.name||(((step.ire!=null)?step.ire:'')+'-'+(step.r||0)+'-'+(step.g||0)+'-'+(step.b||0));
+}
+
+function meterLinearToSrgbChannel(linear){
+ const c=Math.max(0,Math.min(1,linear||0));
+ return c<=0.0031308 ? 12.92*c : 1.055*Math.pow(c,1/2.4)-0.055;
+}
+
+function meterPreviewCssFromLinearRgb(rgb,normalize){
+ let vals=(rgb||[0,0,0]).map(v=>Number.isFinite(v)?Math.max(0,v):0);
+ const isGrey=Math.abs(vals[0]-vals[1])<1e-4&&Math.abs(vals[1]-vals[2])<1e-4;
+ const mx=Math.max(vals[0],vals[1],vals[2],0);
+ if(mx>0){
+  if(normalize&&!isGrey) vals=vals.map(v=>v/mx);
+  else if(mx>1) vals=vals.map(v=>v/mx);
+ }
+ const enc=vals.map(v=>Math.round(255*meterLinearToSrgbChannel(v)));
+ return 'rgb('+enc[0]+','+enc[1]+','+enc[2]+')';
+}
+
+function meterPreviewCssFromXYZ(X,Y,Z,normalize){
+ return meterPreviewCssFromLinearRgb(xyzToLinRgb(X,Y,Z,GAMUT_PRESETS.bt709.xyzToRgb),normalize!==false);
+}
+
+function meterColorWithAlpha(css,alpha){
+ const a=Math.max(0,Math.min(1,alpha==null?1:alpha));
+ const s=String(css||'#aaa').trim();
+ const nums=s.match(/[\d.]+/g);
+ if(/^rgba?\(/i.test(s) && nums && nums.length>=3){
+  return 'rgba('+Math.round(parseFloat(nums[0]))+','+Math.round(parseFloat(nums[1]))+','+Math.round(parseFloat(nums[2]))+','+a+')';
+ }
+ const hex=s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+ if(hex){
+  let h=hex[1];
+  if(h.length===3) h=h.split('').map(ch=>ch+ch).join('');
+  return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';
+ }
+ return s;
+}
+
+function meterBoostPlotColor(css,satBoost,lightBoost){
+ const s=String(css||'#aaa').trim();
+ let r=170,g=170,b=170;
+ const nums=s.match(/[\d.]+/g);
+ if(/^rgba?\(/i.test(s) && nums && nums.length>=3){
+  r=Math.round(parseFloat(nums[0]));
+  g=Math.round(parseFloat(nums[1]));
+  b=Math.round(parseFloat(nums[2]));
+ } else {
+  const hex=s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if(hex){
+   let h=hex[1];
+   if(h.length===3) h=h.split('').map(ch=>ch+ch).join('');
+   r=parseInt(h.slice(0,2),16);
+   g=parseInt(h.slice(2,4),16);
+   b=parseInt(h.slice(4,6),16);
+  }
+ }
+ r/=255; g/=255; b/=255;
+ const max=Math.max(r,g,b), min=Math.min(r,g,b);
+ let h=0, sat=0;
+ const l=(max+min)/2;
+ const d=max-min;
+ if(d>0){
+  sat=l>0.5 ? d/(2-max-min) : d/(max+min);
+  switch(max){
+   case r: h=(g-b)/d + (g<b?6:0); break;
+   case g: h=(b-r)/d + 2; break;
+   default: h=(r-g)/d + 4; break;
+  }
+  h/=6;
+ }
+ sat=Math.max(0,Math.min(1,sat*(satBoost==null?1.10:satBoost)));
+ const ll=Math.max(0,Math.min(1,l+(lightBoost==null?-0.07:lightBoost)));
+ function hue2rgb(p,q,t){
+  if(t<0) t+=1;
+  if(t>1) t-=1;
+  if(t<1/6) return p+(q-p)*6*t;
+  if(t<1/2) return q;
+  if(t<2/3) return p+(q-p)*(2/3-t)*6;
+  return p;
+ }
+ if(sat<=0){
+  const v=Math.round(ll*255);
+  return 'rgb('+v+','+v+','+v+')';
+ }
+ const q=ll<0.5 ? ll*(1+sat) : ll+sat-ll*sat;
+ const p=2*ll-q;
+ const rr=Math.round(hue2rgb(p,q,h+1/3)*255);
+ const gg=Math.round(hue2rgb(p,q,h)*255);
+ const bb=Math.round(hue2rgb(p,q,h-1/3)*255);
+ return 'rgb('+rr+','+gg+','+bb+')';
+}
+
+function meterReadingIsGreyscale(reading){
+ if(!reading) return false;
+ const r=reading.r_code!=null?reading.r_code:reading.r;
+ const g=reading.g_code!=null?reading.g_code:reading.g;
+ const b=reading.b_code!=null?reading.b_code:reading.b;
+ return r!=null&&g!=null&&b!=null&&Number(r)===Number(g)&&Number(g)===Number(b);
+}
+
+function meterSignalPreviewColor(r,g,b){
+ if(r==null||g==null||b==null) return '#aaa';
+ if(r===g&&g===b) return 'rgb('+r+','+g+','+b+')';
+ const xyz=linRgbToXyz(
+  meterDecodeSignalChannel(r),
+  meterDecodeSignalChannel(g),
+  meterDecodeSignalChannel(b),
+  meterStimulusSolveGamut().rgbToXyz
+ );
+ return meterPreviewCssFromXYZ(xyz.X,xyz.Y,xyz.Z,true);
+}
+
+function meterPreviewColorForReading(reading,mode){
+ if(!reading) return '#aaa';
+ const r=reading.r_code!=null?reading.r_code:reading.r;
+ const g=reading.g_code!=null?reading.g_code:reading.g;
+ const b=reading.b_code!=null?reading.b_code:reading.b;
+ if(r!=null&&g!=null&&b!=null&&r===g&&g===b) return meterSignalPreviewColor(r,g,b);
+ if(mode==='measured'&&reading.X!=null&&reading.Y!=null&&reading.Z!=null&&reading.Y>0){
+  return meterPreviewCssFromXYZ(reading.X,reading.Y,reading.Z,true);
+ }
+ const target=meterTargetXYZForReading(reading);
+ if(target&&target.Y>0) return meterPreviewCssFromXYZ(target.X,target.Y,target.Z,true);
+ return meterSignalPreviewColor(r,g,b);
+}
+
+function meterPreviewColorForStep(step){
+ if(!step) return '#aaa';
+ return meterPreviewColorForReading({
+  r_code:step.r,
+  g_code:step.g,
+  b_code:step.b,
+  series_color:step.series_color,
+  sat_pct:step.sat_pct,
+  name:step.name
+ },'target');
+}
+
+function meterContrastTextColor(css){
+ const m=String(css||'').match(/\d+/g)||[];
+ if(m.length<3) return '#222';
+ const lum=0.299*parseInt(m[0],10)+0.587*parseInt(m[1],10)+0.114*parseInt(m[2],10);
+ return lum<145?'#eee':'#222';
+}
+
+// Display color for a stimulus RGB triplet using a browser-safe preview of the
+// actual emitted signal patch inside the current signal container.
+function stimulusColor(r,g,b){
+ return meterSignalPreviewColor(r,g,b);
+}
+
+// CIE 1931 spectral locus xy coordinates (5nm intervals, 380-700nm)
+const CIE_LOCUS=[[.1741,.005],[.174,.005],[.1733,.0048],[.1726,.0048],[.1714,.0051],[.1703,.0058],[.1689,.0069],[.1669,.0086],[.1644,.0109],[.1611,.0138],[.1566,.0177],[.151,.0227],[.144,.0297],[.1355,.0399],[.1241,.0578],[.1096,.0868],[.0913,.1327],[.0687,.2007],[.0454,.295],[.0235,.4127],[.0082,.5384],[.0039,.6548],[.0139,.7502],[.0389,.812],[.0743,.8338],[.1142,.8262],[.1547,.8059],[.1929,.7816],[.2296,.7543],[.2658,.7243],[.3016,.6923],[.3373,.6589],[.3731,.6245],[.4087,.5896],[.4441,.5547],[.4788,.5202],[.5125,.4866],[.5448,.4544],[.5752,.4242],[.6029,.3965],[.627,.3725],[.6482,.3514],[.6658,.334],[.6801,.3197],[.6915,.3083],[.7006,.2993],[.7079,.292],[.714,.2859],[.719,.2809],[.723,.277],[.726,.274],[.7283,.2717],[.73,.27],[.732,.268],[.7334,.2666],[.7347,.2653]];
+
+// CIE L* from Y/Yn (normalized luminance 0-1) — perceptual lightness
+function ynToLstar(yn){
+ const a=Math.abs(yn);
+ const f=a>0.008856451679?Math.pow(a,1/3):(903.2963*a+16)/116;
+ const L=116*f-16;
+ return yn>=0?L:-L;
+}
+
+// Reads the selected RGB balance formula: 'calman' (L*-of-linear-RGB) or
+// 'hcfr' (unit-Y XYZ from measured xy × fact, then XYZtoRGB × 100).
+function meterRgbBalanceFormula(){
+ const sel=document.getElementById('meterRgbBalanceFormula');
+ if(sel && sel.value) return sel.value;
+ return 'calman';
+}
+
+// Perceptual RGB balance: linearRGB → L*, diff + 100.
+// The ire>0 branch builds a luminance-compensated target (chroma-only) in
+// 'absolute'/'relative' modes, or an absolute target in 'eotf' mode.
+function rgbBalanceCalman(reading,whiteRef,modeOrIncl){
+ if(!whiteRef||whiteRef.Y<=0) return {R:100,G:100,B:100};
+ const mode = meterResolveGreyRefMode(modeOrIncl);
+ // Use the absolute D65 white target for greyscale RGB balance in all modes
+ // so HDR/DV 100% white shows its real white-point error instead of being
+ // pinned to 100/100/100 by self-normalizing to the measured white.
+ const wXn = D65.X;
+ const wZn = D65.Z;
+ // Measured XYZ normalized by white Y
+ const mXn=reading.X/whiteRef.Y, mYn=reading.Y/whiteRef.Y, mZn=reading.Z/whiteRef.Y;
+ const ire=reading.ire;
+ let lcXn,lcYn,lcZn;
+ if(ire!=null&&ire>0){
+  // Target: D65 white at the active grey-target luminance.
+  const Lw=whiteRef.Y, Lb=0;
+  const tgtLum=meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code);
+  const tYn=tgtLum/whiteRef.Y;
+  const tXn=wXn*tYn;
+  const tZn=wZn*tYn;
+  if(mode==='eotf'){
+   // Include luminance error: compare measured to absolute target without
+   // rescaling — under/over-bright patches now skew the R/G/B bars.
+   lcXn=tXn; lcYn=tYn; lcZn=tZn;
+  } else {
+   // Chroma-only (absolute or relative): lift/lower the target to the measured
+   // Y so pure luminance errors don't show up as equal R/G/B shifts.
+   const lumRatio=(mYn>0&&tYn>0)?mYn/tYn:1;
+   lcXn=tXn*lumRatio; lcYn=mYn; lcZn=tZn*lumRatio;
+  }
+ } else {
+  // No IRE: scale white chromaticity to measured luminance
+  lcXn=wXn*mYn; lcYn=mYn; lcZn=wZn*mYn;
+ }
+ // Convert both to linear RGB via the active gamut matrix
+ const gamut=meterActiveGamut();
+ const mRgb=xyzToLinRgb(mXn,mYn,mZn,gamut.xyzToRgb);
+ const tRgb=xyzToLinRgb(lcXn,lcYn,lcZn,gamut.xyzToRgb);
+ // Per-channel percent: L*(measured) - L*(target) + 100 (perceptual balance)
+ return {
+  R:ynToLstar(mRgb[0])-ynToLstar(tRgb[0])+100,
+  G:ynToLstar(mRgb[1])-ynToLstar(tRgb[1])+100,
+  B:ynToLstar(mRgb[2])-ynToLstar(tRgb[2])+100
+ };
+}
+
+// HCFR-style RGB balance (RGBLevelWnd.cpp:303-328, luma-mode-OFF branch).
+// Chromaticity RGB balance: build a unit-Y XYZ from the *measured*
+// chromaticity, multiply by a luminance factor selected by the grey-ref
+// mode, convert through the active gamut's XYZtoRGB matrix, × 100.
+// Reference is the absolute gamut white (e.g. D65 for Rec.709/2020), not
+// the measured 100% white — this is a true reading of each step's
+// chromaticity against the colorspace anchor.
+function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
+ if(!whiteRef||whiteRef.Y<=0) return {R:100,G:100,B:100};
+ const mode = meterResolveGreyRefMode(modeOrIncl);
+ const s = (reading.X||0)+(reading.Y||0)+(reading.Z||0);
+ if(!(s>0)) return {R:100,G:100,B:100};
+ const x = reading.X/s, y = reading.Y/s;
+ if(!(y>0)) return {R:100,G:100,B:100};
+ let fact;
+ if(mode==='absolute'){
+  fact = 1.0;
+ } else if(mode==='relative'){
+  fact = (reading.Y>0 && whiteRef.Y>0) ? reading.Y/whiteRef.Y : 1.0;
+ } else { // 'eotf'
+  const Lb = 0;
+  const tgtY = meterGreyTargetLuminance(reading.ire, whiteRef.Y, Lb, reading.r_code);
+  fact = (tgtY>0 && whiteRef.Y>0 && reading.Y>0) ? reading.Y / tgtY : 1.0;
+ }
+ const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
+ const gamut = meterActiveGamut();
+ const [r,g,b] = xyzToLinRgb(Xn,Yn,Zn, gamut.xyzToRgb);
+ return { R:r*100, G:g*100, B:b*100 };
+}
+
+// Dispatcher — keeps every existing caller working while honoring the
+// new <select id="meterRgbBalanceFormula"> selector.
+function rgbBalance(reading,whiteRef,modeOrIncl){
+ return meterRgbBalanceFormula()==='hcfr'
+  ? rgbBalanceHCFR(reading,whiteRef,modeOrIncl)
+  : rgbBalanceCalman(reading,whiteRef,modeOrIncl);
+}
+
+function meterLiveRgbData(reading){
+ if(!reading) return {mode:'balance',R:100,G:100,B:100};
+ const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ if(!isColorSeries||reading.X==null||reading.Y==null||reading.Z==null){
+  return meterWhiteReading?{mode:'balance',...rgbBalance(reading,meterWhiteReading,meterIncludeLum())}:{mode:'balance',R:100,G:100,B:100};
+ }
+ const gamut=meterActiveGamut();
+   const target=meterTargetXYZForReading(reading);
+ const ref=Math.max(1,meterColorReferenceNits());
+ const mRgb=xyzToLinRgb(reading.X,reading.Y,reading.Z,gamut.xyzToRgb);
+ const tRgb=xyzToLinRgb(target.X,target.Y,target.Z,gamut.xyzToRgb);
+ return {
+  mode:'delta',
+  R:((mRgb[0]||0)-(tRgb[0]||0))/ref*100,
+  G:((mRgb[1]||0)-(tRgb[1]||0))/ref*100,
+  B:((mRgb[2]||0)-(tRgb[2]||0))/ref*100
+ };
+}
+
+function effectiveGamma(Y,Yw,ire,prevY,prevIre){
+ if(!(ire>0) || !(Y>0) || !(Yw>0)) return null;
+ if(ire>=100){
+  if(prevY>0 && prevIre>0 && prevIre<100){
+   const gTop=Math.log(prevY/Yw)/Math.log(prevIre/100);
+   return isFinite(gTop)?gTop:null;
+  }
+  return null;
+ }
+ const g=Math.log(Y/Yw)/Math.log(ire/100);
+ return isFinite(g)?g:null;
+}
+
+function bt1886Eotf(v,Lw,Lb){
+ Lw=Lw||100;Lb=Lb||0;
+ const g=2.4;
+ const a=Math.pow(Math.pow(Lw,1/g)-Math.pow(Lb,1/g),g);
+ const b=Math.pow(Lb,1/g)/(Math.pow(Lw,1/g)-Math.pow(Lb,1/g));
+ return a*Math.pow(Math.max(0,v+b),g);
+}
+
+function gammaEotf(v,gamma){return Math.pow(Math.max(0,v),gamma);}
+
+function srgbEotf(v){return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4);}
+
+function targetEotf(v,Lw,Lb){
+ // In HDR/DV modes the source EOTF is PQ (or a 2.2 approximation for DV),
+ // not a BT.1886/sRGB power curve — targetEotf must honor that so grey
+ // tracking ΔE (include-luminance mode) compares against the correct
+ // absolute nits at each stimulus. The meterTargetGamma dropdown is only
+ // meaningful for SDR tracking.
+ if(meterChartIsHdr()) return meterChartTargetLuminance(v,Lw,Lb);
+ const tgt=document.getElementById('meterTargetGamma').value;
+ if(tgt==='bt1886') return bt1886Eotf(v,Lw,Lb);
+ if(tgt==='srgb') return srgbEotf(v)*Lw;
+ return gammaEotf(v,parseFloat(tgt))*Lw;
+}
+
+function meterGreyStimulusFraction(ire){
+ const pct=Math.max(0,Math.min(100,ire||0));
+ const isLimited=meterPatchUsesVideoRange();
+ const dvMode=meterChartIsDv();
+ const code=dvMode
+  ? (isLimited?Math.round(16+Math.pow(pct/100,1/2.2)*219):Math.round(Math.pow(pct/100,1/2.2)*255))
+  : (isLimited?Math.round(16+pct/100*(235-16)):Math.round(pct*255/100));
+ return meterSignalFractionFromCode(code);
+}
+
+function meterGreyTargetSignal(ire,code){
+ const nominal=Math.max(0,Math.min(1,(ire||0)/100));
+ // DV charting should follow the requested greyscale step itself, then apply
+ // display clipping at the calibrated/reference white. Using the SDR/PQ
+ // power-curve path makes the target too dark; using raw transport code alone
+ // removes the top-end roll-off. The reference-style reference is the nominal
+ // step with clipping handled later in meterChartTrackingLuminance().
+ if(meterChartIsDv()) return nominal;
+ if(code!=null) return meterSignalFractionFromCode(code);
+ if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
+ return nominal;
+}
+
+function meterGreyTargetLuminance(ire,Lw,Lb,code){
+ const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():1);
+ const signal=meterGreyTargetSignal(ire,code);
+ return meterChartTargetLuminance(signal,peak,Lb||0);
+}
+
+function meterGreyTargetChartValue(ire,Lw,Lb,code){
+ return meterGreyTargetLuminance(ire,Lw,Lb,code);
+}
+
+function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
+ const peak=(Lw>0)?Lw:100;
+ if(!(peak>0) || !(ire>0)) return null;
+ const tgt=((document.getElementById('meterTargetGamma')||{}).value)||'2.2';
+ const signal=meterGreyTargetSignal(ire,code);
+ if(!(signal>0)) return null;
+ const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
+ const prevStepCode=(prevCode!=null)?prevCode:meterCodeFromSignalPercent(prevStepIre);
+ // HDR/PQ: the "target gamma" is the effective exponent of the actual
+ // displayed target curve at each grey step. In DV this follows the encoded
+ // transport patch values that the series generator emits, which yields the
+ // expected near-linear luminance-vs-step target in the chart view.
+ if(meterChartIsHdr()){
+  const tgtLum=meterChartTargetLuminance(signal,peak,Lb||0);
+  if(ire>=100){
+   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
+   const prevLum=meterChartTargetLuminance(prevSignal,peak,Lb||0);
+   return effectiveGamma(tgtLum,peak,ire,prevLum,prevStepIre);
+  }
+  return effectiveGamma(tgtLum,peak,ire);
+ }
+ let black=Lb||0;
+ if(tgt==='bt1886'){
+  // BT.1886 is not a flat 2.4 line once black level is included. Plot the
+  // effective exponent of the BT.1886 target so the reference follows the
+  // expected rise from near-black toward the nominal 2.4 upper-end gamma.
+  if(!(black>0)){
+   const cfgBlack=parseFloat((config&&config.min_luma)||'0.005');
+   if(cfgBlack>0) black=cfgBlack;
+  }
+  const tgtLum=bt1886Eotf(signal,peak,black);
+  if(ire>=100){
+   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
+   const prevLum=bt1886Eotf(prevSignal,peak,black);
+   return effectiveGamma(tgtLum,peak,ire,prevLum,prevStepIre);
+  }
+  return effectiveGamma(tgtLum,peak,ire);
+ }
+ if(tgt==='srgb') return 2.2;
+ const gamma=parseFloat(tgt);
+ return (gamma>0&&isFinite(gamma))?gamma:null;
+}
+
+function meterTargetGammaLabel(){
+ if(meterChartIsDv()) return 'Dolby Vision';
+ if(meterChartIsPq()) return 'PQ';
+ const sel=document.getElementById('meterTargetGamma');
+ if(!sel) return 'Gamma';
+ const opt=sel.options[sel.selectedIndex];
+ return opt&&opt.textContent?opt.textContent.trim():'Gamma';
+}
+
+function meterGreyTargetChartPoints(steps,Lw,Lb,scale){
+ const pts=[];
+ const seen={};
+ const addPoint=(ire,code)=>{
+  const key=''+ire+':'+(code==null?'':code);
+  if(seen[key]) return;
+  seen[key]=1;
+  pts.push([Math.max(0,Math.min(100,ire))/100,meterGreyTargetChartValue(ire,Lw,Lb,code)/scale]);
+ };
+ addPoint(0,0);
+ (steps||[]).forEach(s=>addPoint(s.ire||0,s.r_code!=null?s.r_code:s.r));
+ addPoint(100,meterPatchRangeMin()+meterPatchRangeSpan());
+ pts.sort((a,b)=>a[0]-b[0]);
+ return pts;
+}
+
+function targetGammaValue(){
+ const tgt=document.getElementById('meterTargetGamma').value;
+ if(tgt==='bt1886') return 2.4;
+ if(tgt==='srgb') return 2.2;
+ return parseFloat(tgt);
+}
+
+function meterChartSignalMode(){
+ const liveSel=(document.getElementById('signal_mode')||{}).value;
+ if(liveSel) return liveSel;
+ if(config&&config.dv_status==='1') return 'dv';
+ if(config&&config.is_hdr==='1') return (config.eotf==='3')?'hlg':'hdr10';
+ return 'sdr';
+}
+
+function meterChartIsHdr(){
+ return meterChartSignalMode()!=='sdr';
+}
+
+function meterChartIsPq(){
+ const sm=meterChartSignalMode();
+ return sm==='hdr10'||sm==='dv';
+}
+
+function meterChartIsDv(){
+ return meterChartSignalMode()==='dv';
+}
+
+function meterChartHdrPeak(){
+ const top=document.getElementById('max_luma');
+ const live=top?parseFloat(top.value):NaN;
+ const cfg=parseFloat((config&&config.max_luma)||'1000');
+ const peak=live>0?live:cfg;
+ if(!(peak>0)) return 1000;
+ return Math.min(10000,peak);
+}
+
+// The meter pane mirrors the main HDR metadata controls so peak/min only
+// have to be set once at the top of the page.
+function meterChartMasterPeak(){
+ return meterChartHdrPeak();
+}
+
+function meterChartMasterMin(){
+ const top=document.getElementById('min_luma');
+ const live=top?parseFloat(top.value):NaN;
+ const cfg=parseFloat((config&&config.min_luma)||'0.005');
+ if(live>=0&&isFinite(live)) return live;
+ return (cfg>=0&&isFinite(cfg))?cfg:0.005;
+}
+
+function meterChartDiffuseWhite(){
+ const el=document.getElementById('meterHdrDiffuse');
+ const v=el?parseFloat(el.value):NaN;
+ return (v>0)?v:203;
+}
+
+function meterChartBt2390Enabled(){
+ const el=document.getElementById('meterHdrApplyBT2390');
+ return !!(el && el.checked);
+}
+
+// ITU-R BT.2390-11 §5.2 Hermite tone-mapping:
+// Maps an input luminance (nits) encoded in PQ against a master peak Lmax
+// to a display peak Ldisp. Input/output are linear nits (not PQ-coded).
+// Below the knee point KS the curve is identity; above, a cubic Hermite
+// spline rolls toward Ldisp. Returns linear nits clipped to Ldisp.
+function bt2390Tonemap(Lsrc, Lmax, Ldisp){
+ if(!(Lmax>0) || !(Ldisp>0)) return Lsrc;
+ if(Ldisp>=Lmax) return Math.min(Lsrc,Lmax);
+ if(!(Lsrc>0)) return 0;
+ // Work in PQ E' domain (0..1) so the curve is perceptually uniform.
+ const Emax = meterChartPqEncodeNormalized(Lmax);
+ const Edisp = meterChartPqEncodeNormalized(Ldisp);
+ const E = meterChartPqEncodeNormalized(Lsrc);
+ if(!(Emax>0)) return Lsrc;
+ const e1 = E / Emax;           // normalized input [0,1]
+ const maxLum = Edisp / Emax;   // display peak in same normalized scale
+ const KS = 1.5*maxLum - 0.5;   // knee start (BT.2390)
+ let e2;
+ if(e1 < KS || KS>=1){
+  e2 = e1;
+ } else {
+  const T = (e1 - KS) / (1 - KS);
+  const T2 = T*T;
+  const T3 = T2*T;
+  // Hermite spline: P(T) = (2T³-3T²+1)KS + (T³-2T²+T)(1-KS) + (-2T³+3T²)maxLum
+  e2 = (2*T3 - 3*T2 + 1)*KS
+     + (T3 - 2*T2 + T)*(1 - KS)
+     + (-2*T3 + 3*T2)*maxLum;
+ }
+ const Eout = e2 * Emax;
+ return Math.min(meterChartPqDecodeNormalized(Eout), Ldisp);
+}
+
+// Show/hide the HDR configuration group whenever the chart signal mode
+// changes. Called from the HDR-aware redraw path.
+function meterUpdateHdrConfigVisibility(){
+ const el=document.getElementById('meterHdrConfig');
+ if(!el) return;
+ el.style.display = meterChartIsHdr() ? '' : 'none';
+}
+
+function meterChartPqEncodeNormalized(nits){
+ const clamped=Math.max(0,Math.min(10000,nits||0));
+ if(clamped<=0) return 0;
+ const l=clamped/10000;
+ const m1=2610/16384;
+ const m2=2523/32;
+ const c1=3424/4096;
+ const c2=2413/128;
+ const c3=2392/128;
+ const p=Math.pow(l,m1);
+ return Math.pow((c1+c2*p)/(1+c3*p),m2);
+}
+
+function meterChartPqDecodeNormalized(code){
+ const clamped=Math.max(0,Math.min(1,code||0));
+ if(clamped<=0) return 0;
+ const m1=2610/16384;
+ const m2=2523/32;
+ const c1=3424/4096;
+ const c2=2413/128;
+ const c3=2392/128;
+ const p=Math.pow(clamped,1/m2);
+ const num=Math.max(p-c1,0);
+ const den=c2-c3*p;
+ if(den<=0) return 10000;
+ return 10000*Math.pow(num/den,1/m1);
+}
+
+function meterChartHdrStimulusLuminance(v){
+ return Math.pow(Math.max(0,Math.min(1,v)),2.2)*meterChartHdrPeak();
+}
+
+function meterChartHdrCodeLuminance(v,clipPeak){
+ const peak=(clipPeak>0)?clipPeak:meterChartHdrPeak();
+ const raw=meterChartPqDecodeNormalized(v);
+ if(meterChartBt2390Enabled()){
+  const master=meterChartMasterPeak();
+  return bt2390Tonemap(raw,master,peak);
+ }
+ return Math.min(raw,peak);
+}
+
+function meterChartDvClipPeak(){
+ const contentPeak=meterChartHdrPeak();
+ const whitePeak=(meterWhiteReading&&meterWhiteReading.luminance>0)?meterWhiteReading.luminance:0;
+ return whitePeak>0?Math.min(contentPeak,whitePeak):contentPeak;
+}
+
+function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
+ const clamped=Math.max(0,Math.min(1,v));
+ if(meterChartIsDv()){
+  // Dolby Vision chart targets should look like the reference workflow's post-cal EOTF:
+  // a diagonal relative-luminance ramp that rolls off when the display hits
+  // its calibrated/reference white. Use the mastering/content peak as the
+  // linear source scale, then clip to the measured/reference white peak.
+  const contentPeak=meterChartMasterPeak();
+  const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartDvClipPeak());
+  return Math.min(clamped*contentPeak,peak);
+ }
+ if(meterChartIsPq()){
+  const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
+  return meterChartHdrCodeLuminance(clamped,peak);
+ }
+ return targetEotf(clamped,Lw,Lb);
+}
+
+function meterChartTargetLuminance(v,Lw,Lb){
+ const peak=(Lw>0)?Lw:meterChartHdrPeak();
+ if(meterChartIsDv()) return meterChartTrackingLuminance(v,peak,Lw,Lb);
+ if(meterChartIsHdr()) return meterChartTrackingLuminance(v,peak,Lw,Lb);
+ return meterChartTrackingLuminance(v,Lw,Lw,Lb);
+}
+
+// CIE L* from Y with white reference Yn
+function cieLstar(Y,Yn){
+ if(Yn<=0) return 0;
+ const r=Y/Yn;
+ return r>0.008856?116*Math.cbrt(r)-16:903.3*r;
+}
+
+// CIELUV chromaticity-only ΔE: 1300 * Δu'v' (HCFR old formula)
+function deltaEuv(X,Y,Z,Xr,Yr,Zr){
+ const d=X+15*Y+3*Z, dr=Xr+15*Yr+3*Zr;
+ if(d<=0||dr<=0) return 0;
+ const u=4*X/d, v=9*Y/d;
+ const ur=4*Xr/dr, vr=9*Yr/dr;
+ return 1300*Math.sqrt((u-ur)*(u-ur)+(v-vr)*(v-vr));
+}
+
+// Full CIELUV ΔE*uv (HCFR 3.5.4.4 new formula)
+// Yw1/Yw2 = white Y for L* scaling of measured/reference
+// (Xn,Yn,Zn) = adaptation white for u'n,v'n
+function deltaELuv(X1,Y1,Z1,Yw1, X2,Y2,Z2,Yw2, Xn,Yn,Zn){
+ const L1=cieLstar(Y1,Yw1), L2=cieLstar(Y2,Yw2);
+ const d1=X1+15*Y1+3*Z1, d2=X2+15*Y2+3*Z2, dn=Xn+15*Yn+3*Zn;
+ if(d1<=0||dn<=0) return Math.abs(L1-L2);
+ const un=4*Xn/dn, vn=9*Yn/dn;
+ const u1s=13*L1*(4*X1/d1-un), v1s=13*L1*(9*Y1/d1-vn);
+ const u2s=d2>0?13*L2*(4*X2/d2-un):0, v2s=d2>0?13*L2*(9*Y2/d2-vn):0;
+ return Math.sqrt((L1-L2)*(L1-L2)+(u1s-u2s)*(u1s-u2s)+(v1s-v2s)*(v1s-v2s));
+}
+
+// XYZ to Lab (optional white point, defaults to D65 Y=1)
+function xyzToLab(X,Y,Z,Xn,Yn,Zn){
+ if(!Xn){Xn=D65.X;Yn=D65.Y;Zn=D65.Z;}
+ const e=216/24389, k=24389/27;
+ function f(t){return t>e?Math.cbrt(t):(k*t+16)/116;}
+ const fx=f(X/Xn),fy=f(Y/Yn),fz=f(Z/Zn);
+ return {L:116*fy-16, a:500*(fx-fy), b:200*(fy-fz)};
+}
+
+// HCFR's CIELUV ΔE — matches libHCFR/Color.cpp ColorLuv ctor bit-for-bit.
+// HCFR's u-prime has a bug (12*x instead of 12*y in the denominator):
+//   u = 4x / (-2x + 12x + 3)   [should be 12y, but HCFR uses 12x]
+//   v = 9y / (-2x + 12y + 3)   [correct]
+// u_white, v_white use the same formulas applied to the CColorReference
+// white point (D65 for BT.709/BT.2020). refColor's chromaticity is NOT the
+// subtraction target — the cRef white is.
+// YWhite / YWhiteRef scale L* via var_Y = Y/YWhite (epsilon branch for low Y).
+function lstar(Y,YW){
+ const e=216/24389, k=24389/27;
+ if(YW<=0||Y<=0) return 0;
+ const v=Y/YW;
+ return v>e ? 116*Math.cbrt(v)-16 : (k*v+16)/116*116-16;
+}
+function _hcfrUV(X,Y,Z){
+ const s=X+Y+Z; if(s<=0) return {u:0,v:0};
+ const x=X/s, y=Y/s;
+ const u=4*x/(10*x+3);        // HCFR's buggy u: -2x+12x+3 = 10x+3
+ const v=9*y/(-2*x+12*y+3);   // standard v
+ return {u:u,v:v};
+}
+function deltaELuvHCFR(X1,Y1,Z1,YW1, X2,Y2,Z2,YW2){
+ // L* from each sample's own YWhite (matches HCFR: Luv(*this, YWhite, cRef)
+ // for measured, LuvRef(refColor, YWhiteRef, cRef) for reference).
+ const L1=lstar(Y1,YW1), L2=lstar(Y2,YW2);
+ // u_white, v_white are always from cRef (D65 for our BT.709/2020 pipeline)
+ const uw=4*D65.x/(10*D65.x+3);
+ const vw=9*D65.y/(-2*D65.x+12*D65.y+3);
+ const m1=_hcfrUV(X1,Y1,Z1);
+ const m2=_hcfrUV(X2,Y2,Z2);
+ const u1s=13*L1*(m1.u-uw), v1s=13*L1*(m1.v-vw);
+ const u2s=13*L2*(m2.u-uw), v2s=13*L2*(m2.v-vw);
+ const dL=L1-L2, du=u1s-u2s, dv=v1s-v2s;
+ return Math.sqrt(dL*dL+du*du+dv*dv);
+}
+
+// Returns whether the "Include luminance error" checkbox is ticked.
+// Retained for back-compat with callers that still pass boolean inclLum.
+function meterIncludeLum(){
+ const el=document.getElementById('meterIncludeLumError');
+ if(!el) return false;
+ // Select-driven mode wins when present (checkbox follows the select).
+ const sel=document.getElementById('meterGreyRefMode');
+ if(sel && sel.value) return sel.value==='eotf';
+ return !!el.checked;
+}
+
+// Unified handler for the grey-ref / gray-world / RGB balance / greyscale
+// ΔE / color ΔE selectors and the legacy checkbox. Keeps checkbox state in
+// sync with the select, persists selections, and redraws charts.
+function meterOnGreyRefChange(src){
+ const cb=document.getElementById('meterIncludeLumError');
+ const sel=document.getElementById('meterGreyRefMode');
+ if(cb && sel){
+  if(src==='checkbox' || (src==null && document.activeElement===cb)){
+   sel.value = cb.checked ? 'eotf' : 'absolute';
+  } else {
+   cb.checked = (sel.value==='eotf');
+  }
+ }
+ try{ meterSaveColorPrefs(); }catch(e){}
+ if(meterReadings && meterReadings.length){
+  // Invalidate any per-reading ΔE cache (mode/form/gw changed).
+  meterReadings.forEach(r=>{ if(r){ delete r._dE_cache_key; delete r._dE_raw; delete r._dE_lc; delete r._gamma_rgb; } });
+  drawAllCharts(meterReadings);
+ }
+}
+
+// Persist the meter color-science selections to localStorage so reloads
+// keep the user's choices. Keys are kept under pgen.meter.* so they don't
+// collide with other prefs.
+function meterSaveColorPrefs(){
+ try{
+  const v=(id)=>{ const e=document.getElementById(id); return e?e.value:''; };
+  const cb=(id)=>{ const e=document.getElementById(id); return e?(e.checked?'1':'0'):''; };
+  const prefs={
+   grey_ref_mode: v('meterGreyRefMode'),
+   gray_world:    v('meterGrayWorld'),
+   rgb_formula:   v('meterRgbBalanceFormula'),
+   de_form:       v('meterDeltaEForm'),
+   color_de_form: v('meterColorDeltaEForm'),
+   incl_lum:      cb('meterIncludeLumError'),
+   target_gamma:  v('meterTargetGamma'),
+   hdr_diffuse:   v('meterHdrDiffuse'),
+   hdr_bt2390:    cb('meterHdrApplyBT2390')
+  };
+  localStorage.setItem('pgen.meter.colorPrefs', JSON.stringify(prefs));
+ }catch(e){}
+}
+
+// Apply saved meter color-science selections to the DOM. Safe to call
+// before the inputs exist — each lookup is a no-op if the element is
+// missing. Server-provided config wins on first load; see meterApplyServerColorPrefs.
+function meterLoadColorPrefs(){
+ try{
+  const raw=localStorage.getItem('pgen.meter.colorPrefs');
+  if(!raw) return;
+  const p=JSON.parse(raw)||{};
+  const setVal=(id,val)=>{ if(val==null||val==='') return; const e=document.getElementById(id); if(e) e.value=val; };
+  const setChk=(id,val)=>{ if(val==null||val==='') return; const e=document.getElementById(id); if(e) e.checked=(val==='1'||val===true); };
+  setVal('meterGreyRefMode', p.grey_ref_mode);
+  setVal('meterGrayWorld',   p.gray_world);
+  setVal('meterRgbBalanceFormula', p.rgb_formula);
+  setVal('meterDeltaEForm',  p.de_form);
+  setVal('meterColorDeltaEForm', p.color_de_form);
+  setChk('meterIncludeLumError', p.incl_lum);
+  setVal('meterTargetGamma', p.target_gamma);
+  setVal('meterHdrDiffuse',    p.hdr_diffuse);
+  setChk('meterHdrApplyBT2390', p.hdr_bt2390);
+ }catch(e){}
+}
+
+// Tri-state grey-reference mode (HCFR m_dE_gray 0/1/2).
+//   'absolute' : ref Y = measured Y (ΔL*=0; chroma only)
+//   'eotf'     : ref Y = target EOTF using the configured / metadata peak
+//                (luminance tracking error included)
+//   'relative' : ref Y = target EOTF normalized to the measured white peak
+//                ("perfect gamma" shape, independent of overall peak mismatch).
+//
+// Reads <select id="meterGreyRefMode"> when present; otherwise falls back
+// to the legacy checkbox (#meterIncludeLumError) where ticked → 'eotf'.
+function meterGreyRefMode(){
+ const sel=document.getElementById('meterGreyRefMode');
+ if(sel && sel.value) return sel.value;
+ return meterIncludeLum() ? 'eotf' : 'absolute';
+}
+
+// Accepts either a boolean (legacy inclLum) or a mode string and returns
+// the canonical mode string for the grey-reference builders.
+function meterResolveGreyRefMode(x){
+ if(typeof x === 'string'){
+  if(x==='eotf'||x==='absolute'||x==='relative') return x;
+ }
+ if(x===true) return 'eotf';
+ if(x===false) return 'absolute';
+ return meterGreyRefMode();
+}
+
+// Returns the selected gray-world weighting (HCFR gw_Weight).
+// 1.0 = off, 0.15 = gray-world, 0.05 = near-black. Pulls the Y/Yn ratio
+// below Lab's ε threshold so near-black luminance errors become visible.
+function meterGrayWorldWeight(){
+ const sel=document.getElementById('meterGrayWorld');
+ if(!sel) return 1.0;
+ const v=parseFloat(sel.value);
+ return (v>0 && v<=1) ? v : 1.0;
+}
+
+// Greyscale reference builder for ΔE calculation.
+//   mode === 'absolute' : chroma-only. Reference is D65 at the measured Y
+//     normalized by peak, so ΔL* = 0 and only u'v' / a*b* chromaticity
+//     error contributes. Matches the chroma-only readout used by most
+//     calibration tools. (HCFR m_dE_gray == 0)
+//   mode === 'eotf'     : "include luminance error" mode. Reference
+//     Y comes from the active EOTF using the configured / metadata peak,
+//     so ΔL* reports absolute tracking error. (HCFR m_dE_gray == 1)
+//   mode === 'relative' : reference Y comes from the same target EOTF but
+//     normalized to the measured white peak. This preserves gamma-shape
+//     error while ignoring an overall white-peak mismatch. (HCFR m_dE_gray == 2)
+//
+// Legacy boolean inclLum is still accepted (true → 'eotf', false → 'absolute').
+// Optional gwWeight (HCFR gw_Weight) pre-multiplies YWhite / YWhiteRef by
+// 0.15 or 0.05 to pull Lab into its linear (κ·t) region for near-black
+// patches.
+function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight){
+ const mode = meterResolveGreyRefMode(modeOrIncl);
+ const gw = (gwWeight>0 && gwWeight<=1) ? gwWeight : 1.0;
+ const measuredPeak = (Lw>0) ? Lw : (Ym>0 ? Ym : 1);
+ const metadataPeak = meterChartIsHdr() ? meterChartHdrPeak() : measuredPeak;
+ // Always reference greyscale chromaticity to the target white (D65). This
+ // keeps the greyscale 100% white point aligned with the color-series white
+ // readout instead of forcing ΔE at 100% to zero in HDR/DV.
+ const wxN = D65.X;
+ const wzN = D65.Z;
+ let peak = measuredPeak;
+ let refVy;
+ if(mode==='eotf'){
+  peak = metadataPeak;
+  const tgtY = meterGreyTargetLuminance(ire, peak, Lb||0, code);
+  refVy = peak>0 ? tgtY/peak : 0;
+ } else if(mode==='relative'){
+  peak = measuredPeak;
+  const tgtY = meterGreyTargetLuminance(ire, peak, Lb||0, code);
+  refVy = peak>0 ? tgtY/peak : 0;
+ } else {
+  refVy = peak>0 ? Ym/peak : 0;
+ }
+ return {
+  YWhite: peak*gw,
+  refX: wxN*refVy, refY: refVy, refZ: wzN*refVy,
+  YWhiteRef: 1.0*gw, wxN, wzN,
+  mode: mode, gwWeight: gw
+ };
+}
+
+// Simplified deltaE2000
+function deltaE2000(lab1,lab2){ const dL=lab2.L-lab1.L;
+ const C1=Math.sqrt(lab1.a*lab1.a+lab1.b*lab1.b);
+ const C2=Math.sqrt(lab2.a*lab2.a+lab2.b*lab2.b);
+ const Cb=(C1+C2)/2;
+ const G=0.5*(1-Math.sqrt(Math.pow(Cb,7)/(Math.pow(Cb,7)+Math.pow(25,7))));
+ const a1p=lab1.a*(1+G),a2p=lab2.a*(1+G);
+ const C1p=Math.sqrt(a1p*a1p+lab1.b*lab1.b);
+ const C2p=Math.sqrt(a2p*a2p+lab2.b*lab2.b);
+ const dCp=C2p-C1p;
+ let h1p=(a1p===0&&lab1.b===0)?0:Math.atan2(lab1.b,a1p)*180/Math.PI; if(h1p<0) h1p+=360;
+ let h2p=(a2p===0&&lab2.b===0)?0:Math.atan2(lab2.b,a2p)*180/Math.PI; if(h2p<0) h2p+=360;
+ const Cprod=C1p*C2p;
+ let dhp;
+ if(Cprod===0){ dhp=0; }
+ else {
+  dhp=h2p-h1p;
+  if(dhp>180) dhp-=360;
+  else if(dhp<-180) dhp+=360;
+ }
+ const dHp=2*Math.sqrt(Cprod)*Math.sin(dhp*Math.PI/360);
+ const Lbp=(lab1.L+lab2.L)/2;
+ const Cbp=(C1p+C2p)/2;
+ let Hbp;
+ if(Cprod===0){ Hbp=h1p+h2p; }
+ else {
+  const dh=Math.abs(h1p-h2p);
+  if(dh<=180) Hbp=(h1p+h2p)/2;
+  else if(h1p+h2p<360) Hbp=(h1p+h2p+360)/2;
+  else Hbp=(h1p+h2p-360)/2;
+ }
+ const T=1-0.17*Math.cos((Hbp-30)*Math.PI/180)+0.24*Math.cos(2*Hbp*Math.PI/180)+0.32*Math.cos((3*Hbp+6)*Math.PI/180)-0.20*Math.cos((4*Hbp-63)*Math.PI/180);
+ const SL=1+0.015*Math.pow(Lbp-50,2)/Math.sqrt(20+Math.pow(Lbp-50,2));
+ const SC=1+0.045*Cbp;
+ const SH=1+0.015*Cbp*T;
+ const RT=-2*Math.sqrt(Math.pow(Cbp,7)/(Math.pow(Cbp,7)+Math.pow(25,7)))*Math.sin(60*Math.exp(-Math.pow((Hbp-275)/25,2))*Math.PI/180);
+ return Math.sqrt(Math.pow(dL/SL,2)+Math.pow(dCp/SC,2)+Math.pow(dHp/SH,2)+RT*(dCp/SC)*(dHp/SH));
+}
+
+// CIE 1976 Lab ΔE (Euclidean distance in L*a*b*).
+function deltaE76Lab(l1,l2){
+ const dL=l1.L-l2.L, da=l1.a-l2.a, db=l1.b-l2.b;
+ return Math.sqrt(dL*dL+da*da+db*db);
+}
+
+// CIE94 (graphics / kL=kC=kH=1 by default). Reference = lab2.
+function deltaE94(l1,l2,kL,kC,kH){
+ kL=kL||1; kC=kC||1; kH=kH||1;
+ const dL=l1.L-l2.L;
+ const C1=Math.hypot(l1.a,l1.b), C2=Math.hypot(l2.a,l2.b);
+ const dC=C1-C2;
+ const da=l1.a-l2.a, db=l1.b-l2.b;
+ const dHsq=Math.max(0, da*da+db*db-dC*dC);
+ const SL=1, SC=1+0.045*C1, SH=1+0.015*C1;
+ return Math.sqrt(Math.pow(dL/(kL*SL),2)+Math.pow(dC/(kC*SC),2)+dHsq/Math.pow(kH*SH,2));
+}
+
+// CMC(l:c) ΔE. l=c=1 is CMC(1:1) perceptibility; l=2,c=1 is CMC(2:1) acceptability.
+function deltaECMC(l1,l2,lParam,cParam){
+ const l=lParam||1, c=cParam||1;
+ const C1=Math.hypot(l1.a,l1.b), C2=Math.hypot(l2.a,l2.b);
+ const dC=C1-C2, dL=l1.L-l2.L;
+ const da=l1.a-l2.a, db=l1.b-l2.b;
+ const dHsq=Math.max(0, da*da+db*db-dC*dC);
+ let H1=Math.atan2(l1.b,l1.a)*180/Math.PI; if(H1<0) H1+=360;
+ const F=Math.sqrt(Math.pow(C1,4)/(Math.pow(C1,4)+1900));
+ const T=(H1>=164&&H1<=345)
+  ? (0.56+Math.abs(0.2*Math.cos((H1+168)*Math.PI/180)))
+  : (0.36+Math.abs(0.4*Math.cos((H1+35)*Math.PI/180)));
+ const SL=(l1.L<16)?0.511:(0.040975*l1.L/(1+0.01765*l1.L));
+ const SC=0.0638*C1/(1+0.0131*C1)+0.638;
+ const SH=SC*(F*T+1-F);
+ return Math.sqrt(Math.pow(dL/(l*SL),2)+Math.pow(dC/(c*SC),2)+dHsq/(SH*SH));
+}
+
+// Barten (1999) CSF-derived JND at average field luminance L (cd/m²).
+// Returns the L* increment per 1 JND at that luminance (approx; from
+// ITU-R BT.2246-7 §7). Clamps to a safe floor so SL never vanishes.
+function bartenJND(L){
+ const Lc=Math.max(0.005, L);
+ // Simplified Barten JND normalized to 1 unit at ~100 nit: ΔL/L scales with
+ // Lc^(-0.5) in the low-nit region and approaches Weber (≈0.0106) at 100+ nit.
+ const weber=0.0106;
+ const dL_over_L = weber * Math.sqrt(100/Lc) ;
+ // Convert relative threshold to an L* delta: dL* ≈ 116/3 * f'(Y/Yn) * ΔY/Yn.
+ // For perceptual weighting we only need a monotonic scale — return dL*/unit.
+ const Yn=100;
+ const r=Lc/Yn;
+ const fprime = (r>0.008856) ? (1/3)*Math.pow(r,-2/3) : 903.2963/116;
+ const dLstar = 116 * fprime * (Lc * dL_over_L) / Yn;
+ return Math.max(dLstar, 0.05);
+}
+
+// dE2000 with SL replaced by a Barten-JND-scaled lightness term so
+// "1 ΔE ≈ 1 JND" across the HDR luminance range. Hybrid JND formulation
+// derived from Barten CSF so near-black is not overweighted.
+function deltaE2000JND(lab1,lab2,Ym,Yref){
+ const dL=lab2.L-lab1.L;
+ const C1=Math.sqrt(lab1.a*lab1.a+lab1.b*lab1.b);
+ const C2=Math.sqrt(lab2.a*lab2.a+lab2.b*lab2.b);
+ const Cb=(C1+C2)/2;
+ const G=0.5*(1-Math.sqrt(Math.pow(Cb,7)/(Math.pow(Cb,7)+Math.pow(25,7))));
+ const a1p=lab1.a*(1+G),a2p=lab2.a*(1+G);
+ const C1p=Math.sqrt(a1p*a1p+lab1.b*lab1.b);
+ const C2p=Math.sqrt(a2p*a2p+lab2.b*lab2.b);
+ const dCp=C2p-C1p;
+ let h1p=(a1p===0&&lab1.b===0)?0:Math.atan2(lab1.b,a1p)*180/Math.PI; if(h1p<0) h1p+=360;
+ let h2p=(a2p===0&&lab2.b===0)?0:Math.atan2(lab2.b,a2p)*180/Math.PI; if(h2p<0) h2p+=360;
+ const Cprod=C1p*C2p;
+ let dhp;
+ if(Cprod===0){ dhp=0; }
+ else {
+  dhp=h2p-h1p;
+  if(dhp>180) dhp-=360;
+  else if(dhp<-180) dhp+=360;
+ }
+ const dHp=2*Math.sqrt(Cprod)*Math.sin(dhp*Math.PI/360);
+ const Cbp=(C1p+C2p)/2;
+ let Hbp;
+ if(Cprod===0){ Hbp=h1p+h2p; }
+ else {
+  const dh=Math.abs(h1p-h2p);
+  if(dh<=180) Hbp=(h1p+h2p)/2;
+  else if(h1p+h2p<360) Hbp=(h1p+h2p+360)/2;
+  else Hbp=(h1p+h2p-360)/2;
+ }
+ const T=1-0.17*Math.cos((Hbp-30)*Math.PI/180)+0.24*Math.cos(2*Hbp*Math.PI/180)+0.32*Math.cos((3*Hbp+6)*Math.PI/180)-0.20*Math.cos((4*Hbp-63)*Math.PI/180);
+ // SL replaced with Barten JND at the field-average luminance. Falls back
+ // to the standard CIEDE2000 SL when Ym/Yref are not supplied.
+ let SL;
+ if(Ym>0 || Yref>0){
+  const Lfield=Math.max(Ym||0, Yref||0, 0.005);
+  SL=bartenJND(Lfield);
+ } else {
+  const Lbp=(lab1.L+lab2.L)/2;
+  SL=1+0.015*Math.pow(Lbp-50,2)/Math.sqrt(20+Math.pow(Lbp-50,2));
+ }
+ const SC=1+0.045*Cbp;
+ const SH=1+0.015*Cbp*T;
+ const RT=-2*Math.sqrt(Math.pow(Cbp,7)/(Math.pow(Cbp,7)+Math.pow(25,7)))*Math.sin(60*Math.exp(-Math.pow((Hbp-275)/25,2))*Math.PI/180);
+ return Math.sqrt(Math.pow(dL/SL,2)+Math.pow(dCp/SC,2)+Math.pow(dHp/SH,2)+RT*(dCp/SC)*(dHp/SH));
+}
+
+// Reads the ΔE form selector. Defaults to 'de2000'.
+function meterDeltaEForm(){
+ const sel=document.getElementById('meterDeltaEForm');
+ if(sel && sel.value) return sel.value;
+ return 'de2000';
+}
+
+function meterDeltaEFormLabel(form){
+ const f=form||meterDeltaEForm();
+ return {
+  de2000:'ΔE 2000',
+  de94:'ΔE 94',
+  de76lab:'ΔE 76 (Lab)',
+  deluv76:'ΔE 76 (Luv)',
+  decmc:'ΔE CMC(1:1)',
+  de2000_jnd:'ΔE 2000 JND',
+  auto:'ΔE Auto'
+ }[f]||'ΔE';
+}
+
+// Router that runs the selected ΔE form on a Lab pair plus optional
+// luminance context (used by de2000_jnd and the auto mode).
+//   form: 'de2000' | 'de94' | 'de76lab' | 'deluv76' | 'decmc' | 'de2000_jnd' | 'auto'
+//   ctx:  { isGrey?: bool, Ym?: nits, Yref?: nits,
+//           X,Y,Z, YWhite, Xr,Yr,Zr, YWhiteRef }   (Luv76 only uses XYZ+YWhite)
+function meterDeltaE(labM,labT,form,ctx){
+ form = form || 'de2000';
+ ctx = ctx || {};
+ if(form==='auto'){
+  // HCFR dE_form==5: Luv76 for grayscale, dE2000 for color.
+  form = ctx.isGrey ? 'deluv76' : 'de2000';
+ }
+ if(form==='deluv76'){
+  if(ctx.X!=null && ctx.Xr!=null){
+   return deltaELuvHCFR(ctx.X,ctx.Y,ctx.Z,ctx.YWhite, ctx.Xr,ctx.Yr,ctx.Zr,ctx.YWhiteRef);
+  }
+  // Fallback: Lab-approximated Luv76 distance when XYZ context missing.
+  return deltaE76Lab(labM,labT);
+ }
+ if(form==='de76lab') return deltaE76Lab(labM,labT);
+ if(form==='de94')    return deltaE94(labM,labT,1,1,1);
+ if(form==='decmc')   return deltaECMC(labM,labT,1,1);
+ if(form==='de2000_jnd') return deltaE2000JND(labM,labT,ctx.Ym||0,ctx.Yref||0);
+ return deltaE2000(labM,labT);
+}
+
+async function meterEnsureDetected(){
+ if(meterDetected) return true;
+ await meterCheckStatus();
+ return !!meterDetected;
+}
+
+async function meterCheckStatus(){
+
+ const r=await fetchJSON('/api/meter/status',{_quiet:true,_timeoutMs:5000});
+ const busy=meterSeriesRunning||meterContinuousActive||document.getElementById('meterDot').style.background==='var(--orange)';
+ if(r&&r.detected){
+  meterStatusMisses=0;
+  meterDetected=true;
+  meterLastKnownName=r.name||meterLastKnownName||'Meter';
+  document.getElementById('meterCard').style.display='';
+  document.getElementById('meterStatusWrap').style.display='';
+  document.getElementById('meterDot').style.background='var(--green)';
+  document.getElementById('meterStatusText').textContent=r.name||'Meter';
+  document.getElementById('meterStatusText').style.color='var(--text)';
+  document.getElementById('meterResetRow').style.display='none';
+  meterUpdateCardMode();
+  meterUpdateReadButtons();
+ } else {
+  meterStatusMisses++;
+  // During mode switches and meter startup, a single status probe can
+  // transiently fail even though the meter is still there and in use.
+  if(meterDetected && (busy || meterStatusMisses < 2)){
+   document.getElementById('meterCard').style.display='';
+   document.getElementById('meterStatusWrap').style.display='';
+   document.getElementById('meterDot').style.background=busy?'var(--orange)':'var(--green)';
+   document.getElementById('meterStatusText').textContent=busy?(meterLastKnownName+' (initializing)'):meterLastKnownName;
+   document.getElementById('meterStatusText').style.color='var(--text)';
+   meterUpdateCardMode();
+   meterUpdateReadButtons();
+  } else {
+   meterDetected=false;
+   // Card stays visible in Patterns mode — always show series buttons + thumbs.
+   document.getElementById('meterCard').style.display='';
+   document.getElementById('meterStatusWrap').style.display='';
+   document.getElementById('meterDot').style.background='var(--text2)';
+   document.getElementById('meterStatusText').textContent='No Meter';
+   document.getElementById('meterStatusText').style.color='var(--text2)';
+   meterUpdateCardMode();
+   meterUpdateReadButtons();
+  }
+ }
+ // Sync shared series state across browsers. First restore any browser-local
+ // snapshot from the current session so a manual reread survives refresh and
+ // stale backend series JSON cannot immediately overwrite it.
+ if(!meterSeriesRunning && !meterSeriesPolling && !meterContinuousActive){
+  if(!meterActiveSeriesKey){
+   try{ meterRestoreLatestPersistedSeries(); }catch(e){}
+  }
+  const s=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
+  if(s){
+   if(s.status==='cleared'){
+    if(meterSharedSeriesId || !meterActiveSeriesKey){
+     meterSharedSeriesId=null;
+     meterApplyClearedState(false);
+    }
+   } else if(!meterActiveSeriesKey && s.series_id && (s.status==='running'||s.status==='complete'||s.status==='cancelled'||s.status==='error')){
+    meterRecoverSeries(s);
+   }
+  }
+ }
+}
+
+function meterRecoverSeries(s){
+ // Determine series type and points from series_id or the recovered steps.
+ let type='greyscale',points=21;
+ if(s.series_id){
+  const m=s.series_id.match(/^(greyscale|colors|saturations)_/);
+  if(m) type=m[1];
+ }
+ // Recover steps: prefer server-provided steps, else rebuild client-side
+ let steps=null;
+ if(s.steps&&Array.isArray(s.steps)&&s.steps.length>0){
+  steps=s.steps;
+  if(type!=='greyscale'&&type!=='colors'&&type!=='saturations'){
+   const allGrey=steps.every(st=>Number(st.r)===Number(st.g)&&Number(st.g)===Number(st.b));
+   if(allGrey){type='greyscale';}
+   else if(steps.length===6){type='colors';}
+   else if(steps.length===24){type='saturations';}
+  }
+ } else {
+  if(s.total_steps){
+   if(type==='greyscale') points=s.total_steps<=11?11:21;
+   else if(type==='colors'||type==='saturations') points=s.total_steps;
+  }
+  steps=meterBuildStepsJS(type,points);
+ }
+ if(s.total_steps){
+  if(type==='greyscale') points=s.total_steps<=11?11:21;
+  else if(type==='colors'||type==='saturations') points=s.total_steps;
+ }
+ meterSeriesSteps=steps;
+ meterActiveSeriesType=type;
+ meterActiveSeriesPoints=points;
+ meterActiveSeriesKey=type+'-'+points;
+ meterSharedSeriesId=s.series_id||null;
+ meterLastChartCount=0;
+ // Restore readings — always clear the previous series first so a cached
+ // empty Sat Sweep can never leave the old Colors CIE plot on screen.
+ meterReadings=[];
+ meterWhiteReading=null;
+ if(s.readings&&s.readings.length>0){
+  meterReadings=s.readings;
+  const white=s.readings.find(rd=>rd.ire===100&&rd.r_code===rd.g_code&&rd.g_code===rd.b_code&&rd.luminance!=null);
+  if(white) meterWhiteReading=white;
+ }
+ // Show UI elements — ensure card is visible even if meter is disconnected
+ document.getElementById('meterCard').style.display='';
+ document.getElementById('meterCharts').style.display='';
+ // Toggle greyscale vs color chart sections
+ if(type==='greyscale'){
+  document.getElementById('chartsGreyscaleWrap').style.display='';
+  document.getElementById('chartsColorWrap').style.display='none';
+ } else {
+  document.getElementById('chartsGreyscaleWrap').style.display='none';
+  document.getElementById('chartsColorWrap').style.display='';
+ }
+ document.getElementById('meterExportRow').style.display='';
+ document.getElementById('meterReadSeriesBtn').style.display='';
+ document.getElementById('meterThumbsRow').style.display='';
+ document.getElementById('meterLiveReading').style.display='';
+ // Highlight correct series button
+ meterResetSeriesButtons();
+ const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+meterActiveSeriesKey+'"]');
+ if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ // Build thumbs and charts
+ const sortedSteps=(type==='colors'||type==='saturations')?[...steps]:[...steps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const completedIres=new Set();
+ if(meterReadings) meterReadings.forEach(rd=>{if(rd.luminance!=null) completedIres.add(meterStepNameKey(rd));});
+ let currentIre=s.current_name||null;
+ meterBuildPatchThumbs(sortedSteps,completedIres,currentIre);
+ // Draw charts with available readings
+ if(meterReadings&&meterReadings.length>0){
+  const sorted=(type==='colors'||type==='saturations')?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  drawAllCharts(sorted);
+  const lastValid=[...meterReadings].reverse().find(rd=>rd.luminance!=null);
+  if(lastValid) updateLiveReading(lastValid);
+ } else {
+  drawAllChartsPreset(sortedSteps);
+ }
+ meterCacheSeriesState(s.status||'complete');
+ if(s.status==='running'){
+  // Series is still running — start polling and show stop button
+  meterSeriesRunning=true;
+  document.getElementById('meterProgress').style.display='';
+  document.getElementById('meterStopBtn').style.display='';
+  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
+  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
+  document.getElementById('meterProgressLabel').textContent=s.current_name||'Running...';
+  document.getElementById('meterDot').style.background='var(--orange)';
+  if(meterSeriesPolling) clearInterval(meterSeriesPolling);
+  meterSeriesPolling=setInterval(meterPollSeries,2000);
+ } else {
+  // Complete/cancelled/error — just show results, no polling
+  meterSeriesRunning=false;
+  document.getElementById('meterStopBtn').style.display='none';
+  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+  if(s.status==='error'){
+   document.getElementById('meterProgress').style.display='';
+   document.getElementById('meterProgressLabel').textContent=s.current_name||'Error';
+  }
+ }
+ meterUpdateReadButtons();
+ meterUpdateDeltaEFormControl();
+}
+
+function meterStampReadingStepMeta(reading,step){
+ if(!reading||!step) return reading;
+ if(step.ire!=null) reading.ire=step.ire;
+ if(step.name!=null) reading.name=step.name;
+ if(step.r!=null) reading.r_code=step.r;
+ if(step.g!=null) reading.g_code=step.g;
+ if(step.b!=null) reading.b_code=step.b;
+ if(step.series_color!=null) reading.series_color=step.series_color;
+ if(step.sat_pct!=null) reading.sat_pct=step.sat_pct;
+ if(step.target_x!=null) reading.target_x=step.target_x;
+ if(step.target_y!=null) reading.target_y=step.target_y;
+ if(step.target_Yn!=null) reading.target_Yn=step.target_Yn;
+ return reading;
+}
+
+function meterAttachSeriesMeta(readings){
+ if(!Array.isArray(readings)||!meterSeriesSteps) return readings||[];
+ return readings.map(rd=>{
+  const step=meterSeriesSteps.find(s=>meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')&&Number(s.r||0)===Number(rd.r_code||0)&&Number(s.g||0)===Number(rd.g_code||0)&&Number(s.b||0)===Number(rd.b_code||0)));
+  return step?meterStampReadingStepMeta(rd,step):rd;
+ });
+}
+
+function meterCanonicalSeriesStep(step){
+ if(!step||!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return step||null;
+ const key=meterStepNameKey(step);
+ return meterSeriesSteps.find(s=>meterStepNameKey(s)===key||((s.name||'')===(step.name||'')))||step;
+}
+
+function meterUpsertSeriesReading(reading,step){
+ if(!reading) return;
+ const canon=meterCanonicalSeriesStep(step||reading);
+ if(canon) meterStampReadingStepMeta(reading,canon);
+ if(!Array.isArray(meterReadings)) meterReadings=[];
+ const key=meterStepNameKey(reading);
+ const idx=meterReadings.findIndex(r=>meterStepNameKey(r)===key||((r&&r.name||'')===(reading.name||'')));
+ if(idx>=0) meterReadings[idx]=reading;
+ else meterReadings.push(reading);
+}
+
+function meterReadingHasLuminance(rd){
+ return !!rd&&((rd.luminance!=null&&rd.luminance>=0)||(rd.Y!=null&&rd.Y>=0));
+}
+
+function meterReadingHasChromaticity(rd){
+ return !!rd&&rd.x!=null&&rd.y!=null&&rd.x>0&&rd.y>0;
+}
+
+function meterCacheSeriesState(status){
+ if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
+ const prev=meterSeriesCache[meterActiveSeriesKey]||null;
+ meterSeriesCache[meterActiveSeriesKey]={
+  type:meterActiveSeriesType,
+  points:meterActiveSeriesPoints,
+  steps:JSON.parse(JSON.stringify(meterSeriesSteps||[])),
+  readings:JSON.parse(JSON.stringify(meterReadings||[])),
+  status:status||(meterSeriesRunning?'running':'complete'),
+  series_id:meterSharedSeriesId||((prev&&prev.series_id)?prev.series_id:null),
+  updated_at:Date.now()
+ };
+ meterPersistSeriesCache();
+}
+
+function meterRestoreSeriesFromCache(key){
+ if((!meterSeriesCache||Object.keys(meterSeriesCache).length===0) && key) meterLoadSeriesCache();
+ const cached=meterSeriesCache[key];
+ if(!cached||!cached.steps||cached.steps.length===0) return false;
+ meterRecoverSeries({
+  series_id:cached.series_id||(cached.type+'_cached'),
+  status:cached.status||'complete',
+  total_steps:cached.steps.length,
+  steps:JSON.parse(JSON.stringify(cached.steps)),
+  readings:JSON.parse(JSON.stringify(cached.readings||[]))
+ });
+ return true;
+}
+
+function updateLiveReading(reading){
+ if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_colorDetailPinned&&_selectedColorReadingName&&Array.isArray(meterReadings)){
+  const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName);
+  if(selected) reading=selected;
+ }
+ document.getElementById('meterLiveReading').style.display='';
+ document.getElementById('meterLum').textContent=reading.luminance!=null?reading.luminance.toFixed(2):'--';
+ document.getElementById('meterCCT').textContent=reading.cct||'--';
+ document.getElementById('meterCIEx').textContent=reading.x!=null?reading.x.toFixed(4):'--';
+ document.getElementById('meterCIEy').textContent=reading.y!=null?reading.y.toFixed(4):'--';
+
+ const liveRgb=meterLiveRgbData(reading);
+ drawRGBBars(liveRgb);
+ const rgbDeltas=meterRgbDeltasForLive(reading,liveRgb);
+ drawDeltaBarsVertical('meterRGBCanvasGrey',rgbDeltas);
+ drawDeltaBarsVertical('meterRGBCanvasColor',rgbDeltas);
+ const xyyDeltas=meterXYYDeltasForLive(reading);
+ drawDeltaBarsVertical('meterXYYCanvasColor',xyyDeltas);
+}
+
+// Convert the meterLiveRgbData() output into a uniform "delta from target"
+// shape for the vertical live bar chart. Target is always the center line
+// (0) regardless of whether the source was balance (100-based) or color
+// delta (already 0-based).
+function meterRgbDeltasForLive(reading,bal){
+ if(!bal) return null;
+ const isDelta=(bal.mode==='delta');
+ const center=isDelta?0:100;
+ const entries=[
+  {key:'R',label:'R',color:'#f44',v:(bal.R!=null)?bal.R-center:null,labelV:(bal.R!=null)?(isDelta?(bal.R-center):bal.R):null,showPlus:isDelta},
+  {key:'G',label:'G',color:'#4caf50',v:(bal.G!=null)?bal.G-center:null,labelV:(bal.G!=null)?(isDelta?(bal.G-center):bal.G):null,showPlus:isDelta},
+  {key:'B',label:'B',color:'#42a5f5',v:(bal.B!=null)?bal.B-center:null,labelV:(bal.B!=null)?(isDelta?(bal.B-center):bal.B):null,showPlus:isDelta}
+ ];
+ return {title:'RGB Δ',unit:'%',entries,decimals:1,minHalfRange:2};
+}
+
+// Build xy/Y deltas vs. the active target for the live bar chart. Uses the
+// same measured-minus-target form as the RGB delta bars so the two charts
+// read the same way: bar above target = over, below = under. ΔY is
+// expressed as % of the reference/white luminance (matching the RGB
+// bars' reference-normalized %). Falls back to null when no target is
+// known (manual read with no series loaded).
+function meterXYYDeltasForLive(reading){
+ if(!reading) return null;
+ const mx=(reading.x!=null)?reading.x:null;
+ const my=(reading.y!=null)?reading.y:null;
+ const mY=(reading.luminance!=null)?reading.luminance:null;
+ let tx=null,ty=null,tY=null;
+ const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ let ref=null;
+ if(isColor){
+  try{
+   const txy=(typeof meterTargetChromaticityForReading==='function')?meterTargetChromaticityForReading(reading):null;
+   if(txy){tx=txy.x;ty=txy.y;}
+   const txyz=(typeof meterTargetXYZForReading==='function')?meterTargetXYZForReading(reading):null;
+   if(txyz) tY=txyz.Y;
+   if(typeof meterColorReferenceNits==='function') ref=meterColorReferenceNits();
+  }catch(e){}
+ } else {
+  // Greyscale: target = D65 chromaticity, target Y from EOTF at this IRE.
+  tx=(typeof D65==='object'&&D65)?D65.x:0.3127;
+  ty=(typeof D65==='object'&&D65)?D65.y:0.329;
+  if(meterWhiteReading&&meterWhiteReading.Y>0&&reading.ire!=null){
+   try{ tY=meterGreyTargetLuminance(reading.ire,meterWhiteReading.Y,0,reading.r_code); }catch(e){}
+   ref=meterWhiteReading.Y;
+  }
+ }
+ // Δx, Δy scaled ×1000 so they sit in a similar magnitude band as ΔY%.
+ const dx=(mx!=null&&tx!=null)?(mx-tx)*1000:null;
+ const dy=(my!=null&&ty!=null)?(my-ty)*1000:null;
+ // ΔY as % of reference nits (same normalization basis as the RGB bars).
+ const dY=(mY!=null&&tY!=null&&ref>0)?((mY-tY)/ref*100):null;
+ if(dx==null&&dy==null&&dY==null) return null;
+ const entries=[
+  {key:'x',label:'x',color:'#f4b',v:dx,unit:'‰'},
+  {key:'y',label:'y',color:'#fd4',v:dy,unit:'‰'},
+  {key:'Y',label:'Y',color:'#8df',v:dY,unit:'%'}
+ ];
+ return {title:'XyY Δ',unit:'',entries,decimals:2,minHalfRange:2};
+}
+
+// Generic vertical delta-bar chart. Every bar extends up/down from a
+// center line that represents the target (delta = 0). Positive bars
+// above, negative bars below. Each entry has its own autoscale based on
+// the data magnitude so bars stay readable.
+function drawDeltaBarsVertical(canvasId,spec){
+ const c=document.getElementById(canvasId);
+ if(!c) return;
+ const rect=c.getBoundingClientRect();
+ if(rect.width<2||rect.height<2) return;
+ const dpr=window.devicePixelRatio||1;
+ c.width=rect.width*dpr;
+ c.height=rect.height*dpr;
+ const ctx=c.getContext('2d');
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.imageSmoothingEnabled=false;
+ const W=rect.width,H=rect.height;
+ ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,W,H);
+ if(!spec||!spec.entries||!spec.entries.length){
+  ctx.fillStyle='#555';ctx.font='10px sans-serif';ctx.textAlign='center';
+  ctx.fillText('--',W/2,H/2);
+  return;
+ }
+ const padTop=18,padBot=24,padL=6,padR=6;
+ const plotH=H-padTop-padBot;
+ const plotW=W-padL-padR;
+ const labelColor='#d7e1f3';
+ // Shared autoscale across all entries so the center-line is visually consistent.
+ let maxAbs=spec.minHalfRange||1;
+ spec.entries.forEach(e=>{ if(e.v!=null) maxAbs=Math.max(maxAbs,Math.abs(e.v)); });
+ const halfRange=maxAbs*1.15;
+ const lo=-halfRange,hi=halfRange;
+ function valToY(v){return padTop+(hi-v)/(hi-lo)*plotH;}
+ const cy=valToY(0);
+ const cyPx=Math.round(cy)+0.5;
+ // Center (target) line
+ ctx.strokeStyle=labelColor;ctx.lineWidth=1.4;
+ ctx.beginPath();ctx.moveTo(padL,cyPx);ctx.lineTo(W-padR,cyPx);ctx.stroke();
+ // Bars
+ const slot=plotW/spec.entries.length;
+ const barW=Math.min(28,slot*0.74);
+ spec.entries.forEach((e,i)=>{
+  const cx=padL+slot*i+slot/2;
+  if(e.v==null){
+   ctx.fillStyle='#555';ctx.font='10px sans-serif';ctx.textAlign='center';
+   ctx.fillText('--',Math.round(cx),cyPx+4);
+   ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';
+   ctx.fillText(e.label,Math.round(cx),H-padBot+15);
+   return;
+  }
+  const yV=valToY(e.v);
+  const yVPx=Math.round(yV);
+  const left=Math.round(cx-barW/2);
+  const top=Math.round(Math.min(cy,yV));
+  const width=Math.max(Math.round(barW),1);
+  const height=Math.max(Math.round(Math.abs(yV-cy)),1);
+  ctx.fillStyle=e.color;ctx.globalAlpha=0.88;
+  ctx.fillRect(left,top,width,height);
+  ctx.globalAlpha=1;
+  ctx.beginPath();ctx.arc(Math.round(cx),yVPx,3,0,Math.PI*2);ctx.fillStyle=e.color;ctx.fill();
+  // Channel label below
+  ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';
+  ctx.fillText(e.label,Math.round(cx),H-padBot+15);
+  // Signed numeric value above positive bars and below negative bars.
+  ctx.fillStyle=labelColor;ctx.font='10px sans-serif';ctx.textAlign='center';
+  const dec=(spec.decimals!=null)?spec.decimals:1;
+  const labelVal=(e.labelV!=null)?e.labelV:e.v;
+  const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
+  let labelY=e.v<0 ? (yVPx+16) : (yVPx-8);
+  if(e.v<0){
+   if(labelY>H-padBot-4) labelY=H-padBot-4;
+  } else if(labelY<padTop) {
+   labelY=padTop;
+  }
+  ctx.fillText(prefix+labelVal.toFixed(dec),Math.round(cx),labelY);
+ });
+}
+
+function drawRGBBars(bal){
+ const c=document.getElementById('meterRGBCanvas');
+ if(!c) return;
+ const rect=c.getBoundingClientRect();
+ // The horizontal live-RGB canvas is retained as a hidden placeholder
+ // for backward compatibility — the live data now renders into the
+ // vertical companions inside the chart areas.
+ if(rect.width<2||rect.height<2) return;
+ const dpr=window.devicePixelRatio||1;
+ c.width=rect.width*dpr;
+ c.height=rect.height*dpr;
+ const ctx=c.getContext('2d');
+ ctx.scale(dpr,dpr);
+ const W=rect.width,H=rect.height;
+ ctx.fillStyle='#1d1d29';ctx.fillRect(0,0,W,H);
+ if(!bal||bal.R==null||bal.G==null||bal.B==null){
+  ctx.fillStyle='#555';ctx.font='10px sans-serif';ctx.textAlign='center';
+  ctx.fillText('--',W/2,H/2);
+  return;
+ }
+ const isDelta=bal&&bal.mode==='delta';
+ const center=isDelta?0:100;
+ const maxDev=Math.max(Math.abs((bal.R||0)-center),Math.abs((bal.G||0)-center),Math.abs((bal.B||0)-center),1);
+ const halfRange=Math.max(isDelta?2:5,Math.ceil(maxDev/5)*5+(isDelta?1:2));
+ const lo=center-halfRange,hi=center+halfRange;
+ const labelW=20,barL=labelW+4,barR=W-40;
+ const barW=barR-barL;
+ function valToX(v){return barL+(v-lo)/(hi-lo)*barW;}
+ // Gridlines at 5-unit intervals
+ ctx.font='8px sans-serif';ctx.textAlign='center';ctx.fillStyle='#666';
+ for(let g=Math.ceil(lo/5)*5;g<=hi;g+=5){
+  const x=valToX(g);
+  ctx.strokeStyle=g===center?'#888':'#2a2a3a';
+  ctx.lineWidth=g===center?1.5:0.5;
+  ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();
+  ctx.fillStyle=g===center?'#aaa':'#555';
+  ctx.fillText(g,x,H-1);
+ }
+ // Bars
+ const channels=[{ch:'R',color:'#f44',v:bal.R},{ch:'G',color:'#4caf50',v:bal.G},{ch:'B',color:'#42a5f5',v:bal.B}];
+ const barH=Math.min(12,(H-16)/3-2);
+ const topPad=2;
+ channels.forEach((c,i)=>{
+  const cy=topPad+i*(barH+3)+barH/2;
+  const x100=valToX(center);
+  const xVal=valToX(c.v);
+  // Bar from center to value
+  const bx=Math.min(x100,xVal),bw=Math.abs(xVal-x100);
+  ctx.fillStyle=c.color;
+  ctx.globalAlpha=0.85;
+  ctx.fillRect(bx,cy-barH/2,Math.max(bw,1),barH);
+  ctx.globalAlpha=1;
+  // Dot at value
+  ctx.beginPath();ctx.arc(xVal,cy,3,0,Math.PI*2);ctx.fillStyle=c.color;ctx.fill();
+  // Channel label
+  ctx.fillStyle=c.color;ctx.font='bold 9px sans-serif';ctx.textAlign='right';
+  ctx.fillText(c.ch,labelW,cy+3);
+  // Value label at right
+  ctx.fillStyle='#ccc';ctx.font='9px sans-serif';ctx.textAlign='left';
+  const prefix=isDelta&&c.v>0?'+':'';
+  ctx.fillText(prefix+c.v.toFixed(1)+'%',barR+4,cy+3);
+ });
+}
+
+async function meterReadOnce(){
+ if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
+ if(meterSeriesRunning){toast('Series scan is running \u2014 stop it first',true);return;}
+ // Enter manual mode: shut down any leftover series poller/state so stale
+ // series snapshots cannot repaint the charts after this manual read.
+ meterSharedSeriesId=null;
+ meterSeriesRunning=false;
+ if(meterSeriesPolling){
+  clearInterval(meterSeriesPolling);
+  meterSeriesPolling=null;
+ }
+ fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ document.getElementById('meterStopBtn').style.display='none';
+ document.getElementById('meterReadOnce').disabled=true;
+ document.getElementById('meterReadOnce').textContent='\u23F3 Reading\u2026';
+ document.getElementById('meterDot').style.background='var(--orange)';
+ // Pulse ONLY the thumb we're reading (selected patch), clear any stale state
+ // from a previous series on all other thumbs.
+ const readIre=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null;
+ if(meterSeriesSteps){
+  const isColor0=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedSteps0=isColor0?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const doneIres=new Set();
+  meterReadings.forEach(r=>{if(r.luminance!=null) doneIres.add(meterStepNameKey(r));});
+  meterBuildPatchThumbs(sortedSteps0,doneIres,readIre);
+ }
+ if(meterCurrentPatchStep){
+  document.getElementById('meterProgress').style.display='';
+  document.getElementById('meterProgressLabel').textContent=(meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%')+' (reading)';
+ }
+ try{
+  const dtype=getEffectiveDisplayType();
+  const rr=getMeterRefreshRate();
+  const delay=parseInt(document.getElementById('meterDelay').value||'2000',10);
+  const requestedStep=meterCurrentPatchStep?{...meterCurrentPatchStep}:null;
+  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay});
+  if(requestedStep){
+   readPayload.patch_r=requestedStep.r;
+   readPayload.patch_g=requestedStep.g;
+   readPayload.patch_b=requestedStep.b;
+   readPayload.patch_size=getMeterPatchSize();
+  }
+  const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(readPayload),_timeoutMs:5000});
+  if(initR&&initR.status==='error'){toast(initR.message||'Read failed',true);throw new Error(initR.message);}
+  // Poll for result
+  const result=await meterPollRead(60000);
+  if(result&&result.status==='ok'&&result.readings&&result.readings.length>0){
+   const rd=result.readings[0];
+   updateLiveReading(rd);
+   // If a series is loaded and a patch is selected, store reading in series results
+   if(meterSeriesSteps&&requestedStep){
+    meterUpsertSeriesReading(rd,requestedStep);
+    // Auto-detect white reference
+    const white=meterReadings.find(r=>r.ire===100&&r.r_code===r.g_code&&r.g_code===r.b_code);
+    if(white) meterWhiteReading=white;
+    // Update charts and thumbnails
+    const completedIres=new Set();
+    meterReadings.forEach(r=>{if(r.luminance!=null) completedIres.add(meterStepNameKey(r));});
+    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+    const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+    drawAllCharts(sorted);
+    meterCacheSeriesState('complete');
+    const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+    meterBuildPatchThumbs(sortedSteps,completedIres,null);
+   }
+   toast('Reading: '+rd.luminance.toFixed(2)+' cd/m\\u00B2');
+  } else {
+   toast(result&&result.message?result.message:'Measurement failed',true);
+  }
+ }catch(e){toast('Meter read error: '+e.message,true);}
+ document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
+ meterUpdateReadButtons();
+ document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+ if(meterCurrentPatchStep){
+  document.getElementById('meterProgressLabel').textContent=meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%';
+ }
+ // Always clear the \"reading\" pulse once Read Once returns (success or error).
+ if(meterSeriesSteps){
+  const isColorE=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedStepsE=isColorE?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const doneE=new Set();
+  meterReadings.forEach(r=>{if(r.luminance!=null) doneE.add(meterStepNameKey(r));});
+  meterBuildPatchThumbs(sortedStepsE,doneE,null);
+ }
+}
+
+async function meterPollRead(timeoutMs){
+ const start=Date.now();
+ // Tiny initial delay so the backend has time to write the 'measuring' marker
+ // before we poll. Then poll quickly — finer than the wrapper's own poll
+ // granularity gives diminishing returns, but 200ms keeps UI responsiveness.
+ await new Promise(r=>setTimeout(r,100));
+ while(Date.now()-start<timeoutMs){
+  try{
+   const r=await fetchJSON('/api/meter/read/result',{_timeoutMs:5000});
+   if(r&&r.status!=='measuring') return r;
+  }catch(e){}
+  await new Promise(r=>setTimeout(r,200));
+ }
+ return {status:'error',message:'Timeout waiting for reading'};
+}
+
+async function meterToggleContinuous(){
+ if(meterContinuousActive){
+  meterStopContinuous();
+ } else {
+  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
+  // Enter manual continuous mode and cut off any leftover series state.
+  meterSharedSeriesId=null;
+  meterSeriesRunning=false;
+  if(meterSeriesPolling){
+   clearInterval(meterSeriesPolling);
+   meterSeriesPolling=null;
+  }
+  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+  // Continuous is its own toggle; don't show the series Stop button here.
+  document.getElementById('meterStopBtn').style.display='none';
+  meterContinuousActive=true;
+  document.getElementById('meterContinuous').classList.add('btn-success');
+  document.getElementById('meterContinuous').classList.remove('btn-secondary');
+  meterContinuousLoop();
+ }
+}
+
+async function meterContinuousLoop(){
+ if(!meterContinuousActive) return;
+ if(meterSeriesRunning){toast('Series scan is running',true);meterStopContinuous();return;}
+ document.getElementById('meterDot').style.background='var(--orange)';
+ // Pulse ONLY the selected thumb during continuous reads.
+ const contIre=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null;
+ if(meterSeriesSteps){
+  const isColorC=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedStepsC=isColorC?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const doneC=new Set();
+  meterReadings.forEach(r=>{if(r.luminance!=null) doneC.add(meterStepNameKey(r));});
+  meterBuildPatchThumbs(sortedStepsC,doneC,contIre);
+ }
+ if(meterCurrentPatchStep){
+  document.getElementById('meterProgress').style.display='';
+  document.getElementById('meterProgressLabel').textContent=(meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%')+' (reading)';
+ }
+ try{
+  const dtype=getEffectiveDisplayType();
+  const rr=getMeterRefreshRate();
+  const delay=parseInt(document.getElementById('meterDelay').value||'2000',10);
+  const requestedStep=meterCurrentPatchStep?{...meterCurrentPatchStep}:null;
+  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay});
+  if(requestedStep){
+   readPayload.patch_r=requestedStep.r;
+   readPayload.patch_g=requestedStep.g;
+   readPayload.patch_b=requestedStep.b;
+   readPayload.patch_size=getMeterPatchSize();
+  }
+  const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(readPayload),_timeoutMs:5000});
+  if(initR&&initR.status==='error'){meterStopContinuous();return;}
+  const r=await meterPollRead(60000);
+  if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
+   const rd=r.readings[0];
+   updateLiveReading(rd);
+   const stampStep=requestedStep;
+   if(meterSeriesSteps&&stampStep){
+    meterUpsertSeriesReading(rd,stampStep);
+    const white=meterReadings.find(x=>x.ire===100&&x.r_code===x.g_code&&x.g_code===x.b_code);
+    if(white) meterWhiteReading=white;
+    const completedIresC=new Set();
+    meterReadings.forEach(x=>{if(x.luminance!=null) completedIresC.add(meterStepNameKey(x));});
+    const isColorL=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+    const sortedL=isColorL?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+    drawAllCharts(sortedL);
+    meterCacheSeriesState(meterContinuousActive?'running':'complete');
+    const sortedStepsL=isColorL?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+    // Keep pulsing on whatever patch is CURRENTLY selected (user may have
+    // clicked a different thumb while the read was in flight).
+    const nowIre=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null;
+    meterBuildPatchThumbs(sortedStepsL,completedIresC,nowIre);
+   }
+  }
+ }catch(e){}
+ document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+ if(meterContinuousActive) meterContinuousTimer=setTimeout(meterContinuousLoop,50);
+}
+
+function meterStopContinuous(){
+ const wasActive=meterContinuousActive;
+ meterContinuousActive=false;
+ if(meterContinuousTimer) clearTimeout(meterContinuousTimer);
+ meterContinuousTimer=null;
+ document.getElementById('meterContinuous').classList.remove('btn-success');
+ document.getElementById('meterContinuous').classList.add('btn-secondary');
+ document.getElementById('meterStopBtn').style.display='none';
+ if(wasActive){
+  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ }
+ document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+ if(meterCurrentPatchStep&&!meterSeriesRunning){
+  document.getElementById('meterProgressLabel').textContent=meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%';
+ }
+ // Clear continuous-read pulse.
+ if(meterSeriesSteps){
+  const isColorCS=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedStepsCS=isColorCS?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const doneCS=new Set();
+  meterReadings.forEach(r=>{if(r.luminance!=null) doneCS.add(meterStepNameKey(r));});
+  meterBuildPatchThumbs(sortedStepsCS,doneCS,null);
+ }
+}
+
+function meterStop(){
+ meterStopContinuous();
+ if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
+ meterSeriesRunning=false;
+ fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ document.getElementById('meterStopBtn').style.display='none';
+ document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+ document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+ document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+ // Clear the "currently reading" pulse animation on whichever thumb was last
+ // being measured — without this, the last-polled thumb keeps pulsing as if
+ // the series is still running.
+ if(meterSeriesSteps){
+  const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const completedIres=new Set();
+  meterReadings.forEach(r=>{if(r.luminance!=null) completedIres.add(meterStepNameKey(r));});
+  meterBuildPatchThumbs(sortedSteps,completedIres,null);
+ }
+ document.getElementById('meterProgress').style.display='none';
+}
+
+async function meterResetUSB(){
+ toast('Resetting USB...');
+ const r=await fetchJSON('/api/meter/reset',{method:'POST',_timeoutMs:15000});
+ if(r&&r.status==='ok'){
+  toast('USB reset done, checking meter...');
+  await new Promise(r=>setTimeout(r,2000));
+  await meterCheckStatus();
+  if(meterDetected) toast('Meter reconnected!');
+  else toast('Meter still not detected after USB reset',true);
+ } else {
+  toast(r&&r.message?r.message:'USB reset failed',true);
+ }
+}
+
+let meterSeriesSteps=null; // steps for loaded series
+let meterActiveSeriesKey=null; // track which series button is active
+let meterActiveSeriesType=null; // series type (greyscale/colors/saturations)
+let meterActiveSeriesPoints=null; // series point count
+let meterCurrentPatchStep=null; // currently displayed patch step object
+let meterSeriesRunning=false; // true when Read Series is actively running
+function meterUpdateDeltaEFormControl(){
+ const greySel=document.getElementById('meterDeltaEForm');
+ const colorSel=document.getElementById('meterColorDeltaEForm');
+ const colorWrap=document.getElementById('meterColorDeltaEFormWrap');
+ const colorMode=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ if(greySel){
+  greySel.disabled=!!colorMode;
+  greySel.title=colorMode?'Greyscale only — switch back to Greyscale to change this':'Changes the greyscale ΔE calculation';
+ }
+ if(colorWrap) colorWrap.style.display=colorMode?'flex':'none';
+ if(colorSel){
+  colorSel.disabled=false;
+  colorSel.title='Changes the color and saturation-sweep ΔE calculation';
+ }
+}
+
+function meterUpdateReadButtons(){
+ const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ const hasSelection=isColorSeries ? !!meterCurrentPatchStep : meterSelectedThumbIre!=null;
+ const hasSeries=meterSeriesSteps&&meterSeriesSteps.length>0;
+ const show=hasSeries&&hasSelection&&meterDetected;
+ const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
+ const clearBtn=document.getElementById('meterClearChartBtn');
+ if(clearBtn){
+  clearBtn.style.display=hasSeries?'':'none';
+  clearBtn.disabled=!hasData;
+ }
+ document.getElementById('meterReadOnce').style.display=show?'':'none';
+ document.getElementById('meterContinuous').style.display=show?'':'none';
+ document.getElementById('meterReadOnce').disabled=!hasSelection||!meterDetected;
+ document.getElementById('meterContinuous').disabled=!hasSelection||!meterDetected;
+}
+function meterUpdateCardMode(){
+ const card=document.getElementById('meterCard');
+ const title=document.getElementById('meterCardTitle');
+ if(!card||!title) return;
+ if(meterDetected){
+  card.classList.remove('meter-patterns-only');
+  title.innerHTML='<span class="drag-handle">&#9776;</span>Meter &amp; Measurements';
+ } else {
+  card.classList.add('meter-patterns-only');
+  title.innerHTML='<span class="drag-handle">&#9776;</span>Test Patterns';
+ }
+}
+function meterResetSeriesButtons(){
+ document.querySelectorAll('#meterSeriesBtnRow button').forEach(b=>{
+  b.classList.remove('btn-primary');b.classList.add('btn-secondary');
+ });
+}
+// Build steps client-side (mirrors server logic in webui_meter_series_start)
+function meterBuildStepsJS(type,points){
+ const steps=[];
+ if(type==='greyscale'){
+  const ires=points===11?[0,10,20,30,40,50,60,70,80,90,100]
+   :[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
+  // Measurement order: 100% first (white reference), then 0%→95% ascending
+  const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
+  ordered.forEach(v=>{
+   // RGB limited output is quantized by the HDMI pipeline itself, so meter
+   // patches must stay in full-range RGB to avoid double-compressing blacks.
+   const signalMode=meterChartSignalMode();
+   const isDv=signalMode==='dv';
+   const min=meterPatchRangeMin();
+   const span=meterPatchRangeSpan();
+   const c=isDv
+  ? Math.round(min+Math.pow(v/100,1/2.2)*span)
+  : Math.round(min+v/100*span);
+   steps.push({ire:v,r:c,g:c,b:c,name:v+'%'});
+  });
+ } else if(type==='colors'){
+  steps.push(...meterBuildColorCheckerStepsJS());
+ } else if(type==='saturations'){
+  ['Red','Green','Blue','Cyan','Magenta','Yellow'].forEach(name=>{
+   [25,50,75,100].forEach(sat=>{
+    const rgb=meterBuildSaturationTargetLinearRgb(name,sat);
+    steps.push({ire:sat,r:meterEncodeSaturationLinear(rgb[0]),g:meterEncodeSaturationLinear(rgb[1]),b:meterEncodeSaturationLinear(rgb[2]),name:name+' '+sat+'%',series_color:name,sat_pct:sat});
+   });
+  });
+ }
+ return steps;
+}
+// Select a series: load thumbnails + display first patch, no reading
+function meterSelectSeries(type,points){
+ meterStopContinuous();
+ if(meterSeriesRunning) meterStop();
+ const key=type+'-'+points;
+ if(meterActiveSeriesKey===key){
+  if(meterSeriesSteps&&meterSeriesSteps.length>0){
+   const sortedSteps=(type==='colors'||type==='saturations')?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   meterBuildPatchThumbs(sortedSteps,null);
+   if(meterReadings&&meterReadings.length>0){
+    const sorted=(type==='colors'||type==='saturations')?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+    drawAllCharts(sorted);
+   } else {
+    drawAllChartsPreset(sortedSteps);
+   }
+  }
+  meterUpdateReadButtons();
+  meterUpdateDeltaEFormControl();
+  return;
+ }
+ if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ document.getElementById('meterLiveReading').style.display='none';
+ document.getElementById('meterProgress').style.display='none';
+ if(meterRestoreSeriesFromCache(key)){
+  meterUpdateReadButtons();
+  return;
+ }
+ // From this point the UI is operating on a local selection, not a
+ // recovered shared series snapshot.
+ meterSharedSeriesId=null;
+ meterReadings=[];
+ meterWhiteReading=null;
+ meterSeriesSteps=null;
+ meterActiveSeriesType=type;
+ meterActiveSeriesPoints=points;
+ meterLastChartCount=0;
+ // Highlight the clicked button
+ meterResetSeriesButtons();
+ meterActiveSeriesKey=key;
+ const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+key+'"]');
+ if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ // Build steps
+ const steps=meterBuildStepsJS(type,points);
+ meterSeriesSteps=steps;
+ // Sort for display
+ const sortedSteps=(type==='colors'||type==='saturations')?[...steps]:[...steps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ // Show UI — toggle greyscale vs color chart sections
+ if(type==='greyscale'){
+  document.getElementById('chartsGreyscaleWrap').style.display='';
+  document.getElementById('chartsColorWrap').style.display='none';
+ } else {
+  document.getElementById('chartsGreyscaleWrap').style.display='none';
+  document.getElementById('chartsColorWrap').style.display='';
+ }
+ document.getElementById('meterCharts').style.display='';
+ document.getElementById('meterExportRow').style.display='';
+ document.getElementById('meterReadSeriesBtn').style.display='';
+ document.getElementById('meterThumbsRow').style.display='';
+ document.getElementById('meterProgress').style.display='none';
+ // Build thumbnails and pre-populate all charts
+ meterBuildPatchThumbs(sortedSteps,null);
+ drawAllChartsPreset(sortedSteps);
+ // No default patch selection — user must click a thumbnail
+ meterUpdateThumbStyles(document.getElementById('meterPatchThumbs'),null,null);
+ meterUpdateReadButtons();
+ meterUpdateDeltaEFormControl();
+ toast(type.charAt(0).toUpperCase()+type.slice(1)+' '+steps.length+'pt loaded');
+}
+function meterMeasurementSignalContext(payload){
+ const body=Object.assign({},payload||{});
+ body.signal_mode=getVal('signal_mode')||'sdr';
+ body.max_luma=(document.getElementById('max_luma')||{}).value||((config&&config.max_luma)||'1000');
+ if(body.signal_range==null) body.signal_range=getVal('rgb_quant_range');
+ if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
+ if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
+ if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
+ return body;
+}
+// Display a patch on PGenerator without reading
+async function meterDisplayPatch(step){
+ meterCurrentPatchStep=step;
+ const psize=getMeterPatchSize();
+ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(meterMeasurementSignalContext({name:'patch',r:step.r,g:step.g,b:step.b,size:psize,input_max:255})),_timeoutMs:5000});
+}
+// Run full automated series (Read Series button)
+async function meterRunSeries(){
+ if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
+ if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return;}
+ meterStopContinuous();
+ meterSelectedThumbIre=null;
+ meterReadings=[];
+ meterWhiteReading=null;
+ meterSeriesRunning=true;
+ meterLastChartCount=0;
+ document.getElementById('meterProgress').style.display='';
+ document.getElementById('meterStopBtn').style.display='';
+ document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
+ document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
+ document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
+ const dtype=getEffectiveDisplayType();
+ const delay=parseInt(document.getElementById('meterDelay').value);
+ const psize=getMeterPatchSize();
+ const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
+ if(!r||r.status!=='started'){
+  toast(r&&r.message?r.message:'Failed to start series',true);
+  meterSeriesRunning=false;
+  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+  return;
+ }
+ toast('Series started: '+r.total_steps+' steps');
+ if(meterSeriesPolling) clearInterval(meterSeriesPolling);
+ meterSeriesPolling=setInterval(meterPollSeries,2000);
+}
+
+async function meterPollSeries(){
+ const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
+ if(!r) return;
+ if(r.status==='cleared'){
+  if(meterSeriesPolling){
+   clearInterval(meterSeriesPolling);
+   meterSeriesPolling=null;
+  }
+  meterSeriesRunning=false;
+  meterSharedSeriesId=null;
+  meterApplyClearedState(false);
+  return;
+ }
+ // If the UI is no longer in active series mode, ignore ALL series snapshots
+ // so stale pollers can never overwrite newer Read Once / Continuous data.
+ if(!meterSeriesRunning){
+  if(meterSeriesPolling){
+   clearInterval(meterSeriesPolling);
+   meterSeriesPolling=null;
+  }
+  return;
+ }
+ // Build set of completed IRE values for thumbnail highlighting
+ const completedIres=new Set();
+ let currentIre=null;
+
+ if(r.readings&&r.readings.length>0) {
+  meterReadings=meterAttachSeriesMeta(r.readings);
+  // Only set white reference from actual 100% reading — never use
+  // "brightest so far" during a running series, because that changes
+  // every poll cycle and causes all ΔE / RGB balance values to shift.
+  const white=r.readings.find(rd=>rd.ire===100&&rd.r_code===rd.g_code&&rd.g_code===rd.b_code&&rd.luminance!=null);
+  if(white) meterWhiteReading=white;
+  // If we don't yet have an actual 100% measurement, allow a configured
+  // target luminance (config.max_luma) as a synthetic white reference so
+  // ΔE/RGB can be computed per-reading consistently (matches HCFR style).
+  if(!meterWhiteReading && config && config.max_luma){
+   const maxL=parseFloat(config.max_luma);
+   if(maxL>0){
+    meterWhiteReading={
+     X:D65.X*maxL,
+     Y:maxL,
+     Z:D65.Z*maxL,
+     luminance:maxL,
+     x:D65.x,
+     y:D65.y,
+     cct:null
+    };
+   }
+  }
+  r.readings.forEach(rd=>{if(rd.luminance!=null) completedIres.add(meterStepNameKey(rd));});
+  // Only redraw charts when reading count changes (avoids flicker)
+  const validCount=r.readings.filter(rd=>rd.luminance!=null).length;
+  if(validCount!==meterLastChartCount){
+   meterLastChartCount=validCount;
+   const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+   const sorted=isColor?[...r.readings]:[...r.readings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   drawAllCharts(sorted);
+   meterCacheSeriesState(r.status||'running');
+  }
+ }
+
+ if(r.total_steps>0){
+  const label=r.current_name||('Step '+r.current_step+'/'+r.total_steps);
+  document.getElementById('meterProgressLabel').textContent=label;
+  // Parse current IRE from name like "70% (reading)"
+  currentIre=r.current_name||null;
+ }
+
+ // Update patch thumbnails with completion state
+ if(meterSeriesSteps){
+  const isColor2=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedSteps=isColor2?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  meterBuildPatchThumbs(sortedSteps,completedIres,currentIre);
+ }
+
+ // Update live reading with latest valid reading
+ if(r.readings&&r.readings.length>0){
+  const lastValid=[...r.readings].reverse().find(rd=>rd.luminance!=null);
+  if(lastValid) updateLiveReading(lastValid);
+ }
+
+ if(r.status==='complete'||r.status==='cancelled'||r.status==='error'){
+  clearInterval(meterSeriesPolling);
+  meterSeriesPolling=null;
+  meterSeriesRunning=false;
+  document.getElementById('meterStopBtn').style.display='none';
+  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+  // Clear the "currently reading" pulse on the last-polled thumb.
+  if(meterSeriesSteps){
+   const isColor3=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+   const sortedSteps2=isColor3?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   meterBuildPatchThumbs(sortedSteps2,completedIres,null);
+  }
+  document.getElementById('meterProgress').style.display='none';
+  toast(r.status==='complete'?'Series complete!':r.status==='error'?'Series error: '+(r.current_name||'process died'):'Series cancelled');
+ }
+}
+
+let meterSelectedThumbIre=null;
+let meterThumbsBuilt=false; // track if thumbnails are already built for current series
+function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
+ const container=document.getElementById('meterPatchThumbs');
+ if(!container) return;
+ const needsRebuild=(container.children.length!==sortedSteps.length)||sortedSteps.some((step,idx)=>{
+  const child=container.children[idx];
+  const isGrey=step.r===step.g&&step.g===step.b;
+  const label=isGrey?(step.ire+'%'):(step.name||'');
+  return !child||(child.dataset.key||'')!==meterStepNameKey(step)||(child.textContent||'')!==label;
+ });
+ if(needsRebuild){
+  container.innerHTML='';
+  meterThumbsBuilt=true;
+  sortedSteps.forEach(step=>{
+   const thumb=document.createElement('div');
+   const isGrey=step.r===step.g&&step.g===step.b;
+   const bgColor=meterPreviewColorForStep(step);
+   const textColor=meterContrastTextColor(bgColor);
+   const textShadow=textColor==='#eee'?'0 1px 2px rgba(0,0,0,.75)':'0 1px 1px rgba(255,255,255,.18)';
+   const label=isGrey?(step.ire+'%'):(step.name||'');
+   thumb.style.cssText='flex:1;display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 2px;text-shadow:'+textShadow;
+   thumb.textContent=label;
+   thumb.dataset.ire=step.ire;
+   thumb.dataset.r=step.r;
+   thumb.dataset.g=step.g;
+   thumb.dataset.b=step.b;
+   thumb.dataset.name=step.name||'';
+  thumb.dataset.key=meterStepNameKey(step);
+   thumb.addEventListener('click',function(){
+    if(meterSeriesRunning) return;
+    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+    if(isColor){
+     // For color series, toggle by name (multiple steps share same ire)
+     const wasSelected=_selectedColorReadingName===step.name;
+     if(wasSelected){
+      _selectedColorReadingName=null;
+      _colorDetailPinned=false;
+      meterFocusColorReading(null,{pin:false});
+     } else {
+      // Find matching reading if we have one
+      const rd=meterReadings?meterReadings.find(r=>r.name===step.name):null;
+      if(rd) meterFocusColorReading(rd,{pin:true});
+      else colorHighlightThumb(step.name);
+     }
+     meterDisplayPatch(step);
+     document.getElementById('meterLiveReading').style.display='';
+     document.getElementById('meterProgress').style.display='';
+     document.getElementById('meterProgressLabel').textContent=step.name||step.ire+'%';
+    } else {
+     meterSelectedThumbIre=(meterSelectedThumbIre===step.ire)?null:step.ire;
+     meterUpdateThumbStyles(container,completedIres,currentIre);
+     if(meterSelectedThumbIre!=null){
+      meterDisplayPatch(step);
+      document.getElementById('meterLiveReading').style.display='';
+      document.getElementById('meterProgress').style.display='';
+      document.getElementById('meterProgressLabel').textContent=step.name||step.ire+'%';
+     } else {
+      document.getElementById('meterProgress').style.display='none';
+     }
+    }
+    meterUpdateReadButtons();
+   });
+   container.appendChild(thumb);
+  });
+ }
+ meterUpdateThumbStyles(container,completedIres,currentIre);
+}
+function meterUpdateThumbStyles(container,completedIres,currentIre){
+ const hasReadings=completedIres&&completedIres.size>0;
+ for(let i=0;i<container.children.length;i++){
+  const thumb=container.children[i];
+  const ire=parseInt(thumb.dataset.ire);
+  const key=thumb.dataset.key||thumb.dataset.name||String(ire);
+  const done=completedIres&&completedIres.has(key);
+  // All thumbs fully visible always; completed ones get a checkmark overlay
+  thumb.style.opacity='1';
+  const isReading=(currentIre!=null&&key===currentIre);
+  const isSelected=(meterSelectedThumbIre!=null&&ire===meterSelectedThumbIre);
+  if(isReading){
+   thumb.style.boxShadow='';
+   thumb.style.animation='thumbPulse 1s ease-in-out infinite';
+   thumb.style.zIndex='1';
+  } else if(isSelected){
+   thumb.style.animation='none';
+   thumb.style.boxShadow='0 0 0 3px #fff';
+   thumb.style.zIndex='1';
+  } else if(done){
+   thumb.style.animation='none';
+   thumb.style.boxShadow='0 0 0 2px #4caf50';
+   thumb.style.zIndex='';
+  } else {
+   thumb.style.animation='none';
+   thumb.style.boxShadow='none';
+   thumb.style.zIndex='';
+  }
+ }
+}
+
+// Pre-populate ALL charts with grids and placeholder points before readings
+function drawAllChartsPreset(sortedSteps){
+ if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
+  const gsSteps=sortedSteps.filter(s=>s.r===s.g&&s.g===s.b);
+  if(gsSteps.length===0) return;
+  drawRGBChartPreset(gsSteps);
+  drawDeltaEPreset(gsSteps);
+  drawDeltaE2000Preset(gsSteps);
+  drawGammaValuePreset(gsSteps);
+  drawEOTFPreset(gsSteps);
+  drawGammaPreset(gsSteps);
+ } else {
+  drawCIEChartPreset(sortedSteps);
+  drawColorDeltaE2000Preset(sortedSteps);
+  const wrap=document.getElementById('colorReadingsTableWrap');
+  if(wrap) wrap.style.display='none';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  _selectedColorReadingName=null;
+  showColorReadingDetail(null);
+ }
+}
+function drawRGBChartPreset(gsSteps){
+ const ctx=getChartCtx('chartRGB');
+ if(!ctx) return;
+ if(gsSteps.length===0) return;
+ const yMin=95,yMax=105;
+ const chart=drawChartGrid(ctx,{
+  xSteps:gsSteps.length-1||1,ySteps:4,
+  xLabel:(i,n)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
+  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(0)
+ });
+ const refY=(100-yMin)/(yMax-yMin);
+ drawDashedLine(ctx,chart,[[0,refY],[1,refY]],'#555');
+ // Placeholder dots at 100 for each point
+ const pts=gsSteps.map((s,i)=>[gsSteps.length>1?i/(gsSteps.length-1):0.5,refY]);
+ drawDots(ctx,chart,pts,'#33333380',3);
+}
+function drawDeltaEPreset(gsSteps){
+ const ctx=getChartCtx('chartDeltaE');
+ if(!ctx) return;
+ const yMax=5;
+ const chart=drawChartGrid(ctx,{
+  xSteps:gsSteps.length-1||1,ySteps:5,
+  xLabel:(i)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
+  yLabel:(i,n)=>(yMax*i/n).toFixed(1)
+ });
+ if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
+ if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
+}
+function drawEOTFPreset(gsSteps){
+ const ctx=getChartCtx('chartEOTF');
+ if(!ctx) return;
+ const Lw=(meterWhiteReading&&meterWhiteReading.luminance>0)?meterWhiteReading.luminance:100;
+ const refPeak=meterChartIsHdr()?meterChartHdrPeak():Lw;
+ const measuredRatio=refPeak>0?(Lw/refPeak):1;
+ const yTop=Math.max(1.1,Math.ceil(Math.max(1,measuredRatio)*1.12*10)/10);
+ const chart=drawChartGrid(ctx,{
+  pad:{t:34,r:15,b:30,l:55},
+  xSteps:10,ySteps:5,
+  xLabel:(i)=>(i*10)+'',
+  yLabel:(i,n)=>(yTop*i/n).toFixed(1)
+ });
+ const tgtPts=meterGreyTargetChartPoints(gsSteps,Lw,0,refPeak*yTop);
+ drawDashedLine(ctx,chart,tgtPts,'#666');
+ const pts=gsSteps.map(s=>{
+  const v=s.ire/100;
+  return [v,meterGreyTargetChartValue(s.ire,Lw,0,s.r)/refPeak/yTop];
+ });
+ drawDots(ctx,chart,pts,'#33333380',3);
+}
+function drawGammaPreset(gsSteps){
+ const ctx=getChartCtx('chartGamma');
+ if(!ctx) return;
+ const Lw=(meterWhiteReading&&meterWhiteReading.luminance>0)?meterWhiteReading.luminance:100;
+ const refPeak=Lw>0?Lw:(meterChartIsHdr()?meterChartHdrPeak():100);
+ const yTop=Math.ceil(Math.max(Lw,refPeak)*1.1/10)*10||Math.max(Lw,refPeak);
+ const chart=drawChartGrid(ctx,{
+  pad:{t:20,r:15,b:30,l:55},
+  xSteps:10,ySteps:5,
+  xLabel:(i)=>(i*10)+'',
+  yLabel:(i,n)=>(yTop*i/n).toFixed(0)
+ });
+ const tgtPts=meterGreyTargetChartPoints(gsSteps,refPeak,0,yTop);
+ drawDashedLine(ctx,chart,tgtPts,'#666');
+ const pts=gsSteps.map(s=>{
+  const v=s.ire/100;
+  return [v,meterGreyTargetChartValue(s.ire,refPeak,0,s.r)/yTop];
+ });
+ drawDots(ctx,chart,pts,'#33333380',3);
+}
+
+function drawGammaLegend(ctx,chart,targetLabel,avgText){
+ const left=chart.pad.l;
+ const right=chart.pad.l+chart.w;
+ const y1=Math.max(12,chart.pad.t-16);
+ const y2=y1+14;
+ const targetText='Target: '+targetLabel;
+ const measuredText='Measured';
+ ctx.save();
+ ctx.font='11px sans-serif';
+ ctx.textAlign='left';
+ const avgWidth=avgText?ctx.measureText(avgText).width:0;
+ const targetWidth=ctx.measureText(targetText).width;
+ const measuredWidth=ctx.measureText(measuredText).width;
+ const targetBlock=24+targetWidth;
+ const measuredBlock=24+measuredWidth;
+ const gap=18;
+ let targetX=left;
+ let measuredX=left+targetBlock+gap;
+ let targetY=y1;
+ let measuredY=y1;
+ if(measuredX+measuredBlock > right-avgWidth-12){
+  measuredX=left;
+  measuredY=y2;
+ }
+ ctx.setLineDash([4,4]);
+ ctx.strokeStyle='#ffb74d';
+ ctx.lineWidth=2;
+ ctx.beginPath();
+ ctx.moveTo(targetX,targetY-3);
+ ctx.lineTo(targetX+18,targetY-3);
+ ctx.stroke();
+ ctx.setLineDash([]);
+ ctx.fillStyle='#ffb74d';
+ ctx.fillText(targetText,targetX+24,targetY);
+ ctx.strokeStyle='#7ecbff';
+ ctx.beginPath();
+ ctx.moveTo(measuredX,measuredY-3);
+ ctx.lineTo(measuredX+18,measuredY-3);
+ ctx.stroke();
+ ctx.fillStyle='#7ecbff';
+ ctx.fillText(measuredText,measuredX+24,measuredY);
+ if(avgText){
+  ctx.textAlign='right';
+  ctx.fillStyle='#aaa';
+  ctx.fillText(avgText,right,y1);
+ }
+ ctx.restore();
+}
+
+function drawGammaValuePreset(gsSteps){
+ const ctx=getChartCtx('chartGammaValue');
+ if(!ctx) return;
+ const lbl=document.getElementById('chartGammaValueLabel');
+ if(lbl) lbl.textContent='Gamma';
+ const targetLabel=meterTargetGammaLabel();
+ const steps=(gsSteps||[]).filter(s=>(s.ire||0)>0);
+ const targetVals=steps.map(s=>meterGreyTargetGamma(s.ire,100,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
+ let yMin=Math.max(1.6,Math.floor((Math.min(...(targetVals.length?targetVals:[2.2]))-0.15)*10)/10);
+ let yMax=Math.min(2.8,Math.ceil((Math.max(...(targetVals.length?targetVals:[2.4]))+0.15)*10)/10);
+ if(yMax-yMin<0.6){ const mid=(yMin+yMax)/2; yMin=Math.max(1.6,mid-0.3); yMax=Math.min(2.8,mid+0.3); }
+ const chart=drawChartGrid(ctx,{
+  pad:{t:34,r:15,b:30,l:55},
+  xSteps:gsSteps.length-1||1,ySteps:4,
+  xLabel:(i)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
+  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2)
+ });
+ const tgtPts=[];
+ steps.forEach((s,idx)=>{
+  const g=meterGreyTargetGamma(s.ire,100,0,s.r_code!=null?s.r_code:s.r);
+  if(g!=null&&isFinite(g)) tgtPts.push([steps.length>1?idx/(steps.length-1):0.5,Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
+ });
+ if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
+ drawDots(ctx,chart,tgtPts,'#ffb74d',3);
+ drawGammaLegend(ctx,chart,targetLabel,'');
+}
+
+function drawGammaValueChart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartGammaValue');
+ if(!ctx) return;
+ const lbl=document.getElementById('chartGammaValueLabel');
+ if(lbl) lbl.textContent=meterChartIsHdr()?'Gamma (PQ-equivalent)':'Gamma';
+ const targetLabel=meterTargetGammaLabel();
+ const sorted=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const white=sorted.find(r=>(r.ire||0)===100)||sorted[sorted.length-1];
+ const Yw=white?(white.luminance||white.Y||0):0;
+ const blacks=sorted.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
+ const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ if(!(Yw>0)){
+  if(allSteps) drawGammaValuePreset(allSteps);
+  return;
+ }
+ const xSteps=allSteps||sorted.map(r=>({ire:r.ire||0,r:r.r_code}));
+ const gammaMap={};
+ const targetMap={};
+ sorted.forEach((rd,idx)=>{
+  const y=rd.luminance!=null?rd.luminance:rd.Y;
+  const prev=idx>0?sorted[idx-1]:null;
+  const prevY=prev?(prev.luminance!=null?prev.luminance:prev.Y):null;
+  const prevIre=prev?(prev.ire||0):null;
+  const g=effectiveGamma(y,Yw,rd.ire,prevY,prevIre);
+  if(g!=null&&isFinite(g)) gammaMap[rd.ire]=g;
+  const tg=meterGreyTargetGamma(rd.ire,Yw,Lb,rd.r_code,prevIre,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
+  if(tg!=null&&isFinite(tg)) targetMap[rd.ire]=tg;
+ });
+ xSteps.forEach((step,idx)=>{
+  const prev=idx>0?xSteps[idx-1]:null;
+  const tg=meterGreyTargetGamma(step.ire,Yw,Lb,step.r_code!=null?step.r_code:step.r,prev?(prev.ire||0):null,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
+  if(tg!=null&&isFinite(tg)) targetMap[step.ire]=tg;
+ });
+ const measuredVals=Object.values(gammaMap).filter(v=>v!=null&&isFinite(v));
+ const targetVals=Object.values(targetMap).filter(v=>v!=null&&isFinite(v));
+ const allVals=[...measuredVals,...targetVals];
+ if(allVals.length===0){ drawGammaValuePreset(xSteps); return; }
+ // HDR/PQ measured "gamma" has much wider range than SDR (0.3–4+), so we
+ // can't clamp at 1.6–2.8 there. Fit the visible axis to actual data.
+ const isHdr=meterChartIsHdr();
+ let yMin,yMax;
+ if(isHdr){
+  const lo=Math.min(...allVals), hi=Math.max(...allVals);
+  yMin=Math.max(0,Math.floor((lo-0.2)*10)/10);
+  yMax=Math.ceil((hi+0.2)*10)/10;
+  if(yMax-yMin<0.6){ const mid=(yMin+yMax)/2; yMin=Math.max(0,mid-0.4); yMax=mid+0.4; }
+ } else {
+  yMin=Math.max(1.6,Math.floor((Math.min(...measuredVals.length?measuredVals:allVals)-0.15)*10)/10);
+  yMax=Math.min(2.8,Math.ceil((Math.max(...measuredVals.length?measuredVals:allVals)+0.15)*10)/10);
+  yMin=Math.min(yMin,1.9);
+  yMax=Math.max(yMax,2.5);
+  if(yMax-yMin<0.6){ const mid=(yMin+yMax)/2; yMin=Math.max(1.6,mid-0.3); yMax=Math.min(2.8,mid+0.3); }
+ }
+ const chart=drawChartGrid(ctx,{
+  pad:{t:34,r:15,b:30,l:55},
+  xSteps:xSteps.length-1||1,ySteps:4,
+  xLabel:(i)=>i<xSteps.length?xSteps[i].ire+'%':'',
+  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2)
+ });
+ const tgtPts=[],mPts=[],emptyPts=[];
+ xSteps.forEach((step,idx)=>{
+  const x=xSteps.length>1?idx/(xSteps.length-1):0.5;
+  const tg=targetMap[step.ire];
+  if(tg!=null&&isFinite(tg)){
+   const ty=Math.max(0,Math.min(1,(tg-yMin)/(yMax-yMin)));
+   tgtPts.push([x,ty]);
+   if(gammaMap[step.ire]==null) emptyPts.push([x,ty]);
+  }
+  const mg=gammaMap[step.ire];
+  if(mg!=null&&isFinite(mg)) mPts.push([x,Math.max(0,Math.min(1,(mg-yMin)/(yMax-yMin)))]);
+ });
+ if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
+ drawDots(ctx,chart,emptyPts,'#6d6d6d80',3);
+ drawDots(ctx,chart,tgtPts,'#ffb74d',2.5);
+ if(mPts.length>1) drawLine(ctx,chart,mPts,'#7ecbff',2);
+ drawDots(ctx,chart,mPts,'#7ecbff',3);
+ // Optional per-channel gamma overlay (R/G/B from the cached
+ // meterPerChannelGamma computed in drawAllCharts).
+ const pcToggle=document.getElementById('meterPerChannelGamma');
+ if(pcToggle && pcToggle.checked){
+  const rPts=[],gPts=[],bPts=[];
+  xSteps.forEach((step,idx)=>{
+   const rd=readingMap[step.ire];
+   if(!rd || !rd._gamma_rgb) return;
+   const gr=rd._gamma_rgb;
+   const x=xSteps.length>1?idx/(xSteps.length-1):0.5;
+   const toY=(v)=>(v!=null&&isFinite(v))?Math.max(0,Math.min(1,(v-yMin)/(yMax-yMin))):null;
+   const yr=toY(gr.r), yg=toY(gr.g), yb=toY(gr.b);
+   if(yr!=null) rPts.push([x,yr]);
+   if(yg!=null) gPts.push([x,yg]);
+   if(yb!=null) bPts.push([x,yb]);
+  });
+  if(rPts.length>1) drawLine(ctx,chart,rPts,'#ff5555',1.5);
+  if(gPts.length>1) drawLine(ctx,chart,gPts,'#55dd55',1.5);
+  if(bPts.length>1) drawLine(ctx,chart,bPts,'#5588ff',1.5);
+  drawDots(ctx,chart,rPts,'#ff5555',2);
+  drawDots(ctx,chart,gPts,'#55dd55',2);
+  drawDots(ctx,chart,bPts,'#5588ff',2);
+ }
+ let avgText='';
+ if(mPts.length>0){
+  const avg=measuredVals.reduce((s,v)=>s+v,0)/measuredVals.length;
+  avgText='Avg: '+avg.toFixed(2);
+ }
+ drawGammaLegend(ctx,chart,targetLabel,avgText);
+}
+
+///////////////////////////////////////////////
+//           Canvas Chart Drawing            //
+///////////////////////////////////////////////
+function drawAllCharts(readings){
+ if(!readings||readings.length===0) return;
+ meterUpdateHdrConfigVisibility();
+ meterEnsureDeltaECache(readings);
+ meterEnsureChannelGammaCache(readings);
+ if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+  // Color/saturation series — CIE chromaticity + color ΔE + readings table
+  const cr=readings.filter(r=>r.luminance!=null&&r.luminance>=0);
+  if(cr.length>0){
+   drawCIEChart(cr);
+   drawColorDeltaE2000Chart(cr);
+   drawColorReadingsTable(cr);
+   colorChartRegisterInteraction(cr);
+   if(_colorDetailPinned&&_selectedColorReadingName){
+    const sel=cr.find(r=>r.name===_selectedColorReadingName);
+    if(sel) showColorReadingDetail(sel,{pin:true});
+    else showColorReadingDetail(cr[cr.length-1],{pin:false});
+   } else {
+    showColorReadingDetail(cr[cr.length-1],{pin:false});
+   }
+  }
+  return;
+ }
+ // Greyscale series
+ const allSteps=meterSeriesSteps?[...meterSeriesSteps].filter(s=>s.r===s.g&&s.g===s.b).sort((a,b)=>a.ire-b.ire):null;
+ const readingMap={};
+ readings.forEach(r=>{if(r.luminance!=null&&r.r_code===r.g_code&&r.g_code===r.b_code) readingMap[r.ire]=r;});
+ const gs=readings.filter(r=>r.luminance!=null&&r.luminance>=0&&r.r_code===r.g_code&&r.g_code===r.b_code)
+  .sort((a,b)=>(a.ire||0)-(b.ire||0));
+ if(gs.length>0){
+  drawRGBChart(gs,allSteps,readingMap);
+  drawDeltaEChart(gs,allSteps,readingMap);
+  drawGammaValueChart(gs,allSteps,readingMap);
+  drawEOTFChart(gs,allSteps,readingMap);
+  drawGammaChart(gs,allSteps,readingMap);
+  chartRegisterInteraction();
+ }
+}
+
+function getChartCtx(id){
+ const c=document.getElementById(id);
+ if(!c) return null;
+ const dpr=window.devicePixelRatio||1;
+ const rect=c.getBoundingClientRect();
+ // Guard: if canvas not visible (VS Code webview, hidden panel), skip
+ if(rect.width<10||rect.height<10) return null;
+ const newW=Math.round(rect.width*dpr), newH=Math.round(rect.height*dpr);
+ // Only resize canvas buffer if dimensions actually changed (avoids unnecessary clear)
+ if(c.width!==newW||c.height!==newH){ c.width=newW; c.height=newH; }
+ const ctx=c.getContext('2d');
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.w=rect.width;
+ ctx.h=rect.height;
+ return ctx;
+}
+
+function drawChartGrid(ctx,opts){
+ const pad=opts.pad||{t:20,r:15,b:30,l:45};
+ const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
+ const xIn=opts.xInset||0, dw=w-2*xIn;
+ // Background
+ ctx.fillStyle='#0d0d15';
+ ctx.fillRect(0,0,ctx.w,ctx.h);
+ // Grid
+ ctx.strokeStyle='#1d1d29';
+ ctx.lineWidth=1;
+ const xSteps=opts.xSteps||10, ySteps=opts.ySteps||5;
+ for(let i=0;i<=xSteps;i++){
+  const x=pad.l+xIn+dw*(i/xSteps);
+  ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
+ }
+ for(let i=0;i<=ySteps;i++){
+  const y=pad.t+h*(i/ySteps);
+  ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+w,y);ctx.stroke();
+ }
+ // Axes
+ ctx.strokeStyle='#3a3a4a';
+ ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
+ // X labels. When opts.rotateX is set, draw them angled so long names
+ // (e.g. "Magenta 100%") don't overlap on dense series.
+ ctx.fillStyle='#888898';ctx.font='11px sans-serif';
+ if(opts.rotateX){
+  for(let i=0;i<=xSteps;i++){
+   const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
+   if(!lbl) continue;
+   const x=pad.l+xIn+dw*(i/xSteps);
+   ctx.save();
+   ctx.translate(x,pad.t+h+6);
+   ctx.rotate(-Math.PI/4);
+   ctx.textAlign='right';
+   ctx.fillText(lbl,0,4);
+   ctx.restore();
+  }
+ } else {
+  ctx.textAlign='center';
+  for(let i=0;i<=xSteps;i++){
+   const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
+   ctx.fillText(lbl,pad.l+xIn+dw*(i/xSteps),pad.t+h+14);
+  }
+ }
+ // Y labels
+ ctx.textAlign='right';
+ for(let i=0;i<=ySteps;i++){
+  const lbl=opts.yLabel?opts.yLabel(i,ySteps):'';
+  ctx.fillText(lbl,pad.l-4,pad.t+h-h*(i/ySteps)+3);
+ }
+ return {pad,w,h,dw,toX:v=>pad.l+xIn+v*dw, toY:v=>pad.t+h-v*h};
+}
+
+function drawLine(ctx,chart,points,color,width){
+ if(points.length<2) return;
+ ctx.strokeStyle=color;ctx.lineWidth=width||1.5;
+ ctx.beginPath();
+ points.forEach((p,i)=>{
+  const x=chart.toX(p[0]),y=chart.toY(p[1]);
+  if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+ });
+ ctx.stroke();
+}
+
+function drawDots(ctx,chart,points,color,radius){
+ ctx.fillStyle=color;
+ points.forEach(p=>{
+  ctx.beginPath();
+  ctx.arc(chart.toX(p[0]),chart.toY(p[1]),radius||2.5,0,Math.PI*2);
+  ctx.fill();
+ });
+}
+
+function drawDashedLine(ctx,chart,points,color){
+ ctx.setLineDash([4,4]);
+ drawLine(ctx,chart,points,color,1);
+ ctx.setLineDash([]);
+}
+
+function drawRGBChart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartRGB');
+ if(!ctx) return;
+ let effectiveWhiteRGB=meterWhiteReading;
+ // For manual single reads before 100% is measured, still plot RGB balance
+ // using either configured target luminance or a white level inferred from
+ // the brightest available grey patch.
+ if((!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0) && config && config.max_luma){
+  const maxL=parseFloat(config.max_luma);
+  if(maxL>0){
+   effectiveWhiteRGB={X:D65.X*maxL,Y:maxL,Z:D65.Z*maxL,luminance:maxL,x:D65.x,y:D65.y,cct:null};
+  }
+ }
+ if((!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0) && gs && gs.length>0){
+  const brightest=[...gs].sort((a,b)=>(b.luminance||0)-(a.luminance||0))[0];
+  if(brightest && (brightest.luminance||brightest.Y||0)>0){
+   let inferredYw=brightest.luminance||brightest.Y;
+   const ire=Math.max(1,brightest.ire||100);
+   if(ire<100){
+    const frac=Math.max(targetEotf(ire/100,1,0),0.02);
+    inferredYw=inferredYw/frac;
+   }
+   effectiveWhiteRGB={X:D65.X*inferredYw,Y:inferredYw,Z:D65.Z*inferredYw,luminance:inferredYw,x:D65.x,y:D65.y,cct:null};
+  }
+ }
+ if(!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0){
+  if(allSteps) drawRGBChartPreset(allSteps);
+  return;
+ }
+ // Use all series steps for x-axis (include 0%)
+ const xSteps=allSteps?[...allSteps]:gs.sort((a,b)=>a.ire-b.ire);
+ if(xSteps.length===0) return;
+ // Compute RGB balance for all available readings (include 0%)
+ const inclLum=meterIncludeLum();
+ const balMap={};
+ gs.forEach(rd=>{balMap[rd.ire]=rgbBalance(rd,effectiveWhiteRGB,inclLum);});
+ // Auto-scale Y axis based on actual data — zoom in tight
+ const allVals=Object.values(balMap).flatMap(b=>[b.R,b.G,b.B]);
+ let yMin,yMax;
+ if(allVals.length>0){
+  const dataMin=Math.min(...allVals),dataMax=Math.max(...allVals);
+  const margin=Math.max(1,(dataMax-dataMin)*0.15);
+  yMin=Math.floor((dataMin-margin)*2)/2;
+  yMax=Math.ceil((dataMax+margin)*2)/2;
+  // Ensure 100 is always visible
+  if(yMin>99) yMin=99; if(yMax<101) yMax=101;
+  if(yMax-yMin<4){const mid=(yMin+yMax)/2;yMin=mid-2;yMax=mid+2;}
+ } else {yMin=95;yMax=105;}
+ const chart=drawChartGrid(ctx,{
+  xInset:15,
+  xSteps:xSteps.length-1||1,ySteps:4,
+  xLabel:(i)=>i<xSteps.length?xSteps[i].ire+'%':'',
+  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(1)
+ });
+ // Reference line at 100%
+ const refY=(100-yMin)/(yMax-yMin);
+ drawDashedLine(ctx,chart,[[0,refY],[1,refY]],'#555');
+ // Plot all x-axis points: measured = colored, missing = grey placeholder
+ const rPts=[],gPts=[],bPts=[],emptyPts=[];
+ xSteps.forEach((step,idx)=>{
+  const x=xSteps.length>1?idx/(xSteps.length-1):0.5;
+  const bal=balMap[step.ire];
+  if(bal){
+   rPts.push([x,Math.max(0,Math.min(1,(bal.R-yMin)/(yMax-yMin)))]);
+   gPts.push([x,Math.max(0,Math.min(1,(bal.G-yMin)/(yMax-yMin)))]);
+   bPts.push([x,Math.max(0,Math.min(1,(bal.B-yMin)/(yMax-yMin)))]);
+  } else {
+   emptyPts.push([x,refY]);
+  }
+ });
+ // Draw placeholder dots for missing
+ drawDots(ctx,chart,emptyPts,'#33333380',3);
+ // Draw measured lines and dots
+ if(rPts.length>1){drawLine(ctx,chart,rPts,'#f44',2);drawLine(ctx,chart,gPts,'#4caf50',2);drawLine(ctx,chart,bPts,'#42a5f5',2);}
+ drawDots(ctx,chart,rPts,'#f44');
+ drawDots(ctx,chart,gPts,'#4caf50');
+ drawDots(ctx,chart,bPts,'#42a5f5');
+ // R/G/B label at right
+ if(rPts.length>0){
+  const last=rPts.length-1;
+  ctx.font='11px sans-serif';ctx.textAlign='left';
+  const xOff=chart.toX(rPts[last][0])+6;
+  ctx.fillStyle='#f44';ctx.fillText('R',xOff,chart.toY(rPts[last][1])+3);
+  ctx.fillStyle='#4caf50';ctx.fillText('G',xOff,chart.toY(gPts[last][1])+3);
+  ctx.fillStyle='#42a5f5';ctx.fillText('B',xOff,chart.toY(bPts[last][1])+3);
+ }
+}
+
+function drawEOTFChart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartEOTF');
+ if(!ctx) return;
+ const sorted=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const white=sorted.find(r=>(r.ire||0)===100)||sorted[sorted.length-1];
+ const refWhite=white?(white.luminance||white.Y||0):0;
+ const blacks=sorted.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
+ const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ if(!(refWhite>0)) return;
+ const targetSteps=allSteps||sorted.map(r=>({ire:r.ire||0,r:r.r_code}));
+ const valid=sorted.filter(r=>r.luminance!=null && r.luminance>=0);
+ const allRatios=[1];
+ valid.forEach(r=>allRatios.push((r.luminance||0)/refWhite));
+ targetSteps.forEach(s=>allRatios.push(meterGreyTargetChartValue(s.ire,refWhite,Lb,s.r_code!=null?s.r_code:s.r)/refWhite));
+ const yTop=Math.max(1.1,Math.ceil(Math.max(...allRatios)*1.12*20)/20);
+ const chart=drawChartGrid(ctx,{
+  pad:{t:34,r:15,b:30,l:55},
+  xSteps:10,ySteps:5,
+  xLabel:(i)=>(i*10)+'',
+  yLabel:(i,n)=>(yTop*i/n).toFixed(2)
+ });
+ const tgtPts=meterGreyTargetChartPoints(targetSteps,refWhite,Lb,refWhite*yTop);
+ drawDashedLine(ctx,chart,tgtPts,'#666');
+ if(allSteps){
+  const emptyPts=allSteps.filter(s=>!readingMap[s.ire]).map(s=>{
+   const v=s.ire/100;
+   return [v,meterGreyTargetChartValue(s.ire,refWhite,Lb,s.r_code!=null?s.r_code:s.r)/(refWhite*yTop)];
+  });
+  drawDots(ctx,chart,emptyPts,'#33333380',3);
+ }
+ const mPts=valid.map(r=>[r.ire/100,((r.luminance||0)/refWhite)/yTop]);
+ if(mPts.length>1) drawLine(ctx,chart,mPts,'#ffeb3b',2);
+ drawDots(ctx,chart,mPts,'#ffeb3b',3);
+ ctx.fillStyle='#aaa';ctx.font='11px sans-serif';ctx.textAlign='left';
+ ctx.fillText('100% reference: '+refWhite.toFixed(1)+' cd/m\u00B2',chart.pad.l,chart.pad.t-8);
+ ctx.fillStyle='#ffeb3b';ctx.textAlign='right';
+ ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
+}
+
+function drawGammaChart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartGamma');
+ if(!ctx) return;
+ const sorted=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const white=sorted.find(r=>(r.ire||0)===100)||sorted[sorted.length-1];
+ const refWhite=white?(white.luminance||white.Y||0):0;
+ const measuredMax=sorted.reduce((mx,r)=>Math.max(mx,r.luminance||0),0);
+ const blacks=sorted.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
+ const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ if(!(Math.max(measuredMax,refWhite)>0)) return;
+ const yTop=Math.ceil(Math.max(measuredMax,refWhite)*1.1/10)*10||Math.max(measuredMax,refWhite);
+ const chart=drawChartGrid(ctx,{
+  pad:{t:20,r:15,b:30,l:55},
+  xSteps:10,ySteps:5,
+  xLabel:(i)=>(i*10)+'',
+  yLabel:(i,n)=>(yTop*i/n).toFixed(0)
+ });
+ const targetSteps=allSteps||sorted.map(r=>({ire:r.ire||0,r:r.r_code}));
+ const tgtPts=meterGreyTargetChartPoints(targetSteps,refWhite||measuredMax,Lb,yTop);
+ drawDashedLine(ctx,chart,tgtPts,'#666');
+ if(allSteps){
+  allSteps.filter(s=>!readingMap[s.ire]).forEach(s=>{
+   const v=s.ire/100;
+   drawDots(ctx,chart,[[v,meterGreyTargetChartValue(s.ire,refWhite||measuredMax,Lb,s.r_code!=null?s.r_code:s.r)/yTop]],'#33333380',3);
+  });
+ }
+ const validG=sorted.filter(r=>r.luminance!=null && r.luminance>=0);
+ const mPts=validG.map(r=>[r.ire/100,Math.min(1,(r.luminance||0)/yTop)]);
+ if(mPts.length>1) drawLine(ctx,chart,mPts,'#ffeb3b',2);
+ drawDots(ctx,chart,mPts,'#ffeb3b',3);
+ ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
+ ctx.textAlign='left';
+ ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
+ ctx.fillText('100% target: '+(refWhite||measuredMax).toFixed(1)+' cd/m\u00B2',chart.pad.l,chart.pad.t+14);
+ ctx.textAlign='right';
+ ctx.fillText('Max cd/m\u00B2: '+measuredMax.toFixed(2),ctx.w-chart.pad.r,ctx.h-2);
+}
+
+function drawDeltaEChart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartDeltaE');
+ if(!ctx) return;
+ const greyMode=meterGreyRefMode();
+ const inclLum=(greyMode==='eotf');
+ const deForm=meterDeltaEForm();
+ const deLabel=meterDeltaEFormLabel(deForm);
+ const gw=meterGrayWorldWeight();
+ const gwTag=gw<1 ? (' · GW '+gw) : '';
+ // Primary greyscale ΔE chart follows the selected formula.
+ const lbl=document.getElementById('chartDeltaELabel');
+ if(lbl) lbl.textContent = greyMode==='relative' ? (deLabel+" (relative gamma"+gwTag+")") : (inclLum ? (deLabel+" (+ Luminance"+gwTag+")") : (deLabel+" (chroma only"+gwTag+")"));
+ // Only compute ΔE when actual 100% white is measured — using "brightest so
+ // far" causes all values to shift every time a brighter patch arrives.
+ const whiteR=gs.find(r=>r.ire===100);
+ // If the 100% measurement isn't present yet, allow a configured target
+ // luminance (`config.max_luma`) to act as the white reference. This
+ // mirrors HCFR's use of a pre-configured target luminance so ΔE values
+ // can be computed per-reading and remain stable.
+ let effectiveWhite=whiteR;
+ if((!effectiveWhite||effectiveWhite.Y<=0) && config && config.max_luma){
+  const maxL=parseFloat(config.max_luma);
+  if(maxL>0){
+   effectiveWhite={X:D65.X*maxL, Y:maxL, Z:D65.Z*maxL, luminance:maxL, x:D65.x, y:D65.y, cct:null};
+  }
+ }
+ if(!effectiveWhite||effectiveWhite.Y<=0){
+  if(allSteps) drawDeltaEPreset(allSteps);
+  return;
+ }
+ const Lw=effectiveWhite.luminance||effectiveWhite.Y;
+ const blacksL=gs.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
+ const Lb=blacksL.length>0?Math.min(...blacksL.map(r=>r.luminance)):0;
+ const gwWeight=meterGrayWorldWeight();
+ // Use all series steps for x-axis
+ const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
+ // Compute deltaE for available readings
+ const deMap={};
+ gs.forEach(rd=>{
+  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+  if(Y<=0){deMap[rd.ire]=0;return;} // true black: no chroma target
+  const ref=hcfrGreyRef(rd.ire, Y, Lw, Lb, greyMode, rd.r_code, gwWeight);
+  const XnM=(ref.wxN||D65.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||D65.Z)*ref.YWhite;
+  const XnR=(ref.wxN||D65.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||D65.Z)*ref.YWhiteRef;
+  const labM=xyzToLab(X,Y,Z,XnM,YnM,ZnM);
+  const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
+  deMap[rd.ire]=meterDeltaE(labM,labR,deForm,{
+   isGrey:true,
+   Ym:Y||0, Yref:ref.refY*ref.YWhiteRef,
+   X:X, Y:Y, Z:Z, YWhite:ref.YWhite,
+   Xr:ref.refX*ref.YWhiteRef, Yr:ref.refY*ref.YWhiteRef, Zr:ref.refZ*ref.YWhiteRef,
+   YWhiteRef:ref.YWhiteRef
+  });
+ });
+ const deValues=Object.values(deMap);
+ // Auto-scale Y: zoom to fit tightest range
+ let yMax;
+ if(deValues.length>0){
+  const maxDE=Math.max(...deValues);
+  yMax=Math.max(2,Math.ceil(maxDE*1.2*2)/2);
+ } else {yMax=5;}
+ const n=xSteps.length;
+ const rawW=ctx.w-55-15;
+ const estBarW=Math.max(8,Math.min(30,rawW/(n*1.5)));
+ const chart=drawChartGrid(ctx,{
+  pad:{t:20,r:15,b:30,l:55},
+  xInset:estBarW/2+4,
+  xSteps:n-1||1,ySteps:Math.min(5,Math.ceil(yMax)),
+  xLabel:(i)=>i<n?xSteps[i].ire+'%':'',
+  yLabel:(i,nn)=>(yMax*i/nn).toFixed(yMax>5?0:1)
+ });
+ // Reference lines
+ if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
+ if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
+ // Draw bars for each x-axis step
+ const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
+ xSteps.forEach((step,i)=>{
+  const cx=chart.toX(n>1?i/(n-1):0.5);
+  const dE=deMap[step.ire];
+  if(dE!=null){
+   const barH=Math.max(0.005,Math.min(dE/yMax,1));
+   const y=chart.pad.t+chart.h-barH*chart.h;
+   ctx.fillStyle=dE<1?'#4caf50':dE<3?'#ff9800':'#f44';
+   ctx.fillRect(cx-barW/2,y,barW,Math.max(2,barH*chart.h));
+   ctx.fillStyle='#ccc';ctx.font='11px sans-serif';
+   ctx.textAlign='center';
+   ctx.fillText(dE.toFixed(2),cx,y-4);
+  } else {
+   // Placeholder: thin grey line
+   ctx.fillStyle='#33333380';
+   ctx.fillRect(cx-1,chart.pad.t+chart.h-2,2,2);
+  }
+ });
+ // Average dE line
+ if(deValues.length>0){
+  const avgDE=deValues.reduce((s,v)=>s+v,0)/deValues.length;
+  ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='right';
+  ctx.fillText('Avg: '+avgDE.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
+ }
+ // White point info (CCT, Δxy from D65)
+ if(whiteR&&whiteR.x>0&&whiteR.y>0){
+  const dxy=Math.sqrt(Math.pow(whiteR.x-0.31271,2)+Math.pow(whiteR.y-0.32902,2));
+  ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='left';
+  const wpText=(whiteR.cct?whiteR.cct+'K  ':'')+'\u0394xy '+dxy.toFixed(4);
+  ctx.fillText(wpText,chart.pad.l,chart.pad.t-4);
+ }
+}
+
+function drawDeltaE2000Chart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartDeltaE2000');
+ if(!ctx) return;
+ const greyMode=meterGreyRefMode();
+ const inclLum=(greyMode==='eotf');
+ const lbl=document.getElementById('chartDeltaE2000Label');
+ if(lbl) lbl.textContent = greyMode==='relative' ? "Reference ΔE 2000 (relative gamma)" : (inclLum ? "Reference ΔE 2000 (+ Luminance)" : "Reference ΔE 2000 (chroma only)");
+ const whiteR=gs.find(r=>r.ire===100);
+ // Use configured target luminance as synthetic white when 100% not yet measured
+ let effectiveWhite2000=whiteR;
+ if((!effectiveWhite2000||effectiveWhite2000.Y<=0) && config && config.max_luma){
+  const maxL=parseFloat(config.max_luma);
+  if(maxL>0){
+   effectiveWhite2000={X:D65.X*maxL, Y:maxL, Z:D65.Z*maxL, luminance:maxL, x:D65.x, y:D65.y, cct:null};
+  }
+ }
+ if(!effectiveWhite2000||effectiveWhite2000.Y<=0){
+  if(allSteps) drawDeltaE2000Preset(allSteps);
+  return;
+ }
+ const Lw=effectiveWhite2000.luminance||effectiveWhite2000.Y;
+ const blacksL=gs.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
+ const Lb=blacksL.length>0?Math.min(...blacksL.map(r=>r.luminance)):0;
+ const gwWeight=meterGrayWorldWeight();
+ const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
+ // Lab normalization: Xn = D65.X * YWhite, Yn = YWhite, Zn = D65.Z * YWhite.
+ // Reference Y per hcfrGreyRef (chroma-only or target-EOTF luminance).
+ const deMap={};
+ gs.forEach(rd=>{
+  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+  if(Y<=0){deMap[rd.ire]=0;return;} // true black: no chroma target
+  const ref=hcfrGreyRef(rd.ire, Y, Lw, Lb, greyMode, rd.r_code, gwWeight);
+  const XnM=(ref.wxN||D65.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||D65.Z)*ref.YWhite;
+  const XnR=(ref.wxN||D65.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||D65.Z)*ref.YWhiteRef;
+  const labM=xyzToLab(X,Y,Z,XnM,YnM,ZnM);
+  const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
+  deMap[rd.ire]=deltaE2000(labM,labR);
+ });
+ const deValues=Object.values(deMap);
+ let yMax;
+ if(deValues.length>0){
+  const maxDE=Math.max(...deValues);
+  yMax=Math.max(2,Math.ceil(maxDE*1.2*2)/2);
+ } else {yMax=5;}
+ const n=xSteps.length;
+ const rawW=ctx.w-55-15;
+ const estBarW=Math.max(8,Math.min(30,rawW/(n*1.5)));
+ const chart=drawChartGrid(ctx,{
+  pad:{t:20,r:15,b:30,l:55},
+  xInset:estBarW/2+4,
+  xSteps:n-1||1,ySteps:Math.min(5,Math.ceil(yMax)),
+  xLabel:(i)=>i<n?xSteps[i].ire+'%':'',
+  yLabel:(i,nn)=>(yMax*i/nn).toFixed(yMax>5?0:1)
+ });
+ if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
+ if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
+ const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
+ xSteps.forEach((step,i)=>{
+  const cx=chart.toX(n>1?i/(n-1):0.5);
+  const dE=deMap[step.ire];
+  if(dE!=null){
+   const barH=Math.max(0.005,Math.min(dE/yMax,1));
+   const y=chart.pad.t+chart.h-barH*chart.h;
+   ctx.fillStyle=dE<1?'#4caf50':dE<3?'#ff9800':'#f44';
+   ctx.fillRect(cx-barW/2,y,barW,Math.max(2,barH*chart.h));
+   ctx.fillStyle='#ccc';ctx.font='11px sans-serif';
+   ctx.textAlign='center';
+   ctx.fillText(dE.toFixed(2),cx,y-4);
+  } else {
+   ctx.fillStyle='#33333380';
+   ctx.fillRect(cx-1,chart.pad.t+chart.h-2,2,2);
+  }
+ });
+ if(deValues.length>0){
+  const avgDE=deValues.reduce((s,v)=>s+v,0)/deValues.length;
+  ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='right';
+  ctx.fillText('Avg: '+avgDE.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
+ }
+}
+
+function drawDeltaE2000Preset(gsSteps){
+ const ctx=getChartCtx('chartDeltaE2000');
+ if(!ctx) return;
+ const yMax=5;
+ const chart=drawChartGrid(ctx,{
+  xSteps:gsSteps.length-1||1,ySteps:5,
+  xLabel:(i)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
+  yLabel:(i,n)=>(yMax*i/n).toFixed(1)
+ });
+ if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
+ if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
+}
+
+///////////////////////////////////////////////
+//     CIE Chromaticity + Color Charts       //
+///////////////////////////////////////////////
+
+function drawColorReadingsTable(readings){
+ const wrap=document.getElementById('colorReadingsTableWrap');
+ const tbody=document.querySelector('#colorReadingsTable tbody');
+ if(!wrap||!tbody) return;
+ if(!readings||readings.length===0){
+  wrap.style.display='none';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  return;
+ }
+ const inclLum=meterIncludeLum();
+ const colorForm=meterColorDeltaEForm();
+ let html='';
+ let deSum=0,deCount=0;
+ readings.forEach(rd=>{
+  if(!meterReadingHasLuminance(rd)) return;
+  const hasChroma=meterReadingHasChromaticity(rd);
+  const targetXYZ=meterTargetXYZForReading(rd);
+  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
+  const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
+  const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
+  const pc=meterPreviewColorForReading(rd,'target');
+  const de=meterColorDeltaE2000(rd,inclLum,colorForm);
+  deSum+=de;deCount++;
+  const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
+  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
+  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
+  html+='<tr data-name=\"'+(rd.name||'').replace(/"/g,'&quot;')+'\" style=\"border-bottom:1px solid #1a1a28;cursor:pointer\" onclick=\"colorTableRowClick(this)\">';
+  html+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+pc+';vertical-align:middle;margin-right:5px"></span>'+(rd.name||'')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.x.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.y.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.x.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.y.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;font-weight:600;color:'+deCol+'">'+de.toFixed(2)+'</td>';
+  html+='</tr>';
+ });
+ if(deCount>0){
+  const avg=deSum/deCount;
+  const avgCol=avg<1?'#4caf50':avg<3?'#ff9800':'#f44';
+  html+='<tr style="border-top:2px solid #333;font-weight:600">';
+  html+='<td style="padding:5px 8px;text-align:left;color:#aaa" colspan="8">Average</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:'+avgCol+'">'+avg.toFixed(2)+'</td>';
+  html+='</tr>';
+ }
+ tbody.innerHTML=html;
+ wrap.style.display='';
+ drawColorSeriesAverages(readings,inclLum);
+}
+
+// Per-color/grand-total averages across the current series. For saturation
+// sweeps we group by color family (Red/Green/Blue/Cyan/Magenta/Yellow); for
+// flat color lists we just show the overall average.
+function drawColorSeriesAverages(readings,inclLum){
+ const wrap=document.getElementById('colorSeriesAveragesWrap');
+ const tbody=document.querySelector('#colorSeriesAveragesTable tbody');
+ if(!wrap||!tbody) return;
+ const valid=(readings||[]).filter(rd=>meterReadingHasLuminance(rd));
+ if(valid.length===0){wrap.style.display='none';return;}
+ const colorForm=meterColorDeltaEForm();
+ const isSat=(meterActiveSeriesType==='saturations');
+ const groups={};
+ const order=[];
+ valid.forEach(rd=>{
+  let key='All';
+  if(isSat){
+   const sat=meterParseSaturationReading(rd);
+   key=sat&&sat.color?sat.color:(rd.name||'Other');
+  }
+  if(!groups[key]){groups[key]={de:[],dx:[],dy:[],Y:[],color:meterPreviewColorForReading(rd,'target')};order.push(key);}
+  const tgt=meterReadingHasChromaticity(rd)?meterTargetChromaticityForReading(rd):null;
+  groups[key].de.push(meterColorDeltaE2000(rd,inclLum,colorForm));
+  if(tgt){
+   groups[key].dx.push(Math.abs(rd.x-tgt.x));
+   groups[key].dy.push(Math.abs(rd.y-tgt.y));
+  }
+  groups[key].Y.push(rd.Y!=null?rd.Y:(rd.luminance||0));
+ });
+ const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0;
+ const mx=a=>a.length?Math.max(...a):0;
+ const rowFor=(label,g,bold)=>{
+  const aDE=avg(g.de), mDE=mx(g.de);
+  const aDx=avg(g.dx), aDy=avg(g.dy), aY=avg(g.Y);
+  const c=aDE<1?'#4caf50':aDE<3?'#ff9800':'#f44';
+  const cMax=mDE<1?'#4caf50':mDE<3?'#ff9800':'#f44';
+  let r='<tr'+(bold?' style="border-top:2px solid #333;font-weight:600"':' style="border-bottom:1px solid #1a1a28"')+'>';
+  r+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+(g.color||'#666')+';vertical-align:middle;margin-right:5px"></span>'+label+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right;color:#888">'+g.de.length+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right">'+aDx.toFixed(4)+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right">'+aDy.toFixed(4)+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right">'+aY.toFixed(1)+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right;color:'+c+'">'+aDE.toFixed(2)+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right;color:'+cMax+'">'+mDE.toFixed(2)+'</td>';
+  r+='</tr>';
+  return r;
+ };
+ let html='';
+ if(isSat){
+  order.forEach(k=>{html+=rowFor(k,groups[k],false);});
+ }
+ const overall={de:[],dx:[],dy:[],Y:[],color:'#888'};
+ Object.keys(groups).forEach(k=>{
+  const g=groups[k];
+  overall.de=overall.de.concat(g.de);
+  overall.dx=overall.dx.concat(g.dx);
+  overall.dy=overall.dy.concat(g.dy);
+  overall.Y=overall.Y.concat(g.Y);
+ });
+ html+=rowFor(isSat?'Overall':'Average',overall,true);
+ tbody.innerHTML=html;
+ wrap.style.display='';
+}
+
+// Cached CIE 1931 xy chromaticity gradient (offscreen canvas at device-pixel
+// resolution so it stays crisp on HiDPI and is drawn explicitly sized into
+// the inner plot rect).
+let _cieGrad=null,_cieGradKey='';
+function getCIEGradient(innerPxW,innerPxH){
+ const gw=Math.max(1,Math.round(innerPxW)), gh=Math.max(1,Math.round(innerPxH));
+ const key=gw+'x'+gh;
+ if(_cieGrad&&_cieGradKey===key) return _cieGrad;
+ const oc=document.createElement('canvas');oc.width=gw;oc.height=gh;
+ const ox=oc.getContext('2d');
+ const img=ox.createImageData(gw,gh);
+ const d=img.data;
+ const xMn=0,xMx=0.8,yMn=0,yMx=0.9;
+ const locus=CIE_LOCUS, M=M_XYZ_TO_RGB;
+ function pip(px,py){
+  let ins=false;
+  for(let i=0,j=locus.length-1;i<locus.length;j=i++){
+   const xi=locus[i][0],yi=locus[i][1],xj=locus[j][0],yj=locus[j][1];
+   if((yi>py)!==(yj>py)&&px<(xj-xi)*(py-yi)/(yj-yi)+xi) ins=!ins;
+  }
+  return ins;
+ }
+ for(let py=0;py<gh;py++){
+  for(let px=0;px<gw;px++){
+   const cx=xMn+(px/gw)*(xMx-xMn);
+   const cy=yMx-(py/gh)*(yMx-yMn);
+   const idx=(py*gw+px)*4;
+   if(cy<0.005||!pip(cx,cy)){d[idx+3]=0;continue;}
+   const X=cx/cy, Y=1.0, Z=(1-cx-cy)/cy;
+   let rl=M[0][0]*X+M[0][1]*Y+M[0][2]*Z;
+   let gl=M[1][0]*X+M[1][1]*Y+M[1][2]*Z;
+   let bl=M[2][0]*X+M[2][1]*Y+M[2][2]*Z;
+   const mx=Math.max(rl,gl,bl);
+   if(mx>0){rl/=mx;gl/=mx;bl/=mx;}
+   rl=Math.max(0,rl);gl=Math.max(0,gl);bl=Math.max(0,bl);
+   d[idx]=Math.round(255*Math.pow(rl,1/2.2));
+   d[idx+1]=Math.round(255*Math.pow(gl,1/2.2));
+   d[idx+2]=Math.round(255*Math.pow(bl,1/2.2));
+   d[idx+3]=95;
+  }
+ }
+ ox.putImageData(img,0,0);
+ _cieGrad=oc;_cieGradKey=key;
+ return oc;
+}
+
+// Color reading detail box (beside CIE chart)
+let _selectedColorReadingName=null;
+let _colorDetailPinned=false;
+function meterFocusColorReading(rd,opts){
+ showColorReadingDetail(rd,opts);
+ if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&Array.isArray(meterReadings)&&meterReadings.length){
+  drawAllCharts(meterReadings);
+ }
+}
+function showColorReadingDetail(rd,opts){
+ const el=document.getElementById('colorDetailContent');
+ if(!el) return;
+ if(!rd){
+  el.innerHTML='<div style="text-align:center;padding:30px 0;color:#666;font-size:13px;line-height:1.45">Select a color<br>to see details</div>';
+  _selectedColorReadingName=null;
+  _colorDetailPinned=false;
+  return;
+ }
+ const pin=!(opts&&opts.pin===false);
+ _selectedColorReadingName=rd.name||null;
+ _colorDetailPinned=pin&&!!_selectedColorReadingName;
+ updateLiveReading(rd);
+ const inclLum=meterIncludeLum();
+ const colorForm=meterColorDeltaEForm();
+ const deLabel=meterDeltaEFormLabel(colorForm);
+ const hasChroma=meterReadingHasChromaticity(rd);
+ const targetXYZ=meterTargetXYZForReading(rd);
+ const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
+ const targetColor=meterPreviewColorForReading(rd,'target');
+ const measuredColor=meterPreviewColorForReading(rd,'measured');
+ const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
+ const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
+ const de=meterColorDeltaE2000(rd,inclLum);
+ const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
+ const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
+ const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
+ let h='<div style="margin-bottom:10px;text-align:center">';
+ h+='<span style="display:inline-block;width:18px;height:18px;border-radius:3px;background:'+targetColor+';vertical-align:middle;margin-right:6px"></span>';
+ h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(rd.name||'')+'</span></div>';
+ h+='<div style="display:flex;gap:8px;margin-bottom:10px;justify-content:center">';
+ h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Target</div></div>';
+ h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured</div></div></div>';
+ h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
+ h+='<tr><td style="padding:3px 0;color:#777">Target x</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Target y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Meas. x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Meas. y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.y.toFixed(4):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Y cd/m\u00B2</td><td style="text-align:right;padding:3px 0;color:#ddd">'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394x</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">\u0394y</td><td style="text-align:right;padding:3px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+de.toFixed(2)+'</td></tr>';
+ h+='</table>';
+ el.innerHTML=h;
+ // Highlight corresponding thumb and table row by name
+ colorHighlightThumb(rd.name);
+ colorHighlightTableRow(rd.name);
+}
+function colorHighlightThumb(name){
+ const container=document.getElementById('meterPatchThumbs');
+ if(!container) return;
+ const hasReadings=meterReadings&&meterReadings.length>0;
+ const completedNames=hasReadings?new Set(meterReadings.filter(r=>r.luminance!=null).map(r=>r.name)):new Set();
+ for(let i=0;i<container.children.length;i++){
+  const t=container.children[i];
+  const isMatch=t.dataset.name===name;
+  const done=completedNames.has(t.dataset.name);
+  t.style.boxShadow=isMatch?'0 0 0 3px #fff':(done?'0 0 0 2px #4caf50':'none');
+  t.style.animation='none';
+  t.style.zIndex=isMatch?'1':'';
+ }
+}
+function colorTableRowClick(tr){
+ const name=tr.getAttribute('data-name');
+ if(!name||!meterReadings) return;
+ const rd=meterReadings.find(r=>r.name===name);
+ if(rd) meterFocusColorReading(rd,{pin:true});
+}
+// Highlight table row for selected reading
+function colorHighlightTableRow(name){
+ const rows=document.querySelectorAll('#colorReadingsTable tbody tr[data-name]');
+ rows.forEach(tr=>{
+  tr.style.background=tr.getAttribute('data-name')===name?'#1a1a2f':'';
+ });
+}
+// Color chart interaction (CIE + ΔE bar chart)
+let _colorChartHitZones=[];
+function colorChartRegisterInteraction(readings){
+ _colorChartHitZones=[];
+ if(!readings||readings.length===0) return;
+ // CIE chart hit zones (use measured xy positions)
+ const cieCanvas=document.getElementById('chartCIE');
+ if(cieCanvas){
+  const rect=cieCanvas.getBoundingClientRect();
+  const cW=rect.width,cH=rect.height;
+  const pad={t:15,r:15,b:35,l:45};
+  const w=cW-pad.l-pad.r, h=cH-pad.t-pad.b;
+  const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
+  readings.forEach(rd=>{
+   if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
+   const px=pad.l+(rd.x-xMin)/(xMax-xMin)*w;
+   const py=pad.t+h-(rd.y-yMin)/(yMax-yMin)*h;
+   _colorChartHitZones.push({canvasId:'chartCIE',cx:px,cy:py,radius:12,reading:rd});
+  });
+  cieCanvas.onmousemove=function(e){colorChartHandleHover(e,'chartCIE');};
+  cieCanvas.onmouseleave=function(){document.getElementById('chartTooltip').style.display='none';};
+  cieCanvas.onclick=function(e){colorChartHandleClick(e,'chartCIE');};
+  cieCanvas.style.cursor='crosshair';
+ }
+ // ΔE bar chart hit zones
+ const deCanvas=document.getElementById('chartColorDE');
+ if(deCanvas){
+  const rect=deCanvas.getBoundingClientRect();
+  const cW=rect.width;
+  const valid=readings.filter(rd=>meterReadingHasLuminance(rd));
+  const n=valid.length;
+  if(n>0){
+   const pad2={t:20,r:15,b:30,l:55};
+   const w2=cW-pad2.l-pad2.r;
+   const estBarW=Math.max(8,Math.min(30,w2/(n*1.5)));
+   const xInset=estBarW/2+4;
+   const dw=w2-2*xInset;
+   valid.forEach((rd,idx)=>{
+    const cx=pad2.l+xInset+(n>1?idx/(n-1):0.5)*dw;
+    _colorChartHitZones.push({canvasId:'chartColorDE',cx:cx,cy:0,radius:estBarW,reading:rd});
+   });
+  }
+  deCanvas.onmousemove=function(e){colorChartHandleHover(e,'chartColorDE');};
+  deCanvas.onmouseleave=function(){document.getElementById('chartTooltip').style.display='none';};
+  deCanvas.onclick=function(e){colorChartHandleClick(e,'chartColorDE');};
+  deCanvas.style.cursor='crosshair';
+ }
+}
+function colorChartFindHit(e,canvasId){
+ const canvas=document.getElementById(canvasId);
+ if(!canvas) return null;
+ const rect=canvas.getBoundingClientRect();
+ const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+ let best=null,bestDist=Infinity;
+ _colorChartHitZones.filter(z=>z.canvasId===canvasId).forEach(z=>{
+  const dx2=mx-z.cx, dy2=canvasId==='chartColorDE'?0:(my-z.cy);
+  const dist=Math.sqrt(dx2*dx2+dy2*dy2);
+  if(dist<Math.max(z.radius,20)&&dist<bestDist){bestDist=dist; best=z;}
+ });
+ return best;
+}
+function colorChartHandleHover(e,canvasId){
+ const hit=colorChartFindHit(e,canvasId);
+ const tip=document.getElementById('chartTooltip');
+ if(!hit){tip.style.display='none';return;}
+ const rd=hit.reading;
+ const hasChroma=meterReadingHasChromaticity(rd);
+ const targetXYZ=meterTargetXYZForReading(rd);
+ const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
+ const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
+ const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
+ let html='<b>'+(rd.name||'')+'</b><br>';
+ html+='Target: '+(tgt?'('+tgt.x.toFixed(4)+', '+tgt.y.toFixed(4)+')':'--')+'<br>';
+ html+='Measured: '+(hasChroma?'('+rd.x.toFixed(4)+', '+rd.y.toFixed(4)+')':'--')+'<br>';
+ html+='\u0394x: '+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+' &nbsp;\u0394y: '+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'<br>';
+ html+='Y: '+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+' cd/m\u00B2';
+ tip.innerHTML=html;
+ tip.style.display='block';
+ const tx=e.clientX+14, ty=e.clientY-10;
+ tip.style.left=Math.min(tx,window.innerWidth-tip.offsetWidth-10)+'px';
+ tip.style.top=Math.min(ty,window.innerHeight-tip.offsetHeight-10)+'px';
+}
+function colorChartHandleClick(e,canvasId){
+ const hit=colorChartFindHit(e,canvasId);
+ if(!hit) return;
+ document.getElementById('chartTooltip').style.display='none';
+ meterFocusColorReading(hit.reading,{pin:true});
+}
+
+function drawCIEChart(readings){
+ const ctx=getChartCtx('chartCIE');
+ if(!ctx) return;
+ const pad={t:15,r:15,b:35,l:45};
+ const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
+ const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
+ const toX=v=>pad.l+(v-xMin)/(xMax-xMin)*w;
+ const toY=v=>pad.t+h-(v-yMin)/(yMax-yMin)*h;
+ // Background
+ ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ // Restore the chromaticity hue wash underneath the grid so the CIE plot keeps
+ // its visible color background even after layout/size changes.
+ { const dpr=window.devicePixelRatio||1; const iw=(ctx.w-pad.l-pad.r), ih=(ctx.h-pad.t-pad.b);
+   ctx.save();
+   ctx.globalAlpha=0.62;
+   ctx.drawImage(getCIEGradient(iw*dpr,ih*dpr),pad.l,pad.t,iw,ih);
+   ctx.restore();
+ }
+ // Grid
+ ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
+ for(let x=0;x<=xMax;x+=0.1){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
+ for(let y=0;y<=yMax;y+=0.1){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
+ // Axes
+ ctx.strokeStyle='rgba(132,148,178,0.85)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
+ // Axis labels
+ ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ for(let x=0;x<=xMax;x+=0.1) ctx.fillText(x.toFixed(1),toX(x),pad.t+h+14);
+ ctx.textAlign='right';
+ for(let y=0;y<=yMax;y+=0.1) ctx.fillText(y.toFixed(1),pad.l-4,toY(y)+3);
+ // Axis titles
+ ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillText('x',pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ // CIE spectral locus
+ ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
+ CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+ ctx.closePath();ctx.stroke();
+ const gamut=meterActiveGamut();
+ const prim=gamut.primaries;
+ ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+ ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
+ ctx.setLineDash([]);
+ ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+ ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
+ ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
+ ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ // D65 white point
+ ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
+ ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,ctx.w-pad.r,pad.t+10);
+ // Plot target and measured points
+ readings.forEach(rd=>{
+  if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
+  const tgt=meterTargetChromaticityForReading(rd);
+  const mx=rd.x, my=rd.y;
+  const targetColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
+  const measuredColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
+  const tx=toX(tgt.x), ty=toY(tgt.y);
+  const px=toX(mx), py=toY(my);
+  // Error line
+  ctx.save();
+  ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(px,py);ctx.stroke();
+  ctx.restore();
+  // Target: crisp hollow square
+  const sq=6;
+  ctx.save();
+  ctx.strokeStyle=targetColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+  ctx.restore();
+  // Measured: solid circle
+  ctx.save();
+  ctx.fillStyle=measuredColor;ctx.beginPath();
+  ctx.arc(px,py,4.6,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+ });
+ drawCIETargetInset(ctx,readings,pad);
+}
+
+// Zoomed inset for the currently focused color patch. The focused reading
+// is the pinned selection (if any) otherwise the most recently measured
+// patch in the series. Rendered in the top-right corner of the CIE chart.
+function drawCIETargetInset(ctx,readings,pad){
+ if(!readings||!readings.length) return;
+ let focus=null;
+ if(_selectedColorReadingName){
+  focus=readings.find(r=>r&&r.name===_selectedColorReadingName)||null;
+ }
+ if(!focus){
+  for(let i=readings.length-1;i>=0;i--){
+   const r=readings[i];
+   if(r&&r.x>0&&r.y>0){focus=r;break;}
+  }
+ }
+ if(!focus||!(focus.x>0)||!(focus.y>0)) return;
+ const tgt=meterTargetChromaticityForReading(focus);
+ if(!tgt) return;
+ const insetSize=130, margin=8;
+ // Shift down further so the zoom clears the gamut label and leaves room
+ // for the target caption above the inset frame.
+ const ix=ctx.w-pad.r-insetSize-margin, iy=pad.t+34;
+ // Autoscale the zoom to fit the target + measured point of the focused
+ // reading (plus any extra readings that share the same target group would
+ // be implicit; we tune to the focus pair for clarity). Enforce a minimum
+ // half-range so very close measurements stay readable.
+ const span=Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y));
+ const halfRange=Math.max(0.004,span*1.6);
+ const xMn=tgt.x-halfRange,xMx=tgt.x+halfRange,yMn=tgt.y-halfRange,yMx=tgt.y+halfRange;
+ // Frame
+ ctx.save();
+ ctx.fillStyle='#0d0d15';
+ ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1.1;
+ ctx.beginPath();ctx.rect(ix,iy,insetSize,insetSize);ctx.fill();ctx.stroke();
+ // Clip to inset
+ ctx.beginPath();ctx.rect(ix,iy,insetSize,insetSize);ctx.clip();
+ const plotPad=6;
+ const pw=insetSize-plotPad*2, ph=insetSize-plotPad*2;
+ const ZtoX=v=>ix+plotPad+(v-xMn)/(xMx-xMn)*pw;
+ const ZtoY=v=>iy+plotPad+ph-(v-yMn)/(yMx-yMn)*ph;
+ // Paint the CIE chromaticity gradient cropped to the zoom window so the
+ // inset shows the same hue wash as the main chart, but magnified to the
+ // focused patch's neighborhood.
+ try{
+  const grad=getCIEGradient(ctx.w,ctx.h,pad);
+  if(grad){
+   const CX_MIN=0,CX_MAX=0.8,CY_MIN=0,CY_MAX=0.9;
+   const sx=(xMn-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
+   const sw=(xMx-xMn)/(CX_MAX-CX_MIN)*grad.width;
+   // Gradient image rows run top-down with y flipped (top row = yMax).
+   const sy=(CY_MAX-yMx)/(CY_MAX-CY_MIN)*grad.height;
+   const sh=(yMx-yMn)/(CY_MAX-CY_MIN)*grad.height;
+   ctx.save();
+   ctx.globalAlpha=0.9;
+   ctx.drawImage(grad,sx,sy,sw,sh,ix+plotPad,iy+plotPad,pw,ph);
+   ctx.restore();
+  }
+ }catch(e){}
+ // Plot neighbors: measured dot (+ connector to their target when visible)
+ // still gets drawn so the surrounding context stays readable, but the
+ // hollow target square is drawn ONLY for the focused reading so the user
+ // can tell at a glance which patch this zoom is anchored on.
+ readings.forEach(rd=>{
+  if(!rd||!(rd.x>0)||!(rd.y>0)) return;
+  const isFocus=(rd===focus);
+  const rt=meterTargetChromaticityForReading(rd);
+  if(!rt) return;
+  const tColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
+  const mColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
+  const tInside=rt.x>=xMn&&rt.x<=xMx&&rt.y>=yMn&&rt.y<=yMx;
+  const mInside=rd.x>=xMn&&rd.x<=xMx&&rd.y>=yMn&&rd.y<=yMx;
+  if(!tInside&&!mInside) return;
+  if(isFocus&&tInside&&mInside){
+   ctx.strokeStyle=meterColorWithAlpha(tColor,0.85);ctx.lineWidth=1.3;
+   ctx.beginPath();ctx.moveTo(ZtoX(rt.x),ZtoY(rt.y));ctx.lineTo(ZtoX(rd.x),ZtoY(rd.y));ctx.stroke();
+  }
+  if(isFocus&&tInside){
+   const sq=5;
+   ctx.save();
+   ctx.strokeStyle=tColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
+   ctx.restore();
+  }
+  if(mInside){
+   ctx.save();
+   ctx.fillStyle=isFocus?mColor:meterColorWithAlpha(mColor,0.7);
+   ctx.beginPath();
+   ctx.arc(ZtoX(rd.x),ZtoY(rd.y),isFocus?4.4:3.2,0,Math.PI*2);ctx.fill();
+   ctx.restore();
+  }
+ });
+ ctx.restore();
+ // Label strip above the inset. Widen beyond the inset on each side as
+ // needed so long patch names ("100% Magenta  ±0.011") don't overflow.
+ // Clamp to the chart's plot bounds so the label never spills off-canvas.
+ const labelText='Target: '+(focus.name||'patch')+'  \u00B1'+halfRange.toFixed(3);
+ ctx.save();
+ ctx.font='9px sans-serif';
+ const textW=ctx.measureText(labelText).width;
+ const labelPadX=10, labelH=15;
+ const idealW=Math.max(insetSize,textW+labelPadX*2);
+ const maxLeft=pad.l, maxRight=ctx.w-pad.r;
+ let lx=ix+(insetSize-idealW)/2;
+ if(lx<maxLeft) lx=maxLeft;
+ let lw=idealW;
+ if(lx+lw>maxRight) lw=maxRight-lx;
+ const ly=iy-labelH-1;
+ ctx.fillStyle='#0d0d15';
+ ctx.fillRect(lx,ly,lw,labelH);
+ ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1;
+ ctx.strokeRect(lx,ly,lw,labelH);
+ ctx.fillStyle='#edf3ff';ctx.textAlign='center';ctx.textBaseline='middle';
+ ctx.fillText(labelText,lx+lw/2,ly+labelH/2);
+ ctx.restore();
+ ctx.textBaseline='alphabetic';
+}
+
+function drawCIEChartPreset(steps){
+ const ctx=getChartCtx('chartCIE');
+ if(!ctx) return;
+ const pad={t:15,r:15,b:35,l:45};
+ const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
+ const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
+ const toX=v=>pad.l+(v-xMin)/(xMax-xMin)*w;
+ const toY=v=>pad.t+h-(v-yMin)/(yMax-yMin)*h;
+ ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ { const dpr=window.devicePixelRatio||1; const iw=(ctx.w-pad.l-pad.r), ih=(ctx.h-pad.t-pad.b);
+   ctx.save();
+   ctx.globalAlpha=0.42;
+   ctx.drawImage(getCIEGradient(iw*dpr,ih*dpr),pad.l,pad.t,iw,ih);
+   ctx.restore();
+ }
+ ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
+ for(let x=0;x<=xMax;x+=0.1){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
+ for(let y=0;y<=yMax;y+=0.1){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
+ ctx.strokeStyle='rgba(132,148,178,0.85)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
+ ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ for(let x=0;x<=xMax;x+=0.1) ctx.fillText(x.toFixed(1),toX(x),pad.t+h+14);
+ ctx.textAlign='right';
+ for(let y=0;y<=yMax;y+=0.1) ctx.fillText(y.toFixed(1),pad.l-4,toY(y)+3);
+ ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillText('x',pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ // Locus
+ ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
+ CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+ ctx.closePath();ctx.stroke();
+ const gamut=meterActiveGamut();
+ const prim=gamut.primaries;
+ ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+ ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
+ ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+ ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
+ ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ // D65
+ ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
+ ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,ctx.w-pad.r,pad.t+10);
+ // Target placeholders (hollow squares)
+ steps.forEach(s=>{
+  const tgt=(s.series_color&&s.sat_pct!=null)?meterTargetChromaticityForReading(s):targetChromaticityXY(s.r,s.g,s.b);
+  const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
+  const sq=6;
+  const tx=toX(tgt.x), ty=toY(tgt.y);
+  ctx.save();
+  ctx.strokeStyle=pc;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+  ctx.restore();
+ });
+}
+
+function drawColorDeltaE2000Chart(readings){
+ const ctx=getChartCtx('chartColorDE');
+ if(!ctx) return;
+ const inclLum=meterIncludeLum();
+ const colorForm=meterColorDeltaEForm();
+ const deLabel=meterDeltaEFormLabel(colorForm);
+ const lbl=document.getElementById('chartColorDELabel');
+ if(lbl) lbl.textContent = inclLum ? (deLabel+' (Color Accuracy + Luminance)') : (deLabel+' (Color Accuracy, Chroma Only)');
+ const deData=[];
+ readings.forEach(rd=>{
+  if(!meterReadingHasLuminance(rd)) return;
+  deData.push({name:rd.name||'',de:meterColorDeltaE2000(rd,inclLum,colorForm),color:meterPreviewColorForReading(rd,'target')});
+ });
+ if(deData.length===0) return;
+ const deValues=deData.map(d=>d.de);
+ let yMaxDE;
+ if(deValues.length>0){const mx=Math.max(...deValues);yMaxDE=Math.max(2,Math.ceil(mx*1.2*2)/2);}else{yMaxDE=5;}
+ const n=deData.length;
+ const rawW=ctx.w-55-15;
+ const estBarW=Math.max(8,Math.min(30,rawW/(n*1.5)));
+ const chart=drawChartGrid(ctx,{
+  pad:{t:20,r:15,b:60,l:55},xInset:estBarW/2+4,
+  xSteps:n-1||1,ySteps:Math.min(5,Math.ceil(yMaxDE)),
+  xLabel:(i)=>i<n?deData[i].name:'',
+  yLabel:(i,nn)=>(yMaxDE*i/nn).toFixed(yMaxDE>5?0:1),
+  rotateX:true
+ });
+ if(1/yMaxDE<=1) drawDashedLine(ctx,chart,[[0,1/yMaxDE],[1,1/yMaxDE]],'#4caf5080');
+ if(3/yMaxDE<=1) drawDashedLine(ctx,chart,[[0,3/yMaxDE],[1,3/yMaxDE]],'#ff980080');
+ const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
+ deData.forEach((d,i)=>{
+  const cx=chart.toX(n>1?i/(n-1):0.5);
+  const barH=Math.max(0.005,Math.min(d.de/yMaxDE,1));
+  const y=chart.pad.t+chart.h-barH*chart.h;
+  ctx.fillStyle=d.de<1?'#4caf50':d.de<3?'#ff9800':'#f44';
+  ctx.fillRect(cx-barW/2,y,barW,Math.max(2,barH*chart.h));
+  ctx.fillStyle='#ccc';ctx.font='11px sans-serif';ctx.textAlign='center';
+  ctx.fillText(d.de.toFixed(2),cx,y-4);
+ });
+ if(deValues.length>0){
+  const avg=deValues.reduce((s,v)=>s+v,0)/deValues.length;
+  ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='right';
+  ctx.fillText('Avg: '+avg.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
+ }
+}
+
+function drawColorDeltaE2000Preset(steps){
+ const ctx=getChartCtx('chartColorDE');
+ if(!ctx) return;
+ const yMax=5;
+ const n=steps.length;
+ const rawW=ctx.w-55-15;
+ const estBarW=Math.max(8,Math.min(30,rawW/(n*1.5)));
+ const chart=drawChartGrid(ctx,{
+  pad:{t:20,r:15,b:60,l:55},xInset:estBarW/2+4,
+  xSteps:n-1||1,ySteps:5,
+  xLabel:(i)=>i<n?(steps[i].name||''):'',
+  yLabel:(i,nn)=>(yMax*i/nn).toFixed(1),
+  rotateX:true
+ });
+ if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
+ if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
+}
+
+// Chart interaction: hover tooltip + click to show reading
+let _chartHitZones=[];
+function chartRegisterInteraction(){
+ _chartHitZones=[];
+ if(!meterReadings||meterReadings.length===0) return;
+ const gs=meterReadings.filter(r=>r.luminance!=null&&r.luminance>=0&&r.r_code===r.g_code&&r.g_code===r.b_code);
+ if(gs.length===0) return;
+ const whiteR=gs.find(r=>r.ire===100);
+ if(!whiteR) return;
+ const Lw=whiteR.luminance||whiteR.Y;
+ const blacks=gs.filter(r=>r.ire<=5&&r.luminance!=null);
+ const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ const inclLum=meterIncludeLum();
+ const greyMode=meterGreyRefMode();
+ const gwWeight=meterGrayWorldWeight();
+ const allSteps=meterSeriesSteps?[...meterSeriesSteps].filter(s=>s.r===s.g&&s.g===s.b).sort((a,b)=>a.ire-b.ire):null;
+ const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
+ const readingByIre={};
+ gs.forEach(r=>{readingByIre[r.ire]=r;});
+ // Pre-compute selected + reference ΔE values for tooltips.
+ const deSelected={},de2000={};
+ const deForm=meterDeltaEForm();
+ const deLabel=meterDeltaEFormLabel(deForm);
+ gs.forEach(rd=>{
+  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+  if(Y<=0){deSelected[rd.ire]=0;de2000[rd.ire]=0;return;} // true black: no chroma target
+  const ref=hcfrGreyRef(rd.ire, Y, Lw, Lb, greyMode, rd.r_code, gwWeight);
+  const XnM=(ref.wxN||D65.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||D65.Z)*ref.YWhite;
+  const XnR=(ref.wxN||D65.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||D65.Z)*ref.YWhiteRef;
+  const labM=xyzToLab(X,Y,Z,XnM,YnM,ZnM);
+  const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
+  deSelected[rd.ire]=meterDeltaE(labM,labR,deForm,{
+   isGrey:true,
+   Ym:Y||0, Yref:ref.refY*ref.YWhiteRef,
+   X:X, Y:Y, Z:Z, YWhite:ref.YWhite,
+   Xr:ref.refX*ref.YWhiteRef, Yr:ref.refY*ref.YWhiteRef, Zr:ref.refZ*ref.YWhiteRef,
+   YWhiteRef:ref.YWhiteRef
+  });
+  de2000[rd.ire]=deltaE2000(labM,labR);
+ });
+ // Register hit zones for each chart canvas
+ const canvasIds=['chartRGB','chartDeltaE','chartGammaValue','chartEOTF','chartGamma'];
+ canvasIds.forEach(cid=>{
+  const canvas=document.getElementById(cid);
+  if(!canvas) return;
+  const dpr=window.devicePixelRatio||1;
+  const rect=canvas.getBoundingClientRect();
+  const cW=rect.width, cH=rect.height;
+  // Estimate chart padding and step positions
+  const isBarChart=cid.indexOf('DeltaE')>=0;
+  const isSmall=cid==='chartEOTF'||cid==='chartGamma';
+  const pad=isBarChart?{t:20,r:15,b:30,l:55}:{t:20,r:15,b:30,l:45};
+  const w=cW-pad.l-pad.r;
+  const n=xSteps.length;
+  const xInset=isBarChart?(Math.max(8,Math.min(30,w/(n*1.5)))/2+4):((cid==='chartRGB')?15:0);
+  const dw=w-2*xInset;
+  // Build hit zones for each step
+  xSteps.forEach((step,idx)=>{
+   const rd=readingByIre[step.ire];
+   if(!rd) return;
+   let cx;
+   if(cid==='chartEOTF'||cid==='chartGamma'){
+    cx=pad.l+step.ire/100*w;
+   } else {
+    cx=pad.l+xInset+(n>1?idx/(n-1):0.5)*dw;
+   }
+   _chartHitZones.push({canvasId:cid, cx:cx, cy:cH/2, radius:isBarChart?18:8, ire:step.ire, reading:rd,
+    deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deLabel:deLabel});
+  });
+  // Attach event handlers (remove old ones first)
+  canvas.onmousemove=function(e){chartHandleHover(e,cid);};
+  canvas.onmouseleave=function(){document.getElementById('chartTooltip').style.display='none';};
+  canvas.onclick=function(e){chartHandleClick(e,cid);};
+  canvas.style.cursor='crosshair';
+ });
+}
+
+function chartFindHit(e,canvasId){
+ const canvas=document.getElementById(canvasId);
+ if(!canvas) return null;
+ const rect=canvas.getBoundingClientRect();
+ const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+ let best=null, bestDist=Infinity;
+ _chartHitZones.filter(z=>z.canvasId===canvasId).forEach(z=>{
+  const dx=mx-z.cx;
+  const dist=Math.abs(dx);
+  if(dist<Math.max(z.radius,25)&&dist<bestDist){
+   bestDist=dist; best=z;
+  }
+ });
+ return best;
+}
+
+function chartHandleHover(e,canvasId){
+ const hit=chartFindHit(e,canvasId);
+ const tip=document.getElementById('chartTooltip');
+ if(!hit){tip.style.display='none';return;}
+ const rd=hit.reading;
+ const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,meterIncludeLum()):{R:100,G:100,B:100};
+ const gamma=effectiveGamma(rd.luminance,meterWhiteReading?meterWhiteReading.Y:rd.Y,rd.ire);
+ let html='<b>'+rd.ire+'%</b><br>';
+ html+='Lum: '+(rd.luminance!=null?rd.luminance.toFixed(2):'--')+' cd/m\u00B2';
+ if(rd.cct) html+='&nbsp; CCT: '+rd.cct+'K';
+ html+='<br>x: '+(rd.x!=null?rd.x.toFixed(4):'--')+' &nbsp;y: '+(rd.y!=null?rd.y.toFixed(4):'--');
+ html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
+ if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);
+ if(hit.deSelected!=null) html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+hit.deSelected.toFixed(2);
+ if(hit.de2000!=null && meterDeltaEForm()!=='de2000') html+='<br>Reference ΔE 2000: '+hit.de2000.toFixed(2);
+ tip.innerHTML=html;
+ tip.style.display='block';
+ // Position near cursor
+ const tx=e.clientX+14, ty=e.clientY-10;
+ tip.style.left=Math.min(tx,window.innerWidth-tip.offsetWidth-10)+'px';
+ tip.style.top=Math.min(ty,window.innerHeight-tip.offsetHeight-10)+'px';
+}
+
+function chartHandleClick(e,canvasId){
+ const hit=chartFindHit(e,canvasId);
+ if(!hit) return;
+ const rd=hit.reading;
+ updateLiveReading(rd);
+ document.getElementById('meterLiveReading').style.display='';
+ // Highlight the corresponding thumbnail
+ meterSelectedThumbIre=rd.ire;
+ const container=document.getElementById('meterPatchThumbs');
+ if(container&&container.children.length>0){
+  const completedIres=new Set(meterReadings.filter(r=>r.luminance!=null).map(r=>meterStepNameKey(r)));
+  meterUpdateThumbStyles(container,completedIres,null);
+ }
+ document.getElementById('meterProgress').style.display='';
+ document.getElementById('meterProgressLabel').textContent=rd.ire+'%';
+}
+
+function meterSeriesLabelFromKey(key){
+ return {
+  'greyscale-21':'Greyscale 21pt',
+  'greyscale-11':'Greyscale 11pt',
+  'colors-30':'Colors',
+  'saturations-24':'Sat Sweep'
+ }[key]||String(key||'Series');
+}
+
+function meterGetSeriesSnapshotByKey(key){
+ if(!key) return null;
+ if(key===meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ const snap=meterSeriesCache[key];
+ if(!snap||!snap.steps||snap.steps.length===0) return null;
+ const readings=(snap.readings||[]).filter(rd=>meterReadingHasLuminance(rd));
+ return {...snap,readings:readings};
+}
+
+function meterAllSeriesReportOptions(){
+ return [
+  {key:'greyscale-21',label:'Greyscale 21pt'},
+  {key:'greyscale-11',label:'Greyscale 11pt'},
+  {key:'colors-30',label:'Colors'},
+  {key:'saturations-24',label:'Sat Sweep'}
+ ].map(item=>{
+  const snap=meterGetSeriesSnapshotByKey(item.key);
+  const count=snap&&snap.readings?snap.readings.length:0;
+  return {...item,count:count,hasData:count>0};
+ });
+}
+
+function meterOpenReportDialog(){
+ if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ const items=meterAllSeriesReportOptions();
+ const list=document.getElementById('meterReportSeriesList');
+ list.innerHTML=items.map(item=>
+  '<label style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#0d0d15;border:1px solid #262b3b;border-radius:6px;padding:8px 10px;cursor:pointer">'
+  +'<span style="display:flex;align-items:center;gap:8px"><input type="checkbox" value="'+item.key+'" checked> '+item.label+'</span>'
+  +'<span style="font-size:.72rem;color:var(--text2)">'+(item.hasData?(item.count+' readings'):'No data yet')+'</span>'
+  +'</label>'
+ ).join('');
+ document.getElementById('meterReportOverlay').style.display='flex';
+}
+
+function meterCloseReportDialog(){
+ const overlay=document.getElementById('meterReportOverlay');
+ if(overlay) overlay.style.display='none';
+}
+
+function meterReportCanvasImageHTML(cv){
+ if(!cv) return '';
+ const img=document.createElement('img');
+ try{ img.src=cv.toDataURL('image/png'); }catch(e){ img.src=''; }
+ img.alt='Chart image';
+ img.style.cssText='width:100%;display:block;background:#0d0d15;border-radius:8px';
+ return img.outerHTML;
+}
+
+function meterCloneReportNodeHTML(el){
+ if(!el) return '';
+ if(el.matches&&el.matches('canvas')) return meterReportCanvasImageHTML(el);
+ const clone=el.cloneNode(true);
+ const sourceCanvases=el.querySelectorAll('canvas');
+ const cloneCanvases=clone.querySelectorAll('canvas');
+ sourceCanvases.forEach((cv,i)=>{
+  const cloneCv=cloneCanvases[i];
+  if(!cloneCv) return;
+  const wrap=document.createElement('div');
+  wrap.innerHTML=meterReportCanvasImageHTML(cv);
+  const img=wrap.firstChild;
+  if(img) cloneCv.replaceWith(img);
+ }
+ );
+ if(clone.querySelectorAll) clone.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
+ if(clone.style) clone.style.display='';
+ return clone.outerHTML||'';
+}
+
+function meterBuildReportChartCard(title,el,layoutClass){
+ if(!el) return '';
+ const extra=layoutClass?(' '+layoutClass):'';
+ return '<div class="report-chart-card'+extra+'"><div class="report-chart-title">'+title+'</div>'+meterCloneReportNodeHTML(el)+'</div>';
+}
+
+function meterBuildReportSummaryCards(){
+ const valid=(meterReadings||[]).filter(rd=>meterReadingHasLuminance(rd));
+ if(valid.length===0) return '';
+ let cards=[];
+ if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
+  const gs=valid.filter(r=>r.r_code===r.g_code&&r.g_code===r.b_code).sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const white=gs.find(r=>(r.ire||0)===100)||meterWhiteReading||gs[gs.length-1];
+  const peak=white?(white.luminance||white.Y||0):0;
+  const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
+  const black=blacks.length?Math.min(...blacks):0;
+  let deVals=[];
+  if(white&&(white.Y||white.luminance)>0){
+   const Lw=white.luminance||white.Y;
+   const Lb=black||0;
+   gs.forEach(rd=>{
+    const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+    if(Y<=0){deVals.push(0);return;}
+    const ref=hcfrGreyRef(rd.ire, Y, Lw, Lb, meterGreyRefMode(), rd.r_code, meterGrayWorldWeight());
+    const labM=xyzToLab(X,Y,Z,(ref.wxN||D65.X)*ref.YWhite,ref.YWhite,(ref.wzN||D65.Z)*ref.YWhite);
+    const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,(ref.wxN||D65.X)*ref.YWhiteRef,ref.YWhiteRef,(ref.wzN||D65.Z)*ref.YWhiteRef);
+    deVals.push(meterDeltaE(labM,labR,meterDeltaEForm(),{
+     isGrey:true,
+     Ym:Y||0, Yref:ref.refY*ref.YWhiteRef,
+     X:X, Y:Y, Z:Z, YWhite:ref.YWhite,
+     Xr:ref.refX*ref.YWhiteRef, Yr:ref.refY*ref.YWhiteRef, Zr:ref.refZ*ref.YWhiteRef,
+     YWhiteRef:ref.YWhiteRef
+    }));
+   });
+  }
+  const avgDe=deVals.length?(deVals.reduce((s,v)=>s+v,0)/deVals.length):0;
+  const avgCct=gs.filter(r=>r.cct).length?(gs.filter(r=>r.cct).reduce((s,r)=>s+(r.cct||0),0)/gs.filter(r=>r.cct).length):null;
+  cards=[
+   {label:'Average '+meterDeltaEFormLabel(),value:isFinite(avgDe)?avgDe.toFixed(2):'--'},
+   {label:'Peak Luminance',value:isFinite(peak)?peak.toFixed(1)+' cd/m²':'--'},
+   {label:'Black Level',value:isFinite(black)?black.toFixed(3)+' cd/m²':'--'},
+   {label:'Average CCT',value:avgCct?Math.round(avgCct)+'K':'--'}
+  ];
+ } else {
+  const inclLum=meterIncludeLum();
+  const colorForm=meterColorDeltaEForm();
+  const deVals=valid.map(rd=>meterColorDeltaE2000(rd,inclLum,colorForm)).filter(v=>isFinite(v));
+  const avgDe=deVals.length?(deVals.reduce((s,v)=>s+v,0)/deVals.length):0;
+  const peak=Math.max(...valid.map(r=>r.Y!=null?r.Y:(r.luminance||0)),0);
+  const avgY=valid.length?(valid.reduce((s,r)=>s+(r.Y!=null?r.Y:(r.luminance||0)),0)/valid.length):0;
+  cards=[
+   {label:'Average '+meterDeltaEFormLabel(colorForm),value:isFinite(avgDe)?avgDe.toFixed(2):'--'},
+   {label:'Peak Luminance',value:isFinite(peak)?peak.toFixed(1)+' cd/m²':'--'},
+   {label:'Average Luminance',value:isFinite(avgY)?avgY.toFixed(1)+' cd/m²':'--'},
+   {label:'Readings',value:String(valid.length)}
+  ];
+ }
+ return '<div class="report-summary">'+cards.map(card=>'<div class="report-stat"><div class="report-stat-label">'+card.label+'</div><div class="report-stat-value">'+card.value+'</div></div>').join('')+'</div>';
+}
+
+function meterBuildGreyscaleReportTable(){
+ const gs=(meterReadings||[]).filter(r=>meterReadingHasLuminance(r)&&r.r_code===r.g_code&&r.g_code===r.b_code).sort((a,b)=>(a.ire||0)-(b.ire||0));
+ if(gs.length===0) return '';
+ const inclLum=meterIncludeLum();
+ const greyMode=meterGreyRefMode();
+ const deForm=meterDeltaEForm();
+ const deLabel=meterDeltaEFormLabel(deForm);
+ const white=gs.find(r=>(r.ire||0)===100)||meterWhiteReading||gs[gs.length-1];
+ const Lw=white?(white.luminance||white.Y||0):0;
+ const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
+ const Lb=blacks.length?Math.min(...blacks):0;
+ let rows='';
+ gs.forEach(rd=>{
+  const bal=white?rgbBalance(rd,white,inclLum):{R:100,G:100,B:100};
+  const gamma=effectiveGamma(rd.luminance,white?(white.Y||white.luminance||rd.Y):rd.Y,rd.ire);
+  let de='--';
+  if(Lw>0 && (rd.Y||0)>0){
+   const ref=hcfrGreyRef(rd.ire, rd.Y||0, Lw, Lb, greyMode, rd.r_code, meterGrayWorldWeight());
+   const labM=xyzToLab(rd.X||0,rd.Y||0,rd.Z||0,D65.X*ref.YWhite,ref.YWhite,D65.Z*ref.YWhite);
+   const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,D65.X*ref.YWhiteRef,ref.YWhiteRef,D65.Z*ref.YWhiteRef);
+   de=meterDeltaE(labM,labR,deForm,{
+    isGrey:true,
+    Ym:rd.Y||0, Yref:ref.refY*ref.YWhiteRef,
+    X:rd.X||0, Y:rd.Y||0, Z:rd.Z||0, YWhite:ref.YWhite,
+    Xr:ref.refX*ref.YWhiteRef, Yr:ref.refY*ref.YWhiteRef, Zr:ref.refZ*ref.YWhiteRef,
+    YWhiteRef:ref.YWhiteRef
+   }).toFixed(2);
+  } else if((rd.Y||0)===0){
+   de='0.00';
+  }
+  rows+='<tr>'
+   +'<td>'+(rd.ire!=null?rd.ire+'%':'--')+'</td>'
+   +'<td>'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(2))+'</td>'
+   +'<td>'+(rd.x!=null?rd.x.toFixed(4):'--')+'</td>'
+   +'<td>'+(rd.y!=null?rd.y.toFixed(4):'--')+'</td>'
+   +'<td>'+(rd.cct?rd.cct+'K':'--')+'</td>'
+   +'<td>'+(gamma!=null&&isFinite(gamma)?gamma.toFixed(2):'--')+'</td>'
+   +'<td>'+bal.R.toFixed(1)+'</td>'
+   +'<td>'+bal.G.toFixed(1)+'</td>'
+   +'<td>'+bal.B.toFixed(1)+'</td>'
+   +'<td>'+de+'</td>'
+   +'</tr>';
+ });
+ return '<div class="report-table-card"><div class="report-table-title">Greyscale Measurements</div><div class="report-table-wrap"><table class="report-table"><thead><tr><th>Patch</th><th>Y cd/m²</th><th>x</th><th>y</th><th>CCT</th><th>Gamma</th><th>R%</th><th>G%</th><th>B%</th><th>'+deLabel+'</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+
+function meterBuildEmptySeriesReportSection(title){
+ let html='<section class="report-section">';
+ html+='<div class="report-section-title">'+title+'</div>';
+ html+='<div class="report-section-meta">0 readings captured</div>';
+ html+='<div class="report-empty">No measurement data has been captured for this series yet.</div>';
+ html+='</section>';
+ return html;
+}
+
+function meterBuildCurrentSeriesReportSection(title){
+ const count=(meterReadings||[]).filter(rd=>meterReadingHasLuminance(rd)).length;
+ let html='<section class="report-section">';
+ html+='<div class="report-section-title">'+title+'</div>';
+ html+='<div class="report-section-meta">'+count+' readings captured</div>';
+ html+=meterBuildReportSummaryCards();
+ if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
+  html+='<div class="report-grid report-grid-charts">';
+  html+=meterBuildReportChartCard('RGB Balance',document.getElementById('chartRGB'),'report-span-full');
+  html+=meterBuildReportChartCard(document.getElementById('chartDeltaELabel')?document.getElementById('chartDeltaELabel').textContent:'ΔE',document.getElementById('chartDeltaE'),'report-span-full');
+  html+=meterBuildReportChartCard(document.getElementById('chartGammaValueLabel')?document.getElementById('chartGammaValueLabel').textContent:'Gamma',document.getElementById('chartGammaValue'),'report-span-full');
+  html+=meterBuildReportChartCard('EOTF',document.getElementById('chartEOTF'),'report-span-half');
+  html+=meterBuildReportChartCard('Luminance',document.getElementById('chartGamma'),'report-span-half');
+  html+='</div>';
+  html+=meterBuildGreyscaleReportTable();
+ } else {
+  html+='<div class="report-grid report-grid-charts">';
+  html+=meterBuildReportChartCard('CIE 1931 Chromaticity',document.getElementById('chartCIE'),'report-span-full');
+  html+=meterBuildReportChartCard(document.getElementById('chartColorDELabel')?document.getElementById('chartColorDELabel').textContent:'ΔE 2000 (Color Accuracy)',document.getElementById('chartColorDE'),'report-span-full');
+  html+='</div>';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap&&getComputedStyle(avgWrap).display!=='none') html+='<div class="report-table-card">'+meterCloneReportNodeHTML(avgWrap)+'</div>';
+  const tblWrap=document.getElementById('colorReadingsTableWrap');
+  if(tblWrap&&getComputedStyle(tblWrap).display!=='none') html+='<div class="report-table-card">'+meterCloneReportNodeHTML(tblWrap)+'</div>';
+ }
+ html+='</section>';
+ return html;
+}
+
+function meterBuildReportDocument(sectionHtml){
+ return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PGenerator Measurement Report</title>'
+ +'<style>'
+ +':root{color-scheme:light;} '
+ +'body{font-family:Inter,Segoe UI,Arial,sans-serif;background:#eef2f8;color:#162032;margin:0;padding:28px;} '
+ +'.report-shell{max-width:1200px;margin:0 auto;} '
+ +'.report-header{margin-bottom:20px;padding:20px 24px;background:linear-gradient(135deg,#13203b 0%,#1c325a 100%);color:#fff;border-radius:16px;box-shadow:0 8px 24px rgba(8,20,44,.14);} '
+ +'.report-title{font-size:28px;font-weight:800;letter-spacing:.2px;margin-bottom:4px;} '
+ +'.report-sub{font-size:12px;color:#d3dced;} '
+ +'.report-section{margin:0 0 22px 0;padding:18px;background:#fff;border:1px solid #d9e0ec;border-radius:16px;box-shadow:0 4px 16px rgba(15,23,42,.05);page-break-inside:avoid;} '
+ +'.report-section-title{font-size:20px;font-weight:800;margin-bottom:4px;color:#162032;} '
+ +'.report-section-meta{font-size:12px;color:#66748c;margin-bottom:14px;} '
+ +'.report-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px;} '
+ +'.report-stat{padding:12px 14px;border:1px solid #dde5f0;border-radius:12px;background:linear-gradient(180deg,#fbfcfe 0%,#f4f7fb 100%);} '
+ +'.report-stat-label{font-size:11px;font-weight:700;color:#6a7892;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;} '
+ +'.report-stat-value{font-size:20px;font-weight:800;color:#162032;} '
+ +'.report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start;} '
+ +'.report-chart-card,.report-table-card{margin-top:14px;padding:12px;border:1px solid #e0e7f1;border-radius:12px;background:#fafcff;} '
+ +'.report-grid-charts .report-chart-card{margin-top:0;} '
+ +'.report-span-full{grid-column:1 / -1;} '
+ +'.report-span-half{grid-column:span 1;} '
+ +'.report-chart-title,.report-table-title{font-size:12px;font-weight:800;color:#50607d;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;} '
+ +'.report-table-wrap{overflow-x:auto;} '
+ +'.report-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff;} '
+ +'.report-table th,.report-table td{padding:8px 10px;border-bottom:1px solid #e7edf5;text-align:right;} '
+ +'.report-table th:first-child,.report-table td:first-child{text-align:left;} '
+ +'.report-table th{background:#f4f7fb;color:#52627e;font-weight:800;} '
+ +'.report-empty{padding:16px;border:1px dashed #b8c5da;border-radius:12px;color:#61728e;background:#f7f9fc;font-size:13px;} '
+ +'img{max-width:100%;display:block;} table{width:100%;} '
+ +'@media (max-width:900px){.report-grid{grid-template-columns:1fr;} .report-span-full,.report-span-half{grid-column:1 / -1;}} '
+ +'@media print{body{background:#fff;padding:0;} .report-shell{max-width:none;} .report-header{box-shadow:none;} .report-section{box-shadow:none;border-color:#cfd7e3;} }'
+ +'</style></head><body><div class="report-shell">'
+ +'<div class="report-header"><div class="report-title">PGenerator Measurement Report</div><div class="report-sub">Generated '+new Date().toLocaleString()+'</div></div>'
+ +sectionHtml+'</div></body></html>';
+}
+
+async function meterGenerateReport(){
+ const selected=[...document.querySelectorAll('#meterReportSeriesList input[type="checkbox"]:checked')].map(x=>x.value);
+ if(selected.length===0){toast('Select at least one series to include',true);return;}
+ const format=(document.querySelector('input[name="meterReportFormat"]:checked')||{}).value||'html';
+ const btn=document.getElementById('meterReportGenerateBtn');
+ if(btn){btn.disabled=true;btn.textContent='Generating…';}
+ const restore={
+  key:meterActiveSeriesKey,
+  selectedName:_selectedColorReadingName,
+  pinned:_colorDetailPinned,
+  currentPatch:meterCurrentPatchStep?{...meterCurrentPatchStep}:null,
+  selectedThumb:meterSelectedThumbIre
+ };
+ if(restore.key&&meterSeriesSteps&&meterSeriesSteps.length>0){
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ }
+ let sectionHtml='';
+ try{
+  for(const key of selected){
+   const snap=meterGetSeriesSnapshotByKey(key);
+   if(!snap||!snap.readings||snap.readings.length===0){
+    sectionHtml+=meterBuildEmptySeriesReportSection(meterSeriesLabelFromKey(key));
+    continue;
+   }
+   meterRestoreSeriesFromCache(key);
+   await new Promise(resolve=>requestAnimationFrame(resolve));
+   sectionHtml+=meterBuildCurrentSeriesReportSection(meterSeriesLabelFromKey(key));
+  }
+ } finally {
+  if(restore.key){
+   meterRestoreSeriesFromCache(restore.key);
+   if(restore.selectedName&&restore.pinned){
+    const sel=(meterReadings||[]).find(r=>r&&r.name===restore.selectedName);
+    if(sel) showColorReadingDetail(sel,{pin:true});
+   }
+   meterCurrentPatchStep=restore.currentPatch;
+   meterSelectedThumbIre=restore.selectedThumb;
+  }
+  if(btn){btn.disabled=false;btn.textContent='Generate';}
+ }
+ if(!sectionHtml){toast('No reportable series data found',true);return;}
+ const html=meterBuildReportDocument(sectionHtml);
+ meterCloseReportDialog();
+ if(format==='pdf'){
+  const win=window.open('','_blank');
+  if(!win){toast('Pop-up blocked — allow pop-ups to create PDF',true);return;}
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  setTimeout(()=>{win.focus();win.print();},400);
+  toast('Print dialog opened — choose Save as PDF');
+ } else {
+  const blob=new Blob([html],{type:'text/html'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='pgenerator_measurement_report.html';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  toast('HTML report downloaded');
+ }
+}
+
+function meterExportCSV(){
+ if(!meterReadings||meterReadings.length===0){toast('No data to export',true);return;}
+ const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const whiteR=meterWhiteReading||sorted.find(r=>r.ire===100);
+ if(!whiteR){toast('No 100% white reading \u2014 run a full series first',true);return;}
+ const Lw=whiteR.luminance||whiteR.Y;
+ // Measured-white adaptation for grey tracking (matching chart)
+ const Xn=whiteR?whiteR.X:(D65.X*Lw);
+ const Yn=whiteR?whiteR.Y:Lw;
+ const Zn=whiteR?whiteR.Z:(D65.Z*Lw);
+ const blacks=meterReadings.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
+ const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ const inclLum=meterIncludeLum();
+ const greyMode=meterGreyRefMode();
+ let csv='Step,Name,IRE,R_code,G_code,B_code,X,Y,Z,x,y,Luminance,CCT,Gamma,R_bal,G_bal,B_bal,dEuv,dE2000\n';
+ // Helper: is this reading a neutral-grey patch (greyscale sweep) vs a chroma
+ // patch (colors / saturations)? Greyscale uses the hcfr greyRef path; chroma
+ // uses the per-color target so each patch gets its own ΔE instead of a
+ // single IRE-keyed value.
+ const isGrey=rd=>(rd.r_code||0)===(rd.g_code||0)&&(rd.g_code||0)===(rd.b_code||0);
+ sorted.forEach((rd,i)=>{
+  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+  let dE=0,dE2k=0;
+  if(Y>0){
+   if(isGrey(rd)){
+    const ref=hcfrGreyRef(rd.ire||0,Y,Lw,Lb,greyMode,rd.r_code,meterGrayWorldWeight());
+    dE=deltaELuvHCFR(X,Y,Z,ref.YWhite, ref.refX,ref.refY,ref.refZ,ref.YWhiteRef);
+    const labM=xyzToLab(X,Y,Z, D65.X*ref.YWhite, ref.YWhite, D65.Z*ref.YWhite);
+    const labR=xyzToLab(ref.refX,ref.refY,ref.refZ, D65.X*ref.YWhiteRef, ref.YWhiteRef, D65.Z*ref.YWhiteRef);
+    dE2k=deltaE2000(labM,labR);
+   } else {
+      // Color / sat-sweep patch: use the per-patch target generated from the
+      // active gamut so export matches the live charts.
+    const tgt=meterTargetChromaticityForReading(rd);
+    const du=4*(rd.x||0)/(-2*(rd.x||0)+12*(rd.y||0)+3)-4*tgt.x/(-2*tgt.x+12*tgt.y+3);
+    const dv=9*(rd.y||0)/(-2*(rd.x||0)+12*(rd.y||0)+3)-9*tgt.y/(-2*tgt.x+12*tgt.y+3);
+    dE=Math.sqrt(du*du+dv*dv)*1000; // scaled u'v' distance — rough dEuv stand-in
+    dE2k=meterColorDeltaE2000(rd,inclLum);
+   }
+  }
+  const g=effectiveGamma(rd.luminance,Lw,rd.ire);
+  const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,inclLum):{R:100,G:100,B:100};
+  csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
+   (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
+   (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
+   rd.cct||'',g!==null?g.toFixed(2):'',bal.R.toFixed(1),bal.G.toFixed(1),bal.B.toFixed(1),
+   dE.toFixed(2),dE2k.toFixed(2)
+  ].join(',')+'\n';
+ });
+ const blob=new Blob([csv],{type:'text/csv'});
+ const a=document.createElement('a');
+ a.href=URL.createObjectURL(blob);
+ a.download='pgenerator_measurements.csv';
+ a.click();
+}
+
+let meterSharedSeriesId=null;
+
+function meterResetLiveReadingDisplay(){
+ document.getElementById('meterLum').textContent='--';
+ document.getElementById('meterCCT').textContent='--';
+ document.getElementById('meterCIEx').textContent='--';
+ document.getElementById('meterCIEy').textContent='--';
+ drawRGBBars(null);
+ drawDeltaBarsVertical('meterRGBCanvasGrey',null);
+ drawDeltaBarsVertical('meterRGBCanvasColor',null);
+ drawDeltaBarsVertical('meterXYYCanvasColor',null);
+}
+
+function meterApplyClearedState(showToastMsg){
+ if(meterActiveSeriesKey) delete meterSeriesCache[meterActiveSeriesKey];
+ meterPersistSeriesCache();
+ meterReadings=[];
+ meterWhiteReading=null;
+ meterLastChartCount=0;
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ document.getElementById('meterProgress').style.display='none';
+ document.getElementById('meterLiveReading').style.display='none';
+ document.getElementById('meterExportRow').style.display='none';
+ document.getElementById('meterStopBtn').style.display='none';
+ meterResetLiveReadingDisplay();
+ if(meterSeriesSteps&&meterSeriesSteps.length>0){
+  const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  document.getElementById('meterCharts').style.display='';
+  document.getElementById('meterThumbsRow').style.display='';
+  document.getElementById('meterReadSeriesBtn').style.display='';
+  meterBuildPatchThumbs(sortedSteps,new Set(),null);
+  drawAllChartsPreset(sortedSteps);
+  meterResetSeriesButtons();
+  if(meterActiveSeriesKey){
+   const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+meterActiveSeriesKey+'"]');
+   if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+  }
+ } else {
+  meterResetSeriesButtons();
+  meterActiveSeriesKey=null;
+  meterActiveSeriesType=null;
+  meterActiveSeriesPoints=null;
+  document.getElementById('meterPatchThumbs').innerHTML='';
+  document.getElementById('meterThumbsRow').style.display='none';
+  document.getElementById('meterReadSeriesBtn').style.display='none';
+  document.getElementById('meterCharts').style.display='none';
+ }
+ meterUpdateReadButtons();
+ if(showToastMsg) toast('Chart data cleared');
+}
+
+async function meterClearResults(){
+ meterStopContinuous();
+ if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
+ meterSeriesRunning=false;
+ meterSharedSeriesId=null;
+ try{await fetchJSON('/api/meter/clear',{method:'POST',_quiet:true,_timeoutMs:5000});}catch(e){}
+ meterApplyClearedState(true);
+}
+
+// Display type → gamma auto-selection + custom CCSS panel
+let customCcssFile=null;
+let meterCcssOptionsPromise=loadMeterCcssOptions();
+document.getElementById('meterDisplayType').addEventListener('change',function(){
+ const v=this.value;
+ applyMeterTargetGammaDefault();
+ // Emissive if selecting an emissive generic type, any display-specific CCSS,
+ // or the custom-upload panel.
+ const vl=v.toLowerCase();
+ const ccssEmissive=vl.startsWith('ccss_')&&/(oled|plasma|crt)/i.test(vl);
+ const emissive=v.startsWith('oled')||v.startsWith('qdoled')||v==='plasma'||v==='crt'||v==='custom'||ccssEmissive;
+ document.getElementById('meterPatchInsert').checked=emissive;
+ document.getElementById('customCcssPanel').style.display=v==='custom'?'':'none';
+ if(v==='custom') loadCustomCcssList();
+});
+
+// Custom CCSS file input
+document.getElementById('ccssFileInput').addEventListener('change',function(){
+ const file=this.files[0];
+ const nameInput=document.getElementById('ccssName');
+ const btn=document.getElementById('ccssUploadBtn');
+ if(file){
+  let baseName=file.name.replace(/\.(ccss|csv)$/i,'');
+  nameInput.value=baseName;
+  btn.disabled=false;
+ } else {
+  nameInput.value='';
+  btn.disabled=true;
+ }
+});
+
+document.getElementById('ccssUploadBtn').addEventListener('click',async function(){
+ const file=document.getElementById('ccssFileInput').files[0];
+ const name=document.getElementById('ccssName').value.trim();
+ if(!file||!name){toast('Select a file and enter a name',true);return;}
+ const status=document.getElementById('ccssUploadStatus');
+ status.textContent='Uploading...';
+ this.disabled=true;
+ try{
+  const buf=await file.arrayBuffer();
+  const b64=btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const r=await fetchJSON('/api/ccss/upload',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({name:name,content:b64,filename:file.name}),_timeoutMs:15000});
+  if(r&&r.status==='ok'){
+   status.textContent=r.message||'Uploaded';
+   status.style.color='var(--green)';
+   customCcssFile=r.filename;
+   document.getElementById('ccssFileInput').value='';
+   document.getElementById('ccssName').value='';
+   loadCustomCcssList();
+   toast(r.message||'CCSS profile saved');
+  } else {
+   status.textContent=r&&r.message?r.message:'Upload failed';
+   status.style.color='var(--red)';
+   toast(r&&r.message?r.message:'Upload failed',true);
+  }
+ }catch(e){
+  status.textContent='Upload error';
+  status.style.color='var(--red)';
+ }
+ this.disabled=false;
+ setTimeout(()=>{status.textContent='';status.style.color='var(--text2)';},5000);
+});
+
+async function loadCustomCcssList(){
+ const r=await fetchJSON('/api/ccss/list',{_quiet:true,_timeoutMs:5000});
+ const el=document.getElementById('customCcssList');
+ if(!r||!r.files||r.files.length===0){el.innerHTML='<div style="font-size:.7rem;color:var(--text2)">No custom profiles</div>';return;}
+ el.innerHTML=r.files.map(f=>{
+  const label=f.replace(/\.ccss$/i,'');
+  const active=customCcssFile===f;
+  return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+  +'<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="flex:1;font-size:.7rem;padding:2px 6px;text-align:left" onclick="selectCustomCcss(\''+f+'\')">'+(active?'\u2713 ':'')+label+'</button>'
+  +'<button class="btn btn-sm" style="font-size:.68rem;padding:2px 6px;color:var(--red)" onclick="deleteCustomCcss(\''+f+'\')">\u2715</button></div>';
+ }).join('');
+}
+
+async function selectCustomCcss(filename){
+ // Dry-run validate before marking the file as the active selection.
+ // Bad files get flagged in a toast; the selection is still applied so
+ // the user can delete or replace it.
+ try{
+  const v=await fetchJSON('/api/ccss/validate',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({ccss_file:'custom/'+filename}),
+   _quiet:true,_timeoutMs:5000
+  });
+  if(v && v.ok===false){ toast('CCSS invalid: '+(v.error||'parse failed'), true); }
+  else if(v && v.ok && v.description){ toast('CCSS: '+v.description); }
+ }catch(e){}
+ customCcssFile=filename;
+ loadCustomCcssList();
+ saveMeterSettings();
+}
+
+function ccssCleanLabelPart(text){
+ return String(text||'').replace(/\.ccss$/i,'').replace(/_/g,' ').replace(/\s+/g,' ').trim();
+}
+
+function ccssPrettyTechnology(text){
+ let tech=ccssCleanLabelPart(text)
+  .replace(/\bQD OLED\b/gi,'QD-OLED')
+  .replace(/\bWRGB OLED\b/gi,'WRGB OLED')
+  .replace(/\bRGB OLED\b/gi,'RGB OLED')
+  .replace(/\bJOLED\b/g,'JOLED')
+  .replace(/\bWLED\b/g,'W-LED')
+  .replace(/\bQD Mini LED\b/gi,'QD-Mini LED')
+  .replace(/\bMini LED\b/gi,'Mini-LED')
+  .replace(/\bGB R LED\b/gi,'GB-R LED')
+  .replace(/\bRG Phosphor\b/gi,'RG Phosphor')
+  .replace(/\bPFS Phosphor\b/gi,'PFS Phosphor')
+  .replace(/\bLCD White LED IPS\b/gi,'W-LED IPS LCD');
+ return tech;
+}
+
+function ccssDisplayStartsWithType(display){
+ return /^(?:white led|w-?led|qd-?oled|wrgb oled|rgb qd-?oled|rgb oled|oled|lcd|plasma|projector|crt|ccfl|rgb led|pfs phosphor|rg phosphor)\b/i.test(String(display||'').trim());
+}
+
+function ccssDisplayLooksIncomplete(display){
+ const text=String(display||'').trim();
+ if(!text) return true;
+ const open=(text.match(/\(/g)||[]).length;
+ const close=(text.match(/\)/g)||[]).length;
+ if(open!==close) return true;
+ if(/\((?:RGB|WRGB|QD|W|GB|VA|IPS)\s*$/i.test(text)) return true;
+ return false;
+}
+
+function ccssLabelLooksGeneric(label){
+ return ccssDisplayStartsWithType(label) || /(?:^|\s)(?:generic|family)(?:\s|$)/i.test(String(label||''));
+}
+
+function ccssIsGenericProfile(entry){
+ const name=String((entry&&entry.name)||'');
+ const display=String((entry&&entry.display)||'');
+ return /^(?:WRGB_OLED_LG|QD-OLED_Generic|WLEDFamily_07Feb11|CCFLFamily_07Feb11|WGCCFLFamily_07Feb11|RGBLEDFamily_07Feb11|PlasmaFamily_20Jul12|ProjectorFamily_07Feb11|CRT)\.ccss$/i.test(name)
+  || /^(?:White_LED|RGB_LED|CCFL|Wide_Gamut_CCFL|PFS_Phosphor|RG_Phosphor|Plasma|Projector)_/i.test(name)
+  || /(?:^|\s)(?:Generic|Family)(?:\s|$)/i.test(display);
+}
+
+function ccssFormatNameFromFilename(name){
+ const base=String(name||'').replace(/\.ccss$/i,'').replace(/_-_.*/,'');
+ let match=base.match(/^(.*)_\(([^)]+)\)$/);
+ if(match){
+  return ccssCleanLabelPart(match[1])+' ('+ccssPrettyTechnology(match[2])+')';
+ }
+ match=base.match(/^(QD-OLED|WRGB_OLED|RGB_OLED|LCD|CRT|Plasma|Projector|White_LED|RGB_LED|CCFL|Wide_Gamut_CCFL|PFS_Phosphor|RG_Phosphor)_(.+)$/i);
+ if(match){
+  return ccssCleanLabelPart(match[2])+' ('+ccssPrettyTechnology(match[1])+')';
+ }
+ return ccssCleanLabelPart(base);
+}
+
+  function ccssLegacyTechFirstName(name){
+   return /^(?:QD-OLED|WRGB_OLED|RGB_OLED|LCD|CRT|Plasma|Projector|White_LED|RGB_LED|CCFL|Wide_Gamut_CCFL|PFS_Phosphor|RG_Phosphor)_/i.test(String(name||''));
+  }
+
+function ccssFormatDropdownLabel(entry){
+ const display=ccssCleanLabelPart(entry&&entry.display);
+ const technology=ccssPrettyTechnology(entry&&entry.technology);
+ const filenameLabel=ccssFormatNameFromFilename(entry&&entry.name);
+ const hasKnownTechnology=technology && !/^unknown$/i.test(technology);
+ const displayHasCompleteType=/\([^)]*\)\s*$/.test(display) && !ccssDisplayLooksIncomplete(display);
+ const metadataLabel=displayHasCompleteType ? display : (display && hasKnownTechnology ? display+' ('+technology+')' : display);
+ const metadataBad=!display || ccssDisplayLooksIncomplete(display) || ccssLabelLooksGeneric(display);
+ const filenameBetter=filenameLabel && /\([^)]*\)/.test(filenameLabel) && (!metadataLabel || ccssDisplayLooksIncomplete(metadataLabel) || ccssLabelLooksGeneric(metadataLabel) || filenameLabel.length>metadataLabel.length);
+ if(filenameBetter || metadataBad) return filenameLabel||metadataLabel||display;
+ if(metadataLabel) return metadataLabel;
+ return filenameLabel;
+}
+
+// Populate the display-specific CCSS optgroup with all .ccss files on the device,
+// sorted alphabetically. Option value is "ccss_FILENAME" (for system) or
+// "custom_FILENAME" (for user-uploaded). The backend's resolve_display_type()
+// handles both prefixes identically.
+async function loadMeterCcssOptions(){
+ const r=await fetchJSON('/api/ccss/all',{_quiet:true,_timeoutMs:5000});
+ const grp=document.getElementById('meterDtCcss');
+ if(!grp) return;
+ grp.innerHTML='';
+ if(!r||!r.files||r.files.length===0) return;
+ const sel=document.getElementById('meterDisplayType');
+ const prev=sel.value;
+ const byLabel=new Map();
+ r.files.forEach(f=>{
+  if(f.source==='system'&&ccssIsGenericProfile(f)) return;
+  const label=ccssFormatDropdownLabel(f);
+  if(!label) return;
+  const score=(f.source==='custom'?1000:0)
+   +(ccssLegacyTechFirstName(f.name)?0:100)
+   +((f.display&&f.technology)?20:0)
+   +(String(f.name||'').length>0?Math.min(String(f.name).length,50):0);
+  const current=byLabel.get(label);
+  if(!current||score>current.score){
+   byLabel.set(label,{entry:f,label:label,score:score});
+  }
+ });
+ [...byLabel.values()].sort((a,b)=>a.label.localeCompare(b.label)).forEach(item=>{
+  const f=item.entry;
+  const prefix=f.source==='custom'?'custom_':'ccss_';
+  const opt=document.createElement('option');
+  opt.value=prefix+f.name;
+  opt.textContent=item.label+(f.source==='custom'?' (custom)':'');
+  grp.appendChild(opt);
+ });
+ // restore previous or pending selection if still present
+ const restore=sel.dataset.pendingValue||prev;
+ if(restore){
+  sel.value=restore;
+  if(sel.value===restore) delete sel.dataset.pendingValue;
+ }
+}
+
+function getMeterPatchSize(){
+ // Accepts plain integer ("10", "18", ...) or APL-prefixed ("apl_5").
+ // APL options currently render as a window of N% on black = N% APL.
+ const raw=document.getElementById('meterPatchSize').value;
+ const m=String(raw).match(/^apl_(\d+)/i);
+ if(m) return parseInt(m[1],10);
+ return parseInt(raw,10);
+}
+
+function getEffectiveDisplayType(){
+ const v=document.getElementById('meterDisplayType').value;
+ if(v==='custom'&&customCcssFile) return 'custom_'+customCcssFile;
+ return v;
+}
+
+function getMeterRefreshRate(){
+ const sel=document.getElementById('meterRefreshRate');
+ if(sel.value) return sel.value;
+ // "Display Setting" — look up current mode's refresh from modes array
+ if(modes&&config.mode_idx!=null){
+  const m=modes.find(m=>String(m.idx)===String(config.mode_idx));
+  if(m&&m.refresh) return m.refresh;
+ }
+ return '';
+}
+
+async function deleteCustomCcss(filename){
+ if(!confirm('Delete '+filename+'?')) return;
+ const r=await fetchJSON('/api/ccss/delete/'+encodeURIComponent(filename),{method:'POST',_timeoutMs:5000});
+ if(r&&r.status==='ok'){
+  if(customCcssFile===filename) customCcssFile=null;
+  loadCustomCcssList();
+  toast('Deleted');
+ } else { toast(r&&r.message?r.message:'Delete failed',true); }
+}
+
+// Meter settings persistence — save to server so all clients share the same settings
+function saveMeterSettings(){
+ const val=(id,def)=>{ const e=document.getElementById(id); return e?(e.value||def||''):(def||''); };
+ const chk=(id)=>{ const e=document.getElementById(id); return !!(e&&e.checked); };
+ const s={
+  display_type:val('meterDisplayType'),
+  target_gamut:val('meterTargetGamut','auto')||'auto',
+  delay:val('meterDelay'),
+  patch_size:val('meterPatchSize'),
+  patch_insert:chk('meterPatchInsert'),
+  refresh_rate:val('meterRefreshRate'),
+  ccss_file:customCcssFile||'',
+  // Color-science selections
+  grey_ref_mode:val('meterGreyRefMode'),
+  gray_world:val('meterGrayWorld'),
+  rgb_formula:val('meterRgbBalanceFormula'),
+  de_form:val('meterDeltaEForm'),
+  color_de_form:val('meterColorDeltaEForm','de2000'),
+  target_gamma:val('meterTargetGamma'),
+  incl_lum:chk('meterIncludeLumError'),
+  // HDR tone-mapping config
+  hdr_diffuse:val('meterHdrDiffuse'),
+  hdr_bt2390:chk('meterHdrApplyBT2390')
+ };
+ fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
+ try{ meterSaveColorPrefs(); }catch(e){}
+}
+async function loadMeterSettings(){
+ if(meterCcssOptionsPromise) await meterCcssOptionsPromise;
+ const s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000})||{};
+ try{ meterSetSeriesCacheBootId(s.boot_id||''); }catch(e){}
+ // Apply any locally-cached color prefs first — server values below will
+ // overwrite them on first sync, but this keeps the UI warm during a brief
+ // daemon outage.
+ try{ meterLoadColorPrefs(); }catch(e){}
+ try{ meterRestoreLatestPersistedSeries(); }catch(e){}
+ if(!s.display_type) return;
+ const setVal=(id,val,def)=>{ if(val==null) return; const e=document.getElementById(id); if(!e) return; e.value=(val===''&&def!=null)?def:val; };
+ const setChk=(id,val)=>{ if(val==null) return; const e=document.getElementById(id); if(!e) return; e.checked=(val===true||val==='1'||val===1); };
+ if(s.display_type){
+  const sel=document.getElementById('meterDisplayType');
+  sel.dataset.pendingValue=s.display_type;
+  sel.value=s.display_type;
+  if(sel.value===s.display_type) delete sel.dataset.pendingValue;
+ }
+ if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
+ applyMeterTargetGamutDefault(false);
+ if(s.delay) document.getElementById('meterDelay').value=s.delay;
+ if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
+ if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
+ if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
+ if(s.ccss_file) customCcssFile=s.ccss_file;
+ // Color-science selections (server values win)
+ setVal('meterGreyRefMode', s.grey_ref_mode);
+ setVal('meterGrayWorld',   s.gray_world);
+ setVal('meterRgbBalanceFormula', s.rgb_formula);
+ setVal('meterDeltaEForm',  s.de_form);
+ setVal('meterColorDeltaEForm', s.color_de_form||'de2000');
+ setVal('meterTargetGamma', s.target_gamma);
+ setChk('meterIncludeLumError', s.incl_lum);
+ setVal('meterHdrDiffuse',    s.hdr_diffuse);
+ setChk('meterHdrApplyBT2390', s.hdr_bt2390);
+ meterSyncHdrMetadata();
+ document.getElementById('customCcssPanel').style.display=s.display_type==='custom'?'':'none';
+ applyMeterTargetGammaDefault();
+ meterUpdateHdrConfigVisibility();
+}
+// Add change listeners for auto-save
+['meterDisplayType','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate',
+ 'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
+ 'meterTargetGamma','meterHdrDiffuse'].forEach(id=>{
+ const el=document.getElementById(id);
+ if(el) el.addEventListener('change',saveMeterSettings);
+});
+['meterPatchInsert','meterIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
+ const el=document.getElementById(id);
+ if(el) el.addEventListener('change',saveMeterSettings);
+});
+
+function meterRefreshActiveSeriesCharts(){
+ if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning) return;
+ meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+ const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const done=new Set();
+ (meterReadings||[]).forEach(r=>{if(r.luminance!=null) done.add(meterStepNameKey(r));});
+ meterBuildPatchThumbs(sortedSteps,done,meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null);
+ if(meterReadings&&meterReadings.length){
+  const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  drawAllCharts(sorted);
+ } else {
+  drawAllChartsPreset(sortedSteps);
+ }
+}
+
+document.getElementById('meterTargetGamut').addEventListener('change',()=>{
+ meterRefreshActiveSeriesCharts();
+});
+
+document.getElementById('meterTargetGamma').addEventListener('change',()=>{
+ meterRefreshActiveSeriesCharts();
+});
+
+// Wire up collapsible card headers. Click the h2 of any .card to toggle.
+// Persist state in localStorage so reloads keep the user's layout.
+function initCardCollapse(){
+ const cards=document.querySelectorAll('.card');
+ let state={};
+ try{ state=JSON.parse(localStorage.getItem('cardCollapse')||'{}')||{}; }catch(e){ state={}; }
+ cards.forEach((card,i)=>{
+  const h=card.querySelector(':scope > h2');
+  if(!h) return;
+  // Derive a stable key: id > data-widget > index
+  const key=card.id||card.getAttribute('data-widget')||('card'+i);
+  card.dataset.collapseKey=key;
+  if(state[key]) card.classList.add('collapsed');
+  h.addEventListener('click',(ev)=>{
+   // Don't toggle if the click was on a control inside the header (e.g. Defaults button)
+   if(ev.target.closest('button,input,select,a')) return;
+   card.classList.toggle('collapsed');
+   try{
+    const s=JSON.parse(localStorage.getItem('cardCollapse')||'{}')||{};
+    s[key]=card.classList.contains('collapsed');
+    localStorage.setItem('cardCollapse',JSON.stringify(s));
+   }catch(e){}
+  });
+ });
+}
+
 // Init
 (async()=>{
+ initCardCollapse();
  await loadConfig(true);
  await Promise.all([loadModes(true),loadCapabilities(true)]);
  updateDropdowns();
  refreshSavedSettingsSnapshot();
  await Promise.all([checkPing(),loadStats(true),loadInfo()]);
  loadMemory();
+ setTimeout(()=>loadMeterSettings(),500);
  setTimeout(()=>loadCecStatus(),500);
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadInfoframes(),1500);
@@ -3552,6 +10408,10 @@ async function submitLogs(){
  setInterval(()=>loadStats(true),3000);
  setInterval(syncRemoteConfig,10000);
  setInterval(()=>loadInfo(true),30000);
+ // Meter: check immediately on load, then repoll shortly after and every 10s
+ meterCheckStatus();
+ setTimeout(()=>meterCheckStatus(),2000);
+ setInterval(()=>meterCheckStatus(),10000);
 })();
 </script>
 </body>

@@ -1,0 +1,142 @@
+#!/bin/bash
+# meter_series.sh - Background measurement series helper
+# Called by PGenerator webui.pm to run a series of pattern+measurement steps
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file>
+
+set -o pipefail
+
+SERIES_ID="$1"
+DISPLAY_TYPE="$2"
+DELAY_MS="$3"
+PATCH_SIZE="$4"
+STEPS_FILE="$5"
+STATE_FILE="$6"
+WRAPPER="/usr/bin/spotread_wrapper.sh"
+API_BASE="http://127.0.0.1/api"
+
+# Simple JSON array parser using python
+get_step_count() {
+ python -c "
+import json,sys
+steps=json.load(open('$STEPS_FILE'))
+print(len(steps))
+" 2>/dev/null
+}
+
+get_step_field() {
+ local idx="$1" field="$2"
+ python -c "
+import json
+steps=json.load(open('$STEPS_FILE'))
+print(steps[$idx].get('$field',''))
+" 2>/dev/null
+}
+
+TOTAL=$(get_step_count)
+DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
+
+READINGS=""
+READING_COUNT=0
+
+for (( i=0; i<TOTAL; i++ )); do
+ R=$(get_step_field $i r)
+ G=$(get_step_field $i g)
+ B=$(get_step_field $i b)
+ IRE=$(get_step_field $i ire)
+ NAME=$(get_step_field $i name)
+
+ # Kill any stale spotread/script processes before each reading
+ pkill -9 -x spotread 2>/dev/null
+ pkill -9 -f 'script.*spotread' 2>/dev/null
+ sleep 0.3
+
+ # Adaptive timeout: dark patches get shorter timeout (meter can't read them anyway)
+ if (( IRE <= 5 )); then
+  READ_TIMEOUT=12
+ elif (( IRE <= 20 )); then
+  READ_TIMEOUT=20
+ else
+  READ_TIMEOUT=30
+ fi
+
+ # Update state to show we're measuring this step
+ STEP_NUM=$((i + 1))
+ cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (displaying)","readings":[$READINGS]}
+EOJSON
+
+ # Display pattern via local API
+ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255}" >/dev/null 2>&1
+
+ # Wait for display settle — shorter for dark patches
+ if (( IRE <= 5 )); then
+  sleep 1
+ else
+  sleep "$DELAY_SEC"
+ fi
+
+ # Update state to show we're reading
+ cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (reading)","readings":[$READINGS]}
+EOJSON
+
+ # Take reading with retry (up to 2 attempts)
+ RAW=""
+ for attempt in 1 2; do
+  # Shorter timeout on retry — if first attempt failed, issue is likely systemic
+  local TRY_TIMEOUT=$READ_TIMEOUT
+  if (( attempt > 1 )); then TRY_TIMEOUT=$(( READ_TIMEOUT / 2 )); fi
+  RAW=$(sudo bash "$WRAPPER" -n 1 -d "$DISPLAY_TYPE" --timeout $TRY_TIMEOUT 2>/dev/null)
+  # Check if we got a valid reading
+  if echo "$RAW" | grep -q '"status":"ok"' 2>/dev/null; then
+   break
+  fi
+  # Failed — kill stale processes and retry
+  pkill -9 -x spotread 2>/dev/null
+  pkill -9 -f 'script.*spotread' 2>/dev/null
+  sleep 0.3
+ done
+
+ # Extract the reading object from wrapper output
+ READING=$(python -c "
+import json,sys
+try:
+ d=json.loads('''$RAW''')
+ if d.get('readings') and len(d['readings'])>0:
+  r=d['readings'][0]
+  r['ire']=$IRE
+  r['name']='$NAME'
+  r['r_code']=$R
+  r['g_code']=$G
+  r['b_code']=$B
+  print(json.dumps(r))
+ else:
+  print(json.dumps({'ire':$IRE,'name':'$NAME','r_code':$R,'g_code':$G,'b_code':$B,'error':'no_reading'}))
+except:
+ print(json.dumps({'ire':$IRE,'name':'$NAME','r_code':$R,'g_code':$G,'b_code':$B,'error':'parse_error'}))
+" 2>/dev/null)
+
+ if [[ -z "$READING" ]]; then
+  READING="{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_output\"}"
+ fi
+
+ # Accumulate readings
+ if [[ $READING_COUNT -gt 0 ]]; then
+  READINGS="$READINGS,$READING"
+ else
+  READINGS="$READING"
+ fi
+ READING_COUNT=$((READING_COUNT + 1))
+
+ # Update state file
+ STEP_NUM=$((i + 1))
+ cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS]}
+EOJSON
+done
+
+# Mark complete
+cat > "$STATE_FILE" << EOJSON
+{"status":"complete","series_id":"$SERIES_ID","current_step":$TOTAL,"total_steps":$TOTAL,"current_name":"Done","readings":[$READINGS]}
+EOJSON
