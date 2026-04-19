@@ -4742,6 +4742,7 @@ function updateDiagInfo(name){
 }
 async function showPattern(name,ev){
  if(activePattern===name){stopPattern();return;}
+ meterClearInteractiveSelection(true);
  clearActive();
  if(ev&&ev.currentTarget)ev.currentTarget.classList.add('active');
  activePattern=name;
@@ -4758,6 +4759,7 @@ async function showPatch(id,pr,pg,pb,ev){
  if(ev&&ev.currentTarget)ev.currentTarget.classList.remove('active');
 }
 async function stopPattern(){
+ meterClearInteractiveSelection(true);
  clearActive();
  var di=document.getElementById('diagInfo');if(di)di.style.display='none';
  const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -7765,6 +7767,30 @@ function meterUpdateDeltaEFormControl(){
   colorSel.disabled=false;
   colorSel.title='Changes the color and saturation-sweep ΔE calculation';
  }
+}
+
+function meterClearInteractiveSelection(keepLiveReading){
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ const container=document.getElementById('meterPatchThumbs');
+ if(container&&container.children.length>0){
+  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  if(isColorSeries){
+   colorHighlightThumb(null);
+   colorHighlightTableRow(null);
+   showColorReadingDetail(null);
+  } else {
+   const completed=new Set((meterReadings||[]).filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
+   meterUpdateThumbStyles(container,completed,null);
+  }
+ }
+ if(!keepLiveReading){
+  document.getElementById('meterLiveReading').style.display='none';
+  document.getElementById('meterProgress').style.display='none';
+ }
+ meterUpdateReadButtons();
 }
 
 function meterSelectPatchFromInteraction(step,reading,opts){
