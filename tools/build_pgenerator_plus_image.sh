@@ -286,6 +286,7 @@ main() {
  check_base_image
  overlay_tree
  reset_runtime_state
+ fix_permissions
  finalize_image
 }
 
