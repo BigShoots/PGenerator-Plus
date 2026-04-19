@@ -627,7 +627,7 @@ sub webui_http (@) {
      my $gpu_mem=&pgenerator_cmd("GET_GPU_MEMORY");
      chomp($gpu_mem);
      $gpu_mem=~s/M$//;
-     $gpu_mem||="64";
+     $gpu_mem||="128";
      my $json="{\"gpu_mem\":\"$gpu_mem\"}";
      my $len=length($json);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$json";
@@ -2033,6 +2033,8 @@ sub webui_create_logs_bundle (@) {
  push @out, "  PGenerator+ Diagnostic Report";
  push @out, "  Host: $hostname   Version: $version   Date: ".`date -u '+%Y-%m-%d %H:%M:%S UTC'`;
  chomp($out[$#out]);
+ push @out, "  NOTE: Log contains WiFi SSID/BSSID, EDID (display serial), meter serial#.";
+ push @out, "  Redact before posting publicly.";
  push @out, "=" x 72;
 
  # System info
@@ -2092,6 +2094,13 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- operations.txt ---";
  push @out, `cat /var/lib/PGenerator/operations.txt 2>/dev/null`; chomp($out[$#out]);
 
+ # Pattern generator state
+ push @out, "", "--- Generator Status ---";
+ my $pg_status=&pgenerator_cmd("GET_STATUS"); chomp($pg_status);
+ my $pg_mode=&pgenerator_cmd("GET_MODE"); chomp($pg_mode);
+ push @out, "GET_STATUS: ".($pg_status ne "" ? $pg_status : "(none found)");
+ push @out, "GET_MODE: ".($pg_mode ne "" ? $pg_mode : "(none found)");
+
  # Processes
  push @out, "", "--- Processes (PGenerator) ---";
  push @out, `ps aux | grep -E 'PGenerator|dhcpcd|dhclient|wpa_|hostapd' | grep -v grep 2>/dev/null`;
@@ -2112,6 +2121,73 @@ sub webui_create_logs_bundle (@) {
   my $content=`cat $f 2>/dev/null`; chomp($content);
   push @out, "$name: $content";
  }
+ if(!@infos) {
+  push @out, "(none found)";
+ }
+
+ # Meter / measurement state
+ push @out, "", "--- Meter Session (log tail) ---";
+ my $meter_log=`tail -n 500 /tmp/meter_session.log 2>/dev/null`; chomp($meter_log);
+ push @out, ($meter_log ne "") ? $meter_log : "(none found)";
+ push @out, "", "--- Meter Session Config ---";
+ my $meter_cfg=`cat /tmp/meter_session.config 2>/dev/null`; chomp($meter_cfg);
+ push @out, ($meter_cfg ne "") ? $meter_cfg : "(none found)";
+ push @out, "", "--- Meter Session PID ---";
+ my $meter_pid=`cat /tmp/meter_session.pid 2>/dev/null`; chomp($meter_pid);
+ push @out, ($meter_pid ne "") ? $meter_pid : "(none found)";
+ foreach my $f (qw(/tmp/meter_read.json /tmp/meter_read_steps.json /tmp/meter_series.json /tmp/meter_series_steps.json /tmp/meter_settings.json)) {
+  push @out, "", "--- $f ---";
+  my $content=`cat $f 2>/dev/null`; chomp($content);
+  push @out, ($content ne "") ? $content : "(none found)";
+ }
+ push @out, "", "--- USB / Serial ---";
+ my $lsusb=`lsusb 2>/dev/null`; chomp($lsusb);
+ push @out, ($lsusb ne "") ? $lsusb : "(none found)";
+ my $serials=`ls -l /dev/serial/by-id/ 2>/dev/null`; chomp($serials);
+ push @out, ($serials ne "") ? $serials : "(none found)";
+ my $tty_nodes=`ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null`; chomp($tty_nodes);
+ push @out, ($tty_nodes ne "") ? $tty_nodes : "(none found)";
+ push @out, "", "--- spotread Version ---";
+ my $spot_ver=`spotread -? 2>&1 | head -4`; chomp($spot_ver);
+ push @out, ($spot_ver ne "") ? $spot_ver : "(none found)";
+ push @out, "", "--- spotread Capabilities ---";
+ my $spot_caps=`timeout 5 spotread -D1 -? 2>&1 | tail -40`; chomp($spot_caps);
+ push @out, ($spot_caps ne "") ? $spot_caps : "(none found)";
+ push @out, "", "--- CCSS Directory ---";
+ my $ccss_dir=`ls -la /usr/share/PGenerator/ccss/ 2>/dev/null`; chomp($ccss_dir);
+ push @out, ($ccss_dir ne "") ? $ccss_dir : "(none found)";
+ my $selected_ccss="";
+ my $meter_settings=&read_from_file($_meter_settings_file);
+ if($meter_settings ne "" && $meter_settings=~/"ccss_file"\s*:\s*"([^"]+)"/) {
+  my $ccss_name=$1;
+  if($ccss_name=~m{^custom/([A-Za-z0-9._-]+)$}) {
+   $selected_ccss="$_ccss_dir/$1";
+  } elsif($ccss_name=~m{^ccss_([A-Za-z0-9._-]+)$}) {
+   $selected_ccss="$_ccss_dir/$1";
+  }
+ }
+ if($selected_ccss ne "" && -f $selected_ccss) {
+  my $ccss_content=&read_from_file($selected_ccss);
+  my @ccss_lines=split(/\n/,$ccss_content||"");
+  if(@ccss_lines>40) {
+   @ccss_lines=@ccss_lines[0..39];
+   push @ccss_lines, "...";
+  }
+  push @out, "", "--- Selected CCSS ($selected_ccss) ---";
+  push @out, join("\n",@ccss_lines);
+ }
+ my @csv_candidates=sort { ((stat($b))[9]||0) <=> ((stat($a))[9]||0) } (glob("/var/lib/PGenerator/reports/*.csv"),glob("/var/lib/PGenerator/*.csv"),glob("/tmp/*.csv"));
+ if(@csv_candidates) {
+  my $latest_csv=$csv_candidates[0];
+  my $csv_content=&read_from_file($latest_csv);
+  my @csv_lines=split(/\n/,$csv_content||"");
+  if(@csv_lines>200) {
+   @csv_lines=@csv_lines[0..199];
+   push @csv_lines, "...";
+  }
+  push @out, "", "--- Latest Series CSV ($latest_csv) ---";
+  push @out, join("\n",@csv_lines);
+ }
 
  # Syslog (PGenerator entries)
  push @out, "", "--- Syslog (last 500 PGenerator lines) ---";
@@ -2122,6 +2198,9 @@ sub webui_create_logs_bundle (@) {
  # dmesg tail
  push @out, "", "--- dmesg (last 200 lines) ---";
  push @out, `dmesg | tail -200 2>/dev/null`; chomp($out[$#out]);
+ push @out, "", "--- dmesg (USB/serial, last 80) ---";
+ my $usb_dmesg=`dmesg 2>/dev/null | grep -iE 'usb|ttyACM|ttyUSB' | tail -n 80`; chomp($usb_dmesg);
+ push @out, ($usb_dmesg ne "") ? $usb_dmesg : "(none found)";
 
  push @out, "", "=" x 72;
  push @out, "  End of diagnostic report";
@@ -4797,7 +4876,7 @@ async function rebootDevice(){
 async function loadMemory(){
  const m=await fetchJSON('/api/boot/memory',{_quiet:true});
  if(!m)return;
- setVal('gpu_mem',m.gpu_mem||'64');
+ setVal('gpu_mem',m.gpu_mem||'128');
  const g=document.getElementById('gpuMemInfo');
  if(g){
   g.innerHTML='';
@@ -5341,8 +5420,19 @@ function meterActiveGamut(){
  return GAMUT_PRESETS[meterActiveGamutKey()]||GAMUT_PRESETS.bt709;
 }
 
+// Analysis targets and chart overlays must follow the currently selected
+// Target Colorspace dropdown so the CIE triangle, saturation endpoints, and
+// ΔE references all stay in sync with what the user is evaluating.
+function meterAnalysisGamutKey(){
+ return meterActiveGamutKey();
+}
+
+function meterAnalysisGamut(){
+ return GAMUT_PRESETS[meterAnalysisGamutKey()]||GAMUT_PRESETS.bt709;
+}
+
 function meterStimulusSolveGamut(){
- return (meterChartIsHdr()||meterChartIsDv()) ? meterContainerGamut() : meterActiveGamut();
+ return (meterChartIsHdr()||meterChartIsDv()) ? meterContainerGamut() : meterAnalysisGamut();
 }
 
 function xyzToLinRgb(X,Y,Z,matrix){
@@ -5442,6 +5532,14 @@ function meterColorReferenceNits(){
  return 100;
 }
 
+function meterBlackReadingY(){
+ const readings=Array.isArray(meterReadings)?meterReadings:[];
+ const blacks=readings.filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&r.luminance!=null)
+  .map(r=>r.luminance||r.Y||0)
+  .filter(v=>v>=0);
+ return blacks.length>0?Math.min(...blacks):0;
+}
+
 function meterColorLabWhite(){
  const white=meterWhiteReading;
  if(white&&white.X>0&&white.Y>0&&white.Z>0) return {X:white.X,Y:white.Y,Z:white.Z};
@@ -5526,7 +5624,7 @@ function meterGamutColorEndpointRgb(colorName){
 }
 
 function meterGamutColorEndpointXY(colorName){
- const gamut=meterActiveGamut();
+ const gamut=meterAnalysisGamut();
  const rgb=meterGamutColorEndpointRgb(colorName);
  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],gamut.rgbToXyz);
  const sum=xyz.X+xyz.Y+xyz.Z;
@@ -5562,7 +5660,12 @@ function meterBuildFullGamutTargetLinearRgb(colorName){
 
 function meterSaturationTargetXYZ(colorName,satPercent){
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
- return linRgbToXyz(rgb[0],rgb[1],rgb[2],meterStimulusSolveGamut().rgbToXyz);
+ const refY=Math.max(1,meterColorReferenceNits());
+ const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterStimulusSolveGamut().rgbToXyz);
+ // Return the target in the same absolute luminance scale as meter readings
+ // so live RGB / XyY deltas for sat sweeps compare like-for-like instead of
+ // exploding into huge percentages from a 0..1-relative target.
+ return {X:xyz.X*refY,Y:xyz.Y*refY,Z:xyz.Z*refY};
 }
 
 function meterParseSaturationReading(reading){
@@ -5588,7 +5691,10 @@ function meterDecodeColorTargetChannel(code){
 }
 
 function targetColorXYZAbs(r,g,b){
- const gamut=meterStimulusSolveGamut();
+ // Analysis targets must follow the selected target gamut, not the transport
+ // container. This keeps the CIE triangle and the target chromaticities in
+ // sync with the Target Colorspace dropdown even in HDR/DV workflows.
+ const gamut=meterAnalysisGamut();
  return linRgbToXyz(
   meterDecodeColorTargetChannel(r),
   meterDecodeColorTargetChannel(g),
@@ -5611,11 +5717,9 @@ function meterTargetXYZForReading(reading){
  if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   if(tYn<=0) return {X:0,Y:0,Z:0};
   const refY=Math.max(1,meterColorReferenceNits());
-  // Gamut-clip: ColorChecker patches such as Cyan lie outside BT.709. Solve
-  // target xy into linear RGB in the display's stimulus gamut, clamp negatives
-  // to zero (what the display actually emits), then recompute XYZ so ΔE is
-  // measured against the achievable target, not an unreachable chromaticity.
-  const gamut=meterStimulusSolveGamut();
+  // Gamut-clip: for analysis/charting, solve in the selected target gamut so
+  // the CIE chart and ΔE targets respect the Target Colorspace dropdown.
+  const gamut=meterAnalysisGamut();
   const coeffs=xyzToLinRgb(tx/ty,1,(1-tx-ty)/ty,gamut.xyzToRgb);
   let r=coeffs[0],g=coeffs[1],b=coeffs[2];
   if(r<0||g<0||b<0){
@@ -5722,8 +5826,10 @@ function meterEnsureDeltaECache(readings){
  if(!Array.isArray(readings)) return;
  const greyForm=meterDeltaEForm();
  const colorForm=meterColorDeltaEForm();
+ const greyMode=meterGreyRefMode();
  const gw=meterGrayWorldWeight();
- const key=greyForm+':'+colorForm+':'+gw;
+ const tgtGamma=((document.getElementById('meterTargetGamma')||{}).value)||'';
+ const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+meterChartSignalMode()+':'+tgtGamma;
  readings.forEach(rd=>{
   if(!rd) return;
   if(rd._dE_cache_key===key) return;
@@ -5741,7 +5847,7 @@ function meterEnsureDeltaECache(readings){
 // when ire<=0.
 function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
  if(!reading||!whiteReading||!(ire>0)) return {r:null,g:null,b:null};
- const g=meterActiveGamut();
+ const g=meterAnalysisGamut();
  const rm=xyzToLinRgb(reading.X||0,reading.Y||0,reading.Z||0,g.xyzToRgb);
  const rw=xyzToLinRgb(whiteReading.X||0,whiteReading.Y||0,whiteReading.Z||0,g.xyzToRgb);
  const prevRgb=prevReading?xyzToLinRgb(prevReading.X||0,prevReading.Y||0,prevReading.Z||0,g.xyzToRgb):null;
@@ -6071,8 +6177,8 @@ function rgbBalanceCalman(reading,whiteRef,modeOrIncl){
   // No IRE: scale white chromaticity to measured luminance
   lcXn=wXn*mYn; lcYn=mYn; lcZn=wZn*mYn;
  }
- // Convert both to linear RGB via the active gamut matrix
- const gamut=meterActiveGamut();
+ // Convert both to linear RGB via the selected analysis gamut matrix.
+ const gamut=meterAnalysisGamut();
  const mRgb=xyzToLinRgb(mXn,mYn,mZn,gamut.xyzToRgb);
  const tRgb=xyzToLinRgb(lcXn,lcYn,lcZn,gamut.xyzToRgb);
  // Per-channel percent: L*(measured) - L*(target) + 100 (perceptual balance)
@@ -6103,12 +6209,12 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
  } else if(mode==='relative'){
   fact = (reading.Y>0 && whiteRef.Y>0) ? reading.Y/whiteRef.Y : 1.0;
  } else { // 'eotf'
-  const Lb = 0;
+  const Lb = meterBlackReadingY();
   const tgtY = meterGreyTargetLuminance(reading.ire, whiteRef.Y, Lb, reading.r_code);
   fact = (tgtY>0 && whiteRef.Y>0 && reading.Y>0) ? reading.Y / tgtY : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
- const gamut = meterActiveGamut();
+ const gamut = meterAnalysisGamut();
  const [r,g,b] = xyzToLinRgb(Xn,Yn,Zn, gamut.xyzToRgb);
  return { R:r*100, G:g*100, B:b*100 };
 }
@@ -6125,18 +6231,33 @@ function meterLiveRgbData(reading){
  if(!reading) return {mode:'balance',R:100,G:100,B:100};
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  if(!isColorSeries||reading.X==null||reading.Y==null||reading.Z==null){
-  return meterWhiteReading?{mode:'balance',...rgbBalance(reading,meterWhiteReading,meterIncludeLum())}:{mode:'balance',R:100,G:100,B:100};
+  return meterWhiteReading?{mode:'balance',...rgbBalance(reading,meterWhiteReading,meterGreyRefMode())}:{mode:'balance',R:100,G:100,B:100};
  }
- const gamut=meterActiveGamut();
-   const target=meterTargetXYZForReading(reading);
- const ref=Math.max(1,meterColorReferenceNits());
+ const gamut=meterAnalysisGamut();
+ const target=meterTargetXYZForReading(reading);
  const mRgb=xyzToLinRgb(reading.X,reading.Y,reading.Z,gamut.xyzToRgb);
  const tRgb=xyzToLinRgb(target.X,target.Y,target.Z,gamut.xyzToRgb);
+ // Use the patch's dominant target channel as the percent reference. For
+ // many color / sat targets one channel is intentionally zero, so dividing
+ // by each channel independently pins contamination to ±50 and stops being
+ // informative. A shared patch-level reference keeps the deltas meaningful.
+ const refScale=Math.max(
+  0.01,
+  Math.abs(tRgb[0]||0),
+  Math.abs(tRgb[1]||0),
+  Math.abs(tRgb[2]||0)
+ );
+ const channelDelta=(meas,ref)=>{
+  meas=meas||0; ref=ref||0;
+  let pct=((meas-ref)/refScale)*100;
+  if(!isFinite(pct)) pct=0;
+  return Math.max(-200,Math.min(200,pct));
+ };
  return {
   mode:'delta',
-  R:((mRgb[0]||0)-(tRgb[0]||0))/ref*100,
-  G:((mRgb[1]||0)-(tRgb[1]||0))/ref*100,
-  B:((mRgb[2]||0)-(tRgb[2]||0))/ref*100
+  R:channelDelta(mRgb[0],tRgb[0]),
+  G:channelDelta(mRgb[1],tRgb[1]),
+  B:channelDelta(mRgb[2],tRgb[2])
  };
 }
 
@@ -6609,8 +6730,8 @@ function meterLoadColorPrefs(){
 //   'absolute' : ref Y = measured Y (ΔL*=0; chroma only)
 //   'eotf'     : ref Y = target EOTF using the configured / metadata peak
 //                (luminance tracking error included)
-//   'relative' : ref Y = target EOTF normalized to the measured white peak
-//                ("perfect gamma" shape, independent of overall peak mismatch).
+//   'relative' : ref Y = measured Y normalized to measured white peak
+//                (perfect-gamma assumption; gamma/luma error cancelled).
 //
 // Reads <select id="meterGreyRefMode"> when present; otherwise falls back
 // to the legacy checkbox (#meterIncludeLumError) where ticked → 'eotf'.
@@ -6649,9 +6770,9 @@ function meterGrayWorldWeight(){
 //   mode === 'eotf'     : "include luminance error" mode. Reference
 //     Y comes from the active EOTF using the configured / metadata peak,
 //     so ΔL* reports absolute tracking error. (HCFR m_dE_gray == 1)
-//   mode === 'relative' : reference Y comes from the same target EOTF but
-//     normalized to the measured white peak. This preserves gamma-shape
-//     error while ignoring an overall white-peak mismatch. (HCFR m_dE_gray == 2)
+//   mode === 'relative' : reference Y uses the measured relative luminance
+//     of the step (Ym / Ywhite), cancelling gamma/luma error while still
+//     using the target white chromaticity. (HCFR m_dE_gray == 2)
 //
 // Legacy boolean inclLum is still accepted (true → 'eotf', false → 'absolute').
 // Optional gwWeight (HCFR gw_Weight) pre-multiplies YWhite / YWhiteRef by
@@ -6673,11 +6794,8 @@ function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight){
   peak = metadataPeak;
   const tgtY = meterGreyTargetLuminance(ire, peak, Lb||0, code);
   refVy = peak>0 ? tgtY/peak : 0;
- } else if(mode==='relative'){
-  peak = measuredPeak;
-  const tgtY = meterGreyTargetLuminance(ire, peak, Lb||0, code);
-  refVy = peak>0 ? tgtY/peak : 0;
  } else {
+  peak = measuredPeak;
   refVy = peak>0 ? Ym/peak : 0;
  }
  return {
@@ -7125,6 +7243,33 @@ function meterRestoreSeriesFromCache(key){
  return true;
 }
 
+function meterClearLiveReading(){
+ document.getElementById('meterLiveReading').style.display='';
+ document.getElementById('meterLum').textContent='--';
+ document.getElementById('meterCCT').textContent='--';
+ document.getElementById('meterCIEx').textContent='--';
+ document.getElementById('meterCIEy').textContent='--';
+ drawRGBBars(null);
+ drawDeltaBarsVertical('meterRGBCanvasGrey',null);
+ drawDeltaBarsVertical('meterRGBCanvasColor',null);
+ drawDeltaBarsVertical('meterXYYCanvasColor',null);
+}
+
+function meterFindReadingForStep(step){
+ if(!step||!Array.isArray(meterReadings)||!meterReadings.length) return null;
+ const canon=meterCanonicalSeriesStep(step)||step;
+ const key=meterStepNameKey(canon);
+ const name=String(canon.name||'');
+ for(let i=meterReadings.length-1;i>=0;i--){
+  const rd=meterReadings[i];
+  if(!rd||!meterReadingHasLuminance(rd)) continue;
+  if(key&&meterStepNameKey(rd)===key) return rd;
+  if(name&&(rd.name||'')===name) return rd;
+  if(!name&&canon.ire!=null&&rd.ire===canon.ire) return rd;
+ }
+ return null;
+}
+
 function updateLiveReading(reading){
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_colorDetailPinned&&_selectedColorReadingName&&Array.isArray(meterReadings)){
   const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName);
@@ -7163,10 +7308,10 @@ function meterRgbDeltasForLive(reading,bal){
 
 // Build xy/Y deltas vs. the active target for the live bar chart. Uses the
 // same measured-minus-target form as the RGB delta bars so the two charts
-// read the same way: bar above target = over, below = under. ΔY is
-// expressed as % of the reference/white luminance (matching the RGB
-// bars' reference-normalized %). Falls back to null when no target is
-// known (manual read with no series loaded).
+// read the same way: bar above target = over, below = under. Δx and Δy are
+// scaled ×1000 for visibility; ΔY is normalized to target Y for color/sat
+// patches and to white Y for greyscale, matching HCFR-style interpretation.
+// Falls back to null when no target is known (manual read with no series loaded).
 function meterXYYDeltasForLive(reading){
  if(!reading) return null;
  const mx=(reading.x!=null)?reading.x:null;
@@ -7195,8 +7340,15 @@ function meterXYYDeltasForLive(reading){
  // Δx, Δy scaled ×1000 so they sit in a similar magnitude band as ΔY%.
  const dx=(mx!=null&&tx!=null)?(mx-tx)*1000:null;
  const dy=(my!=null&&ty!=null)?(my-ty)*1000:null;
- // ΔY as % of reference nits (same normalization basis as the RGB bars).
- const dY=(mY!=null&&tY!=null&&ref>0)?((mY-tY)/ref*100):null;
+ // ΔY as % of target Y for color patches, or % of measured white for grey.
+ let dY=null;
+ if(mY!=null&&tY!=null){
+  if(isColor){
+   dY=(Math.abs(tY)>1e-9)?((mY-tY)/tY*100):null;
+  } else if(ref>0){
+   dY=((mY-tY)/ref*100);
+  }
+ }
  if(dx==null&&dy==null&&dY==null) return null;
  const entries=[
   {key:'x',label:'x',color:'#f4b',v:dx,unit:'‰'},
@@ -7614,6 +7766,38 @@ function meterUpdateDeltaEFormControl(){
  }
 }
 
+function meterSelectPatchFromInteraction(step,reading,opts){
+ if(!step) return;
+ const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ const resolvedStep=meterCanonicalSeriesStep(step)||step;
+ const resolvedReading=reading||meterFindReadingForStep(resolvedStep);
+ meterCurrentPatchStep=resolvedStep;
+ if(isColorSeries){
+  const pin=!(opts&&opts.pin===false);
+  if(resolvedReading) meterFocusColorReading(resolvedReading,{pin:pin});
+  else if(resolvedStep.name){
+   _selectedColorReadingName=resolvedStep.name||null;
+   _colorDetailPinned=pin&&!!_selectedColorReadingName;
+   colorHighlightThumb(resolvedStep.name);
+   colorHighlightTableRow(resolvedStep.name);
+  }
+ } else {
+  meterSelectedThumbIre=resolvedStep.ire;
+  const container=document.getElementById('meterPatchThumbs');
+  if(container&&container.children.length>0){
+   const completed=new Set((meterReadings||[]).filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
+   meterUpdateThumbStyles(container,completed,null);
+  }
+ }
+ if(resolvedReading) updateLiveReading(resolvedReading);
+ else meterClearLiveReading();
+ meterDisplayPatch(resolvedStep);
+ document.getElementById('meterLiveReading').style.display='';
+ document.getElementById('meterProgress').style.display='';
+ document.getElementById('meterProgressLabel').textContent=resolvedStep.name||resolvedStep.ire+'%';
+ meterUpdateReadButtons();
+}
+
 function meterUpdateReadButtons(){
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  const hasSelection=isColorSeries ? !!meterCurrentPatchStep : meterSelectedThumbIre!=null;
@@ -7936,37 +8120,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   thumb.dataset.key=meterStepNameKey(step);
    thumb.addEventListener('click',function(){
     if(meterSeriesRunning) return;
-    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
-    if(isColor){
-     // For color series, toggle by name (multiple steps share same ire)
-     const wasSelected=_selectedColorReadingName===step.name;
-     if(wasSelected){
-      _selectedColorReadingName=null;
-      _colorDetailPinned=false;
-      meterFocusColorReading(null,{pin:false});
-     } else {
-      // Find matching reading if we have one
-      const rd=meterReadings?meterReadings.find(r=>r.name===step.name):null;
-      if(rd) meterFocusColorReading(rd,{pin:true});
-      else colorHighlightThumb(step.name);
-     }
-     meterDisplayPatch(step);
-     document.getElementById('meterLiveReading').style.display='';
-     document.getElementById('meterProgress').style.display='';
-     document.getElementById('meterProgressLabel').textContent=step.name||step.ire+'%';
-    } else {
-     meterSelectedThumbIre=(meterSelectedThumbIre===step.ire)?null:step.ire;
-     meterUpdateThumbStyles(container,completedIres,currentIre);
-     if(meterSelectedThumbIre!=null){
-      meterDisplayPatch(step);
-      document.getElementById('meterLiveReading').style.display='';
-      document.getElementById('meterProgress').style.display='';
-      document.getElementById('meterProgressLabel').textContent=step.name||step.ire+'%';
-     } else {
-      document.getElementById('meterProgress').style.display='none';
-     }
-    }
-    meterUpdateReadButtons();
+    meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true});
    });
    container.appendChild(thumb);
   });
@@ -8005,6 +8159,29 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
 }
 
 // Pre-populate ALL charts with grids and placeholder points before readings
+function meterGreyChartX(step,steps,idx){
+ if(step && step.ire!=null){
+  const ire=Math.max(0,Math.min(100,parseFloat(step.ire)||0));
+  return ire/100;
+ }
+ if(Array.isArray(steps) && steps.length>1) return idx/(steps.length-1);
+ return 0.5;
+}
+
+function meterAnchorOriginPoint(points){
+ const pts=Array.isArray(points)?points.slice():[];
+ if(!pts.length || pts[0][0] > 0.0001) pts.unshift([0,0]);
+ return pts;
+}
+
+function meterGammaValueAnchorPoints(points){
+ const pts=Array.isArray(points)?points.slice():[];
+ // Gamma charts should start at the first real measured step rather than
+ // adding an artificial 0% origin point, which makes the curve look pinned
+ // to black in a misleading way.
+ return pts;
+}
+
 function drawAllChartsPreset(sortedSteps){
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=sortedSteps.filter(s=>s.r===s.g&&s.g===s.b);
@@ -8165,10 +8342,11 @@ function drawGammaValuePreset(gsSteps){
  const tgtPts=[];
  steps.forEach((s,idx)=>{
   const g=meterGreyTargetGamma(s.ire,100,0,s.r_code!=null?s.r_code:s.r);
-  if(g!=null&&isFinite(g)) tgtPts.push([steps.length>1?idx/(steps.length-1):0.5,Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
+  if(g!=null&&isFinite(g)) tgtPts.push([meterGreyChartX(s,gsSteps,idx),Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
  });
- if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
- drawDots(ctx,chart,tgtPts,'#ffb74d',3);
+ const tgtPtsAnchored=meterGammaValueAnchorPoints(tgtPts);
+ if(tgtPtsAnchored.length>1) drawDashedLine(ctx,chart,tgtPtsAnchored,'#ffb74d');
+ drawDots(ctx,chart,tgtPtsAnchored,'#ffb74d',3);
  drawGammaLegend(ctx,chart,targetLabel,'');
 }
 
@@ -8233,7 +8411,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  });
  const tgtPts=[],mPts=[],emptyPts=[];
  xSteps.forEach((step,idx)=>{
-  const x=xSteps.length>1?idx/(xSteps.length-1):0.5;
+  const x=meterGreyChartX(step,xSteps,idx);
   const tg=targetMap[step.ire];
   if(tg!=null&&isFinite(tg)){
    const ty=Math.max(0,Math.min(1,(tg-yMin)/(yMax-yMin)));
@@ -8243,11 +8421,13 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   const mg=gammaMap[step.ire];
   if(mg!=null&&isFinite(mg)) mPts.push([x,Math.max(0,Math.min(1,(mg-yMin)/(yMax-yMin)))]);
  });
- if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
+ const tgtPtsAnchored=meterGammaValueAnchorPoints(tgtPts);
+ const mPtsAnchored=meterGammaValueAnchorPoints(mPts);
+ if(tgtPtsAnchored.length>1) drawDashedLine(ctx,chart,tgtPtsAnchored,'#ffb74d');
  drawDots(ctx,chart,emptyPts,'#6d6d6d80',3);
- drawDots(ctx,chart,tgtPts,'#ffb74d',2.5);
- if(mPts.length>1) drawLine(ctx,chart,mPts,'#7ecbff',2);
- drawDots(ctx,chart,mPts,'#7ecbff',3);
+ drawDots(ctx,chart,tgtPtsAnchored,'#ffb74d',2.5);
+ if(mPtsAnchored.length>1) drawLine(ctx,chart,mPtsAnchored,'#7ecbff',2);
+ drawDots(ctx,chart,mPtsAnchored,'#7ecbff',3);
  // Optional per-channel gamma overlay (R/G/B from the cached
  // meterPerChannelGamma computed in drawAllCharts).
  const pcToggle=document.getElementById('meterPerChannelGamma');
@@ -8257,7 +8437,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
    const rd=readingMap[step.ire];
    if(!rd || !rd._gamma_rgb) return;
    const gr=rd._gamma_rgb;
-   const x=xSteps.length>1?idx/(xSteps.length-1):0.5;
+   const x=meterGreyChartX(step,xSteps,idx);
    const toY=(v)=>(v!=null&&isFinite(v))?Math.max(0,Math.min(1,(v-yMin)/(yMax-yMin))):null;
    const yr=toY(gr.r), yg=toY(gr.g), yb=toY(gr.b);
    if(yr!=null) rPts.push([x,yr]);
@@ -8477,7 +8657,7 @@ function drawRGBChart(gs,allSteps,readingMap){
  // Plot all x-axis points: measured = colored, missing = grey placeholder
  const rPts=[],gPts=[],bPts=[],emptyPts=[];
  xSteps.forEach((step,idx)=>{
-  const x=xSteps.length>1?idx/(xSteps.length-1):0.5;
+  const x=meterGreyChartX(step,xSteps,idx);
   const bal=balMap[step.ire];
   if(bal){
    rPts.push([x,Math.max(0,Math.min(1,(bal.R-yMin)/(yMax-yMin)))]);
@@ -8535,7 +8715,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
   });
   drawDots(ctx,chart,emptyPts,'#33333380',3);
  }
- const mPts=valid.map(r=>[r.ire/100,((r.luminance||0)/refWhite)/yTop]);
+ const mPts=meterAnchorOriginPoint(valid.map(r=>[r.ire/100,((r.luminance||0)/refWhite)/yTop]));
  if(mPts.length>1) drawLine(ctx,chart,mPts,'#ffeb3b',2);
  drawDots(ctx,chart,mPts,'#ffeb3b',3);
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';ctx.textAlign='left';
@@ -8571,7 +8751,7 @@ function drawGammaChart(gs,allSteps,readingMap){
   });
  }
  const validG=sorted.filter(r=>r.luminance!=null && r.luminance>=0);
- const mPts=validG.map(r=>[r.ire/100,Math.min(1,(r.luminance||0)/yTop)]);
+ const mPts=meterAnchorOriginPoint(validG.map(r=>[r.ire/100,Math.min(1,(r.luminance||0)/yTop)]));
  if(mPts.length>1) drawLine(ctx,chart,mPts,'#ffeb3b',2);
  drawDots(ctx,chart,mPts,'#ffeb3b',3);
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
@@ -8659,7 +8839,7 @@ function drawDeltaEChart(gs,allSteps,readingMap){
  // Draw bars for each x-axis step
  const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
  xSteps.forEach((step,i)=>{
-  const cx=chart.toX(n>1?i/(n-1):0.5);
+  const cx=chart.toX(meterGreyChartX(step,xSteps,i));
   const dE=deMap[step.ire];
   if(dE!=null){
    const barH=Math.max(0.005,Math.min(dE/yMax,1));
@@ -8748,7 +8928,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
  const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
  xSteps.forEach((step,i)=>{
-  const cx=chart.toX(n>1?i/(n-1):0.5);
+  const cx=chart.toX(meterGreyChartX(step,xSteps,i));
   const dE=deMap[step.ire];
   if(dE!=null){
    const barH=Math.max(0.005,Math.min(dE/yMax,1));
@@ -9023,7 +9203,13 @@ function colorTableRowClick(tr){
  const name=tr.getAttribute('data-name');
  if(!name||!meterReadings) return;
  const rd=meterReadings.find(r=>r.name===name);
- if(rd) meterFocusColorReading(rd,{pin:true});
+ if(!rd) return;
+ const step=meterCanonicalSeriesStep(rd);
+ if(step) meterSelectPatchFromInteraction(step,rd,{pin:true});
+ else {
+  meterFocusColorReading(rd,{pin:true});
+  meterUpdateReadButtons();
+ }
 }
 // Highlight table row for selected reading
 function colorHighlightTableRow(name){
@@ -9116,9 +9302,14 @@ function colorChartHandleHover(e,canvasId){
 }
 function colorChartHandleClick(e,canvasId){
  const hit=colorChartFindHit(e,canvasId);
- if(!hit) return;
+ if(!hit||meterSeriesRunning) return;
  document.getElementById('chartTooltip').style.display='none';
- meterFocusColorReading(hit.reading,{pin:true});
+ const step=meterCanonicalSeriesStep(hit.reading);
+ if(step) meterSelectPatchFromInteraction(step,hit.reading,{pin:true});
+ else {
+  meterFocusColorReading(hit.reading,{pin:true});
+  meterUpdateReadButtons();
+ }
 }
 
 function drawCIEChart(readings){
@@ -9158,7 +9349,7 @@ function drawCIEChart(readings){
  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
  ctx.closePath();ctx.stroke();
- const gamut=meterActiveGamut();
+ const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
@@ -9345,7 +9536,7 @@ function drawCIEChartPreset(steps){
  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
  ctx.closePath();ctx.stroke();
- const gamut=meterActiveGamut();
+ const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
@@ -9550,19 +9741,10 @@ function chartHandleHover(e,canvasId){
 
 function chartHandleClick(e,canvasId){
  const hit=chartFindHit(e,canvasId);
- if(!hit) return;
+ if(!hit||meterSeriesRunning) return;
  const rd=hit.reading;
- updateLiveReading(rd);
- document.getElementById('meterLiveReading').style.display='';
- // Highlight the corresponding thumbnail
- meterSelectedThumbIre=rd.ire;
- const container=document.getElementById('meterPatchThumbs');
- if(container&&container.children.length>0){
-  const completedIres=new Set(meterReadings.filter(r=>r.luminance!=null).map(r=>meterStepNameKey(r)));
-  meterUpdateThumbStyles(container,completedIres,null);
- }
- document.getElementById('meterProgress').style.display='';
- document.getElementById('meterProgressLabel').textContent=rd.ire+'%';
+ const step=meterCanonicalSeriesStep(rd)||{ire:rd.ire,name:rd.name,r:rd.r_code,g:rd.g_code,b:rd.b_code};
+ meterSelectPatchFromInteraction(step,rd,{pin:true});
 }
 
 function meterSeriesLabelFromKey(key){
@@ -10345,8 +10527,16 @@ function meterRefreshActiveSeriesCharts(){
  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
  const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ meterReadings=meterAttachSeriesMeta(meterReadings||[]);
+ if(meterCurrentPatchStep) meterCurrentPatchStep=meterCanonicalSeriesStep(meterCurrentPatchStep);
  const done=new Set();
- (meterReadings||[]).forEach(r=>{if(r.luminance!=null) done.add(meterStepNameKey(r));});
+ (meterReadings||[]).forEach(r=>{
+  if(r){
+   delete r._dE_cache_key;
+   delete r._gamma_rgb;
+   if(r.luminance!=null) done.add(meterStepNameKey(r));
+  }
+ });
  meterBuildPatchThumbs(sortedSteps,done,meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null);
  if(meterReadings&&meterReadings.length){
   const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
