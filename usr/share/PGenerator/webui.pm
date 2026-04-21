@@ -1079,6 +1079,9 @@ sub webui_meter_series_start (@) {
   my ($v)=@_;
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
+  if($signal_mode eq "dv") {
+   return $v**(1/2.2);
+  }
   if($target_gamma eq "srgb") {
    return ($v<=0.0031308) ? 12.92*$v : 1.055*($v**(1/2.4))-0.055;
   }
@@ -1088,6 +1091,9 @@ sub webui_meter_series_start (@) {
   my ($v)=@_;
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
+  if($signal_mode eq "dv") {
+   return $v**2.2;
+  }
   if($target_gamma eq "srgb") {
    return ($v<=0.04045) ? $v/12.92 : ((($v+0.055)/1.055)**2.4);
   }
@@ -1265,11 +1271,10 @@ sub webui_meter_series_start (@) {
      ["100% Yellow","Yellow",1,1,0]
     ) {
      my ($name,$series_color,$r_mix,$g_mix,$b_mix)=@$sat;
-      # Calman's full-saturation DV patches are direct RGB percentages with the
-      # same 100-nit PQ shift used by the HDR/DV ColorChecker path, not
-      # chromaticity-solved primaries in the BT.2020 container.
+      # Calman's DV full-saturation patches are direct RGB tunnel-code
+      # percentages, not chromaticity-solved BT.2020 primaries.
       if($signal_mode eq "dv") {
-       my $full_sat_code=int($min_code + &webui_pattern_pq_encode_normalized(100)*$span_code + .5);
+       my $full_sat_code=$min_code+$span_code;
        my $r=$r_mix ? $full_sat_code : $min_code;
        my $g=$g_mix ? $full_sat_code : $min_code;
        my $b=$b_mix ? $full_sat_code : $min_code;
