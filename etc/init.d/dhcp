@@ -7,12 +7,50 @@ DHCP_CONF_FILE="/etc/dhcp/dhcpd.conf"
 PROGRAM_DAEMON="/sbin/dhcpd -cf $DHCP_CONF_FILE"
 DEFAULT_FILE="/etc/default/dhcp"
 
-. $DEFAULT_FILE
+[ -f "$DEFAULT_FILE" ] && . "$DEFAULT_FILE"
+: ${DAEMON_ARGUMENT:="bnep ap0 usb0"}
+
+add_iface() {
+ iface_name="$1"
+ iface_list="$2"
+ [ -n "$iface_name" ] || { echo "$iface_list"; return; }
+ case " $iface_list " in
+  *" $iface_name "*) echo "$iface_list" ;;
+  *)
+   if [ -n "$iface_list" ]; then
+    echo "$iface_list $iface_name"
+   else
+    echo "$iface_name"
+   fi
+  ;;
+ esac
+}
+
+build_interface_args() {
+ iface_list=""
+ for iface in $DAEMON_ARGUMENT; do
+  if [ "$iface" = "bnep" ]; then
+   for path in /sys/class/net/bnep*; do
+    [ -e "$path" ] || continue
+    iface_list=`add_iface "$(basename "$path")" "$iface_list"`
+   done
+   continue
+  fi
+  [ -d "/sys/class/net/$iface" ] || continue
+  iface_list=`add_iface "$iface" "$iface_list"`
+ done
+ echo "$iface_list"
+}
 
 case "$1" in
     start)
         echo -n "Starting $PROGRAM_NAME..."
-        $PROGRAM_DAEMON  $DAEMON_ARGUMENT &>/dev/null
+        IFACE_ARGUMENTS=`build_interface_args`
+        if [ -z "$IFACE_ARGUMENTS" ]; then
+            echo "skipped"
+            exit 0
+        fi
+        $PROGRAM_DAEMON $IFACE_ARGUMENTS &>/dev/null
         echo "done"
     ;;
 

@@ -74,6 +74,7 @@ sub discovery_lightspace (@) {
    $calibration_client_ip=$ip_ls;
    $calibration_client_software="LightSpace";
    $thr=threads->create(\&lightspace_connect,$ip_ls,$ls_port)->join;
+  &release_source_rgb_quant_range("lightspace");
    $calibration_client_ip="";
    $calibration_client_software="";
    &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$bg_default","","","","",1,"lightspace"); # when LS disconnects a black pattern is displayed
