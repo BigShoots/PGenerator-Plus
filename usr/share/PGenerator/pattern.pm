@@ -31,6 +31,7 @@ sub create_pattern_file (@) {
  my $return_str=shift;
  my $simple=shift;
  my $requested_by=(($requested_by=shift) eq "") ? $requested_by_default : $requested_by;
+ my $source_range=shift;
  my $scaling_disabled=($requested_by eq "RGB") ? 1 : 0;
  my ($min_rgb,$max_rgb)=(0,255);
  my @el_rgb=split(",",$rgb);
@@ -65,7 +66,9 @@ sub create_pattern_file (@) {
  # create the pattern file
  $pattern_string.="PATTERN_NAME=$pname_file\n" if($pname_file ne "");
  $pattern_string.="MOVIE_NAME=TestPattern\nBITS=$bits\n" if($simple);
- $pattern_string.="DRAW=$draw\nDIM=$dim\nRESOLUTION=$resolution\nRGB=$new_rgb\nBG=$bg\nPOSITION=$position\n$options=$text\nEND=1\n";
+ $pattern_string.="DRAW=$draw\nDIM=$dim\nRESOLUTION=$resolution\nRGB=$new_rgb\nBG=$bg\nPOSITION=$position\n";
+ $pattern_string.="SOURCE_RANGE=$source_range\n" if($source_range ne "");
+ $pattern_string.="$options=$text\nEND=1\n";
  $pattern_string.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n" if($simple);
  return $pattern_string if($return_str);
  open(FILE,">$command_file.tmp");
@@ -279,6 +282,7 @@ sub get_pattern (@) {
  my $pattern = shift;
  my $rgb = shift;
  my $requested_by = shift;
+ my $source_range = shift;
  my ($str,$bg,$dim,$draw_type,$pos,$res,$frame,$str_other,$image,$bits,$rules) = "";
  my %var=();
  my $pattern_dir = $pattern_templates;
@@ -422,8 +426,8 @@ sub get_pattern (@) {
   #
   # MACRO
   #
-  if($_=~/^MACRO=(.*)/) {
-   &get_pattern($type,$1,$rgb,"MACRO");
+    if($_=~/^MACRO=(.*)/) {
+     &get_pattern($type,$1,$rgb,"MACRO",$source_range);
    next;
   }
   #
@@ -500,6 +504,7 @@ sub get_pattern (@) {
  # Write definitive pattern
  #
  $bits=$bits_default if($bits eq "");
+ $str=~s/^END=(.*)$/SOURCE_RANGE=$source_range\nEND=$1/mg if($source_range ne "");
  $str.="FRAME=$frame_default\n"  if($str !~/\n^FRAME=/m);
  open(PATTERN,">$command_file.tmp");
  print PATTERN "PATTERN_NAME=$pattern\n" if($str !~/^PATTERN_NAME=/m);
@@ -591,6 +596,8 @@ return 1;
 ###############################################
 sub create_tmp_file(@) {
  my $pattern_string = shift;
+ my $source_range = shift;
+ $pattern_string=~s/^END=(.*)$/SOURCE_RANGE=$source_range\nEND=$1/mg if($source_range ne "");
  open(FILE,">$command_file.tmp");
  print FILE $pattern_string;
  close(FILE);

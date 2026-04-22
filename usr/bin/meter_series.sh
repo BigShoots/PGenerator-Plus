@@ -69,6 +69,7 @@ find_port() {
 
 TOTAL=$(get_step_count)
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
+FIRST_STEP_EXTRA_SEC=2
 
 # Publish an immediate startup state so the UI shows progress instead of
 # looking hung while spotread is performing its cold-start handshake.
@@ -300,12 +301,16 @@ EOJSON
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
 
- # Settle delay — shorter for near-black
+ # Settle delay — shorter for near-black, but give the first series patch
+ # extra time because cold-start white often reads low on the first pass.
+ STEP_DELAY="$DELAY_SEC"
  if (( IRE <= 5 )); then
-  sleep 1
- else
-  sleep "$DELAY_SEC"
+  STEP_DELAY=1
  fi
+ if (( i == 0 )); then
+  STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
+ fi
+ sleep "$STEP_DELAY"
 
  # Update state: reading
  cat > "$STATE_FILE" << EOJSON

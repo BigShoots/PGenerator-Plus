@@ -109,6 +109,7 @@ sub lightspace_connect() {
    $rgb.="$bits" if($is_rpi_4 && $bits ne "");
    next if($rgb eq $last_rgb);
    $last_rgb=$rgb;
+    &apply_source_rgb_quant_range("lightspace",2);
    &get_pattern($test_template_command,"$pattern_dynamic","$rgb","lightspace");
   }
  }
