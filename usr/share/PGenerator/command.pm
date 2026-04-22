@@ -43,6 +43,42 @@ sub auto_select_4k_mode (@) {
  }
 }
 
+sub webui_preferred_rgb_quant_range (@) {
+ my $quant_range=$webui_rgb_quant_range_preferred;
+ $quant_range=$pgenerator_conf{"rgb_quant_range"} if($quant_range eq "");
+ $quant_range=2 if($quant_range !~/^[12]$/);
+ return $quant_range;
+}
+
+sub apply_source_rgb_quant_range (@) {
+ my $source=lc(shift || "webui");
+ my $quant_range=shift;
+ if($source eq "webui") {
+  $quant_range=&webui_preferred_rgb_quant_range() if($quant_range !~/^[12]$/);
+  $webui_rgb_quant_range_preferred=$quant_range;
+  $external_rgb_quant_range_active=0;
+ } else {
+  $quant_range=2 if($quant_range !~/^[12]$/);
+  $webui_rgb_quant_range_preferred=$pgenerator_conf{"rgb_quant_range"} if($webui_rgb_quant_range_preferred eq "");
+  $external_rgb_quant_range_active=1;
+ }
+ return 0 if(($pgenerator_conf{"rgb_quant_range"}||"") eq "$quant_range" && $rgb_quant_range_source eq $source);
+ &sudo("SET_PGENERATOR_CONF","rgb_quant_range","$quant_range");
+ $pgenerator_conf{"rgb_quant_range"}="$quant_range";
+ $rgb_quant_range_source=$source;
+ &log("Signal range owner: source=$source rgb_quant_range=$quant_range");
+ &pattern_generator_stop();
+ &pattern_generator_start();
+ return 1;
+}
+
+sub release_source_rgb_quant_range (@) {
+ my $source=lc(shift || "");
+ return 0 if($source eq "");
+ return 0 if($rgb_quant_range_source ne $source && !($source ne "webui" && $external_rgb_quant_range_active));
+ return &apply_source_rgb_quant_range("webui",&webui_preferred_rgb_quant_range());
+}
+
 ###############################################
 #  Apply DRM Connector Properties (KMS only)  #
 ###############################################

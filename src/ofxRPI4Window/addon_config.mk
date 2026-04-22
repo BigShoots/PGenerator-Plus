@@ -26,3 +26,6 @@ common:
     ADDON_CFLAGS = -I/usr/include/libdrm -Wno-unused-variable -Wno-unused-value -Wno-unused-function
 	ADDON_LDFLAGS = -ldrm
     ADDON_LDFLAGS += -lgbm
+	ADDON_SOURCES_EXCLUDE += src/ofxRPI4Window/%
+	ADDON_SOURCES_EXCLUDE += src/pattern_generator/%
+	ADDON_SOURCES_EXCLUDE += src/PGeneratorDisplayMirror.c

@@ -24,6 +24,29 @@
 #include "rgb2ycbcr.h"
 /* End Patch RPI P4 */
 
+namespace {
+
+inline float normalize10bitComponent(int value) {
+ float normalized = static_cast<float>(value) / 1023.0f;
+ if (normalized < 0.0f) return 0.0f;
+ if (normalized > 1.0f) return 1.0f;
+ return normalized;
+}
+
+inline void ofSet10bitColor(int red, int green, int blue, int alpha = 1023) {
+ ofSetColor(ofFloatColor(normalize10bitComponent(red), normalize10bitComponent(green), normalize10bitComponent(blue), normalize10bitComponent(alpha)));
+}
+
+inline void of10bitBackground(int red, int green, int blue, int alpha = 1023) {
+ ofBackground(ofFloatColor(normalize10bitComponent(red), normalize10bitComponent(green), normalize10bitComponent(blue), normalize10bitComponent(alpha)));
+}
+
+inline void ofClear10bit(int red, int green, int blue, int alpha = 1023) {
+ ofClear(ofFloatColor(normalize10bitComponent(red), normalize10bitComponent(green), normalize10bitComponent(blue), normalize10bitComponent(alpha)));
+}
+
+}
+
 /*
  ##########################################################
  #                           Setup                        #
@@ -115,6 +138,9 @@ void ofApp::update(){
     greenb=boost::lexical_cast<int>(rgbb[1]);
     blueb=boost::lexical_cast<int>(rgbb[2]);
    }
+	if(el[0] == "SOURCE_RANGE") {
+	 source_range=(el[1] == "LIMITED") ? 1 : 0;
+	}
    if(el[0] == "FRAME_NAME") {
     name=el[1];
     arr_name[frame]=name;
@@ -130,6 +156,7 @@ void ofApp::update(){
     ofApp::set_values();
     n_draw[frame]++;
     dim1=dim2=0;
+	source_range=0;
    }
   }
 
@@ -143,7 +170,7 @@ void ofApp::update(){
    previous_image = ""; 
   }
 #if 1 
-  if (ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) {
+	if (ofxRPI4Window::shader_init && (ofxRPI4Window::avi_info.output_format != 0 || (ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2))) {
  //  ofxRPI4Window::rgb2ycbcr_shader();
    ofxRPI4Window::shader_init=0;
   }
@@ -341,6 +368,7 @@ void ofApp::set_values () {
  arr_rotate[frame][n_draw[frame]]=img_rotate;
  /* Start Patch RPI P4 */
  arr_bits[frame][n_draw[frame]]=bits;
+ arr_source_range[frame][n_draw[frame]]=source_range;
  ofxRPI4Window::bit_depth=bits;
  ofxRPI4Window::avi_info.max_bpc = bits;
  /* End Patch RPI P4 */
@@ -473,6 +501,9 @@ void ofApp::log(std::string str) {
  ##########################################################
 */
 void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
+ redbg=normalizeSourceValue(redbg,arr_source_range[i][to_draw]);
+ greenbg=normalizeSourceValue(greenbg,arr_source_range[i][to_draw]);
+ bluebg=normalizeSourceValue(bluebg,arr_source_range[i][to_draw]);
  if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
   if (ofxRPI4Window::bit_depth == 10) {  
    if(arr_redbg[i][to_draw] != -1) {
@@ -524,6 +555,9 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
  ##########################################################
 */
 void ofApp::setColor(int red, int green, int blue) {
+ red=normalizeSourceValue(red,arr_source_range[i][to_draw]);
+ green=normalizeSourceValue(green,arr_source_range[i][to_draw]);
+ blue=normalizeSourceValue(blue,arr_source_range[i][to_draw]);
  if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
   if (ofxRPI4Window::bit_depth == 10) ofSet10bitColor(red,green,blue);
   else                                ofSetColor(red,green,blue);
@@ -532,6 +566,26 @@ void ofApp::setColor(int red, int green, int blue) {
   else                                ofSetColor(red,green,blue);
  }
 }
+
+int ofApp::normalizeSourceValue(int value, int source_range_mode) {
+ if(source_range_mode != 1)
+  return value;
+ if(ofxRPI4Window::avi_info.output_format != 0)
+  return value;
+ if(!ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.rgb_quant_range != 1)
+  return value;
+ int bit_depth=ofxRPI4Window::bit_depth;
+ int shift=bit_depth - 8;
+ int limited_min=16 << shift;
+ int limited_span=219 << shift;
+ int max_value=(1 << bit_depth) - 1;
+ int normalized=(int)(((long long)(value - limited_min) * max_value) / limited_span + 0.5);
+ if(normalized < 0)
+  normalized=0;
+ if(normalized > max_value)
+  normalized=max_value;
+ return normalized;
+}
 #if 0
 /*
  ##########################################################
@@ -539,7 +593,7 @@ void ofApp::setColor(int red, int green, int blue) {
  ##########################################################
 */
 void ofApp::shader_begin(int is_image) {
- if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi)) {
+ if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi) || (!ofxRPI4Window::shader_init && ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2)) {
   if (is_image) { 
 	if (ofxRPI4Window::avi_info.max_bpc == 10 && ofxRPI4Window::isHDR) float_img.getTexture().bind();
 	else 															         img.getTexture().bind();
@@ -560,6 +614,7 @@ void ofApp::shader_begin(int is_image) {
   }	else {
     ofxRPI4Window::shader.setUniform1i("bits", ofxRPI4Window::bit_depth);
     ofxRPI4Window::shader.setUniform1i("colorimetry", ofxRPI4Window::avi_info.colorimetry);
+		ofxRPI4Window::shader.setUniform2f("resolution", ofGetWindowWidth(), ofGetWindowHeight());
     ofxRPI4Window::shader.setUniform1i("color_format", ofxRPI4Window::avi_info.output_format);
     ofxRPI4Window::shader.setUniform1i("rgb_quant_range", ofxRPI4Window::avi_info.rgb_quant_range);  
     ofxRPI4Window::shader.setUniform1i("is_image", is_image);
@@ -575,7 +630,7 @@ void ofApp::shader_begin(int is_image) {
  ##########################################################
 */
 void ofApp::shader_begin(int is_image) {
- if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi)) {
+ if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi) || (!ofxRPI4Window::shader_init && ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2)) {
   if (is_image) { 
 	if (ofxRPI4Window::avi_info.max_bpc == 10 && ofxRPI4Window::isHDR) float_img.getTexture().bind();
 	else 															         img.getTexture().bind();
@@ -585,7 +640,7 @@ void ofApp::shader_begin(int is_image) {
   ofxRPI4Window::shader.begin();
   if (ofxRPI4Window::is_std_DoVi) {
 	ofxRPI4Window::shader.setUniform2f("resolution", ofGetWindowWidth(), ofGetWindowHeight());
-	if (ofxRPI4Window::dv_profile == 2) {
+ 	if (ofxRPI4Window::dv_profile == 2) {
 	  ofxRPI4Window::shader.setUniform3f("coeffs_num",0.2126, 0.7152, 0.0722); //BT709
 	  ofxRPI4Window::shader.setUniform3f("coeffs_div",1.8556, 1.5748, 0.5); //BT709
 	}
@@ -637,7 +692,7 @@ void ofApp::shader_begin(int is_image) {
  ##########################################################
 */
 void ofApp::shader_end(int is_image) {
- if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi)) {
+ if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi) || (!ofxRPI4Window::shader_init && ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2)) {
   ofxRPI4Window::shader.end();
 
   if (is_image) { 
