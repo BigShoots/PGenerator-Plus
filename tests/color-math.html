@@ -1,59 +1,339 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>PGenerator+ Color Math Checks</title>
-  <style>
-    body{font:14px/1.5 sans-serif;max-width:900px;margin:24px auto;padding:0 16px;background:#111827;color:#e5eefc}
-    h1{font-size:22px;margin-bottom:8px}
-    button{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:10px 14px;cursor:pointer}
-    pre{background:#0b1220;border:1px solid #334155;border-radius:8px;padding:12px;white-space:pre-wrap}
-    .ok{color:#22c55e}.bad{color:#ef4444}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PGenerator Plus Meter Math Harness</title>
+<style>
+ :root{
+  --bg:#0f1118;
+  --panel:#171a24;
+  --panel-alt:#1d2130;
+  --line:#2b3143;
+  --text:#eceff7;
+  --muted:#9ea7bb;
+  --good:#4caf50;
+  --warn:#ffb300;
+  --bad:#ff5d5d;
+  --accent:#66c7ff;
+ }
+ body{
+  margin:0;
+  background:radial-gradient(circle at top,#1a2340 0,#0f1118 45%,#0a0c13 100%);
+  color:var(--text);
+  font:14px/1.45 "IBM Plex Sans", "Segoe UI", sans-serif;
+ }
+ main{max-width:1220px;margin:0 auto;padding:28px 20px 40px;}
+ h1,h2{margin:0 0 12px;}
+ p{margin:0 0 12px;color:var(--muted);}
+ .grid{display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start;}
+ .card{
+  background:linear-gradient(180deg,var(--panel) 0,var(--panel-alt) 100%);
+  border:1px solid var(--line);
+  border-radius:16px;
+  box-shadow:0 18px 48px rgba(0,0,0,.3);
+  padding:18px;
+ }
+ .controls{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;}
+ .controls label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
+ .controls select,.controls input{
+  width:100%;box-sizing:border-box;border-radius:10px;border:1px solid #394059;
+  background:#0e1320;color:var(--text);padding:8px 10px;
+ }
+ .btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;}
+ button{
+  border:0;border-radius:999px;padding:10px 16px;font:600 13px/1 "IBM Plex Sans", "Segoe UI", sans-serif;
+  cursor:pointer;background:var(--accent);color:#071019;
+ }
+ button.secondary{background:#2b3143;color:var(--text);}
+ .summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+ .chip{
+  padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:#0e1320;color:var(--muted);
+ }
+ .chip strong{color:var(--text);}
+ table{width:100%;border-collapse:collapse;font-size:13px;}
+ th,td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.07);text-align:left;vertical-align:top;}
+ th{color:var(--muted);font-weight:600;}
+ tr.pass td:first-child::before{content:"PASS ";color:var(--good);font-weight:700;}
+ tr.fail td:first-child::before{content:"FAIL ";color:var(--bad);font-weight:700;}
+ tr.warn td:first-child::before{content:"WARN ";color:var(--warn);font-weight:700;}
+ code{font-family:"IBM Plex Mono","Consolas",monospace;font-size:12px;}
+ .note{margin-top:14px;padding:12px 14px;border-radius:12px;border:1px solid #4f3e12;background:#211b0f;color:#efdca9;}
+ .hidden-fixture{position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;}
+ @media (max-width: 980px){.grid{grid-template-columns:1fr;}}
+</style>
 </head>
 <body>
-  <h1>PGenerator+ Color Math Regression Checks</h1>
-  <p>This page provides a quick manual sanity check for the HCFR-aligned grey reference and ΔY normalization behavior.</p>
-  <button id="run">Run checks</button>
-  <pre id="out">Ready.</pre>
-  <script>
-    const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
-    const BT709_00=3.2406;
-    const BT2020_00=1.7166511880;
+<main>
+ <h1>PGenerator Plus Meter Math Harness</h1>
+ <p>
+  This page loads the extracted meter/chart math from <code>webui.pm</code>, runs a Calman-backed oracle against it,
+  and highlights any drift in SDR, HDR10, HLG, or Dolby Vision target behavior.
+ </p>
 
-    function approx(actual, expected, tol, label){
-      const ok=Math.abs(actual-expected)<=tol;
-      return {ok, line:`${ok?'PASS':'FAIL'}  ${label} -> expected ${expected}, got ${actual}`};
-    }
+ <div class="grid">
+  <section class="card">
+   <h2>Harness Controls</h2>
+   <div class="controls">
+    <div><label for="signal_mode">Signal Mode</label><select id="signal_mode"><option value="sdr">SDR</option><option value="hdr10">HDR10</option><option value="hlg">HLG</option><option value="dv">Dolby Vision</option></select></div>
+    <div><label for="meterTargetGamma">Target Gamma</label><select id="meterTargetGamma"><option value="2.2">2.2</option><option value="2.4">2.4</option><option value="bt1886">BT.1886</option><option value="srgb">sRGB</option></select></div>
+    <div><label for="meterTargetGamut">Target Gamut</label><select id="meterTargetGamut"><option value="auto">Auto</option><option value="bt709">BT.709</option><option value="bt2020">BT.2020</option><option value="p3d65">P3 / D65</option></select></div>
+    <div><label for="colorimetry">Container Colorimetry</label><select id="colorimetry"><option value="2">BT.709</option><option value="9">BT.2020</option></select></div>
+    <div><label for="primaries">HDR Primaries</label><select id="primaries"><option value="0">BT.2020</option><option value="2">P3 D65</option><option value="3">P3 DCI</option></select></div>
+    <div><label for="rgb_quant_range">RGB Quant Range</label><select id="rgb_quant_range"><option value="2">Full</option><option value="1">Limited</option></select></div>
+    <div><label for="color_format">Color Format</label><select id="color_format"><option value="0">RGB</option><option value="1">YCbCr</option></select></div>
+    <div><label for="max_luma">Peak Luma</label><input id="max_luma" type="number" value="1000" min="1" step="1"></div>
+    <div><label for="min_luma">Black Luma</label><input id="min_luma" type="number" value="0.005" min="0" step="0.001"></div>
+    <div><label for="meterGreyRefMode">Grey Ref Mode</label><select id="meterGreyRefMode"><option value="absolute">Absolute</option><option value="eotf">EOTF</option><option value="relative">Relative</option></select></div>
+    <div><label for="meterGrayWorld">Gray World</label><select id="meterGrayWorld"><option value="1">Off</option><option value="0.15">0.15</option><option value="0.05">0.05</option></select></div>
+    <div><label for="meterRgbBalanceFormula">RGB Balance Formula</label><select id="meterRgbBalanceFormula"><option value="hcfr">HCFR</option><option value="calman">Calman</option></select></div>
+    <div><label for="meterColorDeltaEForm">Color ΔE</label><select id="meterColorDeltaEForm"><option value="de2000">ΔE2000</option><option value="deitp">ΔE ITP</option></select></div>
+   </div>
+   <div class="btn-row">
+    <button id="runTestsBtn" type="button">Run Harness</button>
+    <button id="runDvProbeBtn" class="secondary" type="button">Probe DV 21pt</button>
+   </div>
+   <div class="note">
+    The DV probe verifies that the extracted WebUI logic follows the LG Calman Dolby Vision greyscale model:
+    <code>PowerFunction 2.2</code> from the emitted DV tunnel code, capped to the active reference peak.
+   </div>
+  </section>
 
-    function hcfrRelativeRefY(Ym, whiteY){
-      return (Ym>0 && whiteY>0) ? Ym/whiteY : 0;
-    }
+  <section class="card">
+   <div class="summary">
+    <div class="chip"><strong id="passCount">0</strong> pass</div>
+    <div class="chip"><strong id="failCount">0</strong> fail</div>
+    <div class="chip"><strong id="warnCount">0</strong> warn</div>
+   </div>
+   <table>
+    <thead>
+     <tr><th>Check</th><th>Expected</th><th>Actual</th><th>Notes</th></tr>
+    </thead>
+    <tbody id="resultsBody"></tbody>
+   </table>
+  </section>
+ </div>
 
-    function colorDeltaYPercent(measuredY, targetY){
-      return targetY>0 ? ((measuredY-targetY)/targetY*100) : 0;
-    }
+ <div class="hidden-fixture" aria-hidden="true">
+  <input id="meterHdrDiffuse" value="203">
+  <input id="meterHdrApplyBT2390" type="checkbox">
+  <input id="meterIncludeLumError" type="checkbox">
+  <select id="meterDeltaEForm"><option value="de2000" selected>ΔE2000</option></select>
+  <div id="meterHdrConfig"></div>
+ </div>
+</main>
 
-    function perfectGreyRgbBalance(){
-      return {R:100,G:100,B:100};
-    }
+<script>
+window.config = {
+  color_format: '0',
+  colorimetry: '2',
+  dv_status: '0',
+  eotf: '2',
+  is_hdr: '0',
+  max_luma: '1000',
+  min_luma: '0.005',
+  primaries: '0'
+};
+window.meterReadings = [];
+window.meterWhiteReading = null;
+window.meterActiveSeriesType = 'greyscale';
+window.meterActiveSeriesKey = '';
+window.clampNum = function(v, min, max){
+  const n = Number(v);
+  if(!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
+};
+</script>
+<script src="generated/webui-meter-math.js"></script>
+<script>
+const MODE_MATRIX = {
+  sdr: { signal_mode: 'sdr', colorimetry: '2', primaries: '0', gamma: '2.2', max_luma: 100, target_gamut: 'bt709' },
+  hdr10: { signal_mode: 'hdr10', colorimetry: '9', primaries: '0', gamma: '2.2', max_luma: 1000, target_gamut: 'bt2020' },
+  hlg: { signal_mode: 'hlg', colorimetry: '9', primaries: '0', gamma: '2.2', max_luma: 1000, target_gamut: 'bt2020' },
+  dv: { signal_mode: 'dv', colorimetry: '9', primaries: '2', gamma: '2.2', max_luma: 1000, target_gamut: 'p3d65' }
+};
 
-    document.getElementById('run').addEventListener('click',()=>{
-      const lines=[];
-      const c1=approx(hcfrRelativeRefY(1,100),0.01,0.0001,'Relative grey reference uses Ym / Ywhite');
-      lines.push(c1.line);
-      const c2=approx(colorDeltaYPercent(18,20),-10,0.001,'Color ΔY uses target Y normalization');
-      lines.push(c2.line);
-      const grey=perfectGreyRgbBalance();
-      const c3=approx(grey.R,100,0.001,'Perfect D65 grey keeps R at 100%');
-      const c4=approx(grey.G,100,0.001,'Perfect D65 grey keeps G at 100%');
-      const c5=approx(grey.B,100,0.001,'Perfect D65 grey keeps B at 100%');
-      lines.push(c3.line,c4.line,c5.line);
-      const c6=approx(BT709_00,3.2406,0.0001,'BT.709 analysis matrix constant');
-      const c7=approx(BT2020_00,1.7166511880,0.0001,'BT.2020 analysis matrix constant');
-      lines.push(c6.line,c7.line);
-      document.getElementById('out').textContent=lines.join('\n');
-    });
-  </script>
+function byId(id){ return document.getElementById(id); }
+function setValue(id, value){ const el = byId(id); if(el) el.value = String(value); }
+function setChecked(id, checked){ const el = byId(id); if(el) el.checked = !!checked; }
+function approx(a, b, tol){ return Math.abs(a - b) <= tol; }
+function fmt(value, digits){ return Number.isFinite(value) ? Number(value).toFixed(digits == null ? 4 : digits) : String(value); }
+
+function configureMode(modeKey){
+  const mode = MODE_MATRIX[modeKey];
+  if(!mode) throw new Error('Unknown mode '+modeKey);
+  setValue('signal_mode', mode.signal_mode);
+  setValue('colorimetry', mode.colorimetry);
+  setValue('primaries', mode.primaries);
+  setValue('meterTargetGamma', mode.gamma);
+  setValue('max_luma', mode.max_luma);
+  setValue('meterTargetGamut', mode.target_gamut);
+  config.colorimetry = String(mode.colorimetry);
+  config.primaries = String(mode.primaries);
+  config.max_luma = String(mode.max_luma);
+  config.min_luma = byId('min_luma').value;
+  config.is_hdr = modeKey === 'sdr' ? '0' : '1';
+  config.dv_status = modeKey === 'dv' ? '1' : '0';
+  config.eotf = modeKey === 'hlg' ? '3' : '2';
+}
+
+function signalFractionFromCode(code){
+  const min = byId('rgb_quant_range').value === '1' && byId('color_format').value !== '0' ? 16 : 0;
+  const span = min === 16 ? 219 : 255;
+  return Math.max(0, Math.min(1, (code - min) / span));
+}
+
+function pqToNits(code){
+  const clamped = Math.max(0, Math.min(1, code));
+  if(clamped <= 0) return 0;
+  const m1 = 2610 / 16384;
+  const m2 = 2523 / 32;
+  const c1 = 3424 / 4096;
+  const c2 = 2413 / 128;
+  const c3 = 2392 / 128;
+  const p = Math.pow(clamped, 1 / m2);
+  const num = Math.max(p - c1, 0);
+  const den = c2 - c3 * p;
+  if(den <= 0) return 10000;
+  return 10000 * Math.pow(num / den, 1 / m1);
+}
+
+function bt1886Expected(signal, peak, black){
+  const gamma = 2.4;
+  const a = Math.pow(Math.pow(peak, 1 / gamma) - Math.pow(black, 1 / gamma), gamma);
+  const b = Math.pow(black, 1 / gamma) / (Math.pow(peak, 1 / gamma) - Math.pow(black, 1 / gamma));
+  return a * Math.pow(Math.max(0, signal + b), gamma);
+}
+
+function srgbExpected(signal, peak){
+  const linear = signal <= 0.04045 ? signal / 12.92 : Math.pow((signal + 0.055) / 1.055, 2.4);
+  return linear * peak;
+}
+
+function oracleTargetLuminance(modeKey, signal, peak, black){
+  if(modeKey === 'hdr10') return Math.min(pqToNits(signal), peak);
+  if(modeKey === 'hlg') return null;
+  if(modeKey === 'dv') return Math.pow(Math.max(0, signal), 2.2) * peak;
+  const gamma = byId('meterTargetGamma').value;
+  if(gamma === 'bt1886') return bt1886Expected(signal, peak, black);
+  if(gamma === 'srgb') return srgbExpected(signal, peak);
+  return Math.pow(signal, parseFloat(gamma || '2.2')) * peak;
+}
+
+function buildPerfectD65Grey(y){
+  return { X: D65.X * y, Y: y, Z: D65.Z * y, ire: 50, r_code: 128, g_code: 128, b_code: 128 };
+}
+
+function warmGrey(){
+  const x = 0.3200;
+  const y = 0.3350;
+  const Y = 0.18;
+  return { X: (x / y) * Y, Y, Z: ((1 - x - y) / y) * Y, ire: 50, r_code: 128, g_code: 128, b_code: 128 };
+}
+
+function makeResult(status, name, expected, actual, notes){
+  return { status, name, expected, actual, notes };
+}
+
+function runHarness(){
+  const results = [];
+  setValue('rgb_quant_range', '2');
+  setValue('color_format', '0');
+  setValue('meterGreyRefMode', 'absolute');
+  setValue('meterRgbBalanceFormula', 'hcfr');
+
+  configureMode('sdr');
+  meterWhiteReading = buildPerfectD65Grey(1.0);
+  meterReadings = [meterWhiteReading];
+  let balance = rgbBalanceHCFR(buildPerfectD65Grey(0.18), meterWhiteReading, 'absolute');
+  results.push(
+    approx(balance.R, 100, 0.01) && approx(balance.G, 100, 0.01) && approx(balance.B, 100, 0.01)
+      ? makeResult('pass', 'HCFR perfect D65 grey', 'R/G/B = 100 ± 0.01', `R=${fmt(balance.R,2)} G=${fmt(balance.G,2)} B=${fmt(balance.B,2)}`, 'Verifies the extracted HCFR-style grey balance path stays centered on D65.')
+      : makeResult('fail', 'HCFR perfect D65 grey', 'R/G/B = 100 ± 0.01', `R=${fmt(balance.R,2)} G=${fmt(balance.G,2)} B=${fmt(balance.B,2)}`, 'The RGB balance reference is no longer neutral for a perfect D65 grey.')
+  );
+
+  balance = rgbBalanceHCFR(warmGrey(), meterWhiteReading, 'absolute');
+  results.push(
+    balance.R > 100 && balance.B < 100
+      ? makeResult('pass', 'Warm grey directionality', 'R > 100 and B < 100', `R=${fmt(balance.R,2)} G=${fmt(balance.G,2)} B=${fmt(balance.B,2)}`, 'Pins the expected sign of a warm-grey deviation.')
+      : makeResult('fail', 'Warm grey directionality', 'R > 100 and B < 100', `R=${fmt(balance.R,2)} G=${fmt(balance.G,2)} B=${fmt(balance.B,2)}`, 'The matrix or neutral-axis math drifted.')
+  );
+
+  configureMode('hdr10');
+  const hdrSignal = 0.58;
+  const hdrActual = meterChartTargetLuminance(hdrSignal, 1000, 0);
+  const hdrExpected = oracleTargetLuminance('hdr10', hdrSignal, 1000, 0);
+  results.push(
+    approx(hdrActual, hdrExpected, 0.001)
+      ? makeResult('pass', 'HDR10 PQ target luminance', fmt(hdrExpected,3), fmt(hdrActual,3), 'HDR10 should follow ST.2084 decode clipped to peak luminance.')
+      : makeResult('fail', 'HDR10 PQ target luminance', fmt(hdrExpected,3), fmt(hdrActual,3), 'The HDR10 target helper no longer matches PQ decode.')
+  );
+
+  configureMode('dv');
+  const dvCode = 202;
+  const dvSignal = meterSignalFractionFromCode(dvCode);
+  const dvActual = meterGreyTargetLuminance(60, 1000, 0, dvCode);
+  const dvExpected = oracleTargetLuminance('dv', dvSignal, 1000, 0);
+  results.push(
+    approx(dvActual, dvExpected, 0.5)
+      ? makeResult('pass', 'DV target luminance', fmt(dvExpected,3), fmt(dvActual,3), 'WebUI DV target luminance matches the LG Calman PowerFunction 2.2 model.')
+      : makeResult('fail', 'DV target luminance', fmt(dvExpected,3), fmt(dvActual,3), 'WebUI DV target luminance drifted away from the LG Calman PowerFunction 2.2 model.')
+  );
+
+  const dvAutoTarget = meterAnalysisGamutKey();
+  const dvContainer = meterContainerGamutKey();
+  results.push(
+    dvAutoTarget === 'p3d65' && dvContainer === 'bt2020'
+      ? makeResult('pass', 'DV gamut split', 'analysis=p3d65, container=bt2020', `analysis=${dvAutoTarget}, container=${dvContainer}`, 'Confirms the LG DV target/container split used by current WebUI logic.')
+      : makeResult('fail', 'DV gamut split', 'analysis=p3d65, container=bt2020', `analysis=${dvAutoTarget}, container=${dvContainer}`, 'DV target and stimulus gamuts have drifted from the intended split.')
+  );
+
+  configureMode('hlg');
+  results.push(
+    meterChartSignalMode() === 'hlg' && meterChartIsHdr() && !meterChartIsPq()
+      ? makeResult('pass', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'Matches the Calman/HLG source split where HLG should not be treated as PQ.')
+      : makeResult('fail', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'HLG classification drift will poison chart selection and target math.')
+  );
+
+  renderResults(results);
+}
+
+function probeDv21pt(){
+  configureMode('dv');
+  const peak = parseFloat(byId('max_luma').value || '1000');
+  const results = [];
+  [5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100].forEach((ire) => {
+    const code = Math.round(Math.pow(ire / 100, 1 / 2.2) * 255);
+    const signal = meterSignalFractionFromCode(code);
+    const actual = meterGreyTargetLuminance(ire, peak, 0, code);
+    const expected = oracleTargetLuminance('dv', signal, peak, 0);
+    const status = approx(actual, expected, 0.5) ? 'pass' : 'warn';
+    results.push(makeResult(status, `DV ${ire}%`, fmt(expected,2), fmt(actual,2), `code=${code} signal=${fmt(signal,4)}`));
+  });
+  renderResults(results);
+}
+
+function renderResults(results){
+  const body = byId('resultsBody');
+  body.innerHTML = '';
+  let pass = 0, fail = 0, warn = 0;
+  results.forEach((result) => {
+    if(result.status === 'pass') pass += 1;
+    else if(result.status === 'fail') fail += 1;
+    else warn += 1;
+    const tr = document.createElement('tr');
+    tr.className = result.status;
+    tr.innerHTML = `<td>${result.name}</td><td><code>${result.expected}</code></td><td><code>${result.actual}</code></td><td>${result.notes}</td>`;
+    body.appendChild(tr);
+  });
+  byId('passCount').textContent = String(pass);
+  byId('failCount').textContent = String(fail);
+  byId('warnCount').textContent = String(warn);
+}
+
+byId('runTestsBtn').addEventListener('click', runHarness);
+byId('runDvProbeBtn').addEventListener('click', probeDv21pt);
+runHarness();
+</script>
 </body>
 </html>

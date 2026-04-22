@@ -603,15 +603,14 @@ sub pattern_daemon {
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("is_ll_dovi","1");
-    $calman_save_setting->("is_std_dovi","0");
+    $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
-    $calman_save_setting->("dv_interface","2");
+    $calman_save_setting->("dv_interface","1");
      $calman_save_setting->("color_format","0");
      $calman_save_setting->("colorimetry","9");
      $calman_save_setting->("primaries","1");
      $calman_save_setting->("max_bpc","12");
      $calman_save_setting->("rgb_quant_range","2");
-    $calman_save_setting->("dv_color_space","1");
      $calman_save_setting->("dv_map_mode","$dv_map_mode") if(defined $dv_map_mode && $dv_map_mode ne "");
      $calman_save_setting->("dv_metadata","$dv_metadata") if(defined $dv_metadata && $dv_metadata ne "");
     };
