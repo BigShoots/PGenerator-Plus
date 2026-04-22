@@ -1,0 +1,46 @@
+{
+  "sdr": {
+    "signalMode": "sdr",
+    "analysisGamut": "bt709",
+    "containerGamut": "bt709",
+    "targetModel": {
+      "luminance": "selected SDR target gamma",
+      "gamma": "effective point gamma / BT.1886 / sRGB / power",
+      "rgbBalance": "HCFR or Calman selector"
+    },
+    "expectedCharts": ["rgb-balance", "luminance", "gamma", "delta-e"]
+  },
+  "hdr10": {
+    "signalMode": "hdr10",
+    "analysisGamut": "bt2020 or selected target gamut for analysis",
+    "containerGamut": "bt2020",
+    "targetModel": {
+      "luminance": "ST.2084 PQ clipped to peak",
+      "gamma": "effective PQ-derived exponent",
+      "pq": "Target_PQ and PQ_Diff style behavior"
+    },
+    "expectedCharts": ["rgb-balance", "luminance", "eotf-pq", "gamma", "delta-e"]
+  },
+  "hlg": {
+    "signalMode": "hlg",
+    "analysisGamut": "bt2020",
+    "containerGamut": "bt2020",
+    "targetModel": {
+      "luminance": "HLG EOTF / OOTF-based target",
+      "gamma": "not a generic PQ target; validate luminance/EOTF first",
+      "pq": "should not be treated as PQ"
+    },
+    "expectedCharts": ["rgb-balance", "luminance", "eotf-hlg", "delta-e"]
+  },
+  "dv": {
+    "signalMode": "dv",
+    "analysisGamut": "p3d65",
+    "containerGamut": "bt2020",
+    "targetModel": {
+      "luminance": "PowerFunction 2.2 over emitted DV tunnel stimulus",
+      "gamma": "effective exponent derived from DV 2.2 target",
+      "pq": "do not use generic ST.2084 target for LG DV greyscale"
+    },
+    "expectedCharts": ["rgb-balance", "luminance", "gamma", "delta-e"]
+  }
+}
