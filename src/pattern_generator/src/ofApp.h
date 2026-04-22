@@ -50,7 +50,9 @@ class ofApp : public ofBaseApp{
   ofFbo fbo10;
   ofFbo fbo_dovi;
   int arr_bits[2048][2048];
+  int arr_source_range[2048][2048];
   int bits;
+  int source_range=0;
   std::string previous_draw_type;
   std::string previous_image; 
   /* End Patch For RPI 4 */
@@ -125,6 +127,7 @@ class ofApp : public ofBaseApp{
   /* Start Patch For RPI 4 */
   void setColor(int red, int green, int blue);
   void setBackground(int redbg, int greenbg, int bluebg);
+  int normalizeSourceValue(int value, int source_range_mode);
   void setDoViBackground(int redbg, int greenbg, int bluebg);
   void shader_begin(int is_image);
   void shader_end(int is_image);

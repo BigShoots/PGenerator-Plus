@@ -48,6 +48,7 @@ sub resolve_connection_thread (@) {
   &log("Resolve: disconnected from $ip:$port");
   $calibration_client_ip="";
   $calibration_client_software="";
+    &release_source_rgb_quant_range("resolve");
   # Show black pattern when disconnected
   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$bg_default","","","","",1,"resolve");
  }
@@ -192,6 +193,7 @@ sub resolve_connect (@) {
   my $pattern_key="$rgb_str;$bg_str;$geom_x;$geom_y;$geom_cx;$geom_cy;$bits";
   next if($pattern_key eq $last_pattern_key);
   $last_pattern_key=$pattern_key;
+    &apply_source_rgb_quant_range("resolve",2);
   &clean_pattern_files();
   # Full field pattern (geometry covers entire screen)
   if($geom_cx >= 0.99 && $geom_cy >= 0.99) {

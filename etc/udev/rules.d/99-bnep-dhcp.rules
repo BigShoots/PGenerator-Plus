@@ -1,2 +1,3 @@
-# Restart DHCP when a BT PAN device connects (bnep0 created)
-SUBSYSTEM=="net", ACTION=="add", KERNEL=="bnep[0-9]*", RUN+="/usr/bin/pgenerator-bnep-hook.sh"
+# Restart DHCP when a BT PAN device connects or is renamed into place.
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="bnep[0-9]*", RUN+="/usr/bin/pgenerator-bnep-hook.sh %k"
+SUBSYSTEM=="net", ACTION=="move", KERNEL=="bnep[0-9]*", RUN+="/usr/bin/pgenerator-bnep-hook.sh %k"

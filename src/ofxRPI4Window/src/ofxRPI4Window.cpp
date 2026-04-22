@@ -1645,12 +1645,13 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		in vec2 texCoordVarying; 
 		out vec4 outputColor;
 		
-		vec4 RGBtoYCbCr(vec4 rgb) 
+		vec4 RGBtoYCbCr(vec4 rgb1, vec4 rgb2) 
 		{		
-			float Y, Cb, Cr, a;
-			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
-			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
-			Cr = round((coeffs_div.z * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.y) * rgb.g*float(scale) - (coeffs_num.z/coeffs_div.y) * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
+			float Y, Y1, Y2, Cb, Cr, a;
+			int R1, G1, B1, R2, G2, B2;
+			Y = round(coeffs_num.x * rgb1.r*float(scale) + coeffs_num.y* rgb1.g*float(scale) + coeffs_num.z * rgb1.b*float(scale));
+			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb1.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb1.g*float(scale) + coeffs_div.z * rgb1.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
+			Cr = round((coeffs_div.z * rgb1.r*float(scale) - (coeffs_num.y/coeffs_div.y) * rgb1.g*float(scale) - (coeffs_num.z/coeffs_div.y) * rgb1.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
 			a = 1.0;
  
 		
@@ -1665,14 +1666,46 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);
 		//	return vec4(Y,Cb,Cr, a); 
 			}
+			if (color_format == 0) {
+				float packScale = float(scale + 1);
+				float offset12 = float(offset << 4);
+				float r1 = float(int(rgb1.r * packScale) << 4);
+				float g1 = float(int(rgb1.g * packScale) << 4);
+				float b1 = float(int(rgb1.b * packScale) << 4);
+				float r2 = float(int(rgb2.r * packScale) << 4);
+				float g2 = float(int(rgb2.g * packScale) << 4);
+				float b2 = float(int(rgb2.b * packScale) << 4);
+				Y1 = round(coeffs_num.x * r1 + coeffs_num.y * g1 + coeffs_num.z * b1);
+				Y2 = round(coeffs_num.x * r2 + coeffs_num.y * g2 + coeffs_num.z * b2);
+				Cb = round((((-coeffs_num.x/coeffs_div.x) * r1 - (coeffs_num.y/coeffs_div.x) * g1 + coeffs_div.z * b1 + (-coeffs_num.x/coeffs_div.x) * r2 - (coeffs_num.y/coeffs_div.x) * g2 + coeffs_div.z * b2) * float(scalar1) / float(scalar2)) / 2.0 + offset12);
+				Cr = round(((coeffs_div.z * r1 - (coeffs_num.y/coeffs_div.y) * g1 - (coeffs_num.z/coeffs_div.y) * b1 + coeffs_div.z * r2 - (coeffs_num.y/coeffs_div.y) * g2 - (coeffs_num.z/coeffs_div.y) * b2) * float(scalar1) / float(scalar2)) / 2.0 + offset12);
+				R1 = int(Cb) >> 4;
+				G1 = int(Y1) >> 4;
+				B1 = int(Y1) & 15 | ((int(Cb) & 15) << 4);
+				R2 = int(Cr) >> 4;
+				G2 = int(Y2) >> 4;
+				B2 = int(Y2) & 15 | ((int(Cr) & 15) << 4);
+
+				if(mod(gl_FragCoord.x,2.0)<1.0) {
+					return vec4(float(G1)/255.0,float(B1)/255.0,float(R1)/255.0,a);
+				}
+				return vec4(float(G2)/255.0,float(B2)/255.0,float(R2)/255.0,a);
+			}
+			return rgb;
 		}
 
 		void main() {
 			if (is_image == 1) {
 				vec4 color = texture(tex0, texCoordVarying);
-				outputColor = RGBtoYCbCr(color.rgba);
+				if (color_format == 0) {
+					vec2 onePixel = vec2(1.0, 0.0) / resolution;
+					vec4 color2 = texture(tex0, texCoordVarying + onePixel);
+					outputColor = RGBtoYCbCr(color.rgba, color2.rgba);
+				} else {
+					outputColor = RGBtoYCbCr(color.rgba, color.rgba);
+				}
 			} else {
-				outputColor = RGBtoYCbCr(globalColor.rgba);
+				outputColor = RGBtoYCbCr(globalColor.rgba, globalColor.rgba);
 			}
 		}
 		
@@ -2235,8 +2268,8 @@ void ofxRPI4Window::HDRWindowSetup()
          currentRenderer.reset();  
         currentRenderer = make_shared<ofGLProgrammableRenderer>(this);
         makeCurrent();
-        static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
-		if (avi_info.output_format != 0 && shader_init) { 
+		static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
+		if ((avi_info.output_format != 0 || (isDoVi && !is_std_DoVi && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)) && shader_init) {
 
 			rgb2ycbcr_shader();
 		}
@@ -2779,8 +2812,8 @@ int ret;
 
         currentRenderer = make_shared<ofGLProgrammableRenderer>(this);
         makeCurrent();
-        static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
-		if (avi_info.output_format != 0 && shader_init) { 
+		static_cast<ofGLProgrammableRenderer*>(currentRenderer.get())->setup(3,1);
+		if ((avi_info.output_format != 0 || (isDoVi && !is_std_DoVi && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)) && shader_init) {
 
 			rgb2ycbcr_shader();
 
@@ -2878,14 +2911,20 @@ void ofxRPI4Window::update()
 			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
 				ofLog() << "DRM: updating Low Latency DoVi(10 bit) window/surface"; 
 				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
+					shader_init = 1;
 				HDRWindowSetup();
 			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
 				ofLog() << "DRM: updating Low Latency DoVi(12 bit) window/surface"; 
 				FindModifiers(DRM_FORMAT_ABGR16161616F, HDRplaneId);
+				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
+					shader_init = 1;
 				Bit10_16WindowSetup();
 			} else {
 				ofLog() << "DRM: updating Low Latency Dovi(8 bit) window/surface"; 
 				FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
+				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
+					shader_init = 1;
 				SDRWindowSetup();				
 			}	
 
