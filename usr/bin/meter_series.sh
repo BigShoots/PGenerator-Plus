@@ -274,6 +274,88 @@ else:
  return 1
 }
 
+WHITE_READING="null"
+
+# DEBUG: Log this execution for troubleshooting
+echo "[$(date '+%H:%M:%S.%3N')] meter_series.sh started: SERIES_ID=$SERIES_ID" >> /tmp/meter_series_debug.log
+
+# Saturation sweeps need a fresh mode-matched white reference for target Y,
+# but this pre-read should not become a chart/table step.
+if [[ "$SERIES_ID" == saturations_* ]]; then
+ echo "[$(date '+%H:%M:%S')] WHITE PRE-READ GATE ENTERED for SERIES_ID=$SERIES_ID" >> /tmp/meter_series_debug.log
+ if [[ -f "$STEPS_FILE" ]]; then
+  FIRST_R=$(get_step_field 0 r)
+  if [[ "$FIRST_R" =~ ^[0-9]+$ ]]; then
+   WHITE_CODE="$FIRST_R"
+  fi
+ fi
+
+ cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (displaying)","readings":[]}
+EOJSON
+
+ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"patch\",\"r\":$WHITE_CODE,\"g\":$WHITE_CODE,\"b\":$WHITE_CODE,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+ sleep 1.5
+
+ cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (reading)","readings":[]}
+EOJSON
+
+ PREV_COUNT=$(count_results)
+ DEBUG_LOG="/tmp/white_read_debug_$$.log"
+ echo "[$(date '+%H:%M:%S')] Starting white pre-read: PREV_COUNT=$PREV_COUNT, OUTFILE=$OUTFILE" > "$DEBUG_LOG"
+ 
+ printf " " >&3
+ READ_START=$SECONDS
+ GOT_RESULT=false
+ ITERATIONS=0
+ 
+ while (( SECONDS - READ_START < 20 )); do
+  CUR_COUNT=$(count_results)
+  ITERATIONS=$((ITERATIONS + 1))
+  echo "[$(date '+%H:%M:%S.%3N')] Iteration $ITERATIONS (elapsed $((SECONDS - READ_START))s): PREV_COUNT=$PREV_COUNT CUR_COUNT=$CUR_COUNT" >> "$DEBUG_LOG"
+  if (( CUR_COUNT > PREV_COUNT )); then
+   GOT_RESULT=true
+   echo "[$(date '+%H:%M:%S')] GOT_RESULT=true at iteration $ITERATIONS after $((SECONDS - READ_START))s" >> "$DEBUG_LOG"
+   break
+  fi
+  sleep 0.3
+ done
+
+ ELAPSED=$((SECONDS - READ_START))
+ echo "[$(date '+%H:%M:%S')] Loop complete: GOT_RESULT=$GOT_RESULT ITERATIONS=$ITERATIONS ELAPSED=${ELAPSED}s" >> "$DEBUG_LOG"
+ 
+ if $GOT_RESULT; then
+  PARSED=$(parse_latest_result)
+  echo "[$(date '+%H:%M:%S')] PARSED=(${#PARSED} chars) = $PARSED" >> "$DEBUG_LOG"
+  if [[ -n "$PARSED" ]]; then
+   WHITE_READING=$(python -c "
+import json
+r=json.loads('''$PARSED''')
+r['ire']=100
+r['name']='White Ref'
+r['r_code']=$WHITE_CODE
+r['g_code']=$WHITE_CODE
+r['b_code']=$WHITE_CODE
+print(json.dumps(r))
+" 2>/dev/null || echo "null")
+   echo "[$(date '+%H:%M:%S')] WHITE_READING set successfully (${#WHITE_READING} chars)" >> "$DEBUG_LOG"
+  else
+   echo "[$(date '+%H:%M:%S')] PARSED was empty, WHITE_READING stays null" >> "$DEBUG_LOG"
+  fi
+ else
+  echo "[$(date '+%H:%M:%S')] GOT_RESULT was false, WHITE_READING stays null" >> "$DEBUG_LOG"
+ fi
+ 
+ echo "[$(date '+%H:%M:%S')] Final WHITE_READING=$WHITE_READING" >> "$DEBUG_LOG"
+ cat "$DEBUG_LOG" >> /tmp/white_read_series.log 2>/dev/null
+
+ cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y","readings":[],"white_reading":$WHITE_READING,"debug":{"iterations":$ITERATIONS,"elapsed":$ELAPSED,"got_result":$GOT_RESULT}}
+EOJSON
+fi
+
 READINGS=""
 READING_COUNT=0
 
@@ -287,7 +369,7 @@ for (( i=0; i<TOTAL; i++ )); do
 
  # Update state: displaying
  cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (displaying)","readings":[$READINGS]}
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
  # ABL stabilization: flash mid-gray between patches
@@ -314,7 +396,7 @@ EOJSON
 
  # Update state: reading
  cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (reading)","readings":[$READINGS]}
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (reading)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
  # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
@@ -330,7 +412,7 @@ EOJSON
   fi
   READING_COUNT=$((READING_COUNT + 1))
   cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS]}
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
   continue
  fi
@@ -399,7 +481,7 @@ print(json.dumps(r))
 
  # Update state
  cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS]}
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 done
 
@@ -425,5 +507,5 @@ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
 
 # Mark complete
 cat > "$STATE_FILE" << EOJSON
-{"status":"complete","series_id":"$SERIES_ID","current_step":$TOTAL,"total_steps":$TOTAL,"current_name":"Done","readings":[$READINGS]}
+{"status":"complete","series_id":"$SERIES_ID","current_step":$TOTAL,"total_steps":$TOTAL,"current_name":"Done","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
