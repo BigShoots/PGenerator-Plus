@@ -1,3 +1,6 @@
 # Restart DHCP when a BT PAN device connects or is renamed into place.
+# Some images expose the PAN link as plain "bnep", others as "bnep0"/"bnep1".
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="bnep", RUN+="/usr/bin/pgenerator-bnep-hook.sh %k"
+SUBSYSTEM=="net", ACTION=="move", KERNEL=="bnep", RUN+="/usr/bin/pgenerator-bnep-hook.sh %k"
 SUBSYSTEM=="net", ACTION=="add", KERNEL=="bnep[0-9]*", RUN+="/usr/bin/pgenerator-bnep-hook.sh %k"
 SUBSYSTEM=="net", ACTION=="move", KERNEL=="bnep[0-9]*", RUN+="/usr/bin/pgenerator-bnep-hook.sh %k"
