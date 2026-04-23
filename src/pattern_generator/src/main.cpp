@@ -51,7 +51,7 @@ std::string dv_map_mode="2";
 std::string dv_minpq="62";
 std::string dv_maxpq="3696";
 std::string dv_diagonal="42";
-std::string dv_color_space="1";
+std::string dv_color_space="0";
 /* Include RPI p4 header file */
 #include "ofxRPI4Window.h"
 // End Patch RPI p4
@@ -144,6 +144,7 @@ int main(int argc, char **argv){
   ofxRPI4Window::dv_status=atoi(dv_status.c_str());
   ofxRPI4Window::dv_interface=atoi(dv_interface.c_str());
   ofxRPI4Window::dv_profile=atoi(dv_profile.c_str());
+  ofxRPI4Window::dv_map_mode=atoi(dv_map_mode.c_str());
   ofApp::dv_map_mode=atoi(dv_map_mode.c_str());
   ofApp::dv_minpq=atoi(dv_minpq.c_str());
   ofApp::dv_maxpq=atoi(dv_maxpq.c_str());
