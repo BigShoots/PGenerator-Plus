@@ -1451,6 +1451,7 @@ int ofxRPI4Window::mode_idx = 0;
 int ofxRPI4Window::dv_profile = 2;
 int ofxRPI4Window::dv_status = 0;
 int ofxRPI4Window::dv_interface = 0;
+int ofxRPI4Window::dv_map_mode = 2;
 //int ofxRPI4Window::dv_minpq = 0;
 //int ofxRPI4Window::dv_maxpq = 0;
 //int ofxRPI4Window::dv_diagonal = 0;
@@ -3706,7 +3707,7 @@ void ofxRPI4Window::updateDoVi_Infoframe(int enable, int dv_interface)
 		dovi.dv_interface = dv_interface; 
 		dovi.backlight_metadata = 0;
 		dovi.backlight_max_luminance = 0;
-		dovi.aux_runmode = 0;
+		dovi.aux_runmode = (uint8_t)ofClamp(ofxRPI4Window::dv_map_mode, 0, 255);
 		dovi.aux_version = 0;
 		dovi.aux_debug = 0;
 		drmModeCreatePropertyBlob(device, &dovi, sizeof(dovi), (uint32_t*)&blob_id); 
