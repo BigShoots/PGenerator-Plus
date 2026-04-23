@@ -403,6 +403,7 @@ public:
 	static int dv_profile;	
 	static int dv_status;
 	static int dv_interface; 
+	static int dv_map_mode;
 //	static int dv_minpq; 
 //	static int dv_maxpq; 
 //	static int dv_diagonal; 
