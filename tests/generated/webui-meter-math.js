@@ -1,6 +1,6 @@
 // Generated file. Do not edit directly.
 // Source: /mnt/homestorage/Projects/PGenerator_reference/PGenerator_plus/usr/share/PGenerator/webui.pm
-// Source SHA-256: 322fec607e88
+// Source SHA-256: 6c18c28a0ca4
 // Extracted by tools/extract_webui_meter_math.py
 
 // D65 reference white chromaticity
@@ -118,11 +118,14 @@ function meterAnalysisGamut(){
 }
 
 function meterStimulusSolveGamut(){
- // DV rides in a BT.2020 RGB transport container. Keep analysis targets on
- // the selected gamut, but solve emitted stimulus RGB in the container so
- // the decoded signal lands on the requested chromaticity.
+ // HDR/DV stimuli travel in their container gamut even when chart targets are
+ // analyzed in a smaller target gamut such as P3-D65.
  if(meterChartIsDv()) return meterContainerGamut();
  return meterChartIsPq() ? meterContainerGamut() : meterAnalysisGamut();
+}
+
+function meterTargetSolveGamut(){
+ return meterAnalysisGamut();
 }
 
 function xyzToLinRgb(X,Y,Z,matrix){
@@ -226,8 +229,23 @@ function meterColorLevelPercent(){
 }
 
 function meterFindMeasuredWhiteReading(){
+ const currentMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const readingMatchesMode=(rd)=>{
+  if(!rd) return false;
+  const rdMode=String((rd.signal_mode||'')).toLowerCase();
+  if(rdMode) return rdMode===currentMode;
+  // Legacy cached readings may not carry signal_mode. For SDR, reject
+  // implausibly high white luminance snapshots that are almost certainly
+  // stale HDR/DV references.
+  if(currentMode==='sdr'){
+   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
+   if(lum>300) return false;
+  }
+  return true;
+ };
  const isWhiteReading=(rd)=>{
   if(!rd) return false;
+  if(!readingMatchesMode(rd)) return false;
   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
   if(!(lum>0)) return false;
   const name=String(rd.name||'').toLowerCase();
@@ -248,6 +266,8 @@ function meterFindMeasuredWhiteReading(){
  let best=null;
  const considerSnapshot=(snap)=>{
   if(!snap||!Array.isArray(snap.readings)) return;
+  const snapMode=String((snap.signal_mode||'')).toLowerCase();
+  if(snapMode && snapMode!==currentMode) return;
   const white=snap.readings.find(isWhiteReading);
   if(!white) return;
   const updated=(snap.updated_at||0);
@@ -259,6 +279,15 @@ function meterFindMeasuredWhiteReading(){
 }
 
 function meterColorReferenceNits(){
+ if(meterChartIsDv()){
+  // Calman DV fallback uses a display peak reference derived from measured
+  // white in relative-map mode, and mastering peak in absolute-map mode.
+  const master=Math.max(1,meterChartMasterPeak());
+  if(meterDvMapModeValue()==='1') return master;
+  const white=meterFindMeasuredWhiteReading();
+  const measured=(white&&white.Y>0)?white.Y:master;
+  return Math.max(1,Math.min(master,measured));
+ }
  const white=meterFindMeasuredWhiteReading();
  if(white&&white.Y>0) return white.Y;
  if(meterChartIsPq()&&!meterChartIsDv()) return meterChartHdrPeak();
@@ -272,6 +301,24 @@ function meterBlackReadingY(){
   .map(r=>r.luminance||r.Y||0)
   .filter(v=>v>=0);
  return blacks.length>0?Math.min(...blacks):0;
+}
+
+function meterDisplayIsOled(){
+ const dt=((document.getElementById('meterDisplayType')||{}).value||'').toLowerCase();
+ return dt.indexOf('oled')!==-1;
+}
+
+// Infer chart black level. On OLED, true black can time out and be missing;
+// use only true 0% greyscale reading (or 0 fallback) in every mode.
+function meterChartBlackLevel(readings){
+ const gs=(Array.isArray(readings)?readings:[])
+  .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
+ const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
+ if(trueBlack.length>0) return Math.min(...trueBlack);
+ if(meterDisplayIsOled()) return 0;
+ if(!meterChartIsHdr()) return 0;
+ const nearBlack=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||0);
+ return nearBlack.length>0?Math.min(...nearBlack):0;
 }
 
 function meterColorLabWhite(){
@@ -332,6 +379,10 @@ function meterEncodeColorCheckerFullSatChannel(active){
  return min+span;
 }
 
+function meterFullSatChannelIsActive(linear){
+ return Number(linear||0) > 1e-6;
+}
+
 function meterEncodeSaturationLinear(linear){
  const min=meterPatchRangeMin();
  const span=meterPatchRangeSpan();
@@ -351,9 +402,14 @@ function meterSaturationStimulusLinearLevel(){
  return meterTargetSignalToLinear(actualPercent);
 }
 
+function meterSaturationSolveGamut(){
+ if(meterChartIsDv()) return meterContainerGamut();
+ return meterStimulusSolveGamut();
+}
+
 function meterBuildSaturationStepRgb(colorName,satPercent){
- const linear=meterBuildSaturationStimulusLinearRgb(colorName,satPercent);
- return linear.map(v=>meterEncodeSignalChannel(v));
+ const rgb=meterBuildSaturationStimulusLinearRgb(colorName,satPercent);
+ return rgb.map(v=>meterEncodeSaturationLinear(v));
 }
 
 function meterGamutColorEndpointRgb(colorName){
@@ -368,8 +424,8 @@ function meterGamutColorEndpointRgb(colorName){
  }
 }
 
-function meterGamutColorEndpointXY(colorName){
- const gamut=meterAnalysisGamut();
+function meterGamutColorEndpointXY(colorName,gamutOverride){
+ const gamut=gamutOverride||meterAnalysisGamut();
  const rgb=meterGamutColorEndpointRgb(colorName);
  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],gamut.rgbToXyz);
  const sum=xyz.X+xyz.Y+xyz.Z;
@@ -379,7 +435,7 @@ function meterGamutColorEndpointXY(colorName){
 function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
  const solveGamut=meterAnalysisGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
- const endpoint=meterGamutColorEndpointXY(colorName);
+ const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
  if(y<=0) return [0,0,0];
@@ -390,9 +446,9 @@ function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
 }
 
 function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
- const solveGamut=meterStimulusSolveGamut();
+ const solveGamut=meterSaturationSolveGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
- const endpoint=meterGamutColorEndpointXY(colorName);
+ const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
  if(y<=0) return [0,0,0];
@@ -403,8 +459,8 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
 }
 
 function meterBuildFullGamutTargetLinearRgb(colorName){
- const solveGamut=meterStimulusSolveGamut();
- const endpoint=meterGamutColorEndpointXY(colorName);
+ const solveGamut=meterTargetSolveGamut();
+ const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
  const x=endpoint.x;
  const y=endpoint.y;
  if(y<=0) return [0,0,0];
@@ -417,14 +473,44 @@ function meterColorCheckerFullSatTargetXYZ(colorName){
  return meterSaturationTargetXYZ(colorName,100);
 }
 
+function meterInferSdrSatReferenceNits(){
+ if(meterChartIsHdr()) return null;
+ const rows=(Array.isArray(meterReadings)?meterReadings:[])
+  .filter(r=>r&&r.series_color&&r.sat_pct!=null&&((r.luminance!=null&&r.luminance>0)||(r.Y!=null&&r.Y>0)));
+ if(rows.length<6) return null;
+ const estimates=[];
+ rows.forEach(r=>{
+  const measuredY=(r.luminance!=null)?Number(r.luminance):Number(r.Y);
+  if(!(measuredY>0)) return;
+  const rgb=meterBuildSaturationTargetLinearRgb(String(r.series_color),Number(r.sat_pct));
+  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
+  if(!(xyz&&xyz.Y>1e-9)) return;
+  const est=measuredY/xyz.Y;
+  if(est>30&&est<400) estimates.push(est);
+ });
+ if(estimates.length<6) return null;
+ estimates.sort((a,b)=>a-b);
+ const mid=Math.floor(estimates.length/2);
+ return estimates.length%2 ? estimates[mid] : (estimates[mid-1]+estimates[mid])/2;
+}
+
 function meterSaturationTargetXYZ(colorName,satPercent){
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
- const refY=Math.max(1,meterColorReferenceNits());
- const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterAnalysisGamut().rgbToXyz);
- // Return the target in the same absolute luminance scale as meter readings
- // so live RGB / XyY deltas for sat sweeps compare like-for-like instead of
- // exploding into huge percentages from a 0..1-relative target.
- return {X:xyz.X*refY,Y:xyz.Y*refY,Z:xyz.Z*refY};
+ const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
+ // For PQ the linear RGB is scaled by meterChartPqDecodeNormalized()/10000,
+ // so xyz values are already relative to the 10000-nit PQ reference.
+ // Multiply by 10000 to recover absolute nits.
+ // For SDR/HLG/DV the linear RGB is in 0..1 relative to display peak, so
+ // multiply by meterColorReferenceNits() as before.
+ let scale=meterChartIsPq()&&!meterChartIsDv()?10000:Math.max(1,meterColorReferenceNits());
+ if(!(meterChartIsPq()&&!meterChartIsDv()) && !meterChartIsHdr()){
+  const white=meterFindMeasuredWhiteReading();
+  if(!(white&&white.Y>0)){
+   const inferred=meterInferSdrSatReferenceNits();
+   if(inferred>0) scale=inferred;
+  }
+ }
+ return {X:xyz.X*scale,Y:xyz.Y*scale,Z:xyz.Z*scale};
 }
 
 function meterParseSaturationReading(reading){
@@ -501,12 +587,6 @@ function meterTargetXYZForReading(reading){
  if(satInfo){
   if(meterActiveSeriesType==='colors' && satInfo.sat===100){
    return meterColorCheckerFullSatTargetXYZ(satInfo.color);
-  }
-  if(meterActiveSeriesType==='saturations'){
-   const r=reading.r_code!=null?reading.r_code:reading.r;
-   const g=reading.g_code!=null?reading.g_code:reading.g;
-   const b=reading.b_code!=null?reading.b_code:reading.b;
-   return targetColorXYZAbs(r,g,b);
   }
   return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  }
@@ -809,9 +889,9 @@ function meterBuildColorCheckerStepsJS(){
   const rgb=meterBuildFullGamutTargetLinearRgb(colorName);
   steps.push({
    ire:100,
-   r:meterEncodeColorCheckerFullSatChannel(rgb[0]>0),
-   g:meterEncodeColorCheckerFullSatChannel(rgb[1]>0),
-   b:meterEncodeColorCheckerFullSatChannel(rgb[2]>0),
+   r:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[0])),
+   g:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[1])),
+   b:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[2])),
    name:name,
    series_color:colorName,
    sat_pct:100
@@ -1166,11 +1246,6 @@ function meterGreyStimulusFraction(ire){
 
 function meterGreyTargetSignal(ire,code){
  const nominal=Math.max(0,Math.min(1,(ire||0)/100));
- // DV charting should follow the requested greyscale step itself, then apply
- // display clipping at the calibrated/reference white. Using raw transport
- // code here changes the target shape away from the chart behavior the UI had
- // previously and no longer matches the expected DV chart appearance.
- if(meterChartIsDv()) return nominal;
  if(code!=null) return meterSignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
@@ -1203,6 +1278,52 @@ function meterGreyTargetEotfValue(ire,Lw,Lb,code){
  return peak>0 ? tgtLum/peak : 0;
 }
 
+function meterEotfLogScaleEnabled(){
+ const el=document.getElementById('meterEotfLogScale');
+ return !!(el && el.checked);
+}
+
+// Log-strength tuned for EOTF ratio charts: keeps linear behavior available,
+// while revealing near-black structure in HDR where PQ appears compressed.
+function meterEotfLogAlpha(){
+ return 80;
+}
+
+function meterEotfScaleValue(v,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const val=Math.max(0,Math.min(top,v||0));
+ if(!meterEotfLogScaleEnabled()) return val/top;
+ const a=meterEotfLogAlpha();
+ return Math.log(1+a*val)/Math.log(1+a*top);
+}
+
+function meterEotfUnscaleValue(norm,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const n=Math.max(0,Math.min(1,norm||0));
+ if(!meterEotfLogScaleEnabled()) return n*top;
+ const a=meterEotfLogAlpha();
+ return (Math.exp(n*Math.log(1+a*top))-1)/a;
+}
+
+function meterLuminanceLogScaleEnabled(){
+ const el=document.getElementById('meterLuminanceLogScale');
+ return !!(el && el.checked);
+}
+
+function meterLuminanceScaleValue(v,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const val=Math.max(0,Math.min(top,v||0));
+ if(!meterLuminanceLogScaleEnabled()) return val/top;
+ return Math.log(1+val)/Math.log(1+top);
+}
+
+function meterLuminanceUnscaleValue(norm,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const n=Math.max(0,Math.min(1,norm||0));
+ if(!meterLuminanceLogScaleEnabled()) return n*top;
+ return Math.exp(n*Math.log(1+top))-1;
+}
+
 function meterGreyMeasuredEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
  if(meterChartIsPq() || meterChartIsDv()) return meterChartPqEncodeNormalized(y);
@@ -1233,13 +1354,10 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  }
  let black=Lb||0;
  if(tgt==='bt1886'){
-  // BT.1886 is not a flat 2.4 line once black level is included. Plot the
-  // effective exponent of the BT.1886 target so the reference follows the
-  // expected rise from near-black toward the nominal 2.4 upper-end gamma.
-  if(!(black>0)){
-   const cfgBlack=parseFloat((config&&config.min_luma)||'0.005');
-   if(cfgBlack>0) black=cfgBlack;
-  }
+  // BT.1886 is not a flat 2.4 line once black level is included. Use the
+  // measured/inferred chart black level directly; do not force config.min_luma
+  // when black reads as 0 on emissive displays.
+  if(!(black>0)) return 2.4;
   const tgtLum=bt1886Eotf(signal,peak,black);
   if(ire>=100){
    const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
@@ -1470,15 +1588,6 @@ function meterChartDvClipPeak(){
 
 function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
  const clamped=Math.max(0,Math.min(1,v));
- if(meterChartIsDv()){
-  // Dolby Vision chart targets follow the emitted tunnel code decoded by the
-  // fixed DV power function (gamma 2.2), then clip at the measured/reference
-  // white peak. CalMAN's LG DV greyscale charts plot that decoded luminance,
-  // not a linear ramp through the encoded transport code and not PQ.
-  const contentPeak=meterChartMasterPeak();
-  const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartDvClipPeak());
-  return Math.min(meterTargetSignalToLinear(clamped)*contentPeak,peak);
- }
  if(meterChartIsPq()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
   return meterChartHdrCodeLuminance(clamped,peak);
@@ -1491,7 +1600,6 @@ function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
 }
 
 function meterChartTargetLuminance(v,Lw,Lb){
- if(meterChartIsDv()) return meterChartTrackingLuminance(v,meterChartDvClipPeak(),Lw,Lb);
  const peak=(Lw>0)?Lw:meterChartHdrPeak();
  if(meterChartIsHdr()) return meterChartTrackingLuminance(v,peak,Lw,Lb);
  return meterChartTrackingLuminance(v,Lw,Lw,Lb);
@@ -1633,7 +1741,9 @@ function meterSaveColorPrefs(){
    incl_lum:      cb('meterIncludeLumError'),
    target_gamma:  v('meterTargetGamma'),
    hdr_diffuse:   v('meterHdrDiffuse'),
-   hdr_bt2390:    cb('meterHdrApplyBT2390')
+    hdr_bt2390:    cb('meterHdrApplyBT2390'),
+    eotf_log:      cb('meterEotfLogScale'),
+    lum_log:       cb('meterLuminanceLogScale')
   };
   localStorage.setItem('pgen.meter.colorPrefs', JSON.stringify(prefs));
  }catch(e){}
@@ -1659,6 +1769,8 @@ function meterLoadColorPrefs(){
   setVal('meterTargetGamma', p.target_gamma);
   setVal('meterHdrDiffuse',    p.hdr_diffuse);
   setChk('meterHdrApplyBT2390', p.hdr_bt2390);
+  setChk('meterEotfLogScale', p.eotf_log);
+  setChk('meterLuminanceLogScale', p.lum_log);
  }catch(e){}
 }
 
