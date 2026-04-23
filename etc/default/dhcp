@@ -1,5 +1,5 @@
 # Interface list for dhcpd — only serve DHCP on internal networks.
-# bnep  = dynamically expand to any Bluetooth PAN interfaces (bnep0, bnep1, ...)
+# bnep  = dynamically expand to Bluetooth PAN interfaces (bnep, bnep0, bnep1, ...)
 # ap0   = WiFi Access Point
 # usb0  = USB gadget (OTG)
 # Never bind to eth0 or wlan0 to avoid handing out addresses on the LAN.
