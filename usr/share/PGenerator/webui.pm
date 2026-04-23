@@ -91,10 +91,27 @@ sub webui_mdns_read_name (@) {
   return ("",$next_offset,0) if($offset + $len > length($buf));
   $name.="." if($name ne "");
   $name.=substr($buf,$offset,$len);
+  $offset+=$len;
+  $next_offset=$offset if(!$jumped);
+}
+
  return ("",$next_offset,0);
 }
+
+sub webui_mdns_build_a_response (@) {
+ my $mdns_hostname=shift;
+ my $best_ip=shift;
+ return "" if($mdns_hostname eq "" || $best_ip eq "");
+ my $resp=pack("n",0);           # ID=0 for mDNS
  $resp.=pack("n",0x8400);        # flags: QR=1, AA=1
  $resp.=pack("nnnn",0,1,0,0);
+ foreach my $label (split(/\./,"$mdns_hostname.local")) {
+  $resp.=pack("C",length($label)).$label;
+ }
+ $resp.=pack("C",0);
+ $resp.=pack("nn",1,0x8001);
+ $resp.=pack("N",120);
+ $resp.=pack("n",4);
  $resp.=Socket::inet_aton($best_ip);
  return $resp;
 }
@@ -1048,6 +1065,8 @@ sub webui_meter_series_start (@) {
  my $target_gamma="";
  $target_gamma=lc($1) if($body=~/"target_gamma"\s*:\s*"([A-Za-z0-9_.\-]+)"/);
  $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb");
+my $signal_mode=&webui_pattern_signal_mode($body);
+my $max_luma=&webui_pattern_max_luma($body);
  my $grey_custom_enabled=0;
  $grey_custom_enabled=1 if($body=~/"grey_custom_enabled"\s*:\s*true/i);
  my $grey_steps_11="";
@@ -1088,8 +1107,6 @@ sub webui_meter_series_start (@) {
  # Brief pause to let killed processes release USB device
  select(undef,undef,undef,0.5);
 
- my $signal_mode=&webui_pattern_signal_mode($body);
- my $max_luma=&webui_pattern_max_luma($body);
  my $series_colorimetry=2;
  $series_colorimetry=$1 if($body=~/"colorimetry"\s*:\s*"?(\d+)"?/);
  $series_colorimetry=int($pgenerator_conf{"colorimetry"} || 2) if($series_colorimetry eq "");
@@ -1138,16 +1155,13 @@ sub webui_meter_series_start (@) {
   @steps=map {
    my $v=$_;
    my $c=0;
-    if($dv_series) {
-     my $stim=$stimulus_for_slot{$v}/100;
-     $stim=0 if($stim < 0);
-     $stim=1 if($stim > 1);
-     my $encoded=$stim>0 ? $stim**(1/2.2) : 0;
-     $c=$lim ? int(16 + $encoded*219 + .5) : int($encoded*255 + .5);
-    } else {
-     my $level=int($stimulus_for_slot{$v}/100*219+.5);
-     $c=$lim?($level+16):int($level*255/219+.5);
-    }
+    # Calman LG DV greyscale steps are nominal equal-code RGB patches.
+    # The chart target then interprets those emitted codes through the active
+    # DV/PQ model. Encoding the greyscale series with an extra gamma 2.2 layer
+    # shifts the patches far above Calman's step table and breaks both the
+    # luminance and EOTF plots.
+    my $level=int($stimulus_for_slot{$v}/100*219+.5);
+    $c=$lim?($level+16):int($level*255/219+.5);
     my $stim=$stimulus_for_slot{$v};
     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"${v}%\"}";
   } @ordered;
@@ -1177,18 +1191,21 @@ sub webui_meter_series_start (@) {
      $auto_target_key="p3d65" if($primaries_idx == 2 || $primaries_idx == 3);
     }
     my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
-    # DV ColorChecker patches must be solved in the target/mastering display
-    # gamut (P3-D65). The TV interprets incoming DV RGB as P3-D65 encoded, so
-    # solving in BT.2020 produces wrong hue/luminance values in live reads.
-    # HDR10/HLG patches are solved in the BT.2020 transport container.
-    my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg")) ? $container_key : $target_key;
+    # Color-series stimuli must solve in the transport/container gamut while
+    # their analysis targets remain in the selected target gamut.
+    my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg") || ($signal_mode eq "dv")) ? $container_key : $target_key;
     my @MI=@{$primaries{$solve_key}{M}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
+    my $dv_classic_scale=0.68;
     my $encode_linear=sub {
      my ($linear)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
      $linear=1 if($linear > 1);
-     my $encoded=($signal_mode eq "hdr10") ? &webui_pattern_pq_encode_normalized($linear*100) : (($signal_mode eq "dv") ? $linear**(1/2.2) : $target_linear_to_signal->($linear));
+     if($signal_mode eq "dv") {
+      $linear*=$dv_classic_scale;
+      $linear=1 if($linear > 1);
+     }
+     my $encoded=($signal_mode eq "hdr10") ? &webui_pattern_pq_encode_normalized($linear*100) : $target_linear_to_signal->($linear);
      return int($min_code + $encoded*$span_code + .5);
     };
     my @classic=(
@@ -1263,6 +1280,9 @@ sub webui_meter_series_start (@) {
      my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
      my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
      if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+    $rl=0 if $rl<1e-6;
+    $gl=0 if $gl<1e-6;
+    $bl=0 if $bl<1e-6;
      $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
      my $r=$encode_linear->($rl);
      my $g=$encode_linear->($gl);
@@ -1294,51 +1314,54 @@ sub webui_meter_series_start (@) {
    $auto_target_key="p3d65" if($primaries_idx == 2 || $primaries_idx == 3);
   }
   my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
-  my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg")) ? $container_key : $target_key;
+  # DV saturation patches still need BT.2020 container-space stimulus solve
+  # even though the chart targets stay in the active DV analysis gamut.
+  my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg") || ($signal_mode eq "dv")) ? $container_key : $target_key;
   my @MI=@{$primaries{$solve_key}{M}};
   my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
+    my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
+  my $level_pct=($signal_mode eq "hdr10" || $signal_mode eq "dv") ? 50 : 75;
+  my $max_code=$min_code+$span_code;
+  # White first (reference Y), then saturation sweeps.
+  push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\"}";
   my $encode_channel=sub {
    my ($linear)=@_;
    $linear=0 if(!defined $linear || $linear < 0);
    $linear=1 if($linear > 1);
-   my $encoded=$linear;
    if($signal_mode eq "hdr10") {
-      $encoded=&webui_pattern_pq_encode_normalized($linear*100);
-   } elsif($signal_mode eq "dv") {
-      $encoded=$linear**(1/2.2);
-   } else {
-      $encoded=$target_linear_to_signal->($linear);
+    return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
    }
-   return int($min_code + $encoded*$span_code + .5);
+   return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
   };
-  my $level_pct=($signal_mode eq "hdr10" || $signal_mode eq "dv") ? 50 : 75;
-  my $level_signal=$level_pct/100;
-  my $level_linear=($signal_mode eq "hdr10")
-   ? (&webui_pattern_pq_decode_normalized($level_signal)/10000)
-   : $target_signal_to_linear->($level_signal);
+  # Match frontend meterActualSignalPercent()/meterCodeFromSignalPercent():
+  # DV first gamma-encodes the requested percent before quantization.
+  my $level_request=$level_pct/100;
+  my $level_encoded=($signal_mode eq "dv") ? $target_linear_to_signal->($level_request) : $level_request;
+  my $level_code=int($min_code + $level_encoded*$span_code + .5);
+  my $level_signal=$span_code>0?($level_code-$min_code)/$span_code:0;
+  my $level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($level_signal)/10000) : $target_signal_to_linear->($level_signal);
   foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
    my ($name,$r_mix,$g_mix,$b_mix)=@$color;
-   my $mix_X=$RGB_TO_XYZ[0][0]*$r_mix+$RGB_TO_XYZ[0][1]*$g_mix+$RGB_TO_XYZ[0][2]*$b_mix;
-   my $mix_Y=$RGB_TO_XYZ[1][0]*$r_mix+$RGB_TO_XYZ[1][1]*$g_mix+$RGB_TO_XYZ[1][2]*$b_mix;
-   my $mix_Z=$RGB_TO_XYZ[2][0]*$r_mix+$RGB_TO_XYZ[2][1]*$g_mix+$RGB_TO_XYZ[2][2]*$b_mix;
+    my $mix_X=$STIM_RGB_TO_XYZ[0][0]*$r_mix+$STIM_RGB_TO_XYZ[0][1]*$g_mix+$STIM_RGB_TO_XYZ[0][2]*$b_mix;
+    my $mix_Y=$STIM_RGB_TO_XYZ[1][0]*$r_mix+$STIM_RGB_TO_XYZ[1][1]*$g_mix+$STIM_RGB_TO_XYZ[1][2]*$b_mix;
+    my $mix_Z=$STIM_RGB_TO_XYZ[2][0]*$r_mix+$STIM_RGB_TO_XYZ[2][1]*$g_mix+$STIM_RGB_TO_XYZ[2][2]*$b_mix;
    my $mix_sum=$mix_X+$mix_Y+$mix_Z;
    my $px=$mix_sum>0?$mix_X/$mix_sum:0.3127;
    my $py=$mix_sum>0?$mix_Y/$mix_sum:0.329;
    foreach my $sat (25,50,75,100) {
     my $f=$sat/100;
-    my $x=0.3127 + $f*($px-0.3127);
-    my $y=0.329 + $f*($py-0.329);
+    my $tx=0.3127+$f*($px-0.3127);
+    my $ty=0.329+$f*($py-0.329);
     my ($r,$g,$b)=($min_code,$min_code,$min_code);
-    if($y>0) {
-     my $X=$x/$y;
-     my $Y=1;
-     my $Z=(1-$x-$y)/$y;
+    if($ty>0){
+     my $X=$tx/$ty; my $Y=1; my $Z=(1-$tx-$ty)/$ty;
      my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
      my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
      my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
      my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
-     if($mx>0){$rl=($rl/$mx)*$level_linear;$gl=($gl/$mx)*$level_linear;$bl=($bl/$mx)*$level_linear;}
+     if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
      $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
+     $rl*=$level_linear;$gl*=$level_linear;$bl*=$level_linear;
      $r=$encode_channel->($rl);
      $g=$encode_channel->($gl);
      $b=$encode_channel->($bl);
@@ -1364,7 +1387,12 @@ sub webui_meter_series_start (@) {
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- system("setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' </dev/null >/dev/null 2>&1 &");
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' </dev/null >/dev/null 2>&1 &";
+ open(my $debug_log,">>/tmp/webui_series_debug.log");
+ print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
+ print $debug_log "[".scalar(localtime())."] Command: $cmd\n";
+ close($debug_log);
+ system($cmd);
 
  return "{\"status\":\"started\",\"series_id\":\"$series_id\",\"total_steps\":$total,\"steps\":[".join(",",@steps)."]}";
 }
@@ -1949,6 +1977,8 @@ sub webui_apply_config (@) {
   $changes{"colorimetry"}="9";
   $changes{"primaries"}="1";
   $changes{"rgb_quant_range"}="2";
+  $changes{"dv_profile"}="1";
+  $changes{"dv_metadata"}="2";
   # DV 12-bit RGB tunneling needs 1.5× the pixel clock — reject modes that
   # exceed HDMI 2.0 TMDS bandwidth (600 MHz) to avoid green-screen artifacts.
   if(defined $changes{"mode_idx"} && $changes{"mode_idx"} ne "") {
@@ -1966,7 +1996,7 @@ sub webui_apply_config (@) {
  # Keys that require pattern generator restart
  my %restart_keys=map{$_=>1} qw(mode_idx eotf is_hdr is_sdr colorimetry primaries
   min_luma max_luma max_cll max_fall color_format max_bpc rgb_quant_range
-  dv_status is_ll_dovi is_std_dovi dv_interface dv_metadata dv_color_space dv_map_mode);
+    dv_status is_ll_dovi is_std_dovi dv_interface dv_profile dv_metadata dv_color_space dv_map_mode);
 
  foreach my $k (sort keys %changes) {
   next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
@@ -2657,7 +2687,7 @@ sub webui_pattern_scale_triplet (@) {
  my $b=shift;
  my $input_max=int(shift);
  my $target_bits=int(shift);
- $input_max=255 if($input_max <= 0);
+ return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
  return &webui_pattern_scale_value($r,$input_max,$target_bits).",".&webui_pattern_scale_value($g,$input_max,$target_bits).",".&webui_pattern_scale_value($b,$input_max,$target_bits);
 }
 
@@ -2959,13 +2989,10 @@ sub webui_pattern_effective_bits (@) {
  return 8 if($draw eq "IMAGE");
  my $bits=int($bits_default || 8);
  my $link_bits=int($pgenerator_conf{"max_bpc"} || 8);
- # DV patch generation still feeds the renderer's legacy 8-bit pattern path
- # even when the HDMI tunnel is running at 10/12 bpc.
- return 8 if($signal_mode eq "dv");
  # The native renderer only has distinct 8-bit and 10-bit drawing paths.
- # For HDR/DV/HLG patch generation, prefer the 10-bit path whenever the link
- # is running above 8 bpc so color patches are not funneled through the legacy
- # 8-bit draw path on modern HDR/DV outputs.
+ # HDR10 and HLG use the 10-bit rectangle path when the link is above 8 bpc.
+ # Dolby Vision patches stay on the 8-bit RGB tunnel path even when the HDMI
+ # link is driven at 12 bpc.
  return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
  return 8 if($bits != 10 && $bits != 12);
  return $bits == 12 ? 10 : $bits;
@@ -3898,7 +3925,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        </select>
       </label>
       <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Near-black luminance weighting: reduces over-sensitivity on very dark grayscale steps by scaling the luminance term before ΔE evaluation.">
-       Gray-world
+       Grey World
        <select id="meterGrayWorld" class="inline-select" onchange="meterOnGreyRefChange()">
         <option value="1">Off (default)</option>
         <option value="0.15">Gray (0.15)</option>
@@ -3939,11 +3966,21 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div id="chartTooltip" style="display:none;position:fixed;pointer-events:none;z-index:9999;background:rgba(13,13,21,0.95);border:1px solid #555;border-radius:5px;padding:6px 10px;font-size:12px;color:#ddd;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
      <div>
-      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">EOTF</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase">EOTF</div>
+       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Switch EOTF Y-axis to logarithmic scaling for better low-light visibility.">
+        <input type="checkbox" id="meterEotfLogScale" onchange="meterRedrawEotfChart();meterSaveColorPrefs()" style="vertical-align:middle"> Log scale
+       </label>
+      </div>
       <canvas id="chartEOTF" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
      </div>
      <div>
-      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Luminance</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+         <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase">Luminance</div>
+         <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Switch luminance Y-axis to logarithmic scaling for better low-light visibility.">
+          <input type="checkbox" id="meterLuminanceLogScale" onchange="meterRedrawLuminanceChart();meterSaveColorPrefs()" style="vertical-align:middle"> Log scale
+         </label>
+        </div>
       <canvas id="chartGamma" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
      </div>
     </div>
@@ -4995,7 +5032,7 @@ async function applySettings(){
    rgb_quant_range:'2',
    dv_interface:getVal('dv_interface'),
    dv_map_mode:getVal('dv_map_mode'),
-    dv_metadata:getVal('dv_map_mode')==='1'?'3':'4'});
+    dv_metadata:'2'});
  }
  clearActive();
  var di=document.getElementById('diagInfo');if(di)di.style.display='none';
@@ -5579,11 +5616,14 @@ function meterAnalysisGamut(){
 }
 
 function meterStimulusSolveGamut(){
- // DV rides in a BT.2020 RGB transport container. Keep analysis targets on
- // the selected gamut, but solve emitted stimulus RGB in the container so
- // the decoded signal lands on the requested chromaticity.
+ // HDR/DV stimuli travel in their container gamut even when chart targets are
+ // analyzed in a smaller target gamut such as P3-D65.
  if(meterChartIsDv()) return meterContainerGamut();
  return meterChartIsPq() ? meterContainerGamut() : meterAnalysisGamut();
+}
+
+function meterTargetSolveGamut(){
+ return meterAnalysisGamut();
 }
 
 function xyzToLinRgb(X,Y,Z,matrix){
@@ -5687,8 +5727,23 @@ function meterColorLevelPercent(){
 }
 
 function meterFindMeasuredWhiteReading(){
+ const currentMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const readingMatchesMode=(rd)=>{
+  if(!rd) return false;
+  const rdMode=String((rd.signal_mode||'')).toLowerCase();
+  if(rdMode) return rdMode===currentMode;
+  // Legacy cached readings may not carry signal_mode. For SDR, reject
+  // implausibly high white luminance snapshots that are almost certainly
+  // stale HDR/DV references.
+  if(currentMode==='sdr'){
+   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
+   if(lum>300) return false;
+  }
+  return true;
+ };
  const isWhiteReading=(rd)=>{
   if(!rd) return false;
+  if(!readingMatchesMode(rd)) return false;
   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
   if(!(lum>0)) return false;
   const name=String(rd.name||'').toLowerCase();
@@ -5709,6 +5764,8 @@ function meterFindMeasuredWhiteReading(){
  let best=null;
  const considerSnapshot=(snap)=>{
   if(!snap||!Array.isArray(snap.readings)) return;
+  const snapMode=String((snap.signal_mode||'')).toLowerCase();
+  if(snapMode && snapMode!==currentMode) return;
   const white=snap.readings.find(isWhiteReading);
   if(!white) return;
   const updated=(snap.updated_at||0);
@@ -5720,6 +5777,15 @@ function meterFindMeasuredWhiteReading(){
 }
 
 function meterColorReferenceNits(){
+ if(meterChartIsDv()){
+  // Calman DV fallback uses a display peak reference derived from measured
+  // white in relative-map mode, and mastering peak in absolute-map mode.
+  const master=Math.max(1,meterChartMasterPeak());
+  if(meterDvMapModeValue()==='1') return master;
+  const white=meterFindMeasuredWhiteReading();
+  const measured=(white&&white.Y>0)?white.Y:master;
+  return Math.max(1,Math.min(master,measured));
+ }
  const white=meterFindMeasuredWhiteReading();
  if(white&&white.Y>0) return white.Y;
  if(meterChartIsPq()&&!meterChartIsDv()) return meterChartHdrPeak();
@@ -5733,6 +5799,24 @@ function meterBlackReadingY(){
   .map(r=>r.luminance||r.Y||0)
   .filter(v=>v>=0);
  return blacks.length>0?Math.min(...blacks):0;
+}
+
+function meterDisplayIsOled(){
+ const dt=((document.getElementById('meterDisplayType')||{}).value||'').toLowerCase();
+ return dt.indexOf('oled')!==-1;
+}
+
+// Infer chart black level. On OLED, true black can time out and be missing;
+// use only true 0% greyscale reading (or 0 fallback) in every mode.
+function meterChartBlackLevel(readings){
+ const gs=(Array.isArray(readings)?readings:[])
+  .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
+ const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
+ if(trueBlack.length>0) return Math.min(...trueBlack);
+ if(meterDisplayIsOled()) return 0;
+ if(!meterChartIsHdr()) return 0;
+ const nearBlack=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||0);
+ return nearBlack.length>0?Math.min(...nearBlack):0;
 }
 
 function meterColorLabWhite(){
@@ -5793,6 +5877,10 @@ function meterEncodeColorCheckerFullSatChannel(active){
  return min+span;
 }
 
+function meterFullSatChannelIsActive(linear){
+ return Number(linear||0) > 1e-6;
+}
+
 function meterEncodeSaturationLinear(linear){
  const min=meterPatchRangeMin();
  const span=meterPatchRangeSpan();
@@ -5812,9 +5900,14 @@ function meterSaturationStimulusLinearLevel(){
  return meterTargetSignalToLinear(actualPercent);
 }
 
+function meterSaturationSolveGamut(){
+ if(meterChartIsDv()) return meterContainerGamut();
+ return meterStimulusSolveGamut();
+}
+
 function meterBuildSaturationStepRgb(colorName,satPercent){
- const linear=meterBuildSaturationStimulusLinearRgb(colorName,satPercent);
- return linear.map(v=>meterEncodeSignalChannel(v));
+ const rgb=meterBuildSaturationStimulusLinearRgb(colorName,satPercent);
+ return rgb.map(v=>meterEncodeSaturationLinear(v));
 }
 
 function meterGamutColorEndpointRgb(colorName){
@@ -5829,8 +5922,8 @@ function meterGamutColorEndpointRgb(colorName){
  }
 }
 
-function meterGamutColorEndpointXY(colorName){
- const gamut=meterAnalysisGamut();
+function meterGamutColorEndpointXY(colorName,gamutOverride){
+ const gamut=gamutOverride||meterAnalysisGamut();
  const rgb=meterGamutColorEndpointRgb(colorName);
  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],gamut.rgbToXyz);
  const sum=xyz.X+xyz.Y+xyz.Z;
@@ -5840,7 +5933,7 @@ function meterGamutColorEndpointXY(colorName){
 function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
  const solveGamut=meterAnalysisGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
- const endpoint=meterGamutColorEndpointXY(colorName);
+ const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
  if(y<=0) return [0,0,0];
@@ -5851,9 +5944,9 @@ function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
 }
 
 function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
- const solveGamut=meterStimulusSolveGamut();
+ const solveGamut=meterSaturationSolveGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
- const endpoint=meterGamutColorEndpointXY(colorName);
+ const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
  if(y<=0) return [0,0,0];
@@ -5864,8 +5957,8 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
 }
 
 function meterBuildFullGamutTargetLinearRgb(colorName){
- const solveGamut=meterStimulusSolveGamut();
- const endpoint=meterGamutColorEndpointXY(colorName);
+ const solveGamut=meterTargetSolveGamut();
+ const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
  const x=endpoint.x;
  const y=endpoint.y;
  if(y<=0) return [0,0,0];
@@ -5878,14 +5971,44 @@ function meterColorCheckerFullSatTargetXYZ(colorName){
  return meterSaturationTargetXYZ(colorName,100);
 }
 
+function meterInferSdrSatReferenceNits(){
+ if(meterChartIsHdr()) return null;
+ const rows=(Array.isArray(meterReadings)?meterReadings:[])
+  .filter(r=>r&&r.series_color&&r.sat_pct!=null&&((r.luminance!=null&&r.luminance>0)||(r.Y!=null&&r.Y>0)));
+ if(rows.length<6) return null;
+ const estimates=[];
+ rows.forEach(r=>{
+  const measuredY=(r.luminance!=null)?Number(r.luminance):Number(r.Y);
+  if(!(measuredY>0)) return;
+  const rgb=meterBuildSaturationTargetLinearRgb(String(r.series_color),Number(r.sat_pct));
+  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
+  if(!(xyz&&xyz.Y>1e-9)) return;
+  const est=measuredY/xyz.Y;
+  if(est>30&&est<400) estimates.push(est);
+ });
+ if(estimates.length<6) return null;
+ estimates.sort((a,b)=>a-b);
+ const mid=Math.floor(estimates.length/2);
+ return estimates.length%2 ? estimates[mid] : (estimates[mid-1]+estimates[mid])/2;
+}
+
 function meterSaturationTargetXYZ(colorName,satPercent){
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
- const refY=Math.max(1,meterColorReferenceNits());
- const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterAnalysisGamut().rgbToXyz);
- // Return the target in the same absolute luminance scale as meter readings
- // so live RGB / XyY deltas for sat sweeps compare like-for-like instead of
- // exploding into huge percentages from a 0..1-relative target.
- return {X:xyz.X*refY,Y:xyz.Y*refY,Z:xyz.Z*refY};
+ const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
+ // For PQ the linear RGB is scaled by meterChartPqDecodeNormalized()/10000,
+ // so xyz values are already relative to the 10000-nit PQ reference.
+ // Multiply by 10000 to recover absolute nits.
+ // For SDR/HLG/DV the linear RGB is in 0..1 relative to display peak, so
+ // multiply by meterColorReferenceNits() as before.
+ let scale=meterChartIsPq()&&!meterChartIsDv()?10000:Math.max(1,meterColorReferenceNits());
+ if(!(meterChartIsPq()&&!meterChartIsDv()) && !meterChartIsHdr()){
+  const white=meterFindMeasuredWhiteReading();
+  if(!(white&&white.Y>0)){
+   const inferred=meterInferSdrSatReferenceNits();
+   if(inferred>0) scale=inferred;
+  }
+ }
+ return {X:xyz.X*scale,Y:xyz.Y*scale,Z:xyz.Z*scale};
 }
 
 function meterParseSaturationReading(reading){
@@ -5962,12 +6085,6 @@ function meterTargetXYZForReading(reading){
  if(satInfo){
   if(meterActiveSeriesType==='colors' && satInfo.sat===100){
    return meterColorCheckerFullSatTargetXYZ(satInfo.color);
-  }
-  if(meterActiveSeriesType==='saturations'){
-   const r=reading.r_code!=null?reading.r_code:reading.r;
-   const g=reading.g_code!=null?reading.g_code:reading.g;
-   const b=reading.b_code!=null?reading.b_code:reading.b;
-   return targetColorXYZAbs(r,g,b);
   }
   return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  }
@@ -6270,9 +6387,9 @@ function meterBuildColorCheckerStepsJS(){
   const rgb=meterBuildFullGamutTargetLinearRgb(colorName);
   steps.push({
    ire:100,
-   r:meterEncodeColorCheckerFullSatChannel(rgb[0]>0),
-   g:meterEncodeColorCheckerFullSatChannel(rgb[1]>0),
-   b:meterEncodeColorCheckerFullSatChannel(rgb[2]>0),
+   r:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[0])),
+   g:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[1])),
+   b:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[2])),
    name:name,
    series_color:colorName,
    sat_pct:100
@@ -6627,11 +6744,6 @@ function meterGreyStimulusFraction(ire){
 
 function meterGreyTargetSignal(ire,code){
  const nominal=Math.max(0,Math.min(1,(ire||0)/100));
- // DV charting should follow the requested greyscale step itself, then apply
- // display clipping at the calibrated/reference white. Using raw transport
- // code here changes the target shape away from the chart behavior the UI had
- // previously and no longer matches the expected DV chart appearance.
- if(meterChartIsDv()) return nominal;
  if(code!=null) return meterSignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
@@ -6664,6 +6776,52 @@ function meterGreyTargetEotfValue(ire,Lw,Lb,code){
  return peak>0 ? tgtLum/peak : 0;
 }
 
+function meterEotfLogScaleEnabled(){
+ const el=document.getElementById('meterEotfLogScale');
+ return !!(el && el.checked);
+}
+
+// Log-strength tuned for EOTF ratio charts: keeps linear behavior available,
+// while revealing near-black structure in HDR where PQ appears compressed.
+function meterEotfLogAlpha(){
+ return 80;
+}
+
+function meterEotfScaleValue(v,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const val=Math.max(0,Math.min(top,v||0));
+ if(!meterEotfLogScaleEnabled()) return val/top;
+ const a=meterEotfLogAlpha();
+ return Math.log(1+a*val)/Math.log(1+a*top);
+}
+
+function meterEotfUnscaleValue(norm,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const n=Math.max(0,Math.min(1,norm||0));
+ if(!meterEotfLogScaleEnabled()) return n*top;
+ const a=meterEotfLogAlpha();
+ return (Math.exp(n*Math.log(1+a*top))-1)/a;
+}
+
+function meterLuminanceLogScaleEnabled(){
+ const el=document.getElementById('meterLuminanceLogScale');
+ return !!(el && el.checked);
+}
+
+function meterLuminanceScaleValue(v,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const val=Math.max(0,Math.min(top,v||0));
+ if(!meterLuminanceLogScaleEnabled()) return val/top;
+ return Math.log(1+val)/Math.log(1+top);
+}
+
+function meterLuminanceUnscaleValue(norm,yTop){
+ const top=Math.max(1e-6,yTop||1);
+ const n=Math.max(0,Math.min(1,norm||0));
+ if(!meterLuminanceLogScaleEnabled()) return n*top;
+ return Math.exp(n*Math.log(1+top))-1;
+}
+
 function meterGreyMeasuredEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
  if(meterChartIsPq() || meterChartIsDv()) return meterChartPqEncodeNormalized(y);
@@ -6694,13 +6852,10 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  }
  let black=Lb||0;
  if(tgt==='bt1886'){
-  // BT.1886 is not a flat 2.4 line once black level is included. Plot the
-  // effective exponent of the BT.1886 target so the reference follows the
-  // expected rise from near-black toward the nominal 2.4 upper-end gamma.
-  if(!(black>0)){
-   const cfgBlack=parseFloat((config&&config.min_luma)||'0.005');
-   if(cfgBlack>0) black=cfgBlack;
-  }
+  // BT.1886 is not a flat 2.4 line once black level is included. Use the
+  // measured/inferred chart black level directly; do not force config.min_luma
+  // when black reads as 0 on emissive displays.
+  if(!(black>0)) return 2.4;
   const tgtLum=bt1886Eotf(signal,peak,black);
   if(ire>=100){
    const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
@@ -6931,15 +7086,6 @@ function meterChartDvClipPeak(){
 
 function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
  const clamped=Math.max(0,Math.min(1,v));
- if(meterChartIsDv()){
-  // Dolby Vision chart targets follow the emitted tunnel code decoded by the
-  // fixed DV power function (gamma 2.2), then clip at the measured/reference
-  // white peak. CalMAN's LG DV greyscale charts plot that decoded luminance,
-  // not a linear ramp through the encoded transport code and not PQ.
-  const contentPeak=meterChartMasterPeak();
-  const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartDvClipPeak());
-  return Math.min(meterTargetSignalToLinear(clamped)*contentPeak,peak);
- }
  if(meterChartIsPq()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
   return meterChartHdrCodeLuminance(clamped,peak);
@@ -6952,7 +7098,6 @@ function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
 }
 
 function meterChartTargetLuminance(v,Lw,Lb){
- if(meterChartIsDv()) return meterChartTrackingLuminance(v,meterChartDvClipPeak(),Lw,Lb);
  const peak=(Lw>0)?Lw:meterChartHdrPeak();
  if(meterChartIsHdr()) return meterChartTrackingLuminance(v,peak,Lw,Lb);
  return meterChartTrackingLuminance(v,Lw,Lw,Lb);
@@ -7094,7 +7239,9 @@ function meterSaveColorPrefs(){
    incl_lum:      cb('meterIncludeLumError'),
    target_gamma:  v('meterTargetGamma'),
    hdr_diffuse:   v('meterHdrDiffuse'),
-   hdr_bt2390:    cb('meterHdrApplyBT2390')
+    hdr_bt2390:    cb('meterHdrApplyBT2390'),
+    eotf_log:      cb('meterEotfLogScale'),
+    lum_log:       cb('meterLuminanceLogScale')
   };
   localStorage.setItem('pgen.meter.colorPrefs', JSON.stringify(prefs));
  }catch(e){}
@@ -7120,6 +7267,8 @@ function meterLoadColorPrefs(){
   setVal('meterTargetGamma', p.target_gamma);
   setVal('meterHdrDiffuse',    p.hdr_diffuse);
   setChk('meterHdrApplyBT2390', p.hdr_bt2390);
+  setChk('meterEotfLogScale', p.eotf_log);
+  setChk('meterLuminanceLogScale', p.lum_log);
  }catch(e){}
 }
 
@@ -7491,6 +7640,7 @@ function meterRecoverSeries(s){
  meterSeriesSteps=steps;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
+ meterActiveSeriesSignalMode=String((s.signal_mode||meterChartSignalMode()||'sdr')).toLowerCase();
  meterActiveSeriesKey=type+'-'+points;
  meterSharedSeriesId=s.series_id||null;
  meterLastChartCount=0;
@@ -7502,6 +7652,9 @@ function meterRecoverSeries(s){
   meterReadings=meterAttachSeriesMeta(s.readings);
   const white=meterReadings.find(rd=>rd.ire===100&&rd.r_code===rd.g_code&&rd.g_code===rd.b_code&&rd.luminance!=null);
   if(white) meterWhiteReading=white;
+ }
+ if(s.white_reading&&s.white_reading.luminance!=null){
+  meterWhiteReading=s.white_reading;
  }
  // Show UI elements — ensure card is visible even if meter is disconnected
  document.getElementById('meterCard').style.display='';
@@ -7624,12 +7777,22 @@ function meterReadingHasChromaticity(rd){
  return !!rd&&rd.x!=null&&rd.y!=null&&rd.x>0&&rd.y>0;
 }
 
+function meterIsWhiteReferenceReading(rd){
+ if(!rd) return false;
+ const name=String(rd.name||'').trim().toLowerCase();
+ if(name==='white') return true;
+ if(meterReadingIsGreyscale(rd)&&Number(rd.ire)===100&&name.indexOf('100%')<0) return true;
+ return false;
+}
+
 function meterCacheSeriesState(status){
  if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
  const prev=meterSeriesCache[meterActiveSeriesKey]||null;
  meterSeriesCache[meterActiveSeriesKey]={
   type:meterActiveSeriesType,
   points:meterActiveSeriesPoints,
+  signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
+  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
   steps:JSON.parse(JSON.stringify(meterSeriesSteps||[])),
   readings:JSON.parse(JSON.stringify(meterReadings||[])),
   status:status||(meterSeriesRunning?'running':'complete'),
@@ -7912,6 +8075,7 @@ function drawRGBBars(bal){
 async function meterReadOnce(){
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(meterSeriesRunning){toast('Series scan is running \u2014 stop it first',true);return;}
+ if(!meterEnsureAppliedGeneratorSettings()) return;
  // Enter manual mode: shut down any leftover series poller/state so stale
  // series snapshots cannot repaint the charts after this manual read.
  meterSharedSeriesId=null;
@@ -8018,6 +8182,7 @@ async function meterToggleContinuous(){
   meterStopContinuous();
  } else {
   if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
+  if(!meterEnsureAppliedGeneratorSettings()) return;
   // Enter manual continuous mode and cut off any leftover series state.
   meterSharedSeriesId=null;
   meterSeriesRunning=false;
@@ -8159,6 +8324,7 @@ let meterSeriesSteps=null; // steps for loaded series
 let meterActiveSeriesKey=null; // track which series button is active
 let meterActiveSeriesType=null; // series type (greyscale/colors/saturations)
 let meterActiveSeriesPoints=null; // series point count
+let meterActiveSeriesSignalMode=null; // signal mode tied to active series snapshot
 let meterCurrentPatchStep=null; // currently displayed patch step object
 let meterSeriesRunning=false; // true when Read Series is actively running
 function meterUpdateDeltaEFormControl(){
@@ -8238,16 +8404,30 @@ function meterUpdateReadButtons(){
  const hasSelection=isColorSeries ? !!meterCurrentPatchStep : meterSelectedThumbIre!=null;
  const hasSeries=meterSeriesSteps&&meterSeriesSteps.length>0;
  const show=hasSeries&&hasSelection&&meterDetected;
+ const settingsDirty=hasUnsavedSettings();
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
  const clearBtn=document.getElementById('meterClearChartBtn');
+ const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
+ const readOnceBtn=document.getElementById('meterReadOnce');
+ const continuousBtn=document.getElementById('meterContinuous');
  if(clearBtn){
   clearBtn.style.display=hasSeries?'':'none';
   clearBtn.disabled=!hasData;
  }
- document.getElementById('meterReadOnce').style.display=show?'':'none';
- document.getElementById('meterContinuous').style.display=show?'':'none';
- document.getElementById('meterReadOnce').disabled=!hasSelection||!meterDetected;
- document.getElementById('meterContinuous').disabled=!hasSelection||!meterDetected;
+ if(readSeriesBtn){
+  readSeriesBtn.disabled=!hasSeries||!meterDetected||settingsDirty;
+  readSeriesBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':'';
+ }
+ if(readOnceBtn) readOnceBtn.style.display=show?'':'none';
+ if(continuousBtn) continuousBtn.style.display=show?'':'none';
+ if(readOnceBtn){
+  readOnceBtn.disabled=!hasSelection||!meterDetected||settingsDirty;
+  readOnceBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':'';
+ }
+ if(continuousBtn){
+  continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty;
+  continuousBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':'';
+ }
 }
 function meterUpdateCardMode(){
  const card=document.getElementById('meterCard');
@@ -8540,6 +8720,7 @@ function meterBuildStepsJS(type,points){
 }
 // Select a series: load thumbnails + display first patch, no reading
 function meterSelectSeries(type,points){
+ clearActive();
  meterStopContinuous();
  if(meterSeriesRunning) meterStop();
  const key=type+'-'+points;
@@ -8579,6 +8760,7 @@ function meterSelectSeries(type,points){
  meterSeriesSteps=null;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
+ meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
  meterLastChartCount=0;
  // Highlight the clicked button
  meterResetSeriesButtons();
@@ -8622,6 +8804,15 @@ function meterMeasurementSignalContext(payload){
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
  return body;
 }
+function meterEnsureAppliedGeneratorSettings(){
+ if(!hasUnsavedSettings()) return true;
+ const applyBar=document.getElementById('applyBar');
+ if(applyBar&&applyBar.scrollIntoView){
+  try{ applyBar.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ applyBar.scrollIntoView(); }
+ }
+ toast('Apply & Restart before taking meter readings so the generator mode matches the chart targets',true);
+ return false;
+}
 // Display a patch on PGenerator without reading
 async function meterDisplayPatch(step){
  meterCurrentPatchStep=step;
@@ -8633,12 +8824,14 @@ async function meterDisplayPatch(step){
 async function meterRunSeries(){
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return;}
+ if(!meterEnsureAppliedGeneratorSettings()) return;
  meterStopContinuous();
  meterSelectedThumbIre=null;
  meterReadings=[];
  meterWhiteReading=null;
  meterSeriesRunning=true;
  meterLastChartCount=0;
+ document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
  document.getElementById('meterStopBtn').style.display='';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
@@ -8665,6 +8858,9 @@ async function meterRunSeries(){
 async function meterPollSeries(){
  const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
  if(!r) return;
+ if(r.white_reading&&r.white_reading.luminance!=null){
+  meterWhiteReading=r.white_reading;
+ }
  if(r.status==='cleared'){
   if(meterSeriesPolling){
    clearInterval(meterSeriesPolling);
@@ -8892,6 +9088,27 @@ function meterGammaPlotAnchorStep(steps,idx){
  return idx>0 ? steps[idx-1] : steps[idx];
 }
 
+// Redraws only the EOTF chart (used by log-scale toggle so the ΔE chart is
+// not recomputed and its values don't flicker due to FP reordering).
+function meterRedrawEotfChart(){
+ if(!meterReadings||!meterReadings.length) return;
+ const allSteps=meterSeriesSteps?[...meterSeriesSteps].filter(s=>s.r===s.g&&s.g===s.b).sort((a,b)=>a.ire-b.ire):null;
+ const readingMap={};
+ meterReadings.forEach(r=>{if(r.luminance!=null&&r.r_code===r.g_code&&r.g_code===r.b_code) readingMap[r.ire]=r;});
+ const gs=meterReadings.filter(r=>r.luminance!=null&&r.luminance>=0&&r.r_code===r.g_code&&r.g_code===r.b_code)
+  .sort((a,b)=>(a.ire||0)-(b.ire||0));
+ if(gs.length>0) drawEOTFChart(gs,allSteps,readingMap);
+}
+
+function meterRedrawLuminanceChart(){
+ if(!meterReadings||!meterReadings.length) return;
+ const allSteps=meterSeriesSteps?[...meterSeriesSteps].filter(s=>s.r===s.g&&s.g===s.b).sort((a,b)=>a.ire-b.ire):null;
+ const readingMap={};
+ meterReadings.forEach(r=>{if(r.luminance!=null&&r.r_code===r.g_code&&r.g_code===r.b_code) readingMap[r.ire]=r;});
+ const gs=meterReadings.filter(r=>r.luminance!=null&&r.luminance>=0&&r.r_code===r.g_code&&r.g_code===r.b_code)
+  .sort((a,b)=>(a.ire||0)-(b.ire||0));
+ if(gs.length>0) drawGammaChart(gs,allSteps,readingMap);
+}
 function drawAllChartsPreset(sortedSteps){
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=sortedSteps.filter(s=>s.r===s.g&&s.g===s.b);
@@ -9071,8 +9288,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  const sorted=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
  const white=sorted.find(r=>(r.ire||0)===100)||sorted[sorted.length-1];
  const Yw=white?(white.luminance||white.Y||0):0;
- const blacks=sorted.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
- const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ const Lb=meterChartBlackLevel(sorted);
  if(!(Yw>0)){
   if(allSteps) drawGammaValuePreset(allSteps);
   return;
@@ -9179,7 +9395,7 @@ function drawAllCharts(readings){
  meterEnsureChannelGammaCache(readings);
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
   // Color/saturation series — CIE chromaticity + color ΔE + readings table
-  const cr=readings.filter(r=>r.luminance!=null&&r.luminance>=0);
+  const cr=readings.filter(r=>r.luminance!=null&&r.luminance>=0&&!meterIsWhiteReferenceReading(r));
   if(cr.length>0){
    drawCIEChart(cr);
    drawColorDeltaE2000Chart(cr);
@@ -9401,8 +9617,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
  const sorted=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
  const white=sorted.find(r=>(r.ire||0)===100)||sorted[sorted.length-1];
  const refWhite=white?(white.luminance||white.Y||0):0;
- const blacks=sorted.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
- const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ const Lb=meterChartBlackLevel(sorted);
  if(!(refWhite>0)) return;
  const targetSteps=allSteps||sorted.map(r=>({ire:r.ire||0,r:r.r_code}));
  const valid=sorted.filter(r=>r.luminance!=null && r.luminance>=0);
@@ -9414,61 +9629,72 @@ function drawEOTFChart(gs,allSteps,readingMap){
   pad:{t:34,r:15,b:30,l:55},
   xSteps:10,ySteps:5,
   xLabel:(i)=>(i*10)+'',
-  yLabel:(i,n)=>(yTop*i/n).toFixed(2)
+  yLabel:(i,n)=>meterEotfUnscaleValue(i/n,yTop).toFixed(2)
  });
- const tgtPts=targetSteps.map((s,idx)=>[meterGreyChartX(s,targetSteps,idx),meterGreyTargetEotfValue(s.ire,refWhite,Lb,s.r_code!=null?s.r_code:s.r)/yTop]);
+ const tgtPts=targetSteps.map((s,idx)=>[
+  meterGreyChartX(s,targetSteps,idx),
+  meterEotfScaleValue(meterGreyTargetEotfValue(s.ire,refWhite,Lb,s.r_code!=null?s.r_code:s.r),yTop)
+ ]);
  drawDashedLine(ctx,chart,tgtPts,'#666');
  if(allSteps){
   const emptyPts=[];
   allSteps.forEach((s,idx)=>{
    if(readingMap[s.ire]) return;
    const v=meterGreyChartX(s,allSteps,idx);
-   emptyPts.push([v,meterGreyTargetEotfValue(s.ire,refWhite,Lb,s.r_code!=null?s.r_code:s.r)/yTop]);
+   emptyPts.push([v,meterEotfScaleValue(meterGreyTargetEotfValue(s.ire,refWhite,Lb,s.r_code!=null?s.r_code:s.r),yTop)]);
   });
   drawDots(ctx,chart,emptyPts,'#33333380',3);
  }
  const measureSteps=allSteps||valid;
  const mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
   meterGreyChartX(step,measureSteps,idx),
-  meterGreyMeasuredEotfValue(reading.luminance||0,refWhite)/yTop
+  meterEotfScaleValue(meterGreyMeasuredEotfValue(reading.luminance||0,refWhite),yTop)
  ]);
  if(!allSteps && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
+ // Draw measured EOTF curve
+ mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',2); });
+ drawDots(ctx,chart,mSegments.flat(),'#ffeb3b',3);
  ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
 function drawGammaChart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartGamma');
  if(!ctx) return;
  const sorted=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
  const white=sorted.find(r=>(r.ire||0)===100)||sorted[sorted.length-1];
  const refWhite=white?(white.luminance||white.Y||0):0;
  const measuredMax=sorted.reduce((mx,r)=>Math.max(mx,r.luminance||0),0);
- const blacks=sorted.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
- const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
- const rawTargetPeak=meterGreyTargetPeak(refWhite||measuredMax);
- const targetPeak=meterGreyTargetWhiteValue(rawTargetPeak,Lb);
+ const Lb=meterChartBlackLevel(sorted);
+ // Use measured 100% luminance as target peak for luminance chart (not theoretical HDR peak)
+ const rawTargetPeak=refWhite||measuredMax;
+ const targetPeak=rawTargetPeak;
  if(!(Math.max(measuredMax,refWhite)>0)) return;
  const yTop=Math.ceil(Math.max(measuredMax,targetPeak)*1.1/10)*10||Math.max(measuredMax,targetPeak);
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:30,l:55},
   xSteps:10,ySteps:5,
   xLabel:(i)=>(i*10)+'',
-  yLabel:(i,n)=>(yTop*i/n).toFixed(0)
+  yLabel:(i,n)=>meterLuminanceUnscaleValue(i/n,yTop).toFixed(0)
  });
  const targetSteps=allSteps||sorted.map(r=>({ire:r.ire||0,r:r.r_code}));
- const tgtPts=meterGreyTargetChartPoints(targetSteps,rawTargetPeak,Lb,yTop);
+ // Keep target curve shape (PQ/HLG/SDR EOTF), but anchor peak to measured 100%.
+ const tgtPts=targetSteps.map((s,idx)=>[
+  meterGreyChartX(s,targetSteps,idx),
+  meterLuminanceScaleValue(meterGreyTargetChartValue(s.ire,rawTargetPeak,Lb,s.r_code!=null?s.r_code:s.r),yTop)
+ ]);
  drawDashedLine(ctx,chart,tgtPts,'#666');
  if(allSteps){
   allSteps.forEach((s,idx)=>{
    if(readingMap[s.ire]) return;
    const v=meterGreyChartX(s,allSteps,idx);
-  drawDots(ctx,chart,[[v,meterGreyTargetChartValue(s.ire,rawTargetPeak,Lb,s.r_code!=null?s.r_code:s.r)/yTop]],'#33333380',3);
+   drawDots(ctx,chart,[[v,meterLuminanceScaleValue(meterGreyTargetChartValue(s.ire,rawTargetPeak,Lb,s.r_code!=null?s.r_code:s.r),yTop)]],'#33333380',3);
   });
  }
  const validG=sorted.filter(r=>r.luminance!=null && r.luminance>=0);
  const measureSteps=allSteps||validG;
  const mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
   meterGreyChartX(step,measureSteps,idx),
-  Math.min(1,(reading.luminance||0)/yTop)
+  meterLuminanceScaleValue(reading.luminance||0,yTop)
  ]);
  if(!allSteps && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
  mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',2); });
@@ -9689,6 +9915,7 @@ function drawColorReadingsTable(readings){
  let html='';
  let deSum=0,deCount=0;
  readings.forEach(rd=>{
+  if(meterIsWhiteReferenceReading(rd)) return;
   if(!meterReadingHasLuminance(rd)) return;
   const hasChroma=meterReadingHasChromaticity(rd);
   const targetXYZ=meterTargetXYZForReading(rd);
@@ -9733,7 +9960,7 @@ function drawColorSeriesAverages(readings,colorRefMode){
  const wrap=document.getElementById('colorSeriesAveragesWrap');
  const tbody=document.querySelector('#colorSeriesAveragesTable tbody');
  if(!wrap||!tbody) return;
- const valid=(readings||[]).filter(rd=>meterReadingHasLuminance(rd));
+ const valid=(readings||[]).filter(rd=>meterReadingHasLuminance(rd)&&!meterIsWhiteReferenceReading(rd));
  if(valid.length===0){wrap.style.display='none';return;}
  const colorForm=meterColorDeltaEForm();
  const isSat=(meterActiveSeriesType==='saturations');
@@ -9936,6 +10163,8 @@ let _colorChartHitZones=[];
 function colorChartRegisterInteraction(readings){
  _colorChartHitZones=[];
  if(!readings||readings.length===0) return;
+ const plotReadings=readings.filter(rd=>!meterIsWhiteReferenceReading(rd));
+ if(plotReadings.length===0) return;
  // CIE chart hit zones (use measured xy positions)
  const cieCanvas=document.getElementById('chartCIE');
  if(cieCanvas){
@@ -9944,7 +10173,7 @@ function colorChartRegisterInteraction(readings){
   const pad={t:15,r:15,b:35,l:45};
   const w=cW-pad.l-pad.r, h=cH-pad.t-pad.b;
   const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
-  readings.forEach(rd=>{
+  plotReadings.forEach(rd=>{
    if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
    const px=pad.l+(rd.x-xMin)/(xMax-xMin)*w;
    const py=pad.t+h-(rd.y-yMin)/(yMax-yMin)*h;
@@ -9960,7 +10189,7 @@ function colorChartRegisterInteraction(readings){
  if(deCanvas){
   const rect=deCanvas.getBoundingClientRect();
   const cW=rect.width;
-  const valid=readings.filter(rd=>meterReadingHasLuminance(rd));
+  const valid=plotReadings.filter(rd=>meterReadingHasLuminance(rd));
   const n=valid.length;
   if(n>0){
    const pad2={t:20,r:15,b:30,l:55};
@@ -10027,6 +10256,12 @@ function colorChartHandleClick(e,canvasId){
   meterUpdateReadButtons();
  }
 }
+function meterIsSelectedColorReading(rd){
+ return !!(rd&&_selectedColorReadingName&&rd.name===_selectedColorReadingName);
+}
+function meterSelectedCIETargetColor(rd,baseColor){
+ return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
+}
 
 function drawCIEChart(readings){
  const ctx=getChartCtx('chartCIE');
@@ -10084,11 +10319,13 @@ function drawCIEChart(readings){
  }
  // Plot target and measured points
  readings.forEach(rd=>{
+  if(meterIsWhiteReferenceReading(rd)) return;
   if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
   const tgt=meterTargetChromaticityForReading(rd);
   const lumInfo=meterColorLuminanceInfo(rd);
   const mx=rd.x, my=rd.y;
   const targetColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
+  const targetStrokeColor=meterSelectedCIETargetColor(rd,targetColor);
   const measuredColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
   const tx=toX(tgt.x), ty=toY(tgt.y);
   const px=toX(mx), py=toY(my);
@@ -10099,7 +10336,7 @@ function drawCIEChart(readings){
   // Target: crisp hollow square
   const sq=6;
   ctx.save();
-  ctx.strokeStyle=targetColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+  ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
   ctx.restore();
   if(colorInclLum&&lumInfo.deltaPct!=null&&isFinite(lumInfo.deltaPct)){
    const haloRadius=6+Math.min(16,Math.abs(lumInfo.deltaPct)*0.12);
@@ -10191,6 +10428,7 @@ function drawCIETargetInset(ctx,readings,pad){
   const lumInfo=meterColorLuminanceInfo(rd);
   if(!rt) return;
   const tColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
+  const tStrokeColor=meterSelectedCIETargetColor(rd,tColor);
   const mColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
   const tInside=rt.x>=xMn&&rt.x<=xMx&&rt.y>=yMn&&rt.y<=yMx;
   const mInside=rd.x>=xMn&&rd.x<=xMx&&rd.y>=yMn&&rd.y<=yMx;
@@ -10202,7 +10440,7 @@ function drawCIETargetInset(ctx,readings,pad){
   if(isFocus&&tInside){
    const sq=5;
    ctx.save();
-   ctx.strokeStyle=tColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
+    ctx.strokeStyle=tStrokeColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
    ctx.restore();
   }
   if(isFocus&&colorInclLum&&lumInfo.deltaPct!=null&&isFinite(lumInfo.deltaPct)&&mInside){
@@ -10293,7 +10531,9 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,ctx.w-pad.r,pad.t+10);
  // Target placeholders (hollow squares)
  steps.forEach(s=>{
-  const tgt=(s.series_color&&s.sat_pct!=null)?meterTargetChromaticityForReading(s):targetChromaticityXY(s.r,s.g,s.b);
+  const tgt=((s.target_x!=null&&s.target_y!=null) || (s.series_color&&s.sat_pct!=null))
+   ? meterTargetChromaticityForReading(s)
+   : targetChromaticityXY(s.r,s.g,s.b);
   const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
   const sq=6;
   const tx=toX(tgt.x), ty=toY(tgt.y);
@@ -10314,6 +10554,7 @@ function drawColorDeltaE2000Chart(readings){
  if(lbl) lbl.textContent = colorInclLum ? (deLabel+' (Color Accuracy + Luminance)') : (deLabel+' (Color Accuracy, Chroma Only)');
  const deData=[];
  readings.forEach(rd=>{
+  if(meterIsWhiteReferenceReading(rd)) return;
   if(!meterReadingHasLuminance(rd)) return;
   deData.push({name:rd.name||'',de:meterColorDeltaE2000(rd,colorRefMode,colorForm),color:meterPreviewColorForReading(rd,'target')});
  });
@@ -10882,6 +11123,7 @@ function meterApplyClearedState(showToastMsg){
   meterActiveSeriesKey=null;
   meterActiveSeriesType=null;
   meterActiveSeriesPoints=null;
+  meterActiveSeriesSignalMode=null;
   document.getElementById('meterPatchThumbs').innerHTML='';
   document.getElementById('meterThumbsRow').style.display='none';
   document.getElementById('meterReadSeriesBtn').style.display='none';
