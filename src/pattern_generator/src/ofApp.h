@@ -168,7 +168,7 @@ class ofApp : public ofBaseApp{
 	int dv_minpq=62;
 	int dv_maxpq=3696;
 	int dv_diagonal=42;
-	int dv_color_space=1;
+  int dv_color_space=0;
   };
   struct dv_metadata dv_metadata;
   unsigned char dv_metadata_active[128];
