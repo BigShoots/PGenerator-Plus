@@ -2778,15 +2778,11 @@ sub webui_pattern_legacy_byte (@) {
  $value=0 if($value < 0);
  $value=255 if($value > 255);
  return $value if(!&webui_pattern_is_pq_mode($signal_mode));
- return 0 if($value == 0);
- # Gamma 2.2 decode to linear light, scale to max_luma nits, PQ encode.
- # DV patterns use gamma 2.2 encoding, so we match that.
- # The old linear mapping (value*peak/255) crushed blacks because PQ is
- # perceptual — a linear fraction of PQ codes does not correspond to a
- # linear fraction of perceived brightness.
- my $linear=($value/255.0)**2.2;
- my $nits=$linear*$max_luma;
- return int(&webui_pattern_pq_encode_normalized($nits)*255 + 0.5);
+ # Diagnostic IMAGE patterns use legacy video levels (for example 232-255
+ # white clipping bars). Preserve their relative spacing on PQ links by
+ # scaling against the configured peak byte instead of gamma-remapping.
+ my $peak_byte=&webui_pattern_peak_byte($signal_mode,$max_luma);
+ return int($value*$peak_byte/255 + 0.5);
 }
 
 sub webui_pattern_image_new (@) {
@@ -3471,6 +3467,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterCharts,
 #meterCard.meter-patterns-only #meterExportRow,
 #meterCard.meter-patterns-only #meterSeriesHeader,
+#meterCard.meter-patterns-only #meterClearChartBtn,
 #meterCard.meter-patterns-only #meterReadOnce,
 #meterCard.meter-patterns-only #meterContinuous,
 #meterCard.meter-patterns-only #meterResetRow,
@@ -8406,12 +8403,13 @@ function meterUpdateReadButtons(){
  const show=hasSeries&&hasSelection&&meterDetected;
  const settingsDirty=hasUnsavedSettings();
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
+ const showClear=hasData&&meterDetected;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
  const readOnceBtn=document.getElementById('meterReadOnce');
  const continuousBtn=document.getElementById('meterContinuous');
  if(clearBtn){
-  clearBtn.style.display=hasSeries?'':'none';
+  clearBtn.style.display=showClear?'':'none';
   clearBtn.disabled=!hasData;
  }
  if(readSeriesBtn){

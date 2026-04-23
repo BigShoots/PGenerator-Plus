@@ -185,6 +185,25 @@ sub calman_pattern_source_range (@) {
  return "";
 }
 
+sub legacy_external_pattern_source_name (@) {
+ my $connection=shift;
+ return $hcfr_client{$connection} ? "hcfr" : "devicecontrol";
+}
+
+sub legacy_external_pattern_source_range (@) {
+ my $quant_range=int($pgenerator_conf{"rgb_quant_range"} || 2);
+ return ($quant_range == 1) ? "LIMITED" : "FULL";
+}
+
+sub legacy_external_pattern_prepare (@) {
+ my $connection=shift;
+ my $source=&legacy_external_pattern_source_name($connection);
+ my $quant_range=int($pgenerator_conf{"rgb_quant_range"} || 2);
+ $legacy_external_source{$connection}=$source;
+ &apply_source_rgb_quant_range($source,$quant_range);
+ return (&legacy_external_pattern_source_range(),$source);
+}
+
 ###############################################
 #             Pattern function                #
 ###############################################
@@ -593,19 +612,19 @@ sub pattern_daemon {
       }
      };
     #
-    # Helper: align CalMAN DV mode with the existing RGB LLDV path used by
-    # the Web UI / legacy DeviceControl profiles. The renderer stays 8-bit,
-    # while max_bpc=12 requests a 12-bit HDMI link for Dolby Vision RGB
-    # tunneling on the wire.
+    # Helper: align CalMAN DV mode with the existing Dolby Vision path used by
+    # the Web UI / legacy DeviceControl profiles. Preserve that transport
+    # combination and only switch the renderer map mode between
+    # 0=Perceptual, 1=Absolute, and 2=Relative.
     #
     my $calman_set_dv_rgb = sub {
      my ($dv_map_mode,$dv_metadata)=@_;
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("is_ll_dovi","1");
-    $calman_save_setting->("is_std_dovi","1");
+      $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
-    $calman_save_setting->("dv_interface","1");
+      $calman_save_setting->("dv_interface","1");
      $calman_save_setting->("color_format","0");
      $calman_save_setting->("colorimetry","9");
      $calman_save_setting->("primaries","1");
@@ -781,20 +800,25 @@ sub pattern_daemon {
        $calman_save_setting->("colorimetry","2");
        $calman_save_setting->("max_bpc","8");
       } elsif($mm_val >= 1 && $mm_val <= 4) {
-       # Dolby Vision modes — the renderer consumes dv_map_mode for Absolute
-       # / Relative, not dv_metadata.  Keep dv_metadata in sync for logging and
-       # compatibility, but switch the real renderer key here.
-       if($mm_val == 3) {
+      # Dolby Vision modes — keep dv_metadata in sync for logging and
+      # compatibility, and drive the renderer map mode where the runtime
+      # exposes an explicit choice.
+      if($mm_val == 2) {
+       $calman_set_dv_rgb->("0","2"); # Perceptual
+      } elsif($mm_val == 3) {
         $calman_set_dv_rgb->("1","3"); # Absolute
        } elsif($mm_val == 4) {
         $calman_set_dv_rgb->("2","4"); # Relative
        } else {
-        # 1=RGB tunneling, 2=Perceptual. Preserve current map mode because the
-        # renderer only exposes Absolute/Relative via dv_map_mode.
+       # 1=RGB tunneling. Preserve current map mode because transport mode is
+       # separate from the renderer's Perceptual/Absolute/Relative selector.
         $calman_set_dv_rgb->("","$mm_val");
         &log("Calman: 21_HDR_MetadataMode=$mm_val requested — preserving dv_map_mode=$pgenerator_conf{'dv_map_mode'}");
        }
       }
+        # CalMAN uses this SetControl path for live DV mode changes, so apply
+        # immediately rather than waiting for a later explicit update command.
+        $calman_apply->();
       &send_key_to_client($connection,"");
       last;
      }
@@ -1265,19 +1289,19 @@ sub pattern_daemon {
       $dv_mode=~s/^\s+|\s+$//g;
       &log("Calman: CONF_DV=$dv_mode");
       if($dv_mode eq "PERCEPTUAL" || $dv_mode eq "ABSOLUTE" || $dv_mode eq "RELATIVE") {
-         # The renderer switches between Absolute and Relative via dv_map_mode:
+         # The renderer switches DV mapping via dv_map_mode:
+         #   0 = Perceptual
          #   1 = Absolute
          #   2 = Relative
          # Preserve the incoming CalMAN enum in dv_metadata for visibility.
-         if($dv_mode eq "ABSOLUTE") {
+         if($dv_mode eq "PERCEPTUAL") {
+          $calman_set_dv_rgb->("0","2");
+         } elsif($dv_mode eq "ABSOLUTE") {
           $calman_set_dv_rgb->("1","3");
          } elsif($dv_mode eq "RELATIVE") {
           $calman_set_dv_rgb->("2","4");
          } else {
-          # Perceptual has no distinct dv_map_mode in the renderer. Keep the
-          # existing Absolute/Relative selection and record the CalMAN request.
           $calman_set_dv_rgb->("","2");
-          &log("Calman: CONF_DV=PERCEPTUAL requested — preserving dv_map_mode=$pgenerator_conf{'dv_map_mode'}");
          }
        # Apply immediately — must restart with DV binary
        $calman_apply->();
@@ -1492,7 +1516,8 @@ sub pattern_daemon {
      $calibration_client_ip=$client_ip{$connection} || $client_address;
      $calibration_client_software=($2 eq "HCFR")?"HCFR":"DeviceControl";
      $hcfr_client{$connection}=1 if($2 eq "HCFR");
-     $response=&get_pattern($1,$2,$3,"TESTTEMPLATE:$2");
+      my ($source_range)=&legacy_external_pattern_prepare($connection);
+      $response=&get_pattern($1,$2,$3,"TESTTEMPLATE:$2",$source_range);
      &send_key_to_client($connection,$response);
      &clean_pattern_files();
      last;
@@ -1506,8 +1531,9 @@ sub pattern_daemon {
      $calibration_client_ip=$client_ip{$connection} || $client_address;
      $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
      $pname_file=$1;
+      my ($source_range)=&legacy_external_pattern_prepare($connection);
      &clean_pattern_files();
-     $response="$ok_response:".&create_pattern_file($2,$3,$4,"$5","","","","",1,"TESTPATTERN");
+      $response="$ok_response:".&create_pattern_file($2,$3,$4,"$5","","","","",1,"TESTPATTERN",$source_range);
      &send_key_to_client($connection,$response);
      last;
     }
@@ -1556,12 +1582,13 @@ sub pattern_daemon {
      $calibration_client_ip=$client_ip{$connection} || $client_address;
      $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
      $command_found=1;
+      my ($source_range)=&legacy_external_pattern_prepare($connection);
      &clean_pattern_files();
      my ($draw,$dim,$res,$rgb,$bg,$position,$text)=split($separator,$1);
      $log_string="Received rgb triplet request command";
      $log_string.=" ($key)" if($key ne "");
      &log($log_string);
-     &create_pattern_file($draw,"$dim",$res,"$rgb","$bg","$position","$text","",1,"RGB");
+      &create_pattern_file($draw,"$dim",$res,"$rgb","$bg","$position","$text","",1,"RGB",$source_range);
      &send_key_to_client($connection,$ok_response);
      last;
     }
@@ -1629,6 +1656,8 @@ sub close_connection {
   $calibration_client_ip="";
   $calibration_client_software="";
  }
+ my $legacy_source=delete $legacy_external_source{$connection};
+ &release_source_rgb_quant_range($legacy_source) if($legacy_source ne "");
  $calman{$connection}=0;
  $cmd{$connection}="";
  delete $client_ip{$connection};
