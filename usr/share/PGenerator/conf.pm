@@ -62,11 +62,10 @@ sub get_conf (@) {
 ###############################################
 sub sync_pattern_bits_default (@) {
  my $conf_bits=int($pgenerator_conf{"max_bpc"} || 8);
- # The Dolby Vision renderer (`PGeneratord.dv`) still consumes 8-bit pattern
- # values even though the HDMI link itself is driven at 12bpc for LLDV RGB
- # tunneling.  Keep the daemon/template layer at 8-bit in DV mode so low
- # grey full-field patches are not written as 12-bit values and clipped to
- # white by the renderer.
+ # The Dolby Vision renderer consumes the generic/simple client pattern path
+ # in 8-bit even when the HDMI link itself runs at higher bpc. Keep the
+ # daemon/template default on 8-bit for DV and let dedicated web UI patch
+ # generation select the renderer-safe draw depth explicitly.
  if(int($pgenerator_conf{"dv_status"} || 0) == 1) {
   $bits_default=8;
   return;
