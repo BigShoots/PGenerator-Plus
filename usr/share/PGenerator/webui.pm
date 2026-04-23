@@ -1972,13 +1972,16 @@ sub webui_apply_config (@) {
  my $dv_on=int($effective{"dv_status"} || 0);
  $dv_on=1 if(int($effective{"is_ll_dovi"} || 0) || int($effective{"is_std_dovi"} || 0));
  if($dv_on) {
+  my $dv_map_mode=(defined $changes{"dv_map_mode"} && $changes{"dv_map_mode"} ne "") ? $changes{"dv_map_mode"} : ($effective{"dv_map_mode"} || "2");
+  my $dv_metadata=(defined $changes{"dv_metadata"} && $changes{"dv_metadata"} ne "") ? $changes{"dv_metadata"} : ($dv_map_mode eq "1" ? "3" : ($dv_map_mode eq "2" ? "4" : "2"));
   $changes{"max_bpc"}="12";
   $changes{"color_format"}="0";
   $changes{"colorimetry"}="9";
   $changes{"primaries"}="1";
   $changes{"rgb_quant_range"}="2";
   $changes{"dv_profile"}="1";
-  $changes{"dv_metadata"}="2";
+  $changes{"dv_color_space"}="0";
+  $changes{"dv_metadata"}=$dv_metadata;
   # DV 12-bit RGB tunneling needs 1.5× the pixel clock — reject modes that
   # exceed HDMI 2.0 TMDS bandwidth (600 MHz) to avoid green-screen artifacts.
   if(defined $changes{"mode_idx"} && $changes{"mode_idx"} ne "") {
@@ -4387,6 +4390,13 @@ async function syncRemoteConfig(){
 function setVal(id,v){const el=document.getElementById(id);if(el)el.value=v;}
 function getVal(id){const el=document.getElementById(id);return el?el.value:'';}
 
+function dvMetadataForMapMode(mapMode){
+ const mode=String(mapMode||'2');
+ if(mode==='1') return '3';
+ if(mode==='2') return '4';
+ return '2';
+}
+
 function meterSyncHdrMetadata(){
  const topPeak=document.getElementById('max_luma');
  const topMin=document.getElementById('min_luma');
@@ -5029,7 +5039,8 @@ async function applySettings(){
    rgb_quant_range:'2',
    dv_interface:getVal('dv_interface'),
    dv_map_mode:getVal('dv_map_mode'),
-    dv_metadata:'2'});
+   dv_color_space:'0',
+   dv_metadata:dvMetadataForMapMode(getVal('dv_map_mode'))});
  }
  clearActive();
  var di=document.getElementById('diagInfo');if(di)di.style.display='none';
