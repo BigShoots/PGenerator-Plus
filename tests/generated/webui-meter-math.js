@@ -1,6 +1,6 @@
 // Generated file. Do not edit directly.
 // Source: /mnt/homestorage/Projects/PGenerator_reference/PGenerator_plus/usr/share/PGenerator/webui.pm
-// Source SHA-256: 6c18c28a0ca4
+// Source SHA-256: 248291ad4b9e
 // Extracted by tools/extract_webui_meter_math.py
 
 // D65 reference white chromaticity
@@ -109,7 +109,6 @@ function meterDvMapModeValue(){
 // Target Colorspace dropdown so the CIE triangle, saturation endpoints, and
 // ΔE references all stay in sync with what the user is evaluating.
 function meterAnalysisGamutKey(){
- if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterContainerGamutKey();
  return meterActiveGamutKey();
 }
 
@@ -118,8 +117,10 @@ function meterAnalysisGamut(){
 }
 
 function meterStimulusSolveGamut(){
- // HDR/DV stimuli travel in their container gamut even when chart targets are
- // analyzed in a smaller target gamut such as P3-D65.
+ // DV Absolute color-series patches must solve in the active target gamut.
+ // Solving them in the BT.2020 tunnel widens chromaticities and makes
+ // ColorChecker patches read oversaturated against the selected target.
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterAnalysisGamut();
  if(meterChartIsDv()) return meterContainerGamut();
  return meterChartIsPq() ? meterContainerGamut() : meterAnalysisGamut();
 }
@@ -173,6 +174,21 @@ function meterPatchRangeSpan(){
  return meterPatchUsesVideoRange()?219:255;
 }
 
+function meterDvRelativeSt2084UsesLegalRange(){
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ return meterChartIsDv() && meterDvMapModeValue()==='2' && sel==='st2084';
+}
+
+function meterGreyCodeRange(){
+ if(meterDvRelativeSt2084UsesLegalRange()) return {min:16,span:219};
+ return {min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
+}
+
+function meterGreySignalFractionFromCode(code){
+ const range=meterGreyCodeRange();
+ return Math.max(0,Math.min(1,((code||0)-range.min)/range.span));
+}
+
 function meterSignalFractionFromCode(code){
  const min=meterPatchRangeMin();
  const span=meterPatchRangeSpan();
@@ -200,7 +216,10 @@ function meterEncodeSignalChannel(linear){
  const span=meterRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
  let encoded=clamped;
- if(meterChartIsDv()) encoded=Math.pow(clamped,1/2.2);
+ if(meterChartIsDv()){
+  const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+  encoded=sel==='st2084' ? meterChartPqEncodeNormalized(clamped*10000) : Math.pow(clamped,1/2.2);
+ }
  else if(meterChartIsPq()){
   const peak=meterChartHdrPeak();
   const peakCode=meterChartPqEncodeNormalized(peak)||1;
@@ -211,9 +230,48 @@ function meterEncodeSignalChannel(linear){
  return Math.round(min+encoded*span);
 }
 
+function meterDvAbsoluteTargetLuminanceForPercent(percent, peak){
+ const clamped=clampNum(percent,0,100)/100;
+ const targetPeak=(peak>0)?peak:meterChartMasterPeak();
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||'2.2';
+ if(sel==='srgb') return Math.min(targetPeak,srgbEotf(clamped)*targetPeak);
+ if(sel==='bt1886') return Math.min(targetPeak,gammaEotf(clamped,2.4)*targetPeak);
+ return Math.min(targetPeak,gammaEotf(clamped,parseFloat(sel)||2.2)*targetPeak);
+}
+
+function meterDvAbsoluteTargetRollOffFraction(){
+ return 0.75;
+}
+
+function meterDvAbsoluteChartTargetLuminance(ire, peak){
+ const targetPeak=(peak>0)?peak:100;
+ const frac=clampNum((ire||0)/100,0,1);
+ const roll=meterDvAbsoluteTargetRollOffFraction();
+ const normalized=roll>0?Math.min(frac/roll,1):frac;
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||'2.2';
+ if(sel==='srgb') return srgbEotf(normalized)*targetPeak;
+ if(sel==='bt1886') return gammaEotf(normalized,2.4)*targetPeak;
+ return gammaEotf(normalized,parseFloat(sel)||2.2)*targetPeak;
+}
+
+function meterDvRelativeChartTargetLuminance(ire, peak){
+ const targetPeak=(peak>0)?peak:100;
+ const frac=clampNum((ire||0)/100,0,1);
+ return gammaEotf(frac,2.2)*targetPeak;
+}
+
 function meterCodeFromSignalPercent(percent){
  const clamped=clampNum(percent,0,100)/100;
  if(meterChartIsDv()){
+  const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+  if(sel==='st2084'){
+   const range=meterGreyCodeRange();
+   return Math.round(range.min+clamped*range.span);
+  }
+  if(meterDvMapModeValue()==='1'){
+   const targetY=meterDvAbsoluteTargetLuminanceForPercent(clamped*100,meterChartMasterPeak());
+   return Math.round(meterPatchRangeMin()+meterChartPqEncodeNormalized(targetY)*meterPatchRangeSpan());
+  }
   const encoded=clamped>0?Math.pow(clamped,1/2.2):0;
   return Math.round(meterPatchRangeMin()+encoded*meterPatchRangeSpan());
  }
@@ -221,7 +279,7 @@ function meterCodeFromSignalPercent(percent){
 }
 
 function meterActualSignalPercent(percent){
- return meterSignalFractionFromCode(meterCodeFromSignalPercent(percent))*100;
+ return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(percent))*100;
 }
 
 function meterColorLevelPercent(){
@@ -363,10 +421,15 @@ function meterTargetSignalToLinear(v){
  return Math.pow(c,g);
 }
 
+function meterDvClassicColorCheckerScale(){
+ return 0.68;
+}
+
 function meterEncodeColorCheckerLinear(linear){
  const min=meterPatchRangeMin();
  const span=meterPatchRangeSpan();
- const clamped=Math.max(0,Math.min(1,linear||0));
+ let clamped=Math.max(0,Math.min(1,linear||0));
+ if(meterChartIsDv()) clamped*=meterDvClassicColorCheckerScale();
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*100)*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
@@ -402,8 +465,45 @@ function meterSaturationStimulusLinearLevel(){
  return meterTargetSignalToLinear(actualPercent);
 }
 
+function meterDvRelativeSaturationFraction(sat){
+ const s=Math.max(0,Math.min(1,sat||0));
+ return s-(0.8*s*s*(1-s));
+}
+
+function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
+ if(!(meterChartIsDv() && meterDvMapModeValue()!=='1')) return {x,y};
+ const solveGamut=gamut||meterAnalysisGamut();
+ const wx=D65.x, wy=D65.y;
+ const dx=(x||0)-wx;
+ const dy=(y||0)-wy;
+ if(Math.abs(dx)<1e-9 && Math.abs(dy)<1e-9) return {x,y};
+ const verts=[solveGamut.primaries.R,solveGamut.primaries.G,solveGamut.primaries.B];
+ let bestT=null;
+ for(let i=0;i<verts.length;i++){
+  const a=verts[i];
+  const b=verts[(i+1)%verts.length];
+  const ex=b.x-a.x;
+  const ey=b.y-a.y;
+  const qx=a.x-wx;
+  const qy=a.y-wy;
+  const den=dx*ey-dy*ex;
+  if(Math.abs(den)<1e-9) continue;
+  const t=(qx*ey-qy*ex)/den;
+  const u=(qx*dy-qy*dx)/den;
+  if(t>0 && u>=-1e-9 && u<=1+1e-9 && (bestT==null || t<bestT)) bestT=t;
+ }
+ if(!(bestT>0)) return {x,y};
+ const frac=Math.max(0,Math.min(1,1/bestT));
+ const compressed=meterDvRelativeSaturationFraction(frac);
+ if(!(frac>1e-9)) return {x:wx,y:wy};
+ const scale=compressed/frac;
+ return {x:wx+dx*scale,y:wy+dy*scale};
+}
+
 function meterSaturationSolveGamut(){
- if(meterChartIsDv()) return meterContainerGamut();
+ // Keep the DV relative saturation solve in the selected analysis gamut so
+ // the hue axis stays aligned with the selected target/reference gamut.
+ if(meterChartIsDv()) return meterAnalysisGamut();
  return meterStimulusSolveGamut();
 }
 
@@ -447,7 +547,8 @@ function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
 
 function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const solveGamut=meterSaturationSolveGamut();
- const sat=Math.max(0,Math.min(100,satPercent||0))/100;
+ let sat=Math.max(0,Math.min(100,satPercent||0))/100;
+ if(meterChartIsDv() && meterDvMapModeValue()!=='1') sat=meterDvRelativeSaturationFraction(sat);
  const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
@@ -489,10 +590,10 @@ function meterInferSdrSatReferenceNits(){
   if(est>30&&est<400) estimates.push(est);
  });
  if(estimates.length<6) return null;
- estimates.sort((a,b)=>a-b);
- const mid=Math.floor(estimates.length/2);
- return estimates.length%2 ? estimates[mid] : (estimates[mid-1]+estimates[mid])/2;
-}
+   estimates.sort((a,b)=>a-b);
+   const mid=Math.floor(estimates.length/2);
+   return estimates.length%2 ? estimates[mid] : (estimates[mid-1]+estimates[mid])/2;
+  }
 
 function meterSaturationTargetXYZ(colorName,satPercent){
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
@@ -514,7 +615,6 @@ function meterSaturationTargetXYZ(colorName,satPercent){
 }
 
 function meterParseSaturationReading(reading){
- if(!reading) return null;
  if(reading.series_color&&reading.sat_pct!=null){
   return {color:String(reading.series_color),sat:parseFloat(reading.sat_pct)||0};
  }
@@ -587,6 +687,12 @@ function meterTargetXYZForReading(reading){
  if(satInfo){
   if(meterActiveSeriesType==='colors' && satInfo.sat===100){
    return meterColorCheckerFullSatTargetXYZ(satInfo.color);
+  }
+  if(meterActiveSeriesType==='saturations' && meterChartIsDv() && meterDvMapModeValue()==='1'){
+   const r=reading.r_code!=null?reading.r_code:reading.r;
+   const g=reading.g_code!=null?reading.g_code:reading.g;
+   const b=reading.b_code!=null?reading.b_code:reading.b;
+   return targetColorXYZAbs(r,g,b);
   }
   return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  }
@@ -846,7 +952,7 @@ function meterBuildColorCheckerStepsJS(){
  const steps=[];
  const min=meterPatchRangeMin();
  const max=min+meterPatchRangeSpan();
- const solveGamut=meterStimulusSolveGamut();
+ const solveGamut=meterChartIsDv()?meterAnalysisGamut():meterStimulusSolveGamut();
  steps.push({ire:100,r:max,g:max,b:max,name:'White'});
  steps.push({ire:0,r:min,g:min,b:min,name:'Black'});
  meterColorCheckerClassicSource().forEach(src=>{
@@ -856,9 +962,10 @@ function meterBuildColorCheckerStepsJS(){
    steps.push({ire:ire,r:code,g:code,b:code,name:src.name});
    return;
   }
-  const X=(src.x/src.y)*src.Yn;
+    const emitXY=meterRemapRelativeDvChromaticityToSolveGamut(src.x,src.y,solveGamut);
+    const X=(emitXY.x/emitXY.y)*src.Yn;
   const Y=src.Yn;
-  const Z=((1-src.x-src.y)/src.y)*src.Yn;
+    const Z=((1-emitXY.x-emitXY.y)/emitXY.y)*src.Yn;
   let rl=solveGamut.xyzToRgb[0][0]*X+solveGamut.xyzToRgb[0][1]*Y+solveGamut.xyzToRgb[0][2]*Z;
   let gl=solveGamut.xyzToRgb[1][0]*X+solveGamut.xyzToRgb[1][1]*Y+solveGamut.xyzToRgb[1][2]*Z;
   let bl=solveGamut.xyzToRgb[2][0]*X+solveGamut.xyzToRgb[2][1]*Y+solveGamut.xyzToRgb[2][2]*Z;
@@ -867,15 +974,24 @@ function meterBuildColorCheckerStepsJS(){
   rl=Math.max(0,rl);
   gl=Math.max(0,gl);
   bl=Math.max(0,bl);
+  const rCode=meterEncodeColorCheckerLinear(rl);
+  const gCode=meterEncodeColorCheckerLinear(gl);
+  const bCode=meterEncodeColorCheckerLinear(bl);
+  let targetYn=src.Yn;
+  if(meterChartIsDv()){
+   const refY=Math.max(1,meterColorReferenceNits());
+   const emittedXYZ=targetColorXYZAbs(rCode,gCode,bCode);
+   if(emittedXYZ&&emittedXYZ.Y!=null&&emittedXYZ.Y>=0&&refY>0) targetYn=emittedXYZ.Y/refY;
+  }
   steps.push({
    ire:Math.round(src.Yn*100),
-   r:meterEncodeColorCheckerLinear(rl),
-   g:meterEncodeColorCheckerLinear(gl),
-   b:meterEncodeColorCheckerLinear(bl),
+   r:rCode,
+   g:gCode,
+   b:bCode,
    name:src.name,
    target_x:src.x,
    target_y:src.y,
-   target_Yn:src.Yn
+   target_Yn:targetYn
   });
  });
  [
@@ -886,12 +1002,12 @@ function meterBuildColorCheckerStepsJS(){
   ['100% Magenta','Magenta'],
   ['100% Yellow','Yellow']
  ].forEach(([name,colorName])=>{
-  const rgb=meterBuildFullGamutTargetLinearRgb(colorName);
+  const rgb=meterBuildSaturationStepRgb(colorName,100);
   steps.push({
    ire:100,
-   r:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[0])),
-   g:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[1])),
-   b:meterEncodeColorCheckerFullSatChannel(meterFullSatChannelIsActive(rgb[2])),
+   r:rgb[0],
+   g:rgb[1],
+   b:rgb[2],
    name:name,
    series_color:colorName,
    sat_pct:100
@@ -1167,7 +1283,7 @@ function meterLiveRgbData(reading){
   return meterWhiteReading?{mode:'balance',...rgbBalance(reading,meterWhiteReading,meterGreyRefMode())}:{mode:'balance',R:100,G:100,B:100};
  }
  const gamut=meterAnalysisGamut();
- const target=meterTargetXYZForReading(reading);
+ const target=meterColorDeltaTargetXYZ(reading,meterColorIncludeLum());
  const mRgb=xyzToLinRgb(reading.X,reading.Y,reading.Z,gamut.xyzToRgb);
  const tRgb=xyzToLinRgb(target.X,target.Y,target.Z,gamut.xyzToRgb);
  // Use the patch's dominant target channel as the percent reference. For
@@ -1209,6 +1325,16 @@ function effectiveGamma(Y,Yw,ire,prevY,prevIre){
  return isFinite(g)?g:null;
 }
 
+function meterDvRelativeCalmanWhiteGamma(whiteY,peak){
+ const targetPeak=(peak>0)?peak:100;
+ if(!(whiteY>0) || !(targetPeak>0)) return null;
+ const targetAtWhite=effectiveGamma(meterDvRelativeChartTargetLuminance(99.9,targetPeak),targetPeak,99.9);
+ const normalizedY=whiteY/targetPeak;
+ if(!(targetAtWhite>0) || !(normalizedY>0)) return null;
+ const gamma=targetAtWhite/normalizedY;
+ return isFinite(gamma)?gamma:null;
+}
+
 function bt1886Eotf(v,Lw,Lb){
  Lw=Lw||100;Lb=Lb||0;
  const g=2.4;
@@ -1230,34 +1356,51 @@ function targetEotf(v,Lw,Lb){
  if(meterChartIsHdr()) return meterChartTargetLuminance(v,Lw,Lb);
  const tgt=document.getElementById('meterTargetGamma').value;
  if(tgt==='bt1886') return bt1886Eotf(v,Lw,Lb);
+ if(tgt==='st2084') return meterChartPqDecodeNormalized(v);
  if(tgt==='srgb') return srgbEotf(v)*Lw;
  return gammaEotf(v,parseFloat(tgt))*Lw;
 }
 
 function meterGreyStimulusFraction(ire){
  const pct=Math.max(0,Math.min(100,ire||0));
- const isLimited=meterPatchUsesVideoRange();
  const dvMode=meterChartIsDv();
+ const dvAbsolute=dvMode && meterDvMapModeValue()==='1';
+ if(dvAbsolute || meterDvRelativeSt2084UsesLegalRange()) return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(pct));
+ const isLimited=meterPatchUsesVideoRange();
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
  const code=dvMode
-  ? (isLimited?Math.round(16+Math.pow(pct/100,1/2.2)*219):Math.round(Math.pow(pct/100,1/2.2)*255))
+  ? (sel==='st2084'
+    ? (isLimited?Math.round(16+pct/100*219):Math.round(pct*255/100))
+    : (isLimited?Math.round(16+Math.pow(pct/100,1/2.2)*219):Math.round(Math.pow(pct/100,1/2.2)*255)))
   : (isLimited?Math.round(16+pct/100*(235-16)):Math.round(pct*255/100));
  return meterSignalFractionFromCode(code);
 }
 
 function meterGreyTargetSignal(ire,code){
  const nominal=Math.max(0,Math.min(1,(ire||0)/100));
- if(code!=null) return meterSignalFractionFromCode(code);
+ if(code!=null) return meterGreySignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
 }
 
 function meterGreyInputFraction(ire,code){
  const nominal=Math.max(0,Math.min(1,(ire||0)/100));
- if(code!=null && meterChartIsHdr()) return meterSignalFractionFromCode(code);
+ if(code!=null && meterChartIsHdr()) return meterGreySignalFractionFromCode(code);
  return nominal;
 }
 
 function meterGreyTargetLuminance(ire,Lw,Lb,code){
+ if(meterChartIsDv() && meterDvMapModeValue()==='1'){
+  const peak=(Lw>0)?Lw:100;
+  return meterDvAbsoluteChartTargetLuminance(ire,peak);
+ }
+ if(meterChartIsDv() && meterDvMapModeValue()==='2'){
+  const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+  if(sel==='st2084'){
+   const peak=(Lw>0)?Lw:100;
+   return meterDvRelativeChartTargetLuminance(ire,peak);
+  }
+ }
  const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():1);
  const signal=meterGreyTargetSignal(ire,code);
  return meterChartTargetLuminance(signal,peak,Lb||0);
@@ -1335,6 +1478,23 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  const peak=(Lw>0)?Lw:100;
  if(!(peak>0) || !(ire>0)) return null;
  const tgt=((document.getElementById('meterTargetGamma')||{}).value)||'2.2';
+ if(meterChartIsDv() && meterDvMapModeValue()==='1'){
+  const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
+  const tgtLum=meterDvAbsoluteChartTargetLuminance(ire,peak);
+  if(ire>=100){
+   const prevLum=meterDvAbsoluteChartTargetLuminance(prevStepIre,peak);
+   return effectiveGamma(tgtLum,peak,ire,prevLum,prevStepIre);
+  }
+  return effectiveGamma(tgtLum,peak,ire);
+ }
+ if(meterChartIsDv() && meterDvMapModeValue()==='2' && tgt==='st2084'){
+  const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
+  const tgtLum=meterDvRelativeChartTargetLuminance(ire,peak);
+  if(ire>=100){
+   return meterDvRelativeCalmanWhiteGamma(tgtLum,peak);
+  }
+  return effectiveGamma(tgtLum,peak,ire);
+ }
  const signal=meterGreyTargetSignal(ire,code);
  if(!(signal>0)) return null;
  const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
@@ -1372,17 +1532,21 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
 }
 
 function meterGreyTargetPeak(refWhite){
- if(meterChartIsDv()) return meterChartMasterPeak();
+ // DV absolute and DV relative both anchor the chart target to the measured
+ // 100% white so the target curve tracks what the display actually produces
+ // rather than the authored mastering-peak label.
+ if(meterChartIsDv()) return (refWhite>0)?refWhite:meterChartMasterPeak();
  if(meterChartIsPq()) return meterChartHdrPeak();
  return (refWhite>0)?refWhite:100;
 }
 
 function meterTargetGammaLabel(){
- if(meterChartIsDv()) return 'Dolby Vision';
- if(meterChartIsPq()) return 'PQ';
  const sel=document.getElementById('meterTargetGamma');
- if(!sel) return 'Gamma';
+ if(!sel) return meterChartIsDv() ? 'Dolby Vision' : (meterChartIsPq() ? 'PQ' : 'Gamma');
  const opt=sel.options[sel.selectedIndex];
+ if(meterChartIsDv() && meterDvMapModeValue()==='2' && ((sel&&sel.value)||'')==='st2084') return 'Dolby Vision Relative';
+ if(meterChartIsDv()) return opt&&opt.textContent?opt.textContent.trim():'Dolby Vision';
+ if(meterChartIsPq()) return 'PQ';
  return opt&&opt.textContent?opt.textContent.trim():'Gamma';
 }
 
@@ -1457,12 +1621,6 @@ function meterChartMasterMin(){
  return (cfg>=0&&isFinite(cfg))?cfg:0.005;
 }
 
-function meterChartDiffuseWhite(){
- const el=document.getElementById('meterHdrDiffuse');
- const v=el?parseFloat(el.value):NaN;
- return (v>0)?v:203;
-}
-
 function meterChartBt2390Enabled(){
  const el=document.getElementById('meterHdrApplyBT2390');
  return !!(el && el.checked);
@@ -1501,12 +1659,12 @@ function bt2390Tonemap(Lsrc, Lmax, Ldisp){
  return Math.min(meterChartPqDecodeNormalized(Eout), Ldisp);
 }
 
-// Show/hide the HDR configuration group whenever the chart signal mode
-// changes. Called from the HDR-aware redraw path.
+// Show the HDR roll-off control only when the chart path can actually use it
+// (PQ-based HDR/DV targets). Called from the HDR-aware redraw path.
 function meterUpdateHdrConfigVisibility(){
  const el=document.getElementById('meterHdrConfig');
  if(!el) return;
- el.style.display = meterChartIsHdr() ? '' : 'none';
+ el.style.display = meterChartIsPq() ? '' : 'none';
 }
 
 function meterChartPqEncodeNormalized(nits){
@@ -1740,7 +1898,6 @@ function meterSaveColorPrefs(){
   color_incl_lum:cb('meterColorIncludeLumError'),
    incl_lum:      cb('meterIncludeLumError'),
    target_gamma:  v('meterTargetGamma'),
-   hdr_diffuse:   v('meterHdrDiffuse'),
     hdr_bt2390:    cb('meterHdrApplyBT2390'),
     eotf_log:      cb('meterEotfLogScale'),
     lum_log:       cb('meterLuminanceLogScale')
@@ -1767,7 +1924,6 @@ function meterLoadColorPrefs(){
   setChk('meterColorIncludeLumError', p.color_incl_lum);
   setChk('meterIncludeLumError', p.incl_lum);
   setVal('meterTargetGamma', p.target_gamma);
-  setVal('meterHdrDiffuse',    p.hdr_diffuse);
   setChk('meterHdrApplyBT2390', p.hdr_bt2390);
   setChk('meterEotfLogScale', p.eotf_log);
   setChk('meterLuminanceLogScale', p.lum_log);

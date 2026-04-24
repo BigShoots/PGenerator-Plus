@@ -70,6 +70,36 @@ find_port() {
 TOTAL=$(get_step_count)
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 FIRST_STEP_EXTRA_SEC=2
+FRESH_DAEMON_WINDOW_SEC=180
+FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
+DV_MIN_STEP_DELAY_SEC=3
+
+apply_dv_delay_floor() {
+ local delay="$1"
+ if [[ "$SIGNAL_MODE" == "dv" ]]; then
+  python -c "print(max(float('$delay'), $DV_MIN_STEP_DELAY_SEC))" 2>/dev/null
+ else
+  echo "$delay"
+ fi
+}
+
+daemon_elapsed_sec() {
+ local pid
+ pid=$(pgrep -o -f '/usr/sbin/PGeneratord\.pl' 2>/dev/null | head -1)
+ if [[ -z "$pid" ]]; then
+  echo 999999
+  return
+ fi
+ ps -o etimes= -p "$pid" 2>/dev/null | awk '{print ($1 ~ /^[0-9]+$/) ? $1 : 999999}'
+}
+
+should_apply_fresh_dv_first_white_warmup() {
+ [[ "$SIGNAL_MODE" == "dv" ]] || return 1
+ local elapsed
+ elapsed=$(daemon_elapsed_sec)
+ [[ "$elapsed" =~ ^[0-9]+$ ]] || return 1
+ (( elapsed <= FRESH_DAEMON_WINDOW_SEC ))
+}
 
 # Publish an immediate startup state so the UI shows progress instead of
 # looking hung while spotread is performing its cold-start handshake.
@@ -296,7 +326,14 @@ EOJSON
 
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"patch\",\"r\":$WHITE_CODE,\"g\":$WHITE_CODE,\"b\":$WHITE_CODE,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
- sleep 1.5
+ if should_apply_fresh_dv_first_white_warmup; then
+  sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
+  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+   -d "{\"name\":\"patch\",\"r\":$WHITE_CODE,\"g\":$WHITE_CODE,\"b\":$WHITE_CODE,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+ fi
+ PREREAD_DELAY=$(apply_dv_delay_floor "$DELAY_SEC")
+ PREREAD_DELAY=$(python -c "print(float('$PREREAD_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
+ sleep "$PREREAD_DELAY"
 
  cat > "$STATE_FILE" << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (reading)","readings":[]}
@@ -358,8 +395,38 @@ fi
 
 READINGS=""
 READING_COUNT=0
+START_INDEX=0
 
-for (( i=0; i<TOTAL; i++ )); do
+# The saturation pre-read above is the actual White chart reference. Reuse it
+# as the first series reading so DV saturations do not immediately measure
+# the same white step a second time.
+if [[ "$SERIES_ID" == saturations_* && "$WHITE_READING" != "null" && $TOTAL -gt 0 ]]; then
+ FIRST_IRE=$(get_step_field 0 ire)
+ FIRST_R=$(get_step_field 0 r)
+ FIRST_G=$(get_step_field 0 g)
+ FIRST_B=$(get_step_field 0 b)
+ FIRST_NAME=$(get_step_field 0 name)
+ FIRST_READING=$(python -c "
+import json
+r=json.loads('''$WHITE_READING''')
+r['ire']=int('$FIRST_IRE' or 100)
+r['name']='''$FIRST_NAME'''
+r['r_code']=int('$FIRST_R' or 0)
+r['g_code']=int('$FIRST_G' or 0)
+r['b_code']=int('$FIRST_B' or 0)
+print(json.dumps(r))
+" 2>/dev/null || echo "")
+ if [[ -n "$FIRST_READING" ]]; then
+  READINGS="$FIRST_READING"
+  READING_COUNT=1
+  START_INDEX=1
+  cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+ fi
+fi
+
+for (( i=START_INDEX; i<TOTAL; i++ )); do
  R=$(get_step_field $i r)
  G=$(get_step_field $i g)
  B=$(get_step_field $i b)
@@ -383,12 +450,23 @@ EOJSON
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
 
+ # Right after a PGenerator restart, the first DV white often reads far too
+ # low on the first pass even though an immediate rerun is correct. Give that
+ # very first 100% step one extra warm-up settle while the daemon is still
+ # freshly started, without slowing steady-state runs.
+ if (( i == 0 )) && [[ "$IRE" == "100" ]] && should_apply_fresh_dv_first_white_warmup; then
+  sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
+  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+   -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+ fi
+
  # Settle delay — shorter for near-black, but give the first series patch
  # extra time because cold-start white often reads low on the first pass.
  STEP_DELAY="$DELAY_SEC"
  if (( IRE <= 5 )); then
   STEP_DELAY=1
  fi
+ STEP_DELAY=$(apply_dv_delay_floor "$STEP_DELAY")
  if (( i == 0 )); then
   STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
  fi
