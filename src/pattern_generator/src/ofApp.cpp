@@ -162,9 +162,9 @@ void ofApp::update(){
 
  }
   /* Start Patch RPI P4 */
-  if (draw_type == "IMAGE") {
-   ofxRPI4Window::colorspace_on = 0;
-  }else {
+	if (draw_type == "IMAGE") {
+	 ofxRPI4Window::colorspace_on = 0;
+	}else {
    ofxRPI4Window::colorspace_on = 1;
    loop_count=0; //reset counter
    previous_image = ""; 
