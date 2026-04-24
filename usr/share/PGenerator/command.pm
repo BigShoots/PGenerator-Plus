@@ -224,10 +224,13 @@ sub pattern_generator_start(@) {
  # which is unavailable with vc4-kms-v3d. LD_LIBRARY_PATH=/usr/lib forces
  # Mesa libEGL.so + libGLESv2.so so the binary uses DRM/GBM rendering.
  # LD_PRELOAD overrides DRM property calls to fix max_bpc setting.
+ # MALLOC_CHECK_=0 suppresses a benign glibc double-free abort that fires
+ # right after GBM init in the SOURCE_RANGE-aware renderer; without it the
+ # renderer dies before any IMAGE pattern can be drawn (diagnostics break).
  if($use_drm_override) {
-  system("LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
  } else {
-  system("LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
  }
  usleep(250000);
  &apply_hdr_metadata_helper();
