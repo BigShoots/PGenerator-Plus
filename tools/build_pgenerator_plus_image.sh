@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
+MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -249,6 +250,7 @@ overlay_tree() {
 reset_runtime_state() {
  log "Resetting transient runtime state for a fresh image"
  rm -f "$ROOT_MOUNT/usr/share/PGenerator/meter_settings.json"
+ rm -f "$ROOT_MOUNT/usr/sbin/PGeneratord.hdr"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/running/tmp"
  find "$ROOT_MOUNT/var/lib/PGenerator/running" -mindepth 1 -maxdepth 1 ! -name 'tmp' -exec rm -rf {} + 2>/dev/null || true
  : > "$ROOT_MOUNT/var/lib/PGenerator/operations.txt"
@@ -263,6 +265,11 @@ fix_permissions() {
  chmod 440 "$ROOT_MOUNT/etc/sudo/sudoers" "$ROOT_MOUNT/etc/sudo/sudoers.d/PGenerator" 2>/dev/null || true
  chmod +x "$ROOT_MOUNT/usr/sbin/pgenerator-update" 2>/dev/null || true
  chmod +x "$ROOT_MOUNT/usr/bin/spotread" "$ROOT_MOUNT/usr/bin/spotread_wrapper.sh" "$ROOT_MOUNT/usr/bin/meter_session.sh" "$ROOT_MOUNT/usr/bin/meter_series.sh" 2>/dev/null || true
+}
+
+validate_release_root() {
+ log "Validating release manifest"
+ "$MANIFEST_CHECKER" --root "$ROOT_MOUNT"
 }
 
 finalize_image() {
@@ -287,6 +294,7 @@ main() {
  overlay_tree
  reset_runtime_state
  fix_permissions
+ validate_release_root
  finalize_image
 }
 
