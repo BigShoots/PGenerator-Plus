@@ -1,0 +1,20 @@
+Versioned OTA migration scripts placed in this directory are run by
+/usr/sbin/pgenerator-update after the latest cumulative overlay tarball is
+extracted.
+
+Rules:
+- Name each script with a leading semantic version, for example:
+  2.2.3-remove-obsolete-files.sh
+  2.2.4-migrate-config-layout.sh
+- A script runs when its version is greater than the installed version and
+  less than or equal to the target version being installed.
+- Keep scripts idempotent. Users may jump across multiple releases in one OTA
+  update, so each script must be safe to run exactly once in a cumulative path.
+- Use these scripts for one-time data moves, cleanup of obsolete files, or any
+  compatibility fix that cannot be handled by shipping the latest full overlay
+  alone.
+
+Environment variables passed to each script:
+- PG_UPDATE_FROM
+- PG_UPDATE_TO
+- PG_MIGRATION_VERSION

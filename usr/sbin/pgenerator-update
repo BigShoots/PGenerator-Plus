@@ -24,6 +24,7 @@ set -euo pipefail
 GITHUB_REPO="${GITHUB_REPO:-BigShoots/PGenerator-Plus}"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 VERSION_FILE="${VERSION_FILE:-/usr/share/PGenerator/version.pm}"
+UPDATE_MIGRATIONS_DIR="${UPDATE_MIGRATIONS_DIR:-/usr/share/PGenerator/update-migrations.d}"
 UPDATE_DIR="${UPDATE_DIR:-/var/lib/PGenerator/updates}"
 UPDATE_LOG="${UPDATE_LOG:-/var/log/PGenerator/update.log}"
 CURL_OPTS="-s -L --connect-timeout 10 --max-time 60"
@@ -129,11 +130,64 @@ release_field() {
 }
 
 # ── Compare semver: returns 0 if $1 > $2 ──
+normalize_version() {
+ local version="${1:-0}"
+ version="${version#v}"
+ [ -n "$version" ] || version="0"
+ printf '%s' "$version"
+}
+
 version_gt() {
  local a b
- a=$(echo "$1" | sed 's/^v//')
- b=$(echo "$2" | sed 's/^v//')
+ a=$(normalize_version "$1")
+ b=$(normalize_version "$2")
  [ "$a" != "$b" ] && [ "$(printf '%s\n%s' "$a" "$b" | sort -V | tail -1)" = "$a" ]
+}
+
+version_le() {
+ local a b
+ a=$(normalize_version "$1")
+ b=$(normalize_version "$2")
+ [ "$a" = "$b" ] || [ "$(printf '%s\n%s' "$a" "$b" | sort -V | tail -1)" = "$b" ]
+}
+
+migration_script_version() {
+ local base
+ base="$(basename "$1")"
+ printf '%s' "$base" | sed -E 's/^v?([0-9]+(\.[0-9]+)*).*/\1/'
+}
+
+run_update_migrations() {
+ local from_version target_version migration_count path script_version base
+ from_version=$(normalize_version "${1:-0}")
+ target_version=$(normalize_version "${2:-0}")
+ migration_count=0
+
+ [ -d "$UPDATE_MIGRATIONS_DIR" ] || return 0
+
+ while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  base="$(basename "$path")"
+  script_version=$(migration_script_version "$base")
+  if [ -z "$script_version" ] || [ "$script_version" = "$base" ]; then
+   log_msg "Skipping OTA migration with unparseable version: $base"
+   continue
+  fi
+  if version_gt "$script_version" "$from_version" && version_le "$script_version" "$target_version"; then
+   migration_count=$((migration_count + 1))
+   log_msg "Running OTA migration $base"
+   chmod +x "$path" 2>/dev/null || true
+   if ! PG_UPDATE_FROM="$from_version" PG_UPDATE_TO="$target_version" PG_MIGRATION_VERSION="$script_version" "$path" >> "$UPDATE_LOG" 2>&1; then
+    log_msg "ERROR: OTA migration failed: $base"
+    echo "ERROR: OTA migration failed: $base"
+    return 1
+   fi
+  fi
+ done < <(find "$UPDATE_MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sh' | sort -V)
+
+ if [ "$migration_count" -eq 0 ]; then
+  log_msg "No OTA migrations needed for $from_version -> $target_version"
+ fi
 }
 
 cmd="${1:-help}"
@@ -262,6 +316,8 @@ case "$cmd" in
   chown root:root /etc/sudo/sudoers /etc/sudo/sudoers.d /etc/sudo/sudoers.d/PGenerator 2>/dev/null || true
   chmod 755 /etc/sudo /etc/sudo/sudoers.d 2>/dev/null || true
   chmod 440 /etc/sudo/sudoers /etc/sudo/sudoers.d/PGenerator 2>/dev/null || true
+
+  run_update_migrations "$current" "$latest"
 
   rm -f "$tarball"
   sync

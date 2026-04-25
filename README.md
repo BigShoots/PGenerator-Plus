@@ -85,7 +85,7 @@ Important limitations:
 - This is an overlay build, not a full from-scratch distro build.
 - The base image must already be a compatible BiasiLinux/PGenerator image with the expected distro dependencies, `pgenerator` account, and sudoers setup.
 - The `PGeneratord` and `PGeneratord.dv` binaries are prebuilt and are taken from this repository as-is.
-- The `2.2.2` image/runtime uses a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`; this repository now includes that runtime binary alongside the integration wrappers, CCSS assets, udev rules, and web integration rather than the upstream ArgyllCMS source tree.
+- The `2.3.1` image/runtime uses a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`; this repository now includes that runtime binary alongside the integration wrappers, CCSS assets, udev rules, and web integration rather than the upstream ArgyllCMS source tree.
 - Before publishing or flashing a test image, make sure transient runtime state is cleared so the image is fresh. In particular, do not ship old meter/session artifacts, and confirm [etc/PGenerator/PGenerator.conf](etc/PGenerator/PGenerator.conf) is back on the default SDR 1080p RGB 8-bit profile.
 - The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
 
@@ -280,20 +280,20 @@ Manage the device directly from the interface:
 - **Network Management:** Configure the active WiFi client connection or manage the local WiFi Access Point (reachable at `10.10.10.1`).
 - **Power Options:** Restart the PGenerator backend service or safely reboot the entire Raspberry Pi.
 - **Boot GPU Split:** Adjust the boot-time GPU memory split from the UI and trigger the required reboot.
-- **OTA Updates:** Check GitHub for new PGenerator+ releases, view changelogs, and sequentially download/extract updates with a single click.
+- **OTA Updates:** Check GitHub for new PGenerator+ releases, view changelogs, and install the latest cumulative OTA overlay with a single click.
 
 #### Meter & Measurements
 The current Web UI includes an integrated measurement workflow built around ArgyllCMS `spotread`:
 
 - **USB Meter Detection:** Detects supported colorimeters attached over USB and reports whether `spotread` is available.
-- **Calibration Tool Workflow:** In `2.2.2`, PGenerator+ can be used as a simple calibration tool on the Pi itself, not just as a remote patch source.
+- **Calibration Tool Workflow:** In current releases including `2.3.1`, PGenerator+ can be used as a simple calibration tool on the Pi itself, not just as a remote patch source.
 - **Persistent Read Sessions:** Uses a long-lived meter session so repeated reads avoid paying the full meter initialization cost every time.
 - **Interactive Measurements:** Supports both **Read Once** and **Continuous** live reading modes from the dashboard.
 - **Series Runs:** Built-in measurement series for **Greyscale 21pt**, **Greyscale 11pt**, **Colors 30**, and **Saturation Sweep 24**.
 - **Patch Controls:** Configurable settle delay, patch size, optional APL windows, refresh-rate override, OLED pattern insertion, and optional i1D3 AIO disable.
 - **On-Device Charts:** Displays live luminance, CCT, chromaticity, RGB balance, luminance tracking, and both CIELUV and CIEDE2000 Delta E charts in the browser.
 - **Supported Colorimeters:** Calibrite/X-Rite i1Display Pro Plus, X-Rite i1 Pro, X-Rite i1 Display Pro / ColorMunki Display, Datacolor Spyder 5, Datacolor SpyderX, ColorVision Spyder, and Sequel Chroma 5.
-- **Included ArgyllCMS Runtime:** The `2.2.2` source tree and Pi image include a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`, with `spotread_wrapper.sh`, `spotread_measure.py`, `meter_session.sh`, and `meter_series.sh` providing the Pi-side automation layer.
+- **Included ArgyllCMS Runtime:** The `2.3.1` source tree and Pi image include a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`, with `spotread_wrapper.sh`, `spotread_measure.py`, `meter_session.sh`, and `meter_series.sh` providing the Pi-side automation layer.
 - **Driver Model:** Meter support uses the standard Linux USB/HID stack plus bundled udev permission rules; no extra proprietary driver packages or out-of-tree kernel modules are required.
 
 #### CCSS Profile Management
@@ -316,6 +316,16 @@ Self-updating via GitHub Releases from this repository:
 - `pgenerator-update apply` — downloads the release `.tar.gz` asset, stops the service, extracts over the filesystem, and restarts
 
 Updates are triggered from the web UI or command line. Release assets are tar.gz archives with FHS-layout paths that overlay directly onto the root filesystem.
+
+Important OTA rule: the updater downloads only the latest tar.gz asset. It does not replay every intermediate release. That means each published `pgenerator-plus-<version>.tar.gz` asset must be a cumulative overlay built from the repository's current `etc`, `usr`, `var`, and `lib` trees, not a delta package.
+
+For changes that cannot be expressed by the latest overlay alone, ship a versioned migration script in `usr/share/PGenerator/update-migrations.d`. During `pgenerator-update apply`, scripts whose version is greater than the installed version and less than or equal to the target version are executed after extraction. Use those scripts for one-time data migrations and removal of obsolete files when users skip intermediate releases.
+
+To build the OTA tarball consistently from the repo overlay, use:
+
+```bash
+./tools/build_pgenerator_plus_ota.sh
+```
 
 ### LUT Correction
 
@@ -431,11 +441,11 @@ usr/
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.2.2`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.3.1`) and product name (`PGenerator+`) |
 
 ### Meter Runtime Notes
 
-- The `2.2.2` source tree and runtime include the prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`.
+- The `2.3.1` source tree and runtime include the prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`.
 - The Web UI launches meter helpers through sudo using the rules in `etc/sudo/sudoers.d/PGenerator`.
 - USB permissions for supported meter vendors are provided by `etc/udev/rules.d/99-colorimeter.rules`, including X-Rite/Calibrite, Datacolor, ColorVision, and Sequel devices.
 - Supported USB meter models are: Calibrite/X-Rite i1Display Pro Plus, X-Rite i1 Pro, X-Rite i1 Display Pro / ColorMunki Display, Datacolor Spyder 5, Datacolor SpyderX, ColorVision Spyder, and Sequel Chroma 5.
