@@ -13,9 +13,9 @@
 #   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms]
 #   STOP
 #
-# settle_ms (optional, default 0) is the post-display settle wait — only
-# applied when the patch RGB actually changed since the last READ, so
-# back-to-back reads on the same patch (Continuous mode) pay it once.
+# settle_ms (optional, default 0) is the post-display settle wait applied
+# before every read so manual Read Once and Continuous honor the UI value even
+# when the patch itself has not changed.
 #
 # Writes results to /tmp/meter_read.json after each READ so the existing
 # /api/meter/read/result polling endpoint keeps working unchanged.
@@ -220,7 +220,7 @@ fi
 
 log "command loop ready"
 
-LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE=""
+LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA=""
 
 # --- Main command loop ---
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
@@ -238,18 +238,18 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    # Mark measuring so the polling endpoint knows a read is in flight.
    write_state '{"status":"measuring"}'
 
-   # Re-display only if the patch actually changed. This makes Continuous
-   # reads on a fixed patch fast (no /api/pattern roundtrip, no settle wait)
-   # while still settling correctly when the user picks a different patch.
-   if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" ]]; then
+  # Re-display when the rendered patch changes, including transport fields
+  # like signal mode and mastering peak that affect how the same RGB codes map.
+   if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" ]]; then
     curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
      -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PSIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
-    if (( SETTLE_MS > 0 )); then
-     SETTLE_SEC=$(awk "BEGIN{printf \"%.3f\", $SETTLE_MS/1000.0}")
-     sleep "$SETTLE_SEC"
-    fi
-    LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"
+    LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"
    fi
+
+  if (( SETTLE_MS > 0 )); then
+   SETTLE_SEC=$(awk "BEGIN{printf \"%.3f\", $SETTLE_MS/1000.0}")
+   sleep "$SETTLE_SEC"
+  fi
 
    # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
    # returns no measurable response. Report a valid 0.0 reading immediately.
