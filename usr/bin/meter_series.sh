@@ -18,6 +18,7 @@ REFRESH_RATE="${9:-}"
 DISABLE_AIO="${10:-0}"
 SIGNAL_MODE="${11:-sdr}"
 MAX_LUMA="${12:-1000}"
+DV_MAP_MODE="${13:-}"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
@@ -72,16 +73,6 @@ DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 FIRST_STEP_EXTRA_SEC=2
 FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
-DV_MIN_STEP_DELAY_SEC=3
-
-apply_dv_delay_floor() {
- local delay="$1"
- if [[ "$SIGNAL_MODE" == "dv" ]]; then
-  python -c "print(max(float('$delay'), $DV_MIN_STEP_DELAY_SEC))" 2>/dev/null
- else
-  echo "$delay"
- fi
-}
 
 daemon_elapsed_sec() {
  local pid
@@ -99,6 +90,12 @@ should_apply_fresh_dv_first_white_warmup() {
  elapsed=$(daemon_elapsed_sec)
  [[ "$elapsed" =~ ^[0-9]+$ ]] || return 1
  (( elapsed <= FRESH_DAEMON_WINDOW_SEC ))
+}
+
+series_uses_initial_white_reference() {
+ [[ "$SIGNAL_MODE" == "dv" ]] || return 1
+ [[ "$DV_MAP_MODE" != "1" ]] || return 1
+ [[ "$SERIES_ID" == saturations_* || "$SERIES_ID" == colors_* ]]
 }
 
 # Publish an immediate startup state so the UI shows progress instead of
@@ -309,9 +306,10 @@ WHITE_READING="null"
 # DEBUG: Log this execution for troubleshooting
 echo "[$(date '+%H:%M:%S.%3N')] meter_series.sh started: SERIES_ID=$SERIES_ID" >> /tmp/meter_series_debug.log
 
-# Saturation sweeps need a fresh mode-matched white reference for target Y,
-# but this pre-read should not become a chart/table step.
-if [[ "$SERIES_ID" == saturations_* ]]; then
+# DV Relative color and saturation series still use a helper-side white
+# pre-read for target Y. DV Absolute should use the in-series 100% White step
+# instead so the white patch is measured once and remains part of the charts.
+if series_uses_initial_white_reference; then
  echo "[$(date '+%H:%M:%S')] WHITE PRE-READ GATE ENTERED for SERIES_ID=$SERIES_ID" >> /tmp/meter_series_debug.log
  if [[ -f "$STEPS_FILE" ]]; then
   FIRST_R=$(get_step_field 0 r)
@@ -331,7 +329,7 @@ EOJSON
   curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
    -d "{\"name\":\"patch\",\"r\":$WHITE_CODE,\"g\":$WHITE_CODE,\"b\":$WHITE_CODE,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
  fi
- PREREAD_DELAY=$(apply_dv_delay_floor "$DELAY_SEC")
+ PREREAD_DELAY="$DELAY_SEC"
  PREREAD_DELAY=$(python -c "print(float('$PREREAD_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
  sleep "$PREREAD_DELAY"
 
@@ -397,10 +395,10 @@ READINGS=""
 READING_COUNT=0
 START_INDEX=0
 
-# The saturation pre-read above is the actual White chart reference. Reuse it
-# as the first series reading so DV saturations do not immediately measure
-# the same white step a second time.
-if [[ "$SERIES_ID" == saturations_* && "$WHITE_READING" != "null" && $TOTAL -gt 0 ]]; then
+# The DV pre-read above is the actual White chart reference. Reuse it as the
+# first series reading so DV Colors/Sat Sweep do not immediately measure the
+# same white step a second time.
+if series_uses_initial_white_reference && [[ "$WHITE_READING" != "null" ]] && (( TOTAL > 0 )); then
  FIRST_IRE=$(get_step_field 0 ire)
  FIRST_R=$(get_step_field 0 r)
  FIRST_G=$(get_step_field 0 g)
@@ -460,13 +458,9 @@ EOJSON
    -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
  fi
 
- # Settle delay — shorter for near-black, but give the first series patch
- # extra time because cold-start white often reads low on the first pass.
+ # Settle delay — use the user-configured value for every step, while still
+ # keeping the existing first-step warm-up on cold starts.
  STEP_DELAY="$DELAY_SEC"
- if (( IRE <= 5 )); then
-  STEP_DELAY=1
- fi
- STEP_DELAY=$(apply_dv_delay_floor "$STEP_DELAY")
  if (( i == 0 )); then
   STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
  fi
