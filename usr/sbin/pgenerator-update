@@ -45,6 +45,58 @@ log_msg() {
  echo "$*"
 }
 
+mount_options_for_path() {
+ local path="${1:-/}"
+ if command -v findmnt >/dev/null 2>&1; then
+  findmnt -no OPTIONS -T "$path" 2>/dev/null || true
+  return 0
+ fi
+ awk -v target="$path" '$2 == target {print $4; exit}' /proc/mounts 2>/dev/null || true
+}
+
+path_is_read_only() {
+ local opts
+ opts="$(mount_options_for_path "${1:-/}")"
+ printf '%s' "$opts" | tr ',' '\n' | grep -qx 'ro'
+}
+
+require_writable_path() {
+ local path="$1"
+ local label="$2"
+ local probe
+
+ mkdir -p "$path" 2>/dev/null || true
+
+ if path_is_read_only "$path"; then
+  log_msg "ERROR: ${label} is mounted read-only: $path"
+  echo "ERROR: ${label} is mounted read-only"
+  return 1
+ fi
+
+ probe="$path/.pgenerator-update-write-test.$$"
+ if ! : > "$probe" 2>/dev/null; then
+  log_msg "ERROR: Cannot write to ${label}: $path"
+  echo "ERROR: Cannot write to ${label}"
+  return 1
+ fi
+ rm -f "$probe" 2>/dev/null || true
+}
+
+wait_for_local_api() {
+ local attempts="${1:-30}"
+ local n=0
+ local response=""
+ while [ "$n" -lt "$attempts" ]; do
+  response="$(curl -s --connect-timeout 2 --max-time 3 http://127.0.0.1/api/ping 2>/dev/null || true)"
+  if printf '%s' "$response" | grep -q '"ok"[[:space:]]*:[[:space:]]*1'; then
+   return 0
+  fi
+  n=$((n + 1))
+  sleep 1
+ done
+ return 1
+}
+
 # ── Pi images may boot without a valid RTC-backed clock ──
 clock_seems_invalid() {
  local year
@@ -275,6 +327,9 @@ case "$cmd" in
    exit 1
   fi
 
+    require_writable_path "$UPDATE_DIR" "update directory"
+    require_writable_path "/usr/share/PGenerator" "PGenerator install tree"
+
   log_msg "Downloading $latest from $asset_url"
   mkdir -p "$UPDATE_DIR"
   tarball="$UPDATE_DIR/pgenerator-plus-${latest}.tar.gz"
@@ -301,6 +356,8 @@ case "$cmd" in
   /etc/init.d/PGenerator stop 2>/dev/null || true
   sleep 2
 
+  require_writable_path "/" "root filesystem"
+
   log_msg "Extracting update..."
   cd /
   tar xzf "$tarball" 2>&1 | tee -a "$UPDATE_LOG"
@@ -319,11 +376,23 @@ case "$cmd" in
 
   run_update_migrations "$current" "$latest"
 
+  require_writable_path "/usr/share/PGenerator" "PGenerator install tree"
+
   rm -f "$tarball"
   sync
 
-  log_msg "Update to $latest complete — restarting..."
-  /etc/init.d/PGenerator start 2>/dev/null &
+  log_msg "Update to $latest extracted — restarting PGenerator..."
+  if ! /etc/init.d/PGenerator start 2>/dev/null; then
+   log_msg "ERROR: PGenerator restart command failed after update"
+   echo "ERROR: PGenerator restart failed after update"
+   exit 1
+  fi
+
+  if ! wait_for_local_api 30; then
+   log_msg "ERROR: PGenerator API did not recover after updating to $latest"
+   echo "ERROR: PGenerator did not come back after update"
+   exit 1
+  fi
 
   echo "OK: Updated to $latest"
   ;;
