@@ -458,7 +458,7 @@ sub pattern_daemon {
      my $hex_key=join(' ',map { sprintf("%02x",ord($_)) } split(//,$key));
      &log("Calman RAW: [$hex_key] ascii=[$key]");
      #
-     # No-colon Calman commands (SN, CAP, ENABLE PATTERNS)
+    # No-colon client commands (SN, CAP, ENABLE PATTERNS)
      #
      my $clean_key=$key;
      $clean_key=~s/^\x02//;
@@ -543,7 +543,7 @@ sub pattern_daemon {
      }
      if($clean_key eq "GET_SETTINGS") {
       # Return current resolution/format/range/bits settings
-      # CalMAN parses fields: Resolution, Refresh, 1_FORMAT, Range, Bits, Dolby
+      # The client expects these fields: Resolution, Refresh, 1_FORMAT, Range, Bits, Dolby
       my $cur_res="${w_s}x${h_s}";
       my $cur_refresh="60";
       my $cur_format="RGB 8-bit";
@@ -581,7 +581,7 @@ sub pattern_daemon {
      $type=~s/^\x02//;
      &log("Calman UPGCI: type=$type cmd=$pattern_cmd");
      #
-     # INIT — Calman handshake (just ACK, no state change)
+    # INIT — client handshake (just ACK, no state change)
      #
      if($type eq "INIT") {
       &calman_reset_pattern_state("INIT");
@@ -612,7 +612,7 @@ sub pattern_daemon {
       }
      };
     #
-    # Helper: align CalMAN DV mode with the existing Dolby Vision path used by
+    # Helper: align external DV mode requests with the existing Dolby Vision path used by
     # the Web UI / legacy DeviceControl profiles. Preserve that transport
     # combination and only switch the renderer map mode between
     # 0=Perceptual, 1=Absolute, and 2=Relative.
@@ -636,7 +636,7 @@ sub pattern_daemon {
     };
 
     #
-    # HDR_ENABLE — Calman proprietary HDR toggle
+    # HDR_ENABLE — external HDR toggle
     # HDR_ENABLE:True → prepare for HDR (CONF_HDR follows with details)
     # HDR_ENABLE:False → switch to SDR
     #
@@ -669,7 +669,7 @@ sub pattern_daemon {
       last;
      }
      #
-     # CONF_HDR — Calman proprietary full HDR metadata configuration
+    # CONF_HDR — external full HDR metadata configuration
      # Format: CONF_HDR:EOTF,Rx,Ry,Gx,Gy,Bx,By,Wx,Wy,MinL,MaxL,MaxCLL,MaxFALL
      # EOTF: ST2084 | HLG | SDR
      # Primaries: CIE xy coordinates (matched to BT.2020/P3/BT.709)
@@ -817,7 +817,7 @@ sub pattern_daemon {
         &log("Calman: 21_HDR_MetadataMode=$mm_val requested — preserving dv_map_mode=$pgenerator_conf{'dv_map_mode'}");
        }
       }
-        # CalMAN uses this SetControl path for live DV mode changes, so apply
+        # This SetControl path is used for live DV mode changes, so apply
         # immediately rather than waiting for a later explicit update command.
         $calman_apply->();
       &send_key_to_client($connection,"");
@@ -846,11 +846,11 @@ sub pattern_daemon {
      #
      # PRIM / HDR_PRIMARIES — Mastering display primaries
      # PGenerator: 0=custom, 1=BT2020/D65, 2=P3/D65, 3=P3/DCI
-     # Calman sends: 0=P3, 1=BT709, 2=BT2020, or string names
+    # The client sends: 0=P3, 1=BT709, 2=BT2020, or string names
      #
      if($type eq "PRIM" || $type eq "HDR_PRIMARIES") {
       my $prim_val=$pattern_cmd;
-      # Map Calman UPGCI numeric enum → PGenerator values
+      # Map the client's numeric enum → PGenerator values
       if($pattern_cmd =~/^\d+$/) {
        my $calman_prim=int($pattern_cmd);
        $prim_val="0" if($calman_prim == 1);  # BT709 → custom/0
@@ -1050,9 +1050,9 @@ sub pattern_daemon {
       last;
      }
      #
-    # RGB Pattern Commands (original Calman wire protocol)
+    # RGB Pattern Commands (legacy external wire protocol)
     # RGB_B:R,G,B,BG  RGB_S:R,G,B,SIZE  RGB_A:R,G,B,BG_R,BG_G,BG_B,SIZE
-    # Calman sends 10-bit values (0-1023); scale to the current output depth
+    # The client sends 10-bit values (0-1023); scale to the current output depth
      #
      if($type =~/RGB_/) {
       @el_cmd=split(",",$pattern_cmd);
@@ -1187,7 +1187,7 @@ sub pattern_daemon {
         # Match interlaced/progressive
         my $m_ip=($m_i eq "i") ? "i" : "p";
         next if($m_ip ne $req_ip);
-        # Match refresh rate (CalMAN uses integer: 59=59.94, 60=60.00, 23=23.98, 24=24.00)
+        # Match refresh rate (the client uses integers: 59=59.94, 60=60.00, 23=23.98, 24=24.00)
         next if(int($m_rate) != $req_rate);
         # Score: exact width match > standard width > any width; userdef > preferred > driver
         my $score=0;
@@ -1294,7 +1294,7 @@ sub pattern_daemon {
          #   0 = Perceptual
          #   1 = Absolute
          #   2 = Relative
-         # Preserve the incoming CalMAN enum in dv_metadata for visibility.
+         # Preserve the incoming client enum in dv_metadata for visibility.
          if($dv_mode eq "PERCEPTUAL") {
           $calman_set_dv_rgb->("0","2");
          } elsif($dv_mode eq "ABSOLUTE") {
