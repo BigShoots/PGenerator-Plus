@@ -186,12 +186,38 @@ exec 3>"$CMDPIPE"
 # Wait for spotread prompt. Allow up to 60 s on a cold boot so the first
 # manual read after a Pi restart doesn't fail during slow USB bring-up.
 WAITED=0
+REFRESH_CAL_DONE=0
+WHITE_REF_DONE=0
 while (( WAITED < 600 )); do
- grep -q "to take a reading:" "$OUTFILE" 2>/dev/null && break
+ CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+ echo "$CLEAN_OUT" | grep -q "to take a reading:" && break
+ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+  log "performing refresh-rate calibration during startup"
+  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+   -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE_DEFAULT\",\"max_luma\":$MAX_LUMA_DEFAULT}" >/dev/null 2>&1 || true
+  sleep 2
+  printf " " >&3
+  REFRESH_CAL_DONE=1
+  sleep 2
+  WAITED=$((WAITED + 20))
+  continue
+ fi
+ if (( WHITE_REF_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qiE "white[[:space:]-]+reference|calibration[[:space:]-]+tile|place .*instrument|place .*meter|instrument .*calibration"; then
+  log "detected white-reference calibration prompt during startup"
+  write_state '{"status":"starting","message":"Place the meter on its white calibration tile"}'
+  sleep 4
+  printf " " >&3
+  WHITE_REF_DONE=1
+  WAITED=$((WAITED + 40))
+  continue
+ fi
+ if echo "$CLEAN_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
+  break
+ fi
  sleep 0.1
  WAITED=$((WAITED + 1))
 done
-if ! grep -q "to take a reading:" "$OUTFILE" 2>/dev/null; then
+if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
  log "spotread init failed"
  write_state '{"status":"error","message":"Meter init failed"}'
  exit 1
@@ -209,7 +235,7 @@ exec 4<>"$CMD_FIFO"
 # then continue — some spotread builds redraw the same prompt instead of adding
 # a second prompt line, so waiting for the prompt count to increase can deadlock.
 CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-if echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
  log "performing refresh-rate calibration"
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE_DEFAULT\",\"max_luma\":$MAX_LUMA_DEFAULT}" >/dev/null 2>&1 || true

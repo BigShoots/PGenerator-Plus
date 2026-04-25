@@ -322,6 +322,66 @@ sub _resolve_ccss_yflag (@) {
  return "l";
 }
 
+sub _webui_ccss_normalize_keywords (@) {
+ my ($text)=@_;
+ return $text if(!defined($text) || $text eq "" || $text!~/BEGIN_DATA_FORMAT/m);
+ my @lines=split(/\n/,$text,-1);
+ my @header_fields=qw(DISPLAY TECHNOLOGY DISPLAY_TYPE_REFRESH REFERENCE SPECTRAL_BANDS SPECTRAL_START_NM SPECTRAL_END_NM SPECTRAL_NORM);
+ my %have_keyword;
+ my @format_fields;
+ my $in_data_format=0;
+ foreach my $line (@lines) {
+  $have_keyword{$1}=1 if($line=~/^KEYWORD\s+"([^"]+)"/);
+  if($line=~/^BEGIN_DATA_FORMAT/) { $in_data_format=1; next; }
+  if($line=~/^END_DATA_FORMAT/) { $in_data_format=0; next; }
+  next unless($in_data_format);
+  foreach my $tok (split(/\s+/,$line)) {
+   next unless($tok=~/^(?:SAMPLE_ID|SPEC_\d+)$/);
+   push @format_fields, $tok if(!$have_keyword{$tok});
+  }
+ }
+ my @out;
+ my $format_keywords_added=0;
+ foreach my $line (@lines) {
+  if(!$format_keywords_added && $line=~/^NUMBER_OF_FIELDS\s/ && @format_fields) {
+   foreach my $field (@format_fields) {
+    next if($have_keyword{$field});
+    push @out, 'KEYWORD "'.$field.'"';
+    $have_keyword{$field}=1;
+   }
+   $format_keywords_added=1;
+  }
+  my $matched="";
+  foreach my $field (@header_fields) {
+   if($line=~/^\Q$field\E\s/) {
+    $matched=$field;
+    last;
+   }
+  }
+  if($matched ne "" && !$have_keyword{$matched}) {
+   push @out, 'KEYWORD "'.$matched.'"';
+   $have_keyword{$matched}=1;
+  }
+  push @out, $line;
+ }
+ return join("\n",@out);
+}
+
+sub _webui_ccss_repair_file (@) {
+ my ($path)=@_;
+ return 0 if(!$path || !-f $path);
+ my $raw=&read_from_file($path);
+ return 0 if(!defined($raw) || $raw eq "");
+ my $fixed=&_webui_ccss_normalize_keywords($raw);
+ return 0 if($fixed eq $raw);
+ if(open(my $fh,">",$path)) {
+  print $fh $fixed;
+  close($fh);
+  return 1;
+ }
+ return 0;
+}
+
 sub resolve_display_type (@) {
  my ($key)=@_;
  # ccss_FILENAME or custom_FILENAME: look up a .ccss file in system or custom dirs
@@ -335,8 +395,8 @@ sub resolve_display_type (@) {
   my $cust="$_custom_ccss_dir/$fname";
   my $legacy="$_custom_ccss_legacy_dir/$fname";
   if(-f $sys)    { return (&_resolve_ccss_yflag($sys),$sys); }
-  if(-f $cust)   { return (&_resolve_ccss_yflag($cust),$cust); }
-  if(-f $legacy) { return (&_resolve_ccss_yflag($legacy),$legacy); }
+  if(-f $cust)   { &_webui_ccss_repair_file($cust); return (&_resolve_ccss_yflag($cust),$cust); }
+  if(-f $legacy) { &_webui_ccss_repair_file($legacy); return (&_resolve_ccss_yflag($legacy),$legacy); }
   return ("l","");
  }
  my $info=$_dtype_info->{lc($key)}||["l",""];
@@ -1072,7 +1132,8 @@ sub webui_meter_series_start (@) {
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
  my $target_gamut="";
  $target_gamut=lc($1) if($body=~/"target_gamut"\s*:\s*"([A-Za-z0-9_]+)"/);
- $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65");
+$target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65" || $target_gamut eq "customd65");
+$target_gamut="bt709" if($target_gamut eq "customd65");
  my $target_gamma="";
  $target_gamma=lc($1) if($body=~/"target_gamma"\s*:\s*"([A-Za-z0-9_.\-]+)"/);
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
@@ -1893,10 +1954,12 @@ sub webui_ccss_upload (@) {
   if($raw!~/BEGIN_DATA/ || $raw!~/END_DATA/) {
    return '{"status":"error","message":"Invalid CCSS file: missing data section"}';
   }
+  $raw=&_webui_ccss_normalize_keywords($raw);
   my $out_path="$_custom_ccss_dir/$safe_name";
   if(open(my $fh,">:raw",$out_path)) {
    print $fh $raw;
    close($fh);
+   &_webui_ccss_repair_file($out_path);
    &log("WebUI: custom CCSS uploaded: $safe_name");
    return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"message\":\"CCSS profile saved\"}";
   }
@@ -1911,8 +1974,9 @@ sub webui_ccss_upload (@) {
 
  my $out_path="$_custom_ccss_dir/$safe_name";
  if(open(my $fh,">",$out_path)) {
-  print $fh $ccss_content;
+  print $fh &_webui_ccss_normalize_keywords($ccss_content);
   close($fh);
+  &_webui_ccss_repair_file($out_path);
   &log("WebUI: custom CCSS converted from CSV: $safe_name");
   return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"message\":\"CSV converted to CCSS\"}";
  }
@@ -3614,8 +3678,16 @@ color:var(--text2);transition:color .18s,filter .18s,transform .08s,background .
 .power-btn.online{color:#4caf50;filter:drop-shadow(0 0 5px rgba(76,175,80,.65))}
 .power-btn.online:hover{color:#5dd362;filter:drop-shadow(0 0 7px rgba(76,175,80,.85))}
 .power-btn.offline{color:#555a64;filter:none}
+.power-btn svg{transform:translateY(1px)}
 .reboot-btn{color:#b6b8c2}
 .reboot-btn:hover{color:#ffffff}
+.main-content{position:relative}
+body.ui-offline .dashboard,body.ui-offline .site-footer{filter:grayscale(.35);opacity:.45;pointer-events:none;user-select:none}
+.offline-mask{position:absolute;inset:0;display:none;z-index:20;align-items:center;justify-content:center;padding:20px;background:rgba(10,10,15,.42);backdrop-filter:blur(3px)}
+body.ui-offline .offline-mask{display:flex}
+.offline-mask-card{max-width:430px;padding:18px 20px;border:1px solid var(--border);border-radius:14px;background:rgba(20,20,31,.94);box-shadow:0 12px 30px rgba(0,0,0,.35);text-align:center}
+.offline-mask-title{font-size:1rem;font-weight:700;margin-bottom:6px}
+.offline-mask-text{font-size:.85rem;line-height:1.45;color:var(--text2)}
 .status-bar{display:flex;gap:12px;font-size:.8rem;color:var(--text2)}
 .status-bar span{display:flex;align-items:center;gap:4px}
 .status-dot{width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;
@@ -3653,6 +3725,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field > input[type="number"]{width:100%;min-height:34px}
 #meterSettingsGrid .field-display{width:170px}
 #meterSettingsGrid .field-gamut{width:148px}
+#meterSettingsGrid .field-gamut .field-whitepoint{display:none;margin-top:10px;width:240px}
+#meterSettingsGrid .field-gamut .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
@@ -3665,6 +3739,10 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-toggle{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);text-transform:none !important;letter-spacing:0 !important;cursor:pointer;white-space:nowrap}
 .meter-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
 .meter-note-toggle{display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--text2);cursor:pointer;margin-top:4px;text-transform:none !important;letter-spacing:0 !important}
+.meter-field-label{display:inline-flex;align-items:center;gap:6px}
+.meter-help-tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--border);color:var(--text2);font-size:.65rem;cursor:help;user-select:none}
+.meter-whitepoint-row{display:flex;gap:6px;align-items:center;max-width:240px}
+.meter-whitepoint-row input{flex:1 1 0}
 .btn-row{display:flex;gap:6px;flex-wrap:wrap}
 .btn{padding:7px 14px;border:none;border-radius:6px;font-size:.8rem;cursor:pointer;
 font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap}
@@ -3809,8 +3887,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <div class="hdr-right">
   <div class="hdr-actions">
    <button class="btn btn-sm btn-secondary" id="updateBtn" style="display:none" onclick="showUpdateCard()">Update Available</button>
-   <button class="icon-btn power-btn offline" id="pwrBtn" aria-label="Power off" title="Power off" onclick="shutdownDevice()">
-    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M7.2 6.8a7 7 0 1 0 9.6 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+  <button class="icon-btn power-btn offline" id="pwrBtn" aria-label="Power off" title="Power off" onclick="shutdownDevice()">
+   <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M7.2 6.8a7 7 0 1 0 9.6 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
    </button>
    <button class="icon-btn reboot-btn" id="rebootBtn" aria-label="Reboot" title="Reboot" onclick="confirmReboot()">
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.05-4.95" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M19 4.65V8.85H14.8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -3826,6 +3904,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 </div>
 
+<div class="main-content" id="mainContent">
 <div class="dashboard">
 
  <!-- Display Settings -->
@@ -4011,7 +4090,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="bt709" selected>BT.709</option>
      <option value="bt2020">BT.2020</option>
      <option value="p3d65">DCI-P3 / D65</option>
+     <option value="customd65">Custom / D65</option>
     </select>
+   <div class="field-whitepoint" id="meterTargetWhitePointField">
+    <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Leave blank for standard D65. Custom values update the CIE target, greyscale target white, and color analysis." aria-label="Target white point help">?</span></label>
+    <div class="meter-whitepoint-row">
+     <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
+     <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
+    </div>
+   </div>
    </div>
   <div class="field field-gamma">
     <label>Target Gamma</label>
@@ -4543,6 +4630,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 </div>
 
+<div class="offline-mask" id="offlineMask" aria-hidden="true">
+ <div class="offline-mask-card">
+  <div class="offline-mask-title">Device Offline</div>
+  <div class="offline-mask-text">PGenerator is not responding. Settings are temporarily locked and this page will refresh automatically when the device comes back online.</div>
+ </div>
+</div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -4567,6 +4662,23 @@ function toast(msg,err){
 }
 
 let _pingFailCount=0;
+let _uiOffline=false;
+
+function setUiOffline(offline){
+ offline=!!offline;
+ if(_uiOffline===offline) return false;
+ _uiOffline=offline;
+ document.body.classList.toggle('ui-offline',offline);
+ const overlay=document.getElementById('offlineMask');
+ if(overlay) overlay.setAttribute('aria-hidden',offline?'false':'true');
+ if(offline){
+  try{
+   const active=document.activeElement;
+   if(active&&typeof active.blur==='function') active.blur();
+  }catch(e){}
+ }
+ return true;
+}
 
 async function fetchJSON(url,opts){
  const req=Object.assign({},opts||{});
@@ -4988,9 +5100,17 @@ async function checkPing(){
   const r=await fetch(API+'/api/ping',{signal:AbortSignal.timeout(8000)});
   if(!r.ok) throw new Error(r.status);
   await r.json();
-  const wasOffline=_pingFailCount>=3;
+  const wasOffline=_pingFailCount>=3||_uiOffline;
   _pingFailCount=0;
-  if(wasOffline){loadInfo();loadMemory();}
+  setUiOffline(false);
+  if(wasOffline){
+   document.getElementById('statusDot').style.background='#4caf50';
+   document.getElementById('statusText').textContent='Online';
+   document.getElementById('statusWrap').title='Connection restored, refreshing...';
+   setPowerButtonState(true);
+   location.reload();
+   return;
+  }
  }catch(e){
   _pingFailCount++;
   if(_pingFailCount<3){
@@ -5002,6 +5122,7 @@ async function checkPing(){
   document.getElementById('statusDot').style.background='var(--red)';
   document.getElementById('statusText').textContent='Offline';
   document.getElementById('statusWrap').title='No response';
+  setUiOffline(true);
   setPowerButtonState(false);
   return;
  }
@@ -5825,6 +5946,24 @@ function meterRestoreLatestPersistedSeries(){
 // D65 reference white chromaticity
 const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
 
+function xyToUnitXyz(x,y){
+ if(!(x>0) || !(y>0) || x+y>=1) return {X:D65.X,Y:1,Z:D65.Z};
+ return {X:x/y,Y:1,Z:(1-x-y)/y};
+}
+
+function meterTargetWhitePoint(){
+ if(!meterTargetWhitePointEnabled()) return {...D65};
+ const xEl=document.getElementById('meterTargetWhiteX');
+ const yEl=document.getElementById('meterTargetWhiteY');
+ const rawX=parseFloat((xEl&&xEl.value)||'');
+ const rawY=parseFloat((yEl&&yEl.value)||'');
+ const x=Number.isFinite(rawX)?rawX:D65.x;
+ const y=Number.isFinite(rawY)?rawY:D65.y;
+ if(!(x>0) || !(y>0) || x+y>=1) return {...D65};
+ const xyz=xyToUnitXyz(x,y);
+ return {x,y,X:xyz.X,Y:1,Z:xyz.Z};
+}
+
 const GAMUT_PRESETS={
  bt709:{
   label:'BT.709 / D65',
@@ -5903,7 +6042,19 @@ function meterContainerGamutKey(){
 function meterSelectedTargetGamutKey(){
  const el=document.getElementById('meterTargetGamut');
  const val=String(el&&el.value||'auto').toLowerCase();
+ if(val==='customd65') return 'bt709';
  return /^(bt709|bt2020|p3d65)$/.test(val)?val:'';
+}
+
+function meterTargetWhitePointEnabled(){
+ const el=document.getElementById('meterTargetGamut');
+ return String(el&&el.value||'').toLowerCase()==='customd65';
+}
+
+function updateMeterTargetWhitepointVisibility(){
+ const field=document.getElementById('meterTargetWhitePointField');
+ if(!field) return;
+ field.classList.toggle('visible',meterTargetWhitePointEnabled());
 }
 
 function meterActiveGamutKey(){
@@ -6238,7 +6389,8 @@ function meterColorLabWhite(){
  const white=meterFindMeasuredWhiteReading();
  if(white&&white.X>0&&white.Y>0&&white.Z>0) return {X:white.X,Y:white.Y,Z:white.Z};
  const refY=Math.max(1,meterColorReferenceNits());
- return {X:D65.X*refY,Y:refY,Z:D65.Z*refY};
+ const wp=meterTargetWhitePoint();
+ return {X:wp.X*refY,Y:refY,Z:wp.Z*refY};
 }
 
 // Forward/inverse of the active SDR/DV target signal model used by the meter
@@ -6354,7 +6506,8 @@ function meterDvAbsoluteSaturationFraction(colorName,sat){
 function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
  if(!(meterChartIsDv() && meterDvMapModeValue()!=='1')) return {x,y};
  const solveGamut=gamut||meterAnalysisGamut();
- const wx=D65.x, wy=D65.y;
+ const wp=meterTargetWhitePoint();
+ const wx=wp.x, wy=wp.y;
  const dx=(x||0)-wx;
  const dy=(y||0)-wy;
  if(Math.abs(dx)<1e-9 && Math.abs(dy)<1e-9) return {x,y};
@@ -6384,7 +6537,8 @@ function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
 function meterRemapAbsoluteDvColorCheckerChromaticity(x,y,gamut){
  if(!(meterChartIsDv() && meterDvMapModeValue()==='1')) return {x,y};
  const solveGamut=gamut||meterAnalysisGamut();
- const wx=D65.x, wy=D65.y;
+ const wp=meterTargetWhitePoint();
+ const wx=wp.x, wy=wp.y;
  const dx=(x||0)-wx;
  const dy=(y||0)-wy;
  if(Math.abs(dx)<1e-9 && Math.abs(dy)<1e-9) return {x,y};
@@ -6443,15 +6597,17 @@ function meterGamutColorEndpointXY(colorName,gamutOverride){
  const rgb=meterGamutColorEndpointRgb(colorName);
  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],gamut.rgbToXyz);
  const sum=xyz.X+xyz.Y+xyz.Z;
- return sum>0?{x:xyz.X/sum,y:xyz.Y/sum}:{x:D65.x,y:D65.y};
+ const wp=meterTargetWhitePoint();
+ return sum>0?{x:xyz.X/sum,y:xyz.Y/sum}:{x:wp.x,y:wp.y};
 }
 
 function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
  const solveGamut=meterAnalysisGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
  const endpoint=meterGamutColorEndpointXY(colorName,meterSaturationAxisGamut());
- const x=D65.x+sat*(endpoint.x-D65.x);
- const y=D65.y+sat*(endpoint.y-D65.y);
+ const wp=meterTargetWhitePoint();
+ const x=wp.x+sat*(endpoint.x-wp.x);
+ const y=wp.y+sat*(endpoint.y-wp.y);
  if(y<=0) return [0,0,0];
  const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
@@ -6465,8 +6621,9 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  let sat=Math.max(0,Math.min(100,satPercent||0))/100;
  if(meterChartIsDv()) sat=(meterDvMapModeValue()==='1') ? meterDvAbsoluteSaturationFraction(colorName,sat) : meterDvRelativeSaturationFraction(sat);
  const endpoint=meterGamutColorEndpointXY(colorName,axisGamut);
- const x=D65.x+sat*(endpoint.x-D65.x);
- const y=D65.y+sat*(endpoint.y-D65.y);
+ const wp=meterTargetWhitePoint();
+ const x=wp.x+sat*(endpoint.x-wp.x);
+ const y=wp.y+sat*(endpoint.y-wp.y);
  if(y<=0) return [0,0,0];
  const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
@@ -6566,7 +6723,8 @@ function targetColorXYZAbs(r,g,b){
 function targetChromaticityXY(r,g,b){
  const xyz=targetColorXYZAbs(r,g,b);
  const s=xyz.X+xyz.Y+xyz.Z;
- return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:D65.x,y:D65.y};
+ const wp=meterTargetWhitePoint();
+ return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
 }
 
 function meterTargetXYZForReading(reading){
@@ -6611,7 +6769,8 @@ function meterTargetXYZForReading(reading){
 function meterTargetChromaticityForReading(reading){
  const xyz=meterTargetXYZForReading(reading);
  const s=xyz.X+xyz.Y+xyz.Z;
- return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:D65.x,y:D65.y};
+ const wp=meterTargetWhitePoint();
+ return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
 }
 
 function meterColorDeltaTargetXYZ(reading,inclLum){
@@ -6649,7 +6808,10 @@ function meterReadingXYZ(reading){
  if(Number.isFinite(x) && Number.isFinite(y) && y>0){
   return {X:(x/y)*Y,Y,Z:((1-x-y)/y)*Y};
  }
- if(meterReadingIsGreyscale(reading)) return {X:D65.X*Y,Y,Z:D65.Z*Y};
+ if(meterReadingIsGreyscale(reading)){
+  const wp=meterTargetWhitePoint();
+  return {X:wp.X*Y,Y,Z:wp.Z*Y};
+ }
  return null;
 }
 
@@ -6698,8 +6860,9 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
   const blacks=(Array.isArray(meterReadings)?meterReadings:[]).filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&r.luminance!=null);
   const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
   const ref=hcfrGreyRef(reading.ire, xyz.Y, Lw, Lb, modeOrIncl, reading.r_code, gwWeight);
-  const XnM=(ref.wxN||D65.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||D65.Z)*ref.YWhite;
-  const XnR=(ref.wxN||D65.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||D65.Z)*ref.YWhiteRef;
+  const wp=meterTargetWhitePoint();
+  const XnM=(ref.wxN||wp.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||wp.Z)*ref.YWhite;
+  const XnR=(ref.wxN||wp.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||wp.Z)*ref.YWhiteRef;
   const labM=xyzToLab(xyz.X,xyz.Y,xyz.Z,XnM,YnM,ZnM);
   const labT=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
   const ctx={
@@ -7120,8 +7283,9 @@ function rgbBalanceCalman(reading,whiteRef,modeOrIncl){
  // Use the absolute D65 white target for greyscale RGB balance in all modes
  // so HDR/DV 100% white shows its real white-point error instead of being
  // pinned to 100/100/100 by self-normalizing to the measured white.
- const wXn = D65.X;
- const wZn = D65.Z;
+ const wp = meterTargetWhitePoint();
+ const wXn = wp.X;
+ const wZn = wp.Z;
  // Measured XYZ normalized by white Y
  const mXn=reading.X/whiteRef.Y, mYn=reading.Y/whiteRef.Y, mZn=reading.Z/whiteRef.Y;
  const ire=reading.ire;
@@ -7718,7 +7882,10 @@ function deltaELuv(X1,Y1,Z1,Yw1, X2,Y2,Z2,Yw2, Xn,Yn,Zn){
 
 // XYZ to Lab (optional white point, defaults to D65 Y=1)
 function xyzToLab(X,Y,Z,Xn,Yn,Zn){
- if(!Xn){Xn=D65.X;Yn=D65.Y;Zn=D65.Z;}
+ if(!Xn){
+  const wp=meterTargetWhitePoint();
+  Xn=wp.X; Yn=wp.Y; Zn=wp.Z;
+ }
  const e=216/24389, k=24389/27;
  function f(t){return t>e?Math.cbrt(t):(k*t+16)/116;}
  const fx=f(X/Xn),fy=f(Y/Yn),fz=f(Z/Zn);
@@ -7751,8 +7918,9 @@ function deltaELuvHCFR(X1,Y1,Z1,YW1, X2,Y2,Z2,YW2){
  // for measured, LuvRef(refColor, YWhiteRef, cRef) for reference).
  const L1=lstar(Y1,YW1), L2=lstar(Y2,YW2);
  // u_white, v_white are always from cRef (D65 for our BT.709/2020 pipeline)
- const uw=4*D65.x/(10*D65.x+3);
- const vw=9*D65.y/(-2*D65.x+12*D65.y+3);
+ const wp=meterTargetWhitePoint();
+ const uw=4*wp.x/(10*wp.x+3);
+ const vw=9*wp.y/(-2*wp.x+12*wp.y+3);
  const m1=_hcfrUV(X1,Y1,Z1);
  const m2=_hcfrUV(X2,Y2,Z2);
  const u1s=13*L1*(m1.u-uw), v1s=13*L1*(m1.v-vw);
@@ -7914,8 +8082,9 @@ function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight){
  // Always reference greyscale chromaticity to the target white (D65). This
  // keeps the greyscale 100% white point aligned with the color-series white
  // readout instead of forcing ΔE at 100% to zero in HDR/DV.
- const wxN = D65.X;
- const wzN = D65.Z;
+ const wp = meterTargetWhitePoint();
+ const wxN = wp.X;
+ const wzN = wp.Z;
  let peak = measuredPeak;
  let refVy;
  if(mode==='eotf'){
@@ -8496,9 +8665,10 @@ function meterXYYDeltasForLive(reading){
    if(typeof meterColorReferenceNits==='function') ref=meterColorReferenceNits();
   }catch(e){}
  } else {
-  // Greyscale: target = D65 chromaticity, target Y from EOTF at this IRE.
-  tx=(typeof D65==='object'&&D65)?D65.x:0.3127;
-  ty=(typeof D65==='object'&&D65)?D65.y:0.329;
+  // Greyscale: target = configured target white chromaticity, target Y from EOTF at this IRE.
+  const wp=(typeof meterTargetWhitePoint==='function')?meterTargetWhitePoint():D65;
+  tx=wp.x;
+  ty=wp.y;
   if(meterWhiteReading&&meterWhiteReading.Y>0&&reading.ire!=null){
    const peak=meterGreyTargetPeak(meterWhiteReading.Y);
    const black=meterBlackReadingY();
@@ -9500,13 +9670,14 @@ async function meterPollSeries(){
   if(!meterWhiteReading && config && config.max_luma){
    const maxL=parseFloat(config.max_luma);
    if(maxL>0){
+     const wp=meterTargetWhitePoint();
     meterWhiteReading={
-     X:D65.X*maxL,
+       X:wp.X*maxL,
      Y:maxL,
-     Z:D65.Z*maxL,
+       Z:wp.Z*maxL,
      luminance:maxL,
-     x:D65.x,
-     y:D65.y,
+       x:wp.x,
+       y:wp.y,
      cct:null
     };
    }
@@ -10138,7 +10309,8 @@ function drawRGBChart(gs,allSteps,readingMap){
  if((!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0) && config && config.max_luma){
   const maxL=parseFloat(config.max_luma);
   if(maxL>0){
-   effectiveWhiteRGB={X:D65.X*maxL,Y:maxL,Z:D65.Z*maxL,luminance:maxL,x:D65.x,y:D65.y,cct:null};
+   const wp=meterTargetWhitePoint();
+   effectiveWhiteRGB={X:wp.X*maxL,Y:maxL,Z:wp.Z*maxL,luminance:maxL,x:wp.x,y:wp.y,cct:null};
   }
  }
  if((!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0) && gs && gs.length>0){
@@ -10150,7 +10322,8 @@ function drawRGBChart(gs,allSteps,readingMap){
     const frac=Math.max(targetEotf(ire/100,1,0),0.02);
     inferredYw=inferredYw/frac;
    }
-   effectiveWhiteRGB={X:D65.X*inferredYw,Y:inferredYw,Z:D65.Z*inferredYw,luminance:inferredYw,x:D65.x,y:D65.y,cct:null};
+   const wp=meterTargetWhitePoint();
+   effectiveWhiteRGB={X:wp.X*inferredYw,Y:inferredYw,Z:wp.Z*inferredYw,luminance:inferredYw,x:wp.x,y:wp.y,cct:null};
   }
  }
  if(!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0){
@@ -10336,7 +10509,8 @@ function drawDeltaEChart(gs,allSteps,readingMap){
  if((!effectiveWhite||effectiveWhite.Y<=0) && config && config.max_luma){
   const maxL=parseFloat(config.max_luma);
   if(maxL>0){
-   effectiveWhite={X:D65.X*maxL, Y:maxL, Z:D65.Z*maxL, luminance:maxL, x:D65.x, y:D65.y, cct:null};
+   const wp=meterTargetWhitePoint();
+   effectiveWhite={X:wp.X*maxL, Y:maxL, Z:wp.Z*maxL, luminance:maxL, x:wp.x, y:wp.y, cct:null};
   }
  }
  if(!effectiveWhite||effectiveWhite.Y<=0){
@@ -10402,7 +10576,8 @@ function drawDeltaEChart(gs,allSteps,readingMap){
  }
  // White point info (CCT, Δxy from D65)
  if(whiteR&&whiteR.x>0&&whiteR.y>0){
-  const dxy=Math.sqrt(Math.pow(whiteR.x-0.31271,2)+Math.pow(whiteR.y-0.32902,2));
+  const wp=meterTargetWhitePoint();
+  const dxy=Math.sqrt(Math.pow(whiteR.x-wp.x,2)+Math.pow(whiteR.y-wp.y,2));
   ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='left';
   const wpText=(whiteR.cct?whiteR.cct+'K  ':'')+'\u0394xy '+dxy.toFixed(4);
   ctx.fillText(wpText,chart.pad.l,chart.pad.t-4);
@@ -10422,7 +10597,8 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  if((!effectiveWhite2000||effectiveWhite2000.Y<=0) && config && config.max_luma){
   const maxL=parseFloat(config.max_luma);
   if(maxL>0){
-   effectiveWhite2000={X:D65.X*maxL, Y:maxL, Z:D65.Z*maxL, luminance:maxL, x:D65.x, y:D65.y, cct:null};
+   const wp=meterTargetWhitePoint();
+   effectiveWhite2000={X:wp.X*maxL, Y:maxL, Z:wp.Z*maxL, luminance:maxL, x:wp.x, y:wp.y, cct:null};
   }
  }
  if(!effectiveWhite2000||effectiveWhite2000.Y<=0){
@@ -10441,8 +10617,9 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
   const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
   if(Y<=0){deMap[rd.ire]=0;return;} // true black: no chroma target
   const ref=hcfrGreyRef(rd.ire, Y, Lw, Lb, greyMode, rd.r_code, gwWeight);
-  const XnM=(ref.wxN||D65.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||D65.Z)*ref.YWhite;
-  const XnR=(ref.wxN||D65.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||D65.Z)*ref.YWhiteRef;
+    const wp=meterTargetWhitePoint();
+    const XnM=(ref.wxN||wp.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||wp.Z)*ref.YWhite;
+    const XnR=(ref.wxN||wp.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||wp.Z)*ref.YWhiteRef;
   const labM=xyzToLab(X,Y,Z,XnM,YnM,ZnM);
   const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
   deMap[rd.ire]=deltaE2000(labM,labR);
@@ -11634,9 +11811,10 @@ function meterExportCSV(){
  if(!whiteR){toast('No 100% white reading \u2014 run a full series first',true);return;}
  const Lw=whiteR.luminance||whiteR.Y;
  // Measured-white adaptation for grey tracking (matching chart)
- const Xn=whiteR?whiteR.X:(D65.X*Lw);
+ const wp=meterTargetWhitePoint();
+ const Xn=whiteR?whiteR.X:(wp.X*Lw);
  const Yn=whiteR?whiteR.Y:Lw;
- const Zn=whiteR?whiteR.Z:(D65.Z*Lw);
+ const Zn=whiteR?whiteR.Z:(wp.Z*Lw);
  const blacks=meterReadings.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
  const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
  const colorRefMode=meterColorRefMode();
@@ -11654,8 +11832,9 @@ function meterExportCSV(){
    if(isGrey(rd)){
     const ref=hcfrGreyRef(rd.ire||0,Y,Lw,Lb,greyMode,rd.r_code,meterGrayWorldWeight());
     dE=deltaELuvHCFR(X,Y,Z,ref.YWhite, ref.refX,ref.refY,ref.refZ,ref.YWhiteRef);
-    const labM=xyzToLab(X,Y,Z, D65.X*ref.YWhite, ref.YWhite, D65.Z*ref.YWhite);
-    const labR=xyzToLab(ref.refX,ref.refY,ref.refZ, D65.X*ref.YWhiteRef, ref.YWhiteRef, D65.Z*ref.YWhiteRef);
+    const wp2=meterTargetWhitePoint();
+    const labM=xyzToLab(X,Y,Z, wp2.X*ref.YWhite, ref.YWhite, wp2.Z*ref.YWhite);
+    const labR=xyzToLab(ref.refX,ref.refY,ref.refZ, wp2.X*ref.YWhiteRef, ref.YWhiteRef, wp2.Z*ref.YWhiteRef);
     dE2k=deltaE2000(labM,labR);
    } else {
       // Color / sat-sweep patch: use the per-patch target generated from the
@@ -12071,6 +12250,8 @@ function saveMeterSettings(){
   color_de_form:val('meterColorDeltaEForm','de2000'),
     color_incl_lum:chk('meterColorIncludeLumError'),
   target_gamma:val('meterTargetGamma'),
+    target_white_x:val('meterTargetWhiteX'),
+    target_white_y:val('meterTargetWhiteY'),
   incl_lum:chk('meterIncludeLumError'),
   // HDR tone-mapping config
   hdr_bt2390:chk('meterHdrApplyBT2390')
@@ -12103,6 +12284,7 @@ async function loadMeterSettings(){
  }
  if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
  applyMeterTargetGamutDefault(false);
+ updateMeterTargetWhitepointVisibility();
  meterDelayLoadValue(s.delay);
  if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
  if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
@@ -12116,6 +12298,8 @@ async function loadMeterSettings(){
  setVal('meterColorDeltaEForm', s.color_de_form||'de2000');
  setChk('meterColorIncludeLumError', s.color_incl_lum);
  setVal('meterTargetGamma', s.target_gamma);
+ setVal('meterTargetWhiteX', s.target_white_x);
+ setVal('meterTargetWhiteY', s.target_white_y);
  setChk('meterIncludeLumError', s.incl_lum);
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
  meterSyncHdrMetadata();
@@ -12127,7 +12311,7 @@ async function loadMeterSettings(){
 // Add change listeners for auto-save
 ['meterDisplayType','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate',
  'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
- 'meterTargetGamma'].forEach(id=>{
+ 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -12167,12 +12351,25 @@ function meterRefreshActiveSeriesCharts(){
 }
 
 document.getElementById('meterTargetGamut').addEventListener('change',()=>{
+ updateMeterTargetWhitepointVisibility();
+ meterOnGreyRefChange();
  meterRefreshActiveSeriesCharts();
 });
 
 document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  meterRefreshActiveSeriesCharts();
 });
+
+['meterTargetWhiteX','meterTargetWhiteY'].forEach(id=>{
+ const el=document.getElementById(id);
+ if(!el) return;
+ el.addEventListener('input',()=>{
+  meterOnGreyRefChange();
+  meterRefreshActiveSeriesCharts();
+ });
+});
+
+updateMeterTargetWhitepointVisibility();
 
 // Wire up collapsible card headers. Click the h2 of any .card to toggle.
 // Persist state in localStorage so reloads keep the user's layout.
