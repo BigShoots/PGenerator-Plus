@@ -1,6 +1,6 @@
 // Generated file. Do not edit directly.
 // Source: /mnt/homestorage/Projects/PGenerator_reference/PGenerator_plus/usr/share/PGenerator/webui.pm
-// Source SHA-256: 248291ad4b9e
+// Source SHA-256: 4612e0a65085
 // Extracted by tools/extract_webui_meter_math.py
 
 // D65 reference white chromaticity
@@ -195,9 +195,17 @@ function meterSignalFractionFromCode(code){
  return Math.max(0,Math.min(1,((code||0)-min)/span));
 }
 
+function meterDvTunnelGamma(){
+ return meterChartIsDv() && meterDvMapModeValue()==='1' ? 3.8 : 2.2;
+}
+
+function meterDvSaturationTunnelGamma(colorName){
+ return meterDvTunnelGamma();
+}
+
 function meterDecodeSignalChannel(code){
  const norm=meterSignalFractionFromCode(code);
- if(meterChartIsDv()) return Math.pow(norm,2.2);
+ if(meterChartIsDv()) return Math.pow(norm,meterDvTunnelGamma());
  if(meterChartIsPq()){
   const peak=meterChartHdrPeak();
   if(!(peak>0)) return norm;
@@ -218,7 +226,7 @@ function meterEncodeSignalChannel(linear){
  let encoded=clamped;
  if(meterChartIsDv()){
   const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
-  encoded=sel==='st2084' ? meterChartPqEncodeNormalized(clamped*10000) : Math.pow(clamped,1/2.2);
+  encoded=sel==='st2084' ? meterChartPqEncodeNormalized(clamped*10000) : Math.pow(clamped,1/meterDvTunnelGamma());
  }
  else if(meterChartIsPq()){
   const peak=meterChartHdrPeak();
@@ -268,11 +276,7 @@ function meterCodeFromSignalPercent(percent){
    const range=meterGreyCodeRange();
    return Math.round(range.min+clamped*range.span);
   }
-  if(meterDvMapModeValue()==='1'){
-   const targetY=meterDvAbsoluteTargetLuminanceForPercent(clamped*100,meterChartMasterPeak());
-   return Math.round(meterPatchRangeMin()+meterChartPqEncodeNormalized(targetY)*meterPatchRangeSpan());
-  }
-  const encoded=clamped>0?Math.pow(clamped,1/2.2):0;
+  const encoded=clamped>0?Math.pow(clamped,1/meterDvTunnelGamma()):0;
   return Math.round(meterPatchRangeMin()+encoded*meterPatchRangeSpan());
  }
  return Math.round(meterPatchRangeMin()+clamped*meterPatchRangeSpan());
@@ -282,7 +286,14 @@ function meterActualSignalPercent(percent){
  return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(percent))*100;
 }
 
+function meterActualCodePercent(percent){
+ const clamped=clampNum(percent,0,100)/100;
+ const code=Math.round(meterPatchRangeMin()+clamped*meterPatchRangeSpan());
+ return meterGreySignalFractionFromCode(code)*100;
+}
+
 function meterColorLevelPercent(){
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return 75;
  return meterChartIsHdr()?50:75;
 }
 
@@ -320,7 +331,7 @@ function meterFindMeasuredWhiteReading(){
   const liveWhite=meterReadings.find(isWhiteReading);
   if(liveWhite) return liveWhite;
  }
- const preferredKeys=['greyscale-21','greyscale-11','colors-30'];
+ const preferredKeys=['greyscale-21','greyscale-11','saturations-24','colors-30'];
  let best=null;
  const considerSnapshot=(snap)=>{
   if(!snap||!Array.isArray(snap.readings)) return;
@@ -338,8 +349,9 @@ function meterFindMeasuredWhiteReading(){
 
 function meterColorReferenceNits(){
  if(meterChartIsDv()){
-  // Calman DV fallback uses a display peak reference derived from measured
-  // white in relative-map mode, and mastering peak in absolute-map mode.
+  // DV relative uses the measured white reference when available, but DV
+  // absolute keeps its target luminance anchored to mastering peak. The warm
+  // white pre-read remains diagnostic-only for absolute mode.
   const master=Math.max(1,meterChartMasterPeak());
   if(meterDvMapModeValue()==='1') return master;
   const white=meterFindMeasuredWhiteReading();
@@ -351,6 +363,30 @@ function meterColorReferenceNits(){
  if(meterChartIsPq()&&!meterChartIsDv()) return meterChartHdrPeak();
  if(meterChartIsHdr()) return meterChartHdrPeak();
  return 100;
+}
+
+function meterColorSeriesReferenceNits(){
+ const isSeriesWhite=(rd)=>{
+  if(!rd) return false;
+  const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
+  if(!(lum>0)) return false;
+  const name=String(rd.name||'').toLowerCase();
+  const r=(rd.r_code!=null)?rd.r_code:rd.r;
+  const g=(rd.g_code!=null)?rd.g_code:rd.g;
+  const b=(rd.b_code!=null)?rd.b_code:rd.b;
+  if(r!=null && g!=null && b!=null){
+   return ((rd.ire||0)===100 || name==='white') && Number(r)===Number(g) && Number(g)===Number(b);
+  }
+  return name==='white' || Number(rd.ire)===100;
+ };
+ const white=
+  (isSeriesWhite(meterWhiteReading)?meterWhiteReading:null) ||
+  (Array.isArray(meterReadings)?meterReadings.find(isSeriesWhite):null) ||
+  meterFindMeasuredWhiteReading();
+ if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
+  return Math.max(1,(white.luminance!=null)?white.luminance:white.Y);
+ }
+ return Math.max(1,meterColorReferenceNits());
 }
 
 function meterBlackReadingY(){
@@ -386,20 +422,15 @@ function meterColorLabWhite(){
  return {X:D65.X*refY,Y:refY,Z:D65.Z*refY};
 }
 
-// Forward/inverse of the active SDR+DV target EOTF (BT.1886 / sRGB / pure
-// gamma). Sat-sweep and ColorChecker stimuli must encode with the inverse
-// of the EOTF the display is tracking so the decoded linear matches the
-// xy-linear target chromaticity. Encoding with a hardcoded 1/2.2 while the
-// display runs BT.1886 (γ≈2.4) drives the decoded G/B rails too low,
-// pushing measured chromaticities outward (the "slightly oversaturated"
-// look). For HDR10/PQ the caller short-circuits into the PQ path before
-// reaching these helpers.
+// Forward/inverse of the active SDR/DV target signal model used by the meter
+// series builders. DV relative keeps the classic 2.2 tunnel. DV absolute
+// needs a steeper inverse to match the live panel chromaticities.
 function meterTargetLinearToSignal(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
- // Dolby Vision tunnel always carries a γ=2.2 encoded stimulus — the target
- // EOTF selector applies only to SDR signal modes.
- if(meterChartIsDv()) return Math.pow(c,1/2.2);
+ if(meterChartIsDv()){
+  return Math.pow(c,1/meterDvTunnelGamma());
+ }
  if(meterChartIsHlg()) return hlgOetf(c);
  const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
  if(sel==='srgb') return c<=0.0031308 ? 12.92*c : 1.055*Math.pow(c,1/2.4)-0.055;
@@ -409,7 +440,9 @@ function meterTargetLinearToSignal(v){
 function meterTargetSignalToLinear(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
- if(meterChartIsDv()) return Math.pow(c,2.2);
+ if(meterChartIsDv()){
+  return Math.pow(c,meterDvTunnelGamma());
+ }
  if(meterChartIsHlg()){
   const peak=meterChartHdrPeak();
   const minY=meterChartMasterMin();
@@ -431,7 +464,15 @@ function meterEncodeColorCheckerLinear(linear){
  let clamped=Math.max(0,Math.min(1,linear||0));
  if(meterChartIsDv()) clamped*=meterDvClassicColorCheckerScale();
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*100)*span);
+ if(meterChartIsDv()) return Math.round(min+Math.pow(clamped,1/2.2)*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
+}
+
+function meterDecodeColorCheckerSignal(signal){
+ let clamped=Math.max(0,Math.min(1,signal||0));
+ if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(clamped)/100;
+ if(meterChartIsDv()) return Math.pow(clamped,2.2)/meterDvClassicColorCheckerScale();
+ return meterTargetSignalToLinear(clamped);
 }
 
 function meterEncodeColorCheckerFullSatChannel(active){
@@ -446,11 +487,12 @@ function meterFullSatChannelIsActive(linear){
  return Number(linear||0) > 1e-6;
 }
 
-function meterEncodeSaturationLinear(linear){
+function meterEncodeSaturationLinear(linear,colorName){
  const min=meterPatchRangeMin();
  const span=meterPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return Math.round(min+Math.pow(clamped,1/meterDvSaturationTunnelGamma(colorName))*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
@@ -459,7 +501,11 @@ function meterGamutStimulusLinearLevel(){
  return meterTargetSignalToLinear(meterColorLevelPercent()/100);
 }
 
-function meterSaturationStimulusLinearLevel(){
+function meterSaturationStimulusLinearLevel(colorName){
+ if(meterChartIsDv() && meterDvMapModeValue()==='1'){
+  const actualPercent=meterActualCodePercent(meterColorLevelPercent())/100;
+  return Math.pow(actualPercent,meterDvSaturationTunnelGamma(colorName));
+ }
  const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
  if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
  return meterTargetSignalToLinear(actualPercent);
@@ -468,6 +514,22 @@ function meterSaturationStimulusLinearLevel(){
 function meterDvRelativeSaturationFraction(sat){
  const s=Math.max(0,Math.min(1,sat||0));
  return s-(0.8*s*s*(1-s));
+}
+
+function meterGamutColorIsSecondary(colorName){
+ switch(String(colorName||'').toLowerCase()){
+  case 'cyan':
+  case 'magenta':
+  case 'yellow':
+   return true;
+  default:
+   return false;
+ }
+}
+
+function meterDvAbsoluteSaturationFraction(colorName,sat){
+ const s=Math.max(0,Math.min(1,sat||0));
+ return s + 0.8*s*(1-s);
 }
 
 function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
@@ -500,16 +562,49 @@ function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
  return {x:wx+dx*scale,y:wy+dy*scale};
 }
 
+function meterRemapAbsoluteDvColorCheckerChromaticity(x,y,gamut){
+ if(!(meterChartIsDv() && meterDvMapModeValue()==='1')) return {x,y};
+ const solveGamut=gamut||meterAnalysisGamut();
+ const wx=D65.x, wy=D65.y;
+ const dx=(x||0)-wx;
+ const dy=(y||0)-wy;
+ if(Math.abs(dx)<1e-9 && Math.abs(dy)<1e-9) return {x,y};
+ const verts=[solveGamut.primaries.R,solveGamut.primaries.G,solveGamut.primaries.B];
+ let bestT=null;
+ for(let i=0;i<verts.length;i++){
+  const a=verts[i];
+  const b=verts[(i+1)%verts.length];
+  const ex=b.x-a.x;
+  const ey=b.y-a.y;
+  const qx=a.x-wx;
+  const qy=a.y-wy;
+  const den=dx*ey-dy*ex;
+  if(Math.abs(den)<1e-9) continue;
+  const t=(qx*ey-qy*ex)/den;
+  const u=(qx*dy-qy*dx)/den;
+  if(t>0 && u>=-1e-9 && u<=1+1e-9 && (bestT==null || t<bestT)) bestT=t;
+ }
+ if(!(bestT>0)) return {x,y};
+ const frac=Math.max(0,Math.min(1,1/bestT));
+ if(!(frac>1e-9)) return {x:wx,y:wy};
+ const compressed=frac-0.32*frac*(1-frac);
+ const scale=compressed/frac;
+ return {x:wx+dx*scale,y:wy+dy*scale};
+}
+
 function meterSaturationSolveGamut(){
- // Keep the DV relative saturation solve in the selected analysis gamut so
- // the hue axis stays aligned with the selected target/reference gamut.
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterAnalysisGamut();
  if(meterChartIsDv()) return meterAnalysisGamut();
  return meterStimulusSolveGamut();
 }
 
+function meterSaturationAxisGamut(){
+ return meterAnalysisGamut();
+}
+
 function meterBuildSaturationStepRgb(colorName,satPercent){
  const rgb=meterBuildSaturationStimulusLinearRgb(colorName,satPercent);
- return rgb.map(v=>meterEncodeSaturationLinear(v));
+ return rgb.map(v=>meterEncodeSaturationLinear(v,colorName));
 }
 
 function meterGamutColorEndpointRgb(colorName){
@@ -535,27 +630,28 @@ function meterGamutColorEndpointXY(colorName,gamutOverride){
 function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
  const solveGamut=meterAnalysisGamut();
  const sat=Math.max(0,Math.min(100,satPercent||0))/100;
- const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
+ const endpoint=meterGamutColorEndpointXY(colorName,meterSaturationAxisGamut());
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
  if(y<=0) return [0,0,0];
  const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
- const level=meterSaturationStimulusLinearLevel();
+ const level=meterSaturationStimulusLinearLevel(colorName);
  return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
 }
 
 function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const solveGamut=meterSaturationSolveGamut();
+ const axisGamut=meterSaturationAxisGamut();
  let sat=Math.max(0,Math.min(100,satPercent||0))/100;
- if(meterChartIsDv() && meterDvMapModeValue()!=='1') sat=meterDvRelativeSaturationFraction(sat);
- const endpoint=meterGamutColorEndpointXY(colorName,solveGamut);
+ if(meterChartIsDv()) sat=(meterDvMapModeValue()==='1') ? meterDvAbsoluteSaturationFraction(colorName,sat) : meterDvRelativeSaturationFraction(sat);
+ const endpoint=meterGamutColorEndpointXY(colorName,axisGamut);
  const x=D65.x+sat*(endpoint.x-D65.x);
  const y=D65.y+sat*(endpoint.y-D65.y);
  if(y<=0) return [0,0,0];
  const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
- const level=meterSaturationStimulusLinearLevel();
+ const level=meterSaturationStimulusLinearLevel(colorName);
  return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
 }
 
@@ -603,7 +699,7 @@ function meterSaturationTargetXYZ(colorName,satPercent){
  // Multiply by 10000 to recover absolute nits.
  // For SDR/HLG/DV the linear RGB is in 0..1 relative to display peak, so
  // multiply by meterColorReferenceNits() as before.
- let scale=meterChartIsPq()&&!meterChartIsDv()?10000:Math.max(1,meterColorReferenceNits());
+ let scale=meterChartIsPq()&&!meterChartIsDv()?10000:meterColorSeriesReferenceNits();
  if(!(meterChartIsPq()&&!meterChartIsDv()) && !meterChartIsHdr()){
   const white=meterFindMeasuredWhiteReading();
   if(!(white&&white.Y>0)){
@@ -664,7 +760,7 @@ function meterTargetXYZForReading(reading){
  const tYn=parseFloat(reading.target_Yn);
  if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   if(tYn<=0) return {X:0,Y:0,Z:0};
-  const refY=Math.max(1,meterColorReferenceNits());
+  const refY=meterColorSeriesReferenceNits();
   // Gamut-clip: for analysis/charting, solve in the selected target gamut so
   // the CIE chart and ΔE targets respect the Target Colorspace dropdown.
   const gamut=meterAnalysisGamut();
@@ -687,12 +783,6 @@ function meterTargetXYZForReading(reading){
  if(satInfo){
   if(meterActiveSeriesType==='colors' && satInfo.sat===100){
    return meterColorCheckerFullSatTargetXYZ(satInfo.color);
-  }
-  if(meterActiveSeriesType==='saturations' && meterChartIsDv() && meterDvMapModeValue()==='1'){
-   const r=reading.r_code!=null?reading.r_code:reading.r;
-   const g=reading.g_code!=null?reading.g_code:reading.g;
-   const b=reading.b_code!=null?reading.b_code:reading.b;
-   return targetColorXYZAbs(r,g,b);
   }
   return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  }
@@ -923,10 +1013,10 @@ function meterEnsureChannelGammaCache(readings){
 
 function meterColorCheckerClassicSource(){
  return [
-  {name:'Gray 35',gray:0.35},
-  {name:'Gray 50',gray:0.50},
-  {name:'Gray 65',gray:0.65},
-  {name:'Gray 80',gray:0.80},
+  {name:'Gray 35',gray:0.090},
+  {name:'Gray 50',gray:0.198},
+  {name:'Gray 65',gray:0.362},
+  {name:'Gray 80',gray:0.591},
   {name:'Dark Skin',x:0.405119,y:0.36253,Yn:0.096774},
   {name:'Light Skin',x:0.379756,y:0.357031,Yn:0.353705},
   {name:'Blue Sky',x:0.249396,y:0.266854,Yn:0.18913},
@@ -962,7 +1052,8 @@ function meterBuildColorCheckerStepsJS(){
    steps.push({ire:ire,r:code,g:code,b:code,name:src.name});
    return;
   }
-    const emitXY=meterRemapRelativeDvChromaticityToSolveGamut(src.x,src.y,solveGamut);
+    let emitXY=meterRemapRelativeDvChromaticityToSolveGamut(src.x,src.y,solveGamut);
+    emitXY=meterRemapAbsoluteDvColorCheckerChromaticity(emitXY.x,emitXY.y,solveGamut);
     const X=(emitXY.x/emitXY.y)*src.Yn;
   const Y=src.Yn;
     const Z=((1-emitXY.x-emitXY.y)/emitXY.y)*src.Yn;
@@ -979,9 +1070,20 @@ function meterBuildColorCheckerStepsJS(){
   const bCode=meterEncodeColorCheckerLinear(bl);
   let targetYn=src.Yn;
   if(meterChartIsDv()){
-   const refY=Math.max(1,meterColorReferenceNits());
-   const emittedXYZ=targetColorXYZAbs(rCode,gCode,bCode);
-   if(emittedXYZ&&emittedXYZ.Y!=null&&emittedXYZ.Y>=0&&refY>0) targetYn=emittedXYZ.Y/refY;
+    const min=meterPatchRangeMin();
+    const span=meterPatchRangeSpan();
+    const targetGamut=meterAnalysisGamut();
+    const rSignal=span>0?(rCode-min)/span:0;
+    const gSignal=span>0?(gCode-min)/span:0;
+    const bSignal=span>0?(bCode-min)/span:0;
+    const rLin=meterDecodeColorCheckerSignal(rSignal);
+    const gLin=meterDecodeColorCheckerSignal(gSignal);
+    const bLin=meterDecodeColorCheckerSignal(bSignal);
+    targetYn=
+     targetGamut.rgbToXyz[1][0]*rLin+
+     targetGamut.rgbToXyz[1][1]*gLin+
+     targetGamut.rgbToXyz[1][2]*bLin;
+    if(!(targetYn>=0)) targetYn=0;
   }
   steps.push({
    ire:Math.round(src.Yn*100),
@@ -1182,8 +1284,8 @@ function ynToLstar(yn){
  return yn>=0?L:-L;
 }
 
-// Reads the selected RGB balance formula: 'calman' (L*-of-linear-RGB) or
-// 'hcfr' (unit-Y XYZ from measured xy × fact, then XYZtoRGB × 100).
+// Reads the selected RGB balance formula: perceptual lightness of linear RGB
+// or the HCFR-style unit-Y XYZ path from measured xy.
 function meterRgbBalanceFormula(){
  const sel=document.getElementById('meterRgbBalanceFormula');
  if(sel && sel.value) return sel.value;

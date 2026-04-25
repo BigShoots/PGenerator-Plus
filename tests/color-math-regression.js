@@ -44,6 +44,7 @@ function extractFunction(name) {
 const code = [
   extractConst('D65'),
   extractConst('GAMUT_PRESETS'),
+  extractFunction('meterDvMapModeValue'),
   extractFunction('meterSignalColorimetryGamutKey'),
   extractFunction('meterAutoTargetGamutKey'),
   extractFunction('meterContainerGamutKey'),
@@ -54,6 +55,7 @@ const code = [
   extractFunction('meterAnalysisGamutKey'),
   extractFunction('meterAnalysisGamut'),
   extractFunction('meterStimulusSolveGamut'),
+  extractFunction('meterTargetSolveGamut'),
   extractFunction('xyzToLinRgb'),
   extractFunction('linRgbToXyz'),
   extractFunction('meterParseSaturationReading'),
@@ -62,12 +64,25 @@ const code = [
   extractFunction('meterSaturationTargetXYZ'),
   extractFunction('meterGamutColorEndpointRgb'),
   extractFunction('meterGamutColorEndpointXY'),
+  extractFunction('meterGamutColorIsSecondary'),
+  extractFunction('meterDvTunnelGamma'),
+  extractFunction('meterDvSaturationTunnelGamma'),
   extractFunction('meterTargetLinearToSignal'),
   extractFunction('meterTargetSignalToLinear'),
+  extractFunction('meterEncodeSaturationLinear'),
   extractFunction('meterColorLevelPercent'),
   extractFunction('meterActualSignalPercent'),
+  extractFunction('meterActualCodePercent'),
   extractFunction('meterColorReferenceNits'),
+  extractFunction('meterColorSeriesReferenceNits'),
+  extractFunction('meterIsWhiteReferenceReading'),
   extractFunction('meterSaturationStimulusLinearLevel'),
+  extractFunction('meterDvRelativeSaturationFraction'),
+  extractFunction('meterDvAbsoluteSaturationFraction'),
+  extractFunction('meterSaturationSolveGamut'),
+  extractFunction('meterSaturationAxisGamut'),
+  extractFunction('meterBuildSaturationStepRgb'),
+  extractFunction('meterBuildSaturationStimulusLinearRgb'),
   extractFunction('meterChartPqEncodeNormalized'),
   extractFunction('meterChartPqDecodeNormalized'),
   extractFunction('meterChartTrackingLuminance'),
@@ -85,6 +100,8 @@ const code = [
   extractFunction('targetColorXYZAbs'),
   extractFunction('meterTargetXYZForReading'),
   extractFunction('meterTargetChromaticityForReading'),
+  extractFunction('meterColorDeltaTargetXYZ'),
+  extractFunction('meterColorIncludeLum'),
   extractFunction('meterLiveRgbData'),
   extractFunction('meterXYYDeltasForLive'),
   extractFunction('meterGreyChartX'),
@@ -110,6 +127,9 @@ const context = {
   Math,
   meterActiveSeriesType: 'colors',
   meterWhiteReading: { X: 95.05, Y: 100, Z: 108.9 },
+  meterReadings: [],
+  meterSeriesCache: {},
+  meterActiveSeriesSignalMode: '',
   config: { colorimetry: '2', primaries: '0', signal_mode: 'sdr', max_luma: '1000' },
   document: {
     getElementById(id) {
@@ -133,6 +153,10 @@ const context = {
   targetEotf(v,Lw){ return Math.pow(Math.max(0, v), 2.4) * (Lw||100); }
 };
 context.window = context;
+context.meterFindMeasuredWhiteReading = () => context.meterWhiteReading;
+context.meterChartMasterPeak = () => context.meterChartHdrPeak();
+context.meterChartIsHlg = () => false;
+context.meterGreySignalFractionFromCode = code => Math.max(0, Math.min(1, (Number(code) || 0) / 255));
 vm.createContext(context);
 vm.runInContext(code, context);
 
@@ -223,5 +247,59 @@ const satRgb = context.meterLiveRgbData(satReading);
 if (satRgb.R === 50 && satRgb.G === 50 && satRgb.B === 50) {
   throw new Error(`saturation RGB deltas are pinned at +50: ${JSON.stringify(satRgb)}`);
 }
+
+// Test 6b: the actual in-series White patch should stay visible in color
+// charts, while the helper-only White Ref remains filtered.
+if (context.meterIsWhiteReferenceReading({ name: 'White' })) {
+  throw new Error('actual series White patch should remain plottable');
+}
+if (!context.meterIsWhiteReferenceReading({ name: 'White Ref' })) {
+  throw new Error('helper-only White Ref should stay filtered');
+}
+
+// Test 7: DV absolute sat sweeps keep the P3 hue axis and now solve RGB in
+// the selected target gamut to match the fixed live renderer behavior.
+state.signal_mode = 'dv';
+state.dv_map_mode = '1';
+state.colorimetry = '9';
+state.primaries = '1';
+state.meterTargetGamut = 'auto';
+approxEqual(context.meterColorLevelPercent(), 75, 1e-9, 'DV absolute gamut level should be 75%');
+approxEqual(
+  context.meterSaturationStimulusLinearLevel('Red'),
+  Math.pow(Math.round(0.75 * 255) / 255, context.meterDvSaturationTunnelGamma('Red')),
+  1e-9,
+  'DV absolute saturation level should use code-range percent before DV gamma'
+);
+const axisRed = context.meterGamutColorEndpointXY('Red', context.meterSaturationAxisGamut());
+const solveRed = context.meterGamutColorEndpointXY('Red', context.meterSaturationSolveGamut());
+approxEqual(axisRed.x, 0.68, 1e-9, 'DV absolute saturation axis x mismatch');
+approxEqual(axisRed.y, 0.32, 1e-9, 'DV absolute saturation axis y mismatch');
+approxEqual(solveRed.x, 0.68, 1e-9, 'DV absolute saturation solve x mismatch');
+approxEqual(solveRed.y, 0.32, 1e-9, 'DV absolute saturation solve y mismatch');
+approxEqual(context.meterDvSaturationTunnelGamma('Red'), 3.8, 1e-9, 'DV absolute primary sat tunnel gamma mismatch');
+approxEqual(context.meterDvSaturationTunnelGamma('Cyan'), 3.8, 1e-9, 'DV absolute secondary sat tunnel gamma mismatch');
+const red25 = context.meterBuildSaturationStepRgb('Red', 25);
+const cyan25 = context.meterBuildSaturationStepRgb('Cyan', 25);
+const cyan50 = context.meterBuildSaturationStepRgb('Cyan', 50);
+[191, 134, 134].forEach((value, idx) => approxEqual(red25[idx], value, 1e-9, `DV absolute Red 25 code ${idx} mismatch`));
+[162, 191, 191].forEach((value, idx) => approxEqual(cyan25[idx], value, 1e-9, `DV absolute Cyan 25 code ${idx} mismatch`));
+[132, 191, 191].forEach((value, idx) => approxEqual(cyan50[idx], value, 1e-9, `DV absolute Cyan 50 code ${idx} mismatch`));
+
+// Test 8: DV relative keeps the HDR-style 50% gamut level.
+state.dv_map_mode = '2';
+approxEqual(context.meterColorLevelPercent(), 50, 1e-9, 'DV relative gamut level should stay at 50%');
+
+// Test 9: DV absolute target luminance stays anchored to mastering peak even
+// when a measured white reference exists.
+state.dv_map_mode = '1';
+context.meterWhiteReading = { X: 158.5, Y: 166.7, Z: 181.5 };
+approxEqual(context.meterColorReferenceNits(), 1000, 1e-9, 'DV absolute should stay anchored to mastering peak');
+
+// Test 10: color-series target Y should use the measured White patch when one
+// is available, even in DV absolute mode.
+const dvColorStep = { name:'Orange', target_x:0.512087, target_y:0.410373, target_Yn:0.285811070494883 };
+const dvTarget = context.meterTargetXYZForReading(dvColorStep);
+approxEqual(dvTarget.Y, 166.7 * dvColorStep.target_Yn, 1e-6, 'DV absolute color-series target Y should follow measured White');
 
 console.log('All color-math regression checks passed.');
