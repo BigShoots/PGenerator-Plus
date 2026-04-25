@@ -43,12 +43,28 @@ function extractFunction(name) {
 
 const code = [
   extractConst('D65'),
+  'const METER_GREY_SLOTS_11=[0,10,20,30,40,50,60,70,80,90,100];',
+  'const METER_GREY_SLOTS_21=[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];',
+  "let meterGreyPatchProfiles={format:'pgenerator-greyscale-profile-v1',apply_to_all_modes:false,profiles:{}};",
+  'let meterGreyEditorPoints=21;',
   extractConst('GAMUT_PRESETS'),
+  extractFunction('meterGreyDefaultSlots'),
+  extractFunction('meterGreyProfileTemplate'),
+  extractFunction('meterGreyModeSignature'),
+  extractFunction('meterGreyNormalizeProfilesState'),
+  extractFunction('meterGreyActiveProfileKey'),
+  extractFunction('meterGreyActiveProfile'),
+  extractFunction('meterGreyCustomEnabled'),
+  extractFunction('meterGreyStimulusValues'),
+  extractFunction('meterGreyStimulusCsv'),
   extractFunction('meterDvMapModeValue'),
   extractFunction('meterSignalColorimetryGamutKey'),
   extractFunction('meterAutoTargetGamutKey'),
   extractFunction('meterContainerGamutKey'),
   extractFunction('meterSelectedTargetGamutKey'),
+  extractFunction('meterTargetWhitePointEnabled'),
+  extractFunction('xyToUnitXyz'),
+  extractFunction('meterTargetWhitePoint'),
   extractFunction('meterActiveGamutKey'),
   extractFunction('meterContainerGamut'),
   extractFunction('meterActiveGamut'),
@@ -97,6 +113,7 @@ const code = [
   extractFunction('meterResolveGreyRefMode'),
   extractFunction('meterGreyRefMode'),
   extractFunction('meterGrayWorldWeight'),
+  extractFunction('meterBuildStepsJS'),
   extractFunction('targetColorXYZAbs'),
   extractFunction('meterTargetXYZForReading'),
   extractFunction('meterTargetChromaticityForReading'),
@@ -192,6 +209,26 @@ approxEqual(dY, -10, 0.75, 'color ΔY normalization mismatch');
 // Test 3: greyscale chart X positions must follow actual IRE, not array index.
 const x5 = context.meterGreyChartX({ ire: 5 }, [{ ire: 0 }, { ire: 5 }, { ire: 10 }], 1);
 approxEqual(x5, 0.05, 0.0001, 'greyscale chart X mapping mismatch');
+
+// Test 3b: custom greyscale stimuli must feed both the emitted patch code and
+// the greyscale target luminance path via reading.r_code.
+vm.runInContext(`
+  meterGreyPatchProfiles.apply_to_all_modes = true;
+  meterGreyPatchProfiles.profiles.__all__ = meterGreyProfileTemplate();
+  meterGreyPatchProfiles.profiles.__all__.enabled = true;
+  meterGreyPatchProfiles.profiles.__all__.steps_11["10"] = { slot: 10, stimulus: 7.5 };
+  meterGreyPatchProfiles.profiles.__all__.steps_11["20"] = { slot: 20, stimulus: 18 };
+`, context);
+const customCsv11 = vm.runInContext('meterGreyStimulusCsv(11)', context);
+assert.strictEqual(customCsv11, '0,7.5,18,30,40,50,60,70,80,90,100', 'custom greyscale CSV mismatch');
+const customSteps11 = vm.runInContext("meterBuildStepsJS('greyscale',11)", context);
+const custom10 = customSteps11.find(step => step.ire === 10);
+assert(custom10, 'missing custom 10% greyscale step');
+approxEqual(custom10.stimulus, 7.5, 1e-9, 'custom 10% greyscale stimulus mismatch');
+approxEqual(custom10.r, context.meterCodeFromSignalPercent(7.5), 1e-9, 'custom 10% greyscale code mismatch');
+const customTargetY = context.meterGreyTargetLuminance(10, 100, 0, custom10.r);
+const nominalTargetY = context.meterGreyTargetLuminance(10, 100, 0, null);
+assert(Math.abs(customTargetY - nominalTargetY) > 1e-6, 'custom greyscale target luminance should differ from nominal 10%');
 
 // Test 4: gamma chart should start at the first real point, not add a 0% anchor.
 state.signal_mode = 'dv';
