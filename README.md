@@ -8,10 +8,6 @@ A Raspberry Pi–based HDMI test pattern generator for display calibration. PGen
 
 Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto.
 
-## v2.2.2 Highlights
-
-Version `2.2.2` focuses on polish and reliability for the new on-device calibration workflow. This release improves meter chart math, thumbnail and plot interaction behavior, report layout, startup defaults, and general WebUI stability while keeping the integrated meter-driven workflow introduced in the 2.2.x series.
-
 ## Installation & Updates
 
 ### How to Flash the Image
