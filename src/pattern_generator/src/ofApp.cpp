@@ -763,6 +763,7 @@ int ofApp::dv_color_space=0;
 void ofApp::dovi_metadata_update() {
 
 	int crc;
+	int dv_metadata_map_mode = (dv_map_mode == 1) ? 2 : dv_map_mode;
 	
 	if (dv_map_mode != dv_metadata.dv_map_mode || 
 	    dv_minpq != dv_metadata.dv_minpq || 
@@ -788,7 +789,7 @@ void ofApp::dovi_metadata_update() {
 			dv_metadata.dv_meta8_1[74]	= dv_diagonal & 0xff;
 			
 			/* DV Mapping mode (Perceptual = 0,Absolute(Verify) = 1, Relative(Calibrate) = 2, Unknown=3, None = 256, // 0x00000100) */
-			dv_metadata.dv_meta8_1[92] = dv_map_mode & 0xff;
+			dv_metadata.dv_meta8_1[92] = dv_metadata_map_mode & 0xff;
 			
 			/* Level 1 ext metadata block -- Current Scene minPQ, maxPQ, avgPQ(in 12-bit PQ encoding) */
 			/* The value shall be in the range of 0 to 4095, inclusive. If min_PQ is not present, it shall be inferred to be equal to the value of source_min_PQ */
@@ -828,7 +829,7 @@ void ofApp::dovi_metadata_update() {
 			dv_metadata.dv_meta8_2[74]	= dv_diagonal & 0xff;	
 
 			/* DV Mapping mode (Perceptual = 0,Absolute(Verify) = 1, Relative(Calibrate) = 2, Unknown=3, None = 256, // 0x00000100) */
-			dv_metadata.dv_meta8_2[92] = dv_map_mode & 0xff;
+			dv_metadata.dv_meta8_2[92] = dv_metadata_map_mode & 0xff;
 			
 			/* Level 1 ext metadata block -- Current Scene minPQ, maxPQ, avgPQ(in 12-bit PQ encoding) */
 			/* The value shall be in the range of 0 to 4095, inclusive. If min_PQ is not present, it shall be inferred to be equal to the value of source_min_PQ */
