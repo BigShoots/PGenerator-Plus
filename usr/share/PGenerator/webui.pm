@@ -627,7 +627,7 @@ sub webui_http (@) {
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/update/apply" && $method eq "POST") {
-    my $r='{"status":"ok","message":"Update started. The device will restart shortly."}';
+    my $r='{"status":"ok","message":"Update started. PGenerator will restart shortly."}';
     my $len=length($r);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
     close($client);
@@ -7457,7 +7457,10 @@ function meterGreyTargetPeak(refWhite){
  // 100% white so the target curve tracks what the display actually produces
  // rather than the authored mastering-peak label.
  if(meterChartIsDv()) return (refWhite>0)?refWhite:meterChartMasterPeak();
- if(meterChartIsPq()) return meterChartHdrPeak();
+ // HDR10/PQ greyscale charts should keep the same target-curve shape but
+ // normalize it to the actual measured white so the target luminance and
+ // EOTF views line up with the display's real peak after a series run.
+ if(meterChartIsPq()) return (refWhite>0)?refWhite:meterChartHdrPeak();
  return (refWhite>0)?refWhite:100;
 }
 

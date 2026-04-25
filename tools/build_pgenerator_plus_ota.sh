@@ -149,7 +149,7 @@ build_tarball() {
  log "Creating $OUTPUT_TARBALL"
  (
   cd "$STAGING_DIR"
-  tar czf "$OUTPUT_TARBALL" "${roots[@]}"
+  tar --owner=0 --group=0 --numeric-owner -czf "$OUTPUT_TARBALL" "${roots[@]}"
  )
 }
 

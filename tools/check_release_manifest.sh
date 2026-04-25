@@ -169,12 +169,41 @@ extract_tarball() {
  ROOT_PATH="$WORKDIR"
 }
 
+validate_tarball_metadata() {
+ local bad_entries=()
+ local line owner path
+
+ while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  owner="$(awk '{print $2}' <<<"$line")"
+  path="$(awk '{print $6}' <<<"$line")"
+  [[ -n "$path" ]] || continue
+  case "$path" in
+   etc/*|usr/*|var/*|lib/*|etc/|usr/|var/|lib/)
+    if [[ "$owner" != "0/0" ]]; then
+     bad_entries+=("$owner $path")
+    fi
+    ;;
+  esac
+ done < <(tar --numeric-owner -tvzf "$TARBALL_PATH")
+
+ if [[ ${#bad_entries[@]} -gt 0 ]]; then
+  printf 'Tarball contains non-root ownership metadata:\n' >&2
+  printf '  %s\n' "${bad_entries[@]:0:20}" >&2
+  if [[ ${#bad_entries[@]} -gt 20 ]]; then
+   printf '  ... and %d more\n' "$(( ${#bad_entries[@]} - 20 ))" >&2
+  fi
+  return 1
+ fi
+}
+
 main() {
  parse_args "$@"
  require_commands
 
  if [[ "$MODE" == "tarball" ]]; then
   [[ -f "$TARBALL_PATH" ]] || die "Tarball does not exist: $TARBALL_PATH"
+  validate_tarball_metadata
   extract_tarball
  fi
 

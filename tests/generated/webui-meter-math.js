@@ -1,6 +1,6 @@
 // Generated file. Do not edit directly.
 // Source: /mnt/homestorage/Projects/PGenerator_reference/PGenerator_plus/usr/share/PGenerator/webui.pm
-// Source SHA-256: 4612e0a65085
+// Source SHA-256: 3e3ee2e3ab10
 // Extracted by tools/extract_webui_meter_math.py
 
 // D65 reference white chromaticity
@@ -1638,7 +1638,10 @@ function meterGreyTargetPeak(refWhite){
  // 100% white so the target curve tracks what the display actually produces
  // rather than the authored mastering-peak label.
  if(meterChartIsDv()) return (refWhite>0)?refWhite:meterChartMasterPeak();
- if(meterChartIsPq()) return meterChartHdrPeak();
+ // HDR10/PQ greyscale charts should keep the same target-curve shape but
+ // normalize it to the actual measured white so the target luminance and
+ // EOTF views line up with the display's real peak after a series run.
+ if(meterChartIsPq()) return (refWhite>0)?refWhite:meterChartHdrPeak();
  return (refWhite>0)?refWhite:100;
 }
 

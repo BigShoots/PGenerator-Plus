@@ -51,7 +51,7 @@ PGenerator+ includes a built-in Over-The-Air (OTA) update system that pulls the 
 1. Open the PGenerator+ web dashboard.
 2. Scroll down to the **Software Update** card.
 3. Click **Check for Updates**. If a new version is available, the changelog will appear.
-4. Click **Install Update**. The device will download the update, apply it, and restart automatically.
+4. Click **Install Update**. The device will download the update, apply it, and restart the PGenerator service automatically.
 
 **Via Command Line:**
 You can also trigger updates via SSH (`root` / `PGenerator!!$`):
