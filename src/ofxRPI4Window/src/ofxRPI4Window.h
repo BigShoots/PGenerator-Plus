@@ -342,6 +342,7 @@ public:
 	
     gbm_bo *previousBo = nullptr;
     uint32_t previousFb = 0;
+	uint32_t currentFramebufferFormat = 0;
 	uint32_t buffer_width = 0, buffer_height = 0;
     static ofShader shader;  
  //   static ofShader dovi_shader; 	

@@ -3137,6 +3137,7 @@ void ofxRPI4Window::swapBuffers()
 	if (!fb) {
 		ofLogError() << "DRM: Failed to get a new framebuffer BO";
 	}
+	currentFramebufferFormat = fb->format;
 
 
 		
@@ -3721,6 +3722,19 @@ void ofxRPI4Window::updateDoVi_Infoframe(int enable, int dv_interface)
 void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe avi_infoframe)
 {
 	bool ok;
+	int plane_color_encoding = avi_infoframe.c_enc;
+	int plane_color_range = avi_infoframe.c_range;
+	const bool use_connector_only_ycbcr444 =
+		!isHDR && !isDoVi && !is_std_DoVi &&
+		avi_infoframe.output_format == 1 &&
+		currentFramebufferFormat == GBM_FORMAT_ARGB8888;
+
+	if (use_connector_only_ycbcr444) {
+		ofLog() << "DRM: keeping SDR YCbCr444 on connector CSC for RGB framebuffer format 0x"
+				<< std::hex << currentFramebufferFormat << std::dec;
+		plane_color_encoding = 0;
+		plane_color_range = 0;
+	}
 	
 	ofLog() << "DRM: Setting connector properties";
 	
@@ -3774,7 +3788,7 @@ void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe 
 	if (!ok || !(c_enc >= 0)) {
 		ofLogError() << "DRM: Unable find COLOR_ENCODING";
 	} else {
-		c_enc = avi_infoframe.c_enc; //set to ITU-R BT.601 YCbCr or ITU-R BT.709 YCbCr or ITU-R BT.2020 YCbCr
+		c_enc = plane_color_encoding;
 		drm_mode_atomic_set_property(device, req, "COLOR_ENCODING", plane_id, prop_id, c_enc, prop, 0);
 	}
 
@@ -3786,7 +3800,7 @@ void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe 
 	if (!ok || !(c_range >= 0)) {
 		ofLogError() << "DRM: Unable find COLOR_RANGE";
 	} else {
-		c_range = avi_infoframe.c_range; //set to YCbCr full range	
+		c_range = plane_color_range;
 		drm_mode_atomic_set_property(device, req, "COLOR_RANGE", plane_id, prop_id, c_range, prop, DRM_MODE_ATOMIC_ALLOW_MODESET);
 	}
 
