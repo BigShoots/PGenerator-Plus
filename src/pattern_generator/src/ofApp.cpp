@@ -45,6 +45,14 @@ inline void ofClear10bit(int red, int green, int blue, int alpha = 1023) {
  ofClear(ofFloatColor(normalize10bitComponent(red), normalize10bitComponent(green), normalize10bitComponent(blue), normalize10bitComponent(alpha)));
 }
 
+inline bool usesPackedTransportEncoding() {
+ return ofxRPI4Window::is_std_DoVi ||
+	 (ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi &&
+	  ofxRPI4Window::avi_info.output_format == 0 &&
+	  ofxRPI4Window::avi_info.rgb_quant_range == 2) ||
+	 (!ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi &&
+	  ofxRPI4Window::avi_info.output_format != 0);
+}
 }
 
 /*
