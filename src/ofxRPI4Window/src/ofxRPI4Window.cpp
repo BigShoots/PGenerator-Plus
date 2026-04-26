@@ -3721,7 +3721,8 @@ void ofxRPI4Window::updateDoVi_Infoframe(int enable, int dv_interface)
 void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe avi_infoframe)
 {
 	bool ok;
-	
+	int plane_color_encoding = avi_infoframe.c_enc;
+	int plane_color_range = avi_infoframe.c_range;
 	ofLog() << "DRM: Setting connector properties";
 	
 	first_req = 1; // allocate for atomic requests
