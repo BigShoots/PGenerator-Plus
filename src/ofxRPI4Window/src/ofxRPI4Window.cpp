@@ -1648,13 +1648,6 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		
 		vec4 RGBtoYCbCr(vec4 rgb)
 		{
-			// 4:2:2 bypass: shader does no conversion. Write RGB unchanged to the
-			// framebuffer; the HDMI block performs RGB->YCbCr 4:2:2 with proper
-			// chroma subsampling at output. Shader-side packing produces 4:4:4-rate
-			// data in RGB slots which the SCALER mis-handles for 4:2:2.
-			if (color_format == 2) {
-				return rgb;
-			}
 			float Y, Cb, Cr, a;
 			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
 			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
@@ -1668,6 +1661,9 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 
 			if (color_format == 1) {
 				return vec4(Cb/float(normalizer),Cr/float(normalizer),Y/float(normalizer), a);
+			}
+			if (color_format == 2) {
+				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);
 			}
 			return rgb;
 		}
@@ -1719,13 +1715,6 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		
 		vec4 RGBtoYCbCr(vec4 rgb)
 		{
-			// 4:2:2 bypass: shader does no conversion. Write RGB unchanged to the
-			// framebuffer; the HDMI block performs RGB->YCbCr 4:2:2 with proper
-			// chroma subsampling at output. Shader-side packing produces 4:4:4-rate
-			// data in RGB slots which the SCALER mis-handles for 4:2:2.
-			if (color_format == 2) {
-				return rgb;
-			}
 			//vec4 rgb1;
 			//vec4 rgb2;
 			/*
