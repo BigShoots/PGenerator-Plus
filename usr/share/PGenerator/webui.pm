@@ -4971,8 +4971,8 @@ function getValidFormats(modeIdx,bpc){
  const y444_ok=caps.has_ycbcr444&&((bpc===8)||(bpc===10&&caps.dc_30bit&&caps.dc_y444)||(bpc===12&&caps.dc_36bit&&caps.dc_y444));
  if(y444_ok&&(bpc===8?clock:clock*bpc/8)<=maxTmds) valid.push(1);
 
- // YCbCr 4:2:2 (format 2) — always carries up to 12bpc in 8bpc bandwidth
- if(caps.has_ycbcr422&&clock<=maxTmds) valid.push(2);
+ // YCbCr 4:2:2 (format 2) — only available at 10-bit or higher on this renderer
+ if(caps.has_ycbcr422&&bpc>=10&&clock<=maxTmds) valid.push(2);
 
  // YCbCr 4:2:0 (format 3) — only for modes in 4:2:0 VIC map
  if(has420){
@@ -5003,8 +5003,8 @@ function getValidBpc(modeIdx,fmt){
   }else if(fmt===1){ // YCbCr 4:4:4
    ok=caps.has_ycbcr444&&((bpc===8)||(bpc===10&&caps.dc_30bit&&caps.dc_y444)||(bpc===12&&caps.dc_36bit&&caps.dc_y444));
    if(ok) ok=(bpc===8?clock:clock*bpc/8)<=maxTmds;
-  }else if(fmt===2){ // YCbCr 4:2:2
-   ok=caps.has_ycbcr422&&clock<=maxTmds;
+  }else if(fmt===2){ // YCbCr 4:2:2 — only 10-bit and 12-bit supported by this renderer
+   ok=caps.has_ycbcr422&&bpc>=10&&clock<=maxTmds;
   }else if(fmt===3){ // YCbCr 4:2:0
    if(!has420){ok=false;}
    else{
