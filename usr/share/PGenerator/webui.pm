@@ -3683,7 +3683,7 @@ color:var(--text2);transition:color .18s,filter .18s,transform .08s,background .
 .reboot-btn:hover{color:#ffffff}
 .main-content{position:relative}
 body.ui-offline .dashboard,body.ui-offline .site-footer{filter:grayscale(.35);opacity:.45;pointer-events:none;user-select:none}
-.offline-mask{position:absolute;inset:0;display:none;z-index:20;align-items:center;justify-content:center;padding:20px;background:rgba(10,10,15,.42);backdrop-filter:blur(3px)}
+.offline-mask{position:fixed;inset:0;display:none;z-index:1000;align-items:flex-start;justify-content:center;padding:60px 20px 20px;background:rgba(10,10,15,.42);backdrop-filter:blur(3px)}
 body.ui-offline .offline-mask{display:flex}
 .offline-mask-card{max-width:430px;padding:18px 20px;border:1px solid var(--border);border-radius:14px;background:rgba(20,20,31,.94);box-shadow:0 12px 30px rgba(0,0,0,.35);text-align:center}
 .offline-mask-title{font-size:1rem;font-weight:700;margin-bottom:6px}
@@ -8897,7 +8897,12 @@ async function meterReadOnce(){
   const result=await meterPollRead(60000);
   if(result&&result.status==='ok'&&result.readings&&result.readings.length>0){
    const rd=result.readings[0];
-   updateLiveReading(rd);
+   // Only refresh the live-readout widgets if the user is still on the patch
+   // this read was fired against. If they switched mid-read, the result still
+   // gets stored to the correct series slot below, but we don't clobber the
+   // live widgets with stale values that belong to the previous patch.
+   const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
+   if(stillOnRequested) updateLiveReading(rd);
    // If a series is loaded and a patch is selected, store reading in series results
    if(meterSeriesSteps&&requestedStep){
     meterUpsertSeriesReading(rd,requestedStep);
@@ -9010,7 +9015,12 @@ async function meterContinuousLoop(){
   const r=await meterPollRead(60000);
   if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
    const rd=r.readings[0];
-   updateLiveReading(rd);
+   // Only refresh the live-readout widgets if the user is still on the patch
+   // this read was fired against. If they switched thumbnails mid-read, the
+   // result still goes to the correct series slot below, but we don't clobber
+   // the live widgets with stale values from the previous patch.
+   const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
+   if(stillOnRequested) updateLiveReading(rd);
    const stampStep=requestedStep;
    if(meterSeriesSteps&&stampStep){
     meterUpsertSeriesReading(rd,stampStep);
