@@ -5297,6 +5297,19 @@ async function checkPing(){
    return;
   }
  }catch(e){
+  // Suppress offline detection while a continuous meter read or series scan
+  // is active. The daemon is single-threaded and meter API calls block ping
+  // responses; a busy meter session can cause 3 consecutive ping timeouts
+  // (30s wall-time) and falsely trigger the offline overlay even though the
+  // daemon is fine. Active meter API traffic is itself proof of liveness.
+  const meterBusy=(typeof meterContinuousActive!=='undefined' && meterContinuousActive)
+                || (typeof meterSeriesRunning!=='undefined' && meterSeriesRunning);
+  if(meterBusy){
+   document.getElementById('statusDot').style.background='var(--orange)';
+   document.getElementById('statusText').textContent='Busy';
+   document.getElementById('statusWrap').title='Meter reading in progress';
+   return;
+  }
   _pingFailCount++;
   if(_pingFailCount<3){
    document.getElementById('statusDot').style.background='var(--orange)';
@@ -9163,6 +9176,12 @@ async function meterReadOnce(){
   if(result&&result.status==='ok'&&result.readings&&result.readings.length>0){
    const rd=result.readings[0];
     meterNormalizeMeasuredReading(rd);
+   // Only commit the result if the user is still on the patch this read was
+   // fired against. If they switched mid-read, the meter integrated photons
+   // from a different patch; storing/displaying the result would be wrong
+   // either way.
+   const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
+   if(stillOnRequested){
    updateLiveReading(rd);
    // If a series is loaded and a patch is selected, store reading in series results
    if(meterSeriesSteps&&requestedStep){
@@ -9181,6 +9200,7 @@ async function meterReadOnce(){
     meterBuildPatchThumbs(sortedSteps,completedIres,null);
    }
    toast('Reading: '+rd.luminance.toFixed(2)+' cd/m\\u00B2');
+   }
   } else {
    toast(result&&result.message?result.message:'Measurement failed',true);
   }
@@ -9277,6 +9297,17 @@ async function meterContinuousLoop(){
   if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
    const rd=r.readings[0];
     meterNormalizeMeasuredReading(rd);
+   // Drop the entire result if the user switched thumbnails mid-read. The
+   // meter integrates over time; clicking a different thumb pushes a new
+   // pattern to the screen so the in-flight read actually measures the new
+   // patch's photons. Storing it under the original requestedStep would
+   // overwrite that patch's last good reading with values measured from a
+   // different patch entirely.
+   const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
+   if(!stillOnRequested){
+    // Skip storage, live readout, and chart redraw; the next iteration will
+    // fire fresh against the now-current patch.
+   } else {
    updateLiveReading(rd);
    const stampStep=requestedStep;
    if(meterSeriesSteps&&stampStep){
@@ -9294,6 +9325,7 @@ async function meterContinuousLoop(){
     // clicked a different thumb while the read was in flight).
     const nowIre=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null;
     meterBuildPatchThumbs(sortedStepsL,completedIresC,nowIre);
+   }
    }
   }
  }catch(e){}
