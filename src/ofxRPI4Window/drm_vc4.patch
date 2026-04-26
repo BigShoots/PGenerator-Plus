@@ -10349,10 +10349,26 @@ index 81ea1fb..d632260 100644
 +		break;
 +	}
 +#endif
-+	// YCC422 is always 36-bit and not considered deep colour so doesn't signal in GCP
++	/*
++	 * Honor requested link depth for YCbCr422 as well. Forcing this path to the
++	 * 8/9bpc-style GCP state masks requested 10/12bpc at the HDMI signaling layer.
++	 */
 +	if (BIT(state->color_format) == DRM_COLOR_FORMAT_YCRCB422) {
-+		gcp = 4;
-+		gcp_en = false;
++		switch (state->max_requested_bpc) {
++		case 12:
++			gcp = 6;
++			gcp_en = true;
++			break;
++		case 10 ... 11:
++			gcp = 5;
++			gcp_en = true;
++			break;
++		case 8 ... 9:
++		default:
++			gcp = 4;
++			gcp_en = false;
++			break;
++		}
 +	}
  
  	reg = HDMI_READ(HDMI_DEEP_COLOR_CONFIG_1);
