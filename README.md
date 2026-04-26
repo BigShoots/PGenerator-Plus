@@ -552,7 +552,7 @@ PGenerator+ adds the web-based dashboard, HDR/DV InfoFrame configuration UI, mDN
 
 ## Support the Project
 
-If you'd like to support ongoing development, you can buy me a coffee here:
+If you'd like to support ongoing development, you can tip me at my Buy Me a Coffee link below.
 
 [☕ Buy Me a Coffee](https://buymeacoffee.com/bigshoots)
 
