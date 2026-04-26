@@ -3429,7 +3429,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.rgb_quant_range = avi_info.rgb_quant_range; //Full range [0-255]
 			avi_infoframe.output_format = avi_info.output_format; //1; //YCrCb444
 			avi_infoframe.max_bpc = avi_info.max_bpc; //10 bit
-			avi_infoframe.c_enc = avi_info.c_enc; //ITU-R BT.2020 YCbCr set to 2
+			avi_infoframe.c_enc = (avi_infoframe.colorimetry == 9) ? 2 : ((avi_infoframe.colorimetry == 2) ? 1 : 0); // match plane YCbCr encoding to selected colorimetry
 			avi_infoframe.c_range = 1; //YCbCr Full range 
 			updateAVI_Infoframe(HDRplaneId, avi_infoframe);	  
 
@@ -3466,7 +3466,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.rgb_quant_range = avi_info.rgb_quant_range;  //Full range [0-255] = 2
 			avi_infoframe.output_format = avi_info.output_format; //1; //YCrCb444
 			avi_infoframe.max_bpc = avi_info.max_bpc; //8 bit
-			avi_infoframe.c_enc = avi_info.c_enc; //ITU-R BT.709 YCbCr  set to 1
+			avi_infoframe.c_enc = (avi_infoframe.colorimetry == 9) ? 2 : ((avi_infoframe.colorimetry == 2) ? 1 : 0); // 0=BT.601, 1=BT.709, 2=BT.2020
 			avi_infoframe.c_range = 1; //YCbCr full range
 			updateAVI_Infoframe(SDRplaneId, avi_infoframe);	
 		}
