@@ -5424,6 +5424,18 @@ function resetDefaults(){
 }
 
 async function applySettings(){
+ // Stop any in-flight meter activity before changing display configuration.
+ // Switching color_format / signal_mode / max_bpc tears down the renderer's
+ // framebuffer and shader pipeline; doing that while a continuous read or
+ // series scan is hitting /api/pattern races with the renderer reinit and
+ // crashes PGeneratord.
+ if(typeof meterContinuousActive!=='undefined' && meterContinuousActive){
+  try{ meterStopContinuous(); }catch(e){}
+ }
+ if(typeof meterSeriesRunning!=='undefined' && meterSeriesRunning){
+  try{ meterStop(); }catch(e){}
+ }
+ try{ await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000}); }catch(e){}
  const sm=getVal('signal_mode');
  const changes={
   mode_idx:getVal('mode_idx'),
@@ -9015,12 +9027,18 @@ async function meterContinuousLoop(){
   const r=await meterPollRead(60000);
   if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
    const rd=r.readings[0];
-   // Only refresh the live-readout widgets if the user is still on the patch
-   // this read was fired against. If they switched thumbnails mid-read, the
-   // result still goes to the correct series slot below, but we don't clobber
-   // the live widgets with stale values from the previous patch.
+   // Drop the entire result if the user switched thumbnails mid-read. The
+   // meter integrates over time; clicking a different thumb pushes a new
+   // pattern to the screen so the in-flight read actually measures the new
+   // patch's photons. Storing it under the original requestedStep would
+   // overwrite that patch's last good reading with values measured from a
+   // different patch entirely.
    const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
-   if(stillOnRequested) updateLiveReading(rd);
+   if(!stillOnRequested){
+    // Skip storage and chart redraw; let the next iteration fire fresh
+    // against the now-current patch.
+   } else {
+   updateLiveReading(rd);
    const stampStep=requestedStep;
    if(meterSeriesSteps&&stampStep){
     meterUpsertSeriesReading(rd,stampStep);
@@ -9037,6 +9055,7 @@ async function meterContinuousLoop(){
     // clicked a different thumb while the read was in flight).
     const nowIre=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null;
     meterBuildPatchThumbs(sortedStepsL,completedIresC,nowIre);
+   }
    }
   }
  }catch(e){}
