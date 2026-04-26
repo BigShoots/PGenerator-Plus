@@ -1106,6 +1106,69 @@ sub webui_meter_read_result (@) {
  return '{"status":"idle"}';
 }
 
+our $WEBUI_METER_GAMUT_DEFS;
+
+sub webui_meter_gamut_definitions (@) {
+ if(!$WEBUI_METER_GAMUT_DEFS) {
+  $WEBUI_METER_GAMUT_DEFS={
+   bt709=>{
+    label=>'BT.709 / D65',
+    WHITE=>['0.3127','0.3290'],
+    PRIMARIES=>{R=>['0.64','0.33'],G=>['0.30','0.60'],B=>['0.15','0.06']},
+    M=>[['3.2406','-1.5372','-0.4986'],['-0.9689','1.8758','0.0415'],['0.0557','-0.2040','1.0570']],
+    RGB_TO_XYZ=>[['0.4124564','0.3575761','0.1804375'],['0.2126729','0.7151522','0.0721750'],['0.0193339','0.1191920','0.9503041']]
+   },
+   bt2020=>{
+    label=>'BT.2020 / D65',
+    WHITE=>['0.3127','0.3290'],
+    PRIMARIES=>{R=>['0.708','0.292'],G=>['0.170','0.797'],B=>['0.131','0.046']},
+    M=>[['1.7166511880','-0.3556707838','-0.2533662814'],['-0.6666843518','1.6164812366','0.0157685458'],['0.0176398574','-0.0427706133','0.9421031212']],
+    RGB_TO_XYZ=>[['0.6369580483','0.1446169036','0.1688809752'],['0.2627002120','0.6779980715','0.0593017165'],['0.0000000000','0.0280726930','1.0609850577']]
+   },
+   p3d65=>{
+    label=>'P3 / D65',
+    WHITE=>['0.3127','0.3290'],
+    PRIMARIES=>{R=>['0.680','0.320'],G=>['0.265','0.690'],B=>['0.150','0.060']},
+    M=>[['2.4934969119','-0.9313836179','-0.4027107845'],['-0.8294889696','1.7626640603','0.0236246858'],['0.0358458302','-0.0761723893','0.9568845240']],
+    RGB_TO_XYZ=>[['0.4865709486','0.2656676932','0.1982172852'],['0.2289745641','0.6917385218','0.0792869141'],['0.0000000000','0.0451133819','1.0439443689']]
+   },
+   p3dci=>{
+    label=>'P3 / DCI',
+    WHITE=>['0.3140','0.3510'],
+    PRIMARIES=>{R=>['0.680','0.320'],G=>['0.265','0.690'],B=>['0.150','0.060']},
+    M=>[['2.7253940305','-1.0180030062','-0.4401631952'],['-0.7951680258','1.6897320548','0.0226471906'],['0.0412418914','-0.0876390192','1.1009293786']],
+    RGB_TO_XYZ=>[['0.4451698156','0.2771344092','0.1722826698'],['0.2094916779','0.7215952542','0.0689130679'],['0.0000000000','0.0470605601','0.9073553944']]
+   }
+  };
+ }
+ return $WEBUI_METER_GAMUT_DEFS;
+}
+
+sub webui_meter_gamut_js_literal (@) {
+ my $defs=&webui_meter_gamut_definitions();
+ my @keys=qw(bt709 bt2020 p3d65 p3dci);
+ my @blocks;
+ foreach my $key (@keys) {
+  my $def=$defs->{$key};
+  my @matrix_rows=map { '   ['.join(',',@$_).']' } @{$def->{M}};
+  my @rgb_rows=map { '   ['.join(',',@$_).']' } @{$def->{RGB_TO_XYZ}};
+  my @primaries=map {
+   my ($x,$y)=@{$def->{PRIMARIES}{$_}};
+   "$_:{x:$x,y:$y}"
+  } qw(R G B);
+  my ($wx,$wy)=@{$def->{WHITE}};
+  push @blocks,
+   " $key:{\n".
+   "  label:'$def->{label}',\n".
+   "  white:{x:$wx,y:$wy},\n".
+   "  primaries:{".join(',',@primaries)."},\n".
+   "  xyzToRgb:[\n".join(",\n",@matrix_rows)."\n  ],\n".
+   "  rgbToXyz:[\n".join(",\n",@rgb_rows)."\n  ]\n".
+   " }";
+ }
+ return "{\n".join(",\n",@blocks)."\n}";
+}
+
 sub webui_meter_series_start (@) {
  my ($body)=@_;
  # Parse request
@@ -1132,8 +1195,17 @@ sub webui_meter_series_start (@) {
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
  my $target_gamut="";
  $target_gamut=lc($1) if($body=~/"target_gamut"\s*:\s*"([A-Za-z0-9_]+)"/);
-$target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65" || $target_gamut eq "customd65");
-$target_gamut="bt709" if($target_gamut eq "customd65");
+$target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65" || $target_gamut eq "p3dci" || $target_gamut eq "customd65");
+ my $target_white_x="";
+ $target_white_x=$1 if($body=~/"target_white_x"\s*:\s*"?([0-9.]+)"?/);
+ my $target_white_y="";
+ $target_white_y=$1 if($body=~/"target_white_y"\s*:\s*"?([0-9.]+)"?/);
+ my $custom_target_white;
+ if($target_gamut eq "customd65" && $target_white_x ne "" && $target_white_y ne "") {
+  my $x=$target_white_x+0;
+  my $y=$target_white_y+0;
+  $custom_target_white=[$x,$y] if($x>0 && $y>0 && $x<1 && $y<1 && ($x+$y)<1);
+ }
  my $target_gamma="";
  $target_gamma=lc($1) if($body=~/"target_gamma"\s*:\s*"([A-Za-z0-9_.\-]+)"/);
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
@@ -1271,11 +1343,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
   my $min_code=$patch_limited?16:0;
   my $span_code=$patch_limited?219:255;
     my $max_code=$min_code+$span_code;
-    my %primaries=(
-     bt709=>{M=>[[3.2406,-1.5372,-0.4986],[-0.9689,1.8758,0.0415],[0.0557,-0.2040,1.0570]],RGB_TO_XYZ=>[[0.4124564,0.3575761,0.1804375],[0.2126729,0.7151522,0.0721750],[0.0193339,0.1191920,0.9503041]]},
-     bt2020=>{M=>[[1.7166511880,-0.3556707838,-0.2533662814],[-0.6666843518,1.6164812366,0.0157685458],[0.0176398574,-0.0427706133,0.9421031212]],RGB_TO_XYZ=>[[0.6369580483,0.1446169036,0.1688809752],[0.2627002120,0.6779980715,0.0593017165],[0.0000000000,0.0280726930,1.0609850577]]},
-     p3d65=>{M=>[[2.4934969119,-0.9313836179,-0.4027107845],[-0.8294889696,1.7626640603,0.0236246858],[0.0358458302,-0.0761723893,0.9568845240]],RGB_TO_XYZ=>[[0.4865709486,0.2656676932,0.1982172852],[0.2289745641,0.6917385218,0.0792869141],[0.0000000000,0.0451133819,1.0439443689]]}
-    );
+      my %primaries=%{&webui_meter_gamut_definitions()};
     my $colorimetry=int($series_colorimetry);
     my $primaries_idx=int($series_primaries);
     my $container_key="bt709";
@@ -1290,13 +1358,21 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     if($signal_mode eq "dv") {
      $auto_target_key="p3d65";
     } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
-     $auto_target_key="p3d65" if($primaries_idx == 2 || $primaries_idx == 3);
+      $auto_target_key="p3d65" if($primaries_idx == 2);
+      $auto_target_key="p3dci" if($primaries_idx == 3);
     }
     my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
+    $target_key="bt709" if($target_key eq "customd65");
     # DV ColorChecker patches are target-gamut driven even though the signal
     # rides in a BT.2020 tunnel. Solving them in the container makes DV
     # relative read undersaturated and DV absolute read oversaturated.
     my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg")) ? $container_key : $target_key;
+    my @target_white=@{$primaries{$target_key}{WHITE}};
+    @target_white=@$custom_target_white if($target_gamut eq "customd65" && $custom_target_white);
+    my ($target_wx,$target_wy)=@target_white;
+    my @solve_white=@{$primaries{$solve_key}{WHITE}};
+    @solve_white=@target_white if($target_gamut eq "customd65" && $custom_target_white);
+    my ($solve_wx,$solve_wy)=@solve_white;
     my @MI=@{$primaries{$solve_key}{M}};
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
@@ -1334,14 +1410,14 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     my @solve_xy=map {
      my $sum=$SOLVE_RGB_TO_XYZ[0][$_]+$SOLVE_RGB_TO_XYZ[1][$_]+$SOLVE_RGB_TO_XYZ[2][$_];
      [
-      $sum>0 ? $SOLVE_RGB_TO_XYZ[0][$_]/$sum : 0.3127,
-      $sum>0 ? $SOLVE_RGB_TO_XYZ[1][$_]/$sum : 0.329
+      $sum>0 ? $SOLVE_RGB_TO_XYZ[0][$_]/$sum : $solve_wx,
+      $sum>0 ? $SOLVE_RGB_TO_XYZ[1][$_]/$sum : $solve_wy
      ]
     } (0,1,2);
     my $remap_relative_dv_color_xy=sub {
      my ($sx,$sy)=@_;
      return ($sx,$sy) unless($signal_mode eq "dv" && $dv_map_mode ne "1");
-     my ($wx,$wy)=(0.3127,0.329);
+         my ($wx,$wy)=($solve_wx,$solve_wy);
      my ($dx,$dy)=($sx-$wx,$sy-$wy);
      return ($sx,$sy) if(abs($dx)<1e-9 && abs($dy)<1e-9);
      my $best_t;
@@ -1369,7 +1445,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     my $remap_absolute_dv_color_xy=sub {
      my ($sx,$sy)=@_;
      return ($sx,$sy) unless($signal_mode eq "dv" && $dv_map_mode eq "1");
-     my ($wx,$wy)=(0.3127,0.329);
+      my ($wx,$wy)=($solve_wx,$solve_wy);
      my ($dx,$dy)=($sx-$wx,$sy-$wy);
      return ($sx,$sy) if(abs($dx)<1e-9 && abs($dy)<1e-9);
      my $best_t;
@@ -1498,8 +1574,8 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     my $mix_Y=$STIM_RGB_TO_XYZ[1][0]*$r_mix+$STIM_RGB_TO_XYZ[1][1]*$g_mix+$STIM_RGB_TO_XYZ[1][2]*$b_mix;
     my $mix_Z=$STIM_RGB_TO_XYZ[2][0]*$r_mix+$STIM_RGB_TO_XYZ[2][1]*$g_mix+$STIM_RGB_TO_XYZ[2][2]*$b_mix;
     my $mix_sum=$mix_X+$mix_Y+$mix_Z;
-    my $px=$mix_sum>0?$mix_X/$mix_sum:0.3127;
-    my $py=$mix_sum>0?$mix_Y/$mix_sum:0.329;
+    my $px=$mix_sum>0?$mix_X/$mix_sum:$solve_wx;
+    my $py=$mix_sum>0?$mix_Y/$mix_sum:$solve_wy;
     my ($r,$g,$b)=($min_code,$min_code,$min_code);
     if($py>0) {
      my $X=$px/$py; my $Y=1; my $Z=(1-$px-$py)/$py;
@@ -1531,11 +1607,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  } elsif($type eq "saturations") {
   my $min_code=$patch_limited?16:0;
   my $span_code=$patch_limited?219:255;
-  my %primaries=(
-   bt709=>{M=>[[3.2406,-1.5372,-0.4986],[-0.9689,1.8758,0.0415],[0.0557,-0.2040,1.0570]],RGB_TO_XYZ=>[[0.4124564,0.3575761,0.1804375],[0.2126729,0.7151522,0.0721750],[0.0193339,0.1191920,0.9503041]]},
-   bt2020=>{M=>[[1.7166511880,-0.3556707838,-0.2533662814],[-0.6666843518,1.6164812366,0.0157685458],[0.0176398574,-0.0427706133,0.9421031212]],RGB_TO_XYZ=>[[0.6369580483,0.1446169036,0.1688809752],[0.2627002120,0.6779980715,0.0593017165],[0.0000000000,0.0280726930,1.0609850577]]},
-   p3d65=>{M=>[[2.4934969119,-0.9313836179,-0.4027107845],[-0.8294889696,1.7626640603,0.0236246858],[0.0358458302,-0.0761723893,0.9568845240]],RGB_TO_XYZ=>[[0.4865709486,0.2656676932,0.1982172852],[0.2289745641,0.6917385218,0.0792869141],[0.0000000000,0.0451133819,1.0439443689]]}
-  );
+  my %primaries=%{&webui_meter_gamut_definitions()};
   my $colorimetry=int($series_colorimetry);
   my $primaries_idx=int($series_primaries);
   my $container_key="bt709";
@@ -1550,12 +1622,20 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
   if($signal_mode eq "dv") {
    $auto_target_key="p3d65";
   } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
-   $auto_target_key="p3d65" if($primaries_idx == 2 || $primaries_idx == 3);
+    $auto_target_key="p3d65" if($primaries_idx == 2);
+    $auto_target_key="p3dci" if($primaries_idx == 3);
   }
   my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
+  $target_key="bt709" if($target_key eq "customd65");
+  my @target_white=@{$primaries{$target_key}{WHITE}};
+  @target_white=@$custom_target_white if($target_gamut eq "customd65" && $custom_target_white);
+  my ($target_wx,$target_wy)=@target_white;
   # DV absolute saturation sweeps follow the selected target hue axis, but
   # the emitted patch triplet still needs to be solved in the BT.2020 tunnel.
   my $solve_key=((($signal_mode eq "hdr10") || ($signal_mode eq "hlg"))) ? $container_key : $target_key;
+  my @solve_white=@{$primaries{$solve_key}{WHITE}};
+  @solve_white=@target_white if($target_gamut eq "customd65" && $custom_target_white);
+  my ($solve_wx,$solve_wy)=@solve_white;
   my @MI=@{$primaries{$solve_key}{M}};
   my @AXIS_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
   my $level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : ((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
@@ -1611,15 +1691,15 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     my $mix_Y=$AXIS_RGB_TO_XYZ[1][0]*$r_mix+$AXIS_RGB_TO_XYZ[1][1]*$g_mix+$AXIS_RGB_TO_XYZ[1][2]*$b_mix;
     my $mix_Z=$AXIS_RGB_TO_XYZ[2][0]*$r_mix+$AXIS_RGB_TO_XYZ[2][1]*$g_mix+$AXIS_RGB_TO_XYZ[2][2]*$b_mix;
    my $mix_sum=$mix_X+$mix_Y+$mix_Z;
-   my $px=$mix_sum>0?$mix_X/$mix_sum:0.3127;
-   my $py=$mix_sum>0?$mix_Y/$mix_sum:0.329;
+  my $px=$mix_sum>0?$mix_X/$mix_sum:$target_wx;
+  my $py=$mix_sum>0?$mix_Y/$mix_sum:$target_wy;
    foreach my $sat (25,50,75,100) {
     my $f=$sat/100;
     if($signal_mode eq "dv") {
      $f=($dv_map_mode eq "1") ? $dv_absolute_sat_fraction->($name,$f) : ($f-(0.8*$f*$f*(1-$f)));
     }
-    my $tx=0.3127+$f*($px-0.3127);
-    my $ty=0.329+$f*($py-0.329);
+    my $tx=$target_wx+$f*($px-$target_wx);
+    my $ty=$target_wy+$f*($py-$target_wy);
     my ($r,$g,$b)=($min_code,$min_code,$min_code);
     if($ty>0){
      my $X=$tx/$ty; my $Y=1; my $Z=(1-$tx-$ty)/$ty;
@@ -1759,6 +1839,8 @@ sub webui_meter_settings_save (@) {
   display_type target_gamut delay patch_size patch_insert disable_aio
   refresh_rate ccss_file grey_patch_profiles_json
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
+  target_white_x target_white_y
+    xyz_matrix_enabled xyz_m11 xyz_m12 xyz_m13 xyz_m21 xyz_m22 xyz_m23 xyz_m31 xyz_m32 xyz_m33
   hdr_bt2390 incl_lum color_incl_lum
  );
  my @parts;
@@ -2294,6 +2376,11 @@ sub webui_apply_config (@) {
     return wantarray ? ($result,0) : $result;
    }
   }
+ }
+ my $effective_color_format=(defined $changes{"color_format"} && $changes{"color_format"} ne "") ? int($changes{"color_format"}) : int($pgenerator_conf{"color_format"} || 0);
+ if($effective_color_format == 2) {
+  # YCbCr 4:2:2 renderer path is supported at 10-bit only.
+  $changes{"max_bpc"}="10";
  }
  # Keys that require pattern generator restart
  my %restart_keys=map{$_=>1} qw(mode_idx eotf is_hdr is_sdr colorimetry primaries
@@ -3642,7 +3729,7 @@ sub webui_pattern (@) {
 #              HTML Page                      #
 ###############################################
 sub webui_html (@) {
- return <<'WEBUI_HTML';
+ my $html=<<'WEBUI_HTML';
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3723,7 +3810,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field > select,
 #meterSettingsGrid .field > input[type="text"],
 #meterSettingsGrid .field > input[type="number"]{width:100%;min-height:34px}
-#meterSettingsGrid .field-display{width:170px}
+#meterSettingsGrid .field-display{width:170px;max-width:100%}
 #meterSettingsGrid .field-gamut{width:148px}
 #meterSettingsGrid .field-gamut .field-whitepoint{display:none;margin-top:10px;width:240px}
 #meterSettingsGrid .field-gamut .field-whitepoint.visible{display:block}
@@ -3738,11 +3825,18 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-inline-unit{font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
 .meter-toggle{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);text-transform:none !important;letter-spacing:0 !important;cursor:pointer;white-space:nowrap}
 .meter-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
-.meter-note-toggle{display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--text2);cursor:pointer;margin-top:4px;text-transform:none !important;letter-spacing:0 !important}
+.meter-note-toggle{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;white-space:nowrap}
+.meter-note-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
+.meter-toggle-row{display:flex;align-items:center;gap:14px;flex-wrap:nowrap;margin-top:6px;white-space:nowrap}
 .meter-field-label{display:inline-flex;align-items:center;gap:6px}
 .meter-help-tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--border);color:var(--text2);font-size:.65rem;cursor:help;user-select:none}
 .meter-whitepoint-row{display:flex;gap:6px;align-items:center;max-width:240px}
 .meter-whitepoint-row input{flex:1 1 0}
+.meter-matrix-field{margin-top:10px;max-width:240px}
+.meter-matrix-fields{display:none;margin-top:8px}
+.meter-matrix-fields.visible{display:block}
+.meter-matrix-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:240px}
+.meter-matrix-grid input{text-align:center}
 .btn-row{display:flex;gap:6px;flex-wrap:wrap}
 .btn{padding:7px 14px;border:none;border-radius:6px;font-size:.8rem;cursor:pointer;
 font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap}
@@ -4012,6 +4106,22 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="1">Absolute</option>
     </select>
    </div>
+     <div class="field">
+      <label>Max Luma (nits)</label>
+      <input type="number" id="dv_max_luma" min="0" max="10000" step="1">
+     </div>
+     <div class="field">
+      <label>Min Luma (nits)</label>
+      <input type="number" id="dv_min_luma" min="0" max="100" step="0.0001">
+     </div>
+     <div class="field">
+      <label>MaxCLL</label>
+      <input type="number" id="dv_max_cll" min="0" max="10000" step="1">
+     </div>
+     <div class="field">
+      <label>MaxFALL</label>
+      <input type="number" id="dv_max_fall" min="0" max="10000" step="1">
+     </div>
   <input type="hidden" id="dv_interface" value="1">
   </div>
  </div>
@@ -4079,24 +4189,43 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <div id="ccssUploadStatus" style="font-size:.7rem;color:var(--text2);margin-top:4px"></div>
      <div id="customCcssList" style="margin-top:6px"></div>
     </div>
-    <label class="meter-note-toggle" title="Insert a neutral patch between measurement patterns to stabilize OLED ABL">
-     <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
-    </label>
+    <div class="meter-toggle-row">
+     <label class="meter-note-toggle" title="Insert a neutral patch between measurement patterns to stabilize OLED ABL">
+      <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
+     </label>
+     <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
+    </div>
    </div>
   <div class="field field-gamut">
-    <label>Target Colorspace</label>
+    <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
      <option value="auto">Auto (match signal)</option>
      <option value="bt709" selected>BT.709</option>
      <option value="bt2020">BT.2020</option>
      <option value="p3d65">DCI-P3 / D65</option>
-     <option value="customd65">Custom / D65</option>
+      <option value="p3dci">DCI-P3 / DCI</option>
+    <option value="customd65">Custom / D65</option>
     </select>
    <div class="field-whitepoint" id="meterTargetWhitePointField">
     <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Leave blank for standard D65. Custom values update the CIE target, greyscale target white, and color analysis." aria-label="Target white point help">?</span></label>
     <div class="meter-whitepoint-row">
      <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
      <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
+    </div>
+   </div>
+   <div class="meter-matrix-field">
+    <div class="meter-matrix-fields" id="meterXyzMatrixFields">
+     <div class="meter-matrix-grid">
+      <input type="number" id="meterXyzM11" step="0.0001" placeholder="1">
+      <input type="number" id="meterXyzM12" step="0.0001" placeholder="0">
+      <input type="number" id="meterXyzM13" step="0.0001" placeholder="0">
+      <input type="number" id="meterXyzM21" step="0.0001" placeholder="0">
+      <input type="number" id="meterXyzM22" step="0.0001" placeholder="1">
+      <input type="number" id="meterXyzM23" step="0.0001" placeholder="0">
+      <input type="number" id="meterXyzM31" step="0.0001" placeholder="0">
+      <input type="number" id="meterXyzM32" step="0.0001" placeholder="0">
+      <input type="number" id="meterXyzM33" step="0.0001" placeholder="1">
+     </div>
     </div>
    </div>
    </div>
@@ -4783,14 +4912,51 @@ function dvMetadataForMapMode(mapMode){
  return '2';
 }
 
+function meterHdrMetadataFieldId(key,mode){
+ const sm=mode||getVal('signal_mode')||'sdr';
+ if(sm==='dv'){
+  if(key==='max_luma') return 'dv_max_luma';
+  if(key==='min_luma') return 'dv_min_luma';
+  if(key==='max_cll') return 'dv_max_cll';
+  if(key==='max_fall') return 'dv_max_fall';
+ }
+ return key;
+}
+
+function meterHdrMetadataFieldValue(key,mode){
+ const el=document.getElementById(meterHdrMetadataFieldId(key,mode));
+ return el?el.value:'';
+}
+
+function meterCopyHdrMetadataFields(fromMode,toMode){
+ ['max_luma','min_luma','max_cll','max_fall'].forEach(key=>{
+  const src=document.getElementById(meterHdrMetadataFieldId(key,fromMode));
+  const dst=document.getElementById(meterHdrMetadataFieldId(key,toMode));
+  if(src&&dst) dst.value=src.value;
+ });
+}
+
+let meterLastHdrMetadataMode=null;
+
+function meterSyncHdrMetadataFieldMirrors(){
+ const sm=getVal('signal_mode')||'sdr';
+ if(meterLastHdrMetadataMode==null){
+  if(sm==='dv') meterCopyHdrMetadataFields('hdr10','dv');
+ }else if(sm==='dv'&&meterLastHdrMetadataMode!=='dv'){
+  meterCopyHdrMetadataFields('hdr10','dv');
+ }else if(sm!=='dv'&&meterLastHdrMetadataMode==='dv'){
+  meterCopyHdrMetadataFields('dv','hdr10');
+ }
+ meterLastHdrMetadataMode=sm;
+}
+
 function meterSyncHdrMetadata(){
- const topPeak=document.getElementById('max_luma');
- const topMin=document.getElementById('min_luma');
  const meterPeak=document.getElementById('meterHdrMasterPeak');
  const meterMin=document.getElementById('meterHdrMasterMin');
+ meterSyncHdrMetadataFieldMirrors();
  if(!meterPeak||!meterMin) return;
- const peakVal=(topPeak&&topPeak.value!=='')?topPeak.value:((config&&config.max_luma)||'1000');
- const minVal=(topMin&&topMin.value!=='')?topMin.value:((config&&config.min_luma)||'0.005');
+ const peakVal=meterHdrMetadataFieldValue('max_luma')||((config&&config.max_luma)||'1000');
+ const minVal=meterHdrMetadataFieldValue('min_luma')||((config&&config.min_luma)||'0.005');
  meterPeak.value=peakVal;
  meterMin.value=minVal;
 }
@@ -4801,10 +4967,10 @@ function captureSettings(){
   max_bpc:getVal('max_bpc'),color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),rgb_quant_range:getVal('rgb_quant_range'),
   eotf:getVal('eotf'),primaries:getVal('primaries'),
-  max_luma:document.getElementById('max_luma').value,
-  min_luma:document.getElementById('min_luma').value,
-  max_cll:document.getElementById('max_cll').value,
-  max_fall:document.getElementById('max_fall').value,
+  max_luma:meterHdrMetadataFieldValue('max_luma'),
+  min_luma:meterHdrMetadataFieldValue('min_luma'),
+  max_cll:meterHdrMetadataFieldValue('max_cll'),
+  max_fall:meterHdrMetadataFieldValue('max_fall'),
   dv_map_mode:getVal('dv_map_mode')
  });
 }
@@ -4823,7 +4989,8 @@ function isSettingsFieldActive(){
  const el=document.activeElement;
  if(!el||!el.id)return false;
  return ['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
-  'eotf','primaries','dv_map_mode','max_luma','min_luma','max_cll','max_fall'].includes(el.id);
+  'eotf','primaries','dv_map_mode','max_luma','min_luma','max_cll','max_fall',
+  'dv_max_luma','dv_min_luma','dv_max_cll','dv_max_fall'].includes(el.id);
 }
 
 function shouldPauseAutoRefresh(){
@@ -4840,6 +5007,7 @@ function updateModeVisibility(){
  const sm=getVal('signal_mode');
  document.getElementById('hdrCard').style.display=(sm==='hdr10'||sm==='hlg')?'':'none';
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
+ meterSyncHdrMetadata();
 }
 
 ['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
@@ -4847,14 +5015,31 @@ function updateModeVisibility(){
  document.getElementById(id).addEventListener('change',checkSettingsChanged);
 });
 ['max_luma','min_luma','max_cll','max_fall'].forEach(function(id){
- document.getElementById(id).addEventListener('input',checkSettingsChanged);
-});
-['max_luma','min_luma'].forEach(function(id){
  const el=document.getElementById(id);
  if(!el) return;
  const sync=function(){
-  meterSyncHdrMetadata();
-  if(meterReadings&&meterReadings.length) meterOnGreyRefChange();
+  if((id==='max_luma' || id==='min_luma') && getVal('signal_mode')!=='dv'){
+   meterSyncHdrMetadata();
+   if(meterReadings&&meterReadings.length) meterOnGreyRefChange();
+  }else if(getVal('signal_mode')!=='dv'){
+   meterSyncHdrMetadataFieldMirrors();
+  }
+  checkSettingsChanged();
+ };
+ el.addEventListener('input',sync);
+ el.addEventListener('change',sync);
+});
+[['dv_max_luma','max_luma'],['dv_min_luma','min_luma'],['dv_max_cll','max_cll'],['dv_max_fall','max_fall']].forEach(function(pair){
+ const el=document.getElementById(pair[0]);
+ if(!el) return;
+ const sync=function(){
+  if(getVal('signal_mode')==='dv' && (pair[1]==='max_luma' || pair[1]==='min_luma')){
+   meterSyncHdrMetadata();
+   if(meterReadings&&meterReadings.length) meterOnGreyRefChange();
+  }else if(getVal('signal_mode')==='dv'){
+   meterSyncHdrMetadataFieldMirrors();
+  }
+  checkSettingsChanged();
  };
  el.addEventListener('input',sync);
  el.addEventListener('change',sync);
@@ -5003,8 +5188,8 @@ function getValidBpc(modeIdx,fmt){
   }else if(fmt===1){ // YCbCr 4:4:4
    ok=caps.has_ycbcr444&&((bpc===8)||(bpc===10&&caps.dc_30bit&&caps.dc_y444)||(bpc===12&&caps.dc_36bit&&caps.dc_y444));
    if(ok) ok=(bpc===8?clock:clock*bpc/8)<=maxTmds;
-  }else if(fmt===2){ // YCbCr 4:2:2
-   ok=caps.has_ycbcr422&&clock<=maxTmds;
+  }else if(fmt===2){ // YCbCr 4:2:2 — restricted to 10-bit
+   ok=caps.has_ycbcr422&&bpc===10&&clock<=maxTmds;
   }else if(fmt===3){ // YCbCr 4:2:0
    if(!has420){ok=false;}
    else{
@@ -5439,10 +5624,10 @@ async function applySettings(){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
    is_ll_dovi:'0',is_std_dovi:'0',dv_status:'0',dv_metadata:'0',
    eotf:getVal('eotf'),primaries:getVal('primaries'),
-   max_luma:document.getElementById('max_luma').value,
-   min_luma:document.getElementById('min_luma').value,
-   max_cll:document.getElementById('max_cll').value,
-   max_fall:document.getElementById('max_fall').value});
+   max_luma:meterHdrMetadataFieldValue('max_luma','hdr10'),
+   min_luma:meterHdrMetadataFieldValue('min_luma','hdr10'),
+   max_cll:meterHdrMetadataFieldValue('max_cll','hdr10'),
+   max_fall:meterHdrMetadataFieldValue('max_fall','hdr10')});
  }else if(sm==='dv'){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
    is_ll_dovi:'1',is_std_dovi:'1',
@@ -5450,6 +5635,10 @@ async function applySettings(){
    rgb_quant_range:'2',
    dv_interface:getVal('dv_interface'),
    dv_map_mode:getVal('dv_map_mode'),
+   max_luma:meterHdrMetadataFieldValue('max_luma','dv'),
+   min_luma:meterHdrMetadataFieldValue('min_luma','dv'),
+   max_cll:meterHdrMetadataFieldValue('max_cll','dv'),
+   max_fall:meterHdrMetadataFieldValue('max_fall','dv'),
     dv_color_space:'0',
    dv_metadata:dvMetadataForMapMode(getVal('dv_map_mode'))});
  }
@@ -5945,14 +6134,108 @@ function meterRestoreLatestPersistedSeries(){
 
 // D65 reference white chromaticity
 const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
+const METER_XYZ_MATRIX_DEFAULT=[[1,0,0],[0,1,0],[0,0,1]];
 
 function xyToUnitXyz(x,y){
  if(!(x>0) || !(y>0) || x+y>=1) return {X:D65.X,Y:1,Z:D65.Z};
  return {X:x/y,Y:1,Z:(1-x-y)/y};
 }
 
+function meterIdentityXyzCorrectionMatrix(){
+ return METER_XYZ_MATRIX_DEFAULT.map(row=>row.slice());
+}
+
+function meterXyzCorrectionEnabled(){
+ const el=document.getElementById('meterXyzMatrixEnabled');
+ return el ? !!el.checked : true;
+}
+
+function meterStoredXyzMatrixEnabled(settings){
+ if(!settings||settings.xyz_matrix_enabled==null) return false;
+ return settings.xyz_matrix_enabled===true||settings.xyz_matrix_enabled==='1'||settings.xyz_matrix_enabled===1;
+}
+
+function meterUpdateXyzMatrixVisibility(){
+ const wrap=document.getElementById('meterXyzMatrixFields');
+ const enabled=meterXyzCorrectionEnabled();
+ if(wrap) wrap.classList.toggle('visible',enabled);
+ ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
+  const el=document.getElementById(id);
+  if(el) el.disabled=!enabled;
+ });
+}
+
+function meterXyzCorrectionMatrix(){
+ if(!meterXyzCorrectionEnabled()) return meterIdentityXyzCorrectionMatrix();
+ const ids=[
+  ['meterXyzM11','meterXyzM12','meterXyzM13'],
+  ['meterXyzM21','meterXyzM22','meterXyzM23'],
+  ['meterXyzM31','meterXyzM32','meterXyzM33']
+ ];
+ return ids.map((row,rowIdx)=>row.map((id,colIdx)=>{
+  const el=document.getElementById(id);
+  const raw=parseFloat((el&&el.value)||'');
+  return Number.isFinite(raw)?raw:METER_XYZ_MATRIX_DEFAULT[rowIdx][colIdx];
+ }));
+}
+
+function meterApplyXyzCorrectionMatrix(X,Y,Z,matrix){
+ const M=matrix||meterXyzCorrectionMatrix();
+ return {
+  X:M[0][0]*X+M[0][1]*Y+M[0][2]*Z,
+  Y:M[1][0]*X+M[1][1]*Y+M[1][2]*Z,
+  Z:M[2][0]*X+M[2][1]*Y+M[2][2]*Z
+ };
+}
+
+function meterNormalizeMeasuredReading(reading){
+ if(!reading||typeof reading!=='object'||reading.synthetic_target) return reading;
+ if(reading.raw_X==null&&reading.X!=null) reading.raw_X=Number(reading.X);
+ if(reading.raw_Y==null&&reading.Y!=null) reading.raw_Y=Number(reading.Y);
+ if(reading.raw_Z==null&&reading.Z!=null) reading.raw_Z=Number(reading.Z);
+ if(reading.raw_x==null&&reading.x!=null) reading.raw_x=Number(reading.x);
+ if(reading.raw_y==null&&reading.y!=null) reading.raw_y=Number(reading.y);
+ if(reading.raw_luminance==null){
+  const lum=(reading.luminance!=null)?Number(reading.luminance):Number(reading.Y);
+  if(Number.isFinite(lum)) reading.raw_luminance=lum;
+ }
+ const rawX=Number(reading.raw_X);
+ const rawY=Number(reading.raw_Y);
+ const rawZ=Number(reading.raw_Z);
+ const rawx=Number(reading.raw_x);
+ const rawy=Number(reading.raw_y);
+ const rawLum=Number(reading.raw_luminance);
+ let base=null;
+ if(Number.isFinite(rawX)&&Number.isFinite(rawY)&&Number.isFinite(rawZ)){
+  base={X:rawX,Y:rawY,Z:rawZ};
+ }
+ else if(Number.isFinite(rawx)&&Number.isFinite(rawy)&&rawy>0&&rawx+rawy<1&&Number.isFinite(rawLum)&&rawLum>=0){
+  base={X:(rawx/rawy)*rawLum,Y:rawLum,Z:((1-rawx-rawy)/rawy)*rawLum};
+ }
+ if(!base) return reading;
+ const enabled=meterXyzCorrectionEnabled();
+ const corrected=enabled?meterApplyXyzCorrectionMatrix(base.X,base.Y,base.Z):base;
+ reading.X=corrected.X;
+ reading.Y=corrected.Y;
+ reading.Z=corrected.Z;
+ if(enabled&&(reading.luminance!=null||reading.raw_luminance!=null)) reading.luminance=corrected.Y;
+ const sum=corrected.X+corrected.Y+corrected.Z;
+ if(sum>0){
+  reading.x=corrected.X/sum;
+  reading.y=corrected.Y/sum;
+ }
+ return reading;
+}
+
 function meterTargetWhitePoint(){
- if(!meterTargetWhitePointEnabled()) return {...D65};
+ if(!meterTargetWhitePointEnabled()){
+  const gamut=GAMUT_PRESETS[meterActiveGamutKey()]||GAMUT_PRESETS.bt709;
+  if(gamut&&gamut.white){
+   const xyz=xyToUnitXyz(gamut.white.x,gamut.white.y);
+   return {x:gamut.white.x,y:gamut.white.y,X:xyz.X,Y:1,Z:xyz.Z};
+  }
+  return {...D65};
+ }
  const xEl=document.getElementById('meterTargetWhiteX');
  const yEl=document.getElementById('meterTargetWhiteY');
  const rawX=parseFloat((xEl&&xEl.value)||'');
@@ -5964,50 +6247,7 @@ function meterTargetWhitePoint(){
  return {x,y,X:xyz.X,Y:1,Z:xyz.Z};
 }
 
-const GAMUT_PRESETS={
- bt709:{
-  label:'BT.709 / D65',
-  primaries:{R:{x:0.64,y:0.33},G:{x:0.30,y:0.60},B:{x:0.15,y:0.06}},
-  xyzToRgb:[
-   [3.2406,-1.5372,-0.4986],
-   [-0.9689,1.8758,0.0415],
-   [0.0557,-0.2040,1.0570]
-  ],
-  rgbToXyz:[
-   [0.4124564,0.3575761,0.1804375],
-   [0.2126729,0.7151522,0.0721750],
-   [0.0193339,0.1191920,0.9503041]
-  ]
- },
- bt2020:{
-  label:'BT.2020 / D65',
-  primaries:{R:{x:0.708,y:0.292},G:{x:0.170,y:0.797},B:{x:0.131,y:0.046}},
-  xyzToRgb:[
-   [1.7166511880,-0.3556707838,-0.2533662814],
-   [-0.6666843518,1.6164812366,0.0157685458],
-   [0.0176398574,-0.0427706133,0.9421031212]
-  ],
-  rgbToXyz:[
-   [0.6369580483,0.1446169036,0.1688809752],
-   [0.2627002120,0.6779980715,0.0593017165],
-   [0.0000000000,0.0280726930,1.0609850577]
-  ]
- },
- p3d65:{
-  label:'P3 / D65',
-  primaries:{R:{x:0.680,y:0.320},G:{x:0.265,y:0.690},B:{x:0.150,y:0.060}},
-  xyzToRgb:[
-   [2.4934969119,-0.9313836179,-0.4027107845],
-   [-0.8294889696,1.7626640603,0.0236246858],
-   [0.0358458302,-0.0761723893,0.9568845240]
-  ],
-  rgbToXyz:[
-   [0.4865709486,0.2656676932,0.1982172852],
-   [0.2289745641,0.6917385218,0.0792869141],
-   [0.0000000000,0.0451133819,1.0439443689]
-  ]
- }
-};
+const GAMUT_PRESETS=__PG_GAMUT_PRESETS__;
 
 const M_XYZ_TO_RGB=GAMUT_PRESETS.bt709.xyzToRgb;
 const M_RGB_TO_XYZ=GAMUT_PRESETS.bt709.rgbToXyz;
@@ -6029,7 +6269,8 @@ function meterAutoTargetGamutKey(){
  if(meterChartIsPq() || meterChartSignalMode()==='hlg'){
   const primEl=document.getElementById('primaries');
   const prim=parseInt((primEl&&primEl.value) || (config&&config.primaries) || '0',10);
-  if(prim===2 || prim===3) return 'p3d65';
+  if(prim===2) return 'p3d65';
+  if(prim===3) return 'p3dci';
   return 'bt2020';
  }
  return meterSignalColorimetryGamutKey();
@@ -6043,7 +6284,7 @@ function meterSelectedTargetGamutKey(){
  const el=document.getElementById('meterTargetGamut');
  const val=String(el&&el.value||'auto').toLowerCase();
  if(val==='customd65') return 'bt709';
- return /^(bt709|bt2020|p3d65)$/.test(val)?val:'';
+ return /^(bt709|bt2020|p3d65|p3dci)$/.test(val)?val:'';
 }
 
 function meterTargetWhitePointEnabled(){
@@ -6775,9 +7016,10 @@ function meterTargetChromaticityForReading(reading){
 
 function meterColorDeltaTargetXYZ(reading,inclLum){
  const xyz=meterTargetXYZForReading(reading);
- if(inclLum||!reading||reading.Y==null||!(reading.Y>0)||!(xyz.Y>0)) return xyz;
- const scale=reading.Y/xyz.Y;
- return {X:xyz.X*scale,Y:reading.Y,Z:xyz.Z*scale};
+ const measured=meterReadingXYZ(reading);
+ if(inclLum||!measured||!(measured.Y>0)||!(xyz.Y>0)) return xyz;
+ const scale=measured.Y/xyz.Y;
+ return {X:xyz.X*scale,Y:measured.Y,Z:xyz.Z*scale};
 }
 
 function meterColorIncludeLum(){
@@ -6793,6 +7035,7 @@ function meterColorRefMode(){
 
 function meterReadingLuminanceNits(reading){
  if(!reading) return null;
+ meterNormalizeMeasuredReading(reading);
  if(reading.luminance!=null) return reading.luminance;
  if(reading.Y!=null) return reading.Y;
  return null;
@@ -6800,6 +7043,7 @@ function meterReadingLuminanceNits(reading){
 
 function meterReadingXYZ(reading){
  if(!reading) return null;
+ meterNormalizeMeasuredReading(reading);
  const Y=meterReadingLuminanceNits(reading);
  if(!(Y>0)) return null;
  if(reading.X!=null && reading.Y!=null && reading.Z!=null) return {X:reading.X,Y:reading.Y,Z:reading.Z};
@@ -6900,21 +7144,23 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
 // selector; Colors and Sat Sweep use their dedicated Color ΔE selector.
 function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
  if(!reading) return 0;
+ const xyz=meterReadingXYZ(reading);
  const useColorForm=meterReadingUsesColorDeltaForm(reading);
  form = form || (useColorForm ? meterColorDeltaEForm() : meterDeltaEForm());
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
- if(!useColorForm && meterReadingIsGreyscale(reading) && (reading.Y||0)>0){
+ if(!useColorForm && meterReadingIsGreyscale(reading) && xyz && xyz.Y>0){
   return meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight).value;
  }
+ if(!xyz||!(xyz.Y>0)) return 0;
  const wR=meterColorLabWhite();
  const mode=meterResolveGreyRefMode(modeOrIncl);
  const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
- const labM=xyzToLab(reading.X||0,reading.Y||0,reading.Z||0,wR.X,wR.Y,wR.Z);
+ const labM=xyzToLab(xyz.X,xyz.Y,xyz.Z,wR.X,wR.Y,wR.Z);
  const labT=xyzToLab(target.X,target.Y,target.Z,wR.X,wR.Y,wR.Z);
  return meterDeltaE(labM,labT,form,{
   isGrey:false,
-  Ym:reading.Y||0, Yref:target.Y||0,
-  X:reading.X||0, Y:reading.Y||0, Z:reading.Z||0, YWhite:wR.Y,
+  Ym:xyz.Y, Yref:target.Y||0,
+  X:xyz.X, Y:xyz.Y, Z:xyz.Z, YWhite:wR.Y,
   Xr:target.X, Yr:target.Y, Zr:target.Z, YWhiteRef:wR.Y
  });
 }
@@ -6958,10 +7204,14 @@ function meterEnsureDeltaECache(readings){
 // when ire<=0.
 function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
  if(!reading||!whiteReading||!(ire>0)) return {r:null,g:null,b:null};
+ const readingXYZ=meterReadingXYZ(reading);
+ const whiteXYZ=meterReadingXYZ(whiteReading);
+ const prevXYZ=prevReading?meterReadingXYZ(prevReading):null;
+ if(!readingXYZ||!whiteXYZ) return {r:null,g:null,b:null};
  const g=meterAnalysisGamut();
- const rm=xyzToLinRgb(reading.X||0,reading.Y||0,reading.Z||0,g.xyzToRgb);
- const rw=xyzToLinRgb(whiteReading.X||0,whiteReading.Y||0,whiteReading.Z||0,g.xyzToRgb);
- const prevRgb=prevReading?xyzToLinRgb(prevReading.X||0,prevReading.Y||0,prevReading.Z||0,g.xyzToRgb):null;
+ const rm=xyzToLinRgb(readingXYZ.X,readingXYZ.Y,readingXYZ.Z,g.xyzToRgb);
+ const rw=xyzToLinRgb(whiteXYZ.X,whiteXYZ.Y,whiteXYZ.Z,g.xyzToRgb);
+ const prevRgb=prevXYZ?xyzToLinRgb(prevXYZ.X,prevXYZ.Y,prevXYZ.Z,g.xyzToRgb):null;
  const exp=(m,w,pm)=>{
   if(!(w>0)) return null;
   if(ire>=100){
@@ -7222,8 +7472,9 @@ function meterPreviewColorForReading(reading,mode){
  const g=reading.g_code!=null?reading.g_code:reading.g;
  const b=reading.b_code!=null?reading.b_code:reading.b;
  if(r!=null&&g!=null&&b!=null&&r===g&&g===b) return meterSignalPreviewColor(r,g,b);
- if(mode==='measured'&&reading.X!=null&&reading.Y!=null&&reading.Z!=null&&reading.Y>0){
-  return meterPreviewCssFromXYZ(reading.X,reading.Y,reading.Z,true);
+ if(mode==='measured'){
+  const xyz=meterReadingXYZ(reading);
+  if(xyz&&xyz.Y>0) return meterPreviewCssFromXYZ(xyz.X,xyz.Y,xyz.Z,true);
  }
  const target=meterTargetXYZForReading(reading);
  if(target&&target.Y>0) return meterPreviewCssFromXYZ(target.X,target.Y,target.Z,true);
@@ -7278,7 +7529,9 @@ function meterRgbBalanceFormula(){
 // The ire>0 branch builds a luminance-compensated target (chroma-only) in
 // 'absolute'/'relative' modes, or an absolute target in 'eotf' mode.
 function rgbBalanceCalman(reading,whiteRef,modeOrIncl){
- if(!whiteRef||whiteRef.Y<=0) return {R:100,G:100,B:100};
+ const readingXYZ=meterReadingXYZ(reading);
+ const whiteXYZ=meterReadingXYZ(whiteRef);
+ if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
  const mode = meterResolveGreyRefMode(modeOrIncl);
  // Use the absolute D65 white target for greyscale RGB balance in all modes
  // so HDR/DV 100% white shows its real white-point error instead of being
@@ -7287,14 +7540,14 @@ function rgbBalanceCalman(reading,whiteRef,modeOrIncl){
  const wXn = wp.X;
  const wZn = wp.Z;
  // Measured XYZ normalized by white Y
- const mXn=reading.X/whiteRef.Y, mYn=reading.Y/whiteRef.Y, mZn=reading.Z/whiteRef.Y;
+ const mXn=readingXYZ.X/whiteXYZ.Y, mYn=readingXYZ.Y/whiteXYZ.Y, mZn=readingXYZ.Z/whiteXYZ.Y;
  const ire=reading.ire;
  let lcXn,lcYn,lcZn;
  if(ire!=null&&ire>0){
   // Target: D65 white at the active grey-target luminance.
-  const Lw=whiteRef.Y, Lb=0;
+  const Lw=whiteXYZ.Y, Lb=0;
   const tgtLum=meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code);
-  const tYn=tgtLum/whiteRef.Y;
+  const tYn=tgtLum/whiteXYZ.Y;
   const tXn=wXn*tYn;
   const tZn=wZn*tYn;
   if(mode==='eotf'){
@@ -7331,21 +7584,23 @@ function rgbBalanceCalman(reading,whiteRef,modeOrIncl){
 // the measured 100% white — this is a true reading of each step's
 // chromaticity against the colorspace anchor.
 function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
- if(!whiteRef||whiteRef.Y<=0) return {R:100,G:100,B:100};
+ const readingXYZ=meterReadingXYZ(reading);
+ const whiteXYZ=meterReadingXYZ(whiteRef);
+ if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
  const mode = meterResolveGreyRefMode(modeOrIncl);
- const s = (reading.X||0)+(reading.Y||0)+(reading.Z||0);
+ const s = readingXYZ.X+readingXYZ.Y+readingXYZ.Z;
  if(!(s>0)) return {R:100,G:100,B:100};
- const x = reading.X/s, y = reading.Y/s;
+ const x = readingXYZ.X/s, y = readingXYZ.Y/s;
  if(!(y>0)) return {R:100,G:100,B:100};
  let fact;
  if(mode==='absolute'){
   fact = 1.0;
  } else if(mode==='relative'){
-  fact = (reading.Y>0 && whiteRef.Y>0) ? reading.Y/whiteRef.Y : 1.0;
+  fact = (readingXYZ.Y>0 && whiteXYZ.Y>0) ? readingXYZ.Y/whiteXYZ.Y : 1.0;
  } else { // 'eotf'
   const Lb = meterBlackReadingY();
-  const tgtY = meterGreyTargetLuminance(reading.ire, whiteRef.Y, Lb, reading.r_code);
-  fact = (tgtY>0 && whiteRef.Y>0 && reading.Y>0) ? reading.Y / tgtY : 1.0;
+  const tgtY = meterGreyTargetLuminance(reading.ire, whiteXYZ.Y, Lb, reading.r_code);
+  fact = (tgtY>0 && whiteXYZ.Y>0 && readingXYZ.Y>0) ? readingXYZ.Y / tgtY : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
  const gamut = meterAnalysisGamut();
@@ -7363,13 +7618,14 @@ function rgbBalance(reading,whiteRef,modeOrIncl){
 
 function meterLiveRgbData(reading){
  if(!reading) return {mode:'balance',R:100,G:100,B:100};
+ const measured=meterReadingXYZ(reading);
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
- if(!isColorSeries||reading.X==null||reading.Y==null||reading.Z==null){
+ if(!isColorSeries||!measured||!(measured.Y>0)){
   return meterWhiteReading?{mode:'balance',...rgbBalance(reading,meterWhiteReading,meterGreyRefMode())}:{mode:'balance',R:100,G:100,B:100};
  }
  const gamut=meterAnalysisGamut();
  const target=meterColorDeltaTargetXYZ(reading,meterColorIncludeLum());
- const mRgb=xyzToLinRgb(reading.X,reading.Y,reading.Z,gamut.xyzToRgb);
+ const mRgb=xyzToLinRgb(measured.X,measured.Y,measured.Z,gamut.xyzToRgb);
  const tRgb=xyzToLinRgb(target.X,target.Y,target.Z,gamut.xyzToRgb);
  // Use the patch's dominant target channel as the percent reference. For
  // many color / sat targets one channel is intentionally zero, so dividing
@@ -8415,6 +8671,7 @@ function meterRecoverSeries(s){
  }
  if(s.white_reading&&s.white_reading.luminance!=null){
   meterWhiteReading=s.white_reading;
+  meterNormalizeMeasuredReading(meterWhiteReading);
  }
  // Show UI elements — ensure card is visible even if meter is disconnected
  document.getElementById('meterCard').style.display='';
@@ -8496,7 +8753,8 @@ function meterAttachSeriesMeta(readings){
  if(!Array.isArray(readings)||!meterSeriesSteps) return readings||[];
  return readings.map(rd=>{
   const step=meterSeriesSteps.find(s=>meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')&&Number(s.r||0)===Number(rd.r_code||0)&&Number(s.g||0)===Number(rd.g_code||0)&&Number(s.b||0)===Number(rd.b_code||0)));
-  return step?meterStampReadingStepMeta(rd,step):rd;
+  const reading=step?meterStampReadingStepMeta(rd,step):rd;
+  return meterNormalizeMeasuredReading(reading);
  });
 }
 
@@ -8520,6 +8778,7 @@ function meterCanonicalSeriesStep(step){
 
 function meterUpsertSeriesReading(reading,step){
  if(!reading) return;
+ meterNormalizeMeasuredReading(reading);
  const canon=meterCanonicalSeriesStep(step||reading);
  if(canon) meterStampReadingStepMeta(reading,canon);
  if(!Array.isArray(meterReadings)) meterReadings=[];
@@ -8530,10 +8789,12 @@ function meterUpsertSeriesReading(reading,step){
 }
 
 function meterReadingHasLuminance(rd){
+ meterNormalizeMeasuredReading(rd);
  return !!rd&&((rd.luminance!=null&&rd.luminance>=0)||(rd.Y!=null&&rd.Y>=0));
 }
 
 function meterReadingHasChromaticity(rd){
+ meterNormalizeMeasuredReading(rd);
  return !!rd&&rd.x!=null&&rd.y!=null&&rd.x>0&&rd.y>0;
 }
 
@@ -8602,12 +8863,14 @@ function meterFindReadingForStep(step){
 }
 
 function updateLiveReading(reading){
+ meterNormalizeMeasuredReading(reading);
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_colorDetailPinned&&_selectedColorReadingName&&Array.isArray(meterReadings)){
   const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName);
   if(selected) reading=selected;
  }
+ const measured=meterReadingXYZ(reading);
  document.getElementById('meterLiveReading').style.display='';
- document.getElementById('meterLum').textContent=reading.luminance!=null?reading.luminance.toFixed(2):'--';
+ document.getElementById('meterLum').textContent=measured&&measured.Y!=null?measured.Y.toFixed(2):'--';
  document.getElementById('meterCCT').textContent=reading.cct||'--';
  document.getElementById('meterCIEx').textContent=reading.x!=null?reading.x.toFixed(4):'--';
  document.getElementById('meterCIEy').textContent=reading.y!=null?reading.y.toFixed(4):'--';
@@ -8645,9 +8908,11 @@ function meterRgbDeltasForLive(reading,bal){
 // Falls back to null when no target is known (manual read with no series loaded).
 function meterXYYDeltasForLive(reading){
  if(!reading) return null;
- const mx=(reading.x!=null)?reading.x:null;
- const my=(reading.y!=null)?reading.y:null;
- const mY=(reading.luminance!=null)?reading.luminance:null;
+ const measured=meterReadingXYZ(reading);
+ const sum=measured?(measured.X+measured.Y+measured.Z):0;
+ const mx=(measured&&sum>0)?(measured.X/sum):null;
+ const my=(measured&&sum>0)?(measured.Y/sum):null;
+ const mY=(measured&&measured.Y!=null)?measured.Y:null;
  let tx=null,ty=null,tY=null;
  const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
  let ref=null;
@@ -8897,6 +9162,7 @@ async function meterReadOnce(){
   const result=await meterPollRead(60000);
   if(result&&result.status==='ok'&&result.readings&&result.readings.length>0){
    const rd=result.readings[0];
+    meterNormalizeMeasuredReading(rd);
    updateLiveReading(rd);
    // If a series is loaded and a patch is selected, store reading in series results
    if(meterSeriesSteps&&requestedStep){
@@ -9010,6 +9276,7 @@ async function meterContinuousLoop(){
   const r=await meterPollRead(60000);
   if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
    const rd=r.readings[0];
+    meterNormalizeMeasuredReading(rd);
    updateLiveReading(rd);
    const stampStep=requestedStep;
    if(meterSeriesSteps&&stampStep){
@@ -9568,6 +9835,10 @@ function meterMeasurementSignalContext(payload){
  if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
  if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
+  if(String(body.target_gamut||'').toLowerCase()==='customd65'){
+   body.target_white_x=(document.getElementById('meterTargetWhiteX')||{}).value||'';
+   body.target_white_y=(document.getElementById('meterTargetWhiteY')||{}).value||'';
+  }
  return body;
 }
 function meterEnsureAppliedGeneratorSettings(){
@@ -9678,7 +9949,8 @@ async function meterPollSeries(){
      luminance:maxL,
        x:wp.x,
        y:wp.y,
-     cct:null
+     cct:null,
+     synthetic_target:true
     };
    }
   }
@@ -12252,6 +12524,16 @@ function saveMeterSettings(){
   target_gamma:val('meterTargetGamma'),
     target_white_x:val('meterTargetWhiteX'),
     target_white_y:val('meterTargetWhiteY'),
+    xyz_matrix_enabled:chk('meterXyzMatrixEnabled'),
+    xyz_m11:val('meterXyzM11'),
+    xyz_m12:val('meterXyzM12'),
+    xyz_m13:val('meterXyzM13'),
+    xyz_m21:val('meterXyzM21'),
+    xyz_m22:val('meterXyzM22'),
+    xyz_m23:val('meterXyzM23'),
+    xyz_m31:val('meterXyzM31'),
+    xyz_m32:val('meterXyzM32'),
+    xyz_m33:val('meterXyzM33'),
   incl_lum:chk('meterIncludeLumError'),
   // HDR tone-mapping config
   hdr_bt2390:chk('meterHdrApplyBT2390')
@@ -12300,22 +12582,39 @@ async function loadMeterSettings(){
  setVal('meterTargetGamma', s.target_gamma);
  setVal('meterTargetWhiteX', s.target_white_x);
  setVal('meterTargetWhiteY', s.target_white_y);
+ setVal('meterXyzM11', s.xyz_m11);
+ setVal('meterXyzM12', s.xyz_m12);
+ setVal('meterXyzM13', s.xyz_m13);
+ setVal('meterXyzM21', s.xyz_m21);
+ setVal('meterXyzM22', s.xyz_m22);
+ setVal('meterXyzM23', s.xyz_m23);
+ setVal('meterXyzM31', s.xyz_m31);
+ setVal('meterXyzM32', s.xyz_m32);
+ setVal('meterXyzM33', s.xyz_m33);
+ setChk('meterXyzMatrixEnabled', meterStoredXyzMatrixEnabled(s));
+ meterUpdateXyzMatrixVisibility();
  setChk('meterIncludeLumError', s.incl_lum);
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
  meterSyncHdrMetadata();
  document.getElementById('customCcssPanel').style.display=s.display_type==='custom'?'':'none';
  applyMeterTargetGammaDefault();
  meterUpdateHdrConfigVisibility();
+ if(meterReadings&&meterReadings.length){
+  meterOnGreyRefChange();
+  const live=meterFindReadingForStep(meterCurrentPatchStep)||[...meterReadings].reverse().find(rd=>meterReadingHasLuminance(rd));
+  if(live) updateLiveReading(live);
+ }
  meterSettingsLoaded=true;
 }
 // Add change listeners for auto-save
 ['meterDisplayType','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate',
  'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
- 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY'].forEach(id=>{
+ 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY',
+ 'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
-['meterPatchInsert','meterIncludeLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
+['meterPatchInsert','meterXyzMatrixEnabled','meterIncludeLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -12332,6 +12631,9 @@ function meterRefreshActiveSeriesCharts(){
  const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
  meterReadings=meterAttachSeriesMeta(meterReadings||[]);
+ const white=meterFindSeriesWhiteReading(meterReadings);
+ if(white) meterWhiteReading=white;
+ else if(meterWhiteReading&&!meterWhiteReading.synthetic_target) meterNormalizeMeasuredReading(meterWhiteReading);
  if(meterCurrentPatchStep) meterCurrentPatchStep=meterCanonicalSeriesStep(meterCurrentPatchStep);
  const done=new Set();
  (meterReadings||[]).forEach(r=>{
@@ -12369,7 +12671,25 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  });
 });
 
+function meterRefreshAfterXyzMatrixChange(){
+ meterUpdateXyzMatrixVisibility();
+ meterOnGreyRefChange();
+ meterRefreshActiveSeriesCharts();
+ const live=meterFindReadingForStep(meterCurrentPatchStep)||[...meterReadings].reverse().find(rd=>meterReadingHasLuminance(rd));
+ if(live) updateLiveReading(live);
+}
+
+['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
+ const el=document.getElementById(id);
+ if(!el) return;
+ el.addEventListener('input',meterRefreshAfterXyzMatrixChange);
+});
+
+const meterXyzMatrixToggleEl=document.getElementById('meterXyzMatrixEnabled');
+if(meterXyzMatrixToggleEl) meterXyzMatrixToggleEl.addEventListener('change',meterRefreshAfterXyzMatrixChange);
+
 updateMeterTargetWhitepointVisibility();
+meterUpdateXyzMatrixVisibility();
 
 // Wire up collapsible card headers. Click the h2 of any .card to toggle.
 // Persist state in localStorage so reloads keep the user's layout.
@@ -12424,6 +12744,8 @@ function initCardCollapse(){
 </body>
 </html>
 WEBUI_HTML
+ $html =~ s/__PG_GAMUT_PRESETS__/&webui_meter_gamut_js_literal()/e;
+ return $html;
 }
 
 return 1;

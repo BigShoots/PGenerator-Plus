@@ -129,7 +129,12 @@ int main(int argc, char **argv){
   /* Set var from PGenerator Conf */
   ofxRPI4Window::avi_info.output_format=atoi(color_format.c_str());
   ofxRPI4Window::avi_info.rgb_quant_range=atoi(rgb_quant_range.c_str());
-  ofxRPI4Window::avi_info.colorimetry=atoi(colorimetry.c_str());
+  /* C2: Set colorimetry to Default(0) for RGB, use conf value for YCbCr */
+  if(atoi(color_format.c_str()) == 0) {
+   ofxRPI4Window::avi_info.colorimetry=0;  /* RGB: Default colorimetry */
+  } else {
+   ofxRPI4Window::avi_info.colorimetry=atoi(colorimetry.c_str());  /* YCbCr: use configured value */
+  }
   ofxRPI4Window::isHDR=atoi(is_hdr.c_str());
   ofxRPI4Window::isDoVi=atoi(is_ll_dovi.c_str());
   ofxRPI4Window::is_std_DoVi=atoi(is_std_dovi.c_str());
