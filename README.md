@@ -157,6 +157,7 @@ The compiled binary will be at `src/pattern_generator/bin/PGeneratord`. This is 
 
 ```bash
 sudo cp bin/PGeneratord /usr/sbin/PGeneratord
+sudo cp bin/PGeneratord /usr/sbin/PGeneratord.dv
 ```
 
 For packaged releases and overlay builds, this repository ships prebuilt `/usr/sbin/PGeneratord` and `/usr/sbin/PGeneratord.dv` binaries. Treat those shipped binaries as the authoritative runtime artifacts for PGenerator+ images.
@@ -441,11 +442,11 @@ usr/
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
 | [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
 | [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.3.1`) and product name (`PGenerator+`) |
+| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.4.1`) and product name (`PGenerator+`) |
 
 ### Meter Runtime Notes
 
-- The `2.3.1` source tree and runtime include the prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`.
+- The `2.4.1` source tree and runtime include the prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`.
 - The Web UI launches meter helpers through sudo using the rules in `etc/sudo/sudoers.d/PGenerator`.
 - USB permissions for supported meter vendors are provided by `etc/udev/rules.d/99-colorimeter.rules`, including X-Rite/Calibrite, Datacolor, ColorVision, and Sequel devices.
 - Supported USB meter models are: Calibrite/X-Rite i1Display Pro Plus, X-Rite i1 Pro, X-Rite i1 Display Pro / ColorMunki Display, Datacolor Spyder 5, Datacolor SpyderX, ColorVision Spyder, and Sequel Chroma 5.
