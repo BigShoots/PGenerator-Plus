@@ -10,3 +10,9 @@ docs/
 tools/dv_helper
 tools/read_csc
 usr/lib/scdc_tool
+build/ota-sim-*/
+build/usb-golden-fix-*/
+build/release-staging/*.remote
+build/*.img.sha256
+build/*-state.json
+usr/share/PGenerator/*.bak
