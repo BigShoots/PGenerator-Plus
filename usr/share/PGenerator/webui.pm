@@ -3050,6 +3050,53 @@ sub webui_pattern_target_max (@) {
  return 255;
 }
 
+sub webui_pattern_apl_levels (@) {
+ my $target_bits=int(shift);
+ my $signal_range=int(shift);
+ my $target_max=&webui_pattern_target_max($target_bits);
+ my %bits_for_max=(255 => 8, 1023 => 10, 4095 => 12);
+ my $bits=$bits_for_max{$target_max} || int($target_bits || $bits_default || 8);
+ my $shift=$bits - 8;
+ my $limited_min=16 << $shift;
+ my $limited_span=219 << $shift;
+ return ($limited_min,$limited_span,$limited_min + $limited_span) if($signal_range == 1);
+ return (0,$target_max,$target_max);
+}
+
+sub webui_pattern_apl_bg_triplet (@) {
+ my $r=int(shift);
+ my $g=int(shift);
+ my $b=int(shift);
+ my $target_bits=int(shift);
+ my $win_pct=int(shift);
+ my $apl_pct=shift;
+ my $signal_range=int(shift);
+ my $fallback_rgb=shift;
+ $fallback_rgb="0,0,0" if($fallback_rgb eq "");
+ return $fallback_rgb if($win_pct <= 0 || $win_pct >= 100);
+ $apl_pct=0 + $apl_pct;
+ $apl_pct=0 if($apl_pct < 0);
+ $apl_pct=100 if($apl_pct > 100);
+ my ($min_level,$range_span,$max_level)=&webui_pattern_apl_levels($target_bits,$signal_range);
+ return $fallback_rgb if($range_span <= 0);
+ my $y=(0.2126 * $r) + (0.7152 * $g) + (0.0722 * $b);
+ my $fg_pct=(($y - $min_level) * 100 / $range_span);
+ $fg_pct=0 if($fg_pct < 0);
+ $fg_pct=100 if($fg_pct > 100);
+ my $win_frac=$win_pct / 100;
+ my $bg_frac=1 - $win_frac;
+ return $fallback_rgb if($bg_frac <= 0);
+ my $fg_contrib=$fg_pct * $win_frac;
+ my $bg_pct=($apl_pct - $fg_contrib) / $bg_frac;
+ $bg_pct=0 if($bg_pct < 0);
+ $bg_pct=100 if($bg_pct > 100);
+ my $bg_y=$min_level + ($bg_pct * $range_span / 100);
+ $bg_y=int($bg_y + 0.5);
+ $bg_y=0 if($bg_y < 0);
+ $bg_y=$max_level if($bg_y > $max_level);
+ return "$bg_y,$bg_y,$bg_y";
+}
+
 sub webui_pattern_scale_value (@) {
  my $value=int(shift);
  my $input_max=int(shift);
@@ -3689,17 +3736,24 @@ sub webui_pattern (@) {
   my ($sz)=$body=~/"size"\s*:\s*(\d+)/; $sz=100 if(!defined $sz);
   my ($imax)=$body=~/"input_max"\s*:\s*(\d+)/;
   my $input_max=$imax ? int($imax) : 255;
-    my $target_max=&webui_pattern_target_max($pat_bits);
+  my $target_max=&webui_pattern_target_max($pat_bits);
   $input_max=$target_max if(!$imax && ($pr > 255 || $pg > 255 || $pb > 255));
-    $pr=&webui_pattern_scale_value($pr,$input_max,$pat_bits);
-    $pg=&webui_pattern_scale_value($pg,$input_max,$pat_bits);
-    $pb=&webui_pattern_scale_value($pb,$input_max,$pat_bits);
-  if($sz>=100) {
-   $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$pr,$pg,$pb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n";
+  $pr=&webui_pattern_scale_value($pr,$input_max,$pat_bits);
+  $pg=&webui_pattern_scale_value($pg,$input_max,$pat_bits);
+  $pb=&webui_pattern_scale_value($pb,$input_max,$pat_bits);
+  my $win_pct=int($sz);
+  my $bg_rgb=$black_rgb;
+  if($sz >= 101 && $sz <= 998) {
+   my $apl_pct=$sz - 100;
+   $win_pct=10;
+   $bg_rgb=&webui_pattern_apl_bg_triplet($pr,$pg,$pb,$pat_bits,$win_pct,$apl_pct,$signal_range,$black_rgb);
+  }
+  if($win_pct>=100) {
+   $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$pr,$pg,$pb\nBG=$bg_rgb\nPOSITION=0,0\nEND=1\n";
   } else {
-   my $s=sqrt($sz/100); my $pw=int($w*$s); my $ph=int($h*$s);
+   my $s=sqrt($win_pct/100); my $pw=int($w*$s); my $ph=int($h*$s);
    my $px=int(($w-$pw)/2); my $py=int(($h-$ph)/2);
-   $pat="DRAW=RECTANGLE\nDIM=$pw,$ph\nRGB=$pr,$pg,$pb\nBG=$black_rgb\nPOSITION=$px,$py\nEND=1\n";
+   $pat="DRAW=RECTANGLE\nDIM=$pw,$ph\nRGB=$pr,$pg,$pb\nBG=$bg_rgb\nPOSITION=$px,$py\nEND=1\n";
   }
  }
  # Stop — full black (idle)
@@ -12477,11 +12531,16 @@ async function loadMeterCcssOptions(){
 }
 
 function getMeterPatchSize(){
- // Accepts plain integer ("10", "18", ...) or APL-prefixed ("apl_5").
- // APL options currently render as a window of N% on black = N% APL.
+ // Accepts plain integer ("10", "18", ...) or APL-prefixed ("apl_18").
+ // 5%/10% APL stay black windows; grey-surround APL presets use the
+ // daemon-style 100+APL token so the shared patch renderer can compute a
+ // dynamic background while keeping the foreground window at 10%.
  const raw=document.getElementById('meterPatchSize').value;
  const m=String(raw).match(/^apl_(\d+)/i);
- if(m) return parseInt(m[1],10);
+ if(m){
+  const apl=parseInt(m[1],10);
+  return apl>10 ? 100+apl : apl;
+ }
  return parseInt(raw,10);
 }
 
