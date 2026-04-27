@@ -515,7 +515,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
  if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
   if (ofxRPI4Window::bit_depth == 10) {  
    if(arr_redbg[i][to_draw] != -1) {
-    if (ofxRPI4Window::avi_info.output_format != 0) {
+	if (ofxRPI4Window::avi_info.output_format != 0) {
      RGB data = RGB(redbg,greenbg,bluebg);
      YCbCr bg = RGB2YCbCr(data,10, ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
      if (ofxRPI4Window::avi_info.output_format == 1) of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
@@ -524,7 +524,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
    }
   } else {
    if(arr_redbg[i][to_draw] != -1) {
-    if (ofxRPI4Window::avi_info.output_format != 0) {
+	if (ofxRPI4Window::avi_info.output_format != 0) {
      RGB data = RGB(redbg,greenbg,bluebg);
      YCbCr bg = RGB2YCbCr(data,8,ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
      if (ofxRPI4Window::avi_info.output_format == 1) ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
@@ -535,7 +535,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
  } else {
   if (ofxRPI4Window::bit_depth == 10) {  
    if(arr_redbg[i][to_draw] != -1) {
-    if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
+	if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
      RGB data = RGB(redbg,greenbg,bluebg);
      YCbCr bg = RGB2YCbCr(data,10, ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
      if (ofxRPI4Window::avi_info.output_format == 1) 					of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
@@ -545,7 +545,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
    }
   } else {
    if(arr_redbg[i][to_draw] != -1) {
-    if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
+		if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
      RGB data = RGB(redbg,greenbg,bluebg);
      YCbCr bg = RGB2YCbCr(data,8,ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
      if (ofxRPI4Window::avi_info.output_format == 1)					ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
@@ -670,6 +670,8 @@ void ofApp::shader_begin(int is_image) {
 	  ofxRPI4Window::shader.setUniform3f("coeffs_div", 1.8814, 1.4746, 0.5); //BT2020
 	}
 	int shift = ofxRPI4Window::bit_depth - 8;
+	scalar1 = 256 << shift;
+	scalar2 = 255 << shift;
 	if (ofxRPI4Window::avi_info.rgb_quant_range == 1) {
 		scalar1 = 224 << shift;		
 		scalar2 = 219 << shift;
@@ -680,7 +682,7 @@ void ofApp::shader_begin(int is_image) {
 	}
 	int offset = 128 << shift;
 	int normalizer = (256 << shift) - 1;
-	int scale = (256 << (ofxRPI4Window::bit_depth == 10 ? 8 : 0)) - 1;
+	int scale = normalizer;
 	
 	ofxRPI4Window::shader.setUniform1i("scalar1", scalar1);
     ofxRPI4Window::shader.setUniform1i("scalar2", scalar2);
