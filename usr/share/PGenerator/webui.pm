@@ -9865,10 +9865,17 @@ function meterBuildStepsJS(type,points){
 // Select a series: load thumbnails + display first patch, no reading
 function meterSelectSeries(type,points){
  if(meterActionPending) return;
- clearActive();
- meterStopContinuous();
- if(meterSeriesRunning) meterStop();
  const key=type+'-'+points;
+ if(meterSeriesRunning){
+  if(meterActiveSeriesKey===key){
+   toast('Series scan is running — stop it before reloading this chart',true);
+   return;
+  }
+  if(!window.confirm('Leave the current series and cancel the running series read?')) return;
+ }
+ clearActive();
+ if(meterSeriesRunning) meterStop();
+ else meterStopContinuous();
  if(meterActiveSeriesKey===key){
   if(meterSeriesSteps&&meterSeriesSteps.length>0){
    const sortedSteps=(type==='colors'||type==='saturations')?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
