@@ -3770,7 +3770,7 @@ color:var(--text2);transition:color .18s,filter .18s,transform .08s,background .
 .reboot-btn:hover{color:#ffffff}
 .main-content{position:relative}
 body.ui-offline .dashboard,body.ui-offline .site-footer{filter:grayscale(.35);opacity:.45;pointer-events:none;user-select:none}
-.offline-mask{position:absolute;inset:0;display:none;z-index:20;align-items:center;justify-content:center;padding:20px;background:rgba(10,10,15,.42);backdrop-filter:blur(3px)}
+.offline-mask{position:absolute;inset:0;display:none;z-index:20;align-items:flex-start;justify-content:center;padding:64px 20px 20px;background:rgba(10,10,15,.42);backdrop-filter:blur(3px)}
 body.ui-offline .offline-mask{display:flex}
 .offline-mask-card{max-width:430px;padding:18px 20px;border:1px solid var(--border);border-radius:14px;background:rgba(20,20,31,.94);box-shadow:0 12px 30px rgba(0,0,0,.35);text-align:center}
 .offline-mask-title{font-size:1rem;font-weight:700;margin-bottom:6px}
@@ -4792,6 +4792,7 @@ function toast(msg,err){
 
 let _pingFailCount=0;
 let _uiOffline=false;
+window._configApplyPending=false;
 
 function setUiOffline(offline){
  offline=!!offline;
@@ -5001,6 +5002,7 @@ function checkSettingsChanged(){
  if(!window._savedConfig)return;
  var changed=captureSettings()!==window._savedConfig;
  document.getElementById('applyBar').style.display=changed?'':'none';
+ if(typeof meterUpdateReadButtons==='function') meterUpdateReadButtons();
 }
 
 function updateModeVisibility(){
@@ -5660,9 +5662,20 @@ async function applySettings(){
  const r=await fetchJSON('/api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(changes)});
  if(r&&r.status==='ok'){
+  window._configApplyPending=true;
+  meterUpdateReadButtons();
   toast('Applying settings...');
   document.getElementById('applyBar').style.display='none';
-  setTimeout(()=>{loadConfig().then(()=>updateDropdowns());loadInfo();toast('Settings applied');},3000);
+  try{
+   await new Promise(resolve=>setTimeout(resolve,3000));
+   await loadConfig();
+   updateDropdowns();
+   await loadInfo();
+   toast('Settings applied');
+  }finally{
+   window._configApplyPending=false;
+   meterUpdateReadButtons();
+  }
  }else toast(r&&r.message?r.message:'Failed to apply','err');
 }
 
@@ -6080,6 +6093,7 @@ let meterLastKnownName='Meter';
 let meterContinuousActive=false;
 let meterContinuousTimer=null;
 let meterSeriesPolling=null;
+let meterActionPending=false;
 let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
@@ -9126,6 +9140,7 @@ function drawRGBBars(bal){
 }
 
 async function meterReadOnce(){
+ if(meterActionPending){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(meterSeriesRunning){toast('Series scan is running \u2014 stop it first',true);return;}
  if(!meterEnsureAppliedGeneratorSettings()) return;
@@ -9138,6 +9153,8 @@ async function meterReadOnce(){
   meterSeriesPolling=null;
  }
  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ meterActionPending=true;
+ meterUpdateReadButtons();
  document.getElementById('meterStopBtn').style.display='none';
  document.getElementById('meterReadOnce').disabled=true;
  document.getElementById('meterReadOnce').textContent='\u23F3 Reading\u2026';
@@ -9205,21 +9222,24 @@ async function meterReadOnce(){
    toast(result&&result.message?result.message:'Measurement failed',true);
   }
  }catch(e){toast('Meter read error: '+e.message,true);}
- document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
- meterUpdateReadButtons();
- document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
- if(meterCurrentPatchStep){
-  document.getElementById('meterProgressLabel').textContent=meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%';
+ finally{
+  meterActionPending=false;
+  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
+  meterUpdateReadButtons();
+  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+  if(meterCurrentPatchStep){
+   document.getElementById('meterProgressLabel').textContent=meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%';
+  }
+  // Always clear the "reading" pulse once Read Once returns (success or error).
+  if(meterSeriesSteps){
+   const isColorE=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+   const sortedStepsE=isColorE?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   const doneE=new Set();
+   meterReadings.forEach(r=>{if(r.luminance!=null) doneE.add(meterStepNameKey(r));});
+   meterBuildPatchThumbs(sortedStepsE,doneE,null);
+  }
+  await meterCheckStatus();
  }
- // Always clear the \"reading\" pulse once Read Once returns (success or error).
- if(meterSeriesSteps){
-  const isColorE=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
-  const sortedStepsE=isColorE?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
-  const doneE=new Set();
-  meterReadings.forEach(r=>{if(r.luminance!=null) doneE.add(meterStepNameKey(r));});
-  meterBuildPatchThumbs(sortedStepsE,doneE,null);
- }
- await meterCheckStatus();
 }
 
 async function meterPollRead(timeoutMs){
@@ -9479,6 +9499,7 @@ function meterUpdateReadButtons(){
  const hasSeries=meterSeriesSteps&&meterSeriesSteps.length>0;
  const show=hasSeries&&hasSelection&&meterDetected;
  const settingsDirty=hasUnsavedSettings();
+ const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterContinuousActive;
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
  const showClear=hasData&&meterDetected;
  const clearBtn=document.getElementById('meterClearChartBtn');
@@ -9487,21 +9508,21 @@ function meterUpdateReadButtons(){
  const continuousBtn=document.getElementById('meterContinuous');
  if(clearBtn){
   clearBtn.style.display=showClear?'':'none';
-  clearBtn.disabled=!hasData;
+  clearBtn.disabled=!hasData||busy;
  }
  if(readSeriesBtn){
-  readSeriesBtn.disabled=!hasSeries||!meterDetected||settingsDirty;
-  readSeriesBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':'';
+  readSeriesBtn.disabled=!hasSeries||!meterDetected||settingsDirty||busy;
+  readSeriesBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(readOnceBtn) readOnceBtn.style.display=show?'':'none';
  if(continuousBtn) continuousBtn.style.display=show?'':'none';
  if(readOnceBtn){
-  readOnceBtn.disabled=!hasSelection||!meterDetected||settingsDirty;
-  readOnceBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':'';
+  readOnceBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
+  readOnceBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(continuousBtn){
-  continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty;
-  continuousBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':'';
+  continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
+  continuousBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
 }
 function meterUpdateCardMode(){
@@ -9789,6 +9810,7 @@ function meterBuildStepsJS(type,points){
 }
 // Select a series: load thumbnails + display first patch, no reading
 function meterSelectSeries(type,points){
+ if(meterActionPending) return;
  clearActive();
  meterStopContinuous();
  if(meterSeriesRunning) meterStop();
@@ -9891,6 +9913,7 @@ async function meterDisplayPatch(step){
 }
 // Run full automated series (Read Series button)
 async function meterRunSeries(){
+ if(meterActionPending){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return;}
  if(!meterEnsureAppliedGeneratorSettings()) return;
@@ -9910,22 +9933,29 @@ async function meterRunSeries(){
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
+ meterActionPending=true;
+ meterUpdateReadButtons();
  const dtype=getEffectiveDisplayType();
  const delay=meterDelayMs();
  const psize=getMeterPatchSize();
- const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21)})),_timeoutMs:10000});
- if(!r||r.status!=='started'){
-  toast(r&&r.message?r.message:'Failed to start series',true);
-  meterSeriesRunning=false;
-  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
-  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
-  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
-  return;
+ try{
+  const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21)})),_timeoutMs:10000});
+  if(!r||r.status!=='started'){
+   toast(r&&r.message?r.message:'Failed to start series',true);
+   meterSeriesRunning=false;
+   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+   return;
+  }
+  toast('Series started: '+r.total_steps+' steps');
+  if(meterSeriesPolling) clearInterval(meterSeriesPolling);
+  meterSeriesPolling=setInterval(meterPollSeries,2000);
+ } finally {
+  meterActionPending=false;
+  meterUpdateReadButtons();
  }
- toast('Series started: '+r.total_steps+' steps');
- if(meterSeriesPolling) clearInterval(meterSeriesPolling);
- meterSeriesPolling=setInterval(meterPollSeries,2000);
 }
 
 async function meterPollSeries(){
