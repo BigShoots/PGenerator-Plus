@@ -181,15 +181,21 @@ attach_loop_device() {
 }
 
 discover_root_partition() {
- while read -r name type fstype; do
-  [[ "$type" == "part" ]] || continue
+ local name fstype
+
+ while read -r name; do
+  [[ "$name" != "$LOOP_DEVICE" ]] || continue
+  fstype="$(lsblk -nrpo FSTYPE "$name" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+  if [[ -z "$fstype" ]] && command -v blkid >/dev/null 2>&1; then
+   fstype="$(blkid -o value -s TYPE "$name" 2>/dev/null || true)"
+  fi
   case "$fstype" in
    ext4|ext3|ext2)
     ROOT_PARTITION="$name"
     break
     ;;
   esac
- done < <(lsblk -nrpo NAME,TYPE,FSTYPE "$LOOP_DEVICE")
+ done < <(lsblk -nrpo NAME "$LOOP_DEVICE")
 
  [[ -n "$ROOT_PARTITION" ]] || die "Could not find a Linux root partition in $OUTPUT_IMAGE"
  log "Using root partition $ROOT_PARTITION"
