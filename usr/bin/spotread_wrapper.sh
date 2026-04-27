@@ -14,6 +14,10 @@ SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
 API_BASE="http://127.0.0.1/api"
 
+json_escape() {
+ printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 # Known USB meter IDs
 declare -A KNOWN_METERS=(
  ["0765:5020"]="Calibrite/X-Rite i1Display Pro Plus"
@@ -56,50 +60,124 @@ kill_stale() {
  sleep 0.3
 }
 
+spotread_help_output() {
+ timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true
+}
+
+lsusb_line_for_path() {
+ local device_path="$1"
+ [[ "$device_path" =~ ^/dev/bus/usb/([0-9]+)/([0-9]+)$ ]] || return 1
+ local bus="${BASH_REMATCH[1]}"
+ local dev="${BASH_REMATCH[2]}"
+ printf '%s\n' "$LSUSB_CACHE" | grep -m1 -E "^Bus[[:space:]]+${bus}[[:space:]]+Device[[:space:]]+${dev}:"
+}
+
+spotread_usb_ports() {
+ local help_out="$1"
+ while IFS= read -r line; do
+  if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]*=[[:space:]]*\'(/dev/bus/usb/[0-9]+/[0-9]+)([^\']*)\' ]]; then
+   local port_num="${BASH_REMATCH[1]}"
+   local device_path="${BASH_REMATCH[2]}"
+   local raw_desc="${BASH_REMATCH[3]}"
+   raw_desc="${raw_desc# }"
+   raw_desc="${raw_desc#(}"
+   raw_desc="${raw_desc%)}"
+   local lsusb_line usb_id name
+   lsusb_line=$(lsusb_line_for_path "$device_path")
+   usb_id=$(printf '%s\n' "$lsusb_line" | grep -oP 'ID\s+\K[0-9a-f]{4}:[0-9a-f]{4}' | head -1)
+   name="${KNOWN_METERS[$usb_id]}"
+   if [[ -z "$name" ]]; then
+    name="$raw_desc"
+   fi
+   if [[ -z "$name" && -n "$lsusb_line" ]]; then
+    name=$(printf '%s\n' "$lsusb_line" | sed -E 's/^Bus[[:space:]]+[0-9]+[[:space:]]+Device[[:space:]]+[0-9]+:[[:space:]]+ID[[:space:]]+[0-9a-f]{4}:[0-9a-f]{4}[[:space:]]*//')
+   fi
+   [[ -z "$name" ]] && name="USB Meter"
+   printf '%s|%s|%s|%s\n' "$port_num" "$device_path" "$usb_id" "$name"
+  fi
+ done <<< "$help_out"
+}
+
+spotread_port_exists() {
+ local requested="$1"
+ local help_out="$2"
+ [[ "$requested" =~ ^[0-9]+$ ]] || return 1
+ while IFS= read -r line; do
+  if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/ ]]; then
+   [[ "${BASH_REMATCH[1]}" == "$requested" ]] && return 0
+  fi
+ done <<< "$help_out"
+ return 1
+}
+
 detect_meter() {
  ensure_runtime_exec
- local found=false name="" usb_id="" port=""
- while IFS= read -r line; do
-  local id
-  id=$(echo "$line" | grep -oP 'ID\s+\K[0-9a-f]{4}:[0-9a-f]{4}')
-  if [[ -n "$id" && -n "${KNOWN_METERS[$id]}" ]]; then
-   found=true
-   name="${KNOWN_METERS[$id]}"
-   usb_id="$id"
-   local bus dev
-   bus=$(echo "$line" | grep -oP 'Bus\s+\K\d+')
-   dev=$(echo "$line" | grep -oP 'Device\s+\K\d+')
-   port="/dev/bus/usb/$bus/$dev"
-   break
-  fi
- done < <(lsusb 2>/dev/null)
-
  local sr_avail=false
  [[ -x "$SPOTREAD_BIN" ]] && sr_avail=true
+ local help_out=""
+ local -a meters=()
+ LSUSB_CACHE=$(lsusb 2>/dev/null || true)
+ if $sr_avail; then
+  help_out=$(spotread_help_output)
+  mapfile -t meters < <(spotread_usb_ports "$help_out")
+ fi
 
- if $found; then
-  printf '{"detected":true,"name":"%s","usb_id":"%s","port":"%s","spotread_available":%s}\n' \
-   "$name" "$usb_id" "$port" "$sr_avail"
+ if (( ${#meters[@]} > 0 )); then
+  local meters_json=""
+  local first_name=""
+  local first_usb_id=""
+  local first_port=""
+  local first_port_num=""
+  local entry
+  for entry in "${meters[@]}"; do
+   local port_num device_path usb_id name comma
+   IFS='|' read -r port_num device_path usb_id name <<< "$entry"
+   [[ -z "$first_name" ]] && first_name="$name"
+   [[ -z "$first_usb_id" ]] && first_usb_id="$usb_id"
+   [[ -z "$first_port" ]] && first_port="$device_path"
+   [[ -z "$first_port_num" ]] && first_port_num="$port_num"
+   [[ -n "$meters_json" ]] && comma="," || comma=""
+   meters_json+="${comma}{\"port_num\":\"$(json_escape "$port_num")\",\"port\":\"$(json_escape "$device_path")\",\"usb_id\":"
+   if [[ -n "$usb_id" ]]; then
+    meters_json+="\"$(json_escape "$usb_id")\""
+   else
+    meters_json+="null"
+   fi
+   meters_json+=",\"name\":\"$(json_escape "$name")\"}"
+  done
+  printf '{"detected":true,"name":"%s","usb_id":%s,"port":"%s","port_num":"%s","meters":[%s],"spotread_available":%s}\n' \
+   "$(json_escape "$first_name")" \
+   "$(if [[ -n "$first_usb_id" ]]; then printf '"%s"' "$(json_escape "$first_usb_id")"; else printf 'null'; fi)" \
+   "$(json_escape "$first_port")" \
+   "$(json_escape "$first_port_num")" \
+   "$meters_json" "$sr_avail"
  else
-  printf '{"detected":false,"name":null,"usb_id":null,"port":null,"spotread_available":%s}\n' \
+  printf '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":%s}\n' \
    "$sr_avail"
  fi
 }
 
 find_port() {
+ local requested_port="$1"
  # Cache the spotread port number to avoid re-running spotread -? for every reading
  local cache="/tmp/spotread_port_cache"
+ local help_out
+ help_out=$(spotread_help_output)
+ if [[ -n "$requested_port" ]] && spotread_port_exists "$requested_port" "$help_out"; then
+  echo "$requested_port" > "$cache"
+  sleep 2
+  echo "$requested_port"
+  return
+ fi
  if [[ -f "$cache" ]]; then
   local cached age
   cached=$(cat "$cache" 2>/dev/null)
   age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
-  if (( age < 86400 )) && [[ -n "$cached" ]]; then
+  if (( age < 86400 )) && [[ -n "$cached" ]] && spotread_port_exists "$cached" "$help_out"; then
    echo "$cached"
    return
   fi
  fi
- local help_out
- help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
  local port_num="1"
  while IFS= read -r line; do
   if [[ "$line" =~ ^[[:space:]]+([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/ ]]; then
@@ -115,9 +193,9 @@ find_port() {
 
 take_readings() {
  ensure_runtime_exec
- local display_type="$1" count="$2" timeout_per="$3" ccss_file="$4"
+ local display_type="$1" count="$2" timeout_per="$3" ccss_file="$4" requested_port="$5"
  local port_num
- port_num=$(find_port)
+ port_num=$(find_port "$requested_port")
 
  local outfile="$TMPDIR/spotread_out_$$"
  rm -f "$outfile"
@@ -339,6 +417,7 @@ kill_only=false
 ccss_file=""
 refresh_rate=""
 disable_aio=false
+meter_port=""
 patch_r=""
 patch_g=""
 patch_b=""
@@ -352,6 +431,7 @@ while [[ $# -gt 0 ]]; do
   -n) count="$2"; shift 2 ;;
   --timeout) timeout_per="$2"; shift 2 ;;
   -X) ccss_file="$2"; shift 2 ;;
+  --port) meter_port="$2"; shift 2 ;;
   --refresh-rate) refresh_rate="$2"; shift 2 ;;
   --disable-aio) disable_aio=true; shift ;;
   --patch-r) patch_r="$2"; shift 2 ;;
@@ -375,5 +455,5 @@ elif $kill_only; then
  kill_stale
 else
  kill_stale
- take_readings "$display_type" "$count" "$timeout_per" "$ccss_file"
+ take_readings "$display_type" "$count" "$timeout_per" "$ccss_file" "$meter_port"
 fi
