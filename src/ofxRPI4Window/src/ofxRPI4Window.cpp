@@ -1715,6 +1715,11 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		
 		vec4 RGBtoYCbCr(vec4 rgb)
 		{
+			// For 4:2:2, keep the framebuffer in RGB and let the HDMI block do
+			// the actual RGB->YCbCr 4:2:2 conversion and chroma subsampling.
+			if (color_format == 2) {
+				return rgb;
+			}
 			//vec4 rgb1;
 			//vec4 rgb2;
 			/*
@@ -1795,9 +1800,6 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 			
 			if (color_format == 1) {
 				return vec4(Cb/normalizer,Cr/normalizer,Y/normalizer, a); 
-			}
-			if (color_format == 2) {
-				return vec4(Y/normalizer,Cb/normalizer,Cr/normalizer, a);
 			}
 			if (color_format == 0) {
 				/* Pack Dolby As RGB */
@@ -3430,7 +3432,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.output_format = avi_info.output_format; //1; //YCrCb444
 			avi_infoframe.max_bpc = avi_info.max_bpc; //10 bit
 			avi_infoframe.c_enc = (avi_infoframe.colorimetry == 9) ? 2 : ((avi_infoframe.colorimetry == 2) ? 1 : 0); // match plane YCbCr encoding to selected colorimetry
-			avi_infoframe.c_range = 1; //YCbCr Full range 
+			avi_infoframe.c_range = (avi_infoframe.rgb_quant_range == 2) ? 1 : 0;
 			updateAVI_Infoframe(HDRplaneId, avi_infoframe);	  
 
 		} else if (isHDR && isDoVi && !is_std_DoVi) {
@@ -3442,7 +3444,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.output_format = avi_info.output_format; //2; //YCrCb422, doesnt work with YCrCb420 or RGB444
 			avi_infoframe.max_bpc = avi_info.max_bpc; // 12 bit
 			avi_infoframe.c_enc = 2; //ITU-R BT.2020 YCbCr
-			avi_infoframe.c_range = 1; //YCbCr full range
+			avi_infoframe.c_range = (avi_infoframe.rgb_quant_range == 2) ? 1 : 0;
 			updateAVI_Infoframe(HDRplaneId, avi_infoframe);	
 
 		} else if (isHDR && isDoVi && is_std_DoVi) {
@@ -3454,7 +3456,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.output_format = avi_info.output_format; //0 RGB444; //YCrCb422, doesnt work with YCrCb420
 			avi_infoframe.max_bpc = avi_info.max_bpc; // only works in 8 bit
 			avi_infoframe.c_enc = 2; //ITU-R BT.2020 YCbCr 
-			avi_infoframe.c_range = 1; //YCbCr Full Range
+			avi_infoframe.c_range = (avi_infoframe.rgb_quant_range == 2) ? 1 : 0;
 			updateAVI_Infoframe(HDRplaneId, avi_infoframe);	
 
 		} else {
@@ -3467,7 +3469,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.output_format = avi_info.output_format; //1; //YCrCb444
 			avi_infoframe.max_bpc = avi_info.max_bpc; //8 bit
 			avi_infoframe.c_enc = (avi_infoframe.colorimetry == 9) ? 2 : ((avi_infoframe.colorimetry == 2) ? 1 : 0); // 0=BT.601, 1=BT.709, 2=BT.2020
-			avi_infoframe.c_range = 1; //YCbCr full range
+			avi_infoframe.c_range = (avi_infoframe.rgb_quant_range == 2) ? 1 : 0;
 			updateAVI_Infoframe(SDRplaneId, avi_infoframe);	
 		}
 		
