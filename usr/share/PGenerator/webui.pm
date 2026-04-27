@@ -3832,7 +3832,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-help-tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--border);color:var(--text2);font-size:.65rem;cursor:help;user-select:none}
 .meter-whitepoint-row{display:flex;gap:6px;align-items:center;max-width:240px}
 .meter-whitepoint-row input{flex:1 1 0}
-.meter-matrix-field{margin-top:10px;max-width:240px}
+.meter-matrix-field{margin-top:32px;max-width:240px}
 .meter-matrix-fields{display:none;margin-top:8px}
 .meter-matrix-fields.visible{display:block}
 .meter-matrix-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:240px}
