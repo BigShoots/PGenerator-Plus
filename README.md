@@ -85,7 +85,7 @@ Important limitations:
 - This is an overlay build, not a full from-scratch distro build.
 - The base image must already be a compatible BiasiLinux/PGenerator image with the expected distro dependencies, `pgenerator` account, and sudoers setup.
 - The `PGeneratord` and `PGeneratord.dv` binaries are prebuilt and are taken from this repository as-is.
-- The `2.3.1` image/runtime uses a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`; this repository now includes that runtime binary alongside the integration wrappers, CCSS assets, udev rules, and web integration rather than the upstream ArgyllCMS source tree.
+- The current image/runtime bundles the ArgyllCMS `spotread` `3.5.0` armhf binary at `/usr/bin/spotread`; this repository includes that runtime binary alongside the integration wrappers, CCSS assets, udev rules, and web integration rather than the upstream ArgyllCMS source tree.
 - Before publishing or flashing a test image, make sure transient runtime state is cleared so the image is fresh. In particular, do not ship old meter/session artifacts, and confirm [etc/PGenerator/PGenerator.conf](etc/PGenerator/PGenerator.conf) is back on the default SDR 1080p RGB 8-bit profile.
 - The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
 
@@ -294,7 +294,7 @@ The current Web UI includes an integrated measurement workflow built around Argy
 - **Patch Controls:** Configurable settle delay, patch size, optional APL windows, refresh-rate override, OLED pattern insertion, and optional i1D3 AIO disable.
 - **On-Device Charts:** Displays live luminance, CCT, chromaticity, RGB balance, luminance tracking, and both CIELUV and CIEDE2000 Delta E charts in the browser.
 - **Supported Colorimeters:** Calibrite/X-Rite i1Display Pro Plus, X-Rite i1 Pro, X-Rite i1 Display Pro / ColorMunki Display, Datacolor Spyder 5, Datacolor SpyderX, ColorVision Spyder, and Sequel Chroma 5.
-- **Included ArgyllCMS Runtime:** The `2.3.1` source tree and Pi image include a bundled prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`, with `spotread_wrapper.sh`, `spotread_measure.py`, `meter_session.sh`, and `meter_series.sh` providing the Pi-side automation layer.
+- **Included ArgyllCMS Runtime:** The current source tree and Pi image include a bundled prebuilt ArgyllCMS `spotread` `3.5.0` armhf binary at `/usr/bin/spotread`, with `spotread_wrapper.sh`, `spotread_measure.py`, `meter_session.sh`, and `meter_series.sh` providing the Pi-side automation layer.
 - **Driver Model:** Meter support uses the standard Linux USB/HID stack plus bundled udev permission rules; no extra proprietary driver packages or out-of-tree kernel modules are required.
 
 #### CCSS Profile Management
@@ -446,7 +446,7 @@ usr/
 
 ### Meter Runtime Notes
 
-- The `2.4.1` source tree and runtime include the prebuilt ArgyllCMS `spotread` v1.6.3 armhf binary at `/usr/bin/spotread`.
+- The `2.4.1` source tree and runtime include the prebuilt ArgyllCMS `spotread` `3.5.0` armhf binary at `/usr/bin/spotread`.
 - The Web UI launches meter helpers through sudo using the rules in `etc/sudo/sudoers.d/PGenerator`.
 - USB permissions for supported meter vendors are provided by `etc/udev/rules.d/99-colorimeter.rules`, including X-Rite/Calibrite, Datacolor, ColorVision, and Sequel devices.
 - Supported USB meter models are: Calibrite/X-Rite i1Display Pro Plus, X-Rite i1 Pro, X-Rite i1 Display Pro / ColorMunki Display, Datacolor Spyder 5, Datacolor SpyderX, ColorVision Spyder, and Sequel Chroma 5.

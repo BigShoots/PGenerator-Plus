@@ -1,0 +1,124 @@
+diff --git a/src/ofxRPI4Window/src/ofxRPI4Window.cpp b/src/ofxRPI4Window/src/ofxRPI4Window.cpp
+index d92f4f2..96e7582 100644
+--- a/src/ofxRPI4Window/src/ofxRPI4Window.cpp
++++ b/src/ofxRPI4Window/src/ofxRPI4Window.cpp
+@@ -1611,8 +1611,9 @@ void ofxRPI4Window::EGL_create_surface(EGLint attribs[], EGLConfig config)
+ 	}
+ }
+ #if 1
+-void ofxRPI4Window::rgb2ycbcr_shader()	 
+-{
++void ofxRPI4Window::rgb2ycbcr_shader()
++{  //  ofShader shader;    
++
+ 	ofShaderSettings settings;
+ 	settings.shaderSources[GL_VERTEX_SHADER] = R"(
+ 		#version 310 es
+@@ -1625,46 +1626,85 @@ void ofxRPI4Window::rgb2ycbcr_shader()
+ 			gl_Position = modelViewProjectionMatrix * position;
+ 		}
+ 
+-	)"; 
++	)";
++
+ 	settings.shaderSources[GL_FRAGMENT_SHADER] = R"(
+ 		#version 310 es
+ 		precision highp float;
+ 		uniform vec4 globalColor;
+-
++		uniform int bits;
++		uniform int colorimetry;
+ 		uniform int color_format;
+-
++		uniform int rgb_quant_range;
+ 		uniform int is_image;
+-		uniform int scalar1;
+-		uniform int scalar2;
+-		uniform int offset;
+-		uniform int scale;
+-		uniform int normalizer;
+-		uniform vec3 coeffs_num;
+-		uniform vec3 coeffs_div;
+ 		uniform sampler2D tex0;
+ 		uniform vec2 resolution;
+ 		in vec2 texCoordVarying; 
+ 		out vec4 outputColor;
+ 		
+-		vec4 RGBtoYCbCr(vec4 rgb) 
++		vec4 RGBtoYCbCr(vec4 rgb)
+ 		{		
++			float coeffs[5][3];
++			coeffs[0] = float[](0.2126, 0.7152, 0.0722); //BT709
++			coeffs[1] = float[](0.2627, 0.6780, 0.0593); //BT2020
+ 			float Y, Cb, Cr, a;
+-			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
+-			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
+-			Cr = round((coeffs_div.z * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.y) * rgb.g*float(scale) - (coeffs_num.z/coeffs_div.y) * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
+-			a = 1.0;
+- 
++			float scale, normalizer;
++			int shift = bits - 8;
++			float scalar_full1 = float(256 << shift);
++			float scalar_full2 = float(255 << shift);
++			float scalar_limit1 = float(224 << shift);
++			float scalar_limit2 = float(219 << shift);
++			float scalar1;
++			float scalar2;
++			float offset  = float(128 << shift);
++
++			int idx;
++			if (rgb_quant_range == 1) {
++				scalar1=scalar_limit1;
++				scalar2=scalar_limit2;
++			}
++			if (rgb_quant_range == 2) {
++				scalar1=scalar_full1;
++				scalar2=scalar_full2;
++			}
++			float d, e, f1, f2;
++			if (colorimetry == 2) {
++				idx = 0;
++				d = 1.8556;
++				e = 1.5748;
++				f1 = f2 = 0.5;
++			}	
++			if (colorimetry == 9) {
++				idx = 1;
++				d = 1.8814;
++				e = 1.4746;
++				f1 = f2 = 0.5;
++			}
++
++			normalizer = float((256 << shift) - 1);
+ 		
+-		//	     Y = dot(rgb.rgb, coeffs_num*64.0625);
+-		//	    Cb = dot(rgb.rgb, vec3(-coeffs_num.x/coeffs_div.x,-coeffs_num.y/coeffs_div.x, coeffs_div.z)) + 0.5;
+-		//	    Cr = dot(rgb.rgb, vec3(coeffs_div.z, -coeffs_num.y/coeffs_div.y, -coeffs_num.z/coeffs_div.y)) + 0.5;	
++			if (bits == 10) {
++			   shift = 8;
++			}	
++			scale = float((256 << shift) - 1);
+ 
++			Y = round(coeffs[idx][0] * rgb.r*scale + coeffs[idx][1]* rgb.g*scale + coeffs[idx][2] * rgb.b*scale);
++			Cb = round(((-coeffs[idx][0]/d) * rgb.r*scale - (coeffs[idx][1]/d) * rgb.g*scale + float(f1) * rgb.b*scale)*scalar1/scalar2 + offset); // Chrominance Blue
++			Cr = round((float(f2) * rgb.r*scale - (coeffs[idx][1]/e) * rgb.g*scale - (coeffs[idx][2]/e) * rgb.b*scale)*scalar1/scalar2 + offset); // Chrominance Red
++			a = 1.0;
++			
+ 			if (color_format == 1) {
+-				return vec4(Cb/float(normalizer),Cr/float(normalizer),Y/float(normalizer), a);
++				return vec4(Cb/normalizer,Cr/normalizer,Y/normalizer, a); 
+ 			}
+ 			if (color_format == 2) {
+-				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);
+-		//	return vec4(Y,Cb,Cr, a); 
++				return vec4(Y/normalizer,Cb/normalizer,Cr/normalizer, a);
++			}
++			if (color_format == 0) {
++				/* Pack Dolby As RGB */
++				int R1 = int(Cr) >> 4;  
++				int G1 = int(Y) >> 4;
++				int B1 = int(Cb) >> 4;
++				return  vec4(float(G1)/normalizer,float(B1)/normalizer, float(R1)/normalizer, a); 
+ 			}
+ 		}
+ 
