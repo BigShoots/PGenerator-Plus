@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
+ARGYLL_RUNTIME_BINS=(spotread ccxxmake dispread dispcal colprof chartread i1d3ccss)
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -263,6 +264,8 @@ reset_runtime_state() {
 }
 
 fix_permissions() {
+ local bin
+
  log "Fixing ownership and permissions for release image"
  chown root:root "$ROOT_MOUNT/etc/sudo/sudoers" 2>/dev/null || true
  chown root:root "$ROOT_MOUNT/etc/sudo/sudoers.d" 2>/dev/null || true
@@ -270,7 +273,11 @@ fix_permissions() {
  chmod 755 "$ROOT_MOUNT/etc/sudo" "$ROOT_MOUNT/etc/sudo/sudoers.d" 2>/dev/null || true
  chmod 440 "$ROOT_MOUNT/etc/sudo/sudoers" "$ROOT_MOUNT/etc/sudo/sudoers.d/PGenerator" 2>/dev/null || true
  chmod +x "$ROOT_MOUNT/usr/sbin/pgenerator-update" 2>/dev/null || true
- chmod +x "$ROOT_MOUNT/usr/bin/spotread" "$ROOT_MOUNT/usr/bin/spotread_wrapper.sh" "$ROOT_MOUNT/usr/bin/meter_session.sh" "$ROOT_MOUNT/usr/bin/meter_series.sh" 2>/dev/null || true
+ chmod +x "$ROOT_MOUNT/usr/bin/spotread_wrapper.sh" "$ROOT_MOUNT/usr/bin/meter_session.sh" "$ROOT_MOUNT/usr/bin/meter_series.sh" 2>/dev/null || true
+ for bin in "${ARGYLL_RUNTIME_BINS[@]}"; do
+  [[ -f "$ROOT_MOUNT/usr/bin/$bin" ]] || continue
+  chmod +x "$ROOT_MOUNT/usr/bin/$bin" 2>/dev/null || true
+ done
 }
 
 validate_release_root() {

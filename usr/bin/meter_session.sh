@@ -7,7 +7,7 @@
 # patch series; this is the per-patch equivalent for ad-hoc reads.
 #
 # Usage:
-#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [idle_timeout]
+#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
 #   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms]
@@ -28,7 +28,8 @@ REFRESH_RATE="${3:-}"
 DISABLE_AIO="${4:-0}"
 SIGNAL_MODE_DEFAULT="${5:-sdr}"
 MAX_LUMA_DEFAULT="${6:-1000}"
-IDLE_TIMEOUT="${7:-300}"
+METER_PORT="${7:-}"
+IDLE_TIMEOUT="${8:-300}"
 
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
@@ -57,24 +58,33 @@ if ! flock -n 9; then
  exit 0
 fi
 echo $$ > "$PID_FILE"
-printf '%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" > "$CONFIG_FILE"
-log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO idle=${IDLE_TIMEOUT}s)"
+printf '%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" > "$CONFIG_FILE"
+log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT idle=${IDLE_TIMEOUT}s)"
 
 # --- spotread bring-up (mirrors meter_series.sh) ---
 
 find_port() {
+ local requested_port="$1"
  local cache="/tmp/spotread_port_cache"
+ local help_out
+ help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
+ if [[ -n "$requested_port" ]]; then
+  if printf '%s\n' "$help_out" | grep -qE "^[[:space:]]*${requested_port}[[:space:]]*=[[:space:]]*'/dev/bus/usb/"; then
+   echo "$requested_port" > "$cache"
+   sleep 2
+   echo "$requested_port"
+   return
+  fi
+ fi
  if [[ -f "$cache" ]]; then
   local cached age
   cached=$(cat "$cache" 2>/dev/null)
   age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
-  if (( age < 1800 )) && [[ "$cached" =~ ^[0-9]+$ ]]; then
+  if (( age < 1800 )) && [[ "$cached" =~ ^[0-9]+$ ]] && printf '%s\n' "$help_out" | grep -qE "^[[:space:]]*${cached}[[:space:]]*=[[:space:]]*'/dev/bus/usb/"; then
    echo "$cached"
    return
   fi
  fi
- local help_out
- help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
  local port_num=""
  while IFS= read -r line; do
   if [[ "$line" =~ ^[[:space:]]+([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/ ]]; then
@@ -140,7 +150,7 @@ trap cleanup EXIT INT TERM
 
 PORT_NUM=""
 for _try in 1 2 3; do
- PORT_NUM=$(find_port)
+ PORT_NUM=$(find_port "$METER_PORT")
  [[ -n "$PORT_NUM" ]] && break
  sleep 2
 done
