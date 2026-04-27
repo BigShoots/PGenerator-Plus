@@ -2,7 +2,7 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port]
 
 set -o pipefail
 
@@ -19,6 +19,7 @@ DISABLE_AIO="${10:-0}"
 SIGNAL_MODE="${11:-sdr}"
 MAX_LUMA="${12:-1000}"
 DV_MAP_MODE="${13:-}"
+METER_PORT="${14:-}"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
@@ -41,18 +42,27 @@ print(steps[$idx].get('$field',''))
 }
 
 find_port() {
+ local requested_port="$1"
  local cache="/tmp/spotread_port_cache"
+ local help_out
+ help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
+ if [[ -n "$requested_port" ]]; then
+  if printf '%s\n' "$help_out" | grep -qE "^[[:space:]]*${requested_port}[[:space:]]*=[[:space:]]*'/dev/bus/usb/"; then
+   echo "$requested_port" > "$cache"
+   sleep 2
+   echo "$requested_port"
+   return
+  fi
+ fi
  if [[ -f "$cache" ]]; then
   local cached age
   cached=$(cat "$cache" 2>/dev/null)
   age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
-  if (( age < 1800 )) && [[ "$cached" =~ ^[0-9]+$ ]]; then
+  if (( age < 1800 )) && [[ "$cached" =~ ^[0-9]+$ ]] && printf '%s\n' "$help_out" | grep -qE "^[[:space:]]*${cached}[[:space:]]*=[[:space:]]*'/dev/bus/usb/"; then
    echo "$cached"
    return
   fi
  fi
- local help_out
- help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
  local port_num=""
  while IFS= read -r line; do
   if [[ "$line" =~ ^[[:space:]]+([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/ ]]; then
@@ -143,7 +153,7 @@ MAX_INIT_ATTEMPTS=3
 while : ; do
  INIT_ATTEMPT=$((INIT_ATTEMPT + 1))
 
- PORT_NUM=$(find_port)
+ PORT_NUM=$(find_port "$METER_PORT")
  if [[ -z "$PORT_NUM" ]]; then
   DBGOUT="Meter did not enumerate during initialization"
   if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
@@ -259,7 +269,7 @@ EOJSON
   rm -f /tmp/spotread_port_cache 2>/dev/null
   pkill -9 -x spotread 2>/dev/null
   sleep 2
-  PORT_NUM=$(find_port)
+  PORT_NUM=$(find_port "$METER_PORT")
   continue
  fi
 
