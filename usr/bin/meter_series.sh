@@ -25,6 +25,8 @@ REQUIRE_DEVICE_READY="${16:-0}"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
+INITIAL_READY_PENDING=0
+[[ "$REQUIRE_DEVICE_READY" == "1" ]] && INITIAL_READY_PENDING=1
 
 json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -33,16 +35,79 @@ json_escape() {
 wait_for_device_ready() {
  local step_num="$1"
  local step_name="$2"
+ local wait_reason="${3:-}"
  local escaped_name
+  local extra=""
  escaped_name=$(json_escape "$step_name")
+  if [[ -n "$wait_reason" ]]; then
+   extra=",\"awaiting_ready_reason\":\"$(json_escape "$wait_reason")\""
+  fi
  rm -f "$READY_FILE"
  cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":$step_num,"total_steps":$TOTAL,"current_name":"$escaped_name","awaiting_ready":true,"readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+{"status":"running","series_id":"$SERIES_ID","current_step":$step_num,"total_steps":$TOTAL,"current_name":"$escaped_name","awaiting_ready":true${extra},"readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
  while [[ ! -f "$READY_FILE" ]]; do
   sleep 0.2
  done
  rm -f "$READY_FILE"
+}
+
+maybe_wait_for_initial_ready() {
+ local step_num="$1"
+ local step_name="$2"
+ [[ "$INITIAL_READY_PENDING" == "1" ]] || return 1
+ wait_for_device_ready "$step_num" "$(manual_ready_prompt_label "$step_name" "initial_measurement")" "initial_measurement"
+ INITIAL_READY_PENDING=0
+ return 0
+}
+
+output_size() {
+ if [[ -f "$OUTFILE" ]]; then
+  wc -c < "$OUTFILE" 2>/dev/null | tr -d '[:space:]'
+ else
+  echo 0
+ fi
+}
+
+clean_output_since() {
+ local offset="${1:-0}"
+ local start=$((offset + 1))
+ [[ -f "$OUTFILE" ]] || return 0
+ tail -c +"$start" "$OUTFILE" 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'
+}
+
+manual_ready_prompt_reason() {
+ local clean_out="$1"
+ local normalized
+ normalized=$(printf '%s' "$clean_out" | tr '[:upper:]' '[:lower:]')
+ if printf '%s' "$normalized" | grep -qiE 'incorrect position|meter is in incorrect position'; then
+  echo "incorrect_position"
+  return 0
+ fi
+ if printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|instrument .*calibration|calibration position|place .*instrument|place .*meter|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup'; then
+  echo "calibration_setup"
+  return 0
+ fi
+ return 1
+}
+
+manual_ready_prompt_label() {
+ local step_name="$1"
+ local reason="$2"
+ case "$reason" in
+  initial_measurement)
+   printf '%s' "$step_name (click Device Ready when positioned)"
+   ;;
+  incorrect_position)
+   printf '%s' "$step_name (reposition meter and click Device Ready)"
+   ;;
+  calibration_setup)
+   printf '%s' "$step_name (complete meter setup/calibration and click Device Ready)"
+   ;;
+  *)
+   printf '%s' "$step_name (click Device Ready when positioned)"
+   ;;
+ esac
 }
 
 rm -f "$READY_FILE"
@@ -257,13 +322,10 @@ WHITE_REF_DONE=0
   continue
  fi
  if (( WHITE_REF_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qiE "white[[:space:]-]+reference|calibration[[:space:]-]+tile|place .*instrument|place .*meter|instrument .*calibration"; then
-  cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Waiting for white calibration...","readings":[]}
-EOJSON
-  sleep 4
+  wait_for_device_ready 0 "$(manual_ready_prompt_label "Initializing meter" "calibration_setup")" "calibration_setup"
   printf " " >&3
   WHITE_REF_DONE=1
-  WAITED=$((WAITED + 8))
+  WAITED=$((WAITED + 1))
   continue
  fi
  if echo "$CLEAN_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
@@ -388,9 +450,7 @@ EOJSON
  fi
  PREREAD_DELAY="$DELAY_SEC"
  PREREAD_DELAY=$(python -c "print(float('$PREREAD_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
- if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-  wait_for_device_ready 0 "Reading 100% white for target Y (click Device Ready when positioned)"
- else
+ if ! maybe_wait_for_initial_ready 0 "Reading 100% white for target Y"; then
   sleep "$PREREAD_DELAY"
  fi
 
@@ -402,6 +462,7 @@ EOJSON
  DEBUG_LOG="/tmp/white_read_debug_$$.log"
  echo "[$(date '+%H:%M:%S')] Starting white pre-read: PREV_COUNT=$PREV_COUNT, OUTFILE=$OUTFILE" > "$DEBUG_LOG"
  
+ SCAN_OFFSET=$(output_size)
  printf " " >&3
  READ_START=$SECONDS
  GOT_RESULT=false
@@ -415,6 +476,19 @@ EOJSON
    GOT_RESULT=true
    echo "[$(date '+%H:%M:%S')] GOT_RESULT=true at iteration $ITERATIONS after $((SECONDS - READ_START))s" >> "$DEBUG_LOG"
    break
+  fi
+  NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
+  if [[ -n "$NEW_OUTPUT" ]]; then
+   CUR_SIZE=$(output_size)
+   if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+    echo "[$(date '+%H:%M:%S')] Manual prompt detected during white pre-read: $PROMPT_REASON" >> "$DEBUG_LOG"
+    wait_for_device_ready 0 "$(manual_ready_prompt_label "Reading 100% white for target Y" "$PROMPT_REASON")" "$PROMPT_REASON"
+    printf " " >&3
+    SCAN_OFFSET=$(output_size)
+    READ_START=$SECONDS
+    continue
+   fi
+   SCAN_OFFSET="$CUR_SIZE"
   fi
   sleep 0.3
  done
@@ -525,9 +599,7 @@ EOJSON
  if (( i == 0 )); then
   STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
  fi
- if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-  wait_for_device_ready "$STEP_NUM" "$NAME (click Device Ready when positioned)"
- else
+ if ! maybe_wait_for_initial_ready "$STEP_NUM" "$NAME"; then
   sleep "$STEP_DELAY"
  fi
 
@@ -565,6 +637,7 @@ EOJSON
 
  # Trigger reading: send space
  PREV_COUNT=$(count_results)
+ SCAN_OFFSET=$(output_size)
  printf " " >&3
 
  # Wait for result, retrying once if spotread reports a transient
@@ -578,11 +651,25 @@ EOJSON
    GOT_RESULT=true
    break
   fi
-  CLEAN_NOW=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-  if [[ $RETRIED_COMM -eq 0 && "$CLEAN_NOW" == *"Spot read failed due to communication problem"* ]]; then
-   printf " " >&3
-   RETRIED_COMM=1
-   READ_TIMEOUT=$((READ_TIMEOUT + 15))
+  NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
+  if [[ -n "$NEW_OUTPUT" ]]; then
+   CUR_SIZE=$(output_size)
+   if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+    printf " " >&3
+    RETRIED_COMM=1
+    READ_TIMEOUT=$((READ_TIMEOUT + 15))
+    SCAN_OFFSET=$(output_size)
+    continue
+   fi
+   if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+    wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
+    printf " " >&3
+    READ_START=$SECONDS
+    READ_TIMEOUT=$((READ_TIMEOUT + 30))
+    SCAN_OFFSET=$(output_size)
+    continue
+   fi
+   SCAN_OFFSET="$CUR_SIZE"
   fi
   sleep 0.3
  done
