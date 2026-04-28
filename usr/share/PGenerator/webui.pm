@@ -279,6 +279,13 @@ my $_meter_read_file="/tmp/meter_read.json";
 my $_meter_session_pid_file="/tmp/meter_session.pid";
 my $_meter_session_fifo="/tmp/meter_session.cmd";
 my $_meter_session_config_file="/tmp/meter_session.config";
+my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
+my $_ccss_create_state_file="/tmp/ccss_create.json";
+my $_ccss_create_pid_file="/tmp/ccss_create.pid";
+my $_ccss_create_log_file="/tmp/ccss_create.log";
+my $_ccss_create_runner="/usr/bin/ccss_create.py";
+my $_ccss_create_patch_cmd="/usr/bin/ccss_create_patch.sh";
+my $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
 my $_meter_last_read_time=0;
 my $_ccss_dir="/usr/share/PGenerator/ccss";
 my $_custom_ccss_dir="$var_dir/ccss/custom";
@@ -301,6 +308,24 @@ my $_dtype_info={
  "l"            => ["l",""],
  "c"            => ["c",""],
  "p"            => ["p",""],
+};
+
+my $_ccxxmake_disptech_map={
+ "lcd"            => "l",
+ "lcd_wled"       => "e",
+ "lcd_ccfl"       => "l",
+ "lcd_wgccfl"     => "L",
+ "lcd_rgbled"     => "b",
+ "oled"           => "o",
+ "oled_generic"   => "w",
+ "qdoled"         => "o",
+ "plasma"         => "m",
+ "projector"      => "p",
+ "projector_ccss" => "p",
+ "crt"            => "c",
+ "l"              => "l",
+ "c"              => "c",
+ "p"              => "p",
 };
 
 sub _resolve_ccss_yflag (@) {
@@ -751,6 +776,11 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+  elsif($path eq "/api/meter/series/ready" && $method eq "POST") {
+   my $result=&webui_meter_series_ready();
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+  }
    elsif($path eq "/api/meter/stop" && $method eq "POST") {
     my $result=&webui_meter_stop();
     my $len=length($result);
@@ -792,6 +822,21 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+  elsif($path eq "/api/ccss/create/start" && $method eq "POST") {
+   my $result=&webui_ccss_create_start($body);
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+  }
+  elsif($path eq "/api/ccss/create/status") {
+   my $result=&webui_ccss_create_status();
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+  }
+  elsif($path eq "/api/ccss/create/stop" && $method eq "POST") {
+   my $result=&webui_ccss_create_stop();
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+  }
    elsif($path=~/^\/api\/ccss\/delete\/(.+)/ && $method eq "POST") {
     my $fname=$1;
     my $result=&webui_ccss_delete($fname);
@@ -906,6 +951,19 @@ sub webui_meter_read_state_write (@) {
   close($fh);
   chmod(0666,$_meter_read_file);
  }
+}
+
+sub webui_meter_series_ready_file (@) {
+ my ($series_id)=@_;
+ $series_id="" if(!defined($series_id));
+ $series_id=~s/[^A-Za-z0-9_.-]//g;
+ return "" if($series_id eq "");
+ return "/tmp/meter_series_ready_${series_id}.signal";
+}
+
+sub webui_meter_series_ready_cleanup (@) {
+ my @paths=glob($_meter_series_ready_glob);
+ unlink(@paths) if(@paths);
 }
 
 sub webui_meter_session_send_command (@) {
@@ -1202,6 +1260,8 @@ sub webui_meter_series_start (@) {
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
+ my $require_device_ready=0;
+ $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  my $target_gamut="";
  $target_gamut=lc($1) if($body=~/"target_gamut"\s*:\s*"([A-Za-z0-9_]+)"/);
 $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65" || $target_gamut eq "p3dci" || $target_gamut eq "customd65");
@@ -1741,10 +1801,13 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  # Write initial state
  my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[]}";
  if(open(my $fh,">",$_meter_series_file)) { print $fh $init_json; close($fh); }
+ my $ready_file=&webui_meter_series_ready_file($series_id);
+ &webui_meter_series_ready_cleanup();
+ unlink($ready_file) if($ready_file ne "");
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' </dev/null >/dev/null 2>&1 &";
  open(my $debug_log,">>/tmp/webui_series_debug.log");
  print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
  print $debug_log "[".scalar(localtime())."] Command: $cmd\n";
@@ -1783,6 +1846,25 @@ sub webui_meter_series_status (@) {
  return '{"status":"idle"}';
 }
 
+sub webui_meter_series_ready (@) {
+ return '{"status":"error","message":"No active series"}' unless(-f $_meter_series_file);
+ my $json="";
+ if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
+ return '{"status":"error","message":"No active series"}' if($json eq "");
+ my $series_id="";
+ $series_id=$1 if($json=~/"series_id"\s*:\s*"([^"]+)"/);
+ return '{"status":"error","message":"Series is not waiting for device readiness"}' if($json!~/"awaiting_ready"\s*:\s*true/i || $series_id eq "");
+ my $ready_file=&webui_meter_series_ready_file($series_id);
+ return '{"status":"error","message":"Series ready signal unavailable"}' if($ready_file eq "");
+ if(open(my $fh,">",$ready_file)) {
+  print $fh time();
+  close($fh);
+  chmod(0666,$ready_file);
+  return '{"status":"ok","message":"Measurement resumed"}';
+ }
+ return '{"status":"error","message":"Failed to signal series readiness"}';
+}
+
 sub webui_meter_stop (@) {
  # Stop the persistent session daemon first (graceful, then force).
  &webui_meter_session_stop() if(&webui_meter_session_alive());
@@ -1793,6 +1875,7 @@ sub webui_meter_stop (@) {
  system("sudo pkill -9 -x spotread 2>/dev/null");
  system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
  system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ &webui_meter_series_ready_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  # Mark state as cancelled (if still running)
  if(-f $_meter_series_file) {
@@ -1846,7 +1929,7 @@ sub webui_meter_settings_save (@) {
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
   display_type target_gamut delay patch_size patch_insert disable_aio
-    refresh_rate ccss_file measurement_meter_port profiling_meter_port grey_patch_profiles_json
+      refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y
     xyz_matrix_enabled xyz_m11 xyz_m12 xyz_m13 xyz_m21 xyz_m22 xyz_m23 xyz_m31 xyz_m32 xyz_m33
@@ -1955,6 +2038,72 @@ sub _webui_ccss_meta (@) {
  return \%meta;
 }
 
+sub _webui_ccss_ccxxmake_disptech (@) {
+ my ($display_type_key)=@_;
+ $display_type_key="" if(!defined($display_type_key));
+ $display_type_key=lc($display_type_key);
+ return $_ccxxmake_disptech_map->{$display_type_key} || "";
+}
+
+sub _webui_ccss_from_ti3 (@) {
+ my ($raw,$profile_name,$display_type_key)=@_;
+ my $ccxxmake_bin="/usr/bin/ccxxmake";
+ return (0,"ccxxmake is not installed on this image","") if(!-x $ccxxmake_bin);
+
+ my $disptech=&_webui_ccss_ccxxmake_disptech($display_type_key);
+ return (0,"Choose a concrete display type before importing a TI3 file","") if($disptech eq "");
+
+ my $tmp_root="/tmp/pg_ccss_make_$$"."_".time();
+ my $in_path="$tmp_root/input.ti3";
+ my $out_path="$tmp_root/output.ccss";
+ my $log_path="$tmp_root/ccxxmake.log";
+
+ if(!mkdir($tmp_root,0700)) {
+  return (0,"Failed to create temporary workspace","");
+ }
+
+ my $ok=0;
+ my $message="Unknown ccxxmake failure";
+ my $content="";
+
+ eval {
+  open(my $in_fh,">:raw",$in_path) or die "write input failed";
+  print $in_fh $raw;
+  close($in_fh);
+
+  my $cmd="$ccxxmake_bin -S -t $disptech -f '$in_path' '$out_path' >'$log_path' 2>&1";
+  my $rc=system($cmd);
+  my $log="";
+  if(open(my $log_fh,"<:raw",$log_path)) {
+   local $/;
+   $log=<$log_fh>;
+   close($log_fh);
+  }
+
+  if($rc != 0 || !-f $out_path) {
+   $log=~s/\r/ /g;
+   $log=~s/\n+/ /g;
+   $log=~s/\s+/ /g;
+   $log=~s/^\s+|\s+$//g;
+   $message=$log ne "" ? $log : "ccxxmake failed to build a CCSS from the TI3 file";
+   die "ccxxmake failed";
+  }
+
+  open(my $out_fh,"<:raw",$out_path) or die "read output failed";
+  local $/;
+  $content=<$out_fh>;
+  close($out_fh);
+  $ok=1;
+  $message="TI3 converted to CCSS";
+ };
+
+ my @cleanup=($in_path,$out_path,$log_path);
+ unlink(@cleanup);
+ rmdir($tmp_root);
+
+ return ($ok,$message,$content);
+}
+
 sub _webui_ccss_resolve_named_path (@) {
  my ($fname,$source)=@_;
  $fname="" if(!defined($fname));
@@ -2035,24 +2184,22 @@ sub webui_ccss_all (@) {
 
 sub webui_ccss_upload (@) {
  my ($body)=@_;
- # Expect JSON: { name: "...", content: "base64...", filename: "..." }
+ # Expect JSON: { name: "...", content: "base64...", filename: "...", display_type: "..." }
  my $name="";
  $name=$1 if($body=~/"name"\s*:\s*"([^"]{1,80})"/);
  my $content_b64="";
  $content_b64=$1 if($body=~/"content"\s*:\s*"([^"]+)"/);
  my $orig_filename="";
  $orig_filename=$1 if($body=~/"filename"\s*:\s*"([^"]{1,200})"/);
+ my $display_type_key="";
+ $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"]{1,80})"/);
 
  if($name eq "" || $content_b64 eq "") {
   return '{"status":"error","message":"Name and file content required"}';
  }
 
  # Sanitize name for filesystem use
- my $safe_name=$name;
- $safe_name=~s/[^a-zA-Z0-9._\- ]//g;
- $safe_name=~s/\s+/_/g;
- $safe_name=substr($safe_name,0,60) if(length($safe_name)>60);
- $safe_name.=".ccss" unless($safe_name=~/\.ccss$/i);
+ my $safe_name=&_webui_ccss_safe_filename($name);
 
  my $raw=decode_base64($content_b64);
  if(length($raw) < 10 || length($raw) > 5*1024*1024) {
@@ -2068,7 +2215,7 @@ sub webui_ccss_upload (@) {
   return '{"status":"error","message":"Custom storage unavailable"}';
  }
 
- # Detect file type: CSV or CCSS
+ # Detect file type: CCSS, TI3, or CSV.
  if($raw=~/^CCSS\s/) {
   # Already a CCSS file — validate basic structure
   if($raw!~/BEGIN_DATA/ || $raw!~/END_DATA/) {
@@ -2086,10 +2233,27 @@ sub webui_ccss_upload (@) {
   return '{"status":"error","message":"Failed to write file"}';
  }
 
+ if($raw=~/(?:^|\n)TARGET_INSTRUMENT\s+"[^"]+"/ && $raw=~/(?:^|\n)SPECTRAL_BANDS\s+"?[0-9]+"?/ && $raw=~/(?:^|\n)BEGIN_DATA_FORMAT(?:\n|\r\n)/) {
+  my ($ok,$message,$ccss_content)=&_webui_ccss_from_ti3($raw,$name,$display_type_key);
+  if(!$ok) {
+   $message=&_webui_json_escape($message);
+   return "{\"status\":\"error\",\"message\":\"$message\"}";
+  }
+  my $out_path="$_custom_ccss_dir/$safe_name";
+  if(open(my $fh,">",$out_path)) {
+   print $fh &_webui_ccss_normalize_keywords($ccss_content);
+   close($fh);
+   &_webui_ccss_repair_file($out_path);
+   &log("WebUI: custom CCSS converted from TI3: $safe_name");
+   return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"message\":\"TI3 converted to CCSS\"}";
+  }
+  return '{"status":"error","message":"Failed to write converted CCSS file"}';
+ }
+
  # Assume CSV — try to convert
  my $ccss_content=&csv_to_ccss($raw,$name,$orig_filename);
  if(!$ccss_content) {
-  return '{"status":"error","message":"Failed to parse CSV. Expected: wavelength,R,G,B,W columns (380-780nm)"}';
+  return '{"status":"error","message":"Failed to parse upload. Supported formats: CCSS, TI3, or CSV with wavelength,R,G,B,W columns (380-780nm)"}';
  }
 
  my $out_path="$_custom_ccss_dir/$safe_name";
@@ -2101,6 +2265,143 @@ sub webui_ccss_upload (@) {
   return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"message\":\"CSV converted to CCSS\"}";
  }
  return '{"status":"error","message":"Failed to write file"}';
+}
+
+sub _webui_ccss_create_write_state (@) {
+ my ($json)=@_;
+ $json='{"status":"idle"}' if(!defined($json) || $json eq "");
+ my $tmp="${_ccss_create_state_file}.tmp";
+ if(open(my $fh,">",$tmp)) {
+  print $fh $json;
+  close($fh);
+  rename($tmp,$_ccss_create_state_file);
+ }
+}
+
+sub _webui_ccss_create_read_state (@) {
+ return '{"status":"idle"}' unless(-f $_ccss_create_state_file);
+ my $json="";
+ if(open(my $fh,"<",$_ccss_create_state_file)) { local $/; $json=<$fh>; close($fh); }
+ return ($json ne "" && $json=~/^\{/) ? $json : '{"status":"idle"}';
+}
+
+sub _webui_ccss_create_alive (@) {
+ return 0 unless(-f $_ccss_create_pid_file);
+ my $pid="";
+ if(open(my $fh,"<",$_ccss_create_pid_file)) { local $/; $pid=<$fh>; close($fh); }
+ $pid=~s/\D//g;
+ return 0 if($pid eq "");
+ return kill(0,$pid) ? 1 : 0;
+}
+
+sub webui_ccss_create_status (@) {
+ my $json=&_webui_ccss_create_read_state();
+ if($json=~/"status"\s*:\s*"(starting|running)"/ && !&_webui_ccss_create_alive()) {
+  my $detail="CCSS creation stopped unexpectedly";
+  if(-f $_ccss_create_log_file) {
+   my $tail=`tail -n 20 $_ccss_create_log_file 2>/dev/null`;
+   chomp($tail);
+   $tail=~s/\r/ /g;
+   $tail=~s/\n+/ /g;
+   $tail=~s/\s+/ /g;
+   $tail=~s/^\s+|\s+$//g;
+   $detail=$tail if($tail ne "");
+  }
+  my $escaped=&_webui_json_escape($detail);
+  $json="{\"status\":\"error\",\"message\":\"$escaped\"}";
+  &_webui_ccss_create_write_state($json);
+ }
+ return $json;
+}
+
+sub webui_ccss_create_stop (@) {
+ if(&_webui_ccss_create_alive()) {
+  my $pid="";
+  if(open(my $fh,"<",$_ccss_create_pid_file)) { local $/; $pid=<$fh>; close($fh); }
+  $pid=~s/\D//g;
+  system("sudo kill -TERM $pid 2>/dev/null") if($pid ne "");
+  my $waited=0;
+  while($waited < 30 && &_webui_ccss_create_alive()) {
+   Time::HiRes::sleep(0.1);
+   $waited++;
+  }
+  if(&_webui_ccss_create_alive() && $pid ne "") {
+   system("sudo kill -KILL $pid 2>/dev/null");
+  }
+ }
+ unlink($_ccss_create_pid_file);
+ my $json='{"status":"cancelled","message":"CCSS creation cancelled"}';
+ &_webui_ccss_create_write_state($json);
+ return '{"status":"ok","message":"CCSS creation stopped"}';
+}
+
+sub webui_ccss_create_start (@) {
+ my ($body)=@_;
+ my $name="";
+ $name=$1 if($body=~/"name"\s*:\s*"([^"\\]{1,80})"/);
+ my $display_type_key="";
+ $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,80})"/);
+ my $signal_mode=&webui_pattern_signal_mode($body);
+ my $max_luma=&webui_pattern_max_luma($body);
+ my $patch_size=18;
+ $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
+ my $refresh_rate="";
+ $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
+
+ return '{"status":"error","message":"Enter a profile name"}' if($name eq "");
+ return '{"status":"error","message":"Interactive CCSS creator is not installed on this image"}' if(!-x $_ccss_create_ccxxmake_bin);
+ return '{"status":"error","message":"CCSS create helper is missing"}' if(!-x $_ccss_create_runner || !-x $_ccss_create_patch_cmd);
+ my $python_runner=`command -v python3 2>/dev/null || command -v python2 2>/dev/null || command -v python 2>/dev/null`;
+ chomp($python_runner);
+ $python_runner=~s/[^A-Za-z0-9_\/.-]//g;
+ return '{"status":"error","message":"python2 or python3 is required for live CCSS creation on this image"}' if($python_runner eq "");
+
+ my $disptech=&_webui_ccss_ccxxmake_disptech($display_type_key);
+ return '{"status":"error","message":"Choose a concrete display type before creating a CCSS"}' if($disptech eq "");
+
+ my $status_json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
+ my @meters;
+ while($status_json=~/\{"port_num":"([^"]*)","port":"([^"]*)","usb_id":(?:null|"([^"]*)"),"name":"([^"]*)","meter_type":"([^"]*)"\}/g) {
+  push @meters,{port_num=>$1,port=>$2,usb_id=>$3||"",name=>$4,meter_type=>lc($5||"")};
+ }
+ my @spectros=grep { ($_->{meter_type}||"") eq "spectro" } @meters;
+ return '{"status":"error","message":"Connect a spectrophotometer before creating a CCSS"}' if(!@spectros);
+ return '{"status":"error","message":"Connect only the spectrophotometer you want to use for live CCSS creation"}' if(scalar(@meters) != 1 || scalar(@spectros) != 1);
+
+ if(!-d $_custom_ccss_dir) {
+  system("mkdir -p $_custom_ccss_dir >/dev/null 2>&1");
+ }
+ return '{"status":"error","message":"Custom storage unavailable"}' if(!-d $_custom_ccss_dir);
+
+ my $safe_name=&_webui_ccss_safe_filename($name);
+ my $out_path="$_custom_ccss_dir/$safe_name";
+ return '{"status":"error","message":"A custom CCSS with that name already exists"}' if(-f $out_path);
+ return '{"status":"error","message":"A CCSS creation job is already running"}' if(&_webui_ccss_create_alive());
+
+ &webui_meter_stop();
+ system("sudo bash $_meter_wrapper --kill 2>/dev/null");
+ unlink($_ccss_create_pid_file);
+ unlink($_ccss_create_log_file);
+
+ my $escaped_name=&_webui_json_escape($safe_name);
+ &_webui_ccss_create_write_state("{\"status\":\"starting\",\"message\":\"Preparing CCSS creation...\",\"filename\":\"$escaped_name\"}");
+
+ my $profile_label=$name;
+ $profile_label=~s/'/'"'"'/g;
+ my $cmd="setsid sudo env PG_CCSS_CCXXMAKE_BIN='$_ccss_create_ccxxmake_bin' $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size'";
+ $cmd.=" --refresh-rate '$refresh_rate'" if($refresh_rate ne "");
+ $cmd.=" </dev/null >/dev/null 2>&1 &";
+ system($cmd);
+
+ my $waited=0;
+ while($waited < 40) {
+  last if(-f $_ccss_create_pid_file || &_webui_ccss_create_alive());
+  my $state_json=&_webui_ccss_create_read_state();
+  last if($state_json!~/"status"\s*:\s*"starting"/);
+  Time::HiRes::sleep(0.1);
+  $waited++;
+ }
+ return &webui_ccss_create_status();
 }
 
 sub webui_ccss_delete (@) {
@@ -2341,6 +2642,18 @@ sub _webui_ccss_clean_name (@) {
  $text=~s/\s+/ /g;
  $text=~s/^\s+|\s+$//g;
  return $text;
+}
+
+sub _webui_ccss_safe_filename (@) {
+ my ($name)=@_;
+ $name="" if(!defined $name);
+ my $safe=$name;
+ $safe=~s/[^a-zA-Z0-9._\- ]//g;
+ $safe=~s/\s+/_/g;
+ $safe=substr($safe,0,60) if(length($safe)>60);
+ $safe="custom_ccss" if($safe eq "");
+ $safe.=".ccss" unless($safe=~/\.ccss$/i);
+ return $safe;
 }
 
 sub _webui_ccss_guess_meta (@) {
@@ -4032,6 +4345,13 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .card.collapsed h2{margin-bottom:0}
 .card.collapsed h2::after{transform:rotate(-90deg)}
 .card.collapsed > *:not(h2){display:none !important}
+#meterCard > h2{align-items:center;gap:10px 12px}
+#meterCard > h2::after{margin-left:auto}
+.meter-card-header-title{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:0 1 auto}
+.meter-card-header-meter{display:flex;align-items:center;gap:6px;width:min(100%,360px);max-width:360px;margin:0 0 10px}
+.meter-card-header-select{width:100%;min-height:34px;max-width:100%;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 30px 6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+.meter-card-header-select:focus{border-color:var(--accent)}
+#meterCard.meter-patterns-only .meter-card-header-meter{display:none}
 .card.span2{grid-column:span 2}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
@@ -4075,7 +4395,14 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-toggle-row{display:flex;align-items:flex-start;gap:8px 14px;flex-wrap:wrap;margin-top:6px}
 .meter-toggle-row label{max-width:100%}
 .meter-field-label{display:inline-flex;align-items:flex-start;gap:6px;flex-wrap:wrap}
+.meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%}
+.meter-xyz-action-row{display:none;gap:8px;flex-wrap:wrap;padding-left:22px}
+.meter-xyz-action-row.visible{display:flex}
 .meter-help-tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--border);color:var(--text2);font-size:.65rem;cursor:help;user-select:none}
+.custom-ccss-panel{display:none;margin-top:6px;padding:10px 12px;background:#1a1a2e;border-radius:8px;border:1px solid #333;overflow:hidden}
+.custom-ccss-panel-row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.custom-ccss-panel-copy{min-width:0;flex:1 1 180px}
+.custom-ccss-panel-btn{flex:0 1 auto;max-width:100%;white-space:normal;justify-content:center;align-self:flex-start}
 .meter-whitepoint-row{display:flex;gap:6px;align-items:center;max-width:240px}
 .meter-whitepoint-row input{flex:1 1 0}
 .meter-matrix-field{margin-top:32px;max-width:240px}
@@ -4171,7 +4498,10 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 [data-widget].drag-over{outline:2px dashed var(--accent);outline-offset:-2px}
 [data-widget].dragging{opacity:.4}
 @media(max-width:800px){.dashboard{grid-template-columns:1fr}
-.card.span2{grid-column:span 1}.grid3{grid-template-columns:1fr 1fr}}
+.card.span2{grid-column:span 1}.grid3{grid-template-columns:1fr 1fr}
+#meterCard > h2::after{margin-left:auto}
+.meter-card-header-meter{width:100%;max-width:none;min-width:0}
+.custom-ccss-panel-btn{width:100%}}
 @media(max-width:480px){.grid{grid-template-columns:1fr}
 .hdr-actions{flex-wrap:wrap}.header{padding:2px 12px}.dashboard{padding:8px}}
 #hdmiOverlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
@@ -4401,19 +4731,13 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
  <!-- Meter & Measurements -->
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
-  <h2 id="meterCardTitle"><span class="drag-handle">&#9776;</span>Test Patterns</h2>
+  <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
+  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
   </div>
   <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
-  <div class="field">
-    <label>Measurement Meter</label>
-    <select id="meterMeasurementPort">
-     <option value="">Auto / First detected meter</option>
-    </select>
-    <div style="font-size:.68rem;color:var(--text2);margin-top:4px">Used for Read Once, Continuous, and series measurements.</div>
-   </div>
   <div class="field field-display">
     <label>Display Type</label>
     <select id="meterDisplayType">
@@ -4429,24 +4753,30 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <option value="crt">CRT</option>
       <option value="lcd">None (no correction)</option>
       <option value="custom_create">Create Custom CCSS...</option>
-      <option value="custom">Custom CCSS...</option>
+      <option value="custom_import">Import Custom CCSS...</option>
      </optgroup>
      <optgroup label="Display-specific CCSS" id="meterDtCcss"></optgroup>
     </select>
-      <div id="customCcssPanel" style="display:none;margin-top:6px;padding:10px 12px;background:#1a1a2e;border-radius:8px;border:1px solid #333">
-       <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap">
-        <div style="min-width:0;flex:1">
-         <div style="font-size:.76rem;color:#dfe6f6;font-weight:600;letter-spacing:.02em">Custom CCSS Editor</div>
-         <div id="customCcssPanelSummary" style="font-size:.7rem;color:var(--text2);margin-top:3px;line-height:1.45">Open the focused editor to upload, preview, and manage CCSS profiles.</div>
+      <div id="customCcssPanel" class="custom-ccss-panel">
+       <div class="custom-ccss-panel-row">
+        <div class="custom-ccss-panel-copy">
+         <div style="font-size:.76rem;color:#dfe6f6;font-weight:600;letter-spacing:.02em">Custom CCSS Importer</div>
+         <div id="customCcssPanelSummary" style="font-size:.7rem;color:var(--text2);margin-top:3px;line-height:1.45">Open the importer to upload CCSS, TI3, or spectral CSV files, preview curves, and manage custom profiles.</div>
         </div>
-        <button id="customCcssPanelBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap" onclick="meterOpenCustomCcssEditor()">Open Editor</button>
+        <button id="customCcssPanelBtn" class="btn btn-sm btn-secondary custom-ccss-panel-btn" onclick="meterOpenCustomCcssEditor()">Open Editor</button>
        </div>
     </div>
     <div class="meter-toggle-row">
      <label class="meter-note-toggle" title="Insert a neutral patch between measurement patterns to stabilize OLED ABL">
       <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
      </label>
-     <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
+      <div class="meter-xyz-toggle-block">
+       <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
+       <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
+        <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
+        <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
+       </div>
+      </div>
     </div>
    </div>
   <div class="field field-gamut">
@@ -4480,6 +4810,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <input type="number" id="meterXyzM33" step="0.0001" placeholder="1">
      </div>
     </div>
+       <input type="file" id="meterXyzMatrixImportInput" accept=".json,.txt" style="display:none">
    </div>
    </div>
   <div class="field field-gamma">
@@ -4557,6 +4888,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
     <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
     <button class="btn btn-sm btn-danger" id="meterStopBtn" onclick="meterStop()" style="display:none">&#9632; Stop</button>
+    <button class="btn btn-sm btn-primary" id="meterDeviceReadyBtn" onclick="meterSignalDeviceReady()" style="display:none">Device Ready</button>
    </div>
   </div>
   <div id="meterGreyProfileBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:-2px 0 10px 0;padding:8px 10px;background:#0d0d15;border-radius:6px">
@@ -4643,14 +4975,39 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    <div style="width:min(520px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div>
-      <div style="font-size:.95rem;font-weight:700;color:#eee">Choose CCSS Creation Meter</div>
-      <div style="font-size:.68rem;color:var(--text2)">Select the meter to use for custom CCSS/profile creation.</div>
+      <div style="font-size:.95rem;font-weight:700;color:#eee">Create Custom CCSS</div>
+        <div style="font-size:.68rem;color:var(--text2);max-width:48ch;line-height:1.45">Creates a new CCSS from a connected spectrophotometer using on-device ccxxmake. Choose the display technology below, connect only the reference spectro, then follow the prompts and press the meter button for each read.</div>
      </div>
     </div>
-    <div id="meterCcssCreateChoices" style="display:grid;gap:8px;margin-bottom:12px"></div>
-    <div id="meterCcssCreateStatus" style="font-size:.72rem;color:var(--text2);margin-bottom:12px"></div>
+      <div style="margin-bottom:12px">
+       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Display Technology</label>
+       <select id="meterCcssCreateDisplayType" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
+        <option value="oled_generic">WRGB OLED</option>
+        <option value="qdoled">QD-OLED</option>
+        <option value="lcd_wled">LCD - White LED</option>
+        <option value="lcd_rgbled">LCD - RGB LED</option>
+        <option value="lcd_ccfl">LCD - CCFL</option>
+        <option value="lcd_wgccfl">LCD - Wide Gamut CCFL</option>
+        <option value="plasma">Plasma</option>
+        <option value="projector_ccss">Projector</option>
+        <option value="crt">CRT</option>
+       </select>
+       <div style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">This sets the ccxxmake display technology used to build the new CCSS.</div>
+      </div>
+    <div style="margin-bottom:12px">
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Reference Spectrophotometer</label>
+     <div id="meterCcssCreateChoices" style="display:grid;gap:8px;margin-bottom:10px"></div>
+     <div id="meterCcssCreateStatus" style="font-size:.72rem;color:var(--text2);line-height:1.45"></div>
+    </div>
+    <div style="margin-bottom:12px">
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Name</label>
+    <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
+    </div>
+    <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Connect a spectrophotometer to begin.</div>
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-sm btn-secondary" onclick="meterCloseCcssCreateModal(true)">Cancel</button>
+      <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
+      <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
+      <button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()">Start Creation</button>
     </div>
    </div>
   </div>
@@ -4659,15 +5016,18 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
-      <div style="font-size:1rem;font-weight:700;color:#eee">Custom CCSS Editor</div>
-      <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">Upload a CCSS or spectral CSV, choose the active custom profile, and inspect spectral curves without the meter settings card getting in the way.</div>
+      <div style="font-size:1rem;font-weight:700;color:#eee">Custom CCSS Importer</div>
+      <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">This image supports importing existing CCSS, TI3, or spectral CSV files, then choosing the active custom profile and inspecting its spectral curves. Live CCSS capture is not available in this popup.</div>
      </div>
-     <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomCcssEditor()">Close</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+       <button class="btn btn-sm btn-secondary" onclick="meterOpenCcssCreateModal()">Create With Spectro</button>
+       <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomCcssEditor()">Close</button>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
      <div style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px">
-      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Upload CCSS or spectral CSV</label>
-      <input type="file" id="ccssFileInput" accept=".ccss,.csv" style="font-size:.74rem;width:100%;margin-bottom:8px">
+      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Import CCSS, TI3, or spectral CSV</label>
+      <input type="file" id="ccssFileInput" accept=".ccss,.csv,.ti3" style="font-size:.74rem;width:100%;margin-bottom:8px">
       <div style="display:flex;gap:6px;align-items:center">
        <input type="text" id="ccssName" placeholder="Profile name" style="flex:1;font-size:.8rem;padding:5px 7px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
        <button id="ccssUploadBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap;font-size:.74rem;padding:5px 10px" disabled>Upload</button>
@@ -6402,12 +6762,17 @@ let meterContinuousActive=false;
 let meterContinuousTimer=null;
 let meterSeriesPolling=null;
 let meterActionPending=false;
+let meterSeriesAwaitingReady=false;
+let meterReadySignalPending=false;
+let meterCcssCreatePolling=null;
+let meterCcssCreateHandledToken='';
 let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
 let meterLastChartSignature='';
 let meterSeriesCache={};
 let meterSeriesCacheBootId='';
+let meterCcssCreateDisplayType='oled_generic';
 
 function meterSeriesCacheKey(name){
  const scope=(meterSeriesCacheBootId&&String(meterSeriesCacheBootId).trim())?String(meterSeriesCacheBootId).trim():'global';
@@ -6492,16 +6857,17 @@ function meterStoredXyzMatrixEnabled(settings){
 
 function meterUpdateXyzMatrixVisibility(){
  const wrap=document.getElementById('meterXyzMatrixFields');
+ const actionRow=document.getElementById('meterXyzMatrixActionRow');
  const enabled=meterXyzCorrectionEnabled();
  if(wrap) wrap.classList.toggle('visible',enabled);
+ if(actionRow) actionRow.classList.toggle('visible',enabled);
  ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.disabled=!enabled;
  });
 }
 
-function meterXyzCorrectionMatrix(){
- if(!meterXyzCorrectionEnabled()) return meterIdentityXyzCorrectionMatrix();
+function meterConfiguredXyzCorrectionMatrix(){
  const ids=[
   ['meterXyzM11','meterXyzM12','meterXyzM13'],
   ['meterXyzM21','meterXyzM22','meterXyzM23'],
@@ -6512,6 +6878,88 @@ function meterXyzCorrectionMatrix(){
   const raw=parseFloat((el&&el.value)||'');
   return Number.isFinite(raw)?raw:METER_XYZ_MATRIX_DEFAULT[rowIdx][colIdx];
  }));
+}
+
+function meterSetXyzCorrectionMatrix(matrix, enabled){
+ const ids=[
+  ['meterXyzM11','meterXyzM12','meterXyzM13'],
+  ['meterXyzM21','meterXyzM22','meterXyzM23'],
+  ['meterXyzM31','meterXyzM32','meterXyzM33']
+ ];
+ ids.forEach((row,rowIdx)=>row.forEach((id,colIdx)=>{
+  const el=document.getElementById(id);
+  if(!el) return;
+  const value=matrix&&matrix[rowIdx]&&Number.isFinite(Number(matrix[rowIdx][colIdx]))?Number(matrix[rowIdx][colIdx]):METER_XYZ_MATRIX_DEFAULT[rowIdx][colIdx];
+  el.value=String(Math.round(value*10000)/10000);
+ }));
+ if(enabled!=null){
+  const toggle=document.getElementById('meterXyzMatrixEnabled');
+  if(toggle) toggle.checked=(enabled===true||enabled===1||enabled==='1');
+ }
+}
+
+function meterExportXyzMatrix(){
+ const payload={
+  format:'pgenerator-xyz-correction-matrix',
+  version:1,
+  enabled:meterXyzCorrectionEnabled(),
+  matrix:meterConfiguredXyzCorrectionMatrix()
+ };
+ const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+ const a=document.createElement('a');
+ a.href=URL.createObjectURL(blob);
+ a.download='pgenerator-xyz-correction-matrix.json';
+ a.click();
+ setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+function meterOpenXyzMatrixImport(){
+ const input=document.getElementById('meterXyzMatrixImportInput');
+ if(!input) return;
+ input.value='';
+ input.click();
+}
+
+function meterParseImportedXyzMatrix(rawText){
+ const parsed=JSON.parse(String(rawText||'{}'));
+ let enabled=null;
+ let matrix=parsed;
+ if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)){
+  if(parsed.enabled!=null) enabled=(parsed.enabled===true||parsed.enabled===1||parsed.enabled==='1');
+  if(Array.isArray(parsed.matrix)) matrix=parsed.matrix;
+ }
+ if(!Array.isArray(matrix)||matrix.length!==3||matrix.some(row=>!Array.isArray(row)||row.length!==3)){
+  throw new Error('Matrix must be a 3x3 array');
+ }
+ const normalized=matrix.map(row=>row.map(value=>{
+  const numeric=Number(value);
+  if(!Number.isFinite(numeric)) throw new Error('Matrix values must be numeric');
+  return numeric;
+ }));
+ return {matrix:normalized,enabled:enabled};
+}
+
+function meterImportXyzMatrix(evt){
+ const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
+ if(!file) return;
+ const reader=new FileReader();
+ reader.onload=()=>{
+  try{
+   const imported=meterParseImportedXyzMatrix(reader.result);
+   meterSetXyzCorrectionMatrix(imported.matrix, imported.enabled);
+   meterRefreshAfterXyzMatrixChange();
+   saveMeterSettings();
+   toast('XYZ correction matrix imported');
+  }catch(e){
+   toast('Invalid XYZ correction matrix file',true);
+  }
+ };
+ reader.readAsText(file);
+}
+
+function meterXyzCorrectionMatrix(){
+ if(!meterXyzCorrectionEnabled()) return meterIdentityXyzCorrectionMatrix();
+ return meterConfiguredXyzCorrectionMatrix();
 }
 
 function meterApplyXyzCorrectionMatrix(X,Y,Z,matrix){
@@ -8875,22 +9323,56 @@ function meterFindByPort(port){
  return (meterInventory||[]).find(m=>meterNormalizePortValue(m&&m.port_num)===normalized)||null;
 }
 
-function meterPopulateRoleSelects(meters){
+function meterKindFromName(name){
+ const normalized=String(name||'').toLowerCase();
+ if(/(?:^|[^a-z0-9])(jeti|specbos|spectro|spectroradi|i1\s*pro|i1pro|cs-1000|cs-150|cs-2000|cr-2\d\d|cr-3\d\d|fd-5|fd-7|myiro)(?:[^a-z0-9]|$)/.test(normalized)) return 'spectro';
+ if(/spyder|display\s*pro|i1display|i1\s*display|colormunki\s*display|klein|sequel\s*chroma/.test(normalized)) return 'colorimeter';
+ return '';
+}
+
+function meterKind(meter){
+ const kind=String((meter&&meter.meter_type)||'').trim().toLowerCase();
+ if(kind==='spectro'||kind==='colorimeter') return kind;
+ return meterKindFromName(meter&&meter.name);
+}
+
+function meterIsSpectrophotometer(meter){
+ return meterKind(meter)==='spectro';
+}
+
+function meterSelectedMeasurementMeter(){
+ return meterFindByPort(meterSelectedMeasurementPort())||(Array.isArray(meterInventory)?meterInventory[0]:null);
+}
+
+function meterSelectedMeasurementRequiresReady(){
+ return meterIsSpectrophotometer(meterSelectedMeasurementMeter());
+}
+
+function meterAutoMeasurementOptionLabel(preferredMeter){
+ const meter=preferredMeter||meterFindByPort(meterMeasurementPort)||(Array.isArray(meterInventory)?meterInventory[0]:null);
+ return meter?meterOptionLabel(meter):(meterLastKnownName||'Meter');
+}
+
+function meterPopulateRoleSelects(meters,detectedPort){
  const savedMeasurementPort=meterNormalizePortValue(meterMeasurementPort);
  meterInventory=Array.isArray(meters)
   ? meters.filter(m=>meterNormalizePortValue(m&&m.port_num))
   : [];
  const select=document.getElementById('meterMeasurementPort');
+ const autoMeter=meterFindByPort(detectedPort)||meterFindByPort(savedMeasurementPort)||(meterInventory[0]||null);
  if(select){
   const current=meterNormalizePortValue(select.value)||savedMeasurementPort;
+  const autoPort=meterNormalizePortValue(autoMeter&&autoMeter.port_num);
   select.innerHTML='';
   const empty=document.createElement('option');
   empty.value='';
-  empty.textContent='Auto / First detected meter';
+  empty.textContent=meterAutoMeasurementOptionLabel(autoMeter);
   select.appendChild(empty);
   meterInventory.forEach(meter=>{
+   const port=meterNormalizePortValue(meter.port_num);
+   if(!current && autoPort && port===autoPort) return;
    const option=document.createElement('option');
-   option.value=meterNormalizePortValue(meter.port_num);
+   option.value=port;
    option.textContent=meterOptionLabel(meter);
    select.appendChild(option);
   });
@@ -8929,37 +9411,115 @@ function meterSelectedProfilingPort(){
  return meterNormalizePortValue(meterProfilingPort);
 }
 
+function meterCcssCreateSpectros(){
+ return (meterInventory||[]).filter(meter=>meterIsSpectrophotometer(meter));
+}
+
+function meterCcssCreateSelectedMeter(){
+ const selected=meterFindByPort(meterSelectedProfilingPort());
+ if(selected&&meterIsSpectrophotometer(selected)) return selected;
+ const spectros=meterCcssCreateSpectros();
+ return spectros[0]||null;
+}
+
+function meterCcssCreateDisplayTypeValue(){
+ const createSel=document.getElementById('meterCcssCreateDisplayType');
+ const createValue=String((createSel&&createSel.value)||'').trim();
+ if(createValue){
+  meterCcssCreateDisplayType=createValue;
+  return createValue;
+ }
+ if(meterCcssCreateDisplayType) return meterCcssCreateDisplayType;
+ const sel=document.getElementById('meterDisplayType');
+ let value=String((sel&&sel.value)||'');
+ if(value==='custom_create'||value==='custom_import') value=String((sel&&sel.dataset.lastStableValue)||'lcd');
+ return value;
+}
+
+function meterCcssCreateCanStart(){
+ const spectros=meterCcssCreateSpectros();
+ return spectros.length===1 && (meterInventory||[]).length===1;
+}
+
+function meterCcssCreateSetUi(status){
+ const progress=document.getElementById('meterCcssCreateProgress');
+ const startBtn=document.getElementById('meterCcssCreateStartBtn');
+ const stopBtn=document.getElementById('meterCcssCreateStopBtn');
+ const nameInput=document.getElementById('meterCcssCreateName');
+ const displayTypeSel=document.getElementById('meterCcssCreateDisplayType');
+ const running=!!(status&&(status.status==='starting'||status.status==='running'));
+ if(progress&&status&&status.message){
+  progress.textContent=status.detail?`${status.message} ${status.detail}`:status.message;
+ }
+ if(startBtn) startBtn.disabled=running||!meterCcssCreateCanStart();
+ if(stopBtn) stopBtn.style.display=running?'':'none';
+ if(nameInput) nameInput.disabled=running;
+ if(displayTypeSel) displayTypeSel.disabled=running;
+}
+
 function meterRenderCcssCreateChoices(){
  const wrap=document.getElementById('meterCcssCreateChoices');
  const status=document.getElementById('meterCcssCreateStatus');
+ const startBtn=document.getElementById('meterCcssCreateStartBtn');
  if(!wrap||!status) return;
+ const spectros=meterCcssCreateSpectros();
  const selected=meterSelectedProfilingPort();
  if(!meterInventory||meterInventory.length===0){
   wrap.innerHTML='';
-  status.textContent='No supported meter detected. Connect the profiling meter, then choose Create Custom CCSS again.';
+  status.textContent='No supported meter detected. Connect a spectrophotometer, then choose Create Custom CCSS again.';
+  if(startBtn) startBtn.disabled=true;
   return;
  }
- const chosen=selected?meterFindByPort(selected):null;
- status.textContent=chosen
-  ? ('Current selection: '+meterOptionLabel(chosen))
-  : 'Choose which attached meter to use for custom CCSS creation.';
- wrap.innerHTML=meterInventory.map(meter=>{
+ if(!spectros.length){
+  wrap.innerHTML='';
+  status.textContent='No spectrophotometer detected. Connect only the reference spectro you want to use for CCSS creation.';
+  if(startBtn) startBtn.disabled=true;
+  return;
+ }
+ const chosen=(selected&&meterFindByPort(selected)&&meterIsSpectrophotometer(meterFindByPort(selected)))?meterFindByPort(selected):(spectros[0]||null);
+ if(chosen) meterProfilingPort=meterNormalizePortValue(chosen.port_num);
+ if(spectros.length>1){
+  status.textContent='Connect only one spectrophotometer at a time for CCSS creation.';
+ }else if((meterInventory||[]).length>spectros.length){
+  status.textContent='Disconnect other meters before starting live CCSS creation.';
+ }else if(chosen){
+  status.textContent='Selected spectrophotometer: '+meterOptionLabel(chosen);
+ }else {
+  status.textContent='Choose which attached spectrophotometer to use for custom CCSS creation.';
+ }
+ wrap.innerHTML=spectros.map(meter=>{
   const port=meterNormalizePortValue(meter.port_num);
-  const active=selected===port;
+  const active=meterProfilingPort===port;
   return '<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="text-align:left;justify-content:flex-start;padding:8px 10px" onclick="meterChooseCcssCreationMeter(\''+port+'\')">'+(active?'\u2713 ':'')+meterOptionLabel(meter)+'</button>';
  }).join('');
+ if(startBtn) startBtn.disabled=!meterCcssCreateCanStart();
 }
 
 function meterOpenCcssCreateModal(){
+ meterCloseCustomCcssEditor();
  const modal=document.getElementById('meterCcssCreateModal');
  if(!modal) return;
+ const createSel=document.getElementById('meterCcssCreateDisplayType');
+ if(createSel){
+  const preferred=String(meterCcssCreateDisplayType||'').trim();
+  const mainSel=document.getElementById('meterDisplayType');
+  const stable=String((mainSel&&(mainSel.dataset.lastStableValue||mainSel.value))||'').trim();
+  const fallback=preferred||stable||'oled_generic';
+  const hasChoice=fallback&&Array.from(createSel.options).some(opt=>opt.value===fallback);
+  createSel.value=hasChoice?fallback:'oled_generic';
+  meterCcssCreateDisplayType=createSel.value;
+ }
  meterRenderCcssCreateChoices();
  modal.style.display='flex';
+ meterCcssCreateRefreshStatus(true);
+ if(meterCcssCreatePolling) clearInterval(meterCcssCreatePolling);
+ meterCcssCreatePolling=setInterval(()=>meterCcssCreateRefreshStatus(true),2000);
 }
 
 function meterCloseCcssCreateModal(restoreSelection){
  const modal=document.getElementById('meterCcssCreateModal');
  if(modal) modal.style.display='none';
+ if(meterCcssCreatePolling){clearInterval(meterCcssCreatePolling);meterCcssCreatePolling=null;}
  if(restoreSelection){
   const sel=document.getElementById('meterDisplayType');
   if(sel){
@@ -8973,17 +9533,84 @@ function meterChooseCcssCreationMeter(port){
  const normalized=meterNormalizePortValue(port);
  if(!normalized) return;
  meterProfilingPort=normalized;
- meterCloseCcssCreateModal(false);
- const sel=document.getElementById('meterDisplayType');
- if(sel){
-  sel.value='custom';
-  sel.dataset.lastStableValue='custom';
- }
- meterApplyDisplayTypeSelection('custom');
+ meterRenderCcssCreateChoices();
  saveMeterSettings();
  const chosen=meterFindByPort(normalized);
  if(chosen) toast('CCSS creation meter: '+meterOptionLabel(chosen));
  else toast('CCSS creation meter selected');
+}
+
+async function meterCcssCreateRefreshStatus(quiet){
+ const progress=document.getElementById('meterCcssCreateProgress');
+ const r=await fetchJSON('/api/ccss/create/status',{_quiet:true,_timeoutMs:5000});
+ if(!r){
+  if(progress&&!quiet) progress.textContent='Unable to load CCSS creation status.';
+  return null;
+ }
+ meterCcssCreateSetUi(r);
+ const token=[r.status||'',r.filename||'',r.message||''].join('|');
+ if(r.status==='complete'&&token!==meterCcssCreateHandledToken){
+  meterCcssCreateHandledToken=token;
+  if(r.filename){
+   customCcssFile=r.filename;
+   await refreshMeterCcssCatalog();
+   const sel=document.getElementById('meterDisplayType');
+   const nextValue='custom_'+r.filename;
+   if(sel){
+    sel.value=nextValue;
+    sel.dataset.lastStableValue=nextValue;
+   }
+   meterApplyDisplayTypeSelection(nextValue);
+   await loadCustomCcssList();
+   await ccssPreviewLoadByValue('custom\t'+r.filename,false);
+   saveMeterSettings();
+  }
+  if(!quiet) toast(r.message||'CCSS profile created');
+ }
+ if(!quiet&&r.status==='error') toast(r.message||'CCSS creation failed',true);
+ if(!quiet&&r.status==='cancelled') toast(r.message||'CCSS creation cancelled');
+ return r;
+}
+
+async function meterStartCcssCreate(){
+ if(meterActionPending){toast('Meter operation already in progress',true);return;}
+ await meterCheckStatus();
+ meterRenderCcssCreateChoices();
+ const spectros=meterCcssCreateSpectros();
+ if(!spectros.length){toast('Connect a spectrophotometer first',true);return;}
+ if(spectros.length!==1||((meterInventory||[]).length!==1)){toast('Connect only the reference spectrophotometer before starting CCSS creation',true);return;}
+ const meter=meterCcssCreateSelectedMeter();
+ if(!meter){toast('No spectrophotometer selected',true);return;}
+ if(!meterEnsureAppliedGeneratorSettings()) return;
+ const nameInput=document.getElementById('meterCcssCreateName');
+ const name=String((nameInput&&nameInput.value)||'').trim();
+ if(!name){toast('Enter a profile name',true);return;}
+ const displayType=meterCcssCreateDisplayTypeValue();
+ if(!displayType){toast('Choose a display technology',true);return;}
+ meterActionPending=true;
+ try{
+  const r=await fetchJSON('/api/ccss/create/start',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(meterMeasurementSignalContext({name:name,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
+  if(!r||r.status==='error'){
+   meterCcssCreateSetUi(r||{status:'error',message:'Failed to start CCSS creation'});
+   toast(r&&r.message?r.message:'Failed to start CCSS creation',true);
+   return;
+  }
+  if(meterCcssCreatePolling) clearInterval(meterCcssCreatePolling);
+  meterCcssCreatePolling=setInterval(()=>meterCcssCreateRefreshStatus(true),2000);
+  await meterCcssCreateRefreshStatus(false);
+ }finally{
+  meterActionPending=false;
+ }
+}
+
+async function meterStopCcssCreate(){
+ const r=await fetchJSON('/api/ccss/create/stop',{method:'POST',_timeoutMs:5000});
+ if(!r||r.status!=='ok'){
+  toast(r&&r.message?r.message:'Failed to stop CCSS creation',true);
+  return;
+ }
+ await meterCcssCreateRefreshStatus(false);
 }
 
 // Router that runs the selected ΔE form on a Lab pair plus optional
@@ -9025,7 +9652,7 @@ async function meterCheckStatus(){
  if(r&&r.detected){
   meterStatusMisses=0;
   meterDetected=true;
-  meterPopulateRoleSelects(r.meters||[]);
+  meterPopulateRoleSelects(r.meters||[],r.port_num);
   const selectedMeter=meterFindByPort(meterSelectedMeasurementPort());
     const detectedMeter=meterFindByPort(meterNormalizePortValue(r.port_num));
     meterLastKnownName=meterSelectedMeasurementLabel(selectedMeter||detectedMeter);
@@ -9713,11 +10340,10 @@ async function meterToggleContinuous(){
    meterSeriesPolling=null;
   }
   fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
-  // Continuous is its own toggle; don't show the series Stop button here.
-  document.getElementById('meterStopBtn').style.display='none';
   meterContinuousActive=true;
-  document.getElementById('meterContinuous').classList.add('btn-success');
-  document.getElementById('meterContinuous').classList.remove('btn-secondary');
+  meterSeriesAwaitingReady=false;
+  meterReadySignalPending=false;
+  meterUpdateReadButtons();
   meterContinuousLoop();
  }
 }
@@ -9801,7 +10427,6 @@ function meterStopContinuous(){
  meterContinuousTimer=null;
  document.getElementById('meterContinuous').classList.remove('btn-success');
  document.getElementById('meterContinuous').classList.add('btn-secondary');
- document.getElementById('meterStopBtn').style.display='none';
  if(wasActive){
   fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
  }
@@ -9817,14 +10442,16 @@ function meterStopContinuous(){
   meterReadings.forEach(r=>{if(r.luminance!=null) doneCS.add(meterStepNameKey(r));});
   meterBuildPatchThumbs(sortedStepsCS,doneCS,null);
  }
+ meterUpdateReadButtons();
 }
 
 function meterStop(){
  meterStopContinuous();
  if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
  meterSeriesRunning=false;
+ meterSeriesAwaitingReady=false;
+ meterReadySignalPending=false;
  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
- document.getElementById('meterStopBtn').style.display='none';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
@@ -9839,6 +10466,27 @@ function meterStop(){
   meterBuildPatchThumbs(sortedSteps,completedIres,null);
  }
  document.getElementById('meterProgress').style.display='none';
+ meterUpdateReadButtons();
+}
+
+async function meterSignalDeviceReady(){
+ if(meterReadySignalPending||!meterSeriesAwaitingReady) return;
+ meterReadySignalPending=true;
+ meterUpdateReadButtons();
+ try{
+  const r=await fetchJSON('/api/meter/series/ready',{method:'POST',_timeoutMs:5000});
+  if(!r||r.status!=='ok'){
+   toast(r&&r.message?r.message:'Failed to resume measurement',true);
+   return;
+  }
+  meterSeriesAwaitingReady=false;
+  await meterPollSeries();
+ }catch(e){
+  toast('Failed to resume measurement',true);
+ }finally{
+  meterReadySignalPending=false;
+  meterUpdateReadButtons();
+ }
 }
 
 async function meterResetUSB(){
@@ -9947,6 +10595,8 @@ function meterUpdateReadButtons(){
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
  const readOnceBtn=document.getElementById('meterReadOnce');
  const continuousBtn=document.getElementById('meterContinuous');
+ const stopBtn=document.getElementById('meterStopBtn');
+ const readyBtn=document.getElementById('meterDeviceReadyBtn');
  if(clearBtn){
   clearBtn.style.display=showClear?'':'none';
   clearBtn.disabled=!hasData||busy;
@@ -9965,17 +10615,27 @@ function meterUpdateReadButtons(){
   continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
   continuousBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
+ if(stopBtn){
+  const showStop=meterSeriesRunning||meterContinuousActive||meterSeriesAwaitingReady;
+  stopBtn.style.display=showStop?'':'none';
+  stopBtn.disabled=!showStop;
+ }
+ if(readyBtn){
+  readyBtn.style.display=meterSeriesAwaitingReady?'':'none';
+  readyBtn.disabled=!meterSeriesAwaitingReady||meterReadySignalPending;
+  readyBtn.textContent=meterReadySignalPending?'Sending...':'Device Ready';
+ }
 }
 function meterUpdateCardMode(){
  const card=document.getElementById('meterCard');
- const title=document.getElementById('meterCardTitle');
+ const title=document.getElementById('meterCardTitleText');
  if(!card||!title) return;
  if(meterDetected){
   card.classList.remove('meter-patterns-only');
-  title.innerHTML='<span class="drag-handle">&#9776;</span>Meter &amp; Measurements';
+  title.textContent='Meter & Measurements';
  } else {
   card.classList.add('meter-patterns-only');
-  title.innerHTML='<span class="drag-handle">&#9776;</span>Test Patterns';
+  title.textContent='Test Patterns';
  }
 }
 function meterResetSeriesButtons(){
@@ -10382,10 +11042,11 @@ async function meterRunSeries(){
  meterReadings=[];
  meterWhiteReading=null;
  meterSeriesRunning=true;
+ meterSeriesAwaitingReady=false;
+ meterReadySignalPending=false;
  meterLastChartCount=0;
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
- document.getElementById('meterStopBtn').style.display='';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
@@ -10394,12 +11055,15 @@ async function meterRunSeries(){
  const dtype=getEffectiveDisplayType();
  const delay=meterDelayMs();
  const psize=getMeterPatchSize();
+ const requireDeviceReady=meterSelectedMeasurementRequiresReady();
  try{
   const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21)})),_timeoutMs:10000});
+   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),require_device_ready:requireDeviceReady})),_timeoutMs:10000});
   if(!r||r.status!=='started'){
    toast(r&&r.message?r.message:'Failed to start series',true);
    meterSeriesRunning=false;
+   meterSeriesAwaitingReady=false;
+   meterReadySignalPending=false;
    document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
@@ -10417,6 +11081,7 @@ async function meterRunSeries(){
 async function meterPollSeries(){
  const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
  if(!r) return;
+ meterSeriesAwaitingReady=!!r.awaiting_ready;
  if(Array.isArray(r.steps)&&r.steps.length>0){
   meterSeriesSteps=r.steps;
  }
@@ -10429,6 +11094,8 @@ async function meterPollSeries(){
    meterSeriesPolling=null;
   }
   meterSeriesRunning=false;
+  meterSeriesAwaitingReady=false;
+  meterReadySignalPending=false;
   meterSharedSeriesId=null;
   meterApplyClearedState(false);
   return;
@@ -10440,6 +11107,8 @@ async function meterPollSeries(){
    clearInterval(meterSeriesPolling);
    meterSeriesPolling=null;
   }
+  meterSeriesAwaitingReady=false;
+  meterReadySignalPending=false;
   return;
  }
  // Build set of completed IRE values for thumbnail highlighting
@@ -10516,7 +11185,8 @@ async function meterPollSeries(){
   clearInterval(meterSeriesPolling);
   meterSeriesPolling=null;
   meterSeriesRunning=false;
-  document.getElementById('meterStopBtn').style.display='none';
+  meterSeriesAwaitingReady=false;
+  meterReadySignalPending=false;
   document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
@@ -10530,6 +11200,7 @@ async function meterPollSeries(){
   document.getElementById('meterProgress').style.display='none';
   toast(r.status==='complete'?'Series complete!':r.status==='error'?'Series error: '+(r.current_name||'process died'):'Series cancelled');
  }
+ meterUpdateReadButtons();
 }
 
 let meterSelectedThumbIre=null;
@@ -12675,6 +13346,8 @@ function meterApplyClearedState(showToastMsg){
  meterPersistSeriesCache();
  meterReadings=[];
  meterWhiteReading=null;
+ meterSeriesAwaitingReady=false;
+ meterReadySignalPending=false;
  meterLastChartCount=0;
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
@@ -12683,7 +13356,6 @@ function meterApplyClearedState(showToastMsg){
  document.getElementById('meterProgress').style.display='none';
  document.getElementById('meterLiveReading').style.display='none';
  document.getElementById('meterExportRow').style.display='none';
- document.getElementById('meterStopBtn').style.display='none';
  meterResetLiveReadingDisplay();
  if(meterSeriesSteps&&meterSeriesSteps.length>0){
   const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -12752,7 +13424,7 @@ function meterUpdateCustomCcssPanel(value){
  const visible=current==='custom'||current.toLowerCase().startsWith('custom_')||current.startsWith('ccss_');
  panel.style.display=visible?'':'none';
  if(!visible) return;
- let summaryText='Open the focused editor to upload, preview, and manage CCSS profiles.';
+ let summaryText='Open the importer to upload CCSS, TI3, or spectral CSV files, preview curves, and manage custom profiles.';
  if(current==='custom'){
   summaryText=customCcssFile
    ? ('Active custom profile: '+ccssPreviewDisplayLabelForValue('custom\t'+customCcssFile)+'.')
@@ -12763,7 +13435,7 @@ function meterUpdateCustomCcssPanel(value){
   summaryText='Selected installed CCSS: '+ccssPreviewDisplayLabelForValue('system\t'+current.slice(5))+'.';
  }
  if(summary) summary.textContent=summaryText;
- if(button) button.textContent=(current.startsWith('ccss_')?'Open CCSS Viewer':'Open Custom CCSS Editor');
+ if(button) button.textContent=(current.startsWith('ccss_')?'Open CCSS Viewer':'Open Custom CCSS Importer');
 }
 
 function meterOpenCustomCcssEditor(){
@@ -12794,6 +13466,13 @@ meterDisplayTypeEl.addEventListener('change',function(){
   meterOpenCcssCreateModal();
   return;
  }
+ if(v==='custom_import'){
+  const stable=this.dataset.lastStableValue||'lcd';
+  this.value=stable;
+  meterApplyDisplayTypeSelection(stable);
+  meterOpenCustomCcssEditor();
+  return;
+ }
  this.dataset.lastStableValue=v;
  meterApplyDisplayTypeSelection(v);
  if(v==='custom'||String(v).toLowerCase().startsWith('custom_')) meterOpenCustomCcssEditor();
@@ -12805,7 +13484,7 @@ document.getElementById('ccssFileInput').addEventListener('change',function(){
  const nameInput=document.getElementById('ccssName');
  const btn=document.getElementById('ccssUploadBtn');
  if(file){
-  let baseName=file.name.replace(/\.(ccss|csv)$/i,'');
+  let baseName=file.name.replace(/\.(ccss|csv|ti3)$/i,'');
   nameInput.value=baseName;
   btn.disabled=false;
  } else {
@@ -12824,8 +13503,10 @@ document.getElementById('ccssUploadBtn').addEventListener('click',async function
  try{
   const buf=await file.arrayBuffer();
   const b64=btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const currentDisplayType=((document.getElementById('meterDisplayType')||{}).dataset.lastStableValue
+   || (document.getElementById('meterDisplayType')||{}).value || 'lcd');
   const r=await fetchJSON('/api/ccss/upload',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({name:name,content:b64,filename:file.name}),_timeoutMs:15000});
+   body:JSON.stringify({name:name,content:b64,filename:file.name,display_type:currentDisplayType}),_timeoutMs:15000});
   if(r&&r.status==='ok'){
    status.textContent=r.message||'Uploaded';
    status.style.color='var(--green)';
@@ -13267,6 +13948,12 @@ function getEffectiveDisplayType(){
  return v;
 }
 
+function meterNormalizeStoredDisplayType(value,ccssFile){
+ const current=String(value||'');
+ if(current!=='custom') return current;
+ return ccssFile?('custom_'+ccssFile):'lcd';
+}
+
 function getMeterRefreshRate(){
  const sel=document.getElementById('meterRefreshRate');
  if(sel.value) return sel.value;
@@ -13350,7 +14037,8 @@ function saveMeterSettings(){
  meterProfilingPort=meterSelectedProfilingPort();
  const displayTypeValue=val('meterDisplayType');
  const s={
-  display_type:displayTypeValue==='custom_create'?((document.getElementById('meterDisplayType')||{}).dataset.lastStableValue||'lcd'):displayTypeValue,
+  display_type:(displayTypeValue==='custom_create'||displayTypeValue==='custom_import')?((document.getElementById('meterDisplayType')||{}).dataset.lastStableValue||'lcd'):displayTypeValue,
+  ccss_create_display_type:meterCcssCreateDisplayTypeValue(),
   measurement_meter_port:meterMeasurementPort,
   profiling_meter_port:meterProfilingPort,
   target_gamut:val('meterTargetGamut','auto')||'auto',
@@ -13407,12 +14095,18 @@ async function loadMeterSettings(){
  meterGreySyncUi();
  const setVal=(id,val,def)=>{ if(val==null) return; const e=document.getElementById(id); if(!e) return; e.value=(val===''&&def!=null)?def:val; };
  const setChk=(id,val)=>{ if(val==null) return; const e=document.getElementById(id); if(!e) return; e.checked=(val===true||val==='1'||val===1); };
+ if(s.ccss_create_display_type){
+  meterCcssCreateDisplayType=String(s.ccss_create_display_type).trim()||'oled_generic';
+  setVal('meterCcssCreateDisplayType', meterCcssCreateDisplayType);
+ }
+ if(s.ccss_file) customCcssFile=s.ccss_file;
  if(s.display_type){
+  const normalizedDisplayType=meterNormalizeStoredDisplayType(s.display_type,s.ccss_file);
   const sel=document.getElementById('meterDisplayType');
-  sel.dataset.pendingValue=s.display_type;
-  sel.value=s.display_type;
-  sel.dataset.lastStableValue=s.display_type;
-  if(sel.value===s.display_type) delete sel.dataset.pendingValue;
+  sel.dataset.pendingValue=normalizedDisplayType;
+  sel.value=normalizedDisplayType;
+  sel.dataset.lastStableValue=normalizedDisplayType;
+  if(sel.value===normalizedDisplayType) delete sel.dataset.pendingValue;
  }
  if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
  applyMeterTargetGamutDefault(false);
@@ -13421,7 +14115,6 @@ async function loadMeterSettings(){
  if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
  if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
  if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
- if(s.ccss_file) customCcssFile=s.ccss_file;
  // Color-science selections (server values win)
  setVal('meterGreyRefMode', s.grey_ref_mode);
  setVal('meterGrayWorld',   s.gray_world);
@@ -13446,7 +14139,7 @@ async function loadMeterSettings(){
  setChk('meterIncludeLumError', s.incl_lum);
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
  meterSyncHdrMetadata();
- meterUpdateCustomCcssPanel(s.display_type);
+ meterUpdateCustomCcssPanel(meterNormalizeStoredDisplayType(s.display_type,s.ccss_file));
  applyMeterTargetGammaDefault();
  meterUpdateHdrConfigVisibility();
  if(meterReadings&&meterReadings.length){
@@ -13459,11 +14152,18 @@ async function loadMeterSettings(){
 // Add change listeners for auto-save
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate',
  'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
- 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY',
+ 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
  'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
+const meterCcssCreateDisplayTypeEl=document.getElementById('meterCcssCreateDisplayType');
+if(meterCcssCreateDisplayTypeEl) meterCcssCreateDisplayTypeEl.addEventListener('change',()=>{
+ meterCcssCreateDisplayType=String(meterCcssCreateDisplayTypeEl.value||'oled_generic').trim()||'oled_generic';
+ saveMeterSettings();
+});
+const meterXyzMatrixImportInputEl=document.getElementById('meterXyzMatrixImportInput');
+if(meterXyzMatrixImportInputEl) meterXyzMatrixImportInputEl.addEventListener('change',meterImportXyzMatrix);
 const meterMeasurementPortEl=document.getElementById('meterMeasurementPort');
 if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>{
  meterLastKnownName=meterSelectedMeasurementLabel();
@@ -13562,7 +14262,7 @@ function initCardCollapse(){
   if(state[key]) card.classList.add('collapsed');
   h.addEventListener('click',(ev)=>{
    // Don't toggle if the click was on a control inside the header (e.g. Defaults button)
-   if(ev.target.closest('button,input,select,a')) return;
+    if(ev.target.closest('button,input,select,a,[data-no-collapse]')) return;
    card.classList.toggle('collapsed');
    try{
     const s=JSON.parse(localStorage.getItem('cardCollapse')||'{}')||{};
