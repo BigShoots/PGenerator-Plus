@@ -895,6 +895,26 @@ sub webui_meter_usb_present (@) {
  return ($lsusb =~ /\b\Q$usb_id\E\b/i) ? 1 : 0;
 }
 
+sub webui_meter_simulate_spectro_enabled (@) {
+ foreach my $path ("/tmp/meter_settings.json", "/var/lib/PGenerator/meter_settings.json", "/usr/share/PGenerator/meter_settings.json") {
+  next unless(-f $path);
+  my $json="";
+  if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
+  next if($json eq "");
+  return 1 if($json =~ /"simulate_spectro"\s*:\s*(?:true|1|"1")/i);
+ }
+ return 0;
+}
+
+sub webui_meter_status_apply_overrides (@) {
+ my ($json)=@_;
+ return $json if(!defined($json) || $json eq "");
+ if(&webui_meter_simulate_spectro_enabled()) {
+  $json =~ s/"meter_type"\s*:\s*"[^"]*"/"meter_type":"spectro"/g;
+ }
+ return $json;
+}
+
 sub webui_meter_status (@) {
  my $json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
  chomp($json);
@@ -907,7 +927,7 @@ sub webui_meter_status (@) {
   $_meter_boot_recovery_attempted=0;
   $_meter_last_seen_time=time();
   $_meter_last_good_status=$json;
-  return $json;
+  return &webui_meter_status_apply_overrides($json);
  }
  my $series_running=`pgrep -f meter_series.sh 2>/dev/null`;
  my $spotread_running=`pgrep -x spotread 2>/dev/null`;
@@ -927,10 +947,10 @@ sub webui_meter_status (@) {
   }
   if($busy || ($usb_still_present && $age < 15)) {
    &log("WebUI: transient meter probe miss, keeping last known detection") if($busy || $age < 15);
-   return $_meter_last_good_status;
+   return &webui_meter_status_apply_overrides($_meter_last_good_status);
   }
  }
- return $json;
+ return &webui_meter_status_apply_overrides($json);
 }
 
 sub webui_meter_session_alive (@) {
@@ -1952,8 +1972,10 @@ sub webui_meter_reset (@) {
 
 my $_meter_settings_file="/tmp/meter_settings.json";
 # Persistent copy — reloaded on daemon start and mirrored whenever the
-# transient /tmp copy is written. Survives reboots.
-my $_meter_settings_persist="/usr/share/PGenerator/meter_settings.json";
+# transient /tmp copy is written. Survives reboots and must stay writable
+# by the unprivileged pgenerator daemon user.
+my $_meter_settings_persist="/var/lib/PGenerator/meter_settings.json";
+my $_meter_settings_persist_legacy="/usr/share/PGenerator/meter_settings.json";
 
 sub webui_meter_settings_save (@) {
  my ($body)=@_;
@@ -1964,7 +1986,7 @@ sub webui_meter_settings_save (@) {
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y
     xyz_matrix_enabled xyz_m11 xyz_m12 xyz_m13 xyz_m21 xyz_m22 xyz_m23 xyz_m31 xyz_m32 xyz_m33
-  hdr_bt2390 incl_lum color_incl_lum
+  hdr_bt2390 incl_lum color_incl_lum simulate_spectro
  );
  my @parts;
  while($body=~/"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
@@ -1995,7 +2017,7 @@ sub webui_meter_settings_load (@) {
  chomp($boot_id);
  $boot_id=~s/[^A-Za-z0-9_-]//g;
  $boot_id="boot_".time() if($boot_id eq "");
- foreach my $path ($_meter_settings_file, $_meter_settings_persist) {
+ foreach my $path ($_meter_settings_file, $_meter_settings_persist, $_meter_settings_persist_legacy) {
   next unless(-f $path);
   my $json="";
   if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
@@ -5128,6 +5150,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
   <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+    <label style="display:flex;align-items:center;gap:8px;margin:-2px 0 10px;font-size:.74rem;color:var(--text2)" title="Internal testing switch. Treat the selected meter as a spectrophotometer so Device Ready and other spectro-only flows can be exercised with any connected meter."><input type="checkbox" id="meterSimulateSpectro"> Internal: Simulate spectro</label>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
@@ -6802,6 +6825,7 @@ async function shutdownDevice(){
  _powerOffRequested=true;
  setPowerButtonState(false);
  toast('Shutting down...');
+ await flushMeterSettings(3000);
  try{ await fetchJSON('/api/power',{method:'POST'}); }catch(e){}
 }
 function setPowerButtonState(online){
@@ -7207,6 +7231,7 @@ let meterSeriesPolling=null;
 let meterActionPending=false;
 let meterSeriesAwaitingReady=false;
 let meterReadySignalPending=false;
+let meterPendingDeviceReadyAction=null;
 let meterCcssCreatePolling=null;
 let meterCcssCreateHandledToken='';
 let meterReadings=[];
@@ -9773,7 +9798,13 @@ function meterKindFromName(name){
  return '';
 }
 
+function meterSimulateSpectroEnabled(){
+ const el=document.getElementById('meterSimulateSpectro');
+ return !!(el&&el.checked);
+}
+
 function meterKind(meter){
+ if(meter && meterSimulateSpectroEnabled()) return 'spectro';
  const kind=String((meter&&meter.meter_type)||'').trim().toLowerCase();
  if(kind==='spectro'||kind==='colorimeter') return kind;
  return meterKindFromName(meter&&meter.name);
@@ -10652,6 +10683,70 @@ function drawRGBBars(bal){
  });
 }
 
+async function meterStartSingleRead(readPayload){
+ const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
+ if(!initR) throw new Error('Meter read connection error');
+ if(initR&&initR.status==='error') throw new Error(initR.message||'Read failed');
+ return meterPollRead(60000);
+}
+
+function meterApplySingleReadResult(result,requestedStep){
+ if(result&&result.status==='ok'&&result.readings&&result.readings.length>0){
+  const rd=result.readings[0];
+  meterNormalizeMeasuredReading(rd);
+  // Only commit the result if the user is still on the patch this read was
+  // fired against. If they switched mid-read, the meter integrated photons
+  // from a different patch; storing/displaying the result would be wrong
+  // either way.
+  const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
+  if(stillOnRequested){
+   updateLiveReading(rd);
+   // If a series is loaded and a patch is selected, store reading in series results
+   if(meterSeriesSteps&&requestedStep){
+    meterUpsertSeriesReading(rd,requestedStep);
+    // Auto-detect white reference from the canonical stamped series reading.
+    const white=meterFindSeriesWhiteReading(meterReadings);
+    if(white) meterWhiteReading=white;
+    // Update charts and thumbnails
+    const completedIres=new Set();
+    meterReadings.forEach(r=>{if(r.luminance!=null) completedIres.add(meterStepNameKey(r));});
+    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+    const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+    drawAllCharts(sorted);
+    meterCacheSeriesState('complete');
+    const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+    meterBuildPatchThumbs(sortedSteps,completedIres,null);
+   }
+   toast('Reading: '+rd.luminance.toFixed(2)+' cd/m\\u00B2');
+  }
+ } else {
+  toast(result&&result.message?result.message:'Measurement failed',true);
+ }
+}
+
+async function meterFinishSingleRead(){
+ meterActionPending=false;
+ meterSeriesAwaitingReady=false;
+ meterReadySignalPending=false;
+ meterPendingDeviceReadyAction=null;
+ document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
+ meterUpdateReadButtons();
+ document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+ if(meterCurrentPatchStep){
+  document.getElementById('meterProgressLabel').textContent=meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%';
+ }
+ // Always clear the "reading" pulse once Read Once returns (success or error).
+ if(meterSeriesSteps){
+  const isColorE=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const sortedStepsE=isColorE?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  const doneE=new Set();
+  meterReadings.forEach(r=>{if(r.luminance!=null) doneE.add(meterStepNameKey(r));});
+  meterBuildPatchThumbs(sortedStepsE,doneE,null);
+ }
+ await meterCheckStatus();
+}
+
 async function meterReadOnce(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
@@ -10698,61 +10793,32 @@ async function meterReadOnce(){
    readPayload.patch_b=requestedStep.b;
    readPayload.patch_size=getMeterPatchSize();
   }
-  const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
-  if(!initR){toast('Meter read connection error',true);throw new Error('Meter read connection error');}
-  if(initR&&initR.status==='error'){toast(initR.message||'Read failed',true);throw new Error(initR.message);}
-  // Poll for result
-  const result=await meterPollRead(60000);
-  if(result&&result.status==='ok'&&result.readings&&result.readings.length>0){
-   const rd=result.readings[0];
-    meterNormalizeMeasuredReading(rd);
-   // Only commit the result if the user is still on the patch this read was
-   // fired against. If they switched mid-read, the meter integrated photons
-   // from a different patch; storing/displaying the result would be wrong
-   // either way.
-   const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
-   if(stillOnRequested){
-   updateLiveReading(rd);
-   // If a series is loaded and a patch is selected, store reading in series results
-   if(meterSeriesSteps&&requestedStep){
-    meterUpsertSeriesReading(rd,requestedStep);
-    // Auto-detect white reference from the canonical stamped series reading.
-    const white=meterFindSeriesWhiteReading(meterReadings);
-    if(white) meterWhiteReading=white;
-    // Update charts and thumbnails
-    const completedIres=new Set();
-    meterReadings.forEach(r=>{if(r.luminance!=null) completedIres.add(meterStepNameKey(r));});
-    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
-    const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
-    drawAllCharts(sorted);
-    meterCacheSeriesState('complete');
-    const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
-    meterBuildPatchThumbs(sortedSteps,completedIres,null);
-   }
-   toast('Reading: '+rd.luminance.toFixed(2)+' cd/m\\u00B2');
-   }
-  } else {
-   toast(result&&result.message?result.message:'Measurement failed',true);
+  if(meterSelectedMeasurementRequiresReady()){
+   if(requestedStep) await meterDisplayPatch(requestedStep);
+   meterPendingDeviceReadyAction=async()=>{
+    try{
+     meterSeriesAwaitingReady=false;
+     meterReadySignalPending=false;
+     meterUpdateReadButtons();
+     const result=await meterStartSingleRead(readPayload);
+     meterApplySingleReadResult(result,requestedStep);
+    }catch(e){
+     toast('Meter read error: '+e.message,true);
+    }finally{
+     await meterFinishSingleRead();
+    }
+   };
+   meterSeriesAwaitingReady=true;
+   meterReadySignalPending=false;
+   document.getElementById('meterProgressLabel').textContent=(requestedStep?(requestedStep.name||requestedStep.ire+'%'):'Patch')+' (click Device Ready)';
+   meterUpdateReadButtons();
+   return;
   }
+  const result=await meterStartSingleRead(readPayload);
+  meterApplySingleReadResult(result,requestedStep);
  }catch(e){toast('Meter read error: '+e.message,true);}
  finally{
-  meterActionPending=false;
-  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
-  meterUpdateReadButtons();
-  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
-  if(meterCurrentPatchStep){
-   document.getElementById('meterProgressLabel').textContent=meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%';
-  }
-  // Always clear the "reading" pulse once Read Once returns (success or error).
-  if(meterSeriesSteps){
-   const isColorE=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
-   const sortedStepsE=isColorE?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
-   const doneE=new Set();
-   meterReadings.forEach(r=>{if(r.luminance!=null) doneE.add(meterStepNameKey(r));});
-   meterBuildPatchThumbs(sortedStepsE,doneE,null);
-  }
-  await meterCheckStatus();
+  if(!meterPendingDeviceReadyAction) await meterFinishSingleRead();
  }
 }
 
@@ -10788,6 +10854,10 @@ async function meterToggleContinuous(){
   try{
    await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
   }catch(e){}
+  if(meterSelectedMeasurementRequiresReady()){
+   toast('Continuous reads are unavailable for button-triggered spectrophotometers',true);
+   return;
+  }
   meterContinuousActive=true;
   meterSeriesAwaitingReady=false;
   meterReadySignalPending=false;
@@ -10902,7 +10972,10 @@ function meterStop(){
  meterSeriesRunning=false;
  meterSeriesAwaitingReady=false;
  meterReadySignalPending=false;
+ meterPendingDeviceReadyAction=null;
+ meterActionPending=false;
  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
@@ -10925,6 +10998,12 @@ async function meterSignalDeviceReady(){
  meterReadySignalPending=true;
  meterUpdateReadButtons();
  try{
+  if(meterPendingDeviceReadyAction){
+   const action=meterPendingDeviceReadyAction;
+   meterPendingDeviceReadyAction=null;
+   await action();
+   return;
+  }
   const r=await fetchJSON('/api/meter/series/ready',{method:'POST',_timeoutMs:5000});
   if(!r||r.status!=='ok'){
    toast(r&&r.message?r.message:'Failed to resume measurement',true);
@@ -11063,8 +11142,9 @@ function meterUpdateReadButtons(){
   readOnceBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(continuousBtn){
-  continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
-  continuousBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
+  const readyGated=meterSelectedMeasurementRequiresReady();
+  continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy||readyGated;
+  continuousBtn.title=readyGated?'Continuous reads are unavailable for button-triggered spectrophotometers':window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(stopBtn){
   const showStop=meterSeriesRunning||meterContinuousActive||meterSeriesAwaitingReady;
@@ -11072,8 +11152,9 @@ function meterUpdateReadButtons(){
   stopBtn.disabled=!showStop;
  }
  if(readyBtn){
-  readyBtn.style.display=meterSeriesAwaitingReady?'':'none';
-  readyBtn.disabled=!meterSeriesAwaitingReady||meterReadySignalPending;
+  const readyVisible=meterSeriesAwaitingReady&&meterSelectedMeasurementRequiresReady();
+  readyBtn.style.display=readyVisible?'':'none';
+  readyBtn.disabled=!readyVisible||meterReadySignalPending;
   readyBtn.textContent=meterReadySignalPending?'Sending...':'Device Ready';
  }
 }
@@ -11525,6 +11606,7 @@ async function meterRunSeries(){
   toast('Series started: '+r.total_steps+' steps');
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
   meterSeriesPolling=setInterval(meterPollSeries,2000);
+  await meterPollSeries();
  } finally {
   meterActionPending=false;
   meterUpdateReadButtons();
@@ -14597,8 +14679,9 @@ async function deleteCustomCcss(filename){
 
 // Meter settings persistence — save to server so all clients share the same settings
 let meterSettingsLoaded=false;
+let meterSettingsSavePromise=Promise.resolve(null);
 function saveMeterSettings(){
- if(!meterSettingsLoaded) return;
+ if(!meterSettingsLoaded) return Promise.resolve(null);
  const val=(id,def)=>{ const e=document.getElementById(id); return e?(e.value||def||''):(def||''); };
  const chk=(id)=>{ const e=document.getElementById(id); return !!(e&&e.checked); };
  meterMeasurementPort=meterSelectedMeasurementPort();
@@ -14609,6 +14692,7 @@ function saveMeterSettings(){
   ccss_create_display_type:meterCcssCreateDisplayTypeValue(),
   measurement_meter_port:meterMeasurementPort,
   profiling_meter_port:meterProfilingPort,
+  simulate_spectro:chk('meterSimulateSpectro'),
   target_gamut:val('meterTargetGamut','auto')||'auto',
   delay:String(meterDelayMs()),
   patch_size:val('meterPatchSize'),
@@ -14640,9 +14724,19 @@ function saveMeterSettings(){
   // HDR tone-mapping config
   hdr_bt2390:chk('meterHdrApplyBT2390')
  };
- fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+ const request=fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
+ meterSettingsSavePromise=request.catch(()=>null);
  try{ meterSaveColorPrefs(); }catch(e){}
+ return meterSettingsSavePromise;
+}
+async function flushMeterSettings(timeoutMs){
+ try{
+  await Promise.race([
+   saveMeterSettings(),
+   new Promise((_,reject)=>setTimeout(()=>reject(new Error('meter-settings-save-timeout')),timeoutMs||3000))
+  ]);
+ }catch(e){}
 }
 async function loadMeterSettings(){
  if(meterCcssOptionsPromise) await meterCcssOptionsPromise;
@@ -14668,6 +14762,7 @@ async function loadMeterSettings(){
   setVal('meterCcssCreateDisplayType', meterCcssCreateDisplayType);
  }
  if(s.ccss_file) customCcssFile=s.ccss_file;
+ setChk('meterSimulateSpectro', s.simulate_spectro);
  if(s.display_type){
   const normalizedDisplayType=meterNormalizeStoredDisplayType(s.display_type,s.ccss_file);
   const sel=document.getElementById('meterDisplayType');
@@ -14721,7 +14816,7 @@ async function loadMeterSettings(){
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate',
  'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
  'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
- 'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
+ 'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33','meterSimulateSpectro'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -14737,6 +14832,13 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  meterLastKnownName=meterSelectedMeasurementLabel();
  const label=document.getElementById('meterStatusText');
  if(label) label.textContent=meterLastKnownName;
+ meterUpdateReadButtons();
+});
+const meterSimulateSpectroEl=document.getElementById('meterSimulateSpectro');
+if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',async()=>{
+ meterUpdateReadButtons();
+ await saveMeterSettings();
+ await meterCheckStatus();
 });
 ['meterPatchInsert','meterXyzMatrixEnabled','meterIncludeLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
  const el=document.getElementById(id);

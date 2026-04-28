@@ -298,8 +298,8 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    # Trigger reading and wait for it
    PREV_COUNT=$(count_results)
    printf " " >&3
-   READ_TIMEOUT=15
-   (( IRE <= 5 )) && READ_TIMEOUT=25
+  READ_TIMEOUT=60
+  (( IRE <= 5 )) && READ_TIMEOUT=70
    READ_START=$SECONDS
    GOT_RESULT=false
    RETRIED_COMM=0
