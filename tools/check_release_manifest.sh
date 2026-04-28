@@ -14,6 +14,7 @@ REQUIRED_PATHS=(
   etc/PGenerator/PGenerator.conf
   etc/PGenerator/lut.txt
   usr/bin/PGenerator_cmd.pl
+  usr/bin/ccxxmake
   usr/bin/meter_series.sh
   usr/bin/meter_session.sh
   usr/bin/spotread

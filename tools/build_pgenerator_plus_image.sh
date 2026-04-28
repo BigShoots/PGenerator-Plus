@@ -9,7 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
-ARGYLL_RUNTIME_BINS=(spotread ccxxmake dispread dispcal colprof chartread i1d3ccss)
+ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
+ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof i1d3ccss oeminst dispread dispcal)
+ARGYLL_RUNTIME_DIR=""
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -31,7 +33,7 @@ die() {
 }
 
 usage() {
- cat <<EOF
+ cat <<'EOF'
 Usage:
   sudo ./tools/build_pgenerator_plus_image.sh --base-image /path/to/BiasiLinux.img [options]
 
@@ -44,6 +46,8 @@ Optional:
   --force                Overwrite the output image if it already exists.
   --skip-base-check      Skip compatibility checks on the mounted rootfs.
   --keep-workdir         Keep the temporary mount/work directory for inspection.
+  --argyll-runtime-dir   Directory containing cross-compiled or prebuilt armhf
+                         ArgyllCMS binaries to stage into /usr/bin.
   -h, --help             Show this help text.
 
 Notes:
@@ -52,6 +56,10 @@ Notes:
     and overlays this repository's runtime filesystem onto it.
   - The base image should already be a compatible BiasiLinux/PGenerator image
     with the expected distro dependencies and account setup.
+  - In the current source tree only `spotread` is bundled. Use
+    --argyll-runtime-dir to add the headless Argyll runtime slice used for
+    on-device TI3 -> CCSS conversion. `ccxxmake` is required; matching helper
+    binaries present in the directory are staged too.
 EOF
 }
 
@@ -133,6 +141,11 @@ parse_args() {
     KEEP_WORKDIR=1
     shift
     ;;
+  --argyll-runtime-dir)
+   [[ $# -ge 2 ]] || die "Missing value for --argyll-runtime-dir"
+   ARGYLL_RUNTIME_DIR="$2"
+   shift 2
+   ;;
    -h|--help)
     usage
     exit 0
@@ -151,6 +164,10 @@ prepare_paths() {
  version="$(repo_version)"
 
  BASE_IMAGE="$(abs_existing_path "$BASE_IMAGE")"
+ if [[ -n "$ARGYLL_RUNTIME_DIR" ]]; then
+  ARGYLL_RUNTIME_DIR="$(abs_existing_path "$ARGYLL_RUNTIME_DIR")"
+  [[ -d "$ARGYLL_RUNTIME_DIR" ]] || die "Argyll runtime path is not a directory: $ARGYLL_RUNTIME_DIR"
+ fi
 
  if [[ -z "$OUTPUT_IMAGE" ]]; then
   OUTPUT_IMAGE="$REPO_ROOT/build/PGenerator_Plus_v${version}_from_biasi.img"
@@ -254,6 +271,43 @@ overlay_tree() {
  done
 }
 
+stage_argyll_runtime() {
+ local bin src
+ local missing=()
+ local staged=()
+
+ if [[ -z "$ARGYLL_RUNTIME_DIR" ]]; then
+  log "No external Argyll runtime directory supplied; only bundled meter tools will be staged"
+  return
+ fi
+
+ mkdir -p "$ROOT_MOUNT/usr/bin"
+ for bin in "${ARGYLL_RUNTIME_REQUIRED_BINS[@]}"; do
+  src="$ARGYLL_RUNTIME_DIR/$bin"
+  if [[ ! -f "$src" ]]; then
+   missing+=("$bin")
+   continue
+  fi
+  install -m 0755 "$src" "$ROOT_MOUNT/usr/bin/$bin"
+  staged+=("$bin")
+ done
+
+ if [[ ${#missing[@]} -gt 0 ]]; then
+  printf 'Missing Argyll runtime binaries in %s:\n' "$ARGYLL_RUNTIME_DIR" >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  die "Argyll runtime import is incomplete"
+ fi
+
+ for bin in "${ARGYLL_RUNTIME_OPTIONAL_BINS[@]}"; do
+  src="$ARGYLL_RUNTIME_DIR/$bin"
+  [[ -f "$src" ]] || continue
+  install -m 0755 "$src" "$ROOT_MOUNT/usr/bin/$bin"
+  staged+=("$bin")
+ done
+
+ log "Staged external Argyll runtime from $ARGYLL_RUNTIME_DIR: ${staged[*]}"
+}
+
 reset_runtime_state() {
  log "Resetting transient runtime state for a fresh image"
  rm -f "$ROOT_MOUNT/usr/share/PGenerator/meter_settings.json"
@@ -305,6 +359,7 @@ main() {
  mount_root_partition
  check_base_image
  overlay_tree
+ stage_argyll_runtime
  reset_runtime_state
  fix_permissions
  validate_release_root

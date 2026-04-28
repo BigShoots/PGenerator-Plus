@@ -2,7 +2,7 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready]
 
 set -o pipefail
 
@@ -20,9 +20,33 @@ SIGNAL_MODE="${11:-sdr}"
 MAX_LUMA="${12:-1000}"
 DV_MAP_MODE="${13:-}"
 METER_PORT="${14:-}"
+READY_FILE="${15:-/tmp/meter_series_ready_${SERIES_ID}.signal}"
+REQUIRE_DEVICE_READY="${16:-0}"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
+
+json_escape() {
+ printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+wait_for_device_ready() {
+ local step_num="$1"
+ local step_name="$2"
+ local escaped_name
+ escaped_name=$(json_escape "$step_name")
+ rm -f "$READY_FILE"
+ cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$step_num,"total_steps":$TOTAL,"current_name":"$escaped_name","awaiting_ready":true,"readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ while [[ ! -f "$READY_FILE" ]]; do
+  sleep 0.2
+ done
+ rm -f "$READY_FILE"
+}
+
+rm -f "$READY_FILE"
+trap 'rm -f "$READY_FILE"' EXIT
 
 get_step_count() {
  python -c "
@@ -364,7 +388,11 @@ EOJSON
  fi
  PREREAD_DELAY="$DELAY_SEC"
  PREREAD_DELAY=$(python -c "print(float('$PREREAD_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
- sleep "$PREREAD_DELAY"
+ if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+  wait_for_device_ready 0 "Reading 100% white for target Y (click Device Ready when positioned)"
+ else
+  sleep "$PREREAD_DELAY"
+ fi
 
  cat > "$STATE_FILE" << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (reading)","readings":[]}
@@ -497,7 +525,11 @@ EOJSON
  if (( i == 0 )); then
   STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
  fi
- sleep "$STEP_DELAY"
+ if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+  wait_for_device_ready "$STEP_NUM" "$NAME (click Device Ready when positioned)"
+ else
+  sleep "$STEP_DELAY"
+ fi
 
  # Update state: reading
  cat > "$STATE_FILE" << EOJSON
