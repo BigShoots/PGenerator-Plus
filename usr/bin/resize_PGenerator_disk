@@ -32,9 +32,15 @@ fi
 #############################################
 #       Check if device is PGenerator       #
 #############################################
-BOOT_PARTITION=$(blkid -L BOOT_PG)
-ROOT_PARTITION=$(blkid -L /_PG)
-if [ $BOOT_PARTITION == "" ] || [ $ROOT_PARTITION == "" ];then
+BOOT_PARTITION=$(blkid -L BOOT_PG 2>/dev/null)
+if [ "$BOOT_PARTITION" = "" ];then
+ BOOT_PARTITION=$(blkid -L PGBOOT 2>/dev/null)
+fi
+ROOT_PARTITION=$(blkid -L /_PG 2>/dev/null)
+if [ "$ROOT_PARTITION" = "" ];then
+ ROOT_PARTITION=$(blkid -L __PG 2>/dev/null)
+fi
+if [ "$BOOT_PARTITION" = "" ] || [ "$ROOT_PARTITION" = "" ];then
  echo -e "\nThis device doesn't contain a PGenerator image, not executing\n"
  exit 0
 fi
@@ -43,19 +49,26 @@ fi
 #                 Variables                 #
 #############################################
 ROOT_PARTITION_PATTERN=$(echo $ROOT_PARTITION|sed -e "s/\//\\\\\//g")
-DISK=$(lsblk -pndo pkname $BOOT_PARTITION)
+DISK=$(lsblk -pndo pkname "$BOOT_PARTITION" 2>/dev/null)
+if [ "$DISK" = "" ];then
+ DISK=$(lsblk -pndo pkname "$ROOT_PARTITION" 2>/dev/null)
+fi
+if [ "$DISK" = "" ];then
+ echo -e "\nUnable to determine parent disk, not executing\n"
+ exit 1
+fi
 FILE=/tmp/PARTITIONING
-START_LAST=$(parted $DISK unit s print free|grep -v Free|grep primary|tail -1|sed -e "s/\s \+/ /g"|awk '{print $4}'|sed -e "s/s$//")
-N_PART=$(parted $DISK unit s print free|grep -v Free|grep primary|tail -1|sed -e "s/\s \+/ /g"|awk '{print $1}')
-START=$(parted $DISK unit s print free|grep Free|tail -1|sed -e "s/\s \+/ /g"|awk '{print $1}'|sed -e "s/s$//")
-END=$(parted $DISK unit s print free|grep Free|tail -1|sed -e "s/\s \+/ /g"|awk '{print $2}'|sed -e "s/s$//")
+START_LAST=$(parted "$DISK" unit s print free|grep -v Free|grep primary|tail -1|sed -e "s/\s \+/ /g"|awk '{print $4}'|sed -e "s/s$//")
+N_PART=$(parted "$DISK" unit s print free|grep -v Free|grep primary|tail -1|sed -e "s/\s \+/ /g"|awk '{print $1}')
+START=$(parted "$DISK" unit s print free|grep Free|tail -1|sed -e "s/\s \+/ /g"|awk '{print $1}'|sed -e "s/s$//")
+END=$(parted "$DISK" unit s print free|grep Free|tail -1|sed -e "s/\s \+/ /g"|awk '{print $2}'|sed -e "s/s$//")
 DIFF=$(($END-$START))
 END_LAST=$(($START_LAST+$DIFF))
 
 #############################################
 #           Check Resize Needed             #
 #############################################
-if [ $DIFF -eq 0 ];then
+if [ $DIFF -le 0 ];then
  echo -e "\nNo resize is needed\n"
  exit 0
 fi
@@ -63,12 +76,12 @@ fi
 #############################################
 #                   Resize                  #
 #############################################
-sfdisk -d $DISK > $FILE
+sfdisk -d "$DISK" > $FILE
 echo "Changing $START_LAST to $END_LAST for $ROOT_PARTITION"
 perl -p -i -e "s/^$ROOT_PARTITION_PATTERN : (.*) size=(.*) $START_LAST,/^$ROOT_PARTITION_PATTERN : \1 size=       $END_LAST,/" $FILE
-cat $FILE|sfdisk --force --no-reread $DISK 1>/dev/null
-resizepart $DISK $N_PART $END_LAST
-resize2fs $ROOT_PARTITION
+cat "$FILE"|sfdisk --force --no-reread "$DISK" 1>/dev/null
+resizepart "$DISK" "$N_PART" "$END_LAST"
+resize2fs "$ROOT_PARTITION"
 
 #############################################
 #                    Sync                   #

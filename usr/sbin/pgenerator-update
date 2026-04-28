@@ -189,6 +189,15 @@ normalize_version() {
  printf '%s' "$version"
 }
 
+is_prerelease_version() {
+ local version
+ version=$(normalize_version "$1")
+ case "$version" in
+  *[!0-9.]* ) return 0 ;;
+ esac
+ return 1
+}
+
 version_gt() {
  local a b
  a=$(normalize_version "$1")
@@ -264,6 +273,15 @@ case "$cmd" in
   changelog=$(release_field body 2>/dev/null || true)
   asset_url=$(release_field asset_url 2>/dev/null || true)
 
+    if is_prerelease_version "$current"; then
+     printf '{"status":"ok","current":%s,"latest":%s,"update_available":false,"published":%s,"changelog":%s,"asset_url":""}\n' \
+      "$(json_escape "$current")" \
+      "$(json_escape "$current")" \
+      "$(json_escape "")" \
+      "$(json_escape "OTA updates are disabled on beta builds. Flash a matching stable or newer beta image instead.")"
+     exit 0
+    fi
+
   if [ -z "$latest" ] && [ "$message" = "Not Found" ]; then
    printf '{"status":"ok","current":%s,"latest":%s,"update_available":false,"published":"","changelog":%s,"asset_url":""}\n' \
     "$(json_escape "$current")" \
@@ -307,6 +325,12 @@ case "$cmd" in
   latest=$(release_field tag_name 2>/dev/null | sed 's/^v//')
   asset_url=$(release_field asset_url 2>/dev/null || true)
   message=$(release_field message 2>/dev/null || true)
+
+    if is_prerelease_version "$current"; then
+     log_msg "ERROR: OTA updates are disabled on beta builds ($current)"
+     echo "ERROR: OTA updates are disabled on beta builds ($current)"
+     exit 1
+    fi
 
   if [ -z "$latest" ]; then
    [ -z "$message" ] && message="Cannot parse release info"
