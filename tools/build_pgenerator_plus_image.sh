@@ -20,8 +20,10 @@ BASE_IMAGE=""
 OUTPUT_IMAGE=""
 WORKDIR=""
 ROOT_MOUNT=""
+BOOT_MOUNT=""
 LOOP_DEVICE=""
 ROOT_PARTITION=""
+BOOT_PARTITION=""
 
 log() {
  echo "[build-image] $*"
@@ -72,7 +74,7 @@ require_root() {
 require_commands() {
  local missing=()
  local cmd
- for cmd in awk cp grep losetup lsblk mktemp mount mountpoint rsync sed sync umount; do
+ for cmd in awk cpio cp gzip grep losetup lsblk mktemp mount mountpoint rsync sed sync umount; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -103,6 +105,9 @@ abs_target_path() {
 
 cleanup() {
  set +e
+ if [[ -n "$BOOT_MOUNT" ]] && mountpoint -q "$BOOT_MOUNT" 2>/dev/null; then
+  umount "$BOOT_MOUNT"
+ fi
  if [[ -n "$ROOT_MOUNT" ]] && mountpoint -q "$ROOT_MOUNT" 2>/dev/null; then
   umount "$ROOT_MOUNT"
  fi
@@ -219,12 +224,41 @@ discover_root_partition() {
  log "Using root partition $ROOT_PARTITION"
 }
 
+discover_boot_partition() {
+ local name fstype
+
+ while read -r name; do
+  [[ "$name" != "$LOOP_DEVICE" ]] || continue
+  [[ "$name" != "$ROOT_PARTITION" ]] || continue
+  fstype="$(lsblk -nrpo FSTYPE "$name" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+  if [[ -z "$fstype" ]] && command -v blkid >/dev/null 2>&1; then
+   fstype="$(blkid -o value -s TYPE "$name" 2>/dev/null || true)"
+  fi
+  case "$fstype" in
+   vfat|fat|fat16|fat32)
+    BOOT_PARTITION="$name"
+    break
+    ;;
+  esac
+ done < <(lsblk -nrpo NAME "$LOOP_DEVICE")
+
+ [[ -n "$BOOT_PARTITION" ]] || die "Could not find a FAT boot partition in $OUTPUT_IMAGE"
+ log "Using boot partition $BOOT_PARTITION"
+}
+
 mount_root_partition() {
- WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/pgenerator-image-build.XXXXXX")"
+ WORKDIR="$(mktemp -d "$(dirname "$OUTPUT_IMAGE")/pgenerator-image-build.XXXXXX")"
  ROOT_MOUNT="$WORKDIR/root"
+ BOOT_MOUNT="$WORKDIR/boot"
  mkdir -p "$ROOT_MOUNT"
+ mkdir -p "$BOOT_MOUNT"
  log "Mounting $ROOT_PARTITION"
  mount "$ROOT_PARTITION" "$ROOT_MOUNT"
+}
+
+mount_boot_partition() {
+ log "Mounting $BOOT_PARTITION"
+ mount "$BOOT_PARTITION" "$BOOT_MOUNT"
 }
 
 check_base_image() {
@@ -317,6 +351,114 @@ reset_runtime_state() {
  : > "$ROOT_MOUNT/var/lib/PGenerator/operations.txt"
 }
 
+ensure_boot_ramdisk_size() {
+ local cmdline_file="$BOOT_MOUNT/cmdline.txt"
+ local initramfs_file="$BOOT_MOUNT/initramfs.gz"
+ local required_kb=65536
+ local current_size current_cmdline
+
+ [[ -f "$cmdline_file" ]] || die "Boot partition is missing cmdline.txt"
+ [[ -f "$initramfs_file" ]] || return 0
+
+ current_size="$(sed -n 's/.*\<ramdisk_size=\([0-9][0-9]*\).*/\1/p' "$cmdline_file" | head -n 1)"
+ if [[ -n "$current_size" ]] && (( current_size >= required_kb )); then
+  log "Boot cmdline already provides ramdisk_size=$current_size"
+  return 0
+ fi
+
+ current_cmdline="$(tr -d '\n' < "$cmdline_file")"
+ if [[ -n "$current_size" ]]; then
+  current_cmdline="$(sed -E "s/(^| )ramdisk_size=[0-9]+/ ramdisk_size=$required_kb/" <<<"$current_cmdline")"
+ else
+  current_cmdline="$current_cmdline ramdisk_size=$required_kb"
+ fi
+
+ printf '%s\n' "$current_cmdline" > "$cmdline_file"
+ log "Ensured ramdisk_size=$required_kb in cmdline.txt for initramfs.gz"
+}
+
+patch_boot_initramfs_rootwait() {
+ local initramfs_file="$BOOT_MOUNT/initramfs.gz"
+ local initramfs_dir="$WORKDIR/initramfs"
+ local repacked_initramfs="$WORKDIR/initramfs.gz"
+ local init_file
+
+ [[ -f "$initramfs_file" ]] || return 0
+
+ rm -rf "$initramfs_dir"
+ mkdir -p "$initramfs_dir"
+
+ (
+  # The shipped base image carries an initramfs.gz with a bad gzip trailer.
+  # gunzip still emits a usable cpio stream, so tolerate that non-zero status
+  # and repack a clean archive after patching /init.
+  cd "$initramfs_dir"
+  set +o pipefail
+  gzip -dc "$initramfs_file" 2>/dev/null | cpio -id --quiet --no-absolute-filenames || true
+ )
+
+ init_file="$initramfs_dir/init"
+ [[ -f "$init_file" ]] || die "Extracted initramfs is missing /init"
+
+ cat > "$init_file" <<'EOF'
+#!/bin/sh
+echo 'Booting initramfs image...'
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export RUNLEVEL=S
+export FROM_INITRAMFS=1
+/etc/init.d/udev start
+/sbin/mdadm -As
+unset RUNLEVEL
+INIT_PROGRAM="/sbin/init"
+OTHER=`cat /proc/cmdline|grep init=|awk -F init=\" '{print $2}'|sed -e "s/\".*//"`
+if [ -z "$OTHER" ]; then
+OTHER=`cat /proc/cmdline|grep init=|awk -F init= '{print $2}'|sed -e "s/ .*//"`
+fi
+SINGLE=`cat /proc/cmdline|egrep " single | single$"`
+ROOTFS=`cat /proc/cmdline|awk -F root= '{print $2}'|sed -e "s/ .*//"`
+if [ -n "$SINGLE" ]; then
+INIT_PROGRAM="/sbin/init s"
+fi
+if [ -n "$OTHER" ]; then
+INIT_PROGRAM="$OTHER"
+fi
+if [ -z "$ROOTFS" ]; then
+ROOTFS="LABEL=/_PG"
+fi
+echo "Waiting for root filesystem $ROOTFS..."
+ROOT_MOUNTED=0
+RETRY=0
+while [ "$RETRY" -lt 30 ]; do
+ if mount -n -o ro "$ROOTFS" /mnt 2>/dev/null; then
+  ROOT_MOUNTED=1
+  break
+ fi
+ RETRY=$((RETRY+1))
+ sleep 1
+done
+if [ "$ROOT_MOUNTED" -ne 1 ]; then
+ echo "Unable to mount $ROOTFS after ${RETRY} seconds"
+ exec /bin/bash </dev/console >/dev/console 2>&1
+fi
+/etc/init.d/udev stop
+mount --move /dev /mnt/dev
+mount --move /proc /mnt/proc
+mount --move /sys /mnt/sys
+export INITRAMFS_EXECUTED=1
+export FROM_INITRAMFS=0
+exec switch_root /mnt $INIT_PROGRAM </dev/console >/dev/console 2>&1
+EOF
+ chmod 0755 "$init_file"
+
+ (
+  cd "$initramfs_dir"
+  find . -print | LC_ALL=C sort | cpio -o -H newc --quiet | gzip -9n > "$repacked_initramfs"
+ )
+
+ install -m 0644 "$repacked_initramfs" "$initramfs_file"
+ log "Patched initramfs /init to wait for the USB root filesystem and rebuilt initramfs.gz"
+}
+
 fix_permissions() {
  local bin
 
@@ -356,11 +498,15 @@ main() {
  copy_base_image
  attach_loop_device
  discover_root_partition
+ discover_boot_partition
  mount_root_partition
+ mount_boot_partition
  check_base_image
  overlay_tree
  stage_argyll_runtime
  reset_runtime_state
+ ensure_boot_ramdisk_size
+ patch_boot_initramfs_rootwait
  fix_permissions
  validate_release_root
  finalize_image

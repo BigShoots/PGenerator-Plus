@@ -117,6 +117,18 @@ contains_allowed_renderer() {
  return 1
 }
 
+validate_boot_scripts() {
+ local root="$1"
+ local rc_script="$root/etc/init.d/rcPGenerator"
+
+ [[ -f "$rc_script" ]] || return 0
+
+ if grep -Ev '^[[:space:]]*#' "$rc_script" | grep -q 'uuidgen'; then
+  printf 'Stale first-boot rcPGenerator detected: uuidgen is still present in %s\n' "$rc_script" >&2
+  return 1
+ fi
+}
+
 validate_root() {
  local root="$1"
  local missing=()
@@ -160,6 +172,8 @@ validate_root() {
   printf '  %s\n' "${extras[@]}" >&2
   return 1
  fi
+
+ validate_boot_scripts "$root"
 
  echo "Release manifest OK: $root"
 }
