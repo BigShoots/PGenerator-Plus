@@ -853,6 +853,17 @@ sub webui_http (@) {
      my $len=length($result);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
     }
+    elsif($path eq "/api/ccss/export" && $method eq "POST") {
+     my ($ok,$status,$content_type,$download_name,$content)=&webui_ccss_export($body);
+     my $len=length($content);
+     if($ok) {
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: $content_type\r\nContent-Disposition: attachment; filename=\"$download_name\"\r\nContent-Length: $len\r\n$cors\r\n";
+      print $client $content;
+     } else {
+      my $status_text=($status==404) ? "404 Not Found" : (($status==415) ? "415 Unsupported Media Type" : "400 Bad Request");
+      print $client "HTTP/1.1 $status_text\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$content";
+     }
+    }
    else {
     my $msg="404 Not Found";
     print $client "HTTP/1.1 404 Not Found\r\nContent-Length: ".length($msg)."\r\n\r\n$msg";
@@ -2253,7 +2264,7 @@ sub webui_ccss_upload (@) {
  # Assume CSV — try to convert
  my $ccss_content=&csv_to_ccss($raw,$name,$orig_filename);
  if(!$ccss_content) {
-  return '{"status":"error","message":"Failed to parse upload. Supported formats: CCSS, TI3, or CSV with wavelength,R,G,B,W columns (380-780nm)"}';
+  return '{"status":"error","message":"Failed to parse upload. Supported formats: CCSS, TI3, CSV with wavelength,R,G,B,W columns, or raw 3/4-row spectral CSV (380-780nm)"}';
  }
 
  my $out_path="$_custom_ccss_dir/$safe_name";
@@ -2482,154 +2493,474 @@ sub webui_ccss_validate (@) {
  return $r;
 }
 
+  sub _webui_ccss_body_target (@) {
+   my ($body)=@_;
+   my ($fname,$source)=("","");
+   $fname=$1 if($body=~/"filename"\s*:\s*"([^"]+)"/);
+   $source=lc($1) if($body=~/"source"\s*:\s*"(system|custom)"/i);
+   if($fname eq "" && $body=~/"ccss_file"\s*:\s*"([^"]+)"/) {
+    $fname=$1;
+    if($fname=~m{^custom/(.+)$}i) {
+     $source="custom";
+     $fname=$1;
+    } elsif($fname=~m{^custom_(.+)$}i) {
+     $source="custom";
+     $fname=$1;
+    } elsif($fname=~m{^ccss_(.+)$}i) {
+     $source="system";
+     $fname=$1;
+    }
+   }
+   return ($fname,$source);
+  }
+
+  sub _webui_ccss_format_number (@) {
+   my ($value,$precision)=@_;
+   $precision=6 if(!defined($precision) || $precision eq "");
+   my $text=sprintf("%.".int($precision)."f",$value+0);
+   $text=~s/\.0+$//;
+   $text=~s/(\.\d*?)0+$/$1/;
+   return $text;
+  }
+
+  sub _webui_ccss_parse_file (@) {
+   my ($resolved,$safe_name)=@_;
+   my ($descriptor,$display,$technology,$reference,$refresh)=("","","","","");
+   my ($originator,$manufacturer,$manufacturer_id,$created_raw)=("","","","");
+   my ($bands,$start_nm,$end_nm,$norm)=(0,0,0,0);
+   my @wavelengths=();
+   my @samples=();
+   my ($in_format,$in_data)=(0,0);
+
+   my $content=&read_from_file($resolved);
+   return (undef,"Cannot open CCSS file") if(!defined($content) || $content eq "");
+
+   foreach my $line (split(/\r?\n/,$content // "")) {
+    if(!$in_format && !$in_data) {
+     $descriptor=$1 if($descriptor eq "" && $line=~/^DESCRIPTOR\s+"([^"]*)"/i);
+    $originator=$1 if($originator eq "" && $line=~/^ORIGINATOR\s+"([^"]*)"/i);
+    $created_raw=$1 if($created_raw eq "" && $line=~/^CREATED\s+"([^"]*)"/i);
+    $manufacturer=$1 if($manufacturer eq "" && $line=~/^MANUFACTURER\s+"([^"]*)"/i);
+    $manufacturer_id=$1 if($manufacturer_id eq "" && $line=~/^MANUFACTURER_ID\s+"([^"]*)"/i);
+     $display=$1 if($display eq "" && $line=~/^DISPLAY\s+"([^"]*)"/i);
+     $technology=$1 if($technology eq "" && $line=~/^TECHNOLOGY\s+"([^"]*)"/i);
+     $reference=$1 if($reference eq "" && $line=~/^REFERENCE\s+"([^"]*)"/i);
+     $refresh=$1 if($refresh eq "" && $line=~/^DISPLAY_TYPE_REFRESH\s+"([^"]*)"/i);
+     $bands=$1+0 if(!$bands && $line=~/^SPECTRAL_BANDS\s+"?([0-9.]+)"?/i);
+     $start_nm=$1+0 if(!$start_nm && $line=~/^SPECTRAL_START_NM\s+"?([0-9eE.\-+]+)"?/i);
+     $end_nm=$1+0 if(!$end_nm && $line=~/^SPECTRAL_END_NM\s+"?([0-9eE.\-+]+)"?/i);
+     $norm=$1+0 if(!$norm && $line=~/^SPECTRAL_NORM\s+"?([0-9eE.\-+]+)"?/i);
+     if($line=~/^BEGIN_DATA_FORMAT\b/i) {
+      $in_format=1;
+      next;
+     }
+     if($line=~/^BEGIN_DATA\b/i) {
+      $in_data=1;
+      next;
+     }
+    }
+    if($in_format) {
+     if($line=~/^END_DATA_FORMAT\b/i) {
+      $in_format=0;
+      next;
+     }
+     next if($line=~/^\s*$/);
+     if(!@wavelengths) {
+      my @fields=grep { $_ ne "" } split(/\s+/,$line);
+      shift @fields if(@fields && uc($fields[0]) eq "SAMPLE_ID");
+      foreach my $field (@fields) {
+       push @wavelengths, $1+0 if($field=~/^SPEC_([0-9]+(?:\.[0-9]+)?)$/i);
+      }
+     }
+     next;
+    }
+    if($in_data) {
+     last if($line=~/^END_DATA\b/i);
+     next if($line=~/^\s*$/);
+     my @fields=grep { $_ ne "" } split(/\s+/,$line);
+     next unless(@fields>=2);
+     my $sample_id=shift @fields;
+     my $limit=@wavelengths ? scalar(@wavelengths) : scalar(@fields);
+     my @values;
+     for(my $i=0;$i<$limit && $i<scalar(@fields);$i++) {
+      my $value=$fields[$i];
+      $value=~s/[^0-9eE.\-+]//g;
+      push @values, ($value ne "" ? $value+0 : 0);
+     }
+     push @samples, { id=>$sample_id, values=>\@values } if(@values);
+    }
+   }
+
+   if(!@wavelengths && $bands>0 && $end_nm>$start_nm) {
+    my $step=$bands>1 ? (($end_nm-$start_nm)/($bands-1)) : 1;
+    for(my $i=0;$i<$bands;$i++) {
+     push @wavelengths, $start_nm+($step*$i);
+    }
+   }
+   return (undef,"No spectral data found in CCSS file") if(!@wavelengths || !@samples);
+
+   $bands=scalar(@wavelengths) if(!$bands && @wavelengths);
+   $start_nm=$wavelengths[0] if(!$start_nm && @wavelengths);
+   $end_nm=$wavelengths[-1] if(!$end_nm && @wavelengths);
+
+   my $global_max=0;
+   my @parsed_samples;
+   my @default_labels=("Red","Green","Blue","White");
+   for(my $idx=0;$idx<scalar(@samples);$idx++) {
+    my $sample=$samples[$idx];
+    my @values=@{$sample->{values}||[]};
+    my $limit=scalar(@values) < scalar(@wavelengths) ? scalar(@values) : scalar(@wavelengths);
+    next if($limit<=0);
+    $#values=$limit-1;
+    my ($peak_idx,$peak_val)=(0,-1);
+    for(my $i=0;$i<$limit;$i++) {
+     my $value=$values[$i]+0;
+     if($value>$peak_val) {
+      $peak_val=$value;
+      $peak_idx=$i;
+     }
+     $global_max=$value if($value>$global_max);
+    }
+    my $label=$default_labels[$idx] || ("Set ".($idx+1));
+    my $peak_nm=$wavelengths[$peak_idx] || 0;
+    push @parsed_samples, {
+     id=>$sample->{id},
+     label=>$label,
+     peak_nm=>$peak_nm+0,
+     peak_value=>($peak_val>0 ? $peak_val+0 : 0),
+     values=>\@values
+    };
+   }
+   return (undef,"No usable spectral samples found") if(!@parsed_samples);
+   $global_max=1 if($global_max<=0);
+
+   return ({
+    safe_name=>$safe_name,
+    descriptor=>$descriptor,
+    originator=>$originator,
+    manufacturer=>$manufacturer,
+    manufacturer_id=>$manufacturer_id,
+    created_raw=>$created_raw,
+    display=>$display,
+    technology=>$technology,
+    reference=>$reference,
+    display_type_refresh=>$refresh,
+    bands=>$bands+0,
+    start_nm=>$start_nm+0,
+    end_nm=>$end_nm+0,
+    norm=>$norm+0,
+    max_value=>$global_max+0,
+    wavelengths=>\@wavelengths,
+    samples=>\@parsed_samples,
+    raw_content=>$content
+   },"");
+  }
+
+  sub _webui_ccss_preview_payload (@) {
+   my ($parsed,$resolved_source)=@_;
+   my @sample_json;
+   foreach my $sample (@{$parsed->{samples}||[]}) {
+    my @values_json=map { &_webui_ccss_format_number($_,6) } @{$sample->{values}||[]};
+    push @sample_json,
+     '{"id":"'.&_webui_json_escape($sample->{id}).'"'
+     .',"label":"'.&_webui_json_escape($sample->{label}).'"'
+     .',"peak_nm":'.&_webui_ccss_format_number($sample->{peak_nm},3)
+     .',"peak_value":'.&_webui_ccss_format_number($sample->{peak_value},6)
+     .',"values":['.join(',',@values_json).']}'
+    ;
+   }
+
+   my @wavelengths_json=map { &_webui_ccss_format_number($_,3) } @{$parsed->{wavelengths}||[]};
+   my $desc=$parsed->{descriptor} ne "" ? $parsed->{descriptor} : ($parsed->{display} ne "" ? $parsed->{display} : $parsed->{safe_name});
+   return '{"ok":true'
+    .',"name":"'.&_webui_json_escape($parsed->{safe_name}).'"'
+    .',"source":"'.&_webui_json_escape($resolved_source).'"'
+    .',"description":"'.&_webui_json_escape($desc).'"'
+    .',"display":"'.&_webui_json_escape($parsed->{display}).'"'
+    .',"technology":"'.&_webui_json_escape($parsed->{technology}).'"'
+    .',"reference":"'.&_webui_json_escape($parsed->{reference}).'"'
+    .',"display_type_refresh":"'.&_webui_json_escape($parsed->{display_type_refresh}).'"'
+    .',"bands":'.($parsed->{bands}+0)
+    .',"start_nm":'.&_webui_ccss_format_number($parsed->{start_nm},3)
+    .',"end_nm":'.&_webui_ccss_format_number($parsed->{end_nm},3)
+    .',"norm":'.&_webui_ccss_format_number($parsed->{norm},6)
+    .',"max_value":'.&_webui_ccss_format_number($parsed->{max_value},6)
+    .',"wavelengths":['.join(',',@wavelengths_json).']'
+    .',"samples":['.join(',',@sample_json).']'
+    .'}';
+  }
+
+  sub _webui_ccss_export_csv (@) {
+   my ($parsed)=@_;
+   my @samples=@{$parsed->{samples}||[]};
+    my @wavelengths=@{$parsed->{wavelengths}||[]};
+    my $can_emit_raw_rows=((scalar(@samples)==3 || scalar(@samples)==4) && scalar(@wavelengths)==401);
+    if($can_emit_raw_rows) {
+     my $is_uniform_1nm=1;
+     $is_uniform_1nm=0 if(abs((($wavelengths[0]||0)+0)-380)>0.01 || abs((($wavelengths[-1]||0)+0)-780)>0.01);
+     for(my $i=1;$i<scalar(@wavelengths) && $is_uniform_1nm;$i++) {
+      my $step=(($wavelengths[$i]||0)+0)-(($wavelengths[$i-1]||0)+0);
+      $is_uniform_1nm=0 if(abs($step-1)>0.01);
+     }
+     if($is_uniform_1nm) {
+      my @lines;
+      foreach my $sample (@samples) {
+      my @values=map { sprintf("%.2E",(defined($_) ? $_ : 0)+0) } @{$sample->{values}||[]};
+      push @lines, join(',',@values);
+      }
+      return join("\n",@lines)."\n";
+     }
+    }
+   my @headers=("wavelength");
+   for(my $idx=0;$idx<scalar(@samples);$idx++) {
+    push @headers, ($idx==0 ? "R" : $idx==1 ? "G" : $idx==2 ? "B" : $idx==3 ? "W" : ("Set".($idx+1)));
+   }
+   my @lines=(join(',',@headers));
+   for(my $i=0;$i<scalar(@wavelengths);$i++) {
+    my @row=(&_webui_ccss_format_number($wavelengths[$i],3));
+    foreach my $sample (@samples) {
+     my $value=(ref($sample->{values}) eq "ARRAY" && defined($sample->{values}->[$i])) ? $sample->{values}->[$i] : 0;
+     push @row, &_webui_ccss_format_number($value,6);
+    }
+    push @lines, join(',',@row);
+   }
+   return join("\n",@lines)."\n";
+  }
+
+  sub _webui_ccss_ascii_field (@) {
+   my ($text)=@_;
+   $text="" if(!defined($text));
+   $text=~s/\r?\n/ /g;
+   $text=~s/[^\x20-\x7E]//g;
+   $text=~s/\s+/ /g;
+   $text=~s/^\s+|\s+$//g;
+   return $text;
+  }
+
+  sub _webui_ccss_interp_linear (@) {
+   my ($target,$wavelengths,$values)=@_;
+   return 0 if(ref($wavelengths) ne "ARRAY" || ref($values) ne "ARRAY" || !@{$wavelengths} || !@{$values});
+   my $last_index=scalar(@{$wavelengths})-1;
+   return 0 if($last_index<0);
+
+   my $first_nm=($wavelengths->[0]||0)+0;
+   my $last_nm=($wavelengths->[$last_index]||0)+0;
+   return (($values->[0]||0)+0) if(abs($target-$first_nm)<0.000001);
+   return (($values->[$last_index]||0)+0) if(abs($target-$last_nm)<0.000001);
+   return 0 if($target<$first_nm || $target>$last_nm);
+
+   for(my $i=0;$i<$last_index;$i++) {
+    my $x1=($wavelengths->[$i]||0)+0;
+    my $x2=($wavelengths->[$i+1]||0)+0;
+    my $y1=(defined($values->[$i]) ? $values->[$i] : 0)+0;
+    my $y2=(defined($values->[$i+1]) ? $values->[$i+1] : 0)+0;
+    return $y1 if(abs($target-$x1)<0.000001);
+    return $y2 if(abs($target-$x2)<0.000001);
+    next if($target>$x2);
+    return $y1 if($x2<=$x1);
+    my $ratio=($target-$x1)/($x2-$x1);
+    return $y1+(($y2-$y1)*$ratio);
+   }
+   return 0;
+  }
+
+  sub _webui_ccss_resample_series (@) {
+   my ($wavelengths,$values)=@_;
+   my @resampled=();
+   for(my $nm=380;$nm<=780;$nm++) {
+    my $value=&_webui_ccss_interp_linear($nm,$wavelengths,$values);
+    $value=0 if($value<0);
+    push @resampled, $value+0;
+   }
+   return \@resampled;
+  }
+
+  sub _webui_ccss_edr_tech_type (@) {
+   my ($technology,$display,$safe_name)=@_;
+   my %exact=(
+    "CUSTOM"=>1,
+    "CRT"=>2,
+    "LCD CCFL IPS"=>3,
+    "LCD CCFL VPA"=>4,
+    "LCD CCFL TFT"=>5,
+    "LCD CCFL WIDE GAMUT IPS"=>6,
+    "LCD CCFL WIDE GAMUT VPA"=>7,
+    "LCD CCFL WIDE GAMUT TFT"=>8,
+    "LCD WHITE LED IPS"=>9,
+    "LCD WHITE LED VPA"=>10,
+    "LCD WHITE LED TFT"=>11,
+    "LCD RGB LED IPS"=>12,
+    "LCD RGB LED VPA"=>13,
+    "LCD RGB LED TFT"=>14,
+    "LED OLED"=>15,
+    "LED AMOLED"=>16,
+    "PLASMA"=>17,
+    "LCD RG PHOSPHOR"=>18,
+    "PROJECTOR RGB FILTER WHEEL"=>19,
+    "PROJECTOR RGBW FILTER WHEEL"=>20,
+    "PROJECTOR RGBCMY FILTER WHEEL"=>21,
+    "PROJECTOR"=>22,
+    "LCD PFS PHOSPHOR"=>23,
+    "LED WOLED"=>24,
+    "LCD GB R PHOSPHOR IPS"=>64
+   );
+   my $text=uc(&_webui_ccss_ascii_field(join(" ",grep { defined($_) && $_ ne "" } ($technology,$display,$safe_name))));
+   $text=~s/[\/_\-]+/ /g;
+   $text=~s/\s+/ /g;
+   $text=~s/^\s+|\s+$//g;
+   return $exact{$text} if(exists $exact{$text});
+
+   my $suffix=" IPS" if($text=~/\bIPS\b/);
+   $suffix=" VPA" if($text!~/\bIPS\b/ && $text=~/\bVPA\b/);
+   $suffix=" TFT" if($text!~/\bIPS\b/ && $text!~/\bVPA\b/ && $text=~/\bTFT\b/);
+
+   return 21 if($text=~/PROJECTOR\s+RGBCMY/);
+   return 20 if($text=~/PROJECTOR\s+RGBW/);
+   return 19 if($text=~/PROJECTOR\s+RGB/);
+   return 22 if($text=~/PROJECTOR/);
+   return 64 if($text=~/GB\s*R\s+PHOSPHOR/);
+   return 23 if($text=~/PFS\s+PHOSPHOR/);
+   return 18 if($text=~/RG\s+PHOSPHOR/);
+   return ($exact{"LCD RGB LED$suffix"} || 12) if($text=~/RGB\s+LED/);
+   return ($exact{"LCD WHITE LED$suffix"} || 9) if($text=~/(?:WHITE|W)\s*LED/);
+   return ($exact{"LCD CCFL WIDE GAMUT$suffix"} || 6) if($text=~/WIDE\s+GAMUT\s+CCFL|WGCCFL/);
+   return ($exact{"LCD CCFL$suffix"} || 3) if($text=~/CCFL/);
+   return 24 if($text=~/WRGB\s+OLED|WOLED/);
+   return 16 if($text=~/AMOLED/);
+   return 15 if($text=~/QD\s*OLED|RGB\s+OLED|OLED/);
+   return 17 if($text=~/PLASMA/);
+   return 2 if($text=~/CRT/);
+   return 1;
+  }
+
+  sub _webui_ccss_pack_u64le (@) {
+   my ($value)=@_;
+   $value=0 if(!defined($value) || $value<0);
+   my $low=$value % 4294967296;
+   my $high=int($value / 4294967296);
+   return pack("L< L<",$low,$high);
+  }
+
+  sub _webui_ccss_export_edr (@) {
+   my ($parsed)=@_;
+   my @samples=@{$parsed->{samples}||[]};
+   my @wavelengths=@{$parsed->{wavelengths}||[]};
+   return "" if(!@samples || !@wavelengths);
+
+   my $desc=$parsed->{descriptor} ne "" ? $parsed->{descriptor} : ($parsed->{display} ne "" ? $parsed->{display} : $parsed->{safe_name});
+   my $display=$parsed->{display} ne "" ? $parsed->{display} : $parsed->{safe_name};
+   my $creation_tool="PGenerator+ CCSS export";
+   $creation_tool.=" - ".$parsed->{originator} if($parsed->{originator});
+   my $tech_type=&_webui_ccss_edr_tech_type($parsed->{technology},$parsed->{display},$parsed->{safe_name});
+   my $norm=($parsed->{norm}||0)+0;
+
+  my $edr=pack(
+   "a9 x7 L< L<",
+    "EDR DATA1",
+    1,
+   1
+  );
+  $edr.=&_webui_ccss_pack_u64le(int(time()));
+  $edr.=pack(
+   "a64 a256 L< L< a64 a64 a64 L< S< S< d< d< d< L< x12",
+    &_webui_ccss_ascii_field($creation_tool),
+    &_webui_ccss_ascii_field($desc),
+    $tech_type,
+    scalar(@samples),
+    &_webui_ccss_ascii_field($parsed->{manufacturer}),
+    &_webui_ccss_ascii_field($parsed->{manufacturer_id}),
+    &_webui_ccss_ascii_field($display),
+    0,
+    1,
+    1,
+    380.0,
+    780.0,
+    $norm,
+    0
+   );
+
+   my $display_header=pack(
+    "a12 x68 S< S< S< a2 d< d< d< d< d<",
+    "DISPLAY DATA",
+    255,
+    255,
+    255,
+    "c",
+    0,
+    0,
+    0,
+    0,
+    0
+   );
+
+   foreach my $sample (@samples) {
+    my $series=&_webui_ccss_resample_series(\@wavelengths,$sample->{values});
+    my $spectral_header=pack("a13 x3 L< L< a4","SPECTRAL DATA",scalar(@{$series}),0,"0000");
+    $edr.=$display_header;
+    $edr.=$spectral_header;
+    foreach my $value (@{$series}) {
+     my $watts=($value+0)/1000.0;
+     $watts=0 if($watts<0);
+     $edr.=pack("d<",$watts);
+    }
+   }
+
+   return $edr;
+  }
+
+  sub webui_ccss_export (@) {
+   my ($body)=@_;
+   my ($fname,$source)=&_webui_ccss_body_target($body);
+   my $format="ccss";
+   $format=lc($1) if($body=~/"format"\s*:\s*"([^"]+)"/i);
+   $format=~s/^\.+//;
+   $format=~s/[^a-z0-9]//g;
+   $format="ccss" if($format eq "" || $format eq "raw" || $format eq "txt");
+
+   my ($resolved,$resolved_source,$safe_name)=&_webui_ccss_resolve_named_path($fname,$source);
+   return (0,400,'application/json','',"{\"status\":\"error\",\"message\":\"Missing or invalid filename\"}") if($safe_name eq "");
+   return (0,404,'application/json','',"{\"status\":\"error\",\"message\":\"CCSS file not found\"}") if($resolved eq "");
+
+   my ($parsed,$error)=&_webui_ccss_parse_file($resolved,$safe_name);
+   if(!$parsed) {
+    my $message=&_webui_json_escape($error||"Unable to parse CCSS file");
+    return (0,400,'application/json','',"{\"status\":\"error\",\"message\":\"$message\"}");
+   }
+
+   my $base_name=$safe_name;
+   $base_name=~s/\.[^.]+$//;
+   $base_name=~s/[^a-zA-Z0-9._\-]+/_/g;
+   $base_name=~s/_+/_/g;
+   $base_name=~s/^_+|_+$//g;
+   $base_name="ccss_profile" if($base_name eq "");
+
+   if($format eq "ccss") {
+    return (1,200,'text/plain; charset=utf-8',"${base_name}.ccss",&_webui_ccss_normalize_keywords($parsed->{raw_content}));
+   }
+   if($format eq "csv") {
+    return (1,200,'text/csv; charset=utf-8',"${base_name}.csv",&_webui_ccss_export_csv($parsed));
+   }
+  if($format eq "edr") {
+   my $edr=&_webui_ccss_export_edr($parsed);
+   return (0,400,'application/json','',"{\"status\":\"error\",\"message\":\"Unable to build EDR export\"}") if($edr eq "");
+   return (1,200,'application/octet-stream',"${base_name}.edr",$edr);
+   }
+
+   my $message=&_webui_json_escape("Unsupported export format");
+   return (0,415,'application/json','',"{\"status\":\"error\",\"message\":\"$message\"}");
+  }
+
 sub webui_ccss_preview (@) {
  my ($body)=@_;
- my ($fname,$source)=("","");
- $fname=$1 if($body=~/"filename"\s*:\s*"([^"]+)"/);
- $source=lc($1) if($body=~/"source"\s*:\s*"(system|custom)"/i);
- if($fname eq "" && $body=~/"ccss_file"\s*:\s*"([^"]+)"/) {
-  $fname=$1;
-  if($fname=~m{^custom/(.+)$}i) {
-   $source="custom";
-   $fname=$1;
-  } elsif($fname=~m{^custom_(.+)$}i) {
-   $source="custom";
-   $fname=$1;
-  } elsif($fname=~m{^ccss_(.+)$}i) {
-   $source="system";
-   $fname=$1;
-  }
- }
+   my ($fname,$source)=&_webui_ccss_body_target($body);
 
  my ($resolved,$resolved_source,$safe_name)=&_webui_ccss_resolve_named_path($fname,$source);
  return '{"ok":false,"error":"Missing or invalid filename"}' if($safe_name eq "");
  return '{"ok":false,"error":"CCSS file not found"}' if($resolved eq "");
 
- my ($descriptor,$display,$technology,$reference,$refresh)=("","","","","");
- my ($bands,$start_nm,$end_nm,$norm)=(0,0,0,0);
- my @wavelengths=();
- my @samples=();
- my ($in_format,$in_data)=(0,0);
-
- my $content=&read_from_file($resolved);
- return '{"ok":false,"error":"Cannot open CCSS file"}' if(!defined($content));
- foreach my $line (split(/\r?\n/,$content // "")) {
-  if(!$in_format && !$in_data) {
-   $descriptor=$1 if($descriptor eq "" && $line=~/^DESCRIPTOR\s+"([^"]*)"/i);
-   $display=$1 if($display eq "" && $line=~/^DISPLAY\s+"([^"]*)"/i);
-   $technology=$1 if($technology eq "" && $line=~/^TECHNOLOGY\s+"([^"]*)"/i);
-   $reference=$1 if($reference eq "" && $line=~/^REFERENCE\s+"([^"]*)"/i);
-   $refresh=$1 if($refresh eq "" && $line=~/^DISPLAY_TYPE_REFRESH\s+"([^"]*)"/i);
-   $bands=$1+0 if(!$bands && $line=~/^SPECTRAL_BANDS\s+"?([0-9.]+)"?/i);
-   $start_nm=$1+0 if(!$start_nm && $line=~/^SPECTRAL_START_NM\s+"?([0-9eE.\-+]+)"?/i);
-   $end_nm=$1+0 if(!$end_nm && $line=~/^SPECTRAL_END_NM\s+"?([0-9eE.\-+]+)"?/i);
-   $norm=$1+0 if(!$norm && $line=~/^SPECTRAL_NORM\s+"?([0-9eE.\-+]+)"?/i);
-   if($line=~/^BEGIN_DATA_FORMAT\b/i) {
-    $in_format=1;
-    next;
-   }
-   if($line=~/^BEGIN_DATA\b/i) {
-    $in_data=1;
-    next;
-   }
-  }
-  if($in_format) {
-   if($line=~/^END_DATA_FORMAT\b/i) {
-    $in_format=0;
-    next;
-   }
-   next if($line=~/^\s*$/);
-   if(!@wavelengths) {
-    my @fields=grep { $_ ne "" } split(/\s+/,$line);
-    shift @fields if(@fields && uc($fields[0]) eq "SAMPLE_ID");
-    foreach my $field (@fields) {
-     push @wavelengths, $1+0 if($field=~/^SPEC_([0-9]+(?:\.[0-9]+)?)$/i);
-    }
-   }
-   next;
-  }
-  if($in_data) {
-   last if($line=~/^END_DATA\b/i);
-   next if($line=~/^\s*$/);
-   my @fields=grep { $_ ne "" } split(/\s+/,$line);
-   next unless(@fields>=2);
-   my $sample_id=shift @fields;
-   my $limit=@wavelengths ? scalar(@wavelengths) : scalar(@fields);
-   my @values;
-   for(my $i=0;$i<$limit && $i<scalar(@fields);$i++) {
-    my $value=$fields[$i];
-    $value=~s/[^0-9eE.\-+]//g;
-    push @values, ($value ne "" ? $value+0 : 0);
-   }
-   push @samples, { id=>$sample_id, values=>\@values } if(@values);
-  }
- }
-
- if(!@wavelengths && $bands>0 && $end_nm>$start_nm) {
-  my $step=$bands>1 ? (($end_nm-$start_nm)/($bands-1)) : 1;
-  for(my $i=0;$i<$bands;$i++) {
-   push @wavelengths, $start_nm+($step*$i);
-  }
- }
- return '{"ok":false,"error":"No spectral data found in CCSS file"}' if(!@wavelengths || !@samples);
-
- my $global_max=0;
- my @sample_json;
- my @default_labels=("Red","Green","Blue","White");
- for(my $idx=0;$idx<scalar(@samples);$idx++) {
-  my $sample=$samples[$idx];
-  my @values=@{$sample->{values}||[]};
-  my $limit=scalar(@values) < scalar(@wavelengths) ? scalar(@values) : scalar(@wavelengths);
-  next if($limit<=0);
-  $#values=$limit-1;
-  my ($peak_idx,$peak_val)=(0,-1);
-  for(my $i=0;$i<$limit;$i++) {
-   my $value=$values[$i]+0;
-   if($value>$peak_val) {
-    $peak_val=$value;
-    $peak_idx=$i;
-   }
-   $global_max=$value if($value>$global_max);
-  }
-  my $label=$default_labels[$idx] || ("Set ".($idx+1));
-  my $peak_nm=$wavelengths[$peak_idx] || 0;
-  my @values_json=map { sprintf("%.6f",$_+0) } @values;
-  push @sample_json,
-   '{"id":"'.&_webui_json_escape($sample->{id}).'"'
-   .',"label":"'.&_webui_json_escape($label).'"'
-   .',"peak_nm":'.sprintf("%.3f",$peak_nm+0)
-   .',"peak_value":'.sprintf("%.6f",$peak_val>0?$peak_val:0)
-   .',"values":['.join(',',@values_json).']}'
-  ;
- }
- return '{"ok":false,"error":"No usable spectral samples found"}' if(!@sample_json);
- $global_max=1 if($global_max<=0);
-
- my @wavelengths_json=map {
-  my $value=sprintf("%.3f",$_+0);
-  $value=~s/\.0+$//;
-  $value=~s/(\.\d*?)0+$/$1/;
-  $value;
- } @wavelengths;
-
- my $desc=$descriptor ne "" ? $descriptor : ($display ne "" ? $display : $safe_name);
- my $result='{"ok":true'
-  .',"name":"'.&_webui_json_escape($safe_name).'"'
-  .',"source":"'.&_webui_json_escape($resolved_source).'"'
-  .',"description":"'.&_webui_json_escape($desc).'"'
-  .',"display":"'.&_webui_json_escape($display).'"'
-  .',"technology":"'.&_webui_json_escape($technology).'"'
-  .',"reference":"'.&_webui_json_escape($reference).'"'
-  .',"display_type_refresh":"'.&_webui_json_escape($refresh).'"'
-  .',"bands":'.(0+$bands)
-  .',"start_nm":'.sprintf("%.3f",$start_nm+0)
-  .',"end_nm":'.sprintf("%.3f",$end_nm+0)
-  .',"norm":'.sprintf("%.6f",$norm+0)
-  .',"max_value":'.sprintf("%.6f",$global_max+0)
-  .',"wavelengths":['.join(',',@wavelengths_json).']'
-  .',"samples":['.join(',',@sample_json).']'
-  .'}';
- return $result;
+   my ($parsed,$error)=&_webui_ccss_parse_file($resolved,$safe_name);
+   return '{"ok":false,"error":"'.&_webui_json_escape($error||"Unable to parse CCSS file").'"}' if(!$parsed);
+   return &_webui_ccss_preview_payload($parsed,$resolved_source);
 }
 
 sub _webui_ccss_clean_name (@) {
@@ -2673,78 +3004,21 @@ sub _webui_ccss_guess_meta (@) {
  return ($display,$technology);
 }
 
-sub csv_to_ccss (@) {
- my ($csv_text,$profile_name,$orig_filename)=@_;
- my @lines=split(/\r?\n/,$csv_text);
- # Parse header to find columns
- my $header=shift @lines;
- return undef if(!$header);
- my @cols=split(/[,\t]/,$header);
- # Find wavelength and R/G/B/W columns (case-insensitive)
- my ($wl_col,$r_col,$g_col,$b_col,$w_col)=(-1,-1,-1,-1,-1);
- for(my $i=0;$i<scalar(@cols);$i++) {
-  my $c=lc($cols[$i]);
-  $c=~s/^\s+|\s+$//g;
-  $c=~s/^"(.*)"$/$1/;
-  if($c=~/^(wavelength|nm|lambda|wl)$/) { $wl_col=$i; }
-  elsif($c=~/^(red|r)$/) { $r_col=$i; }
-  elsif($c=~/^(green|g)$/) { $g_col=$i; }
-  elsif($c=~/^(blue|b)$/) { $b_col=$i; }
-  elsif($c=~/^(white|w)$/) { $w_col=$i; }
- }
- # If no header match, try numeric detection
- if($wl_col<0) {
-  # Check if first column looks like wavelengths (380-780)
-  my @first_vals;
-  for my $line (@lines) {
-   my @v=split(/[,\t]/,$line);
-   if($v[0]=~/^\s*(\d+\.?\d*)/) { push @first_vals,$1; last if(scalar(@first_vals)>=3); }
-  }
-  if(@first_vals && $first_vals[0]>=300 && $first_vals[0]<=400) {
-   $wl_col=0;
-   if(scalar(@cols)>=5) { $r_col=1;$g_col=2;$b_col=3;$w_col=4; }
-   elsif(scalar(@cols)>=4) { $r_col=1;$g_col=2;$b_col=3; }
-   else { return undef; }
-  }
- }
- return undef if($wl_col<0 || $r_col<0 || $g_col<0 || $b_col<0);
+sub _webui_csv_data_to_ccss (@) {
+ my ($data,$profile_name,$orig_filename,$has_white)=@_;
+ return undef if(ref($data) ne "ARRAY" || scalar(@{$data})<10);
 
- # Parse data rows
- my @data;
- for my $line (@lines) {
-  next if($line=~/^\s*$/ || $line=~/^\s*#/);
-  my @v=split(/[,\t]/,$line);
-  my $wl=$v[$wl_col]; $wl=~s/[^\d.]//g;
-  next if($wl eq "" || $wl<300 || $wl>900);
-  my %row=(wl=>$wl+0);
-  for my $ch (["r",$r_col],["g",$g_col],["b",$b_col]) {
-   my $val=$v[$ch->[1]]||0; $val=~s/[^\d.eE\-+]//g; $val=($val+0);
-   $row{$ch->[0]}=$val;
-  }
-  if($w_col>=0 && defined $v[$w_col]) {
-   my $val=$v[$w_col]||0; $val=~s/[^\d.eE\-+]//g;
-   $row{w}=$val+0;
-  }
-  push @data,\%row;
- }
- return undef if(scalar(@data)<10);
-
- # Interpolate/resample to 1nm from 380-780
  my @resampled;
  for(my $nm=380;$nm<=780;$nm++) {
   my %pt=(wl=>$nm);
   for my $ch ("r","g","b","w") {
-   next if($ch eq "w" && $w_col<0);
-   $pt{$ch}=&_interp_spectral(\@data,$ch,$nm);
+   next if($ch eq "w" && !$has_white);
+   $pt{$ch}=&_interp_spectral($data,$ch,$nm);
   }
   push @resampled,\%pt;
  }
 
- # Determine number of sets (3 if no white, 4 if white)
- my $has_white=($w_col>=0)?1:0;
  my $num_sets=$has_white?4:3;
-
- # Find spectral norm (max value across all channels and wavelengths)
  my $norm=0;
  for my $pt (@resampled) {
   for my $ch ("r","g","b",($has_white?"w":())) {
@@ -2753,7 +3027,6 @@ sub csv_to_ccss (@) {
  }
  $norm=1 if($norm<=0);
 
- # Build CCSS
  my $bands=scalar(@resampled);
  my $now_str=localtime();
  my ($display_name,$technology_name)=&_webui_ccss_guess_meta($profile_name,$orig_filename);
@@ -2778,7 +3051,6 @@ sub csv_to_ccss (@) {
  $ccss.="\nEND_DATA_FORMAT\n\n";
  $ccss.="NUMBER_OF_SETS $num_sets\n";
  $ccss.="BEGIN_DATA\n";
- # Write R, G, B (and optionally W) as separate rows
  my @channels=("r","g","b");
  push @channels,"w" if($has_white);
  my $set_id=1;
@@ -2790,6 +3062,108 @@ sub csv_to_ccss (@) {
  }
  $ccss.="END_DATA\n";
  return $ccss;
+}
+
+sub csv_to_ccss (@) {
+ my ($csv_text,$profile_name,$orig_filename)=@_;
+ my @all_lines=grep { $_!~/^\s*$/ && $_!~/^\s*#/ } split(/\r?\n/,$csv_text);
+ return undef if(!@all_lines);
+
+ my @first_cols=split(/[,\t]/,$all_lines[0],-1);
+ if((scalar(@all_lines)==3 || scalar(@all_lines)==4) && scalar(@first_cols)>=50) {
+  my $bands=scalar(@first_cols);
+  my $raw_row_major=1;
+  foreach my $line (@all_lines) {
+   my @cells=split(/[,\t]/,$line,-1);
+   if(scalar(@cells)!=$bands) { $raw_row_major=0; last; }
+   for(my $i=0;$i<$bands;$i++) {
+    my $val=$cells[$i];
+    $val=~s/^\x{FEFF}// if($i==0);
+    $val=~s/[^\d.eE\-+]//g;
+    if($val eq "") { $raw_row_major=0; last; }
+   }
+   last if(!$raw_row_major);
+  }
+  if($raw_row_major) {
+   my $step=$bands>1 ? (400/($bands-1)) : 1;
+   return undef if($step<=0);
+   my @rows;
+   foreach my $line (@all_lines) {
+    my @cells=split(/[,\t]/,$line,-1);
+    my @values;
+    for(my $i=0;$i<$bands;$i++) {
+     my $val=$cells[$i];
+     $val=~s/^\x{FEFF}// if($i==0);
+     $val=~s/[^\d.eE\-+]//g;
+     push @values, ($val ne "" ? $val+0 : 0);
+    }
+    push @rows,\@values;
+   }
+   my $has_white=(scalar(@rows)>=4)?1:0;
+   my @data;
+   for(my $idx=0;$idx<$bands;$idx++) {
+    my %row=(
+     wl=>380+($idx*$step),
+     r=>$rows[0]->[$idx],
+     g=>$rows[1]->[$idx],
+     b=>$rows[2]->[$idx]
+    );
+    $row{w}=$rows[3]->[$idx] if($has_white);
+    push @data,\%row;
+   }
+   return &_webui_csv_data_to_ccss(\@data,$profile_name,$orig_filename,$has_white);
+  }
+ }
+
+ my @lines=@all_lines;
+ my $header=shift @lines;
+ return undef if(!$header);
+ my @cols=split(/[,\t]/,$header);
+ my ($wl_col,$r_col,$g_col,$b_col,$w_col)=(-1,-1,-1,-1,-1);
+ for(my $i=0;$i<scalar(@cols);$i++) {
+  my $c=lc($cols[$i]);
+  $c=~s/^\s+|\s+$//g;
+  $c=~s/^\x{FEFF}//;
+  $c=~s/^"(.*)"$/$1/;
+  if($c=~/^(wavelength|nm|lambda|wl)$/) { $wl_col=$i; }
+  elsif($c=~/^(red|r)$/) { $r_col=$i; }
+  elsif($c=~/^(green|g)$/) { $g_col=$i; }
+  elsif($c=~/^(blue|b)$/) { $b_col=$i; }
+  elsif($c=~/^(white|w)$/) { $w_col=$i; }
+ }
+ if($wl_col<0) {
+  my @first_vals;
+  for my $line (@lines) {
+   my @v=split(/[,\t]/,$line);
+   if($v[0]=~/^\s*(\d+\.?\d*)/) { push @first_vals,$1; last if(scalar(@first_vals)>=3); }
+  }
+  if(@first_vals && $first_vals[0]>=300 && $first_vals[0]<=400) {
+   $wl_col=0;
+   if(scalar(@cols)>=5) { $r_col=1;$g_col=2;$b_col=3;$w_col=4; }
+   elsif(scalar(@cols)>=4) { $r_col=1;$g_col=2;$b_col=3; }
+   else { return undef; }
+  }
+ }
+ return undef if($wl_col<0 || $r_col<0 || $g_col<0 || $b_col<0);
+
+ my @data;
+ for my $line (@lines) {
+  next if($line=~/^\s*$/ || $line=~/^\s*#/);
+  my @v=split(/[,\t]/,$line);
+  my $wl=$v[$wl_col]; $wl=~s/[^\d.]//g;
+  next if($wl eq "" || $wl<300 || $wl>900);
+  my %row=(wl=>$wl+0);
+  for my $ch (["r",$r_col],["g",$g_col],["b",$b_col]) {
+   my $val=$v[$ch->[1]]||0; $val=~s/[^\d.eE\-+]//g; $val=($val+0);
+   $row{$ch->[0]}=$val;
+  }
+  if($w_col>=0 && defined $v[$w_col]) {
+   my $val=$v[$w_col]||0; $val=~s/[^\d.eE\-+]//g;
+   $row{w}=$val+0;
+  }
+  push @data,\%row;
+ }
+ return &_webui_csv_data_to_ccss(\@data,$profile_name,$orig_filename,($w_col>=0)?1:0);
 }
 
 sub _interp_spectral (@) {
@@ -4298,6 +4672,7 @@ sub webui_html (@) {
 --text:#e0e0e8;--text2:#888898;--green:#4caf50;--red:#f44;--orange:#ff9800;--dv:#b388ff}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
+body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
 align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
@@ -5043,6 +5418,16 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <select id="ccssPreviewSelect" style="width:100%;font-size:.78rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
        <option value="">Choose installed CCSS profile...</option>
       </select>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+         <select id="ccssExportFormat" style="min-width:160px;font-size:.74rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)" disabled>
+          <option value="ccss">Export CCSS</option>
+          <option value="csv">Export CSV</option>
+          <option value="edr">Export EDR</option>
+         </select>
+         <button id="ccssExportBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap" onclick="ccssExportSelected()" disabled>Export</button>
+         <button id="ccssDeleteSelectedBtn" class="btn btn-sm" style="white-space:nowrap;color:var(--red)" onclick="deleteSelectedCustomCcss()" disabled>Delete Profile</button>
+         <div id="ccssExportStatus" style="flex:1 1 220px;font-size:.72rem;color:var(--text2);min-height:1.1em">Select a CCSS profile to download. Custom profiles can also be deleted here.</div>
+        </div>
       <div id="ccssPreviewMeta" style="font-size:.72rem;color:var(--text2);margin-top:8px;line-height:1.5;min-height:1.2em">Select any built-in or custom CCSS profile to inspect its spectral curves.</div>
       <canvas id="ccssPreviewCanvas" width="760" height="320" style="width:100%;height:320px;background:#0d0d15;border-radius:8px;margin-top:10px;display:block"></canvas>
       <div id="ccssPreviewLegend" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
@@ -6083,6 +6468,40 @@ async function loadInfo(quiet){
 }
 
 let _hdmiIgnored=false;
+const uiBlockingOverlayIds=['meterGreyProfileModal','meterCcssCreateModal','customCcssEditorModal','meterReportOverlay'];
+let uiLockedScrollTop=0;
+
+function uiAnyBlockingOverlayVisible(){
+ const hdmi=document.getElementById('hdmiOverlay');
+ if(hdmi&&hdmi.classList.contains('active')) return true;
+ return uiBlockingOverlayIds.some(id=>{
+  const el=document.getElementById(id);
+  if(!el) return false;
+  if(el.style.display) return el.style.display!=='none';
+  return getComputedStyle(el).display!=='none';
+ });
+}
+
+function uiSyncBodyScrollLock(){
+ const body=document.body;
+ const shouldLock=uiAnyBlockingOverlayVisible();
+ if(shouldLock){
+  if(!body.classList.contains('modal-open')){
+   uiLockedScrollTop=window.scrollY||window.pageYOffset||0;
+   body.style.top='-'+uiLockedScrollTop+'px';
+   body.classList.add('modal-open');
+  }
+  return;
+ }
+ if(body.classList.contains('modal-open')){
+  const restoreTop=uiLockedScrollTop||Math.abs(parseInt(body.style.top||'0',10))||0;
+  body.classList.remove('modal-open');
+  body.style.top='';
+  window.scrollTo(0,restoreTop);
+  uiLockedScrollTop=0;
+ }
+}
+
 function updateHdmiPortWarning(hp){
  const overlay=document.getElementById('hdmiOverlay');
  const badge=document.getElementById('hdmiWarnBadge');
@@ -6095,10 +6514,12 @@ function updateHdmiPortWarning(hp){
   badge.style.display='none';
   overlay.classList.remove('active');
  }
+ uiSyncBodyScrollLock();
 }
 function hdmiIgnore(){
  _hdmiIgnored=true;
  document.getElementById('hdmiOverlay').classList.remove('active');
+ uiSyncBodyScrollLock();
 }
 async function hdmiRecheck(){
  const btn=document.getElementById('hdmiRecheckBtn');
@@ -6114,6 +6535,7 @@ async function hdmiRecheck(){
      await fetchJSON('/api/restart',{_timeoutMs:10000}).catch(function(){});
      _hdmiIgnored=false;
      document.getElementById('hdmiOverlay').classList.remove('active');
+    uiSyncBodyScrollLock();
      document.getElementById('hdmiWarnBadge').style.display='none';
      toast('Correct port detected \u2014 display restarted');loadInfo();ok=true;break;
     }else{
@@ -6130,6 +6552,7 @@ async function hdmiRecheck(){
 function hdmiShowOverlay(){
  _hdmiIgnored=false;
  document.getElementById('hdmiOverlay').classList.add('active');
+ uiSyncBodyScrollLock();
 }
 
 function statToneClass(pct){
@@ -9511,6 +9934,7 @@ function meterOpenCcssCreateModal(){
  }
  meterRenderCcssCreateChoices();
  modal.style.display='flex';
+ uiSyncBodyScrollLock();
  meterCcssCreateRefreshStatus(true);
  if(meterCcssCreatePolling) clearInterval(meterCcssCreatePolling);
  meterCcssCreatePolling=setInterval(()=>meterCcssCreateRefreshStatus(true),2000);
@@ -9519,6 +9943,7 @@ function meterOpenCcssCreateModal(){
 function meterCloseCcssCreateModal(restoreSelection){
  const modal=document.getElementById('meterCcssCreateModal');
  if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
  if(meterCcssCreatePolling){clearInterval(meterCcssCreatePolling);meterCcssCreatePolling=null;}
  if(restoreSelection){
   const sel=document.getElementById('meterDisplayType');
@@ -10809,11 +11234,13 @@ function meterOpenGreyProfileEditor(points){
  if(label) label.textContent=meterGreyModeSignature();
  meterRenderGreyProfileEditor();
  modal.style.display='flex';
+ uiSyncBodyScrollLock();
 }
 
 function meterCloseGreyProfileEditor(){
  const modal=document.getElementById('meterGreyProfileModal');
  if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
 }
 
 function meterSetGreyEditorPoints(points){
@@ -13016,11 +13443,13 @@ function meterOpenReportDialog(){
   +'</label>'
  ).join('');
  document.getElementById('meterReportOverlay').style.display='flex';
+ uiSyncBodyScrollLock();
 }
 
 function meterCloseReportDialog(){
  const overlay=document.getElementById('meterReportOverlay');
  if(overlay) overlay.style.display='none';
+ uiSyncBodyScrollLock();
 }
 
 function meterReportCanvasImageHTML(cv){
@@ -13443,6 +13872,7 @@ function meterOpenCustomCcssEditor(){
  if(!modal) return;
  loadCustomCcssList();
  modal.style.display='flex';
+ uiSyncBodyScrollLock();
  requestAnimationFrame(()=>{
   const active=ccssPreviewActiveValue||ccssPreviewCurrentDisplayValue()||(customCcssFile?('custom\t'+customCcssFile):'');
   if(active) ccssPreviewLoadByValue(active,true);
@@ -13453,6 +13883,7 @@ function meterOpenCustomCcssEditor(){
 function meterCloseCustomCcssEditor(){
  const modal=document.getElementById('customCcssEditorModal');
  if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
 }
 
 const meterDisplayTypeEl=document.getElementById('meterDisplayType');
@@ -13673,6 +14104,106 @@ function ccssPreviewDisplayLabelForValue(value){
  return entry ? ccssFormatDropdownLabel(entry) : 'CCSS profile';
 }
 
+function ccssExportSetStatus(message,isError){
+ const el=document.getElementById('ccssExportStatus');
+ if(!el) return;
+ el.textContent=message||'';
+ el.style.color=isError?'var(--red)':'var(--text2)';
+}
+
+function ccssExportCurrentEntry(){
+ const active=ccssPreviewActiveValue||ccssPreviewCurrentDisplayValue()||(customCcssFile?('custom\t'+customCcssFile):'');
+ return ccssPreviewFindEntry(active);
+}
+
+function ccssExportSyncControls(message,isError){
+ const entry=ccssExportCurrentEntry();
+ const btn=document.getElementById('ccssExportBtn');
+ const format=document.getElementById('ccssExportFormat');
+ const deleteBtn=document.getElementById('ccssDeleteSelectedBtn');
+ const enabled=!!entry;
+ const canDelete=!!(entry&&entry.source==='custom');
+ if(btn) btn.disabled=!enabled;
+ if(format) format.disabled=!enabled;
+ if(deleteBtn) deleteBtn.disabled=!canDelete;
+ if(message!==undefined){
+  ccssExportSetStatus(message,!!isError);
+ }else if(!enabled){
+  ccssExportSetStatus('Select a CCSS profile to download. Custom profiles can also be deleted here.',false);
+ }
+}
+
+async function ccssExportSelected(){
+ const entry=ccssExportCurrentEntry();
+ if(!entry){
+  ccssExportSyncControls('Select a CCSS profile to download.',false);
+  toast('Select a CCSS profile first',true);
+  return;
+ }
+ const btn=document.getElementById('ccssExportBtn');
+ const formatSelect=document.getElementById('ccssExportFormat');
+ const format=String(formatSelect&&formatSelect.value||'ccss');
+ const prevText=btn?btn.textContent:'Export';
+ if(btn) btn.disabled=true;
+ if(btn) btn.textContent='Preparing...';
+ ccssExportSetStatus('Building '+format.toUpperCase()+' download...',false);
+ try{
+  const res=await fetch('/api/ccss/export',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({filename:entry.name,source:entry.source,format:format})
+  });
+  if(res.ok){
+   const blob=await res.blob();
+   const cd=res.headers.get('Content-Disposition')||'';
+   const match=cd.match(/filename="([^"]+)"/i);
+   const fallback=(String(entry.name||'').replace(/\.[^.]+$/,'')||'ccss_profile')+'.'+format;
+   const filename=match?match[1]:fallback;
+   const href=URL.createObjectURL(blob);
+   const link=document.createElement('a');
+   link.href=href;
+   link.download=filename;
+   document.body.appendChild(link);
+   link.click();
+   link.remove();
+   setTimeout(()=>URL.revokeObjectURL(href),1000);
+   ccssExportSetStatus('Downloaded '+filename,false);
+   toast('Downloaded '+filename);
+  }else{
+   const payload=await res.json().catch(()=>null);
+   const message=(payload&&payload.message)||'Export failed';
+   ccssExportSetStatus(message,true);
+   toast(message,true);
+  }
+ }catch(e){
+  ccssExportSetStatus('Export error: '+e.message,true);
+  toast('Export error: '+e.message,true);
+ }finally{
+  if(btn) btn.textContent=prevText;
+  ccssExportSyncControls();
+ }
+}
+
+async function deleteSelectedCustomCcss(){
+ const entry=ccssExportCurrentEntry();
+ if(!entry||entry.source!=='custom'){
+  ccssExportSyncControls('Only custom CCSS profiles can be deleted.',true);
+  toast('Select a custom CCSS profile first',true);
+  return;
+ }
+ const btn=document.getElementById('ccssDeleteSelectedBtn');
+ const prevText=btn?btn.textContent:'Delete Profile';
+ if(btn) btn.disabled=true;
+ if(btn) btn.textContent='Deleting...';
+ try{
+  const ok=await deleteCustomCcss(entry.name);
+  if(ok) ccssExportSetStatus('Deleted '+entry.name,false);
+ }finally{
+  if(btn) btn.textContent=prevText;
+  ccssExportSyncControls();
+ }
+}
+
 function ccssPreviewSampleColor(index){
  const colors=['#ff6b6b','#67d36f','#6fb6ff','#f6ef9a','#ff9f68','#d29cff'];
  return colors[index%colors.length];
@@ -13682,6 +14213,7 @@ function ccssPreviewClear(message){
  const meta=document.getElementById('ccssPreviewMeta');
  const legend=document.getElementById('ccssPreviewLegend');
  const canvas=document.getElementById('ccssPreviewCanvas');
+ ccssExportSyncControls();
  if(meta) meta.textContent=message||'Select any built-in or custom CCSS profile to inspect its spectral curves.';
  if(legend) legend.innerHTML='';
  if(!canvas) return;
@@ -13720,6 +14252,7 @@ function ccssPreviewPopulateOptions(files){
  select.value=previous;
  if(select.value!==previous) select.value='';
  ccssPreviewActiveValue=select.value||'';
+ ccssExportSyncControls();
  if(ccssPreviewActiveValue) ccssPreviewLoadByValue(ccssPreviewActiveValue,true);
  else ccssPreviewClear('Select any built-in or custom CCSS profile to inspect its spectral curves.');
 }
@@ -13735,6 +14268,7 @@ async function ccssPreviewLoadByValue(value,quiet){
  }
  ccssPreviewActiveValue=ccssPreviewValue(entry);
  if(select) select.value=ccssPreviewActiveValue;
+ ccssExportSyncControls();
  const meta=document.getElementById('ccssPreviewMeta');
  if(meta) meta.textContent='Loading '+ccssFormatDropdownLabel(entry)+'...';
  const payload=await fetchJSON('/api/ccss/preview',{
@@ -14015,16 +14549,24 @@ function meterDelayLoadValue(raw){
 }
 
 async function deleteCustomCcss(filename){
- if(!confirm('Delete '+filename+'?')) return;
- const r=await fetchJSON('/api/ccss/delete/'+encodeURIComponent(filename),{method:'POST',_timeoutMs:5000});
- if(r&&r.status==='ok'){
-  if(customCcssFile===filename) customCcssFile=null;
-  if(ccssPreviewActiveValue==='custom\t'+filename) ccssPreviewActiveValue='';
-  await refreshMeterCcssCatalog();
-  await loadCustomCcssList();
-  if(!ccssPreviewActiveValue) ccssPreviewClear('Select any built-in or custom CCSS profile to inspect its spectral curves.');
-  toast('Deleted');
- } else { toast(r&&r.message?r.message:'Delete failed',true); }
+ if(!confirm('Delete '+filename+'?')) return false;
+ try{
+  const r=await fetchJSON('/api/ccss/delete/'+encodeURIComponent(filename),{method:'POST',_timeoutMs:5000});
+  if(r&&r.status==='ok'){
+   if(customCcssFile===filename) customCcssFile=null;
+   if(ccssPreviewActiveValue==='custom\t'+filename) ccssPreviewActiveValue='';
+   await refreshMeterCcssCatalog();
+   await loadCustomCcssList();
+   if(!ccssPreviewActiveValue) ccssPreviewClear('Select any built-in or custom CCSS profile to inspect its spectral curves.');
+   ccssExportSyncControls();
+   toast('Deleted');
+   return true;
+  }
+  toast(r&&r.message?r.message:'Delete failed',true);
+ }catch(e){
+  toast('Delete error: '+e.message,true);
+ }
+ return false;
 }
 
 // Meter settings persistence — save to server so all clients share the same settings
