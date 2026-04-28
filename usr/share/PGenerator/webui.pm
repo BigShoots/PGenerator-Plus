@@ -954,6 +954,16 @@ sub webui_meter_session_config_matches (@) {
  return $cur eq $want ? 1 : 0;
 }
 
+sub webui_meter_session_fifo_ready () {
+ return 0 unless(-p $_meter_session_fifo);
+ return 0 unless(&webui_meter_session_alive());
+ if(sysopen(my $fh,$_meter_session_fifo,O_WRONLY | O_NONBLOCK)) {
+  close($fh);
+  return 1;
+ }
+ return 0;
+}
+
 sub webui_meter_read_state_write (@) {
  my ($json)=@_;
  $json='{"status":"idle"}' if(!defined($json) || $json eq "");
@@ -1026,7 +1036,7 @@ sub webui_meter_session_start (@) {
  # Some CCSS/meter combinations trigger spotread refresh calibration on first
  # start and can legitimately take 35-45 seconds before the FIFO is ready.
  while($waited < 900) {
-  last if(-p $_meter_session_fifo && &webui_meter_session_alive() && &webui_meter_session_config_matches($config));
+  last if(&webui_meter_session_config_matches($config) && &webui_meter_session_fifo_ready());
   Time::HiRes::sleep(0.1);
   $waited++;
   # If the daemon died early (init failure), the read result file will
@@ -1038,7 +1048,7 @@ sub webui_meter_session_start (@) {
    last if($mtime >= $started_at && $check=~/"status"\s*:\s*"error"/);
   }
  }
- return (-p $_meter_session_fifo && &webui_meter_session_config_matches($config)) ? 1 : 0;
+ return (&webui_meter_session_config_matches($config) && &webui_meter_session_fifo_ready()) ? 1 : 0;
 }
 
 sub webui_meter_read (@) {
@@ -1111,9 +1121,19 @@ sub webui_meter_read (@) {
    &log("WebUI: meter session config changed, restarting daemon");
    &webui_meter_session_stop();
   } else {
-   # Belt-and-suspenders: clear any lingering spotread holding the meter.
+     # If the session PID disappeared but helper children are still around,
+     # they can keep the session lock/FIFO namespace busy and make the next
+     # start fail with a stale-session error.
+     &log("WebUI: meter session missing its PID, clearing stale helpers");
+     system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
+     system("sudo pkill -9 -x spotread 2>/dev/null");
+     system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
+     system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
    system("sudo bash $_meter_wrapper --kill 2>/dev/null");
-   select(undef,undef,undef,0.2);
+     unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo, "/tmp/meter_session.lock");
+     my @stale=glob("/tmp/spotread_series_* /tmp/spotread_cmd_* /tmp/spotread_session_*");
+     unlink(@stale) if @stale;
+     select(undef,undef,undef,0.3);
   }
   &webui_meter_read_state_write('{"status":"starting"}');
   # If spotread decides it needs refresh calibration, it asks for an 80% white
@@ -10679,7 +10699,8 @@ async function meterReadOnce(){
    readPayload.patch_size=getMeterPatchSize();
   }
   const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(readPayload),_timeoutMs:5000});
+   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
+  if(!initR){toast('Meter read connection error',true);throw new Error('Meter read connection error');}
   if(initR&&initR.status==='error'){toast(initR.message||'Read failed',true);throw new Error(initR.message);}
   // Poll for result
   const result=await meterPollRead(60000);
@@ -10743,7 +10764,7 @@ async function meterPollRead(timeoutMs){
  await new Promise(r=>setTimeout(r,100));
  while(Date.now()-start<timeoutMs){
   try{
-   const r=await fetchJSON('/api/meter/read/result',{_timeoutMs:5000});
+   const r=await fetchJSON('/api/meter/read/result',{_quiet:true,_timeoutMs:5000});
    if(r&&r.status!=='measuring') return r;
   }catch(e){}
   await new Promise(r=>setTimeout(r,200));
@@ -10764,10 +10785,14 @@ async function meterToggleContinuous(){
    clearInterval(meterSeriesPolling);
    meterSeriesPolling=null;
   }
-  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+  try{
+   await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+  }catch(e){}
   meterContinuousActive=true;
   meterSeriesAwaitingReady=false;
   meterReadySignalPending=false;
+  document.getElementById('meterContinuous').classList.remove('btn-secondary');
+  document.getElementById('meterContinuous').classList.add('btn-success');
   meterUpdateReadButtons();
   meterContinuousLoop();
  }
@@ -10803,7 +10828,8 @@ async function meterContinuousLoop(){
    readPayload.patch_size=getMeterPatchSize();
   }
   const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(readPayload),_timeoutMs:5000});
+   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
+  if(!initR){meterStopContinuous();toast('Meter read connection error',true);return;}
   if(initR&&initR.status==='error'){meterStopContinuous();return;}
   const r=await meterPollRead(60000);
   if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
