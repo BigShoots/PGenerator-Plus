@@ -1,20 +1,25 @@
 ## PGenerator+ 2.5.1b Beta
 
-### Beta Scope
+### Overview
 
-- Beta release for the new spectro profiling, CCSS import/export, CSV round-trip, EDR export, and related Web UI workflow changes.
-- Built from the `2.4.1` full image as the base image with the current repository overlay applied.
-- Includes the runtime files updated on 2026-04-27, including the refreshed Argyll helper binaries and the Web UI changes.
+- Beta release for the new spectro-driven CCSS workflow and related Web UI/runtime fixes.
+- Targets feature request #6: Add ability to create CCSS profile using spectrophotometer.
 
-### Publishing Rules
+### Added
 
-- Publish this version on GitHub as a prerelease.
-- Do not publish this version as the latest release.
-- Do not attach an OTA tarball for this beta release.
-- Attach only the full image assets and checksum files for manual installation/testing.
+- Added on-device custom CCSS creation from a connected spectrophotometer.
+- Added CCSS export/download options for CCSS, CSV, and EDR.
+- Added CSV import/export round-trip support for raw spectral CSV files and CCSS conversion.
+- Added a visible `Delete Profile` action for selected custom CCSS entries.
+- Added a `Device Ready` button for spectro-driven meter series reads so users can position the device before each measurement step.
 
-### Why This Stays Out Of OTA
+### Fixed
 
-- Device OTA uses GitHub's `releases/latest` endpoint.
-- GitHub excludes prereleases from `releases/latest`, so marking `v2.5.1b` as a prerelease keeps OTA pinned to the latest stable release.
-- Keeping the beta image-only avoids accidental OTA targeting even if release assets are browsed manually.
+- Fixed the reported monitor startup case where the screen could remain on the logo in RGB mode even though the Web UI reported that a pattern was sent; the renderer now reapplies HDMI DRM properties after startup so RGB output does not depend on toggling through YCbCr first.
+- Fixed CSV export so files created from imported raw spectral CSV data export back in the expected row-based spectral layout.
+- Fixed CSV import so the same raw 3-row and 4-row spectral CSV formats can be converted back into CCSS.
+- Fixed modal behavior so blocking popups no longer allow the page behind them to keep scrolling.
+
+### Notes
+
+- This is a beta prerelease intended for manual testing, especially of the new spectro and custom-profile workflow.
