@@ -233,6 +233,11 @@ sub pattern_generator_start(@) {
   system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
  }
  usleep(250000);
+   # Some displays miss the first pre-launch RGB/colorspace programming and stay
+   # on the splash screen until a later format toggle forces HDMI state back in.
+   # Reapply connector properties once the renderer is alive so the first pattern
+   # push lands on the intended format without requiring a manual YCbCr detour.
+   &apply_drm_properties();
  &apply_hdr_metadata_helper();
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
