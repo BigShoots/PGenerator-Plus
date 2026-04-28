@@ -1391,74 +1391,83 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  my @steps;
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
  if($type eq "greyscale") {
-  my @ire_vals;
-  if($points==11) {
-   @ire_vals=(0,10,20,30,40,50,60,70,80,90,100);
+  if($points==256) {
+   @steps=map {
+    my $code=$_;
+    my $ire=($code>=255) ? 100 : (($code<=0) ? 0 : ($code*100/255));
+    my $stim=$ire;
+    sprintf('{"ire":%.12g,"stimulus":%.12g,"r":%d,"g":%d,"b":%d,"name":"%d"}',$ire,$stim,$code,$code,$code,$code);
+   } (255, 0..254);
   } else {
-   @ire_vals=(0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
-  }
-  my %stimulus_for_slot=map { $_ => $_ } @ire_vals;
-  if($grey_custom_enabled) {
-   my $csv=$points==11 ? $grey_steps_11 : $grey_steps_21;
-   my @vals=grep { $_ ne "" } map { my $v=$_; $v=~s/^\s+|\s+$//g; $v } split(/,/,$csv || "");
-   if(@vals == @ire_vals) {
-    my $prev=-1;
-    for(my $idx=0;$idx<scalar(@ire_vals);$idx++) {
-     my $stim=$vals[$idx] + 0;
-     $stim=0 if($stim < 0);
-     $stim=100 if($stim > 100);
-     $stim=$prev if($stim < $prev);
-     $stimulus_for_slot{$ire_vals[$idx]}=$stim;
-     $prev=$stim;
+   my @ire_vals;
+   if($points==11) {
+    @ire_vals=(0,10,20,30,40,50,60,70,80,90,100);
+   } else {
+    @ire_vals=(0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
+   }
+   my %stimulus_for_slot=map { $_ => $_ } @ire_vals;
+   if($grey_custom_enabled) {
+    my $csv=$points==11 ? $grey_steps_11 : $grey_steps_21;
+    my @vals=grep { $_ ne "" } map { my $v=$_; $v=~s/^\s+|\s+$//g; $v } split(/,/,$csv || "");
+    if(@vals == @ire_vals) {
+     my $prev=-1;
+     for(my $idx=0;$idx<scalar(@ire_vals);$idx++) {
+      my $stim=$vals[$idx] + 0;
+      $stim=0 if($stim < 0);
+      $stim=100 if($stim > 100);
+      $stim=$prev if($stim < $prev);
+      $stimulus_for_slot{$ire_vals[$idx]}=$stim;
+      $prev=$stim;
+     }
     }
    }
-  }
-  # 100% first (white reference), then 0%→95% ascending.
-  # Reading white first lets every subsequent ΔE be computed immediately
-  # and never change — HCFR achieves this with a pre-configured target
-  # luminance; we use the actual measured white instead.
-  my @ordered = (100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
-  my $lim=$patch_limited;
-  @steps=map {
-   my $v=$_;
-   my $c=0;
-    if($dv_series) {
-      if($dv_map_mode eq "1") {
-      my $stim=$stimulus_for_slot{$v}/100;
-      $stim=0 if($stim < 0);
-      $stim=1 if($stim > 1);
-      my $target_lum=0;
-      # Absolute-mode DV already applies its own roll-off relative to the
-      # mastering peak. Pre-scaling the emitted patches to force 75% white
-      # a second time makes the series reach peak roughly 10 IRE too early.
-      if($target_gamma eq "srgb") {
-       $target_lum=((($stim<=0.04045) ? $stim/12.92 : ((($stim+0.055)/1.055)**2.4)))*$max_luma;
-      } elsif($target_gamma eq "bt1886") {
-       $target_lum=($stim**2.4)*$max_luma;
-      } else {
-       my $gamma=($target_gamma_exp_resolved>0)?$target_gamma_exp_resolved:2.2;
-       $target_lum=($stim**$gamma)*$max_luma;
-      }
-      $target_lum=$max_luma if($target_lum > $max_luma);
-      my $encoded=&webui_pattern_pq_encode_normalized($target_lum);
-      $c=$lim ? int(16 + $encoded*219 + .5) : int($encoded*255 + .5);
-      } elsif($target_gamma eq "st2084") {
+   # 100% first (white reference), then 0%→95% ascending.
+   # Reading white first lets every subsequent ΔE be computed immediately
+   # and never change — HCFR achieves this with a pre-configured target
+   # luminance; we use the actual measured white instead.
+   my @ordered = (100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
+   my $lim=$patch_limited;
+   @steps=map {
+    my $v=$_;
+    my $c=0;
+     if($dv_series) {
+       if($dv_map_mode eq "1") {
+       my $stim=$stimulus_for_slot{$v}/100;
+       $stim=0 if($stim < 0);
+       $stim=1 if($stim > 1);
+       my $target_lum=0;
+       # Absolute-mode DV already applies its own roll-off relative to the
+       # mastering peak. Pre-scaling the emitted patches to force 75% white
+       # a second time makes the series reach peak roughly 10 IRE too early.
+       if($target_gamma eq "srgb") {
+        $target_lum=((($stim<=0.04045) ? $stim/12.92 : ((($stim+0.055)/1.055)**2.4)))*$max_luma;
+       } elsif($target_gamma eq "bt1886") {
+        $target_lum=($stim**2.4)*$max_luma;
+       } else {
+        my $gamma=($target_gamma_exp_resolved>0)?$target_gamma_exp_resolved:2.2;
+        $target_lum=($stim**$gamma)*$max_luma;
+       }
+       $target_lum=$max_luma if($target_lum > $max_luma);
+       my $encoded=&webui_pattern_pq_encode_normalized($target_lum);
+       $c=$lim ? int(16 + $encoded*219 + .5) : int($encoded*255 + .5);
+       } elsif($target_gamma eq "st2084") {
+       my $level=int($stimulus_for_slot{$v}/100*219+.5);
+       $c=$level+16;
+       } else {
+       my $stim=$stimulus_for_slot{$v}/100;
+       $stim=0 if($stim < 0);
+       $stim=1 if($stim > 1);
+       my $encoded=$stim>0 ? $stim**(1/2.2) : 0;
+       $c=$lim ? int(16 + $encoded*219 + .5) : int($encoded*255 + .5);
+       }
+     } else {
       my $level=int($stimulus_for_slot{$v}/100*219+.5);
-      $c=$level+16;
-      } else {
-      my $stim=$stimulus_for_slot{$v}/100;
-      $stim=0 if($stim < 0);
-      $stim=1 if($stim > 1);
-      my $encoded=$stim>0 ? $stim**(1/2.2) : 0;
-      $c=$lim ? int(16 + $encoded*219 + .5) : int($encoded*255 + .5);
-      }
-    } else {
-     my $level=int($stimulus_for_slot{$v}/100*219+.5);
-     $c=$lim?($level+16):int($level*255/219+.5);
-    }
-    my $stim=$stimulus_for_slot{$v};
-    "{\"ire\":$v,\"stimulus\":$stim,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"${v}%\"}";
-  } @ordered;
+      $c=$lim?($level+16):int($level*255/219+.5);
+     }
+     my $stim=$stimulus_for_slot{$v};
+     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"${v}%\"}";
+   } @ordered;
+  }
  } elsif($type eq "colors") {
   my $min_code=$patch_limited?16:0;
   my $span_code=$patch_limited?219:255;
@@ -3536,6 +3545,12 @@ sub webui_create_logs_bundle (@) {
   my $content=`cat $f 2>/dev/null`; chomp($content);
   push @out, ($content ne "") ? $content : "(none found)";
  }
+ push @out, "", "--- Meter Series API Status (/api/meter/series/status) ---";
+ my $series_status=&webui_meter_series_status(); chomp($series_status);
+ push @out, ($series_status ne "") ? $series_status : "(none found)";
+ push @out, "", "--- Meter Series Debug Log (/tmp/meter_series_debug.log, last 500 lines) ---";
+ my $series_debug=`tail -n 500 /tmp/meter_series_debug.log 2>/dev/null`; chomp($series_debug);
+ push @out, ($series_debug ne "") ? $series_debug : "(none found)";
  push @out, "", "--- USB / Serial ---";
  my $lsusb=`lsusb 2>/dev/null`; chomp($lsusb);
  push @out, ($lsusb ne "") ? $lsusb : "(none found)";
@@ -4715,6 +4730,13 @@ sub webui_html (@) {
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
+#meterThumbsRow,.meter-scroll-sync{scrollbar-color:#06080d #161a25;scrollbar-width:thin}
+#meterThumbsRow::-webkit-scrollbar,.meter-scroll-sync::-webkit-scrollbar{height:10px}
+#meterThumbsRow::-webkit-scrollbar-track,.meter-scroll-sync::-webkit-scrollbar-track{background:#161a25;border-radius:999px}
+#meterThumbsRow::-webkit-scrollbar-thumb,.meter-scroll-sync::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2a3142 0%,#0a0d14 100%);border-radius:999px;border:1px solid #232938}
+#meterThumbsRow::-webkit-scrollbar-thumb:hover,.meter-scroll-sync::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#394257 0%,#131823 100%)}
+.meter-scroll-sync{overflow-x:auto;overflow-y:hidden;padding-bottom:4px}
+.meter-scroll-sync>canvas{display:block}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
 align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
@@ -5150,7 +5172,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
   <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
-    <label style="display:flex;align-items:center;gap:8px;margin:-2px 0 10px;font-size:.74rem;color:var(--text2)" title="Internal testing switch. Treat the selected meter as a spectrophotometer so Device Ready and other spectro-only flows can be exercised with any connected meter."><input type="checkbox" id="meterSimulateSpectro"> Internal: Simulate spectro</label>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
@@ -5295,6 +5316,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div id="meterSeriesHeader" style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px;padding-top:8px;border-top:1px solid var(--border)">Series Measurements</div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
    <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
+    <button class="btn btn-sm btn-secondary" data-series="greyscale-256" onclick="meterSelectSeries('greyscale',256)">Greyscale 256pt</button>
     <button class="btn btn-sm btn-secondary" data-series="greyscale-21" onclick="meterSelectSeries('greyscale',21)">Greyscale 21pt</button>
     <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
     <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">Colors</button>
@@ -5322,8 +5344,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
    <input type="file" id="meterGreyProfileImportInput" accept="application/json,.json" style="display:none">
   </div>
-  <div id="meterThumbsRow" style="display:none;margin-bottom:10px">
-   <div id="meterPatchThumbs" style="display:flex;gap:2px;width:100%"></div>
+  <div id="meterThumbsRow" style="display:none;margin-bottom:10px;overflow-x:auto;overflow-y:hidden;padding-bottom:4px">
+   <div id="meterPatchThumbs" style="display:flex;gap:2px;width:100%;min-width:100%"></div>
   </div>
 
   <!-- Live Reading -->
@@ -5351,7 +5373,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div id="meterGreyProfileModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(720px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-     <div>
+    <div style="min-width:0">
       <div style="font-size:.95rem;font-weight:700;color:#eee">Custom Greyscale Values</div>
       <div id="meterGreyModalModeLabel" style="font-size:.68rem;color:var(--text2)">Current mode</div>
      </div>
@@ -5489,7 +5511,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        <div style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
        <canvas id="meterRGBCanvasGrey" width="200" height="200" style="width:100%;flex:1;min-height:0;display:block"></canvas>
       </div>
-      <canvas id="chartRGB" width="800" height="220" style="flex:1;min-width:0;height:220px;background:#0d0d15;border-radius:6px"></canvas>
+      <div id="meterRgbChartScroller" class="meter-scroll-sync" style="flex:1;min-width:0;background:#0d0d15;border-radius:6px">
+       <canvas id="chartRGB" width="800" height="220" style="width:100%;min-width:100%;height:220px;background:#0d0d15;border-radius:6px"></canvas>
+      </div>
      </div>
     </div>
     <div style="margin-bottom:10px">
@@ -5533,7 +5557,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </label>
      </div>
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px" id="chartDeltaELabel">&Delta;E CIELUV</div>
-     <canvas id="chartDeltaE" width="800" height="180" style="width:100%;height:180px;background:#0d0d15;border-radius:6px"></canvas>
+    <div id="meterDeltaEScroller" class="meter-scroll-sync" style="background:#0d0d15;border-radius:6px">
+     <canvas id="chartDeltaE" width="800" height="180" style="width:100%;min-width:100%;height:180px;background:#0d0d15;border-radius:6px"></canvas>
+    </div>
     </div>
     <div style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
@@ -5542,10 +5568,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        <input type="checkbox" id="meterPerChannelGamma" onchange="if(meterReadings&&meterReadings.length)drawAllCharts(meterReadings)" style="vertical-align:middle"> Per-channel γ
       </label>
      </div>
-     <canvas id="chartGammaValue" width="800" height="180" style="width:100%;height:180px;background:#0d0d15;border-radius:6px"></canvas>
+    <div id="meterGammaValueScroller" class="meter-scroll-sync" style="background:#0d0d15;border-radius:6px">
+     <canvas id="chartGammaValue" width="800" height="180" style="width:100%;min-width:100%;height:180px;background:#0d0d15;border-radius:6px"></canvas>
+    </div>
     </div>
     <div id="chartTooltip" style="display:none;position:fixed;pointer-events:none;z-index:9999;background:rgba(13,13,21,0.95);border:1px solid #555;border-radius:5px;padding:6px 10px;font-size:12px;color:#ddd;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:10px">
      <div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
        <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase">EOTF</div>
@@ -5553,16 +5581,20 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         <input type="checkbox" id="meterEotfLogScale" onchange="meterRedrawEotfChart();meterSaveColorPrefs()" style="vertical-align:middle"> Log scale
        </label>
       </div>
-      <canvas id="chartEOTF" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <div id="meterEotfScroller" class="meter-scroll-sync" style="width:100%;min-width:0;background:#0d0d15;border-radius:6px">
+       <canvas id="chartEOTF" width="500" height="280" style="width:100%;min-width:100%;height:280px;min-height:280px;background:#0d0d15;border-radius:6px"></canvas>
+      </div>
      </div>
-     <div>
+    <div style="min-width:0">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
          <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase">Luminance</div>
          <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Switch luminance Y-axis to logarithmic scaling for better low-light visibility.">
           <input type="checkbox" id="meterLuminanceLogScale" onchange="meterRedrawLuminanceChart();meterSaveColorPrefs()" style="vertical-align:middle"> Log scale
          </label>
         </div>
-      <canvas id="chartGamma" width="500" height="280" style="width:100%;background:#0d0d15;border-radius:6px"></canvas>
+      <div id="meterLuminanceScroller" class="meter-scroll-sync" style="width:100%;min-width:0;background:#0d0d15;border-radius:6px">
+       <canvas id="chartGamma" width="500" height="280" style="width:100%;min-width:100%;height:280px;min-height:280px;background:#0d0d15;border-radius:6px"></canvas>
+      </div>
      </div>
     </div>
    </div>
@@ -7793,7 +7825,7 @@ function meterFindMeasuredWhiteReading(){
   const liveWhite=meterReadings.find(isWhiteReading);
   if(liveWhite) return liveWhite;
  }
- const preferredKeys=['greyscale-21','greyscale-11','saturations-24','colors-30'];
+ const preferredKeys=['greyscale-256','greyscale-21','greyscale-11','saturations-24','colors-30'];
  let best=null;
  const considerSnapshot=(snap)=>{
   if(!snap||!Array.isArray(snap.readings)) return;
@@ -10200,6 +10232,7 @@ function meterRecoverSeries(s){
   if(seriesType==='colors') return 30;
   if(seriesType==='saturations') return 24;
   const basis=count||stepCount;
+  if(basis>=200) return 256;
   return basis>0&&basis<=11?11:21;
  };
  // Recover steps: prefer server-provided steps, else rebuild client-side
@@ -10230,6 +10263,7 @@ function meterRecoverSeries(s){
  meterActiveSeriesSignalMode=String((s.signal_mode||meterChartSignalMode()||'sdr')).toLowerCase();
  meterActiveSeriesKey=type+'-'+points;
  meterSharedSeriesId=s.series_id||null;
+ meterGreyscaleScrollRatio=0;
  meterLastChartCount=0;
  // Restore readings — always clear the previous series first so a cached
  // empty Sat Sweep can never leave the old Colors CIE plot on screen.
@@ -10995,6 +11029,8 @@ function meterStop(){
 
 async function meterSignalDeviceReady(){
  if(meterReadySignalPending||!meterSeriesAwaitingReady) return;
+ const progressEl=document.getElementById('meterProgressLabel');
+ const previousLabel=progressEl?(progressEl.textContent||''):'';
  meterReadySignalPending=true;
  meterUpdateReadButtons();
  try{
@@ -11006,16 +11042,43 @@ async function meterSignalDeviceReady(){
   }
   const r=await fetchJSON('/api/meter/series/ready',{method:'POST',_timeoutMs:5000});
   if(!r||r.status!=='ok'){
+  if(r&&/not waiting for device readiness/i.test(r.message||'')){
+   meterSeriesAwaitingReady=false;
+   await meterSyncSeriesAfterReady(previousLabel,4000);
+   return;
+  }
    toast(r&&r.message?r.message:'Failed to resume measurement',true);
    return;
   }
   meterSeriesAwaitingReady=false;
-  await meterPollSeries();
+  await meterSyncSeriesAfterReady(previousLabel,4000);
  }catch(e){
   toast('Failed to resume measurement',true);
  }finally{
   meterReadySignalPending=false;
   meterUpdateReadButtons();
+ }
+}
+
+async function meterSyncSeriesAfterReady(previousLabel,timeoutMs){
+ const start=Date.now();
+ const prior=(previousLabel||'');
+ let idleSince=0;
+ while(Date.now()-start<Math.max(250,Number(timeoutMs)||0)){
+  try{
+  await meterPollSeries();
+  }catch(e){}
+  const progressEl=document.getElementById('meterProgressLabel');
+  const currentLabel=progressEl?(progressEl.textContent||''):'';
+  if(currentLabel!==prior) return;
+  if(!meterSeriesRunning) return;
+  if(!meterSeriesAwaitingReady){
+   if(!idleSince) idleSince=Date.now();
+   if(Date.now()-idleSince>=750) return;
+  } else {
+   idleSince=0;
+  }
+  await new Promise(r=>setTimeout(r,150));
  }
 }
 
@@ -11096,7 +11159,7 @@ function meterSelectPatchFromInteraction(step,reading,opts){
    colorHighlightTableRow(resolvedStep.name);
   }
  } else {
-  meterSelectedThumbIre=resolvedStep.ire;
+  meterSelectedThumbIre=meterStepNameKey(resolvedStep);
   const container=document.getElementById('meterPatchThumbs');
   if(container&&container.children.length>0){
    const completed=new Set((meterReadings||[]).filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
@@ -11184,6 +11247,34 @@ let meterGreyEditorPoints=21;
 function meterGreyDefaultSlots(points){
  return points===11?[...METER_GREY_SLOTS_11]:[...METER_GREY_SLOTS_21];
 }
+
+function meterGreySeriesSlots(points){
+ if(points===256) return Array.from({length:256},(_,idx)=>idx);
+ return meterGreyDefaultSlots(points);
+}
+
+function meterGreyAnalysisIreFromCode(code){
+ const value=Number(code);
+ if(!Number.isFinite(value)) return 0;
+ if(value<=0) return 0;
+ if(value>=255) return 100;
+ return value*100/255;
+}
+
+function meterGreyscaleStepLabel(step){
+ if(!step) return '';
+ if(step.name!=null && String(step.name)!=='') return String(step.name);
+ if(step.ire!=null){
+  const ire=Number(step.ire);
+  if(Number.isFinite(ire)) return (Math.round(ire*100)/100)+'%';
+ }
+ return '';
+}
+
+function meterGreyscaleChartLabel(step,steps,idx){
+ const label=meterGreyscaleStepLabel(step);
+ return label||'';
+ }
 
 function meterGreyProfileTemplate(){
  const makeSteps=(points)=>{
@@ -11420,17 +11511,25 @@ function meterSaveGreyProfileEditor(){
 function meterBuildStepsJS(type,points){
  const steps=[];
  if(type==='greyscale'){
-  const ires=meterGreyDefaultSlots(points);
-  const stimuli=meterGreyStimulusValues(points);
-  const stimulusBySlot={};
-  ires.forEach((slot,idx)=>{ stimulusBySlot[slot]=stimuli[idx]; });
-  // Measurement order: 100% first (white reference), then 0%→95% ascending
-  const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
-  ordered.forEach(v=>{
-   const stim=stimulusBySlot[v]!=null?stimulusBySlot[v]:v;
-    const c=meterCodeFromSignalPercent(stim);
-   steps.push({ire:v,stimulus:stim,r:c,g:c,b:c,name:v+'%'});
-  });
+  if(points===256){
+   const ordered=[255,...Array.from({length:255},(_,idx)=>idx)];
+   ordered.forEach(code=>{
+    const ire=meterGreyAnalysisIreFromCode(code);
+    steps.push({ire:ire,stimulus:ire,r:code,g:code,b:code,name:String(code)});
+   });
+  } else {
+   const ires=meterGreySeriesSlots(points);
+   const stimuli=meterGreyStimulusValues(points);
+   const stimulusBySlot={};
+   ires.forEach((slot,idx)=>{ stimulusBySlot[slot]=stimuli[idx]; });
+   // Measurement order: 100% first (white reference), then 0%→95% ascending
+   const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
+   ordered.forEach(v=>{
+    const stim=stimulusBySlot[v]!=null?stimulusBySlot[v]:v;
+     const c=meterCodeFromSignalPercent(stim);
+    steps.push({ire:v,stimulus:stim,r:c,g:c,b:c,name:v+'%'});
+   });
+  }
  } else if(type==='colors'){
   steps.push(...meterBuildColorCheckerStepsJS());
  } else if(type==='saturations'){
@@ -11487,6 +11586,7 @@ function meterSelectSeries(type,points){
  meterReadings=[];
  meterWhiteReading=null;
  meterSeriesSteps=null;
+ meterGreyscaleScrollRatio=0;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
@@ -11740,13 +11840,145 @@ async function meterPollSeries(){
 
 let meterSelectedThumbIre=null;
 let meterThumbsBuilt=false; // track if thumbnails are already built for current series
+let meterGreyscaleScrollRatio=0;
+let meterGreyscaleScrollSyncing=false;
+let meterGreyscaleScrollFrame=0;
+
+function meterGreyscaleScrollSource(){
+ return document.getElementById('meterThumbsRow');
+}
+
+function meterGreyscaleScrollTargets(){
+ const ids=['meterRgbChartScroller','meterDeltaEScroller','meterGammaValueScroller'];
+ return ids.map(id=>document.getElementById(id)).filter(Boolean);
+}
+
+function meterGreyscaleScrollElements(){
+ const source=meterGreyscaleScrollSource();
+ return (source?[source]:[]).concat(meterGreyscaleScrollTargets());
+}
+
+function meterGreyscaleCanvasPairs(){
+ return [
+  ['meterRgbChartScroller','chartRGB'],
+  ['meterDeltaEScroller','chartDeltaE'],
+  ['meterGammaValueScroller','chartGammaValue']
+ ];
+}
+
+function meterGreyscaleStaticCanvasPairs(){
+ return [
+  ['meterEotfScroller','chartEOTF'],
+  ['meterLuminanceScroller','chartGamma']
+ ];
+}
+
+function meterGreyscaleScrollMax(el){
+ if(!el) return 0;
+ return Math.max(0,(el.scrollWidth||0)-(el.clientWidth||0));
+}
+
+function meterGreyscaleScrollRatioFor(el){
+ const max=meterGreyscaleScrollMax(el);
+ return max>0 ? Math.max(0,Math.min(1,el.scrollLeft/max)) : 0;
+}
+
+function meterSetGreyscaleScrollRatio(el,ratio){
+ if(!el) return;
+ const max=meterGreyscaleScrollMax(el);
+ el.scrollLeft=max>0 ? Math.max(0,Math.min(1,ratio))*max : 0;
+}
+
+function meterQueueGreyscaleTargetSync(){
+ if(meterGreyscaleScrollFrame) return;
+ meterGreyscaleScrollFrame=window.requestAnimationFrame(()=>{
+  meterGreyscaleScrollFrame=0;
+  meterGreyscaleScrollTargets().forEach(el=>meterSetGreyscaleScrollRatio(el,meterGreyscaleScrollRatio));
+ });
+}
+
+function meterGreyscaleChartContentWidth(stepCount,viewportWidth){
+ const count=Math.max(0,Number(stepCount)||0);
+ const viewport=Math.max(320,Number(viewportWidth)||0);
+ return Math.max(viewport,Math.round(count*36+90));
+}
+
+function meterGreyscaleRotateXLabels(stepCount){
+ return false;
+}
+
+function meterGreyscaleChartPad(basePad,stepCount){
+ const pad=Object.assign({},basePad||{t:20,r:15,b:30,l:45});
+ if(meterGreyscaleRotateXLabels(stepCount)) pad.b=Math.max(pad.b||0,60);
+ return pad;
+}
+
+function meterBindGreyscaleScrollSync(){
+ const source=meterGreyscaleScrollSource();
+ if(!source||source.dataset.greyscaleScrollBound==='1') return;
+ source.dataset.greyscaleScrollBound='1';
+ source.addEventListener('scroll',()=>{
+  if(meterGreyscaleScrollSyncing) return;
+  const nextRatio=meterGreyscaleScrollRatioFor(source);
+  if(Math.abs(nextRatio-meterGreyscaleScrollRatio)<0.0005) return;
+  meterGreyscaleScrollRatio=nextRatio;
+  meterQueueGreyscaleTargetSync();
+ },{passive:true});
+}
+
+function meterUpdateGreyscaleChartScrollLayout(stepCount){
+ const count=Math.max(0,Number(stepCount)||0);
+ const scrollMode=(meterActiveSeriesType==='greyscale'&&count>64);
+ const thumbRow=document.getElementById('meterThumbsRow');
+ const fallbackViewport=Math.max(320,Math.round((thumbRow&&thumbRow.clientWidth)||0)||800);
+ meterGreyscaleCanvasPairs().forEach(pair=>{
+  const scroller=document.getElementById(pair[0]);
+  const canvas=document.getElementById(pair[1]);
+  if(!scroller||!canvas) return;
+  const viewport=Math.max(320,Math.round(scroller.clientWidth||fallbackViewport));
+  if(scrollMode){
+   const desired=meterGreyscaleChartContentWidth(count,viewport);
+   canvas.style.width=desired+'px';
+   canvas.style.minWidth=desired+'px';
+   scroller.style.overflowX='hidden';
+  } else {
+   canvas.style.width='100%';
+   canvas.style.minWidth='100%';
+   scroller.style.overflowX='hidden';
+   scroller.scrollLeft=0;
+  }
+ });
+ meterGreyscaleStaticCanvasPairs().forEach(pair=>{
+  const scroller=document.getElementById(pair[0]);
+  const canvas=document.getElementById(pair[1]);
+  if(!scroller||!canvas) return;
+  canvas.style.width='100%';
+  canvas.style.minWidth='100%';
+  scroller.style.overflowX='hidden';
+  scroller.scrollLeft=0;
+ });
+ if(!scrollMode) meterGreyscaleScrollRatio=0;
+ if(meterGreyscaleScrollFrame){
+  window.cancelAnimationFrame(meterGreyscaleScrollFrame);
+  meterGreyscaleScrollFrame=0;
+ }
+ meterBindGreyscaleScrollSync();
+ meterGreyscaleScrollSyncing=true;
+ meterGreyscaleScrollElements().forEach(el=>meterSetGreyscaleScrollRatio(el,meterGreyscaleScrollRatio));
+ meterGreyscaleScrollSyncing=false;
+}
+
 function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  const container=document.getElementById('meterPatchThumbs');
  if(!container) return;
+ const scrollMode=sortedSteps.length>64;
+ container.style.flexWrap='nowrap';
+ container.style.width=scrollMode?'max-content':'100%';
+ container.style.minWidth='100%';
  const needsRebuild=(container.children.length!==sortedSteps.length)||sortedSteps.some((step,idx)=>{
   const child=container.children[idx];
   const isGrey=step.r===step.g&&step.g===step.b;
-  const label=isGrey?(step.ire+'%'):(step.name||'');
+  const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
   return !child||(child.dataset.key||'')!==meterStepNameKey(step)||(child.textContent||'')!==label;
  });
  if(needsRebuild){
@@ -11758,8 +11990,9 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
    const bgColor=meterPreviewColorForStep(step);
    const textColor=meterContrastTextColor(bgColor);
    const textShadow=textColor==='#eee'?'0 1px 2px rgba(0,0,0,.75)':'0 1px 1px rgba(255,255,255,.18)';
-   const label=isGrey?(step.ire+'%'):(step.name||'');
-   thumb.style.cssText='flex:1;display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 2px;text-shadow:'+textShadow;
+  const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
+  const flexStyle=scrollMode?'flex:0 0 34px;min-width:34px;':'flex:1 1 0;';
+  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 2px;text-shadow:'+textShadow;
    thumb.textContent=label;
    thumb.dataset.ire=step.ire;
    thumb.dataset.r=step.r;
@@ -11780,13 +12013,12 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
  const hasReadings=completedIres&&completedIres.size>0;
  for(let i=0;i<container.children.length;i++){
   const thumb=container.children[i];
-  const ire=parseInt(thumb.dataset.ire);
-  const key=thumb.dataset.key||thumb.dataset.name||String(ire);
+  const key=thumb.dataset.key||thumb.dataset.name||String(thumb.dataset.ire||'');
   const done=completedIres&&completedIres.has(key);
   // All thumbs fully visible always; completed ones get a checkmark overlay
   thumb.style.opacity='1';
   const isReading=(currentIre!=null&&key===currentIre);
-  const isSelected=(meterSelectedThumbIre!=null&&ire===meterSelectedThumbIre);
+  const isSelected=(meterSelectedThumbIre!=null&&key===meterSelectedThumbIre);
   if(isReading){
    thumb.style.boxShadow='';
    thumb.style.animation='thumbPulse 1s ease-in-out infinite';
@@ -11883,6 +12115,7 @@ function drawAllChartsPreset(sortedSteps){
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=sortedSteps.filter(s=>s.r===s.g&&s.g===s.b);
   if(gsSteps.length===0) return;
+  meterUpdateGreyscaleChartScrollLayout(gsSteps.length);
   drawRGBChartPreset(gsSteps);
   drawDeltaEPreset(gsSteps);
   drawDeltaE2000Preset(gsSteps);
@@ -11905,10 +12138,13 @@ function drawRGBChartPreset(gsSteps){
  if(!ctx) return;
  if(gsSteps.length===0) return;
  const yMin=95,yMax=105;
+ const rotateX=meterGreyscaleRotateXLabels(gsSteps.length);
  const chart=drawChartGrid(ctx,{
+  pad:meterGreyscaleChartPad(null,gsSteps.length),
   xSteps:gsSteps.length-1||1,ySteps:4,
-  xLabel:(i,n)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
-  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(0)
+  xLabel:(i,n)=>i<gsSteps.length?meterGreyscaleChartLabel(gsSteps[i],gsSteps,i):'',
+  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(0),
+  rotateX:rotateX
  });
  const refY=(100-yMin)/(yMax-yMin);
  drawDashedLine(ctx,chart,[[0,refY],[1,refY]],'#555');
@@ -11920,10 +12156,13 @@ function drawDeltaEPreset(gsSteps){
  const ctx=getChartCtx('chartDeltaE');
  if(!ctx) return;
  const yMax=5;
+ const rotateX=meterGreyscaleRotateXLabels(gsSteps.length);
  const chart=drawChartGrid(ctx,{
+  pad:meterGreyscaleChartPad({t:20,r:15,b:30,l:55},gsSteps.length),
   xSteps:gsSteps.length-1||1,ySteps:5,
-  xLabel:(i)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
-  yLabel:(i,n)=>(yMax*i/n).toFixed(1)
+  xLabel:(i)=>i<gsSteps.length?meterGreyscaleChartLabel(gsSteps[i],gsSteps,i):'',
+  yLabel:(i,n)=>(yMax*i/n).toFixed(1),
+  rotateX:rotateX
  });
  if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
  if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
@@ -12030,11 +12269,13 @@ function drawGammaValuePreset(gsSteps){
  let yMin=Math.max(1.6,Math.floor((Math.min(...(targetVals.length?targetVals:[2.2]))-0.15)*10)/10);
  let yMax=Math.min(2.8,Math.ceil((Math.max(...(targetVals.length?targetVals:[2.4]))+0.15)*10)/10);
  if(yMax-yMin<0.6){ const mid=(yMin+yMax)/2; yMin=Math.max(1.6,mid-0.3); yMax=Math.min(2.8,mid+0.3); }
+ const rotateX=meterGreyscaleRotateXLabels(gsSteps.length);
  const chart=drawChartGrid(ctx,{
-  pad:{t:34,r:15,b:30,l:55},
+  pad:meterGreyscaleChartPad({t:34,r:15,b:30,l:55},gsSteps.length),
   xSteps:gsSteps.length-1||1,ySteps:4,
-  xLabel:(i)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
-  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2)
+  xLabel:(i)=>i<gsSteps.length?meterGreyscaleChartLabel(gsSteps[i],gsSteps,i):'',
+  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2),
+  rotateX:rotateX
  });
  const tgtPts=[];
  steps.forEach((s,idx)=>{
@@ -12103,11 +12344,13 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   yMax=Math.max(yMax,2.5);
   if(yMax-yMin<0.6){ const mid=(yMin+yMax)/2; yMin=Math.max(1.6,mid-0.3); yMax=Math.min(2.8,mid+0.3); }
  }
+ const rotateX=meterGreyscaleRotateXLabels(xSteps.length);
  const chart=drawChartGrid(ctx,{
-  pad:{t:34,r:15,b:30,l:55},
+  pad:meterGreyscaleChartPad({t:34,r:15,b:30,l:55},xSteps.length),
   xSteps:xSteps.length-1||1,ySteps:4,
-  xLabel:(i)=>i<xSteps.length?xSteps[i].ire+'%':'',
-  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2)
+  xLabel:(i)=>i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'',
+  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2),
+  rotateX:rotateX
  });
  const tgtPts=[],mPts=[],emptyPts=[];
  xSteps.forEach((step,idx)=>{
@@ -12190,6 +12433,7 @@ function drawAllCharts(readings){
  const gs=readings.filter(r=>r.luminance!=null&&r.luminance>=0&&r.r_code===r.g_code&&r.g_code===r.b_code)
   .sort((a,b)=>(a.ire||0)-(b.ire||0));
  if(gs.length>0){
+  meterUpdateGreyscaleChartScrollLayout((allSteps&&allSteps.length)||gs.length);
   drawRGBChart(gs,allSteps,readingMap);
   drawDeltaEChart(gs,allSteps,readingMap);
   drawGammaValueChart(gs,allSteps,readingMap);
@@ -12350,11 +12594,14 @@ function drawRGBChart(gs,allSteps,readingMap){
   if(yMin>99) yMin=99; if(yMax<101) yMax=101;
   if(yMax-yMin<4){const mid=(yMin+yMax)/2;yMin=mid-2;yMax=mid+2;}
  } else {yMin=95;yMax=105;}
+   const rotateX=meterGreyscaleRotateXLabels(xSteps.length);
  const chart=drawChartGrid(ctx,{
+    pad:meterGreyscaleChartPad(null,xSteps.length),
   xInset:15,
   xSteps:xSteps.length-1||1,ySteps:4,
-  xLabel:(i)=>i<xSteps.length?xSteps[i].ire+'%':'',
-  yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(1)
+    xLabel:(i)=>i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'',
+    yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(1),
+    rotateX:rotateX
  });
  // Reference line at 100%
  const refY=(100-yMin)/(yMax-yMin);
@@ -12540,12 +12787,14 @@ function drawDeltaEChart(gs,allSteps,readingMap){
  const n=xSteps.length;
  const rawW=ctx.w-55-15;
  const estBarW=Math.max(8,Math.min(30,rawW/(n*1.5)));
+ const rotateX=meterGreyscaleRotateXLabels(n);
  const chart=drawChartGrid(ctx,{
-  pad:{t:20,r:15,b:30,l:55},
+  pad:meterGreyscaleChartPad({t:20,r:15,b:30,l:55},n),
   xInset:estBarW/2+4,
   xSteps:n-1||1,ySteps:Math.min(5,Math.ceil(yMax)),
-  xLabel:(i)=>i<n?xSteps[i].ire+'%':'',
-  yLabel:(i,nn)=>(yMax*i/nn).toFixed(yMax>5?0:1)
+  xLabel:(i)=>i<n?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'',
+  yLabel:(i,nn)=>(yMax*i/nn).toFixed(yMax>5?0:1),
+  rotateX:rotateX
  });
  // Reference lines
  if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
@@ -12638,7 +12887,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
   pad:{t:20,r:15,b:30,l:55},
   xInset:estBarW/2+4,
   xSteps:n-1||1,ySteps:Math.min(5,Math.ceil(yMax)),
-  xLabel:(i)=>i<n?xSteps[i].ire+'%':'',
+  xLabel:(i)=>i<n?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'',
   yLabel:(i,nn)=>(yMax*i/nn).toFixed(yMax>5?0:1)
  });
  if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
@@ -12673,7 +12922,7 @@ function drawDeltaE2000Preset(gsSteps){
  const yMax=5;
  const chart=drawChartGrid(ctx,{
   xSteps:gsSteps.length-1||1,ySteps:5,
-  xLabel:(i)=>i<gsSteps.length?gsSteps[i].ire+'%':'',
+  xLabel:(i)=>i<gsSteps.length?meterGreyscaleChartLabel(gsSteps[i],gsSteps,i):'',
   yLabel:(i,n)=>(yMax*i/n).toFixed(1)
  });
  if(1/yMax<=1) drawDashedLine(ctx,chart,[[0,1/yMax],[1,1/yMax]],'#4caf5080');
@@ -13507,6 +13756,7 @@ function chartHandleClick(e,canvasId){
 
 function meterSeriesLabelFromKey(key){
  return {
+  'greyscale-256':'Greyscale 256pt',
   'greyscale-21':'Greyscale 21pt',
   'greyscale-11':'Greyscale 11pt',
   'colors-30':'Colors',
@@ -13527,6 +13777,7 @@ function meterGetSeriesSnapshotByKey(key){
 
 function meterAllSeriesReportOptions(){
  return [
+  {key:'greyscale-256',label:'Greyscale 256pt'},
   {key:'greyscale-21',label:'Greyscale 21pt'},
   {key:'greyscale-11',label:'Greyscale 11pt'},
   {key:'colors-30',label:'Colors'},
@@ -13656,7 +13907,7 @@ function meterBuildGreyscaleReportTable(){
    de='0.00';
   }
   rows+='<tr>'
-   +'<td>'+(rd.ire!=null?rd.ire+'%':'--')+'</td>'
+    +'<td>'+(rd.name||((rd.ire!=null)?(Math.round(rd.ire*100)/100)+'%':'--'))+'</td>'
    +'<td>'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(2))+'</td>'
    +'<td>'+(rd.x!=null?rd.x.toFixed(4):'--')+'</td>'
    +'<td>'+(rd.y!=null?rd.y.toFixed(4):'--')+'</td>'
@@ -14877,6 +15128,21 @@ function meterRefreshActiveSeriesCharts(){
   drawAllChartsPreset(sortedSteps);
  }
 }
+
+let meterGreyscaleResizeTimer=null;
+window.addEventListener('resize',()=>{
+ if(meterActiveSeriesType!=='greyscale') return;
+ if(meterGreyscaleResizeTimer) clearTimeout(meterGreyscaleResizeTimer);
+ meterGreyscaleResizeTimer=setTimeout(()=>{
+  if(meterReadings&&meterReadings.length){
+   const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   drawAllCharts(sorted);
+  } else if(meterSeriesSteps&&meterSeriesSteps.length){
+   const sorted=[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   drawAllChartsPreset(sorted);
+  }
+ },80);
+});
 
 document.getElementById('meterTargetGamut').addEventListener('change',()=>{
  updateMeterTargetWhitepointVisibility();
