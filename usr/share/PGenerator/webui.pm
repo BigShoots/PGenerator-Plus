@@ -9240,7 +9240,8 @@ async function meterReadOnce(){
    readPayload.patch_size=getMeterPatchSize();
   }
   const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(readPayload),_timeoutMs:5000});
+   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
+  if(!initR){toast('Meter read connection error',true);throw new Error('Meter read connection error');}
   if(initR&&initR.status==='error'){toast(initR.message||'Read failed',true);throw new Error(initR.message);}
   // Poll for result
   const result=await meterPollRead(60000);
@@ -9304,7 +9305,7 @@ async function meterPollRead(timeoutMs){
  await new Promise(r=>setTimeout(r,100));
  while(Date.now()-start<timeoutMs){
   try{
-   const r=await fetchJSON('/api/meter/read/result',{_timeoutMs:5000});
+   const r=await fetchJSON('/api/meter/read/result',{_quiet:true,_timeoutMs:5000});
    if(r&&r.status!=='measuring') return r;
   }catch(e){}
   await new Promise(r=>setTimeout(r,200));
@@ -9365,7 +9366,8 @@ async function meterContinuousLoop(){
    readPayload.patch_size=getMeterPatchSize();
   }
   const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(readPayload),_timeoutMs:5000});
+   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
+  if(!initR){meterStopContinuous();toast('Meter read connection error',true);return;}
   if(initR&&initR.status==='error'){meterStopContinuous();return;}
   const r=await meterPollRead(60000);
   if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
