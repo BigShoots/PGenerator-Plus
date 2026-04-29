@@ -177,6 +177,28 @@ sub wifi_set_country (@) {
 ###############################################
 #          Wifi AP Password function          #
 ###############################################
+sub normalize_hostapd_ap_security (@) {
+ my ($content)=@_;
+ $content="" if(!defined $content);
+ my %wanted=(
+  auth_algs=>"1",
+  wpa=>"2",
+  wpa_key_mgmt=>"WPA-PSK",
+  wpa_pairwise=>"CCMP",
+  rsn_pairwise=>"CCMP",
+  ignore_broadcast_ssid=>"0"
+ );
+ foreach my $key (qw(auth_algs wpa wpa_key_mgmt wpa_pairwise rsn_pairwise ignore_broadcast_ssid)) {
+  if($content=~/^$key=/m) {
+   $content=~s/^$key=.*/$key=$wanted{$key}/m;
+  } else {
+   $content.="\n" if($content ne "" && $content!~/\n$/);
+   $content.="$key=$wanted{$key}\n";
+  }
+ }
+ return $content;
+}
+
 sub wifi_ap_apply_conf (@) {
  my $response = "";
  $ssid=$ARGV[1];
@@ -184,6 +206,7 @@ sub wifi_ap_apply_conf (@) {
  my $content=&read_from_file($hostapd_conf);
  $content=~s/ssid=.*/ssid=$ssid/;
  $content=~s/wpa_passphrase=.*/wpa_passphrase=$password/;
+ $content=&normalize_hostapd_ap_security($content);
  &write_file("$hostapd_conf.tmp",$hostapd_conf,$content);
  system("$hostapd_init restart");
 }
