@@ -7,7 +7,7 @@
 # patch series; this is the per-patch equivalent for ad-hoc reads.
 #
 # Usage:
-#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout]
+#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
 #   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [signal_range]
@@ -30,6 +30,7 @@ SIGNAL_MODE_DEFAULT="${5:-sdr}"
 MAX_LUMA_DEFAULT="${6:-1000}"
 METER_PORT="${7:-}"
 IDLE_TIMEOUT="${8:-300}"
+REQUIRE_DEVICE_READY="${9:-0}"
 
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
@@ -40,6 +41,7 @@ PID_FILE="/tmp/meter_session.pid"
 CONFIG_FILE="/tmp/meter_session.config"
 LOCK_FILE="/tmp/meter_session.lock"
 LOG_FILE="/tmp/meter_session.log"
+READY_FILE="/tmp/meter_session_ready.signal"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
 startup_marker() { log "startup marker: $*"; }
@@ -55,6 +57,78 @@ write_state() {
 startup_output_excerpt() {
  [[ -f "$OUTFILE" ]] || return 0
  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | tail -n 8 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//'
+}
+
+output_size() {
+ if [[ -f "$OUTFILE" ]]; then
+  wc -c < "$OUTFILE" 2>/dev/null | tr -d '[:space:]'
+ else
+  echo 0
+ fi
+}
+
+clean_output_since() {
+ local offset="${1:-0}"
+ local start=$((offset + 1))
+ [[ -f "$OUTFILE" ]] || return 0
+ tail -c +"$start" "$OUTFILE" 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'
+}
+
+manual_calibration_setup_prompt() {
+ local normalized
+ normalized=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+ printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|calibration position|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup'
+}
+
+manual_initial_measurement_prompt() {
+ local normalized
+ normalized=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+ printf '%s' "$normalized" | grep -qiE 'place .*instrument|place .*meter|position .*instrument|position .*meter'
+}
+
+manual_ready_prompt_reason() {
+ local clean_out="$1"
+ local normalized
+ normalized=$(printf '%s' "$clean_out" | tr '[:upper:]' '[:lower:]')
+ if printf '%s' "$normalized" | grep -qiE 'incorrect position|meter is in incorrect position'; then
+  echo "incorrect_position"
+  return 0
+ fi
+ if manual_calibration_setup_prompt "$clean_out"; then
+  echo "calibration_setup"
+  return 0
+ fi
+ if manual_initial_measurement_prompt "$clean_out"; then
+  echo "initial_measurement"
+  return 0
+ fi
+ return 1
+}
+
+manual_ready_prompt_message() {
+ case "$1" in
+  calibration_setup)
+   printf '%s' 'Place the meter on its white calibration tile'
+   ;;
+  incorrect_position)
+   printf '%s' 'Reposition the meter and continue the reading'
+   ;;
+  *)
+   printf '%s' 'Position the meter and continue when ready'
+   ;;
+ esac
+}
+
+wait_for_device_ready() {
+ local reason="${1:-initial_measurement}"
+ local message
+ message=$(manual_ready_prompt_message "$reason")
+ rm -f "$READY_FILE"
+ write_state "{\"status\":\"running\",\"awaiting_ready\":true,\"awaiting_ready_reason\":\"$reason\",\"message\":\"$message\"}"
+ while [[ ! -f "$READY_FILE" ]]; do
+  sleep 0.2
+ done
+ rm -f "$READY_FILE"
 }
 
 patch_request_body() {
@@ -84,8 +158,8 @@ if ! flock -n 9; then
  exit 0
 fi
 echo $$ > "$PID_FILE"
-printf '%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" > "$CONFIG_FILE"
-log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT idle=${IDLE_TIMEOUT}s)"
+printf '%s|%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" "$REQUIRE_DEVICE_READY" > "$CONFIG_FILE"
+log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT ready_gate=$REQUIRE_DEVICE_READY idle=${IDLE_TIMEOUT}s)"
 startup_marker "pid/config written"
 
 # --- spotread bring-up (mirrors meter_series.sh) ---
@@ -171,7 +245,7 @@ cleanup() {
  [[ -n "$BG_PID" ]] && pkill -9 -P "$BG_PID" 2>/dev/null
  [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
  pkill -9 -x spotread 2>/dev/null
- rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE"
+ rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE"
 }
 trap cleanup EXIT INT TERM
 
@@ -222,6 +296,14 @@ BG_PID=$!
 exec 3>"$CMDPIPE"
 startup_marker "spotread spawned (bg_pid=$BG_PID)"
 
+# Publish the command FIFO immediately so the web UI can queue a manual READ
+# even while startup is paused on an internal meter prompt.
+rm -f "$CMD_FIFO" "$READY_FILE"
+mkfifo "$CMD_FIFO"
+chmod 666 "$CMD_FIFO"
+exec 4<>"$CMD_FIFO"
+startup_marker "command FIFO created"
+
 # Wait for spotread prompt. Allow up to 60 s on a cold boot so the first
 # manual read after a Pi restart doesn't fail during slow USB bring-up.
 WAITED=0
@@ -241,12 +323,16 @@ while (( WAITED < 600 )); do
   WAITED=$((WAITED + 20))
   continue
  fi
- if (( WHITE_REF_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qiE "white[[:space:]-]+reference|calibration[[:space:]-]+tile|calibration position|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup"; then
+ if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$CLEAN_OUT"; then
   log "detected white-reference calibration prompt during startup"
   startup_marker "white-reference prompt seen"
   STARTUP_HINT="white_reference_prompt"
-  write_state '{"status":"starting","message":"Place the meter on its white calibration tile"}'
-  sleep 4
+  if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+   wait_for_device_ready "calibration_setup"
+  else
+   write_state '{"status":"starting","message":"Place the meter on its white calibration tile"}'
+   sleep 4
+  fi
   printf " " >&3
   WHITE_REF_DONE=1
   WAITED=$((WAITED + 40))
@@ -275,14 +361,6 @@ if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep
 fi
 log "spotread ready in $((WAITED / 10))s"
 startup_marker "ready prompt reached"
-
-# Set up the command FIFO immediately so the WebUI can see a live session and
-# queue a READ even if spotread spends a few seconds in one-time refresh calibration.
-rm -f "$CMD_FIFO"
-mkfifo "$CMD_FIFO"
-chmod 666 "$CMD_FIFO"
-exec 4<>"$CMD_FIFO"
-startup_marker "command FIFO created"
 
 # Refresh-rate calibration prompt (CRT/OLED). Display white, send a key once,
 # then continue — some spotread builds redraw the same prompt instead of adding
@@ -339,6 +417,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 
    # Trigger reading and wait for it
    PREV_COUNT=$(count_results)
+     SCAN_OFFSET=$(output_size)
    printf " " >&3
   READ_TIMEOUT=60
   (( IRE <= 5 )) && READ_TIMEOUT=70
@@ -351,12 +430,29 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
      GOT_RESULT=true
      break
     fi
-    CLEAN_NOW=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-    if [[ $RETRIED_COMM -eq 0 && "$CLEAN_NOW" == *"Spot read failed due to communication problem"* ]]; then
-     log "spotread communication problem during read - retrying once"
-     printf " " >&3
-     RETRIED_COMM=1
-     READ_TIMEOUT=$((READ_TIMEOUT + 15))
+      NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
+      if [[ -n "$NEW_OUTPUT" ]]; then
+       CUR_SIZE=$(output_size)
+       if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+        log "spotread communication problem during read - retrying once"
+        printf " " >&3
+        RETRIED_COMM=1
+        READ_TIMEOUT=$((READ_TIMEOUT + 15))
+        SCAN_OFFSET=$(output_size)
+        continue
+       fi
+       if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+        if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+         log "manual prompt during read: reason=$PROMPT_REASON name=$NAME"
+         wait_for_device_ready "$PROMPT_REASON"
+         printf " " >&3
+         READ_START=$SECONDS
+         READ_TIMEOUT=$((READ_TIMEOUT + 30))
+         SCAN_OFFSET=$(output_size)
+         continue
+        fi
+       fi
+       SCAN_OFFSET="$CUR_SIZE"
     fi
     sleep 0.1
    done
