@@ -2,7 +2,7 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range]
 
 set -o pipefail
 
@@ -22,6 +22,7 @@ DV_MAP_MODE="${13:-}"
 METER_PORT="${14:-}"
 READY_FILE="${15:-/tmp/meter_series_ready_${SERIES_ID}.signal}"
 REQUIRE_DEVICE_READY="${16:-0}"
+PATTERN_SIGNAL_RANGE="${17:-}"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
@@ -30,6 +31,26 @@ INITIAL_READY_PENDING=0
 
 json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+patch_request_body() {
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7"
+ local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":255,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
+ if [[ -n "$signal_range" ]]; then
+  payload="$payload,\"signal_range\":\"$signal_range\""
+ fi
+ payload="$payload}"
+ printf '%s' "$payload"
+}
+
+post_patch() {
+ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1
+}
+
+post_patch_timeout() {
+ timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1 || true
 }
 
 wait_for_device_ready() {
@@ -76,6 +97,18 @@ clean_output_since() {
  tail -c +"$start" "$OUTFILE" 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'
 }
 
+manual_calibration_setup_prompt() {
+ local normalized
+ normalized=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+ printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|calibration position|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup'
+}
+
+manual_initial_measurement_prompt() {
+ local normalized
+ normalized=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+ printf '%s' "$normalized" | grep -qiE 'place .*instrument|place .*meter|position .*instrument|position .*meter'
+}
+
 manual_ready_prompt_reason() {
  local clean_out="$1"
  local normalized
@@ -84,8 +117,12 @@ manual_ready_prompt_reason() {
   echo "incorrect_position"
   return 0
  fi
- if printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|instrument .*calibration|calibration position|place .*instrument|place .*meter|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup'; then
+ if manual_calibration_setup_prompt "$clean_out"; then
   echo "calibration_setup"
+  return 0
+ fi
+ if manual_initial_measurement_prompt "$clean_out"; then
+  echo "initial_measurement"
   return 0
  fi
  return 1
@@ -128,6 +165,24 @@ import json
 steps=json.load(open('$STEPS_FILE'))
 print(steps[$idx].get('$field',''))
 " 2>/dev/null
+}
+
+float_le() {
+ local left="${1:-0}" right="${2:-0}"
+ awk -v left="$left" -v right="$right" 'BEGIN { exit !((left + 0) <= (right + 0)) }'
+}
+
+read_timeout_seconds() {
+ local ire="${1:-0}"
+ if float_le "$ire" 1; then
+  echo 90
+ elif float_le "$ire" 5; then
+  echo 70
+ elif float_le "$ire" 20; then
+  echo 20
+ else
+  echo 10
+ fi
 }
 
 find_port() {
@@ -312,8 +367,7 @@ WHITE_REF_DONE=0
    break
   fi
  if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
-  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-   -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1 || true
+  post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
   sleep 2
   printf " " >&3
   REFRESH_CAL_DONE=1
@@ -321,8 +375,12 @@ WHITE_REF_DONE=0
   WAITED=$((WAITED + 4))
   continue
  fi
- if (( WHITE_REF_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qiE "white[[:space:]-]+reference|calibration[[:space:]-]+tile|place .*instrument|place .*meter|instrument .*calibration"; then
-  wait_for_device_ready 0 "$(manual_ready_prompt_label "Initializing meter" "calibration_setup")" "calibration_setup"
+ if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$CLEAN_OUT"; then
+    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+     wait_for_device_ready 0 "$(manual_ready_prompt_label "Initializing meter" "calibration_setup")" "calibration_setup"
+    else
+     sleep 4
+    fi
   printf " " >&3
   WHITE_REF_DONE=1
   WAITED=$((WAITED + 1))
@@ -372,8 +430,7 @@ done
 # count to increase here or startup can deadlock.
 CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
 if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
- timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1 || true
+ post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
  sleep 2
  printf " " >&3
  sleep 2
@@ -441,12 +498,10 @@ if series_uses_initial_white_reference; then
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (displaying)","readings":[]}
 EOJSON
 
- curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "{\"name\":\"patch\",\"r\":$WHITE_CODE,\"g\":$WHITE_CODE,\"b\":$WHITE_CODE,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+ post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
  if should_apply_fresh_dv_first_white_warmup; then
   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
-  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-   -d "{\"name\":\"patch\",\"r\":$WHITE_CODE,\"g\":$WHITE_CODE,\"b\":$WHITE_CODE,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+  post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
  fi
  PREREAD_DELAY="$DELAY_SEC"
  PREREAD_DELAY=$(python -c "print(float('$PREREAD_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
@@ -482,7 +537,11 @@ EOJSON
    CUR_SIZE=$(output_size)
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S')] Manual prompt detected during white pre-read: $PROMPT_REASON" >> "$DEBUG_LOG"
-    wait_for_device_ready 0 "$(manual_ready_prompt_label "Reading 100% white for target Y" "$PROMPT_REASON")" "$PROMPT_REASON"
+    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+     wait_for_device_ready 0 "$(manual_ready_prompt_label "Reading 100% white for target Y" "$PROMPT_REASON")" "$PROMPT_REASON"
+    else
+     sleep 1
+    fi
     printf " " >&3
     SCAN_OFFSET=$(output_size)
     READ_START=$SECONDS
@@ -574,14 +633,12 @@ EOJSON
 
  # ABL stabilization: flash mid-gray between patches
  if [[ "$PATCH_INSERT" == "1" ]] && (( i > 0 )); then
-  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-   -d "{\"name\":\"patch\",\"r\":64,\"g\":64,\"b\":64,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+  post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
   sleep 1.5
  fi
 
  # Display pattern
- curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+ post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
 
  # Right after a PGenerator restart, the first DV white often reads far too
  # low on the first pass even though an immediate rerun is correct. Give that
@@ -589,8 +646,7 @@ EOJSON
  # freshly started, without slowing steady-state runs.
  if (( i == 0 )) && [[ "$IRE" == "100" ]] && should_apply_fresh_dv_first_white_warmup; then
   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
-  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-   -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PATCH_SIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
+  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
  fi
 
  # Settle delay — use the user-configured value for every step, while still
@@ -611,7 +667,7 @@ EOJSON
  # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
  # has no usable meter response. Treat it as a valid 0.0 read immediately so
  # the series continues instead of sitting through a timeout.
- if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" && "$IRE" -le 0 ]]; then
+ if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" ]] && float_le "$IRE" 0; then
   TS=$(date +%s)
   READING="{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B}"
   if [[ $READING_COUNT -gt 0 ]]; then
@@ -626,14 +682,9 @@ EOJSON
   continue
  fi
 
- # Per-patch timeout
- if (( IRE <= 5 )); then
-  READ_TIMEOUT=25
- elif (( IRE <= 20 )); then
-  READ_TIMEOUT=20
- else
-  READ_TIMEOUT=10
- fi
+ # Near-black reads can take much longer than mid/high greys. Match the
+ # manual-read tolerance here so the low end does not time out prematurely.
+ READ_TIMEOUT=$(read_timeout_seconds "$IRE")
 
  # Trigger reading: send space
  PREV_COUNT=$(count_results)
@@ -662,7 +713,12 @@ EOJSON
     continue
    fi
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
-    wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
+    echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
+    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+     wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
+    else
+     sleep 1
+    fi
     printf " " >&3
     READ_START=$SECONDS
     READ_TIMEOUT=$((READ_TIMEOUT + 30))
@@ -692,6 +748,7 @@ print(json.dumps(r))
  fi
 
  if [[ -z "$READING" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   READING="{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}"
  fi
 
