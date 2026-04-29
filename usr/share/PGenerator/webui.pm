@@ -994,6 +994,34 @@ sub webui_meter_read_state_write (@) {
  }
 }
 
+sub webui_meter_read_state_read () {
+ my $json="";
+ return $json unless(-f $_meter_read_file);
+ if(open(my $fh,"<",$_meter_read_file)) {
+  local $/;
+  $json=<$fh>;
+  close($fh);
+ }
+ chomp $json;
+ return $json;
+}
+
+sub webui_meter_session_start_error_json (@) {
+ my ($config)=@_;
+ my $config_ready=&webui_meter_session_config_matches($config) ? 1 : 0;
+ my $fifo_ready=&webui_meter_session_fifo_ready() ? 1 : 0;
+ my $state=&webui_meter_read_state_read();
+ my $state_log=$state;
+ $state_log='(none)' if(!defined($state_log) || $state_log eq "");
+ $state_log=~s/\s+/ /g;
+ &log("WebUI: meter session failed to start (config_ready=$config_ready fifo_ready=$fifo_ready state=$state_log)");
+ if($state=~/"status"\s*:\s*"error"/) {
+  &webui_meter_read_state_write($state);
+  return $state;
+ }
+ return '{"status":"error","message":"Meter session failed to start"}';
+}
+
 sub webui_meter_series_ready_file (@) {
  my ($series_id)=@_;
  $series_id="" if(!defined($series_id));
@@ -1115,6 +1143,8 @@ sub webui_meter_read (@) {
  $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
  my $delay_ms=2000;
  $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
+ my $signal_range="";
+ $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
  my $signal_mode=&webui_pattern_signal_mode($body);
  my $max_luma=&webui_pattern_max_luma($body);
  # Default to a 50% mid-grey patch when the caller didn't specify RGB —
@@ -1165,9 +1195,7 @@ sub webui_meter_read (@) {
   }
   &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port)");
   if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port)) {
-   &log("WebUI: meter session failed to start");
-   if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"error","message":"Meter session failed to start"}'; close($fh); }
-   return '{"status":"error","message":"Meter session failed to start"}';
+    return &webui_meter_session_start_error_json($want_config);
   }
  }
 
@@ -1178,14 +1206,16 @@ sub webui_meter_read (@) {
  # Send the READ command to the daemon. The settle delay is only applied
  # by the daemon when the patch RGB actually changes — repeat reads on the
  # same patch (Continuous mode) skip both the redisplay and the wait.
- my $read_command="READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma\n";
+ my $read_command="READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
+ $read_command.=" $signal_range" if($signal_range ne "");
+ $read_command.="\n";
  if(!&webui_meter_session_send_command($read_command)) {
   &log("WebUI: meter session command send failed, restarting daemon");
   &webui_meter_session_stop();
   &webui_meter_read_state_write('{"status":"starting"}');
   if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port)) {
-   &log("WebUI: meter session restart failed after FIFO send error");
-   return '{"status":"error","message":"Session daemon unavailable"}';
+     &log("WebUI: meter session restart failed after FIFO send error");
+     return &webui_meter_session_start_error_json($want_config);
   }
   if(!&webui_meter_session_send_command($read_command)) {
    &log("WebUI: meter session retry send failed");
@@ -1202,7 +1232,7 @@ sub webui_meter_read_result (@) {
   if(open(my $fh,"<",$_meter_read_file)) { local $/; $json=<$fh>; close($fh); }
   chomp($json);
   if($json ne "") {
-   if($json=~/measuring/ || $json=~/"status"\s*:\s*"running"/) {
+  if($json=~/"status"\s*:\s*"(starting|measuring|running)"/) {
     my $age=time() - (stat($_meter_read_file))[9];
     if($age > 90) {
      return '{"status":"error","message":"Read timed out"}';
@@ -1292,6 +1322,7 @@ sub webui_meter_series_start (@) {
  $type=$1 if($body=~/"type"\s*:\s*"(\w+)"/);
  my $points=21;
  $points=$1 if($body=~/"points"\s*:\s*(\d+)/);
+ $points=100 if($type eq "greyscale" && $points==256);
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
  my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
@@ -1301,6 +1332,8 @@ sub webui_meter_series_start (@) {
  $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
  my $signal_range=0;
  $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
+ my $pattern_signal_range="";
+ $pattern_signal_range=$1 if($body=~/"pattern_signal_range"\s*:\s*"?(\d+)"?/);
  my $series_color_format=0;
  $series_color_format=$1 if($body=~/"color_format"\s*:\s*"?(\d+)"?/);
  my $patch_insert=0;
@@ -1391,17 +1424,11 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  my @steps;
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
  if($type eq "greyscale") {
-  if($points==256) {
-   @steps=map {
-    my $code=$_;
-    my $ire=($code>=255) ? 100 : (($code<=0) ? 0 : ($code*100/255));
-    my $stim=$ire;
-    sprintf('{"ire":%.12g,"stimulus":%.12g,"r":%d,"g":%d,"b":%d,"name":"%d"}',$ire,$stim,$code,$code,$code,$code);
-   } (255, 0..254);
-  } else {
    my @ire_vals;
    if($points==11) {
     @ire_vals=(0,10,20,30,40,50,60,70,80,90,100);
+   } elsif($points==100) {
+    @ire_vals=(0..100);
    } else {
     @ire_vals=(0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
    }
@@ -1467,7 +1494,6 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
      my $stim=$stimulus_for_slot{$v};
      "{\"ire\":$v,\"stimulus\":$stim,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"${v}%\"}";
    } @ordered;
-  }
  } elsif($type eq "colors") {
   my $min_code=$patch_limited?16:0;
   my $span_code=$patch_limited?219:255;
@@ -1867,7 +1893,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' </dev/null >/dev/null 2>&1 &";
  open(my $debug_log,">>/tmp/webui_series_debug.log");
  print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
  print $debug_log "[".scalar(localtime())."] Command: $cmd\n";
@@ -4921,7 +4947,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .drag-handle:hover{opacity:.7}
 .update-pulse{animation:updatePulse 2s ease-in-out infinite}
 @keyframes updatePulse{0%,100%{opacity:1}50%{opacity:.6}}
-@keyframes thumbPulse{0%,100%{box-shadow:0 0 0 3px #fff}50%{box-shadow:0 0 0 3px rgba(255,255,255,.25)}}
+@keyframes thumbPulse{0%,100%{box-shadow:inset 0 0 0 3px #fff}50%{box-shadow:inset 0 0 0 3px rgba(255,255,255,.25)}}
 #meterCard.meter-patterns-only #meterSettingsGrid,
 #meterCard.meter-patterns-only #meterLiveReading,
 #meterCard.meter-patterns-only #meterReadSeriesBtn,
@@ -5316,7 +5342,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div id="meterSeriesHeader" style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px;padding-top:8px;border-top:1px solid var(--border)">Series Measurements</div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
    <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
-    <button class="btn btn-sm btn-secondary" data-series="greyscale-256" onclick="meterSelectSeries('greyscale',256)">Greyscale 256pt</button>
+    <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 0-100%</button>
     <button class="btn btn-sm btn-secondary" data-series="greyscale-21" onclick="meterSelectSeries('greyscale',21)">Greyscale 21pt</button>
     <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
     <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">Colors</button>
@@ -7648,6 +7674,10 @@ function meterOutputIsRgb(){
  return val==='0';
 }
 
+function meterGreyscaleUsesFullSourceRange(){
+ return false;
+}
+
 function meterPatchUsesVideoRange(){
  return meterIsLimitedRange();
 }
@@ -7675,6 +7705,7 @@ function meterDvRelativeSt2084UsesLegalRange(){
 
 function meterGreyCodeRange(){
  if(meterDvRelativeSt2084UsesLegalRange()) return {min:16,span:219};
+ if(meterGreyscaleUsesFullSourceRange()) return {min:0,span:255};
  return {min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
 }
 
@@ -7825,7 +7856,7 @@ function meterFindMeasuredWhiteReading(){
   const liveWhite=meterReadings.find(isWhiteReading);
   if(liveWhite) return liveWhite;
  }
- const preferredKeys=['greyscale-256','greyscale-21','greyscale-11','saturations-24','colors-30'];
+ const preferredKeys=['greyscale-100','greyscale-21','greyscale-11','saturations-24','colors-30'];
  let best=null;
  const considerSnapshot=(snap)=>{
   if(!snap||!Array.isArray(snap.readings)) return;
@@ -10719,7 +10750,7 @@ function drawRGBBars(bal){
 
 async function meterStartSingleRead(readPayload){
  const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
+  body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
  if(!initR) throw new Error('Meter read connection error');
  if(initR&&initR.status==='error') throw new Error(initR.message||'Read failed');
  return meterPollRead(60000);
@@ -10820,12 +10851,14 @@ async function meterReadOnce(){
   const rr=getMeterRefreshRate();
   const delay=meterDelayMs();
   const requestedStep=meterCurrentPatchStep?{...meterCurrentPatchStep}:null;
+  const patternSignalRange=meterMeasurementPatchSignalRange();
   const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'});
   if(requestedStep){
    readPayload.patch_r=requestedStep.r;
    readPayload.patch_g=requestedStep.g;
    readPayload.patch_b=requestedStep.b;
    readPayload.patch_size=getMeterPatchSize();
+   if(patternSignalRange!=null) readPayload.signal_range=patternSignalRange;
   }
   if(meterSelectedMeasurementRequiresReady()){
    if(requestedStep) await meterDisplayPatch(requestedStep);
@@ -10924,15 +10957,17 @@ async function meterContinuousLoop(){
   const rr=getMeterRefreshRate();
   const delay=meterDelayMs();
   const requestedStep=meterCurrentPatchStep?{...meterCurrentPatchStep}:null;
+  const patternSignalRange=meterMeasurementPatchSignalRange();
   const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'});
   if(requestedStep){
    readPayload.patch_r=requestedStep.r;
    readPayload.patch_g=requestedStep.g;
    readPayload.patch_b=requestedStep.b;
    readPayload.patch_size=getMeterPatchSize();
+   if(patternSignalRange!=null) readPayload.signal_range=patternSignalRange;
   }
   const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:5000});
+   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
   if(!initR){meterStopContinuous();toast('Meter read connection error',true);return;}
   if(initR&&initR.status==='error'){meterStopContinuous();return;}
   const r=await meterPollRead(60000);
@@ -11245,11 +11280,12 @@ let meterGreyPatchProfiles={format:'pgenerator-greyscale-profile-v1',apply_to_al
 let meterGreyEditorPoints=21;
 
 function meterGreyDefaultSlots(points){
+ if(points===100) return Array.from({length:101},(_,idx)=>idx);
  return points===11?[...METER_GREY_SLOTS_11]:[...METER_GREY_SLOTS_21];
 }
 
 function meterGreySeriesSlots(points){
- if(points===256) return Array.from({length:256},(_,idx)=>idx);
+ if(points===256) points=100;
  return meterGreyDefaultSlots(points);
 }
 
@@ -11509,27 +11545,20 @@ function meterSaveGreyProfileEditor(){
 }
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
 function meterBuildStepsJS(type,points){
+ if(type==='greyscale' && points===256) points=100;
  const steps=[];
  if(type==='greyscale'){
-  if(points===256){
-   const ordered=[255,...Array.from({length:255},(_,idx)=>idx)];
-   ordered.forEach(code=>{
-    const ire=meterGreyAnalysisIreFromCode(code);
-    steps.push({ire:ire,stimulus:ire,r:code,g:code,b:code,name:String(code)});
-   });
-  } else {
-   const ires=meterGreySeriesSlots(points);
-   const stimuli=meterGreyStimulusValues(points);
-   const stimulusBySlot={};
-   ires.forEach((slot,idx)=>{ stimulusBySlot[slot]=stimuli[idx]; });
-   // Measurement order: 100% first (white reference), then 0%→95% ascending
-   const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
-   ordered.forEach(v=>{
-    const stim=stimulusBySlot[v]!=null?stimulusBySlot[v]:v;
-     const c=meterCodeFromSignalPercent(stim);
-    steps.push({ire:v,stimulus:stim,r:c,g:c,b:c,name:v+'%'});
-   });
-  }
+  const ires=meterGreySeriesSlots(points);
+  const stimuli=meterGreyStimulusValues(points);
+  const stimulusBySlot={};
+  ires.forEach((slot,idx)=>{ stimulusBySlot[slot]=stimuli[idx]; });
+  // Measurement order: 100% first (white reference), then 0%→95% ascending
+  const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
+  ordered.forEach(v=>{
+   const stim=stimulusBySlot[v]!=null?stimulusBySlot[v]:v;
+    const c=meterCodeFromSignalPercent(stim);
+   steps.push({ire:v,stimulus:stim,r:c,g:c,b:c,name:v+'%'});
+  });
  } else if(type==='colors'){
   steps.push(...meterBuildColorCheckerStepsJS());
  } else if(type==='saturations'){
@@ -11545,6 +11574,7 @@ function meterBuildStepsJS(type,points){
 // Select a series: load thumbnails + display first patch, no reading
 function meterSelectSeries(type,points){
  if(meterActionPending) return;
+ if(type==='greyscale' && points===256) points=100;
  const key=type+'-'+points;
  if(meterSeriesRunning){
   if(meterActiveSeriesKey===key){
@@ -11621,7 +11651,7 @@ function meterSelectSeries(type,points){
  meterUpdateThumbStyles(document.getElementById('meterPatchThumbs'),null,null);
  meterUpdateReadButtons();
  meterUpdateDeltaEFormControl();
- toast(type.charAt(0).toUpperCase()+type.slice(1)+' '+steps.length+'pt loaded');
+ toast(meterSeriesLabelFromKey(key)+' loaded');
 }
 function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
@@ -11655,11 +11685,17 @@ function meterEnsureAppliedGeneratorSettings(){
  return false;
 }
 // Display a patch on PGenerator without reading
+function meterMeasurementPatchSignalRange(){
+ if(meterGreyscaleUsesFullSourceRange()) return '2';
+ return null;
+}
+
 async function meterDisplayPatch(step){
  meterCurrentPatchStep=step;
  const psize=getMeterPatchSize();
+ const signalRange=meterMeasurementPatchSignalRange();
  await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(meterMeasurementSignalContext({name:'patch',r:step.r,g:step.g,b:step.b,size:psize,input_max:255})),_timeoutMs:5000});
+  body:JSON.stringify(meterMeasurementSignalContext({name:'patch',r:step.r,g:step.g,b:step.b,size:psize,input_max:255,signal_range:signalRange||undefined})),_timeoutMs:5000});
 }
 // Run full automated series (Read Series button)
 async function meterRunSeries(){
@@ -11689,10 +11725,11 @@ async function meterRunSeries(){
  const dtype=getEffectiveDisplayType();
  const delay=meterDelayMs();
  const psize=getMeterPatchSize();
+ const patternSignalRange=meterMeasurementPatchSignalRange();
  const requireDeviceReady=meterSelectedMeasurementRequiresReady();
  try{
   const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),require_device_ready:requireDeviceReady})),_timeoutMs:10000});
   if(!r||r.status!=='started'){
    toast(r&&r.message?r.message:'Failed to start series',true);
    meterSeriesRunning=false;
@@ -11799,8 +11836,7 @@ async function meterPollSeries(){
  if(r.total_steps>0){
   const label=r.current_name||('Step '+r.current_step+'/'+r.total_steps);
   document.getElementById('meterProgressLabel').textContent=label;
-  // Parse current IRE from name like "70% (reading)"
-  currentIre=r.current_name||null;
+  currentIre=meterCurrentSeriesStepKeyFromStatus(r);
  }
 
  // Update patch thumbnails with completion state
@@ -11887,6 +11923,41 @@ function meterSetGreyscaleScrollRatio(el,ratio){
  if(!el) return;
  const max=meterGreyscaleScrollMax(el);
  el.scrollLeft=max>0 ? Math.max(0,Math.min(1,ratio))*max : 0;
+}
+
+function meterEnsureThumbVisible(container,key){
+ if(!container||!key) return;
+ const row=meterGreyscaleScrollSource();
+ if(!row) return;
+ const thumb=Array.from(container.children||[]).find(child=>(child.dataset.key||'')===key);
+ if(!thumb) return;
+ const max=meterGreyscaleScrollMax(row);
+ const rowLeft=row.scrollLeft||0;
+ const thumbLeft=thumb.offsetLeft||0;
+ const thumbCenter=thumbLeft+((thumb.offsetWidth||0)/2);
+ const rowCenter=(row.clientWidth||0)/2;
+ const nextLeft=Math.max(0,Math.min(max,thumbCenter-rowCenter));
+ if(Math.abs(nextLeft-rowLeft)<1) return;
+ if(row.scrollTo){
+  row.scrollTo({left:nextLeft,behavior:'smooth'});
+ } else {
+  row.scrollLeft=nextLeft;
+  meterGreyscaleScrollRatio=meterGreyscaleScrollRatioFor(row);
+  meterQueueGreyscaleTargetSync();
+ }
+}
+
+function meterCurrentSeriesStepKeyFromStatus(status){
+ if(!status) return null;
+ const steps=(Array.isArray(status.steps)&&status.steps.length>0)
+  ? status.steps
+  : (Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length>0 ? meterSeriesSteps : null);
+ const stepIndex=(Number(status.current_step)||0)-1;
+ if(steps&&stepIndex>=0&&stepIndex<steps.length) return meterStepNameKey(steps[stepIndex]);
+ const name=String(status.current_name||'').trim();
+ if(!name) return null;
+ const stripped=name.replace(/\s+\((displaying|reading|click Device Ready when positioned|reposition meter and click Device Ready|complete meter setup\/calibration and click Device Ready)\)$/i,'');
+ return stripped||name;
 }
 
 function meterQueueGreyscaleTargetSync(){
@@ -12008,6 +12079,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   });
  }
  meterUpdateThumbStyles(container,completedIres,currentIre);
+ if(currentIre!=null) meterEnsureThumbVisible(container,currentIre);
 }
 function meterUpdateThumbStyles(container,completedIres,currentIre){
  const hasReadings=completedIres&&completedIres.size>0;
@@ -12025,11 +12097,11 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
    thumb.style.zIndex='1';
   } else if(isSelected){
    thumb.style.animation='none';
-   thumb.style.boxShadow='0 0 0 3px #fff';
+    thumb.style.boxShadow='inset 0 0 0 3px #fff';
    thumb.style.zIndex='1';
   } else if(done){
    thumb.style.animation='none';
-   thumb.style.boxShadow='0 0 0 2px #4caf50';
+    thumb.style.boxShadow='inset 0 0 0 2px #4caf50';
    thumb.style.zIndex='';
   } else {
    thumb.style.animation='none';
@@ -13756,7 +13828,8 @@ function chartHandleClick(e,canvasId){
 
 function meterSeriesLabelFromKey(key){
  return {
-  'greyscale-256':'Greyscale 256pt',
+  'greyscale-100':'Greyscale 0-100%',
+  'greyscale-256':'Greyscale 0-100%',
   'greyscale-21':'Greyscale 21pt',
   'greyscale-11':'Greyscale 11pt',
   'colors-30':'Colors',
@@ -13777,7 +13850,7 @@ function meterGetSeriesSnapshotByKey(key){
 
 function meterAllSeriesReportOptions(){
  return [
-  {key:'greyscale-256',label:'Greyscale 256pt'},
+  {key:'greyscale-100',label:'Greyscale 0-100%'},
   {key:'greyscale-21',label:'Greyscale 21pt'},
   {key:'greyscale-11',label:'Greyscale 11pt'},
   {key:'colors-30',label:'Colors'},
@@ -14192,7 +14265,7 @@ function meterApplyDisplayTypeSelection(v){
  // Emissive if selecting an emissive generic type, any display-specific CCSS,
  // or the custom-upload panel.
  const vl=v.toLowerCase();
- const ccssEmissive=vl.startsWith('ccss_')&&/(oled|plasma|crt)/i.test(vl);
+ const ccssEmissive=(vl.startsWith('ccss_')||vl.startsWith('custom_'))&&/(oled|plasma|crt)/i.test(vl);
  const emissive=v.startsWith('oled')||v.startsWith('qdoled')||v==='plasma'||v==='crt'||v==='custom'||ccssEmissive;
  const showCcssPanel=v==='custom'||vl.startsWith('ccss_')||vl.startsWith('custom_');
  document.getElementById('meterPatchInsert').checked=emissive;
@@ -14224,6 +14297,24 @@ function meterUpdateCustomCcssPanel(value){
  }
  if(summary) summary.textContent=summaryText;
  if(button) button.textContent=(current.startsWith('ccss_')?'Open CCSS Viewer':'Open Custom CCSS Importer');
+}
+
+function meterSelectCustomCcssValue(filename){
+ const sel=document.getElementById('meterDisplayType');
+ if(!sel||!filename) return;
+ const nextValue='custom_'+filename;
+ sel.dataset.pendingValue=nextValue;
+ sel.value=nextValue;
+ if(sel.value===nextValue){
+  delete sel.dataset.pendingValue;
+  sel.dataset.lastStableValue=nextValue;
+  meterApplyDisplayTypeSelection(nextValue);
+  return;
+ }
+ delete sel.dataset.pendingValue;
+ sel.value='custom';
+ sel.dataset.lastStableValue='custom';
+ meterApplyDisplayTypeSelection('custom');
 }
 
 function meterOpenCustomCcssEditor(){
@@ -14305,8 +14396,10 @@ document.getElementById('ccssUploadBtn').addEventListener('click',async function
    document.getElementById('ccssName').value='';
     await refreshMeterCcssCatalog();
     await loadCustomCcssList();
+    meterSelectCustomCcssValue(r.filename);
     await ccssPreviewLoadByValue('custom\t'+r.filename,false);
     meterUpdateCustomCcssPanel(document.getElementById('meterDisplayType').value);
+    saveMeterSettings();
    toast(r.message||'CCSS profile saved');
   } else {
    status.textContent=r&&r.message?r.message:'Upload failed';
@@ -14350,6 +14443,7 @@ async function selectCustomCcss(filename){
   else if(v && v.ok && v.description){ toast('CCSS: '+v.description); }
  }catch(e){}
  customCcssFile=filename;
+   meterSelectCustomCcssValue(filename);
  ccssPreviewLoadByValue('custom\t'+filename,true);
  loadCustomCcssList();
  saveMeterSettings();
