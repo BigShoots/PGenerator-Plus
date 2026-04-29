@@ -42,6 +42,7 @@ LOCK_FILE="/tmp/meter_session.lock"
 LOG_FILE="/tmp/meter_session.log"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
+startup_marker() { log "startup marker: $*"; }
 
 # Atomic-ish state file writer that keeps the file world-writable so the
 # webui daemon (running as the unprivileged pgenerator user) can overwrite
@@ -49,6 +50,11 @@ log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
 write_state() {
  echo "$1" > "$STATE_FILE"
  chmod 666 "$STATE_FILE" 2>/dev/null
+}
+
+startup_output_excerpt() {
+ [[ -f "$OUTFILE" ]] || return 0
+ sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | tail -n 8 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//'
 }
 
 patch_request_body() {
@@ -80,6 +86,7 @@ fi
 echo $$ > "$PID_FILE"
 printf '%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" > "$CONFIG_FILE"
 log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT idle=${IDLE_TIMEOUT}s)"
+startup_marker "pid/config written"
 
 # --- spotread bring-up (mirrors meter_series.sh) ---
 
@@ -176,9 +183,10 @@ for _try in 1 2 3; do
 done
 if [[ -z "$PORT_NUM" ]]; then
  log "meter failed to enumerate during session startup"
- write_state '{"status":"error","message":"Meter init failed"}'
+ write_state '{"status":"error","message":"Meter enumeration failed"}'
  exit 1
 fi
+startup_marker "meter port resolved ($PORT_NUM)"
 OUTFILE="$TMPDIR/spotread_session_$$"
 CMDPIPE="$TMPDIR/spotread_cmd_$$"
 rm -f "$OUTFILE" "$CMDPIPE"
@@ -212,12 +220,14 @@ fi
 cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
 BG_PID=$!
 exec 3>"$CMDPIPE"
+startup_marker "spotread spawned (bg_pid=$BG_PID)"
 
 # Wait for spotread prompt. Allow up to 60 s on a cold boot so the first
 # manual read after a Pi restart doesn't fail during slow USB bring-up.
 WAITED=0
 REFRESH_CAL_DONE=0
 WHITE_REF_DONE=0
+STARTUP_HINT=""
 while (( WAITED < 600 )); do
  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
  echo "$CLEAN_OUT" | grep -q "to take a reading:" && break
@@ -233,6 +243,8 @@ while (( WAITED < 600 )); do
  fi
  if (( WHITE_REF_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qiE "white[[:space:]-]+reference|calibration[[:space:]-]+tile|calibration position|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup"; then
   log "detected white-reference calibration prompt during startup"
+  startup_marker "white-reference prompt seen"
+  STARTUP_HINT="white_reference_prompt"
   write_state '{"status":"starting","message":"Place the meter on its white calibration tile"}'
   sleep 4
   printf " " >&3
@@ -241,17 +253,28 @@ while (( WAITED < 600 )); do
   continue
  fi
  if echo "$CLEAN_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
+  STARTUP_HINT="communications_failure"
   break
  fi
  sleep 0.1
  WAITED=$((WAITED + 1))
 done
 if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
- log "spotread init failed"
- write_state '{"status":"error","message":"Meter init failed"}'
+ FAIL_CONTEXT=$(startup_output_excerpt)
+ if [[ "$STARTUP_HINT" == "white_reference_prompt" ]]; then
+  log "spotread init failed after white-reference prompt${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
+  write_state '{"status":"error","message":"Meter init failed after white-reference prompt"}'
+ elif [[ "$STARTUP_HINT" == "communications_failure" ]]; then
+  log "spotread init failed after communications failure${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
+  write_state '{"status":"error","message":"Meter communication failed during init"}'
+ else
+  log "spotread init failed${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
+  write_state '{"status":"error","message":"Meter init failed"}'
+ fi
  exit 1
 fi
 log "spotread ready in $((WAITED / 10))s"
+startup_marker "ready prompt reached"
 
 # Set up the command FIFO immediately so the WebUI can see a live session and
 # queue a READ even if spotread spends a few seconds in one-time refresh calibration.
@@ -259,6 +282,7 @@ rm -f "$CMD_FIFO"
 mkfifo "$CMD_FIFO"
 chmod 666 "$CMD_FIFO"
 exec 4<>"$CMD_FIFO"
+startup_marker "command FIFO created"
 
 # Refresh-rate calibration prompt (CRT/OLED). Display white, send a key once,
 # then continue — some spotread builds redraw the same prompt instead of adding
