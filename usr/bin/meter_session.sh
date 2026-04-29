@@ -10,7 +10,7 @@
 #   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
-#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms]
+#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [signal_range]
 #   STOP
 #
 # settle_ms (optional, default 0) is the post-display settle wait applied
@@ -49,6 +49,26 @@ log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
 write_state() {
  echo "$1" > "$STATE_FILE"
  chmod 666 "$STATE_FILE" 2>/dev/null
+}
+
+patch_request_body() {
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7"
+ local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":255,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
+ if [[ -n "$signal_range" ]]; then
+  payload="$payload,\"signal_range\":\"$signal_range\""
+ fi
+ payload="$payload}"
+ printf '%s' "$payload"
+}
+
+post_patch() {
+ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1
+}
+
+post_patch_timeout() {
+ timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1 || true
 }
 
 # Single-instance lock — refuse to start if another session is alive.
@@ -203,8 +223,7 @@ while (( WAITED < 600 )); do
  echo "$CLEAN_OUT" | grep -q "to take a reading:" && break
  if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
   log "performing refresh-rate calibration during startup"
-  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-   -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE_DEFAULT\",\"max_luma\":$MAX_LUMA_DEFAULT}" >/dev/null 2>&1 || true
+  post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
   sleep 2
   printf " " >&3
   REFRESH_CAL_DONE=1
@@ -212,7 +231,7 @@ while (( WAITED < 600 )); do
   WAITED=$((WAITED + 20))
   continue
  fi
- if (( WHITE_REF_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qiE "white[[:space:]-]+reference|calibration[[:space:]-]+tile|place .*instrument|place .*meter|instrument .*calibration"; then
+ if (( WHITE_REF_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qiE "white[[:space:]-]+reference|calibration[[:space:]-]+tile|calibration position|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup"; then
   log "detected white-reference calibration prompt during startup"
   write_state '{"status":"starting","message":"Place the meter on its white calibration tile"}'
   sleep 4
@@ -247,8 +266,7 @@ exec 4<>"$CMD_FIFO"
 CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
 if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
  log "performing refresh-rate calibration"
- timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "{\"name\":\"patch\",\"r\":204,\"g\":204,\"b\":204,\"size\":100,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE_DEFAULT\",\"max_luma\":$MAX_LUMA_DEFAULT}" >/dev/null 2>&1 || true
+ post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
  sleep 2
  printf " " >&3
  sleep 2
@@ -256,30 +274,30 @@ fi
 
 log "command loop ready"
 
-LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA=""
+LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE=""
 
 # --- Main command loop ---
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
   READ\ *)
-   # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA]
-   read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA <<< "$line"
+     # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [SIGNAL_RANGE]
+     read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
    [[ -z "$SETTLE_MS" ]] && SETTLE_MS=0
    [[ -z "$SIGNAL_MODE" ]] && SIGNAL_MODE="$SIGNAL_MODE_DEFAULT"
    [[ -z "$MAX_LUMA" ]] && MAX_LUMA="$MAX_LUMA_DEFAULT"
+     [[ -z "$SIGNAL_RANGE" ]] && SIGNAL_RANGE=""
 
    # Mark measuring so the polling endpoint knows a read is in flight.
    write_state '{"status":"measuring"}'
 
   # Re-display when the rendered patch changes, including transport fields
   # like signal mode and mastering peak that affect how the same RGB codes map.
-   if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" ]]; then
-    curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-     -d "{\"name\":\"patch\",\"r\":$R,\"g\":$G,\"b\":$B,\"size\":$PSIZE,\"input_max\":255,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}" >/dev/null 2>&1
-    LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"
+  if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" ]]; then
+   post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE"
+   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"
    fi
 
   if (( SETTLE_MS > 0 )); then
