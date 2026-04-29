@@ -279,6 +279,7 @@ my $_meter_read_file="/tmp/meter_read.json";
 my $_meter_session_pid_file="/tmp/meter_session.pid";
 my $_meter_session_fifo="/tmp/meter_session.cmd";
 my $_meter_session_config_file="/tmp/meter_session.config";
+my $_meter_session_ready_file="/tmp/meter_session_ready.signal";
 my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
 my $_ccss_create_state_file="/tmp/ccss_create.json";
 my $_ccss_create_pid_file="/tmp/ccss_create.pid";
@@ -766,6 +767,11 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+  elsif($path eq "/api/meter/read/ready" && $method eq "POST") {
+   my $result=&webui_meter_read_ready();
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+  }
    elsif($path eq "/api/meter/series" && $method eq "POST") {
     my $result=&webui_meter_series_start($body);
     my $len=length($result);
@@ -1035,6 +1041,22 @@ sub webui_meter_series_ready_cleanup (@) {
  unlink(@paths) if(@paths);
 }
 
+sub webui_meter_session_ready_cleanup () {
+ unlink($_meter_session_ready_file) if(-e $_meter_session_ready_file);
+}
+
+sub webui_meter_read_ready (@) {
+ my $json=&webui_meter_read_state_read();
+ return '{"status":"error","message":"Manual read is not waiting for device readiness"}' if($json eq "" || $json!~/"awaiting_ready"\s*:\s*true/i);
+ if(open(my $fh,">",$_meter_session_ready_file)) {
+  print $fh time();
+  close($fh);
+  chmod(0666,$_meter_session_ready_file);
+  return '{"status":"ok","message":"Measurement resumed"}';
+ }
+ return '{"status":"error","message":"Failed to signal manual read readiness"}';
+}
+
 sub webui_meter_session_send_command (@) {
  my ($command)=@_;
  return 0 if(!defined($command) || $command eq "");
@@ -1064,22 +1086,25 @@ sub webui_meter_session_stop (@) {
   system("sudo pkill -9 -x spotread 2>/dev/null");
   Time::HiRes::sleep(0.2);
  }
+ &webui_meter_session_ready_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
 }
 
 sub webui_meter_session_start (@) {
- my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port)=@_;
+ my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready)=@_;
  # Start from a clean slate. Only the session daemon itself should write the
  # advertised config file once it has actually grabbed the lock and is ready.
+ &webui_meter_session_ready_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  &webui_meter_read_state_write('{"status":"starting"}');
  # Launch detached as root. The daemon writes its own PID/config files once it
  # grabs the lock; wait for all of that to happen before reporting success.
  my $aio_flag=$disable_aio ? "1" : "0";
+ $require_device_ready=0 if(!defined($require_device_ready) || $require_device_ready!~/^1$/);
  $signal_mode=&webui_pattern_signal_mode("") if(!defined($signal_mode) || $signal_mode eq "");
  $max_luma=&webui_pattern_max_luma("") if(!defined($max_luma) || $max_luma eq "");
  my $started_at=time();
- system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' </dev/null >/dev/null 2>&1 &");
+ system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '300' '$require_device_ready' </dev/null >/dev/null 2>&1 &");
  my $waited=0;
  # Some CCSS/meter combinations trigger spotread refresh calibration on first
  # start and can legitimately take 35-45 seconds before the FIFO is ready.
@@ -1131,6 +1156,8 @@ sub webui_meter_read (@) {
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
  my $measurement_meter_port="";
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
+ my $require_device_ready=0;
+ $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
  my $patch_r="";
@@ -1163,7 +1190,7 @@ sub webui_meter_read (@) {
  # Restart only when the meter config (display type, ccss, refresh, AIO) changes
  # or the daemon isn't running.
  my $aio_flag=$disable_aio ? "1" : "0";
- my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port";
+ my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
  if($needs_restart) {
@@ -1180,6 +1207,7 @@ sub webui_meter_read (@) {
      system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
      system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
    system("sudo bash $_meter_wrapper --kill 2>/dev/null");
+     &webui_meter_session_ready_cleanup();
      unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo, "/tmp/meter_session.lock");
      my @stale=glob("/tmp/spotread_series_* /tmp/spotread_cmd_* /tmp/spotread_session_*");
      unlink(@stale) if @stale;
@@ -1193,15 +1221,18 @@ sub webui_meter_read (@) {
    &webui_pattern('{"name":"patch","r":204,"g":204,"b":204,"size":100,"input_max":255,"signal_mode":"'.$signal_mode.'","max_luma":'.$max_luma.'}');
    select(undef,undef,undef,0.5);
   }
-  &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port)");
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port)) {
+  &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port, ready_gate=$require_device_ready)");
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready)) {
     return &webui_meter_session_start_error_json($want_config);
   }
  }
 
  # Mark measuring so the polling endpoint sees a fresh in-flight state and
  # can't return the previous reading by mistake.
- if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"measuring"}'; close($fh); }
+ my $state_before_send=&webui_meter_read_state_read();
+ if($state_before_send!~/"awaiting_ready"\s*:\s*true/i) {
+  if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"measuring"}'; close($fh); }
+ }
 
  # Send the READ command to the daemon. The settle delay is only applied
  # by the daemon when the patch RGB actually changes — repeat reads on the
@@ -1213,7 +1244,7 @@ sub webui_meter_read (@) {
   &log("WebUI: meter session command send failed, restarting daemon");
   &webui_meter_session_stop();
   &webui_meter_read_state_write('{"status":"starting"}');
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready)) {
      &log("WebUI: meter session restart failed after FIFO send error");
      return &webui_meter_session_start_error_json($want_config);
   }
@@ -1232,6 +1263,9 @@ sub webui_meter_read_result (@) {
   if(open(my $fh,"<",$_meter_read_file)) { local $/; $json=<$fh>; close($fh); }
   chomp($json);
   if($json ne "") {
+    if($json=~/"awaiting_ready"\s*:\s*true/i) {
+      return $json;
+     }
   if($json=~/"status"\s*:\s*"(starting|measuring|running)"/) {
     my $age=time() - (stat($_meter_read_file))[9];
     if($age > 90) {
@@ -1961,6 +1995,7 @@ sub webui_meter_stop (@) {
  system("sudo pkill -9 -x spotread 2>/dev/null");
  system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
  system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ &webui_meter_session_ready_cleanup();
  &webui_meter_series_ready_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  # Mark state as cancelled (if still running)
@@ -5355,6 +5390,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
     <button class="btn btn-sm btn-danger" id="meterStopBtn" onclick="meterStop()" style="display:none">&#9632; Stop</button>
     <button class="btn btn-sm btn-primary" id="meterDeviceReadyBtn" onclick="meterSignalDeviceReady()" style="display:none">Device Ready</button>
+    <button class="btn btn-sm btn-primary" id="meterManualPromptBtn" onclick="meterSignalManualPromptReady()" style="display:none">Continue Meter Setup</button>
    </div>
   </div>
   <div id="meterGreyProfileBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:-2px 0 10px 0;padding:8px 10px;background:#0d0d15;border-radius:6px">
@@ -7290,6 +7326,10 @@ let meterActionPending=false;
 let meterSeriesAwaitingReady=false;
 let meterReadySignalPending=false;
 let meterPendingDeviceReadyAction=null;
+let meterManualPromptAwaiting=false;
+let meterManualPromptReason='';
+let meterManualPromptMessage='';
+let meterManualPromptContinueResolver=null;
 let meterCcssCreatePolling=null;
 let meterCcssCreateHandledToken='';
 let meterReadings=[];
@@ -10790,11 +10830,66 @@ function meterApplySingleReadResult(result,requestedStep){
  }
 }
 
+function meterManualPromptActionLabel(){
+ switch(meterManualPromptReason){
+  case 'calibration_setup': return 'Continue Meter Setup';
+  case 'incorrect_position': return 'Continue After Reposition';
+  default: return 'Continue Reading';
+ }
+}
+
+function meterClearManualPromptAwaiting(resolvePending){
+ const resolver=meterManualPromptContinueResolver;
+ meterManualPromptAwaiting=false;
+ meterManualPromptReason='';
+ meterManualPromptMessage='';
+ meterManualPromptContinueResolver=null;
+ if(resolvePending&&resolver) resolver();
+}
+
+async function meterWaitForManualPromptClear(state){
+ meterManualPromptAwaiting=true;
+ meterManualPromptReason=String((state&&state.awaiting_ready_reason)||'');
+ meterManualPromptMessage=String((state&&state.message)||'Meter is waiting for operator input');
+ const progress=document.getElementById('meterProgress');
+ const label=document.getElementById('meterProgressLabel');
+ if(progress) progress.style.display='';
+ if(label) label.textContent=meterManualPromptMessage;
+ meterUpdateReadButtons();
+ await new Promise(resolve=>{ meterManualPromptContinueResolver=resolve; });
+}
+
+async function meterSignalManualPromptReady(){
+ if(meterReadySignalPending||!meterManualPromptAwaiting) return;
+ const progressEl=document.getElementById('meterProgressLabel');
+ meterReadySignalPending=true;
+ if(progressEl) progressEl.textContent='Resuming measurement...';
+ meterUpdateReadButtons();
+ try{
+  const r=await fetchJSON('/api/meter/read/ready',{method:'POST',_timeoutMs:5000});
+  if(!r||r.status!=='ok'){
+   if(r&&/not waiting for device readiness/i.test(r.message||'')){
+    meterClearManualPromptAwaiting(true);
+    return;
+   }
+   toast(r&&r.message?r.message:'Failed to resume measurement',true);
+   return;
+  }
+  meterClearManualPromptAwaiting(true);
+ }catch(e){
+  toast('Failed to resume measurement',true);
+ }finally{
+  meterReadySignalPending=false;
+  meterUpdateReadButtons();
+ }
+}
+
 async function meterFinishSingleRead(){
  meterActionPending=false;
  meterSeriesAwaitingReady=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
+ meterClearManualPromptAwaiting(false);
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
  meterUpdateReadButtons();
  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
@@ -10860,6 +10955,7 @@ async function meterReadOnce(){
    readPayload.patch_size=getMeterPatchSize();
    if(patternSignalRange!=null) readPayload.signal_range=patternSignalRange;
   }
+  readPayload.require_device_ready=meterSelectedMeasurementRequiresReady();
   if(meterSelectedMeasurementRequiresReady()){
    if(requestedStep) await meterDisplayPatch(requestedStep);
    meterPendingDeviceReadyAction=async()=>{
@@ -10890,7 +10986,7 @@ async function meterReadOnce(){
 }
 
 async function meterPollRead(timeoutMs){
- const start=Date.now();
+ let start=Date.now();
  // Tiny initial delay so the backend has time to write the 'measuring' marker
  // before we poll. Then poll quickly — finer than the wrapper's own poll
  // granularity gives diminishing returns, but 200ms keeps UI responsiveness.
@@ -10898,10 +10994,19 @@ async function meterPollRead(timeoutMs){
  while(Date.now()-start<timeoutMs){
   try{
    const r=await fetchJSON('/api/meter/read/result',{_quiet:true,_timeoutMs:5000});
-   if(r&&r.status!=='measuring') return r;
+   if(r&&r.awaiting_ready){
+    await meterWaitForManualPromptClear(r);
+    start=Date.now();
+    continue;
+   }
+   if(r&&r.status!=='measuring'){
+    meterClearManualPromptAwaiting(false);
+    return r;
+   }
   }catch(e){}
   await new Promise(r=>setTimeout(r,200));
  }
+ meterClearManualPromptAwaiting(false);
  return {status:'error',message:'Timeout waiting for reading'};
 }
 
@@ -10921,10 +11026,6 @@ async function meterToggleContinuous(){
   try{
    await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
   }catch(e){}
-  if(meterSelectedMeasurementRequiresReady()){
-   toast('Continuous reads are unavailable for button-triggered spectrophotometers',true);
-   return;
-  }
   meterContinuousActive=true;
   meterSeriesAwaitingReady=false;
   meterReadySignalPending=false;
@@ -10966,6 +11067,7 @@ async function meterContinuousLoop(){
    readPayload.patch_size=getMeterPatchSize();
    if(patternSignalRange!=null) readPayload.signal_range=patternSignalRange;
   }
+  readPayload.require_device_ready=meterSelectedMeasurementRequiresReady();
   const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
   if(!initR){meterStopContinuous();toast('Meter read connection error',true);return;}
@@ -11013,6 +11115,7 @@ async function meterContinuousLoop(){
 function meterStopContinuous(){
  const wasActive=meterContinuousActive;
  meterContinuousActive=false;
+ meterClearManualPromptAwaiting(true);
  if(meterContinuousTimer) clearTimeout(meterContinuousTimer);
  meterContinuousTimer=null;
  document.getElementById('meterContinuous').classList.remove('btn-success');
@@ -11042,6 +11145,7 @@ function meterStop(){
  meterSeriesAwaitingReady=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
+ meterClearManualPromptAwaiting(true);
  meterActionPending=false;
  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
@@ -11225,6 +11329,7 @@ function meterUpdateReadButtons(){
  const continuousBtn=document.getElementById('meterContinuous');
  const stopBtn=document.getElementById('meterStopBtn');
  const readyBtn=document.getElementById('meterDeviceReadyBtn');
+ const manualPromptBtn=document.getElementById('meterManualPromptBtn');
  if(clearBtn){
   clearBtn.style.display=showClear?'':'none';
   clearBtn.disabled=!hasData||busy;
@@ -11240,12 +11345,11 @@ function meterUpdateReadButtons(){
   readOnceBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(continuousBtn){
-  const readyGated=meterSelectedMeasurementRequiresReady();
-  continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy||readyGated;
-  continuousBtn.title=readyGated?'Continuous reads are unavailable for button-triggered spectrophotometers':window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
+    continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
+    continuousBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(stopBtn){
-  const showStop=meterSeriesRunning||meterContinuousActive||meterSeriesAwaitingReady;
+    const showStop=meterSeriesRunning||meterContinuousActive||meterSeriesAwaitingReady||meterManualPromptAwaiting;
   stopBtn.style.display=showStop?'':'none';
   stopBtn.disabled=!showStop;
  }
@@ -11255,6 +11359,12 @@ function meterUpdateReadButtons(){
   readyBtn.disabled=!readyVisible||meterReadySignalPending;
   readyBtn.textContent=meterReadySignalPending?'Sending...':'Device Ready';
  }
+   if(manualPromptBtn){
+    const promptVisible=meterManualPromptAwaiting;
+    manualPromptBtn.style.display=promptVisible?'':'none';
+    manualPromptBtn.disabled=!promptVisible||meterReadySignalPending;
+    manualPromptBtn.textContent=meterReadySignalPending?'Sending...':meterManualPromptActionLabel();
+   }
 }
 function meterUpdateCardMode(){
  const card=document.getElementById('meterCard');
