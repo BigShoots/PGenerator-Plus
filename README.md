@@ -223,6 +223,7 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
 **3. HCFR**
 - **Protocol:** Network Pattern Generator Commands (Port `85`)
 - **How to Connect:** Go to **Measures** > **Generator** > **Configure** → Select `Network` from the dropdown and enter the PGenerator's IP address.
+- **Implementation Note:** HCFR compatibility work in PGenerator+ has been cross-checked against the upstream [HCFR](https://github.com/hcfr/hcfr) source so generator behavior, grayscale reference handling, and related measurement logic can be aligned to HCFR's actual application behavior where practical. HCFR remains a separate upstream project; PGenerator+ uses it as a reference and does not bundle the HCFR application itself.
 
 **4. Resolve Protocol (CalMAN/HCFR/DisplayCAL)**
 - **Protocol:** XML Calibration Protocol (Port `20002`) — PGenerator+ acts as a *client*, connecting outbound to calibration software. This is useful when the calibration PC cannot reach the PGenerator directly (e.g., different subnets).
