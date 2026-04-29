@@ -192,6 +192,9 @@ rc_PGenerator_start () {
     ifconfig wlan0 $AP_NET".1" netmask 255.255.255.0
     perl -p -i -e "s/interface=.*/interface=wlan0/" /etc/hostapd/hostapd.conf
    fi
+    if [ -f /etc/hostapd/hostapd.conf ]; then
+     perl -0pi -e 'for my $pair (["auth_algs","1"],["wpa","2"],["wpa_key_mgmt","WPA-PSK"],["wpa_pairwise","CCMP"],["rsn_pairwise","CCMP"],["ignore_broadcast_ssid","0"]) { my ($k,$v)=@$pair; if($_ =~ /^${k}=.*$/m){ s/^${k}=.*$/${k}=${v}/m; } else { $_ .= "\n" unless /\n\z/; $_ .= "${k}=${v}\n"; } }' /etc/hostapd/hostapd.conf
+    fi
    /etc/init.d/hostapd start
   fi
   # END RPI2 wifi
@@ -225,6 +228,9 @@ rc_PGenerator_start () {
     perl -p -i -e "s/interface=.*/interface=ap0/" /etc/hostapd/hostapd.conf
     ifconfig ap0 $AP_NET".1" netmask 255.255.255.0
     ifconfig wlan0 0 0
+    if [ -f /etc/hostapd/hostapd.conf ]; then
+     perl -0pi -e 'for my $pair (["auth_algs","1"],["wpa","2"],["wpa_key_mgmt","WPA-PSK"],["wpa_pairwise","CCMP"],["rsn_pairwise","CCMP"],["ignore_broadcast_ssid","0"]) { my ($k,$v)=@$pair; if($_ =~ /^${k}=.*$/m){ s/^${k}=.*$/${k}=${v}/m; } else { $_ .= "\n" unless /\n\z/; $_ .= "${k}=${v}\n"; } }' /etc/hostapd/hostapd.conf
+    fi
     /etc/init.d/hostapd restart
     /etc/init.d/wpa_supplicant restart
    else
