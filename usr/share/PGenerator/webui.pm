@@ -5583,12 +5583,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none">
        <input type="checkbox" id="meterIncludeLumError" onchange="meterOnGreyRefChange()" style="vertical-align:middle"> Include luminance error
       </label>
-      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Grayscale reference mode: Absolute compares chromaticity only; EOTF includes luminance tracking error; Relative normalizes to the patch's relative luminance.">
+      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="HCFR grayscale reference mode: Relative Y normalizes each patch to its own luminance; Absolute Y w/gamma includes target gamma/EOTF luminance error; Absolute Y w/o gamma keeps the measured relative luminance while cancelling gamma error.">
        Grey ref
        <select id="meterGreyRefMode" class="inline-select" onchange="meterOnGreyRefChange()">
-        <option value="absolute">Absolute (chroma only)</option>
-        <option value="eotf">EOTF (with luminance)</option>
-        <option value="relative" selected>Relative (perfect gamma) (default)</option>
+        <option value="absolute">Relative Y</option>
+        <option value="eotf">Absolute Y w/gamma</option>
+        <option value="relative" selected>Absolute Y w/o gamma (default)</option>
        </select>
       </label>
       <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Near-black luminance weighting: reduces over-sensitivity on very dark grayscale steps by scaling the luminance term before ΔE evaluation.">
@@ -8371,7 +8371,14 @@ function meterTargetChromaticityForReading(reading){
 function meterColorDeltaTargetXYZ(reading,inclLum){
  const xyz=meterTargetXYZForReading(reading);
  const measured=meterReadingXYZ(reading);
- if(inclLum||!measured||!(measured.Y>0)||!(xyz.Y>0)) return xyz;
+ if(inclLum||!measured||!(measured.Y>0)) return xyz;
+ if(!(xyz.Y>0)){
+  if(meterReadingIsGreyscale(reading)){
+   const wp=meterTargetWhitePoint();
+   return {X:wp.X*measured.Y,Y:measured.Y,Z:wp.Z*measured.Y};
+  }
+  return xyz;
+ }
  const scale=measured.Y/xyz.Y;
  return {X:xyz.X*scale,Y:measured.Y,Z:xyz.Z*scale};
 }
@@ -8930,13 +8937,9 @@ function rgbBalanceCalman(reading,whiteRef,modeOrIncl){
  };
 }
 
-// HCFR-style RGB balance (RGBLevelWnd.cpp:303-328, luma-mode-OFF branch).
-// Chromaticity RGB balance: build a unit-Y XYZ from the *measured*
-// chromaticity, multiply by a luminance factor selected by the grey-ref
-// mode, convert through the active gamut's XYZtoRGB matrix, × 100.
-// Reference is the absolute gamut white (e.g. D65 for Rec.709/2020), not
-// the measured 100% white — this is a true reading of each step's
-// chromaticity against the colorspace anchor.
+// HCFR-style RGB balance (mirrors RGBLevelWnd.cpp luma-mode-OFF branch).
+// Modes 0 and 2 both use a unit-Y XYZ built from the measured chromaticity;
+// only mode 1 (Absolute Y w/gamma) rescales by measuredY / targetY.
 function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
@@ -8946,14 +8949,11 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
  if(!(s>0)) return {R:100,G:100,B:100};
  const x = readingXYZ.X/s, y = readingXYZ.Y/s;
  if(!(y>0)) return {R:100,G:100,B:100};
- let fact;
- if(mode==='absolute'){
-  fact = 1.0;
- } else if(mode==='relative'){
-  fact = (readingXYZ.Y>0 && whiteXYZ.Y>0) ? readingXYZ.Y/whiteXYZ.Y : 1.0;
- } else { // 'eotf'
+ let fact = 1.0;
+ if(mode==='eotf'){
   const Lb = meterBlackReadingY();
-  const tgtY = meterGreyTargetLuminance(reading.ire, whiteXYZ.Y, Lb, reading.r_code);
+  const targetPeak = meterChartIsHdr() ? meterChartHdrPeak() : whiteXYZ.Y;
+  const tgtY = meterGreyTargetLuminance(reading.ire, targetPeak, Lb, reading.r_code);
   fact = (tgtY>0 && whiteXYZ.Y>0 && readingXYZ.Y>0) ? readingXYZ.Y / tgtY : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
@@ -9558,7 +9558,7 @@ function meterOnGreyRefChange(src){
  const sel=document.getElementById('meterGreyRefMode');
  if(cb && sel){
   if(src==='checkbox' || (src==null && document.activeElement===cb)){
-   sel.value = cb.checked ? 'eotf' : 'absolute';
+  sel.value = cb.checked ? 'eotf' : 'relative';
   } else {
    cb.checked = (sel.value==='eotf');
   }
@@ -9608,6 +9608,17 @@ function meterSaveColorPrefs(){
  }catch(e){}
 }
 
+  function meterNormalizeSavedGreyRefMode(mode,inclLum){
+   if(inclLum===true || inclLum==='1' || inclLum===1) return 'eotf';
+   const normalized=String(mode==null?'':mode).trim();
+   if(normalized==='eotf') return 'eotf';
+   if(normalized==='relative') return 'relative';
+   // Legacy saved "absolute" values came from the pre-HCFR relabeling.
+   // Default those forward to Absolute Y w/o gamma.
+   if(normalized==='absolute') return 'relative';
+   return 'relative';
+  }
+
 // Apply saved meter color-science selections to the DOM. Safe to call
 // before the inputs exist — each lookup is a no-op if the element is
 // missing. Server-provided config wins on first load; see meterApplyServerColorPrefs.
@@ -9618,13 +9629,14 @@ function meterLoadColorPrefs(){
   const p=JSON.parse(raw)||{};
   const setVal=(id,val)=>{ if(val==null||val==='') return; const e=document.getElementById(id); if(e) e.value=val; };
   const setChk=(id,val)=>{ if(val==null||val==='') return; const e=document.getElementById(id); if(e) e.checked=(val==='1'||val===true); };
-  setVal('meterGreyRefMode', p.grey_ref_mode);
+    const greyMode=meterNormalizeSavedGreyRefMode(p.grey_ref_mode,p.incl_lum);
+    setVal('meterGreyRefMode', greyMode);
   setVal('meterGrayWorld',   p.gray_world);
   setVal('meterRgbBalanceFormula', p.rgb_formula);
   setVal('meterDeltaEForm',  p.de_form==='auto'?'deluv76':p.de_form);
   setVal('meterColorDeltaEForm', p.color_de_form);
   setChk('meterColorIncludeLumError', p.color_incl_lum);
-  setChk('meterIncludeLumError', p.incl_lum);
+    setChk('meterIncludeLumError', greyMode==='eotf');
   setVal('meterTargetGamma', p.target_gamma);
   setChk('meterHdrApplyBT2390', p.hdr_bt2390);
   setChk('meterEotfLogScale', p.eotf_log);
@@ -9632,12 +9644,17 @@ function meterLoadColorPrefs(){
  }catch(e){}
 }
 
-// Tri-state grey-reference mode (HCFR m_dE_gray 0/1/2).
-//   'absolute' : ref Y = measured Y (ΔL*=0; chroma only)
-//   'eotf'     : ref Y = target EOTF using the configured / metadata peak
+// Tri-state grey-reference mode. The stored string values are kept for
+// backward compatibility, but their HCFR meanings are:
+//   'absolute' : HCFR m_dE_gray == 0, "Relative Y"
+//                ref Y = 1.0 with measured YWhite = patch Y
+//                (chroma-only, L*=100 at every step)
+//   'eotf'     : HCFR m_dE_gray == 1, "Absolute Y w/gamma"
+//                ref Y = target gamma/EOTF luminance
 //                (luminance tracking error included)
-//   'relative' : ref Y = measured Y normalized to measured white peak
-//                (perfect-gamma assumption; gamma/luma error cancelled).
+//   'relative' : HCFR m_dE_gray == 2, "Absolute Y w/o gamma"
+//                ref Y = measured Y normalized to measured white peak
+//                (gamma/luma error cancelled while keeping step lightness).
 //
 // Reads <select id="meterGreyRefMode"> when present; otherwise falls back
 // to the legacy checkbox (#meterIncludeLumError) where ticked → 'eotf'.
@@ -9654,8 +9671,15 @@ function meterResolveGreyRefMode(x){
   if(x==='eotf'||x==='absolute'||x==='relative') return x;
  }
  if(x===true) return 'eotf';
- if(x===false) return 'absolute';
+ if(x===false) return 'relative';
  return meterGreyRefMode();
+}
+
+function meterGreyRefModeLabel(mode){
+ const resolved=meterResolveGreyRefMode(mode);
+ return resolved==='absolute' ? 'Relative Y'
+  : resolved==='eotf' ? 'Absolute Y w/gamma'
+  : 'Absolute Y w/o gamma';
 }
 
 // Returns the selected gray-world weighting (HCFR gw_Weight).
@@ -9668,19 +9692,9 @@ function meterGrayWorldWeight(){
  return (v>0 && v<=1) ? v : 1.0;
 }
 
-// Greyscale reference builder for ΔE calculation.
-//   mode === 'absolute' : chroma-only. Reference is D65 at the measured Y
-//     normalized by peak, so ΔL* = 0 and only u'v' / a*b* chromaticity
-//     error contributes. Matches the chroma-only readout used by most
-//     calibration tools. (HCFR m_dE_gray == 0)
-//   mode === 'eotf'     : "include luminance error" mode. Reference
-//     Y comes from the active EOTF using the configured / metadata peak,
-//     so ΔL* reports absolute tracking error. (HCFR m_dE_gray == 1)
-//   mode === 'relative' : reference Y uses the measured relative luminance
-//     of the step (Ym / Ywhite), cancelling gamma/luma error while still
-//     using the target white chromaticity. (HCFR m_dE_gray == 2)
+// Greyscale reference builder for the HCFR-compatible ΔE path.
 //
-// Legacy boolean inclLum is still accepted (true → 'eotf', false → 'absolute').
+// Legacy boolean inclLum is still accepted (true → 'eotf', false → 'relative').
 // Optional gwWeight (HCFR gw_Weight) pre-multiplies YWhite / YWhiteRef by
 // 0.15 or 0.05 to pull Lab into its linear (κ·t) region for near-black
 // patches.
@@ -9688,25 +9702,24 @@ function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight){
  const mode = meterResolveGreyRefMode(modeOrIncl);
  const gw = (gwWeight>0 && gwWeight<=1) ? gwWeight : 1.0;
  const measuredPeak = (Lw>0) ? Lw : (Ym>0 ? Ym : 1);
- const metadataPeak = meterChartIsHdr() ? meterChartHdrPeak() : measuredPeak;
  // Always reference greyscale chromaticity to the target white (D65). This
  // keeps the greyscale 100% white point aligned with the color-series white
  // readout instead of forcing ΔE at 100% to zero in HDR/DV.
  const wp = meterTargetWhitePoint();
  const wxN = wp.X;
  const wzN = wp.Z;
- let peak = measuredPeak;
- let refVy;
- if(mode==='eotf'){
-  peak = metadataPeak;
-  const tgtY = meterGreyTargetLuminance(ire, peak, Lb||0, code);
-  refVy = peak>0 ? tgtY/peak : 0;
- } else {
-  peak = measuredPeak;
-  refVy = peak>0 ? Ym/peak : 0;
+ let YWhite = measuredPeak;
+ let refVy = measuredPeak>0 ? Ym/measuredPeak : 0;
+ if(mode==='absolute'){
+  YWhite = (Ym>0) ? Ym : measuredPeak;
+  refVy = 1.0;
+ } else if(mode==='eotf'){
+  const targetPeak = meterChartIsHdr() ? meterChartHdrPeak() : measuredPeak;
+  const tgtY = meterGreyTargetLuminance(ire, targetPeak, Lb||0, code);
+  refVy = measuredPeak>0 ? tgtY/measuredPeak : 0;
  }
  return {
-  YWhite: peak*gw,
+  YWhite: YWhite*gw,
   refX: wxN*refVy, refY: refVy, refZ: wzN*refVy,
   YWhiteRef: 1.0*gw, wxN, wzN,
   mode: mode, gwWeight: gw
@@ -10303,7 +10316,7 @@ function meterRecoverSeries(s){
   if(seriesType==='colors') return 30;
   if(seriesType==='saturations') return 24;
   const basis=count||stepCount;
-  if(basis>=200) return 256;
+  if(basis>=101) return 100;
   return basis>0&&basis<=11?11:21;
  };
  // Recover steps: prefer server-provided steps, else rebuild client-side
@@ -11727,6 +11740,8 @@ function meterSelectSeries(type,points){
  meterWhiteReading=null;
  meterSeriesSteps=null;
  meterGreyscaleScrollRatio=0;
+ meterGreyscaleLowEndPinned=false;
+ meterGreyscaleLastCurrentKey=null;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
@@ -11825,6 +11840,8 @@ async function meterRunSeries(){
  meterSeriesAwaitingReady=false;
  meterReadySignalPending=false;
  meterLastChartCount=0;
+ meterGreyscaleLowEndPinned=false;
+ meterGreyscaleLastCurrentKey=null;
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
@@ -11878,6 +11895,8 @@ async function meterPollSeries(){
   meterSeriesRunning=false;
   meterSeriesAwaitingReady=false;
   meterReadySignalPending=false;
+    meterGreyscaleLowEndPinned=false;
+    meterGreyscaleLastCurrentKey=null;
   meterSharedSeriesId=null;
   meterApplyClearedState(false);
   return;
@@ -11968,6 +11987,8 @@ async function meterPollSeries(){
   meterSeriesRunning=false;
   meterSeriesAwaitingReady=false;
   meterReadySignalPending=false;
+    meterGreyscaleLowEndPinned=false;
+    meterGreyscaleLastCurrentKey=null;
   document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
@@ -11989,6 +12010,8 @@ let meterThumbsBuilt=false; // track if thumbnails are already built for current
 let meterGreyscaleScrollRatio=0;
 let meterGreyscaleScrollSyncing=false;
 let meterGreyscaleScrollFrame=0;
+let meterGreyscaleLowEndPinned=false;
+let meterGreyscaleLastCurrentKey=null;
 
 function meterGreyscaleScrollSource(){
  return document.getElementById('meterThumbsRow');
@@ -12035,26 +12058,64 @@ function meterSetGreyscaleScrollRatio(el,ratio){
  el.scrollLeft=max>0 ? Math.max(0,Math.min(1,ratio))*max : 0;
 }
 
+function meterGreyscaleStepPercent(key){
+ if(key==null) return null;
+ const match=String(key).trim().match(/^(-?\d+(?:\.\d+)?)%$/);
+ if(!match) return null;
+ const value=parseFloat(match[1]);
+ return Number.isFinite(value) ? value : null;
+}
+
+function meterGreyscaleLowEndGracePercent(row,thumb){
+ const viewport=Math.max(1,Math.round((row&&row.clientWidth)||0));
+ const thumbWidth=Math.max(1,Math.round((thumb&&thumb.offsetWidth)||34));
+ return Math.min(100,Math.max(8,Math.ceil(viewport/thumbWidth)+6)-1);
+}
+
+function meterUpdateGreyscaleLowEndPin(key,row,thumb){
+ const currentPct=meterGreyscaleStepPercent(key);
+ const lastPct=meterGreyscaleStepPercent(meterGreyscaleLastCurrentKey);
+ if(currentPct==null){
+  meterGreyscaleLastCurrentKey=key;
+  return false;
+ }
+ const gracePct=meterGreyscaleLowEndGracePercent(row,thumb);
+ if(lastPct!=null&&lastPct>=95&&currentPct<=gracePct) meterGreyscaleLowEndPinned=true;
+ if(meterGreyscaleLowEndPinned&&currentPct>gracePct) meterGreyscaleLowEndPinned=false;
+ meterGreyscaleLastCurrentKey=key;
+ return meterGreyscaleLowEndPinned;
+}
+
 function meterEnsureThumbVisible(container,key){
  if(!container||!key) return;
  const row=meterGreyscaleScrollSource();
  if(!row) return;
  const thumb=Array.from(container.children||[]).find(child=>(child.dataset.key||'')===key);
  if(!thumb) return;
+ if(meterUpdateGreyscaleLowEndPin(key,row,thumb)){
+  meterGreyscaleScrollRatio=0;
+  row.scrollLeft=0;
+  meterQueueGreyscaleTargetSync();
+  return;
+ }
  const max=meterGreyscaleScrollMax(row);
  const rowLeft=row.scrollLeft||0;
+ const rowRight=rowLeft+(row.clientWidth||0);
  const thumbLeft=thumb.offsetLeft||0;
- const thumbCenter=thumbLeft+((thumb.offsetWidth||0)/2);
- const rowCenter=(row.clientWidth||0)/2;
- const nextLeft=Math.max(0,Math.min(max,thumbCenter-rowCenter));
- if(Math.abs(nextLeft-rowLeft)<1) return;
- if(row.scrollTo){
-  row.scrollTo({left:nextLeft,behavior:'smooth'});
- } else {
-  row.scrollLeft=nextLeft;
-  meterGreyscaleScrollRatio=meterGreyscaleScrollRatioFor(row);
+ const thumbRight=thumbLeft+(thumb.offsetWidth||0);
+ let nextLeft=rowLeft;
+ if(thumbLeft < rowLeft) nextLeft=thumbLeft;
+ else if(thumbRight > rowRight) nextLeft=thumbRight-(row.clientWidth||0);
+ nextLeft=Math.max(0,Math.min(max,nextLeft));
+ const nextRatio=max>0 ? nextLeft/max : 0;
+ if(Math.abs(nextLeft-rowLeft)<1){
+  meterGreyscaleScrollRatio=nextRatio;
   meterQueueGreyscaleTargetSync();
+  return;
  }
+ meterGreyscaleScrollRatio=nextRatio;
+ row.scrollLeft=nextLeft;
+ meterQueueGreyscaleTargetSync();
 }
 
 function meterCurrentSeriesStepKeyFromStatus(status){
@@ -12927,7 +12988,7 @@ function drawDeltaEChart(gs,allSteps,readingMap){
  const gwTag=gw<1 ? (' · GW '+gw) : '';
  // Primary greyscale ΔE chart follows the selected formula.
  const lbl=document.getElementById('chartDeltaELabel');
- if(lbl) lbl.textContent = greyMode==='relative' ? (deLabel+" (relative gamma"+gwTag+")") : (inclLum ? (deLabel+" (+ Luminance"+gwTag+")") : (deLabel+" (chroma only"+gwTag+")"));
+ if(lbl) lbl.textContent = deLabel+" ("+meterGreyRefModeLabel(greyMode)+gwTag+")";
  // Only compute ΔE when actual 100% white is measured — using "brightest so
  // far" causes all values to shift every time a brighter patch arrives.
  const whiteR=gs.find(r=>r.ire===100);
@@ -13022,7 +13083,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  const greyMode=meterGreyRefMode();
  const inclLum=(greyMode==='eotf');
  const lbl=document.getElementById('chartDeltaE2000Label');
- if(lbl) lbl.textContent = greyMode==='relative' ? "Reference ΔE 2000 (relative gamma)" : (inclLum ? "Reference ΔE 2000 (+ Luminance)" : "Reference ΔE 2000 (chroma only)");
+ if(lbl) lbl.textContent = "Reference ΔE 2000 ("+meterGreyRefModeLabel(greyMode)+")";
  const whiteR=gs.find(r=>r.ire===100);
  // Use configured target luminance as synthetic white when 100% not yet measured
  let effectiveWhite2000=whiteR;
@@ -13043,7 +13104,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  const gwWeight=meterGrayWorldWeight();
  const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
  // Lab normalization: Xn = D65.X * YWhite, Yn = YWhite, Zn = D65.Z * YWhite.
- // Reference Y per hcfrGreyRef (chroma-only or target-EOTF luminance).
+ // Reference Y per hcfrGreyRef's HCFR mode 0/1/2 semantics.
  const deMap={};
  gs.forEach(rd=>{
   const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
@@ -15234,7 +15295,8 @@ async function loadMeterSettings(){
  if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
  if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
  // Color-science selections (server values win)
- setVal('meterGreyRefMode', s.grey_ref_mode);
+ const greyMode=meterNormalizeSavedGreyRefMode(s.grey_ref_mode,s.incl_lum);
+ setVal('meterGreyRefMode', greyMode);
  setVal('meterGrayWorld',   s.gray_world);
  setVal('meterRgbBalanceFormula', s.rgb_formula);
  setVal('meterDeltaEForm',  s.de_form==='auto'?'deluv76':s.de_form);
@@ -15254,7 +15316,7 @@ async function loadMeterSettings(){
  setVal('meterXyzM33', s.xyz_m33);
  setChk('meterXyzMatrixEnabled', meterStoredXyzMatrixEnabled(s));
  meterUpdateXyzMatrixVisibility();
- setChk('meterIncludeLumError', s.incl_lum);
+ setChk('meterIncludeLumError', greyMode==='eotf');
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
  meterSyncHdrMetadata();
  meterUpdateCustomCcssPanel(meterNormalizeStoredDisplayType(s.display_type,s.ccss_file));
