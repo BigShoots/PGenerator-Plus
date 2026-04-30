@@ -165,7 +165,7 @@ class Runner:
         env["PG_CCSS_MAX_LUMA"] = str(self.args.max_luma)
         env.setdefault("PG_CCSS_SETTLE_SEC", "0.8")
 
-        ccxxmake_bin = env.get("PG_CCSS_CCXXMAKE_BIN") or "ccxxmake"
+        ccxxmake_bin = self.args.ccxxmake_bin or env.get("PG_CCSS_CCXXMAKE_BIN") or "ccxxmake"
         if os.path.sep in ccxxmake_bin and not os.access(ccxxmake_bin, os.X_OK):
             return self.fail("Failed to launch ccxxmake", "%s is not executable" % ccxxmake_bin)
 
@@ -265,6 +265,7 @@ def main():
     parser.add_argument("--max-luma", default="1000")
     parser.add_argument("--patch-size", default="18")
     parser.add_argument("--refresh-rate", default="")
+    parser.add_argument("--ccxxmake-bin", default="")
     args = parser.parse_args()
 
     runner = Runner(args)
