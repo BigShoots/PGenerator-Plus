@@ -42,9 +42,15 @@ CONFIG_FILE="/tmp/meter_session.config"
 LOCK_FILE="/tmp/meter_session.lock"
 LOG_FILE="/tmp/meter_session.log"
 READY_FILE="/tmp/meter_session_ready.signal"
+STARTUP_READY_FILE="/tmp/meter_session_start_ready.signal"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
 startup_marker() { log "startup marker: $*"; }
+
+signal_startup_ready() {
+ : > "$STARTUP_READY_FILE"
+ chmod 666 "$STARTUP_READY_FILE" 2>/dev/null
+}
 
 # Atomic-ish state file writer that keeps the file world-writable so the
 # webui daemon (running as the unprivileged pgenerator user) can overwrite
@@ -245,7 +251,7 @@ cleanup() {
  [[ -n "$BG_PID" ]] && pkill -9 -P "$BG_PID" 2>/dev/null
  [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
  pkill -9 -x spotread 2>/dev/null
- rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE"
+ rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
 trap cleanup EXIT INT TERM
 
@@ -298,7 +304,7 @@ startup_marker "spotread spawned (bg_pid=$BG_PID)"
 
 # Publish the command FIFO immediately so the web UI can queue a manual READ
 # even while startup is paused on an internal meter prompt.
-rm -f "$CMD_FIFO" "$READY_FILE"
+rm -f "$CMD_FIFO" "$READY_FILE" "$STARTUP_READY_FILE"
 mkfifo "$CMD_FIFO"
 chmod 666 "$CMD_FIFO"
 exec 4<>"$CMD_FIFO"
@@ -374,6 +380,8 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
  sleep 2
 fi
 
+signal_startup_ready
+startup_marker "startup ready signaled"
 log "command loop ready"
 
 LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE=""

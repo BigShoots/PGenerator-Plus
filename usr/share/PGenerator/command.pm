@@ -63,6 +63,11 @@ sub apply_source_rgb_quant_range (@) {
   $external_rgb_quant_range_active=1;
  }
  return 0 if(($pgenerator_conf{"rgb_quant_range"}||"") eq "$quant_range" && $rgb_quant_range_source eq $source);
+ if(($pgenerator_conf{"rgb_quant_range"}||"") eq "$quant_range") {
+  $rgb_quant_range_source=$source;
+  &log("Signal range owner: source=$source rgb_quant_range=$quant_range (no restart)");
+  return 1;
+ }
  &sudo("SET_PGENERATOR_CONF","rgb_quant_range","$quant_range");
  $pgenerator_conf{"rgb_quant_range"}="$quant_range";
  $rgb_quant_range_source=$source;
@@ -272,8 +277,14 @@ sub video_program_stop {
  my $program = shift;
  if($program ne "") {
   &process_pid("$program","kill");
-  &pattern_generator_start(1) if((&process_pid("$pattern_generator","get")) eq "");
+  &pattern_generator_start(1) if(!&pattern_generator_is_running());
  }
+}
+
+sub pattern_generator_is_running () {
+ return 1 if((&process_pid("$pattern_generator","get")) ne "");
+ return 1 if(-x "${pattern_generator}.dv" && (&process_pid("${pattern_generator}.dv","get")) ne "");
+ return 0;
 }
 
 ###############################################
@@ -313,7 +324,6 @@ sub clean_files(@) {
  &remove_files("$var_dir",".*");
  &remove_files("$var_dir/frames/",".*");
  &remove_files("$var_dir/running/",".*");
- &remove_files("$var_dir/running/tmp/",".*");
  opendir(TMP,"$var_dir/tmp");
  @dir=readdir(TMP);
  closedir(TMP);

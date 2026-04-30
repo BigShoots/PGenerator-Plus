@@ -280,6 +280,7 @@ my $_meter_session_pid_file="/tmp/meter_session.pid";
 my $_meter_session_fifo="/tmp/meter_session.cmd";
 my $_meter_session_config_file="/tmp/meter_session.config";
 my $_meter_session_ready_file="/tmp/meter_session_ready.signal";
+my $_meter_session_start_ready_file="/tmp/meter_session_start_ready.signal";
 my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
 my $_ccss_create_state_file="/tmp/ccss_create.json";
 my $_ccss_create_pid_file="/tmp/ccss_create.pid";
@@ -990,6 +991,12 @@ sub webui_meter_session_fifo_ready () {
  return 0;
 }
 
+sub webui_meter_session_start_ready () {
+ return 0 unless(-f $_meter_session_start_ready_file);
+ return 0 unless(&webui_meter_session_alive());
+ return 1;
+}
+
 sub webui_meter_read_state_write (@) {
  my ($json)=@_;
  $json='{"status":"idle"}' if(!defined($json) || $json eq "");
@@ -1016,11 +1023,12 @@ sub webui_meter_session_start_error_json (@) {
  my ($config)=@_;
  my $config_ready=&webui_meter_session_config_matches($config) ? 1 : 0;
  my $fifo_ready=&webui_meter_session_fifo_ready() ? 1 : 0;
+ my $start_ready=&webui_meter_session_start_ready() ? 1 : 0;
  my $state=&webui_meter_read_state_read();
  my $state_log=$state;
  $state_log='(none)' if(!defined($state_log) || $state_log eq "");
  $state_log=~s/\s+/ /g;
- &log("WebUI: meter session failed to start (config_ready=$config_ready fifo_ready=$fifo_ready state=$state_log)");
+ &log("WebUI: meter session failed to start (config_ready=$config_ready fifo_ready=$fifo_ready start_ready=$start_ready state=$state_log)");
  if($state=~/"status"\s*:\s*"error"/) {
   &webui_meter_read_state_write($state);
   return $state;
@@ -1043,6 +1051,7 @@ sub webui_meter_series_ready_cleanup (@) {
 
 sub webui_meter_session_ready_cleanup () {
  unlink($_meter_session_ready_file) if(-e $_meter_session_ready_file);
+ unlink($_meter_session_start_ready_file) if(-e $_meter_session_start_ready_file);
 }
 
 sub webui_meter_read_ready (@) {
@@ -1093,12 +1102,14 @@ sub webui_meter_session_stop (@) {
 sub webui_meter_session_start (@) {
  my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready)=@_;
  # Start from a clean slate. Only the session daemon itself should write the
- # advertised config file once it has actually grabbed the lock and is ready.
+ # advertised config file once it has actually grabbed the lock. Report
+ # success only after startup has reached either a real ready state or an
+ # explicit awaiting-ready prompt that the UI can surface to the user.
  &webui_meter_session_ready_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  &webui_meter_read_state_write('{"status":"starting"}');
  # Launch detached as root. The daemon writes its own PID/config files once it
- # grabs the lock; wait for all of that to happen before reporting success.
+ # grabs the lock; wait for an actionable startup state before reporting success.
  my $aio_flag=$disable_aio ? "1" : "0";
  $require_device_ready=0 if(!defined($require_device_ready) || $require_device_ready!~/^1$/);
  $signal_mode=&webui_pattern_signal_mode("") if(!defined($signal_mode) || $signal_mode eq "");
@@ -1107,21 +1118,29 @@ sub webui_meter_session_start (@) {
  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '300' '$require_device_ready' </dev/null >/dev/null 2>&1 &");
  my $waited=0;
  # Some CCSS/meter combinations trigger spotread refresh calibration on first
- # start and can legitimately take 35-45 seconds before the FIFO is ready.
+ # start and can legitimately take 35-45 seconds before the helper reaches a
+ # real ready state or emits an explicit operator prompt.
  while($waited < 900) {
-  last if(&webui_meter_session_config_matches($config) && &webui_meter_session_fifo_ready());
+  my $state="";
+  my $state_mtime=0;
+  my $awaiting_ready=0;
+  my $state_error=0;
+  if(-f $_meter_read_file) {
+   if(open(my $fh,"<",$_meter_read_file)) { local $/; $state=<$fh>; close($fh); }
+   $state_mtime=(stat($_meter_read_file))[9] || 0;
+   if($state_mtime >= $started_at) {
+    $awaiting_ready=1 if($state=~/"awaiting_ready"\s*:\s*true/i);
+    $state_error=1 if($state=~/"status"\s*:\s*"error"/);
+   }
+  }
+  last if($state_error);
+  last if(&webui_meter_session_config_matches($config) && &webui_meter_session_fifo_ready() && (&webui_meter_session_start_ready() || $awaiting_ready));
   Time::HiRes::sleep(0.1);
   $waited++;
-  # If the daemon died early (init failure), the read result file will
-  # contain a status:error — surface that quickly instead of waiting.
-  if(-f $_meter_read_file) {
-   my $check="";
-   if(open(my $fh,"<",$_meter_read_file)) { local $/; $check=<$fh>; close($fh); }
-   my $mtime=(stat($_meter_read_file))[9] || 0;
-   last if($mtime >= $started_at && $check=~/"status"\s*:\s*"error"/);
-  }
  }
- return (&webui_meter_session_config_matches($config) && &webui_meter_session_fifo_ready()) ? 1 : 0;
+ my $final_state=&webui_meter_read_state_read();
+ return 1 if(&webui_meter_session_config_matches($config) && &webui_meter_session_fifo_ready() && (&webui_meter_session_start_ready() || $final_state=~/"awaiting_ready"\s*:\s*true/i));
+ return 0;
 }
 
 sub webui_meter_read (@) {
@@ -1452,6 +1471,10 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  # range request must generate limited-range patch codes regardless of the
  # transport color format.
  my $patch_limited=(int($signal_range)==1) ? 1 : 0;
+ my $greyscale_patch_limited=$patch_limited;
+ if($type eq "greyscale" && $signal_mode eq "sdr" && $pattern_signal_range=~/^[12]$/) {
+  $greyscale_patch_limited=(int($pattern_signal_range)==1) ? 1 : 0;
+ }
 
  # Build step list as JSON array for the helper script
  # Measurement order: WHITE first (reference), then 0%→95% ascending
@@ -1487,7 +1510,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
    # and never change — HCFR achieves this with a pre-configured target
    # luminance; we use the actual measured white instead.
    my @ordered = (100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
-   my $lim=$patch_limited;
+  my $lim=$greyscale_patch_limited;
    @steps=map {
     my $v=$_;
     my $c=0;
@@ -2511,16 +2534,33 @@ sub webui_ccss_create_start (@) {
 
  my $profile_label=$name;
  $profile_label=~s/'/'"'"'/g;
- my $cmd="setsid sudo env PG_CCSS_CCXXMAKE_BIN='$_ccss_create_ccxxmake_bin' $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size'";
+ my $cmd="setsid sudo $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size' --ccxxmake-bin '$_ccss_create_ccxxmake_bin'";
  $cmd.=" --refresh-rate '$refresh_rate'" if($refresh_rate ne "");
  $cmd.=" </dev/null >/dev/null 2>&1 &";
  system($cmd);
 
  my $waited=0;
- while($waited < 40) {
-  last if(-f $_ccss_create_pid_file || &_webui_ccss_create_alive());
+ my $saw_helper=0;
+ my $dead_settle=0;
+ while($waited < 80) {
   my $state_json=&_webui_ccss_create_read_state();
   last if($state_json!~/"status"\s*:\s*"starting"/);
+  my $alive=&_webui_ccss_create_alive() ? 1 : 0;
+  my $has_pid=-f $_ccss_create_pid_file ? 1 : 0;
+  if($alive || $has_pid) {
+   $saw_helper=1;
+   $dead_settle=0;
+  }
+  elsif($saw_helper) {
+   # If the helper started and then exited quickly, give it a short grace
+   # window to flush its final error state instead of collapsing that path
+   # into a generic "stopped unexpectedly" response.
+   $dead_settle++;
+   last if($dead_settle >= 10);
+  }
+  elsif($waited >= 10) {
+   last;
+  }
   Time::HiRes::sleep(0.1);
   $waited++;
  }
@@ -4755,7 +4795,7 @@ sub webui_pattern (@) {
   return '{"status":"error","message":"Unknown pattern: '.$name.'"}';
  }
  # Ensure the C renderer binary is running (auto-start on first pattern)
- if(&process_pid("$pattern_generator","get") eq "") {
+ if(!&pattern_generator_is_running()) {
   &pattern_generator_start(1);
  }
  if($pattern_color_format == 0 && $pat !~/^SOURCE_RANGE=/m) {
@@ -5003,6 +5043,9 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .meter-card-header-meter{width:100%;max-width:none;min-width:0}
 .custom-ccss-panel-btn{width:100%}}
 @media(max-width:480px){.grid{grid-template-columns:1fr}
+.hdr-right{width:100%;min-width:0;flex-wrap:wrap;justify-content:space-between}
+.status-bar{width:100%;min-width:0;flex-wrap:wrap}
+.status-bar span{min-width:0}
 .hdr-actions{flex-wrap:wrap}.header{padding:2px 12px}.dashboard{padding:8px}}
 #hdmiOverlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
 background:rgba(0,0,0,.75);z-index:9999;justify-content:center;align-items:center;
@@ -7715,7 +7758,8 @@ function meterOutputIsRgb(){
 }
 
 function meterGreyscaleUsesFullSourceRange(){
- return false;
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ return meterActiveSeriesType==='greyscale' && mode==='sdr';
 }
 
 function meterPatchUsesVideoRange(){
@@ -7835,16 +7879,16 @@ function meterDvRelativeChartTargetLuminance(ire, peak){
 
 function meterCodeFromSignalPercent(percent){
  const clamped=clampNum(percent,0,100)/100;
+ const range=meterGreyCodeRange();
  if(meterChartIsDv()){
   const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
   if(sel==='st2084'){
-   const range=meterGreyCodeRange();
    return Math.round(range.min+clamped*range.span);
   }
   const encoded=clamped>0?Math.pow(clamped,1/meterDvTunnelGamma()):0;
   return Math.round(meterPatchRangeMin()+encoded*meterPatchRangeSpan());
  }
- return Math.round(meterPatchRangeMin()+clamped*meterPatchRangeSpan());
+ return Math.round(range.min+clamped*range.span);
 }
 
 function meterActualSignalPercent(percent){
@@ -7853,7 +7897,8 @@ function meterActualSignalPercent(percent){
 
 function meterActualCodePercent(percent){
  const clamped=clampNum(percent,0,100)/100;
- const code=Math.round(meterPatchRangeMin()+clamped*meterPatchRangeSpan());
+ const range=meterGreyCodeRange();
+ const code=Math.round(range.min+clamped*range.span);
  return meterGreySignalFractionFromCode(code)*100;
 }
 
