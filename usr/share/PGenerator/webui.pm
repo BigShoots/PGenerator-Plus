@@ -2112,12 +2112,44 @@ sub webui_meter_reset (@) {
  return '{"status":"ok","message":"USB reset performed"}';
 }
 
+my $_meter_settings_runtime="$var_dir/running/meter_settings.json";
 my $_meter_settings_file="/tmp/meter_settings.json";
 # Persistent copy — reloaded on daemon start and mirrored whenever the
 # transient /tmp copy is written. Survives reboots and must stay writable
 # by the unprivileged pgenerator daemon user.
 my $_meter_settings_persist="/var/lib/PGenerator/meter_settings.json";
 my $_meter_settings_persist_legacy="/usr/share/PGenerator/meter_settings.json";
+
+sub _webui_meter_settings_write_json (@) {
+ my ($path,$json)=@_;
+ return 0 if(!defined($path) || $path eq "");
+ my $dir=$path;
+ $dir=~s{/[^/]+$}{};
+ if($dir ne "" && !-d $dir) {
+  system("mkdir -p '$dir' >/dev/null 2>&1");
+ }
+ my $tmp="$path.tmp";
+ if(open(my $fh,">",$tmp)) {
+  print $fh $json;
+  close($fh);
+  return 1 if(rename($tmp,$path));
+  unlink($tmp) if(-f $tmp);
+ }
+ return 0;
+}
+
+sub _webui_meter_settings_boot_id (@) {
+ my $boot_id="";
+ if(open(my $fh,"<","/proc/sys/kernel/random/boot_id")) {
+  local $/;
+  $boot_id=<$fh>;
+  close($fh);
+ }
+ chomp($boot_id);
+ $boot_id=~s/[^A-Za-z0-9_-]//g;
+ $boot_id="boot_".time() if($boot_id eq "");
+ return $boot_id;
+}
 
 sub webui_meter_settings_save (@) {
  my ($body)=@_;
@@ -2135,11 +2167,11 @@ sub webui_meter_settings_save (@) {
   push @parts, "\"$1\":$2" if($allowed{$1});
  }
  my $safe="{".join(",",@parts)."}";
- if(open(my $fh,">",$_meter_settings_file)) { print $fh $safe; close($fh); }
- # Mirror to persistent location. Failures here are non-fatal — the /tmp
- # copy is authoritative for the running session either way.
- if(open(my $pf,">",$_meter_settings_persist)) { print $pf $safe; close($pf); }
- return '{"status":"ok"}';
+ my $saved_runtime=&_webui_meter_settings_write_json($_meter_settings_runtime,$safe);
+ my $saved_persist=&_webui_meter_settings_write_json($_meter_settings_persist,$safe);
+ return '{"status":"ok"}' if($saved_runtime || $saved_persist);
+ &log("WebUI: meter settings save failed (runtime=$_meter_settings_runtime persist=$_meter_settings_persist)");
+ return '{"status":"error","message":"Failed to save meter settings"}';
 }
 
 sub webui_meter_settings_load (@) {
@@ -2155,11 +2187,8 @@ sub webui_meter_settings_load (@) {
   $meter_target_gamma_auto=($dv_map_mode eq "2") ? "st2084" : "2.2";
   $meter_target_gamut_auto="p3d65";
  }
- my $boot_id=`cat /proc/sys/kernel/random/boot_id 2>/dev/null`;
- chomp($boot_id);
- $boot_id=~s/[^A-Za-z0-9_-]//g;
- $boot_id="boot_".time() if($boot_id eq "");
- foreach my $path ($_meter_settings_file, $_meter_settings_persist, $_meter_settings_persist_legacy) {
+ my $boot_id=&_webui_meter_settings_boot_id();
+ foreach my $path ($_meter_settings_runtime, $_meter_settings_file, $_meter_settings_persist, $_meter_settings_persist_legacy) {
   next unless(-f $path);
   my $json="";
   if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
@@ -7500,6 +7529,103 @@ function meterLoadSeriesCache(){
  }catch(e){}
 }
 
+function meterParseSeriesKey(key){
+ const match=String(key||'').match(/^([a-z]+)-(\d+)$/);
+ if(!match) return null;
+ return {type:match[1],points:Number(match[2])||0};
+}
+
+function meterSeriesSnapshotSignalMode(snapshot,fallbackMode){
+ const mode=String((snapshot&&snapshot.signal_mode)||fallbackMode||'sdr').toLowerCase();
+ return mode||'sdr';
+}
+
+function meterGreyscaleReadingMatchesStep(reading,step){
+ if(!reading||!step) return false;
+ if(step.ire!=null&&reading.ire!=null&&Number(step.ire)===Number(reading.ire)) return true;
+ const stepName=String(step.name||'');
+ const readingName=String(reading.name||'');
+ return stepName!==''&&stepName===readingName;
+}
+
+function meterResolveSeriesSnapshotFromCache(key,options){
+ if((!meterSeriesCache||Object.keys(meterSeriesCache).length===0) && key) meterLoadSeriesCache();
+ const clone=(value)=>JSON.parse(JSON.stringify(value));
+ const opts=options||{};
+ const exact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
+ const parsed=meterParseSeriesKey(key)||null;
+ const type=opts.type||((parsed&&parsed.type)?parsed.type:'')||(exact&&exact.type)||'greyscale';
+ const points=opts.points||((parsed&&parsed.points)?parsed.points:0)||(exact&&exact.points)||21;
+ const signalMode=meterSeriesSnapshotSignalMode(exact,(opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr'));
+ const steps=clone((Array.isArray(opts.steps)&&opts.steps.length)?opts.steps:((exact&&Array.isArray(exact.steps)&&exact.steps.length)?exact.steps:meterBuildStepsJS(type,points)));
+ const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode?exact:null;
+ if(type!=='greyscale'){
+  if(!exactEligible) return null;
+  return {
+   type:type,
+   points:points,
+   signal_mode:signalMode,
+   steps:steps,
+   readings:clone((exactEligible.readings||[]).filter(rd=>meterReadingHasLuminance(rd))),
+   white_reading:exactEligible.white_reading?clone(exactEligible.white_reading):null,
+   status:exactEligible.status||'complete'
+  };
+ }
+ const candidates=[];
+ if(exactEligible) candidates.push({snap:exactEligible,exact:true});
+ if(meterSeriesCache&&typeof meterSeriesCache==='object'){
+  Object.entries(meterSeriesCache).forEach(([cacheKey,snap])=>{
+   if(cacheKey===key) return;
+   const meta=meterParseSeriesKey(cacheKey);
+   if(!meta||meta.type!=='greyscale') return;
+   if(!snap||!Array.isArray(snap.readings)||snap.readings.length===0) return;
+   if(meterSeriesSnapshotSignalMode(snap,signalMode)!==signalMode) return;
+   candidates.push({snap:snap,exact:false});
+  });
+ }
+ if(candidates.length===0) return null;
+ candidates.sort((a,b)=>{
+  if(a.exact!==b.exact) return a.exact?-1:1;
+  return Number(b.snap.updated_at||0)-Number(a.snap.updated_at||0);
+ });
+ const mergedReadings=[];
+ steps.forEach(step=>{
+  for(const candidate of candidates){
+   const source=(candidate.snap.readings||[]).find(rd=>meterReadingHasLuminance(rd)&&meterGreyscaleReadingMatchesStep(rd,step));
+   if(!source) continue;
+   const reading=clone(source);
+   meterStampReadingStepMeta(reading,step);
+   meterNormalizeMeasuredReading(reading);
+   mergedReadings.push(reading);
+   break;
+  }
+ });
+ if(mergedReadings.length===0) return null;
+ let white=null;
+ if(exactEligible&&exactEligible.white_reading&&meterReadingHasLuminance(exactEligible.white_reading)) white=clone(exactEligible.white_reading);
+ if(!white){
+  const mergedWhite=meterFindSeriesWhiteReading(mergedReadings);
+  if(mergedWhite) white=clone(mergedWhite);
+ }
+ if(!white){
+  for(const candidate of candidates){
+   if(candidate.snap.white_reading&&meterReadingHasLuminance(candidate.snap.white_reading)){
+    white=clone(candidate.snap.white_reading);
+    break;
+   }
+  }
+ }
+ return {
+  type:type,
+  points:points,
+  signal_mode:signalMode,
+  steps:steps,
+  readings:mergedReadings,
+  white_reading:white,
+  status:(exactEligible&&exactEligible.status)||'complete'
+ };
+}
+
 function meterRestoreLatestPersistedSeries(){
  if(!meterSeriesCacheBootId || meterActiveSeriesKey) return false;
  meterLoadSeriesCache();
@@ -10653,16 +10779,18 @@ function meterCacheSeriesState(status){
 }
 
 function meterRestoreSeriesFromCache(key){
- if((!meterSeriesCache||Object.keys(meterSeriesCache).length===0) && key) meterLoadSeriesCache();
- const cached=meterSeriesCache[key];
+ const cached=meterResolveSeriesSnapshotFromCache(key,arguments[1]||{});
  if(!cached||!cached.steps||cached.steps.length===0) return false;
  meterRecoverSeries({
-  series_id:cached.series_id||(cached.type+'_cached'),
+  series_id:null,
   status:cached.status||'complete',
   total_steps:cached.steps.length,
+  signal_mode:cached.signal_mode,
   steps:JSON.parse(JSON.stringify(cached.steps)),
-  readings:JSON.parse(JSON.stringify(cached.readings||[]))
+  readings:JSON.parse(JSON.stringify(cached.readings||[])),
+  white_reading:cached.white_reading?JSON.parse(JSON.stringify(cached.white_reading)):null
  });
+ meterSharedSeriesId=null;
  return true;
 }
 
@@ -11896,6 +12024,11 @@ function meterSelectSeries(type,points){
  // Build steps
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
+ if(meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
+  meterUpdateDeltaEFormControl();
+  toast(meterSeriesLabelFromKey(key)+' loaded');
+  return;
+ }
  // Sort for display
  const sortedSteps=(type==='colors'||type==='saturations')?[...steps]:[...steps].sort((a,b)=>(a.ire||0)-(b.ire||0));
  // Show UI — toggle greyscale vs color chart sections
