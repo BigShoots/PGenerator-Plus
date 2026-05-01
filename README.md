@@ -90,6 +90,10 @@ Important limitations:
 - Before publishing or flashing a test image, make sure transient runtime state is cleared so the image is fresh. In particular, do not ship old meter/session artifacts, and confirm [etc/PGenerator/PGenerator.conf](etc/PGenerator/PGenerator.conf) is back on the default SDR 1080p RGB 8-bit profile.
 - The script does not shrink or compress the final image; if you want a smaller distributable image, run your preferred shrink/compression workflow afterward (for example `pishrink`, `xz`, or `zstd`).
 
+### VC4 Kernel Build Snapshot
+
+For kernel-side VC4 HDMI work, the saved `5.10.89+-7l` build tree lives under `build/vc4-kernel-build-env/` and is intentionally gitignored because of its size. The tracked usage note is [docs/vc4-kernel-build-environment.md](docs/vc4-kernel-build-environment.md), which covers refreshing the saved snapshot, rebuilding only `drivers/gpu/drm/vc4`, and deploying or rolling back `vc4.ko` on a Pi.
+
 ### Building the Renderer Binary from Source
 
 The `PGeneratord` pattern renderer is a C++ application built on [openFrameworks](https://openframeworks.cc/) 0.11.2 with a custom DRM/KMS window addon for HDR and Dolby Vision HDMI output. The source is in the `src/` directory.
