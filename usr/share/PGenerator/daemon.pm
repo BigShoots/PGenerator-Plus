@@ -199,16 +199,31 @@ sub legacy_external_mark_hcfr (@) {
  &legacy_external_set_status($connection,"HCFR");
 }
 
-sub legacy_external_hcfr_quant_range (@) {
- my $payload=shift;
- my ($primary_payload)=split(/;/,$payload || "",2);
+sub legacy_external_hcfr_triplet_quant_range (@) {
+ my $triplet=shift;
+ my $allow_full=shift;
+ return "" if(!defined $triplet || $triplet eq "");
+ my @values=split(/,/,$triplet);
+ return "" if($#values != 2);
  my $limited_anchor=0;
- for(split(/,/,$primary_payload || "")) {
-  next if($_ eq "" || $_ !~/^-?\d+$/);
-  return 2 if($_ < 16 || $_ > 235);
+ for(@values) {
+  return "" if($_ !~/^-?\d+$/);
+  return "" if($_ < 0);
+  return 2 if($allow_full && $_ > 255);
+  return 2 if($allow_full && ($_ < 16 || $_ > 235));
   $limited_anchor=1 if($_ == 16 || $_ == 235);
  }
  return 1 if($limited_anchor);
+ return "";
+}
+
+sub legacy_external_hcfr_quant_range (@) {
+ my $payload=shift;
+ my @fields=split(/;/,$payload || "",-1);
+ my $primary_range=&legacy_external_hcfr_triplet_quant_range($fields[0],1);
+ return 2 if($primary_range eq "2");
+ my $background_range=&legacy_external_hcfr_triplet_quant_range($fields[1],0);
+ return 1 if($primary_range eq "1" || $background_range eq "1");
  return "";
 }
 
