@@ -7938,7 +7938,10 @@ function meterDvAbsoluteTargetLuminanceForPercent(percent, peak){
 }
 
 function meterDvAbsoluteTargetRollOffFraction(){
- return 0.75;
+ // With the corrected DV transport/range path, Absolute chart targets should
+ // rise to the measured peak across the full 0-100% range rather than
+ // flattening at 75%.
+ return 1;
 }
 
 function meterDvAbsoluteChartTargetLuminance(ire, peak){

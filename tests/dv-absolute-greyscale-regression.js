@@ -22,6 +22,11 @@ function extractFunction(name) {
 }
 
 const code = [
+  extractFunction('clampNum'),
+  extractFunction('gammaEotf'),
+  extractFunction('srgbEotf'),
+  extractFunction('meterDvAbsoluteTargetRollOffFraction'),
+  extractFunction('meterDvAbsoluteChartTargetLuminance'),
   extractFunction('meterCodeFromSignalPercent'),
   extractFunction('meterGreyStimulusFraction'),
   extractFunction('meterBuildStepsJS')
@@ -112,5 +117,9 @@ assert.strictEqual(steps[0].r, 255, 'DV absolute White should emit code 255');
 const step45 = steps.find(step => step.ire === 45);
 assert(step45, 'Missing DV absolute 45% greyscale step');
 assert.strictEqual(step45.r, 115, 'DV absolute 45% greyscale series code mismatch');
+
+const abs75 = context.meterDvAbsoluteChartTargetLuminance(75, 750);
+const abs100 = context.meterDvAbsoluteChartTargetLuminance(100, 750);
+assert(abs100 > abs75, 'DV absolute chart target should continue rising through 100%');
 
 console.log('DV absolute greyscale regression checks passed.');
