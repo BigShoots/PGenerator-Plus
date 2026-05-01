@@ -53,6 +53,7 @@ sub webui_preferred_rgb_quant_range (@) {
 sub apply_source_rgb_quant_range (@) {
  my $source=lc(shift || "webui");
  my $quant_range=shift;
+ my $owner_changed=0;
  if($source eq "webui") {
   $quant_range=&webui_preferred_rgb_quant_range() if($quant_range !~/^[12]$/);
   $webui_rgb_quant_range_preferred=$quant_range;
@@ -64,8 +65,10 @@ sub apply_source_rgb_quant_range (@) {
  }
  return 0 if(($pgenerator_conf{"rgb_quant_range"}||"") eq "$quant_range" && $rgb_quant_range_source eq $source);
  if(($pgenerator_conf{"rgb_quant_range"}||"") eq "$quant_range") {
+  $owner_changed=($rgb_quant_range_source ne $source);
   $rgb_quant_range_source=$source;
   &log("Signal range owner: source=$source rgb_quant_range=$quant_range (no restart)");
+  &apply_drm_properties() if($owner_changed);
   return 1;
  }
  &sudo("SET_PGENERATOR_CONF","rgb_quant_range","$quant_range");
@@ -155,7 +158,6 @@ sub apply_drm_properties (@) {
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
- $quant_range=2 if($is_dv);
  if($quant_range ne "") {
   system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
