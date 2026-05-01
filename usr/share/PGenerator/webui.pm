@@ -18,8 +18,24 @@ use Time::HiRes ();
 ###############################################
 #             mDNS Route Helpers              #
 ###############################################
+sub webui_mdns_iface_ip (@) {
+ my $iface=shift;
+ my $addr_out="";
+ my $fallback="";
+ return "" if(!defined($iface) || $iface eq "");
+ $addr_out=`ip -o -4 addr show dev $iface scope global 2>/dev/null`;
+ foreach my $line (split(/\n/,$addr_out)) {
+  next unless($line =~ /^\d+:\s+\S+\s+inet\s+(\d+\.\d+\.\d+\.\d+)\/\d+/);
+  my $ip=$1;
+  return $ip if($line !~ /\bsecondary\b/);
+  $fallback=$ip if($fallback eq "");
+ }
+ return $fallback;
+}
+
 sub webui_mdns_routes (@) {
  my @routes;
+ my %seen;
  my $route_out=`ip -o -4 route show scope link 2>/dev/null`;
  foreach my $line (split(/\n/,$route_out)) {
   next if($line =~ /\blinkdown\b/);
@@ -27,10 +43,13 @@ sub webui_mdns_routes (@) {
     my $network=$1;
     my $prefix=int($2);
     my $iface=$3;
-    my $ip=$4;
+    my $ip=&webui_mdns_iface_ip($iface);
+    $ip=$4 if($ip eq "");
     my $ifindex=&read_from_file("/sys/class/net/$iface/ifindex");
   $ifindex=~s/\s+//g;
   $ifindex=int($ifindex||0);
+    my $key="$network/$prefix:".(($ifindex > 0) ? "ifindex:$ifindex" : "iface:$iface");
+    next if($seen{$key}++);
     push @routes,{ network => $network, prefix => $prefix, iface => $iface, ip => $ip, ifindex => $ifindex };
   }
  }
@@ -147,30 +166,60 @@ sub webui_mdns (@) {
  # Join multicast group on each active IPv4 interface so queries work across
  # Wi-Fi client, AP mode, Bluetooth PAN, USB gadget, etc.
  # Track joined interfaces so we can re-join after hotplug events.
- my %mdns_joined; # key="iface:ip" value=1
+ my %mdns_joined; # key="ifindex:<n>" or "iface:<name>" value=route hashref
  my $mdns_join_time=0;
+
+ my $mdns_route_key=sub {
+  my $route=shift;
+  return "ifindex:$route->{ifindex}" if(int($route->{ifindex} || 0) > 0);
+  return "iface:$route->{iface}";
+ };
+
+ my $mdns_drop=sub {
+  my $route=shift;
+  return if(!defined($route) || ref($route) ne "HASH");
+  return if(!defined($route->{ip}) || $route->{ip} eq "");
+  if(int($route->{ifindex} || 0) > 0) {
+   my $mreqn=pack("a4 a4 i",Socket::inet_aton($MDNS_ADDR),pack("N",0),int($route->{ifindex}));
+   setsockopt($sock, $IPPROTO_IP, $IP_DROP_MEMBERSHIP, $mreqn);
+  }
+  my $mreq=Socket::inet_aton($MDNS_ADDR) . Socket::inet_aton($route->{ip});
+  setsockopt($sock, $IPPROTO_IP, $IP_DROP_MEMBERSHIP, $mreq);
+ };
 
  my $mdns_rejoin=sub {
   my @routes=&webui_mdns_routes();
   my %current;
   foreach my $route (@routes) {
-   my $key="$route->{iface}:$route->{ip}";
+   my $key=$mdns_route_key->($route);
    $current{$key}=1;
-   next if($mdns_joined{$key});
+   if($mdns_joined{$key}) {
+    next if($mdns_joined{$key}->{ip} eq $route->{ip});
+    $mdns_drop->($mdns_joined{$key});
+    delete $mdns_joined{$key};
+   }
    my $joined=0;
+   my $already_joined=0;
+   my $join_error="";
    if($route->{ifindex} > 0) {
     my $mreqn=pack("a4 a4 i",Socket::inet_aton($MDNS_ADDR),pack("N",0),$route->{ifindex});
     $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreqn) ? 1 : 0;
+    $join_error="$!" if(!$joined);
    }
    if(!$joined) {
     my $mreq = Socket::inet_aton($MDNS_ADDR) . Socket::inet_aton($route->{ip});
     $joined=setsockopt($sock, $IPPROTO_IP, $IP_ADD_MEMBERSHIP, $mreq) ? 1 : 0;
+    $join_error="$!" if(!$joined);
+   }
+   if(!$joined && $join_error=~/Address already in use/i) {
+    $joined=1;
+    $already_joined=1;
    }
     if($joined) {
-     $mdns_joined{$key}=1;
+     $mdns_joined{$key}={ %$route };
      &log("mDNS: joined multicast on $route->{iface} ($route->{ip})");
      my $announce=&webui_mdns_build_a_response($mdns_hostname,$route->{ip});
-     if($announce ne "") {
+     if(!$already_joined && $announce ne "") {
       my $IP_MULTICAST_IF=eval { Socket::IP_MULTICAST_IF() } || 32;
       setsockopt($sock, $IPPROTO_IP, $IP_MULTICAST_IF, Socket::inet_aton($route->{ip}));
       my $mcast_dest=Socket::sockaddr_in($MDNS_PORT, Socket::inet_aton($MDNS_ADDR));
@@ -178,12 +227,13 @@ sub webui_mdns (@) {
       &log("mDNS: announced $mdns_hostname.local -> $route->{ip}");
      }
     } else {
-     &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $!");
+     &log("mDNS: multicast join failed on $route->{iface} ($route->{ip}): $join_error");
     }
     }
     # Drop stale memberships for interfaces that disappeared
     foreach my $key (keys %mdns_joined) {
     next if($current{$key});
+    $mdns_drop->($mdns_joined{$key});
     delete $mdns_joined{$key};
     }
     &log("mDNS: no active IPv4 interfaces found for multicast join") if(!@routes && !keys %mdns_joined);
@@ -1467,13 +1517,16 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  $series_primaries=$1 if($body=~/"primaries"\s*:\s*"?(\d+)"?/);
  $series_primaries=int($pgenerator_conf{"primaries"} || 0) if($series_primaries eq "");
  $series_color_format=int($pgenerator_conf{"color_format"} || 0) if($series_color_format eq "");
- # The feeder now preserves SOURCE_RANGE for RGB patterns too, so a limited
- # range request must generate limited-range patch codes regardless of the
- # transport color format.
  my $patch_limited=(int($signal_range)==1) ? 1 : 0;
  my $greyscale_patch_limited=$patch_limited;
  if($type eq "greyscale" && $signal_mode eq "sdr" && $pattern_signal_range=~/^[12]$/) {
   $greyscale_patch_limited=(int($pattern_signal_range)==1) ? 1 : 0;
+ }
+ # SDR RGB chroma sweeps still need full-source RGB patch codes. Pre-scaling
+ # those triplets into 16-235 pulls the emitted chromaticities inward.
+ my $chroma_patch_limited=$patch_limited;
+ if($signal_mode eq "sdr" && int($series_color_format) == 0) {
+  $chroma_patch_limited=0;
  }
 
  # Build step list as JSON array for the helper script
@@ -1516,24 +1569,20 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     my $c=0;
      if($dv_series) {
        if($dv_map_mode eq "1") {
-       my $stim=$stimulus_for_slot{$v}/100;
-       $stim=0 if($stim < 0);
-       $stim=1 if($stim > 1);
-       my $target_lum=0;
-       # Absolute-mode DV already applies its own roll-off relative to the
-       # mastering peak. Pre-scaling the emitted patches to force 75% white
-       # a second time makes the series reach peak roughly 10 IRE too early.
-       if($target_gamma eq "srgb") {
-        $target_lum=((($stim<=0.04045) ? $stim/12.92 : ((($stim+0.055)/1.055)**2.4)))*$max_luma;
-       } elsif($target_gamma eq "bt1886") {
-        $target_lum=($stim**2.4)*$max_luma;
+       # DV absolute greyscale keeps the tunnel transport full-range, but some
+       # sinks still clamp interior greyscale steps against the legal-range
+       # floor. Keep the interior steps on nominal legal codes while
+       # preserving explicit full-range black/white endpoints.
+       my $level=int($stimulus_for_slot{$v}/100*219+.5);
+       if($lim) {
+        $c=$level+16;
+       } elsif($stimulus_for_slot{$v} <= 0) {
+        $c=0;
+       } elsif($stimulus_for_slot{$v} >= 100) {
+        $c=255;
        } else {
-        my $gamma=($target_gamma_exp_resolved>0)?$target_gamma_exp_resolved:2.2;
-        $target_lum=($stim**$gamma)*$max_luma;
+        $c=$level+16;
        }
-       $target_lum=$max_luma if($target_lum > $max_luma);
-       my $encoded=&webui_pattern_pq_encode_normalized($target_lum);
-       $c=$lim ? int(16 + $encoded*219 + .5) : int($encoded*255 + .5);
        } elsif($target_gamma eq "st2084") {
        my $level=int($stimulus_for_slot{$v}/100*219+.5);
        $c=$level+16;
@@ -1552,8 +1601,8 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
      "{\"ire\":$v,\"stimulus\":$stim,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"${v}%\"}";
    } @ordered;
  } elsif($type eq "colors") {
-  my $min_code=$patch_limited?16:0;
-  my $span_code=$patch_limited?219:255;
+  my $min_code=$chroma_patch_limited?16:0;
+  my $span_code=$chroma_patch_limited?219:255;
     my $max_code=$min_code+$span_code;
       my %primaries=%{&webui_meter_gamut_definitions()};
     my $colorimetry=int($series_colorimetry);
@@ -1817,8 +1866,8 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
      push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"series_color\":\"$series_color\",\"sat_pct\":100}";
     }
  } elsif($type eq "saturations") {
-  my $min_code=$patch_limited?16:0;
-  my $span_code=$patch_limited?219:255;
+  my $min_code=$chroma_patch_limited?16:0;
+  my $span_code=$chroma_patch_limited?219:255;
   my %primaries=%{&webui_meter_gamut_definitions()};
   my $colorimetry=int($series_colorimetry);
   my $primaries_idx=int($series_primaries);
@@ -4690,11 +4739,11 @@ sub webui_pattern (@) {
  my ($name)=$body=~/"name"\s*:\s*"([^"]+)"/;
  return '{"status":"error","message":"Missing pattern name"}' if(!$name);
  $name=~s/[^a-zA-Z0-9_ -]//g;
- &apply_source_rgb_quant_range("webui",&webui_preferred_rgb_quant_range());
  my $signal_mode=&webui_pattern_signal_mode($body);
  my $max_luma=&webui_pattern_max_luma($body);
  my ($signal_range)=$body=~/"signal_range"\s*:\s*"?(\d+)"?/;
  $signal_range=&webui_preferred_rgb_quant_range() if(!defined $signal_range || $signal_range eq "");
+ &apply_source_rgb_quant_range("webui",$signal_range);
  my ($color_format_body)=$body=~/"color_format"\s*:\s*"?(\d+)"?/;
  my $pattern_color_format=defined($color_format_body) ? int($color_format_body) : int($pgenerator_conf{"color_format"} || 0);
  my $source_range=(int($signal_range || 0) == 1) ? "LIMITED" : "FULL";
@@ -5023,7 +5072,6 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .update-pulse{animation:updatePulse 2s ease-in-out infinite}
 @keyframes updatePulse{0%,100%{opacity:1}50%{opacity:.6}}
 @keyframes thumbPulse{0%,100%{box-shadow:inset 0 0 0 3px #fff}50%{box-shadow:inset 0 0 0 3px rgba(255,255,255,.25)}}
-#meterCard.meter-patterns-only #meterSettingsGrid,
 #meterCard.meter-patterns-only #meterLiveReading,
 #meterCard.meter-patterns-only #meterReadSeriesBtn,
 #meterCard.meter-patterns-only #meterCharts,
@@ -5035,6 +5083,11 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterResetRow,
 #meterCard.meter-patterns-only #meterProgress,
 #meterCard.meter-patterns-only #meterStopBtn{display:none !important}
+#meterCard.meter-patterns-only #meterSettingsGrid .field-display,
+#meterCard.meter-patterns-only #meterSettingsGrid .field-gamut,
+#meterCard.meter-patterns-only #meterSettingsGrid .field-gamma,
+#meterCard.meter-patterns-only #meterSettingsGrid .field-hdr,
+#meterCard.meter-patterns-only #meterSettingsGrid .field-refresh{display:none !important}
 [data-widget].drag-over{outline:2px dashed var(--accent);outline-offset:-2px}
 [data-widget].dragging{opacity:.4}
 @media(max-width:800px){.dashboard{grid-template-columns:1fr}
@@ -7128,22 +7181,36 @@ async function cecScan(){
  }
 }
 
-async function loadCecStatus(){
- const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:8000});
+let cecStatusPending=false;
+
+function renderCecStatus(tvPower,physAddr){
  const el=document.getElementById('cecStatus');
- if(r&&r.status==='ok'){
-  const pwr=r.tv_power||'unknown';
-  const pwrColors={on:'#4caf50',standby:'var(--orange)','powering-on':'var(--orange)','powering-off':'var(--orange)',unknown:'var(--text2)'};
-  const pwrLabels={on:'On',standby:'Standby','powering-on':'Waking Up','powering-off':'Going to Standby',unknown:'Unknown'};
-  const c=pwrColors[pwr]||'var(--text2)';
-  const lbl=pwrLabels[pwr]||pwr;
-  let html='TV: <span style="color:'+c+';font-weight:600">'+lbl+'</span>';
-  if(r.phys_addr) html+=' &bull; HDMI '+r.phys_addr;
-  el.innerHTML=html;
- }else{
-  const msg=(r&&r.message)?r.message:'Not available';
-  el.innerHTML='CEC: '+msg;
-  el.style.color='var(--text2)';
+ if(!el) return;
+ const pwr=tvPower||'unknown';
+ const pwrColors={on:'#4caf50',standby:'var(--orange)','powering-on':'var(--orange)','powering-off':'var(--orange)',unknown:'var(--text2)'};
+ const pwrLabels={on:'On',standby:'Standby','powering-on':'Waking Up','powering-off':'Going to Standby',unknown:'Unknown'};
+ const c=pwrColors[pwr]||'var(--text2)';
+ const lbl=pwrLabels[pwr]||pwr;
+ let html='TV: <span style="color:'+c+';font-weight:600">'+lbl+'</span>';
+ if(physAddr) html+=' &bull; HDMI '+physAddr;
+ el.innerHTML=html;
+ el.style.color='';
+}
+
+async function loadCecStatus(){
+ if(cecStatusPending) return;
+ cecStatusPending=true;
+ try{
+  const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:8000});
+  if(r&&r.status==='ok'){
+   renderCecStatus(r.tv_power,r.phys_addr);
+  }else{
+   renderCecStatus('unknown','');
+  }
+ }catch(e){
+  renderCecStatus('unknown','');
+ }finally{
+  cecStatusPending=false;
  }
 }
 
@@ -7782,12 +7849,26 @@ function meterPatchRangeSpan(){
  return meterPatchUsesVideoRange()?219:255;
 }
 
+function meterSdrRgbChromaUsesFullSourceRange(){
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ return mode==='sdr' && meterOutputIsRgb();
+}
+
+function meterChromaPatchRangeMin(){
+ return meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+}
+
+function meterChromaPatchRangeSpan(){
+ return meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
+}
+
 function meterDvRelativeSt2084UsesLegalRange(){
  const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
  return meterChartIsDv() && meterDvMapModeValue()==='2' && sel==='st2084';
 }
 
 function meterGreyCodeRange(){
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return {min:16,span:219};
  if(meterDvRelativeSt2084UsesLegalRange()) return {min:16,span:219};
  if(meterGreyscaleUsesFullSourceRange()) return {min:0,span:255};
  return {min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
@@ -7881,7 +7962,14 @@ function meterCodeFromSignalPercent(percent){
  const clamped=clampNum(percent,0,100)/100;
  const range=meterGreyCodeRange();
  if(meterChartIsDv()){
+  const dvAbsolute=meterDvMapModeValue()==='1';
   const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+  if(dvAbsolute){
+  if(meterPatchUsesVideoRange()) return Math.round(range.min+clamped*range.span);
+  if(clamped<=0) return 0;
+  if(clamped>=1) return 255;
+  return Math.round(range.min+clamped*range.span);
+  }
   if(sel==='st2084'){
    return Math.round(range.min+clamped*range.span);
   }
@@ -7976,6 +8064,12 @@ function meterColorReferenceNits(){
 }
 
 function meterColorSeriesReferenceNits(){
+ if(meterChartIsDv() && meterDvMapModeValue()==='1'){
+  // DV Absolute target luminance stays anchored to mastering peak. The
+  // white pre-read is still useful diagnostically, but it is not the target
+  // Y reference for color or saturation patches in absolute mode.
+  return Math.max(1,meterColorReferenceNits());
+ }
  const isSeriesWhite=(rd)=>{
   if(!rd) return false;
   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
@@ -7994,7 +8088,9 @@ function meterColorSeriesReferenceNits(){
   (Array.isArray(meterReadings)?meterReadings.find(isSeriesWhite):null) ||
   meterFindMeasuredWhiteReading();
  if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
-  return Math.max(1,(white.luminance!=null)?white.luminance:white.Y);
+  const measured=(white.luminance!=null)?white.luminance:white.Y;
+  if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
+  return Math.max(1,measured);
  }
  return Math.max(1,meterColorReferenceNits());
 }
@@ -8070,8 +8166,8 @@ function meterDvClassicColorCheckerScale(){
 }
 
 function meterEncodeColorCheckerLinear(linear){
- const min=meterPatchRangeMin();
- const span=meterPatchRangeSpan();
+ const min=meterChromaPatchRangeMin();
+ const span=meterChromaPatchRangeSpan();
  let clamped=Math.max(0,Math.min(1,linear||0));
  if(meterChartIsDv()) clamped*=meterDvClassicColorCheckerScale();
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*100)*span);
@@ -8087,8 +8183,8 @@ function meterDecodeColorCheckerSignal(signal){
 }
 
 function meterEncodeColorCheckerFullSatChannel(active){
- const min=meterPatchRangeMin();
- const span=meterPatchRangeSpan();
+ const min=meterChromaPatchRangeMin();
+ const span=meterChromaPatchRangeSpan();
  if(!active) return min;
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
  return min+span;
@@ -8099,8 +8195,8 @@ function meterFullSatChannelIsActive(linear){
 }
 
 function meterEncodeSaturationLinear(linear,colorName){
- const min=meterPatchRangeMin();
- const span=meterPatchRangeSpan();
+ const min=meterChromaPatchRangeMin();
+ const span=meterChromaPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
  if(meterChartIsDv() && meterDvMapModeValue()==='1') return Math.round(min+Math.pow(clamped,1/meterDvSaturationTunnelGamma(colorName))*span);
@@ -8310,12 +8406,9 @@ function meterInferSdrSatReferenceNits(){
 function meterSaturationTargetXYZ(colorName,satPercent){
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
- // For PQ the linear RGB is scaled by meterChartPqDecodeNormalized()/10000,
- // so xyz values are already relative to the 10000-nit PQ reference.
- // Multiply by 10000 to recover absolute nits.
- // For SDR/HLG/DV the linear RGB is in 0..1 relative to display peak, so
- // multiply by meterColorReferenceNits() as before.
- let scale=meterChartIsPq()&&!meterChartIsDv()?10000:meterColorSeriesReferenceNits();
+ // Use the same per-mode luminance reference as target_Yn-based color
+ // patches so saturation sweeps and color series stay aligned.
+ let scale=meterColorSeriesReferenceNits();
  if(!(meterChartIsPq()&&!meterChartIsDv()) && !meterChartIsHdr()){
   const white=meterFindMeasuredWhiteReading();
   if(!(white&&white.Y>0)){
@@ -8557,7 +8650,7 @@ function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
  if(!useColorForm && meterReadingIsGreyscale(reading) && xyz && xyz.Y>0){
   return meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight).value;
  }
- if(!xyz||!(xyz.Y>0)) return 0;
+ if(!xyz||!(xyz.Y>0)) return useColorForm ? NaN : 0;
  const wR=meterColorLabWhite();
  const mode=meterResolveGreyRefMode(modeOrIncl);
  const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
@@ -8678,8 +8771,8 @@ function meterColorCheckerClassicSource(){
 
 function meterBuildColorCheckerStepsJS(){
  const steps=[];
- const min=meterPatchRangeMin();
- const max=min+meterPatchRangeSpan();
+ const min=meterChromaPatchRangeMin();
+ const max=min+meterChromaPatchRangeSpan();
  const solveGamut=meterChartIsDv()?meterAnalysisGamut():meterStimulusSolveGamut();
  steps.push({ire:100,r:max,g:max,b:max,name:'White'});
  steps.push({ire:0,r:min,g:min,b:min,name:'Black'});
@@ -8708,8 +8801,8 @@ function meterBuildColorCheckerStepsJS(){
   const bCode=meterEncodeColorCheckerLinear(bl);
   let targetYn=src.Yn;
   if(meterChartIsDv()){
-    const min=meterPatchRangeMin();
-    const span=meterPatchRangeSpan();
+    const min=meterChromaPatchRangeMin();
+    const span=meterChromaPatchRangeSpan();
     const targetGamut=meterAnalysisGamut();
     const rSignal=span>0?(rCode-min)/span:0;
     const gSignal=span>0?(gCode-min)/span:0;
@@ -8881,6 +8974,7 @@ function meterPreviewColorForReading(reading,mode){
  if(mode==='measured'){
   const xyz=meterReadingXYZ(reading);
   if(xyz&&xyz.Y>0) return meterPreviewCssFromXYZ(xyz.X,xyz.Y,xyz.Z,true);
+  return '#111';
  }
  const target=meterTargetXYZForReading(reading);
  if(target&&target.Y>0) return meterPreviewCssFromXYZ(target.X,target.Y,target.Z,true);
@@ -13245,8 +13339,9 @@ function drawColorReadingsTable(readings){
   const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
   const pc=meterPreviewColorForReading(rd,'target');
   const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
-  deSum+=de;deCount++;
-  const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
+   const hasDe=Number.isFinite(de);
+   if(hasDe){deSum+=de;deCount++;}
+   const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
   const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
   const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
   html+='<tr data-name=\"'+(rd.name||'').replace(/"/g,'&quot;')+'\" style=\"border-bottom:1px solid #1a1a28;cursor:pointer\" onclick=\"colorTableRowClick(this)\">';
@@ -13258,7 +13353,7 @@ function drawColorReadingsTable(readings){
   html+='<td style="padding:5px 6px;text-align:right">'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right;font-weight:600;color:'+deCol+'">'+de.toFixed(2)+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;font-weight:600;color:'+deCol+'">'+(hasDe?de.toFixed(2):'--')+'</td>';
   html+='</tr>';
  });
  if(deCount>0){
@@ -13295,28 +13390,29 @@ function drawColorSeriesAverages(readings,colorRefMode){
   }
   if(!groups[key]){groups[key]={de:[],dx:[],dy:[],Y:[],color:meterPreviewColorForReading(rd,'target')};order.push(key);}
   const tgt=meterReadingHasChromaticity(rd)?meterTargetChromaticityForReading(rd):null;
-  groups[key].de.push(meterColorDeltaE2000(rd,colorRefMode,colorForm));
+  const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
+  if(Number.isFinite(de)) groups[key].de.push(de);
   if(tgt){
    groups[key].dx.push(Math.abs(rd.x-tgt.x));
    groups[key].dy.push(Math.abs(rd.y-tgt.y));
   }
   groups[key].Y.push(rd.Y!=null?rd.Y:(rd.luminance||0));
  });
- const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0;
- const mx=a=>a.length?Math.max(...a):0;
+ const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:NaN;
+ const mx=a=>a.length?Math.max(...a):NaN;
  const rowFor=(label,g,bold)=>{
   const aDE=avg(g.de), mDE=mx(g.de);
   const aDx=avg(g.dx), aDy=avg(g.dy), aY=avg(g.Y);
-  const c=aDE<1?'#4caf50':aDE<3?'#ff9800':'#f44';
-  const cMax=mDE<1?'#4caf50':mDE<3?'#ff9800':'#f44';
+  const c=!Number.isFinite(aDE)?'#888':aDE<1?'#4caf50':aDE<3?'#ff9800':'#f44';
+  const cMax=!Number.isFinite(mDE)?'#888':mDE<1?'#4caf50':mDE<3?'#ff9800':'#f44';
   let r='<tr'+(bold?' style="border-top:2px solid #333;font-weight:600"':' style="border-bottom:1px solid #1a1a28"')+'>';
   r+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+(g.color||'#666')+';vertical-align:middle;margin-right:5px"></span>'+label+'</td>';
   r+='<td style="padding:5px 6px;text-align:right;color:#888">'+g.de.length+'</td>';
   r+='<td style="padding:5px 6px;text-align:right">'+aDx.toFixed(4)+'</td>';
   r+='<td style="padding:5px 6px;text-align:right">'+aDy.toFixed(4)+'</td>';
   r+='<td style="padding:5px 6px;text-align:right">'+aY.toFixed(1)+'</td>';
-  r+='<td style="padding:5px 6px;text-align:right;color:'+c+'">'+aDE.toFixed(2)+'</td>';
-  r+='<td style="padding:5px 6px;text-align:right;color:'+cMax+'">'+mDE.toFixed(2)+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right;color:'+c+'">'+(Number.isFinite(aDE)?aDE.toFixed(2):'--')+'</td>';
+  r+='<td style="padding:5px 6px;text-align:right;color:'+cMax+'">'+(Number.isFinite(mDE)?mDE.toFixed(2):'--')+'</td>';
   r+='</tr>';
   return r;
  };
@@ -13409,7 +13505,8 @@ function showColorReadingDetail(rd,opts){
  const colorInclLum=(colorRefMode==='eotf');
  const colorForm=meterColorDeltaEForm();
  const deLabel=meterDeltaEFormLabel(colorForm);
- const hasChroma=meterReadingHasChromaticity(rd);
+ const hasMeasuredXYZ=!!meterReadingXYZ(rd);
+ const hasChroma=hasMeasuredXYZ&&meterReadingHasChromaticity(rd);
  const targetXYZ=meterTargetXYZForReading(rd);
  const lumInfo=meterColorLuminanceInfo(rd);
  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
@@ -13419,7 +13516,8 @@ function showColorReadingDetail(rd,opts){
  const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  const dYCol=lumInfo.deltaPct==null?'#888':(Math.abs(lumInfo.deltaPct)<2?'#4caf50':Math.abs(lumInfo.deltaPct)<5?'#ff9800':'#f44');
  const de=meterColorDeltaE2000(rd,colorRefMode);
- const deCol=de<1?'#4caf50':de<3?'#ff9800':'#f44';
+ const hasDe=Number.isFinite(de);
+ const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
  let h='<div style="margin-bottom:10px;text-align:center">';
@@ -13439,7 +13537,7 @@ function showColorReadingDetail(rd,opts){
  h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394x</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394y</td><td style="text-align:right;padding:3px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+de.toFixed(2)+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
  h+='</table>';
  el.innerHTML=h;
  // Highlight corresponding thumb and table row by name
@@ -13877,7 +13975,9 @@ function drawColorDeltaE2000Chart(readings){
  readings.forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
   if(!meterReadingHasLuminance(rd)) return;
-  deData.push({name:rd.name||'',de:meterColorDeltaE2000(rd,colorRefMode,colorForm),color:meterPreviewColorForReading(rd,'target')});
+  const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
+  if(!Number.isFinite(de)) return;
+  deData.push({name:rd.name||'',de,color:meterPreviewColorForReading(rd,'target')});
  });
  if(deData.length===0) return;
  const deValues=deData.map(d=>d.de);
@@ -15538,6 +15638,7 @@ function initCardCollapse(){
  setInterval(()=>loadStats(true),3000);
  setInterval(syncRemoteConfig,10000);
  setInterval(()=>loadInfo(true),30000);
+ setInterval(()=>loadCecStatus(),5000);
  // Meter: check immediately on load, then repoll shortly after and every 10s
  meterCheckStatus();
  setTimeout(()=>meterCheckStatus(),2000);
