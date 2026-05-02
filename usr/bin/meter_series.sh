@@ -2,7 +2,7 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range]
 
 set -o pipefail
 
@@ -23,6 +23,7 @@ METER_PORT="${14:-}"
 READY_FILE="${15:-/tmp/meter_series_ready_${SERIES_ID}.signal}"
 REQUIRE_DEVICE_READY="${16:-0}"
 PATTERN_SIGNAL_RANGE="${17:-}"
+TRANSPORT_SIGNAL_RANGE="${18:-}"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
@@ -34,10 +35,13 @@ json_escape() {
 }
 
 patch_request_body() {
- local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7"
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8"
  local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":255,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
  if [[ -n "$signal_range" ]]; then
   payload="$payload,\"signal_range\":\"$signal_range\""
+ fi
+ if [[ -n "$transport_signal_range" ]]; then
+  payload="$payload,\"transport_signal_range\":\"$transport_signal_range\""
  fi
  payload="$payload}"
  printf '%s' "$payload"
@@ -45,12 +49,12 @@ patch_request_body() {
 
 post_patch() {
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}")" >/dev/null 2>&1
 }
 
 post_patch_timeout() {
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1 || true
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}")" >/dev/null 2>&1 || true
 }
 
 wait_for_device_ready() {

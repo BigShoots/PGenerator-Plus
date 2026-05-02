@@ -277,6 +277,7 @@ sub apply_bootloader () {
 #               Reboot function               #
 ###############################################
 sub reboot(@) {
+ &persist_meter_settings_legacy();
  &process_pid("$pattern_generator.pl","kill");
  system("$reboot");
 }
@@ -285,7 +286,27 @@ sub reboot(@) {
 #                Halt function                #
 ###############################################
 sub halt(@) {
+ &persist_meter_settings_legacy();
  system("$halt");
+}
+
+sub persist_meter_settings_legacy(@) {
+ my $src="/var/lib/PGenerator/meter_settings.json";
+ my $dst="/usr/share/PGenerator/meter_settings.json";
+ return if(!-f $src);
+ my $json=&read_from_file($src);
+ return if($json eq "" || $json!~/^\{/);
+ my $tmp="$dst.tmp";
+ if(open(my $fh,">",$tmp)) {
+  print $fh $json;
+  close($fh);
+  chmod 0644, $tmp;
+  if(rename($tmp,$dst)) {
+   system("timeout 3 $sync >/dev/null 2>&1");
+   return;
+  }
+  unlink($tmp) if(-f $tmp);
+ }
 }
 
 ###############################################
@@ -618,6 +639,25 @@ sub bash_cmd(@) {
   my $out=`/usr/sbin/pgenerator-update apply 2>/dev/null`;
   chomp($out);
   print $out;
+ }
+ if($cmd eq "SAVE_METER_SETTINGS") {
+  my $path="/usr/share/PGenerator/meter_settings.json";
+  my $tmp="$path.tmp";
+  if(open(my $fh,">",$tmp)) {
+   print $fh $argument;
+   close($fh);
+   chmod 0644, $tmp;
+   if(rename($tmp,$path)) {
+    system("timeout 3 $sync >/dev/null 2>&1");
+    print "OK";
+   } else {
+    unlink($tmp) if(-f $tmp);
+    print "ERR";
+   }
+  } else {
+   unlink($tmp) if(-f $tmp);
+   print "ERR";
+  }
  }
  system("$passwd $argument 1>/dev/stderr")                             if($cmd eq "CHANGE_PASSWORD");
  system("$perl -p -i -e \"s/$distro_name.*/$argument/\" $distro_conf") if($cmd eq "PKG_SUBSCRIBE");
