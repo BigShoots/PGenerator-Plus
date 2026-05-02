@@ -1283,10 +1283,10 @@ sub webui_meter_read (@) {
      select(undef,undef,undef,0.3);
   }
   &webui_meter_read_state_write('{"status":"starting"}');
-  # If spotread decides it needs refresh calibration, it asks for an 80% white
-  # patch during startup. Show that patch now so the background session helper
-  # doesn't have to call back into the busy HTTP server and deadlock.
-  if($display_type eq "c" || $ccss_file ne "") {
+  # The refresh-display (-y c) startup path can ask for an 80% white patch
+  # during initialization. Pre-show it here so the background session helper
+  # does not need to call back into the active HTTP request path.
+  if($display_type eq "c") {
    &webui_pattern('{"name":"patch","r":204,"g":204,"b":204,"size":100,"input_max":255,"signal_mode":"'.$signal_mode.'","max_luma":'.$max_luma.'}');
    select(undef,undef,undef,0.5);
   }
@@ -14664,8 +14664,43 @@ function meterResetLiveReadingDisplay(){
  drawDeltaBarsVertical('meterXYYCanvasColor',null);
 }
 
+function meterPreserveOtherSeriesCacheOnClear(clearedKey){
+ if(!clearedKey||!meterSeriesCache||typeof meterSeriesCache!=='object') return;
+ const keys=new Set(Object.keys(meterSeriesCache));
+ document.querySelectorAll('#meterSeriesBtnRow button[data-series]').forEach(btn=>{
+  const key=String((btn&&btn.dataset&&btn.dataset.series)||'').trim();
+  if(key) keys.add(key);
+ });
+ keys.forEach(key=>{
+  if(!key||key===clearedKey) return;
+  const meta=meterParseSeriesKey(key);
+  if(!meta) return;
+  const current=meterSeriesCache[key]||null;
+  const signalMode=meterSeriesSnapshotSignalMode(current,(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr'));
+  const steps=(current&&Array.isArray(current.steps)&&current.steps.length)
+   ? JSON.parse(JSON.stringify(current.steps))
+   : meterBuildStepsJS(meta.type,meta.points);
+  const resolved=meterResolveSeriesSnapshotFromCache(key,{type:meta.type,points:meta.points,signalMode:signalMode,steps:steps});
+  if(!resolved||!Array.isArray(resolved.readings)||resolved.readings.length===0) return;
+  meterSeriesCache[key]={
+   type:meta.type,
+   points:meta.points,
+   signal_mode:signalMode,
+   white_reading:resolved.white_reading?JSON.parse(JSON.stringify(resolved.white_reading)):null,
+   steps:JSON.parse(JSON.stringify(steps)),
+   readings:JSON.parse(JSON.stringify(resolved.readings||[])),
+   status:(resolved.status||((current&&current.status)||'complete')),
+   series_id:(current&&current.series_id)?current.series_id:null,
+   updated_at:Date.now()
+  };
+ });
+}
+
 function meterApplyClearedState(showToastMsg){
- if(meterActiveSeriesKey) delete meterSeriesCache[meterActiveSeriesKey];
+ if(meterActiveSeriesKey){
+  meterPreserveOtherSeriesCacheOnClear(meterActiveSeriesKey);
+  delete meterSeriesCache[meterActiveSeriesKey];
+ }
  meterPersistSeriesCache();
  meterReadings=[];
  meterWhiteReading=null;
