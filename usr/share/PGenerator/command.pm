@@ -245,6 +245,15 @@ sub pattern_generator_start(@) {
    # Reapply connector properties once the renderer is alive so the first pattern
    # push lands on the intended format without requiring a manual YCbCr detour.
    &apply_drm_properties();
+ my $startup_color_fmt=$pgenerator_conf{"color_format"};
+ $startup_color_fmt=0 if($startup_color_fmt eq "");
+ if($is_kms && ($pgenerator_conf{"dv_status"}||"0") ne "1" && $startup_color_fmt == 0) {
+  # Some monitor-class RGB sinks take longer than TVs to latch the connector
+  # state after the renderer grabs DRM master. Retry once more after the link
+  # has been stable a bit longer so a manual YCbCr toggle is not needed.
+  usleep(1000000);
+  &apply_drm_properties();
+ }
  &apply_hdr_metadata_helper();
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
