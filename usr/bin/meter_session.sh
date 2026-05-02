@@ -336,12 +336,11 @@ while (( WAITED < 600 )); do
   log "detected white-reference calibration prompt during startup"
   startup_marker "white-reference prompt seen"
   STARTUP_HINT="white_reference_prompt"
-  if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-   wait_for_device_ready "calibration_setup"
-  else
-   write_state '{"status":"starting","message":"Place the meter on its white calibration tile"}'
-   sleep 4
-  fi
+    # Startup white-reference prompts require explicit operator setup on
+    # spectros and can otherwise hold the single-threaded Web UI request open
+    # long enough that the page looks offline. Always surface the prompt and
+    # let the queued manual READ continue after the operator resumes.
+    wait_for_device_ready "calibration_setup"
   printf " " >&3
   WHITE_REF_DONE=1
   WAITED=$((WAITED + 40))
