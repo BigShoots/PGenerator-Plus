@@ -112,7 +112,7 @@ sub webui_mdns_read_name (@) {
   $name.=substr($buf,$offset,$len);
   $offset+=$len;
   $next_offset=$offset if(!$jumped);
-}
+ }
 
  return ("",$next_offset,0);
 }
@@ -1237,12 +1237,17 @@ sub webui_meter_read (@) {
  $patch_b=$1 if($body=~/"patch_b"\s*:\s*(\d+)/);
  my $patch_size=10;
  $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
- my $delay_ms=2000;
+ my $delay_ms=500;
  $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
  my $signal_range="";
  $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
+ my $transport_signal_range="";
+ $transport_signal_range=$1 if($body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/);
  my $signal_mode=&webui_pattern_signal_mode($body);
  my $max_luma=&webui_pattern_max_luma($body);
+ $transport_signal_range=$signal_range if($transport_signal_range eq "");
+ $transport_signal_range=&webui_preferred_rgb_quant_range() if($transport_signal_range eq "");
+ $signal_range=$transport_signal_range if($signal_range eq "");
  # Default to a 50% mid-grey patch when the caller didn't specify RGB —
  # the persistent session always displays a patch before reading.
  if($patch_r eq "" || $patch_g eq "" || $patch_b eq "") {
@@ -1303,11 +1308,11 @@ sub webui_meter_read (@) {
   if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"measuring"}'; close($fh); }
  }
 
- # Send the READ command to the daemon. The settle delay is only applied
- # by the daemon when the patch RGB actually changes — repeat reads on the
- # same patch (Continuous mode) skip both the redisplay and the wait.
+ # Send the READ command to the daemon. The session helper applies this
+ # settle delay before each reading, even when the current patch is reused.
  my $read_command="READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
  $read_command.=" $signal_range" if($signal_range ne "");
+ $read_command.=" $transport_signal_range" if($transport_signal_range ne "");
  $read_command.="\n";
  if(!&webui_meter_session_send_command($read_command)) {
   &log("WebUI: meter session command send failed, restarting daemon");
@@ -1429,14 +1434,16 @@ sub webui_meter_series_start (@) {
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
  my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
- my $delay_ms=3000;
+ my $delay_ms=500;
  $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
  my $patch_size=10;
  $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
- my $signal_range=0;
+ my $signal_range="";
  $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
  my $pattern_signal_range="";
  $pattern_signal_range=$1 if($body=~/"pattern_signal_range"\s*:\s*"?(\d+)"?/);
+ my $transport_signal_range="";
+ $transport_signal_range=$1 if($body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/);
  my $series_color_format=0;
  $series_color_format=$1 if($body=~/"color_format"\s*:\s*"?(\d+)"?/);
  my $patch_insert=0;
@@ -1467,6 +1474,11 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
 my $signal_mode=&webui_pattern_signal_mode($body);
 my $max_luma=&webui_pattern_max_luma($body);
+ $transport_signal_range=$signal_range if($transport_signal_range eq "");
+ $transport_signal_range=&webui_preferred_rgb_quant_range() if($transport_signal_range eq "");
+ $signal_range=$transport_signal_range if($signal_range eq "");
+ $pattern_signal_range=$signal_range if($pattern_signal_range eq "");
+ $pattern_signal_range=$transport_signal_range if($pattern_signal_range eq "");
  my $grey_custom_enabled=0;
  $grey_custom_enabled=1 if($body=~/"grey_custom_enabled"\s*:\s*true/i);
  my $grey_steps_11="";
@@ -1994,7 +2006,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' </dev/null >/dev/null 2>&1 &";
  open(my $debug_log,">>/tmp/webui_series_debug.log");
  print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
  print $debug_log "[".scalar(localtime())."] Command: $cmd\n";
@@ -2150,7 +2162,7 @@ sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
-  display_type target_gamut delay patch_size patch_insert disable_aio
+  display_type target_gamut delay delay_explicit patch_size patch_insert disable_aio
       refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y
@@ -2162,6 +2174,11 @@ sub webui_meter_settings_save (@) {
   push @parts, "\"$1\":$2" if($allowed{$1});
  }
  my $safe="{".join(",",@parts)."}";
+ if($safe=~/"delay"\s*:/ && $safe!~/"delay_explicit"\s*:/) {
+  $safe=~s/\}\s*$//;
+  $safe.="," if($safe!~/\{\s*$/);
+  $safe.='"delay_explicit":true}';
+ }
  my $saved_runtime=&_webui_meter_settings_write_json($_meter_settings_runtime,$safe);
  my $saved_persist=&_webui_meter_settings_write_json($_meter_settings_persist,$safe);
  return '{"status":"ok"}' if($saved_runtime || $saved_persist);
@@ -2174,6 +2191,7 @@ sub webui_meter_settings_load (@) {
  $peak=1000 if(!defined $peak || $peak eq "");
  my $min=$pgenerator_conf{"min_luma"};
  $min=0.005 if(!defined $min || $min eq "");
+ my $delay_default_ms=500;
  my $meter_target_gamma_auto="";
  my $meter_target_gamut_auto="";
  if(($pgenerator_conf{"dv_status"}||"0") eq "1") {
@@ -2188,9 +2206,18 @@ sub webui_meter_settings_load (@) {
   my $json="";
   if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "" && $json=~/^\{/) {
+     my $delay_explicit=($json=~/"delay_explicit"\s*:\s*true/i) ? 1 : 0;
    $json=~s/,?\s*"hdr_master_peak"\s*:\s*"[^"]*"//g;
    $json=~s/,?\s*"hdr_master_min"\s*:\s*"[^"]*"//g;
    $json=~s/,?\s*"boot_id"\s*:\s*"[^"]*"//g;
+     if(!$delay_explicit) {
+      if($json=~/"delay"\s*:\s*"?0+(?:\.0+)?"?/) {
+       $json=~s/"delay"\s*:\s*"?0+(?:\.0+)?"?/"delay":"$delay_default_ms"/g;
+      } elsif($json!~/"delay"\s*:/) {
+       $json=~s/\{\s*/{"delay":"$delay_default_ms",/;
+      }
+     }
+     $json=~s/,?\s*"delay_explicit"\s*:\s*(?:true|false|null|"[^"]*"|-?\d+(?:\.\d+)?)//g;
   if($meter_target_gamma_auto ne "") {
    if($json=~/"target_gamma"\s*:/) {
     $json=~s/"target_gamma"\s*:\s*"[^"]*"/"target_gamma":"$meter_target_gamma_auto"/g;
@@ -4986,6 +5013,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .inline-select:focus{border-color:var(--accent)}
 #meterSettingsGrid{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-start}
 #meterSettingsGrid .field{flex:0 0 auto;min-width:0}
+#meterSettingsGrid > .field > label:first-child{min-height:18px;display:flex;align-items:center}
 #meterSettingsGrid .field label{white-space:nowrap}
 #meterSettingsGrid .field label.meter-toggle,
 #meterSettingsGrid .field label.meter-note-toggle,
@@ -5016,6 +5044,10 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%}
 .meter-xyz-action-row{display:none;gap:8px;flex-wrap:wrap;padding-left:22px}
 .meter-xyz-action-row.visible{display:flex}
+#meterSettingsGrid .field-display .meter-toggle-row{gap:2px 10px;margin-top:4px}
+#meterSettingsGrid .field-display .meter-note-toggle,
+#meterSettingsGrid .field-display .meter-toggle{min-height:24px}
+#meterSettingsGrid .field-display .meter-xyz-toggle-block{gap:4px}
 .meter-help-tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--border);color:var(--text2);font-size:.65rem;cursor:help;user-select:none}
 .custom-ccss-panel{display:none;margin-top:6px;padding:10px 12px;background:#1a1a2e;border-radius:8px;border:1px solid #333;overflow:hidden}
 .custom-ccss-panel-row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
@@ -5456,9 +5488,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     </label>
    </div>
    <div class="field field-delay">
-    <label>Settle Delay</label>
+    <label>Meter Delay</label>
     <div class="meter-inline-value">
-     <input id="meterDelay" type="text" value="2" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Digits only, with at most one decimal point" aria-label="Settle Delay in seconds" oninput="meterDelaySyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,2))">
+     <input id="meterDelay" type="text" value="0.5" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied before each meter reading" aria-label="Meter Delay in seconds" oninput="meterDelaySyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,0.5))">
      <span class="meter-inline-unit">sec</span>
     </div>
    </div>
@@ -9480,17 +9512,10 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  }
  let black=Lb||0;
  if(tgt==='bt1886'){
-  // BT.1886 is not a flat 2.4 line once black level is included. Use the
-  // measured/inferred chart black level directly; do not force config.min_luma
-  // when black reads as 0 on emissive displays.
-  if(!(black>0)) return 2.4;
-  const tgtLum=bt1886Eotf(signal,peak,black);
-  if(ire>=100){
-   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
-   const prevLum=bt1886Eotf(prevSignal,peak,black);
-   return effectiveGamma(tgtLum,peak,ire,prevLum,prevStepIre);
-  }
-  return effectiveGamma(tgtLum,peak,ire);
+  // Keep the SDR gamma target consistent across 11/21/101-point greyscale
+  // series. The BT.1886 black-offset shape still belongs in the luminance and
+  // EOTF targets; the gamma target chart should reflect the nominal exponent.
+  return 2.4;
  }
  if(tgt==='srgb') return 2.2;
  const gamma=parseFloat(tgt);
@@ -12069,6 +12094,7 @@ function meterMeasurementSignalContext(payload){
   if(profilingPort) body.profiling_meter_port=profilingPort;
  }
  if(body.signal_range==null) body.signal_range=getVal('rgb_quant_range');
+ if(body.transport_signal_range==null) body.transport_signal_range=getVal('rgb_quant_range');
  if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
  if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
@@ -15457,7 +15483,7 @@ function meterDelaySanitize(raw){
 }
 
 function meterDelayParseSeconds(raw,fallbackSeconds){
- const fallback=(fallbackSeconds!=null)?fallbackSeconds:2;
+ const fallback=(fallbackSeconds!=null)?fallbackSeconds:0.5;
  const sanitized=meterDelaySanitize(raw);
  if(!sanitized||sanitized==='.') return fallback;
  const value=parseFloat(sanitized);
@@ -15466,7 +15492,7 @@ function meterDelayParseSeconds(raw,fallbackSeconds){
 }
 
 function meterDelayFormatSeconds(seconds,fallbackSeconds){
- const fallback=(fallbackSeconds!=null)?fallbackSeconds:2;
+ const fallback=(fallbackSeconds!=null)?fallbackSeconds:0.5;
  let value=Number(seconds);
  if(!(Number.isFinite(value)&&value>=0)) value=fallback;
  value=Math.round(value*1000)/1000;
@@ -15480,14 +15506,14 @@ function meterDelaySyncInput(el){
 
 function meterDelayMs(){
  const el=document.getElementById('meterDelay');
- return Math.round(meterDelayParseSeconds(el?el.value:'',2)*1000);
+ return Math.round(meterDelayParseSeconds(el?el.value:'',0.5)*1000);
 }
 
 function meterDelayLoadValue(raw){
  const el=document.getElementById('meterDelay');
  if(!el) return;
  if(raw==null||raw===''){
-  el.value=meterDelayFormatSeconds(2);
+  el.value=meterDelayFormatSeconds(0.5);
   return;
  }
  const numeric=Number(raw);
@@ -15495,7 +15521,7 @@ function meterDelayLoadValue(raw){
   el.value=meterDelayFormatSeconds(numeric>99?(numeric/1000):numeric);
   return;
  }
- el.value=meterDelayFormatSeconds(meterDelayParseSeconds(raw,2));
+ el.value=meterDelayFormatSeconds(meterDelayParseSeconds(raw,0.5));
 }
 
 async function deleteCustomCcss(filename){
