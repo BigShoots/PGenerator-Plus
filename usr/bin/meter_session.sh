@@ -10,7 +10,7 @@
 #   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
-#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [signal_range]
+#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range]
 #   STOP
 #
 # settle_ms (optional, default 0) is the post-display settle wait applied
@@ -138,10 +138,13 @@ wait_for_device_ready() {
 }
 
 patch_request_body() {
- local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7"
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8"
  local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":255,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
  if [[ -n "$signal_range" ]]; then
   payload="$payload,\"signal_range\":\"$signal_range\""
+ fi
+ if [[ -n "$transport_signal_range" ]]; then
+  payload="$payload,\"transport_signal_range\":\"$transport_signal_range\""
  fi
  payload="$payload}"
  printf '%s' "$payload"
@@ -149,12 +152,12 @@ patch_request_body() {
 
 post_patch() {
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8")" >/dev/null 2>&1
 }
 
 post_patch_timeout() {
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7")" >/dev/null 2>&1 || true
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8")" >/dev/null 2>&1 || true
 }
 
 # Single-instance lock — refuse to start if another session is alive.
@@ -384,14 +387,14 @@ signal_startup_ready
 startup_marker "startup ready signaled"
 log "command loop ready"
 
-LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE=""
+LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE="" LAST_TRANSPORT_SIGNAL_RANGE=""
 
 # --- Main command loop ---
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
   READ\ *)
-     # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [SIGNAL_RANGE]
-     read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE <<< "$line"
+    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE]
+    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
@@ -399,15 +402,16 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    [[ -z "$SIGNAL_MODE" ]] && SIGNAL_MODE="$SIGNAL_MODE_DEFAULT"
    [[ -z "$MAX_LUMA" ]] && MAX_LUMA="$MAX_LUMA_DEFAULT"
      [[ -z "$SIGNAL_RANGE" ]] && SIGNAL_RANGE=""
+     [[ -z "$TRANSPORT_SIGNAL_RANGE" ]] && TRANSPORT_SIGNAL_RANGE=""
 
    # Mark measuring so the polling endpoint knows a read is in flight.
    write_state '{"status":"measuring"}'
 
   # Re-display when the rendered patch changes, including transport fields
   # like signal mode and mastering peak that affect how the same RGB codes map.
-  if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" ]]; then
-   post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE"
-   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"
+  if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" || "$TRANSPORT_SIGNAL_RANGE" != "$LAST_TRANSPORT_SIGNAL_RANGE" ]]; then
+   post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE"
+   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"; LAST_TRANSPORT_SIGNAL_RANGE="$TRANSPORT_SIGNAL_RANGE"
    fi
 
   if (( SETTLE_MS > 0 )); then
