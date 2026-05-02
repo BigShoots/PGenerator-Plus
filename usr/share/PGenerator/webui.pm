@@ -6650,7 +6650,8 @@ async function checkPing(){
   // (30s wall-time) and falsely trigger the offline overlay even though the
   // daemon is fine. Active meter API traffic is itself proof of liveness.
   const meterBusy=(typeof meterContinuousActive!=='undefined' && meterContinuousActive)
-                || (typeof meterSeriesRunning!=='undefined' && meterSeriesRunning);
+                  || (typeof meterSeriesRunning!=='undefined' && meterSeriesRunning)
+                  || (typeof meterPingBusy!=='undefined' && meterPingBusy);
   if(meterBusy){
    document.getElementById('statusDot').style.background='var(--orange)';
    document.getElementById('statusText').textContent='Busy';
@@ -7497,6 +7498,7 @@ let meterSeriesPolling=null;
 const meterSeriesPollIntervalMs=500;
 let meterSeriesPollInFlight=false;
 let meterActionPending=false;
+let meterPingBusy=false;
 let meterSeriesAwaitingReady=false;
 let meterReadySignalPending=false;
 let meterPendingDeviceReadyAction=null;
@@ -11100,11 +11102,16 @@ function drawRGBBars(bal){
 }
 
 async function meterStartSingleRead(readPayload){
- const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
- if(!initR) throw new Error('Meter read connection error');
- if(initR&&initR.status==='error') throw new Error(initR.message||'Read failed');
- return meterPollRead(60000);
+ meterPingBusy=true;
+ try{
+  const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
+  if(!initR) throw new Error('Meter read connection error');
+  if(initR&&initR.status==='error') throw new Error(initR.message||'Read failed');
+  return meterPollRead(60000);
+ } finally {
+  meterPingBusy=false;
+ }
 }
 
 function meterApplySingleReadResult(result,requestedStep){
@@ -11159,6 +11166,7 @@ function meterClearManualPromptAwaiting(resolvePending){
 }
 
 async function meterWaitForManualPromptClear(state){
+ meterPingBusy=false;
  meterManualPromptAwaiting=true;
  meterManualPromptReason=String((state&&state.awaiting_ready_reason)||'');
  meterManualPromptMessage=String((state&&state.message)||'Meter is waiting for operator input');
@@ -11168,6 +11176,7 @@ async function meterWaitForManualPromptClear(state){
  if(label) label.textContent=meterManualPromptMessage;
  meterUpdateReadButtons();
  await new Promise(resolve=>{ meterManualPromptContinueResolver=resolve; });
+ meterPingBusy=true;
 }
 
 async function meterSignalManualPromptReady(){
@@ -11197,6 +11206,7 @@ async function meterSignalManualPromptReady(){
 
 async function meterFinishSingleRead(){
  meterActionPending=false;
+ meterPingBusy=false;
  meterSeriesAwaitingReady=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
