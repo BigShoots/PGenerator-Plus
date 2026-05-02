@@ -1522,12 +1522,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  if($type eq "greyscale" && $signal_mode eq "sdr" && $pattern_signal_range=~/^[12]$/) {
   $greyscale_patch_limited=(int($pattern_signal_range)==1) ? 1 : 0;
  }
- # SDR RGB chroma sweeps still need full-source RGB patch codes. Pre-scaling
- # those triplets into 16-235 pulls the emitted chromaticities inward.
  my $chroma_patch_limited=$patch_limited;
- if($signal_mode eq "sdr" && int($series_color_format) == 0) {
-  $chroma_patch_limited=0;
- }
 
  # Build step list as JSON array for the helper script
  # Measurement order: WHITE first (reference), then 0%→95% ascending
@@ -4771,11 +4766,16 @@ sub webui_pattern (@) {
  my $signal_mode=&webui_pattern_signal_mode($body);
  my $max_luma=&webui_pattern_max_luma($body);
  my ($signal_range)=$body=~/"signal_range"\s*:\s*"?(\d+)"?/;
- $signal_range=&webui_preferred_rgb_quant_range() if(!defined $signal_range || $signal_range eq "");
- &apply_source_rgb_quant_range("webui",$signal_range);
+ my ($pattern_signal_range)=$body=~/"pattern_signal_range"\s*:\s*"?(\d+)"?/;
+ my ($transport_signal_range)=$body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/;
+ $transport_signal_range=$signal_range if(!defined $transport_signal_range || $transport_signal_range eq "");
+ $transport_signal_range=&webui_preferred_rgb_quant_range() if(!defined $transport_signal_range || $transport_signal_range eq "");
+ $pattern_signal_range=$signal_range if(!defined $pattern_signal_range || $pattern_signal_range eq "");
+ $pattern_signal_range=$transport_signal_range if(!defined $pattern_signal_range || $pattern_signal_range eq "");
+ &apply_source_rgb_quant_range("webui",$transport_signal_range);
  my ($color_format_body)=$body=~/"color_format"\s*:\s*"?(\d+)"?/;
  my $pattern_color_format=defined($color_format_body) ? int($color_format_body) : int($pgenerator_conf{"color_format"} || 0);
- my $source_range=(int($signal_range || 0) == 1) ? "LIMITED" : "FULL";
+ my $source_range=(int($pattern_signal_range || 0) == 1) ? "LIMITED" : "FULL";
  my $w=$w_s || 1920; my $h=$h_s || 1080;
  my $pat=""; my $img=&webui_pattern_diag_image_file($name); my $pat_bits=&webui_pattern_effective_bits("",$signal_mode);
  my $white_rgb=&webui_pattern_scale_triplet(255,255,255,255,$pat_bits);
@@ -5116,6 +5116,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamut,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamma,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-hdr,
+#meterCard.meter-patterns-only #meterSettingsGrid .field-delay,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-refresh{display:none !important}
 [data-widget].drag-over{outline:2px dashed var(--accent);outline-offset:-2px}
 [data-widget].dragging{opacity:.4}
@@ -7461,6 +7462,8 @@ let meterProfilingPort='';
 let meterContinuousActive=false;
 let meterContinuousTimer=null;
 let meterSeriesPolling=null;
+const meterSeriesPollIntervalMs=500;
+let meterSeriesPollInFlight=false;
 let meterActionPending=false;
 let meterSeriesAwaitingReady=false;
 let meterReadySignalPending=false;
@@ -7977,7 +7980,7 @@ function meterPatchRangeSpan(){
 
 function meterSdrRgbChromaUsesFullSourceRange(){
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- return mode==='sdr' && meterOutputIsRgb();
+ return mode==='sdr' && meterOutputIsRgb() && !meterPatchUsesVideoRange();
 }
 
 function meterChromaPatchRangeMin(){
@@ -10675,7 +10678,7 @@ function meterRecoverSeries(s){
   document.getElementById('meterProgressLabel').textContent=s.current_name||'Running...';
   document.getElementById('meterDot').style.background='var(--orange)';
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-  meterSeriesPolling=setInterval(meterPollSeries,2000);
+  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
  } else {
   // Complete/cancelled/error — just show results, no polling
   meterSeriesRunning=false;
@@ -12144,7 +12147,7 @@ async function meterRunSeries(){
   }
   toast('Series started: '+r.total_steps+' steps');
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-  meterSeriesPolling=setInterval(meterPollSeries,2000);
+  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
   await meterPollSeries();
  } finally {
   meterActionPending=false;
@@ -12153,6 +12156,9 @@ async function meterRunSeries(){
 }
 
 async function meterPollSeries(){
+ if(meterSeriesPollInFlight) return;
+ meterSeriesPollInFlight=true;
+ try{
  const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
  if(!r) return;
  meterSeriesAwaitingReady=!!r.awaiting_ready;
@@ -12278,6 +12284,9 @@ async function meterPollSeries(){
   toast(r.status==='complete'?'Series complete!':r.status==='error'?'Series error: '+(r.current_name||'process died'):'Series cancelled');
  }
  meterUpdateReadButtons();
+ } finally {
+  meterSeriesPollInFlight=false;
+ }
 }
 
 let meterSelectedThumbIre=null;
@@ -14598,6 +14607,7 @@ function meterExportCSV(){
  const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
  const colorRefMode=meterColorRefMode();
  const greyMode=meterGreyRefMode();
+ const inclLum=meterIncludeLum();
  let csv='Step,Name,IRE,R_code,G_code,B_code,X,Y,Z,x,y,Luminance,CCT,Gamma,R_bal,G_bal,B_bal,dEuv,dE2000\n';
  // Helper: is this reading a neutral-grey patch (greyscale sweep) vs a chroma
  // patch (colors / saturations)? Greyscale uses the hcfr greyRef path; chroma
@@ -14626,7 +14636,7 @@ function meterExportCSV(){
    }
   }
   const g=effectiveGamma(rd.luminance,Lw,rd.ire);
-  const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,inclLum):{R:100,G:100,B:100};
+  const bal=whiteR?rgbBalance(rd,whiteR,inclLum):{R:100,G:100,B:100};
   csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
