@@ -67,7 +67,7 @@ startup_output_excerpt() {
 
 output_size() {
  if [[ -f "$OUTFILE" ]]; then
-  wc -c < "$OUTFILE" 2>/dev/null | tr -d '[:space:]'
+  stat -c %s "$OUTFILE" 2>/dev/null | tr -d '[:space:]'
  else
   echo 0
  fi
@@ -219,6 +219,35 @@ parse_latest_result() {
  local clean_out result_line
  clean_out=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
  result_line=$(echo "$clean_out" | grep "Result is XYZ:" | tail -1)
+ [[ -z "$result_line" ]] && return 1
+ local xyz_part yxy_part X Y Z lum x_chr y_chr cct ts
+ xyz_part=$(echo "$result_line" | sed 's/.*XYZ:\s*//' | sed 's/,.*//')
+ yxy_part=$(echo "$result_line" | sed 's/.*Yxy:\s*//')
+ X=$(echo "$xyz_part" | awk '{print $1}')
+ Y=$(echo "$xyz_part" | awk '{print $2}')
+ Z=$(echo "$xyz_part" | awk '{print $3}')
+ lum=$(echo "$yxy_part" | awk '{print $1}')
+ x_chr=$(echo "$yxy_part" | awk '{print $2}')
+ y_chr=$(echo "$yxy_part" | awk '{print $3}')
+ cct=0
+ if [[ -n "$x_chr" && -n "$y_chr" && "$y_chr" != "0.000000" ]]; then
+  cct=$(python -c "
+x=$x_chr; y=$y_chr
+if y > 0:
+ n = (x - 0.3320) / (0.1858 - y)
+ print(int(round(449*n**3 + 3525*n**2 + 6823.3*n + 5520.33)))
+else:
+ print(0)
+" 2>/dev/null || echo 0)
+ fi
+ ts=$(date +%s)
+ echo "{\"X\":$X,\"Y\":$Y,\"Z\":$Z,\"x\":$x_chr,\"y\":$y_chr,\"luminance\":$lum,\"cct\":$cct,\"timestamp\":$ts}"
+ return 0
+}
+
+parse_latest_result_text() {
+ local clean_out="$1" result_line
+ result_line=$(printf '%s\n' "$clean_out" | grep "Result is XYZ:" | tail -1)
  [[ -z "$result_line" ]] && return 1
  local xyz_part yxy_part X Y Z lum x_chr y_chr cct ts
  xyz_part=$(echo "$result_line" | sed 's/.*XYZ:\s*//' | sed 's/,.*//')
@@ -427,8 +456,9 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    fi
 
    # Trigger reading and wait for it
-   PREV_COUNT=$(count_results)
-     SCAN_OFFSET=$(output_size)
+   PARSED_RESULT=""
+   READ_OUTPUT=""
+   SCAN_OFFSET=$(output_size)
    printf " " >&3
   READ_TIMEOUT=60
   (( IRE <= 5 )) && READ_TIMEOUT=70
@@ -436,31 +466,36 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    GOT_RESULT=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < READ_TIMEOUT )); do
-    CUR_COUNT=$(count_results)
-    if (( CUR_COUNT > PREV_COUNT )); then
-     GOT_RESULT=true
-     break
-    fi
       NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
       if [[ -n "$NEW_OUTPUT" ]]; then
        CUR_SIZE=$(output_size)
-       if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+       READ_OUTPUT+="$NEW_OUTPUT"
+       if [[ $RETRIED_COMM -eq 0 && "$READ_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
         log "spotread communication problem during read - retrying once"
         printf " " >&3
         RETRIED_COMM=1
         READ_TIMEOUT=$((READ_TIMEOUT + 15))
+        READ_OUTPUT=""
         SCAN_OFFSET=$(output_size)
         continue
        fi
        if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-        if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+        if PROMPT_REASON=$(manual_ready_prompt_reason "$READ_OUTPUT"); then
          log "manual prompt during read: reason=$PROMPT_REASON name=$NAME"
          wait_for_device_ready "$PROMPT_REASON"
          printf " " >&3
          READ_START=$SECONDS
          READ_TIMEOUT=$((READ_TIMEOUT + 30))
+         READ_OUTPUT=""
          SCAN_OFFSET=$(output_size)
          continue
+        fi
+       fi
+       if [[ "$READ_OUTPUT" == *"Result is XYZ:"* ]]; then
+        PARSED_RESULT=$(parse_latest_result_text "$READ_OUTPUT")
+        if [[ -n "$PARSED_RESULT" ]]; then
+         GOT_RESULT=true
+         break
         fi
        fi
        SCAN_OFFSET="$CUR_SIZE"
@@ -469,7 +504,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    done
 
    if $GOT_RESULT; then
-    PARSED=$(parse_latest_result)
+    PARSED="$PARSED_RESULT"
     if [[ -n "$PARSED" ]]; then
      # Wrap as a complete reading record (matches spotread_wrapper.sh shape)
      OUT=$(python -c "
