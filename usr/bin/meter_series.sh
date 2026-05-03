@@ -259,7 +259,7 @@ series_uses_initial_white_reference() {
 # Publish an immediate startup state so the UI shows progress instead of
 # looking hung while spotread is performing its cold-start handshake.
 cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Initializing meter...","readings":[]}
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[]}
 EOJSON
 
 # Full cleanup of any previous meter state. Called before starting a session
@@ -306,7 +306,7 @@ while : ; do
   DBGOUT="Meter did not enumerate during initialization"
   if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
    cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Retrying meter connection...","readings":[]}
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[]}
 EOJSON
    meter_full_cleanup
    sleep 2
@@ -410,7 +410,7 @@ WHITE_REF_DONE=0
 
  if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
   cat > "$STATE_FILE" << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Retrying meter connection...","readings":[]}
+  {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[]}
 EOJSON
   # Force full cleanup and invalidate port cache before retrying.
   meter_full_cleanup
