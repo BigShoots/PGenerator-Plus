@@ -18,6 +18,7 @@
 - Fixed two-point greyscale white-reference handling so RGB balance stays meaningful even when the high patch is below a literal 100% white read.
 - Fixed cached series recovery so saved two-point greyscale runs reopen with the correct chart mode instead of falling back to the full greyscale chart stack.
 - Fixed meter-series startup copy so the UI reports `Connecting to meter...` during initialization and retry phases.
+- Fixed the full-image build helper so it falls back to a sequential `dd` copy when `cp` fails reading a sparse-hostile base image with `cannot lseek`.
 - Bumped the shipped image/runtime version from `2.5.9b` to `2.5.10b`.
 
 ### Downloads

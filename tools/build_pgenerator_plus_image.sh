@@ -74,7 +74,7 @@ require_root() {
 require_commands() {
  local missing=()
  local cmd
- for cmd in awk cpio cp gzip grep losetup lsblk mktemp mount mountpoint rsync sed sync umount; do
+ for cmd in awk cpio cp dd gzip grep losetup lsblk mktemp mount mountpoint rsync sed sync umount; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -191,7 +191,12 @@ copy_base_image() {
   rm -f "$OUTPUT_IMAGE"
  fi
  log "Copying base image to $OUTPUT_IMAGE"
- cp --reflink=auto --sparse=always -- "$BASE_IMAGE" "$OUTPUT_IMAGE"
+ if cp --reflink=auto --sparse=always -- "$BASE_IMAGE" "$OUTPUT_IMAGE"; then
+  return
+ fi
+ log "cp failed; retrying with sequential dd copy"
+ rm -f "$OUTPUT_IMAGE"
+ dd if="$BASE_IMAGE" of="$OUTPUT_IMAGE" bs=16M iflag=fullblock status=progress conv=fsync
 }
 
 attach_loop_device() {
