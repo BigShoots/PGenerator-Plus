@@ -973,6 +973,13 @@ sub webui_meter_status_apply_overrides (@) {
 }
 
 sub webui_meter_status (@) {
+ my $series_running=`pgrep -f meter_series.sh 2>/dev/null`;
+ my $spotread_running=`pgrep -x spotread 2>/dev/null`;
+ my $session_alive=&webui_meter_session_alive();
+ my $busy=($series_running=~/\d/ || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
+ if($busy && $_meter_last_good_status =~ /"detected"\s*:\s*true/) {
+  return &webui_meter_status_apply_overrides($_meter_last_good_status);
+ }
  my $json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
  chomp($json);
  $json='{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false}' if($json eq "" || $json!~/^\{/);
@@ -986,10 +993,6 @@ sub webui_meter_status (@) {
   $_meter_last_good_status=$json;
   return &webui_meter_status_apply_overrides($json);
  }
- my $series_running=`pgrep -f meter_series.sh 2>/dev/null`;
- my $spotread_running=`pgrep -x spotread 2>/dev/null`;
- my $session_alive=&webui_meter_session_alive();
- my $busy=($series_running=~/\d/ || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
  if($_meter_was_detected) {
   my $age=time()-($_meter_last_seen_time||0);
   my $last_usb_id="";
@@ -1213,10 +1216,12 @@ sub webui_meter_read (@) {
  # Debounce: coalesce accidental double-clicks. The session daemon serializes
  # the actual reads, so this is purely a UI-side protection.
  my $now=Time::HiRes::time();
- if($now - $_meter_last_read_time < 0.25) {
+ my $is_continuous=0;
+ $is_continuous=1 if($body=~/"continuous"\s*:\s*true/i);
+ if(!$is_continuous && ($now - $_meter_last_read_time < 0.25)) {
   return '{"status":"measuring"}';
  }
- $_meter_last_read_time=$now;
+ $_meter_last_read_time=$now if(!$is_continuous);
 
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
@@ -7494,6 +7499,7 @@ let meterMeasurementPort='';
 let meterProfilingPort='';
 let meterContinuousActive=false;
 let meterContinuousTimer=null;
+let meterContinuousRetryDelayMs=50;
 let meterSeriesPolling=null;
 const meterSeriesPollIntervalMs=500;
 let meterSeriesPollInFlight=false;
@@ -10603,7 +10609,10 @@ async function meterCheckStatus(){
 
 function meterRecoverSeries(s){
  // Determine series type and points from series_id or the recovered steps.
- let type='greyscale',points=21;
+ let type=String((s&&s.type)||'').toLowerCase();
+ let points=Number((s&&s.points)||0)||0;
+ if(!type) type='greyscale';
+ if(!points) points=21;
  if(s.series_id){
   const m=s.series_id.match(/^(greyscale|colors|saturations)_/);
   if(m) type=m[1];
@@ -10813,6 +10822,8 @@ function meterRestoreSeriesFromCache(key){
  if(!cached||!cached.steps||cached.steps.length===0) return false;
  meterRecoverSeries({
   series_id:null,
+  type:cached.type,
+  points:cached.points,
   status:cached.status||'complete',
   total_steps:cached.steps.length,
   signal_mode:cached.signal_mode,
@@ -11348,6 +11359,7 @@ async function meterToggleContinuous(){
    await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
   }catch(e){}
   meterContinuousActive=true;
+  meterContinuousRetryDelayMs=50;
   meterSeriesAwaitingReady=false;
   meterReadySignalPending=false;
   document.getElementById('meterContinuous').classList.remove('btn-secondary');
@@ -11360,6 +11372,7 @@ async function meterToggleContinuous(){
 async function meterContinuousLoop(){
  if(!meterContinuousActive) return;
  if(meterSeriesRunning){toast('Series scan is running',true);meterStopContinuous();return;}
+ let nextDelay=meterContinuousRetryDelayMs||50;
  document.getElementById('meterDot').style.background='var(--orange)';
  // Pulse ONLY the selected thumb during continuous reads.
  const contIre=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):null;
@@ -11388,6 +11401,7 @@ async function meterContinuousLoop(){
    readPayload.patch_size=getMeterPatchSize();
    if(patternSignalRange!=null) readPayload.signal_range=patternSignalRange;
   }
+  readPayload.continuous=true;
   readPayload.require_device_ready=meterSelectedMeasurementRequiresReady();
   const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
@@ -11395,6 +11409,8 @@ async function meterContinuousLoop(){
   if(initR&&initR.status==='error'){meterStopContinuous();return;}
   const r=await meterPollRead(60000);
   if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
+    meterContinuousRetryDelayMs=50;
+    nextDelay=50;
    const rd=r.readings[0];
     meterNormalizeMeasuredReading(rd);
    // Drop the entire result if the user switched thumbnails mid-read. The
@@ -11427,15 +11443,22 @@ async function meterContinuousLoop(){
     meterBuildPatchThumbs(sortedStepsL,completedIresC,nowIre);
    }
    }
+  } else {
+   meterContinuousRetryDelayMs=Math.min(1000,Math.max(250,(meterContinuousRetryDelayMs||50)*2));
+   nextDelay=meterContinuousRetryDelayMs;
   }
- }catch(e){}
+ }catch(e){
+  meterContinuousRetryDelayMs=Math.min(1000,Math.max(250,(meterContinuousRetryDelayMs||50)*2));
+  nextDelay=meterContinuousRetryDelayMs;
+ }
  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
- if(meterContinuousActive) meterContinuousTimer=setTimeout(meterContinuousLoop,50);
+ if(meterContinuousActive) meterContinuousTimer=setTimeout(meterContinuousLoop,nextDelay);
 }
 
 function meterStopContinuous(){
  const wasActive=meterContinuousActive;
  meterContinuousActive=false;
+ meterContinuousRetryDelayMs=50;
  meterClearManualPromptAwaiting(true);
  if(meterContinuousTimer) clearTimeout(meterContinuousTimer);
  meterContinuousTimer=null;
