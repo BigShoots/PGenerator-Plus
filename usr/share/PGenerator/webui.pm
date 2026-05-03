@@ -1490,6 +1490,10 @@ my $max_luma=&webui_pattern_max_luma($body);
  $grey_steps_11=$1 if($body=~/"grey_steps_11"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_21="";
  $grey_steps_21=$1 if($body=~/"grey_steps_21"\s*:\s*"([0-9.,\s]+)"/);
+ my $grey_two_point_low="";
+ $grey_two_point_low=$1 if($body=~/"grey_two_point_low"\s*:\s*"?([0-9.]+)"?/);
+ my $grey_two_point_high="";
+ $grey_two_point_high=$1 if($body=~/"grey_two_point_high"\s*:\s*"?([0-9.]+)"?/);
  # Stimulus must invert the display's target EOTF so the decoded linear on a
  # tracking display lands on the target linear — otherwise chromaticities
  # shift outward (measured appears oversaturated vs target xy).
@@ -1547,7 +1551,27 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
  if($type eq "greyscale") {
    my @ire_vals;
-   if($points==11) {
+   my %step_names;
+   if($points==2) {
+    my $low=30;
+    my $high=100;
+    $low=$grey_two_point_low+0 if($grey_two_point_low ne "");
+    $high=$grey_two_point_high+0 if($grey_two_point_high ne "");
+    $low=0 if($low < 0);
+    $low=99 if($low > 99);
+    $high=1 if($high < 1);
+    $high=100 if($high > 100);
+    if($high <= $low) {
+     if($high >= 100) { $low=$high-1; }
+     else { $high=$low+1; }
+    }
+    @ire_vals=($low,$high);
+    foreach my $v (@ire_vals) {
+     my $label=(abs($v-int($v))<0.05)?int($v):sprintf("%.1f",$v);
+     my $role=(abs($v-$high)<0.0001)?"High":"Low";
+     $step_names{$v}="$role ${label}%";
+    }
+   } elsif($points==11) {
     @ire_vals=(0,10,20,30,40,50,60,70,80,90,100);
    } elsif($points==100) {
     @ire_vals=(0..100);
@@ -1555,7 +1579,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     @ire_vals=(0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
    }
    my %stimulus_for_slot=map { $_ => $_ } @ire_vals;
-   if($grey_custom_enabled) {
+   if($grey_custom_enabled && $points!=2) {
     my $csv=$points==11 ? $grey_steps_11 : $grey_steps_21;
     my @vals=grep { $_ ne "" } map { my $v=$_; $v=~s/^\s+|\s+$//g; $v } split(/,/,$csv || "");
     if(@vals == @ire_vals) {
@@ -1574,7 +1598,9 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
    # Reading white first lets every subsequent ΔE be computed immediately
    # and never change — HCFR achieves this with a pre-configured target
    # luminance; we use the actual measured white instead.
-   my @ordered = (100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
+  my @ordered = ($points==2)
+   ? ((sort { $a <=> $b } @ire_vals)[1], (sort { $a <=> $b } @ire_vals)[0])
+   : (100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
   my $lim=$greyscale_patch_limited;
    @steps=map {
     my $v=$_;
@@ -1610,7 +1636,12 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
       $c=$lim?($level+16):int($level*255/219+.5);
      }
      my $stim=$stimulus_for_slot{$v};
-     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"${v}%\"}";
+     my $name=exists $step_names{$v} ? $step_names{$v} : "${v}%";
+     my $role="";
+     $role="high" if($points==2 && $name=~/^High /);
+     $role="low" if($points==2 && $name=~/^Low /);
+     my $extra=$points==2 ? ",\"point_role\":\"$role\"" : "";
+     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$c,\"g\":$c,\"b\":$c,\"name\":\"$name\"$extra}";
    } @ordered;
  } elsif($type eq "colors") {
   my $min_code=$chroma_patch_limited?16:0;
@@ -2168,7 +2199,8 @@ sub webui_meter_settings_save (@) {
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
   display_type target_gamut delay delay_explicit patch_size patch_insert disable_aio
-      refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
+    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
+  grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y
     xyz_matrix_enabled xyz_m11 xyz_m12 xyz_m13 xyz_m21 xyz_m22 xyz_m23 xyz_m31 xyz_m32 xyz_m33
@@ -4941,11 +4973,22 @@ sub webui_html (@) {
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
-#meterThumbsRow,.meter-scroll-sync{scrollbar-color:#06080d #161a25;scrollbar-width:thin}
-#meterThumbsRow::-webkit-scrollbar,.meter-scroll-sync::-webkit-scrollbar{height:10px}
-#meterThumbsRow::-webkit-scrollbar-track,.meter-scroll-sync::-webkit-scrollbar-track{background:#161a25;border-radius:999px}
-#meterThumbsRow::-webkit-scrollbar-thumb,.meter-scroll-sync::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2a3142 0%,#0a0d14 100%);border-radius:999px;border:1px solid #232938}
-#meterThumbsRow::-webkit-scrollbar-thumb:hover,.meter-scroll-sync::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#394257 0%,#131823 100%)}
+#meterThumbsRow,.meter-scroll-sync{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x;scrollbar-gutter:stable both-edges}
+#meterThumbsRow{scrollbar-color:#8ea4c6 #162132;scrollbar-width:auto}
+.meter-scroll-sync{scrollbar-color:#7287a8 #161a25;scrollbar-width:thin}
+#meterThumbsRow::-webkit-scrollbar{height:14px}
+.meter-scroll-sync::-webkit-scrollbar{height:10px}
+#meterThumbsRow::-webkit-scrollbar-track{background:linear-gradient(180deg,#101827 0%,#1a2537 100%);border-radius:999px;border:1px solid #32435d}
+.meter-scroll-sync::-webkit-scrollbar-track{background:#161a25;border-radius:999px}
+#meterThumbsRow::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#98accb 0%,#5a7295 100%);border-radius:999px;border:1px solid #b5c6e2;box-shadow:inset 0 1px 0 rgba(255,255,255,.18)}
+.meter-scroll-sync::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#637996 0%,#33455f 100%);border-radius:999px;border:1px solid #506480}
+#meterThumbsRow::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#b1c1db 0%,#6e86ab 100%)}
+.meter-scroll-sync::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#7f97bc 0%,#415979 100%)}
+.meter-thumbs-shell{display:flex;align-items:center;gap:8px;max-width:100%}
+.meter-thumbs-nav{flex:0 0 32px;width:32px;height:32px;border-radius:10px;border:1px solid #506785;background:linear-gradient(180deg,#31445f 0%,#192638 100%);color:#dce7f8;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;font-weight:700;line-height:1;box-shadow:0 4px 12px rgba(0,0,0,.22);transition:filter .18s,transform .08s,opacity .18s,background .18s}
+.meter-thumbs-nav:hover:not(:disabled){filter:brightness(1.12)}
+.meter-thumbs-nav:active:not(:disabled){transform:scale(.95)}
+.meter-thumbs-nav:disabled{opacity:.35;cursor:default;filter:none}
 .meter-scroll-sync{overflow-x:auto;overflow-y:hidden;padding-bottom:4px}
 .meter-scroll-sync>canvas{display:block}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
@@ -4987,7 +5030,7 @@ transition:background .3s;cursor:default;position:relative}
 .status-bar span[title]{cursor:default}
 .dashboard{max-width:1200px;margin:0 auto;padding:12px;display:grid;
 grid-template-columns:1fr 1fr;gap:12px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}
 .card h2{font-size:.95rem;margin-bottom:10px;color:var(--accent);
 display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .card h2 .icon{font-size:1rem}
@@ -5538,13 +5581,36 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
   <!-- Series Controls -->
   <div id="meterSeriesHeader" style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px;padding-top:8px;border-top:1px solid var(--border)">Series Measurements</div>
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-   <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
-    <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 0-100%</button>
-    <button class="btn btn-sm btn-secondary" data-series="greyscale-21" onclick="meterSelectSeries('greyscale',21)">Greyscale 21pt</button>
-    <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
-    <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">Colors</button>
-    <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+   <div style="display:flex;flex-direction:column;gap:6px;flex:1 1 520px;min-width:0">
+    <div class="btn-row" id="meterSeriesTabRow" style="margin:0">
+     <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
+     <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
+    </div>
+    <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
+     <div id="meterSeriesGroupGreyscale" style="display:flex;gap:4px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-secondary" data-series="greyscale-2" onclick="meterSelectSeries('greyscale',2)">Greyscale 2pt</button>
+      <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
+      <button class="btn btn-sm btn-secondary" data-series="greyscale-21" onclick="meterSelectSeries('greyscale',21)">Greyscale 21pt</button>
+      <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
+     </div>
+     <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
+      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
+     </div>
+    </div>
+    <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:#0d0d15;border-radius:6px">
+     <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">2pt Levels</div>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>Low Patch</span>
+      <input type="number" id="meterTwoPointLow" min="0" max="99" step="1" value="30" style="width:84px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+     </label>
+     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <span>High Patch</span>
+      <input type="number" id="meterTwoPointHigh" min="1" max="100" step="1" value="100" style="width:84px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+     </label>
+     <div style="font-size:.7rem;color:var(--text2);line-height:1.45;max-width:38ch">Defaults use the common 30 / 100 two-point workflow. Change them before starting the series if you want different low and high patches.</div>
+    </div>
    </div>
    <div class="btn-row" id="meterReadBtnRow" style="margin:0">
     <button class="btn btn-sm btn-danger" id="meterClearChartBtn" onclick="meterClearResults()" style="display:none">Clear Chart Data</button>
@@ -5569,8 +5635,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
    <input type="file" id="meterGreyProfileImportInput" accept="application/json,.json" style="display:none">
   </div>
-  <div id="meterThumbsRow" style="display:none;margin-bottom:10px;overflow-x:auto;overflow-y:hidden;padding-bottom:4px">
-   <div id="meterPatchThumbs" style="display:flex;gap:2px;width:100%;min-width:100%"></div>
+  <div id="meterThumbsWrap" class="meter-thumbs-shell" style="display:none;margin-bottom:10px">
+   <button type="button" id="meterThumbsLeftBtn" class="meter-thumbs-nav" onclick="meterThumbsPage(-1)" aria-label="Scroll thumbnails left" title="Scroll thumbnails left">&#10094;</button>
+   <div id="meterThumbsRow" style="flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding-bottom:6px;max-width:100%">
+    <div id="meterPatchThumbs" style="display:flex;gap:2px;min-width:0"></div>
+   </div>
+   <button type="button" id="meterThumbsRightBtn" class="meter-thumbs-nav" onclick="meterThumbsPage(1)" aria-label="Scroll thumbnails right" title="Scroll thumbnails right">&#10095;</button>
   </div>
 
   <!-- Live Reading -->
@@ -5728,7 +5798,32 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
   <!-- Charts Container -->
   <div id="meterCharts" style="display:none">
-   <div id="chartsGreyscaleWrap">
+  <div id="chartsGreyscaleWrap">
+   <div id="chartsGreyscaleTwoPointWrap" style="display:none;margin-bottom:10px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:10px">
+    <div style="background:#0d0d15;border-radius:6px;padding:10px;min-width:0">
+     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase">Low RGB Balance</div>
+      <div id="meterTwoPointLowLabel" style="font-size:.72rem;color:#eee">Low</div>
+     </div>
+     <canvas id="meterTwoPointLowCanvas" width="220" height="220" style="width:100%;height:220px;display:block"></canvas>
+     <div id="meterTwoPointLowMeta" style="font-size:.72rem;color:var(--text2);line-height:1.5;margin-top:8px">No low-point reading yet.</div>
+    </div>
+    <div style="background:#0d0d15;border-radius:6px;padding:10px;min-width:0">
+     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase">High RGB Balance</div>
+      <div id="meterTwoPointHighLabel" style="font-size:.72rem;color:#eee">High</div>
+     </div>
+     <canvas id="meterTwoPointHighCanvas" width="220" height="220" style="width:100%;height:220px;display:block"></canvas>
+     <div id="meterTwoPointHighMeta" style="font-size:.72rem;color:var(--text2);line-height:1.5;margin-top:8px">No high-point reading yet.</div>
+    </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:#0d0d15;border-radius:6px;padding:10px 12px">
+    <div style="font-size:.72rem;color:var(--text2)">High Luminance: <strong id="meterTwoPointHighLuminance" style="color:#eee;font-size:.9rem">--</strong> cd/m&sup2;</div>
+    <div style="font-size:.72rem;color:var(--text2)">Two-point greyscale shows only the low and high RGB balance results.</div>
+    </div>
+   </div>
+   <div id="chartsGreyscaleFullWrap">
     <div style="margin-bottom:10px">
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">RGB Balance</div>
      <div style="display:flex;gap:8px;align-items:stretch">
@@ -5822,7 +5917,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
      </div>
     </div>
-   </div>
+    </div>
+     </div>
    <div id="chartsColorWrap" style="display:none">
     <div style="margin-bottom:10px">
      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">CIE 1931 Chromaticity</div>
@@ -8201,7 +8297,7 @@ function meterFindMeasuredWhiteReading(){
   const liveWhite=meterReadings.find(isWhiteReading);
   if(liveWhite) return liveWhite;
  }
- const preferredKeys=['greyscale-100','greyscale-21','greyscale-11','saturations-24','colors-30'];
+ const preferredKeys=['greyscale-100','greyscale-2','greyscale-21','greyscale-11','saturations-24','colors-30'];
  let best=null;
  const considerSnapshot=(snap)=>{
   if(!snap||!Array.isArray(snap.readings)) return;
@@ -8215,6 +8311,40 @@ function meterFindMeasuredWhiteReading(){
  preferredKeys.forEach(key=>considerSnapshot(meterSeriesCache&&meterSeriesCache[key]));
  if(meterSeriesCache&&typeof meterSeriesCache==='object') Object.values(meterSeriesCache).forEach(considerSnapshot);
  return best?best.reading:null;
+}
+
+function meterSyntheticGreyWhiteReading(luminance){
+ const value=Number(luminance);
+ if(!(Number.isFinite(value)&&value>0)) return null;
+ const wp=meterTargetWhitePoint();
+ return {X:wp.X*value,Y:value,Z:wp.Z*value,luminance:value,x:wp.x,y:wp.y,cct:null,synthetic_target:true};
+}
+
+function meterEffectiveGreyscaleWhiteReference(readings){
+ const cached=meterWhiteReading?meterReadingXYZ(meterWhiteReading):null;
+ if(cached&&cached.Y>0) return meterWhiteReading;
+ const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
+ const white=meterFindSeriesWhiteReading(list);
+ if(white) return white;
+ if(config&&config.max_luma){
+  const synthetic=meterSyntheticGreyWhiteReading(parseFloat(config.max_luma));
+  if(synthetic) return synthetic;
+ }
+ if(list.length>0){
+  const brightest=[...list].sort((a,b)=>(meterReadingLuminanceNits(b)||0)-(meterReadingLuminanceNits(a)||0))[0];
+  const measured=meterReadingLuminanceNits(brightest);
+  const ire=Math.max(1,Number((brightest&&brightest.ire)||100)||100);
+  if(measured>0){
+   let inferred=measured;
+   if(ire<100){
+    const frac=Math.max(targetEotf(ire/100,1,0),0.02);
+    inferred=measured/frac;
+   }
+   const synthetic=meterSyntheticGreyWhiteReading(inferred);
+   if(synthetic) return synthetic;
+  }
+ }
+ return null;
 }
 
 function meterColorReferenceNits(){
@@ -9286,7 +9416,8 @@ function meterLiveRgbData(reading){
  const measured=meterReadingXYZ(reading);
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  if(!isColorSeries||!measured||!(measured.Y>0)){
-  return meterWhiteReading?{mode:'balance',...rgbBalance(reading,meterWhiteReading,meterGreyRefMode())}:{mode:'balance',R:100,G:100,B:100};
+  const whiteRef=meterEffectiveGreyscaleWhiteReference(Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading]);
+  return whiteRef?{mode:'balance',...rgbBalance(reading,whiteRef,meterGreyRefMode())}:{mode:'balance',R:100,G:100,B:100};
  }
  const gamut=meterAnalysisGamut();
  const target=meterColorDeltaTargetXYZ(reading,meterColorIncludeLum());
@@ -10623,6 +10754,7 @@ function meterRecoverSeries(s){
   if(seriesType==='colors') return 30;
   if(seriesType==='saturations') return 24;
   const basis=count||stepCount;
+  if(basis>0&&basis<=2) return 2;
   if(basis>=101) return 100;
   return basis>0&&basis<=11?11:21;
  };
@@ -10672,6 +10804,7 @@ function meterRecoverSeries(s){
  // Show UI elements — ensure card is visible even if meter is disconnected
  document.getElementById('meterCard').style.display='';
  document.getElementById('meterCharts').style.display='';
+ meterSetSeriesTab(meterSeriesTabForType(type));
  // Toggle greyscale vs color chart sections
  if(type==='greyscale'){
   document.getElementById('chartsGreyscaleWrap').style.display='';
@@ -10680,9 +10813,10 @@ function meterRecoverSeries(s){
   document.getElementById('chartsGreyscaleWrap').style.display='none';
   document.getElementById('chartsColorWrap').style.display='';
  }
+ meterUpdateGreyscaleChartMode();
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterReadSeriesBtn').style.display='';
- document.getElementById('meterThumbsRow').style.display='';
+ meterSetThumbsVisible(true);
  document.getElementById('meterLiveReading').style.display='';
  // Highlight correct series button
  meterResetSeriesButtons();
@@ -10737,6 +10871,7 @@ function meterStampReadingStepMeta(reading,step){
  if(step.r!=null) reading.r_code=step.r;
  if(step.g!=null) reading.g_code=step.g;
  if(step.b!=null) reading.b_code=step.b;
+ if(step.point_role!=null) reading.point_role=step.point_role;
  if(step.series_color!=null) reading.series_color=step.series_color;
  if(step.sat_pct!=null) reading.sat_pct=step.sat_pct;
  if(step.target_x!=null) reading.target_x=step.target_x;
@@ -11728,10 +11863,95 @@ function meterResetSeriesButtons(){
  });
 }
 
+let meterSeriesTab='greyscale';
+const METER_TWO_POINT_DEFAULTS={low:30,high:100};
+
 const METER_GREY_SLOTS_11=[0,10,20,30,40,50,60,70,80,90,100];
 const METER_GREY_SLOTS_21=[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
 let meterGreyPatchProfiles={format:'pgenerator-greyscale-profile-v1',apply_to_all_modes:false,profiles:{}};
 let meterGreyEditorPoints=21;
+
+function meterFormatPercentValue(value){
+ const numeric=Number(value);
+ if(!Number.isFinite(numeric)) return '0';
+ const rounded=Math.round(numeric*10)/10;
+ return String(rounded).replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'');
+}
+
+function meterIsTwoPointGreyscale(){
+ return meterActiveSeriesType==='greyscale' && Number(meterActiveSeriesPoints)===2;
+}
+
+function meterSeriesTabForType(type){
+ return (type==='colors'||type==='saturations')?'color':'greyscale';
+}
+
+function meterTwoPointValues(){
+ const lowEl=document.getElementById('meterTwoPointLow');
+ const highEl=document.getElementById('meterTwoPointHigh');
+ let low=parseFloat((lowEl&&lowEl.value)||METER_TWO_POINT_DEFAULTS.low);
+ let high=parseFloat((highEl&&highEl.value)||METER_TWO_POINT_DEFAULTS.high);
+ if(!Number.isFinite(low)) low=METER_TWO_POINT_DEFAULTS.low;
+ if(!Number.isFinite(high)) high=METER_TWO_POINT_DEFAULTS.high;
+ low=Math.max(0,Math.min(99,Math.round(low*10)/10));
+ high=Math.max(1,Math.min(100,Math.round(high*10)/10));
+ if(high<=low){
+  if(high>=100) low=Math.max(0,Math.min(99,high-1));
+  else high=Math.min(100,low+1);
+ }
+ return {low,high};
+}
+
+function meterSetTwoPointInputs(values){
+ const lowEl=document.getElementById('meterTwoPointLow');
+ const highEl=document.getElementById('meterTwoPointHigh');
+ if(lowEl) lowEl.value=meterFormatPercentValue(values.low);
+ if(highEl) highEl.value=meterFormatPercentValue(values.high);
+}
+
+function meterSyncTwoPointInputs(){
+ const values=meterTwoPointValues();
+ meterSetTwoPointInputs(values);
+ return values;
+}
+
+function meterHandleTwoPointLevelChange(){
+ meterSyncTwoPointInputs();
+ saveMeterSettings();
+ if(meterIsTwoPointGreyscale()) meterRefreshActiveSeriesCharts();
+}
+
+function meterUpdateSeriesTabUi(){
+ const tab=(meterSeriesTab==='color')?'color':'greyscale';
+ const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
+ const colorGroup=document.getElementById('meterSeriesGroupColor');
+ const greyBar=document.getElementById('meterGreyProfileBar');
+ const twoPointControls=document.getElementById('meterTwoPointControls');
+ const twoPointActive=meterIsTwoPointGreyscale();
+ document.querySelectorAll('#meterSeriesTabRow button[data-series-tab]').forEach(btn=>{
+  const active=(btn.dataset.seriesTab||'')===tab;
+  btn.classList.toggle('btn-primary',active);
+  btn.classList.toggle('btn-secondary',!active);
+ });
+ if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
+ if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
+ meterGreySyncUi();
+ if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive)?'flex':'none';
+ if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
+}
+
+function meterSetSeriesTab(tab){
+ meterSeriesTab=(tab==='color')?'color':'greyscale';
+ meterUpdateSeriesTabUi();
+}
+
+function meterUpdateGreyscaleChartMode(){
+ const full=document.getElementById('chartsGreyscaleFullWrap');
+ const twoPoint=document.getElementById('chartsGreyscaleTwoPointWrap');
+ const showTwoPoint=meterIsTwoPointGreyscale();
+ if(full) full.style.display=showTwoPoint?'none':'';
+ if(twoPoint) twoPoint.style.display=showTwoPoint?'':'none';
+}
 
 function meterGreyDefaultSlots(points){
  if(points===100) return Array.from({length:101},(_,idx)=>idx);
@@ -12002,17 +12222,29 @@ function meterBuildStepsJS(type,points){
  if(type==='greyscale' && points===256) points=100;
  const steps=[];
  if(type==='greyscale'){
-  const ires=meterGreySeriesSlots(points);
-  const stimuli=meterGreyStimulusValues(points);
-  const stimulusBySlot={};
-  ires.forEach((slot,idx)=>{ stimulusBySlot[slot]=stimuli[idx]; });
-  // Measurement order: 100% first (white reference), then 0%→95% ascending
-  const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
-  ordered.forEach(v=>{
-   const stim=stimulusBySlot[v]!=null?stimulusBySlot[v]:v;
+  if(points===2){
+   const twoPoint=meterSyncTwoPointInputs();
+   [
+    {role:'high',value:twoPoint.high},
+    {role:'low',value:twoPoint.low}
+   ].forEach(entry=>{
+    const c=meterCodeFromSignalPercent(entry.value);
+    const label=(entry.role==='low'?'Low ':'High ')+meterFormatPercentValue(entry.value)+'%';
+    steps.push({ire:entry.value,stimulus:entry.value,r:c,g:c,b:c,name:label,point_role:entry.role});
+   });
+  } else {
+   const ires=meterGreySeriesSlots(points);
+   const stimuli=meterGreyStimulusValues(points);
+   const stimulusBySlot={};
+   ires.forEach((slot,idx)=>{ stimulusBySlot[slot]=stimuli[idx]; });
+   // Measurement order: 100% first (white reference), then 0%→95% ascending
+   const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
+   ordered.forEach(v=>{
+    const stim=stimulusBySlot[v]!=null?stimulusBySlot[v]:v;
     const c=meterCodeFromSignalPercent(stim);
-   steps.push({ire:v,stimulus:stim,r:c,g:c,b:c,name:v+'%'});
-  });
+    steps.push({ire:v,stimulus:stim,r:c,g:c,b:c,name:v+'%'});
+   });
+  }
  } else if(type==='colors'){
   steps.push(...meterBuildColorCheckerStepsJS());
  } else if(type==='saturations'){
@@ -12030,6 +12262,7 @@ function meterSelectSeries(type,points){
  if(meterActionPending) return;
  if(type==='greyscale' && points===256) points=100;
  const key=type+'-'+points;
+ meterSetSeriesTab(meterSeriesTabForType(type));
  if(meterSeriesRunning){
   if(meterActiveSeriesKey===key){
    toast('Series scan is running — stop it before reloading this chart',true);
@@ -12077,6 +12310,7 @@ function meterSelectSeries(type,points){
  meterActiveSeriesPoints=points;
  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
  meterLastChartCount=0;
+ meterSetSeriesTab(meterSeriesTabForType(type));
  // Highlight the clicked button
  meterResetSeriesButtons();
  meterActiveSeriesKey=key;
@@ -12103,7 +12337,7 @@ function meterSelectSeries(type,points){
  document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterReadSeriesBtn').style.display='';
- document.getElementById('meterThumbsRow').style.display='';
+ meterSetThumbsVisible(true);
  document.getElementById('meterProgress').style.display='none';
  // Build thumbnails and pre-populate all charts
  meterBuildPatchThumbs(sortedSteps,null);
@@ -12173,17 +12407,27 @@ async function meterRunSeries(){
  meterSelectedThumbIre=null;
  meterReadings=[];
  meterWhiteReading=null;
+ meterCurrentPatchStep=null;
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
  meterSeriesRunning=true;
  meterSeriesAwaitingReady=false;
  meterReadySignalPending=false;
  meterLastChartCount=0;
  meterGreyscaleLowEndPinned=false;
  meterGreyscaleLastCurrentKey=null;
+ meterSharedSeriesId=null;
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
+ document.getElementById('meterProgressLabel').textContent='Connecting to meter...';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
+ const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ meterBuildPatchThumbs(sortedSteps,new Set(),null);
+ drawAllChartsPreset(sortedSteps);
+ meterClearLiveReading();
+ showColorReadingDetail(null,{pin:false});
  meterActionPending=true;
  meterUpdateReadButtons();
  const dtype=getEffectiveDisplayType();
@@ -12193,7 +12437,7 @@ async function meterRunSeries(){
  const requireDeviceReady=meterSelectedMeasurementRequiresReady();
  try{
   const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
   if(!r||r.status!=='started'){
    toast(r&&r.message?r.message:'Failed to start series',true);
    meterSeriesRunning=false;
@@ -12360,6 +12604,75 @@ function meterGreyscaleScrollSource(){
  return document.getElementById('meterThumbsRow');
 }
 
+function meterThumbsWrap(){
+ return document.getElementById('meterThumbsWrap');
+}
+
+function meterSetThumbsVisible(visible){
+ const wrap=meterThumbsWrap();
+ if(!wrap) return;
+ wrap.style.display=visible?'flex':'none';
+ meterUpdateThumbScrollButtons();
+}
+
+function meterThumbsPage(direction){
+ const row=meterGreyscaleScrollSource();
+ if(!row) return;
+ const max=meterGreyscaleScrollMax(row);
+ if(max<=0) return;
+ const current=row.scrollLeft||0;
+ const delta=Math.max(120,Math.round((row.clientWidth||0)*0.82))*(direction<0?-1:1);
+ const next=Math.max(0,Math.min(max,current+delta));
+ row.scrollLeft=next;
+ meterUpdateThumbScrollButtons();
+}
+
+function meterUpdateThumbScrollButtons(){
+ const wrap=meterThumbsWrap();
+ const row=meterGreyscaleScrollSource();
+ const left=document.getElementById('meterThumbsLeftBtn');
+ const right=document.getElementById('meterThumbsRightBtn');
+ if(!wrap||!row||!left||!right) return;
+ const wrapVisible=getComputedStyle(wrap).display!=='none';
+ const max=meterGreyscaleScrollMax(row);
+ const hasOverflow=wrapVisible&&max>4;
+ left.style.display=hasOverflow?'inline-flex':'none';
+ right.style.display=hasOverflow?'inline-flex':'none';
+ const pos=row.scrollLeft||0;
+ left.disabled=!hasOverflow||pos<=1;
+ right.disabled=!hasOverflow||pos>=max-1;
+}
+
+function meterSeriesThumbsUseScroll(stepCount){
+ const count=Math.max(0,Number(stepCount)||0);
+ const mobile=(window.matchMedia&&window.matchMedia('(max-width:800px)').matches) || window.innerWidth<=800;
+ if(meterActiveSeriesType==='colors' || meterActiveSeriesType==='saturations') return true;
+ if(count>64) return true;
+ return !!(mobile && count>11);
+}
+
+function meterSeriesThumbWidth(step){
+ const isColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ if(isColorSeries){
+  const name=String((step&&step.name)||'').trim();
+  if(name.length>12) return 60;
+  if(name.length>8) return 54;
+  return 46;
+ }
+ return 34;
+}
+
+function meterSeriesThumbContentWidth(sortedSteps,row){
+ const steps=Array.isArray(sortedSteps)?sortedSteps:[];
+ const viewport=Math.max(320,Math.round((row&&row.clientWidth)||0)||800);
+ let total=0;
+ steps.forEach((step,idx)=>{
+  total+=meterSeriesThumbWidth(step);
+  if(idx<steps.length-1) total+=2;
+ });
+ return Math.max(viewport,total);
+}
+
 function meterGreyscaleScrollTargets(){
  const ids=['meterRgbChartScroller','meterDeltaEScroller','meterGammaValueScroller'];
  return ids.map(id=>document.getElementById(id)).filter(Boolean);
@@ -12399,6 +12712,7 @@ function meterSetGreyscaleScrollRatio(el,ratio){
  if(!el) return;
  const max=meterGreyscaleScrollMax(el);
  el.scrollLeft=max>0 ? Math.max(0,Math.min(1,ratio))*max : 0;
+ if(el===meterGreyscaleScrollSource()) meterUpdateThumbScrollButtons();
 }
 
 function meterGreyscaleStepPercent(key){
@@ -12438,6 +12752,7 @@ function meterEnsureThumbVisible(container,key){
  if(meterUpdateGreyscaleLowEndPin(key,row,thumb)){
   meterGreyscaleScrollRatio=0;
   row.scrollLeft=0;
+  meterUpdateThumbScrollButtons();
   meterQueueGreyscaleTargetSync();
   return;
  }
@@ -12454,10 +12769,12 @@ function meterEnsureThumbVisible(container,key){
  if(Math.abs(nextLeft-rowLeft)<1){
   meterGreyscaleScrollRatio=nextRatio;
   meterQueueGreyscaleTargetSync();
+  meterUpdateThumbScrollButtons();
   return;
  }
  meterGreyscaleScrollRatio=nextRatio;
  row.scrollLeft=nextLeft;
+ meterUpdateThumbScrollButtons();
  meterQueueGreyscaleTargetSync();
 }
 
@@ -12507,6 +12824,7 @@ function meterBindGreyscaleScrollSync(){
   const nextRatio=meterGreyscaleScrollRatioFor(source);
   if(Math.abs(nextRatio-meterGreyscaleScrollRatio)<0.0005) return;
   meterGreyscaleScrollRatio=nextRatio;
+  meterUpdateThumbScrollButtons();
   meterQueueGreyscaleTargetSync();
  },{passive:true});
 }
@@ -12551,20 +12869,30 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
  meterGreyscaleScrollSyncing=true;
  meterGreyscaleScrollElements().forEach(el=>meterSetGreyscaleScrollRatio(el,meterGreyscaleScrollRatio));
  meterGreyscaleScrollSyncing=false;
+ meterUpdateThumbScrollButtons();
 }
 
 function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  const container=document.getElementById('meterPatchThumbs');
  if(!container) return;
- const scrollMode=sortedSteps.length>64;
+ const row=meterGreyscaleScrollSource();
+ const scrollMode=meterSeriesThumbsUseScroll(sortedSteps.length);
  container.style.flexWrap='nowrap';
- container.style.width=scrollMode?'max-content':'100%';
- container.style.minWidth='100%';
+ container.dataset.scrollMode=scrollMode?'1':'0';
+ if(scrollMode){
+  const contentWidth=meterSeriesThumbContentWidth(sortedSteps,row);
+  container.style.width=contentWidth+'px';
+  container.style.minWidth=contentWidth+'px';
+ } else {
+  container.style.width='100%';
+  container.style.minWidth='100%';
+ }
  const needsRebuild=(container.children.length!==sortedSteps.length)||sortedSteps.some((step,idx)=>{
   const child=container.children[idx];
   const isGrey=step.r===step.g&&step.g===step.b;
   const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
-  return !child||(child.dataset.key||'')!==meterStepNameKey(step)||(child.textContent||'')!==label;
+  const thumbWidth=scrollMode?String(meterSeriesThumbWidth(step)):'';
+  return !child||(child.dataset.key||'')!==meterStepNameKey(step)||(child.textContent||'')!==label||(child.dataset.thumbWidth||'')!==thumbWidth;
  });
  if(needsRebuild){
   container.innerHTML='';
@@ -12576,14 +12904,17 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
    const textColor=meterContrastTextColor(bgColor);
    const textShadow=textColor==='#eee'?'0 1px 2px rgba(0,0,0,.75)':'0 1px 1px rgba(255,255,255,.18)';
   const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
-  const flexStyle=scrollMode?'flex:0 0 34px;min-width:34px;':'flex:1 1 0;';
-  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 2px;text-shadow:'+textShadow;
+  const thumbWidth=scrollMode?meterSeriesThumbWidth(step):0;
+  const padX=isGrey?'2px':'1px';
+  const flexStyle=scrollMode?('flex:0 0 '+thumbWidth+'px;min-width:'+thumbWidth+'px;'):'flex:1 1 0;min-width:0;';
+  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
    thumb.textContent=label;
    thumb.dataset.ire=step.ire;
    thumb.dataset.r=step.r;
    thumb.dataset.g=step.g;
    thumb.dataset.b=step.b;
    thumb.dataset.name=step.name||'';
+  thumb.dataset.thumbWidth=scrollMode?String(thumbWidth):'';
   thumb.dataset.key=meterStepNameKey(step);
    thumb.addEventListener('click',function(){
     if(meterSeriesRunning) return;
@@ -12593,6 +12924,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   });
  }
  meterUpdateThumbStyles(container,completedIres,currentIre);
+ meterUpdateThumbScrollButtons();
  if(currentIre!=null) meterEnsureThumbVisible(container,currentIre);
 }
 function meterUpdateThumbStyles(container,completedIres,currentIre){
@@ -12697,10 +13029,83 @@ function meterRedrawLuminanceChart(){
   .sort((a,b)=>(a.ire||0)-(b.ire||0));
  if(gs.length>0) drawGammaChart(gs,allSteps,readingMap);
 }
+
+function meterResolveTwoPointSeriesState(steps,readings){
+ const stepList=(Array.isArray(steps)?steps:[]).filter(step=>step&&step.r===step.g&&step.g===step.b).sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const readingList=(Array.isArray(readings)?readings:[]).filter(rd=>rd&&meterReadingIsGreyscale(rd)).sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const findReading=(step)=>{
+  if(!step) return null;
+  return readingList.find(rd=>meterStepNameKey(rd)===meterStepNameKey(step)||meterGreyscaleReadingMatchesStep(rd,step))||null;
+ };
+ const lowStep=stepList[0]||null;
+ const highStep=stepList[stepList.length-1]||null;
+ return {
+  lowStep:lowStep,
+  highStep:highStep,
+  lowReading:findReading(lowStep),
+  highReading:findReading(highStep)
+ };
+}
+
+function meterTwoPointMetaHtml(role,step,reading){
+ const label=step?meterGreyscaleStepLabel(step):(role==='low'?'Low':'High');
+ if(!reading||!meterReadingHasLuminance(reading)) return label+' patch not read yet.';
+ const parts=['<strong>'+label+'</strong>'];
+ if(role==='high'){
+  const lum=meterReadingLuminanceNits(reading);
+  parts.push('Luminance: <strong>'+(lum!=null?lum.toFixed(2):'--')+'</strong> cd/m&sup2;');
+ }
+ if(reading.cct) parts.push('CCT: <strong>'+reading.cct+'K</strong>');
+ if(reading.x!=null&&reading.y!=null) parts.push('x / y: <strong>'+reading.x.toFixed(4)+'</strong> / <strong>'+reading.y.toFixed(4)+'</strong>');
+ return parts.join('<br>');
+}
+
+function drawTwoPointPreset(gsSteps){
+ meterUpdateGreyscaleChartMode();
+ const state=meterResolveTwoPointSeriesState(gsSteps,[]);
+ const lowLabel=document.getElementById('meterTwoPointLowLabel');
+ const highLabel=document.getElementById('meterTwoPointHighLabel');
+ const lowMeta=document.getElementById('meterTwoPointLowMeta');
+ const highMeta=document.getElementById('meterTwoPointHighMeta');
+ const highLum=document.getElementById('meterTwoPointHighLuminance');
+ if(lowLabel) lowLabel.textContent=state.lowStep?meterGreyscaleStepLabel(state.lowStep):'Low';
+ if(highLabel) highLabel.textContent=state.highStep?meterGreyscaleStepLabel(state.highStep):'High';
+ if(lowMeta) lowMeta.innerHTML=meterTwoPointMetaHtml('low',state.lowStep,null);
+ if(highMeta) highMeta.innerHTML=meterTwoPointMetaHtml('high',state.highStep,null);
+ if(highLum) highLum.textContent='--';
+ drawDeltaBarsVertical('meterTwoPointLowCanvas',null);
+ drawDeltaBarsVertical('meterTwoPointHighCanvas',null);
+}
+
+function drawTwoPointCharts(gs,allSteps){
+ meterUpdateGreyscaleChartMode();
+ const state=meterResolveTwoPointSeriesState(allSteps&&allSteps.length?allSteps:gs,gs);
+ const lowLabel=document.getElementById('meterTwoPointLowLabel');
+ const highLabel=document.getElementById('meterTwoPointHighLabel');
+ const lowMeta=document.getElementById('meterTwoPointLowMeta');
+ const highMeta=document.getElementById('meterTwoPointHighMeta');
+ const highLum=document.getElementById('meterTwoPointHighLuminance');
+ if(lowLabel) lowLabel.textContent=state.lowStep?meterGreyscaleStepLabel(state.lowStep):'Low';
+ if(highLabel) highLabel.textContent=state.highStep?meterGreyscaleStepLabel(state.highStep):'High';
+ drawDeltaBarsVertical('meterTwoPointLowCanvas',state.lowReading?meterRgbDeltasForLive(state.lowReading,meterLiveRgbData(state.lowReading)):null);
+ drawDeltaBarsVertical('meterTwoPointHighCanvas',state.highReading?meterRgbDeltasForLive(state.highReading,meterLiveRgbData(state.highReading)):null);
+ if(lowMeta) lowMeta.innerHTML=meterTwoPointMetaHtml('low',state.lowStep,state.lowReading);
+ if(highMeta) highMeta.innerHTML=meterTwoPointMetaHtml('high',state.highStep,state.highReading);
+ if(highLum){
+  const lum=state.highReading?meterReadingLuminanceNits(state.highReading):null;
+  highLum.textContent=lum!=null?lum.toFixed(2):'--';
+ }
+}
+
 function drawAllChartsPreset(sortedSteps){
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=sortedSteps.filter(s=>s.r===s.g&&s.g===s.b);
   if(gsSteps.length===0) return;
+  meterUpdateGreyscaleChartMode();
+  if(meterIsTwoPointGreyscale()){
+   drawTwoPointPreset(gsSteps);
+   return;
+  }
   meterUpdateGreyscaleChartScrollLayout(gsSteps.length);
   drawRGBChartPreset(gsSteps);
   drawDeltaEPreset(gsSteps);
@@ -13018,6 +13423,12 @@ function drawAllCharts(readings){
  readings.forEach(r=>{if(r.luminance!=null&&r.r_code===r.g_code&&r.g_code===r.b_code) readingMap[r.ire]=r;});
  const gs=readings.filter(r=>r.luminance!=null&&r.luminance>=0&&r.r_code===r.g_code&&r.g_code===r.b_code)
   .sort((a,b)=>(a.ire||0)-(b.ire||0));
+ meterUpdateGreyscaleChartMode();
+ if(meterIsTwoPointGreyscale()){
+  if(gs.length>0) drawTwoPointCharts(gs,allSteps);
+  else if(allSteps&&allSteps.length>0) drawTwoPointPreset(allSteps);
+  return;
+ }
  if(gs.length>0){
   meterUpdateGreyscaleChartScrollLayout((allSteps&&allSteps.length)||gs.length);
   drawRGBChart(gs,allSteps,readingMap);
@@ -14348,11 +14759,12 @@ function chartHandleClick(e,canvasId){
 
 function meterSeriesLabelFromKey(key){
  return {
-  'greyscale-100':'Greyscale 0-100%',
-  'greyscale-256':'Greyscale 0-100%',
+  'greyscale-2':'Greyscale 2pt',
+  'greyscale-100':'Greyscale 101pt',
+  'greyscale-256':'Greyscale 101pt',
   'greyscale-21':'Greyscale 21pt',
   'greyscale-11':'Greyscale 11pt',
-  'colors-30':'Colors',
+  'colors-30':'ColorChecker',
   'saturations-24':'Sat Sweep'
  }[key]||String(key||'Series');
 }
@@ -14370,10 +14782,11 @@ function meterGetSeriesSnapshotByKey(key){
 
 function meterAllSeriesReportOptions(){
  return [
-  {key:'greyscale-100',label:'Greyscale 0-100%'},
+  {key:'greyscale-2',label:'Greyscale 2pt'},
+  {key:'greyscale-100',label:'Greyscale 101pt'},
   {key:'greyscale-21',label:'Greyscale 21pt'},
   {key:'greyscale-11',label:'Greyscale 11pt'},
-  {key:'colors-30',label:'Colors'},
+  {key:'colors-30',label:'ColorChecker'},
   {key:'saturations-24',label:'Sat Sweep'}
  ].map(item=>{
   const snap=meterGetSeriesSnapshotByKey(item.key);
@@ -14719,8 +15132,16 @@ function meterResetLiveReadingDisplay(){
  document.getElementById('meterCIEy').textContent='--';
  drawRGBBars(null);
  drawDeltaBarsVertical('meterRGBCanvasGrey',null);
+ drawDeltaBarsVertical('meterTwoPointLowCanvas',null);
+ drawDeltaBarsVertical('meterTwoPointHighCanvas',null);
  drawDeltaBarsVertical('meterRGBCanvasColor',null);
  drawDeltaBarsVertical('meterXYYCanvasColor',null);
+ const highLum=document.getElementById('meterTwoPointHighLuminance');
+ const lowMeta=document.getElementById('meterTwoPointLowMeta');
+ const highMeta=document.getElementById('meterTwoPointHighMeta');
+ if(highLum) highLum.textContent='--';
+ if(lowMeta) lowMeta.textContent='No low-point reading yet.';
+ if(highMeta) highMeta.textContent='No high-point reading yet.';
 }
 
 function meterPreserveOtherSeriesCacheOnClear(clearedKey){
@@ -14778,7 +15199,7 @@ function meterApplyClearedState(showToastMsg){
   const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
   const sortedSteps=isColor?[...meterSeriesSteps]:[...meterSeriesSteps].sort((a,b)=>(a.ire||0)-(b.ire||0));
   document.getElementById('meterCharts').style.display='';
-  document.getElementById('meterThumbsRow').style.display='';
+  meterSetThumbsVisible(true);
   document.getElementById('meterReadSeriesBtn').style.display='';
   meterBuildPatchThumbs(sortedSteps,new Set(),null);
   drawAllChartsPreset(sortedSteps);
@@ -14794,10 +15215,12 @@ function meterApplyClearedState(showToastMsg){
   meterActiveSeriesPoints=null;
   meterActiveSeriesSignalMode=null;
   document.getElementById('meterPatchThumbs').innerHTML='';
-  document.getElementById('meterThumbsRow').style.display='none';
+  meterSetThumbsVisible(false);
   document.getElementById('meterReadSeriesBtn').style.display='none';
   document.getElementById('meterCharts').style.display='none';
  }
+ if(meterActiveSeriesType) meterSetSeriesTab(meterSeriesTabForType(meterActiveSeriesType));
+ else meterUpdateSeriesTabUi();
  meterUpdateReadButtons();
  if(showToastMsg) toast('Chart data cleared');
 }
@@ -15597,6 +16020,8 @@ function saveMeterSettings(){
   target_gamut:val('meterTargetGamut','auto')||'auto',
   delay:String(meterDelayMs()),
   patch_size:val('meterPatchSize'),
+  grey_two_point_low:val('meterTwoPointLow',String(METER_TWO_POINT_DEFAULTS.low)),
+  grey_two_point_high:val('meterTwoPointHigh',String(METER_TWO_POINT_DEFAULTS.high)),
   patch_insert:chk('meterPatchInsert'),
   refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
@@ -15677,6 +16102,9 @@ async function loadMeterSettings(){
  updateMeterTargetWhitepointVisibility();
  meterDelayLoadValue(s.delay);
  if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
+ setVal('meterTwoPointLow', s.grey_two_point_low, String(METER_TWO_POINT_DEFAULTS.low));
+ setVal('meterTwoPointHigh', s.grey_two_point_high, String(METER_TWO_POINT_DEFAULTS.high));
+ meterSyncTwoPointInputs();
  if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
  if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
  // Color-science selections (server values win)
@@ -15713,6 +16141,7 @@ async function loadMeterSettings(){
   if(live) updateLiveReading(live);
  }
  meterSettingsLoaded=true;
+ meterSetSeriesTab(meterSeriesTab);
 }
 // Add change listeners for auto-save
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate',
@@ -15721,6 +16150,10 @@ async function loadMeterSettings(){
  'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33','meterSimulateSpectro'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
+});
+['meterTwoPointLow','meterTwoPointHigh'].forEach(id=>{
+ const el=document.getElementById(id);
+ if(el) el.addEventListener('change',meterHandleTwoPointLevelChange);
 });
 const meterCcssCreateDisplayTypeEl=document.getElementById('meterCcssCreateDisplayType');
 if(meterCcssCreateDisplayTypeEl) meterCcssCreateDisplayTypeEl.addEventListener('change',()=>{
@@ -15778,6 +16211,7 @@ function meterRefreshActiveSeriesCharts(){
  } else {
   drawAllChartsPreset(sortedSteps);
  }
+ meterUpdateSeriesTabUi();
 }
 
 let meterGreyscaleResizeTimer=null;
