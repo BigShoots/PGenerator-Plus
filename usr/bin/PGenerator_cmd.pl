@@ -177,6 +177,28 @@ sub wifi_set_country (@) {
 ###############################################
 #          Wifi AP Password function          #
 ###############################################
+sub normalize_hostapd_ap_security (@) {
+ my ($content)=@_;
+ $content="" if(!defined $content);
+ my %wanted=(
+  auth_algs=>"1",
+  wpa=>"2",
+  wpa_key_mgmt=>"WPA-PSK",
+  wpa_pairwise=>"CCMP",
+  rsn_pairwise=>"CCMP",
+  ignore_broadcast_ssid=>"0"
+ );
+ foreach my $key (qw(auth_algs wpa wpa_key_mgmt wpa_pairwise rsn_pairwise ignore_broadcast_ssid)) {
+  if($content=~/^$key=/m) {
+   $content=~s/^$key=.*/$key=$wanted{$key}/m;
+  } else {
+   $content.="\n" if($content ne "" && $content!~/\n$/);
+   $content.="$key=$wanted{$key}\n";
+  }
+ }
+ return $content;
+}
+
 sub wifi_ap_apply_conf (@) {
  my $response = "";
  $ssid=$ARGV[1];
@@ -184,6 +206,7 @@ sub wifi_ap_apply_conf (@) {
  my $content=&read_from_file($hostapd_conf);
  $content=~s/ssid=.*/ssid=$ssid/;
  $content=~s/wpa_passphrase=.*/wpa_passphrase=$password/;
+ $content=&normalize_hostapd_ap_security($content);
  &write_file("$hostapd_conf.tmp",$hostapd_conf,$content);
  system("$hostapd_init restart");
 }
@@ -254,6 +277,7 @@ sub apply_bootloader () {
 #               Reboot function               #
 ###############################################
 sub reboot(@) {
+ &persist_meter_settings_legacy();
  &process_pid("$pattern_generator.pl","kill");
  system("$reboot");
 }
@@ -262,7 +286,27 @@ sub reboot(@) {
 #                Halt function                #
 ###############################################
 sub halt(@) {
+ &persist_meter_settings_legacy();
  system("$halt");
+}
+
+sub persist_meter_settings_legacy(@) {
+ my $src="/var/lib/PGenerator/meter_settings.json";
+ my $dst="/usr/share/PGenerator/meter_settings.json";
+ return if(!-f $src);
+ my $json=&read_from_file($src);
+ return if($json eq "" || $json!~/^\{/);
+ my $tmp="$dst.tmp";
+ if(open(my $fh,">",$tmp)) {
+  print $fh $json;
+  close($fh);
+  chmod 0644, $tmp;
+  if(rename($tmp,$dst)) {
+   system("timeout 3 $sync >/dev/null 2>&1");
+   return;
+  }
+  unlink($tmp) if(-f $tmp);
+ }
 }
 
 ###############################################
@@ -595,6 +639,25 @@ sub bash_cmd(@) {
   my $out=`/usr/sbin/pgenerator-update apply 2>/dev/null`;
   chomp($out);
   print $out;
+ }
+ if($cmd eq "SAVE_METER_SETTINGS") {
+  my $path="/usr/share/PGenerator/meter_settings.json";
+  my $tmp="$path.tmp";
+  if(open(my $fh,">",$tmp)) {
+   print $fh $argument;
+   close($fh);
+   chmod 0644, $tmp;
+   if(rename($tmp,$path)) {
+    system("timeout 3 $sync >/dev/null 2>&1");
+    print "OK";
+   } else {
+    unlink($tmp) if(-f $tmp);
+    print "ERR";
+   }
+  } else {
+   unlink($tmp) if(-f $tmp);
+   print "ERR";
+  }
  }
  system("$passwd $argument 1>/dev/stderr")                             if($cmd eq "CHANGE_PASSWORD");
  system("$perl -p -i -e \"s/$distro_name.*/$argument/\" $distro_conf") if($cmd eq "PKG_SUBSCRIBE");

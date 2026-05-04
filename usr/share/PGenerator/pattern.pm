@@ -257,6 +257,7 @@ sub save_images_pattern (@) {
 sub load_new_pattern_file (@) {
  my $requested_by = shift;
  &video_program_stop("$program_video_to_kill");
+ &pattern_generator_start(1) if(!&pattern_generator_is_running());
  &create_return_file() if($requested_by ne $last_pattern_requested_by || $requested_by eq "");
  $last_pattern_requested_by=$requested_by;
 }
