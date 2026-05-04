@@ -101,14 +101,23 @@ sub play_video(@) {
  my $program = shift;
  my $video = shift;
  my ($duration,$repeat) = split("-",shift);
+ my $play_as_root=($program =~ /(^|\/)omxplayer(\.bin)?$/) ? 1 : 0;
+ my $response="OK";
  $repeat=0 if($repeat != 1);
  &pattern_generator_stop();
  #system("$timeout --foreground -k $duration $duration $program '$video_dir/$video' &>/dev/null");
  &create_pattern_file("$draw_default","$w_s,$h_s",$res_default,"$rgb_default","$bg_default","$position_default","","","","play_video");
  $program_video_to_kill=$program;
- #system("$timeout --foreground -k $duration $duration $program '$video_dir/$video' &>/dev/null &");
- # timeout exit with 124 and kill process exit withn 143
- system("while [ true ]; do $timeout --foreground -k $duration $duration $program '$video_dir/$video' &>/dev/null;if [ \$? == 143 ] || [ $repeat == 0 ];then exit 0;fi; done &");
+ if($play_as_root) {
+  $response=&sudo("PLAY_VIDEO","$program","$video","$duration","$repeat");
+  chomp($response);
+  $response=~s/^ERR://;
+  $response="Video playback failed to start" if($response eq "");
+ } else {
+  # timeout exit with 124 and kill process exit with 143
+  system("while [ true ]; do $timeout --foreground -k $duration $duration $program '$video_dir/$video' &>/dev/null;if [ \$? == 143 ] || [ $repeat == 0 ];then exit 0;fi; done &");
+ }
+ return $response;
  #&pattern_generator_start();
 }
 
@@ -256,6 +265,11 @@ sub save_images_pattern (@) {
 ###############################################
 sub load_new_pattern_file (@) {
  my $requested_by = shift;
+ if($requested_by eq "play_video") {
+  &create_return_file() if($requested_by ne $last_pattern_requested_by || $requested_by eq "");
+  $last_pattern_requested_by=$requested_by;
+  return;
+ }
  &video_program_stop("$program_video_to_kill");
  &pattern_generator_start(1) if(!&pattern_generator_is_running());
  &create_return_file() if($requested_by ne $last_pattern_requested_by || $requested_by eq "");
