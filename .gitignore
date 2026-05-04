@@ -10,6 +10,7 @@ docs/
 tools/dv_helper
 tools/read_csc
 usr/lib/scdc_tool
+build/vc4-kernel-build-env/
 build/ota-sim-*/
 build/usb-golden-fix-*/
 build/release-staging/*.remote

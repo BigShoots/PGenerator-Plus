@@ -119,6 +119,7 @@ sub set_conf_pattern (@) {
  my $pattern_dir=$pattern_templates;
  $pattern_dir="$var_dir/running/tmp" if($type eq "TEMPLATERAMDISK");
  my $str = '';
+ $val=~s/\r\n?/\n/g if(defined($val));
  if($type eq "TESTCMD") {
   copy("$pattern_dir/$pattern","$command_file");
   return;
