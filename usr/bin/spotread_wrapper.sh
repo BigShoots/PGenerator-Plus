@@ -13,6 +13,7 @@ set -o pipefail
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
 API_BASE="http://127.0.0.1/api"
+METER_TYPE_OVERRIDE_FILE="/tmp/pg_meter_type_override"
 
 json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -29,6 +30,41 @@ declare -A KNOWN_METERS=(
  ["04db:0100"]="ColorVision Spyder"
  ["0670:0001"]="Sequel Chroma 5"
 )
+
+declare -A KNOWN_METER_TYPES=(
+ ["0765:5020"]="colorimeter"
+ ["0765:5001"]="spectro"
+ ["0971:2000"]="spectro"
+ ["0971:2007"]="colorimeter"
+ ["085c:0500"]="colorimeter"
+ ["085c:0a00"]="colorimeter"
+ ["04db:0100"]="colorimeter"
+ ["0670:0001"]="colorimeter"
+)
+
+meter_type_from_name() {
+ local name
+ name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+ if [[ "$name" =~ (^|[^[:alnum:]])(jeti|specbos|spectro|spectroradi|i1[[:space:]]*pro|i1pro|cs-1000|cs-150|cs-2000|cr-2[0-9]{2}|cr-3[0-9]{2}|fd-5|fd-7|myiro)([^[:alnum:]]|$) ]]; then
+  echo "spectro"
+ elif [[ "$name" =~ (spyder|display[[:space:]]*pro|i1display|i1[[:space:]]*display|colormunki[[:space:]]*display|klein|sequel[[:space:]]*chroma) ]]; then
+  echo "colorimeter"
+ else
+  echo "unknown"
+ fi
+}
+
+meter_type_override() {
+ local override=""
+ [[ -r "$METER_TYPE_OVERRIDE_FILE" ]] || return 0
+ override=$(tr -d '[:space:]' < "$METER_TYPE_OVERRIDE_FILE" 2>/dev/null)
+ override=$(printf '%s' "$override" | tr '[:upper:]' '[:lower:]')
+ case "$override" in
+  spectro|colorimeter|unknown)
+   printf '%s' "$override"
+   ;;
+ esac
+}
 
 ensure_runtime_exec() {
  local f
@@ -74,6 +110,7 @@ lsusb_line_for_path() {
 
 spotread_usb_ports() {
  local help_out="$1"
+ local forced_meter_type="$2"
  while IFS= read -r line; do
   if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]*=[[:space:]]*\'(/dev/bus/usb/[0-9]+/[0-9]+)([^\']*)\' ]]; then
    local port_num="${BASH_REMATCH[1]}"
@@ -82,7 +119,7 @@ spotread_usb_ports() {
    raw_desc="${raw_desc# }"
    raw_desc="${raw_desc#(}"
    raw_desc="${raw_desc%)}"
-   local lsusb_line usb_id name
+  local lsusb_line usb_id name meter_type
    lsusb_line=$(lsusb_line_for_path "$device_path")
    usb_id=$(printf '%s\n' "$lsusb_line" | grep -oP 'ID\s+\K[0-9a-f]{4}:[0-9a-f]{4}' | head -1)
    name="${KNOWN_METERS[$usb_id]}"
@@ -93,7 +130,14 @@ spotread_usb_ports() {
     name=$(printf '%s\n' "$lsusb_line" | sed -E 's/^Bus[[:space:]]+[0-9]+[[:space:]]+Device[[:space:]]+[0-9]+:[[:space:]]+ID[[:space:]]+[0-9a-f]{4}:[0-9a-f]{4}[[:space:]]*//')
    fi
    [[ -z "$name" ]] && name="USB Meter"
-   printf '%s|%s|%s|%s\n' "$port_num" "$device_path" "$usb_id" "$name"
+  meter_type="${KNOWN_METER_TYPES[$usb_id]}"
+  if [[ -z "$meter_type" ]]; then
+   meter_type=$(meter_type_from_name "$name")
+  fi
+  if [[ -n "$forced_meter_type" ]]; then
+   meter_type="$forced_meter_type"
+  fi
+  printf '%s|%s|%s|%s|%s\n' "$port_num" "$device_path" "$usb_id" "$name" "$meter_type"
   fi
  done <<< "$help_out"
 }
@@ -116,10 +160,12 @@ detect_meter() {
  [[ -x "$SPOTREAD_BIN" ]] && sr_avail=true
  local help_out=""
  local -a meters=()
+ local forced_meter_type=""
  LSUSB_CACHE=$(lsusb 2>/dev/null || true)
+ forced_meter_type=$(meter_type_override)
  if $sr_avail; then
   help_out=$(spotread_help_output)
-  mapfile -t meters < <(spotread_usb_ports "$help_out")
+  mapfile -t meters < <(spotread_usb_ports "$help_out" "$forced_meter_type")
  fi
 
  if (( ${#meters[@]} > 0 )); then
@@ -128,14 +174,16 @@ detect_meter() {
   local first_usb_id=""
   local first_port=""
   local first_port_num=""
+  local first_meter_type="unknown"
   local entry
   for entry in "${meters[@]}"; do
-   local port_num device_path usb_id name comma
-   IFS='|' read -r port_num device_path usb_id name <<< "$entry"
+   local port_num device_path usb_id name meter_type comma
+   IFS='|' read -r port_num device_path usb_id name meter_type <<< "$entry"
    [[ -z "$first_name" ]] && first_name="$name"
    [[ -z "$first_usb_id" ]] && first_usb_id="$usb_id"
    [[ -z "$first_port" ]] && first_port="$device_path"
    [[ -z "$first_port_num" ]] && first_port_num="$port_num"
+   [[ "$first_meter_type" == "unknown" && -n "$meter_type" ]] && first_meter_type="$meter_type"
    [[ -n "$meters_json" ]] && comma="," || comma=""
    meters_json+="${comma}{\"port_num\":\"$(json_escape "$port_num")\",\"port\":\"$(json_escape "$device_path")\",\"usb_id\":"
    if [[ -n "$usb_id" ]]; then
@@ -143,13 +191,14 @@ detect_meter() {
    else
     meters_json+="null"
    fi
-   meters_json+=",\"name\":\"$(json_escape "$name")\"}"
+   meters_json+=",\"name\":\"$(json_escape "$name")\",\"meter_type\":\"$(json_escape "$meter_type")\"}"
   done
-  printf '{"detected":true,"name":"%s","usb_id":%s,"port":"%s","port_num":"%s","meters":[%s],"spotread_available":%s}\n' \
+  printf '{"detected":true,"name":"%s","usb_id":%s,"port":"%s","port_num":"%s","meter_type":"%s","meters":[%s],"spotread_available":%s}\n' \
    "$(json_escape "$first_name")" \
    "$(if [[ -n "$first_usb_id" ]]; then printf '"%s"' "$(json_escape "$first_usb_id")"; else printf 'null'; fi)" \
    "$(json_escape "$first_port")" \
    "$(json_escape "$first_port_num")" \
+   "$(json_escape "$first_meter_type")" \
    "$meters_json" "$sr_avail"
  else
   printf '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":%s}\n' \

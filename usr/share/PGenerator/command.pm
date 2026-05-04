@@ -53,6 +53,7 @@ sub webui_preferred_rgb_quant_range (@) {
 sub apply_source_rgb_quant_range (@) {
  my $source=lc(shift || "webui");
  my $quant_range=shift;
+ my $owner_changed=0;
  if($source eq "webui") {
   $quant_range=&webui_preferred_rgb_quant_range() if($quant_range !~/^[12]$/);
   $webui_rgb_quant_range_preferred=$quant_range;
@@ -63,6 +64,13 @@ sub apply_source_rgb_quant_range (@) {
   $external_rgb_quant_range_active=1;
  }
  return 0 if(($pgenerator_conf{"rgb_quant_range"}||"") eq "$quant_range" && $rgb_quant_range_source eq $source);
+ if(($pgenerator_conf{"rgb_quant_range"}||"") eq "$quant_range") {
+  $owner_changed=($rgb_quant_range_source ne $source);
+  $rgb_quant_range_source=$source;
+  &log("Signal range owner: source=$source rgb_quant_range=$quant_range (no restart)");
+  &apply_drm_properties() if($owner_changed);
+  return 1;
+ }
  &sudo("SET_PGENERATOR_CONF","rgb_quant_range","$quant_range");
  $pgenerator_conf{"rgb_quant_range"}="$quant_range";
  $rgb_quant_range_source=$source;
@@ -150,7 +158,6 @@ sub apply_drm_properties (@) {
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
- $quant_range=2 if($is_dv);
  if($quant_range ne "") {
   system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
@@ -233,6 +240,20 @@ sub pattern_generator_start(@) {
   system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
  }
  usleep(250000);
+   # Some displays miss the first pre-launch RGB/colorspace programming and stay
+   # on the splash screen until a later format toggle forces HDMI state back in.
+   # Reapply connector properties once the renderer is alive so the first pattern
+   # push lands on the intended format without requiring a manual YCbCr detour.
+   &apply_drm_properties();
+ my $startup_color_fmt=$pgenerator_conf{"color_format"};
+ $startup_color_fmt=0 if($startup_color_fmt eq "");
+ if($is_kms && ($pgenerator_conf{"dv_status"}||"0") ne "1" && $startup_color_fmt == 0) {
+  # Some monitor-class RGB sinks take longer than TVs to latch the connector
+  # state after the renderer grabs DRM master. Retry once more after the link
+  # has been stable a bit longer so a manual YCbCr toggle is not needed.
+  usleep(1000000);
+  &apply_drm_properties();
+ }
  &apply_hdr_metadata_helper();
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
@@ -267,8 +288,14 @@ sub video_program_stop {
  my $program = shift;
  if($program ne "") {
   &process_pid("$program","kill");
-  &pattern_generator_start(1) if((&process_pid("$pattern_generator","get")) eq "");
+  &pattern_generator_start(1) if(!&pattern_generator_is_running());
  }
+}
+
+sub pattern_generator_is_running () {
+ return 1 if((&process_pid("$pattern_generator","get")) ne "");
+ return 1 if(-x "${pattern_generator}.dv" && (&process_pid("${pattern_generator}.dv","get")) ne "");
+ return 0;
 }
 
 ###############################################
@@ -308,7 +335,6 @@ sub clean_files(@) {
  &remove_files("$var_dir",".*");
  &remove_files("$var_dir/frames/",".*");
  &remove_files("$var_dir/running/",".*");
- &remove_files("$var_dir/running/tmp/",".*");
  opendir(TMP,"$var_dir/tmp");
  @dir=readdir(TMP);
  closedir(TMP);
