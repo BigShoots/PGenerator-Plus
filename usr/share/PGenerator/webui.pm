@@ -879,6 +879,26 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+    elsif($path eq "/api/diagnostic/videos") {
+     my $result=&webui_diag_asset_list("video");
+     my $len=length($result);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+    }
+    elsif($path eq "/api/diagnostic/images") {
+     my $result=&webui_diag_asset_list("image");
+     my $len=length($result);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+    }
+    elsif($path eq "/api/diagnostic/upload" && $method eq "POST") {
+     my $result=&webui_diag_asset_upload($body);
+     my $len=length($result);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+    }
+    elsif($path eq "/api/diagnostic/video-sequence" && $method eq "POST") {
+     my $result=&webui_diag_video_sequence_upload($body);
+     my $len=length($result);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+    }
   elsif($path eq "/api/ccss/create/start" && $method eq "POST") {
    my $result=&webui_ccss_create_start($body);
    my $len=length($result);
@@ -2299,6 +2319,239 @@ sub _webui_json_escape (@) {
  $s=~s/\n/\\n/g;
  $s=~s/\t/\\t/g;
  return $s;
+}
+
+my $_diag_video_sequence_root="$video_dir/.diagseq";
+my $_DIAG_VIDEO_SEQUENCE_MAX_FRAMES=24;
+
+sub _webui_diag_asset_sequence_key (@) {
+ my $name=lc("".shift);
+ $name=~s/[^a-z0-9_]+/_/g;
+ $name=~s/_+/_/g;
+ $name=~s/^_+//;
+ $name=~s/_+$//;
+ return $name eq "" ? "asset" : $name;
+}
+
+sub _webui_diag_asset_video_sequence_dir (@) {
+ my $fname=shift;
+ my $safe_name=&_webui_diag_asset_safe_filename($fname,"video");
+ return "" if($safe_name eq "");
+ return "$_diag_video_sequence_root/".&_webui_diag_asset_sequence_key($safe_name);
+}
+
+sub _webui_diag_asset_sequence_frame_count (@) {
+ my $dir="".shift;
+ my $count=0;
+ return 0 if($dir eq "" || !-d $dir);
+ if(opendir(my $dh,$dir)) {
+  while(my $f=readdir($dh)) {
+   next if($f !~ /\.(?:png|jpe?g|ppm)$/i);
+   next if(!-f "$dir/$f");
+   $count++;
+  }
+  closedir($dh);
+ }
+ return $count;
+}
+
+sub _webui_diag_asset_reset_dir (@) {
+ my $dir="".shift;
+ return 0 if($dir eq "" || $dir !~ /^\Q$_diag_video_sequence_root\E(?:\/|$)/);
+ system("/bin/rm","-rf",$dir);
+ return !-e $dir ? 1 : 0;
+}
+
+sub _webui_diag_asset_write_base64_file (@) {
+ my ($path,$content_b64)=@_;
+ return 0 if(!defined($path) || $path eq "" || !defined($content_b64) || $content_b64 eq "");
+ my $raw=decode_base64($content_b64);
+ return 0 if(length($raw) <= 0 || length($raw) > 8*1024*1024);
+ my $dir=$path;
+ $dir=~s{/[^/]+$}{};
+ if($dir ne "" && !-d $dir) {
+  system("/bin/mkdir","-p",$dir);
+ }
+ return 0 if($dir ne "" && !-d $dir);
+ my $tmp="$path.tmp";
+ if(open(my $fh,">",$tmp)) {
+  binmode($fh);
+  print $fh $raw;
+  close($fh);
+  return 1 if(rename($tmp,$path));
+  unlink($tmp) if(-f $tmp);
+ }
+ return 0;
+}
+
+sub _webui_diag_asset_kind_info (@) {
+ my $kind=lc(shift || "");
+ return ("video",$video_dir,"custom_video",512*1024*1024) if($kind eq "video");
+ return ("image",$pattern_images,"custom_image",64*1024*1024) if($kind eq "image");
+ return ("","","",0);
+}
+
+sub _webui_diag_asset_extension_allowed (@) {
+ my ($kind,$ext)=@_;
+ $kind=lc($kind || "");
+ $ext=lc($ext || "");
+ return ($ext =~ /^\.(?:mp4|m4v|mov|webm|mkv|avi)$/) ? 1 : 0 if($kind eq "video");
+ return ($ext =~ /^\.(?:png|jpe?g|bmp|ppm|gif)$/) ? 1 : 0 if($kind eq "image");
+ return 0;
+}
+
+sub _webui_diag_asset_safe_filename (@) {
+ my ($name,$kind)=@_;
+ my ($resolved_kind,undef,$default_base)=&_webui_diag_asset_kind_info($kind);
+ return "" if($resolved_kind eq "");
+ $name="" if(!defined $name);
+ $name=~s{\\}{/}g;
+ $name=~s{^.*/}{};
+ my $ext="";
+ $ext=lc($1) if($name =~ /(\.[^.]{1,10})$/);
+ $ext="" if(!_webui_diag_asset_extension_allowed($resolved_kind,$ext));
+ $ext=".mp4" if($ext eq "" && $resolved_kind eq "video");
+ $ext=".png" if($ext eq "" && $resolved_kind eq "image");
+ my $base=$name;
+ $base=~s/\.[^.]+$//;
+ $base=~s/[^a-zA-Z0-9._\- ]//g;
+ $base=~s/\s+/_/g;
+ $base=~s/_+/_/g;
+ $base=substr($base,0,80) if(length($base) > 80);
+ $base=$default_base if($base eq "");
+ return $base.$ext;
+}
+
+sub _webui_diag_asset_resolve_path (@) {
+ my ($kind,$fname)=@_;
+ my ($resolved_kind,$dir)=&_webui_diag_asset_kind_info($kind);
+ return ("","") if($resolved_kind eq "" || $dir eq "");
+ my $safe_name=&_webui_diag_asset_safe_filename($fname,$resolved_kind);
+ return ("","") if($safe_name eq "");
+ my $path="$dir/$safe_name";
+ return ("","") if(!-f $path);
+ return ($safe_name,$path);
+}
+
+sub webui_diag_asset_list (@) {
+ my ($kind)=@_;
+ my ($resolved_kind,$dir)=&_webui_diag_asset_kind_info($kind);
+ return '{"files":[]}' if($resolved_kind eq "" || $dir eq "" || !-d $dir);
+ my @out;
+ if(opendir(my $dh,$dir)) {
+  while(my $f=readdir($dh)) {
+   next if($f =~ /^\./);
+   next if(!-f "$dir/$f");
+   next if(!_webui_diag_asset_extension_allowed($resolved_kind,($f =~ /(\.[^.]+)$/ ? $1 : "")));
+   push @out, '"'.&_webui_json_escape($f).'"';
+  }
+  closedir($dh);
+ }
+ @out=sort { lc($a) cmp lc($b) } @out;
+ return '{"files":['.join(',',@out).']}';
+}
+
+sub webui_diag_asset_upload (@) {
+ my ($body)=@_;
+ my $kind="";
+ $kind=lc($1) if($body =~ /"kind"\s*:\s*"(video|image)"/i);
+ my ($resolved_kind,$dir,undef,$max_size)=&_webui_diag_asset_kind_info($kind);
+ return '{"status":"error","message":"Invalid asset type"}' if($resolved_kind eq "" || $dir eq "");
+
+ my $upload_id="";
+ $upload_id=$1 if($body =~ /"upload_id"\s*:\s*"([A-Za-z0-9_-]{1,80})"/);
+ my $orig_filename="";
+ $orig_filename=$1 if($body =~ /"filename"\s*:\s*"([^"]{1,240})"/);
+ my $content_b64="";
+ $content_b64=$1 if($body =~ /"content"\s*:\s*"([^"]+)"/);
+ my $offset=-1;
+ $offset=$1 if($body =~ /"offset"\s*:\s*(\d+)/);
+ my $total_size=0;
+ $total_size=$1 if($body =~ /"total_size"\s*:\s*(\d+)/);
+ my $is_final=0;
+ $is_final=1 if($body =~ /"is_final"\s*:\s*true/i);
+
+ return '{"status":"error","message":"Upload metadata required"}' if($upload_id eq "" || $orig_filename eq "" || $content_b64 eq "" || $offset < 0 || $total_size <= 0);
+ return '{"status":"error","message":"File exceeds size limit"}' if($total_size > $max_size);
+
+ my $safe_name=&_webui_diag_asset_safe_filename($orig_filename,$resolved_kind);
+ return '{"status":"error","message":"Unsupported file type"}' if($safe_name eq "");
+
+ if(!-d $dir) {
+  system("mkdir -p '$dir' >/dev/null 2>&1");
+ }
+ return '{"status":"error","message":"Diagnostic storage unavailable"}' if(!-d $dir);
+ my $tmp_path="$dir/.WEBUI_DIAG_".$resolved_kind."_".$upload_id.".part";
+ unlink($tmp_path) if($offset == 0 && -f $tmp_path);
+ my $current_size=(-f $tmp_path) ? (-s $tmp_path) : 0;
+ return '{"status":"error","message":"Upload offset mismatch"}' if($current_size != $offset);
+ $content_b64 =~ s/.*;base64,//;
+ &upload_file($safe_name,$tmp_path,$content_b64);
+ my $written=(-f $tmp_path) ? (-s $tmp_path) : 0;
+ return '{"status":"error","message":"Upload failed"}' if($written <= 0);
+ return '{"status":"error","message":"Uploaded data exceeds size limit"}' if($written > $max_size);
+
+ if(!$is_final) {
+  return '{"status":"ok","received":'.$written.',"filename":"'.&_webui_json_escape($safe_name).'"}';
+ }
+
+ return '{"status":"error","message":"Upload incomplete"}' if($written != $total_size);
+ my $dest_path="$dir/$safe_name";
+ unlink($dest_path) if(-f $dest_path);
+ if(!rename($tmp_path,$dest_path)) {
+  unlink($tmp_path);
+  return '{"status":"error","message":"Failed to save upload"}';
+ }
+ if($resolved_kind eq "video") {
+  my $seq_dir=&_webui_diag_asset_video_sequence_dir($safe_name);
+  &_webui_diag_asset_reset_dir($seq_dir) if($seq_dir ne "");
+ }
+ &log("WebUI: custom diagnostic $resolved_kind uploaded: $safe_name");
+ return '{"status":"ok","filename":"'.&_webui_json_escape($safe_name).'","message":"Uploaded '.($resolved_kind eq "video" ? 'diagnostic video' : 'diagnostic image').'"}';
+}
+
+sub webui_diag_video_sequence_upload (@) {
+ my ($body)=@_;
+ my $upload_id="";
+ $upload_id=$1 if($body =~ /"upload_id"\s*:\s*"([A-Za-z0-9_-]{1,80})"/);
+ my $video_filename="";
+ $video_filename=$1 if($body =~ /"video_filename"\s*:\s*"([^"]{1,240})"/);
+ my $content_b64="";
+ $content_b64=$1 if($body =~ /"content"\s*:\s*"([^"]+)"/);
+ my $frame_index=-1;
+ $frame_index=$1 if($body =~ /"frame_index"\s*:\s*(\d+)/);
+ my $frame_total=0;
+ $frame_total=$1 if($body =~ /"frame_total"\s*:\s*(\d+)/);
+ return '{"status":"error","message":"Sequence upload metadata required"}' if($upload_id eq "" || $video_filename eq "" || $content_b64 eq "" || $frame_index < 0 || $frame_total <= 0);
+ return '{"status":"error","message":"Too many sequence frames"}' if($frame_total > $_DIAG_VIDEO_SEQUENCE_MAX_FRAMES);
+ return '{"status":"error","message":"Sequence frame index out of range"}' if($frame_index >= $frame_total);
+ my ($safe_name,undef)=&_webui_diag_asset_resolve_path("video",$video_filename);
+ return '{"status":"error","message":"Diagnostic video not found"}' if($safe_name eq "");
+ my $seq_dir=&_webui_diag_asset_video_sequence_dir($safe_name);
+ return '{"status":"error","message":"Sequence storage unavailable"}' if($seq_dir eq "");
+ my $tmp_dir=$seq_dir.".upload_".$upload_id;
+ if($frame_index == 0) {
+  &_webui_diag_asset_reset_dir($tmp_dir);
+ }
+ system("/bin/mkdir","-p",$_diag_video_sequence_root);
+ system("/bin/mkdir","-p",$tmp_dir);
+ return '{"status":"error","message":"Sequence storage unavailable"}' if(!-d $tmp_dir);
+ my $existing=&_webui_diag_asset_sequence_frame_count($tmp_dir);
+ return '{"status":"error","message":"Sequence frame order mismatch"}' if($existing != $frame_index);
+ my $frame_name=sprintf("f%03d.png",$frame_index+1);
+ return '{"status":"error","message":"Failed to store sequence frame"}' if(!&_webui_diag_asset_write_base64_file("$tmp_dir/$frame_name",$content_b64));
+ my $received=$frame_index+1;
+ if($received < $frame_total) {
+  return '{"status":"ok","received":'.$received.',"frame_total":'.$frame_total.',"filename":"'.&_webui_json_escape($safe_name).'"}';
+ }
+ return '{"status":"error","message":"Sequence upload incomplete"}' if(&_webui_diag_asset_sequence_frame_count($tmp_dir) != $frame_total);
+ &_webui_diag_asset_reset_dir($seq_dir);
+ if(!rename($tmp_dir,$seq_dir)) {
+  &_webui_diag_asset_reset_dir($tmp_dir);
+  return '{"status":"error","message":"Failed to finalize video sequence"}';
+ }
+ &log("WebUI: diagnostic video sequence uploaded: $safe_name ($frame_total frames)");
+ return '{"status":"ok","filename":"'.&_webui_json_escape($safe_name).'","frame_total":'.$frame_total.',"message":"Prepared diagnostic video renderer sequence"}';
 }
 
 sub _webui_ccss_meta (@) {
@@ -4657,6 +4910,52 @@ sub webui_pattern_render_white_clipping (@) {
  return &webui_pattern_image_save($image,$file);
 }
 
+sub webui_pattern_render_apl_clipping (@) {
+ my $file=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $signal_mode=shift;
+ my $max_luma=shift;
+ my $apl_bg=&webui_pattern_legacy_byte(128,$signal_mode,$max_luma);
+ my $image=&webui_pattern_image_new($w,$h,$apl_bg,$apl_bg,$apl_bg);
+ my @levels=(232,234,236,238,240,242,244,246,248,250,252,254,255);
+ my @labels=@levels;
+ my $panel_x=int($w*0.06);
+ my $panel_y=int($h*0.15);
+ my $panel_w=$w-$panel_x*2;
+ my $panel_h=int($h*0.52);
+ my $footer_y=$panel_y+$panel_h+int($h*0.045);
+ my $footer_h=int($h*0.11);
+ my $panel_bg=235;
+ my $frame_t=int($h/360);
+ my $gap=int($panel_w/(scalar(@levels)*10));
+ my $scale=&webui_pattern_label_scale($h);
+ my $bar_y1=$panel_y+int($panel_h*0.10);
+ my $bar_y2=$panel_y+$panel_h-int($panel_h*0.10)-1;
+ $frame_t=2 if($frame_t < 2);
+ $gap=2 if($gap < 2);
+ $panel_bg=&webui_pattern_legacy_byte($panel_bg,$signal_mode,$max_luma);
+ @levels=map { &webui_pattern_legacy_byte($_,$signal_mode,$max_luma) } @levels;
+ &webui_pattern_image_rect($image,$panel_x,$panel_y,$panel_x+$panel_w-1,$panel_y+$panel_h-1,$panel_bg,$panel_bg,$panel_bg);
+ &webui_pattern_image_box($image,$panel_x,$panel_y,$panel_x+$panel_w-1,$panel_y+$panel_h-1,$frame_t,96,96,96);
+ &webui_pattern_image_rect($image,$panel_x,$footer_y,$panel_x+$panel_w-1,$footer_y+$footer_h-1,0,0,0);
+ &webui_pattern_image_box($image,$panel_x,$footer_y,$panel_x+$panel_w-1,$footer_y+$footer_h-1,$frame_t,48,48,48);
+ for(my $i=0;$i<scalar(@levels);$i++) {
+  my $slot_x1=$panel_x+int($i*$panel_w/scalar(@levels));
+  my $slot_x2=$panel_x+int((($i+1)*$panel_w)/scalar(@levels))-1;
+  $slot_x2=$panel_x+$panel_w-1 if($i == scalar(@levels)-1);
+  my $x1=$slot_x1+$gap;
+  my $x2=$slot_x2-$gap;
+  my $v=$levels[$i];
+  my $label=$labels[$i];
+  $x1=$slot_x1 if($x1 > $x2);
+  $x2=$slot_x2 if($x2 < $x1);
+  &webui_pattern_image_rect($image,$x1,$bar_y1,$x2,$bar_y2,$v,$v,$v);
+  &webui_pattern_image_text_center($image,$label,$slot_x1,$slot_x2,$footer_y+int(($footer_h-5*$scale)/2),$scale,255,255,255);
+ }
+ return &webui_pattern_image_save($image,$file);
+}
+
 sub webui_pattern_render_black_clipping (@) {
  my $file=shift;
  my $w=int(shift);
@@ -4822,6 +5121,74 @@ sub webui_pattern_render_overscan (@) {
  return &webui_pattern_image_save($image,$file);
 }
 
+sub webui_pattern_diag_video_path (@) {
+ my $name=shift;
+ return "Basic Settings/1-Black Clipping.mp4" if($name eq "avs_hd_709_black_clipping");
+ return "Basic Settings/2-APL Clipping.mp4" if($name eq "avs_hd_709_apl_clipping");
+ return "Basic Settings/3-White Clipping.mp4" if($name eq "avs_hd_709_white_clipping");
+ return "Basic Settings/4-Flashing Color Bars.mp4" if($name eq "avs_hd_709_flashing_color_bars");
+ return "Basic Settings/5-Sharpness & Overscan.mp4" if($name eq "avs_hd_709_sharpness_overscan");
+ return "";
+}
+
+sub webui_pattern_diag_video_sequence_dir (@) {
+ my $name=lc("".shift);
+ $name=~s/[^a-z0-9_]+/_/g;
+ return "" if($name eq "");
+ return "$var_dir/diagseq/$name";
+}
+
+sub webui_pattern_frame_sequence_pattern (@) {
+ my $dir=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my @frames=();
+ return "" if($dir eq "" || !-d $dir);
+ if(opendir(my $dh,$dir)) {
+  while(my $f=readdir($dh)) {
+   next if($f !~ /\.(?:png|jpe?g|ppm)$/i);
+   next if(!-f "$dir/$f");
+   push(@frames,$f);
+  }
+  closedir($dh);
+ }
+ @frames=sort @frames;
+ return "" if(!@frames);
+ my $pat="";
+ my $frame_ms=83;
+ for(my $i=0;$i<scalar(@frames);$i++) {
+  my $image="$dir/$frames[$i]";
+  $pat.="DRAW=IMAGE\nDIM=$w,$h\nRGB=0,0,0\nBG=0,0,0\nPOSITION=0,0\nIMAGE=$image\nEND=1\nFRAME_NAME=$frames[$i]\nFRAME=$frame_ms\n";
+ }
+ return $pat;
+}
+
+sub webui_pattern_diag_video_sequence_pattern (@) {
+ my $name=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $dir=&webui_pattern_diag_video_sequence_dir($name);
+ return &webui_pattern_frame_sequence_pattern($dir,$w,$h);
+}
+
+sub webui_pattern_uploaded_diag_video_sequence_pattern (@) {
+ my $filename=shift;
+ my $w=int(shift);
+ my $h=int(shift);
+ my $dir=&_webui_diag_asset_video_sequence_dir($filename);
+ return &webui_pattern_frame_sequence_pattern($dir,$w,$h);
+}
+
+sub webui_pattern_diag_video_fallback_name (@) {
+ my $name=shift;
+ return "black_clipping" if($name eq "avs_hd_709_black_clipping");
+ return "apl_clipping" if($name eq "avs_hd_709_apl_clipping");
+ return "white_clipping" if($name eq "avs_hd_709_white_clipping");
+ return "color_bars" if($name eq "avs_hd_709_flashing_color_bars");
+ return "overscan" if($name eq "avs_hd_709_sharpness_overscan");
+ return "";
+}
+
 sub webui_pattern (@) {
  my $body=shift;
  my ($name)=$body=~/"name"\s*:\s*"([^"]+)"/;
@@ -4842,6 +5209,8 @@ sub webui_pattern (@) {
  my $source_range=(int($pattern_signal_range || 0) == 1) ? "LIMITED" : "FULL";
  my $w=$w_s || 1920; my $h=$h_s || 1080;
  my $pat=""; my $img=&webui_pattern_diag_image_file($name); my $pat_bits=&webui_pattern_effective_bits("",$signal_mode);
+my $diag_video=&webui_pattern_diag_video_path($name);
+ my $diag_video_fallback=&webui_pattern_diag_video_fallback_name($name);
  my $white_rgb=&webui_pattern_scale_triplet(255,255,255,255,$pat_bits);
  my $black_rgb=&webui_pattern_scale_triplet(0,0,0,255,$pat_bits);
  my $red_rgb=&webui_pattern_scale_triplet(255,0,0,255,$pat_bits);
@@ -4851,60 +5220,117 @@ sub webui_pattern (@) {
  my $magenta_rgb=&webui_pattern_scale_triplet(255,0,255,255,$pat_bits);
  my $yellow_rgb=&webui_pattern_scale_triplet(255,255,0,255,$pat_bits);
  my $gray50_rgb=&webui_pattern_scale_triplet(128,128,128,255,$pat_bits);
+ if($diag_video ne "") {
+  return '{"status":"error","message":"AVS HD 709 videos are available only in SDR"}' if($signal_mode ne "sdr");
+  my $diag_sequence=&webui_pattern_diag_video_sequence_pattern($name,$w,$h);
+  if($diag_sequence ne "") {
+   &log("WebUI: AVS HD 709 using renderer sequence for $name");
+   $pat=$diag_sequence;
+   $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
+   $diag_video="";
+  }
+  elsif(-e "$video_dir/$diag_video") {
+   my $video_result="";
+   &video_program_stop("$program_video_to_kill");
+   $video_result=&play_video("omxplayer.bin",$diag_video,"1h-1");
+   return '{"status":"ok","pattern":"'.$name.'"}' if($video_result eq "OK");
+   &log("WebUI: AVS HD 709 fallback to built-in pattern for $name ($video_result)");
+  } else {
+   &log("WebUI: AVS HD 709 source missing for $name, using built-in pattern fallback");
+  }
+  if($pat eq "") {
+   return '{"status":"error","message":"Missing AVS HD 709 video file on device"}' if($diag_video_fallback eq "");
+   $name=$diag_video_fallback;
+   $img=&webui_pattern_diag_image_file($name);
+   $diag_video="";
+  }
+ }
  # Complex patterns are rendered directly into a temporary image (DRAW=IMAGE),
  # because PGeneratord clears the entire frame for each DRAW=RECTANGLE entry.
  # Prefer PNG for renderer compatibility; fall back to raw PPM only if convert
  # is unavailable on the target system.
  #
  # White Clipping — near-white bar plate with labeled 232-255 bars on a 235 field
- if($name eq "white_clipping") {
+ if($pat eq "" && $name eq "white_clipping") {
   return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_white_clipping($img,$w,$h,$signal_mode,$max_luma));
   $pat=&webui_pattern_image_pattern($w,$h,$img);
   $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
  }
+  elsif($pat eq "" && $name eq "apl_clipping") {
+   return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_apl_clipping($img,$w,$h,$signal_mode,$max_luma));
+   $pat=&webui_pattern_image_pattern($w,$h,$img);
+   $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
+  }
  # Black Clipping — near-black bar plate with labeled 2-25 bars on black
- elsif($name eq "black_clipping") {
+ elsif($pat eq "" && $name eq "black_clipping") {
   return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_black_clipping($img,$w,$h,$signal_mode,$max_luma));
   $pat=&webui_pattern_image_pattern($w,$h,$img);
   $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
  }
  # Color Bars — 75% Rec.709 bars with a bottom PLUGE/reference section
- elsif($name eq "color_bars") {
+ elsif($pat eq "" && $name eq "color_bars") {
   return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_color_bars($img,$w,$h,$signal_mode,$max_luma));
   $pat=&webui_pattern_image_pattern($w,$h,$img);
   $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
  }
  # Gray Ramp — smooth top gradient with 11 stepped bars underneath
- elsif($name eq "gray_ramp") {
+ elsif($pat eq "" && $name eq "gray_ramp") {
   return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_gray_ramp($img,$w,$h,$signal_mode,$max_luma));
   $pat=&webui_pattern_image_pattern($w,$h,$img);
   $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
  }
  # Full field solid colors
-   elsif($name eq "white")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$white_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
-   elsif($name eq "black")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$black_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
-   elsif($name eq "red")     { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$red_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
-   elsif($name eq "green")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$green_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
-   elsif($name eq "blue")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$blue_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
-   elsif($name eq "cyan")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$cyan_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
-   elsif($name eq "magenta") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$magenta_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
-   elsif($name eq "yellow")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$yellow_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "white")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$white_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "black")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$black_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "red")     { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$red_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "green")   { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$green_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "blue")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$blue_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "cyan")    { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$cyan_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "magenta") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$magenta_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "yellow")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$yellow_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
  # 50% Gray
-   elsif($name eq "gray50")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$gray50_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+   elsif($pat eq "" && $name eq "gray50")  { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$gray50_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
  # Window pattern — centered white window on black (18% of screen area)
- elsif($name eq "window") {
+ elsif($pat eq "" && $name eq "window") {
   my $s=sqrt(0.18); my $ww=int($w*$s); my $wh=int($h*$s);
   my $wx=int(($w-$ww)/2); my $wy=int(($h-$wh)/2);
     $pat="DRAW=RECTANGLE\nDIM=$ww,$wh\nRGB=$white_rgb\nBG=$black_rgb\nPOSITION=$wx,$wy\nEND=1\n";
  }
  # Overscan — borders at 0%, 2.5%, 5% with corner brackets and crosshair
- elsif($name eq "overscan") {
+ elsif($pat eq "" && $name eq "overscan") {
   return '{"status":"error","message":"Failed to generate image pattern"}' if(!&webui_pattern_render_overscan($img,$w,$h));
   $pat=&webui_pattern_image_pattern($w,$h,$img);
   $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
  }
+elsif($pat eq "" && $name eq "uploaded_diag_image") {
+ my $requested_filename="";
+ $requested_filename=$1 if($body =~ /"filename"\s*:\s*"([^"]{1,240})"/);
+ my (undef,$requested_path)=&_webui_diag_asset_resolve_path("image",$requested_filename);
+ return '{"status":"error","message":"Diagnostic image not found"}' if($requested_path eq "");
+ $pat=&webui_pattern_image_pattern($w,$h,$requested_path);
+ $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
+}
+elsif($pat eq "" && $name eq "uploaded_diag_video") {
+ my $requested_filename="";
+ $requested_filename=$1 if($body =~ /"filename"\s*:\s*"([^"]{1,240})"/);
+ my ($requested_name,undef)=&_webui_diag_asset_resolve_path("video",$requested_filename);
+ return '{"status":"error","message":"Diagnostic video not found"}' if($requested_name eq "");
+ my $diag_sequence=&webui_pattern_uploaded_diag_video_sequence_pattern($requested_name,$w,$h);
+ if($diag_sequence ne "") {
+  &log("WebUI: uploaded diagnostic video using renderer sequence for $requested_name");
+  $pat=$diag_sequence;
+  $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
+ }
+ else {
+  my $video_result="";
+  &video_program_stop("$program_video_to_kill");
+  $video_result=&play_video("omxplayer.bin",$requested_name,"1h-1");
+  return '{"status":"error","message":"'.&_webui_json_escape($video_result).'"}' if($video_result ne "OK");
+  return '{"status":"ok","pattern":"'.$name.'"}';
+ }
+}
  # Generic patch — takes r,g,b,size params from JSON body
- elsif($name eq "patch") {
+ elsif($pat eq "" && $name eq "patch") {
   my ($pr)=$body=~/"r"\s*:\s*(\d+)/; $pr=0 if(!defined $pr);
   my ($pg)=$body=~/"g"\s*:\s*(\d+)/; $pg=0 if(!defined $pg);
   my ($pb)=$body=~/"b"\s*:\s*(\d+)/; $pb=0 if(!defined $pb);
@@ -4932,10 +5358,11 @@ sub webui_pattern (@) {
   }
  }
  # Stop — full black (idle)
- elsif($name eq "stop") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$black_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
- else {
+ elsif($pat eq "" && $name eq "stop") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$black_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
+ elsif($pat eq "") {
   return '{"status":"error","message":"Unknown pattern: '.$name.'"}';
  }
+ &video_program_stop("$program_video_to_kill");
  # Ensure the C renderer binary is running (auto-start on first pattern)
  if(!&pattern_generator_is_running()) {
   &pattern_generator_start(1);
@@ -5057,8 +5484,9 @@ padding:6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:bord
 background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");
 background-repeat:no-repeat;background-position:right 8px center;padding-right:24px}
 .inline-select{background-color:#0d0d15;border:1px solid var(--border);color:var(--text);
-padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transition:border .2s;min-height:28px}
-.inline-select:focus{border-color:var(--accent)}
+padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transition:border .2s,box-shadow .2s;min-height:28px}
+.inline-select:focus{outline:none}
+.inline-select:focus-visible{border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.35)}
 #meterSettingsGrid{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-start}
 #meterSettingsGrid .field{flex:0 0 auto;min-width:0}
 #meterSettingsGrid > .field > label:first-child{min-height:18px;display:flex;align-items:center}
@@ -5158,8 +5586,9 @@ background:#0d0d15;padding:8px;border-radius:6px;word-break:break-all;line-heigh
 .pat-grid-sm{display:grid;grid-template-columns:repeat(auto-fill,minmax(55px,1fr));gap:4px}
 .pat-btn{padding:8px 4px;border:1px solid var(--border);border-radius:6px;
 background:#0d0d15;color:var(--text);font-size:.72rem;cursor:pointer;text-align:center;
-transition:all .2s;line-height:1.2;font-weight:500}
-.pat-btn:hover{border-color:var(--accent);background:#1a1a2e;transform:translateY(-1px)}
+transition:all .2s;line-height:1.2;font-weight:500;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.pat-btn:focus{outline:none}
+.pat-btn:focus-visible{border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.35)}
 .pat-btn.active{border-color:var(--accent);background:rgba(91,127,255,.15)}
 .pat-btn-sm{padding:5px 2px;font-size:.65rem}
 .pat-section{margin-bottom:8px}
@@ -5169,6 +5598,9 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .pat-section-title::before{content:'\25BE';font-size:.8em;transition:transform .2s}
 .pat-section.collapsed .pat-section-title::before{content:'\25B8'}
 .pat-section.collapsed .pat-content{display:none}
+.diag-custom-assets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:min(100%,570px)}
+.diag-custom-asset{min-width:0}
+@media (hover:hover) and (pointer:fine){.pat-btn:hover{border-color:var(--accent);background:#1a1a2e;transform:translateY(-1px)}}
 .sat-row{display:flex;align-items:center;gap:4px;margin-bottom:4px}
 .sat-label{width:52px;font-size:.65rem;font-weight:600;flex-shrink:0}
 .sat-btns{display:flex;gap:4px;flex:1;flex-wrap:wrap}
@@ -5205,6 +5637,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard > h2::after{margin-left:auto}
 .meter-card-header-meter{width:100%;max-width:none;min-width:0}
 .custom-ccss-panel-btn{width:100%}}
+@media(max-width:640px){.diag-custom-assets{grid-template-columns:1fr;max-width:none}}
 @media(max-width:480px){.grid{grid-template-columns:1fr}
 .hdr-right{width:100%;min-width:0;flex-wrap:wrap;justify-content:space-between}
 .status-bar{width:100%;min-width:0;flex-wrap:wrap}
@@ -5428,6 +5861,37 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="pat-btn" onclick="showPattern('color_bars',event)">Color Bars</button>
     <button class="pat-btn" onclick="showPattern('gray_ramp',event)">Gray Ramp</button>
     <button class="pat-btn" onclick="showPattern('overscan',event)">Overscan</button>
+    </div>
+    <div id="diagAvsHd709Section" style="margin-top:10px;display:none">
+     <div style="font-size:.62rem;color:var(--text2);margin:0 0 6px 2px;letter-spacing:.04em;text-transform:uppercase">AVS HD 709 Videos (SDR Only)</div>
+     <div class="pat-grid">
+      <button class="pat-btn" onclick="showPattern('avs_hd_709_white_clipping',event)">White Clipping</button>
+      <button class="pat-btn" onclick="showPattern('avs_hd_709_black_clipping',event)">Black Clipping</button>
+      <button class="pat-btn" onclick="showPattern('avs_hd_709_flashing_color_bars',event)">Flashing Color Bars</button>
+      <button class="pat-btn" onclick="showPattern('avs_hd_709_apl_clipping',event)">APL Clipping</button>
+      <button class="pat-btn" onclick="showPattern('avs_hd_709_sharpness_overscan',event)">Sharpness & Overscan</button>
+     </div>
+    </div>
+    <div style="margin-top:10px">
+     <div class="diag-custom-assets">
+      <div class="diag-custom-asset">
+       <select id="diagCustomVideoSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('video')">
+      <option value="">Custom Diagnostic Video...</option>
+      <option value="__upload__">Upload video...</option>
+       </select>
+       <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded videos play through the legacy video playback path.</div>
+      </div>
+      <div class="diag-custom-asset">
+       <select id="diagCustomImageSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('image')">
+      <option value="">Custom Diagnostic Image...</option>
+      <option value="__upload__">Upload image...</option>
+       </select>
+       <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded images render through the IMAGE pattern path.</div>
+      </div>
+     </div>
+     <input type="file" id="diagCustomVideoInput" accept="video/mp4,.mp4,.m4v,.mov,.webm,.mkv,.avi" style="display:none">
+     <input type="file" id="diagCustomImageInput" accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/bmp,.bmp,.ppm,image/gif,.gif" style="display:none">
+     <div id="diagUploadStatus" style="display:none;font-size:.68rem;color:var(--text2);margin-top:8px"></div>
     </div>
     <div id="diagInfo" style="font-size:.7rem;color:var(--text2);margin-top:8px;padding:8px 10px;background:#0d0d15;border-radius:6px;line-height:1.5;display:none"></div>
    </div>
@@ -6455,6 +6919,7 @@ function updateModeVisibility(){
  const sm=getVal('signal_mode');
  document.getElementById('hdrCard').style.display=(sm==='hdr10'||sm==='hlg')?'':'none';
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
+ updateDiagAvsHd709Visibility();
  meterSyncHdrMetadata();
 }
 
@@ -7009,26 +7474,326 @@ const DIAG_DESCRIPTIONS={
  color_bars:'<b>Color Bars</b> &mdash; 75% Rec.709 bars with a mid reference strip and a bottom PLUGE/white section for quick color and level checks. Use this pattern with HDMI output set to RGB.',
  gray_ramp:'<b>Gray Ramp</b> &mdash; Smooth black-to-white ramp across the top with 11 stepped gray bars underneath. Use HDMI RGB output and check for smooth transitions, neutral grayscale, and no banding.',
  overscan:'<b>Overscan</b> &mdash; Border lines at 0%, 2.5%, and 5% from screen edges with corner L-brackets and center crosshair. Use HDMI RGB output, and all lines should be visible &mdash; if not, disable overscan in your TV settings.',
+ avs_hd_709_black_clipping:'<b>AVS HD 709 - Black Clipping</b> &mdash; SDR-only AVS HD 709 video version of the black clipping pattern. Use it to set Brightness with near-black bars just above video black.',
+ avs_hd_709_apl_clipping:'<b>AVS HD 709 - APL Clipping</b> &mdash; SDR-only AVS HD 709 APL clipping video for checking level behavior with an average picture level load on screen.',
+ avs_hd_709_white_clipping:'<b>AVS HD 709 - White Clipping</b> &mdash; SDR-only AVS HD 709 video version of the white clipping pattern. Use it to set Contrast so near-white detail is not crushed.',
+ avs_hd_709_flashing_color_bars:'<b>AVS HD 709 - Flashing Color Bars</b> &mdash; SDR-only AVS HD 709 flashing color bars video for color and tint checks with blue-only or filter workflows.',
+ avs_hd_709_sharpness_overscan:'<b>AVS HD 709 - Sharpness &amp; Overscan</b> &mdash; SDR-only AVS HD 709 sharpness and overscan video for checking edge visibility and artificial sharpening.',
 };
+const AVS_HD_709_PATTERNS={
+ avs_hd_709_black_clipping:true,
+ avs_hd_709_apl_clipping:true,
+ avs_hd_709_white_clipping:true,
+ avs_hd_709_flashing_color_bars:true,
+ avs_hd_709_sharpness_overscan:true,
+};
+const DIAG_UPLOAD_SENTINEL='__upload__';
+const DIAG_UPLOAD_CHUNK_BYTES=192*1024;
+const DIAG_VIDEO_SEQUENCE_FPS=8;
+const DIAG_VIDEO_SEQUENCE_MAX_FRAMES=24;
+const DIAG_VIDEO_SEQUENCE_MAX_SECONDS=3;
+let diagCustomAssets={video:[],image:[]};
 let activePattern=null;
-function clearActive(){document.querySelectorAll('.pat-btn').forEach(b=>b.classList.remove('active'));activePattern=null;}
-function updateDiagInfo(name){
+function clearActive(){document.querySelectorAll('.pat-btn').forEach(b=>b.classList.remove('active'));if(document.activeElement&&document.activeElement.classList&&document.activeElement.classList.contains('pat-btn'))document.activeElement.blur();activePattern=null;}
+function isAvsHd709Pattern(name){return !!AVS_HD_709_PATTERNS[String(name||'')];}
+function diagSetInfoHtml(html){
  const el=document.getElementById('diagInfo');
- if(el&&DIAG_DESCRIPTIONS[name]){el.innerHTML=DIAG_DESCRIPTIONS[name];el.style.display='';}
- else if(el){el.style.display='none';}
+ if(!el) return;
+ if(html){el.innerHTML=html;el.style.display='';}
+ else el.style.display='none';
+}
+function diagAssetSelectId(kind){return kind==='video'?'diagCustomVideoSelect':'diagCustomImageSelect';}
+function diagAssetInputId(kind){return kind==='video'?'diagCustomVideoInput':'diagCustomImageInput';}
+function diagAssetBaseLabel(filename){return String(filename||'').replace(/\.[^.]+$/,'');}
+function diagAssetDisplayLabel(filename){return diagAssetBaseLabel(filename).replace(/_/g,' ');}
+function diagAssetPatternToken(kind,filename){return (kind==='video'?'uploaded_diag_video:':'uploaded_diag_image:')+String(filename||'');}
+function diagBlurElement(el){if(el&&typeof el.blur==='function')el.blur();}
+function diagAssetInfoHtml(kind,filename){
+ const label=diagAssetDisplayLabel(filename);
+ if(kind==='video') return '<b>Custom Diagnostic Video</b> &mdash; '+label+'. Uploaded videos now prefer a browser-extracted renderer frame sequence when one is available, then fall back to the legacy video path.';
+ return '<b>Custom Diagnostic Image</b> &mdash; '+label+'. Uploaded images render through the IMAGE pattern path.';
+}
+function diagUpdateUploadStatus(message,isError){
+ const el=document.getElementById('diagUploadStatus');
+ if(!el) return;
+ const text=message||'';
+ el.textContent=text;
+ el.style.color=isError?'var(--red)':'var(--text2)';
+ el.style.display=text?'block':'none';
+}
+function diagRenderAssetSelect(kind,selectedValue){
+ const sel=document.getElementById(diagAssetSelectId(kind));
+ if(!sel) return;
+ const files=Array.isArray(diagCustomAssets[kind])?diagCustomAssets[kind]:[];
+ const placeholder=kind==='video'?'Custom Diagnostic Video...':'Custom Diagnostic Image...';
+ let html='<option value="">'+placeholder+'</option>';
+ files.forEach(filename=>{
+  html+='<option value="'+filename+'">'+diagAssetDisplayLabel(filename)+'</option>';
+ });
+ html+='<option value="'+DIAG_UPLOAD_SENTINEL+'">Upload '+kind+'...</option>';
+ sel.innerHTML=html;
+ if(selectedValue&&files.includes(selectedValue)) sel.value=selectedValue;
+ else if(sel.dataset.lastSelected&&files.includes(sel.dataset.lastSelected)) sel.value=sel.dataset.lastSelected;
+ else sel.value='';
+ if(sel.value!==DIAG_UPLOAD_SENTINEL) sel.dataset.lastSelected=sel.value;
+}
+async function diagLoadAssetCatalog(kind,preserveValue){
+ const path=kind==='video'?'/api/diagnostic/videos':'/api/diagnostic/images';
+ const r=await fetchJSON(path,{_quiet:true,_timeoutMs:10000});
+ diagCustomAssets[kind]=r&&Array.isArray(r.files)?r.files:[];
+ diagRenderAssetSelect(kind,preserveValue||'');
+}
+async function diagRefreshCustomAssets(){
+ await Promise.all([diagLoadAssetCatalog('video'),diagLoadAssetCatalog('image')]);
+}
+function diagBlobToBase64(blob){
+ return new Promise((resolve,reject)=>{
+  const reader=new FileReader();
+  reader.onload=()=>{
+   const raw=String(reader.result||'');
+   const comma=raw.indexOf(',');
+   resolve(comma>=0?raw.slice(comma+1):raw);
+  };
+  reader.onerror=()=>reject(reader.error||new Error('Failed to read file'));
+  reader.readAsDataURL(blob);
+ });
+}
+function diagCanvasToBlob(canvas,type){
+ return new Promise((resolve,reject)=>{
+  canvas.toBlob(blob=>blob?resolve(blob):reject(new Error('Failed to encode video frame')),type||'image/png');
+ });
+}
+function diagVideoLoadFile(file){
+ return new Promise((resolve,reject)=>{
+  const video=document.createElement('video');
+  const url=URL.createObjectURL(file);
+  let done=false;
+  function finishOk(){
+   if(done)return;
+   done=true;
+   cleanup();
+   resolve({video,url});
+  }
+  function finishErr(){
+   if(done)return;
+   done=true;
+   cleanup();
+   URL.revokeObjectURL(url);
+   reject(new Error('Browser could not decode the uploaded video'));
+  }
+  function cleanup(){
+   video.onloadeddata=null;
+   video.onerror=null;
+  }
+  video.preload='auto';
+  video.muted=true;
+  video.playsInline=true;
+  video.onloadeddata=finishOk;
+  video.onerror=finishErr;
+  video.src=url;
+  video.load();
+ });
+}
+function diagClampVideoTimestamp(video,time){
+ const duration=Number(video&&video.duration||0);
+ let target=Math.max(0,Number(time)||0);
+ if(duration>0){
+  const epsilon=Math.min(0.05,Math.max(duration/1000,0.001));
+  if(target>=duration) target=Math.max(0,duration-epsilon);
+ }
+ return target;
+}
+function diagVideoSeek(video,time){
+ return new Promise((resolve,reject)=>{
+  const target=diagClampVideoTimestamp(video,time);
+  const onSeeked=()=>{cleanup();resolve();};
+  const onError=()=>{cleanup();reject(new Error('Failed to decode video frame'));};
+  function cleanup(){
+   video.removeEventListener('seeked',onSeeked);
+   video.removeEventListener('error',onError);
+  }
+  if(Math.abs((Number(video.currentTime)||0)-target) < 0.001 && video.readyState >= 2){
+   resolve();
+   return;
+  }
+  video.addEventListener('seeked',onSeeked);
+  video.addEventListener('error',onError);
+  try{video.currentTime=target;}catch(e){cleanup();reject(e);}
+ });
+}
+async function diagUploadVideoSequence(videoFilename,file){
+ const uploadedName=String(videoFilename||file&&file.name||'');
+ if(!uploadedName||!file) throw new Error('Video file is unavailable for renderer preparation');
+ const loaded=await diagVideoLoadFile(file);
+ const video=loaded.video;
+ const url=loaded.url;
+ try{
+  const duration=Math.max(0,Number(video.duration)||0);
+  const sequenceSeconds=duration>0?Math.min(duration,DIAG_VIDEO_SEQUENCE_MAX_SECONDS):0;
+  let frameCount=Math.max(1,Math.ceil(Math.max(sequenceSeconds,1/DIAG_VIDEO_SEQUENCE_FPS)*DIAG_VIDEO_SEQUENCE_FPS));
+  frameCount=Math.min(frameCount,DIAG_VIDEO_SEQUENCE_MAX_FRAMES);
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.max(1,video.videoWidth||1920);
+  canvas.height=Math.max(1,video.videoHeight||1080);
+  const ctx=canvas.getContext('2d');
+  if(!ctx) throw new Error('Canvas is unavailable for video decoding');
+  const uploadId='diagseq_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+  for(let i=0;i<frameCount;i++){
+   const time=(frameCount<=1||sequenceSeconds<=0)?0:(sequenceSeconds*(i/(frameCount-1)));
+   if(i>0 || video.readyState<2) await diagVideoSeek(video,time);
+   ctx.clearRect(0,0,canvas.width,canvas.height);
+   ctx.drawImage(video,0,0,canvas.width,canvas.height);
+   const blob=await diagCanvasToBlob(canvas,'image/png');
+   const b64=await diagBlobToBase64(blob);
+   const percent=Math.min(100,Math.round(((i+1)/frameCount)*100));
+   diagUpdateUploadStatus('Preparing video frames... '+percent+'%');
+   const r=await fetchJSON('/api/diagnostic/video-sequence',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({upload_id:uploadId,video_filename:uploadedName,frame_index:i,frame_total:frameCount,content:b64}),
+    _timeoutMs:20000
+   });
+   if(!r||r.status!=='ok') throw new Error(r&&r.message?r.message:'Failed to upload video frames');
+  }
+  return {frameCount};
+ } finally {
+  try{video.pause();}catch(_e){}
+  try{video.removeAttribute('src');video.load();}catch(_e){}
+  URL.revokeObjectURL(url);
+ }
+}
+async function diagUploadAsset(kind,file){
+ if(!file||!file.size) throw new Error('Choose a file to upload');
+ const uploadId=kind+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+ diagUpdateUploadStatus('Uploading '+file.name+'...');
+ for(let offset=0; offset<file.size; offset+=DIAG_UPLOAD_CHUNK_BYTES){
+  const chunk=file.slice(offset,offset+DIAG_UPLOAD_CHUNK_BYTES);
+  const b64=await diagBlobToBase64(chunk);
+  const isFinal=(offset+chunk.size)>=file.size;
+  const percent=Math.min(100,Math.round(((offset+chunk.size)/file.size)*100));
+  const r=await fetchJSON('/api/diagnostic/upload',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({kind:kind,upload_id:uploadId,filename:file.name,offset:offset,total_size:file.size,is_final:isFinal,content:b64}),
+   _timeoutMs:20000
+  });
+  if(!r||r.status!=='ok') throw new Error(r&&r.message?r.message:'Upload failed');
+  diagUpdateUploadStatus('Uploading '+file.name+'... '+percent+'%');
+  if(isFinal) return r;
+ }
+ throw new Error('Upload failed');
+}
+async function diagShowUploadedAsset(kind,filename){
+ const token=diagAssetPatternToken(kind,filename);
+ if(activePattern===token){await stopPattern();return;}
+ meterClearInteractiveSelection(true);
+ clearActive();
+ activePattern=token;
+ diagSetInfoHtml(diagAssetInfoHtml(kind,filename));
+ const body={name:kind==='video'?'uploaded_diag_video':'uploaded_diag_image',filename:filename,signal_mode:getVal('signal_mode'),max_luma:document.getElementById('max_luma').value};
+ const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ if(r&&r.status==='ok') toast('Pattern: '+diagAssetDisplayLabel(filename));
+ else toast(r&&r.message?r.message:'Pattern error',true);
+}
+async function diagHandleAssetSelect(kind){
+ const sel=document.getElementById(diagAssetSelectId(kind));
+ if(!sel) return;
+ const value=sel.value||'';
+ if(value===DIAG_UPLOAD_SENTINEL){
+  sel.value=sel.dataset.lastSelected||'';
+  diagBlurElement(sel);
+  const input=document.getElementById(diagAssetInputId(kind));
+  if(input){input.value='';input.click();}
+  return;
+ }
+ if(value===''){
+  sel.dataset.lastSelected='';
+  diagBlurElement(sel);
+  return;
+ }
+ sel.dataset.lastSelected=value;
+ diagBlurElement(sel);
+ await diagShowUploadedAsset(kind,value);
+}
+async function diagHandleAssetUpload(kind,evt){
+ const input=evt&&evt.target?evt.target:null;
+ const file=input&&input.files&&input.files[0]?input.files[0]:null;
+ if(!file) return;
+ try{
+  const r=await diagUploadAsset(kind,file);
+  let statusMessage=r&&r.message?r.message:'Upload complete';
+  if(kind==='video'){
+   try{
+    const seq=await diagUploadVideoSequence(r&&r.filename?r.filename:file.name,file);
+    statusMessage='Uploaded diagnostic video and '+seq.frameCount+' renderer frames';
+   }catch(seqErr){
+    const seqMessage='Video uploaded, but renderer frame preparation failed: '+(seqErr&&seqErr.message?seqErr.message:'Video frame extraction failed');
+    await diagLoadAssetCatalog(kind,r.filename||file.name);
+    const sel=document.getElementById(diagAssetSelectId(kind));
+    if(sel && r && r.filename){
+     sel.value=r.filename;
+     sel.dataset.lastSelected=r.filename;
+    }
+    diagUpdateUploadStatus(seqMessage,true);
+    toast(seqMessage,true);
+    if(input) input.value='';
+    return;
+   }
+  }
+  await diagLoadAssetCatalog(kind,r.filename||file.name);
+  const sel=document.getElementById(diagAssetSelectId(kind));
+  if(sel && r && r.filename){
+   sel.value=r.filename;
+   sel.dataset.lastSelected=r.filename;
+  }
+  diagUpdateUploadStatus(statusMessage);
+  toast(statusMessage);
+ }catch(e){
+  const message=e&&e.message?e.message:'Upload failed';
+  diagUpdateUploadStatus(message,true);
+  toast(message,true);
+ }
+ if(input) input.value='';
+}
+function updateDiagAvsHd709Visibility(){
+ const el=document.getElementById('diagAvsHd709Section');
+ const isSdr=getVal('signal_mode')==='sdr';
+ if(el) el.style.display=isSdr?'':'none';
+ if(!isSdr&&activePattern&&isAvsHd709Pattern(activePattern)) stopPattern();
+}
+function updateDiagInfo(name){
+ if(DIAG_DESCRIPTIONS[name]) diagSetInfoHtml(DIAG_DESCRIPTIONS[name]);
+ else diagSetInfoHtml('');
 }
 async function showPattern(name,ev){
- if(activePattern===name){stopPattern();return;}
+ const btn=ev&&ev.currentTarget?ev.currentTarget:null;
+ if(btn&&typeof btn.blur==='function') btn.blur();
+ if(activePattern===name){await stopPattern();return;}
+ if(isAvsHd709Pattern(name)&&getVal('signal_mode')!=='sdr'){
+  toast('AVS HD 709 videos are available only in SDR',true);
+  return;
+ }
  meterClearInteractiveSelection(true);
  clearActive();
  if(ev&&ev.currentTarget)ev.currentTarget.classList.add('active');
  activePattern=name;
  updateDiagInfo(name);
- const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({name:name,signal_mode:getVal('signal_mode'),
-   max_luma:document.getElementById('max_luma').value})});
- if(r&&r.status==='ok') toast('Pattern: '+name.replace(/_/g,' '));
- else toast(r?r.message:'Pattern error',true);
+ const label=ev&&ev.currentTarget?ev.currentTarget.textContent.trim():name.replace(/_/g,' ');
+ try{
+  const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({name:name,signal_mode:getVal('signal_mode'),
+    max_luma:document.getElementById('max_luma').value})});
+  if(r&&r.status==='ok') toast('Pattern: '+label);
+  else {
+   clearActive();
+   diagSetInfoHtml('');
+   toast(r?r.message:'Pattern error',true);
+  }
+ }catch(e){
+  clearActive();
+  diagSetInfoHtml('');
+  toast(e&&e.message?e.message:'Pattern error',true);
+ }
 }
 async function showPatch(id,pr,pg,pb,ev){
  // Greyscale/color/saturation patches are now driven by the Meter & Measurements
@@ -7038,11 +7803,15 @@ async function showPatch(id,pr,pg,pb,ev){
 async function stopPattern(){
  meterClearInteractiveSelection(true);
  clearActive();
- var di=document.getElementById('diagInfo');if(di)di.style.display='none';
+ diagBlurElement(document.getElementById('diagCustomVideoSelect'));
+ diagBlurElement(document.getElementById('diagCustomImageSelect'));
+ diagSetInfoHtml('');
  const r=await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({name:'stop'})});
  if(r&&r.status==='ok') toast('Pattern stopped');
 }
+document.getElementById('diagCustomVideoInput').addEventListener('change',evt=>diagHandleAssetUpload('video',evt));
+document.getElementById('diagCustomImageInput').addEventListener('change',evt=>diagHandleAssetUpload('image',evt));
 function toggleSection(el){el.parentElement.classList.toggle('collapsed');}
 function getPatternTargetMax(){
  const sm=getVal('signal_mode');
@@ -16477,6 +17246,7 @@ function initCardCollapse(){
 (async()=>{
  initCardCollapse();
  await loadConfig(true);
+ await diagRefreshCustomAssets();
  await Promise.all([loadModes(true),loadCapabilities(true)]);
  updateDropdowns();
  refreshSavedSettingsSnapshot();
