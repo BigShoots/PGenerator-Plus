@@ -37,6 +37,7 @@ use IPC::Open2;
 use File::Path;
 use Digest::MD5;
 use List::Util qw(sum);
+use POSIX qw(setsid WNOHANG);
 
 #########################################
 #              Shared Dir               #
@@ -66,6 +67,7 @@ $i=0;
 for(split(" ",$ENV{$pg_cmd_env})) { $ARGV[$i++]=decode_base64($_); }
 $action=$ARGV[0];
 $0=basename($0)." $action";
+$root_video_pid_file="/tmp/PGenerator_video.pid";
 
 #
 # main
@@ -95,6 +97,8 @@ $0=basename($0)." $action";
 &set_pgenerator_conf()    if($action eq "SET_PGENERATOR_CONF");
 &set_plugin()             if($action eq "SET_PLUGIN");
 &bash_cmd()               if($action eq "BASH_CMD");
+&play_video_root()        if($action eq "PLAY_VIDEO");
+&stop_video_root()        if($action eq "STOP_VIDEO");
 &bt_status()              if($action eq "BT_STATUS");
 &bt_set_discoverable()    if($action eq "BT_SET_DISCOVERABLE");
 &bt_set_powered()         if($action eq "BT_SET_POWERED");
@@ -661,6 +665,140 @@ sub bash_cmd(@) {
  }
  system("$passwd $argument 1>/dev/stderr")                             if($cmd eq "CHANGE_PASSWORD");
  system("$perl -p -i -e \"s/$distro_name.*/$argument/\" $distro_conf") if($cmd eq "PKG_SUBSCRIBE");
+}
+
+###############################################
+#             Root Video Functions            #
+###############################################
+sub stop_video_root_process (@) {
+ my $program = shift;
+ my $program_name=basename($program || "");
+ my $pid="";
+ if(-f $root_video_pid_file) {
+  open(PID,"$root_video_pid_file");
+  $pid=<PID>;
+  close(PID);
+  chomp($pid);
+  if($pid =~ /^\d+$/) {
+   kill("TERM",-$pid);
+   usleep(250000);
+   kill("KILL",-$pid);
+  }
+  unlink($root_video_pid_file);
+ }
+ if($program_name =~ /^omxplayer(\.bin)?$/) {
+    system("/usr/bin/pkill","-TERM","-x","omxplayer");
+    system("/usr/bin/pkill","-TERM","-x","omxplayer.bin");
+  usleep(250000);
+    system("/usr/bin/pkill","-KILL","-x","omxplayer");
+    system("/usr/bin/pkill","-KILL","-x","omxplayer.bin");
+ }
+}
+
+sub root_video_error_message (@) {
+ my $log_file="/tmp/omxplayer.log";
+ my $log_content="";
+ return "Video playback failed to start" if(!-f $log_file);
+ $log_content=&read_from_file($log_file);
+ return "Video playback backend unavailable on this image (OpenMAX init failed)" if($log_content =~ /OMXCore failed to init|OMX\.broadcom\.clock/i);
+ return $1 if($log_content =~ /([^\r\n]+)\s*$/ && $1 !~ /^have a nice day/i);
+ return "Video playback failed to start";
+}
+
+sub play_video_root (@) {
+ my $program_name=basename($ARGV[1] || "");
+ my $video=$ARGV[2];
+ my $duration=$ARGV[3];
+ my $repeat=$ARGV[4];
+ my $program_path="/usr/bin/$program_name";
+ my $log_file="/tmp/omxplayer.log";
+ my $video_path="";
+ my $pid=0;
+ my $status="";
+ my ($status_read,$status_write);
+ return print "ERR:Video playback failed to start" if($program_name !~ /^omxplayer(\.bin)?$/);
+ $program_path="/usr/bin/omxplayer" if(-x "/usr/bin/omxplayer");
+ return print "ERR:Video playback failed to start" if(!-x $program_path);
+ return print "ERR:Video playback failed to start" if(!defined $video || $video eq "");
+ return print "ERR:Video playback failed to start" if($video =~ /(^\/|\.\.|[\r\n\0])/);
+ return print "ERR:Video playback failed to start" if($video !~ /^[A-Za-z0-9 _\.\-\/()]+$/);
+ return print "ERR:Video playback failed to start" if(!defined $duration || $duration !~ /^\d+[smhd]?$/);
+ $repeat=0 if(!defined $repeat || $repeat ne "1");
+ $video_path="$video_dir/$video";
+ return print "ERR:Video playback failed to start" if(!-f $video_path);
+ return print "ERR:Video playback failed to start" if(!pipe($status_read,$status_write));
+ &stop_video_root_process($program_name);
+ unlink($log_file);
+ $pid=fork();
+ return print "ERR:Video playback failed to start" if(!defined $pid);
+ if($pid == 0) {
+  my $status_sent=0;
+  my $play_pid=0;
+  my $wait_pid=0;
+  close($status_read);
+  eval { setsid(); };
+  $SIG{"TERM"}=sub { exit 0; };
+  open(STDIN,"</dev/null");
+    open(STDOUT,">>$log_file");
+    open(STDERR,">&STDOUT");
+  while(1) {
+   $play_pid=fork();
+   if(!defined $play_pid) {
+    print $status_write "ERR:Video playback failed to start\n" if(!$status_sent);
+    close($status_write) if(!$status_sent);
+    exit 1;
+   }
+   if($play_pid == 0) {
+    exec($timeout,"-k","$duration","$duration","$program_path","$video_path");
+    exit 127;
+   }
+   usleep(2500000);
+   $wait_pid=waitpid($play_pid,WNOHANG);
+   if($wait_pid == 0) {
+    if(!$status_sent) {
+     print $status_write "OK\n";
+     close($status_write);
+     $status_sent=1;
+    }
+    waitpid($play_pid,0);
+   } else {
+    if(!$status_sent) {
+     print $status_write "ERR:".&root_video_error_message()."\n";
+     close($status_write);
+    }
+    exit 1 if(!$status_sent);
+   }
+   last if((($? >> 8) == 143) || !$repeat);
+  }
+  close($status_write) if(!$status_sent);
+  exit 0;
+ }
+ close($status_write);
+ if(open(PID,">$root_video_pid_file")) {
+  print PID $pid;
+  close(PID);
+ }
+ eval {
+  local $SIG{ALRM}=sub { die "status timeout\n"; };
+  alarm(5);
+  $status=<$status_read>;
+  alarm(0);
+ };
+ alarm(0);
+ close($status_read);
+ chomp($status) if(defined $status);
+ if(!defined $status || $status eq "" || $status !~ /^OK$/) {
+  &stop_video_root_process($program_name);
+  $status=~s/^ERR:// if(defined $status);
+  $status="Video playback failed to start" if(!defined $status || $status eq "");
+  return print "ERR:$status";
+ }
+ print "OK";
+}
+
+sub stop_video_root (@) {
+ &stop_video_root_process($ARGV[1]);
+ print "OK";
 }
 
 ###############################################
