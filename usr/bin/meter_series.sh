@@ -256,6 +256,11 @@ series_uses_initial_white_reference() {
  [[ "$SERIES_ID" == saturations_* || "$SERIES_ID" == colors_* ]]
 }
 
+series_requires_final_white_refresh() {
+ [[ "$SERIES_ID" == greyscale_* ]] || return 1
+ (( TOTAL > 2 ))
+}
+
 # Publish an immediate startup state so the UI shows progress instead of
 # looking hung while spotread is performing its cold-start handshake.
 cat > "$STATE_FILE" << EOJSON
@@ -479,6 +484,37 @@ else:
   return 0
  fi
  return 1
+}
+
+replace_series_reading() {
+ local target_ire="$1"
+ local target_name="$2"
+ local replacement="$3"
+ local updated
+ updated=$(READINGS_JSON="[$READINGS]" TARGET_IRE="$target_ire" TARGET_NAME="$target_name" REPLACEMENT_JSON="$replacement" python -c "import json, os
+try:
+ readings=json.loads(os.environ.get('READINGS_JSON','[]') or '[]')
+except Exception:
+ readings=[]
+replacement=json.loads(os.environ['REPLACEMENT_JSON'])
+target_ire=str(os.environ.get('TARGET_IRE',''))
+target_name=os.environ.get('TARGET_NAME','')
+for idx, reading in enumerate(readings):
+ if str(reading.get('ire','')) == target_ire or (target_name and reading.get('name','') == target_name):
+  readings[idx]=replacement
+  break
+else:
+ readings.append(replacement)
+print(','.join(json.dumps(item, separators=(',',':')) for item in readings))" 2>/dev/null)
+ [[ -n "$updated" ]] || return 1
+ READINGS="$updated"
+ READING_COUNT=$(READINGS_JSON="[$READINGS]" python -c "import json, os
+try:
+ print(len(json.loads(os.environ.get('READINGS_JSON','[]') or '[]')))
+except Exception:
+ print(0)" 2>/dev/null)
+ [[ "$READING_COUNT" =~ ^[0-9]+$ ]] || READING_COUNT=0
+ return 0
 }
 
 WHITE_READING="null"
@@ -769,6 +805,102 @@ print(json.dumps(r))
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 done
+
+# Non-2pt greyscale uses the first 100% read as the live white reference while
+# the sweep is running, then refreshes white once more at the end so the saved
+# 100% result reflects the warmed-up display.
+if series_requires_final_white_refresh && (( TOTAL > 0 )); then
+ FIRST_R=$(get_step_field 0 r)
+ FIRST_G=$(get_step_field 0 g)
+ FIRST_B=$(get_step_field 0 b)
+ FIRST_IRE=$(get_step_field 0 ire)
+ FIRST_NAME=$(get_step_field 0 name)
+
+ if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+
+  if [[ "$PATCH_INSERT" == "1" ]] && (( READING_COUNT > 0 )); then
+   post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+   sleep 1.5
+  fi
+
+  post_patch "$FIRST_R" "$FIRST_G" "$FIRST_B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+  sleep "$DELAY_SEC"
+
+  cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh reading)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+
+  PREV_COUNT=$(count_results)
+  SCAN_OFFSET=$(output_size)
+  printf " " >&3
+
+  READ_TIMEOUT=$(read_timeout_seconds "$FIRST_IRE")
+  READ_START=$SECONDS
+  GOT_RESULT=false
+  RETRIED_COMM=0
+  while (( SECONDS - READ_START < READ_TIMEOUT )); do
+   CUR_COUNT=$(count_results)
+   if (( CUR_COUNT > PREV_COUNT )); then
+    GOT_RESULT=true
+    break
+   fi
+   NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
+   if [[ -n "$NEW_OUTPUT" ]]; then
+    CUR_SIZE=$(output_size)
+    if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+     printf " " >&3
+     RETRIED_COMM=1
+     READ_TIMEOUT=$((READ_TIMEOUT + 15))
+     SCAN_OFFSET=$(output_size)
+     continue
+    fi
+    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+    echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=1 ire=$FIRST_IRE reason=$PROMPT_REASON name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
+     if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+     wait_for_device_ready "1" "$(manual_ready_prompt_label "$FIRST_NAME (refresh)" "$PROMPT_REASON")" "$PROMPT_REASON"
+     else
+      sleep 1
+     fi
+     printf " " >&3
+     READ_START=$SECONDS
+     READ_TIMEOUT=$((READ_TIMEOUT + 30))
+     SCAN_OFFSET=$(output_size)
+     continue
+    fi
+    SCAN_OFFSET="$CUR_SIZE"
+   fi
+   sleep 0.3
+  done
+
+  REFRESH_READING=""
+  if $GOT_RESULT; then
+   PARSED=$(parse_latest_result)
+   if [[ -n "$PARSED" ]]; then
+    REFRESH_READING=$(PARSED_JSON="$PARSED" REFRESH_IRE="$FIRST_IRE" REFRESH_NAME="$FIRST_NAME" REFRESH_R="$FIRST_R" REFRESH_G="$FIRST_G" REFRESH_B="$FIRST_B" python -c "import json, os
+  r=json.loads(os.environ['PARSED_JSON'])
+  ire=float(os.environ.get('REFRESH_IRE','100'))
+  r['ire']=int(ire) if ire.is_integer() else ire
+  r['name']=os.environ.get('REFRESH_NAME','100%')
+  r['r_code']=int(os.environ.get('REFRESH_R','0'))
+  r['g_code']=int(os.environ.get('REFRESH_G','0'))
+  r['b_code']=int(os.environ.get('REFRESH_B','0'))
+  print(json.dumps(r))" 2>/dev/null)
+   fi
+  fi
+
+  if [[ -n "$REFRESH_READING" ]]; then
+   if replace_series_reading "$FIRST_IRE" "$FIRST_NAME" "$REFRESH_READING"; then
+    WHITE_READING="$REFRESH_READING"
+    cat > "$STATE_FILE" << EOJSON
+  {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refreshed)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   fi
+  fi
+ fi
+fi
 
 # Quit spotread
 printf "Q" >&3 2>/dev/null
