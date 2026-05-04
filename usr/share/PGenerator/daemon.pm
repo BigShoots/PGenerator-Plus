@@ -185,23 +185,79 @@ sub calman_pattern_source_range (@) {
  return "";
 }
 
-sub legacy_external_pattern_source_name (@) {
+sub legacy_external_set_status (@) {
  my $connection=shift;
- return $hcfr_client{$connection} ? "hcfr" : "devicecontrol";
+ my $software=shift;
+ $software="DeviceControl" if($software eq "");
+ $calibration_client_ip=$client_ip{$connection} || $client_address;
+ $calibration_client_software=$software;
 }
 
-sub legacy_external_pattern_source_range (@) {
- my $quant_range=int($pgenerator_conf{"rgb_quant_range"} || 2);
- return ($quant_range == 1) ? "LIMITED" : "FULL";
+sub legacy_external_mark_hcfr (@) {
+ my $connection=shift;
+ $hcfr_client{$connection}=1;
+ &legacy_external_set_status($connection,"HCFR");
 }
 
-sub legacy_external_pattern_prepare (@) {
- my $connection=shift;
- my $source=&legacy_external_pattern_source_name($connection);
- my $quant_range=int($pgenerator_conf{"rgb_quant_range"} || 2);
- $legacy_external_source{$connection}=$source;
- &apply_source_rgb_quant_range($source,$quant_range);
- return (&legacy_external_pattern_source_range(),$source);
+sub legacy_external_hcfr_triplet_quant_range (@) {
+ my $triplet=shift;
+ my $allow_full=shift;
+ return "" if(!defined $triplet || $triplet eq "");
+ my @values=split(/,/,$triplet);
+ return "" if($#values != 2);
+ my $limited_anchor=0;
+ for(@values) {
+  return "" if($_ !~/^-?\d+$/);
+  return "" if($_ < 0);
+  return 2 if($allow_full && $_ > 255);
+  return 2 if($allow_full && ($_ < 16 || $_ > 235));
+  $limited_anchor=1 if($_ == 16 || $_ == 235);
+ }
+ return 1 if($limited_anchor);
+ return "";
+}
+
+sub legacy_external_hcfr_quant_range (@) {
+ my $payload=shift;
+ my @fields=split(/;/,$payload || "",-1);
+ my $primary_range=&legacy_external_hcfr_triplet_quant_range($fields[0],1);
+ return 2 if($primary_range eq "2");
+ my $background_range=&legacy_external_hcfr_triplet_quant_range($fields[1],0);
+ return 1 if($primary_range eq "1" || $background_range eq "1");
+ return "";
+}
+
+sub legacy_external_hcfr_source_range (@) {
+ my $payload=shift;
+ return "LIMITED" if(&legacy_external_hcfr_quant_range($payload) eq "1");
+ return "";
+}
+
+sub legacy_external_hcfr_template_payload (@) {
+ my $payload=shift;
+ my @fields=split(/;/,$payload || "",-1);
+ for my $idx (0..8) {
+  $fields[$idx]="" if(!defined $fields[$idx]);
+ }
+ $fields[8]="8";
+ return join(";",@fields[0..8]);
+}
+
+sub legacy_external_hcfr_draw (@) {
+ my $draw=shift;
+ return "" if(!defined $draw);
+ return $draw if($draw =~/\d+bit$/i);
+ my $draw_upper=uc($draw);
+ return "${draw_upper}8bit" if($draw_upper =~/^(RECTANGLE|CIRCLE|TRIANGLE|TEXT|IMAGE)$/);
+ return $draw;
+}
+
+sub legacy_external_detect_hcfr_rgb (@) {
+ my $draw=uc(shift || "");
+ my $text=shift;
+ return 1 if($draw eq "IMAGE" && $text =~m{^/var/lib/PGenerator/images-HCFR/}i);
+ return 1 if($draw eq "TEXT" && $text =~/^(Init|End of sequence|Initializing PGenerator at:)/);
+ return 0;
 }
 
 ###############################################
@@ -1419,6 +1475,16 @@ sub pattern_daemon {
     #
     if($key=~/$cmd_pgenerator_command:(.*)/) {
      @el_cmd=split(":",$1);
+      if($el_cmd[0] eq "GET_RESOLUTION" || $el_cmd[0] eq "GET_GPU_MEMORY") {
+       &legacy_external_mark_hcfr($connection);
+      } elsif($el_cmd[0] eq "MULTIPLE") {
+       foreach my $probe (@el_cmd[1..$#el_cmd]) {
+        if($probe eq "GET_RESOLUTION" || $probe eq "GET_GPU_MEMORY") {
+         &legacy_external_mark_hcfr($connection);
+         last;
+        }
+       }
+      }
      if($el_cmd[0] eq "MULTIPLE") {
       $response_tmp="\n";
       shift(@el_cmd);
@@ -1514,11 +1580,16 @@ sub pattern_daemon {
     # TESTTEMPLATE:Pattern
     #
     if($key=~/($test_template_command.*):(.*):(.*)/) {
-     $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software=($2 eq "HCFR")?"HCFR":"DeviceControl";
-     $hcfr_client{$connection}=1 if($2 eq "HCFR");
-      my ($source_range)=&legacy_external_pattern_prepare($connection);
-      $response=&get_pattern($1,$2,$3,"TESTTEMPLATE:$2",$source_range);
+      my $payload=$3;
+      my $source_range="";
+     if($2 eq "HCFR") {
+      &legacy_external_mark_hcfr($connection);
+      $payload=&legacy_external_hcfr_template_payload($payload);
+      $source_range=&legacy_external_hcfr_source_range($payload);
+     } else {
+      &legacy_external_set_status($connection,"DeviceControl");
+     }
+      $response=&get_pattern($1,$2,$payload,"TESTTEMPLATE:$2",$source_range);
      &send_key_to_client($connection,$response);
      &clean_pattern_files();
      last;
@@ -1529,12 +1600,18 @@ sub pattern_daemon {
     # TESTPATTERN:Pattern:DRAW:RESOLUTION:DIM1,DIM2:RED,GREEN,BLUE:
     #
     if($key=~/$test_pattern_command:(.*):(.*):(.*):(.*):(.*):/) {
-     $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
+      my $draw=$2;
+      my $source_range="";
+      if($hcfr_client{$connection}) {
+       &legacy_external_set_status($connection,"HCFR");
+       $draw=&legacy_external_hcfr_draw($draw);
+       $source_range=&legacy_external_hcfr_source_range($5);
+      } else {
+       &legacy_external_set_status($connection,"DeviceControl");
+      }
      $pname_file=$1;
-      my ($source_range)=&legacy_external_pattern_prepare($connection);
      &clean_pattern_files();
-      $response="$ok_response:".&create_pattern_file($2,$3,$4,"$5","","","","",1,"TESTPATTERN",$source_range);
+      $response="$ok_response:".&create_pattern_file($draw,$3,$4,"$5","","","","",1,"TESTPATTERN",$source_range);
      &send_key_to_client($connection,$response);
      last;
     }
@@ -1553,6 +1630,7 @@ sub pattern_daemon {
     #
     if($key=~/$set_conf_command:(.*):(.*):(.*)/sm) {
      @el=split(":",$key,4); 
+      &legacy_external_mark_hcfr($connection) if($el[1] eq "HCFR");
      &set_conf_pattern($el[1],$el[2],$el[3]);
      &send_key_to_client($connection,$ok_response);
      last;
@@ -1563,8 +1641,11 @@ sub pattern_daemon {
     # FUNCTIONS=RECTANGLE;500,500;0;GREY10
     #
     if($key=~/$functions_command=(.*)/) {
-     $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
+      if($hcfr_client{$connection}) {
+       &legacy_external_set_status($connection,"HCFR");
+      } else {
+       &legacy_external_set_status($connection,"DeviceControl");
+      }
      $command_found=1;
      my ($draw,$dim,$res,$functions)=split($separator,$1);
      $log_string="Received rgb triplet request command";
@@ -1580,16 +1661,31 @@ sub pattern_daemon {
     # RGB=RECTANGLE;500,500;0;235,235,235;16,16,16;50,50;Testo
     #
     if($key=~/$rgb_triplet_command=(.*)/) {
-     $calibration_client_ip=$client_ip{$connection} || $client_address;
-     $calibration_client_software=$hcfr_client{$connection}?"HCFR":"DeviceControl";
+      my ($draw,$dim,$res,$rgb,$bg,$position,$text)=split($separator,$1);
+      my $hcfr_marker_only=&legacy_external_detect_hcfr_rgb($draw,$text);
+      my $hcfr_marker_text=($hcfr_marker_only && uc($draw || "") eq "TEXT") ? 1 : 0;
+      my $source_range="";
+      &legacy_external_mark_hcfr($connection) if($hcfr_marker_only);
+      if($hcfr_client{$connection}) {
+       &legacy_external_set_status($connection,"HCFR");
+       $draw=&legacy_external_hcfr_draw($draw);
+       $source_range=&legacy_external_hcfr_source_range("$rgb;$bg") if(!$hcfr_marker_only);
+      } else {
+       &legacy_external_set_status($connection,"DeviceControl");
+      }
      $command_found=1;
-      my ($source_range)=&legacy_external_pattern_prepare($connection);
+     if($hcfr_marker_text) {
+      $log_string="Received hcfr marker text command";
+      $log_string.=" ($key)" if($key ne "");
+      &log($log_string);
+      &send_key_to_client($connection,$ok_response);
+      last;
+     }
      &clean_pattern_files();
-     my ($draw,$dim,$res,$rgb,$bg,$position,$text)=split($separator,$1);
      $log_string="Received rgb triplet request command";
      $log_string.=" ($key)" if($key ne "");
      &log($log_string);
-      &create_pattern_file($draw,"$dim",$res,"$rgb","$bg","$position","$text","",1,"RGB",$source_range);
+    &create_pattern_file($draw,"$dim",$res,"$rgb","$bg","$position","$text","",1,"RGB",$source_range);
      &send_key_to_client($connection,$ok_response);
      last;
     }
@@ -1652,18 +1748,18 @@ sub close_connection {
  my $connection = shift;
  return if(!$connection);
  my $conn_ip=$client_ip{$connection} || "";
+ my $is_hcfr=delete $hcfr_client{$connection};
  if($calman{$connection} || ($conn_ip ne "" && $conn_ip eq $calibration_client_ip)) {
   &calman_reset_pattern_state("disconnect");
   $calibration_client_ip="";
   $calibration_client_software="";
  }
- my $legacy_source=delete $legacy_external_source{$connection};
- &release_source_rgb_quant_range($legacy_source) if($legacy_source ne "");
+ &release_source_rgb_quant_range("hcfr") if($is_hcfr);
  $calman{$connection}=0;
  $cmd{$connection}="";
  delete $client_ip{$connection};
+ delete $hcfr_client_quant_range{$connection};
  delete $rpc_client{$connection};
- delete $hcfr_client{$connection};
  #$connection->send("");
  $select->remove($connection);
  eval { $connection->close(); };
