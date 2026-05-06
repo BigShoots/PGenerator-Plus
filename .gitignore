@@ -16,4 +16,6 @@ build/usb-golden-fix-*/
 build/release-staging/*.remote
 build/*.img.sha256
 build/*-state.json
+build/*.rootfs.ext4
+build/third_party/
 usr/share/PGenerator/*.bak
