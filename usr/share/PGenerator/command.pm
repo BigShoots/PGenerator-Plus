@@ -287,7 +287,7 @@ sub pattern_generator_stop {
 sub video_program_stop {
  my $program = shift;
  if($program ne "") {
-  &sudo("STOP_VIDEO","$program") if($program =~ /(^|\/)omxplayer(\.bin)?$/);
+  &sudo("STOP_VIDEO","$program") if($program =~ /(^|\/)(?:omxplayer(?:\.bin)?|pg_diag_video_player)$/);
   &process_pid("$program","kill");
   &pattern_generator_start(1) if(!&pattern_generator_is_running());
  }

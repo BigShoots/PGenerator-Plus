@@ -2477,7 +2477,7 @@ sub _webui_diag_asset_extension_allowed (@) {
  my ($kind,$ext)=@_;
  $kind=lc($kind || "");
  $ext=lc($ext || "");
- return ($ext =~ /^\.(?:mp4|m4v|mov|webm|mkv|avi)$/) ? 1 : 0 if($kind eq "video");
+ return ($ext =~ /^\.(?:mp4|m4v|mov|webm|mkv|avi|hevc|h265|h264|ts|m2ts)$/) ? 1 : 0 if($kind eq "video");
  return ($ext =~ /^\.(?:png|jpe?g|bmp|ppm|gif)$/) ? 1 : 0 if($kind eq "image");
  return 0;
 }
@@ -5495,7 +5495,7 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
  else {
   my $video_result="";
   &video_program_stop("$program_video_to_kill");
-  $video_result=&play_video("omxplayer.bin",$requested_name,"1h-1");
+  $video_result=&play_video("pg_diag_video_player",$requested_name,"1h-1",$w,$h);
   return '{"status":"error","message":"'.&_webui_json_escape($video_result).'"}' if($video_result ne "OK");
   return '{"status":"ok","pattern":"'.$name.'"}';
  }
@@ -6109,7 +6109,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      </div>
     </div>
     <div style="margin-top:10px">
-     <input type="file" id="diagCustomVideoInput" accept="video/mp4,.mp4,.m4v,.mov,.webm,.mkv,.avi" style="display:none">
+     <input type="file" id="diagCustomVideoInput" accept="video/mp4,.mp4,.m4v,.mov,.webm,.mkv,.avi,.hevc,.h265,.h264,.ts,.m2ts" style="display:none">
      <input type="file" id="diagCustomImageInput" accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/bmp,.bmp,.ppm,image/gif,.gif" style="display:none">
      <div id="diagUploadStatus" style="display:none;font-size:.68rem;color:var(--text2);margin-top:8px"></div>
     </div>
@@ -8077,15 +8077,16 @@ async function diagHandleAssetUpload(kind,evt){
     const seq=await diagUploadVideoSequence(r&&r.filename?r.filename:file.name,file);
     statusMessage='Uploaded diagnostic video and '+seq.frameCount+' renderer frames';
    }catch(seqErr){
-    const seqMessage='Video uploaded, but renderer frame preparation failed: '+(seqErr&&seqErr.message?seqErr.message:'Video frame extraction failed');
+    const seqMessage='Uploaded diagnostic video; using Pi video player';
     await diagLoadAssetCatalog(kind,r.filename||file.name);
     const sel=document.getElementById(diagAssetSelectId(kind));
     if(sel && r && r.filename){
      sel.value=r.filename;
      sel.dataset.lastSelected=r.filename;
     }
-    diagUpdateUploadStatus(seqMessage,true);
-    toast(seqMessage,true);
+    diagUpdateUploadStatus(seqMessage);
+    toast(seqMessage);
+    if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename);
     if(input) input.value='';
     return;
    }
@@ -8098,6 +8099,7 @@ async function diagHandleAssetUpload(kind,evt){
   }
   diagUpdateUploadStatus(statusMessage);
   toast(statusMessage);
+  if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename);
  }catch(e){
   const message=e&&e.message?e.message:'Upload failed';
   diagUpdateUploadStatus(message,true);

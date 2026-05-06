@@ -693,6 +693,15 @@ sub stop_video_root_process (@) {
     system("/usr/bin/pkill","-KILL","-x","omxplayer");
     system("/usr/bin/pkill","-KILL","-x","omxplayer.bin");
  }
+ if($program_name eq "pg_diag_video_player") {
+  for my $name ("pg_diag_video_player","ffmpeg","drm_player","fb_player","omxplayer","omxplayer.bin") {
+   system("/usr/bin/pkill","-TERM","-x",$name);
+  }
+  usleep(250000);
+  for my $name ("pg_diag_video_player","ffmpeg","drm_player","fb_player","omxplayer","omxplayer.bin") {
+   system("/usr/bin/pkill","-KILL","-x",$name);
+  }
+ }
 }
 
 sub root_video_error_message (@) {
@@ -716,8 +725,12 @@ sub play_video_root (@) {
  my $pid=0;
  my $status="";
  my ($status_read,$status_write);
- return print "ERR:Video playback failed to start" if($program_name !~ /^omxplayer(\.bin)?$/);
- $program_path="/usr/bin/omxplayer" if(-x "/usr/bin/omxplayer");
+ return print "ERR:Video playback failed to start" if($program_name !~ /^(?:omxplayer(?:\.bin)?|pg_diag_video_player)$/);
+ if($program_name eq "pg_diag_video_player") {
+  $program_path="/usr/sbin/pg_diag_video_player";
+ } else {
+  $program_path="/usr/bin/omxplayer" if(-x "/usr/bin/omxplayer");
+ }
  return print "ERR:Video playback failed to start" if(!-x $program_path);
  return print "ERR:Video playback failed to start" if(!defined $video || $video eq "");
  return print "ERR:Video playback failed to start" if($video =~ /(^\/|\.\.|[\r\n\0])/);
@@ -749,6 +762,11 @@ sub play_video_root (@) {
     exit 1;
    }
    if($play_pid == 0) {
+    if($program_name eq "pg_diag_video_player") {
+     my $width=$ARGV[5] || "";
+     my $height=$ARGV[6] || "";
+     exec($timeout,"-k","$duration","$duration","$program_path","$video_path","$width","$height");
+    }
     exec($timeout,"-k","$duration","$duration","$program_path","$video_path");
     exit 127;
    }
