@@ -67,7 +67,7 @@
 <main>
  <h1>PGenerator Plus Meter Math Harness</h1>
  <p>
-  This page loads the extracted meter/chart math from <code>webui.pm</code>, runs a Calman-backed oracle against it,
+  This page loads the extracted meter/chart math from <code>webui.pm</code>, runs a compatibility reference against it,
   and highlights any drift in SDR, HDR10, HLG, or Dolby Vision target behavior.
  </p>
 
@@ -291,7 +291,7 @@ function runHarness(){
   configureMode('hlg');
   results.push(
     meterChartSignalMode() === 'hlg' && meterChartIsHdr() && !meterChartIsPq()
-      ? makeResult('pass', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'Matches the Calman/HLG source split where HLG should not be treated as PQ.')
+      ? makeResult('pass', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'Matches the Calman/HLG signal-mode split where HLG should not be treated as PQ.')
       : makeResult('fail', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'HLG classification drift will poison chart selection and target math.')
   );
 
