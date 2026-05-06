@@ -58,6 +58,7 @@ do "daemon.pm"        || die "Error";
 do "client.pm"        || die "Error";
 do "resolve.pm"       || die "Error";
 do "discovery.pm"     || die "Error";
+do "lg.pm"            || die "Error";
 do "webui.pm"         || die "Error";
 do "bash.pm"          || die "Error";
 do "serial.pm"        || die "Error";
