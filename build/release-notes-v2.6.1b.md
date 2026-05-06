@@ -1,9 +1,9 @@
-## PGenerator+ 2.6.1
+## PGenerator+ 2.6.1b
 
 ### Overview
 
-- Stable release focused on LG display calibration workflows, diagnostic pattern playback, meter/chart stability, and smoother Web UI operation during active reads and TV control.
-- Rebuilt from the released `2.5.10b` full image with the current `2.6.1` PGenerator+ overlay. The shipped image continues to include the patched `5.10.89+-7l` `vc4.ko` carried forward from that base image.
+- Beta update focused on LG display calibration workflows, diagnostic pattern playback, meter/chart stability, and smoother Web UI operation during active reads and TV control.
+- Rebuilt from the released `2.5.10b` full image with the current `2.6.1b` PGenerator+ overlay. The shipped image continues to include the patched `5.10.89+-7l` `vc4.ko` carried forward from that base image.
 
 ### Added
 
@@ -20,12 +20,12 @@
 - Fixed Web UI connection handling during long-running meter reads and LG writes so busy operations do not look like random page disconnects.
 - Fixed continuous-read startup retry behavior so the first continuous read after restart is more reliable.
 - Fixed chart/cache behavior so manual reads, series reads, 0%/100% contrast handling, gamma tracking, and stale series restores stay consistent after refreshes.
-- Fixed diagnostic pattern layout and button sizing so AVS HD 709 video patterns and image patterns are separated cleanly.
+- Fixed diagnostic pattern layout and custom media controls so AVS HD 709 video patterns, image patterns, uploaded video playback, and uploaded image playback are easier to control.
 - Fixed the full-image build helper's optional Argyll permission pass so `set -u` does not abort builds without an external Argyll runtime directory.
-- Bumped the shipped image/runtime version from `2.5.10b` to `2.6.1`.
+- Bumped the shipped image/runtime version from `2.5.10b` to `2.6.1b`.
 
 ### Downloads
 
-- `PGenerator_Plus_v2.6.1.img.7z.001` + `.002` - full SD card image built from the released `v2.5.10b` base image with the current `2.6.1` overlay; the resulting image retains the patched `5.10.89+-7l` `vc4.ko` from that base.
-- `PGenerator_Plus_v2.6.1.img.sha256` - SHA-256 checksum for the extracted full image.
-- `PGenerator_Plus_v2.6.1.img.7z.sha256` - SHA-256 checksums for the split archive parts.
+- `PGenerator_Plus_v2.6.1b.img.7z.001` + `.002` - full SD card image built from the released `v2.5.10b` base image with the current `2.6.1b` overlay; the resulting image retains the patched `5.10.89+-7l` `vc4.ko` from that base.
+- `PGenerator_Plus_v2.6.1b.img.sha256` - SHA-256 checksum for the extracted full image.
+- `PGenerator_Plus_v2.6.1b.img.7z.sha256` - SHA-256 checksums for the split archive parts.
