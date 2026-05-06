@@ -5814,6 +5814,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .pat-section.collapsed .pat-content{display:none}
 .diag-custom-assets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:min(100%,570px)}
 .diag-custom-asset{min-width:0}
+.diag-custom-picker{display:grid;grid-template-columns:minmax(0,1fr) 40px 40px;gap:6px;align-items:center}
 @media (max-width:720px){.diag-pattern-layout{grid-template-columns:1fr}}
 @media (hover:hover) and (pointer:fine){.pat-btn:hover{border-color:var(--accent);background:#1a1a2e;transform:translateY(-1px)}}
 .sat-row{display:flex;align-items:center;gap:4px;margin-bottom:4px}
@@ -6083,10 +6084,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        </div>
       </div>
       <div class="diag-custom-asset" style="margin-top:10px">
-       <select id="diagCustomVideoSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('video')">
-        <option value="">Custom Diagnostic Video...</option>
-        <option value="__upload__">Upload video...</option>
-       </select>
+       <div class="diag-custom-picker">
+        <select id="diagCustomVideoSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('video')">
+         <option value="">Custom Diagnostic Video...</option>
+         <option value="__upload__">Upload video...</option>
+        </select>
+        <button class="btn btn-sm btn-secondary" type="button" onclick="diagPlaySelectedAsset('video')" title="Play custom diagnostic video">&#9654;</button>
+        <button class="btn btn-sm btn-secondary" type="button" onclick="stopPattern()" title="Stop custom diagnostic video">&#9632;</button>
+       </div>
        <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded videos play through the legacy video playback path.</div>
       </div>
      </div>
@@ -6100,10 +6105,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        <button class="pat-btn" onclick="showPattern('overscan',event)">Overscan</button>
       </div>
       <div class="diag-custom-asset" style="margin-top:10px">
-       <select id="diagCustomImageSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('image')">
-        <option value="">Custom Diagnostic Image...</option>
-        <option value="__upload__">Upload image...</option>
-       </select>
+       <div class="diag-custom-picker">
+        <select id="diagCustomImageSelect" class="inline-select" style="width:100%" onchange="diagHandleAssetSelect('image')">
+         <option value="">Custom Diagnostic Image...</option>
+         <option value="__upload__">Upload image...</option>
+        </select>
+        <button class="btn btn-sm btn-secondary" type="button" onclick="diagPlaySelectedAsset('image')" title="Play custom diagnostic image">&#9654;</button>
+        <button class="btn btn-sm btn-secondary" type="button" onclick="stopPattern()" title="Stop custom diagnostic image">&#9632;</button>
+       </div>
        <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded images render through the IMAGE pattern path.</div>
       </div>
      </div>
@@ -7887,6 +7896,19 @@ function diagRenderAssetSelect(kind,selectedValue){
  else sel.value='';
  if(sel.value!==DIAG_UPLOAD_SENTINEL) sel.dataset.lastSelected=sel.value;
 }
+async function diagPlaySelectedAsset(kind){
+ const sel=document.getElementById(diagAssetSelectId(kind));
+ if(!sel) return;
+ const value=sel.value||sel.dataset.lastSelected||'';
+ if(!value||value===DIAG_UPLOAD_SENTINEL){
+  toast('Choose a custom diagnostic '+kind+' first',true);
+  return;
+ }
+ sel.value=value;
+ sel.dataset.lastSelected=value;
+ diagBlurElement(sel);
+ await diagShowUploadedAsset(kind,value,true);
+}
 async function diagLoadAssetCatalog(kind,preserveValue){
  const path=kind==='video'?'/api/diagnostic/videos':'/api/diagnostic/images';
  const r=await fetchJSON(path,{_quiet:true,_timeoutMs:10000});
@@ -8033,9 +8055,9 @@ async function diagUploadAsset(kind,file){
  }
  throw new Error('Upload failed');
 }
-async function diagShowUploadedAsset(kind,filename){
+async function diagShowUploadedAsset(kind,filename,forcePlay){
  const token=diagAssetPatternToken(kind,filename);
- if(activePattern===token){await stopPattern();return;}
+ if(activePattern===token && !forcePlay){await stopPattern();return;}
  meterClearInteractiveSelection(true);
  clearActive();
  activePattern=token;
@@ -8063,7 +8085,7 @@ async function diagHandleAssetSelect(kind){
  }
  sel.dataset.lastSelected=value;
  diagBlurElement(sel);
- await diagShowUploadedAsset(kind,value);
+ await diagShowUploadedAsset(kind,value,true);
 }
 async function diagHandleAssetUpload(kind,evt){
  const input=evt&&evt.target?evt.target:null;
@@ -8086,7 +8108,7 @@ async function diagHandleAssetUpload(kind,evt){
     }
     diagUpdateUploadStatus(seqMessage);
     toast(seqMessage);
-    if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename);
+    if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename,true);
     if(input) input.value='';
     return;
    }
@@ -8099,7 +8121,7 @@ async function diagHandleAssetUpload(kind,evt){
   }
   diagUpdateUploadStatus(statusMessage);
   toast(statusMessage);
-  if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename);
+  if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename,true);
  }catch(e){
   const message=e&&e.message?e.message:'Upload failed';
   diagUpdateUploadStatus(message,true);
