@@ -20,6 +20,11 @@
 - Fixed Web UI connection handling during long-running meter reads and LG writes so busy operations do not look like random page disconnects.
 - Fixed continuous-read startup retry behavior so the first continuous read after restart is more reliable.
 - Fixed chart/cache behavior so manual reads, series reads, 0%/100% contrast handling, gamma tracking, and stale series restores stay consistent after refreshes.
+- Fixed the manual-read controls during continuous reads by hiding Read Once and Read Series while Read Continuous is active.
+- Replaced the misleading Live Ready label with the active patch name so the displayed measurement context is clearer.
+- Improved chart y-axis auto-scaling to prefer readable 2, 5, and 10 step intervals.
+- Added measured On/Off contrast display in the luminance chart when both black and white readings are available.
+- Fixed connected-meter updates so changing meters is reflected without requiring a fresh boot.
 - Fixed diagnostic pattern layout and custom media controls so AVS HD 709 video patterns, image patterns, uploaded video playback, and uploaded image playback are easier to control.
 - Fixed the full-image build helper's optional Argyll permission pass so `set -u` does not abort builds without an external Argyll runtime directory.
 - Bumped the shipped image/runtime version from `2.5.10b` to `2.6.1b`.
