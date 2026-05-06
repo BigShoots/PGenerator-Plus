@@ -28,6 +28,9 @@ const code = [
   extractFunction('meterDvAbsoluteTargetRollOffFraction'),
   extractFunction('meterDvAbsoluteChartTargetLuminance'),
   extractFunction('meterCodeFromSignalPercent'),
+  extractFunction('meterLgSdrExtendedCodeFromPercent'),
+  extractFunction('meterCodeFromSignalPercentWithOptions'),
+  extractFunction('meterLgGreyscaleUsesExtendedSdr'),
   extractFunction('meterGreyStimulusFraction'),
   extractFunction('meterBuildStepsJS')
 ].join('\n\n');
@@ -93,6 +96,21 @@ const context = {
     return Math.max(0, Math.min(1, ((Number(code) || 0) - min) / span));
   },
   meterGreySeriesSlots,
+  meterGreyTvControlsActive() {
+    return false;
+  },
+  meterGreySignalEntries(points) {
+    return meterGreySeriesSlots(points).map(slot => ({
+      slot,
+      stimulus: slot,
+      r: slot,
+      g: slot,
+      b: slot
+    }));
+  },
+  meterFormatPercentValue(value) {
+    return String(Math.round(Number(value) * 10) / 10).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  },
   meterGreyStimulusValues(points) {
     return meterGreySeriesSlots(points);
   },

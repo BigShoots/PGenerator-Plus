@@ -1,0 +1,2086 @@
+#!/usr/bin/perl
+
+use IO::Socket::INET;
+use IO::Socket::SSL;
+use IO::Select;
+use IPC::Open2;
+use JSON::PP;
+use Digest::SHA qw(sha1_base64);
+use File::Path qw(make_path);
+use MIME::Base64 qw(encode_base64 decode_base64);
+use Time::HiRes qw(time);
+
+$|=1;
+$SIG{PIPE}="IGNORE";
+
+$WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+$REQUEST_ENV="PGEN_LG_REQUEST_B64";
+$DEFAULT_CONNECT_TIMEOUT=5;
+$DEFAULT_PAIR_TIMEOUT=55;
+$MAX_FRAME_SIZE=1024*1024;
+# LG authorizes externalpq calibration/DDC by this signed app identity on some
+# WebOS models; the saved client key alone is not always sufficient.
+$SIGNATURE=(
+ "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbm".
+ "ctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.CHgjyv0gsB4sHNSJ2VVHFdk4".
+ "yvc+XdMCxOtQChuXKqFNMVGYb9PmcsiDI98tP4ylQVWZDJfjQgjktez7ccQq9".
+ "DLFmKpiF/RRlPz8RycRAkJkAzlZfwIUrIFC9QCxnigPVKk4BYiTmUf/dyijz".
+ "9wFdmLujMtLsD8K53/tf5tjDIuUbz46OfIsrMr+9YaAlhrQz9HJPL8mWhKIR".
+ "PX185ObbZTXyr+tp6/XLbas0G/jW8Q5d9d3YaFt9cYVadiS7cDU3uGL4kLZO".
+ "59L3r9CvLtwfd6N11P5DIumA1o8vIx3fM//eX2JNk8UYDJ4huAhK69qh26EG".
+ "iIJ+iTynVJerrv4Xg=="
+);
+
+###############################################
+#              JSON Helpers                   #
+###############################################
+sub json_true (@) {
+ return JSON::PP::true;
+}
+
+sub json_false (@) {
+ return JSON::PP::false;
+}
+
+sub json_bool (@) {
+ my $value=shift;
+ return $value ? &json_true() : &json_false();
+}
+
+sub json_encode (@) {
+ my $data=shift;
+ return JSON::PP::encode_json($data);
+}
+
+sub json_decode (@) {
+ my $text=shift;
+ my $data={};
+ eval { $data=JSON::PP::decode_json($text); 1; } or return {};
+ return (ref($data) eq "HASH") ? $data : {};
+}
+
+sub json_error (@) {
+ my ($message,$extra)=@_;
+ $extra={} if(ref($extra) ne "HASH");
+ $extra->{"status"}="error";
+ $extra->{"message"}=$message;
+ return $extra;
+}
+
+sub json_ok (@) {
+ my $extra=shift;
+ $extra={} if(ref($extra) ne "HASH");
+ $extra->{"status"}="ok" if(!defined($extra->{"status"}) || $extra->{"status"} eq "");
+ return $extra;
+}
+
+sub json_permission_error (@) {
+ my ($message,$extra)=@_;
+ $extra={} if(ref($extra) ne "HASH");
+ $extra=&json_error($message,$extra);
+ $extra->{"error_code"}="insufficient-permissions" if(!defined($extra->{"error_code"}) || $extra->{"error_code"} eq "");
+ $extra->{"needs_repair"}=&json_true() if(!exists($extra->{"needs_repair"}));
+ return $extra;
+}
+
+sub request_from_env (@) {
+ my $raw=$ENV{$REQUEST_ENV}||"";
+ return {} if($raw eq "");
+ my $json="";
+ eval {
+  $json=decode_base64($raw);
+  1;
+ } or do {
+  $json=$raw;
+ };
+ return &json_decode($json);
+}
+
+sub valid_ipv4 (@) {
+ my $ip=shift;
+ return 0 if(!defined($ip) || $ip eq "");
+ return 0 if($ip !~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+ foreach my $octet ($1,$2,$3,$4) {
+  return 0 if($octet < 0 || $octet > 255);
+ }
+ return 1;
+}
+ 
+sub file_read_text (@) {
+ my $path=shift;
+ return "" if(!defined($path) || $path eq "" || !-f $path);
+ my $text="";
+ local $/;
+ open(my $fh,"<",$path) or return "";
+ binmode($fh);
+ $text=<$fh>;
+ close($fh);
+ $text="" if(!defined($text));
+ return $text;
+}
+
+sub file_write_text (@) {
+ my ($path,$text)=@_;
+ return 0 if(!defined($path) || $path eq "");
+ $text="" if(!defined($text));
+ my $dir=$path;
+ $dir =~ s{/[^/]+$}{};
+ if($dir ne "" && !-d $dir) {
+  eval { make_path($dir); 1; } or return 0;
+ }
+ my $tmp="$path.tmp";
+ open(my $fh,">",$tmp) or return 0;
+ binmode($fh);
+ print $fh $text;
+ close($fh);
+ return rename($tmp,$path) ? 1 : 0;
+}
+
+sub file_write_json (@) {
+ my ($path,$data)=@_;
+ return &file_write_text($path,&json_encode($data));
+}
+
+sub file_read_json (@) {
+ my $path=shift;
+ my $text=&file_read_text($path);
+ return {} if($text eq "");
+ return &json_decode($text);
+}
+
+sub random_bytes (@) {
+ my $wanted=int(shift);
+ my $out="";
+ while(length($out) < $wanted) {
+  $out.=chr(int(rand(256)));
+ }
+ return substr($out,0,$wanted);
+}
+
+###############################################
+#            Socket / WebSocket               #
+###############################################
+sub session_reader (@) {
+ my $session=shift;
+ return $session->{"reader"}||$session->{"socket"};
+}
+
+sub session_writer (@) {
+ my $session=shift;
+ return $session->{"writer"}||$session->{"socket"};
+}
+
+sub socket_write_all (@) {
+ my ($session,$buf)=@_;
+ my $handle=&session_writer($session);
+ return print {$handle} $buf;
+}
+
+sub socket_read_exact (@) {
+ my ($session,$wanted,$timeout)=@_;
+ my $sock=&session_reader($session);
+ my $sel=$session->{"select"};
+ my $buf="";
+ my $deadline=time()+$timeout;
+ while(length($buf) < $wanted) {
+  my $remaining=$deadline-time();
+  return undef if($remaining <= 0);
+  my @ready=$sel->can_read($remaining);
+  return undef if(!@ready);
+  my $chunk="";
+  my $read=sysread($sock,$chunk,$wanted-length($buf));
+  return undef if(!defined($read) || $read <= 0);
+  $buf.=$chunk;
+ }
+ return $buf;
+}
+
+sub socket_read_headers (@) {
+ my ($session,$timeout)=@_;
+ my $sock=&session_reader($session);
+ my $sel=$session->{"select"};
+ my $buf="";
+ my $deadline=time()+$timeout;
+ while(index($buf,"\r\n\r\n") < 0) {
+  my $remaining=$deadline-time();
+  return undef if($remaining <= 0);
+  my @ready=$sel->can_read($remaining);
+  return undef if(!@ready);
+  my $chunk="";
+  my $read=sysread($sock,$chunk,1024);
+  return undef if(!defined($read) || $read <= 0);
+  $buf.=$chunk;
+  return undef if(length($buf) > 32768);
+ }
+ return $buf;
+}
+
+sub websocket_mask_payload (@) {
+ my ($mask,$payload)=@_;
+ my $masked="";
+ my $mask_len=length($mask);
+ for(my $i=0;$i<length($payload);$i++) {
+  $masked.=chr(ord(substr($payload,$i,1)) ^ ord(substr($mask,$i % $mask_len,1)));
+ }
+ return $masked;
+}
+
+sub websocket_send_frame (@) {
+ my ($session,$opcode,$payload)=@_;
+ $payload="" if(!defined($payload));
+ my $len=length($payload);
+ my $frame=chr(0x80 | ($opcode & 0x0F));
+ my $mask=&random_bytes(4);
+ if($len < 126) {
+  $frame.=chr(0x80 | $len);
+ } elsif($len <= 65535) {
+  $frame.=chr(0x80 | 126).pack("n",$len);
+ } else {
+  $frame.=chr(0x80 | 127).pack("Q>",$len);
+ }
+ $frame.=$mask;
+ $frame.=&websocket_mask_payload($mask,$payload);
+ return &socket_write_all($session,$frame);
+}
+
+sub websocket_send_json (@) {
+ my ($session,$payload)=@_;
+ return &websocket_send_frame($session,0x1,&json_encode($payload));
+}
+
+sub websocket_send_pong (@) {
+ my ($session,$payload)=@_;
+ return &websocket_send_frame($session,0xA,$payload);
+}
+
+sub websocket_send_ping (@) {
+ my ($session,$payload)=@_;
+ return &websocket_send_frame($session,0x9,$payload);
+}
+
+sub websocket_recv_frame (@) {
+ my ($session,$timeout)=@_;
+ my $hdr=&socket_read_exact($session,2,$timeout);
+ return undef if(!defined($hdr));
+ my ($byte1,$byte2)=map { ord($_) } split(//,$hdr);
+ my $opcode=$byte1 & 0x0F;
+ my $masked=($byte2 & 0x80) ? 1 : 0;
+ my $len=$byte2 & 0x7F;
+ if($len == 126) {
+  my $ext=&socket_read_exact($session,2,$timeout);
+  return undef if(!defined($ext));
+  $len=unpack("n",$ext);
+ } elsif($len == 127) {
+  my $ext=&socket_read_exact($session,8,$timeout);
+  return undef if(!defined($ext));
+  $len=unpack("Q>",$ext);
+ }
+ return undef if($len > $MAX_FRAME_SIZE);
+ my $mask="";
+ if($masked) {
+  $mask=&socket_read_exact($session,4,$timeout);
+  return undef if(!defined($mask));
+ }
+ my $payload=&socket_read_exact($session,$len,$timeout);
+ return undef if(!defined($payload));
+ if($masked) {
+  $payload=&websocket_mask_payload($mask,$payload);
+ }
+ return { opcode => $opcode, payload => $payload };
+}
+
+sub websocket_recv_json (@) {
+ my ($session,$timeout,$wanted_id)=@_;
+ my $deadline=time()+$timeout;
+ while(time() < $deadline) {
+  my $remaining=$deadline-time();
+  return undef if($remaining <= 0);
+  my $frame=&websocket_recv_frame($session,$remaining);
+  return undef if(!defined($frame));
+  if($frame->{"opcode"} == 0x9) {
+   &websocket_send_pong($session,$frame->{"payload"});
+   next;
+  }
+  next if($frame->{"opcode"} == 0xA);
+  return { type => "close", error => "Connection closed" } if($frame->{"opcode"} == 0x8);
+  next if($frame->{"opcode"} != 0x1);
+  my $msg={};
+  eval { $msg=JSON::PP::decode_json($frame->{"payload"}); 1; } or next;
+  next if(ref($msg) ne "HASH");
+  if(defined($wanted_id) && $wanted_id ne "") {
+   next if(defined($msg->{"id"}) && $msg->{"id"} ne $wanted_id);
+  }
+  return $msg;
+ }
+ return undef;
+}
+
+sub websocket_close (@) {
+ my $session=shift;
+ return if(ref($session) ne "HASH");
+ eval { &websocket_send_frame($session,0x8,""); };
+ if($session->{"reader"}) {
+  eval { close($session->{"reader"}); };
+ }
+ if($session->{"writer"}) {
+  eval { close($session->{"writer"}); };
+ }
+ if($session->{"socket"}) {
+  eval { close($session->{"socket"}); };
+ }
+ if($session->{"pid"}) {
+  eval { waitpid($session->{"pid"},0); };
+ }
+}
+
+sub websocket_connect_candidate (@) {
+ my ($host,$scheme,$port,$timeout)=@_;
+ my $sock;
+ my $session;
+ if($scheme eq "wss") {
+  my ($reader,$writer);
+  my $pid=eval { IPC::Open2::open2($reader,$writer,"sh","-c","exec socat -T $timeout - OPENSSL:$host:$port,verify=0 2>/dev/null"); };
+  return undef if(!$pid);
+  binmode($reader);
+  binmode($writer);
+  select((select($writer),$|=1)[0]);
+  $session={
+   reader => $reader,
+   writer => $writer,
+   select => IO::Select->new($reader),
+   host => $host,
+   scheme => $scheme,
+   port => $port,
+   seq => 1,
+   pid => $pid,
+  };
+ } else {
+  $sock=IO::Socket::INET->new(
+   PeerHost => $host,
+   PeerPort => $port,
+   Proto => 'tcp',
+   Timeout => $timeout,
+  );
+  return undef if(!$sock);
+  $session={
+   socket => $sock,
+   select => IO::Select->new($sock),
+   host => $host,
+   scheme => $scheme,
+   port => $port,
+   seq => 1,
+  };
+ }
+ my $key=encode_base64(&random_bytes(16),"");
+ my $want=sha1_base64($key.$WS_GUID)."=";
+ my $request="GET / HTTP/1.1\r\n".
+             "Host: $host:$port\r\n".
+             "Upgrade: websocket\r\n".
+             "Connection: Upgrade\r\n".
+             "Sec-WebSocket-Key: $key\r\n".
+             "Sec-WebSocket-Version: 13\r\n\r\n";
+ if(!&socket_write_all($session,$request)) {
+  &websocket_close($session);
+  return undef;
+ }
+ my $headers=&socket_read_headers($session,$timeout + 2);
+ if(!defined($headers) || $headers !~ /^HTTP\/1\.[01]\s+101\s+/) {
+  &websocket_close($session);
+  return undef;
+ }
+ my $accept="";
+ if($headers =~ /Sec-WebSocket-Accept:\s*([^\r\n]+)/i) {
+  $accept=$1;
+  $accept =~ s/^\s+//;
+  $accept =~ s/\s+$//;
+ }
+ if($accept eq "" || $accept ne $want) {
+  &websocket_close($session);
+  return undef;
+ }
+ return $session;
+}
+
+sub websocket_open (@) {
+ my ($host,$timeout)=@_;
+ my @candidates=(
+  { scheme => "wss", port => 3001 },
+  { scheme => "ws", port => 3000 },
+ );
+ foreach my $candidate (@candidates) {
+  my $session=&websocket_connect_candidate($host,$candidate->{"scheme"},$candidate->{"port"},$timeout);
+  return $session if(ref($session) eq "HASH");
+ }
+ return undef;
+}
+
+###############################################
+#             LG Session Helpers              #
+###############################################
+sub lg_message_hello (@) {
+ return { id => "hello", type => "hello", payload => {} };
+}
+
+sub lg_message_register (@) {
+ my $client_key=shift(@_);
+ my $pairing_type_arg=shift(@_);
+ my $force_pairing_arg=shift(@_);
+ my $pairing_type=uc($pairing_type_arg||"PROMPT");
+ my $force_pairing=$force_pairing_arg ? 1 : 0;
+ $client_key="" if(!defined($client_key));
+ $pairing_type="PROMPT" if($pairing_type !~ /^(PROMPT|PIN|COMBINED|LGSWITCH-PIN)$/);
+ return {
+  type => "register",
+  id => "register_0",
+  payload => {
+   "client-key" => $client_key,
+   forcePairing => &json_bool($force_pairing),
+   manifest => {
+    appVersion => "1.0",
+    manifestVersion => 1,
+    permissions => [
+     "LAUNCH","LAUNCH_WEBAPP","TEST_OPEN","TEST_PROTECTED",
+     "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
+     "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","READ_APP_STATUS",
+     "CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD","READ_CURRENT_CHANNEL",
+     "READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE","READ_INSTALLED_APPS",
+     "READ_TV_CHANNEL_LIST","READ_SETTINGS","WRITE_NOTIFICATION_TOAST"
+    ],
+    signatures => [{ signature => $SIGNATURE, signatureVersion => 1 }],
+    signed => {
+     appId => "com.lge.test",
+     created => "20130630",
+     localizedAppNames => {
+      "" => "Test Remote App",
+      "ko-KR" => "Test \x{B9AC}\x{BAA8}\x{CEE8} \x{C571}",
+      "zxx-XX" => "\x{041B}\x{0413} Test R\x{044D}\x{043C}ot\x{044D} A\x{041F}\x{041F}",
+     },
+     localizedVendorNames => { "" => "LG Electronics" },
+     permissions => [
+      "TEST_SECURE","READ_RUNNING_APPS","READ_LGE_SDX","READ_LGE_TV_INPUT_EVENTS",
+      "READ_NOTIFICATIONS","SEARCH","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT",
+      "READ_UPDATE_INFO","UPDATE_FROM_REMOTE_APP"
+     ],
+     serial => "3c6f8f1519ac979d1ce1064329e0f2e7",
+     vendorId => "com.lge",
+    },
+   },
+    pairingType => $pairing_type,
+  },
+ };
+}
+
+sub lg_request (@) {
+ my ($session,$id,$uri,$payload,$timeout)=@_;
+ $payload={} if(ref($payload) ne "HASH");
+ my $message={ id => $id, type => "request", uri => "ssap://$uri", payload => $payload };
+ return undef if(!&websocket_send_json($session,$message));
+ return &websocket_recv_json($session,$timeout,$id);
+}
+
+sub lg_luna_request (@) {
+ my ($session,$id_prefix,$luna_uri,$params,$timeout)=@_;
+ $params={} if(ref($params) ne "HASH");
+ my $target_uri="luna://$luna_uri";
+ my $alert_payload={
+  message => " ",
+  buttons => [
+   { label => "", onClick => $target_uri, params => $params },
+  ],
+  onclose => { uri => $target_uri, params => $params },
+  onfail => { uri => $target_uri, params => $params },
+ };
+ my $create=&lg_request($session,"${id_prefix}_create_alert","system.notifications/createAlert",$alert_payload,$timeout);
+ return $create if(ref($create) ne "HASH");
+ return $create if(($create->{"type"}||"") eq "error");
+ my $alert_id="";
+ if(ref($create->{"payload"}) eq "HASH") {
+  $alert_id=$create->{"payload"}{"alertId"}||"";
+ }
+ return { type => "error", error => "LG TV did not return an alertId for Luna request", payload => $create->{"payload"}||{} } if($alert_id eq "");
+ my $close=&lg_request($session,"${id_prefix}_close_alert","system.notifications/closeAlert",{ alertId => $alert_id },$timeout);
+ return $close if(ref($close) eq "HASH");
+ return { type => "error", error => "LG TV did not acknowledge Luna request alert close", payload => {} };
+}
+
+sub lg_authenticated_session (@) {
+ my ($ip,$client_key,$connect_timeout,$pair_timeout,$allow_pair)=@_;
+ my $session=&websocket_open($ip,$connect_timeout);
+ my $connect_attempts=1;
+ if(ref($session) ne "HASH") {
+  select(undef,undef,undef,0.35);
+  $connect_attempts=2;
+  $session=&websocket_open($ip,$connect_timeout + 2);
+ }
+ if(ref($session) ne "HASH") {
+  &diag_log_append("connect:failure",{ ip => $ip, attempts => $connect_attempts });
+  return &json_error("Unable to connect to LG WebOS TV at $ip on ws://3000 or wss://3001",{ ip => $ip, connect_attempts => $connect_attempts });
+ }
+
+ my $hello_info={};
+ my $system_info={};
+ my $software_info={};
+ my $pair_prompted=0;
+ my $message="";
+ my $response;
+
+ eval {
+  &websocket_send_json($session,&lg_message_hello()) or die "Unable to send hello request\n";
+  $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+  die "No hello response from TV\n" if(ref($response) ne "HASH");
+  die "Unexpected hello response from TV\n" if(($response->{"type"}||"") ne "hello");
+  $hello_info=$response->{"payload"} if(ref($response->{"payload"}) eq "HASH");
+
+  $response=&lg_request($session,"get_sys_info","system/getSystemInfo",{},$connect_timeout + 2);
+  $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+
+  &websocket_send_json($session,&lg_message_register($client_key)) or die "Unable to send registration request\n";
+  $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+  die "No registration response from TV\n" if(ref($response) ne "HASH");
+  die (($response->{"error"}||"LG registration failed")."\n") if(($response->{"type"}||"") eq "error");
+
+  if(($response->{"type"}||"") eq "registered") {
+   $client_key=$response->{"payload"}{"client-key"}||$client_key;
+   $message="Connected using stored LG TV pairing.";
+  } elsif(($response->{"type"}||"") eq "response" && ($response->{"payload"}{"pairingType"}||"") eq "PROMPT") {
+   die "LG TV is not paired. Connect / Pair first\n" if(!$allow_pair);
+   $pair_prompted=1;
+   $message="Accept the LG pairing prompt on the TV.";
+   $response=&websocket_recv_json($session,$pair_timeout,"");
+   die "Pairing prompt was shown on the TV but was not accepted in time\n" if(ref($response) ne "HASH");
+   die (($response->{"error"}||"LG pairing failed")."\n") if(($response->{"type"}||"") eq "error");
+   die "Unexpected LG pairing response\n" if(($response->{"type"}||"") ne "registered");
+   $client_key=$response->{"payload"}{"client-key"}||"";
+   die "TV did not return an LG client key\n" if($client_key eq "");
+   $message="LG TV pairing accepted on the TV.";
+  } else {
+   die "Unexpected LG registration response\n";
+  }
+
+  $response=&lg_request($session,"get_sys_info_post","system/getSystemInfo",{},$connect_timeout + 2);
+  $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+  $response=&lg_request($session,"get_sw_info","com.webos.service.update/getCurrentSWInformation",{},$connect_timeout + 2);
+  $software_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+  1;
+ };
+
+ my $err=$@;
+ if($err) {
+  $err =~ s/[\r\n]+$//;
+  &websocket_close($session);
+  return &json_error($err,{ ip => $ip, pair_prompted => &json_bool($pair_prompted) });
+ }
+
+ return {
+  status => "ok",
+  session => $session,
+  ip => $ip,
+  client_key => $client_key,
+  pair_prompted => &json_bool($pair_prompted),
+  prompt_style => "tv-prompt",
+  hello_info => $hello_info,
+  system_info => $system_info,
+  software_info => $software_info,
+  message => $message,
+ };
+}
+
+sub lg_probe_workflow (@) {
+ my ($ip,$connect_timeout)=@_;
+ my $session=&websocket_open($ip,$connect_timeout);
+ return &json_error("No LG WebOS socket answered at $ip",{ ip => $ip, is_lg_tv => &json_false() }) if(ref($session) ne "HASH");
+ my $hello_info={};
+ my $system_info={};
+ my $software_info={};
+ my $result={};
+ eval {
+  &websocket_send_json($session,&lg_message_hello()) or die "Unable to send hello request\n";
+  my $response=&websocket_recv_json($session,$connect_timeout + 1,"");
+  die "No WebOS hello response\n" if(ref($response) ne "HASH");
+  die "Unexpected WebOS hello response\n" if(($response->{"type"}||"") ne "hello");
+  $hello_info=$response->{"payload"} if(ref($response->{"payload"}) eq "HASH");
+  $response=&lg_request($session,"probe_sys_info","system/getSystemInfo",{},$connect_timeout + 1);
+  $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+  $response=&lg_request($session,"probe_sw_info","com.webos.service.update/getCurrentSWInformation",{},$connect_timeout + 1);
+  $software_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+  my $device_type=lc($hello_info->{"deviceType"}||"");
+  my $device_os=lc($hello_info->{"deviceOS"}||"");
+  my $model=&lg_extract_model_name($system_info,$software_info,$hello_info);
+  my $is_lg_tv=(($device_type eq "tv" || $model =~ /(?:oled|lg|dtv|webos)/i) && ($device_os =~ /webos/ || ($software_info->{"product_name"}||"") =~ /webos/i)) ? 1 : 0;
+  $result=&json_ok({
+   ip => $ip,
+   is_lg_tv => &json_bool($is_lg_tv),
+   name => &lg_extract_name($system_info,$software_info,$hello_info),
+   model_name => $model,
+   software_version => &lg_extract_software_version($software_info),
+   transport => $session->{"scheme"},
+   port => $session->{"port"},
+   hello_info => $hello_info,
+   system_info => $system_info,
+   software_info => $software_info,
+  });
+  1;
+ };
+ my $err=$@;
+ &websocket_close($session);
+ if($err) {
+  $err =~ s/[\r\n]+$//;
+  return &json_error($err,{ ip => $ip, is_lg_tv => &json_false() });
+ }
+ return $result;
+}
+
+sub lg_picture_get_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$keys,$requested_picture_mode)=@_;
+ $keys=[] if(ref($keys) ne "ARRAY");
+ $requested_picture_mode="" if(!defined($requested_picture_mode));
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ if($generation->{"ddc_only_white_balance"} && &lg_keys_include_ddc_only_forbidden($keys)) {
+  my @allowed=grep { !&lg_picture_key_forbidden_on_ddc_only($_) } @{$keys};
+  my $picture_mode=&lg_resolve_ddc_picture_mode($ip,$requested_picture_mode);
+  my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$picture_mode);
+  if(@allowed) {
+   my $allowed_response=&lg_request($session,"get_picture_settings_allowed","settings/getSystemSettings",{
+    category => "picture",
+    keys => \@allowed,
+   },$connect_timeout + 2);
+   my ($allowed_failed,$allowed_message)=&response_is_app_failure($allowed_response);
+   if(!$allowed_failed && ref($allowed_response) eq "HASH" && ref($allowed_response->{"payload"}) eq "HASH" && ref($allowed_response->{"payload"}{"settings"}) eq "HASH") {
+    foreach my $key (keys(%{$allowed_response->{"payload"}{"settings"}})) {
+     $picture_settings->{$key}=$allowed_response->{"payload"}{"settings"}{$key};
+    }
+   }
+  }
+  &websocket_close($session);
+  return &json_ok({
+   ip => $ip,
+   client_key => $auth->{"client_key"},
+   picture_settings => $picture_settings,
+   hello_info => $auth->{"hello_info"},
+   system_info => $auth->{"system_info"},
+   software_info => $auth->{"software_info"},
+   lg_generation => $generation,
+   virtual_picture_settings => &json_true(),
+   message => "LG white-balance settings are represented through PGenerator DDC state on this LG generation.",
+  });
+ }
+ my $response=&lg_request($session,"get_picture_settings","settings/getSystemSettings",{
+  category => "picture",
+  keys => $keys,
+ },$connect_timeout + 2);
+ &websocket_close($session);
+ return &json_error("LG TV did not return picture settings",{ ip => $ip }) if(ref($response) ne "HASH");
+ my ($get_failed,$get_failure_message)=&response_is_app_failure($response);
+ if($get_failed) {
+  &diag_log_append("picture_get:failure",{ ip => $ip, response => $response, message => $get_failure_message });
+  if($get_failure_message =~ /insufficient permissions/i) {
+   return &json_permission_error("LG client key cannot read picture settings. Pair With PIN once to mint a fresh PIN-paired key; future reconnects will reuse it.",{ ip => $ip, raw_error => $get_failure_message });
+  }
+  return &json_error($get_failure_message,{ ip => $ip, raw_response => $response });
+ }
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ my $picture_settings=(ref($payload->{"settings"}) eq "HASH") ? $payload->{"settings"} : {};
+ $picture_settings=&lg_ddc_merge_picture_settings($ip,$picture_settings);
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  picture_settings => $picture_settings,
+  payload => $payload,
+  hello_info => $auth->{"hello_info"},
+  system_info => $auth->{"system_info"},
+  software_info => $auth->{"software_info"},
+  lg_generation => $generation,
+ });
+}
+
+###############################################
+#       Picture-write Diagnostic Logging      #
+###############################################
+$DIAG_LOG_PATH="/var/lib/PGenerator/lg/last-write.log";
+$DIAG_LOG_MAX_BYTES=131072;
+$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|game)$';
+
+sub diag_log_append (@) {
+ my ($label,$data)=@_;
+ my $dir=$DIAG_LOG_PATH;
+ $dir =~ s{/[^/]+$}{};
+ if($dir ne "" && !-d $dir) {
+  eval { make_path($dir); 1; };
+ }
+ my @t=localtime(time());
+ my $stamp=sprintf("%04d-%02d-%02dT%02d:%02d:%02d",$t[5]+1900,$t[4]+1,$t[3],$t[2],$t[1],$t[0]);
+ my $body=eval { JSON::PP->new->canonical(1)->utf8(1)->encode($data); } || "<encode-failed>";
+ my $line="[$stamp] $label $body\n";
+ if(-f $DIAG_LOG_PATH && (stat($DIAG_LOG_PATH))[7] > $DIAG_LOG_MAX_BYTES) {
+  unlink($DIAG_LOG_PATH);
+ }
+ if(open(my $fh,">>",$DIAG_LOG_PATH)) {
+  binmode($fh);
+  print $fh $line;
+  close($fh);
+ }
+}
+
+sub response_is_app_failure (@) {
+ my $response=shift;
+ return (0,"") if(ref($response) ne "HASH");
+ my $type=$response->{"type"}||"";
+ if($type eq "error") {
+  my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+  my $msg=$response->{"error"}||"LG TV returned an error envelope";
+  my $detail=$payload->{"errorMessage"}||$payload->{"errorText"}||"";
+  $msg.=": $detail" if($detail ne "" && index($msg,$detail) < 0);
+  return (1,$msg);
+ }
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ my $rv=$payload->{"returnValue"};
+ my $rv_false=0;
+ if(defined($rv)) {
+  if(ref($rv) eq "JSON::PP::Boolean") {
+   $rv_false=!$rv ? 1 : 0;
+  } elsif(!ref($rv)) {
+   $rv_false=(lc("$rv") eq "false" || "$rv" eq "0") ? 1 : 0;
+  }
+	}
+	if($rv_false) {
+	 my $msg=$payload->{"errorMessage"}||$payload->{"errorText"}||$response->{"error"}||"LG TV rejected the request (returnValue=false)";
+	 $msg.=" (errorCode=".$payload->{"errorCode"}.")" if(defined($payload->{"errorCode"}) && $msg !~ /errorCode/i);
+	 return (1,$msg);
+	}
+ return (0,"");
+}
+
+###############################################
+#        LG Calibration / 1D LUT DDC          #
+###############################################
+$LG_DDC_DIR="/var/lib/PGenerator/lg/ddc";
+$LG_DDC_1D_MIN_STEP_UNITS=64;
+$LG_DDC_1D_STEP_RATIO=0.018;
+@LG_DDC_1D_LABELS=(2.5,5,7.5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
+
+sub lg_ddc_round_to_even (@) {
+ my $value=shift;
+ $value=0 if(!defined($value));
+ my $floor=int($value);
+ my $frac=$value-$floor;
+ return $floor if($frac < 0.5);
+ return $floor+1 if($frac > 0.5);
+ return ($floor % 2 == 0) ? $floor : $floor+1;
+}
+
+sub lg_ddc_reference_video_10bit_for_ire (@) {
+ my $ire=shift;
+ $ire=0 if(!defined($ire));
+ $ire=0+$ire;
+ $ire=0 if($ire < 0);
+ $ire=100 if($ire > 100);
+ return 64+&lg_ddc_round_to_even($ire/100*876);
+}
+
+sub lg_ddc_legal_video_8bit_for_ire (@) {
+ my $ire=shift;
+ $ire=0 if(!defined($ire));
+ $ire=0+$ire;
+ $ire=0 if($ire < 0);
+ $ire=100 if($ire > 100);
+ return 16+&lg_ddc_round_to_even($ire/100*219);
+}
+
+sub lg_ddc_extended_video_8bit_for_ire (@) {
+ my $ire=shift;
+ $ire=0 if(!defined($ire));
+ $ire=0+$ire;
+ $ire=0 if($ire < 0);
+ $ire=100 if($ire > 100);
+ return 16+&lg_ddc_round_to_even($ire/100*239);
+}
+
+# PGenerator's limited-range renderer normalizes legal 16-235 source codes so
+# the HDMI wire code stays legal. Keep the editable DDC bins aligned to those
+# patch codes; using 16-255 here clips the upper greyscale points on limited RGB.
+@LG_DDC_1D_INDEXES=map { &lg_ddc_legal_video_8bit_for_ire($_) << 2 } @LG_DDC_1D_LABELS;
+@LG_DDC_1D_PATCH_INDEXES_8BIT=map { &lg_ddc_legal_video_8bit_for_ire($_) << 2 } @LG_DDC_1D_LABELS;
+
+sub lg_ddc_token (@) {
+ my $value=shift;
+ $value="" if(!defined($value));
+ $value=lc($value);
+ $value =~ s/[^a-z0-9_.-]+/_/g;
+ $value =~ s/^\.+//;
+ $value="default" if($value eq "");
+ return $value;
+}
+
+sub lg_ddc_state_path (@) {
+ my ($ip,$picture_mode)=@_;
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).".json";
+}
+
+sub lg_ddc_baseline_path (@) {
+ my ($ip,$picture_mode)=@_;
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).".baseline.1dlut";
+}
+
+sub lg_picture_mode_for_calibration (@) {
+ my $picture_mode=shift;
+ $picture_mode="" if(!defined($picture_mode));
+ my $mode_lc=lc($picture_mode);
+ my %map=(
+  "cinema" => "cinema",
+  "expert1" => "expert1",
+  "expert2" => "expert2",
+  "isfexpert1" => "expert1",
+  "isfexpert2" => "expert2",
+  "game" => "game",
+  "technicolorexpert" => "technicolorExpert",
+  "filmmaker" => "filmMaker",
+  "filmmakermode" => "filmMaker",
+  "hdr_cinema" => "hdr_cinema",
+  "hdr_game" => "hdr_game",
+  "hdr_technicolorexpert" => "hdr_technicolorExpert",
+  "hdr_filmmaker" => "hdr_filmMaker",
+  "hdr_filmmakermode" => "hdr_filmMaker",
+ );
+ return $map{$mode_lc}||"";
+}
+
+sub lg_calibration_request (@) {
+ my ($session,$id,$command,$data,$data_opt,$picture_mode,$timeout)=@_;
+ my $payload={
+  command => $command,
+  profileNo => 0,
+  programID => 1,
+ };
+ $payload->{"picMode"}=$picture_mode if(defined($picture_mode) && $picture_mode ne "");
+ if(ref($data) eq "ARRAY") {
+  my $packed=pack("v*",@{$data});
+  $payload->{"data"}=encode_base64($packed,"");
+  $payload->{"dataCount"}=scalar(@{$data});
+  # LG's calibration endpoint expects the symbolic type string; C2 firmware
+  # reports "not a string" when this is sent as the older numeric code.
+  $payload->{"dataType"}="unsigned integer16";
+  $payload->{"dataOpt"}=defined($data_opt) ? int($data_opt) : 1;
+ }
+ return &lg_request($session,$id,"externalpq/setExternalPqData",$payload,$timeout);
+}
+
+sub lg_calibration_get (@) {
+ my ($session,$id,$command,$timeout)=@_;
+ return &lg_request($session,$id,"externalpq/getExternalPqData",{ command => $command },$timeout);
+}
+
+sub lg_unity_1d_lut (@) {
+ my @lut=();
+ for(my $channel=0;$channel<3;$channel++) {
+  for(my $i=0;$i<1024;$i++) {
+   push(@lut,int(($i*32767/1023)+0.5));
+  }
+ }
+ return \@lut;
+}
+
+sub lg_decode_1d_lut_payload (@) {
+ my $payload=shift;
+ return undef if(ref($payload) ne "HASH");
+ my $encoded=$payload->{"data"}||"";
+ return undef if($encoded eq "");
+ my $raw="";
+ eval { $raw=decode_base64($encoded); 1; } or return undef;
+ return undef if(length($raw) < 6144);
+ my @lut=unpack("v*",substr($raw,0,6144));
+ return undef if(@lut < 3072);
+ $#lut=3071 if(@lut > 3072);
+ return \@lut;
+}
+
+sub lg_read_1d_lut_file (@) {
+ my $path=shift;
+ return undef if(!-f $path);
+ my $raw=&file_read_text($path);
+ return undef if(length($raw) != 6144);
+ my @lut=unpack("v*",$raw);
+ return undef if(@lut != 3072);
+ return \@lut;
+}
+
+sub lg_write_1d_lut_file (@) {
+ my ($path,$lut)=@_;
+ return 0 if(ref($lut) ne "ARRAY" || @{$lut} != 3072);
+ return &file_write_text($path,pack("v*",@{$lut}));
+}
+
+sub lg_get_current_1d_lut (@) {
+ my ($session,$timeout)=@_;
+ my $response=&lg_calibration_get($session,"ddc_get_1d_lut","GET_1D_DPG_DATA",$timeout);
+ my ($failed,$message)=&response_is_app_failure($response);
+ return undef if($failed || ref($response) ne "HASH");
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ return &lg_decode_1d_lut_payload($payload);
+}
+
+sub lg_ddc_baseline_lut (@) {
+ my ($session,$ip,$picture_mode,$timeout)=@_;
+ my $path=&lg_ddc_baseline_path($ip,$picture_mode);
+ my $stored=&lg_read_1d_lut_file($path);
+ return $stored if(ref($stored) eq "ARRAY");
+ my $current=&lg_get_current_1d_lut($session,$timeout);
+ $current=&lg_unity_1d_lut() if(ref($current) ne "ARRAY");
+ &lg_write_1d_lut_file($path,$current);
+ return $current;
+}
+
+sub lg_ddc_normalize_rgb_array (@) {
+ my $value=shift;
+ my @out=();
+	for(my $i=0;$i<@LG_DDC_1D_INDEXES;$i++) {
+	 my $v=0;
+	 if(ref($value) eq "ARRAY" && defined($value->[$i])) {
+	  $v=0+$value->[$i];
+	 }
+	 $v=-50 if($v < -50);
+	 $v=50 if($v > 50);
+	 $v=int($v*100+($v < 0 ? -0.5 : 0.5))/100;
+	 push(@out,$v);
+	}
+	return \@out;
+}
+
+sub lg_ddc_1d_index_for_ire (@) {
+ my $ire=shift;
+ return -1 if(!defined($ire) || "$ire" eq "");
+ $ire=0+$ire;
+ for(my $i=0;$i<@LG_DDC_1D_LABELS;$i++) {
+  return $i if(abs($LG_DDC_1D_LABELS[$i]-$ire) < 0.001);
+ }
+ return -1;
+}
+
+sub lg_ddc_1d_slot_info (@) {
+ my $slot=shift;
+ return undef if(!defined($slot) || $slot < 0 || $slot >= @LG_DDC_1D_INDEXES);
+ my $ire=$LG_DDC_1D_LABELS[$slot];
+ my $sample=$LG_DDC_1D_INDEXES[$slot];
+ my $patch_sample=$LG_DDC_1D_PATCH_INDEXES_8BIT[$slot];
+	 return {
+	  slot => int($slot),
+	  ire => $ire,
+	  sample_10bit => int($sample),
+	  sample_10bit_reference => int(&lg_ddc_reference_video_10bit_for_ire($ire)),
+	  sample_10bit_8bit_scaled => int($patch_sample),
+	  patch_8bit_limited => int($patch_sample >> 2),
+	  sample_8bit_floor => int($sample/4),
+  sample_8bit_round => int(($sample/4) + 0.5),
+ };
+}
+
+sub lg_ddc_1d_target_info (@) {
+ my $settings=shift;
+ return {} if(ref($settings) ne "HASH");
+ my $slot=&lg_ddc_1d_index_for_ire($settings->{"whiteBalanceIre"});
+ return {} if($slot < 0);
+ my $info=&lg_ddc_1d_slot_info($slot);
+ return {} if(ref($info) ne "HASH");
+ my %channels=(
+  red => "whiteBalanceRed",
+  green => "whiteBalanceGreen",
+  blue => "whiteBalanceBlue",
+ );
+ foreach my $name (keys %channels) {
+  my $values=&lg_ddc_normalize_rgb_array($settings->{$channels{$name}});
+  $info->{$name}=0+$values->[$slot];
+ }
+ return $info;
+}
+
+sub lg_ddc_1d_nonzero_map (@) {
+ my $settings=shift;
+ return {} if(ref($settings) ne "HASH");
+ my %channels=(
+  red => "whiteBalanceRed",
+  green => "whiteBalanceGreen",
+  blue => "whiteBalanceBlue",
+ );
+ my %out=();
+ foreach my $name (keys %channels) {
+  my $values=&lg_ddc_normalize_rgb_array($settings->{$channels{$name}});
+  my @items=();
+  for(my $slot=0;$slot<@{$values};$slot++) {
+   my $value=0+$values->[$slot];
+   next if(abs($value) < 0.00001);
+   my $info=&lg_ddc_1d_slot_info($slot);
+   next if(ref($info) ne "HASH");
+   $info->{"value"}=$value;
+   push(@items,$info);
+  }
+  $out{$name}=\@items if(@items);
+ }
+ return \%out;
+}
+
+sub lg_ddc_has_22pt_rgb (@) {
+ my $settings=shift;
+ return 0 if(ref($settings) ne "HASH");
+ return 0 if(($settings->{"whiteBalanceMethod"}||"") ne "22");
+ return 0 if(ref($settings->{"whiteBalanceRed"}) ne "ARRAY");
+ return 0 if(ref($settings->{"whiteBalanceGreen"}) ne "ARRAY");
+ return 0 if(ref($settings->{"whiteBalanceBlue"}) ne "ARRAY");
+ return 1;
+}
+
+sub lg_ddc_step_units_for_point (@) {
+ my ($baseline,$channel,$sample)=@_;
+ my $base=0;
+ if(ref($baseline) eq "ARRAY" && @{$baseline} == 3072) {
+  $base=$baseline->[$channel*1024+$sample]||0;
+ }
+ my $units=int($base*$LG_DDC_1D_STEP_RATIO+0.5);
+ $units=$LG_DDC_1D_MIN_STEP_UNITS if($units < $LG_DDC_1D_MIN_STEP_UNITS);
+ return $units;
+}
+
+sub lg_ddc_1d_bin_start (@) {
+ my $slot=shift;
+ my $center=$LG_DDC_1D_INDEXES[$slot];
+ if($slot <= 0) {
+  return (64+$center)/2;
+ }
+ return ($LG_DDC_1D_INDEXES[$slot-1]+$center)/2;
+}
+
+sub lg_ddc_1d_bin_end (@) {
+ my $slot=shift;
+ my $center=$LG_DDC_1D_INDEXES[$slot];
+ if($slot >= $#LG_DDC_1D_INDEXES) {
+  return ($center+1023)/2;
+ }
+ return ($center+$LG_DDC_1D_INDEXES[$slot+1])/2;
+}
+
+sub lg_ddc_1d_nearest_slot_for_sample (@) {
+ my $sample=shift;
+ return -1 if(!defined($sample));
+ for(my $slot=0;$slot<@LG_DDC_1D_INDEXES;$slot++) {
+  my $start=&lg_ddc_1d_bin_start($slot);
+  my $end=&lg_ddc_1d_bin_end($slot);
+  next if($sample < $start);
+  return $slot if($sample < $end || $slot == $#LG_DDC_1D_INDEXES);
+ }
+ return -1;
+}
+
+sub lg_ddc_offset_at_index (@) {
+	 my ($sample,$offsets,$baseline,$channel)=@_;
+	 my $slot=&lg_ddc_1d_nearest_slot_for_sample($sample);
+	 return 0 if($slot < 0);
+	 my $offset=(ref($offsets) eq "ARRAY") ? ($offsets->[$slot]||0) : 0;
+ return 0 if(abs($offset) < 0.000001);
+ my $point=$LG_DDC_1D_INDEXES[$slot];
+	 return $offset*&lg_ddc_step_units_for_point($baseline,$channel,$point);
+	}
+
+sub lg_ddc_offset_units_for_slot (@) {
+	 my ($slot,$offsets,$baseline,$channel)=@_;
+	 return 0 if(!defined($slot) || $slot < 0 || $slot >= @LG_DDC_1D_INDEXES);
+	 my $offset=(ref($offsets) eq "ARRAY") ? ($offsets->[$slot]||0) : 0;
+	 return 0 if(abs($offset) < 0.000001);
+	 my $point=$LG_DDC_1D_INDEXES[$slot];
+	 return $offset*&lg_ddc_step_units_for_point($baseline,$channel,$point);
+	}
+
+sub lg_ddc_interpolated_offset_at_index (@) {
+	 my ($sample,$offsets,$baseline,$channel)=@_;
+	 return 0 if(ref($offsets) ne "ARRAY" || !@LG_DDC_1D_INDEXES);
+	 $sample=0 if(!defined($sample));
+	 my $black=64;
+	 return 0 if($sample <= $black);
+	 my $first_point=$LG_DDC_1D_INDEXES[0];
+	 my $first_offset=&lg_ddc_offset_units_for_slot(0,$offsets,$baseline,$channel);
+	 if($sample <= $first_point) {
+	  my $span=$first_point-$black;
+	  return $first_offset if($span <= 0);
+	  return $first_offset*(($sample-$black)/$span);
+	 }
+	 for(my $slot=0;$slot<$#LG_DDC_1D_INDEXES;$slot++) {
+	  my $left_point=$LG_DDC_1D_INDEXES[$slot];
+	  my $right_point=$LG_DDC_1D_INDEXES[$slot+1];
+	  next if($sample > $right_point);
+	  my $left_offset=&lg_ddc_offset_units_for_slot($slot,$offsets,$baseline,$channel);
+	  my $right_offset=&lg_ddc_offset_units_for_slot($slot+1,$offsets,$baseline,$channel);
+	  my $span=$right_point-$left_point;
+	  return $left_offset if($span <= 0);
+	  my $ratio=($sample-$left_point)/$span;
+	  $ratio=0 if($ratio < 0);
+	  $ratio=1 if($ratio > 1);
+	  return $left_offset+(($right_offset-$left_offset)*$ratio);
+	 }
+	 return &lg_ddc_offset_units_for_slot($#LG_DDC_1D_INDEXES,$offsets,$baseline,$channel);
+	}
+
+sub lg_ddc_build_1d_lut (@) {
+	 my ($baseline,$settings)=@_;
+	 $baseline=&lg_unity_1d_lut() if(ref($baseline) ne "ARRAY" || @{$baseline} != 3072);
+ my @lut=@{$baseline};
+ my @channels=(
+  &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceRed"}),
+  &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceGreen"}),
+  &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceBlue"}),
+ );
+	 for(my $channel=0;$channel<3;$channel++) {
+	  for(my $i=0;$i<1024;$i++) {
+	   my $pos=($channel*1024)+$i;
+	   my $adjusted=($baseline->[$pos]||0)+&lg_ddc_interpolated_offset_at_index($i,$channels[$channel],$baseline,$channel);
+	   $adjusted=0 if($adjusted < 0);
+	   $adjusted=32767 if($adjusted > 32767);
+	   $lut[$pos]=int($adjusted+0.5);
+  }
+ }
+ return \@lut;
+}
+
+sub lg_ddc_enable_1d_pipeline (@) {
+ my ($session,$timeout,$picture_mode)=@_;
+ my @responses=();
+ foreach my $item (
+  ["1D_DPG_EN","ddc_enable_1d_lut",1],
+  ["1D_2_2_EN","ddc_enable_1d_degamma",0],
+  ["1D_0_45_EN","ddc_enable_1d_regamma",0],
+ ) {
+  my ($command,$id,$required)=@{$item};
+  my $response=&lg_calibration_request($session,$id,$command,[1],1,$picture_mode,$timeout);
+  my ($failed,$message)=&response_is_app_failure($response);
+  my $ignored=0;
+  if($required && $command eq "1D_DPG_EN" && ($failed || ref($response) ne "HASH") && ($message||"") =~ /not a string/i) {
+   $ignored=1;
+  }
+  push(@responses,{
+   command => $command,
+   required => &json_bool($required),
+   failed => &json_bool(($failed || ref($response) ne "HASH") && !$ignored),
+   ignored_failure => &json_bool($ignored),
+   message => $ignored ? (($message||"LG TV rejected 1D LUT enable.")." Continuing with LUT upload.") : ($message||""),
+   raw_response => $response,
+  });
+  if($required && ($failed || ref($response) ne "HASH") && !$ignored) {
+   return (0,$message||"LG TV rejected 1D LUT enable.",\@responses);
+  }
+ }
+ return (1,"",\@responses);
+}
+
+sub lg_ddc_state_from_settings (@) {
+ my ($settings,$picture_mode)=@_;
+ return {
+  pictureMode => $picture_mode,
+  whiteBalanceMethod => "22",
+  whiteBalanceIre => $settings->{"whiteBalanceIre"}||"",
+  whiteBalanceRed => &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceRed"}),
+  whiteBalanceGreen => &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceGreen"}),
+  whiteBalanceBlue => &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceBlue"}),
+  ddc_1d_lut => &json_true(),
+  updated_at => int(time()),
+ };
+}
+
+sub lg_ddc_save_state (@) {
+ my ($ip,$picture_mode,$settings)=@_;
+ my $state=&lg_ddc_state_from_settings($settings,$picture_mode);
+ &file_write_json(&lg_ddc_state_path($ip,$picture_mode),$state);
+ return $state;
+}
+
+sub lg_ddc_load_state (@) {
+ my ($ip,$picture_mode)=@_;
+ my $state=&file_read_json(&lg_ddc_state_path($ip,$picture_mode));
+ return {} if(ref($state) ne "HASH");
+ return $state;
+}
+
+sub lg_ddc_merge_picture_settings (@) {
+ my ($ip,$picture_settings)=@_;
+ return $picture_settings if(ref($picture_settings) ne "HASH");
+ my $picture_mode=$picture_settings->{"pictureMode"}||"";
+ return $picture_settings if($picture_mode eq "");
+ my $state=&lg_ddc_load_state($ip,$picture_mode);
+ return $picture_settings if(ref($state) ne "HASH" || ref($state->{"whiteBalanceRed"}) ne "ARRAY");
+ foreach my $key ("whiteBalanceMethod","whiteBalanceIre","whiteBalanceRed","whiteBalanceGreen","whiteBalanceBlue","ddc_1d_lut") {
+  $picture_settings->{$key}=$state->{$key} if(exists($state->{$key}));
+ }
+ return $picture_settings;
+}
+
+sub lg_generation_info (@) {
+ my ($system_info,$software_info,$hello_info)=@_;
+ my $model=&lg_extract_model_name($system_info,$software_info,$hello_info);
+ my $model_lc=lc($model||"");
+ my $platform=(ref($software_info) eq "HASH") ? ($software_info->{"model_name"}||"") : "";
+ my $product=(ref($software_info) eq "HASH") ? ($software_info->{"product_name"}||"") : "";
+ my $release=(ref($hello_info) eq "HASH") ? ($hello_info->{"deviceOSReleaseVersion"}||"") : "";
+ my $platform_year=0;
+ $platform_year=2000+$1 if($platform =~ /W(\d{2})/i);
+ my $series="";
+ if($model_lc =~ /oled\d*([a-z])(\d)/) {
+  $series=uc($1).$2;
+ }
+ my $webos_major=0;
+ $webos_major=$1 if($product =~ /webostv\s+(\d+)/i);
+ $webos_major=$1 if(!$webos_major && $release =~ /^(\d+)/);
+ my $ddc_only=0;
+ $ddc_only=1 if($platform_year && $platform_year <= 2021);
+ $ddc_only=1 if($series =~ /^[BCGZ]1$/);
+ $ddc_only=1 if($webos_major && $webos_major <= 6);
+ return {
+  model_name => $model,
+  platform_model => $platform,
+  product_name => $product,
+  webos_release => $release,
+  platform_year => $platform_year,
+  series => $series,
+  webos_major => $webos_major,
+  ddc_only_white_balance => &json_bool($ddc_only),
+  picture_mode_read_forbidden => &json_bool($ddc_only),
+ };
+}
+
+sub lg_picture_key_forbidden_on_ddc_only (@) {
+ my $key=shift;
+ $key="" if(!defined($key));
+ return ($key =~ /^(?:pictureMode|colorTemperature|whiteBalance.*)$/) ? 1 : 0;
+}
+
+sub lg_keys_include_ddc_only_forbidden (@) {
+ my $keys=shift;
+ return 0 if(ref($keys) ne "ARRAY");
+ foreach my $key (@{$keys}) {
+  return 1 if(&lg_picture_key_forbidden_on_ddc_only($key));
+ }
+ return 0;
+}
+
+sub lg_find_latest_ddc_picture_mode (@) {
+ my $ip=shift;
+ return "" if(!&valid_ipv4($ip) || !-d $LG_DDC_DIR);
+ my $prefix=&lg_ddc_token($ip)."-";
+ my $best_path="";
+ my $best_mtime=0;
+ if(opendir(my $dh,$LG_DDC_DIR)) {
+  foreach my $name (readdir($dh)) {
+   next if(index($name,$prefix) != 0 || $name !~ /\.json$/);
+   my $path="$LG_DDC_DIR/$name";
+   my $mtime=(stat($path))[9]||0;
+   next if($mtime <= $best_mtime);
+   $best_mtime=$mtime;
+   $best_path=$path;
+  }
+  closedir($dh);
+ }
+ return "" if($best_path eq "");
+ my $state=&file_read_json($best_path);
+ return (ref($state) eq "HASH") ? ($state->{"pictureMode"}||"") : "";
+}
+
+sub lg_resolve_ddc_picture_mode (@) {
+ my ($ip,$requested)=@_;
+ $requested="" if(!defined($requested));
+ return $requested if($requested ne "");
+ my $latest=&lg_find_latest_ddc_picture_mode($ip);
+ return $latest if($latest ne "");
+ return "cinema";
+}
+
+sub lg_ddc_virtual_picture_settings (@) {
+ my ($ip,$picture_mode)=@_;
+ $picture_mode=&lg_resolve_ddc_picture_mode($ip,$picture_mode);
+ my $state=&lg_ddc_load_state($ip,$picture_mode);
+ if(ref($state) eq "HASH" && ref($state->{"whiteBalanceRed"}) eq "ARRAY") {
+  $state->{"pictureMode"}=$picture_mode if(($state->{"pictureMode"}||"") eq "");
+  $state->{"whiteBalanceMethod"}="22" if(($state->{"whiteBalanceMethod"}||"") eq "");
+  $state->{"ddc_1d_lut"}=&json_true();
+  return $state;
+ }
+ my @zero=map { 0 } @LG_DDC_1D_LABELS;
+ return {
+  pictureMode => $picture_mode,
+  whiteBalanceMethod => "22",
+  whiteBalanceIre => "50",
+  whiteBalanceRed => [@zero],
+  whiteBalanceGreen => [@zero],
+  whiteBalanceBlue => [@zero],
+  ddc_1d_lut => &json_true(),
+ };
+}
+
+sub lg_ddc_1d_white_balance_set (@) {
+ my ($session,$ip,$picture_mode,$settings,$timeout,$keep_calibration_mode)=@_;
+ $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
+ return (0,undef) if(!&lg_ddc_has_22pt_rgb($settings));
+ my $cal_mode=&lg_picture_mode_for_calibration($picture_mode);
+ if($cal_mode eq "") {
+  return (1,&json_error("LG DDC 1D LUT white-balance writes are not mapped for picture mode '$picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ active_picture_mode => $picture_mode }));
+ }
+
+ my $start=&lg_calibration_request($session,"ddc_cal_start","CAL_START",undef,1,$cal_mode,$timeout);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ if($start_failed || ref($start) ne "HASH") {
+  my $message=$start_message||"LG TV rejected calibration mode start.";
+  if($message =~ /insufficient permissions/i) {
+   return (1,&json_error(
+    "LG TV is paired, but this saved key is not authorized for LG calibration/DDC yet. Pairing completed, but CAL_START returned 401.",
+    {
+     active_picture_mode => $picture_mode,
+     raw_response => $start,
+     error_code => "lg-calibration-permission",
+     needs_repair => &json_false(),
+    }
+   ));
+  }
+  return (1,&json_error($message,{ active_picture_mode => $picture_mode, raw_response => $start }));
+ }
+
+ my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout);
+ my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
+
+ my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
+ if(!$enable_ok) {
+  &lg_calibration_request($session,"ddc_cal_end_after_enable_fail","CAL_END",undef,1,"",$timeout) if(!$keep_calibration_mode);
+  return (1,&json_error($enable_message||"LG TV rejected 1D LUT enable.",{ active_picture_mode => $picture_mode, pipeline_responses => $enable_responses }));
+ }
+
+	my $upload=&lg_calibration_request($session,"ddc_upload_1d_lut","1D_DPG_DATA",$lut,1,$cal_mode,$timeout);
+	my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
+	my $retry_info=undef;
+	my $end={ type => "pending" };
+	if($upload_failed || ref($upload) ne "HASH") {
+	 my $first_upload=$upload;
+	 my $first_message=$upload_message||"";
+	 my $first_end=&lg_calibration_request($session,"ddc_cal_end_after_upload_fail","CAL_END",undef,1,"",$timeout);
+	 $end=$first_end;
+	 if($first_message =~ /(500\s+Application error|not a string)/i) {
+	  select(undef,undef,undef,0.35);
+	  my $retry_start=&lg_calibration_request($session,"ddc_cal_start_retry","CAL_START",undef,1,$cal_mode,$timeout);
+	  my ($retry_start_failed,$retry_start_message)=&response_is_app_failure($retry_start);
+	  my $retry_enable_responses=[];
+	  my $retry_upload=undef;
+	  my $retry_upload_message="";
+	  my $retry_end=undef;
+	  if(!$retry_start_failed && ref($retry_start) eq "HASH") {
+	   my $retry_enable_ok=0;
+	   my $retry_enable_message="";
+	   ($retry_enable_ok,$retry_enable_message,$retry_enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
+	   if($retry_enable_ok) {
+	    $retry_upload=&lg_calibration_request($session,"ddc_upload_1d_lut_retry","1D_DPG_DATA",$lut,1,$cal_mode,$timeout);
+	    ($upload_failed,$retry_upload_message)=&response_is_app_failure($retry_upload);
+	    if(!$upload_failed && ref($retry_upload) eq "HASH") {
+	     $upload=$retry_upload;
+	     $upload_message="";
+	     $end=$keep_calibration_mode
+	      ? { type => "skipped", payload => { returnValue => &json_true() }, keep_calibration_mode => &json_true() }
+	      : &lg_calibration_request($session,"ddc_cal_end_retry","CAL_END",undef,1,"",$timeout);
+	    } else {
+	     $upload=$retry_upload;
+	     $upload_message=$retry_upload_message;
+	     $retry_end=&lg_calibration_request($session,"ddc_cal_end_after_upload_retry_fail","CAL_END",undef,1,"",$timeout);
+	     $end=$retry_end;
+	    }
+	   } else {
+	    $upload_message=$retry_enable_message||$first_message;
+	    $retry_end=&lg_calibration_request($session,"ddc_cal_end_after_enable_retry_fail","CAL_END",undef,1,"",$timeout);
+	    $end=$retry_end;
+	   }
+	  } else {
+	   $upload_message=$retry_start_message||$first_message;
+	  }
+	  $retry_info={
+	   first_upload => $first_upload,
+	   first_end => $first_end,
+	   retry_start => $retry_start,
+	   retry_enable_responses => $retry_enable_responses,
+	   retry_upload => $retry_upload,
+	   retry_end => $retry_end,
+	  };
+	 }
+	}
+	if(!$upload_failed && ref($upload) eq "HASH" && (($end->{"type"}||"") eq "pending")) {
+	 $end=$keep_calibration_mode
+	  ? { type => "skipped", payload => { returnValue => &json_true() }, keep_calibration_mode => &json_true() }
+	  : &lg_calibration_request($session,"ddc_cal_end","CAL_END",undef,1,"",$timeout);
+	}
+	if($upload_failed || ref($upload) ne "HASH") {
+	 return (1,&json_error($upload_message||"LG TV rejected 1D LUT upload.",{ active_picture_mode => $picture_mode, raw_response => $upload, end_response => $end, retry => $retry_info }));
+	}
+
+	 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
+	 my @reference_slot_samples=map { &lg_ddc_reference_video_10bit_for_ire($_) } @LG_DDC_1D_LABELS;
+	 return (1,&json_ok({
+	  active_picture_mode => $picture_mode,
+	  calibration_picture_mode => $cal_mode,
+	 picture_settings => $state,
+	  ddc_target => &lg_ddc_1d_target_info($settings),
+	  ddc_nonzero => &lg_ddc_1d_nonzero_map($settings),
+	  ddc_slot_labels => \@LG_DDC_1D_LABELS,
+	  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
+	  ddc_slot_samples_reference => \@reference_slot_samples,
+	  ddc_response => $upload,
+	  ddc_end_response => $end,
+	  pipeline_responses => $enable_responses,
+  calibration_mode => &json_bool($keep_calibration_mode),
+ }));
+}
+
+sub lg_picture_set_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$fallback_picture_mode)=@_;
+ $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
+ $settings={} if(ref($settings) ne "HASH");
+ $readback_keys=[] if(ref($readback_keys) ne "ARRAY");
+ $tv_input="" if(!defined($tv_input));
+ $fallback_picture_mode="" if(!defined($fallback_picture_mode));
+ $tv_input=lc($tv_input);
+ $tv_input="" if($tv_input !~ /^hdmi[1-4](?:_pc)?$/);
+ return &json_error("No picture settings were provided",{ ip => $ip }) if(!%{$settings});
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+
+ my $caller_picture_mode=$settings->{"pictureMode"}||"";
+ my $picture_mode_only=($caller_picture_mode ne "" && scalar(keys(%{$settings}))==1) ? 1 : 0;
+ my $active_picture_mode=$caller_picture_mode || $fallback_picture_mode;
+ if($picture_mode_only && $generation->{"ddc_only_white_balance"}) {
+  my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
+  $picture_settings->{"pictureMode"}=$active_picture_mode if($active_picture_mode ne "");
+  &websocket_close($session);
+  return &json_ok({
+   ip => $ip,
+   client_key => $auth->{"client_key"},
+   picture_settings => $picture_settings,
+   applied => { pictureMode => $active_picture_mode },
+   active_picture_mode => $active_picture_mode,
+   virtual_picture_settings => &json_true(),
+   lg_generation => $generation,
+   hello_info => $auth->{"hello_info"},
+   system_info => $auth->{"system_info"},
+   software_info => $auth->{"software_info"},
+   message => "This LG generation does not expose WebOS picture-mode switching through the normal settings key; PGenerator will use '$active_picture_mode' as the LG DDC target picture mode.",
+  });
+ }
+ if($active_picture_mode eq "") {
+  my $probe=&lg_request($session,"get_picture_mode_pre","settings/getSystemSettings",{
+   category => "picture",
+   keys => ["pictureMode"],
+  },$connect_timeout + 2);
+  if(ref($probe) eq "HASH" && ref($probe->{"payload"}) eq "HASH" && ref($probe->{"payload"}{"settings"}) eq "HASH") {
+   $active_picture_mode=$probe->{"payload"}{"settings"}{"pictureMode"}||"";
+  }
+ }
+ if($active_picture_mode eq "" && $generation->{"ddc_only_white_balance"}) {
+  $active_picture_mode=&lg_resolve_ddc_picture_mode($ip,$fallback_picture_mode);
+ }
+ my $mode_lc=lc($active_picture_mode);
+ my $mode_writable=($mode_lc ne "" && $mode_lc =~ /$WRITABLE_PICTURE_MODES_RE/) ? 1 : 0;
+ if(!$picture_mode_only && $active_picture_mode ne "" && !$mode_writable) {
+  &websocket_close($session);
+  &diag_log_append("picture_set:preflight",{ ip => $ip, picture_mode => $active_picture_mode, blocked => "non-writable picture mode" });
+  return {
+   status => "error",
+   error_code => "non-writable-picture-mode",
+   needs_repair => &json_false(),
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   message => "LG TV is on picture mode '$active_picture_mode'. White-balance writes are only accepted on Expert/ISF/FilmMaker/Cinema modes — switch the TV to one of those before adjusting RGB.",
+  };
+ }
+
+ my $settings_to_apply={ %{$settings} };
+ delete($settings_to_apply->{"pictureMode"}) if(!$picture_mode_only);
+ if(!%{$settings_to_apply}) {
+  &websocket_close($session);
+  return &json_error("No writable LG picture settings were provided",{ ip => $ip, active_picture_mode => $active_picture_mode });
+ }
+ my $set_payload={
+	  category => "picture",
+	  settings => $settings_to_apply,
+	 };
+ $set_payload->{"dimension"}={ pictureMode => $active_picture_mode } if($active_picture_mode ne "" && !$picture_mode_only);
+
+ &diag_log_append("picture_set:request",{
+  ip => $ip,
+  picture_mode => $active_picture_mode,
+  settings => $settings_to_apply,
+  ddc_target => &lg_ddc_1d_target_info($settings_to_apply),
+  ddc_nonzero => &lg_ddc_1d_nonzero_map($settings_to_apply),
+ });
+
+ my ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$settings_to_apply,$connect_timeout + 4,$keep_calibration_mode);
+ if($ddc_attempted) {
+  if(ref($ddc_result) eq "HASH" && ($ddc_result->{"status"}||"") eq "ok") {
+   my $settings_after=(ref($ddc_result->{"picture_settings"}) eq "HASH") ? $ddc_result->{"picture_settings"} : &lg_ddc_state_from_settings($settings_to_apply,$active_picture_mode);
+   &websocket_close($session);
+   &diag_log_append("picture_set:ddc1d-ok",{
+    ip => $ip,
+    picture_mode => $active_picture_mode,
+    applied => $settings_to_apply,
+    settings_after => $settings_after,
+    calibration_picture_mode => $ddc_result->{"calibration_picture_mode"}||"",
+	    ddc_target => $ddc_result->{"ddc_target"}||{},
+	    ddc_nonzero => $ddc_result->{"ddc_nonzero"}||{},
+	    ddc_slot_samples => $ddc_result->{"ddc_slot_samples"}||[],
+	    ddc_slot_samples_reference => $ddc_result->{"ddc_slot_samples_reference"}||[],
+	    pipeline_responses => $ddc_result->{"pipeline_responses"}||[],
+	   });
+   return &json_ok({
+    ip => $ip,
+    client_key => $auth->{"client_key"},
+    picture_settings => $settings_after,
+    applied => $settings_to_apply,
+    active_picture_mode => $active_picture_mode,
+    ddc_1d_lut => &json_true(),
+   calibration_mode => &json_bool($keep_calibration_mode),
+   hello_info => $auth->{"hello_info"},
+   system_info => $auth->{"system_info"},
+   software_info => $auth->{"software_info"},
+   lg_generation => $generation,
+  });
+  }
+  &websocket_close($session);
+  &diag_log_append("picture_set:ddc1d-failure",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   applied => $settings_to_apply,
+   ddc_target => &lg_ddc_1d_target_info($settings_to_apply),
+   ddc_nonzero => &lg_ddc_1d_nonzero_map($settings_to_apply),
+   response => $ddc_result,
+  });
+  my $ddc_message=(ref($ddc_result) eq "HASH" && ($ddc_result->{"message"}||"") ne "") ? $ddc_result->{"message"} : "LG TV rejected the DDC 1D LUT white-balance update.";
+  my $extra={
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   ddc_1d_lut => &json_true(),
+   raw_response => $ddc_result,
+  };
+  if(ref($ddc_result) eq "HASH") {
+   $extra->{"error_code"}=$ddc_result->{"error_code"} if(($ddc_result->{"error_code"}||"") ne "");
+   $extra->{"needs_repair"}=$ddc_result->{"needs_repair"} if(exists($ddc_result->{"needs_repair"}));
+  }
+  return &json_error($ddc_message,$extra);
+ }
+
+ my $response=&lg_request($session,"set_picture_settings","settings/setSystemSettings",$set_payload,$connect_timeout + 2);
+ if(ref($response) ne "HASH") {
+  &websocket_close($session);
+  &diag_log_append("picture_set:no-response",{ ip => $ip, picture_mode => $active_picture_mode });
+  return &json_error("LG TV did not acknowledge picture settings update",{ ip => $ip });
+ }
+ my ($failed,$failure_message)=&response_is_app_failure($response);
+ if($failed) {
+  &diag_log_append("picture_set:failure",{ ip => $ip, picture_mode => $active_picture_mode, response => $response, message => $failure_message });
+  if(!$picture_mode_only && ($failure_message =~ /401\s+insufficient permissions/i || $failure_message =~ /insufficient permissions/i)) {
+   my $luna_payload=$set_payload;
+   if($tv_input ne "" && $active_picture_mode ne "") {
+    $luna_payload={
+     category => "picture\$".$tv_input.".".$active_picture_mode.".2d.x",
+     settings => $settings_to_apply,
+    };
+   }
+   my $luna_response=&lg_luna_request($session,"set_picture_settings_luna","com.webos.settingsservice/setSystemSettings",$luna_payload,$connect_timeout + 2);
+   my ($luna_failed,$luna_failure_message)=&response_is_app_failure($luna_response);
+   if(!$luna_failed && ref($luna_response) eq "HASH") {
+    &diag_log_append("picture_set:luna-ok",{ ip => $ip, picture_mode => $active_picture_mode, tv_input => $tv_input, category => $luna_payload->{"category"}||"", applied => $settings_to_apply, response => $luna_response });
+    $failed=0;
+   } else {
+    &websocket_close($session);
+    &diag_log_append("picture_set:luna-failure",{ ip => $ip, picture_mode => $active_picture_mode, tv_input => $tv_input, category => $luna_payload->{"category"}||"", response => $luna_response, message => $luna_failure_message });
+    return &json_permission_error("This LG client key cannot use the normal or Luna picture-settings write path. Pair With PIN once in Display to mint a fresh PIN-paired key, then future reconnects will reuse it.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_error => $failure_message, luna_error => $luna_failure_message });
+   }
+  } else {
+   &websocket_close($session);
+   return &json_error($failure_message,{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $response });
+  }
+ }
+ my $settings_after={};
+ if(@{$readback_keys}) {
+  my $readback_category="picture";
+  if(!$picture_mode_only && $tv_input ne "" && $active_picture_mode ne "") {
+   $readback_category="picture\$".$tv_input.".".$active_picture_mode.".2d.x";
+  }
+  my $followup=&lg_request($session,"get_picture_settings_after","settings/getSystemSettings",{
+   category => $readback_category,
+   keys => $readback_keys,
+  },$connect_timeout + 2);
+  if(ref($followup) eq "HASH" && ($followup->{"type"}||"") ne "error" && ref($followup->{"payload"}) eq "HASH" && ref($followup->{"payload"}{"settings"}) eq "HASH") {
+   $settings_after=$followup->{"payload"}{"settings"};
+  }
+ }
+ if(!%{$settings_after}) {
+  $settings_after={ %{$settings_to_apply} };
+  $settings_after->{"pictureMode"}=$active_picture_mode if($active_picture_mode ne "");
+ }
+ &websocket_close($session);
+ &diag_log_append("picture_set:ok",{ ip => $ip, picture_mode => $active_picture_mode, applied => $settings_to_apply, settings_after => $settings_after });
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  picture_settings => $settings_after,
+  applied => $settings_to_apply,
+  active_picture_mode => $active_picture_mode,
+  calibration_mode => &json_bool($keep_calibration_mode),
+  hello_info => $auth->{"hello_info"},
+  system_info => $auth->{"system_info"},
+  software_info => $auth->{"software_info"},
+  lg_generation => $generation,
+ });
+}
+
+  sub lg_remote_enter_workflow (@) {
+   my ($ip,$client_key,$connect_timeout)=@_;
+   return &json_error("Connect / Pair the LG TV before sending Enter",{ ip => $ip }) if($client_key eq "");
+   my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+   return $auth if(($auth->{"status"}||"") ne "ok");
+   my $session=$auth->{"session"};
+   my $response=&lg_request($session,"send_enter","com.webos.service.ime/sendEnterKey",{},$connect_timeout + 2);
+   &websocket_close($session);
+   return &json_error("LG TV did not acknowledge Enter key",{ ip => $ip }) if(ref($response) ne "HASH");
+   return &json_error($response->{"error"}||"LG TV rejected Enter key",{ ip => $ip }) if(($response->{"type"}||"") eq "error");
+   return &json_ok({
+    ip => $ip,
+    client_key => $auth->{"client_key"},
+    payload => (ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {},
+    message => "Sent Enter to LG TV.",
+   });
+  }
+
+sub lg_response_ok (@) {
+ my $response=shift;
+ return 0 if(ref($response) ne "HASH");
+ my ($failed,$message)=&response_is_app_failure($response);
+ return $failed ? 0 : 1;
+}
+
+sub lg_external_input_id_for_target (@) {
+ my ($session,$timeout,$target_input)=@_;
+ $target_input=lc($target_input||"");
+ my $wanted="";
+ $wanted="HDMI_".$1 if($target_input =~ /^hdmi([1-4])/);
+ my $response=&lg_request($session,"get_external_inputs","tv/getExternalInputList",{},$timeout);
+ my $payload=(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ my $devices=(ref($payload->{"devices"}) eq "ARRAY") ? $payload->{"devices"} : [];
+ my $first_hdmi="";
+ my $first_connected="";
+ foreach my $device (@{$devices}) {
+  next if(ref($device) ne "HASH");
+  my $id=$device->{"id"}||$device->{"inputId"}||"";
+  my $label=$device->{"label"}||$device->{"name"}||"";
+  my $app_id=$device->{"appId"}||"";
+  next if($id !~ /HDMI[_\s-]*([1-4])/i && $label !~ /HDMI\s*([1-4])/i && $app_id !~ /hdmi([1-4])/i);
+  my $number=$1||"";
+  my $normal=$id ne "" ? $id : "HDMI_$number";
+  $first_hdmi=$normal if($first_hdmi eq "");
+  my $connected=$device->{"connected"};
+  if((defined($connected) && ("$connected" eq "1" || lc("$connected") eq "true")) && $first_connected eq "") {
+   $first_connected=$normal;
+  }
+  return $normal if($wanted ne "" && uc($normal) eq uc($wanted));
+ }
+ return $wanted if($wanted ne "");
+ return $first_connected if($first_connected ne "");
+ return $first_hdmi if($first_hdmi ne "");
+ return "HDMI_1";
+}
+
+sub lg_switch_external_input (@) {
+ my ($session,$timeout,$target_input)=@_;
+ my $input_id=&lg_external_input_id_for_target($session,$timeout,$target_input);
+ my @responses=();
+ my $response=&lg_request($session,"switch_input","tv/switchInput",{ inputId => $input_id },$timeout);
+ push(@responses,$response);
+ return (1,$input_id,\@responses) if(&lg_response_ok($response));
+ if($input_id =~ /HDMI[_\s-]*([1-4])/i) {
+  my $app_id="com.webos.app.hdmi$1";
+  $response=&lg_request($session,"launch_input","com.webos.applicationManager/launch",{ id => $app_id },$timeout);
+  push(@responses,$response);
+  return (1,$input_id,\@responses) if(&lg_response_ok($response));
+ }
+ return (0,$input_id,\@responses);
+}
+
+sub lg_remote_control_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$command,$target_input)=@_;
+ return &json_error("Connect / Pair the LG TV before sending display controls",{ ip => $ip }) if($client_key eq "");
+ $command=lc($command||"");
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $response;
+ my $message="";
+ my $extra={};
+ if($command eq "volup" || $command eq "volume_up") {
+  $response=&lg_request($session,"volume_up","audio/volumeUp",{},$connect_timeout + 2);
+  $message="LG volume up sent.";
+ } elsif($command eq "voldown" || $command eq "volume_down") {
+  $response=&lg_request($session,"volume_down","audio/volumeDown",{},$connect_timeout + 2);
+  $message="LG volume down sent.";
+ } elsif($command eq "mute" || $command eq "toggle_mute") {
+  my $status=&lg_request($session,"audio_status","audio/getStatus",{},$connect_timeout + 2);
+  my $payload=(ref($status) eq "HASH" && ref($status->{"payload"}) eq "HASH") ? $status->{"payload"} : {};
+  my $muted=$payload->{"mute"};
+  $muted=$payload->{"muted"} if(!defined($muted));
+  my $next=defined($muted) ? !($muted ? 1 : 0) : 1;
+  $response=&lg_request($session,"audio_mute","audio/setMute",{ mute => &json_bool($next) },$connect_timeout + 2);
+  $message=$next ? "LG mute sent." : "LG unmute sent.";
+  $extra->{"mute"}=&json_bool($next);
+  $extra->{"status_response"}=$status;
+ } elsif($command eq "active" || $command eq "input" || $command eq "switch_input") {
+  my ($ok,$input_id,$responses)=&lg_switch_external_input($session,$connect_timeout + 2,$target_input);
+  &websocket_close($session);
+  return &json_error("LG TV rejected input switch",{ ip => $ip, input_id => $input_id, responses => $responses }) if(!$ok);
+  return &json_ok({
+   ip => $ip,
+   client_key => $auth->{"client_key"},
+   command => $command,
+   input_id => $input_id,
+   responses => $responses,
+   hello_info => $auth->{"hello_info"},
+   system_info => $auth->{"system_info"},
+   software_info => $auth->{"software_info"},
+   message => "LG input switch sent.",
+  });
+ } else {
+  &websocket_close($session);
+  return &json_error("Unsupported LG remote command: $command",{ ip => $ip, command => $command });
+ }
+ my ($failed,$failure_message)=&response_is_app_failure($response);
+ &websocket_close($session);
+ return &json_error($failure_message||"LG TV rejected display control",{ ip => $ip, command => $command, raw_response => $response }) if($failed || ref($response) ne "HASH");
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  command => $command,
+  raw_response => $response,
+  hello_info => $auth->{"hello_info"},
+  system_info => $auth->{"system_info"},
+  software_info => $auth->{"software_info"},
+  message => $message,
+  %{$extra},
+ });
+}
+
+sub lg_current_picture_mode (@) {
+ my ($session,$timeout)=@_;
+ my $response=&lg_request($session,"get_calibration_picture_mode","settings/getSystemSettings",{
+  category => "picture",
+  keys => ["pictureMode"],
+ },$timeout);
+ return "" if(ref($response) ne "HASH" || ref($response->{"payload"}) ne "HASH" || ref($response->{"payload"}{"settings"}) ne "HASH");
+ return $response->{"payload"}{"settings"}{"pictureMode"}||"";
+}
+
+sub lg_calibration_mode_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$enable,$picture_mode)=@_;
+ $enable=$enable ? 1 : 0;
+ $picture_mode="" if(!defined($picture_mode));
+ return &json_error("Connect / Pair the LG TV before changing calibration mode",{ ip => $ip }) if($client_key eq "");
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my $active_picture_mode=$picture_mode;
+ if($enable && $active_picture_mode eq "") {
+  $active_picture_mode=&lg_current_picture_mode($session,$connect_timeout + 2);
+ }
+ if($enable && $active_picture_mode eq "" && $generation->{"ddc_only_white_balance"}) {
+  $active_picture_mode=&lg_resolve_ddc_picture_mode($ip,$picture_mode);
+ }
+ my $cal_mode=$enable ? &lg_picture_mode_for_calibration($active_picture_mode) : "";
+ if($enable && $cal_mode eq "") {
+  &websocket_close($session);
+  return &json_error("LG calibration mode is not mapped for picture mode '$active_picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ ip => $ip, active_picture_mode => $active_picture_mode });
+ }
+ my $response=$enable
+  ? &lg_calibration_request($session,"calibration_mode_start","CAL_START",undef,1,$cal_mode,$connect_timeout + 4)
+  : &lg_calibration_request($session,"calibration_mode_end","CAL_END",undef,1,"",$connect_timeout + 4);
+ my ($failed,$message)=&response_is_app_failure($response);
+ &websocket_close($session);
+ if($failed || ref($response) ne "HASH") {
+  return &json_error($message||($enable ? "LG TV rejected calibration mode start." : "LG TV rejected calibration mode end."),{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   raw_response => $response,
+  });
+ }
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  calibration_mode => &json_bool($enable),
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  response => $response,
+  hello_info => $auth->{"hello_info"},
+  system_info => $auth->{"system_info"},
+  software_info => $auth->{"software_info"},
+  lg_generation => $generation,
+  message => $enable ? "LG calibration mode enabled." : "LG calibration mode disabled.",
+ });
+}
+
+sub lg_extract_model_name (@) {
+ my ($system_info,$software_info,$hello_info)=@_;
+ return $system_info->{"modelName"} if(ref($system_info) eq "HASH" && $system_info->{"modelName"});
+ return $software_info->{"model_name"} if(ref($software_info) eq "HASH" && $software_info->{"model_name"});
+ return $hello_info->{"modelName"} if(ref($hello_info) eq "HASH" && $hello_info->{"modelName"});
+ return "";
+}
+
+sub lg_connect_pin_wait_workflow (@) {
+ my ($ip,$initial_client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type)=@_;
+ $initial_client_key="" if(!defined($initial_client_key));
+ $pair_timeout=$DEFAULT_PAIR_TIMEOUT if(int($pair_timeout||0) <= 0);
+ $pin_wait_timeout=150 if(int($pin_wait_timeout||0) <= 0);
+ $pairing_type=uc($pairing_type||"PIN");
+ $pairing_type="PIN" if($pairing_type !~ /^(PIN|COMBINED|LGSWITCH-PIN)$/);
+ my $prompt_style=($pairing_type eq "PIN") ? "controller-pin" : "mixed-prompt";
+ my $pending_message=($pairing_type eq "PIN")
+  ? "LG TV should now be showing a PIN. Enter it in PGenerator to finish pairing."
+  : "LG TV should now be showing a pairing prompt or PIN. Accept it on the TV, or enter the PIN in PGenerator if one appears.";
+ my $session=&websocket_open($ip,$connect_timeout);
+ if(ref($session) ne "HASH") {
+  my $error=&json_error("Unable to connect to LG WebOS TV at $ip on ws://3000 or wss://3001",{ ip => $ip, token => $token, pairing_mode => $pairing_type, prompt_style => $prompt_style });
+  &file_write_json($state_file,$error) if($state_file ne "");
+  return $error;
+ }
+ my $hello_info={};
+ my $system_info={};
+ my $software_info={};
+ my $client_key=$initial_client_key;
+ my $response;
+ my $result={};
+
+ eval {
+  &websocket_send_json($session,&lg_message_hello()) or die "Unable to send hello request\n";
+  $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+  die "No hello response from TV\n" if(ref($response) ne "HASH");
+  die "Unexpected hello response from TV\n" if(($response->{"type"}||"") ne "hello");
+  $hello_info=$response->{"payload"} if(ref($response->{"payload"}) eq "HASH");
+
+  $response=&lg_request($session,"get_sys_info","system/getSystemInfo",{},$connect_timeout + 2);
+  $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+
+  &websocket_send_json($session,&lg_message_register($initial_client_key,$pairing_type,1)) or die "Unable to send registration request\n";
+  $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+  die "No registration response from TV\n" if(ref($response) ne "HASH");
+  die (($response->{"error"}||"LG registration failed")."\n") if(($response->{"type"}||"") eq "error");
+
+  if(($response->{"type"}||"") eq "registered") {
+   $client_key=$response->{"payload"}{"client-key"}||"";
+   die "TV did not return an LG client key\n" if($client_key eq "");
+  } elsif(($response->{"type"}||"") eq "response") {
+   my $response_pairing_type=uc($response->{"payload"}{"pairingType"}||"");
+   die "TV did not enter pairing mode\n" if(
+    $response_pairing_type ne "PIN" &&
+    $response_pairing_type ne "COMBINED" &&
+    $response_pairing_type ne "LGSWITCH-PIN" &&
+    !($pairing_type ne "PIN" && $response_pairing_type eq "PROMPT")
+   );
+   &file_write_json($state_file,{
+    status => "pending",
+    ip => $ip,
+    token => $token,
+    prompt_style => $prompt_style,
+    pairing_mode => $pairing_type,
+    pin_pairing_pending => &json_true(),
+    message => $pending_message,
+   }) if($state_file ne "");
+   my $deadline=time()+$pin_wait_timeout;
+   my $pin="";
+   my $registered_without_pin=0;
+   my $next_ping=time()+2;
+   while(time() < $deadline) {
+    my $pending_response=&websocket_recv_json($session,0.1,"");
+    if(ref($pending_response) eq "HASH") {
+     die (($pending_response->{"error"}||"LG pairing failed")."\n") if(($pending_response->{"type"}||"") eq "error");
+     if(($pending_response->{"type"}||"") eq "registered") {
+      $client_key=$pending_response->{"payload"}{"client-key"}||"";
+      die "TV did not return an LG client key\n" if($client_key eq "");
+      $registered_without_pin=1;
+      last;
+     }
+    }
+    $pin=&file_read_text($pin_file);
+    $pin=~s/\D+//g;
+    last if($pin ne "");
+    if(time() >= $next_ping) {
+     &websocket_send_ping($session,"pg-pin-wait") or die "LG PIN pairing session closed while waiting for the TV PIN\n";
+     $next_ping=time()+2;
+    }
+    select(undef,undef,undef,0.25);
+   }
+   unlink($pin_file) if($pin_file ne "" && -f $pin_file);
+   die "LG pairing timed out before the TV prompt was accepted or a PIN was entered\n" if($pin eq "" && !$registered_without_pin);
+
+   if(!$registered_without_pin) {
+    &websocket_send_json($session,{ id => "set_pin", type => "request", uri => "ssap://pairing/setPin", payload => { pin => $pin } })
+     or die "Unable to submit PIN to LG TV\n";
+
+    my $registered=0;
+    my $post_pin_deadline=time()+($pair_timeout > 0 ? $pair_timeout : ($connect_timeout + 12));
+    while(time() < $post_pin_deadline) {
+     my $wait=$post_pin_deadline-time();
+     $wait=$connect_timeout + 2 if($wait > $connect_timeout + 2);
+     $wait=0.5 if($wait < 0.5);
+     $response=&websocket_recv_json($session,$wait,"");
+     next if(ref($response) ne "HASH");
+     die (($response->{"error"}||"LG PIN pairing failed")."\n") if(($response->{"type"}||"") eq "error");
+
+     if(($response->{"type"}||"") eq "registered") {
+      $client_key=$response->{"payload"}{"client-key"}||"";
+      die "TV did not return an LG client key\n" if($client_key eq "");
+      $registered=1;
+      last;
+     }
+
+     next if(($response->{"type"}||"") ne "response");
+     next if(($response->{"id"}||"") ne "set_pin");
+     $client_key=$response->{"payload"}{"client-key"}||$client_key;
+     if($client_key ne "") {
+      $registered=1;
+      last;
+     }
+   }
+    die "No registration confirmation after submitting the PIN\n" if(!$registered);
+  }
+  } else {
+   die "TV did not enter PIN pairing mode\n";
+  }
+
+  $response=&lg_request($session,"get_sys_info_post","system/getSystemInfo",{},$connect_timeout + 2);
+  $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+  $response=&lg_request($session,"get_sw_info","com.webos.service.update/getCurrentSWInformation",{},$connect_timeout + 2);
+  $software_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+
+  $result=&json_ok({
+   ip => $ip,
+   token => $token,
+   client_key => $client_key,
+   pair_prompted => &json_true(),
+    prompt_style => $prompt_style,
+    pairing_mode => $pairing_type,
+    message => ($pairing_type eq "PIN") ? "LG TV PIN pairing completed." : "LG TV pairing completed.",
+   hello_info => $hello_info,
+   system_info => $system_info,
+   software_info => $software_info,
+  });
+  1;
+ };
+
+ my $err=$@;
+ &websocket_close($session);
+ if($err) {
+  $err =~ s/[\r\n]+$//;
+  $result=&json_error($err,{ ip => $ip, token => $token, prompt_style => $prompt_style, pairing_mode => $pairing_type });
+ }
+ &file_write_json($state_file,$result) if($state_file ne "");
+ return $result;
+}
+
+sub lg_extract_name (@) {
+ my ($system_info,$software_info,$hello_info)=@_;
+ return $system_info->{"deviceName"} if(ref($system_info) eq "HASH" && $system_info->{"deviceName"});
+ return $hello_info->{"deviceName"} if(ref($hello_info) eq "HASH" && $hello_info->{"deviceName"});
+ return $software_info->{"device_name"} if(ref($software_info) eq "HASH" && $software_info->{"device_name"});
+ return &lg_extract_model_name($system_info,$software_info,$hello_info);
+}
+
+sub lg_extract_software_version (@) {
+ my $software_info=shift;
+ return $software_info->{"software_version"} if(ref($software_info) eq "HASH" && $software_info->{"software_version"});
+ return $software_info->{"version"} if(ref($software_info) eq "HASH" && $software_info->{"version"});
+ return $software_info->{"major_ver"}.".".$software_info->{"minor_ver"} if(ref($software_info) eq "HASH" && defined($software_info->{"major_ver"}) && defined($software_info->{"minor_ver"}));
+ return "";
+}
+
+sub lg_connect_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$pair_timeout)=@_;
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$pair_timeout,1);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $hello_info=$auth->{"hello_info"};
+ my $system_info=$auth->{"system_info"};
+ my $software_info=$auth->{"software_info"};
+ my $pair_prompted=$auth->{"pair_prompted"};
+ my $client_key_out=$auth->{"client_key"}||$client_key;
+ my $message=$auth->{"message"}||"";
+ &websocket_close($session);
+
+ my $model_name=&lg_extract_model_name($system_info,$software_info,$hello_info);
+ my $name=&lg_extract_name($system_info,$software_info,$hello_info);
+ my $software_version=&lg_extract_software_version($software_info);
+ return &json_ok({
+  ip => $ip,
+  paired => &json_true(),
+  pair_prompted => $pair_prompted,
+  prompt_style => "tv-prompt",
+  client_key => $client_key_out,
+  transport => $session->{"scheme"},
+  port => $session->{"port"},
+  hello_info => $hello_info,
+  system_info => $system_info,
+  software_info => $software_info,
+  model_name => $model_name,
+  name => $name,
+  software_version => $software_version,
+  message => $pair_prompted ? "LG TV pairing completed. The TV prompt was accepted." : ($message || "LG TV connection succeeded."),
+ });
+}
+
+###############################################
+#                  Main                       #
+###############################################
+sub main (@) {
+ my $request=&request_from_env();
+ my $action=$request->{"action"}||"connect";
+ my $ip=$request->{"ip"}||"";
+ my $client_key=$request->{"client_key"}||"";
+ my $connect_timeout=int($request->{"connect_timeout"}||$DEFAULT_CONNECT_TIMEOUT);
+ my $pair_timeout=int($request->{"pair_timeout"}||$DEFAULT_PAIR_TIMEOUT);
+ my $keys=$request->{"keys"};
+ my $settings=$request->{"settings"};
+ my $readback_keys=$request->{"readback_keys"};
+ my $tv_input=$request->{"tv_input"}||"";
+ my $pin_wait_timeout=int($request->{"pin_wait_timeout"}||150);
+ my $state_file=$request->{"state_file"}||"";
+ my $pin_file=$request->{"pin_file"}||"";
+ my $token=$request->{"token"}||"";
+ my $pairing_type=$request->{"pairing_type"}||$request->{"pairing_mode"}||"";
+ my $enable=$request->{"enable"} ? 1 : 0;
+ my $keep_calibration_mode=$request->{"keep_calibration_mode"} ? 1 : 0;
+ my $picture_mode=$request->{"picture_mode"}||"";
+ my $command=$request->{"command"}||"";
+ my $target_input=$request->{"target_input"}||"";
+ my $result;
+
+ if(!$ip || !&valid_ipv4($ip)) {
+  $result=&json_error("Enter a valid LG TV IPv4 address",{ ip => $ip });
+ } elsif($action eq "probe") {
+  $result=&lg_probe_workflow($ip,$connect_timeout);
+ } elsif($action eq "connect" || $action eq "pair") {
+  $result=&lg_connect_workflow($ip,$client_key,$connect_timeout,$pair_timeout);
+ } elsif($action eq "picture_get") {
+  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode);
+ } elsif($action eq "picture_set") {
+  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode);
+   } elsif($action eq "remote_enter") {
+    $result=&lg_remote_enter_workflow($ip,$client_key,$connect_timeout);
+ } elsif($action eq "remote_control") {
+  $result=&lg_remote_control_workflow($ip,$client_key,$connect_timeout,$command,$target_input);
+ } elsif($action eq "calibration_mode") {
+  $result=&lg_calibration_mode_workflow($ip,$client_key,$connect_timeout,$enable,$picture_mode);
+ } elsif($action eq "connect_pin_wait") {
+  $result=&lg_connect_pin_wait_workflow($ip,$client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type);
+ } else {
+  $result=&json_error("Unknown LG helper action: $action",{ action => $action, ip => $ip });
+ }
+
+ print &json_encode($result);
+}
+
+&main();

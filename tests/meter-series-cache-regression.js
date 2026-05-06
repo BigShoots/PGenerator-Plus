@@ -23,12 +23,27 @@ function extractFunction(name) {
 
 const code = [
   'var meterSeriesCache = {};',
+  "var meterSeriesCacheBootId = '';",
   "var meterActiveSeriesSignalMode = 'sdr';",
+  'var meterSeriesSteps = [];',
   'function meterLoadSeriesCache(){}',
+  extractFunction('meterSeriesCacheKey'),
+  extractFunction('meterSetSeriesCacheBootId'),
   extractFunction('meterParseSeriesKey'),
   extractFunction('meterSeriesSnapshotSignalMode'),
+  extractFunction('meterStepNameKey'),
   extractFunction('meterGreyscaleReadingMatchesStep'),
+  extractFunction('meterReadingCodesMatchStep'),
+  extractFunction('meterRecoveredStepsMatchSeries'),
+  extractFunction('meterRecoveredStepsDifferInCodes'),
+  extractFunction('meterCanonicalRecoveredSteps'),
+  extractFunction('meterReadingIsBlackStep'),
+  extractFunction('meterReadingsWouldRecoverAsBlackOnly'),
+  extractFunction('meterFilterReadingsForSteps'),
+  extractFunction('meterFilterReadingsForCurrentSteps'),
+  extractFunction('meterReadingMatchesStepList'),
   extractFunction('meterNormalizeMeasuredReading'),
+  extractFunction('meterReadingIsGreyscale'),
   extractFunction('meterReadingHasLuminance'),
   extractFunction('meterFindSeriesWhiteReading'),
   extractFunction('meterStampReadingStepMeta'),
@@ -42,8 +57,29 @@ const context = {
   Array,
   Number,
   String,
+  localStorage: (() => {
+    const store = {};
+    return {
+      getItem(key) {
+        return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
+      },
+      setItem(key, value) {
+        store[key] = String(value);
+      },
+      removeItem(key) {
+        delete store[key];
+      },
+      clear() {
+        Object.keys(store).forEach(key => delete store[key]);
+      },
+      _store: store
+    };
+  })(),
   meterChartSignalMode() {
     return 'sdr';
+  },
+  meterUseLgGreyscale21() {
+    return false;
   },
   meterBuildStepsJS() {
     throw new Error('Unexpected meterBuildStepsJS call in cache regression test');
@@ -129,5 +165,91 @@ const colorSnap = context.meterResolveSeriesSnapshotFromCache('colors-30', {
 assert(colorSnap, 'Expected exact non-greyscale cache snapshot');
 assert.strictEqual(colorSnap.readings.length, 1, 'Non-greyscale cache should restore only its own readings');
 assert.strictEqual(colorSnap.readings[0].name, 'Red', 'Unexpected non-greyscale reading restore');
+
+context.localStorage.clear();
+context.localStorage.setItem('pgen.meter.seriesCache.bootId', 'oldboot');
+context.localStorage.setItem('pgen.meter.oldboot.lastSeriesKey', 'greyscale-21');
+context.localStorage.setItem('pgen.meter.oldboot.seriesCache', JSON.stringify({
+  'greyscale-21': {
+    type: 'greyscale',
+    points: 21,
+    signal_mode: 'sdr',
+    updated_at: 200,
+    steps: steps21,
+    readings: [{ ire: 30, name: '30%', luminance: 30.5 }]
+  }
+}));
+context.meterSeriesCache = {};
+context.meterSeriesCacheBootId = '';
+context.meterSetSeriesCacheBootId('newboot');
+const migratedCache = JSON.parse(context.localStorage.getItem('pgen.meter.newboot.seriesCache'));
+assert(migratedCache['greyscale-21'], 'Expected old boot cache to migrate to new boot scope');
+assert.strictEqual(migratedCache['greyscale-21'].readings[0].luminance, 30.5, 'Migrated manual reading mismatch');
+assert(context.localStorage.getItem('pgen.meter.oldboot.seriesCache'), 'Old scoped cache should not be deleted');
+assert.strictEqual(context.localStorage.getItem('pgen.meter.newboot.lastSeriesKey'), 'greyscale-21', 'Last series key should migrate');
+
+context.meterSeriesCache = {};
+context.meterSeriesCacheBootId = '';
+context.meterSetSeriesCacheBootId('');
+assert.strictEqual(context.meterSeriesCacheBootId, 'newboot', 'Missing boot id should reuse stored marker instead of global');
+
+context.meterUseLgGreyscale21 = () => true;
+context.meterBuildStepsJS = () => [
+  { ire: 40, name: '40%', r: 104, g: 104, b: 104 },
+  { ire: 45, name: '45%', r: 115, g: 115, b: 115 }
+];
+const staleLgSteps = [
+  { ire: 40, name: '40%', r: 112, g: 112, b: 112 },
+  { ire: 45, name: '45%', r: 124, g: 124, b: 124 }
+];
+const canonicalLgSteps = context.meterCanonicalRecoveredSteps('greyscale', 21, staleLgSteps, 'complete');
+assert.strictEqual(canonicalLgSteps[0].r, 104, 'LG recovered greyscale steps should rebuild stale extended patch codes');
+assert.strictEqual(
+  context.meterGreyscaleReadingMatchesStep({ ire: 40, name: '40%', r_code: 112, g_code: 112, b_code: 112 }, canonicalLgSteps[0]),
+  false,
+  'Readings measured against stale extended LG patch codes must not be restored onto legal-code steps'
+);
+
+const legalLgStepsWithBlack = [
+  { ire: 0, name: '0%', r: 16, g: 16, b: 16 },
+  ...canonicalLgSteps
+];
+const staleLgReadingsWithBlack = [
+  { ire: 0, name: '0%', luminance: 0.01, r_code: 16, g_code: 16, b_code: 16 },
+  { ire: 40, name: '40%', luminance: 40.2, r_code: 112, g_code: 112, b_code: 112 },
+  { ire: 45, name: '45%', luminance: 45.3, r_code: 124, g_code: 124, b_code: 124 }
+];
+assert.strictEqual(
+  context.meterReadingsWouldRecoverAsBlackOnly(staleLgReadingsWithBlack, 'greyscale', legalLgStepsWithBlack),
+  true,
+  'Stale extended LG readings should be recognized before restoring a black-only chart'
+);
+context.meterSeriesSteps = legalLgStepsWithBlack;
+assert.strictEqual(
+  context.meterFilterReadingsForCurrentSteps(staleLgReadingsWithBlack, 'greyscale').length,
+  0,
+  'Stale extended LG readings should not recover as a black-only chart'
+);
+context.meterSeriesCache = {
+  'greyscale-21': {
+    type: 'greyscale',
+    points: 21,
+    signal_mode: 'sdr',
+    updated_at: 300,
+    steps: [
+      { ire: 0, name: '0%', r: 16, g: 16, b: 16 },
+      ...staleLgSteps
+    ],
+    readings: staleLgReadingsWithBlack,
+    white_reading: { ire: 100, name: '100%', luminance: 100, r_code: 255, g_code: 255, b_code: 255 }
+  }
+};
+const staleOnlyBlackSnap = context.meterResolveSeriesSnapshotFromCache('greyscale-21', {
+  type: 'greyscale',
+  points: 21,
+  signalMode: 'sdr',
+  steps: legalLgStepsWithBlack
+});
+assert.strictEqual(staleOnlyBlackSnap, null, 'Cache recovery should drop stale series data instead of plotting only black');
 
 console.log('Meter series cache regression checks passed.');
