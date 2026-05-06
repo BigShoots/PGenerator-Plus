@@ -475,7 +475,7 @@ fix_permissions() {
  chmod 440 "$ROOT_MOUNT/etc/sudo/sudoers" "$ROOT_MOUNT/etc/sudo/sudoers.d/PGenerator" 2>/dev/null || true
  chmod +x "$ROOT_MOUNT/usr/sbin/pgenerator-update" 2>/dev/null || true
  chmod +x "$ROOT_MOUNT/usr/bin/spotread_wrapper.sh" "$ROOT_MOUNT/usr/bin/meter_session.sh" "$ROOT_MOUNT/usr/bin/meter_series.sh" 2>/dev/null || true
- for bin in "${ARGYLL_RUNTIME_BINS[@]}"; do
+ for bin in "${ARGYLL_RUNTIME_REQUIRED_BINS[@]}" "${ARGYLL_RUNTIME_OPTIONAL_BINS[@]}"; do
   [[ -f "$ROOT_MOUNT/usr/bin/$bin" ]] || continue
   chmod +x "$ROOT_MOUNT/usr/bin/$bin" 2>/dev/null || true
  done
