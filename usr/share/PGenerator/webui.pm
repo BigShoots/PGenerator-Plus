@@ -5815,6 +5815,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .diag-custom-assets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:min(100%,570px)}
 .diag-custom-asset{min-width:0}
 .diag-custom-picker{display:grid;grid-template-columns:minmax(0,1fr) 40px 40px;gap:6px;align-items:center}
+.diag-custom-picker .btn{height:36px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1rem;line-height:1;padding:0}
 @media (max-width:720px){.diag-pattern-layout{grid-template-columns:1fr}}
 @media (hover:hover) and (pointer:fine){.pat-btn:hover{border-color:var(--accent);background:#1a1a2e;transform:translateY(-1px)}}
 .sat-row{display:flex;align-items:center;gap:4px;margin-bottom:4px}
@@ -7869,8 +7870,8 @@ function diagAssetPatternToken(kind,filename){return (kind==='video'?'uploaded_d
 function diagBlurElement(el){if(el&&typeof el.blur==='function')el.blur();}
 function diagAssetInfoHtml(kind,filename){
  const label=diagAssetDisplayLabel(filename);
- if(kind==='video') return '<b>Custom Diagnostic Video</b> &mdash; '+label+'. Uploaded videos now prefer a browser-extracted renderer frame sequence when one is available, then fall back to the legacy video path.';
- return '<b>Custom Diagnostic Image</b> &mdash; '+label+'. Uploaded images render through the IMAGE pattern path.';
+ if(kind==='video') return '<b>Custom Diagnostic Video</b> &mdash; '+label+'.';
+ return '<b>Custom Diagnostic Image</b> &mdash; '+label+'.';
 }
 function diagUpdateUploadStatus(message,isError){
  const el=document.getElementById('diagUploadStatus');
@@ -8081,11 +8082,12 @@ async function diagHandleAssetSelect(kind){
  if(value===''){
   sel.dataset.lastSelected='';
   diagBlurElement(sel);
+  if(activePattern&&activePattern.indexOf('uploaded_diag_'+kind+':')===0) await stopPattern();
   return;
  }
  sel.dataset.lastSelected=value;
  diagBlurElement(sel);
- await diagShowUploadedAsset(kind,value,true);
+ diagSetInfoHtml(diagAssetInfoHtml(kind,value));
 }
 async function diagHandleAssetUpload(kind,evt){
  const input=evt&&evt.target?evt.target:null;
@@ -8108,7 +8110,6 @@ async function diagHandleAssetUpload(kind,evt){
     }
     diagUpdateUploadStatus(seqMessage);
     toast(seqMessage);
-    if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename,true);
     if(input) input.value='';
     return;
    }
@@ -8121,7 +8122,7 @@ async function diagHandleAssetUpload(kind,evt){
   }
   diagUpdateUploadStatus(statusMessage);
   toast(statusMessage);
-  if(r&&r.filename) await diagShowUploadedAsset(kind,r.filename,true);
+  if(r&&r.filename) diagSetInfoHtml(diagAssetInfoHtml(kind,r.filename));
  }catch(e){
   const message=e&&e.message?e.message:'Upload failed';
   diagUpdateUploadStatus(message,true);
