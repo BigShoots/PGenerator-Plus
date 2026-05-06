@@ -11,7 +11,7 @@
 - Added LG-aware greyscale calibration controls, including an LG-specific greyscale series, vertical RGB adjustment bars, direct numeric RGB entry, and finer manual adjustment steps.
 - Added generation-aware LG control behavior so supported LG models can use the appropriate picture and calibration commands automatically.
 - Added bundled AVS HD 709 SDR diagnostic frame sequences for black clipping, APL clipping, white clipping, flashing color bars, and sharpness/overscan checks.
-- Added bundled framebuffer and DRM video player helpers for diagnostic playback support on compatible images.
+- Added bundled ARM static FFmpeg support plus framebuffer and DRM video player helpers for diagnostic playback on compatible images.
 
 ### Fixed
 

@@ -101,7 +101,9 @@ sub play_video(@) {
  my $program = shift;
  my $video = shift;
  my ($duration,$repeat) = split("-",shift);
- my $play_as_root=($program =~ /(^|\/)omxplayer(\.bin)?$/) ? 1 : 0;
+ my $width = int(shift || 0);
+ my $height = int(shift || 0);
+ my $play_as_root=($program =~ /(^|\/)(?:omxplayer(?:\.bin)?|pg_diag_video_player)$/) ? 1 : 0;
  my $response="OK";
  $repeat=0 if($repeat != 1);
  &pattern_generator_stop();
@@ -109,7 +111,7 @@ sub play_video(@) {
  &create_pattern_file("$draw_default","$w_s,$h_s",$res_default,"$rgb_default","$bg_default","$position_default","","","","play_video");
  $program_video_to_kill=$program;
  if($play_as_root) {
-  $response=&sudo("PLAY_VIDEO","$program","$video","$duration","$repeat");
+  $response=&sudo("PLAY_VIDEO","$program","$video","$duration","$repeat","$width","$height");
   chomp($response);
   $response=~s/^ERR://;
   $response="Video playback failed to start" if($response eq "");

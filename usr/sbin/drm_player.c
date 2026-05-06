@@ -5,7 +5,8 @@
  * static binary so it runs on any ARM Linux regardless of glibc version.
  *
  * Reads XRGB8888 frames from stdin (piped from ffmpeg) and displays
- * via DRM/KMS on /dev/dri/card0 with double-buffered dumb buffers.
+ * via DRM/KMS on the first usable /dev/dri/cardN node with double-buffered
+ * dumb buffers.
  *
  * Must be run when PGeneratord is NOT active (needs DRM master).
  *
@@ -322,6 +323,8 @@ int main(int argc, char *argv[]) {
  ssize_t nread;
  size_t total;
  int i;
+ int card_index;
+ int have_resources = 0;
  uint32_t crtc_id = 0;
 
  if (argc >= 3) {
@@ -334,21 +337,39 @@ int main(int argc, char *argv[]) {
 
  atexit(cleanup);
 
- /* Open DRM */
- drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
- if (drm_fd < 0) {
-  fprintf(stderr, "drm_player: cannot open /dev/dri/card0: %s\n", strerror(errno));
-  return 1;
+ for (card_index = 0; card_index < 4; card_index++) {
+  char card_path[32];
+  snprintf(card_path, sizeof(card_path), "/dev/dri/card%d", card_index);
+  drm_fd = open(card_path, O_RDWR | O_CLOEXEC);
+  if (drm_fd < 0) {
+   if (card_index == 0) {
+    fprintf(stderr, "drm_player: cannot open %s: %s\n", card_path, strerror(errno));
+   }
+   continue;
+  }
+
+  if (drm_ioctl(drm_fd, DRM_IOCTL_SET_MASTER, NULL) < 0) {
+   fprintf(stderr, "drm_player: cannot become DRM master on %s: %s\n"
+       "  (is PGeneratord still running?)\n", card_path, strerror(errno));
+   close(drm_fd);
+   drm_fd = -1;
+   continue;
+  }
+
+  if (get_resources(&res) == 0) {
+   have_resources = 1;
+   fprintf(stderr, "drm_player: using %s\n", card_path);
+   break;
+  }
+
+  fprintf(stderr, "drm_player: get_resources failed on %s\n", card_path);
+  drm_ioctl(drm_fd, DRM_IOCTL_DROP_MASTER, NULL);
+  close(drm_fd);
+  drm_fd = -1;
  }
 
- if (drm_ioctl(drm_fd, DRM_IOCTL_SET_MASTER, NULL) < 0) {
-  fprintf(stderr, "drm_player: cannot become DRM master: %s\n"
-      "  (is PGeneratord still running?)\n", strerror(errno));
-  return 1;
- }
-
- if (get_resources(&res) < 0) {
-  fprintf(stderr, "drm_player: get_resources failed\n");
+ if (!have_resources) {
+  fprintf(stderr, "drm_player: no usable DRM card found\n");
   return 1;
  }
 
