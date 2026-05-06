@@ -6786,8 +6786,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </details>
  </div>
 
-  __PG_LG_CARD__
-
  <!-- Resolve Protocol -->
  <div class="card" data-widget="resolve" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
@@ -6843,9 +6841,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">DRM InfoFrame</div>
     <div id="drmIF" class="if-hex">-</div>
     <div id="drmDecoded" class="if-decoded"></div>
-   </div>
-  </div>
  </div>
+ </div>
+ </div>
+
+  __PG_LG_CARD__
 
  <!-- GPU Memory -->
  <div class="card" data-widget="gpu_memory" draggable="true">
