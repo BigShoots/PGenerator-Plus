@@ -1,0 +1,48 @@
+#!/bin/sh
+
+video="$1"
+width="${2:-1920}"
+height="${3:-1080}"
+
+case "$width" in
+ *[!0-9]*|"") width=1920 ;;
+esac
+case "$height" in
+ *[!0-9]*|"") height=1080 ;;
+esac
+
+if [ ! -f "$video" ]; then
+ echo "Diagnostic video file not found" >&2
+ exit 1
+fi
+
+play_with_ffmpeg() {
+ pixel_format="$1"
+ player="$2"
+ shift 2
+ ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 -i "$video" \
+  -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,format=${pixel_format}" \
+  -pix_fmt "$pixel_format" -f rawvideo - | "$player" "$width" "$height" "$@"
+}
+
+if command -v ffmpeg >/dev/null 2>&1; then
+ if [ -x /usr/sbin/drm_player ] && [ -e /dev/dri/card0 ]; then
+  play_with_ffmpeg bgr0 /usr/sbin/drm_player
+  exit $?
+ fi
+ if [ -x /usr/sbin/fb_player ] && [ -e /dev/fb0 ]; then
+  play_with_ffmpeg bgra /usr/sbin/fb_player
+  exit $?
+ fi
+fi
+
+if [ -x /usr/bin/omxplayer ]; then
+ exec /usr/bin/omxplayer "$video"
+fi
+
+if [ -x /usr/bin/omxplayer.bin ]; then
+ exec /usr/bin/omxplayer.bin "$video"
+fi
+
+echo "No diagnostic video playback backend is available" >&2
+exit 127
