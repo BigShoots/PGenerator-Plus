@@ -2410,7 +2410,9 @@ function renderLgStatus(r){
 	 }
 	 lgPopulatePictureModeSelect(lgPictureModeValue);
 	 lgDisplayControlRender();
-	 if(typeof meterUpdateSeriesLabels==='function') meterUpdateSeriesLabels();
+	 if(typeof meterUpdateSeriesTabUi==='function') meterUpdateSeriesTabUi();
+	 else if(typeof meterUpdateSeriesLabels==='function') meterUpdateSeriesLabels();
+	 if(typeof meterUpdateReadButtons==='function') meterUpdateReadButtons();
 	 if((paired||clientKeyPresent)&&!pinPending) {
 	  lgSchedulePictureModeRefresh(false);
 	  setTimeout(()=>lgDisplayControlRefresh(false),650);
