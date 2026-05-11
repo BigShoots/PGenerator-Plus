@@ -35,8 +35,9 @@ json_escape() {
 }
 
 patch_request_body() {
- local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8"
- local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":255,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8" input_max="${9:-255}"
+ [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
+ local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
  if [[ -n "$signal_range" ]]; then
   payload="$payload,\"signal_range\":\"$signal_range\""
  fi
@@ -49,12 +50,12 @@ patch_request_body() {
 
 post_patch() {
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}")" >/dev/null 2>&1
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")" >/dev/null 2>&1
 }
 
 post_patch_timeout() {
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}")" >/dev/null 2>&1 || true
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")" >/dev/null 2>&1 || true
 }
 
 wait_for_device_ready() {
@@ -659,10 +660,12 @@ EOJSON
 fi
 
 for (( i=START_INDEX; i<TOTAL; i++ )); do
- R=$(get_step_field $i r)
- G=$(get_step_field $i g)
- B=$(get_step_field $i b)
- IRE=$(get_step_field $i ire)
+	 R=$(get_step_field $i r)
+	 G=$(get_step_field $i g)
+	 B=$(get_step_field $i b)
+	 INPUT_MAX=$(get_step_field $i input_max)
+	 [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
+	 IRE=$(get_step_field $i ire)
  NAME=$(get_step_field $i name)
  STEP_NUM=$((i + 1))
 
@@ -678,7 +681,7 @@ EOJSON
  fi
 
  # Display pattern
- post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+	 post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 
  # Right after a PGenerator restart, the first DV white often reads far too
  # low on the first pass even though an immediate rerun is correct. Give that
@@ -686,7 +689,7 @@ EOJSON
  # freshly started, without slowing steady-state runs.
  if (( i == 0 )) && [[ "$IRE" == "100" ]] && should_apply_fresh_dv_first_white_warmup; then
   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
-  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+	  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
  fi
 
  # Settle delay — use the user-configured value for every step, while still
@@ -810,9 +813,11 @@ done
 # the sweep is running, then refreshes white once more at the end so the saved
 # 100% result reflects the warmed-up display.
 if series_requires_final_white_refresh && (( TOTAL > 0 )); then
- FIRST_R=$(get_step_field 0 r)
- FIRST_G=$(get_step_field 0 g)
- FIRST_B=$(get_step_field 0 b)
+	FIRST_R=$(get_step_field 0 r)
+	FIRST_G=$(get_step_field 0 g)
+	FIRST_B=$(get_step_field 0 b)
+	FIRST_INPUT_MAX=$(get_step_field 0 input_max)
+	[[ -z "$FIRST_INPUT_MAX" ]] && FIRST_INPUT_MAX=255
  FIRST_IRE=$(get_step_field 0 ire)
  FIRST_NAME=$(get_step_field 0 name)
 
@@ -826,7 +831,7 @@ EOJSON
    sleep 1.5
   fi
 
-  post_patch "$FIRST_R" "$FIRST_G" "$FIRST_B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+	  post_patch "$FIRST_R" "$FIRST_G" "$FIRST_B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$FIRST_INPUT_MAX"
   sleep "$DELAY_SEC"
 
   cat > "$STATE_FILE" << EOJSON
