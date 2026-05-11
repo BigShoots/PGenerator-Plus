@@ -22,8 +22,10 @@ function extractFunction(name) {
 }
 
 const code = [
+  extractFunction('meterReadingPlotIre'),
   extractFunction('meterStepNameKey'),
   extractFunction('effectiveGamma'),
+  extractFunction('effectiveGammaTopSlope'),
   extractFunction('meterGammaPreviousSeriesReading')
 ].join('\n\n');
 
@@ -64,7 +66,7 @@ assert.strictEqual(
 );
 
 assert(
-  context.effectiveGamma(100, 100, 100, 88.4, 95) > 0,
+  context.effectiveGammaTopSlope(100, 100, 100, 88.4, 95) > 0,
   '100% top segment gamma should still be computable after the adjacent lower point is measured'
 );
 

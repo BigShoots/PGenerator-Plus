@@ -3,6 +3,14 @@ const vm = require('vm');
 const assert = require('assert');
 
 const source = fs.readFileSync('usr/share/PGenerator/webui.pm', 'utf8');
+const GAMUT_PRESETS_JS = `const GAMUT_PRESETS={
+ bt709:{label:'BT.709 / D65',white:{x:0.3127,y:0.3290},primaries:{R:{x:0.64,y:0.33},G:{x:0.30,y:0.60},B:{x:0.15,y:0.06}},xyzToRgb:[[3.2406,-1.5372,-0.4986],[-0.9689,1.8758,0.0415],[0.0557,-0.2040,1.0570]],rgbToXyz:[[0.4124564,0.3575761,0.1804375],[0.2126729,0.7151522,0.0721750],[0.0193339,0.1191920,0.9503041]]},
+ bt2020:{label:'BT.2020 / D65',white:{x:0.3127,y:0.3290},primaries:{R:{x:0.708,y:0.292},G:{x:0.170,y:0.797},B:{x:0.131,y:0.046}},xyzToRgb:[[1.7166511880,-0.3556707838,-0.2533662814],[-0.6666843518,1.6164812366,0.0157685458],[0.0176398574,-0.0427706133,0.9421031212]],rgbToXyz:[[0.6369580483,0.1446169036,0.1688809752],[0.2627002120,0.6779980715,0.0593017165],[0.0000000000,0.0280726930,1.0609850577]]},
+ p3d65:{label:'P3 / D65',white:{x:0.3127,y:0.3290},primaries:{R:{x:0.680,y:0.320},G:{x:0.265,y:0.690},B:{x:0.150,y:0.060}},xyzToRgb:[[2.4934969119,-0.9313836179,-0.4027107845],[-0.8294889696,1.7626640603,0.0236246858],[0.0358458302,-0.0761723893,0.9568845240]],rgbToXyz:[[0.4865709486,0.2656676932,0.1982172852],[0.2289745641,0.6917385218,0.0792869141],[0.0000000000,0.0451133819,1.0439443689]]},
+ p3dci:{label:'P3 / DCI',white:{x:0.3140,y:0.3510},primaries:{R:{x:0.680,y:0.320},G:{x:0.265,y:0.690},B:{x:0.150,y:0.060}},xyzToRgb:[[2.7253940305,-1.0180030062,-0.4401631952],[-0.7951680258,1.6897320548,0.0226471906],[0.0412418914,-0.0876390192,1.1009293786]],rgbToXyz:[[0.4451698156,0.2771344092,0.1722826698],[0.2094916779,0.7215952542,0.0689130679],[0.0000000000,0.0470605601,0.9073553944]]}
+};
+const M_XYZ_TO_RGB=GAMUT_PRESETS.bt709.xyzToRgb;
+const M_RGB_TO_XYZ=GAMUT_PRESETS.bt709.rgbToXyz;`;
 
 function extractConst(name) {
   const token = `const ${name}=`;
@@ -47,13 +55,20 @@ const code = [
   'const METER_GREY_SLOTS_21=[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];',
   "let meterGreyPatchProfiles={format:'pgenerator-greyscale-profile-v1',apply_to_all_modes:false,profiles:{}};",
   'let meterGreyEditorPoints=21;',
-  extractConst('GAMUT_PRESETS'),
+  GAMUT_PRESETS_JS,
   extractFunction('meterGreyDefaultSlots'),
+  extractFunction('meterGreySeriesSlots'),
+  extractFunction('meterGreyClampPercent'),
+  extractFunction('meterGreyNormalizeEntry'),
+  extractFunction('meterGreyProfileSlots'),
   extractFunction('meterGreyProfileTemplate'),
+  extractFunction('meterGreyProfileStepsKey'),
   extractFunction('meterGreyModeSignature'),
   extractFunction('meterGreyNormalizeProfilesState'),
   extractFunction('meterGreyActiveProfileKey'),
   extractFunction('meterGreyActiveProfile'),
+  extractFunction('meterGreyProfileEntry'),
+  extractFunction('meterGreySignalEntries'),
   extractFunction('meterGreyCustomEnabled'),
   extractFunction('meterGreyStimulusValues'),
   extractFunction('meterGreyStimulusCsv'),
@@ -114,6 +129,9 @@ const code = [
   extractFunction('meterGreyRefMode'),
   extractFunction('meterGrayWorldWeight'),
   extractFunction('meterBuildStepsJS'),
+  extractFunction('meterNormalizeMeasuredReading'),
+  extractFunction('meterReadingLuminanceNits'),
+  extractFunction('meterReadingXYZ'),
   extractFunction('targetColorXYZAbs'),
   extractFunction('meterTargetXYZForReading'),
   extractFunction('meterTargetChromaticityForReading'),
@@ -160,11 +178,22 @@ const context = {
     return sum > 0 ? { x: xyz.X/sum, y: xyz.Y/sum } : { x: this.D65.x, y: this.D65.y };
   },
   meterCodeFromSignalPercent(p){ return Math.round((Number(p)||0) * 255 / 100); },
+  meterCodeFromSignalPercentWithOptions(p){ return Math.round((Number(p)||0) * 255 / 100); },
+  meterFormatPercentValue(value){ return String(Math.round(Number(value) * 10) / 10).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, ''); },
   meterPatchRangeMin(){ return 0; },
   meterPatchRangeSpan(){ return 255; },
+  meterChromaPatchRangeMin(){ return 0; },
+  meterChromaPatchRangeSpan(){ return 255; },
+  meterGreyCodeRange(){ return { min: 0, span: 255 }; },
   meterSignalFractionFromCode(code){ return Math.max(0, Math.min(1, (Number(code)||0) / 255)); },
   meterPatchUsesVideoRange(){ return false; },
   meterIncludeLum(){ return false; },
+  meterUseLgGreyscale21(){ return false; },
+  meterUseLgAutoCal26(){ return false; },
+  meterLgGreyscaleUsesExtendedSdr(){ return false; },
+  meterLgGreyscaleUsesLegalSdrDdcCodes(){ return false; },
+  meterXyzCorrectionEnabled(){ return false; },
+  meterApplyXyzCorrectionMatrix(X, Y, Z){ return { X, Y, Z }; },
   meterBuildColorCheckerStepsJS(){ return [{ name:'Cyan', series_color:'Cyan', sat_pct:100, r_code:0, g_code:255, b_code:255, r:0, g:255, b:255, iree:100 }]; },
   getVal(){ return 'sdr'; },
   targetEotf(v,Lw){ return Math.pow(Math.max(0, v), 2.4) * (Lw||100); }
@@ -333,10 +362,10 @@ state.dv_map_mode = '1';
 context.meterWhiteReading = { X: 158.5, Y: 166.7, Z: 181.5 };
 approxEqual(context.meterColorReferenceNits(), 1000, 1e-9, 'DV absolute should stay anchored to mastering peak');
 
-// Test 10: color-series target Y should use the measured White patch when one
-// is available, even in DV absolute mode.
+// Test 10: color-series target Y stays anchored to the DV absolute mastering
+// peak even when a measured White patch is available.
 const dvColorStep = { name:'Orange', target_x:0.512087, target_y:0.410373, target_Yn:0.285811070494883 };
 const dvTarget = context.meterTargetXYZForReading(dvColorStep);
-approxEqual(dvTarget.Y, 166.7 * dvColorStep.target_Yn, 1e-6, 'DV absolute color-series target Y should follow measured White');
+approxEqual(dvTarget.Y, 1000 * dvColorStep.target_Yn, 1e-6, 'DV absolute color-series target Y should follow mastering peak');
 
 console.log('All color-math regression checks passed.');

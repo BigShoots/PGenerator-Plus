@@ -94,7 +94,7 @@
     <button id="runDvProbeBtn" class="secondary" type="button">Probe DV 21pt</button>
    </div>
    <div class="note">
-    The DV probe verifies that the extracted WebUI logic follows the LG Calman Dolby Vision greyscale model:
+    The DV probe verifies that the extracted WebUI logic follows the LG Dolby Vision greyscale target model:
     <code>PowerFunction 2.2</code> from the emitted DV tunnel code, capped to the active reference peak.
    </div>
   </section>
@@ -276,8 +276,8 @@ function runHarness(){
   const dvExpected = oracleTargetLuminance('dv', dvSignal, 1000, 0);
   results.push(
     approx(dvActual, dvExpected, 0.5)
-      ? makeResult('pass', 'DV target luminance', fmt(dvExpected,3), fmt(dvActual,3), 'WebUI DV target luminance matches the LG Calman PowerFunction 2.2 model.')
-      : makeResult('fail', 'DV target luminance', fmt(dvExpected,3), fmt(dvActual,3), 'WebUI DV target luminance drifted away from the LG Calman PowerFunction 2.2 model.')
+      ? makeResult('pass', 'DV target luminance', fmt(dvExpected,3), fmt(dvActual,3), 'WebUI DV target luminance matches the LG Dolby Vision PowerFunction 2.2 model.')
+      : makeResult('fail', 'DV target luminance', fmt(dvExpected,3), fmt(dvActual,3), 'WebUI DV target luminance drifted away from the LG Dolby Vision PowerFunction 2.2 model.')
   );
 
   const dvAutoTarget = meterAnalysisGamutKey();
@@ -291,7 +291,7 @@ function runHarness(){
   configureMode('hlg');
   results.push(
     meterChartSignalMode() === 'hlg' && meterChartIsHdr() && !meterChartIsPq()
-      ? makeResult('pass', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'Matches the Calman/HLG signal-mode split where HLG should not be treated as PQ.')
+      ? makeResult('pass', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'Matches the PQ/HLG signal-mode split where HLG should not be treated as PQ.')
       : makeResult('fail', 'HLG mode classification', 'HLG = HDR but not PQ', `signal=${meterChartSignalMode()} pq=${meterChartIsPq()}`, 'HLG classification drift will poison chart selection and target math.')
   );
 

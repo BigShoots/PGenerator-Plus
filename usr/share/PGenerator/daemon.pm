@@ -1075,11 +1075,14 @@ sub pattern_daemon {
      #
      if($type eq "CommandRGB") {
       @el_cmd=split(",",$pattern_cmd);
-      my $cr_r=int($el_cmd[0]);
-      my $cr_g=int($el_cmd[1]);
-      my $cr_b=int($el_cmd[2]);
+      my $cr_r_in=int($el_cmd[0]);
+      my $cr_g_in=int($el_cmd[1]);
+      my $cr_b_in=int($el_cmd[2]);
       my $cr_tenBit=int($el_cmd[3]);
       my $cr_size=int($el_cmd[4]);
+      my $cr_r=$cr_r_in;
+      my $cr_g=$cr_g_in;
+      my $cr_b=$cr_b_in;
         my $target_max=&calman_target_max();
       my $input_max=$cr_tenBit ? 1023 : 255;
       # Scale CommandRGB to the current output bit depth.  Only reduce to 8-bit
@@ -1093,6 +1096,14 @@ sub pattern_daemon {
       $calman_apply->();
       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
         my $cr_source_range=&calman_pattern_source_range();
+      &log_calman_patch(type=>"CommandRGB",
+                        raw=>"$cr_r_in,$cr_g_in,$cr_b_in",
+                        scaled=>"$cr_r,$cr_g,$cr_b",
+                        win=>$cr_size_effective,
+                        bg=>$cr_bg,
+                        range=>$cr_source_range,
+                        peer=>$client_ip{$connection},
+                        extra=>"tenBit=$cr_tenBit size_token=$cr_size target_max=$target_max input_max=$input_max");
       &clean_pattern_files();
         if($cr_size_effective >= 100) {
          &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_rgb","$cr_bg","","","",1,"calman",$cr_source_range);
@@ -1114,11 +1125,20 @@ sub pattern_daemon {
       @el_cmd=split(",",$pattern_cmd);
       my $calman_max=1023;
         my $target_max=&calman_target_max();
-      &log("Calman PATTERN: type=$type raw=$el_cmd[0],$el_cmd[1],$el_cmd[2] bits_default=$bits_default target_max=$target_max");
+      my $rgb_raw="$el_cmd[0],$el_cmd[1],$el_cmd[2]";
+      &log("Calman PATTERN: type=$type raw=$rgb_raw bits_default=$bits_default target_max=$target_max");
         $r=&calman_scale_value($el_cmd[0],$calman_max);
         $g=&calman_scale_value($el_cmd[1],$calman_max);
         $b=&calman_scale_value($el_cmd[2],$calman_max);
       &log("Calman PATTERN: scaled=$r,$g,$b bg=$calman_bg max_bpc=$pgenerator_conf{'max_bpc'}");
+      &log_calman_patch(type=>$type,
+                        raw=>$rgb_raw,
+                        scaled=>"$r,$g,$b",
+                        win=>$calman_win_size,
+                        bg=>$calman_bg,
+                        range=>&calman_pattern_source_range(),
+                        peer=>$client_ip{$connection},
+                        extra=>"raw_extra=".join(",",@el_cmd[3..$#el_cmd])." target_max=$target_max calman_max=$calman_max");
       if($calman_special_pattern{$key} ne "" &&  -f "$pattern_templates/$calman_special_pattern{$key}") {
        $response=&get_pattern("TESTTEMPLATE","$calman_special_pattern{$key}","","TESTTEMPLATE:$calman_special_pattern{$key}");
        &send_key_to_client($connection,$response);

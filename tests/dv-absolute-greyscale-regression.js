@@ -31,6 +31,8 @@ const code = [
   extractFunction('meterLgSdrExtendedCodeFromPercent'),
   extractFunction('meterCodeFromSignalPercentWithOptions'),
   extractFunction('meterLgGreyscaleUsesExtendedSdr'),
+  extractFunction('meterUseLgGreyscale21'),
+  extractFunction('meterLgGreyscaleUsesLegalSdrDdcCodes'),
   extractFunction('meterGreyStimulusFraction'),
   extractFunction('meterBuildStepsJS')
 ].join('\n\n');

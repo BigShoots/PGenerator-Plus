@@ -31,9 +31,16 @@ const code = [
   extractFunction('meterSetSeriesCacheBootId'),
   extractFunction('meterParseSeriesKey'),
   extractFunction('meterSeriesSnapshotSignalMode'),
+  extractFunction('meterSeriesSnapshotIsCleared'),
+  extractFunction('meterSeriesSnapshotHasReadings'),
+  extractFunction('meterSeriesSnapshotCanRestore'),
+  extractFunction('meterReadingPlotIre'),
   extractFunction('meterStepNameKey'),
   extractFunction('meterGreyscaleReadingMatchesStep'),
   extractFunction('meterReadingCodesMatchStep'),
+  extractFunction('meterReadingNominalSlotMatchesStep'),
+  extractFunction('meterReadingUsesAlternateStimulus'),
+  extractFunction('meterReadingMatchesStepForPlot'),
   extractFunction('meterRecoveredStepsMatchSeries'),
   extractFunction('meterRecoveredStepsDifferInCodes'),
   extractFunction('meterCanonicalRecoveredSteps'),
@@ -79,6 +86,9 @@ const context = {
     return 'sdr';
   },
   meterUseLgGreyscale21() {
+    return false;
+  },
+  meterUseLgAutoCal26() {
     return false;
   },
   meterBuildStepsJS() {
