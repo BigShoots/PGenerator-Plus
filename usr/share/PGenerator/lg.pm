@@ -725,11 +725,16 @@ sub lg_helper_run (@) {
  my $helper=&lg_helper_path();
  return { status => "error", message => "LG WebOS helper is not installed" } if(!-x $helper);
  my $payload=MIME::Base64::encode_base64(&lg_encode_json($request),"");
- my $cmd="PGEN_LG_REQUEST_B64=".&lg_shell_quote($payload)." $helper 2>&1";
+ my $timeout=&lg_helper_timeout($request);
+ my $cmd="timeout ${timeout}s env PGEN_LG_REQUEST_B64=".&lg_shell_quote($payload)." ".&lg_shell_quote($helper)." 2>&1";
  my $raw=`$cmd`;
+ my $exit_status=$? >> 8;
  my $result=&lg_decode_json($raw);
  if(ref($result) eq "HASH" && ($result->{"status"}||"") ne "") {
     return $result;
+ }
+ if($exit_status == 124 || $exit_status == 137) {
+  return { status => "error", message => &lg_helper_timeout_message($request,$timeout) };
  }
  $raw =~ s/[\r\n]+/ /g;
  $raw =~ s/\s+/ /g;
@@ -737,6 +742,37 @@ sub lg_helper_run (@) {
  $raw =~ s/\s+$//;
  $raw="LG helper execution failed" if($raw eq "");
  return { status => "error", message => $raw };
+}
+
+sub lg_helper_timeout (@) {
+ my $request=shift;
+ $request={} if(ref($request) ne "HASH");
+ my $override=int($request->{"helper_timeout"}||0);
+ return $override if($override > 0);
+ my $action=$request->{"action"}||"";
+ if($action eq "picture_set") {
+  my $settings=$request->{"settings"};
+  if(ref($settings) eq "HASH" && (ref($settings->{"whiteBalanceRed"}) eq "ARRAY" || ref($settings->{"whiteBalanceGreen"}) eq "ARRAY" || ref($settings->{"whiteBalanceBlue"}) eq "ARRAY")) {
+   return 150;
+  }
+  return 45;
+ }
+ return 180 if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
+ return 130 if($action eq "picture_reset");
+ return 75 if($action eq "calibration_mode");
+ return 60 if($action eq "picture_get");
+ return 90;
+}
+
+sub lg_helper_timeout_message (@) {
+ my ($request,$timeout)=@_;
+ $request={} if(ref($request) ne "HASH");
+ my $action=$request->{"action"}||"";
+ return "LG TV did not finish the white-balance write within ${timeout}s." if($action eq "picture_set");
+ return "LG TV did not finish the 3D LUT command within ${timeout}s." if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
+ return "LG TV did not finish the picture-mode reset within ${timeout}s." if($action eq "picture_reset");
+ return "LG TV did not answer the picture-settings request within ${timeout}s." if($action eq "picture_get");
+ return "LG TV command timed out after ${timeout}s.";
 }
 
 sub lg_helper_start_async (@) {
@@ -1011,9 +1047,25 @@ sub lg_picture_default_keys (@) {
   "whiteBalanceRedOffset",
   "whiteBalanceGreenOffset",
   "whiteBalanceBlueOffset",
+  "oledLight",
+  "backlight",
   "adjustingLuminance",
   "adjustingLuminance10pt"
  ];
+}
+
+sub lg_picture_diagnostic_keys (@) {
+ my @keys=(@{&lg_picture_default_keys()},
+  "brightness","contrast","blackLevel","blackLevelAdjust",
+  "oledPixelBrightness","peakBrightness","color","colorDepth","tint",
+  "sharpness","hSharpness","vSharpness","gamma","colorGamut",
+  "energySaving","dynamicContrast","dynamicColor","localDimming",
+  "noiseReduction","mpegNoiseReduction","smoothGradation","superResolution",
+  "realCinema","eyeComfortMode","blackFrameInsertion","truMotionMode",
+  "deJudder","deBlur"
+ );
+ my %seen;
+ return [grep { !$seen{$_}++ } @keys];
 }
 
 sub lg_picture_needs_repair (@) {
@@ -1163,16 +1215,29 @@ sub webui_lg_picture_settings (@) {
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading picture settings." }) if($client_key eq "");
  my $keys=$payload->{"keys"};
  $keys=&lg_picture_default_keys() if(ref($keys) ne "ARRAY" || !@{$keys});
- my $result=&lg_helper_run({
+my $result=&lg_helper_run({
  action => "picture_get",
  ip => $ip,
  client_key => $client_key,
   keys => $keys,
-  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
-  connect_timeout => 5,
- });
+	  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+	  tv_input => &lg_input_from_cec(),
+	  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
+	  helper_timeout => int($payload->{"helper_timeout"}||0),
+	  connect_timeout => 5,
+	 });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  return &lg_encode_json($result);
+}
+
+sub lg_settings_are_ddc_white_balance (@) {
+ my $settings=shift;
+ return 0 if(ref($settings) ne "HASH");
+ return 0 if(($settings->{"whiteBalanceMethod"}||"") ne "22");
+ return 0 if(ref($settings->{"whiteBalanceRed"}) ne "ARRAY");
+ return 0 if(ref($settings->{"whiteBalanceGreen"}) ne "ARRAY");
+ return 0 if(ref($settings->{"whiteBalanceBlue"}) ne "ARRAY");
+ return 1;
 }
 
 sub webui_lg_picture_settings_set (@) {
@@ -1196,26 +1261,86 @@ sub webui_lg_picture_settings_set (@) {
  my $settings=$payload->{"settings"};
  return &lg_encode_json({ status => "error", message => "No LG picture settings were provided." }) if(ref($settings) ne "HASH" || !%{$settings});
  my $readback_keys=$payload->{"readback_keys"};
- if(ref($readback_keys) ne "ARRAY" || !@{$readback_keys}) {
+ if($payload->{"skip_readback"}) {
+  $readback_keys=[];
+ } elsif(ref($readback_keys) ne "ARRAY" || !@{$readback_keys}) {
   $readback_keys=[keys(%{$settings})];
  }
+	 my $ddc_white_balance=&lg_settings_are_ddc_white_balance($settings);
+	 my $keep_calibration_mode=exists($payload->{"keep_calibration_mode"})
+	  ? ($payload->{"keep_calibration_mode"} ? 1 : 0)
+	  : (($clients->{"calibration_mode"}||$ddc_white_balance) ? 1 : 0);
+ my $calibration_mode_active=($payload->{"calibration_mode_active"}||($ddc_white_balance&&$keep_calibration_mode&&$clients->{"calibration_mode"})) ? 1 : 0;
+ $calibration_mode_active=0 if($payload->{"reset_ddc_baseline"}||$payload->{"clear_ddc_baseline"});
  my $result=&lg_helper_run({
   action => "picture_set",
   ip => $ip,
   client_key => $client_key,
   settings => $settings,
   readback_keys => $readback_keys,
-  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
-  tv_input => &lg_input_from_cec(),
-  keep_calibration_mode => $clients->{"calibration_mode"} ? 1 : 0,
-  connect_timeout => 5,
- });
- &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+	  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+	 tv_input => &lg_input_from_cec(),
+		  keep_calibration_mode => $keep_calibration_mode,
+		  calibration_mode_active => $calibration_mode_active,
+		  reset_ddc_baseline => ($payload->{"reset_ddc_baseline"}||$payload->{"clear_ddc_baseline"}) ? &lg_json_true() : &lg_json_false(),
+		  verify_ddc_upload => $payload->{"verify_ddc_upload"} ? &lg_json_true() : &lg_json_false(),
+		  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
+		  helper_timeout => int($payload->{"helper_timeout"}||0),
+	  connect_timeout => 5,
+	 });
+ my $updated_clients=$clients;
+ $updated_clients=&lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+	 if(($result->{"status"}||"") eq "ok" && $ddc_white_balance && ($result->{"ddc_1d_lut"} || exists($result->{"calibration_mode"}))) {
+	  $updated_clients->{"calibration_mode"}=$keep_calibration_mode ? &lg_json_true() : &lg_json_false();
+	  my $cal_mode=$result->{"calibration_picture_mode"}||$result->{"active_picture_mode"}||$payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"";
+	  if($keep_calibration_mode) {
+	   $updated_clients->{"calibration_picture_mode"}=$cal_mode if($cal_mode ne "");
+	  } else {
+	   delete($updated_clients->{"calibration_picture_mode"});
+	  }
+	  &lg_save_clients($updated_clients);
+	  $result->{"calibration_mode"}=$keep_calibration_mode ? &lg_json_true() : &lg_json_false();
+	  $result->{"calibration_picture_mode"}=$cal_mode if($cal_mode ne "");
+	 }
  if(&lg_picture_needs_repair($result)) {
    $result->{"message"}="The saved LG client key does not have picture-control permission. Use Display -> Pair With PIN once, enter the TV PIN, then reconnects will use the saved key without another PIN.";
    $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
  } elsif(($result->{"error_code"}||"") eq "lg-calibration-permission") {
-   $result->{"repair_hint"}="The TV accepted pairing but denied LG calibration/DDC access. Clear the existing LG Connect Apps entry for PGenerator/Test Remote App on the TV, then pair from Display again.";
+   $result->{"repair_hint"}="The TV accepted pairing but denied LG calibration/DDC access. Clear the existing LG Connect Apps entry for PGenerator/LG Remote App on the TV, then pair from Display again.";
+ }
+ return &lg_encode_json($result);
+}
+
+sub webui_lg_picture_reset (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+ if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+  return &lg_encode_json({
+   status => "error",
+   message => "Complete LG PIN pairing first by entering the PIN shown on the TV.",
+   needs_repair => &lg_json_true(),
+  });
+ }
+ my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting picture settings." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting picture settings." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "picture_reset",
+	  ip => $ip,
+	  client_key => $client_key,
+	  picture_mode => $payload->{"picture_mode"}||"",
+	  signal_mode => $payload->{"signal_mode"}||"",
+	  tv_input => &lg_input_from_cec(),
+	  connect_timeout => 5,
+	 });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have picture-control permission. Use Display -> Pair With PIN once, enter the TV PIN, then reconnects will use the saved key without another PIN.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
  }
  return &lg_encode_json($result);
 }
@@ -1249,6 +1374,103 @@ sub webui_lg_cec_fallback (@) {
  return $result;
 }
 
+sub lg_3d_lut_payload_path_ok (@) {
+ my $path=shift;
+ $path="" if(!defined($path));
+ return ($path =~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9_.-]+\.bin$}) ? 1 : 0;
+}
+
+sub webui_lg_3d_lut_probe (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+ if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before probing 3D LUT support.", needs_repair => &lg_json_true() });
+ }
+ my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before probing 3D LUT support." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before probing 3D LUT support." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "3d_lut_probe",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  write_probe => $payload->{"write_probe"} ? &lg_json_true() : &lg_json_false(),
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the 3D LUT probe again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
+sub webui_lg_3d_lut_upload (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $payload_path=$payload->{"payload_path"}||"";
+ return &lg_encode_json({ status => "error", message => "LG 3D LUT upload requires an exported payload under /var/lib/PGenerator/lg/luts." }) if(!&lg_3d_lut_payload_path_ok($payload_path) || !-f $payload_path);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+ if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before uploading a 3D LUT.", needs_repair => &lg_json_true() });
+ }
+ my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a 3D LUT." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a 3D LUT." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "3d_lut_upload",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  payload_path => $payload_path,
+  upload_command => $payload->{"upload_command"}||"",
+  get_command => $payload->{"get_command"}||"",
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the 3D LUT upload again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
+sub webui_lg_3d_lut_reset (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+ if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before resetting the 3D LUT.", needs_repair => &lg_json_true() });
+ }
+ my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting the 3D LUT." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting the 3D LUT." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "3d_lut_reset",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  upload_command => $payload->{"upload_command"}||"",
+  get_command => $payload->{"get_command"}||"",
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_api (@) {
  my $path=shift;
  my $method=shift;
@@ -1268,6 +1490,15 @@ sub webui_lg_api (@) {
  if($path eq "/api/lg/calibration-mode" && $method eq "POST") {
   return &webui_lg_calibration_mode($body);
  }
+ if($path eq "/api/lg/3d-lut/probe" && $method eq "POST") {
+  return &webui_lg_3d_lut_probe($body);
+ }
+ if($path eq "/api/lg/3d-lut/upload" && $method eq "POST") {
+  return &webui_lg_3d_lut_upload($body);
+ }
+ if($path eq "/api/lg/3d-lut/reset" && $method eq "POST") {
+  return &webui_lg_3d_lut_reset($body);
+ }
  if($path eq "/api/lg/pair-pin/start" && $method eq "POST") {
   return &webui_lg_pin_pair_start($body);
  }
@@ -1279,6 +1510,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/picture-settings/set" && $method eq "POST") {
   return &webui_lg_picture_settings_set($body);
+ }
+ if($path eq "/api/lg/picture-settings/reset" && $method eq "POST") {
+  return &webui_lg_picture_reset($body);
  }
  if($path eq "/api/lg/forget" && $method eq "POST") {
   return &webui_lg_forget();
@@ -1322,8 +1556,30 @@ sub webui_lg_card_html (@) {
 	   #lgDeviceList::-webkit-scrollbar-thumb:hover{background:#3a3a4a}
 	   #lgDeviceList .lg-device-item:hover{background:#171a25!important}
 	   #lgDeviceList .lg-device-item.selected{background:#10131d!important;color:#fff;box-shadow:inset 3px 0 0 var(--green)}
+	   #lgCardTitle::after{margin-left:0}
+	   #lgDisplayControlModal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
+	   #lgDisplayControlPanel{width:min(920px,calc(100vw - 36px));max-height:min(760px,calc(100vh - 36px));overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:16px;box-sizing:border-box;scrollbar-color:#525264 #232330;scrollbar-width:auto;scrollbar-gutter:stable}
+	   #lgDisplayControlPanel::-webkit-scrollbar{width:14px;height:14px}
+	   #lgDisplayControlPanel::-webkit-scrollbar-track{background:linear-gradient(90deg,#20202d 0%,#272736 100%);border-radius:999px;border:1px solid #3a3a4a}
+	   #lgDisplayControlPanel::-webkit-scrollbar-thumb{background:linear-gradient(90deg,#58586c 0%,#38384a 100%);border-radius:999px;border:1px solid #6c6c82;box-shadow:inset 1px 0 0 rgba(255,255,255,.12)}
+	   #lgDisplayControlPanel::-webkit-scrollbar-thumb:hover{background:linear-gradient(90deg,#67677c 0%,#434356 100%)}
+	   #lgDisplayControlGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+	   .lg-display-control-item{border:1px solid var(--border);border-radius:6px;padding:9px;background:#10131d;min-height:74px}
+	   .lg-display-control-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
+	   .lg-display-control-label{font-size:.78rem;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	   .lg-display-control-value{font-size:.72rem;color:var(--text2);min-width:34px;text-align:right}
+	   .lg-display-control-row{display:flex;align-items:center;gap:8px}
+	   .lg-display-control-row input[type="range"]{flex:1;min-width:0}
+	   .lg-display-control-row input[type="number"]{width:68px}
+	   .lg-display-control-row select,.lg-display-control-row input[type="text"]{width:100%}
+	   #lgDisplayControlPanel .lg-display-control-row select,#lgDisplayControlPanel .lg-display-control-row input[type="number"],#lgDisplayControlPanel .lg-display-control-row input[type="text"]{min-height:32px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;box-sizing:border-box;color-scheme:dark}
+	   #lgDisplayControlPanel .lg-display-control-row input[type="number"],#lgDisplayControlPanel .lg-display-control-row input[type="text"]{padding:6px 8px}
+	   #lgDisplayControlPanel .lg-display-control-row select{padding:6px 30px 6px 8px;-webkit-appearance:none;appearance:none;cursor:pointer;background-color:#0d0d15;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+	   #lgDisplayControlPanel .lg-display-control-row select option{background:#0d0d15;color:var(--text)}
+	   #lgDisplayControlPanel .lg-display-control-row select:focus,#lgDisplayControlPanel .lg-display-control-row input[type="number"]:focus,#lgDisplayControlPanel .lg-display-control-row input[type="text"]:focus{border-color:var(--accent)}
+	   #lgDisplayControlPanel .lg-display-control-row select:disabled,#lgDisplayControlPanel .lg-display-control-row input:disabled{opacity:.65;cursor:not-allowed}
 	  </style>
-	  <h2><span class="drag-handle">&#9776;</span>Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Checking...</span></h2>
+	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Checking...</span><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" style="margin-left:auto" onclick="lgOpenDisplayControl()">Display Control</button></h2>
   <div id="lgCommandStatus" style="display:none;align-items:center;gap:8px;font-size:.78rem;color:var(--text);background:#101522;border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin-bottom:8px">
    <span class="spinner"></span>
    <span id="lgCommandStatusText">Communicating with LG TV...</span>
@@ -1374,6 +1630,20 @@ sub webui_lg_card_html (@) {
   </div>
     <div id="lgWorkflowHint" style="font-size:.75rem;color:var(--text2);margin-top:8px;line-height:1.45">Display detection is checking for an LG TV.</div>
  </div>
+ <div id="lgDisplayControlModal" onclick="if(event.target===this) lgCloseDisplayControl()">
+  <div id="lgDisplayControlPanel">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+   <h2 style="margin:0">Display Control <span id="lgDisplayControlBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Idle</span></h2>
+   <button class="btn btn-sm btn-secondary" onclick="lgCloseDisplayControl()">Close</button>
+  </div>
+  <div id="lgDisplayControlStatus" style="font-size:.8rem;color:var(--text2);line-height:1.45;margin-bottom:8px">Connect display</div>
+	  <div class="btn-row" style="margin-bottom:10px">
+	   <button class="btn btn-sm btn-primary" id="lgDisplayControlRefreshBtn" onclick="lgDisplayControlRefresh(true)">Refresh Settings</button>
+	   <button class="btn btn-sm btn-warning" id="lgDisplayControlResetBtn" onclick="lgResetPictureMode()" disabled>&#8634; Reset Picture Mode</button>
+	  </div>
+	  <div id="lgDisplayControlGrid"></div>
+  </div>
+ </div>
 LG_CARD
 }
 
@@ -1389,6 +1659,32 @@ let lgPictureModeRefreshTimer=null;
 let lgScanPending=false;
 let lgCalibrationModePending=false;
 window.lgStatusState=window.lgStatusState||{paired:false,detected:false,hasIp:false,checked:false,clientKeyPresent:false,pinPending:false};
+
+function renderLgTopStatus(r){
+ const wrap=document.getElementById('lgTopStatusWrap');
+ const dot=document.getElementById('lgTopDot');
+ const text=document.getElementById('lgTopStatusText');
+ if(!wrap||!dot||!text) return;
+ const paired=!!(r&&(r.paired||r.client_key_present||r.clientKeyPresent));
+ const pinPending=!!(r&&(r.pin_pairing_pending||r.pinPending));
+ if(!paired||pinPending){
+  wrap.style.display='none';
+  if(typeof syncTopStatusStack==='function') syncTopStatusStack();
+  return;
+ }
+ const rawName=String((r&&(r.model_name||r.modelName||r.displayName||r.stored_name||r.cec_osd_name||r.product_name||r.cec_tv_name))||'LG TV').trim()||'LG TV';
+ const ip=String((r&&(r.manual_ip||r.stored_ip||r.auto_ip||r.ip))||'').trim();
+ const name=(rawName.toLowerCase()==='lg tv'&&ip&&r&&r.auto_host)?String(r.auto_host).trim():rawName;
+ const label=name+(ip?' ['+ip+']':'');
+ const power=String((r&&(r.tv_power||r.tvPower))||'').trim();
+ const powerKey=power.toLowerCase();
+ dot.style.background=/^(off|standby)$/.test(powerKey)?'var(--orange)':'var(--green)';
+ text.textContent=label;
+ text.style.color='var(--text)';
+ wrap.title='Display: '+label+(power?(' | Power: '+power):'');
+ wrap.style.display='flex';
+ if(typeof syncTopStatusStack==='function') syncTopStatusStack();
+}
 
 const LG_PICTURE_MODES_BY_SIGNAL={
  sdr:[
@@ -1424,6 +1720,46 @@ const LG_PICTURE_MODES_BY_SIGNAL={
   ['dolby_hdr_vivid','Vivid']
  ]
 };
+
+const LG_DISPLAY_CONTROL_ITEMS=[
+ {key:'brightness',label:'Brightness',type:'number',min:0,max:100,step:1},
+ {key:'contrast',label:'Contrast',type:'number',min:0,max:100,step:1},
+ {key:'blackLevel',label:'Black Level / Range',type:'select',options:['auto','low','high','limited','full']},
+ {key:'blackLevelAdjust',label:'Black Level Adjust',type:'number',min:0,max:100,step:1},
+ {key:'backlight',label:'Backlight',type:'number',min:0,max:100,step:1},
+ {key:'oledLight',label:'OLED Light',type:'number',min:0,max:100,step:1},
+ {key:'oledPixelBrightness',label:'OLED Pixel Brightness',type:'number',min:0,max:100,step:1},
+ {key:'peakBrightness',label:'Peak Brightness',type:'select',options:['off','low','medium','high']},
+ {key:'color',label:'Color',type:'number',min:0,max:100,step:1},
+ {key:'colorDepth',label:'Color Depth',type:'number',min:0,max:100,step:1},
+ {key:'tint',label:'Tint',type:'number',min:0,max:100,step:1},
+ {key:'sharpness',label:'Sharpness',type:'number',min:0,max:100,step:1},
+ {key:'hSharpness',label:'H Sharpness',type:'number',min:0,max:100,step:1},
+ {key:'vSharpness',label:'V Sharpness',type:'number',min:0,max:100,step:1},
+ {key:'gamma',label:'Gamma',type:'select',options:['1.9','2.2','2.4','bt1886','BT.1886']},
+ {key:'colorTemperature',label:'Color Temperature',type:'select',options:['cool','medium','warm','warm1','warm2','warm3','expert1','expert2']},
+ {key:'colorGamut',label:'Color Gamut',type:'select',options:['auto','native','extended','wide']},
+ {key:'energySaving',label:'Energy Saving',type:'select',options:['off','minimum','medium','maximum','auto','screenOff']},
+ {key:'dynamicContrast',label:'Dynamic Contrast',type:'select',options:['off','low','medium','high']},
+ {key:'dynamicColor',label:'Dynamic Color',type:'select',options:['off','low','medium','high']},
+ {key:'localDimming',label:'Local Dimming',type:'select',options:['off','low','medium','high']},
+ {key:'noiseReduction',label:'Noise Reduction',type:'select',options:['off','low','medium','high','auto']},
+ {key:'mpegNoiseReduction',label:'MPEG Noise Reduction',type:'select',options:['off','low','medium','high','auto']},
+ {key:'smoothGradation',label:'Smooth Gradation',type:'select',options:['off','low','medium','high']},
+ {key:'superResolution',label:'Super Resolution',type:'select',options:['off','low','medium','high']},
+ {key:'realCinema',label:'Real Cinema',type:'select',options:['off','on']},
+ {key:'eyeComfortMode',label:'Eye Comfort Mode',type:'select',options:['off','on']},
+ {key:'blackFrameInsertion',label:'Black Frame Insertion',type:'select',options:['off','low','medium','high']},
+ {key:'truMotionMode',label:'TruMotion Mode',type:'select',options:['off','cinematicMovement','natural','smooth','user']},
+ {key:'deJudder',label:'De-Judder',type:'number',min:0,max:10,step:1},
+ {key:'deBlur',label:'De-Blur',type:'number',min:0,max:10,step:1}
+];
+const LG_DISPLAY_CONTROL_KEYS=LG_DISPLAY_CONTROL_ITEMS.map(item=>item.key);
+let lgDisplayControlPending=false;
+let lgDisplayControlValues={};
+let lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{}};
+let lgDisplayControlLoaded=false;
+let lgDisplayControlError='';
 
 function lgEscapeHtml(value){
  return String(value==null?'':value).replace(/[&<>"']/g,(ch)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -1738,6 +2074,224 @@ function lgBindDisplayModeControl(){
  lgPopulatePictureModeSelect(lgPictureModeValue);
 }
 
+function lgDisplayControlConnected(){
+ const state=window.lgStatusState||{};
+ return !!((state.paired||state.clientKeyPresent)&&!state.pinPending);
+}
+
+function lgSelectedPictureModeValue(){
+ const select=document.getElementById('lgPictureMode');
+ return (select&&select.value)||lgPictureModeValue||lgStoredPictureMode(lgSignalModeKey())||'';
+}
+
+function lgDisplayControlPictureMode(){
+ return lgSelectedPictureModeValue();
+}
+
+function lgPictureResetButtons(){
+ return ['lgPictureResetBtn','lgDisplayControlResetBtn'].map(id=>document.getElementById(id)).filter(Boolean);
+}
+
+function lgSetPictureResetButtonsDisabled(disabled){
+ lgPictureResetButtons().forEach(button=>{button.disabled=!!disabled;});
+}
+
+function lgDisplayControlSetStatus(text,error){
+ const status=document.getElementById('lgDisplayControlStatus');
+ const badge=document.getElementById('lgDisplayControlBadge');
+ if(status){
+  status.textContent=text||'';
+  status.style.color=error?'var(--red)':'var(--text2)';
+ }
+ if(badge){
+  badge.textContent=lgDisplayControlPending?'Busy':(lgDisplayControlConnected()?(lgDisplayControlLoaded?'Ready':'Refresh'):'Connect');
+  badge.style.background=lgDisplayControlPending?'var(--orange)':(lgDisplayControlConnected()?'var(--green)':'var(--text2)');
+ }
+}
+
+function lgOpenDisplayControl(){
+ const modal=document.getElementById('lgDisplayControlModal');
+ if(!modal) return;
+ modal.style.display='flex';
+ lgDisplayControlRender();
+ lgDisplayControlRefresh(false);
+ if(typeof uiSyncBodyScrollLock==='function') uiSyncBodyScrollLock();
+}
+
+function lgCloseDisplayControl(){
+ const modal=document.getElementById('lgDisplayControlModal');
+ if(modal) modal.style.display='none';
+ if(typeof uiSyncBodyScrollLock==='function') uiSyncBodyScrollLock();
+}
+
+function lgDisplayControlCurrentValue(key){
+ return Object.prototype.hasOwnProperty.call(lgDisplayControlValues,key)?lgDisplayControlValues[key]:null;
+}
+
+function lgDisplayControlOptionHtml(meta,value){
+ const raw=String(value==null?'':value);
+ const seen={};
+ let html='';
+ (meta.options||[]).forEach(opt=>{
+  const val=String(opt);
+  seen[val]=true;
+  html+='<option value="'+lgEscapeHtml(val)+'"'+(raw===val?' selected':'')+'>'+lgEscapeHtml(lgPictureModeLabel(val))+'</option>';
+ });
+ if(raw!==''&&!seen[raw]){
+  html='<option value="'+lgEscapeHtml(raw)+'" selected>'+lgEscapeHtml(raw)+'</option>'+html;
+ }
+ return html;
+}
+
+function lgDisplayControlInvalidate(){
+ lgDisplayControlLoaded=false;
+ lgDisplayControlValues={};
+ lgDisplayControlCapabilities={supportedKeys:[],unsupportedKeys:{}};
+ lgDisplayControlError='';
+ lgDisplayControlRender();
+}
+
+function lgDisplayControlRender(){
+ const grid=document.getElementById('lgDisplayControlGrid');
+ const refreshBtn=document.getElementById('lgDisplayControlRefreshBtn');
+ const resetBtn=document.getElementById('lgDisplayControlResetBtn');
+ if(refreshBtn) refreshBtn.disabled=lgDisplayControlPending||!lgDisplayControlConnected();
+ if(resetBtn) resetBtn.disabled=lgDisplayControlPending||!lgDisplayControlConnected()||lgPictureModePending||lgCalibrationModePending;
+ if(!grid) return;
+ const connected=lgDisplayControlConnected();
+ if(!connected){
+  grid.innerHTML='';
+  lgDisplayControlSetStatus('Connect display',false);
+  return;
+ }
+ let html='';
+ LG_DISPLAY_CONTROL_ITEMS.forEach(meta=>{
+  const value=lgDisplayControlCurrentValue(meta.key);
+  const supported=value!==null&&value!==undefined;
+  const disabled=(!supported||lgDisplayControlPending)?' disabled':'';
+  const displayValue=supported?String(value):'--';
+  html+='<div class="lg-display-control-item" data-lg-display-control="'+lgEscapeHtml(meta.key)+'">';
+  html+='<div class="lg-display-control-top"><div class="lg-display-control-label">'+lgEscapeHtml(meta.label)+'</div><div class="lg-display-control-value" id="lgDcValue_'+lgEscapeHtml(meta.key)+'">'+lgEscapeHtml(displayValue)+'</div></div>';
+  html+='<div class="lg-display-control-row">';
+  if(meta.type==='number'){
+   const numeric=Number(value);
+   const safe=Number.isFinite(numeric)?numeric:(meta.min||0);
+   html+='<input type="range" id="lgDcRange_'+lgEscapeHtml(meta.key)+'" min="'+meta.min+'" max="'+meta.max+'" step="'+meta.step+'" value="'+safe+'" oninput="lgDisplayControlSyncNumber(\''+lgEscapeHtml(meta.key)+'\',this.value)" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>';
+   html+='<input type="number" id="lgDcInput_'+lgEscapeHtml(meta.key)+'" min="'+meta.min+'" max="'+meta.max+'" step="'+meta.step+'" value="'+safe+'" oninput="lgDisplayControlSyncRange(\''+lgEscapeHtml(meta.key)+'\',this.value)" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>';
+  }else{
+   html+='<select id="lgDcInput_'+lgEscapeHtml(meta.key)+'" onchange="lgDisplayControlCommit(\''+lgEscapeHtml(meta.key)+'\')"'+disabled+'>'+lgDisplayControlOptionHtml(meta,value)+'</select>';
+  }
+  html+='</div></div>';
+ });
+ grid.innerHTML=html;
+ lgDisplayControlSetStatus(lgDisplayControlError||(lgDisplayControlLoaded?'Picture controls loaded':'Refresh settings'),!!lgDisplayControlError);
+}
+
+function lgDisplayControlSyncNumber(key,value){
+ const number=document.getElementById('lgDcInput_'+key);
+ const label=document.getElementById('lgDcValue_'+key);
+ if(number&&document.activeElement!==number) number.value=value;
+ if(label) label.textContent=String(value);
+}
+
+function lgDisplayControlSyncRange(key,value){
+ const range=document.getElementById('lgDcRange_'+key);
+ const label=document.getElementById('lgDcValue_'+key);
+ if(range&&document.activeElement!==range) range.value=value;
+ if(label) label.textContent=String(value);
+}
+
+async function lgDisplayControlRefresh(force){
+ if(lgDisplayControlPending) return;
+ if(!lgDisplayControlConnected()){
+  lgDisplayControlInvalidate();
+  return;
+ }
+ if(!force&&lgDisplayControlLoaded) return;
+ lgDisplayControlPending=true;
+ lgDisplayControlError='';
+ lgDisplayControlRender();
+ try{
+  const r=await fetchJSON('/api/lg/picture-settings',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode()}),
+   _quiet:true,
+   _timeoutMs:18000
+  });
+	  if(r&&r.status==='ok'&&r.picture_settings){
+	   lgDisplayControlValues=r.picture_settings||{};
+	   lgDisplayControlCapabilities={
+	    supportedKeys:Array.isArray(r.supported_picture_keys)?r.supported_picture_keys:[],
+	    unsupportedKeys:(r.unsupported_picture_keys&&typeof r.unsupported_picture_keys==='object')?r.unsupported_picture_keys:{}
+	   };
+	   lgDisplayControlLoaded=true;
+   lgDisplayControlError='';
+   if(r.picture_settings.pictureMode){
+    lgPictureModeValue=r.picture_settings.pictureMode;
+    lgRememberPictureMode(lgPictureModeValue,lgSignalModeKey());
+   }
+  }else{
+   lgDisplayControlError=(r&&r.message)||'Unable to read display controls';
+  }
+ }catch(e){
+  lgDisplayControlError='Unable to read display controls';
+ }finally{
+  lgDisplayControlPending=false;
+  lgDisplayControlRender();
+ }
+}
+
+async function lgDisplayControlCommit(key){
+ const meta=LG_DISPLAY_CONTROL_ITEMS.find(item=>item.key===key);
+ if(!meta||!lgDisplayControlConnected()||lgDisplayControlPending) return;
+ const input=document.getElementById('lgDcInput_'+key);
+ if(!input) return;
+ let value=meta.type==='number'?Number(input.value):input.value;
+ if(meta.type==='number'){
+  if(!Number.isFinite(value)) return;
+  value=Math.max(Number(meta.min),Math.min(Number(meta.max),value));
+ }
+ const previousValue=lgDisplayControlValues[key];
+ lgDisplayControlValues[key]=value;
+ lgDisplayControlPending=true;
+ lgDisplayControlError='';
+ lgDisplayControlRender();
+ const commandHandle=lgBeginCommand('Changing '+meta.label);
+ let refreshAfter=false;
+ try{
+  const settings={};
+  settings[key]=value;
+  const r=await fetchJSON('/api/lg/picture-settings/set',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({settings:settings,picture_mode:lgDisplayControlPictureMode(),readback_keys:[key,'pictureMode']}),
+   _timeoutMs:30000
+  });
+  if(r&&r.status==='ok'){
+   const picture=r.picture_settings||{};
+   lgDisplayControlValues[key]=(picture[key]!==undefined)?picture[key]:value;
+   if(picture.pictureMode) lgPictureModeValue=picture.pictureMode;
+   lgDisplayControlLoaded=true;
+   lgDisplayControlError='';
+   toast(meta.label+' updated');
+  }else{
+   lgDisplayControlValues[key]=previousValue;
+   toast((r&&r.message)||('Unable to update '+meta.label),'err');
+   refreshAfter=true;
+  }
+ }catch(e){
+  lgDisplayControlValues[key]=previousValue;
+  toast('Unable to update '+meta.label,'err');
+  refreshAfter=true;
+ }finally{
+  lgEndCommand(commandHandle);
+  lgDisplayControlPending=false;
+  if(refreshAfter) await lgDisplayControlRefresh(true);
+  else lgDisplayControlRender();
+ }
+}
+
 function renderLgStatus(r){
  const badge=document.getElementById('lgStatusBadge');
  const text=document.getElementById('lgStatusText');
@@ -1748,6 +2302,7 @@ function renderLgStatus(r){
  const connectBtn=document.getElementById('lgConnectBtn');
  const pinStartBtn=document.getElementById('lgPinStartBtn');
  const pinSubmitBtn=document.getElementById('lgPinSubmitBtn');
+ const resetButtons=lgPictureResetButtons();
  const pinRow=document.getElementById('lgPinRow');
  const calibrationMode=document.getElementById('lgCalibrationMode');
  const hint=document.getElementById('lgWorkflowHint');
@@ -1768,12 +2323,15 @@ function renderLgStatus(r){
 	  checked:true,
 	  clientKeyPresent:clientKeyPresent,
 	  pinPending:pinPending,
-	  calibrationMode:!!r.calibration_mode,
-	  promptKey:promptKey,
-	  ip:r.manual_ip||r.stored_ip||r.auto_ip||'',
-	  modelName:r.model_name||r.stored_name||r.cec_tv_name||r.cec_osd_name||''
-	 };
- if(pinPending){
+		  calibrationMode:!!r.calibration_mode,
+		  promptKey:promptKey,
+		  ip:r.manual_ip||r.stored_ip||r.auto_ip||'',
+		  modelName:r.model_name||r.stored_name||r.cec_tv_name||r.cec_osd_name||'',
+		  displayName:r.model_name||r.stored_name||r.cec_tv_name||r.cec_osd_name||'',
+		  tvPower:r.tv_power||''
+		 };
+	 renderLgTopStatus(r);
+	 if(pinPending){
     badge.textContent=promptStyle==='controller-pin'?'Enter PIN':'Pairing';
    badge.style.background='var(--orange)';
  }else if(paired){
@@ -1834,6 +2392,7 @@ function renderLgStatus(r){
 	  pinStartBtn.textContent=pinPending?'Pairing Active':'Pair With PIN';
 	 }
  if(pinSubmitBtn) pinSubmitBtn.style.display=pinPending?'':'none';
+ resetButtons.forEach(button=>{button.disabled=pinPending||!(paired||clientKeyPresent)||lgPictureModePending||lgCalibrationModePending;});
 	 if(hint){
 	  if(pinPending){
 	   hint.textContent=promptStyle==='controller-pin'
@@ -1850,8 +2409,14 @@ function renderLgStatus(r){
 	  }
 	 }
 	 lgPopulatePictureModeSelect(lgPictureModeValue);
+	 lgDisplayControlRender();
 	 if(typeof meterUpdateSeriesLabels==='function') meterUpdateSeriesLabels();
-	 if((paired||clientKeyPresent)&&!pinPending) lgSchedulePictureModeRefresh(false);
+	 if((paired||clientKeyPresent)&&!pinPending) {
+	  lgSchedulePictureModeRefresh(false);
+	  setTimeout(()=>lgDisplayControlRefresh(false),650);
+	 } else {
+	  lgDisplayControlInvalidate();
+	 }
 	 lgMaybeShowDetectedPrompt(r);
 	 lgLastPinPending=pinPending;
 		 if(previousPaired!==paired && typeof meterRefreshActiveSeriesCharts==='function') meterRefreshActiveSeriesCharts();
@@ -2009,12 +2574,13 @@ function lgPinKeydown(event){
 async function lgRefreshPictureMode(force){
  const state=window.lgStatusState||{};
  const signal=lgSignalModeKey();
-	 if(!(state.paired||state.clientKeyPresent)){
-	  lgPictureModeValue='';
-	  lgPictureModeSignalMode=signal;
-	  lgPopulatePictureModeSelect('');
-	  return;
-	 }
+		 if(!(state.paired||state.clientKeyPresent)){
+		  lgPictureModeValue='';
+		  lgPictureModeSignalMode=signal;
+		  lgPopulatePictureModeSelect('');
+		  lgDisplayControlInvalidate();
+		  return;
+		 }
 	 if(typeof lgIsCommandBusy==='function'&&lgIsCommandBusy()) return;
 	 if(lgPictureModePending) return;
  if(!force&&lgPictureModeValue&&lgPictureModeSignalMode===signal){
@@ -2038,10 +2604,11 @@ async function lgRefreshPictureMode(force){
    if(mode) lgRememberPictureMode(mode,signal);
   }
  }catch(e){
- }finally{
-  lgPictureModePending=false;
-  lgPopulatePictureModeSelect(lgPictureModeValue);
- }
+	 }finally{
+	  lgPictureModePending=false;
+	  lgPopulatePictureModeSelect(lgPictureModeValue);
+	  lgDisplayControlRender();
+	 }
 }
 
 async function lgSetPictureMode(){
@@ -2073,11 +2640,13 @@ async function lgSetPictureMode(){
    lgPictureModeSignalMode=signal;
    lgRememberPictureMode(mode,signal);
    toast('LG picture mode set to '+lgPictureModeLabel(mode));
-   if(typeof meterLgGreySyncForCurrentStep==='function'){
-    try{meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};}catch(e){}
-    meterLgGreySyncForCurrentStep(true);
-   }
-  }else{
+	   if(typeof meterLgGreySyncForCurrentStep==='function'){
+	    try{meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};}catch(e){}
+	    meterLgGreySyncForCurrentStep(true);
+	   }
+	   lgDisplayControlInvalidate();
+	   lgDisplayControlRefresh(true);
+	  }else{
    toast(r&&r.message?r.message:'Unable to change LG picture mode','err');
   }
 	 }catch(e){
@@ -2086,6 +2655,54 @@ async function lgSetPictureMode(){
 	  lgEndCommand(commandHandle);
 	  lgPictureModePending=false;
 	 lgPopulatePictureModeSelect(lgPictureModeValue);
+ }
+}
+
+async function lgResetPictureMode(){
+ const state=window.lgStatusState||{};
+ if(!(state.paired||state.clientKeyPresent)){
+  toast('Connect the LG TV first','err');
+  return;
+	 }
+	 const signal=lgSignalModeKey();
+	 const mode=lgSelectedPictureModeValue();
+	 if(!mode){
+	  toast('Select the LG picture mode before resetting picture settings','err');
+	  return;
+ }
+ const label=mode?lgPictureModeLabel(mode):'the active mode';
+ if(!confirm('Reset '+label+' picture settings? This resets the mode before calibration.')) return;
+ lgSetPictureResetButtonsDisabled(true);
+ const commandHandle=lgBeginCommand('Resetting LG picture mode');
+ try{
+  const r=await fetchJSON('/api/lg/picture-settings/reset',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({picture_mode:mode,signal_mode:signal}),
+   _timeoutMs:90000
+  });
+  if(r&&r.status==='ok'){
+   toast(r.message||'LG picture mode reset complete');
+   if(r.active_picture_mode){
+    lgPictureModeValue=r.active_picture_mode;
+    lgRememberPictureMode(r.active_picture_mode,lgSignalModeKey());
+   }
+	   if(typeof meterLgGreySyncForCurrentStep==='function'){
+	    try{meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};}catch(e){}
+	    meterLgGreySyncForCurrentStep(true);
+	   }
+	   lgRefreshPictureMode(true);
+	   lgDisplayControlInvalidate();
+	   lgDisplayControlRefresh(true);
+	  }else{
+   toast(r&&r.message?r.message:'Unable to reset LG picture mode','err');
+  }
+ }catch(e){
+  toast('Unable to reset LG picture mode','err');
+ }finally{
+  lgEndCommand(commandHandle);
+  await loadLgStatus(true);
+  lgDisplayControlRender();
  }
 }
 
@@ -2132,9 +2749,10 @@ async function lgSetCalibrationMode(){
 async function lgForgetClient(){
  const r=await fetchJSON('/api/lg/forget',{method:'POST'});
  if(r&&r.status==='ok'){
-  lgPictureModeValue='';
-  lgPictureModeSignalMode='';
-  lgMarkDetectedPromptHandled(r);
+	  lgPictureModeValue='';
+	  lgPictureModeSignalMode='';
+  lgDisplayControlInvalidate();
+	  lgMarkDetectedPromptHandled(r);
   renderLgStatus(r);
   toast('Stored LG pairing cleared');
  }else{
@@ -2145,11 +2763,11 @@ LG_JS
 }
 
 sub webui_lg_load_info_js (@) {
- return 'lgBindDisplayModeControl();loadLgStatus(true);';
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();loadLgStatus(true);';
 }
 
 sub webui_lg_init_js (@) {
- return 'lgBindDisplayModeControl();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgScanTvs(false),1200);';
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgScanTvs(false),1200);';
 }
 
 return 1;

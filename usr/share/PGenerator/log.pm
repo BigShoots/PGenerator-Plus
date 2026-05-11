@@ -42,6 +42,39 @@ sub log (@) {
  }
 }
 
+###############################################
+#         Calman Patch Logger                 #
+# Writes one structured line per patch the    #
+# Calman client pushes, regardless of $debug. #
+# Fields: ts, type, raw, scaled, win, bg,     #
+#         range, peer, extra                  #
+###############################################
+sub log_calman_patch (@) {
+ my %f=@_;
+ my $path=$calman_patch_log || "/tmp/calman-patches.log";
+ my $dir=$path; $dir=~s|/[^/]+$||;
+ if($dir ne "" && ! -d $dir) {
+  mkdir $dir;
+  if(! -d $dir) { $path="/tmp/calman-patches.log"; }
+ }
+ my $ts=Time::HiRes::time();
+ my $type=defined($f{type})?$f{type}:"";
+ my $raw=defined($f{raw})?$f{raw}:"";
+ my $scaled=defined($f{scaled})?$f{scaled}:"";
+ my $win=defined($f{win})?$f{win}:"";
+ my $bg=defined($f{bg})?$f{bg}:"";
+ my $range=defined($f{range})?$f{range}:"";
+ my $peer=defined($f{peer})?$f{peer}:"";
+ my $extra=defined($f{extra})?$f{extra}:"";
+ for($raw,$scaled,$win,$bg,$range,$peer,$extra) { s/[\r\n\t]/ /g; }
+ my $line=sprintf("%.6f\ttype=%s\traw=%s\tscaled=%s\twin=%s\tbg=%s\trange=%s\tpeer=%s\textra=%s\n",
+                  $ts,$type,$raw,$scaled,$win,$bg,$range,$peer,$extra);
+ if(open(my $fh,">>",$path)) {
+  print $fh $line;
+  close($fh);
+ }
+}
+
 #############################################
 #            Log And Die Function           #
 #############################################
