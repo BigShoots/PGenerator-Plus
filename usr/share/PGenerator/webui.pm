@@ -14483,10 +14483,20 @@ function meterGreyscale26SeriesLabel(){
  return meterUseLgAutoCal26(26)?'Greyscale LG 26pt AutoCal':'Greyscale 26pt';
 }
 
+function meterSetSeriesButtonVisible(seriesKey,visible){
+ const btn=document.querySelector('#meterSeriesBtnRow button[data-series="'+seriesKey+'"]');
+ if(!btn) return null;
+ btn.style.display=visible?'':'none';
+ btn.hidden=!visible;
+ btn.disabled=!visible;
+ return btn;
+}
+
 function meterUpdateSeriesLabels(){
+ const lgTvAvailable=meterGreyTvControlsActive();
  const grey21=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-21"]');
  if(grey21) grey21.textContent=meterGreyscale21SeriesLabel();
- const grey26=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
+ const grey26=meterSetSeriesButtonVisible('greyscale-26',lgTvAvailable);
  if(grey26) grey26.textContent=meterGreyscale26SeriesLabel();
  const edit21=document.getElementById('meterGreyEdit21Btn');
  if(edit21) edit21.textContent=meterUseLgGreyscale21(21)?'LG 22pt':'21pt';
@@ -14521,7 +14531,8 @@ function meterUpdateSeriesTabUi(){
 
 function meterDefaultSeriesButtonForTab(tab){
  const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':'meterSeriesGroupGreyscale');
- return group?group.querySelector('button[data-series]'):null;
+ if(!group) return null;
+ return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
 }
 
 function meterSetSeriesTab(tab,skipAutoSelect){
@@ -15513,7 +15524,7 @@ function meterGreyTvLuminanceHtml(tvValue,disabled){
 
 function meterGreyTvControlsActive(){
  const state=window.lgStatusState||{};
- return !!state.paired;
+ return !!((state.paired||state.clientKeyPresent)&&!state.pinPending);
 }
 
 function meterAutoCalAvailable(){
