@@ -26,6 +26,7 @@ $pid_file="/var/run/PGenerator/PGeneratord.pl.pid";
 
 $debug="file";
 $log_file="/tmp/pgenerator_debug.log";
+$calman_patch_log="/var/log/PGenerator/calman-patches.log";
 
 $none="None";
 
