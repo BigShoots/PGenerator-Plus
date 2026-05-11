@@ -10,7 +10,7 @@
 #   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
-#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range]
+#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max]
 #   STOP
 #
 # settle_ms (optional, default 0) is the post-display settle wait applied
@@ -122,7 +122,11 @@ manual_ready_prompt_message() {
   *)
    printf '%s' 'Position the meter and continue when ready'
    ;;
- esac
+	 esac
+}
+
+ire_le() {
+ awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !((a+0) <= (b+0))}'
 }
 
 wait_for_device_ready() {
@@ -138,8 +142,9 @@ wait_for_device_ready() {
 }
 
 patch_request_body() {
- local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8"
- local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":255,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8" input_max="${9:-255}"
+ [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
+ local payload="{\"name\":\"patch\",\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma"
  if [[ -n "$signal_range" ]]; then
   payload="$payload,\"signal_range\":\"$signal_range\""
  fi
@@ -152,12 +157,12 @@ patch_request_body() {
 
 post_patch() {
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8")" >/dev/null 2>&1
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")" >/dev/null 2>&1
 }
 
 post_patch_timeout() {
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
-  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8")" >/dev/null 2>&1 || true
+  -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")" >/dev/null 2>&1 || true
 }
 
 # Single-instance lock — refuse to start if another session is alive.
@@ -415,32 +420,37 @@ signal_startup_ready
 startup_marker "startup ready signaled"
 log "command loop ready"
 
-LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE="" LAST_TRANSPORT_SIGNAL_RANGE=""
+LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE="" LAST_TRANSPORT_SIGNAL_RANGE="" LAST_INPUT_MAX=""
 
 # --- Main command loop ---
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
   READ\ *)
-    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE]
-    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE <<< "$line"
+	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX]
+	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
    [[ -z "$SETTLE_MS" ]] && SETTLE_MS=0
    [[ -z "$SIGNAL_MODE" ]] && SIGNAL_MODE="$SIGNAL_MODE_DEFAULT"
    [[ -z "$MAX_LUMA" ]] && MAX_LUMA="$MAX_LUMA_DEFAULT"
-     [[ -z "$SIGNAL_RANGE" ]] && SIGNAL_RANGE=""
-     [[ -z "$TRANSPORT_SIGNAL_RANGE" ]] && TRANSPORT_SIGNAL_RANGE=""
+	     [[ -z "$SIGNAL_RANGE" ]] && SIGNAL_RANGE=""
+		     [[ -z "$TRANSPORT_SIGNAL_RANGE" ]] && TRANSPORT_SIGNAL_RANGE=""
+		     [[ -z "$REQUEST_ID" ]] && REQUEST_ID=""
+		     [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
+		     [[ "$SIGNAL_RANGE" == "-" ]] && SIGNAL_RANGE=""
+		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
+		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
 
-   # Mark measuring so the polling endpoint knows a read is in flight.
-   write_state '{"status":"measuring"}'
+	   # Mark measuring so the polling endpoint knows a read is in flight.
+	   write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\"}"
 
   # Re-display when the rendered patch changes, including transport fields
   # like signal mode and mastering peak that affect how the same RGB codes map.
-  if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" || "$TRANSPORT_SIGNAL_RANGE" != "$LAST_TRANSPORT_SIGNAL_RANGE" ]]; then
-   post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE"
-   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"; LAST_TRANSPORT_SIGNAL_RANGE="$TRANSPORT_SIGNAL_RANGE"
-   fi
+	  if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" || "$TRANSPORT_SIGNAL_RANGE" != "$LAST_TRANSPORT_SIGNAL_RANGE" || "$INPUT_MAX" != "$LAST_INPUT_MAX" ]]; then
+	   post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"; LAST_TRANSPORT_SIGNAL_RANGE="$TRANSPORT_SIGNAL_RANGE"; LAST_INPUT_MAX="$INPUT_MAX"
+	   fi
 
   if (( SETTLE_MS > 0 )); then
    SETTLE_SEC=$(awk "BEGIN{printf \"%.3f\", $SETTLE_MS/1000.0}")
@@ -449,9 +459,9 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 
    # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
    # returns no measurable response. Report a valid 0.0 reading immediately.
-   if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" && "$IRE" -le 0 ]]; then
+	   if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" ]] && ire_le "$IRE" 0; then
     TS=$(date +%s)
-    write_state "{\"status\":\"complete\",\"readings\":[{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B}],\"count\":1}"
+	    write_state "{\"status\":\"complete\",\"request_id\":\"$REQUEST_ID\",\"readings\":[{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"request_id\":\"$REQUEST_ID\"}],\"count\":1}"
     continue
    fi
 
@@ -460,8 +470,9 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    READ_OUTPUT=""
    SCAN_OFFSET=$(output_size)
    printf " " >&3
-  READ_TIMEOUT=60
-  (( IRE <= 5 )) && READ_TIMEOUT=70
+	  READ_TIMEOUT=90
+	  ire_le "$IRE" 25 && READ_TIMEOUT=120
+	  ire_le "$IRE" 5 && READ_TIMEOUT=140
    READ_START=$SECONDS
    GOT_RESULT=false
    RETRIED_COMM=0
@@ -474,7 +485,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
         log "spotread communication problem during read - retrying once"
         printf " " >&3
         RETRIED_COMM=1
-        READ_TIMEOUT=$((READ_TIMEOUT + 15))
+        READ_TIMEOUT=$((READ_TIMEOUT + 30))
         READ_OUTPUT=""
         SCAN_OFFSET=$(output_size)
         continue
@@ -504,19 +515,28 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    done
 
    if $GOT_RESULT; then
-    PARSED="$PARSED_RESULT"
-    if [[ -n "$PARSED" ]]; then
-     # Wrap as a complete reading record (matches spotread_wrapper.sh shape)
-     OUT=$(python -c "
-import json
-r=json.loads('''$PARSED''')
-r['ire']=$IRE
-r['name']='$NAME'
-r['r_code']=$R
-r['g_code']=$G
-r['b_code']=$B
-print(json.dumps({'status':'complete','readings':[r],'count':1}))
-" 2>/dev/null)
+	    PARSED="$PARSED_RESULT"
+	    if [[ -n "$PARSED" ]]; then
+	     # Wrap as a complete reading record (matches spotread_wrapper.sh shape).
+	     # Pass parsed JSON via environment variables so Python 2 shells on older
+	     # Pi images do not choke on inline quoting.
+	     OUT=$(PARSED_JSON="$PARSED" READ_IRE="$IRE" READ_NAME="$NAME" READ_R="$R" READ_G="$G" READ_B="$B" READ_REQUEST_ID="$REQUEST_ID" python -c "
+import json, os
+r=json.loads(os.environ.get('PARSED_JSON','{}'))
+try:
+ ire=float(os.environ.get('READ_IRE','0'))
+ if abs(ire-int(ire)) < 0.000001:
+  ire=int(ire)
+except Exception:
+ ire=0
+r['ire']=ire
+r['name']=os.environ.get('READ_NAME','manual')
+r['r_code']=int(os.environ.get('READ_R','0') or 0)
+r['g_code']=int(os.environ.get('READ_G','0') or 0)
+r['b_code']=int(os.environ.get('READ_B','0') or 0)
+r['request_id']=os.environ.get('READ_REQUEST_ID','')
+print(json.dumps({'status':'complete','request_id':os.environ.get('READ_REQUEST_ID',''),'readings':[r],'count':1}))
+		" 2>/dev/null)
      if [[ -n "$OUT" ]]; then
       write_state "$OUT"
      else
