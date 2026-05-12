@@ -179,21 +179,29 @@ sub format_percent {
 }
 
 sub patch_code_for_percent {
- my ($pct,$signal_range)=@_;
- $pct=clamp($pct,0,100);
- my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
- return $limited ? int(16 + ($pct/100)*219 + 0.5) : int(($pct/100)*255 + 0.5);
+	 my ($pct,$signal_range)=@_;
+	 $pct=clamp($pct,0,100);
+	 my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
+	 return $limited ? int(16 + ($pct/100)*219 + 0.5) : int(($pct/100)*255 + 0.5);
+}
+
+sub patch_code_for_8bit_value {
+	 my ($value,$signal_range)=@_;
+	 $value=clamp($value,0,255);
+	 my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
+	 return $limited ? int(16 + ($value/255)*219 + 0.5) : int($value + 0.5);
 }
 
 sub patch_step {
- my ($kind,$level,$phase,$config)=@_;
- my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
- my $code=patch_code_for_percent($level,$signal_range);
- my %rgb=(r=>0,g=>0,b=>0);
- if($kind eq "white") { %rgb=(r=>$code,g=>$code,b=>$code); }
- elsif($kind eq "red") { $rgb{r}=$code; }
- elsif($kind eq "green") { $rgb{g}=$code; }
- elsif($kind eq "blue") { $rgb{b}=$code; }
+	 my ($kind,$level,$phase,$config)=@_;
+	 my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
+	 my $code=patch_code_for_percent($level,$signal_range);
+	 my $black_code=patch_code_for_percent(0,$signal_range);
+	 my %rgb=(r=>$black_code,g=>$black_code,b=>$black_code);
+	 if($kind eq "white") { %rgb=(r=>$code,g=>$code,b=>$code); }
+	 elsif($kind eq "red") { $rgb{r}=$code; }
+	 elsif($kind eq "green") { $rgb{g}=$code; }
+	 elsif($kind eq "blue") { $rgb{b}=$code; }
  my $name=($phase ? "$phase " : "").uc(substr($kind,0,1))." ".format_percent($level)."%";
  return {
   kind => $kind,
@@ -423,20 +431,25 @@ sub srgb_to_linear {
 }
 
 sub post_check_target_xyz {
- my ($step,$white_y)=@_;
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- my ($r,$g,$b)=(0,0,0);
- if(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {
-  my $color=lc($1);
-  my $sat=clamp(($2+0)/100,0,1);
-  $r=($color eq "red" || $color eq "magenta" || $color eq "yellow") ? $sat : 0;
-  $g=($color eq "green" || $color eq "cyan" || $color eq "yellow") ? $sat : 0;
-  $b=($color eq "blue" || $color eq "cyan" || $color eq "magenta") ? $sat : 0;
- } else {
-  $r=srgb_to_linear(($step->{"r"}||0)/255);
-  $g=srgb_to_linear(($step->{"g"}||0)/255);
-  $b=srgb_to_linear(($step->{"b"}||0)/255);
- }
+	 my ($step,$white_y,$target_gamma)=@_;
+	 $white_y=100 if(!defined($white_y) || $white_y <= 0);
+	 $target_gamma||="bt1886";
+	 my ($r,$g,$b)=(0,0,0);
+	 if(defined($step->{"target_linear_r"}) && defined($step->{"target_linear_g"}) && defined($step->{"target_linear_b"})) {
+	  $r=clamp($step->{"target_linear_r"}+0,0,1);
+	  $g=clamp($step->{"target_linear_g"}+0,0,1);
+	  $b=clamp($step->{"target_linear_b"}+0,0,1);
+	 } elsif(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {
+	  my $color=lc($1);
+	  my $sat=target_gamma_linear(clamp(($2+0)/100,0,1),$target_gamma);
+	  $r=($color eq "red" || $color eq "magenta" || $color eq "yellow") ? $sat : 0;
+	  $g=($color eq "green" || $color eq "cyan" || $color eq "yellow") ? $sat : 0;
+	  $b=($color eq "blue" || $color eq "cyan" || $color eq "magenta") ? $sat : 0;
+	 } else {
+	  $r=target_gamma_linear(($step->{"signal_r_pct"}||0)/100,$target_gamma);
+	  $g=target_gamma_linear(($step->{"signal_g_pct"}||0)/100,$target_gamma);
+	  $b=target_gamma_linear(($step->{"signal_b_pct"}||0)/100,$target_gamma);
+	 }
  return bt709_rgb_to_xyz($r,$g,$b,$white_y);
 }
 
@@ -875,31 +888,82 @@ sub read_step {
 }
 
 sub post_check_steps {
- my ($config)=@_;
- my @steps;
- my @cc=(
-  ["Dark Skin",115,82,68],["Light Skin",194,150,130],["Blue Sky",98,122,157],["Foliage",87,108,67],
-  ["Blue Flower",133,128,177],["Bluish Green",103,189,170],["Orange",214,126,44],["Purplish Blue",80,91,166],
-  ["Moderate Red",193,90,99],["Purple",94,60,108],["Yellow Green",157,188,64],["Orange Yellow",224,163,46],
-  ["Blue",56,61,150],["Green",70,148,73],["Red",175,54,60],["Yellow",231,199,31],
+	 my ($config)=@_;
+	 my @steps;
+	 my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
+	 my $target_gamma=$config->{"target_gamma"}||"bt1886";
+	 my @cc=(
+	  ["Dark Skin",115,82,68],["Light Skin",194,150,130],["Blue Sky",98,122,157],["Foliage",87,108,67],
+	  ["Blue Flower",133,128,177],["Bluish Green",103,189,170],["Orange",214,126,44],["Purplish Blue",80,91,166],
+	  ["Moderate Red",193,90,99],["Purple",94,60,108],["Yellow Green",157,188,64],["Orange Yellow",224,163,46],
+	  ["Blue",56,61,150],["Green",70,148,73],["Red",175,54,60],["Yellow",231,199,31],
   ["Magenta",187,86,149],["Cyan",8,133,161],["White",243,243,242],["Neutral 8",200,200,200],
   ["Neutral 6.5",160,160,160],["Neutral 5",122,122,121],["Neutral 3.5",85,85,85],["Black",52,52,52],
- );
- foreach my $c (@cc) {
-  my ($name,$r,$g,$b)=@{$c};
-  push @steps,{ kind=>"post", phase=>"post_check", level=>0, name=>"CC24 ".$name, ire=>0, stimulus=>0, signal_r_pct=>$r/255*100, signal_g_pct=>$g/255*100, signal_b_pct=>$b/255*100, r=>$r, g=>$g, b=>$b, input_max=>255 };
+	 );
+	 foreach my $c (@cc) {
+	  my ($name,$r,$g,$b)=@{$c};
+	  push @steps,{
+	   kind=>"post", phase=>"post_check", level=>0, name=>"CC24 ".$name, ire=>0, stimulus=>0,
+	   signal_r_pct=>$r/255*100, signal_g_pct=>$g/255*100, signal_b_pct=>$b/255*100,
+	   r=>patch_code_for_8bit_value($r,$signal_range),
+	   g=>patch_code_for_8bit_value($g,$signal_range),
+	   b=>patch_code_for_8bit_value($b,$signal_range),
+	   target_linear_r=>target_gamma_linear($r/255,$target_gamma),
+	   target_linear_g=>target_gamma_linear($g/255,$target_gamma),
+	   target_linear_b=>target_gamma_linear($b/255,$target_gamma),
+	   input_max=>255
+	  };
+	 }
+	 foreach my $sat (25,50,75,100) {
+	  my $c=patch_code_for_percent($sat,$signal_range);
+	  my $k=patch_code_for_percent(0,$signal_range);
+	  my $linear=target_gamma_linear($sat/100,$target_gamma);
+	  my @defs=(
+	   ["Red",$c,$k,$k,$linear,0,0],["Green",$k,$c,$k,0,$linear,0],["Blue",$k,$k,$c,0,0,$linear],
+	   ["Cyan",$k,$c,$c,0,$linear,$linear],["Magenta",$c,$k,$c,$linear,0,$linear],["Yellow",$c,$c,$k,$linear,$linear,0],
+	  );
+	  foreach my $d (@defs) {
+	   push @steps,{
+	    kind=>"post", phase=>"post_check", level=>$sat, name=>"Sat ".$d->[0]." $sat%", ire=>$sat, stimulus=>$sat,
+	    signal_r_pct=>($d->[4] > 0 ? $sat : 0), signal_g_pct=>($d->[5] > 0 ? $sat : 0), signal_b_pct=>($d->[6] > 0 ? $sat : 0),
+	    r=>$d->[1], g=>$d->[2], b=>$d->[3],
+	    target_linear_r=>$d->[4], target_linear_g=>$d->[5], target_linear_b=>$d->[6],
+	    input_max=>255
+	   };
+	  }
+	 }
+	 return @steps;
+}
+
+sub upload_requested {
+ my ($config)=@_;
+ return ($config->{"upload"} || ($config->{"output"}||"") eq "upload") ? 1 : 0;
+}
+
+sub reset_3d_lut_to_unity_before_profile {
+ my ($config,$state)=@_;
+ return undef if(!upload_requested($config) || $config->{"fixture_mode"});
+ die "cancelled\n" if(cancelled());
+ $state->{"phase"}="unity_reset";
+ $state->{"current_step"}=0;
+ $state->{"current_name"}="Resetting LG 3D LUT";
+ $state->{"message"}="Writing verified unity 3D LUT before profile reads";
+ write_state($state);
+ my $reset=api_json("POST","/api/lg/3d-lut/reset",{
+  picture_mode => $config->{"picture_mode"}||"",
+  upload_command => $config->{"upload_command"}||"",
+  get_command => $config->{"get_command"}||"",
+  helper_timeout => 220,
+ },245);
+ $state->{"unity_reset"}=$reset;
+ $state->{"unity_reset_verified"}=(ref($reset) eq "HASH" && $reset->{"status"} eq "ok" && $reset->{"upload_verified"}) ? json_true() : json_false();
+ $state->{"upload_supported"}=(ref($reset) eq "HASH" && $reset->{"status"} eq "ok") ? json_true() : json_false();
+ write_state($state);
+ if(ref($reset) ne "HASH" || $reset->{"status"} ne "ok" || !$reset->{"upload_verified"}) {
+  my $message=(ref($reset) eq "HASH" && $reset->{"message"}) ? $reset->{"message"} : "LG 3D LUT reset did not verify.";
+  die "Unable to reset LG 3D LUT to unity before profiling - $message\n";
  }
- foreach my $sat (25,50,75,100) {
-  my $c=patch_code_for_percent($sat,$config->{"pattern_signal_range"}||"1");
-  my @defs=(
-   ["Red",$c,0,0],["Green",0,$c,0],["Blue",0,0,$c],
-   ["Cyan",0,$c,$c],["Magenta",$c,0,$c],["Yellow",$c,$c,0],
-  );
-  foreach my $d (@defs) {
-   push @steps,{ kind=>"post", phase=>"post_check", level=>$sat, name=>"Sat ".$d->[0]." $sat%", ire=>$sat, stimulus=>$sat, signal_r_pct=>$d->[1]/255*100, signal_g_pct=>$d->[2]/255*100, signal_b_pct=>$d->[3]/255*100, r=>$d->[1], g=>$d->[2], b=>$d->[3], input_max=>255 };
-  }
- }
- return @steps;
+ return $reset;
 }
 
 my $config=decode_json_safe(read_file($config_file),{});
@@ -928,16 +992,21 @@ my $state={
  target_gamma => $config->{"target_gamma"}||"bt1886",
 };
 write_state($state);
+my $upload_requested=upload_requested($config);
 
 eval {
  die "LG 3D LUT Auto Cal is SDR-only in this version\n" if(lc($config->{"requested_signal_mode"}||$config->{"ui_signal_mode"}||"sdr") ne "sdr");
+ my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
  for(my $i=0;$i<@steps;$i++) {
   die "cancelled\n" if(cancelled());
   my $step=$steps[$i];
   $state->{"current_step"}=$i+1;
   $state->{"current_name"}=$step->{"name"};
-  $state->{"message"}="Reading ".($step->{"name"}||"patch");
+  my $profile_total=scalar(@steps);
+  $state->{"profile_current"}=$i+1;
+  $state->{"profile_total"}=$profile_total;
+  $state->{"message"}=($method eq "matrix" ? "Matrix profile " : "3D LUT profile ").($i+1)."/".$profile_total." - Reading ".($step->{"name"}||"patch");
   write_state($state);
   my ($reading,$error)=read_step($config,$step,$state);
   die "$error\n" if($error);
@@ -970,17 +1039,28 @@ eval {
  $state->{"lut_preview_nodes"}=$preview_nodes;
  write_state($state);
 
- my $upload_requested=$config->{"upload"} || ($config->{"output"}||"") eq "upload";
  if($upload_requested && !$config->{"fixture_mode"}) {
-  $state->{"phase"}="upload_probe";
-  $state->{"current_name"}="Probing LG 3D LUT upload";
-  $state->{"message"}="Round-tripping a unity 33x33x33 payload before upload";
-  write_state($state);
-  my $probe=api_json("POST","/api/lg/3d-lut/probe",{
-   picture_mode => $config->{"picture_mode"}||"",
-   write_probe => json_true(),
-   helper_timeout => 190,
-  },210);
+  my $probe=undef;
+  if(ref($unity_reset) eq "HASH" && ($unity_reset->{"status"}||"") eq "ok" && $unity_reset->{"upload_verified"}) {
+   $probe={
+    status => "ok",
+    upload_supported => json_true(),
+    upload_command => $unity_reset->{"upload_command"}||"",
+    get_command => $unity_reset->{"get_command"}||"",
+    message => "3D LUT upload path verified by the pre-profile unity reset.",
+    reset_to_unity => json_true(),
+   };
+  } else {
+   $state->{"phase"}="upload_probe";
+   $state->{"current_name"}="Probing LG 3D LUT upload";
+   $state->{"message"}="Round-tripping a unity 33x33x33 payload before upload";
+   write_state($state);
+   $probe=api_json("POST","/api/lg/3d-lut/probe",{
+    picture_mode => $config->{"picture_mode"}||"",
+    write_probe => json_true(),
+    helper_timeout => 190,
+   },210);
+  }
   $state->{"upload_probe"}=$probe;
   if(ref($probe) eq "HASH" && $probe->{"status"} eq "ok" && $probe->{"upload_supported"}) {
    $state->{"phase"}="upload";
@@ -1021,7 +1101,7 @@ eval {
    my $post_entry={ %{$reading}, name=>$step->{"name"} };
    eval {
    my $measured=reading_xyz($reading);
-   my $target=post_check_target_xyz($step,$model->{"white_y"}||100);
+   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886");
    $post_entry->{"target_X"}=$target->[0];
    $post_entry->{"target_Y"}=$target->[1];
    $post_entry->{"target_Z"}=$target->[2];
