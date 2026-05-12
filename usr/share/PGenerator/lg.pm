@@ -944,7 +944,17 @@ sub lg_status_data (@) {
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  my $manual_ip=$clients->{"manual_ip"}||"";
  my $stored_ip=$client->{"ip"}||"";
- my $auto=&lg_autodetect_info($clients,0);
+ my $has_saved_tv=(($client_key ne "") || ($manual_ip ne "") || ($stored_ip ne "")) ? 1 : 0;
+ my $auto={};
+ if($has_saved_tv) {
+  my $cached_ip=$clients->{"auto_ip"}||"";
+  my $cached_host=$clients->{"auto_host"}||"";
+  if(&lg_valid_ipv4($cached_ip)) {
+   $auto={ ip => $cached_ip, host => $cached_host, source => "mdns-cache" };
+  }
+ } else {
+  $auto=&lg_autodetect_info($clients,0);
+ }
  my $auto_ip=$auto->{"ip"}||"";
  my $auto_host=$auto->{"host"}||"";
  my $stored_name=$client->{"name"}||$client->{"model_name"}||"";
