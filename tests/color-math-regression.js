@@ -55,6 +55,7 @@ const code = [
   'const METER_GREY_SLOTS_21=[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];',
   "let meterGreyPatchProfiles={format:'pgenerator-greyscale-profile-v1',apply_to_all_modes:false,profiles:{}};",
   'let meterGreyEditorPoints=21;',
+  'function meterGreyAllowsHeadroomTargets(){return false;}',
   GAMUT_PRESETS_JS,
   extractFunction('meterGreyDefaultSlots'),
   extractFunction('meterGreySeriesSlots'),
@@ -125,6 +126,8 @@ const code = [
   extractFunction('meterGreyTargetSignal'),
   extractFunction('meterChartTargetLuminance'),
   extractFunction('meterGreyTargetLuminance'),
+  extractFunction('meterReadingAnalysisIre'),
+  extractFunction('meterGreyscaleTargetIreForStep'),
   extractFunction('meterResolveGreyRefMode'),
   extractFunction('meterGreyRefMode'),
   extractFunction('meterGrayWorldWeight'),
@@ -135,6 +138,9 @@ const code = [
   extractFunction('targetColorXYZAbs'),
   extractFunction('meterTargetXYZForReading'),
   extractFunction('meterTargetChromaticityForReading'),
+  extractFunction('meterReadingIsGreyscale'),
+  extractFunction('meterIreIsPeakHeadroom'),
+  extractFunction('meterReadingIsPeakHeadroom'),
   extractFunction('meterColorDeltaTargetXYZ'),
   extractFunction('meterColorIncludeLum'),
   extractFunction('meterLiveRgbData'),
@@ -255,7 +261,9 @@ const custom10 = customSteps11.find(step => step.ire === 10);
 assert(custom10, 'missing custom 10% greyscale step');
 approxEqual(custom10.stimulus, 7.5, 1e-9, 'custom 10% greyscale stimulus mismatch');
 approxEqual(custom10.r, context.meterCodeFromSignalPercent(7.5), 1e-9, 'custom 10% greyscale code mismatch');
-const customTargetY = context.meterGreyTargetLuminance(10, 100, 0, custom10.r);
+const customTargetIre = context.meterGreyscaleTargetIreForStep(custom10, null);
+approxEqual(customTargetIre, 7.5, 1e-9, 'custom 10% greyscale target IRE should follow the explicit stimulus');
+const customTargetY = context.meterGreyTargetLuminance(customTargetIre, 100, 0, custom10.r);
 const nominalTargetY = context.meterGreyTargetLuminance(10, 100, 0, null);
 assert(Math.abs(customTargetY - nominalTargetY) > 1e-6, 'custom greyscale target luminance should differ from nominal 10%');
 

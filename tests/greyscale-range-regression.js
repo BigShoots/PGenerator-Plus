@@ -22,6 +22,33 @@ assert(
   'server greyscale full-range path should use direct 0-255 rounding'
 );
 assert(
+  source.includes('$patch_input_max <= 255 && ($patch_r > 255 || $patch_g > 255 || $patch_b > 255)') &&
+    source.includes('$patch_input_max=$patch_target_max;') &&
+    source.includes('$input_max=$target_max if($input_max <= 255 && ($pr > 255 || $pg > 255 || $pb > 255));'),
+  '10-bit greyscale patches must not be clamped and re-expanded as 8-bit patches when input_max is missing or wrong'
+);
+assert(
+  source.includes('id="meterFullAutoCalConfirmBox"') &&
+    source.includes('function meterFullAutoCalConfirmDialog()') &&
+    source.includes('function meterFullAutoCalResolveConfirm(accepted)') &&
+    source.includes('const accepted=await meterFullAutoCalConfirmDialog();') &&
+    !source.includes("window.confirm('Full Auto Cal will reset") &&
+    !source.includes('then calibrate white, 75%, 50%, 25%') &&
+    source.includes('derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence from high to low') &&
+    source.includes('run the current LG 26-point greyscale AutoCal from high to low') &&
+    source.includes('reset the active LG greyscale DDC state and LG 3D LUT baseline'),
+  'Full Auto Cal confirmation should use the in-app AutoCal overlay instead of a browser confirm dialog'
+);
+assert(
+  source.includes("id=\"meterIncludeLumError\" onchange=\"meterOnGreyRefChange('checkbox')\"") &&
+    source.includes('if(meterReadingIsGreyscale(reading)) return false;'),
+  'Greyscale AutoCal readings should honor the Include luminance error checkbox and stay on the greyscale Delta E path'
+);
+assert(
+  autocalWorkerSource.includes('return 0 if(autocal_step_is_fast_headroom($target));'),
+  'LG AutoCal headroom points should not seed from the previously calibrated higher headroom slot'
+);
+assert(
   source.includes("const savedTargetGamma=(s.target_gamma!=null)?String(s.target_gamma):'';") &&
     source.includes("if(savedTargetGamma!==''){") &&
     source.includes("setVal('meterTargetGamma', savedTargetGamma);") &&
@@ -142,8 +169,13 @@ assert(
     !source.includes('message:meterAutoCalResetNotice+') &&
     autoCalDdcResetSource.includes('/api/lg/picture-settings/set') &&
     autoCalDdcResetSource.includes('reset_ddc_baseline:true') &&
+    source.includes('async function meterAutoCalReset3dLutBaseline()') &&
+    source.includes("/api/lg/3d-lut/reset") &&
+    source.includes('Writing unity 3D LUT baseline before greyscale') &&
+    source.includes('if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)') &&
+    source.indexOf('await meterAutoCalResetDdc();') < source.indexOf('await meterAutoCalReset3dLutBaseline();') &&
     !autoCalDdcResetSource.includes('/api/lg/picture-settings/reset'),
-  'LG Auto Cal should clear only the DDC table, refresh retained panel light silently, and continue to the luminance setup step'
+  'LG Auto Cal should clear the DDC table, Full Auto Cal should also reset the LG 3D LUT baseline before greyscale, refresh retained panel light silently, and continue to the luminance setup step'
 );
 assert(
   lgSource.includes('my ($session,$ip,$picture_mode,$timeout,$reset_to_unity)=@_;') &&
@@ -168,12 +200,22 @@ assert(
   'LG 21/22-point greyscale should keep using the saved custom stimulus table from the 2.6.1 flow'
 );
 assert(
+  source.includes('\\"analysis_ire\\":$analysis_ire,\\"target_ire\\":$analysis_ire,\\"transport_stimulus\\":$stim') &&
+    source.includes('function meterLgSdrLegalStimulusFromCode(code)') &&
+    source.includes('const analysisIre=meterLgSdrLegalStimulusFromCode(step.g);') &&
+    source.includes('function meterGreyChartStimulusIre(item)') &&
+    source.includes('function meterGreyChartPlotIre(item)') &&
+    source.includes('step.transport_stimulus=entry.stimulus;') &&
+    source.includes('const candidates=[reading.analysis_ire,reading.target_ire') &&
+    source.includes('if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets())) return meterGreySignalFractionFromCode(code);'),
+  'LG 22pt manual charts should analyze the decoded legal stimulus while still labeling and controlling the LG menu slot'
+);
+assert(
   source.includes('id="meterAutoCalResetBtn" onclick="meterAutoCalRunPreflightReset()"') &&
     source.includes('resetBtn.style.display=(showDisclaimer&&!meterAutoCalPreflightResetDone)') &&
     source.includes('disclaimerBtn.style.display=(showDisclaimer&&meterAutoCalPreflightResetDone)') &&
     source.includes('async function meterAutoCalRunPreflightReset()') &&
     source.includes("message:'Click Continue when ready.'") &&
-    source.includes("message:meterAutoCalPreflightResetDone?'Click Continue when ready.'") &&
     source.includes('async function meterAutoCalRunLevelPreflight()') &&
     source.includes('async function meterStartSingleReadWithTimeout') &&
     source.includes('function meterAutoCalBlackClipOk') &&
@@ -209,9 +251,13 @@ assert(
     !source.includes('Checking white clipping') &&
     !source.includes('Checking black clipping') &&
     !source.includes('meterAutoCalLevelPreflight=await meterAutoCalRunLevelPreflight();') &&
-    source.includes('meterAutoCalLevelPreflight={skipped:true};') &&
-    source.includes('meterActionPending=false;') &&
-    source.includes("toast('Run the LG DDC reset first.',true)"),
+	    source.includes('meterAutoCalLevelPreflight={skipped:true};') &&
+	    source.includes('meterActionPending=false;') &&
+	    source.includes('function meterAutoCalSetupOverlayActive()') &&
+	    source.includes("current_name:'Reset failed'") &&
+	    source.includes("const message=meterAutoCalPreflightResetDone?'Click Continue when ready.'") &&
+	    source.includes("'Run the LG DDC reset first.'") &&
+	    source.includes("'Run the LG DDC and 3D LUT reset first.'"),
   'LG Auto Cal preflight should expose Reset first, skip automatic clipping changes, then park on a simple Continue path'
 );
 assert(
@@ -313,7 +359,7 @@ assert(
 );
 {
   const orderStart = autocalWorkerSource.indexOf('sub order_autocal_steps');
-  const lgDescending = autocalWorkerSource.indexOf('return sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } @valid', orderStart);
+  const lgDescending = autocalWorkerSource.indexOf('defined($a->{"autocal_order_ire"})', orderStart);
   const topSort = autocalWorkerSource.indexOf('my ($top)=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { !$seen{format_percent($_->{"ire"})} } @valid;', orderStart);
   const p50 = autocalWorkerSource.indexOf('$add_nearest->(50);', orderStart);
   const p25 = autocalWorkerSource.indexOf('$add_nearest->(25);', orderStart);
@@ -330,7 +376,8 @@ assert(
 	      descendingSort > p75 &&
 	      skipDuplicate >= 0 &&
 	      skipDuplicate < orderStart &&
-	      autocalWorkerSource.includes('!autocal_skip_duplicate_ddc_slot($_)') &&
+      autocalWorkerSource.includes('!autocal_skip_duplicate_ddc_slot($_)') &&
+	      autocalWorkerSource.includes('defined($step->{"ddc_target_ire"}) ? $step->{"ddc_target_ire"} : $step->{"ire"}') &&
 	      !autocalWorkerSource.includes('return 1 if($key eq "7.5" || $key eq "35" || $key eq "70");') &&
 	      autocalWorkerSource.includes('my @ordered=order_autocal_steps($steps,$config);') &&
 	      autocalWorkerSource.includes('sub fixed_lg_autocal_stimulus') &&
@@ -378,9 +425,12 @@ assert(
 			    autocalWorkerSource.includes('return 0 if(low_ire_luminance_needs_lift($step,$lum_pct));') &&
 			    autocalWorkerSource.includes('sub low_ire_luminance_needs_tuning') &&
 			    autocalWorkerSource.includes('return 0 if(low_ire_luminance_needs_tuning($step,$lum_pct));') &&
-				    autocalWorkerSource.includes('return 18 if($ire <= 5);') &&
-				    autocalWorkerSource.includes('return 14 if($ire <= 7.5);') &&
-				    autocalWorkerSource.includes('return 10 if($ire <= 10);') &&
+			    !autocalWorkerSource.includes('return 1 if($ire > 0 && $ire <= 3.1 && $de <= 0.25);') &&
+			    !autocalWorkerSource.includes('return 1 if($ire <= 5 && $de <= 4.0);') &&
+				    autocalWorkerSource.includes('return 4 if($ire <= 3.1);') &&
+				    autocalWorkerSource.includes('return 3.5 if($ire <= 5);') &&
+				    autocalWorkerSource.includes('return 3 if($ire <= 7.5);') &&
+				    autocalWorkerSource.includes('return 2.5 if($ire <= 10);') &&
 			    autocalWorkerSource.includes('$value=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $value < 0);') &&
 			    autocalWorkerSource.includes('$next=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $luminance_err < 0 && $current < 0 && $next < 0);') &&
 		    autocalWorkerSource.includes('sub implausible_autocal_read') &&
@@ -388,11 +438,11 @@ assert(
 		    autocalWorkerSource.includes('Rejecting implausible Auto Cal read') &&
 		    autocalWorkerSource.includes('$ratio >= 0.35 && $ratio <= 2.20') &&
 		    autocalWorkerSource.includes('read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label)') &&
-		    autocalWorkerSource.includes('sub chroma_error_magnitude') &&
+	    autocalWorkerSource.includes('sub chroma_error_magnitude') &&
 	    autocalWorkerSource.includes('neutral_luminance=>1') &&
-	    autocalWorkerSource.includes('$luminance_err=0 if($ire >= 99.9);') &&
+	    autocalWorkerSource.includes('$luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));') &&
 	    autocalWorkerSource.includes('$near_fine=0 if($ire >= 99.9 && defined($de) && $de > 0.75);') &&
-	    autocalWorkerSource.includes('return 1 if($ire >= 99.9);') &&
+	    autocalWorkerSource.includes('return 1 if($ire >= 99.9 && !defined($lum_pct));') &&
 	    autocalWorkerSource.includes('return 0.45;') &&
 		    autocalWorkerSource.includes('$_->{"damped"}?" damped":""') &&
 			    autocalWorkerSource.includes('sub stimulus_probe_steps') &&
@@ -428,6 +478,8 @@ assert(
 			    autocalWorkerSource.includes('sub close_enough_stalled') &&
 			    autocalWorkerSource.includes('sub iteration_limit_for_step') &&
 			    autocalWorkerSource.includes('sub autocal_step_is_fast_headroom') &&
+			    autocalWorkerSource.includes('sub autocal_step_is_peak_headroom') &&
+			    autocalWorkerSource.includes('return autocal_step_is_peak_headroom($step);') &&
 			    autocalWorkerSource.includes('sub headroom_iteration_limit_for_step') &&
 			    autocalWorkerSource.includes('return 60 if($ire >= 108.5);') &&
 			    autocalWorkerSource.includes('return 36;') &&
@@ -438,9 +490,12 @@ assert(
 				    autocalWorkerSource.includes('sub headroom_fine_target_delta') &&
 				    autocalWorkerSource.includes('sub headroom_needs_fine_tune') &&
 				    autocalWorkerSource.includes('return 0 if(headroom_needs_fine_tune($de,$target_delta,$reading,$step));') &&
-				    autocalWorkerSource.includes('return headroom_autocal_result_score($de,$reading,$step) if(autocal_step_is_fast_headroom($step));') &&
+				    autocalWorkerSource.includes('my $headroom_score=headroom_autocal_result_score($de,$reading,$step);') &&
 				    autocalWorkerSource.includes('sub choose_headroom_single_adjustment') &&
-			    autocalWorkerSource.includes('return choose_headroom_single_adjustment($error,$arrays,$target,$de,$min_step,$stalls,$tried,$step);') &&
+			    autocalWorkerSource.includes('sub headroom_chroma_adjustment') &&
+			    autocalWorkerSource.includes('headroom_chroma_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_step,6,0)') &&
+			    autocalWorkerSource.includes('sub headroom_rgb_luminance_adjustments') &&
+			    autocalWorkerSource.includes('headroom_rgb_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step)') &&
 			    autocalWorkerSource.includes('sub headroom_proportional_adjustment') &&
 			    autocalWorkerSource.includes('my $ideal=$start - ($e0*($end-$start)/($e1-$e0));') &&
 			    autocalWorkerSource.includes('proportional=>1') &&
@@ -477,6 +532,10 @@ assert(
     autocalWorkerSource.includes('sub delta_e_luv_gamma') &&
     autocalWorkerSource.includes('sub luminance_error_ratio') &&
 	    autocalWorkerSource.includes('sub luminance_tolerance_percent') &&
+	    autocalWorkerSource.includes('return 4 if($ire <= 3.1);') &&
+	    autocalWorkerSource.includes('return 3.5 if($ire <= 5);') &&
+	    autocalWorkerSource.includes('return 3 if($ire <= 7.5);') &&
+	    autocalWorkerSource.includes('return 2.5 if($ire <= 10);') &&
 	    autocalWorkerSource.includes('sub target_reached') &&
 		    autocalWorkerSource.includes('sub autocal_result_score') &&
 		    autocalWorkerSource.includes('sub white_luminance_guard_failed') &&
@@ -498,13 +557,15 @@ assert(
 		    autocalWorkerSource.includes('if(defined($de) && $probe_score + 0.0001 < $best_score)') &&
 		    autocalWorkerSource.includes('Keeping best $label result') &&
 	    autocalWorkerSource.includes('target_gamma=>$target_gamma') &&
-	    autocalWorkerSource.includes('setup_luminance_reference=>$target_luminance') &&
-	    autocalWorkerSource.includes('target_luminance=>undef') &&
-	    autocalWorkerSource.includes('my $white_y=undef;') &&
+	    autocalWorkerSource.includes('setup_luminance_reference=>$setup_luminance_reference||$target_luminance||undef') &&
+	    autocalWorkerSource.includes('target_luminance=>$target_luminance||undef') &&
+	    autocalWorkerSource.includes('headroom_target_luminance=>$headroom_target_luminance||undef') &&
+	    autocalWorkerSource.includes('my $white_y=($target_luminance > 0) ? $target_luminance : undef;') &&
 	    autocalWorkerSource.includes('set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step));') &&
 	    autocalWorkerSource.includes('return undef if(autocal_step_is_white($step));') &&
-    autocalWorkerSource.includes('target_step_luminance') &&
-    autocalWorkerSource.includes('configured_delay_ms') &&
+		    autocalWorkerSource.includes('target_step_luminance') &&
+		    autocalWorkerSource.includes('return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if(autocal_step_is_peak_headroom($step) && $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);') &&
+		    autocalWorkerSource.includes('configured_delay_ms') &&
     autocalWorkerSource.includes('$reading->{"read_delay_ms"}=$delay_ms') &&
     autocalWorkerSource.includes('sub read_request_id') &&
     autocalWorkerSource.includes('sub read_timeout_for_step') &&
@@ -551,13 +612,67 @@ assert(
     autocalWorkerSource.includes('ire => $step->{"ire"}+0') &&
     source.includes('$cmd!~/meter_session\\.sh/') &&
     source.includes("sudo pkill -9 -f 'script.*spotread'") &&
+	    autocalWorkerSource.includes('my $err=autocal_adjustment_error($reading,$read_step);') &&
 	    autocalWorkerSource.includes('choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\\%tried_values,$read_step)') &&
-	    autocalWorkerSource.includes('choose_micro_adjustments($err,$arrays,$target,$lum_err,\\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step)') &&
+    autocalWorkerSource.includes('choose_micro_adjustments($err,$arrays,$target,$lum_err,\\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step)') &&
     autocalWorkerSource.includes('$state->{"message"}=guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y)') &&
     source.includes("target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'") &&
-    source.includes("message:'Setup white reference '+targetY.toFixed(2)+' cd/m\\u00B2'"),
+    source.includes('return Math.max(10,Math.min(10000,setup*1.15));') &&
+    source.includes("message:'Using 100% target '+targetY.toFixed(2)+' cd/m\\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\\u00B2'"),
   'LG Auto Cal/manual reads should include gamma/luminance error, reject stale results, and keep meter sessions healthy'
 );
+assert(
+    autocalWorkerSource.includes('sub autocal_step_is_low_shadow') &&
+    autocalWorkerSource.includes('return ($ire > 0 && $ire <= 5.0001) ? 1 : 0;') &&
+    autocalWorkerSource.includes('sub low_shadow_luminance_priority_adjustments') &&
+    autocalWorkerSource.includes('my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);') &&
+    autocalWorkerSource.includes('my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);') &&
+    autocalWorkerSource.includes('sub autocal_config_is_touchup') &&
+    autocalWorkerSource.includes('return 8 if($ire <= 3.1);') &&
+    autocalWorkerSource.includes('return 10;') &&
+    autocalWorkerSource.includes('return 1 if($ire <= 3.1);') &&
+    autocalWorkerSource.includes('return 2;') &&
+    autocalWorkerSource.includes('sub low_shadow_delta_acceptance') &&
+    autocalWorkerSource.includes('return 1 if(autocal_step_is_low_shadow($step) && $de <= low_shadow_delta_acceptance($step,$target_delta));') &&
+    autocalWorkerSource.includes('my $shadow_limit=low_shadow_iteration_limit_for_step($step,$config);') &&
+    autocalWorkerSource.includes('my $shadow_polish_limit=low_shadow_polish_limit_for_step($read_step,$config);') &&
+    autocalWorkerSource.includes('$adj->{"low_shadow_luminance"}=1'),
+  'LG Auto Cal shadow points should prioritize per-point luminance before spending slow low-level reads on RGB polish, with shorter Full AutoCal touch-up limits'
+);
+assert(
+  !autocalWorkerSource.includes('return $white_y if($stimulus >= 100);') &&
+    !autocalWorkerSource.includes('return undef if((defined($stimulus) && $stimulus >= 100) || (defined($ire) && $ire >= 100));') &&
+    autocalWorkerSource.includes('$signal=1.1 if($signal > 1.1);') &&
+    autocalWorkerSource.includes('return 1 if($ire >= 99.9 && !defined($lum_pct));') &&
+    autocalWorkerSource.includes('return 1 if($ire >= 99.9 && !defined($best_lum_pct));') &&
+    !autocalWorkerSource.includes('$luminance_err=0 if($ire >= 99.9);') &&
+    autocalWorkerSource.includes('$luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));') &&
+    autocalWorkerSource.includes('return 3 if($ire >= 108.5);') &&
+	    autocalWorkerSource.includes('my $headroom_score=headroom_autocal_result_score($de,$reading,$step);') &&
+	    autocalWorkerSource.includes('$headroom_score+=$penalty;') &&
+	    autocalWorkerSource.includes('my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step);') &&
+	    autocalWorkerSource.includes('sub headroom_chroma_adjustment') &&
+	    autocalWorkerSource.includes('headroom_chroma=>1') &&
+	    autocalWorkerSource.includes('sub headroom_rgb_luminance_adjustments') &&
+	    autocalWorkerSource.includes('headroom_rgb_luminance=>1') &&
+	    autocalWorkerSource.includes('sub headroom_green_luminance_adjustment') &&
+	    autocalWorkerSource.includes('brightness_luminance=>1') &&
+	    autocalWorkerSource.includes('green_luminance=>1') &&
+	    autocalWorkerSource.includes('The LG 1D LUT upload treats RGB white-balance arrays as chroma-only') &&
+	    autocalWorkerSource.includes('$adj->{"headroom_luminance"}=1') &&
+	    autocalWorkerSource.includes('sub headroom_match_green_adjustment') &&
+	    autocalWorkerSource.includes('match_green=>1') &&
+	    autocalWorkerSource.includes('return undef if($adj->{"green_luminance"} || $adj->{"brightness_luminance"} || $adj->{"match_green"});') &&
+	    autocalWorkerSource.includes('sub derived_white_reference_from_peak_headroom') &&
+	    autocalWorkerSource.includes('sub apply_peak_headroom_reference') &&
+	    autocalWorkerSource.includes('$$white_y_ref=$derived if(defined($derived) && $derived > 0);') &&
+	    autocalWorkerSource.includes('$state->{"headroom_target_luminance"}=$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE;') &&
+	    autocalWorkerSource.includes('$state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));') &&
+	    autocalWorkerSource.includes('if(abs($lum_pct) > $luma_tol && $chroma_mag < 0.035)') &&
+	    autocalWorkerSource.includes('if(abs($lum_pct) > ($luma_tol*0.45) && $chroma_mag < 0.030)') &&
+	    autocalWorkerSource.includes('apply_peak_headroom_reference($state,$read_step,$best_reading,\\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);'),
+	  'LG Auto Cal should target 105% and 109% extended Y from the setup headroom model'
+	);
 	assert(
 	  source.includes('patch_insert:document.getElementById(\'meterPatchInsert\').checked') &&
 	    autocalWorkerSource.includes('$config->{"patch_insert"}') &&
@@ -628,16 +743,24 @@ assert(
 assert(
   source.includes('meterAutoCalRunning||meterActionPending') &&
     source.includes('meterAutoCalRunning||meterActionPending||meterLgGreyBusy') &&
-    source.includes('setInterval(meterPollAutoCal,1500)'),
-  'LG Auto Cal should not mark the meter disconnected or over-poll the web service while calibration writes are blocking'
+    source.includes('setInterval(meterPollAutoCal,1500)') &&
+    source.includes("r.status==='running'||meterAutoCalPolling||meterAutoCalPhase==='running'") &&
+    source.includes('function meterAutoCalBackendRecoveryWatchdog()') &&
+    source.includes('meterPollAutoCal({initial:true,recover:true,timeoutMs:15000})') &&
+    source.includes('setInterval(meterAutoCalBackendRecoveryWatchdog,15000)'),
+  'LG Auto Cal should keep/recover the running UI from backend worker status without over-polling while calibration writes are blocking'
 );
 assert(
   source.includes('$result=&webui_cec($cec_cmd);') &&
-    source.includes('timeout 2 $cec_bin status') &&
-    source.includes('return "{\\"status\\":\\"ok\\",\\"tv_power\\":\\"$power\\"') &&
-    source.includes('"driver":"cec-status-timeout"') &&
+    source.includes('cec-status-direct') &&
+    source.includes('cec-scan-cache') &&
+    source.includes('cec-cache') &&
+    source.includes('cec-status-background') &&
+    source.includes('/tmp/pgenerator-cec-power.json') &&
+    source.includes('timeout $timeout $cec_bin status') &&
+    source.includes('timeout 8 "$cec" scan-json') &&
     !source.includes('($now - $_cec_cache_time) >= $_CEC_CACHE_TTL'),
-  'CEC status should use a short direct power query instead of serving stale scan-cache power'
+  'CEC status should use bounded direct power reads before falling back to cached/unknown state'
 );
 assert(
   source.includes('&webui_meter_read_state_write(\'{"status":"idle","message":"Measurement stopped"}\');') &&
@@ -708,9 +831,9 @@ assert(
 );
 assert(
   source.includes('.diag-custom-picker button[onclick^="diagPlaySelectedAsset"]::before') &&
-    source.includes('border-left:14px solid currentColor') &&
+    source.includes('border-left:10px solid currentColor') &&
     source.includes('.diag-custom-picker button[onclick="stopPattern()"]::before') &&
-    source.includes('width:13px;height:13px'),
+    source.includes('width:10px;height:10px'),
   'Diagnostic custom asset play/stop buttons should use explicit CSS icon geometry instead of font glyph sizes'
 );
 assert(
@@ -824,15 +947,36 @@ assert(
 	    source.includes('meterReadingMatchesStepForPlot(rd,s)') &&
 	    source.includes('meterReadingMatchesStepForPlot(rd,canon)') &&
 	    source.includes('function meterGreyChartTargetCode(step)') &&
-	    source.includes('if(!meterChartIsHdr()) return null;') &&
+	    source.includes('if(!meterChartIsHdr()&&!meterGreyAllowsHeadroomTargets()) return null;') &&
 	    source.includes('function meterGreyNominalTargetCurvePoints') &&
-	    source.includes("meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf')") &&
-	    source.includes("meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'luminance')") &&
-	    source.includes('meterGreyTargetEotfValue(s.ire,targetPeak,Lb,null)') &&
-	    source.includes('meterGreyTargetChartValue(s.ire,targetPeak,Lb,null)') &&
+	    source.includes("meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf',axisMax,plotSteps)") &&
+	    source.includes("meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'luminance',axisMax,plotSteps)") &&
+	    source.includes('function meterGreyTargetEotfChartValue(ire,Lw,Lb,code)') &&
+	    source.includes('meterEotfNormalizedEnabled()') &&
+	    source.includes('id="meterEotfLogScale"') &&
+	    source.includes('id="meterLuminanceLogScale"') &&
+	    source.includes('id="meterHdrDiffuseWhite"') &&
+	    source.includes('function meterEotfLogScaleEnabled()') &&
+	    source.includes('function meterLuminanceLogScaleEnabled()') &&
+	    source.includes('const METER_HDR_DIFFUSE_WHITE_DEFAULT=94.4;') &&
+	    source.includes('function meterHdrDiffuseWhiteOverride()') &&
+	    source.includes('function meterApplyHdrDiffuseOverridePeak(peak)') &&
+	    source.includes('function meterOnHdrDiffuseWhiteChange()') &&
+	    source.includes("hdr_diffuse_white: v('meterHdrDiffuseWhite')") &&
+	    source.includes("setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white)") &&
+	    source.includes('function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb)') &&
+	    source.includes('meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(readings),steps,fallbackPeak,Lb)') &&
+	    source.includes('targetPeak=meterGreyTargetPeakForReadings(sorted,plotSteps.length?plotSteps:targetSteps,targetPeak,Lb);') &&
+	    source.includes('const code=meterGreyChartTargetCode(s);') &&
+	    source.includes('const targetIre=meterGreyChartStimulusIre(s);') &&
+	    source.includes('meterGreyTargetEotfChartValue(targetIre,targetPeak,Lb,code)') &&
+	    source.includes('meterGreyTargetChartValue(targetIre,targetPeak,Lb,code)') &&
 	    source.includes('function effectiveGammaTopSlope') &&
 	    source.includes('if(frac>=0.999999) return null;') &&
 	    source.includes('if(topGamma) return;') &&
+	    source.includes('const chartYw=meterGreyTargetPeakForReadings(sortedAll,rawXSteps,Yw||measuredPeak,Lb);') &&
+	    source.includes('effectiveGamma(y,chartYw,analysisIre)') &&
+	    source.includes('meterGreyTargetGamma(analysisIre,chartYw,Lb') &&
 	    source.includes('if((Number(step.ire)||0)>=100 || (targetIre||0)>=100) return;') &&
 	    source.includes('topGamma && (meterChartIsHdr()||meterChartIsDv())') &&
 	    autocalWorkerSource.includes('$reading->{"plot_ire"}=$step->{"ire"}') &&
@@ -846,19 +990,38 @@ assert(
     source.includes('const visibleSteps=meterFilterLgAutoCalChartItems(sortedSteps);') &&
     source.includes('meterSeriesThumbsUseScroll(visibleSteps.length)') &&
     source.includes('function meterFilterEotfLuminanceChartItems(items)') &&
-    source.includes('return (Array.isArray(items)?items:[]).filter(item=>Number(item&&item.ire)<=100);') &&
+    source.includes('function meterEotfLuminanceAxisMax(items)') &&
+    source.includes('function meterGreyEotfLuminanceChartX(step,steps,idx,axisMax)') &&
+    source.includes('const ire=meterGreyChartPlotIre(step);') &&
     source.includes('const plotSteps=meterFilterEotfLuminanceChartItems(targetSteps);') &&
     source.includes('const validG=meterFilterEotfLuminanceChartItems(sorted).filter') &&
-    source.includes('xSteps:10,ySteps:5') &&
+    source.includes('xSteps:axisMax/10,ySteps:5') &&
     source.includes('const allStepsRaw=meterSeriesSteps?meterGreyscaleSeriesSteps(meterSeriesSteps):null;') &&
     source.includes('const allSteps=allStepsRaw?meterFilterLgAutoCalChartItems(allStepsRaw):null;') &&
     source.includes('const gs=meterFilterLgAutoCalChartItems(rawGs);') &&
     source.includes('const white=meterGreyscaleChartWhiteReference(sorted);') &&
     source.includes('const center=targets.length') &&
     source.includes('return {min:center-half,max:center+half};') &&
-    source.includes('const yMin=97,yMax=103;') &&
-    source.includes('const halfRange=Math.max(3') &&
-    source.includes('function meterUseLgAutoCal26GammaAxis') &&
+    source.includes('let yMin=97,yMax=103;') &&
+    source.includes("meterApplyLinearYZoom('chartRGB',yMin,yMax,100)") &&
+	    source.includes('const halfRange=Math.max(3') &&
+	    source.includes('function meterEnsureChartYZoomInput(canvas)') &&
+	    source.includes('function meterChartPointerIsOnYAxis(canvas,e)') &&
+	    source.includes('function meterChartYZoomIsActive(id)') &&
+	    source.includes('if(!meterChartYZoomIsActive(id)) return {min:lo,max:hi};') &&
+	    source.includes("localStorage.removeItem('pgen.meter.chartYZoom')") &&
+	    source.includes("id!=='chartCIE'") &&
+	    source.includes("canvas.addEventListener('wheel'") &&
+	    source.includes('if(!meterChartPointerIsOnYAxis(canvas,e)) return;') &&
+	    source.includes('if(!meterChartPointerIsOnYAxis(canvas,e.touches[0])) return;') &&
+	    source.includes("canvas.addEventListener('touchmove'") &&
+	    source.includes("meterApplyTopYZoom('chartEOTF'") &&
+	    source.includes("meterApplyTopYZoom('chartGamma'") &&
+	    source.includes("meterApplyTopYZoom('chartDeltaE'") &&
+	    source.includes("meterApplyTopYZoom('chartColorDE'") &&
+	    source.includes("meterApplyLinearYZoom('chartGammaValue'") &&
+	    source.includes('meterLoadChartYZoom();') &&
+	    source.includes('function meterUseLgAutoCal26GammaAxis') &&
     source.includes('function meterFilterGammaChartItems') &&
     source.includes('if(!meterUseLgAutoCal26GammaAxis()) return list;') &&
     source.includes('return Number.isFinite(ire) && ire>0 && ire<99;') &&
@@ -868,14 +1031,21 @@ assert(
     source.includes('const chartSteps=meterGreyscaleInteractionStepsForChart(cid,xStepsBase);') &&
     source.includes('const xNorm=meterGreyscaleInteractionXForChart(cid,step,chartSteps,idx);') &&
     source.includes('const gammaFixedAxis=meterUseLgAutoCal26GammaAxis();') &&
-    source.includes('const steps=meterFilterGammaChartItems(sourceSteps).filter(s=>(s.ire||0)>0&&(s.ire||0)<100);') &&
+    source.includes('const steps=meterFilterGammaChartItems(sourceSteps).filter(s=>{') &&
+    source.includes('const targetIre=meterGreyChartStimulusIre(s);') &&
     source.includes('const sorted=gammaFixedAxis?meterFilterGammaChartItems(sortedAll):sortedAll;') &&
+    source.includes('const chartYw=meterGreyTargetPeakForReadings(sortedAll,rawXSteps,Yw||measuredPeak,Lb);') &&
     source.includes('xSteps:gammaFixedAxis?10:(xSteps.length-1||1)') &&
     source.includes("xLabel:(i)=>gammaFixedAxis?String(i*10):(i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'')") &&
     source.includes('rd._gamma_rgb=meterPerChannelGamma(rd,white,rd.ire||0,prev);') &&
     source.includes('if(ire>=100){') &&
     !source.includes('const gTop=Math.log(pm/w)/Math.log(prevIre/100);'),
   'Greyscale charts should center gamma on target, omit LG 26pt gamma headroom tracking, and keep RGB balance no tighter than 97-103'
+);
+
+assert(
+    !source.includes('const whiteR=gs.find(r=>r.ire===100);\n if(!whiteR) return;'),
+  'Greyscale chart hover hit zones must not require a literal 100% reading, because the LG 26pt AutoCal series can omit 100%'
 );
 
 function extractConst(name) {
@@ -902,6 +1072,268 @@ function extractFunction(name) {
     }
   }
   throw new Error(`Failed to extract function ${name}`);
+}
+
+{
+  const eotfContext = {};
+  vm.createContext(eotfContext);
+  vm.runInContext([
+    `
+      let normalizedChecked = true;
+      let logChecked = false;
+      let luminanceLogChecked = false;
+      const document = {
+        getElementById: (id) => {
+          if (id === 'meterEotfNormalized') return { checked: normalizedChecked };
+          if (id === 'meterEotfLogScale') return { checked: logChecked };
+          if (id === 'meterLuminanceLogScale') return { checked: luminanceLogChecked };
+          return null;
+        }
+      };
+      function meterGreyTargetEotfValue(){ return 0.42; }
+      function meterGreyTargetNormalizedEotfValue(){ return 0.84; }
+      function meterGreyMeasuredEotfValue(){ return 0.5; }
+      function meterGreyMeasuredNormalizedEotfValue(){ return 0.8; }
+    `,
+    extractFunction('meterEotfNormalizedEnabled'),
+    extractFunction('meterEotfLogScaleEnabled'),
+    extractFunction('meterLuminanceLogScaleEnabled'),
+    extractFunction('meterLogScaleValue'),
+    extractFunction('meterLogUnscaleValue'),
+    extractFunction('meterEotfScaleValue'),
+    extractFunction('meterEotfUnscaleValue'),
+    extractFunction('meterLuminanceScaleValue'),
+    extractFunction('meterLuminanceUnscaleValue'),
+    extractFunction('meterEotfAxisLabel'),
+    extractFunction('meterGreyTargetEotfChartValue'),
+    extractFunction('meterGreyMeasuredEotfChartValue'),
+    extractFunction('meterEotfChartTop'),
+    `
+      globalThis.normalizedTarget = meterGreyTargetEotfChartValue(50,100,0,null);
+      globalThis.normalizedMeasured = meterGreyMeasuredEotfChartValue(80,100);
+      globalThis.normalizedTop = meterEotfChartTop([0.5,1]);
+      normalizedChecked = false;
+      globalThis.absoluteTarget = meterGreyTargetEotfChartValue(50,100,0,null);
+      globalThis.absoluteMeasured = meterGreyMeasuredEotfChartValue(80,100);
+      globalThis.absoluteTop = meterEotfChartTop([0.5,0.7]);
+      globalThis.absoluteLabel = meterEotfAxisLabel(0.8);
+      logChecked = true;
+      const scaled = meterEotfScaleValue(0.5,0.8);
+      globalThis.absoluteLogScaled = scaled;
+      globalThis.absoluteLogRoundTrip = meterEotfUnscaleValue(scaled,0.8);
+      luminanceLogChecked = true;
+      const lumaScaled = meterLuminanceScaleValue(50,200);
+      globalThis.lumaLogScaled = lumaScaled;
+      globalThis.lumaLogRoundTrip = meterLuminanceUnscaleValue(lumaScaled,200);
+    `
+  ].join('\n'), eotfContext);
+  assert.strictEqual(eotfContext.normalizedTarget, 0.84, 'Normalized EOTF chart should use peak-normalized target values');
+  assert.strictEqual(eotfContext.normalizedMeasured, 0.8, 'Normalized EOTF chart should use peak-normalized measured values');
+  assert(eotfContext.normalizedTop <= 1.15, 'Normalized EOTF chart should keep normalized axis scaling');
+  assert.strictEqual(eotfContext.absoluteTarget, 0.42, 'Non-normalized EOTF chart should use absolute perceptual EOTF target values');
+  assert.strictEqual(eotfContext.absoluteMeasured, 0.5, 'Non-normalized EOTF chart should plot absolute perceptual EOTF measured values');
+  assert(eotfContext.absoluteTop <= 1.15, 'Non-normalized EOTF chart should stay on the perceptual EOTF axis instead of duplicating cd/m2 luminance');
+  assert.strictEqual(eotfContext.absoluteLabel, '0.80', 'Non-normalized EOTF chart should label the perceptual EOTF axis');
+  assert(eotfContext.absoluteLogScaled > (0.5 / 0.8), 'EOTF log scale should expand lower chart values while preserving targets/dots together');
+  assert(Math.abs(eotfContext.absoluteLogRoundTrip - 0.5) < 1e-9, 'EOTF log scale should round-trip through the axis label transform');
+  assert(eotfContext.lumaLogScaled > (50 / 200), 'Luminance log scale should expand lower cd/m2 chart values');
+  assert(Math.abs(eotfContext.lumaLogRoundTrip - 50) < 1e-9, 'Luminance log scale should round-trip through the axis label transform');
+}
+
+{
+  const diffuseContext = {};
+  vm.createContext(diffuseContext);
+  vm.runInContext([
+    `
+      let signalMode = 'hdr10';
+      let diffuseValue = '';
+      const document = {
+        getElementById: (id) => {
+          if (id === 'meterHdrDiffuseWhite') return { value: diffuseValue };
+          return null;
+        }
+      };
+      function meterChartIsPq(){ return signalMode === 'hdr10' || signalMode === 'dv'; }
+      function meterChartIsDv(){ return signalMode === 'dv'; }
+      function meterChartHdrPeak(){ return 1000; }
+      function meterChartMasterPeak(){ return 1000; }
+      function meterGreyHeadroomReferenceReading(){ return {}; }
+      function meterGreySolvePeakFromHeadroomReading(){ return 50; }
+    `,
+    extractConst('METER_HDR_DIFFUSE_WHITE_DEFAULT'),
+    extractFunction('meterHdrDiffuseWhiteOverride'),
+    extractFunction('meterHdrDiffuseScale'),
+    extractFunction('meterApplyHdrDiffuseOverridePeak'),
+    extractFunction('meterGreyTargetPeak'),
+    extractFunction('meterGreyTargetPeakForReadings'),
+    `
+      globalThis.defaultPeak = meterGreyTargetPeak(200);
+      diffuseValue = '47.2';
+      globalThis.scaledPeak = meterGreyTargetPeak(200);
+      globalThis.scaledFallback = meterGreyTargetPeakForReadings([{ ire: 109, luminance: 100 }], [{ ire: 109 }], 200, 0);
+      signalMode = 'sdr';
+      globalThis.sdrPeak = meterGreyTargetPeak(200);
+      signalMode = 'hdr10';
+      diffuseValue = '';
+      globalThis.unsolvedFallback = meterGreyTargetPeakForReadings([{ ire: 109, luminance: 100 }], [{ ire: 109 }], 200, 0);
+    `
+  ].join('\n'), diffuseContext);
+  assert.strictEqual(diffuseContext.defaultPeak, 200, 'Blank diffuse white override should keep the current HDR target peak');
+  assert(Math.abs(diffuseContext.scaledPeak - 100) < 1e-9, 'Diffuse white override should scale PQ targets relative to 94.4 cd/m2');
+  assert.strictEqual(diffuseContext.scaledFallback, 200, 'Diffuse override should keep the explicit scaled target instead of re-solving from headroom reads');
+  assert.strictEqual(diffuseContext.sdrPeak, 200, 'Diffuse white override should not alter SDR targets');
+  assert.strictEqual(diffuseContext.unsolvedFallback, 50, 'Without diffuse override, headroom reads may still derive the chart target peak');
+}
+
+{
+  const headroomContext = {};
+  vm.createContext(headroomContext);
+  vm.runInContext([
+    `
+      let meterActiveSeriesType = 'greyscale';
+      let meterActiveSeriesPoints = 26;
+      let meterActiveSeriesSignalMode = 'sdr';
+      const document = { getElementById: () => ({ value: 'bt1886' }) };
+      function meterGreyTvControlsActive(){ return true; }
+      function meterChartSignalMode(){ return 'sdr'; }
+      function meterChartIsHdr(){ return false; }
+      function meterChartIsPq(){ return false; }
+      function meterChartIsHlg(){ return false; }
+      function meterChartIsDv(){ return false; }
+      function meterHdrDiffuseWhiteOverride(){ return null; }
+      function meterDvMapModeValue(){ return '0'; }
+      function meterDvRelativeSt2084UsesLegalRange(){ return false; }
+      function meterPatchUsesVideoRange(){ return true; }
+      function meterPatchRangeMin(){ return 16; }
+      function meterPatchRangeSpan(){ return 219; }
+      function meterChartHdrPeak(){ return 1000; }
+      function meterNormalizeMeasuredReading(){}
+    `,
+    extractFunction('meterReadingLuminanceNits'),
+    extractFunction('meterReadingHasLuminance'),
+    extractFunction('meterUseLgAutoCal26'),
+    extractFunction('meterGreyAllowsHeadroomTargets'),
+    extractFunction('meterGreyCodeRange'),
+    extractFunction('meterGreySignalFractionFromCode'),
+    extractFunction('meterGreyStimulusFraction'),
+    extractFunction('meterGreyTargetSignal'),
+    extractFunction('bt1886Eotf'),
+    extractFunction('gammaEotf'),
+    extractFunction('srgbEotf'),
+    extractFunction('targetEotf'),
+    extractFunction('meterChartTrackingLuminance'),
+    extractFunction('meterChartTargetLuminance'),
+    extractFunction('meterGreyTargetLuminance'),
+    extractFunction('meterGreyChartTargetCode'),
+    extractFunction('meterGreyHeadroomReferenceReading'),
+    extractFunction('meterGreyStepCodeForIre'),
+    extractFunction('meterGreySolvePeakFromHeadroomReading'),
+    extractFunction('meterGreyTargetPeakForReadings'),
+    extractFunction('meterGreyChartStimulusIre'),
+    extractFunction('meterGreyChartPlotIre'),
+    extractFunction('meterEotfLuminanceAxisMax'),
+    extractFunction('meterGreyEotfLuminanceChartX'),
+    extractFunction('meterFilterEotfLuminanceChartItems'),
+    `
+      const steps = [{ ire: 99 }, { ire: 105 }, { ire: 109 }];
+      globalThis.frac23 = meterGreySignalFractionFromCode(84);
+      globalThis.frac3 = meterGreySignalFractionFromCode(92);
+      globalThis.frac109 = meterGreySignalFractionFromCode(1023);
+      globalThis.y23 = meterGreyTargetLuminance(2.3, 200, 0, 84);
+      globalThis.y3 = meterGreyTargetLuminance(3, 200, 0, 92);
+      globalThis.y100 = meterGreyTargetLuminance(100, 200, 0, null);
+      globalThis.y105 = meterGreyTargetLuminance(105, 200, 0, 984);
+      globalThis.y109 = meterGreyTargetLuminance(109, 200, 0, 1023);
+      globalThis.derivedPeak = meterGreyTargetPeakForReadings([{ ire: 109, luminance: 205.74, r_code: 1023 }], steps, 184, 0);
+      globalThis.derivedY109 = meterGreyTargetLuminance(109, globalThis.derivedPeak, 0, 1023);
+      globalThis.axisMax = meterEotfLuminanceAxisMax(steps);
+      globalThis.filteredCount = meterFilterEotfLuminanceChartItems(steps).length;
+      globalThis.x109 = meterGreyEotfLuminanceChartX({ ire: 109 }, steps, 2, globalThis.axisMax);
+      meterActiveSeriesPoints = 21;
+      globalThis.axisMax22 = meterEotfLuminanceAxisMax(steps);
+      globalThis.filteredCount22 = meterFilterEotfLuminanceChartItems(steps).length;
+      const manual22 = { ire: 2.5, plot_ire: 2.5, analysis_ire: 7.3059, target_ire: 7.3059 };
+      globalThis.manual22Stimulus = meterGreyChartStimulusIre(manual22);
+      globalThis.manual22X = meterGreyEotfLuminanceChartX(manual22, [manual22], 0, 100);
+    `
+  ].join('\n'), headroomContext);
+  assert(Math.abs(headroomContext.frac23 - ((84 - 64) / 876)) < 1e-9, 'LG 26pt low 10-bit codes should not be decoded as 8-bit video values');
+  assert(Math.abs(headroomContext.frac3 - ((92 - 64) / 876)) < 1e-9, 'LG 26pt 3% target should use its 10-bit AutoCal code');
+  assert(headroomContext.frac109 > 1.09, 'LG 26pt 109% code should decode as headroom above 100%');
+  assert(headroomContext.y23 < headroomContext.y3 && headroomContext.y3 < 1, 'LG 26pt low target dots should stay near black instead of jumping up the EOTF curve');
+  assert.strictEqual(Math.round(headroomContext.y100), 200, '100% target luminance should stay anchored to measured peak');
+  assert(headroomContext.y105 > headroomContext.y100, '105% should target luminance above 100%');
+  assert(headroomContext.y109 > headroomContext.y105, '109% should target luminance above 105%');
+  assert(headroomContext.derivedPeak < 184, 'Measured 109% should back-solve a lower 100% reference when headroom is below the old target curve');
+  assert(Math.abs(headroomContext.derivedY109 - 205.74) < 0.02, 'Derived LG 26pt target curve should pass through the measured 109% anchor');
+  assert.strictEqual(headroomContext.axisMax, 110, 'LG 26pt EOTF/Luminance charts should extend the x-axis to 110');
+  assert.strictEqual(headroomContext.filteredCount, 3, 'LG 26pt EOTF/Luminance charts should include 99/105/109');
+  assert(Math.abs(headroomContext.x109 - (109 / 110)) < 1e-9, '109% should plot at its proportional x position on the 110 axis');
+  assert.strictEqual(headroomContext.axisMax22, 100, 'Non-AutoCal greyscale charts should keep the 100% EOTF/Luminance axis');
+  assert.strictEqual(headroomContext.filteredCount22, 1, 'Non-AutoCal EOTF/Luminance charts should not plot headroom points');
+  assert(Math.abs(headroomContext.manual22Stimulus - 7.3059) < 1e-9, 'LG 22pt EOTF/Luminance targets should still use the decoded stimulus value');
+  assert(Math.abs(headroomContext.manual22X - 0.025) < 1e-9, 'LG 22pt EOTF/Luminance points should plot at the TV menu slot position');
+}
+
+{
+  const headroomDeltaContext = {};
+  vm.createContext(headroomDeltaContext);
+  vm.runInContext([
+    `
+      function meterReadingIsGreyscale(){ return true; }
+      function meterTargetWhitePoint(){ return { X: 0.95, Y: 1, Z: 1.09, x: 0.3127, y: 0.329 }; }
+      function meterTargetXYZForReading(){ return { X: 218.5, Y: 230, Z: 250.7 }; }
+      function meterReadingXYZ(){ return { X: 190, Y: 200, Z: 218 }; }
+      function meterResolveGreyRefMode(mode){ return mode === true ? 'eotf' : String(mode || 'absolute'); }
+      function meterChartIsHdr(){ return false; }
+      function meterChartHdrPeak(){ return 1000; }
+      function meterGreyTargetPeak(refWhite){ return refWhite > 0 ? refWhite : 1000; }
+      function meterGreyTargetLuminance(){ return 999; }
+      function meterBlackReadingY(){ return 0; }
+      function meterAnalysisGamut(){ return { xyzToRgb: [[1,0,0],[0,1,0],[0,0,1]] }; }
+    `,
+    extractFunction('meterIreIsPeakHeadroom'),
+    extractFunction('meterReadingIsPeakHeadroom'),
+    extractFunction('meterColorDeltaTargetXYZ'),
+    extractFunction('ynToLstar'),
+    extractFunction('xyzToLinRgb'),
+    extractFunction('rgbBalanceCalman'),
+    extractFunction('rgbBalanceHCFR'),
+    extractFunction('hcfrGreyRef'),
+    `
+      const target109WithLum = meterColorDeltaTargetXYZ({ ire: 109, luminance: 200 }, true);
+      const target109WithoutLum = meterColorDeltaTargetXYZ({ ire: 109, luminance: 200 }, false);
+      const target105WithLum = meterColorDeltaTargetXYZ({ ire: 105, luminance: 200 }, true);
+      const hcfr109 = hcfrGreyRef(109, 200, 180, 0, 'eotf', 1023, 1);
+      const hcfr105 = hcfrGreyRef(105, 200, 180, 0, 'eotf', 984, 1);
+      const calman109WithLum = rgbBalanceCalman({ ire: 109, luminance: 200 }, {}, true);
+      const calman109WithoutLum = rgbBalanceCalman({ ire: 109, luminance: 200 }, {}, false);
+      const calman105WithLum = rgbBalanceCalman({ ire: 105, luminance: 200 }, {}, true);
+      const calman105WithoutLum = rgbBalanceCalman({ ire: 105, luminance: 200 }, {}, false);
+      const hcfrRgb109WithLum = rgbBalanceHCFR({ ire: 109, luminance: 200 }, {}, true);
+      const hcfrRgb109WithoutLum = rgbBalanceHCFR({ ire: 109, luminance: 200 }, {}, false);
+      const hcfrRgb105WithLum = rgbBalanceHCFR({ ire: 105, luminance: 200 }, {}, true);
+      const hcfrRgb105WithoutLum = rgbBalanceHCFR({ ire: 105, luminance: 200 }, {}, false);
+      globalThis.y109WithLum = target109WithLum.Y;
+      globalThis.y109WithoutLum = target109WithoutLum.Y;
+      globalThis.y105WithLum = target105WithLum.Y;
+      globalThis.hcfr109RefY = hcfr109.refY;
+      globalThis.hcfr105RefY = hcfr105.refY;
+      globalThis.calman109Stable = JSON.stringify(calman109WithLum) === JSON.stringify(calman109WithoutLum);
+      globalThis.calman105ChangesWithLum = Math.abs(calman105WithLum.R - calman105WithoutLum.R) > 0.001;
+      globalThis.hcfr109Stable = JSON.stringify(hcfrRgb109WithLum) === JSON.stringify(hcfrRgb109WithoutLum);
+      globalThis.hcfr105ChangesWithLum = Math.abs(hcfrRgb105WithLum.R - hcfrRgb105WithoutLum.R) > 0.001;
+    `
+  ].join('\n'), headroomDeltaContext);
+  assert.strictEqual(headroomDeltaContext.y109WithLum, 200, '109% ΔE with luminance enabled should use measured 109% Y as its luminance target');
+  assert.strictEqual(headroomDeltaContext.y109WithoutLum, 200, '109% ΔE without luminance enabled should also use measured 109% Y');
+  assert.strictEqual(headroomDeltaContext.y105WithLum, 230, '105% ΔE should still use the modeled luminance target when luminance is enabled');
+  assert(Math.abs(headroomDeltaContext.hcfr109RefY - (200 / 180)) < 1e-9, 'HCFR-style 109% ΔE should also use measured 109% Y as the target luminance');
+  assert(headroomDeltaContext.hcfr105RefY > 5, 'HCFR-style 105% ΔE should still use the modeled luminance target');
+  assert(headroomDeltaContext.calman109Stable, 'CalMAN-style RGB balance for 109% should not change when Include luminance error is toggled');
+  assert(headroomDeltaContext.calman105ChangesWithLum, 'CalMAN-style RGB balance for 105% should still include modeled luminance when requested');
+  assert(headroomDeltaContext.hcfr109Stable, 'HCFR-style RGB balance for 109% should not change when Include luminance error is toggled');
+  assert(headroomDeltaContext.hcfr105ChangesWithLum, 'HCFR-style RGB balance for 105% should still include modeled luminance when requested');
 }
 
 {
@@ -1017,6 +1449,7 @@ const code = [
   extractFunction('meterLgAutoCalStimulusFromCode'),
   extractFunction('meterLgAutoCalCodeForSlot'),
   extractFunction('meterLgSdrLegalDdcCodeFromPercent'),
+  extractFunction('meterLgSdrLegalStimulusFromCode'),
   extractFunction('meterCodeFromSignalPercentWithOptions'),
 	  extractFunction('meterGreyDefaultSlots'),
 	  extractFunction('meterUseLgGreyscale21'),
@@ -1187,6 +1620,15 @@ assert.strictEqual(
   expectedLgExtendedSdrCode(6.7),
   'LG manual 2.5% slot should use the mapped LG control-anchor stimulus code'
 );
+assert(
+  Math.abs(lgSeries.find(step => step.ire === 2.5).analysis_ire - ((expectedLgExtendedSdrCode(6.7) - 16) * 100 / 219)) < 0.0001,
+  'LG manual 2.5% slot should analyze against the legal-video stimulus represented by the emitted code'
+);
+assert.strictEqual(
+  lgSeries.find(step => step.ire === 100).analysis_ire,
+  100,
+  'LG manual 100% slot should still analyze as legal 100% even though it uses the mapped control-anchor stimulus'
+);
 assert.strictEqual(
   lgSeries.find(step => step.ire === 7.5).stimulus,
   11.3,
@@ -1289,6 +1731,12 @@ state.color_format = '0';
 	  assert(!autoCalIres.includes(2.5) && !autoCalIres.includes(100), 'LG Auto Cal should not use manual 22pt labels or add a writable legal-white slot');
 	  assert.strictEqual(autoCalSteps.find(step => step.ire === 109).ddc_slot_locked, true, 'LG Auto Cal 109% should be a writable DDC LUT anchor');
 	  assert.strictEqual(autoCalSteps.find(step => step.ire === 0).autocal_read_only, true, 'LG Auto Cal 0% should remain read-only black verification');
+  const autoCalWorkerSteps = context.meterBuildLgAutoCalSteps([], true);
+  const legalWhite = autoCalWorkerSteps.find(step => step.autocal_legal_white_anchor);
+  assert(legalWhite, 'LG Auto Cal should carry a hidden legal-white worker anchor');
+  assert.strictEqual(legalWhite.ire, 100, 'The hidden legal-white anchor should read the 100% legal-white patch');
+  assert.strictEqual(legalWhite.ddc_target_ire, 99, 'The hidden legal-white anchor should write through the nearest LG 99% DDC slot');
+  assert(legalWhite.autocal_order_ire < 99, 'The hidden legal-white anchor should run after the visible 99% headroom point');
 }
 
 state.lgPaired = false;
