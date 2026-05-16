@@ -20,5 +20,6 @@ build/*.rootfs.ext4
 build/.*
 build/
 tmp/
+.claude/
 build/third_party/
 usr/share/PGenerator/*.bak
