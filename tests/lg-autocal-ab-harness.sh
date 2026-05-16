@@ -44,9 +44,10 @@ const displayType = process.env.PROFILE || 'ccss_LG_C2_(WRGB_OLED)_-_JETI_1501_H
 const patchSize = Number(process.env.PATCH_SIZE || 10);
 const delayMs = Number(process.env.DELAY_MS || 500);
 const targetDelta = Number(process.env.TARGET_DELTA_E || 0.5);
-const focusIre = process.env.FOCUS_IRE != null && process.env.FOCUS_IRE !== ''
-  ? Number(process.env.FOCUS_IRE)
-  : null;
+const focusIres = (process.env.FOCUS_IRES || process.env.FOCUS_IRE || '')
+  .split(',')
+  .map(value => Number(value.trim()))
+  .filter(value => Number.isFinite(value));
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -231,12 +232,14 @@ function buildGreyscale26Steps() {
 
 function selectedGreyscale26Steps() {
   const steps = buildGreyscale26Steps();
-  if (!Number.isFinite(focusIre)) return steps;
+  if (!focusIres.length) return steps;
   const focused = steps.filter(step => {
     if (!step || step.autocal_white_reference) return false;
-    return Math.abs(Number(step.ire) - focusIre) < 0.001;
+    return focusIres.some(ire => Math.abs(Number(step.ire) - ire) < 0.001);
   });
-  if (!focused.length) throw new Error(`No LG 26-point greyscale step matches FOCUS_IRE=${focusIre}`);
+  if (focused.length !== focusIres.length) {
+    throw new Error(`Only matched ${focused.length}/${focusIres.length} requested LG 26-point greyscale focus steps`);
+  }
   return focused;
 }
 
