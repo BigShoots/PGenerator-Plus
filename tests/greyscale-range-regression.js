@@ -1111,6 +1111,8 @@ function extractFunction(name) {
       function meterGreyMeasuredEotfValue(){ return 0.5; }
       function meterGreyMeasuredNormalizedEotfValue(){ return 0.8; }
     `,
+    extractConst('METER_CHART_LOG_KNEE_DIVISOR'),
+    extractConst('METER_LUMINANCE_LOG_FLOOR_DIVISOR'),
     extractFunction('meterEotfNormalizedEnabled'),
     extractFunction('meterEotfLogScaleEnabled'),
     extractFunction('meterLuminanceLogScaleEnabled'),
@@ -1120,6 +1122,7 @@ function extractFunction(name) {
     extractFunction('meterEotfUnscaleValue'),
     extractFunction('meterLuminanceScaleValue'),
     extractFunction('meterLuminanceUnscaleValue'),
+    extractFunction('meterLuminanceLogFloor'),
     extractFunction('meterEotfAxisLabel'),
     extractFunction('meterGreyTargetEotfChartValue'),
     extractFunction('meterGreyMeasuredEotfChartValue'),
@@ -1141,6 +1144,10 @@ function extractFunction(name) {
       const lumaScaled = meterLuminanceScaleValue(50,200);
       globalThis.lumaLogScaled = lumaScaled;
       globalThis.lumaLogRoundTrip = meterLuminanceUnscaleValue(lumaScaled,200);
+      globalThis.lumaLogFloor = meterLuminanceLogFloor(200);
+      globalThis.lumaLogZeroScaled = meterLuminanceScaleValue(0,200);
+      globalThis.lumaLogAxisFloor = meterLuminanceUnscaleValue(0,200);
+      globalThis.genericLogAxisFloor = meterLogUnscaleValue(0,200);
     `
   ].join('\n'), eotfContext);
   assert.strictEqual(eotfContext.normalizedTarget, 0.84, 'Normalized EOTF chart should use peak-normalized target values');
@@ -1154,6 +1161,10 @@ function extractFunction(name) {
   assert(Math.abs(eotfContext.absoluteLogRoundTrip - 0.5) < 1e-9, 'EOTF log scale should round-trip through the axis label transform');
   assert(eotfContext.lumaLogScaled > (50 / 200), 'Luminance log scale should expand lower cd/m2 chart values');
   assert(Math.abs(eotfContext.lumaLogRoundTrip - 50) < 1e-9, 'Luminance log scale should round-trip through the axis label transform');
+  assert(eotfContext.lumaLogFloor > 0 && eotfContext.lumaLogFloor < 0.001, 'Luminance log scale should use a tiny positive floor for low-end axis labels');
+  assert.strictEqual(eotfContext.lumaLogZeroScaled, 0, 'Luminance log scale should keep black at the chart floor');
+  assert(Math.abs(eotfContext.lumaLogAxisFloor - eotfContext.lumaLogFloor) < 1e-12, 'Luminance log scale bottom axis label should unscale to the positive floor');
+  assert.strictEqual(eotfContext.genericLogAxisFloor, 0, 'Generic log scale should not add the luminance-specific floor');
 }
 
 {
