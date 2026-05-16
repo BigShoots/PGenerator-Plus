@@ -11928,10 +11928,20 @@ function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
 }
 
 function meterGreyGammaReferencePeakForReadings(readings,fallbackPeak){
- const white=meterGreyscaleChartWhiteReference(readings);
- const y=white?meterReadingLuminanceNits(white):0;
- const peak=(y>0)?y:fallbackPeak;
- return (peak>0&&isFinite(peak))?peak:fallbackPeak;
+	 const cached=meterGreyGammaReferenceY(meterWhiteReading);
+	 if(cached>0) return cached;
+	 const white=meterGreyscaleChartWhiteReference(readings);
+	 const y=meterGreyGammaReferenceY(white);
+	 const peak=(y>0)?y:fallbackPeak;
+	 return (peak>0&&isFinite(peak))?peak:fallbackPeak;
+}
+
+function meterGreyGammaReferenceY(reading){
+	 if(!reading) return 0;
+	 const y=Number(reading.Y);
+	 if(Number.isFinite(y)&&y>0) return y;
+	 const lum=Number(reading.luminance);
+	 return (Number.isFinite(lum)&&lum>0)?lum:0;
 }
 
 function meterGreyTargetChartValue(ire,Lw,Lb,code){
@@ -15868,25 +15878,29 @@ function syncMeterLgRgbBusyIndicator(){
 	 box.style.display=active?'flex':'none';
 	}
 
-function meterGreyTvColumnHtml(channelKey,label,color,tvValue,liveEntry,halfRange,disabled){
+function meterGreyTvColumnHtml(channelKey,label,color,tvValue,liveEntry,halfRange,disabled,readOnly){
 	 const delta=(liveEntry&&liveEntry.v!=null)?Number(liveEntry.v):null;
- const magnitude=(delta!=null&&halfRange>0)?Math.min(50,Math.abs(delta)/halfRange*50):0;
- const fillStyle=(delta==null)
-	  ? 'display:none;'
-	  : 'top:'+(delta>=0?(50-magnitude):50)+'%;height:'+magnitude+'%;background:'+color+';color:'+color+';border-radius:'+(delta>=0?'4px 4px 0 0':'0 0 4px 4px')+';';
- const inputValue=meterGreyTvFormatInputValue(tvValue);
-	 return `
-	  <div class="meter-lg-rgb-column">
-	   <div class="meter-lg-rgb-label" style="color:${color}">${label}</div>
-	   <button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} up ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',1)" ${disabled?'disabled':''}>&#9650;</button>
-	   <div class="meter-lg-rgb-bar">
-	    <div class="meter-lg-rgb-zero"></div>
-	    <div class="meter-lg-rgb-fill" style="${fillStyle}"></div>
-	   </div>
-	   <button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} down ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',-1)" ${disabled?'disabled':''}>&#9660;</button>
-	   <div class="meter-lg-rgb-tv"><input class="meter-lg-rgb-tv-input" data-channel="${channelKey}" type="text" inputmode="decimal" value="${inputValue}" title="Set ${label} value" aria-label="Set ${label} LG RGB value" onkeydown="meterGreyTvInputKeydown(event,'${channelKey}',this)" ${disabled?'disabled':''}><button class="btn btn-sm btn-secondary meter-lg-rgb-apply" title="Apply ${label} value" aria-label="Apply ${label} LG RGB value" onclick="meterGreyTvApplyInput('${channelKey}',this)" ${disabled?'disabled':''}>&#10003;</button></div>
-	   <div class="meter-lg-rgb-live">Live ${meterGreyTvFormatLiveValue(liveEntry)}</div>
-		  </div>`;
+	 const magnitude=(delta!=null&&halfRange>0)?Math.min(50,Math.abs(delta)/halfRange*50):0;
+	 const fillStyle=(delta==null)
+		  ? 'display:none;'
+		  : 'top:'+(delta>=0?(50-magnitude):50)+'%;height:'+magnitude+'%;background:'+color+';color:'+color+';border-radius:'+(delta>=0?'4px 4px 0 0':'0 0 4px 4px')+';';
+	 const inputValue=meterGreyTvFormatInputValue(tvValue);
+	 const upButton=readOnly?'':`<button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} up ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',1)" ${disabled?'disabled':''}>&#9650;</button>`;
+	 const downButton=readOnly?'':`<button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} down ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',-1)" ${disabled?'disabled':''}>&#9660;</button>`;
+	 const tvInput=readOnly?'':`<div class="meter-lg-rgb-tv"><input class="meter-lg-rgb-tv-input" data-channel="${channelKey}" type="text" inputmode="decimal" value="${inputValue}" title="Set ${label} value" aria-label="Set ${label} LG RGB value" onkeydown="meterGreyTvInputKeydown(event,'${channelKey}',this)" ${disabled?'disabled':''}><button class="btn btn-sm btn-secondary meter-lg-rgb-apply" title="Apply ${label} value" aria-label="Apply ${label} LG RGB value" onclick="meterGreyTvApplyInput('${channelKey}',this)" ${disabled?'disabled':''}>&#10003;</button></div>`;
+	 const liveLabel=readOnly?'':'Live ';
+		 return `
+		  <div class="meter-lg-rgb-column">
+		   <div class="meter-lg-rgb-label" style="color:${color}">${label}</div>
+		   ${upButton}
+		   <div class="meter-lg-rgb-bar">
+		    <div class="meter-lg-rgb-zero"></div>
+		    <div class="meter-lg-rgb-fill" style="${fillStyle}"></div>
+		   </div>
+		   ${downButton}
+		   ${tvInput}
+		   <div class="meter-lg-rgb-live">${liveLabel}${meterGreyTvFormatLiveValue(liveEntry)}</div>
+			  </div>`;
 }
 
 function meterGreyTvLuminanceHtml(tvValue,disabled){
@@ -15992,15 +16006,16 @@ function meterRenderGreyTvControls(reading){
  const selected=meterGreyTvSelectedValues(state);
 	 const liveRgb=meterLiveRgbData(reading);
 	 const spec=meterRgbDeltasForLive(reading,liveRgb);
-	 const halfRange=meterGreyTvHalfRange(spec);
-	 const busy=meterGreyTvBusyActive();
-	 const disabled=busy||state.status!=='ok';
-		 const columns=[
-		  meterGreyTvColumnHtml('r','R','#f44',selected?selected.r:null,meterGreyTvLiveEntry(spec,'R'),halfRange,disabled),
-		  meterGreyTvColumnHtml('g','G','#4caf50',selected?selected.g:null,meterGreyTvLiveEntry(spec,'G'),halfRange,disabled),
-		  meterGreyTvColumnHtml('b','B','#42a5f5',selected?selected.b:null,meterGreyTvLiveEntry(spec,'B'),halfRange,disabled)
-		 ];
-			 const lumaHtml=meterGreyTvSupportsLuminance(state)?meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled):'';
+		 const halfRange=meterGreyTvHalfRange(spec);
+		 const busy=meterGreyTvBusyActive();
+		 const disabled=busy||state.status!=='ok';
+		 const readOnly=state.source==='autocal'||meterAutoCalRunning||meterFullAutoCalRunning;
+			 const columns=[
+			  meterGreyTvColumnHtml('r','R','#f44',selected?selected.r:null,meterGreyTvLiveEntry(spec,'R'),halfRange,disabled,readOnly),
+			  meterGreyTvColumnHtml('g','G','#4caf50',selected?selected.g:null,meterGreyTvLiveEntry(spec,'G'),halfRange,disabled,readOnly),
+			  meterGreyTvColumnHtml('b','B','#42a5f5',selected?selected.b:null,meterGreyTvLiveEntry(spec,'B'),halfRange,disabled,readOnly)
+			 ];
+				 const lumaHtml=(!readOnly&&meterGreyTvSupportsLuminance(state))?meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled):'';
 			 host.innerHTML='<div class="meter-lg-rgb-host'+(busy?' has-busy':'')+'">'+meterGreyTvBusyHtml()+columns.join('')+lumaHtml+'</div>';
 	 if(editingChannel&&!busy){
 	  const restore=host.querySelector('.meter-lg-rgb-tv-input[data-channel="'+editingChannel+'"]');
@@ -20882,7 +20897,7 @@ function chartHandleHover(e,canvasId){
  if(!hit){tip.style.display='none';return;}
  const rd=hit.reading;
  const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,meterIncludeLum()):{R:100,G:100,B:100};
- const gamma=effectiveGamma(rd.luminance,meterWhiteReading?meterWhiteReading.Y:rd.Y,rd.ire);
+	 const gamma=effectiveGamma(rd.luminance,meterGreyGammaReferenceY(meterWhiteReading)||meterGreyGammaReferenceY(rd),rd.ire);
  let html='<b>'+rd.ire+'%</b><br>';
  html+='Lum: '+(rd.luminance!=null?rd.luminance.toFixed(2):'--')+' cd/m\u00B2';
  if(rd.cct) html+='&nbsp; CCT: '+rd.cct+'K';
@@ -21067,7 +21082,7 @@ function meterBuildGreyscaleReportTable(){
  let rows='';
  gs.forEach(rd=>{
   const bal=white?rgbBalance(rd,white,inclLum):{R:100,G:100,B:100};
-  const gamma=effectiveGamma(rd.luminance,white?(white.Y||white.luminance||rd.Y):rd.Y,rd.ire);
+	  const gamma=effectiveGamma(rd.luminance,meterGreyGammaReferenceY(white)||meterGreyGammaReferenceY(rd),rd.ire);
   let de='--';
   if(Lw>0 && (rd.Y||0)>0){
      de=meterColorDeltaE2000(rd,greyMode,deForm,meterGrayWorldWeight()).toFixed(2);
@@ -21234,7 +21249,7 @@ function meterExportCSV(){
  const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
  const whiteR=meterWhiteReading||sorted.find(r=>r.ire===100);
  if(!whiteR){toast('No 100% white reading \u2014 run a full series first',true);return;}
- const Lw=whiteR.luminance||whiteR.Y;
+	 const Lw=meterGreyGammaReferenceY(whiteR);
  // Measured-white adaptation for grey tracking (matching chart)
  const wp=meterTargetWhitePoint();
  const Xn=whiteR?whiteR.X:(wp.X*Lw);
