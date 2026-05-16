@@ -1700,6 +1700,47 @@ sub lg_lut_matches (@) {
  return 1;
 }
 
+sub lg_lut_channel_matches_scaled_readback (@) {
+ my ($actual,$expected,$channel)=@_;
+ return 0 if(ref($actual) ne "ARRAY" || ref($expected) ne "ARRAY");
+ return 0 if(@{$actual} != 3072 || @{$expected} != 3072);
+ my $base=$channel*1024;
+ return 0 if(($actual->[$base]||0) != 0 || ($expected->[$base]||0) != 0);
+ my $actual_max=$actual->[$base+1023]||0;
+ my $expected_max=$expected->[$base+1023]||0;
+ return 0 if($actual_max <= 0 || $expected_max <= 0);
+ my $compression=$expected_max-$actual_max;
+ return 0 if($compression < 0 || $compression > 128);
+ for(my $sample=0;$sample<1024;$sample++) {
+  my $scaled=($expected->[$base+$sample]||0)*$actual_max/$expected_max;
+  my $expected_floor=int($scaled);
+  my $expected_round=int($scaled+0.5);
+  my $a=$actual->[$base+$sample]||0;
+  return 0 if(abs($a-$expected_floor) > 1 && abs($a-$expected_round) > 1);
+ }
+ return 1;
+}
+
+sub lg_lut_matches_tv_readback (@) {
+ my ($actual,$expected)=@_;
+ return 1 if(&lg_lut_matches($actual,$expected));
+ return 0 if(ref($actual) ne "ARRAY" || ref($expected) ne "ARRAY");
+ return 0 if(@{$actual} != 3072 || @{$expected} != 3072);
+ for(my $channel=0;$channel<3;$channel++) {
+  my $base=$channel*1024;
+  my $exact=1;
+  for(my $sample=0;$sample<1024;$sample++) {
+   if(($actual->[$base+$sample]||0) != ($expected->[$base+$sample]||0)) {
+    $exact=0;
+    last;
+   }
+  }
+  next if($exact);
+  return 0 if(!&lg_lut_channel_matches_scaled_readback($actual,$expected,$channel));
+ }
+ return 1;
+}
+
 sub lg_lut_mismatch_summary (@) {
  my ($actual,$expected)=@_;
  return { reason => "invalid-lut", actual_ref => ref($actual)||"", expected_ref => ref($expected)||"" }
@@ -2745,12 +2786,18 @@ sub lg_ddc_1d_white_balance_set (@) {
 
 		 my $upload_verified=0;
 		 my $reset_readback_contract="";
+		 my $upload_readback_contract="";
 		 if($reset_ddc_baseline || $verify_ddc_upload) {
 		  select(undef,undef,undef,0.35);
 		  my $verify_lut=&lg_get_current_1d_lut($session,$timeout);
 		  if(!&lg_lut_matches($verify_lut,$lut)) {
 		   select(undef,undef,undef,0.75);
 		   $verify_lut=&lg_get_current_1d_lut($session,$timeout);
+		  }
+		  $upload_verified=1 if(&lg_lut_matches($verify_lut,$lut));
+		  if(!$upload_verified && !$reset_ddc_baseline && &lg_lut_matches_tv_readback($verify_lut,$lut)) {
+		   $upload_verified=1;
+		   $upload_readback_contract="scaled-channel-readback";
 		  }
 		  if(!&lg_lut_matches($verify_lut,$lut) && $reset_ddc_baseline && &lg_lut_linear_unity_readback($verify_lut)) {
 		   # C2 firmware can read back a canonical linear reset LUT whose
@@ -2762,8 +2809,9 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   $baseline=$verify_lut;
 		   $lut=$verify_lut;
 		   $reset_readback_contract="linear-unity-readback";
+		   $upload_verified=1;
 		  }
-		  if(!&lg_lut_matches($verify_lut,$lut)) {
+		  if(!$upload_verified) {
 		   &lg_calibration_request($session,"ddc_cal_end_after_verify_fail","CAL_END",undef,1,"",$timeout) if(!$keep_calibration_mode);
 		   my $verify_message=$reset_ddc_baseline
 		    ? "LG DDC reset upload did not verify against the TV 1D LUT readback."
@@ -2777,7 +2825,6 @@ sub lg_ddc_1d_white_balance_set (@) {
 		    ddc_linear_unity_diagnostics => &lg_lut_linear_unity_diagnostics($verify_lut),
 		   }));
 		  }
-		  $upload_verified=1;
 		 }
 
 	 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
@@ -2800,6 +2847,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified),
 		  ddc_upload_verified => &json_bool($upload_verified),
 		  ddc_reset_verify_contract => $reset_readback_contract,
+		  ddc_upload_verify_contract => $upload_readback_contract,
 	  calibration_mode => &json_bool($keep_calibration_mode),
 	 }));
 }
