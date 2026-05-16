@@ -12286,19 +12286,26 @@ function meterLuminanceLogScaleEnabled(){
 }
 
 const METER_CHART_LOG_KNEE_DIVISOR=10000;
+const METER_LUMINANCE_LOG_FLOOR_DIVISOR=1000000;
 
-function meterLogScaleValue(v,yTop){
+function meterLogScaleValue(v,yTop,floorValue){
  const top=Math.max(1e-6,yTop||1);
- const val=Math.max(0,Math.min(top,v||0));
+ const floor=Math.max(0,Math.min(top*0.999,Number(floorValue)||0));
+ const val=Math.max(floor,Math.min(top,v||0));
  const knee=Math.max(top/METER_CHART_LOG_KNEE_DIVISOR,1e-9);
- return Math.log1p(val/knee)/Math.log1p(top/knee);
+ const lo=floor>0?Math.log1p(floor/knee):0;
+ const hi=Math.log1p(top/knee);
+ return (Math.log1p(val/knee)-lo)/Math.max(1e-9,hi-lo);
 }
 
-function meterLogUnscaleValue(norm,yTop){
+function meterLogUnscaleValue(norm,yTop,floorValue){
  const top=Math.max(1e-6,yTop||1);
  const n=Math.max(0,Math.min(1,norm||0));
+ const floor=Math.max(0,Math.min(top*0.999,Number(floorValue)||0));
  const knee=Math.max(top/METER_CHART_LOG_KNEE_DIVISOR,1e-9);
- return knee*(Math.exp(n*Math.log1p(top/knee))-1);
+ const lo=floor>0?Math.log1p(floor/knee):0;
+ const hi=Math.log1p(top/knee);
+ return knee*(Math.exp(lo+n*Math.max(1e-9,hi-lo))-1);
 }
 
 function meterEotfScaleValue(v,yTop){
@@ -12330,15 +12337,20 @@ function meterGreyTargetEotfChartValue(ire,Lw,Lb,code){
 function meterLuminanceScaleValue(v,yTop){
  const top=Math.max(1e-6,yTop||1);
  const val=Math.max(0,Math.min(top,v||0));
- if(meterLuminanceLogScaleEnabled()) return meterLogScaleValue(val,top);
+ if(meterLuminanceLogScaleEnabled()) return meterLogScaleValue(val,top,meterLuminanceLogFloor(top));
  return val/top;
 }
 
 function meterLuminanceUnscaleValue(norm,yTop){
  const top=Math.max(1e-6,yTop||1);
  const n=Math.max(0,Math.min(1,norm||0));
- if(meterLuminanceLogScaleEnabled()) return meterLogUnscaleValue(n,top);
+ if(meterLuminanceLogScaleEnabled()) return meterLogUnscaleValue(n,top,meterLuminanceLogFloor(top));
  return n*top;
+}
+
+function meterLuminanceLogFloor(yTop){
+ const top=Math.max(1e-6,yTop||1);
+ return Math.max(1e-6,top/METER_LUMINANCE_LOG_FLOOR_DIVISOR);
 }
 
 function meterLuminanceAxisLabel(v){
