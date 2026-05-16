@@ -29,7 +29,7 @@ trap cleanup EXIT
 cleanup
 if command -v sshpass >/dev/null 2>&1; then
   sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "root@$PI" "rm -f /var/log/PGenerator/lg-autocal-109-trace.log" >/dev/null 2>&1 || true
+    "root@$PI" "rm -f /var/log/PGenerator/lg-autocal-109-trace.log /tmp/meter_lg_autocal.log" >/dev/null 2>&1 || true
 fi
 
 node - "$LABEL" "$PI" "$PICTURE_MODE" "$OUT" "$PI_PASS" <<'NODE'
