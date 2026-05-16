@@ -965,8 +965,8 @@ assert(
 	    source.includes('function meterGreyNominalTargetCurvePoints') &&
 	    source.includes("meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf',axisMax,plotSteps)") &&
 	    source.includes("meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'luminance',axisMax,plotSteps)") &&
-	    source.includes('function meterGreyTargetEotfChartValue(ire,Lw,Lb,code)') &&
-	    source.includes('meterEotfNormalizedEnabled()') &&
+		    source.includes('function meterGreyTargetEotfChartValue(ire,Lw,Lb,code)') &&
+		    source.includes('meterEotfNormalizedEnabled()') &&
 	    source.includes('id="meterEotfLogScale"') &&
 	    source.includes('id="meterLuminanceLogScale"') &&
 	    source.includes('id="meterHdrDiffuseWhite"') &&
@@ -978,9 +978,10 @@ assert(
 	    source.includes('function meterOnHdrDiffuseWhiteChange()') &&
 	    source.includes("hdr_diffuse_white: v('meterHdrDiffuseWhite')") &&
 	    source.includes("setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white)") &&
-	    source.includes('function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb)') &&
-	    source.includes('meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(readings),steps,fallbackPeak,Lb)') &&
-	    source.includes('targetPeak=meterGreyTargetPeakForReadings(sorted,plotSteps.length?plotSteps:targetSteps,targetPeak,Lb);') &&
+		    source.includes('function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb)') &&
+		    source.includes('function meterGreyGammaReferencePeakForReadings(readings,fallbackPeak)') &&
+		    source.includes('meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(readings),steps,fallbackPeak,Lb)') &&
+		    source.includes('targetPeak=meterGreyTargetPeakForReadings(sorted,plotSteps.length?plotSteps:targetSteps,targetPeak,Lb);') &&
 	    source.includes('const code=meterGreyChartTargetCode(s);') &&
 	    source.includes('const targetIre=meterGreyChartStimulusIre(s);') &&
 	    source.includes('meterGreyTargetEotfChartValue(targetIre,targetPeak,Lb,code)') &&
@@ -988,7 +989,7 @@ assert(
 	    source.includes('function effectiveGammaTopSlope') &&
 	    source.includes('if(frac>=0.999999) return null;') &&
 	    source.includes('if(topGamma) return;') &&
-	    source.includes('const chartYw=meterGreyTargetPeakForReadings(sortedAll,rawXSteps,Yw||measuredPeak,Lb);') &&
+		    source.includes('const chartYw=meterGreyGammaReferencePeakForReadings(sortedAll,Yw||measuredPeak);') &&
 	    source.includes('effectiveGamma(y,chartYw,analysisIre)') &&
 	    source.includes('meterGreyTargetGamma(analysisIre,chartYw,Lb') &&
 	    source.includes('if((Number(step.ire)||0)>=100 || (targetIre||0)>=100) return;') &&
@@ -1048,7 +1049,8 @@ assert(
     source.includes('const steps=meterFilterGammaChartItems(sourceSteps).filter(s=>{') &&
     source.includes('const targetIre=meterGreyChartStimulusIre(s);') &&
     source.includes('const sorted=gammaFixedAxis?meterFilterGammaChartItems(sortedAll):sortedAll;') &&
-    source.includes('const chartYw=meterGreyTargetPeakForReadings(sortedAll,rawXSteps,Yw||measuredPeak,Lb);') &&
+    source.includes('const chartYw=meterGreyGammaReferencePeakForReadings(sortedAll,Yw||measuredPeak);') &&
+    source.includes('drawGammaValueChart(rawGs,allSteps,readingMap);') &&
     source.includes('xSteps:gammaFixedAxis?10:(xSteps.length-1||1)') &&
     source.includes("xLabel:(i)=>gammaFixedAxis?String(i*10):(i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'')") &&
     source.includes('rd._gamma_rgb=meterPerChannelGamma(rd,white,rd.ire||0,prev);') &&
