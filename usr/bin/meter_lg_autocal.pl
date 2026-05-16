@@ -42,7 +42,9 @@ sub trace_number {
 sub trace_109_enabled {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
- return abs(($step->{"ire"}+0)-109) < 0.001 ? 1 : 0;
+ my $ire=$step->{"ire"}+0;
+ return 1 if($ire > 0 && $ire <= 10.0001);
+ return abs($ire-109) < 0.001 ? 1 : 0;
 }
 
 sub trace_reading_summary {
