@@ -7630,7 +7630,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <button class="btn btn-sm btn-secondary" id="meterFullAutoCalSkipBtn" onclick="meterFullAutoCalResolveConfirm('skip')" style="display:none">Skip Pre-Cal</button>
 		   <button class="btn btn-sm btn-success" id="meterFullAutoCalContinueBtn" onclick="meterFullAutoCalResolveConfirm(true)" style="display:none">&#9654; Continue</button>
 	   <button class="btn btn-sm btn-primary" id="meterFullAutoCalPostReportBtn" onclick="meterFullAutoCalGeneratePostReport()" style="display:none">&#128196; Generate Post-Cal Report</button>
-	   <button class="btn btn-sm btn-secondary" id="meterFullAutoCalSkipReportBtn" onclick="meterFullAutoCalSkipPostReport()" style="display:none">Skip Report</button>
+	   <button class="btn btn-sm btn-secondary" id="meterFullAutoCalSkipReportBtn" onclick="meterAutoCalCloseCompleteAction()" style="display:none">Close</button>
 	   <button class="btn btn-sm btn-danger" id="meterAutoCalStopOverlayBtn" onclick="meterStopAutoCal()">&#9632; Stop</button>
 	  </div>
  </div>
@@ -17202,6 +17202,11 @@ function meterAutoCalCloseComplete(){
  meterAutoCalSetOverlay(false,null);
 }
 
+async function meterAutoCalCloseCompleteAction(){
+ try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
+ meterAutoCalCloseComplete();
+}
+
 function meterAutoCalScheduleCompleteAutoClose(postReportAvailable){
  meterAutoCalClearCompleteAutoClose();
 }
@@ -17272,8 +17277,8 @@ function meterAutoCalSetOverlay(active,status){
  if(fullContinueBtn) fullContinueBtn.style.display='none';
  const postReportAvailable=!!(showComplete&&status&&status.full_autocal);
  if(postReportBtn) postReportBtn.style.display=postReportAvailable?'':'none';
- if(skipReportBtn) skipReportBtn.style.display=postReportAvailable?'':'none';
- if(skipReportBtn&&postReportAvailable) skipReportBtn.textContent='Close';
+ if(skipReportBtn) skipReportBtn.style.display=showComplete?'':'none';
+ if(skipReportBtn&&showComplete) skipReportBtn.textContent='Close';
  if(postReportBtn&&postReportAvailable) postReportBtn.textContent='\uD83D\uDCC4 Generate Post-Cal Report';
  if(stopBtn) stopBtn.style.display=showComplete?'none':'';
  if(showComplete){
@@ -18644,9 +18649,7 @@ async function meterFullAutoCalGeneratePostReport(){
 }
 
 async function meterFullAutoCalSkipPostReport(){
- try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
- meterAutoCalCloseComplete();
- toast('Full AutoCal report skipped');
+ await meterAutoCalCloseCompleteAction();
 }
 
 async function meterStartFullAutoCal(){
