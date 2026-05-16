@@ -185,6 +185,9 @@ assert(
     lgSource.includes('sub lg_lut_matches') &&
     lgSource.includes('&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline)') &&
     lgSource.includes('my $verify_lut=&lg_get_current_1d_lut($session,$timeout);') &&
+    lgSource.includes('sub lg_lut_linear_unity_readback') &&
+    lgSource.includes('&lg_write_1d_lut_file(&lg_ddc_baseline_path($ip,$picture_mode),$verify_lut);') &&
+    lgSource.includes('ddc_reset_verify_contract => $reset_readback_contract') &&
     lgSource.includes('LG DDC reset upload did not verify against the TV 1D LUT readback.') &&
 	    lgSource.includes('ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified)') &&
 	    lgSource.includes('ddc_upload_verified => &json_bool($upload_verified)') &&

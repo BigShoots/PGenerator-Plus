@@ -79,6 +79,8 @@ assert.match(status.neutral_axis_source, /exact diagonal identity/i);
 assert.match(lgHelper, /externalpq\/setExternalPqData/);
 assert.match(lgHelper, /externalpq\/getExternalPqData/);
 assert.match(lgHelper, /sub lg_unity_3d_lut/);
+assert.match(lgHelper, /sub lg_lut_linear_unity_readback/);
+assert.match(lgHelper, /ddc_reset_verify_contract => \$reset_readback_contract/);
 assert.match(lgHelper, /BT709_3D_LUT_DATA/);
 assert.match(lgHelper, /GET_3D_LUT_DATA/);
 assert.match(lgHelper, /lg_3d_lut_probe_candidate/);
