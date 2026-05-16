@@ -1098,6 +1098,48 @@ sub guarded_autocal_result_score {
  return $score;
 }
 
+sub autocal_de_epsilon_for_best_update {
+ my ($step)=@_;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+ return 0.08 if(autocal_step_is_fast_headroom($step));
+ return 0.02 if($ire <= 10);
+ return 0.04;
+}
+
+sub autocal_luminance_regresses_too_far_for_best_update {
+ my ($candidate_lum_pct,$best_lum_pct,$step)=@_;
+ return 0 if(!defined($candidate_lum_pct) || !defined($best_lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+ if(autocal_step_is_fast_headroom($step)) {
+  my $limit=luminance_tolerance_percent($step)*6;
+  $limit=10 if($limit < 10);
+  return abs($candidate_lum_pct) > $limit ? 1 : 0;
+ }
+ my $tol=luminance_tolerance_percent($step);
+ my $candidate_excess=abs($candidate_lum_pct)-$tol;
+ my $best_excess=abs($best_lum_pct)-$tol;
+ $candidate_excess=0 if($candidate_excess < 0);
+ $best_excess=0 if($best_excess < 0);
+ my $allow=($ire <= 10) ? $tol : (($ire <= 25) ? ($tol*0.5) : 0.25);
+ return $candidate_excess > ($best_excess+$allow) ? 1 : 0;
+}
+
+sub autocal_best_update_reason {
+ my ($candidate_de,$candidate_score,$best_de,$best_score,$candidate_lum_pct,$best_lum_pct,$step,$reading,$white_guard_y)=@_;
+ return undef if(!defined($candidate_de));
+ return undef if(white_luminance_guard_failed($step,$reading,$white_guard_y));
+ return "delta_e_fallback" if(
+  defined($best_de) &&
+  ($candidate_de+autocal_de_epsilon_for_best_update($step)) < ($best_de+0) &&
+  !autocal_luminance_regresses_too_far_for_best_update($candidate_lum_pct,$best_lum_pct,$step)
+ );
+ return undef if(!defined($candidate_score) || !defined($best_score));
+ return undef if($candidate_score + 0.0001 >= $best_score);
+ return "score" if(!defined($best_de));
+ return "score" if($candidate_de <= ($best_de+autocal_de_epsilon_for_best_update($step)));
+ return undef;
+}
+
 sub guarded_target_reached {
  my ($de,$lum_pct,$target_delta,$step,$reading,$white_guard_y)=@_;
  return 0 if(white_luminance_guard_failed($step,$reading,$white_guard_y));
@@ -3144,22 +3186,24 @@ eval {
 			   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
 			   $de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
 			   $lum_pct=luminance_error_percent($reading,$target_step_y);
-				   my $probe_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
-					   if(defined($de) && $probe_score + 0.0001 < $best_score) {
-					    $best_de=$de;
-				    $best_lum_pct=$lum_pct;
-				    $best_score=$probe_score;
-				    $best_arrays=clone_arrays($arrays);
-					    $best_reading=clone_picture($reading);
-					   }
+			   my $probe_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+			   my $probe_best_update_reason=autocal_best_update_reason($de,$probe_score,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
+				   if($probe_best_update_reason) {
+				    $best_de=$de;
+			    $best_lum_pct=$lum_pct;
+			    $best_score=$probe_score;
+			    $best_arrays=clone_arrays($arrays);
+				    $best_reading=clone_picture($reading);
+				   }
 					   trace_109($read_step,"probe_applied",{
 					    label=>$label,
 					    reading=>trace_reading_summary($reading),
 					    delta_e=>defined($de)?$de+0:undef,
 					    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-					    score=>$probe_score+0,
-					    best_delta_e=>defined($best_de)?$best_de+0:undef,
-					    best_score=>$best_score+0,
+				    score=>$probe_score+0,
+				    best_update_reason=>$probe_best_update_reason,
+				    best_delta_e=>defined($best_de)?$best_de+0:undef,
+				    best_score=>$best_score+0,
 					    target_values=>trace_target_values($arrays,$target)
 					   });
 				   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
@@ -3311,24 +3355,26 @@ eval {
 				    last if($probe_error && $probe_error eq "cancelled");
 					    $probe_found=1 if($apply_probe_result->($probe_step,$probe_reading,$probe_arrays,$probe_picture));
 					   }
-					   if($probe_found) {
-					    # The probe already reset the baseline to the responsive patch stimulus.
-					    $iter-- if($iter > 0);
-					   } elsif(defined($de) && $candidate_score_after + 0.0001 < $best_score) {
-				    $best_de=$de;
-				    $best_lum_pct=$lum_pct;
-				    $best_score=$candidate_score_after;
-				    $best_arrays=clone_arrays($arrays);
-					    $best_reading=clone_picture($reading);
+					   my $best_update_reason=autocal_best_update_reason($de,$candidate_score_after,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
+				   if($probe_found) {
+				    # The probe already reset the baseline to the responsive patch stimulus.
+				    $iter-- if($iter > 0);
+				   } elsif($best_update_reason) {
+			    $best_de=$de;
+			    $best_lum_pct=$lum_pct;
+			    $best_score=$candidate_score_after;
+			    $best_arrays=clone_arrays($arrays);
+				    $best_reading=clone_picture($reading);
 					    $stalls=0;
 					    trace_109($read_step,"best_updated",{
 					     label=>$label,
 					     iteration=>$iter+0,
-					     best_delta_e=>defined($best_de)?$best_de+0:undef,
-					     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-					     best_score=>$best_score+0,
-					     best_values=>trace_target_values($best_arrays,$target)
-					    });
+				     best_delta_e=>defined($best_de)?$best_de+0:undef,
+				     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+				     best_score=>$best_score+0,
+					     best_update_reason=>$best_update_reason,
+				     best_values=>trace_target_values($best_arrays,$target)
+				    });
 		   } else {
 			    $stalls++;
 			    my $candidate_score=$candidate_score_after;
@@ -3501,7 +3547,8 @@ eval {
 			     rgb_error=>rgb_error($reading),
 			     target_values=>trace_target_values($arrays,$target)
 			    });
-			    if(defined($de) && $candidate_score + 0.0001 < $best_score) {
+			    my $fine_tune_best_update_reason=autocal_best_update_reason($de,$candidate_score,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
+			    if($fine_tune_best_update_reason) {
 			     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
 		     $best_score=$candidate_score;
@@ -3514,6 +3561,7 @@ eval {
 			      best_delta_e=>defined($best_de)?$best_de+0:undef,
 			      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 			      best_score=>$best_score+0,
+			      best_update_reason=>$fine_tune_best_update_reason,
 			      best_values=>trace_target_values($best_arrays,$target)
 			     });
 			    } else {
