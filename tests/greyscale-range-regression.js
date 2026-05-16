@@ -49,6 +49,13 @@ assert(
   'LG AutoCal headroom points should not seed from the previously calibrated higher headroom slot'
 );
 assert(
+  autocalWorkerSource.includes('sub autocal_best_update_reason') &&
+    autocalWorkerSource.includes('delta_e_fallback') &&
+    autocalWorkerSource.includes('best_update_reason') &&
+    autocalWorkerSource.includes('autocal_luminance_regresses_too_far_for_best_update'),
+  'LG AutoCal should keep materially better Delta E candidates instead of relying only on the composite score'
+);
+assert(
   source.includes("const savedTargetGamma=(s.target_gamma!=null)?String(s.target_gamma):'';") &&
     source.includes("if(savedTargetGamma!==''){") &&
     source.includes("setVal('meterTargetGamma', savedTargetGamma);") &&
@@ -560,9 +567,9 @@ assert(
 		    autocalWorkerSource.includes('$best_de <= ($target_delta+0.15)') &&
 		    autocalWorkerSource.includes('next_untried_value($current,$dir*$mag,$tried,$setting,$min_micro_step)') &&
 			    autocalWorkerSource.includes('last if($polish_stalls >= 14);') &&
-		    autocalWorkerSource.includes('my $probe_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);') &&
-		    autocalWorkerSource.includes('if(defined($de) && $probe_score + 0.0001 < $best_score)') &&
-		    autocalWorkerSource.includes('Keeping best $label result') &&
+			    autocalWorkerSource.includes('my $probe_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);') &&
+			    autocalWorkerSource.includes('my $probe_best_update_reason=autocal_best_update_reason($de,$probe_score,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);') &&
+			    autocalWorkerSource.includes('Keeping best $label result') &&
 	    autocalWorkerSource.includes('target_gamma=>$target_gamma') &&
 	    autocalWorkerSource.includes('setup_luminance_reference=>$setup_luminance_reference||$target_luminance||undef') &&
 	    autocalWorkerSource.includes('target_luminance=>$target_luminance||undef') &&
