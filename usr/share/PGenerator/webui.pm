@@ -1653,6 +1653,9 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  $target_white_x=$1 if($body=~/"target_white_x"\s*:\s*"?([0-9.]+)"?/);
  my $target_white_y="";
  $target_white_y=$1 if($body=~/"target_white_y"\s*:\s*"?([0-9.]+)"?/);
+ my $series_target_white_y="";
+ $series_target_white_y=$1 if($body=~/"series_target_white_y"\s*:\s*"?([0-9.]+)"?/);
+ my $series_target_white_y_num=($series_target_white_y ne "") ? ($series_target_white_y+0) : 0;
  my $custom_target_white;
  if($target_gamut eq "customd65" && $target_white_x ne "" && $target_white_y ne "") {
   my $x=$target_white_x+0;
@@ -2358,6 +2361,17 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	   }
 	  }
 	 }
+
+ if(($type eq "colors" || $type eq "saturations") && $series_target_white_y_num>0) {
+  @steps=map {
+   my $step=$_;
+   if($step!~/"series_target_white_y"\s*:/) {
+    $step=~s/\}\s*$//;
+    $step.=",\"series_target_white_y\":$series_target_white_y_num,\"lg_target_white_y\":$series_target_white_y_num}";
+   }
+   $step;
+  } @steps;
+ }
 
  my $series_id="${type}_".time();
  my $total=scalar(@steps);
@@ -10654,12 +10668,19 @@ function meterStoredLgTargetWhiteReferenceNits(){
  }catch(e){ return null; }
 }
 
-function meterLgTargetWhiteReferenceNits(readings){
+function meterExplicitLgTargetWhiteReferenceNits(readings){
  const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
  for(const rd of list){
   const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
   if(Number.isFinite(y)&&y>0) return y;
  }
+ return null;
+}
+
+function meterLgTargetWhiteReferenceNits(readings){
+ const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
+ const explicit=meterExplicitLgTargetWhiteReferenceNits(list);
+ if(explicit>0) return explicit;
  const cfg=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.targetY);
  if(Number.isFinite(cfg)&&cfg>0) return cfg;
  try{
@@ -10669,6 +10690,38 @@ function meterLgTargetWhiteReferenceNits(readings){
  const connected=!!((state.paired||state.clientKeyPresent)&&!state.pinPending);
  if(!connected) return null;
  return meterStoredLgTargetWhiteReferenceNits();
+}
+
+function meterColorSeriesUsesLgTargetWhite(type){
+ const t=String(type||'').toLowerCase();
+ return t==='colors'||t==='saturations';
+}
+
+function meterColorSeriesTargetWhiteForRun(type){
+ if(!meterColorSeriesUsesLgTargetWhite(type||meterActiveSeriesType)) return null;
+ const phase=String(meterFullAutoCalPhase||'');
+ if(meterFullAutoCalRunning&&phase==='precal-report') return null;
+ const cfg=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.targetY);
+ if(Number.isFinite(cfg)&&cfg>0) return cfg;
+ try{
+  if((typeof meterChartIsHdr==='function'&&meterChartIsHdr())||(typeof meterChartIsDv==='function'&&meterChartIsDv())) return null;
+ }catch(e){}
+ const state=window.lgStatusState||{};
+ const connected=!!((state.paired||state.clientKeyPresent)&&!state.pinPending);
+ if(!connected) return null;
+ return meterStoredLgTargetWhiteReferenceNits();
+}
+
+function meterApplyColorSeriesTargetWhiteReference(steps,type){
+ if(!Array.isArray(steps)||!meterColorSeriesUsesLgTargetWhite(type)) return steps;
+ const targetY=Number(meterColorSeriesTargetWhiteForRun(type));
+ if(!(Number.isFinite(targetY)&&targetY>0)) return steps;
+ steps.forEach(step=>{
+  if(!step) return;
+  step.series_target_white_y=targetY;
+  step.lg_target_white_y=targetY;
+ });
+ return steps;
 }
 
 function meterEffectiveGreyscaleWhiteReference(readings){
@@ -10738,8 +10791,8 @@ function meterColorSeriesReferenceNits(){
 	  // Y reference for color or saturation patches in absolute mode.
 	  return Math.max(1,meterColorReferenceNits());
 	 }
- const lgTarget=meterLgTargetWhiteReferenceNits(meterReadings);
- if(lgTarget>0) return Math.max(1,lgTarget);
+ const explicitLgTarget=meterExplicitLgTargetWhiteReferenceNits(meterReadings);
+ if(explicitLgTarget>0) return Math.max(1,explicitLgTarget);
  const isSeriesWhite=(rd)=>{
   if(!rd) return false;
   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
@@ -10762,6 +10815,8 @@ function meterColorSeriesReferenceNits(){
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
   return Math.max(1,measured);
  }
+ const lgTarget=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType);
+ if(lgTarget>0) return Math.max(1,lgTarget);
  return Math.max(1,meterColorReferenceNits());
 }
 
@@ -13674,6 +13729,7 @@ function meterRecoverSeries(s){
 	  points=normalizePoints(type,steps.length,steps);
 	 }
 	 steps=meterCanonicalRecoveredSteps(type,points,steps,s.status||'complete');
+	 if(s.series_id) steps=meterApplyColorSeriesTargetWhiteReference(steps,type);
 	 meterSeriesSteps=steps;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
@@ -13797,6 +13853,8 @@ function meterStampReadingStepMeta(reading,step){
  if(step.target_x!=null) reading.target_x=step.target_x;
  if(step.target_y!=null) reading.target_y=step.target_y;
  if(step.target_Yn!=null) reading.target_Yn=step.target_Yn;
+ if(step.series_target_white_y!=null) reading.series_target_white_y=step.series_target_white_y;
+ if(step.lg_target_white_y!=null) reading.lg_target_white_y=step.lg_target_white_y;
  return reading;
 }
 
@@ -15857,7 +15915,7 @@ function meterBuildStepsJS(type,points){
    });
   });
  }
-	 return steps;
+	 return meterApplyColorSeriesTargetWhiteReference(steps,type);
 }
 
 function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
@@ -19608,7 +19666,7 @@ async function meterRunSeries(){
  const requireDeviceReady=meterSelectedMeasurementRequiresReady();
  try{
   const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
   if(!r||r.status!=='started'){
    toast(r&&r.message?r.message:'Failed to start series',true);
    meterSeriesRunning=false;
@@ -19639,6 +19697,7 @@ async function meterPollSeries(){
 	 meterSeriesAwaitingReady=!!r.awaiting_ready;
 	 if(Array.isArray(r.steps)&&r.steps.length>0){
 	  meterSeriesSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
+	  meterSeriesSteps=meterApplyColorSeriesTargetWhiteReference(meterSeriesSteps,meterActiveSeriesType);
 	 }
  if(r.white_reading&&r.white_reading.luminance!=null){
   meterWhiteReading=r.white_reading;
