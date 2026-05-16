@@ -29,13 +29,13 @@ assert(
 );
 assert(
   source.includes('id="meterFullAutoCalConfirmBox"') &&
-    source.includes('function meterFullAutoCalConfirmDialog()') &&
+    source.includes('function meterFullAutoCalConfirmDialog(options)') &&
     source.includes('function meterFullAutoCalResolveConfirm(accepted)') &&
     source.includes('const accepted=await meterFullAutoCalConfirmDialog();') &&
     !source.includes("window.confirm('Full Auto Cal will reset") &&
     !source.includes('then calibrate white, 75%, 50%, 25%') &&
-    source.includes('derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence from high to low') &&
-    source.includes('run the current LG 26-point greyscale AutoCal from high to low') &&
+    source.includes('derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high') &&
+    source.includes('run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high') &&
     source.includes('reset the active LG greyscale DDC state and LG 3D LUT baseline'),
   'Full Auto Cal confirmation should use the in-app AutoCal overlay instead of a browser confirm dialog'
 );
@@ -1533,6 +1533,9 @@ const context = {
   },
   meterBuildSaturationStepRgb() {
     return [0, 0, 0];
+  },
+  meterApplyColorSeriesTargetWhiteReference(steps) {
+    return steps;
   }
 };
 context.window = context;

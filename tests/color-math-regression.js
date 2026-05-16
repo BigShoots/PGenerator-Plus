@@ -122,6 +122,11 @@ const code = [
   extractFunction('meterChartIsPq'),
   extractFunction('meterChartIsDv'),
   extractFunction('meterChartIsHdr'),
+  extractFunction('meterStoredLgTargetWhiteReferenceNits'),
+  extractFunction('meterExplicitLgTargetWhiteReferenceNits'),
+  extractFunction('meterColorSeriesUsesLgTargetWhite'),
+  extractFunction('meterColorSeriesTargetWhiteForRun'),
+  extractFunction('meterApplyColorSeriesTargetWhiteReference'),
   extractFunction('meterChartSignalMode'),
   extractFunction('meterGreyTargetSignal'),
   extractFunction('meterChartTargetLuminance'),
@@ -171,7 +176,14 @@ const context = {
   meterReadings: [],
   meterSeriesCache: {},
   meterActiveSeriesSignalMode: '',
+  meterFullAutoCalRunning: false,
+  meterFullAutoCalPhase: '',
+  meterFullAutoCalConfig: null,
   config: { colorimetry: '2', primaries: '0', signal_mode: 'sdr', max_luma: '1000' },
+  lgStatusState: {},
+  localStorage: {
+    getItem(){ return null; }
+  },
   document: {
     getElementById(id) {
       return { value: Object.prototype.hasOwnProperty.call(state, id) ? state[id] : '' };
@@ -240,6 +252,39 @@ if (!xyy || !Array.isArray(xyy.entries)) {
 }
 const dY = xyy.entries.find(e => e.key === 'Y').v;
 approxEqual(dY, -10, 0.75, 'color ΔY normalization mismatch');
+
+// Test 2b: post-cal LG color/sat series must carry the calibrated white
+// target through step metadata, while untagged historical/pre-cal series keep
+// their own measured series white instead of being reinterpreted later.
+vm.runInContext(`
+  meterFullAutoCalRunning = true;
+  meterFullAutoCalPhase = 'postcal-report';
+  meterFullAutoCalConfig = { targetY: 175 };
+  meterActiveSeriesType = 'colors';
+`, context);
+const postColorSteps = vm.runInContext("meterBuildStepsJS('colors',30)", context);
+assert(
+  postColorSteps.length > 0 && postColorSteps.every(step => step.series_target_white_y === 175 && step.lg_target_white_y === 175),
+  'post-cal ColorChecker steps should be tagged with calibrated LG white target Y'
+);
+vm.runInContext(`
+  meterReadings = [{ name:'White', ire:100, r_code:255, g_code:255, b_code:255, luminance:100, Y:100 }];
+`, context);
+approxEqual(
+  vm.runInContext('meterColorSeriesReferenceNits()', context),
+  100,
+  0.001,
+  'untagged color series should keep measured series white reference'
+);
+vm.runInContext(`
+  meterReadings = [{ name:'White', ire:100, r_code:255, g_code:255, b_code:255, luminance:100, Y:100, series_target_white_y:175 }];
+`, context);
+approxEqual(
+  vm.runInContext('meterColorSeriesReferenceNits()', context),
+  175,
+  0.001,
+  'tagged post-cal color series should use calibrated target white reference'
+);
 
 // Test 3: greyscale chart X positions must follow actual IRE, not array index.
 const x5 = context.meterGreyChartX({ ire: 5 }, [{ ire: 0 }, { ire: 5 }, { ire: 10 }], 1);
