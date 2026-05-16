@@ -298,6 +298,7 @@ async function runGreyscale(setupY) {
   writeJson('start.json', started);
   if (started.status !== 'started') throw new Error(started.message || 'LG AutoCal did not start');
 
+  await sleep(2500);
   const snapshots = [];
   while (true) {
     const status = await request('/api/meter/lg-autocal/status', { timeoutMs: 45000 });
