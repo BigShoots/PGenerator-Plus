@@ -11927,6 +11927,13 @@ function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
  return (peak>0&&isFinite(peak))?peak:fallbackPeak;
 }
 
+function meterGreyGammaReferencePeakForReadings(readings,fallbackPeak){
+ const white=meterGreyscaleChartWhiteReference(readings);
+ const y=white?meterReadingLuminanceNits(white):0;
+ const peak=(y>0)?y:fallbackPeak;
+ return (peak>0&&isFinite(peak))?peak:fallbackPeak;
+}
+
 function meterGreyTargetChartValue(ire,Lw,Lb,code){
  return meterGreyTargetLuminance(ire,Lw,Lb,code);
 }
@@ -19287,7 +19294,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  const Lb=meterChartBlackLevel(sorted);
  const rawXSteps=allSteps||sortedAll.map(r=>({ire:r.ire||0,r:r.r_code}));
  const measuredPeak=meterFilterEotfLuminanceChartItems(sortedAll).reduce((mx,r)=>Math.max(mx,meterReadingLuminanceNits(r)||0),0);
- const chartYw=meterGreyTargetPeakForReadings(sortedAll,rawXSteps,Yw||measuredPeak,Lb);
+ const chartYw=meterGreyGammaReferencePeakForReadings(sortedAll,Yw||measuredPeak);
  if(!(chartYw>0)){
   if(allSteps) drawGammaValuePreset(allSteps);
   return;
@@ -19438,7 +19445,7 @@ function drawAllCharts(readings){
   meterUpdateGreyscaleChartScrollLayout((allSteps&&allSteps.length)||gs.length);
   drawRGBChart(gs,allSteps,readingMap);
   drawDeltaEChart(gs,allSteps,readingMap);
-  drawGammaValueChart(gs,allSteps,readingMap);
+  drawGammaValueChart(rawGs,allSteps,readingMap);
   drawEOTFChart(gs,allSteps,readingMap);
   drawGammaChart(gs,allSteps,readingMap);
   chartRegisterInteraction();
