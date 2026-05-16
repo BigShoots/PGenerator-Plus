@@ -46,6 +46,8 @@ const delayMs = Number(process.env.DELAY_MS || 500);
 const targetDelta = Number(process.env.TARGET_DELTA_E || 0.5);
 const focusIres = (process.env.FOCUS_IRES || process.env.FOCUS_IRE || '')
   .split(',')
+  .map(value => value.trim())
+  .filter(value => value !== '')
   .map(value => Number(value.trim()))
   .filter(value => Number.isFinite(value));
 
