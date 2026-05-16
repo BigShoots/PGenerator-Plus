@@ -446,7 +446,7 @@ assert(
 				    autocalWorkerSource.includes('return 3 if($ire <= 7.5);') &&
 				    autocalWorkerSource.includes('return 2.5 if($ire <= 10);') &&
 			    autocalWorkerSource.includes('$value=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $value < 0);') &&
-			    autocalWorkerSource.includes('$next=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $luminance_err < 0 && $current < 0 && $next < 0);') &&
+			    !autocalWorkerSource.includes('$next=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $luminance_err < 0 && $current < 0 && $next < 0);') &&
 		    autocalWorkerSource.includes('sub implausible_autocal_read') &&
 		    autocalWorkerSource.includes('sub read_step_guarded') &&
 		    autocalWorkerSource.includes('Rejecting implausible Auto Cal read') &&

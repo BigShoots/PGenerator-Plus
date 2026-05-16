@@ -1639,7 +1639,6 @@ sub neutral_luminance_adjustments {
 			  foreach my $mag (@magnitudes) {
 			   my $current=$arr->[$idx]||0;
 			   my $next=clamp_ddc_value($current+($direction*$mag));
-			   $next=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $luminance_err < 0 && $current < 0 && $next < 0);
 			   next if(abs($next-$current) < 0.0001 || repeated_value($tried,$setting,$next));
 			   return [{ channel=>"lum", setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1 }];
 			  }
