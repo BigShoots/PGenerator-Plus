@@ -44,6 +44,9 @@ const displayType = process.env.PROFILE || 'ccss_LG_C2_(WRGB_OLED)_-_JETI_1501_H
 const patchSize = Number(process.env.PATCH_SIZE || 10);
 const delayMs = Number(process.env.DELAY_MS || 500);
 const targetDelta = Number(process.env.TARGET_DELTA_E || 0.5);
+const focusIre = process.env.FOCUS_IRE != null && process.env.FOCUS_IRE !== ''
+  ? Number(process.env.FOCUS_IRE)
+  : null;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -226,6 +229,17 @@ function buildGreyscale26Steps() {
   return steps;
 }
 
+function selectedGreyscale26Steps() {
+  const steps = buildGreyscale26Steps();
+  if (!Number.isFinite(focusIre)) return steps;
+  const focused = steps.filter(step => {
+    if (!step || step.autocal_white_reference) return false;
+    return Math.abs(Number(step.ire) - focusIre) < 0.001;
+  });
+  if (!focused.length) throw new Error(`No LG 26-point greyscale step matches FOCUS_IRE=${focusIre}`);
+  return focused;
+}
+
 function headroomRatio() {
   const stimulus109 = (1023 - 64) * 100 / 876;
   return Math.pow(stimulus109 / 100, 2.4);
@@ -310,7 +324,7 @@ async function runGreyscale(setupY) {
     force_ddc_white_balance: true,
     full_workflow: false,
     full_autocal_run_id: label,
-    steps: buildGreyscale26Steps(),
+    steps: selectedGreyscale26Steps(),
   });
   writeJson('payload.json', payload);
   const started = await post('/api/meter/lg-autocal', payload, 12000);
