@@ -3391,12 +3391,14 @@ eval {
 			     candidate_values=>trace_target_values($arrays,$target),
 			     best_values=>trace_target_values($best_arrays,$target)
 			    });
-		    my $backtrack_ready=(defined($best_de) && $best_de <= 2.0) ? 1 : 0;
-		    $backtrack_ready=1 if(!$backtrack_ready && autocal_step_is_white($read_step) && defined($best_de) && $best_de <= 5.0);
-		    $backtrack_ready=1 if(!$backtrack_ready && defined($best_de) && $best_de <= 5.0 && defined($best_lum_pct) && abs($best_lum_pct) <= luminance_tolerance_percent($read_step));
-	    if(($backtrack_ready || white_luminance_guard_failed($read_step,$reading,$white_guard_y)) && $candidate_score > $best_score+0.02 && !guarded_target_reached($de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y)) {
-	     $restore_best_branch->("Backtracking to best $label result");
-	    }
+			    my $backtrack_ready=(defined($best_de) && $best_de <= 2.0) ? 1 : 0;
+			    $backtrack_ready=1 if(!$backtrack_ready && autocal_step_is_white($read_step) && defined($best_de) && $best_de <= 5.0);
+			    $backtrack_ready=1 if(!$backtrack_ready && defined($best_de) && $best_de <= 5.0 && defined($best_lum_pct) && abs($best_lum_pct) <= luminance_tolerance_percent($read_step));
+			    # Re-anchor after repeated misses even when the absolute dE is still high.
+			    $backtrack_ready=1 if(!$backtrack_ready && $stalls >= 3 && defined($best_de));
+		    if(($backtrack_ready || white_luminance_guard_failed($read_step,$reading,$white_guard_y)) && $candidate_score > $best_score+0.02 && !guarded_target_reached($de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y)) {
+		     $restore_best_branch->("Backtracking to best $label result");
+		    }
 		   }
 		   $state->{"best_delta_e"}=$best_de;
 		   $state->{"best_score"}=$best_score;
