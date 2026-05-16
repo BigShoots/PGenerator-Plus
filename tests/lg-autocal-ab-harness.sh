@@ -32,12 +32,13 @@ if command -v sshpass >/dev/null 2>&1; then
     "root@$PI" "rm -f /var/log/PGenerator/lg-autocal-109-trace.log" >/dev/null 2>&1 || true
 fi
 
-node - "$LABEL" "$PI" "$PICTURE_MODE" "$OUT" <<'NODE'
+node - "$LABEL" "$PI" "$PICTURE_MODE" "$OUT" "$PI_PASS" <<'NODE'
 'use strict';
 
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 
-const [label, pi, pictureMode, outDir] = process.argv.slice(2);
+const [label, pi, pictureMode, outDir, piPass] = process.argv.slice(2);
 const base = `http://${pi}`;
 const displayType = process.env.PROFILE || 'ccss_LG_C2_(WRGB_OLED)_-_JETI_1501_HiRes_2nm.ccss';
 const patchSize = Number(process.env.PATCH_SIZE || 10);
@@ -82,6 +83,24 @@ function post(endpoint, body, timeoutMs = 30000) {
     body: JSON.stringify(body || {}),
     timeoutMs,
   });
+}
+
+function readRemoteJson(remotePath) {
+  const args = [
+    '-p',
+    piPass,
+    'ssh',
+    '-o',
+    'StrictHostKeyChecking=no',
+    '-o',
+    'UserKnownHostsFile=/dev/null',
+    '-o',
+    'LogLevel=ERROR',
+    `root@${pi}`,
+    `cat ${remotePath} 2>/dev/null || true`,
+  ];
+  const raw = execFileSync('sshpass', args, { encoding: 'utf8', timeout: 15000 });
+  return raw.trim() ? JSON.parse(raw) : null;
 }
 
 async function cleanup() {
@@ -301,7 +320,11 @@ async function runGreyscale(setupY) {
   await sleep(2500);
   const snapshots = [];
   while (true) {
-    const status = await request('/api/meter/lg-autocal/status', { timeoutMs: 45000 });
+    const status = readRemoteJson('/tmp/meter_lg_autocal.json');
+    if (!status) {
+      await sleep(1000);
+      continue;
+    }
     snapshots.push({
       at: Date.now(),
       status: status.status,
