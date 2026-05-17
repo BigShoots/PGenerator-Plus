@@ -170,7 +170,8 @@ assert(
 );
 assert(
   source.includes('function meterAutoCalPanelLightFromPicture(picture)') &&
-    source.includes('const loadedPanel=await meterAutoCalLoadPanelLightValue(true);') &&
+    source.includes('meterAutoCalSeedPanelLightFromDisplayControl();') &&
+    source.includes('await meterAutoCalLoadPanelLightValue(true);') &&
     !source.includes('LG kept ') &&
     !source.includes('Adjust TV settings now if needed') &&
     !source.includes('message:meterAutoCalResetNotice+') &&
@@ -324,7 +325,7 @@ assert(
   source.includes('setsid /usr/bin/perl /usr/bin/meter_lg_autocal.pl') &&
     !source.includes('setsid sudo /usr/bin/perl /usr/bin/meter_lg_autocal.pl') &&
     source.includes('const overlayActive=!!active;') &&
-    source.includes("document.body.classList.toggle('meter-autocal-active',overlayActive)") &&
+    source.includes("document.body.classList.toggle('meter-autocal-active',meterAutoCalOverlayVisible())") &&
     source.includes("if(status.status==='running')") &&
     source.includes('meterAutoCalSetOverlay(false,status)') &&
     source.includes("meterAutoCalSetOverlay(false,{phase:'running',current_name:'LG Auto Cal started'") &&
@@ -605,7 +606,7 @@ assert(
     autocalWorkerSource.includes('my $read_started=time();') &&
     autocalWorkerSource.includes('Ignoring stale meter result') &&
     source.includes('"request_id":"\'.$request_id.\'"') &&
-    source.includes('$read_command.=" $cmd_signal_range $cmd_transport_signal_range $request_id $patch_input_max"') &&
+    source.includes('$read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout"') &&
     meterSessionSource.includes('REQUEST_ID') &&
     meterSessionSource.includes('\\"request_id\\":\\"$REQUEST_ID\\"') &&
     meterSessionSource.includes('READ_TIMEOUT=90') &&
@@ -631,7 +632,8 @@ assert(
     autocalWorkerSource.includes('choose_micro_adjustments($err,$arrays,$target,$lum_err,\\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step)') &&
     autocalWorkerSource.includes('$state->{"message"}=guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y)') &&
     source.includes("target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'") &&
-    source.includes('return Math.max(10,Math.min(10000,setup*1.15));') &&
+    source.includes('const peakRatio=meterAutoCalHeadroomTargetRatio();') &&
+    source.includes('return Math.max(10,Math.min(10000,setup*peakRatio));') &&
     source.includes("message:'Using 100% target '+targetY.toFixed(2)+' cd/m\\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\\u00B2'"),
   'LG Auto Cal/manual reads should include gamma/luminance error, reject stale results, and keep meter sessions healthy'
 );
@@ -825,23 +827,26 @@ assert(
   'Meter series selector rows should keep full width when Read Once / Continuous buttons appear'
 );
 assert(
-  source.includes('data-meter-autocal-brightness="1"') &&
-    source.includes("document.querySelectorAll('[data-meter-autocal-brightness]').forEach") &&
+  source.includes('data-meter-autocal-panel-light') &&
+    source.includes("document.querySelectorAll('[data-meter-autocal-panel-light]').forEach") &&
     source.includes('let meterAutoCalLuminanceReadBusy=false;') &&
     source.includes('let meterAutoCalPanelLightQueuedDelta=0;') &&
+    source.includes('let meterAutoCalPanelLightQueuedValue=null;') &&
     source.includes('function meterAutoCalPanelLightQueuePending()') &&
-    source.includes('const disableBrightness=busy&&!inLiveLuminance') &&
+    source.includes('const disablePanelLight=meterAutoCalLuminanceSetupActive?false:busy') &&
     source.includes('meterAutoCalPanelLightQueuedDelta+=numericDelta;') &&
+    source.includes('meterAutoCalPanelLightQueuedValue=next;') &&
     source.includes('function meterAutoCalProcessQueuedPanelLight()') &&
     source.includes('meterAutoCalProcessQueuedPanelLight();') &&
     source.includes("lgBeginCommand('LG TV panel-light adjustment')") &&
     source.includes("await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000})") &&
     !source.includes('let cancelledForPanelLight=false;') &&
     !source.includes('if(await meterAutoCalProcessQueuedPanelLight())') &&
+    source.includes('const startedPanelLightWrite=meterAutoCalProcessQueuedPanelLight();') &&
     source.includes('meterAutoCalLuminanceReadBusy=true;') &&
-    source.includes('btn.disabled=disableBrightness') &&
+    source.includes('input.disabled=disablePanelLight||unavailable') &&
     source.includes("panelBusy?' (updating...)':(queued?' (queued...)':'')"),
-  'LG Auto Cal panel-light +/- buttons should queue in the background without interrupting live luminance reads'
+  'LG Auto Cal panel-light controls should queue in the background without interrupting live luminance reads'
 );
 assert(
   source.includes('.diag-custom-picker button[onclick^="diagPlaySelectedAsset"]::before') &&
@@ -890,7 +895,8 @@ assert(
   'LG RGB value inputs should apply only on Enter or the adjacent check button, with no TV prefix label'
 );
 assert(
-  source.includes('function meterGreyTvLuminanceHtml(tvValue,disabled)') &&
+  source.includes('function meterGreyTvLuminanceHtml(tvValue,disabled,readOnly)') &&
+    source.includes("if(readOnly) return '';") &&
     source.includes('meter-lg-rgb-luma') &&
     source.includes('meter-lg-rgb-luma-tv') &&
     source.includes('meter-lg-rgb-luma-arrow-left') &&
@@ -908,7 +914,7 @@ assert(
     source.includes("onclick=\"meterGreyAdjustCurrentStepChannel('lum',-1)\"") &&
     source.includes("onclick=\"meterGreyAdjustCurrentStepChannel('lum',1)\"") &&
     source.includes('if(arrays.adjustingLuminance) settingsPayload.adjustingLuminance=arrays.adjustingLuminance;') &&
-    source.includes('meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled)'),
+    source.includes('meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled,ddcReadOnly)'),
   'LG 22pt manual controls should expose the per-point brightness/adjustingLuminance array as a horizontal control'
 );
 assert(
@@ -979,7 +985,8 @@ assert(
 	    source.includes("hdr_diffuse_white: v('meterHdrDiffuseWhite')") &&
 	    source.includes("setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white)") &&
 		    source.includes('function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb)') &&
-		    source.includes('function meterGreyGammaReferencePeakForReadings(readings,fallbackPeak)') &&
+		    source.includes('function meterGammaValueReferenceY(readings)') &&
+		    source.includes('function meterGammaValueWhiteReference(readings)') &&
 		    source.includes('meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(readings),steps,fallbackPeak,Lb)') &&
 		    source.includes('targetPeak=meterGreyTargetPeakForReadings(sorted,plotSteps.length?plotSteps:targetSteps,targetPeak,Lb);') &&
 	    source.includes('const code=meterGreyChartTargetCode(s);') &&
@@ -989,8 +996,9 @@ assert(
 	    source.includes('function effectiveGammaTopSlope') &&
 	    source.includes('if(frac>=0.999999) return null;') &&
 	    source.includes('if(topGamma) return;') &&
-		    source.includes('const chartYw=meterGreyGammaReferencePeakForReadings(sortedAll,Yw||measuredPeak);') &&
-	    source.includes('effectiveGamma(y,chartYw,analysisIre)') &&
+		    source.includes('const gammaYw=meterGammaValueReferenceY(sortedAll);') &&
+		    source.includes('const chartYw=meterChartIsHdr()?meterGreyTargetPeakForReadings(sortedAll,rawXSteps,gammaYw||Yw||measuredPeak,Lb):(gammaYw||Yw||measuredPeak);') &&
+	    source.includes('meterGreyscaleGammaValue(rd,chartYw)') &&
 	    source.includes('meterGreyTargetGamma(analysisIre,chartYw,Lb') &&
 	    source.includes('if((Number(step.ire)||0)>=100 || (targetIre||0)>=100) return;') &&
 	    source.includes('topGamma && (meterChartIsHdr()||meterChartIsDv())') &&
@@ -1017,9 +1025,9 @@ assert(
     source.includes('const white=meterGreyscaleChartWhiteReference(sorted);') &&
     source.includes('const center=targets.length') &&
     source.includes('return {min:center-half,max:center+half};') &&
-    source.includes('let yMin=97,yMax=103;') &&
+    source.includes('let yMin=95,yMax=105;') &&
     source.includes("meterApplyLinearYZoom('chartRGB',yMin,yMax,100)") &&
-	    source.includes('const halfRange=Math.max(3') &&
+	    source.includes('let half=0.3;') &&
 	    source.includes('function meterEnsureChartYZoomInput(canvas)') &&
 	    source.includes('function meterChartPointerIsOnYAxis(canvas,e)') &&
 	    source.includes('function meterChartYZoomIsActive(id)') &&
@@ -1049,14 +1057,15 @@ assert(
     source.includes('const steps=meterFilterGammaChartItems(sourceSteps).filter(s=>{') &&
     source.includes('const targetIre=meterGreyChartStimulusIre(s);') &&
     source.includes('const sorted=gammaFixedAxis?meterFilterGammaChartItems(sortedAll):sortedAll;') &&
-    source.includes('const chartYw=meterGreyGammaReferencePeakForReadings(sortedAll,Yw||measuredPeak);') &&
-    source.includes('drawGammaValueChart(rawGs,allSteps,readingMap);') &&
+    source.includes('const gammaYw=meterGammaValueReferenceY(sortedAll);') &&
+    source.includes('const chartYw=meterChartIsHdr()?meterGreyTargetPeakForReadings(sortedAll,rawXSteps,gammaYw||Yw||measuredPeak,Lb):(gammaYw||Yw||measuredPeak);') &&
+    source.includes('drawGammaValueChart(gs,allSteps,readingMap);') &&
     source.includes('xSteps:gammaFixedAxis?10:(xSteps.length-1||1)') &&
     source.includes("xLabel:(i)=>gammaFixedAxis?String(i*10):(i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'')") &&
-    source.includes('rd._gamma_rgb=meterPerChannelGamma(rd,white,rd.ire||0,prev);') &&
+    source.includes('rd._gamma_rgb=meterPerChannelGamma(rd,white,meterReadingAnalysisIre(rd)||rd.ire||0,prev);') &&
     source.includes('if(ire>=100){') &&
     !source.includes('const gTop=Math.log(pm/w)/Math.log(prevIre/100);'),
-  'Greyscale charts should center gamma on target, omit LG 26pt gamma headroom tracking, and keep RGB balance no tighter than 97-103'
+  'Greyscale charts should center gamma on target, omit LG 26pt gamma headroom tracking, and keep RGB balance no tighter than 95-105'
 );
 
 assert(
@@ -1174,12 +1183,14 @@ function extractFunction(name) {
     `
       let signalMode = 'hdr10';
       let diffuseValue = '';
+      let projector = true;
       const document = {
         getElementById: (id) => {
           if (id === 'meterHdrDiffuseWhite') return { value: diffuseValue };
           return null;
         }
       };
+      function meterDisplayTypeIsProjector(){ return projector; }
       function meterChartIsPq(){ return signalMode === 'hdr10' || signalMode === 'dv'; }
       function meterChartIsDv(){ return signalMode === 'dv'; }
       function meterChartHdrPeak(){ return 1000; }
@@ -1197,6 +1208,9 @@ function extractFunction(name) {
       globalThis.defaultPeak = meterGreyTargetPeak(200);
       diffuseValue = '47.2';
       globalThis.scaledPeak = meterGreyTargetPeak(200);
+      projector = false;
+      globalThis.nonProjectorPeak = meterGreyTargetPeak(200);
+      projector = true;
       globalThis.scaledFallback = meterGreyTargetPeakForReadings([{ ire: 109, luminance: 100 }], [{ ire: 109 }], 200, 0);
       signalMode = 'sdr';
       globalThis.sdrPeak = meterGreyTargetPeak(200);
@@ -1207,6 +1221,7 @@ function extractFunction(name) {
   ].join('\n'), diffuseContext);
   assert.strictEqual(diffuseContext.defaultPeak, 200, 'Blank diffuse white override should keep the current HDR target peak');
   assert(Math.abs(diffuseContext.scaledPeak - 100) < 1e-9, 'Diffuse white override should scale PQ targets relative to 94.4 cd/m2');
+  assert.strictEqual(diffuseContext.nonProjectorPeak, 200, 'Diffuse white override should only affect projector display types');
   assert.strictEqual(diffuseContext.scaledFallback, 200, 'Diffuse override should keep the explicit scaled target instead of re-solving from headroom reads');
   assert.strictEqual(diffuseContext.sdrPeak, 200, 'Diffuse white override should not alter SDR targets');
   assert.strictEqual(diffuseContext.unsolvedFallback, 50, 'Without diffuse override, headroom reads may still derive the chart target peak');
@@ -1324,7 +1339,7 @@ function extractFunction(name) {
     extractFunction('meterColorDeltaTargetXYZ'),
     extractFunction('ynToLstar'),
     extractFunction('xyzToLinRgb'),
-    extractFunction('rgbBalanceCalman'),
+    extractFunction('rgbBalancePerceptual'),
     extractFunction('rgbBalanceHCFR'),
     extractFunction('hcfrGreyRef'),
     `
@@ -1333,10 +1348,10 @@ function extractFunction(name) {
       const target105WithLum = meterColorDeltaTargetXYZ({ ire: 105, luminance: 200 }, true);
       const hcfr109 = hcfrGreyRef(109, 200, 180, 0, 'eotf', 1023, 1);
       const hcfr105 = hcfrGreyRef(105, 200, 180, 0, 'eotf', 984, 1);
-      const calman109WithLum = rgbBalanceCalman({ ire: 109, luminance: 200 }, {}, true);
-      const calman109WithoutLum = rgbBalanceCalman({ ire: 109, luminance: 200 }, {}, false);
-      const calman105WithLum = rgbBalanceCalman({ ire: 105, luminance: 200 }, {}, true);
-      const calman105WithoutLum = rgbBalanceCalman({ ire: 105, luminance: 200 }, {}, false);
+      const perceptual109WithLum = rgbBalancePerceptual({ ire: 109, luminance: 200 }, {}, true);
+      const perceptual109WithoutLum = rgbBalancePerceptual({ ire: 109, luminance: 200 }, {}, false);
+      const perceptual105WithLum = rgbBalancePerceptual({ ire: 105, luminance: 200 }, {}, true);
+      const perceptual105WithoutLum = rgbBalancePerceptual({ ire: 105, luminance: 200 }, {}, false);
       const hcfrRgb109WithLum = rgbBalanceHCFR({ ire: 109, luminance: 200 }, {}, true);
       const hcfrRgb109WithoutLum = rgbBalanceHCFR({ ire: 109, luminance: 200 }, {}, false);
       const hcfrRgb105WithLum = rgbBalanceHCFR({ ire: 105, luminance: 200 }, {}, true);
@@ -1346,8 +1361,8 @@ function extractFunction(name) {
       globalThis.y105WithLum = target105WithLum.Y;
       globalThis.hcfr109RefY = hcfr109.refY;
       globalThis.hcfr105RefY = hcfr105.refY;
-      globalThis.calman109Stable = JSON.stringify(calman109WithLum) === JSON.stringify(calman109WithoutLum);
-      globalThis.calman105ChangesWithLum = Math.abs(calman105WithLum.R - calman105WithoutLum.R) > 0.001;
+      globalThis.perceptual109Stable = JSON.stringify(perceptual109WithLum) === JSON.stringify(perceptual109WithoutLum);
+      globalThis.perceptual105ChangesWithLum = Math.abs(perceptual105WithLum.R - perceptual105WithoutLum.R) > 0.001;
       globalThis.hcfr109Stable = JSON.stringify(hcfrRgb109WithLum) === JSON.stringify(hcfrRgb109WithoutLum);
       globalThis.hcfr105ChangesWithLum = Math.abs(hcfrRgb105WithLum.R - hcfrRgb105WithoutLum.R) > 0.001;
     `
@@ -1357,8 +1372,8 @@ function extractFunction(name) {
   assert.strictEqual(headroomDeltaContext.y105WithLum, 230, '105% ΔE should still use the modeled luminance target when luminance is enabled');
   assert(Math.abs(headroomDeltaContext.hcfr109RefY - (200 / 180)) < 1e-9, 'HCFR-style 109% ΔE should also use measured 109% Y as the target luminance');
   assert(headroomDeltaContext.hcfr105RefY > 5, 'HCFR-style 105% ΔE should still use the modeled luminance target');
-  assert(headroomDeltaContext.calman109Stable, 'CalMAN-style RGB balance for 109% should not change when Include luminance error is toggled');
-  assert(headroomDeltaContext.calman105ChangesWithLum, 'CalMAN-style RGB balance for 105% should still include modeled luminance when requested');
+  assert(headroomDeltaContext.perceptual109Stable, 'Perceptual RGB balance for 109% should not change when Include luminance error is toggled');
+  assert(headroomDeltaContext.perceptual105ChangesWithLum, 'Perceptual RGB balance for 105% should still include modeled luminance when requested');
   assert(headroomDeltaContext.hcfr109Stable, 'HCFR-style RGB balance for 109% should not change when Include luminance error is toggled');
   assert(headroomDeltaContext.hcfr105ChangesWithLum, 'HCFR-style RGB balance for 105% should still include modeled luminance when requested');
 }
@@ -1504,6 +1519,7 @@ const code = [
   extractFunction('meterBuildStepsJS'),
   extractFunction('meterBuildLgAutoCalSteps'),
   extractFunction('meterMeasurementPatchSignalRange'),
+  extractFunction('meterStepInputMax'),
   extractFunction('meterApplyReadStepPayload')
 ].join('\n\n');
 
