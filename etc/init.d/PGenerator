@@ -27,6 +27,11 @@ case "$1" in
         if [ ! -d "/var/lib/PGenerator" ]; then
          mkdir -p /var/lib/PGenerator
         fi
+        mkdir -p /var/lib/PGenerator/ccss/custom /usr/share/PGenerator/ccss/custom /var/lib/PGenerator/lg/pin-sessions 2>/dev/null
+        chown -R $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP /var/lib/PGenerator/ccss /usr/share/PGenerator/ccss/custom 2>/dev/null
+        chown -R $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP /var/lib/PGenerator/lg 2>/dev/null
+        chmod 775 /var/lib/PGenerator/ccss /var/lib/PGenerator/ccss/custom /usr/share/PGenerator/ccss/custom 2>/dev/null
+        chmod 775 /var/lib/PGenerator/lg /var/lib/PGenerator/lg/pin-sessions 2>/dev/null
         if [ ! -d "$PGENERATOR_PID_DIR" ]; then
          mkdir $PGENERATOR_PID_DIR
         fi
