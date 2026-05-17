@@ -654,6 +654,14 @@ assert(
     autocalWorkerSource.includes('sub autocal_step_is_low_shadow') &&
     autocalWorkerSource.includes('return ($ire > 0 && $ire <= 5.0001) ? 1 : 0;') &&
     autocalWorkerSource.includes('sub low_shadow_luminance_priority_adjustments') &&
+    autocalWorkerSource.includes('sub deep_shadow_chroma_priority_adjustment') &&
+    autocalWorkerSource.includes('return undef if($ire <= 0 || $ire > 2.31);') &&
+    autocalWorkerSource.includes('return undef if(abs($lum_pct) > $luma_tol);') &&
+    autocalWorkerSource.includes('return undef if(!defined($de) || $de < 2.0);') &&
+    autocalWorkerSource.includes('return undef if($chroma_mag < 0.020);') &&
+    autocalWorkerSource.includes('deep_shadow_chroma=>1') &&
+    autocalWorkerSource.includes('my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_step,2,0);') &&
+    autocalWorkerSource.includes('my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_micro_step,$max_step,1);') &&
     autocalWorkerSource.includes('my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);') &&
     autocalWorkerSource.includes('my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);') &&
     autocalWorkerSource.includes('sub autocal_config_is_touchup') &&
