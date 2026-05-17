@@ -686,6 +686,13 @@ assert(
 	    autocalWorkerSource.includes('$$white_y_ref=$derived if(defined($derived) && $derived > 0);') &&
 	    autocalWorkerSource.includes('$state->{"headroom_target_luminance"}=$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE;') &&
 	    autocalWorkerSource.includes('$state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));') &&
+	    autocalWorkerSource.includes('sub refresh_headroom_targets_from_white_reference') &&
+	    autocalWorkerSource.includes('next if($ire < 105);') &&
+	    autocalWorkerSource.includes('my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);') &&
+	    autocalWorkerSource.includes('$state->{"headroom_target_luminance"}=$peak_target_luminance;') &&
+	    autocalWorkerSource.includes('$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_luminance;') &&
+	    autocalWorkerSource.includes('my $refresh_white_after_headroom=($white_reference_step && !$white_reference_is_adjustable') &&
+	    autocalWorkerSource.includes('refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)') &&
 	    autocalWorkerSource.includes('if(abs($lum_pct) > $luma_tol && $chroma_mag < 0.035)') &&
 	    autocalWorkerSource.includes('if(abs($lum_pct) > ($luma_tol*0.45) && $chroma_mag < 0.030)') &&
 	    autocalWorkerSource.includes('apply_peak_headroom_reference($state,$read_step,$best_reading,\\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);'),
