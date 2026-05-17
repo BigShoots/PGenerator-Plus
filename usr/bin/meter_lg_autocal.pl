@@ -1864,18 +1864,48 @@ sub low_shadow_luminance_priority_adjustments {
 
 sub deep_shadow_chroma_priority_adjustment {
  my ($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_step,$max_step,$micro)=@_;
- return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
- return undef if(!has_luminance_channel($arrays,$target));
- return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $trace_shadow=sub {
+  my ($reason,$extra)=@_;
+  $extra={} if(ref($extra) ne "HASH");
+  my %data=(reason=>$reason);
+  foreach my $key (keys %{$extra}) {
+   $data{$key}=$extra->{$key};
+  }
+  trace_109($step,"deep_shadow_chroma_priority_adjustment",\%data);
+ };
+ if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH") {
+  $trace_shadow->("invalid_input",{de=>defined($de)?$de+0:undef});
+  return undef;
+ }
+ if(!has_luminance_channel($arrays,$target)) {
+  $trace_shadow->("no_luminance_channel",{de=>defined($de)?$de+0:undef});
+  return undef;
+ }
+ if(ref($step) ne "HASH" || !defined($step->{"ire"})) {
+  $trace_shadow->("invalid_input",{de=>defined($de)?$de+0:undef});
+  return undef;
+ }
  my $ire=$step->{"ire"}+0;
- return undef if($ire <= 0 || $ire > 2.31);
+ if($ire <= 0 || $ire > 2.31) {
+  $trace_shadow->("not_deep_shadow",{ire=>$ire,de=>defined($de)?$de+0:undef});
+  return undef;
+ }
  $luminance_err=0 if(!defined($luminance_err));
  my $lum_pct=$luminance_err*100;
  my $luma_tol=luminance_tolerance_percent($step);
- return undef if(abs($lum_pct) > $luma_tol);
- return undef if(!defined($de) || $de < 2.0);
+ if(abs($lum_pct) > $luma_tol) {
+  $trace_shadow->("luma_not_close",{ire=>$ire,de=>defined($de)?$de+0:undef,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0});
+  return undef;
+ }
+ if(!defined($de) || $de < 2.0) {
+  $trace_shadow->("de_too_low",{ire=>$ire,de=>defined($de)?$de+0:undef,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0});
+  return undef;
+ }
  my $chroma_mag=chroma_error_magnitude($error);
- return undef if($chroma_mag < 0.020);
+ if($chroma_mag < 0.020) {
+  $trace_shadow->("chroma_too_low",{ire=>$ire,de=>$de+0,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0,chroma_mag=>$chroma_mag+0});
+  return undef;
+ }
  $min_step ||= 0.25;
  $max_step ||= ($micro ? 0.5 : 2);
  my @channels=sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
@@ -1895,9 +1925,11 @@ sub deep_shadow_chroma_priority_adjustment {
    my ($next,$damped)=next_untried_value($current,$dir*$step_size,$tried,$setting,$min_step);
    next if(!defined($next));
    next if(abs($next-$current) < 0.0001);
+   $trace_shadow->("selected",{ire=>$ire,de=>$de+0,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0,chroma_mag=>$chroma_mag+0,channel=>$ch,setting=>$setting,current=>$current+0,next=>$next+0,delta=>$next-$current,damped=>$damped ? 1 : 0,micro=>$micro ? 1 : 0});
    return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, deep_shadow_chroma=>1, micro=>$micro ? 1 : 0 }];
   }
  }
+ $trace_shadow->("no_untried_channel",{ire=>$ire,de=>$de+0,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0,chroma_mag=>$chroma_mag+0});
  return undef;
 }
 
