@@ -43,6 +43,11 @@ const displayType = process.env.PROFILE || 'ccss_LG_C2_(WRGB_OLED)_-_JETI_1501_H
 const patchSize = Number(process.env.PATCH_SIZE || 10);
 const delayMs = Number(process.env.DELAY_MS || 500);
 const targetDelta = Number(process.env.TARGET_DELTA_E || 0.5);
+const stepList = String(process.env.STEP_LIST || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const postCommitPolishEnv = process.env.POST_COMMIT_POLISH;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -207,6 +212,25 @@ function buildGreyscale26Steps() {
   return steps;
 }
 
+function stepKey(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value || '').replace(/%$/, '').trim();
+  const rounded = Math.round(n * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function filterGreyscale26Steps(steps) {
+  if (!stepList.length) return steps;
+  const keep = new Set(stepList.map(stepKey));
+  return steps.filter(step => {
+    if (!step) return false;
+    const ire = stepKey(step.ire);
+    const ddc = step.ddc_target_ire != null ? stepKey(step.ddc_target_ire) : null;
+    const name = String(step.name || '').replace(/%$/, '').trim();
+    return keep.has(ire) || (ddc && keep.has(ddc)) || keep.has(name);
+  });
+}
+
 function headroomRatio() {
   const stimulus109 = (1023 - 64) * 100 / 876;
   return Math.pow(stimulus109 / 100, 2.4);
@@ -276,6 +300,10 @@ async function resetDdc() {
 async function runGreyscale(setupY) {
   const targetY = Math.max(10, Math.min(10000, setupY));
   const headroomY = Math.max(10, Math.min(10000, setupY * headroomRatio()));
+  const steps = filterGreyscale26Steps(buildGreyscale26Steps());
+  if (stepList.length && !steps.some(step => Number(step && step.ire) >= 108.5)) {
+    throw new Error('STEP_LIST focused AutoCal must include 109 so the headroom white reference can be established');
+  }
   const payload = measurementPayload({
     type: 'greyscale',
     points: 26,
@@ -291,8 +319,11 @@ async function runGreyscale(setupY) {
     force_ddc_white_balance: true,
     full_workflow: false,
     full_autocal_run_id: label,
-    steps: buildGreyscale26Steps(),
+    steps,
   });
+  if (postCommitPolishEnv != null && postCommitPolishEnv !== '') {
+    payload.post_commit_polish = /^(1|true|yes|on)$/i.test(String(postCommitPolishEnv));
+  }
   writeJson('payload.json', payload);
   const started = await post('/api/meter/lg-autocal', payload, 12000);
   writeJson('start.json', started);
@@ -348,6 +379,9 @@ NODE
 if command -v sshpass >/dev/null 2>&1; then
   sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     "root@$PI" "cat /var/log/PGenerator/lg-autocal-109-trace.log 2>/dev/null || true" > "$OUT/trace.jsonl" || true
+fi
+if [ -s "$OUT/trace.jsonl" ] && [ -x "$(dirname "$0")/lg-autocal-trace-summary.js" ]; then
+  node "$(dirname "$0")/lg-autocal-trace-summary.js" "$OUT/trace.jsonl" > "$OUT/trace-summary.tsv" || true
 fi
 
 echo "ARTIFACTS: $OUT"

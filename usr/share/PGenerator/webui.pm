@@ -7627,6 +7627,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  <div id="meterAutoCalResultsBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Auto Cal complete</div>
 	   <div id="meterAutoCalResultsSummary" style="font-size:.82rem;color:var(--text);line-height:1.45"></div>
+	   <div id="meterAutoCalResultsDuration" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
 	   <div id="meterAutoCalResultsWorst" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
 	   <div style="display:flex;justify-content:flex-end;margin-top:12px">
 	    <button class="btn btn-sm btn-secondary" id="meterAutoCalResultsCloseBtn" onclick="meterAutoCalCloseCompleteAction()">Close</button>
@@ -9515,6 +9516,7 @@ let meterFullAutoCalRunning=false;
 let meterFullAutoCalPhase='';
 let meterFullAutoCalConfig=null;
 let meterFullAutoCalRunId=null;
+let meterFullAutoCalStartedAt=null;
 let meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
 let meterFullAutoCalReportData={pre:null,post:null,updated_at:null};
 let meterFullAutoCalConfirmResolver=null;
@@ -10726,6 +10728,11 @@ function meterApplyColorSeriesTargetWhiteReference(steps,type){
 
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
+ const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
+ if(headroomTargetY>0){
+  const synthetic=meterSyntheticGreyWhiteReading(headroomTargetY);
+  if(synthetic) return synthetic;
+ }
  const targetY=meterLgTargetWhiteReferenceNits(list);
  if(targetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(targetY);
@@ -11210,7 +11217,13 @@ function meterTargetXYZForReading(reading){
 	 const tYn=parseFloat(reading.target_Yn);
 	 if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   if(tYn<=0) return {X:0,Y:0,Z:0};
-  const refY=meterColorSeriesReferenceNits();
+  let refY=meterColorSeriesReferenceNits();
+  if(meterReadingIsGreyscale(reading)){
+   let greyWhite=null;
+   try{ greyWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
+   const greyY=meterReadingLuminanceNits(greyWhite);
+   if(greyY>0) refY=greyY;
+  }
   // Gamut-clip: for analysis/charting, solve in the selected target gamut so
   // the CIE chart and ΔE targets respect the Target Colorspace dropdown.
   const gamut=meterAnalysisGamut();
@@ -11500,11 +11513,13 @@ function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
 
 function meterGammaValueWhiteReference(readings){
  const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
+ const effective=meterEffectiveGreyscaleWhiteReference(list);
+ if(effective) return effective;
  const seriesWhite=meterFindSeriesWhiteReading(list);
  if(seriesWhite) return seriesWhite;
  const measured=meterFindMeasuredWhiteReading();
  if(measured) return measured;
- return meterEffectiveGreyscaleWhiteReference(list);
+ return null;
 }
 
 function meterGammaValueReferenceY(readings){
@@ -12099,9 +12114,16 @@ function meterGreyStimulusFraction(ire){
  return meterSignalFractionFromCode(code);
 }
 
+function meterGreyCodeLooksHeadroom(code){
+ const c=Number(code);
+ return Number.isFinite(c)&&c>255;
+}
+
 function meterGreyTargetSignal(ire,code){
- if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets())) return meterGreySignalFractionFromCode(code);
- const nominal=Math.max(0,Math.min(meterGreyAllowsHeadroomTargets()?1.1:1,(ire||0)/100));
+ const headroomCode=meterGreyCodeLooksHeadroom(code);
+ if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets()||headroomCode)) return meterGreySignalFractionFromCode(code);
+ const headroomIre=Number(ire)>100;
+ const nominal=Math.max(0,Math.min((meterGreyAllowsHeadroomTargets()||headroomIre)?1.1:1,(ire||0)/100));
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
 }
@@ -12184,8 +12206,19 @@ function meterGreyTargetLuminance(ire,Lw,Lb,code){
  return meterChartTargetLuminance(signal,peak,Lb||0);
 }
 
+function meterReadingsUseLgHeadroomReference(readings){
+ if(meterGreyAllowsHeadroomTargets()) return true;
+ const list=Array.isArray(readings)?readings:[];
+ return list.some(rd=>{
+  if(!rd || !meterReadingIsGreyscale(rd) || !meterReadingHasLuminance(rd)) return false;
+  const ire=Number(meterReadingPlotIre(rd));
+  const code=Number(rd.r_code!=null?rd.r_code:rd.r);
+  return Number.isFinite(ire)&&ire>=108.5&&Number.isFinite(code)&&code>255;
+ });
+}
+
 function meterGreyHeadroomReferenceReading(readings){
- if(!meterGreyAllowsHeadroomTargets()) return null;
+ if(!meterReadingsUseLgHeadroomReference(readings)) return null;
  const list=Array.isArray(readings)?readings:[];
  let best=null;
  list.forEach(rd=>{
@@ -12198,6 +12231,16 @@ function meterGreyHeadroomReferenceReading(readings){
   if(!best || ire > best.ire || (Math.abs(ire-best.ire)<0.001 && y > best.y)) best={reading:rd,ire,y};
  });
  return best?best.reading:null;
+}
+
+function meterLgHeadroomDerivedWhiteReferenceNits(readings){
+ const list=Array.isArray(readings)?readings:[];
+ if(!meterReadingsUseLgHeadroomReference(list)) return null;
+ const headroom=meterGreyHeadroomReferenceReading(list);
+ if(!headroom) return null;
+ const fallback=meterExplicitLgTargetWhiteReferenceNits(list)||meterStoredLgTargetWhiteReferenceNits()||meterColorReferenceNits();
+ const peak=meterGreySolvePeakFromHeadroomReading(headroom,list,fallback,meterChartBlackLevel(list));
+ return (peak>0&&isFinite(peak))?peak:null;
 }
 
 function meterGreyStepCodeForIre(steps,ire){
@@ -12214,13 +12257,15 @@ function meterGreyStepCodeForIre(steps,ire){
 }
 
 function meterGreySolvePeakFromHeadroomReading(reading,steps,fallbackPeak,Lb){
- if(!meterGreyAllowsHeadroomTargets() || !reading) return fallbackPeak;
+ if(!reading) return fallbackPeak;
  const y=meterReadingLuminanceNits(reading);
  if(!(y>0)) return fallbackPeak;
  const raw=(reading.plot_ire!=null)?reading.plot_ire:(reading.ire!=null?reading.ire:reading.stimulus);
  const ire=Number(raw);
  if(!Number.isFinite(ire) || ire < 108.5) return fallbackPeak;
  const code=(reading.r_code!=null)?reading.r_code:(reading.r!=null?reading.r:meterGreyStepCodeForIre(steps,ire));
+ const headroomContext=meterGreyAllowsHeadroomTargets()||meterReadingsUseLgHeadroomReference(steps)||(meterGreyCodeLooksHeadroom(code)&&ire>=108.5);
+ if(!headroomContext) return fallbackPeak;
  const targetFor=peak=>meterGreyTargetLuminance(ire,peak,Lb||0,code);
  let lo=0.01;
  let hi=Math.max(Number(fallbackPeak)||0,y,100);
@@ -12238,6 +12283,10 @@ function meterGreySolvePeakFromHeadroomReading(reading,steps,fallbackPeak,Lb){
 function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
  if(meterHdrDiffuseWhiteOverride()!=null && meterChartIsPq()) return fallbackPeak;
  const list=Array.isArray(readings)?readings:[];
+ if(meterReadingsUseLgHeadroomReference(list)){
+  const peak=meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(list),steps,fallbackPeak,Lb);
+  if(peak>0&&isFinite(peak)) return peak;
+ }
  const hasMeasuredWhite=list.some(rd=>{
   if(!rd || rd.synthetic_target) return false;
   const y=Number((rd.luminance!=null)?rd.luminance:rd.Y);
@@ -17214,9 +17263,46 @@ function meterAutoCalSummaryRows(status){
  });
 }
 
+function meterAutoCalDurationMs(status){
+ if(!status) return null;
+ const explicit=Number(status.elapsed_ms!=null?status.elapsed_ms:status.duration_ms);
+ if(Number.isFinite(explicit)&&explicit>=0) return explicit;
+ let start=Number(status.started_at!=null?status.started_at:status.start_time);
+ let end=Number(status.completed_at!=null?status.completed_at:status.finished_at);
+ if(!Number.isFinite(end)&&String(status.status||'')==='complete') end=Date.now();
+ if(Number.isFinite(start)&&Number.isFinite(end)&&end>=start) return end-start;
+ const children=[status.first_greyscale,status.lut3d,status.touchup].filter(Boolean);
+ const starts=children.map(item=>Number(item.started_at)).filter(value=>Number.isFinite(value));
+ const ends=children.map(item=>Number(item.completed_at)).filter(value=>Number.isFinite(value));
+ if(starts.length&&ends.length){
+  start=Math.min(...starts);
+  end=Math.max(...ends);
+  if(end>=start) return end-start;
+ }
+ return null;
+}
+
+function meterAutoCalFormatDuration(ms){
+ const totalSeconds=Math.max(0,Math.round((Number(ms)||0)/1000));
+ const hours=Math.floor(totalSeconds/3600);
+ const minutes=Math.floor((totalSeconds%3600)/60);
+ const seconds=totalSeconds%60;
+ if(hours>0) return hours+'h '+String(minutes).padStart(2,'0')+'m '+String(seconds).padStart(2,'0')+'s';
+ if(minutes>0) return minutes+'m '+String(seconds).padStart(2,'0')+'s';
+ return seconds+'s';
+}
+
+function meterAutoCalRenderDuration(status){
+ const duration=document.getElementById('meterAutoCalResultsDuration');
+ if(!duration) return;
+ const ms=meterAutoCalDurationMs(status);
+ duration.textContent=ms==null?'':'Total calibration time: '+meterAutoCalFormatDuration(ms);
+}
+
 function meterAutoCalRenderResults(status){
  const summary=document.getElementById('meterAutoCalResultsSummary');
  const worst=document.getElementById('meterAutoCalResultsWorst');
+ meterAutoCalRenderDuration(status);
  if(!summary&&!worst) return;
  if(status&&status.full_autocal){
   const lut=status.lut3d||{};
@@ -17279,6 +17365,7 @@ function meterAutoCalCloseComplete(){
  meterFullAutoCalRunning=false;
  meterFullAutoCalPhase='';
  meterFullAutoCalRunId=null;
+ meterFullAutoCalStartedAt=null;
  meterFullAutoCalConfig=null;
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
  meterFullAutoCalClearReportData();
@@ -18291,6 +18378,7 @@ function meterFullAutoCalSaveState(){
    active:true,
    phase:meterFullAutoCalPhase||'first-greyscale',
    runId:meterFullAutoCalRunId||null,
+   startedAt:meterFullAutoCalStartedAt||null,
    config:meterFullAutoCalConfig||meterFullAutoCalDefaultConfig(),
    report:meterFullAutoCalReportData||meterFullAutoCalDefaultReportData(),
    updated:Date.now()
@@ -18396,6 +18484,7 @@ function meterFullAutoCalEnsureStatusPhase(status,phase){
  meterFullAutoCalRunning=true;
  meterFullAutoCalPhase=phase;
  meterFullAutoCalRunId=status.full_autocal_run_id||status.run_id||meterFullAutoCalRunId||null;
+ meterFullAutoCalStartedAt=meterFullAutoCalStartedAt||Number(status.started_at)||Date.now();
  meterFullAutoCalConfig=meterFullAutoCalConfig||meterFullAutoCalDefaultConfig();
  meterFullAutoCalResults=meterFullAutoCalResults||{first:null,lut3d:null,touchup:null};
  meterFullAutoCalLoadReportData();
@@ -18415,6 +18504,7 @@ function meterFullAutoCalRestoreSavedState(){
  meterFullAutoCalRunning=true;
  meterFullAutoCalPhase=saved.phase||'first-greyscale';
  meterFullAutoCalRunId=saved.runId||null;
+ meterFullAutoCalStartedAt=Number(saved.startedAt)||null;
  meterFullAutoCalConfig=saved.config||meterFullAutoCalDefaultConfig();
  meterFullAutoCalReportData=saved.report||meterFullAutoCalLoadReportData();
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
@@ -18436,6 +18526,7 @@ function meterFullAutoCalResetState(keepResults){
  meterFullAutoCalRunning=false;
  meterFullAutoCalPhase='';
  meterFullAutoCalRunId=null;
+ meterFullAutoCalStartedAt=null;
  meterFullAutoCalConfig=null;
  if(!keepResults) meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
  if(!keepResults) meterFullAutoCalClearReportData();
@@ -18757,6 +18848,7 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalClearCompletionHandled();
  meterFullAutoCalRunning=true;
  meterFullAutoCalRunId=meterFullAutoCalNewRunId();
+ meterFullAutoCalStartedAt=Date.now();
  meterFullAutoCalPhase=skipPreCal?'first-greyscale':'precal-report';
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
  meterFullAutoCalConfig={...meterFullAutoCalDefaultConfig(),preCalSkipped:skipPreCal};
@@ -18964,6 +19056,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
  meterFullAutoCalLoadReportData();
  const offerPostReport=true;
  const completedAt=Number(touchupStatus&&touchupStatus.completed_at)||Date.now();
+ const startedAt=Number(meterFullAutoCalStartedAt)||Number((meterFullAutoCalResults.first||{}).started_at)||Number(touchupStatus&&touchupStatus.started_at)||null;
  const runId=(touchupStatus&&(touchupStatus.full_autocal_run_id||touchupStatus.run_id))||meterFullAutoCalRunId||meterFullAutoCalNewRunId();
  meterFullAutoCalRunId=runId;
  const status={
@@ -18973,6 +19066,8 @@ function meterFullAutoCalComplete(touchupStatus,options){
   full_autocal_run_id:runId,
   run_id:runId,
 	  completed_at:completedAt,
+	  started_at:startedAt||undefined,
+	  elapsed_ms:(startedAt&&completedAt>=startedAt)?(completedAt-startedAt):undefined,
 	  offer_post_report:offerPostReport,
 	  touchup_skipped:skipTouchup,
 	  phase:'complete',
