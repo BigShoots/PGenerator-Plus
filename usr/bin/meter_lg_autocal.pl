@@ -1918,8 +1918,12 @@ sub peak_headroom_floor_adjustments {
  my $idx=$target->{"index"};
  return undef if(!defined($idx));
  my @channels=qw(r g b);
- my @ordered=sort { ($error->{$a}||0) <=> ($error->{$b}||0) } @channels;
- my $floor_ch=$ordered[0];
+ my $floor_ch=$target->{"peak_headroom_floor_channel"};
+ if(!$floor_ch || $floor_ch !~ /^(?:r|g|b)$/) {
+  my @ordered=sort { ($error->{$a}||0) <=> ($error->{$b}||0) } @channels;
+  $floor_ch=$ordered[0];
+  $target->{"peak_headroom_floor_channel"}=$floor_ch;
+ }
  my $floor=$error->{$floor_ch}||0;
  my $min_gap=rgb_error_floor($de,0.5,0);
  $min_gap=0.0015 if($min_gap < 0.0015);
