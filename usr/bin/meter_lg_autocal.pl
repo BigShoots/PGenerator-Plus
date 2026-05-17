@@ -44,6 +44,7 @@ sub trace_109_enabled {
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
  return 1 if($ire > 0 && $ire <= 10.0001);
+ return 1 if(abs($ire-99) < 0.001 || abs($ire-100) < 0.001 || abs($ire-105) < 0.001);
  return abs($ire-109) < 0.001 ? 1 : 0;
 }
 
@@ -1333,6 +1334,24 @@ sub guarded_target_reached {
  return 0 if(white_luminance_guard_failed($step,$reading,$white_guard_y));
  return 0 if(headroom_needs_fine_tune($de,$target_delta,$reading,$step));
  return target_reached($de,$lum_pct,$target_delta,$step);
+}
+
+sub paired_white_primary_regression_reason {
+ my ($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$step,$reading,$best_reading,$white_guard_y)=@_;
+ return undef if(!defined($de));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $limit=$target_delta+0.25;
+ $limit=1.0 if($limit > 1.0);
+ return "primary exceeds luminance-included ITP cap" if(!within_itp_luminance_included_acceptance($de,$step));
+ return "primary exceeds paired white limit" if($de > $limit);
+ if(
+  guarded_target_reached($best_de,$best_lum_pct,$target_delta,$step,$best_reading,$white_guard_y) &&
+  !guarded_target_reached($de,$lum_pct,$target_delta,$step,$reading,$white_guard_y)
+ ) {
+  return "primary lost target after paired white adjustment";
+ }
+ return "primary materially worse than best" if(defined($best_de) && $de > ($best_de+0.35) && $de > ($target_delta+0.10));
+ return undef;
 }
 
 sub near_target_for_probe_skip {
@@ -3774,6 +3793,30 @@ eval {
 				    response_score=>$response_score+0,
 				    target_values=>trace_target_values($arrays,$target)
 				   });
+				   if($planning_from_paired) {
+				    my $paired_regression_reason=paired_white_primary_regression_reason($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y);
+				    if($paired_regression_reason) {
+				     $stalls++;
+				     trace_109($read_step,"paired_white_primary_rejected",{
+				      label=>$label,
+				      iteration=>$iter+0,
+				      reason=>$paired_regression_reason,
+				      candidate_delta_e=>defined($de)?$de+0:undef,
+				      candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				      candidate_score=>$candidate_score_after+0,
+				      best_delta_e=>defined($best_de)?$best_de+0:undef,
+				      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+				      best_score=>$best_score+0,
+				      candidate_values=>trace_target_values($arrays,$target),
+				      best_values=>trace_target_values($best_arrays,$target)
+				     });
+				     $restore_best_branch->("Backtracking paired 100% adjustment that regressed $label");
+				     $state->{"best_delta_e"}=$best_de;
+				     $state->{"best_score"}=$best_score;
+				     write_state($state);
+				     next;
+				    }
+				   }
 				   my $no_response_threshold=(ref($read_step) eq "HASH" && defined($read_step->{"ire"}) && ($read_step->{"ire"}+0) <= 25) ? 0.012 : 0.006;
 			   if(adjustment_total($adjustments) >= 1 && $response_score < $no_response_threshold) {
 			    $no_response_stalls++;
@@ -4020,6 +4063,28 @@ eval {
 			     rgb_error=>rgb_error($reading),
 			     target_values=>trace_target_values($arrays,$target)
 			    });
+			    if($planning_from_paired) {
+			     my $paired_regression_reason=paired_white_primary_regression_reason($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y);
+			     if($paired_regression_reason) {
+			      $polish_stalls++;
+			      trace_109($read_step,"paired_white_fine_tune_primary_rejected",{
+			       label=>$label,
+			       polish=>$polish+0,
+			       reason=>$paired_regression_reason,
+			       candidate_delta_e=>defined($de)?$de+0:undef,
+			       candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+			       candidate_score=>$candidate_score+0,
+			       best_delta_e=>defined($best_de)?$best_de+0:undef,
+			       best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+			       best_score=>$best_score+0,
+			       candidate_values=>trace_target_values($arrays,$target),
+			       best_values=>trace_target_values($best_arrays,$target)
+			      });
+			      $restore_best_branch->("Backtracking paired 100% fine tune that regressed $label");
+			      last if($polish_stalls >= 14);
+			      next;
+			     }
+			    }
 			    my $fine_tune_best_update_reason=autocal_best_update_reason($de,$candidate_score,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
 			    if($fine_tune_best_update_reason) {
 			     $best_de=$de;
