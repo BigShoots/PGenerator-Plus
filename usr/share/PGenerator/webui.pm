@@ -15861,25 +15861,29 @@ function syncMeterLgRgbBusyIndicator(){
 	 box.style.display=active?'flex':'none';
 	}
 
-function meterGreyTvColumnHtml(channelKey,label,color,tvValue,liveEntry,halfRange,disabled){
+function meterGreyTvColumnHtml(channelKey,label,color,tvValue,liveEntry,halfRange,disabled,readOnly){
 	 const delta=(liveEntry&&liveEntry.v!=null)?Number(liveEntry.v):null;
- const magnitude=(delta!=null&&halfRange>0)?Math.min(50,Math.abs(delta)/halfRange*50):0;
- const fillStyle=(delta==null)
-	  ? 'display:none;'
-	  : 'top:'+(delta>=0?(50-magnitude):50)+'%;height:'+magnitude+'%;background:'+color+';color:'+color+';border-radius:'+(delta>=0?'4px 4px 0 0':'0 0 4px 4px')+';';
- const inputValue=meterGreyTvFormatInputValue(tvValue);
-	 return `
-	  <div class="meter-lg-rgb-column">
-	   <div class="meter-lg-rgb-label" style="color:${color}">${label}</div>
-	   <button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} up ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',1)" ${disabled?'disabled':''}>&#9650;</button>
-	   <div class="meter-lg-rgb-bar">
-	    <div class="meter-lg-rgb-zero"></div>
-	    <div class="meter-lg-rgb-fill" style="${fillStyle}"></div>
-	   </div>
-	   <button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} down ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',-1)" ${disabled?'disabled':''}>&#9660;</button>
-	   <div class="meter-lg-rgb-tv"><input class="meter-lg-rgb-tv-input" data-channel="${channelKey}" type="text" inputmode="decimal" value="${inputValue}" title="Set ${label} value" aria-label="Set ${label} LG RGB value" onkeydown="meterGreyTvInputKeydown(event,'${channelKey}',this)" ${disabled?'disabled':''}><button class="btn btn-sm btn-secondary meter-lg-rgb-apply" title="Apply ${label} value" aria-label="Apply ${label} LG RGB value" onclick="meterGreyTvApplyInput('${channelKey}',this)" ${disabled?'disabled':''}>&#10003;</button></div>
-	   <div class="meter-lg-rgb-live">Live ${meterGreyTvFormatLiveValue(liveEntry)}</div>
-		  </div>`;
+	 const magnitude=(delta!=null&&halfRange>0)?Math.min(50,Math.abs(delta)/halfRange*50):0;
+	 const fillStyle=(delta==null)
+		  ? 'display:none;'
+		  : 'top:'+(delta>=0?(50-magnitude):50)+'%;height:'+magnitude+'%;background:'+color+';color:'+color+';border-radius:'+(delta>=0?'4px 4px 0 0':'0 0 4px 4px')+';';
+	 const inputValue=meterGreyTvFormatInputValue(tvValue);
+	 const upButton=readOnly?'':`<button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} up ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',1)" ${disabled?'disabled':''}>&#9650;</button>`;
+	 const downButton=readOnly?'':`<button class="btn btn-sm btn-secondary meter-lg-rgb-button" title="${label} down ${meterGreyTvChannelStep(channelKey)}" onclick="meterGreyAdjustCurrentStepChannel('${channelKey}',-1)" ${disabled?'disabled':''}>&#9660;</button>`;
+	 const tvInput=readOnly?'':`<div class="meter-lg-rgb-tv"><input class="meter-lg-rgb-tv-input" data-channel="${channelKey}" type="text" inputmode="decimal" value="${inputValue}" title="Set ${label} value" aria-label="Set ${label} LG RGB value" onkeydown="meterGreyTvInputKeydown(event,'${channelKey}',this)" ${disabled?'disabled':''}><button class="btn btn-sm btn-secondary meter-lg-rgb-apply" title="Apply ${label} value" aria-label="Apply ${label} LG RGB value" onclick="meterGreyTvApplyInput('${channelKey}',this)" ${disabled?'disabled':''}>&#10003;</button></div>`;
+	 const liveLabel=readOnly?'':'Live ';
+		 return `
+		  <div class="meter-lg-rgb-column">
+		   <div class="meter-lg-rgb-label" style="color:${color}">${label}</div>
+		   ${upButton}
+		   <div class="meter-lg-rgb-bar">
+		    <div class="meter-lg-rgb-zero"></div>
+		    <div class="meter-lg-rgb-fill" style="${fillStyle}"></div>
+		   </div>
+		   ${downButton}
+		   ${tvInput}
+		   <div class="meter-lg-rgb-live">${liveLabel}${meterGreyTvFormatLiveValue(liveEntry)}</div>
+			  </div>`;
 }
 
 function meterGreyTvLuminanceHtml(tvValue,disabled){
@@ -15988,12 +15992,14 @@ function meterRenderGreyTvControls(reading){
 	 const halfRange=meterGreyTvHalfRange(spec);
 	 const busy=meterGreyTvBusyActive();
 	 const disabled=busy||state.status!=='ok';
+	 const autoCal26Series=meterActiveSeriesType==='greyscale'&&Number(meterActiveSeriesPoints)===26&&meterUseLgAutoCal26(meterActiveSeriesPoints);
+	 const readOnly=autoCal26Series||state.source==='autocal'||meterAutoCalRunning||meterFullAutoCalRunning;
 		 const columns=[
-		  meterGreyTvColumnHtml('r','R','#f44',selected?selected.r:null,meterGreyTvLiveEntry(spec,'R'),halfRange,disabled),
-		  meterGreyTvColumnHtml('g','G','#4caf50',selected?selected.g:null,meterGreyTvLiveEntry(spec,'G'),halfRange,disabled),
-		  meterGreyTvColumnHtml('b','B','#42a5f5',selected?selected.b:null,meterGreyTvLiveEntry(spec,'B'),halfRange,disabled)
+		  meterGreyTvColumnHtml('r','R','#f44',selected?selected.r:null,meterGreyTvLiveEntry(spec,'R'),halfRange,disabled,readOnly),
+		  meterGreyTvColumnHtml('g','G','#4caf50',selected?selected.g:null,meterGreyTvLiveEntry(spec,'G'),halfRange,disabled,readOnly),
+		  meterGreyTvColumnHtml('b','B','#42a5f5',selected?selected.b:null,meterGreyTvLiveEntry(spec,'B'),halfRange,disabled,readOnly)
 		 ];
-			 const lumaHtml=meterGreyTvSupportsLuminance(state)?meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled):'';
+			 const lumaHtml=(!readOnly&&meterGreyTvSupportsLuminance(state))?meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled):'';
 			 host.innerHTML='<div class="meter-lg-rgb-host'+(busy?' has-busy':'')+'">'+meterGreyTvBusyHtml()+columns.join('')+lumaHtml+'</div>';
 	 if(editingChannel&&!busy){
 	  const restore=host.querySelector('.meter-lg-rgb-tv-input[data-channel="'+editingChannel+'"]');
@@ -21412,7 +21418,45 @@ let customCcssFile=null;
 let meterCcssLibrary=[];
 let ccssPreviewActiveValue='';
 let meterCcssOptionsPromise=loadMeterCcssOptions();
-function meterApplyDisplayTypeSelection(v){
+function meterDisplayTypeCcssEntry(value){
+ const current=String(value||'');
+ const lower=current.toLowerCase();
+ if(!(lower.startsWith('ccss_')||lower.startsWith('custom_'))) return null;
+ const source=lower.startsWith('custom_')?'custom':'system';
+ const name=current.replace(/^(?:ccss|custom)_/i,'');
+ return (meterCcssLibrary||[]).find(item=>
+  String(item&&item.source||'').toLowerCase()===source &&
+  String(item&&item.name||'').toLowerCase()===name.toLowerCase()
+ )||null;
+}
+
+function meterDisplayTypeMetaText(value){
+ const current=String(value||'');
+ const entry=meterDisplayTypeCcssEntry(current);
+ const name=current.replace(/^(?:ccss|custom)_/i,'');
+ return [entry&&entry.display,entry&&entry.technology,entry&&entry.name,name,current].filter(Boolean).join(' ').replace(/[_-]+/g,' ');
+}
+
+function meterDisplayTypePatchSizeDefault(value){
+ const current=String(value||'').toLowerCase();
+ if(current.startsWith('oled')||current.startsWith('qdoled')) return '10';
+ if(current==='lcd'||current.startsWith('lcd_')||current==='projector'||current==='projector_ccss') return '100';
+ if(current.startsWith('ccss_')||current.startsWith('custom_')){
+  const meta=meterDisplayTypeMetaText(value);
+  if(/\b(?:qd[-\s]*oled|wrgb[-\s]*oled|rgb[-\s]*oled|woled|amoled|oled)\b/i.test(meta)) return '10';
+  if(/(?:\bprojector\b|\blcd\b|\bwled\w*\b|white\s*led|mini\s*led|\bqled\b|\bccfl\w*\b|\bwgccfl\b|rgb\s*led|pfs\s*phosphor|rg\s*phosphor)/i.test(meta)) return '100';
+ }
+ return null;
+}
+
+function meterApplyDisplayTypePatchSizeDefault(value){
+ const sel=document.getElementById('meterPatchSize');
+ const next=meterDisplayTypePatchSizeDefault(value);
+ if(sel&&next) sel.value=next;
+}
+
+function meterApplyDisplayTypeSelection(v,opts){
+ opts=opts||{};
  applyMeterTargetGammaDefault();
  // Emissive if selecting an emissive generic type, any display-specific CCSS,
  // or the custom-upload panel.
@@ -21421,6 +21465,7 @@ function meterApplyDisplayTypeSelection(v){
  const emissive=v.startsWith('oled')||v.startsWith('qdoled')||v==='plasma'||v==='crt'||v==='custom'||ccssEmissive;
  const showCcssPanel=v==='custom'||vl.startsWith('ccss_')||vl.startsWith('custom_');
  document.getElementById('meterPatchInsert').checked=emissive;
+ if(opts.patchSizeDefault) meterApplyDisplayTypePatchSizeDefault(v);
  document.getElementById('customCcssPanel').style.display=showCcssPanel?'':'none';
  meterUpdateCustomCcssPanel(v);
  if(showCcssPanel) loadCustomCcssList();
@@ -21460,7 +21505,7 @@ function meterSelectCustomCcssValue(filename){
  if(sel.value===nextValue){
   delete sel.dataset.pendingValue;
   sel.dataset.lastStableValue=nextValue;
-  meterApplyDisplayTypeSelection(nextValue);
+  meterApplyDisplayTypeSelection(nextValue,{patchSizeDefault:true});
   return;
  }
  delete sel.dataset.pendingValue;
@@ -21507,7 +21552,7 @@ meterDisplayTypeEl.addEventListener('change',function(){
   return;
  }
  this.dataset.lastStableValue=v;
- meterApplyDisplayTypeSelection(v);
+ meterApplyDisplayTypeSelection(v,{patchSizeDefault:true});
  if(v==='custom'||String(v).toLowerCase().startsWith('custom_')) meterOpenCustomCcssEditor();
 });
 
