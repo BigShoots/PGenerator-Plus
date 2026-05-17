@@ -1700,142 +1700,6 @@ sub lg_lut_matches (@) {
  return 1;
 }
 
-sub lg_lut_channel_matches_scaled_readback (@) {
- my ($actual,$expected,$channel)=@_;
- return 0 if(ref($actual) ne "ARRAY" || ref($expected) ne "ARRAY");
- return 0 if(@{$actual} != 3072 || @{$expected} != 3072);
- my $base=$channel*1024;
- return 0 if(($actual->[$base]||0) != 0 || ($expected->[$base]||0) != 0);
- my $actual_max=$actual->[$base+1023]||0;
- my $expected_max=$expected->[$base+1023]||0;
- return 0 if($actual_max <= 0 || $expected_max <= 0);
- my $compression=$expected_max-$actual_max;
- return 0 if($compression < 0 || $compression > 128);
- for(my $sample=0;$sample<1024;$sample++) {
-  my $scaled=($expected->[$base+$sample]||0)*$actual_max/$expected_max;
-  my $expected_floor=int($scaled);
-  my $expected_round=int($scaled+0.5);
-  my $a=$actual->[$base+$sample]||0;
-  return 0 if(abs($a-$expected_floor) > 1 && abs($a-$expected_round) > 1);
- }
- return 1;
-}
-
-sub lg_lut_matches_tv_readback (@) {
- my ($actual,$expected)=@_;
- return 1 if(&lg_lut_matches($actual,$expected));
- return 0 if(ref($actual) ne "ARRAY" || ref($expected) ne "ARRAY");
- return 0 if(@{$actual} != 3072 || @{$expected} != 3072);
- for(my $channel=0;$channel<3;$channel++) {
-  my $base=$channel*1024;
-  my $exact=1;
-  for(my $sample=0;$sample<1024;$sample++) {
-   if(($actual->[$base+$sample]||0) != ($expected->[$base+$sample]||0)) {
-    $exact=0;
-    last;
-   }
-  }
-  next if($exact);
-  return 0 if(!&lg_lut_channel_matches_scaled_readback($actual,$expected,$channel));
- }
- return 1;
-}
-
-sub lg_lut_mismatch_summary (@) {
- my ($actual,$expected)=@_;
- return { reason => "invalid-lut", actual_ref => ref($actual)||"", expected_ref => ref($expected)||"" }
-  if(ref($actual) ne "ARRAY" || ref($expected) ne "ARRAY");
- my $actual_len=scalar(@{$actual});
- my $expected_len=scalar(@{$expected});
- my $count=0;
- my $max_delta=0;
- my $first=undef;
- my @samples=();
- my $limit=$actual_len < $expected_len ? $actual_len : $expected_len;
- for(my $i=0;$i<$limit;$i++) {
-  my $a=$actual->[$i]||0;
-  my $e=$expected->[$i]||0;
-  next if($a == $e);
-  my $delta=$a-$e;
-  my $abs=abs($delta);
-  $count++;
-  $max_delta=$abs if($abs > $max_delta);
-  my $item={
-   index => int($i),
-   channel => int($i/1024),
-   sample => int($i%1024),
-   actual => int($a),
-   expected => int($e),
-   delta => int($delta),
-  };
-  $first=$item if(!defined($first));
-  push(@samples,$item) if(@samples < 12);
- }
- $count += abs($actual_len-$expected_len);
- return {
-  actual_len => int($actual_len),
-  expected_len => int($expected_len),
-  mismatch_count => int($count),
-  max_abs_delta => int($max_delta),
-  first_mismatch => $first,
-  sample_mismatches => \@samples,
- };
-}
-
-sub lg_lut_linear_unity_readback (@) {
- my $lut=shift;
- return 0 if(ref($lut) ne "ARRAY" || @{$lut} != 3072);
- for(my $channel=0;$channel<3;$channel++) {
-  my $base=$channel*1024;
-  my $max=$lut->[$base+1023]||0;
-  return 0 if(($lut->[$base]||0) != 0);
-  return 0 if($max < 32000 || $max > 32767);
-  for(my $sample=0;$sample<1024;$sample++) {
-   my $scaled=$sample*$max/1023;
-   my $expected_floor=int($scaled);
-   my $expected_round=int($scaled+0.5);
-   my $actual=$lut->[$base+$sample]||0;
-   return 0 if(abs($actual-$expected_floor) > 1 && abs($actual-$expected_round) > 1);
-  }
- }
- return 1;
-}
-
-sub lg_lut_linear_unity_diagnostics (@) {
- my $lut=shift;
- return { reason => "invalid-lut", actual_ref => ref($lut)||"" }
-  if(ref($lut) ne "ARRAY" || @{$lut} != 3072);
- my @channels=();
- for(my $channel=0;$channel<3;$channel++) {
-  my $base=$channel*1024;
-  my $max=$lut->[$base+1023]||0;
-  my $first_bad=undef;
-  for(my $sample=0;$sample<1024;$sample++) {
-   my $scaled=$sample*$max/1023;
-   my $expected_floor=int($scaled);
-   my $expected_round=int($scaled+0.5);
-   my $actual=$lut->[$base+$sample]||0;
-   if(abs($actual-$expected_floor) > 1 && abs($actual-$expected_round) > 1) {
-    $first_bad={
-     sample => int($sample),
-     actual => int($actual),
-     expected_floor => int($expected_floor),
-     expected_round => int($expected_round),
-    };
-    last;
-   }
-  }
- push(@channels,{
-   channel => int($channel),
-   first => int($lut->[$base]||0),
-   max => int($max),
-   samples => [ map { int($lut->[$base+$_]||0) } (0,1,2,3,4,5,6,7,8,9,10,16,17,18,32,64,128,256,512,768,1023) ],
-   first_bad => $first_bad,
-  });
- }
- return { channels => \@channels };
-}
-
 sub lg_3d_lut_value_count (@) {
  my $size=shift;
  $size=33 if(!defined($size) || $size <= 0);
@@ -2785,8 +2649,6 @@ sub lg_ddc_1d_white_balance_set (@) {
 	}
 
 		 my $upload_verified=0;
-		 my $reset_readback_contract="";
-		 my $upload_readback_contract="";
 		 if($reset_ddc_baseline || $verify_ddc_upload) {
 		  select(undef,undef,undef,0.35);
 		  my $verify_lut=&lg_get_current_1d_lut($session,$timeout);
@@ -2794,37 +2656,14 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   select(undef,undef,undef,0.75);
 		   $verify_lut=&lg_get_current_1d_lut($session,$timeout);
 		  }
-		  $upload_verified=1 if(&lg_lut_matches($verify_lut,$lut));
-		  if(!$upload_verified && !$reset_ddc_baseline && &lg_lut_matches_tv_readback($verify_lut,$lut)) {
-		   $upload_verified=1;
-		   $upload_readback_contract="scaled-channel-readback";
-		  }
-		  if(!&lg_lut_matches($verify_lut,$lut) && $reset_ddc_baseline && &lg_lut_linear_unity_readback($verify_lut)) {
-		   # C2 firmware can read back a canonical linear reset LUT whose
-		   # per-channel endpoint differs slightly from the uploaded unity
-		   # payload (observed green max 32682 vs 32767). Treat that stable
-		   # linear readback as the TV's post-reset contract and use it as
-		   # the DDC baseline for future offsets.
-		   &lg_write_1d_lut_file(&lg_ddc_baseline_path($ip,$picture_mode),$verify_lut);
-		   $baseline=$verify_lut;
-		   $lut=$verify_lut;
-		   $reset_readback_contract="linear-unity-readback";
-		   $upload_verified=1;
-		  }
-		  if(!$upload_verified) {
+		  if(!&lg_lut_matches($verify_lut,$lut)) {
 		   &lg_calibration_request($session,"ddc_cal_end_after_verify_fail","CAL_END",undef,1,"",$timeout) if(!$keep_calibration_mode);
 		   my $verify_message=$reset_ddc_baseline
 		    ? "LG DDC reset upload did not verify against the TV 1D LUT readback."
 		    : "LG DDC 1D LUT upload did not verify against the TV readback.";
-		   return (1,&json_error($verify_message,{
-		    active_picture_mode => $picture_mode,
-		    ddc_baseline_reset => &json_bool($reset_ddc_baseline),
-		    ddc_reset_verified => &json_false(),
-		    ddc_upload_verified => &json_false(),
-		    ddc_verify_mismatch => &lg_lut_mismatch_summary($verify_lut,$lut),
-		    ddc_linear_unity_diagnostics => &lg_lut_linear_unity_diagnostics($verify_lut),
-		   }));
+		   return (1,&json_error($verify_message,{ active_picture_mode => $picture_mode, ddc_baseline_reset => &json_bool($reset_ddc_baseline), ddc_reset_verified => &json_false(), ddc_upload_verified => &json_false() }));
 		  }
+		  $upload_verified=1;
 		 }
 
 	 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
@@ -2846,8 +2685,6 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  ddc_baseline_reset => &json_bool($reset_ddc_baseline),
 		  ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified),
 		  ddc_upload_verified => &json_bool($upload_verified),
-		  ddc_reset_verify_contract => $reset_readback_contract,
-		  ddc_upload_verify_contract => $upload_readback_contract,
 	  calibration_mode => &json_bool($keep_calibration_mode),
 	 }));
 }
@@ -2989,7 +2826,6 @@ sub lg_picture_set_workflow (@) {
 		    ddc_slot_samples => $ddc_result->{"ddc_slot_samples"}||[],
 		    ddc_slot_samples_reference => $ddc_result->{"ddc_slot_samples_reference"}||[],
 		    ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
-		    ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
 		    pipeline_responses => $ddc_result->{"pipeline_responses"}||[],
 		   });
    return &json_ok({
@@ -3003,7 +2839,6 @@ sub lg_picture_set_workflow (@) {
 	   ddc_baseline_reset => &json_bool($reset_ddc_baseline),
 	   ddc_reset_verified => &json_bool($ddc_result->{"ddc_reset_verified"}),
 	   ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
-	   ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
 	   calibration_mode => &json_bool($keep_calibration_mode),
    hello_info => $auth->{"hello_info"},
    system_info => $auth->{"system_info"},

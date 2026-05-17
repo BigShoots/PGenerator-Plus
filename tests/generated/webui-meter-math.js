@@ -1,6 +1,6 @@
 // Generated file. Do not edit directly.
 // Source: /mnt/homestorage/Projects/PGenerator_reference/PGenerator_plus/usr/share/PGenerator/webui.pm
-// Source SHA-256: cea1e84325e0
+// Source SHA-256: 76197c1ae9ba
 // Extracted by tools/extract_webui_meter_math.py
 
 // D65 reference white chromaticity
@@ -662,96 +662,8 @@ function meterSyntheticGreyWhiteReading(luminance){
  return {X:wp.X*value,Y:value,Z:wp.Z*value,luminance:value,x:wp.x,y:wp.y,cct:null,synthetic_target:true};
 }
 
-function meterStoreLgTargetWhiteReference(value,source,runId){
- const y=Number(value);
- if(!(Number.isFinite(y)&&y>0)) return;
- try{
-  localStorage.setItem('pgen.meter.lgTargetWhiteReference',JSON.stringify({
-   luminance:y,
-   source:source||'lg-autocal',
-   run_id:runId||null,
-   signal_mode:String((meterChartSignalMode&&meterChartSignalMode())||'sdr').toLowerCase(),
-   updated_at:Date.now()
-  }));
- }catch(e){}
-}
-
-function meterStoredLgTargetWhiteReferenceNits(){
- try{
-  const raw=localStorage.getItem('pgen.meter.lgTargetWhiteReference')||'';
-  if(!raw) return null;
-  const parsed=JSON.parse(raw)||{};
-  const mode=String(parsed.signal_mode||'sdr').toLowerCase();
-  const current=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
-  if(mode&&current&&mode!==current) return null;
-  const y=Number(parsed.luminance);
-  return (Number.isFinite(y)&&y>0)?y:null;
- }catch(e){ return null; }
-}
-
-function meterExplicitLgTargetWhiteReferenceNits(readings){
- const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
- for(const rd of list){
-  const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
-  if(Number.isFinite(y)&&y>0) return y;
- }
- return null;
-}
-
-function meterLgTargetWhiteReferenceNits(readings){
- const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
- const explicit=meterExplicitLgTargetWhiteReferenceNits(list);
- if(explicit>0) return explicit;
- const cfg=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.targetY);
- if(Number.isFinite(cfg)&&cfg>0) return cfg;
- try{
-  if((typeof meterChartIsHdr==='function'&&meterChartIsHdr())||(typeof meterChartIsDv==='function'&&meterChartIsDv())) return null;
- }catch(e){}
- const state=window.lgStatusState||{};
- const connected=!!((state.paired||state.clientKeyPresent)&&!state.pinPending);
- if(!connected) return null;
- return meterStoredLgTargetWhiteReferenceNits();
-}
-
-function meterColorSeriesUsesLgTargetWhite(type){
- const t=String(type||'').toLowerCase();
- return t==='colors'||t==='saturations';
-}
-
-function meterColorSeriesTargetWhiteForRun(type){
- if(!meterColorSeriesUsesLgTargetWhite(type||meterActiveSeriesType)) return null;
- const phase=String(meterFullAutoCalPhase||'');
- if(meterFullAutoCalRunning&&phase==='precal-report') return null;
- const cfg=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.targetY);
- if(Number.isFinite(cfg)&&cfg>0) return cfg;
- try{
-  if((typeof meterChartIsHdr==='function'&&meterChartIsHdr())||(typeof meterChartIsDv==='function'&&meterChartIsDv())) return null;
- }catch(e){}
- const state=window.lgStatusState||{};
- const connected=!!((state.paired||state.clientKeyPresent)&&!state.pinPending);
- if(!connected) return null;
- return meterStoredLgTargetWhiteReferenceNits();
-}
-
-function meterApplyColorSeriesTargetWhiteReference(steps,type){
- if(!Array.isArray(steps)||!meterColorSeriesUsesLgTargetWhite(type)) return steps;
- const targetY=Number(meterColorSeriesTargetWhiteForRun(type));
- if(!(Number.isFinite(targetY)&&targetY>0)) return steps;
- steps.forEach(step=>{
-  if(!step) return;
-  step.series_target_white_y=targetY;
-  step.lg_target_white_y=targetY;
- });
- return steps;
-}
-
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
- const targetY=meterLgTargetWhiteReferenceNits(list);
- if(targetY>0){
-  const synthetic=meterSyntheticGreyWhiteReading(targetY);
-  if(synthetic) return synthetic;
- }
  const white=meterFindSeriesWhiteReading(list);
  if(white) return white;
  const cached=meterWhiteReading&&!meterWhiteReading.synthetic_target?meterReadingXYZ(meterWhiteReading):null;
@@ -806,14 +718,12 @@ function meterColorReferenceNits(){
 }
 
 function meterColorSeriesReferenceNits(){
-	 if(meterChartIsDv() && meterDvMapModeValue()==='1'){
-	  // DV Absolute target luminance stays anchored to mastering peak. The
-	  // white pre-read is still useful diagnostically, but it is not the target
-	  // Y reference for color or saturation patches in absolute mode.
-	  return Math.max(1,meterColorReferenceNits());
-	 }
- const explicitLgTarget=meterExplicitLgTargetWhiteReferenceNits(meterReadings);
- if(explicitLgTarget>0) return Math.max(1,explicitLgTarget);
+ if(meterChartIsDv() && meterDvMapModeValue()==='1'){
+  // DV Absolute target luminance stays anchored to mastering peak. The
+  // white pre-read is still useful diagnostically, but it is not the target
+  // Y reference for color or saturation patches in absolute mode.
+  return Math.max(1,meterColorReferenceNits());
+ }
  const isSeriesWhite=(rd)=>{
   if(!rd) return false;
   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
@@ -836,8 +746,6 @@ function meterColorSeriesReferenceNits(){
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
   return Math.max(1,measured);
  }
- const lgTarget=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType);
- if(lgTarget>0) return Math.max(1,lgTarget);
  return Math.max(1,meterColorReferenceNits());
 }
 
@@ -1095,18 +1003,6 @@ function meterBuildSaturationTargetLinearRgb(colorName,satPercent){
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
  const level=meterSaturationStimulusLinearLevel(colorName);
  return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
-}
-
-function meterBuildSaturationTargetStepMeta(colorName,satPercent){
- const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
- const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
- const sum=xyz.X+xyz.Y+xyz.Z;
- const wp=meterTargetWhitePoint();
- return {
-  target_x:sum>0?xyz.X/sum:wp.x,
-  target_y:sum>0?xyz.Y/sum:wp.y,
-  target_Yn:Math.max(0,xyz.Y||0)
- };
 }
 
 function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
@@ -1519,39 +1415,13 @@ function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
  };
 }
 
-function meterGammaValueWhiteReference(readings){
- const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
- const seriesWhite=meterFindSeriesWhiteReading(list);
- if(seriesWhite) return seriesWhite;
- const measured=meterFindMeasuredWhiteReading();
- if(measured) return measured;
- return meterEffectiveGreyscaleWhiteReference(list);
-}
-
-function meterGammaValueReferenceY(readings){
- const white=meterGammaValueWhiteReference(readings);
- const y=white?meterReadingLuminanceNits(white):null;
- if(y>0) return y;
- const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
- const measuredPeak=meterFilterEotfLuminanceChartItems(list).reduce((mx,r)=>Math.max(mx,meterReadingLuminanceNits(r)||0),0);
- return measuredPeak>0?measuredPeak:0;
-}
-
-function meterGreyscaleGammaValue(reading,whiteY){
- if(!reading) return null;
- const y=meterReadingLuminanceNits(reading);
- const analysisIre=meterReadingAnalysisIre(reading);
- if(!(whiteY>0) || !(y>0) || !(analysisIre>0) || analysisIre>=100) return null;
- return effectiveGamma(y,whiteY,analysisIre);
-}
-
 function meterEnsureChannelGammaCache(readings){
  if(!Array.isArray(readings)) return;
  const greys=readings.filter(rd=>rd&&meterReadingIsGreyscale(rd)).sort((a,b)=>(a.ire||0)-(b.ire||0));
- const white=meterGammaValueWhiteReference(greys);
+ const white=meterGreyscaleChartWhiteReference(greys);
  greys.forEach((rd,idx)=>{
   const prev=idx>0?greys[idx-1]:null;
-  rd._gamma_rgb=meterPerChannelGamma(rd,white,meterReadingAnalysisIre(rd)||rd.ire||0,prev);
+  rd._gamma_rgb=meterPerChannelGamma(rd,white,rd.ire||0,prev);
  });
 }
 
@@ -1583,26 +1453,19 @@ function meterColorCheckerClassicSource(){
 }
 
 function meterBuildColorCheckerStepsJS(){
-	 const steps=[];
-	 const min=meterChromaPatchRangeMin();
-	 const max=min+meterChromaPatchRangeSpan();
-	 const solveGamut=meterChartIsDv()?meterAnalysisGamut():meterStimulusSolveGamut();
-	 const wp=meterTargetWhitePoint();
-	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1});
-	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0});
-	 meterColorCheckerClassicSource().forEach(src=>{
-	  if(src.gray!=null){
-	   const ire=Math.round(src.gray*100);
-	   const code=meterEncodeColorCheckerLinear(src.gray);
-	   let targetYn=src.gray;
-	   if(meterChartIsDv()){
-	    const span=meterChromaPatchRangeSpan();
-	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
-	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
-	   }
-	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn});
-	   return;
-	  }
+ const steps=[];
+ const min=meterChromaPatchRangeMin();
+ const max=min+meterChromaPatchRangeSpan();
+ const solveGamut=meterChartIsDv()?meterAnalysisGamut():meterStimulusSolveGamut();
+ steps.push({ire:100,r:max,g:max,b:max,name:'White'});
+ steps.push({ire:0,r:min,g:min,b:min,name:'Black'});
+ meterColorCheckerClassicSource().forEach(src=>{
+  if(src.gray!=null){
+   const ire=Math.round(src.gray*100);
+   const code=meterEncodeColorCheckerLinear(src.gray);
+   steps.push({ire:ire,r:code,g:code,b:code,name:src.name});
+   return;
+  }
     let emitXY=meterRemapRelativeDvChromaticityToSolveGamut(src.x,src.y,solveGamut);
     emitXY=meterRemapAbsoluteDvColorCheckerChromaticity(emitXY.x,emitXY.y,solveGamut);
     const X=(emitXY.x/emitXY.y)*src.Yn;
@@ -1656,7 +1519,6 @@ function meterBuildColorCheckerStepsJS(){
   ['100% Yellow','Yellow']
  ].forEach(([name,colorName])=>{
   const rgb=meterBuildSaturationStepRgb(colorName,100);
-  const target=meterBuildSaturationTargetStepMeta(colorName,100);
   steps.push({
    ire:100,
    r:rgb[0],
@@ -1664,8 +1526,7 @@ function meterBuildColorCheckerStepsJS(){
    b:rgb[2],
    name:name,
    series_color:colorName,
-   sat_pct:100,
-   ...target
+   sat_pct:100
   });
  });
  return steps;
@@ -2258,16 +2119,6 @@ function meterGreySolvePeakFromHeadroomReading(reading,steps,fallbackPeak,Lb){
 
 function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
  if(meterHdrDiffuseWhiteOverride()!=null && meterChartIsPq()) return fallbackPeak;
- const list=Array.isArray(readings)?readings:[];
- const hasMeasuredWhite=list.some(rd=>{
-  if(!rd || rd.synthetic_target) return false;
-  const y=Number((rd.luminance!=null)?rd.luminance:rd.Y);
-  if(!(y>0)) return false;
-  const raw=(rd.ire!=null)?rd.ire:(rd.plot_ire!=null?rd.plot_ire:rd.stimulus);
-  const name=String(rd.name||'').toLowerCase();
-  return Math.abs((Number(raw)||0)-100)<0.05 || name==='white' || !!rd.autocal_white_reference;
- });
- if(hasMeasuredWhite) return fallbackPeak;
  const peak=meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(readings),steps,fallbackPeak,Lb);
  return (peak>0&&isFinite(peak))?peak:fallbackPeak;
 }
@@ -2306,27 +2157,18 @@ function meterLuminanceLogScaleEnabled(){
  return !!(el&&el.checked);
 }
 
-const METER_CHART_LOG_KNEE_DIVISOR=10000;
-const METER_LUMINANCE_LOG_FLOOR_DIVISOR=1000000;
-
-function meterLogScaleValue(v,yTop,floorValue){
+function meterLogScaleValue(v,yTop){
  const top=Math.max(1e-6,yTop||1);
- const floor=Math.max(0,Math.min(top*0.999,Number(floorValue)||0));
- const val=Math.max(floor,Math.min(top,v||0));
- const knee=Math.max(top/METER_CHART_LOG_KNEE_DIVISOR,1e-9);
- const lo=floor>0?Math.log1p(floor/knee):0;
- const hi=Math.log1p(top/knee);
- return (Math.log1p(val/knee)-lo)/Math.max(1e-9,hi-lo);
+ const val=Math.max(0,Math.min(top,v||0));
+ const knee=Math.max(top/1000,1e-9);
+ return Math.log1p(val/knee)/Math.log1p(top/knee);
 }
 
-function meterLogUnscaleValue(norm,yTop,floorValue){
+function meterLogUnscaleValue(norm,yTop){
  const top=Math.max(1e-6,yTop||1);
  const n=Math.max(0,Math.min(1,norm||0));
- const floor=Math.max(0,Math.min(top*0.999,Number(floorValue)||0));
- const knee=Math.max(top/METER_CHART_LOG_KNEE_DIVISOR,1e-9);
- const lo=floor>0?Math.log1p(floor/knee):0;
- const hi=Math.log1p(top/knee);
- return knee*(Math.exp(lo+n*Math.max(1e-9,hi-lo))-1);
+ const knee=Math.max(top/1000,1e-9);
+ return knee*(Math.exp(n*Math.log1p(top/knee))-1);
 }
 
 function meterEotfScaleValue(v,yTop){
@@ -2358,29 +2200,15 @@ function meterGreyTargetEotfChartValue(ire,Lw,Lb,code){
 function meterLuminanceScaleValue(v,yTop){
  const top=Math.max(1e-6,yTop||1);
  const val=Math.max(0,Math.min(top,v||0));
- if(meterLuminanceLogScaleEnabled()) return meterLogScaleValue(val,top,meterLuminanceLogFloor(top));
+ if(meterLuminanceLogScaleEnabled()) return meterLogScaleValue(val,top);
  return val/top;
 }
 
 function meterLuminanceUnscaleValue(norm,yTop){
  const top=Math.max(1e-6,yTop||1);
  const n=Math.max(0,Math.min(1,norm||0));
- if(meterLuminanceLogScaleEnabled()) return meterLogUnscaleValue(n,top,meterLuminanceLogFloor(top));
+ if(meterLuminanceLogScaleEnabled()) return meterLogUnscaleValue(n,top);
  return n*top;
-}
-
-function meterLuminanceLogFloor(yTop){
- const top=Math.max(1e-6,yTop||1);
- return Math.max(1e-6,top/METER_LUMINANCE_LOG_FLOOR_DIVISOR);
-}
-
-function meterLuminanceAxisLabel(v){
- const value=Number(v)||0;
- if(value>=100) return value.toFixed(0);
- if(value>=10) return value.toFixed(1);
- if(value>=1) return value.toFixed(2);
- if(value>0) return value.toFixed(3);
- return '0';
 }
 
 function meterGreyMeasuredEotfValue(luminance,refWhite){
@@ -2502,57 +2330,6 @@ function meterGreyTargetChartPoints(steps,Lw,Lb,scale){
  return pts;
 }
 
-function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
- if(mode!=='luminance' || !meterLuminanceLogScaleEnabled()) return null;
- if(meterChartIsDv()) return null;
- const stepList=Array.isArray(steps)?steps:[];
- const end=Math.max(1,Number(maxPct)||100);
- const top=Math.max(1e-6,yTop||1);
- const rows=[];
- stepList.forEach(s=>{
-  if(!s) return;
-  const plot=Number(meterGreyChartPlotIre(s));
-  if(!Number.isFinite(plot)) return;
-  const stimulus=Number(meterGreyChartStimulusIre(s));
-  const code=meterGreyChartTargetCode(s);
-  const signal=meterGreyTargetSignal(Number.isFinite(stimulus)?stimulus:plot,code);
-  if(!Number.isFinite(signal)) return;
-  rows.push({plot:Math.max(0,Math.min(end,plot)),signal:Math.max(0,signal)});
- });
- if(rows.length<2) return null;
- if(!rows.some(row=>row.plot<=0.0001)){
-  rows.push({plot:0,signal:meterGreyTargetSignal(0,meterPatchRangeMin())});
- }
- rows.sort((a,b)=>a.plot-b.plot);
- const unique=[];
- rows.forEach(row=>{
-  const last=unique[unique.length-1];
-  if(last&&Math.abs(last.plot-row.plot)<0.0001){
-   last.signal=row.signal;
-  } else {
-   unique.push(Object.assign({},row));
-  }
- });
- if(unique.length<2) return null;
- const pointFor=(plot,signal)=>[
-  Math.max(0,Math.min(end,plot))/end,
-  meterLuminanceScaleValue(meterChartTargetLuminance(signal,targetPeak,Lb||0),top)
- ];
- const pts=[];
- for(let i=0;i<unique.length-1;i++){
-  const a=unique[i];
-  const b=unique[i+1];
-  const span=Math.max(0,b.plot-a.plot);
-  const segments=Math.max(1,Math.ceil(span*4));
-  for(let j=0;j<=segments;j++){
-   if(i>0&&j===0) continue;
-   const t=segments>0?j/segments:0;
-   pts.push(pointFor(a.plot+(b.plot-a.plot)*t,a.signal+(b.signal-a.signal)*t));
-  }
- }
- return pts.length>1?pts:null;
-}
-
 function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
  const pts=[];
  const top=Math.max(1e-6,yTop||1);
@@ -2567,12 +2344,10 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
    const value=(mode==='eotf')
     ? meterEotfScaleValue(meterGreyTargetEotfChartValue(ire,targetPeak,Lb,code),top)
     : meterLuminanceScaleValue(meterGreyTargetChartValue(ire,targetPeak,Lb,code),top);
-  return [x,value];
+   return [x,value];
   })
   .filter(p=>p&&isFinite(p[0])&&isFinite(p[1]));
  if(coded.length>1){
-  const dense=meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,stepList);
-  if(dense&&dense.length>1) return dense;
   const hasBlack=coded.some(p=>p[0]<=0.0001);
   if(!hasBlack){
    const value=(mode==='eotf')

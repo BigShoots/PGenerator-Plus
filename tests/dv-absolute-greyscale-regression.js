@@ -66,6 +66,9 @@ const context = {
   meterChartIsDv() {
     return state.signal_mode === 'dv';
   },
+  meterGreyAllowsHeadroomTargets() {
+    return false;
+  },
   meterDvMapModeValue() {
     return state.dv_map_mode;
   },
@@ -98,12 +101,6 @@ const context = {
     return Math.max(0, Math.min(1, ((Number(code) || 0) - min) / span));
   },
   meterGreySeriesSlots,
-  meterGreyAllowsHeadroomTargets() {
-    return false;
-  },
-  meterApplyColorSeriesTargetWhiteReference(steps) {
-    return steps;
-  },
   meterGreyTvControlsActive() {
     return false;
   },

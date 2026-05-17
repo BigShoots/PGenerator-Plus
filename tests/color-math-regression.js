@@ -99,18 +99,34 @@ const code = [
   extractFunction('meterGamutColorIsSecondary'),
   extractFunction('meterDvTunnelGamma'),
   extractFunction('meterDvSaturationTunnelGamma'),
+  extractFunction('meterDvClassicColorCheckerScale'),
+  extractFunction('meterEncodeColorCheckerLinear'),
+  extractFunction('meterDecodeColorCheckerSignal'),
   extractFunction('meterTargetLinearToSignal'),
   extractFunction('meterTargetSignalToLinear'),
   extractFunction('meterEncodeSaturationLinear'),
   extractFunction('meterColorLevelPercent'),
   extractFunction('meterActualSignalPercent'),
   extractFunction('meterActualCodePercent'),
+  extractFunction('meterFindMeasuredWhiteReading'),
+  extractFunction('meterFindSeriesWhiteReading'),
+  extractFunction('meterSyntheticGreyWhiteReading'),
+  extractFunction('meterStoreLgTargetWhiteReference'),
+  extractFunction('meterStoredLgTargetWhiteReferenceNits'),
+  extractFunction('meterLgTargetWhiteReferenceNits'),
+  extractFunction('meterEffectiveGreyscaleWhiteReference'),
+  extractFunction('meterGreyscaleChartWhiteReference'),
   extractFunction('meterColorReferenceNits'),
   extractFunction('meterColorSeriesReferenceNits'),
   extractFunction('meterIsWhiteReferenceReading'),
   extractFunction('meterSaturationStimulusLinearLevel'),
   extractFunction('meterDvRelativeSaturationFraction'),
   extractFunction('meterDvAbsoluteSaturationFraction'),
+  extractFunction('meterRemapRelativeDvChromaticityToSolveGamut'),
+  extractFunction('meterRemapAbsoluteDvColorCheckerChromaticity'),
+  extractFunction('meterColorCheckerClassicSource'),
+  extractFunction('meterBuildSaturationTargetStepMeta'),
+  extractFunction('meterBuildColorCheckerStepsJS'),
   extractFunction('meterSaturationSolveGamut'),
   extractFunction('meterSaturationAxisGamut'),
   extractFunction('meterBuildSaturationStepRgb'),
@@ -122,11 +138,6 @@ const code = [
   extractFunction('meterChartIsPq'),
   extractFunction('meterChartIsDv'),
   extractFunction('meterChartIsHdr'),
-  extractFunction('meterStoredLgTargetWhiteReferenceNits'),
-  extractFunction('meterExplicitLgTargetWhiteReferenceNits'),
-  extractFunction('meterColorSeriesUsesLgTargetWhite'),
-  extractFunction('meterColorSeriesTargetWhiteForRun'),
-  extractFunction('meterApplyColorSeriesTargetWhiteReference'),
   extractFunction('meterChartSignalMode'),
   extractFunction('meterGreyTargetSignal'),
   extractFunction('meterChartTargetLuminance'),
@@ -140,6 +151,7 @@ const code = [
   extractFunction('meterNormalizeMeasuredReading'),
   extractFunction('meterReadingLuminanceNits'),
   extractFunction('meterReadingXYZ'),
+  extractFunction('meterReadingHasLuminance'),
   extractFunction('targetColorXYZAbs'),
   extractFunction('meterTargetXYZForReading'),
   extractFunction('meterTargetChromaticityForReading'),
@@ -175,14 +187,15 @@ const context = {
   meterWhiteReading: { X: 95.05, Y: 100, Z: 108.9 },
   meterReadings: [],
   meterSeriesCache: {},
-  meterActiveSeriesSignalMode: '',
-  meterFullAutoCalRunning: false,
-  meterFullAutoCalPhase: '',
   meterFullAutoCalConfig: null,
+  meterActiveSeriesSignalMode: '',
   config: { colorimetry: '2', primaries: '0', signal_mode: 'sdr', max_luma: '1000' },
   lgStatusState: {},
   localStorage: {
-    getItem(){ return null; }
+    _store: {},
+    getItem(key) { return Object.prototype.hasOwnProperty.call(this._store, key) ? this._store[key] : null; },
+    setItem(key, value) { this._store[key] = String(value); },
+    removeItem(key) { delete this._store[key]; }
   },
   document: {
     getElementById(id) {
@@ -253,38 +266,86 @@ if (!xyy || !Array.isArray(xyy.entries)) {
 const dY = xyy.entries.find(e => e.key === 'Y').v;
 approxEqual(dY, -10, 0.75, 'color ΔY normalization mismatch');
 
-// Test 2b: post-cal LG color/sat series must carry the calibrated white
-// target through step metadata, while untagged historical/pre-cal series keep
-// their own measured series white instead of being reinterpreted later.
-vm.runInContext(`
-  meterFullAutoCalRunning = true;
-  meterFullAutoCalPhase = 'postcal-report';
-  meterFullAutoCalConfig = { targetY: 175 };
-  meterActiveSeriesType = 'colors';
-`, context);
-const postColorSteps = vm.runInContext("meterBuildStepsJS('colors',30)", context);
-assert(
-  postColorSteps.length > 0 && postColorSteps.every(step => step.series_target_white_y === 175 && step.lg_target_white_y === 175),
-  'post-cal ColorChecker steps should be tagged with calibrated LG white target Y'
-);
-vm.runInContext(`
-  meterReadings = [{ name:'White', ire:100, r_code:255, g_code:255, b_code:255, luminance:100, Y:100 }];
-`, context);
-approxEqual(
-  vm.runInContext('meterColorSeriesReferenceNits()', context),
-  100,
-  0.001,
-  'untagged color series should keep measured series white reference'
-);
-vm.runInContext(`
-  meterReadings = [{ name:'White', ire:100, r_code:255, g_code:255, b_code:255, luminance:100, Y:100, series_target_white_y:175 }];
-`, context);
-approxEqual(
-  vm.runInContext('meterColorSeriesReferenceNits()', context),
-  175,
-  0.001,
-  'tagged post-cal color series should use calibrated target white reference'
-);
+// Test 2b: SDR ColorChecker gray patches must use the active series white
+// luminance. Meter reads often stamp only `luminance`, not `Y`; falling back
+// to 100 nits makes gray ColorChecker dE explode when luminance is included.
+{
+  const prevWhite = context.meterWhiteReading;
+  const prevReadings = context.meterReadings;
+  const prevType = context.meterActiveSeriesType;
+  context.meterActiveSeriesType = 'colors';
+  context.meterWhiteReading = { name: 'White', ire: 100, luminance: 176.2, r_code: 255, g_code: 255, b_code: 255 };
+  context.meterReadings = [context.meterWhiteReading];
+  const gray50 = context.targetColorXYZAbs(128, 128, 128);
+  const linear50 = context.meterTargetSignalToLinear(128 / 255);
+  approxEqual(gray50.Y, linear50 * 176.2, 0.15, 'ColorChecker gray target Y should use series white luminance');
+  context.meterWhiteReading = prevWhite;
+  context.meterReadings = prevReadings;
+  context.meterActiveSeriesType = prevType;
+}
+
+// Test 2c: after LG AutoCal, color/sat and greyscale analysis should use the
+// stored AutoCal target white, not a later measured 100% white that may include
+// post-reset/ABL drift. This is what keeps luminance-inclusive post-cal reports
+// from making otherwise-correct ColorChecker gray patches look catastrophic.
+{
+  const prevWhite = context.meterWhiteReading;
+  const prevReadings = context.meterReadings;
+  const prevType = context.meterActiveSeriesType;
+  const prevLg = context.lgStatusState;
+  const prevStore = { ...context.localStorage._store };
+  context.lgStatusState = { paired: true };
+  context.meterActiveSeriesType = 'colors';
+  context.meterWhiteReading = { name: 'White', ire: 100, luminance: 214.9, r_code: 255, g_code: 255, b_code: 255 };
+  context.meterReadings = [context.meterWhiteReading];
+  context.meterStoreLgTargetWhiteReference(176.2, 'test-lg-autocal', 'run-test');
+  const gray50 = context.targetColorXYZAbs(128, 128, 128);
+  const linear50 = context.meterTargetSignalToLinear(128 / 255);
+  approxEqual(gray50.Y, linear50 * 176.2, 0.15, 'LG ColorChecker gray target Y should use stored AutoCal target white');
+  context.meterActiveSeriesType = 'greyscale';
+  const greyRef = context.meterEffectiveGreyscaleWhiteReference([{
+    name: '100%',
+    series_type: 'greyscale',
+    ire: 100,
+    r_code: 940,
+    g_code: 940,
+    b_code: 940,
+    luminance: 214.9,
+    x: 0.3127,
+    y: 0.3290
+  }]);
+  approxEqual(greyRef.luminance || greyRef.Y, 176.2, 1e-9, 'LG greyscale target should use stored AutoCal target white');
+  context.meterWhiteReading = prevWhite;
+  context.meterReadings = prevReadings;
+  context.meterActiveSeriesType = prevType;
+  context.lgStatusState = prevLg;
+  context.localStorage._store = prevStore;
+}
+
+// Test 2d: ColorChecker gray patches are encoded from linear target Yn values,
+// so they must carry target_Yn metadata. Otherwise they are treated like gamma
+// greyscale IRE patches and luminance-inclusive dE is wildly inflated.
+{
+  const prevType = context.meterActiveSeriesType;
+  const prevWhite = context.meterWhiteReading;
+  const prevReadings = context.meterReadings;
+  context.meterActiveSeriesType = 'colors';
+  context.meterWhiteReading = { name: 'White', ire: 100, luminance: 176.2, r_code: 255, g_code: 255, b_code: 255 };
+  context.meterReadings = [context.meterWhiteReading];
+  const steps = context.meterBuildColorCheckerStepsJS();
+  const gray35 = steps.find(step => step.name === 'Gray 35');
+  assert(gray35, 'missing Gray 35 ColorChecker step');
+  approxEqual(gray35.target_Yn, 0.090, 1e-9, 'Gray 35 target_Yn metadata mismatch');
+  approxEqual(gray35.target_x, 0.3127, 1e-9, 'Gray 35 target x should be D65');
+  approxEqual(gray35.target_y, 0.3290, 1e-9, 'Gray 35 target y should be D65');
+  const gray35Target = context.meterTargetXYZForReading(gray35);
+  approxEqual(gray35Target.Y, 176.2 * 0.090, 0.05, 'Gray 35 target Y should use ColorChecker Yn');
+  const gammaWrongY = context.meterGreyTargetLuminance(gray35.ire, 176.2, 0, null);
+  assert(Math.abs(gray35Target.Y - gammaWrongY) > 10, 'Gray 35 target Y should not fall back to gamma IRE math');
+  context.meterActiveSeriesType = prevType;
+  context.meterWhiteReading = prevWhite;
+  context.meterReadings = prevReadings;
+}
 
 // Test 3: greyscale chart X positions must follow actual IRE, not array index.
 const x5 = context.meterGreyChartX({ ire: 5 }, [{ ire: 0 }, { ire: 5 }, { ire: 10 }], 1);
@@ -311,6 +372,60 @@ approxEqual(customTargetIre, 7.5, 1e-9, 'custom 10% greyscale target IRE should 
 const customTargetY = context.meterGreyTargetLuminance(customTargetIre, 100, 0, custom10.r);
 const nominalTargetY = context.meterGreyTargetLuminance(10, 100, 0, null);
 assert(Math.abs(customTargetY - nominalTargetY) > 1e-6, 'custom greyscale target luminance should differ from nominal 10%');
+
+// Test 3c: SDR one-off/continuous greyscale reads must not borrow the HDR
+// metadata max_luma fallback when no 100% point is present locally.
+const prevWhiteReading = context.meterWhiteReading;
+const prevReadings = context.meterReadings;
+const prevSeriesCache = context.meterSeriesCache;
+const prevActiveSeriesSignalMode = context.meterActiveSeriesSignalMode;
+try {
+  state.signal_mode = 'sdr';
+  context.meterActiveSeriesSignalMode = 'sdr';
+  context.meterWhiteReading = context.meterSyntheticGreyWhiteReading(1000);
+  context.meterReadings = [{
+    name: '2.3%',
+    series_type: 'greyscale',
+    ire: 2.3,
+    r_code: 84,
+    g_code: 84,
+    b_code: 84,
+    luminance: 0.18,
+    x: 0.3127,
+    y: 0.3290
+  }];
+  const cachedSeriesWhite = {
+    name: '100%',
+    series_type: 'greyscale',
+    signal_mode: 'sdr',
+    ire: 100,
+    r_code: 940,
+    g_code: 940,
+    b_code: 940,
+    luminance: 180,
+    x: 0.3127,
+    y: 0.3290
+  };
+  context.meterSeriesCache = {
+    'greyscale-26': {
+      signal_mode: 'sdr',
+      updated_at: 123,
+      readings: [cachedSeriesWhite]
+    }
+  };
+  const cachedRef = context.meterEffectiveGreyscaleWhiteReference(context.meterReadings);
+  approxEqual(cachedRef.luminance || cachedRef.Y, 180, 1e-9, 'one-off greyscale should reuse cached measured white');
+
+  context.meterSeriesCache = {};
+  context.meterWhiteReading = context.meterSyntheticGreyWhiteReading(1000);
+  const fallbackRef = context.meterEffectiveGreyscaleWhiteReference(context.meterReadings);
+  approxEqual(fallbackRef.Y, 100, 1e-9, 'SDR greyscale fallback should be 100 nits, not config.max_luma');
+} finally {
+  context.meterWhiteReading = prevWhiteReading;
+  context.meterReadings = prevReadings;
+  context.meterSeriesCache = prevSeriesCache;
+  context.meterActiveSeriesSignalMode = prevActiveSeriesSignalMode;
+}
 
 // Test 4: gamma chart should start at the first real point, not add a 0% anchor.
 state.signal_mode = 'dv';
