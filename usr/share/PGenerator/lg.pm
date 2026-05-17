@@ -109,7 +109,15 @@ sub lg_save_clients (@) {
  $clients={} if(ref($clients) ne "HASH");
  return 0 if(!&lg_ensure_data_dir());
  my $file=&lg_clients_file();
- &write_file("$file.tmp",$file,&lg_encode_json($clients),1);
+ my $tmp="$file.tmp.$$";
+ return 0 if(!open(my $fh,">",$tmp));
+ print $fh &lg_encode_json($clients);
+ return 0 if(!close($fh));
+ if(!rename($tmp,$file)) {
+  unlink($tmp);
+  return 0;
+ }
+ &sync();
  return 1;
 }
 
@@ -243,6 +251,7 @@ sub lg_detect_from_cec (@) {
  my $cec=shift;
  return 0 if(ref($cec) ne "HASH");
  my $osd_name=lc($cec->{"osd_name"}||"");
+ return 0 if(&lg_is_pgenerator_name($osd_name));
  return 1 if($osd_name =~ /\blg\b/);
  return 0;
 }
@@ -270,6 +279,12 @@ sub lg_clean_cec_name (@) {
  $name=~s/[\x00-\x1f\x7f]+//g;
  $name=~s/^\s+|\s+$//g;
  return $name;
+}
+
+sub lg_is_pgenerator_name (@) {
+ my $name=lc(&lg_clean_cec_name(shift));
+ $name=~s/[\s_-]+//g;
+ return ($name =~ /^pgenerator(?:plus|\+)?$/) ? 1 : 0;
 }
 
 sub lg_cec_lg_device (@) {
@@ -966,7 +981,8 @@ sub lg_status_data (@) {
  my $calibration_mode=$clients->{"calibration_mode"} ? 1 : 0;
  my $calibration_picture_mode=$clients->{"calibration_picture_mode"}||"";
  my $cec=&lg_cec_status();
- my $osd_name=$cec->{"osd_name"}||"";
+ my $osd_name=&lg_clean_cec_name($cec->{"osd_name"}||"");
+ $osd_name="" if(&lg_is_pgenerator_name($osd_name));
  my $cec_tv_name=($model_name ne "" || $stored_name ne "" || $auto_ip ne "" || $manual_ip ne "" || $stored_ip ne "") ? "LG TV" : "";
  my $cec_tv_vendor="";
  my $detected=&lg_detect_from_cec($cec);
@@ -1670,6 +1686,28 @@ let lgScanPending=false;
 let lgCalibrationModePending=false;
 window.lgStatusState=window.lgStatusState||{paired:false,detected:false,hasIp:false,checked:false,clientKeyPresent:false,pinPending:false};
 
+function lgIsPGeneratorDisplayName(name){
+ const normalized=String(name||'').trim().toLowerCase().replace(/[\s_-]+/g,'');
+ return /^(?:pgenerator|pgeneratorplus|pgenerator\+)$/.test(normalized);
+}
+
+function lgDisplayNameFromStatus(r){
+ const candidates=[
+  r&&r.model_name,
+  r&&r.modelName,
+  r&&r.displayName,
+  r&&r.stored_name,
+  r&&r.product_name,
+  r&&r.cec_tv_name,
+  r&&r.cec_osd_name
+ ];
+ for(const candidate of candidates){
+  const name=String(candidate||'').trim();
+  if(name&&!lgIsPGeneratorDisplayName(name)) return name;
+ }
+ return 'LG TV';
+}
+
 function renderLgTopStatus(r){
  const wrap=document.getElementById('lgTopStatusWrap');
  const dot=document.getElementById('lgTopDot');
@@ -1682,9 +1720,9 @@ function renderLgTopStatus(r){
   if(typeof syncTopStatusStack==='function') syncTopStatusStack();
   return;
  }
- const rawName=String((r&&(r.model_name||r.modelName||r.displayName||r.stored_name||r.cec_osd_name||r.product_name||r.cec_tv_name))||'LG TV').trim()||'LG TV';
+ const rawName=lgDisplayNameFromStatus(r);
  const ip=String((r&&(r.manual_ip||r.stored_ip||r.auto_ip||r.ip))||'').trim();
- const name=(rawName.toLowerCase()==='lg tv'&&ip&&r&&r.auto_host)?String(r.auto_host).trim():rawName;
+ const name=rawName;
  const label=name+(ip?' ['+ip+']':'');
  const power=String((r&&(r.tv_power||r.tvPower))||'').trim();
  const powerKey=power.toLowerCase();
@@ -2336,8 +2374,8 @@ function renderLgStatus(r){
 		  calibrationMode:!!r.calibration_mode,
 		  promptKey:promptKey,
 		  ip:r.manual_ip||r.stored_ip||r.auto_ip||'',
-		  modelName:r.model_name||r.stored_name||r.cec_tv_name||r.cec_osd_name||'',
-		  displayName:r.model_name||r.stored_name||r.cec_tv_name||r.cec_osd_name||'',
+		  modelName:lgDisplayNameFromStatus(r),
+		  displayName:lgDisplayNameFromStatus(r),
 		  tvPower:r.tv_power||''
 		 };
 	 renderLgTopStatus(r);
@@ -2359,7 +2397,7 @@ function renderLgStatus(r){
  }
 	 if(connectBtn) connectBtn.textContent=(paired||clientKeyPresent)?'Connect':'Pair With PIN';
  const parts=[];
- if(r.cec_osd_name) parts.push('CEC OSD: '+r.cec_osd_name);
+ if(r.cec_osd_name&&!lgIsPGeneratorDisplayName(r.cec_osd_name)) parts.push('CEC OSD: '+r.cec_osd_name);
  if(r.cec_tv_vendor) parts.push('CEC TV vendor: '+r.cec_tv_vendor);
  if(r.phys_addr) parts.push('HDMI '+r.phys_addr);
  if(r.manual_ip) parts.push('Manual IP: '+r.manual_ip);
