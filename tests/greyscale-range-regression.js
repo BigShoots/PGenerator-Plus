@@ -544,7 +544,9 @@ assert(
     autocalWorkerSource.includes('sub target_luminance_for_autocal_step') &&
     autocalWorkerSource.includes('sub update_white_reference_for_step') &&
     autocalWorkerSource.includes('sub set_state_white_reference') &&
-    autocalWorkerSource.includes('sub delta_e_luv_gamma') &&
+    autocalWorkerSource.includes('sub delta_e_itp') &&
+    autocalWorkerSource.includes('sub autocal_delta_e_for_step') &&
+    !autocalWorkerSource.includes('sub delta_e_luv_gamma') &&
     autocalWorkerSource.includes('sub luminance_error_ratio') &&
 	    autocalWorkerSource.includes('sub luminance_tolerance_percent') &&
 	    autocalWorkerSource.includes('return 4 if($ire <= 3.1);') &&
@@ -895,7 +897,7 @@ assert(
   'LG RGB value inputs should apply only on Enter or the adjacent check button, with no TV prefix label'
 );
 assert(
-  source.includes('function meterGreyTvLuminanceHtml(tvValue,disabled,readOnly)') &&
+    source.includes('function meterGreyTvLuminanceHtml(tvValue,disabled,readOnly)') &&
     source.includes("if(readOnly) return '';") &&
     source.includes('meter-lg-rgb-luma') &&
     source.includes('meter-lg-rgb-luma-tv') &&
@@ -914,7 +916,10 @@ assert(
     source.includes("onclick=\"meterGreyAdjustCurrentStepChannel('lum',-1)\"") &&
     source.includes("onclick=\"meterGreyAdjustCurrentStepChannel('lum',1)\"") &&
     source.includes('if(arrays.adjustingLuminance) settingsPayload.adjustingLuminance=arrays.adjustingLuminance;') &&
-    source.includes('meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled,ddcReadOnly)'),
+    source.includes('meterGreyTvLuminanceHtml(selected?selected.lum:null,disabled,ddcReadOnly)') &&
+    source.includes('meterAutoCalRunning ||') &&
+    source.includes("state.source==='autocal'") &&
+    source.includes("String(meterCurrentPatchStep.series_mode||'')==='lg-autocal-26'"),
   'LG 22pt manual controls should expose the per-point brightness/adjustingLuminance array as a horizontal control'
 );
 assert(
@@ -984,7 +989,7 @@ assert(
 	    source.includes('function meterOnHdrDiffuseWhiteChange()') &&
 	    source.includes("hdr_diffuse_white: v('meterHdrDiffuseWhite')") &&
 	    source.includes("setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white)") &&
-		    source.includes('function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb)') &&
+	    source.includes('function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb)') &&
 		    source.includes('function meterGammaValueReferenceY(readings)') &&
 		    source.includes('function meterGammaValueWhiteReference(readings)') &&
 		    source.includes('meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(readings),steps,fallbackPeak,Lb)') &&
@@ -997,7 +1002,7 @@ assert(
 	    source.includes('if(frac>=0.999999) return null;') &&
 	    source.includes('if(topGamma) return;') &&
 		    source.includes('const gammaYw=meterGammaValueReferenceY(sortedAll);') &&
-		    source.includes('const chartYw=meterChartIsHdr()?meterGreyTargetPeakForReadings(sortedAll,rawXSteps,gammaYw||Yw||measuredPeak,Lb):(gammaYw||Yw||measuredPeak);') &&
+		    source.includes('const chartYw=gammaYw||Yw||measuredPeak;') &&
 	    source.includes('meterGreyscaleGammaValue(rd,chartYw)') &&
 	    source.includes('meterGreyTargetGamma(analysisIre,chartYw,Lb') &&
 	    source.includes('if((Number(step.ire)||0)>=100 || (targetIre||0)>=100) return;') &&
@@ -1058,7 +1063,7 @@ assert(
     source.includes('const targetIre=meterGreyChartStimulusIre(s);') &&
     source.includes('const sorted=gammaFixedAxis?meterFilterGammaChartItems(sortedAll):sortedAll;') &&
     source.includes('const gammaYw=meterGammaValueReferenceY(sortedAll);') &&
-    source.includes('const chartYw=meterChartIsHdr()?meterGreyTargetPeakForReadings(sortedAll,rawXSteps,gammaYw||Yw||measuredPeak,Lb):(gammaYw||Yw||measuredPeak);') &&
+    source.includes('const chartYw=gammaYw||Yw||measuredPeak;') &&
     source.includes('drawGammaValueChart(gs,allSteps,readingMap);') &&
     source.includes('xSteps:gammaFixedAxis?10:(xSteps.length-1||1)') &&
     source.includes("xLabel:(i)=>gammaFixedAxis?String(i*10):(i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'')") &&
