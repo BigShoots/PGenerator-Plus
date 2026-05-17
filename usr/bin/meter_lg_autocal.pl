@@ -692,12 +692,16 @@ sub apply_peak_headroom_reference {
 	 return undef if(ref($white_y_ref) ne "SCALAR");
 	 return $$white_y_ref if(!autocal_step_is_peak_headroom($step));
 	 my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
-	 $$white_y_ref=$derived if(defined($derived) && $derived > 0);
 	 my $effective_white=$$white_y_ref;
+	 if(!defined($effective_white) || $effective_white <= 0) {
+	  $effective_white=$derived if(defined($derived) && $derived > 0);
+	  $$white_y_ref=$effective_white if(defined($effective_white) && $effective_white > 0);
+	 }
 	 my $reading_y=luminance($reading);
 	 if(ref($state) eq "HASH") {
 	  $state->{"peak_headroom_luminance"}=$reading_y if(defined($reading_y));
 	  $state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));
+	  $state->{"peak_headroom_measured_reference"}=$derived if(defined($derived) && $derived > 0);
 	  set_state_white_reference($state,$effective_white) if(defined($effective_white) && $effective_white > 0);
 	 }
 	 my $peak_target_y=(defined($effective_white) && $effective_white > 0) ? target_luminance_for_step($effective_white,$step,$target_gamma,$signal_mode) : undef;
@@ -719,13 +723,9 @@ sub apply_peak_headroom_reference {
 	   if(ref($reading) eq "HASH" && defined($effective_white) && $effective_white > 0);
 	  return $effective_white;
 	 }
-	 return $$white_y_ref if(!defined($derived) || $derived <= 0);
-	 if(ref($state) eq "HASH") {
-	  $state->{"peak_headroom_reference"}=$derived;
-	  set_state_white_reference($state,$derived);
-	 }
-	 annotate_reading_target($reading,$derived,$reading_y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($reading_y) && $reading_y > 0);
-	 return $derived;
+	 return $$white_y_ref if(!defined($effective_white) || $effective_white <= 0);
+	 annotate_reading_target($reading,$effective_white,$reading_y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($reading_y) && $reading_y > 0);
+	 return $effective_white;
 	}
 
 sub refresh_headroom_targets_from_white_reference {
