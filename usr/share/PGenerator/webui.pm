@@ -7221,18 +7221,18 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Changes the greyscale ΔE calculation.">
        Grey ΔE
        <select id="meterDeltaEForm" class="inline-select" onchange="meterOnGreyRefChange()">
-        <option value="deluv76" selected>ΔE76 (Luv) (default)</option>
+        <option value="deitp" selected>ΔE ITP (default)</option>
+        <option value="deluv76">ΔE76 (Luv)</option>
         <option value="de2000">ΔE2000</option>
        <option value="de94">ΔE94</option>
        <option value="de76lab">ΔE76 (Lab)</option>
        <option value="decmc">ΔE CMC(1:1)</option>
        <option value="de2000_jnd">ΔE2000 JND</option>
-       <option value="deitp">ΔE ITP</option>
       </select>
       </label>
      </div>
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
-      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartDeltaELabel">&Delta;E CIELUV</div>
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartDeltaELabel">&Delta;E ITP</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none">
        <input type="checkbox" id="meterIncludeLumError" onchange="meterOnGreyRefChange('checkbox')" style="vertical-align:middle"> Include luminance error
       </label>
@@ -12981,6 +12981,12 @@ function meterSaveColorPrefs(){
    return 'relative';
   }
 
+function meterNormalizeSavedGreyDeltaEForm(form){
+ const normalized=String(form==null?'':form).trim().toLowerCase();
+ if(!normalized || normalized==='auto' || normalized==='deluv76') return 'deitp';
+ return normalized;
+}
+
 // Apply saved meter color-science selections to the DOM. Safe to call
 // before the inputs exist — each lookup is a no-op if the element is
 // missing. Server-provided config wins on first load; see meterApplyServerColorPrefs.
@@ -12995,7 +13001,7 @@ function meterLoadColorPrefs(){
     setVal('meterGreyRefMode', greyMode);
   setVal('meterGrayWorld',   p.gray_world);
   setVal('meterRgbBalanceFormula', p.rgb_formula);
-  setVal('meterDeltaEForm',  p.de_form==='auto'?'deluv76':p.de_form);
+  setVal('meterDeltaEForm',  meterNormalizeSavedGreyDeltaEForm(p.de_form));
   setVal('meterColorDeltaEForm', p.color_de_form);
   setChk('meterColorIncludeLumError', p.color_incl_lum);
     setChk('meterIncludeLumError', greyMode==='eotf');
@@ -13237,11 +13243,11 @@ function deltaE2000JND(lab1,lab2,Ym,Yref){
  return Math.sqrt(Math.pow(dL/SL,2)+Math.pow(dCp/SC,2)+Math.pow(dHp/SH,2)+RT*(dCp/SC)*(dHp/SH));
 }
 
-// Reads the ΔE form selector. Defaults to 'de2000'.
+// Reads the greyscale ΔE form selector. AutoCal and new installs default to ITP.
 function meterDeltaEForm(){
  const sel=document.getElementById('meterDeltaEForm');
  if(sel && sel.value) return sel.value;
- return 'deluv76';
+ return 'deitp';
 }
 
 function meterDeltaEFormLabel(form){
@@ -13592,8 +13598,7 @@ function meterDeltaE(labM,labT,form,ctx){
  form = form || 'de2000';
  ctx = ctx || {};
  if(form==='auto'){
-  // HCFR dE_form==5: Luv76 for grayscale, dE2000 for color.
-  form = ctx.isGrey ? 'deluv76' : 'de2000';
+  form = ctx.isGrey ? 'deitp' : 'de2000';
  }
  if(form==='deluv76'){
   if(ctx.X!=null && ctx.Xr!=null){
@@ -16551,7 +16556,12 @@ function meterRenderGreyTvControls(reading){
 	 const halfRange=meterGreyTvHalfRange(spec);
 	 const busy=meterGreyTvBusyActive();
 	 const disabled=busy||state.status!=='ok';
-	 const ddcReadOnly=!!(target&&target.force_ddc);
+ const ddcReadOnly=!!(
+  (target&&target.force_ddc) ||
+  meterAutoCalRunning ||
+  state.source==='autocal' ||
+  (meterCurrentPatchStep&&(meterCurrentPatchStep.ddc_slot_locked||meterCurrentPatchStep.autocal_slot_locked||String(meterCurrentPatchStep.series_mode||'')==='lg-autocal-26'))
+ );
 		 const columns=[
 		  meterGreyTvColumnHtml('r','R','#f44',selected?selected.r:null,meterGreyTvLiveEntry(spec,'R'),halfRange,disabled,ddcReadOnly),
 		  meterGreyTvColumnHtml('g','G','#4caf50',selected?selected.g:null,meterGreyTvLiveEntry(spec,'G'),halfRange,disabled,ddcReadOnly),
@@ -17179,9 +17189,9 @@ async function meterAutoCalAdjustBrightness(delta){
 
 function meterAutoCalResultRows(status){
  const readings=(status&&Array.isArray(status.readings)?status.readings:(Array.isArray(meterReadings)?meterReadings:[]))
-  .filter(rd=>rd&&meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd));
+ .filter(rd=>rd&&meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd));
  const greyMode=meterGreyRefMode();
- const deForm=meterDeltaEForm();
+ const deForm='deitp';
  const gw=meterGrayWorldWeight();
  return readings.map(rd=>{
   const de=Number(meterColorDeltaE2000(rd,greyMode,deForm,gw));
@@ -20670,7 +20680,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  const rawXSteps=allSteps||sortedAll.map(r=>({ire:r.ire||0,r:r.r_code}));
  const measuredPeak=meterFilterEotfLuminanceChartItems(sortedAll).reduce((mx,r)=>Math.max(mx,meterReadingLuminanceNits(r)||0),0);
  const gammaYw=meterGammaValueReferenceY(sortedAll);
- const chartYw=meterChartIsHdr()?meterGreyTargetPeakForReadings(sortedAll,rawXSteps,gammaYw||Yw||measuredPeak,Lb):(gammaYw||Yw||measuredPeak);
+ const chartYw=gammaYw||Yw||measuredPeak;
  if(!(chartYw>0)){
   if(allSteps) drawGammaValuePreset(allSteps);
   return;
@@ -23695,7 +23705,7 @@ async function loadMeterSettings(){
  setVal('meterGreyRefMode', greyMode);
  setVal('meterGrayWorld',   s.gray_world);
  setVal('meterRgbBalanceFormula', s.rgb_formula);
- setVal('meterDeltaEForm',  s.de_form==='auto'?'deluv76':s.de_form);
+ setVal('meterDeltaEForm',  meterNormalizeSavedGreyDeltaEForm(s.de_form));
  setVal('meterColorDeltaEForm', s.color_de_form||'de2000');
  setChk('meterColorIncludeLumError', s.color_incl_lum);
  const savedTargetGamma=(s.target_gamma!=null)?String(s.target_gamma):'';

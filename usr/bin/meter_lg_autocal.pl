@@ -425,21 +425,6 @@ sub luminance {
  return undef;
 }
 
-sub uv_prime {
- my ($x,$y)=@_;
- return (0,0) if(!defined($x) || !defined($y));
- my $den=(-2*$x)+(12*$y)+3;
- return (0,0) if(abs($den) < 1e-9);
- return ((4*$x)/$den,(9*$y)/$den);
-}
-
-sub lstar {
- my ($ratio)=@_;
- $ratio=0 if(!defined($ratio) || $ratio < 0);
- return (903.2963*$ratio) if($ratio <= 0.008856451679);
- return 116*($ratio ** (1/3))-16;
-}
-
 sub pq_encode_normalized {
  my ($nits)=@_;
  $nits=0 if(!defined($nits) || $nits < 0);
@@ -891,31 +876,6 @@ sub stimulus_scan_steps {
 	  push @out,$probe if($probe);
 	 }
 	 return @out;
-}
-
-sub delta_e_luv_chroma {
- my ($reading,$white_y,$target_x,$target_y)=@_;
- return undef if(ref($reading) ne "HASH");
- my $x=$reading->{"x"};
- my $y=$reading->{"y"};
- my $Y=luminance($reading);
- return undef if(!defined($x) || !defined($y) || !defined($Y) || !defined($white_y) || $white_y <= 0);
- return undef if($x <= 0 || $y <= 0);
- my ($u,$v)=uv_prime($x+0,$y+0);
- my ($tu,$tv)=uv_prime($target_x,$target_y);
- my $L=lstar($Y/$white_y);
- return 13*$L*sqrt(($u-$tu)*($u-$tu)+($v-$tv)*($v-$tv));
-}
-
-sub delta_e_luv_gamma {
- my ($reading,$white_y,$target_x,$target_y,$target_luminance)=@_;
- my $chroma=delta_e_luv_chroma($reading,$white_y,$target_x,$target_y);
- return $chroma if(!defined($target_luminance) || !defined($white_y) || $white_y <= 0 || $target_luminance <= 0);
- my $Y=luminance($reading);
- return $chroma if(!defined($Y));
- my $luma=abs(lstar($Y/$white_y)-lstar($target_luminance/$white_y));
- $chroma=0 if(!defined($chroma));
- return sqrt($chroma*$chroma + $luma*$luma);
 }
 
 sub delta_e_itp {
