@@ -352,7 +352,6 @@ reset_runtime_state() {
  rm -f "$ROOT_MOUNT/usr/share/PGenerator/meter_settings.json"
  rm -f "$ROOT_MOUNT/usr/sbin/PGeneratord.hdr"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/running/tmp"
- mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/ccss/custom" "$ROOT_MOUNT/usr/share/PGenerator/ccss/custom"
  find "$ROOT_MOUNT/var/lib/PGenerator/running" -mindepth 1 -maxdepth 1 ! -name 'tmp' -exec rm -rf {} + 2>/dev/null || true
  : > "$ROOT_MOUNT/var/lib/PGenerator/operations.txt"
 }

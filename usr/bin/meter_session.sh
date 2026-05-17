@@ -10,7 +10,7 @@
 #   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
-#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout]
+#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max]
 #   STOP
 #
 # settle_ms (optional, default 0) is the post-display settle wait applied
@@ -426,8 +426,8 @@ LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA=""
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
   READ\ *)
-	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT]
-	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX READ_TIMEOUT_OVERRIDE <<< "$line"
+	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX]
+	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
@@ -438,22 +438,19 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     [[ -z "$TRANSPORT_SIGNAL_RANGE" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ -z "$REQUEST_ID" ]] && REQUEST_ID=""
 		     [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
-		     [[ -z "$READ_TIMEOUT_OVERRIDE" ]] && READ_TIMEOUT_OVERRIDE=0
 		     [[ "$SIGNAL_RANGE" == "-" ]] && SIGNAL_RANGE=""
 		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
-		     [[ "$REQUEST_ID" == "-" ]] && REQUEST_ID=""
 		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
-		     [[ "$READ_TIMEOUT_OVERRIDE" == "-" ]] && READ_TIMEOUT_OVERRIDE=0
 
 	   # Mark measuring so the polling endpoint knows a read is in flight.
-	   write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\",\"timeout_sec\":$READ_TIMEOUT_OVERRIDE}"
+	   write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\"}"
 
-  # Always re-display the requested patch before measuring. Other workers can
-  # stop or replace the pattern while this long-lived spotread session stays
-  # alive, so the local LAST_* cache is not enough to prove the TV is still
-  # showing the requested RGB payload.
-	  post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
-	  LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"; LAST_TRANSPORT_SIGNAL_RANGE="$TRANSPORT_SIGNAL_RANGE"; LAST_INPUT_MAX="$INPUT_MAX"
+  # Re-display when the rendered patch changes, including transport fields
+  # like signal mode and mastering peak that affect how the same RGB codes map.
+	  if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" || "$TRANSPORT_SIGNAL_RANGE" != "$LAST_TRANSPORT_SIGNAL_RANGE" || "$INPUT_MAX" != "$LAST_INPUT_MAX" ]]; then
+	   post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"; LAST_TRANSPORT_SIGNAL_RANGE="$TRANSPORT_SIGNAL_RANGE"; LAST_INPUT_MAX="$INPUT_MAX"
+	   fi
 
   if (( SETTLE_MS > 0 )); then
    SETTLE_SEC=$(awk "BEGIN{printf \"%.3f\", $SETTLE_MS/1000.0}")
@@ -476,9 +473,6 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	  READ_TIMEOUT=90
 	  ire_le "$IRE" 25 && READ_TIMEOUT=120
 	  ire_le "$IRE" 5 && READ_TIMEOUT=140
-	  if [[ "$READ_TIMEOUT_OVERRIDE" =~ ^[0-9]+$ ]] && (( READ_TIMEOUT_OVERRIDE >= 10 )); then
-	   READ_TIMEOUT="$READ_TIMEOUT_OVERRIDE"
-	  fi
    READ_START=$SECONDS
    GOT_RESULT=false
    RETRIED_COMM=0

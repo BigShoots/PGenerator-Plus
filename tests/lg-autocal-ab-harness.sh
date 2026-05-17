@@ -29,27 +29,20 @@ trap cleanup EXIT
 cleanup
 if command -v sshpass >/dev/null 2>&1; then
   sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "root@$PI" "rm -f /var/log/PGenerator/lg-autocal-109-trace.log /tmp/meter_lg_autocal.log" >/dev/null 2>&1 || true
+    "root@$PI" "rm -f /var/log/PGenerator/lg-autocal-109-trace.log" >/dev/null 2>&1 || true
 fi
 
-node - "$LABEL" "$PI" "$PICTURE_MODE" "$OUT" "$PI_PASS" <<'NODE'
+node - "$LABEL" "$PI" "$PICTURE_MODE" "$OUT" <<'NODE'
 'use strict';
 
 const fs = require('fs');
-const { execFileSync } = require('child_process');
 
-const [label, pi, pictureMode, outDir, piPass] = process.argv.slice(2);
+const [label, pi, pictureMode, outDir] = process.argv.slice(2);
 const base = `http://${pi}`;
 const displayType = process.env.PROFILE || 'ccss_LG_C2_(WRGB_OLED)_-_JETI_1501_HiRes_2nm.ccss';
 const patchSize = Number(process.env.PATCH_SIZE || 10);
 const delayMs = Number(process.env.DELAY_MS || 500);
 const targetDelta = Number(process.env.TARGET_DELTA_E || 0.5);
-const focusIres = (process.env.FOCUS_IRES || process.env.FOCUS_IRE || '')
-  .split(',')
-  .map(value => value.trim())
-  .filter(value => value !== '')
-  .map(value => Number(value.trim()))
-  .filter(value => Number.isFinite(value));
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -89,24 +82,6 @@ function post(endpoint, body, timeoutMs = 30000) {
     body: JSON.stringify(body || {}),
     timeoutMs,
   });
-}
-
-function readRemoteJson(remotePath) {
-  const args = [
-    '-p',
-    piPass,
-    'ssh',
-    '-o',
-    'StrictHostKeyChecking=no',
-    '-o',
-    'UserKnownHostsFile=/dev/null',
-    '-o',
-    'LogLevel=ERROR',
-    `root@${pi}`,
-    `cat ${remotePath} 2>/dev/null || true`,
-  ];
-  const raw = execFileSync('sshpass', args, { encoding: 'utf8', timeout: 15000 });
-  return raw.trim() ? JSON.parse(raw) : null;
 }
 
 async function cleanup() {
@@ -232,19 +207,6 @@ function buildGreyscale26Steps() {
   return steps;
 }
 
-function selectedGreyscale26Steps() {
-  const steps = buildGreyscale26Steps();
-  if (!focusIres.length) return steps;
-  const focused = steps.filter(step => {
-    if (!step || step.autocal_white_reference) return false;
-    return focusIres.some(ire => Math.abs(Number(step.ire) - ire) < 0.001);
-  });
-  if (focused.length !== focusIres.length) {
-    throw new Error(`Only matched ${focused.length}/${focusIres.length} requested LG 26-point greyscale focus steps`);
-  }
-  return focused;
-}
-
 function headroomRatio() {
   const stimulus109 = (1023 - 64) * 100 / 876;
   return Math.pow(stimulus109 / 100, 2.4);
@@ -329,21 +291,16 @@ async function runGreyscale(setupY) {
     force_ddc_white_balance: true,
     full_workflow: false,
     full_autocal_run_id: label,
-    steps: selectedGreyscale26Steps(),
+    steps: buildGreyscale26Steps(),
   });
   writeJson('payload.json', payload);
   const started = await post('/api/meter/lg-autocal', payload, 12000);
   writeJson('start.json', started);
   if (started.status !== 'started') throw new Error(started.message || 'LG AutoCal did not start');
 
-  await sleep(2500);
   const snapshots = [];
   while (true) {
-    const status = readRemoteJson('/tmp/meter_lg_autocal.json');
-    if (!status) {
-      await sleep(1000);
-      continue;
-    }
+    const status = await request('/api/meter/lg-autocal/status', { timeoutMs: 45000 });
     snapshots.push({
       at: Date.now(),
       status: status.status,

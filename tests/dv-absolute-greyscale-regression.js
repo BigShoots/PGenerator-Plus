@@ -66,9 +66,6 @@ const context = {
   meterChartIsDv() {
     return state.signal_mode === 'dv';
   },
-  meterGreyAllowsHeadroomTargets() {
-    return false;
-  },
   meterDvMapModeValue() {
     return state.dv_map_mode;
   },

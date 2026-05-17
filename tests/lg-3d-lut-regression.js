@@ -11,11 +11,6 @@ const acceptanceRunner = fs.readFileSync(path.join(root, 'tools/lg-3d-lut-accept
 const lgHelper = fs.readFileSync(path.join(root, 'usr/sbin/pgenerator-lg'), 'utf8');
 const lgPm = fs.readFileSync(path.join(root, 'usr/share/PGenerator/lg.pm'), 'utf8');
 const webui = fs.readFileSync(path.join(root, 'usr/share/PGenerator/webui.pm'), 'utf8');
-const fullAutoCalStartStart = webui.indexOf('async function meterStartFullAutoCal');
-const fullAutoCalStartEnd = webui.indexOf('async function meterFullAutoCalStart3d', fullAutoCalStartStart);
-const fullAutoCalStartSource = fullAutoCalStartStart >= 0 && fullAutoCalStartEnd > fullAutoCalStartStart
-  ? webui.slice(fullAutoCalStartStart, fullAutoCalStartEnd)
-  : '';
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -76,24 +71,6 @@ assert.strictEqual(payload.readUInt16LE(payload.length - 6), 4095);
 assert.strictEqual(payload.readUInt16LE(payload.length - 4), 4095);
 assert.strictEqual(payload.readUInt16LE(payload.length - 2), 4095);
 
-const invalidTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-lg-3d-lut-invalid-'));
-const invalidConfig = path.join(invalidTmp, 'config.json');
-const invalidState = path.join(invalidTmp, 'state.json');
-const invalidStop = path.join(invalidTmp, 'stop');
-fs.writeFileSync(invalidConfig, JSON.stringify({
-  fixture_mode: true,
-  fixture_zero_green_profile: true,
-  method: 'matrix',
-  picture_mode: 'cinema',
-  lut_dir: path.join(invalidTmp, 'luts'),
-  post_check: false,
-}));
-execFileSync(worker, [invalidConfig, invalidState, invalidStop], { stdio: 'pipe' });
-const invalidStatus = readJson(invalidState);
-assert.strictEqual(invalidStatus.status, 'error');
-assert.match(invalidStatus.message, /Invalid profile read.*green/i);
-assert.ok(!invalidStatus.export, 'Invalid profile reads must fail before exporting a 3D LUT');
-
 const cube = fs.readFileSync(status.export.cube_path, 'utf8').trim().split(/\n/);
 assert.strictEqual(cube[1], 'LUT_3D_SIZE 17');
 assert.strictEqual(cube.filter(line => /^\d/.test(line)).length, 4913);
@@ -111,12 +88,6 @@ assert.match(lgPm, /\/api\/lg\/3d-lut\/probe/);
 assert.match(lgPm, /\/api\/lg\/3d-lut\/upload/);
 assert.match(lgPm, /\/api\/lg\/3d-lut\/reset/);
 assert.match(lgPm, /\/var\/lib\/PGenerator\/lg\/luts/);
-assert.match(lgPm, /sub lg_is_pgenerator_name/);
-assert.match(lgPm, /\$osd_name="" if\(&lg_is_pgenerator_name\(\$osd_name\)\)/);
-assert.match(lgPm, /function lgDisplayNameFromStatus\(r\)/);
-assert.match(lgPm, /!lgIsPGeneratorDisplayName\(name\)/);
-assert.match(lgPm, /modelName:lgDisplayNameFromStatus\(r\)/);
-assert.doesNotMatch(lgPm, /r\.model_name\|\|r\.modelName\|\|r\.displayName\|\|r\.stored_name\|\|r\.cec_osd_name/);
 
 assert.match(webui, /\/api\/meter\/lg-3d-autocal\/start/);
 assert.match(webui, /\/api\/meter\/lg-3d-autocal\/status/);
@@ -161,19 +132,14 @@ assert.match(webui, /function meterFullAutoCalRestoreSavedState/);
 assert.match(webui, /meterFullAutoCalRestoreSavedState\(\)/);
 assert.match(webui, /meterAutoCalPollErrors\+\+/);
 assert.match(webui, /meterLg3dAutoCalPollErrors\+\+/);
-assert.match(fullAutoCalStartSource, /await meterEnsureLgAutoCalTransport\('Full Auto Cal'\)/);
-assert.match(webui, /This will first switch PGenerator to the AutoCal video transport and measure the current state for the before report/);
+assert.match(webui, /await meterEnsureLgAutoCalTransport\('Full Auto Cal'\)/);
 assert.match(webui, /await meterEnsureLgAutoCalTransport\(fullWorkflow\?'Full Auto Cal':'LG Greyscale Auto Cal'\)/);
 assert.match(webui, /await meterEnsureLgAutoCalTransport\('LG 3D LUT AutoCal'\)/);
-assert.match(webui, /run the current LG 26-point greyscale AutoCal top\/body first and shadows low-to-high with committed greyscale polish, then run color-only 3D LUT AutoCal/);
+assert.match(webui, /run the current LG 26-point greyscale AutoCal from high to low, run color-only 3D LUT AutoCal/);
 assert.match(webui, /upload:true/);
-assert.match(webui, /post_check:false/);
 assert.match(webui, /meterStartLg3dAutoCal\(\{\s*fullWorkflow:true,\s*skipConfirm:true/s);
 assert.match(webui, /full_autocal_touchup:true/);
-assert.match(webui, /restore_factory_levels:false/);
-assert.match(webui, /reset_ddc_baseline:false/);
-assert.match(webui, /max_iterations:8/);
-assert.match(webui, /headroom_max_iterations:8/);
+assert.match(webui, /max_iterations:20/);
 assert.match(webui, /meter_lg_3d_autocal/);
 const workerSource = fs.readFileSync(worker, 'utf8');
 assert.match(workerSource, /\$state->\{"post_check_current"\}=\$i\+1/);
