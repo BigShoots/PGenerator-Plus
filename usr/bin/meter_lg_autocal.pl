@@ -1994,8 +1994,10 @@ sub deep_shadow_chroma_priority_adjustment {
   $trace_shadow->("luma_not_close",{ire=>$ire,de=>defined($de)?$de+0:undef,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0});
   return undef;
  }
- if(!defined($de) || $de < 2.0) {
-  $trace_shadow->("de_too_low",{ire=>$ire,de=>defined($de)?$de+0:undef,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0});
+ my $accept_limit=itp_luminance_included_acceptance_limit($step);
+ $accept_limit=1.0 if(!defined($accept_limit));
+ if(!defined($de) || $de <= $accept_limit) {
+  $trace_shadow->("de_too_low",{ire=>$ire,de=>defined($de)?$de+0:undef,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0,acceptance_limit=>$accept_limit+0});
   return undef;
  }
  my $chroma_mag=chroma_error_magnitude($error);
@@ -2005,6 +2007,7 @@ sub deep_shadow_chroma_priority_adjustment {
  }
  $min_step ||= 0.25;
  $max_step ||= ($micro ? 0.5 : 2);
+ $max_step=0.5 if(defined($de) && $de <= 2.0 && $max_step > 0.5);
  if($micro && $ire <= 3.1) {
   my $shadow_step=low_shadow_minimum_ddc_step($step);
   $min_step=$shadow_step if($min_step > $shadow_step);
