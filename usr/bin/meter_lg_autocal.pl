@@ -691,6 +691,34 @@ sub apply_peak_headroom_reference {
  return $derived;
 }
 
+sub refresh_headroom_targets_from_white_reference {
+ my ($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)=@_;
+ return 0 if(ref($state) ne "HASH" || ref($state->{"readings"}) ne "ARRAY");
+ return 0 if(!defined($white_y) || $white_y <= 0);
+ my $updated=0;
+ my $peak_target_luminance=undef;
+ foreach my $reading (@{$state->{"readings"}}) {
+  next if(ref($reading) ne "HASH" || !defined($reading->{"ire"}));
+  my $ire=$reading->{"ire"}+0;
+  next if($ire < 105);
+  my $step=clone_picture($reading);
+  if(!defined($step->{"stimulus"})) {
+   my $fixed=fixed_lg_autocal_stimulus($step);
+   $step->{"stimulus"}=defined($fixed) ? $fixed : $ire;
+  }
+  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+  next if(!defined($target_lum_y));
+  annotate_reading_target($reading,$white_y,$target_lum_y,$target_x,$target_y);
+  $updated++;
+  $peak_target_luminance=$target_lum_y if(autocal_step_is_peak_headroom($step));
+ }
+ if(defined($peak_target_luminance) && $peak_target_luminance > 0) {
+  $state->{"headroom_target_luminance"}=$peak_target_luminance;
+  $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_luminance;
+ }
+ return $updated;
+}
+
 sub lg_extended_sdr_16_255_enabled {
  my ($config)=@_;
  return 0 if(ref($config) ne "HASH");
@@ -2625,6 +2653,7 @@ sub committed_state_polish {
  annotate_reading_target($white_reading,$white_y,$white_y,$target_x,$target_y);
  $state->{"readings"}=merge_reading($state->{"readings"},$white_reading);
  set_state_white_reference($state,$white_y);
+ refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
  $state->{"message"}="Committed white reference read complete";
  write_state($state);
 
@@ -2749,6 +2778,7 @@ sub committed_state_polish {
      $state->{"readings"}=merge_reading($state->{"readings"},$candidate_white);
      $state->{"current_luminance"}=$candidate_y;
      set_state_white_reference($state,$white_y);
+     refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
      set_state_target_step_luminance($state,$white_y);
      $state->{"message"}="Committed white reference refreshed";
      write_state($state);
@@ -3135,7 +3165,7 @@ eval {
 		 my ($black_step)=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)) < 0.001 } @{$steps};
 		 my ($white_reference_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
 		 my $white_reference_is_adjustable=($white_reference_step && ddc_target_for_step($white_reference_step)) ? 1 : 0;
-		 my $refresh_white_after_headroom=0;
+		 my $refresh_white_after_headroom=($white_reference_step && !$white_reference_is_adjustable && ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 1 : 0;
 		 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0);
 
 		 my $white_y=($target_luminance > 0) ? $target_luminance : undef;
@@ -3165,6 +3195,8 @@ eval {
 		  $state->{"current_luminance"}=luminance($ref_reading);
 		  $state->{"current_delta_e"}=undef;
 		  set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step));
+		  refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)
+		   if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && autocal_step_is_white($read_step));
 		  set_state_target_step_luminance($state,$target_lum_y);
 		  write_state($state);
 		  return $ref_reading;
@@ -3732,6 +3764,8 @@ eval {
 				  if(autocal_step_is_white($read_step)) {
 				   $white_y=update_white_reference_for_step($read_step,$best_reading,$white_y);
 				   set_state_white_reference($state,$white_y);
+				   refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)
+				    if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
 				   $best_lum_pct=undef;
 				   set_state_target_step_luminance($state,undef);
 				  } elsif(autocal_step_is_peak_headroom($read_step)) {
