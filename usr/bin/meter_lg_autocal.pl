@@ -1037,8 +1037,23 @@ sub luminance_tolerance_percent {
 sub low_shadow_delta_acceptance {
  my ($step,$target_delta)=@_;
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
- return $target_delta if(!autocal_step_is_low_shadow($step));
- return $target_delta+0.75;
+ my $accept=autocal_step_is_low_shadow($step) ? ($target_delta+0.75) : $target_delta;
+ my $limit=itp_luminance_included_acceptance_limit($step);
+ $accept=$limit if(defined($limit) && $accept > $limit);
+ return $accept;
+}
+
+sub itp_luminance_included_acceptance_limit {
+ my ($step)=@_;
+ return undef if(autocal_step_ignores_luminance_error($step));
+ return 1.0;
+}
+
+sub within_itp_luminance_included_acceptance {
+ my ($de,$step)=@_;
+ my $limit=itp_luminance_included_acceptance_limit($step);
+ return 1 if(!defined($limit));
+ return (defined($de) && $de <= $limit) ? 1 : 0;
 }
 
 sub target_reached {
@@ -1048,6 +1063,7 @@ sub target_reached {
 				 return 0 if(low_ire_luminance_needs_lift($step,$lum_pct));
 				 return 0 if(low_ire_luminance_needs_tuning($step,$lum_pct));
 				 return 1 if(autocal_step_is_low_shadow($step) && $de <= low_shadow_delta_acceptance($step,$target_delta));
+			 return 0 if(!within_itp_luminance_included_acceptance($de,$step));
 			 my $low_delta_allow=($ire <= 10) ? 0.75 : 0.30;
 			 return 0 if($de > $target_delta && !($ire <= 10 && $de <= $target_delta+$low_delta_allow));
 			 return 1 if($ire >= 99.9 && !defined($lum_pct));
@@ -1080,6 +1096,7 @@ sub close_enough_stalled {
 	 return 0 if($ire < 90);
 	 return 0 if(($iter||0) < 40 || ($stalls||0) < 16);
 	 return 0 if($best_de > ($target_delta+0.10));
+	 return 0 if(!within_itp_luminance_included_acceptance($best_de,$step));
 	 return 1 if($ire >= 99.9 && !defined($best_lum_pct));
 	 return 1 if(!defined($best_lum_pct));
 		 return abs($best_lum_pct) <= luminance_tolerance_percent($step);
@@ -3288,6 +3305,16 @@ eval {
 
 		 my $white_y=($target_luminance > 0) ? $target_luminance : undef;
 		 set_state_white_reference($state,$white_y) if(defined($white_y) && $white_y > 0);
+		 my $apply_measured_white_reference=sub {
+		  my ($read_step)=@_;
+		  return 0 if(!autocal_step_is_white($read_step));
+		  return 0 if(!defined($white_y) || $white_y <= 0);
+		  $target_luminance=$white_y;
+		  set_state_white_reference($state,$white_y);
+		  refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)
+		   if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
+		  return 1;
+		 };
 		 my $step_num=0;
 		 my $read_reference_step=sub {
 		  my ($ref_step,$label,$message)=@_;
@@ -3312,9 +3339,7 @@ eval {
 		  $state->{"readings"}=merge_reading($state->{"readings"},$ref_reading);
 		  $state->{"current_luminance"}=luminance($ref_reading);
 		  $state->{"current_delta_e"}=undef;
-		  set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step));
-		  refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)
-		   if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && autocal_step_is_white($read_step));
+		  $apply_measured_white_reference->($read_step);
 		  set_state_target_step_luminance($state,$target_lum_y);
 		  write_state($state);
 		  return $ref_reading;
@@ -3371,8 +3396,9 @@ eval {
 		  } else {
 		   delete $state->{"white_luminance_floor"};
 		  }
-  $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
-  $white_y ||= 100;
+	  $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+	  $apply_measured_white_reference->($read_step);
+	  $white_y ||= 100;
 		  my $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 	  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
 	  my $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
@@ -3459,6 +3485,7 @@ eval {
 			   $de=$best_de;
 			   $lum_pct=$best_lum_pct;
 			   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+			   $apply_measured_white_reference->($read_step);
 			   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 			   return 1;
 			  };
@@ -3470,6 +3497,7 @@ eval {
 		   $picture=$probe_picture if(ref($probe_picture) eq "HASH");
 		   $reading=$probe_reading;
 		   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+		   $apply_measured_white_reference->($read_step);
 		   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 			   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
 			   $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
@@ -3580,7 +3608,8 @@ eval {
 		   ($reading,$read_error,$guarded_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
 	   die $read_error if($read_error && $read_error ne "cancelled");
 	   last if($read_error && $read_error eq "cancelled");
-		   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+			   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+			   $apply_measured_white_reference->($read_step);
 		   $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 		   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
 		   $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
@@ -3729,9 +3758,10 @@ eval {
 		   die $write_error if($write_error);
 		   $calibration_mode_active=1;
 		   sync_state_picture($state,$picture,$picture_mode);
-		   $reading=clone_picture($best_reading) if(ref($best_reading) eq "HASH");
-		   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
-		   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+			   $reading=clone_picture($best_reading) if(ref($best_reading) eq "HASH");
+			   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+			   $apply_measured_white_reference->($read_step);
+			   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 		   $de=$best_de;
 		   $lum_pct=$best_lum_pct;
 		   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
@@ -3809,8 +3839,9 @@ eval {
 		    ($reading,$read_error,$guarded_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
 		    die $read_error if($read_error && $read_error ne "cancelled");
 		    last if($read_error && $read_error eq "cancelled");
-		    $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
-		    $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+			    $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+			    $apply_measured_white_reference->($read_step);
+			    $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 		    annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
 		    $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
 		    $lum_pct=luminance_error_percent($reading,$target_step_y);
@@ -3881,9 +3912,7 @@ eval {
 			  $restore_best_branch->("Keeping best $label result") if(!cancelled() && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH");
 				  if(autocal_step_is_white($read_step)) {
 				   $white_y=update_white_reference_for_step($read_step,$best_reading,$white_y);
-				   set_state_white_reference($state,$white_y);
-				   refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)
-				    if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
+				   $apply_measured_white_reference->($read_step);
 				   $best_lum_pct=undef;
 				   set_state_target_step_luminance($state,undef);
 				  } elsif(autocal_step_is_peak_headroom($read_step)) {
