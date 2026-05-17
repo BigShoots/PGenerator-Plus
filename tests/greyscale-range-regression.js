@@ -662,11 +662,15 @@ assert(
     autocalWorkerSource.includes('return 1 if($ire <= 3.1);') &&
     autocalWorkerSource.includes('return 2;') &&
     autocalWorkerSource.includes('sub low_shadow_delta_acceptance') &&
+    autocalWorkerSource.includes('return $target_delta+0.75;') &&
+    !autocalWorkerSource.includes('my $limit=($ire <= 3.1) ? 5.0 : 4.0;') &&
+    !autocalWorkerSource.includes('return $limit > $floor ? $limit : $floor;') &&
     autocalWorkerSource.includes('return 1 if(autocal_step_is_low_shadow($step) && $de <= low_shadow_delta_acceptance($step,$target_delta));') &&
+    autocalWorkerSource.includes('return ($ire > 0 && $ire <= 7.5001) ? 1 : 0;') &&
     autocalWorkerSource.includes('my $shadow_limit=low_shadow_iteration_limit_for_step($step,$config);') &&
     autocalWorkerSource.includes('my $shadow_polish_limit=low_shadow_polish_limit_for_step($read_step,$config);') &&
     autocalWorkerSource.includes('$adj->{"low_shadow_luminance"}=1'),
-  'LG Auto Cal shadow points should prioritize per-point luminance before spending slow low-level reads on RGB polish, with shorter Full AutoCal touch-up limits'
+  'LG Auto Cal shadow points should prioritize per-point luminance before spending slow low-level reads on RGB polish, without accepting high raw low-shadow Delta E'
 );
 assert(
   !autocalWorkerSource.includes('return $white_y if($stimulus >= 100);') &&
