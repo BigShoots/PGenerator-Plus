@@ -1038,10 +1038,7 @@ sub low_shadow_delta_acceptance {
  my ($step,$target_delta)=@_;
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
  return $target_delta if(!autocal_step_is_low_shadow($step));
- my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
- my $limit=($ire <= 3.1) ? 5.0 : 4.0;
- my $floor=$target_delta+0.75;
- return $limit > $floor ? $limit : $floor;
+ return $target_delta+0.75;
 }
 
 sub target_reached {
