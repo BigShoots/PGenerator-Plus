@@ -655,10 +655,24 @@ assert(
     autocalWorkerSource.includes('return ($ire > 0 && $ire <= 5.0001) ? 1 : 0;') &&
     autocalWorkerSource.includes('sub low_shadow_luminance_priority_adjustments') &&
     autocalWorkerSource.includes('sub deep_shadow_chroma_priority_adjustment') &&
-    autocalWorkerSource.includes('return undef if($ire <= 0 || $ire > 2.31);') &&
-    autocalWorkerSource.includes('return undef if(abs($lum_pct) > $luma_tol);') &&
-    autocalWorkerSource.includes('return undef if(!defined($de) || $de < 2.0);') &&
-    autocalWorkerSource.includes('return undef if($chroma_mag < 0.020);') &&
+    autocalWorkerSource.includes('if($ire <= 0 || $ire > 2.31)') &&
+    autocalWorkerSource.includes('if(abs($lum_pct) > $luma_tol)') &&
+    autocalWorkerSource.includes('if(!defined($de) || $de < 2.0)') &&
+    autocalWorkerSource.includes('if($chroma_mag < 0.020)') &&
+    autocalWorkerSource.includes('trace_109($step,"deep_shadow_chroma_priority_adjustment"') &&
+    autocalWorkerSource.includes('reason=>$reason') &&
+    autocalWorkerSource.includes('"invalid_input"') &&
+    autocalWorkerSource.includes('"no_luminance_channel"') &&
+    autocalWorkerSource.includes('"not_deep_shadow"') &&
+    autocalWorkerSource.includes('"luma_not_close"') &&
+    autocalWorkerSource.includes('"de_too_low"') &&
+    autocalWorkerSource.includes('"chroma_too_low"') &&
+    autocalWorkerSource.includes('"no_untried_channel"') &&
+    autocalWorkerSource.includes('"selected"') &&
+    autocalWorkerSource.includes('luminance_error_pct=>$lum_pct+0') &&
+    autocalWorkerSource.includes('luminance_tolerance_pct=>$luma_tol+0') &&
+    autocalWorkerSource.includes('chroma_mag=>$chroma_mag+0') &&
+    autocalWorkerSource.includes('channel=>$ch,setting=>$setting,current=>$current+0,next=>$next+0,delta=>$next-$current') &&
     autocalWorkerSource.includes('deep_shadow_chroma=>1') &&
     autocalWorkerSource.includes('my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_step,2,0);') &&
     autocalWorkerSource.includes('my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_micro_step,$max_step,1);') &&
