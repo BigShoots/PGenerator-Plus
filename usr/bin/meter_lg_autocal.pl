@@ -440,6 +440,71 @@ sub lstar {
  return 116*($ratio ** (1/3))-16;
 }
 
+sub pq_encode_normalized {
+ my ($nits)=@_;
+ $nits=0 if(!defined($nits) || $nits < 0);
+ $nits=10000 if($nits > 10000);
+ return 0 if($nits <= 0);
+ my $l=$nits/10000;
+ my $m1=2610/16384;
+ my $m2=2523/32;
+ my $c1=3424/4096;
+ my $c2=2413/128;
+ my $c3=2392/128;
+ my $p=$l ** $m1;
+ return (($c1+$c2*$p)/(1+$c3*$p)) ** $m2;
+}
+
+sub reading_xyz {
+ my ($reading)=@_;
+ return undef if(ref($reading) ne "HASH");
+ my ($X,$Y,$Z)=($reading->{"X"},$reading->{"Y"},$reading->{"Z"});
+ if((!defined($X) || !defined($Y) || !defined($Z)) && defined($reading->{"x"}) && defined($reading->{"y"}) && defined(luminance($reading)) && $reading->{"y"} > 0) {
+  $Y=luminance($reading);
+  $X=($reading->{"x"}/$reading->{"y"})*$Y;
+  $Z=((1-$reading->{"x"}-$reading->{"y"})/$reading->{"y"})*$Y;
+ }
+ return undef if(!defined($X) || !defined($Y) || !defined($Z));
+ return [$X+0,$Y+0,$Z+0];
+}
+
+sub xyz_from_xyy {
+ my ($x,$y,$Y)=@_;
+ return undef if(!defined($x) || !defined($y) || !defined($Y) || $y <= 0);
+ return [($x/$y)*$Y,$Y,((1-$x-$y)/$y)*$Y];
+}
+
+sub xyz_to_ictcp {
+ my ($X,$Y,$Z)=@_;
+ $X=0 if(!defined($X)); $Y=0 if(!defined($Y)); $Z=0 if(!defined($Z));
+ my $R= 1.7166511880*$X -0.3556707838*$Y -0.2533662814*$Z;
+ my $G=-0.6666843518*$X +1.6164812366*$Y +0.0157685458*$Z;
+ my $B= 0.0176398574*$X -0.0427706133*$Y +0.9421031212*$Z;
+ $R=0 if($R < 0); $G=0 if($G < 0); $B=0 if($B < 0);
+ my $L=(1688*$R+2146*$G+262*$B)/4096;
+ my $M=(683*$R+2951*$G+462*$B)/4096;
+ my $S=(99*$R+309*$G+3688*$B)/4096;
+ my $Lp=pq_encode_normalized($L);
+ my $Mp=pq_encode_normalized($M);
+ my $Sp=pq_encode_normalized($S);
+ return {
+  I=>0.5*$Lp+0.5*$Mp,
+  T=>(6610*$Lp-13613*$Mp+7003*$Sp)/4096,
+  P=>(17933*$Lp-17390*$Mp-543*$Sp)/4096,
+ };
+}
+
+sub delta_e_itp_xyz {
+ my ($actual,$target)=@_;
+ return undef if(ref($actual) ne "ARRAY" || ref($target) ne "ARRAY");
+ my $a=xyz_to_ictcp($actual->[0],$actual->[1],$actual->[2]);
+ my $b=xyz_to_ictcp($target->[0],$target->[1],$target->[2]);
+ my $dI=($a->{"I"}||0)-($b->{"I"}||0);
+ my $dT=($a->{"T"}||0)-($b->{"T"}||0);
+ my $dP=($a->{"P"}||0)-($b->{"P"}||0);
+ return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
+}
+
 sub clamp_unit {
  my ($value)=@_;
  $value=0 if(!defined($value));
@@ -853,10 +918,20 @@ sub delta_e_luv_gamma {
  return sqrt($chroma*$chroma + $luma*$luma);
 }
 
+sub delta_e_itp {
+ my ($reading,$target_x,$target_y,$target_luminance,$chroma_only)=@_;
+ my $actual=reading_xyz($reading);
+ return undef if(ref($actual) ne "ARRAY");
+ my $Y=$chroma_only ? luminance($reading) : $target_luminance;
+ return undef if(!defined($Y));
+ my $target=xyz_from_xyy($target_x,$target_y,$Y);
+ return undef if(ref($target) ne "ARRAY");
+ return delta_e_itp_xyz($actual,$target);
+}
+
 sub autocal_delta_e_for_step {
  my ($reading,$white_y,$target_x,$target_y,$target_luminance,$step)=@_;
- return delta_e_luv_chroma($reading,$white_y,$target_x,$target_y) if(autocal_step_ignores_luminance_error($step));
- return delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_luminance);
+ return delta_e_itp($reading,$target_x,$target_y,$target_luminance,autocal_step_ignores_luminance_error($step));
 }
 
 sub luminance_error_ratio {
@@ -1000,7 +1075,7 @@ sub autocal_result_score {
 		 my $tol=luminance_tolerance_percent($step);
 		 my $excess=abs($lum_pct)-$tol;
 		 return $score if($excess <= 0);
-		 # delta_e_luv_gamma already contains a perceptual luminance term. Keep
+		 # ΔE ITP already contains a perceptual luminance term. Keep
 		 # Y/gamma as a tie-breaker, but do not let it preserve a visibly worse
 		 # RGB balance just because the luminance was slightly closer.
 		 my $penalty=$excess*0.35;
@@ -1010,6 +1085,10 @@ sub autocal_result_score {
 
 sub headroom_autocal_result_score {
  my ($de,$reading,$step)=@_;
+ if(autocal_step_is_peak_headroom($step)) {
+  my $floor=headroom_floor_balance($reading);
+  return $floor->{"score"} if(ref($floor) eq "HASH");
+ }
  my $err=rgb_error($reading);
  return defined($de) ? ($de+0) : 9999 if(ref($err) ne "HASH");
  my $max=0;
@@ -1023,8 +1102,41 @@ sub headroom_autocal_result_score {
  return ($max*100)+($sum*10)+$de_tiebreak;
 }
 
+sub headroom_floor_balance {
+ my ($reading)=@_;
+ my $err=rgb_balance_error($reading);
+ return undef if(ref($err) ne "HASH");
+ my @channels=qw(r g b);
+ my @ordered=sort { ($err->{$a}||0) <=> ($err->{$b}||0) } @channels;
+ my $floor_ch=$ordered[0];
+ my $floor=$err->{$floor_ch}||0;
+ my $max_gap=0;
+ my $sum_gap=0;
+ my %gaps;
+ foreach my $ch (@channels) {
+  my $gap=($err->{$ch}||0)-$floor;
+  $gap=0 if($gap < 0);
+  $gaps{$ch}=$gap;
+  $max_gap=$gap if($gap > $max_gap);
+  $sum_gap+=$gap;
+ }
+ return {
+  floor_channel=>$floor_ch,
+  floor=>$floor,
+  max_gap=>$max_gap,
+  sum_gap=>$sum_gap,
+  gaps=>\%gaps,
+  errors=>$err,
+  score=>($max_gap*100)+($sum_gap*5),
+ };
+}
+
 sub headroom_rgb_balance_error {
  my ($reading,$step)=@_;
+ if(autocal_step_is_peak_headroom($step)) {
+  my $floor=headroom_floor_balance($reading);
+  return $floor->{"max_gap"} if(ref($floor) eq "HASH");
+ }
  my $err=rgb_error($reading);
  return undef if(ref($err) ne "HASH");
  my $max=0;
@@ -1142,6 +1254,10 @@ sub autocal_best_update_reason {
  my ($candidate_de,$candidate_score,$best_de,$best_score,$candidate_lum_pct,$best_lum_pct,$step,$reading,$white_guard_y)=@_;
  return undef if(!defined($candidate_de));
  return undef if(white_luminance_guard_failed($step,$reading,$white_guard_y));
+ if(autocal_step_ignores_luminance_error($step)) {
+  return undef if(!defined($candidate_score) || !defined($best_score));
+  return ($candidate_score + 0.0001 < $best_score) ? "headroom_balance" : undef;
+ }
  return "delta_e_fallback" if(
   defined($best_de) &&
   ($candidate_de+autocal_de_epsilon_for_best_update($step)) < ($best_de+0) &&
@@ -1794,6 +1910,45 @@ sub headroom_chroma_adjustment {
 	 return undef;
 }
 
+sub peak_headroom_floor_adjustments {
+ my ($error,$arrays,$target,$de,$stalls,$tried,$min_step,$max_step)=@_;
+ return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ $min_step ||= 0.25;
+ $max_step ||= 10;
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my @channels=qw(r g b);
+ my @ordered=sort { ($error->{$a}||0) <=> ($error->{$b}||0) } @channels;
+ my $floor_ch=$ordered[0];
+ my $floor=$error->{$floor_ch}||0;
+ my $min_gap=rgb_error_floor($de,0.5,0);
+ $min_gap=0.0015 if($min_gap < 0.0015);
+ my @out;
+ foreach my $ch (sort { (($error->{$b}||0)-$floor) <=> (($error->{$a}||0)-$floor) } grep { $_ ne $floor_ch } @channels) {
+  my $gap=($error->{$ch}||0)-$floor;
+  next if($gap < $min_gap);
+  my $setting=channel_setting($ch);
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+  my $current=$arr->[$idx]||0;
+  my $step=adjustment_step($gap,$de,$stalls,$min_step);
+  $step=$max_step if($step > $max_step);
+  my ($next,$damped)=next_new_headroom_value($current,-$step,$tried,$setting,$min_step);
+  next if(!defined($next) || abs($next-$current) < 0.0001);
+  push @out,{
+   channel=>$ch,
+   setting=>$setting,
+   current=>$current,
+   next=>$next,
+   delta=>$next-$current,
+   damped=>$damped ? 1 : 0,
+   peak_floor_balance=>1,
+   floor_channel=>$floor_ch,
+  };
+ }
+ return @out ? \@out : undef;
+}
+
 sub headroom_rgb_luminance_adjustments {
 	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_step)=@_;
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -2137,7 +2292,7 @@ sub choose_adjustments {
 			 $luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));
 			 if(autocal_step_is_fast_headroom($step)) {
 			  if(autocal_step_is_peak_headroom($step)) {
-			   return choose_headroom_single_adjustment($error,$arrays,$target,$de,$min_step,$stalls,$tried,$step);
+			   return peak_headroom_floor_adjustments($error,$arrays,$target,$de,$stalls,$tried,$min_step,10);
 			  }
 			  my $lum_pct=$luminance_err*100;
 			  my $luma_tol=luminance_tolerance_percent($step);
@@ -2239,7 +2394,7 @@ sub choose_micro_adjustments {
 			 }
 			 if(autocal_step_is_fast_headroom($step)) {
 			  if(autocal_step_is_peak_headroom($step)) {
-			   return choose_headroom_single_adjustment($error,$arrays,$target,$de,$min_micro_step,$stalls,$tried,$step);
+			   return peak_headroom_floor_adjustments($error,$arrays,$target,$de,$stalls,$tried,$min_micro_step,$max_step);
 			  }
 			  my $chroma_mag=chroma_error_magnitude($error);
 			  if(abs($lum_pct) > ($luma_tol*0.45) && $chroma_mag < 0.030) {
