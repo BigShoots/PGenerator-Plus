@@ -1837,6 +1837,36 @@ sub neutral_luminance_adjustments {
 	 return undef;
 }
 
+sub common_rgb_luminance_adjustments {
+	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_step)=@_;
+	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+	 $luminance_err=0 if(!defined($luminance_err));
+	 return undef if(abs($luminance_err) < 0.0035);
+	 my $idx=$target->{"index"};
+	 return undef if(!defined($idx));
+	 $min_step ||= 0.25;
+	 my $direction=($luminance_err > 0) ? -1 : 1;
+	 my $step=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
+	 my @magnitudes=($step);
+	 push @magnitudes,0.5 if($step > 0.5);
+	 push @magnitudes,0.25 if($step > 0.25);
+	 foreach my $mag (@magnitudes) {
+	  my @out;
+	  my $blocked=0;
+	  foreach my $ch (qw(r g b)) {
+	   my $setting=channel_setting($ch);
+	   my $arr=$arrays->{$setting};
+	   if(ref($arr) ne "ARRAY") { $blocked=1; last; }
+	   my $current=$arr->[$idx]||0;
+	   my $next=clamp_ddc_value($current+($direction*$mag));
+	   if(abs($next-$current) < 0.0001 || repeated_value($tried,$setting,$next)) { $blocked=1; last; }
+	   push @out,{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, common_rgb_luminance=>1 };
+	  }
+	  return \@out if(!$blocked && @out == 3);
+	 }
+	 return undef;
+}
+
 sub low_shadow_luminance_max_step {
  my ($luminance_err,$stalls)=@_;
  $luminance_err=0 if(!defined($luminance_err));
@@ -2462,6 +2492,11 @@ sub choose_adjustments {
 		 $near_fine=0 if($ire >= 99.9 && defined($de) && $de > 0.75);
 		 my $luma_priority=(abs($luminance_drive) >= 0.012) ? 1 : 0;
 		 my $chroma_mag=chroma_error_magnitude($error);
+			 if($ire > 10.0001 && $ire < 99.9 && $chroma_mag < 0.012 && abs($lum_pct) > ($luma_tol*0.35)) {
+			  my $max_luma_step=abs($luminance_err) >= 0.08 ? 2 : 1;
+			  my $common_luma=common_rgb_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step);
+			  return $common_luma if($common_luma);
+			 }
 			 if(has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.35)) {
 			  my $max_luma_step=abs($luminance_err) >= 0.20 ? 6 : 3;
 			  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step);
@@ -2548,6 +2583,10 @@ sub choose_micro_adjustments {
 				  my $luma_max_step=$max_step;
 				  $luma_max_step=4 if(abs($luminance_err) >= 0.20 && $luma_max_step < 4);
 				  $luma_max_step=2 if(abs($luminance_err) >= 0.08 && $luma_max_step < 2);
+				  if($ire > 10.0001 && $ire < 99.9 && chroma_error_magnitude($error) < 0.012) {
+				   my $common_luma=common_rgb_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$luma_max_step);
+				   return $common_luma if($common_luma);
+				  }
 				  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$luma_max_step);
 				  return $neutral if($neutral && ((defined($de) && $de <= 3.0) || chroma_error_magnitude($error) < 0.015));
 				 }
