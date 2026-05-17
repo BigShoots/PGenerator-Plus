@@ -42,7 +42,9 @@ sub trace_number {
 sub trace_109_enabled {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
- return abs(($step->{"ire"}+0)-109) < 0.001 ? 1 : 0;
+ my $ire=$step->{"ire"}+0;
+ return 1 if($ire > 0 && $ire <= 10.0001);
+ return abs($ire-109) < 0.001 ? 1 : 0;
 }
 
 sub trace_reading_summary {
@@ -423,19 +425,69 @@ sub luminance {
  return undef;
 }
 
-sub uv_prime {
- my ($x,$y)=@_;
- return (0,0) if(!defined($x) || !defined($y));
- my $den=(-2*$x)+(12*$y)+3;
- return (0,0) if(abs($den) < 1e-9);
- return ((4*$x)/$den,(9*$y)/$den);
+sub pq_encode_normalized {
+ my ($nits)=@_;
+ $nits=0 if(!defined($nits) || $nits < 0);
+ $nits=10000 if($nits > 10000);
+ return 0 if($nits <= 0);
+ my $l=$nits/10000;
+ my $m1=2610/16384;
+ my $m2=2523/32;
+ my $c1=3424/4096;
+ my $c2=2413/128;
+ my $c3=2392/128;
+ my $p=$l ** $m1;
+ return (($c1+$c2*$p)/(1+$c3*$p)) ** $m2;
 }
 
-sub lstar {
- my ($ratio)=@_;
- $ratio=0 if(!defined($ratio) || $ratio < 0);
- return (903.2963*$ratio) if($ratio <= 0.008856451679);
- return 116*($ratio ** (1/3))-16;
+sub reading_xyz {
+ my ($reading)=@_;
+ return undef if(ref($reading) ne "HASH");
+ my ($X,$Y,$Z)=($reading->{"X"},$reading->{"Y"},$reading->{"Z"});
+ if((!defined($X) || !defined($Y) || !defined($Z)) && defined($reading->{"x"}) && defined($reading->{"y"}) && defined(luminance($reading)) && $reading->{"y"} > 0) {
+  $Y=luminance($reading);
+  $X=($reading->{"x"}/$reading->{"y"})*$Y;
+  $Z=((1-$reading->{"x"}-$reading->{"y"})/$reading->{"y"})*$Y;
+ }
+ return undef if(!defined($X) || !defined($Y) || !defined($Z));
+ return [$X+0,$Y+0,$Z+0];
+}
+
+sub xyz_from_xyy {
+ my ($x,$y,$Y)=@_;
+ return undef if(!defined($x) || !defined($y) || !defined($Y) || $y <= 0);
+ return [($x/$y)*$Y,$Y,((1-$x-$y)/$y)*$Y];
+}
+
+sub xyz_to_ictcp {
+ my ($X,$Y,$Z)=@_;
+ $X=0 if(!defined($X)); $Y=0 if(!defined($Y)); $Z=0 if(!defined($Z));
+ my $R= 1.7166511880*$X -0.3556707838*$Y -0.2533662814*$Z;
+ my $G=-0.6666843518*$X +1.6164812366*$Y +0.0157685458*$Z;
+ my $B= 0.0176398574*$X -0.0427706133*$Y +0.9421031212*$Z;
+ $R=0 if($R < 0); $G=0 if($G < 0); $B=0 if($B < 0);
+ my $L=(1688*$R+2146*$G+262*$B)/4096;
+ my $M=(683*$R+2951*$G+462*$B)/4096;
+ my $S=(99*$R+309*$G+3688*$B)/4096;
+ my $Lp=pq_encode_normalized($L);
+ my $Mp=pq_encode_normalized($M);
+ my $Sp=pq_encode_normalized($S);
+ return {
+  I=>0.5*$Lp+0.5*$Mp,
+  T=>(6610*$Lp-13613*$Mp+7003*$Sp)/4096,
+  P=>(17933*$Lp-17390*$Mp-543*$Sp)/4096,
+ };
+}
+
+sub delta_e_itp_xyz {
+ my ($actual,$target)=@_;
+ return undef if(ref($actual) ne "ARRAY" || ref($target) ne "ARRAY");
+ my $a=xyz_to_ictcp($actual->[0],$actual->[1],$actual->[2]);
+ my $b=xyz_to_ictcp($target->[0],$target->[1],$target->[2]);
+ my $dI=($a->{"I"}||0)-($b->{"I"}||0);
+ my $dT=($a->{"T"}||0)-($b->{"T"}||0);
+ my $dP=($a->{"P"}||0)-($b->{"P"}||0);
+ return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
 }
 
 sub clamp_unit {
@@ -498,6 +550,11 @@ sub autocal_step_is_peak_headroom {
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
  return $ire >= 108.5 ? 1 : 0;
+}
+
+sub autocal_step_ignores_luminance_error {
+ my ($step)=@_;
+ return autocal_step_is_peak_headroom($step) ? 1 : 0;
 }
 
 sub autocal_step_uses_direct_headroom_balance {
@@ -574,12 +631,16 @@ sub update_white_reference_for_step {
 }
 
 sub target_luminance_for_autocal_step {
-	 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
-	 return undef if(autocal_step_is_white($step));
-	 return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if(autocal_step_is_peak_headroom($step) && $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);
-	 return undef if(autocal_step_is_peak_headroom($step));
-	 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
-}
+		 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
+		 return undef if(autocal_step_is_white($step));
+		 if(autocal_step_is_peak_headroom($step)) {
+		  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+		  return $target_lum_y if(defined($target_lum_y));
+		  return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);
+		  return undef;
+		 }
+		 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+	}
 
 sub effective_target_luminance_for_autocal_reading {
  my ($white_y,$step,$reading,$target_gamma,$signal_mode)=@_;
@@ -606,32 +667,91 @@ sub derived_white_reference_from_peak_headroom {
 }
 
 sub apply_peak_headroom_reference {
- my ($state,$step,$reading,$white_y_ref,$target_gamma,$signal_mode,$target_x,$target_y)=@_;
- return undef if(ref($white_y_ref) ne "SCALAR");
- return $$white_y_ref if(!autocal_step_is_peak_headroom($step));
- my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
- $$white_y_ref=$derived if(defined($derived) && $derived > 0);
- my $effective_white=$$white_y_ref;
- if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0) {
-  if(ref($state) eq "HASH") {
-   $state->{"peak_headroom_luminance"}=luminance($reading) if(defined(luminance($reading)));
-   $state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));
-   $state->{"headroom_target_luminance"}=$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE;
-   set_state_white_reference($state,$effective_white) if(defined($effective_white) && $effective_white > 0);
-  }
-  annotate_reading_target($reading,$effective_white,$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE,$target_x,$target_y)
-   if(ref($reading) eq "HASH" && defined($effective_white) && $effective_white > 0);
-  return $effective_white;
+	 my ($state,$step,$reading,$white_y_ref,$target_gamma,$signal_mode,$target_x,$target_y)=@_;
+	 return undef if(ref($white_y_ref) ne "SCALAR");
+	 return $$white_y_ref if(!autocal_step_is_peak_headroom($step));
+	 my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
+	 $$white_y_ref=$derived if(defined($derived) && $derived > 0);
+	 my $effective_white=$$white_y_ref;
+	 my $reading_y=luminance($reading);
+	 if(ref($state) eq "HASH") {
+	  $state->{"peak_headroom_luminance"}=$reading_y if(defined($reading_y));
+	  $state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));
+	  set_state_white_reference($state,$effective_white) if(defined($effective_white) && $effective_white > 0);
+	 }
+	 my $peak_target_y=(defined($effective_white) && $effective_white > 0) ? target_luminance_for_step($effective_white,$step,$target_gamma,$signal_mode) : undef;
+	 if(defined($peak_target_y) && $peak_target_y > 0) {
+	  $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_y;
+	  if(ref($state) eq "HASH") {
+	   $state->{"headroom_target_luminance"}=$peak_target_y;
+	   set_state_target_step_luminance($state,$peak_target_y);
+	  }
+	  annotate_reading_target($reading,$effective_white,$peak_target_y,$target_x,$target_y) if(ref($reading) eq "HASH");
+	  return $effective_white;
+	 }
+	 if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0) {
+	  if(ref($state) eq "HASH") {
+	   $state->{"headroom_target_luminance"}=$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE;
+	   set_state_target_step_luminance($state,$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE);
+	  }
+	  annotate_reading_target($reading,$effective_white,$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE,$target_x,$target_y)
+	   if(ref($reading) eq "HASH" && defined($effective_white) && $effective_white > 0);
+	  return $effective_white;
+	 }
+	 return $$white_y_ref if(!defined($derived) || $derived <= 0);
+	 if(ref($state) eq "HASH") {
+	  $state->{"peak_headroom_reference"}=$derived;
+	  set_state_white_reference($state,$derived);
+	 }
+	 annotate_reading_target($reading,$derived,$reading_y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($reading_y) && $reading_y > 0);
+	 return $derived;
+	}
+
+sub refresh_headroom_targets_from_white_reference {
+ my ($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)=@_;
+ return 0 if(ref($state) ne "HASH" || ref($state->{"readings"}) ne "ARRAY");
+ return 0 if(!defined($white_y) || $white_y <= 0);
+ my $updated=0;
+ my $peak_target_luminance=undef;
+ foreach my $reading (@{$state->{"readings"}}) {
+  next if(ref($reading) ne "HASH" || !defined($reading->{"ire"}));
+  my $ire=$reading->{"ire"}+0;
+  next if($ire < 105);
+  my $step=clone_picture($reading);
+	  if(!defined($step->{"stimulus"})) {
+	   my $fixed=fixed_lg_autocal_stimulus($step);
+	   $step->{"stimulus"}=defined($fixed) ? $fixed : $ire;
+	  }
+	  delete $step->{"target_luminance"};
+	  delete $step->{"target_Yn"};
+	  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+	  next if(!defined($target_lum_y));
+	  annotate_reading_target($reading,$white_y,$target_lum_y,$target_x,$target_y);
+  $updated++;
+  $peak_target_luminance=$target_lum_y if(autocal_step_is_peak_headroom($step));
+	 }
+	 if(!defined($peak_target_luminance) && ref($state->{"steps"}) eq "ARRAY") {
+	  foreach my $candidate (@{$state->{"steps"}}) {
+	   next if(ref($candidate) ne "HASH" || !autocal_step_is_peak_headroom($candidate));
+	   my $step=clone_picture($candidate);
+	   my $ire=$step->{"ire"}+0;
+	   if(!defined($step->{"stimulus"})) {
+	    my $fixed=fixed_lg_autocal_stimulus($step);
+	    $step->{"stimulus"}=defined($fixed) ? $fixed : $ire;
+	   }
+	   delete $step->{"target_luminance"};
+	   delete $step->{"target_Yn"};
+	   my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+	   next if(!defined($target_lum_y));
+	   $peak_target_luminance=$target_lum_y;
+	   last;
+	  }
+	 }
+	 if(defined($peak_target_luminance) && $peak_target_luminance > 0) {
+	  $state->{"headroom_target_luminance"}=$peak_target_luminance;
+	  $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_luminance;
  }
- return $$white_y_ref if(!defined($derived) || $derived <= 0);
- if(ref($state) eq "HASH") {
-  $state->{"peak_headroom_luminance"}=luminance($reading) if(defined(luminance($reading)));
-  $state->{"peak_headroom_reference"}=$derived;
-  set_state_white_reference($state,$derived);
- }
- my $Y=luminance($reading);
- annotate_reading_target($reading,$derived,$Y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($Y) && $Y > 0);
- return $derived;
+ return $updated;
 }
 
 sub lg_extended_sdr_16_255_enabled {
@@ -821,29 +941,20 @@ sub stimulus_scan_steps {
 	 return @out;
 }
 
-sub delta_e_luv_chroma {
- my ($reading,$white_y,$target_x,$target_y)=@_;
- return undef if(ref($reading) ne "HASH");
- my $x=$reading->{"x"};
- my $y=$reading->{"y"};
- my $Y=luminance($reading);
- return undef if(!defined($x) || !defined($y) || !defined($Y) || !defined($white_y) || $white_y <= 0);
- return undef if($x <= 0 || $y <= 0);
- my ($u,$v)=uv_prime($x+0,$y+0);
- my ($tu,$tv)=uv_prime($target_x,$target_y);
- my $L=lstar($Y/$white_y);
- return 13*$L*sqrt(($u-$tu)*($u-$tu)+($v-$tv)*($v-$tv));
+sub delta_e_itp {
+ my ($reading,$target_x,$target_y,$target_luminance,$chroma_only)=@_;
+ my $actual=reading_xyz($reading);
+ return undef if(ref($actual) ne "ARRAY");
+ my $Y=$chroma_only ? luminance($reading) : $target_luminance;
+ return undef if(!defined($Y));
+ my $target=xyz_from_xyy($target_x,$target_y,$Y);
+ return undef if(ref($target) ne "ARRAY");
+ return delta_e_itp_xyz($actual,$target);
 }
 
-sub delta_e_luv_gamma {
- my ($reading,$white_y,$target_x,$target_y,$target_luminance)=@_;
- my $chroma=delta_e_luv_chroma($reading,$white_y,$target_x,$target_y);
- return $chroma if(!defined($target_luminance) || !defined($white_y) || $white_y <= 0 || $target_luminance <= 0);
- my $Y=luminance($reading);
- return $chroma if(!defined($Y));
- my $luma=abs(lstar($Y/$white_y)-lstar($target_luminance/$white_y));
- $chroma=0 if(!defined($chroma));
- return sqrt($chroma*$chroma + $luma*$luma);
+sub autocal_delta_e_for_step {
+ my ($reading,$white_y,$target_x,$target_y,$target_luminance,$step)=@_;
+ return delta_e_itp($reading,$target_x,$target_y,$target_luminance,autocal_step_ignores_luminance_error($step));
 }
 
 sub luminance_error_ratio {
@@ -927,10 +1038,7 @@ sub low_shadow_delta_acceptance {
  my ($step,$target_delta)=@_;
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
  return $target_delta if(!autocal_step_is_low_shadow($step));
- my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
- my $limit=($ire <= 3.1) ? 5.0 : 4.0;
- my $floor=$target_delta+0.75;
- return $limit > $floor ? $limit : $floor;
+ return $target_delta+0.75;
 }
 
 sub target_reached {
@@ -981,12 +1089,13 @@ sub autocal_result_score {
 		 my ($de,$lum_pct,$step)=@_;
 			 my $score=defined($de) ? ($de+0) : 9999;
 			 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+			 return $score if(autocal_step_ignores_luminance_error($step));
 			 return $score if($ire <= 5 && $score <= 4.0 && !low_ire_luminance_needs_tuning($step,$lum_pct));
 			 return $score if(!defined($lum_pct));
 		 my $tol=luminance_tolerance_percent($step);
 		 my $excess=abs($lum_pct)-$tol;
 		 return $score if($excess <= 0);
-		 # delta_e_luv_gamma already contains a perceptual luminance term. Keep
+		 # ΔE ITP already contains a perceptual luminance term. Keep
 		 # Y/gamma as a tie-breaker, but do not let it preserve a visibly worse
 		 # RGB balance just because the luminance was slightly closer.
 		 my $penalty=$excess*0.35;
@@ -996,6 +1105,10 @@ sub autocal_result_score {
 
 sub headroom_autocal_result_score {
  my ($de,$reading,$step)=@_;
+ if(autocal_step_is_peak_headroom($step)) {
+  my $floor=headroom_floor_balance($reading);
+  return $floor->{"score"} if(ref($floor) eq "HASH");
+ }
  my $err=rgb_error($reading);
  return defined($de) ? ($de+0) : 9999 if(ref($err) ne "HASH");
  my $max=0;
@@ -1009,8 +1122,41 @@ sub headroom_autocal_result_score {
  return ($max*100)+($sum*10)+$de_tiebreak;
 }
 
+sub headroom_floor_balance {
+ my ($reading)=@_;
+ my $err=rgb_balance_error($reading);
+ return undef if(ref($err) ne "HASH");
+ my @channels=qw(r g b);
+ my @ordered=sort { ($err->{$a}||0) <=> ($err->{$b}||0) } @channels;
+ my $floor_ch=$ordered[0];
+ my $floor=$err->{$floor_ch}||0;
+ my $max_gap=0;
+ my $sum_gap=0;
+ my %gaps;
+ foreach my $ch (@channels) {
+  my $gap=($err->{$ch}||0)-$floor;
+  $gap=0 if($gap < 0);
+  $gaps{$ch}=$gap;
+  $max_gap=$gap if($gap > $max_gap);
+  $sum_gap+=$gap;
+ }
+ return {
+  floor_channel=>$floor_ch,
+  floor=>$floor,
+  max_gap=>$max_gap,
+  sum_gap=>$sum_gap,
+  gaps=>\%gaps,
+  errors=>$err,
+  score=>($max_gap*100)+($sum_gap*5),
+ };
+}
+
 sub headroom_rgb_balance_error {
  my ($reading,$step)=@_;
+ if(autocal_step_is_peak_headroom($step)) {
+  my $floor=headroom_floor_balance($reading);
+  return $floor->{"max_gap"} if(ref($floor) eq "HASH");
+ }
  my $err=rgb_error($reading);
  return undef if(ref($err) ne "HASH");
  my $max=0;
@@ -1051,7 +1197,7 @@ sub headroom_needs_fine_tune {
  my ($de,$target_delta,$reading,$step)=@_;
  return 0 if(!autocal_step_is_fast_headroom($step));
  return 1 if(!defined($de));
- if(ref($reading) eq "HASH" && defined($reading->{"target_luminance"})) {
+ if(!autocal_step_ignores_luminance_error($step) && ref($reading) eq "HASH" && defined($reading->{"target_luminance"})) {
   my $lum_pct=luminance_error_percent($reading,$reading->{"target_luminance"});
   return 1 if(defined($lum_pct) && abs($lum_pct) > luminance_tolerance_percent($step));
  }
@@ -1085,7 +1231,7 @@ sub guarded_autocal_result_score {
  }
 	 if(autocal_step_is_fast_headroom($step)) {
 	  my $headroom_score=headroom_autocal_result_score($de,$reading,$step);
-	  if(defined($lum_pct)) {
+	  if(defined($lum_pct) && !autocal_step_ignores_luminance_error($step)) {
 	   my $excess=abs($lum_pct)-luminance_tolerance_percent($step);
 	   if($excess > 0) {
 	    my $penalty=$excess*1.60;
@@ -1096,6 +1242,63 @@ sub guarded_autocal_result_score {
 	  return $headroom_score;
  }
  return $score;
+}
+
+sub autocal_de_epsilon_for_best_update {
+ my ($step)=@_;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+ return 0.08 if(autocal_step_is_fast_headroom($step));
+ return 0.02 if($ire <= 10);
+ return 0.04;
+}
+
+sub autocal_step_uses_raw_itp_best_update {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return ($ire > 0 && $ire <= 7.5001) ? 1 : 0;
+}
+
+sub autocal_luminance_regresses_too_far_for_best_update {
+ my ($candidate_lum_pct,$best_lum_pct,$step)=@_;
+ return 0 if(!defined($candidate_lum_pct) || !defined($best_lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+ if(autocal_step_is_fast_headroom($step)) {
+  my $limit=luminance_tolerance_percent($step)*6;
+  $limit=10 if($limit < 10);
+  return abs($candidate_lum_pct) > $limit ? 1 : 0;
+ }
+ my $tol=luminance_tolerance_percent($step);
+ my $candidate_excess=abs($candidate_lum_pct)-$tol;
+ my $best_excess=abs($best_lum_pct)-$tol;
+ $candidate_excess=0 if($candidate_excess < 0);
+ $best_excess=0 if($best_excess < 0);
+ my $allow=($ire <= 10) ? $tol : (($ire <= 25) ? ($tol*0.5) : 0.25);
+ return $candidate_excess > ($best_excess+$allow) ? 1 : 0;
+}
+
+sub autocal_best_update_reason {
+ my ($candidate_de,$candidate_score,$best_de,$best_score,$candidate_lum_pct,$best_lum_pct,$step,$reading,$white_guard_y)=@_;
+ return undef if(!defined($candidate_de));
+ return undef if(white_luminance_guard_failed($step,$reading,$white_guard_y));
+ if(autocal_step_ignores_luminance_error($step)) {
+  return undef if(!defined($candidate_score) || !defined($best_score));
+  return ($candidate_score + 0.0001 < $best_score) ? "headroom_balance" : undef;
+ }
+ if(autocal_step_uses_raw_itp_best_update($step)) {
+  return "raw_itp_delta_e" if(!defined($best_de) || ($candidate_de+0) < ($best_de+0));
+  return undef;
+ }
+ return "delta_e_fallback" if(
+  defined($best_de) &&
+  ($candidate_de+autocal_de_epsilon_for_best_update($step)) < ($best_de+0) &&
+  !autocal_luminance_regresses_too_far_for_best_update($candidate_lum_pct,$best_lum_pct,$step)
+ );
+ return undef if(!defined($candidate_score) || !defined($best_score));
+ return undef if($candidate_score + 0.0001 >= $best_score);
+ return "score" if(!defined($best_de));
+ return "score" if($candidate_de <= ($best_de+autocal_de_epsilon_for_best_update($step)));
+ return undef;
 }
 
 sub guarded_target_reached {
@@ -1595,7 +1798,6 @@ sub neutral_luminance_adjustments {
 			  foreach my $mag (@magnitudes) {
 			   my $current=$arr->[$idx]||0;
 			   my $next=clamp_ddc_value($current+($direction*$mag));
-			   $next=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $luminance_err < 0 && $current < 0 && $next < 0);
 			   next if(abs($next-$current) < 0.0001 || repeated_value($tried,$setting,$next));
 			   return [{ channel=>"lum", setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1 }];
 			  }
@@ -1658,6 +1860,77 @@ sub low_shadow_luminance_priority_adjustments {
   }
  }
  return $adjustments;
+}
+
+sub deep_shadow_chroma_priority_adjustment {
+ my ($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_step,$max_step,$micro)=@_;
+ my $trace_shadow=sub {
+  my ($reason,$extra)=@_;
+  $extra={} if(ref($extra) ne "HASH");
+  my %data=(reason=>$reason);
+  foreach my $key (keys %{$extra}) {
+   $data{$key}=$extra->{$key};
+  }
+  trace_109($step,"deep_shadow_chroma_priority_adjustment",\%data);
+ };
+ if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH") {
+  $trace_shadow->("invalid_input",{de=>defined($de)?$de+0:undef});
+  return undef;
+ }
+ if(!has_luminance_channel($arrays,$target)) {
+  $trace_shadow->("no_luminance_channel",{de=>defined($de)?$de+0:undef});
+  return undef;
+ }
+ if(ref($step) ne "HASH" || !defined($step->{"ire"})) {
+  $trace_shadow->("invalid_input",{de=>defined($de)?$de+0:undef});
+  return undef;
+ }
+ my $ire=$step->{"ire"}+0;
+ if($ire <= 0 || $ire > 2.31) {
+  $trace_shadow->("not_deep_shadow",{ire=>$ire,de=>defined($de)?$de+0:undef});
+  return undef;
+ }
+ $luminance_err=0 if(!defined($luminance_err));
+ my $lum_pct=$luminance_err*100;
+ my $luma_tol=luminance_tolerance_percent($step);
+ if(abs($lum_pct) > $luma_tol) {
+  $trace_shadow->("luma_not_close",{ire=>$ire,de=>defined($de)?$de+0:undef,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0});
+  return undef;
+ }
+ if(!defined($de) || $de < 2.0) {
+  $trace_shadow->("de_too_low",{ire=>$ire,de=>defined($de)?$de+0:undef,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0});
+  return undef;
+ }
+ my $chroma_mag=chroma_error_magnitude($error);
+ if($chroma_mag < 0.020) {
+  $trace_shadow->("chroma_too_low",{ire=>$ire,de=>$de+0,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0,chroma_mag=>$chroma_mag+0});
+  return undef;
+ }
+ $min_step ||= 0.25;
+ $max_step ||= ($micro ? 0.5 : 2);
+ my @channels=sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
+ foreach my $ch (@channels) {
+  my $err=$error->{$ch}||0;
+  next if(abs($err) < rgb_error_floor($de,0.5,$micro ? 1 : 0));
+  my $setting=channel_setting($ch);
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY");
+  my $idx=$target->{"index"};
+  next if(!defined($idx) || $idx >= @{$arr});
+  my $current=$arr->[$idx]||0;
+  my $step_size=adjustment_step(abs($err),$de,$stalls,$min_step);
+  $step_size=$max_step if($step_size > $max_step);
+  my $direction=($err > 0) ? -1 : 1;
+  foreach my $dir ($direction,-$direction) {
+   my ($next,$damped)=next_untried_value($current,$dir*$step_size,$tried,$setting,$min_step);
+   next if(!defined($next));
+   next if(abs($next-$current) < 0.0001);
+   $trace_shadow->("selected",{ire=>$ire,de=>$de+0,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0,chroma_mag=>$chroma_mag+0,channel=>$ch,setting=>$setting,current=>$current+0,next=>$next+0,delta=>$next-$current,damped=>$damped ? 1 : 0,micro=>$micro ? 1 : 0});
+   return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, deep_shadow_chroma=>1, micro=>$micro ? 1 : 0 }];
+  }
+ }
+ $trace_shadow->("no_untried_channel",{ire=>$ire,de=>$de+0,luminance_error_pct=>$lum_pct+0,luminance_tolerance_pct=>$luma_tol+0,chroma_mag=>$chroma_mag+0});
+ return undef;
 }
 
 sub headroom_green_luminance_adjustment {
@@ -1737,6 +2010,49 @@ sub headroom_chroma_adjustment {
 	  return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, headroom_chroma=>1, micro=>$micro ? 1 : 0 }];
 	 }
 	 return undef;
+}
+
+sub peak_headroom_floor_adjustments {
+ my ($error,$arrays,$target,$de,$stalls,$tried,$min_step,$max_step)=@_;
+ return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ $min_step ||= 0.25;
+ $max_step ||= 10;
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my @channels=qw(r g b);
+ my $floor_ch=$target->{"peak_headroom_floor_channel"};
+ if(!$floor_ch || $floor_ch !~ /^(?:r|g|b)$/) {
+  my @ordered=sort { ($error->{$a}||0) <=> ($error->{$b}||0) } @channels;
+  $floor_ch=$ordered[0];
+  $target->{"peak_headroom_floor_channel"}=$floor_ch;
+ }
+ my $floor=$error->{$floor_ch}||0;
+ my $min_gap=rgb_error_floor($de,0.5,0);
+ $min_gap=0.0015 if($min_gap < 0.0015);
+ my @out;
+ foreach my $ch (sort { (($error->{$b}||0)-$floor) <=> (($error->{$a}||0)-$floor) } grep { $_ ne $floor_ch } @channels) {
+  my $gap=($error->{$ch}||0)-$floor;
+  next if($gap < $min_gap);
+  my $setting=channel_setting($ch);
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+  my $current=$arr->[$idx]||0;
+  my $step=adjustment_step($gap,$de,$stalls,$min_step);
+  $step=$max_step if($step > $max_step);
+  my ($next,$damped)=next_new_headroom_value($current,-$step,$tried,$setting,$min_step);
+  next if(!defined($next) || abs($next-$current) < 0.0001);
+  push @out,{
+   channel=>$ch,
+   setting=>$setting,
+   current=>$current,
+   next=>$next,
+   delta=>$next-$current,
+   damped=>$damped ? 1 : 0,
+   peak_floor_balance=>1,
+   floor_channel=>$floor_ch,
+  };
+ }
+ return @out ? \@out : undef;
 }
 
 sub headroom_rgb_luminance_adjustments {
@@ -1914,7 +2230,7 @@ sub probe_responsive_stimulus {
 	 my $err=rgb_error($reading);
 	 my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$step,$reading,$target_gamma,$signal_mode);
 	 my $lum_err=luminance_error_ratio($reading,$target_step_y);
-	 my $current_de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
+	 my $current_de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$step);
 	 my $current_lum_pct=luminance_error_percent($reading,$target_step_y);
 	 my $current_score=autocal_result_score($current_de,$current_lum_pct,$step);
 	 my $probe_adj=probe_adjustment($err,$arrays,$target,undef,$lum_err);
@@ -1944,7 +2260,7 @@ sub probe_responsive_stimulus {
 		  next if(ref($before) ne "HASH");
 		  my $candidate_target_y=effective_target_luminance_for_autocal_reading($white_y,$probe_step,$before,$target_gamma,$signal_mode);
 		  annotate_reading_target($before,$white_y,$candidate_target_y,$target_x,$target_y);
-		  my $candidate_de=delta_e_luv_gamma($before,$white_y,$target_x,$target_y,$candidate_target_y);
+		  my $candidate_de=autocal_delta_e_for_step($before,$white_y,$target_x,$target_y,$candidate_target_y,$probe_step);
 		  my $candidate_lum_pct=luminance_error_percent($before,$candidate_target_y);
 		  my $test_arrays=clone_arrays($base_arrays);
 	  $test_arrays->{$probe_adj->{"setting"}}[$target->{"index"}]=$probe_adj->{"next"};
@@ -2081,6 +2397,9 @@ sub choose_adjustments {
 			 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
 			 $luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));
 			 if(autocal_step_is_fast_headroom($step)) {
+			  if(autocal_step_is_peak_headroom($step)) {
+			   return peak_headroom_floor_adjustments($error,$arrays,$target,$de,$stalls,$tried,$min_step,10);
+			  }
 			  my $lum_pct=$luminance_err*100;
 			  my $luma_tol=luminance_tolerance_percent($step);
 			  my $chroma_mag=chroma_error_magnitude($error);
@@ -2103,6 +2422,8 @@ sub choose_adjustments {
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
 			 if(autocal_step_is_low_shadow($step)) {
+			  my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_step,2,0);
+			  return $shadow_chroma if($shadow_chroma);
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);
 			  return $shadow_luma if($shadow_luma);
 			 }
@@ -2171,6 +2492,8 @@ sub choose_micro_adjustments {
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
 			 if(autocal_step_is_low_shadow($step)) {
+			  my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_micro_step,$max_step,1);
+			  return $shadow_chroma if($shadow_chroma);
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);
 			  return $shadow_luma if($shadow_luma);
 			 }
@@ -2180,6 +2503,9 @@ sub choose_micro_adjustments {
 			  return $neutral if($neutral);
 			 }
 			 if(autocal_step_is_fast_headroom($step)) {
+			  if(autocal_step_is_peak_headroom($step)) {
+			   return peak_headroom_floor_adjustments($error,$arrays,$target,$de,$stalls,$tried,$min_micro_step,$max_step);
+			  }
 			  my $chroma_mag=chroma_error_magnitude($error);
 			  if(abs($lum_pct) > ($luma_tol*0.45) && $chroma_mag < 0.030) {
 			   my $luma_max_step=abs($luminance_err) >= 0.04 ? 1 : $max_step;
@@ -2445,6 +2771,7 @@ sub committed_state_polish {
  annotate_reading_target($white_reading,$white_y,$white_y,$target_x,$target_y);
  $state->{"readings"}=merge_reading($state->{"readings"},$white_reading);
  set_state_white_reference($state,$white_y);
+ refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
  $state->{"message"}="Committed white reference read complete";
  write_state($state);
 
@@ -2478,7 +2805,7 @@ sub committed_state_polish {
   next if(ref($reading) ne "HASH");
   my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-  my $de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
+  my $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
   my $lum_pct=luminance_error_percent($reading,$target_step_y);
   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
   $state->{"current_delta_e"}=defined($de) ? $de : undef;
@@ -2519,7 +2846,7 @@ sub committed_state_polish {
    last if(ref($reading) ne "HASH");
    $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
    annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-   $de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
+   $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
    $lum_pct=luminance_error_percent($reading,$target_step_y);
    mark_tried_values(\%tried_values,$arrays,$target,$de);
    $state->{"readings"}=merge_reading($state->{"readings"},$reading);
@@ -2569,6 +2896,7 @@ sub committed_state_polish {
      $state->{"readings"}=merge_reading($state->{"readings"},$candidate_white);
      $state->{"current_luminance"}=$candidate_y;
      set_state_white_reference($state,$white_y);
+     refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
      set_state_target_step_luminance($state,$white_y);
      $state->{"message"}="Committed white reference refreshed";
      write_state($state);
@@ -2955,7 +3283,7 @@ eval {
 		 my ($black_step)=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)) < 0.001 } @{$steps};
 		 my ($white_reference_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
 		 my $white_reference_is_adjustable=($white_reference_step && ddc_target_for_step($white_reference_step)) ? 1 : 0;
-		 my $refresh_white_after_headroom=0;
+		 my $refresh_white_after_headroom=($white_reference_step && !$white_reference_is_adjustable && ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 1 : 0;
 		 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0);
 
 		 my $white_y=($target_luminance > 0) ? $target_luminance : undef;
@@ -2985,6 +3313,8 @@ eval {
 		  $state->{"current_luminance"}=luminance($ref_reading);
 		  $state->{"current_delta_e"}=undef;
 		  set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step));
+		  refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)
+		   if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && autocal_step_is_white($read_step));
 		  set_state_target_step_luminance($state,$target_lum_y);
 		  write_state($state);
 		  return $ref_reading;
@@ -3045,7 +3375,7 @@ eval {
   $white_y ||= 100;
 		  my $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 	  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-	  my $de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
+	  my $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
 		  my $best_de=defined($de) ? $de : 9999;
 			  my $best_lum_pct=undef;
 			  my $best_arrays=decode_json_safe($json->encode($arrays),{});
@@ -3142,24 +3472,26 @@ eval {
 		   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
 		   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 			   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-			   $de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
+			   $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
 			   $lum_pct=luminance_error_percent($reading,$target_step_y);
-				   my $probe_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
-					   if(defined($de) && $probe_score + 0.0001 < $best_score) {
-					    $best_de=$de;
-				    $best_lum_pct=$lum_pct;
-				    $best_score=$probe_score;
-				    $best_arrays=clone_arrays($arrays);
-					    $best_reading=clone_picture($reading);
-					   }
+			   my $probe_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+			   my $probe_best_update_reason=autocal_best_update_reason($de,$probe_score,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
+				   if($probe_best_update_reason) {
+				    $best_de=$de;
+			    $best_lum_pct=$lum_pct;
+			    $best_score=$probe_score;
+			    $best_arrays=clone_arrays($arrays);
+				    $best_reading=clone_picture($reading);
+				   }
 					   trace_109($read_step,"probe_applied",{
 					    label=>$label,
 					    reading=>trace_reading_summary($reading),
 					    delta_e=>defined($de)?$de+0:undef,
 					    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-					    score=>$probe_score+0,
-					    best_delta_e=>defined($best_de)?$best_de+0:undef,
-					    best_score=>$best_score+0,
+				    score=>$probe_score+0,
+				    best_update_reason=>$probe_best_update_reason,
+				    best_delta_e=>defined($best_de)?$best_de+0:undef,
+				    best_score=>$best_score+0,
 					    target_values=>trace_target_values($arrays,$target)
 					   });
 				   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
@@ -3251,7 +3583,7 @@ eval {
 		   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
 		   $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 		   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-		   $de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
+		   $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
 	   $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 	   $state->{"current_delta_e"}=defined($de) ? $de : undef;
 	   $state->{"current_luminance"}=luminance($reading);
@@ -3311,24 +3643,26 @@ eval {
 				    last if($probe_error && $probe_error eq "cancelled");
 					    $probe_found=1 if($apply_probe_result->($probe_step,$probe_reading,$probe_arrays,$probe_picture));
 					   }
-					   if($probe_found) {
-					    # The probe already reset the baseline to the responsive patch stimulus.
-					    $iter-- if($iter > 0);
-					   } elsif(defined($de) && $candidate_score_after + 0.0001 < $best_score) {
-				    $best_de=$de;
-				    $best_lum_pct=$lum_pct;
-				    $best_score=$candidate_score_after;
-				    $best_arrays=clone_arrays($arrays);
-					    $best_reading=clone_picture($reading);
+					   my $best_update_reason=autocal_best_update_reason($de,$candidate_score_after,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
+				   if($probe_found) {
+				    # The probe already reset the baseline to the responsive patch stimulus.
+				    $iter-- if($iter > 0);
+				   } elsif($best_update_reason) {
+			    $best_de=$de;
+			    $best_lum_pct=$lum_pct;
+			    $best_score=$candidate_score_after;
+			    $best_arrays=clone_arrays($arrays);
+				    $best_reading=clone_picture($reading);
 					    $stalls=0;
 					    trace_109($read_step,"best_updated",{
 					     label=>$label,
 					     iteration=>$iter+0,
-					     best_delta_e=>defined($best_de)?$best_de+0:undef,
-					     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-					     best_score=>$best_score+0,
-					     best_values=>trace_target_values($best_arrays,$target)
-					    });
+				     best_delta_e=>defined($best_de)?$best_de+0:undef,
+				     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+				     best_score=>$best_score+0,
+					     best_update_reason=>$best_update_reason,
+				     best_values=>trace_target_values($best_arrays,$target)
+				    });
 		   } else {
 			    $stalls++;
 			    my $candidate_score=$candidate_score_after;
@@ -3345,12 +3679,14 @@ eval {
 			     candidate_values=>trace_target_values($arrays,$target),
 			     best_values=>trace_target_values($best_arrays,$target)
 			    });
-		    my $backtrack_ready=(defined($best_de) && $best_de <= 2.0) ? 1 : 0;
-		    $backtrack_ready=1 if(!$backtrack_ready && autocal_step_is_white($read_step) && defined($best_de) && $best_de <= 5.0);
-		    $backtrack_ready=1 if(!$backtrack_ready && defined($best_de) && $best_de <= 5.0 && defined($best_lum_pct) && abs($best_lum_pct) <= luminance_tolerance_percent($read_step));
-	    if(($backtrack_ready || white_luminance_guard_failed($read_step,$reading,$white_guard_y)) && $candidate_score > $best_score+0.02 && !guarded_target_reached($de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y)) {
-	     $restore_best_branch->("Backtracking to best $label result");
-	    }
+			    my $backtrack_ready=(defined($best_de) && $best_de <= 2.0) ? 1 : 0;
+			    $backtrack_ready=1 if(!$backtrack_ready && autocal_step_is_white($read_step) && defined($best_de) && $best_de <= 5.0);
+			    $backtrack_ready=1 if(!$backtrack_ready && defined($best_de) && $best_de <= 5.0 && defined($best_lum_pct) && abs($best_lum_pct) <= luminance_tolerance_percent($read_step));
+			    # Re-anchor after repeated misses even when the absolute dE is still high.
+			    $backtrack_ready=1 if(!$backtrack_ready && $stalls >= 3 && defined($best_de));
+		    if(($backtrack_ready || white_luminance_guard_failed($read_step,$reading,$white_guard_y)) && $candidate_score > $best_score+0.02 && !guarded_target_reached($de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y)) {
+		     $restore_best_branch->("Backtracking to best $label result");
+		    }
 		   }
 		   $state->{"best_delta_e"}=$best_de;
 		   $state->{"best_score"}=$best_score;
@@ -3476,7 +3812,7 @@ eval {
 		    $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
 		    $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 		    annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-		    $de=delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_step_y);
+		    $de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$target_step_y,$read_step);
 		    $lum_pct=luminance_error_percent($reading,$target_step_y);
 		    mark_tried_values(\%polish_tried,$arrays,$target,$de);
 		    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
@@ -3501,7 +3837,8 @@ eval {
 			     rgb_error=>rgb_error($reading),
 			     target_values=>trace_target_values($arrays,$target)
 			    });
-			    if(defined($de) && $candidate_score + 0.0001 < $best_score) {
+			    my $fine_tune_best_update_reason=autocal_best_update_reason($de,$candidate_score,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
+			    if($fine_tune_best_update_reason) {
 			     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
 		     $best_score=$candidate_score;
@@ -3514,6 +3851,7 @@ eval {
 			      best_delta_e=>defined($best_de)?$best_de+0:undef,
 			      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 			      best_score=>$best_score+0,
+			      best_update_reason=>$fine_tune_best_update_reason,
 			      best_values=>trace_target_values($best_arrays,$target)
 			     });
 			    } else {
@@ -3544,11 +3882,20 @@ eval {
 				  if(autocal_step_is_white($read_step)) {
 				   $white_y=update_white_reference_for_step($read_step,$best_reading,$white_y);
 				   set_state_white_reference($state,$white_y);
+				   refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)
+				    if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
 				   $best_lum_pct=undef;
 				   set_state_target_step_luminance($state,undef);
 				  } elsif(autocal_step_is_peak_headroom($read_step)) {
-				   my $peak_target_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode);
 				   apply_peak_headroom_reference($state,$read_step,$best_reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
+				   my $peak_target_y=target_luminance_for_step($white_y,$read_step,$target_gamma,$signal_mode);
+				   $peak_target_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode) if(!defined($peak_target_y));
+				   if(defined($peak_target_y) && $peak_target_y > 0) {
+				    $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_y;
+				    $state->{"headroom_target_luminance"}=$peak_target_y;
+				    annotate_reading_target($best_reading,$white_y,$peak_target_y,$target_x,$target_y);
+				    annotate_reading_target($reading,$white_y,$peak_target_y,$target_x,$target_y);
+				   }
 				   $best_lum_pct=luminance_error_percent($best_reading,$peak_target_y);
 				   set_state_target_step_luminance($state,$peak_target_y);
 				   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
@@ -3595,7 +3942,7 @@ eval {
 			   next if(ref($verify_reading) ne "HASH");
 			   my $verify_target_y=target_luminance_for_step($white_y,$verify_step,$target_gamma,$signal_mode);
 			   annotate_reading_target($verify_reading,$white_y,$verify_target_y,$target_x,$target_y);
-			   my $verify_de=delta_e_luv_gamma($verify_reading,$white_y,$target_x,$target_y,$verify_target_y);
+			   my $verify_de=autocal_delta_e_for_step($verify_reading,$white_y,$target_x,$target_y,$verify_target_y,$verify_step);
 			   my $verify_lum_pct=luminance_error_percent($verify_reading,$verify_target_y);
 			   $state->{"readings"}=merge_reading($state->{"readings"},$verify_reading);
 			   $state->{"current_delta_e"}=defined($verify_de) ? $verify_de : undef;
