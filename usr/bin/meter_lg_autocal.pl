@@ -631,12 +631,16 @@ sub update_white_reference_for_step {
 }
 
 sub target_luminance_for_autocal_step {
-	 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
-	 return undef if(autocal_step_is_white($step));
-	 return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if(autocal_step_is_peak_headroom($step) && $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);
-	 return undef if(autocal_step_is_peak_headroom($step));
-	 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
-}
+		 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
+		 return undef if(autocal_step_is_white($step));
+		 if(autocal_step_is_peak_headroom($step)) {
+		  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+		  return $target_lum_y if(defined($target_lum_y));
+		  return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);
+		  return undef;
+		 }
+		 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+	}
 
 sub effective_target_luminance_for_autocal_reading {
  my ($white_y,$step,$reading,$target_gamma,$signal_mode)=@_;
@@ -663,33 +667,45 @@ sub derived_white_reference_from_peak_headroom {
 }
 
 sub apply_peak_headroom_reference {
- my ($state,$step,$reading,$white_y_ref,$target_gamma,$signal_mode,$target_x,$target_y)=@_;
- return undef if(ref($white_y_ref) ne "SCALAR");
- return $$white_y_ref if(!autocal_step_is_peak_headroom($step));
- my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
- $$white_y_ref=$derived if(defined($derived) && $derived > 0);
- my $effective_white=$$white_y_ref;
- if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0) {
-  if(ref($state) eq "HASH") {
-   $state->{"peak_headroom_luminance"}=luminance($reading) if(defined(luminance($reading)));
-   $state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));
-   $state->{"headroom_target_luminance"}=$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE;
-   set_state_white_reference($state,$effective_white) if(defined($effective_white) && $effective_white > 0);
-  }
-  annotate_reading_target($reading,$effective_white,$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE,$target_x,$target_y)
-   if(ref($reading) eq "HASH" && defined($effective_white) && $effective_white > 0);
-  return $effective_white;
- }
- return $$white_y_ref if(!defined($derived) || $derived <= 0);
- if(ref($state) eq "HASH") {
-  $state->{"peak_headroom_luminance"}=luminance($reading) if(defined(luminance($reading)));
-  $state->{"peak_headroom_reference"}=$derived;
-  set_state_white_reference($state,$derived);
- }
- my $Y=luminance($reading);
- annotate_reading_target($reading,$derived,$Y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($Y) && $Y > 0);
- return $derived;
-}
+	 my ($state,$step,$reading,$white_y_ref,$target_gamma,$signal_mode,$target_x,$target_y)=@_;
+	 return undef if(ref($white_y_ref) ne "SCALAR");
+	 return $$white_y_ref if(!autocal_step_is_peak_headroom($step));
+	 my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
+	 $$white_y_ref=$derived if(defined($derived) && $derived > 0);
+	 my $effective_white=$$white_y_ref;
+	 my $reading_y=luminance($reading);
+	 if(ref($state) eq "HASH") {
+	  $state->{"peak_headroom_luminance"}=$reading_y if(defined($reading_y));
+	  $state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));
+	  set_state_white_reference($state,$effective_white) if(defined($effective_white) && $effective_white > 0);
+	 }
+	 my $peak_target_y=(defined($effective_white) && $effective_white > 0) ? target_luminance_for_step($effective_white,$step,$target_gamma,$signal_mode) : undef;
+	 if(defined($peak_target_y) && $peak_target_y > 0) {
+	  $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_y;
+	  if(ref($state) eq "HASH") {
+	   $state->{"headroom_target_luminance"}=$peak_target_y;
+	   set_state_target_step_luminance($state,$peak_target_y);
+	  }
+	  annotate_reading_target($reading,$effective_white,$peak_target_y,$target_x,$target_y) if(ref($reading) eq "HASH");
+	  return $effective_white;
+	 }
+	 if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0) {
+	  if(ref($state) eq "HASH") {
+	   $state->{"headroom_target_luminance"}=$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE;
+	   set_state_target_step_luminance($state,$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE);
+	  }
+	  annotate_reading_target($reading,$effective_white,$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE,$target_x,$target_y)
+	   if(ref($reading) eq "HASH" && defined($effective_white) && $effective_white > 0);
+	  return $effective_white;
+	 }
+	 return $$white_y_ref if(!defined($derived) || $derived <= 0);
+	 if(ref($state) eq "HASH") {
+	  $state->{"peak_headroom_reference"}=$derived;
+	  set_state_white_reference($state,$derived);
+	 }
+	 annotate_reading_target($reading,$derived,$reading_y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($reading_y) && $reading_y > 0);
+	 return $derived;
+	}
 
 sub refresh_headroom_targets_from_white_reference {
  my ($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)=@_;
@@ -702,19 +718,38 @@ sub refresh_headroom_targets_from_white_reference {
   my $ire=$reading->{"ire"}+0;
   next if($ire < 105);
   my $step=clone_picture($reading);
-  if(!defined($step->{"stimulus"})) {
-   my $fixed=fixed_lg_autocal_stimulus($step);
-   $step->{"stimulus"}=defined($fixed) ? $fixed : $ire;
-  }
-  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
-  next if(!defined($target_lum_y));
-  annotate_reading_target($reading,$white_y,$target_lum_y,$target_x,$target_y);
+	  if(!defined($step->{"stimulus"})) {
+	   my $fixed=fixed_lg_autocal_stimulus($step);
+	   $step->{"stimulus"}=defined($fixed) ? $fixed : $ire;
+	  }
+	  delete $step->{"target_luminance"};
+	  delete $step->{"target_Yn"};
+	  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+	  next if(!defined($target_lum_y));
+	  annotate_reading_target($reading,$white_y,$target_lum_y,$target_x,$target_y);
   $updated++;
   $peak_target_luminance=$target_lum_y if(autocal_step_is_peak_headroom($step));
- }
- if(defined($peak_target_luminance) && $peak_target_luminance > 0) {
-  $state->{"headroom_target_luminance"}=$peak_target_luminance;
-  $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_luminance;
+	 }
+	 if(!defined($peak_target_luminance) && ref($state->{"steps"}) eq "ARRAY") {
+	  foreach my $candidate (@{$state->{"steps"}}) {
+	   next if(ref($candidate) ne "HASH" || !autocal_step_is_peak_headroom($candidate));
+	   my $step=clone_picture($candidate);
+	   my $ire=$step->{"ire"}+0;
+	   if(!defined($step->{"stimulus"})) {
+	    my $fixed=fixed_lg_autocal_stimulus($step);
+	    $step->{"stimulus"}=defined($fixed) ? $fixed : $ire;
+	   }
+	   delete $step->{"target_luminance"};
+	   delete $step->{"target_Yn"};
+	   my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+	   next if(!defined($target_lum_y));
+	   $peak_target_luminance=$target_lum_y;
+	   last;
+	  }
+	 }
+	 if(defined($peak_target_luminance) && $peak_target_luminance > 0) {
+	  $state->{"headroom_target_luminance"}=$peak_target_luminance;
+	  $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_luminance;
  }
  return $updated;
 }
@@ -1220,6 +1255,13 @@ sub autocal_de_epsilon_for_best_update {
  return 0.04;
 }
 
+sub autocal_step_uses_raw_itp_best_update {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return ($ire > 0 && $ire <= 7.5001) ? 1 : 0;
+}
+
 sub autocal_luminance_regresses_too_far_for_best_update {
  my ($candidate_lum_pct,$best_lum_pct,$step)=@_;
  return 0 if(!defined($candidate_lum_pct) || !defined($best_lum_pct));
@@ -1245,6 +1287,10 @@ sub autocal_best_update_reason {
  if(autocal_step_ignores_luminance_error($step)) {
   return undef if(!defined($candidate_score) || !defined($best_score));
   return ($candidate_score + 0.0001 < $best_score) ? "headroom_balance" : undef;
+ }
+ if(autocal_step_uses_raw_itp_best_update($step)) {
+  return "raw_itp_delta_e" if(!defined($best_de) || ($candidate_de+0) < ($best_de+0));
+  return undef;
  }
  return "delta_e_fallback" if(
   defined($best_de) &&
@@ -3769,8 +3815,15 @@ eval {
 				   $best_lum_pct=undef;
 				   set_state_target_step_luminance($state,undef);
 				  } elsif(autocal_step_is_peak_headroom($read_step)) {
-				   my $peak_target_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode);
 				   apply_peak_headroom_reference($state,$read_step,$best_reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
+				   my $peak_target_y=target_luminance_for_step($white_y,$read_step,$target_gamma,$signal_mode);
+				   $peak_target_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode) if(!defined($peak_target_y));
+				   if(defined($peak_target_y) && $peak_target_y > 0) {
+				    $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_y;
+				    $state->{"headroom_target_luminance"}=$peak_target_y;
+				    annotate_reading_target($best_reading,$white_y,$peak_target_y,$target_x,$target_y);
+				    annotate_reading_target($reading,$white_y,$peak_target_y,$target_x,$target_y);
+				   }
 				   $best_lum_pct=luminance_error_percent($best_reading,$peak_target_y);
 				   set_state_target_step_luminance($state,$peak_target_y);
 				   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
