@@ -1337,12 +1337,13 @@ sub guarded_target_reached {
 }
 
 sub paired_white_primary_regression_reason {
- my ($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$step,$reading,$best_reading,$white_guard_y)=@_;
+ my ($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$step,$reading,$best_reading,$white_guard_y,$cap_only)=@_;
  return undef if(!defined($de));
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
  my $limit=$target_delta+0.25;
  $limit=1.0 if($limit > 1.0);
  return "primary exceeds luminance-included ITP cap" if(!within_itp_luminance_included_acceptance($de,$step));
+ return undef if($cap_only);
  return "primary exceeds paired white limit" if($de > $limit);
  if(
   guarded_target_reached($best_de,$best_lum_pct,$target_delta,$step,$best_reading,$white_guard_y) &&
@@ -3555,7 +3556,7 @@ eval {
 			   $de=$primary_de;
 			   $lum_pct=$primary_lum_pct;
 			   $target_step_y=$primary_target_y;
-			   my $pair_primary_rejected=paired_white_primary_regression_reason($primary_de,$primary_lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y);
+			   my $pair_primary_rejected=paired_white_primary_regression_reason($primary_de,$primary_lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y,1);
 			   my $pair_under_cap=within_itp_luminance_included_acceptance($pair_de,$pair_step);
 			   if(!$pair_primary_rejected && $pair_under_cap && (!defined($paired_best_pair_score) || $pair_combined_score + 0.0001 < $paired_best_pair_score)) {
 			    $paired_best_arrays=clone_arrays($arrays);
@@ -3897,7 +3898,7 @@ eval {
 				    target_values=>trace_target_values($arrays,$target)
 				   });
 				   if($planning_from_paired) {
-				    my $paired_regression_reason=paired_white_primary_regression_reason($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y);
+				    my $paired_regression_reason=paired_white_primary_regression_reason($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y,1);
 				    if($paired_regression_reason) {
 				     $stalls++;
 				     trace_109($read_step,"paired_white_primary_rejected",{
@@ -3919,6 +3920,11 @@ eval {
 				     write_state($state);
 				     next;
 				    }
+				    last if($read_paired_white_validation->("Validating 100% legal white after paired $label adjustment"));
+				    $state->{"best_delta_e"}=$best_de;
+				    $state->{"best_score"}=$best_score;
+				    write_state($state);
+				    next;
 				   }
 				   my $no_response_threshold=(ref($read_step) eq "HASH" && defined($read_step->{"ire"}) && ($read_step->{"ire"}+0) <= 25) ? 0.012 : 0.006;
 			   if(adjustment_total($adjustments) >= 1 && $response_score < $no_response_threshold) {
@@ -4167,7 +4173,7 @@ eval {
 			     target_values=>trace_target_values($arrays,$target)
 			    });
 			    if($planning_from_paired) {
-			     my $paired_regression_reason=paired_white_primary_regression_reason($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y);
+			     my $paired_regression_reason=paired_white_primary_regression_reason($de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y,1);
 			     if($paired_regression_reason) {
 			      $polish_stalls++;
 			      trace_109($read_step,"paired_white_fine_tune_primary_rejected",{
@@ -4187,6 +4193,11 @@ eval {
 			      last if($polish_stalls >= 14);
 			      next;
 			     }
+			     last if($read_paired_white_validation->("Validating 100% legal white after paired $label fine tune"));
+			     $state->{"best_delta_e"}=$best_de;
+			     $state->{"best_score"}=$best_score;
+			     write_state($state);
+			     next;
 			    }
 			    my $fine_tune_best_update_reason=autocal_best_update_reason($de,$candidate_score,$best_de,$best_score,$lum_pct,$best_lum_pct,$read_step,$reading,$white_guard_y);
 			    if($fine_tune_best_update_reason) {
