@@ -108,7 +108,7 @@ sub cancelled {
 }
 
 sub api_json {
- my ($method,$path,$payload,$timeout,$ignore_cancel)=@_;
+ my ($method,$path,$payload,$timeout)=@_;
  $method ||= "GET";
  $timeout ||= 30;
  $timeout=1 if($timeout < 1);
@@ -128,7 +128,7 @@ sub api_json {
  my $buf="";
  my $selector=IO::Select->new($socket);
  while(1) {
-  return { status=>"error", message=>"cancelled" } if(!$ignore_cancel && cancelled());
+  return { status=>"error", message=>"cancelled" } if(cancelled());
   my $remaining=$deadline-time();
   if($remaining <= 0) {
    close($socket);
@@ -856,9 +856,6 @@ sub read_step_once {
 sub fixture_reading_for_step {
  my ($step,$config)=@_;
  return undef if(!$config->{"fixture_mode"});
- if($config->{"fixture_zero_green_profile"} && ($step->{"kind"}||"") eq "green" && ($step->{"phase"}||"") eq "profile" && ($step->{"level"}||0) >= 99) {
-  return { X=>0, Y=>0, Z=>0, x=>0.3333, y=>0.3333, luminance=>0, timestamp=>time() };
- }
  my $level=($step->{"level"}||0)/100;
  my $gamma=target_gamma_linear($level,$config->{"target_gamma"}||"bt1886");
  my $kind=$step->{"kind"}||"black";
@@ -868,10 +865,7 @@ sub fixture_reading_for_step {
  elsif($kind eq "red") { $xyz=bt709_rgb_to_xyz($gamma,0,0,100); }
  elsif($kind eq "green") { $xyz=bt709_rgb_to_xyz(0,$gamma,0,100); }
  else { $xyz=bt709_rgb_to_xyz(0,0,$gamma,100); }
- my $sum=($xyz->[0]||0)+($xyz->[1]||0)+($xyz->[2]||0);
- my $x=$sum > 0 ? $xyz->[0]/$sum : 0;
- my $y=$sum > 0 ? $xyz->[1]/$sum : 0;
- return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>$x, y=>$y, luminance=>$xyz->[1], timestamp=>time() };
+ return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>0, y=>0, luminance=>$xyz->[1], timestamp=>time() };
 }
 
 sub read_step {
@@ -891,97 +885,6 @@ sub read_step {
   sleep(1+$i);
  }
  return (undef,$last||"Meter read failed");
-}
-
-sub profile_reading_invalid_reason {
- my ($step,$reading,$white_y)=@_;
- return undef if(ref($step) ne "HASH" || ($step->{"phase"}||"") eq "post_check");
- return "missing reading" if(ref($reading) ne "HASH");
- my $kind=$step->{"kind"}||"";
- my $level=defined($step->{"level"}) ? ($step->{"level"}+0) : 0;
- my $xyz=reading_xyz($reading);
- return "missing XYZ" if(!$xyz);
- my ($x,$y)=(defined($reading->{"x"}) ? $reading->{"x"}+0 : undef, defined($reading->{"y"}) ? $reading->{"y"}+0 : undef);
- my $all_zero=(abs($xyz->[0])+abs($xyz->[1])+abs($xyz->[2]) < 0.000001) ? 1 : 0;
- return undef if($kind eq "black" || $level <= 0);
- return "zero XYZ for non-black $kind $level%" if($all_zero);
- return undef if($level < 99 || ($kind ne "white" && $kind ne "red" && $kind ne "green" && $kind ne "blue"));
- return "implausible chromaticity for $kind $level%" if(!defined($x) || !defined($y) || $x <= 0 || $y <= 0 || $x >= 0.9 || $y >= 0.9);
- if($kind eq "white") {
-  return "white 100% luminance is too low ($xyz->[1])" if(($xyz->[1]||0) < 5);
-  return "white 100% chromaticity is implausible ($x,$y)" if($x < 0.20 || $x > 0.50 || $y < 0.20 || $y > 0.50);
-  return undef;
- }
- my $wy=(defined($white_y) && $white_y > 0) ? $white_y : 100;
- my %min_ratio=(red=>0.02, green=>0.08, blue=>0.005);
- my $min_y=$wy*($min_ratio{$kind}||0.005);
- $min_y=1 if($min_y < 1 && $kind ne "blue");
- $min_y=0.35 if($min_y < 0.35);
- return "$kind 100% luminance is too low ($xyz->[1] < $min_y)" if(($xyz->[1]||0) < $min_y);
- return "red 100% chromaticity is implausible ($x,$y)" if($kind eq "red" && ($x < 0.40 || $y > 0.50));
- return "green 100% chromaticity is implausible ($x,$y)" if($kind eq "green" && ($x > 0.45 || $y < 0.40));
- return "blue 100% chromaticity is implausible ($x,$y)" if($kind eq "blue" && ($x > 0.30 || $y > 0.25));
- return undef;
-}
-
-sub read_profile_step_validated {
- my ($config,$step,$state,$white_y)=@_;
- my $attempts=3;
- my $last_reason="";
- for(my $attempt=1;$attempt<=$attempts;$attempt++) {
-  my ($reading,$error)=read_step($config,$step,$state);
-  return (undef,$error) if($error);
-  my $reason=profile_reading_invalid_reason($step,$reading,$white_y);
-  return ($reading,undef) if(!$reason);
-  $last_reason=$reason;
-  log_line("Rejected ".($step->{"name"}||"profile patch")." read: $reason");
-  $state->{"message"}="Rejected ".($step->{"name"}||"profile patch")." read: $reason".($attempt<$attempts ? " - retrying" : "");
-  write_state($state);
-  api_json("POST","/api/meter/session/stop",undef,25);
-  sleep(1+$attempt) if(!$config->{"fixture_mode"});
- }
- return (undef,"Invalid profile read for ".($step->{"name"}||"patch").": ".$last_reason);
-}
-
-sub validate_profile_readings_or_die {
- my ($method,$entries)=@_;
- my $white_y;
- foreach my $entry (@{$entries||[]}) {
-  next if(ref($entry) ne "HASH");
-  my $step=$entry->{"step"}||{};
-  next unless(($step->{"kind"}||"") eq "white" && ($step->{"level"}||0) >= 99);
-  my $xyz=reading_xyz($entry->{"reading"}||{});
-  $white_y=$xyz->[1] if($xyz && (!defined($white_y) || $white_y <= 0));
- }
- my @errors;
- foreach my $entry (@{$entries||[]}) {
-  next if(ref($entry) ne "HASH");
-  my $reason=profile_reading_invalid_reason($entry->{"step"}||{},$entry->{"reading"}||{},$white_y);
-  push @errors, (($entry->{"step"}||{})->{"name"}||"profile patch").": $reason" if($reason);
- }
- die "Invalid 3D LUT profile readings: ".join("; ",@errors)."\n" if(@errors);
-}
-
-sub validate_model_or_die {
- my ($model)=@_;
- die "3D LUT model did not build\n" if(ref($model) ne "HASH");
- my $white_y=$model->{"white_y"}||0;
- die "3D LUT model white reference is invalid\n" if($white_y < 5);
- foreach my $kind (qw(red green blue)) {
-  my $v=$model->{"contrib"}{$kind}{100};
-  die "3D LUT model missing $kind 100% primary\n" if(ref($v) ne "ARRAY");
-  my %min_ratio=(red=>0.02, green=>0.08, blue=>0.005);
-  my $min=$white_y*($min_ratio{$kind}||0.005);
-  $min=1 if($min < 1 && $kind ne "blue");
-  $min=0.35 if($min < 0.35);
-  die "3D LUT model $kind 100% primary is invalid\n" if(($v->[1]||0) < $min);
- }
- my $peak=matrix_for_level($model,100);
- die "3D LUT model primary matrix is singular\n" if(!matrix_inverse($peak));
-}
-
-sub clear_active_pattern {
- api_json("POST","/api/pattern",{ name=>"stop" },10,1);
 }
 
 sub post_check_steps {
@@ -1037,42 +940,6 @@ sub upload_requested {
  return ($config->{"upload"} || ($config->{"output"}||"") eq "upload") ? 1 : 0;
 }
 
-sub lg_3d_upload_failure_is_transient {
- my ($message)=@_;
- $message="" if(!defined($message));
- return ($message =~ /(?:Unable to connect|connection|connect|timed?\s*out|timeout|closed|broken pipe|reset by peer|no route|network is unreachable|temporar|Web UI API timed out|Web UI API read failed)/i) ? 1 : 0;
-}
-
-sub upload_generated_lut_verified {
- my ($config,$state,$export,$probe)=@_;
- my $attempts=3;
- my $last;
- for(my $attempt=1;$attempt<=$attempts;$attempt++) {
-  die "cancelled\n" if(cancelled());
-  $state->{"phase"}="upload";
-  $state->{"current_name"}="Uploading LG 3D LUT";
-  $state->{"message"}="Writing generated BT.709 3D LUT".($attempt>1 ? " (retry $attempt/$attempts)" : "");
-  write_state($state);
-  my $upload=api_json("POST","/api/lg/3d-lut/upload",{
-   picture_mode => $config->{"picture_mode"}||"",
-   payload_path => $export->{"payload_path"},
-   upload_command => $probe->{"upload_command"}||"",
-   get_command => $probe->{"get_command"}||"",
-   helper_timeout => 220,
-  },240);
-  $last=$upload;
-  $state->{"upload"}=$upload;
-  $state->{"upload_supported"}=json_true();
-  $state->{"upload_verified"}=(ref($upload) eq "HASH" && $upload->{"upload_verified"}) ? json_true() : json_false();
-  write_state($state);
-  return $upload if(ref($upload) eq "HASH" && ($upload->{"status"}||"") eq "ok" && $upload->{"upload_verified"});
-  my $message=(ref($upload) eq "HASH") ? ($upload->{"message"}||"LG 3D LUT upload did not verify") : "LG 3D LUT upload did not verify";
-  last if($attempt >= $attempts || !lg_3d_upload_failure_is_transient($message));
-  sleep(2+$attempt);
- }
- return $last;
-}
-
 sub reset_3d_lut_to_unity_before_profile {
  my ($config,$state)=@_;
  return undef if(!upload_requested($config) || $config->{"fixture_mode"});
@@ -1099,40 +966,6 @@ sub reset_3d_lut_to_unity_before_profile {
  return $reset;
 }
 
-sub restore_unity_3d_lut_after_failure {
- my ($config,$state,$reason)=@_;
- return undef if(!upload_requested($config) || $config->{"fixture_mode"});
- $state->{"failure_restore_reason"}=$reason||"";
- $state->{"failure_restore_phase"}=$state->{"phase"}||"";
- $state->{"message"}="Restoring unity 3D LUT after failed verification";
- write_state($state);
- my $reset=api_json("POST","/api/lg/3d-lut/reset",{
-  picture_mode => $config->{"picture_mode"}||"",
-  upload_command => $config->{"upload_command"}||"",
-  get_command => $config->{"get_command"}||"",
-  helper_timeout => 220,
- },245,1);
- $state->{"failure_unity_reset"}=$reset;
- $state->{"failure_unity_reset_verified"}=(ref($reset) eq "HASH" && ($reset->{"status"}||"") eq "ok" && $reset->{"upload_verified"}) ? json_true() : json_false();
- write_state($state);
- log_line("Restored unity 3D LUT after failure") if($state->{"failure_unity_reset_verified"});
- log_line("Unable to restore unity 3D LUT after failure") if(!$state->{"failure_unity_reset_verified"});
- return $reset;
-}
-
-sub validate_post_check_summary_or_die {
- my ($config,$summary)=@_;
- return if(ref($summary) ne "HASH" || !($summary->{"count"}||0));
- my $avg=$summary->{"mean_delta_e_2000"}||0;
- my $max=$summary->{"max_delta_e_2000"}||0;
- my $avg_limit=defined($config->{"post_check_max_avg_de2000"}) ? ($config->{"post_check_max_avg_de2000"}+0) : 8;
- my $max_limit=defined($config->{"post_check_max_de2000"}) ? ($config->{"post_check_max_de2000"}+0) : 20;
- if($avg > $avg_limit || $max > $max_limit) {
-  die sprintf("3D LUT post-check failed validation: avg dE2000 %.2f (limit %.2f), max %.2f at %s (limit %.2f)\n",
-   $avg,$avg_limit,$max,($summary->{"max_name"}||"patch"),$max_limit);
- }
-}
-
 my $config=decode_json_safe(read_file($config_file),{});
 unlink($stop_file);
 my $method=lc($config->{"method"}||"matrix");
@@ -1143,20 +976,10 @@ $config->{"signal_range"}=$config->{"signal_range"}||"1";
 $config->{"pattern_signal_range"}=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
 $config->{"transport_signal_range"}=$config->{"transport_signal_range"}||$config->{"signal_range"}||"1";
 my @steps=($method eq "matrix") ? build_matrix_steps($config) : build_ramp_steps($config);
-my $full_workflow=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
-my $full_autocal_phase=(ref($config) eq "HASH") ? ($config->{"full_autocal_phase"}||"") : "";
-$full_autocal_phase="3d-lut" if($full_workflow && $full_autocal_phase eq "");
-my $run_id=(ref($config) eq "HASH" && defined($config->{"full_autocal_run_id"}) && $config->{"full_autocal_run_id"} ne "")
- ? $config->{"full_autocal_run_id"}
- : ("lg-3d-".$$."-".int(time()*1000));
 
 my $state={
- run_id => $run_id,
  status => "running",
  autocal3d => json_true(),
- full_workflow => $full_workflow ? json_true() : json_false(),
- full_autocal_run_id => $full_workflow ? $run_id : undef,
- full_autocal_phase => $full_autocal_phase||undef,
  method => $method,
  current_step => 0,
  total_steps => scalar(@steps),
@@ -1170,13 +993,11 @@ my $state={
 };
 write_state($state);
 my $upload_requested=upload_requested($config);
-my $generated_lut_uploaded=0;
 
 eval {
  die "LG 3D LUT Auto Cal is SDR-only in this version\n" if(lc($config->{"requested_signal_mode"}||$config->{"ui_signal_mode"}||"sdr") ne "sdr");
  my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
- my $profile_white_y;
  for(my $i=0;$i<@steps;$i++) {
   die "cancelled\n" if(cancelled());
   my $step=$steps[$i];
@@ -1187,12 +1008,8 @@ eval {
   $state->{"profile_total"}=$profile_total;
   $state->{"message"}=($method eq "matrix" ? "Matrix profile " : "3D LUT profile ").($i+1)."/".$profile_total." - Reading ".($step->{"name"}||"patch");
   write_state($state);
-  my ($reading,$error)=read_profile_step_validated($config,$step,$state,$profile_white_y);
+  my ($reading,$error)=read_step($config,$step,$state);
   die "$error\n" if($error);
-  if(($step->{"kind"}||"") eq "white" && ($step->{"level"}||0) >= 99) {
-   my $xyz=reading_xyz($reading);
-   $profile_white_y=$xyz->[1] if($xyz);
-  }
   my $entry={ step=>$step, reading=>$reading, read_time=>time() };
   push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
   push @{$state->{"readings"}},{ %{$reading}, name=>$step->{"name"}, phase=>$step->{"phase"}, kind=>$step->{"kind"}, level=>$step->{"level"} };
@@ -1207,9 +1024,7 @@ eval {
   : "Solving matrix 17-point cube plus 33-point LG payload";
  write_state($state);
 
- validate_profile_readings_or_die($method,\@profile_readings);
  my $model=model_from_readings($method,\@profile_readings,$config);
- validate_model_or_die($model);
  my ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
  my $payload_u16=generate_lut_lg_payload($model,33);
  my $export=export_lut($cube_u16,$payload_u16,$model,$config);
@@ -1248,17 +1063,23 @@ eval {
   }
   $state->{"upload_probe"}=$probe;
   if(ref($probe) eq "HASH" && $probe->{"status"} eq "ok" && $probe->{"upload_supported"}) {
-   my $upload=upload_generated_lut_verified($config,$state,$export,$probe);
-   if(ref($upload) ne "HASH" || ($upload->{"status"}||"") ne "ok" || !$upload->{"upload_verified"}) {
-    my $message=(ref($upload) eq "HASH" && $upload->{"message"}) ? $upload->{"message"} : "LG 3D LUT upload did not verify";
-   die "Generated LG 3D LUT was not uploaded and verified - $message\n";
-   }
-   $generated_lut_uploaded=1;
+   $state->{"phase"}="upload";
+   $state->{"current_name"}="Uploading LG 3D LUT";
+   $state->{"message"}="Writing generated BT.709 3D LUT";
+   write_state($state);
+   my $upload=api_json("POST","/api/lg/3d-lut/upload",{
+   picture_mode => $config->{"picture_mode"}||"",
+   payload_path => $export->{"payload_path"},
+    upload_command => $probe->{"upload_command"}||"",
+    get_command => $probe->{"get_command"}||"",
+    helper_timeout => 220,
+   },240);
+   $state->{"upload"}=$upload;
+   $state->{"upload_supported"}=(ref($upload) eq "HASH" && $upload->{"status"} eq "ok") ? json_true() : json_false();
+   $state->{"upload_verified"}=(ref($upload) eq "HASH" && $upload->{"upload_verified"}) ? json_true() : json_false();
   } else {
    $state->{"upload_supported"}=json_false();
    $state->{"message"}="3D LUT upload probe did not verify; export kept";
-   my $message=(ref($probe) eq "HASH" && $probe->{"message"}) ? $probe->{"message"} : "LG 3D LUT upload probe did not verify";
-   die "LG 3D LUT upload is required but the upload path did not verify - $message\n" if($full_workflow || $upload_requested);
   }
  }
 
@@ -1307,22 +1128,17 @@ eval {
    write_state($state);
   }
   $state->{"post_check_summary"}=summarize_post_check($state->{"post_check_readings"});
-  validate_post_check_summary_or_die($config,$state->{"post_check_summary"});
  }
 
  $state->{"status"}="complete";
  $state->{"phase"}="complete";
  $state->{"current_name"}="LG 3D LUT Auto Cal complete";
  $state->{"message"}=$state->{"upload_verified"} ? "3D LUT exported, uploaded, and verified" : "3D LUT exported";
- $state->{"completed_at"}=int(time()*1000);
  write_state($state);
- clear_active_pattern();
  1;
 } or do {
  my $err=$@ || "LG 3D LUT Auto Cal failed";
  $err=~s/[\r\n]+$//;
- restore_unity_3d_lut_after_failure($config,$state,$err) if($generated_lut_uploaded);
- clear_active_pattern();
  $state->{"status"}=($err =~ /^cancelled$/i) ? "cancelled" : "error";
  $state->{"phase"}=$state->{"status"};
  $state->{"current_name"}=$state->{"status"} eq "cancelled" ? "LG 3D LUT Auto Cal cancelled" : "LG 3D LUT Auto Cal error";
