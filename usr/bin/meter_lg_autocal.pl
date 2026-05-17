@@ -3496,6 +3496,8 @@ eval {
 				  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
 				  $state->{"best_score"}=$best_score;
 			  my ($paired_pending_reading,$paired_pending_step,$paired_pending_de,$paired_pending_lum_pct,$paired_pending_target_y);
+			  my ($paired_best_arrays,$paired_best_reading,$paired_best_de,$paired_best_lum_pct,$paired_best_score);
+			  my ($paired_best_pair_reading,$paired_best_pair_step,$paired_best_pair_de,$paired_best_pair_lum_pct,$paired_best_pair_target_y,$paired_best_pair_score);
 			  my $read_paired_white_validation=sub {
 			   my ($reason)=@_;
 			   return 1 if(ref($paired_white_step) ne "HASH");
@@ -3519,6 +3521,12 @@ eval {
 			   my $pair_de=autocal_delta_e_for_step($pair_reading,$white_y,$target_x,$target_y,$pair_target_y,$pair_step);
 			   my $pair_lum_pct=luminance_error_percent($pair_reading,$pair_target_y);
 			   my $pair_score=guarded_autocal_result_score($pair_de,$pair_lum_pct,$pair_step,$pair_reading,undef);
+			   my $primary_target_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+			   annotate_reading_target($reading,$white_y,$primary_target_y,$target_x,$target_y);
+			   my $primary_de=autocal_delta_e_for_step($reading,$white_y,$target_x,$target_y,$primary_target_y,$read_step);
+			   my $primary_lum_pct=luminance_error_percent($reading,$primary_target_y);
+			   my $primary_score=guarded_autocal_result_score($primary_de,$primary_lum_pct,$read_step,$reading,$white_guard_y);
+			   my $pair_combined_score=$primary_score > $pair_score ? $primary_score : $pair_score;
 			   $state->{"readings"}=merge_reading($state->{"readings"},$pair_reading);
 			   $state->{"current_delta_e"}=defined($pair_de) ? $pair_de : undef;
 			   $state->{"current_luminance"}=luminance($pair_reading);
@@ -3536,10 +3544,45 @@ eval {
 			    delta_e=>defined($pair_de)?$pair_de+0:undef,
 			    luminance_error_pct=>defined($pair_lum_pct)?$pair_lum_pct+0:undef,
 			    score=>$pair_score+0,
+			    primary_delta_e=>defined($primary_de)?$primary_de+0:undef,
+			    primary_luminance_error_pct=>defined($primary_lum_pct)?$primary_lum_pct+0:undef,
+			    primary_target_luminance=>defined($primary_target_y)?$primary_target_y+0:undef,
+			    primary_score=>$primary_score+0,
+			    pair_score=>$pair_combined_score+0,
 			    target_values=>trace_target_values($arrays,$target)
 			   });
 			   write_state($state);
-			   if(guarded_target_reached($pair_de,$pair_lum_pct,$target_delta,$pair_step,$pair_reading,undef)) {
+			   $de=$primary_de;
+			   $lum_pct=$primary_lum_pct;
+			   $target_step_y=$primary_target_y;
+			   my $pair_primary_rejected=paired_white_primary_regression_reason($primary_de,$primary_lum_pct,$best_de,$best_lum_pct,$target_delta,$read_step,$reading,$best_reading,$white_guard_y);
+			   my $pair_under_cap=within_itp_luminance_included_acceptance($pair_de,$pair_step);
+			   if(!$pair_primary_rejected && $pair_under_cap && (!defined($paired_best_pair_score) || $pair_combined_score + 0.0001 < $paired_best_pair_score)) {
+			    $paired_best_arrays=clone_arrays($arrays);
+			    $paired_best_reading=clone_picture($reading);
+			    $paired_best_de=$primary_de;
+			    $paired_best_lum_pct=$primary_lum_pct;
+			    $paired_best_score=$primary_score;
+			    $paired_best_pair_reading=clone_picture($pair_reading);
+			    $paired_best_pair_step=$pair_step;
+			    $paired_best_pair_de=$pair_de;
+			    $paired_best_pair_lum_pct=$pair_lum_pct;
+			    $paired_best_pair_target_y=$pair_target_y;
+			    $paired_best_pair_score=$pair_combined_score;
+			    trace_109($read_step,"paired_white_best_updated",{
+			     label=>$label,
+			     reason=>$reason||"",
+			     primary_delta_e=>defined($paired_best_de)?$paired_best_de+0:undef,
+			     primary_luminance_error_pct=>defined($paired_best_lum_pct)?$paired_best_lum_pct+0:undef,
+			     primary_score=>$paired_best_score+0,
+			     paired_delta_e=>defined($paired_best_pair_de)?$paired_best_pair_de+0:undef,
+			     paired_luminance_error_pct=>defined($paired_best_pair_lum_pct)?$paired_best_pair_lum_pct+0:undef,
+			     paired_score=>$pair_score+0,
+			     pair_score=>$paired_best_pair_score+0,
+			     paired_values=>trace_target_values($paired_best_arrays,$target)
+			    });
+			   }
+			   if(guarded_target_reached($pair_de,$pair_lum_pct,$target_delta,$pair_step,$pair_reading,undef) || (!$pair_primary_rejected && $pair_under_cap)) {
 			    $paired_pending_reading=undef;
 			    $paired_pending_step=undef;
 			    $paired_pending_de=undef;
@@ -3623,9 +3666,69 @@ eval {
 			   $lum_pct=$best_lum_pct;
 			   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
 			   $apply_measured_white_reference->($read_step);
-			   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+				   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+			   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+			   $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+			   $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+			   $state->{"current_luminance"}=luminance($reading);
+			   set_state_target_step_luminance($state,$target_step_y);
+			   $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
 			   return 1;
 			  };
+				  my $restore_best_pair=sub {
+				   my ($reason)=@_;
+				   return 0 if(cancelled() || ref($paired_best_arrays) ne "HASH" || ref($paired_best_reading) ne "HASH" || !defined($paired_best_pair_score));
+				   my $current_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+				   trace_109($read_step,"restore_best_pair",{
+				    label=>$label,
+				    reason=>$reason||"Restoring best $label / 100% pair",
+				    current_score=>$current_score+0,
+				    pair_score=>$paired_best_pair_score+0,
+				    primary_delta_e=>defined($paired_best_de)?$paired_best_de+0:undef,
+				    primary_luminance_error_pct=>defined($paired_best_lum_pct)?$paired_best_lum_pct+0:undef,
+				    primary_score=>defined($paired_best_score)?$paired_best_score+0:undef,
+				    paired_delta_e=>defined($paired_best_pair_de)?$paired_best_pair_de+0:undef,
+				    paired_luminance_error_pct=>defined($paired_best_pair_lum_pct)?$paired_best_pair_lum_pct+0:undef,
+				    paired_values=>trace_target_values($paired_best_arrays,$target)
+				   });
+				   $arrays=clone_arrays($paired_best_arrays);
+				   $best_arrays=clone_arrays($paired_best_arrays);
+				   $best_reading=clone_picture($paired_best_reading);
+				   $best_de=$paired_best_de;
+				   $best_lum_pct=$paired_best_lum_pct;
+				   $best_score=$paired_best_score;
+				   $state->{"phase"}="restoring";
+				   $state->{"message"}=$reason||"Restoring best $label / 100% pair";
+				   write_state($state);
+				   my $restore_error;
+				   ($picture,$restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+				   die $restore_error if($restore_error);
+				   $calibration_mode_active=1;
+				   sync_state_picture($state,$picture,$picture_mode);
+				   $reading=clone_picture($best_reading);
+				   $de=$best_de;
+				   $lum_pct=$best_lum_pct;
+				   $white_y=update_white_reference_for_step($read_step,$reading,$white_y);
+				   $apply_measured_white_reference->($read_step);
+				   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+				   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+				   $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+				   $state->{"readings"}=merge_reading($state->{"readings"},$paired_best_pair_reading) if(ref($paired_best_pair_reading) eq "HASH");
+				   $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+				   $state->{"current_luminance"}=luminance($reading);
+				   set_state_target_step_luminance($state,$target_step_y);
+				   $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+				   $state->{"paired_white_delta_e"}=defined($paired_best_pair_de) ? $paired_best_pair_de : undef;
+				   $state->{"paired_white_score"}=defined($paired_best_pair_score) ? $paired_best_pair_score : undef;
+				   if(within_itp_luminance_included_acceptance($paired_best_pair_de,$paired_best_pair_step)) {
+				    $paired_pending_reading=undef;
+				    $paired_pending_step=undef;
+				    $paired_pending_de=undef;
+				    $paired_pending_lum_pct=undef;
+				    $paired_pending_target_y=undef;
+				   }
+				   return 1;
+				  };
 			  my $apply_probe_result=sub {
 		   my ($probe_step,$probe_reading,$probe_arrays,$probe_picture)=@_;
 		   return 0 if(!$probe_step || ref($probe_reading) ne "HASH" || ref($probe_arrays) ne "HASH");
@@ -4127,6 +4230,7 @@ eval {
 		   $restore_best_if_better->("Restoring closest $label result after fine tune");
 		  }
 			  $restore_best_branch->("Keeping best $label result") if(!cancelled() && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH");
+			  $restore_best_pair->("Keeping best $label / 100% pair");
 				  if(autocal_step_is_white($read_step)) {
 				   $white_y=update_white_reference_for_step($read_step,$best_reading,$white_y);
 				   $apply_measured_white_reference->($read_step);
@@ -4146,10 +4250,21 @@ eval {
 				   set_state_target_step_luminance($state,$peak_target_y);
 				   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
 				  }
-				  if(!cancelled() && ref($paired_white_step) eq "HASH" && ref($paired_pending_reading) ne "HASH") {
-				   $read_paired_white_validation->("Final 100% legal white validation for $label");
-				  }
-				  my $paired_white_pending=(ref($paired_pending_reading) eq "HASH") ? 1 : 0;
+					  if(!cancelled() && ref($paired_white_step) eq "HASH" && ref($paired_pending_reading) ne "HASH") {
+					   $read_paired_white_validation->("Final 100% legal white validation for $label");
+					  }
+					  if(!cancelled() && ref($paired_white_step) eq "HASH" && ref($reading) eq "HASH") {
+					   $best_reading=clone_picture($reading);
+					   $best_de=$de;
+					   $best_lum_pct=$lum_pct;
+					   $best_score=guarded_autocal_result_score($best_de,$best_lum_pct,$read_step,$best_reading,$white_guard_y);
+					   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading);
+					   $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+					   $state->{"current_luminance"}=luminance($best_reading);
+					   set_state_target_step_luminance($state,$target_step_y);
+					   $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+					  }
+					  my $paired_white_pending=(ref($paired_pending_reading) eq "HASH") ? 1 : 0;
 				  my $final_reached=guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y) && !$paired_white_pending;
 				  $state->{"current_delta_e"}=$best_de;
 		  $state->{"best_delta_e"}=$best_de;
