@@ -97,6 +97,7 @@ $root_video_pid_file="/tmp/PGenerator_video.pid";
 &set_pgenerator_conf()    if($action eq "SET_PGENERATOR_CONF");
 &set_plugin()             if($action eq "SET_PLUGIN");
 &bash_cmd()               if($action eq "BASH_CMD");
+&ensure_ccss_storage()    if($action eq "ENSURE_CCSS_STORAGE");
 &play_video_root()        if($action eq "PLAY_VIDEO");
 &stop_video_root()        if($action eq "STOP_VIDEO");
 &bt_status()              if($action eq "BT_STATUS");
@@ -665,6 +666,26 @@ sub bash_cmd(@) {
  }
  system("$passwd $argument 1>/dev/stderr")                             if($cmd eq "CHANGE_PASSWORD");
  system("$perl -p -i -e \"s/$distro_name.*/$argument/\" $distro_conf") if($cmd eq "PKG_SUBSCRIBE");
+}
+
+sub ensure_ccss_storage(@) {
+ my $dir=$ARGV[1]||"";
+ $dir=~s{/+}{/}g;
+ return if($dir ne "/var/lib/PGenerator/ccss/custom" && $dir ne "/usr/share/PGenerator/ccss/custom");
+ eval {
+  File::Path::make_path($dir) if(!-d $dir);
+  my $uid=getpwnam("pgenerator");
+  my $gid=getgrnam("pgenerator");
+  if($dir eq "/var/lib/PGenerator/ccss/custom") {
+   my $parent="/var/lib/PGenerator/ccss";
+   File::Path::make_path($parent) if(!-d $parent);
+   chown($uid,$gid,$parent) if(defined($uid) && defined($gid));
+   chmod(0775,$parent);
+  }
+  chown($uid,$gid,$dir) if(defined($uid) && defined($gid));
+  chmod(0775,$dir);
+ };
+ print((-d $dir && -w $dir) ? "OK" : "ERR");
 }
 
 ###############################################
