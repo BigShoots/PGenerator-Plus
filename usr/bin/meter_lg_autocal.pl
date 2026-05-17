@@ -602,9 +602,11 @@ sub low_shadow_polish_limit_for_step {
  return undef if(!autocal_step_is_low_shadow($step));
  my $ire=$step->{"ire"}+0;
  if(autocal_config_is_touchup($config)) {
+  return 8 if($ire <= 2.31);
   return 4 if($ire <= 3.1);
   return 2;
  }
+ return 24 if($ire <= 2.31);
  return 12 if($ire <= 3.1);
  return 6;
 }
