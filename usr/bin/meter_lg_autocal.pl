@@ -1862,6 +1862,45 @@ sub low_shadow_luminance_priority_adjustments {
  return $adjustments;
 }
 
+sub deep_shadow_chroma_priority_adjustment {
+ my ($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_step,$max_step,$micro)=@_;
+ return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ return undef if(!has_luminance_channel($arrays,$target));
+ return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return undef if($ire <= 0 || $ire > 2.31);
+ $luminance_err=0 if(!defined($luminance_err));
+ my $lum_pct=$luminance_err*100;
+ my $luma_tol=luminance_tolerance_percent($step);
+ return undef if(abs($lum_pct) > $luma_tol);
+ return undef if(!defined($de) || $de < 2.0);
+ my $chroma_mag=chroma_error_magnitude($error);
+ return undef if($chroma_mag < 0.020);
+ $min_step ||= 0.25;
+ $max_step ||= ($micro ? 0.5 : 2);
+ my @channels=sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
+ foreach my $ch (@channels) {
+  my $err=$error->{$ch}||0;
+  next if(abs($err) < rgb_error_floor($de,0.5,$micro ? 1 : 0));
+  my $setting=channel_setting($ch);
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY");
+  my $idx=$target->{"index"};
+  next if(!defined($idx) || $idx >= @{$arr});
+  my $current=$arr->[$idx]||0;
+  my $step_size=adjustment_step(abs($err),$de,$stalls,$min_step);
+  $step_size=$max_step if($step_size > $max_step);
+  my $direction=($err > 0) ? -1 : 1;
+  foreach my $dir ($direction,-$direction) {
+   my ($next,$damped)=next_untried_value($current,$dir*$step_size,$tried,$setting,$min_step);
+   next if(!defined($next));
+   next if(abs($next-$current) < 0.0001);
+   return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, deep_shadow_chroma=>1, micro=>$micro ? 1 : 0 }];
+  }
+ }
+ return undef;
+}
+
 sub headroom_green_luminance_adjustment {
 	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_step,$error)=@_;
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -2351,6 +2390,8 @@ sub choose_adjustments {
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
 			 if(autocal_step_is_low_shadow($step)) {
+			  my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_step,2,0);
+			  return $shadow_chroma if($shadow_chroma);
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);
 			  return $shadow_luma if($shadow_luma);
 			 }
@@ -2419,6 +2460,8 @@ sub choose_micro_adjustments {
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
 			 if(autocal_step_is_low_shadow($step)) {
+			  my $shadow_chroma=deep_shadow_chroma_priority_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$min_micro_step,$max_step,1);
+			  return $shadow_chroma if($shadow_chroma);
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);
 			  return $shadow_luma if($shadow_luma);
 			 }
