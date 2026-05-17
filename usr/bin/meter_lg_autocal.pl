@@ -602,11 +602,19 @@ sub low_shadow_polish_limit_for_step {
  return undef if(!autocal_step_is_low_shadow($step));
  my $ire=$step->{"ire"}+0;
  if(autocal_config_is_touchup($config)) {
-  return 1 if($ire <= 3.1);
+  return 4 if($ire <= 3.1);
   return 2;
  }
- return 4 if($ire <= 3.1);
+ return 12 if($ire <= 3.1);
  return 6;
+}
+
+sub low_shadow_minimum_ddc_step {
+ my ($step)=@_;
+ return 0.25 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return 0.10 if($ire > 0 && $ire <= 3.1);
+ return 0.25;
 }
 
 sub headroom_iteration_limit_for_step {
@@ -1839,6 +1847,7 @@ sub neutral_luminance_adjustments {
 		 my @magnitudes=($step);
 		 push @magnitudes,0.5 if($step > 0.5);
 		 push @magnitudes,0.25 if($step > 0.25);
+		 push @magnitudes,$min_step if($min_step < 0.25 && $step > $min_step);
 			 if(has_luminance_channel($arrays,$target)) {
 			  my $setting="adjustingLuminance";
 			  my $arr=$arrays->{$setting};
@@ -1898,24 +1907,34 @@ sub common_rgb_luminance_adjustments {
 }
 
 sub low_shadow_luminance_max_step {
- my ($luminance_err,$stalls)=@_;
+ my ($luminance_err,$stalls,$step)=@_;
  $luminance_err=0 if(!defined($luminance_err));
  $stalls=0 if(!defined($stalls));
  my $abs=abs($luminance_err);
- my $step=0.5;
+ my $max=0.5;
  if($abs >= 0.30) {
-  $step=5;
+  $max=5;
  } elsif($abs >= 0.18) {
-  $step=4;
+  $max=4;
  } elsif($abs >= 0.10) {
-  $step=3;
+  $max=3;
  } elsif($abs >= 0.05) {
-  $step=2;
+  $max=2;
  } elsif($abs >= 0.02) {
-  $step=1;
+  $max=1;
  }
- $step=1 if($stalls >= 3 && $step < 1);
- return $step;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef;
+ if(defined($ire) && $ire > 0 && $ire <= 2.31) {
+  $max=0.5 if($max > 0.5);
+ } elsif(defined($ire) && $ire > 0 && $ire <= 3.1) {
+  $max=0.5 if($max > 0.5);
+ } elsif(defined($ire) && $ire > 0 && $ire <= 5.0001) {
+  $max=1 if($max > 1);
+  $max=1 if($stalls >= 3 && $max < 1);
+ } else {
+  $max=1 if($stalls >= 3 && $max < 1);
+ }
+ return $max;
 }
 
 sub low_shadow_luminance_priority_adjustments {
@@ -1928,9 +1947,10 @@ sub low_shadow_luminance_priority_adjustments {
  my $threshold=$tol*($micro ? 0.22 : 0.30);
  $threshold=0.6 if($threshold < 0.6);
  return undef if(abs($lum_pct) <= $threshold);
- my $max_step=low_shadow_luminance_max_step($luminance_err,$stalls);
+ my $max_step=low_shadow_luminance_max_step($luminance_err,$stalls,$step);
  $max_step=1 if($micro && $max_step > 1);
- my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step);
+ my $min_step=$micro ? low_shadow_minimum_ddc_step($step) : 0.25;
+ my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_step);
  if(ref($adjustments) eq "ARRAY") {
   foreach my $adj (@{$adjustments}) {
    $adj->{"low_shadow_luminance"}=1 if(ref($adj) eq "HASH");
@@ -1963,7 +1983,7 @@ sub deep_shadow_chroma_priority_adjustment {
   return undef;
  }
  my $ire=$step->{"ire"}+0;
- if($ire <= 0 || $ire > 2.31) {
+ if($ire <= 0 || $ire > 3.1) {
   $trace_shadow->("not_deep_shadow",{ire=>$ire,de=>defined($de)?$de+0:undef});
   return undef;
  }
@@ -1985,6 +2005,11 @@ sub deep_shadow_chroma_priority_adjustment {
  }
  $min_step ||= 0.25;
  $max_step ||= ($micro ? 0.5 : 2);
+ if($micro && $ire <= 3.1) {
+  my $shadow_step=low_shadow_minimum_ddc_step($step);
+  $min_step=$shadow_step if($min_step > $shadow_step);
+  $max_step=$shadow_step if($max_step > $shadow_step);
+ }
  my @channels=sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
  foreach my $ch (@channels) {
   my $err=$error->{$ch}||0;
@@ -2571,6 +2596,7 @@ sub choose_micro_adjustments {
 			 $max_step=0.10 if(!defined($max_step) || $max_step < 0.10);
 			 $max_step=0.5 if($max_step > 0.5);
 			 my $min_micro_step=($max_step < 0.25) ? $max_step : 0.25;
+			 $min_micro_step=low_shadow_minimum_ddc_step($step) if(autocal_step_is_low_shadow($step) && $ire <= 3.1);
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
 			 if(autocal_step_is_low_shadow($step)) {
