@@ -606,7 +606,7 @@ sub low_shadow_polish_limit_for_step {
   return 4 if($ire <= 3.1);
   return 2;
  }
- return 24 if($ire <= 2.31);
+ return 16 if($ire <= 2.31);
  return 12 if($ire <= 3.1);
  return 6;
 }
