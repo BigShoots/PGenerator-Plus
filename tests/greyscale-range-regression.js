@@ -56,6 +56,15 @@ assert(
   'LG AutoCal should keep materially better Delta E candidates instead of relying only on the composite score'
 );
 assert(
+  autocalWorkerSource.includes('sub autocal_step_uses_raw_itp_best_update') &&
+    autocalWorkerSource.includes('return ($ire > 0 && $ire <= 7.5001) ? 1 : 0;') &&
+    autocalWorkerSource.includes('if(autocal_step_uses_raw_itp_best_update($step))') &&
+    autocalWorkerSource.includes('return "raw_itp_delta_e" if(!defined($best_de) || ($candidate_de+0) < ($best_de+0));') &&
+    autocalWorkerSource.includes('return undef;\n }\n return "delta_e_fallback" if(') &&
+    autocalWorkerSource.includes('return ($candidate_score + 0.0001 < $best_score) ? "headroom_balance" : undef;\n }\n if(autocal_step_uses_raw_itp_best_update($step))'),
+  'LG AutoCal low-shadow preserve bucket should update best only on raw ITP Delta E improvement while leaving headroom best scoring first'
+);
+assert(
   source.includes("const savedTargetGamma=(s.target_gamma!=null)?String(s.target_gamma):'';") &&
     source.includes("if(savedTargetGamma!==''){") &&
     source.includes("setVal('meterTargetGamma', savedTargetGamma);") &&
@@ -577,12 +586,14 @@ assert(
 	    autocalWorkerSource.includes('setup_luminance_reference=>$setup_luminance_reference||$target_luminance||undef') &&
 	    autocalWorkerSource.includes('target_luminance=>$target_luminance||undef') &&
 	    autocalWorkerSource.includes('headroom_target_luminance=>$headroom_target_luminance||undef') &&
-	    autocalWorkerSource.includes('my $white_y=($target_luminance > 0) ? $target_luminance : undef;') &&
-	    autocalWorkerSource.includes('set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step));') &&
-	    autocalWorkerSource.includes('return undef if(autocal_step_is_white($step));') &&
-		    autocalWorkerSource.includes('target_step_luminance') &&
-		    autocalWorkerSource.includes('return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if(autocal_step_is_peak_headroom($step) && $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);') &&
-		    autocalWorkerSource.includes('configured_delay_ms') &&
+		    autocalWorkerSource.includes('my $white_y=($target_luminance > 0) ? $target_luminance : undef;') &&
+		    autocalWorkerSource.includes('set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step));') &&
+		    autocalWorkerSource.includes('return undef if(autocal_step_is_white($step));') &&
+			    autocalWorkerSource.includes('target_step_luminance') &&
+			    autocalWorkerSource.includes('my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);') &&
+			    autocalWorkerSource.includes('return $target_lum_y if(defined($target_lum_y));') &&
+			    autocalWorkerSource.includes('return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);') &&
+			    autocalWorkerSource.includes('configured_delay_ms') &&
     autocalWorkerSource.includes('$reading->{"read_delay_ms"}=$delay_ms') &&
     autocalWorkerSource.includes('sub read_request_id') &&
     autocalWorkerSource.includes('sub read_timeout_for_step') &&
@@ -681,23 +692,33 @@ assert(
 	    autocalWorkerSource.includes('sub headroom_match_green_adjustment') &&
 	    autocalWorkerSource.includes('match_green=>1') &&
 	    autocalWorkerSource.includes('return undef if($adj->{"green_luminance"} || $adj->{"brightness_luminance"} || $adj->{"match_green"});') &&
-	    autocalWorkerSource.includes('sub derived_white_reference_from_peak_headroom') &&
-	    autocalWorkerSource.includes('sub apply_peak_headroom_reference') &&
-	    autocalWorkerSource.includes('$$white_y_ref=$derived if(defined($derived) && $derived > 0);') &&
-	    autocalWorkerSource.includes('$state->{"headroom_target_luminance"}=$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE;') &&
-	    autocalWorkerSource.includes('$state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));') &&
-	    autocalWorkerSource.includes('sub refresh_headroom_targets_from_white_reference') &&
-	    autocalWorkerSource.includes('next if($ire < 105);') &&
-	    autocalWorkerSource.includes('my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);') &&
-	    autocalWorkerSource.includes('$state->{"headroom_target_luminance"}=$peak_target_luminance;') &&
-	    autocalWorkerSource.includes('$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_luminance;') &&
+		    autocalWorkerSource.includes('sub derived_white_reference_from_peak_headroom') &&
+		    autocalWorkerSource.includes('sub apply_peak_headroom_reference') &&
+		    autocalWorkerSource.includes('$$white_y_ref=$derived if(defined($derived) && $derived > 0);') &&
+		    autocalWorkerSource.includes('my $peak_target_y=(defined($effective_white) && $effective_white > 0) ? target_luminance_for_step($effective_white,$step,$target_gamma,$signal_mode) : undef;') &&
+		    autocalWorkerSource.includes('$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_y;') &&
+		    autocalWorkerSource.includes('$state->{"headroom_target_luminance"}=$peak_target_y;') &&
+		    autocalWorkerSource.includes('set_state_target_step_luminance($state,$peak_target_y);') &&
+		    autocalWorkerSource.includes('$state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));') &&
+		    autocalWorkerSource.includes('sub refresh_headroom_targets_from_white_reference') &&
+		    autocalWorkerSource.includes('next if($ire < 105);') &&
+		    autocalWorkerSource.includes('delete $step->{"target_luminance"};') &&
+		    autocalWorkerSource.includes('delete $step->{"target_Yn"};') &&
+		    autocalWorkerSource.includes('my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);') &&
+		    autocalWorkerSource.includes('if(!defined($peak_target_luminance) && ref($state->{"steps"}) eq "ARRAY")') &&
+		    autocalWorkerSource.includes('next if(ref($candidate) ne "HASH" || !autocal_step_is_peak_headroom($candidate));') &&
+		    autocalWorkerSource.includes('$state->{"headroom_target_luminance"}=$peak_target_luminance;') &&
+		    autocalWorkerSource.includes('$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$peak_target_luminance;') &&
 	    autocalWorkerSource.includes('my $refresh_white_after_headroom=($white_reference_step && !$white_reference_is_adjustable') &&
-	    autocalWorkerSource.includes('refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)') &&
-	    autocalWorkerSource.includes('if(abs($lum_pct) > $luma_tol && $chroma_mag < 0.035)') &&
-	    autocalWorkerSource.includes('if(abs($lum_pct) > ($luma_tol*0.45) && $chroma_mag < 0.030)') &&
-	    autocalWorkerSource.includes('apply_peak_headroom_reference($state,$read_step,$best_reading,\\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);'),
-	  'LG Auto Cal should target 105% and 109% extended Y from the setup headroom model'
-	);
+		    autocalWorkerSource.includes('refresh_headroom_targets_from_white_reference($state,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)') &&
+		    autocalWorkerSource.includes('if(abs($lum_pct) > $luma_tol && $chroma_mag < 0.035)') &&
+		    autocalWorkerSource.includes('if(abs($lum_pct) > ($luma_tol*0.45) && $chroma_mag < 0.030)') &&
+		    autocalWorkerSource.includes('apply_peak_headroom_reference($state,$read_step,$best_reading,\\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);') &&
+		    autocalWorkerSource.includes('my $peak_target_y=target_luminance_for_step($white_y,$read_step,$target_gamma,$signal_mode);') &&
+		    autocalWorkerSource.includes('annotate_reading_target($best_reading,$white_y,$peak_target_y,$target_x,$target_y);') &&
+		    autocalWorkerSource.includes('annotate_reading_target($reading,$white_y,$peak_target_y,$target_x,$target_y);'),
+		  'LG Auto Cal should refresh 105% and 109% extended Y metadata from the legal white reference'
+		);
 	assert(
 	  source.includes('patch_insert:document.getElementById(\'meterPatchInsert\').checked') &&
 	    autocalWorkerSource.includes('$config->{"patch_insert"}') &&
