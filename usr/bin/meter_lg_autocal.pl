@@ -304,15 +304,25 @@ sub ddc_target_for_step {
  return undef;
 }
 
+sub steps_share_ddc_target {
+ my ($a,$b)=@_;
+ my $ta=ddc_target_for_step($a);
+ my $tb=ddc_target_for_step($b);
+ return 0 if(ref($ta) ne "HASH" || ref($tb) ne "HASH");
+ return (defined($ta->{"index"}) && defined($tb->{"index"}) && $ta->{"index"} == $tb->{"index"}) ? 1 : 0;
+}
+
 sub autocal_skip_duplicate_ddc_slot {
- my ($step)=@_;
+ my ($step,$config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 1 if(ref($step) eq "HASH" && $step->{"autocal_white_reference"} && defined($step->{"ddc_target_ire"}));
  return 0;
 }
 
 sub order_autocal_steps {
  my ($steps,$config)=@_;
  return () if(ref($steps) ne "ARRAY");
- my @valid=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)) >= 0.001 && ddc_target_for_step($_) && !autocal_skip_duplicate_ddc_slot($_) } @{$steps};
+ my @valid=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)) >= 0.001 && ddc_target_for_step($_) && !autocal_skip_duplicate_ddc_slot($_,$config) } @{$steps};
  return sort {
   my $av=defined($a->{"autocal_order_ire"}) ? ($a->{"autocal_order_ire"}+0) : ($a->{"ire"}||0);
   my $bv=defined($b->{"autocal_order_ire"}) ? ($b->{"autocal_order_ire"}+0) : ($b->{"ire"}||0);
@@ -3383,6 +3393,14 @@ eval {
 		  write_state($state);
 		  return $ref_reading;
 		 };
+		 my $paired_white_reference_for_step=sub {
+		  my ($candidate)=@_;
+		  return undef if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+		  return undef if(ref($candidate) ne "HASH" || autocal_step_is_white($candidate));
+		  return undef if(ref($white_reference_step) ne "HASH");
+		  return undef if(!steps_share_ddc_target($candidate,$white_reference_step));
+		  return clone_picture($white_reference_step);
+		 };
 		 my $white_refreshed_after_headroom=0;
 	 foreach my $step (@ordered) {
 	  last if(cancelled());
@@ -3393,6 +3411,8 @@ eval {
 		  die $mismatch if($mismatch ne "");
 			  my $label=$target->{"label"};
 			  my $read_step=fixed_lg_autocal_step($config,$step);
+			  my $paired_white_step=$paired_white_reference_for_step->($step);
+			  my $paired_label=$paired_white_step ? "$label / 100%" : $label;
 			  trace_109($read_step,"start_step",{
 			   label=>$label,
 			   target=>$target,
@@ -3405,7 +3425,7 @@ eval {
 			   });
 			   $state->{"current_step"}=$step_num;
 		   $state->{"total_steps"}=$total_ordered_steps;
-		   $state->{"current_name"}="Auto Cal $label";
+		   $state->{"current_name"}="Auto Cal $paired_label";
 		   $state->{"phase"}="writing";
 		   $state->{"message"}="Seeding $label from nearest calibrated point";
 		   write_state($state);
@@ -3419,7 +3439,7 @@ eval {
 		  mark_stimulus_probe_tried(\%stimulus_probe_tried,$read_step);
 		  $state->{"current_step"}=$step_num;
 			  $state->{"total_steps"}=$total_ordered_steps;
-		  $state->{"current_name"}="Auto Cal $label";
+		  $state->{"current_name"}="Auto Cal $paired_label";
   $state->{"phase"}="reading";
   $state->{"message"}="Reading $label";
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
@@ -3451,13 +3471,72 @@ eval {
 	  $state->{"best_delta_e"}=$best_de;
 	  $state->{"current_luminance"}=luminance($reading);
 	  set_state_target_step_luminance($state,$target_step_y);
-		  my $lum_pct=luminance_error_percent($reading,$target_step_y);
-		  $best_lum_pct=$lum_pct;
-		  my $best_score=guarded_autocal_result_score($best_de,$best_lum_pct,$read_step,$best_reading,$white_guard_y);
-			  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
-			  $state->{"best_score"}=$best_score;
-			  trace_109($read_step,"initial_measurement",{
-			   label=>$label,
+			  my $lum_pct=luminance_error_percent($reading,$target_step_y);
+			  $best_lum_pct=$lum_pct;
+			  my $best_score=guarded_autocal_result_score($best_de,$best_lum_pct,$read_step,$best_reading,$white_guard_y);
+				  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+				  $state->{"best_score"}=$best_score;
+			  my ($paired_pending_reading,$paired_pending_step,$paired_pending_de,$paired_pending_lum_pct,$paired_pending_target_y);
+			  my $read_paired_white_validation=sub {
+			   my ($reason)=@_;
+			   return 1 if(ref($paired_white_step) ne "HASH");
+			   my $pair_step=fixed_lg_autocal_step($config,clone_picture($paired_white_step));
+			   $state->{"current_step"}=$step_num;
+			   $state->{"total_steps"}=$total_ordered_steps;
+			   $state->{"current_name"}="Auto Cal $paired_label";
+			   $state->{"phase"}="reading";
+			   $state->{"message"}=$reason||"Validating 100% legal white with $label";
+			   $state->{"active_stimulus"}=$pair_step->{"stimulus"}+0 if(defined($pair_step->{"stimulus"}));
+			   write_state($state);
+			   my ($pair_reading,$pair_error)=read_step($config,$pair_step,$state);
+			   die $pair_error if($pair_error && $pair_error ne "cancelled");
+			   return 0 if($pair_error && $pair_error eq "cancelled");
+			   return 1 if(ref($pair_reading) ne "HASH");
+			   $white_y=update_white_reference_for_step($pair_step,$pair_reading,$white_y);
+			   $white_y ||= 100;
+			   $apply_measured_white_reference->($pair_step);
+			   my $pair_target_y=target_luminance_for_step($white_y,$pair_step,$target_gamma,$signal_mode);
+			   annotate_reading_target($pair_reading,$white_y,$pair_target_y,$target_x,$target_y);
+			   my $pair_de=autocal_delta_e_for_step($pair_reading,$white_y,$target_x,$target_y,$pair_target_y,$pair_step);
+			   my $pair_lum_pct=luminance_error_percent($pair_reading,$pair_target_y);
+			   my $pair_score=guarded_autocal_result_score($pair_de,$pair_lum_pct,$pair_step,$pair_reading,undef);
+			   $state->{"readings"}=merge_reading($state->{"readings"},$pair_reading);
+			   $state->{"current_delta_e"}=defined($pair_de) ? $pair_de : undef;
+			   $state->{"current_luminance"}=luminance($pair_reading);
+			   $state->{"luminance_error_pct"}=defined($pair_lum_pct) ? $pair_lum_pct : undef;
+			   $state->{"paired_white_delta_e"}=defined($pair_de) ? $pair_de : undef;
+			   $state->{"paired_white_score"}=$pair_score;
+			   set_state_target_step_luminance($state,$pair_target_y);
+			   trace_109($read_step,"paired_white_validation",{
+			    label=>$label,
+			    paired_label=>"100%",
+			    reason=>$reason||"",
+			    reading=>trace_reading_summary($pair_reading),
+			    target_luminance=>$pair_target_y,
+			    white_y=>$white_y,
+			    delta_e=>defined($pair_de)?$pair_de+0:undef,
+			    luminance_error_pct=>defined($pair_lum_pct)?$pair_lum_pct+0:undef,
+			    score=>$pair_score+0,
+			    target_values=>trace_target_values($arrays,$target)
+			   });
+			   write_state($state);
+			   if(guarded_target_reached($pair_de,$pair_lum_pct,$target_delta,$pair_step,$pair_reading,undef)) {
+			    $paired_pending_reading=undef;
+			    $paired_pending_step=undef;
+			    $paired_pending_de=undef;
+			    $paired_pending_lum_pct=undef;
+			    $paired_pending_target_y=undef;
+			    return 1;
+			   }
+			   $paired_pending_reading=clone_picture($pair_reading);
+			   $paired_pending_step=$pair_step;
+			   $paired_pending_de=$pair_de;
+			   $paired_pending_lum_pct=$pair_lum_pct;
+			   $paired_pending_target_y=$pair_target_y;
+			   return 0;
+			  };
+				  trace_109($read_step,"initial_measurement",{
+				   label=>$label,
 			   reading=>trace_reading_summary($reading),
 			   target_luminance=>$target_step_y,
 			   white_y=>$white_y,
@@ -3488,7 +3567,7 @@ eval {
 					    set_state_white_reference($state,$white_y);
 					    write_state($state);
 					   }
-				   next;
+						   next if($read_paired_white_validation->("Validating 100% legal white with $label"));
 				  }
 
 			  my $last_de=$best_de;
@@ -3577,14 +3656,20 @@ eval {
 			  my $iteration_limit=iteration_limit_for_step($step,$max_iterations,$config);
 			  for(my $iter=1;$iter<=$iteration_limit;$iter++) {
 			   last if(cancelled());
-			   my $err=autocal_adjustment_error($reading,$read_step);
-			   my $lum_err=luminance_error_ratio($reading,$target_step_y);
+			   my $planning_from_paired=(ref($paired_pending_reading) eq "HASH" && ref($paired_pending_step) eq "HASH") ? 1 : 0;
+			   my $plan_reading=$planning_from_paired ? $paired_pending_reading : $reading;
+			   my $plan_step=$planning_from_paired ? $paired_pending_step : $read_step;
+			   my $plan_de=$planning_from_paired ? $paired_pending_de : $de;
+			   my $plan_lum_pct=$planning_from_paired ? $paired_pending_lum_pct : $lum_pct;
+			   my $plan_target_y=$planning_from_paired ? $paired_pending_target_y : $target_step_y;
+			   my $err=autocal_adjustment_error($plan_reading,$plan_step);
+			   my $lum_err=luminance_error_ratio($plan_reading,$plan_target_y);
 					   my $adjustments;
-					   if(autocal_step_is_fast_headroom($read_step) && ref($headroom_next_adjustments) eq "ARRAY") {
+					   if(!$planning_from_paired && autocal_step_is_fast_headroom($read_step) && ref($headroom_next_adjustments) eq "ARRAY") {
 					    $adjustments=$headroom_next_adjustments;
 					    $headroom_next_adjustments=undef;
 					   } else {
-					    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step);
+					    $adjustments=choose_adjustments($err,$arrays,$target,$plan_de,0.25,$stalls,$lum_err,\%tried_values,$plan_step);
 					   }
 				   if(!$adjustments && stimulus_probe_enabled($config) && !guarded_target_reached($de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y)) {
 				    my ($probe_step,$probe_reading,$probe_arrays,$probe_picture,$probe_error)=probe_responsive_stimulus(
@@ -3601,10 +3686,11 @@ eval {
 					   if(!$adjustments) {
 					    trace_109($read_step,"no_adjustment_chosen",{
 					     label=>$label,
+					     planning_from_paired_white=>$planning_from_paired ? JSON::PP::true : JSON::PP::false,
 					     iteration=>$iter+0,
 					     iteration_limit=>$iteration_limit+0,
-					     delta_e=>defined($de)?$de+0:undef,
-					     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					     delta_e=>defined($plan_de)?$plan_de+0:undef,
+					     luminance_error_pct=>defined($plan_lum_pct)?$plan_lum_pct+0:undef,
 					     rgb_error=>$err,
 					     luminance_error_ratio=>defined($lum_err)?$lum_err+0:undef,
 					     target_values=>trace_target_values($arrays,$target)
@@ -3618,10 +3704,11 @@ eval {
 		   }
 		   trace_109($read_step,"adjustment_plan",{
 		    label=>$label,
+		    planning_from_paired_white=>$planning_from_paired ? JSON::PP::true : JSON::PP::false,
 		    iteration=>$iter+0,
 		    iteration_limit=>$iteration_limit+0,
-		    delta_e=>defined($de)?$de+0:undef,
-		    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+		    delta_e=>defined($plan_de)?$plan_de+0:undef,
+		    luminance_error_pct=>defined($plan_lum_pct)?$plan_lum_pct+0:undef,
 		    score=>guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y)+0,
 		    best_delta_e=>defined($best_de)?$best_de+0:undef,
 		    best_score=>$best_score+0,
@@ -3631,8 +3718,15 @@ eval {
 		    values_before=>$before_values,
 		    values_after=>trace_target_values($arrays,$target)
 		   });
+		   if($planning_from_paired) {
+		    $paired_pending_reading=undef;
+		    $paired_pending_step=undef;
+		    $paired_pending_de=undef;
+		    $paired_pending_lum_pct=undef;
+		    $paired_pending_target_y=undef;
+		   }
 	   $state->{"phase"}="writing";
-	   $state->{"message"}="Writing $label ".describe_adjustments($adjustments)." ($iter/$iteration_limit)";
+	   $state->{"message"}="Writing $paired_label ".describe_adjustments($adjustments)." ($iter/$iteration_limit)";
 	   $state->{"iteration"}=$iter;
 	   write_state($state);
 	   my $write_error;
@@ -3642,7 +3736,7 @@ eval {
 	   sync_state_picture($state,$picture,$picture_mode);
 	   last if(cancelled());
 	   $state->{"phase"}="reading";
-	   $state->{"message"}="Reading $label after adjustment ($iter/$iteration_limit)";
+	   $state->{"message"}="Reading $paired_label after adjustment ($iter/$iteration_limit)";
 	   write_state($state);
 		   ($reading,$read_error,$guarded_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
 	   die $read_error if($read_error && $read_error ne "cancelled");
@@ -3759,9 +3853,11 @@ eval {
 		   $state->{"best_delta_e"}=$best_de;
 		   $state->{"best_score"}=$best_score;
 		   write_state($state);
-			   last if(guarded_target_reached($de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y));
+			   if(guarded_target_reached($de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y)) {
+				    last if($read_paired_white_validation->("Validating 100% legal white after $label adjustment"));
+			   }
 			   if(!$probe_found && $no_response_stalls >= 2 && $iter >= 4 && !stimulus_scan_steps($config,$read_step,\%stimulus_probe_tried)) {
-		    $state->{"message"}="$label uncorrectable within stimulus window; closest result kept";
+		    $state->{"message"}="$paired_label uncorrectable within stimulus window; closest result kept";
 		    write_state($state);
 		    last;
 		   }
@@ -3825,17 +3921,26 @@ eval {
 		   my $polish_stalls=0;
 		   for(my $polish=1;$polish<=$polish_limit;$polish++) {
 		    last if(cancelled());
-		    last if(guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y));
-		    my $err=autocal_adjustment_error($reading,$read_step);
-		    my $lum_err=luminance_error_ratio($reading,$target_step_y);
+		    if(guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y)) {
+		     last if($read_paired_white_validation->("Validating 100% legal white during $label fine tune"));
+		    }
+		    my $planning_from_paired=(ref($paired_pending_reading) eq "HASH" && ref($paired_pending_step) eq "HASH") ? 1 : 0;
+		    my $plan_reading=$planning_from_paired ? $paired_pending_reading : $reading;
+		    my $plan_step=$planning_from_paired ? $paired_pending_step : $read_step;
+		    my $plan_de=$planning_from_paired ? $paired_pending_de : $best_de;
+		    my $plan_lum_pct=$planning_from_paired ? $paired_pending_lum_pct : $lum_pct;
+		    my $plan_target_y=$planning_from_paired ? $paired_pending_target_y : $target_step_y;
+		    my $err=autocal_adjustment_error($plan_reading,$plan_step);
+		    my $lum_err=luminance_error_ratio($plan_reading,$plan_target_y);
 		    my $micro_step=(defined($best_de) && $best_de <= ($target_delta+0.15)) ? 0.10 : ((defined($best_de) && $best_de > ($target_delta*2)) ? 0.5 : 0.25);
-			    my $adjustments=choose_micro_adjustments($err,$arrays,$target,$lum_err,\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step);
+			    my $adjustments=choose_micro_adjustments($err,$arrays,$target,$lum_err,\%polish_tried,$micro_step,$plan_de,$polish_stalls,$plan_step);
 			    if(!$adjustments) {
 			     trace_109($read_step,"no_fine_tune_adjustment_chosen",{
 			      label=>$label,
+			      planning_from_paired_white=>$planning_from_paired ? JSON::PP::true : JSON::PP::false,
 			      polish=>$polish+0,
 			      polish_limit=>$polish_limit+0,
-			      delta_e=>defined($de)?$de+0:undef,
+			      delta_e=>defined($plan_de)?$plan_de+0:undef,
 			      best_delta_e=>defined($best_de)?$best_de+0:undef,
 			      rgb_error=>$err,
 			      luminance_error_ratio=>defined($lum_err)?$lum_err+0:undef,
@@ -3850,10 +3955,11 @@ eval {
 			    }
 			    trace_109($read_step,"fine_tune_plan",{
 			     label=>$label,
+			     planning_from_paired_white=>$planning_from_paired ? JSON::PP::true : JSON::PP::false,
 			     polish=>$polish+0,
 			     polish_limit=>$polish_limit+0,
-			     delta_e=>defined($de)?$de+0:undef,
-			     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+			     delta_e=>defined($plan_de)?$plan_de+0:undef,
+			     luminance_error_pct=>defined($plan_lum_pct)?$plan_lum_pct+0:undef,
 			     best_delta_e=>defined($best_de)?$best_de+0:undef,
 			     best_score=>$best_score+0,
 			     rgb_error=>$err,
@@ -3863,8 +3969,15 @@ eval {
 			     values_before=>$before_values,
 			     values_after=>trace_target_values($arrays,$target)
 			    });
+		    if($planning_from_paired) {
+		     $paired_pending_reading=undef;
+		     $paired_pending_step=undef;
+		     $paired_pending_de=undef;
+		     $paired_pending_lum_pct=undef;
+		     $paired_pending_target_y=undef;
+		    }
 		    $state->{"phase"}="writing";
-		    $state->{"message"}="Fine tuning $label ".describe_adjustments($adjustments)." ($polish/$polish_limit)";
+		    $state->{"message"}="Fine tuning $paired_label ".describe_adjustments($adjustments)." ($polish/$polish_limit)";
 		    write_state($state);
 		    my $write_error;
 			    ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
@@ -3873,7 +3986,7 @@ eval {
 		    sync_state_picture($state,$picture,$picture_mode);
 		    last if(cancelled());
 		    $state->{"phase"}="reading";
-		    $state->{"message"}="Reading $label fine tune ($polish/$polish_limit)";
+		    $state->{"message"}="Reading $paired_label fine tune ($polish/$polish_limit)";
 		    write_state($state);
 		    ($reading,$read_error,$guarded_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
 		    die $read_error if($read_error && $read_error ne "cancelled");
@@ -3968,13 +4081,19 @@ eval {
 				   set_state_target_step_luminance($state,$peak_target_y);
 				   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
 				  }
+				  if(!cancelled() && ref($paired_white_step) eq "HASH" && ref($paired_pending_reading) ne "HASH") {
+				   $read_paired_white_validation->("Final 100% legal white validation for $label");
+				  }
+				  my $paired_white_pending=(ref($paired_pending_reading) eq "HASH") ? 1 : 0;
+				  my $final_reached=guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y) && !$paired_white_pending;
 				  $state->{"current_delta_e"}=$best_de;
 		  $state->{"best_delta_e"}=$best_de;
 		  $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
-				  $state->{"message"}=guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y) ? "$label reached target" : "$label closest result kept";
+				  $state->{"message"}=$final_reached ? "$paired_label reached target" : "$paired_label closest result kept";
 				  trace_109($read_step,"final_step_result",{
 				   label=>$label,
-				   reached_target=>guarded_target_reached($best_de,$best_lum_pct,$target_delta,$read_step,$best_reading,$white_guard_y)?JSON::PP::true:JSON::PP::false,
+				   reached_target=>$final_reached?JSON::PP::true:JSON::PP::false,
+				   paired_white_pending=>$paired_white_pending?JSON::PP::true:JSON::PP::false,
 				   best_delta_e=>defined($best_de)?$best_de+0:undef,
 				   best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 				   best_score=>$best_score+0,
