@@ -11280,9 +11280,14 @@ function meterTargetXYZForReading(reading){
 	 if(Number.isFinite(absX)&&Number.isFinite(absY)&&Number.isFinite(absZ)&&absY>=0){
 	  return {X:absX,Y:absY,Z:absZ};
 	 }
-	 const tx=parseFloat(reading.target_x);
-	 const ty=parseFloat(reading.target_y);
-	 const tYn=parseFloat(reading.target_Yn);
+	 let targetMeta=null;
+	 if((reading.target_x==null||reading.target_y==null||reading.target_Yn==null) && typeof meterCanonicalSeriesStep==='function'){
+	  const step=meterCanonicalSeriesStep(reading);
+	  if(step&&(step.target_x!=null||step.target_y!=null||step.target_Yn!=null)) targetMeta=step;
+	 }
+	 const tx=parseFloat(reading.target_x!=null?reading.target_x:(targetMeta?targetMeta.target_x:null));
+	 const ty=parseFloat(reading.target_y!=null?reading.target_y:(targetMeta?targetMeta.target_y:null));
+	 const tYn=parseFloat(reading.target_Yn!=null?reading.target_Yn:(targetMeta?targetMeta.target_Yn:null));
 	 if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   if(tYn<=0) return {X:0,Y:0,Z:0};
   let refY=meterColorSeriesReferenceNits();
@@ -11321,14 +11326,15 @@ function meterTargetXYZForReading(reading){
   return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  }
  if(meterReadingIsGreyscale(reading)){
-  const wp=meterTargetWhitePoint();
+ const wp=meterTargetWhitePoint();
   let refWhite=null;
   try{ refWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
   const refY=refWhite?meterReadingLuminanceNits(refWhite):null;
   const peak=meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits());
   const black=meterBlackReadingY();
-  const ire=meterReadingAnalysisIre(reading);
-  const code=(reading.r_code!=null)?reading.r_code:reading.r;
+  const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
+  const ire=meterReadingAnalysisIre(reading)||(step?meterGreyChartStimulusIre(step):null);
+  const code=(reading.r_code!=null)?reading.r_code:(reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
   const Y=meterGreyTargetLuminance(ire!=null?ire:(reading.ire||0),peak,black||0,code);
   return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
  }
