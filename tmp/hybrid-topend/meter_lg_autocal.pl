@@ -3916,8 +3916,8 @@ sub park_black_for_settle {
 sub post_commit_polish_enabled {
  my ($config)=@_;
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- return 0 if(exists($config->{"post_commit_polish"}) && !$config->{"post_commit_polish"});
- return 1;
+ return 0 if(!exists($config->{"post_commit_polish"}));
+ return $config->{"post_commit_polish"} ? 1 : 0;
 }
 
 sub committed_top_window_score {
