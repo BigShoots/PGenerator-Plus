@@ -778,16 +778,16 @@ sub body_luma_bias_decision {
   ($eligible,$reason)=(0,"patch_insert_disabled");
  } elsif(($signal_mode||"") ne "sdr") {
   ($eligible,$reason)=(0,"not_sdr");
- } elsif(!body_luma_bias_display_allowed($config)) {
-  ($eligible,$reason)=(0,"display_not_c2");
- } elsif(!defined($ire) || !grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85)) {
-  ($eligible,$reason)=(0,"ire_not_eligible");
- } elsif(!defined($base_target_y) || $base_target_y <= 0) {
-  ($eligible,$reason)=(0,"missing_target");
- }
- my $applied=($eligible && $mode eq "apply" && $bias_pct > 0) ? 1 : 0;
- my $effective_target_y=$applied ? $base_target_y*(1+$bias_pct) : $base_target_y;
- if(defined($ire) && grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85)) {
+	 } elsif(!body_luma_bias_display_allowed($config)) {
+	  ($eligible,$reason)=(0,"display_not_c2");
+	 } elsif(!defined($ire) || ($bias_source ne "matrix" && !grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85))) {
+	  ($eligible,$reason)=(0,"ire_not_eligible");
+	 } elsif(!defined($base_target_y) || $base_target_y <= 0) {
+	  ($eligible,$reason)=(0,"missing_target");
+	 }
+	 my $applied=($eligible && $mode eq "apply" && $bias_pct > 0) ? 1 : 0;
+	 my $effective_target_y=$applied ? $base_target_y*(1+$bias_pct) : $base_target_y;
+	 if(defined($ire) && ($bias_source eq "matrix" || grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85))) {
   trace_109($step,"body_luma_bias_decision",{
    ire=>defined($ire)?$ire+0:undef,
    mode=>$mode,
