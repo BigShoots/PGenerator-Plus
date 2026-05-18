@@ -2386,7 +2386,9 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	  }
 	 }
 
- if(($type eq "colors" || $type eq "saturations") && $series_target_white_y_num>0) {
+ my $stamp_series_target_white_y=($type eq "colors" || $type eq "saturations") ? 1 : 0;
+ $stamp_series_target_white_y=1 if($type eq "greyscale" && $signal_mode eq "sdr" && $points==26 && $lg_autocal_26);
+ if($stamp_series_target_white_y && $series_target_white_y_num>0) {
   @steps=map {
    my $step=$_;
    if($step!~/"series_target_white_y"\s*:/) {
@@ -10760,13 +10762,18 @@ function meterLgTargetWhiteReferenceNits(readings){
  return meterStoredLgTargetWhiteReferenceNits();
 }
 
-function meterColorSeriesUsesLgTargetWhite(type){
+function meterSeriesUsesLgTargetWhite(type,points){
  const t=String(type||'').toLowerCase();
- return t==='colors'||t==='saturations';
+ if(t==='colors'||t==='saturations') return true;
+ return t==='greyscale'&&meterUseLgAutoCal26(points!=null?points:meterActiveSeriesPoints);
 }
 
-function meterColorSeriesTargetWhiteForRun(type){
- if(!meterColorSeriesUsesLgTargetWhite(type||meterActiveSeriesType)) return null;
+function meterColorSeriesUsesLgTargetWhite(type){
+ return meterSeriesUsesLgTargetWhite(type,meterActiveSeriesPoints);
+}
+
+function meterColorSeriesTargetWhiteForRun(type,points){
+ if(!meterSeriesUsesLgTargetWhite(type||meterActiveSeriesType,points!=null?points:meterActiveSeriesPoints)) return null;
  const phase=String(meterFullAutoCalPhase||'');
  if(meterFullAutoCalRunning&&phase==='precal-report') return null;
  const cfg=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.targetY);
@@ -10780,9 +10787,9 @@ function meterColorSeriesTargetWhiteForRun(type){
  return meterStoredLgTargetWhiteReferenceNits();
 }
 
-function meterApplyColorSeriesTargetWhiteReference(steps,type){
- if(!Array.isArray(steps)||!meterColorSeriesUsesLgTargetWhite(type)) return steps;
- const targetY=Number(meterColorSeriesTargetWhiteForRun(type));
+function meterApplyColorSeriesTargetWhiteReference(steps,type,points){
+ if(!Array.isArray(steps)||!meterSeriesUsesLgTargetWhite(type,points)) return steps;
+ const targetY=Number(meterColorSeriesTargetWhiteForRun(type,points));
  if(!(Number.isFinite(targetY)&&targetY>0)) return steps;
  steps.forEach(step=>{
   if(!step) return;
@@ -16071,7 +16078,7 @@ function meterBuildStepsJS(type,points){
    });
   });
  }
-	 return meterApplyColorSeriesTargetWhiteReference(steps,type);
+	 return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
 }
 
 function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
@@ -19879,7 +19886,7 @@ async function meterRunSeries(){
  const requireDeviceReady=meterSelectedMeasurementRequiresReady();
  try{
   const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
   if(!r||r.status!=='started'){
    toast(r&&r.message?r.message:'Failed to start series',true);
    meterSeriesRunning=false;
