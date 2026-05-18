@@ -4297,9 +4297,6 @@ sub committed_top_window_polish {
 	  write_state($state);
 	  return ($picture,$arrays,undef);
 	 }
-	 my $base_window=$best_window;
-	 my $base_score={ %{$best_score} };
-	 my $base_arrays=clone_arrays($arrays);
 	 my $best_arrays=clone_arrays($arrays);
 	 my $limit=config_positive_int($config,"post_commit_top_window_candidates",7,0,40);
 	 if($state->{"committed_top_window_no_material_gain"} && !(ref($config) eq "HASH" && exists($config->{"post_commit_top_window_candidates"}))) {
@@ -4308,6 +4305,22 @@ sub committed_top_window_polish {
 	 my $round_limit=config_positive_int($config,"post_commit_top_window_rounds",3,1,5);
 	 my $tested_total=0;
 	 my $accepted_total=0;
+	 $state->{"current_name"}="Committed top window";
+	 $state->{"phase"}="writing";
+	 $state->{"message"}="Starting fresh LG calibration mode for committed top-window writes";
+	 write_state($state);
+	 my $start_error=start_calibration_mode($picture_mode,$state,"Committed top-window calibration mode enabled");
+	 return ($picture,$arrays,$start_error) if($start_error);
+	 my $top_window_calibration_mode_active=1;
+	 my $finish_top_window=sub {
+	  my ($error)=@_;
+	  if($top_window_calibration_mode_active) {
+	   end_calibration_mode($picture_mode);
+	   set_state_calibration_mode($state,0,"");
+	   $top_window_calibration_mode_active=0;
+	  }
+	  return ($picture,$arrays,$error);
+	 };
 	 for(my $round=1;$round<=$round_limit;$round++) {
 	  last if(cancelled() || $tested_total >= $limit);
 	  my @candidates=committed_top_window_candidates($best_window,$config);
@@ -4325,13 +4338,12 @@ sub committed_top_window_polish {
 	   $state->{"message"}="Testing top-window ".($candidate->{"label"}||"candidate")." ($tested_total/$limit)";
 	   write_state($state);
 	   my $write_error;
-   ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$anchor,$picture_mode,0,$state,1,0);
-	   return ($picture,$arrays,$write_error) if($write_error);
-	   set_state_calibration_mode($state,0,"");
+   ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$anchor,$picture_mode,1,$state,1,1);
+	   return $finish_top_window->($write_error) if($write_error);
 	   sync_state_picture($state,$picture,$picture_mode);
 	   select(undef,undef,undef,0.6);
 	   my ($candidate_window,$candidate_error)=committed_top_window_read($config,$state,\%steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$candidate->{"label"}||"candidate");
-	   return ($picture,$arrays,$candidate_error) if($candidate_error && $candidate_error ne "cancelled");
+	   return $finish_top_window->($candidate_error) if($candidate_error && $candidate_error ne "cancelled");
 	   last if($candidate_error && $candidate_error eq "cancelled");
 	   my $candidate_score=committed_top_window_score($candidate_window);
 	   my $protected_worsened=committed_top_window_protected_worsened($candidate_window,$best_window);
@@ -4353,16 +4365,41 @@ sub committed_top_window_polish {
 	    $arrays=clone_arrays($candidate_arrays);
 	    $round_improved=1;
 	    $accepted_total++;
+	    trace_109($steps_by_ire{99},"committed_top_window_candidate_accepted",{
+	     label=>$candidate->{"label"},
+	     round=>$round+0,
+	     accepted_total=>$accepted_total+0,
+	     score=>$best_score->{"score"}+0,
+	     worst=>$best_score->{"worst"}+0,
+	     over=>$best_score->{"over"}+0
+	    });
 	    last if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95);
 	   } else {
+	    trace_109($steps_by_ire{99},"committed_top_window_candidate_rejected",{
+	     label=>$candidate->{"label"},
+	     round=>$round+0,
+	     score=>$candidate_score->{"score"}+0,
+	     worst=>$candidate_score->{"worst"}+0,
+	     over=>$candidate_score->{"over"}+0,
+	     best_score=>$best_score->{"score"}+0,
+	     best_worst=>$best_score->{"worst"}+0,
+	     best_over=>$best_score->{"over"}+0,
+	     protected_worsened=>$protected_worsened?1:0
+	    });
 	    $state->{"phase"}="writing";
 	    $state->{"message"}="Restoring top-window best";
 	    write_state($state);
 	    my $restore_error;
-    ($picture,$restore_error)=set_picture_values($picture,$best_arrays,$anchor,$picture_mode,0,$state,1,0);
-	    return ($picture,$arrays,$restore_error) if($restore_error);
-	    set_state_calibration_mode($state,0,"");
+    ($picture,$restore_error)=set_picture_values($picture,$best_arrays,$anchor,$picture_mode,1,$state,1,1);
+	    return $finish_top_window->($restore_error) if($restore_error);
 	    sync_state_picture($state,$picture,$picture_mode);
+	    trace_109($steps_by_ire{99},"committed_top_window_restored",{
+	     label=>$candidate->{"label"},
+	     round=>$round+0,
+	     score=>$best_score->{"score"}+0,
+	     worst=>$best_score->{"worst"}+0,
+	     over=>$best_score->{"over"}+0
+	    });
 	   }
 	  }
 	  last if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95);
@@ -4371,33 +4408,44 @@ sub committed_top_window_polish {
 	 if(ref($best_arrays) eq "HASH") {
 	  $arrays=clone_arrays($best_arrays);
 	  my $restore_error;
-  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,0,$state,1,0);
-	  return ($picture,$arrays,$restore_error) if($restore_error);
-	  set_state_calibration_mode($state,0,"");
+  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
+	  return $finish_top_window->($restore_error) if($restore_error);
 	  sync_state_picture($state,$picture,$picture_mode);
 	  select(undef,undef,undef,0.6);
 	  my ($final_window,$final_error)=committed_top_window_read($config,$state,\%steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,"final");
-	  return ($picture,$arrays,$final_error) if($final_error && $final_error ne "cancelled");
+	  return $finish_top_window->($final_error) if($final_error && $final_error ne "cancelled");
 	  if(ref($final_window) eq "HASH") {
 	   my $final_score=committed_top_window_score($final_window);
-	   if(!committed_top_window_candidate_allowed($final_score,$base_score) && ($final_score->{"score"}||9999) > (($base_score->{"score"}||9999)+0.03)) {
-	    $arrays=clone_arrays($base_arrays);
-	    $best_arrays=clone_arrays($base_arrays);
-	    $best_window=$base_window;
-	    $best_score=$base_score;
+	   if(!committed_top_window_candidate_allowed($final_score,$best_score) && ($final_score->{"score"}||9999) > (($best_score->{"score"}||9999)+0.03)) {
+	    trace_109($steps_by_ire{99},"committed_top_window_final_drift",{
+	     final_score=>$final_score->{"score"}+0,
+	     final_worst=>$final_score->{"worst"}+0,
+	     final_over=>$final_score->{"over"}+0,
+	     best_score=>$best_score->{"score"}+0,
+	     best_worst=>$best_score->{"worst"}+0,
+	     best_over=>$best_score->{"over"}+0,
+	     accepted_total=>$accepted_total+0
+	    });
+	    $arrays=clone_arrays($best_arrays);
 	    $state->{"phase"}="writing";
-	    $state->{"message"}="Restoring starting top-window state after final verify drift";
+	    $state->{"message"}="Restoring accepted top-window best after final verify drift";
 	    write_state($state);
-    ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,0,$state,1,0);
-	    return ($picture,$arrays,$restore_error) if($restore_error);
-	    set_state_calibration_mode($state,0,"");
+    ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
+	    return $finish_top_window->($restore_error) if($restore_error);
 	    sync_state_picture($state,$picture,$picture_mode);
+	    trace_109($steps_by_ire{99},"committed_top_window_restored",{
+	     label=>"final_drift",
+	     score=>$best_score->{"score"}+0,
+	     worst=>$best_score->{"worst"}+0,
+	     over=>$best_score->{"over"}+0
+	    });
 	   } else {
 	    $best_window=$final_window;
 	    $best_score=$final_score;
 	   }
 	  }
 	 }
+	 ($picture,$arrays,undef)=$finish_top_window->(undef);
  if(ref($best_window) eq "HASH" && ref($best_window->{"points"}) eq "HASH") {
   foreach my $ire (keys %{$best_window->{"points"}}) {
    my $reading=$best_window->{"points"}{$ire}{"reading"};
