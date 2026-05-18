@@ -1510,6 +1510,16 @@ sub autocal_result_score {
 		 return $score+$penalty;
 }
 
+sub autocal_measurement_not_worse_than_best {
+ my ($de,$lum_pct,$best_de,$best_lum_pct)=@_;
+ return 0 if(!defined($de));
+ return 0 if(defined($best_de) && ($de+0) > ($best_de+0.0001));
+ if(defined($lum_pct) && defined($best_lum_pct)) {
+  return 0 if(abs($lum_pct) > abs($best_lum_pct)+0.05);
+ }
+ return 1;
+}
+
 sub headroom_autocal_result_score {
 	 my ($de,$reading,$step)=@_;
 	 my $err=rgb_error($reading);
@@ -2508,6 +2518,64 @@ sub low_shadow_luminance_response_adjustment {
  return undef if(abs($next-$current) < 0.0001);
  return undef if(tried_value_exists($tried,"adjustingLuminance",$next));
  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, low_shadow_luminance=>1, response_model=>1, slope=>$slope+0, predicted_error=>($after_lum_pct+($slope*($next-$end)))+0 }];
+}
+
+sub body_luminance_response_cap {
+ my ($step)=@_;
+ return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return 1.5 if($ire > 10.0001 && $ire <= 25.0001);
+ return 2.0 if($ire > 25.0001 && $ire <= 35.0001);
+ return 2.5 if($ire > 35.0001 && $ire <= 50.0001);
+ return undef;
+}
+
+sub body_luminance_response_adjustment {
+ my ($step,$adjustments,$before,$after,$arrays,$target,$tried,$from_start)=@_;
+ return undef if(autocal_step_is_low_shadow($step) || autocal_step_is_fast_headroom($step) || autocal_step_is_white($step));
+ my $cap=body_luminance_response_cap($step);
+ return undef if(!defined($cap));
+ return undef if(ref($adjustments) ne "ARRAY" || @{$adjustments} != 1);
+ return undef if(ref($before) ne "HASH" || ref($after) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ my $adj=$adjustments->[0];
+ return undef if(ref($adj) ne "HASH");
+ return undef if(($adj->{"setting"}||"") ne "adjustingLuminance");
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+ my $start=defined($adj->{"current"}) ? ($adj->{"current"}+0) : undef;
+ my $end=defined($adj->{"next"}) ? ($adj->{"next"}+0) : undef;
+ return undef if(!defined($start) || !defined($end) || abs($end-$start) < 0.0001);
+ my $target_y=$after->{"target_luminance"};
+ $target_y=$before->{"target_luminance"} if(!defined($target_y));
+ return undef if(!defined($target_y) || $target_y <= 0);
+ my $before_lum_pct=luminance_error_percent($before,$target_y);
+ my $after_lum_pct=luminance_error_percent($after,$target_y);
+ return undef if(!defined($before_lum_pct) || !defined($after_lum_pct));
+ my $slope=($after_lum_pct-$before_lum_pct)/($end-$start);
+ return undef if(abs($slope) < 0.10);
+ my $current=$from_start ? $start : ($arrays->{"adjustingLuminance"}[$idx]||0);
+ my $current_error=$before_lum_pct+($slope*($current-$start));
+ my $ideal=$current-($current_error/$slope);
+ my $delta=$ideal-$current;
+ return undef if(abs($delta) < 0.18);
+ my $direction=($delta < 0) ? -1 : 1;
+ my $mag=abs($delta);
+ $mag=$cap if($mag > $cap);
+ $mag=0.25 if($mag < 0.25);
+ my @magnitudes;
+ while($mag >= 0.25-0.0001) {
+  push @magnitudes,$mag;
+  $mag-=0.25;
+ }
+ foreach my $candidate_mag (@magnitudes) {
+  my $next=round_ddc_quarter($current+($direction*$candidate_mag));
+  next if(abs($next-$current) < 0.0001);
+  next if(tried_value_exists($tried,"adjustingLuminance",$next));
+  my $predicted=$before_lum_pct+($slope*($next-$start));
+  next if(abs($predicted) + 0.0001 >= abs($current_error));
+  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, body_luminance=>1, response_model=>1, slope=>$slope+0, predicted_error=>$predicted+0 }];
+ }
+ return undef;
 }
 
 sub low_shadow_luminance_priority_adjustments {
@@ -3931,10 +3999,10 @@ sub park_black_for_settle {
 }
 
 sub post_commit_polish_enabled {
- my ($config)=@_;
- return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- return 0 if(!exists($config->{"post_commit_polish"}));
- return $config->{"post_commit_polish"} ? 1 : 0;
+	 my ($config)=@_;
+	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	 return 1 if(!exists($config->{"post_commit_polish"}));
+	 return $config->{"post_commit_polish"} ? 1 : 0;
 }
 
 sub committed_top_window_score {
@@ -4533,9 +4601,12 @@ sub committed_state_polish {
     values=>trace_target_values($arrays,$target),
     reading=>trace_reading_summary($reading)
    });
+   my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
+   $not_worse_measurement=0 if(ref($best_pair_reading) eq "HASH" && !autocal_measurement_not_worse_than_best($committed_pair_de,$committed_pair_lum_pct,$best_pair_de,$best_pair_lum_pct));
    my $keep_committed_candidate=(ref($committed_pair_step) eq "HASH")
     ? legal_white_pair_best_update_allowed($score,$best_score,$de,$committed_pair_de,$best_de,$best_pair_de,$target_delta)
     : ($score + 0.0001 < $best_score);
+   $keep_committed_candidate=0 if(!$not_worse_measurement);
    if($keep_committed_candidate) {
    $best_score=$score;
     $best_arrays=clone_arrays($arrays);
@@ -5375,7 +5446,12 @@ eval {
 				  my $pair_best_update_allowed=sub {
 				   my ($candidate_score)=@_;
 				   return 0 if(!defined($de));
+				   return 0 if(!autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct));
 				   return ($candidate_score + 0.0001 < $best_score) ? 1 : 0 if(!$paired_white_step);
+				   return 0 if(
+				    ref($best_pair_reading) eq "HASH" &&
+				    !autocal_measurement_not_worse_than_best($pair_de,$pair_lum_pct,$best_pair_de,$best_pair_lum_pct)
+				   );
 				   return 0 if(
 				    defined($best_de) &&
 				    within_itp_luminance_included_acceptance($best_de,$best_read_step) &&
@@ -5552,8 +5628,9 @@ eval {
 			   my $candidate_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
 			   my $after_error=autocal_adjustment_error($reading,$read_step);
 			   my ($after_rgb_ch,$after_rgb_err,$after_rgb_max)=furthest_rgb_error_channel($after_error);
-			   my $improved_score=(defined($de) && $candidate_score + 0.0001 < $best_score) ? 1 : 0;
-			   my $improved_balance=(defined($de) && $candidate_score <= $best_score+0.03 && $after_rgb_max+0.0002 < $before_rgb_max) ? 1 : 0;
+			   my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
+			   my $improved_score=(defined($de) && $not_worse_measurement && $candidate_score + 0.0001 < $best_score) ? 1 : 0;
+			   my $improved_balance=(defined($de) && $not_worse_measurement && $candidate_score <= $best_score+0.03 && $after_rgb_max+0.0002 < $before_rgb_max) ? 1 : 0;
 				   my $keep=($improved_score || $improved_balance) && body_final_micro_near_target_reached($read_step,$de,$lum_pct,$target_delta);
 			   trace_109($read_step,"body_final_micro_measurement",{
 			    label=>$label,
@@ -5567,6 +5644,7 @@ eval {
 			    rgb_error=>$after_error,
 			    rgb_max_error=>$after_rgb_max+0,
 			    previous_rgb_max_error=>$before_rgb_max+0,
+			    not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 			    kept=>$keep?JSON::PP::true:JSON::PP::false,
 			    target_values=>trace_target_values($arrays,$target)
 			   });
@@ -5675,6 +5753,7 @@ eval {
 					  my %rgb_response_model;
 					  my $headroom_next_adjustments;
 					  my $low_shadow_next_adjustments;
+					  my $body_luminance_next_adjustments;
 				  mark_tried_values(\%tried_values,$arrays,$target,$de);
 				  my $restore_best_branch=sub {
 				   my ($reason)=@_;
@@ -5730,7 +5809,7 @@ eval {
 			   $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
 			   $lum_pct=luminance_error_percent($reading,$target_step_y);
 				   my $probe_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
-					   if(defined($de) && $probe_score + 0.0001 < $best_score) {
+					   if(defined($de) && autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct) && $probe_score + 0.0001 < $best_score) {
 					    $best_de=$de;
 				    $best_lum_pct=$lum_pct;
 				    $best_score=$probe_score;
@@ -5800,6 +5879,14 @@ eval {
 								   ) {
 								    $adjustments=$low_shadow_next_adjustments;
 								    $low_shadow_next_adjustments=undef;
+								   }
+								   if(
+								    !$adjustments &&
+								    !autocal_step_is_low_shadow($read_step) &&
+								    ref($body_luminance_next_adjustments) eq "ARRAY"
+								   ) {
+								    $adjustments=$body_luminance_next_adjustments;
+								    $body_luminance_next_adjustments=undef;
 								   }
 								   if(!$adjustments && autocal_step_is_low_shadow($read_step)) {
 								    $adjustments=low_shadow_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,0);
@@ -5902,6 +5989,8 @@ eval {
 						   $headroom_next_adjustments=headroom_proportional_adjustment($read_step,$adjustments,$before_adjustment_reading,$reading,$arrays,$target,\%tried_values);
 						   my $low_shadow_candidate_next_adjustments=low_shadow_luminance_response_adjustment($read_step,$adjustments,$before_adjustment_reading,$reading,$arrays,$target,\%tried_values,0);
 						   my $low_shadow_restore_next_adjustments=low_shadow_luminance_response_adjustment($read_step,$adjustments,$before_adjustment_reading,$reading,$arrays,$target,\%tried_values,1);
+						   my $body_candidate_next_adjustments=body_luminance_response_adjustment($read_step,$adjustments,$before_adjustment_reading,$reading,$arrays,$target,\%tried_values,0);
+						   my $body_restore_next_adjustments=body_luminance_response_adjustment($read_step,$adjustments,$before_adjustment_reading,$reading,$arrays,$target,\%tried_values,1);
 					   my $response_score=reading_change_score($before_adjustment_reading,$reading);
 					   my $rgb_response_update=update_rgb_response_model(\%rgb_response_model,$adjustments,$before_adjustment_reading,$reading,$read_step);
 					   $state->{"response_score"}=$response_score;
@@ -5911,6 +6000,7 @@ eval {
 						    if($pair_switched) {
 						     %rgb_response_model=();
 						     $headroom_next_adjustments=undef;
+						     $body_luminance_next_adjustments=undef;
 						    }
 						   }
 				   my $candidate_score_after=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
@@ -5985,9 +6075,10 @@ eval {
 					   } else {
 					    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
 					    my $delta_keep=$candidate_delta_keep->();
-					    my $keep_candidate=$paired_white_step
-					     ? $pair_best_update_allowed->($candidate_score_after)
-					     : (defined($de) && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep));
+						    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
+						    my $keep_candidate=$paired_white_step
+						     ? $pair_best_update_allowed->($candidate_score_after)
+						     : (defined($de) && $not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep));
 					    if($keep_candidate) {
 				    $best_de=$de;
 				    $best_lum_pct=$lum_pct;
@@ -5997,6 +6088,7 @@ eval {
 						    $best_read_step=clone_picture($read_step);
 						    $store_best_pair->() if($paired_white_step);
 						    $low_shadow_next_adjustments=$low_shadow_candidate_next_adjustments if(ref($low_shadow_candidate_next_adjustments) eq "ARRAY");
+						    $body_luminance_next_adjustments=$body_candidate_next_adjustments if(ref($body_candidate_next_adjustments) eq "ARRAY");
 						    $stalls=0;
 					    trace_109($read_step,"best_updated",{
 					     label=>$label,
@@ -6004,8 +6096,9 @@ eval {
 					     best_delta_e=>defined($best_de)?$best_de+0:undef,
 					     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 					     best_score=>$best_score+0,
-					     chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
-					     delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
+				     chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
+				     delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
+					     not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 					     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 					     previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
 					     best_values=>trace_target_values($best_arrays,$target)
@@ -6048,6 +6141,7 @@ eval {
 					     });
 						    } else {
 						     $low_shadow_next_adjustments=$low_shadow_restore_next_adjustments if(ref($low_shadow_restore_next_adjustments) eq "ARRAY");
+						     $body_luminance_next_adjustments=$body_restore_next_adjustments if(ref($body_restore_next_adjustments) eq "ARRAY");
 						     $restore_best_branch->("Backtracking to best $label result after rejected adjustment");
 						    }
 			   }
@@ -6089,7 +6183,12 @@ eval {
 			  my $restore_best_if_better=sub {
 			   my ($reason)=@_;
 			   my $current_score=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
-			   return 0 if(cancelled() || ref($best_arrays) ne "HASH" || !defined($de) || $best_score + 0.0001 >= $current_score);
+			   my $best_score_better=$best_score + 0.0001 < $current_score ? 1 : 0;
+			   my $current_measurement_worse=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct) ? 0 : 1;
+			   if($paired_white_step && ref($best_pair_reading) eq "HASH") {
+			    $current_measurement_worse=1 if(!autocal_measurement_not_worse_than_best($pair_de,$pair_lum_pct,$best_pair_de,$best_pair_lum_pct));
+			   }
+			   return 0 if(cancelled() || ref($best_arrays) ne "HASH" || !defined($de) || (!$best_score_better && !$current_measurement_worse));
 			   trace_109($read_step,"restore_best_if_better",{
 			    label=>$label,
 			    reason=>$reason||"Restoring closest $label result",
@@ -6100,9 +6199,10 @@ eval {
 			    best_delta_e=>defined($best_de)?$best_de+0:undef,
 			    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 			    best_score=>$best_score+0,
+			    current_measurement_worse=>$current_measurement_worse?JSON::PP::true:JSON::PP::false,
 			    best_values=>trace_target_values($best_arrays,$target)
 			   });
-			   $arrays=$best_arrays;
+			   $arrays=clone_arrays($best_arrays);
 		   $state->{"phase"}="restoring";
 		   $state->{"message"}=$reason||"Restoring closest $label result";
 		   write_state($state);
@@ -6280,9 +6380,10 @@ eval {
 			    });
 			    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
 			    my $delta_keep=$candidate_delta_keep->();
-			    my $keep_candidate=$paired_white_step
-			     ? $pair_best_update_allowed->($candidate_score)
-			     : (defined($de) && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep));
+				    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
+				    my $keep_candidate=$paired_white_step
+				     ? $pair_best_update_allowed->($candidate_score)
+				     : (defined($de) && $not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep));
 			    if($keep_candidate) {
 			     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
@@ -6298,9 +6399,10 @@ eval {
 			      best_delta_e=>defined($best_de)?$best_de+0:undef,
 			      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 			      best_score=>$best_score+0,
-			      chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
-			      delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
-			      candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
+				      chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
+				      delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
+				      not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
+				      candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 			      previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
 			      best_values=>trace_target_values($best_arrays,$target)
 			     });
