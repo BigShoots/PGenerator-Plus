@@ -733,23 +733,44 @@ sub target_luminance_for_autocal_step {
 		}
 
 sub body_luma_bias_display_allowed {
- my ($config)=@_;
- return 0 if(ref($config) ne "HASH");
- return 1 if($config->{"body_luma_bias_display_opt_in"} || $config->{"body_luma_bias_allow_non_c2"});
- my $display=lc($config->{"display_type"}||"");
- return ($display =~ /lg[_ -]?c2/) ? 1 : 0;
+	 my ($config)=@_;
+	 return 0 if(ref($config) ne "HASH");
+	 return 1 if($config->{"body_luma_bias_display_opt_in"} || $config->{"body_luma_bias_allow_non_c2"});
+	 my $display=lc($config->{"display_type"}||"");
+	 return ($display =~ /lg[_ -]?c2/) ? 1 : 0;
+}
+
+sub body_luma_bias_pct_for_step {
+	 my ($config,$ire)=@_;
+	 my $pct=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_pct"})) ? ($config->{"body_luma_bias_pct"}+0) : 0.0065;
+	 my $source="scalar";
+	 if(ref($config) eq "HASH" && ref($config->{"body_luma_bias_matrix_pct"}) eq "HASH" && defined($ire)) {
+	  my $matrix=$config->{"body_luma_bias_matrix_pct"};
+	  foreach my $key (keys %$matrix) {
+	   next if(!defined($key) || !defined($matrix->{$key}));
+	   if(abs(($key+0)-($ire+0)) < 0.001) {
+	    $pct=$matrix->{$key}+0;
+	    $source="matrix";
+	    last;
+	   }
+	  }
+	 }
+	 $pct=0 if($pct < 0);
+	 if($source ne "matrix" && defined($ire) && abs($ire-60) < 0.001 && $pct > 0.004) {
+	  $pct=0.004;
+	  $source="scalar_cap60";
+	 }
+	 return ($pct,$source);
 }
 
 sub body_luma_bias_decision {
- my ($config,$state,$step,$target_gamma,$signal_mode,$base_target_y)=@_;
- my $mode=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_mode"})) ? lc($config->{"body_luma_bias_mode"}) : "observe";
- $mode="observe" if($mode ne "apply");
- my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef;
- my $bias_pct=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_pct"})) ? ($config->{"body_luma_bias_pct"}+0) : 0.0065;
- $bias_pct=0 if($bias_pct < 0);
- $bias_pct=0.004 if(defined($ire) && abs($ire-60) < 0.001 && $bias_pct > 0.004);
- my $reason="eligible";
- my $eligible=1;
+	 my ($config,$state,$step,$target_gamma,$signal_mode,$base_target_y)=@_;
+	 my $mode=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_mode"})) ? lc($config->{"body_luma_bias_mode"}) : "observe";
+	 $mode="observe" if($mode ne "apply");
+	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef;
+	 my ($bias_pct,$bias_source)=body_luma_bias_pct_for_step($config,$ire);
+	 my $reason="eligible";
+	 my $eligible=1;
  if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"}) {
   ($eligible,$reason)=(0,"not_lg_autocal_26");
  } elsif(!$config->{"patch_insert"}) {
@@ -771,10 +792,11 @@ sub body_luma_bias_decision {
    mode=>$mode,
    base_target_y=>defined($base_target_y)?$base_target_y+0:undef,
    biased_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
-   effective_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
-   bias_pct=>$bias_pct+0,
-   bias_applied=>$applied?JSON::PP::true:JSON::PP::false,
-   applied=>$applied?JSON::PP::true:JSON::PP::false,
+	   effective_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
+	   bias_pct=>$bias_pct+0,
+	   bias_source=>$bias_source,
+	   bias_applied=>$applied?JSON::PP::true:JSON::PP::false,
+	   applied=>$applied?JSON::PP::true:JSON::PP::false,
    bias_disabled_reason=>$applied ? undef : $reason,
    reason=>$applied ? "applied" : $reason
   });
