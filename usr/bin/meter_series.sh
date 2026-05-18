@@ -232,6 +232,7 @@ DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 FIRST_STEP_EXTRA_SEC=2
 FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
+ZERO_READ_RETRIES=2
 
 daemon_elapsed_sec() {
  local pid
@@ -485,6 +486,22 @@ else:
   return 0
  fi
  return 1
+}
+
+nonblack_zero_reading() {
+ local reading="$1" ire="$2" r="$3" g="$4" b="$5"
+ awk -v r="$r" -v g="$g" -v b="$b" 'BEGIN { exit !((r+0)==0 && (g+0)==0 && (b+0)==0) }' && return 1
+ local X Y Z lum
+ X=$(printf '%s' "$reading" | sed -n 's/.*"X":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ Y=$(printf '%s' "$reading" | sed -n 's/.*"Y":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ Z=$(printf '%s' "$reading" | sed -n 's/.*"Z":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ lum=$(printf '%s' "$reading" | sed -n 's/.*"luminance":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ awk -v X="$X" -v Y="$Y" -v Z="$Z" -v lum="$lum" '
+  function abs(v) { return v < 0 ? -v : v }
+  BEGIN {
+   if (X == "" || Y == "" || Z == "" || lum == "") exit 1
+   exit !((abs(X+0) < 1e-12) && (abs(Y+0) < 1e-12) && (abs(Z+0) < 1e-12) && (abs(lum+0) < 1e-12))
+  }'
 }
 
 replace_series_reading() {
@@ -787,6 +804,86 @@ r['g_code']=$G
 r['b_code']=$B
 print(json.dumps(r))
 " 2>/dev/null)
+  fi
+ fi
+
+ if [[ -n "$READING" ]] && nonblack_zero_reading "$READING" "$IRE" "$R" "$G" "$B"; then
+  echo "[$(date '+%H:%M:%S.%3N')] zero read guard: step=$STEP_NUM ire=$IRE name=$NAME parsed all-zero XYZ/luminance" >> /tmp/meter_series_debug.log
+  ZERO_RETRY_READING=""
+  for (( zero_retry=1; zero_retry<=ZERO_READ_RETRIES; zero_retry++ )); do
+   cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (redisplaying after zero read $zero_retry/$ZERO_READ_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+   sleep "$STEP_DELAY"
+   cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $zero_retry/$ZERO_READ_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   PREV_COUNT=$(count_results)
+   SCAN_OFFSET=$(output_size)
+   printf " " >&3
+   READ_START=$SECONDS
+   RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
+   GOT_RETRY=false
+   RETRIED_COMM=0
+   while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
+    CUR_COUNT=$(count_results)
+    if (( CUR_COUNT > PREV_COUNT )); then
+     GOT_RETRY=true
+     break
+    fi
+    NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
+    if [[ -n "$NEW_OUTPUT" ]]; then
+     CUR_SIZE=$(output_size)
+     if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+      printf " " >&3
+      RETRIED_COMM=1
+      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
+      SCAN_OFFSET=$(output_size)
+      continue
+     fi
+     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+      echo "[$(date '+%H:%M:%S.%3N')] manual prompt during zero retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
+      if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+       wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
+      else
+       sleep 1
+      fi
+      printf " " >&3
+      READ_START=$SECONDS
+      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 30))
+      SCAN_OFFSET=$(output_size)
+      continue
+     fi
+     SCAN_OFFSET="$CUR_SIZE"
+    fi
+    sleep 0.3
+   done
+   if $GOT_RETRY; then
+    PARSED=$(parse_latest_result)
+    if [[ -n "$PARSED" ]]; then
+     ZERO_RETRY_READING=$(PARSED_JSON="$PARSED" STEP_IRE="$IRE" STEP_NAME="$NAME" STEP_R="$R" STEP_G="$G" STEP_B="$B" python -c "import json, os
+r=json.loads(os.environ['PARSED_JSON'])
+r['ire']=float(os.environ.get('STEP_IRE','0'))
+if r['ire'].is_integer():
+ r['ire']=int(r['ire'])
+r['name']=os.environ.get('STEP_NAME','')
+r['r_code']=int(float(os.environ.get('STEP_R','0')))
+r['g_code']=int(float(os.environ.get('STEP_G','0')))
+r['b_code']=int(float(os.environ.get('STEP_B','0')))
+print(json.dumps(r))" 2>/dev/null)
+    fi
+   fi
+   if [[ -n "$ZERO_RETRY_READING" ]] && ! nonblack_zero_reading "$ZERO_RETRY_READING" "$IRE" "$R" "$G" "$B"; then
+    echo "[$(date '+%H:%M:%S.%3N')] zero read guard recovered: step=$STEP_NUM ire=$IRE retry=$zero_retry name=$NAME" >> /tmp/meter_series_debug.log
+    READING="$ZERO_RETRY_READING"
+    break
+   fi
+   ZERO_RETRY_READING=""
+  done
+  if nonblack_zero_reading "$READING" "$IRE" "$R" "$G" "$B"; then
+   echo "[$(date '+%H:%M:%S.%3N')] zero read guard excluded: step=$STEP_NUM ire=$IRE retries=$ZERO_READ_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
+   READING="{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}"
   fi
  fi
 
