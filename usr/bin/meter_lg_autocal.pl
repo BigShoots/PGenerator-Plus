@@ -745,7 +745,7 @@ sub body_luma_bias_decision {
  my $mode=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_mode"})) ? lc($config->{"body_luma_bias_mode"}) : "observe";
  $mode="observe" if($mode ne "apply");
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef;
- my $bias_pct=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_pct"})) ? ($config->{"body_luma_bias_pct"}+0) : 0.007;
+ my $bias_pct=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_pct"})) ? ($config->{"body_luma_bias_pct"}+0) : 0.0065;
  $bias_pct=0 if($bias_pct < 0);
  $bias_pct=0.004 if(defined($ire) && abs($ire-60) < 0.001 && $bias_pct > 0.004);
  my $reason="eligible";
@@ -770,9 +770,12 @@ sub body_luma_bias_decision {
    ire=>defined($ire)?$ire+0:undef,
    mode=>$mode,
    base_target_y=>defined($base_target_y)?$base_target_y+0:undef,
+   biased_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
    effective_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
    bias_pct=>$bias_pct+0,
+   bias_applied=>$applied?JSON::PP::true:JSON::PP::false,
    applied=>$applied?JSON::PP::true:JSON::PP::false,
+   bias_disabled_reason=>$applied ? undef : $reason,
    reason=>$applied ? "applied" : $reason
   });
  }
