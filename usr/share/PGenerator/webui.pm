@@ -14159,10 +14159,14 @@ function meterMeasuredContrastRatio(readings){
   .filter(r=>r&&meterReadingIsGreyscale(r)&&meterReadingHasLuminance(r));
  if(gs.length===0) return null;
  const hasIre=(r,target)=>{
-  const ire=Number(r&&r.ire);
-  return Number.isFinite(ire)&&Math.abs(ire-target)<0.05;
+  const plot=(typeof meterReadingPlotIre==='function')?meterReadingPlotIre(r):null;
+  const candidates=[plot,r&&r.plot_ire,r&&r.nominal_ire,r&&r.target_ire,r&&r.ire,r&&r.stimulus];
+  return candidates.some(value=>{
+   const ire=Number(value);
+   return Number.isFinite(ire)&&Math.abs(ire-target)<0.05;
+  });
  };
- const white=gs.find(r=>hasIre(r,100)) || null;
+ const white=gs.find(r=>hasIre(r,100) || String(r&&r.name||'').toLowerCase()==='white') || null;
  const black=gs.find(r=>hasIre(r,0)) || null;
  const whiteY=white?meterReadingLuminanceNits(white):null;
  const blackY=black?meterReadingLuminanceNits(black):null;
@@ -19051,8 +19055,8 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     headroom_max_iterations:8,
     max_polish_iterations:4,
     precision_polish_iterations:6,
-    post_commit_body_polish:true,
-    post_commit_polish:true,
+    post_commit_body_polish:false,
+    post_commit_polish:false,
     post_commit_polish_iterations:3,
     post_commit_low_shadow_iterations:2,
     post_commit_true_low_shadow:true,
@@ -19439,7 +19443,7 @@ async function meterAutoCalConfirmAndStart(){
 	    full_workflow:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
 	    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
 	    full_autocal_phase:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'first-greyscale':undefined,
-	    post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
+	    post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?false:undefined,
 	    post_commit_body_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?false:undefined,
 	    post_commit_polish_iterations:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?2:undefined,
 	    post_commit_low_shadow_iterations:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?6:undefined,
@@ -21376,7 +21380,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  // target curve rather than the mastering-peak label used elsewhere.
  const tgtPts=meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'luminance',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666');
- drawGammaContrastLabel(ctx,chart,gs);
+ drawGammaContrastLabel(ctx,chart,(Array.isArray(meterReadings)&&meterReadings.length)?meterReadings:gs);
  if(plotSteps.length){
   plotSteps.forEach((s,idx)=>{
    if(readingMap[s.ire]) return;
