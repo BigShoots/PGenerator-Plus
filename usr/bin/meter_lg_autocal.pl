@@ -125,6 +125,35 @@ sub trace_109 {
  };
 }
 
+sub drift_matrix_trace_enabled {
+ my ($config,$step)=@_;
+ return 0 if(ref($config) ne "HASH");
+ return 0 if(!$config->{"drift_matrix_trace"} && !$config->{"lg_autocal_drift_matrix_trace"} && !$config->{"trace_drift_matrix"});
+ return trace_109_enabled($step);
+}
+
+sub trace_drift_matrix_final_kept {
+ my ($config,$state,$step,$picture_mode,$target_gamma,$target_luminance,$delta_e,$luminance_error_pct,$reading,$arrays,$target)=@_;
+ return if(!drift_matrix_trace_enabled($config,$step));
+ return if(ref($reading) ne "HASH");
+ my %row=(
+  run_id=>(ref($state) eq "HASH" ? $state->{"run_id"} : undef),
+  picture_mode=>$picture_mode,
+  display_type=>$reading->{"display_type"} || (ref($state) eq "HASH" ? $state->{"display_type"} : undef) || $config->{"display_type"} || "lcd",
+  target_gamma=>$target_gamma,
+  patch_insert=>$config->{"patch_insert"} ? JSON::PP::true : JSON::PP::false,
+  ire=>(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef,
+  measured_Y=>defined($reading->{"Y"}) ? trace_number($reading->{"Y"}) : undef,
+  measured_x=>defined($reading->{"x"}) ? trace_number($reading->{"x"}) : undef,
+  measured_y=>defined($reading->{"y"}) ? trace_number($reading->{"y"}) : undef,
+  target_luminance=>defined($target_luminance) ? ($target_luminance+0) : undef,
+  delta_e=>defined($delta_e) ? ($delta_e+0) : undef,
+  luminance_error_pct=>defined($luminance_error_pct) ? ($luminance_error_pct+0) : undef,
+  ddc_values=>trace_target_values($arrays,$target)
+ );
+ trace_109($step,"drift_matrix_final_kept",\%row);
+}
+
 sub read_file {
  my ($path)=@_;
  return "" if(!defined($path) || !-f $path);
@@ -6614,6 +6643,10 @@ eval {
 				   paired_reading=>trace_reading_summary($best_pair_reading),
 				   final_values=>trace_target_values($best_arrays,$target)
 				  });
+				  trace_drift_matrix_final_kept(
+				   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
+				   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
+				  );
 			  write_state($state);
 			  if(
 			   !$white_refreshed_after_headroom &&
