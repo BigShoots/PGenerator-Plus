@@ -16,6 +16,15 @@ const pictureMode = 'cinema';
 const postCommitPolish = process.env.PGEN_POST_COMMIT_POLISH == null
   ? undefined
   : !/^(0|false|off|no)$/i.test(process.env.PGEN_POST_COMMIT_POLISH);
+const bodyLumaBiasMode = process.env.PGEN_BODY_LUMA_BIAS_MODE || '';
+let bodyLumaBiasMatrix = null;
+if (process.env.PGEN_BODY_LUMA_BIAS_MATRIX) {
+  try {
+    bodyLumaBiasMatrix = JSON.parse(process.env.PGEN_BODY_LUMA_BIAS_MATRIX);
+  } catch (error) {
+    throw new Error(`Invalid PGEN_BODY_LUMA_BIAS_MATRIX JSON: ${error.message}`);
+  }
+}
 
 const slots = [
   [2.3, 84], [3, 92], [4, 100], [5, 108], [7, 124], [10, 152],
@@ -517,6 +526,8 @@ async function main() {
     steps: buildAutocalSteps()
   };
   if (postCommitPolish !== undefined) autocalPayload.post_commit_polish = postCommitPolish;
+  if (bodyLumaBiasMode) autocalPayload.body_luma_bias_mode = bodyLumaBiasMode;
+  if (bodyLumaBiasMatrix) autocalPayload.body_luma_bias_matrix_pct = bodyLumaBiasMatrix;
   save('payload.json', autocalPayload);
   const autocalStartTime = Date.now();
   const start = await api('/api/meter/lg-autocal', { method: 'POST', body: autocalPayload, timeoutMs: 30000 });
