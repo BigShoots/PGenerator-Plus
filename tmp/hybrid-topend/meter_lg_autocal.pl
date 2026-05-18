@@ -3940,7 +3940,7 @@ sub post_commit_polish_enabled {
 sub committed_top_window_score {
  my ($window)=@_;
  return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
- my @ires=(95,99,100,105,109);
+ my @ires=(109,105,99,100,95);
  my $sum=0;
  my $count=0;
  my $worst=0;
@@ -4005,9 +4005,20 @@ sub committed_top_window_candidates {
  my $rank_count=0;
  foreach my $ire (@ranked) {
   last if($rank_count++ >= 3);
-  my $reading=$window->{"points"}{$ire}{"reading"};
-  my $err=rgb_error($reading);
-  next if(ref($err) ne "HASH");
+	  my $reading=$window->{"points"}{$ire}{"reading"};
+	  my $err=rgb_error($reading);
+  my $lum_pct=$window->{"points"}{$ire}{"luminance_error_pct"};
+  if(defined($lum_pct) && abs($lum_pct) >= 0.35) {
+   my $dir=($lum_pct > 0) ? -1 : 1;
+   foreach my $idx (@{$influence{$ire}||[]}) {
+    foreach my $mag (0.25,0.50,0.125) {
+     committed_top_window_add_candidate(\@out,\%seen,"top_${ire}_lum_${idx}_".ddc_value_key($dir*$mag),[
+      { setting=>"adjustingLuminance", index=>$idx, delta=>$dir*$mag },
+     ]);
+    }
+   }
+  }
+	  next if(ref($err) ne "HASH");
   my @channels=sort { abs($err->{$b}||0) <=> abs($err->{$a}||0) } qw(r g b);
   @channels=@channels[0,1] if(@channels > 2);
   foreach my $ch (@channels) {
@@ -4107,7 +4118,7 @@ sub committed_top_window_apply_candidate {
 sub committed_top_window_read {
  my ($config,$state,$steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$tag)=@_;
  my %points;
- foreach my $ire (95,99,100,105,109) {
+ foreach my $ire (109,105,99,100,95) {
   my $step=$steps_by_ire->{$ire};
   next if(ref($step) ne "HASH");
   my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
@@ -4122,21 +4133,24 @@ sub committed_top_window_read {
   next if(ref($reading) ne "HASH");
   my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-  my $de=autocal_chroma_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y);
+  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+  my $lum_pct=luminance_error_percent($reading,$target_step_y);
   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
   $state->{"current_delta_e"}=defined($de) ? $de : undef;
   $state->{"current_luminance"}=luminance($reading);
   set_state_target_step_luminance($state,$target_step_y);
   $points{$ire}={
-   reading => clone_picture($reading),
-   de => defined($de) ? ($de+0) : undef,
-   target_luminance => $target_step_y,
-  };
-  trace_109($read_step,"committed_top_window_read",{
-   tag=>$tag,
-   delta_e=>defined($de)?$de+0:undef,
-   reading=>trace_reading_summary($reading)
-  });
+	   reading => clone_picture($reading),
+	   de => defined($de) ? ($de+0) : undef,
+   luminance_error_pct => defined($lum_pct) ? ($lum_pct+0) : undef,
+	   target_luminance => $target_step_y,
+	  };
+	  trace_109($read_step,"committed_top_window_read",{
+	   tag=>$tag,
+	   delta_e=>defined($de)?$de+0:undef,
+   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	   reading=>trace_reading_summary($reading)
+	  });
   write_state($state);
  }
  my $window={ points=>\%points };
@@ -4199,7 +4213,7 @@ sub committed_top_window_polish {
 	   $state->{"message"}="Testing top-window ".($candidate->{"label"}||"candidate")." ($tested_total/$limit)";
 	   write_state($state);
 	   my $write_error;
-	   ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$anchor,$picture_mode,0,$state,0,1);
+   ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$anchor,$picture_mode,0,$state,1,0);
 	   return ($picture,$arrays,$write_error) if($write_error);
 	   set_state_calibration_mode($state,0,"");
 	   sync_state_picture($state,$picture,$picture_mode);
@@ -4230,7 +4244,7 @@ sub committed_top_window_polish {
 	    $state->{"message"}="Restoring top-window best";
 	    write_state($state);
 	    my $restore_error;
-	    ($picture,$restore_error)=set_picture_values($picture,$best_arrays,$anchor,$picture_mode,0,$state,0,1);
+    ($picture,$restore_error)=set_picture_values($picture,$best_arrays,$anchor,$picture_mode,0,$state,1,0);
 	    return ($picture,$arrays,$restore_error) if($restore_error);
 	    set_state_calibration_mode($state,0,"");
 	    sync_state_picture($state,$picture,$picture_mode);
@@ -4242,7 +4256,7 @@ sub committed_top_window_polish {
 	 if(ref($best_arrays) eq "HASH") {
 	  $arrays=clone_arrays($best_arrays);
 	  my $restore_error;
-	  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,0,$state,0,1);
+  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,0,$state,1,0);
 	  return ($picture,$arrays,$restore_error) if($restore_error);
 	  set_state_calibration_mode($state,0,"");
 	  sync_state_picture($state,$picture,$picture_mode);
@@ -4259,7 +4273,7 @@ sub committed_top_window_polish {
 	    $state->{"phase"}="writing";
 	    $state->{"message"}="Restoring starting top-window state after final verify drift";
 	    write_state($state);
-	    ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,0,$state,0,1);
+    ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,0,$state,1,0);
 	    return ($picture,$arrays,$restore_error) if($restore_error);
 	    set_state_calibration_mode($state,0,"");
 	    sync_state_picture($state,$picture,$picture_mode);
@@ -4735,9 +4749,17 @@ sub committed_state_polish {
 	   write_state($state);
 	  }
 	 }
-	 park_black_for_settle($config,$state,"Settling post-polish committed state before completion");
+	 park_black_for_settle($config,$state,"Settling post-polish committed state before final top-window verification");
+	 if(!(ref($config) eq "HASH" && exists($config->{"post_commit_final_top_window"}) && !$config->{"post_commit_final_top_window"})) {
+	  my $final_top_window_error;
+	  ($picture,$arrays,$final_top_window_error)=committed_top_window_polish(
+	   $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
+	   $target_x,$target_y,$target_gamma,$signal_mode
+	  );
+	  return ($picture,$final_top_window_error) if($final_top_window_error && $final_top_window_error ne "cancelled");
+	 }
 	 return ($picture,undef);
-	}
+		}
 
 sub end_calibration_mode {
  my ($picture_mode)=@_;
