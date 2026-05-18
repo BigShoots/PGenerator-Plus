@@ -4044,6 +4044,22 @@ sub committed_top_window_candidate_allowed {
  return 0;
 }
 
+sub committed_top_window_protected_worsened {
+ my ($candidate_window,$best_window)=@_;
+ return 0 if(ref($candidate_window) ne "HASH" || ref($best_window) ne "HASH");
+ return 0 if(ref($candidate_window->{"points"}) ne "HASH" || ref($best_window->{"points"}) ne "HASH");
+ foreach my $ire (95,99,100) {
+  my $candidate=$candidate_window->{"points"}{$ire};
+  my $best=$best_window->{"points"}{$ire};
+  next if(ref($candidate) ne "HASH" || ref($best) ne "HASH");
+  next if(!defined($candidate->{"de"}) || !defined($best->{"de"}));
+  my $candidate_de=$candidate->{"de"}+0;
+  my $best_de=$best->{"de"}+0;
+  return 1 if($candidate_de > 1.0 && $candidate_de > ($best_de+0.0001));
+ }
+ return 0;
+}
+
 sub committed_top_window_add_candidate {
  my ($out,$seen,$label,$changes)=@_;
  return if(ref($out) ne "ARRAY" || ref($seen) ne "HASH" || ref($changes) ne "ARRAY" || !@{$changes});
@@ -4189,7 +4205,8 @@ sub committed_top_window_apply_candidate {
 sub committed_top_window_read {
  my ($config,$state,$steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$tag)=@_;
  my %points;
- foreach my $ire (109,105,99,100,95) {
+ my $window_white_y=(defined($white_y) && $white_y > 0) ? ($white_y+0) : $white_y;
+ foreach my $ire (109,105,100,99,95) {
   my $step=$steps_by_ire->{$ire};
   next if(ref($step) ne "HASH");
   my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
@@ -4202,9 +4219,9 @@ sub committed_top_window_read {
   return (undef,$read_error) if($read_error && $read_error ne "cancelled");
   return (undef,"cancelled") if($read_error && $read_error eq "cancelled");
   next if(ref($reading) ne "HASH");
-  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
-  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+  my $target_step_y=effective_target_luminance_for_autocal_reading($window_white_y,$read_step,$reading,$target_gamma,$signal_mode);
+  annotate_reading_target($reading,$window_white_y,$target_step_y,$target_x,$target_y);
+  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$window_white_y,$target_x,$target_y,$target_step_y);
   my $lum_pct=luminance_error_percent($reading,$target_step_y);
   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
   $state->{"current_delta_e"}=defined($de) ? $de : undef;
@@ -4220,6 +4237,8 @@ sub committed_top_window_read {
 	   tag=>$tag,
 	   delta_e=>defined($de)?$de+0:undef,
    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+   white_y=>defined($window_white_y)?$window_white_y+0:undef,
+   target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
 	   reading=>trace_reading_summary($reading)
 	  });
   write_state($state);
@@ -4259,7 +4278,12 @@ sub committed_top_window_polish {
 	  worst=>$best_score->{"worst"}+0,
 	  over=>$best_score->{"over"}+0
 	 });
-	 return ($picture,$arrays,undef) if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95);
+	 if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95) {
+	  $state->{"committed_top_window_passed"}=1;
+	  $state->{"committed_top_window_worst"}=$best_score->{"worst"}+0;
+	  write_state($state);
+	  return ($picture,$arrays,undef);
+	 }
 	 my $base_window=$best_window;
 	 my $base_score={ %{$best_score} };
 	 my $base_arrays=clone_arrays($arrays);
@@ -4293,6 +4317,7 @@ sub committed_top_window_polish {
 	   return ($picture,$arrays,$candidate_error) if($candidate_error && $candidate_error ne "cancelled");
 	   last if($candidate_error && $candidate_error eq "cancelled");
 	   my $candidate_score=committed_top_window_score($candidate_window);
+	   my $protected_worsened=committed_top_window_protected_worsened($candidate_window,$best_window);
 	   trace_109($steps_by_ire{99},"committed_top_window_candidate",{
 	    label=>$candidate->{"label"},
 	    round=>$round+0,
@@ -4301,9 +4326,10 @@ sub committed_top_window_polish {
 	    over=>$candidate_score->{"over"}+0,
 	    best_score=>$best_score->{"score"}+0,
 	    best_worst=>$best_score->{"worst"}+0,
-	    best_over=>$best_score->{"over"}+0
+	    best_over=>$best_score->{"over"}+0,
+	    protected_worsened=>$protected_worsened?1:0
 	   });
-	   if(committed_top_window_candidate_allowed($candidate_score,$best_score)) {
+	   if(!$protected_worsened && committed_top_window_candidate_allowed($candidate_score,$best_score)) {
 	    $best_score=$candidate_score;
 	    $best_window=$candidate_window;
 	    $best_arrays=clone_arrays($candidate_arrays);
@@ -4360,6 +4386,8 @@ sub committed_top_window_polish {
    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
   }
   $state->{"current_delta_e"}=$best_score->{"worst"};
+  $state->{"committed_top_window_passed"}=(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95) ? 1 : 0;
+  $state->{"committed_top_window_worst"}=$best_score->{"worst"}+0;
   $state->{"message"}="Committed top window best kept (worst ".sprintf("%.2f",$best_score->{"worst"}).")";
   write_state($state);
  }
@@ -4478,6 +4506,13 @@ sub committed_state_polish {
   my $read_committed_pair=sub {
    my ($reason)=@_;
    return undef if(ref($committed_pair_step) ne "HASH");
+   $committed_pair_reading=undef;
+   $committed_pair_de=undef;
+   $committed_pair_lum_pct=undef;
+   $committed_pair_target_step_y=undef;
+   $state->{"paired_delta_e"}=undef;
+   $state->{"paired_luminance_error_pct"}=undef;
+   $state->{"paired_target_luminance"}=undef;
    $state->{"current_name"}="Committed polish $label";
    $state->{"phase"}="reading";
    $state->{"message"}=($reason||"Checking committed 100% legal white");
@@ -4495,10 +4530,13 @@ sub committed_state_polish {
    $state->{"readings"}=merge_reading($state->{"readings"},$pair_reading);
    $state->{"paired_delta_e"}=defined($committed_pair_de) ? $committed_pair_de : undef;
    $state->{"paired_luminance_error_pct"}=defined($committed_pair_lum_pct) ? $committed_pair_lum_pct : undef;
+   $state->{"paired_target_luminance"}=defined($committed_pair_target_step_y) ? $committed_pair_target_step_y : undef;
    trace_109($committed_pair_step,"committed_polish_pair_read",{
     label=>$label,
     delta_e=>defined($committed_pair_de)?$committed_pair_de+0:undef,
     luminance_error_pct=>defined($committed_pair_lum_pct)?$committed_pair_lum_pct+0:undef,
+    white_y=>defined($white_y)?$white_y+0:undef,
+    target_luminance=>defined($committed_pair_target_step_y)?$committed_pair_target_step_y+0:undef,
     pair_score=>legal_white_pair_score($de,$lum_pct,$read_step,$reading,$committed_pair_de,$committed_pair_lum_pct,$committed_pair_step,$committed_pair_reading,undef)+0,
     reading=>trace_reading_summary($pair_reading)
    });
@@ -4656,6 +4694,8 @@ sub committed_state_polish {
 	  }
 	 }
 		 $finish_polish->(undef);
+		 delete $state->{"committed_top_window_passed"};
+		 delete $state->{"committed_top_window_worst"};
 		 my $top_window_error;
 		 ($picture,$arrays,$top_window_error)=committed_top_window_polish(
 		  $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
@@ -4823,14 +4863,16 @@ sub committed_state_polish {
 	   write_state($state);
 	  }
 	 }
-	 park_black_for_settle($config,$state,"Settling post-polish committed state before final top-window verification");
 	 if(!(ref($config) eq "HASH" && exists($config->{"post_commit_final_top_window"}) && !$config->{"post_commit_final_top_window"})) {
-	  my $final_top_window_error;
-	  ($picture,$arrays,$final_top_window_error)=committed_top_window_polish(
-	   $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
-	   $target_x,$target_y,$target_gamma,$signal_mode
-	  );
-	  return ($picture,$final_top_window_error) if($final_top_window_error && $final_top_window_error ne "cancelled");
+	  if(!$state->{"committed_top_window_passed"}) {
+	   park_black_for_settle($config,$state,"Settling post-polish committed state before final top-window verification");
+	   my $final_top_window_error;
+	   ($picture,$arrays,$final_top_window_error)=committed_top_window_polish(
+	    $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
+	    $target_x,$target_y,$target_gamma,$signal_mode
+	   );
+	   return ($picture,$final_top_window_error) if($final_top_window_error && $final_top_window_error ne "cancelled");
+	  }
 	 }
 	 return ($picture,undef);
 		}

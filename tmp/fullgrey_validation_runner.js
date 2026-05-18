@@ -253,27 +253,145 @@ function xyToUvPrime(x, y) {
   return [(4 * x) / den, (9 * y) / den];
 }
 
-function deltaEItpY(reading, targetY) {
+function deltaEItpY(reading, targetY, targetWhite = null) {
   const x = Number(reading && reading.x);
   const y = Number(reading && reading.y);
   const Y = Number(reading && (reading.luminance ?? reading.Y));
   const ty = Number(targetY);
   if (![x, y, Y, ty].every(Number.isFinite) || y <= 0 || ty <= 0) return null;
+  const targetX = Number(targetWhite && targetWhite.x != null ? targetWhite.x : 0.3127);
+  const targetYxy = Number(targetWhite && targetWhite.y != null ? targetWhite.y : 0.3290);
   const [u, v] = xyToUvPrime(x, y);
-  const [tu, tv] = xyToUvPrime(0.3127, 0.3290);
+  const [tu, tv] = xyToUvPrime(targetX, targetYxy);
   const chroma = Math.sqrt((u - tu) ** 2 + (v - tv) ** 2) * 720;
   const luma = Math.abs(Math.log(Math.max(Y, 0.0001) / ty)) * 100;
   return Math.sqrt(chroma ** 2 + luma ** 2);
 }
 
-function summarizeReadings(readings, referenceY) {
+function normalizeKeyPart(value) {
+  if (value == null) return '';
+  const n = Number(value);
+  if (Number.isFinite(n)) return fmt(n);
+  return String(value).trim().toLowerCase();
+}
+
+function codeFor(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function stepKeys(stepRow) {
+  const keys = new Set();
+  const name = normalizeKeyPart(stepRow.name);
+  const ire = normalizeKeyPart(stepRow.ire);
+  const codes = [stepRow.autocal_code, stepRow.code, stepRow.r_code, stepRow.g_code, stepRow.b_code, stepRow.r, stepRow.g, stepRow.b]
+    .map(codeFor)
+    .filter(code => code != null);
+  if (ire && codes.length) {
+    for (const code of codes) keys.add(`ire-code:${ire}:${code}`);
+  }
+  if (name && codes.length) {
+    for (const code of codes) keys.add(`name-code:${name}:${code}`);
+  }
+  if (ire) keys.add(`ire:${ire}`);
+  if (name) keys.add(`name:${name}`);
+  for (const code of codes) keys.add(`code:${code}`);
+  return keys;
+}
+
+function readingKeys(reading) {
+  const keys = new Set();
+  const name = normalizeKeyPart(reading.name);
+  const ire = normalizeKeyPart(reading.ire);
+  const codes = [reading.autocal_code, reading.code, reading.r_code, reading.g_code, reading.b_code, reading.r, reading.g, reading.b]
+    .map(codeFor)
+    .filter(code => code != null);
+  if (ire && codes.length) {
+    for (const code of codes) keys.add(`ire-code:${ire}:${code}`);
+  }
+  if (name && codes.length) {
+    for (const code of codes) keys.add(`name-code:${name}:${code}`);
+  }
+  if (ire) keys.add(`ire:${ire}`);
+  if (name) keys.add(`name:${name}`);
+  for (const code of codes) keys.add(`code:${code}`);
+  return keys;
+}
+
+function buildStepLookup(steps) {
+  const lookup = new Map();
+  for (const stepRow of steps || []) {
+    for (const key of stepKeys(stepRow)) {
+      if (!lookup.has(key)) lookup.set(key, stepRow);
+    }
+  }
+  return lookup;
+}
+
+function findMatchingStep(reading, stepLookup) {
+  for (const key of readingKeys(reading)) {
+    const match = stepLookup.get(key);
+    if (match) return match;
+  }
+  return null;
+}
+
+function enrichSeriesReadings(readings, steps) {
+  const stepLookup = buildStepLookup(steps);
+  return (readings || []).map(reading => {
+    if (!reading) return reading;
+    const matchedStep = findMatchingStep(reading, stepLookup);
+    if (!matchedStep) return reading;
+    const enriched = { ...reading };
+    const fields = [
+      'target_x',
+      'target_y',
+      'target_Yn',
+      'stimulus',
+      'signal_r_pct',
+      'signal_g_pct',
+      'signal_b_pct',
+      'r',
+      'g',
+      'b',
+      'r_code',
+      'g_code',
+      'b_code',
+      'autocal_code',
+      'code'
+    ];
+    for (const field of fields) {
+      if (matchedStep[field] != null) enriched[field] = matchedStep[field];
+    }
+    return enriched;
+  });
+}
+
+function deriveReferenceFrom109Reading(readings, fallbackReferenceY) {
+  const reading109 = (readings || []).find(row => {
+    const ire = Number(row && row.ire);
+    const code = codeFor(row && (row.autocal_code ?? row.code ?? row.r_code ?? row.g_code ?? row.b_code ?? row.r ?? row.g ?? row.b));
+    return Math.abs(ire - 109) < 0.01 || code === 1023 || String(row && row.name || '').trim() === '109%';
+  });
+  const measuredY = Number(reading109 && (reading109.luminance ?? reading109.Y));
+  const targetYn = Number(reading109 && reading109.target_Yn);
+  if (Number.isFinite(measuredY) && measuredY > 0 && Number.isFinite(targetYn) && targetYn > 0) {
+    return measuredY / targetYn;
+  }
+  return fallbackReferenceY;
+}
+
+function summarizeReadings(readings, referenceY, options = {}) {
   const rows = (readings || []).filter(r => r && r.ire != null && (r.luminance != null || r.Y != null)).map(r => {
     const ire = Number(r.ire);
     const stimulus = Number(r.stimulus ?? r.signal_g_pct ?? ire);
-    const targetY = Number(r.target_luminance ?? r.lg_target_white_y ?? r.series_target_white_y) ||
+    const targetYn = Number(r.target_Yn);
+    const targetY = (options.useStepTargets && Number.isFinite(targetYn) && targetYn > 0 ? referenceY * targetYn : null) ||
+      Number(r.target_luminance ?? r.lg_target_white_y ?? r.series_target_white_y) ||
       (ire >= 99.999 ? referenceY : referenceY * targetGammaLinear(stimulus / 100));
-    const dE = Number(r.delta_e_itp_y ?? r.delta_e_itp ?? r.delta_e ?? r.de_itp_y ?? r.deitp) || deltaEItpY(r, targetY);
-    return {
+    const targetWhite = options.useStepTargets ? { x: r.target_x, y: r.target_y } : null;
+    const dE = Number(r.delta_e_itp_y ?? r.delta_e_itp ?? r.delta_e ?? r.de_itp_y ?? r.deitp) || deltaEItpY(r, targetY, targetWhite);
+    const row = {
       ire,
       name: r.name,
       stimulus,
@@ -287,6 +405,17 @@ function summarizeReadings(readings, referenceY) {
       deltaEItpY: Number.isFinite(dE) ? dE : null,
       settings: r.settings || r.adjustments || null
     };
+    if (options.includeStepMetadata) {
+      row.target_x = r.target_x;
+      row.target_y = r.target_y;
+      row.target_Yn = r.target_Yn;
+      row.signal_r_pct = r.signal_r_pct;
+      row.signal_g_pct = r.signal_g_pct;
+      row.signal_b_pct = r.signal_b_pct;
+      row.autocal_code = r.autocal_code;
+      row.code = r.code;
+    }
+    return row;
   });
   const valid = rows.filter(r => r.deltaEItpY != null && r.ire > 0 && !r.name?.match(/target white/i));
   const avg = valid.length ? valid.reduce((sum, r) => sum + r.deltaEItpY, 0) / valid.length : null;
@@ -372,8 +501,13 @@ async function main() {
   if (!seriesStart || seriesStart.status !== 'started') throw new Error(`Series did not start: ${JSON.stringify(seriesStart)}`);
   const seriesStatus = await poll('/api/meter/series/status', 'post-series-status-stream.jsonl', 'post-series-status.json', 'series');
   save('post-series-final-status.json', seriesStatus);
-  save('post-series-readings.json', seriesStatus.readings || []);
-  const seriesSummary = summarizeReadings(seriesStatus.readings || [], calibratedReferenceY);
+  const enrichedSeriesReadings = enrichSeriesReadings(seriesStatus.readings || [], seriesStatus.steps || []);
+  save('post-series-readings.json', enrichedSeriesReadings);
+  const postSeriesReferenceY = deriveReferenceFrom109Reading(enrichedSeriesReadings, calibratedReferenceY);
+  const seriesSummary = summarizeReadings(enrichedSeriesReadings, postSeriesReferenceY, {
+    includeStepMetadata: true,
+    useStepTargets: true
+  });
   save('post-series-summary.json', seriesSummary);
   save('post-series-readings.csv', csvForRows(seriesSummary.rows));
   if (seriesStatus.status !== 'complete') throw new Error(`Series ended as ${seriesStatus.status}`);
@@ -388,11 +522,12 @@ async function main() {
     target_white_Y: setupY,
     calibrated_reference_Y: calibratedReferenceY,
     headroom_reference_Y: headroomReferenceY,
+    post_series_reference_Y: postSeriesReferenceY,
     post_read_reference: {
       passed_series_target_white_y: calibratedReferenceY,
       passed_lg_target_white_y: calibratedReferenceY,
       measured_white_first: true,
-      applied_109_derived_reference: Number.isFinite(headroomReferenceY) && headroomReferenceY > 0
+      applied_109_derived_reference: postSeriesReferenceY !== calibratedReferenceY
     },
     autocal: autocalSummary,
     post_series: seriesSummary
