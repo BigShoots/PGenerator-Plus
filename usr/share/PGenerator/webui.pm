@@ -2553,18 +2553,44 @@ sub webui_meter_lg_autocal_status (@) {
  if(-f $_meter_lg_autocal_file) {
   my $json="";
   if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
-  if($json ne "") {
-   if($json=~/"status"\s*:\s*"running"/ && !&webui_meter_lg_autocal_running()) {
-    $json=~s/"status"\s*:\s*"running"/"status":"error"/;
-    if($json=~/"current_name"\s*:\s*"[^"]*"/) {
-     $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal process died"/;
-    }
-    if($json=~/"message"\s*:\s*"[^"]*"/) {
-     $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG Auto Cal stopped unexpectedly"/;
-    }
-    if(open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
-   }
-   return $json;
+	  if($json ne "") {
+	   if($json=~/"status"\s*:\s*"running"/ && !&webui_meter_lg_autocal_running()) {
+	    if(
+	     $json=~/"final_1d_lut_uploaded"\s*:\s*true/ &&
+	     $json=~/"final_1d_lut_upload_verified"\s*:\s*true/ &&
+	     $json=~/"calibration_mode"\s*:\s*false/
+	    ) {
+	     my $now=int(time()*1000);
+	     $json=~s/"status"\s*:\s*"running"/"status":"complete"/;
+	     if($json=~/"current_name"\s*:\s*"[^"]*"/) {
+	      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal complete"/;
+	     } else {
+	      $json=~s/\}$/,"current_name":"Auto Cal complete"}/;
+	     }
+	     if($json=~/"message"\s*:\s*"[^"]*"/) {
+	      $json=~s/"message"\s*:\s*"[^"]*"/"message":"Auto Cal complete"/;
+	     } else {
+	      $json=~s/\}$/,"message":"Auto Cal complete"}/;
+	     }
+	     $json=~s/\}$/,"completed_at":$now}/ if($json!~/"completed_at"\s*:/);
+	     if($json!~/"elapsed_ms"\s*:/) {
+	      my $elapsed=0;
+	      $elapsed=$now-($1+0) if($json=~/"started_at"\s*:\s*(\d+)/);
+	      $elapsed=0 if($elapsed<0);
+	      $json=~s/\}$/,"elapsed_ms":$elapsed}/;
+	     }
+	    } else {
+	     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+	     if($json=~/"current_name"\s*:\s*"[^"]*"/) {
+	      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal process died"/;
+	     }
+	     if($json=~/"message"\s*:\s*"[^"]*"/) {
+	      $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG Auto Cal stopped unexpectedly"/;
+	     }
+	    }
+	    if(open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
+	   }
+	   return $json;
   }
  }
  return '{"status":"idle"}';
