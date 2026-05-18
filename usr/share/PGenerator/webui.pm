@@ -11787,6 +11787,13 @@ function meterFilterLgAutoCalChartItems(items){
  return list.filter(item=>!meterLgAutoCalChartReferenceWhite(item));
 }
 
+function meterGreyscaleReportReadings(readings){
+ const raw=meterGreyscaleReadings(readings||[]);
+ const visible=meterFilterLgAutoCalChartItems(raw);
+ const white=meterGreyscaleChartWhiteReference(raw)||meterWhiteReading||raw.find(r=>(r.ire||0)===100)||raw[raw.length-1]||null;
+ return {raw,visible,white};
+}
+
 function meterLinearToSrgbChannel(linear){
  const c=Math.max(0,Math.min(1,linear||0));
  return c<=0.0031308 ? 12.92*c : 1.055*Math.pow(c,1/2.4)-0.055;
@@ -22565,8 +22572,10 @@ function meterBuildReportSummaryCards(){
  if(valid.length===0) return '';
  let cards=[];
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
-  const gs=meterGreyscaleReadings(valid);
-  const white=gs.find(r=>(r.ire||0)===100)||meterWhiteReading||gs[gs.length-1];
+  const report=meterGreyscaleReportReadings(valid);
+  const gs=report.visible;
+  const rawGs=report.raw;
+  const white=report.white;
   const peak=white?(white.luminance||white.Y||0):0;
   const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
   const black=blacks.length?Math.min(...blacks):0;
@@ -22580,7 +22589,7 @@ function meterBuildReportSummaryCards(){
    {label:'Average '+meterDeltaEFormLabel(),value:isFinite(avgDe)?avgDe.toFixed(2):'--'},
    {label:'Peak Luminance',value:isFinite(peak)?peak.toFixed(1)+' cd/m²':'--'},
    {label:'Black Level',value:isFinite(black)?black.toFixed(3)+' cd/m²':'--'},
-    {label:'Contrast Ratio',value:meterFormatContrastRatio(meterMeasuredContrastRatio(gs))},
+    {label:'Contrast Ratio',value:meterFormatContrastRatio(meterMeasuredContrastRatio(rawGs))},
    {label:'Average CCT',value:avgCct?Math.round(avgCct)+'K':'--'}
   ];
  } else {
@@ -22601,13 +22610,14 @@ function meterBuildReportSummaryCards(){
 }
 
 function meterBuildGreyscaleReportTable(){
- const gs=meterGreyscaleReadings(meterReadings||[]);
+ const report=meterGreyscaleReportReadings(meterReadings||[]);
+ const gs=report.visible;
  if(gs.length===0) return '';
  const inclLum=meterIncludeLum();
  const greyMode=meterGreyRefMode();
  const deForm=meterDeltaEForm();
  const deLabel=meterDeltaEFormLabel(deForm);
- const white=gs.find(r=>(r.ire||0)===100)||meterWhiteReading||gs[gs.length-1];
+ const white=report.white;
  const Lw=white?(white.luminance||white.Y||0):0;
  const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
  const Lb=blacks.length?Math.min(...blacks):0;
@@ -22647,7 +22657,8 @@ function meterBuildEmptySeriesReportSection(title){
 }
 
 function meterBuildCurrentSeriesReportSection(title){
- const count=(meterReadings||[]).filter(rd=>meterReadingHasLuminance(rd)).length;
+ const valid=(meterReadings||[]).filter(rd=>meterReadingHasLuminance(rd));
+ const count=(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType)?meterGreyscaleReportReadings(valid).visible.length:valid.length;
  let html='<section class="report-section">';
  html+='<div class="report-section-title">'+title+'</div>';
  html+='<div class="report-section-meta">'+count+' readings captured</div>';
