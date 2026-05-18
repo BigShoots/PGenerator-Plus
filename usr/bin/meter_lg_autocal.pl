@@ -19,6 +19,8 @@ my $cancelled = 0;
 our $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE = 0;
 our $LG_AUTOCAL_SETUP_LUMINANCE = 0;
 our $LG_AUTOCAL_DELTA_E_FORMULA = "deitp";
+our $LG_AUTOCAL_CONFIG;
+our $LG_AUTOCAL_STATE;
 
 $SIG{TERM} = sub { $cancelled = 1; };
 $SIG{INT} = sub { $cancelled = 1; };
@@ -730,13 +732,61 @@ sub target_luminance_for_autocal_step {
 			 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
 		}
 
+sub body_luma_bias_display_allowed {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH");
+ return 1 if($config->{"body_luma_bias_display_opt_in"} || $config->{"body_luma_bias_allow_non_c2"});
+ my $display=lc($config->{"display_type"}||"");
+ return ($display =~ /lg[_ -]?c2/) ? 1 : 0;
+}
+
+sub body_luma_bias_decision {
+ my ($config,$state,$step,$target_gamma,$signal_mode,$base_target_y)=@_;
+ my $mode=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_mode"})) ? lc($config->{"body_luma_bias_mode"}) : "observe";
+ $mode="observe" if($mode ne "apply");
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef;
+ my $bias_pct=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_pct"})) ? ($config->{"body_luma_bias_pct"}+0) : 0.007;
+ $bias_pct=0 if($bias_pct < 0);
+ $bias_pct=0.004 if(defined($ire) && abs($ire-60) < 0.001 && $bias_pct > 0.004);
+ my $reason="eligible";
+ my $eligible=1;
+ if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"}) {
+  ($eligible,$reason)=(0,"not_lg_autocal_26");
+ } elsif(!$config->{"patch_insert"}) {
+  ($eligible,$reason)=(0,"patch_insert_disabled");
+ } elsif(($signal_mode||"") ne "sdr") {
+  ($eligible,$reason)=(0,"not_sdr");
+ } elsif(!body_luma_bias_display_allowed($config)) {
+  ($eligible,$reason)=(0,"display_not_c2");
+ } elsif(!defined($ire) || !grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85)) {
+  ($eligible,$reason)=(0,"ire_not_eligible");
+ } elsif(!defined($base_target_y) || $base_target_y <= 0) {
+  ($eligible,$reason)=(0,"missing_target");
+ }
+ my $applied=($eligible && $mode eq "apply" && $bias_pct > 0) ? 1 : 0;
+ my $effective_target_y=$applied ? $base_target_y*(1+$bias_pct) : $base_target_y;
+ if(defined($ire) && grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85)) {
+  trace_109($step,"body_luma_bias_decision",{
+   ire=>defined($ire)?$ire+0:undef,
+   mode=>$mode,
+   base_target_y=>defined($base_target_y)?$base_target_y+0:undef,
+   effective_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
+   bias_pct=>$bias_pct+0,
+   applied=>$applied?JSON::PP::true:JSON::PP::false,
+   reason=>$applied ? "applied" : $reason
+  });
+ }
+ return $effective_target_y;
+}
+
 sub effective_target_luminance_for_autocal_reading {
- my ($white_y,$step,$reading,$target_gamma,$signal_mode)=@_;
+ my ($white_y,$step,$reading,$target_gamma,$signal_mode,$config,$state)=@_;
  my $target=target_luminance_for_autocal_step($white_y,$step,$target_gamma,$signal_mode);
  if(!defined($target) && autocal_step_is_peak_headroom($step)) {
   my $Y=luminance($reading);
   return $Y if(defined($Y) && $Y > 0);
  }
+ $target=body_luma_bias_decision($config || $LG_AUTOCAL_CONFIG,$state || $LG_AUTOCAL_STATE,$step,$target_gamma,$signal_mode,$target);
  return $target;
 }
 
@@ -5088,7 +5138,7 @@ sub read_step_guarded {
  for(my $attempt=1;$attempt<=3;$attempt++) {
   my ($reading,$error)=read_step($config,$step,$state_ref);
   return ($reading,$error,undef) if($error);
-  my $target_step_y=target_luminance_for_autocal_step($white_y,$step,$target_gamma,$signal_mode);
+  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$step,$reading,$target_gamma,$signal_mode,$config,$state_ref);
   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
   my $bad=implausible_autocal_read($reading,$target_step_y,$step);
   return ($reading,undef,$target_step_y) if($bad eq "");
@@ -5349,6 +5399,7 @@ sub read_step_once {
 }
 
 my $config=decode_json_safe(read_file($config_file),{});
+$LG_AUTOCAL_CONFIG=$config;
 my $steps=(ref($config->{"steps"}) eq "ARRAY") ? $config->{"steps"} : [];
 unlink($trace_109_file) if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
 $LG_AUTOCAL_DELTA_E_FORMULA=autocal_delta_e_formula($config);
@@ -5409,6 +5460,7 @@ my $state={
 		 message=>"Starting",
 		};
 write_state($state);
+$LG_AUTOCAL_STATE=$state;
 my $calibration_mode_active=0;
 my $active_picture_mode_for_cleanup="";
 
