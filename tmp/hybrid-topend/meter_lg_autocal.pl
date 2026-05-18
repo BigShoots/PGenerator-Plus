@@ -2530,6 +2530,9 @@ sub body_luminance_response_cap {
  return 1.5 if($ire > 10.0001 && $ire <= 25.0001);
  return 2.0 if($ire > 25.0001 && $ire <= 35.0001);
  return 2.5 if($ire > 35.0001 && $ire <= 50.0001);
+ return 2.0 if($ire > 50.0001 && $ire <= 70.0001);
+ return 1.5 if($ire > 70.0001 && $ire <= 85.0001);
+ return 1.0 if($ire > 85.0001 && $ire <= 95.0001);
  return undef;
 }
 
@@ -4037,10 +4040,16 @@ sub committed_top_window_score {
 sub committed_top_window_candidate_allowed {
  my ($candidate,$best)=@_;
  return 0 if(ref($candidate) ne "HASH" || ref($best) ne "HASH");
- return 1 if(($candidate->{"over"}||9999) < ($best->{"over"}||9999));
- return 0 if(($candidate->{"over"}||9999) > ($best->{"over"}||9999));
- return 1 if(($candidate->{"worst"}||9999)+0.03 < ($best->{"worst"}||9999));
- return 1 if(($candidate->{"score"}||9999)+0.03 < ($best->{"score"}||9999) && ($candidate->{"worst"}||9999) <= (($best->{"worst"}||9999)+0.06));
+ my $candidate_over=defined($candidate->{"over"}) ? ($candidate->{"over"}+0) : 9999;
+ my $best_over=defined($best->{"over"}) ? ($best->{"over"}+0) : 9999;
+ my $candidate_worst=defined($candidate->{"worst"}) ? ($candidate->{"worst"}+0) : 9999;
+ my $best_worst=defined($best->{"worst"}) ? ($best->{"worst"}+0) : 9999;
+ my $candidate_score=defined($candidate->{"score"}) ? ($candidate->{"score"}+0) : 9999;
+ my $best_score=defined($best->{"score"}) ? ($best->{"score"}+0) : 9999;
+ return 1 if($candidate_over < $best_over);
+ return 0 if($candidate_over > $best_over);
+ return 1 if($candidate_worst+0.03 < $best_worst);
+ return 1 if($candidate_score+0.03 < $best_score && $candidate_worst <= ($best_worst+0.06));
  return 0;
 }
 
