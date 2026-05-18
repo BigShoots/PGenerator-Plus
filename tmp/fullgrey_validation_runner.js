@@ -247,10 +247,50 @@ function targetGammaLinear(signal) {
   return s <= 0 ? 0 : Math.pow(s, targetGamma === '2.2' ? 2.2 : 2.4);
 }
 
-function xyToUvPrime(x, y) {
-  const den = (-2 * x) + (12 * y) + 3;
-  if (!Number.isFinite(den) || Math.abs(den) < 1e-12) return [0, 0];
-  return [(4 * x) / den, (9 * y) / den];
+function pqEncodeNormalized(nits) {
+  let value = Number(nits) || 0;
+  if (value <= 0) return 0;
+  if (value > 10000) value = 10000;
+  const l = value / 10000;
+  const m1 = 2610 / 16384;
+  const m2 = 2523 / 32;
+  const c1 = 3424 / 4096;
+  const c2 = 2413 / 128;
+  const c3 = 2392 / 128;
+  const p = Math.pow(l, m1);
+  return Math.pow((c1 + c2 * p) / (1 + c3 * p), m2);
+}
+
+function xyzToICtCp(X, Y, Z) {
+  X = Number(X) || 0;
+  Y = Number(Y) || 0;
+  Z = Number(Z) || 0;
+  const R = Math.max(0, 1.7166511880 * X - 0.3556707838 * Y - 0.2533662814 * Z);
+  const G = Math.max(0, -0.6666843518 * X + 1.6164812366 * Y + 0.0157685458 * Z);
+  const B = Math.max(0, 0.0176398574 * X - 0.0427706133 * Y + 0.9421031212 * Z);
+  const L = (1688 * R + 2146 * G + 262 * B) / 4096;
+  const M = (683 * R + 2951 * G + 462 * B) / 4096;
+  const S = (99 * R + 309 * G + 3688 * B) / 4096;
+  const Lp = pqEncodeNormalized(L);
+  const Mp = pqEncodeNormalized(M);
+  const Sp = pqEncodeNormalized(S);
+  return {
+    I: 0.5 * Lp + 0.5 * Mp,
+    T: (6610 * Lp - 13613 * Mp + 7003 * Sp) / 4096,
+    P: (17933 * Lp - 17390 * Mp - 543 * Sp) / 4096
+  };
+}
+
+function xyzFromXyY(x, y, Y) {
+  x = Number(x);
+  y = Number(y);
+  Y = Number(Y);
+  if (![x, y, Y].every(Number.isFinite) || y <= 0) return null;
+  return {
+    X: (x * Y) / y,
+    Y,
+    Z: ((1 - x - y) * Y) / y
+  };
 }
 
 function deltaEItpY(reading, targetY, targetWhite = null) {
@@ -261,11 +301,22 @@ function deltaEItpY(reading, targetY, targetWhite = null) {
   if (![x, y, Y, ty].every(Number.isFinite) || y <= 0 || ty <= 0) return null;
   const targetX = Number(targetWhite && targetWhite.x != null ? targetWhite.x : 0.3127);
   const targetYxy = Number(targetWhite && targetWhite.y != null ? targetWhite.y : 0.3290);
-  const [u, v] = xyToUvPrime(x, y);
-  const [tu, tv] = xyToUvPrime(targetX, targetYxy);
-  const chroma = Math.sqrt((u - tu) ** 2 + (v - tv) ** 2) * 720;
-  const luma = Math.abs(Math.log(Math.max(Y, 0.0001) / ty)) * 100;
-  return Math.sqrt(chroma ** 2 + luma ** 2);
+  const measured = {
+    X: Number(reading && reading.X),
+    Y,
+    Z: Number(reading && reading.Z)
+  };
+  const measuredXyz = [measured.X, measured.Y, measured.Z].every(Number.isFinite)
+    ? measured
+    : xyzFromXyY(x, y, Y);
+  const targetXyz = xyzFromXyY(targetX, targetYxy, ty);
+  if (!measuredXyz || !targetXyz) return null;
+  const a = xyzToICtCp(measuredXyz.X, measuredXyz.Y, measuredXyz.Z);
+  const b = xyzToICtCp(targetXyz.X, targetXyz.Y, targetXyz.Z);
+  const dI = a.I - b.I;
+  const dT = a.T - b.T;
+  const dP = a.P - b.P;
+  return 720 * Math.sqrt(dI * dI + 0.25 * dT * dT + dP * dP);
 }
 
 function normalizeKeyPart(value) {
@@ -503,13 +554,20 @@ async function main() {
   save('post-series-final-status.json', seriesStatus);
   const enrichedSeriesReadings = enrichSeriesReadings(seriesStatus.readings || [], seriesStatus.steps || []);
   save('post-series-readings.json', enrichedSeriesReadings);
-  const postSeriesReferenceY = deriveReferenceFrom109Reading(enrichedSeriesReadings, calibratedReferenceY);
-  const seriesSummary = summarizeReadings(enrichedSeriesReadings, postSeriesReferenceY, {
+  const postSeries109ReferenceY = deriveReferenceFrom109Reading(enrichedSeriesReadings, calibratedReferenceY);
+  const seriesSummary109Reference = summarizeReadings(enrichedSeriesReadings, postSeries109ReferenceY, {
     includeStepMetadata: true,
     useStepTargets: true
   });
-  save('post-series-summary.json', seriesSummary);
-  save('post-series-readings.csv', csvForRows(seriesSummary.rows));
+  const seriesSummaryCalibratedReference = summarizeReadings(enrichedSeriesReadings, calibratedReferenceY, {
+    includeStepMetadata: true,
+    useStepTargets: true
+  });
+  save('post-series-summary.json', seriesSummary109Reference);
+  save('post-series-summary-109-reference.json', seriesSummary109Reference);
+  save('post-series-summary-calibrated-reference.json', seriesSummaryCalibratedReference);
+  save('post-series-readings.csv', csvForRows(seriesSummary109Reference.rows));
+  save('post-series-readings-calibrated-reference.csv', csvForRows(seriesSummaryCalibratedReference.rows));
   if (seriesStatus.status !== 'complete') throw new Error(`Series ended as ${seriesStatus.status}`);
 
   await cleanup('final');
@@ -522,15 +580,20 @@ async function main() {
     target_white_Y: setupY,
     calibrated_reference_Y: calibratedReferenceY,
     headroom_reference_Y: headroomReferenceY,
-    post_series_reference_Y: postSeriesReferenceY,
+    post_series_reference_Y: postSeries109ReferenceY,
+    post_series_109_reference_Y: postSeries109ReferenceY,
+    post_series_calibrated_reference_Y: calibratedReferenceY,
     post_read_reference: {
       passed_series_target_white_y: calibratedReferenceY,
       passed_lg_target_white_y: calibratedReferenceY,
       measured_white_first: true,
-      applied_109_derived_reference: postSeriesReferenceY !== calibratedReferenceY
+      applied_109_derived_reference: postSeries109ReferenceY !== calibratedReferenceY,
+      calibrated_reference_summary: true
     },
     autocal: autocalSummary,
-    post_series: seriesSummary
+    post_series: seriesSummary109Reference,
+    post_series_109_reference: seriesSummary109Reference,
+    post_series_calibrated_reference: seriesSummaryCalibratedReference
   };
   save('summary.json', summary);
   console.log(`complete ${outDir}`);
