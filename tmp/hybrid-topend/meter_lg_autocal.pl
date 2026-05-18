@@ -6502,15 +6502,6 @@ eval {
 					   }
 					  }
 					 }
-			 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
-			  # Some LG DDC write paths can leave the TV's calibration-mode
-			  # flag active even after the worker state believes CAL_END ran.
-			  # Force the committed pipeline before reporting complete so
-			  # post-cal series reads are actually post-cal reads.
-			  end_calibration_mode($active_picture_mode_for_cleanup || $picture_mode);
-			  $calibration_mode_active=0;
-			  set_state_calibration_mode($state,0,"");
-			 }
 			 if(cancelled()) {
 	  $state->{"status"}="cancelled";
 	  $state->{"current_name"}="Auto Cal cancelled";
@@ -6524,6 +6515,15 @@ eval {
 	 $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
 	 }
 	 write_state($state);
+			 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
+			  # Some LG DDC write paths can leave the TV's calibration-mode
+			  # flag active even after the worker state believes CAL_END ran.
+			  # Write the terminal state first so a final cleanup hiccup cannot
+			  # strand a successful verified LUT upload as "running".
+			  end_calibration_mode($active_picture_mode_for_cleanup || $picture_mode);
+			  $calibration_mode_active=0;
+			  set_state_calibration_mode($state,0,"");
+			 }
 	 if($calibration_mode_active) {
 	  end_calibration_mode($active_picture_mode_for_cleanup);
 	  $calibration_mode_active=0;
