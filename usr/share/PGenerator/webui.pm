@@ -10768,6 +10768,8 @@ function meterApplyColorSeriesTargetWhiteReference(steps,type){
 
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
+ const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
+ const referenceList=lgAutoCalChartRef?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
  const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
  if(headroomTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(headroomTargetY);
@@ -10778,20 +10780,20 @@ function meterEffectiveGreyscaleWhiteReference(readings){
   const synthetic=meterSyntheticGreyWhiteReading(targetY);
   if(synthetic) return synthetic;
  }
- const white=meterFindSeriesWhiteReading(list);
+ const white=meterFindSeriesWhiteReading(referenceList);
  if(white) return white;
- const cached=meterWhiteReading&&!meterWhiteReading.synthetic_target?meterReadingXYZ(meterWhiteReading):null;
+ const cached=meterWhiteReading&&!meterWhiteReading.synthetic_target&&(!lgAutoCalChartRef||!meterReadingIsAutoCalReferenceOnly(meterWhiteReading))?meterReadingXYZ(meterWhiteReading):null;
  if(cached&&cached.Y>0) return meterWhiteReading;
  const measured=meterFindMeasuredWhiteReading();
- const measuredXyz=measured&&!measured.synthetic_target?meterReadingXYZ(measured):null;
+ const measuredXyz=measured&&!measured.synthetic_target&&(!lgAutoCalChartRef||!meterReadingIsAutoCalReferenceOnly(measured))?meterReadingXYZ(measured):null;
  if(measuredXyz&&measuredXyz.Y>0) return measured;
  const fallbackY=Number(meterColorReferenceNits());
  if(Number.isFinite(fallbackY)&&fallbackY>0){
   const synthetic=meterSyntheticGreyWhiteReading(fallbackY);
   if(synthetic) return synthetic;
  }
- if(list.length>0){
-  const brightest=[...list].sort((a,b)=>(meterReadingLuminanceNits(b)||0)-(meterReadingLuminanceNits(a)||0))[0];
+ if(referenceList.length>0){
+  const brightest=[...referenceList].sort((a,b)=>(meterReadingLuminanceNits(b)||0)-(meterReadingLuminanceNits(a)||0))[0];
   const measured=meterReadingLuminanceNits(brightest);
   const ire=Math.max(1,Number((brightest&&brightest.ire)||100)||100);
   if(measured>0){
@@ -11422,7 +11424,8 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
  const mode=meterResolveGreyRefMode(modeOrIncl);
  if(meterRgbBalanceFormula()==='hcfr'){
-  const white=(meterWhiteReading&&meterWhiteReading.Y>0)?meterWhiteReading:null;
+  const chartWhite=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints))?meterGreyscaleChartWhiteReference(meterReadings):null;
+  const white=(chartWhite&&meterReadingLuminanceNits(chartWhite)>0)?chartWhite:((meterWhiteReading&&meterWhiteReading.Y>0)?meterWhiteReading:null);
   const Lw=white?(white.luminance||white.Y||0):0;
   const blacks=(Array.isArray(meterReadings)?meterReadings:[]).filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&r.luminance!=null);
   const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
@@ -11740,6 +11743,10 @@ function meterGreyscaleSeriesSteps(steps){
   if(Math.abs(av-bv)>0.0001) return av-bv;
   return (Number(a&&a.ire)||0)-(Number(b&&b.ire)||0);
  });
+}
+
+function meterReadingIsAutoCalReferenceOnly(item){
+ return !!(item&&(item.autocal_white_reference||item.autocal_reference_only));
 }
 
 function meterLgAutoCalChartReferenceWhite(item){
@@ -19055,8 +19062,8 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     headroom_max_iterations:8,
     max_polish_iterations:4,
     precision_polish_iterations:6,
-    post_commit_body_polish:false,
-    post_commit_polish:false,
+    post_commit_body_polish:true,
+    post_commit_polish:true,
     post_commit_polish_iterations:3,
     post_commit_low_shadow_iterations:2,
     post_commit_true_low_shadow:true,
@@ -19443,7 +19450,7 @@ async function meterAutoCalConfirmAndStart(){
 	    full_workflow:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
 	    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
 	    full_autocal_phase:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'first-greyscale':undefined,
-	    post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?false:undefined,
+	    post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
 	    post_commit_body_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?false:undefined,
 	    post_commit_polish_iterations:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?2:undefined,
 	    post_commit_low_shadow_iterations:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?6:undefined,
@@ -21421,9 +21428,7 @@ function drawDeltaEChart(gs,allSteps,readingMap){
  // Primary greyscale ΔE chart follows the selected formula.
  const lbl=document.getElementById('chartDeltaELabel');
  if(lbl) lbl.textContent = deLabel+" ("+meterGreyRefModeLabel(greyMode)+gwTag+")";
- // Prefer an actual/cached 100% white. Using "brightest so far" causes all
- // values to shift every time a brighter patch arrives.
- const whiteR=gs.find(r=>r.ire===100)||meterGreyscaleChartWhiteReference(gs);
+ const whiteR=meterGreyscaleChartWhiteReference(gs);
  // If the 100% measurement isn't present yet, use the same mode-aware
  // fallback as the greyscale target helpers so SDR one-off reads do not
  // inherit stale HDR metadata luminance.
@@ -21513,7 +21518,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  const inclLum=(greyMode==='eotf');
  const lbl=document.getElementById('chartDeltaE2000Label');
  if(lbl) lbl.textContent = "Reference ΔE 2000 ("+meterGreyRefModeLabel(greyMode)+")";
- const whiteR=gs.find(r=>r.ire===100)||meterGreyscaleChartWhiteReference(gs);
+ const whiteR=meterGreyscaleChartWhiteReference(gs);
  // Use the same mode-aware synthetic white when 100% is not yet measured.
  let effectiveWhite2000=whiteR;
  if(!effectiveWhite2000||effectiveWhite2000.Y<=0){
