@@ -756,7 +756,12 @@ sub body_luma_bias_pct_for_step {
 	   }
 	  }
 	 }
-	 $pct=0 if($pct < 0);
+	 if($source eq "matrix") {
+	  $pct=-0.12 if($pct < -0.12);
+	  $pct=0.12 if($pct > 0.12);
+	 } else {
+	  $pct=0 if($pct < 0);
+	 }
 	 if($source ne "matrix" && defined($ire) && abs($ire-60) < 0.001 && $pct > 0.004) {
 	  $pct=0.004;
 	  $source="scalar_cap60";
