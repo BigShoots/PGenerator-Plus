@@ -859,11 +859,28 @@ sub headroom_reference_white_from_target {
 
 sub committed_polish_reference_white_y {
  my ($config,$state,$steps,$target_gamma,$signal_mode,$fallback)=@_;
- my $from_headroom=headroom_reference_white_from_target($config,$steps,$target_gamma,$signal_mode);
- return $from_headroom if(defined($from_headroom) && $from_headroom > 0);
  if(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0) {
   return $state->{"peak_headroom_reference"}+0;
  }
+ if(ref($state) eq "HASH" && ref($state->{"readings"}) eq "ARRAY") {
+  my $best_ire=-1;
+  my $best_ref=undef;
+  foreach my $reading (@{$state->{"readings"}}) {
+   next if(ref($reading) ne "HASH" || !defined($reading->{"ire"}));
+   my $step=fixed_lg_autocal_step($config,clone_picture($reading));
+   next if(!autocal_step_is_peak_headroom($step));
+   my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
+   next if(!defined($derived) || $derived <= 0);
+   my $ire=$step->{"ire"}+0;
+   if($ire > $best_ire) {
+    $best_ire=$ire;
+    $best_ref=$derived;
+   }
+  }
+  return $best_ref if(defined($best_ref) && $best_ref > 0);
+ }
+ my $from_headroom=headroom_reference_white_from_target($config,$steps,$target_gamma,$signal_mode);
+ return $from_headroom if(defined($from_headroom) && $from_headroom > 0);
  if(ref($state) eq "HASH" && defined($state->{"target_luminance"}) && ($state->{"target_luminance"}+0) > 0) {
   return $state->{"target_luminance"}+0;
  }
@@ -4286,48 +4303,11 @@ sub committed_state_polish {
  return ($picture,undef) if(!post_commit_polish_enabled($config));
  return ($picture,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
  my ($white_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
- if(!$white_step) {
-  log_line("Committed polish skipped: no 100% white reference step was available");
-  return ($picture,undef);
- }
  park_black_for_settle($config,$state);
- my $white_reading=undef;
- my $white_y=undef;
- my $previous_white_y=undef;
- my $white_resettle_ms=(ref($config) eq "HASH" && defined($config->{"post_commit_white_resettle_ms"})) ? int($config->{"post_commit_white_resettle_ms"}) : 30000;
- $white_resettle_ms=0 if($white_resettle_ms < 0);
- $white_resettle_ms=60000 if($white_resettle_ms > 60000);
- for(my $white_attempt=1;$white_attempt<=3;$white_attempt++) {
-  $state->{"current_name"}="Committed state check";
-  $state->{"phase"}="reading";
-  $state->{"message"}="Reading committed 100% white reference".($white_attempt>1 ? " ($white_attempt/3)" : "");
-  write_state($state);
- my ($candidate_white,$white_error)=read_step($config,clone_picture($white_step),$state);
-  return ($picture,$white_error) if($white_error && $white_error ne "cancelled");
-  last if($white_error && $white_error eq "cancelled");
-  last if(ref($candidate_white) ne "HASH");
-  my $candidate_y=luminance($candidate_white);
-  if(defined($candidate_y) && $candidate_y > 0 && (!defined($white_y) || $candidate_y > $white_y)) {
-   $white_y=$candidate_y;
-   $white_reading=$candidate_white;
-  }
-  if(defined($candidate_y) && defined($previous_white_y) && $candidate_y > 0) {
-   my $delta=abs($candidate_y-$previous_white_y)/$candidate_y;
-   last if($delta < 0.006);
-  }
-  $previous_white_y=$candidate_y if(defined($candidate_y));
-  park_black_for_settle($config,$state,"Settling display on black before another white reference read",$white_resettle_ms) if($white_attempt < 3);
- }
+ my $white_y=committed_polish_reference_white_y($config,$state,$steps,$target_gamma,$signal_mode,undef);
  return ($picture,undef) if(!defined($white_y) || $white_y <= 0);
- my $committed_white_y=$white_y;
- my $reference_white_y=committed_polish_reference_white_y($config,$state,$steps,$target_gamma,$signal_mode,$committed_white_y);
- $reference_white_y=$committed_white_y if(!defined($reference_white_y) || $reference_white_y <= 0);
- $white_y=$reference_white_y;
- $state->{"committed_white_luminance"}=$committed_white_y if(defined($committed_white_y) && $committed_white_y > 0);
- annotate_reading_target($white_reading,$white_y,$white_y,$target_x,$target_y);
- $state->{"readings"}=merge_reading($state->{"readings"},$white_reading);
  set_state_white_reference($state,$white_y);
- $state->{"message"}="Committed white reference read complete";
+ $state->{"message"}="Committed polish using fixed headroom white reference";
  write_state($state);
 
 		 my $candidate_steps=(ref($polish_steps) eq "ARRAY") ? $polish_steps : $steps;
@@ -4337,13 +4317,18 @@ sub committed_state_polish {
 		  ($_->{"ire"}+0) > 0 &&
 		  ddc_target_for_step($_)
 		 } @{$candidate_steps};
-	 my @headroom=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { ($_->{"ire"}+0) >= 95 } @polish_candidates;
+	 my @headroom=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { ($_->{"ire"}+0) >= 105 } @polish_candidates;
+	 my @legal_white=sort {
+	  (($a->{"ire"}+0) == 99 ? 0 : 1) <=> (($b->{"ire"}+0) == 99 ? 0 : 1)
+	 } grep { abs(($_->{"ire"}+0)-99) < 0.001 || abs(($_->{"ire"}+0)-100) < 0.001 } @polish_candidates;
 	 my @shadow=sort { ($a->{"ire"}||0) <=> ($b->{"ire"}||0) } grep { ($_->{"ire"}+0) <= 10.0001 } @polish_candidates;
-	 my @body=sort { ($a->{"ire"}||0) <=> ($b->{"ire"}||0) } grep { ($_->{"ire"}+0) > 10.0001 && ($_->{"ire"}+0) < 99 } @polish_candidates;
+	 my @body=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { ($_->{"ire"}+0) > 10.0001 && ($_->{"ire"}+0) < 99 } @polish_candidates;
 	 my $include_body=(ref($config) eq "HASH" && exists($config->{"post_commit_body_polish"}))
 	  ? ($config->{"post_commit_body_polish"} ? 1 : 0)
 	  : (autocal_config_is_touchup($config) ? 0 : 1);
-	 my @polish=$include_body ? (@headroom,@shadow,@body) : (@headroom,@shadow);
+	 my $include_shadow=!(ref($config) eq "HASH" && exists($config->{"post_commit_true_low_shadow"}) && !$config->{"post_commit_true_low_shadow"});
+	 my @polish=$include_body ? (@headroom,@legal_white,@body) : (@headroom,@legal_white);
+	 push @polish,@shadow if($include_shadow);
 	 my $limit=defined($config->{"post_commit_polish_iterations"}) ? int($config->{"post_commit_polish_iterations"}) : 8;
 	 $limit=1 if($limit < 1);
 	 $limit=12 if($limit > 12);
@@ -4363,7 +4348,6 @@ sub committed_state_polish {
   }
   return ($picture,$error);
 	 };
-	 my $white_refreshed_after_headroom=0;
 	 my $low_shadow_polish_settled=0;
 	 foreach my $step (@polish) {
 	  last if(cancelled());
@@ -4582,35 +4566,6 @@ sub committed_state_polish {
 	    last if(low_shadow_good_enough($read_step,$de,$lum_pct,$target_delta));
 	   }
 	  }
-  if(
-   !$white_refreshed_after_headroom &&
-   defined($step->{"ire"}) &&
-   abs(($step->{"ire"}+0)-99) < 0.001
-  ) {
-   $white_refreshed_after_headroom=1;
-   $state->{"current_name"}="Committed state check";
-   $state->{"phase"}="reading";
-   $state->{"message"}="Refreshing committed 100% white after top-end polish";
-   write_state($state);
-   my ($candidate_white,$white_error)=read_step($config,clone_picture($white_step),$state);
-   return $finish_polish->($white_error) if($white_error && $white_error ne "cancelled");
-   last if($white_error && $white_error eq "cancelled");
-   if(ref($candidate_white) eq "HASH") {
-    my $candidate_y=luminance($candidate_white);
-    if(defined($candidate_y) && $candidate_y > 0) {
-     $state->{"committed_white_luminance"}=$candidate_y;
-     my $refreshed_reference=committed_polish_reference_white_y($config,$state,$steps,$target_gamma,$signal_mode,$candidate_y);
-     $white_y=$refreshed_reference if(defined($refreshed_reference) && $refreshed_reference > 0);
-     annotate_reading_target($candidate_white,$white_y,$white_y,$target_x,$target_y);
-     $state->{"readings"}=merge_reading($state->{"readings"},$candidate_white);
-     $state->{"current_luminance"}=$candidate_y;
-     set_state_white_reference($state,$white_y);
-     set_state_target_step_luminance($state,$white_y);
-     $state->{"message"}="Committed white reference refreshed";
-     write_state($state);
-    }
-   }
-  }
 	 }
 		 $finish_polish->(undef);
 		 my $top_window_error;
