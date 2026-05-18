@@ -1922,13 +1922,17 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 		    }
     return $c;
    };
-   # 100% first (white reference), then 0%→95% ascending.
-   # Reading white first lets every subsequent ΔE be computed immediately
-   # and never change — HCFR achieves this with a pre-configured target
-   # luminance; we use the actual measured white instead.
-  my @ordered = ($points==2)
-   ? ((sort { $a <=> $b } @ire_vals)[1], (sort { $a <=> $b } @ire_vals)[0])
-   : (100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
+   # Reference first, then the remaining steps. LG AutoCal 26 uses 109%
+   # as the headroom reference so chart targets are derived from the same
+   # fresh read the calibration logic uses instead of a stale 100% read.
+  my @ordered;
+  if($points==2) {
+   @ordered=((sort { $a <=> $b } @ire_vals)[1], (sort { $a <=> $b } @ire_vals)[0]);
+  } elsif($lg_autocal_26_codes) {
+   @ordered=(109,100,sort { $a <=> $b } grep { abs($_-109)>0.001 && abs($_-100)>0.001 } @ire_vals);
+  } else {
+   @ordered=(100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
+  }
    foreach my $v (@ordered) {
     $stimulus_for_slot{$v}=$v if(!defined($stimulus_for_slot{$v}));
     foreach my $channel (qw(r g b)) {
@@ -16042,7 +16046,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true};
  const whiteCode=mode==='sdr'?meterLgSdrLegalHeadroomCodeFromPercent(100):meterCodeFromSignalPercentWithOptions(100,null);
  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode),autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
- return [...(includeWhiteReference?[white]:[]),zero,...METER_LG_GREY_AUTOCAL_26_SLOTS.map(makeDdcStep),...passthrough];
+ const headroom=makeDdcStep(109);
+ const body=METER_LG_GREY_AUTOCAL_26_SLOTS.filter(slot=>Math.abs(slot-109)>0.001).map(makeDdcStep);
+ return [headroom,...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
 function meterSelectSeries(type,points){
