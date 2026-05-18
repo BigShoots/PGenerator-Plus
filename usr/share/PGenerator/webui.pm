@@ -1742,6 +1742,22 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
   }
   return $v**$target_gamma_exp_resolved;
  };
+ my $lg_autocal_26_target_yn_for_stimulus=sub {
+  my ($stimulus)=@_;
+  return 0 if(!defined $stimulus);
+  my $signal=($stimulus+0)/100;
+  $signal=0 if($signal < 0);
+  $signal=1.1 if($signal > 1.1);
+  return 0 if($signal <= 0);
+  if($target_gamma eq "srgb") {
+   return ($signal <= 0.04045) ? ($signal/12.92) : ((($signal+0.055)/1.055)**2.4);
+  }
+  if($signal_mode eq "dv" && $target_gamma eq "st2084") {
+   return $signal**2.2;
+  }
+  my $gamma=($target_gamma eq "2.2") ? 2.2 : 2.4;
+  return $signal**$gamma;
+ };
  # Cancel any running series and clean up
  &webui_meter_stop();
  # Brief pause to let killed processes release USB device
@@ -1965,6 +1981,10 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	    $extra.=",\"series_type\":\"greyscale\",\"signal_r_pct\":$r_stim,\"signal_g_pct\":$g_stim,\"signal_b_pct\":$b_stim";
 	    $extra.=",\"analysis_ire\":$analysis_ire,\"target_ire\":$analysis_ire,\"transport_stimulus\":$stim" if($points==21 && $lg_greyscale_21);
 	    $extra.=",\"input_max\":1023" if($lg_autocal_26_codes);
+	    if($lg_autocal_26_codes) {
+	     my $target_Yn_for_step=$lg_autocal_26_target_yn_for_stimulus->($stim);
+	     $extra.=",\"target_x\":0.3127,\"target_y\":0.329,\"target_Yn\":$target_Yn_for_step";
+	    }
 	    $extra.=",\"autocal_white_reference\":true,\"autocal_reference_only\":true,\"autocal_read_only\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_legal_white_anchor\":true,\"ddc_target_ire\":99,\"autocal_order_ire\":98.95,\"autocal_target_label\":\"100% legal white\"" if($lg_autocal_26_codes && abs($v-100)<0.001);
     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$r_code,\"g\":$g_code,\"b\":$b_code,\"name\":\"$name\"$extra}";
    } @ordered;
@@ -10528,6 +10548,25 @@ function meterLgAutoCalStimulusFromCode(code){
 	 return Math.max(0,(numeric-64)*100/876);
 }
 
+function meterLgAutoCalTargetYnForStimulus(stimulus){
+ const signal=Math.max(0,Math.min(1.1,(Number(stimulus)||0)/100));
+ if(signal<=0) return 0;
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
+ if(sel==='srgb') return signal<=0.04045 ? signal/12.92 : Math.pow((signal+0.055)/1.055,2.4);
+ const gamma=sel==='2.2'?2.2:2.4;
+ return Math.pow(signal,gamma);
+}
+
+function meterLgAutoCalTargetMetaForCode(code){
+ const wp=meterTargetWhitePoint();
+ const stimulus=meterLgAutoCalStimulusFromCode(code);
+ return {
+  target_x:wp.x,
+  target_y:wp.y,
+  target_Yn:meterLgAutoCalTargetYnForStimulus(stimulus)
+ };
+}
+
 function meterLgAutoCalCodeForSlot(slot){
  const idx=METER_LG_GREY_AUTOCAL_26_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
  return idx>=0?METER_LG_GREY_AUTOCAL_26_CODES[idx]:meterLgSdrLegalHeadroomCodeFromPercent(slot);
@@ -16005,6 +16044,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const source=inputByDdcSlot[String(slot)];
 	  const code=meterLgAutoCalCodeForSlot(slot);
 	  const stimulus=meterLgAutoCalStimulusFromCode(code);
+	  const targetMeta=meterLgAutoCalTargetMetaForCode(code);
 		  if(source){
 		   return {
 		    ...source,
@@ -16019,6 +16059,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		    name:meterFormatPercentValue(slot)+'%',
 		    autocal_code:code,
 		    input_max:1023,
+		    ...targetMeta,
 		    ...previewCodesForCode(code),
 		    ddc_slot_locked:true,
 	    autocal_slot_locked:true
@@ -16037,15 +16078,17 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	   series_type:'greyscale',
 		   autocal_code:code,
 		   input_max:1023,
+	   ...targetMeta,
 	   ...previewCodesForCode(code),
 	   ddc_slot_locked:true,
 	   autocal_slot_locked:true
 	  };
 	 };
 			 const zeroCode=mode==='sdr'?64:meterCodeFromSignalPercentWithOptions(0,null);
-			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true};
+			 const zeroMeta=meterLgAutoCalTargetMetaForCode(zeroCode);
+			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true};
  const whiteCode=mode==='sdr'?meterLgSdrLegalHeadroomCodeFromPercent(100):meterCodeFromSignalPercentWithOptions(100,null);
- const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode),autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
+ const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode),autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
  const headroom=makeDdcStep(109);
  const body=METER_LG_GREY_AUTOCAL_26_SLOTS.filter(slot=>Math.abs(slot-109)>0.001).map(makeDdcStep);
  return [headroom,...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];

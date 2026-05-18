@@ -1465,6 +1465,8 @@ const code = [
   extractFunction('meterLgGreyDefaultEntry'),
   extractFunction('meterLgAutoCalDefaultEntry'),
   extractFunction('meterLgDdcStepHasCustomStimulus'),
+  extractFunction('meterLgAutoCalTargetYnForStimulus'),
+  extractFunction('meterLgAutoCalTargetMetaForCode'),
   extractFunction('meterGreyProfileStepsKey'),
   extractFunction('meterGreyProfileTemplate'),
   extractFunction('meterGreyModeSignature'),
@@ -1651,14 +1653,17 @@ assert.strictEqual(lgAutoCal25.r, 284, 'LG Auto Cal 25% patch should use exact c
 assert.strictEqual(lgAutoCal25.input_max, 1023, 'LG Auto Cal 25% patch should declare 10-bit input max');
 assert.strictEqual(lgAutoCal25.preview_r, 71, 'LG Auto Cal 25% thumbnail should use the 8-bit preview code 71');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 2.3).r, 84, 'LG Auto Cal 2.3% patch should use exact captured raw 10-bit code 84');
+assert(Math.abs(lgAutoCalDefault.find(step => step.ire === 2.3).target_Yn - Math.pow((84 - 64) / 876, 2.4)) < 1e-12, 'LG Auto Cal 2.3% series metadata should carry the same target_Yn used by AutoCal');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 50).r, 504, 'LG Auto Cal 50% patch should use exact captured raw 10-bit code 504');
 assert(Math.abs(lgAutoCalDefault.find(step => step.ire === 50).stimulus - 50.2283105022831) < 0.0001, 'LG Auto Cal 50% patch should use the captured 10-bit 504 level');
+assert(Math.abs(lgAutoCalDefault.find(step => step.ire === 50).target_Yn - Math.pow((504 - 64) / 876, 2.4)) < 1e-12, 'LG Auto Cal 50% series metadata should carry AutoCal target_Yn');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 75).r, 720, 'LG Auto Cal 75% patch should use exact captured raw 10-bit code 720');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 95).r, 896, 'LG Auto Cal 95% patch should use exact captured raw 10-bit code 896');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 99).r, 932, 'LG Auto Cal 99% near-white patch should use exact captured raw 10-bit code 932');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 100), undefined, 'LG Auto Cal 26pt patch set should not add an extra writable 100% legal-white anchor');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 105).r, 984, 'LG Auto Cal 105% headroom patch should use exact captured raw 10-bit code 984');
 assert.strictEqual(lgAutoCalDefault.find(step => step.ire === 109).r, 1023, 'LG Auto Cal 109% top patch should use exact captured raw 10-bit code 1023');
+assert(Math.abs(lgAutoCalDefault.find(step => step.ire === 109).target_Yn - Math.pow((1023 - 64) / 876, 2.4)) < 1e-12, 'LG Auto Cal 109% series metadata should preserve super-white target_Yn');
 
 state.lgPaired = false;
 setMode({ mode: 'sdr', range: '1', points: 21 });

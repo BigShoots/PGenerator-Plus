@@ -6525,6 +6525,15 @@ eval {
 					   }
 					  }
 					 }
+			 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
+			  # Some LG DDC write paths can leave the TV's calibration-mode
+			  # flag active even after the worker state believes CAL_END ran.
+			  # Force the committed pipeline before reporting complete so
+			  # post-cal series reads are actually post-cal reads.
+			  end_calibration_mode($active_picture_mode_for_cleanup || $picture_mode);
+			  $calibration_mode_active=0;
+			  set_state_calibration_mode($state,0,"");
+			 }
 			 if(cancelled()) {
 	  $state->{"status"}="cancelled";
 	  $state->{"current_name"}="Auto Cal cancelled";
