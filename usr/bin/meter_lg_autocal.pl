@@ -744,8 +744,9 @@ sub body_luma_bias_pct_for_step {
 	 my ($config,$ire)=@_;
 	 my $pct=(ref($config) eq "HASH" && defined($config->{"body_luma_bias_pct"})) ? ($config->{"body_luma_bias_pct"}+0) : 0.0065;
 	 my $source="scalar";
-	 if(ref($config) eq "HASH" && ref($config->{"body_luma_bias_matrix_pct"}) eq "HASH" && defined($ire)) {
-	  my $matrix=$config->{"body_luma_bias_matrix_pct"};
+	 my $matrix=(ref($config) eq "HASH" && ref($config->{"body_luma_bias_matrix_pct"}) eq "HASH") ? $config->{"body_luma_bias_matrix_pct"} : undef;
+	 $matrix=$config->{"body_luma_bias_matrix"} if(ref($config) eq "HASH" && ref($config->{"body_luma_bias_matrix"}) eq "HASH" && ref($matrix) ne "HASH");
+	 if(ref($matrix) eq "HASH" && defined($ire)) {
 	  foreach my $key (keys %$matrix) {
 	   next if(!defined($key) || !defined($matrix->{$key}));
 	   if(abs(($key+0)-($ire+0)) < 0.001) {
