@@ -4408,16 +4408,21 @@ sub committed_top_window_polish {
 	 if(ref($best_arrays) eq "HASH") {
 	  $arrays=clone_arrays($best_arrays);
 	  my $restore_error;
-  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
+	  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
 	  return $finish_top_window->($restore_error) if($restore_error);
 	  sync_state_picture($state,$picture,$picture_mode);
-	  select(undef,undef,undef,0.6);
-	  my ($final_window,$final_error)=committed_top_window_read($config,$state,\%steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,"final");
+	  if($top_window_calibration_mode_active) {
+	   end_calibration_mode($picture_mode);
+	   set_state_calibration_mode($state,0,"");
+	   $top_window_calibration_mode_active=0;
+	  }
+	  park_black_for_settle($config,$state,"Settling after committed top-window restore",config_positive_int($config,"post_commit_top_window_final_settle_ms",6000,0,60000));
+	  my ($final_window,$final_error)=committed_top_window_read($config,$state,\%steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,"post_cal_final");
 	  return $finish_top_window->($final_error) if($final_error && $final_error ne "cancelled");
 	  if(ref($final_window) eq "HASH") {
 	   my $final_score=committed_top_window_score($final_window);
 	   if(!committed_top_window_candidate_allowed($final_score,$best_score) && ($final_score->{"score"}||9999) > (($best_score->{"score"}||9999)+0.03)) {
-	    trace_109($steps_by_ire{99},"committed_top_window_final_drift",{
+	    trace_109($steps_by_ire{99},"committed_top_window_post_cal_drift",{
 	     final_score=>$final_score->{"score"}+0,
 	     final_worst=>$final_score->{"worst"}+0,
 	     final_over=>$final_score->{"over"}+0,
@@ -4426,23 +4431,9 @@ sub committed_top_window_polish {
 	     best_over=>$best_score->{"over"}+0,
 	     accepted_total=>$accepted_total+0
 	    });
-	    $arrays=clone_arrays($best_arrays);
-	    $state->{"phase"}="writing";
-	    $state->{"message"}="Restoring accepted top-window best after final verify drift";
-	    write_state($state);
-    ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
-	    return $finish_top_window->($restore_error) if($restore_error);
-	    sync_state_picture($state,$picture,$picture_mode);
-	    trace_109($steps_by_ire{99},"committed_top_window_restored",{
-	     label=>"final_drift",
-	     score=>$best_score->{"score"}+0,
-	     worst=>$best_score->{"worst"}+0,
-	     over=>$best_score->{"over"}+0
-	    });
-	   } else {
-	    $best_window=$final_window;
-	    $best_score=$final_score;
 	   }
+	   $best_window=$final_window;
+	   $best_score=$final_score;
 	  }
 	 }
 	 ($picture,$arrays,undef)=$finish_top_window->(undef);
