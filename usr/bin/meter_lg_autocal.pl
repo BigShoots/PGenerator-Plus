@@ -5558,25 +5558,27 @@ eval {
 				  my $pair_best_update_allowed=sub {
 				   my ($candidate_score)=@_;
 				   return 0 if(!defined($de));
-				   return 0 if(!autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct));
-				   return ($candidate_score + 0.0001 < $best_score) ? 1 : 0 if(!$paired_white_step);
-				   return 0 if(
-				    ref($best_pair_reading) eq "HASH" &&
-				    !autocal_measurement_not_worse_than_best($pair_de,$pair_lum_pct,$best_pair_de,$best_pair_lum_pct)
+					   if(!$paired_white_step) {
+					    return 0 if(!autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct));
+					    return ($candidate_score + 0.0001 < $best_score) ? 1 : 0;
+					   }
+					   return 0 if(
+					    defined($best_de) &&
+					    within_itp_luminance_included_acceptance($best_de,$best_read_step) &&
+					    !within_itp_luminance_included_acceptance($de,$read_step)
 				   );
 				   return 0 if(
-				    defined($best_de) &&
-				    within_itp_luminance_included_acceptance($best_de,$best_read_step) &&
-				    !within_itp_luminance_included_acceptance($de,$read_step)
-				   );
-				   return 0 if(
-				    defined($best_pair_de) &&
-				    within_itp_luminance_included_acceptance($best_pair_de,$best_pair_step) &&
-				    !within_itp_luminance_included_acceptance($pair_de,$pair_step)
-				   );
-				   return legal_white_pair_best_update_allowed(
-				    $candidate_score,$best_score,
-			    $de,$pair_de,$best_de,$best_pair_de,$target_delta
+					    defined($best_pair_de) &&
+					    within_itp_luminance_included_acceptance($best_pair_de,$best_pair_step) &&
+					    !within_itp_luminance_included_acceptance($pair_de,$pair_step)
+					   );
+					   # For 99/100, the shared DDC slot must keep the best combined pair.
+					   # A candidate may make the active side slightly worse while pulling the
+					   # paired legal-white read materially closer; score the pair before the
+					   # single-side "not worse" gate rejects it.
+					   return legal_white_pair_best_update_allowed(
+					    $candidate_score,$best_score,
+				    $de,$pair_de,$best_de,$best_pair_de,$target_delta
 			   );
 			  };
 			  my $read_legal_white_pair_counterpart=sub {
