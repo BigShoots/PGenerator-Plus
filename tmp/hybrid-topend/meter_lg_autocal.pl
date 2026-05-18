@@ -1513,7 +1513,10 @@ sub autocal_result_score {
 sub autocal_measurement_not_worse_than_best {
  my ($de,$lum_pct,$best_de,$best_lum_pct)=@_;
  return 0 if(!defined($de));
- return 0 if(defined($best_de) && ($de+0) > ($best_de+0.0001));
+ return 1 if(!defined($best_de));
+ my $de_delta=($de+0)-($best_de+0);
+ return 1 if($de_delta < -0.0001);
+ return 0 if($de_delta > 0.0001);
  if(defined($lum_pct) && defined($best_lum_pct)) {
   return 0 if(abs($lum_pct) > abs($best_lum_pct)+0.05);
  }
