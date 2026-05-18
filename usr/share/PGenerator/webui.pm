@@ -7629,9 +7629,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <div id="meterAutoCalResultsSummary" style="font-size:.82rem;color:var(--text);line-height:1.45"></div>
 	   <div id="meterAutoCalResultsDuration" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
 	   <div id="meterAutoCalResultsWorst" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
-	   <div style="display:flex;justify-content:flex-end;margin-top:12px">
-	    <button class="btn btn-sm btn-secondary" id="meterAutoCalResultsCloseBtn" onclick="meterAutoCalCloseCompleteAction()">Close</button>
-	   </div>
 	  </div>
 	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
