@@ -4167,7 +4167,7 @@ sub committed_top_window_protected_worsened {
  my ($candidate_window,$best_window)=@_;
  return 0 if(ref($candidate_window) ne "HASH" || ref($best_window) ne "HASH");
  return 0 if(ref($candidate_window->{"points"}) ne "HASH" || ref($best_window->{"points"}) ne "HASH");
- foreach my $ire (95,99,100) {
+ foreach my $ire (95,99,100,105) {
   my $candidate=$candidate_window->{"points"}{$ire};
   my $best=$best_window->{"points"}{$ire};
   next if(ref($candidate) ne "HASH" || ref($best) ne "HASH");
