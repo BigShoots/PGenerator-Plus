@@ -4076,7 +4076,7 @@ sub committed_top_window_add_candidate {
 }
 
 sub committed_top_window_candidates {
- my ($window)=@_;
+ my ($window,$config)=@_;
  my @out;
  my %seen;
  my %influence=(
@@ -4090,8 +4090,9 @@ sub committed_top_window_candidates {
   (($window->{"points"}{$b}||{})->{"de"}||0) <=> (($window->{"points"}{$a}||{})->{"de"}||0)
  } grep { ref(($window->{"points"}{$_}||{})->{"reading"}) eq "HASH" } (95,99,100,105,109);
  my $rank_count=0;
+ my $rank_limit=config_positive_int($config,"post_commit_top_window_worst_points",2,1,3);
  foreach my $ire (@ranked) {
-  last if($rank_count++ >= 3);
+  last if($rank_count++ >= $rank_limit);
 	  my $reading=$window->{"points"}{$ire}{"reading"};
 	  my $err=rgb_error($reading);
   my $lum_pct=$window->{"points"}{$ire}{"luminance_error_pct"};
@@ -4162,6 +4163,7 @@ sub committed_top_window_candidates {
 	   }
 	  }
 	 }
+ if(ref($config) eq "HASH" && $config->{"post_commit_top_window_special_candidates"}) {
 	 committed_top_window_add_candidate(\@out,\%seen,"top_pair_99r_down_105g_up",[
   { setting=>"whiteBalanceRed", index=>23, delta=>-0.25 },
   { setting=>"whiteBalanceGreen", index=>24, delta=>0.25 },
@@ -4184,6 +4186,7 @@ sub committed_top_window_candidates {
   { setting=>"whiteBalanceGreen", index=>24, delta=>0.125 },
   { setting=>"whiteBalanceBlue", index=>24, delta=>0.125 },
  ]);
+ }
  return @out;
 }
 
@@ -4280,6 +4283,7 @@ sub committed_top_window_polish {
 	 });
 	 if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95) {
 	  $state->{"committed_top_window_passed"}=1;
+	  $state->{"committed_top_window_no_material_gain"}=0;
 	  $state->{"committed_top_window_worst"}=$best_score->{"worst"}+0;
 	  write_state($state);
 	  return ($picture,$arrays,undef);
@@ -4288,12 +4292,16 @@ sub committed_top_window_polish {
 	 my $base_score={ %{$best_score} };
 	 my $base_arrays=clone_arrays($arrays);
 	 my $best_arrays=clone_arrays($arrays);
-	 my $limit=config_positive_int($config,"post_commit_top_window_candidates",18,0,40);
+	 my $limit=config_positive_int($config,"post_commit_top_window_candidates",7,0,40);
+	 if($state->{"committed_top_window_no_material_gain"} && !(ref($config) eq "HASH" && exists($config->{"post_commit_top_window_candidates"}))) {
+	  $limit=2 if($limit > 2);
+	 }
 	 my $round_limit=config_positive_int($config,"post_commit_top_window_rounds",3,1,5);
 	 my $tested_total=0;
+	 my $accepted_total=0;
 	 for(my $round=1;$round<=$round_limit;$round++) {
 	  last if(cancelled() || $tested_total >= $limit);
-	  my @candidates=committed_top_window_candidates($best_window);
+	  my @candidates=committed_top_window_candidates($best_window,$config);
 	  my $round_improved=0;
 	  my $round_budget=$limit-$tested_total;
 	  $round_budget=8 if($round_budget > 8);
@@ -4335,6 +4343,7 @@ sub committed_top_window_polish {
 	    $best_arrays=clone_arrays($candidate_arrays);
 	    $arrays=clone_arrays($candidate_arrays);
 	    $round_improved=1;
+	    $accepted_total++;
 	    last if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95);
 	   } else {
 	    $state->{"phase"}="writing";
@@ -4387,6 +4396,7 @@ sub committed_top_window_polish {
   }
   $state->{"current_delta_e"}=$best_score->{"worst"};
   $state->{"committed_top_window_passed"}=(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95) ? 1 : 0;
+  $state->{"committed_top_window_no_material_gain"}=(!$state->{"committed_top_window_passed"} && !$accepted_total) ? 1 : 0;
   $state->{"committed_top_window_worst"}=$best_score->{"worst"}+0;
   $state->{"message"}="Committed top window best kept (worst ".sprintf("%.2f",$best_score->{"worst"}).")";
   write_state($state);
