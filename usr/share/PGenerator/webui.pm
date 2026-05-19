@@ -18890,7 +18890,7 @@ async function meterFullAutoCalBuildSnapshotReportSections(entries){
     readings:meterFullAutoCalCloneValue(snap.readings||[]),
     white_reading:snap.white_reading?meterFullAutoCalCloneValue(snap.white_reading):null
    });
-   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   await meterPrepareCurrentSeriesForReport();
    sectionHtml+=meterBuildCurrentSeriesReportSection(title);
   }
  } finally {
@@ -22693,6 +22693,32 @@ function meterBuildReportSummaryCards(){
  return '<div class="report-summary">'+cards.map(card=>'<div class="report-stat"><div class="report-stat-label">'+card.label+'</div><div class="report-stat-value">'+card.value+'</div></div>').join('')+'</div>';
 }
 
+function meterReportNextPaint(){
+ return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+}
+
+async function meterPrepareCurrentSeriesForReport(){
+ const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ const readings=Array.isArray(meterReadings)?meterReadings:[];
+ const steps=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
+ if(readings.length>0){
+  const sorted=isColor?[...readings]:[...readings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  drawAllCharts(sorted);
+ } else if(steps.length>0){
+  const sortedSteps=isColor?[...steps]:meterGreyscaleSeriesSteps(steps);
+  drawAllChartsPreset(sortedSteps);
+ }
+ await meterReportNextPaint();
+ if(readings.length>0){
+  const sorted=isColor?[...readings]:[...readings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  drawAllCharts(sorted);
+ } else if(steps.length>0){
+  const sortedSteps=isColor?[...steps]:meterGreyscaleSeriesSteps(steps);
+  drawAllChartsPreset(sortedSteps);
+ }
+ await meterReportNextPaint();
+}
+
 function meterBuildGreyscaleReportTable(){
  const report=meterGreyscaleReportReadings(meterReadings||[]);
  const gs=report.visible;
@@ -22836,7 +22862,7 @@ async function meterGenerateReport(){
     continue;
    }
    meterRestoreSeriesFromCache(key);
-   await new Promise(resolve=>requestAnimationFrame(resolve));
+   await meterPrepareCurrentSeriesForReport();
    sectionHtml+=meterBuildCurrentSeriesReportSection(meterSeriesLabelFromKey(key));
   }
  } finally {
