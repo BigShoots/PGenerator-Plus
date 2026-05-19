@@ -4173,6 +4173,19 @@ sub committed_top_window_protected_worsened {
  my ($candidate_window,$best_window)=@_;
  return 0 if(ref($candidate_window) ne "HASH" || ref($best_window) ne "HASH");
  return 0 if(ref($candidate_window->{"points"}) ne "HASH" || ref($best_window->{"points"}) ne "HASH");
+ my $candidate_score=committed_top_window_score($candidate_window);
+ my $best_score=committed_top_window_score($best_window);
+ my $candidate_over=defined($candidate_score->{"over"}) ? ($candidate_score->{"over"}+0) : 9999;
+ my $best_over=defined($best_score->{"over"}) ? ($best_score->{"over"}+0) : 9999;
+ my $candidate_worst=defined($candidate_score->{"worst"}) ? ($candidate_score->{"worst"}+0) : 9999;
+ my $best_worst=defined($best_score->{"worst"}) ? ($best_score->{"worst"}+0) : 9999;
+ my $candidate_total=defined($candidate_score->{"score"}) ? ($candidate_score->{"score"}+0) : 9999;
+ my $best_total=defined($best_score->{"score"}) ? ($best_score->{"score"}+0) : 9999;
+ # The guard is only meant to block trading one already-bad top-end point for
+ # another. If a candidate materially reduces the number of failing points, keep
+ # it instead of restoring a globally worse window.
+ return 0 if($candidate_over < $best_over);
+ return 0 if($candidate_worst+0.25 < $best_worst && $candidate_total+1.0 < $best_total);
  foreach my $ire (95,99,100,105) {
   my $candidate=$candidate_window->{"points"}{$ire};
   my $best=$best_window->{"points"}{$ire};
