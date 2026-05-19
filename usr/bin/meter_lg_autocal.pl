@@ -790,7 +790,7 @@ sub body_luma_bias_decision {
 	 } elsif(!defined($base_target_y) || $base_target_y <= 0) {
 	  ($eligible,$reason)=(0,"missing_target");
 	 }
-	 my $applied=($eligible && $mode eq "apply" && $bias_pct > 0) ? 1 : 0;
+	 my $applied=($eligible && $mode eq "apply" && ($bias_source eq "matrix" ? abs($bias_pct) > 0.0000001 : $bias_pct > 0)) ? 1 : 0;
 	 my $effective_target_y=$applied ? $base_target_y*(1+$bias_pct) : $base_target_y;
 	 if(defined($ire) && ($bias_source eq "matrix" || grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85))) {
   trace_109($step,"body_luma_bias_decision",{
