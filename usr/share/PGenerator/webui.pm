@@ -10876,6 +10876,11 @@ function meterEffectiveGreyscaleWhiteReference(readings){
  const list=(Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[])).filter(rd=>rd&&meterReadingIsGreyscale(rd)&&meterReadingHasLuminance(rd));
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
  const referenceList=lgAutoCalChartRef?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
+ const explicitTargetY=meterExplicitLgTargetWhiteReferenceNits(list);
+ if(explicitTargetY>0){
+  const synthetic=meterSyntheticGreyWhiteReading(explicitTargetY);
+  if(synthetic) return synthetic;
+ }
  const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
  if(headroomTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(headroomTargetY);
@@ -14776,7 +14781,13 @@ function meterWorkflowPhaseFraction(status){
   total=Number(status.post_check_total)||total;
   current=Number(status.post_check_current)||current;
  }
- if(total>0) return meterWorkflowClamp01(current/total);
+ if(total>0){
+  let fraction=meterWorkflowClamp01(current/total);
+  const running=String(status.status||'').toLowerCase()==='running';
+  const label=String((status.current_name||'')+' '+(status.message||'')).toLowerCase();
+  if(running&&fraction>=1&&/committed|polish|settling|verify/.test(label)) fraction=0.985;
+  return fraction;
+ }
  if(status.status==='complete') return 1;
  if(phase==='building') return 0.86;
  if(phase==='upload_probe') return 0.92;
