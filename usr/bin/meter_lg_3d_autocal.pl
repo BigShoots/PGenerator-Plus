@@ -944,6 +944,28 @@ sub reset_3d_lut_to_unity_before_profile {
  my ($config,$state)=@_;
  return undef if(!upload_requested($config) || $config->{"fixture_mode"});
  die "cancelled\n" if(cancelled());
+ if($config->{"skip_preprofile_unity_reset"} && $config->{"preflight_3d_lut_verified"}) {
+  $state->{"phase"}="unity_reset_skipped";
+  $state->{"current_step"}=0;
+  $state->{"current_name"}="Using verified LG 3D LUT baseline";
+  $state->{"message"}="Skipping matrix-stage unity reset; Full AutoCal preflight already verified the 3D LUT baseline";
+  my $reset={
+   status => "ok",
+   upload_verified => json_true(),
+   upload_supported => json_true(),
+   upload_command => $config->{"preflight_3d_lut_upload_command"}||$config->{"upload_command"}||"",
+   get_command => $config->{"preflight_3d_lut_get_command"}||$config->{"get_command"}||"",
+   message => "Using verified Full AutoCal preflight unity 3D LUT reset.",
+   reset_to_unity => json_true(),
+   preflight_unity_reset => json_true(),
+   skipped => json_true(),
+  };
+  $state->{"unity_reset"}=$reset;
+  $state->{"unity_reset_verified"}=json_true();
+  $state->{"upload_supported"}=json_true();
+  write_state($state);
+  return $reset;
+ }
  $state->{"phase"}="unity_reset";
  $state->{"current_step"}=0;
  $state->{"current_name"}="Resetting LG 3D LUT";
@@ -976,10 +998,12 @@ $config->{"signal_range"}=$config->{"signal_range"}||"1";
 $config->{"pattern_signal_range"}=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
 $config->{"transport_signal_range"}=$config->{"transport_signal_range"}||$config->{"signal_range"}||"1";
 my @steps=($method eq "matrix") ? build_matrix_steps($config) : build_ramp_steps($config);
+my $started_at=int(time()*1000);
 
 my $state={
  status => "running",
  autocal3d => json_true(),
+ started_at => $started_at,
  method => $method,
  current_step => 0,
  total_steps => scalar(@steps),
@@ -1134,6 +1158,9 @@ eval {
  $state->{"phase"}="complete";
  $state->{"current_name"}="LG 3D LUT Auto Cal complete";
  $state->{"message"}=$state->{"upload_verified"} ? "3D LUT exported, uploaded, and verified" : "3D LUT exported";
+ $state->{"completed_at"}=int(time()*1000);
+ $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
+ $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
  write_state($state);
  1;
 } or do {
