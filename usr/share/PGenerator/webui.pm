@@ -13078,7 +13078,11 @@ function meterOnGreyRefChange(src){
   _chartHitZones=[];
   meterLastChartSignature='';
   meterLastChartCount=0;
-  if(meterActiveSeriesType && meterActiveSeriesPoints && typeof meterRefreshActiveSeriesCharts==='function'){
+  if(meterAutoCalRunning||meterAutoCalPolling||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling){
+   const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+   const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   drawAllCharts(sorted);
+  } else if(meterActiveSeriesType && meterActiveSeriesPoints && typeof meterRefreshActiveSeriesCharts==='function'){
    meterRefreshActiveSeriesCharts();
   } else {
    drawAllCharts(meterReadings);
