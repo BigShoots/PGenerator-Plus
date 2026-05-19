@@ -9629,7 +9629,7 @@ let meterAutoCalLevelPreflight=null;
 const METER_FULL_AUTOCAL_STATE_KEY='meterFullAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
 const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
-const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=true;
+const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=false;
 const METER_AUTOCAL_STATE_KEY='meterAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_SERIES=[
  {key:'greyscale-26',type:'greyscale',points:26,label:'Greyscale LG 26pt AutoCal'},
