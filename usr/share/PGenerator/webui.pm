@@ -868,6 +868,11 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/meter/full-autocal/report-state" && $method eq "POST") {
+    my $result=&webui_meter_full_autocal_report_state($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/meter/lg-autocal" && $method eq "POST") {
     my $result=&webui_meter_lg_autocal_start($body);
     my $len=length($result);
@@ -2457,6 +2462,39 @@ sub webui_meter_series_status (@) {
   }
  }
  return '{"status":"idle"}';
+}
+
+sub webui_meter_full_autocal_report_state (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Full AutoCal report state payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ my $run="unknown";
+ $run=$1 if($body=~/"run_id"\s*:\s*"([^"]+)"/);
+ $run=$1 if($run eq "unknown" && $body=~/"runId"\s*:\s*"([^"]+)"/);
+ $run=~s/[^A-Za-z0-9_.-]/_/g;
+ $run="unknown" if($run eq "");
+ my @dirs=("/var/lib/PGenerator/reports/full-autocal","/tmp/PGenerator_full_autocal_reports");
+ foreach my $dir (@dirs) {
+  system("mkdir","-p",$dir);
+  if(!-d $dir && $dir=~m{^/var/lib/PGenerator/}) {
+   system("sudo","mkdir","-p",$dir);
+   system("sudo","chmod","0777","/var/lib/PGenerator/reports");
+   system("sudo","chmod","0777",$dir);
+  }
+  system("chmod","0777",$dir) if(-d $dir);
+  next unless(-d $dir && -w $dir);
+  my $file="$dir/$run.json";
+  my $tmp="$file.tmp";
+  if(open(my $fh,">",$tmp)) {
+   print $fh $body;
+   close($fh);
+   rename($tmp,$file);
+   chmod(0666,$file);
+   my $safe_file=$file;
+   $safe_file=~s/"/\\"/g;
+   return "{\"status\":\"ok\",\"path\":\"$safe_file\"}";
+  }
+ }
+ return '{"status":"error","message":"Unable to save Full AutoCal report state"}';
 }
 
 sub webui_meter_series_ready (@) {
@@ -9567,7 +9605,7 @@ let meterFullAutoCalConfig=null;
 let meterFullAutoCalRunId=null;
 let meterFullAutoCalStartedAt=null;
 let meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
-let meterFullAutoCalReportData={pre:null,post:null,updated_at:null};
+let meterFullAutoCalReportData={pre:null,post:null,updated_at:null,run_id:null,started_at:null,pre_cal_skipped:null,stages:{},reset:null};
 let meterFullAutoCalConfirmResolver=null;
 let meterAutoCalLuminanceSetupActive=false;
 let meterAutoCalLuminanceContinue=false;
@@ -18112,7 +18150,7 @@ async function meterAutoCalResetDdc(){
   meterAutoCalUpdatePanelLightUi();
  }
  meterLgGreyState={status:'ok',picture:resetPicture,message:'',needsRepair:false};
- return resetPicture;
+ return response;
 }
 
 async function meterAutoCalReset3dLutBaseline(){
@@ -18161,10 +18199,33 @@ async function meterAutoCalRunPreflightReset(){
  meterActionPending=true;
  let resetErrorMessage='';
  try{
-  await meterAutoCalResetDdc();
+  const ddcReset=await meterAutoCalResetDdc();
+  let lutReset=null;
   if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow){
    if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
-   await meterAutoCalReset3dLutBaseline();
+   lutReset=await meterAutoCalReset3dLutBaseline();
+  }
+  if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow){
+   const resetSummary={
+    completed_at:Date.now(),
+    ddc:{
+     status:ddcReset&&ddcReset.status||null,
+     ddc_baseline_reset:!!(ddcReset&&ddcReset.ddc_baseline_reset),
+     ddc_1d_lut:!!(ddcReset&&ddcReset.ddc_1d_lut),
+     ddc_reset_verified:!!(ddcReset&&ddcReset.ddc_reset_verified),
+     picture_mode:(ddcReset&&ddcReset.picture_settings&&ddcReset.picture_settings.pictureMode)||meterLgPictureModeValue()
+    },
+    lut3d:lutReset?{
+     status:lutReset.status||null,
+     upload_verified:!!lutReset.upload_verified,
+     picture_mode:lutReset.picture_mode||meterLgPictureModeValue()
+    }:null
+   };
+   meterFullAutoCalConfig={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig()),preflightReset:resetSummary};
+   meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+   meterFullAutoCalReportData.reset=resetSummary;
+   meterFullAutoCalSaveReportData();
+   meterFullAutoCalArchiveReportData('preflight-reset',resetSummary);
   }
   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
   meterAutoCalPreflightResetDone=true;
@@ -18423,7 +18484,7 @@ function meterFullAutoCalCloneValue(value){
 }
 
 function meterFullAutoCalDefaultReportData(){
- return {pre:null,post:null,updated_at:Date.now()};
+ return {pre:null,post:null,updated_at:Date.now(),run_id:null,started_at:null,pre_cal_skipped:null,stages:{},reset:null};
 }
 
 function meterFullAutoCalLoadReportData(){
@@ -18441,6 +18502,9 @@ function meterFullAutoCalLoadReportData(){
 function meterFullAutoCalSaveReportData(){
  try{
   meterFullAutoCalReportData.updated_at=Date.now();
+  if(!meterFullAutoCalReportData.run_id&&meterFullAutoCalRunId) meterFullAutoCalReportData.run_id=meterFullAutoCalRunId;
+  if(!meterFullAutoCalReportData.started_at&&meterFullAutoCalStartedAt) meterFullAutoCalReportData.started_at=meterFullAutoCalStartedAt;
+  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
   localStorage.setItem(METER_FULL_AUTOCAL_REPORT_KEY,JSON.stringify(meterFullAutoCalReportData));
  }catch(e){}
 }
@@ -18448,6 +18512,38 @@ function meterFullAutoCalSaveReportData(){
 function meterFullAutoCalClearReportData(){
  meterFullAutoCalReportData=meterFullAutoCalDefaultReportData();
  try{ localStorage.removeItem(METER_FULL_AUTOCAL_REPORT_KEY); }catch(e){}
+}
+
+function meterFullAutoCalBeginReportData(skipPreCal){
+ meterFullAutoCalReportData=meterFullAutoCalDefaultReportData();
+ meterFullAutoCalReportData.run_id=meterFullAutoCalRunId||null;
+ meterFullAutoCalReportData.started_at=meterFullAutoCalStartedAt||Date.now();
+ meterFullAutoCalReportData.pre_cal_skipped=!!skipPreCal;
+ meterFullAutoCalSaveReportData();
+ meterFullAutoCalArchiveReportData('started');
+}
+
+function meterFullAutoCalArchiveReportData(stage,extra){
+ let payload=null;
+ try{
+  payload={
+   run_id:meterFullAutoCalRunId||(meterFullAutoCalReportData&&meterFullAutoCalReportData.run_id)||null,
+   stage:stage||'state',
+   saved_at:Date.now(),
+   report:meterFullAutoCalLoadReportData(),
+   config:meterFullAutoCalConfig||null,
+   results:meterFullAutoCalResults||null,
+   extra:extra||null
+  };
+ }catch(e){ return Promise.resolve(null); }
+ if(!payload.run_id) payload.run_id='unknown';
+ return fetchJSON('/api/meter/full-autocal/report-state',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(payload),
+  _quiet:true,
+  _timeoutMs:6000
+ }).catch(()=>null);
 }
 
 function meterAutoCalSaveState(){
@@ -18504,6 +18600,12 @@ function meterFullAutoCalReportSetHasData(stage){
  const data=meterFullAutoCalLoadReportData();
  const set=data&&data[stage];
  return !!(set&&METER_FULL_AUTOCAL_REPORT_SERIES.every(item=>meterSeriesSnapshotHasReadings(set[item.key])));
+}
+
+function meterFullAutoCalReportSetAnyData(stage){
+ const data=meterFullAutoCalLoadReportData();
+ const set=data&&data[stage];
+ return !!(set&&METER_FULL_AUTOCAL_REPORT_SERIES.some(item=>meterSeriesSnapshotHasReadings(set[item.key])));
 }
 
 function meterFullAutoCalReportStatusText(stage){
@@ -18831,6 +18933,12 @@ async function meterFullAutoCalCaptureReportSet(stage){
  const phase=isPre?'precal-report':'postcal-report';
  const set={};
  meterFullAutoCalPhase=phase;
+ meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+ if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
+ meterFullAutoCalReportData[stage]=set;
+ meterFullAutoCalReportData.stages[stage]={status:'running',started_at:Date.now(),series:{}};
+ meterFullAutoCalSaveReportData();
+ meterFullAutoCalArchiveReportData(stage+'-started');
  meterFullAutoCalSaveState();
  if(!(await meterEnsureDetected())) throw new Error('No meter detected');
  if(!meterEnsureAppliedGeneratorSettings()) throw new Error('Apply & Restart first so measurements match the live signal mode');
@@ -18854,9 +18962,18 @@ async function meterFullAutoCalCaptureReportSet(stage){
   if(!snap) throw new Error('No report data was captured for '+item.label);
   set[item.key]=snap;
   meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
+  if(!meterFullAutoCalReportData.stages[stage]) meterFullAutoCalReportData.stages[stage]={status:'running',started_at:Date.now(),series:{}};
+  if(!meterFullAutoCalReportData.stages[stage].series) meterFullAutoCalReportData.stages[stage].series={};
+  meterFullAutoCalReportData.stages[stage].series[item.key]={status:'complete',completed_at:Date.now(),readings:snap.readings.length};
   meterFullAutoCalReportData[stage]=set;
   meterFullAutoCalSaveReportData();
+  meterFullAutoCalArchiveReportData(stage+'-'+item.key);
  }
+ if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
+ meterFullAutoCalReportData.stages[stage]={...(meterFullAutoCalReportData.stages[stage]||{}),status:'complete',completed_at:Date.now()};
+ meterFullAutoCalSaveReportData();
+ meterFullAutoCalArchiveReportData(stage+'-complete');
  meterSetWorkflowProgress({status:'running',current_step:METER_FULL_AUTOCAL_REPORT_SERIES.length,total_steps:METER_FULL_AUTOCAL_REPORT_SERIES.length,current_name:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'},{workflow:'full',label:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'});
  return true;
 }
@@ -18873,6 +18990,10 @@ async function meterFullAutoCalBuildSnapshotReportSections(entries){
  let sectionHtml='';
  try{
   for(const entry of entries){
+   if(entry&&entry.notice){
+    sectionHtml+=meterBuildNoticeReportSection(entry.title||'Full AutoCal',entry.notice);
+    continue;
+   }
    const snap=entry&&entry.snapshot;
    const title=(entry&&entry.title)||'Measurement';
    if(!meterSeriesSnapshotHasReadings(snap)){
@@ -18913,10 +19034,20 @@ function meterFullAutoCalReportEntries(){
  const data=meterFullAutoCalLoadReportData();
  const entries=[];
  const hasPre=meterFullAutoCalReportSetHasData('pre');
+ const anyPre=meterFullAutoCalReportSetAnyData('pre');
  const hasPost=meterFullAutoCalReportSetHasData('post');
+ const preExpected=data&&data.pre_cal_skipped===false;
+ if(data&&data.pre_cal_skipped===true){
+  entries.push({title:'Pre-Cal Measurements',notice:'Pre-Cal measurements were skipped for this Full AutoCal run, so this report has no before charts.'});
+ }else if(preExpected||hasPre||anyPre){
+  METER_FULL_AUTOCAL_REPORT_SERIES.forEach(item=>{
+   entries.push({title:'Pre-Cal '+item.label,snapshot:data&&data.pre?data.pre[item.key]:null});
+  });
+ }else if(hasPost){
+  entries.push({title:'Pre-Cal Measurements',notice:'No Pre-Cal measurements were saved for this run. This usually means the Pre-Cal step was skipped or the page was running an older workflow before the report-state tracking was added.'});
+ }
  METER_FULL_AUTOCAL_REPORT_SERIES.forEach(item=>{
-  if(hasPre) entries.push({title:'Pre-Cal '+item.label,snapshot:data&&data.pre?data.pre[item.key]:null});
-  if(hasPost||!hasPre) entries.push({title:'Post-Cal '+item.label,snapshot:data&&data.post?data.post[item.key]:null});
+  if(hasPost||!hasPre&&!anyPre) entries.push({title:'Post-Cal '+item.label,snapshot:data&&data.post?data.post[item.key]:null});
  });
  return entries;
 }
@@ -18978,11 +19109,17 @@ async function meterFullAutoCalGeneratePostReport(){
   meterSetWorkflowProgress({status:'running',current_step:1,total_steps:1,current_name:'Generating Full AutoCal report'},{workflow:'full',label:'Generating Full AutoCal report'});
   const downloaded=await meterFullAutoCalDownloadReport(filename);
   await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+  await meterFullAutoCalArchiveReportData(downloaded?'report-downloaded':'report-built',{filename:filename,downloaded:!!downloaded});
   meterFullAutoCalResetState(true);
   meterFullAutoCalClearReportData();
   meterHideWorkflowProgress();
-  if(downloaded) toast('Full AutoCal report downloaded');
+ if(downloaded) toast('Full AutoCal report downloaded');
  }catch(e){
+  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
+  meterFullAutoCalReportData.stages.post={...(meterFullAutoCalReportData.stages.post||{}),status:'error',completed_at:Date.now(),message:(e&&e.message)||'Full AutoCal report failed'};
+  meterFullAutoCalSaveReportData();
+  await meterFullAutoCalArchiveReportData('post-error',{message:(e&&e.message)||'Full AutoCal report failed'});
   try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(_e){}
   meterFullAutoCalAbort((e&&e.message)||'Full AutoCal report failed',true);
  }finally{
@@ -19022,12 +19159,18 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalPhase=skipPreCal?'first-greyscale':'precal-report';
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
  meterFullAutoCalConfig={...meterFullAutoCalDefaultConfig(),preCalSkipped:skipPreCal};
+ meterFullAutoCalBeginReportData(skipPreCal);
  meterFullAutoCalSaveState();
  if(!skipPreCal){
   try{
    const measured=await meterFullAutoCalCaptureReportSet('pre');
    if(!measured) throw new Error('Pre-cal report measurements were cancelled');
   }catch(e){
+   meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+   if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
+   meterFullAutoCalReportData.stages.pre={...(meterFullAutoCalReportData.stages.pre||{}),status:'error',completed_at:Date.now(),message:(e&&e.message)||'Pre-cal report measurements failed'};
+   meterFullAutoCalSaveReportData();
+   meterFullAutoCalArchiveReportData('pre-error',{message:(e&&e.message)||'Pre-cal report measurements failed'});
    try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(_e){}
    meterFullAutoCalAbort((e&&e.message)||'Pre-cal report measurements failed',true);
    return;
@@ -19248,6 +19391,13 @@ function meterFullAutoCalComplete(touchupStatus,options){
   lut3d:meterFullAutoCalResults.lut3d,
   touchup:skipTouchup?null:(touchupStatus||null)
  };
+ meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+ meterFullAutoCalReportData.run_id=runId;
+ meterFullAutoCalReportData.completed_at=completedAt;
+ meterFullAutoCalReportData.elapsed_ms=status.elapsed_ms||null;
+ meterFullAutoCalReportData.completion_status=status;
+ meterFullAutoCalSaveReportData();
+ meterFullAutoCalArchiveReportData('complete',{completed_at:completedAt,elapsed_ms:status.elapsed_ms||null});
  meterFullAutoCalMarkCompletionHandled(status);
  meterFullAutoCalResetState(true);
  meterAutoCalPhase='complete';
@@ -22762,6 +22912,15 @@ function meterBuildEmptySeriesReportSection(title){
  html+='<div class="report-section-title">'+title+'</div>';
  html+='<div class="report-section-meta">0 readings captured</div>';
  html+='<div class="report-empty">No measurement data has been captured for this series yet.</div>';
+ html+='</section>';
+ return html;
+}
+
+function meterBuildNoticeReportSection(title,message){
+ let html='<section class="report-section">';
+ html+='<div class="report-section-title">'+title+'</div>';
+ html+='<div class="report-section-meta">Full AutoCal report note</div>';
+ html+='<div class="report-empty">'+String(message||'No data was saved for this section.')+'</div>';
  html+='</section>';
  return html;
 }
