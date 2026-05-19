@@ -10595,6 +10595,33 @@ function meterLgAutoCalTargetMetaForCode(code){
  };
 }
 
+function meterLgAutoCalBodyLumaBiasPayload(dtype){
+ const display=String(dtype||getEffectiveDisplayType()||'').toLowerCase();
+ if(!/lg[_ -]?c2/.test(display)) return {};
+ return {
+  body_luma_bias_mode:'apply',
+  body_luma_bias_matrix_pct:{
+   10:-0.006,
+   15:0.008,
+   20:0.014,
+   25:0.008,
+   30:0.0145,
+   35:0.014,
+   40:0.0156,
+   45:0.0191,
+   50:0.0218,
+   55:0.012,
+   60:0.0152,
+   65:0.0126,
+   70:0.0219,
+   75:0.0146,
+   80:0.0073,
+   85:0.0101,
+   90:0.0107
+  }
+ };
+}
+
 function meterLgAutoCalCodeForSlot(slot){
  const idx=METER_LG_GREY_AUTOCAL_26_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
  return idx>=0?METER_LG_GREY_AUTOCAL_26_CODES[idx]:meterLgSdrLegalHeadroomCodeFromPercent(slot);
@@ -19103,6 +19130,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
+    ...meterLgAutoCalBodyLumaBiasPayload(dtype),
     force_ddc_white_balance:true,
     restore_factory_levels:false,
     reset_ddc_baseline:false,
@@ -19493,9 +19521,10 @@ async function meterAutoCalConfirmAndStart(){
 			    target_luminance:targetY,
 			    setup_luminance_reference:setupY,
 			    headroom_target_luminance:headroomY,
-			    target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+    target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
+    ...meterLgAutoCalBodyLumaBiasPayload(dtype),
     force_ddc_white_balance:true,
 	    full_workflow:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
 	    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
