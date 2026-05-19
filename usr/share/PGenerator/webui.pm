@@ -7723,6 +7723,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
 	   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high with committed greyscale polish, then run color-only 3D LUT AutoCal with probe-gated TV upload.</div>
+	   <label id="meterFullAutoCalTouchupChoiceRow" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
+	    <span style="display:flex;gap:8px;align-items:flex-start">
+	     <input type="checkbox" id="meterFullAutoCalPostTouchupEnabled" checked style="margin-top:2px">
+	     <span>
+	      <span style="display:block;font-weight:700">Run post-cal greyscale touch-up after 3D LUT</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Runs a short greyscale correction after the 3D LUT. Disable to preserve the first greyscale result after color calibration.</span>
+	     </span>
+	    </span>
+	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
 		  <div class="btn-row" style="justify-content:flex-end;margin:0">
@@ -14822,7 +14831,7 @@ function meterFullAutoCalStageOrder(){
  const stages=[];
  if(!skipPre) stages.push('precal-report');
  stages.push('first-greyscale','3d-lut');
- if(!METER_FULL_AUTOCAL_TOUCHUP_DISABLED) stages.push('touchup-greyscale');
+ if(meterFullAutoCalPostTouchupEnabled()) stages.push('touchup-greyscale');
  stages.push('postcal-report','complete');
  return stages;
 }
@@ -18648,14 +18657,29 @@ function meterFullAutoCalDefaultConfig(){
   method:meterFullAutoCalMethodValue(),
   upload:true,
   targetDelta:null,
-	  targetY:null,
-	  setupY:null,
-	  headroomY:null,
-	  dtype:null,
-	  patternSignalRange:null,
-	  wp:null,
-	  preCalSkipped:false
-	 };
+  targetY:null,
+  setupY:null,
+  headroomY:null,
+  dtype:null,
+  patternSignalRange:null,
+  wp:null,
+  preCalSkipped:false,
+  postCalTouchupEnabled:true
+ };
+}
+
+function meterFullAutoCalPostTouchupEnabled(){
+ if(METER_FULL_AUTOCAL_TOUCHUP_DISABLED) return false;
+ if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'postCalTouchupEnabled')){
+  return meterFullAutoCalConfig.postCalTouchupEnabled!==false;
+ }
+ return true;
+}
+
+function meterFullAutoCalTouchupChoiceValue(){
+ const cb=document.getElementById('meterFullAutoCalPostTouchupEnabled');
+ if(METER_FULL_AUTOCAL_TOUCHUP_DISABLED) return false;
+ return cb ? !!cb.checked : true;
 }
 
 function meterFullAutoCalSaveState(){
@@ -18858,7 +18882,7 @@ function meterFullAutoCalResolveConfirm(accepted){
  const overlay=document.getElementById('meterAutoCalOverlay');
  if(overlay) overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('meter-autocal-active');
- ['meterFullAutoCalConfirmBox','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
+ ['meterFullAutoCalConfirmBox','meterFullAutoCalTouchupChoiceRow','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.style.display='none';
  });
@@ -18876,6 +18900,8 @@ function meterFullAutoCalConfirmDialog(options){
  const fullConfirmBox=document.getElementById('meterFullAutoCalConfirmBox');
  const title=document.getElementById('meterFullAutoCalConfirmTitle');
  const message=document.getElementById('meterFullAutoCalConfirmMessage');
+ const touchupChoiceRow=document.getElementById('meterFullAutoCalTouchupChoiceRow');
+ const touchupChoice=document.getElementById('meterFullAutoCalPostTouchupEnabled');
  const progressBox=document.getElementById('meterAutoCalProgressBox');
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
  const cancelBtn=document.getElementById('meterFullAutoCalCancelBtn');
@@ -18888,6 +18914,13 @@ function meterFullAutoCalConfirmDialog(options){
  if(text) text.textContent=opts.statusText;
  if(title) title.textContent=opts.title;
  if(message) message.textContent=opts.message;
+ if(touchupChoiceRow){
+  touchupChoiceRow.style.display=opts.showPostCalTouchupChoice?'':'none';
+  if(touchupChoice){
+   touchupChoice.checked=METER_FULL_AUTOCAL_TOUCHUP_DISABLED?false:meterFullAutoCalPostTouchupEnabled();
+   touchupChoice.disabled=!!METER_FULL_AUTOCAL_TOUCHUP_DISABLED;
+  }
+ }
  if(fullConfirmBox) fullConfirmBox.style.display='';
  if(progressBox) progressBox.style.display='none';
  if(stopBtn) stopBtn.style.display='none';
@@ -19154,8 +19187,9 @@ async function meterStartFullAutoCal(){
  if(!(await meterEnsureLgAutoCalTransport('Full Auto Cal'))) return;
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
- const accepted=await meterFullAutoCalConfirmDialog();
+ const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true});
  if(!accepted) return;
+ const postCalTouchupEnabled=meterFullAutoCalTouchupChoiceValue();
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
   message:'Before calibration, PGenerator will measure Greyscale LG 26pt AutoCal, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
@@ -19172,7 +19206,7 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalStartedAt=Date.now();
  meterFullAutoCalPhase=skipPreCal?'first-greyscale':'precal-report';
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
- meterFullAutoCalConfig={...meterFullAutoCalDefaultConfig(),preCalSkipped:skipPreCal};
+ meterFullAutoCalConfig={...meterFullAutoCalDefaultConfig(),preCalSkipped:skipPreCal,postCalTouchupEnabled:postCalTouchupEnabled};
  meterFullAutoCalBeginReportData(skipPreCal);
  meterFullAutoCalSaveState();
  if(!skipPreCal){
@@ -19240,7 +19274,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
  if(lutRunId) meterFullAutoCalRunId=lutRunId;
  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalMarkCompletionHandled(lutStatus);
- if(METER_FULL_AUTOCAL_TOUCHUP_DISABLED){
+ if(!meterFullAutoCalPostTouchupEnabled()){
   meterLg3dAutoCalRunning=false;
   meterActionPending=false;
   meterFullAutoCalComplete({
@@ -19249,11 +19283,11 @@ async function meterFullAutoCalStartTouchup(lutStatus){
    full_workflow:true,
    full_autocal_run_id:meterFullAutoCalRunId,
    run_id:meterFullAutoCalRunId,
-   full_autocal_phase:'3d-lut',
-   completed_at:Number(lutStatus&&lutStatus.completed_at)||Date.now(),
-   touchup_skipped:true,
+	   full_autocal_phase:'3d-lut',
+	   completed_at:Number(lutStatus&&lutStatus.completed_at)||Date.now(),
+	   touchup_skipped:true,
 	   message:'Greyscale and 3D LUT complete. Post-3D greyscale touch-up skipped to preserve color alignment.'
-  },{skipTouchup:true});
+	  },{skipTouchup:true});
   return true;
  }
  meterFullAutoCalPhase='touchup-greyscale';
