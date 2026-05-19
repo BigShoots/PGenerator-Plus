@@ -9616,6 +9616,7 @@ let meterFullAutoCalStartedAt=null;
 let meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
 let meterFullAutoCalReportData={pre:null,post:null,updated_at:null,run_id:null,started_at:null,pre_cal_skipped:null,stages:{},reset:null};
 let meterFullAutoCalConfirmResolver=null;
+let meterFullAutoCalConfirmOptions=null;
 let meterAutoCalLuminanceSetupActive=false;
 let meterAutoCalLuminanceContinue=false;
 let meterAutoCalStopRequested=false;
@@ -18878,7 +18879,13 @@ function meterFullAutoCalTransitionBusy(message){
 
 function meterFullAutoCalResolveConfirm(accepted){
  const resolver=meterFullAutoCalConfirmResolver;
+ const opts=meterFullAutoCalConfirmOptions||{};
+ let result=accepted;
+ if(accepted&&opts.showPostCalTouchupChoice){
+  result={accepted:true,postCalTouchupEnabled:meterFullAutoCalTouchupChoiceValue()};
+ }
  meterFullAutoCalConfirmResolver=null;
+ meterFullAutoCalConfirmOptions=null;
  const overlay=document.getElementById('meterAutoCalOverlay');
  if(overlay) overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('meter-autocal-active');
@@ -18888,13 +18895,14 @@ function meterFullAutoCalResolveConfirm(accepted){
  });
  const text=document.getElementById('meterAutoCalStatusText');
  if(text) text.textContent='Preparing...';
- if(resolver) resolver(accepted);
+ if(resolver) resolver(result);
 }
 
 function meterFullAutoCalConfirmDialog(options){
  meterAutoCalClearCompleteAutoClose();
  if(meterFullAutoCalConfirmResolver) meterFullAutoCalResolveConfirm(false);
  const opts={...meterFullAutoCalPromptDefaults(),...(options||{})};
+ meterFullAutoCalConfirmOptions=opts;
  const overlay=document.getElementById('meterAutoCalOverlay');
  const text=document.getElementById('meterAutoCalStatusText');
  const fullConfirmBox=document.getElementById('meterFullAutoCalConfirmBox');
@@ -19189,7 +19197,9 @@ async function meterStartFullAutoCal(){
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true});
  if(!accepted) return;
- const postCalTouchupEnabled=meterFullAutoCalTouchupChoiceValue();
+ const postCalTouchupEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCalTouchupEnabled'))
+  ? accepted.postCalTouchupEnabled!==false
+  : meterFullAutoCalTouchupChoiceValue();
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
   message:'Before calibration, PGenerator will measure Greyscale LG 26pt AutoCal, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
