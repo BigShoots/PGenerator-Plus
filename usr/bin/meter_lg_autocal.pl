@@ -969,6 +969,9 @@ sub headroom_reference_white_from_target {
 
 sub committed_polish_reference_white_y {
  my ($config,$state,$steps,$target_gamma,$signal_mode,$fallback)=@_;
+ if(ref($state) eq "HASH" && defined($state->{"committed_polish_white_y"}) && ($state->{"committed_polish_white_y"}+0) > 0) {
+  return $state->{"committed_polish_white_y"}+0;
+ }
  if(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0) {
   return $state->{"peak_headroom_reference"}+0;
  }
@@ -6817,6 +6820,11 @@ eval {
 			 if(!cancelled()) {
 					  my $commit_error=undef;
 					  my $commit_ended_calibration=0;
+						  if(defined($white_y) && $white_y > 0) {
+						   $state->{"committed_polish_white_y"}=$white_y+0;
+						   $state->{"committed_polish_reference_locked"}=JSON::PP::true;
+						   write_state($state);
+						  }
 						  ($picture,$commit_error,$commit_ended_calibration)=commit_final_1d_lut($state,$picture,$arrays,$picture_mode,\@ordered,$calibration_mode_active);
 						  die $commit_error if($commit_error);
 						  $calibration_mode_active=0 if($commit_ended_calibration);
