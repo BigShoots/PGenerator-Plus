@@ -9639,6 +9639,14 @@ function meterPromptExportFilename(key,defaultBase,extension,promptLabel){
  return base+ext;
 }
 
+function meterDefaultExportFilename(key,defaultBase,extension){
+ const ext='.'+String(extension||'').replace(/^\./,'');
+ const sessionBase=meterSanitizeExportFilenameBase((key&&meterExportFilenameBases[key])?meterExportFilenameBases[key]:defaultBase)||defaultBase;
+ const stamp=new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d+Z$/,'Z');
+ if(key&&!meterExportFilenameBases[key]) meterExportFilenameBases[key]=sessionBase;
+ return sessionBase+'_'+stamp+ext;
+}
+
 function meterDownloadBlob(blob,filename){
  const a=document.createElement('a');
  a.href=URL.createObjectURL(blob);
@@ -10930,9 +10938,9 @@ function meterColorSeriesReferenceNits(){
 }
 
 function meterBlackReadingY(){
- const readings=Array.isArray(meterReadings)?meterReadings:[];
- const blacks=readings.filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&r.luminance!=null)
-  .map(r=>r.luminance||r.Y||0)
+ const readings=(Array.isArray(meterReadings)?meterReadings:[]).map(r=>meterNormalizeOledBlackReading(r));
+ const blacks=readings.filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&meterReadingHasLuminance(r))
+  .map(r=>meterReadingLuminanceNits(r)||0)
   .filter(v=>v>=0);
  return blacks.length>0?Math.min(...blacks):0;
 }
@@ -10945,7 +10953,7 @@ function meterDisplayIsOled(){
 // Infer chart black level. On OLED, true black can time out and be missing;
 // use only true 0% greyscale reading (or 0 fallback) in every mode.
 function meterChartBlackLevel(readings){
- const gs=(Array.isArray(readings)?readings:[])
+ const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
  const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
  if(trueBlack.length>0) return Math.min(...trueBlack);
@@ -11934,8 +11942,37 @@ function meterReadingIsGreyscale(reading){
  return r!=null&&g!=null&&b!=null&&Number(r)===Number(g)&&Number(g)===Number(b);
 }
 
+function meterReadingIsZeroBlack(reading){
+ if(!reading) return false;
+ const name=String(reading.name||'').trim().toLowerCase();
+ if(name==='0%'||name==='black') return true;
+ const plot=(typeof meterReadingPlotIre==='function')?meterReadingPlotIre(reading):null;
+ const candidates=[plot,reading.plot_ire,reading.nominal_ire,reading.target_ire,reading.ire,reading.stimulus];
+ return candidates.some(value=>{
+  const ire=Number(value);
+  return Number.isFinite(ire)&&Math.abs(ire)<0.05;
+ });
+}
+
+function meterNormalizeOledBlackReading(reading){
+ if(!reading||typeof reading!=='object') return reading;
+ meterNormalizeMeasuredReading(reading);
+ if(!meterDisplayIsOled()||!meterReadingIsGreyscale(reading)||!meterReadingIsZeroBlack(reading)) return reading;
+ const lum=(reading.luminance!=null)?Number(reading.luminance):Number(reading.Y);
+ if(Number.isFinite(lum)&&lum>=0) return reading;
+ reading.luminance=0;
+ reading.Y=0;
+ if(reading.raw_luminance==null) reading.raw_luminance=0;
+ if(reading.raw_Y==null) reading.raw_Y=0;
+ if(reading.X==null) reading.X=0;
+ if(reading.Z==null) reading.Z=0;
+ if(reading.raw_X==null) reading.raw_X=0;
+ if(reading.raw_Z==null) reading.raw_Z=0;
+ return reading;
+}
+
 function meterGreyscaleReadings(readings){
- return (Array.isArray(readings)?readings:[]).filter(rd=>meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd)).map(rd=>{
+ return (Array.isArray(readings)?readings:[]).map(rd=>meterNormalizeOledBlackReading(rd)).filter(rd=>meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd)).map(rd=>{
   const plotIre=meterReadingPlotIre(rd);
   if(plotIre==null) return rd;
   const current=Number(rd.ire);
@@ -14053,7 +14090,7 @@ function meterAttachSeriesMeta(readings){
  return readings.map(rd=>{
   const step=meterSeriesSteps.find(s=>(meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')))&&meterReadingMatchesStepForPlot(rd,s));
   const reading=step?meterStampReadingStepMeta(rd,step):rd;
-  return meterNormalizeMeasuredReading(reading);
+  return meterNormalizeOledBlackReading(meterNormalizeMeasuredReading(reading));
  });
 }
 
@@ -14239,7 +14276,7 @@ function meterLiveReadingLabel(reading){
 }
 
 function meterMeasuredContrastRatio(readings){
- const gs=(Array.isArray(readings)?readings:[])
+ const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r&&meterReadingIsGreyscale(r)&&meterReadingHasLuminance(r));
  if(gs.length===0) return null;
  const hasIre=(r,target)=>{
@@ -18921,8 +18958,7 @@ async function meterFullAutoCalEnsureCalibrationModeOff(reason){
 
 async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalLoadReportData();
- const filename=meterPromptExportFilename('report','pgenerator_full_autocal_report','html','Enter a file name for the Full AutoCal report export');
- if(!filename) return;
+ const filename=meterDefaultExportFilename('report','pgenerator_full_autocal_report','html');
  const btn=document.getElementById('meterFullAutoCalPostReportBtn');
  const skipBtn=document.getElementById('meterFullAutoCalSkipReportBtn');
  if(btn){btn.disabled=true;btn.textContent='Reading Post-Cal...';}
@@ -22482,7 +22518,9 @@ function chartHandleHover(e,canvasId){
  if(!hit){tip.style.display='none';return;}
  const rd=hit.reading;
  const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,meterIncludeLum()):{R:100,G:100,B:100};
- const gamma=meterGreyscaleGammaValue(rd,meterGammaValueReferenceY(meterGreyscaleReadings(meterReadings)));
+ let gammaReferenceReadings=meterGreyscaleReadings(meterReadings);
+ if(canvasId==='chartGammaValue') gammaReferenceReadings=meterFilterLgAutoCalChartItems(gammaReferenceReadings);
+ const gamma=meterGreyscaleGammaValue(rd,meterGammaValueReferenceY(gammaReferenceReadings));
  let html='<b>'+rd.ire+'%</b><br>';
  html+='Lum: '+(rd.luminance!=null?rd.luminance.toFixed(2):'--')+' cd/m\u00B2';
  if(rd.cct) html+='&nbsp; CCT: '+rd.cct+'K';
