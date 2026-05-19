@@ -4147,6 +4147,12 @@ sub committed_top_window_score {
  };
 }
 
+sub committed_top_window_score_passed {
+ my ($score)=@_;
+ return 0 if(ref($score) ne "HASH");
+ return (($score->{"over"}||0) == 0 && ($score->{"worst"}||9999) <= 1.0) ? 1 : 0;
+}
+
 sub committed_top_window_candidate_allowed {
  my ($candidate,$best)=@_;
  return 0 if(ref($candidate) ne "HASH" || ref($best) ne "HASH");
@@ -4400,7 +4406,7 @@ sub committed_top_window_polish {
 	  worst=>$best_score->{"worst"}+0,
 	  over=>$best_score->{"over"}+0
 	 });
-	 if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95) {
+	 if(committed_top_window_score_passed($best_score)) {
 	  $state->{"committed_top_window_passed"}=1;
 	  $state->{"committed_top_window_no_material_gain"}=0;
 	  $state->{"committed_top_window_worst"}=$best_score->{"worst"}+0;
@@ -4483,7 +4489,7 @@ sub committed_top_window_polish {
 	     worst=>$best_score->{"worst"}+0,
 	     over=>$best_score->{"over"}+0
 	    });
-	    last if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95);
+	    last if(committed_top_window_score_passed($best_score));
 	   } else {
 	    trace_109($steps_by_ire{99},"committed_top_window_candidate_rejected",{
 	     label=>$candidate->{"label"},
@@ -4512,7 +4518,7 @@ sub committed_top_window_polish {
 	    });
 	   }
 	  }
-	  last if(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95);
+	  last if(committed_top_window_score_passed($best_score));
 	  last if(!$round_improved);
 	 }
 	 if(ref($best_arrays) eq "HASH") {
@@ -4553,7 +4559,7 @@ sub committed_top_window_polish {
    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
   }
   $state->{"current_delta_e"}=$best_score->{"worst"};
-  $state->{"committed_top_window_passed"}=(($best_score->{"over"}||0) == 0 && ($best_score->{"worst"}||9999) <= 0.95) ? 1 : 0;
+  $state->{"committed_top_window_passed"}=committed_top_window_score_passed($best_score) ? 1 : 0;
   $state->{"committed_top_window_no_material_gain"}=(!$state->{"committed_top_window_passed"} && !$accepted_total) ? 1 : 0;
   $state->{"committed_top_window_worst"}=$best_score->{"worst"}+0;
   $state->{"message"}="Committed top window best kept (worst ".sprintf("%.2f",$best_score->{"worst"}).")";
