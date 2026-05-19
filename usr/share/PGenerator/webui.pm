@@ -18229,7 +18229,10 @@ async function meterAutoCalRunPreflightReset(){
     lut3d:lutReset?{
      status:lutReset.status||null,
      upload_verified:!!lutReset.upload_verified,
-     picture_mode:lutReset.picture_mode||meterLgPictureModeValue()
+     picture_mode:lutReset.picture_mode||meterLgPictureModeValue(),
+     completed_at:Date.now(),
+     upload_command:lutReset.upload_command||'',
+     get_command:lutReset.get_command||''
     }:null
    };
    meterFullAutoCalConfig={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig()),preflightReset:resetSummary};
@@ -19990,6 +19993,10 @@ async function meterStartLg3dAutoCal(options){
  const method=String((options&&options.method)||'matrix').toLowerCase()==='ramp'?'ramp':'matrix';
  const upload=(options&&Object.prototype.hasOwnProperty.call(options,'upload'))?!!options.upload:true;
  const dtype=getEffectiveDisplayType();
+ const pictureMode=meterLgPictureModeValue();
+ const preflightLut3d=meterFullAutoCalConfig&&meterFullAutoCalConfig.preflightReset&&meterFullAutoCalConfig.preflightReset.lut3d;
+ const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
+ const skipPreprofileUnityReset=!!(fullWorkflow&&upload&&preflightLut3d&&preflightLut3d.upload_verified&&(!preflightPictureMode||!pictureMode||preflightPictureMode===pictureMode));
  const payload=meterMeasurementSignalContext({
   method:method,
   type:'lg-3d-lut',
@@ -20001,7 +20008,7 @@ async function meterStartLg3dAutoCal(options){
   transport_signal_range:getVal('rgb_quant_range'),
   target_gamut:'bt709',
   target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
-  picture_mode:meterLgPictureModeValue(),
+  picture_mode:pictureMode,
   refresh_rate:getMeterRefreshRate()||undefined,
  require_device_ready:meterSelectedMeasurementRequiresReady(),
  requested_signal_mode:meterChartSignalMode(),
@@ -20010,6 +20017,11 @@ async function meterStartLg3dAutoCal(options){
  full_workflow:fullWorkflow?true:undefined,
  full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
  full_autocal_phase:fullWorkflow?'3d-lut':undefined,
+ skip_preprofile_unity_reset:skipPreprofileUnityReset||undefined,
+ preflight_3d_lut_verified:skipPreprofileUnityReset||undefined,
+ preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
+ preflight_3d_lut_upload_command:skipPreprofileUnityReset&&preflightLut3d.upload_command?preflightLut3d.upload_command:undefined,
+ preflight_3d_lut_get_command:skipPreprofileUnityReset&&preflightLut3d.get_command?preflightLut3d.get_command:undefined,
  post_check:false
  });
  if(fullWorkflow){
