@@ -2344,6 +2344,57 @@ sub clone_arrays {
 	 return decode_json_safe($json->encode($arrays||{}),{});
 }
 
+sub lg_autocal_26_lut_indexes {
+ return (21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+}
+
+sub mark_calibrated_26pt_slot {
+ my ($calibrated_slot_mask,$target)=@_;
+ return if(ref($calibrated_slot_mask) ne "ARRAY" || ref($target) ne "HASH");
+ my $idx=$target->{"index"};
+ return if(!defined($idx) || $idx < 0 || $idx >= ddc_slot_count());
+ $calibrated_slot_mask->[$idx]=1;
+}
+
+sub propagate_uncalibrated_26pt_slots {
+ my ($arrays,$calibrated_slot_mask)=@_;
+ return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ my @lut_indexes=lg_autocal_26_lut_indexes();
+ my @settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
+ my $filled=0;
+ for(my $idx=0;$idx<@lut_indexes;$idx++) {
+  next if($calibrated_slot_mask->[$idx]);
+  my ($left,$right);
+  for(my $probe=$idx-1;$probe>=0;$probe--) {
+   if($calibrated_slot_mask->[$probe]) {
+    $left=$probe;
+    last;
+   }
+  }
+  for(my $probe=$idx+1;$probe<@lut_indexes;$probe++) {
+   if($calibrated_slot_mask->[$probe]) {
+    $right=$probe;
+    last;
+   }
+  }
+  next if(!defined($right));
+  my $left_point=defined($left) ? ($lut_indexes[$left]+0) : 0;
+  my $right_point=$lut_indexes[$right]+0;
+  my $span=$right_point-$left_point;
+  next if($span == 0);
+  my $ratio=(($lut_indexes[$idx]+0)-$left_point)/$span;
+  foreach my $setting (@settings) {
+   my $arr=$arrays->{$setting};
+   next if(ref($arr) ne "ARRAY");
+   my $left_value=(defined($left) && defined($arr->[$left])) ? ($arr->[$left]+0) : 0;
+   my $right_value=defined($arr->[$right]) ? ($arr->[$right]+0) : 0;
+   $arr->[$idx]=clamp_ddc_value($left_value+(($right_value-$left_value)*$ratio));
+  }
+  $filled++;
+ }
+ return $filled;
+}
+
 sub seed_target_from_prior_slot {
 		 my ($arrays,$target)=@_;
 	 return 0 if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -5590,6 +5641,7 @@ eval {
 		  whiteBalanceBlue => numeric_array($picture->{"whiteBalanceBlue"},ddc_slot_count()),
 		  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_slot_count()),
 		 };
+	 my @calibrated_ddc_slots=map { 0 } (1..ddc_slot_count());
 	 sync_state_picture($state,$picture,$picture_mode);
 	 write_state($state);
 		 my @ordered=order_autocal_steps($steps,$config);
@@ -6016,6 +6068,7 @@ eval {
 					   $state->{"best_delta_e"}=$best_de;
 					   $state->{"best_score"}=$best_score;
 					   write_state($state);
+					   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target);
 					   next;
 					  }
 					  if($pair_target_reached_now->()) {
@@ -6037,7 +6090,10 @@ eval {
 					    set_state_white_reference($state,$white_y);
 					    write_state($state);
 					   }
-				   next if($pair_target_reached_now->());
+				   if($pair_target_reached_now->()) {
+				    mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target);
+				    next;
+				   }
 				  }
 
 				  my $last_de=$best_de;
@@ -6807,6 +6863,7 @@ eval {
 				   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
 				   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
 				  );
+			  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target);
 			  write_state($state);
 			  if(
 			   !$white_refreshed_after_headroom &&
@@ -6879,6 +6936,13 @@ eval {
 						   $state->{"committed_polish_white_y"}=$white_y+0;
 						   $state->{"committed_polish_reference_locked"}=JSON::PP::true;
 						   write_state($state);
+						  }
+						  if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
+						   my $propagated_slots=propagate_uncalibrated_26pt_slots($arrays,\@calibrated_ddc_slots);
+						   if($propagated_slots) {
+						    $state->{"propagated_26pt_slots"}=$propagated_slots+0;
+						    write_state($state);
+						   }
 						  }
 						  ($picture,$commit_error,$commit_ended_calibration)=commit_final_1d_lut($state,$picture,$arrays,$picture_mode,\@ordered,$calibration_mode_active);
 						  die $commit_error if($commit_error);
