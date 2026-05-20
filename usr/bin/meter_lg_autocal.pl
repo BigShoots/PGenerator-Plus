@@ -1554,6 +1554,39 @@ sub target_reached {
 		 return abs($lum_pct) <= luminance_tolerance_percent($step);
 }
 
+sub max_defined_delta {
+ my @values=grep { defined($_) } @_;
+ return undef if(!@values);
+ my $max=$values[0];
+ foreach my $value (@values) {
+  $max=$value if($value > $max);
+ }
+ return $max;
+}
+
+sub committed_polish_far_from_target {
+ my ($de,$target_delta)=@_;
+ return 0 if(!defined($de));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return ($de > ($target_delta*2.0)) ? 1 : 0;
+}
+
+sub committed_polish_stall_limit {
+ my ($step,$de,$target_delta)=@_;
+ my $limit=2;
+ $limit=3 if(autocal_step_is_low_shadow($step));
+ if(committed_polish_far_from_target($de,$target_delta)) {
+  $limit=autocal_step_is_low_shadow($step) ? 5 : 4;
+ }
+ return $limit;
+}
+
+sub committed_polish_min_iteration_limit {
+ my ($step,$de,$target_delta)=@_;
+ return 0 if(!committed_polish_far_from_target($de,$target_delta));
+ return autocal_step_is_low_shadow($step) ? 5 : 4;
+}
+
 sub low_ire_luminance_needs_lift {
  my ($step,$lum_pct)=@_;
  return 0 if(!defined($lum_pct));
@@ -4782,6 +4815,9 @@ sub committed_state_polish {
 	  my $stalls=0;
 	  my $step_limit=$limit;
 	  $step_limit=config_positive_int($config,"post_commit_low_shadow_iterations",4,0,8) if(autocal_step_is_low_shadow($read_step));
+	  my $initial_worst_de=max_defined_delta($de,$committed_pair_de);
+	  my $far_min_limit=committed_polish_min_iteration_limit($read_step,$initial_worst_de,$target_delta);
+	  $step_limit=$far_min_limit if($far_min_limit && $step_limit < $far_min_limit);
 	  for(my $iter=1;$iter<=$step_limit;$iter++) {
 	   last if(cancelled());
 	   my $err=autocal_adjustment_error($reading,$read_step);
@@ -4887,7 +4923,8 @@ sub committed_state_polish {
 	    $state->{"paired_delta_e"}=defined($best_pair_de) ? $best_pair_de : undef;
 	    $state->{"paired_luminance_error_pct"}=defined($best_pair_lum_pct) ? $best_pair_lum_pct : undef;
 	    last if(committed_low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta));
-	    last if($stalls >= 2);
+	    my $stall_de=max_defined_delta($best_de,$best_pair_de);
+	    last if($stalls >= committed_polish_stall_limit($read_step,$stall_de,$target_delta));
 	   }
 	   write_state($state);
 	   if(autocal_step_is_low_shadow($read_step)) {
@@ -4959,7 +4996,10 @@ sub committed_state_polish {
 	   my %tried_values;
 	   mark_tried_values(\%tried_values,$arrays,$target,$de);
 	   my $stalls=0;
-	   for(my $iter=1;$iter<=$committed_limit;$iter++) {
+	   my $far_min_limit=committed_polish_min_iteration_limit($read_step,$de,$target_delta);
+	   my $step_committed_limit=$committed_limit;
+	   $step_committed_limit=$far_min_limit if($far_min_limit && $step_committed_limit < $far_min_limit);
+	   for(my $iter=1;$iter<=$step_committed_limit;$iter++) {
 	    last if(cancelled());
 	    my $err=autocal_adjustment_error($reading,$read_step);
 	    my $lum_err=luminance_error_ratio($reading,$target_step_y);
@@ -4970,7 +5010,7 @@ sub committed_state_polish {
 	     $arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
 	    }
 	    $state->{"phase"}="writing";
-	    $state->{"message"}="Committed verify $label ".describe_adjustments($adjustments)." ($iter/$committed_limit)";
+	    $state->{"message"}="Committed verify $label ".describe_adjustments($adjustments)." ($iter/$step_committed_limit)";
 	    trace_109($read_step,"committed_low_shadow_adjustment",{
 	     label=>$label,
 	     iteration=>$iter+0,
@@ -5042,7 +5082,7 @@ sub committed_state_polish {
 		     $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
 		     $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
 		     last if(committed_low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta));
-		     last if($stalls >= 2);
+		     last if($stalls >= committed_polish_stall_limit($read_step,$best_de,$target_delta));
 		    }
 		    write_state($state);
 		    last if(committed_low_shadow_good_enough($read_step,$de,$lum_pct,$target_delta));
