@@ -5943,6 +5943,83 @@ eval {
 		  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_slot_count()),
 		 };
 	 my @calibrated_ddc_slots=map { 0 } (1..ddc_slot_count());
+	 my $finalize_calibrated_26pt_slot=sub {
+	  my ($final_target,$final_read_step,$final_label)=@_;
+	  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$final_target);
+	  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	  return 0 if(ref($arrays) ne "HASH" || ref($final_target) ne "HASH");
+	  my @dynamic_seed_slots=ddc_slots();
+	  my $calibrated_non_black_anchors=0;
+	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
+	   next if(!$calibrated_ddc_slots[$idx]);
+	   next if(defined($dynamic_seed_slots[$idx]) && ($dynamic_seed_slots[$idx]+0) <= 0.0001);
+	   $calibrated_non_black_anchors++;
+	  }
+	  return 0 if($calibrated_non_black_anchors < 2);
+	  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
+	  my $before_arrays=clone_arrays($arrays);
+	  my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
+	  return 0 if(!$propagated_slots);
+	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
+	   next if($calibrated_ddc_slots[$idx]);
+	   next if(!defined($dynamic_seed_slots[$idx]) || ($dynamic_seed_slots[$idx]+0) > 10.0001);
+	   my ($left_anchor,$right_anchor);
+	   for(my $probe=$idx-1;$probe>=0;$probe--) {
+	    if($calibrated_ddc_slots[$probe]) {
+	     $left_anchor=$probe;
+	     last;
+	    }
+	   }
+	   for(my $probe=$idx+1;$probe<@dynamic_seed_slots;$probe++) {
+	    if($calibrated_ddc_slots[$probe]) {
+	     $right_anchor=$probe;
+	     last;
+	    }
+	   }
+	   next if(defined($left_anchor) && defined($right_anchor));
+	   foreach my $setting (@dynamic_seed_settings) {
+	    next if(ref($arrays->{$setting}) ne "ARRAY" || ref($before_arrays->{$setting}) ne "ARRAY");
+	    $arrays->{$setting}[$idx]=$before_arrays->{$setting}[$idx];
+	   }
+	  }
+	  my $after_arrays=clone_arrays($arrays);
+	  my $changed_slots=0;
+	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
+	   next if($calibrated_ddc_slots[$idx]);
+	   my $slot_changed=0;
+	   foreach my $setting (@dynamic_seed_settings) {
+	    next if(ref($before_arrays->{$setting}) ne "ARRAY" || ref($after_arrays->{$setting}) ne "ARRAY");
+	    my $before=defined($before_arrays->{$setting}[$idx]) ? ($before_arrays->{$setting}[$idx]+0) : 0;
+	    my $after=defined($after_arrays->{$setting}[$idx]) ? ($after_arrays->{$setting}[$idx]+0) : 0;
+	    if(abs($after-$before) > 0.0001) {
+	     $slot_changed=1;
+	     last;
+	    }
+	   }
+	   $changed_slots++ if($slot_changed);
+	  }
+	  return 0 if(!$changed_slots);
+	  $state->{"dynamic_propagated_26pt_slots"}=$changed_slots+0;
+	  $state->{"propagated_26pt_slots"}=$changed_slots+0;
+	  trace_109($final_read_step || $final_target,"dynamic_26pt_seed_propagation",{
+	   label=>$final_label||$final_target->{"label"}||"",
+	   changed_slots=>$changed_slots+0,
+	   propagated_slots=>$propagated_slots+0,
+	   calibrated_non_black_anchors=>$calibrated_non_black_anchors+0,
+	   target=>$final_target
+	  });
+	  if(!cancelled()) {
+	   $state->{"phase"}="writing";
+	   $state->{"message"}="Dynamic 26pt seed propagation updated $changed_slots pending slots";
+	   write_state($state);
+	   my $dynamic_seed_error;
+	   ($picture,$dynamic_seed_error)=set_picture_values($picture,$arrays,$final_target,$picture_mode,$calibration_mode_active,$state);
+	   die $dynamic_seed_error if($dynamic_seed_error);
+	   $calibration_mode_active=1;
+	   sync_state_picture($state,$picture,$picture_mode);
+	  }
+	  return $changed_slots;
+	 };
 	 sync_state_picture($state,$picture,$picture_mode);
 	 write_state($state);
 		 my @ordered=order_autocal_steps($steps,$config);
@@ -6369,7 +6446,7 @@ eval {
 					   $state->{"best_delta_e"}=$best_de;
 					   $state->{"best_score"}=$best_score;
 					   write_state($state);
-					   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target);
+					   $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 					   next;
 					  }
 					  if($pair_target_reached_now->()) {
@@ -6392,7 +6469,7 @@ eval {
 					    write_state($state);
 					   }
 				   if($pair_target_reached_now->()) {
-				    mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target);
+				    $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 				    next;
 				   }
 				  }
@@ -7167,7 +7244,7 @@ eval {
 				   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
 				   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
 				  );
-			  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target);
+			  $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 			  write_state($state);
 			  if(
 			   !$white_refreshed_after_headroom &&
