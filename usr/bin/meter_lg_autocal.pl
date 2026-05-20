@@ -2398,6 +2398,19 @@ sub mark_calibrated_26pt_candidate_slots {
  }
 }
 
+sub calibrated_non_black_26pt_anchor_count {
+ my ($calibrated_slot_mask)=@_;
+ return 0 if(ref($calibrated_slot_mask) ne "ARRAY");
+ my @slots=ddc_slots();
+ my $count=0;
+ for(my $idx=0;$idx<@slots;$idx++) {
+  next if(!$calibrated_slot_mask->[$idx]);
+  next if(defined($slots[$idx]) && ($slots[$idx]+0) <= 0.0001);
+  $count++;
+ }
+ return $count;
+}
+
 sub linear_interpolated_26pt_curve_value {
  my ($x,$left,$right)=@_;
  return undef if(ref($left) ne "HASH" || ref($right) ne "HASH");
@@ -2497,6 +2510,7 @@ sub propagate_uncalibrated_26pt_slots {
 sub refresh_propagated_uncalibrated_26pt_slots {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if(calibrated_non_black_26pt_anchor_count($calibrated_slot_mask) < 3);
  return propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask);
 }
 
@@ -6013,13 +6027,7 @@ eval {
 	  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	  return 0 if(ref($arrays) ne "HASH" || ref($final_target) ne "HASH");
 	  my @dynamic_seed_slots=ddc_slots();
-	  my $calibrated_non_black_anchors=0;
-	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
-	   next if(!$calibrated_ddc_slots[$idx]);
-	   next if(defined($dynamic_seed_slots[$idx]) && ($dynamic_seed_slots[$idx]+0) <= 0.0001);
-	   $calibrated_non_black_anchors++;
-	  }
-	  return 0 if($calibrated_non_black_anchors < 3);
+	  my $calibrated_non_black_anchors=calibrated_non_black_26pt_anchor_count(\@calibrated_ddc_slots);
 	  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
 	  my $before_arrays=clone_arrays($arrays);
 	  my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
