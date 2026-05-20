@@ -2398,42 +2398,98 @@ sub mark_calibrated_26pt_candidate_slots {
  }
 }
 
+sub linear_interpolated_26pt_curve_value {
+ my ($x,$left,$right)=@_;
+ return undef if(ref($left) ne "HASH" || ref($right) ne "HASH");
+ my $span=($right->{"x"}+0)-($left->{"x"}+0);
+ return undef if($span == 0);
+ my $ratio=(($x+0)-($left->{"x"}+0))/$span;
+ return ($left->{"y"}+0)+((($right->{"y"}+0)-($left->{"y"}+0))*$ratio);
+}
+
+sub bounded_hermite_26pt_curve_value {
+ my ($x,$knots,$left_idx)=@_;
+ return undef if(ref($knots) ne "ARRAY" || !defined($left_idx) || $left_idx < 0 || $left_idx+1 >= @{$knots});
+ my $left=$knots->[$left_idx];
+ my $right=$knots->[$left_idx+1];
+ return undef if(ref($left) ne "HASH" || ref($right) ne "HASH");
+ my $span=($right->{"x"}+0)-($left->{"x"}+0);
+ return undef if($span == 0);
+ my $slope_for=sub {
+  my ($from,$to)=@_;
+  return 0 if($from < 0 || $to < 0 || $from >= @{$knots} || $to >= @{$knots});
+  my $dx=($knots->[$to]{"x"}+0)-($knots->[$from]{"x"}+0);
+  return 0 if($dx == 0);
+  return (($knots->[$to]{"y"}+0)-($knots->[$from]{"y"}+0))/$dx;
+ };
+ my $m_left=($left_idx > 0) ? $slope_for->($left_idx-1,$left_idx+1) : $slope_for->($left_idx,$left_idx+1);
+ my $m_right=($left_idx+2 < @{$knots}) ? $slope_for->($left_idx,$left_idx+2) : $slope_for->($left_idx,$left_idx+1);
+ my $t=(($x+0)-($left->{"x"}+0))/$span;
+ my $t2=$t*$t;
+ my $t3=$t2*$t;
+ my $y=((2*$t3)-(3*$t2)+1)*($left->{"y"}+0)
+  +(($t3-(2*$t2)+$t)*$span*$m_left)
+  +(((-2*$t3)+(3*$t2))*($right->{"y"}+0))
+  +(($t3-$t2)*$span*$m_right);
+ my $min_y=($left->{"y"}+0) < ($right->{"y"}+0) ? ($left->{"y"}+0) : ($right->{"y"}+0);
+ my $max_y=($left->{"y"}+0) > ($right->{"y"}+0) ? ($left->{"y"}+0) : ($right->{"y"}+0);
+ $y=$min_y if($y < $min_y);
+ $y=$max_y if($y > $max_y);
+ return $y;
+}
+
+sub interpolated_26pt_curve_value {
+ my ($x,$knots)=@_;
+ return undef if(ref($knots) ne "ARRAY" || @{$knots} < 2);
+ for(my $idx=0;$idx<@{$knots};$idx++) {
+  next if(ref($knots->[$idx]) ne "HASH");
+  return $knots->[$idx]{"y"}+0 if(abs(($x+0)-($knots->[$idx]{"x"}+0)) < 0.000001);
+ }
+ my $left_idx;
+ for(my $idx=0;$idx+1<@{$knots};$idx++) {
+  next if(ref($knots->[$idx]) ne "HASH" || ref($knots->[$idx+1]) ne "HASH");
+  if(($x+0) >= ($knots->[$idx]{"x"}+0) && ($x+0) <= ($knots->[$idx+1]{"x"}+0)) {
+   $left_idx=$idx;
+   last;
+  }
+ }
+ return undef if(!defined($left_idx));
+ return linear_interpolated_26pt_curve_value($x,$knots->[$left_idx],$knots->[$left_idx+1]) if(@{$knots} < 5);
+ return bounded_hermite_26pt_curve_value($x,$knots,$left_idx);
+}
+
 sub propagate_uncalibrated_26pt_slots {
  my ($arrays,$calibrated_slot_mask)=@_;
  return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
  my @lut_indexes=lg_autocal_26_lut_indexes();
  my $black_anchor=lg_autocal_26_black_lut_anchor();
  my @settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
+ my %setting_knots;
+ foreach my $setting (@settings) {
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY");
+  my @knots=({ x=>$black_anchor+0, y=>0 });
+  for(my $idx=0;$idx<@lut_indexes;$idx++) {
+   next if(!$calibrated_slot_mask->[$idx]);
+   next if(!defined($arr->[$idx]));
+   push @knots,{ x=>$lut_indexes[$idx]+0, y=>$arr->[$idx]+0 };
+  }
+  @knots=sort { ($a->{"x"}||0) <=> ($b->{"x"}||0) } @knots;
+  $setting_knots{$setting}=\@knots;
+ }
  my $filled=0;
  for(my $idx=0;$idx<@lut_indexes;$idx++) {
   next if($calibrated_slot_mask->[$idx]);
-  my ($left,$right);
-  for(my $probe=$idx-1;$probe>=0;$probe--) {
-   if($calibrated_slot_mask->[$probe]) {
-    $left=$probe;
-    last;
-   }
-  }
-  for(my $probe=$idx+1;$probe<@lut_indexes;$probe++) {
-   if($calibrated_slot_mask->[$probe]) {
-    $right=$probe;
-    last;
-   }
-  }
-  next if(!defined($right));
-  my $left_point=defined($left) ? ($lut_indexes[$left]+0) : $black_anchor;
-  my $right_point=$lut_indexes[$right]+0;
-  my $span=$right_point-$left_point;
-  next if($span == 0);
-  my $ratio=(($lut_indexes[$idx]+0)-$left_point)/$span;
+  my $slot_filled=0;
   foreach my $setting (@settings) {
    my $arr=$arrays->{$setting};
    next if(ref($arr) ne "ARRAY");
-   my $left_value=(defined($left) && defined($arr->[$left])) ? ($arr->[$left]+0) : $black_anchor;
-   my $right_value=defined($arr->[$right]) ? ($arr->[$right]+0) : 0;
-   $arr->[$idx]=clamp_ddc_value($left_value+(($right_value-$left_value)*$ratio));
+   my $value=interpolated_26pt_curve_value($lut_indexes[$idx]+0,$setting_knots{$setting});
+   next if(!defined($value));
+   $arr->[$idx]=clamp_ddc_value($value);
+   $slot_filled=1;
   }
-  $filled++;
+  $filled++ if($slot_filled);
  }
  return $filled;
 }
@@ -5963,35 +6019,11 @@ eval {
 	   next if(defined($dynamic_seed_slots[$idx]) && ($dynamic_seed_slots[$idx]+0) <= 0.0001);
 	   $calibrated_non_black_anchors++;
 	  }
-	  return 0 if($calibrated_non_black_anchors < 2);
+	  return 0 if($calibrated_non_black_anchors < 3);
 	  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
 	  my $before_arrays=clone_arrays($arrays);
 	  my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
 	  return 0 if(!$propagated_slots);
-	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
-	   next if($calibrated_ddc_slots[$idx]);
-	   next if(!defined($dynamic_seed_slots[$idx]));
-	   my ($left_anchor,$right_anchor);
-	   for(my $probe=$idx-1;$probe>=0;$probe--) {
-	    next if(defined($dynamic_seed_slots[$probe]) && ($dynamic_seed_slots[$probe]+0) <= 0.0001);
-	    if($calibrated_ddc_slots[$probe]) {
-	     $left_anchor=$probe;
-	     last;
-	    }
-	   }
-	   for(my $probe=$idx+1;$probe<@dynamic_seed_slots;$probe++) {
-	    next if(defined($dynamic_seed_slots[$probe]) && ($dynamic_seed_slots[$probe]+0) <= 0.0001);
-	    if($calibrated_ddc_slots[$probe]) {
-	     $right_anchor=$probe;
-	     last;
-	    }
-	   }
-	   next if(defined($left_anchor) && defined($right_anchor));
-	   foreach my $setting (@dynamic_seed_settings) {
-	    next if(ref($arrays->{$setting}) ne "ARRAY" || ref($before_arrays->{$setting}) ne "ARRAY");
-	    $arrays->{$setting}[$idx]=$before_arrays->{$setting}[$idx];
-	   }
-	  }
 	  my $after_arrays=clone_arrays($arrays);
 	  my $changed_slots=0;
 	  my @changed_slot_details;
