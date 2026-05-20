@@ -4775,6 +4775,202 @@ sub start_calibration_mode {
  return $error;
 }
 
+sub committed_body_verify_step {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ return 0 if(autocal_step_is_low_shadow($step) || autocal_step_is_fast_headroom($step) || autocal_step_is_white($step));
+ my $ire=$step->{"ire"}+0;
+ return 0 if($ire <= 15.0001 || $ire >= 85.0001);
+ return ($ire >= 19.999 && $ire <= 80.0001) ? 1 : 0;
+}
+
+sub committed_body_verify_luminance_adjustment {
+ my ($arrays,$target,$step,$de,$lum_pct,$target_delta)=@_;
+ return undef if(!committed_body_verify_step($step));
+ return undef if(!has_luminance_channel($arrays,$target));
+ return undef if(!defined($lum_pct));
+ my $abs=abs($lum_pct);
+ my $threshold=0.80;
+ $threshold=0.50 if(defined($de) && defined($target_delta) && $target_delta > 0 && $de > $target_delta);
+ return undef if($abs < $threshold);
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+ my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
+ my $direction=($lum_pct > 0) ? -1 : 1;
+ my $mag=0.25;
+ $mag=0.50 if($abs >= 1.0);
+ $mag=0.75 if($abs >= 2.0);
+ $mag=1.00 if($abs >= 3.0);
+ my $cap=body_luminance_response_cap($step);
+ $cap=1.0 if(!defined($cap) || $cap > 1.0);
+ $mag=$cap if($mag > $cap);
+ my $next=round_ddc_quarter($current+($direction*$mag));
+ return undef if(abs($next-$current) < 0.0001);
+ return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, committed_body_verify=>1 }];
+}
+
+sub committed_body_verify_candidate_kept {
+ my ($de,$lum_pct,$best_de,$best_lum_pct,$step)=@_;
+ return 0 if(!defined($de));
+ return 1 if(!defined($best_de));
+ my $best_lum_abs=defined($best_lum_pct) ? abs($best_lum_pct) : undef;
+ my $lum_abs=defined($lum_pct) ? abs($lum_pct) : undef;
+ return 1 if(($de+0) < ($best_de+0)-0.0001 && (!defined($best_lum_abs) || !defined($lum_abs) || $lum_abs <= $best_lum_abs+0.05));
+ return 1 if(($de+0) <= ($best_de+0)+0.0001 && defined($best_lum_abs) && defined($lum_abs) && $lum_abs+0.05 < $best_lum_abs);
+ return 0;
+}
+
+sub committed_body_verify_off_cal {
+ my ($config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$calibrated_slot_mask)=@_;
+ return ($picture,$arrays,undef) if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return ($picture,$arrays,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
+ return ($picture,$arrays,undef) if(exists($config->{"post_commit_body_verify"}) && !$config->{"post_commit_body_verify"});
+ return ($picture,$arrays,undef) if(!defined($white_y) || $white_y <= 0);
+ my @body=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep {
+  ref($_) eq "HASH" &&
+  committed_body_verify_step($_) &&
+  ddc_target_for_step($_)
+ } @{$steps};
+ return ($picture,$arrays,undef) if(!@body);
+ my $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($calibrated_slot_mask);
+ $state->{"current_name"}="Committed body verify";
+ $state->{"phase"}="reading";
+ $state->{"message"}="Starting committed body verify with calibration mode off";
+ set_state_calibration_mode($state,0,"");
+ write_state($state);
+ foreach my $step (@body) {
+  last if(cancelled());
+  my $target=ddc_target_for_step($step);
+  next if(ref($target) ne "HASH" || !has_luminance_channel($arrays,$target));
+  my $read_step=fixed_lg_autocal_step($config,$step);
+  next if(!committed_body_verify_step($read_step));
+  my $label=$target->{"label"};
+  $state->{"current_name"}="Committed body verify $label";
+  $state->{"phase"}="reading";
+  $state->{"message"}="Reading committed body $label with calibration mode off";
+  $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+  write_state($state);
+  my ($reading,$read_error)=read_step($config,$read_step,$state);
+  return ($picture,$arrays,$read_error) if($read_error && $read_error ne "cancelled");
+  last if($read_error && $read_error eq "cancelled");
+  next if(ref($reading) ne "HASH");
+  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+  my $lum_pct=luminance_error_percent($reading,$target_step_y);
+  $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+  $state->{"current_delta_e"}=defined($de) ? $de : undef;
+  $state->{"current_luminance"}=luminance($reading);
+  set_state_target_step_luminance($state,$target_step_y);
+  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+  trace_109($read_step,"committed_body_verify_off_cal_read",{
+   label=>$label,
+   calibration_mode_active=>JSON::PP::false,
+   delta_e=>defined($de)?$de+0:undef,
+   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+   target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+   values=>trace_target_values($arrays,$target),
+   reading=>trace_reading_summary($reading)
+  });
+  write_state($state);
+  my $adjustments=committed_body_verify_luminance_adjustment($arrays,$target,$read_step,$de,$lum_pct,$target_delta);
+  next if(ref($adjustments) ne "ARRAY" || @{$adjustments} != 1);
+  my $best_arrays=clone_arrays($arrays);
+  my $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($current_calibrated_slot_mask);
+  my $best_reading=clone_picture($reading);
+  my $best_de=$de;
+  my $best_lum_pct=$lum_pct;
+  my $candidate_arrays=clone_arrays($arrays);
+  foreach my $adj (@{$adjustments}) {
+   next if(ref($adj) ne "HASH");
+   $candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
+  }
+  my $candidate_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+  mark_calibrated_26pt_slot($candidate_calibrated_slot_mask,$target);
+  refresh_propagated_uncalibrated_26pt_slots($config,$candidate_arrays,$candidate_calibrated_slot_mask);
+  $state->{"phase"}="writing";
+  $state->{"message"}="Committed body verify $label ".describe_adjustments($adjustments)." with calibration mode off";
+  trace_109($read_step,"committed_body_verify_off_cal_adjustment",{
+   label=>$label,
+   calibration_mode_active=>JSON::PP::false,
+   delta_e=>defined($de)?$de+0:undef,
+   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+   adjustments=>trace_adjustments_summary($adjustments),
+   values_after=>trace_target_values($candidate_arrays,$target)
+  });
+  write_state($state);
+  my $write_error;
+  ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$target,$picture_mode,0,$state,0,1);
+  return ($picture,$arrays,$write_error) if($write_error);
+  set_state_calibration_mode($state,0,"");
+  sync_state_picture($state,$picture,$picture_mode);
+  my $read_settle_ms=config_positive_int($config,"post_commit_body_verify_read_settle_ms",2000,0,20000);
+  select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
+  $state->{"phase"}="reading";
+  $state->{"message"}="Reading committed body $label after off-CAL verify adjustment";
+  write_state($state);
+  ($reading,$read_error)=read_step($config,$read_step,$state);
+  return ($picture,$arrays,$read_error) if($read_error && $read_error ne "cancelled");
+  last if($read_error && $read_error eq "cancelled");
+  if(ref($reading) eq "HASH") {
+   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+   $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+   $lum_pct=luminance_error_percent($reading,$target_step_y);
+   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+   $state->{"current_delta_e"}=defined($de) ? $de : undef;
+   $state->{"current_luminance"}=luminance($reading);
+   set_state_target_step_luminance($state,$target_step_y);
+   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+   my $kept=committed_body_verify_candidate_kept($de,$lum_pct,$best_de,$best_lum_pct,$read_step);
+   trace_109($read_step,"committed_body_verify_off_cal_measurement",{
+    label=>$label,
+    calibration_mode_active=>JSON::PP::false,
+    kept=>$kept?1:0,
+    delta_e=>defined($de)?$de+0:undef,
+    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+    best_delta_e=>defined($best_de)?$best_de+0:undef,
+    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+    values=>trace_target_values($candidate_arrays,$target),
+    reading=>trace_reading_summary($reading)
+   });
+   if($kept) {
+    $arrays=clone_arrays($candidate_arrays);
+    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+    write_state($state);
+    next;
+   }
+  }
+  $arrays=clone_arrays($best_arrays);
+  $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+  $state->{"phase"}="writing";
+  $state->{"message"}="Restoring committed body $label verify best with calibration mode off";
+  write_state($state);
+  my $restore_error;
+  refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
+  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+  ($picture,$restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,0,$state,0,1);
+  return ($picture,$arrays,$restore_error) if($restore_error);
+  set_state_calibration_mode($state,0,"");
+  sync_state_picture($state,$picture,$picture_mode);
+  $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
+  $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+  $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
+  $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+  trace_109($read_step,"committed_body_verify_off_cal_restored",{
+   label=>$label,
+   calibration_mode_active=>JSON::PP::false,
+   best_delta_e=>defined($best_de)?$best_de+0:undef,
+   best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+   values=>trace_target_values($arrays,$target)
+  });
+  write_state($state);
+ }
+ promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+ return ($picture,$arrays,undef);
+}
+
 sub committed_state_polish {
  my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$polish_steps,$calibrated_slot_mask)=@_;
  return ($picture,undef) if(!post_commit_polish_enabled($config));
@@ -5073,6 +5269,12 @@ sub committed_state_polish {
 	  }
 	 }
 		 $finish_polish->(undef);
+		 my $body_verify_error;
+		 ($picture,$arrays,$body_verify_error)=committed_body_verify_off_cal(
+		  $config,$state,$picture,$arrays,$picture_mode,\@body,$white_y,
+		  $target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$current_calibrated_slot_mask
+		 );
+		 return ($picture,$body_verify_error) if($body_verify_error && $body_verify_error ne "cancelled");
 		 delete $state->{"committed_top_window_passed"};
 		 delete $state->{"committed_top_window_worst"};
 		 my $top_window_error;
