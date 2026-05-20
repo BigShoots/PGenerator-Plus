@@ -345,6 +345,32 @@ sub target_gamma_linear {
  return $signal ** $g;
 }
 
+sub bt1886_luminance_y {
+ my ($signal,$white_y,$black_y)=@_;
+ $signal=clamp($signal,0,1);
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ $black_y=0 if(!defined($black_y) || $black_y < 0);
+ $black_y=0 if($black_y >= $white_y);
+ my $g=2.4;
+ return (($white_y ** (1/$g) - $black_y ** (1/$g))*$signal + $black_y ** (1/$g)) ** $g;
+}
+
+sub bt1886_relative_luminance {
+ my ($signal,$white_y,$black_y)=@_;
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ $black_y=0 if(!defined($black_y) || $black_y < 0);
+ my $range=$white_y-$black_y;
+ return target_gamma_linear($signal,"2.4") if($range <= 1e-9);
+ return clamp((bt1886_luminance_y($signal,$white_y,$black_y)-$black_y)/$range,0,1);
+}
+
+sub target_relative_luminance {
+ my ($signal,$gamma,$white_y,$black_y)=@_;
+ $gamma=lc($gamma||"bt1886");
+ return bt1886_relative_luminance($signal,$white_y,$black_y) if($gamma eq "bt1886");
+ return target_gamma_linear($signal,$gamma);
+}
+
 sub bt709_rgb_to_xyz {
  my ($r,$g,$b,$white_y)=@_;
  $white_y=100 if(!defined($white_y) || $white_y <= 0);
@@ -353,6 +379,26 @@ sub bt709_rgb_to_xyz {
   (0.2126390*$r + 0.7151687*$g + 0.0721923*$b) * $white_y,
   (0.0193308*$r + 0.1191948*$g + 0.9505322*$b) * $white_y,
  ];
+}
+
+sub target_rgb_to_xyz {
+ my ($r,$g,$b,$gamma,$white_y,$black)=@_;
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ $gamma=lc($gamma||"bt1886");
+ if($gamma eq "bt1886") {
+  $black=[0,0,0] if(ref($black) ne "ARRAY");
+  my $black_y=$black->[1] || 0;
+  my $range=$white_y-$black_y;
+  $range=$white_y if($range <= 1e-9);
+  my $lr=target_relative_luminance($r,$gamma,$white_y,$black_y);
+  my $lg=target_relative_luminance($g,$gamma,$white_y,$black_y);
+  my $lb=target_relative_luminance($b,$gamma,$white_y,$black_y);
+  return vec_add($black,bt709_rgb_to_xyz($lr,$lg,$lb,$range));
+ }
+ my $lr=target_gamma_linear($r,$gamma);
+ my $lg=target_gamma_linear($g,$gamma);
+ my $lb=target_gamma_linear($b,$gamma);
+ return bt709_rgb_to_xyz($lr,$lg,$lb,$white_y);
 }
 
 sub interpolate_vec_by_level {
@@ -400,7 +446,8 @@ sub channel_inverse_level {
 
 sub matrix_for_level {
  my ($model,$level)=@_;
- my $lin=target_gamma_linear($level/100,$model->{"target_gamma"});
+ my $black=$model->{"black"} || [0,0,0];
+ my $lin=target_relative_luminance($level/100,$model->{"target_gamma"},$model->{"white_y"},$black->[1]||0);
  $lin=1 if($lin <= 1e-9);
  my @cols;
  foreach my $kind (qw(red green blue)) {
@@ -418,10 +465,7 @@ sub target_xyz_for_node {
  if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
   return interpolate_vec_by_level($model->{"white_axis"},$r*100);
  }
- my $lr=target_gamma_linear($r,$model->{"target_gamma"});
- my $lg=target_gamma_linear($g,$model->{"target_gamma"});
- my $lb=target_gamma_linear($b,$model->{"target_gamma"});
- return bt709_rgb_to_xyz($lr,$lg,$lb,$model->{"white_y"});
+ return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$model->{"white_y"},$model->{"black"});
 }
 
 sub srgb_to_linear {
@@ -431,26 +475,30 @@ sub srgb_to_linear {
 }
 
 sub post_check_target_xyz {
-	 my ($step,$white_y,$target_gamma)=@_;
+	 my ($step,$white_y,$target_gamma,$black)=@_;
 	 $white_y=100 if(!defined($white_y) || $white_y <= 0);
 	 $target_gamma||="bt1886";
+	 my $gamma=lc($target_gamma);
 	 my ($r,$g,$b)=(0,0,0);
-	 if(defined($step->{"target_linear_r"}) && defined($step->{"target_linear_g"}) && defined($step->{"target_linear_b"})) {
+	 if($gamma eq "bt1886" && (defined($step->{"signal_r_pct"}) || defined($step->{"signal_g_pct"}) || defined($step->{"signal_b_pct"}))) {
+	  return target_rgb_to_xyz(($step->{"signal_r_pct"}||0)/100,($step->{"signal_g_pct"}||0)/100,($step->{"signal_b_pct"}||0)/100,$target_gamma,$white_y,$black);
+	 } elsif(defined($step->{"target_linear_r"}) && defined($step->{"target_linear_g"}) && defined($step->{"target_linear_b"})) {
 	  $r=clamp($step->{"target_linear_r"}+0,0,1);
 	  $g=clamp($step->{"target_linear_g"}+0,0,1);
 	  $b=clamp($step->{"target_linear_b"}+0,0,1);
+	  return bt709_rgb_to_xyz($r,$g,$b,$white_y);
 	 } elsif(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {
 	  my $color=lc($1);
-	  my $sat=target_gamma_linear(clamp(($2+0)/100,0,1),$target_gamma);
+	  my $sat=clamp(($2+0)/100,0,1);
 	  $r=($color eq "red" || $color eq "magenta" || $color eq "yellow") ? $sat : 0;
 	  $g=($color eq "green" || $color eq "cyan" || $color eq "yellow") ? $sat : 0;
 	  $b=($color eq "blue" || $color eq "cyan" || $color eq "magenta") ? $sat : 0;
 	 } else {
-	  $r=target_gamma_linear(($step->{"signal_r_pct"}||0)/100,$target_gamma);
-	  $g=target_gamma_linear(($step->{"signal_g_pct"}||0)/100,$target_gamma);
-	  $b=target_gamma_linear(($step->{"signal_b_pct"}||0)/100,$target_gamma);
+	  $r=($step->{"signal_r_pct"}||0)/100;
+	  $g=($step->{"signal_g_pct"}||0)/100;
+	  $b=($step->{"signal_b_pct"}||0)/100;
 	 }
- return bt709_rgb_to_xyz($r,$g,$b,$white_y);
+ return target_rgb_to_xyz($r,$g,$b,$target_gamma,$white_y,$black);
 }
 
 sub lab_f {
@@ -618,6 +666,9 @@ sub model_from_readings {
   $by{$phase}{$kind}{$level}={ xyz=>$xyz, time=>($entry->{"read_time"}||$reading->{"timestamp"}||time()) };
  }
  my $black=$by{"profile"}{"black"}{0}{xyz} || [0,0,0];
+ my $black_y=$black->[1] || 0;
+ my $profile_white=$by{"profile"}{"white"}{100}{xyz} || [95.047,100,108.883];
+ my $profile_white_y=$profile_white->[1] || 100;
  my %start; my %end;
  foreach my $kind (qw(white red green blue)) {
   my $sx=$by{"drift_start"}{$kind}{100}{xyz} || $by{"profile"}{$kind}{100}{xyz};
@@ -644,7 +695,7 @@ sub model_from_readings {
    my $src=$by{"profile"}{$kind}{$level} || $by{"drift_start"}{$kind}{$level};
    if(!$src && $method eq "matrix") {
     my $peak=$by{"profile"}{$kind}{100};
-    my $lin=target_gamma_linear($level/100,$target_gamma);
+    my $lin=target_relative_luminance($level/100,$target_gamma,$profile_white_y,$black_y);
     $contrib{$kind}{$level}=vec_scale(vec_sub($peak->{xyz},$black),$lin) if($peak);
     next;
    }
@@ -657,7 +708,7 @@ sub model_from_readings {
    $white_axis{$level}=apply_drift_correction($wsrc->{xyz},$black,$wsrc->{time},$drift);
   } elsif($method eq "matrix") {
    my $peak=$by{"profile"}{"white"}{100};
-   my $lin=target_gamma_linear($level/100,$target_gamma);
+   my $lin=target_relative_luminance($level/100,$target_gamma,$profile_white_y,$black_y);
    $white_axis{$level}=vec_add($black,vec_scale(vec_sub($peak->{xyz},$black),$lin)) if($peak);
   } else {
    $white_axis{$level}=vec_add($black,vec_add($contrib{"red"}{$level}||[0,0,0],vec_add($contrib{"green"}{$level}||[0,0,0],$contrib{"blue"}{$level}||[0,0,0])));
@@ -666,8 +717,11 @@ sub model_from_readings {
  my $white100=$white_axis{100} || $by{"profile"}{"white"}{100}{xyz} || [95.047,100,108.883];
  my $white_y=$white100->[1] || 100;
  my $peak_matrix=matrix_for_level({
+  method=>$method,
   contrib=>\%contrib,
   target_gamma=>$target_gamma,
+  black=>$black,
+  white_y=>$white_y,
  },100);
  my $peak_inverse=matrix_inverse($peak_matrix);
  $peak_inverse ||= [
@@ -683,6 +737,7 @@ sub model_from_readings {
   method => $method,
   target_gamma => $target_gamma,
   black => $black,
+  black_y => $black_y,
   contrib => \%contrib,
   white_axis => \%white_axis,
   white_y => $white_y,
@@ -857,14 +912,20 @@ sub fixture_reading_for_step {
  my ($step,$config)=@_;
  return undef if(!$config->{"fixture_mode"});
  my $level=($step->{"level"}||0)/100;
- my $gamma=target_gamma_linear($level,$config->{"target_gamma"}||"bt1886");
+ my $white_y=$config->{"fixture_white_y"} || 100;
+ my $black_y=$config->{"fixture_black_y"} || 0;
+ $white_y=100 if($white_y <= 0);
+ $black_y=0 if($black_y < 0 || $black_y >= $white_y);
+ my $range_y=$white_y-$black_y;
+ my $black=bt709_rgb_to_xyz(1,1,1,$black_y);
+ my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
  my $kind=$step->{"kind"}||"black";
  my $xyz;
- if($kind eq "black") { $xyz=[0,0,0]; }
- elsif($kind eq "white") { $xyz=bt709_rgb_to_xyz($gamma,$gamma,$gamma,100); }
- elsif($kind eq "red") { $xyz=bt709_rgb_to_xyz($gamma,0,0,100); }
- elsif($kind eq "green") { $xyz=bt709_rgb_to_xyz(0,$gamma,0,100); }
- else { $xyz=bt709_rgb_to_xyz(0,0,$gamma,100); }
+ if($kind eq "black") { $xyz=$black; }
+ elsif($kind eq "white") { $xyz=vec_add($black,bt709_rgb_to_xyz($gamma,$gamma,$gamma,$range_y)); }
+ elsif($kind eq "red") { $xyz=vec_add($black,bt709_rgb_to_xyz($gamma,0,0,$range_y)); }
+ elsif($kind eq "green") { $xyz=vec_add($black,bt709_rgb_to_xyz(0,$gamma,0,$range_y)); }
+ else { $xyz=vec_add($black,bt709_rgb_to_xyz(0,0,$gamma,$range_y)); }
  return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>0, y=>0, luminance=>$xyz->[1], timestamp=>time() };
 }
 
@@ -1125,7 +1186,7 @@ eval {
    my $post_entry={ %{$reading}, name=>$step->{"name"} };
    eval {
    my $measured=reading_xyz($reading);
-   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886");
+   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"});
    $post_entry->{"target_X"}=$target->[0];
    $post_entry->{"target_Y"}=$target->[1];
    $post_entry->{"target_Z"}=$target->[2];
