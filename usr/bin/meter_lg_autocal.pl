@@ -2515,7 +2515,7 @@ sub refresh_propagated_uncalibrated_26pt_slots {
 }
 
 sub seed_target_from_prior_slot {
-		 my ($arrays,$target)=@_;
+		 my ($arrays,$target,$calibrated_slot_mask,$config)=@_;
 	 return 0 if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
 	 my $idx=$target->{"index"};
 	 return 0 if(!defined($idx));
@@ -2523,50 +2523,108 @@ sub seed_target_from_prior_slot {
 	 my @slots=ddc_slots();
 	 return 0 if(!defined($slots[$idx]));
 	 my $target_slot_ire=$slots[$idx]+0;
+	 return 0 if(ref($calibrated_slot_mask) eq "ARRAY" && $calibrated_slot_mask->[$idx]);
+	 my %target_before;
 	 foreach my $setting (@settings) {
 	  my $arr=$arrays->{$setting};
 	  next if(ref($arr) ne "ARRAY");
-	  return 0 if(abs($arr->[$idx]||0) > 0.0001);
+	  $target_before{$setting}=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	 }
-	 my @probe_indices;
-	 if(target_is_low_shadow_slot($target)) {
-	  @probe_indices=reverse(0..($idx-1)) if($idx > 0);
-	 } else {
-	  @probe_indices=($idx+1)..(ddc_slot_count()-1) if($idx+1 < ddc_slot_count());
-	 }
-	 my $source_idx;
-	 foreach my $probe (@probe_indices) {
-	  next if(!defined($slots[$probe]));
-	  next if($target_slot_ire <= 100.0001 && ($slots[$probe]+0) >= 105);
-	  my $has_value=0;
-	  foreach my $setting (@settings) {
-	   my $arr=$arrays->{$setting};
-	   next if(ref($arr) ne "ARRAY");
-	   if(abs($arr->[$probe]||0) > 0.0001) {
-	    $has_value=1;
-	    last;
-	   }
-	  }
-	 if($has_value) {
-	   $source_idx=$probe;
+	 my $all_zero=1;
+	 foreach my $setting (@settings) {
+	  if(abs($target_before{$setting}||0) > 0.0001) {
+	   $all_zero=0;
 	   last;
 	  }
 	 }
-		 return 0 if(!defined($source_idx));
-		 return 0 if(!defined($slots[$idx]) || !defined($slots[$source_idx]));
-		 return 0 if(abs(($slots[$source_idx]+0)-($slots[$idx]+0)) > 12);
-		 return 0 if($target_slot_ire >= 105 && $target_slot_ire < 108.5 && ($slots[$source_idx]+0) >= 108.5);
-		 return 0 if(target_is_low_shadow_slot($target) && abs(($slots[$source_idx]+0)-($slots[$idx]+0)) > 3.1001);
-		 my $copied=0;
-		 foreach my $setting (@settings) {
-		  my $arr=$arrays->{$setting};
-		  next if(ref($arr) ne "ARRAY");
-		  my $value=$arr->[$source_idx]||0;
-		  $value=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $value < 0);
-		  $arr->[$idx]=$value;
-		  $copied=1 if(abs($value) > 0.0001);
-		 }
-		 return $copied;
+	 if($all_zero) {
+	  my @probe_indices;
+	  if(target_is_low_shadow_slot($target)) {
+	   @probe_indices=reverse(0..($idx-1)) if($idx > 0);
+	  } else {
+	   @probe_indices=($idx+1)..(ddc_slot_count()-1) if($idx+1 < ddc_slot_count());
+	  }
+	  my $source_idx;
+	  foreach my $probe (@probe_indices) {
+	   next if(!defined($slots[$probe]));
+	   next if($target_slot_ire <= 100.0001 && ($slots[$probe]+0) >= 105);
+	   my $has_value=0;
+	   foreach my $setting (@settings) {
+	    my $arr=$arrays->{$setting};
+	    next if(ref($arr) ne "ARRAY");
+	    if(abs($arr->[$probe]||0) > 0.0001) {
+	     $has_value=1;
+	     last;
+	    }
+	   }
+	   if($has_value) {
+	    $source_idx=$probe;
+	    last;
+	   }
+	  }
+	  return 0 if(!defined($source_idx));
+	  return 0 if(!defined($slots[$idx]) || !defined($slots[$source_idx]));
+	  return 0 if(abs(($slots[$source_idx]+0)-($slots[$idx]+0)) > 12);
+	  return 0 if($target_slot_ire >= 105 && $target_slot_ire < 108.5 && ($slots[$source_idx]+0) >= 108.5);
+	  return 0 if(target_is_low_shadow_slot($target) && abs(($slots[$source_idx]+0)-($slots[$idx]+0)) > 3.1001);
+	  my $copied=0;
+	  foreach my $setting (@settings) {
+	   my $arr=$arrays->{$setting};
+	   next if(ref($arr) ne "ARRAY");
+	   my $value=$arr->[$source_idx]||0;
+	   $value=0 if($setting eq "adjustingLuminance" && target_is_low_shadow_slot($target) && $value < 0);
+	   $arr->[$idx]=$value;
+	   $copied=1 if(abs($value) > 0.0001);
+	  }
+	  return 0 if(!$copied);
+	  my %target_after;
+	  foreach my $setting (@settings) {
+	   my $arr=$arrays->{$setting};
+	   next if(ref($arr) ne "ARRAY");
+	   $target_after{$setting}=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	  }
+	  return {
+	   mode=>"full-copy",
+	   source_index=>$source_idx+0,
+	   source_ire=>defined($slots[$source_idx]) ? ($slots[$source_idx]+0) : undef,
+	   target_index=>$idx+0,
+	   target_ire=>$target_slot_ire+0,
+	   before=>\%target_before,
+	   after=>\%target_after
+	  };
+	 }
+	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	 return 0 if(ref($calibrated_slot_mask) ne "ARRAY");
+	 return 0 if(!grep { abs($target_slot_ire-$_) < 0.001 } (80,60,40,20));
+	 return 0 if(ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+	 my $source_idx;
+	 for(my $probe=$idx+1;$probe<ddc_slot_count();$probe++) {
+	  next if(!$calibrated_slot_mask->[$probe]);
+	  next if(!defined($slots[$probe]));
+	  next if($target_slot_ire <= 100.0001 && ($slots[$probe]+0) >= 105);
+	  next if(abs(($slots[$probe]+0)-$target_slot_ire) > 25.0001);
+	  $source_idx=$probe;
+	  last;
+	 }
+	 return 0 if(!defined($source_idx));
+	 my $luma_arr=$arrays->{"adjustingLuminance"};
+	 my $source_luma=defined($luma_arr->[$source_idx]) ? ($luma_arr->[$source_idx]+0) : 0;
+	 my $current_luma=defined($luma_arr->[$idx]) ? ($luma_arr->[$idx]+0) : 0;
+	 return 0 if(abs($source_luma) <= 0.0001);
+	 return 0 if(abs($source_luma) <= abs($current_luma)+0.0001);
+	 return 0 if(abs($current_luma) > 0.0001 && (($current_luma > 0) != ($source_luma > 0)));
+	 my $after_luma=clamp_ddc_value($source_luma);
+	 return 0 if(abs($after_luma-$current_luma) <= 0.0001);
+	 $luma_arr->[$idx]=$after_luma;
+	 return {
+	  mode=>"luma-only",
+	  source_index=>$source_idx+0,
+	  source_ire=>defined($slots[$source_idx]) ? ($slots[$source_idx]+0) : undef,
+	  target_index=>$idx+0,
+	  target_ire=>$target_slot_ire+0,
+	  before=>{ adjustingLuminance=>$current_luma+0 },
+	  after=>{ adjustingLuminance=>$after_luma+0 }
+	 };
 	}
 
 sub repeated_value {
@@ -6153,16 +6211,22 @@ eval {
 			   target=>$target,
 			   target_values=>trace_target_values($arrays,$target)
 			  });
-			  if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && seed_target_from_prior_slot($arrays,$target)) {
+			  my $seed_from_prior_slot=0;
+			  $seed_from_prior_slot=seed_target_from_prior_slot($arrays,$target,\@calibrated_ddc_slots,$config)
+			   if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
+			  if($seed_from_prior_slot) {
 			   trace_109($read_step,"seed_from_prior_slot",{
 			    label=>$label,
-			    target_values=>trace_target_values($arrays,$target)
+			    target_values=>trace_target_values($arrays,$target),
+			    seed=>$seed_from_prior_slot
 			   });
 			   $state->{"current_step"}=$step_num;
 		   $state->{"total_steps"}=$total_ordered_steps;
 		   $state->{"current_name"}="Auto Cal $label";
 		   $state->{"phase"}="writing";
-		   $state->{"message"}="Seeding $label from nearest calibrated point";
+		   $state->{"message"}=(ref($seed_from_prior_slot) eq "HASH" && ($seed_from_prior_slot->{"mode"}||"") eq "luma-only")
+		    ? "Refining $label spline seed from nearest calibrated anchor"
+		    : "Seeding $label from nearest calibrated point";
 		   write_state($state);
 		   my $seed_error;
 		   ($picture,$seed_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
