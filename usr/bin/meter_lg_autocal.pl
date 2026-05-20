@@ -4780,8 +4780,7 @@ sub committed_body_verify_step {
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  return 0 if(autocal_step_is_low_shadow($step) || autocal_step_is_fast_headroom($step) || autocal_step_is_white($step));
  my $ire=$step->{"ire"}+0;
- return 0 if($ire <= 15.0001 || $ire >= 85.0001);
- return ($ire >= 19.999 && $ire <= 80.0001) ? 1 : 0;
+ return ($ire >= 24.999 && $ire <= 75.0001) ? 1 : 0;
 }
 
 sub committed_body_verify_luminance_adjustment {
