@@ -10856,7 +10856,13 @@ function meterColorSeriesUsesLgTargetWhite(type){
 }
 
 function meterColorSeriesTargetWhiteForRun(type,points){
- if(!meterSeriesUsesLgTargetWhite(type||meterActiveSeriesType,points!=null?points:meterActiveSeriesPoints)) return null;
+ const resolvedType=type||meterActiveSeriesType;
+ const resolvedPoints=points!=null?points:meterActiveSeriesPoints;
+ if(!meterSeriesUsesLgTargetWhite(resolvedType,resolvedPoints)) return null;
+ // LG 26pt greyscale series reads 109% first. Let the chart derive the
+ // current target white from that fresh headroom read instead of stamping a
+ // possibly stale setup/previous-run white into every step.
+ if(String(resolvedType||'').toLowerCase()==='greyscale'&&meterUseLgAutoCal26(resolvedPoints)) return null;
  const phase=String(meterFullAutoCalPhase||'');
  if(meterFullAutoCalRunning&&phase==='precal-report') return null;
  const cfg=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.targetY);
@@ -18455,6 +18461,13 @@ function meterAutoCalApplyStatus(status){
 	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(status.readings,'greyscale'));
 	  const white=meterFindSeriesWhiteReading(meterReadings);
 	  const statusTargetY=Number(status.target_luminance||status.calibrated_white_luminance);
+	  if(Number.isFinite(statusTargetY)&&statusTargetY>0){
+	   meterStoreLgTargetWhiteReference(
+	    statusTargetY,
+	    status.full_workflow?'full-autocal':'greyscale-autocal',
+	    status.full_autocal_run_id||status.run_id||meterFullAutoCalRunId||null
+	   );
+	  }
 	  const synthetic=meterSyntheticGreyWhiteReading(statusTargetY);
 	  if(synthetic){
 	   synthetic.name='Auto Cal 100% target';
