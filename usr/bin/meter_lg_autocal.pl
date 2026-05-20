@@ -2348,18 +2348,53 @@ sub lg_autocal_26_lut_indexes {
  return (21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
 }
 
+sub lg_autocal_26_black_lut_anchor {
+ return 0;
+}
+
+sub clone_calibrated_26pt_slot_mask {
+ my ($calibrated_slot_mask)=@_;
+ return undef if(ref($calibrated_slot_mask) ne "ARRAY");
+ return [ map { $_ ? 1 : 0 } @{$calibrated_slot_mask} ];
+}
+
+sub promote_calibrated_26pt_slot_mask {
+ my ($calibrated_slot_mask,$candidate_slot_mask)=@_;
+ return if(ref($calibrated_slot_mask) ne "ARRAY" || ref($candidate_slot_mask) ne "ARRAY");
+ my $count=ddc_slot_count();
+ for(my $idx=0;$idx<$count;$idx++) {
+  $calibrated_slot_mask->[$idx]=$candidate_slot_mask->[$idx] ? 1 : 0;
+ }
+}
+
+sub mark_calibrated_26pt_slot_index {
+ my ($calibrated_slot_mask,$idx)=@_;
+ return if(ref($calibrated_slot_mask) ne "ARRAY");
+ return if(!defined($idx) || $idx < 0 || $idx >= ddc_slot_count());
+ $calibrated_slot_mask->[$idx]=1;
+}
+
 sub mark_calibrated_26pt_slot {
  my ($calibrated_slot_mask,$target)=@_;
  return if(ref($calibrated_slot_mask) ne "ARRAY" || ref($target) ne "HASH");
  my $idx=$target->{"index"};
- return if(!defined($idx) || $idx < 0 || $idx >= ddc_slot_count());
- $calibrated_slot_mask->[$idx]=1;
+ mark_calibrated_26pt_slot_index($calibrated_slot_mask,$idx);
+}
+
+sub mark_calibrated_26pt_candidate_slots {
+ my ($calibrated_slot_mask,$candidate)=@_;
+ return if(ref($calibrated_slot_mask) ne "ARRAY" || ref($candidate) ne "HASH" || ref($candidate->{"changes"}) ne "ARRAY");
+ foreach my $change (@{$candidate->{"changes"}}) {
+  next if(ref($change) ne "HASH");
+  mark_calibrated_26pt_slot_index($calibrated_slot_mask,$change->{"index"});
+ }
 }
 
 sub propagate_uncalibrated_26pt_slots {
  my ($arrays,$calibrated_slot_mask)=@_;
  return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
  my @lut_indexes=lg_autocal_26_lut_indexes();
+ my $black_anchor=lg_autocal_26_black_lut_anchor();
  my @settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
  my $filled=0;
  for(my $idx=0;$idx<@lut_indexes;$idx++) {
@@ -2378,7 +2413,7 @@ sub propagate_uncalibrated_26pt_slots {
    }
   }
   next if(!defined($right));
-  my $left_point=defined($left) ? ($lut_indexes[$left]+0) : 0;
+  my $left_point=defined($left) ? ($lut_indexes[$left]+0) : $black_anchor;
   my $right_point=$lut_indexes[$right]+0;
   my $span=$right_point-$left_point;
   next if($span == 0);
@@ -2386,13 +2421,19 @@ sub propagate_uncalibrated_26pt_slots {
   foreach my $setting (@settings) {
    my $arr=$arrays->{$setting};
    next if(ref($arr) ne "ARRAY");
-   my $left_value=(defined($left) && defined($arr->[$left])) ? ($arr->[$left]+0) : 0;
+   my $left_value=(defined($left) && defined($arr->[$left])) ? ($arr->[$left]+0) : $black_anchor;
    my $right_value=defined($arr->[$right]) ? ($arr->[$right]+0) : 0;
    $arr->[$idx]=clamp_ddc_value($left_value+(($right_value-$left_value)*$ratio));
   }
   $filled++;
  }
  return $filled;
+}
+
+sub refresh_propagated_uncalibrated_26pt_slots {
+ my ($config,$arrays,$calibrated_slot_mask)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask);
 }
 
 sub seed_target_from_prior_slot {
@@ -4495,7 +4536,7 @@ sub committed_top_window_read {
 }
 
 sub committed_top_window_polish {
- my ($config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode)=@_;
+ my ($config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$calibrated_slot_mask)=@_;
  return ($picture,$arrays,undef) if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  return ($picture,$arrays,undef) if(exists($config->{"post_commit_top_window"}) && !$config->{"post_commit_top_window"});
  return ($picture,$arrays,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
@@ -4529,6 +4570,8 @@ sub committed_top_window_polish {
 	  return ($picture,$arrays,undef);
 	 }
 	 my $best_arrays=clone_arrays($arrays);
+	 my $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($calibrated_slot_mask);
+	 my $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($current_calibrated_slot_mask);
 	 my $limit=config_positive_int($config,"post_commit_top_window_candidates",7,0,40);
 	 if($state->{"committed_top_window_no_material_gain"} && !(ref($config) eq "HASH" && exists($config->{"post_commit_top_window_candidates"}))) {
 	  $limit=2 if($limit > 2);
@@ -4564,6 +4607,9 @@ sub committed_top_window_polish {
 	   last if($tested_total >= $limit || $tested_round++ >= $round_budget);
 	   $tested_total++;
 	   my $candidate_arrays=committed_top_window_apply_candidate($best_arrays,$candidate);
+	   my $candidate_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+	   mark_calibrated_26pt_candidate_slots($candidate_calibrated_slot_mask,$candidate);
+	   refresh_propagated_uncalibrated_26pt_slots($config,$candidate_arrays,$candidate_calibrated_slot_mask);
 	   $state->{"current_name"}="Committed top window";
 	   $state->{"phase"}="writing";
 	   $state->{"message"}="Testing top-window ".($candidate->{"label"}||"candidate")." ($tested_total/$limit)";
@@ -4594,6 +4640,9 @@ sub committed_top_window_polish {
 	    $best_window=$candidate_window;
 	    $best_arrays=clone_arrays($candidate_arrays);
 	    $arrays=clone_arrays($candidate_arrays);
+	    $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+	    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+	    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 	    $round_improved=1;
 	    $accepted_total++;
 	    trace_109($steps_by_ire{99},"committed_top_window_candidate_accepted",{
@@ -4621,6 +4670,9 @@ sub committed_top_window_polish {
 	    $state->{"message"}="Restoring top-window best";
 	    write_state($state);
 	    my $restore_error;
+	    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+	    refresh_propagated_uncalibrated_26pt_slots($config,$best_arrays,$current_calibrated_slot_mask);
+	    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
     ($picture,$restore_error)=set_picture_values($picture,$best_arrays,$anchor,$picture_mode,1,$state,1,1);
 	    return $finish_top_window->($restore_error) if($restore_error);
 	    sync_state_picture($state,$picture,$picture_mode);
@@ -4638,6 +4690,9 @@ sub committed_top_window_polish {
 	 }
 	 if(ref($best_arrays) eq "HASH") {
 	  $arrays=clone_arrays($best_arrays);
+	  $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+	  refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
+	  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 	  my $restore_error;
 	  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
 	  return $finish_top_window->($restore_error) if($restore_error);
@@ -4701,9 +4756,10 @@ sub start_calibration_mode {
 }
 
 sub committed_state_polish {
- my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$polish_steps)=@_;
+ my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$polish_steps,$calibrated_slot_mask)=@_;
  return ($picture,undef) if(!post_commit_polish_enabled($config));
  return ($picture,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
+ my $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($calibrated_slot_mask);
  my ($white_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
  park_black_for_settle($config,$state);
  my $white_y=committed_polish_reference_white_y($config,$state,$steps,$target_gamma,$signal_mode,undef);
@@ -4854,6 +4910,7 @@ sub committed_state_polish {
 
   my $best_score=$committed_pair_score_now->();
   my $best_arrays=clone_arrays($arrays);
+  my $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($current_calibrated_slot_mask);
   my $best_reading=clone_picture($reading);
   my $best_de=$de;
   my $best_lum_pct=$lum_pct;
@@ -4884,6 +4941,9 @@ sub committed_state_polish {
    foreach my $adj (@{$adjustments}) {
     $arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
 	   }
+	   my $candidate_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+	   mark_calibrated_26pt_slot($candidate_calibrated_slot_mask,$target);
+	   refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$candidate_calibrated_slot_mask);
 	   $state->{"phase"}="writing";
 	   $state->{"message"}="Committed polish $label ".describe_adjustments($adjustments)." ($iter/$step_limit)";
 	   trace_109($read_step,"committed_polish_adjustment",{
@@ -4943,6 +5003,9 @@ sub committed_state_polish {
    if($keep_committed_candidate) {
    $best_score=$score;
     $best_arrays=clone_arrays($arrays);
+    $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
     $best_reading=clone_picture($reading);
     $best_de=$de;
     $best_lum_pct=$lum_pct;
@@ -4954,9 +5017,12 @@ sub committed_state_polish {
    } else {
     $stalls++;
     $arrays=clone_arrays($best_arrays);
+    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
     $state->{"phase"}="writing";
     $state->{"message"}="Restoring committed $label polish";
     write_state($state);
+    refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
+    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
     ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,1);
     return $finish_polish->($write_error) if($write_error);
     sync_state_picture($state,$picture,$picture_mode);
@@ -4992,7 +5058,7 @@ sub committed_state_polish {
 		 my $top_window_error;
 		 ($picture,$arrays,$top_window_error)=committed_top_window_polish(
 		  $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
-		  $target_x,$target_y,$target_gamma,$signal_mode
+		  $target_x,$target_y,$target_gamma,$signal_mode,$current_calibrated_slot_mask
 		 );
 		 return ($picture,$top_window_error) if($top_window_error && $top_window_error ne "cancelled");
 		 if(!(ref($config) eq "HASH" && exists($config->{"post_commit_true_low_shadow"}) && !$config->{"post_commit_true_low_shadow"})) {
@@ -5041,6 +5107,7 @@ sub committed_state_polish {
 		   next if(committed_low_shadow_good_enough($read_step,$de,$lum_pct,$target_delta));
 	   my $best_score=autocal_result_score($de,$lum_pct,$read_step);
 	   my $best_arrays=clone_arrays($arrays);
+	   my $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($current_calibrated_slot_mask);
 	   my $best_reading=clone_picture($reading);
 	   my $best_de=$de;
 	   my $best_lum_pct=$lum_pct;
@@ -5060,6 +5127,9 @@ sub committed_state_polish {
 	    foreach my $adj (@{$adjustments}) {
 	     $arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
 	    }
+	    my $candidate_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+	    mark_calibrated_26pt_slot($candidate_calibrated_slot_mask,$target);
+	    refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$candidate_calibrated_slot_mask);
 	    $state->{"phase"}="writing";
 	    $state->{"message"}="Committed verify $label ".describe_adjustments($adjustments)." ($iter/$step_committed_limit)";
 	    trace_109($read_step,"committed_low_shadow_adjustment",{
@@ -5110,6 +5180,9 @@ sub committed_state_polish {
 	    if(defined($de) && $score + 0.0001 < $best_score) {
 	     $best_score=$score;
 	     $best_arrays=clone_arrays($arrays);
+	     $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+	     $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+	     promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 	     $best_reading=clone_picture($reading);
 	     $best_de=$de;
 	     $best_lum_pct=$lum_pct;
@@ -5117,10 +5190,13 @@ sub committed_state_polish {
 		    } else {
 		     $stalls++;
 		     $arrays=clone_arrays($best_arrays);
+		     $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
 		     $state->{"phase"}="writing";
 		     $state->{"message"}="Restoring committed $label verify best";
 		     write_state($state);
 		     my $restore_error;
+		     refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
+		     promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 		     ($picture,$restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,0,$state,0,1);
 		     return ($picture,$restore_error) if($restore_error);
 		     set_state_calibration_mode($state,0,"");
@@ -5140,10 +5216,13 @@ sub committed_state_polish {
 		   }
 	   if(ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH" && $best_score + 0.0001 < autocal_result_score($de,$lum_pct,$read_step)) {
 	    $arrays=clone_arrays($best_arrays);
+	    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
 	    $state->{"phase"}="writing";
 	    $state->{"message"}="Restoring committed $label verify best";
 	    write_state($state);
 	    my $restore_error;
+	    refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
+	    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 	    ($picture,$restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,0,$state,0,1);
 	    return ($picture,$restore_error) if($restore_error);
 	    set_state_calibration_mode($state,0,"");
@@ -5165,11 +5244,12 @@ sub committed_state_polish {
 	   my $final_top_window_error;
 	   ($picture,$arrays,$final_top_window_error)=committed_top_window_polish(
 	    $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
-	    $target_x,$target_y,$target_gamma,$signal_mode
+	    $target_x,$target_y,$target_gamma,$signal_mode,$current_calibrated_slot_mask
 	   );
 	   return ($picture,$final_top_window_error) if($final_top_window_error && $final_top_window_error ne "cancelled");
 	  }
 	 }
+	 promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 	 return ($picture,undef);
 		}
 
@@ -6938,7 +7018,7 @@ eval {
 						   write_state($state);
 						  }
 						  if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
-						   my $propagated_slots=propagate_uncalibrated_26pt_slots($arrays,\@calibrated_ddc_slots);
+						   my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
 						   if($propagated_slots) {
 						    $state->{"propagated_26pt_slots"}=$propagated_slots+0;
 						    write_state($state);
@@ -6963,7 +7043,8 @@ eval {
 						     $target_gamma,
 						     $signal_mode,
 						     $target_delta,
-						     \@ordered
+						     \@ordered,
+						     \@calibrated_ddc_slots
 						    );
 					    die $polish_error if($polish_error && $polish_error ne "cancelled");
 					   } else {
