@@ -1497,6 +1497,7 @@ sub low_shadow_itp_near_target_reached {
  return 0 if(!autocal_uses_itp());
  return 0 if(!defined($de));
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return 0 if(!low_shadow_luminance_close_enough($step,$lum_pct));
  return ($de <= $target_delta) ? 1 : 0;
 }
 
@@ -1506,6 +1507,7 @@ sub low_shadow_good_enough {
  return 0 if(!defined($de));
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
  if(autocal_uses_itp()) {
+  return 0 if(!low_shadow_luminance_close_enough($step,$lum_pct));
   return ($de <= $target_delta) ? 1 : 0;
  }
  return ($de <= low_shadow_delta_acceptance($step,$target_delta)) ? 1 : 0;
@@ -1518,6 +1520,7 @@ sub committed_low_shadow_good_enough {
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
  my $allow=($ire <= 3.1001) ? ($target_delta+0.30) : (($ire <= 4.1001) ? ($target_delta+0.28) : (($ire <= 5.1001) ? ($target_delta+0.25) : ($target_delta+0.25)));
+ return 0 if(autocal_uses_itp() && !low_shadow_luminance_close_enough($step,$lum_pct));
  return ($de <= $allow) ? 1 : 0;
 }
 
@@ -1601,15 +1604,17 @@ sub close_enough_stalled {
 sub autocal_result_score {
 		 my ($de,$lum_pct,$step)=@_;
 			 my $score=defined($de) ? ($de+0) : 9999;
-			 return $score if(autocal_uses_itp());
 			 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
-				 if(autocal_step_is_low_shadow($step) && autocal_uses_itp() && defined($lum_pct) && !low_ire_luminance_needs_lift($step,$lum_pct)) {
+			 if(autocal_uses_itp()) {
+				 if(autocal_step_is_low_shadow($step) && autocal_uses_itp() && defined($lum_pct)) {
 				  my $shadow_lum_excess=abs($lum_pct)-low_shadow_luminance_acceptance_percent($step);
 				  return $score if($shadow_lum_excess <= 0);
 				  my $shadow_lum_penalty=$shadow_lum_excess*0.45;
 				  $shadow_lum_penalty=4 if($shadow_lum_penalty > 4);
 				  return $score+$shadow_lum_penalty;
 				 }
+				 return $score;
+			 }
 			 return $score if($ire <= 5 && $score <= 4.0 && !low_ire_luminance_needs_tuning($step,$lum_pct));
 			 return $score if(!defined($lum_pct));
 		 my $tol=luminance_tolerance_percent($step);
@@ -2725,6 +2730,34 @@ sub low_shadow_luminance_priority_adjustments {
 	 return $adjustments;
 }
 
+sub cap_post_commit_low_shadow_adjustment {
+ my ($adj,$ire)=@_;
+ return undef if(ref($adj) ne "HASH");
+ my $channel=$adj->{"channel"}||"";
+ my $is_lum=($channel eq "lum" || ($adj->{"setting"}||"") eq "adjustingLuminance") ? 1 : 0;
+ my $cap;
+ if($is_lum) {
+  $cap=($ire <= 3.1001) ? 0.25 : (($ire <= 5.1001) ? 0.5 : 1);
+ } else {
+  $cap=($ire <= 4.1001) ? 0.20 : (($ire <= 5.1001) ? 0.25 : 0.5);
+ }
+ my $delta=$adj->{"delta"};
+ if(defined($delta)) {
+  $delta+=0;
+  return undef if(abs($delta) < 0.0001);
+  if(abs($delta) > $cap) {
+   my $current=defined($adj->{"current"}) ? ($adj->{"current"}+0) : undef;
+   $current=($adj->{"next"}+0)-$delta if(!defined($current) && defined($adj->{"next"}));
+   $current=0 if(!defined($current));
+   my $next=clamp_ddc_value($current+(($delta < 0) ? -$cap : $cap));
+   return undef if(abs($next-$current) < 0.0001);
+   $adj={%{$adj}, current=>$current, next=>$next, delta=>$next-$current, capped_post_commit_low_shadow=>1};
+  }
+ }
+ $adj->{"post_commit_low_shadow"}=1;
+ return $adj;
+}
+
 sub post_commit_low_shadow_adjustments {
  my ($adjustments,$step,$lum_pct)=@_;
  return $adjustments if(!autocal_step_is_low_shadow($step));
@@ -2736,32 +2769,14 @@ sub post_commit_low_shadow_adjustments {
  } @{$adjustments};
 
 	 if(@lum && low_ire_luminance_needs_tuning($step,$lum_pct)) {
-	  foreach my $adj (@lum) { $adj->{"post_commit_low_shadow"}=1 if(ref($adj) eq "HASH"); }
-	  return \@lum;
+	  my @capped=grep { defined($_) } map { cap_post_commit_low_shadow_adjustment($_,$ire) } @lum;
+	  return \@capped if(@capped);
 	 }
 
-	 my $rgb_cap=($ire <= 4.1001) ? 0.20 : (($ire <= 5.1001) ? 0.25 : 0.5);
  my @filtered;
  foreach my $adj (@{$adjustments}) {
-  next if(ref($adj) ne "HASH");
-  my $channel=$adj->{"channel"}||"";
-  if($channel eq "lum" || ($adj->{"setting"}||"") eq "adjustingLuminance") {
-   $adj->{"post_commit_low_shadow"}=1;
-   push @filtered,$adj;
-   next;
-  }
-  my $delta=$adj->{"delta"};
-  next if(!defined($delta));
-  $delta+=0;
-  next if(abs($delta) < 0.0001);
-  if(abs($delta) > $rgb_cap) {
-   my $current=defined($adj->{"current"}) ? ($adj->{"current"}+0) : 0;
-   my $next=clamp_ddc_value($current+(($delta < 0) ? -$rgb_cap : $rgb_cap));
-   next if(abs($next-$current) < 0.0001);
-   $adj={%{$adj}, current=>$current, next=>$next, delta=>$next-$current, capped_post_commit_low_shadow=>1};
-  }
-  $adj->{"post_commit_low_shadow"}=1;
-  push @filtered,$adj;
+  my $capped=cap_post_commit_low_shadow_adjustment($adj,$ire);
+  push @filtered,$capped if(ref($capped) eq "HASH");
  }
  return @filtered ? \@filtered : undef;
 }
