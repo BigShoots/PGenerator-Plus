@@ -5962,15 +5962,17 @@ eval {
 	  return 0 if(!$propagated_slots);
 	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
 	   next if($calibrated_ddc_slots[$idx]);
-	   next if(!defined($dynamic_seed_slots[$idx]) || ($dynamic_seed_slots[$idx]+0) > 10.0001);
+	   next if(!defined($dynamic_seed_slots[$idx]));
 	   my ($left_anchor,$right_anchor);
 	   for(my $probe=$idx-1;$probe>=0;$probe--) {
+	    next if(defined($dynamic_seed_slots[$probe]) && ($dynamic_seed_slots[$probe]+0) <= 0.0001);
 	    if($calibrated_ddc_slots[$probe]) {
 	     $left_anchor=$probe;
 	     last;
 	    }
 	   }
 	   for(my $probe=$idx+1;$probe<@dynamic_seed_slots;$probe++) {
+	    next if(defined($dynamic_seed_slots[$probe]) && ($dynamic_seed_slots[$probe]+0) <= 0.0001);
 	    if($calibrated_ddc_slots[$probe]) {
 	     $right_anchor=$probe;
 	     last;
