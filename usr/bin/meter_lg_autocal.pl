@@ -377,10 +377,11 @@ sub order_autocal_steps {
    my $target=ddc_target_for_step($step);
    $normal_ddc_slot{format_percent($target->{"ire"})}=1 if($target);
   }
-  @valid=grep {
+	 @valid=grep {
    my $target=ddc_target_for_step($_);
    !($_->{"autocal_white_reference"} && $target && $normal_ddc_slot{format_percent($target->{"ire"})})
 	 } @valid;
+  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
 	  my $top_rank=sub {
 	   my ($step)=@_;
 	   my $target=ddc_target_for_step($step);
@@ -5986,26 +5987,37 @@ eval {
 	  }
 	  my $after_arrays=clone_arrays($arrays);
 	  my $changed_slots=0;
+	  my @changed_slot_details;
 	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
 	   next if($calibrated_ddc_slots[$idx]);
 	   my $slot_changed=0;
+	   my %changed_settings;
 	   foreach my $setting (@dynamic_seed_settings) {
 	    next if(ref($before_arrays->{$setting}) ne "ARRAY" || ref($after_arrays->{$setting}) ne "ARRAY");
 	    my $before=defined($before_arrays->{$setting}[$idx]) ? ($before_arrays->{$setting}[$idx]+0) : 0;
 	    my $after=defined($after_arrays->{$setting}[$idx]) ? ($after_arrays->{$setting}[$idx]+0) : 0;
 	    if(abs($after-$before) > 0.0001) {
 	     $slot_changed=1;
-	     last;
+	     $changed_settings{$setting}={ before=>$before+0, after=>$after+0 };
 	    }
 	   }
-	   $changed_slots++ if($slot_changed);
+	   if($slot_changed) {
+	    $changed_slots++;
+	    push @changed_slot_details,{
+	     index=>$idx+0,
+	     ire=>defined($dynamic_seed_slots[$idx]) ? ($dynamic_seed_slots[$idx]+0) : undef,
+	     settings=>\%changed_settings
+	    };
+	   }
 	  }
 	  return 0 if(!$changed_slots);
 	  $state->{"dynamic_propagated_26pt_slots"}=$changed_slots+0;
 	  $state->{"propagated_26pt_slots"}=$changed_slots+0;
+	  $state->{"dynamic_propagated_26pt_slot_details"}=\@changed_slot_details;
 	  trace_109($final_read_step || $final_target,"dynamic_26pt_seed_propagation",{
 	   label=>$final_label||$final_target->{"label"}||"",
 	   changed_slots=>$changed_slots+0,
+	   changed_slot_details=>\@changed_slot_details,
 	   propagated_slots=>$propagated_slots+0,
 	   calibrated_non_black_anchors=>$calibrated_non_black_anchors+0,
 	   target=>$final_target
