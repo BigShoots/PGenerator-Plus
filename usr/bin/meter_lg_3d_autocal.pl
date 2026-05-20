@@ -245,11 +245,11 @@ sub high_low_stride_381 {
 sub build_matrix_steps {
  my ($config)=@_;
  return (
-  patch_step("black",0,"profile",$config),
   patch_step("white",100,"profile",$config),
   patch_step("red",100,"profile",$config),
   patch_step("green",100,"profile",$config),
   patch_step("blue",100,"profile",$config),
+  patch_step("black",0,"profile",$config),
  );
 }
 
