@@ -143,6 +143,21 @@ function measuredWhiteY(seriesStatus) {
   return Number.isFinite(Y) && Y > 0 ? Y : 100;
 }
 
+function measuredBlackXyz(seriesStatus) {
+  const readings = seriesStatus.readings || [];
+  const black = seriesStatus.black_reading
+    || readings.find(reading => String(reading.name || '').toLowerCase() === 'black')
+    || readings.find(reading => Number(reading.ire) === 0);
+  if (!black) return null;
+  const X = Number(black.X);
+  const Y = Number(black.Y ?? black.luminance);
+  const Z = Number(black.Z);
+  if (Number.isFinite(X) && Number.isFinite(Y) && Number.isFinite(Z) && Y >= 0) return [X, Y, Z];
+  const x = Number(black.x);
+  const y = Number(black.y);
+  return xyzFromXyY(x, y, Y);
+}
+
 function readingXyz(reading) {
   if (!reading || reading.error) return null;
   const X = Number(reading.X);
@@ -258,10 +273,22 @@ function codeToSignal(step, channel) {
   return clamp((code - 16) / 219);
 }
 
-function targetFromRgbCodes(step, whiteY) {
-  const r = targetGammaSignalToLinear(codeToSignal(step, 'r'));
-  const g = targetGammaSignalToLinear(codeToSignal(step, 'g'));
-  const b = targetGammaSignalToLinear(codeToSignal(step, 'b'));
+function bt1886LuminanceY(signal, whiteY, blackY) {
+  const s = clamp(signal);
+  const Lw = Number.isFinite(whiteY) && whiteY > 0 ? whiteY : 100;
+  let Lb = Number.isFinite(blackY) && blackY >= 0 ? blackY : 0;
+  if (Lb >= Lw) Lb = 0;
+  const gamma = 2.4;
+  return Math.pow((Math.pow(Lw, 1 / gamma) - Math.pow(Lb, 1 / gamma)) * s + Math.pow(Lb, 1 / gamma), gamma);
+}
+
+function bt1886RelativeLuminance(signal, whiteY, blackY) {
+  const range = whiteY - blackY;
+  if (range <= 1e-9) return targetGammaSignalToLinear(signal);
+  return clamp((bt1886LuminanceY(signal, whiteY, blackY) - blackY) / range);
+}
+
+function bt709RgbToXyz(r, g, b, whiteY) {
   return [
     (BT709.rgbToXyz[0][0] * r + BT709.rgbToXyz[0][1] * g + BT709.rgbToXyz[0][2] * b) * whiteY,
     (BT709.rgbToXyz[1][0] * r + BT709.rgbToXyz[1][1] * g + BT709.rgbToXyz[1][2] * b) * whiteY,
@@ -269,15 +296,44 @@ function targetFromRgbCodes(step, whiteY) {
   ];
 }
 
-function targetForStep(step, whiteY) {
+function targetFromRgbCodes(step, whiteY, blackXyz) {
+  const rs = codeToSignal(step, 'r');
+  const gs = codeToSignal(step, 'g');
+  const bs = codeToSignal(step, 'b');
+  if (config.target_gamma === 'bt1886' && blackXyz) {
+    const blackY = Number(blackXyz[1]) || 0;
+    let range = whiteY - blackY;
+    if (range <= 1e-9) range = whiteY;
+    const target = bt709RgbToXyz(
+      bt1886RelativeLuminance(rs, whiteY, blackY),
+      bt1886RelativeLuminance(gs, whiteY, blackY),
+      bt1886RelativeLuminance(bs, whiteY, blackY),
+      range
+    );
+    return {
+      xyz: [
+        blackXyz[0] + target[0],
+        blackXyz[1] + target[1],
+        blackXyz[2] + target[2]
+      ],
+      source: 'rgb_codes_bt1886_measured_black'
+    };
+  }
+  const r = targetGammaSignalToLinear(codeToSignal(step, 'r'));
+  const g = targetGammaSignalToLinear(codeToSignal(step, 'g'));
+  const b = targetGammaSignalToLinear(codeToSignal(step, 'b'));
+  return { xyz: bt709RgbToXyz(r, g, b, whiteY), source: 'rgb_codes' };
+}
+
+function targetForStep(step, whiteY, blackXyz) {
   if (!step) return null;
   const targetX = Number(step.target_x);
   const targetY = Number(step.target_y);
   const targetYn = Number(step.target_Yn);
   if (Number.isFinite(targetX) && Number.isFinite(targetY) && Number.isFinite(targetYn)) {
-    return xyzFromXyY(targetX, targetY, targetYn * whiteY);
+    return { xyz: xyzFromXyY(targetX, targetY, targetYn * whiteY), source: 'target_Yn' };
   }
-  if (step.r != null && step.g != null && step.b != null) return targetFromRgbCodes(step, whiteY);
+  if (step.r != null && step.g != null && step.b != null) return targetFromRgbCodes(step, whiteY, blackXyz);
   return null;
 }
 
@@ -290,16 +346,34 @@ function summarizeSeries(start, status, type) {
   const readings = status.readings || [];
   const nameMap = stepByName(steps);
   const whiteY = measuredWhiteY(status);
+  const blackXyz = measuredBlackXyz(status);
   const whiteXyz = referenceWhiteXyz(whiteY);
   const rows = [];
+  const warnings = [];
   for (const reading of readings) {
     const step = findStep(reading, steps, nameMap);
     const actualXyz = readingXyz(reading);
-    const targetXyz = targetForStep(step, whiteY);
+    if (
+      type === 'greyscale'
+      && config.target_gamma === 'bt1886'
+      && step
+      && step.target_Yn == null
+      && step.r != null
+      && step.g != null
+      && step.b != null
+      && !blackXyz
+    ) {
+      throw new Error('BT.1886 greyscale summary cannot score RGB-code fallback without a measured black sample.');
+    }
+    const target = targetForStep(step, whiteY, blackXyz);
+    const targetXyz = target && target.xyz;
     const name = readingLabel(reading, step);
     const lowerName = name.toLowerCase();
     if (!actualXyz || !targetXyz || lowerName === 'black' || lowerName === 'white') {
       continue;
+    }
+    if (target.source === 'rgb_codes' && config.target_gamma === 'bt1886') {
+      warnings.push(`BT.1886 ${type} target for ${name} used RGB-code fallback without measured black.`);
     }
     const actualLab = xyzToLab(actualXyz, whiteXyz);
     const targetLab = xyzToLab(targetXyz, whiteXyz);
@@ -319,6 +393,7 @@ function summarizeSeries(start, status, type) {
       target_X: targetXyz[0],
       target_Y: targetXyz[1],
       target_Z: targetXyz[2],
+      target_source: target.source,
       delta_e_2000: Number(dE.toFixed(4))
     });
   }
@@ -327,6 +402,8 @@ function summarizeSeries(start, status, type) {
   return {
     type,
     whiteY: Number(whiteY.toFixed(4)),
+    blackY: blackXyz ? Number(blackXyz[1].toFixed(4)) : null,
+    warnings: [...new Set(warnings)],
     count: rows.length,
     mean_delta_e_2000: mean == null ? null : Number(mean.toFixed(4)),
     max_delta_e_2000: max ? Number(max.delta_e_2000.toFixed(4)) : null,
