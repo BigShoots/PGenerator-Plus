@@ -382,28 +382,35 @@ sub order_autocal_steps {
    !($_->{"autocal_white_reference"} && $target && $normal_ddc_slot{format_percent($target->{"ire"})})
 	 } @valid;
   return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
-	  my $top_rank=sub {
-	   my ($step)=@_;
-	   my $target=ddc_target_for_step($step);
-	   my $ire=(ref($target) eq "HASH" && defined($target->{"ire"})) ? ($target->{"ire"}+0) : ($step->{"ire"}||0);
-	   return 0 if($ire >= 108.5);
-	   return 1 if($ire >= 104.5 && $ire < 106.0);
-	   return 2 if($ire >= 98.9 && $ire < 100.5);
-	   return 10-(($ire||0)/1000);
-	  };
-	  my @top=sort {
-	   $top_rank->($a) <=> $top_rank->($b)
-	  } grep {
-	   my $target=ddc_target_for_step($_);
-	   my $ire=(ref($target) eq "HASH" && defined($target->{"ire"})) ? ($target->{"ire"}+0) : ($_->{"ire"}+0);
-	   $ire >= 98.9
-	  } @valid;
-  # Walk shadows low-to-high. The darker LG DDC slots can pull 5% around through
-  # interpolation, so 5/7/10 must be checked after 2.3/3/4 instead of before them.
-  my @shadow=sort { ($a->{"ire"}||0) <=> ($b->{"ire"}||0) } grep { ($_->{"ire"}+0) > 0 && ($_->{"ire"}+0) <= 10.0001 } @valid;
-  my %reserved=map { format_percent($_->{"ire"}) => 1 } (@top,@shadow);
-  my @body=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { !$reserved{format_percent($_->{"ire"})} } @valid;
-  return (@top,@body,@shadow);
+  my @lg_autocal_26_order=(109,105,99,80,90,95,85,60,70,75,65,40,50,55,45,20,30,35,25,15,2.3,3,4,5,7,10);
+  my %seen_target;
+  my @ordered;
+  my $target_key=sub {
+   my ($step)=@_;
+   my $target=ddc_target_for_step($step);
+   return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}));
+   return format_percent($target->{"ire"});
+  };
+  foreach my $wanted (@lg_autocal_26_order) {
+   my $wanted_key=format_percent($wanted);
+   my ($match)=grep {
+    my $key=$target_key->($_);
+    defined($key) && !$seen_target{$key} && $key eq $wanted_key
+   } @valid;
+   next if(!$match);
+   push @ordered,$match;
+   $seen_target{$wanted_key}=1;
+  }
+  my @leftovers=sort {
+   my $at=ddc_target_for_step($a);
+   my $bt=ddc_target_for_step($b);
+   (($bt && defined($bt->{"ire"})) ? ($bt->{"ire"}+0) : 0) <=>
+    (($at && defined($at->{"ire"})) ? ($at->{"ire"}+0) : 0)
+  } grep {
+   my $key=$target_key->($_);
+   defined($key) && !$seen_target{$key}
+  } @valid;
+  return (@ordered,@leftovers);
 	 }
 	 return sort {
 	  my $av=defined($a->{"autocal_order_ire"}) ? ($a->{"autocal_order_ire"}+0) : ($a->{"ire"}||0);
