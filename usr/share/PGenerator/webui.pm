@@ -15717,6 +15717,12 @@ function meterSelectPatchFromInteraction(step,reading,opts){
  meterUpdateReadButtons();
 }
 
+function meterHideSeriesControlsForAutoCal(){
+ const phase=String(meterAutoCalPhase||'');
+ const greyscaleAutoCalActive=!!(meterAutoCalPolling||meterAutoCalPendingConfig||(meterAutoCalRunning&&phase!=='complete'&&phase!=='error'));
+ return !!(greyscaleAutoCalActive||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling||meterFullAutoCalRunning);
+}
+
 function meterUpdateReadButtons(){
  meterAutoCalRepairOverlayPointerState();
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -15728,6 +15734,7 @@ function meterUpdateReadButtons(){
  const continuousUiActive=meterContinuousActive||meterContinuousSuspendedForLgWrite;
  const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||continuousUiActive;
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
+ const hideSeriesControlsForAutoCal=meterHideSeriesControlsForAutoCal();
  const showClear=hasData&&meterDetected;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
@@ -15742,8 +15749,8 @@ function meterUpdateReadButtons(){
  const readyBtn=document.getElementById('meterDeviceReadyBtn');
  const manualPromptBtn=document.getElementById('meterManualPromptBtn');
  if(clearBtn){
-  clearBtn.style.display=showClear?'':'none';
-  clearBtn.disabled=!hasData||busy;
+  clearBtn.style.display=(showClear&&!hideSeriesControlsForAutoCal)?'':'none';
+  clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal;
  }
  if(readSeriesBtn){
   readSeriesBtn.disabled=!hasSeries||!meterDetected||settingsDirty||busy;
@@ -15751,7 +15758,7 @@ function meterUpdateReadButtons(){
  }
  if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive)?'':'none';
  if(continuousBtn) continuousBtn.style.display=show?'':'none';
- if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive)?'':'none';
+ if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal)?'':'none';
  const showAutoCal=showSeries&&meterAutoCalAvailable()&&!continuousUiActive;
  if(autoCalBtn){
   autoCalBtn.style.display=showAutoCal?'':'none';
