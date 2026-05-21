@@ -9783,7 +9783,7 @@ const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
 const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=false;
 const METER_AUTOCAL_STATE_KEY='meterAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_SERIES=[
- {key:'greyscale-26',type:'greyscale',points:26,label:'Greyscale LG 26pt AutoCal'},
+ {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale LG 22pt Manual'},
  {key:'colors-30',type:'colors',points:30,label:'ColorChecker'},
  {key:'saturations-24',type:'saturations',points:24,label:'Sat Sweep'}
 ];
@@ -17692,7 +17692,7 @@ function meterAutoCalRenderResults(status){
    const sorted=[...rows].sort((a,b)=>b.de-a.de);
    greyText=' Touch-up greyscale avg ΔE '+avg.toFixed(2)+', max '+sorted[0].de.toFixed(2)+' at '+sorted[0].label+'.';
   }
-  const reportText=hasPreReport?' Click Generate Post-Cal Report to read Greyscale LG 26pt AutoCal, ColorChecker, and Sat Sweep again and build a before/after report.':' Click Generate Post-Cal Report to read Greyscale LG 26pt AutoCal, ColorChecker, and Sat Sweep and build a post-cal report.';
+  const reportText=hasPreReport?' Click Generate Post-Cal Report to read Greyscale LG 22pt Manual, ColorChecker, and Sat Sweep again and build a before/after report.':' Click Generate Post-Cal Report to read Greyscale LG 22pt Manual, ColorChecker, and Sat Sweep and build a post-cal report.';
   const doneText=status.touchup_skipped?'Full Auto Cal complete: greyscale and 3D LUT finished.':'Full Auto Cal complete: greyscale, 3D LUT, and greyscale touch-up finished.';
   if(summary) summary.textContent=doneText+uploadText+greyText+reportText;
   const post=lut.post_check_summary||{};
@@ -19356,7 +19356,7 @@ async function meterStartFullAutoCal(){
   : meterFullAutoCalTouchupChoiceValue();
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
-  message:'Before calibration, PGenerator will measure Greyscale LG 26pt AutoCal, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
+  message:'Before calibration, PGenerator will measure Greyscale LG 22pt Manual, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
   continueText:'\u25B6 Measure Pre-Cal',
   skipText:'Skip Pre-Cal',
   statusText:'Capture the before measurements for the Full AutoCal report.'
