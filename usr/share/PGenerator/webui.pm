@@ -17999,7 +17999,8 @@ function meterAutoCalSetGreyscaleOptionControls(){
  const optionsBox=document.getElementById('meterAutoCalGreyscaleOptionsBox');
  const polishChoice=document.getElementById('meterAutoCalPostCommitPolishEnabled');
  const verifyChoice=document.getElementById('meterAutoCalPostCommitVerifyEnabled');
- if(optionsBox) optionsBox.style.display=(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'none':'';
+ const choicesCaptured=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
+ if(optionsBox) optionsBox.style.display=(meterAutoCalPendingConfig&&(meterAutoCalPendingConfig.fullWorkflow||(choicesCaptured&&meterAutoCalPhase!=='options')))?'none':'';
  if(polishChoice) polishChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitPolishEnabled')?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:true;
  if(verifyChoice) verifyChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitVerifyEnabled')?meterAutoCalPendingConfig.postCommitVerifyEnabled!==false:true;
 }
@@ -18022,6 +18023,7 @@ function meterAutoCalAcceptPreflightOptions(){
  if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow){toast('Auto Cal setup is not ready',true);return;}
  meterAutoCalPendingConfig.postCommitPolishEnabled=meterAutoCalPostCommitPolishChoiceValue();
  meterAutoCalPendingConfig.postCommitVerifyEnabled=meterAutoCalPostCommitVerifyChoiceValue();
+ meterAutoCalPendingConfig.greyscaleOptionsCaptured=true;
  meterAutoCalPhase='disclaimer';
  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
 }
@@ -20066,8 +20068,9 @@ async function meterAutoCalConfirmAndStart(){
 	 const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
 	 const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
 	 const firstFullGreyscalePass=!!(fullWorkflow&&meterFullAutoCalRunning&&meterFullAutoCalPhase==='first-greyscale');
-	 const postCommitPolishEnabled=firstFullGreyscalePass?false:meterAutoCalPostCommitPolishChoiceValue();
-	 const postCommitVerifyEnabled=firstFullGreyscalePass?false:meterAutoCalPostCommitVerifyChoiceValue();
+	 const capturedGreyscaleOptions=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
+	 const postCommitPolishEnabled=firstFullGreyscalePass?false:(capturedGreyscaleOptions?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:meterAutoCalPostCommitPolishChoiceValue());
+	 const postCommitVerifyEnabled=firstFullGreyscalePass?false:(capturedGreyscaleOptions?meterAutoCalPendingConfig.postCommitVerifyEnabled!==false:meterAutoCalPostCommitVerifyChoiceValue());
 	 meterAutoCalPendingConfig.postCommitPolishEnabled=postCommitPolishEnabled;
 	 meterAutoCalPendingConfig.postCommitVerifyEnabled=postCommitVerifyEnabled;
 	 meterStoreLgTargetWhiteReference(targetY,meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow?'full-autocal':'greyscale-autocal',meterFullAutoCalRunId||null);
