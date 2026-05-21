@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma response_probe response_model learned_response_model slope predicted_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -1884,7 +1884,7 @@ sub lg_autocal_26_response_model_for_step {
 	}
 
 sub lg_autocal_26_learned_luminance_adjustment {
-	 my ($state,$arrays,$target,$step,$lum_pct,$tried,$cap,$source)=@_;
+		 my ($state,$arrays,$target,$step,$lum_pct,$tried,$cap,$source)=@_;
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
 	 return undef if(!has_luminance_channel($arrays,$target));
 	 my $model=lg_autocal_26_response_model_for_step($state,$step);
@@ -1911,8 +1911,66 @@ sub lg_autocal_26_learned_luminance_adjustment {
 	  next if(abs($predicted) >= abs($lum_pct)*0.92 && abs($actual_delta) > 0.21);
 	  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, learned_response_model=>1, slope=>$slope, predicted_error=>$predicted, source=>$source||"learned_luminance", samples=>$entry->{"samples"}||1 }];
 	 }
-	 return undef;
-	}
+		 return undef;
+		}
+
+sub lg_autocal_26_adaptive_headroom_luminance_adjustment {
+		 my ($state,$arrays,$target,$step,$lum_pct,$tried,$stalls,$source)=@_;
+		 return undef if(ref($step) ne "HASH" || !autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
+		 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
+		 return undef if(!has_luminance_channel($arrays,$target));
+		 my $luma_gate=headroom_luminance_control_gate_percent($step,0.65);
+		 return undef if(abs($lum_pct) <= $luma_gate);
+		 my $model=lg_autocal_26_response_model_for_step($state,$step);
+		 my $entry=(ref($model) eq "HASH" && ref($model->{"luminance"}) eq "HASH") ? $model->{"luminance"}{"adjustingLuminance"} : undef;
+		 return undef if(ref($entry) ne "HASH" || !defined($entry->{"slope"}));
+		 my $idx=$target->{"index"};
+		 return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+		 my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
+		 my $slope=$entry->{"slope"}+0;
+		 my $prev_delta=defined($entry->{"delta"}) ? ($entry->{"delta"}+0) : 0;
+		 my $before_error=defined($entry->{"before_error"}) ? ($entry->{"before_error"}+0) : undef;
+		 my $after_error=defined($entry->{"after_error"}) ? ($entry->{"after_error"}+0) : undef;
+		 my $observed_change=(defined($before_error) && defined($after_error)) ? abs($after_error-$before_error) : undef;
+		 my $improvement=(defined($before_error) && defined($after_error)) ? (abs($before_error)-abs($after_error)) : undef;
+		 my $ineffective=0;
+		 $ineffective=1 if(defined($observed_change) && abs($prev_delta) >= 0.2499 && $observed_change < 0.35);
+		 $ineffective=1 if(defined($improvement) && $improvement <= 0.05 && abs($prev_delta) >= 0.2499);
+		 $stalls=0 if(!defined($stalls));
+		 my $cap=abs($lum_pct) >= 10 ? 8 : (abs($lum_pct) >= 5 ? 6 : (abs($lum_pct) >= 2 ? 4 : 2));
+		 $cap=4 if($cap > 4 && $stalls < 2 && !$ineffective);
+		 my $raw_delta;
+		 my $weak_response=0;
+		 if(abs($slope) >= 0.05) {
+		  $raw_delta=-($lum_pct+0)/$slope;
+		 } else {
+		  $weak_response=1;
+		  my $direction=($lum_pct > 0) ? -1 : 1;
+		  $raw_delta=$direction*$cap;
+		 }
+		 my $min_escalated=0;
+		 if(($ineffective || $weak_response) && abs($prev_delta) >= 0.2499) {
+		  $min_escalated=abs($prev_delta)*2;
+		  $min_escalated=$cap if($min_escalated > $cap);
+		  if(abs($raw_delta) < $min_escalated) {
+		   my $direction=($raw_delta < 0) ? -1 : 1;
+		   $direction=(($lum_pct > 0) ? -1 : 1) if(abs($raw_delta) < 0.0001);
+		   $raw_delta=$direction*$min_escalated;
+		  }
+		 }
+		 $raw_delta=$cap if($raw_delta > $cap);
+		 $raw_delta=-$cap if($raw_delta < -$cap);
+		 return undef if(abs($raw_delta) < 0.20);
+		 foreach my $scale (1,0.75,0.50,0.25) {
+		  my $next=round_ddc_quarter($current+($raw_delta*$scale));
+		  next if(abs($next-$current) < 0.1999);
+		  next if(tried_value_exists($tried,"adjustingLuminance",$next));
+		  my $actual_delta=$next-$current;
+		  my $predicted=(abs($slope) >= 0.05) ? (($lum_pct+0)+($slope*$actual_delta)) : undef;
+		  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$actual_delta, adaptive_luminance=>1, headroom_luminance=>1, response_model=>1, slope=>$slope, predicted_error=>$predicted, previous_delta=>$prev_delta+0, previous_before_error=>$before_error, previous_after_error=>$after_error, insufficient_luminance_response=>($ineffective||$weak_response)?1:0, source=>$source||"adaptive_headroom_luminance" }];
+		 }
+		 return undef;
+		}
 
 sub lg_autocal_26_learned_rgb_adjustment {
 	 my ($state,$arrays,$target,$step,$reading,$de,$target_delta,$tried,$cap,$source)=@_;
@@ -1973,17 +2031,31 @@ sub lg_autocal_26_best_known_committed_state {
 }
 
 sub lg_autocal_26_arrays_with_best_known_values {
- my ($arrays,$target,$entry)=@_;
- return undef if(!lg_autocal_26_best_known_values_available($entry,$target,$arrays));
- my $next=clone_arrays($arrays);
- my $idx=$target->{"index"};
+	 my ($arrays,$target,$entry)=@_;
+	 return undef if(!lg_autocal_26_best_known_values_available($entry,$target,$arrays));
+	 my $next=clone_arrays($arrays);
+	 my $idx=$target->{"index"};
  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
   next if(!exists($entry->{"ddc_values"}{$setting}));
   next if(ref($next->{$setting}) ne "ARRAY" || $idx >= @{$next->{$setting}});
   $next->{$setting}[$idx]=$entry->{"ddc_values"}{$setting}+0;
- }
- return $next;
-}
+	 }
+	 return $next;
+	}
+
+sub apply_lg_autocal_26_best_known_values_to_target {
+	 my ($arrays,$target,$entry)=@_;
+	 return 0 if(!lg_autocal_26_best_known_values_available($entry,$target,$arrays));
+	 my $idx=$target->{"index"};
+	 my $applied=0;
+	 foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+	  next if(!exists($entry->{"ddc_values"}{$setting}));
+	  next if(ref($arrays->{$setting}) ne "ARRAY" || $idx >= @{$arrays->{$setting}});
+	  $arrays->{$setting}[$idx]=$entry->{"ddc_values"}{$setting}+0;
+	  $applied++;
+	 }
+	 return $applied;
+	}
 
 sub headroom_autocal_result_score {
 	 my ($de,$reading,$step)=@_;
@@ -7324,37 +7396,59 @@ eval {
 		   $state->{"lg_autocal_26_full_ddc_spine_completed_slots"}=\@completed_anchor_ires;
 			   $state->{"lg_autocal_26_full_ddc_spine_last_completed_anchor"}=($final_target->{"ire"}+0) if(lg_autocal_26_full_ddc_spine_anchor($final_target));
 		  }
-		  my $adjacent_seed=0;
-		  my $adjacent_seed_target;
-		  my $final_ire=defined($final_target->{"ire"}) ? ($final_target->{"ire"}+0) : undef;
-		  if($anchor_predrive_mode && defined($final_ire)) {
-		   if(abs($final_ire-109) < 0.001) {
-		    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,109,105,0);
-		    $adjacent_seed->{"message"}="seeded 105 from 109" if(ref($adjacent_seed) eq "HASH");
-		    $adjacent_seed->{"label"}="105%" if(ref($adjacent_seed) eq "HASH");
-		    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(105), ire=>format_percent(105), label=>"105%" } if(ref($adjacent_seed) eq "HASH");
-		   } elsif(abs($final_ire-105) < 0.001) {
-		    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,105,99,1);
-		    $adjacent_seed->{"message"}="seeded 99 legal-white from 105" if(ref($adjacent_seed) eq "HASH");
-		    $adjacent_seed->{"label"}="99% legal-white" if(ref($adjacent_seed) eq "HASH");
-		    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(99), ire=>format_percent(99), label=>"99% legal-white" } if(ref($adjacent_seed) eq "HASH");
-		   }
-		  }
-		  if(ref($adjacent_seed) eq "HASH" && ref($adjacent_seed_target) eq "HASH" && defined($adjacent_seed_target->{"index"})) {
-		   $state->{"lg_autocal_26_anchor_predrive_last_adjacent_seed"}=$adjacent_seed;
-		   $state->{"lg_autocal_26_anchor_predrive_adjacent_seed_message"}=$adjacent_seed->{"message"};
-		   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed",{
+			  my $adjacent_seed=0;
+			  my $adjacent_seed_target;
+			  my $final_ire=defined($final_target->{"ire"}) ? ($final_target->{"ire"}+0) : undef;
+			  my $adjacent_seed_source_best;
+			  my $adjacent_seed_source_best_applied=0;
+			  my $adjacent_seed_skip_reason="";
+			  if($anchor_predrive_mode && defined($final_ire)) {
+			   $adjacent_seed_source_best=lg_autocal_26_best_known_for_step($state,{ ire=>$final_ire });
+			   if(ref($adjacent_seed_source_best) eq "HASH") {
+			    $adjacent_seed_source_best_applied=apply_lg_autocal_26_best_known_values_to_target($arrays,$final_target,$adjacent_seed_source_best);
+			   } else {
+			    $adjacent_seed_skip_reason="missing_final_best_source";
+			   }
+			   if(abs($final_ire-109) < 0.001 && ref($adjacent_seed_source_best) eq "HASH") {
+			    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,109,105,0);
+			    $adjacent_seed->{"message"}="seeded 105 from 109" if(ref($adjacent_seed) eq "HASH");
+			    $adjacent_seed->{"label"}="105%" if(ref($adjacent_seed) eq "HASH");
+			    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(105), ire=>format_percent(105), label=>"105%" } if(ref($adjacent_seed) eq "HASH");
+			   } elsif(abs($final_ire-105) < 0.001 && ref($adjacent_seed_source_best) eq "HASH") {
+			    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,105,99,1);
+			    $adjacent_seed->{"message"}="seeded 99 legal-white from 105" if(ref($adjacent_seed) eq "HASH");
+			    $adjacent_seed->{"label"}="99% legal-white" if(ref($adjacent_seed) eq "HASH");
+			    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(99), ire=>format_percent(99), label=>"99% legal-white" } if(ref($adjacent_seed) eq "HASH");
+			   }
+			  }
+			  if($anchor_predrive_mode && defined($final_ire) && $adjacent_seed_skip_reason ne "" && (abs($final_ire-109) < 0.001 || abs($final_ire-105) < 0.001)) {
+			   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed_skipped",{
+			    mode=>"anchor_predrive",
+			    reason=>$adjacent_seed_skip_reason,
+			    label=>$final_label||$final_target->{"label"}||"",
+			    source_ire=>$final_ire+0
+			   });
+			  }
+			  if(ref($adjacent_seed) eq "HASH" && ref($adjacent_seed_target) eq "HASH" && defined($adjacent_seed_target->{"index"})) {
+			   $state->{"lg_autocal_26_anchor_predrive_last_adjacent_seed"}=$adjacent_seed;
+			   $state->{"lg_autocal_26_anchor_predrive_adjacent_seed_message"}=$adjacent_seed->{"message"};
+			   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed",{
 		    mode=>"anchor_predrive",
 		    message=>$adjacent_seed->{"message"},
 		    label=>$final_label||$final_target->{"label"}||"",
 		    source_ire=>$adjacent_seed->{"source_ire"},
 		    target_ire=>$adjacent_seed->{"target_ire"},
-		    copy_luminance=>$adjacent_seed->{"copy_luminance"},
-		    seed=>$adjacent_seed,
-		    source_values=>$adjacent_seed->{"source"},
-		    target_values_before=>$adjacent_seed->{"before"},
-		    target_values_after=>$adjacent_seed->{"after"}
-		   });
+			    copy_luminance=>$adjacent_seed->{"copy_luminance"},
+			    seed=>$adjacent_seed,
+			    source_values=>$adjacent_seed->{"source"},
+			    source_final_best_applied=>$adjacent_seed_source_best_applied+0,
+			    source_final_best_reason=>ref($adjacent_seed_source_best) eq "HASH" ? ($adjacent_seed_source_best->{"reason"}||"") : "",
+			    source_final_best_delta_e=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"delta_e"}) ? ($adjacent_seed_source_best->{"delta_e"}+0) : undef,
+			    source_final_best_luminance_error_pct=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"luminance_error_pct"}) ? ($adjacent_seed_source_best->{"luminance_error_pct"}+0) : undef,
+			    source_final_best_values=>ref($adjacent_seed_source_best) eq "HASH" ? $adjacent_seed_source_best->{"ddc_values"} : undef,
+			    target_values_before=>$adjacent_seed->{"before"},
+			    target_values_after=>$adjacent_seed->{"after"}
+			   });
 		   if(!cancelled()) {
 		    $state->{"phase"}="writing";
 		    $state->{"message"}=$adjacent_seed->{"message"};
@@ -8228,11 +8322,12 @@ eval {
 						   ) {
 						    $adjustments=$headroom_next_adjustments;
 						    $headroom_next_adjustments=undef;
-						   } else {
-						    $headroom_next_adjustments=undef if(autocal_step_is_fast_headroom($read_step));
-						    $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls) if(!$adjustments);
-						    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step) if(!$adjustments);
-						   }
+							   } else {
+							    $headroom_next_adjustments=undef if(autocal_step_is_fast_headroom($read_step));
+							    $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls) if(!$adjustments);
+							    $adjustments=lg_autocal_26_adaptive_headroom_luminance_adjustment($state,$arrays,$target,$read_step,$lum_pct,\%tried_values,$stalls,"main_headroom_luminance") if(!$adjustments);
+							    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step) if(!$adjustments);
+							   }
 					   if(!$adjustments && stimulus_probe_enabled($config) && !autocal_step_is_peak_headroom($read_step) && !$pair_target_reached_now->()) {
 				    my ($probe_step,$probe_reading,$probe_arrays,$probe_picture,$probe_error)=probe_responsive_stimulus(
 				     $config,$state,$read_step,$arrays,$slot_default_arrays,$target,$picture,$picture_mode,$calibration_mode_active,$reading,
