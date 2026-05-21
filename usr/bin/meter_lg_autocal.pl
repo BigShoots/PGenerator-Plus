@@ -355,6 +355,23 @@ sub autocal_skip_duplicate_ddc_slot {
  return 0;
 }
 
+sub lg_autocal_26_full_ddc_spine_enabled {
+ my ($config)=@_;
+ return (ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $config->{"lg_autocal_26_full_ddc_spine"}) ? 1 : 0;
+}
+
+sub lg_autocal_26_full_ddc_spine_anchor_ires {
+ return (109,85,65,45,25);
+}
+
+sub lg_autocal_26_full_ddc_spine_anchor {
+ my ($target)=@_;
+ return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
+ my $ire=$target->{"ire"}+0;
+ my $match=grep { abs($ire-$_) < 0.001 } lg_autocal_26_full_ddc_spine_anchor_ires();
+ return $match ? 1 : 0;
+}
+
 sub high_low_stride_steps {
  my (@steps)=@_;
  @steps=sort { ($a->{"ire"}||0) <=> ($b->{"ire"}||0) } grep { ref($_) eq "HASH" } @steps;
@@ -376,15 +393,17 @@ sub order_autocal_steps {
    next if($step->{"autocal_white_reference"});
    my $target=ddc_target_for_step($step);
    $normal_ddc_slot{format_percent($target->{"ire"})}=1 if($target);
-  }
-	 @valid=grep {
-   my $target=ddc_target_for_step($_);
-   !($_->{"autocal_white_reference"} && $target && $normal_ddc_slot{format_percent($target->{"ire"})})
-	 } @valid;
-  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
-  my @lg_autocal_26_order=(109,105,99,80,60,40,20,90,95,85,70,75,65,50,55,45,30,35,25,15,10,7,5,4,3,2.3);
-  my %seen_target;
-  my @ordered;
+	  }
+		 @valid=grep {
+	   my $target=ddc_target_for_step($_);
+	   !($_->{"autocal_white_reference"} && $target && $normal_ddc_slot{format_percent($target->{"ire"})})
+		 } @valid;
+	  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
+	  my @lg_autocal_26_order=(109,105,99,80,60,40,20,90,95,85,70,75,65,50,55,45,30,35,25,15,10,7,5,4,3,2.3);
+	  @lg_autocal_26_order=(109,85,65,45,25,105,99,95,90,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
+	   if(lg_autocal_26_full_ddc_spine_enabled($config));
+	  my %seen_target;
+	  my @ordered;
   my $target_key=sub {
    my ($step)=@_;
    my $target=ddc_target_for_step($step);
@@ -2411,6 +2430,24 @@ sub calibrated_non_black_26pt_anchor_count {
  return $count;
 }
 
+sub calibrated_26pt_slot_ires {
+ my ($calibrated_slot_mask)=@_;
+ return () if(ref($calibrated_slot_mask) ne "ARRAY");
+ my @slots=ddc_slots();
+ my @ires;
+ for(my $idx=0;$idx<@slots;$idx++) {
+  next if(!$calibrated_slot_mask->[$idx]);
+  push @ires,$slots[$idx]+0;
+ }
+ return @ires;
+}
+
+sub completed_lg_autocal_26_full_ddc_spine_anchor_ires {
+ my ($calibrated_slot_mask)=@_;
+ my %calibrated=map { format_percent($_) => 1 } calibrated_26pt_slot_ires($calibrated_slot_mask);
+ return grep { $calibrated{format_percent($_)} } lg_autocal_26_full_ddc_spine_anchor_ires();
+}
+
 sub linear_interpolated_26pt_curve_value {
  my ($x,$left,$right)=@_;
  return undef if(ref($left) ne "HASH" || ref($right) ne "HASH");
@@ -2510,7 +2547,8 @@ sub propagate_uncalibrated_26pt_slots {
 sub refresh_propagated_uncalibrated_26pt_slots {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- return 0 if(calibrated_non_black_26pt_anchor_count($calibrated_slot_mask) < 3);
+ my $minimum_anchors=lg_autocal_26_full_ddc_spine_enabled($config) ? 1 : 3;
+ return 0 if(calibrated_non_black_26pt_anchor_count($calibrated_slot_mask) < $minimum_anchors);
  return propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask);
 }
 
@@ -6053,10 +6091,17 @@ my $state={
 		 final_1d_lut_uploaded=>JSON::PP::false,
 		 final_1d_lut_upload_verified=>JSON::PP::false,
 		 calibration_mode=>JSON::PP::false,
-		 message=>"Starting",
-		};
-write_state($state);
-$LG_AUTOCAL_STATE=$state;
+			 message=>"Starting",
+			};
+if(lg_autocal_26_full_ddc_spine_enabled($config)) {
+ $state->{"lg_autocal_26_mode"}="full_ddc_spine";
+ $state->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::true;
+ $state->{"lg_autocal_26_full_ddc_spine_anchors"}=[lg_autocal_26_full_ddc_spine_anchor_ires()];
+ $state->{"lg_autocal_26_full_ddc_spine_completed_anchors"}=[];
+ $state->{"lg_autocal_26_full_ddc_spine_synthesized_slots"}=[];
+}
+	write_state($state);
+	$LG_AUTOCAL_STATE=$state;
 my $calibration_mode_active=0;
 my $active_picture_mode_for_cleanup="";
 
@@ -6082,17 +6127,26 @@ eval {
 	 my $finalize_calibrated_26pt_slot=sub {
 	  my ($final_target,$final_read_step,$final_label)=@_;
 	  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$final_target);
-	  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
-	  return 0 if(ref($arrays) ne "HASH" || ref($final_target) ne "HASH");
-	  my @dynamic_seed_slots=ddc_slots();
-	  my $calibrated_non_black_anchors=calibrated_non_black_26pt_anchor_count(\@calibrated_ddc_slots);
-	  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
-	  my $before_arrays=clone_arrays($arrays);
-	  my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
-	  return 0 if(!$propagated_slots);
-	  my $after_arrays=clone_arrays($arrays);
-	  my $changed_slots=0;
-	  my @changed_slot_details;
+		  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+		  return 0 if(ref($arrays) ne "HASH" || ref($final_target) ne "HASH");
+		  my @dynamic_seed_slots=ddc_slots();
+		  my $calibrated_non_black_anchors=calibrated_non_black_26pt_anchor_count(\@calibrated_ddc_slots);
+		  my $full_ddc_spine_mode=lg_autocal_26_full_ddc_spine_enabled($config);
+		  my @completed_anchor_ires=calibrated_26pt_slot_ires(\@calibrated_ddc_slots);
+		  my @completed_spine_anchors=completed_lg_autocal_26_full_ddc_spine_anchor_ires(\@calibrated_ddc_slots);
+		  if($full_ddc_spine_mode) {
+		   $state->{"lg_autocal_26_mode"}="full_ddc_spine";
+		   $state->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::true;
+		   $state->{"lg_autocal_26_full_ddc_spine_completed_anchors"}=\@completed_spine_anchors;
+		   $state->{"lg_autocal_26_full_ddc_spine_completed_slots"}=\@completed_anchor_ires;
+		   $state->{"lg_autocal_26_full_ddc_spine_last_completed_anchor"}=($final_target->{"ire"}+0) if(lg_autocal_26_full_ddc_spine_anchor($final_target));
+		  }
+		  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
+		  my $before_arrays=clone_arrays($arrays);
+		  my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
+		  my $after_arrays=clone_arrays($arrays);
+		  my $changed_slots=0;
+		  my @changed_slot_details;
 	  for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
 	   next if($calibrated_ddc_slots[$idx]);
 	   my $slot_changed=0;
@@ -6112,20 +6166,46 @@ eval {
 	     index=>$idx+0,
 	     ire=>defined($dynamic_seed_slots[$idx]) ? ($dynamic_seed_slots[$idx]+0) : undef,
 	     settings=>\%changed_settings
-	    };
-	   }
-	  }
-	  return 0 if(!$changed_slots);
-	  $state->{"dynamic_propagated_26pt_slots"}=$changed_slots+0;
-	  $state->{"propagated_26pt_slots"}=$changed_slots+0;
-	  $state->{"dynamic_propagated_26pt_slot_details"}=\@changed_slot_details;
-	  trace_109($final_read_step || $final_target,"dynamic_26pt_seed_propagation",{
-	   label=>$final_label||$final_target->{"label"}||"",
-	   changed_slots=>$changed_slots+0,
-	   changed_slot_details=>\@changed_slot_details,
-	   propagated_slots=>$propagated_slots+0,
-	   calibrated_non_black_anchors=>$calibrated_non_black_anchors+0,
-	   target=>$final_target
+		    };
+		   }
+		  }
+		  my @changed_slot_ires=map { $_->{"ire"} } @changed_slot_details;
+		  if($full_ddc_spine_mode) {
+		   $state->{"lg_autocal_26_full_ddc_spine_synthesized_slots"}=\@changed_slot_details;
+		   $state->{"lg_autocal_26_full_ddc_spine_synthesized_ires"}=\@changed_slot_ires;
+		   $state->{"lg_autocal_26_full_ddc_spine_propagated_slots"}=$propagated_slots+0;
+		   trace_109($final_read_step || $final_target,"full_ddc_spine_seed_propagation",{
+		    mode=>"full_ddc_spine",
+		    label=>$final_label||$final_target->{"label"}||"",
+		    target=>$final_target,
+		    completed_anchors=>\@completed_anchor_ires,
+		    completed_spine_anchors=>\@completed_spine_anchors,
+		    completed_anchor_count=>scalar(@completed_anchor_ires)+0,
+		    completed_spine_anchor_count=>scalar(@completed_spine_anchors)+0,
+		    spine_anchor=>lg_autocal_26_full_ddc_spine_anchor($final_target) ? JSON::PP::true : JSON::PP::false,
+		    propagated_slots=>$propagated_slots+0,
+		    synthesized_seeded_slots=>\@changed_slot_details,
+		    synthesized_seeded_ires=>\@changed_slot_ires,
+		    changed_slots=>$changed_slots+0,
+		    calibrated_non_black_anchors=>$calibrated_non_black_anchors+0
+		   });
+		  }
+		  return 0 if(!$propagated_slots);
+		  return 0 if(!$changed_slots);
+		  $state->{"dynamic_propagated_26pt_slots"}=$changed_slots+0;
+		  $state->{"propagated_26pt_slots"}=$changed_slots+0;
+		  $state->{"dynamic_propagated_26pt_slot_details"}=\@changed_slot_details;
+		  trace_109($final_read_step || $final_target,"dynamic_26pt_seed_propagation",{
+		   mode=>$full_ddc_spine_mode ? "full_ddc_spine" : "dynamic",
+		   label=>$final_label||$final_target->{"label"}||"",
+		   changed_slots=>$changed_slots+0,
+		   changed_slot_details=>\@changed_slot_details,
+		   synthesized_seeded_slots=>\@changed_slot_details,
+		   completed_anchors=>\@completed_anchor_ires,
+		   completed_spine_anchors=>\@completed_spine_anchors,
+		   propagated_slots=>$propagated_slots+0,
+		   calibrated_non_black_anchors=>$calibrated_non_black_anchors+0,
+		   target=>$final_target
 	  });
 	  if(!cancelled()) {
 	   $state->{"phase"}="writing";
