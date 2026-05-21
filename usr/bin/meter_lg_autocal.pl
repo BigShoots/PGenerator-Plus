@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance response_vector_model headroom_response_vector slope predicted_error predicted_vector_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -1811,22 +1811,25 @@ sub lg_autocal_26_best_known_for_step {
 	}
 
 sub remember_lg_autocal_26_response_axis {
-	 my ($bucket,$group,$axis,$slope,$delta,$before_error,$after_error,$source)=@_;
+	 my ($bucket,$group,$axis,$slope,$delta,$before_error,$after_error,$source,$vector)=@_;
 	 return undef if(ref($bucket) ne "HASH" || !defined($group) || !defined($axis));
 	 return undef if(!defined($slope) || abs($slope) < 0.000001 || !defined($delta) || abs($delta) < 0.0001);
 	 $bucket->{$group}={} if(ref($bucket->{$group}) ne "HASH");
 	 my $existing=$bucket->{$group}{$axis};
 	 my $samples=1;
+	 my $old_samples=1;
+	 my $blend_existing=0;
 	 if(ref($existing) eq "HASH" && defined($existing->{"slope"})) {
 	  my $old=$existing->{"slope"}+0;
 	  if(($old < 0 && $slope < 0) || ($old > 0 && $slope > 0)) {
-	   my $old_samples=$existing->{"samples"}||1;
+	   $old_samples=$existing->{"samples"}||1;
 	   $old_samples=5 if($old_samples > 5);
 	   $slope=(($old*$old_samples)+$slope)/($old_samples+1);
 	   $samples=($existing->{"samples"}||1)+1;
+	   $blend_existing=1;
 	  }
 	 }
-	 $bucket->{$group}{$axis}={
+	 my %entry=(
 	  slope=>$slope+0,
 	  samples=>$samples+0,
 	  delta=>$delta+0,
@@ -1834,8 +1837,44 @@ sub remember_lg_autocal_26_response_axis {
 	  after_error=>defined($after_error) ? ($after_error+0) : undef,
 	  source=>$source||"calibration",
 	  updated_at=>time()+0
-	 };
+	 );
+	 if(ref($vector) eq "HASH") {
+	  my %stored;
+	  foreach my $dim (qw(r g b luminance_pct)) {
+	   next if(!defined($vector->{$dim}));
+	   my $value=$vector->{$dim}+0;
+	   if($blend_existing && ref($existing->{"vector"}) eq "HASH" && defined($existing->{"vector"}{$dim})) {
+	    $value=((($existing->{"vector"}{$dim}+0)*$old_samples)+$value)/($old_samples+1);
+	   }
+	   $stored{$dim}=$value+0;
+	  }
+	  $entry{"vector"}=\%stored if(%stored);
+	 }
+	 $bucket->{$group}{$axis}=\%entry;
 	 return $bucket->{$group}{$axis};
+	}
+
+sub lg_autocal_26_response_vector_from_readings {
+	 my ($before,$after,$step,$delta)=@_;
+	 return undef if(ref($before) ne "HASH" || ref($after) ne "HASH" || !defined($delta) || abs($delta) < 0.0001);
+	 my %vector;
+	 my $before_err=autocal_adjustment_error($before,$step);
+	 my $after_err=autocal_adjustment_error($after,$step);
+	 if(ref($before_err) eq "HASH" && ref($after_err) eq "HASH") {
+	  foreach my $dim (qw(r g b)) {
+	   next if(!defined($before_err->{$dim}) || !defined($after_err->{$dim}));
+	   $vector{$dim}=(($after_err->{$dim}+0)-($before_err->{$dim}+0))/$delta;
+	  }
+	 }
+	 my $target_y=$after->{"target_luminance"};
+	 $target_y=$before->{"target_luminance"} if(!defined($target_y));
+	 if(defined($target_y) && $target_y > 0) {
+	  my $before_lum_pct=luminance_error_percent($before,$target_y);
+	  my $after_lum_pct=luminance_error_percent($after,$target_y);
+	  $vector{"luminance_pct"}=($after_lum_pct-$before_lum_pct)/$delta
+	   if(defined($before_lum_pct) && defined($after_lum_pct));
+	 }
+	 return %vector ? \%vector : undef;
 	}
 
 sub lg_autocal_26_expected_headroom_luminance_direction {
@@ -1876,6 +1915,7 @@ sub remember_lg_autocal_26_response_model {
 	 return undef if(!defined($delta) || abs($delta) < 0.0001 || abs($delta) > 12.0001);
 	 my $key=lg_autocal_26_best_known_key($step);
 	 return undef if(!defined($key));
+	 my $response_vector=lg_autocal_26_response_vector_from_readings($before,$after,$step,$delta);
 	 $state->{"lg_autocal_26_response_model"}={} if(ref($state->{"lg_autocal_26_response_model"}) ne "HASH");
 	 $state->{"lg_autocal_26_response_model"}{$key}={} if(ref($state->{"lg_autocal_26_response_model"}{$key}) ne "HASH");
 	 my $bucket=$state->{"lg_autocal_26_response_model"}{$key};
@@ -1886,7 +1926,7 @@ sub remember_lg_autocal_26_response_model {
 	  my $after_err=autocal_adjustment_error($after,$step);
 	  if(ref($before_err) eq "HASH" && ref($after_err) eq "HASH" && defined($before_err->{$ch}) && defined($after_err->{$ch})) {
 	   my $slope=(($after_err->{$ch}+0)-($before_err->{$ch}+0))/$delta;
-	   my $entry=remember_lg_autocal_26_response_axis($bucket,"rgb",$ch,$slope,$delta,$before_err->{$ch},$after_err->{$ch},$source);
+	   my $entry=remember_lg_autocal_26_response_axis($bucket,"rgb",$ch,$slope,$delta,$before_err->{$ch},$after_err->{$ch},$source,$response_vector);
 	   $updates{"rgb"}{$ch}=$entry if(ref($entry) eq "HASH");
 	  }
 	 }
@@ -1899,7 +1939,7 @@ sub remember_lg_autocal_26_response_model {
 	   if(defined($before_lum_pct) && defined($after_lum_pct)) {
 	    return undef if(!lg_autocal_26_headroom_luminance_response_acceptable($step,$delta,$before_lum_pct,$after_lum_pct));
 	    my $slope=($after_lum_pct-$before_lum_pct)/$delta;
-	    my $entry=remember_lg_autocal_26_response_axis($bucket,"luminance","adjustingLuminance",$slope,$delta,$before_lum_pct,$after_lum_pct,$source);
+	    my $entry=remember_lg_autocal_26_response_axis($bucket,"luminance","adjustingLuminance",$slope,$delta,$before_lum_pct,$after_lum_pct,$source,$response_vector);
 	    $updates{"luminance"}{"adjustingLuminance"}=$entry if(ref($entry) eq "HASH");
 	   }
 	  }
@@ -1914,6 +1954,204 @@ sub lg_autocal_26_response_model_for_step {
 	 return undef if(!defined($key));
 	 my $entry=$state->{"lg_autocal_26_response_model"}{$key};
 	 return (ref($entry) eq "HASH") ? $entry : undef;
+	}
+
+sub lg_autocal_26_solve_linear_system {
+	 my ($matrix,$rhs)=@_;
+	 return undef if(ref($matrix) ne "ARRAY" || ref($rhs) ne "ARRAY");
+	 my $n=@{$rhs};
+	 return undef if($n < 1 || $n > 4 || @{$matrix} != $n);
+	 my @a;
+	 for(my $i=0;$i<$n;$i++) {
+	  return undef if(ref($matrix->[$i]) ne "ARRAY" || @{$matrix->[$i]} != $n);
+	  $a[$i]=[ map { defined($_) ? ($_+0) : 0 } @{$matrix->[$i]} ];
+	  push @{$a[$i]},$rhs->[$i]+0;
+	 }
+	 for(my $i=0;$i<$n;$i++) {
+	  my $pivot=$i;
+	  my $pivot_abs=abs($a[$i][$i]);
+	  for(my $r=$i+1;$r<$n;$r++) {
+	   my $abs=abs($a[$r][$i]);
+	   if($abs > $pivot_abs) {
+	    $pivot=$r;
+	    $pivot_abs=$abs;
+	   }
+	  }
+	  return undef if($pivot_abs < 0.0000001);
+	  if($pivot != $i) {
+	   my $tmp=$a[$i];
+	   $a[$i]=$a[$pivot];
+	   $a[$pivot]=$tmp;
+	  }
+	  my $den=$a[$i][$i];
+	  for(my $c=$i;$c<=$n;$c++) {
+	   $a[$i][$c]/=$den;
+	  }
+	  for(my $r=0;$r<$n;$r++) {
+	   next if($r == $i);
+	   my $factor=$a[$r][$i];
+	   next if(abs($factor) < 0.0000000001);
+	   for(my $c=$i;$c<=$n;$c++) {
+	    $a[$r][$c]-=$factor*$a[$i][$c];
+	   }
+	  }
+	 }
+	 return [ map { $a[$_][$n]+0 } 0..($n-1) ];
+	}
+
+sub lg_autocal_26_headroom_response_vector_adjustment {
+	 my ($state,$arrays,$target,$step,$error,$lum_pct,$tried,$de,$target_delta,$micro,$source)=@_;
+	 return undef if(ref($step) ne "HASH" || !autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
+	 return undef if(strict_tried_for_step($step));
+	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($error) ne "HASH" || !defined($lum_pct));
+	 return undef if(!has_luminance_channel($arrays,$target));
+	 my $luma_gate=headroom_luminance_control_gate_percent($step,$micro ? 0.45 : 0.65);
+	 return undef if(abs($lum_pct) <= $luma_gate);
+	 my $chroma_mag=chroma_error_magnitude($error);
+	 return undef if($chroma_mag < ($micro ? 0.006 : 0.008));
+	 my $model=lg_autocal_26_response_model_for_step($state,$step);
+	 return undef if(ref($model) ne "HASH");
+	 my %scale=(r=>0.010,g=>0.010,b=>0.010,luminance_pct=>2.0);
+	 my @dims=qw(r g b luminance_pct);
+	 my @axes;
+	 my $add_axis=sub {
+	  my ($axis,$setting,$channel,$entry,$require_luma)=@_;
+	  return if(ref($entry) ne "HASH" || ref($entry->{"vector"}) ne "HASH");
+	  return if($require_luma && (!defined($entry->{"vector"}{"luminance_pct"}) || abs($entry->{"vector"}{"luminance_pct"}) < 0.05));
+	  my %col;
+	  my $norm=0;
+	  foreach my $dim (@dims) {
+	   next if(!defined($entry->{"vector"}{$dim}));
+	   $col{$dim}=($entry->{"vector"}{$dim}+0)/$scale{$dim};
+	   $norm+=$col{$dim}*$col{$dim};
+	  }
+	  return if($norm < 0.0004);
+	  push @axes,{ axis=>$axis, setting=>$setting, channel=>$channel, entry=>$entry, col=>\%col, norm=>sqrt($norm) };
+	 };
+	 my $luma_entry=(ref($model->{"luminance"}) eq "HASH") ? $model->{"luminance"}{"adjustingLuminance"} : undef;
+	 $add_axis->("lum","adjustingLuminance","lum",$luma_entry,1);
+	 return undef if(@axes < 1 || $axes[0]{"axis"} ne "lum");
+	 my $rgb_count=0;
+	 if(ref($model->{"rgb"}) eq "HASH") {
+	  foreach my $ch (qw(r g b)) {
+	   my $before=@axes;
+	   $add_axis->($ch,channel_setting($ch),$ch,$model->{"rgb"}{$ch},0);
+	   $rgb_count++ if(@axes > $before);
+	  }
+	 }
+	 return undef if($rgb_count < 1 || @axes < 2);
+	 for(my $i=0;$i<@axes;$i++) {
+	  for(my $j=$i+1;$j<@axes;$j++) {
+	   my $dot=0;
+	   foreach my $dim (@dims) {
+	    $dot+=(($axes[$i]{"col"}{$dim}||0)*($axes[$j]{"col"}{$dim}||0));
+	   }
+	   my $corr=(abs($dot)/(($axes[$i]{"norm"}||1)*($axes[$j]{"norm"}||1)));
+	   return undef if($corr > 0.999);
+	  }
+	 }
+	 my %target=(
+	  r=>-(($error->{"r"}||0)/$scale{"r"}),
+	  g=>-(($error->{"g"}||0)/$scale{"g"}),
+	  b=>-(($error->{"b"}||0)/$scale{"b"}),
+	  luminance_pct=>-(($lum_pct+0)/$scale{"luminance_pct"})
+	 );
+	 my (@normal,@rhs);
+	 for(my $i=0;$i<@axes;$i++) {
+	  $rhs[$i]=0;
+	  for(my $j=0;$j<@axes;$j++) {
+	   $normal[$i][$j]=0;
+	  }
+	  foreach my $dim (@dims) {
+	   my $ci=$axes[$i]{"col"}{$dim}||0;
+	   $rhs[$i]+=$ci*($target{$dim}||0);
+	   for(my $j=0;$j<@axes;$j++) {
+	    $normal[$i][$j]+=$ci*(($axes[$j]{"col"}{$dim}||0));
+	   }
+	  }
+	 }
+	 my $diag_sum=0;
+	 $diag_sum+=$normal[$_][$_] for(0..$#axes);
+	 return undef if($diag_sum <= 0.000001);
+	 my $ridge=($diag_sum/@axes)*0.0025;
+	 $normal[$_][$_]+=$ridge for(0..$#axes);
+	 my $solution=lg_autocal_26_solve_linear_system(\@normal,\@rhs);
+	 return undef if(ref($solution) ne "ARRAY" || @{$solution} != @axes);
+	 my $idx=$target->{"index"};
+	 return undef if(!defined($idx));
+	 my $expected_luma_direction=lg_autocal_26_expected_headroom_luminance_direction($step,$lum_pct,0.35);
+	 my $current_score=0;
+	 my $current_rgb_score=0;
+	 foreach my $dim (@dims) {
+	  my $v=($dim eq "luminance_pct") ? (($lum_pct+0)/$scale{$dim}) : (($error->{$dim}||0)/$scale{$dim});
+	  $current_score+=$v*$v;
+	  $current_rgb_score+=$v*$v if($dim ne "luminance_pct");
+	 }
+	 return undef if($current_score <= 0.000001);
+	 foreach my $scale_factor (1,0.75,0.50,0.35,0.25) {
+	  my @out;
+	  my %pred=(r=>$error->{"r"}||0,g=>$error->{"g"}||0,b=>$error->{"b"}||0,luminance_pct=>$lum_pct+0);
+	  my ($blocked,$has_luma,$has_rgb)=(0,0,0);
+	  for(my $i=0;$i<@axes;$i++) {
+	   my $axis=$axes[$i];
+	   my $setting=$axis->{"setting"};
+	   my $arr=$arrays->{$setting};
+	   if(ref($arr) ne "ARRAY" || $idx >= @{$arr}) { $blocked=1; last; }
+	   my $cap=($setting eq "adjustingLuminance")
+	    ? ($micro ? (abs($lum_pct) >= 3.5 ? 1.5 : 1.0) : (abs($lum_pct) >= 8 ? 4.0 : (abs($lum_pct) >= 4 ? 3.0 : 2.0)))
+	    : ($micro ? 1.0 : ((defined($de) && $de > 4) ? 2.0 : 1.5));
+	   my $raw=($solution->[$i]||0)*$scale_factor;
+	   $raw=$cap if($raw > $cap);
+	   $raw=-$cap if($raw < -$cap);
+	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	   my $next=round_ddc_quarter($current+$raw);
+	   my $actual_delta=$next-$current;
+	   my $min_actual=($setting eq "adjustingLuminance") ? 0.1999 : 0.0999;
+	   next if(abs($actual_delta) < $min_actual);
+	   if($setting eq "adjustingLuminance") {
+	    next if($expected_luma_direction && $actual_delta*$expected_luma_direction <= 0);
+	    $has_luma=1;
+	   } else {
+	    $has_rgb=1;
+	   }
+	   if(tried_value_exists($tried,$setting,$next)) { $blocked=1; last; }
+	   foreach my $dim (@dims) {
+	    $pred{$dim}+=(($axis->{"entry"}{"vector"}{$dim}||0)*$actual_delta);
+	   }
+	   my $predicted_error=($setting eq "adjustingLuminance") ? $pred{"luminance_pct"} : $pred{$axis->{"channel"}};
+	   push @out,{
+	    channel=>$axis->{"channel"},
+	    setting=>$setting,
+	    current=>$current,
+	    next=>$next,
+	    delta=>$actual_delta,
+	    response_model=>1,
+	    response_vector_model=>1,
+	    headroom_response_vector=>1,
+	    predicted_error=>$predicted_error,
+	    source=>$source||"headroom_response_vector",
+	    samples=>$axis->{"entry"}{"samples"}||1
+	   };
+	  }
+	  next if($blocked || !$has_luma || !$has_rgb || @out < 2);
+	  my $pred_score=0;
+	  my $pred_rgb_score=0;
+	  foreach my $dim (@dims) {
+	   my $v=$pred{$dim}/$scale{$dim};
+	   $pred_score+=$v*$v;
+	   $pred_rgb_score+=$v*$v if($dim ne "luminance_pct");
+	  }
+	  next if($pred_score >= $current_score*0.88);
+	  next if(abs($pred{"luminance_pct"}) >= abs($lum_pct)*0.92);
+	  next if($current_rgb_score > 0.000001 && $pred_rgb_score >= $current_rgb_score*0.98);
+	  my $key=headroom_combo_key(\@out);
+	  next if($key eq "");
+	  $tried->{"__headroom_response_vector_combo"}={} if(ref($tried->{"__headroom_response_vector_combo"}) ne "HASH");
+	  next if($tried->{"__headroom_response_vector_combo"}{$key});
+	  $tried->{"__headroom_response_vector_combo"}{$key}={ count=>1, de=>defined($de) ? $de+0 : undef };
+	  return \@out;
+	 }
+	 return undef;
 	}
 
 sub lg_autocal_26_learned_luminance_adjustment {
@@ -8857,6 +9095,7 @@ eval {
 							   } else {
 							    $headroom_next_adjustments=undef if(autocal_step_is_fast_headroom($read_step));
 							    $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls) if(!$adjustments);
+							    $adjustments=lg_autocal_26_headroom_response_vector_adjustment($state,$arrays,$target,$read_step,$err,$lum_pct,\%tried_values,$de,$target_delta,0,"main_headroom_response_vector") if(!$adjustments);
 							    $adjustments=lg_autocal_26_adaptive_headroom_luminance_adjustment($state,$arrays,$target,$read_step,$lum_pct,\%tried_values,$stalls,"main_headroom_luminance") if(!$adjustments);
 							    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step) if(!$adjustments);
 							   }
@@ -9287,6 +9526,8 @@ eval {
 					      $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$best_de,$polish_stalls,\%polish_tried,$read_step,$pair_lum_pct,1);
 					     }
 					    }
+					    my $polish_lum_pct=defined($lum_err) ? ($lum_err*100) : undef;
+					    $adjustments=lg_autocal_26_headroom_response_vector_adjustment($state,$arrays,$target,$read_step,$err,$polish_lum_pct,\%polish_tried,$best_de,$target_delta,1,"fine_headroom_response_vector") if(!$adjustments);
 					    $adjustments=choose_micro_adjustments($err,$arrays,$target,$lum_err,\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step,$target_delta) if(!$adjustments);
 			    if(!$adjustments) {
 			     trace_109($read_step,"no_fine_tune_adjustment_chosen",{
