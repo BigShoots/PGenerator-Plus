@@ -1763,10 +1763,10 @@ sub lg_autocal_26_candidate_better_than_entry {
 }
 
 sub lg_autocal_26_best_known_entry {
- my ($step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason)=@_;
+ my ($step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason,$reached_target)=@_;
  return undef if(ref($step) ne "HASH" || ref($reading) ne "HASH" || !defined($de));
  my $score=lg_autocal_26_measurement_score($step,$de,$lum_pct);
- return {
+ my $entry={
   ire=>($step->{"ire"}+0),
   delta_e=>$de+0,
   luminance_error_pct=>defined($lum_pct) ? ($lum_pct+0) : undef,
@@ -1776,13 +1776,15 @@ sub lg_autocal_26_best_known_entry {
   reading=>trace_reading_summary($reading),
   ddc_values=>trace_target_values($arrays,$target),
  };
+ $entry->{"reached_target"}=$reached_target ? JSON::PP::true : JSON::PP::false if(defined($reached_target));
+ return $entry;
 }
 
 sub remember_lg_autocal_26_best_known {
- my ($config,$state,$step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason)=@_;
+ my ($config,$state,$step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason,$reached_target)=@_;
  return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  return if(ref($state) ne "HASH");
- my $entry=lg_autocal_26_best_known_entry($step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason);
+ my $entry=lg_autocal_26_best_known_entry($step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason,$reached_target);
  return if(ref($entry) ne "HASH");
  my $key=lg_autocal_26_best_known_key($step);
  return if(!defined($key));
@@ -2044,8 +2046,8 @@ sub lg_autocal_26_arrays_with_best_known_values {
 	}
 
 sub apply_lg_autocal_26_best_known_values_to_target {
-	 my ($arrays,$target,$entry)=@_;
-	 return 0 if(!lg_autocal_26_best_known_values_available($entry,$target,$arrays));
+		 my ($arrays,$target,$entry)=@_;
+		 return 0 if(!lg_autocal_26_best_known_values_available($entry,$target,$arrays));
 	 my $idx=$target->{"index"};
 	 my $applied=0;
 	 foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
@@ -2054,11 +2056,50 @@ sub apply_lg_autocal_26_best_known_values_to_target {
 	  $arrays->{$setting}[$idx]=$entry->{"ddc_values"}{$setting}+0;
 	  $applied++;
 	 }
-	 return $applied;
-	}
+		 return $applied;
+		}
+
+sub lg_autocal_26_legal_white_seed_source_gate {
+ my ($entry,$target_delta)=@_;
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $delta_limit=($target_delta*2 > 1.25) ? ($target_delta*2) : 1.25;
+ my $luma_limit=2.0;
+ my %decision=(
+  accepted=>JSON::PP::false,
+  reason=>"missing_final_best_source",
+  delta_e_limit=>$delta_limit+0,
+  luminance_error_limit_pct=>$luma_limit+0
+ );
+ return \%decision if(ref($entry) ne "HASH");
+ my $de=defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef;
+ my $lum_pct=defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef;
+ my $reached=$entry->{"reached_target"} ? 1 : 0;
+ $decision{"source_delta_e"}=$de if(defined($de));
+ $decision{"source_luminance_error_pct"}=$lum_pct if(defined($lum_pct));
+ $decision{"source_reached_target"}=$reached ? JSON::PP::true : JSON::PP::false;
+ if(!defined($de)) {
+  $decision{"reason"}="missing_source_delta_e";
+  return \%decision;
+ }
+ if(!defined($lum_pct)) {
+  $decision{"reason"}="missing_source_luminance_error";
+  return \%decision;
+ }
+ my $de_ok=($de <= $delta_limit) ? 1 : 0;
+ my $luma_ok=(abs($lum_pct) <= $luma_limit) ? 1 : 0;
+ $decision{"source_delta_e_ok"}=$de_ok ? JSON::PP::true : JSON::PP::false;
+ $decision{"source_luminance_error_ok"}=$luma_ok ? JSON::PP::true : JSON::PP::false;
+ if($luma_ok && ($reached || $de_ok)) {
+  $decision{"accepted"}=JSON::PP::true;
+  $decision{"reason"}=$reached ? "source_reached_target" : "source_within_seed_gate";
+  return \%decision;
+ }
+ $decision{"reason"}=$luma_ok ? "source_delta_e_exceeds_gate" : "source_luminance_error_exceeds_gate";
+ return \%decision;
+}
 
 sub headroom_autocal_result_score {
-	 my ($de,$reading,$step)=@_;
+		 my ($de,$reading,$step)=@_;
 	 my $err=rgb_error($reading);
 	 return defined($de) ? ($de+0) : 9999 if(ref($err) ne "HASH");
 	 return defined($de) ? ($de+0) : 9999 if(autocal_step_is_fast_headroom($step) && !autocal_step_is_peak_headroom($step));
@@ -7399,37 +7440,48 @@ eval {
 			  my $adjacent_seed=0;
 			  my $adjacent_seed_target;
 			  my $final_ire=defined($final_target->{"ire"}) ? ($final_target->{"ire"}+0) : undef;
-			  my $adjacent_seed_source_best;
-			  my $adjacent_seed_source_best_applied=0;
-			  my $adjacent_seed_skip_reason="";
-			  if($anchor_predrive_mode && defined($final_ire)) {
-			   $adjacent_seed_source_best=lg_autocal_26_best_known_for_step($state,{ ire=>$final_ire });
-			   if(ref($adjacent_seed_source_best) eq "HASH") {
-			    $adjacent_seed_source_best_applied=apply_lg_autocal_26_best_known_values_to_target($arrays,$final_target,$adjacent_seed_source_best);
+				  my $adjacent_seed_source_best;
+				  my $adjacent_seed_source_best_applied=0;
+				  my $adjacent_seed_skip_reason="";
+				  my $adjacent_seed_source_gate;
+				  if($anchor_predrive_mode && defined($final_ire)) {
+				   $adjacent_seed_source_best=lg_autocal_26_best_known_for_step($state,{ ire=>$final_ire });
+				   if(ref($adjacent_seed_source_best) eq "HASH") {
+				    $adjacent_seed_source_best_applied=apply_lg_autocal_26_best_known_values_to_target($arrays,$final_target,$adjacent_seed_source_best);
 			   } else {
 			    $adjacent_seed_skip_reason="missing_final_best_source";
 			   }
 			   if(abs($final_ire-109) < 0.001 && ref($adjacent_seed_source_best) eq "HASH") {
 			    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,109,105,0);
 			    $adjacent_seed->{"message"}="seeded 105 from 109" if(ref($adjacent_seed) eq "HASH");
-			    $adjacent_seed->{"label"}="105%" if(ref($adjacent_seed) eq "HASH");
-			    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(105), ire=>format_percent(105), label=>"105%" } if(ref($adjacent_seed) eq "HASH");
-			   } elsif(abs($final_ire-105) < 0.001 && ref($adjacent_seed_source_best) eq "HASH") {
-			    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,105,99,1);
-			    $adjacent_seed->{"message"}="seeded 99 legal-white from 105" if(ref($adjacent_seed) eq "HASH");
-			    $adjacent_seed->{"label"}="99% legal-white" if(ref($adjacent_seed) eq "HASH");
-			    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(99), ire=>format_percent(99), label=>"99% legal-white" } if(ref($adjacent_seed) eq "HASH");
-			   }
-			  }
-			  if($anchor_predrive_mode && defined($final_ire) && $adjacent_seed_skip_reason ne "" && (abs($final_ire-109) < 0.001 || abs($final_ire-105) < 0.001)) {
-			   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed_skipped",{
-			    mode=>"anchor_predrive",
-			    reason=>$adjacent_seed_skip_reason,
-			    label=>$final_label||$final_target->{"label"}||"",
-			    source_ire=>$final_ire+0
-			   });
-			  }
-			  if(ref($adjacent_seed) eq "HASH" && ref($adjacent_seed_target) eq "HASH" && defined($adjacent_seed_target->{"index"})) {
+				    $adjacent_seed->{"label"}="105%" if(ref($adjacent_seed) eq "HASH");
+				    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(105), ire=>format_percent(105), label=>"105%" } if(ref($adjacent_seed) eq "HASH");
+				   } elsif(abs($final_ire-105) < 0.001 && ref($adjacent_seed_source_best) eq "HASH") {
+				    $adjacent_seed_source_gate=lg_autocal_26_legal_white_seed_source_gate($adjacent_seed_source_best,$target_delta);
+				    if(ref($adjacent_seed_source_gate) eq "HASH" && $adjacent_seed_source_gate->{"accepted"}) {
+				     $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,105,99,1);
+				     $adjacent_seed->{"message"}="seeded 99 legal-white from 105" if(ref($adjacent_seed) eq "HASH");
+				     $adjacent_seed->{"label"}="99% legal-white" if(ref($adjacent_seed) eq "HASH");
+				     $adjacent_seed_target={ index=>ddc_slot_index_for_ire(99), ire=>format_percent(99), label=>"99% legal-white" } if(ref($adjacent_seed) eq "HASH");
+				    } else {
+				     $adjacent_seed_skip_reason=(ref($adjacent_seed_source_gate) eq "HASH" && defined($adjacent_seed_source_gate->{"reason"})) ? $adjacent_seed_source_gate->{"reason"} : "source_quality_gate_rejected";
+				    }
+				   }
+				  }
+				  if($anchor_predrive_mode && defined($final_ire) && $adjacent_seed_skip_reason ne "" && (abs($final_ire-109) < 0.001 || abs($final_ire-105) < 0.001)) {
+				   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed_skipped",{
+				    mode=>"anchor_predrive",
+				    reason=>$adjacent_seed_skip_reason,
+				    label=>$final_label||$final_target->{"label"}||"",
+				    source_ire=>$final_ire+0,
+				    source_final_best_reason=>ref($adjacent_seed_source_best) eq "HASH" ? ($adjacent_seed_source_best->{"reason"}||"") : "",
+				    source_final_best_delta_e=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"delta_e"}) ? ($adjacent_seed_source_best->{"delta_e"}+0) : undef,
+				    source_final_best_luminance_error_pct=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"luminance_error_pct"}) ? ($adjacent_seed_source_best->{"luminance_error_pct"}+0) : undef,
+				    source_final_best_reached_target=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"reached_target"}) ? $adjacent_seed_source_best->{"reached_target"} : undef,
+				    legal_white_seed_gate=>$adjacent_seed_source_gate
+				   });
+				  }
+				  if(ref($adjacent_seed) eq "HASH" && ref($adjacent_seed_target) eq "HASH" && defined($adjacent_seed_target->{"index"})) {
 			   $state->{"lg_autocal_26_anchor_predrive_last_adjacent_seed"}=$adjacent_seed;
 			   $state->{"lg_autocal_26_anchor_predrive_adjacent_seed_message"}=$adjacent_seed->{"message"};
 			   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed",{
@@ -7442,12 +7494,14 @@ eval {
 			    seed=>$adjacent_seed,
 			    source_values=>$adjacent_seed->{"source"},
 			    source_final_best_applied=>$adjacent_seed_source_best_applied+0,
-			    source_final_best_reason=>ref($adjacent_seed_source_best) eq "HASH" ? ($adjacent_seed_source_best->{"reason"}||"") : "",
-			    source_final_best_delta_e=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"delta_e"}) ? ($adjacent_seed_source_best->{"delta_e"}+0) : undef,
-			    source_final_best_luminance_error_pct=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"luminance_error_pct"}) ? ($adjacent_seed_source_best->{"luminance_error_pct"}+0) : undef,
-			    source_final_best_values=>ref($adjacent_seed_source_best) eq "HASH" ? $adjacent_seed_source_best->{"ddc_values"} : undef,
-			    target_values_before=>$adjacent_seed->{"before"},
-			    target_values_after=>$adjacent_seed->{"after"}
+				    source_final_best_reason=>ref($adjacent_seed_source_best) eq "HASH" ? ($adjacent_seed_source_best->{"reason"}||"") : "",
+				    source_final_best_delta_e=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"delta_e"}) ? ($adjacent_seed_source_best->{"delta_e"}+0) : undef,
+				    source_final_best_luminance_error_pct=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"luminance_error_pct"}) ? ($adjacent_seed_source_best->{"luminance_error_pct"}+0) : undef,
+				    source_final_best_reached_target=>ref($adjacent_seed_source_best) eq "HASH" && defined($adjacent_seed_source_best->{"reached_target"}) ? $adjacent_seed_source_best->{"reached_target"} : undef,
+				    legal_white_seed_gate=>$adjacent_seed_source_gate,
+				    source_final_best_values=>ref($adjacent_seed_source_best) eq "HASH" ? $adjacent_seed_source_best->{"ddc_values"} : undef,
+				    target_values_before=>$adjacent_seed->{"before"},
+				    target_values_after=>$adjacent_seed->{"after"}
 			   });
 		   if(!cancelled()) {
 		    $state->{"phase"}="writing";
@@ -8034,10 +8088,10 @@ eval {
 					   $state->{"best_delta_e"}=$best_de;
 					   $state->{"best_score"}=$best_score;
 					   write_state($state);
-					   remember_lg_autocal_26_best_known(
-					    $config,$state,$read_step,$reading,$de,$lum_pct,
-					    $target_step_y,$arrays,$target,"main_initial_touchup_target"
-					   );
+						   remember_lg_autocal_26_best_known(
+						    $config,$state,$read_step,$reading,$de,$lum_pct,
+						    $target_step_y,$arrays,$target,"main_initial_touchup_target",1
+						   );
 					   $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 					   next;
 					  }
@@ -8061,10 +8115,10 @@ eval {
 					    write_state($state);
 					   }
 				   if($pair_target_reached_now->()) {
-				    remember_lg_autocal_26_best_known(
-				     $config,$state,$read_step,$reading,$de,$lum_pct,
-				     $target_step_y,$arrays,$target,"main_initial_target_reached"
-				    );
+					    remember_lg_autocal_26_best_known(
+					     $config,$state,$read_step,$reading,$de,$lum_pct,
+					     $target_step_y,$arrays,$target,"main_initial_target_reached",1
+					    );
 				    $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 				    next;
 				   }
@@ -8949,10 +9003,10 @@ eval {
 				   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
 				   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
 				  );
-				  remember_lg_autocal_26_best_known(
-				   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
-				   $target_step_y,$best_arrays,$target,"main_final_step_result"
-				  );
+					  remember_lg_autocal_26_best_known(
+					   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
+					   $target_step_y,$best_arrays,$target,"main_final_step_result",$final_reached
+					  );
 			  $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 			  write_state($state);
 			  if(
