@@ -1831,6 +1831,29 @@ sub remember_lg_autocal_26_response_axis {
 	 return $bucket->{$group}{$axis};
 	}
 
+sub lg_autocal_26_expected_headroom_luminance_direction {
+	 my ($step,$lum_pct,$gate_fraction)=@_;
+	 return 0 if(ref($step) ne "HASH" || !autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
+	 return 0 if(!defined($lum_pct));
+	 my $gate=headroom_luminance_control_gate_percent($step,defined($gate_fraction) ? $gate_fraction : 0.35);
+	 $gate=0.15 if(!defined($gate) || $gate < 0.15);
+	 return -1 if($lum_pct > $gate);
+	 return 1 if($lum_pct < -$gate);
+	 return 0;
+	}
+
+sub lg_autocal_26_headroom_luminance_response_acceptable {
+	 my ($step,$delta,$before_lum_pct,$after_lum_pct)=@_;
+	 return 1 if(ref($step) ne "HASH" || !autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
+	 return 1 if(!defined($delta) || !defined($before_lum_pct) || !defined($after_lum_pct));
+	 my $expected=lg_autocal_26_expected_headroom_luminance_direction($step,$before_lum_pct,0.35);
+	 my $change=($after_lum_pct+0)-($before_lum_pct+0);
+	 return 0 if($expected && (($delta+0)*$expected) <= 0);
+	 return 0 if($expected && ($change*$expected) < -0.05);
+	 return 0 if(!$expected && (($delta+0)*$change) < -0.05);
+	 return 1;
+	}
+
 sub remember_lg_autocal_26_response_model {
 	 my ($config,$state,$step,$adjustments,$before,$after,$source)=@_;
 	 return undef if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
@@ -1867,6 +1890,7 @@ sub remember_lg_autocal_26_response_model {
 	   my $before_lum_pct=luminance_error_percent($before,$target_y);
 	   my $after_lum_pct=luminance_error_percent($after,$target_y);
 	   if(defined($before_lum_pct) && defined($after_lum_pct)) {
+	    return undef if(!lg_autocal_26_headroom_luminance_response_acceptable($step,$delta,$before_lum_pct,$after_lum_pct));
 	    my $slope=($after_lum_pct-$before_lum_pct)/$delta;
 	    my $entry=remember_lg_autocal_26_response_axis($bucket,"luminance","adjustingLuminance",$slope,$delta,$before_lum_pct,$after_lum_pct,$source);
 	    $updates{"luminance"}{"adjustingLuminance"}=$entry if(ref($entry) eq "HASH");
@@ -1943,18 +1967,32 @@ sub lg_autocal_26_adaptive_headroom_luminance_adjustment {
 		 $cap=4 if($cap > 4 && $stalls < 2 && !$ineffective);
 		 my $raw_delta;
 		 my $weak_response=0;
-		 if(abs($slope) >= 0.05) {
-		  $raw_delta=-($lum_pct+0)/$slope;
-		 } else {
-		  $weak_response=1;
-		  my $direction=($lum_pct > 0) ? -1 : 1;
-		  $raw_delta=$direction*$cap;
-		 }
-		 my $min_escalated=0;
-		 if(($ineffective || $weak_response) && abs($prev_delta) >= 0.2499) {
-		  $min_escalated=abs($prev_delta)*2;
-		  $min_escalated=$cap if($min_escalated > $cap);
-		  if(abs($raw_delta) < $min_escalated) {
+			 if(abs($slope) >= 0.05) {
+			  $raw_delta=-($lum_pct+0)/$slope;
+			 } else {
+			  $weak_response=1;
+			  my $direction=($lum_pct > 0) ? -1 : 1;
+			  $raw_delta=$direction*$cap;
+			 }
+			 my $expected_direction=lg_autocal_26_expected_headroom_luminance_direction($step,$lum_pct,0.35);
+			 if($expected_direction && $raw_delta*$expected_direction <= 0) {
+			  trace_109($step,"adaptive_luminance_wrong_direction",{
+			   luminance_error_pct=>$lum_pct+0,
+			   slope=>$slope+0,
+			   planned_delta=>$raw_delta+0,
+			   expected_direction=>$expected_direction+0,
+			   previous_delta=>$prev_delta+0,
+			   previous_before_error=>$before_error,
+			   previous_after_error=>$after_error,
+			   source=>$source||"adaptive_headroom_luminance"
+			  });
+			  return undef;
+			 }
+			 my $min_escalated=0;
+			 if(($ineffective || $weak_response) && abs($prev_delta) >= 0.2499) {
+			  $min_escalated=abs($prev_delta)*2;
+			  $min_escalated=$cap if($min_escalated > $cap);
+			  if(abs($raw_delta) < $min_escalated) {
 		   my $direction=($raw_delta < 0) ? -1 : 1;
 		   $direction=(($lum_pct > 0) ? -1 : 1) if(abs($raw_delta) < 0.0001);
 		   $raw_delta=$direction*$min_escalated;
@@ -1965,12 +2003,13 @@ sub lg_autocal_26_adaptive_headroom_luminance_adjustment {
 		 return undef if(abs($raw_delta) < 0.20);
 		 foreach my $scale (1,0.75,0.50,0.25) {
 		  my $next=round_ddc_quarter($current+($raw_delta*$scale));
-		  next if(abs($next-$current) < 0.1999);
-		  next if(tried_value_exists($tried,"adjustingLuminance",$next));
-		  my $actual_delta=$next-$current;
-		  my $predicted=(abs($slope) >= 0.05) ? (($lum_pct+0)+($slope*$actual_delta)) : undef;
-		  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$actual_delta, adaptive_luminance=>1, headroom_luminance=>1, response_model=>1, slope=>$slope, predicted_error=>$predicted, previous_delta=>$prev_delta+0, previous_before_error=>$before_error, previous_after_error=>$after_error, insufficient_luminance_response=>($ineffective||$weak_response)?1:0, source=>$source||"adaptive_headroom_luminance" }];
-		 }
+			  next if(abs($next-$current) < 0.1999);
+			  next if(tried_value_exists($tried,"adjustingLuminance",$next));
+			  my $actual_delta=$next-$current;
+			  next if($expected_direction && $actual_delta*$expected_direction <= 0);
+			  my $predicted=(abs($slope) >= 0.05) ? (($lum_pct+0)+($slope*$actual_delta)) : undef;
+			  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$actual_delta, adaptive_luminance=>1, headroom_luminance=>1, response_model=>1, slope=>$slope, predicted_error=>$predicted, previous_delta=>$prev_delta+0, previous_before_error=>$before_error, previous_after_error=>$after_error, insufficient_luminance_response=>($ineffective||$weak_response)?1:0, source=>$source||"adaptive_headroom_luminance" }];
+			 }
 		 return undef;
 		}
 
