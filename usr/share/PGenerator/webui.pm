@@ -1531,7 +1531,7 @@ sub webui_meter_read_result (@) {
     if($json=~/"timeout_sec"\s*:\s*(\d+)/) {
      my $requested=$1+0;
      $timeout_sec=$requested+30 if($requested >= 10);
-     $timeout_sec=170 if($timeout_sec < 170);
+     $timeout_sec=40 if($timeout_sec < 40);
      $timeout_sec=330 if($timeout_sec > 330);
     }
     if($age > $timeout_sec) {
