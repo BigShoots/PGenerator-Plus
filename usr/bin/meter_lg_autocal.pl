@@ -2168,21 +2168,26 @@ sub legal_white_pair_spread_delta {
 
 sub legal_white_pair_best_update_allowed {
 	 my ($candidate_score,$best_score,$de_a,$de_b,$best_de_a,$best_de_b,$target_delta)=@_;
-	 return 0 if(!defined($candidate_score) || !defined($best_score));
-	 return 1 if(!defined($de_b) || !defined($best_de_b)) && $candidate_score + 0.0001 < $best_score;
+	 return defined(legal_white_pair_best_update_reason($candidate_score,$best_score,$de_a,$de_b,$best_de_a,$best_de_b,$target_delta)) ? 1 : 0;
+}
+
+sub legal_white_pair_best_update_reason {
+	 my ($candidate_score,$best_score,$de_a,$de_b,$best_de_a,$best_de_b,$target_delta)=@_;
+	 return undef if(!defined($candidate_score) || !defined($best_score));
+	 return "score_improved" if(!defined($de_b) || !defined($best_de_b)) && $candidate_score + 0.0001 < $best_score;
 	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
 	 my $candidate_worst=legal_white_pair_worst_delta($de_a,$de_b);
 	 my $best_worst=legal_white_pair_worst_delta($best_de_a,$best_de_b);
-	 return 1 if($candidate_worst + 0.0001 < $best_worst);
-	 return 0 if($candidate_worst > $best_worst + 0.03);
+	 return "paired_score_improved" if($candidate_worst + 0.0001 < $best_worst);
+	 return undef if($candidate_worst > $best_worst + 0.03);
 	 my $candidate_avg=legal_white_pair_delta_average($de_a,$de_b);
 	 my $best_avg=legal_white_pair_delta_average($best_de_a,$best_de_b);
-	 return 1 if($candidate_worst <= $best_worst + 0.0001 && $candidate_avg + 0.0001 < $best_avg);
+	 return "paired_score_improved" if($candidate_worst <= $best_worst + 0.0001 && $candidate_avg + 0.0001 < $best_avg);
 	 my $candidate_spread=legal_white_pair_spread_delta($de_a,$de_b);
 	 my $best_spread=legal_white_pair_spread_delta($best_de_a,$best_de_b);
-	 return 1 if($candidate_score + 0.0001 < $best_score && $candidate_spread + 0.02 < $best_spread);
-	 return 1 if($candidate_worst <= $target_delta+0.30 && $candidate_score + 0.0001 < $best_score);
-	 return 0;
+	 return "paired_score_improved" if($candidate_score + 0.0001 < $best_score && $candidate_spread + 0.02 < $best_spread);
+	 return "paired_score_improved" if($candidate_worst <= $target_delta+0.30 && $candidate_score + 0.0001 < $best_score);
+	 return undef;
 }
 
 sub legal_white_pair_target_reached {
@@ -6319,13 +6324,31 @@ sub committed_state_polish {
     values=>trace_target_values($arrays,$target),
     reading=>trace_reading_summary($reading)
    });
-   my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
-   $not_worse_measurement=0 if(ref($best_pair_reading) eq "HASH" && !autocal_measurement_not_worse_than_best($committed_pair_de,$committed_pair_lum_pct,$best_pair_de,$best_pair_lum_pct));
-	   my $keep_committed_candidate=(ref($committed_pair_step) eq "HASH")
-	    ? legal_white_pair_best_update_allowed($score,$best_score,$de,$committed_pair_de,$best_de,$best_pair_de,$target_delta)
-	    : ($score + 0.0001 < $best_score);
-	   $keep_committed_candidate=0 if(!$not_worse_measurement);
-	   if($keep_committed_candidate) {
+	   my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
+	   $not_worse_measurement=0 if(ref($best_pair_reading) eq "HASH" && !autocal_measurement_not_worse_than_best($committed_pair_de,$committed_pair_lum_pct,$best_pair_de,$best_pair_lum_pct));
+		   my $best_update_reason;
+		   my $keep_committed_candidate=0;
+		   if(ref($committed_pair_step) eq "HASH") {
+		    $best_update_reason=legal_white_pair_best_update_reason($score,$best_score,$de,$committed_pair_de,$best_de,$best_pair_de,$target_delta);
+		    $keep_committed_candidate=defined($best_update_reason) ? 1 : 0;
+		   } else {
+		    $best_update_reason="score_improved" if($score + 0.0001 < $best_score);
+		    $keep_committed_candidate=(defined($best_update_reason) && $not_worse_measurement) ? 1 : 0;
+		   }
+		   trace_109($read_step,"committed_polish_best_candidate",{
+		    label=>$label,
+		    iteration=>$iter+0,
+		    keep=>$keep_committed_candidate?JSON::PP::true:JSON::PP::false,
+		    reason=>defined($best_update_reason)?$best_update_reason:"",
+		    not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
+		    candidate_delta_e=>defined($de)?$de+0:undef,
+		    paired_candidate_delta_e=>defined($committed_pair_de)?$committed_pair_de+0:undef,
+		    best_delta_e=>defined($best_de)?$best_de+0:undef,
+		    best_paired_delta_e=>defined($best_pair_de)?$best_pair_de+0:undef,
+		    candidate_score=>$score+0,
+		    best_score=>$best_score+0
+		   });
+		   if($keep_committed_candidate) {
 	   $polish_kept++;
 	   $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
 	   $best_score=$score;
@@ -7417,31 +7440,31 @@ eval {
 			   $best_pair_lum_pct=$pair_lum_pct;
 			   $best_pair_target_step_y=$pair_target_step_y;
 			  };
-				  my $pair_best_update_allowed=sub {
-				   my ($candidate_score)=@_;
-				   return 0 if(!defined($de));
-					   if(!$paired_white_step) {
-					    return 0 if(!autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct));
-					    return ($candidate_score + 0.0001 < $best_score) ? 1 : 0;
-					   }
-					   return 0 if(
-					    defined($best_de) &&
-					    within_itp_luminance_included_acceptance($best_de,$best_read_step) &&
-					    !within_itp_luminance_included_acceptance($de,$read_step)
-				   );
-				   return 0 if(
-					    defined($best_pair_de) &&
-					    within_itp_luminance_included_acceptance($best_pair_de,$best_pair_step) &&
-					    !within_itp_luminance_included_acceptance($pair_de,$pair_step)
+				  my $pair_best_update_reason=sub {
+					   my ($candidate_score)=@_;
+					   return undef if(!defined($de));
+						   if(!$paired_white_step) {
+						    return undef if(!autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct));
+						    return ($candidate_score + 0.0001 < $best_score) ? "score_improved" : undef;
+						   }
+						   return undef if(
+						    defined($best_de) &&
+						    within_itp_luminance_included_acceptance($best_de,$best_read_step) &&
+						    !within_itp_luminance_included_acceptance($de,$read_step)
 					   );
+					   return undef if(
+						    defined($best_pair_de) &&
+						    within_itp_luminance_included_acceptance($best_pair_de,$best_pair_step) &&
+						    !within_itp_luminance_included_acceptance($pair_de,$pair_step)
+						   );
 					   # For 99/100, the shared DDC slot must keep the best combined pair.
 					   # A candidate may make the active side slightly worse while pulling the
 					   # paired legal-white read materially closer; score the pair before the
 					   # single-side "not worse" gate rejects it.
-					   return legal_white_pair_best_update_allowed(
-					    $candidate_score,$best_score,
-				    $de,$pair_de,$best_de,$best_pair_de,$target_delta
-			   );
+						   return legal_white_pair_best_update_reason(
+						    $candidate_score,$best_score,
+					    $de,$pair_de,$best_de,$best_pair_de,$target_delta
+				   );
 			  };
 			  my $read_legal_white_pair_counterpart=sub {
 			   my ($reason)=@_;
@@ -7751,7 +7774,7 @@ eval {
 				    reason=>$reason||"Backtracking to best $label result",
 				    current_delta_e=>defined($de)?$de+0:undef,
 				    current_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-				    current_score=>guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y)+0,
+					    current_score=>($paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y))+0,
 				    best_delta_e=>defined($best_de)?$best_de+0:undef,
 				    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 				    best_score=>$best_score+0,
@@ -8102,10 +8125,11 @@ eval {
 						    target_values=>trace_target_values($arrays,$target)
 						   });
 					   if(touchup_delta_skip_reached($config,$de,$target_delta,$read_step,$lum_pct) && (!$paired_white_step || $pair_target_reached_now->())) {
-				    if($pair_best_update_allowed->($candidate_score_after)) {
-				     $best_de=$de;
-				     $best_lum_pct=$lum_pct;
-				     $best_score=$candidate_score_after;
+					    my $best_update_reason=$pair_best_update_reason->($candidate_score_after);
+					    if(defined($best_update_reason)) {
+					     $best_de=$de;
+					     $best_lum_pct=$lum_pct;
+					     $best_score=$candidate_score_after;
 				     $best_arrays=clone_arrays($arrays);
 				     $best_reading=clone_picture($reading);
 				     $best_read_step=clone_picture($read_step);
@@ -8155,9 +8179,10 @@ eval {
 					    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
 					    my $delta_keep=$candidate_delta_keep->();
 						    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
-						    my $keep_candidate=$paired_white_step
-						     ? $pair_best_update_allowed->($candidate_score_after)
-						     : (defined($de) && $not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep));
+							    my $best_update_reason=$paired_white_step ? $pair_best_update_reason->($candidate_score_after) : undef;
+							    my $keep_candidate=$paired_white_step
+							     ? defined($best_update_reason)
+							     : (defined($de) && $not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep));
 					    if($keep_candidate) {
 				    $best_de=$de;
 				    $best_lum_pct=$lum_pct;
@@ -8174,8 +8199,9 @@ eval {
 					     iteration=>$iter+0,
 					     best_delta_e=>defined($best_de)?$best_de+0:undef,
 					     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-					     best_score=>$best_score+0,
-				     chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
+						     best_score=>$best_score+0,
+						     reason=>defined($best_update_reason)?$best_update_reason:($chroma_keep?"chroma_keep":($delta_keep?"delta_keep":"score_improved")),
+					     chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
 				     delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
 					     not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 					     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
@@ -8311,7 +8337,7 @@ eval {
 		   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
 		   return 1;
 		  };
-		  $restore_best_if_better->("Restoring closest $label result");
+			  $restore_best_if_better->($paired_white_step ? "Restoring closest 99/100 paired result" : "Restoring closest $label result");
 		  $run_body_final_micro_once->("Final micro-balancing $label before moving on");
 			  my $paired_white_close_enough=$paired_white_step ? legal_white_pair_close_enough($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading,$target_delta,$white_guard_y) : 0;
 			  if($paired_white_close_enough) {
@@ -8465,9 +8491,10 @@ eval {
 			    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
 			    my $delta_keep=$candidate_delta_keep->();
 				    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
-				    my $keep_candidate=$paired_white_step
-				     ? $pair_best_update_allowed->($candidate_score)
-				     : (defined($de) && $not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep));
+					    my $best_update_reason=$paired_white_step ? $pair_best_update_reason->($candidate_score) : undef;
+					    my $keep_candidate=$paired_white_step
+					     ? defined($best_update_reason)
+					     : (defined($de) && $not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep));
 			    if($keep_candidate) {
 			     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
@@ -8482,8 +8509,9 @@ eval {
 			      polish=>$polish+0,
 			      best_delta_e=>defined($best_de)?$best_de+0:undef,
 			      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-			      best_score=>$best_score+0,
-				      chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
+				      best_score=>$best_score+0,
+				      reason=>defined($best_update_reason)?$best_update_reason:($chroma_keep?"chroma_keep":($delta_keep?"delta_keep":"score_improved")),
+					      chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
 				      delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
 				      not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 				      candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
@@ -8548,9 +8576,9 @@ eval {
 		    $state->{"best_score"}=$best_score;
 		    write_state($state);
 		   }
-		   $restore_best_if_better->("Restoring closest $label result after fine tune");
-		  }
-			  $restore_best_branch->("Keeping best $label result") if(!cancelled() && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH");
+			   $restore_best_if_better->($paired_white_step ? "Restoring closest 99/100 paired result after fine tune" : "Restoring closest $label result after fine tune");
+			  }
+				  $restore_best_branch->($paired_white_step ? "Keeping best 99/100 paired result" : "Keeping best $label result") if(!cancelled() && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH");
 					  if($paired_white_step) {
 					   if(ref($best_pair_reading) eq "HASH") {
 					    $state->{"readings"}=merge_reading($state->{"readings"},$best_pair_reading);
