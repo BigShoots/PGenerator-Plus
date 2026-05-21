@@ -1618,6 +1618,110 @@ sub webui_meter_gamut_js_literal (@) {
  return "{\n".join(",\n",@blocks)."\n}";
 }
 
+sub _webui_meter_lg_autocal_norm_text (@) {
+ my ($value)=@_;
+ $value="" if(!defined($value) || ref($value));
+ $value="$value";
+ $value=~s/^\s+|\s+$//g;
+ return lc($value);
+}
+
+sub _webui_meter_lg_autocal_completed_ms (@) {
+ my ($value)=@_;
+ return undef if(!defined($value) || ref($value));
+ my $text="$value";
+ $text=~s/^\s+|\s+$//g;
+ return undef unless($text=~/^\d+(?:\.\d+)?$/);
+ my $num=$text+0;
+ return undef if($num<=0);
+ $num*=1000 if($num < 100000000000);
+ return int($num+0.5);
+}
+
+sub webui_meter_lg_autocal_series_target_reference (@) {
+ my (%opts)=@_;
+ return undef if($opts{"explicit_series_target_white_y"});
+ return undef unless(&_webui_meter_lg_autocal_norm_text($opts{"type"}) eq "greyscale");
+ return undef unless(int($opts{"points"}||0)==26);
+ return undef unless($opts{"lg_autocal_26"});
+ return undef unless(&_webui_meter_lg_autocal_norm_text($opts{"signal_mode"}||"sdr") eq "sdr");
+
+ my $state_file=$opts{"state_file"} || $_meter_lg_autocal_file;
+ return undef if(!$state_file || !-f $state_file);
+ my $json="";
+ if(open(my $fh,"<",$state_file)) { local $/; $json=<$fh>; close($fh); }
+ return undef if($json eq "");
+ my $state=eval {
+  require JSON::PP;
+  JSON::PP::decode_json($json);
+ };
+ return undef if($@ || ref($state) ne "HASH");
+ return undef unless(&_webui_meter_lg_autocal_norm_text($state->{"status"}) eq "complete");
+
+ my $state_picture=&_webui_meter_lg_autocal_norm_text($state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "");
+ my $req_picture=&_webui_meter_lg_autocal_norm_text($opts{"picture_mode"} || "");
+ return undef if($state_picture ne "" && $req_picture eq "");
+ return undef if($state_picture ne "" && $req_picture ne $state_picture);
+
+ my $state_display=&_webui_meter_lg_autocal_norm_text($state->{"display_type"} || "");
+ if($state_display ne "") {
+  my %request_display=();
+  foreach my $display ($opts{"display_type_key"},$opts{"display_type"}) {
+   my $norm=&_webui_meter_lg_autocal_norm_text($display);
+   $request_display{$norm}=1 if($norm ne "");
+  }
+  return undef unless($request_display{$state_display});
+ }
+
+ my $state_gamma=&_webui_meter_lg_autocal_norm_text($state->{"target_gamma"} || "");
+ my $req_gamma=&_webui_meter_lg_autocal_norm_text($opts{"target_gamma"} || "");
+ return undef if($state_gamma ne "" && $req_gamma eq "");
+ return undef if($state_gamma ne "" && $req_gamma ne $state_gamma);
+
+ my @state_runs=grep { $_ ne "" } map { &_webui_meter_lg_autocal_norm_text($_) } ($state->{"full_autocal_run_id"},$state->{"run_id"});
+ my @request_runs=grep { $_ ne "" } map { &_webui_meter_lg_autocal_norm_text($_) } ($opts{"full_autocal_run_id"},$opts{"run_id"});
+ my $explicit_run_match=0;
+ foreach my $req (@request_runs) {
+  foreach my $state_run (@state_runs) {
+   if($req eq $state_run) { $explicit_run_match=1; last; }
+  }
+  last if($explicit_run_match);
+ }
+
+ my $completed_ms=&_webui_meter_lg_autocal_completed_ms($state->{"completed_at"});
+ if(!$explicit_run_match) {
+  return undef if(!defined($completed_ms));
+  my $now_ms=defined($opts{"now_ms"}) ? ($opts{"now_ms"}+0) : int(Time::HiRes::time()*1000);
+  my $age_ms=$now_ms-$completed_ms;
+  return undef if($age_ms < 0 || $age_ms > 30*60*1000);
+ }
+
+ my @candidates=(
+  ["committed_polish_white_y","lg-autocal-committed"],
+  ["calibrated_white_luminance","lg-autocal-calibrated"],
+  ["target_luminance","lg-autocal-target"]
+ );
+ foreach my $candidate (@candidates) {
+  my ($field,$source)=@$candidate;
+  next if(!defined($state->{$field}) || ref($state->{$field}));
+  my $white_y=$state->{$field}+0;
+  next if($white_y<=0);
+  next if($field eq "committed_polish_white_y" && !$state->{"committed_polish_reference_locked"});
+  my $run_id=$state->{"full_autocal_run_id"} || $state->{"run_id"} || "";
+  return {
+   white_y=>$white_y,
+   source=>$source,
+   field=>$field,
+   run_id=>$run_id,
+   completed_at=>$state->{"completed_at"},
+   picture_mode=>$state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "",
+   display_type=>$state->{"display_type"} || "",
+   target_gamma=>$state->{"target_gamma"} || ""
+  };
+ }
+ return undef;
+}
+
 sub webui_meter_series_start (@) {
  my ($body)=@_;
  # Parse request
@@ -1660,6 +1764,7 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  $target_white_y=$1 if($body=~/"target_white_y"\s*:\s*"?([0-9.]+)"?/);
  my $series_target_white_y="";
  $series_target_white_y=$1 if($body=~/"series_target_white_y"\s*:\s*"?([0-9.]+)"?/);
+ my $series_target_white_y_provided=($body=~/"series_target_white_y"\s*:/) ? 1 : 0;
  my $series_target_white_y_num=($series_target_white_y ne "") ? ($series_target_white_y+0) : 0;
  my $custom_target_white;
  if($target_gamut eq "customd65" && $target_white_x ne "" && $target_white_y ne "") {
@@ -1670,6 +1775,12 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  my $target_gamma="";
  $target_gamma=lc($1) if($body=~/"target_gamma"\s*:\s*"([A-Za-z0-9_.\-]+)"/);
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
+ my $picture_mode="";
+ $picture_mode=$1 if($body=~/"picture_mode"\s*:\s*"([^"\\]{0,160})"/);
+ my $request_full_autocal_run_id="";
+ $request_full_autocal_run_id=$1 if($body=~/"full_autocal_run_id"\s*:\s*"([^"\\]{1,200})"/);
+ my $request_run_id="";
+ $request_run_id=$1 if($body=~/"run_id"\s*:\s*"([^"\\]{1,200})"/);
 my $signal_mode=&webui_pattern_signal_mode($body);
 my $max_luma=&webui_pattern_max_luma($body);
  $transport_signal_range=$signal_range if($transport_signal_range eq "");
@@ -1681,12 +1792,29 @@ my $max_luma=&webui_pattern_max_luma($body);
 		 $grey_custom_enabled=1 if($body=~/"grey_custom_enabled"\s*:\s*true/i);
 			 my $lg_greyscale_21=0;
 			 $lg_greyscale_21=1 if($body=~/"lg_greyscale_21"\s*:\s*true/i);
-			 my $lg_autocal_26=0;
-			 $lg_autocal_26=1 if($body=~/"lg_autocal_26"\s*:\s*true/i);
-			 if($type eq "greyscale" && $signal_mode eq "sdr" && (($points==21 && $lg_greyscale_21) || ($points==26 && $lg_autocal_26))) {
-			  $pattern_signal_range="1";
-			 }
-		 my $grey_custom_allowed=$grey_custom_enabled ? 1 : 0;
+				 my $lg_autocal_26=0;
+				 $lg_autocal_26=1 if($body=~/"lg_autocal_26"\s*:\s*true/i);
+				 if($type eq "greyscale" && $signal_mode eq "sdr" && (($points==21 && $lg_greyscale_21) || ($points==26 && $lg_autocal_26))) {
+				  $pattern_signal_range="1";
+				 }
+ my $series_target_white_reference;
+ if(!$series_target_white_y_provided) {
+  $series_target_white_reference=&webui_meter_lg_autocal_series_target_reference(
+   type=>$type,
+   points=>$points,
+   lg_autocal_26=>$lg_autocal_26,
+   signal_mode=>$signal_mode,
+   display_type_key=>$display_type_key,
+   display_type=>$display_type,
+   target_gamma=>$target_gamma,
+   picture_mode=>$picture_mode,
+   full_autocal_run_id=>$request_full_autocal_run_id,
+   run_id=>$request_run_id
+  );
+  $series_target_white_y_num=$series_target_white_reference->{"white_y"}+0
+   if($series_target_white_reference && ($series_target_white_reference->{"white_y"}+0)>0);
+ }
+			 my $grey_custom_allowed=$grey_custom_enabled ? 1 : 0;
 	 my $grey_steps_11="";
 	 $grey_steps_11=$1 if($body=~/"grey_steps_11"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_21="";
@@ -2391,18 +2519,31 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	  }
 	 }
 
- my $stamp_series_target_white_y=($type eq "colors" || $type eq "saturations") ? 1 : 0;
- $stamp_series_target_white_y=1 if($type eq "greyscale" && $signal_mode eq "sdr" && $points==26 && $lg_autocal_26);
- if($stamp_series_target_white_y && $series_target_white_y_num>0) {
-  @steps=map {
-   my $step=$_;
-   if($step!~/"series_target_white_y"\s*:/) {
-    $step=~s/\}\s*$//;
-    $step.=",\"series_target_white_y\":$series_target_white_y_num,\"lg_target_white_y\":$series_target_white_y_num}";
-   }
-   $step;
-  } @steps;
+	 my $stamp_series_target_white_y=($type eq "colors" || $type eq "saturations") ? 1 : 0;
+	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $signal_mode eq "sdr" && $points==26 && $lg_autocal_26);
+ my $series_target_white_audit="";
+ if($series_target_white_reference && $series_target_white_y_num>0) {
+  my @audit_fields;
+  my $source=$series_target_white_reference->{"source"} || "";
+  my $run_id=$series_target_white_reference->{"run_id"} || "";
+  my $field=$series_target_white_reference->{"field"} || "";
+  my $completed_at=$series_target_white_reference->{"completed_at"};
+  push @audit_fields, "\"series_target_white_source\":\"".&_webui_json_escape($source)."\"" if($source ne "");
+  push @audit_fields, "\"series_target_autocal_run_id\":\"".&_webui_json_escape($run_id)."\"" if($run_id ne "");
+  push @audit_fields, "\"series_target_autocal_field\":\"".&_webui_json_escape($field)."\"" if($field ne "");
+  push @audit_fields, "\"series_target_autocal_completed_at\":".int($completed_at+0) if(defined($completed_at) && !ref($completed_at) && "$completed_at"=~/^\d+(?:\.\d+)?$/);
+  $series_target_white_audit=",".join(",",@audit_fields) if(@audit_fields);
  }
+	 if($stamp_series_target_white_y && $series_target_white_y_num>0) {
+	  @steps=map {
+	   my $step=$_;
+	   if($step!~/"series_target_white_y"\s*:/) {
+	    $step=~s/\}\s*$//;
+	    $step.=",\"series_target_white_y\":$series_target_white_y_num,\"lg_target_white_y\":$series_target_white_y_num$series_target_white_audit}";
+	   }
+	   $step;
+	  } @steps;
+	 }
 
  my $series_id="${type}_".time();
  my $total=scalar(@steps);
@@ -20185,7 +20326,7 @@ async function meterRunSeries(){
  const requireDeviceReady=meterSelectedMeasurementRequiresReady();
  try{
   const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
   if(!r||r.status!=='started'){
    toast(r&&r.message?r.message:'Failed to start series',true);
    meterSeriesRunning=false;
