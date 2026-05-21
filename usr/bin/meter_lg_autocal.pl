@@ -394,6 +394,15 @@ sub lg_autocal_26_anchor_predrive_anchor {
  return $match ? 1 : 0;
 }
 
+sub apply_lg_autocal_26_standalone_defaults {
+ my ($config)=@_;
+ return if(ref($config) ne "HASH");
+ return if(!$config->{"lg_autocal_26"});
+ return if($config->{"full_workflow"} || $config->{"full_autocal_touchup"});
+ return if(exists($config->{"lg_autocal_26_anchor_predrive"}));
+ $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::true;
+}
+
 sub high_low_stride_steps {
  my (@steps)=@_;
  @steps=sort { ($a->{"ire"}||0) <=> ($b->{"ire"}||0) } grep { ref($_) eq "HASH" } @steps;
@@ -7017,6 +7026,7 @@ sub read_step_once {
 }
 
 my $config=decode_json_safe(read_file($config_file),{});
+apply_lg_autocal_26_standalone_defaults($config);
 $LG_AUTOCAL_CONFIG=$config;
 my $steps=(ref($config->{"steps"}) eq "ARRAY") ? $config->{"steps"} : [];
 unlink($trace_109_file) if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
