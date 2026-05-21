@@ -2140,7 +2140,15 @@ sub legal_white_pair_score {
  my $worst=$score_a > $score_b ? $score_a : $score_b;
  my $best=$score_a > $score_b ? $score_b : $score_a;
  my $spread=abs((defined($de_a)?$de_a:9999)-(defined($de_b)?$de_b:9999));
- return ($worst*1.45)+($best*0.20)+($spread*1.25);
+ my $pair_avg=legal_white_pair_delta_average($de_a,$de_b);
+ return ($worst*1.45)+($best*0.20)+($pair_avg*0.10)+($spread*1.25);
+}
+
+sub legal_white_pair_delta_average {
+	 my ($de_a,$de_b)=@_;
+	 return defined($de_a) ? ($de_a+0) : 9999 if(!defined($de_b));
+	 return defined($de_b) ? ($de_b+0) : 9999 if(!defined($de_a));
+	 return (($de_a+0)+($de_b+0))/2;
 }
 
 sub legal_white_pair_worst_delta {
@@ -2166,6 +2174,9 @@ sub legal_white_pair_best_update_allowed {
 	 my $best_worst=legal_white_pair_worst_delta($best_de_a,$best_de_b);
 	 return 1 if($candidate_worst + 0.0001 < $best_worst);
 	 return 0 if($candidate_worst > $best_worst + 0.03);
+	 my $candidate_avg=legal_white_pair_delta_average($de_a,$de_b);
+	 my $best_avg=legal_white_pair_delta_average($best_de_a,$best_de_b);
+	 return 1 if($candidate_worst <= $best_worst + 0.0001 && $candidate_avg + 0.0001 < $best_avg);
 	 my $candidate_spread=legal_white_pair_spread_delta($de_a,$de_b);
 	 my $best_spread=legal_white_pair_spread_delta($best_de_a,$best_de_b);
 	 return 1 if($candidate_score + 0.0001 < $best_score && $candidate_spread + 0.02 < $best_spread);
@@ -3840,6 +3851,32 @@ sub headroom_105_rgb_pull_adjustment {
 	 }];
 }
 
+sub headroom_105_rgb_luma_combo_first {
+	 my ($luminance_err,$de)=@_;
+	 return 1 if(defined($luminance_err) && abs($luminance_err) > 0.04);
+	 return 1 if(defined($de) && $de > 6);
+	 return 0;
+}
+
+sub headroom_105_rgb_pull_allowed {
+	 my ($error,$luminance_err)=@_;
+	 return 1 if(!defined($luminance_err) || abs($luminance_err) <= 0.05);
+	 return chroma_error_magnitude($error) >= 0.060 ? 1 : 0;
+}
+
+sub headroom_105_experimental_accept_best {
+	 my ($config,$step,$best_de,$best_lum_pct)=@_;
+	 return 0 if(!lg_autocal_26_105_rgb_luma_path_enabled($config,$step));
+	 return 0 if(!defined($best_de) || !defined($best_lum_pct));
+	 return ($best_de < 0.35 && abs($best_lum_pct) < 0.5) ? 1 : 0;
+}
+
+sub headroom_105_skip_fine_luminance {
+	 my ($de,$luminance_err,$target_delta)=@_;
+	 return 0 if(!defined($de) || !defined($luminance_err) || !defined($target_delta));
+	 return ($de < $target_delta && abs($luminance_err) < 0.005) ? 1 : 0;
+}
+
 sub headroom_105_rgb_luma_combo_adjustments {
 	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_step,$micro,$step)=@_;
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -3852,6 +3889,9 @@ sub headroom_105_rgb_luma_combo_adjustments {
 	 return undef if(!defined($idx));
 	 $min_step ||= ($micro ? 0.10 : 0.25);
 	 $max_step ||= ($micro ? 0.5 : 2);
+	 my $abs_lum_err=abs($luminance_err);
+	 $max_step=6 if($abs_lum_err >= 0.10 && $max_step < 6);
+	 $max_step=4 if($abs_lum_err >= 0.04 && $max_step < 4);
 	 my $direction=($luminance_err > 0) ? -1 : 1;
 	 my $luma_step=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
 	 my @out;
@@ -4492,11 +4532,19 @@ sub choose_adjustments {
 				  my $luma_tol=headroom_luminance_control_gate_percent($step,1);
 				  my $chroma_mag=chroma_error_magnitude($error);
 				  if(lg_autocal_26_105_rgb_luma_path_enabled($LG_AUTOCAL_CONFIG,$step)) {
-				   my $rgb_pull=headroom_105_rgb_pull_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_step,3,0);
-				   return $rgb_pull if($rgb_pull);
 				   my $combo_max_luma_step=abs($luminance_err) >= 0.035 ? 4 : (abs($luminance_err) >= 0.015 ? 2 : 1);
-				   my $rgb_luma_combo=headroom_105_rgb_luma_combo_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$combo_max_luma_step,0,$step);
-				   return $rgb_luma_combo if($rgb_luma_combo);
+				   if(headroom_105_rgb_luma_combo_first($luminance_err,$de)) {
+				    my $rgb_luma_combo=headroom_105_rgb_luma_combo_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$combo_max_luma_step,0,$step);
+				    return $rgb_luma_combo if($rgb_luma_combo);
+				   }
+				   if(headroom_105_rgb_pull_allowed($error,$luminance_err)) {
+				    my $rgb_pull=headroom_105_rgb_pull_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_step,3,0);
+				    return $rgb_pull if($rgb_pull);
+				   }
+				   if(!headroom_105_rgb_luma_combo_first($luminance_err,$de)) {
+				    my $rgb_luma_combo=headroom_105_rgb_luma_combo_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$combo_max_luma_step,0,$step);
+				    return $rgb_luma_combo if($rgb_luma_combo);
+				   }
 				  }
 					  if(!autocal_step_is_peak_headroom($step) && has_luminance_channel($arrays,$target) && abs($lum_pct) > $luma_tol) {
 					   my $max_luma_step=abs($luminance_err) >= 0.035 ? 4 : (abs($luminance_err) >= 0.015 ? 2 : 1);
@@ -4661,13 +4709,23 @@ sub choose_micro_adjustments {
 				   return undef;
 				  }
 				  if(lg_autocal_26_105_rgb_luma_path_enabled($LG_AUTOCAL_CONFIG,$step)) {
-				   my $rgb_pull=headroom_105_rgb_pull_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_micro_step,$max_step,1);
-				   return $rgb_pull if($rgb_pull);
 				   my $combo_max_luma_step=abs($luminance_err) >= 0.035 ? 2 : (abs($luminance_err) >= 0.015 ? 1 : $max_step);
-				   my $rgb_luma_combo=headroom_105_rgb_luma_combo_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$combo_max_luma_step,1,$step);
-				   return $rgb_luma_combo if($rgb_luma_combo);
-				   my $final_luma=headroom_105_fine_luminance_adjustment($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$max_step,1,$step);
-				   return $final_luma if($final_luma);
+				   if(headroom_105_rgb_luma_combo_first($luminance_err,$de)) {
+				    my $rgb_luma_combo=headroom_105_rgb_luma_combo_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$combo_max_luma_step,1,$step);
+				    return $rgb_luma_combo if($rgb_luma_combo);
+				   }
+				   if(headroom_105_rgb_pull_allowed($error,$luminance_err)) {
+				    my $rgb_pull=headroom_105_rgb_pull_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_micro_step,$max_step,1);
+				    return $rgb_pull if($rgb_pull);
+				   }
+				   if(!headroom_105_rgb_luma_combo_first($luminance_err,$de)) {
+				    my $rgb_luma_combo=headroom_105_rgb_luma_combo_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$combo_max_luma_step,1,$step);
+				    return $rgb_luma_combo if($rgb_luma_combo);
+				   }
+				   if(!headroom_105_skip_fine_luminance($de,$luminance_err,$target_delta)) {
+				    my $final_luma=headroom_105_fine_luminance_adjustment($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$max_step,1,$step);
+				    return $final_luma if($final_luma);
+				   }
 				  }
 					  if(has_luminance_channel($arrays,$target) && abs($lum_pct) > $luma_gate) {
 					   my $luma_max_step=abs($luminance_err) >= 0.035 ? 2 : (abs($luminance_err) >= 0.015 ? 1 : $max_step);
@@ -8349,6 +8407,18 @@ eval {
 		   $state->{"best_score"}=$best_score;
 		   write_state($state);
 			   last if($pair_target_reached_now->());
+			   if(headroom_105_experimental_accept_best($config,$read_step,$best_de,$best_lum_pct)) {
+		    $state->{"message"}="$label excellent 105 RGB/luma result kept";
+		    trace_109($read_step,"headroom_105_experimental_accept_best",{
+		     label=>$label,
+		     iteration=>$iter+0,
+		     best_delta_e=>defined($best_de)?$best_de+0:undef,
+		     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+		     best_values=>trace_target_values($best_arrays,$target)
+		    });
+		    write_state($state);
+		    last;
+		   }
 			   if($paired_white_step && legal_white_pair_close_enough_stalled($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading,$target_delta,$white_guard_y,$stalls,$iter)) {
 		    $state->{"message"}="$label and 100% legal white close pair kept after stalled fine-tune";
 		    trace_109($read_step,"legal_white_pair_close_enough_stalled",{
@@ -8429,7 +8499,8 @@ eval {
 		   return 1;
 		  };
 		  $restore_best_if_better->("Restoring closest $label result");
-		  $run_body_final_micro_once->("Final micro-balancing $label before moving on");
+		  my $headroom_105_best_accepted=headroom_105_experimental_accept_best($config,$read_step,$best_de,$best_lum_pct);
+		  $run_body_final_micro_once->("Final micro-balancing $label before moving on") if(!$headroom_105_best_accepted);
 			  my $paired_white_close_enough=$paired_white_step ? legal_white_pair_close_enough($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading,$target_delta,$white_guard_y) : 0;
 			  if($paired_white_close_enough) {
 			   $state->{"message"}="$label and 100% legal white close pair kept";
@@ -8444,7 +8515,7 @@ eval {
 			   });
 			   write_state($state);
 			  }
-			  if(!cancelled() && autocal_step_allows_final_fine_tune($read_step,$best_de,$target_delta) && !low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta) && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH" && !$pair_target_reached_now->() && !$paired_white_close_enough) {
+			  if(!cancelled() && !$headroom_105_best_accepted && autocal_step_allows_final_fine_tune($read_step,$best_de,$target_delta) && !low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta) && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH" && !$pair_target_reached_now->() && !$paired_white_close_enough) {
 			   trace_109($read_step,"start_final_fine_tune",{
 			    label=>$label,
 			    best_delta_e=>defined($best_de)?$best_de+0:undef,
@@ -8480,6 +8551,16 @@ eval {
 			   for(my $polish=1;$polish<=$polish_limit;$polish++) {
 			    last if(cancelled());
 			    last if($pair_target_reached_now->());
+				    if(headroom_105_experimental_accept_best($config,$read_step,$best_de,$best_lum_pct)) {
+				     trace_109($read_step,"headroom_105_experimental_accept_best_fine_tune",{
+				      label=>$label,
+				      polish=>$polish+0,
+				      best_delta_e=>defined($best_de)?$best_de+0:undef,
+				      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+				      best_values=>trace_target_values($best_arrays,$target)
+				     });
+				     last;
+				    }
 				    my $err=autocal_adjustment_error($reading,$read_step);
 				    my $lum_err=luminance_error_ratio($reading,$target_step_y);
 				    my $micro_step=(defined($best_de) && $best_de <= ($target_delta+0.15)) ? 0.20 : ((defined($best_de) && $best_de > ($target_delta*2)) ? 0.5 : 0.20);
