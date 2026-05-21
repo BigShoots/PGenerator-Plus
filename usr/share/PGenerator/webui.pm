@@ -7849,8 +7849,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 	  <div id="meterAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
-	  <div style="font-size:.82rem;color:var(--text);line-height:1.45;margin-bottom:10px">The active LG picture mode has been reset. Auto Cal will use the current 100% white luminance and selected gamma target, derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high. 100% is used for setup and then checked internally as the legal-white anchor; 0% is read for black level/charts. The closest result is kept when the target cannot be reached.</div>
-	   <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:150px">Target &Delta;E
+	  <div id="meterAutoCalConfirmDescription" style="font-size:.82rem;color:var(--text);line-height:1.45;margin-bottom:10px">The active LG picture mode has been reset. Auto Cal will use the current 100% white luminance and selected gamma target, derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high. 100% is used for setup and then checked internally as the legal-white anchor; 0% is read for black level/charts. The closest result is kept when the target cannot be reached.</div>
+	   <label id="meterAutoCalTargetRow" style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:150px">Target &Delta;E
 	    <input type="number" id="meterAutoCalTarget" min="0.1" max="10" step="0.1" value="0.5" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
 	   </label>
 	   <div id="meterAutoCalGreyscaleOptionsBox" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
@@ -17839,14 +17839,15 @@ function meterAutoCalSetOverlay(active,status){
  const phase=(status&&status.phase)||meterAutoCalPhase||'';
  const showDisclaimer=phase==='disclaimer';
  const showLuminance=phase==='luminance';
+ const showOptions=phase==='options';
  const showConfirm=phase==='confirm';
  const showComplete=phase==='complete'||(status&&status.status==='complete');
  if(disclaimerBox) disclaimerBox.style.display=showDisclaimer?'':'none';
  if(lumBox) lumBox.style.display=showLuminance?'':'none';
- if(confirmBox) confirmBox.style.display=showConfirm?'':'none';
+ if(confirmBox) confirmBox.style.display=(showConfirm||showOptions)?'':'none';
  if(resultsBox) resultsBox.style.display=showComplete?'':'none';
  if(fullConfirmBox) fullConfirmBox.style.display='none';
- if(progressBox) progressBox.style.display=(showConfirm||showDisclaimer||showComplete)?'none':'';
+ if(progressBox) progressBox.style.display=(showConfirm||showOptions||showDisclaimer||showComplete)?'none':'';
  if(resetBtn){
   resetBtn.style.display=(showDisclaimer&&!meterAutoCalPreflightResetDone)?'':'none';
   resetBtn.disabled=!!meterAutoCalResetInProgress;
@@ -17854,7 +17855,10 @@ function meterAutoCalSetOverlay(active,status){
  }
  if(disclaimerBtn) disclaimerBtn.style.display=(showDisclaimer&&meterAutoCalPreflightResetDone)?'':'none';
  if(continueBtn) continueBtn.style.display=showLuminance?'':'none';
- if(startBtn) startBtn.style.display=showConfirm?'':'none';
+ if(startBtn){
+  startBtn.style.display=(showConfirm||showOptions)?'':'none';
+  startBtn.textContent=showOptions?'\u25B6 Continue':'\u25B6 Start';
+ }
  if(backBtn) backBtn.style.display=showConfirm?'':'none';
  if(fullCancelBtn) fullCancelBtn.style.display='none';
  if(fullSkipBtn) fullSkipBtn.style.display='none';
@@ -17891,7 +17895,7 @@ function meterAutoCalSetupOverlayActive(){
  if(meterFullAutoCalConfirmOverlayActive()) return true;
  const phase=String(meterAutoCalPhase||'');
  if(phase==='running'||phase==='complete'||phase==='error') return false;
- return !!(meterAutoCalPendingConfig||meterAutoCalResetInProgress||meterAutoCalLuminanceSetupActive||phase==='disclaimer'||phase==='preflight'||phase==='luminance'||phase==='confirm');
+ return !!(meterAutoCalPendingConfig||meterAutoCalResetInProgress||meterAutoCalLuminanceSetupActive||phase==='options'||phase==='disclaimer'||phase==='preflight'||phase==='luminance'||phase==='confirm');
 }
 
 function meterAutoCalTargetDeltaValue(){
@@ -17991,20 +17995,49 @@ async function meterAutoCalBackToLuminance(){
  meterAutoCalShowConfirm();
 }
 
+function meterAutoCalSetGreyscaleOptionControls(){
+ const optionsBox=document.getElementById('meterAutoCalGreyscaleOptionsBox');
+ const polishChoice=document.getElementById('meterAutoCalPostCommitPolishEnabled');
+ const verifyChoice=document.getElementById('meterAutoCalPostCommitVerifyEnabled');
+ if(optionsBox) optionsBox.style.display=(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'none':'';
+ if(polishChoice) polishChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitPolishEnabled')?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:true;
+ if(verifyChoice) verifyChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitVerifyEnabled')?meterAutoCalPendingConfig.postCommitVerifyEnabled!==false:true;
+}
+
+function meterAutoCalShowPreflightOptions(){
+ if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow) return;
+ meterAutoCalPhase='options';
+ meterAutoCalLuminanceSetupActive=false;
+ meterAutoCalSetGreyscaleOptionControls();
+ const description=document.getElementById('meterAutoCalConfirmDescription');
+ const targetRow=document.getElementById('meterAutoCalTargetRow');
+ const summary=document.getElementById('meterAutoCalConfirmSummary');
+ if(description) description.textContent='Choose the standalone greyscale Auto Cal cleanup options before the LG DDC reset. These choices will be carried through reset, luminance setup, and the final Auto Cal payload.';
+ if(targetRow) targetRow.style.display='none';
+ if(summary) summary.textContent='The DDC reset and 100% luminance setup will follow.';
+ meterAutoCalSetOverlay(true,{phase:'options',current_name:'Greyscale Auto Cal options',message:'Choose post-cal cleanup before reset.'});
+}
+
+function meterAutoCalAcceptPreflightOptions(){
+ if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow){toast('Auto Cal setup is not ready',true);return;}
+ meterAutoCalPendingConfig.postCommitPolishEnabled=meterAutoCalPostCommitPolishChoiceValue();
+ meterAutoCalPendingConfig.postCommitVerifyEnabled=meterAutoCalPostCommitVerifyChoiceValue();
+ meterAutoCalPhase='disclaimer';
+ meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
+}
+
 function meterAutoCalShowConfirm(){
  meterAutoCalPhase='confirm';
  meterAutoCalLuminanceSetupActive=false;
  const summary=document.getElementById('meterAutoCalConfirmSummary');
- const optionsBox=document.getElementById('meterAutoCalGreyscaleOptionsBox');
- const polishChoice=document.getElementById('meterAutoCalPostCommitPolishEnabled');
- const verifyChoice=document.getElementById('meterAutoCalPostCommitVerifyEnabled');
+ const description=document.getElementById('meterAutoCalConfirmDescription');
+ const targetRow=document.getElementById('meterAutoCalTargetRow');
  const setupY=meterAutoCalSetupYValue();
  const targetY=meterAutoCalTargetYValue();
  const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
- const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
- if(optionsBox) optionsBox.style.display=fullWorkflow?'none':'';
- if(polishChoice) polishChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitPolishEnabled')?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:true;
- if(verifyChoice) verifyChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitVerifyEnabled')?meterAutoCalPendingConfig.postCommitVerifyEnabled!==false:true;
+ meterAutoCalSetGreyscaleOptionControls();
+ if(description) description.textContent='The active LG picture mode has been reset. Auto Cal will use the current 100% white luminance and selected gamma target, derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high. 100% is used for setup and then checked internally as the legal-white anchor; 0% is read for black level/charts. The closest result is kept when the target cannot be reached.';
+ if(targetRow) targetRow.style.display='flex';
  if(summary){
   const levels=meterAutoCalLevelPreflight;
   const levelText=(levels&&!levels.skipped)?(' Levels: brightness '+(levels.brightness!=null?levels.brightness:'--')+', contrast '+(levels.contrast!=null?levels.contrast:'--')+'.'):'';
@@ -19974,7 +20007,8 @@ async function meterStartAutoCal(options){
   postCommitPolishEnabled:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():true,
   postCommitVerifyEnabled:fullWorkflow?meterFullAutoCalPostCommitVerifyEnabled():true
  };
- meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
+ if(fullWorkflow) meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
+ else meterAutoCalShowPreflightOptions();
  meterActionPending=true;
  meterUpdateReadButtons();
  return true;
@@ -20021,6 +20055,10 @@ async function meterAutoCalAcceptDisclaimer(){
 
 async function meterAutoCalConfirmAndStart(){
 	 if(!meterAutoCalPendingConfig){toast('Auto Cal setup is not ready',true);return;}
+	 if(meterAutoCalPhase==='options'){
+	  meterAutoCalAcceptPreflightOptions();
+	  return;
+	 }
 	 const target=meterAutoCalTargetDeltaValue();
 	 const deltaEFormula='deitp';
 	 const setupY=meterAutoCalSetupYValue();
