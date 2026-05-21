@@ -1698,16 +1698,23 @@ sub autocal_result_score {
 		 my ($de,$lum_pct,$step)=@_;
 			 my $score=defined($de) ? ($de+0) : 9999;
 			 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
-			 if(autocal_uses_itp()) {
-				 if(autocal_step_is_low_shadow($step) && autocal_uses_itp() && defined($lum_pct)) {
-				  my $shadow_lum_excess=abs($lum_pct)-low_shadow_luminance_acceptance_percent($step);
-				  return $score if($shadow_lum_excess <= 0);
-				  my $shadow_lum_penalty=$shadow_lum_excess*0.45;
-				  $shadow_lum_penalty=4 if($shadow_lum_penalty > 4);
-				  return $score+$shadow_lum_penalty;
+				 if(autocal_uses_itp()) {
+					 if(autocal_step_is_low_shadow($step) && autocal_uses_itp() && defined($lum_pct)) {
+					  my $shadow_lum_excess=abs($lum_pct)-low_shadow_luminance_acceptance_percent($step);
+					  return $score if($shadow_lum_excess <= 0);
+					  my $shadow_lum_penalty=$shadow_lum_excess*0.45;
+					  $shadow_lum_penalty=4 if($shadow_lum_penalty > 4);
+					  return $score+$shadow_lum_penalty;
+					 }
+					 if(autocal_step_is_fast_headroom($step) && !autocal_step_is_peak_headroom($step) && defined($lum_pct)) {
+					  my $excess=abs($lum_pct)-luminance_tolerance_percent($step);
+					  return $score if($excess <= 0);
+					  my $penalty=$excess*0.35;
+					  $penalty=4 if($penalty > 4);
+					  return $score+$penalty;
+					 }
+					 return $score;
 				 }
-				 return $score;
-			 }
 			 return $score if($ire <= 5 && $score <= 4.0 && !low_ire_luminance_needs_tuning($step,$lum_pct));
 			 return $score if(!defined($lum_pct));
 		 my $tol=luminance_tolerance_percent($step);
@@ -3324,14 +3331,15 @@ sub luma_probe_guarded_target {
 }
 
 sub luma_probe_family_key {
- my ($target,$current,$next,$step)=@_;
- return undef if(!defined($current) || !defined($next));
- my $target_key=luma_probe_target_key($target,$step);
- return undef if(!defined($target_key));
- my $delta=($next+0)-($current+0);
- return undef if(abs($delta) < 0.0001);
- my $direction=$delta < 0 ? -1 : 1;
- return join("|",$target_key,ddc_value_key($current),$direction);
+	 my ($target,$current,$next,$step)=@_;
+	 return undef if(!defined($current) || !defined($next));
+	 my $target_key=luma_probe_target_key($target,$step);
+	 return undef if(!defined($target_key));
+	 my $delta=($next+0)-($current+0);
+	 return undef if(abs($delta) < 0.0001);
+	 my $direction=$delta < 0 ? -1 : 1;
+	 my $magnitude=ddc_value_key(abs($delta));
+	 return join("|",$target_key,ddc_value_key($current),$direction,$magnitude);
 }
 
 sub luma_probe_target_key {
@@ -3401,10 +3409,11 @@ sub luma_probe_family_suppressed {
   trace_109($trace_step,"luma_probe_family_suppressed",{
    target=>luma_probe_target_key($target,$step),
    source=>$source||$entry->{"source"}||"luma_planner",
-   family_key=>$key,
-   current=>defined($current)?$current+0:undef,
-   next=>defined($next)?$next+0:undef,
-   direction=>defined($next)&&defined($current)?(($next-$current)<0?-1:1):undef,
+	   family_key=>$key,
+	   current=>defined($current)?$current+0:undef,
+	   next=>defined($next)?$next+0:undef,
+	   magnitude=>defined($next)&&defined($current)?abs(($next+0)-($current+0)):undef,
+	   direction=>defined($next)&&defined($current)?(($next-$current)<0?-1:1):undef,
    count=>$entry->{"count"}||0,
    severe_count=>$entry->{"severe_count"}||0,
    before_delta_e=>$entry->{"before_delta_e"},
@@ -3448,9 +3457,10 @@ sub record_bad_luma_probe_family {
  );
  $entry->{"count"}=($entry->{"count"}||0)+1;
  $entry->{"severe_count"}=($entry->{"severe_count"}||0)+($severe ? 1 : 0);
- $entry->{"current"}=defined($current) ? $current+0 : undef;
- $entry->{"next"}=defined($next) ? $next+0 : undef;
- $entry->{"direction"}=(($next-$current) < 0) ? -1 : 1 if(defined($current) && defined($next));
+	 $entry->{"current"}=defined($current) ? $current+0 : undef;
+	 $entry->{"next"}=defined($next) ? $next+0 : undef;
+	 $entry->{"magnitude"}=abs(($next+0)-($current+0)) if(defined($current) && defined($next));
+	 $entry->{"direction"}=(($next-$current) < 0) ? -1 : 1 if(defined($current) && defined($next));
  $entry->{"target"}=luma_probe_target_key($target,$step);
  $entry->{"source"}=$source||$adj->{"source"}||"luma_probe";
  $entry->{"before_delta_e"}=$before_de+0;
@@ -3468,9 +3478,10 @@ sub record_bad_luma_probe_family {
   target=>$entry->{"target"},
   source=>$entry->{"source"},
   family_key=>$key,
-  current=>defined($current)?$current+0:undef,
-  next=>defined($next)?$next+0:undef,
-  direction=>$entry->{"direction"},
+	  current=>defined($current)?$current+0:undef,
+	  next=>defined($next)?$next+0:undef,
+	  magnitude=>$entry->{"magnitude"},
+	  direction=>$entry->{"direction"},
   count=>$entry->{"count"}||0,
   severe_count=>$entry->{"severe_count"}||0,
   before_delta_e=>$before_de+0,
@@ -5396,29 +5407,42 @@ sub post_commit_polish_enabled {
 }
 
 sub committed_top_window_score {
- my ($window)=@_;
- return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
+	 my ($window)=@_;
+	 return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
  my @ires=grep { ref($window->{"points"}{$_}) eq "HASH" && defined($window->{"points"}{$_}{"de"}) } (109,105,99,100,95);
  return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(!@ires);
  my $sum=0;
  my $count=0;
  my $worst=0;
  my $over=0;
- foreach my $ire (@ires) {
-  my $rec=$window->{"points"}{$ire};
-  my $de=$rec->{"de"}+0;
-  $sum+=$de;
-  $count++;
-  $worst=$de if($de > $worst);
-  $over++ if($de > 1.0);
- }
+	 foreach my $ire (@ires) {
+	  my $rec=$window->{"points"}{$ire};
+	  my $point_score=committed_top_window_point_score($ire,$rec);
+	  $sum+=$point_score;
+	  $count++;
+	  $worst=$point_score if($point_score > $worst);
+	  $over++ if($point_score > 1.0);
+	 }
  my $avg=$count ? ($sum/$count) : 9999;
  return {
   score => ($over*10)+$worst+($avg*0.25),
   worst => $worst,
   avg => $avg,
   over => $over,
- };
+	 };
+}
+
+sub committed_top_window_point_score {
+ my ($ire,$point)=@_;
+ return 9999 if(ref($point) ne "HASH" || !defined($point->{"de"}));
+ my $score=$point->{"de"}+0;
+ return $score if(abs(($ire||0)-105) >= 0.001);
+ return $score if(!defined($point->{"luminance_error_pct"}));
+ my $excess=abs($point->{"luminance_error_pct"}+0)-luminance_tolerance_percent({ ire=>105 });
+ return $score if($excess <= 0);
+ my $penalty=$excess*0.35;
+ $penalty=4 if($penalty > 4);
+ return $score+$penalty;
 }
 
 sub committed_top_window_score_passed {
@@ -5490,10 +5514,11 @@ sub committed_top_window_luma_family_key {
  my $idx=$change->{"index"};
  my $delta=$change->{"delta"};
  return undef if(!defined($ire) || !defined($idx) || !defined($delta) || abs($delta+0) < 0.0001);
- my $arr=(ref($arrays) eq "HASH") ? $arrays->{"adjustingLuminance"} : undef;
- my $current=(ref($arr) eq "ARRAY" && defined($arr->[$idx])) ? ($arr->[$idx]+0) : 0;
- my $direction=($delta+0) < 0 ? -1 : 1;
- return join("|",format_percent($ire),ddc_value_key($current),$direction);
+	 my $arr=(ref($arrays) eq "HASH") ? $arrays->{"adjustingLuminance"} : undef;
+	 my $current=(ref($arr) eq "ARRAY" && defined($arr->[$idx])) ? ($arr->[$idx]+0) : 0;
+	 my $direction=($delta+0) < 0 ? -1 : 1;
+	 my $magnitude=ddc_value_key(abs($delta+0));
+	 return join("|",format_percent($ire),ddc_value_key($current),$direction,$magnitude);
 }
 
 sub committed_top_window_luma_suppressed {
@@ -5568,9 +5593,10 @@ sub record_committed_top_window_bad_luma {
  $entry->{"severe_count"}=($entry->{"severe_count"}||0)+($severe ? 1 : 0);
  $entry->{"label"}=$label;
  $entry->{"ire"}=$ire+0;
- $entry->{"index"}=$change->{"index"}+0 if(defined($change->{"index"}));
- $entry->{"direction"}=($change->{"delta"}+0) < 0 ? -1 : 1;
- $entry->{"family_key"}=$key;
+	 $entry->{"index"}=$change->{"index"}+0 if(defined($change->{"index"}));
+	 $entry->{"direction"}=($change->{"delta"}+0) < 0 ? -1 : 1;
+	 $entry->{"magnitude"}=abs($change->{"delta"}+0);
+	 $entry->{"family_key"}=$key;
  $entry->{"before_delta_e"}=$before_de;
  $entry->{"after_delta_e"}=$after_de;
  $entry->{"before_luminance_error_pct"}=$before_lum;
