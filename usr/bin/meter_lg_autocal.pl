@@ -1797,6 +1797,15 @@ sub lg_autocal_26_best_known_values_available {
  return 0;
 }
 
+sub lg_autocal_26_best_known_committed_state {
+ my ($entry)=@_;
+ return 0 if(ref($entry) ne "HASH");
+ my $reason=$entry->{"reason"};
+ return 0 if(!defined($reason));
+ return 1 if($reason =~ /^(?:committed_|final_all_level_verify_|post_commit_|off_cal_)/);
+ return 0;
+}
+
 sub lg_autocal_26_arrays_with_best_known_values {
  my ($arrays,$target,$entry)=@_;
  return undef if(!lg_autocal_26_best_known_values_available($entry,$target,$arrays));
@@ -5662,7 +5671,12 @@ sub committed_final_all_level_verify {
    mark_tried_values(\%tried_values,$candidate_arrays,$target,$candidate_de);
    my $candidate_score=lg_autocal_26_measurement_score($read_step,$candidate_de,$candidate_lum_pct);
    my $stored_best_blocks=0;
-   $stored_best_blocks=1 if(defined($stored_best_score) && $candidate_score > $stored_best_score+0.05 && lg_autocal_26_best_known_values_available($stored_best,$target,$candidate_arrays));
+   $stored_best_blocks=1 if(
+    defined($stored_best_score)
+    && $candidate_score > $stored_best_score+0.05
+    && lg_autocal_26_best_known_committed_state($stored_best)
+    && lg_autocal_26_best_known_values_available($stored_best,$target,$candidate_arrays)
+   );
    my $improved=defined($candidate_de) && $candidate_score + 0.0001 < $best_score && !$stored_best_blocks;
    if($improved) {
     $arrays=clone_arrays($candidate_arrays);
