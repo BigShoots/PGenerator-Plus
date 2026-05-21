@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance response_probe response_model slope predicted_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed frozen_channel error_gap body_final_micro body_luminance_priority first_read_luminance_jump low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance response_probe response_model slope predicted_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -2961,36 +2961,6 @@ sub body_luminance_response_adjustment {
   return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, body_luminance=>1, response_model=>1, slope=>$slope+0, predicted_error=>$predicted+0 }];
  }
  return undef;
-}
-
-sub body_first_read_luminance_jump_adjustments {
- my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$iter,$seed_result)=@_;
- return undef if(!defined($iter) || ($iter+0) != 1);
- return undef if(ref($seed_result) ne "HASH" || ($seed_result->{"mode"}||"") ne "luma-only");
- return undef if(autocal_step_is_low_shadow($step) || autocal_step_is_fast_headroom($step) || autocal_step_is_white($step) || strict_tried_for_step($step));
- return undef if(!has_luminance_channel($arrays,$target));
- return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}));
- my $ire=$step->{"ire"}+0;
- return undef if($ire + 0.0001 < 35 || $ire > 85.0001);
- $luminance_err=0 if(!defined($luminance_err));
- my $lum_pct=$luminance_err*100;
- return undef if(abs($lum_pct) < 3.5);
- my $threshold=luminance_tolerance_percent($step)*3;
- $threshold=8 if($threshold < 8);
- return undef if(abs($lum_pct) >= $threshold);
- my $cap=body_luminance_response_cap($step);
- return undef if(!defined($cap));
- my $max_step=abs($lum_pct) >= 5 ? 1.5 : 1.0;
- $max_step=$cap if($max_step > $cap);
- my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,0);
- if(ref($adjustments) eq "ARRAY") {
-  foreach my $adj (@{$adjustments}) {
-   next if(ref($adj) ne "HASH");
-   $adj->{"body_luminance_priority"}=1;
-   $adj->{"first_read_luminance_jump"}=1;
-  }
- }
- return $adjustments;
 }
 
 sub body_luminance_priority_adjustments {
@@ -6782,9 +6752,6 @@ eval {
 							    if($pair_chroma_mag < 0.035 || (defined($de) && $de <= ($target_delta+1.0)) || (defined($lum_err) && abs($lum_err*100) > 12)) {
 							     $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$pair_lum_pct,0);
 							    }
-							   }
-							   if(!$adjustments) {
-							    $adjustments=body_first_read_luminance_jump_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$iter,$seed_from_prior_slot);
 							   }
 							   if(!$adjustments) {
 							    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
