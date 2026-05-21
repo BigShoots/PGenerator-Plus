@@ -7892,10 +7892,7 @@ eval {
 			    $adjacent_seed_skip_reason="missing_final_best_source";
 			   }
 			   if(abs($final_ire-109) < 0.001 && ref($adjacent_seed_source_best) eq "HASH") {
-			    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,109,105,0);
-			    $adjacent_seed->{"message"}="seeded 105 from 109" if(ref($adjacent_seed) eq "HASH");
-				    $adjacent_seed->{"label"}="105%" if(ref($adjacent_seed) eq "HASH");
-				    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(105), ire=>format_percent(105), label=>"105%" } if(ref($adjacent_seed) eq "HASH");
+			    $adjacent_seed_skip_reason="source_is_chroma_only";
 				   } elsif(abs($final_ire-105) < 0.001 && ref($adjacent_seed_source_best) eq "HASH") {
 				    $adjacent_seed_source_gate=lg_autocal_26_legal_white_seed_source_gate($adjacent_seed_source_best,$target_delta);
 				    if(ref($adjacent_seed_source_gate) eq "HASH" && $adjacent_seed_source_gate->{"accepted"}) {
