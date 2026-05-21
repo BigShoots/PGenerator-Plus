@@ -426,8 +426,8 @@ LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA=""
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
   READ\ *)
-	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX]
-	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX <<< "$line"
+	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT]
+	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX CMD_READ_TIMEOUT <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
@@ -438,9 +438,11 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     [[ -z "$TRANSPORT_SIGNAL_RANGE" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ -z "$REQUEST_ID" ]] && REQUEST_ID=""
 		     [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
+		     [[ -z "$CMD_READ_TIMEOUT" ]] && CMD_READ_TIMEOUT=""
 		     [[ "$SIGNAL_RANGE" == "-" ]] && SIGNAL_RANGE=""
 		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
+		     [[ "$CMD_READ_TIMEOUT" == "-" ]] && CMD_READ_TIMEOUT=""
 
 	   # Mark measuring so the polling endpoint knows a read is in flight.
 	   write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\"}"
@@ -473,6 +475,10 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	  READ_TIMEOUT=90
 	  ire_le "$IRE" 25 && READ_TIMEOUT=120
 	  ire_le "$IRE" 5 && READ_TIMEOUT=140
+	  if [[ "$CMD_READ_TIMEOUT" =~ ^[0-9]+$ ]] && (( CMD_READ_TIMEOUT >= 10 )); then
+	   READ_TIMEOUT="$CMD_READ_TIMEOUT"
+	   (( READ_TIMEOUT > 300 )) && READ_TIMEOUT=300
+	  fi
    READ_START=$SECONDS
    GOT_RESULT=false
    RETRIED_COMM=0
