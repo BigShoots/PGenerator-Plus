@@ -5301,14 +5301,14 @@ sub post_commit_polish_enabled {
 sub committed_top_window_score {
  my ($window)=@_;
  return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
- my @ires=(109,105,99,100,95);
+ my @ires=grep { ref($window->{"points"}{$_}) eq "HASH" && defined($window->{"points"}{$_}{"de"}) } (109,105,99,100,95);
+ return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(!@ires);
  my $sum=0;
  my $count=0;
  my $worst=0;
  my $over=0;
  foreach my $ire (@ires) {
   my $rec=$window->{"points"}{$ire};
-  return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(ref($rec) ne "HASH" || !defined($rec->{"de"}));
   my $de=$rec->{"de"}+0;
   $sum+=$de;
   $count++;
@@ -5375,6 +5375,115 @@ sub committed_top_window_protected_worsened {
  return 0;
 }
 
+sub committed_top_window_luma_candidate_change {
+ my ($candidate)=@_;
+ return undef if(ref($candidate) ne "HASH" || ref($candidate->{"changes"}) ne "ARRAY");
+ return undef if(@{$candidate->{"changes"}} != 1);
+ my $change=$candidate->{"changes"}[0];
+ return undef if(ref($change) ne "HASH" || ($change->{"setting"}||"") ne "adjustingLuminance");
+ return $change;
+}
+
+sub committed_top_window_luma_family_key {
+ my ($candidate,$arrays)=@_;
+ my $change=committed_top_window_luma_candidate_change($candidate);
+ return undef if(ref($change) ne "HASH");
+ my $source="top";
+ $source=$1+0 if(($candidate->{"label"}||"") =~ /^top_([0-9.]+)_/);
+ my $idx=$change->{"index"};
+ my $delta=$change->{"delta"};
+ return undef if(!defined($idx) || !defined($delta) || abs($delta+0) < 0.0001);
+ my $arr=(ref($arrays) eq "HASH") ? $arrays->{"adjustingLuminance"} : undef;
+ my $current=(ref($arr) eq "ARRAY" && defined($arr->[$idx])) ? ($arr->[$idx]+0) : 0;
+ my $direction=($delta+0) < 0 ? -1 : 1;
+ return join("|",$source,$idx+0,ddc_value_key($current),$direction);
+}
+
+sub committed_top_window_luma_suppressed {
+ my ($bad_luma,$candidate,$arrays)=@_;
+ return 0 if(ref($bad_luma) ne "HASH");
+ my $key=committed_top_window_luma_family_key($candidate,$arrays);
+ return 0 if(!defined($key));
+ my $entry=$bad_luma->{$key};
+ return 0 if(ref($entry) ne "HASH");
+ return 1 if(($entry->{"severe_count"}||0) >= 1);
+ return 1 if(($entry->{"count"}||0) >= 2);
+ return 0;
+}
+
+sub committed_top_window_point_chroma_magnitude {
+ my ($point)=@_;
+ return 999 if(ref($point) ne "HASH" || ref($point->{"reading"}) ne "HASH");
+ return chroma_error_magnitude(rgb_error($point->{"reading"}));
+}
+
+sub committed_top_window_luma_allowed {
+ my ($window,$ire,$candidate,$arrays,$bad_luma)=@_;
+ return 0 if(committed_top_window_luma_suppressed($bad_luma,$candidate,$arrays));
+ return 1 if(ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
+ my $point=$window->{"points"}{$ire};
+ return 1 if(ref($point) ne "HASH");
+ my $chroma=committed_top_window_point_chroma_magnitude($point);
+ my $de=defined($point->{"de"}) ? ($point->{"de"}+0) : 0;
+ my $lum_abs=defined($point->{"luminance_error_pct"}) ? abs($point->{"luminance_error_pct"}+0) : 0;
+ # 105% is a chroma/RGB headroom point; do not spend the top-window budget on
+ # luma-only probes while its RGB error is still the dominant failure.
+ return 0 if(abs(($ire||0)-105) < 0.001 && $de > 2.0 && $chroma >= 0.030);
+ # The legal-white side should also avoid luma-only hammering when chroma is
+ # clearly bad and Y is not the dominant problem for the pair.
+ return 0 if((abs(($ire||0)-99) < 0.001 || abs(($ire||0)-100) < 0.001) && $chroma >= 0.035 && $lum_abs < 4.0);
+ return 1;
+}
+
+sub record_committed_top_window_bad_luma {
+ my ($bad_luma,$candidate,$arrays,$best_window,$candidate_window,$best_score,$candidate_score)=@_;
+ return undef if(ref($bad_luma) ne "HASH");
+ my $change=committed_top_window_luma_candidate_change($candidate);
+ return undef if(ref($change) ne "HASH");
+ my $label=$candidate->{"label"}||"";
+ my $ire;
+ $ire=$1+0 if($label =~ /^top_([0-9.]+)_lum_/);
+ return undef if(!defined($ire));
+ return undef if(ref($best_window) ne "HASH" || ref($candidate_window) ne "HASH");
+ my $before=(ref($best_window->{"points"}) eq "HASH") ? $best_window->{"points"}{$ire} : undef;
+ my $after=(ref($candidate_window->{"points"}) eq "HASH") ? $candidate_window->{"points"}{$ire} : undef;
+ return undef if(ref($before) ne "HASH" || ref($after) ne "HASH");
+ return undef if(!defined($before->{"luminance_error_pct"}) || !defined($after->{"luminance_error_pct"}));
+ return undef if(!defined($before->{"de"}) || !defined($after->{"de"}));
+ my $before_lum=$before->{"luminance_error_pct"}+0;
+ my $after_lum=$after->{"luminance_error_pct"}+0;
+ return undef if(abs($after_lum)+0.10 >= abs($before_lum));
+ my $before_de=$before->{"de"}+0;
+ my $after_de=$after->{"de"}+0;
+ my $before_chroma=committed_top_window_point_chroma_magnitude($before);
+ my $after_chroma=committed_top_window_point_chroma_magnitude($after);
+ my $score_worse=0;
+ $score_worse=1 if(ref($best_score) eq "HASH" && ref($candidate_score) eq "HASH" && ($candidate_score->{"score"}||9999) > (($best_score->{"score"}||9999)+0.25));
+ my $de_worse=($after_de > $before_de+0.10) ? 1 : 0;
+ my $chroma_worse=($after_chroma > $before_chroma+0.004) ? 1 : 0;
+ return undef if(!$de_worse && !$chroma_worse && !$score_worse);
+ my $key=committed_top_window_luma_family_key($candidate,$arrays);
+ return undef if(!defined($key));
+ my $entry=$bad_luma->{$key};
+ $entry={} if(ref($entry) ne "HASH");
+ my $severe=($after_de > $before_de+0.25 || $after_chroma > $before_chroma+0.008 || $score_worse) ? 1 : 0;
+ $entry->{"count"}=($entry->{"count"}||0)+1;
+ $entry->{"severe_count"}=($entry->{"severe_count"}||0)+($severe ? 1 : 0);
+ $entry->{"label"}=$label;
+ $entry->{"ire"}=$ire+0;
+ $entry->{"index"}=$change->{"index"}+0 if(defined($change->{"index"}));
+ $entry->{"direction"}=($change->{"delta"}+0) < 0 ? -1 : 1;
+ $entry->{"before_delta_e"}=$before_de;
+ $entry->{"after_delta_e"}=$after_de;
+ $entry->{"before_luminance_error_pct"}=$before_lum;
+ $entry->{"after_luminance_error_pct"}=$after_lum;
+ $entry->{"before_chroma"}=$before_chroma;
+ $entry->{"after_chroma"}=$after_chroma;
+ $bad_luma->{$key}=$entry;
+ $entry->{"suppressed"}=committed_top_window_luma_suppressed($bad_luma,$candidate,$arrays) ? JSON::PP::true : JSON::PP::false;
+ return $entry;
+}
+
 sub committed_top_window_add_candidate {
  my ($out,$seen,$label,$changes)=@_;
  return if(ref($out) ne "ARRAY" || ref($seen) ne "HASH" || ref($changes) ne "ARRAY" || !@{$changes});
@@ -5391,7 +5500,7 @@ sub committed_top_window_add_candidate {
 }
 
 sub committed_top_window_candidates {
- my ($window,$config)=@_;
+ my ($window,$config,$arrays,$bad_luma)=@_;
  my @out;
  my %seen;
  my %influence=(
@@ -5411,17 +5520,24 @@ sub committed_top_window_candidates {
 	  my $reading=$window->{"points"}{$ire}{"reading"};
 	  my $err=rgb_error($reading);
   my $lum_pct=$window->{"points"}{$ire}{"luminance_error_pct"};
-  if(defined($lum_pct) && abs($lum_pct) >= 0.35) {
+	  next if(ref($err) ne "HASH");
+  my $chroma_mag=chroma_error_magnitude($err);
+  my $de=defined($window->{"points"}{$ire}{"de"}) ? ($window->{"points"}{$ire}{"de"}+0) : 0;
+  my $rgb_first=(abs($ire-105) < 0.001 && $de > 2.0 && $chroma_mag >= 0.030) ? 1 : 0;
+  my $add_luma_candidates=sub {
+   return if(!defined($lum_pct) || abs($lum_pct) < 0.35);
    my $dir=($lum_pct > 0) ? -1 : 1;
    foreach my $idx (@{$influence{$ire}||[]}) {
     foreach my $mag (0.25,0.50,0.125) {
-     committed_top_window_add_candidate(\@out,\%seen,"top_${ire}_lum_${idx}_".ddc_value_key($dir*$mag),[
-      { setting=>"adjustingLuminance", index=>$idx, delta=>$dir*$mag },
-     ]);
+     my $label="top_${ire}_lum_${idx}_".ddc_value_key($dir*$mag);
+     my $changes=[{ setting=>"adjustingLuminance", index=>$idx, delta=>$dir*$mag }];
+     my $probe={ label=>$label, changes=>$changes };
+     next if(!committed_top_window_luma_allowed($window,$ire,$probe,$arrays,$bad_luma));
+     committed_top_window_add_candidate(\@out,\%seen,$label,$changes);
     }
    }
-  }
-	  next if(ref($err) ne "HASH");
+  };
+  $add_luma_candidates->() if(!$rgb_first);
   my @channels=sort { abs($err->{$b}||0) <=> abs($err->{$a}||0) } qw(r g b);
   @channels=@channels[0,1] if(@channels > 2);
   foreach my $ch (@channels) {
@@ -5437,6 +5553,7 @@ sub committed_top_window_candidates {
     }
 	   }
 	  }
+  $add_luma_candidates->() if($rgb_first);
 	 }
 	 foreach my $ch (qw(r g b)) {
 	  my $setting=channel_setting($ch);
@@ -5631,6 +5748,7 @@ sub committed_top_window_polish {
 	 my $round_limit=config_positive_int($config,"post_commit_top_window_rounds",3,1,5);
 	 my $tested_total=0;
 	 my $accepted_total=0;
+	 my %bad_luma_candidates;
 	 $state->{"current_name"}="Committed top window";
 	 $state->{"phase"}="writing";
 	 $state->{"message"}="Starting fresh LG calibration mode for committed top-window writes";
@@ -5649,14 +5767,16 @@ sub committed_top_window_polish {
 	 };
 	 for(my $round=1;$round<=$round_limit;$round++) {
 	  last if(cancelled() || $tested_total >= $limit);
-	  my @candidates=committed_top_window_candidates($best_window,$config);
+	  my @candidates=committed_top_window_candidates($best_window,$config,$best_arrays,\%bad_luma_candidates);
 	  my $round_improved=0;
 	  my $round_budget=$limit-$tested_total;
 	  $round_budget=8 if($round_budget > 8);
 	  my $tested_round=0;
 	  foreach my $candidate (@candidates) {
 	   last if(cancelled());
-	   last if($tested_total >= $limit || $tested_round++ >= $round_budget);
+	   last if($tested_total >= $limit);
+	   next if(committed_top_window_luma_suppressed(\%bad_luma_candidates,$candidate,$best_arrays));
+	   last if($tested_round++ >= $round_budget);
 	   $tested_total++;
 	   my $candidate_arrays=committed_top_window_apply_candidate($best_arrays,$candidate);
 	   my $candidate_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
@@ -5676,6 +5796,9 @@ sub committed_top_window_polish {
 	   last if($candidate_error && $candidate_error eq "cancelled");
 	   my $candidate_score=committed_top_window_score($candidate_window);
 	   my $protected_worsened=committed_top_window_protected_worsened($candidate_window,$best_window);
+	   my $bad_luma_candidate=record_committed_top_window_bad_luma(
+	    \%bad_luma_candidates,$candidate,$best_arrays,$best_window,$candidate_window,$best_score,$candidate_score
+	   );
 	   trace_109($steps_by_ire{99},"committed_top_window_candidate",{
 	    label=>$candidate->{"label"},
 	    round=>$round+0,
@@ -5685,7 +5808,8 @@ sub committed_top_window_polish {
 	    best_score=>$best_score->{"score"}+0,
 	    best_worst=>$best_score->{"worst"}+0,
 	    best_over=>$best_score->{"over"}+0,
-	    protected_worsened=>$protected_worsened?1:0
+	    protected_worsened=>$protected_worsened?1:0,
+	    bad_luma_candidate=>$bad_luma_candidate
 	   });
 	   if(!$protected_worsened && committed_top_window_candidate_allowed($candidate_score,$best_score)) {
 	    $best_score=$candidate_score;
@@ -5717,7 +5841,8 @@ sub committed_top_window_polish {
 	     best_score=>$best_score->{"score"}+0,
 	     best_worst=>$best_score->{"worst"}+0,
 	     best_over=>$best_score->{"over"}+0,
-	     protected_worsened=>$protected_worsened?1:0
+	     protected_worsened=>$protected_worsened?1:0,
+	     bad_luma_candidate=>$bad_luma_candidate
 	    });
 	    $state->{"phase"}="writing";
 	    $state->{"message"}="Restoring top-window best";
