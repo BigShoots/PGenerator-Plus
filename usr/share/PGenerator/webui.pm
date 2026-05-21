@@ -2705,9 +2705,20 @@ sub webui_meter_lg_autocal_kill (@) {
  &webui_meter_lg_autocal_mark_cancelled() if($mark);
 }
 
+sub webui_meter_lg_autocal_body_with_defaults (@) {
+ my ($body)=@_;
+ return $body if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ return $body if($body=~/"lg_autocal_26_anchor_predrive"\s*:/);
+ return $body if($body=~/"full_workflow"\s*:\s*true/i || $body=~/"full_autocal_touchup"\s*:\s*true/i);
+ return $body unless($body=~/"type"\s*:\s*"greyscale"/i && $body=~/"points"\s*:\s*26\b/ && $body=~/"lg_autocal_26"\s*:\s*true/i);
+ $body=~s/\}\s*\z/,"lg_autocal_26_anchor_predrive":true}/;
+ return $body;
+}
+
 sub webui_meter_lg_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG Auto Cal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ $body=&webui_meter_lg_autocal_body_with_defaults($body);
  if(&webui_meter_lg_autocal_running()) {
   return '{"status":"started","message":"LG Auto Cal already running"}' if(&webui_meter_lg_autocal_same_run_running($body));
   return '{"status":"error","message":"LG Auto Cal is already running"}';
@@ -20150,6 +20161,7 @@ async function meterAutoCalConfirmAndStart(){
 	    pattern_signal_range:patternSignalRange||undefined,
 	    lg_greyscale_21:false,
 	    lg_autocal_26:true,
+		    lg_autocal_26_anchor_predrive:fullWorkflow?undefined:true,
 		    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
 	    patch_insert:document.getElementById('meterPatchInsert').checked,
 			   target_delta_e:target,
