@@ -1725,6 +1725,91 @@ sub autocal_measurement_not_worse_than_best {
  return 1;
 }
 
+sub lg_autocal_26_best_known_key {
+ my ($step_or_ire)=@_;
+ my $ire;
+ if(ref($step_or_ire) eq "HASH") {
+  $ire=$step_or_ire->{"ire"} if(defined($step_or_ire->{"ire"}));
+ } else {
+  $ire=$step_or_ire if(defined($step_or_ire));
+ }
+ return undef if(!defined($ire));
+ return format_percent($ire);
+}
+
+sub lg_autocal_26_measurement_score {
+ my ($step,$de,$lum_pct)=@_;
+ return autocal_result_score($de,$lum_pct,$step);
+}
+
+sub lg_autocal_26_candidate_better_than_entry {
+ my ($step,$de,$lum_pct,$entry)=@_;
+ return 0 if(!defined($de));
+ return 1 if(ref($entry) ne "HASH" || !defined($entry->{"delta_e"}));
+ my $score=lg_autocal_26_measurement_score($step,$de,$lum_pct);
+ my $best_score=defined($entry->{"score"}) ? ($entry->{"score"}+0) : lg_autocal_26_measurement_score($step,$entry->{"delta_e"},$entry->{"luminance_error_pct"});
+ return 1 if($score + 0.0001 < $best_score);
+ return 0 if($score > $best_score + 0.0001);
+ return autocal_measurement_not_worse_than_best($de,$lum_pct,$entry->{"delta_e"},$entry->{"luminance_error_pct"});
+}
+
+sub remember_lg_autocal_26_best_known {
+ my ($config,$state,$step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason)=@_;
+ return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return if(ref($state) ne "HASH" || ref($step) ne "HASH" || ref($reading) ne "HASH");
+ return if(!defined($de));
+ my $key=lg_autocal_26_best_known_key($step);
+ return if(!defined($key));
+ $state->{"lg_autocal_26_best_known"}={} if(ref($state->{"lg_autocal_26_best_known"}) ne "HASH");
+ my $existing=$state->{"lg_autocal_26_best_known"}{$key};
+ return if(!lg_autocal_26_candidate_better_than_entry($step,$de,$lum_pct,$existing));
+ my $score=lg_autocal_26_measurement_score($step,$de,$lum_pct);
+ $state->{"lg_autocal_26_best_known"}{$key}={
+  ire=>($step->{"ire"}+0),
+  delta_e=>$de+0,
+  luminance_error_pct=>defined($lum_pct) ? ($lum_pct+0) : undef,
+  target_luminance=>defined($target_luminance) ? ($target_luminance+0) : undef,
+  score=>$score+0,
+  reason=>$reason||"best_known",
+  reading=>trace_reading_summary($reading),
+  ddc_values=>trace_target_values($arrays,$target),
+ };
+}
+
+sub lg_autocal_26_best_known_for_step {
+ my ($state,$step)=@_;
+ return undef if(ref($state) ne "HASH" || ref($state->{"lg_autocal_26_best_known"}) ne "HASH");
+ my $key=lg_autocal_26_best_known_key($step);
+ return undef if(!defined($key));
+ my $entry=$state->{"lg_autocal_26_best_known"}{$key};
+ return (ref($entry) eq "HASH") ? $entry : undef;
+}
+
+sub lg_autocal_26_best_known_values_available {
+ my ($entry,$target,$arrays)=@_;
+ return 0 if(ref($entry) ne "HASH" || ref($entry->{"ddc_values"}) ne "HASH" || ref($target) ne "HASH" || ref($arrays) ne "HASH");
+ my $idx=$target->{"index"};
+ return 0 if(!defined($idx));
+ foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+  next if(!exists($entry->{"ddc_values"}{$setting}));
+  return 1 if(ref($arrays->{$setting}) eq "ARRAY" && $idx < @{$arrays->{$setting}});
+ }
+ return 0;
+}
+
+sub lg_autocal_26_arrays_with_best_known_values {
+ my ($arrays,$target,$entry)=@_;
+ return undef if(!lg_autocal_26_best_known_values_available($entry,$target,$arrays));
+ my $next=clone_arrays($arrays);
+ my $idx=$target->{"index"};
+ foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+  next if(!exists($entry->{"ddc_values"}{$setting}));
+  next if(ref($next->{$setting}) ne "ARRAY" || $idx >= @{$next->{$setting}});
+  $next->{$setting}[$idx]=$entry->{"ddc_values"}{$setting}+0;
+ }
+ return $next;
+}
+
 sub headroom_autocal_result_score {
 	 my ($de,$reading,$step)=@_;
 	 my $err=rgb_error($reading);
@@ -4847,6 +4932,23 @@ sub committed_top_window_read {
  return ($window,undef);
 }
 
+sub remember_lg_autocal_26_window_best_known {
+ my ($config,$state,$steps_by_ire,$window,$arrays,$reason)=@_;
+ return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return if(ref($steps_by_ire) ne "HASH" || ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
+ foreach my $ire (keys %{$window->{"points"}}) {
+  my $point=$window->{"points"}{$ire};
+  next if(ref($point) ne "HASH" || ref($point->{"reading"}) ne "HASH");
+  my $step=$steps_by_ire->{$ire};
+  next if(ref($step) ne "HASH");
+  my $target=ddc_target_for_step($step);
+  remember_lg_autocal_26_best_known(
+   $config,$state,$step,$point->{"reading"},$point->{"de"},$point->{"luminance_error_pct"},
+   $point->{"target_luminance"},$arrays,$target,$reason||"top_window"
+  );
+ }
+}
+
 sub committed_top_window_polish {
  my ($config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$calibrated_slot_mask)=@_;
  return ($picture,$arrays,undef) if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
@@ -4869,6 +4971,7 @@ sub committed_top_window_polish {
  return ($picture,$arrays,undef) if($read_error && $read_error eq "cancelled");
  return ($picture,$arrays,undef) if(ref($best_window) ne "HASH");
  my $best_score=committed_top_window_score($best_window);
+ remember_lg_autocal_26_window_best_known($config,$state,\%steps_by_ire,$best_window,$arrays,"committed_top_window_base");
 	 trace_109($steps_by_ire{99},"committed_top_window_base",{
 	  score=>$best_score->{"score"}+0,
 	  worst=>$best_score->{"worst"}+0,
@@ -4955,6 +5058,7 @@ sub committed_top_window_polish {
 	    $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
 	    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
 	    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+	    remember_lg_autocal_26_window_best_known($config,$state,\%steps_by_ire,$candidate_window,$candidate_arrays,"committed_top_window_candidate_accepted");
 	    $round_improved=1;
 	    $accepted_total++;
 	    trace_109($steps_by_ire{99},"committed_top_window_candidate_accepted",{
@@ -5017,10 +5121,11 @@ sub committed_top_window_polish {
 	  park_black_for_settle($config,$state,"Settling after committed top-window restore",config_positive_int($config,"post_commit_top_window_final_settle_ms",6000,0,60000));
 	  my ($final_window,$final_error)=committed_top_window_read($config,$state,\%steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,"post_cal_final");
 	  return $finish_top_window->($final_error) if($final_error && $final_error ne "cancelled");
-	  if(ref($final_window) eq "HASH") {
-	   my $final_score=committed_top_window_score($final_window);
-	   if(!committed_top_window_candidate_allowed($final_score,$best_score) && ($final_score->{"score"}||9999) > (($best_score->{"score"}||9999)+0.03)) {
-	    trace_109($steps_by_ire{99},"committed_top_window_post_cal_drift",{
+	   if(ref($final_window) eq "HASH") {
+	    my $final_score=committed_top_window_score($final_window);
+	    remember_lg_autocal_26_window_best_known($config,$state,\%steps_by_ire,$final_window,$arrays,"committed_top_window_post_cal_final");
+	    if(!committed_top_window_candidate_allowed($final_score,$best_score) && ($final_score->{"score"}||9999) > (($best_score->{"score"}||9999)+0.03)) {
+	     trace_109($steps_by_ire{99},"committed_top_window_post_cal_drift",{
 	     final_score=>$final_score->{"score"}+0,
 	     final_worst=>$final_score->{"worst"}+0,
 	     final_over=>$final_score->{"over"}+0,
@@ -5163,6 +5268,7 @@ sub committed_body_verify_off_cal {
    values=>trace_target_values($arrays,$target),
    reading=>trace_reading_summary($reading)
   });
+  remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_body_verify_read");
   write_state($state);
   my $adjustments=committed_body_verify_luminance_adjustment($arrays,$target,$read_step,$de,$lum_pct,$target_delta);
   next if(ref($adjustments) ne "ARRAY" || @{$adjustments} != 1);
@@ -5226,12 +5332,13 @@ sub committed_body_verify_off_cal {
     reading=>trace_reading_summary($reading)
    });
    if($kept) {
-    $arrays=clone_arrays($candidate_arrays);
-    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
-    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
-    write_state($state);
-    next;
-   }
+   $arrays=clone_arrays($candidate_arrays);
+   $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+   promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+   remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$candidate_arrays,$target,"committed_body_verify_keep");
+   write_state($state);
+   next;
+  }
   }
   $arrays=clone_arrays($best_arrays);
   $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
@@ -5256,9 +5363,405 @@ sub committed_body_verify_off_cal {
    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
    values=>trace_target_values($arrays,$target)
   });
+  remember_lg_autocal_26_best_known($config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,$target_step_y,$arrays,$target,"committed_body_verify_restore");
   write_state($state);
  }
  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+ return ($picture,$arrays,undef);
+}
+
+sub final_all_level_verify_order {
+ return (105,100,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
+}
+
+sub final_all_level_verify_steps_by_ire {
+ my ($steps)=@_;
+ my %wanted=map { format_percent($_)=>1 } final_all_level_verify_order();
+ my %out;
+ return \%out if(ref($steps) ne "ARRAY");
+ foreach my $step (@{$steps}) {
+  next if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+  my $key=format_percent($step->{"ire"});
+  next if(!$wanted{$key});
+  if(!defined($out{$key}) || ($step->{"autocal_white_reference"} && abs(($step->{"ire"}+0)-100) < 0.001)) {
+   $out{$key}=$step;
+  }
+ }
+ return \%out;
+}
+
+sub final_all_level_verify_de_limit {
+ my ($target_delta)=@_;
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $limit=$target_delta+0.15;
+ $limit=0.75 if($limit < 0.75);
+ return $limit;
+}
+
+sub final_all_level_verify_outlier_reason {
+ my ($step,$de,$lum_pct,$target_delta)=@_;
+ return "missing_delta_e" if(!defined($de));
+ return "" if(autocal_step_is_low_shadow($step) && committed_low_shadow_good_enough($step,$de,$lum_pct,$target_delta));
+ my @reasons;
+ my $de_limit=final_all_level_verify_de_limit($target_delta);
+ push @reasons,"delta_e" if($de > $de_limit);
+ if(defined($lum_pct)) {
+  my $tol=luminance_tolerance_percent($step);
+  push @reasons,"luminance" if(defined($tol) && abs($lum_pct) > $tol);
+ }
+ return join("+",@reasons);
+}
+
+sub final_all_level_verify_adjustment_cap {
+ my ($step,$setting)=@_;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $is_luma=($setting||"") eq "adjustingLuminance" ? 1 : 0;
+ if($ire <= 10.0001) {
+  return $is_luma ? low_shadow_luminance_response_cap($step,undef) : (($ire <= 4.1001) ? 0.20 : 0.25);
+ }
+ return $is_luma ? 2.0 : 0.50 if($ire <= 30.0001);
+ return $is_luma ? 1.5 : 0.35 if($ire <= 50.0001);
+ return $is_luma ? 1.0 : 0.25 if($ire <= 85.0001);
+ return $is_luma ? 0.5 : 0.25;
+}
+
+sub final_all_level_verify_luminance_adjustment {
+ my ($arrays,$target,$step,$lum_pct)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
+ return undef if(!has_luminance_channel($arrays,$target));
+ my $tol=luminance_tolerance_percent($step);
+ return undef if(!defined($tol) || abs($lum_pct) <= $tol);
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+ my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
+ my $direction=($lum_pct > 0) ? -1 : 1;
+ my $abs=abs($lum_pct);
+ my $mag=0.25;
+ $mag=0.50 if($abs >= 2.0);
+ $mag=1.00 if($abs >= 4.0);
+ $mag=1.50 if($abs >= 8.0);
+ $mag=2.00 if($abs >= 14.0);
+ my $cap=final_all_level_verify_adjustment_cap($step,"adjustingLuminance");
+ $mag=$cap if(defined($cap) && $mag > $cap);
+ my $next=round_ddc_quarter($current+($direction*$mag));
+ return undef if(abs($next-$current) < 0.0001);
+ return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, final_all_level_verify=>1 }];
+}
+
+sub final_all_level_verify_cap_adjustments {
+ my ($adjustments,$step)=@_;
+ return undef if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+ my @out;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
+  my $current=defined($adj->{"current"}) ? ($adj->{"current"}+0) : undef;
+  my $next=defined($adj->{"next"}) ? ($adj->{"next"}+0) : undef;
+  my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : undef;
+  next if(!defined($next));
+  if(!defined($current)) {
+   $current=defined($delta) ? ($next-$delta) : 0;
+  }
+  $delta=$next-$current if(!defined($delta));
+  my $cap=final_all_level_verify_adjustment_cap($step,$adj->{"setting"});
+  if(defined($cap) && abs($delta) > $cap) {
+   $delta=($delta < 0) ? -$cap : $cap;
+   $next=clamp_ddc_value($current+$delta);
+  }
+  next if(abs($next-$current) < 0.0001);
+  my %copy=%{$adj};
+  $copy{"current"}=$current+0;
+  $copy{"next"}=$next+0;
+  $copy{"delta"}=$next-$current;
+  $copy{"final_all_level_verify"}=1;
+  push @out,\%copy;
+ }
+ return @out ? \@out : undef;
+}
+
+sub final_all_level_verify_adjustments {
+ my ($arrays,$target,$step,$reading,$de,$lum_pct,$target_luminance,$target_delta,$tried,$stalls)=@_;
+ my $lum=final_all_level_verify_luminance_adjustment($arrays,$target,$step,$lum_pct);
+ return $lum if($lum);
+ my $err=autocal_adjustment_error($reading,$step);
+ return undef if(ref($err) ne "HASH");
+ my $lum_err=luminance_error_ratio($reading,$target_luminance);
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $max_step=($ire <= 30.0001) ? 0.50 : 0.25;
+ $max_step=0.25 if($ire >= 90);
+ my $adjustments=choose_micro_adjustments($err,$arrays,$target,$lum_err,$tried,$max_step,$de,$stalls,$step,$target_delta);
+ $adjustments=post_commit_low_shadow_adjustments($adjustments,$step,$lum_pct) if(autocal_step_is_low_shadow($step));
+ return final_all_level_verify_cap_adjustments($adjustments,$step);
+}
+
+sub final_all_level_verify_step_read {
+ my ($config,$state,$step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$label,$event,$arrays,$target)=@_;
+ my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
+ $state->{"current_name"}="Final all-level verify ".($label||($read_step->{"name"}||""));
+ $state->{"phase"}="reading";
+ $state->{"message"}="Reading final committed verify ".($label||($read_step->{"name"}||"patch"));
+ $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+ write_state($state);
+ my ($reading,$read_error)=read_step($config,$read_step,$state);
+ return (undef,undef,undef,undef,$read_step,$read_error) if($read_error);
+ return (undef,undef,undef,undef,$read_step,"Final committed verify read failed") if(ref($reading) ne "HASH");
+ my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+ annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+ my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+ my $lum_pct=luminance_error_percent($reading,$target_step_y);
+ $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+ $state->{"current_delta_e"}=defined($de) ? $de : undef;
+ $state->{"current_luminance"}=luminance($reading);
+ set_state_target_step_luminance($state,$target_step_y);
+ $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+ trace_109($read_step,$event||"final_all_level_verify_read",{
+  label=>$label,
+  delta_e=>defined($de)?$de+0:undef,
+  luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+  target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+  white_y=>defined($white_y)?$white_y+0:undef,
+  values=>trace_target_values($arrays,$target),
+  reading=>trace_reading_summary($reading)
+ });
+ write_state($state);
+ return ($reading,$de,$lum_pct,$target_step_y,$read_step,undef);
+}
+
+sub committed_final_all_level_verify {
+ my ($config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$calibrated_slot_mask)=@_;
+ return ($picture,$arrays,undef) if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return ($picture,$arrays,undef) if(exists($config->{"post_commit_final_all_level_verify"}) && !$config->{"post_commit_final_all_level_verify"});
+ return ($picture,$arrays,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
+ return ($picture,$arrays,undef) if(!defined($white_y) || $white_y <= 0);
+ my $steps_by_ire=final_all_level_verify_steps_by_ire($steps);
+ my @ordered;
+ foreach my $ire (final_all_level_verify_order()) {
+  my $step=$steps_by_ire->{format_percent($ire)};
+  push @ordered,$step if(ref($step) eq "HASH");
+ }
+ return ($picture,$arrays,undef) if(!@ordered);
+ my $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($calibrated_slot_mask);
+ my $limit=config_positive_int($config,"post_commit_final_all_level_verify_outlier_iterations",1,0,3);
+ my $read_settle_ms=config_positive_int($config,"post_commit_final_all_level_verify_read_settle_ms",2000,0,20000);
+ my @outliers;
+ my $read_count=0;
+ trace_109($ordered[0],"final_all_level_verify_start",{
+  order=>[final_all_level_verify_order()],
+  white_y=>$white_y+0,
+  target_delta_e=>$target_delta+0,
+  de_limit=>final_all_level_verify_de_limit($target_delta)+0
+ });
+ $state->{"current_name"}="Final all-level verify";
+ $state->{"phase"}="reading";
+ $state->{"message"}="Starting final top-down committed verify pass";
+ $state->{"final_all_level_verify"}={ status=>"running", order=>[final_all_level_verify_order()] };
+ set_state_calibration_mode($state,0,"");
+ set_state_white_reference($state,$white_y);
+ write_state($state);
+ foreach my $step (@ordered) {
+  last if(cancelled());
+  my $target=ddc_target_for_step($step);
+  my $label=(ref($target) eq "HASH" ? $target->{"label"} : ($step->{"name"}||format_percent($step->{"ire"})."%"));
+  my ($reading,$de,$lum_pct,$target_step_y,$read_step,$read_error)=final_all_level_verify_step_read(
+   $config,$state,$step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$label,"final_all_level_verify_read",$arrays,$target
+  );
+  return ($picture,$arrays,$read_error) if($read_error && $read_error ne "cancelled");
+  last if($read_error && $read_error eq "cancelled");
+  next if(ref($reading) ne "HASH" || ref($read_step) ne "HASH");
+  $read_count++;
+  remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"final_all_level_verify_read");
+  my $reason=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
+  next if($reason eq "");
+  my $touchable=(ref($target) eq "HASH") ? 1 : 0;
+  push @outliers,{
+   step=>$step,
+   read_step=>$read_step,
+   target=>$target,
+   label=>$label,
+   reading=>$reading,
+   delta_e=>$de,
+   luminance_error_pct=>$lum_pct,
+   target_luminance=>$target_step_y,
+   reason=>$touchable ? $reason : "read_only_".$reason,
+  } if($touchable);
+  trace_109($read_step,"final_all_level_verify_outlier",{
+   label=>$label,
+   reason=>$touchable ? $reason : "read_only_".$reason,
+   touchable=>$touchable?JSON::PP::true:JSON::PP::false,
+   delta_e=>defined($de)?$de+0:undef,
+   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+   target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+   values=>trace_target_values($arrays,$target)
+  });
+ }
+ my ($touch_count,$keep_count,$restore_count)=(0,0,0);
+ foreach my $item (@outliers) {
+  last if(cancelled());
+  last if($limit <= 0);
+  my $target=$item->{"target"};
+  next if(ref($target) ne "HASH");
+  my $read_step=$item->{"read_step"};
+  my $label=$item->{"label"};
+  my $reading=$item->{"reading"};
+  my $de=$item->{"delta_e"};
+  my $lum_pct=$item->{"luminance_error_pct"};
+  my $target_step_y=$item->{"target_luminance"};
+  my $best_arrays=clone_arrays($arrays);
+  my $best_reading=clone_picture($reading);
+  my $best_de=$de;
+  my $best_lum_pct=$lum_pct;
+  my $best_score=lg_autocal_26_measurement_score($read_step,$de,$lum_pct);
+  my $stored_best=lg_autocal_26_best_known_for_step($state,$read_step);
+  my $stored_best_score=(ref($stored_best) eq "HASH" && defined($stored_best->{"score"})) ? ($stored_best->{"score"}+0) : undef;
+  my %tried_values;
+  mark_tried_values(\%tried_values,$arrays,$target,$de);
+  my $stalls=0;
+  for(my $iter=1;$iter<=$limit;$iter++) {
+   last if(cancelled());
+   last if(final_all_level_verify_outlier_reason($read_step,$best_de,$best_lum_pct,$target_delta) eq "");
+   my $adjustments=final_all_level_verify_adjustments($arrays,$target,$read_step,$reading,$de,$lum_pct,$target_step_y,$target_delta,\%tried_values,$stalls);
+   last if(!$adjustments);
+   my $values_before=trace_target_values($arrays,$target);
+   my $candidate_arrays=clone_arrays($arrays);
+   foreach my $adj (@{$adjustments}) {
+    next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
+    $candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
+   }
+   my $candidate_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($current_calibrated_slot_mask);
+   mark_calibrated_26pt_slot($candidate_calibrated_slot_mask,$target);
+   refresh_propagated_uncalibrated_26pt_slots($config,$candidate_arrays,$candidate_calibrated_slot_mask);
+   $state->{"phase"}="writing";
+   $state->{"message"}="Final verify $label ".describe_adjustments($adjustments)." ($iter/$limit)";
+   trace_109($read_step,"final_all_level_verify_touch_keep",{
+    label=>$label,
+    planned=>JSON::PP::true,
+    reason=>$item->{"reason"},
+    iteration=>$iter+0,
+    delta_e=>defined($de)?$de+0:undef,
+    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+    target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+    adjustments=>trace_adjustments_summary($adjustments),
+    values_before=>$values_before,
+    values_after=>trace_target_values($candidate_arrays,$target)
+   });
+   write_state($state);
+   my $write_error;
+   $touch_count++;
+   ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$target,$picture_mode,0,$state,0,1);
+   return ($picture,$arrays,$write_error) if($write_error);
+   set_state_calibration_mode($state,0,"");
+   sync_state_picture($state,$picture,$picture_mode);
+   select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
+   my ($candidate_reading,$candidate_error)=read_step($config,$read_step,$state);
+   return ($picture,$arrays,$candidate_error) if($candidate_error && $candidate_error ne "cancelled");
+   last if($candidate_error && $candidate_error eq "cancelled");
+   last if(ref($candidate_reading) ne "HASH");
+   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$candidate_reading,$target_gamma,$signal_mode);
+   annotate_reading_target($candidate_reading,$white_y,$target_step_y,$target_x,$target_y);
+   my $candidate_de=autocal_delta_e_for_step($config,$candidate_reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+   my $candidate_lum_pct=luminance_error_percent($candidate_reading,$target_step_y);
+   mark_tried_values(\%tried_values,$candidate_arrays,$target,$candidate_de);
+   my $candidate_score=lg_autocal_26_measurement_score($read_step,$candidate_de,$candidate_lum_pct);
+   my $stored_best_blocks=0;
+   $stored_best_blocks=1 if(defined($stored_best_score) && $candidate_score > $stored_best_score+0.05 && lg_autocal_26_best_known_values_available($stored_best,$target,$candidate_arrays));
+   my $improved=defined($candidate_de) && $candidate_score + 0.0001 < $best_score && !$stored_best_blocks;
+   if($improved) {
+    $arrays=clone_arrays($candidate_arrays);
+    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+    $best_arrays=clone_arrays($candidate_arrays);
+    $best_reading=clone_picture($candidate_reading);
+    $best_de=$candidate_de;
+    $best_lum_pct=$candidate_lum_pct;
+    $best_score=$candidate_score;
+    $reading=$candidate_reading;
+    $de=$candidate_de;
+    $lum_pct=$candidate_lum_pct;
+    $keep_count++;
+    $state->{"readings"}=merge_reading($state->{"readings"},$candidate_reading);
+    $state->{"current_delta_e"}=defined($candidate_de) ? $candidate_de : undef;
+    $state->{"current_luminance"}=luminance($candidate_reading);
+    set_state_target_step_luminance($state,$target_step_y);
+    $state->{"luminance_error_pct"}=defined($candidate_lum_pct) ? $candidate_lum_pct : undef;
+    remember_lg_autocal_26_best_known($config,$state,$read_step,$candidate_reading,$candidate_de,$candidate_lum_pct,$target_step_y,$candidate_arrays,$target,"final_all_level_verify_touch_keep");
+    trace_109($read_step,"final_all_level_verify_touch_keep",{
+     label=>$label,
+     planned=>JSON::PP::false,
+     kept=>JSON::PP::true,
+     reason=>$item->{"reason"},
+     iteration=>$iter+0,
+     delta_e=>defined($candidate_de)?$candidate_de+0:undef,
+     luminance_error_pct=>defined($candidate_lum_pct)?$candidate_lum_pct+0:undef,
+     target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+     best_delta_e=>defined($best_de)?$best_de+0:undef,
+     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+     values_before=>$values_before,
+     values_after=>trace_target_values($arrays,$target)
+    });
+    write_state($state);
+    next;
+   }
+   my $restore_arrays=clone_arrays($best_arrays);
+   my $restore_reason=$stored_best_blocks ? "stored_best_known_better" : "candidate_not_improved";
+   if($stored_best_blocks) {
+    my $stored_arrays=lg_autocal_26_arrays_with_best_known_values($candidate_arrays,$target,$stored_best);
+    $restore_arrays=$stored_arrays if(ref($stored_arrays) eq "HASH");
+   }
+   refresh_propagated_uncalibrated_26pt_slots($config,$restore_arrays,$current_calibrated_slot_mask);
+   $state->{"phase"}="writing";
+   $state->{"message"}="Restoring final verify $label best";
+   write_state($state);
+   my $restore_error;
+   ($picture,$restore_error)=set_picture_values($picture,$restore_arrays,$target,$picture_mode,0,$state,0,1);
+   return ($picture,$arrays,$restore_error) if($restore_error);
+   set_state_calibration_mode($state,0,"");
+   sync_state_picture($state,$picture,$picture_mode);
+   $arrays=clone_arrays($restore_arrays);
+   $restore_count++;
+   $stalls++;
+   trace_109($read_step,"final_all_level_verify_touch_restore",{
+    label=>$label,
+    reason=>$restore_reason,
+    iteration=>$iter+0,
+    candidate_delta_e=>defined($candidate_de)?$candidate_de+0:undef,
+    candidate_luminance_error_pct=>defined($candidate_lum_pct)?$candidate_lum_pct+0:undef,
+    best_delta_e=>defined($best_de)?$best_de+0:undef,
+    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+    stored_best_delta_e=>(ref($stored_best) eq "HASH" && defined($stored_best->{"delta_e"})) ? ($stored_best->{"delta_e"}+0) : undef,
+    stored_best_luminance_error_pct=>(ref($stored_best) eq "HASH" && defined($stored_best->{"luminance_error_pct"})) ? ($stored_best->{"luminance_error_pct"}+0) : undef,
+    target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+    values_before=>$values_before,
+    values_after=>trace_target_values($arrays,$target)
+   });
+   $reading=clone_picture($best_reading);
+   $de=$best_de;
+   $lum_pct=$best_lum_pct;
+   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
+   $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+   $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
+   $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+   write_state($state);
+   last;
+  }
+ }
+ promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+ $state->{"final_all_level_verify"}={
+  status=>"complete",
+  reads=>$read_count+0,
+  outliers=>scalar(@outliers)+0,
+  touches=>$touch_count+0,
+  kept=>$keep_count+0,
+  restored=>$restore_count+0,
+  white_y=>$white_y+0,
+ };
+ trace_109($ordered[0],"final_all_level_verify_complete",{
+  reads=>$read_count+0,
+  outliers=>scalar(@outliers)+0,
+  touches=>$touch_count+0,
+  kept=>$keep_count+0,
+  restored=>$restore_count+0,
+  white_y=>$white_y+0
+ });
+ write_state($state);
  return ($picture,$arrays,undef);
 }
 
@@ -5350,6 +5853,7 @@ sub committed_state_polish {
    values=>trace_target_values($arrays,$target),
    reading=>trace_reading_summary($reading)
   });
+  remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_polish_read");
   write_state($state);
   my ($committed_pair_step,$committed_pair_reading,$committed_pair_de,$committed_pair_lum_pct,$committed_pair_target_step_y);
   if(defined($step->{"ire"}) && abs(($step->{"ire"}+0)-99) < 0.001 && ref($white_step) eq "HASH") {
@@ -5520,6 +6024,7 @@ sub committed_state_polish {
     $best_pair_de=$committed_pair_de;
     $best_pair_lum_pct=$committed_pair_lum_pct;
     $best_pair_target_step_y=$committed_pair_target_step_y;
+    remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_polish_keep");
     $stalls=0;
    } else {
     $stalls++;
@@ -5616,6 +6121,7 @@ sub committed_state_polish {
 	    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
 	    values=>trace_target_values($arrays,$target)
 	   });
+	   remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_low_shadow_read");
 	   write_state($state);
 		   next if(committed_low_shadow_good_enough($read_step,$de,$lum_pct,$target_delta));
 	   my $best_score=autocal_result_score($de,$lum_pct,$read_step);
@@ -5699,6 +6205,7 @@ sub committed_state_polish {
 	     $best_reading=clone_picture($reading);
 	     $best_de=$de;
 	     $best_lum_pct=$lum_pct;
+	     remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_low_shadow_keep");
 	     $stalls=0;
 		    } else {
 		     $stalls++;
@@ -5762,6 +6269,12 @@ sub committed_state_polish {
 	   return ($picture,$final_top_window_error) if($final_top_window_error && $final_top_window_error ne "cancelled");
 	  }
 	 }
+	 my $final_all_level_error;
+	 ($picture,$arrays,$final_all_level_error)=committed_final_all_level_verify(
+	  $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
+	  $target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$current_calibrated_slot_mask
+	 );
+	 return ($picture,$final_all_level_error) if($final_all_level_error && $final_all_level_error ne "cancelled");
 	 promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 	 return ($picture,undef);
 		}
@@ -5774,6 +6287,42 @@ sub end_calibration_mode {
  },90);
  log_line("CAL_END cleanup: ".($result->{"message"}||$result->{"status"}||"done"));
  return $result;
+}
+
+sub autocal_completion_pattern_cleanup {
+ my ($config,$state)=@_;
+ return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return if(exists($config->{"autocal_completion_pattern_cleanup"}) && !$config->{"autocal_completion_pattern_cleanup"});
+ my $stop_result=api_json("POST","/api/pattern",{ name=>"stop" },10);
+ my $mode="stop";
+ my $ok=(ref($stop_result) eq "HASH" && ($stop_result->{"status"}||"") ne "error") ? 1 : 0;
+ if(!$ok) {
+  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
+  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
+  my $payload={
+   name => "patch",
+   r => 0,
+   g => 0,
+   b => 0,
+   size => 100,
+   input_max => 255,
+   signal_mode => $config->{"signal_mode"}||"sdr",
+   max_luma => $config->{"max_luma"}||1000,
+  };
+  $payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
+  $payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
+  my $black_result=api_json("POST","/api/pattern",$payload,10);
+  $mode="black";
+  $ok=(ref($black_result) eq "HASH" && ($black_result->{"status"}||"") ne "error") ? 1 : 0;
+ }
+ if(ref($state) eq "HASH") {
+  $state->{"completion_pattern_cleanup"}={
+   mode=>$mode,
+   ok=>$ok ? JSON::PP::true : JSON::PP::false,
+  };
+  write_state($state);
+ }
+ log_line("Auto Cal completion pattern cleanup: $mode ".($ok ? "ok" : "failed"));
 }
 
 sub median_numeric {
@@ -6822,6 +7371,10 @@ eval {
 					   $state->{"best_delta_e"}=$best_de;
 					   $state->{"best_score"}=$best_score;
 					   write_state($state);
+					   remember_lg_autocal_26_best_known(
+					    $config,$state,$read_step,$reading,$de,$lum_pct,
+					    $target_step_y,$arrays,$target,"main_initial_touchup_target"
+					   );
 					   $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 					   next;
 					  }
@@ -6845,6 +7398,10 @@ eval {
 					    write_state($state);
 					   }
 				   if($pair_target_reached_now->()) {
+				    remember_lg_autocal_26_best_known(
+				     $config,$state,$read_step,$reading,$de,$lum_pct,
+				     $target_step_y,$arrays,$target,"main_initial_target_reached"
+				    );
 				    $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 				    next;
 				   }
@@ -7712,6 +8269,10 @@ eval {
 				   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
 				   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
 				  );
+				  remember_lg_autocal_26_best_known(
+				   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
+				   $target_step_y,$best_arrays,$target,"main_final_step_result"
+				  );
 			  $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 			  write_state($state);
 			  if(
@@ -7849,7 +8410,8 @@ eval {
 	  set_state_calibration_mode($state,0,"");
 	 }
 	 write_state($state);
- 1;
+	 autocal_completion_pattern_cleanup($config,$state) if(!cancelled());
+  1;
 } or do {
  my $err=$@ || "Auto Cal failed";
  $err=~s/[\r\n]+/ /g;
