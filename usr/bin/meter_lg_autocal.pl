@@ -5392,24 +5392,29 @@ sub committed_body_verify_off_cal {
   ref($_) eq "HASH" &&
   committed_body_verify_step($_) &&
   ddc_target_for_step($_)
- } @{$steps};
- return ($picture,$arrays,undef) if(!@body);
- my $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($calibrated_slot_mask);
- $state->{"current_name"}="Committed body verify";
- $state->{"phase"}="reading";
- $state->{"message"}="Starting committed body verify with calibration mode off";
- set_state_calibration_mode($state,0,"");
- write_state($state);
- foreach my $step (@body) {
+	 } @{$steps};
+	 return ($picture,$arrays,undef) if(!@body);
+	 my $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($calibrated_slot_mask);
+	 my $body_total=scalar(@body);
+	 my ($body_index,$body_touches,$body_kept,$body_restored)=(0,0,0,0);
+	 $state->{"current_name"}="Committed body verify";
+	 $state->{"phase"}="reading";
+	 $state->{"message"}="Starting committed body verify with calibration mode off";
+	 $state->{"committed_body_verify"}={ status=>"running", total=>$body_total+0, current_index=>0, touches=>0, kept=>0, restored=>0 };
+	 set_state_calibration_mode($state,0,"");
+	 write_state($state);
+	 foreach my $step (@body) {
   last if(cancelled());
   my $target=ddc_target_for_step($step);
   next if(ref($target) ne "HASH" || !has_luminance_channel($arrays,$target));
-  my $read_step=fixed_lg_autocal_step($config,$step);
-  next if(!committed_body_verify_step($read_step));
-  my $label=$target->{"label"};
-  $state->{"current_name"}="Committed body verify $label";
-  $state->{"phase"}="reading";
-  $state->{"message"}="Reading committed body $label with calibration mode off";
+	  my $read_step=fixed_lg_autocal_step($config,$step);
+	  next if(!committed_body_verify_step($read_step));
+	  my $label=$target->{"label"};
+	  $body_index++;
+	  $state->{"committed_body_verify"}={ status=>"running", total=>$body_total+0, current_index=>$body_index+0, current=>$label, touches=>$body_touches+0, kept=>$body_kept+0, restored=>$body_restored+0 };
+	  $state->{"current_name"}="Committed body verify $label";
+	  $state->{"phase"}="reading";
+	  $state->{"message"}="Reading committed body $label with calibration mode off";
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
   write_state($state);
   my ($reading,$read_error)=read_step($config,$read_step,$state);
@@ -5466,10 +5471,12 @@ sub committed_body_verify_off_cal {
    adjustments=>trace_adjustments_summary($adjustments),
    values_after=>trace_target_values($candidate_arrays,$target)
   });
-  write_state($state);
-  my $write_error;
-  ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$target,$picture_mode,0,$state,0,1);
-  return ($picture,$arrays,$write_error) if($write_error);
+	  write_state($state);
+	  my $write_error;
+	  $body_touches++;
+	  $state->{"committed_body_verify"}={ status=>"running", total=>$body_total+0, current_index=>$body_index+0, current=>$label, touches=>$body_touches+0, kept=>$body_kept+0, restored=>$body_restored+0 };
+	  ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$target,$picture_mode,0,$state,0,1);
+	  return ($picture,$arrays,$write_error) if($write_error);
   set_state_calibration_mode($state,0,"");
   sync_state_picture($state,$picture,$picture_mode);
   my $read_settle_ms=config_positive_int($config,"post_commit_body_verify_read_settle_ms",2000,0,20000);
@@ -5501,11 +5508,13 @@ sub committed_body_verify_off_cal {
     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
     values=>trace_target_values($candidate_arrays,$target),
     reading=>trace_reading_summary($reading)
-   });
-   if($kept) {
-   $arrays=clone_arrays($candidate_arrays);
-   $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
-   promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+	   });
+	   if($kept) {
+	   $body_kept++;
+	   $state->{"committed_body_verify"}={ status=>"running", total=>$body_total+0, current_index=>$body_index+0, current=>$label, touches=>$body_touches+0, kept=>$body_kept+0, restored=>$body_restored+0 };
+	   $arrays=clone_arrays($candidate_arrays);
+	   $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+	   promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
    remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$candidate_arrays,$target,"committed_body_verify_keep");
    write_state($state);
    next;
@@ -5513,12 +5522,14 @@ sub committed_body_verify_off_cal {
   }
   $arrays=clone_arrays($best_arrays);
   $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
-  $state->{"phase"}="writing";
-  $state->{"message"}="Restoring committed body $label verify best with calibration mode off";
-  write_state($state);
-  my $restore_error;
-  refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
-  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+	  $state->{"phase"}="writing";
+	  $state->{"message"}="Restoring committed body $label verify best with calibration mode off";
+	  write_state($state);
+	  my $restore_error;
+	  $body_restored++;
+	  $state->{"committed_body_verify"}={ status=>"running", total=>$body_total+0, current_index=>$body_index+0, current=>$label, touches=>$body_touches+0, kept=>$body_kept+0, restored=>$body_restored+0 };
+	  refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
+	  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
   ($picture,$restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,0,$state,0,1);
   return ($picture,$arrays,$restore_error) if($restore_error);
   set_state_calibration_mode($state,0,"");
@@ -5536,10 +5547,11 @@ sub committed_body_verify_off_cal {
   });
   remember_lg_autocal_26_best_known($config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,$target_step_y,$arrays,$target,"committed_body_verify_restore");
   write_state($state);
- }
- promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
- return ($picture,$arrays,undef);
-}
+	 }
+	 promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+	 $state->{"committed_body_verify"}={ status=>"complete", total=>$body_total+0, current_index=>$body_index+0, touches=>$body_touches+0, kept=>$body_kept+0, restored=>$body_restored+0 };
+	 return ($picture,$arrays,undef);
+	}
 
 sub final_all_level_verify_order {
  return (109,105,100,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
@@ -5567,6 +5579,23 @@ sub final_all_level_verify_de_limit {
  my $limit=$target_delta+0.15;
  $limit=0.75 if($limit < 0.75);
  return $limit;
+}
+
+sub final_all_level_verify_protected_step {
+ my (@steps)=@_;
+ foreach my $step (@steps) {
+  next if(ref($step) ne "HASH");
+  return 1 if($step->{"autocal_read_only"} || $step->{"autocal_white_reference"} || $step->{"autocal_reference_only"});
+ }
+ return 0;
+}
+
+sub final_all_level_verify_touchable_step {
+ my ($step,$read_step,$target)=@_;
+ return 0 if(ref($target) ne "HASH");
+ return 0 if(final_all_level_verify_protected_step($step,$read_step));
+ return 0 if(autocal_step_is_peak_headroom($read_step));
+ return 1;
 }
 
 sub final_all_level_verify_outlier_reason {
@@ -5599,6 +5628,7 @@ sub final_all_level_verify_adjustment_cap {
 sub final_all_level_verify_luminance_adjustment {
  my ($arrays,$target,$step,$lum_pct)=@_;
  return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
+ return undef if(final_all_level_verify_protected_step($step));
  return undef if(!has_luminance_channel($arrays,$target));
  my $tol=luminance_tolerance_percent($step);
  return undef if(!defined($tol) || abs($lum_pct) <= $tol);
@@ -5650,10 +5680,11 @@ sub final_all_level_verify_cap_adjustments {
 }
 
 sub final_all_level_verify_adjustments {
-	 my ($state,$arrays,$target,$step,$reading,$de,$lum_pct,$target_luminance,$target_delta,$tried,$stalls)=@_;
-	 my $cap_lum=final_all_level_verify_adjustment_cap($step,"adjustingLuminance");
-	 my $learned_lum=lg_autocal_26_learned_luminance_adjustment($state,$arrays,$target,$step,$lum_pct,$tried,$cap_lum,"final_all_level_verify_luminance");
-	 return $learned_lum if($learned_lum);
+		 my ($state,$arrays,$target,$step,$reading,$de,$lum_pct,$target_luminance,$target_delta,$tried,$stalls)=@_;
+		 return undef if(final_all_level_verify_protected_step($step));
+		 my $cap_lum=final_all_level_verify_adjustment_cap($step,"adjustingLuminance");
+		 my $learned_lum=lg_autocal_26_learned_luminance_adjustment($state,$arrays,$target,$step,$lum_pct,$tried,$cap_lum,"final_all_level_verify_luminance");
+		 return $learned_lum if($learned_lum);
 	 my $lum=final_all_level_verify_luminance_adjustment($arrays,$target,$step,$lum_pct);
 	 return $lum if($lum);
 	 my $err=autocal_adjustment_error($reading,$step);
@@ -5723,7 +5754,9 @@ sub committed_final_all_level_verify {
  my $read_settle_ms=config_positive_int($config,"post_commit_final_all_level_verify_read_settle_ms",2000,0,20000);
  my @outliers;
  my $read_count=0;
+ my ($touch_count,$keep_count,$restore_count)=(0,0,0);
  my %current_pass_best_known;
+ my $verify_total=scalar(@ordered);
  trace_109($ordered[0],"final_all_level_verify_start",{
   order=>[final_all_level_verify_order()],
   white_y=>$white_y+0,
@@ -5733,14 +5766,28 @@ sub committed_final_all_level_verify {
  $state->{"current_name"}="Final all-level verify";
  $state->{"phase"}="reading";
  $state->{"message"}="Starting final top-down committed verify pass";
- $state->{"final_all_level_verify"}={ status=>"running", order=>[final_all_level_verify_order()] };
+ $state->{"final_all_level_verify"}={ status=>"running", order=>[final_all_level_verify_order()], total=>$verify_total+0, reads=>0, outliers=>0, touches=>0, kept=>0, restored=>0 };
  set_state_calibration_mode($state,0,"");
  set_state_white_reference($state,$white_y);
  write_state($state);
+ my $verify_index=0;
  foreach my $step (@ordered) {
   last if(cancelled());
+  $verify_index++;
   my $target=ddc_target_for_step($step);
   my $label=(ref($target) eq "HASH" ? $target->{"label"} : ($step->{"name"}||format_percent($step->{"ire"})."%"));
+  $state->{"final_all_level_verify"}={
+   status=>"running",
+   order=>[final_all_level_verify_order()],
+   total=>$verify_total+0,
+   current_index=>$verify_index+0,
+   current=>$label,
+   reads=>$read_count+0,
+   outliers=>scalar(@outliers)+0,
+   touches=>$touch_count+0,
+   kept=>$keep_count+0,
+   restored=>$restore_count+0,
+  };
   my ($reading,$de,$lum_pct,$target_step_y,$read_step,$read_error)=final_all_level_verify_step_read(
    $config,$state,$step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$label,"final_all_level_verify_read",$arrays,$target
   );
@@ -5754,7 +5801,7 @@ sub committed_final_all_level_verify {
   remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"final_all_level_verify_read");
   my $reason=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
   next if($reason eq "");
-  my $touchable=(ref($target) eq "HASH" && !autocal_step_is_peak_headroom($read_step)) ? 1 : 0;
+  my $touchable=final_all_level_verify_touchable_step($step,$read_step,$target) ? 1 : 0;
   push @outliers,{
    step=>$step,
    read_step=>$read_step,
@@ -5776,7 +5823,6 @@ sub committed_final_all_level_verify {
    values=>trace_target_values($arrays,$target)
   });
  }
- my ($touch_count,$keep_count,$restore_count)=(0,0,0);
  foreach my $item (@outliers) {
   last if(cancelled());
   last if($limit <= 0);
@@ -5784,6 +5830,7 @@ sub committed_final_all_level_verify {
   next if(ref($target) ne "HASH");
   my $read_step=$item->{"read_step"};
   my $label=$item->{"label"};
+  next if(!final_all_level_verify_touchable_step($item->{"step"},$read_step,$target));
   my $reading=$item->{"reading"};
   my $de=$item->{"delta_e"};
   my $lum_pct=$item->{"luminance_error_pct"};
@@ -5830,6 +5877,17 @@ sub committed_final_all_level_verify {
    write_state($state);
    my $write_error;
    $touch_count++;
+   $state->{"final_all_level_verify"}={
+    status=>"running",
+    order=>[final_all_level_verify_order()],
+    total=>$verify_total+0,
+    current=>$label,
+    reads=>$read_count+0,
+    outliers=>scalar(@outliers)+0,
+    touches=>$touch_count+0,
+    kept=>$keep_count+0,
+    restored=>$restore_count+0,
+   };
    ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$target,$picture_mode,0,$state,0,1);
    return ($picture,$arrays,$write_error) if($write_error);
    set_state_calibration_mode($state,0,"");
@@ -5859,6 +5917,17 @@ sub committed_final_all_level_verify {
     $de=$candidate_de;
     $lum_pct=$candidate_lum_pct;
     $keep_count++;
+    $state->{"final_all_level_verify"}={
+     status=>"running",
+     order=>[final_all_level_verify_order()],
+     total=>$verify_total+0,
+     current=>$label,
+     reads=>$read_count+0,
+     outliers=>scalar(@outliers)+0,
+     touches=>$touch_count+0,
+     kept=>$keep_count+0,
+     restored=>$restore_count+0,
+    };
     $state->{"readings"}=merge_reading($state->{"readings"},$candidate_reading);
     $state->{"current_delta_e"}=defined($candidate_de) ? $candidate_de : undef;
     $state->{"current_luminance"}=luminance($candidate_reading);
@@ -5911,6 +5980,17 @@ sub committed_final_all_level_verify {
    sync_state_picture($state,$picture,$picture_mode);
    $arrays=clone_arrays($restore_arrays);
    $restore_count++;
+   $state->{"final_all_level_verify"}={
+    status=>"running",
+    order=>[final_all_level_verify_order()],
+    total=>$verify_total+0,
+    current=>$label,
+    reads=>$read_count+0,
+    outliers=>scalar(@outliers)+0,
+    touches=>$touch_count+0,
+    kept=>$keep_count+0,
+    restored=>$restore_count+0,
+   };
    $stalls++;
    trace_109($read_step,"final_all_level_verify_touch_restore",{
     label=>$label,
@@ -5940,6 +6020,7 @@ sub committed_final_all_level_verify {
  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
  $state->{"final_all_level_verify"}={
   status=>"complete",
+  total=>$verify_total+0,
   reads=>$read_count+0,
   outliers=>scalar(@outliers)+0,
   touches=>$touch_count+0,
@@ -5973,12 +6054,15 @@ sub committed_state_polish {
  write_state($state);
 
 		 my $candidate_steps=(ref($polish_steps) eq "ARRAY") ? $polish_steps : $steps;
-		 my @polish_candidates=grep {
-		  ref($_) eq "HASH" &&
-		  defined($_->{"ire"}) &&
-		  ($_->{"ire"}+0) > 0 &&
-		  ddc_target_for_step($_)
-		 } @{$candidate_steps};
+			 my @polish_candidates=grep {
+			  ref($_) eq "HASH" &&
+			  defined($_->{"ire"}) &&
+			  ($_->{"ire"}+0) > 0 &&
+			  !$_->{"autocal_read_only"} &&
+			  !$_->{"autocal_white_reference"} &&
+			  !$_->{"autocal_reference_only"} &&
+			  ddc_target_for_step($_)
+			 } @{$candidate_steps};
 	 my @headroom=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { ($_->{"ire"}+0) >= 105 } @polish_candidates;
 	 my @legal_white=sort {
 	  (($a->{"ire"}+0) == 99 ? 0 : 1) <=> (($b->{"ire"}+0) == 99 ? 0 : 1)
@@ -5991,13 +6075,16 @@ sub committed_state_polish {
 	 my $include_shadow=!(ref($config) eq "HASH" && exists($config->{"post_commit_true_low_shadow"}) && !$config->{"post_commit_true_low_shadow"});
 	 my @polish=$include_body ? (@headroom,@legal_white,@body) : (@headroom,@legal_white);
 	 push @polish,@shadow if($include_shadow);
-	 my $limit=defined($config->{"post_commit_polish_iterations"}) ? int($config->{"post_commit_polish_iterations"}) : 8;
-	 $limit=1 if($limit < 1);
-	 $limit=12 if($limit > 12);
- $state->{"current_name"}="Committed polish";
- $state->{"phase"}="writing";
- $state->{"message"}="Starting fresh LG calibration mode for committed polish writes";
- write_state($state);
+		 my $limit=defined($config->{"post_commit_polish_iterations"}) ? int($config->{"post_commit_polish_iterations"}) : 8;
+		 $limit=1 if($limit < 1);
+		 $limit=12 if($limit > 12);
+	 my $polish_total=scalar(@polish);
+	 my ($polish_index,$polish_touches,$polish_kept,$polish_restored)=(0,0,0,0);
+	 $state->{"current_name"}="Committed polish";
+	 $state->{"phase"}="writing";
+	 $state->{"message"}="Starting fresh LG calibration mode for committed polish writes";
+	 $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>0, touches=>0, kept=>0, restored=>0 };
+	 write_state($state);
  my $start_error=start_calibration_mode($picture_mode,$state,"Committed polish calibration mode enabled");
  return ($picture,$start_error) if($start_error);
  my $polish_calibration_mode_active=1;
@@ -6015,10 +6102,12 @@ sub committed_state_polish {
 	  last if(cancelled());
 	  my $target=ddc_target_for_step($step);
 	  next if(!$target);
-	  my $read_step=fixed_lg_autocal_step($config,$step);
-	  my $label=$target->{"label"};
-	  if(autocal_step_is_low_shadow($read_step) && !$low_shadow_polish_settled) {
-	   my $settle_ms=config_positive_int($config,"post_commit_low_shadow_settle_ms",12000,0,60000);
+		  my $read_step=fixed_lg_autocal_step($config,$step);
+		  my $label=$target->{"label"};
+		  $polish_index++;
+		  $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
+		  if(autocal_step_is_low_shadow($read_step) && !$low_shadow_polish_settled) {
+		   my $settle_ms=config_positive_int($config,"post_commit_low_shadow_settle_ms",12000,0,60000);
 	   park_black_for_settle($config,$state,"Settling panel before committed low-shadow polish",$settle_ms);
 	   $low_shadow_polish_settled=1;
 	  }
@@ -6167,11 +6256,13 @@ sub committed_state_polish {
 	    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
 	    adjustments=>trace_adjustments_summary($adjustments),
 	    values_after=>trace_target_values($arrays,$target)
-	   });
-	   write_state($state);
-   my $write_error;
-   ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,1);
-   return $finish_polish->($write_error) if($write_error);
+		   });
+		   write_state($state);
+	   my $write_error;
+	   $polish_touches++;
+	   $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
+	   ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,1);
+	   return $finish_polish->($write_error) if($write_error);
 	   sync_state_picture($state,$picture,$picture_mode);
 	   $state->{"phase"}="reading";
 	   $state->{"message"}="Reading committed $label polish ($iter/$step_limit)";
@@ -6210,13 +6301,15 @@ sub committed_state_polish {
    });
    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
    $not_worse_measurement=0 if(ref($best_pair_reading) eq "HASH" && !autocal_measurement_not_worse_than_best($committed_pair_de,$committed_pair_lum_pct,$best_pair_de,$best_pair_lum_pct));
-   my $keep_committed_candidate=(ref($committed_pair_step) eq "HASH")
-    ? legal_white_pair_best_update_allowed($score,$best_score,$de,$committed_pair_de,$best_de,$best_pair_de,$target_delta)
-    : ($score + 0.0001 < $best_score);
-   $keep_committed_candidate=0 if(!$not_worse_measurement);
-   if($keep_committed_candidate) {
-   $best_score=$score;
-    $best_arrays=clone_arrays($arrays);
+	   my $keep_committed_candidate=(ref($committed_pair_step) eq "HASH")
+	    ? legal_white_pair_best_update_allowed($score,$best_score,$de,$committed_pair_de,$best_de,$best_pair_de,$target_delta)
+	    : ($score + 0.0001 < $best_score);
+	   $keep_committed_candidate=0 if(!$not_worse_measurement);
+	   if($keep_committed_candidate) {
+	   $polish_kept++;
+	   $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
+	   $best_score=$score;
+	    $best_arrays=clone_arrays($arrays);
     $best_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
     $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
     promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
@@ -6229,10 +6322,12 @@ sub committed_state_polish {
     $best_pair_target_step_y=$committed_pair_target_step_y;
     remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_polish_keep");
     $stalls=0;
-   } else {
-    $stalls++;
-    $arrays=clone_arrays($best_arrays);
-    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+	   } else {
+	    $stalls++;
+	    $polish_restored++;
+	    $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
+	    $arrays=clone_arrays($best_arrays);
+	    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
     $state->{"phase"}="writing";
     $state->{"message"}="Restoring committed $label polish";
     write_state($state);
@@ -6483,11 +6578,12 @@ sub committed_state_polish {
 	 ($picture,$arrays,$final_all_level_error)=committed_final_all_level_verify(
 	  $config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,
 	  $target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$current_calibrated_slot_mask
-	 );
-	 return ($picture,$final_all_level_error) if($final_all_level_error && $final_all_level_error ne "cancelled");
-	 promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
-	 return ($picture,undef);
-		}
+		 );
+		 return ($picture,$final_all_level_error) if($final_all_level_error && $final_all_level_error ne "cancelled");
+		 promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+		 $state->{"committed_polish"}={ status=>"complete", total=>$polish_total+0, current_index=>$polish_index+0, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
+		 return ($picture,undef);
+			}
 
 sub end_calibration_mode {
  my ($picture_mode)=@_;
