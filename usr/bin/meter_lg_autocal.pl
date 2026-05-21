@@ -381,6 +381,11 @@ sub lg_autocal_26_anchor_predrive_anchor_ires {
  return (109,105,99,75,50,25);
 }
 
+sub lg_autocal_26_anchor_predrive_anchor_count {
+ my @anchors=lg_autocal_26_anchor_predrive_anchor_ires();
+ return scalar(@anchors);
+}
+
 sub lg_autocal_26_anchor_predrive_anchor {
  my ($target)=@_;
  return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
@@ -2595,7 +2600,7 @@ sub refresh_propagated_uncalibrated_26pt_slots {
  my $minimum_anchors=lg_autocal_26_full_ddc_spine_enabled($config) ? 1 : 3;
  my $source_slot_mask=$calibrated_slot_mask;
  if(lg_autocal_26_anchor_predrive_enabled($config)) {
-  $minimum_anchors=1;
+  $minimum_anchors=lg_autocal_26_anchor_predrive_anchor_count();
   $source_slot_mask=lg_autocal_26_anchor_predrive_source_slot_mask($calibrated_slot_mask);
  }
  return 0 if(calibrated_non_black_26pt_anchor_count($source_slot_mask) < $minimum_anchors);
@@ -6258,6 +6263,7 @@ eval {
 			  my @completed_anchor_ires=calibrated_26pt_slot_ires(\@calibrated_ddc_slots);
 			  my @completed_spine_anchors=completed_lg_autocal_26_full_ddc_spine_anchor_ires(\@calibrated_ddc_slots);
 			  my @completed_predrive_anchors=completed_lg_autocal_26_anchor_predrive_anchor_ires(\@calibrated_ddc_slots);
+			  my $anchor_predrive_anchors_complete=(scalar(@completed_predrive_anchors) >= lg_autocal_26_anchor_predrive_anchor_count()) ? 1 : 0;
 			  if($anchor_predrive_mode) {
 			   $state->{"lg_autocal_26_mode"}="anchor_predrive";
 			   $state->{"lg_autocal_26_anchor_predrive"}=JSON::PP::true;
@@ -6301,36 +6307,38 @@ eval {
 			  }
 			  my @changed_slot_ires=map { $_->{"ire"} } @changed_slot_details;
 			  if($anchor_predrive_mode) {
-			   my $propagation_events=($state->{"lg_autocal_26_anchor_predrive_propagation_events"}||0)+1;
-			   $state->{"lg_autocal_26_anchor_predrive_synthesized_slots"}=\@changed_slot_details;
-			   $state->{"lg_autocal_26_anchor_predrive_synthesized_ires"}=\@changed_slot_ires;
-			   $state->{"lg_autocal_26_anchor_predrive_propagated_slots"}=$propagated_slots+0;
-			   $state->{"lg_autocal_26_anchor_predrive_changed_slots"}=$changed_slots+0;
-			   $state->{"lg_autocal_26_anchor_predrive_propagation_events"}=$propagation_events+0;
-			   $state->{"lg_autocal_26_anchor_predrive_last_propagation"}={
-			    event=>$propagation_events+0,
-			    label=>$final_label||$final_target->{"label"}||"",
-			    completed_anchors=>\@completed_predrive_anchors,
-			    completed_slots=>\@completed_anchor_ires,
-			    propagated_slots=>$propagated_slots+0,
-			    changed_slots=>$changed_slots+0,
-			    synthesized_ires=>\@changed_slot_ires
-			   };
-			   trace_109($final_read_step || $final_target,"anchor_predrive_seed_propagation",{
-			    mode=>"anchor_predrive",
-			    label=>$final_label||$final_target->{"label"}||"",
-			    target=>$final_target,
-			    completed_anchors=>\@completed_predrive_anchors,
-			    completed_slots=>\@completed_anchor_ires,
-			    completed_anchor_count=>scalar(@completed_predrive_anchors)+0,
-			    anchor=>lg_autocal_26_anchor_predrive_anchor($final_target) ? JSON::PP::true : JSON::PP::false,
-			    propagated_slots=>$propagated_slots+0,
-			    synthesized_seeded_slots=>\@changed_slot_details,
-			    synthesized_seeded_ires=>\@changed_slot_ires,
-			    changed_slots=>$changed_slots+0,
-			    propagation_event=>$propagation_events+0,
-			    calibrated_non_black_anchors=>$calibrated_non_black_anchors+0
-			   });
+			   if($anchor_predrive_anchors_complete) {
+			    my $propagation_events=($state->{"lg_autocal_26_anchor_predrive_propagation_events"}||0)+1;
+			    $state->{"lg_autocal_26_anchor_predrive_synthesized_slots"}=\@changed_slot_details;
+			    $state->{"lg_autocal_26_anchor_predrive_synthesized_ires"}=\@changed_slot_ires;
+			    $state->{"lg_autocal_26_anchor_predrive_propagated_slots"}=$propagated_slots+0;
+			    $state->{"lg_autocal_26_anchor_predrive_changed_slots"}=$changed_slots+0;
+			    $state->{"lg_autocal_26_anchor_predrive_propagation_events"}=$propagation_events+0;
+			    $state->{"lg_autocal_26_anchor_predrive_last_propagation"}={
+			     event=>$propagation_events+0,
+			     label=>$final_label||$final_target->{"label"}||"",
+			     completed_anchors=>\@completed_predrive_anchors,
+			     completed_slots=>\@completed_anchor_ires,
+			     propagated_slots=>$propagated_slots+0,
+			     changed_slots=>$changed_slots+0,
+			     synthesized_ires=>\@changed_slot_ires
+			    };
+			    trace_109($final_read_step || $final_target,"anchor_predrive_seed_propagation",{
+			     mode=>"anchor_predrive",
+			     label=>$final_label||$final_target->{"label"}||"",
+			     target=>$final_target,
+			     completed_anchors=>\@completed_predrive_anchors,
+			     completed_slots=>\@completed_anchor_ires,
+			     completed_anchor_count=>scalar(@completed_predrive_anchors)+0,
+			     anchor=>lg_autocal_26_anchor_predrive_anchor($final_target) ? JSON::PP::true : JSON::PP::false,
+			     propagated_slots=>$propagated_slots+0,
+			     synthesized_seeded_slots=>\@changed_slot_details,
+			     synthesized_seeded_ires=>\@changed_slot_ires,
+			     changed_slots=>$changed_slots+0,
+			     propagation_event=>$propagation_events+0,
+			     calibrated_non_black_anchors=>$calibrated_non_black_anchors+0
+			    });
+			   }
 			  } elsif($full_ddc_spine_mode) {
 			   $state->{"lg_autocal_26_full_ddc_spine_synthesized_slots"}=\@changed_slot_details;
 			   $state->{"lg_autocal_26_full_ddc_spine_synthesized_ires"}=\@changed_slot_ires;
