@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma response_probe response_model learned_response_model slope predicted_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma response_probe response_model learned_response_model slope predicted_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -2871,20 +2871,46 @@ sub propagate_uncalibrated_26pt_slots {
 }
 
 sub refresh_propagated_uncalibrated_26pt_slots {
- my ($config,$arrays,$calibrated_slot_mask)=@_;
- return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- my $minimum_anchors=lg_autocal_26_full_ddc_spine_enabled($config) ? 1 : 3;
- my $source_slot_mask=$calibrated_slot_mask;
+	 my ($config,$arrays,$calibrated_slot_mask)=@_;
+	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	 my $minimum_anchors=lg_autocal_26_full_ddc_spine_enabled($config) ? 1 : 3;
+	 my $source_slot_mask=$calibrated_slot_mask;
  if(lg_autocal_26_anchor_predrive_enabled($config)) {
   $minimum_anchors=lg_autocal_26_anchor_predrive_anchor_count();
   $source_slot_mask=lg_autocal_26_anchor_predrive_source_slot_mask($calibrated_slot_mask);
  }
- return 0 if(calibrated_non_black_26pt_anchor_count($source_slot_mask) < $minimum_anchors);
- return propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask);
+	 return 0 if(calibrated_non_black_26pt_anchor_count($source_slot_mask) < $minimum_anchors);
+	 return propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask);
+	}
+
+sub lg_autocal_26_seeded_move_damping_ready {
+	 my ($config,$calibrated_slot_mask)=@_;
+	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	 return 0 if(ref($calibrated_slot_mask) ne "ARRAY");
+	 if(lg_autocal_26_anchor_predrive_enabled($config)) {
+	  my @completed=completed_lg_autocal_26_anchor_predrive_anchor_ires($calibrated_slot_mask);
+	  return scalar(@completed) >= lg_autocal_26_anchor_predrive_anchor_count() ? 1 : 0;
+	 }
+	 return calibrated_non_black_26pt_anchor_count($calibrated_slot_mask) >= 1 ? 1 : 0
+	  if(lg_autocal_26_full_ddc_spine_enabled($config));
+	 return 0;
+}
+
+sub lg_autocal_26_seeded_move_damping_for_step {
+	 my ($config,$target,$step,$calibrated_slot_mask,$seed_from_prior_slot)=@_;
+	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	 return 0 if(ref($target) ne "HASH" || ref($step) ne "HASH");
+	 return 0 if(strict_tried_for_step($step) || autocal_step_is_fast_headroom($step));
+	 my $idx=$target->{"index"};
+	 return 0 if(!defined($idx) || (ref($calibrated_slot_mask) eq "ARRAY" && $calibrated_slot_mask->[$idx]));
+	 my $mode_active=(lg_autocal_26_anchor_predrive_enabled($config) || lg_autocal_26_full_ddc_spine_enabled($config)) ? 1 : 0;
+	 return 1 if($mode_active && $seed_from_prior_slot);
+	 return 1 if($mode_active && lg_autocal_26_seeded_move_damping_ready($config,$calibrated_slot_mask));
+	 return 0;
 }
 
 sub seed_target_from_prior_slot {
-		 my ($arrays,$target,$calibrated_slot_mask,$config)=@_;
+			 my ($arrays,$target,$calibrated_slot_mask,$config)=@_;
 	 return 0 if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
 	 my $idx=$target->{"index"};
 	 return 0 if(!defined($idx));
@@ -3078,6 +3104,26 @@ sub chroma_error_magnitude {
 	  $max=$value if($value > $max);
 	 }
 	 return $max;
+	}
+
+sub seeded_move_damping_cap {
+	 my ($step,$error,$de,$target_delta,$stalls)=@_;
+	 return undef if(ref($step) ne "HASH" || !$step->{"lg_autocal_26_seeded_move_damping"});
+	 return undef if(strict_tried_for_step($step) || autocal_step_is_fast_headroom($step));
+	 return undef if(!defined($de));
+	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+	 $stalls=0 if(!defined($stalls));
+	 return undef if($stalls >= 4);
+	 my $chroma=chroma_error_magnitude($error);
+	 my $cap;
+	 if($de <= ($target_delta+0.50) && $chroma <= 0.012) {
+	  $cap=0.25;
+	 } elsif($de <= ($target_delta+1.25) && $chroma <= 0.020) {
+	  $cap=0.50;
+	 }
+	 return undef if(!defined($cap));
+	 $cap=0.50 if($stalls >= 2 && $cap < 0.50);
+	 return $cap;
 }
 
 sub neutral_luminance_step {
@@ -4342,13 +4388,14 @@ sub choose_rgb_response_adjustments {
 	 return undef if(autocal_step_is_fast_headroom($step));
 	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
 	 my $paired_white=strict_tried_for_step($step);
-	 my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
-	 return undef if(!$ch);
-	 my $threshold=rgb_response_close_threshold($de,$target_delta);
-	 return undef if($max_err < $threshold);
-	 my $setting=channel_setting($ch);
-	 my $arr=$arrays->{$setting};
-	 my $idx=$target->{"index"};
+		 my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
+		 return undef if(!$ch);
+		 my $threshold=rgb_response_close_threshold($de,$target_delta);
+		 return undef if($max_err < $threshold);
+		 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,$target_delta,$stalls);
+		 my $setting=channel_setting($ch);
+		 my $arr=$arrays->{$setting};
+		 my $idx=$target->{"index"};
 	 return undef if(ref($arr) ne "ARRAY" || !defined($idx) || $idx >= @{$arr});
 	 my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	 my $entry=(ref($model) eq "HASH") ? $model->{$ch} : undef;
@@ -4356,13 +4403,14 @@ sub choose_rgb_response_adjustments {
 	  my $slope=$entry->{"slope"}+0;
 	  my $raw_delta=-$err/$slope;
 	  my $max_jump=(defined($de) && $de > 4) ? 10 : ((defined($de) && $de > 2) ? 6 : 4);
-	  if($paired_white) {
-	   $max_jump=(defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 1.0 : 0.5;
-	  } else {
-	   $max_jump=12 if(($stalls||0) >= 2 && $max_jump < 12);
-	  }
-	  $raw_delta=$max_jump if($raw_delta > $max_jump);
-	  $raw_delta=-$max_jump if($raw_delta < -$max_jump);
+		  if($paired_white) {
+		   $max_jump=(defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 1.0 : 0.5;
+		  } else {
+		   $max_jump=12 if(($stalls||0) >= 2 && $max_jump < 12);
+		   $max_jump=$seeded_cap if(defined($seeded_cap) && $max_jump > $seeded_cap);
+		  }
+		  $raw_delta=$max_jump if($raw_delta > $max_jump);
+		  $raw_delta=-$max_jump if($raw_delta < -$max_jump);
 	  my $min_delta=$paired_white ? 0.10 : 0.20;
 	  return undef if(abs($raw_delta) < $min_delta);
 	  foreach my $scale (1,0.75,0.50,0.25) {
@@ -4372,15 +4420,16 @@ sub choose_rgb_response_adjustments {
 	   my $actual_delta=$next-$current;
 	   my $predicted=$err+($slope*$actual_delta);
 	   next if(abs($predicted) >= abs($err)*0.92 && abs($actual_delta) > 0.21);
-	   return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, slope=>$slope, predicted_error=>$predicted, paired_white=>$paired_white ? 1 : 0 }];
-	  }
-	 }
-	 my $direction=($err > 0) ? -1 : 1;
-	 my $probe_step=$paired_white ? ((defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 0.5 : 0.25) : 1;
-	 my ($next,$damped)=next_untried_value($current,$direction*$probe_step,$tried,$setting,0.25,$paired_white);
-	 return undef if(!defined($next) || abs($next-$current) < 0.0001);
-	 return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, response_probe=>1, damped=>$damped ? 1 : 0, paired_white=>$paired_white ? 1 : 0 }];
-	}
+		   return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, slope=>$slope, predicted_error=>$predicted, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef }];
+		  }
+		 }
+		 my $direction=($err > 0) ? -1 : 1;
+		 my $probe_step=$paired_white ? ((defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 0.5 : 0.25) : 1;
+		 $probe_step=$seeded_cap if(!$paired_white && defined($seeded_cap) && $probe_step > $seeded_cap);
+		 my ($next,$damped)=next_untried_value($current,$direction*$probe_step,$tried,$setting,0.25,$paired_white);
+		 return undef if(!defined($next) || abs($next-$current) < 0.0001);
+		 return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, response_probe=>1, damped=>$damped ? 1 : 0, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef }];
+		}
 
 sub choose_adjustments {
 					 my ($error,$arrays,$target,$de,$min_step,$stalls,$luminance_err,$tried,$step)=@_;
@@ -4468,11 +4517,12 @@ sub choose_adjustments {
 			 my $luminance_drive=has_luminance_channel($arrays,$target) ? 0 : luminance_adjustment_drive($luminance_err);
 	 my %combined=map { $_ => (($error->{$_}||0)+$luminance_drive) } qw(r g b);
 		 my @channels=sort { abs($combined{$b}||0) <=> abs($combined{$a}||0) } qw(r g b);
-		 my @out;
-		 my $near_fine=(defined($de) && $de <= 2.0) ? 1 : 0;
-		 $near_fine=0 if($ire >= 99.9 && defined($de) && $de > 0.75);
-		 my $luma_priority=(abs($luminance_drive) >= 0.012) ? 1 : 0;
-		 my $chroma_mag=chroma_error_magnitude($error);
+			 my @out;
+			 my $near_fine=(defined($de) && $de <= 2.0) ? 1 : 0;
+			 $near_fine=0 if($ire >= 99.9 && defined($de) && $de > 0.75);
+			 my $luma_priority=(abs($luminance_drive) >= 0.012) ? 1 : 0;
+			 my $chroma_mag=chroma_error_magnitude($error);
+			 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,0.5,$stalls);
 				 if(has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.35)) {
 				  my $max_luma_step=abs($luminance_err) >= 0.20 ? 6 : 3;
 				  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step,$strict_tried);
@@ -4494,15 +4544,16 @@ sub choose_adjustments {
 	  next if(ref($arr) ne "ARRAY");
 	  my $idx=$target->{"index"};
 		  my $current=$arr->[$idx]||0;
-				  my $step=adjustment_step(abs($err),$de,$stalls,$min_step);
-			  my $delta = ($err > 0) ? -$step : $step;
-			  foreach my $try_delta ($delta,-$delta) {
-			   my ($next,$damped)=next_untried_value($current,$try_delta,$tried,$setting,$min_step,$strict_tried);
-			   next if(!defined($next));
-			   next if(abs($next-$current) < 0.0001);
-		   push @out,{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0 };
-		   last;
-		  }
+					  my $step=adjustment_step(abs($err),$de,$stalls,$min_step);
+					  $step=$seeded_cap if(defined($seeded_cap) && $step > $seeded_cap);
+				  my $delta = ($err > 0) ? -$step : $step;
+				  foreach my $try_delta ($delta,-$delta) {
+				   my ($next,$damped)=next_untried_value($current,$try_delta,$tried,$setting,$min_step,$strict_tried);
+				   next if(!defined($next));
+				   next if(abs($next-$current) < 0.0001);
+			   push @out,{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef };
+			   last;
+			  }
 		  last if(@out && $near_fine && !$luma_priority);
 		 }
 		 return @out ? \@out : undef;
@@ -7381,11 +7432,16 @@ eval {
 		   my $seed_error;
 		   ($picture,$seed_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
 		   die $seed_error if($seed_error);
-		   $calibration_mode_active=1;
-		   sync_state_picture($state,$picture,$picture_mode);
-		  }
-		  my %stimulus_probe_tried;
-		  mark_stimulus_probe_tried(\%stimulus_probe_tried,$read_step);
+			   $calibration_mode_active=1;
+			   sync_state_picture($state,$picture,$picture_mode);
+			  }
+			  my $seeded_move_damping=lg_autocal_26_seeded_move_damping_for_step($config,$target,$read_step,\@calibrated_ddc_slots,$seed_from_prior_slot);
+			  if($seeded_move_damping) {
+			   $slot_read_step->{"lg_autocal_26_seeded_move_damping"}=JSON::PP::true if(ref($slot_read_step) eq "HASH");
+			   $read_step->{"lg_autocal_26_seeded_move_damping"}=JSON::PP::true;
+			  }
+			  my %stimulus_probe_tried;
+			  mark_stimulus_probe_tried(\%stimulus_probe_tried,$read_step);
 			  $state->{"current_step"}=$step_num;
 				  $state->{"total_steps"}=$total_ordered_steps;
 			  $state->{"current_name"}="Auto Cal $label";
@@ -7710,11 +7766,12 @@ eval {
 			   delta_e=>defined($de)?$de+0:undef,
 			   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
 			   score=>$best_score+0,
-			   best_delta_e=>$best_de+0,
-			   best_score=>$best_score+0,
-			   rgb_error=>rgb_error($reading),
-			   target_values=>trace_target_values($arrays,$target)
-			  });
+				   best_delta_e=>$best_de+0,
+				   best_score=>$best_score+0,
+				   rgb_error=>rgb_error($reading),
+				   seeded_move_damping=>$seeded_move_damping?JSON::PP::true:JSON::PP::false,
+				   target_values=>trace_target_values($arrays,$target)
+				  });
 				  write_state($state);
 						  if(touchup_delta_skip_reached($config,$de,$target_delta,$read_step,$lum_pct) && (!$paired_white_step || $pair_target_reached_now->())) {
 						   $state->{"message"}="$label already within touch-up target; moving to next patch";
