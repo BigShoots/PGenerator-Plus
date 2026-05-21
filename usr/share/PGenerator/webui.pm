@@ -7853,6 +7853,22 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:150px">Target &Delta;E
 	    <input type="number" id="meterAutoCalTarget" min="0.1" max="10" step="0.1" value="0.5" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
 	   </label>
+	   <div id="meterAutoCalGreyscaleOptionsBox" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
+	    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+	     <input type="checkbox" id="meterAutoCalPostCommitPolishEnabled" checked style="margin-top:2px">
+	     <span>
+	      <span style="display:block;font-weight:700">Post greyscale commit polish</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Re-reads the committed 1D LUT and corrects residual greyscale drift after CAL mode closes.</span>
+	     </span>
+	    </label>
+	    <label style="display:flex;gap:8px;align-items:flex-start">
+	     <input type="checkbox" id="meterAutoCalPostCommitVerifyEnabled" checked style="margin-top:2px">
+	     <span>
+	      <span style="display:block;font-weight:700">Post polish verify</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Runs the committed verification pass and only keeps verify adjustments that improve the measured result.</span>
+	     </span>
+	    </label>
+	   </div>
 	   <div id="meterAutoCalConfirmSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
 	  <div id="meterAutoCalResultsBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
@@ -7863,16 +7879,37 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  </div>
 	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
-	   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high with committed greyscale polish, then run color-only 3D LUT AutoCal with probe-gated TV upload.</div>
-	   <label id="meterFullAutoCalTouchupChoiceRow" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
-	    <span style="display:flex;gap:8px;align-items:flex-start">
-	     <input type="checkbox" id="meterFullAutoCalPostTouchupEnabled" checked style="margin-top:2px">
+	   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high, then run color-only 3D LUT AutoCal with probe-gated TV upload. Meticulous options apply after the 3D LUT so the first greyscale pass stays fast.</div>
+	   <div id="meterFullAutoCalTouchupChoiceRow" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
+	    <span style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px">
+	     <input type="checkbox" id="meterFullAutoCalMeticulousEnabled" checked onchange="meterFullAutoCalSyncMeticulousChoices('meticulous')" style="margin-top:2px">
 	     <span>
-	      <span style="display:block;font-weight:700">Run post-cal greyscale touch-up after 3D LUT</span>
-	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Runs a short greyscale correction after the 3D LUT. Disable to preserve the first greyscale result after color calibration.</span>
+	      <span style="display:block;font-weight:700">Meticulous mode</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Checks all post-3D greyscale cleanup steps for best quality. Turn it off for a faster run, then enable only the steps you want.</span>
 	     </span>
 	    </span>
-	   </label>
+	    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+	     <input type="checkbox" id="meterFullAutoCalPostCommitPolishEnabled" checked onchange="meterFullAutoCalSyncMeticulousChoices('option')" style="margin-top:2px">
+	     <span>
+	      <span style="display:block;font-weight:700">Post greyscale commit polish</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Polishes the committed greyscale state after the 3D LUT touch-up writes its 1D LUT.</span>
+	     </span>
+	    </label>
+	    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+	     <input type="checkbox" id="meterFullAutoCalPostCommitVerifyEnabled" checked onchange="meterFullAutoCalSyncMeticulousChoices('option')" style="margin-top:2px">
+	     <span>
+	      <span style="display:block;font-weight:700">Post polish verify</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Runs committed verification after the polish pass and restores the best measured state.</span>
+	     </span>
+	    </label>
+	    <label style="display:flex;gap:8px;align-items:flex-start">
+	     <input type="checkbox" id="meterFullAutoCalPostTouchupEnabled" checked onchange="meterFullAutoCalSyncMeticulousChoices('option')" style="margin-top:2px">
+	     <span>
+	      <span style="display:block;font-weight:700">Post-3D LUT greyscale touch-up</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Runs a short greyscale correction after the 3D LUT. Disable to preserve the first greyscale result after color calibration.</span>
+	     </span>
+	    </label>
+	   </div>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
 		  <div class="btn-row" style="justify-content:flex-end;margin:0">
@@ -17958,9 +17995,16 @@ function meterAutoCalShowConfirm(){
  meterAutoCalPhase='confirm';
  meterAutoCalLuminanceSetupActive=false;
  const summary=document.getElementById('meterAutoCalConfirmSummary');
+ const optionsBox=document.getElementById('meterAutoCalGreyscaleOptionsBox');
+ const polishChoice=document.getElementById('meterAutoCalPostCommitPolishEnabled');
+ const verifyChoice=document.getElementById('meterAutoCalPostCommitVerifyEnabled');
  const setupY=meterAutoCalSetupYValue();
  const targetY=meterAutoCalTargetYValue();
  const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
+ const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
+ if(optionsBox) optionsBox.style.display=fullWorkflow?'none':'';
+ if(polishChoice) polishChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitPolishEnabled')?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:true;
+ if(verifyChoice) verifyChoice.checked=meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'postCommitVerifyEnabled')?meterAutoCalPendingConfig.postCommitVerifyEnabled!==false:true;
  if(summary){
   const levels=meterAutoCalLevelPreflight;
   const levelText=(levels&&!levels.skipped)?(' Levels: brightness '+(levels.brightness!=null?levels.brightness:'--')+', contrast '+(levels.contrast!=null?levels.contrast:'--')+'.'):'';
@@ -18799,7 +18843,7 @@ function meterFullAutoCalReportStatusText(stage){
 function meterFullAutoCalPromptDefaults(){
  return {
   title:'Full Auto Cal',
-	  message:'This will first switch PGenerator to the AutoCal video transport and measure the current state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high with committed greyscale polish, then run color-only 3D LUT AutoCal with probe-gated TV upload.',
+	  message:'This will first switch PGenerator to the AutoCal video transport and optionally measure the current state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run a fast LG 26-point greyscale AutoCal pass, then run color-only 3D LUT AutoCal with probe-gated TV upload. Meticulous cleanup options apply only after the 3D LUT.',
   continueText:'\u25B6 Continue',
   skipText:'',
   cancelText:'Cancel',
@@ -18819,8 +18863,24 @@ function meterFullAutoCalDefaultConfig(){
   patternSignalRange:null,
   wp:null,
   preCalSkipped:false,
+  meticulousModeEnabled:true,
+  postCommitPolishEnabled:true,
+  postCommitVerifyEnabled:true,
   postCalTouchupEnabled:true
  };
+}
+
+function meterConfigFlag(config,key,fallback){
+ if(config&&Object.prototype.hasOwnProperty.call(config,key)) return config[key]!==false;
+ return !!fallback;
+}
+
+function meterFullAutoCalPostCommitPolishEnabled(){
+ return meterConfigFlag(meterFullAutoCalConfig,'postCommitPolishEnabled',true);
+}
+
+function meterFullAutoCalPostCommitVerifyEnabled(){
+ return meterConfigFlag(meterFullAutoCalConfig,'postCommitVerifyEnabled',true);
 }
 
 function meterFullAutoCalPostTouchupEnabled(){
@@ -18831,10 +18891,59 @@ function meterFullAutoCalPostTouchupEnabled(){
  return true;
 }
 
+function meterFullAutoCalMeticulousEnabled(){
+ if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'meticulousModeEnabled')){
+  return meterFullAutoCalConfig.meticulousModeEnabled!==false;
+ }
+ return meterFullAutoCalPostCommitPolishEnabled()&&meterFullAutoCalPostCommitVerifyEnabled()&&meterFullAutoCalPostTouchupEnabled();
+}
+
+function meterAutoCalPostCommitPolishChoiceValue(){
+ const cb=document.getElementById('meterAutoCalPostCommitPolishEnabled');
+ return cb ? !!cb.checked : true;
+}
+
+function meterAutoCalPostCommitVerifyChoiceValue(){
+ const cb=document.getElementById('meterAutoCalPostCommitVerifyEnabled');
+ return cb ? !!cb.checked : true;
+}
+
+function meterFullAutoCalMeticulousChoiceValue(){
+ const cb=document.getElementById('meterFullAutoCalMeticulousEnabled');
+ return cb ? !!cb.checked : true;
+}
+
+function meterFullAutoCalPostCommitPolishChoiceValue(){
+ const cb=document.getElementById('meterFullAutoCalPostCommitPolishEnabled');
+ return cb ? !!cb.checked : meterFullAutoCalPostCommitPolishEnabled();
+}
+
+function meterFullAutoCalPostCommitVerifyChoiceValue(){
+ const cb=document.getElementById('meterFullAutoCalPostCommitVerifyEnabled');
+ return cb ? !!cb.checked : meterFullAutoCalPostCommitVerifyEnabled();
+}
+
 function meterFullAutoCalTouchupChoiceValue(){
  const cb=document.getElementById('meterFullAutoCalPostTouchupEnabled');
  if(METER_FULL_AUTOCAL_TOUCHUP_DISABLED) return false;
  return cb ? !!cb.checked : true;
+}
+
+function meterFullAutoCalSyncMeticulousChoices(source){
+ const meticulous=document.getElementById('meterFullAutoCalMeticulousEnabled');
+ const polish=document.getElementById('meterFullAutoCalPostCommitPolishEnabled');
+ const verify=document.getElementById('meterFullAutoCalPostCommitVerifyEnabled');
+ const touchup=document.getElementById('meterFullAutoCalPostTouchupEnabled');
+ if(source==='meticulous'&&meticulous){
+  const checked=!!meticulous.checked;
+  if(polish) polish.checked=checked;
+  if(verify) verify.checked=checked;
+  if(touchup&&!METER_FULL_AUTOCAL_TOUCHUP_DISABLED) touchup.checked=checked;
+ }
+ if(touchup&&METER_FULL_AUTOCAL_TOUCHUP_DISABLED) touchup.checked=false;
+ if(meticulous){
+  meticulous.checked=!!(polish&&polish.checked&&verify&&verify.checked&&touchup&&touchup.checked&&!METER_FULL_AUTOCAL_TOUCHUP_DISABLED);
+ }
 }
 
 function meterFullAutoCalSaveState(){
@@ -19036,7 +19145,13 @@ function meterFullAutoCalResolveConfirm(accepted){
  const opts=meterFullAutoCalConfirmOptions||{};
  let result=accepted;
  if(accepted&&opts.showPostCalTouchupChoice){
-  result={accepted:true,postCalTouchupEnabled:meterFullAutoCalTouchupChoiceValue()};
+  result={
+   accepted:true,
+   meticulousModeEnabled:meterFullAutoCalMeticulousChoiceValue(),
+   postCommitPolishEnabled:meterFullAutoCalPostCommitPolishChoiceValue(),
+   postCommitVerifyEnabled:meterFullAutoCalPostCommitVerifyChoiceValue(),
+   postCalTouchupEnabled:meterFullAutoCalTouchupChoiceValue()
+  };
  }
  meterFullAutoCalConfirmResolver=null;
  meterFullAutoCalConfirmOptions=null;
@@ -19063,6 +19178,9 @@ function meterFullAutoCalConfirmDialog(options){
  const title=document.getElementById('meterFullAutoCalConfirmTitle');
  const message=document.getElementById('meterFullAutoCalConfirmMessage');
  const touchupChoiceRow=document.getElementById('meterFullAutoCalTouchupChoiceRow');
+ const meticulousChoice=document.getElementById('meterFullAutoCalMeticulousEnabled');
+ const polishChoice=document.getElementById('meterFullAutoCalPostCommitPolishEnabled');
+ const verifyChoice=document.getElementById('meterFullAutoCalPostCommitVerifyEnabled');
  const touchupChoice=document.getElementById('meterFullAutoCalPostTouchupEnabled');
  const progressBox=document.getElementById('meterAutoCalProgressBox');
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
@@ -19078,10 +19196,14 @@ function meterFullAutoCalConfirmDialog(options){
  if(message) message.textContent=opts.message;
  if(touchupChoiceRow){
   touchupChoiceRow.style.display=opts.showPostCalTouchupChoice?'':'none';
+  if(meticulousChoice) meticulousChoice.checked=meterFullAutoCalMeticulousEnabled();
+  if(polishChoice) polishChoice.checked=meterFullAutoCalPostCommitPolishEnabled();
+  if(verifyChoice) verifyChoice.checked=meterFullAutoCalPostCommitVerifyEnabled();
   if(touchupChoice){
    touchupChoice.checked=METER_FULL_AUTOCAL_TOUCHUP_DISABLED?false:meterFullAutoCalPostTouchupEnabled();
    touchupChoice.disabled=!!METER_FULL_AUTOCAL_TOUCHUP_DISABLED;
   }
+  meterFullAutoCalSyncMeticulousChoices('option');
  }
  if(fullConfirmBox) fullConfirmBox.style.display='';
  if(progressBox) progressBox.style.display='none';
@@ -19351,9 +19473,18 @@ async function meterStartFullAutoCal(){
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true});
  if(!accepted) return;
- const postCalTouchupEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCalTouchupEnabled'))
-  ? accepted.postCalTouchupEnabled!==false
-  : meterFullAutoCalTouchupChoiceValue();
+	 const postCalTouchupEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCalTouchupEnabled'))
+	  ? accepted.postCalTouchupEnabled!==false
+	  : meterFullAutoCalTouchupChoiceValue();
+	 const meticulousModeEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'meticulousModeEnabled'))
+	  ? accepted.meticulousModeEnabled!==false
+	  : meterFullAutoCalMeticulousChoiceValue();
+	 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
+	  ? accepted.postCommitPolishEnabled!==false
+	  : meterFullAutoCalPostCommitPolishChoiceValue();
+	 const postCommitVerifyEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitVerifyEnabled'))
+	  ? accepted.postCommitVerifyEnabled!==false
+	  : meterFullAutoCalPostCommitVerifyChoiceValue();
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
   message:'Before calibration, PGenerator will measure Greyscale LG 22pt Manual, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
@@ -19370,7 +19501,14 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalStartedAt=Date.now();
  meterFullAutoCalPhase=skipPreCal?'first-greyscale':'precal-report';
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
- meterFullAutoCalConfig={...meterFullAutoCalDefaultConfig(),preCalSkipped:skipPreCal,postCalTouchupEnabled:postCalTouchupEnabled};
+	 meterFullAutoCalConfig={
+	  ...meterFullAutoCalDefaultConfig(),
+	  preCalSkipped:skipPreCal,
+	  meticulousModeEnabled:meticulousModeEnabled,
+	  postCommitPolishEnabled:postCommitPolishEnabled,
+	  postCommitVerifyEnabled:postCommitVerifyEnabled,
+	  postCalTouchupEnabled:postCalTouchupEnabled
+	 };
  meterFullAutoCalBeginReportData(skipPreCal);
  meterFullAutoCalSaveState();
  if(!skipPreCal){
@@ -19482,10 +19620,12 @@ async function meterFullAutoCalStartTouchup(lutStatus){
   if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
   const target=meterFullAutoCalTouchupTargetDelta();
   const targetY=meterFullAutoCalTouchupTargetY();
-  const deltaEFormula='deitp';
-  const setupY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.setupY);
-  const headroomY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY);
-  const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
+	  const deltaEFormula='deitp';
+	  const setupY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.setupY);
+	  const headroomY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY);
+	  const touchupPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
+	  const touchupPostCommitVerifyEnabled=meterFullAutoCalPostCommitVerifyEnabled();
+	  const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
   const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const whiteKey=meterStepNameKey(whiteStep);
@@ -19531,16 +19671,20 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     headroom_max_iterations:8,
     max_polish_iterations:4,
     precision_polish_iterations:6,
-    post_commit_body_polish:true,
-    post_commit_polish:true,
-    post_commit_polish_iterations:3,
-    post_commit_low_shadow_iterations:2,
-    post_commit_true_low_shadow:true,
-    post_commit_low_shadow_committed_iterations:3,
-    post_commit_settle_ms:12000,
-    post_commit_white_resettle_ms:8000,
-    post_commit_low_shadow_settle_ms:2500,
-    post_commit_low_shadow_read_settle_ms:1200,
+	    post_commit_body_polish:touchupPostCommitPolishEnabled?true:false,
+	    post_commit_polish:touchupPostCommitPolishEnabled,
+	    post_commit_top_window:touchupPostCommitPolishEnabled?undefined:false,
+	    post_commit_body_verify:touchupPostCommitVerifyEnabled,
+	    post_commit_final_all_level_verify:touchupPostCommitVerifyEnabled,
+	    post_commit_final_top_window:touchupPostCommitVerifyEnabled,
+	    post_commit_polish_iterations:touchupPostCommitPolishEnabled?3:undefined,
+	    post_commit_low_shadow_iterations:touchupPostCommitPolishEnabled?2:undefined,
+	    post_commit_true_low_shadow:touchupPostCommitPolishEnabled?true:undefined,
+	    post_commit_low_shadow_committed_iterations:touchupPostCommitPolishEnabled?3:undefined,
+	    post_commit_settle_ms:touchupPostCommitPolishEnabled?12000:undefined,
+	    post_commit_white_resettle_ms:touchupPostCommitPolishEnabled?8000:undefined,
+	    post_commit_low_shadow_settle_ms:touchupPostCommitPolishEnabled?2500:undefined,
+	    post_commit_low_shadow_read_settle_ms:touchupPostCommitPolishEnabled?1200:undefined,
     full_autocal_touchup:true,
     full_workflow:true,
     full_autocal_run_id:meterFullAutoCalRunId||undefined,
@@ -19818,9 +19962,18 @@ async function meterStartAutoCal(options){
  meterBuildPatchThumbs(sortedSteps,new Set(),null);
  drawAllChartsPreset(sortedSteps);
  const dtype=getEffectiveDisplayType();
-	 const patternSignalRange=meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange();
+ const patternSignalRange=meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange();
  const wp=meterTargetWhitePoint();
- meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflow:fullWorkflow};
+ meterAutoCalPendingConfig={
+  dtype,
+  patternSignalRange,
+  wp,
+  adjustable,
+  whiteStep,
+  fullWorkflow:fullWorkflow,
+  postCommitPolishEnabled:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():true,
+  postCommitVerifyEnabled:fullWorkflow?meterFullAutoCalPostCommitVerifyEnabled():true
+ };
  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
  meterActionPending=true;
  meterUpdateReadButtons();
@@ -19867,13 +20020,19 @@ async function meterAutoCalAcceptDisclaimer(){
 }
 
 async function meterAutoCalConfirmAndStart(){
- if(!meterAutoCalPendingConfig){toast('Auto Cal setup is not ready',true);return;}
- const target=meterAutoCalTargetDeltaValue();
- const deltaEFormula='deitp';
- const setupY=meterAutoCalSetupYValue();
- const targetY=meterAutoCalTargetYValue();
- const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
- meterStoreLgTargetWhiteReference(targetY,meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow?'full-autocal':'greyscale-autocal',meterFullAutoCalRunId||null);
+	 if(!meterAutoCalPendingConfig){toast('Auto Cal setup is not ready',true);return;}
+	 const target=meterAutoCalTargetDeltaValue();
+	 const deltaEFormula='deitp';
+	 const setupY=meterAutoCalSetupYValue();
+	 const targetY=meterAutoCalTargetYValue();
+	 const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
+	 const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
+	 const firstFullGreyscalePass=!!(fullWorkflow&&meterFullAutoCalRunning&&meterFullAutoCalPhase==='first-greyscale');
+	 const postCommitPolishEnabled=firstFullGreyscalePass?false:meterAutoCalPostCommitPolishChoiceValue();
+	 const postCommitVerifyEnabled=firstFullGreyscalePass?false:meterAutoCalPostCommitVerifyChoiceValue();
+	 meterAutoCalPendingConfig.postCommitPolishEnabled=postCommitPolishEnabled;
+	 meterAutoCalPendingConfig.postCommitVerifyEnabled=postCommitVerifyEnabled;
+	 meterStoreLgTargetWhiteReference(targetY,meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow?'full-autocal':'greyscale-autocal',meterFullAutoCalRunId||null);
  const dtype=meterAutoCalPendingConfig.dtype;
  const patternSignalRange=meterAutoCalPendingConfig.patternSignalRange;
  const wp=meterAutoCalPendingConfig.wp;
@@ -19923,20 +20082,24 @@ async function meterAutoCalConfirmAndStart(){
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
-    force_ddc_white_balance:true,
-	    full_workflow:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
-	    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
-	    full_autocal_phase:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'first-greyscale':undefined,
-	    post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
-	    post_commit_body_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?false:undefined,
-	    post_commit_polish_iterations:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?2:undefined,
-	    post_commit_low_shadow_iterations:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?6:undefined,
-	    post_commit_true_low_shadow:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
-	    post_commit_low_shadow_committed_iterations:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?6:undefined,
-	    post_commit_settle_ms:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?12000:undefined,
-	    post_commit_white_resettle_ms:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?8000:undefined,
-	    post_commit_low_shadow_settle_ms:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?2500:undefined,
-	    post_commit_low_shadow_read_settle_ms:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?1200:undefined,
+	    force_ddc_white_balance:true,
+		    full_workflow:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
+		    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
+		    full_autocal_phase:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'first-greyscale':undefined,
+		    post_commit_polish:postCommitPolishEnabled,
+		    post_commit_body_polish:postCommitPolishEnabled?undefined:false,
+		    post_commit_top_window:postCommitPolishEnabled?undefined:false,
+		    post_commit_body_verify:postCommitVerifyEnabled,
+		    post_commit_final_all_level_verify:postCommitVerifyEnabled,
+		    post_commit_final_top_window:postCommitVerifyEnabled,
+		    post_commit_polish_iterations:undefined,
+		    post_commit_low_shadow_iterations:undefined,
+		    post_commit_true_low_shadow:postCommitPolishEnabled?undefined:false,
+		    post_commit_low_shadow_committed_iterations:undefined,
+		    post_commit_settle_ms:undefined,
+		    post_commit_white_resettle_ms:undefined,
+		    post_commit_low_shadow_settle_ms:undefined,
+		    post_commit_low_shadow_read_settle_ms:undefined,
 	    refresh_rate:getMeterRefreshRate()||undefined,
     require_device_ready:meterSelectedMeasurementRequiresReady(),
     max_iterations:36,
