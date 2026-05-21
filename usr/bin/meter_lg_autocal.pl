@@ -382,7 +382,7 @@ sub order_autocal_steps {
    !($_->{"autocal_white_reference"} && $target && $normal_ddc_slot{format_percent($target->{"ire"})})
 	 } @valid;
   return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
-  my @lg_autocal_26_order=(109,105,99,80,90,95,85,60,70,75,65,40,50,55,45,20,30,35,25,15,2.3,3,4,5,7,10);
+  my @lg_autocal_26_order=(109,105,99,80,60,40,20,90,95,85,70,75,65,50,55,45,30,35,25,15,10,7,5,4,3,2.3);
   my %seen_target;
   my @ordered;
   my $target_key=sub {
