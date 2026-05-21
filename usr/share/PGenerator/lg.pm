@@ -1670,6 +1670,29 @@ let lgScanPending=false;
 let lgCalibrationModePending=false;
 window.lgStatusState=window.lgStatusState||{paired:false,detected:false,hasIp:false,checked:false,clientKeyPresent:false,pinPending:false};
 
+function lgIsPGeneratorDisplayName(name){
+ const normalized=String(name||'').trim().toLowerCase().replace(/[\s_-]+/g,'');
+ return /^(?:pgenerator|pgeneratorplus|pgenerator\+)$/.test(normalized);
+}
+
+function lgDisplayNameFromStatus(r){
+ const candidates=[
+  r&&r.model_name,
+  r&&r.modelName,
+  r&&r.product_name,
+  r&&r.productName,
+  r&&r.displayName,
+  r&&r.stored_name,
+  r&&r.cec_osd_name,
+  r&&r.cec_tv_name
+ ];
+ for(const candidate of candidates){
+  const name=String(candidate||'').trim();
+  if(name&&!lgIsPGeneratorDisplayName(name)) return name;
+ }
+ return 'LG TV';
+}
+
 function renderLgTopStatus(r){
  const wrap=document.getElementById('lgTopStatusWrap');
  const dot=document.getElementById('lgTopDot');
@@ -1682,9 +1705,9 @@ function renderLgTopStatus(r){
   if(typeof syncTopStatusStack==='function') syncTopStatusStack();
   return;
  }
- const rawName=String((r&&(r.model_name||r.modelName||r.displayName||r.stored_name||r.cec_osd_name||r.product_name||r.cec_tv_name))||'LG TV').trim()||'LG TV';
+ const rawName=lgDisplayNameFromStatus(r);
  const ip=String((r&&(r.manual_ip||r.stored_ip||r.auto_ip||r.ip))||'').trim();
- const name=(rawName.toLowerCase()==='lg tv'&&ip&&r&&r.auto_host)?String(r.auto_host).trim():rawName;
+ const name=rawName;
  const label=name+(ip?' ['+ip+']':'');
  const power=String((r&&(r.tv_power||r.tvPower))||'').trim();
  const powerKey=power.toLowerCase();
@@ -2336,8 +2359,8 @@ function renderLgStatus(r){
 		  calibrationMode:!!r.calibration_mode,
 		  promptKey:promptKey,
 		  ip:r.manual_ip||r.stored_ip||r.auto_ip||'',
-		  modelName:r.model_name||r.stored_name||r.cec_tv_name||r.cec_osd_name||'',
-		  displayName:r.model_name||r.stored_name||r.cec_tv_name||r.cec_osd_name||'',
+		  modelName:lgDisplayNameFromStatus(r),
+		  displayName:lgDisplayNameFromStatus(r),
 		  tvPower:r.tv_power||''
 		 };
 	 renderLgTopStatus(r);
