@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance response_probe response_model slope predicted_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma response_probe response_model slope predicted_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -2999,6 +2999,68 @@ sub body_luminance_response_adjustment {
   return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, body_luminance=>1, response_model=>1, slope=>$slope+0, predicted_error=>$predicted+0 }];
  }
  return undef;
+}
+
+sub high_end_paired_luma_allowed {
+ my ($config,$step,$target,$paired_white_step)=@_;
+ return 0 if($paired_white_step);
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(!autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
+ return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
+ my $ire=$target->{"ire"}+0;
+ return ($ire >= 104.5 && $ire < 108.5) ? 1 : 0;
+}
+
+sub high_end_rgb_move_summary {
+ my ($adjustments)=@_;
+ return undef if(ref($adjustments) ne "ARRAY");
+ my @moves;
+ my $max=0;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  my $ch=$adj->{"channel"}||"";
+  return undef if($ch eq "lum" || ($adj->{"setting"}||"") eq "adjustingLuminance");
+  next if($ch !~ /^(?:r|g|b)$/);
+  my $setting=$adj->{"setting"}||"";
+  next if($setting !~ /^whiteBalance(?:Red|Green|Blue)$/);
+  my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : 0;
+  next if(abs($delta) < 0.0001);
+  push @moves,{ channel=>$ch, setting=>$setting, delta=>$delta+0 };
+  $max=abs($delta) if(abs($delta) > $max);
+ }
+ return undef if(!@moves || $max < 0.0001);
+ return { moves=>\@moves, max_abs_delta=>$max+0 };
+}
+
+sub high_end_paired_luma_adjustment {
+ my ($config,$step,$target,$arrays,$adjustments,$candidate_lum_pct,$best_lum_pct,$candidate_chroma,$best_chroma,$tried,$paired_white_step)=@_;
+ return undef if(!high_end_paired_luma_allowed($config,$step,$target,$paired_white_step));
+ return undef if(!has_luminance_channel($arrays,$target));
+ return undef if(!defined($candidate_lum_pct) || $candidate_lum_pct <= 0.35);
+ return undef if(defined($best_lum_pct) && abs($candidate_lum_pct) <= abs($best_lum_pct)+0.35);
+ return undef if(!defined($candidate_chroma) || !defined($best_chroma));
+ return undef if($candidate_chroma + 0.0001 >= $best_chroma);
+ my $move=high_end_rgb_move_summary($adjustments);
+ return undef if(ref($move) ne "HASH");
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my $arr=$arrays->{"adjustingLuminance"};
+ return undef if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+ my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+ my $excess=defined($best_lum_pct) ? (($candidate_lum_pct+0)-($best_lum_pct+0)) : ($candidate_lum_pct+0);
+ $excess=$candidate_lum_pct+0 if($excess < 0);
+ my $mag=($move->{"max_abs_delta"}||0)*0.50;
+ my $luma_mag=$excess*0.35;
+ $mag=$luma_mag if($luma_mag > $mag);
+ $mag=0.5 if($mag < 0.5);
+ $mag=3.0 if($mag > 3.0);
+ $mag=round_ddc_quarter($mag);
+ $mag=0.5 if($mag < 0.5);
+ my $next=clamp_ddc_value($current-$mag);
+ return undef if(abs($next-$current) < 0.0001);
+ return undef if(tried_value_exists($tried,"adjustingLuminance",$next));
+ my $luma={ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, high_end_paired_luma=>1 };
+ return { luma_adjustment=>$luma, rgb_move=>$move, luma_delta=>$next-$current };
 }
 
 sub body_luminance_priority_adjustments {
@@ -6799,6 +6861,92 @@ eval {
 				   return 0 if(low_ire_luminance_needs_lift($read_step,$lum_pct));
 				   return ($de + 0.0001 < $best_de) ? 1 : 0;
 				  };
+				  my $try_high_end_paired_luma_probe=sub {
+				   my ($attempt_adjustments,$candidate_score,$candidate_chroma,$best_chroma,$tried_ref,$phase_label,$phase_index)=@_;
+				   my $probe=high_end_paired_luma_adjustment(
+				    $config,$read_step,$target,$arrays,$attempt_adjustments,$lum_pct,$best_lum_pct,
+				    $candidate_chroma,$best_chroma,$tried_ref,$paired_white_step
+				   );
+				   return 0 if(ref($probe) ne "HASH" || ref($probe->{"luma_adjustment"}) ne "HASH");
+				   my $luma_adj=$probe->{"luma_adjustment"};
+				   my $before_probe_reading=clone_picture($reading);
+				   my $before_probe_values=trace_target_values($arrays,$target);
+				   trace_109($read_step,"high_end_paired_luma_probe",{
+				    label=>$label,
+				    phase=>$phase_label||"",
+				    index=>defined($phase_index)?$phase_index+0:undef,
+				    rgb_move=>$probe->{"rgb_move"},
+				    luma_compensation=>$luma_adj->{"delta"}+0,
+				    prior_score=>defined($best_score)?$best_score+0:undef,
+				    rejected_candidate_score=>defined($candidate_score)?$candidate_score+0:undef,
+				    rejected_candidate_delta_e=>defined($de)?$de+0:undef,
+				    rejected_candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				    rejected_candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
+				    best_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
+				    values_before=>$before_probe_values
+				   });
+				   $arrays->{$luma_adj->{"setting"}}[$target->{"index"}]=$luma_adj->{"next"};
+				   $state->{"phase"}="writing";
+				   $state->{"message"}="Trying paired luminance compensation for $label ".describe_adjustments([$luma_adj]);
+				   write_state($state);
+				   my $write_error;
+				   ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+				   die $write_error if($write_error);
+				   $calibration_mode_active=1;
+				   sync_state_picture($state,$picture,$picture_mode);
+				   return 0 if(cancelled());
+				   $state->{"phase"}="reading";
+				   $state->{"message"}="Reading $label paired luminance compensation";
+				   write_state($state);
+				   ($reading,$read_error,$guarded_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
+				   die $read_error if($read_error && $read_error ne "cancelled");
+				   return 0 if($read_error && $read_error eq "cancelled");
+				   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$reading,$white_y);
+				   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+				   $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+				   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+				   $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+				   $lum_pct=luminance_error_percent($reading,$target_step_y);
+				   my $paired_score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+				   mark_tried_values($tried_ref,$arrays,$target,$de) if(ref($tried_ref) eq "HASH");
+				   $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+				   $state->{"current_delta_e"}=defined($de) ? $de : undef;
+				   $state->{"current_luminance"}=luminance($reading);
+				   set_state_target_step_luminance($state,$target_step_y);
+				   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+				   my $paired_chroma=autocal_chroma_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y);
+				   my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
+				   my $previous_best_score=$best_score;
+				   my $keep=(defined($de) && $not_worse_measurement && $paired_score + 0.0001 < $best_score) ? 1 : 0;
+				   if($keep) {
+				    $best_de=$de;
+				    $best_lum_pct=$lum_pct;
+				    $best_score=$paired_score;
+				    $best_arrays=clone_arrays($arrays);
+				    $best_reading=clone_picture($reading);
+				    $best_read_step=clone_picture($read_step);
+				   }
+				   trace_109($read_step,$keep ? "high_end_paired_luma_kept" : "high_end_paired_luma_rejected",{
+				    label=>$label,
+				    phase=>$phase_label||"",
+				    index=>defined($phase_index)?$phase_index+0:undef,
+				    reading=>trace_reading_summary($reading),
+				    previous_reading=>trace_reading_summary($before_probe_reading),
+				    luma_compensation=>$luma_adj->{"delta"}+0,
+				    prior_score=>defined($candidate_score)?$candidate_score+0:undef,
+				    previous_best_score=>defined($previous_best_score)?$previous_best_score+0:undef,
+				    best_score=>defined($best_score)?$best_score+0:undef,
+				    paired_candidate_score=>$paired_score+0,
+				    paired_candidate_delta_e=>defined($de)?$de+0:undef,
+				    paired_candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				    paired_candidate_chroma_delta_e=>defined($paired_chroma)?$paired_chroma+0:undef,
+				    previous_candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
+				    best_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
+				    not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
+				    target_values=>trace_target_values($arrays,$target)
+				   });
+				   return $keep;
+				  };
 				  my $iteration_limit=iteration_limit_for_step($step,$max_iterations,$config);
 				  $iteration_limit=48 if($paired_white_step && !autocal_config_is_touchup($config) && $iteration_limit < 48);
 				  for(my $iter=1;$iter<=$iteration_limit;$iter++) {
@@ -7064,7 +7212,10 @@ eval {
 				     candidate_values=>trace_target_values($arrays,$target),
 				     best_values=>trace_target_values($best_arrays,$target)
 				    });
-					    if($luma_anchor_working) {
+					    my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%tried_values,"iteration",$iter);
+					    if($paired_luma_kept) {
+					     $stalls=0;
+					    } elsif($luma_anchor_working) {
 					     $stalls=0;
 					     trace_109($read_step,"keep_luminance_anchor_working_state",{
 					      label=>$label,
@@ -7360,7 +7511,10 @@ eval {
 				      best_values=>trace_target_values($best_arrays,$target),
 				      luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false
 				     });
-						     if($luma_anchor_working) {
+						     my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%polish_tried,"fine_tune",$polish);
+						     if($paired_luma_kept) {
+						      $polish_stalls=0;
+						     } elsif($luma_anchor_working) {
 						      $polish_stalls=0;
 						      trace_109($read_step,"keep_luminance_anchor_working_state",{
 						       label=>$label,
