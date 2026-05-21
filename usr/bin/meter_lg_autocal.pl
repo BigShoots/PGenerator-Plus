@@ -2810,6 +2810,60 @@ sub lg_autocal_26_anchor_predrive_source_slot_mask {
  return lg_autocal_26_calibrated_slot_mask_for_ires($calibrated_slot_mask,lg_autocal_26_anchor_predrive_anchor_ires());
 }
 
+sub ddc_slot_index_for_ire {
+ my ($wanted_ire)=@_;
+ return undef if(!defined($wanted_ire));
+ my @slots=ddc_slots();
+ for(my $idx=0;$idx<@slots;$idx++) {
+  return $idx if(abs(($wanted_ire+0)-($slots[$idx]+0)) < 0.001);
+ }
+ return undef;
+}
+
+sub copy_lg_26pt_ddc_slot_values {
+ my ($arrays,$source_ire,$target_ire,$copy_luminance)=@_;
+ return 0 if(ref($arrays) ne "HASH");
+ my $source_idx=ddc_slot_index_for_ire($source_ire);
+ my $target_idx=ddc_slot_index_for_ire($target_ire);
+ return 0 if(!defined($source_idx) || !defined($target_idx));
+ my @settings=ddc_adjustment_settings($arrays);
+ my (%source,%before,%after,%changed_settings);
+ my $copied=0;
+ my $changed=0;
+ foreach my $setting (@settings) {
+  next if($setting eq "adjustingLuminance" && !$copy_luminance);
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $source_idx >= @{$arr} || $target_idx >= @{$arr});
+  my $source_value=defined($arr->[$source_idx]) ? ($arr->[$source_idx]+0) : 0;
+  my $before_value=defined($arr->[$target_idx]) ? ($arr->[$target_idx]+0) : 0;
+  my $after_value=clamp_ddc_value($source_value);
+  $source{$setting}=$source_value+0;
+  $before{$setting}=$before_value+0;
+  $arr->[$target_idx]=$after_value;
+  $after{$setting}=$after_value+0;
+  $copied++;
+  if(abs($after_value-$before_value) > 0.0001) {
+   $changed++;
+   $changed_settings{$setting}={ before=>$before_value+0, after=>$after_value+0 };
+  }
+ }
+ return 0 if(!$copied);
+ return {
+  mode=>"adjacent-anchor-copy",
+  source_index=>$source_idx+0,
+  source_ire=>$source_ire+0,
+  target_index=>$target_idx+0,
+  target_ire=>$target_ire+0,
+  copied_settings=>$copied+0,
+  changed_settings_count=>$changed+0,
+  copy_luminance=>$copy_luminance ? JSON::PP::true : JSON::PP::false,
+  source=>\%source,
+  before=>\%before,
+  after=>\%after,
+  changed_settings=>\%changed_settings
+ };
+}
+
 sub linear_interpolated_26pt_curve_value {
  my ($x,$left,$right)=@_;
  return undef if(ref($left) ne "HASH" || ref($right) ne "HASH");
@@ -7268,7 +7322,49 @@ eval {
 			   $state->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::true;
 			   $state->{"lg_autocal_26_full_ddc_spine_completed_anchors"}=\@completed_spine_anchors;
 		   $state->{"lg_autocal_26_full_ddc_spine_completed_slots"}=\@completed_anchor_ires;
-		   $state->{"lg_autocal_26_full_ddc_spine_last_completed_anchor"}=($final_target->{"ire"}+0) if(lg_autocal_26_full_ddc_spine_anchor($final_target));
+			   $state->{"lg_autocal_26_full_ddc_spine_last_completed_anchor"}=($final_target->{"ire"}+0) if(lg_autocal_26_full_ddc_spine_anchor($final_target));
+		  }
+		  my $adjacent_seed=0;
+		  my $adjacent_seed_target;
+		  my $final_ire=defined($final_target->{"ire"}) ? ($final_target->{"ire"}+0) : undef;
+		  if($anchor_predrive_mode && defined($final_ire)) {
+		   if(abs($final_ire-109) < 0.001) {
+		    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,109,105,0);
+		    $adjacent_seed->{"message"}="seeded 105 from 109" if(ref($adjacent_seed) eq "HASH");
+		    $adjacent_seed->{"label"}="105%" if(ref($adjacent_seed) eq "HASH");
+		    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(105), ire=>format_percent(105), label=>"105%" } if(ref($adjacent_seed) eq "HASH");
+		   } elsif(abs($final_ire-105) < 0.001) {
+		    $adjacent_seed=copy_lg_26pt_ddc_slot_values($arrays,105,99,1);
+		    $adjacent_seed->{"message"}="seeded 99 legal-white from 105" if(ref($adjacent_seed) eq "HASH");
+		    $adjacent_seed->{"label"}="99% legal-white" if(ref($adjacent_seed) eq "HASH");
+		    $adjacent_seed_target={ index=>ddc_slot_index_for_ire(99), ire=>format_percent(99), label=>"99% legal-white" } if(ref($adjacent_seed) eq "HASH");
+		   }
+		  }
+		  if(ref($adjacent_seed) eq "HASH" && ref($adjacent_seed_target) eq "HASH" && defined($adjacent_seed_target->{"index"})) {
+		   $state->{"lg_autocal_26_anchor_predrive_last_adjacent_seed"}=$adjacent_seed;
+		   $state->{"lg_autocal_26_anchor_predrive_adjacent_seed_message"}=$adjacent_seed->{"message"};
+		   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed",{
+		    mode=>"anchor_predrive",
+		    message=>$adjacent_seed->{"message"},
+		    label=>$final_label||$final_target->{"label"}||"",
+		    source_ire=>$adjacent_seed->{"source_ire"},
+		    target_ire=>$adjacent_seed->{"target_ire"},
+		    copy_luminance=>$adjacent_seed->{"copy_luminance"},
+		    seed=>$adjacent_seed,
+		    source_values=>$adjacent_seed->{"source"},
+		    target_values_before=>$adjacent_seed->{"before"},
+		    target_values_after=>$adjacent_seed->{"after"}
+		   });
+		   if(!cancelled()) {
+		    $state->{"phase"}="writing";
+		    $state->{"message"}=$adjacent_seed->{"message"};
+		    write_state($state);
+		    my $adjacent_seed_error;
+		    ($picture,$adjacent_seed_error)=set_picture_values($picture,$arrays,$adjacent_seed_target,$picture_mode,$calibration_mode_active,$state);
+		    die $adjacent_seed_error if($adjacent_seed_error);
+		    $calibration_mode_active=1;
+		    sync_state_picture($state,$picture,$picture_mode);
+		   }
 		  }
 		  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
 		  my $before_arrays=clone_arrays($arrays);
