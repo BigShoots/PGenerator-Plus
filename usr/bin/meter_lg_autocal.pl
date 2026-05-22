@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -4654,6 +4654,40 @@ sub low_shadow_luminance_response_cap {
  return 2;
 }
 
+sub low_shadow_luminance_response_escalation {
+ my ($step,$before_lum_pct,$after_lum_pct,$base_cap)=@_;
+ return ($base_cap,1,"adequate_response",0) if(!defined($before_lum_pct) || !defined($after_lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
+ return ($base_cap,1,"protected_noise_floor",0) if($ire > 0 && $ire <= 2.5001);
+ my $before_abs=abs($before_lum_pct);
+ my $after_abs=abs($after_lum_pct);
+ my $accept=low_shadow_luminance_acceptance_percent($step);
+ return ($base_cap,1,"near_target",0) if($after_abs <= $accept*1.25);
+ my $improvement=$before_abs-$after_abs;
+ my $same_side=(($before_lum_pct < 0 && $after_lum_pct < 0) || ($before_lum_pct > 0 && $after_lum_pct > 0)) ? 1 : 0;
+ return ($base_cap,1,"crossed_target",0) if(!$same_side && $after_abs <= $before_abs);
+ return ($base_cap,1,"wrong_direction",0) if($improvement < -0.05);
+ my $ratio=($before_abs > 0.0001) ? ($improvement/$before_abs) : 1;
+ my $mult=1;
+ my $reason="adequate_response";
+ if($improvement < 0.20 || $ratio < 0.18) {
+  $mult=2.0;
+  $reason="insufficient_response_x2";
+ } elsif($improvement < 0.45 || $ratio < 0.32) {
+  $mult=1.5;
+  $reason="insufficient_response_x1_5";
+ }
+ return ($base_cap,$mult,$reason,0) if($mult <= 1.0001);
+ my $limit=2;
+ $limit=3 if($ire > 3.1001 && $ire <= 4.1001);
+ $limit=4 if($ire > 4.1001 && $ire <= 5.1001);
+ $limit=6 if($ire > 5.1001 && $ire <= 10.1001);
+ my $cap=$base_cap*$mult;
+ $cap=$limit if($cap > $limit);
+ $cap=$base_cap if($cap < $base_cap);
+ return ($cap,$mult,$reason,1);
+}
+
 sub low_shadow_luminance_response_adjustment {
  my ($step,$adjustments,$before,$after,$arrays,$target,$tried,$from_start)=@_;
  return undef if(!autocal_step_is_low_shadow($step));
@@ -4675,17 +4709,21 @@ sub low_shadow_luminance_response_adjustment {
  return undef if(!defined($before_lum_pct) || !defined($after_lum_pct));
  my $slope=($after_lum_pct-$before_lum_pct)/($end-$start);
  return undef if(abs($slope) < 0.25);
+ my $previous_improvement=abs($before_lum_pct)-abs($after_lum_pct);
+ return undef if($previous_improvement < -0.05);
  my $ideal=$start-($before_lum_pct/$slope);
  my $current=$from_start ? $start : ($arrays->{"adjustingLuminance"}[$idx]||0);
  my $delta=$ideal-$current;
  return undef if(abs($delta) < 0.18);
  my $cap=low_shadow_luminance_response_cap($step,$after_lum_pct);
+ my ($scaled_cap,$response_multiplier,$cap_reason,$insufficient)=low_shadow_luminance_response_escalation($step,$before_lum_pct,$after_lum_pct,$cap);
+ $cap=$scaled_cap if(defined($scaled_cap) && $scaled_cap > $cap);
  $delta=$cap if($delta > $cap);
  $delta=-$cap if($delta < -$cap);
  my $next=round_ddc_quarter($current+$delta);
  return undef if(abs($next-$current) < 0.0001);
  return undef if(tried_value_exists($tried,"adjustingLuminance",$next));
- return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, low_shadow_luminance=>1, response_model=>1, slope=>$slope+0, predicted_error=>($after_lum_pct+($slope*($next-$end)))+0 }];
+ return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, low_shadow_luminance=>1, low_shadow_luminance_response_scaled=>($response_multiplier > 1.0001 ? 1 : undef), response_multiplier=>$response_multiplier+0, cap_reason=>$cap_reason, insufficient_luminance_response=>$insufficient ? 1 : undef, response_model=>1, slope=>$slope+0, predicted_error=>($after_lum_pct+($slope*($next-$end)))+0, previous_delta=>$end-$start, previous_before_error=>$before_lum_pct+0, previous_after_error=>$after_lum_pct+0, remaining_error=>abs($after_lum_pct)+0 }];
 }
 
 sub body_luminance_response_cap {
