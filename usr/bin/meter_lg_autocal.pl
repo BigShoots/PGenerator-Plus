@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -3592,6 +3592,47 @@ sub neutral_luminance_step_cap_for_target {
 	 return undef;
 }
 
+sub headroom_105_seed_luma_refine_cap {
+	 my ($arrays,$target,$step,$luminance_err)=@_;
+	 return undef if(!autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
+	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+	 return undef if(!defined($luminance_err) || $luminance_err <= 0);
+	 my $ire=(defined($target->{"ire"}) ? ($target->{"ire"}+0) : ((ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0));
+	 return undef if($ire < 104.5 || $ire >= 108.5);
+	 my $idx=$target->{"index"};
+	 return undef if(!defined($idx));
+	 my $lum_arr=$arrays->{"adjustingLuminance"};
+	 return undef if(ref($lum_arr) ne "ARRAY" || $idx >= @{$lum_arr});
+	 my $current_luma=$lum_arr->[$idx]||0;
+	 return undef if(abs($current_luma) > 0.0001);
+	 return undef if(($luminance_err*100) <= headroom_luminance_control_gate_percent($step,0.65));
+	 my $r_arr=$arrays->{"whiteBalanceRed"};
+	 my $g_arr=$arrays->{"whiteBalanceGreen"};
+	 my $b_arr=$arrays->{"whiteBalanceBlue"};
+	 return undef if(ref($r_arr) ne "ARRAY" || ref($g_arr) ne "ARRAY" || ref($b_arr) ne "ARRAY");
+	 return undef if($idx >= @{$r_arr} || $idx >= @{$g_arr} || $idx >= @{$b_arr});
+	 my $r=$r_arr->[$idx]||0;
+	 my $g=$g_arr->[$idx]||0;
+	 my $b=$b_arr->[$idx]||0;
+	 return undef if(abs($r-4.25) > 0.7501 || abs($g+5.5) > 0.7501 || abs($b+13) > 1.0001);
+	 return 1.0;
+}
+
+sub apply_headroom_105_seed_luma_refine_cap {
+	 my ($arrays,$target,$step,$luminance_err,$planned_step,$source)=@_;
+	 return ($planned_step,0,undef) if(!defined($planned_step));
+	 my $cap=headroom_105_seed_luma_refine_cap($arrays,$target,$step,$luminance_err);
+	 return ($planned_step,0,undef) if(!defined($cap) || $planned_step <= $cap+0.0001);
+	 trace_109($step,"headroom_105_seed_luma_refine_cap",{
+	  source=>$source||"neutral_luminance",
+	  planned_step=>$planned_step+0,
+	  capped_step=>$cap+0,
+	  luminance_error_pct=>defined($luminance_err) ? (($luminance_err*100)+0) : undef,
+	  target_values=>trace_target_values($arrays,$target)
+	 });
+	 return ($cap,1,$cap);
+}
+
 sub neutral_luminance_adjustments {
 	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_step,$strict_tried,$step,$source,$state)=@_;
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -3604,6 +3645,8 @@ sub neutral_luminance_adjustments {
 	 $max_step=$cap if(defined($cap) && (!defined($max_step) || $max_step > $cap));
 	 my $direction=($luminance_err > 0) ? -1 : 1;
 	 my $planned_step=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
+	 my ($capped_step,$seed_luma_capped)=apply_headroom_105_seed_luma_refine_cap($arrays,$target,$step,$luminance_err,$planned_step,$source||"neutral_luminance");
+	 $planned_step=$capped_step;
 		 my @magnitudes=($planned_step);
 		 push @magnitudes,0.5 if($planned_step > 0.5);
 		 push @magnitudes,0.25 if($planned_step > 0.25);
@@ -3616,7 +3659,7 @@ sub neutral_luminance_adjustments {
 				   my $seen=$strict_tried ? tried_value_exists($tried,$setting,$next) : repeated_value($tried,$setting,$next);
 				   $seen=1 if(!$seen && luma_probe_family_suppressed($tried,$target,$current,$next,$step,$source||"neutral_luminance",$state));
 				   next if(abs($next-$current) < 0.0001 || $seen);
-				   return [{ channel=>"lum", setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, source=>$source||"neutral_luminance" }];
+				   return [{ channel=>"lum", setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, headroom_105_seed_luma_refine_cap=>$seed_luma_capped ? 1 : undef, source=>$source||"neutral_luminance" }];
 				  }
 		  return undef;
 		 }
@@ -4273,24 +4316,6 @@ sub headroom_105_wrgb_seed_adjustment {
 	 my ($error,$arrays,$target,$de,$tried,$step,$luminance_err)=@_;
 	 return undef if(!autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
 	 return undef if(!defined($de) || $de < 2.5);
-	 if(defined($luminance_err)) {
-	  my $lum_pct=$luminance_err*100;
-	  my $tol=luminance_tolerance_percent($step);
-	  my $gate=$tol*3;
-	  $gate=6 if($gate < 6);
-	  if($lum_pct > $gate) {
-	   trace_109($step,"headroom_105_seed_skipped_high_luma",{
-	    source=>"headroom_105_seed",
-	    reason=>"positive_luminance_error_exceeds_seed_gate",
-	    luminance_error_pct=>$lum_pct+0,
-	    luminance_gate_pct=>$gate+0,
-	    luminance_tolerance_pct=>$tol+0,
-	    delta_e=>$de+0,
-	    chroma_error_magnitude=>chroma_error_magnitude($error)+0
-	   });
-	   return undef;
-	  }
-	 }
 	 if(defined($luminance_err) && ($luminance_err*100) > headroom_luminance_control_gate_percent($step,0.50)) {
 	  return undef if(chroma_error_magnitude($error) < 0.035);
 	 }
@@ -4434,6 +4459,8 @@ sub headroom_chroma_luma_adjustment {
 	 my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
 	 my $direction=($luminance_err > 0) ? -1 : 1;
 	 my $luma_mag=neutral_luminance_step($luminance_err,$de,$stalls,0.25,$micro ? 0.75 : 1.25);
+	 my ($capped_luma_mag,$seed_luma_capped)=apply_headroom_105_seed_luma_refine_cap($arrays,$target,$step,$luminance_err,$luma_mag,"headroom_chroma_luma");
+	 $luma_mag=$capped_luma_mag;
 	 $luma_mag=0.25 if($luma_mag < 0.25);
 	 my @magnitudes=($luma_mag,0.75,0.50,0.25);
 	 my %seen_mag;
@@ -4444,7 +4471,7 @@ sub headroom_chroma_luma_adjustment {
 	  next if(abs($next-$current) < 0.0001);
 	  next if(tried_value_exists($tried,"adjustingLuminance",$next));
 	  my @out=map { { %{$_} } } @{$rgb};
-	  push @out,{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, headroom_chroma_luma=>1, micro=>$micro ? 1 : 0 };
+	  push @out,{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, headroom_chroma_luma=>1, headroom_105_seed_luma_refine_cap=>$seed_luma_capped ? 1 : undef, micro=>$micro ? 1 : 0 };
 	  foreach my $adj (@out) {
 	   $adj->{"headroom_chroma_luma"}=1 if(ref($adj) eq "HASH");
 	  }
