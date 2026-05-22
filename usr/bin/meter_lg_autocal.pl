@@ -1551,6 +1551,21 @@ sub low_shadow_luminance_close_enough {
  return abs($lum_pct) <= low_shadow_luminance_acceptance_percent($step) ? 1 : 0;
 }
 
+sub low_shadow_strict_itp_y_step {
+ my ($step)=@_;
+ return 0 if(!autocal_uses_itp());
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return ($ire >= 2.999 && $ire <= 5.1001) ? 1 : 0;
+}
+
+sub low_shadow_strict_luminance_close_enough {
+ my ($step,$lum_pct)=@_;
+ return 0 if(!defined($lum_pct));
+ return 0 if(low_ire_luminance_needs_lift($step,$lum_pct));
+ return abs($lum_pct) <= luminance_tolerance_percent($step) ? 1 : 0;
+}
+
 sub low_shadow_itp_near_target_reached {
  my ($step,$de,$lum_pct,$target_delta)=@_;
  return 0 if(!autocal_step_is_low_shadow($step));
@@ -1580,6 +1595,10 @@ sub committed_low_shadow_good_enough {
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
  my $allow=($ire <= 3.1001) ? ($target_delta+0.30) : (($ire <= 4.1001) ? ($target_delta+0.28) : (($ire <= 5.1001) ? ($target_delta+0.25) : ($target_delta+0.25)));
+ if(low_shadow_strict_itp_y_step($step)) {
+  return 0 if(!low_shadow_strict_luminance_close_enough($step,$lum_pct));
+  return ($de <= $target_delta) ? 1 : 0;
+ }
  return 0 if(autocal_uses_itp() && !low_shadow_luminance_close_enough($step,$lum_pct));
  return ($de <= $allow) ? 1 : 0;
 }
@@ -7317,6 +7336,7 @@ sub final_all_level_verify_outlier_reason {
  return "" if(autocal_step_is_low_shadow($step) && committed_low_shadow_good_enough($step,$de,$lum_pct,$target_delta));
  my @reasons;
  my $de_limit=final_all_level_verify_de_limit($target_delta);
+ $de_limit=$target_delta if(low_shadow_strict_itp_y_step($step));
  push @reasons,"delta_e" if($de > $de_limit);
  if(defined($lum_pct)) {
   my $tol=luminance_tolerance_percent($step);
@@ -7570,7 +7590,9 @@ sub committed_final_all_level_verify {
   my %tried_values;
   mark_tried_values(\%tried_values,$arrays,$target,$de);
   my $stalls=0;
-  for(my $iter=1;$iter<=$limit;$iter++) {
+  my $step_limit=$limit;
+  $step_limit=3 if(low_shadow_strict_itp_y_step($read_step) && $step_limit < 3);
+  for(my $iter=1;$iter<=$step_limit;$iter++) {
    last if(cancelled());
    last if(final_all_level_verify_outlier_reason($read_step,$best_de,$best_lum_pct,$target_delta) eq "");
    my $adjustments=final_all_level_verify_adjustments($state,$arrays,$target,$read_step,$reading,$de,$lum_pct,$target_step_y,$target_delta,\%tried_values,$stalls);
@@ -7588,7 +7610,7 @@ sub committed_final_all_level_verify {
    mark_calibrated_26pt_slot($candidate_calibrated_slot_mask,$target);
    refresh_propagated_uncalibrated_26pt_slots($config,$candidate_arrays,$candidate_calibrated_slot_mask);
    $state->{"phase"}="writing";
-   $state->{"message"}="Final verify $label ".describe_adjustments($adjustments)." ($iter/$limit)";
+   $state->{"message"}="Final verify $label ".describe_adjustments($adjustments)." ($iter/$step_limit)";
    trace_109($read_step,"final_all_level_verify_touch_keep",{
     label=>$label,
     planned=>JSON::PP::true,
@@ -7631,6 +7653,12 @@ sub committed_final_all_level_verify {
    mark_tried_values(\%tried_values,$candidate_arrays,$target,$candidate_de);
    my $candidate_score=lg_autocal_26_measurement_score($read_step,$candidate_de,$candidate_lum_pct);
    my $improved=defined($candidate_de) && $candidate_score + 0.0001 < $best_score;
+   my $candidate_y_better=(defined($candidate_lum_pct) && defined($lum_pct) && abs($candidate_lum_pct) + 0.0001 < abs($lum_pct)) ? 1 : 0;
+   my $candidate_worse_score_y=(defined($candidate_score) && defined($before_score_for_verify) && $candidate_score > $before_score_for_verify+0.0001 && defined($candidate_lum_pct) && defined($before_lum_pct_for_verify) && abs($candidate_lum_pct) > abs($before_lum_pct_for_verify)+0.05) ? 1 : 0;
+   my $low_shadow_reject_reason="";
+   $low_shadow_reject_reason=final_all_level_verify_outlier_reason($read_step,$candidate_de,$candidate_lum_pct,$target_delta)
+    if(low_shadow_strict_itp_y_step($read_step));
+   my $low_shadow_touch_still_outlier=($low_shadow_reject_reason ne "") ? 1 : 0;
    my $good_105_best_blocks=0;
    $good_105_best_blocks=1 if(
     $improved &&
@@ -7638,7 +7666,7 @@ sub committed_final_all_level_verify {
     !lg_autocal_26_candidate_beats_good_105_best_known($read_step,$candidate_score,$prior_good_105_best,$target_delta) &&
     lg_autocal_26_best_known_values_available($prior_good_105_best,$target,$candidate_arrays)
    );
-   if($improved && !$good_105_best_blocks) {
+   if($improved && !$good_105_best_blocks && !$low_shadow_touch_still_outlier) {
     $arrays=clone_arrays($candidate_arrays);
     $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
     promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
@@ -7691,6 +7719,86 @@ sub committed_final_all_level_verify {
     write_state($state);
     next;
    }
+   if($low_shadow_touch_still_outlier && $improved && !$candidate_worse_score_y) {
+    $arrays=clone_arrays($candidate_arrays);
+    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
+    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+    $best_arrays=clone_arrays($candidate_arrays);
+    $best_reading=clone_picture($candidate_reading);
+    $best_de=$candidate_de;
+    $best_lum_pct=$candidate_lum_pct;
+    $best_score=$candidate_score;
+    $reading=$candidate_reading;
+    $de=$candidate_de;
+    $lum_pct=$candidate_lum_pct;
+    $keep_count++;
+    $stalls=0;
+    $state->{"final_all_level_verify"}={
+     status=>"running",
+     order=>[final_all_level_verify_order()],
+     total=>$verify_total+0,
+     current=>$label,
+     reads=>$read_count+0,
+     outliers=>scalar(@outliers)+0,
+     touches=>$touch_count+0,
+     kept=>$keep_count+0,
+     restored=>$restore_count+0,
+    };
+    $state->{"readings"}=merge_reading($state->{"readings"},$candidate_reading);
+    $state->{"current_delta_e"}=defined($candidate_de) ? $candidate_de : undef;
+    $state->{"current_luminance"}=luminance($candidate_reading);
+    set_state_target_step_luminance($state,$target_step_y);
+    $state->{"luminance_error_pct"}=defined($candidate_lum_pct) ? $candidate_lum_pct : undef;
+    my $current_best_entry=lg_autocal_26_best_known_entry($read_step,$candidate_reading,$candidate_de,$candidate_lum_pct,$target_step_y,$candidate_arrays,$target,"final_all_level_verify_low_shadow_retry");
+    if(defined($stored_best_key) && ref($current_best_entry) eq "HASH") {
+     $current_pass_best_known{$stored_best_key}=$current_best_entry;
+     $stored_best=$current_best_entry;
+     $stored_best_score=(defined($current_best_entry->{"score"})) ? ($current_best_entry->{"score"}+0) : undef;
+    }
+    trace_109($read_step,"final_all_level_verify_low_shadow_retry",{
+     label=>$label,
+     ire=>(defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef),
+     reason=>"improved_working_branch_still_outlier",
+     outlier_reason=>$low_shadow_reject_reason,
+     iteration=>$iter+0,
+     retry_limit=>$step_limit+0,
+     target_delta_e=>$target_delta+0,
+     current_delta_e=>defined($de)?$de+0:undef,
+     current_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+     previous_delta_e=>defined($before_de_for_verify)?$before_de_for_verify+0:undef,
+     previous_luminance_error_pct=>defined($before_lum_pct_for_verify)?$before_lum_pct_for_verify+0:undef,
+     previous_score=>defined($before_score_for_verify)?$before_score_for_verify+0:undef,
+     candidate_delta_e=>defined($candidate_de)?$candidate_de+0:undef,
+     candidate_luminance_error_pct=>defined($candidate_lum_pct)?$candidate_lum_pct+0:undef,
+     candidate_score=>defined($candidate_score)?$candidate_score+0:undef,
+     candidate_luminance_better=>$candidate_y_better?JSON::PP::true:JSON::PP::false,
+     values_before=>$values_before,
+     candidate_values=>trace_target_values($candidate_arrays,$target),
+     working_values=>trace_target_values($arrays,$target)
+    });
+    write_state($state);
+    next;
+   }
+   if($low_shadow_touch_still_outlier) {
+    trace_109($read_step,"final_all_level_verify_low_shadow_touch_rejected",{
+     label=>$label,
+     ire=>(defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef),
+     reason=>$candidate_worse_score_y ? "worsened_score_and_luminance" : "retry_limit_or_not_improved",
+     outlier_reason=>$low_shadow_reject_reason,
+     iteration=>$iter+0,
+     retry_limit=>$step_limit+0,
+     target_delta_e=>$target_delta+0,
+     current_delta_e=>defined($de)?$de+0:undef,
+     current_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+     current_score=>defined($best_score)?$best_score+0:undef,
+     candidate_delta_e=>defined($candidate_de)?$candidate_de+0:undef,
+     candidate_luminance_error_pct=>defined($candidate_lum_pct)?$candidate_lum_pct+0:undef,
+     candidate_score=>defined($candidate_score)?$candidate_score+0:undef,
+     values_before=>$values_before,
+     candidate_values=>trace_target_values($candidate_arrays,$target),
+     restored_values=>trace_target_values($best_arrays,$target)
+    });
+   }
    if($good_105_best_blocks) {
     trace_109($read_step,"final_all_level_verify_105_best_known_guard",{
      label=>$label,
@@ -7717,6 +7825,7 @@ sub committed_final_all_level_verify {
    );
    my $stored_best_blocks=0;
    $stored_best_blocks=1 if(
+    !$low_shadow_touch_still_outlier &&
     !$good_105_best_blocks &&
     defined($stored_best_score)
     && $candidate_score > $stored_best_score+0.05
@@ -7724,7 +7833,7 @@ sub committed_final_all_level_verify {
    );
    my $restore_arrays=clone_arrays($best_arrays);
    my $restore_entry=$good_105_best_blocks ? $prior_good_105_best : ($stored_best_blocks ? $stored_best : undef);
-   my $restore_reason=$good_105_best_blocks ? "good_105_best_known_better" : ($stored_best_blocks ? "stored_best_known_better" : "candidate_not_improved");
+   my $restore_reason=$low_shadow_touch_still_outlier ? "low_shadow_touch_still_outlier" : ($good_105_best_blocks ? "good_105_best_known_better" : ($stored_best_blocks ? "stored_best_known_better" : "candidate_not_improved"));
    if(ref($restore_entry) eq "HASH") {
     my $stored_arrays=lg_autocal_26_arrays_with_best_known_values($candidate_arrays,$target,$restore_entry);
     $restore_arrays=$stored_arrays if(ref($stored_arrays) eq "HASH");
