@@ -1810,6 +1810,36 @@ sub lg_autocal_26_best_known_for_step {
 	 return (ref($entry) eq "HASH") ? $entry : undef;
 	}
 
+sub lg_autocal_26_is_105_step {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return (abs($ire-105) < 0.001) ? 1 : 0;
+}
+
+sub lg_autocal_26_good_105_best_known_limit {
+ my ($target_delta)=@_;
+ my $limit=defined($target_delta) ? (($target_delta+0)+0.40) : 0.90;
+ $limit=0.90 if($limit > 0.90);
+ $limit=0.60 if($limit < 0.60);
+ return $limit;
+}
+
+sub lg_autocal_26_good_105_best_known {
+ my ($step,$entry,$target_delta)=@_;
+ return 0 if(!lg_autocal_26_is_105_step($step));
+ return 0 if(ref($entry) ne "HASH" || !defined($entry->{"delta_e"}));
+ return (($entry->{"delta_e"}+0) <= lg_autocal_26_good_105_best_known_limit($target_delta)+0.0001) ? 1 : 0;
+}
+
+sub lg_autocal_26_candidate_beats_good_105_best_known {
+ my ($step,$candidate_score,$entry,$target_delta)=@_;
+ return 1 if(!lg_autocal_26_good_105_best_known($step,$entry,$target_delta));
+ return 0 if(!defined($candidate_score));
+ my $best_score=defined($entry->{"score"}) ? ($entry->{"score"}+0) : lg_autocal_26_measurement_score($step,$entry->{"delta_e"},$entry->{"luminance_error_pct"});
+ return (($candidate_score+0) + 0.03 < $best_score) ? 1 : 0;
+}
+
 sub remember_lg_autocal_26_response_axis {
 	 my ($bucket,$group,$axis,$slope,$delta,$before_error,$after_error,$source)=@_;
 	 return undef if(ref($bucket) ne "HASH" || !defined($group) || !defined($axis));
@@ -6380,6 +6410,25 @@ sub committed_top_window_score_passed {
  return (($score->{"over"}||0) == 0 && ($score->{"worst"}||9999) <= 1.0) ? 1 : 0;
 }
 
+sub committed_top_window_good_105_point {
+ my ($window,$target_delta)=@_;
+ return undef if(ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
+ my $point=$window->{"points"}{105};
+ return undef if(ref($point) ne "HASH" || !defined($point->{"de"}));
+ return undef if(($point->{"de"}+0) > lg_autocal_26_good_105_best_known_limit($target_delta)+0.0001);
+ return $point;
+}
+
+sub committed_top_window_105_best_blocks_final {
+ my ($best_window,$final_window,$target_delta)=@_;
+ my $best=committed_top_window_good_105_point($best_window,$target_delta);
+ return 0 if(ref($best) ne "HASH");
+ return 0 if(ref($final_window) ne "HASH" || ref($final_window->{"points"}) ne "HASH");
+ my $final=$final_window->{"points"}{105};
+ return 0 if(ref($final) ne "HASH" || !defined($final->{"de"}));
+ return (($final->{"de"}+0) > ($best->{"de"}+0)+0.03) ? 1 : 0;
+}
+
 sub committed_top_window_candidate_allowed {
  my ($candidate,$best)=@_;
  return 0 if(ref($candidate) ne "HASH" || ref($best) ne "HASH");
@@ -6939,6 +6988,7 @@ sub committed_top_window_polish {
 	   if(ref($final_window) eq "HASH") {
 	    my $final_score=committed_top_window_score($final_window);
 	    remember_lg_autocal_26_window_best_known($config,$state,\%steps_by_ire,$final_window,$arrays,"committed_top_window_post_cal_final");
+	    my $good_105_best_blocks_final=committed_top_window_105_best_blocks_final($best_window,$final_window,undef);
 	    if(!committed_top_window_candidate_allowed($final_score,$best_score) && ($final_score->{"score"}||9999) > (($best_score->{"score"}||9999)+0.03)) {
 	     trace_109($steps_by_ire{99},"committed_top_window_post_cal_drift",{
 	     final_score=>$final_score->{"score"}+0,
@@ -6950,8 +7000,22 @@ sub committed_top_window_polish {
 	     accepted_total=>$accepted_total+0
 	    });
 	   }
-	   $best_window=$final_window;
-	   $best_score=$final_score;
+	   if($good_105_best_blocks_final) {
+	    my $best_105=(ref($best_window->{"points"}) eq "HASH") ? $best_window->{"points"}{105} : undef;
+	    my $final_105=(ref($final_window->{"points"}) eq "HASH") ? $final_window->{"points"}{105} : undef;
+	    trace_109($steps_by_ire{105},"committed_top_window_105_best_known_guard",{
+	     reason=>"post_cal_final_did_not_beat_good_105_best_known",
+	     best_delta_e=>(ref($best_105) eq "HASH" && defined($best_105->{"de"})) ? ($best_105->{"de"}+0) : undef,
+	     best_luminance_error_pct=>(ref($best_105) eq "HASH" && defined($best_105->{"luminance_error_pct"})) ? ($best_105->{"luminance_error_pct"}+0) : undef,
+	     final_delta_e=>(ref($final_105) eq "HASH" && defined($final_105->{"de"})) ? ($final_105->{"de"}+0) : undef,
+	     final_luminance_error_pct=>(ref($final_105) eq "HASH" && defined($final_105->{"luminance_error_pct"})) ? ($final_105->{"luminance_error_pct"}+0) : undef,
+	     best_score=>$best_score->{"score"}+0,
+	     final_score=>$final_score->{"score"}+0
+	    });
+	   } else {
+	    $best_window=$final_window;
+	    $best_score=$final_score;
+	   }
 	  }
 	 }
 	 ($picture,$arrays,undef)=$finish_top_window->(undef);
@@ -7406,6 +7470,7 @@ sub committed_final_all_level_verify {
  my $read_count=0;
  my ($touch_count,$keep_count,$restore_count)=(0,0,0);
  my %current_pass_best_known;
+ my %prior_good_105_best_known;
  my $verify_total=scalar(@ordered);
  trace_109($ordered[0],"final_all_level_verify_start",{
   order=>[final_all_level_verify_order()],
@@ -7446,6 +7511,14 @@ sub committed_final_all_level_verify {
   next if(ref($reading) ne "HASH" || ref($read_step) ne "HASH");
   $read_count++;
   my $current_best_key=lg_autocal_26_best_known_key($read_step);
+  my $prior_best_entry=lg_autocal_26_best_known_for_step($state,$read_step);
+  if(
+   defined($current_best_key) &&
+   lg_autocal_26_good_105_best_known($read_step,$prior_best_entry,$target_delta) &&
+   lg_autocal_26_best_known_values_available($prior_best_entry,$target,$arrays)
+  ) {
+   $prior_good_105_best_known{$current_best_key}=$prior_best_entry;
+  }
   my $current_best_entry=lg_autocal_26_best_known_entry($read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"final_all_level_verify_read");
   $current_pass_best_known{$current_best_key}=$current_best_entry if(defined($current_best_key) && ref($current_best_entry) eq "HASH");
   remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"final_all_level_verify_read");
@@ -7492,6 +7565,7 @@ sub committed_final_all_level_verify {
   my $best_score=lg_autocal_26_measurement_score($read_step,$de,$lum_pct);
   my $stored_best_key=lg_autocal_26_best_known_key($read_step);
   my $stored_best=defined($stored_best_key) ? $current_pass_best_known{$stored_best_key} : undef;
+  my $prior_good_105_best=defined($stored_best_key) ? $prior_good_105_best_known{$stored_best_key} : undef;
   my $stored_best_score=(ref($stored_best) eq "HASH" && defined($stored_best->{"score"})) ? ($stored_best->{"score"}+0) : undef;
   my %tried_values;
   mark_tried_values(\%tried_values,$arrays,$target,$de);
@@ -7557,7 +7631,14 @@ sub committed_final_all_level_verify {
    mark_tried_values(\%tried_values,$candidate_arrays,$target,$candidate_de);
    my $candidate_score=lg_autocal_26_measurement_score($read_step,$candidate_de,$candidate_lum_pct);
    my $improved=defined($candidate_de) && $candidate_score + 0.0001 < $best_score;
-   if($improved) {
+   my $good_105_best_blocks=0;
+   $good_105_best_blocks=1 if(
+    $improved &&
+    ref($prior_good_105_best) eq "HASH" &&
+    !lg_autocal_26_candidate_beats_good_105_best_known($read_step,$candidate_score,$prior_good_105_best,$target_delta) &&
+    lg_autocal_26_best_known_values_available($prior_good_105_best,$target,$candidate_arrays)
+   );
+   if($improved && !$good_105_best_blocks) {
     $arrays=clone_arrays($candidate_arrays);
     $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($candidate_calibrated_slot_mask);
     promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
@@ -7610,6 +7691,23 @@ sub committed_final_all_level_verify {
     write_state($state);
     next;
    }
+   if($good_105_best_blocks) {
+    trace_109($read_step,"final_all_level_verify_105_best_known_guard",{
+     label=>$label,
+     reason=>"touch_did_not_beat_good_105_best_known",
+     iteration=>$iter+0,
+     candidate_delta_e=>defined($candidate_de)?$candidate_de+0:undef,
+     candidate_luminance_error_pct=>defined($candidate_lum_pct)?$candidate_lum_pct+0:undef,
+     candidate_score=>defined($candidate_score)?$candidate_score+0:undef,
+     best_known_delta_e=>(ref($prior_good_105_best) eq "HASH" && defined($prior_good_105_best->{"delta_e"})) ? ($prior_good_105_best->{"delta_e"}+0) : undef,
+     best_known_luminance_error_pct=>(ref($prior_good_105_best) eq "HASH" && defined($prior_good_105_best->{"luminance_error_pct"})) ? ($prior_good_105_best->{"luminance_error_pct"}+0) : undef,
+     best_known_score=>(ref($prior_good_105_best) eq "HASH" && defined($prior_good_105_best->{"score"})) ? ($prior_good_105_best->{"score"}+0) : undef,
+     best_known_reason=>(ref($prior_good_105_best) eq "HASH") ? $prior_good_105_best->{"reason"} : undef,
+     values_before=>$values_before,
+     candidate_values=>trace_target_values($candidate_arrays,$target),
+     restored_values=>(ref($prior_good_105_best) eq "HASH") ? $prior_good_105_best->{"ddc_values"} : undef
+    });
+   }
    my $bad_luma_probe=record_bad_luma_probe_family(
     \%tried_values,$target,$adjustments,
     $before_de_for_verify,$candidate_de,
@@ -7619,15 +7717,23 @@ sub committed_final_all_level_verify {
    );
    my $stored_best_blocks=0;
    $stored_best_blocks=1 if(
+    !$good_105_best_blocks &&
     defined($stored_best_score)
     && $candidate_score > $stored_best_score+0.05
     && lg_autocal_26_best_known_values_available($stored_best,$target,$candidate_arrays)
    );
    my $restore_arrays=clone_arrays($best_arrays);
-   my $restore_reason=$stored_best_blocks ? "stored_best_known_better" : "candidate_not_improved";
-   if($stored_best_blocks) {
-    my $stored_arrays=lg_autocal_26_arrays_with_best_known_values($candidate_arrays,$target,$stored_best);
+   my $restore_entry=$good_105_best_blocks ? $prior_good_105_best : ($stored_best_blocks ? $stored_best : undef);
+   my $restore_reason=$good_105_best_blocks ? "good_105_best_known_better" : ($stored_best_blocks ? "stored_best_known_better" : "candidate_not_improved");
+   if(ref($restore_entry) eq "HASH") {
+    my $stored_arrays=lg_autocal_26_arrays_with_best_known_values($candidate_arrays,$target,$restore_entry);
     $restore_arrays=$stored_arrays if(ref($stored_arrays) eq "HASH");
+   }
+   if($good_105_best_blocks && ref($prior_good_105_best) eq "HASH") {
+    $best_arrays=clone_arrays($restore_arrays);
+    $best_de=$prior_good_105_best->{"delta_e"}+0 if(defined($prior_good_105_best->{"delta_e"}));
+    $best_lum_pct=$prior_good_105_best->{"luminance_error_pct"}+0 if(defined($prior_good_105_best->{"luminance_error_pct"}));
+    $best_score=$prior_good_105_best->{"score"}+0 if(defined($prior_good_105_best->{"score"}));
    }
    refresh_propagated_uncalibrated_26pt_slots($config,$restore_arrays,$current_calibrated_slot_mask);
    $state->{"phase"}="writing";
@@ -7662,6 +7768,9 @@ sub committed_final_all_level_verify {
     best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
     stored_best_delta_e=>(ref($stored_best) eq "HASH" && defined($stored_best->{"delta_e"})) ? ($stored_best->{"delta_e"}+0) : undef,
     stored_best_luminance_error_pct=>(ref($stored_best) eq "HASH" && defined($stored_best->{"luminance_error_pct"})) ? ($stored_best->{"luminance_error_pct"}+0) : undef,
+    good_105_best_known_guard=>$good_105_best_blocks?JSON::PP::true:JSON::PP::false,
+    good_105_best_delta_e=>(ref($prior_good_105_best) eq "HASH" && defined($prior_good_105_best->{"delta_e"})) ? ($prior_good_105_best->{"delta_e"}+0) : undef,
+    good_105_best_luminance_error_pct=>(ref($prior_good_105_best) eq "HASH" && defined($prior_good_105_best->{"luminance_error_pct"})) ? ($prior_good_105_best->{"luminance_error_pct"}+0) : undef,
     target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
     bad_luma_probe=>$bad_luma_probe,
     values_before=>$values_before,
