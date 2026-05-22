@@ -684,6 +684,11 @@ sub autocal_config_is_touchup {
  return (ref($config) eq "HASH" && $config->{"full_autocal_touchup"}) ? 1 : 0;
 }
 
+sub autocal_config_is_post_3d_polish {
+ my ($config)=@_;
+ return (ref($config) eq "HASH" && $config->{"full_autocal_post_3d_polish"}) ? 1 : 0;
+}
+
 sub config_positive_int {
  my ($config,$key,$default,$min,$max)=@_;
  my $value=$default;
@@ -6623,14 +6628,25 @@ sub park_black_for_settle {
 }
 
 sub post_commit_polish_enabled {
-	 my ($config)=@_;
-	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
-	 return 1 if(!exists($config->{"post_commit_polish"}));
-	 return $config->{"post_commit_polish"} ? 1 : 0;
-}
+		 my ($config)=@_;
+		 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+		 return 1 if(!exists($config->{"post_commit_polish"}));
+		 return $config->{"post_commit_polish"} ? 1 : 0;
+	}
+
+sub post_commit_verify_enabled {
+		 my ($config)=@_;
+		 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+		 return 0 if(exists($config->{"post_commit_verify"}) && !$config->{"post_commit_verify"});
+		 return 1 if(exists($config->{"post_commit_verify"}) && $config->{"post_commit_verify"});
+		 foreach my $key (qw(post_commit_body_verify post_commit_final_all_level_verify post_commit_final_top_window)) {
+		  return 1 if(exists($config->{$key}) && $config->{$key});
+		 }
+		 return 0;
+	}
 
 sub committed_top_window_score {
-	 my ($window)=@_;
+		 my ($window)=@_;
 	 return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(ref($window) ne "HASH" || ref($window->{"points"}) ne "HASH");
  my @ires=grep { ref($window->{"points"}{$_}) eq "HASH" && defined($window->{"points"}{$_}{"de"}) } (109,105,99,100,95);
  return { score=>9999, worst=>9999, avg=>9999, over=>9999 } if(!@ires);
@@ -7115,16 +7131,21 @@ sub committed_top_window_polish {
 	 my $tested_total=0;
 	 my $accepted_total=0;
 	 my %bad_luma_candidates;
-	 $state->{"current_name"}="Committed top window";
-	 $state->{"phase"}="writing";
-	 $state->{"message"}="Starting fresh LG calibration mode for committed top-window writes";
-	 write_state($state);
-	 my $start_error=start_calibration_mode($picture_mode,$state,"Committed top-window calibration mode enabled");
-	 return ($picture,$arrays,$start_error) if($start_error);
-	 my $top_window_calibration_mode_active=1;
-	 my $finish_top_window=sub {
-	  my ($error)=@_;
-	  if($top_window_calibration_mode_active) {
+		 $state->{"current_name"}="Committed top window";
+		 $state->{"phase"}="writing";
+		 $state->{"message"}="Committed top-window writes will use fresh LG calibration mode";
+		 write_state($state);
+		 my $top_window_calibration_mode_active=0;
+		 my $ensure_top_window_write_mode=sub {
+		  return undef if($top_window_calibration_mode_active);
+		  my $start_error=start_calibration_mode($picture_mode,$state,"Committed top-window calibration mode enabled");
+		  return $start_error if($start_error);
+		  $top_window_calibration_mode_active=1;
+		  return undef;
+		 };
+		 my $finish_top_window=sub {
+		  my ($error)=@_;
+		  if($top_window_calibration_mode_active) {
 	   end_calibration_mode($picture_mode);
 	   set_state_calibration_mode($state,0,"");
 	   $top_window_calibration_mode_active=0;
@@ -7150,14 +7171,21 @@ sub committed_top_window_polish {
 	   refresh_propagated_uncalibrated_26pt_slots($config,$candidate_arrays,$candidate_calibrated_slot_mask);
 	   $state->{"current_name"}="Committed top window";
 	   $state->{"phase"}="writing";
-	   $state->{"message"}="Testing top-window ".($candidate->{"label"}||"candidate")." ($tested_total/$limit)";
-	   write_state($state);
-	   my $write_error;
-   ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$anchor,$picture_mode,1,$state,1,1);
-	   return $finish_top_window->($write_error) if($write_error);
-	   sync_state_picture($state,$picture,$picture_mode);
-	   select(undef,undef,undef,0.6);
-	   my ($candidate_window,$candidate_error)=committed_top_window_read($config,$state,\%steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$candidate->{"label"}||"candidate");
+		   $state->{"message"}="Testing top-window ".($candidate->{"label"}||"candidate")." ($tested_total/$limit)";
+		   write_state($state);
+		   my $write_error;
+		   $write_error=$ensure_top_window_write_mode->();
+		   return $finish_top_window->($write_error) if($write_error);
+	   ($picture,$write_error)=set_picture_values($picture,$candidate_arrays,$anchor,$picture_mode,1,$state,1,1);
+		   return $finish_top_window->($write_error) if($write_error);
+		   sync_state_picture($state,$picture,$picture_mode);
+		   if($top_window_calibration_mode_active) {
+		    end_calibration_mode($picture_mode);
+		    set_state_calibration_mode($state,0,"");
+		    $top_window_calibration_mode_active=0;
+		   }
+		   select(undef,undef,undef,0.6);
+		   my ($candidate_window,$candidate_error)=committed_top_window_read($config,$state,\%steps_by_ire,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$candidate->{"label"}||"candidate");
 	   return $finish_top_window->($candidate_error) if($candidate_error && $candidate_error ne "cancelled");
 	   last if($candidate_error && $candidate_error eq "cancelled");
 	   my $candidate_score=committed_top_window_score($candidate_window);
@@ -7213,12 +7241,14 @@ sub committed_top_window_polish {
 	    $state->{"phase"}="writing";
 	    $state->{"message"}="Restoring top-window best";
 	    write_state($state);
-	    my $restore_error;
-	    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
-	    refresh_propagated_uncalibrated_26pt_slots($config,$best_arrays,$current_calibrated_slot_mask);
-	    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
-    ($picture,$restore_error)=set_picture_values($picture,$best_arrays,$anchor,$picture_mode,1,$state,1,1);
-	    return $finish_top_window->($restore_error) if($restore_error);
+		    my $restore_error;
+		    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
+		    refresh_propagated_uncalibrated_26pt_slots($config,$best_arrays,$current_calibrated_slot_mask);
+		    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+		    $restore_error=$ensure_top_window_write_mode->();
+		    return $finish_top_window->($restore_error) if($restore_error);
+	    ($picture,$restore_error)=set_picture_values($picture,$best_arrays,$anchor,$picture_mode,1,$state,1,1);
+		    return $finish_top_window->($restore_error) if($restore_error);
 	    sync_state_picture($state,$picture,$picture_mode);
 	    trace_109($steps_by_ire{99},"committed_top_window_restored",{
 	     label=>$candidate->{"label"},
@@ -7236,9 +7266,11 @@ sub committed_top_window_polish {
 	  $arrays=clone_arrays($best_arrays);
 	  $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
 	  refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
-	  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
-	  my $restore_error;
-	  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
+		  promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+		  my $restore_error;
+		  $restore_error=$ensure_top_window_write_mode->();
+		  return $finish_top_window->($restore_error) if($restore_error);
+		  ($picture,$restore_error)=set_picture_values($picture,$arrays,$anchor,$picture_mode,1,$state,1,1);
 	  return $finish_top_window->($restore_error) if($restore_error);
 	  sync_state_picture($state,$picture,$picture_mode);
 	  if($top_window_calibration_mode_active) {
@@ -8165,9 +8197,11 @@ sub committed_final_all_level_verify {
 }
 
 sub committed_state_polish {
- my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$polish_steps,$calibrated_slot_mask)=@_;
- return ($picture,undef) if(!post_commit_polish_enabled($config));
- return ($picture,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
+	 my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$polish_steps,$calibrated_slot_mask)=@_;
+	 my $polish_enabled=post_commit_polish_enabled($config);
+	 my $verify_enabled=post_commit_verify_enabled($config);
+	 return ($picture,undef) if(!$polish_enabled && !$verify_enabled);
+	 return ($picture,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
  my $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($calibrated_slot_mask);
  my ($white_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
  park_black_for_settle($config,$state);
@@ -8197,23 +8231,29 @@ sub committed_state_polish {
 	  ? ($config->{"post_commit_body_polish"} ? 1 : 0)
 	  : (autocal_config_is_touchup($config) ? 0 : 1);
 	 my $include_shadow=!(ref($config) eq "HASH" && exists($config->{"post_commit_true_low_shadow"}) && !$config->{"post_commit_true_low_shadow"});
-	 my @polish=$include_body ? (@headroom,@legal_white,@body) : (@headroom,@legal_white);
-	 push @polish,@shadow if($include_shadow);
-		 my $limit=defined($config->{"post_commit_polish_iterations"}) ? int($config->{"post_commit_polish_iterations"}) : 8;
+		 my @polish=$include_body ? (@headroom,@legal_white,@body) : (@headroom,@legal_white);
+		 push @polish,@shadow if($include_shadow);
+		 @polish=() if(!$polish_enabled);
+			 my $limit=defined($config->{"post_commit_polish_iterations"}) ? int($config->{"post_commit_polish_iterations"}) : 8;
 		 $limit=1 if($limit < 1);
 		 $limit=12 if($limit > 12);
 	 my $polish_total=scalar(@polish);
-	 my ($polish_index,$polish_touches,$polish_kept,$polish_restored)=(0,0,0,0);
-	 $state->{"current_name"}="Committed polish";
-	 $state->{"phase"}="writing";
-	 $state->{"message"}="Starting fresh LG calibration mode for committed polish writes";
-	 $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>0, touches=>0, kept=>0, restored=>0 };
-	 write_state($state);
- my $start_error=start_calibration_mode($picture_mode,$state,"Committed polish calibration mode enabled");
- return ($picture,$start_error) if($start_error);
- my $polish_calibration_mode_active=1;
- my $finish_polish=sub {
-  my ($error)=@_;
+		 my ($polish_index,$polish_touches,$polish_kept,$polish_restored)=(0,0,0,0);
+		 $state->{"current_name"}="Committed polish";
+		 $state->{"phase"}="writing";
+		 $state->{"message"}="Committed polish writes will use fresh LG calibration mode";
+		 $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>0, touches=>0, kept=>0, restored=>0 };
+		 write_state($state);
+	 my $polish_calibration_mode_active=0;
+	 my $ensure_polish_write_mode=sub {
+	  return undef if($polish_calibration_mode_active);
+	  my $start_error=start_calibration_mode($picture_mode,$state,"Committed polish calibration mode enabled");
+	  return $start_error if($start_error);
+	  $polish_calibration_mode_active=1;
+	  return undef;
+	 };
+	 my $finish_polish=sub {
+	  my ($error)=@_;
   if($polish_calibration_mode_active) {
    end_calibration_mode($picture_mode);
    set_state_calibration_mode($state,0,"");
@@ -8384,15 +8424,22 @@ sub committed_state_polish {
 	    adjustments=>trace_adjustments_summary($adjustments),
 	    values_after=>trace_target_values($arrays,$target)
 		   });
-		   write_state($state);
-	   my $write_error;
-	   $polish_touches++;
-	   $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
-	   ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,1);
-	   return $finish_polish->($write_error) if($write_error);
-	   sync_state_picture($state,$picture,$picture_mode);
-	   $state->{"phase"}="reading";
-	   $state->{"message"}="Reading committed $label polish ($iter/$step_limit)";
+	   write_state($state);
+		   my $write_error;
+		   $polish_touches++;
+		   $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
+		   $write_error=$ensure_polish_write_mode->();
+		   return $finish_polish->($write_error) if($write_error);
+		   ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,1);
+		   return $finish_polish->($write_error) if($write_error);
+		   sync_state_picture($state,$picture,$picture_mode);
+		   if($polish_calibration_mode_active) {
+		    end_calibration_mode($picture_mode);
+		    set_state_calibration_mode($state,0,"");
+		    $polish_calibration_mode_active=0;
+		   }
+		   $state->{"phase"}="reading";
+		   $state->{"message"}="Reading committed $label polish ($iter/$step_limit)";
    write_state($state);
    ($reading,$read_error)=read_step($config,$read_step,$state);
    return $finish_polish->($read_error) if($read_error && $read_error ne "cancelled");
@@ -8492,13 +8539,20 @@ sub committed_state_polish {
 	    $current_calibrated_slot_mask=clone_calibrated_26pt_slot_mask($best_calibrated_slot_mask);
     $state->{"phase"}="writing";
     $state->{"message"}="Restoring committed $label polish";
-    write_state($state);
-    refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
-    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
-    ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,1);
-    return $finish_polish->($write_error) if($write_error);
-    sync_state_picture($state,$picture,$picture_mode);
-	    $reading=clone_picture($best_reading);
+	    write_state($state);
+	    refresh_propagated_uncalibrated_26pt_slots($config,$arrays,$current_calibrated_slot_mask);
+	    promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
+	    $write_error=$ensure_polish_write_mode->();
+	    return $finish_polish->($write_error) if($write_error);
+	    ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,1);
+	    return $finish_polish->($write_error) if($write_error);
+	    sync_state_picture($state,$picture,$picture_mode);
+	    if($polish_calibration_mode_active) {
+	     end_calibration_mode($picture_mode);
+	     set_state_calibration_mode($state,0,"");
+	     $polish_calibration_mode_active=0;
+	    }
+		    $reading=clone_picture($best_reading);
 	    $de=$best_de;
 	    $lum_pct=$best_lum_pct;
 	    $committed_pair_reading=clone_picture($best_pair_reading) if(ref($best_pair_reading) eq "HASH");
@@ -9264,15 +9318,43 @@ eval {
  my $picture_mode=$config->{"picture_mode"}||$picture->{"pictureMode"}||"";
  $active_picture_mode_for_cleanup=$picture_mode;
 	 my $arrays={
-		  whiteBalanceRed => numeric_array($picture->{"whiteBalanceRed"},ddc_slot_count()),
-		  whiteBalanceGreen => numeric_array($picture->{"whiteBalanceGreen"},ddc_slot_count()),
-		  whiteBalanceBlue => numeric_array($picture->{"whiteBalanceBlue"},ddc_slot_count()),
-		  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_slot_count()),
-		 };
-	 my @calibrated_ddc_slots=map { 0 } (1..ddc_slot_count());
-	 my $finalize_calibrated_26pt_slot=sub {
-	  my ($final_target,$final_read_step,$final_label)=@_;
-	  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$final_target);
+			  whiteBalanceRed => numeric_array($picture->{"whiteBalanceRed"},ddc_slot_count()),
+			  whiteBalanceGreen => numeric_array($picture->{"whiteBalanceGreen"},ddc_slot_count()),
+			  whiteBalanceBlue => numeric_array($picture->{"whiteBalanceBlue"},ddc_slot_count()),
+			  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_slot_count()),
+			 };
+		 my @calibrated_ddc_slots=map { 0 } (1..ddc_slot_count());
+		 if(autocal_config_is_post_3d_polish($config)) {
+		  foreach my $step (@{$steps}) {
+		   my $target=ddc_target_for_step($step);
+		   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
+		  }
+		  $state->{"current_name"}="Post-3D committed polish";
+		  $state->{"phase"}="reading";
+		  $state->{"message"}="Polishing committed greyscale state after 3D LUT";
+		  $state->{"post_3d_committed_polish"}=JSON::PP::true;
+		  write_state($state);
+		  my $polish_error=undef;
+		  ($picture,$polish_error)=committed_state_polish(
+		   $config,
+		   $state,
+		   $picture,
+		   $arrays,
+		   $active_picture_mode_for_cleanup || $picture_mode,
+		   $steps,
+		   $target_x,
+		   $target_y,
+		   $target_gamma,
+		   $signal_mode,
+		   $target_delta,
+		   $steps,
+		   \@calibrated_ddc_slots
+		  );
+		  die $polish_error if($polish_error && $polish_error ne "cancelled");
+		 } else {
+		 my $finalize_calibrated_26pt_slot=sub {
+		  my ($final_target,$final_read_step,$final_label)=@_;
+		  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$final_target);
 		  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 			  return 0 if(ref($arrays) ne "HASH" || ref($final_target) ne "HASH");
 			  my @dynamic_seed_slots=ddc_slots();
@@ -11330,10 +11412,11 @@ eval {
 					   } else {
 					    park_black_for_settle($config,$state,"Settling post-CAL_END committed state before completion");
 					   }
-					  }
-					 }
-			 if(cancelled()) {
-	  $state->{"status"}="cancelled";
+						  }
+						 }
+		 }
+				 if(cancelled()) {
+		  $state->{"status"}="cancelled";
 	  $state->{"current_name"}="Auto Cal cancelled";
 	  $state->{"message"}="Auto Cal stopped";
 	 } else {
