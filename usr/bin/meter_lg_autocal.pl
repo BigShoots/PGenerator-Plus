@@ -378,7 +378,7 @@ sub lg_autocal_26_anchor_predrive_enabled {
 }
 
 sub lg_autocal_26_anchor_predrive_anchor_ires {
- return (109,105,99,75,50,25,5);
+ return (109,105,99,75,50,25,5,4,3);
 }
 
 sub lg_autocal_26_anchor_predrive_anchor_count {
@@ -401,6 +401,15 @@ sub apply_lg_autocal_26_standalone_defaults {
  return if($config->{"full_workflow"} || $config->{"full_autocal_touchup"});
  return if(exists($config->{"lg_autocal_26_anchor_predrive"}));
  $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::true;
+}
+
+sub apply_post_commit_verify_gate {
+ my ($config)=@_;
+ return if(ref($config) ne "HASH");
+ return if(!exists($config->{"post_commit_verify"}) || $config->{"post_commit_verify"});
+ foreach my $key (qw(post_commit_body_verify post_commit_final_all_level_verify post_commit_final_top_window post_commit_top_window post_commit_true_low_shadow)) {
+  $config->{$key}=JSON::PP::false;
+ }
 }
 
 sub high_low_stride_steps {
@@ -433,7 +442,7 @@ sub order_autocal_steps {
 		  my @lg_autocal_26_order=(109,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
 		  @lg_autocal_26_order=(109,85,65,45,25,105,99,95,90,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
 		   if(lg_autocal_26_full_ddc_spine_enabled($config));
-		  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,4,3,2.3)
+		  @lg_autocal_26_order=(109,105,99,75,50,25,5,4,3,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,2.3)
 		   if(lg_autocal_26_anchor_predrive_enabled($config));
 		  my %seen_target;
 		  my @ordered;
@@ -3325,7 +3334,7 @@ sub seed_target_from_prior_slot {
 	 }
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 return 0 if(ref($calibrated_slot_mask) ne "ARRAY");
-	 return 0 if(!grep { abs($target_slot_ire-$_) < 0.001 } (75,50,25,5));
+	 return 0 if(!grep { abs($target_slot_ire-$_) < 0.001 } (75,50,25,5,4,3));
 	 return 0 if(ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
 	 my $source_idx;
 	 for(my $probe=$idx+1;$probe<ddc_slot_count();$probe++) {
@@ -4575,6 +4584,14 @@ sub neutral_luminance_adjustments {
 	 return undef;
 }
 
+sub low_shadow_3_4_luma_far_from_target {
+ my ($step,$lum_pct)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || !defined($lum_pct));
+ my $ire=$step->{"ire"}+0;
+ return 0 if($ire <= 2.5001 || $ire > 4.1001);
+ return abs($lum_pct) >= (luminance_tolerance_percent($step)*2.0) ? 1 : 0;
+}
+
 sub low_shadow_luminance_max_step {
 	 my ($luminance_err,$stalls,$step)=@_;
 	 $luminance_err=0 if(!defined($luminance_err));
@@ -4606,6 +4623,7 @@ sub low_shadow_luminance_max_step {
 	   $low_cap=1 if($abs >= 0.20);
 	   $low_cap=2 if($abs >= 0.50);
 	  }
+	  $low_cap=1 if(low_shadow_3_4_luma_far_from_target($step,$luminance_err*100) && $low_cap < 1);
 	 } elsif($ire > 0 && $ire <= 10.1001) {
 	  $low_cap=1;
 	  $low_cap=2 if($abs >= 0.20);
@@ -4921,6 +4939,7 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  return undef if(abs($lum_pct) > $wild_luma_gate);
  my $chroma_mag=chroma_error_magnitude($error);
  return undef if($chroma_mag < 0.035 && (!defined($de) || $de <= ($target_delta+1.0)));
+ my $far_3_4_luma=(!$micro && low_shadow_3_4_luma_far_from_target($step,$lum_pct) && defined($de) && $de > ($target_delta+1.0)) ? 1 : 0;
  my $rgb_cap=1.5;
  $rgb_cap=1.0 if($ire <= 5.1001);
  $rgb_cap=0.5 if($ire <= 4.1001);
@@ -4966,6 +4985,7 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
    my $luma_cap=1.0;
    $luma_cap=0.5 if($ire <= 5.1001);
    $luma_cap=0.25 if($ire <= 4.1001);
+   $luma_cap=0.5 if($far_3_4_luma && $luma_cap < 0.5);
    $luma_cap=0.25 if($micro && $luma_cap > 0.25);
    my $mag=round_ddc_quarter(abs($lum_pct)*0.20);
    $mag=0.25 if($mag < 0.25);
@@ -8171,7 +8191,7 @@ sub committed_state_polish {
 	 my @legal_white=sort {
 	  (($a->{"ire"}+0) == 99 ? 0 : 1) <=> (($b->{"ire"}+0) == 99 ? 0 : 1)
 	 } grep { abs(($_->{"ire"}+0)-99) < 0.001 || abs(($_->{"ire"}+0)-100) < 0.001 } @polish_candidates;
-	 my @shadow=sort { ($a->{"ire"}||0) <=> ($b->{"ire"}||0) } grep { ($_->{"ire"}+0) <= 10.0001 } @polish_candidates;
+	 my @shadow=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { ($_->{"ire"}+0) <= 10.0001 } @polish_candidates;
 	 my @body=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) } grep { ($_->{"ire"}+0) > 10.0001 && ($_->{"ire"}+0) < 99 } @polish_candidates;
 	 my $include_body=(ref($config) eq "HASH" && exists($config->{"post_commit_body_polish"}))
 	  ? ($config->{"post_commit_body_polish"} ? 1 : 0)
@@ -9149,6 +9169,7 @@ sub read_step_once {
 
 my $config=decode_json_safe(read_file($config_file),{});
 apply_lg_autocal_26_standalone_defaults($config);
+apply_post_commit_verify_gate($config);
 $LG_AUTOCAL_CONFIG=$config;
 my $steps=(ref($config->{"steps"}) eq "ARRAY") ? $config->{"steps"} : [];
 unlink($trace_109_file) if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
