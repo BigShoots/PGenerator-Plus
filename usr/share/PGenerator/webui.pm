@@ -6625,7 +6625,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-series-control-layout{display:flex;flex-direction:column;align-items:stretch;margin-bottom:8px;gap:8px}
 .meter-series-selector-panel{display:flex;flex-direction:column;gap:6px;width:100%;min-width:0}
 #meterSeriesBtnRow{width:100%;min-width:0}
-#meterSeriesGroupGreyscale,#meterSeriesGroupColor{min-width:0}
+#meterSeriesGroupGreyscale,#meterSeriesGroupColor,#meterSeriesGroupAutoCal{min-width:0}
 #meterReadBtnRow{width:100%;justify-content:flex-end;min-width:0}
 .btn{padding:7px 14px;border:none;border-radius:6px;font-size:.8rem;cursor:pointer;
 font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap}
@@ -7172,7 +7172,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="btn-row" id="meterSeriesTabRow" style="margin:0">
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
-     <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
+     <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
     </div>
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
      <div id="meterSeriesGroupGreyscale" style="display:flex;gap:4px;flex-wrap:wrap">
@@ -7185,10 +7185,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
-      <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:4px;flex-wrap:wrap;margin-left:4px">
-       <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">3D LUT AutoCal</button>
-      </span>
      </div>
+     <div id="meterSeriesGroupAutoCal" style="display:none;gap:4px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
+      <button class="btn btn-sm btn-secondary" data-autocal-series="greyscale" onclick="meterSelectAutoCalGreyscale()">Greyscale</button>
+      <button class="btn btn-sm btn-secondary" data-autocal-series="3d-lut" onclick="meterSelectAutoCal3dLut()">3D LUT</button>
+     </div>
+     <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:4px;flex-wrap:wrap;margin-left:4px">
+      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">3D LUT AutoCal</button>
+     </span>
     </div>
     <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:#0d0d15;border-radius:6px">
      <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">2pt Levels</div>
@@ -9828,7 +9833,7 @@ let meterAutoCalLevelPreflight=null;
 const METER_FULL_AUTOCAL_STATE_KEY='meterFullAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
 const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
-const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=false;
+const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=true;
 const METER_AUTOCAL_STATE_KEY='meterAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_SERIES=[
  {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale LG 22pt Manual'},
@@ -15059,6 +15064,7 @@ function meterFullAutoCalStageOrder(){
  if(!skipPre) stages.push('precal-report');
  stages.push('first-greyscale','3d-lut');
  if(meterFullAutoCalPostTouchupEnabled()) stages.push('touchup-greyscale');
+ if(meterFullAutoCalPost3dCleanupEnabled()) stages.push('post-3d-polish');
  stages.push('postcal-report','complete');
  return stages;
 }
@@ -15066,10 +15072,11 @@ function meterFullAutoCalStageOrder(){
 function meterFullAutoCalStageLabel(){
  switch(String(meterFullAutoCalPhase||'')){
   case 'precal-report': return 'Pre-Cal measurements';
-  case 'first-greyscale': return 'Greyscale';
-  case '3d-lut': return '3D LUT';
-  case 'touchup-greyscale': return 'Greyscale touch-up';
-  case 'postcal-report': return 'Post-Cal measurements';
+	  case 'first-greyscale': return 'Greyscale';
+	  case '3d-lut': return '3D LUT';
+	  case 'touchup-greyscale': return 'Greyscale touch-up';
+	  case 'post-3d-polish': return 'Committed polish';
+	  case 'postcal-report': return 'Post-Cal measurements';
   case 'complete': return 'Complete';
   default: return 'Greyscale';
  }
@@ -15782,7 +15789,7 @@ function meterUpdateReadButtons(){
   fullAutoCalBtn.disabled=!showFullAutoCal||settingsDirty||busy;
   fullAutoCalBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
- const showLg3d=meterSeriesTab==='color'&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
+ const showLg3d=(meterSeriesTab==='color'||(meterSeriesTab==='autocal'&&isColorSeries))&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
  if(lg3dColorControls) lg3dColorControls.style.display=showLg3d?'flex':'none';
  if(lg3dBtn){
   lg3dBtn.style.display=showLg3d?'':'none';
@@ -15834,6 +15841,14 @@ function meterResetSeriesButtons(){
  });
 }
 
+function meterSetAutoCalSeriesChoice(choice){
+ document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series]').forEach(btn=>{
+  const active=(btn.dataset.autocalSeries||'')===choice;
+  btn.classList.toggle('btn-primary',active);
+  btn.classList.toggle('btn-secondary',!active);
+ });
+}
+
 let meterSeriesTab='greyscale';
 const METER_TWO_POINT_DEFAULTS={low:30,high:100};
 
@@ -15868,6 +15883,10 @@ function meterIsTwoPointGreyscale(){
 
 function meterSeriesTabForType(type){
  return (type==='colors'||type==='saturations')?'color':'greyscale';
+}
+
+function meterNormalizeSeriesTab(tab){
+ return tab==='autocal'?'autocal':(tab==='color'?'color':'greyscale');
 }
 
 function meterTwoPointValues(){
@@ -15933,9 +15952,10 @@ function meterHandleTwoPointLevelChange(){
 }
 
 function meterUpdateSeriesTabUi(){
- const tab=(meterSeriesTab==='color')?'color':'greyscale';
+ const tab=meterNormalizeSeriesTab(meterSeriesTab);
  const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
  const colorGroup=document.getElementById('meterSeriesGroupColor');
+ const autoCalGroup=document.getElementById('meterSeriesGroupAutoCal');
 	 const greyBar=document.getElementById('meterGreyProfileBar');
 	 const twoPointControls=document.getElementById('meterTwoPointControls');
 	 const twoPointActive=meterIsTwoPointGreyscale();
@@ -15948,6 +15968,7 @@ function meterUpdateSeriesTabUi(){
  meterUpdateSeriesLabels();
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
+ if(autoCalGroup) autoCalGroup.style.display=tab==='autocal'?'flex':'none';
  meterGreySyncUi();
 	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active)?'flex':'none';
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
@@ -15960,13 +15981,28 @@ function meterDefaultSeriesButtonForTab(tab){
 }
 
 function meterSetSeriesTab(tab,skipAutoSelect){
- meterSeriesTab=(tab==='color')?'color':'greyscale';
+ meterSeriesTab=meterNormalizeSeriesTab(tab);
  meterUpdateSeriesTabUi();
  if(skipAutoSelect) return;
+ if(meterSeriesTab==='autocal') return;
  if(meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
  if(match) meterSelectSeries(match[1],parseInt(match[2],10));
+}
+
+function meterSelectAutoCalGreyscale(){
+ meterSeriesTab='autocal';
+ meterSetAutoCalSeriesChoice('greyscale');
+ meterUpdateSeriesTabUi();
+ meterSelectSeries('greyscale',26,{preserveTab:true});
+}
+
+function meterSelectAutoCal3dLut(){
+ meterSeriesTab='autocal';
+ meterSetAutoCalSeriesChoice('3d-lut');
+ meterUpdateSeriesTabUi();
+ meterSelectSeries('colors',30,{preserveTab:true});
 }
 
 function meterUpdateGreyscaleChartMode(){
@@ -16511,11 +16547,12 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  return [headroom,...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
-function meterSelectSeries(type,points){
+function meterSelectSeries(type,points,opts){
+ opts=opts||{};
  if(meterActionPending) return;
  if(type==='greyscale' && points===256) points=100;
  const key=type+'-'+points;
- meterSetSeriesTab(meterSeriesTabForType(type),true);
+ if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
  if(meterSeriesRunning){
   if(meterActiveSeriesKey===key){
    toast('Series scan is running — stop it before reloading this chart',true);
@@ -16564,12 +16601,15 @@ function meterSelectSeries(type,points){
  meterActiveSeriesPoints=points;
  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
  meterLastChartCount=0;
- meterSetSeriesTab(meterSeriesTabForType(type),true);
+ if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
  // Highlight the clicked button
  meterResetSeriesButtons();
  meterActiveSeriesKey=key;
  const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+key+'"]');
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ if(opts.preserveTab&&meterSeriesTab==='autocal'){
+  meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
+ }
  // Build steps
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
@@ -18950,7 +18990,7 @@ function meterFullAutoCalDefaultConfig(){
   meticulousModeEnabled:true,
   postCommitPolishEnabled:true,
   postCommitVerifyEnabled:true,
-  postCalTouchupEnabled:true
+  postCalTouchupEnabled:false
  };
 }
 
@@ -18972,7 +19012,11 @@ function meterFullAutoCalPostTouchupEnabled(){
  if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'postCalTouchupEnabled')){
   return meterFullAutoCalConfig.postCalTouchupEnabled!==false;
  }
- return true;
+ return false;
+}
+
+function meterFullAutoCalPost3dCleanupEnabled(){
+ return !meterFullAutoCalPostTouchupEnabled()&&(meterFullAutoCalPostCommitPolishEnabled()||meterFullAutoCalPostCommitVerifyEnabled());
 }
 
 function meterFullAutoCalMeticulousEnabled(){
@@ -19653,6 +19697,139 @@ function meterFullAutoCalTouchupTargetY(){
  return meterAutoCalTargetYValue();
 }
 
+async function meterFullAutoCalStartPost3dPolish(lutStatus){
+ if(!meterFullAutoCalRunning) return false;
+ const post3dPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
+ const post3dPostCommitVerifyEnabled=meterFullAutoCalPostCommitVerifyEnabled();
+ if(!post3dPostCommitPolishEnabled&&!post3dPostCommitVerifyEnabled) return false;
+ meterFullAutoCalResults.lut3d=lutStatus||null;
+ const lutRunId=lutStatus&&(lutStatus.full_autocal_run_id||lutStatus.run_id);
+ if(lutRunId) meterFullAutoCalRunId=lutRunId;
+ if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
+ meterFullAutoCalMarkCompletionHandled(lutStatus);
+ meterFullAutoCalPhase='post-3d-polish';
+ meterFullAutoCalSaveState();
+ meterLg3dAutoCalRunning=false;
+ meterAutoCalRunning=true;
+ meterAutoCalPhase='running';
+ meterActionPending=true;
+ meterAutoCalSetOverlay(true,{phase:'running',current_name:'Full Auto Cal: committed polish',message:'3D LUT complete. Reading committed greyscale state.',total_steps:26,current_step:0});
+ meterUpdateReadButtons();
+ try{
+  if(!(await meterEnsureDetected())) throw new Error('No meter detected');
+  if(!(await meterEnsureLgAutoCalTransport('Full Auto Cal committed polish'))) throw new Error('LG Auto Cal transport is not ready');
+  if(!meterEnsureLgAutoCalExtendedVideoTransport()) throw new Error('LG Auto Cal transport is not ready');
+  if(!meterEnsureAppliedGeneratorSettings()) throw new Error('Apply & Restart first so measurements match the live signal mode');
+  meterActiveSeriesType='greyscale';
+  meterActiveSeriesPoints=26;
+  meterActiveSeriesKey='greyscale-26';
+  meterSetSeriesTab('greyscale',true);
+  meterResetSeriesButtons();
+  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
+  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
+  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
+  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported);
+  if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
+  const whiteStep=meterAutoCalWhiteStep();
+  if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
+  const target=meterFullAutoCalTouchupTargetDelta();
+  const targetY=meterFullAutoCalTouchupTargetY();
+  const deltaEFormula='deitp';
+  const setupY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.setupY);
+  const headroomY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY);
+  const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
+  const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
+  const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
+  const whiteKey=meterStepNameKey(whiteStep);
+  const autocalSteps=[whiteStep,...(meterSeriesSteps||[]).filter(step=>meterStepNameKey(step)!==whiteKey)];
+  meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
+  meterReadings=[];
+  meterWhiteReading=null;
+  meterCurrentPatchStep=null;
+  meterSelectedThumbIre=null;
+  document.getElementById('meterExportRow').style.display='';
+  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Starting committed polish'},{workflow:'full',label:'Starting committed polish'});
+  const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
+  meterBuildPatchThumbs(sortedSteps,new Set(),null);
+  drawAllChartsPreset(sortedSteps);
+  await meterStopContinuous();
+  const post3dBody=JSON.stringify(meterMeasurementSignalContext({
+    type:'greyscale',
+    points:26,
+    display_type:dtype,
+    delay_ms:meterDelayMs(),
+    patch_size:getMeterPatchSize(),
+    signal_range:getVal('rgb_quant_range'),
+    pattern_signal_range:patternSignalRange||undefined,
+    lg_greyscale_21:false,
+    lg_autocal_26:true,
+    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
+    patch_insert:document.getElementById('meterPatchInsert').checked,
+    target_delta_e:target,
+    delta_e_formula:deltaEFormula,
+    target_luminance:targetY,
+    setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
+    headroom_target_luminance:(Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
+    target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+    target_white:{x:wp.x,y:wp.y},
+    picture_mode:meterLgPictureModeValue(),
+    ...meterLgAutoCalBodyLumaBiasPayload(dtype),
+    force_ddc_white_balance:true,
+    restore_factory_levels:false,
+    reset_ddc_baseline:false,
+    refresh_rate:getMeterRefreshRate()||undefined,
+    require_device_ready:meterSelectedMeasurementRequiresReady(),
+    post_commit_body_polish:post3dPostCommitPolishEnabled?true:false,
+    post_commit_polish:post3dPostCommitPolishEnabled,
+    post_commit_verify:post3dPostCommitVerifyEnabled,
+    post_commit_top_window:post3dPostCommitPolishEnabled?undefined:false,
+    post_commit_body_verify:post3dPostCommitVerifyEnabled,
+    post_commit_final_all_level_verify:post3dPostCommitVerifyEnabled,
+    post_commit_final_top_window:post3dPostCommitVerifyEnabled,
+    post_commit_polish_iterations:post3dPostCommitPolishEnabled?3:undefined,
+    post_commit_low_shadow_iterations:post3dPostCommitPolishEnabled?2:undefined,
+    post_commit_true_low_shadow:post3dPostCommitPolishEnabled?true:undefined,
+    post_commit_low_shadow_committed_iterations:post3dPostCommitPolishEnabled?3:undefined,
+    post_commit_settle_ms:post3dPostCommitPolishEnabled?12000:undefined,
+    post_commit_white_resettle_ms:post3dPostCommitPolishEnabled?8000:undefined,
+    post_commit_low_shadow_settle_ms:post3dPostCommitPolishEnabled?2500:undefined,
+    post_commit_low_shadow_read_settle_ms:post3dPostCommitPolishEnabled?1200:undefined,
+    full_autocal_post_3d_polish:true,
+    full_workflow:true,
+    full_autocal_run_id:meterFullAutoCalRunId||undefined,
+    full_autocal_phase:'post-3d-polish',
+    steps:autocalSteps
+   }));
+  let r=null;
+  for(let attempt=0;attempt<5;attempt++){
+   r=await fetchJSON('/api/meter/lg-autocal',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:post3dBody,
+    _timeoutMs:10000
+   });
+   if(r&&r.status==='started') break;
+   if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
+   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for 3D LUT AutoCal cleanup'},{workflow:'full',label:'Waiting for 3D LUT AutoCal cleanup'});
+   await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
+  }
+  if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start committed polish');
+  meterActionPending=false;
+  toast('Full Auto Cal committed polish started');
+  meterAutoCalSetOverlay(false,{phase:'running',current_name:'Committed polish started',message:'Showing live charts'});
+  if(meterAutoCalPolling) clearInterval(meterAutoCalPolling);
+  meterAutoCalPolling=setInterval(meterPollAutoCal,1500);
+  await meterPollAutoCal();
+  return true;
+ }catch(e){
+  meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal committed polish failed',true);
+  return false;
+ }finally{
+  meterUpdateReadButtons();
+ }
+}
+
 async function meterFullAutoCalStartTouchup(lutStatus){
  if(!meterFullAutoCalRunning) return false;
  meterFullAutoCalResults.lut3d=lutStatus||null;
@@ -19661,6 +19838,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalMarkCompletionHandled(lutStatus);
  if(!meterFullAutoCalPostTouchupEnabled()){
+  if(await meterFullAutoCalStartPost3dPolish(lutStatus)) return true;
   meterLg3dAutoCalRunning=false;
   meterActionPending=false;
   meterFullAutoCalComplete({
@@ -19807,7 +19985,8 @@ async function meterFullAutoCalStartTouchup(lutStatus){
 
 function meterFullAutoCalComplete(touchupStatus,options){
  const skipTouchup=!!(options&&options.skipTouchup);
- if(!skipTouchup) meterFullAutoCalResults.touchup=touchupStatus||null;
+ const post3dPolish=String(touchupStatus&&touchupStatus.full_autocal_phase||'')==='post-3d-polish';
+ if(!skipTouchup||post3dPolish) meterFullAutoCalResults.touchup=touchupStatus||null;
  meterFullAutoCalLoadReportData();
  const offerPostReport=true;
  const completedAt=Number(touchupStatus&&touchupStatus.completed_at)||Date.now();
@@ -19827,10 +20006,10 @@ function meterFullAutoCalComplete(touchupStatus,options){
 	  touchup_skipped:skipTouchup,
 	  phase:'complete',
 	  current_name:'Full Auto Cal complete',
-	  message:skipTouchup?'Greyscale and 3D LUT complete. Post-3D greyscale touch-up skipped to preserve color alignment.':'Greyscale, 3D LUT, and greyscale touch-up complete.',
+		  message:post3dPolish?'Greyscale, 3D LUT, and committed polish complete.':(skipTouchup?'Greyscale and 3D LUT complete. Post-3D greyscale touch-up skipped to preserve color alignment.':'Greyscale, 3D LUT, and greyscale touch-up complete.'),
   first_greyscale:meterFullAutoCalResults.first,
   lut3d:meterFullAutoCalResults.lut3d,
-  touchup:skipTouchup?null:(touchupStatus||null)
+	  touchup:(skipTouchup&&!post3dPolish)?null:(touchupStatus||null)
  };
  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
  meterFullAutoCalReportData.run_id=runId;
@@ -19854,7 +20033,7 @@ async function meterPollAutoCal(options){
 	 const recover=!!(options&&options.recover);
 	 const timeoutMs=Number((options&&options.timeoutMs)||0)|| (initial?15000:8000);
 	 const setupOverlayActiveBeforeFetch=meterAutoCalSetupOverlayActive();
-	 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'));
+		 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'));
 	 const fullGreyscaleBackendActive=!!(fullGreyscalePhase&&(meterAutoCalPolling||meterAutoCalPhase==='running'));
 	 if(setupOverlayActiveBeforeFetch&&!fullGreyscaleBackendActive) return;
 	 meterAutoCalPollInFlight=true;
@@ -19891,6 +20070,14 @@ async function meterPollAutoCal(options){
 	   await meterFullAutoCalStart3d(r);
 	   return;
 	  }
+	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'post-3d-polish')){
+	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
+	   meterActionPending=false;
+	   meterAutoCalRunning=false;
+	   meterAutoCalPendingConfig=null;
+	   meterFullAutoCalComplete(r);
+	   return;
+	  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
 	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
 	   meterActionPending=false;
@@ -19900,7 +20087,7 @@ async function meterPollAutoCal(options){
 	   return;
 	  }
 	  const backendGreyscaleActive=!!(r.status==='running'||meterAutoCalPolling||meterAutoCalPhase==='running');
-	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale')&&backendGreyscaleActive);
+		  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
 	  const localAutoCalActive=!!(backendGreyscaleActive||fullGreyscaleActive);
 	  if(initial&&r.status!=='running'&&!localAutoCalActive){
 	   meterAutoCalRunning=false;
@@ -19926,12 +20113,18 @@ async function meterPollAutoCal(options){
 	     await meterFullAutoCalStart3d(r);
 	     return;
 	    }
-	    if(meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
-	     meterAutoCalRunning=false;
-	     meterAutoCalPendingConfig=null;
-	     meterFullAutoCalComplete(r);
-	     return;
-	    }
+		    if(meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
+		     meterAutoCalRunning=false;
+		     meterAutoCalPendingConfig=null;
+		     meterFullAutoCalComplete(r);
+		     return;
+		    }
+		    if(meterFullAutoCalEnsureStatusPhase(r,'post-3d-polish')){
+		     meterAutoCalRunning=false;
+		     meterAutoCalPendingConfig=null;
+		     meterFullAutoCalComplete(r);
+		     return;
+		    }
 		    meterAutoCalPhase='complete';
 	    meterAutoCalRunning=true;
 	    meterAutoCalPendingConfig=null;
@@ -19953,7 +20146,7 @@ async function meterPollAutoCal(options){
 	  }
  }catch(e){
   const backendGreyscaleActive=!!(meterAutoCalPolling||meterAutoCalPhase==='running');
-  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale')&&backendGreyscaleActive);
+	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
   const active=!!(backendGreyscaleActive||fullGreyscaleActive);
   if(active){
    meterAutoCalPollErrors++;
