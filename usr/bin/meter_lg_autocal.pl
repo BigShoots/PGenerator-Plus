@@ -4273,6 +4273,24 @@ sub headroom_105_wrgb_seed_adjustment {
 	 my ($error,$arrays,$target,$de,$tried,$step,$luminance_err)=@_;
 	 return undef if(!autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
 	 return undef if(!defined($de) || $de < 2.5);
+	 if(defined($luminance_err)) {
+	  my $lum_pct=$luminance_err*100;
+	  my $tol=luminance_tolerance_percent($step);
+	  my $gate=$tol*3;
+	  $gate=6 if($gate < 6);
+	  if($lum_pct > $gate) {
+	   trace_109($step,"headroom_105_seed_skipped_high_luma",{
+	    source=>"headroom_105_seed",
+	    reason=>"positive_luminance_error_exceeds_seed_gate",
+	    luminance_error_pct=>$lum_pct+0,
+	    luminance_gate_pct=>$gate+0,
+	    luminance_tolerance_pct=>$tol+0,
+	    delta_e=>$de+0,
+	    chroma_error_magnitude=>chroma_error_magnitude($error)+0
+	   });
+	   return undef;
+	  }
+	 }
 	 if(defined($luminance_err) && ($luminance_err*100) > headroom_luminance_control_gate_percent($step,0.50)) {
 	  return undef if(chroma_error_magnitude($error) < 0.035);
 	 }
