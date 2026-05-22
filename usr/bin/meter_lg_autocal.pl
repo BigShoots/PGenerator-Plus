@@ -2226,6 +2226,19 @@ sub headroom_luminance_anchor_working_state {
 	 return 0;
 }
 
+sub headroom_105_luminance_progress_working_state {
+	 my ($step,$arrays,$target,$tried,$lum_pct,$best_lum_pct,$de,$best_de,$candidate_score,$best_score)=@_;
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return 0 if(!defined($lum_pct) || !defined($best_lum_pct) || !defined($de) || !defined($best_de));
+	 return 0 if($lum_pct <= 0 || $best_lum_pct <= 0);
+	 my $candidate_abs=abs($lum_pct);
+	 my $best_abs=abs($best_lum_pct);
+	 return 0 if($candidate_abs+0.50 >= $best_abs);
+	 return 0 if($de > $best_de+1.25);
+	 return 0 if(defined($candidate_score) && defined($best_score) && $candidate_score > $best_score+0.25);
+	 return 1;
+}
+
 sub white_luminance_floor_ratio {
  return 0.78;
 }
@@ -9266,7 +9279,9 @@ eval {
 				    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
 				    my $delta_keep=$candidate_delta_keep->();
 				    my $luma_anchor_working=headroom_luminance_anchor_working_state($read_step,$lum_pct,$best_lum_pct,$de,$best_de);
-				    $luma_anchor_working=0 if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step));
+				    if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step)) {
+				     $luma_anchor_working=headroom_105_luminance_progress_working_state($read_step,$arrays,$target,\%tried_values,$lum_pct,$best_lum_pct,$de,$best_de,$candidate_score_after,$best_score);
+				    }
 				    my $bad_luma_probe=record_bad_luma_probe_family(
 				     \%tried_values,$target,$adjustments,
 				     $before_de_for_adjustment,$de,
@@ -9609,7 +9624,9 @@ eval {
 				    } else {
 				     $polish_stalls++;
 				     my $luma_anchor_working=headroom_luminance_anchor_working_state($read_step,$lum_pct,$best_lum_pct,$de,$best_de);
-				     $luma_anchor_working=0 if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step));
+				     if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step)) {
+				      $luma_anchor_working=headroom_105_luminance_progress_working_state($read_step,$arrays,$target,\%polish_tried,$lum_pct,$best_lum_pct,$de,$best_de,$candidate_score,$best_score);
+				     }
 				     my $bad_luma_probe=record_bad_luma_probe_family(
 				      \%polish_tried,$target,$adjustments,
 				      $before_de_for_polish,$de,
