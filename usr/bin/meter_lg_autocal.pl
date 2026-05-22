@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_response_scaled response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -3832,6 +3832,108 @@ sub headroom_105_score_y_working_candidate {
 	 return 0 if(defined($before_score) && ($after_score+0) > ($before_score+0)-0.35);
 	 return 1 if(!defined($before_de) || !defined($after_de));
 	 return (($after_de+0) < ($before_de+0)-0.35) ? 1 : 0;
+}
+
+sub headroom_105_score_branch_adjustment {
+	 my ($adjustments)=@_;
+	 return 0 if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+	 my $has_rgb=0;
+	 foreach my $adj (@{$adjustments}) {
+	  return 0 if(ref($adj) ne "HASH");
+	  return 0 if($adj->{"headroom_105_all_down_luma"} || $adj->{"headroom_105_floor_luma_coupled"});
+	  my $setting=$adj->{"setting"}||"";
+	  my $channel=$adj->{"channel"}||"";
+	  $has_rgb=1 if($channel =~ /^(?:r|g|b)$/ || $setting =~ /^whiteBalance(?:Red|Green|Blue)$/);
+	 }
+	 return $has_rgb ? 1 : 0;
+}
+
+sub headroom_105_score_branch_promote_candidate {
+	 my ($step,$arrays,$target,$tried,$adjustments,$after_lum_pct,$after_score,$best_lum_pct,$best_score,$after_de,$best_de)=@_;
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return 0 if(!headroom_105_score_branch_adjustment($adjustments));
+	 return 0 if(!defined($after_lum_pct) || !defined($best_lum_pct));
+	 return 0 if(!defined($after_score) || !defined($best_score));
+	 return 0 if(!defined($after_de) || !defined($best_de));
+	 return 0 if(($best_de+0) <= 2.50);
+	 return 0 if(!headroom_105_near_y_luminance($step,$best_lum_pct));
+	 return 0 if(($after_score+0) + 0.50 >= ($best_score+0));
+	 return 0 if(($after_de+0) + 0.75 >= ($best_de+0));
+	 my $after_abs=abs($after_lum_pct+0);
+	 my $max_lum=headroom_105_near_y_cleanup_gate_percent($step)+6.0;
+	 $max_lum=8.0 if($max_lum > 8.0);
+	 return 0 if($after_abs > $max_lum);
+	 return 1;
+}
+
+sub headroom_105_main_polish_refine_active {
+	 my ($step,$arrays,$target,$tried,$de,$lum_pct,$target_delta)=@_;
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return 0 if(!defined($de) || !defined($lum_pct));
+	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+	 return 0 if(($de+0) <= ($target_delta+1.0));
+	 my $abs=abs($lum_pct+0);
+	 my $max=headroom_105_near_y_cleanup_gate_percent($step)+2.0;
+	 $max=4.0 if($max > 4.0);
+	 return ($abs <= $max) ? 1 : 0;
+}
+
+sub mark_headroom_105_main_polish_refine_adjustments {
+	 my ($adjustments,$source)=@_;
+	 return $adjustments if(ref($adjustments) ne "ARRAY");
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH");
+	  $adj->{"headroom_105_main_polish_refine"}=1;
+	  $adj->{"headroom_105_body_refinement"}=1;
+	  $adj->{"source"}=$source if(defined($source) && !defined($adj->{"source"}));
+	 }
+	 return $adjustments;
+}
+
+sub headroom_105_main_polish_refine_adjustment {
+	 my ($adjustments)=@_;
+	 return 0 if(ref($adjustments) ne "ARRAY");
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH");
+	  return 1 if($adj->{"headroom_105_main_polish_refine"});
+	 }
+	 return 0;
+}
+
+sub headroom_105_main_polish_refine_adjustments {
+	 my ($state,$arrays,$target,$step,$reading,$de,$lum_pct,$target_delta,$tried,$stalls,$lum_err,$rgb_response_model,$err)=@_;
+	 return undef if(!headroom_105_main_polish_refine_active($step,$arrays,$target,$tried,$de,$lum_pct,$target_delta));
+	 return undef if(strict_tried_for_step($step));
+	 $err=autocal_adjustment_error($reading,$step) if(ref($err) ne "HASH");
+	 my ($adjustments,$source);
+	 $adjustments=lg_autocal_26_learned_luminance_adjustment($state,$arrays,$target,$step,$lum_pct,$tried,final_all_level_verify_adjustment_cap($step,"adjustingLuminance"),"headroom_105_main_polish_luminance");
+	 $source="headroom_105_main_polish_luminance" if($adjustments);
+	 if(!$adjustments && ref($err) eq "HASH") {
+	  my ($learned_ch)=furthest_rgb_error_channel($err);
+	  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
+	  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($step,$learned_setting) : undef;
+	  $adjustments=lg_autocal_26_learned_rgb_adjustment($state,$arrays,$target,$step,$reading,$de,$target_delta,$tried,$learned_rgb_cap,"headroom_105_main_polish_rgb");
+	  $source="headroom_105_main_polish_rgb" if($adjustments);
+	 }
+	 if(!$adjustments && ref($err) eq "HASH") {
+	  $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,$rgb_response_model,$tried,$de,$step,$target_delta,$stalls,$lum_err);
+	  $source="headroom_105_main_polish_response_rgb" if($adjustments);
+	 }
+	 if(!$adjustments && ref($err) eq "HASH") {
+	  $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,$tried,$step);
+	  $source="headroom_105_main_polish_fallback" if($adjustments);
+	 }
+	 return undef if(!$adjustments);
+	 mark_headroom_105_main_polish_refine_adjustments($adjustments,$source);
+	 trace_109($step,"headroom_105_main_polish_refine_plan",{
+	  source=>$source,
+	  delta_e=>defined($de)?$de+0:undef,
+	  luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	  score=>lg_autocal_26_measurement_score($step,$de,$lum_pct)+0,
+	  adjustments=>trace_adjustments_summary($adjustments),
+	  values_before=>trace_target_values($arrays,$target)
+	 });
+	 return $adjustments;
 }
 
 sub headroom_105_rgb_cleanup_adjustment {
@@ -10032,6 +10134,9 @@ eval {
 								    }
 								   }
 								   if(!$adjustments) {
+								    $adjustments=headroom_105_main_polish_refine_adjustments($state,$arrays,$target,$read_step,$reading,$de,$lum_pct,$target_delta,\%tried_values,$stalls,$lum_err,\%rgb_response_model,$err);
+								   }
+								   if(!$adjustments) {
 								    $adjustments=headroom_105_luma_priority_adjustment($arrays,$target,$lum_err,$de,$stalls,\%tried_values,0.25,1,0,$read_step);
 								   }
 								   if(!$adjustments) {
@@ -10238,6 +10343,9 @@ eval {
 							    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
 								    my $best_update_reason=$paired_white_step ? $pair_best_update_reason->($candidate_score_after) : undef;
 								    my $headroom_105_score_keep=0;
+								    my $headroom_105_score_branch_promote=0;
+								    my $headroom_105_main_polish_refine=headroom_105_main_polish_refine_adjustment($adjustments);
+								    my $headroom_105_main_polish_keep=0;
 								    my $headroom_105_luma_blocking_after=(!$paired_white_step && defined($lum_pct))
 								     ? headroom_105_luma_blocking_active($read_step,$arrays,$target,\%tried_values,$lum_pct/100)
 								     : 0;
@@ -10252,12 +10360,71 @@ eval {
 								     $headroom_105_score_keep=1;
 								     $best_update_reason="headroom_105_y_score_keep";
 								    }
+								    if(
+								     !$headroom_105_score_keep &&
+								     !$paired_white_step &&
+								     headroom_105_score_branch_promote_candidate(
+								      $read_step,$arrays,$target,\%tried_values,$adjustments,
+								      $lum_pct,$candidate_score_after,$best_lum_pct,$best_score,$de,$best_de
+								     )
+								    ) {
+								     $headroom_105_score_branch_promote=1;
+								     $best_update_reason="headroom_105_score_branch_promoted";
+								    }
+								    if(
+								     !$paired_white_step &&
+								     $headroom_105_main_polish_refine &&
+								     defined($candidate_score_after) && defined($best_score) &&
+								     $candidate_score_after + 0.0001 < $best_score
+								    ) {
+								     my $candidate_y_worse=(defined($lum_pct) && defined($before_lum_pct_for_adjustment) && abs($lum_pct) > abs($before_lum_pct_for_adjustment)+0.05) ? 1 : 0;
+								     my $candidate_de_worse=(defined($de) && defined($before_de_for_adjustment) && ($de+0) > ($before_de_for_adjustment+0)+0.25) ? 1 : 0;
+								     if(!$candidate_y_worse || !$candidate_de_worse) {
+								      $headroom_105_main_polish_keep=1;
+								      $best_update_reason="headroom_105_main_polish_refine_score_keep" if(!defined($best_update_reason));
+								     }
+								    }
 								    my $keep_candidate=$paired_white_step
 								     ? defined($best_update_reason)
 								     : (defined($de) && ($headroom_105_luma_blocking_after
-								      ? $headroom_105_score_keep
-								      : (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep)));
+								      ? ($headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)
+								      : (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)));
 					    if($keep_candidate) {
+					    if($headroom_105_score_branch_promote) {
+					     trace_109($read_step,"headroom_105_score_branch_promoted",{
+					      label=>$label,
+					      iteration=>$iter+0,
+					      prior_delta_e=>defined($best_de)?$best_de+0:undef,
+					      prior_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+					      prior_score=>defined($best_score)?$best_score+0:undef,
+					      candidate_delta_e=>defined($de)?$de+0:undef,
+					      candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					      candidate_score=>defined($candidate_score_after)?$candidate_score_after+0:undef,
+					      reason=>"rgb_branch_lower_combined_score",
+					      adjustments=>trace_adjustments_summary($adjustments),
+					      prior_values=>trace_target_values($best_arrays,$target),
+					      candidate_values=>trace_target_values($arrays,$target)
+					     });
+					    }
+					    if($headroom_105_main_polish_refine) {
+					     trace_109($read_step,"headroom_105_main_polish_refine_keep",{
+					      label=>$label,
+					      iteration=>$iter+0,
+					      reason=>$headroom_105_main_polish_keep ? "score_improved" : "normal_keep",
+					      before_delta_e=>defined($before_de_for_adjustment)?$before_de_for_adjustment+0:undef,
+					      before_luminance_error_pct=>defined($before_lum_pct_for_adjustment)?$before_lum_pct_for_adjustment+0:undef,
+					      before_score=>defined($before_score_for_adjustment)?$before_score_for_adjustment+0:undef,
+					      previous_best_delta_e=>defined($best_de)?$best_de+0:undef,
+					      previous_best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+					      previous_best_score=>defined($best_score)?$best_score+0:undef,
+					      candidate_delta_e=>defined($de)?$de+0:undef,
+					      candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					      candidate_score=>defined($candidate_score_after)?$candidate_score_after+0:undef,
+					      adjustments=>trace_adjustments_summary($adjustments),
+					      values_before=>$before_values,
+					      candidate_values=>trace_target_values($arrays,$target)
+					     });
+					    }
 				    $best_de=$de;
 				    $best_lum_pct=$lum_pct;
 				    $best_score=$candidate_score_after;
@@ -10278,6 +10445,8 @@ eval {
 						     reason=>defined($best_update_reason)?$best_update_reason:($chroma_keep?"chroma_keep":($delta_keep?"delta_keep":"score_improved")),
 						     chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
 					     delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
+					     headroom_105_score_branch_promoted=>$headroom_105_score_branch_promote?JSON::PP::true:JSON::PP::false,
+					     headroom_105_main_polish_refine=>$headroom_105_main_polish_refine?JSON::PP::true:JSON::PP::false,
 						     not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 						     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 						     previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
@@ -10394,6 +10563,26 @@ eval {
 					     candidate_values=>trace_target_values($arrays,$target),
 					     best_values=>trace_target_values($best_arrays,$target)
 					    });
+					    if($headroom_105_main_polish_refine) {
+					     my $reject_reason=(defined($candidate_score_after) && defined($best_score) && $candidate_score_after + 0.0001 >= $best_score) ? "score_not_improved" : "sanity_gate";
+					     trace_109($read_step,"headroom_105_main_polish_refine_reject",{
+					      label=>$label,
+					      iteration=>$iter+0,
+					      reason=>$reject_reason,
+					      before_delta_e=>defined($before_de_for_adjustment)?$before_de_for_adjustment+0:undef,
+					      before_luminance_error_pct=>defined($before_lum_pct_for_adjustment)?$before_lum_pct_for_adjustment+0:undef,
+					      before_score=>defined($before_score_for_adjustment)?$before_score_for_adjustment+0:undef,
+					      best_delta_e=>defined($best_de)?$best_de+0:undef,
+					      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+					      best_score=>defined($best_score)?$best_score+0:undef,
+					      candidate_delta_e=>defined($de)?$de+0:undef,
+					      candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					      candidate_score=>defined($candidate_score_after)?$candidate_score_after+0:undef,
+					      adjustments=>trace_adjustments_summary($adjustments),
+					      candidate_values=>trace_target_values($arrays,$target),
+					      best_values=>trace_target_values($best_arrays,$target)
+					     });
+					    }
 					    my $near_y_cleanup_branch=headroom_105_near_y_cleanup_branch(\%tried_values);
 					    my $near_y_cleanup_rgb_failed=(ref($near_y_cleanup_branch) eq "HASH" && $near_y_cleanup_branch->{"active"} && headroom_105_rgb_cleanup_adjustment($adjustments)) ? 1 : 0;
 					    my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%tried_values,"iteration",$iter);
