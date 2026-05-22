@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -4903,6 +4903,87 @@ sub low_shadow_luminance_priority_adjustments {
 	 return $adjustments;
 }
 
+sub low_shadow_chroma_luminance_coupled_adjustments {
+ my ($error,$arrays,$target,$luminance_err,$de,$target_delta,$tried,$step,$micro)=@_;
+ return undef if(!autocal_step_is_low_shadow($step));
+ return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ return undef if(!has_luminance_channel($arrays,$target));
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ $luminance_err=0 if(!defined($luminance_err));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
+ return undef if($ire > 0 && $ire <= 2.5001);
+ my $lum_pct=$luminance_err*100;
+ my $luma_tol=luminance_tolerance_percent($step);
+ my $wild_luma_gate=$luma_tol*1.25;
+ $wild_luma_gate=5.0 if($wild_luma_gate < 5.0);
+ return undef if(abs($lum_pct) > $wild_luma_gate);
+ my $chroma_mag=chroma_error_magnitude($error);
+ return undef if($chroma_mag < 0.035 && (!defined($de) || $de <= ($target_delta+1.0)));
+ my $rgb_cap=1.5;
+ $rgb_cap=1.0 if($ire <= 5.1001);
+ $rgb_cap=0.5 if($ire <= 4.1001);
+ $rgb_cap=0.25 if($ire <= 2.5001);
+ $rgb_cap=0.5 if($micro && $rgb_cap > 0.5);
+ my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
+ $floor=0.004 if($floor < 0.004);
+ my $max_abs=0;
+ foreach my $ch (qw(r g b)) {
+  my $abs=abs($error->{$ch}||0);
+  $max_abs=$abs if($abs > $max_abs);
+ }
+ return undef if($max_abs < $floor);
+ my $strict_tried=1;
+ my @out;
+ foreach my $ch (sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b)) {
+  my $err=$error->{$ch}||0;
+  next if(abs($err) < $floor);
+  my $setting=channel_setting($ch);
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+  my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+  my $direction=($err > 0) ? -1 : 1;
+  my $mag=round_ddc_quarter($rgb_cap*(abs($err)/$max_abs));
+  $mag=0.25 if($mag < 0.25);
+  $mag=$rgb_cap if($mag > $rgb_cap);
+  my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,$setting,0.25,$strict_tried);
+  next if(!defined($next) || abs($next-$current) < 0.0001);
+  push @out,{
+   channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current,
+   damped=>$damped ? 1 : 0, micro=>$micro ? 1 : undef, low_shadow_chroma_luma=>1,
+   source=>"low_shadow_chroma_luma", remaining_error=>abs($err)
+  };
+ }
+ return undef if(!@out);
+ my $luma_meaningful=$luma_tol*0.20;
+ $luma_meaningful=0.5 if($luma_meaningful < 0.5);
+ if(abs($lum_pct) >= $luma_meaningful) {
+  my $arr=$arrays->{"adjustingLuminance"};
+  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
+   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+   my $direction=($lum_pct > 0) ? -1 : 1;
+   my $luma_cap=1.0;
+   $luma_cap=0.5 if($ire <= 5.1001);
+   $luma_cap=0.25 if($ire <= 4.1001);
+   $luma_cap=0.25 if($micro && $luma_cap > 0.25);
+   my $mag=round_ddc_quarter(abs($lum_pct)*0.20);
+   $mag=0.25 if($mag < 0.25);
+   $mag=$luma_cap if($mag > $luma_cap);
+   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",0.25,$strict_tried);
+   if(defined($next) && abs($next-$current) >= 0.0001 && !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"low_shadow_chroma_luma",$LG_AUTOCAL_STATE)) {
+    push @out,{
+     channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current,
+     damped=>$damped ? 1 : 0, micro=>$micro ? 1 : undef, neutral_luminance=>1,
+     low_shadow_luminance=>1, low_shadow_chroma_luma=>1, source=>"low_shadow_chroma_luma",
+     remaining_error=>abs($lum_pct)
+    };
+   }
+  }
+ }
+ return \@out;
+}
+
 sub cap_post_commit_low_shadow_adjustment {
  my ($adj,$ire)=@_;
  return undef if(ref($adj) ne "HASH");
@@ -6016,6 +6097,8 @@ sub choose_adjustments {
 			 if(autocal_step_is_low_shadow($step)) {
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);
 			  return $shadow_luma if($shadow_luma);
+			  my $shadow_chroma_luma=low_shadow_chroma_luminance_coupled_adjustments($error,$arrays,$target,$luminance_err,$de,0.5,$tried,$step,0);
+			  return $shadow_chroma_luma if($shadow_chroma_luma);
 			 }
 				 if($strict_tried) {
 				  my $pair_seed=legal_white_pair_wrgb_seed_adjustment($arrays,$target,$de,$tried,$step);
@@ -6133,6 +6216,8 @@ sub choose_micro_adjustments {
 			 if(autocal_step_is_low_shadow($step)) {
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);
 			  return $shadow_luma if($shadow_luma);
+			  my $shadow_chroma_luma=low_shadow_chroma_luminance_coupled_adjustments($error,$arrays,$target,$luminance_err,$de,$target_delta,$tried,$step,1);
+			  return $shadow_chroma_luma if($shadow_chroma_luma);
 			 }
 				 if($ire <= 10.0001 && has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.85)) {
 				  my $luma_max_step=abs($luminance_err) >= 0.20 ? 4 : (abs($luminance_err) >= 0.08 ? 2 : $max_step);
@@ -10161,6 +10246,7 @@ eval {
 									   }
 								   if(!$adjustments && autocal_step_is_low_shadow($read_step)) {
 								    $adjustments=low_shadow_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,0);
+								    $adjustments=low_shadow_chroma_luminance_coupled_adjustments($err,$arrays,$target,$lum_err,$de,$target_delta,\%tried_values,$read_step,0) if(!$adjustments);
 								   }
 							   if(!$adjustments && $paired_white_step) {
 							    $adjustments=legal_white_pair_wrgb_seed_adjustment($arrays,$target,$de,\%tried_values,$read_step);
