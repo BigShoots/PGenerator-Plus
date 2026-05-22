@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_response_scaled response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -2235,11 +2235,26 @@ sub headroom_105_luminance_progress_working_state {
 	 my $best_abs=abs($best_lum_pct);
 	 return 0 if($candidate_abs+0.50 >= $best_abs);
 	 my $far_luma=($best_lum_pct > headroom_luminance_control_gate_percent($step,3.0)) ? 1 : 0;
-	 my $de_allowance=$far_luma ? 2.50 : 1.25;
-	 my $score_allowance=$far_luma ? 1.00 : 0.25;
+	 my $near_target=($candidate_abs <= luminance_tolerance_percent($step) && $best_abs > luminance_tolerance_percent($step)) ? 1 : 0;
+	 my $de_allowance=$near_target ? 4.00 : ($far_luma ? 2.50 : 1.25);
+	 my $score_allowance=$near_target ? 3.00 : ($far_luma ? 1.00 : 0.25);
 	 return 0 if($de > $best_de+$de_allowance);
 	 return 0 if(defined($candidate_score) && defined($best_score) && $candidate_score > $best_score+$score_allowance);
 	 return 1;
+}
+
+sub headroom_105_near_y_cleanup_gate_percent {
+	 my ($step)=@_;
+	 my $gate=luminance_tolerance_percent($step)*2.0;
+	 $gate=1.5 if($gate < 1.5);
+	 $gate=2.0 if($gate > 2.0);
+	 return $gate;
+}
+
+sub headroom_105_near_y_luminance {
+	 my ($step,$lum_pct)=@_;
+	 return 0 if(!defined($lum_pct));
+	 return abs($lum_pct) <= headroom_105_near_y_cleanup_gate_percent($step) ? 1 : 0;
 }
 
 sub white_luminance_floor_ratio {
@@ -3631,16 +3646,36 @@ sub headroom_105_seed_luma_refine_cap {
 	 my $r=$r_arr->[$idx]||0;
 	 my $g=$g_arr->[$idx]||0;
 	 my $b=$b_arr->[$idx]||0;
-	 return undef if(abs($r-4.25) > 0.7501 || abs($g+5.5) > 0.7501 || abs($b+13) > 1.0001);
+	 my $seed=headroom_105_hard_seed_values();
+	 return undef if(abs($r-($seed->{"whiteBalanceRed"}+0)) > 0.7501 || abs($g-($seed->{"whiteBalanceGreen"}+0)) > 0.7501 || abs($b-($seed->{"whiteBalanceBlue"}+0)) > 1.0001);
 	 return 1.0;
 }
 
 sub headroom_105_hard_seed_values {
+	 return weighted_headroom_105_seed_values(headroom_105_seed_weight());
+}
+
+sub headroom_105_seed_base_values {
 	 return {
 	  whiteBalanceRed => 4.25,
 	  whiteBalanceGreen => -5.5,
 	  whiteBalanceBlue => -13,
 	 };
+}
+
+sub headroom_105_seed_weight {
+	 return 0.5;
+}
+
+sub weighted_headroom_105_seed_values {
+	 my ($weight)=@_;
+	 $weight=1 if(!defined($weight));
+	 my $base=headroom_105_seed_base_values();
+	 my %weighted;
+	 foreach my $setting (keys %{$base}) {
+	  $weighted{$setting}=round_ddc_quarter(($base->{$setting}+0)*$weight);
+	 }
+	 return \%weighted;
 }
 
 sub headroom_105_post_seed_candidate {
@@ -3684,9 +3719,512 @@ sub mark_headroom_105_body_refinement_adjustments {
 	 return $adjustments;
 }
 
+sub headroom_105_near_y_cleanup_branch {
+	 my ($tried)=@_;
+	 return undef if(ref($tried) ne "HASH" || ref($tried->{"__headroom_105_near_y_cleanup"}) ne "HASH");
+	 return $tried->{"__headroom_105_near_y_cleanup"};
+}
+
+sub headroom_105_near_y_cleanup_branch_active {
+	 my ($tried,$step,$arrays,$target,$luminance_err)=@_;
+	 my $branch=headroom_105_near_y_cleanup_branch($tried);
+	 return 0 if(ref($branch) ne "HASH" || !$branch->{"active"});
+	 return 0 if(($branch->{"mode"}||"near_y_cleanup") ne "near_y_cleanup");
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return 0 if(!defined($luminance_err));
+	 return headroom_105_near_y_luminance($step,$luminance_err*100);
+}
+
+sub headroom_105_score_y_branch_active {
+	 my ($tried,$step,$arrays,$target,$luminance_err)=@_;
+	 my $branch=headroom_105_near_y_cleanup_branch($tried);
+	 return 0 if(ref($branch) ne "HASH" || !$branch->{"active"});
+	 return 0 if(($branch->{"mode"}||"") ne "score_y_recovery");
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return 0 if(!defined($luminance_err));
+	 return abs(($luminance_err+0)*100) > luminance_tolerance_percent($step) ? 1 : 0;
+}
+
+sub headroom_105_near_y_cleanup_rgb_cap {
+	 my ($tried,$step,$arrays,$target,$luminance_err,$micro)=@_;
+	 return undef if(!headroom_105_near_y_cleanup_branch_active($tried,$step,$arrays,$target,$luminance_err));
+	 return $micro ? 0.25 : 0.50;
+}
+
+sub headroom_105_near_y_cleanup_working_candidate {
+	 my ($step,$arrays,$target,$tried,$adjustments,$before_lum_pct,$after_lum_pct,$before_de,$after_de,$before_score,$after_score)=@_;
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 my $adj=luma_only_adjustment($adjustments);
+	 return 0 if(ref($adj) ne "HASH");
+	 return 0 if(abs($adj->{"delta"}||0) > 1.0001);
+	 return 0 if(!defined($before_lum_pct) || !defined($after_lum_pct));
+	 return 0 if(!defined($before_de) || !defined($after_de));
+	 my $before_abs=abs($before_lum_pct+0);
+	 my $after_abs=abs($after_lum_pct+0);
+	 return 0 if(!headroom_105_near_y_luminance($step,$after_lum_pct));
+	 return 0 if($after_abs+0.10 >= $before_abs);
+	 my $de_worse=(($after_de+0) > ($before_de+0)+0.35) ? 1 : 0;
+	 my $score_worse=(defined($before_score) && defined($after_score) && ($after_score+0) > ($before_score+0)+0.35) ? 1 : 0;
+	 return ($de_worse || $score_worse) ? 1 : 0;
+}
+
+sub headroom_105_score_y_working_candidate {
+	 my ($step,$arrays,$target,$tried,$adjustments,$before_lum_pct,$after_lum_pct,$before_score,$after_score,$best_lum_pct,$best_score,$before_de,$after_de)=@_;
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return 0 if(!headroom_105_rgb_cleanup_adjustment($adjustments));
+	 return 0 if(!defined($before_lum_pct) || !defined($after_lum_pct));
+	 return 0 if(!defined($after_score) || !defined($best_score));
+	 my $before_abs=abs($before_lum_pct+0);
+	 my $after_abs=abs($after_lum_pct+0);
+	 my $best_abs=defined($best_lum_pct) ? abs($best_lum_pct+0) : $before_abs;
+	 return 0 if($after_abs <= luminance_tolerance_percent($step));
+	 return 0 if($after_abs <= $before_abs+0.35 && $after_abs <= $best_abs+0.35);
+	 return 0 if(($after_score+0) > ($best_score+0)-0.50);
+	 return 0 if(defined($before_score) && ($after_score+0) > ($before_score+0)-0.35);
+	 return 1 if(!defined($before_de) || !defined($after_de));
+	 return (($after_de+0) < ($before_de+0)-0.35) ? 1 : 0;
+}
+
+sub headroom_105_rgb_cleanup_adjustment {
+	 my ($adjustments)=@_;
+	 return 0 if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+	 foreach my $adj (@{$adjustments}) {
+	  return 0 if(ref($adj) ne "HASH");
+	  return 0 if(($adj->{"setting"}||"") eq "adjustingLuminance");
+	  return 0 if($adj->{"headroom_105_all_down_luma"} || $adj->{"headroom_105_floor_luma_coupled"});
+	 }
+	 return 1;
+}
+
+sub headroom_105_rgb_luma_assist {
+	 my ($adjustments,$luminance_err)=@_;
+	 return 0 if(ref($adjustments) ne "ARRAY" || !defined($luminance_err));
+	 my $desired=($luminance_err > 0) ? -1 : 1;
+	 my $sum=0;
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH");
+	  next if(($adj->{"channel"}||"") !~ /^(?:r|g|b)$/);
+	  $sum+=$adj->{"delta"}||0;
+	 }
+	 return ($sum*$desired > 0) ? abs($sum) : 0;
+}
+
+sub headroom_105_rgb_luma_opposition {
+	 my ($adjustments,$luminance_err)=@_;
+	 return 0 if(ref($adjustments) ne "ARRAY" || !defined($luminance_err));
+	 my $desired=($luminance_err > 0) ? -1 : (($luminance_err < 0) ? 1 : 0);
+	 my $sum=0;
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH");
+	  next if(($adj->{"channel"}||"") !~ /^(?:r|g|b)$/);
+	  $sum+=$adj->{"delta"}||0;
+	 }
+	 if(!$desired && abs($sum) > 0.0001) {
+	  $desired=($sum > 0) ? -1 : 1;
+	 }
+	 return ($desired && $sum*$desired < 0) ? abs($sum) : 0;
+}
+
+sub headroom_105_luma_coupling_adjustment {
+	 my ($adjustments,$arrays,$target,$step,$luminance_err,$tried,$micro,$state)=@_;
+	 return undef if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return undef if(strict_tried_for_step($step));
+	 return undef if(headroom_105_family_suppressed($tried,"headroom_105_luma_coupled_rgb"));
+	 return undef if(ref($adjustments) ne "ARRAY" || ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($tried) ne "HASH");
+	 return undef if(!has_luminance_channel($arrays,$target));
+	 return undef if(!defined($luminance_err));
+	 return undef if(!headroom_105_rgb_cleanup_adjustment($adjustments));
+	 my $lum_pct=$luminance_err*100;
+	 my $tol=luminance_tolerance_percent($step);
+	 my $assist=headroom_105_rgb_luma_assist($adjustments,$luminance_err);
+	 my $opposition=headroom_105_rgb_luma_opposition($adjustments,$luminance_err);
+	 return undef if(abs($lum_pct) <= $tol && $opposition < 0.4999);
+	 my $idx=$target->{"index"};
+	 return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY" || $idx >= @{$arrays->{"adjustingLuminance"}});
+	 my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
+	 my $near=headroom_105_near_y_luminance($step,$lum_pct);
+	 my $cap=$near ? 0.25 : 0.50;
+	 $cap=0.25 if($micro && $cap > 0.25);
+	 if(!$micro && $near && $opposition >= 0.9999 && $cap < 0.50) {
+	  $cap=0.50;
+	 }
+	 if(!$micro && $near && $opposition >= 2.0001 && $cap < 1.00) {
+	  $cap=1.00;
+	 }
+	 if($assist >= 0.4999 && $cap > 0.25) {
+	  $cap=0.25;
+	 }
+	 my $direction=($luminance_err > 0) ? -1 : (($luminance_err < 0) ? 1 : 0);
+	 if(!$direction && $opposition >= 0.4999) {
+	  my $sum=0;
+	  foreach my $adj (@{$adjustments}) {
+	   next if(ref($adj) ne "HASH" || ($adj->{"channel"}||"") !~ /^(?:r|g|b)$/);
+	   $sum+=$adj->{"delta"}||0;
+	  }
+	  $direction=($sum > 0) ? -1 : 1 if(abs($sum) > 0.0001);
+	 }
+	 return undef if(!$direction);
+	 my $projected_lum_pct=$lum_pct;
+	 if($opposition >= 0.4999) {
+	  my $extra=$opposition*1.25;
+	  $projected_lum_pct += ($direction < 0 ? $extra : -$extra);
+	 }
+	 my $model=lg_autocal_26_response_model_for_step($state || $LG_AUTOCAL_STATE,$step);
+	 my $entry=(ref($model) eq "HASH" && ref($model->{"luminance"}) eq "HASH") ? $model->{"luminance"}{"adjustingLuminance"} : undef;
+	 my ($slope,$predicted,$raw_delta,$reason,$response_multiplier,$response_cap_reason,$response_entry);
+	 if(ref($entry) eq "HASH" && defined($entry->{"slope"}) && abs($entry->{"slope"}+0) >= 0.05) {
+	  $slope=$entry->{"slope"}+0;
+	  $raw_delta=-($projected_lum_pct+0)/$slope;
+	  if($raw_delta*$direction <= 0) {
+	   $raw_delta=$direction*$cap;
+	   $reason="fallback_direction";
+	  } else {
+	   $reason="measured_luminance_response";
+	  }
+	 } else {
+	  $raw_delta=$direction*$cap;
+	  $reason="default_luminance_coupling";
+	 }
+	 $raw_delta=$cap if($raw_delta > $cap);
+	 $raw_delta=-$cap if($raw_delta < -$cap);
+	 my $base_abs=abs($raw_delta);
+	 my $response_cap=$cap;
+	 if(!$micro && !$near) {
+	  $response_cap=($assist >= 0.4999) ? 0.50 : 1.00;
+	 }
+	 my $remaining=abs($lum_pct);
+	 $remaining=abs($projected_lum_pct) if(abs($projected_lum_pct) > $remaining);
+	 my ($scaled_abs,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
+	  $tried,$step,"adjustingLuminance",$direction,$base_abs,$response_cap,$remaining,"headroom_105_luma_coupled_rgb"
+	 );
+	 return undef if(!defined($scaled_abs));
+	 if($scaled_abs > $base_abs+0.0001) {
+	  $raw_delta=$direction*$scaled_abs;
+	  $response_multiplier=$scaled_mult;
+	  $response_cap_reason=$scaled_reason;
+	  $response_entry=$scaled_entry;
+	  $reason.=";response_scaled";
+	 }
+	 return undef if(abs($raw_delta) < 0.0999);
+	 foreach my $scale (1,0.5) {
+	  my $next=round_ddc_quarter($current+($raw_delta*$scale));
+	  next if(abs($next-$current) < 0.0999);
+	  next if(($next-$current)*$direction <= 0);
+	  next if(tried_value_exists($tried,"adjustingLuminance",$next));
+	  next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"headroom_105_luma_coupled_rgb",$state));
+	  my $actual_delta=$next-$current;
+	  $predicted=defined($slope) ? (($projected_lum_pct+0)+($slope*$actual_delta)) : undef;
+		  trace_109($step,"headroom_105_luma_coupled_rgb",{
+		   reason=>$reason,
+		   luminance_error_pct=>$lum_pct+0,
+		   projected_luminance_error_pct=>$projected_lum_pct+0,
+		   tolerance_pct=>$tol+0,
+		   near_y=>$near?JSON::PP::true:JSON::PP::false,
+		   rgb_luma_assist=>$assist+0,
+		   rgb_luma_opposition=>$opposition+0,
+	   cap=>$cap+0,
+	   current=>$current+0,
+	   next=>$next+0,
+		   delta=>$actual_delta+0,
+		   response_multiplier=>defined($response_multiplier)?$response_multiplier+0:undef,
+		   cap_reason=>$response_cap_reason,
+		   remaining_error=>$remaining+0,
+		   previous_delta=>(ref($response_entry) eq "HASH" && defined($response_entry->{"delta"})) ? $response_entry->{"delta"}+0 : undef,
+		   previous_before_error=>(ref($response_entry) eq "HASH" && defined($response_entry->{"before_error"})) ? $response_entry->{"before_error"}+0 : undef,
+		   previous_after_error=>(ref($response_entry) eq "HASH" && defined($response_entry->{"after_error"})) ? $response_entry->{"after_error"}+0 : undef,
+		   slope=>defined($slope)?$slope+0:undef,
+		   predicted_error=>defined($predicted)?$predicted+0:undef,
+		   rgb_adjustments=>trace_adjustments_summary($adjustments),
+	   target_values=>trace_target_values($arrays,$target)
+	  });
+	  return {
+	   channel=>"lum",
+	   setting=>"adjustingLuminance",
+	   current=>$current,
+	   next=>$next,
+	   delta=>$actual_delta,
+	   neutral_luminance=>1,
+		   headroom_105_luma_coupled_rgb=>1,
+		   headroom_105_response_scaled=>defined($response_multiplier) ? 1 : undef,
+		   response_multiplier=>defined($response_multiplier) ? $response_multiplier+0 : undef,
+		   cap_reason=>$response_cap_reason,
+		   remaining_error=>$remaining+0,
+		   headroom_105_body_refinement=>1,
+		   response_model=>defined($slope) ? 1 : undef,
+	   slope=>defined($slope) ? $slope+0 : undef,
+	   predicted_error=>defined($predicted) ? $predicted+0 : undef,
+	   source=>"headroom_105_luma_coupled_rgb",
+	   micro=>$micro ? 1 : 0,
+	  };
+	 }
+	 return undef;
+}
+
+sub append_headroom_105_luma_coupling {
+	 my ($adjustments,$arrays,$target,$step,$luminance_err,$tried,$micro,$state)=@_;
+	 return $adjustments if(ref($adjustments) ne "ARRAY");
+	 my $luma=headroom_105_luma_coupling_adjustment($adjustments,$arrays,$target,$step,$luminance_err,$tried,$micro,$state);
+	 return $adjustments if(ref($luma) ne "HASH");
+	 push @{$adjustments},$luma;
+	 return mark_headroom_105_body_refinement_adjustments($adjustments);
+}
+
+sub headroom_105_response_entry {
+	 my ($tried,$setting)=@_;
+	 return undef if(ref($tried) ne "HASH" || ref($tried->{"__headroom_105_response"}) ne "HASH");
+	 my $entry=$tried->{"__headroom_105_response"}{$setting};
+	 return ref($entry) eq "HASH" ? $entry : undef;
+}
+
+sub headroom_105_response_scaled_step {
+	 my ($tried,$step,$setting,$direction,$base_step,$cap,$remaining_error,$source)=@_;
+	 return ($base_step,1,"initial_probe",undef) if(ref($tried) ne "HASH");
+	 my $entry=headroom_105_response_entry($tried,$setting);
+	 return ($base_step,1,"initial_probe",undef) if(ref($entry) ne "HASH");
+	 if(($entry->{"direction"}||0) == ($direction||0) && $entry->{"wrong_direction"}) {
+	  trace_109($step,"headroom_105_response_direction_suppressed",{
+	   setting=>$setting,
+	   source=>$source||"headroom_105_response",
+	   direction=>$direction+0,
+	   previous_delta=>$entry->{"delta"},
+	   before_error=>$entry->{"before_error"},
+	   after_error=>$entry->{"after_error"},
+	   slope=>$entry->{"slope"},
+	   remaining_error=>defined($remaining_error)?$remaining_error+0:undef
+	  });
+	  return (undef,0,"wrong_direction_suppressed",$entry);
+	 }
+	 return ($base_step,1,"adequate_response",$entry) if(!$entry->{"insufficient_response"});
+	 my $mult=($entry->{"samples"}||1) >= 2 ? 2.0 : 1.5;
+	 my $next=$base_step*$mult;
+	 $next=$cap if(defined($cap) && $next > $cap);
+	 $next=$base_step if($next < $base_step);
+	 return ($next,$mult,"insufficient_response",$entry);
+}
+
+sub mark_headroom_105_response_scaled_adjustments {
+	 my ($adjustments,$setting,$mult,$reason,$entry,$cap)=@_;
+	 return $adjustments if(ref($adjustments) ne "ARRAY" || !defined($mult) || $mult <= 1.0001);
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH" || ($adj->{"setting"}||"") ne $setting);
+	  $adj->{"headroom_105_response_scaled"}=1;
+	  $adj->{"response_multiplier"}=$mult+0;
+	  $adj->{"cap_reason"}=$reason if(defined($reason));
+	  $adj->{"previous_delta"}=$entry->{"delta"} if(ref($entry) eq "HASH" && defined($entry->{"delta"}));
+	  $adj->{"previous_before_error"}=$entry->{"before_error"} if(ref($entry) eq "HASH" && defined($entry->{"before_error"}));
+	  $adj->{"previous_after_error"}=$entry->{"after_error"} if(ref($entry) eq "HASH" && defined($entry->{"after_error"}));
+	  $adj->{"slope"}=$entry->{"slope"} if(ref($entry) eq "HASH" && defined($entry->{"slope"}));
+	 }
+	 return $adjustments;
+}
+
+sub record_headroom_105_response {
+	 my ($tried,$target,$step,$adjustments,$before,$after,$before_lum_pct,$after_lum_pct,$before_de,$after_de,$before_score,$after_score)=@_;
+	 return undef if(ref($tried) ne "HASH" || !headroom_105_post_seed_candidate($step,$target));
+	 return undef if(strict_tried_for_step($step));
+	 return undef if(ref($adjustments) ne "ARRAY" || ref($before) ne "HASH" || ref($after) ne "HASH");
+	 my $before_err=autocal_adjustment_error($before,$step);
+	 my $after_err=autocal_adjustment_error($after,$step);
+	 $tried->{"__headroom_105_response"}={} if(ref($tried->{"__headroom_105_response"}) ne "HASH");
+	 my @updates;
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH");
+	  my $setting=$adj->{"setting"}||"";
+	  my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : undef;
+	  next if(!defined($delta) || abs($delta) < 0.0001);
+	  my ($before_error,$after_error,$remaining,$floor);
+	  if($setting eq "adjustingLuminance") {
+	   next if(!defined($before_lum_pct) || !defined($after_lum_pct));
+	   ($before_error,$after_error)=($before_lum_pct+0,$after_lum_pct+0);
+	   $remaining=abs($after_error);
+	   $floor=luminance_tolerance_percent($step);
+	  } else {
+	   my $ch=$adj->{"channel"}||"";
+	   next if($ch !~ /^(?:r|g|b)$/ || ref($before_err) ne "HASH" || ref($after_err) ne "HASH");
+	   next if(!defined($before_err->{$ch}) || !defined($after_err->{$ch}));
+	   ($before_error,$after_error)=($before_err->{$ch}+0,$after_err->{$ch}+0);
+	   $remaining=abs($after_error);
+	   $floor=0.0030;
+	  }
+	  my $change=$after_error-$before_error;
+	  my $slope=$change/$delta;
+		  my $before_abs=abs($before_error);
+		  my $after_abs=abs($after_error);
+		  my $improvement=$before_abs-$after_abs;
+		  my $wrong=($after_abs > $before_abs+($setting eq "adjustingLuminance" ? 0.10 : 0.0005)) ? 1 : 0;
+		  my $y_worse=(defined($before_lum_pct) && defined($after_lum_pct) && abs($after_lum_pct+0) > abs($before_lum_pct+0)+0.05) ? 1 : 0;
+		  my $score_worse=(defined($before_score) && defined($after_score) && ($after_score+0) > ($before_score+0)+0.25) ? 1 : 0;
+		  my $de_worse=(defined($before_de) && defined($after_de) && ($after_de+0) > ($before_de+0)+0.25) ? 1 : 0;
+		  $wrong=1 if(!$wrong && $y_worse && ($score_worse || $de_worse));
+		  my $insufficient=(!$wrong && $after_abs > $floor && $improvement < (($before_abs*0.35) > ($setting eq "adjustingLuminance" ? 0.30 : 0.0010) ? ($before_abs*0.35) : ($setting eq "adjustingLuminance" ? 0.30 : 0.0010))) ? 1 : 0;
+	  my $prior=headroom_105_response_entry($tried,$setting);
+	  my $samples=(ref($prior) eq "HASH" ? ($prior->{"samples"}||1) : 0)+1;
+	  my $entry={
+	   setting=>$setting,
+	   delta=>$delta+0,
+	   direction=>$delta < 0 ? -1 : 1,
+	   before_error=>$before_error+0,
+	   after_error=>$after_error+0,
+	   remaining_error=>$remaining+0,
+	   slope=>$slope+0,
+	   improvement=>$improvement+0,
+	   insufficient_response=>$insufficient,
+		   wrong_direction=>$wrong,
+		   y_worse=>$y_worse,
+		   score_worse=>$score_worse,
+		   de_worse=>$de_worse,
+	   samples=>$samples+0,
+	   before_delta_e=>defined($before_de)?$before_de+0:undef,
+	   after_delta_e=>defined($after_de)?$after_de+0:undef,
+	   before_score=>defined($before_score)?$before_score+0:undef,
+	   after_score=>defined($after_score)?$after_score+0:undef,
+	  };
+	  $tried->{"__headroom_105_response"}{$setting}=$entry;
+	  push @updates,$entry;
+	  trace_109($step,"headroom_105_response_measured",$entry);
+	 }
+	 return @updates ? \@updates : undef;
+}
+
+sub headroom_105_family_suppressed {
+	 my ($tried,$family)=@_;
+	 return 0 if(ref($tried) ne "HASH" || ref($tried->{"__headroom_105_suppressed_family"}) ne "HASH");
+	 return $tried->{"__headroom_105_suppressed_family"}{$family} ? 1 : 0;
+}
+
+sub suppress_headroom_105_family {
+	 my ($tried,$step,$target,$family,$reason,$before_lum_pct,$after_lum_pct,$before_score,$after_score)=@_;
+	 return 0 if(ref($tried) ne "HASH" || !$family);
+	 return 0 if(!headroom_105_post_seed_candidate($step,$target));
+	 $tried->{"__headroom_105_suppressed_family"}={} if(ref($tried->{"__headroom_105_suppressed_family"}) ne "HASH");
+	 return 0 if($tried->{"__headroom_105_suppressed_family"}{$family});
+	 $tried->{"__headroom_105_suppressed_family"}{$family}=1;
+	 trace_109($step,"headroom_105_family_suppressed",{
+	  family=>$family,
+	  reason=>$reason||"suppressed",
+	  before_luminance_error_pct=>defined($before_lum_pct)?$before_lum_pct+0:undef,
+	  after_luminance_error_pct=>defined($after_lum_pct)?$after_lum_pct+0:undef,
+	  before_score=>defined($before_score)?$before_score+0:undef,
+	  after_score=>defined($after_score)?$after_score+0:undef
+	 });
+	 return 1;
+}
+
+sub record_headroom_105_bad_adjustment_family {
+	 my ($tried,$target,$adjustments,$before_lum_pct,$after_lum_pct,$before_score,$after_score,$step,$before_de,$after_de)=@_;
+	 return undef if(ref($tried) ne "HASH" || !headroom_105_post_seed_candidate($step,$target));
+	 return undef if(!defined($before_lum_pct) || !defined($after_lum_pct));
+	 my $family;
+	 foreach my $adj (@{ref($adjustments) eq "ARRAY" ? $adjustments : []}) {
+	  next if(ref($adj) ne "HASH");
+	  $family="headroom_105_all_down_luma" if($adj->{"headroom_105_all_down_luma"});
+	  $family="headroom_105_floor_luma_coupled" if($adj->{"headroom_105_floor_luma_coupled"});
+	  $family="headroom_105_luma_coupled_rgb" if($adj->{"headroom_105_luma_coupled_rgb"});
+	  last if($family);
+	 }
+	 return undef if(!$family);
+	 my $before_abs=abs($before_lum_pct+0);
+	 my $after_abs=abs($after_lum_pct+0);
+	 my $y_worse=($after_abs > $before_abs+0.05) ? 1 : 0;
+	 my $score_worse=(defined($before_score) && defined($after_score) && ($after_score+0) > ($before_score+0)+0.25) ? 1 : 0;
+	 my $de_worse=(defined($before_de) && defined($after_de) && ($after_de+0) > ($before_de+0)+0.25) ? 1 : 0;
+	 if($family eq "headroom_105_luma_coupled_rgb") {
+	  return undef if(!$y_worse || (!$score_worse && !$de_worse));
+	 } else {
+	  return undef if(!$y_worse && !$score_worse);
+	 }
+	 suppress_headroom_105_family($tried,$step,$target,$family,$y_worse ? "luminance_worse" : "score_worse",$before_lum_pct,$after_lum_pct,$before_score,$after_score);
+	 return $family;
+}
+
+sub headroom_105_luma_priority_active {
+	 my ($step,$arrays,$target,$tried,$luminance_err)=@_;
+	 return 0 if(!headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err));
+	 $luminance_err=0 if(!defined($luminance_err));
+	 my $lum_pct=$luminance_err*100;
+	 return abs($lum_pct) > headroom_luminance_control_gate_percent($step,1.0) ? 1 : 0;
+}
+
+sub headroom_105_luma_blocking_active {
+	 my ($step,$arrays,$target,$tried,$luminance_err)=@_;
+	 return 0 if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return 0 if(!has_luminance_channel($arrays,$target));
+	 $luminance_err=0 if(!defined($luminance_err));
+	 my $lum_pct=$luminance_err*100;
+	 return 0 if(headroom_105_near_y_luminance($step,$lum_pct));
+	 return abs($lum_pct) > luminance_tolerance_percent($step) ? 1 : 0;
+}
+
+sub headroom_105_luma_priority_adjustment {
+	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_step,$micro,$step)=@_;
+	 return undef if(!headroom_105_luma_priority_active($step,$arrays,$target,$tried,$luminance_err));
+	 return undef if(headroom_105_family_suppressed($tried,"headroom_105_luma_priority") && !headroom_105_score_y_branch_active($tried,$step,$arrays,$target,$luminance_err));
+	 return undef if(headroom_105_near_y_cleanup_branch_active($tried,$step,$arrays,$target,$luminance_err));
+	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($tried) ne "HASH");
+	 my $idx=$target->{"index"};
+	 return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY" || $idx >= @{$arrays->{"adjustingLuminance"}});
+	 $min_step ||= ($micro ? 0.20 : 0.25);
+	 $max_step ||= ($micro ? 1.00 : 4.00);
+	 my $authority=1.00;
+	 $max_step=$authority if($max_step > $authority);
+	 my $direction=($luminance_err > 0) ? -1 : 1;
+	 my $planned=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
+	 my ($scaled_planned,$response_multiplier,$response_cap_reason,$response_entry)=headroom_105_response_scaled_step(
+	  $tried,$step,"adjustingLuminance",$direction,$planned,$max_step,abs(($luminance_err||0)*100),"headroom_105_luma_priority"
+	 );
+	 return undef if(!defined($scaled_planned));
+	 $planned=$scaled_planned;
+	 my @magnitudes=($planned);
+	 push @magnitudes,4 if($planned > 4.0001 && !$micro);
+	 push @magnitudes,2 if($planned > 2.0001);
+	 push @magnitudes,1 if($planned > 1.0001);
+	 push @magnitudes,0.5 if($planned > 0.5001);
+	 push @magnitudes,0.25 if($planned > 0.2501 && $min_step <= 0.25);
+	 my %seen_mag;
+	 my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
+	 foreach my $mag (@magnitudes) {
+	  next if($mag < $min_step-0.0001);
+	  next if($seen_mag{ddc_value_key($mag)}++);
+	  my $next=clamp_ddc_value($current+($direction*$mag));
+	  next if(abs($next-$current) < 0.0001);
+	  next if(tried_value_exists($tried,"adjustingLuminance",$next));
+	  next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"headroom_105_luma_priority",$LG_AUTOCAL_STATE));
+	  trace_109($step,"headroom_105_luma_priority",{
+	   delta_e=>defined($de)?$de+0:undef,
+	   luminance_error_pct=>($luminance_err*100)+0,
+	   magnitude=>$mag+0,
+	   response_multiplier=>defined($response_multiplier) && $response_multiplier > 1.0001 ? $response_multiplier+0 : undef,
+	   cap_reason=>$response_cap_reason,
+	   remaining_error=>abs(($luminance_err||0)*100),
+	   previous_delta=>(ref($response_entry) eq "HASH" && defined($response_entry->{"delta"})) ? $response_entry->{"delta"}+0 : undef,
+	   previous_before_error=>(ref($response_entry) eq "HASH" && defined($response_entry->{"before_error"})) ? $response_entry->{"before_error"}+0 : undef,
+	   previous_after_error=>(ref($response_entry) eq "HASH" && defined($response_entry->{"after_error"})) ? $response_entry->{"after_error"}+0 : undef,
+	   current=>$current+0,
+	   next=>$next+0,
+	   target_values=>trace_target_values($arrays,$target)
+	  });
+	  my $out=[{
+	   channel=>"lum",
+	   setting=>"adjustingLuminance",
+	   current=>$current,
+	   next=>$next,
+	   delta=>$next-$current,
+	   neutral_luminance=>1,
+	   headroom_105_luma_priority=>1,
+	   headroom_105_body_refinement=>1,
+	   source=>"headroom_105_luma_priority",
+	   micro=>$micro ? 1 : 0,
+	  }];
+	  return mark_headroom_105_response_scaled_adjustments($out,"adjustingLuminance",$response_multiplier,$response_cap_reason,$response_entry,$max_step);
+	 }
+	 return undef;
+}
+
 sub headroom_105_all_down_luma_adjustment {
 	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_rgb_step,$micro,$step)=@_;
 	 return undef if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return undef if(headroom_105_family_suppressed($tried,"headroom_105_all_down_luma"));
+	 return undef if(headroom_105_near_y_cleanup_branch_active($tried,$step,$arrays,$target,$luminance_err));
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($tried) ne "HASH");
 	 $luminance_err=0 if(!defined($luminance_err));
 	 my $lum_pct=$luminance_err*100;
@@ -3750,6 +4288,8 @@ sub headroom_105_all_down_luma_adjustment {
 sub headroom_105_floor_luma_coupled_adjustment {
 	 my ($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_rgb_step,$micro,$step)=@_;
 	 return undef if(!headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried));
+	 return undef if(headroom_105_family_suppressed($tried,"headroom_105_floor_luma_coupled"));
+	 return undef if(headroom_105_near_y_cleanup_branch_active($tried,$step,$arrays,$target,$luminance_err));
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($tried) ne "HASH");
 	 return undef if(!has_luminance_channel($arrays,$target));
 	 $luminance_err=0 if(!defined($luminance_err));
@@ -4973,9 +5513,9 @@ sub headroom_proportional_adjustment {
  return undef if(!defined($e0) || !defined($e1));
  return undef if($e0 == 0 || abs($e1-$e0) < 0.0005);
  return undef if(($e0 > 0 && $e1 > 0) || ($e0 < 0 && $e1 < 0));
- my $current=defined($arrays->{$setting}[$idx]) ? ($arrays->{$setting}[$idx]+0) : 0;
- my $start=defined($adj->{"current"}) ? ($adj->{"current"}+0) : ($current-($adj->{"delta"}||0));
- my $end=defined($adj->{"next"}) ? ($adj->{"next"}+0) : $current;
+	  my $current=defined($arrays->{$setting}[$idx]) ? ($arrays->{$setting}[$idx]+0) : 0;
+	  my $start=defined($adj->{"current"}) ? ($adj->{"current"}+0) : ($current-($adj->{"delta"}||0));
+	  my $end=defined($adj->{"next"}) ? ($adj->{"next"}+0) : $current;
  my $ideal=$start - ($e0*($end-$start)/($e1-$e0));
  $ideal=round_ddc_quarter($ideal);
  my $lo=$start < $end ? $start : $end;
@@ -5109,21 +5649,24 @@ sub update_rgb_response_model {
 }
 
 sub choose_rgb_response_adjustments {
-	 my ($error,$arrays,$target,$model,$tried,$de,$step,$target_delta,$stalls)=@_;
+	 my ($error,$arrays,$target,$model,$tried,$de,$step,$target_delta,$stalls,$luminance_err)=@_;
 	 my $headroom_105_body=headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried);
 	 return undef if(autocal_step_is_fast_headroom($step) && !$headroom_105_body);
+	 return undef if(headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err));
 	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
 	 my $paired_white=strict_tried_for_step($step);
 		 my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
 		 return undef if(!$ch);
-		 my $threshold=rgb_response_close_threshold($de,$target_delta);
-		 return undef if($max_err < $threshold);
-		 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,$target_delta,$stalls);
-		 my $setting=channel_setting($ch);
-		 my $arr=$arrays->{$setting};
-		 my $idx=$target->{"index"};
+	 my $threshold=rgb_response_close_threshold($de,$target_delta);
+	 return undef if($max_err < $threshold);
+	 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,$target_delta,$stalls);
+	 my $near_y_cleanup_cap=headroom_105_near_y_cleanup_rgb_cap($tried,$step,$arrays,$target,$luminance_err,0);
+	 my $setting=channel_setting($ch);
+	 my $arr=$arrays->{$setting};
+	 my $idx=$target->{"index"};
 	 return undef if(ref($arr) ne "ARRAY" || !defined($idx) || $idx >= @{$arr});
 	 my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	 my $direction=($err > 0) ? -1 : 1;
 	 my $entry=(ref($model) eq "HASH") ? $model->{$ch} : undef;
 	 if(ref($entry) eq "HASH" && defined($entry->{"slope"}) && abs($entry->{"slope"}) >= 0.00005) {
 	  my $slope=$entry->{"slope"}+0;
@@ -5134,6 +5677,21 @@ sub choose_rgb_response_adjustments {
 		  } else {
 		   $max_jump=12 if(($stalls||0) >= 2 && $max_jump < 12);
 		   $max_jump=$seeded_cap if(defined($seeded_cap) && $max_jump > $seeded_cap);
+		   $max_jump=$near_y_cleanup_cap if(defined($near_y_cleanup_cap) && $max_jump > $near_y_cleanup_cap);
+		  }
+		  my ($response_multiplier,$response_cap_reason,$response_entry);
+		  if($headroom_105_body && !$paired_white) {
+		   my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
+		   my ($scaled_cap,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
+		    $tried,$step,$setting,$direction,$max_jump,$response_cap,abs($err),"rgb_response_model"
+		   );
+		   return undef if(!defined($scaled_cap));
+		   if($scaled_cap > $max_jump+0.0001) {
+		    $max_jump=$scaled_cap;
+		    $response_multiplier=$scaled_mult;
+		    $response_cap_reason=$scaled_reason;
+		    $response_entry=$scaled_entry;
+		   }
 		  }
 		  $raw_delta=$max_jump if($raw_delta > $max_jump);
 		  $raw_delta=-$max_jump if($raw_delta < -$max_jump);
@@ -5143,18 +5701,36 @@ sub choose_rgb_response_adjustments {
 	   my $next=$paired_white ? round_ddc_quarter($current+($raw_delta*$scale)) : round_ddc_fifth($current+($raw_delta*$scale));
 	   next if(abs($next-$current) < ($paired_white ? 0.0999 : 0.1999));
 	   next if(tried_value_exists($tried,$setting,$next));
-	   my $actual_delta=$next-$current;
-	   my $predicted=$err+($slope*$actual_delta);
-	   next if(abs($predicted) >= abs($err)*0.92 && abs($actual_delta) > 0.21);
-		   return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, slope=>$slope, predicted_error=>$predicted, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef }];
-		  }
-		 }
-		 my $direction=($err > 0) ? -1 : 1;
-		 my $probe_step=$paired_white ? ((defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 0.5 : 0.25) : 1;
-		 $probe_step=$seeded_cap if(!$paired_white && defined($seeded_cap) && $probe_step > $seeded_cap);
-		 my ($next,$damped)=next_untried_value($current,$direction*$probe_step,$tried,$setting,0.25,$paired_white);
-		 return undef if(!defined($next) || abs($next-$current) < 0.0001);
-		 return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, response_probe=>1, damped=>$damped ? 1 : 0, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef }];
+		   my $actual_delta=$next-$current;
+		   my $predicted=$err+($slope*$actual_delta);
+		   next if(abs($predicted) >= abs($err)*0.92 && abs($actual_delta) > 0.21 && !defined($response_multiplier));
+			   my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, slope=>$slope, predicted_error=>$predicted, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef, remaining_error=>abs($err) }];
+			   mark_headroom_105_response_scaled_adjustments($out,$setting,$response_multiplier,$response_cap_reason,$response_entry,$max_jump);
+			   return append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,0,$LG_AUTOCAL_STATE);
+			  }
+			 }
+			 my $probe_step=$paired_white ? ((defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 0.5 : 0.25) : 1;
+			 $probe_step=$seeded_cap if(!$paired_white && defined($seeded_cap) && $probe_step > $seeded_cap);
+			 $probe_step=$near_y_cleanup_cap if(!$paired_white && defined($near_y_cleanup_cap) && $probe_step > $near_y_cleanup_cap);
+			 my ($response_multiplier,$response_cap_reason,$response_entry);
+			 if($headroom_105_body && !$paired_white) {
+			  my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
+			  my ($scaled_probe,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
+			   $tried,$step,$setting,$direction,$probe_step,$response_cap,abs($err),"rgb_response_probe"
+			  );
+			  return undef if(!defined($scaled_probe));
+			  if($scaled_probe > $probe_step+0.0001) {
+			   $probe_step=$scaled_probe;
+			   $response_multiplier=$scaled_mult;
+			   $response_cap_reason=$scaled_reason;
+			   $response_entry=$scaled_entry;
+			  }
+			 }
+			 my ($next,$damped)=next_untried_value($current,$direction*$probe_step,$tried,$setting,0.25,$paired_white);
+			 return undef if(!defined($next) || abs($next-$current) < 0.0001);
+			 my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, response_probe=>1, damped=>$damped ? 1 : 0, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef, remaining_error=>abs($err) }];
+			 mark_headroom_105_response_scaled_adjustments($out,$setting,$response_multiplier,$response_cap_reason,$response_entry,$probe_step);
+			 return append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,0,$LG_AUTOCAL_STATE);
 		}
 
 sub choose_adjustments {
@@ -5237,10 +5813,17 @@ sub choose_adjustments {
 			 }
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
+			 my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err);
+			 my $headroom_105_luma_priority=headroom_105_luma_priority_active($step,$arrays,$target,$tried,$luminance_err);
+			 if($headroom_105_luma_priority) {
+			  my $luma_priority=headroom_105_luma_priority_adjustment($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,1,0,$step);
+			  return $luma_priority if($luma_priority);
+			 }
 			 my $all_down_luma=headroom_105_all_down_luma_adjustment($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,2,0,$step);
 			 return $all_down_luma if($all_down_luma);
 			 my $floor_luma_coupled=headroom_105_floor_luma_coupled_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,1,0,$step);
 			 return $floor_luma_coupled if($floor_luma_coupled);
+			 return undef if($headroom_105_luma_blocking);
 			 if(autocal_step_is_low_shadow($step)) {
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);
 			  return $shadow_luma if($shadow_luma);
@@ -5276,6 +5859,8 @@ sub choose_adjustments {
 			 my $luma_priority=(abs($luminance_drive) >= 0.012) ? 1 : 0;
 			 my $chroma_mag=chroma_error_magnitude($error);
 			 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,0.5,$stalls);
+			 my $near_y_cleanup_cap=headroom_105_near_y_cleanup_rgb_cap($tried,$step,$arrays,$target,$luminance_err,0);
+			 $seeded_cap=$near_y_cleanup_cap if(defined($near_y_cleanup_cap) && (!defined($seeded_cap) || $seeded_cap > $near_y_cleanup_cap));
 				 if(has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.35)) {
 				  my $max_luma_step=abs($luminance_err) >= 0.20 ? 6 : 3;
 				  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step,$strict_tried,$step,"main_luminance");
@@ -5297,19 +5882,41 @@ sub choose_adjustments {
 	  next if(ref($arr) ne "ARRAY");
 	  my $idx=$target->{"index"};
 		  my $current=$arr->[$idx]||0;
-					  my $step=adjustment_step(abs($err),$de,$stalls,$min_step);
-					  $step=$seeded_cap if(defined($seeded_cap) && $step > $seeded_cap);
-				  my $delta = ($err > 0) ? -$step : $step;
-				  foreach my $try_delta ($delta,-$delta) {
-				   my ($next,$damped)=next_untried_value($current,$try_delta,$tried,$setting,$min_step,$strict_tried);
-				   next if(!defined($next));
-				   next if(abs($next-$current) < 0.0001);
-			   push @out,{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef };
-			   last;
-			  }
+						  my $rgb_step=adjustment_step(abs($err),$de,$stalls,$min_step);
+						  $rgb_step=$seeded_cap if(defined($seeded_cap) && $rgb_step > $seeded_cap);
+						  my $direction=($err > 0) ? -1 : 1;
+						  my ($response_multiplier,$response_cap_reason,$response_entry);
+						  if($headroom_105_body && !$strict_tried) {
+						   my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
+						   my ($scaled_step,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
+						    $tried,$step,$setting,$direction,$rgb_step,$response_cap,abs($err),"main_rgb"
+						   );
+						   next if(!defined($scaled_step));
+						   if($scaled_step > $rgb_step+0.0001) {
+						    $rgb_step=$scaled_step;
+						    $response_multiplier=$scaled_mult;
+						    $response_cap_reason=$scaled_reason;
+						    $response_entry=$scaled_entry;
+						   }
+						  }
+					  my $delta = $direction*$rgb_step;
+					  foreach my $try_delta ($delta,-$delta) {
+					   my ($next,$damped)=next_untried_value($current,$try_delta,$tried,$setting,$min_step,$strict_tried);
+					   next if(!defined($next));
+					   next if(abs($next-$current) < 0.0001);
+				   my $adj={ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, remaining_error=>abs($err) };
+				   my $single=[$adj];
+				   mark_headroom_105_response_scaled_adjustments($single,$setting,$response_multiplier,$response_cap_reason,$response_entry,$rgb_step);
+				   push @out,$adj;
+				   last;
+				  }
 		  last if(@out && $near_fine && !$luma_priority);
 		 }
-		 return @out ? ($headroom_105_body ? mark_headroom_105_body_refinement_adjustments(\@out) : \@out) : undef;
+		 if(@out && $headroom_105_body) {
+		  my $coupled=append_headroom_105_luma_coupling(\@out,$arrays,$target,$step,$luminance_err,$tried,0,$LG_AUTOCAL_STATE);
+		  return $coupled;
+		 }
+		 return @out ? \@out : undef;
 }
 
 sub choose_micro_adjustments {
@@ -5424,9 +6031,17 @@ sub choose_micro_adjustments {
 			  });
 			 }
 				 my $all_down_luma=headroom_105_all_down_luma_adjustment($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$max_step < 0.5 ? $max_step : 0.5,1,$step);
+				 my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err);
+				 my $headroom_105_luma_priority=headroom_105_luma_priority_active($step,$arrays,$target,$tried,$luminance_err);
+				 if($headroom_105_luma_priority) {
+				  my $luma_priority=headroom_105_luma_priority_adjustment($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,1,1,$step);
+				  return $luma_priority if($luma_priority);
+				 }
+				 $all_down_luma=headroom_105_all_down_luma_adjustment($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$max_step < 0.5 ? $max_step : 0.5,1,$step);
 				 return $all_down_luma if($all_down_luma);
 				 my $floor_luma_coupled=headroom_105_floor_luma_coupled_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$max_step < 0.5 ? $max_step : 0.5,1,$step);
 				 return $floor_luma_coupled if($floor_luma_coupled);
+				 return undef if($headroom_105_luma_blocking);
 				 if($paired_white) {
 				  my $pair_seed=legal_white_pair_wrgb_seed_adjustment($arrays,$target,$de,$tried,$step);
 				  return $pair_seed if($pair_seed);
@@ -5459,16 +6074,33 @@ sub choose_micro_adjustments {
 		  my $idx=$target->{"index"};
 		  next if(!defined($idx) || $idx >= @{$arr});
 		  my $current=$arr->[$idx]||0;
-			  my $direction=($err > 0) ? -1 : 1;
-			  foreach my $mag (@magnitudes) {
-			   foreach my $dir ($direction,-$direction) {
-			    my ($next,$damped)=next_untried_value($current,$dir*$mag,$tried,$setting,$min_micro_step,$strict_tried);
-			    next if(!defined($next));
-		    next if(abs($next-$current) < 0.0001);
-		    my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, micro=>1 }];
-		    return $headroom_105_body ? mark_headroom_105_body_refinement_adjustments($out) : $out;
-		   }
-			  }
+				  my $direction=($err > 0) ? -1 : 1;
+				  foreach my $mag (@magnitudes) {
+				   foreach my $dir ($direction,-$direction) {
+				    my $effective_mag=$mag;
+				    my ($response_multiplier,$response_cap_reason,$response_entry);
+				    if($headroom_105_body && !$strict_tried) {
+				     my $near_y_cleanup_cap=headroom_105_near_y_cleanup_rgb_cap($tried,$step,$arrays,$target,$luminance_err,1);
+				     my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 1.0;
+				     my ($scaled_mag,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
+				      $tried,$step,$setting,$dir,$effective_mag,$response_cap,abs($err),"fine_rgb"
+				     );
+				     next if(!defined($scaled_mag));
+				     if($scaled_mag > $effective_mag+0.0001) {
+				      $effective_mag=$scaled_mag;
+				      $response_multiplier=$scaled_mult;
+				      $response_cap_reason=$scaled_reason;
+				      $response_entry=$scaled_entry;
+				     }
+				    }
+				    my ($next,$damped)=next_untried_value($current,$dir*$effective_mag,$tried,$setting,$min_micro_step,$strict_tried);
+				    next if(!defined($next));
+			    next if(abs($next-$current) < 0.0001);
+			    my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, micro=>1, remaining_error=>abs($err) }];
+			    mark_headroom_105_response_scaled_adjustments($out,$setting,$response_multiplier,$response_cap_reason,$response_entry,$effective_mag);
+			    return $headroom_105_body ? append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,1,$LG_AUTOCAL_STATE) : $out;
+			   }
+				  }
 			 }
 			 my @sweep_channels=qw(r g b);
 			 push @sweep_channels,"lum" if(has_luminance_channel($arrays,$target) && ($ire < 99.9 || autocal_step_is_fast_headroom($step)));
@@ -5479,14 +6111,31 @@ sub choose_micro_adjustments {
 			   next if(ref($arr) ne "ARRAY");
 			   my $idx=$target->{"index"};
 			   next if(!defined($idx) || $idx >= @{$arr});
-				   my $current=$arr->[$idx]||0;
-				   foreach my $dir (1,-1) {
-				    my ($next,$damped)=next_untried_value($current,$dir*$mag,$tried,$setting,$min_micro_step,$strict_tried);
-				    next if(!defined($next));
-			    next if(abs($next-$current) < 0.0001);
-			    next if($ch eq "lum" && luma_probe_family_suppressed($tried,$target,$current,$next,$step,"fine_sweep_luminance"));
-			    my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, micro=>1, sweep=>1 }];
-			    return $headroom_105_body ? mark_headroom_105_body_refinement_adjustments($out) : $out;
+					   my $current=$arr->[$idx]||0;
+					   foreach my $dir (1,-1) {
+					    my $effective_mag=$mag;
+					    my ($response_multiplier,$response_cap_reason,$response_entry);
+					    if($headroom_105_body && !$strict_tried) {
+					     my $near_y_cleanup_cap=headroom_105_near_y_cleanup_rgb_cap($tried,$step,$arrays,$target,$luminance_err,1);
+					     my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : ($ch eq "lum" ? 1.0 : 1.0);
+					     my ($scaled_mag,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
+					      $tried,$step,$setting,$dir,$effective_mag,$response_cap,undef,"fine_sweep"
+					     );
+					     next if(!defined($scaled_mag));
+					     if($scaled_mag > $effective_mag+0.0001) {
+					      $effective_mag=$scaled_mag;
+					      $response_multiplier=$scaled_mult;
+					      $response_cap_reason=$scaled_reason;
+					      $response_entry=$scaled_entry;
+					     }
+					    }
+					    my ($next,$damped)=next_untried_value($current,$dir*$effective_mag,$tried,$setting,$min_micro_step,$strict_tried);
+					    next if(!defined($next));
+				    next if(abs($next-$current) < 0.0001);
+				    next if($ch eq "lum" && luma_probe_family_suppressed($tried,$target,$current,$next,$step,"fine_sweep_luminance"));
+				    my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, micro=>1, sweep=>1 }];
+				    mark_headroom_105_response_scaled_adjustments($out,$setting,$response_multiplier,$response_cap_reason,$response_entry,$effective_mag);
+				    return $headroom_105_body ? append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,1,$LG_AUTOCAL_STATE) : $out;
 			   }
 			  }
 			 }
@@ -8918,6 +9567,44 @@ eval {
 				   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 			   return 1;
 			  };
+			  my $restore_headroom_105_near_y_cleanup_branch=sub {
+			   my ($reason)=@_;
+			   my $branch=headroom_105_near_y_cleanup_branch(\%tried_values);
+			   return 0 if(ref($branch) ne "HASH" || ref($branch->{"arrays"}) ne "HASH" || ref($branch->{"reading"}) ne "HASH");
+			   trace_109($read_step,"restore_headroom_105_near_y_cleanup_branch",{
+			    label=>$label,
+			    reason=>$reason||"Restoring 105 near-Y cleanup branch",
+			    attempts=>$branch->{"attempts"}||0,
+			    candidate_delta_e=>defined($de)?$de+0:undef,
+			    candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+			    branch_delta_e=>defined($branch->{"de"})?$branch->{"de"}+0:undef,
+			    branch_luminance_error_pct=>defined($branch->{"lum_pct"})?$branch->{"lum_pct"}+0:undef,
+			    branch_values=>trace_target_values($branch->{"arrays"},$target)
+			   });
+			   $arrays=clone_arrays($branch->{"arrays"});
+			   $state->{"phase"}="restoring";
+			   $state->{"message"}=$reason||"Restoring 105 near-Y cleanup branch";
+			   write_state($state);
+			   my $restore_error;
+			   ($picture,$restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+			   die $restore_error if($restore_error);
+			   $calibration_mode_active=1;
+			   sync_state_picture($state,$picture,$picture_mode);
+			   $read_step=clone_picture($branch->{"read_step"}) if(ref($branch->{"read_step"}) eq "HASH");
+			   $reading=clone_picture($branch->{"reading"});
+			   $de=$branch->{"de"};
+			   $lum_pct=$branch->{"lum_pct"};
+			   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$reading,$white_y);
+			   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+			   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+			   $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+			   $state->{"current_delta_e"}=defined($de) ? $de : undef;
+			   $state->{"current_luminance"}=luminance($reading);
+			   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+			   set_state_target_step_luminance($state,$target_step_y);
+			   write_state($state);
+			   return 1;
+			  };
 			  my $apply_probe_result=sub {
 		   my ($probe_step,$probe_reading,$probe_arrays,$probe_picture)=@_;
 		   return 0 if(!$probe_step || ref($probe_reading) ne "HASH" || ref($probe_arrays) ne "HASH");
@@ -9091,61 +9778,68 @@ eval {
 				  };
 				  my $iteration_limit=iteration_limit_for_step($step,$max_iterations,$config);
 				  $iteration_limit=48 if($paired_white_step && !autocal_config_is_touchup($config) && $iteration_limit < 48);
-				  for(my $iter=1;$iter<=$iteration_limit;$iter++) {
-				   last if(cancelled());
-				   my $err=autocal_adjustment_error($reading,$read_step);
-				   my $lum_err=luminance_error_ratio($reading,$target_step_y);
-						   my $adjustments;
-								   if(
-								    autocal_step_is_low_shadow($read_step) &&
-								    ref($low_shadow_next_adjustments) eq "ARRAY"
+					  for(my $iter=1;$iter<=$iteration_limit;$iter++) {
+					   last if(cancelled());
+					   my $err=autocal_adjustment_error($reading,$read_step);
+					   my $lum_err=luminance_error_ratio($reading,$target_step_y);
+					   my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($read_step,$arrays,$target,\%tried_values,$lum_err);
+					   my $headroom_105_luma_priority=headroom_105_luma_priority_active($read_step,$arrays,$target,\%tried_values,$lum_err);
+					   my $headroom_105_near_y_cleanup_active=headroom_105_near_y_cleanup_branch_active(\%tried_values,$read_step,$arrays,$target,$lum_err);
+							   my $adjustments;
+									   if(
+									    autocal_step_is_low_shadow($read_step) &&
+									    ref($low_shadow_next_adjustments) eq "ARRAY"
 								   ) {
 								    $adjustments=$low_shadow_next_adjustments;
 								    $low_shadow_next_adjustments=undef;
 								   }
 								   if(
-								    !$adjustments &&
-								    !autocal_step_is_low_shadow($read_step) &&
-								    ref($body_luminance_next_adjustments) eq "ARRAY"
-								   ) {
-								    $adjustments=$body_luminance_next_adjustments;
-								    $body_luminance_next_adjustments=undef;
-								   }
+									    !$adjustments &&
+									    !autocal_step_is_low_shadow($read_step) &&
+									    ref($body_luminance_next_adjustments) eq "ARRAY"
+									   ) {
+									    $adjustments=$body_luminance_next_adjustments if(!$headroom_105_near_y_cleanup_active && (!$headroom_105_luma_priority || ref(luma_only_adjustment($body_luminance_next_adjustments)) eq "HASH"));
+									    $body_luminance_next_adjustments=undef;
+									   }
 								   if(!$adjustments && autocal_step_is_low_shadow($read_step)) {
 								    $adjustments=low_shadow_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,0);
 								   }
 							   if(!$adjustments && $paired_white_step) {
 							    $adjustments=legal_white_pair_wrgb_seed_adjustment($arrays,$target,$de,\%tried_values,$read_step);
 							   }
-							   if(!$adjustments && $paired_white_step) {
-							    my $pair_chroma_mag=chroma_error_magnitude($err);
-							    if($pair_chroma_mag < 0.035 || (defined($de) && $de <= ($target_delta+1.0)) || (defined($lum_err) && abs($lum_err*100) > 12)) {
-							     $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$pair_lum_pct,0);
-							    }
-							   }
-							   if(!$adjustments) {
-							    $adjustments=headroom_105_all_down_luma_adjustment($arrays,$target,$lum_err,$de,$stalls,\%tried_values,0.25,2,0,$read_step);
-							   }
-							   if(!$adjustments) {
-							    $adjustments=headroom_105_floor_luma_coupled_adjustment($err,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,0.25,1,0,$read_step);
-							   }
-							   if(!$adjustments) {
-							    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
-							   }
-							   if(
-							    !$adjustments &&
-							    autocal_step_is_fast_headroom($read_step) &&
-						    ref($headroom_next_adjustments) eq "ARRAY" &&
-						    headroom_queued_adjustment_still_best($headroom_next_adjustments,$err,$de,$target_delta,$read_step)
-						   ) {
-						    $adjustments=$headroom_next_adjustments;
-						    $headroom_next_adjustments=undef;
-							   } else {
-							    $headroom_next_adjustments=undef if(autocal_step_is_fast_headroom($read_step));
-							    $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls) if(!$adjustments);
-							    $adjustments=lg_autocal_26_adaptive_headroom_luminance_adjustment($state,$arrays,$target,$read_step,$lum_pct,\%tried_values,$stalls,"main_headroom_luminance") if(!$adjustments);
-							    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step) if(!$adjustments);
-							   }
+								   if(!$adjustments && $paired_white_step) {
+								    my $pair_chroma_mag=chroma_error_magnitude($err);
+								    if($pair_chroma_mag < 0.035 || (defined($de) && $de <= ($target_delta+1.0)) || (defined($lum_err) && abs($lum_err*100) > 12)) {
+								     $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$pair_lum_pct,0);
+								    }
+								   }
+								   if(!$adjustments) {
+								    $adjustments=headroom_105_luma_priority_adjustment($arrays,$target,$lum_err,$de,$stalls,\%tried_values,0.25,1,0,$read_step);
+								   }
+								   if(!$adjustments) {
+								    $adjustments=headroom_105_all_down_luma_adjustment($arrays,$target,$lum_err,$de,$stalls,\%tried_values,0.25,2,0,$read_step);
+								   }
+								   if(!$adjustments) {
+								    $adjustments=headroom_105_floor_luma_coupled_adjustment($err,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,0.25,1,0,$read_step);
+								   }
+								   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
+								    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
+								   }
+								   if(
+								    !$adjustments &&
+								    !$headroom_105_luma_blocking &&
+								    autocal_step_is_fast_headroom($read_step) &&
+							    ref($headroom_next_adjustments) eq "ARRAY" &&
+							    headroom_queued_adjustment_still_best($headroom_next_adjustments,$err,$de,$target_delta,$read_step)
+							   ) {
+							    $adjustments=$headroom_next_adjustments;
+							    $headroom_next_adjustments=undef;
+								   } else {
+								    $headroom_next_adjustments=undef if(autocal_step_is_fast_headroom($read_step));
+								    $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls,$lum_err) if(!$adjustments && !$headroom_105_luma_blocking);
+								    $adjustments=lg_autocal_26_adaptive_headroom_luminance_adjustment($state,$arrays,$target,$read_step,$lum_pct,\%tried_values,$stalls,"main_headroom_luminance") if(!$adjustments && !$headroom_105_near_y_cleanup_active);
+								    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step) if(!$adjustments);
+								   }
 					   if(!$adjustments && stimulus_probe_enabled($config) && !autocal_step_is_peak_headroom($read_step) && !$pair_target_reached_now->()) {
 				    my ($probe_step,$probe_reading,$probe_arrays,$probe_picture,$probe_error)=probe_responsive_stimulus(
 				     $config,$state,$read_step,$arrays,$slot_default_arrays,$target,$picture,$picture_mode,$calibration_mode_active,$reading,
@@ -9240,8 +9934,15 @@ eval {
 						     $body_luminance_next_adjustments=undef;
 						    }
 						   }
-				   my $candidate_score_after=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
-				   trace_109($read_step,"measurement_after_adjustment",{
+					   my $candidate_score_after=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+					   my $headroom_105_response_update=record_headroom_105_response(
+					    \%tried_values,$target,$read_step,$adjustments,
+					    $before_adjustment_reading,$reading,
+					    $before_lum_pct_for_adjustment,$lum_pct,
+					    $before_de_for_adjustment,$de,
+					    $before_score_for_adjustment,$candidate_score_after
+					   );
+					   trace_109($read_step,"measurement_after_adjustment",{
 				    label=>$label,
 				    iteration=>$iter+0,
 				    iteration_limit=>$iteration_limit+0,
@@ -9256,9 +9957,10 @@ eval {
 					    best_score=>$best_score+0,
 					    rgb_error=>rgb_error($reading),
 							    response_score=>$response_score+0,
-							    rgb_response_model=>$rgb_response_update,
-							    saved_response_model=>$saved_response_model,
-							    $pair_side_trace_fields->(),
+								    rgb_response_model=>$rgb_response_update,
+								    saved_response_model=>$saved_response_model,
+								    headroom_105_response_update=>$headroom_105_response_update,
+								    $pair_side_trace_fields->(),
 							    target_values=>trace_target_values($arrays,$target)
 							   });
 					   if(touchup_delta_skip_reached($config,$de,$target_delta,$read_step,$lum_pct) && (!$paired_white_step || $pair_target_reached_now->())) {
@@ -9312,14 +10014,31 @@ eval {
 					   if($probe_found) {
 					    # The probe already reset the baseline to the responsive patch stimulus.
 					    $iter-- if($iter > 0);
-					   } else {
-					    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
-					    my $delta_keep=$candidate_delta_keep->();
-						    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
-							    my $best_update_reason=$paired_white_step ? $pair_best_update_reason->($candidate_score_after) : undef;
-							    my $keep_candidate=$paired_white_step
-							     ? defined($best_update_reason)
-							     : (defined($de) && $not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep));
+						   } else {
+						    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
+						    my $delta_keep=$candidate_delta_keep->();
+							    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
+								    my $best_update_reason=$paired_white_step ? $pair_best_update_reason->($candidate_score_after) : undef;
+								    my $headroom_105_score_keep=0;
+								    my $headroom_105_luma_blocking_after=(!$paired_white_step && defined($lum_pct))
+								     ? headroom_105_luma_blocking_active($read_step,$arrays,$target,\%tried_values,$lum_pct/100)
+								     : 0;
+								    if(
+								     !$paired_white_step &&
+								     headroom_105_post_seed_body_refinement($read_step,$arrays,$target,\%tried_values) &&
+								     defined($candidate_score_after) && defined($best_score) &&
+								     defined($lum_pct) && defined($best_lum_pct) &&
+								     abs($lum_pct) + 0.05 < abs($best_lum_pct) &&
+								     $candidate_score_after + 0.0001 < $best_score
+								    ) {
+								     $headroom_105_score_keep=1;
+								     $best_update_reason="headroom_105_y_score_keep";
+								    }
+								    my $keep_candidate=$paired_white_step
+								     ? defined($best_update_reason)
+								     : (defined($de) && ($headroom_105_luma_blocking_after
+								      ? $headroom_105_score_keep
+								      : (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep)));
 					    if($keep_candidate) {
 				    $best_de=$de;
 				    $best_lum_pct=$lum_pct;
@@ -9327,6 +10046,7 @@ eval {
 					    $best_arrays=clone_arrays($arrays);
 						    $best_reading=clone_picture($reading);
 						    $best_read_step=clone_picture($read_step);
+						    delete($tried_values{"__headroom_105_near_y_cleanup"});
 						    $store_best_pair->() if($paired_white_step);
 						    $low_shadow_next_adjustments=$low_shadow_candidate_next_adjustments if(ref($low_shadow_candidate_next_adjustments) eq "ARRAY");
 						    $body_luminance_next_adjustments=$body_candidate_next_adjustments if(ref($body_candidate_next_adjustments) eq "ARRAY");
@@ -9362,6 +10082,79 @@ eval {
 				     $before_score_for_adjustment,$candidate_score_after,
 				     $read_step,"main",$state
 				    );
+				    my $headroom_105_near_y_working=headroom_105_near_y_cleanup_working_candidate(
+				     $read_step,$arrays,$target,\%tried_values,$adjustments,
+				     $before_lum_pct_for_adjustment,$lum_pct,
+				     $before_de_for_adjustment,$de,
+				     $before_score_for_adjustment,$candidate_score_after
+				    );
+					    if($headroom_105_near_y_working) {
+					     $tried_values{"__headroom_105_near_y_cleanup"}={
+					      active=>1,
+					      mode=>"near_y_cleanup",
+					      attempts=>0,
+					      max_attempts=>2,
+				      arrays=>clone_arrays($arrays),
+				      reading=>clone_picture($reading),
+				      read_step=>clone_picture($read_step),
+				      de=>defined($de)?$de+0:undef,
+				      lum_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				      score=>defined($candidate_score_after)?$candidate_score_after+0:undef
+				     };
+				     $luma_anchor_working=1;
+				     trace_109($read_step,"headroom_105_near_y_cleanup_branch_started",{
+				      label=>$label,
+				      iteration=>$iter+0,
+				      candidate_delta_e=>defined($de)?$de+0:undef,
+				      candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				      best_delta_e=>defined($best_de)?$best_de+0:undef,
+				      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+				      best_score=>$best_score+0,
+				      candidate_score=>defined($candidate_score_after)?$candidate_score_after+0:undef,
+					      working_values=>trace_target_values($arrays,$target)
+					     });
+					    } elsif(headroom_105_score_y_working_candidate(
+					     $read_step,$arrays,$target,\%tried_values,$adjustments,
+					     $before_lum_pct_for_adjustment,$lum_pct,
+					     $before_score_for_adjustment,$candidate_score_after,
+					     $best_lum_pct,$best_score,
+					     $before_de_for_adjustment,$de
+					    )) {
+					     $tried_values{"__headroom_105_near_y_cleanup"}={
+					      active=>1,
+					      mode=>"score_y_recovery",
+					      attempts=>0,
+					      max_attempts=>3,
+					      arrays=>clone_arrays($arrays),
+					      reading=>clone_picture($reading),
+					      read_step=>clone_picture($read_step),
+					      de=>defined($de)?$de+0:undef,
+					      lum_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					      score=>defined($candidate_score_after)?$candidate_score_after+0:undef
+					     };
+					     $luma_anchor_working=1;
+					     trace_109($read_step,"headroom_105_score_y_branch_started",{
+					      label=>$label,
+					      iteration=>$iter+0,
+					      before_luminance_error_pct=>defined($before_lum_pct_for_adjustment)?$before_lum_pct_for_adjustment+0:undef,
+					      candidate_delta_e=>defined($de)?$de+0:undef,
+					      candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					      candidate_score=>defined($candidate_score_after)?$candidate_score_after+0:undef,
+					      best_delta_e=>defined($best_de)?$best_de+0:undef,
+					      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+					      best_score=>$best_score+0,
+					      adjustments=>trace_adjustments_summary($adjustments),
+					      working_values=>trace_target_values($arrays,$target)
+					     });
+					    } else {
+					     $luma_anchor_working=0 if(ref($bad_luma_probe) eq "HASH");
+					    }
+				    my $bad_headroom_105_family=record_headroom_105_bad_adjustment_family(
+				     \%tried_values,$target,$adjustments,
+				     $before_lum_pct_for_adjustment,$lum_pct,
+				     $before_score_for_adjustment,$candidate_score_after,
+				     $read_step,$before_de_for_adjustment,$de
+				    );
 				    trace_109($read_step,"candidate_rejected",{
 			     label=>$label,
 			     iteration=>$iter+0,
@@ -9378,12 +10171,45 @@ eval {
 					     best_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
 					     luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
 					     bad_luma_probe=>$bad_luma_probe,
+					     bad_headroom_105_family=>$bad_headroom_105_family,
 					     $pair_side_trace_fields->(),
 					     candidate_values=>trace_target_values($arrays,$target),
 					     best_values=>trace_target_values($best_arrays,$target)
 					    });
+					    my $near_y_cleanup_branch=headroom_105_near_y_cleanup_branch(\%tried_values);
+					    my $near_y_cleanup_rgb_failed=(ref($near_y_cleanup_branch) eq "HASH" && $near_y_cleanup_branch->{"active"} && headroom_105_rgb_cleanup_adjustment($adjustments)) ? 1 : 0;
 					    my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%tried_values,"iteration",$iter);
-					    if($paired_luma_kept) {
+					    if($near_y_cleanup_rgb_failed) {
+					     my $branch=headroom_105_near_y_cleanup_branch(\%tried_values);
+					     $branch->{"attempts"}=($branch->{"attempts"}||0)+1 if(ref($branch) eq "HASH");
+					     my $attempts=(ref($branch) eq "HASH") ? ($branch->{"attempts"}||0) : 1;
+					     my $max_attempts=(ref($branch) eq "HASH" && defined($branch->{"max_attempts"})) ? ($branch->{"max_attempts"}+0) : 2;
+					     trace_109($read_step,"headroom_105_near_y_cleanup_rejected",{
+					      label=>$label,
+					      iteration=>$iter+0,
+					      attempts=>$attempts+0,
+					      max_attempts=>$max_attempts+0,
+					      candidate_delta_e=>defined($de)?$de+0:undef,
+					      candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					      candidate_score=>$candidate_score+0,
+					      best_delta_e=>defined($best_de)?$best_de+0:undef,
+					      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+					      best_score=>$best_score+0,
+					      adjustments=>trace_adjustments_summary($adjustments),
+					      candidate_values=>trace_target_values($arrays,$target)
+					     });
+					     if($attempts >= $max_attempts) {
+					      suppress_headroom_105_family(\%tried_values,$read_step,$target,"headroom_105_luma_priority","near_y_cleanup_exhausted",$before_lum_pct_for_adjustment,$lum_pct,$before_score_for_adjustment,$candidate_score_after);
+					      suppress_headroom_105_family(\%tried_values,$read_step,$target,"headroom_105_all_down_luma","near_y_cleanup_exhausted",$before_lum_pct_for_adjustment,$lum_pct,$before_score_for_adjustment,$candidate_score_after);
+					      suppress_headroom_105_family(\%tried_values,$read_step,$target,"headroom_105_floor_luma_coupled","near_y_cleanup_exhausted",$before_lum_pct_for_adjustment,$lum_pct,$before_score_for_adjustment,$candidate_score_after);
+					      delete($tried_values{"__headroom_105_near_y_cleanup"});
+					      $restore_best_branch->("105 near-Y RGB cleanup exhausted; keeping best $label result");
+					      last;
+					     }
+					     $restore_headroom_105_near_y_cleanup_branch->("Retrying 105 near-Y RGB cleanup from luma branch");
+					     $stalls=0;
+					     next;
+					    } elsif($paired_luma_kept) {
 					     $stalls=0;
 					    } elsif($luma_anchor_working) {
 					     $stalls=0;
@@ -9643,9 +10469,16 @@ eval {
 				     last if(!$read_legal_white_pair_counterpart->("Balancing 99% and 100% fine tune") && cancelled());
 				     $switch_to_worst_pair_step->("Paired fine-tune result");
 				    }
-				    my $candidate_score=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
-				    my $saved_response_model=remember_lg_autocal_26_response_model($config,$state,$read_step,$adjustments,$before_polish,$reading,"fine_tune");
-				    trace_109($read_step,"fine_tune_measurement",{
+					    my $candidate_score=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+					    my $saved_response_model=remember_lg_autocal_26_response_model($config,$state,$read_step,$adjustments,$before_polish,$reading,"fine_tune");
+					    my $headroom_105_response_update=record_headroom_105_response(
+					     \%polish_tried,$target,$read_step,$adjustments,
+					     $before_polish,$reading,
+					     $before_lum_pct_for_polish,$lum_pct,
+					     $before_de_for_polish,$de,
+					     $before_score_for_polish,$candidate_score
+					    );
+					    trace_109($read_step,"fine_tune_measurement",{
 			     label=>$label,
 			     polish=>$polish+0,
 			     polish_limit=>$polish_limit+0,
@@ -9658,18 +10491,36 @@ eval {
 				     score=>$candidate_score+0,
 					     best_delta_e=>defined($best_de)?$best_de+0:undef,
 					     best_score=>$best_score+0,
-					     rgb_error=>rgb_error($reading),
-					     saved_response_model=>$saved_response_model,
-					     $pair_side_trace_fields->(),
+						     rgb_error=>rgb_error($reading),
+						     saved_response_model=>$saved_response_model,
+						     headroom_105_response_update=>$headroom_105_response_update,
+						     $pair_side_trace_fields->(),
 					     target_values=>trace_target_values($arrays,$target)
 					    });
 			    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
 			    my $delta_keep=$candidate_delta_keep->();
 				    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
 					    my $best_update_reason=$paired_white_step ? $pair_best_update_reason->($candidate_score) : undef;
+					    my $headroom_105_score_keep=0;
+					    my $headroom_105_luma_blocking_after=(!$paired_white_step && defined($lum_pct))
+					     ? headroom_105_luma_blocking_active($read_step,$arrays,$target,\%polish_tried,$lum_pct/100)
+					     : 0;
+					    if(
+					     !$paired_white_step &&
+					     headroom_105_post_seed_body_refinement($read_step,$arrays,$target,\%polish_tried) &&
+					     defined($candidate_score) && defined($best_score) &&
+					     defined($lum_pct) && defined($best_lum_pct) &&
+					     abs($lum_pct) + 0.05 < abs($best_lum_pct) &&
+					     $candidate_score + 0.0001 < $best_score
+					    ) {
+					     $headroom_105_score_keep=1;
+					     $best_update_reason="headroom_105_y_score_keep";
+					    }
 					    my $keep_candidate=$paired_white_step
 					     ? defined($best_update_reason)
-					     : (defined($de) && $not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep));
+					     : (defined($de) && ($headroom_105_luma_blocking_after
+					      ? $headroom_105_score_keep
+					      : (($not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep)));
 			    if($keep_candidate) {
 			     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
@@ -9707,6 +10558,7 @@ eval {
 				      $before_score_for_polish,$candidate_score,
 				      $read_step,"fine_tune",$state
 				     );
+				     $luma_anchor_working=0 if(ref($bad_luma_probe) eq "HASH");
 				     trace_109($read_step,"fine_tune_candidate_rejected",{
 			      label=>$label,
 			      polish=>$polish+0,
