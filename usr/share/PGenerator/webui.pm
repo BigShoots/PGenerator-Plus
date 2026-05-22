@@ -7908,7 +7908,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	     <input type="checkbox" id="meterFullAutoCalPostCommitPolishEnabled" checked onchange="meterFullAutoCalSyncMeticulousChoices('option')" style="margin-top:2px">
 	     <span>
 	      <span style="display:block;font-weight:700">Post greyscale commit polish</span>
-	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Polishes the committed greyscale state after the 3D LUT touch-up writes its 1D LUT.</span>
+	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Polishes the committed greyscale state after the 3D LUT writes its calibration.</span>
 	     </span>
 	    </label>
 	    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
@@ -7918,7 +7918,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Runs committed verification after the polish pass and restores the best measured state.</span>
 	     </span>
 	    </label>
-	    <label style="display:flex;gap:8px;align-items:flex-start">
+	    <label id="meterFullAutoCalPostTouchupChoice" style="display:none;gap:8px;align-items:flex-start">
 	     <input type="checkbox" id="meterFullAutoCalPostTouchupEnabled" checked onchange="meterFullAutoCalSyncMeticulousChoices('option')" style="margin-top:2px">
 	     <span>
 	      <span style="display:block;font-weight:700">Post-3D LUT greyscale touch-up</span>
@@ -15939,7 +15939,7 @@ function meterUpdateSeriesLabels(){
  const lgTvAvailable=meterGreyTvControlsActive();
  const grey21=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-21"]');
  if(grey21) grey21.textContent=meterGreyscale21SeriesLabel();
- const grey26=meterSetSeriesButtonVisible('greyscale-26',lgTvAvailable);
+ const grey26=meterSetSeriesButtonVisible('greyscale-26',false);
  if(grey26) grey26.textContent=meterGreyscale26SeriesLabel();
  const edit21=document.getElementById('meterGreyEdit21Btn');
  if(edit21) edit21.textContent=meterUseLgGreyscale21(21)?'LG 22pt':'21pt';
@@ -16614,6 +16614,14 @@ function meterSelectSeries(type,points,opts){
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
  if(meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
+  if(opts.preserveTab&&meterSeriesTab==='autocal'){
+   meterUpdateSeriesTabUi();
+   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
+  } else if(opts.preserveTab){
+   meterSeriesTab='autocal';
+   meterUpdateSeriesTabUi();
+   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
+  }
   meterUpdateDeltaEFormControl();
   toast(meterSeriesLabelFromKey(key)+' loaded');
   return;
@@ -19070,7 +19078,7 @@ function meterFullAutoCalSyncMeticulousChoices(source){
  }
  if(touchup&&METER_FULL_AUTOCAL_TOUCHUP_DISABLED) touchup.checked=false;
  if(meticulous){
-  meticulous.checked=!!(polish&&polish.checked&&verify&&verify.checked&&touchup&&touchup.checked&&!METER_FULL_AUTOCAL_TOUCHUP_DISABLED);
+  meticulous.checked=!!(polish&&polish.checked&&verify&&verify.checked&&(METER_FULL_AUTOCAL_TOUCHUP_DISABLED||(touchup&&touchup.checked)));
  }
 }
 
@@ -19310,6 +19318,7 @@ function meterFullAutoCalConfirmDialog(options){
  const polishChoice=document.getElementById('meterFullAutoCalPostCommitPolishEnabled');
  const verifyChoice=document.getElementById('meterFullAutoCalPostCommitVerifyEnabled');
  const touchupChoice=document.getElementById('meterFullAutoCalPostTouchupEnabled');
+ const touchupChoiceLabel=document.getElementById('meterFullAutoCalPostTouchupChoice');
  const progressBox=document.getElementById('meterAutoCalProgressBox');
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
  const cancelBtn=document.getElementById('meterFullAutoCalCancelBtn');
@@ -19331,6 +19340,7 @@ function meterFullAutoCalConfirmDialog(options){
    touchupChoice.checked=METER_FULL_AUTOCAL_TOUCHUP_DISABLED?false:meterFullAutoCalPostTouchupEnabled();
    touchupChoice.disabled=!!METER_FULL_AUTOCAL_TOUCHUP_DISABLED;
   }
+  if(touchupChoiceLabel) touchupChoiceLabel.style.display=METER_FULL_AUTOCAL_TOUCHUP_DISABLED?'none':'flex';
   meterFullAutoCalSyncMeticulousChoices('option');
  }
  if(fullConfirmBox) fullConfirmBox.style.display='';
