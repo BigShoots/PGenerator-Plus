@@ -20366,6 +20366,7 @@ async function meterAutoCalConfirmAndStart(){
 	    lg_greyscale_21:false,
 	    lg_autocal_26:true,
 		    lg_autocal_26_anchor_predrive:fullWorkflow?undefined:true,
+		    lg_autocal_26_full_ddc_spine:fullWorkflow?true:undefined,
 		    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
 	    patch_insert:document.getElementById('meterPatchInsert').checked,
 			   target_delta_e:target,
