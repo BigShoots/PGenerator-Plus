@@ -4965,7 +4965,8 @@ sub high_end_paired_luma_allowed {
  return 0 if($paired_white_step);
  return 0 if(lg_autocal_26_anchor_predrive_enabled($config));
  my $standalone_non_spine=(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && !$config->{"full_workflow"} && !autocal_config_is_touchup($config) && !autocal_config_is_post_3d_polish($config) && !lg_autocal_26_full_ddc_spine_enabled($config)) ? 1 : 0;
- return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config) && !$standalone_non_spine);
+ my $full_workflow_first_greyscale_non_spine=(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $config->{"full_workflow"} && !autocal_config_is_touchup($config) && !autocal_config_is_post_3d_polish($config) && !lg_autocal_26_full_ddc_spine_enabled($config)) ? 1 : 0;
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config) && !$standalone_non_spine && !$full_workflow_first_greyscale_non_spine);
  return 0 if(!autocal_step_is_fast_headroom($step) || autocal_step_is_peak_headroom($step));
  return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
  my $ire=$target->{"ire"}+0;
