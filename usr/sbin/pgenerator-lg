@@ -18,6 +18,10 @@ $REQUEST_ENV="PGEN_LG_REQUEST_B64";
 $DEFAULT_CONNECT_TIMEOUT=5;
 $DEFAULT_PAIR_TIMEOUT=55;
 $MAX_FRAME_SIZE=1024*1024;
+$LG_DEFAULT_APP_ID="com.lge.test";
+$LG_DEFAULT_APP_NAME="LG Remote App";
+$LG_CURRENT_APP_ID=$LG_DEFAULT_APP_ID;
+$LG_CURRENT_APP_NAME=$LG_DEFAULT_APP_NAME;
 $LG_REMOTE_APP_SIGNATURE=(
  "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbm".
  "ctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR".
@@ -102,6 +106,23 @@ sub valid_ipv4 (@) {
   return 0 if($octet < 0 || $octet > 255);
  }
  return 1;
+}
+
+sub sanitize_lg_app_id (@) {
+ my $app_id=shift||"";
+ $app_id =~ s/[^A-Za-z0-9_.-]+/./g;
+ $app_id =~ s/^\.+//;
+ $app_id =~ s/\.+$//;
+ return $LG_DEFAULT_APP_ID if($app_id eq "" || $app_id !~ /^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)+$/);
+ return substr($app_id,0,96);
+}
+
+sub sanitize_lg_app_name (@) {
+ my $name=shift||"";
+ $name =~ s/[\r\n\t]+/ /g;
+ $name =~ s/^\s+|\s+$//g;
+ return $LG_DEFAULT_APP_NAME if($name eq "");
+ return substr($name,0,64);
 }
  
 sub file_read_text (@) {
@@ -440,6 +461,8 @@ sub lg_message_register (@) {
  my $force_pairing_arg=shift(@_);
  my $pairing_type=uc($pairing_type_arg||"PROMPT");
  my $force_pairing=$force_pairing_arg ? 1 : 0;
+ my $app_id=&sanitize_lg_app_id($LG_CURRENT_APP_ID);
+ my $app_name=&sanitize_lg_app_name($LG_CURRENT_APP_NAME);
  $client_key="" if(!defined($client_key));
  $pairing_type="PROMPT" if($pairing_type !~ /^(PROMPT|PIN|COMBINED|LGSWITCH-PIN)$/);
  return {
@@ -462,10 +485,10 @@ sub lg_message_register (@) {
     ],
     signatures => [{ signature => $LG_REMOTE_APP_SIGNATURE, signatureVersion => 1 }],
     signed => {
-     appId => "com.lge.test",
+     appId => $app_id,
      created => "20140509",
      localizedAppNames => {
-      "" => "LG Remote App",
+      "" => $app_name,
       "ko-KR" => "\x{B9AC}\x{BAA8}\x{CEE8} \x{C571}",
       "zxx-XX" => "\x{041B}\x{0413} R\x{044D}\x{043C}ot\x{044D} A\x{041F}\x{041F}",
      },
@@ -594,6 +617,8 @@ sub lg_authenticated_session (@) {
   client_key => $client_key,
   pair_prompted => &json_bool($pair_prompted),
   prompt_style => "tv-prompt",
+  app_id => $LG_CURRENT_APP_ID,
+  app_name => $LG_CURRENT_APP_NAME,
   hello_info => $hello_info,
   system_info => $system_info,
   software_info => $software_info,
@@ -3597,9 +3622,11 @@ sub lg_connect_pin_wait_workflow (@) {
    token => $token,
    client_key => $client_key,
    pair_prompted => &json_true(),
-    prompt_style => $prompt_style,
-    pairing_mode => $pairing_type,
-    message => ($pairing_type eq "PIN") ? "LG TV PIN pairing completed." : "LG TV pairing completed.",
+   prompt_style => $prompt_style,
+   pairing_mode => $pairing_type,
+   app_id => $LG_CURRENT_APP_ID,
+   app_name => $LG_CURRENT_APP_NAME,
+   message => ($pairing_type eq "PIN") ? "LG TV PIN pairing completed." : "LG TV pairing completed.",
    hello_info => $hello_info,
    system_info => $system_info,
    software_info => $software_info,
@@ -3654,6 +3681,8 @@ sub lg_connect_workflow (@) {
   paired => &json_true(),
   pair_prompted => $pair_prompted,
   prompt_style => "tv-prompt",
+  app_id => $LG_CURRENT_APP_ID,
+  app_name => $LG_CURRENT_APP_NAME,
   client_key => $client_key_out,
   transport => $session->{"scheme"},
   port => $session->{"port"},
@@ -3686,6 +3715,8 @@ sub main (@) {
  my $pin_file=$request->{"pin_file"}||"";
  my $token=$request->{"token"}||"";
  my $pairing_type=$request->{"pairing_type"}||$request->{"pairing_mode"}||"";
+ $LG_CURRENT_APP_ID=&sanitize_lg_app_id($request->{"app_id"}||$request->{"appId"}||$LG_DEFAULT_APP_ID);
+ $LG_CURRENT_APP_NAME=&sanitize_lg_app_name($request->{"app_name"}||$request->{"appName"}||$LG_DEFAULT_APP_NAME);
  my $enable=$request->{"enable"} ? 1 : 0;
 	 my $keep_calibration_mode=$request->{"keep_calibration_mode"} ? 1 : 0;
 	 my $calibration_mode_active=$request->{"calibration_mode_active"} ? 1 : 0;

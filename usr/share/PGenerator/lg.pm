@@ -117,6 +117,18 @@ sub lg_generate_token (@) {
  return sprintf("%x%x%x",time(),$$,int(rand(0x7fffffff)));
 }
 
+sub lg_pairing_app_identity (@) {
+ my $token=shift||&lg_generate_token();
+ $token =~ s/[^A-Fa-f0-9]+//g;
+ $token=substr($token,-12);
+ $token=&lg_generate_token() if($token eq "");
+ my $suffix=lc($token);
+ return {
+  app_id => "com.pgenerator.plus.$suffix",
+  app_name => "PGenerator+ $suffix",
+ };
+}
+
 sub lg_load_pin_state (@) {
  my $token=shift;
  return {} if(!defined($token) || $token eq "");
@@ -724,6 +736,12 @@ sub lg_helper_run (@) {
  $request={} if(ref($request) ne "HASH");
  my $helper=&lg_helper_path();
  return { status => "error", message => "LG WebOS helper is not installed" } if(!-x $helper);
+ if(!defined($request->{"app_id"}) && !defined($request->{"appId"})) {
+  my $clients=&lg_load_clients();
+  my $client=&lg_primary_client($clients);
+  $request->{"app_id"}=$client->{"app_id"} if(($client->{"app_id"}||"") ne "");
+  $request->{"app_name"}=$client->{"app_name"} if(($client->{"app_name"}||"") ne "");
+ }
  my $payload=MIME::Base64::encode_base64(&lg_encode_json($request),"");
  my $timeout=&lg_helper_timeout($request);
  my $cmd="timeout ${timeout}s env PGEN_LG_REQUEST_B64=".&lg_shell_quote($payload)." ".&lg_shell_quote($helper)." 2>&1";
@@ -800,11 +818,14 @@ sub lg_pin_pair_start (@) {
  eval { make_path($dir); 1; };
  return &lg_status_response("error","Unable to prepare LG PIN pairing storage.",{}) if(!-d $dir);
  my $prompt_style=($pairing_mode eq "PIN") ? "controller-pin" : "mixed-prompt";
+ my $app_identity=&lg_pairing_app_identity($token);
  my $client_key="";
  my $pid=&lg_helper_start_async({
   action => "connect_pin_wait",
   ip => $ip,
   client_key => $client_key,
+  app_id => $app_identity->{"app_id"},
+  app_name => $app_identity->{"app_name"},
   pairing_type => $pairing_mode,
   connect_timeout => 5,
   pair_timeout => 55,
@@ -813,7 +834,7 @@ sub lg_pin_pair_start (@) {
   pin_file => &lg_pin_input_file($token),
   token => $token,
  },&lg_pin_log_file($token));
- $clients->{"pin_pairing"}={ token => $token, ip => $ip, pairing_mode => $pairing_mode, started_at => time(), pid => $pid };
+ $clients->{"pin_pairing"}={ token => $token, ip => $ip, pairing_mode => $pairing_mode, app_id => $app_identity->{"app_id"}, app_name => $app_identity->{"app_name"}, started_at => time(), pid => $pid };
  &lg_save_clients($clients);
  my $state={};
  for(my $i=0;$i<40;$i++) {
@@ -906,6 +927,8 @@ sub lg_update_connect_metadata (@) {
     $clients->{"name"}=$result->{"name"} if(($result->{"name"}||"") ne "");
     $clients->{"model_name"}=$result->{"model_name"} if(($result->{"model_name"}||"") ne "");
     $clients->{"software_version"}=$result->{"software_version"} if(($result->{"software_version"}||"") ne "");
+    $clients->{"app_id"}=$result->{"app_id"} if(($result->{"app_id"}||"") ne "");
+    $clients->{"app_name"}=$result->{"app_name"} if(($result->{"app_name"}||"") ne "");
     $clients->{"transport"}=$result->{"transport"} if(($result->{"transport"}||"") ne "");
     $clients->{"hello_info"}=$result->{"hello_info"} if(ref($result->{"hello_info"}) eq "HASH");
     $clients->{"system_info"}=$result->{"system_info"} if(ref($result->{"system_info"}) eq "HASH");
