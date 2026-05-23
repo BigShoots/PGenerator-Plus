@@ -692,7 +692,7 @@ sub autocal_config_is_post_3d_polish {
 sub lg_autocal_26_standalone_committed_cleanup_enabled {
  my ($config)=@_;
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- return 0 if($config->{"full_workflow"} || autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config));
+ return 0 if($config->{"full_workflow"} || autocal_config_is_touchup($config));
  return 1;
 }
 
