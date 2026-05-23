@@ -696,6 +696,120 @@ sub lg_autocal_26_standalone_committed_cleanup_enabled {
  return 1;
 }
 
+sub lg_autocal_26_oled_shadow_detail_compensation_enabled {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if($config->{"full_workflow"} || autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config));
+ return 0 if(exists($config->{"lg_autocal_26_oled_shadow_detail_compensation"}) && !$config->{"lg_autocal_26_oled_shadow_detail_compensation"});
+ my $display=lc($config->{"display_type"}||"");
+ return 1 if($display =~ /oled/);
+ return $config->{"lg_autocal_26_oled_shadow_detail_compensation_force"} ? 1 : 0;
+}
+
+sub oled_shadow_detail_bias_pct_for_ire {
+ my ($config,$ire)=@_;
+ my %default=(
+  "2.3" => 14.0,
+  "3" => 4.0,
+  "4" => 3.0,
+  "5" => 1.5,
+ );
+ my $key=format_percent($ire);
+ my $matrix=(ref($config) eq "HASH" && ref($config->{"lg_autocal_26_oled_shadow_detail_bias_pct"}) eq "HASH")
+  ? $config->{"lg_autocal_26_oled_shadow_detail_bias_pct"} : undef;
+ if(ref($matrix) eq "HASH") {
+  foreach my $candidate (keys %$matrix) {
+   next if(!defined($candidate) || !defined($matrix->{$candidate}));
+   if(abs(($candidate+0)-($ire+0)) < 0.001) {
+    my $pct=$matrix->{$candidate}+0;
+    $pct=0 if($pct < 0);
+    $pct=25 if($pct > 25);
+    return $pct;
+   }
+  }
+ }
+ return exists($default{$key}) ? $default{$key} : undef;
+}
+
+sub oled_shadow_detail_default_slope_for_ire {
+ my ($ire)=@_;
+ return 30 if(defined($ire) && $ire <= 2.5001);
+ return 15 if(defined($ire) && $ire <= 3.1001);
+ return 10 if(defined($ire) && $ire <= 4.1001);
+ return 7 if(defined($ire) && $ire <= 5.1001);
+ return undef;
+}
+
+sub oled_shadow_detail_max_delta_for_ire {
+ my ($config,$ire)=@_;
+ my $default=(defined($ire) && $ire <= 2.5001) ? 0.75 : 0.50;
+ my $configured=(ref($config) eq "HASH" && defined($config->{"lg_autocal_26_oled_shadow_detail_max_delta"}))
+  ? ($config->{"lg_autocal_26_oled_shadow_detail_max_delta"}+0) : $default;
+ $configured=0.25 if($configured < 0.25);
+ $configured=2.0 if($configured > 2.0);
+ return $configured;
+}
+
+sub apply_lg_autocal_26_oled_shadow_detail_compensation {
+ my ($config,$state,$arrays,$ordered,$calibrated_slot_mask)=@_;
+ return 0 if(!lg_autocal_26_oled_shadow_detail_compensation_enabled($config));
+ return 0 if(ref($state) ne "HASH" || ref($arrays) ne "HASH" || ref($ordered) ne "ARRAY");
+ return 0 if(ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+ my @changes;
+ foreach my $step (@{$ordered}) {
+  next if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+  next if(!autocal_step_is_low_shadow($step));
+  my $ire=$step->{"ire"}+0;
+  my $target_bias=oled_shadow_detail_bias_pct_for_ire($config,$ire);
+  next if(!defined($target_bias) || $target_bias <= 0);
+  my $target=ddc_target_for_step($step);
+  next if(ref($target) ne "HASH");
+  my $idx=$target->{"index"};
+  next if(!defined($idx) || $idx >= @{$arrays->{"adjustingLuminance"}});
+  next if(ref($calibrated_slot_mask) eq "ARRAY" && !$calibrated_slot_mask->[$idx]);
+  my $entry=lg_autocal_26_best_known_for_step($state,$step);
+  next if(ref($entry) ne "HASH" || lg_autocal_26_best_known_committed_state($entry));
+  my $lum_pct=defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef;
+  next if(!defined($lum_pct));
+  my $remaining_bias=$target_bias-$lum_pct;
+  next if($remaining_bias <= 0.25);
+  my $model=lg_autocal_26_response_model_for_step($state,$step);
+  my $response=(ref($model) eq "HASH" && ref($model->{"luminance"}) eq "HASH" && ref($model->{"luminance"}{"adjustingLuminance"}) eq "HASH")
+   ? $model->{"luminance"}{"adjustingLuminance"} : undef;
+  my $slope=(ref($response) eq "HASH" && defined($response->{"slope"})) ? ($response->{"slope"}+0) : oled_shadow_detail_default_slope_for_ire($ire);
+  next if(!defined($slope) || $slope <= 0.05);
+  my $raw_delta=$remaining_bias/$slope;
+  my $cap=oled_shadow_detail_max_delta_for_ire($config,$ire);
+  $raw_delta=$cap if($raw_delta > $cap);
+  next if($raw_delta < 0.10);
+  my $current=defined($arrays->{"adjustingLuminance"}[$idx]) ? ($arrays->{"adjustingLuminance"}[$idx]+0) : 0;
+  my $next=round_ddc_quarter($current+$raw_delta);
+  next if($next <= $current+0.0001);
+  $arrays->{"adjustingLuminance"}[$idx]=$next;
+  my $change={
+   ire=>$ire+0,
+   index=>$idx+0,
+   current=>$current+0,
+   next=>$next+0,
+   delta=>($next-$current)+0,
+   source_luminance_error_pct=>$lum_pct+0,
+   target_bias_pct=>$target_bias+0,
+   remaining_bias_pct=>$remaining_bias+0,
+   slope=>$slope+0,
+   slope_source=>(ref($response) eq "HASH" ? "learned" : "default"),
+   source_reason=>$entry->{"reason"}||"best_known",
+  };
+  push @changes,$change;
+  trace_109($step,"oled_shadow_detail_compensation",$change);
+ }
+ if(@changes) {
+  $state->{"oled_shadow_detail_compensation"}=\@changes;
+  $state->{"oled_shadow_detail_compensation_applied"}=scalar(@changes)+0;
+  write_state($state);
+ }
+ return scalar(@changes);
+}
+
 sub config_positive_int {
  my ($config,$key,$default,$min,$max)=@_;
  my $value=$default;
@@ -11576,6 +11690,13 @@ eval {
 						   write_state($state);
 						  }
 						  if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
+						   my $shadow_detail_adjusted=apply_lg_autocal_26_oled_shadow_detail_compensation(
+						    $config,$state,$arrays,\@ordered,\@calibrated_ddc_slots
+						   );
+						   if($shadow_detail_adjusted) {
+						    $state->{"message"}="Applied OLED shadow detail pre-commit compensation";
+						    write_state($state);
+						   }
 						   my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
 						   if($propagated_slots) {
 						    $state->{"propagated_26pt_slots"}=$propagated_slots+0;
