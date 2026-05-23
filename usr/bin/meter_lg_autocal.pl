@@ -8450,7 +8450,7 @@ sub committed_state_polish {
  my $white_y=committed_polish_reference_white_y($config,$state,$steps,$target_gamma,$signal_mode,undef);
  return ($picture,undef) if(!defined($white_y) || $white_y <= 0);
  set_state_white_reference($state,$white_y);
- $state->{"message"}="Committed polish using fixed headroom white reference";
+	 $state->{"message"}="Committed polish using committed headroom white reference";
  write_state($state);
 
 		 my $candidate_steps=(ref($polish_steps) eq "ARRAY") ? $polish_steps : $steps;
@@ -8503,6 +8503,14 @@ sub committed_state_polish {
   }
   return ($picture,$error);
 	 };
+	 my $lock_committed_polish_white_reference=sub {
+	  my ($read_step,$reading)=@_;
+	  return if(!autocal_step_is_peak_headroom($read_step) || ref($reading) ne "HASH");
+	  my $updated=apply_peak_headroom_reference($state,$read_step,$reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
+	  return if(!defined($updated) || $updated <= 0);
+	  $state->{"committed_polish_white_y"}=$updated+0;
+	  $state->{"committed_polish_reference_locked"}=JSON::PP::true;
+	 };
 	 my $low_shadow_polish_settled=0;
 	 foreach my $step (@polish) {
 	  last if(cancelled());
@@ -8524,11 +8532,12 @@ sub committed_state_polish {
   clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
   write_state($state);
-  my ($reading,$read_error)=read_step($config,$read_step,$state);
-  return $finish_polish->($read_error) if($read_error && $read_error ne "cancelled");
-  last if($read_error && $read_error eq "cancelled");
-  next if(ref($reading) ne "HASH");
-  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+	  my ($reading,$read_error)=read_step($config,$read_step,$state);
+	  return $finish_polish->($read_error) if($read_error && $read_error ne "cancelled");
+	  last if($read_error && $read_error eq "cancelled");
+	  next if(ref($reading) ne "HASH");
+	  $lock_committed_polish_white_reference->($read_step,$reading);
+	  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
   my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
   my $lum_pct=luminance_error_percent($reading,$target_step_y);
@@ -8537,15 +8546,15 @@ sub committed_state_polish {
   $state->{"current_luminance"}=luminance($reading);
   set_state_target_step_luminance($state,$target_step_y);
   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
-  trace_109($read_step,"committed_polish_read",{
-   label=>$label,
-   delta_e=>defined($de)?$de+0:undef,
+	  trace_109($read_step,"committed_polish_read",{
+	   label=>$label,
+	   delta_e=>defined($de)?$de+0:undef,
    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
    values=>trace_target_values($arrays,$target),
    reading=>trace_reading_summary($reading)
-  });
-  remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_polish_read");
-  write_state($state);
+	  });
+	  remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_polish_read");
+	  write_state($state);
   my ($committed_pair_step,$committed_pair_reading,$committed_pair_de,$committed_pair_lum_pct,$committed_pair_target_step_y);
   if(defined($step->{"ire"}) && abs(($step->{"ire"}+0)-99) < 0.001 && ref($white_step) eq "HASH") {
    $committed_pair_step=fixed_lg_autocal_step($config,clone_picture($white_step));
@@ -8695,10 +8704,11 @@ sub committed_state_polish {
    write_state($state);
    ($reading,$read_error)=read_step($config,$read_step,$state);
    return $finish_polish->($read_error) if($read_error && $read_error ne "cancelled");
-   last if($read_error && $read_error eq "cancelled");
-   last if(ref($reading) ne "HASH");
-   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
-   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+	   last if($read_error && $read_error eq "cancelled");
+	   last if(ref($reading) ne "HASH");
+	   $lock_committed_polish_white_reference->($read_step,$reading);
+	   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+	   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
    $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
    $lum_pct=luminance_error_percent($reading,$target_step_y);
    mark_tried_values(\%tried_values,$arrays,$target,$de);
@@ -8816,8 +8826,9 @@ sub committed_state_polish {
 	     ($reading,$read_error)=read_step($config,$read_step,$state);
 	     return $finish_polish->($read_error) if($read_error && $read_error ne "cancelled");
 	     last if($read_error && $read_error eq "cancelled");
-	     if(ref($reading) eq "HASH") {
-	      $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+		     if(ref($reading) eq "HASH") {
+		      $lock_committed_polish_white_reference->($read_step,$reading);
+		      $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 	      annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
 	      $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
 	      $lum_pct=luminance_error_percent($reading,$target_step_y);
