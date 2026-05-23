@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -4737,6 +4737,55 @@ sub neutral_luminance_adjustments {
 	 return undef;
 }
 
+sub near_white_95_luma_step {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return (abs($ire-95) < 0.001) ? 1 : 0;
+}
+
+sub near_white_95_luma_gate_percent {
+ my ($step,$polish,$target_delta,$de)=@_;
+ my $tol=luminance_tolerance_percent($step);
+ $tol=0.45 if(!defined($tol) || $tol <= 0);
+ my $gate=$polish ? ($tol*0.85) : $tol;
+ if($polish && defined($target_delta) && $target_delta > 0 && defined($de) && $de > $target_delta) {
+  my $active_gate=$tol*0.75;
+  $gate=$active_gate if($active_gate < $gate);
+ }
+ $gate=0.30 if($gate < 0.30);
+ return $gate;
+}
+
+sub near_white_95_luma_max_step {
+ my ($lum_pct,$polish)=@_;
+ my $abs=defined($lum_pct) ? abs($lum_pct+0) : 0;
+ return 0.25 if($polish && $abs < 1.20);
+ return 0.50 if($polish);
+ return 0.25 if($abs < 0.75);
+ return 0.50 if($abs < 2.00);
+ return 1.00;
+}
+
+sub near_white_95_luma_adjustments {
+ my ($arrays,$target,$step,$lum_pct,$de,$target_delta,$tried,$stalls,$source,$state,$polish)=@_;
+ return undef if(!near_white_95_luma_step($step));
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ return undef if(!has_luminance_channel($arrays,$target));
+ return undef if(!defined($lum_pct));
+ my $gate=near_white_95_luma_gate_percent($step,$polish,$target_delta,$de);
+ return undef if(abs($lum_pct) <= $gate);
+ my $max_step=near_white_95_luma_max_step($lum_pct,$polish);
+ my $adjustments=neutral_luminance_adjustments($arrays,$target,($lum_pct/100),$de,$stalls,$tried,0.25,$max_step,0,$step,$source||"near_white_95_luma",$state);
+ return undef if(ref($adjustments) ne "ARRAY");
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  $adj->{"near_white_95_luma"}=1;
+  $adj->{"committed_polish_near_white_95_luma"}=1 if(($source||"") =~ /^committed_polish/);
+ }
+ return $adjustments;
+}
+
 sub low_shadow_3_4_luma_far_from_target {
  my ($step,$lum_pct)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || !defined($lum_pct));
@@ -6269,6 +6318,8 @@ sub choose_adjustments {
 			 my $floor_luma_coupled=headroom_105_floor_luma_coupled_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,1,0,$step);
 			 return $floor_luma_coupled if($floor_luma_coupled);
 			 return undef if($headroom_105_luma_blocking);
+			 my $near_white_95_luma=near_white_95_luma_adjustments($arrays,$target,$step,$lum_pct,$de,0.5,$tried,$stalls,"near_white_95_luma",$LG_AUTOCAL_STATE,0);
+			 return $near_white_95_luma if($near_white_95_luma);
 			 if(autocal_step_is_low_shadow($step)) {
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);
 			  return $shadow_luma if($shadow_luma);
@@ -6491,6 +6542,8 @@ sub choose_micro_adjustments {
 				 my $floor_luma_coupled=headroom_105_floor_luma_coupled_adjustment($error,$arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$max_step < 0.5 ? $max_step : 0.5,1,$step);
 				 return $floor_luma_coupled if($floor_luma_coupled);
 				 return undef if($headroom_105_luma_blocking);
+				 my $near_white_95_luma=near_white_95_luma_adjustments($arrays,$target,$step,$lum_pct,$de,$target_delta,$tried,$stalls,"near_white_95_luma_verify",$LG_AUTOCAL_STATE,1);
+				 return $near_white_95_luma if($near_white_95_luma);
 				 if($paired_white) {
 				  my $pair_seed=legal_white_pair_wrgb_seed_adjustment($arrays,$target,$de,$tried,$step);
 				  return $pair_seed if($pair_seed);
@@ -8584,6 +8637,9 @@ sub committed_state_polish {
 	   my $adjustments;
 	   if(!strict_tried_for_step($read_step)) {
 	    $adjustments=lg_autocal_26_learned_luminance_adjustment($state,$arrays,$target,$read_step,$lum_pct,\%tried_values,final_all_level_verify_adjustment_cap($read_step,"adjustingLuminance"),"committed_polish_luminance");
+	    if(!$adjustments) {
+	     $adjustments=near_white_95_luma_adjustments($arrays,$target,$read_step,$lum_pct,$de,$target_delta,\%tried_values,$stalls,"committed_polish_near_white_95_luma",$state,1);
+	    }
 	    if(!$adjustments) {
 	     my ($learned_ch)=furthest_rgb_error_channel($err);
 	     my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
