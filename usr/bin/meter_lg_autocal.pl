@@ -689,6 +689,13 @@ sub autocal_config_is_post_3d_polish {
  return (ref($config) eq "HASH" && $config->{"full_autocal_post_3d_polish"}) ? 1 : 0;
 }
 
+sub lg_autocal_26_standalone_committed_cleanup_enabled {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if($config->{"full_workflow"} || autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config));
+ return 1;
+}
+
 sub config_positive_int {
  my ($config,$key,$default,$min,$max)=@_;
  my $value=$default;
@@ -2615,6 +2622,19 @@ sub set_state_target_step_luminance {
 	 } else {
 	  delete $state->{"target_step_luminance"};
 	 }
+}
+
+sub clear_committed_measurement_state {
+ my ($state,$clear_pair)=@_;
+ return if(ref($state) ne "HASH");
+ foreach my $key (qw(current_delta_e current_luminance luminance_error_pct target_step_luminance)) {
+  delete $state->{$key};
+ }
+ if($clear_pair) {
+  foreach my $key (qw(paired_delta_e paired_luminance_error_pct paired_target_luminance paired_current_name)) {
+   delete $state->{$key};
+  }
+ }
 }
 
 sub set_state_white_reference {
@@ -7424,6 +7444,7 @@ sub committed_body_verify_off_cal {
 	  $state->{"current_name"}="Committed body verify $label";
 	  $state->{"phase"}="reading";
 	  $state->{"message"}="Reading committed body $label with calibration mode off";
+  clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
   write_state($state);
   my ($reading,$read_error)=read_step($config,$read_step,$state);
@@ -7492,6 +7513,7 @@ sub committed_body_verify_off_cal {
   select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
   $state->{"phase"}="reading";
   $state->{"message"}="Reading committed body $label after off-CAL verify adjustment";
+  clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   write_state($state);
   ($reading,$read_error)=read_step($config,$read_step,$state);
   return ($picture,$arrays,$read_error) if($read_error && $read_error ne "cancelled");
@@ -7543,10 +7565,44 @@ sub committed_body_verify_off_cal {
   return ($picture,$arrays,$restore_error) if($restore_error);
   set_state_calibration_mode($state,0,"");
   sync_state_picture($state,$picture,$picture_mode);
-  $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
-  $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
-  $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
-  $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+  if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
+   my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
+   select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+   $state->{"phase"}="reading";
+   $state->{"message"}="Reading restored committed body $label verify best";
+   clear_committed_measurement_state($state,1);
+   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+   write_state($state);
+   ($reading,$read_error)=read_step($config,$read_step,$state);
+   return ($picture,$arrays,$read_error) if($read_error && $read_error ne "cancelled");
+   last if($read_error && $read_error eq "cancelled");
+   if(ref($reading) eq "HASH") {
+    $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+    annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+    $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+    $lum_pct=luminance_error_percent($reading,$target_step_y);
+    $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+    $state->{"current_delta_e"}=defined($de) ? $de : undef;
+    $state->{"current_luminance"}=luminance($reading);
+    set_state_target_step_luminance($state,$target_step_y);
+    $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+    trace_109($read_step,"committed_body_verify_off_cal_restore_read",{
+     label=>$label,
+     calibration_mode_active=>JSON::PP::false,
+     delta_e=>defined($de)?$de+0:undef,
+     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+     target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+     values=>trace_target_values($arrays,$target),
+     reading=>trace_reading_summary($reading)
+    });
+    remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_body_verify_restore_read");
+   }
+  } else {
+   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
+   $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+   $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
+   $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+  }
   trace_109($read_step,"committed_body_verify_off_cal_restored",{
    label=>$label,
    calibration_mode_active=>JSON::PP::false,
@@ -7554,7 +7610,8 @@ sub committed_body_verify_off_cal {
    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
    values=>trace_target_values($arrays,$target)
   });
-  remember_lg_autocal_26_best_known($config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,$target_step_y,$arrays,$target,"committed_body_verify_restore");
+  remember_lg_autocal_26_best_known($config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,$target_step_y,$arrays,$target,"committed_body_verify_restore")
+   if(!lg_autocal_26_standalone_committed_cleanup_enabled($config));
   write_state($state);
 	 }
 	 promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
@@ -8278,6 +8335,7 @@ sub committed_state_polish {
 	  $state->{"current_name"}="Committed polish $label";
 	  $state->{"phase"}="reading";
 	  $state->{"message"}="Reading committed $label";
+  clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
   write_state($state);
   my ($reading,$read_error)=read_step($config,$read_step,$state);
@@ -8440,6 +8498,11 @@ sub committed_state_polish {
 		   }
 		   $state->{"phase"}="reading";
 		   $state->{"message"}="Reading committed $label polish ($iter/$step_limit)";
+   if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
+    my $read_settle_ms=config_positive_int($config,"post_commit_polish_read_settle_ms",2500,0,20000);
+    select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
+    clear_committed_measurement_state($state,1);
+   }
    write_state($state);
    ($reading,$read_error)=read_step($config,$read_step,$state);
    return $finish_polish->($read_error) if($read_error && $read_error ne "cancelled");
@@ -8552,21 +8615,59 @@ sub committed_state_polish {
 	     set_state_calibration_mode($state,0,"");
 	     $polish_calibration_mode_active=0;
 	    }
+	    if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
+	     my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
+	     select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+	     $state->{"phase"}="reading";
+	     $state->{"message"}="Reading restored committed $label polish";
+	     clear_committed_measurement_state($state,1);
+	     $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+	     write_state($state);
+	     ($reading,$read_error)=read_step($config,$read_step,$state);
+	     return $finish_polish->($read_error) if($read_error && $read_error ne "cancelled");
+	     last if($read_error && $read_error eq "cancelled");
+	     if(ref($reading) eq "HASH") {
+	      $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+	      annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+	      $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+	      $lum_pct=luminance_error_percent($reading,$target_step_y);
+	      $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+	      $state->{"current_delta_e"}=defined($de) ? $de : undef;
+	      $state->{"current_luminance"}=luminance($reading);
+	      set_state_target_step_luminance($state,$target_step_y);
+	      $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+	      trace_109($read_step,"committed_polish_restore_read",{
+	       label=>$label,
+	       delta_e=>defined($de)?$de+0:undef,
+	       luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	       values=>trace_target_values($arrays,$target),
+	       reading=>trace_reading_summary($reading)
+	      });
+	      remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_polish_restore_read");
+	     } else {
+	      $reading=clone_picture($best_reading);
+	      $de=$best_de;
+	      $lum_pct=$best_lum_pct;
+	     }
+	    } else {
 		    $reading=clone_picture($best_reading);
-	    $de=$best_de;
-	    $lum_pct=$best_lum_pct;
+	     $de=$best_de;
+	     $lum_pct=$best_lum_pct;
+	     $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
+	     $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+	     $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
+	     $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+	    }
 	    $committed_pair_reading=clone_picture($best_pair_reading) if(ref($best_pair_reading) eq "HASH");
 	    $committed_pair_de=$best_pair_de;
 	    $committed_pair_lum_pct=$best_pair_lum_pct;
 	    $committed_pair_target_step_y=$best_pair_target_step_y;
-	    $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
-	    $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
-	    $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
-	    $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
 	    $state->{"paired_delta_e"}=defined($best_pair_de) ? $best_pair_de : undef;
 	    $state->{"paired_luminance_error_pct"}=defined($best_pair_lum_pct) ? $best_pair_lum_pct : undef;
-	    last if(committed_low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta));
-	    my $stall_de=max_defined_delta($best_de,$best_pair_de);
+	    my $restore_exit_de=lg_autocal_26_standalone_committed_cleanup_enabled($config) ? $de : $best_de;
+	    my $restore_exit_lum_pct=lg_autocal_26_standalone_committed_cleanup_enabled($config) ? $lum_pct : $best_lum_pct;
+	    last if(committed_low_shadow_good_enough($read_step,$restore_exit_de,$restore_exit_lum_pct,$target_delta));
+	    my $stall_de=max_defined_delta($restore_exit_de,$best_pair_de);
 	    last if($stalls >= committed_polish_stall_limit($read_step,$stall_de,$target_delta));
 	   }
 	   write_state($state);
@@ -8614,6 +8715,7 @@ sub committed_state_polish {
 	   $state->{"current_name"}="Committed verify $label";
 	   $state->{"phase"}="reading";
 	   $state->{"message"}="Reading committed $label with calibration mode off";
+	   clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
 	   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
 	   write_state($state);
 	   my ($reading,$read_error)=read_step($config,$read_step,$state);
@@ -8690,6 +8792,7 @@ sub committed_state_polish {
 	    select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
 	    $state->{"phase"}="reading";
 	    $state->{"message"}="Reading committed $label after verify adjustment ($iter/$committed_limit)";
+	    clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
 	    write_state($state);
 	    ($reading,$read_error)=read_step($config,$read_step,$state);
 	    return ($picture,$read_error) if($read_error && $read_error ne "cancelled");
@@ -8742,15 +8845,54 @@ sub committed_state_polish {
 		     return ($picture,$restore_error) if($restore_error);
 		     set_state_calibration_mode($state,0,"");
 		     sync_state_picture($state,$picture,$picture_mode);
-		     $reading=clone_picture($best_reading);
-		     $de=$best_de;
-		     $lum_pct=$best_lum_pct;
-		     $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
-		     $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
-		     $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
-		     $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
-		     last if(committed_low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta));
-		     last if($stalls >= committed_polish_stall_limit($read_step,$best_de,$target_delta));
+		     if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
+		      my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
+		      select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+		      $state->{"phase"}="reading";
+		      $state->{"message"}="Reading restored committed $label verify best";
+		      clear_committed_measurement_state($state,1);
+		      $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+		      write_state($state);
+		      ($reading,$read_error)=read_step($config,$read_step,$state);
+		      return ($picture,$read_error) if($read_error && $read_error ne "cancelled");
+		      last if($read_error && $read_error eq "cancelled");
+		      if(ref($reading) eq "HASH") {
+		       $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+		       annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+		       $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+		       $lum_pct=luminance_error_percent($reading,$target_step_y);
+		       $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+		       $state->{"current_delta_e"}=defined($de) ? $de : undef;
+		       $state->{"current_luminance"}=luminance($reading);
+		       set_state_target_step_luminance($state,$target_step_y);
+		       $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+		       trace_109($read_step,"committed_low_shadow_restore_read",{
+		        label=>$label,
+		        iteration=>$iter+0,
+		        delta_e=>defined($de)?$de+0:undef,
+		        luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+		        values=>trace_target_values($arrays,$target),
+		        reading=>trace_reading_summary($reading)
+		       });
+		       remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_low_shadow_restore_read");
+		      } else {
+		       $reading=clone_picture($best_reading);
+		       $de=$best_de;
+		       $lum_pct=$best_lum_pct;
+		      }
+		     } else {
+		      $reading=clone_picture($best_reading);
+		      $de=$best_de;
+		      $lum_pct=$best_lum_pct;
+		      $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
+		      $state->{"current_delta_e"}=defined($best_de) ? $best_de : undef;
+		      $state->{"current_luminance"}=luminance($best_reading) if(ref($best_reading) eq "HASH");
+		      $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+		     }
+		     my $restore_exit_de=lg_autocal_26_standalone_committed_cleanup_enabled($config) ? $de : $best_de;
+		     my $restore_exit_lum_pct=lg_autocal_26_standalone_committed_cleanup_enabled($config) ? $lum_pct : $best_lum_pct;
+		     last if(committed_low_shadow_good_enough($read_step,$restore_exit_de,$restore_exit_lum_pct,$target_delta));
+		     last if($stalls >= committed_polish_stall_limit($read_step,$restore_exit_de,$target_delta));
 		    }
 		    write_state($state);
 		    last if(committed_low_shadow_good_enough($read_step,$de,$lum_pct,$target_delta));
@@ -8768,13 +8910,45 @@ sub committed_state_polish {
 	    return ($picture,$restore_error) if($restore_error);
 	    set_state_calibration_mode($state,0,"");
 	    sync_state_picture($state,$picture,$picture_mode);
-	    $reading=clone_picture($best_reading);
-	    $de=$best_de;
-	    $lum_pct=$best_lum_pct;
+	    if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
+	     my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
+	     select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+	     $state->{"phase"}="reading";
+	     $state->{"message"}="Reading final restored committed $label verify best";
+	     clear_committed_measurement_state($state,1);
+	     $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+	     write_state($state);
+	     ($reading,$read_error)=read_step($config,$read_step,$state);
+	     return ($picture,$read_error) if($read_error && $read_error ne "cancelled");
+	     last if($read_error && $read_error eq "cancelled");
+	     if(ref($reading) eq "HASH") {
+	      $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+	      annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+	      $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+	      $lum_pct=luminance_error_percent($reading,$target_step_y);
+	      trace_109($read_step,"committed_low_shadow_final_restore_read",{
+	       label=>$label,
+	       delta_e=>defined($de)?$de+0:undef,
+	       luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	       values=>trace_target_values($arrays,$target),
+	       reading=>trace_reading_summary($reading)
+	      });
+	      remember_lg_autocal_26_best_known($config,$state,$read_step,$reading,$de,$lum_pct,$target_step_y,$arrays,$target,"committed_low_shadow_final_restore_read");
+	     } else {
+	      $reading=clone_picture($best_reading);
+	      $de=$best_de;
+	      $lum_pct=$best_lum_pct;
+	     }
+	    } else {
+	     $reading=clone_picture($best_reading);
+	     $de=$best_de;
+	     $lum_pct=$best_lum_pct;
+	    }
 	   }
 	   $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 	   $state->{"current_delta_e"}=defined($de) ? $de : undef;
 	   $state->{"current_luminance"}=luminance($reading);
+	   set_state_target_step_luminance($state,$target_step_y);
 	   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
 	   write_state($state);
 	  }
