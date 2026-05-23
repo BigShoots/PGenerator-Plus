@@ -407,7 +407,7 @@ sub apply_post_commit_verify_gate {
  my ($config)=@_;
  return if(ref($config) ne "HASH");
  return if(!exists($config->{"post_commit_verify"}) || $config->{"post_commit_verify"});
- foreach my $key (qw(post_commit_body_verify post_commit_final_all_level_verify post_commit_final_top_window post_commit_top_window post_commit_true_low_shadow)) {
+ foreach my $key (qw(post_commit_body_verify post_commit_final_all_level_verify post_commit_final_top_window)) {
   $config->{$key}=JSON::PP::false;
  }
 }
