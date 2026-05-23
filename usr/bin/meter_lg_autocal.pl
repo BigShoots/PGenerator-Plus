@@ -2637,6 +2637,19 @@ sub clear_committed_measurement_state {
  }
 }
 
+sub prepare_standalone_committed_off_cal_read {
+ my ($config,$state,$picture_mode,$step,$reason,$settle_key,$default_ms)=@_;
+ return if(!lg_autocal_26_standalone_committed_cleanup_enabled($config));
+ end_calibration_mode($picture_mode);
+ set_state_calibration_mode($state,0,"");
+ my $settle_ms=config_positive_int($config,$settle_key||"post_commit_read_cal_off_settle_ms",defined($default_ms)?$default_ms:3500,0,30000);
+ trace_109($step,"committed_read_calibration_off",{
+  reason=>defined($reason)?$reason:"",
+  settle_ms=>$settle_ms+0
+ });
+ select(undef,undef,undef,$settle_ms/1000) if($settle_ms > 0);
+}
+
 sub set_state_white_reference {
 	 my ($state,$white_y)=@_;
 	 return if(ref($state) ne "HASH" || !defined($white_y) || $white_y <= 0);
@@ -7444,6 +7457,7 @@ sub committed_body_verify_off_cal {
 	  $state->{"current_name"}="Committed body verify $label";
 	  $state->{"phase"}="reading";
 	  $state->{"message"}="Reading committed body $label with calibration mode off";
+  prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_body_verify_read");
   clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
   write_state($state);
@@ -7510,9 +7524,10 @@ sub committed_body_verify_off_cal {
   set_state_calibration_mode($state,0,"");
   sync_state_picture($state,$picture,$picture_mode);
   my $read_settle_ms=config_positive_int($config,"post_commit_body_verify_read_settle_ms",2000,0,20000);
-  select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
+  select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0 && !lg_autocal_26_standalone_committed_cleanup_enabled($config));
   $state->{"phase"}="reading";
   $state->{"message"}="Reading committed body $label after off-CAL verify adjustment";
+  prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_body_verify_after_adjustment","post_commit_body_verify_read_settle_ms",2000);
   clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   write_state($state);
   ($reading,$read_error)=read_step($config,$read_step,$state);
@@ -7567,9 +7582,10 @@ sub committed_body_verify_off_cal {
   sync_state_picture($state,$picture,$picture_mode);
   if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
    my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
-   select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+   select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0 && !lg_autocal_26_standalone_committed_cleanup_enabled($config));
    $state->{"phase"}="reading";
    $state->{"message"}="Reading restored committed body $label verify best";
+   prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_body_verify_restore_read","post_commit_restore_read_settle_ms",2500);
    clear_committed_measurement_state($state,1);
    $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
    write_state($state);
@@ -8335,6 +8351,7 @@ sub committed_state_polish {
 	  $state->{"current_name"}="Committed polish $label";
 	  $state->{"phase"}="reading";
 	  $state->{"message"}="Reading committed $label";
+  prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_read");
   clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
   write_state($state);
@@ -8377,6 +8394,7 @@ sub committed_state_polish {
    $state->{"current_name"}="Committed polish $label";
    $state->{"phase"}="reading";
    $state->{"message"}=($reason||"Checking committed 100% legal white");
+   prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$committed_pair_step,"committed_polish_pair_read");
    $state->{"active_stimulus"}=$committed_pair_step->{"stimulus"}+0 if(defined($committed_pair_step->{"stimulus"}));
    write_state($state);
    my ($pair_reading,$pair_error)=read_step($config,clone_picture($committed_pair_step),$state);
@@ -8499,8 +8517,7 @@ sub committed_state_polish {
 		   $state->{"phase"}="reading";
 		   $state->{"message"}="Reading committed $label polish ($iter/$step_limit)";
    if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
-    my $read_settle_ms=config_positive_int($config,"post_commit_polish_read_settle_ms",2500,0,20000);
-    select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
+    prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_measurement","post_commit_polish_read_settle_ms",3500);
     clear_committed_measurement_state($state,1);
    }
    write_state($state);
@@ -8617,9 +8634,10 @@ sub committed_state_polish {
 	    }
 	    if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
 	     my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
-	     select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+	     select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0 && !lg_autocal_26_standalone_committed_cleanup_enabled($config));
 	     $state->{"phase"}="reading";
 	     $state->{"message"}="Reading restored committed $label polish";
+	     prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_restore_read","post_commit_restore_read_settle_ms",3500);
 	     clear_committed_measurement_state($state,1);
 	     $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
 	     write_state($state);
@@ -8715,6 +8733,7 @@ sub committed_state_polish {
 	   $state->{"current_name"}="Committed verify $label";
 	   $state->{"phase"}="reading";
 	   $state->{"message"}="Reading committed $label with calibration mode off";
+	   prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_low_shadow_read","post_commit_low_shadow_read_settle_ms",3500);
 	   clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
 	   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
 	   write_state($state);
@@ -8792,6 +8811,7 @@ sub committed_state_polish {
 	    select(undef,undef,undef,$read_settle_ms/1000) if($read_settle_ms > 0);
 	    $state->{"phase"}="reading";
 	    $state->{"message"}="Reading committed $label after verify adjustment ($iter/$committed_limit)";
+	    prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_low_shadow_measurement","post_commit_low_shadow_read_settle_ms",3500);
 	    clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
 	    write_state($state);
 	    ($reading,$read_error)=read_step($config,$read_step,$state);
@@ -8847,9 +8867,10 @@ sub committed_state_polish {
 		     sync_state_picture($state,$picture,$picture_mode);
 		     if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
 		      my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
-		      select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+		      select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0 && !lg_autocal_26_standalone_committed_cleanup_enabled($config));
 		      $state->{"phase"}="reading";
 		      $state->{"message"}="Reading restored committed $label verify best";
+		      prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_low_shadow_restore_read","post_commit_restore_read_settle_ms",3500);
 		      clear_committed_measurement_state($state,1);
 		      $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
 		      write_state($state);
@@ -8912,9 +8933,10 @@ sub committed_state_polish {
 	    sync_state_picture($state,$picture,$picture_mode);
 	    if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
 	     my $restore_read_settle_ms=config_positive_int($config,"post_commit_restore_read_settle_ms",2500,0,20000);
-	     select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0);
+	     select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0 && !lg_autocal_26_standalone_committed_cleanup_enabled($config));
 	     $state->{"phase"}="reading";
 	     $state->{"message"}="Reading final restored committed $label verify best";
+	     prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_low_shadow_final_restore_read","post_commit_restore_read_settle_ms",3500);
 	     clear_committed_measurement_state($state,1);
 	     $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
 	     write_state($state);
