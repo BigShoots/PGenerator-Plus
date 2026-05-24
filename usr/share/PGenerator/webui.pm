@@ -2708,10 +2708,10 @@ sub webui_meter_lg_autocal_kill (@) {
 sub webui_meter_lg_autocal_body_with_defaults (@) {
  my ($body)=@_;
  return $body if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
- return $body if($body=~/"lg_autocal_26_anchor_predrive"\s*:/);
  return $body if($body=~/"full_workflow"\s*:\s*true/i || $body=~/"full_autocal_touchup"\s*:\s*true/i);
  return $body unless($body=~/"type"\s*:\s*"greyscale"/i && $body=~/"points"\s*:\s*26\b/ && $body=~/"lg_autocal_26"\s*:\s*true/i);
- $body=~s/\}\s*\z/,"lg_autocal_26_anchor_predrive":true}/;
+ return $body if($body=~/"lg_autocal_26_full_ddc_spine"\s*:/ || $body=~/"lg_autocal_26_anchor_predrive"\s*:/);
+ $body=~s/\}\s*\z/,"lg_autocal_26_full_ddc_spine":true,"lg_autocal_26_anchor_predrive":false}/;
  return $body;
 }
 
@@ -20365,7 +20365,8 @@ async function meterAutoCalConfirmAndStart(){
 	    pattern_signal_range:patternSignalRange||undefined,
 	    lg_greyscale_21:false,
 	    lg_autocal_26:true,
-		    lg_autocal_26_anchor_predrive:fullWorkflow?undefined:true,
+		    lg_autocal_26_full_ddc_spine:fullWorkflow?undefined:true,
+		    lg_autocal_26_anchor_predrive:fullWorkflow?undefined:false,
 		    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
 	    patch_insert:document.getElementById('meterPatchInsert').checked,
 			   target_delta_e:target,
