@@ -14395,7 +14395,7 @@ function meterRecoverSeries(s){
  // Show UI elements — ensure card is visible even if meter is disconnected
  document.getElementById('meterCard').style.display='';
  document.getElementById('meterCharts').style.display='';
- meterSetSeriesTab(meterSeriesTabForType(type),true);
+ meterShowSeriesTabForSeries(type,points);
  // Toggle greyscale vs color chart sections
  if(type==='greyscale'){
   document.getElementById('chartsGreyscaleWrap').style.display='';
@@ -15902,7 +15902,8 @@ function meterUpdateReadButtons(){
  if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive)?'':'none';
  if(continuousBtn) continuousBtn.style.display=show?'':'none';
  if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal)?'':'none';
- const showAutoCal=meterSeriesTab==='autocal'&&showSeries&&meterAutoCalAvailable()&&!continuousUiActive;
+ const autoCalTabActive=meterSeriesTab==='autocal';
+ const showAutoCal=autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&meterDetected&&meterGreyTvControlsActive()&&!continuousUiActive;
  if(autoCalBtn){
   autoCalBtn.style.display=showAutoCal?'':'none';
   autoCalBtn.disabled=!showAutoCal||settingsDirty||busy;
@@ -15914,7 +15915,7 @@ function meterUpdateReadButtons(){
   fullAutoCalBtn.disabled=!showFullAutoCal||settingsDirty||busy;
   fullAutoCalBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
- const showLg3d=meterSeriesTab==='autocal'&&isColorSeries&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
+ const showLg3d=autoCalTabActive&&meterAutoCalSeriesChoice==='3d-lut'&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
  if(lg3dColorControls) lg3dColorControls.style.display=showLg3d?'flex':'none';
  if(lg3dBtn){
   lg3dBtn.style.display=showLg3d?'':'none';
@@ -15966,9 +15967,15 @@ function meterResetSeriesButtons(){
  });
 }
 
+let meterAutoCalSeriesChoice='greyscale';
+function meterNormalizeAutoCalSeriesChoice(choice){
+ return choice==='3d-lut'?'3d-lut':'greyscale';
+}
+
 function meterSetAutoCalSeriesChoice(choice){
+ meterAutoCalSeriesChoice=meterNormalizeAutoCalSeriesChoice(choice);
  document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series]').forEach(btn=>{
-  const active=(btn.dataset.autocalSeries||'')===choice;
+  const active=(btn.dataset.autocalSeries||'')===meterAutoCalSeriesChoice;
   btn.classList.toggle('btn-primary',active);
   btn.classList.toggle('btn-secondary',!active);
  });
@@ -16095,9 +16102,39 @@ function meterUpdateSeriesTabUi(){
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
  if(autoCalGroup) autoCalGroup.style.display=tab==='autocal'?'flex':'none';
+ if(tab==='autocal') meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
 	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active)?'flex':'none';
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
+}
+
+function meterAutoCalChoiceForSeries(type,points){
+ if(type==='greyscale'&&Number(points)===26) return 'greyscale';
+ if(type==='colors'&&Number(points)===30) return '3d-lut';
+ return '';
+}
+
+function meterPreserveAutoCalTabForSeries(type,points){
+ const choice=meterAutoCalChoiceForSeries(type,points);
+ if(meterSeriesTab!=='autocal'||!choice) return false;
+ meterUpdateSeriesTabUi();
+ meterSetAutoCalSeriesChoice(choice);
+ return true;
+}
+
+function meterShowSeriesTabForSeries(type,points){
+ if(meterPreserveAutoCalTabForSeries(type,points)) return;
+ meterSetSeriesTab(meterSeriesTabForType(type),true);
+}
+
+function meterShowGreyscaleAutoCalContext(){
+ if(meterPreserveAutoCalTabForSeries('greyscale',26)) return;
+ meterSetSeriesTab('greyscale',true);
+}
+
+function meterShow3dLutAutoCalContext(){
+ if(meterPreserveAutoCalTabForSeries('colors',30)) return;
+ meterSetSeriesTab('color',true);
 }
 
 function meterDefaultSeriesButtonForTab(tab){
@@ -16694,6 +16731,10 @@ function meterSelectSeries(type,points,opts){
  if(meterSeriesRunning) meterStop();
  else meterStopContinuous();
  if(meterActiveSeriesKey===key){
+  if(opts.preserveTab&&meterSeriesTab==='autocal'){
+   meterUpdateSeriesTabUi();
+   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
+  }
   if(meterSeriesSteps&&meterSeriesSteps.length>0){
    const sortedSteps=(type==='colors'||type==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
    meterBuildPatchThumbs(sortedSteps,null);
@@ -18889,7 +18930,7 @@ function meterAutoCalApplyStatus(status){
 	   meterActiveSeriesType='greyscale';
 	   meterActiveSeriesPoints=26;
 	   meterActiveSeriesKey='greyscale-26';
-	   meterSetSeriesTab('greyscale',true);
+	   meterShowGreyscaleAutoCalContext();
 	   meterResetSeriesButtons();
 	   const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
 	   if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
@@ -19928,7 +19969,7 @@ async function meterFullAutoCalStartPost3dSeriesAdjustment(lutStatus,post3dPostC
   meterActiveSeriesType='greyscale';
   meterActiveSeriesPoints=26;
   meterActiveSeriesKey='greyscale-26';
-  meterSetSeriesTab('greyscale',true);
+  meterShowGreyscaleAutoCalContext();
   meterResetSeriesButtons();
   const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
   if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
@@ -20077,7 +20118,7 @@ async function meterFullAutoCalStartPost3dPolish(lutStatus){
   meterActiveSeriesType='greyscale';
   meterActiveSeriesPoints=26;
   meterActiveSeriesKey='greyscale-26';
-  meterSetSeriesTab('greyscale',true);
+  meterShowGreyscaleAutoCalContext();
   meterResetSeriesButtons();
   const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
   if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
@@ -20224,7 +20265,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
   meterActiveSeriesType='greyscale';
   meterActiveSeriesPoints=26;
   meterActiveSeriesKey='greyscale-26';
-  meterSetSeriesTab('greyscale',true);
+  meterShowGreyscaleAutoCalContext();
   meterResetSeriesButtons();
   const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
   if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
@@ -20539,7 +20580,7 @@ async function meterStartAutoCal(options){
  };
 	 if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||(!fullWorkflow&&meterFullAutoCalRunning)) return fail('Meter operation already in progress');
 	 if(!(await meterEnsureDetected())) return fail('No meter detected');
- if(fullWorkflow){
+ if(fullWorkflow||(meterSeriesTab==='autocal'&&meterAutoCalSeriesChoice==='greyscale')){
   meterActiveSeriesType='greyscale';
   meterActiveSeriesPoints=26;
   meterActiveSeriesKey='greyscale-26';
@@ -20552,7 +20593,7 @@ async function meterStartAutoCal(options){
  meterActiveSeriesType='greyscale';
  meterActiveSeriesPoints=26;
  meterActiveSeriesKey='greyscale-26';
- meterSetSeriesTab('greyscale',true);
+ meterShowGreyscaleAutoCalContext();
  meterResetSeriesButtons();
  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
@@ -20860,7 +20901,7 @@ function meterLg3dApplyPostCheckStatus(status){
  meterActiveSeriesPoints=readings.length;
  meterActiveSeriesKey='lg-3d-post-check';
  meterActiveSeriesSignalMode='sdr';
- meterSetSeriesTab('color',true);
+ meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
  meterSeriesSteps=readings.map(meterLg3dPostCheckStep);
  meterReadings=readings;
