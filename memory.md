@@ -24,6 +24,11 @@ This file is a working reminder for future sessions in this repo. Treat it as lo
 - Full-DDC spine seeding should wait until all spine anchors are solved, then use the calibrated anchors plus subsequently solved points to seed the remaining slots. Anchors need normal larger adjustment moves; non-anchors get seeded/fine move damping.
 - Anchor pre-drive is currently off for standalone greyscale spine testing.
 - Full AutoCal should not be silently switched into standalone spine behavior.
+- 20% spine anchor tuning issue observed on 2026-05-24: when blue is visibly high and luminance is also high, the first anchor move should pull blue down because that also reduces luminance. Do not let the anchor algorithm waste early iterations on isolated luma moves or weak channel guesses when one channel is clearly dominant.
+- 105% full-DDC spine seed quality issue observed on 2026-05-24: stage/order was correct after anchors, and luminance was close, but dE remained high (~6.35 at iteration 8) because chroma/RGB seed was not close enough. The 105 headroom seed needs better RGB prediction, not only luma preservation.
+- 95% full-DDC spine/body issue observed on 2026-05-24: it accepted/kept best too quickly with dE ~0.62 and luma error ~0.79%, but user observed gamma still was not tracking. Near-white points need a gamma/luma fine-adjustment rule, not only an early dE accept.
+- Post-cal LG 26pt greyscale series must use the series' own measured 100% white read for target Y. Do not stamp AutoCal's completed/calibrated/committed white into `series_target_white_y` for normal LG 26pt greyscale reads; that makes post-cal charts use the old calibration basis.
+- Seed-vs-final DDC comparison from 2026-05-24 full-DDC spine test is in `tmp/spine-test-monitor-20260524T022642Z/seed-vs-final-ddc.tsv`. Pattern: 99/95/90 and 10/7/5/4/3/2.3 seeds often predict green too low/negative while final DDC needs green positive or much less negative; 105/99/95 also need more negative luminance than seed predicted. Use this before changing seed math.
 
 ## Polish / Verify Semantics
 
