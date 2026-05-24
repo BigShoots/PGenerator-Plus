@@ -7201,9 +7201,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <button class="btn btn-sm btn-secondary" data-autocal-series="greyscale" onclick="meterSelectAutoCalGreyscale()">Greyscale</button>
       <button class="btn btn-sm btn-secondary" data-autocal-series="3d-lut" onclick="meterSelectAutoCal3dLut()">3D LUT</button>
      </div>
-     <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:4px;flex-wrap:wrap;margin-left:4px">
-      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">3D LUT AutoCal</button>
-     </span>
     </div>
     <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:#0d0d15;border-radius:6px">
      <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">2pt Levels</div>
@@ -7224,6 +7221,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
     <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
     <button class="btn btn-sm btn-primary" id="meterAutoCalBtn" onclick="meterStartAutoCal()" style="display:none">&#9654; Auto Cal</button>
+    <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:4px;flex-wrap:wrap">
+     <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">&#9654; 3D LUT AutoCal</button>
+    </span>
     <button class="btn btn-sm btn-danger" id="meterStopBtn" onclick="meterStop()" style="display:none">&#9632; Stop</button>
     <button class="btn btn-sm btn-primary" id="meterDeviceReadyBtn" onclick="meterSignalDeviceReady()" style="display:none">Device Ready</button>
     <button class="btn btn-sm btn-primary" id="meterManualPromptBtn" onclick="meterSignalManualPromptReady()" style="display:none">Continue Meter Setup</button>
@@ -15902,7 +15902,7 @@ function meterUpdateReadButtons(){
  if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive)?'':'none';
  if(continuousBtn) continuousBtn.style.display=show?'':'none';
  if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal)?'':'none';
- const showAutoCal=showSeries&&meterAutoCalAvailable()&&!continuousUiActive;
+ const showAutoCal=meterSeriesTab==='autocal'&&showSeries&&meterAutoCalAvailable()&&!continuousUiActive;
  if(autoCalBtn){
   autoCalBtn.style.display=showAutoCal?'':'none';
   autoCalBtn.disabled=!showAutoCal||settingsDirty||busy;
@@ -15914,7 +15914,7 @@ function meterUpdateReadButtons(){
   fullAutoCalBtn.disabled=!showFullAutoCal||settingsDirty||busy;
   fullAutoCalBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
- const showLg3d=(meterSeriesTab==='color'||(meterSeriesTab==='autocal'&&isColorSeries))&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
+ const showLg3d=meterSeriesTab==='autocal'&&isColorSeries&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
  if(lg3dColorControls) lg3dColorControls.style.display=showLg3d?'flex':'none';
  if(lg3dBtn){
   lg3dBtn.style.display=showLg3d?'':'none';
