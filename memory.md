@@ -20,12 +20,12 @@ This file is a working reminder for future sessions in this repo. Treat it as lo
 - 109% peak headroom calibration is chroma-only. Once 109 chroma is calibrated, its measured Y becomes the headroom reference; any stored AutoCal target/luminance-error fields for 109 must be recomputed after that rebase so charts/status do not mix the old setup target with the 109-derived target.
 - Post-cal/series reporting may use 100% as legal-white target reference where appropriate; that is separate from calibration order.
 - OLED shadow detail pre-commit compensation is disabled. Do not re-enable the automatic low-shadow DDC offset unless a future hardware test proves it does not make 2.3/3/4/5 too bright after commit.
-- Standalone greyscale 26pt is currently set to test the full-DDC spine path.
+- Standalone greyscale 26pt and Full AutoCal's first greyscale pass both use the full-DDC spine path. Full AutoCal post-commit polish, post-polish verify, and post-3D series DDC adjustment are deferred until after the 3D LUT upload.
 - Current full-DDC spine anchors are `109,20,40,60,80`, then remaining points continue from the top down.
 - In full-DDC spine calibration, do not invoke the hidden paired `100% legal white` read while solving 99%; 100% remains a post-cal/series chart reference, not an AutoCal target in this path.
 - Full-DDC spine seeding should wait until all spine anchors are solved, then use the calibrated anchors plus subsequently solved points to seed the remaining slots. Anchors need normal larger adjustment moves; non-anchors get seeded/fine move damping.
 - Anchor pre-drive is currently off for standalone greyscale spine testing.
-- Full AutoCal should not be silently switched into standalone spine behavior.
+- Full AutoCal greyscale should stay aligned with standalone spine behavior unless the user explicitly asks to split them again.
 - 20% spine anchor tuning issue observed on 2026-05-24: when blue is visibly high and luminance is also high, the first anchor move should pull blue down because that also reduces luminance. Do not let the anchor algorithm waste early iterations on isolated luma moves or weak channel guesses when one channel is clearly dominant.
 - 2026-05-24 clean-DDC spine test showed another anchor bottleneck: 20% started around dE 32 with Y roughly +75% high. Dominant-channel moves alone improved chroma but left Y wildly high, so full-DDC spine anchors now need paired `adjustingLuminance` + RGB moves when luma is far out. This is anchor-only and should bypass the tiny generic 20% neutral-luma cap.
 - Follow-up from the paired-luma validation: paired anchor luma worked, but 20% was still too slow because tried-value damping collapsed luma moves to `-2/-1` while Y was still +40% high. Far-out full-DDC spine anchors should keep anchor-sized luma caps until the luma error is much closer, then fall back to fine/response-model moves.
