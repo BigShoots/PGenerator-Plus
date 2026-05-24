@@ -682,9 +682,10 @@ for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 B=$(get_step_field $i b)
 	 INPUT_MAX=$(get_step_field $i input_max)
 	 [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
+	 READ_DELAY_MS=$(get_step_field $i read_delay_ms)
 	 IRE=$(get_step_field $i ire)
- NAME=$(get_step_field $i name)
- STEP_NUM=$((i + 1))
+	 NAME=$(get_step_field $i name)
+	 STEP_NUM=$((i + 1))
 
  # Update state: displaying
  cat > "$STATE_FILE" << EOJSON
@@ -709,12 +710,15 @@ EOJSON
 	  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
  fi
 
- # Settle delay — use the user-configured value for every step, while still
- # keeping the existing first-step warm-up on cold starts.
- STEP_DELAY="$DELAY_SEC"
- if (( i == 0 )); then
-  STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
- fi
+	 # Settle delay — use the user-configured value by default, but allow
+	 # per-step overrides for very dark or otherwise slow-settling patches.
+	 STEP_DELAY="$DELAY_SEC"
+	 if [[ "$READ_DELAY_MS" =~ ^[0-9]+$ ]] && (( READ_DELAY_MS > 0 )); then
+	  STEP_DELAY=$(python -c "print(float('$READ_DELAY_MS')/1000.0)" 2>/dev/null)
+	 fi
+	 if (( i == 0 )); then
+	  STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
+	 fi
  if ! maybe_wait_for_initial_ready "$STEP_NUM" "$NAME"; then
   sleep "$STEP_DELAY"
  fi
