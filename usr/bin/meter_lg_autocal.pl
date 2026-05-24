@@ -411,11 +411,12 @@ sub lg_autocal_26_anchor_predrive_anchor {
  return $match ? 1 : 0;
 }
 
-sub apply_lg_autocal_26_standalone_defaults {
+sub apply_lg_autocal_26_default_modes {
  my ($config)=@_;
  return if(ref($config) ne "HASH");
  return if(!$config->{"lg_autocal_26"});
- return if($config->{"full_workflow"} || $config->{"full_autocal_touchup"});
+ # Standalone and Full AutoCal greyscale now share the same LG 26pt
+ # full-DDC spine path. Explicit callers can still override both flags.
  if(!exists($config->{"lg_autocal_26_full_ddc_spine"}) && !exists($config->{"lg_autocal_26_anchor_predrive"})) {
   $config->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::true;
   $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false;
@@ -9946,7 +9947,7 @@ sub read_step_once {
 }
 
 my $config=decode_json_safe(read_file($config_file),{});
-apply_lg_autocal_26_standalone_defaults($config);
+apply_lg_autocal_26_default_modes($config);
 apply_post_commit_verify_gate($config);
 $LG_AUTOCAL_CONFIG=$config;
 my $steps=(ref($config->{"steps"}) eq "ARRAY") ? $config->{"steps"} : [];
