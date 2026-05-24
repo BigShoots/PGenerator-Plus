@@ -364,12 +364,24 @@ sub lg_autocal_26_full_ddc_spine_anchor_ires {
  return (109,20,40,60,80);
 }
 
+sub lg_autocal_26_full_ddc_spine_anchor_count {
+ my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires();
+ return scalar(@anchors);
+}
+
 sub lg_autocal_26_full_ddc_spine_anchor {
  my ($target)=@_;
  return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
  my $ire=$target->{"ire"}+0;
  my $match=grep { abs($ire-$_) < 0.001 } lg_autocal_26_full_ddc_spine_anchor_ires();
  return $match ? 1 : 0;
+}
+
+sub lg_autocal_26_full_ddc_spine_body_anchor {
+ my ($target)=@_;
+ return 0 if(!lg_autocal_26_full_ddc_spine_anchor($target));
+ my $ire=$target->{"ire"}+0;
+ return ($ire > 0 && $ire < 99.9) ? 1 : 0;
 }
 
 sub lg_autocal_26_anchor_predrive_enabled {
@@ -447,10 +459,10 @@ sub order_autocal_steps {
 	   my $target=ddc_target_for_step($_);
 	   !($_->{"autocal_white_reference"} && $target && $normal_ddc_slot{format_percent($target->{"ire"})})
 		 } @valid;
-	  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
-		  my @lg_autocal_26_order=(109,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
-		  @lg_autocal_26_order=(109,20,40,60,80,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
-		   if(lg_autocal_26_full_ddc_spine_enabled($config));
+		  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
+			  my @lg_autocal_26_order=(109,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
+			  @lg_autocal_26_order=(109,20,40,60,80,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
+			   if(lg_autocal_26_full_ddc_spine_enabled($config));
 		  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,4,3,2.3)
 		   if(lg_autocal_26_anchor_predrive_enabled($config));
 		  my %seen_target;
@@ -698,6 +710,11 @@ sub autocal_config_is_post_3d_polish {
  return (ref($config) eq "HASH" && $config->{"full_autocal_post_3d_polish"}) ? 1 : 0;
 }
 
+sub autocal_config_is_post_series_adjust {
+ my ($config)=@_;
+ return (ref($config) eq "HASH" && $config->{"full_autocal_post_series_adjust"}) ? 1 : 0;
+}
+
 sub lg_autocal_26_standalone_committed_cleanup_enabled {
  my ($config)=@_;
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
@@ -878,6 +895,7 @@ sub headroom_iteration_limit_for_step {
  return undef if(!autocal_step_is_fast_headroom($step));
  my $ire=$step->{"ire"}+0;
  my $limit=($ire >= 108.5) ? 60 : 36;
+ $limit=18 if($ire < 108.5 && lg_autocal_26_full_ddc_spine_enabled($config));
  $limit=($ire >= 108.5) ? 10 : 8 if(autocal_config_is_touchup($config));
  if(ref($config) eq "HASH" && defined($config->{"headroom_max_iterations"})) {
   my $cap=int($config->{"headroom_max_iterations"});
@@ -2499,6 +2517,10 @@ sub guarded_target_reached {
 sub legal_white_pair_reference_step {
  my ($steps,$target,$step,$config)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ # Full-DDC spine calibration uses the solved 109% peak as the top anchor.
+ # Keep 100% legal white for post-cal series/chart reference, not as a
+ # calibration target in this path.
+ return undef if(lg_autocal_26_full_ddc_spine_enabled($config));
  return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}) || abs(($target->{"ire"}+0)-99) > 0.001);
  return undef if(ref($step) ne "HASH" || $step->{"autocal_white_reference"});
  return undef if(ref($steps) ne "ARRAY");
@@ -2722,6 +2744,10 @@ sub iteration_limit_for_step {
 				 return $headroom_limit if(defined($headroom_limit));
 				 my $shadow_limit=low_shadow_iteration_limit_for_step($step,$config);
 				 return $shadow_limit if(defined($shadow_limit));
+				 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
+				  return 22 if(lg_autocal_26_full_ddc_spine_body_anchor($step));
+				  return 12 if(ref($step) eq "HASH" && defined($step->{"ire"}));
+				 }
 			 return $default;
 }
 
@@ -3118,6 +3144,28 @@ sub mark_tried_values {
 	 }
 }
 
+sub exhaust_adjustment_next_values {
+ my ($tried,$adjustments,$de)=@_;
+ return 0 if(ref($tried) ne "HASH" || ref($adjustments) ne "ARRAY");
+ my $count=0;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  my $setting=$adj->{"setting"};
+  my $next=$adj->{"next"};
+  next if(!defined($setting) || !defined($next));
+  $tried->{$setting}={} if(ref($tried->{$setting}) ne "HASH");
+  my $key=ddc_value_key($next);
+  my $prior=(ref($tried->{$setting}{$key}) eq "HASH") ? (($tried->{$setting}{$key}->{"count"}||0)+0) : 0;
+  $tried->{$setting}{$key}={
+   count => $prior >= 2 ? $prior : 2,
+   de => defined($de) ? $de+0 : undef,
+   rejected => JSON::PP::true,
+  };
+  $count++;
+ }
+ return $count;
+}
+
 sub clone_arrays {
 	 my ($arrays)=@_;
 	 return decode_json_safe($json->encode($arrays||{}),{});
@@ -3376,17 +3424,46 @@ sub propagate_uncalibrated_26pt_slots {
  return $filled;
 }
 
+sub apply_full_ddc_spine_headroom_seed_overrides {
+ my ($config,$arrays,$calibrated_slot_mask)=@_;
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ my $idx=ddc_slot_index_for_ire(105);
+ return 0 if(!defined($idx) || $calibrated_slot_mask->[$idx]);
+ my $seed=headroom_105_hard_seed_values();
+ return 0 if(ref($seed) ne "HASH");
+ my $changed=0;
+ foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
+  next if(ref($arrays->{$setting}) ne "ARRAY" || $idx >= @{$arrays->{$setting}});
+  next if(!defined($seed->{$setting}));
+  my $before=defined($arrays->{$setting}[$idx]) ? ($arrays->{$setting}[$idx]+0) : 0;
+  my $after=clamp_ddc_value($seed->{$setting});
+  next if(abs($after-$before) < 0.0001);
+  $arrays->{$setting}[$idx]=$after;
+  $changed++;
+ }
+ return $changed;
+}
+
 sub refresh_propagated_uncalibrated_26pt_slots {
 	 my ($config,$arrays,$calibrated_slot_mask)=@_;
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
-	 my $minimum_anchors=lg_autocal_26_full_ddc_spine_enabled($config) ? 1 : 3;
+	 my $minimum_anchors=3;
 	 my $source_slot_mask=$calibrated_slot_mask;
+	 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
+	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask);
+	  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires();
+	  $minimum_anchors=scalar(@anchors);
+	  return 0 if(scalar(@completed) < $minimum_anchors);
+	 }
  if(lg_autocal_26_anchor_predrive_enabled($config)) {
   $minimum_anchors=lg_autocal_26_anchor_predrive_anchor_count();
   $source_slot_mask=lg_autocal_26_anchor_predrive_source_slot_mask($calibrated_slot_mask);
  }
 	 return 0 if(calibrated_non_black_26pt_anchor_count($source_slot_mask) < $minimum_anchors);
-	 return propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask);
+	 my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask);
+	 my $overrides=apply_full_ddc_spine_headroom_seed_overrides($config,$arrays,$calibrated_slot_mask);
+	 return $filled+$overrides;
 	}
 
 sub lg_autocal_26_seeded_move_damping_ready {
@@ -3397,8 +3474,10 @@ sub lg_autocal_26_seeded_move_damping_ready {
 	  my @completed=completed_lg_autocal_26_anchor_predrive_anchor_ires($calibrated_slot_mask);
 	  return scalar(@completed) >= lg_autocal_26_anchor_predrive_anchor_count() ? 1 : 0;
 	 }
-	 return calibrated_non_black_26pt_anchor_count($calibrated_slot_mask) >= 1 ? 1 : 0
-	  if(lg_autocal_26_full_ddc_spine_enabled($config));
+	 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
+	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask);
+	  return scalar(@completed) >= lg_autocal_26_full_ddc_spine_anchor_count() ? 1 : 0;
+	 }
 	 return 0;
 }
 
@@ -3407,6 +3486,7 @@ sub lg_autocal_26_seeded_move_damping_for_step {
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 return 0 if(ref($target) ne "HASH" || ref($step) ne "HASH");
 	 return 0 if(strict_tried_for_step($step) || autocal_step_is_fast_headroom($step));
+	 return 0 if(lg_autocal_26_full_ddc_spine_enabled($config) && lg_autocal_26_full_ddc_spine_anchor($target));
 	 my $idx=$target->{"index"};
 	 return 0 if(!defined($idx) || (ref($calibrated_slot_mask) eq "ARRAY" && $calibrated_slot_mask->[$idx]));
 	 my $mode_active=(lg_autocal_26_anchor_predrive_enabled($config) || lg_autocal_26_full_ddc_spine_enabled($config)) ? 1 : 0;
@@ -8448,6 +8528,215 @@ sub committed_final_all_level_verify {
  return ($picture,$arrays,undef);
 }
 
+sub post_cal_series_reference_white_y {
+ my ($config,$state,$readings)=@_;
+ if(ref($readings) eq "ARRAY") {
+  foreach my $reading (@{$readings}) {
+   next if(ref($reading) ne "HASH");
+   foreach my $key (qw(lg_target_white_y series_target_white_y autocal_white_y)) {
+    my $value=$reading->{$key};
+    return $value+0 if(defined($value) && $value > 0);
+   }
+  }
+ }
+ foreach my $source ($config,$state) {
+  next if(ref($source) ne "HASH");
+  foreach my $key (qw(committed_polish_white_y target_luminance calibrated_white_luminance setup_luminance_reference)) {
+   my $value=$source->{$key};
+   return $value+0 if(defined($value) && $value > 0);
+  }
+ }
+ return undef;
+}
+
+sub post_cal_series_reading_for_step {
+ my ($readings,$step)=@_;
+ return undef if(ref($readings) ne "ARRAY" || ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $wanted=$step->{"ire"}+0;
+ foreach my $reading (@{$readings}) {
+  next if(ref($reading) ne "HASH" || !defined($reading->{"ire"}));
+  return $reading if(abs(($reading->{"ire"}+0)-$wanted) < 0.001);
+ }
+ return undef;
+}
+
+sub post_cal_series_adjustment_luma_cap {
+ my ($config,$step,$lum_pct)=@_;
+ my $configured=(ref($config) eq "HASH" && defined($config->{"post_cal_series_luma_cap"})) ? ($config->{"post_cal_series_luma_cap"}+0) : undef;
+ if(defined($configured) && $configured > 0) {
+  $configured=0.25 if($configured < 0.25);
+  $configured=6 if($configured > 6);
+  return $configured;
+ }
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ return final_all_level_verify_adjustment_cap($step,"adjustingLuminance") if($ire <= 10.0001);
+ my $abs=defined($lum_pct) ? abs($lum_pct+0) : 0;
+ return 3.0 if($abs >= 8);
+ return 2.0 if($abs >= 4);
+ return 1.5 if($abs >= 2);
+ return 1.0;
+}
+
+sub post_cal_series_adjustment_reference {
+ my ($config)=@_;
+ return undef if(ref($config) ne "HASH");
+ return $config->{"post_cal_adjustment_reference"} if(ref($config->{"post_cal_adjustment_reference"}) eq "HASH");
+ return $config->{"prior_autocal_state"} if(ref($config->{"prior_autocal_state"}) eq "HASH");
+ return undef;
+}
+
+sub import_post_cal_series_adjustment_reference {
+ my ($config,$state)=@_;
+ return 0 if(ref($state) ne "HASH");
+ my $reference=post_cal_series_adjustment_reference($config);
+ return 0 if(ref($reference) ne "HASH");
+ my $imported=0;
+ foreach my $key (qw(lg_autocal_26_response_model lg_autocal_26_best_known)) {
+  next if(ref($reference->{$key}) ne "HASH");
+  $state->{$key}=clone_picture($reference->{$key});
+  $imported++;
+ }
+ $state->{"post_cal_adjustment_reference_imported"}=$imported+0 if($imported);
+ return $imported;
+}
+
+sub post_cal_series_adjustment {
+ my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta)=@_;
+ return ($picture,"Post-cal series adjustment requires LG 26pt steps") if(ref($steps) ne "ARRAY" || !@{$steps});
+ return ($picture,"Post-cal series adjustment requires current LG DDC arrays") if(ref($arrays) ne "HASH");
+ my $readings=(ref($config) eq "HASH" && ref($config->{"post_cal_series_readings"}) eq "ARRAY") ? $config->{"post_cal_series_readings"} : [];
+ return ($picture,"Post-cal series adjustment requires a completed 26pt series read") if(!@{$readings});
+ import_post_cal_series_adjustment_reference($config,$state);
+ my $white_y=post_cal_series_reference_white_y($config,$state,$readings);
+ return ($picture,"Post-cal series adjustment is missing a target white reference") if(!defined($white_y) || $white_y <= 0);
+ set_state_white_reference($state,$white_y);
+ my @candidates=grep {
+  ref($_) eq "HASH" &&
+  defined($_->{"ire"}) &&
+  !$_->{"autocal_read_only"} &&
+  !$_->{"autocal_white_reference"} &&
+  !$_->{"autocal_reference_only"} &&
+  ddc_target_for_step($_)
+ } @{$steps};
+ my @changed;
+ my @evaluated;
+ my $changed_count=0;
+ my $total=scalar(@candidates);
+ my $index=0;
+ $state->{"current_name"}="Post-cal series adjustment";
+ $state->{"phase"}="analyzing";
+ $state->{"post_cal_series_adjustment"}={ status=>"running", total=>$total+0, current_index=>0, changed=>0 };
+ write_state($state);
+ foreach my $step (@candidates) {
+  last if(cancelled());
+  my $target=ddc_target_for_step($step);
+  next if(ref($target) ne "HASH");
+  my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
+  my $reading=post_cal_series_reading_for_step($readings,$read_step);
+  $index++;
+  $state->{"post_cal_series_adjustment"}={ status=>"running", total=>$total+0, current_index=>$index+0, current=>$target->{"label"}, changed=>$changed_count+0 };
+  next if(ref($reading) ne "HASH" || $reading->{"error"});
+  $reading=clone_picture($reading);
+  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+  my $lum_pct=luminance_error_percent($reading,$target_step_y);
+  $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+  push @evaluated,{
+   ire=>$read_step->{"ire"}+0,
+   label=>$target->{"label"},
+   delta_e=>defined($de) ? $de+0 : undef,
+   luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+   target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
+  };
+  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
+  next if($outlier eq "");
+  next if(autocal_step_is_peak_headroom($read_step));
+  my %tried_values;
+  mark_tried_values(\%tried_values,$arrays,$target,$de);
+  my $adjustments=lg_autocal_26_learned_luminance_adjustment(
+   $state,$arrays,$target,$read_step,$lum_pct,\%tried_values,
+   post_cal_series_adjustment_luma_cap($config,$read_step,$lum_pct),
+   "post_cal_series_luminance"
+  );
+  if(!$adjustments) {
+   $adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$read_step,$lum_pct,\%tried_values,$state);
+  }
+  if(!$adjustments) {
+   my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($reading,$read_step));
+   my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
+   my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($read_step,$learned_setting) : undef;
+   $adjustments=lg_autocal_26_learned_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb");
+  }
+  next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+  foreach my $adj (@{$adjustments}) {
+   next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
+   next if(ref($arrays->{$adj->{"setting"}}) ne "ARRAY");
+   $arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
+  }
+  $changed_count++;
+  push @changed,{
+   ire=>$read_step->{"ire"}+0,
+   label=>$target->{"label"},
+   reason=>$outlier,
+   before_delta_e=>defined($de) ? $de+0 : undef,
+   before_luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+   adjustments=>trace_adjustments_summary($adjustments),
+   values_after=>trace_target_values($arrays,$target),
+  };
+  trace_109($read_step,"post_cal_series_adjustment",{
+   label=>$target->{"label"},
+   reason=>$outlier,
+   delta_e=>defined($de)?$de+0:undef,
+   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+   adjustments=>trace_adjustments_summary($adjustments),
+   values_after=>trace_target_values($arrays,$target),
+  });
+ }
+ $state->{"post_cal_series_adjustment"}={
+  status=>$changed_count ? "writing" : "complete",
+  total=>$total+0,
+  current_index=>$index+0,
+  changed=>$changed_count+0,
+  evaluated=>\@evaluated,
+  changes=>\@changed,
+  white_y=>$white_y+0,
+ };
+ write_state($state);
+ return ($picture,undef) if(!$changed_count);
+ my $write_target;
+ foreach my $step (reverse @candidates) {
+  my $target=ddc_target_for_step($step);
+  if(ref($target) eq "HASH") { $write_target=$target; last; }
+ }
+ return ($picture,"Post-cal series adjustment had changes but no writable target") if(ref($write_target) ne "HASH");
+ $state->{"phase"}="writing";
+ $state->{"current_name"}="Applying post-cal series adjustment";
+ $state->{"message"}="Applying $changed_count estimated DDC correction".($changed_count==1?"":"s")." from post-cal series";
+ write_state($state);
+ my $start_error=start_calibration_mode($picture_mode,$state,"Post-cal series adjustment calibration mode enabled");
+ return ($picture,$start_error) if($start_error);
+ my $write_error;
+ ($picture,$write_error)=set_picture_values($picture,$arrays,$write_target,$picture_mode,1,$state,1,1);
+ if($write_error) {
+  end_calibration_mode($picture_mode);
+  set_state_calibration_mode($state,0,"");
+  return ($picture,$write_error);
+ }
+ sync_state_picture($state,$picture,$picture_mode);
+ end_calibration_mode($picture_mode);
+ set_state_calibration_mode($state,0,"");
+ my $settle_ms=config_positive_int($config,"post_cal_series_adjust_settle_ms",6000,0,60000);
+ $state->{"phase"}="settling";
+ $state->{"message"}="Settling after post-cal series adjustment";
+ $state->{"post_cal_series_adjustment"}{"settle_ms"}=$settle_ms+0;
+ write_state($state);
+ select(undef,undef,undef,$settle_ms/1000) if($settle_ms > 0);
+ $state->{"post_cal_series_adjustment"}{"status"}="complete";
+ write_state($state);
+ return ($picture,undef);
+}
+
 sub committed_state_polish {
 	 my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$polish_steps,$calibrated_slot_mask)=@_;
 	 my $polish_enabled=post_commit_polish_enabled($config);
@@ -8537,7 +8826,7 @@ sub committed_state_polish {
 	  $state->{"current_name"}="Committed polish $label";
 	  $state->{"phase"}="reading";
 	  $state->{"message"}="Reading committed $label";
-  prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_read");
+  prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_read","post_commit_polish_read_settle_ms",6000);
   clear_committed_measurement_state($state,1) if(lg_autocal_26_standalone_committed_cleanup_enabled($config));
   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
   write_state($state);
@@ -8581,7 +8870,7 @@ sub committed_state_polish {
    $state->{"current_name"}="Committed polish $label";
    $state->{"phase"}="reading";
    $state->{"message"}=($reason||"Checking committed 100% legal white");
-   prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$committed_pair_step,"committed_polish_pair_read");
+   prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$committed_pair_step,"committed_polish_pair_read","post_commit_polish_read_settle_ms",6000);
    $state->{"active_stimulus"}=$committed_pair_step->{"stimulus"}+0 if(defined($committed_pair_step->{"stimulus"}));
    write_state($state);
    my ($pair_reading,$pair_error)=read_step($config,clone_picture($committed_pair_step),$state);
@@ -8707,7 +8996,7 @@ sub committed_state_polish {
 		   $state->{"phase"}="reading";
 		   $state->{"message"}="Reading committed $label polish ($iter/$step_limit)";
    if(lg_autocal_26_standalone_committed_cleanup_enabled($config)) {
-    prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_measurement","post_commit_polish_read_settle_ms",3500);
+    prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_measurement","post_commit_polish_read_settle_ms",6000);
     clear_committed_measurement_state($state,1);
    }
    write_state($state);
@@ -8828,7 +9117,7 @@ sub committed_state_polish {
 	     select(undef,undef,undef,$restore_read_settle_ms/1000) if($restore_read_settle_ms > 0 && !lg_autocal_26_standalone_committed_cleanup_enabled($config));
 	     $state->{"phase"}="reading";
 	     $state->{"message"}="Reading restored committed $label polish";
-	     prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_restore_read","post_commit_restore_read_settle_ms",3500);
+	     prepare_standalone_committed_off_cal_read($config,$state,$picture_mode,$read_step,"committed_polish_restore_read","post_commit_restore_read_settle_ms",6000);
 	     clear_committed_measurement_state($state,1);
 	     $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
 	     write_state($state);
@@ -8892,6 +9181,7 @@ sub committed_state_polish {
 			 $finish_polish->(undef);
 			 promote_calibrated_26pt_slot_mask($calibrated_slot_mask,$current_calibrated_slot_mask);
 			 $state->{"committed_polish"}={ status=>"complete", total=>$polish_total+0, current_index=>$polish_index+0, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
+			 write_state($state);
 			 return ($picture,undef);
 			}
 
@@ -9418,7 +9708,32 @@ eval {
 			  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_slot_count()),
 			 };
 		 my @calibrated_ddc_slots=map { 0 } (1..ddc_slot_count());
-		 if(autocal_config_is_post_3d_polish($config)) {
+		 if(autocal_config_is_post_series_adjust($config)) {
+		  foreach my $step (@{$steps}) {
+		   my $target=ddc_target_for_step($step);
+		   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
+		  }
+		  $state->{"current_name"}="Post-cal series adjustment";
+		  $state->{"phase"}="analyzing";
+		  $state->{"message"}="Estimating committed greyscale DDC corrections from post-cal series";
+		  $state->{"full_autocal_post_series_adjust"}=JSON::PP::true;
+		  write_state($state);
+		  my $adjust_error=undef;
+		  ($picture,$adjust_error)=post_cal_series_adjustment(
+		   $config,
+		   $state,
+		   $picture,
+		   $arrays,
+		   $active_picture_mode_for_cleanup || $picture_mode,
+		   $steps,
+		   $target_x,
+		   $target_y,
+		   $target_gamma,
+		   $signal_mode,
+		   $target_delta
+		  );
+		  die $adjust_error if($adjust_error && $adjust_error ne "cancelled");
+		 } elsif(autocal_config_is_post_3d_polish($config)) {
 		  foreach my $step (@{$steps}) {
 		   my $target=ddc_target_for_step($step);
 		   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
@@ -9663,12 +9978,12 @@ eval {
 	 write_state($state);
 		 my @ordered=order_autocal_steps($steps,$config);
 	 die "No adjustable LG greyscale steps were supplied" if(!@ordered);
-		 my @verification=verification_autocal_steps($steps);
-		 my ($black_step)=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)) < 0.001 } @{$steps};
-		 my ($white_reference_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
-		 my $white_reference_is_adjustable=($white_reference_step && ddc_target_for_step($white_reference_step)) ? 1 : 0;
-		 my $refresh_white_after_headroom=0;
-		 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0);
+			 my @verification=verification_autocal_steps($steps);
+			 my ($black_step)=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)) < 0.001 } @{$steps};
+			 my ($white_reference_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
+			 my $white_reference_is_adjustable=($white_reference_step && ddc_target_for_step($white_reference_step)) ? 1 : 0;
+			 my $refresh_white_after_headroom=0;
+			 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0);
 
 		 my $white_y=($target_luminance > 0) ? $target_luminance : undef;
 		 set_state_white_reference($state,$white_y) if(defined($white_y) && $white_y > 0);
@@ -9701,10 +10016,10 @@ eval {
 		  set_state_target_step_luminance($state,$target_lum_y);
 		  write_state($state);
 		  return $ref_reading;
-			 };
-			 my $white_refreshed_after_headroom=0;
-			 my $low_shadow_calibration_settled=0;
-		 foreach my $step (@ordered) {
+				 };
+				 my $white_refreshed_after_headroom=0;
+				 my $low_shadow_calibration_settled=0;
+				 foreach my $step (@ordered) {
 		  last if(cancelled());
 		  $step_num++;
 		  my $target=ddc_target_for_step($step);
@@ -10123,10 +10438,10 @@ eval {
 						   remember_lg_autocal_26_best_known(
 						    $config,$state,$read_step,$reading,$de,$lum_pct,
 						    $target_step_y,$arrays,$target,"main_initial_touchup_target",1
-						   );
-					   $finalize_calibrated_26pt_slot->($target,$read_step,$label);
-					   next;
-					  }
+							   );
+						   $finalize_calibrated_26pt_slot->($target,$read_step,$label);
+						   next;
+						  }
 					  if($pair_target_reached_now->()) {
 					   $run_body_final_micro_once->("Final micro-balancing $label before moving on");
 					   trace_109($read_step,"target_reached_initial",{
@@ -10149,8 +10464,8 @@ eval {
 				   if($pair_target_reached_now->()) {
 					    remember_lg_autocal_26_best_known(
 					     $config,$state,$read_step,$reading,$de,$lum_pct,
-					     $target_step_y,$arrays,$target,"main_initial_target_reached",1
-					    );
+						     $target_step_y,$arrays,$target,"main_initial_target_reached",1
+						    );
 				    $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 				    next;
 				   }
@@ -10953,6 +11268,8 @@ eval {
 						    } else {
 						     $low_shadow_next_adjustments=$low_shadow_restore_next_adjustments if(ref($low_shadow_restore_next_adjustments) eq "ARRAY");
 						     $body_luminance_next_adjustments=$body_restore_next_adjustments if(ref($body_restore_next_adjustments) eq "ARRAY");
+						     exhaust_adjustment_next_values(\%tried_values,$adjustments,$de)
+						      if(lg_autocal_26_full_ddc_spine_enabled($config) || $seeded_move_damping);
 						     $restore_best_branch->("Backtracking to best $label result after rejected adjustment");
 						    }
 						    if(
@@ -11398,19 +11715,19 @@ eval {
 					  remember_lg_autocal_26_best_known(
 					   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
 					   $target_step_y,$best_arrays,$target,"main_final_step_result",$final_reached
-					  );
-			  $finalize_calibrated_26pt_slot->($target,$read_step,$label);
-			  write_state($state);
-			  if(
-			   !$white_refreshed_after_headroom &&
-			   $refresh_white_after_headroom &&
-			   defined($step->{"ire"}) &&
-			   abs(($step->{"ire"}+0)-99) < 0.001
-			  ) {
-			   $white_refreshed_after_headroom=1;
-			   $read_reference_step->($white_reference_step,"Auto Cal 100% calibrated reference","Refreshing 100% white after top-end calibration");
-			  }
-			 }
+							  );
+					  $finalize_calibrated_26pt_slot->($target,$read_step,$label);
+					  write_state($state);
+					  if(
+					   !$white_refreshed_after_headroom &&
+					   $refresh_white_after_headroom &&
+					   defined($step->{"ire"}) &&
+					   abs(($step->{"ire"}+0)-99) < 0.001
+					  ) {
+					   $white_refreshed_after_headroom=1;
+					   $read_reference_step->($white_reference_step,"Auto Cal 100% calibrated reference","Refreshing 100% white after top-end calibration");
+					  }
+					 }
 			 if(!cancelled() && @verification) {
 			  foreach my $verify_step (@verification) {
 			   last if(cancelled());
