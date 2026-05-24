@@ -8901,6 +8901,27 @@ sub post_cal_series_reading_for_step {
  return undef;
 }
 
+sub post_cal_series_legal_white_reference_step {
+ my ($steps)=@_;
+ return undef if(ref($steps) ne "ARRAY");
+ foreach my $step (@{$steps}) {
+  next if(ref($step) ne "HASH" || !$step->{"autocal_white_reference"});
+  next if(!defined($step->{"ire"}) || abs(($step->{"ire"}+0)-100) > 0.001);
+  return $step;
+ }
+ foreach my $step (@{$steps}) {
+  next if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+  return $step if(abs(($step->{"ire"}+0)-100) < 0.001);
+ }
+ return undef;
+}
+
+sub post_cal_series_shared_legal_white_target {
+ my ($target)=@_;
+ return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
+ return abs(($target->{"ire"}+0)-99) < 0.001 ? 1 : 0;
+}
+
 sub post_cal_series_adjustment_luma_cap {
  my ($config,$step,$lum_pct)=@_;
  my $configured=(ref($config) eq "HASH" && defined($config->{"post_cal_series_luma_cap"})) ? ($config->{"post_cal_series_luma_cap"}+0) : undef;
@@ -8951,6 +8972,20 @@ sub post_cal_series_adjustment {
  my $white_y=post_cal_series_reference_white_y($config,$state,$readings);
  return ($picture,"Post-cal series adjustment is missing a target white reference") if(!defined($white_y) || $white_y <= 0);
  set_state_white_reference($state,$white_y);
+ my $legal_white_step=post_cal_series_legal_white_reference_step($steps);
+ my ($legal_white_read_step,$legal_white_reading,$legal_white_de,$legal_white_lum_pct,$legal_white_target_step_y);
+ if(ref($legal_white_step) eq "HASH") {
+  $legal_white_read_step=fixed_lg_autocal_step($config,clone_picture($legal_white_step));
+  my $raw_legal_white_reading=post_cal_series_reading_for_step($readings,$legal_white_read_step);
+  if(ref($raw_legal_white_reading) eq "HASH" && !$raw_legal_white_reading->{"error"}) {
+   $legal_white_reading=clone_picture($raw_legal_white_reading);
+   $legal_white_target_step_y=effective_target_luminance_for_autocal_reading($white_y,$legal_white_read_step,$legal_white_reading,$target_gamma,$signal_mode,$config,$state);
+   annotate_reading_target($legal_white_reading,$white_y,$legal_white_target_step_y,$target_x,$target_y);
+   $legal_white_de=autocal_delta_e_for_step($config,$legal_white_reading,$legal_white_read_step,$white_y,$target_x,$target_y,$legal_white_target_step_y);
+   $legal_white_lum_pct=luminance_error_percent($legal_white_reading,$legal_white_target_step_y);
+   $state->{"readings"}=merge_reading($state->{"readings"},$legal_white_reading);
+  }
+ }
  my @candidates=grep {
   ref($_) eq "HASH" &&
   defined($_->{"ire"}) &&
@@ -8993,6 +9028,24 @@ sub post_cal_series_adjustment {
   my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
   next if($outlier eq "");
   next if(autocal_step_is_peak_headroom($read_step));
+  if(post_cal_series_shared_legal_white_target($target) && ref($legal_white_reading) eq "HASH") {
+   $evaluated[-1]{"skipped_reason"}="shared_99_100_legal_white_guard" if(@evaluated);
+   $evaluated[-1]{"legal_white_delta_e"}=defined($legal_white_de) ? $legal_white_de+0 : undef if(@evaluated);
+   $evaluated[-1]{"legal_white_luminance_error_pct"}=defined($legal_white_lum_pct) ? $legal_white_lum_pct+0 : undef if(@evaluated);
+   trace_109($read_step,"post_cal_series_legal_white_guard",{
+    label=>$target->{"label"},
+    reason=>$outlier,
+    delta_e=>defined($de)?$de+0:undef,
+    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+    legal_white_delta_e=>defined($legal_white_de)?$legal_white_de+0:undef,
+    legal_white_luminance_error_pct=>defined($legal_white_lum_pct)?$legal_white_lum_pct+0:undef,
+    legal_white_target_luminance=>defined($legal_white_target_step_y)?$legal_white_target_step_y+0:undef,
+    legal_white_reading=>trace_reading_summary($legal_white_reading),
+    values_before=>trace_target_values($arrays,$target),
+    skipped_reason=>"shared_99_100_legal_white_guard"
+   });
+   next;
+  }
   my %tried_values;
   mark_tried_values(\%tried_values,$arrays,$target,$de);
   my $adjustments=lg_autocal_26_learned_luminance_adjustment(
