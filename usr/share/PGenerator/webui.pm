@@ -19204,7 +19204,7 @@ function meterFullAutoCalPostTouchupEnabled(){
 }
 
 function meterFullAutoCalPost3dCleanupEnabled(){
- return !meterFullAutoCalPostTouchupEnabled()&&(meterFullAutoCalPostSeriesAdjustEnabled()||meterFullAutoCalPostCommitPolishEnabled()||meterFullAutoCalPostCommitVerifyEnabled());
+ return !meterFullAutoCalPostTouchupEnabled()&&(meterFullAutoCalPostSeriesAdjustEnabled()||meterFullAutoCalPostCommitPolishEnabled());
 }
 
 function meterFullAutoCalMeticulousEnabled(){
@@ -20096,8 +20096,8 @@ async function meterFullAutoCalStartPost3dPolish(lutStatus){
  const post3dPostSeriesAdjustEnabled=meterFullAutoCalPostSeriesAdjustEnabled();
  const post3dPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
  const post3dPostCommitVerifyEnabled=meterFullAutoCalPostCommitVerifyEnabled();
- if(!post3dPostSeriesAdjustEnabled&&!post3dPostCommitPolishEnabled&&!post3dPostCommitVerifyEnabled) return false;
  if(post3dPostSeriesAdjustEnabled) return meterFullAutoCalStartPost3dSeriesAdjustment(lutStatus,post3dPostCommitVerifyEnabled);
+ if(!post3dPostCommitPolishEnabled) return false;
  meterFullAutoCalResults.lut3d=lutStatus||null;
  const lutRunId=lutStatus&&(lutStatus.full_autocal_run_id||lutStatus.run_id);
  if(lutRunId) meterFullAutoCalRunId=lutRunId;
