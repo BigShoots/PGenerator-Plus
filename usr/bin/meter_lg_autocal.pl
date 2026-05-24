@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -5311,6 +5311,35 @@ sub body_luminance_priority_adjustments {
    next if(ref($adj) ne "HASH");
    $adj->{"body_luminance_priority"}=1;
    $adj->{"headroom_105_body_refinement"}=1 if($headroom_105_body);
+  }
+ }
+ return $adjustments;
+}
+
+sub full_ddc_spine_seeded_body_luminance_priority_adjustments {
+ my ($config,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step)=@_;
+ return undef if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return undef if(ref($step) ne "HASH" || !$step->{"lg_autocal_26_seeded_move_damping"});
+ return undef if(ref($target) ne "HASH" || lg_autocal_26_full_ddc_spine_body_anchor($target));
+ return undef if(autocal_step_is_low_shadow($step) || autocal_step_is_fast_headroom($step) || autocal_step_is_white($step) || strict_tried_for_step($step));
+ return undef if(!has_luminance_channel($arrays,$target));
+ $luminance_err=0 if(!defined($luminance_err));
+ my $lum_pct=$luminance_err*100;
+ my $tol=luminance_tolerance_percent($step);
+ $tol=2 if(!defined($tol) || $tol <= 0);
+ my $threshold=$tol*1.05;
+ $threshold=2.0 if($threshold < 2.0);
+ return undef if(abs($lum_pct) < $threshold);
+ my $ire=(defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $max_step=1;
+ $max_step=2 if(abs($lum_pct) >= 10 && $ire >= 15);
+ $max_step=1 if($ire <= 35 && $max_step > 1);
+ my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,0,$step,"full_ddc_spine_seeded_body_luminance");
+ if(ref($adjustments) eq "ARRAY") {
+  foreach my $adj (@{$adjustments}) {
+   next if(ref($adj) ne "HASH");
+   $adj->{"body_luminance_priority"}=1;
+   $adj->{"full_ddc_spine_seeded_body_luminance_priority"}=1;
   }
  }
  return $adjustments;
@@ -11068,6 +11097,9 @@ eval {
 								   }
 								   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
 								    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
+								   }
+								   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
+								    $adjustments=full_ddc_spine_seeded_body_luminance_priority_adjustments($config,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
 								   }
 								   if(
 								    !$adjustments &&
