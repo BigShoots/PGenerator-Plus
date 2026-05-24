@@ -23622,7 +23622,7 @@ function chartHandleHover(e,canvasId){
  if(canvasId==='chartGammaValue') gammaReferenceReadings=meterFilterLgAutoCalChartItems(gammaReferenceReadings);
  const gamma=meterGreyscaleGammaValue(rd,meterGammaValueReferenceY(gammaReferenceReadings));
  let html='<b>'+rd.ire+'%</b><br>';
- html+='Lum: '+(rd.luminance!=null?rd.luminance.toFixed(2):'--')+' cd/m\u00B2';
+ html+='Read Y: '+(rd.luminance!=null?rd.luminance.toFixed(2):'--')+' cd/m\u00B2';
  if(rd.cct) html+='&nbsp; CCT: '+rd.cct+'K';
  html+='<br>x: '+(rd.x!=null?rd.x.toFixed(4):'--')+' &nbsp;y: '+(rd.y!=null?rd.y.toFixed(4):'--');
  html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
@@ -23638,9 +23638,7 @@ function chartHandleHover(e,canvasId){
  if(canvasId==='chartDeltaE'){
   const lumInfo=meterColorLuminanceInfo(rd);
   if(lumInfo.measuredY!=null||lumInfo.targetY!=null){
-   const readY=(lumInfo.measuredY!=null&&Number.isFinite(Number(lumInfo.measuredY)))?Number(lumInfo.measuredY).toFixed(3):'--';
    const targetY=(lumInfo.targetY!=null&&Number.isFinite(Number(lumInfo.targetY)))?Number(lumInfo.targetY).toFixed(3):'--';
-   html+='<br>Read Y: '+readY+' cd/m\u00B2';
    html+='<br>Target Y: '+targetY+' cd/m\u00B2';
    if(lumInfo.deltaPct!=null&&Number.isFinite(Number(lumInfo.deltaPct))) html+='<br>Y error: '+Number(lumInfo.deltaPct).toFixed(2)+'%';
   }
