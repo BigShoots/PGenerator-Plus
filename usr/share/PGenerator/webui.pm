@@ -22347,9 +22347,9 @@ function meterChartPointerIsOnYAxis(canvas,e){
 
 function meterChartYZoomHelpRect(id,pad){
  if(!meterChartCanYZoom(id)) return null;
- const left=Number((pad&&pad.l)||55);
- const top=Number((pad&&pad.t)||20);
- return {cx:Math.max(11,left-22),cy:Math.max(11,top-12),radius:8};
+ const radius=8;
+ const inset=14;
+ return {cx:inset,cy:inset,radius:radius};
 }
 
 function meterChartRegisterYZoomHelp(id,rect){
