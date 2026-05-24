@@ -11213,6 +11213,11 @@ function meterEffectiveGreyscaleWhiteReference(readings){
  const list=meterGreyscaleReferenceReadings(readings);
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
  const referenceList=lgAutoCalChartRef?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
+ const activeAutoCalTargetY=meterAutoCalGreyscaleTargetWhiteReferenceNits(list);
+ if(activeAutoCalTargetY>0){
+  const synthetic=meterSyntheticGreyWhiteReading(activeAutoCalTargetY);
+  if(synthetic) return synthetic;
+ }
  const white=meterFindSeriesWhiteReading(list);
  if(white) return white;
  const explicitTargetY=meterExplicitLgTargetWhiteReferenceNits(list);
@@ -11257,6 +11262,22 @@ function meterEffectiveGreyscaleWhiteReference(readings){
   }
  }
  return null;
+}
+
+function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
+ if(meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
+ const phase=String(meterFullAutoCalPhase||'');
+ const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish';
+ return !!(meterAutoCalRunning||meterAutoCalPolling||meterActionPending||(meterFullAutoCalRunning&&fullGreyscalePhase));
+}
+
+function meterAutoCalGreyscaleTargetWhiteReferenceNits(readings){
+ if(!meterAutoCalGreyscaleTargetWhiteReferenceActive(readings)) return null;
+ const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
+ const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
+ if(headroomTargetY>0) return headroomTargetY;
+ const targetY=meterLgTargetWhiteReferenceNits(list);
+ return targetY>0?targetY:null;
 }
 
 function meterGreyscaleChartWhiteReference(readings){
