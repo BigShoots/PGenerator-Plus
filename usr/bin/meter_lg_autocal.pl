@@ -399,6 +399,15 @@ sub apply_lg_autocal_26_standalone_defaults {
  return if(ref($config) ne "HASH");
  return if(!$config->{"lg_autocal_26"});
  return if($config->{"full_workflow"} || $config->{"full_autocal_touchup"});
+ if(!exists($config->{"lg_autocal_26_full_ddc_spine"}) && !exists($config->{"lg_autocal_26_anchor_predrive"})) {
+  $config->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::true;
+  $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false;
+  return;
+ }
+ if($config->{"lg_autocal_26_full_ddc_spine"} && !exists($config->{"lg_autocal_26_anchor_predrive"})) {
+  $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false;
+  return;
+ }
  return if(exists($config->{"lg_autocal_26_anchor_predrive"}));
  $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::true;
 }
