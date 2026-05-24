@@ -1792,6 +1792,9 @@ my $max_luma=&webui_pattern_max_luma($body);
 		 $grey_custom_enabled=1 if($body=~/"grey_custom_enabled"\s*:\s*true/i);
 			 my $lg_greyscale_21=0;
 			 $lg_greyscale_21=1 if($body=~/"lg_greyscale_21"\s*:\s*true/i);
+			 # The LG 22pt manual map was captured for a specific TV's DDC slots.
+			 # Keep it gated off so the public 21pt series uses normal stimulus points.
+			 $lg_greyscale_21=0;
 				 my $lg_autocal_26=0;
 				 $lg_autocal_26=1 if($body=~/"lg_autocal_26"\s*:\s*true/i);
 				 if($type eq "greyscale" && $signal_mode eq "sdr" && (($points==21 && $lg_greyscale_21) || ($points==26 && $lg_autocal_26))) {
@@ -9852,7 +9855,7 @@ const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
 const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=true;
 const METER_AUTOCAL_STATE_KEY='meterAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_SERIES=[
- {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale LG 22pt Manual'},
+ {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale 21pt'},
  {key:'colors-30',type:'colors',points:30,label:'ColorChecker'},
  {key:'saturations-24',type:'saturations',points:24,label:'Sat Sweep'}
 ];
@@ -15884,6 +15887,7 @@ const METER_TWO_POINT_DEFAULTS={low:30,high:100};
 
 		const METER_GREY_SLOTS_11=[0,10,20,30,40,50,60,70,80,90,100];
 		const METER_GREY_SLOTS_21=[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
+const METER_LG_GREY_MANUAL_22_ENABLED=false;
 		const METER_LG_GREY_DDC_SLOTS_22=[2.5,5,7.5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
 			const METER_LG_GREY_AUTOCAL_26_SLOTS=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
 				const METER_LG_GREY_AUTOCAL_26_CODES=[84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023];
@@ -16050,7 +16054,7 @@ function meterGreyDefaultSlots(points){
 
 function meterUseLgGreyscale21(points){
  const normalized=(points===256)?100:Number(points);
- return normalized===21&&meterGreyTvControlsActive();
+ return METER_LG_GREY_MANUAL_22_ENABLED&&normalized===21&&meterGreyTvControlsActive();
 }
 
 function meterUseLgAutoCal26(points){
@@ -16067,7 +16071,7 @@ function meterGreyAllowsHeadroomTargets(){
 function meterLgGreyscaleUsesExtendedSdr(points){
  const normalized=(points===256)?100:Number(points);
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- return (normalized===21||normalized===26)&&mode==='sdr'&&meterGreyTvControlsActive();
+ return (meterUseLgGreyscale21(normalized)||meterUseLgAutoCal26(normalized))&&mode==='sdr'&&meterGreyTvControlsActive();
 }
 
 function meterLgGreyscaleUsesLegalSdrDdcCodes(points){
@@ -17860,7 +17864,7 @@ function meterAutoCalRenderResults(status){
    const sorted=[...rows].sort((a,b)=>b.de-a.de);
    greyText=' Touch-up greyscale avg ΔE '+avg.toFixed(2)+', max '+sorted[0].de.toFixed(2)+' at '+sorted[0].label+'.';
   }
-  const reportText=hasPreReport?' Click Generate Post-Cal Report to read Greyscale LG 22pt Manual, ColorChecker, and Sat Sweep again and build a before/after report.':' Click Generate Post-Cal Report to read Greyscale LG 22pt Manual, ColorChecker, and Sat Sweep and build a post-cal report.';
+  const reportText=hasPreReport?' Click Generate Post-Cal Report to read Greyscale 21pt, ColorChecker, and Sat Sweep again and build a before/after report.':' Click Generate Post-Cal Report to read Greyscale 21pt, ColorChecker, and Sat Sweep and build a post-cal report.';
   const doneText=status.touchup_skipped?'Full Auto Cal complete: greyscale and 3D LUT finished.':'Full Auto Cal complete: greyscale, 3D LUT, and greyscale touch-up finished.';
   if(summary) summary.textContent=doneText+uploadText+greyText+reportText;
   const post=lut.post_check_summary||{};
@@ -19712,7 +19716,7 @@ async function meterStartFullAutoCal(){
 	  : meterFullAutoCalPostSeriesAdjustChoiceValue();
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
-  message:'Before calibration, PGenerator will measure Greyscale LG 22pt Manual, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
+  message:'Before calibration, PGenerator will measure Greyscale 21pt, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
   continueText:'\u25B6 Measure Pre-Cal',
   skipText:'Skip Pre-Cal',
   statusText:'Capture the before measurements for the Full AutoCal report.'
