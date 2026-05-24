@@ -2526,7 +2526,10 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	 }
 
 	 my $stamp_series_target_white_y=($type eq "colors" || $type eq "saturations") ? 1 : 0;
-	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $signal_mode eq "sdr" && $points==26 && $lg_autocal_26);
+	 # LG 26pt greyscale post-cal reads must target the series' own 100% white
+	 # read. AutoCal-derived white is useful audit context, but stamping it as
+	 # series_target_white_y makes post-cal charts use the old calibration basis.
+	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $series_target_white_y_provided);
  my $series_target_white_audit="";
  if($series_target_white_reference && $series_target_white_y_num>0) {
   my @audit_fields;
@@ -11030,6 +11033,11 @@ function meterStoredLgTargetWhiteReferenceNits(){
 
 function meterExplicitLgTargetWhiteReferenceNits(readings){
  const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
+ if(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints)){
+  const white=(typeof meterFindSeriesWhiteReading==='function')?meterFindSeriesWhiteReading(list):null;
+  const whiteY=white?meterReadingLuminanceNits(white):null;
+  if(white&&!white.synthetic_target&&whiteY>0) return null;
+ }
  for(const rd of list){
   const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
   if(Number.isFinite(y)&&y>0) return y;
@@ -23623,6 +23631,16 @@ function chartHandleHover(e,canvasId){
   }
  }
  if(hit.de2000!=null && meterDeltaEForm()!=='de2000') html+='<br>Reference ΔE 2000: '+hit.de2000.toFixed(2);
+ if(canvasId==='chartDeltaE'){
+  const lumInfo=meterColorLuminanceInfo(rd);
+  if(lumInfo.measuredY!=null||lumInfo.targetY!=null){
+   const readY=(lumInfo.measuredY!=null&&Number.isFinite(Number(lumInfo.measuredY)))?Number(lumInfo.measuredY).toFixed(3):'--';
+   const targetY=(lumInfo.targetY!=null&&Number.isFinite(Number(lumInfo.targetY)))?Number(lumInfo.targetY).toFixed(3):'--';
+   html+='<br>Read Y: '+readY+' cd/m\u00B2';
+   html+='<br>Target Y: '+targetY+' cd/m\u00B2';
+   if(lumInfo.deltaPct!=null&&Number.isFinite(Number(lumInfo.deltaPct))) html+='<br>Y error: '+Number(lumInfo.deltaPct).toFixed(2)+'%';
+  }
+ }
  tip.innerHTML=html;
  tip.style.display='block';
  // Position near cursor
