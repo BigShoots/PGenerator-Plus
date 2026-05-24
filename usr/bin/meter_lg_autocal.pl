@@ -10794,6 +10794,7 @@ eval {
 					   if(autocal_step_is_peak_headroom($read_step)) {
 					    apply_peak_headroom_reference($state,$read_step,$reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
 					    $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+					    $lum_pct=luminance_error_percent($reading,$target_step_y);
 					    set_state_target_step_luminance($state,$target_step_y);
 					    $state->{"readings"}=merge_reading($state->{"readings"},$reading);
 					    write_state($state);
@@ -12040,10 +12041,10 @@ eval {
 				   $best_lum_pct=undef;
 				   set_state_target_step_luminance($state,undef);
 				  } elsif(autocal_step_is_peak_headroom($read_step)) {
-				   my $peak_target_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode);
 				   apply_peak_headroom_reference($state,$read_step,$best_reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
-				   $best_lum_pct=luminance_error_percent($best_reading,$peak_target_y);
-				   set_state_target_step_luminance($state,$peak_target_y);
+				   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode);
+				   $best_lum_pct=luminance_error_percent($best_reading,$target_step_y);
+				   set_state_target_step_luminance($state,$target_step_y);
 				  }
 				  if(ref($best_reading) eq "HASH") {
 				   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading);
