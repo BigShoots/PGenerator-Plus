@@ -20,3 +20,10 @@ build/*.rootfs.ext4
 build/.*
 build/third_party/
 usr/share/PGenerator/*.bak
+
+# Generated AutoCal/status artifacts; keep tracked helper sources visible.
+/tmp/*
+!/tmp/fullgrey_validation_runner.js
+!/tmp/hybrid-topend/
+/tmp/hybrid-topend/*
+!/tmp/hybrid-topend/meter_lg_autocal.pl
