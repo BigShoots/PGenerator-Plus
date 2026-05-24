@@ -1211,12 +1211,12 @@ sub headroom_reference_white_from_target {
 
 sub committed_polish_reference_white_y {
  my ($config,$state,$steps,$target_gamma,$signal_mode,$fallback)=@_;
- if(ref($state) eq "HASH" && defined($state->{"committed_polish_white_y"}) && ($state->{"committed_polish_white_y"}+0) > 0) {
-  return $state->{"committed_polish_white_y"}+0;
- }
- if(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0) {
-  return $state->{"peak_headroom_reference"}+0;
- }
+ my $prefer_headroom=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 1 : 0;
+ my $committed_ref=(ref($state) eq "HASH" && defined($state->{"committed_polish_white_y"}) && ($state->{"committed_polish_white_y"}+0) > 0)
+  ? ($state->{"committed_polish_white_y"}+0) : undef;
+ my $peak_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0)
+  ? ($state->{"peak_headroom_reference"}+0) : undef;
+ return $peak_ref if($prefer_headroom && defined($peak_ref));
  if(ref($state) eq "HASH" && ref($state->{"readings"}) eq "ARRAY") {
   my $best_ire=-1;
   my $best_ref=undef;
@@ -1235,6 +1235,9 @@ sub committed_polish_reference_white_y {
   return $best_ref if(defined($best_ref) && $best_ref > 0);
  }
  my $from_headroom=headroom_reference_white_from_target($config,$steps,$target_gamma,$signal_mode);
+ return $from_headroom if($prefer_headroom && defined($from_headroom) && $from_headroom > 0);
+ return $committed_ref if(defined($committed_ref));
+ return $peak_ref if(defined($peak_ref));
  return $from_headroom if(defined($from_headroom) && $from_headroom > 0);
  if(ref($state) eq "HASH" && defined($state->{"target_luminance"}) && ($state->{"target_luminance"}+0) > 0) {
   return $state->{"target_luminance"}+0;
