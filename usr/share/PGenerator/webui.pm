@@ -21582,7 +21582,7 @@ function meterNiceLinearAxis(minValue,maxValue,steps,options){
 }
 
 function meterGreyscaleChartPad(basePad,stepCount){
- const pad=Object.assign({},basePad||{t:20,r:15,b:30,l:45});
+ const pad=Object.assign({},basePad||{t:34,r:15,b:30,l:55});
  if(meterGreyscaleRotateXLabels(stepCount)) pad.b=Math.max(pad.b||0,60);
  return pad;
 }
@@ -22388,8 +22388,8 @@ function meterChartPointerIsOnYAxis(canvas,e){
 
 function meterChartYZoomHelpRect(id,pad){
  if(!meterChartCanYZoom(id)) return null;
- const radius=8;
- const inset=14;
+ const radius=7;
+ const inset=10;
  return {cx:inset,cy:inset,radius:radius};
 }
 
