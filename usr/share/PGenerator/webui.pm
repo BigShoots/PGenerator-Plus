@@ -10302,6 +10302,68 @@ function meterRestoreLatestPersistedSeries(){
  return false;
 }
 
+function meterSeriesLatestReadingTimestamp(readings){
+ let latest=0;
+ (Array.isArray(readings)?readings:[]).forEach(rd=>{
+  const ts=Number(rd&&rd.timestamp);
+  if(Number.isFinite(ts)&&ts>latest) latest=ts;
+ });
+ return latest;
+}
+
+function meterSeriesIdTimestamp(seriesId){
+ const match=String(seriesId||'').match(/_(\d{9,})$/);
+ return match?Number(match[1]):0;
+}
+
+function meterSeriesStatusLatestTimestamp(status){
+ return Math.max(
+  meterSeriesLatestReadingTimestamp(status&&status.readings),
+  meterSeriesLatestReadingTimestamp(status&&status.white_reading?[status.white_reading]:[]),
+  meterSeriesIdTimestamp(status&&status.series_id)
+ );
+}
+
+function meterCurrentSeriesLatestTimestamp(){
+ return Math.max(
+  meterSeriesLatestReadingTimestamp(meterReadings),
+  meterSeriesLatestReadingTimestamp(meterWhiteReading?[meterWhiteReading]:[])
+ );
+}
+
+function meterSeriesLuminanceReadingCount(readings){
+ return (Array.isArray(readings)?readings:[]).filter(rd=>meterReadingHasLuminance(rd)).length;
+}
+
+function meterSharedSeriesStatusCanRecover(status){
+ const s=String((status&&status.status)||'').toLowerCase();
+ return !!(status&&status.series_id&&(s==='running'||s==='complete'||s==='cancelled'||s==='error'));
+}
+
+function meterSharedSeriesShouldRecover(status){
+ if(!meterSharedSeriesStatusCanRecover(status)) return false;
+ if(!meterActiveSeriesKey) return true;
+ const serverId=String(status.series_id||'');
+ const localId=String(meterSharedSeriesId||'');
+ const serverCount=meterSeriesLuminanceReadingCount(status.readings);
+ const localCount=meterSeriesLuminanceReadingCount(meterReadings);
+ const serverTs=meterSeriesStatusLatestTimestamp(status);
+ const localTs=meterCurrentSeriesLatestTimestamp();
+ const isRunning=String(status.status||'').toLowerCase()==='running';
+ if(serverId&&localId){
+  if(serverId!==localId) return true;
+  if(serverCount>localCount) return true;
+  return serverTs>0&&serverTs>localTs;
+ }
+ if(serverId&&!localId){
+  if(isRunning) return true;
+  if(serverCount>0&&localCount===0) return true;
+  if(serverTs>0&&(!localTs||serverTs>=localTs)) return true;
+  if(serverCount>localCount&&(!localTs||serverTs+300>=localTs)) return true;
+ }
+ return false;
+}
+
 // D65 reference white chromaticity
 const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
 const METER_XYZ_MATRIX_DEFAULT=[[1,0,0],[0,1,0],[0,0,1]];
@@ -14221,11 +14283,11 @@ async function meterCheckStatus(){
      meterSharedSeriesId=null;
      meterApplyClearedState(false);
     }
-   } else if(!meterActiveSeriesKey && s.series_id && (s.status==='running'||s.status==='complete'||s.status==='cancelled'||s.status==='error')){
+  } else if(meterSharedSeriesShouldRecover(s)){
     meterRecoverSeries(s);
-   }
   }
  }
+}
 }
 
 function meterRecoverSeries(s){
