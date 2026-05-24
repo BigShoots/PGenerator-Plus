@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -384,6 +384,11 @@ sub lg_autocal_26_full_ddc_spine_body_anchor {
  return ($ire > 0 && $ire < 99.9) ? 1 : 0;
 }
 
+sub lg_autocal_26_full_ddc_spine_anchor_revisit_step {
+ my ($step)=@_;
+ return (ref($step) eq "HASH" && $step->{"lg_autocal_26_full_ddc_spine_anchor_revisit"}) ? 1 : 0;
+}
+
 sub lg_autocal_26_anchor_predrive_enabled {
  my ($config)=@_;
  return (ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $config->{"lg_autocal_26_anchor_predrive"}) ? 1 : 0;
@@ -475,6 +480,23 @@ sub order_autocal_steps {
   };
   foreach my $wanted (@lg_autocal_26_order) {
    my $wanted_key=format_percent($wanted);
+   if($seen_target{$wanted_key} && lg_autocal_26_full_ddc_spine_enabled($config)) {
+    my ($anchor_match)=grep {
+     my $key=$target_key->($_);
+     defined($key) && $key eq $wanted_key
+    } @valid;
+    if($anchor_match) {
+     my $anchor_target=ddc_target_for_step($anchor_match);
+     if(lg_autocal_26_full_ddc_spine_body_anchor($anchor_target)) {
+      my $revisit=clone_picture($anchor_match);
+      $revisit->{"lg_autocal_26_full_ddc_spine_anchor_revisit"}=JSON::PP::true;
+      $revisit->{"lg_autocal_26_seeded_move_damping"}=JSON::PP::true;
+      $revisit->{"autocal_target_label"}=format_percent($anchor_target->{"ire"})."% anchor revisit";
+      push @ordered,$revisit;
+     }
+    }
+    next;
+   }
    my ($match)=grep {
     my $key=$target_key->($_);
     defined($key) && !$seen_target{$key} && $key eq $wanted_key
@@ -854,6 +876,7 @@ sub touchup_delta_skip_reached {
 	 return 1 if($de <= ($target_delta/6.0));
 	 return 0 if(low_ire_luminance_needs_lift($step,$lum_pct));
 	 return 0 if(low_ire_luminance_needs_tuning($step,$lum_pct));
+	 return 0 if(near_white_95_luma_needs_fine_tune($step,$lum_pct,$de,$target_delta,0));
 	 if(autocal_step_is_low_shadow($step) && ref($step) eq "HASH" && defined($step->{"ire"}) && ($step->{"ire"}+0) <= 3.1001) {
 	  return 1 if($de <= ($target_delta+0.5));
 	 }
@@ -1785,6 +1808,7 @@ sub target_reached {
 				 return 1 if(low_shadow_itp_near_target_reached($step,$de,$lum_pct,$target_delta));
 				 return 0 if(low_ire_luminance_needs_lift($step,$lum_pct));
 					 return 0 if(low_ire_luminance_needs_tuning($step,$lum_pct));
+					 return 0 if(near_white_95_luma_needs_fine_tune($step,$lum_pct,$de,$target_delta,0));
 					 return 1 if(autocal_step_is_low_shadow($step) && $de <= low_shadow_delta_acceptance($step,$target_delta));
 					 return 1 if(body_itp_near_target_reached($step,$de,$lum_pct,$target_delta));
 				 return 0 if(!within_itp_luminance_included_acceptance($de,$step));
@@ -1850,6 +1874,7 @@ sub close_enough_stalled {
 		 my ($best_de,$best_lum_pct,$target_delta,$step,$stalls,$iter)=@_;
 		 return 0 if(!defined($best_de));
 	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+	 return 0 if(near_white_95_luma_needs_fine_tune($step,$best_lum_pct,$best_de,$target_delta,0));
 	 if(low_shadow_good_enough($step,$best_de,$best_lum_pct,$target_delta)) {
 	  if(autocal_step_is_low_shadow($step)) {
 	   return 1 if($ire <= 3.1001 && ($iter||0) >= 2 && ($stalls||0) >= 1);
@@ -3424,25 +3449,64 @@ sub propagate_uncalibrated_26pt_slots {
  return $filled;
 }
 
-sub apply_full_ddc_spine_headroom_seed_overrides {
+sub full_ddc_spine_seed_correction_deltas {
+ my ($ire)=@_;
+ return undef if(!defined($ire));
+ my $key=format_percent($ire);
+ my %deltas=(
+  "105" => { adjustingLuminance => -4.90 },
+  "99"  => { adjustingLuminance => -3.25, whiteBalanceRed => -2.00, whiteBalanceGreen => 5.50, whiteBalanceBlue => 5.50 },
+  "95"  => { adjustingLuminance => -2.40, whiteBalanceRed => -1.40, whiteBalanceGreen => 4.25, whiteBalanceBlue => 4.50 },
+  "90"  => { adjustingLuminance => -1.45, whiteBalanceRed => -0.80, whiteBalanceGreen => 2.60, whiteBalanceBlue => 3.00 },
+  "10"  => { adjustingLuminance => -3.00, whiteBalanceRed => 0.60, whiteBalanceGreen => 0.75, whiteBalanceBlue => -2.25 },
+  "7"   => { adjustingLuminance => -3.00, whiteBalanceRed => 0.50, whiteBalanceGreen => 1.00, whiteBalanceBlue => -0.75 },
+  "5"   => { adjustingLuminance => -2.00, whiteBalanceRed => 0.40, whiteBalanceGreen => 0.75, whiteBalanceBlue => -0.50 },
+  "4"   => { adjustingLuminance => -1.50, whiteBalanceRed => 0.30, whiteBalanceGreen => 0.65, whiteBalanceBlue => -0.40 },
+  "3"   => { adjustingLuminance => -0.80, whiteBalanceRed => -0.20, whiteBalanceGreen => 0.75, whiteBalanceBlue => -0.10 },
+  "2.3" => { adjustingLuminance => 1.00, whiteBalanceRed => -0.20, whiteBalanceGreen => 0.85, whiteBalanceBlue => -0.10 },
+ );
+ return $deltas{$key};
+}
+
+sub apply_full_ddc_spine_seed_corrections {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
  return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
  return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
- my $idx=ddc_slot_index_for_ire(105);
- return 0 if(!defined($idx) || $calibrated_slot_mask->[$idx]);
- my $seed=headroom_105_hard_seed_values();
- return 0 if(ref($seed) ne "HASH");
  my $changed=0;
- foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
-  next if(ref($arrays->{$setting}) ne "ARRAY" || $idx >= @{$arrays->{$setting}});
-  next if(!defined($seed->{$setting}));
-  my $before=defined($arrays->{$setting}[$idx]) ? ($arrays->{$setting}[$idx]+0) : 0;
-  my $after=clamp_ddc_value($seed->{$setting});
-  next if(abs($after-$before) < 0.0001);
-  $arrays->{$setting}[$idx]=$after;
-  $changed++;
+ foreach my $ire (qw(105 99 95 90 10 7 5 4 3 2.3)) {
+  my $idx=ddc_slot_index_for_ire($ire);
+  next if(!defined($idx) || $calibrated_slot_mask->[$idx]);
+  my $deltas=full_ddc_spine_seed_correction_deltas($ire);
+  next if(ref($deltas) ne "HASH");
+  if(abs(($ire+0)-105) < 0.001) {
+   my $seed=headroom_105_hard_seed_values();
+   if(ref($seed) eq "HASH") {
+    foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
+     next if(ref($arrays->{$setting}) ne "ARRAY" || $idx >= @{$arrays->{$setting}});
+     next if(!defined($seed->{$setting}));
+     my $before=defined($arrays->{$setting}[$idx]) ? ($arrays->{$setting}[$idx]+0) : 0;
+     my $after=clamp_ddc_value($seed->{$setting});
+     next if(abs($after-$before) < 0.0001);
+     $arrays->{$setting}[$idx]=$after;
+     $changed++;
+    }
+   }
+  }
+  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+   next if(!defined($deltas->{$setting}));
+   next if(ref($arrays->{$setting}) ne "ARRAY" || $idx >= @{$arrays->{$setting}});
+   my $before=defined($arrays->{$setting}[$idx]) ? ($arrays->{$setting}[$idx]+0) : 0;
+   my $after=clamp_ddc_value($before+($deltas->{$setting}+0));
+   next if(abs($after-$before) < 0.0001);
+   $arrays->{$setting}[$idx]=$after;
+   $changed++;
+  }
  }
  return $changed;
+}
+
+sub apply_full_ddc_spine_headroom_seed_overrides {
+ return apply_full_ddc_spine_seed_corrections(@_);
 }
 
 sub refresh_propagated_uncalibrated_26pt_slots {
@@ -3486,8 +3550,10 @@ sub lg_autocal_26_seeded_move_damping_for_step {
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 return 0 if(ref($target) ne "HASH" || ref($step) ne "HASH");
 	 return 0 if(strict_tried_for_step($step) || autocal_step_is_fast_headroom($step));
-	 return 0 if(lg_autocal_26_full_ddc_spine_enabled($config) && lg_autocal_26_full_ddc_spine_anchor($target));
+	 my $anchor_revisit=lg_autocal_26_full_ddc_spine_anchor_revisit_step($step);
+	 return 0 if(lg_autocal_26_full_ddc_spine_enabled($config) && lg_autocal_26_full_ddc_spine_anchor($target) && !$anchor_revisit);
 	 my $idx=$target->{"index"};
+	 return 1 if($anchor_revisit);
 	 return 0 if(!defined($idx) || (ref($calibrated_slot_mask) eq "ARRAY" && $calibrated_slot_mask->[$idx]));
 	 my $mode_active=(lg_autocal_26_anchor_predrive_enabled($config) || lg_autocal_26_full_ddc_spine_enabled($config)) ? 1 : 0;
 	 return 1 if($mode_active && $seed_from_prior_slot);
@@ -3957,9 +4023,9 @@ sub headroom_105_hard_seed_values {
 
 sub headroom_105_seed_base_values {
 	 return {
-	  whiteBalanceRed => 4.25,
-	  whiteBalanceGreen => -5.5,
-	  whiteBalanceBlue => -13,
+	  whiteBalanceRed => 2.5,
+	  whiteBalanceGreen => 2.5,
+	  whiteBalanceBlue => -12.5,
 	 };
 }
 
@@ -4830,7 +4896,10 @@ sub near_white_95_luma_step {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
- return (abs($ire-95) < 0.001) ? 1 : 0;
+ return 1 if(abs($ire-95) < 0.001);
+ return 1 if(abs($ire-99) < 0.001);
+ return 1 if(abs($ire-105) < 0.001 && !autocal_step_is_peak_headroom($step));
+ return 0;
 }
 
 sub near_white_95_luma_gate_percent {
@@ -4838,12 +4907,24 @@ sub near_white_95_luma_gate_percent {
  my $tol=luminance_tolerance_percent($step);
  $tol=0.45 if(!defined($tol) || $tol <= 0);
  my $gate=$polish ? ($tol*0.85) : $tol;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+ my $seeded_context=(ref($step) eq "HASH" && ($step->{"lg_autocal_26_seeded_move_damping"} || lg_autocal_26_full_ddc_spine_anchor_revisit_step($step))) ? 1 : 0;
+ $gate=0.35 if(!$polish && $seeded_context && abs($ire-95) < 0.001 && $gate > 0.35);
  if($polish && defined($target_delta) && $target_delta > 0 && defined($de) && $de > $target_delta) {
   my $active_gate=$tol*0.75;
   $gate=$active_gate if($active_gate < $gate);
  }
  $gate=0.30 if($gate < 0.30);
  return $gate;
+}
+
+sub near_white_95_luma_needs_fine_tune {
+ my ($step,$lum_pct,$de,$target_delta,$polish)=@_;
+ return 0 if(!near_white_95_luma_step($step));
+ return 0 if(ref($step) ne "HASH" || (!$step->{"lg_autocal_26_seeded_move_damping"} && !lg_autocal_26_full_ddc_spine_anchor_revisit_step($step)));
+ return 0 if(!defined($lum_pct));
+ my $gate=near_white_95_luma_gate_percent($step,$polish,$target_delta,$de);
+ return abs($lum_pct+0) > $gate ? 1 : 0;
 }
 
 sub near_white_95_luma_max_step {
@@ -4859,6 +4940,8 @@ sub near_white_95_luma_max_step {
 sub near_white_95_luma_adjustments {
  my ($arrays,$target,$step,$lum_pct,$de,$target_delta,$tried,$stalls,$source,$state,$polish)=@_;
  return undef if(!near_white_95_luma_step($step));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+ return undef if($ire >= 98.9 && ref($step) eq "HASH" && !$step->{"lg_autocal_26_seeded_move_damping"} && !lg_autocal_26_full_ddc_spine_anchor_revisit_step($step));
  return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
  return undef if(!has_luminance_channel($arrays,$target));
  return undef if(!defined($lum_pct));
@@ -6315,6 +6398,68 @@ sub choose_rgb_response_adjustments {
 			 mark_headroom_105_response_scaled_adjustments($out,$setting,$response_multiplier,$response_cap_reason,$response_entry,$probe_step);
 			 return append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,0,$LG_AUTOCAL_STATE);
 		}
+
+sub full_ddc_spine_anchor_adjustments {
+ my ($config,$error,$arrays,$target,$step,$de,$luminance_err,$stalls,$tried,$target_delta)=@_;
+ return undef if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($step) ne "HASH");
+ return undef if(lg_autocal_26_full_ddc_spine_anchor_revisit_step($step));
+ return undef if(!lg_autocal_26_full_ddc_spine_body_anchor($target));
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my $lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : 0;
+ my @channels=sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
+ my $ch=$channels[0];
+ my $err=$error->{$ch}||0;
+ my $abs_err=abs($err);
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return undef if($abs_err < rgb_error_floor($de,$target_delta,0));
+ my $second=abs($error->{$channels[1]}||0);
+ my $dominant=($abs_err >= 0.030 || ($abs_err >= 0.016 && $abs_err >= ($second*1.22))) ? 1 : 0;
+ return undef if(!$dominant);
+ my $direction=($err > 0) ? -1 : 1;
+ my $luma_aligned=(($lum_pct > 0.35 && $direction < 0) || ($lum_pct < -0.35 && $direction > 0)) ? 1 : 0;
+ my $setting=channel_setting($ch);
+ my $arr=$arrays->{$setting};
+ return undef if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+ my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+ my $cap=1;
+ if(defined($de) && $de > ($target_delta+5.0)) {
+  $cap=8;
+ } elsif(defined($de) && $de > ($target_delta+3.0)) {
+  $cap=6;
+ } elsif($abs_err >= 0.060) {
+  $cap=8;
+ } elsif($abs_err >= 0.042) {
+  $cap=6;
+ } elsif($abs_err >= 0.026) {
+  $cap=4;
+ } elsif($abs_err >= 0.016) {
+  $cap=2;
+ }
+ $cap=4 if(!$luma_aligned && $cap > 4);
+ my $tries=(ref($tried) eq "HASH" && ref($tried->{$setting}) eq "HASH") ? scalar(keys %{$tried->{$setting}}) : 0;
+ $cap=4 if($tries >= 1 && $cap > 4);
+ $cap=2 if($tries >= 2 && $cap > 2);
+ $cap=1 if(($tries >= 3 || ($stalls||0) >= 2) && $cap > 1);
+ $cap=0.5 if(($stalls||0) >= 4 && $cap > 0.5);
+ my ($next,$damped)=next_untried_value($current,$direction*$cap,$tried,$setting,0.25,0);
+ return undef if(!defined($next) || abs($next-$current) < 0.0001);
+ return [{
+  channel=>$ch,
+  setting=>$setting,
+  current=>$current,
+  next=>$next,
+  delta=>$next-$current,
+  damped=>$damped ? 1 : 0,
+  full_ddc_spine_anchor=>1,
+  anchor_dominant_chroma=>1,
+  anchor_luma_aligned=>$luma_aligned ? 1 : 0,
+  anchor_move_cap=>$cap+0,
+  remaining_error=>$abs_err+0,
+  source=>"full_ddc_spine_anchor_dominant_channel"
+ }];
+}
 
 sub choose_adjustments {
 					 my ($error,$arrays,$target,$de,$min_step,$stalls,$luminance_err,$tried,$step)=@_;
@@ -10780,6 +10925,9 @@ eval {
 								   }
 								   if(!$adjustments) {
 								    $adjustments=headroom_105_floor_luma_coupled_adjustment($err,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,0.25,1,0,$read_step);
+								   }
+								   if(!$adjustments) {
+								    $adjustments=full_ddc_spine_anchor_adjustments($config,$err,$arrays,$target,$read_step,$de,$lum_err,$stalls,\%tried_values,$target_delta);
 								   }
 								   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
 								    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
