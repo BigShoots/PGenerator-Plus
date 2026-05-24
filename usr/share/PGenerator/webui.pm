@@ -2604,9 +2604,7 @@ sub webui_meter_series_status (@) {
    # Include steps from steps file so any client can reconstruct the UI
    if(-f "/tmp/meter_series_steps.json" && $json=~/"status"\s*:\s*"(running|complete|error|cancelled)"/) {
     my $steps="";
-    my $steps_mtime=(stat("/tmp/meter_series_steps.json"))[9] || 0;
-    my $webui_mtime=(stat(__FILE__))[9] || 0;
-    if($steps_mtime >= $webui_mtime && open(my $sf,"<","/tmp/meter_series_steps.json")) { local $/; $steps=<$sf>; close($sf); }
+    if(open(my $sf,"<","/tmp/meter_series_steps.json")) { local $/; $steps=<$sf>; close($sf); }
     if($steps ne "" && $json!~/"steps"/) {
      $json=~s/\}$/,"steps":$steps}/;
     }
@@ -10340,11 +10338,40 @@ function meterSharedSeriesStatusCanRecover(status){
  return !!(status&&status.series_id&&(s==='running'||s==='complete'||s==='cancelled'||s==='error'));
 }
 
-function meterSharedSeriesShouldRecover(status){
+function meterSharedSeriesStatusKey(status){
+ if(!status) return '';
+ let type=String(status.type||'').toLowerCase();
+ let points=Number(status.points||0)||0;
+ const steps=Array.isArray(status.steps)?status.steps:null;
+ if(!type) type='greyscale';
+ if(status.series_id){
+  const m=String(status.series_id||'').match(/^(greyscale|colors|saturations)_/);
+  if(m) type=m[1];
+ }
+ if(type==='colors') points=30;
+ else if(type==='saturations') points=24;
+ else if(type==='greyscale'){
+  const total=Number(status.total_steps||0)||0;
+  const stepCount=steps?steps.length:0;
+  if(steps&&steps.some(step=>step&&(String(step.series_mode||'')==='lg-autocal-26'||step.autocal_white_reference||step.autocal_slot_locked))) points=26;
+  else {
+   const basis=points||total||stepCount;
+   if(basis>0&&basis<=2) points=2;
+   else if(basis===26) points=26;
+   else if(basis>=101) points=100;
+   else points=(basis>0&&basis<=11)?11:21;
+  }
+ }
+ return type&&points ? type+'-'+points : '';
+}
+
+function meterSharedSeriesShouldRecover(status,opts){
+ opts=opts||{};
  if(!meterSharedSeriesStatusCanRecover(status)) return false;
  if(!meterActiveSeriesKey) return true;
  const serverId=String(status.series_id||'');
  const localId=String(meterSharedSeriesId||'');
+ const serverKey=meterSharedSeriesStatusKey(status);
  const serverCount=meterSeriesLuminanceReadingCount(status.readings);
  const localCount=meterSeriesLuminanceReadingCount(meterReadings);
  const serverTs=meterSeriesStatusLatestTimestamp(status);
@@ -10357,6 +10384,8 @@ function meterSharedSeriesShouldRecover(status){
  }
  if(serverId&&!localId){
   if(isRunning) return true;
+  if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&!opts.restoredLocal) return false;
+  if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&opts.restoredLocal) return serverTs>0&&(!localTs||serverTs>=localTs);
   if(serverCount>0&&localCount===0) return true;
   if(serverTs>0&&(!localTs||serverTs>=localTs)) return true;
   if(serverCount>localCount&&(!localTs||serverTs+300>=localTs)) return true;
@@ -14273,8 +14302,9 @@ async function meterCheckStatus(){
  // stale backend series JSON cannot immediately overwrite it.
  if(!meterSeriesRunning && !meterSeriesPolling && !meterContinuousActive){
   if(!meterSeriesCacheBootId) return;
+  let restoredLocal=false;
   if(!meterActiveSeriesKey){
-   try{ meterRestoreLatestPersistedSeries(); }catch(e){}
+   try{ restoredLocal=!!meterRestoreLatestPersistedSeries(); }catch(e){}
   }
   const s=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
   if(s){
@@ -14283,7 +14313,7 @@ async function meterCheckStatus(){
      meterSharedSeriesId=null;
      meterApplyClearedState(false);
     }
-  } else if(meterSharedSeriesShouldRecover(s)){
+  } else if(meterSharedSeriesShouldRecover(s,{restoredLocal:restoredLocal})){
     meterRecoverSeries(s);
   }
  }
@@ -23680,12 +23710,15 @@ function chartHandleHover(e,canvasId){
  if(!hit){tip.style.display='none';return;}
  const rd=hit.reading;
  const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,meterGreyRefMode()):{R:100,G:100,B:100};
+ const lumInfo=meterColorLuminanceInfo(rd);
+ const readY=(rd.luminance!=null&&Number.isFinite(Number(rd.luminance)))?Number(rd.luminance).toFixed(3):'--';
+ const targetY=(lumInfo.targetY!=null&&Number.isFinite(Number(lumInfo.targetY)))?Number(lumInfo.targetY).toFixed(3):'--';
  let gammaReferenceReadings=meterGreyscaleReadings(meterReadings);
  if(canvasId==='chartGammaValue') gammaReferenceReadings=meterFilterLgAutoCalChartItems(gammaReferenceReadings);
  const gamma=meterGreyscaleGammaValue(rd,meterGammaValueReferenceY(gammaReferenceReadings));
  let html='<b>'+rd.ire+'%</b><br>';
- html+='Read Y: '+(rd.luminance!=null?rd.luminance.toFixed(2):'--')+' cd/m\u00B2';
- if(rd.cct) html+='&nbsp; CCT: '+rd.cct+'K';
+ html+='<span>Read Y: '+readY+' cd/m\u00B2</span> &nbsp; <span>Target Y: '+targetY+' cd/m\u00B2</span>';
+ if(rd.cct) html+='<br>CCT: '+rd.cct+'K';
  html+='<br>x: '+(rd.x!=null?rd.x.toFixed(4):'--')+' &nbsp;y: '+(rd.y!=null?rd.y.toFixed(4):'--');
  html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
  if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);
@@ -23698,10 +23731,7 @@ function chartHandleHover(e,canvasId){
  }
  if(hit.de2000!=null && meterDeltaEForm()!=='de2000') html+='<br>Reference ΔE 2000: '+hit.de2000.toFixed(2);
  if(canvasId==='chartDeltaE'){
-  const lumInfo=meterColorLuminanceInfo(rd);
   if(lumInfo.measuredY!=null||lumInfo.targetY!=null){
-   const targetY=(lumInfo.targetY!=null&&Number.isFinite(Number(lumInfo.targetY)))?Number(lumInfo.targetY).toFixed(3):'--';
-   html+='<br>Target Y: '+targetY+' cd/m\u00B2';
    if(lumInfo.deltaPct!=null&&Number.isFinite(Number(lumInfo.deltaPct))) html+='<br>Y error: '+Number(lumInfo.deltaPct).toFixed(2)+'%';
   }
  }

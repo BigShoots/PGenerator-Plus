@@ -747,12 +747,7 @@ sub lg_autocal_26_standalone_committed_cleanup_enabled {
 
 sub lg_autocal_26_oled_shadow_detail_compensation_enabled {
  my ($config)=@_;
- return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- return 0 if($config->{"full_workflow"} || autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config));
- return 0 if(exists($config->{"lg_autocal_26_oled_shadow_detail_compensation"}) && !$config->{"lg_autocal_26_oled_shadow_detail_compensation"});
- my $display=lc($config->{"display_type"}||"");
- return 1 if($display =~ /oled/);
- return $config->{"lg_autocal_26_oled_shadow_detail_compensation_force"} ? 1 : 0;
+ return 0; # Disabled: this pre-commit OLED shadow bias made low-shadow points read too bright after calibration.
 }
 
 sub oled_shadow_detail_bias_pct_for_ire {
