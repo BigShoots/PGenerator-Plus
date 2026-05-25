@@ -16204,7 +16204,8 @@ function meterGreyDefaultSlots(points){
 
 function meterUseLgGreyscale21(points){
  const normalized=(points===256)?100:Number(points);
- return METER_LG_GREY_MANUAL_22_ENABLED&&normalized===21&&meterGreyTvControlsActive();
+ const manual22Enabled=(typeof METER_LG_GREY_MANUAL_22_ENABLED!=='undefined') && METER_LG_GREY_MANUAL_22_ENABLED;
+ return manual22Enabled&&normalized===21&&meterGreyTvControlsActive();
 }
 
 function meterUseLgAutoCal26(points){
@@ -16221,7 +16222,9 @@ function meterGreyAllowsHeadroomTargets(){
 function meterLgGreyscaleUsesExtendedSdr(points){
  const normalized=(points===256)?100:Number(points);
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- return (meterUseLgGreyscale21(normalized)||meterUseLgAutoCal26(normalized))&&mode==='sdr'&&meterGreyTvControlsActive();
+ const useLg21=(typeof meterUseLgGreyscale21==='function')&&meterUseLgGreyscale21(normalized);
+ const useLg26=(typeof meterUseLgAutoCal26==='function')&&meterUseLgAutoCal26(normalized);
+ return (useLg21||useLg26)&&mode==='sdr'&&meterGreyTvControlsActive();
 }
 
 function meterLgGreyscaleUsesLegalSdrDdcCodes(points){
