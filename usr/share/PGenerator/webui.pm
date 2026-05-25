@@ -13278,21 +13278,19 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
  const stepList=Array.isArray(steps)?steps:[];
  const end=Math.max(1,Number(maxPct)||100);
  const top=Math.max(1e-6,yTop||1);
- const omitLogBlack=(mode==='luminance'&&typeof meterLuminanceLogScaleEnabled==='function'&&meterLuminanceLogScaleEnabled());
  const rows=[];
  stepList.forEach(s=>{
   if(!s) return;
   const stimulus=Number(meterGreyChartStimulusIre(s));
   const plot=Number(meterGreyEotfLuminancePlotIre(s));
   if(!Number.isFinite(plot)) return;
-  if(omitLogBlack&&plot<=0.0001) return;
   const code=meterGreyChartTargetCode(s);
   const signal=meterGreyTargetSignal(Number.isFinite(stimulus)?stimulus:plot,code);
   if(!Number.isFinite(signal)) return;
   rows.push({plot:Math.max(0,Math.min(end,plot)),stimulus:Number.isFinite(stimulus)?stimulus:plot,code,signal:Math.max(0,signal)});
  });
  if(rows.length<2) return null;
- if(!omitLogBlack&&!rows.some(row=>row.plot<=0.0001)){
+ if(!rows.some(row=>row.plot<=0.0001)){
   rows.push({plot:0,stimulus:0,code:meterPatchRangeMin(),signal:meterGreyTargetSignal(0,meterPatchRangeMin())});
  }
  rows.sort((a,b)=>a.plot-b.plot);
@@ -13336,7 +13334,6 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
  const top=Math.max(1e-6,yTop||1);
  const end=Math.max(1,Number(maxPct)||100);
  const stepList=Array.isArray(steps)?steps:[];
- const omitLogBlack=(mode==='luminance'&&typeof meterLuminanceLogScaleEnabled==='function'&&meterLuminanceLogScaleEnabled());
  const coded=stepList
   .filter(s=>s&&Number.isFinite(Number(meterGreyChartStimulusIre(s))))
   .map((s,idx)=>{
@@ -13348,12 +13345,12 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
     : meterLuminanceScaleValue(meterGreyTargetChartValue(ire,targetPeak,Lb,code),top);
   return [x,value];
   })
-  .filter(p=>p&&isFinite(p[0])&&isFinite(p[1])&&!(omitLogBlack&&p[0]<=0.0001));
+  .filter(p=>p&&isFinite(p[0])&&isFinite(p[1]));
  if(coded.length>1){
   const dense=meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,stepList);
   if(dense&&dense.length>1) return dense;
   const hasBlack=coded.some(p=>p[0]<=0.0001);
-  if(!omitLogBlack&&!hasBlack){
+  if(!hasBlack){
    const value=(mode==='eotf')
     ? meterEotfScaleValue(meterGreyTargetEotfChartValue(0,targetPeak,Lb,meterPatchRangeMin()),top)
     : meterLuminanceScaleValue(meterGreyTargetChartValue(0,targetPeak,Lb,meterPatchRangeMin()),top);
@@ -13362,7 +13359,7 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
   coded.sort((a,b)=>a[0]-b[0]);
   return coded;
  }
- for(let pct=omitLogBlack?1:0;pct<=end;pct+=1){
+ for(let pct=0;pct<=end;pct+=1){
   const value=(mode==='eotf')
    ? meterEotfScaleValue(meterGreyTargetEotfChartValue(pct,targetPeak,Lb,null),top)
    : meterLuminanceScaleValue(meterGreyTargetChartValue(pct,targetPeak,Lb,null),top);
@@ -23289,8 +23286,8 @@ function drawGammaChart(gs,allSteps,readingMap){
  const measureSteps=plotSteps.length?plotSteps:validG;
  const scaleMeasuredLuminance=lum=>{
   const value=Number(lum);
-  if(meterLuminanceLogScaleEnabled()&&!(value>0)) return null;
-  return meterLuminanceScaleValue(value||0,yTop);
+  if(!Number.isFinite(value)) return null;
+  return meterLuminanceScaleValue(value,yTop);
  };
  let mSegments=meterMeasuredEotfLuminanceSegments(
  measureSteps,
