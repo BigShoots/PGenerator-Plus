@@ -9331,11 +9331,12 @@ async function applySettings(){
   meterUpdateReadButtons();
   toast('Applying settings...');
   document.getElementById('applyBar').style.display='none';
-  try{
-   await new Promise(resolve=>setTimeout(resolve,3000));
+	  try{
+	   await new Promise(resolve=>setTimeout(resolve,3000));
    await loadConfig();
    updateDropdowns();
    await loadInfo();
+   if(typeof lgRefreshPictureModeAfterOutputApply==='function') lgRefreshPictureModeAfterOutputApply();
    toast('Settings applied');
   }finally{
    window._configApplyPending=false;
