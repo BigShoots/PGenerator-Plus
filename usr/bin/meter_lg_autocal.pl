@@ -7304,22 +7304,29 @@ sub park_black_for_settle {
 }
 
 sub post_commit_polish_enabled {
-		 my ($config)=@_;
-		 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
-		 return 1 if(!exists($config->{"post_commit_polish"}));
-		 return $config->{"post_commit_polish"} ? 1 : 0;
-	}
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 1 if(!exists($config->{"post_commit_polish"}));
+ return $config->{"post_commit_polish"} ? 1 : 0;
+}
+
+sub post_3d_committed_polish_requested {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if(!autocal_config_is_post_3d_polish($config));
+ return (exists($config->{"post_commit_polish"}) && $config->{"post_commit_polish"}) ? 1 : 0;
+}
 
 sub post_commit_verify_enabled {
-		 my ($config)=@_;
-		 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
-		 return 0 if(exists($config->{"post_commit_verify"}) && !$config->{"post_commit_verify"});
-		 return 1 if(exists($config->{"post_commit_verify"}) && $config->{"post_commit_verify"});
-		 foreach my $key (qw(post_commit_body_verify post_commit_final_all_level_verify post_commit_final_top_window)) {
-		  return 1 if(exists($config->{$key}) && $config->{$key});
-		 }
-		 return 0;
-	}
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if(exists($config->{"post_commit_verify"}) && !$config->{"post_commit_verify"});
+ return 1 if(exists($config->{"post_commit_verify"}) && $config->{"post_commit_verify"});
+ foreach my $key (qw(post_commit_body_verify post_commit_final_all_level_verify post_commit_final_top_window)) {
+  return 1 if(exists($config->{$key}) && $config->{$key});
+ }
+ return 0;
+}
 
 sub committed_top_window_score {
 		 my ($window)=@_;
@@ -8976,16 +8983,80 @@ sub post_cal_series_adjustment_luma_cap {
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
  my $abs=defined($lum_pct) ? abs($lum_pct+0) : 0;
  if($ire <= 3.1001) {
-  return ($abs >= 20) ? 1.0 : 0.50;
+  return 1.50 if($abs >= 25);
+  return 1.25 if($abs >= 15);
+  return 0.50;
  }
  if($ire <= 5.1001) {
-  return ($abs >= 8) ? 0.75 : 0.50;
+  return 1.25 if($abs >= 15);
+  return 1.00 if($abs >= 8);
+  return 0.50;
  }
  return 0.50 if($ire <= 10.1001);
  return 1.0 if($abs >= 8);
  return 0.75 if($abs >= 4);
  return 0.50 if($abs >= 2);
  return 0.25;
+}
+
+sub post_cal_series_luma_only_deadband {
+ my ($step)=@_;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ return 0.80 if($ire >= 90 && $ire < 105);
+ return 0;
+}
+
+sub post_cal_series_direct_luminance_fallback_enabled {
+ my ($step,$lum_pct)=@_;
+ return 0 if(!defined($lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $abs=abs($lum_pct+0);
+ return 1 if(autocal_step_is_low_shadow($step));
+ return 1 if($ire <= 20.1001 && $abs >= 1.50);
+ return 1 if($ire <= 30.1001 && $abs >= 2.00);
+ return 0;
+}
+
+sub post_cal_series_luma_scales {
+ my ($step,$lum_pct)=@_;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $abs=defined($lum_pct) ? abs($lum_pct+0) : 0;
+ return (0.25,0.50) if($ire <= 5.1001 && $abs < 8);
+ return (0.50,0.25) if($ire <= 10.1001 && $abs < 4);
+ return (1,0.75,0.50,0.25);
+}
+
+sub post_cal_series_capped_luma_next {
+ my ($current,$raw_delta,$cap)=@_;
+ $current=0 if(!defined($current));
+ $raw_delta=0 if(!defined($raw_delta));
+ if(defined($cap) && $cap > 0) {
+  $raw_delta=$cap if($raw_delta > $cap);
+  $raw_delta=-$cap if($raw_delta < -$cap);
+ }
+ my $next=round_ddc_quarter($current+$raw_delta);
+ if(defined($cap) && $cap > 0) {
+  my $delta=$next-$current;
+  while(abs($delta) > $cap+0.0001) {
+   my $step=($delta > 0) ? -0.25 : 0.25;
+   my $candidate=round_ddc_quarter($next+$step);
+   last if(abs($candidate-$next) < 0.0001);
+   $next=$candidate;
+   $delta=$next-$current;
+  }
+ }
+ return ($next,$next-$current);
+}
+
+sub post_cal_series_allow_rgb_adjustment {
+ my ($step,$lum_pct,$luma_adjustments)=@_;
+ return 0 if(autocal_step_is_peak_headroom($step));
+ return 1 if(ref($luma_adjustments) ne "ARRAY" || !@{$luma_adjustments});
+ return 1 if(!defined($lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $abs=abs($lum_pct+0);
+ return 0 if($ire <= 10.1001 && $abs >= 2.0 && $abs < 4.5);
+ return 1;
 }
 
 sub post_cal_series_direct_luminance_adjustment {
@@ -9005,19 +9076,19 @@ sub post_cal_series_direct_luminance_adjustment {
  $mag=1.00 if($abs >= 20.0);
  $cap=post_cal_series_adjustment_luma_cap(undef,$step,$lum_pct) if(!defined($cap) || $cap <= 0);
  $mag=$cap if($mag > $cap);
- my $next=round_ddc_quarter($current+($direction*$mag));
+ my ($next,$actual_delta)=post_cal_series_capped_luma_next($current,$direction*$mag,$cap);
  return undef if(abs($next-$current) < 0.0001);
  return undef if(tried_value_exists($tried,"adjustingLuminance",$next));
  return undef if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,$source||"post_cal_series_direct_luminance",$state));
  return [{
   channel=>"lum",
-  setting=>"adjustingLuminance",
-  current=>$current,
-  next=>$next,
-  delta=>$next-$current,
-  source=>$source||"post_cal_series_direct_luminance",
-  post_cal_one_shot=>1
- }];
+	  setting=>"adjustingLuminance",
+	  current=>$current,
+	  next=>$next,
+	  delta=>$actual_delta,
+	  source=>$source||"post_cal_series_direct_luminance",
+	  post_cal_one_shot=>1
+	 }];
 }
 
 sub post_cal_series_cap_luminance_adjustments {
@@ -9034,12 +9105,13 @@ sub post_cal_series_cap_luminance_adjustments {
    my $delta=defined($copy{"delta"}) ? ($copy{"delta"}+0) : undef;
    $current=defined($delta) ? ($next-$delta) : 0 if(!defined($current) && defined($next));
    $delta=$next-$current if(defined($current) && defined($next) && !defined($delta));
-   if(defined($current) && defined($delta) && abs($delta) > $cap) {
-    $delta=($delta < 0) ? -$cap : $cap;
-    $copy{"next"}=round_ddc_quarter($current+$delta);
-    $copy{"delta"}=$copy{"next"}-$current;
-    $copy{"post_cal_luma_cap"}=$cap+0;
-   }
+	   if(defined($current) && defined($delta) && abs($delta) > $cap) {
+	    $delta=($delta < 0) ? -$cap : $cap;
+	    my ($capped_next,$capped_delta)=post_cal_series_capped_luma_next($current,$delta,$cap);
+	    $copy{"next"}=$capped_next;
+	    $copy{"delta"}=$capped_delta;
+	    $copy{"post_cal_luma_cap"}=$cap+0;
+	   }
   }
   push @out,\%copy;
  }
@@ -9155,12 +9227,11 @@ sub post_cal_series_response_table_luminance_adjustment {
  $cap=post_cal_series_adjustment_luma_cap(undef,$step,$lum_pct) if(!defined($cap) || $cap <= 0);
  $raw_delta=$cap if($raw_delta > $cap);
  $raw_delta=-$cap if($raw_delta < -$cap);
- foreach my $scale (1,0.75,0.50,0.25) {
-  my $next=round_ddc_quarter($current+($raw_delta*$scale));
+ foreach my $scale (post_cal_series_luma_scales($step,$lum_pct)) {
+  my ($next,$actual_delta)=post_cal_series_capped_luma_next($current,$raw_delta*$scale,$cap);
   next if(abs($next-$current) < 0.0999);
   next if(tried_value_exists($tried,"adjustingLuminance",$next));
   next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"post_cal_series_luminance",$state));
-  my $actual_delta=$next-$current;
   my $predicted=($lum_pct+0)+($slope*$actual_delta);
   next if(abs($predicted) >= abs($lum_pct)*0.92 && abs($actual_delta) > 0.21);
   return [{
@@ -9356,12 +9427,28 @@ sub post_cal_series_adjustment {
    luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
    target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
   };
-  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
-  next if($outlier eq "");
-  next if(autocal_step_is_peak_headroom($read_step));
-  if(post_cal_series_shared_legal_white_target($target) && ref($legal_white_reading) eq "HASH") {
-   $evaluated[-1]{"skipped_reason"}="shared_99_100_legal_white_guard" if(@evaluated);
-   $evaluated[-1]{"legal_white_delta_e"}=defined($legal_white_de) ? $legal_white_de+0 : undef if(@evaluated);
+	  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
+	  next if($outlier eq "");
+	  next if(autocal_step_is_peak_headroom($read_step));
+	  if($outlier eq "luminance") {
+	   my $luma_deadband=post_cal_series_luma_only_deadband($read_step);
+	   if(defined($lum_pct) && $luma_deadband > 0 && abs($lum_pct) <= $luma_deadband) {
+	    $evaluated[-1]{"skipped_reason"}="post_cal_luma_only_deadband" if(@evaluated);
+	    $evaluated[-1]{"post_cal_luma_only_deadband_pct"}=$luma_deadband+0 if(@evaluated);
+	    trace_109($read_step,"post_cal_series_luma_only_deadband",{
+	     label=>$target->{"label"},
+	     reason=>$outlier,
+	     delta_e=>defined($de)?$de+0:undef,
+	     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	     deadband_pct=>$luma_deadband+0,
+	     skipped_reason=>"post_cal_luma_only_deadband"
+	    });
+	    next;
+	   }
+	  }
+	  if(post_cal_series_shared_legal_white_target($target) && ref($legal_white_reading) eq "HASH") {
+	   $evaluated[-1]{"skipped_reason"}="shared_99_100_legal_white_guard" if(@evaluated);
+	   $evaluated[-1]{"legal_white_delta_e"}=defined($legal_white_de) ? $legal_white_de+0 : undef if(@evaluated);
    $evaluated[-1]{"legal_white_luminance_error_pct"}=defined($legal_white_lum_pct) ? $legal_white_lum_pct+0 : undef if(@evaluated);
    trace_109($read_step,"post_cal_series_legal_white_guard",{
     label=>$target->{"label"},
@@ -9380,24 +9467,26 @@ sub post_cal_series_adjustment {
   my %tried_values;
   mark_tried_values(\%tried_values,$arrays,$target,$de);
   my $luma_cap=post_cal_series_adjustment_luma_cap($config,$read_step,$lum_pct);
-  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
-   $state,$arrays,$target,$read_step,$lum_pct,\%tried_values,
-   $luma_cap
-  );
-  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
-  if(!$luma_adjustments && autocal_step_is_low_shadow($read_step)) {
-   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
-    $arrays,$target,$read_step,$lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_low_shadow_luminance"
-   );
+	  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
+	   $state,$arrays,$target,$read_step,$lum_pct,\%tried_values,
+	   $luma_cap
+	  );
+	  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
+	  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($read_step,$lum_pct)) {
+	   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
+	    $arrays,$target,$read_step,$lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_direct_luminance"
+	   );
+	  }
+	  if(!$luma_adjustments) {
+	   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$read_step,$lum_pct,\%tried_values,$state);
+	   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
   }
-  if(!$luma_adjustments) {
-   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$read_step,$lum_pct,\%tried_values,$state);
-   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
-  }
-  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($reading,$read_step));
-  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
-  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($read_step,$learned_setting) : undef;
-  my $rgb_adjustments=post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb");
+	  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($reading,$read_step));
+	  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
+	  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($read_step,$learned_setting) : undef;
+	  my $rgb_adjustments=post_cal_series_allow_rgb_adjustment($read_step,$lum_pct,$luma_adjustments)
+	   ? post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb")
+	   : undef;
   $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
   my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
   next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
@@ -10465,12 +10554,20 @@ eval {
 		   $target_delta
 		  );
 		  die $adjust_error if($adjust_error && $adjust_error ne "cancelled");
-		 } elsif(autocal_config_is_post_3d_polish($config)) {
-		  foreach my $step (@{$steps}) {
-		   my $target=ddc_target_for_step($step);
-		   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
-		  }
-		  $state->{"current_name"}="Post-3D committed polish";
+			 } elsif(autocal_config_is_post_3d_polish($config)) {
+			  if(!post_3d_committed_polish_requested($config)) {
+			   $state->{"current_name"}="Post-3D committed polish skipped";
+			   $state->{"phase"}="complete";
+			   $state->{"message"}="Committed polish disabled by Full AutoCal options";
+			   $state->{"post_3d_committed_polish"}=JSON::PP::false;
+			   $state->{"post_3d_committed_polish_skipped"}=JSON::PP::true;
+			   write_state($state);
+			  } else {
+			  foreach my $step (@{$steps}) {
+			   my $target=ddc_target_for_step($step);
+			   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
+			  }
+			  $state->{"current_name"}="Post-3D committed polish";
 		  $state->{"phase"}="reading";
 		  $state->{"message"}="Polishing committed greyscale state after 3D LUT";
 		  $state->{"post_3d_committed_polish"}=JSON::PP::true;
@@ -10490,9 +10587,10 @@ eval {
 		   $target_delta,
 		   $steps,
 		   \@calibrated_ddc_slots
-		  );
-		  die $polish_error if($polish_error && $polish_error ne "cancelled");
-		 } else {
+			  );
+			  die $polish_error if($polish_error && $polish_error ne "cancelled");
+			  }
+			 } else {
 		 my $finalize_calibrated_26pt_slot=sub {
 		  my ($final_target,$final_read_step,$final_label)=@_;
 		  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$final_target);
