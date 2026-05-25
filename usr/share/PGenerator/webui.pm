@@ -8309,6 +8309,7 @@ function updateModeVisibility(){
  document.getElementById('hdrCard').style.display=(sm==='hdr10'||sm==='hlg')?'':'none';
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
  syncDvOutputEotfState();
+ meterSyncTargetGammaControl();
  updateDiagAvsHd709Visibility();
  meterSyncHdrMetadata();
 }
@@ -8367,6 +8368,18 @@ function meterDvAutoTargetGamma(){
  return meterDvMapModeValue()==='2' ? '2.2' : 'st2084';
 }
 
+function meterSyncTargetGammaControl(){
+ const g=document.getElementById('meterTargetGamma');
+ if(!g) return;
+ const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
+ const locked=sm==='dv';
+ if(locked) g.value=meterDvAutoTargetGamma();
+ g.disabled=locked;
+ g.title=locked
+  ? 'Dolby Vision target EOTF is fixed by the DV mode: Relative uses Gamma 2.2, Absolute uses ST 2084.'
+  : '';
+}
+
 function applyMeterTargetGammaDefault(){
  const g=document.getElementById('meterTargetGamma');
  if(!g) return;
@@ -8374,10 +8387,12 @@ function applyMeterTargetGammaDefault(){
  const displayType=document.getElementById('meterDisplayType').value;
  if(sm==='dv'){
   g.value=meterDvAutoTargetGamma();
+  meterSyncTargetGammaControl();
   return;
  }
  if(displayType.startsWith('projector')) g.value='2.2';
  else g.value='bt1886';
+ meterSyncTargetGammaControl();
 }
 
 document.getElementById('signal_mode').addEventListener('change',function(){
@@ -10110,6 +10125,18 @@ function meterReadingAnalysisIre(reading){
  return null;
 }
 
+function meterReadingGammaAnalysisIre(reading){
+ if(!reading) return null;
+ if(meterChartIsDv()&&meterReadingIsGreyscale(reading)){
+  const code=reading.r_code!=null?reading.r_code:reading.r;
+  if(code!=null){
+   const signal=meterGreySignalFractionFromCode(code);
+   if(Number.isFinite(signal)) return signal*100;
+  }
+ }
+ return meterReadingAnalysisIre(reading);
+}
+
 function meterGreyChartStimulusIre(item){
  if(!item) return null;
  const candidates=[item.analysis_ire,item.target_ire,item.patch_stimulus,item.stimulus,item.patch_ire,item.signal_g_pct,item.signal_r_pct,item.plot_ire,item.nominal_ire,item.ire];
@@ -10850,30 +10877,26 @@ function meterChromaPatchRangeSpan(){
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
- const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():''));
- return meterChartIsDv() && meterDvMapModeValue()==='2' && sel==='st2084';
+ return false;
 }
 
 function meterGreyTargetGammaSelection(){
  const el=document.getElementById('meterTargetGamma');
  const selected=String((el&&el.value) || '');
  if(meterChartIsDv()){
-  if(meterDvMapModeValue()==='1') return 'st2084';
-  return selected||meterDvAutoTargetGamma();
+  return meterDvAutoTargetGamma();
  }
  return selected;
 }
 
 function meterDvRelativeUsesGammaChartMath(){
- const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():''));
- return meterChartIsDv() && meterDvMapModeValue()==='2' && sel!=='st2084';
+ return meterChartIsDv() && meterDvMapModeValue()==='2';
 }
 
 function meterGreyTargetUsesPq(){
  if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return false;
  if(meterChartIsDv()){
-  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():''));
-  return sel==='st2084';
+  return meterDvMapModeValue()==='1';
  }
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
@@ -10965,24 +10988,34 @@ function meterDvAbsoluteTargetRollOffFraction(){
  return 1;
 }
 
-function meterDvAbsoluteChartTargetLuminance(ire, peak){
- const targetPeak=(peak>0)?peak:100;
- const frac=clampNum((ire||0)/100,0,1);
- const roll=meterDvAbsoluteTargetRollOffFraction();
- const normalized=roll>0?Math.min(frac/roll,1):frac;
- const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():''));
- if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(normalized));
- if(sel==='srgb') return srgbEotf(normalized)*targetPeak;
- if(sel==='bt1886') return gammaEotf(normalized,2.4)*targetPeak;
- return gammaEotf(normalized,parseFloat(sel)||2.2)*targetPeak;
+function meterDvTargetSignalFraction(ire,code){
+ if(code!=null&&code!==''){
+  const numeric=Number(code);
+  if(Number.isFinite(numeric)) return meterGreySignalFractionFromCode(numeric);
+ }
+ return meterGreyStimulusFraction(ire);
 }
 
-function meterDvRelativeChartTargetLuminance(ire, peak){
+function meterDvAbsoluteChartTargetLuminance(ire, peak, code){
  const targetPeak=(peak>0)?peak:100;
  const frac=clampNum((ire||0)/100,0,1);
- const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():''));
- if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(frac));
- return gammaEotf(frac,2.2)*targetPeak;
+ const signal=(typeof meterDvTargetSignalFraction==='function')
+  ? meterDvTargetSignalFraction(ire,code)
+  : ((code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
+   ? meterGreySignalFractionFromCode(Number(code))
+   : meterChartPqEncodeNormalized(frac*10000));
+ return Math.min(targetPeak,meterChartPqDecodeNormalized(signal));
+}
+
+function meterDvRelativeChartTargetLuminance(ire, peak, code){
+ const targetPeak=(peak>0)?peak:100;
+ const frac=clampNum((ire||0)/100,0,1);
+ const signal=(typeof meterDvTargetSignalFraction==='function')
+  ? meterDvTargetSignalFraction(ire,code)
+  : ((code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
+   ? meterGreySignalFractionFromCode(Number(code))
+   : (frac>0?Math.pow(frac,1/2.2):0));
+ return gammaEotf(signal,2.2)*targetPeak;
 }
 
 function meterCodeFromSignalPercent(percent){
@@ -12107,6 +12140,7 @@ function meterLgAutoCal26PairedDeltaEFor99(reading,readings,greyMode,deForm,gwWe
 // when ire<=0.
 function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
  if(!reading||!whiteReading||!(ire>0)) return {r:null,g:null,b:null};
+ const analysisIre=(meterChartIsDv()&&meterReadingIsGreyscale(reading))?(meterReadingGammaAnalysisIre(reading)||ire):ire;
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteReading);
  const prevXYZ=prevReading?meterReadingXYZ(prevReading):null;
@@ -12117,11 +12151,11 @@ function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
  const prevRgb=prevXYZ?xyzToLinRgb(prevXYZ.X,prevXYZ.Y,prevXYZ.Z,g.xyzToRgb):null;
  const exp=(m,w,pm)=>{
  if(!(w>0)) return null;
- if(ire>=100){
+ if(analysisIre>=100){
    return null;
   }
   if(!(m>0)) return null;
-  const gv=Math.log(m/w)/Math.log(ire/100);
+  const gv=Math.log(m/w)/Math.log(analysisIre/100);
   return isFinite(gv)?gv:null;
  };
  return {
@@ -12154,7 +12188,7 @@ function meterGammaValueReferenceY(readings){
 function meterGreyscaleGammaValue(reading,whiteY){
  if(!reading) return null;
  const y=meterReadingLuminanceNits(reading);
- const analysisIre=meterReadingAnalysisIre(reading);
+ const analysisIre=meterReadingGammaAnalysisIre(reading);
  if(!(whiteY>0) || !(y>0) || !(analysisIre>0) || analysisIre>=100) return null;
  return effectiveGamma(y,whiteY,analysisIre);
 }
@@ -12790,7 +12824,6 @@ function meterGreyCodeLooksHeadroom(code){
 function meterGreyTargetSignal(ire,code){
  const headroomIre=Number(ire)>100;
  const nominal=Math.max(0,Math.min((meterGreyAllowsHeadroomTargets()||headroomIre)?1.1:1,(ire||0)/100));
- if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return nominal;
  const headroomCode=meterGreyCodeLooksHeadroom(code);
  if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets()||headroomCode)) return meterGreySignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
@@ -12799,8 +12832,8 @@ function meterGreyTargetSignal(ire,code){
 
 function meterGreyInputFraction(ire,code){
  const nominal=Math.max(0,Math.min(1,(ire||0)/100));
- if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return nominal;
  if(code!=null && meterChartIsHdr()) return meterGreySignalFractionFromCode(code);
+ if(meterChartIsDv()&&meterDvMapModeValue()==='2') return meterGreyStimulusFraction(ire);
  return nominal;
 }
 
@@ -12862,11 +12895,11 @@ function meterOnHdrDiffuseWhiteChange(){
 function meterGreyTargetLuminance(ire,Lw,Lb,code){
  if(meterChartIsDv() && meterDvMapModeValue()==='1'){
   const peak=(Lw>0)?Lw:100;
-  return meterDvAbsoluteChartTargetLuminance(ire,peak);
+  return meterDvAbsoluteChartTargetLuminance(ire,peak,code);
  }
  if(meterChartIsDv() && meterDvMapModeValue()==='2'){
   const peak=(Lw>0)?Lw:100;
-  return meterDvRelativeChartTargetLuminance(ire,peak);
+  return meterDvRelativeChartTargetLuminance(ire,peak,code);
  }
  const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():1);
  const signal=meterGreyTargetSignal(ire,code);
@@ -13141,30 +13174,26 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  if(!(peak>0) || !(ire>0)) return null;
  const tgt=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function'&&meterChartIsDv())?meterDvAutoTargetGamma():'')))||'2.2';
  if(meterChartIsDv() && meterDvMapModeValue()==='1'){
+  const analysisIre=meterDvTargetSignalFraction(ire,code)*100;
   const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
-	  const tgtLum=meterDvAbsoluteChartTargetLuminance(ire,peak);
-	  if(ire>=100){
-	   const prevLum=meterDvAbsoluteChartTargetLuminance(prevStepIre,peak);
-	   return effectiveGammaTopSlope(tgtLum,peak,ire,prevLum,prevStepIre);
-	  }
-  return effectiveGamma(tgtLum,peak,ire);
- }
- if(meterChartIsDv() && meterDvMapModeValue()==='2' && tgt==='st2084'){
-  const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
-  const tgtLum=meterDvRelativeChartTargetLuminance(ire,peak);
-  if(ire>=100){
-   return meterDvRelativeWhiteGamma(tgtLum,peak);
+  const prevSignalIre=meterDvTargetSignalFraction(prevStepIre,prevCode)*100;
+  const tgtLum=meterDvAbsoluteChartTargetLuminance(ire,peak,code);
+  if(analysisIre>=99.999){
+   const prevLum=meterDvAbsoluteChartTargetLuminance(prevStepIre,peak,prevCode);
+   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignalIre);
   }
-  return effectiveGamma(tgtLum,peak,ire);
+  return effectiveGamma(tgtLum,peak,analysisIre);
  }
  if(meterChartIsDv() && meterDvMapModeValue()==='2'){
+  const analysisIre=meterDvTargetSignalFraction(ire,code)*100;
   const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
-  const tgtLum=meterDvRelativeChartTargetLuminance(ire,peak);
-  if(ire>=100){
-   const prevLum=meterDvRelativeChartTargetLuminance(prevStepIre,peak);
-   return effectiveGammaTopSlope(tgtLum,peak,ire,prevLum,prevStepIre);
+  const prevSignalIre=meterDvTargetSignalFraction(prevStepIre,prevCode)*100;
+  const tgtLum=meterDvRelativeChartTargetLuminance(ire,peak,code);
+  if(analysisIre>=99.999){
+   const prevLum=meterDvRelativeChartTargetLuminance(prevStepIre,peak,prevCode);
+   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignalIre);
   }
-  return effectiveGamma(tgtLum,peak,ire);
+  return effectiveGamma(tgtLum,peak,analysisIre);
  }
  const signal=meterGreyTargetSignal(ire,code);
  if(!(signal>0)) return null;
@@ -13351,7 +13380,6 @@ function meterGammaAxisCenteredOnTarget(measuredVals,targetVals,isHdr){
 
 function meterGreyChartTargetCode(step){
  if(!step) return null;
- if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return null;
  if(!meterChartIsHdr()&&!meterGreyAllowsHeadroomTargets()) return null;
  return step.r_code!=null?step.r_code:step.r;
 }
@@ -22653,12 +22681,12 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 	  const y=rd.luminance!=null?rd.luminance:rd.Y;
 	  const topGamma=(Number(rd.ire)||0)>=100;
 	  if(topGamma) return;
-	  const analysisIre=meterReadingAnalysisIre(rd)||rd.ire;
+	  const analysisIre=meterReadingGammaAnalysisIre(rd)||rd.ire;
 	  const prev=topGamma
 	   ? (meterGammaPreviousSeriesReading(rd,xSteps,readingMap)||(!allSteps&&idx>0?sorted[idx-1]:null))
 	   : (idx>0?sorted[idx-1]:null);
 	  const prevY=prev?(prev.luminance!=null?prev.luminance:prev.Y):null;
-	  const prevIre=prev?(meterReadingAnalysisIre(prev)||prev.ire||0):null;
+	  const prevIre=prev?(meterReadingGammaAnalysisIre(prev)||prev.ire||0):null;
 	  if(!(topGamma&&allSteps&&!prev)){
 	  const g=(meterChartIsDv() && meterDvMapModeValue()==='2' && ((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():'')))==='st2084' && (rd.ire||0)>=100)
 	    ? meterDvRelativeWhiteGamma(y,chartYw)
@@ -22670,14 +22698,14 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 	  const tg=meterGreyTargetGamma(analysisIre,chartYw,Lb,rd.r_code,prevIre,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
 	  if(tg!=null&&isFinite(tg)) targetMap[rd.ire]=tg;
 	 });
-	 xSteps.forEach((step,idx)=>{
+ xSteps.forEach((step,idx)=>{
 	  const prev=idx>0?xSteps[idx-1]:null;
 	  const rd=readingMap?readingMap[step.ire]:null;
 	  const prevRd=(readingMap&&prev)?readingMap[prev.ire]:null;
-	  const targetIre=rd?(meterReadingAnalysisIre(rd)||step.ire):meterGreyscaleTargetIreForStep(step,readingMap);
+	  const targetIre=rd?(meterReadingGammaAnalysisIre(rd)||step.ire):meterGreyscaleTargetIreForStep(step,readingMap);
 	  if((Number(step.ire)||0)>=100 || (targetIre||0)>=100) return;
 	  const targetCode=rd&&rd.r_code!=null?rd.r_code:meterGreyscaleTargetCodeForStep(step,readingMap);
-	  const prevIre=prevRd?(meterReadingAnalysisIre(prevRd)||prev.ire):(prev?meterGreyscaleTargetIreForStep(prev,readingMap):null);
+	  const prevIre=prevRd?(meterReadingGammaAnalysisIre(prevRd)||prev.ire):(prev?meterGreyscaleTargetIreForStep(prev,readingMap):null);
 	  const prevCode=prevRd&&prevRd.r_code!=null?prevRd.r_code:(prev?meterGreyscaleTargetCodeForStep(prev,readingMap):null);
 	  const tg=meterGreyTargetGamma(targetIre,chartYw,Lb,targetCode,prevIre,prevCode);
 	  if(tg!=null&&isFinite(tg)) targetMap[step.ire]=tg;
@@ -25776,6 +25804,7 @@ async function loadMeterSettings(){
   applyMeterTargetGammaDefault();
  }
  if(getVal('signal_mode')==='dv') applyMeterTargetGammaDefault();
+ meterSyncTargetGammaControl();
  setVal('meterTargetWhiteX', s.target_white_x);
  setVal('meterTargetWhiteY', s.target_white_y);
  setVal('meterXyzM11', s.xyz_m11);
@@ -25901,6 +25930,11 @@ document.getElementById('meterTargetGamut').addEventListener('change',()=>{
 });
 
 document.getElementById('meterTargetGamma').addEventListener('change',()=>{
+ if(getVal('signal_mode')==='dv'){
+  applyMeterTargetGammaDefault();
+  meterRefreshActiveSeriesCharts();
+  return;
+ }
  meterRefreshActiveSeriesCharts();
 });
 
