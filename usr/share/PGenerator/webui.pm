@@ -2040,20 +2040,12 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	     return $c;
 	    }
     if($dv_series) {
-      if($dv_map_mode eq "1") {
-      my $level=int($stimulus_pct/100*219+.5);
-      if($lim) {
-       $c=$level+16;
-      } elsif($stimulus_pct <= 0) {
-       $c=0;
-      } elsif($stimulus_pct >= 100) {
-       $c=255;
-      } else {
-       $c=$level+16;
-      }
-      } elsif($target_gamma eq "st2084") {
-      my $level=int($stimulus_pct/100*219+.5);
-      $c=$level+16;
+      if($dv_map_mode eq "1" || $target_gamma eq "st2084") {
+      my $stim=$stimulus_pct/100;
+      $stim=0 if($stim < 0);
+      $stim=1 if($stim > 1);
+      my $encoded=&webui_pattern_pq_encode_normalized($stim*10000);
+      $c=int(16 + $encoded*219 + .5);
       } else {
       my $stim=$stimulus_pct/100;
       $stim=0 if($stim < 0);
@@ -10851,6 +10843,16 @@ function meterDvRelativeSt2084UsesLegalRange(){
  return meterChartIsDv() && meterDvMapModeValue()==='2' && sel==='st2084';
 }
 
+function meterGreyTargetGammaSelection(){
+ const el=document.getElementById('meterTargetGamma');
+ return String((el&&el.value) || (meterChartIsDv()?meterDvAutoTargetGamma():''));
+}
+
+function meterGreyTargetUsesPq(){
+ if(meterChartIsDv()) return meterGreyTargetGammaSelection()==='st2084';
+ return (typeof meterChartIsPq==='function') && meterChartIsPq();
+}
+
 function meterGreyCodeRange(){
  if(meterChartIsDv() && meterDvMapModeValue()==='1') return {min:16,span:219};
  if(meterDvRelativeSt2084UsesLegalRange()) return {min:16,span:219};
@@ -11052,14 +11054,9 @@ function meterCodeFromSignalPercentWithOptions(percent,opts){
  if(meterChartIsDv()){
   const dvAbsolute=meterDvMapModeValue()==='1';
   const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
-  if(dvAbsolute){
-  if(meterPatchUsesVideoRange()) return Math.round(range.min+clamped*range.span);
-  if(clamped<=0) return 0;
-  if(clamped>=1) return 255;
-  return Math.round(range.min+clamped*range.span);
-  }
-  if(sel==='st2084'){
-   return Math.round(range.min+clamped*range.span);
+  if(dvAbsolute || sel==='st2084'){
+   const encoded=meterChartPqEncodeNormalized(clamped*10000);
+   return Math.round(range.min+encoded*range.span);
   }
   const encoded=clamped>0?Math.pow(clamped,1/meterDvTunnelGamma()):0;
   return Math.round(meterPatchRangeMin()+encoded*meterPatchRangeSpan());
@@ -12722,11 +12719,17 @@ function gammaEotf(v,gamma){return Math.pow(Math.max(0,v),gamma);}
 function srgbEotf(v){return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4);}
 
 function targetEotf(v,Lw,Lb){
- // In HDR/DV modes the source EOTF is PQ (or a 2.2 approximation for DV),
- // not a BT.1886/sRGB power curve — targetEotf must honor that so grey
- // tracking ΔE (include-luminance mode) compares against the correct
- // absolute nits at each stimulus. The meterTargetGamma dropdown is only
- // meaningful for SDR tracking.
+ // DV transport is always signalled as HDR, but greyscale analysis still has
+ // two modes: Relative tracks Gamma 2.2, Absolute tracks ST.2084/PQ.
+ if(meterChartIsDv()){
+  const peak=(Lw>0)?Lw:meterChartHdrPeak();
+  const ire=Math.max(0,Math.min(1,Number(v)||0))*100;
+  return meterDvMapModeValue()==='1'
+   ? meterDvAbsoluteChartTargetLuminance(ire,peak)
+   : meterDvRelativeChartTargetLuminance(ire,peak);
+ }
+ // In HDR10 the source EOTF is PQ, so targetEotf must honor that and compare
+ // against the correct absolute nits at each stimulus.
  if(meterChartIsHdr()) return meterChartTargetLuminance(v,Lw,Lb);
  const tgt=document.getElementById('meterTargetGamma').value;
  if(tgt==='bt1886') return bt1886Eotf(v,Lw,Lb);
@@ -12945,7 +12948,7 @@ function meterGreyTargetWhiteValue(Lw,Lb){
 
 function meterGreyTargetEotfValue(ire,Lw,Lb,code){
  const tgtLum=meterGreyTargetLuminance(ire,Lw,Lb,code);
- return meterChartPqEncodeNormalized(tgtLum);
+ return meterGreyEotfValueFromLuminance(tgtLum,Lw);
 }
 
 function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
@@ -12967,7 +12970,7 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 
 function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
  const lum=meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb||0,point);
- const eotf=meterChartPqEncodeNormalized(lum);
+ const eotf=meterGreyEotfValueFromLuminance(lum,Lw);
  if(!meterEotfNormalizedEnabled()) return eotf;
  const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
  return peakEotf>0 ? eotf/peakEotf : eotf;
@@ -13067,7 +13070,14 @@ function meterLuminanceAxisLabel(v){
 
 function meterGreyMeasuredEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- return meterChartPqEncodeNormalized(y);
+ return meterGreyEotfValueFromLuminance(y,refWhite);
+}
+
+function meterGreyEotfValueFromLuminance(luminance,refWhite){
+ const y=Math.max(0,luminance||0);
+ if(meterGreyTargetUsesPq()) return meterChartPqEncodeNormalized(y);
+ const peak=(refWhite>0)?refWhite:100;
+ return peak>0 ? y/peak : 0;
 }
 
 function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
@@ -13521,6 +13531,10 @@ function meterChartDvClipPeak(){
 function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
  const signal=Math.max(0,Number(v)||0);
  const clamped=Math.min(1,signal);
+ if(meterChartIsDv()){
+  const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
+  return meterGreyTargetLuminance(clamped*100,peak,Lb||0,null);
+ }
  if(meterChartIsPq()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
   return meterChartHdrCodeLuminance(clamped,peak);
@@ -22502,7 +22516,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  const ctx=getChartCtx('chartGammaValue');
  if(!ctx) return;
  const lbl=document.getElementById('chartGammaValueLabel');
- if(lbl) lbl.textContent=meterChartIsHdr()?'Gamma (PQ-equivalent)':'Gamma';
+ if(lbl) lbl.textContent=meterGreyTargetUsesPq()?'Gamma (PQ-equivalent)':'Gamma';
  const targetLabel=meterTargetGammaLabel();
  const gammaFixedAxis=meterUseLgAutoCal26GammaAxis();
  const sortedAll=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
@@ -22560,7 +22574,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  if(allVals.length===0){ drawGammaValuePreset(xSteps); return; }
  // HDR/PQ measured "gamma" has much wider range than SDR (0.3–4+), so we
  // can't clamp at 1.6–2.8 there. Fit the visible axis to actual data.
- const isHdr=meterChartIsHdr();
+ const isHdr=meterGreyTargetUsesPq();
  let yMin,yMax;
  const axis=meterGammaAxisCenteredOnTarget(measuredVals,targetVals,isHdr);
  yMin=axis.min;
@@ -23077,7 +23091,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
    const targetLum=meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
    return meterEotfScaleValue(meterEotfNormalizedEnabled()
     ? meterGreyMeasuredNormalizedEotfValue(targetLum,eotfMeasuredRef)
-    : meterChartPqEncodeNormalized(targetLum),yTop);
+    : meterGreyMeasuredEotfValue(targetLum,eotfMeasuredRef),yTop);
   },
   lum=>meterEotfScaleValue(meterGreyMeasuredEotfChartValue(lum||0,eotfMeasuredRef),yTop)
  );
