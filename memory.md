@@ -14,6 +14,7 @@ This file is a working reminder for future sessions in this repo. Treat it as lo
 
 ## Current LG AutoCal Rules
 
+- 2026-05-25 DV EOTF/target-gamma decision: do not add a duplicate EOTF selector to the Dolby Vision output card because the calibration card already exposes the target gamma/EOTF. Keep DV HDMI/config output EOTF pinned to ST.2084/PQ (`eotf=2`) when DV is selected. The calibration target default is map-mode dependent: DV Relative (`dv_map_mode=2`) defaults to Gamma 2.2, DV Absolute (`dv_map_mode=1`) defaults to ST.2084/PQ. Original PGenerator 1.6 Display Control did not expose an HDR EOTF selection for DV; it used DV/DOVI metadata and map mode, with SDR/HDR/HLG controlled through `is_hdr` plus EOTF (`2` PQ, `3` HLG).
 - Do not treat the low-end 3/4/5 issue as solved by polish. It is a separate root-cause problem unless proven otherwise.
 - Do not modify the Full AutoCal greyscale reference path unless the user explicitly asks for it.
 - During calibration, 109 is the reference/headroom anchor. Do not switch calibration to 100-first target Y.
