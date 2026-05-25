@@ -12678,7 +12678,8 @@ function targetEotf(v,Lw,Lb){
 }
 
 function meterGreyStimulusFraction(ire){
- const pct=Math.max(0,Math.min(meterGreyAllowsHeadroomTargets()?110:100,ire||0));
+ const allowsHeadroom=(typeof meterGreyAllowsHeadroomTargets==='function') && meterGreyAllowsHeadroomTargets();
+ const pct=Math.max(0,Math.min(allowsHeadroom?110:100,ire||0));
  const dvMode=meterChartIsDv();
  const dvAbsolute=dvMode && meterDvMapModeValue()==='1';
  if(dvAbsolute || meterDvRelativeSt2084UsesLegalRange()) return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(pct));
