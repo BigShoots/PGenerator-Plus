@@ -367,6 +367,10 @@ try:
         json.dump(steps, fh, separators=(",", ":"))
         fh.write("\n")
     os.rename(tmp_path, steps_file)
+    try:
+        os.chmod(steps_file, int("644", 8))
+    except Exception:
+        pass
 finally:
     try:
         if os.path.exists(tmp_path):
