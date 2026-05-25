@@ -34,6 +34,12 @@ json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+cleanup_stale_series_step_files() {
+ local keep
+ keep="$(basename "$STEPS_FILE")"
+ find "$TMPDIR" -maxdepth 1 -type f -name 'meter_series_steps_*.json' ! -name "$keep" -delete >/dev/null 2>&1 || true
+}
+
 patch_request_body() {
  local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8" input_max="${9:-255}"
  [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
@@ -442,6 +448,8 @@ find_port() {
  fi
  echo "$port_num"
 }
+
+cleanup_stale_series_step_files
 
 TOTAL=$(get_step_count)
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
