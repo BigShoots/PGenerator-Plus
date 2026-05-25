@@ -249,6 +249,127 @@ print(json.dumps(reading, separators=(",", ":")))
 PY
 }
 
+dv_absolute_greyscale_series_active() {
+ [[ "$SIGNAL_MODE" == "dv" ]] || return 1
+ [[ "$DV_MAP_MODE" == "1" ]] || return 1
+ [[ "$SERIES_ID" == greyscale_* ]] || return 1
+}
+
+reading_luminance_json() {
+ READING_JSON="$1" python - <<'PY' 2>/dev/null
+import json, math, os
+
+try:
+    reading = json.loads(os.environ.get("READING_JSON", "") or "{}")
+except Exception:
+    raise SystemExit(1)
+
+for key in ("luminance", "Y"):
+    try:
+        value = float(reading.get(key))
+    except Exception:
+        continue
+    if math.isfinite(value) and value > 0:
+        print(value)
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+apply_dv_absolute_greyscale_codes() {
+ local white_y="$1"
+ [[ -f "$STEPS_FILE" ]] || return 1
+ is_number "$white_y" || return 1
+ STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
+import json, math, os, tempfile
+
+steps_file = os.environ.get("STEPS_FILE", "")
+try:
+    white_y = float(os.environ.get("WHITE_Y", "0"))
+except Exception:
+    raise SystemExit(1)
+if not (math.isfinite(white_y) and white_y > 0):
+    raise SystemExit(1)
+
+try:
+    with open(steps_file) as fh:
+        steps = json.load(fh)
+except Exception:
+    raise SystemExit(1)
+if not isinstance(steps, list):
+    raise SystemExit(1)
+
+m1 = 2610 / 16384
+m2 = 2523 / 32
+c1 = 3424 / 4096
+c2 = 2413 / 128
+c3 = 2392 / 128
+
+def pq_decode_normalized(code):
+    code = max(0.0, min(1.0, float(code)))
+    if code <= 0:
+        return 0.0
+    p = code ** (1 / m2)
+    num = max(p - c1, 0.0)
+    den = c2 - c3 * p
+    if den <= 0:
+        return 10000.0
+    return 10000.0 * ((num / den) ** (1 / m1))
+
+def percent_from_step(step, channel):
+    for key in (f"signal_{channel}_pct", "stimulus", "analysis_ire", "target_ire", "ire"):
+        try:
+            value = float(step.get(key))
+        except Exception:
+            continue
+        if math.isfinite(value):
+            return value
+    return 0.0
+
+def legal_code_for_absolute_percent(percent):
+    stim = max(0.0, min(1.0, float(percent) / 100.0))
+    if stim <= 0:
+        return 16, 0.0
+    target_y = min(white_y, pq_decode_normalized(stim))
+    encoded = 0.0 if target_y <= 0 else (target_y / white_y) ** (1 / 2.2)
+    code = int(round(16 + max(0.0, min(1.0, encoded)) * 219))
+    return max(16, min(235, code)), target_y
+
+changed = False
+for step in steps:
+    if not isinstance(step, dict):
+        continue
+    if str(step.get("series_type", "")).lower() != "greyscale":
+        continue
+    for channel in ("r", "g", "b"):
+        code, target_y = legal_code_for_absolute_percent(percent_from_step(step, channel))
+        if step.get(channel) != code:
+            changed = True
+        step[channel] = code
+    _, target_y = legal_code_for_absolute_percent(percent_from_step(step, "g"))
+    step["dv_absolute_white_y"] = white_y
+    step["dv_absolute_st2084_precomp"] = True
+    step["dv_absolute_target_y"] = target_y
+
+if not changed:
+    raise SystemExit(0)
+
+directory = os.path.dirname(steps_file) or "."
+fd, tmp_path = tempfile.mkstemp(prefix=os.path.basename(steps_file) + ".", suffix=".tmp", dir=directory)
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(steps, fh, separators=(",", ":"))
+        fh.write("\n")
+    os.replace(tmp_path, steps_file)
+finally:
+    try:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+    except Exception:
+        pass
+PY
+}
+
 is_number() {
  [[ "$1" =~ ^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$ ]]
 }
@@ -760,6 +881,7 @@ fi
 READINGS=""
 READING_COUNT=0
 START_INDEX=0
+DV_ABSOLUTE_CODES_APPLIED=0
 
 # The DV pre-read above is the actual White chart reference. Reuse it as the
 # first series reading so DV Colors/Sat Sweep do not immediately measure the
@@ -987,6 +1109,15 @@ EOJSON
   READINGS="$READING"
  fi
  READING_COUNT=$((READING_COUNT + 1))
+
+ if [[ "$DV_ABSOLUTE_CODES_APPLIED" == "0" ]] && dv_absolute_greyscale_series_active && is_number "$IRE" && float_le 99.999 "$IRE"; then
+  WHITE_Y=$(reading_luminance_json "$READING" 2>/dev/null || true)
+  if [[ -n "$WHITE_Y" ]] && apply_dv_absolute_greyscale_codes "$WHITE_Y"; then
+   DV_ABSOLUTE_CODES_APPLIED=1
+   WHITE_READING="$READING"
+   echo "[$(date '+%H:%M:%S.%3N')] DV absolute greyscale codes applied from white_y=$WHITE_Y" >> /tmp/meter_series_debug.log
+  fi
+ fi
 
  # Update state
  cat > "$STATE_FILE" << EOJSON
