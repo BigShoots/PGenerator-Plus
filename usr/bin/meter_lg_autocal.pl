@@ -9006,16 +9006,6 @@ sub post_cal_series_luma_only_deadband {
  return 0;
 }
 
-sub post_cal_series_low_shadow_soft_outlier {
- my ($step,$de,$lum_pct,$target_delta)=@_;
- return 0 if(!autocal_step_is_low_shadow($step));
- return 0 if(!defined($de) || !defined($lum_pct));
- $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
- my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
- return 1 if($ire <= 2.3001 && $de > $target_delta && abs($lum_pct) > 3.0);
- return 0;
-}
-
 sub post_cal_series_direct_luminance_fallback_enabled {
  my ($step,$lum_pct)=@_;
  return 0 if(!defined($lum_pct));
@@ -9024,6 +9014,14 @@ sub post_cal_series_direct_luminance_fallback_enabled {
  return 1 if(autocal_step_is_low_shadow($step));
  return 1 if($ire <= 20.1001 && $abs >= 1.50);
  return 1 if($ire <= 30.1001 && $abs >= 2.00);
+ return 0;
+}
+
+sub post_cal_series_low_shadow_unstable_skip {
+ my ($step,$lum_pct)=@_;
+ return 0 if(!autocal_step_is_low_shadow($step) || !defined($lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ return 1 if($ire > 3.1001 && $ire <= 4.1001 && abs($lum_pct+0) < 8.0);
  return 0;
 }
 
@@ -9438,19 +9436,19 @@ sub post_cal_series_adjustment {
    target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
 	  };
 	  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
-	  if($outlier eq "" && post_cal_series_low_shadow_soft_outlier($read_step,$de,$lum_pct,$target_delta)) {
-	   $outlier="low_shadow_soft";
-	   $evaluated[-1]{"post_cal_low_shadow_soft_outlier"}=JSON::PP::true if(@evaluated);
-	   trace_109($read_step,"post_cal_series_low_shadow_soft_outlier",{
-	    label=>$target->{"label"},
-	    delta_e=>defined($de)?$de+0:undef,
-	    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-	    target_delta_e=>$target_delta+0,
-	    reason=>$outlier
-	   });
-	  }
 	  next if($outlier eq "");
 	  next if(autocal_step_is_peak_headroom($read_step));
+	  if(post_cal_series_low_shadow_unstable_skip($read_step,$lum_pct)) {
+	   $evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_unstable_deadband" if(@evaluated);
+	   trace_109($read_step,"post_cal_series_low_shadow_unstable_deadband",{
+	    label=>$target->{"label"},
+	    reason=>$outlier,
+	    delta_e=>defined($de)?$de+0:undef,
+	    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	    skipped_reason=>"post_cal_low_shadow_unstable_deadband"
+	   });
+	   next;
+	  }
 	  if($outlier eq "luminance") {
 	   my $luma_deadband=post_cal_series_luma_only_deadband($read_step);
 	   if(defined($lum_pct) && $luma_deadband > 0 && abs($lum_pct) <= $luma_deadband) {
