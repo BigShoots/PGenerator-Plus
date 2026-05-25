@@ -305,11 +305,11 @@ except Exception:
 if not isinstance(steps, list):
     raise SystemExit(1)
 
-m1 = 2610 / 16384
-m2 = 2523 / 32
-c1 = 3424 / 4096
-c2 = 2413 / 128
-c3 = 2392 / 128
+m1 = 2610.0 / 16384.0
+m2 = 2523.0 / 32.0
+c1 = 3424.0 / 4096.0
+c2 = 2413.0 / 128.0
+c3 = 2392.0 / 128.0
 
 def pq_decode_normalized(code):
     code = max(0.0, min(1.0, float(code)))
