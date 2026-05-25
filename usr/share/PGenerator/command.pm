@@ -179,6 +179,10 @@ sub apply_drm_properties (@) {
 sub apply_hdr_metadata_helper (@) {
  my $helper="/usr/bin/pgsethdr";
  return if(!$is_kms || !-x $helper);
+ if(int($pgenerator_conf{"dv_status"} || 0) == 1 || int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 || int($pgenerator_conf{"is_std_dovi"} || 0) == 1) {
+  &log("DRM: skipping HDR metadata helper while Dolby Vision metadata is active");
+  return;
+ }
  my $output=`timeout 5 $helper 2>&1`;
  chomp($output);
  if($? != 0) {
