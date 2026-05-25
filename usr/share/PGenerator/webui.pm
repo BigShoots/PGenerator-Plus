@@ -12011,15 +12011,12 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
   const XnR=(ref.wxN||wp.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||wp.Z)*ref.YWhiteRef;
   const labM=xyzToLab(xyz.X,xyz.Y,xyz.Z,XnM,YnM,ZnM);
   const labT=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
-  const refAbsScale=(ref.YWhiteRef>0)?(ref.YWhite/ref.YWhiteRef):ref.YWhite;
   const ctx={
    isGrey:true,
    Ym:xyz.Y, Yref:ref.refY*ref.YWhiteRef,
    X:xyz.X, Y:xyz.Y, Z:xyz.Z, YWhite:ref.YWhite,
    Xr:ref.refX*ref.YWhiteRef, Yr:ref.refY*ref.YWhiteRef, Zr:ref.refZ*ref.YWhiteRef,
-   YWhiteRef:ref.YWhiteRef,
-   itpX:xyz.X, itpY:xyz.Y, itpZ:xyz.Z,
-   itpXr:ref.refX*refAbsScale, itpYr:ref.refY*refAbsScale, itpZr:ref.refZ*refAbsScale
+   YWhiteRef:ref.YWhiteRef
   };
   return {value:meterDeltaE(labM,labT,form,ctx),de2000:deltaE2000(labM,labT)};
  }
@@ -14403,15 +14400,7 @@ function meterDeltaE(labM,labT,form,ctx){
  if(form==='de94')    return deltaE94(labM,labT,1,1,1);
  if(form==='decmc')   return deltaECMC(labM,labT,1,1);
  if(form==='de2000_jnd') return deltaE2000JND(labM,labT,ctx.Ym||0,ctx.Yref||0);
- if(form==='deitp' && ctx.X!=null && ctx.Xr!=null){
-  const X=(ctx.itpX!=null)?ctx.itpX:ctx.X;
-  const Y=(ctx.itpY!=null)?ctx.itpY:ctx.Y;
-  const Z=(ctx.itpZ!=null)?ctx.itpZ:ctx.Z;
-  const Xr=(ctx.itpXr!=null)?ctx.itpXr:ctx.Xr;
-  const Yr=(ctx.itpYr!=null)?ctx.itpYr:ctx.Yr;
-  const Zr=(ctx.itpZr!=null)?ctx.itpZr:ctx.Zr;
-  return deltaEITP(X,Y,Z,Xr,Yr,Zr);
- }
+ if(form==='deitp' && ctx.X!=null && ctx.Xr!=null) return deltaEITP(ctx.X,ctx.Y,ctx.Z,ctx.Xr,ctx.Yr,ctx.Zr);
  return deltaE2000(labM,labT);
 }
 
