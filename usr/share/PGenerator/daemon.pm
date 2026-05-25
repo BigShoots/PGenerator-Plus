@@ -199,6 +199,13 @@ sub legacy_external_mark_hcfr (@) {
  &legacy_external_set_status($connection,"HCFR");
 }
 
+sub legacy_external_dv_active (@) {
+ return 1 if(int($pgenerator_conf{"dv_status"} || 0) == 1);
+ return 1 if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
+ return 1 if(int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
+ return 0;
+}
+
 sub legacy_external_hcfr_triplet_quant_range (@) {
  my $triplet=shift;
  my $allow_full=shift;
@@ -229,6 +236,7 @@ sub legacy_external_hcfr_quant_range (@) {
 
 sub legacy_external_hcfr_source_range (@) {
  my $payload=shift;
+ return "" if(defined &legacy_external_dv_active && &legacy_external_dv_active());
  return "LIMITED" if(&legacy_external_hcfr_quant_range($payload) eq "1");
  return "";
 }
@@ -677,6 +685,7 @@ sub pattern_daemon {
      my ($dv_map_mode,$dv_metadata)=@_;
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
+     $calman_save_setting->("eotf","2");
      $calman_save_setting->("is_ll_dovi","1");
       $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
