@@ -22200,6 +22200,43 @@ function meterUniqueMeasuredRowsByPlotX(rows){
  return out;
 }
 
+function meterUseTargetShapedMeasuredEotfLuminanceCurve(){
+ // DV Relative is calibrated as a relative/gamma trace. Bending the measured
+ // line along the target between measured samples can create a visible chart
+ // kink even when the measured points themselves are smooth.
+ if(meterChartIsDv() && meterDvMapModeValue()==='2') return false;
+ return true;
+}
+
+function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance){
+ const segments=[];
+ let current=[];
+ const flushCurrent=()=>{
+  if(current.length){
+   const unique=meterUniqueMeasuredRowsByPlotX(current);
+   if(unique.length) segments.push(unique.map(row=>[row.x,row.y]));
+  }
+  current=[];
+ };
+ (steps||[]).forEach((step,idx)=>{
+  const reading=readingMap?readingMap[step.ire]:null;
+  if(!reading){
+   flushCurrent();
+   return;
+  }
+  const lum=meterReadingLuminanceNits(reading);
+  if(!(lum!=null&&Number.isFinite(Number(lum))&&lum>=0)){
+   flushCurrent();
+   return;
+  }
+  const x=meterGreyEotfLuminanceChartX(step,steps,idx,axisMax);
+  const y=typeof scaleLuminance==='function'?scaleLuminance(lum):lum;
+  current.push({x,y,luminance:Number(lum)});
+ });
+ flushCurrent();
+ return segments;
+}
+
 function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance){
  const segments=[];
  let current=[];
@@ -22231,6 +22268,13 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
  });
  flushCurrent();
  return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal));
+}
+
+function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance){
+ if(meterUseTargetShapedMeasuredEotfLuminanceCurve()){
+  return meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance);
+ }
+ return meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance);
 }
 
 function meterGammaPlotAnchorStep(steps,idx){
@@ -23083,7 +23127,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
  const tgtPts=meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  const measureSteps=plotSteps.length?plotSteps:valid;
- let mSegments=meterTargetShapedMeasuredSegments(
+ let mSegments=meterMeasuredEotfLuminanceSegments(
  measureSteps,
  readingMap,
  axisMax,
@@ -23131,7 +23175,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  drawGammaContrastLabel(ctx,chart,(Array.isArray(meterReadings)&&meterReadings.length)?meterReadings:gs);
  const validG=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
  const measureSteps=plotSteps.length?plotSteps:validG;
- let mSegments=meterTargetShapedMeasuredSegments(
+ let mSegments=meterMeasuredEotfLuminanceSegments(
  measureSteps,
  readingMap,
  axisMax,
