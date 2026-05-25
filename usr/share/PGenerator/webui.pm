@@ -3052,7 +3052,7 @@ sub webui_meter_settings_load (@) {
  if(($pgenerator_conf{"dv_status"}||"0") eq "1") {
   my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
   $dv_map_mode="2" if(!defined $dv_map_mode || $dv_map_mode eq "");
-  $meter_target_gamma_auto=($dv_map_mode eq "2") ? "st2084" : "2.2";
+  $meter_target_gamma_auto="st2084";
   $meter_target_gamut_auto="p3d65";
  }
  my $boot_id=&_webui_meter_settings_boot_id();
@@ -4595,6 +4595,7 @@ sub webui_apply_config (@) {
   $changes{"max_bpc"}="12";
   $changes{"color_format"}="0";
   $changes{"colorimetry"}="9";
+  $changes{"eotf"}="2";
   $changes{"primaries"}="1";
   $changes{"rgb_quant_range"}="2";
   $changes{"dv_profile"}="1";
@@ -8351,7 +8352,7 @@ function applyMeterTargetGamutDefault(force){
 }
 
 function meterDvAutoTargetGamma(){
- return meterDvMapModeValue()==='2' ? 'st2084' : '2.2';
+ return 'st2084';
 }
 
 function applyMeterTargetGammaDefault(){
@@ -9299,7 +9300,7 @@ async function applySettings(){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
    is_ll_dovi:'1',is_std_dovi:'1',
    dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'12',
-   rgb_quant_range:'2',
+   rgb_quant_range:'2',eotf:'2',
    dv_interface:getVal('dv_interface'),
    dv_map_mode:getVal('dv_map_mode'),
    max_luma:meterHdrMetadataFieldValue('max_luma','dv'),
@@ -10867,7 +10868,8 @@ function meterEncodeSignalChannel(linear){
 function meterDvAbsoluteTargetLuminanceForPercent(percent, peak){
  const clamped=clampNum(percent,0,100)/100;
  const targetPeak=(peak>0)?peak:meterChartMasterPeak();
- const sel=(document.getElementById('meterTargetGamma')||{}).value||'2.2';
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(clamped));
  if(sel==='srgb') return Math.min(targetPeak,srgbEotf(clamped)*targetPeak);
  if(sel==='bt1886') return Math.min(targetPeak,gammaEotf(clamped,2.4)*targetPeak);
  return Math.min(targetPeak,gammaEotf(clamped,parseFloat(sel)||2.2)*targetPeak);
@@ -10885,7 +10887,8 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak){
  const frac=clampNum((ire||0)/100,0,1);
  const roll=meterDvAbsoluteTargetRollOffFraction();
  const normalized=roll>0?Math.min(frac/roll,1):frac;
- const sel=(document.getElementById('meterTargetGamma')||{}).value||'2.2';
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(normalized));
  if(sel==='srgb') return srgbEotf(normalized)*targetPeak;
  if(sel==='bt1886') return gammaEotf(normalized,2.4)*targetPeak;
  return gammaEotf(normalized,parseFloat(sel)||2.2)*targetPeak;
@@ -12534,7 +12537,7 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  };
 }
 
-// HCFR-style RGB balance (mirrors RGBLevelWnd.cpp luma-mode-OFF branch).
+// HCFR-style RGB balance for the luma-mode-OFF branch.
 // Modes 0 and 2 both use a unit-Y XYZ built from the measured chromaticity;
 // only mode 1 (Absolute Y w/gamma) rescales by measuredY / targetY.
 function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
@@ -13497,7 +13500,7 @@ function xyzToLab(X,Y,Z,Xn,Yn,Zn){
  return {L:116*fy-16, a:500*(fx-fy), b:200*(fy-fz)};
 }
 
-// HCFR's CIELUV ΔE — matches libHCFR/Color.cpp ColorLuv ctor bit-for-bit.
+// HCFR-style CIELUV ΔE using the same L*u*v* reference math.
 // HCFR's u-prime has a bug (12*x instead of 12*y in the denominator):
 //   u = 4x / (-2x + 12x + 3)   [should be 12y, but HCFR uses 12x]
 //   v = 9y / (-2x + 12y + 3)   [correct]

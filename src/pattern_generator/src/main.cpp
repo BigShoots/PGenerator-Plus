@@ -150,6 +150,7 @@ int main(int argc, char **argv){
   ofxRPI4Window::dv_interface=atoi(dv_interface.c_str());
   ofxRPI4Window::dv_profile=atoi(dv_profile.c_str());
   ofApp::dv_map_mode=atoi(dv_map_mode.c_str());
+  ofxRPI4Window::dv_map_mode=ofApp::dv_map_mode;
   ofApp::dv_minpq=atoi(dv_minpq.c_str());
   ofApp::dv_maxpq=atoi(dv_maxpq.c_str());
   ofApp::dv_diagonal=atoi(dv_diagonal.c_str());

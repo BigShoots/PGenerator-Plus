@@ -773,7 +773,8 @@ int ofApp::dv_color_space=0;
 void ofApp::dovi_metadata_update() {
 
 	int crc;
-	int dv_metadata_map_mode = (dv_map_mode == 1) ? 2 : dv_map_mode;
+	int dv_metadata_map_mode = dv_map_mode;
+	if (dv_metadata_map_mode < 0 || dv_metadata_map_mode > 2) dv_metadata_map_mode = 2;
 	
 	if (dv_map_mode != dv_metadata.dv_map_mode || 
 	    dv_minpq != dv_metadata.dv_minpq || 
