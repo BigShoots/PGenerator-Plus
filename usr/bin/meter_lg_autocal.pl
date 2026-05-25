@@ -8983,12 +8983,12 @@ sub post_cal_series_adjustment_luma_cap {
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
  my $abs=defined($lum_pct) ? abs($lum_pct+0) : 0;
  if($ire <= 3.1001) {
-  return 1.50 if($abs >= 25);
+  return 2.00 if($abs >= 25);
   return 1.25 if($abs >= 15);
   return 0.50;
  }
  if($ire <= 5.1001) {
-  return 1.25 if($abs >= 15);
+  return 2.00 if($abs >= 15);
   return 1.00 if($abs >= 8);
   return 0.50;
  }
@@ -9003,6 +9003,16 @@ sub post_cal_series_luma_only_deadband {
  my ($step)=@_;
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
  return 0.80 if($ire >= 90 && $ire < 105);
+ return 0;
+}
+
+sub post_cal_series_low_shadow_soft_outlier {
+ my ($step,$de,$lum_pct,$target_delta)=@_;
+ return 0 if(!autocal_step_is_low_shadow($step));
+ return 0 if(!defined($de) || !defined($lum_pct));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ return 1 if($ire <= 2.3001 && $de > $target_delta && abs($lum_pct) > 3.0);
  return 0;
 }
 
@@ -9426,8 +9436,19 @@ sub post_cal_series_adjustment {
    delta_e=>defined($de) ? $de+0 : undef,
    luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
    target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
-  };
+	  };
 	  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
+	  if($outlier eq "" && post_cal_series_low_shadow_soft_outlier($read_step,$de,$lum_pct,$target_delta)) {
+	   $outlier="low_shadow_soft";
+	   $evaluated[-1]{"post_cal_low_shadow_soft_outlier"}=JSON::PP::true if(@evaluated);
+	   trace_109($read_step,"post_cal_series_low_shadow_soft_outlier",{
+	    label=>$target->{"label"},
+	    delta_e=>defined($de)?$de+0:undef,
+	    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	    target_delta_e=>$target_delta+0,
+	    reason=>$outlier
+	   });
+	  }
 	  next if($outlier eq "");
 	  next if(autocal_step_is_peak_headroom($read_step));
 	  if($outlier eq "luminance") {
