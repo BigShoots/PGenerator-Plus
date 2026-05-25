@@ -10894,6 +10894,10 @@ function meterGreyTargetUsesPq(){
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
 
+function meterGreyEotfUsesPqCurve(){
+ return meterChartIsDv() ? meterDvMapModeValue()==='1' : meterChartIsPq();
+}
+
 function meterGreyCodeRange(){
  if(meterChartIsDv() && meterDvMapModeValue()==='1') return {min:16,span:219};
  if(meterDvRelativeSt2084UsesLegalRange()) return {min:16,span:219};
@@ -12992,7 +12996,7 @@ function meterGreyTargetEotfValue(ire,Lw,Lb,code){
 }
 
 function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
- if(meterChartIsPq()) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
+ if(meterGreyEotfUsesPqCurve()) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
  const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
  if(!(peakEotf>0)) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
  return meterGreyTargetEotfValue(ire,Lw,Lb,code)/peakEotf;
@@ -13013,7 +13017,7 @@ function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
  const lum=meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb||0,point);
  const eotf=meterGreyEotfValueFromLuminance(lum,Lw);
  if(!meterEotfNormalizedEnabled()) return eotf;
- if(meterChartIsPq()) return eotf;
+ if(meterGreyEotfUsesPqCurve()) return eotf;
  const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
  return peakEotf>0 ? eotf/peakEotf : eotf;
 }
@@ -13117,14 +13121,14 @@ function meterGreyMeasuredEotfValue(luminance,refWhite){
 
 function meterGreyEotfValueFromLuminance(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- if(meterChartIsPq()) return meterChartPqEncodeNormalized(y);
+ if(meterGreyEotfUsesPqCurve()) return meterChartPqEncodeNormalized(y);
  const peak=(refWhite>0)?refWhite:100;
  return peak>0 ? y/peak : 0;
 }
 
 function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- if(meterChartIsPq()) return meterGreyMeasuredEotfValue(y,refWhite);
+ if(meterGreyEotfUsesPqCurve()) return meterGreyMeasuredEotfValue(y,refWhite);
  const peakEotf=meterGreyMeasuredEotfValue(refWhite>0?refWhite:100,refWhite);
  return peakEotf>0 ? meterGreyMeasuredEotfValue(y,refWhite)/peakEotf : meterGreyMeasuredEotfValue(y,refWhite);
 }
