@@ -10119,6 +10119,8 @@ function meterReadingAnalysisIre(reading){
 function meterReadingGammaAnalysisIre(reading){
  if(!reading) return null;
  if(meterChartIsDv()&&meterReadingIsGreyscale(reading)){
+  const analysis=meterReadingAnalysisIre(reading);
+  if(analysis!=null) return analysis;
   const code=reading.r_code!=null?reading.r_code:reading.r;
   if(code!=null){
    const signal=meterGreySignalFractionFromCode(code);
@@ -12796,6 +12798,7 @@ function meterGreyTargetSignal(ire,code){
  const headroomIre=Number(ire)>100;
  const nominal=Math.max(0,Math.min((meterGreyAllowsHeadroomTargets()||headroomIre)?1.1:1,(ire||0)/100));
  const headroomCode=meterGreyCodeLooksHeadroom(code);
+ if(meterChartIsDv()) return nominal;
  if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets()||headroomCode)) return meterGreySignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
@@ -12986,7 +12989,7 @@ function meterGreyTargetEotfValue(ire,Lw,Lb,code){
 }
 
 function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
- if(meterGreyTargetUsesPq()) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
+ if(meterChartIsPq()) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
  const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
  if(!(peakEotf>0)) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
  return meterGreyTargetEotfValue(ire,Lw,Lb,code)/peakEotf;
@@ -13007,7 +13010,7 @@ function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
  const lum=meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb||0,point);
  const eotf=meterGreyEotfValueFromLuminance(lum,Lw);
  if(!meterEotfNormalizedEnabled()) return eotf;
- if(meterGreyTargetUsesPq()) return eotf;
+ if(meterChartIsPq()) return eotf;
  const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
  return peakEotf>0 ? eotf/peakEotf : eotf;
 }
@@ -13111,14 +13114,14 @@ function meterGreyMeasuredEotfValue(luminance,refWhite){
 
 function meterGreyEotfValueFromLuminance(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- if(meterGreyTargetUsesPq()) return meterChartPqEncodeNormalized(y);
+ if(meterChartIsPq()) return meterChartPqEncodeNormalized(y);
  const peak=(refWhite>0)?refWhite:100;
  return peak>0 ? y/peak : 0;
 }
 
 function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- if(meterGreyTargetUsesPq()) return meterGreyMeasuredEotfValue(y,refWhite);
+ if(meterChartIsPq()) return meterGreyMeasuredEotfValue(y,refWhite);
  const peakEotf=meterGreyMeasuredEotfValue(refWhite>0?refWhite:100,refWhite);
  return peakEotf>0 ? meterGreyMeasuredEotfValue(y,refWhite)/peakEotf : meterGreyMeasuredEotfValue(y,refWhite);
 }
@@ -13341,11 +13344,13 @@ function meterGammaAxisCenteredOnTarget(measuredVals,targetVals,isHdr){
   const lo=Math.min(...(allVals.length?allVals:[0.8]));
   const hi=Math.max(...(allVals.length?allVals:[3.2]));
   const axis=meterNiceLinearAxis(lo-0.2,hi+0.2,4,{clampMin:0,minSpan:0.8});
-  return {min:axis.min,max:axis.max};
+  if(Number.isFinite(axis.min)&&Number.isFinite(axis.max)&&axis.max>axis.min) return {min:axis.min,max:axis.max};
+  return {min:0,max:4};
  }
- const center=targets.length
+ let center=targets.length
   ? targets.reduce((sum,v)=>sum+v,0)/targets.length
   : targetGammaValue();
+ if(!Number.isFinite(center)) center=2.2;
  let half=0.3;
  allVals.forEach(v=>{ half=Math.max(half,Math.abs(v-center)+0.08); });
  half=Math.ceil(half*20)/20;
