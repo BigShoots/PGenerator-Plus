@@ -14620,6 +14620,8 @@ function meterStampReadingStepMeta(reading,step){
   if(step.b!=null) reading.b_code=step.b;
  }
  if(step.series_type!=null) reading.series_type=step.series_type;
+ if(!alternateStimulus&&step.stimulus!=null) reading.stimulus=step.stimulus;
+ if(!alternateStimulus&&step.input_max!=null) reading.input_max=step.input_max;
  if(!alternateStimulus&&step.signal_r_pct!=null) reading.signal_r_pct=step.signal_r_pct;
  if(!alternateStimulus&&step.signal_g_pct!=null) reading.signal_g_pct=step.signal_g_pct;
  if(!alternateStimulus&&step.signal_b_pct!=null) reading.signal_b_pct=step.signal_b_pct;
@@ -14632,8 +14634,22 @@ function meterStampReadingStepMeta(reading,step){
  if(step.target_x!=null) reading.target_x=step.target_x;
  if(step.target_y!=null) reading.target_y=step.target_y;
  if(step.target_Yn!=null) reading.target_Yn=step.target_Yn;
+ if(step.target_X!=null) reading.target_X=step.target_X;
+ if(step.target_Y!=null) reading.target_Y=step.target_Y;
+ if(step.target_Z!=null) reading.target_Z=step.target_Z;
  if(step.series_target_white_y!=null) reading.series_target_white_y=step.series_target_white_y;
  if(step.lg_target_white_y!=null) reading.lg_target_white_y=step.lg_target_white_y;
+ if(step.autocal_code!=null) reading.autocal_code=step.autocal_code;
+ if(step.series_mode!=null) reading.series_mode=step.series_mode;
+ if(step.autocal_white_reference!=null) reading.autocal_white_reference=step.autocal_white_reference;
+ if(step.autocal_reference_only!=null) reading.autocal_reference_only=step.autocal_reference_only;
+ if(step.autocal_read_only!=null) reading.autocal_read_only=step.autocal_read_only;
+ if(step.autocal_slot_locked!=null) reading.autocal_slot_locked=step.autocal_slot_locked;
+ if(step.ddc_slot_locked!=null) reading.ddc_slot_locked=step.ddc_slot_locked;
+ if(step.autocal_legal_white_anchor!=null) reading.autocal_legal_white_anchor=step.autocal_legal_white_anchor;
+ if(step.ddc_target_ire!=null) reading.ddc_target_ire=step.ddc_target_ire;
+ if(step.autocal_order_ire!=null) reading.autocal_order_ire=step.autocal_order_ire;
+ if(step.autocal_target_label!=null) reading.autocal_target_label=step.autocal_target_label;
  return reading;
 }
 
