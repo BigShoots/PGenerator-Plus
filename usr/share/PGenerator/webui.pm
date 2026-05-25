@@ -1783,6 +1783,9 @@ $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2
  $request_run_id=$1 if($body=~/"run_id"\s*:\s*"([^"\\]{1,200})"/);
 my $signal_mode=&webui_pattern_signal_mode($body);
 my $max_luma=&webui_pattern_max_luma($body);
+if($signal_mode eq "dv") {
+ $target_gamma=(($pgenerator_conf{"dv_map_mode"} || "2") eq "2") ? "2.2" : "st2084";
+}
  $transport_signal_range=$signal_range if($transport_signal_range eq "");
  $transport_signal_range=&webui_preferred_rgb_quant_range() if($transport_signal_range eq "");
  $signal_range=$transport_signal_range if($signal_range eq "");
@@ -2040,7 +2043,12 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	     return $c;
 	    }
     if($dv_series) {
-      if($dv_map_mode eq "1" || $target_gamma eq "st2084") {
+      if($dv_map_mode eq "1") {
+      my $stim=$stimulus_pct/100;
+      $stim=0 if($stim < 0);
+      $stim=1 if($stim > 1);
+      $c=int(16 + $stim*219 + .5);
+      } elsif($target_gamma eq "st2084") {
       my $stim=$stimulus_pct/100;
       $stim=0 if($stim < 0);
       $stim=1 if($stim > 1);
@@ -4583,7 +4591,7 @@ sub webui_apply_config (@) {
  $dv_on=1 if(int($effective{"is_ll_dovi"} || 0) || int($effective{"is_std_dovi"} || 0));
  if($dv_on) {
   my $dv_map_mode=(defined $changes{"dv_map_mode"} && $changes{"dv_map_mode"} ne "") ? $changes{"dv_map_mode"} : ($effective{"dv_map_mode"} || "2");
-    my $dv_metadata=(defined $changes{"dv_metadata"} && $changes{"dv_metadata"} ne "") ? $changes{"dv_metadata"} : ($dv_map_mode eq "1" ? "3" : "2");
+    my $dv_metadata=(defined $changes{"dv_metadata"} && $changes{"dv_metadata"} ne "") ? $changes{"dv_metadata"} : ($dv_map_mode eq "1" ? "3" : ($dv_map_mode eq "2" ? "4" : "2"));
   $changes{"max_bpc"}="12";
   $changes{"color_format"}="0";
   $changes{"colorimetry"}="9";
@@ -8201,7 +8209,7 @@ function getVal(id){const el=document.getElementById(id);return el?el.value:'';}
 function dvMetadataForMapMode(mapMode){
  const mode=String(mapMode||'2');
  if(mode==='1') return '3';
- if(mode==='2') return '2';
+ if(mode==='2') return '4';
  return '2';
 }
 
@@ -10847,22 +10855,27 @@ function meterChromaPatchRangeSpan(){
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
- const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterChartIsDv==='function'&&meterChartIsDv()&&typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
  return meterChartIsDv() && meterDvMapModeValue()==='2' && sel==='st2084';
 }
 
 function meterGreyTargetGammaSelection(){
+ if(meterChartIsDv()) return meterDvAutoTargetGamma();
  const el=document.getElementById('meterTargetGamma');
- return String((el&&el.value) || (meterChartIsDv()?meterDvAutoTargetGamma():''));
+ return String((el&&el.value) || '');
 }
 
 function meterDvRelativeUsesGammaChartMath(){
- return meterChartIsDv() && meterDvMapModeValue()==='2' && meterGreyTargetGammaSelection()!=='st2084';
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterChartIsDv==='function'&&meterChartIsDv()&&typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
+ return meterChartIsDv() && meterDvMapModeValue()==='2' && sel!=='st2084';
 }
 
 function meterGreyTargetUsesPq(){
  if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return false;
- if(meterChartIsDv()) return meterGreyTargetGammaSelection()==='st2084';
+ if(meterChartIsDv()){
+  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
+  return sel==='st2084';
+ }
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
 
@@ -10923,7 +10936,7 @@ function meterEncodeSignalChannel(linear){
  const clamped=Math.max(0,Math.min(1,linear||0));
  let encoded=clamped;
  if(meterChartIsDv()){
-  const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
   encoded=sel==='st2084' ? meterChartPqEncodeNormalized(clamped*10000) : Math.pow(clamped,1/meterDvTunnelGamma());
  }
  else if(meterChartIsPq()){
@@ -10939,7 +10952,7 @@ function meterEncodeSignalChannel(linear){
 function meterDvAbsoluteTargetLuminanceForPercent(percent, peak){
  const clamped=clampNum(percent,0,100)/100;
  const targetPeak=(peak>0)?peak:meterChartMasterPeak();
- const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
  if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(clamped));
  if(sel==='srgb') return Math.min(targetPeak,srgbEotf(clamped)*targetPeak);
  if(sel==='bt1886') return Math.min(targetPeak,gammaEotf(clamped,2.4)*targetPeak);
@@ -10958,7 +10971,7 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak){
  const frac=clampNum((ire||0)/100,0,1);
  const roll=meterDvAbsoluteTargetRollOffFraction();
  const normalized=roll>0?Math.min(frac/roll,1):frac;
- const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
  if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(normalized));
  if(sel==='srgb') return srgbEotf(normalized)*targetPeak;
  if(sel==='bt1886') return gammaEotf(normalized,2.4)*targetPeak;
@@ -10968,7 +10981,7 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak){
 function meterDvRelativeChartTargetLuminance(ire, peak){
  const targetPeak=(peak>0)?peak:100;
  const frac=clampNum((ire||0)/100,0,1);
- const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
  if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(frac));
  return gammaEotf(frac,2.2)*targetPeak;
 }
@@ -10997,7 +11010,7 @@ function meterLgAutoCalStimulusFromCode(code){
 function meterLgAutoCalTargetYnForStimulus(stimulus){
  const signal=Math.max(0,Math.min(1.1,(Number(stimulus)||0)/100));
  if(signal<=0) return 0;
- const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
+ const sel=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''))||'bt1886';
  if(sel==='srgb') return signal<=0.04045 ? signal/12.92 : Math.pow((signal+0.055)/1.055,2.4);
  const gamma=sel==='2.2'?2.2:2.4;
  return Math.pow(signal,gamma);
@@ -11066,8 +11079,11 @@ function meterCodeFromSignalPercentWithOptions(percent,opts){
  const range=meterGreyCodeRange();
  if(meterChartIsDv()){
   const dvAbsolute=meterDvMapModeValue()==='1';
-  const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
-  if(dvAbsolute || sel==='st2084'){
+  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||''));
+  if(dvAbsolute){
+   return Math.round(range.min+clamped*range.span);
+  }
+  if(sel==='st2084'){
    const encoded=meterChartPqEncodeNormalized(clamped*10000);
    return Math.round(range.min+encoded*range.span);
   }
@@ -12045,7 +12061,7 @@ function meterEnsureDeltaECache(readings){
  const colorForm=meterColorDeltaEForm();
  const greyMode=meterGreyRefMode();
  const gw=meterGrayWorldWeight();
- const tgtGamma=((document.getElementById('meterTargetGamma')||{}).value)||'';
+ const tgtGamma=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''))||'';
  const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+meterChartSignalMode()+':'+tgtGamma;
  readings.forEach(rd=>{
   if(!rd) return;
@@ -12747,7 +12763,7 @@ function targetEotf(v,Lw,Lb){
  // In HDR10 the source EOTF is PQ, so targetEotf must honor that and compare
  // against the correct absolute nits at each stimulus.
  if(meterChartIsHdr()) return meterChartTargetLuminance(v,Lw,Lb);
- const tgt=document.getElementById('meterTargetGamma').value;
+ const tgt=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||'');
  if(tgt==='bt1886') return bt1886Eotf(v,Lw,Lb);
  if(tgt==='st2084') return meterChartPqDecodeNormalized(v);
  if(tgt==='srgb') return srgbEotf(v)*Lw;
@@ -12761,7 +12777,7 @@ function meterGreyStimulusFraction(ire){
  const dvAbsolute=dvMode && meterDvMapModeValue()==='1';
  if(dvAbsolute || meterDvRelativeSt2084UsesLegalRange()) return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(pct));
  const isLimited=meterPatchUsesVideoRange();
- const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ const sel=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||'')))||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():'');
  const code=dvMode
   ? (sel==='st2084'
     ? (isLimited?Math.round(16+pct/100*219):Math.round(pct*255/100))
@@ -13127,7 +13143,7 @@ function meterUpdateEotfChartLabel(){
 function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  const peak=(Lw>0)?Lw:100;
  if(!(peak>0) || !(ire>0)) return null;
- const tgt=((document.getElementById('meterTargetGamma')||{}).value)||'2.2';
+ const tgt=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function'&&meterChartIsDv())?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||'')))||'2.2';
  if(meterChartIsDv() && meterDvMapModeValue()==='1'){
   const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
 	  const tgtLum=meterDvAbsoluteChartTargetLuminance(ire,peak);
@@ -13197,10 +13213,9 @@ function meterGreyTargetPeak(refWhite){
 
 function meterTargetGammaLabel(){
  const sel=document.getElementById('meterTargetGamma');
- if(!sel) return meterChartIsDv() ? 'Dolby Vision' : (meterChartIsPq() ? 'PQ' : 'Gamma');
+ if(!sel) return meterChartIsDv() ? (meterDvMapModeValue()==='2'?'Gamma 2.2':'ST 2084') : (meterChartIsPq() ? 'PQ' : 'Gamma');
  const opt=sel.options[sel.selectedIndex];
- if(meterChartIsDv() && meterDvMapModeValue()==='2' && ((sel&&sel.value)||'')==='st2084') return 'Dolby Vision Relative';
- if(meterChartIsDv()) return opt&&opt.textContent?opt.textContent.trim():'Dolby Vision';
+ if(meterChartIsDv()) return meterDvMapModeValue()==='2'?'Gamma 2.2':'ST 2084';
  if(meterChartIsPq()) return 'PQ';
  return opt&&opt.textContent?opt.textContent.trim():'Gamma';
 }
@@ -13346,7 +13361,7 @@ function meterGreyChartTargetCode(step){
 }
 
 function targetGammaValue(){
- const tgt=document.getElementById('meterTargetGamma').value;
+ const tgt=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||'');
  if(tgt==='bt1886') return 2.4;
  if(tgt==='srgb') return 2.2;
  return parseFloat(tgt);
@@ -16986,6 +17001,7 @@ function meterSelectSeries(type,points,opts){
 function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
  body.signal_mode=getVal('signal_mode')||'sdr';
+ if(body.signal_mode==='dv') body.target_gamma=meterDvAutoTargetGamma();
  body.max_luma=(document.getElementById('max_luma')||{}).value||((config&&config.max_luma)||'1000');
  if(body.measurement_meter_port==null){
   const measurementPort=meterSelectedMeasurementPort();
@@ -22644,7 +22660,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 	  const prevY=prev?(prev.luminance!=null?prev.luminance:prev.Y):null;
 	  const prevIre=prev?(meterReadingAnalysisIre(prev)||prev.ire||0):null;
 	  if(!(topGamma&&allSteps&&!prev)){
-	   const g=(meterChartIsDv() && meterDvMapModeValue()==='2' && ((document.getElementById('meterTargetGamma')||{}).value)==='st2084' && (rd.ire||0)>=100)
+	  const g=(meterChartIsDv() && meterDvMapModeValue()==='2' && ((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():((document.getElementById('meterTargetGamma')||{}).value||'')))==='st2084' && (rd.ire||0)>=100)
 	    ? meterDvRelativeWhiteGamma(y,chartYw)
 	    : ((topGamma && (meterChartIsHdr()||meterChartIsDv()))
 	      ? effectiveGammaTopSlope(y,chartYw,analysisIre,prevY,prevIre)
@@ -25759,6 +25775,7 @@ async function loadMeterSettings(){
  }else{
   applyMeterTargetGammaDefault();
  }
+ if(getVal('signal_mode')==='dv') applyMeterTargetGammaDefault();
  setVal('meterTargetWhiteX', s.target_white_x);
  setVal('meterTargetWhiteY', s.target_white_y);
  setVal('meterXyzM11', s.xyz_m11);
