@@ -6940,8 +6940,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    <div class="field">
     <label>Map Mode</label>
     <select id="dv_map_mode">
-     <option value="2">Relative</option>
-     <option value="1">Absolute</option>
+     <option value="2">Relative (Calibration)</option>
+     <option value="1">Absolute (Mastering)</option>
     </select>
    </div>
      <div class="field">
