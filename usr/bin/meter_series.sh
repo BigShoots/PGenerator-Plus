@@ -256,8 +256,11 @@ dv_absolute_greyscale_series_active() {
 }
 
 reading_luminance_json() {
- READING_JSON="$1" python - <<'PY' 2>/dev/null
+READING_JSON="$1" python - <<'PY' 2>/dev/null
 import json, math, os
+
+def finite(value):
+    return value == value and value not in (float("inf"), float("-inf"))
 
 try:
     reading = json.loads(os.environ.get("READING_JSON", "") or "{}")
@@ -269,7 +272,7 @@ for key in ("luminance", "Y"):
         value = float(reading.get(key))
     except Exception:
         continue
-    if math.isfinite(value) and value > 0:
+    if finite(value) and value > 0:
         print(value)
         raise SystemExit(0)
 raise SystemExit(1)
@@ -283,12 +286,15 @@ apply_dv_absolute_greyscale_codes() {
  STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
 import json, math, os, tempfile
 
+def finite(value):
+    return value == value and value not in (float("inf"), float("-inf"))
+
 steps_file = os.environ.get("STEPS_FILE", "")
 try:
     white_y = float(os.environ.get("WHITE_Y", "0"))
 except Exception:
     raise SystemExit(1)
-if not (math.isfinite(white_y) and white_y > 0):
+if not (finite(white_y) and white_y > 0):
     raise SystemExit(1)
 
 try:
@@ -317,12 +323,12 @@ def pq_decode_normalized(code):
     return 10000.0 * ((num / den) ** (1 / m1))
 
 def percent_from_step(step, channel):
-    for key in (f"signal_{channel}_pct", "stimulus", "analysis_ire", "target_ire", "ire"):
+    for key in ("signal_%s_pct" % channel, "stimulus", "analysis_ire", "target_ire", "ire"):
         try:
             value = float(step.get(key))
         except Exception:
             continue
-        if math.isfinite(value):
+        if finite(value):
             return value
     return 0.0
 
@@ -360,7 +366,7 @@ try:
     with os.fdopen(fd, "w") as fh:
         json.dump(steps, fh, separators=(",", ":"))
         fh.write("\n")
-    os.replace(tmp_path, steps_file)
+    os.rename(tmp_path, steps_file)
 finally:
     try:
         if os.path.exists(tmp_path):
