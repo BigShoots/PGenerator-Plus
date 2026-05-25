@@ -1225,12 +1225,15 @@ sub webui_lg_picture_settings (@) {
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading picture settings." }) if($client_key eq "");
  my $keys=$payload->{"keys"};
  $keys=&lg_picture_default_keys() if(ref($keys) ne "ARRAY" || !@{$keys});
+ my $ignore_calibration_picture_mode=$payload->{"ignore_calibration_picture_mode"} ? 1 : 0;
+ my $picture_mode=$payload->{"picture_mode"}||"";
+ $picture_mode=$clients->{"calibration_picture_mode"}||"" if($picture_mode eq "" && !$ignore_calibration_picture_mode);
 my $result=&lg_helper_run({
  action => "picture_get",
  ip => $ip,
  client_key => $client_key,
   keys => $keys,
-	  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+	  picture_mode => $picture_mode,
 	  tv_input => &lg_input_from_cec(),
 	  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
 	  helper_timeout => int($payload->{"helper_timeout"}||0),
@@ -1276,6 +1279,9 @@ sub webui_lg_picture_settings_set (@) {
  } elsif(ref($readback_keys) ne "ARRAY" || !@{$readback_keys}) {
   $readback_keys=[keys(%{$settings})];
  }
+ my $ignore_calibration_picture_mode=$payload->{"ignore_calibration_picture_mode"} ? 1 : 0;
+ my $picture_mode=$payload->{"picture_mode"}||"";
+ $picture_mode=$clients->{"calibration_picture_mode"}||"" if($picture_mode eq "" && !$ignore_calibration_picture_mode);
 	 my $ddc_white_balance=&lg_settings_are_ddc_white_balance($settings);
 	 my $keep_calibration_mode=exists($payload->{"keep_calibration_mode"})
 	  ? ($payload->{"keep_calibration_mode"} ? 1 : 0)
@@ -1288,7 +1294,7 @@ sub webui_lg_picture_settings_set (@) {
   client_key => $client_key,
   settings => $settings,
   readback_keys => $readback_keys,
-	  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+	  picture_mode => $picture_mode,
 	 tv_input => &lg_input_from_cec(),
 		  keep_calibration_mode => $keep_calibration_mode,
 		  calibration_mode_active => $calibration_mode_active,
@@ -1810,9 +1816,32 @@ function lgPictureModeStorageKey(signalMode){
  return 'lgPictureMode:'+String(signalMode||lgSignalModeKey());
 }
 
+function lgPictureModeSignalForValue(value){
+ const mode=String(value||'');
+ if(!mode) return '';
+ for(const entry of Object.entries(LG_PICTURE_MODES_BY_SIGNAL)){
+  const signal=entry[0];
+  const modes=entry[1]||[];
+  if(modes.some(item=>item[0]===mode)) return signal;
+ }
+ if(/^dolby_hdr_/i.test(mode)) return 'dv';
+ if(/^hdr_/i.test(mode)) return 'hdr10';
+ return 'sdr';
+}
+
+function lgPictureModeMatchesSignal(value,signalMode){
+ const signal=signalMode||lgSignalModeKey();
+ const modeSignal=lgPictureModeSignalForValue(value);
+ if(!modeSignal) return false;
+ if(signal==='hdr10'||signal==='hlg') return modeSignal==='hdr10'||modeSignal==='hlg';
+ return modeSignal===signal;
+}
+
 function lgRememberPictureMode(value,signalMode){
  if(!value) return;
- try{localStorage.setItem(lgPictureModeStorageKey(signalMode),value);}catch(e){}
+ const signal=signalMode||lgSignalModeKey();
+ if(!lgPictureModeMatchesSignal(value,signal)) return;
+ try{localStorage.setItem(lgPictureModeStorageKey(signal),value);}catch(e){}
 }
 
 function lgStoredPictureMode(signalMode){
@@ -1831,7 +1860,11 @@ function lgPictureModeLabel(value){
 function lgPictureModeOptions(signalMode,current){
  const mode=signalMode||lgSignalModeKey();
  const options=(LG_PICTURE_MODES_BY_SIGNAL[mode]||LG_PICTURE_MODES_BY_SIGNAL.sdr).map(item=>item.slice());
- [lgStoredPictureMode(mode),current].forEach(value=>{
+ const stored=lgStoredPictureMode(mode);
+ const extras=[];
+ if(stored&&lgPictureModeMatchesSignal(stored,mode)) extras.push(stored);
+ if(current) extras.push(current);
+ extras.forEach(value=>{
   if(value&&!options.some(item=>item[0]===value)) options.unshift([value,lgPictureModeLabel(value)]);
  });
  return options;
@@ -1842,7 +1875,7 @@ function lgPopulatePictureModeSelect(current){
  if(!select) return;
  const state=window.lgStatusState||{};
  const signal=lgSignalModeKey();
- const selected=current||lgStoredPictureMode(signal)||'';
+ const selected=String(current||'');
  const options=lgPictureModeOptions(signal,selected);
  let html='<option value="">Select mode</option>';
  options.forEach(item=>{html+='<option value="'+lgEscapeHtml(item[0])+'">'+lgEscapeHtml(item[1])+'</option>';});
@@ -2098,7 +2131,10 @@ function lgBindDisplayModeControl(){
  if(signal&&!signal.dataset.lgPictureModeBound){
   signal.dataset.lgPictureModeBound='1';
   signal.addEventListener('change',()=>{
-   lgPopulatePictureModeSelect(lgStoredPictureMode(lgSignalModeKey())||lgPictureModeValue);
+   lgPictureModeValue='';
+   lgPictureModeSignalMode=lgSignalModeKey();
+   lgDisplayControlInvalidate();
+   lgPopulatePictureModeSelect('');
    if(window.lgStatusState&&(window.lgStatusState.paired||window.lgStatusState.clientKeyPresent)){
     setTimeout(()=>lgRefreshPictureMode(true),1200);
    }
@@ -2114,7 +2150,8 @@ function lgDisplayControlConnected(){
 
 function lgSelectedPictureModeValue(){
  const select=document.getElementById('lgPictureMode');
- return (select&&select.value)||lgPictureModeValue||lgStoredPictureMode(lgSignalModeKey())||'';
+ if(select&&select.value) return select.value;
+ return lgPictureModeSignalMode===lgSignalModeKey()?lgPictureModeValue:'';
 }
 
 function lgDisplayControlPictureMode(){
@@ -2248,7 +2285,7 @@ async function lgDisplayControlRefresh(force){
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode()}),
+   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode(),ignore_calibration_picture_mode:true}),
    _quiet:true,
    _timeoutMs:18000
   });
@@ -2261,8 +2298,12 @@ async function lgDisplayControlRefresh(force){
 	   lgDisplayControlLoaded=true;
    lgDisplayControlError='';
    if(r.picture_settings.pictureMode){
-    lgPictureModeValue=r.picture_settings.pictureMode;
-    lgRememberPictureMode(lgPictureModeValue,lgSignalModeKey());
+    const mode=r.picture_settings.pictureMode;
+    const signal=lgSignalModeKey();
+    lgPictureModeValue=mode;
+    lgPictureModeSignalMode=signal;
+    lgRememberPictureMode(mode,signal);
+    lgPopulatePictureModeSelect(mode);
    }
   }else{
    lgDisplayControlError=(r&&r.message)||'Unable to read display controls';
@@ -2298,13 +2339,18 @@ async function lgDisplayControlCommit(key){
   const r=await fetchJSON('/api/lg/picture-settings/set',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({settings:settings,picture_mode:lgDisplayControlPictureMode(),readback_keys:[key,'pictureMode']}),
+   body:JSON.stringify({settings:settings,picture_mode:lgDisplayControlPictureMode(),ignore_calibration_picture_mode:true,readback_keys:[key,'pictureMode']}),
    _timeoutMs:30000
   });
   if(r&&r.status==='ok'){
    const picture=r.picture_settings||{};
    lgDisplayControlValues[key]=(picture[key]!==undefined)?picture[key]:value;
-   if(picture.pictureMode) lgPictureModeValue=picture.pictureMode;
+   if(picture.pictureMode){
+    lgPictureModeValue=picture.pictureMode;
+    lgPictureModeSignalMode=lgSignalModeKey();
+    lgRememberPictureMode(lgPictureModeValue,lgPictureModeSignalMode);
+    lgPopulatePictureModeSelect(lgPictureModeValue);
+   }
    lgDisplayControlLoaded=true;
    lgDisplayControlError='';
    toast(meta.label+' updated');
@@ -2441,7 +2487,7 @@ function renderLgStatus(r){
 	   hint.textContent='No LG TV IP is available yet.';
 	  }
 	 }
-	 lgPopulatePictureModeSelect(lgPictureModeValue);
+	 lgPopulatePictureModeSelect(lgPictureModeSignalMode===lgSignalModeKey()?lgPictureModeValue:'');
 	 lgDisplayControlRender();
 	 if(typeof meterUpdateSeriesTabUi==='function') meterUpdateSeriesTabUi();
 	 else if(typeof meterUpdateSeriesLabels==='function') meterUpdateSeriesLabels();
@@ -2623,12 +2669,12 @@ async function lgRefreshPictureMode(force){
   return;
  }
  lgPictureModePending=true;
- lgPopulatePictureModeSelect(lgPictureModeValue);
+ lgPopulatePictureModeSelect(lgPictureModeSignalMode===signal?lgPictureModeValue:'');
  try{
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({keys:['pictureMode'],picture_mode:lgPictureModeValue||lgStoredPictureMode(signal)||''}),
+   body:JSON.stringify({keys:['pictureMode'],picture_mode:'',ignore_calibration_picture_mode:true}),
    _quiet:true,
    _timeoutMs:9000
   });
@@ -2641,7 +2687,7 @@ async function lgRefreshPictureMode(force){
  }catch(e){
 	 }finally{
 	  lgPictureModePending=false;
-	  lgPopulatePictureModeSelect(lgPictureModeValue);
+	  lgPopulatePictureModeSelect(lgPictureModeSignalMode===signal?lgPictureModeValue:'');
 	  lgDisplayControlRender();
 	 }
 }
@@ -2758,7 +2804,7 @@ async function lgSetCalibrationMode(){
   const r=await fetchJSON('/api/lg/calibration-mode',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({enabled,picture_mode:lgPictureModeValue||''}),
+   body:JSON.stringify({enabled,picture_mode:lgSelectedPictureModeValue()||''}),
    _timeoutMs:18000
   });
   if(r&&r.status==='ok'){
