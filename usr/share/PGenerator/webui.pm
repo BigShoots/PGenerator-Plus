@@ -10848,7 +10848,12 @@ function meterGreyTargetGammaSelection(){
  return String((el&&el.value) || (meterChartIsDv()?meterDvAutoTargetGamma():''));
 }
 
+function meterDvRelativeUsesGammaChartMath(){
+ return meterChartIsDv() && meterDvMapModeValue()==='2' && meterGreyTargetGammaSelection()!=='st2084';
+}
+
 function meterGreyTargetUsesPq(){
+ if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return false;
  if(meterChartIsDv()) return meterGreyTargetGammaSelection()==='st2084';
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
@@ -12760,16 +12765,18 @@ function meterGreyCodeLooksHeadroom(code){
 }
 
 function meterGreyTargetSignal(ire,code){
- const headroomCode=meterGreyCodeLooksHeadroom(code);
- if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets()||headroomCode)) return meterGreySignalFractionFromCode(code);
  const headroomIre=Number(ire)>100;
  const nominal=Math.max(0,Math.min((meterGreyAllowsHeadroomTargets()||headroomIre)?1.1:1,(ire||0)/100));
+ if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return nominal;
+ const headroomCode=meterGreyCodeLooksHeadroom(code);
+ if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets()||headroomCode)) return meterGreySignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
 }
 
 function meterGreyInputFraction(ire,code){
  const nominal=Math.max(0,Math.min(1,(ire||0)/100));
+ if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return nominal;
  if(code!=null && meterChartIsHdr()) return meterGreySignalFractionFromCode(code);
  return nominal;
 }
@@ -13322,6 +13329,7 @@ function meterGammaAxisCenteredOnTarget(measuredVals,targetVals,isHdr){
 
 function meterGreyChartTargetCode(step){
  if(!step) return null;
+ if((typeof meterDvRelativeUsesGammaChartMath==='function')&&meterDvRelativeUsesGammaChartMath()) return null;
  if(!meterChartIsHdr()&&!meterGreyAllowsHeadroomTargets()) return null;
  return step.r_code!=null?step.r_code:step.r;
 }
@@ -22542,7 +22550,7 @@ function drawGammaValuePreset(gsSteps){
   return (targetIre||0)>0&&(targetIre||0)<100;
  });
  const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyChartStimulusIre(s),100,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
- const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterChartIsHdr());
+ const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterGreyTargetUsesPq());
  let yMin=axis.min;
  let yMax=axis.max;
  ({min:yMin,max:yMax}=meterApplyLinearYZoom('chartGammaValue',yMin,yMax,(yMin+yMax)/2));
