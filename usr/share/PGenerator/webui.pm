@@ -2543,15 +2543,18 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	  } @steps;
 	 }
 
- my $series_id="${type}_".time();
- my $total=scalar(@steps);
+	 my $series_id="${type}_".time();
+	 my $total=scalar(@steps);
 
- # Write steps to temp file for helper script
- my $steps_file="/tmp/meter_series_steps.json";
- if(open(my $fh,">",$steps_file)) {
-  print $fh "[".join(",",@steps)."]";
-  close($fh);
- }
+	 # Write steps to temp file for helper script
+	 my $steps_file="/tmp/meter_series_steps_${series_id}.json";
+	 if(open(my $fh,">",$steps_file)) {
+	  print $fh "[".join(",",@steps)."]";
+	  close($fh);
+	  chmod 0644, $steps_file;
+	 } else {
+	  return "{\"status\":\"error\",\"message\":\"Failed to write series steps file\"}";
+	 }
 
  # Write initial state
  my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[]}";
@@ -2587,13 +2590,22 @@ sub webui_meter_series_status (@) {
      if(open(my $wf,">",$_meter_series_file)) { print $wf $json; close($wf); }
     }
    }
-   # Include steps from steps file so any client can reconstruct the UI
-   if(-f "/tmp/meter_series_steps.json" && $json=~/"status"\s*:\s*"(running|complete|error|cancelled)"/) {
-    my $steps="";
-    if(open(my $sf,"<","/tmp/meter_series_steps.json")) { local $/; $steps=<$sf>; close($sf); }
-    if($steps ne "" && $json!~/"steps"/) {
-     $json=~s/\}$/,"steps":$steps}/;
-    }
+	   # Include steps from steps file so any client can reconstruct the UI.
+	   # The helper may rewrite DV Absolute codes in-place as root, so every run
+	   # uses a unique path instead of reusing a stale fixed /tmp file.
+	   my $steps_file="";
+	   if($json=~/"series_id"\s*:\s*"([A-Za-z0-9_.-]+)"/) {
+	    my $sid=$1;
+	    my $candidate="/tmp/meter_series_steps_${sid}.json";
+	    $steps_file=$candidate if(-f $candidate);
+	   }
+	   $steps_file="/tmp/meter_series_steps.json" if($steps_file eq "" && -f "/tmp/meter_series_steps.json");
+	   if($steps_file ne "" && $json=~/"status"\s*:\s*"(running|complete|error|cancelled)"/) {
+	    my $steps="";
+	    if(open(my $sf,"<",$steps_file)) { local $/; $steps=<$sf>; close($sf); }
+	    if($steps ne "" && $json!~/"steps"/) {
+	     $json=~s/\}$/,"steps":$steps}/;
+	    }
    }
    return $json;
   }
@@ -2937,9 +2949,10 @@ sub webui_meter_stop (@) {
 sub webui_meter_clear (@) {
  &webui_meter_stop();
  &webui_meter_read_state_write('{"status":"idle"}');
- unlink("${_meter_read_file}.tmp");
- unlink("/tmp/meter_series_steps.json");
- unlink("/tmp/meter_read_steps.json");
+	 unlink("${_meter_read_file}.tmp");
+	 unlink("/tmp/meter_series_steps.json");
+	 unlink(glob("/tmp/meter_series_steps_*.json"));
+	 unlink("/tmp/meter_read_steps.json");
  my $stamp=time();
  my $json="{\"status\":\"cleared\",\"timestamp\":$stamp,\"readings\":[]}";
  if(open(my $fh,">",$_meter_series_file)) { print $fh $json; close($fh); }
