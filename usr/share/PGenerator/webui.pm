@@ -12895,6 +12895,14 @@ function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
  return meterGreyTargetEotfValue(ire,Lw,Lb,code)/peakEotf;
 }
 
+function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb){
+ const lum=meterChartTargetLuminance(signal,Lw,Lb||0);
+ const eotf=meterChartPqEncodeNormalized(lum);
+ if(!meterEotfNormalizedEnabled()) return eotf;
+ const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
+ return peakEotf>0 ? eotf/peakEotf : eotf;
+}
+
 function meterEotfNormalizedEnabled(){
  const el=document.getElementById('meterEotfNormalized');
  return !el || !!el.checked;
@@ -13107,7 +13115,7 @@ function meterGreyTargetChartPoints(steps,Lw,Lb,scale){
 }
 
 function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
- if(mode!=='luminance' || !meterLuminanceLogScaleEnabled()) return null;
+ if(mode!=='luminance' && mode!=='eotf') return null;
  if(meterChartIsDv()) return null;
  const stepList=Array.isArray(steps)?steps:[];
  const end=Math.max(1,Number(maxPct)||100);
@@ -13140,14 +13148,16 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
  if(unique.length<2) return null;
  const pointFor=(plot,signal)=>[
   Math.max(0,Math.min(end,plot))/end,
-  meterLuminanceScaleValue(meterChartTargetLuminance(signal,targetPeak,Lb||0),top)
+  mode==='eotf'
+   ? meterEotfScaleValue(meterGreyTargetEotfChartValueForSignal(signal,targetPeak,Lb||0),top)
+   : meterLuminanceScaleValue(meterChartTargetLuminance(signal,targetPeak,Lb||0),top)
  ];
  const pts=[];
  for(let i=0;i<unique.length-1;i++){
   const a=unique[i];
   const b=unique[i+1];
   const span=Math.max(0,b.plot-a.plot);
-  const segments=Math.max(1,Math.ceil(span*4));
+  const segments=Math.max(1,Math.ceil(span*8));
   for(let j=0;j<=segments;j++){
    if(i>0&&j===0) continue;
    const t=segments>0?j/segments:0;
@@ -22043,7 +22053,7 @@ function meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t){
  return Math.max(0,Math.min(1,(mv-av)/(bv-av)));
 }
 
-function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSignal,scaleLuminance){
+function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSignal){
  const list=Array.isArray(rows)?rows:[];
  if(list.length<2) return list.map(row=>[row.x,row.y]);
  const out=[[list[0].x,list[0].y]];
@@ -22063,9 +22073,8 @@ function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSign
     ? a.signal+(b.signal-a.signal)*t
     : null;
    const shaped=meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t);
-   const lum=(Number(a.luminance)||0)+((Number(b.luminance)||0)-(Number(a.luminance)||0))*shaped;
    const x=(Number(a.x)||0)+((Number(b.x)||0)-(Number(a.x)||0))*t;
-   const y=typeof scaleLuminance==='function'?scaleLuminance(lum):(Number(a.y)||0)+((Number(b.y)||0)-(Number(a.y)||0))*shaped;
+   const y=(Number(a.y)||0)+((Number(b.y)||0)-(Number(a.y)||0))*shaped;
    out.push([x,y]);
   }
  }
@@ -22096,7 +22105,7 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
   current.push({x,y,luminance:Number(lum),signal});
  });
  if(current.length) segments.push(current);
- return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal,scaleLuminance));
+ return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal));
 }
 
 function meterGammaPlotAnchorStep(steps,idx){
@@ -22232,9 +22241,6 @@ function drawRGBChartPreset(gsSteps){
  });
  const refY=(100-yMin)/(yMax-yMin);
  drawDashedLine(ctx,chart,[[0,refY],[1,refY]],'#555');
- // Placeholder dots at 100 for each point
- const pts=gsSteps.map((s,i)=>[gsSteps.length>1?i/(gsSteps.length-1):0.5,refY]);
- drawDots(ctx,chart,pts,'#33333380',3);
 }
 function drawDeltaEPreset(gsSteps){
  const ctx=getChartCtx('chartDeltaE');
@@ -22900,8 +22906,7 @@ function drawRGBChart(gs,allSteps,readingMap){
  // Reference line at 100%
  const refY=(100-yMin)/(yMax-yMin);
  drawDashedLine(ctx,chart,[[0,refY],[1,refY]],'#555');
- // Plot all x-axis points: measured = colored, missing = grey placeholder
- const rPts=[],gPts=[],bPts=[],emptyPts=[];
+ const rPts=[],gPts=[],bPts=[];
  xSteps.forEach((step,idx)=>{
   const x=meterGreyCategoryChartX(xSteps,idx);
   const bal=balMap[step.ire];
@@ -22909,17 +22914,9 @@ function drawRGBChart(gs,allSteps,readingMap){
    rPts.push([x,Math.max(0,Math.min(1,(bal.R-yMin)/(yMax-yMin)))]);
    gPts.push([x,Math.max(0,Math.min(1,(bal.G-yMin)/(yMax-yMin)))]);
    bPts.push([x,Math.max(0,Math.min(1,(bal.B-yMin)/(yMax-yMin)))]);
-  } else {
-   emptyPts.push([x,refY]);
   }
  });
- // Draw placeholder dots for missing
- drawDots(ctx,chart,emptyPts,'#33333380',3);
- // Draw measured lines and dots
  if(rPts.length>1){drawLine(ctx,chart,rPts,'#f44',2);drawLine(ctx,chart,gPts,'#4caf50',2);drawLine(ctx,chart,bPts,'#42a5f5',2);}
- drawDots(ctx,chart,rPts,'#f44');
- drawDots(ctx,chart,gPts,'#4caf50');
- drawDots(ctx,chart,bPts,'#42a5f5');
  // R/G/B label at right
  if(rPts.length>0){
   const last=rPts.length-1;
@@ -22965,7 +22962,9 @@ function drawEOTFChart(gs,allSteps,readingMap){
   measureSteps,
   readingMap,
   axisMax,
-  signal=>meterChartPqEncodeNormalized(meterChartTargetLuminance(signal,targetPeak,Lb||0)),
+  signal=>meterEotfScaleValue(meterEotfNormalizedEnabled()
+   ? meterGreyMeasuredNormalizedEotfValue(meterChartTargetLuminance(signal,targetPeak,Lb||0),eotfMeasuredRef)
+   : meterChartPqEncodeNormalized(meterChartTargetLuminance(signal,targetPeak,Lb||0)),yTop),
   lum=>meterEotfScaleValue(meterGreyMeasuredEotfChartValue(lum||0,eotfMeasuredRef),yTop)
  );
  if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
@@ -23009,7 +23008,7 @@ function drawGammaChart(gs,allSteps,readingMap){
   measureSteps,
   readingMap,
   axisMax,
-  signal=>meterChartTargetLuminance(signal,targetPeak,Lb||0),
+  signal=>meterLuminanceScaleValue(meterChartTargetLuminance(signal,targetPeak,Lb||0),yTop),
   lum=>meterLuminanceScaleValue(lum||0,yTop)
  );
  if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
