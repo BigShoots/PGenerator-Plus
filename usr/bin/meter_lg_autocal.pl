@@ -8983,7 +8983,7 @@ sub post_cal_series_adjustment_luma_cap {
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
  my $abs=defined($lum_pct) ? abs($lum_pct+0) : 0;
  if($ire <= 3.1001) {
-  return 2.00 if($abs >= 25);
+  return 1.50 if($abs >= 25);
   return 1.25 if($abs >= 15);
   return 0.50;
  }
@@ -9021,6 +9021,7 @@ sub post_cal_series_low_shadow_unstable_skip {
  my ($step,$lum_pct)=@_;
  return 0 if(!autocal_step_is_low_shadow($step) || !defined($lum_pct));
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ return 1 if($ire <= 2.3001 && abs($lum_pct+0) < 8.0);
  return 1 if($ire > 3.1001 && $ire <= 4.1001 && abs($lum_pct+0) < 8.0);
  return 0;
 }
