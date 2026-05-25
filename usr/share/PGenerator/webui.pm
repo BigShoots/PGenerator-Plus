@@ -6591,7 +6591,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field > input[type="text"],
 #meterSettingsGrid .field > input[type="number"]{width:100%;min-height:34px}
 #meterSettingsGrid .field-display{width:170px;max-width:100%}
-#meterSettingsGrid .field-gamut{width:360px;max-width:100%}
+#meterSettingsGrid .field-gamut{width:148px;max-width:100%}
+#meterSettingsGrid .field-gamut.has-whitepoint{width:360px}
 #meterSettingsGrid .field-gamut > select{width:148px;max-width:100%}
 #meterSettingsGrid .field-gamut .field-whitepoint{display:none;margin-top:10px;width:100%}
 #meterSettingsGrid .field-gamut .field-whitepoint.visible{display:block}
@@ -6628,7 +6629,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-whitepoint-row{display:flex;gap:6px;align-items:center;max-width:360px;flex-wrap:wrap}
 .meter-whitepoint-row input{flex:1 1 76px;min-width:0}
 .meter-whitepoint-row .btn{flex:0 0 auto;white-space:nowrap}
-.meter-matrix-field{margin-top:32px;max-width:240px}
+.meter-matrix-field{display:none;margin-top:32px;max-width:240px}
+.meter-matrix-field.visible{display:block}
 .meter-matrix-fields{display:none;margin-top:8px}
 .meter-matrix-fields.visible{display:block}
 .meter-matrix-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:240px}
@@ -10412,8 +10414,10 @@ function meterStoredXyzMatrixEnabled(settings){
 
 function meterUpdateXyzMatrixVisibility(){
  const wrap=document.getElementById('meterXyzMatrixFields');
+ const field=wrap&&wrap.closest('.meter-matrix-field');
  const actionRow=document.getElementById('meterXyzMatrixActionRow');
  const enabled=meterXyzCorrectionEnabled();
+ if(field) field.classList.toggle('visible',enabled);
  if(wrap) wrap.classList.toggle('visible',enabled);
  if(actionRow) actionRow.classList.toggle('visible',enabled);
  ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
@@ -10669,7 +10673,10 @@ function meterTargetWhitePointEnabled(){
 function updateMeterTargetWhitepointVisibility(){
  const field=document.getElementById('meterTargetWhitePointField');
  if(!field) return;
- field.classList.toggle('visible',meterTargetWhitePointEnabled());
+ const enabled=meterTargetWhitePointEnabled();
+ field.classList.toggle('visible',enabled);
+ const gamutField=field.closest('.field-gamut');
+ if(gamutField) gamutField.classList.toggle('has-whitepoint',enabled);
 }
 
 function meterActiveGamutKey(){
