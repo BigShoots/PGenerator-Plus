@@ -2042,12 +2042,12 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	     $c=1023 if($c > 1023);
 	     return $c;
 	    }
-    if($dv_series) {
-      my $stim=$stimulus_pct/100;
-      $stim=0 if($stim < 0);
-      $stim=1 if($stim > 1);
-      $c=($dv_map_mode eq "1" || $lim) ? int(16 + $stim*219 + .5) : int($stim*255 + .5);
-		    } else {
+	    if($dv_series) {
+	      my $stim=$stimulus_pct/100;
+	      $stim=0 if($stim < 0);
+	      $stim=1 if($stim > 1);
+	      $c=int(16 + $stim*219 + .5);
+			    } else {
 			     if($lg_extended_sdr_codes) {
 			      $c=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
 		     } elsif($lg_legal_sdr_ddc_codes) {
@@ -10870,7 +10870,7 @@ function meterChromaPatchRangeSpan(){
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
- return false;
+ return meterChartIsDv() && meterDvMapModeValue()==='2';
 }
 
 function meterGreyTargetGammaSelection(){
