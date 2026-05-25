@@ -10938,6 +10938,8 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak){
 function meterDvRelativeChartTargetLuminance(ire, peak){
  const targetPeak=(peak>0)?peak:100;
  const frac=clampNum((ire||0)/100,0,1);
+ const sel=(document.getElementById('meterTargetGamma')||{}).value||meterDvAutoTargetGamma();
+ if(sel==='st2084') return Math.min(targetPeak,meterChartPqDecodeNormalized(frac));
  return gammaEotf(frac,2.2)*targetPeak;
 }
 
@@ -13169,7 +13171,7 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
  stepList.forEach(s=>{
   if(!s) return;
   const stimulus=Number(meterGreyChartStimulusIre(s));
-  const plot=Number.isFinite(stimulus)?stimulus:Number(meterGreyChartPlotIre(s));
+  const plot=Number(meterGreyEotfLuminancePlotIre(s));
   if(!Number.isFinite(plot)) return;
   const code=meterGreyChartTargetCode(s);
   const signal=meterGreyTargetSignal(Number.isFinite(stimulus)?stimulus:plot,code);
@@ -21983,13 +21985,10 @@ function meterEotfLuminanceAxisMax(items){
 
 function meterGreyEotfLuminancePlotIre(item){
  if(!item) return null;
- if(Number(meterActiveSeriesPoints)===21 && item.analysis_ire!=null && item.transport_stimulus!=null && item.target_Yn==null){
-  const plot=meterGreyChartPlotIre(item);
-  if(Number.isFinite(Number(plot))) return Number(plot);
- }
+ const plot=meterGreyChartPlotIre(item);
+ if(Number.isFinite(Number(plot))) return Number(plot);
  const stimulus=meterGreyChartStimulusIre(item);
- const ire=Number.isFinite(Number(stimulus))?Number(stimulus):meterGreyChartPlotIre(item);
- return Number.isFinite(Number(ire))?Number(ire):null;
+ return Number.isFinite(Number(stimulus))?Number(stimulus):null;
 }
 
 function meterGreyEotfLuminanceChartX(step,steps,idx,axisMax){
@@ -22129,20 +22128,42 @@ function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSign
  return out;
 }
 
+function meterUniqueMeasuredRowsByPlotX(rows){
+ const out=[];
+ const indexByX={};
+ (Array.isArray(rows)?rows:[]).forEach(row=>{
+  if(!row) return;
+  const x=Number(row.x);
+  if(!Number.isFinite(x)) return;
+  const key=x.toFixed(6);
+  if(indexByX[key]!=null) out[indexByX[key]]=row;
+  else {
+   indexByX[key]=out.length;
+   out.push(row);
+  }
+ });
+ return out;
+}
+
 function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance){
  const segments=[];
  let current=[];
+ const flushCurrent=()=>{
+  if(current.length){
+   const unique=meterUniqueMeasuredRowsByPlotX(current);
+   if(unique.length) segments.push(unique);
+  }
+  current=[];
+ };
  (steps||[]).forEach((step,idx)=>{
   const reading=readingMap?readingMap[step.ire]:null;
   if(!reading){
-   if(current.length) segments.push(current);
-   current=[];
+   flushCurrent();
    return;
   }
   const lum=meterReadingLuminanceNits(reading);
   if(!(lum!=null&&Number.isFinite(Number(lum))&&lum>=0)){
-   if(current.length) segments.push(current);
-   current=[];
+   flushCurrent();
    return;
   }
   const stimulus=meterGreyChartStimulusIre(step);
@@ -22152,7 +22173,7 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
   const y=typeof scaleLuminance==='function'?scaleLuminance(lum):lum;
   current.push({x,y,luminance:Number(lum),signal});
  });
- if(current.length) segments.push(current);
+ flushCurrent();
  return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal));
 }
 
@@ -23015,7 +23036,6 @@ function drawEOTFChart(gs,allSteps,readingMap){
    : meterChartPqEncodeNormalized(meterChartTargetLuminance(signal,targetPeak,Lb||0)),yTop),
   lum=>meterEotfScaleValue(meterGreyMeasuredEotfChartValue(lum||0,eotfMeasuredRef),yTop)
  );
- if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
  // Draw measured EOTF curve
  mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25); });
  ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
@@ -23059,7 +23079,6 @@ function drawGammaChart(gs,allSteps,readingMap){
   signal=>meterLuminanceScaleValue(meterChartTargetLuminance(signal,targetPeak,Lb||0),yTop),
   lum=>meterLuminanceScaleValue(lum||0,yTop)
  );
- if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
  mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25); });
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
  ctx.textAlign='left';
