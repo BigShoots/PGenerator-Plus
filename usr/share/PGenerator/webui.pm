@@ -21960,25 +21960,6 @@ function meterAnchorOriginPoint(points){
  return pts;
 }
 
-function meterSplitBlackOriginSegment(points){
- const segments=Array.isArray(points)?points:[];
- const split=[];
- segments.forEach(seg=>{
-  if(!Array.isArray(seg)||seg.length<2){
-   split.push(seg);
-   return;
-  }
-  const first=seg[0];
-  const second=seg[1];
-  if(first&&second&&Number(first[0])<=0.0001&&Number(second[0])>0.0001){
-   split.push([first],seg.slice(1));
-   return;
-  }
-  split.push(seg);
- });
- return split;
-}
-
 function meterGammaValueAnchorPoints(points){
  const pts=Array.isArray(points)?points.slice():[];
  // Gamma charts should start at the first real measured step rather than
@@ -22047,6 +22028,75 @@ function meterSeriesMeasuredSegments(steps,readingMap,pointBuilder){
  });
  if(current.length) segments.push(current);
  return segments;
+}
+
+function meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t){
+ if(!a||!b||typeof targetValueForSignal!=='function') return t;
+ const aSignal=Number(a.signal);
+ const bSignal=Number(b.signal);
+ const midSignal=Number(signal);
+ if(!Number.isFinite(aSignal)||!Number.isFinite(bSignal)||!Number.isFinite(midSignal)) return t;
+ const av=Number(targetValueForSignal(aSignal));
+ const bv=Number(targetValueForSignal(bSignal));
+ const mv=Number(targetValueForSignal(midSignal));
+ if(!Number.isFinite(av)||!Number.isFinite(bv)||!Number.isFinite(mv)||Math.abs(bv-av)<1e-12) return t;
+ return Math.max(0,Math.min(1,(mv-av)/(bv-av)));
+}
+
+function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSignal,scaleLuminance){
+ const list=Array.isArray(rows)?rows:[];
+ if(list.length<2) return list.map(row=>[row.x,row.y]);
+ const out=[[list[0].x,list[0].y]];
+ const maxPct=Math.max(1,Number(axisMax)||100);
+ for(let i=0;i<list.length-1;i++){
+  const a=list[i];
+  const b=list[i+1];
+  const spanPct=Math.abs((Number(b.x)||0)-(Number(a.x)||0))*maxPct;
+  const segments=Math.max(1,Math.min(80,Math.ceil(spanPct*6)));
+  for(let j=1;j<=segments;j++){
+   const t=j/segments;
+   if(j===segments){
+    out.push([b.x,b.y]);
+    continue;
+   }
+   const signal=(Number.isFinite(Number(a.signal))&&Number.isFinite(Number(b.signal)))
+    ? a.signal+(b.signal-a.signal)*t
+    : null;
+   const shaped=meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t);
+   const lum=(Number(a.luminance)||0)+((Number(b.luminance)||0)-(Number(a.luminance)||0))*shaped;
+   const x=(Number(a.x)||0)+((Number(b.x)||0)-(Number(a.x)||0))*t;
+   const y=typeof scaleLuminance==='function'?scaleLuminance(lum):(Number(a.y)||0)+((Number(b.y)||0)-(Number(a.y)||0))*shaped;
+   out.push([x,y]);
+  }
+ }
+ return out;
+}
+
+function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance){
+ const segments=[];
+ let current=[];
+ (steps||[]).forEach((step,idx)=>{
+  const reading=readingMap?readingMap[step.ire]:null;
+  if(!reading){
+   if(current.length) segments.push(current);
+   current=[];
+   return;
+  }
+  const lum=meterReadingLuminanceNits(reading);
+  if(!(lum!=null&&Number.isFinite(Number(lum))&&lum>=0)){
+   if(current.length) segments.push(current);
+   current=[];
+   return;
+  }
+  const stimulus=meterGreyChartStimulusIre(step);
+  const code=meterGreyChartTargetCode(step);
+  const signal=meterGreyTargetSignal(Number.isFinite(Number(stimulus))?Number(stimulus):meterGreyEotfLuminancePlotIre(step),code);
+  const x=meterGreyEotfLuminanceChartX(step,steps,idx,axisMax);
+  const y=typeof scaleLuminance==='function'?scaleLuminance(lum):lum;
+  current.push({x,y,luminance:Number(lum),signal});
+ });
+ if(current.length) segments.push(current);
+ return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal,scaleLuminance));
 }
 
 function meterGammaPlotAnchorStep(steps,idx){
@@ -22221,14 +22271,7 @@ function drawEOTFPreset(gsSteps){
   yLabel:(i,n)=>meterEotfAxisLabel(meterEotfUnscaleValue(i/n,yTop))
  });
  const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,0,yTop,'eotf',axisMax,plotSteps);
- drawDashedLine(ctx,chart,tgtPts,'#666');
- const pts=plotSteps.map((s,idx)=>{
-  const v=meterGreyEotfLuminanceChartX(s,plotSteps,idx,axisMax);
-  const code=meterGreyChartTargetCode(s);
-  const targetIre=meterGreyChartStimulusIre(s);
-  return [v,meterEotfScaleValue(meterGreyTargetEotfChartValue(targetIre,refPeak,0,code),yTop)];
- });
- drawDots(ctx,chart,pts,'#33333380',3);
+ drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
 }
 function drawGammaPreset(gsSteps){
  const ctx=getChartCtx('chartGamma');
@@ -22247,15 +22290,8 @@ function drawGammaPreset(gsSteps){
   yLabel:(i,n)=>meterLuminanceAxisLabel(meterLuminanceUnscaleValue(i/n,yTop))
  });
  const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,0,yTop,'luminance',axisMax,plotSteps);
- drawDashedLine(ctx,chart,tgtPts,'#666');
+ drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  drawGammaContrastLabel(ctx,chart,[]);
- const pts=plotSteps.map((s,idx)=>{
-  const v=meterGreyEotfLuminanceChartX(s,plotSteps,idx,axisMax);
-  const code=meterGreyChartTargetCode(s);
-  const targetIre=meterGreyChartStimulusIre(s);
-  return [v,meterLuminanceScaleValue(meterGreyTargetChartValue(targetIre,refPeak,0,code),yTop)];
- });
- drawDots(ctx,chart,pts,'#33333380',3);
 }
 
 function drawGammaLegend(ctx,chart,targetLabel,avgText){
@@ -22342,7 +22378,6 @@ function drawGammaValuePreset(gsSteps){
  });
  const tgtPtsAnchored=meterGammaValueAnchorPoints(tgtPts);
  if(tgtPtsAnchored.length>1) drawDashedLine(ctx,chart,tgtPtsAnchored,'#ffb74d');
- drawDots(ctx,chart,tgtPtsAnchored,'#ffb74d',3);
  drawGammaLegend(ctx,chart,targetLabel,'');
 }
 
@@ -22422,23 +22457,19 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2),
   rotateX:rotateX
  });
- const tgtPts=[],mPts=[],emptyPts=[];
+ const tgtPts=[],mPts=[];
  xSteps.forEach((step,idx)=>{
   const x=meterGammaChartX(step,xSteps,idx);
   const tg=targetMap[step.ire];
   if(tg!=null&&isFinite(tg)){
    const ty=Math.max(0,Math.min(1,(tg-yMin)/(yMax-yMin)));
    tgtPts.push([x,ty]);
-   if(gammaMap[step.ire]==null) emptyPts.push([x,ty]);
   }
   const mg=gammaMap[step.ire];
   if(mg!=null&&isFinite(mg)) mPts.push([x,Math.max(0,Math.min(1,(mg-yMin)/(yMax-yMin)))]);
  });
  if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
- drawDots(ctx,chart,emptyPts,'#6d6d6d80',3);
- drawDots(ctx,chart,tgtPts,'#ffb74d',2.5);
  if(mPts.length>1) drawLine(ctx,chart,mPts,'#7ecbff',2);
- drawDots(ctx,chart,mPts,'#7ecbff',3);
  // Optional per-channel gamma overlay (R/G/B from the cached
  // meterPerChannelGamma computed in drawAllCharts).
  const pcToggle=document.getElementById('meterPerChannelGamma');
@@ -22458,9 +22489,6 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   if(rPts.length>1) drawLine(ctx,chart,rPts,'#ff5555',1.5);
   if(gPts.length>1) drawLine(ctx,chart,gPts,'#55dd55',1.5);
   if(bPts.length>1) drawLine(ctx,chart,bPts,'#5588ff',1.5);
-  drawDots(ctx,chart,rPts,'#ff5555',2);
-  drawDots(ctx,chart,gPts,'#55dd55',2);
-  drawDots(ctx,chart,bPts,'#5588ff',2);
  }
  let avgText='';
  if(mPts.length>0){
@@ -22813,9 +22841,9 @@ function drawDots(ctx,chart,points,color,radius){
  });
 }
 
-function drawDashedLine(ctx,chart,points,color){
+function drawDashedLine(ctx,chart,points,color,width){
  ctx.setLineDash([4,4]);
- drawLine(ctx,chart,points,color,1);
+ drawLine(ctx,chart,points,color,width||1);
  ctx.setLineDash([]);
 }
 
@@ -22931,28 +22959,18 @@ function drawEOTFChart(gs,allSteps,readingMap){
   yLabel:(i,n)=>meterEotfAxisLabel(meterEotfUnscaleValue(i/n,yTop))
  });
  const tgtPts=meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf',axisMax,plotSteps);
- drawDashedLine(ctx,chart,tgtPts,'#666');
- if(plotSteps.length){
-  const emptyPts=[];
-  plotSteps.forEach((s,idx)=>{
-   if(readingMap[s.ire]) return;
-   const v=meterGreyEotfLuminanceChartX(s,plotSteps,idx,axisMax);
-   const code=meterGreyChartTargetCode(s);
-   const targetIre=meterGreyChartStimulusIre(s);
-   emptyPts.push([v,meterEotfScaleValue(meterGreyTargetEotfChartValue(targetIre,targetPeak,Lb,code),yTop)]);
-  });
-  drawDots(ctx,chart,emptyPts,'#33333380',3);
- }
+ drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  const measureSteps=plotSteps.length?plotSteps:valid;
- let mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
-  meterGreyEotfLuminanceChartX(step,measureSteps,idx,axisMax),
-  meterEotfScaleValue(meterGreyMeasuredEotfChartValue(reading.luminance||0,eotfMeasuredRef),yTop)
- ]);
+ let mSegments=meterTargetShapedMeasuredSegments(
+  measureSteps,
+  readingMap,
+  axisMax,
+  signal=>meterChartPqEncodeNormalized(meterChartTargetLuminance(signal,targetPeak,Lb||0)),
+  lum=>meterEotfScaleValue(meterGreyMeasuredEotfChartValue(lum||0,eotfMeasuredRef),yTop)
+ );
  if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
- mSegments=meterSplitBlackOriginSegment(mSegments);
  // Draw measured EOTF curve
- mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',2); });
- drawDots(ctx,chart,mSegments.flat(),'#ffeb3b',3);
+ mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25); });
  ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
@@ -22983,27 +23001,19 @@ function drawGammaChart(gs,allSteps,readingMap){
  // In DV absolute, the luminance chart should track the measured absolute-white
  // target curve rather than the mastering-peak label used elsewhere.
  const tgtPts=meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'luminance',axisMax,plotSteps);
- drawDashedLine(ctx,chart,tgtPts,'#666');
+ drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  drawGammaContrastLabel(ctx,chart,(Array.isArray(meterReadings)&&meterReadings.length)?meterReadings:gs);
- if(plotSteps.length){
-  plotSteps.forEach((s,idx)=>{
-   if(readingMap[s.ire]) return;
-   const v=meterGreyEotfLuminanceChartX(s,plotSteps,idx,axisMax);
-   const code=meterGreyChartTargetCode(s);
-   const targetIre=meterGreyChartStimulusIre(s);
-   drawDots(ctx,chart,[[v,meterLuminanceScaleValue(meterGreyTargetChartValue(targetIre,targetPeak,Lb,code),yTop)]],'#33333380',3);
-  });
- }
  const validG=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
  const measureSteps=plotSteps.length?plotSteps:validG;
- let mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
-  meterGreyEotfLuminanceChartX(step,measureSteps,idx,axisMax),
-  meterLuminanceScaleValue(reading.luminance||0,yTop)
- ]);
+ let mSegments=meterTargetShapedMeasuredSegments(
+  measureSteps,
+  readingMap,
+  axisMax,
+  signal=>meterChartTargetLuminance(signal,targetPeak,Lb||0),
+  lum=>meterLuminanceScaleValue(lum||0,yTop)
+ );
  if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
- mSegments=meterSplitBlackOriginSegment(mSegments);
- mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',2); });
- drawDots(ctx,chart,mSegments.flat(),'#ffeb3b',3);
+ mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25); });
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
  ctx.textAlign='left';
  ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
