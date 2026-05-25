@@ -20089,27 +20089,128 @@ async function meterFullAutoCalStartPost3dSeriesAdjustment(lutStatus,post3dPostC
 }
 
 async function meterFullAutoCalFinishPost3dSeriesAdjustment(adjustStatus){
- try{
-  meterFullAutoCalMarkCompletionHandled(adjustStatus);
-  meterAutoCalRunning=false;
+	 try{
+	  meterFullAutoCalMarkCompletionHandled(adjustStatus);
+	  meterAutoCalRunning=false;
   meterAutoCalPhase='';
   meterAutoCalPendingConfig=null;
-  meterActionPending=false;
-  meterAutoCalSetOverlay(true,{phase:'running',current_name:'Full Auto Cal: post-adjust LG 26pt read',message:'Reading committed greyscale after estimated DDC corrections.',total_steps:26,current_step:0});
-  const afterSnap=await meterFullAutoCalCapturePost3dLg26Series('after','Post-adjust LG 26pt verification');
-  meterFullAutoCalComplete({
-   ...(adjustStatus||{}),
-   full_autocal_post_series_adjust:true,
-   post_series_before:meterFullAutoCalReportData&&meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.post_3d_series_adjust?meterFullAutoCalReportData.stages.post_3d_series_adjust.before:null,
-   post_series_after:afterSnap
-  });
+	  meterActionPending=false;
+	  meterAutoCalSetOverlay(true,{phase:'running',current_name:'Full Auto Cal: post-adjust LG 26pt read',message:'Reading committed greyscale after estimated DDC corrections.',total_steps:26,current_step:0});
+	  const afterSnap=await meterFullAutoCalCapturePost3dLg26Series('after','Post-adjust LG 26pt verification');
+	  const revertStatus=await meterFullAutoCalRunPostSeriesRevert(adjustStatus,afterSnap);
+	  meterFullAutoCalComplete({
+	   ...(adjustStatus||{}),
+	   full_autocal_post_series_adjust:true,
+	   post_series_revert:revertStatus&&revertStatus.post_cal_series_revert?revertStatus.post_cal_series_revert:null,
+	   post_series_before:meterFullAutoCalReportData&&meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.post_3d_series_adjust?meterFullAutoCalReportData.stages.post_3d_series_adjust.before:null,
+	   post_series_after:afterSnap
+	  });
   return true;
  }catch(e){
   meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal post-series verification failed',true);
   return false;
  }finally{
   meterUpdateReadButtons();
+	 }
+}
+
+async function meterFullAutoCalRunPostSeriesRevert(adjustStatus,afterSnap){
+ const adjustment=adjustStatus&&adjustStatus.post_cal_series_adjustment;
+ if(!adjustment||!Array.isArray(adjustment.changes)||!adjustment.changes.length) return null;
+ if(!afterSnap||!Array.isArray(afterSnap.readings)||!afterSnap.readings.length) return null;
+ meterAutoCalSetOverlay(true,{phase:'running',current_name:'Full Auto Cal: post-adjust failsafe',message:'Checking the existing post-adjust read for worse DDC corrections.',total_steps:adjustment.changes.length,current_step:0});
+ meterActiveSeriesType='greyscale';
+ meterActiveSeriesPoints=26;
+ meterActiveSeriesKey='greyscale-26';
+ meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+ meterSeriesSteps=meterBuildStepsJS('greyscale',26);
+ const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported);
+ if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available for post-adjust failsafe');
+ const whiteStep=meterAutoCalWhiteStep();
+ if(!whiteStep) throw new Error('100% white is required before post-adjust failsafe can start');
+ const target=meterFullAutoCalTouchupTargetDelta();
+ const targetY=meterFullAutoCalTouchupTargetY();
+ const setupY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.setupY);
+ const headroomY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY);
+ const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
+ const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
+ const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
+ const whiteKey=meterStepNameKey(whiteStep);
+ const autocalSteps=[whiteStep,...(meterSeriesSteps||[]).filter(step=>meterStepNameKey(step)!==whiteKey)];
+ const body=JSON.stringify(meterMeasurementSignalContext({
+   type:'greyscale',
+   points:26,
+   display_type:dtype,
+   delay_ms:meterDelayMs(),
+   patch_size:getMeterPatchSize(),
+   signal_range:getVal('rgb_quant_range'),
+   pattern_signal_range:patternSignalRange||undefined,
+   lg_greyscale_21:false,
+   lg_autocal_26:true,
+   lg_autocal_26_full_ddc_spine:true,
+   lg_autocal_26_anchor_predrive:false,
+   lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
+   patch_insert:document.getElementById('meterPatchInsert').checked,
+   target_delta_e:target,
+   delta_e_formula:'deitp',
+   target_luminance:targetY,
+   setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
+   headroom_target_luminance:(Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
+   target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+   target_white:{x:wp.x,y:wp.y},
+   picture_mode:meterLgPictureModeValue(),
+   ...meterLgAutoCalBodyLumaBiasPayload(dtype),
+   force_ddc_white_balance:true,
+   restore_factory_levels:false,
+   reset_ddc_baseline:false,
+   refresh_rate:getMeterRefreshRate()||undefined,
+   require_device_ready:meterSelectedMeasurementRequiresReady(),
+   full_autocal_post_series_revert:true,
+   full_autocal_post_3d_polish:true,
+   full_workflow:true,
+   full_autocal_run_id:meterFullAutoCalRunId||undefined,
+   full_autocal_phase:'post-3d-polish',
+   post_cal_series_after_readings:afterSnap.readings,
+   post_cal_series_adjustment_status:adjustment,
+   post_commit_polish:false,
+   post_commit_verify:false,
+   post_commit_body_polish:false,
+   post_commit_body_verify:false,
+   post_commit_final_all_level_verify:false,
+   post_commit_final_top_window:false,
+   steps:autocalSteps
+  }));
+ let r=null;
+ for(let attempt=0;attempt<5;attempt++){
+  r=await fetchJSON('/api/meter/lg-autocal',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body,
+   _timeoutMs:10000
+  });
+  if(r&&r.status==='started') break;
+  if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
+  await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
  }
+ if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start post-adjust failsafe');
+ const start=Date.now();
+ let last=null;
+ while(Date.now()-start<180000){
+  const status=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:8000});
+  if(status) last=status;
+  if(status&&(status.status==='complete'||status.status==='cancelled'||status.status==='error')){
+   if(status.status!=='complete') throw new Error((status&&status.message)||(status&&status.current_name)||'Post-adjust failsafe failed');
+   meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+   if(meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.post_3d_series_adjust){
+    meterFullAutoCalReportData.stages.post_3d_series_adjust.revert={status:'complete',completed_at:Date.now(),snapshot:status.post_cal_series_revert||null};
+    meterFullAutoCalSaveReportData();
+    meterFullAutoCalArchiveReportData('post_3d_series_adjust-revert-complete',{reverted:status.post_cal_series_revert&&Array.isArray(status.post_cal_series_revert.reverted)?status.post_cal_series_revert.reverted.length:0});
+   }
+   return status;
+  }
+  await meterFullAutoCalSleep(750);
+ }
+ throw new Error((last&&last.current_name)||'Timed out waiting for post-adjust failsafe');
 }
 
 async function meterFullAutoCalStartPost3dPolish(lutStatus){
