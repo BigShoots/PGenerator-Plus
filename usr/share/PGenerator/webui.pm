@@ -11815,6 +11815,20 @@ function targetChromaticityXY(r,g,b){
  return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
 }
 
+function meterGreyChartTargetXYZForReading(reading){
+ const wp=meterTargetWhitePoint();
+ let refWhite=null;
+ try{ refWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
+ const refY=refWhite?meterReadingLuminanceNits(refWhite):null;
+ const peak=meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits());
+ const black=meterBlackReadingY();
+ const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
+ const ire=meterReadingAnalysisIre(reading)||(step?meterGreyChartStimulusIre(step):null);
+ const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
+ const Y=meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code);
+ return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
+}
+
 function meterTargetXYZForReading(reading){
 	 if(!reading) return {X:0,Y:0,Z:0};
 	 const absX=Number(reading.target_X);
@@ -11868,20 +11882,8 @@ function meterTargetXYZForReading(reading){
   }
   return meterSaturationTargetXYZ(satInfo.color,satInfo.sat);
  }
- if(meterReadingIsGreyscale(reading)){
- const wp=meterTargetWhitePoint();
-  let refWhite=null;
-  try{ refWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
-  const refY=refWhite?meterReadingLuminanceNits(refWhite):null;
-  const peak=meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits());
-  const black=meterBlackReadingY();
-  const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
-  const ire=meterReadingAnalysisIre(reading)||(step?meterGreyChartStimulusIre(step):null);
-  const code=(reading.r_code!=null)?reading.r_code:(reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
-  const Y=meterGreyTargetLuminance(ire!=null?ire:(reading.ire||0),peak,black||0,code);
-  return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
- }
- return targetColorXYZAbs(reading.r_code,reading.g_code,reading.b_code);
+ if(meterReadingIsGreyscale(reading)) return meterGreyChartTargetXYZForReading(reading);
+	 return targetColorXYZAbs(reading.r_code,reading.g_code,reading.b_code);
 }
 
 function meterTargetChromaticityForReading(reading){
@@ -11919,6 +11921,19 @@ function meterColorDeltaTargetXYZ(reading,inclLum){
  }
  const scale=measured.Y/xyz.Y;
  return {X:xyz.X*scale,Y:measured.Y,Z:xyz.Z*scale};
+}
+
+function meterGreyDeltaTargetXYZ(reading,inclLum){
+ if(!(meterChartIsDv()&&meterReadingIsGreyscale(reading))) return meterColorDeltaTargetXYZ(reading,inclLum);
+ const target=meterGreyChartTargetXYZForReading(reading);
+ const measured=meterReadingXYZ(reading);
+ if(inclLum||!measured||!(measured.Y>0)) return target;
+ if(!(target.Y>0)){
+  const wp=meterTargetWhitePoint();
+  return {X:wp.X*measured.Y,Y:measured.Y,Z:wp.Z*measured.Y};
+ }
+ const scale=measured.Y/target.Y;
+ return {X:target.X*scale,Y:measured.Y,Z:target.Z*scale};
 }
 
 function meterColorIncludeLum(){
@@ -12025,7 +12040,7 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  let wR=meterColorLabWhite();
  const _gw=(gwWeight>0&&gwWeight<=1)?gwWeight:1;
  if(_gw<1) wR={X:wR.X*_gw,Y:wR.Y*_gw,Z:wR.Z*_gw};
- const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
+ const target=meterGreyDeltaTargetXYZ(reading, mode==='eotf');
  if(mode==='absolute'){
   const stepY=Math.max(xyz.Y||0,target.Y||0,0);
   if(stepY>0 && wR.Y>0){
