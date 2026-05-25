@@ -3661,17 +3661,19 @@ void ofxRPI4Window::updateDoVi_Infoframe(int enable, int dv_interface)
 		if (blob_id)
 			drmModeDestroyPropertyBlob(device, blob_id);
 		blob_id = 0;	
-		if (!enable && !dv_interface) {
+		if (!enable) {
 			first_req = 1; // allocate for atomic requests
 			last_req = 1; // commit previous atomic requests	
 			drm_mode_atomic_set_property(device, req, "DOVI_OUTPUT_METADATA", connectorId, prop_id, blob_id, prop, DRM_MODE_ATOMIC_ALLOW_MODESET);
 			return; 
 		}
-		struct dovi_output_metadata dovi;
-		if (dv_interface == 1) 
-			dovi.oui = 0x000C03;
-		else if (dv_interface == 2)	
+		struct dovi_output_metadata dovi = {};
+		if (dv_interface == 2)
 			dovi.oui = 0x00D046;
+		else {
+			dv_interface = 1;
+			dovi.oui = 0x000C03;
+		}
 		dovi.dv_status = enable; //set to 1 to enable dovi infoframe 
 		dovi.dv_interface = dv_interface; 
 		dovi.backlight_metadata = 0;
@@ -3969,6 +3971,4 @@ ofxRPI4Window::~ofxRPI4Window()
     drmDropMaster(device);
     ::close(device); 
 }
-
-
 
