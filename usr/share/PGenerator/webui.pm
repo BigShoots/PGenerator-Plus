@@ -6591,8 +6591,9 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field > input[type="text"],
 #meterSettingsGrid .field > input[type="number"]{width:100%;min-height:34px}
 #meterSettingsGrid .field-display{width:170px;max-width:100%}
-#meterSettingsGrid .field-gamut{width:148px}
-#meterSettingsGrid .field-gamut .field-whitepoint{display:none;margin-top:10px;width:240px}
+#meterSettingsGrid .field-gamut{width:360px;max-width:100%}
+#meterSettingsGrid .field-gamut > select{width:148px;max-width:100%}
+#meterSettingsGrid .field-gamut .field-whitepoint{display:none;margin-top:10px;width:100%}
 #meterSettingsGrid .field-gamut .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
 #meterSettingsGrid .field-hdr{width:auto}
@@ -6624,8 +6625,9 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .custom-ccss-panel-row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
 .custom-ccss-panel-copy{min-width:0;flex:1 1 180px}
 .custom-ccss-panel-btn{flex:0 1 auto;max-width:100%;white-space:normal;justify-content:center;align-self:flex-start}
-.meter-whitepoint-row{display:flex;gap:6px;align-items:center;max-width:240px}
-.meter-whitepoint-row input{flex:1 1 0}
+.meter-whitepoint-row{display:flex;gap:6px;align-items:center;max-width:360px;flex-wrap:wrap}
+.meter-whitepoint-row input{flex:1 1 76px;min-width:0}
+.meter-whitepoint-row .btn{flex:0 0 auto;white-space:nowrap}
 .meter-matrix-field{margin-top:32px;max-width:240px}
 .meter-matrix-fields{display:none;margin-top:8px}
 .meter-matrix-fields.visible{display:block}
@@ -7096,6 +7098,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="meter-whitepoint-row">
      <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
      <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
+     <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
     </div>
    </div>
    <div class="meter-matrix-field">
@@ -10570,6 +10573,44 @@ function meterTargetWhitePoint(){
  if(!(x>0) || !(y>0) || x+y>=1) return {...D65};
  const xyz=xyToUnitXyz(x,y);
  return {x,y,X:xyz.X,Y:1,Z:xyz.Z};
+}
+
+function meterMeasuredWhiteChromaticity(reading){
+ const valid=(x,y)=>Number.isFinite(x)&&Number.isFinite(y)&&x>0&&y>0&&x+y<1;
+ if(!reading||typeof reading!=='object') return null;
+ const directX=Number(reading.x);
+ const directY=Number(reading.y);
+ if(valid(directX,directY)) return {x:directX,y:directY};
+ const X=Number(reading.X);
+ const Y=Number(reading.Y);
+ const Z=Number(reading.Z);
+ const sum=X+Y+Z;
+ if(Number.isFinite(X)&&Number.isFinite(Y)&&Number.isFinite(Z)&&sum>0){
+  const x=X/sum;
+  const y=Y/sum;
+  if(valid(x,y)) return {x,y};
+ }
+ return null;
+}
+
+function meterUseMeasuredWhiteTarget(){
+ const xy=meterMeasuredWhiteChromaticity(meterFindMeasuredWhiteReading());
+ if(!xy){
+  toast('Read a white patch first.',true);
+  return false;
+ }
+ const xEl=document.getElementById('meterTargetWhiteX');
+ const yEl=document.getElementById('meterTargetWhiteY');
+ if(!xEl||!yEl) return false;
+ xEl.value=xy.x.toFixed(4);
+ yEl.value=xy.y.toFixed(4);
+ const gamutEl=document.getElementById('meterTargetGamut');
+ if(gamutEl&&String(gamutEl.value||'').toLowerCase()!=='customd65') gamutEl.value='customd65';
+ updateMeterTargetWhitepointVisibility();
+ saveMeterSettings();
+ meterOnGreyRefChange();
+ meterRefreshActiveSeriesCharts();
+ return true;
 }
 
 const GAMUT_PRESETS=__PG_GAMUT_PRESETS__;
