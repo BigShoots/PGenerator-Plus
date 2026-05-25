@@ -13171,7 +13171,6 @@ function meterGreyTargetChartPoints(steps,Lw,Lb,scale){
 
 function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
  if(mode!=='luminance' && mode!=='eotf') return null;
- if(meterChartIsDv()) return null;
  const stepList=Array.isArray(steps)?steps:[];
  const end=Math.max(1,Number(maxPct)||100);
  const top=Math.max(1e-6,yTop||1);
