@@ -173,22 +173,48 @@ print(steps[$idx].get('$field',''))
 }
 
 build_step_reading_json() {
- local idx="$1" parsed_json="${2:-{}}"
- STEP_INDEX="$idx" PARSED_JSON="$parsed_json" STEPS_FILE_PATH="$STEPS_FILE" python - <<'PY'
-import json, os
+ local idx="$1" parsed_json="${2:-}"
+ [[ -n "$parsed_json" ]] || parsed_json="{}"
+ python - "$idx" "$STEPS_FILE" "$parsed_json" <<'PY'
+import json, math, sys
 
 try:
-    reading = json.loads(os.environ.get("PARSED_JSON") or "{}")
-except Exception:
-    reading = {}
-
-try:
-    index = int(os.environ.get("STEP_INDEX", "0"))
+    index = int(sys.argv[1])
 except Exception:
     index = 0
 
 try:
-    with open(os.environ["STEPS_FILE_PATH"]) as fh:
+    steps_file = sys.argv[2]
+except Exception:
+    steps_file = ""
+
+try:
+    reading = json.loads(sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "{}")
+except Exception:
+    sys.exit(1)
+
+if not isinstance(reading, dict):
+    sys.exit(1)
+
+def finite_number(value):
+    try:
+        value = float(value)
+    except Exception:
+        return False
+    return math.isfinite(value) if hasattr(math, "isfinite") else value == value and value not in (float("inf"), float("-inf"))
+
+has_measurement = (
+    finite_number(reading.get("X")) and
+    finite_number(reading.get("Y")) and
+    finite_number(reading.get("Z")) and
+    finite_number(reading.get("luminance"))
+)
+
+if not has_measurement and "error" not in reading:
+    sys.exit(1)
+
+try:
+    with open(steps_file) as fh:
         steps = json.load(fh)
     step = steps[index] if 0 <= index < len(steps) else {}
 except Exception:
@@ -221,6 +247,14 @@ for field in (
 
 print(json.dumps(reading, separators=(",", ":")))
 PY
+}
+
+is_number() {
+ [[ "$1" =~ ^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$ ]]
+}
+
+number_token() {
+ printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[^0-9.eE+-].*$//'
 }
 
 float_le() {
@@ -512,14 +546,43 @@ parse_latest_result() {
  result_line=$(echo "$clean_out" | grep "Result is XYZ:" | tail -1)
  if [[ -n "$result_line" ]]; then
   local xyz_part yxy_part X Y Z lum x_chr y_chr cct ts
-  xyz_part=$(echo "$result_line" | sed 's/.*XYZ:\s*//' | sed 's/,.*//')
-  yxy_part=$(echo "$result_line" | sed 's/.*Yxy:\s*//')
+  xyz_part=$(echo "$result_line" | sed 's/.*XYZ:[[:space:]]*//' | sed 's/,.*//')
   X=$(echo "$xyz_part" | awk '{print $1}')
   Y=$(echo "$xyz_part" | awk '{print $2}')
   Z=$(echo "$xyz_part" | awk '{print $3}')
-  lum=$(echo "$yxy_part" | awk '{print $1}')
-  x_chr=$(echo "$yxy_part" | awk '{print $2}')
-  y_chr=$(echo "$yxy_part" | awk '{print $3}')
+  X=$(number_token "$X")
+  Y=$(number_token "$Y")
+  Z=$(number_token "$Z")
+  if [[ "$result_line" == *"Yxy:"* ]]; then
+   yxy_part=$(echo "$result_line" | sed 's/.*Yxy:[[:space:]]*//')
+   lum=$(echo "$yxy_part" | awk '{print $1}')
+   x_chr=$(echo "$yxy_part" | awk '{print $2}')
+   y_chr=$(echo "$yxy_part" | awk '{print $3}')
+   lum=$(number_token "$lum")
+   x_chr=$(number_token "$x_chr")
+   y_chr=$(number_token "$y_chr")
+  fi
+  if ! is_number "$X" || ! is_number "$Y" || ! is_number "$Z"; then
+   echo "[$(date '+%H:%M:%S.%3N')] parse failed: missing XYZ result=$(printf '%s' "$result_line" | cut -c1-240)" >> /tmp/meter_series_debug.log
+   return 1
+  fi
+  if ! is_number "$lum" || ! is_number "$x_chr" || ! is_number "$y_chr"; then
+   # Some spotread builds omit Yxy in continuous mode. Derive it from XYZ so
+   # valid meter reads still plot instead of becoming metadata-only entries.
+   local derived
+   derived=$(awk -v X="$X" -v Y="$Y" -v Z="$Z" 'BEGIN {
+    sum = X + Y + Z
+    if (sum > 0) printf "%.10g %.10g %.10g", Y, X / sum, Y / sum
+    else printf "%.10g 0 0", Y
+   }')
+   lum=$(echo "$derived" | awk '{print $1}')
+   x_chr=$(echo "$derived" | awk '{print $2}')
+   y_chr=$(echo "$derived" | awk '{print $3}')
+  fi
+  if ! is_number "$lum" || ! is_number "$x_chr" || ! is_number "$y_chr"; then
+   echo "[$(date '+%H:%M:%S.%3N')] parse failed: missing Yxy result=$(printf '%s' "$result_line" | cut -c1-240)" >> /tmp/meter_series_debug.log
+   return 1
+  fi
 
   cct=0
   if [[ -n "$x_chr" && -n "$y_chr" && "$y_chr" != "0.000000" ]]; then
