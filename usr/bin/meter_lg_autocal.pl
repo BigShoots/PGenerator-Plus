@@ -9455,7 +9455,7 @@ sub post_cal_series_revert_worse_adjustments {
  return ($picture,"Post-cal revert requires LG 26pt steps") if(ref($steps) ne "ARRAY" || !@{$steps});
  return ($picture,"Post-cal revert requires current LG DDC arrays") if(ref($arrays) ne "HASH");
  my $after_readings=(ref($config) eq "HASH" && ref($config->{"post_cal_series_after_readings"}) eq "ARRAY") ? $config->{"post_cal_series_after_readings"} : [];
- return ($picture,"Post-cal revert requires the post-adjust series read") if(!@{$after_readings});
+ return ($picture,"Magic Wand failsafe requires the verification series read") if(!@{$after_readings});
  my $adjustment=(ref($config) eq "HASH" && ref($config->{"post_cal_series_adjustment_status"}) eq "HASH") ? $config->{"post_cal_series_adjustment_status"} : {};
  my $changes=(ref($adjustment->{"changes"}) eq "ARRAY") ? $adjustment->{"changes"} : [];
  return ($picture,"Post-cal revert requires adjustment change metadata") if(!@{$changes});
@@ -10744,9 +10744,9 @@ eval {
 			   my $target=ddc_target_for_step($step);
 			   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
 			  }
-			  $state->{"current_name"}="Post-cal correction failsafe";
-			  $state->{"phase"}="analyzing";
-			  $state->{"message"}="Checking post-adjust series for worse DDC corrections";
+				  $state->{"current_name"}="Magic Wand failsafe";
+				  $state->{"phase"}="analyzing";
+				  $state->{"message"}="Checking Magic Wand results for worse DDC corrections";
 			  $state->{"full_autocal_post_series_revert"}=JSON::PP::true;
 			  write_state($state);
 			  my $revert_error=undef;
@@ -10769,9 +10769,9 @@ eval {
 		   my $target=ddc_target_for_step($step);
 		   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
 		  }
-		  $state->{"current_name"}="Post-cal series adjustment";
-		  $state->{"phase"}="analyzing";
-		  $state->{"message"}="Estimating committed greyscale DDC corrections from post-cal series";
+			  $state->{"current_name"}="Magic Wand";
+			  $state->{"phase"}="analyzing";
+			  $state->{"message"}="Estimating committed greyscale DDC corrections from the Magic Wand read";
 		  $state->{"full_autocal_post_series_adjust"}=JSON::PP::true;
 		  write_state($state);
 		  my $adjust_error=undef;
@@ -10791,7 +10791,7 @@ eval {
 		  die $adjust_error if($adjust_error && $adjust_error ne "cancelled");
 			 } elsif(autocal_config_is_post_3d_polish($config)) {
 			  if(!post_3d_committed_polish_requested($config)) {
-			   $state->{"current_name"}="Post-3D committed polish skipped";
+				   $state->{"current_name"}="Committed polish skipped";
 			   $state->{"phase"}="complete";
 			   $state->{"message"}="Committed polish disabled by Full AutoCal options";
 			   $state->{"post_3d_committed_polish"}=JSON::PP::false;
@@ -10802,7 +10802,7 @@ eval {
 			   my $target=ddc_target_for_step($step);
 			   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
 			  }
-			  $state->{"current_name"}="Post-3D committed polish";
+				  $state->{"current_name"}="Committed polish";
 		  $state->{"phase"}="reading";
 		  $state->{"message"}="Polishing committed greyscale state after 3D LUT";
 		  $state->{"post_3d_committed_polish"}=JSON::PP::true;
