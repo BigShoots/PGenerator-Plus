@@ -2126,18 +2126,27 @@ function lgSchedulePictureModeRefresh(force){
  },80);
 }
 
+function lgClearPictureModeForSignalChange(){
+ lgPictureModeValue='';
+ lgPictureModeSignalMode=lgSignalModeKey();
+ lgDisplayControlInvalidate();
+ lgPopulatePictureModeSelect('');
+}
+
+function lgRefreshPictureModeAfterOutputApply(){
+ if(!lgDisplayControlConnected()) return;
+ lgClearPictureModeForSignalChange();
+ [250,1500,3500,6500].forEach(delay=>{
+  setTimeout(()=>lgRefreshPictureMode(true),delay);
+ });
+}
+
 function lgBindDisplayModeControl(){
  const signal=document.getElementById('signal_mode');
  if(signal&&!signal.dataset.lgPictureModeBound){
   signal.dataset.lgPictureModeBound='1';
   signal.addEventListener('change',()=>{
-   lgPictureModeValue='';
-   lgPictureModeSignalMode=lgSignalModeKey();
-   lgDisplayControlInvalidate();
-   lgPopulatePictureModeSelect('');
-   if(window.lgStatusState&&(window.lgStatusState.paired||window.lgStatusState.clientKeyPresent)){
-    setTimeout(()=>lgRefreshPictureMode(true),1200);
-   }
+   lgClearPictureModeForSignalChange();
   });
  }
  lgPopulatePictureModeSelect(lgPictureModeValue);
@@ -2682,8 +2691,12 @@ async function lgRefreshPictureMode(force){
    const mode=r.picture_settings.pictureMode||'';
    lgPictureModeValue=mode;
    lgPictureModeSignalMode=signal;
-   if(mode) lgRememberPictureMode(mode,signal);
-  }
+   if(mode){
+    lgRememberPictureMode(mode,signal);
+    lgDisplayControlInvalidate();
+    setTimeout(()=>lgDisplayControlRefresh(true),650);
+   }
+	  }
  }catch(e){
 	 }finally{
 	  lgPictureModePending=false;
