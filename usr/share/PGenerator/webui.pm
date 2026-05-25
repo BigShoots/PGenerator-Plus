@@ -4606,6 +4606,12 @@ sub webui_apply_config (@) {
     return wantarray ? ($result,0) : $result;
    }
   }
+ } else {
+  $changes{"dv_status"}="0";
+  $changes{"is_ll_dovi"}="0";
+  $changes{"is_std_dovi"}="0";
+  $changes{"dv_interface"}="0";
+  $changes{"dv_metadata"}="0";
  }
  my $effective_color_format=(defined $changes{"color_format"} && $changes{"color_format"} ne "") ? int($changes{"color_format"}) : int($pgenerator_conf{"color_format"} || 0);
  if($effective_color_format == 2) {
@@ -9292,10 +9298,11 @@ async function applySettings(){
  };
  if(sm==='sdr'){
   Object.assign(changes,{is_sdr:'1',is_hdr:'0',eotf:'0',
-   is_ll_dovi:'0',is_std_dovi:'0',dv_status:'0',dv_metadata:'0'});
+   primaries:'0',is_ll_dovi:'0',is_std_dovi:'0',dv_status:'0',
+   dv_interface:'0',dv_metadata:'0'});
  }else if(sm==='hdr10'||sm==='hlg'){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
-   is_ll_dovi:'0',is_std_dovi:'0',dv_status:'0',dv_metadata:'0',
+   is_ll_dovi:'0',is_std_dovi:'0',dv_status:'0',dv_interface:'0',dv_metadata:'0',
    eotf:getVal('eotf'),primaries:getVal('primaries'),
    max_luma:meterHdrMetadataFieldValue('max_luma','hdr10'),
    min_luma:meterHdrMetadataFieldValue('min_luma','hdr10'),
