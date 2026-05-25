@@ -456,6 +456,7 @@ DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 FIRST_STEP_EXTRA_SEC=2
 FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
+DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=5
 ZERO_READ_RETRIES=2
 
 daemon_elapsed_sec() {
@@ -483,6 +484,13 @@ series_uses_initial_white_reference() {
 }
 
 series_requires_final_white_refresh() {
+ [[ "$SERIES_ID" == greyscale_* ]] || return 1
+ [[ "$SIGNAL_MODE" == "dv" ]] && return 1
+ (( TOTAL > 2 ))
+}
+
+series_uses_first_white_warmup() {
+ [[ "$SIGNAL_MODE" == "dv" ]] || return 1
  [[ "$SERIES_ID" == greyscale_* ]] || return 1
  (( TOTAL > 2 ))
 }
@@ -943,13 +951,17 @@ EOJSON
  # Display pattern
 	 post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 
- # Right after a PGenerator restart, the first DV white often reads far too
- # low on the first pass even though an immediate rerun is correct. Give that
- # very first 100% step one extra warm-up settle while the daemon is still
- # freshly started, without slowing steady-state runs.
- if (( i == 0 )) && [[ "$IRE" == "100" ]] && should_apply_fresh_dv_first_white_warmup; then
-  sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
+ # DV greyscale derives chart/patch targets from the first 100% read. Warm
+ # that first white in place and do not replace it with a different final
+ # read after the sweep.
+ if (( i == 0 )) && [[ "$IRE" == "100" ]]; then
+  if series_uses_first_white_warmup; then
+   sleep "$DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC"
 	  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+  elif should_apply_fresh_dv_first_white_warmup; then
+   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
+	  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+  fi
  fi
 
 	 # Settle delay — use the user-configured value by default, but allow
@@ -1143,9 +1155,10 @@ EOJSON
 EOJSON
 done
 
-# Non-2pt greyscale uses the first 100% read as the live white reference while
-# the sweep is running, then refreshes white once more at the end so the saved
-# 100% result reflects the warmed-up display.
+# Non-2pt SDR/HDR greyscale uses the first 100% read as the live white reference
+# while the sweep is running, then refreshes white once more at the end so the
+# saved 100% result reflects the warmed-up display. DV skips this because
+# Absolute mode rewrites patch codes from the first 100% Y.
 if series_requires_final_white_refresh && (( TOTAL > 0 )); then
 	FIRST_R=$(get_step_field 0 r)
 	FIRST_G=$(get_step_field 0 g)
