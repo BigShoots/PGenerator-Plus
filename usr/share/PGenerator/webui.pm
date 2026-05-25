@@ -12241,9 +12241,13 @@ function meterReadingIsAutoCalReferenceOnly(item){
 }
 
 function meterLgAutoCalChartReferenceWhite(item){
- if(!item||meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
+ if(!item||meterActiveSeriesType!=='greyscale') return false;
  const plotIre=meterReadingPlotIre(item);
  const ire=Number(plotIre!=null?plotIre:item.ire);
+ if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
+  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
+ }
+ if(!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
 }
 
@@ -21944,6 +21948,7 @@ function meterFilterEotfLuminanceChartItems(items){
  const list=Array.isArray(items)?items:[];
  const maxIre=meterEotfLuminanceAxisMax(list);
  return list.filter(item=>{
+  if(typeof meterLgAutoCalChartReferenceWhite==='function'&&meterLgAutoCalChartReferenceWhite(item)) return false;
   const ire=meterGreyEotfLuminancePlotIre(item);
   return Number.isFinite(ire)&&ire<=maxIre+0.001;
  });
@@ -21953,6 +21958,25 @@ function meterAnchorOriginPoint(points){
  const pts=Array.isArray(points)?points.slice():[];
  if(!pts.length || pts[0][0] > 0.0001) pts.unshift([0,0]);
  return pts;
+}
+
+function meterSplitBlackOriginSegment(points){
+ const segments=Array.isArray(points)?points:[];
+ const split=[];
+ segments.forEach(seg=>{
+  if(!Array.isArray(seg)||seg.length<2){
+   split.push(seg);
+   return;
+  }
+  const first=seg[0];
+  const second=seg[1];
+  if(first&&second&&Number(first[0])<=0.0001&&Number(second[0])>0.0001){
+   split.push([first],seg.slice(1));
+   return;
+  }
+  split.push(seg);
+ });
+ return split;
 }
 
 function meterGammaValueAnchorPoints(points){
@@ -22920,11 +22944,12 @@ function drawEOTFChart(gs,allSteps,readingMap){
   drawDots(ctx,chart,emptyPts,'#33333380',3);
  }
  const measureSteps=plotSteps.length?plotSteps:valid;
- const mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
+ let mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
   meterGreyEotfLuminanceChartX(step,measureSteps,idx,axisMax),
   meterEotfScaleValue(meterGreyMeasuredEotfChartValue(reading.luminance||0,eotfMeasuredRef),yTop)
  ]);
  if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
+ mSegments=meterSplitBlackOriginSegment(mSegments);
  // Draw measured EOTF curve
  mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',2); });
  drawDots(ctx,chart,mSegments.flat(),'#ffeb3b',3);
@@ -22971,11 +22996,12 @@ function drawGammaChart(gs,allSteps,readingMap){
  }
  const validG=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
  const measureSteps=plotSteps.length?plotSteps:validG;
- const mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
+ let mSegments=meterSeriesMeasuredSegments(measureSteps,readingMap,(reading,step,idx)=>[
   meterGreyEotfLuminanceChartX(step,measureSteps,idx,axisMax),
   meterLuminanceScaleValue(reading.luminance||0,yTop)
  ]);
  if(!plotSteps.length && mSegments.length===1) mSegments[0]=meterAnchorOriginPoint(mSegments[0]);
+ mSegments=meterSplitBlackOriginSegment(mSegments);
  mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',2); });
  drawDots(ctx,chart,mSegments.flat(),'#ffeb3b',3);
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
