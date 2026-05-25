@@ -2043,19 +2043,10 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	     return $c;
 	    }
     if($dv_series) {
-      if($dv_map_mode eq "1" || $target_gamma eq "st2084") {
       my $stim=$stimulus_pct/100;
       $stim=0 if($stim < 0);
       $stim=1 if($stim > 1);
-      my $encoded=&webui_pattern_pq_encode_normalized($stim*10000);
-      $c=int(16 + $encoded*219 + .5);
-      } else {
-      my $stim=$stimulus_pct/100;
-      $stim=0 if($stim < 0);
-      $stim=1 if($stim > 1);
-      my $encoded=$stim>0 ? $stim**(1/2.2) : 0;
-      $c=$lim ? int(16 + $encoded*219 + .5) : int($encoded*255 + .5);
-      }
+      $c=($dv_map_mode eq "1" || $lim) ? int(16 + $stim*219 + .5) : int($stim*255 + .5);
 		    } else {
 			     if($lg_extended_sdr_codes) {
 			      $c=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
@@ -10989,11 +10980,7 @@ function meterDvAbsoluteTargetRollOffFraction(){
 }
 
 function meterDvTargetSignalFraction(ire,code){
- if(code!=null&&code!==''){
-  const numeric=Number(code);
-  if(Number.isFinite(numeric)) return meterGreySignalFractionFromCode(numeric);
- }
- return meterGreyStimulusFraction(ire);
+ return clampNum((ire||0)/100,0,1);
 }
 
 function meterDvAbsoluteChartTargetLuminance(ire, peak, code){
@@ -11003,7 +10990,7 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak, code){
   ? meterDvTargetSignalFraction(ire,code)
   : ((code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
    ? meterGreySignalFractionFromCode(Number(code))
-   : meterChartPqEncodeNormalized(frac*10000));
+   : frac);
  return Math.min(targetPeak,meterChartPqDecodeNormalized(signal));
 }
 
@@ -11014,7 +11001,7 @@ function meterDvRelativeChartTargetLuminance(ire, peak, code){
   ? meterDvTargetSignalFraction(ire,code)
   : ((code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
    ? meterGreySignalFractionFromCode(Number(code))
-   : (frac>0?Math.pow(frac,1/2.2):0));
+   : frac);
  return gammaEotf(signal,2.2)*targetPeak;
 }
 
@@ -11110,14 +11097,7 @@ function meterCodeFromSignalPercentWithOptions(percent,opts){
  const clamped=clampNum(percent,0,100)/100;
  const range=meterGreyCodeRange();
  if(meterChartIsDv()){
-  const dvAbsolute=meterDvMapModeValue()==='1';
-  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():''));
-  if(dvAbsolute || sel==='st2084'){
-   const encoded=meterChartPqEncodeNormalized(clamped*10000);
-   return Math.round(range.min+encoded*range.span);
-  }
-  const encoded=clamped>0?Math.pow(clamped,1/meterDvTunnelGamma()):0;
-  return Math.round(meterPatchRangeMin()+encoded*meterPatchRangeSpan());
+  return Math.round(range.min+clamped*range.span);
  }
  return Math.round(range.min+clamped*range.span);
 }
@@ -12801,15 +12781,9 @@ function meterGreyStimulusFraction(ire){
  const allowsHeadroom=(typeof meterGreyAllowsHeadroomTargets==='function') && meterGreyAllowsHeadroomTargets();
  const pct=Math.max(0,Math.min(allowsHeadroom?110:100,ire||0));
  const dvMode=meterChartIsDv();
- const dvAbsolute=dvMode && meterDvMapModeValue()==='1';
- if(dvAbsolute || meterDvRelativeSt2084UsesLegalRange()) return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(pct));
+ if(dvMode || meterDvRelativeSt2084UsesLegalRange()) return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(pct));
  const isLimited=meterPatchUsesVideoRange();
- const sel=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'')||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():'')))||((typeof meterDvAutoTargetGamma==='function')?meterDvAutoTargetGamma():'');
- const code=dvMode
-  ? (sel==='st2084'
-    ? (isLimited?Math.round(16+pct/100*219):Math.round(pct*255/100))
-    : (isLimited?Math.round(16+Math.pow(pct/100,1/2.2)*219):Math.round(Math.pow(pct/100,1/2.2)*255)))
-  : (isLimited?Math.round(16+pct/100*(235-16)):Math.round(pct*255/100));
+ const code=isLimited?Math.round(16+pct/100*(235-16)):Math.round(pct*255/100);
  return meterSignalFractionFromCode(code);
 }
 
@@ -13012,6 +12986,7 @@ function meterGreyTargetEotfValue(ire,Lw,Lb,code){
 }
 
 function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
+ if(meterGreyTargetUsesPq()) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
  const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
  if(!(peakEotf>0)) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
  return meterGreyTargetEotfValue(ire,Lw,Lb,code)/peakEotf;
@@ -13032,6 +13007,7 @@ function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
  const lum=meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb||0,point);
  const eotf=meterGreyEotfValueFromLuminance(lum,Lw);
  if(!meterEotfNormalizedEnabled()) return eotf;
+ if(meterGreyTargetUsesPq()) return eotf;
  const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
  return peakEotf>0 ? eotf/peakEotf : eotf;
 }
@@ -13142,6 +13118,7 @@ function meterGreyEotfValueFromLuminance(luminance,refWhite){
 
 function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
+ if(meterGreyTargetUsesPq()) return meterGreyMeasuredEotfValue(y,refWhite);
  const peakEotf=meterGreyMeasuredEotfValue(refWhite>0?refWhite:100,refWhite);
  return peakEotf>0 ? meterGreyMeasuredEotfValue(y,refWhite)/peakEotf : meterGreyMeasuredEotfValue(y,refWhite);
 }
