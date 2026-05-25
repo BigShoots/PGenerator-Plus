@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -2046,10 +2046,30 @@ sub lg_autocal_26_candidate_beats_good_105_best_known {
  return (($candidate_score+0) + 0.03 < $best_score) ? 1 : 0;
 }
 
+sub lg_autocal_26_reading_response_for_delta {
+ my ($before,$after,$delta)=@_;
+ return undef if(ref($before) ne "HASH" || ref($after) ne "HASH");
+ return undef if(!defined($delta) || abs($delta) < 0.0001);
+ my %response;
+ foreach my $key (qw(x y Y)) {
+  next if(!defined($before->{$key}) || !defined($after->{$key}));
+  my $change=($after->{$key}+0)-($before->{$key}+0);
+  $response{$key."_delta"}=$change+0;
+  $response{$key."_per_ddc"}=$change/$delta;
+ }
+ if(defined($before->{"luminance"}) && defined($after->{"luminance"})) {
+  my $change=($after->{"luminance"}+0)-($before->{"luminance"}+0);
+  $response{"luminance_delta"}=$change+0;
+  $response{"luminance_per_ddc"}=$change/$delta;
+ }
+ return %response ? \%response : undef;
+}
+
 sub remember_lg_autocal_26_response_axis {
-	 my ($bucket,$group,$axis,$slope,$delta,$before_error,$after_error,$source)=@_;
+	 my ($bucket,$group,$axis,$slope,$delta,$before_error,$after_error,$source,$reading_response)=@_;
 	 return undef if(ref($bucket) ne "HASH" || !defined($group) || !defined($axis));
 	 return undef if(!defined($slope) || abs($slope) < 0.000001 || !defined($delta) || abs($delta) < 0.0001);
+ my $error_delta=(defined($before_error) && defined($after_error)) ? (($after_error+0)-($before_error+0)) : undef;
 	 $bucket->{$group}={} if(ref($bucket->{$group}) ne "HASH");
 	 my $existing=$bucket->{$group}{$axis};
 	 my $samples=1;
@@ -2058,14 +2078,31 @@ sub remember_lg_autocal_26_response_axis {
 	  if(($old < 0 && $slope < 0) || ($old > 0 && $slope > 0)) {
 	   my $old_samples=$existing->{"samples"}||1;
 	   $old_samples=5 if($old_samples > 5);
-	   $slope=(($old*$old_samples)+$slope)/($old_samples+1);
-	   $samples=($existing->{"samples"}||1)+1;
+	    $slope=(($old*$old_samples)+$slope)/($old_samples+1);
+	    $samples=($existing->{"samples"}||1)+1;
 	  }
 	 }
+ my $ddc_per_error=(abs($slope) >= 0.000001) ? (1/$slope) : undef;
+ my %reading_fields;
+ if(ref($reading_response) eq "HASH") {
+  foreach my $key (qw(x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc)) {
+   next if(!defined($reading_response->{$key}));
+   my $value=$reading_response->{$key}+0;
+   if(ref($existing) eq "HASH" && defined($existing->{$key}) && $samples > 1) {
+    my $old_samples=($samples-1);
+    $old_samples=5 if($old_samples > 5);
+    $value=(($existing->{$key}+0)*$old_samples+$value)/($old_samples+1);
+   }
+   $reading_fields{$key}=$value+0;
+  }
+ }
 	 $bucket->{$group}{$axis}={
 	  slope=>$slope+0,
+  ddc_per_error=>defined($ddc_per_error) ? ($ddc_per_error+0) : undef,
 	  samples=>$samples+0,
 	  delta=>$delta+0,
+  error_delta=>defined($error_delta) ? ($error_delta+0) : undef,
+  %reading_fields,
 	  before_error=>defined($before_error) ? ($before_error+0) : undef,
 	  after_error=>defined($after_error) ? ($after_error+0) : undef,
 	  source=>$source||"calibration",
@@ -2116,13 +2153,14 @@ sub remember_lg_autocal_26_response_model {
 	 $state->{"lg_autocal_26_response_model"}{$key}={} if(ref($state->{"lg_autocal_26_response_model"}{$key}) ne "HASH");
 	 my $bucket=$state->{"lg_autocal_26_response_model"}{$key};
 	 my %updates;
+  my $reading_response=lg_autocal_26_reading_response_for_delta($before,$after,$delta);
 	 my $ch=$adj->{"channel"}||"";
 	 if($ch =~ /^(?:r|g|b)$/) {
 	  my $before_err=autocal_adjustment_error($before,$step);
 	  my $after_err=autocal_adjustment_error($after,$step);
 	  if(ref($before_err) eq "HASH" && ref($after_err) eq "HASH" && defined($before_err->{$ch}) && defined($after_err->{$ch})) {
 	   my $slope=(($after_err->{$ch}+0)-($before_err->{$ch}+0))/$delta;
-	   my $entry=remember_lg_autocal_26_response_axis($bucket,"rgb",$ch,$slope,$delta,$before_err->{$ch},$after_err->{$ch},$source);
+	   my $entry=remember_lg_autocal_26_response_axis($bucket,"rgb",$ch,$slope,$delta,$before_err->{$ch},$after_err->{$ch},$source,$reading_response);
 	   $updates{"rgb"}{$ch}=$entry if(ref($entry) eq "HASH");
 	  }
 	 }
@@ -2135,7 +2173,7 @@ sub remember_lg_autocal_26_response_model {
 	   if(defined($before_lum_pct) && defined($after_lum_pct)) {
 	    return undef if(!lg_autocal_26_headroom_luminance_response_acceptable($step,$delta,$before_lum_pct,$after_lum_pct));
 	    my $slope=($after_lum_pct-$before_lum_pct)/$delta;
-	    my $entry=remember_lg_autocal_26_response_axis($bucket,"luminance","adjustingLuminance",$slope,$delta,$before_lum_pct,$after_lum_pct,$source);
+	    my $entry=remember_lg_autocal_26_response_axis($bucket,"luminance","adjustingLuminance",$slope,$delta,$before_lum_pct,$after_lum_pct,$source,$reading_response);
 	    $updates{"luminance"}{"adjustingLuminance"}=$entry if(ref($entry) eq "HASH");
 	   }
 	  }
@@ -2179,7 +2217,8 @@ sub lg_autocal_26_learned_luminance_adjustment {
 	  my $actual_delta=$next-$current;
 	  my $predicted=($lum_pct+0)+($slope*$actual_delta);
 	  next if(abs($predicted) >= abs($lum_pct)*0.92 && abs($actual_delta) > 0.21);
-	  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, learned_response_model=>1, slope=>$slope, predicted_error=>$predicted, source=>$source||"learned_luminance", samples=>$entry->{"samples"}||1 }];
+	  my $ddc_per_error=(abs($slope) >= 0.000001) ? (1/$slope) : undef;
+	  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, learned_response_model=>1, slope=>$slope, ddc_per_error=>defined($ddc_per_error)?$ddc_per_error:undef, predicted_error=>$predicted, source=>$source||"learned_luminance", samples=>$entry->{"samples"}||1 }];
 	 }
 		 return undef;
 		}
@@ -2291,7 +2330,8 @@ sub lg_autocal_26_learned_rgb_adjustment {
 	  my $actual_delta=$next-$current;
 	  my $predicted=($err+0)+($slope*$actual_delta);
 	  next if(abs($predicted) >= abs($err)*0.92 && abs($actual_delta) > 0.21);
-	  return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, learned_response_model=>1, slope=>$slope, predicted_error=>$predicted, source=>$source||"learned_rgb", samples=>$entry->{"samples"}||1 }];
+	  my $ddc_per_error=(abs($slope) >= 0.000001) ? (1/$slope) : undef;
+	  return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, learned_response_model=>1, slope=>$slope, ddc_per_error=>defined($ddc_per_error)?$ddc_per_error:undef, predicted_error=>$predicted, source=>$source||"learned_rgb", samples=>$entry->{"samples"}||1 }];
 	 }
 	 return undef;
 	}
@@ -8934,12 +8974,300 @@ sub post_cal_series_adjustment_luma_cap {
   return $configured;
  }
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
- return final_all_level_verify_adjustment_cap($step,"adjustingLuminance") if($ire <= 10.0001);
  my $abs=defined($lum_pct) ? abs($lum_pct+0) : 0;
- return 3.0 if($abs >= 8);
- return 2.0 if($abs >= 4);
- return 1.5 if($abs >= 2);
- return 1.0;
+ if($ire <= 3.1001) {
+  return ($abs >= 20) ? 1.0 : 0.50;
+ }
+ if($ire <= 5.1001) {
+  return ($abs >= 8) ? 0.75 : 0.50;
+ }
+ return 0.50 if($ire <= 10.1001);
+ return 1.0 if($abs >= 8);
+ return 0.75 if($abs >= 4);
+ return 0.50 if($abs >= 2);
+ return 0.25;
+}
+
+sub post_cal_series_direct_luminance_adjustment {
+ my ($arrays,$target,$step,$lum_pct,$tried,$state,$cap,$source)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
+ return undef if(!has_luminance_channel($arrays,$target));
+ my $tol=luminance_tolerance_percent($step);
+ return undef if(defined($tol) && abs($lum_pct) <= $tol);
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+ my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
+ my $direction=($lum_pct > 0) ? -1 : 1;
+ my $abs=abs($lum_pct);
+ my $mag=0.25;
+ $mag=0.50 if($abs >= 2.0);
+ $mag=0.75 if($abs >= 8.0);
+ $mag=1.00 if($abs >= 20.0);
+ $cap=post_cal_series_adjustment_luma_cap(undef,$step,$lum_pct) if(!defined($cap) || $cap <= 0);
+ $mag=$cap if($mag > $cap);
+ my $next=round_ddc_quarter($current+($direction*$mag));
+ return undef if(abs($next-$current) < 0.0001);
+ return undef if(tried_value_exists($tried,"adjustingLuminance",$next));
+ return undef if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,$source||"post_cal_series_direct_luminance",$state));
+ return [{
+  channel=>"lum",
+  setting=>"adjustingLuminance",
+  current=>$current,
+  next=>$next,
+  delta=>$next-$current,
+  source=>$source||"post_cal_series_direct_luminance",
+  post_cal_one_shot=>1
+ }];
+}
+
+sub post_cal_series_cap_luminance_adjustments {
+ my ($adjustments,$cap)=@_;
+ return undef if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+ return $adjustments if(!defined($cap) || $cap <= 0);
+ my @out;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
+  my %copy=%{$adj};
+  if($copy{"setting"} eq "adjustingLuminance") {
+   my $current=defined($copy{"current"}) ? ($copy{"current"}+0) : undef;
+   my $next=defined($copy{"next"}) ? ($copy{"next"}+0) : undef;
+   my $delta=defined($copy{"delta"}) ? ($copy{"delta"}+0) : undef;
+   $current=defined($delta) ? ($next-$delta) : 0 if(!defined($current) && defined($next));
+   $delta=$next-$current if(defined($current) && defined($next) && !defined($delta));
+   if(defined($current) && defined($delta) && abs($delta) > $cap) {
+    $delta=($delta < 0) ? -$cap : $cap;
+    $copy{"next"}=round_ddc_quarter($current+$delta);
+    $copy{"delta"}=$copy{"next"}-$current;
+    $copy{"post_cal_luma_cap"}=$cap+0;
+   }
+  }
+  push @out,\%copy;
+ }
+ return @out ? \@out : undef;
+}
+
+sub post_cal_series_response_axis_entry {
+ my ($state,$ire,$group,$axis,$expected_sign)=@_;
+ return undef if(ref($state) ne "HASH" || ref($state->{"lg_autocal_26_response_model"}) ne "HASH");
+ return undef if(!defined($ire) || !defined($group) || !defined($axis));
+ my $key=lg_autocal_26_best_known_key({ ire=>$ire+0 });
+ return undef if(!defined($key));
+ my $model=$state->{"lg_autocal_26_response_model"}{$key};
+ my $entry=(ref($model) eq "HASH" && ref($model->{$group}) eq "HASH") ? $model->{$group}{$axis} : undef;
+ return undef if(ref($entry) ne "HASH" || !defined($entry->{"slope"}));
+ my $slope=$entry->{"slope"}+0;
+ return undef if(abs($slope) < 0.000001);
+ if(defined($expected_sign) && $expected_sign != 0) {
+  return undef if(($slope*$expected_sign) <= 0);
+ }
+ my %copy=%{$entry};
+ $copy{"ire"}=$ire+0;
+ $copy{"samples"}=1 if(!defined($copy{"samples"}) || $copy{"samples"} <= 0);
+ return \%copy;
+}
+
+sub post_cal_series_smoothed_response_axis {
+ my ($state,$step,$group,$axis,$expected_sign)=@_;
+ return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ my @slots=ddc_slots();
+ my $slot_index;
+ for(my $i=0;$i<@slots;$i++) {
+  if(abs(($slots[$i]+0)-$ire) < 0.001) { $slot_index=$i; last; }
+ }
+ return undef if(!defined($slot_index));
+ my $exact=post_cal_series_response_axis_entry($state,$ire,$group,$axis,$expected_sign);
+ my $exact_samples=(ref($exact) eq "HASH" && defined($exact->{"samples"})) ? ($exact->{"samples"}+0) : 0;
+ return $exact if(ref($exact) eq "HASH" && $exact_samples >= 3);
+ my @contributors;
+ if(ref($exact) eq "HASH") {
+  push @contributors,{ entry=>$exact, distance=>0, exact=>1 };
+ }
+ foreach my $direction (-1,1) {
+  for(my $i=$slot_index+$direction;$i>=0 && $i<@slots;$i+=$direction) {
+   my $neighbor=post_cal_series_response_axis_entry($state,$slots[$i],$group,$axis,$expected_sign);
+   next if(ref($neighbor) ne "HASH");
+   push @contributors,{ entry=>$neighbor, distance=>abs(($slots[$i]+0)-$ire), exact=>0 };
+   last;
+  }
+ }
+ return $exact if(@contributors < 2 && ref($exact) eq "HASH");
+ return undef if(!@contributors);
+ my ($weighted,$weight_total,$neighbor_count,$sample_total)=(0,0,0,0);
+ my (%field_weighted,%field_weight_total);
+ foreach my $item (@contributors) {
+  my $entry=$item->{"entry"};
+  next if(ref($entry) ne "HASH" || !defined($entry->{"slope"}));
+  my $samples=$entry->{"samples"}||1;
+  $samples=5 if($samples > 5);
+  my $distance=$item->{"distance"}||0;
+  my $weight=$samples/(1+($distance/10));
+  $weight*=1.5 if($item->{"exact"});
+  $weighted+=($entry->{"slope"}+0)*$weight;
+  $weight_total+=$weight;
+  $sample_total+=$samples;
+  $neighbor_count++ if(!$item->{"exact"});
+  foreach my $field (qw(x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc)) {
+   next if(!defined($entry->{$field}));
+   $field_weighted{$field}+=($entry->{$field}+0)*$weight;
+   $field_weight_total{$field}+=$weight;
+  }
+ }
+ return $exact if($weight_total <= 0 && ref($exact) eq "HASH");
+ return undef if($weight_total <= 0);
+ my $slope=$weighted/$weight_total;
+ return undef if(abs($slope) < 0.000001);
+ if(defined($expected_sign) && $expected_sign != 0) {
+  return undef if(($slope*$expected_sign) <= 0);
+ }
+ my %reading_fields;
+ foreach my $field (keys %field_weighted) {
+  next if(!$field_weight_total{$field});
+  $reading_fields{$field}=$field_weighted{$field}/$field_weight_total{$field};
+ }
+ return {
+  slope=>$slope+0,
+  ddc_per_error=>1/$slope,
+  samples=>$sample_total+0,
+  exact_samples=>$exact_samples+0,
+  %reading_fields,
+  smoothed_response_model=>JSON::PP::true,
+  smoothed_neighbors=>$neighbor_count+0,
+  source=>"post_cal_series_smoothed_response"
+ };
+}
+
+sub post_cal_series_response_table_luminance_adjustment {
+ my ($state,$arrays,$target,$step,$lum_pct,$tried,$cap)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
+ return undef if(!has_luminance_channel($arrays,$target));
+ my $entry=post_cal_series_smoothed_response_axis($state,$step,"luminance","adjustingLuminance",1);
+ return undef if(ref($entry) ne "HASH" || !defined($entry->{"slope"}));
+ my $slope=$entry->{"slope"}+0;
+ return undef if($slope <= 0);
+ my $tol=luminance_tolerance_percent($step);
+ return undef if(defined($tol) && abs($lum_pct) <= $tol);
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
+ my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
+ my $raw_delta=-($lum_pct+0)/$slope;
+ return undef if(abs($raw_delta) < 0.10);
+ $cap=post_cal_series_adjustment_luma_cap(undef,$step,$lum_pct) if(!defined($cap) || $cap <= 0);
+ $raw_delta=$cap if($raw_delta > $cap);
+ $raw_delta=-$cap if($raw_delta < -$cap);
+ foreach my $scale (1,0.75,0.50,0.25) {
+  my $next=round_ddc_quarter($current+($raw_delta*$scale));
+  next if(abs($next-$current) < 0.0999);
+  next if(tried_value_exists($tried,"adjustingLuminance",$next));
+  next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"post_cal_series_luminance",$state));
+  my $actual_delta=$next-$current;
+  my $predicted=($lum_pct+0)+($slope*$actual_delta);
+  next if(abs($predicted) >= abs($lum_pct)*0.92 && abs($actual_delta) > 0.21);
+  return [{
+   channel=>"lum",
+   setting=>"adjustingLuminance",
+   current=>$current,
+   next=>$next,
+   delta=>$actual_delta,
+   map { defined($entry->{$_}) ? ($_=>$entry->{$_}+0) : () } qw(x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc),
+   response_model=>1,
+   learned_response_model=>1,
+   post_cal_response_table=>1,
+   smoothed_response_model=>$entry->{"smoothed_response_model"} ? 1 : undef,
+   smoothed_neighbors=>$entry->{"smoothed_neighbors"},
+   exact_samples=>$entry->{"exact_samples"},
+   slope=>$slope,
+   ddc_per_error=>defined($entry->{"ddc_per_error"}) ? ($entry->{"ddc_per_error"}+0) : (1/$slope),
+   predicted_error=>$predicted,
+   source=>"post_cal_series_luminance",
+   samples=>$entry->{"samples"}||1
+  }];
+ }
+ return undef;
+}
+
+sub post_cal_series_learned_luminance_adjustment {
+ my ($state,$arrays,$target,$step,$lum_pct,$tried,$cap)=@_;
+ return post_cal_series_response_table_luminance_adjustment($state,$arrays,$target,$step,$lum_pct,$tried,$cap);
+}
+
+sub post_cal_series_response_table_rgb_adjustment {
+ my ($state,$arrays,$target,$step,$reading,$de,$target_delta,$tried,$cap,$source)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($reading) ne "HASH");
+ return undef if(autocal_step_is_peak_headroom($step));
+ my $error=autocal_adjustment_error($reading,$step);
+ return undef if(ref($error) ne "HASH");
+ my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
+ return undef if(!$ch);
+ my $threshold=rgb_response_close_threshold($de,$target_delta);
+ return undef if($max_err < $threshold);
+ my $entry=post_cal_series_smoothed_response_axis($state,$step,"rgb",$ch,1);
+ return undef if(ref($entry) ne "HASH" || !defined($entry->{"slope"}));
+ my $slope=$entry->{"slope"}+0;
+ return undef if($slope <= 0);
+ my $setting=channel_setting($ch);
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx) || ref($arrays->{$setting}) ne "ARRAY");
+ my $current=$arrays->{$setting}[$idx]||0;
+ my $raw_delta=-($err+0)/$slope;
+ return undef if(abs($raw_delta) < 0.10);
+ $cap=final_all_level_verify_adjustment_cap($step,$setting) if(!defined($cap) || $cap <= 0);
+ $raw_delta=$cap if($raw_delta > $cap);
+ $raw_delta=-$cap if($raw_delta < -$cap);
+ foreach my $scale (1,0.75,0.50,0.25) {
+  my $next=round_ddc_quarter($current+($raw_delta*$scale));
+  next if(abs($next-$current) < 0.0999);
+  next if(tried_value_exists($tried,$setting,$next));
+  my $actual_delta=$next-$current;
+  my $predicted=($err+0)+($slope*$actual_delta);
+  next if(abs($predicted) >= abs($err)*0.92 && abs($actual_delta) > 0.21);
+  return [{
+   channel=>$ch,
+   setting=>$setting,
+   current=>$current,
+   next=>$next,
+   delta=>$actual_delta,
+   map { defined($entry->{$_}) ? ($_=>$entry->{$_}+0) : () } qw(x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc),
+   response_model=>1,
+   learned_response_model=>1,
+   post_cal_response_table=>1,
+   smoothed_response_model=>$entry->{"smoothed_response_model"} ? 1 : undef,
+   smoothed_neighbors=>$entry->{"smoothed_neighbors"},
+   exact_samples=>$entry->{"exact_samples"},
+   slope=>$slope,
+   ddc_per_error=>defined($entry->{"ddc_per_error"}) ? ($entry->{"ddc_per_error"}+0) : (1/$slope),
+   predicted_error=>$predicted,
+   source=>$source||"post_cal_series_rgb",
+   samples=>$entry->{"samples"}||1
+  }];
+ }
+ return undef;
+}
+
+sub post_cal_series_mark_response_table_adjustments {
+ my ($adjustments)=@_;
+ return undef if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  $adj->{"post_cal_response_table"}=JSON::PP::true if($adj->{"learned_response_model"});
+ }
+ return $adjustments;
+}
+
+sub post_cal_series_merge_adjustments {
+ my (@sets)=@_;
+ my @merged;
+ my %settings;
+ foreach my $set (@sets) {
+  next if(ref($set) ne "ARRAY");
+  foreach my $adj (@{$set}) {
+   next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
+   next if($settings{$adj->{"setting"}});
+   push @merged,$adj;
+   $settings{$adj->{"setting"}}=1;
+  }
+ }
+ return @merged ? \@merged : undef;
 }
 
 sub post_cal_series_adjustment_reference {
@@ -9051,20 +9379,27 @@ sub post_cal_series_adjustment {
   }
   my %tried_values;
   mark_tried_values(\%tried_values,$arrays,$target,$de);
-  my $adjustments=lg_autocal_26_learned_luminance_adjustment(
+  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$read_step,$lum_pct);
+  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
    $state,$arrays,$target,$read_step,$lum_pct,\%tried_values,
-   post_cal_series_adjustment_luma_cap($config,$read_step,$lum_pct),
-   "post_cal_series_luminance"
+   $luma_cap
   );
-  if(!$adjustments) {
-   $adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$read_step,$lum_pct,\%tried_values,$state);
+  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
+  if(!$luma_adjustments && autocal_step_is_low_shadow($read_step)) {
+   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
+    $arrays,$target,$read_step,$lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_low_shadow_luminance"
+   );
   }
-  if(!$adjustments) {
-   my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($reading,$read_step));
-   my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
-   my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($read_step,$learned_setting) : undef;
-   $adjustments=lg_autocal_26_learned_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb");
+  if(!$luma_adjustments) {
+   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$read_step,$lum_pct,\%tried_values,$state);
+   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
   }
+  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($reading,$read_step));
+  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
+  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($read_step,$learned_setting) : undef;
+  my $rgb_adjustments=post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb");
+  $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
+  my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
   next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
   foreach my $adj (@{$adjustments}) {
    next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
