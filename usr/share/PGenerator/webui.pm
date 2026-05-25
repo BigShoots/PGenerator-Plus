@@ -16321,7 +16321,10 @@ function meterSetSeriesTab(tab,skipAutoSelect){
  meterSeriesTab=meterNormalizeSeriesTab(tab);
  meterUpdateSeriesTabUi();
  if(skipAutoSelect) return;
- if(meterSeriesTab==='autocal') return;
+ if(meterSeriesTab==='autocal'){
+  meterSelectAutoCalGreyscale();
+  return;
+ }
  if(meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
