@@ -734,8 +734,13 @@ sub autocal_config_is_post_3d_polish {
 }
 
 sub autocal_config_is_post_series_adjust {
+	 my ($config)=@_;
+	 return (ref($config) eq "HASH" && $config->{"full_autocal_post_series_adjust"}) ? 1 : 0;
+}
+
+sub autocal_config_is_post_series_revert {
  my ($config)=@_;
- return (ref($config) eq "HASH" && $config->{"full_autocal_post_series_adjust"}) ? 1 : 0;
+ return (ref($config) eq "HASH" && $config->{"full_autocal_post_series_revert"}) ? 1 : 0;
 }
 
 sub lg_autocal_26_standalone_committed_cleanup_enabled {
@@ -9000,16 +9005,46 @@ sub post_cal_series_adjustment_luma_cap {
 }
 
 sub post_cal_series_luma_only_deadband {
- my ($step)=@_;
- my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
- return 0.80 if($ire >= 90 && $ire < 105);
- return 0;
+	 my ($step)=@_;
+	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+	 return 0.80 if($ire >= 90 && $ire < 105);
+	 return 0;
+}
+
+sub post_cal_series_luminance_error_for_ire {
+ my ($readings,$steps,$ire,$white_y,$target_gamma,$signal_mode,$config,$state)=@_;
+ return undef if(ref($readings) ne "ARRAY" || ref($steps) ne "ARRAY" || !defined($ire));
+ foreach my $step (@{$steps}) {
+  next if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+  next if(abs(($step->{"ire"}+0)-($ire+0)) > 0.001);
+  my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
+  my $reading=post_cal_series_reading_for_step($readings,$read_step);
+  next if(ref($reading) ne "HASH" || $reading->{"error"});
+  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+  return luminance_error_percent($reading,$target_step_y);
+ }
+ return undef;
+}
+
+sub post_cal_series_neighbor_protected_luma_cap {
+ my ($cap,$read_step,$lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state)=@_;
+ return $cap if(!defined($cap) || !autocal_step_is_low_shadow($read_step) || !defined($lum_pct));
+ my $ire=(ref($read_step) eq "HASH" && defined($read_step->{"ire"})) ? ($read_step->{"ire"}+0) : 50;
+ return $cap if(!($ire > 4.1001 && $ire <= 5.1001 && ($lum_pct+0) > 0 && abs($lum_pct+0) >= 15));
+ foreach my $neighbor_ire (4,3,2.3) {
+  my $neighbor_lum=post_cal_series_luminance_error_for_ire($readings,$steps,$neighbor_ire,$white_y,$target_gamma,$signal_mode,$config,$state);
+  next if(!defined($neighbor_lum));
+  if($neighbor_lum < -4.0) {
+   return $cap < 2.0 ? $cap : 2.0;
+  }
+ }
+ return $cap;
 }
 
 sub post_cal_series_direct_luminance_fallback_enabled {
- my ($step,$lum_pct)=@_;
- return 0 if(!defined($lum_pct));
- my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+	 my ($step,$lum_pct)=@_;
+	 return 0 if(!defined($lum_pct));
+	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
  my $abs=abs($lum_pct+0);
  return 1 if(autocal_step_is_low_shadow($step));
  return 1 if($ire <= 20.1001 && $abs >= 1.50);
@@ -9069,11 +9104,12 @@ sub post_cal_series_allow_rgb_adjustment {
 }
 
 sub post_cal_series_direct_luminance_adjustment {
- my ($arrays,$target,$step,$lum_pct,$tried,$state,$cap,$source)=@_;
- return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
- return undef if(!has_luminance_channel($arrays,$target));
- my $tol=luminance_tolerance_percent($step);
- return undef if(defined($tol) && abs($lum_pct) <= $tol);
+	 my ($arrays,$target,$step,$lum_pct,$tried,$state,$cap,$source)=@_;
+	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($lum_pct));
+	 return undef if(!has_luminance_channel($arrays,$target));
+	 my $tol=luminance_tolerance_percent($step);
+	 my $deltae_assist=(defined($source) && $source eq "post_cal_series_deltae_luminance_assist") ? 1 : 0;
+	 return undef if(!$deltae_assist && defined($tol) && abs($lum_pct) <= $tol);
  my $idx=$target->{"index"};
  return undef if(!defined($idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
  my $current=$arrays->{"adjustingLuminance"}[$idx]||0;
@@ -9097,7 +9133,37 @@ sub post_cal_series_direct_luminance_adjustment {
 	  delta=>$actual_delta,
 	  source=>$source||"post_cal_series_direct_luminance",
 	  post_cal_one_shot=>1
-	 }];
+		 }];
+	}
+
+sub post_cal_series_deltae_luminance_assist_enabled {
+ my ($step,$de,$lum_pct)=@_;
+ return 0 if(!defined($de) || !defined($lum_pct));
+ return 0 if($de <= 1.0);
+ return 0 if(autocal_step_is_peak_headroom($step));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ return 0 if($ire > 50.1001);
+ return abs($lum_pct+0) >= 1.25 ? 1 : 0;
+}
+
+sub post_cal_series_generic_rgb_adjustment {
+ my ($state,$arrays,$target,$step,$reading,$de,$lum_pct,$target_delta,$tried)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($reading) ne "HASH");
+ return undef if(!defined($de) || $de <= 1.0);
+ return undef if(autocal_step_is_peak_headroom($step));
+ my $error=autocal_adjustment_error($reading,$step);
+ return undef if(ref($error) ne "HASH");
+ my $lum_err=defined($lum_pct) ? (($lum_pct+0)/100) : undef;
+ my $adjustments=choose_rgb_response_adjustments($error,$arrays,$target,undef,$tried,$de,$step,$target_delta,0,$lum_err);
+ $adjustments=final_all_level_verify_cap_adjustments($adjustments,$step);
+ return undef if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  $adj->{"post_cal_one_shot"}=1;
+  $adj->{"post_cal_generic_rgb_fallback"}=1;
+  $adj->{"source"}="post_cal_series_generic_rgb" if(!defined($adj->{"source"}));
+ }
+ return $adjustments;
 }
 
 sub post_cal_series_cap_luminance_adjustments {
@@ -9335,9 +9401,9 @@ sub post_cal_series_mark_response_table_adjustments {
 }
 
 sub post_cal_series_merge_adjustments {
- my (@sets)=@_;
- my @merged;
- my %settings;
+	 my (@sets)=@_;
+	 my @merged;
+	 my %settings;
  foreach my $set (@sets) {
   next if(ref($set) ne "ARRAY");
   foreach my $adj (@{$set}) {
@@ -9347,7 +9413,119 @@ sub post_cal_series_merge_adjustments {
    $settings{$adj->{"setting"}}=1;
   }
  }
- return @merged ? \@merged : undef;
+	 return @merged ? \@merged : undef;
+}
+
+sub post_cal_series_revert_margin {
+ my ($config)=@_;
+ my $margin=(ref($config) eq "HASH" && defined($config->{"post_cal_series_revert_margin"})) ? ($config->{"post_cal_series_revert_margin"}+0) : 0.05;
+ $margin=0 if($margin < 0);
+ $margin=0.50 if($margin > 0.50);
+ return $margin;
+}
+
+sub post_cal_series_restore_values_before {
+ my ($arrays,$target,$values_before)=@_;
+ return 0 if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($values_before) ne "HASH");
+ my $idx=$target->{"index"};
+ return 0 if(!defined($idx));
+ my $restored=0;
+ foreach my $setting (qw(adjustingLuminance whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
+  next if(ref($arrays->{$setting}) ne "ARRAY" || !defined($values_before->{$setting}));
+  next if($idx >= @{$arrays->{$setting}});
+  $arrays->{$setting}[$idx]=$values_before->{$setting}+0;
+  $restored=1;
+ }
+ return $restored;
+}
+
+sub post_cal_series_adjustment_change_for_step {
+ my ($changes,$step)=@_;
+ return undef if(ref($changes) ne "ARRAY" || ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ foreach my $change (@{$changes}) {
+  next if(ref($change) ne "HASH" || !defined($change->{"ire"}));
+  return $change if(abs(($change->{"ire"}+0)-$ire) < 0.001);
+ }
+ return undef;
+}
+
+sub post_cal_series_revert_worse_adjustments {
+ my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta)=@_;
+ return ($picture,"Post-cal revert requires LG 26pt steps") if(ref($steps) ne "ARRAY" || !@{$steps});
+ return ($picture,"Post-cal revert requires current LG DDC arrays") if(ref($arrays) ne "HASH");
+ my $after_readings=(ref($config) eq "HASH" && ref($config->{"post_cal_series_after_readings"}) eq "ARRAY") ? $config->{"post_cal_series_after_readings"} : [];
+ return ($picture,"Post-cal revert requires the post-adjust series read") if(!@{$after_readings});
+ my $adjustment=(ref($config) eq "HASH" && ref($config->{"post_cal_series_adjustment_status"}) eq "HASH") ? $config->{"post_cal_series_adjustment_status"} : {};
+ my $changes=(ref($adjustment->{"changes"}) eq "ARRAY") ? $adjustment->{"changes"} : [];
+ return ($picture,"Post-cal revert requires adjustment change metadata") if(!@{$changes});
+ my $white_y=post_cal_series_reference_white_y($config,$state,$after_readings);
+ return ($picture,"Post-cal revert is missing a target white reference") if(!defined($white_y) || $white_y <= 0);
+ set_state_white_reference($state,$white_y);
+ my $margin=post_cal_series_revert_margin($config);
+ my (@verified,@reverted);
+ foreach my $step (@{$steps}) {
+  last if(cancelled());
+  next if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+  my $target=ddc_target_for_step($step);
+  next if(ref($target) ne "HASH");
+  my $change=post_cal_series_adjustment_change_for_step($changes,$step);
+  next if(ref($change) ne "HASH" || ref($change->{"values_before"}) ne "HASH");
+  my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
+  my $reading=post_cal_series_reading_for_step($after_readings,$read_step);
+  next if(ref($reading) ne "HASH" || $reading->{"error"});
+  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+  my $after_de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+  my $after_lum_pct=luminance_error_percent($reading,$target_step_y);
+  my $before_de=defined($change->{"before_delta_e"}) ? ($change->{"before_delta_e"}+0) : undef;
+  my %entry=(
+   ire=>$read_step->{"ire"}+0,
+   label=>$target->{"label"},
+   before_delta_e=>defined($before_de) ? $before_de+0 : undef,
+   after_delta_e=>defined($after_de) ? $after_de+0 : undef,
+   after_luminance_error_pct=>defined($after_lum_pct) ? $after_lum_pct+0 : undef,
+   revert_margin=>$margin+0,
+  );
+  my $worse=(defined($before_de) && defined($after_de) && $after_de > ($before_de+$margin)) ? 1 : 0;
+  if($worse && post_cal_series_restore_values_before($arrays,$target,$change->{"values_before"})) {
+   $entry{"reverted"}=JSON::PP::true;
+   $entry{"values_restored"}=trace_target_values($arrays,$target);
+   push @reverted,{ %entry };
+  }
+  push @verified,\%entry;
+ }
+ $state->{"post_cal_series_revert"}={
+  status=>@reverted ? "writing" : "complete",
+  verified=>\@verified,
+  reverted=>\@reverted,
+  revert_margin=>$margin+0,
+ };
+ $state->{"current_name"}=@reverted ? "Restoring worse post-cal corrections" : "Post-cal correction failsafe complete";
+ $state->{"phase"}=@reverted ? "writing" : "complete";
+ $state->{"message"}=@reverted ? ("Restoring ".scalar(@reverted)." DDC correction".(@reverted==1?"":"s")." that read worse") : "Post-cal correction failsafe found no worse points";
+ write_state($state);
+ return ($picture,undef) if(!@reverted);
+ my $write_target;
+ foreach my $step (reverse @{$steps}) {
+  my $target=ddc_target_for_step($step);
+  if(ref($target) eq "HASH") { $write_target=$target; last; }
+ }
+ return ($picture,"Post-cal revert had changes but no writable target") if(ref($write_target) ne "HASH");
+ my $start_error=start_calibration_mode($picture_mode,$state,"Post-cal series revert calibration mode enabled");
+ return ($picture,$start_error) if($start_error);
+ my $write_error;
+ ($picture,$write_error)=set_picture_values($picture,$arrays,$write_target,$picture_mode,1,$state,1,1);
+ end_calibration_mode($picture_mode);
+ set_state_calibration_mode($state,0,"");
+ return ($picture,$write_error) if($write_error);
+ sync_state_picture($state,$picture,$picture_mode);
+ $state->{"post_cal_series_revert"}{"status"}="complete";
+ $state->{"post_cal_series_revert"}{"ddc_restored"}=JSON::PP::true;
+ $state->{"phase"}="complete";
+ $state->{"message"}="Restored worse post-cal DDC corrections";
+ write_state($state);
+ return ($picture,undef);
 }
 
 sub post_cal_series_adjustment_reference {
@@ -9405,8 +9583,9 @@ sub post_cal_series_adjustment {
   !$_->{"autocal_reference_only"} &&
   ddc_target_for_step($_)
  } @{$steps};
- my @changed;
- my @evaluated;
+	 my @changed;
+	 my @evaluated;
+	 my $pre_adjust_arrays=clone_arrays($arrays);
  my $changed_count=0;
  my $total=scalar(@candidates);
  my $index=0;
@@ -9483,13 +9662,14 @@ sub post_cal_series_adjustment {
     skipped_reason=>"shared_99_100_legal_white_guard"
    });
    next;
-  }
-  my %tried_values;
-  mark_tried_values(\%tried_values,$arrays,$target,$de);
-  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$read_step,$lum_pct);
-	  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
-	   $state,$arrays,$target,$read_step,$lum_pct,\%tried_values,
-	   $luma_cap
+	  }
+	  my %tried_values;
+	  mark_tried_values(\%tried_values,$arrays,$target,$de);
+	  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$read_step,$lum_pct);
+	  $luma_cap=post_cal_series_neighbor_protected_luma_cap($luma_cap,$read_step,$lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state);
+		  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
+		   $state,$arrays,$target,$read_step,$lum_pct,\%tried_values,
+		   $luma_cap
 	  );
 	  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
 	  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($read_step,$lum_pct)) {
@@ -9500,15 +9680,21 @@ sub post_cal_series_adjustment {
 	  if(!$luma_adjustments) {
 	   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$read_step,$lum_pct,\%tried_values,$state);
 	   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
-  }
+	  }
+	  if(!$luma_adjustments && post_cal_series_deltae_luminance_assist_enabled($read_step,$de,$lum_pct)) {
+	   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
+	    $arrays,$target,$read_step,$lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_deltae_luminance_assist"
+	   );
+	  }
 	  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($reading,$read_step));
 	  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
 	  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($read_step,$learned_setting) : undef;
 	  my $rgb_adjustments=post_cal_series_allow_rgb_adjustment($read_step,$lum_pct,$luma_adjustments)
 	   ? post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb")
 	   : undef;
-  $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
-  my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
+	  $rgb_adjustments=post_cal_series_generic_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$lum_pct,$target_delta,\%tried_values) if(!$rgb_adjustments);
+	  $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
+	  my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
   next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
   foreach my $adj (@{$adjustments}) {
    next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
@@ -9520,11 +9706,14 @@ sub post_cal_series_adjustment {
    ire=>$read_step->{"ire"}+0,
    label=>$target->{"label"},
    reason=>$outlier,
-   before_delta_e=>defined($de) ? $de+0 : undef,
-   before_luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
-   adjustments=>trace_adjustments_summary($adjustments),
-   values_after=>trace_target_values($arrays,$target),
-  };
+	   before_delta_e=>defined($de) ? $de+0 : undef,
+	   before_luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+	   adjustments=>trace_adjustments_summary($adjustments),
+	   target_index=>$target->{"index"}+0,
+	   ddc_ire=>$target->{"ire"},
+	   values_before=>trace_target_values($pre_adjust_arrays,$target),
+	   values_after=>trace_target_values($arrays,$target),
+	  };
   trace_109($read_step,"post_cal_series_adjustment",{
    label=>$target->{"label"},
    reason=>$outlier,
@@ -9540,9 +9729,10 @@ sub post_cal_series_adjustment {
   current_index=>$index+0,
   changed=>$changed_count+0,
   evaluated=>\@evaluated,
-  changes=>\@changed,
-  white_y=>$white_y+0,
- };
+	  changes=>\@changed,
+	  white_y=>$white_y+0,
+	  pre_adjust_arrays=>$pre_adjust_arrays,
+	 };
  write_state($state);
  return ($picture,undef) if(!$changed_count);
  my $write_target;
@@ -10549,8 +10739,33 @@ eval {
 			  adjustingLuminance => numeric_array($picture->{"adjustingLuminance"},ddc_slot_count()),
 			 };
 		 my @calibrated_ddc_slots=map { 0 } (1..ddc_slot_count());
-		 if(autocal_config_is_post_series_adjust($config)) {
-		  foreach my $step (@{$steps}) {
+			 if(autocal_config_is_post_series_revert($config)) {
+			  foreach my $step (@{$steps}) {
+			   my $target=ddc_target_for_step($step);
+			   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
+			  }
+			  $state->{"current_name"}="Post-cal correction failsafe";
+			  $state->{"phase"}="analyzing";
+			  $state->{"message"}="Checking post-adjust series for worse DDC corrections";
+			  $state->{"full_autocal_post_series_revert"}=JSON::PP::true;
+			  write_state($state);
+			  my $revert_error=undef;
+			  ($picture,$revert_error)=post_cal_series_revert_worse_adjustments(
+			   $config,
+			   $state,
+			   $picture,
+			   $arrays,
+			   $active_picture_mode_for_cleanup || $picture_mode,
+			   $steps,
+			   $target_x,
+			   $target_y,
+			   $target_gamma,
+			   $signal_mode,
+			   $target_delta
+			  );
+			  die $revert_error if($revert_error && $revert_error ne "cancelled");
+			 } elsif(autocal_config_is_post_series_adjust($config)) {
+			  foreach my $step (@{$steps}) {
 		   my $target=ddc_target_for_step($step);
 		   mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$target) if(ref($target) eq "HASH");
 		  }
