@@ -172,6 +172,57 @@ print(steps[$idx].get('$field',''))
 " 2>/dev/null
 }
 
+build_step_reading_json() {
+ local idx="$1" parsed_json="${2:-{}}"
+ STEP_INDEX="$idx" PARSED_JSON="$parsed_json" STEPS_FILE_PATH="$STEPS_FILE" python - <<'PY'
+import json, os
+
+try:
+    reading = json.loads(os.environ.get("PARSED_JSON") or "{}")
+except Exception:
+    reading = {}
+
+try:
+    index = int(os.environ.get("STEP_INDEX", "0"))
+except Exception:
+    index = 0
+
+try:
+    with open(os.environ["STEPS_FILE_PATH"]) as fh:
+        steps = json.load(fh)
+    step = steps[index] if 0 <= index < len(steps) else {}
+except Exception:
+    step = {}
+
+def copy_field(name):
+    if name in step:
+        reading[name] = step[name]
+
+if "ire" in step:
+    reading["ire"] = step["ire"]
+if "name" in step:
+    reading["name"] = step["name"]
+for dst, src in (("r_code", "r"), ("g_code", "g"), ("b_code", "b")):
+    if src in step:
+        reading[dst] = step[src]
+
+for field in (
+    "input_max", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
+    "analysis_ire", "target_ire", "transport_stimulus",
+    "target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
+    "series_target_white_y", "lg_target_white_y",
+    "series_type", "series_color", "sat_pct", "point_role", "series_mode",
+    "autocal_code", "autocal_white_reference", "autocal_reference_only",
+    "autocal_read_only", "autocal_slot_locked", "ddc_slot_locked",
+    "autocal_legal_white_anchor", "ddc_target_ire", "autocal_order_ire",
+    "autocal_target_label", "preview_r", "preview_g", "preview_b"
+):
+    copy_field(field)
+
+print(json.dumps(reading, separators=(",", ":")))
+PY
+}
+
 float_le() {
  local left="${1:-0}" right="${2:-0}"
  awk -v left="$left" -v right="$right" 'BEGIN { exit !((left + 0) <= (right + 0)) }'
@@ -652,20 +703,8 @@ START_INDEX=0
 # same white step a second time.
 if series_uses_initial_white_reference && [[ "$WHITE_READING" != "null" ]] && (( TOTAL > 0 )); then
  FIRST_IRE=$(get_step_field 0 ire)
- FIRST_R=$(get_step_field 0 r)
- FIRST_G=$(get_step_field 0 g)
- FIRST_B=$(get_step_field 0 b)
  FIRST_NAME=$(get_step_field 0 name)
- FIRST_READING=$(python -c "
-import json
-r=json.loads('''$WHITE_READING''')
-r['ire']=int('$FIRST_IRE' or 100)
-r['name']='''$FIRST_NAME'''
-r['r_code']=int('$FIRST_R' or 0)
-r['g_code']=int('$FIRST_G' or 0)
-r['b_code']=int('$FIRST_B' or 0)
-print(json.dumps(r))
-" 2>/dev/null || echo "")
+ FIRST_READING=$(build_step_reading_json 0 "$WHITE_READING" 2>/dev/null || echo "")
  if [[ -n "$FIRST_READING" ]]; then
   READINGS="$FIRST_READING"
   READING_COUNT=1
@@ -733,7 +772,7 @@ EOJSON
  # the series continues instead of sitting through a timeout.
  if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" ]] && float_le "$IRE" 0; then
   TS=$(date +%s)
-  READING="{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS,\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B}"
+  READING=$(build_step_reading_json "$i" "{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS}" 2>/dev/null || echo "")
   if [[ $READING_COUNT -gt 0 ]]; then
    READINGS="$READINGS,$READING"
   else
@@ -798,16 +837,7 @@ EOJSON
  if $GOT_RESULT; then
   PARSED=$(parse_latest_result)
   if [[ -n "$PARSED" ]]; then
-   READING=$(python -c "
-import json
-r=json.loads('''$PARSED''')
-r['ire']=$IRE
-r['name']='$NAME'
-r['r_code']=$R
-r['g_code']=$G
-r['b_code']=$B
-print(json.dumps(r))
-" 2>/dev/null)
+   READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
   fi
  fi
 
@@ -866,16 +896,7 @@ EOJSON
    if $GOT_RETRY; then
     PARSED=$(parse_latest_result)
     if [[ -n "$PARSED" ]]; then
-     ZERO_RETRY_READING=$(PARSED_JSON="$PARSED" STEP_IRE="$IRE" STEP_NAME="$NAME" STEP_R="$R" STEP_G="$G" STEP_B="$B" python -c "import json, os
-r=json.loads(os.environ['PARSED_JSON'])
-r['ire']=float(os.environ.get('STEP_IRE','0'))
-if r['ire'].is_integer():
- r['ire']=int(r['ire'])
-r['name']=os.environ.get('STEP_NAME','')
-r['r_code']=int(float(os.environ.get('STEP_R','0')))
-r['g_code']=int(float(os.environ.get('STEP_G','0')))
-r['b_code']=int(float(os.environ.get('STEP_B','0')))
-print(json.dumps(r))" 2>/dev/null)
+     ZERO_RETRY_READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
     fi
    fi
    if [[ -n "$ZERO_RETRY_READING" ]] && ! nonblack_zero_reading "$ZERO_RETRY_READING" "$IRE" "$R" "$G" "$B"; then
@@ -887,13 +908,13 @@ print(json.dumps(r))" 2>/dev/null)
   done
   if nonblack_zero_reading "$READING" "$IRE" "$R" "$G" "$B"; then
    echo "[$(date '+%H:%M:%S.%3N')] zero read guard excluded: step=$STEP_NUM ire=$IRE retries=$ZERO_READ_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
-   READING="{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}"
+   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}")
   fi
  fi
 
  if [[ -z "$READING" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
-  READING="{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}"
+  READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}")
  fi
 
  # Accumulate
@@ -985,15 +1006,7 @@ EOJSON
   if $GOT_RESULT; then
    PARSED=$(parse_latest_result)
    if [[ -n "$PARSED" ]]; then
-    REFRESH_READING=$(PARSED_JSON="$PARSED" REFRESH_IRE="$FIRST_IRE" REFRESH_NAME="$FIRST_NAME" REFRESH_R="$FIRST_R" REFRESH_G="$FIRST_G" REFRESH_B="$FIRST_B" python -c "import json, os
-  r=json.loads(os.environ['PARSED_JSON'])
-  ire=float(os.environ.get('REFRESH_IRE','100'))
-  r['ire']=int(ire) if ire.is_integer() else ire
-  r['name']=os.environ.get('REFRESH_NAME','100%')
-  r['r_code']=int(os.environ.get('REFRESH_R','0'))
-  r['g_code']=int(os.environ.get('REFRESH_G','0'))
-  r['b_code']=int(os.environ.get('REFRESH_B','0'))
-  print(json.dumps(r))" 2>/dev/null)
+    REFRESH_READING=$(build_step_reading_json 0 "$PARSED" 2>/dev/null)
    fi
   fi
 
