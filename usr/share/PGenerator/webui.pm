@@ -3052,7 +3052,7 @@ sub webui_meter_settings_load (@) {
  if(($pgenerator_conf{"dv_status"}||"0") eq "1") {
   my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
   $dv_map_mode="2" if(!defined $dv_map_mode || $dv_map_mode eq "");
-  $meter_target_gamma_auto="st2084";
+  $meter_target_gamma_auto=($dv_map_mode eq "2") ? "2.2" : "st2084";
   $meter_target_gamut_auto="p3d65";
  }
  my $boot_id=&_webui_meter_settings_boot_id();
@@ -8165,6 +8165,7 @@ function applyConfigState(nextConfig){
  // DV settings
  setVal('dv_map_mode',config.dv_map_mode||'2');
  if(sm==='dv'){
+  syncDvOutputEotfState();
   setVal('max_bpc','12');
   setVal('color_format','0');
   setVal('colorimetry','9');
@@ -8202,6 +8203,10 @@ function dvMetadataForMapMode(mapMode){
  if(mode==='1') return '3';
  if(mode==='2') return '2';
  return '2';
+}
+
+function syncDvOutputEotfState(){
+ if(getVal('signal_mode')==='dv') setVal('eotf','2');
 }
 
 function meterHdrMetadataFieldId(key,mode){
@@ -8300,6 +8305,7 @@ function updateModeVisibility(){
  const sm=getVal('signal_mode');
  document.getElementById('hdrCard').style.display=(sm==='hdr10'||sm==='hlg')?'':'none';
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
+ syncDvOutputEotfState();
  updateDiagAvsHd709Visibility();
  meterSyncHdrMetadata();
 }
@@ -8355,7 +8361,7 @@ function applyMeterTargetGamutDefault(force){
 }
 
 function meterDvAutoTargetGamma(){
- return 'st2084';
+ return meterDvMapModeValue()==='2' ? '2.2' : 'st2084';
 }
 
 function applyMeterTargetGammaDefault(){
@@ -8390,6 +8396,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('primaries','1');
   setVal('max_bpc','10');
  }else if(sm==='dv'){
+  setVal('eotf','2');
   setVal('color_format','0');
   setVal('colorimetry','9');
   setVal('primaries','1');
@@ -8407,6 +8414,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
 
 document.getElementById('dv_map_mode').addEventListener('change',function(){
  if(getVal('signal_mode')!=='dv') return;
+ syncDvOutputEotfState();
  applyMeterTargetGammaDefault();
  meterRefreshActiveSeriesCharts();
  saveMeterSettings();
@@ -13099,6 +13107,15 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
   const tgtLum=meterDvRelativeChartTargetLuminance(ire,peak);
   if(ire>=100){
    return meterDvRelativeWhiteGamma(tgtLum,peak);
+  }
+  return effectiveGamma(tgtLum,peak,ire);
+ }
+ if(meterChartIsDv() && meterDvMapModeValue()==='2'){
+  const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
+  const tgtLum=meterDvRelativeChartTargetLuminance(ire,peak);
+  if(ire>=100){
+   const prevLum=meterDvRelativeChartTargetLuminance(prevStepIre,peak);
+   return effectiveGammaTopSlope(tgtLum,peak,ire,prevLum,prevStepIre);
   }
   return effectiveGamma(tgtLum,peak,ire);
  }
