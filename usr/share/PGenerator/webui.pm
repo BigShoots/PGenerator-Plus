@@ -16318,6 +16318,7 @@ function meterDefaultSeriesButtonForTab(tab){
 }
 
 function meterSetSeriesTab(tab,skipAutoSelect){
+ const previousTab=meterNormalizeSeriesTab(meterSeriesTab);
  meterSeriesTab=meterNormalizeSeriesTab(tab);
  meterUpdateSeriesTabUi();
  if(skipAutoSelect) return;
@@ -16325,7 +16326,7 @@ function meterSetSeriesTab(tab,skipAutoSelect){
   meterSelectAutoCalGreyscale();
   return;
  }
- if(meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
+ if(previousTab===meterSeriesTab&&meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
  if(match) meterSelectSeries(match[1],parseInt(match[2],10));
