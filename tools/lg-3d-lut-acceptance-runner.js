@@ -149,6 +149,7 @@ function measuredBlackXyz(seriesStatus) {
     || readings.find(reading => String(reading.name || '').toLowerCase() === 'black')
     || readings.find(reading => Number(reading.ire) === 0);
   if (!black) return null;
+  if (black.error === 'no_reading' && black.reason === 'zero_xyz_luminance') return [0, 0, 0];
   const X = Number(black.X);
   const Y = Number(black.Y ?? black.luminance);
   const Z = Number(black.Z);
