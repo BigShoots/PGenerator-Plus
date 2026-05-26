@@ -10991,11 +10991,9 @@ function meterDvAbsoluteTargetLuminanceForPercent(percent, peak){
  return Math.min(targetPeak,gammaEotf(clamped,parseFloat(sel)||2.2)*targetPeak);
 }
 
-function meterDvAbsoluteTargetRollOffFraction(){
- // With the corrected DV transport/range path, Absolute chart targets should
- // rise to the measured peak across the full 0-100% range rather than
- // flattening at 75%.
- return 1;
+function meterDvAbsoluteTargetRollOffFraction(peak){
+ const targetPeak=(peak>0)?peak:meterChartMasterPeak();
+ return meterChartPqEncodeNormalized(targetPeak);
 }
 
 function meterDvTargetSignalFraction(ire,code){
@@ -11010,7 +11008,10 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak, code){
   : ((code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
    ? meterGreySignalFractionFromCode(Number(code))
    : frac);
- return Math.min(targetPeak,meterChartPqDecodeNormalized(signal));
+ const roll=(typeof meterDvAbsoluteTargetRollOffFraction==='function')
+  ? meterDvAbsoluteTargetRollOffFraction(targetPeak)
+  : meterChartPqEncodeNormalized(targetPeak);
+ return signal>=roll ? targetPeak : Math.min(targetPeak,meterChartPqDecodeNormalized(signal));
 }
 
 function meterDvRelativeChartTargetLuminance(ire, peak, code){
@@ -11815,6 +11816,18 @@ function targetChromaticityXY(r,g,b){
  return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
 }
 
+function meterDvAbsoluteReadingTargetY(reading){
+ if(!(meterChartIsDv()&&meterDvMapModeValue()==='1')||!reading||!meterReadingIsGreyscale(reading)) return null;
+ const stamped=Number(reading.dv_absolute_target_y);
+ if(Number.isFinite(stamped)&&stamped>=0) return stamped;
+ const white=Number(reading.dv_absolute_white_y);
+ const stim=meterReadingAnalysisIre(reading);
+ if(Number.isFinite(white)&&white>0&&Number.isFinite(Number(stim))){
+  return meterDvAbsoluteChartTargetLuminance(Number(stim),white,null);
+ }
+ return null;
+}
+
 function meterGreyChartTargetXYZForReading(reading){
  const wp=meterTargetWhitePoint();
  let refWhite=null;
@@ -11825,7 +11838,8 @@ function meterGreyChartTargetXYZForReading(reading){
  const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
  const ire=meterReadingAnalysisIre(reading)||(step?meterGreyChartStimulusIre(step):null);
  const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
- const Y=meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code);
+ const measuredDvTargetY=meterDvAbsoluteReadingTargetY(reading);
+ const Y=measuredDvTargetY!=null?measuredDvTargetY:meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code);
  return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
 }
 
@@ -12019,7 +12033,8 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
   const Lw=white?(white.luminance||white.Y||0):0;
   const blacks=(Array.isArray(meterReadings)?meterReadings:[]).filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&r.luminance!=null);
   const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
-  const ref=hcfrGreyRef(meterReadingAnalysisIre(reading)||reading.ire, xyz.Y, Lw, Lb, modeOrIncl, reading.r_code, gwWeight);
+  const dvTargetY=meterDvAbsoluteReadingTargetY(reading);
+  const ref=hcfrGreyRef(meterReadingAnalysisIre(reading)||reading.ire, xyz.Y, Lw, Lb, modeOrIncl, reading.r_code, gwWeight, dvTargetY);
   const wp=meterTargetWhitePoint();
   const XnM=(ref.wxN||wp.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||wp.Z)*ref.YWhite;
   const XnR=(ref.wxN||wp.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||wp.Z)*ref.YWhiteRef;
@@ -13875,7 +13890,7 @@ function meterGrayWorldWeight(){
 // Optional gwWeight (HCFR gw_Weight) pre-multiplies YWhite / YWhiteRef by
 // 0.15 or 0.05 to pull Lab into its linear (κ·t) region for near-black
 // patches.
-function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight){
+function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight, targetYOverride){
  const mode = meterResolveGreyRefMode(modeOrIncl);
  const gw = (gwWeight>0 && gwWeight<=1) ? gwWeight : 1.0;
  const measuredPeak = (Lw>0) ? Lw : (Ym>0 ? Ym : 1);
@@ -13892,7 +13907,8 @@ function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight){
   refVy = 1.0;
  } else if(mode==='eotf'){
   const targetPeak = meterChartIsHdr() ? meterGreyTargetPeak(measuredPeak) : measuredPeak;
-  const tgtY = meterGreyTargetLuminance(ire, targetPeak, Lb||0, code);
+  const stampedY=Number(targetYOverride);
+  const tgtY = (Number.isFinite(stampedY)&&stampedY>=0) ? stampedY : meterGreyTargetLuminance(ire, targetPeak, Lb||0, code);
   refVy = measuredPeak>0 ? tgtY/measuredPeak : 0;
  }
  return {
@@ -14687,6 +14703,11 @@ function meterStampReadingStepMeta(reading,step){
  if(step.target_X!=null) reading.target_X=step.target_X;
  if(step.target_Y!=null) reading.target_Y=step.target_Y;
  if(step.target_Z!=null) reading.target_Z=step.target_Z;
+ if(step.dv_absolute_white_y!=null) reading.dv_absolute_white_y=step.dv_absolute_white_y;
+ if(step.dv_absolute_target_y!=null) reading.dv_absolute_target_y=step.dv_absolute_target_y;
+ if(step.dv_absolute_rolloff_pct!=null) reading.dv_absolute_rolloff_pct=step.dv_absolute_rolloff_pct;
+ if(step.dv_absolute_tunnel_gamma!=null) reading.dv_absolute_tunnel_gamma=step.dv_absolute_tunnel_gamma;
+ if(step.dv_absolute_st2084_precomp!=null) reading.dv_absolute_st2084_precomp=step.dv_absolute_st2084_precomp;
  if(step.series_target_white_y!=null) reading.series_target_white_y=step.series_target_white_y;
  if(step.lg_target_white_y!=null) reading.lg_target_white_y=step.lg_target_white_y;
  if(step.autocal_code!=null) reading.autocal_code=step.autocal_code;
