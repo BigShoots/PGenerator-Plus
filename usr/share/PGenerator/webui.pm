@@ -2692,8 +2692,28 @@ sub webui_meter_lg_autocal_mark_cancelled (@) {
  return unless(-f $_meter_lg_autocal_file);
  my $json="";
  if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
- return if($json eq "" || $json!~/"status"\s*:\s*"running"/);
- $json=~s/"status"\s*:\s*"running"/"status":"cancelled"/;
+ return if($json eq "");
+ return if($json=~/"status"\s*:\s*"complete"/);
+ if($json=~/"status"\s*:\s*"[^"]*"/) {
+  $json=~s/"status"\s*:\s*"[^"]*"/"status":"cancelled"/;
+ } else {
+  $json=~s/\}$/,"status":"cancelled"}/;
+ }
+ if($json=~/"autocal"\s*:\s*(?:true|false)/) {
+  $json=~s/"autocal"\s*:\s*(?:true|false)/"autocal":false/;
+ } else {
+  $json=~s/\}$/,"autocal":false}/;
+ }
+ if($json=~/"calibration_mode"\s*:\s*(?:true|false)/) {
+  $json=~s/"calibration_mode"\s*:\s*(?:true|false)/"calibration_mode":false/;
+ } else {
+  $json=~s/\}$/,"calibration_mode":false}/;
+ }
+ if($json=~/"phase"\s*:\s*"[^"]*"/) {
+  $json=~s/"phase"\s*:\s*"[^"]*"/"phase":"cancelled"/;
+ } else {
+  $json=~s/\}$/,"phase":"cancelled"}/;
+ }
  if($json=~/"current_name"\s*:\s*"[^"]*"/) {
   $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal cancelled"/;
  } else {
@@ -2756,6 +2776,28 @@ sub webui_meter_lg_autocal_status (@) {
   my $json="";
   if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
 	  if($json ne "") {
+	   if($json=~/"status"\s*:\s*"cancelled"/ && !&webui_meter_lg_autocal_running()) {
+	    my $changed=0;
+	    if($json=~/"autocal"\s*:\s*true/) {
+	     $json=~s/"autocal"\s*:\s*true/"autocal":false/;
+	     $changed=1;
+	    } elsif($json!~/"autocal"\s*:/) {
+	     $json=~s/\}$/,"autocal":false}/;
+	     $changed=1;
+	    }
+	    if($json=~/"calibration_mode"\s*:\s*true/) {
+	     $json=~s/"calibration_mode"\s*:\s*true/"calibration_mode":false/;
+	     $changed=1;
+	    } elsif($json!~/"calibration_mode"\s*:/) {
+	     $json=~s/\}$/,"calibration_mode":false}/;
+	     $changed=1;
+	    }
+	    if($json=~/"phase"\s*:\s*"restoring"/) {
+	     $json=~s/"phase"\s*:\s*"restoring"/"phase":"cancelled"/;
+	     $changed=1;
+	    }
+	    if($changed && open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
+	   }
 	   if($json=~/"status"\s*:\s*"running"/ && !&webui_meter_lg_autocal_running()) {
 	    if(
 	     $json=~/"final_1d_lut_uploaded"\s*:\s*true/ &&
