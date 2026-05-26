@@ -316,6 +316,7 @@ m2 = 2523.0 / 32.0
 c1 = 3424.0 / 4096.0
 c2 = 2413.0 / 128.0
 c3 = 2392.0 / 128.0
+dv_tunnel_gamma = 3.8
 
 def pq_decode_normalized(code):
     code = max(0.0, min(1.0, float(code)))
@@ -343,7 +344,7 @@ def legal_code_for_absolute_percent(percent):
     if stim <= 0:
         return 16, 0.0
     target_y = min(white_y, pq_decode_normalized(stim))
-    encoded = 0.0 if target_y <= 0 else (target_y / white_y) ** (1 / 2.2)
+    encoded = 0.0 if target_y <= 0 else (target_y / white_y) ** (1 / dv_tunnel_gamma)
     code = int(round(16 + max(0.0, min(1.0, encoded)) * 219))
     return max(16, min(235, code)), target_y
 
@@ -362,6 +363,7 @@ for step in steps:
     step["dv_absolute_white_y"] = white_y
     step["dv_absolute_st2084_precomp"] = True
     step["dv_absolute_target_y"] = target_y
+    step["dv_absolute_tunnel_gamma"] = dv_tunnel_gamma
 
 if not changed:
     raise SystemExit(0)
