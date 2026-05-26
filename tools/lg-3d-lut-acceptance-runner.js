@@ -535,6 +535,20 @@ async function parkBlack() {
   }).catch(() => null);
 }
 
+async function ensureCalibrationModeOff(label) {
+  await api('/api/meter/lg-autocal/stop', { method: 'POST', timeoutMs: 10000 }).catch(() => null);
+  const result = await api('/api/lg/calibration-mode', {
+    method: 'POST',
+    body: { enabled: false, picture_mode: config.picture_mode },
+    timeoutMs: 18000
+  });
+  save(`lg-3d-lut-acceptance-${stamp}-${label}-calibration-mode-off.json`, result);
+  if (!result || result.status !== 'ok') {
+    throw new Error(`${label} could not turn LG calibration mode off before series read: ${(result && result.message) || 'unknown'}`);
+  }
+  await sleep(2000);
+}
+
 async function pollStatus(endpoint, outName, label, timeoutMs) {
   const started = Date.now();
   let last = null;
@@ -580,6 +594,7 @@ async function runSeries(type, label) {
   save(`lg-3d-lut-acceptance-${stamp}-${label}-${type}-payload.json`, payload);
   await api('/api/meter/stop', { method: 'POST', timeoutMs: 30000 }).catch(() => null);
   await parkBlack();
+  await ensureCalibrationModeOff(`${label}-${type}`);
   const start = await api('/api/meter/series', { method: 'POST', body: payload, timeoutMs: 30000 });
   save(`lg-3d-lut-acceptance-${stamp}-${label}-${type}-start.json`, start);
   if (!start || start.status !== 'started') throw new Error(`${label} ${type} did not start: ${(start && start.message) || 'unknown'}`);
