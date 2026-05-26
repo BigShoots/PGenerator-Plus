@@ -11130,7 +11130,7 @@ function meterLgAutoCalBodyLumaBiasPayload(dtype){
  const display=String(dtype||getEffectiveDisplayType()||'').toLowerCase();
  if(!/lg[_ -]?c2/.test(display)) return {};
  return {
-  body_luma_bias_mode:'apply',
+  body_luma_bias_mode:'observe',
   body_luma_bias_matrix_pct:{
    10:-0.006,
    15:0.008,
