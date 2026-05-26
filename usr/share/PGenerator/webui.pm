@@ -6608,6 +6608,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-refresh{width:170px}
 .meter-inline-value{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0}
 .meter-inline-value input{width:54px;min-height:34px;padding:6px 10px;border:1px solid var(--border) !important;background:#0d0d15 !important;border-radius:6px}
+#meterSettingsGrid .field-delay #meterDelay{height:34px;box-sizing:border-box}
 .meter-inline-value input:focus{outline:none;border-color:var(--accent) !important}
 .meter-inline-unit{font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
 .meter-chart-inline-input{width:62px;height:22px;min-height:0;padding:2px 6px;border:1px solid var(--border);background:#0d0d15;color:var(--text);border-radius:5px;font-size:.68rem;box-sizing:border-box}
