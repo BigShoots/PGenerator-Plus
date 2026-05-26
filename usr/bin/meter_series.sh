@@ -500,6 +500,9 @@ series_requires_final_white_refresh() {
  [[ "$SERIES_ID" == greyscale_* ]] || return 1
  [[ "$SIGNAL_MODE" == "dv" ]] && return 1
  (( TOTAL > 2 ))
+ local first_white_reference
+ first_white_reference=$(get_step_field 0 autocal_white_reference)
+ [[ "$first_white_reference" == "True" || "$first_white_reference" == "true" || "$first_white_reference" == "1" ]] && return 1
 }
 
 series_uses_first_white_warmup() {
@@ -980,10 +983,12 @@ EOJSON
 	 # Settle delay — use the user-configured value by default, but allow
 	 # per-step overrides for very dark or otherwise slow-settling patches.
 	 STEP_DELAY="$DELAY_SEC"
+	 STEP_DELAY_EXPLICIT=0
 	 if [[ "$READ_DELAY_MS" =~ ^[0-9]+$ ]] && (( READ_DELAY_MS > 0 )); then
 	  STEP_DELAY=$(python -c "print(float('$READ_DELAY_MS')/1000.0)" 2>/dev/null)
+	  STEP_DELAY_EXPLICIT=1
 	 fi
-	 if (( i == 0 )); then
+	 if (( i == 0 && STEP_DELAY_EXPLICIT == 0 )); then
 	  STEP_DELAY=$(python -c "print(float('$STEP_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
 	 fi
  if ! maybe_wait_for_initial_ready "$STEP_NUM" "$NAME"; then
