@@ -12028,31 +12028,6 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  form = form || meterDeltaEForm();
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
  const mode=meterResolveGreyRefMode(modeOrIncl);
- if(meterRgbBalanceFormula()==='hcfr'){
-  const chartWhite=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints))?meterGreyscaleChartWhiteReference(meterReadings):null;
-  const white=(chartWhite&&meterReadingLuminanceNits(chartWhite)>0)?chartWhite:((meterWhiteReading&&meterWhiteReading.Y>0)?meterWhiteReading:null);
-  const Lw=white?(white.luminance||white.Y||0):0;
-  const blacks=(Array.isArray(meterReadings)?meterReadings:[]).filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&r.luminance!=null);
-  const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
-  const dvTargetY=meterDvAbsoluteReadingTargetY(reading);
-  const ref=hcfrGreyRef(meterReadingAnalysisIre(reading)||reading.ire, xyz.Y, Lw, Lb, modeOrIncl, reading.r_code, gwWeight, dvTargetY);
-  const wp=meterTargetWhitePoint();
-  const XnM=(ref.wxN||wp.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||wp.Z)*ref.YWhite;
-  const XnR=(ref.wxN||wp.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||wp.Z)*ref.YWhiteRef;
-  const labM=xyzToLab(xyz.X,xyz.Y,xyz.Z,XnM,YnM,ZnM);
-  const labT=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
-  const refAbsScale=(ref.YWhiteRef>0)?(ref.YWhite/ref.YWhiteRef):ref.YWhite;
-  const ctx={
-   isGrey:true,
-   Ym:xyz.Y, Yref:ref.refY*ref.YWhiteRef,
-   X:xyz.X, Y:xyz.Y, Z:xyz.Z, YWhite:ref.YWhite,
-   Xr:ref.refX*ref.YWhiteRef, Yr:ref.refY*ref.YWhiteRef, Zr:ref.refZ*ref.YWhiteRef,
-   YWhiteRef:ref.YWhiteRef,
-   itpX:xyz.X, itpY:xyz.Y, itpZ:xyz.Z,
-   itpXr:ref.refX*refAbsScale, itpYr:ref.refY*refAbsScale, itpZr:ref.refZ*refAbsScale
-  };
-  return {value:meterDeltaE(labM,labT,form,ctx),de2000:deltaE2000(labM,labT)};
- }
  let wR=meterColorLabWhite();
  const _gw=(gwWeight>0&&gwWeight<=1)?gwWeight:1;
  if(_gw<1) wR={X:wR.X*_gw,Y:wR.Y*_gw,Z:wR.Z*_gw};
