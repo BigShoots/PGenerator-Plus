@@ -1802,7 +1802,7 @@ sub body_itp_near_target_reached {
  my $ire=$step->{"ire"}+0;
  return 0 if($ire <= 10.0001 || $ire >= 99);
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
- return ($de <= ($target_delta+0.25)) ? 1 : 0;
+ return ($de <= ($target_delta+0.08)) ? 1 : 0;
 }
 
 sub target_reached {
@@ -1892,7 +1892,7 @@ sub close_enough_stalled {
 	  return 1 if(($iter||0) >= 7);
 	 }
 	 if(body_itp_near_target_reached($step,$best_de,$best_lum_pct,$target_delta)) {
-	  return 1 if(($iter||0) >= 4 && ($stalls||0) >= 1 && $best_de <= ($target_delta+0.25));
+	  return 1 if(($iter||0) >= 4 && ($stalls||0) >= 1 && $best_de <= ($target_delta+0.08));
 	  return 1 if(($iter||0) >= 5 && ($stalls||0) >= 2);
 	  return 1 if(($iter||0) >= 8 && ($stalls||0) >= 3);
 		 }
@@ -2851,7 +2851,7 @@ sub legal_white_pair_close_enough {
 		 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
 		 return 0 if(!within_itp_luminance_included_acceptance($de_a,$step_a));
 		 return 0 if(!within_itp_luminance_included_acceptance($de_b,$step_b));
-		 my $allow=$target_delta+0.20;
+		 my $allow=$target_delta+0.05;
 		 return 0 if($de_a > $allow || $de_b > $allow);
 	 return 0 if(abs($de_a-$de_b) > legal_white_pair_spread_limit($target_delta)+0.12);
 	 return 0 if(white_luminance_guard_failed($step_a,$reading_a,$white_guard_y));
