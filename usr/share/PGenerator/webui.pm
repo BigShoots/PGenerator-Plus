@@ -7937,7 +7937,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 		   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT so the first greyscale pass stays fast.</div>
 		   <div id="meterFullAutoCalTouchupChoiceRow" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
 		    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
-		     <input type="checkbox" id="meterFullAutoCalPostCommitPolishEnabled" checked style="margin-top:2px">
+		     <input type="checkbox" id="meterFullAutoCalPostCommitPolishEnabled" style="margin-top:2px">
 		     <span>
 		      <span style="display:block;font-weight:700">Post greyscale commit polish</span>
 		      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Polishes the committed greyscale state after the 3D LUT writes its calibration.</span>
@@ -19414,7 +19414,7 @@ function meterFullAutoCalDefaultConfig(){
   patternSignalRange:null,
   wp:null,
 	  preCalSkipped:false,
-	  postCommitPolishEnabled:true,
+	  postCommitPolishEnabled:false,
 	  magicWandEnabled:false
 	 };
 	}
@@ -19430,7 +19430,7 @@ function meterFullAutoCalRunConfigFlag(key,fallback){
 }
 
 function meterFullAutoCalPostCommitPolishEnabled(){
- return meterFullAutoCalRunConfigFlag('postCommitPolishEnabled',true);
+ return meterFullAutoCalRunConfigFlag('postCommitPolishEnabled',false);
 }
 
 	function meterFullAutoCalPostCommitVerifyEnabled(){
