@@ -27,7 +27,7 @@ This file is a working reminder for future sessions in this repo. Treat it as lo
 - Hardware acceptance rule: never judge greyscale AutoCal from the final in-cal AutoCal status alone. After the worker is complete, explicitly turn LG calibration mode off, run a separate post-cal greyscale series read, and evaluate dE ITP with luminance from that committed-state read.
 - OLED shadow detail pre-commit compensation is disabled. Do not re-enable the automatic low-shadow DDC offset unless a future hardware test proves it does not make 2.3/3/4/5 too bright after commit.
 - Standalone greyscale 26pt and Full AutoCal's first greyscale pass both use the full-DDC spine path. Full AutoCal cleanup after the 3D LUT is limited to the selected post greyscale commit polish and/or Magic Wand steps.
-- Current full-DDC spine anchors are `109,20,40,60,80`, then remaining points continue from the top down.
+- Current full-DDC spine anchors are `109,105,99,75,50,25,5`, then remaining body points run downward to 15% and the shadow-detail pass runs upward from `2.3,3,4,7,10` (5% is already solved as the low anchor).
 - In full-DDC spine calibration, do not invoke the hidden paired `100% legal white` read while solving 99%; 100% remains a post-cal/series chart reference, not an AutoCal target in this path.
 - Full-DDC spine seeding should wait until all spine anchors are solved, then use the calibrated anchors plus subsequently solved points to seed the remaining slots. Anchors need normal larger adjustment moves; non-anchors get seeded/fine move damping.
 - Anchor pre-drive is currently off for standalone greyscale spine testing.
