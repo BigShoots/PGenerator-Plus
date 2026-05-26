@@ -361,7 +361,7 @@ sub lg_autocal_26_full_ddc_spine_enabled {
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_ires {
- return (109,105,99,75,50,25,5);
+ return (109,20,40,60,80);
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_count {
@@ -467,7 +467,7 @@ sub order_autocal_steps {
 		 } @valid;
 		  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
 			  my @lg_autocal_26_order=(109,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
-				  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,2.3,3,4,7,10)
+				  @lg_autocal_26_order=(109,20,40,60,80,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,2.3,3,4,5,7,10)
 				   if(lg_autocal_26_full_ddc_spine_enabled($config));
 		  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,4,3,2.3)
 		   if(lg_autocal_26_anchor_predrive_enabled($config));
