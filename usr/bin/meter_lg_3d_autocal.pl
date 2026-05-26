@@ -1076,6 +1076,13 @@ my $state={
  target_gamut => "bt709",
  target_gamma => $config->{"target_gamma"}||"bt1886",
 };
+if($config->{"full_workflow"}) {
+ $state->{"full_workflow"}=json_true();
+ $state->{"full_autocal_run_id"}=$config->{"full_autocal_run_id"} if(defined($config->{"full_autocal_run_id"}) && $config->{"full_autocal_run_id"} ne "");
+ $state->{"full_autocal_phase"}=$config->{"full_autocal_phase"} if(defined($config->{"full_autocal_phase"}) && $config->{"full_autocal_phase"} ne "");
+ $state->{"full_autocal_post_commit_polish"}=json_bool($config->{"full_autocal_post_commit_polish"}) if(exists($config->{"full_autocal_post_commit_polish"}));
+ $state->{"full_autocal_magic_wand"}=json_bool($config->{"full_autocal_magic_wand"}) if(exists($config->{"full_autocal_magic_wand"}));
+}
 write_state($state);
 my $upload_requested=upload_requested($config);
 

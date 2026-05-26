@@ -10699,6 +10699,10 @@ my $state={
 		 calibration_mode=>JSON::PP::false,
 			 message=>"Starting",
 			};
+if($full_workflow) {
+ $state->{"full_autocal_post_commit_polish"}=$config->{"full_autocal_post_commit_polish"} ? JSON::PP::true : JSON::PP::false if(exists($config->{"full_autocal_post_commit_polish"}));
+ $state->{"full_autocal_magic_wand"}=$config->{"full_autocal_magic_wand"} ? JSON::PP::true : JSON::PP::false if(exists($config->{"full_autocal_magic_wand"}));
+}
 	if(lg_autocal_26_anchor_predrive_enabled($config)) {
 	 $state->{"lg_autocal_26_mode"}="anchor_predrive";
 	 $state->{"lg_autocal_26_anchor_predrive"}=JSON::PP::true;
