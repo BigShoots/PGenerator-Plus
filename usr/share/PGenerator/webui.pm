@@ -13157,7 +13157,8 @@ function meterGreyMeasuredEotfValue(luminance,refWhite){
 function meterGreyEotfValueFromLuminance(luminance,refWhite){
  const y=Math.max(0,luminance||0);
  if(meterGreyEotfUsesPqCurve()) return meterChartPqEncodeNormalized(y);
- return y;
+ const peak=(refWhite>0)?refWhite:100;
+ return peak>0 ? y/peak : 0;
 }
 
 function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
