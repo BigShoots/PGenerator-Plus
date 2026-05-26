@@ -1054,19 +1054,99 @@ sub body_luma_bias_decision {
    reason=>$applied ? "applied" : $reason
   });
  }
+	 return $effective_target_y;
+	}
+
+sub low_shadow_committed_target_bias_pct_for_step {
+ my ($config,$step)=@_;
+ return (0,"not_lg_autocal_26") if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return (0,"not_low_shadow") if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return (0,"not_low_shadow") if($ire <= 0 || $ire > 10.0001);
+ my $mode=defined($config->{"low_shadow_committed_target_bias_mode"}) ? lc($config->{"low_shadow_committed_target_bias_mode"}) : "apply";
+ return (0,"disabled") if($mode eq "off" || $mode eq "disabled" || $mode eq "none");
+ my %default=(
+  "5" => -0.16,
+ );
+ my $matrix=(ref($config->{"low_shadow_committed_target_bias_matrix_pct"}) eq "HASH")
+  ? $config->{"low_shadow_committed_target_bias_matrix_pct"} : undef;
+ $matrix=$config->{"low_shadow_committed_target_bias_matrix"} if(ref($matrix) ne "HASH" && ref($config->{"low_shadow_committed_target_bias_matrix"}) eq "HASH");
+ my $source="default";
+ my $bias;
+ if(ref($matrix) eq "HASH") {
+  foreach my $key (keys %$matrix) {
+   next if(!defined($key) || !defined($matrix->{$key}));
+   if(abs(($key+0)-$ire) < 0.001) {
+    $bias=$matrix->{$key}+0;
+    $source="matrix";
+    last;
+   }
+  }
+ }
+ if(!defined($bias)) {
+  my $key=format_percent($ire);
+  return (0,"not_configured") if(!exists($default{$key}));
+  $bias=$default{$key};
+ }
+ $bias=-0.25 if($bias < -0.25);
+ $bias=0.05 if($bias > 0.05);
+ return (0,"zero_bias") if(abs($bias) < 0.0000001);
+ return ($bias,$source);
+}
+
+sub low_shadow_committed_target_bias_allowed {
+ my ($config,$state,$signal_mode,$base_target_y)=@_;
+ return (0,"not_lg_autocal_26") if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return (0,"not_sdr") if(lc($signal_mode||"sdr") ne "sdr");
+ return (0,"missing_target") if(!defined($base_target_y) || $base_target_y <= 0);
+ return (0,"touchup") if(autocal_config_is_touchup($config));
+ return (0,"post_3d_polish") if(autocal_config_is_post_3d_polish($config));
+ return (0,"post_series_adjust") if(autocal_config_is_post_series_adjust($config));
+ return (0,"post_series_revert") if(autocal_config_is_post_series_revert($config));
+ if(ref($state) eq "HASH") {
+  return (0,"final_lut_uploaded") if($state->{"final_1d_lut_uploaded"});
+  my $phase=lc($state->{"phase"}||"");
+  my $name=lc($state->{"current_name"}||"");
+  return (0,"committed_phase") if($phase =~ /(committed|polish|verify|post|series|settling)/ || $name =~ /(committed|polish|verify|post|series|magic wand)/);
+ }
+ return (1,"eligible");
+}
+
+sub low_shadow_committed_target_bias_decision {
+ my ($config,$state,$step,$signal_mode,$base_target_y)=@_;
+ my ($bias_pct,$bias_source)=low_shadow_committed_target_bias_pct_for_step($config,$step);
+ my ($eligible,$allowed_reason)=low_shadow_committed_target_bias_allowed($config,$state,$signal_mode,$base_target_y);
+ my $applied=($eligible && abs($bias_pct) > 0.0000001) ? 1 : 0;
+ my $effective_target_y=$applied ? $base_target_y*(1+$bias_pct) : $base_target_y;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef;
+ my $reason=$applied ? "applied" : (!$eligible ? $allowed_reason : $bias_source);
+ if(defined($ire) && $ire > 0 && $ire <= 10.0001 && ($applied || $reason ne "not_configured")) {
+  trace_109($step,"low_shadow_committed_target_bias_decision",{
+   ire=>$ire+0,
+   base_target_y=>defined($base_target_y)?$base_target_y+0:undef,
+   biased_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
+   effective_target_y=>defined($effective_target_y)?$effective_target_y+0:undef,
+   bias_pct=>$bias_pct+0,
+   bias_source=>$bias_source,
+   bias_applied=>$applied?JSON::PP::true:JSON::PP::false,
+   applied=>$applied?JSON::PP::true:JSON::PP::false,
+   reason=>$reason
+  });
+ }
  return $effective_target_y;
 }
 
 sub effective_target_luminance_for_autocal_reading {
- my ($white_y,$step,$reading,$target_gamma,$signal_mode,$config,$state)=@_;
- my $target=target_luminance_for_autocal_step($white_y,$step,$target_gamma,$signal_mode);
- if(!defined($target) && autocal_step_is_peak_headroom($step)) {
-  my $Y=luminance($reading);
-  return $Y if(defined($Y) && $Y > 0);
- }
- $target=body_luma_bias_decision($config || $LG_AUTOCAL_CONFIG,$state || $LG_AUTOCAL_STATE,$step,$target_gamma,$signal_mode,$target);
- return $target;
-}
+	 my ($white_y,$step,$reading,$target_gamma,$signal_mode,$config,$state)=@_;
+	 my $target=target_luminance_for_autocal_step($white_y,$step,$target_gamma,$signal_mode);
+	 if(!defined($target) && autocal_step_is_peak_headroom($step)) {
+	  my $Y=luminance($reading);
+	  return $Y if(defined($Y) && $Y > 0);
+	 }
+	 $target=body_luma_bias_decision($config || $LG_AUTOCAL_CONFIG,$state || $LG_AUTOCAL_STATE,$step,$target_gamma,$signal_mode,$target);
+	 $target=low_shadow_committed_target_bias_decision($config || $LG_AUTOCAL_CONFIG,$state || $LG_AUTOCAL_STATE,$step,$signal_mode,$target);
+	 return $target;
+	}
 
 sub derived_white_reference_from_peak_headroom {
  my ($step,$reading,$target_gamma,$signal_mode)=@_;
