@@ -19586,6 +19586,17 @@ function meterFullAutoCalStatusMatchesRun(status){
  return true;
 }
 
+function meterFullAutoCalMergeCleanupConfigFromStatus(status){
+ if(!(status&&status.full_workflow)) return;
+ const hasPolish=Object.prototype.hasOwnProperty.call(status,'full_autocal_post_commit_polish');
+ const hasMagicWand=Object.prototype.hasOwnProperty.call(status,'full_autocal_magic_wand');
+ if(!hasPolish&&!hasMagicWand) return;
+ const next={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig())};
+ if(hasPolish) next.postCommitPolishEnabled=status.full_autocal_post_commit_polish!==false;
+ if(hasMagicWand) next.magicWandEnabled=status.full_autocal_magic_wand===true;
+ meterFullAutoCalConfig=next;
+}
+
 function meterFullAutoCalEnsureStatusPhase(status,phase){
  if(meterFullAutoCalRunning&&meterFullAutoCalPhase===phase) return true;
  if(status&&status.full_workflow&&!meterFullAutoCalStatusMatchesRun(status)) return false;
@@ -19597,6 +19608,7 @@ function meterFullAutoCalEnsureStatusPhase(status,phase){
  meterFullAutoCalConfig=meterFullAutoCalConfig||meterFullAutoCalDefaultConfig();
  meterFullAutoCalResults=meterFullAutoCalResults||{first:null,lut3d:null,touchup:null};
  meterFullAutoCalLoadReportData();
+ meterFullAutoCalMergeCleanupConfigFromStatus(status);
  meterFullAutoCalMergeConfigFromGreyscaleStatus(status);
  meterFullAutoCalSaveState();
  return true;
@@ -20094,6 +20106,8 @@ async function meterFullAutoCalStart3d(firstStatus){
  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalMarkCompletionHandled(firstStatus);
  meterFullAutoCalMergeConfigFromGreyscaleStatus(firstStatus);
+ const postCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
+ const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
  meterFullAutoCalPhase='3d-lut';
  meterFullAutoCalSaveState();
  meterAutoCalRunning=false;
@@ -20106,7 +20120,9 @@ async function meterFullAutoCalStart3d(firstStatus){
   fullWorkflow:true,
   skipConfirm:true,
   method:(meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||meterFullAutoCalMethodValue(),
- upload:meterFullAutoCalConfig?!!meterFullAutoCalConfig.upload:meterFullAutoCalUploadValue()
+  upload:meterFullAutoCalConfig?!!meterFullAutoCalConfig.upload:meterFullAutoCalUploadValue(),
+  postCommitPolishEnabled:postCommitPolishEnabled,
+  magicWandEnabled:magicWandEnabled
  });
  if(!started) meterFullAutoCalAbort('Full Auto Cal could not start 3D LUT AutoCal',true);
 }
@@ -20238,6 +20254,8 @@ function meterFullAutoCalTouchupTargetY(){
 	    full_workflow:fullWorkflow?true:undefined,
 	    full_autocal_run_id:fullWorkflow?(meterFullAutoCalRunId||undefined):undefined,
 	    full_autocal_phase:fullWorkflow?'post-3d-polish':undefined,
+	    full_autocal_post_commit_polish:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():undefined,
+	    full_autocal_magic_wand:fullWorkflow?meterFullAutoCalMagicWandEnabled():undefined,
 	    post_cal_series_readings:beforeSnap.readings,
 	    post_cal_adjustment_reference:meterAutoCalMagicWandAdjustmentReference(status,fullWorkflow),
 	    post_cal_series_adjust_settle_ms:6000,
@@ -20434,6 +20452,7 @@ function meterFullAutoCalTouchupTargetY(){
 
 	async function meterFullAutoCalStartPost3dPolish(lutStatus){
 	 if(!meterFullAutoCalRunning) return false;
+	 meterFullAutoCalMergeCleanupConfigFromStatus(lutStatus);
 	 const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
 	 const post3dPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
 	 const post3dPostCommitVerifyEnabled=false;
@@ -20540,6 +20559,8 @@ function meterFullAutoCalTouchupTargetY(){
     full_workflow:true,
     full_autocal_run_id:meterFullAutoCalRunId||undefined,
     full_autocal_phase:'post-3d-polish',
+    full_autocal_post_commit_polish:post3dPostCommitPolishEnabled,
+    full_autocal_magic_wand:magicWandEnabled,
     steps:autocalSteps
    }));
   let r=null;
@@ -20577,6 +20598,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
  if(lutRunId) meterFullAutoCalRunId=lutRunId;
  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalMarkCompletionHandled(lutStatus);
+ meterFullAutoCalMergeCleanupConfigFromStatus(lutStatus);
  if(!meterFullAutoCalPostTouchupEnabled()){
   if(await meterFullAutoCalStartPost3dPolish(lutStatus)) return true;
   meterLg3dAutoCalRunning=false;
@@ -20694,6 +20716,8 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     full_workflow:true,
     full_autocal_run_id:meterFullAutoCalRunId||undefined,
     full_autocal_phase:'touchup-greyscale',
+    full_autocal_post_commit_polish:touchupPostCommitPolishEnabled,
+    full_autocal_magic_wand:meterFullAutoCalMagicWandEnabled(),
     steps:autocalSteps
    }));
   let r=null;
@@ -21133,10 +21157,12 @@ async function meterAutoCalConfirmAndStart(){
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
-	    force_ddc_white_balance:true,
+		    force_ddc_white_balance:true,
 		    full_workflow:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?true:undefined,
 		    full_autocal_run_id:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalRunId||undefined:undefined,
 		    full_autocal_phase:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'first-greyscale':undefined,
+		    full_autocal_post_commit_polish:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalPostCommitPolishEnabled():undefined,
+		    full_autocal_magic_wand:(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?meterFullAutoCalMagicWandEnabled():undefined,
 		    post_commit_polish:postCommitPolishEnabled,
 		    post_commit_verify:postCommitVerifyEnabled,
 		    post_commit_body_polish:postCommitPolishEnabled?undefined:false,
@@ -21414,6 +21440,8 @@ async function meterStartLg3dAutoCal(options){
  const preflightLut3d=meterFullAutoCalConfig&&meterFullAutoCalConfig.preflightReset&&meterFullAutoCalConfig.preflightReset.lut3d;
  const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
  const skipPreprofileUnityReset=!!(fullWorkflow&&upload&&preflightLut3d&&preflightLut3d.upload_verified&&(!preflightPictureMode||!pictureMode||preflightPictureMode===pictureMode));
+ const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
+ const fullMagicWand=(options&&Object.prototype.hasOwnProperty.call(options,'magicWandEnabled'))?options.magicWandEnabled===true:meterFullAutoCalMagicWandEnabled();
  const payload=meterMeasurementSignalContext({
   method:method,
   type:'lg-3d-lut',
@@ -21431,10 +21459,12 @@ async function meterStartLg3dAutoCal(options){
  requested_signal_mode:meterChartSignalMode(),
  patch_insert:document.getElementById('meterPatchInsert').checked,
  upload:upload,
- full_workflow:fullWorkflow?true:undefined,
- full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
- full_autocal_phase:fullWorkflow?'3d-lut':undefined,
- skip_preprofile_unity_reset:skipPreprofileUnityReset||undefined,
+  full_workflow:fullWorkflow?true:undefined,
+  full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
+  full_autocal_phase:fullWorkflow?'3d-lut':undefined,
+  full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
+  full_autocal_magic_wand:fullWorkflow?fullMagicWand:undefined,
+  skip_preprofile_unity_reset:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_verified:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
  preflight_3d_lut_upload_command:skipPreprofileUnityReset&&preflightLut3d.upload_command?preflightLut3d.upload_command:undefined,
