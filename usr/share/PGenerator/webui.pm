@@ -19430,6 +19430,7 @@ function meterFullAutoCalRunConfigFlag(key,fallback){
 }
 
 function meterFullAutoCalPostCommitPolishEnabled(){
+ if(!meterFullAutoCalRunning) return false;
  return meterFullAutoCalRunConfigFlag('postCommitPolishEnabled',false);
 }
 
