@@ -23417,6 +23417,16 @@ function drawEOTFChart(gs,allSteps,readingMap){
  ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
+function meterDrawDeltaSummary(ctx,chart,values){
+ const vals=(values||[]).filter(v=>Number.isFinite(v));
+ if(!vals.length) return;
+ const avg=vals.reduce((s,v)=>s+v,0)/vals.length;
+ const min=Math.min(...vals);
+ const max=Math.max(...vals);
+ ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='right';
+ ctx.fillText('Min: '+min.toFixed(2)+'  Avg: '+avg.toFixed(2)+'  Max: '+max.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
+}
+
 function drawGammaChart(gs,allSteps,readingMap){
  const ctx=getChartCtx('chartGamma');
  if(!ctx) return;
@@ -23553,11 +23563,7 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
   }
  });
  // Average dE line
- if(deValues.length>0){
-  const avgDE=deValues.reduce((s,v)=>s+v,0)/deValues.length;
-  ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='right';
-  ctx.fillText('Avg: '+avgDE.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
- }
+ meterDrawDeltaSummary(ctx,chart,deValues);
  // White point info (CCT, Δxy from D65)
  if(whiteR&&whiteR.x>0&&whiteR.y>0){
   const wp=meterTargetWhitePoint();
@@ -23640,11 +23646,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
    ctx.fillRect(cx-1,chart.pad.t+chart.h-2,2,2);
   }
  });
- if(deValues.length>0){
-  const avgDE=deValues.reduce((s,v)=>s+v,0)/deValues.length;
-  ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='right';
-  ctx.fillText('Avg: '+avgDE.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
- }
+ meterDrawDeltaSummary(ctx,chart,deValues);
 }
 
 function drawDeltaE2000Preset(gsSteps){
@@ -24356,11 +24358,7 @@ function drawColorDeltaE2000Chart(readings){
   ctx.fillStyle='#ccc';ctx.font='11px sans-serif';ctx.textAlign='center';
   ctx.fillText(d.de.toFixed(2),cx,y-4);
  });
- if(deValues.length>0){
-  const avg=deValues.reduce((s,v)=>s+v,0)/deValues.length;
-  ctx.fillStyle='#888';ctx.font='11px sans-serif';ctx.textAlign='right';
-  ctx.fillText('Avg: '+avg.toFixed(2),chart.pad.l+chart.w,chart.pad.t-4);
- }
+ meterDrawDeltaSummary(ctx,chart,deValues);
 }
 
 function drawColorDeltaE2000Preset(steps){
