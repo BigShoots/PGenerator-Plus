@@ -10537,7 +10537,7 @@ sub read_step_once {
 		 my ($config,$step,$attempt,$opts)=@_;
 		 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
 		 my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : 100;
-		 my $delay_ms=int($config->{"delay_ms"}||500);
+		 my $delay_ms=int($config->{"delay_ms"}||1000);
 		 $delay_ms=1800 if($delay_ms < 1800);
 		 $delay_ms=5000 if($ire <= 5 && $delay_ms < 5000);
 		 $delay_ms=4200 if($ire > 5 && $ire <= 10 && $delay_ms < 4200);
@@ -10690,7 +10690,7 @@ my $state={
 		 headroom_target_luminance=>$headroom_target_luminance||undef,
 		 target_gamma=>$target_gamma,
 		 display_type=>$config->{"display_type"}||"lcd",
-		 configured_delay_ms=>int($config->{"delay_ms"}||500),
+		 configured_delay_ms=>int($config->{"delay_ms"}||1000),
 		 full_workflow=>$full_workflow ? JSON::PP::true : JSON::PP::false,
 		 full_autocal_phase=>$full_autocal_phase||undef,
 		 full_autocal_touchup=>autocal_config_is_touchup($config) ? JSON::PP::true : JSON::PP::false,
