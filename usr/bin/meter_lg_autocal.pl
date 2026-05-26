@@ -9173,9 +9173,11 @@ sub post_cal_series_direct_luminance_fallback_enabled {
 }
 
 sub post_cal_series_low_shadow_unstable_skip {
- my ($step,$lum_pct)=@_;
+ my ($step,$lum_pct,$de,$target_delta)=@_;
  return 0 if(!autocal_step_is_low_shadow($step) || !defined($lum_pct));
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $de_limit=($ire <= 2.3001) ? 1.25 : 1.0;
+ return 0 if(defined($de) && $de > $de_limit);
  return 1 if($ire <= 2.3001 && abs($lum_pct+0) < 8.0);
  return 1 if($ire > 3.1001 && $ire <= 4.1001 && abs($lum_pct+0) < 8.0);
  return 0;
@@ -9579,11 +9581,17 @@ sub post_cal_series_revert_worse_adjustments {
  my $adjustment=(ref($config) eq "HASH" && ref($config->{"post_cal_series_adjustment_status"}) eq "HASH") ? $config->{"post_cal_series_adjustment_status"} : {};
  my $changes=(ref($adjustment->{"changes"}) eq "ARRAY") ? $adjustment->{"changes"} : [];
  return ($picture,"Post-cal revert requires adjustment change metadata") if(!@{$changes});
- my $white_y=post_cal_series_reference_white_y($config,$state,$after_readings);
- return ($picture,"Post-cal revert is missing a target white reference") if(!defined($white_y) || $white_y <= 0);
- set_state_white_reference($state,$white_y);
- my $margin=post_cal_series_revert_margin($config);
- my (@verified,@reverted);
+	 my $white_y=post_cal_series_reference_white_y($config,$state,$after_readings);
+	 return ($picture,"Post-cal revert is missing a target white reference") if(!defined($white_y) || $white_y <= 0);
+	 set_state_white_reference($state,$white_y);
+	 my $margin=post_cal_series_revert_margin($config);
+	 my $legal_white_step=post_cal_series_legal_white_reference_step($steps);
+	 my ($legal_white_read_step,$legal_white_after_reading);
+	 if(ref($legal_white_step) eq "HASH") {
+	  $legal_white_read_step=fixed_lg_autocal_step($config,clone_picture($legal_white_step));
+	  $legal_white_after_reading=post_cal_series_reading_for_step($after_readings,$legal_white_read_step);
+	 }
+	 my (@verified,@reverted);
  foreach my $step (@{$steps}) {
   last if(cancelled());
   next if(ref($step) ne "HASH" || !defined($step->{"ire"}));
@@ -9596,18 +9604,37 @@ sub post_cal_series_revert_worse_adjustments {
   next if(ref($reading) ne "HASH" || $reading->{"error"});
   my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-  my $after_de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
-  my $after_lum_pct=luminance_error_percent($reading,$target_step_y);
-  my $before_de=defined($change->{"before_delta_e"}) ? ($change->{"before_delta_e"}+0) : undef;
-  my %entry=(
-   ire=>$read_step->{"ire"}+0,
-   label=>$target->{"label"},
-   before_delta_e=>defined($before_de) ? $before_de+0 : undef,
-   after_delta_e=>defined($after_de) ? $after_de+0 : undef,
-   after_luminance_error_pct=>defined($after_lum_pct) ? $after_lum_pct+0 : undef,
-   revert_margin=>$margin+0,
-  );
-  my $worse=(defined($before_de) && defined($after_de) && $after_de > ($before_de+$margin)) ? 1 : 0;
+	  my $after_de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+	  my $after_lum_pct=luminance_error_percent($reading,$target_step_y);
+	  my $before_de=defined($change->{"before_delta_e"}) ? ($change->{"before_delta_e"}+0) : undef;
+	  my ($legal_after_de,$legal_after_lum_pct,$pair_before_de,$pair_after_de);
+	  if($change->{"shared_legal_white_pair"} && ref($legal_white_after_reading) eq "HASH" && !$legal_white_after_reading->{"error"} && ref($legal_white_read_step) eq "HASH") {
+	   my $legal_target_y=effective_target_luminance_for_autocal_reading($white_y,$legal_white_read_step,$legal_white_after_reading,$target_gamma,$signal_mode,$config,$state);
+	   annotate_reading_target($legal_white_after_reading,$white_y,$legal_target_y,$target_x,$target_y);
+	   $legal_after_de=autocal_delta_e_for_step($config,$legal_white_after_reading,$legal_white_read_step,$white_y,$target_x,$target_y,$legal_target_y);
+	   $legal_after_lum_pct=luminance_error_percent($legal_white_after_reading,$legal_target_y);
+	   $pair_before_de=$before_de;
+	   $pair_before_de=$change->{"legal_white_before_delta_e"}+0 if(defined($change->{"legal_white_before_delta_e"}) && (!defined($pair_before_de) || ($change->{"legal_white_before_delta_e"}+0) > $pair_before_de));
+	   $pair_after_de=$after_de;
+	   $pair_after_de=$legal_after_de+0 if(defined($legal_after_de) && (!defined($pair_after_de) || ($legal_after_de+0) > $pair_after_de));
+	  }
+	  my %entry=(
+	   ire=>$read_step->{"ire"}+0,
+	   label=>$target->{"label"},
+	   before_delta_e=>defined($before_de) ? $before_de+0 : undef,
+	   after_delta_e=>defined($after_de) ? $after_de+0 : undef,
+	   after_luminance_error_pct=>defined($after_lum_pct) ? $after_lum_pct+0 : undef,
+	   shared_legal_white_pair=>$change->{"shared_legal_white_pair"} ? JSON::PP::true : undef,
+	   legal_white_before_delta_e=>defined($change->{"legal_white_before_delta_e"}) ? $change->{"legal_white_before_delta_e"}+0 : undef,
+	   legal_white_after_delta_e=>defined($legal_after_de) ? $legal_after_de+0 : undef,
+	   legal_white_after_luminance_error_pct=>defined($legal_after_lum_pct) ? $legal_after_lum_pct+0 : undef,
+	   pair_worst_before_delta_e=>defined($pair_before_de) ? $pair_before_de+0 : undef,
+	   pair_worst_after_delta_e=>defined($pair_after_de) ? $pair_after_de+0 : undef,
+	   revert_margin=>$margin+0,
+	  );
+	  my $compare_before=defined($pair_before_de) ? $pair_before_de : $before_de;
+	  my $compare_after=defined($pair_after_de) ? $pair_after_de : $after_de;
+	  my $worse=(defined($compare_before) && defined($compare_after) && $compare_after > ($compare_before+$margin)) ? 1 : 0;
   if($worse && post_cal_series_restore_values_before($arrays,$target,$change->{"values_before"})) {
    $entry{"reverted"}=JSON::PP::true;
    $entry{"values_restored"}=trace_target_values($arrays,$target);
@@ -9682,19 +9709,20 @@ sub post_cal_series_adjustment {
  return ($picture,"Post-cal series adjustment is missing a target white reference") if(!defined($white_y) || $white_y <= 0);
  set_state_white_reference($state,$white_y);
  my $legal_white_step=post_cal_series_legal_white_reference_step($steps);
- my ($legal_white_read_step,$legal_white_reading,$legal_white_de,$legal_white_lum_pct,$legal_white_target_step_y);
+ my ($legal_white_read_step,$legal_white_reading,$legal_white_de,$legal_white_lum_pct,$legal_white_target_step_y,$legal_white_outlier);
  if(ref($legal_white_step) eq "HASH") {
   $legal_white_read_step=fixed_lg_autocal_step($config,clone_picture($legal_white_step));
   my $raw_legal_white_reading=post_cal_series_reading_for_step($readings,$legal_white_read_step);
   if(ref($raw_legal_white_reading) eq "HASH" && !$raw_legal_white_reading->{"error"}) {
    $legal_white_reading=clone_picture($raw_legal_white_reading);
    $legal_white_target_step_y=effective_target_luminance_for_autocal_reading($white_y,$legal_white_read_step,$legal_white_reading,$target_gamma,$signal_mode,$config,$state);
-   annotate_reading_target($legal_white_reading,$white_y,$legal_white_target_step_y,$target_x,$target_y);
-   $legal_white_de=autocal_delta_e_for_step($config,$legal_white_reading,$legal_white_read_step,$white_y,$target_x,$target_y,$legal_white_target_step_y);
-   $legal_white_lum_pct=luminance_error_percent($legal_white_reading,$legal_white_target_step_y);
-   $state->{"readings"}=merge_reading($state->{"readings"},$legal_white_reading);
-  }
- }
+	   annotate_reading_target($legal_white_reading,$white_y,$legal_white_target_step_y,$target_x,$target_y);
+	   $legal_white_de=autocal_delta_e_for_step($config,$legal_white_reading,$legal_white_read_step,$white_y,$target_x,$target_y,$legal_white_target_step_y);
+	   $legal_white_lum_pct=luminance_error_percent($legal_white_reading,$legal_white_target_step_y);
+	   $legal_white_outlier=final_all_level_verify_outlier_reason($legal_white_read_step,$legal_white_de,$legal_white_lum_pct,$target_delta);
+	   $state->{"readings"}=merge_reading($state->{"readings"},$legal_white_reading);
+	  }
+	 }
  my @candidates=grep {
   ref($_) eq "HASH" &&
   defined($_->{"ire"}) &&
@@ -9738,20 +9766,28 @@ sub post_cal_series_adjustment {
 	  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
 	  next if($outlier eq "");
 	  next if(autocal_step_is_peak_headroom($read_step));
-	  if(post_cal_series_low_shadow_unstable_skip($read_step,$lum_pct)) {
-	   $evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_unstable_deadband" if(@evaluated);
-	   trace_109($read_step,"post_cal_series_low_shadow_unstable_deadband",{
-	    label=>$target->{"label"},
+		  if(post_cal_series_low_shadow_unstable_skip($read_step,$lum_pct,$de,$target_delta)) {
+		   $evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_unstable_deadband" if(@evaluated);
+		   trace_109($read_step,"post_cal_series_low_shadow_unstable_deadband",{
+		    label=>$target->{"label"},
 	    reason=>$outlier,
 	    delta_e=>defined($de)?$de+0:undef,
 	    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
 	    skipped_reason=>"post_cal_low_shadow_unstable_deadband"
-	   });
-	   next;
-	  }
-	  if($outlier eq "luminance") {
-	   my $luma_deadband=post_cal_series_luma_only_deadband($read_step);
-	   if(defined($lum_pct) && $luma_deadband > 0 && abs($lum_pct) <= $luma_deadband) {
+		   });
+		   next;
+		  }
+		  my $adjust_read_step=$read_step;
+		  my $adjust_reading=$reading;
+		  my $adjust_de=$de;
+		  my $adjust_lum_pct=$lum_pct;
+		  my $adjust_outlier=$outlier;
+		  my $shared_legal_white_pair=0;
+		  my $legal_white_drives_adjustment=0;
+		  my $legal_white_pair_worst_de=$de;
+		  if($outlier eq "luminance") {
+		   my $luma_deadband=post_cal_series_luma_only_deadband($read_step);
+		   if(defined($lum_pct) && $luma_deadband > 0 && abs($lum_pct) <= $luma_deadband) {
 	    $evaluated[-1]{"skipped_reason"}="post_cal_luma_only_deadband" if(@evaluated);
 	    $evaluated[-1]{"post_cal_luma_only_deadband_pct"}=$luma_deadband+0 if(@evaluated);
 	    trace_109($read_step,"post_cal_series_luma_only_deadband",{
@@ -9762,57 +9798,69 @@ sub post_cal_series_adjustment {
 	     deadband_pct=>$luma_deadband+0,
 	     skipped_reason=>"post_cal_luma_only_deadband"
 	    });
-	    next;
-	   }
-	  }
-	  if(post_cal_series_shared_legal_white_target($target) && ref($legal_white_reading) eq "HASH") {
-	   $evaluated[-1]{"skipped_reason"}="shared_99_100_legal_white_guard" if(@evaluated);
-	   $evaluated[-1]{"legal_white_delta_e"}=defined($legal_white_de) ? $legal_white_de+0 : undef if(@evaluated);
-   $evaluated[-1]{"legal_white_luminance_error_pct"}=defined($legal_white_lum_pct) ? $legal_white_lum_pct+0 : undef if(@evaluated);
-   trace_109($read_step,"post_cal_series_legal_white_guard",{
-    label=>$target->{"label"},
-    reason=>$outlier,
-    delta_e=>defined($de)?$de+0:undef,
-    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-    legal_white_delta_e=>defined($legal_white_de)?$legal_white_de+0:undef,
-    legal_white_luminance_error_pct=>defined($legal_white_lum_pct)?$legal_white_lum_pct+0:undef,
-    legal_white_target_luminance=>defined($legal_white_target_step_y)?$legal_white_target_step_y+0:undef,
-    legal_white_reading=>trace_reading_summary($legal_white_reading),
-    values_before=>trace_target_values($arrays,$target),
-    skipped_reason=>"shared_99_100_legal_white_guard"
-   });
-   next;
-	  }
-	  my %tried_values;
-	  mark_tried_values(\%tried_values,$arrays,$target,$de);
-	  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$read_step,$lum_pct);
-	  $luma_cap=post_cal_series_neighbor_protected_luma_cap($luma_cap,$read_step,$lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state);
-		  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
-		   $state,$arrays,$target,$read_step,$lum_pct,\%tried_values,
-		   $luma_cap
-	  );
-	  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
-	  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($read_step,$lum_pct)) {
-	   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
-	    $arrays,$target,$read_step,$lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_direct_luminance"
-	   );
-	  }
-	  if(!$luma_adjustments) {
-	   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$read_step,$lum_pct,\%tried_values,$state);
-	   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
-	  }
-	  if(!$luma_adjustments && post_cal_series_deltae_luminance_assist_enabled($read_step,$de,$lum_pct)) {
-	   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
-	    $arrays,$target,$read_step,$lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_deltae_luminance_assist"
-	   );
-	  }
-	  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($reading,$read_step));
-	  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
-	  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($read_step,$learned_setting) : undef;
-	  my $rgb_adjustments=post_cal_series_allow_rgb_adjustment($read_step,$lum_pct,$luma_adjustments)
-	   ? post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb")
-	   : undef;
-	  $rgb_adjustments=post_cal_series_generic_rgb_adjustment($state,$arrays,$target,$read_step,$reading,$de,$lum_pct,$target_delta,\%tried_values) if(!$rgb_adjustments);
+		    next;
+		   }
+		  }
+		  if(post_cal_series_shared_legal_white_target($target) && ref($legal_white_reading) eq "HASH") {
+		   $shared_legal_white_pair=1;
+		   $legal_white_pair_worst_de=$legal_white_de if(defined($legal_white_de) && (!defined($legal_white_pair_worst_de) || $legal_white_de > $legal_white_pair_worst_de));
+		   if(@evaluated) {
+		    $evaluated[-1]{"shared_legal_white_pair"}=JSON::PP::true;
+		    $evaluated[-1]{"legal_white_delta_e"}=defined($legal_white_de) ? $legal_white_de+0 : undef;
+		    $evaluated[-1]{"legal_white_luminance_error_pct"}=defined($legal_white_lum_pct) ? $legal_white_lum_pct+0 : undef;
+		    $evaluated[-1]{"pair_worst_delta_e"}=defined($legal_white_pair_worst_de) ? $legal_white_pair_worst_de+0 : undef;
+		   }
+		   if(defined($legal_white_de) && (!defined($de) || $legal_white_de > ($de+0.15) || (defined($legal_white_outlier) && $legal_white_outlier ne "" && $outlier eq ""))) {
+		    $adjust_read_step=$legal_white_read_step;
+		    $adjust_reading=$legal_white_reading;
+		    $adjust_de=$legal_white_de;
+		    $adjust_lum_pct=$legal_white_lum_pct;
+		    $adjust_outlier=defined($legal_white_outlier) && $legal_white_outlier ne "" ? $legal_white_outlier : $outlier;
+		    $legal_white_drives_adjustment=1;
+		   }
+		   trace_109($read_step,"post_cal_series_legal_white_pair",{
+		    label=>$target->{"label"},
+		    reason=>$outlier,
+		    delta_e=>defined($de)?$de+0:undef,
+		    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+		    legal_white_delta_e=>defined($legal_white_de)?$legal_white_de+0:undef,
+		    legal_white_luminance_error_pct=>defined($legal_white_lum_pct)?$legal_white_lum_pct+0:undef,
+		    legal_white_target_luminance=>defined($legal_white_target_step_y)?$legal_white_target_step_y+0:undef,
+		    legal_white_reading=>trace_reading_summary($legal_white_reading),
+		    legal_white_drives_adjustment=>$legal_white_drives_adjustment?JSON::PP::true:JSON::PP::false,
+		    values_before=>trace_target_values($arrays,$target),
+		   });
+		  }
+		  my %tried_values;
+		  mark_tried_values(\%tried_values,$arrays,$target,$adjust_de);
+		  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$adjust_read_step,$adjust_lum_pct);
+		  $luma_cap=post_cal_series_neighbor_protected_luma_cap($luma_cap,$adjust_read_step,$adjust_lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state);
+			  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
+			   $state,$arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,
+			   $luma_cap
+		  );
+		  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
+		  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($adjust_read_step,$adjust_lum_pct)) {
+		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
+		    $arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_direct_luminance"
+		   );
+		  }
+		  if(!$luma_adjustments) {
+		   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,$state);
+		   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
+		  }
+		  if(!$luma_adjustments && post_cal_series_deltae_luminance_assist_enabled($adjust_read_step,$adjust_de,$adjust_lum_pct)) {
+		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
+		    $arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_deltae_luminance_assist"
+		   );
+		  }
+		  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($adjust_reading,$adjust_read_step));
+		  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
+		  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($adjust_read_step,$learned_setting) : undef;
+		  my $rgb_adjustments=post_cal_series_allow_rgb_adjustment($adjust_read_step,$adjust_lum_pct,$luma_adjustments)
+		   ? post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb")
+		   : undef;
+		  $rgb_adjustments=post_cal_series_generic_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$adjust_lum_pct,$target_delta,\%tried_values) if(!$rgb_adjustments);
 	  $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
 	  my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
   next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
@@ -9822,26 +9870,35 @@ sub post_cal_series_adjustment {
    $arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
   }
   $changed_count++;
-  push @changed,{
-   ire=>$read_step->{"ire"}+0,
-   label=>$target->{"label"},
-   reason=>$outlier,
-	   before_delta_e=>defined($de) ? $de+0 : undef,
-	   before_luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
-	   adjustments=>trace_adjustments_summary($adjustments),
-	   target_index=>$target->{"index"}+0,
-	   ddc_ire=>$target->{"ire"},
+	  push @changed,{
+	   ire=>$read_step->{"ire"}+0,
+	   label=>$target->{"label"},
+	   reason=>$adjust_outlier,
+		   before_delta_e=>defined($de) ? $de+0 : undef,
+		   before_luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+		   shared_legal_white_pair=>$shared_legal_white_pair?JSON::PP::true:undef,
+		   legal_white_before_delta_e=>defined($legal_white_de) && $shared_legal_white_pair ? $legal_white_de+0 : undef,
+		   legal_white_before_luminance_error_pct=>defined($legal_white_lum_pct) && $shared_legal_white_pair ? $legal_white_lum_pct+0 : undef,
+		   pair_worst_before_delta_e=>defined($legal_white_pair_worst_de) && $shared_legal_white_pair ? $legal_white_pair_worst_de+0 : undef,
+		   legal_white_drives_adjustment=>$legal_white_drives_adjustment?JSON::PP::true:undef,
+		   adjustments=>trace_adjustments_summary($adjustments),
+		   target_index=>$target->{"index"}+0,
+		   ddc_ire=>$target->{"ire"},
 	   values_before=>trace_target_values($pre_adjust_arrays,$target),
 	   values_after=>trace_target_values($arrays,$target),
 	  };
-  trace_109($read_step,"post_cal_series_adjustment",{
-   label=>$target->{"label"},
-   reason=>$outlier,
-   delta_e=>defined($de)?$de+0:undef,
-   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-   adjustments=>trace_adjustments_summary($adjustments),
-   values_after=>trace_target_values($arrays,$target),
-  });
+	  trace_109($read_step,"post_cal_series_adjustment",{
+	   label=>$target->{"label"},
+	   reason=>$adjust_outlier,
+	   delta_e=>defined($de)?$de+0:undef,
+	   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+	   shared_legal_white_pair=>$shared_legal_white_pair?JSON::PP::true:JSON::PP::false,
+	   legal_white_delta_e=>defined($legal_white_de) && $shared_legal_white_pair ? $legal_white_de+0 : undef,
+	   legal_white_luminance_error_pct=>defined($legal_white_lum_pct) && $shared_legal_white_pair ? $legal_white_lum_pct+0 : undef,
+	   legal_white_drives_adjustment=>$legal_white_drives_adjustment?JSON::PP::true:JSON::PP::false,
+	   adjustments=>trace_adjustments_summary($adjustments),
+	   values_after=>trace_target_values($arrays,$target),
+	  });
  }
  $state->{"post_cal_series_adjustment"}={
   status=>$changed_count ? "writing" : "complete",
