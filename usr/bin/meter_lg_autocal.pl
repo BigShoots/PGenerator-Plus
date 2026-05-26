@@ -9123,6 +9123,7 @@ sub post_cal_series_adjustment_luma_cap {
   return 0.50;
  }
  return 0.50 if($ire <= 10.1001);
+ return 0.75 if($ire >= 85 && $ire < 99 && $abs >= 2.5);
  return 1.0 if($abs >= 8);
  return 0.75 if($abs >= 4);
  return 0.50 if($abs >= 2);
