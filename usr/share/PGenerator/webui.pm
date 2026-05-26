@@ -13076,13 +13076,12 @@ function meterGreyTargetWhiteValue(Lw,Lb){
 
 function meterGreyTargetEotfValue(ire,Lw,Lb,code){
  const tgtLum=meterGreyTargetLuminance(ire,Lw,Lb,code);
- return meterGreyEotfValueFromLuminance(tgtLum,Lw);
+ return meterGreyEotfValueFromLuminance(tgtLum,Lw,Lb);
 }
 
 function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
- const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
- if(!(peakEotf>0)) return meterGreyTargetEotfValue(ire,Lw,Lb,code);
- return meterGreyTargetEotfValue(ire,Lw,Lb,code)/peakEotf;
+ const tgtLum=meterGreyTargetLuminance(ire,Lw,Lb,code);
+ return meterGreyNormalizedEotfValueFromLuminance(tgtLum,Lw,Lb);
 }
 
 function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
@@ -13098,10 +13097,9 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 
 function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
  const lum=meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb||0,point);
- const eotf=meterGreyEotfValueFromLuminance(lum,Lw);
- if(!meterEotfNormalizedEnabled()) return eotf;
- const peakEotf=meterGreyTargetEotfValue(100,Lw,Lb,null);
- return peakEotf>0 ? eotf/peakEotf : eotf;
+ return meterEotfNormalizedEnabled()
+  ? meterGreyNormalizedEotfValueFromLuminance(lum,Lw,Lb)
+  : meterGreyEotfValueFromLuminance(lum,Lw,Lb);
 }
 
 function meterEotfNormalizedEnabled(){
@@ -13201,17 +13199,59 @@ function meterGreyMeasuredEotfValue(luminance,refWhite){
  return meterGreyEotfValueFromLuminance(y,refWhite);
 }
 
-function meterGreyEotfValueFromLuminance(luminance,refWhite){
+function meterGreyNormalizedLuminanceValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- if(meterGreyEotfUsesPqCurve()) return meterChartPqEncodeNormalized(y);
  const peak=(refWhite>0)?refWhite:100;
  return peak>0 ? y/peak : 0;
 }
 
+function meterGreyInverseEotfSignalFromLuminance(luminance,refWhite,blackLevel){
+ const y=Math.max(0,luminance||0);
+ const peak=(refWhite>0)?refWhite:100;
+ if(!(peak>0)) return 0;
+ const ratio=Math.max(0,y/peak);
+ const tgt=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''))||'2.2';
+ if(tgt==='bt1886'){
+  const Lw=peak;
+  const Lb=Math.max(0,Number(blackLevel)||0);
+  const g=2.4;
+  const lwRoot=Math.pow(Lw,1/g);
+  const lbRoot=Math.pow(Lb,1/g);
+  const denom=lwRoot-lbRoot;
+  if(denom>0){
+   const a=Math.pow(denom,g);
+   const b=lbRoot/denom;
+   return Math.max(0,Math.min(1.1,Math.pow(y/Math.max(a,1e-12),1/g)-b));
+  }
+  return Math.pow(ratio,1/g);
+ }
+ if(tgt==='srgb'){
+  return ratio<=0.0031308 ? ratio*12.92 : 1.055*Math.pow(ratio,1/2.4)-0.055;
+ }
+ if(tgt==='st2084') return meterChartPqEncodeNormalized(y);
+ const gamma=parseFloat(tgt);
+ return Math.pow(ratio,1/(gamma>0?gamma:2.2));
+}
+
+function meterGreyEotfValueFromLuminance(luminance,refWhite,blackLevel){
+ const y=Math.max(0,luminance||0);
+ if(meterGreyEotfUsesPqCurve()) return meterChartPqEncodeNormalized(y);
+ return meterGreyInverseEotfSignalFromLuminance(y,refWhite,blackLevel);
+}
+
+function meterGreyNormalizedEotfValueFromLuminance(luminance,refWhite,blackLevel){
+ const y=Math.max(0,luminance||0);
+ if(meterGreyEotfUsesPqCurve()){
+  const peak=(refWhite>0)?refWhite:100;
+  const peakEotf=meterGreyEotfValueFromLuminance(peak,refWhite,blackLevel);
+  return peakEotf>0 ? meterGreyEotfValueFromLuminance(y,refWhite,blackLevel)/peakEotf : meterGreyEotfValueFromLuminance(y,refWhite,blackLevel);
+ }
+ return meterGreyNormalizedLuminanceValue(y,refWhite);
+}
+
 function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- const peakEotf=meterGreyMeasuredEotfValue(refWhite>0?refWhite:100,refWhite);
- return peakEotf>0 ? meterGreyMeasuredEotfValue(y,refWhite)/peakEotf : meterGreyMeasuredEotfValue(y,refWhite);
+ return meterGreyNormalizedEotfValueFromLuminance(y,refWhite);
 }
 
 function meterGreyMeasuredEotfChartValue(luminance,refWhite){
