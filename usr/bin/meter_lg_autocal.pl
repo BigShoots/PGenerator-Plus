@@ -72,7 +72,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples)) {
+	  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -2341,6 +2341,106 @@ sub lg_autocal_26_learned_rgb_adjustment {
 	 return undef;
 	}
 
+sub lg_autocal_26_response_axis_entry {
+ my ($state,$step,$group,$axis)=@_;
+ my $model=lg_autocal_26_response_model_for_step($state,$step);
+ return undef if(ref($model) ne "HASH" || ref($model->{$group}) ne "HASH");
+ my $entry=$model->{$group}{$axis};
+ return (ref($entry) eq "HASH") ? $entry : undef;
+}
+
+sub lg_autocal_26_response_axis_samples {
+ my ($state,$step,$group,$axis)=@_;
+ my $entry=lg_autocal_26_response_axis_entry($state,$step,$group,$axis);
+ return 0 if(ref($entry) ne "HASH");
+ return $entry->{"samples"} ? ($entry->{"samples"}+0) : 0;
+}
+
+sub lg_autocal_26_initial_target_move_active {
+ my ($iter,$iteration_limit,$stalls,$step,$de,$target_delta)=@_;
+ return 0 if(ref($step) ne "HASH");
+ return 0 if(autocal_step_is_peak_headroom($step));
+ $iter=0 if(!defined($iter));
+ $iteration_limit=0 if(!defined($iteration_limit));
+ $stalls=0 if(!defined($stalls));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $remaining_pct=100;
+ if($iteration_limit > 0) {
+  $remaining_pct=(($iteration_limit-$iter+1)/$iteration_limit)*100;
+ }
+ return 1 if($stalls >= 2);
+ return 1 if($iteration_limit > 0 && $remaining_pct <= 35);
+ return 1 if(autocal_step_is_low_shadow($step) && defined($de) && $de > $target_delta+1.0 && $iter >= 4);
+ return 1 if(legal_white_pair_side_ire($step) && defined($de) && $de > $target_delta+0.50 && $iter >= 6);
+ return 0;
+}
+
+sub lg_autocal_26_initial_target_move_cap {
+ my ($step,$setting,$lum_pct,$de,$target_delta)=@_;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ my $is_luma=($setting||"") eq "adjustingLuminance" ? 1 : 0;
+ if($ire >= 99 && $ire <= 105.0001) {
+  return $is_luma ? 1.50 : 0.75;
+ }
+ if($ire <= 4.1001) {
+  return $is_luma ? 0.75 : 0.50;
+ }
+ if($ire <= 5.1001) {
+  return $is_luma ? 1.00 : 0.75;
+ }
+ if($ire <= 10.0001) {
+  return $is_luma ? 1.25 : 0.75;
+ }
+ return $is_luma ? 2.00 : 1.00;
+}
+
+sub annotate_lg_autocal_26_initial_target_move {
+ my ($adjustments,$reason,$activation,$remaining_pct)=@_;
+ return $adjustments if(ref($adjustments) ne "ARRAY");
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  $adj->{"learned_target_move"}=1;
+  $adj->{"target_move_reason"}=$reason if(defined($reason));
+  $adj->{"activation_reason"}=$activation if(defined($activation));
+  $adj->{"remaining_budget_pct"}=$remaining_pct+0 if(defined($remaining_pct));
+ }
+ return $adjustments;
+}
+
+sub lg_autocal_26_initial_learned_target_adjustments {
+ my ($state,$arrays,$target,$step,$reading,$de,$target_delta,$lum_pct,$tried,$iter,$iteration_limit,$stalls,$paired_white_step)=@_;
+ return undef if(ref($state) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($step) ne "HASH" || ref($reading) ne "HASH");
+ return undef if(!lg_autocal_26_initial_target_move_active($iter,$iteration_limit,$stalls,$step,$de,$target_delta));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $remaining_pct=100;
+ $remaining_pct=(($iteration_limit-$iter+1)/$iteration_limit)*100 if(defined($iteration_limit) && $iteration_limit > 0);
+ my $activation=($stalls >= 2) ? "stalled" : (($remaining_pct <= 35) ? "late_budget" : "high_error");
+ my $tol=luminance_tolerance_percent($step);
+ my $luma_far=(defined($lum_pct) && defined($tol) && abs($lum_pct) > ($tol*1.10)) ? 1 : 0;
+ my $luma_very_far=(defined($lum_pct) && defined($tol) && abs($lum_pct) > ($tol*1.75)) ? 1 : 0;
+ if($luma_far && lg_autocal_26_response_axis_samples($state,$step,"luminance","adjustingLuminance") >= 2) {
+  my $cap=lg_autocal_26_initial_target_move_cap($step,"adjustingLuminance",$lum_pct,$de,$target_delta);
+  my $adjustments=lg_autocal_26_learned_luminance_adjustment($state,$arrays,$target,$step,$lum_pct,$tried,$cap,"initial_learned_luminance");
+  return annotate_lg_autocal_26_initial_target_move($adjustments,"luminance",$activation,$remaining_pct) if(ref($adjustments) eq "ARRAY");
+  return undef if(autocal_step_is_low_shadow($step) && $luma_very_far);
+ }
+ my $error=autocal_adjustment_error($reading,$step);
+ my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
+ if($ch && lg_autocal_26_response_axis_samples($state,$step,"rgb",$ch) >= 2) {
+  my $threshold=rgb_response_close_threshold($de,$target_delta);
+  my $chroma_allowed=1;
+  $chroma_allowed=0 if(autocal_step_is_low_shadow($step) && $luma_very_far);
+  $chroma_allowed=0 if($paired_white_step && $luma_very_far && defined($de) && $de <= $target_delta+0.75);
+  if($chroma_allowed && $max_err >= $threshold) {
+   my $setting=channel_setting($ch);
+   my $cap=lg_autocal_26_initial_target_move_cap($step,$setting,$lum_pct,$de,$target_delta);
+   my $adjustments=lg_autocal_26_learned_rgb_adjustment($state,$arrays,$target,$step,$reading,$de,$target_delta,$tried,$cap,"initial_learned_rgb");
+   return annotate_lg_autocal_26_initial_target_move($adjustments,"rgb",$activation,$remaining_pct) if(ref($adjustments) eq "ARRAY");
+  }
+ }
+ return undef;
+}
+
 sub lg_autocal_26_best_known_values_available {
  my ($entry,$target,$arrays)=@_;
  return 0 if(ref($entry) ne "HASH" || ref($entry->{"ddc_values"}) ne "HASH" || ref($target) ne "HASH" || ref($arrays) ne "HASH");
@@ -2586,10 +2686,9 @@ sub guarded_target_reached {
 sub legal_white_pair_reference_step {
  my ($steps,$target,$step,$config)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- # Full-DDC spine calibration uses the solved 109% peak as the top anchor.
- # Keep 100% legal white for post-cal series/chart reference, not as a
- # calibration target in this path.
- return undef if(lg_autocal_26_full_ddc_spine_enabled($config));
+ # Full-DDC spine still needs the hidden 100% legal-white read while solving
+ # the shared 99% LG DDC slot. Otherwise 99 can look clean while the user's
+ # visible 100% white read keeps a red/blue imbalance.
  return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}) || abs(($target->{"ire"}+0)-99) > 0.001);
  return undef if(ref($step) ne "HASH" || $step->{"autocal_white_reference"});
  return undef if(ref($steps) ne "ARRAY");
@@ -2620,7 +2719,11 @@ sub legal_white_pair_score {
  my $best=$score_a > $score_b ? $score_b : $score_a;
  my $spread=abs((defined($de_a)?$de_a:9999)-(defined($de_b)?$de_b:9999));
  my $pair_avg=legal_white_pair_delta_average($de_a,$de_b);
- return ($worst*1.45)+($best*0.20)+($pair_avg*0.10)+($spread*1.25);
+ my $rgb_a=legal_white_pair_rgb_imbalance($reading_a,$step_a);
+ my $rgb_b=legal_white_pair_rgb_imbalance($reading_b,$step_b);
+ my $worst_rgb=$rgb_a > $rgb_b ? $rgb_a : $rgb_b;
+ my $white_rgb=autocal_step_is_white($step_a) ? $rgb_a : (autocal_step_is_white($step_b) ? $rgb_b : $worst_rgb);
+ return ($worst*1.40)+($best*0.18)+($pair_avg*0.12)+($spread*1.20)+($worst_rgb*0.30)+($white_rgb*0.45);
 }
 
 sub legal_white_pair_delta_average {
@@ -2641,7 +2744,17 @@ sub legal_white_pair_spread_delta {
 	 my ($de_a,$de_b)=@_;
 	 my $a=defined($de_a) ? ($de_a+0) : 9999;
 	 my $b=defined($de_b) ? ($de_b+0) : 9999;
-	 return abs($a-$b);
+ return abs($a-$b);
+}
+
+sub legal_white_pair_rgb_imbalance {
+ my ($reading,$step)=@_;
+ return 0 if(ref($reading) ne "HASH" || ref($step) ne "HASH");
+ my $error=autocal_adjustment_error($reading,$step);
+ return 0 if(ref($error) ne "HASH");
+ my $max=chroma_error_magnitude($error);
+ return 0 if(!defined($max) || $max >= 999);
+ return $max*50;
 }
 
 sub legal_white_pair_side_ire {
@@ -2657,18 +2770,19 @@ sub legal_white_pair_side_ire {
 }
 
 sub legal_white_pair_side_metrics {
-	 my ($de_a,$lum_a,$step_a,$de_b,$lum_b,$step_b)=@_;
+	 my ($de_a,$lum_a,$step_a,$reading_a,$de_b,$lum_b,$step_b,$reading_b)=@_;
 	 my %out;
 	 foreach my $entry (
-	  [ $de_a,$lum_a,$step_a ],
-	  [ $de_b,$lum_b,$step_b ]
+	  [ $de_a,$lum_a,$step_a,$reading_a ],
+	  [ $de_b,$lum_b,$step_b,$reading_b ]
 	 ) {
-	  my ($de,$lum,$step)=@{$entry};
+	  my ($de,$lum,$step,$reading)=@{$entry};
 	  my $ire=legal_white_pair_side_ire($step);
 	  next if(!defined($ire));
 	  $out{$ire}={
 	   delta_e=>$de,
 	   luminance_error_pct=>$lum,
+	   rgb_imbalance=>legal_white_pair_rgb_imbalance($reading,$step),
 	   step=>$step
 	  };
 	 }
@@ -2679,6 +2793,12 @@ sub legal_white_pair_metric_delta {
 	 my ($metrics,$ire)=@_;
 	 return undef if(ref($metrics) ne "HASH" || ref($metrics->{$ire}) ne "HASH");
 	 return defined($metrics->{$ire}{"delta_e"}) ? $metrics->{$ire}{"delta_e"}+0 : undef;
+}
+
+sub legal_white_pair_metric_rgb_imbalance {
+	 my ($metrics,$ire)=@_;
+	 return undef if(ref($metrics) ne "HASH" || ref($metrics->{$ire}) ne "HASH");
+	 return defined($metrics->{$ire}{"rgb_imbalance"}) ? $metrics->{$ire}{"rgb_imbalance"}+0 : undef;
 }
 
 sub legal_white_pair_best_update_allowed {
@@ -11202,13 +11322,17 @@ eval {
 				  my $pair_best_reject_reason;
 				  my $pair_side_trace_fields=sub {
 				   return () if(!$paired_white_step);
-				   my $candidate_metrics=legal_white_pair_side_metrics($de,$lum_pct,$read_step,$pair_de,$pair_lum_pct,$pair_step);
-				   my $best_metrics=legal_white_pair_side_metrics($best_de,$best_lum_pct,$best_read_step,$best_pair_de,$best_pair_lum_pct,$best_pair_step);
+				   my $candidate_metrics=legal_white_pair_side_metrics($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading);
+				   my $best_metrics=legal_white_pair_side_metrics($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading);
 				   return (
 				    candidate_99_delta_e=>legal_white_pair_metric_delta($candidate_metrics,99),
 				    candidate_100_delta_e=>legal_white_pair_metric_delta($candidate_metrics,100),
 				    best_99_delta_e=>legal_white_pair_metric_delta($best_metrics,99),
 				    best_100_delta_e=>legal_white_pair_metric_delta($best_metrics,100),
+				    candidate_99_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($candidate_metrics,99),
+				    candidate_100_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($candidate_metrics,100),
+				    best_99_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($best_metrics,99),
+				    best_100_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($best_metrics,100),
 				    pair_update_reject_reason=>defined($pair_best_reject_reason)?$pair_best_reject_reason:""
 				   );
 				  };
@@ -11220,8 +11344,8 @@ eval {
 							    return undef if(!autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct));
 							    return ($candidate_score + 0.0001 < $best_score) ? "score_improved" : undef;
 							   }
-						   my $candidate_metrics=legal_white_pair_side_metrics($de,$lum_pct,$read_step,$pair_de,$pair_lum_pct,$pair_step);
-						   my $best_metrics=legal_white_pair_side_metrics($best_de,$best_lum_pct,$best_read_step,$best_pair_de,$best_pair_lum_pct,$best_pair_step);
+						   my $candidate_metrics=legal_white_pair_side_metrics($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading);
+						   my $best_metrics=legal_white_pair_side_metrics($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading);
 						   foreach my $ire (99,100) {
 						    my $candidate_side=ref($candidate_metrics) eq "HASH" ? $candidate_metrics->{$ire} : undef;
 						    my $best_side=ref($best_metrics) eq "HASH" ? $best_metrics->{$ire} : undef;
@@ -11243,6 +11367,23 @@ eval {
 							    $candidate_score,$best_score,
 						    $de,$pair_de,$best_de,$best_pair_de,$target_delta
 					   );
+					   if(defined($reason)) {
+					    my $candidate_worst=legal_white_pair_worst_delta($de,$pair_de);
+					    my $best_worst=legal_white_pair_worst_delta($best_de,$best_pair_de);
+					    my $worst_meaningfully_improved=($candidate_worst + 0.10 < $best_worst) ? 1 : 0;
+					    my $candidate_100_de=legal_white_pair_metric_delta($candidate_metrics,100);
+					    my $best_100_de=legal_white_pair_metric_delta($best_metrics,100);
+					    my $candidate_100_rgb=legal_white_pair_metric_rgb_imbalance($candidate_metrics,100);
+					    my $best_100_rgb=legal_white_pair_metric_rgb_imbalance($best_metrics,100);
+					    if(!$worst_meaningfully_improved && defined($candidate_100_de) && defined($best_100_de) && $candidate_100_de > $best_100_de+0.15) {
+					     $pair_best_reject_reason="100_delta_guard";
+					     return undef;
+					    }
+					    if(!$worst_meaningfully_improved && defined($candidate_100_rgb) && defined($best_100_rgb) && $candidate_100_rgb > $best_100_rgb+0.12) {
+					     $pair_best_reject_reason="100_rgb_guard";
+					     return undef;
+					    }
+					   }
 					   $pair_best_reject_reason="paired_score_not_improved" if(!defined($reason));
 					   return $reason;
 				  };
@@ -11838,6 +11979,12 @@ eval {
 								    if($pair_chroma_mag < 0.035 || (defined($de) && $de <= ($target_delta+1.0)) || (defined($lum_err) && abs($lum_err*100) > 12)) {
 								     $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$pair_lum_pct,0);
 								    }
+								   }
+								   if(!$adjustments) {
+								    $adjustments=lg_autocal_26_initial_learned_target_adjustments(
+								     $state,$arrays,$target,$read_step,$reading,$de,$target_delta,$lum_pct,\%tried_values,
+								     $iter,$iteration_limit,$stalls,$paired_white_step
+								    );
 								   }
 								   if(!$adjustments) {
 								    $adjustments=headroom_105_main_polish_refine_adjustments($state,$arrays,$target,$read_step,$reading,$de,$lum_pct,$target_delta,\%tried_values,$stalls,$lum_err,\%rgb_response_model,$err);
