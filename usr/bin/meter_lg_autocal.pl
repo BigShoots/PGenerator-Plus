@@ -361,7 +361,7 @@ sub lg_autocal_26_full_ddc_spine_enabled {
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_ires {
- return (109,20,40,60,80);
+ return (109,105,99,75,50,25,5);
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_count {
@@ -467,8 +467,8 @@ sub order_autocal_steps {
 		 } @valid;
 		  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
 			  my @lg_autocal_26_order=(109,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
-				  @lg_autocal_26_order=(109,20,40,60,80,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,2.3,3,4,5,7,10)
-				   if(lg_autocal_26_full_ddc_spine_enabled($config));
+				  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,2.3,3,4,7,10)
+			   if(lg_autocal_26_full_ddc_spine_enabled($config));
 		  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,4,3,2.3)
 		   if(lg_autocal_26_anchor_predrive_enabled($config));
 		  my %seen_target;
@@ -1063,11 +1063,9 @@ sub low_shadow_committed_target_bias_pct_for_step {
  return (0,"not_low_shadow") if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
  return (0,"not_low_shadow") if($ire <= 0 || $ire > 10.0001);
- my $mode=defined($config->{"low_shadow_committed_target_bias_mode"}) ? lc($config->{"low_shadow_committed_target_bias_mode"}) : "apply";
+ my $mode=defined($config->{"low_shadow_committed_target_bias_mode"}) ? lc($config->{"low_shadow_committed_target_bias_mode"}) : "off";
  return (0,"disabled") if($mode eq "off" || $mode eq "disabled" || $mode eq "none");
- my %default=(
-  "5" => -0.16,
- );
+ my %default=();
  my $matrix=(ref($config->{"low_shadow_committed_target_bias_matrix_pct"}) eq "HASH")
   ? $config->{"low_shadow_committed_target_bias_matrix_pct"} : undef;
  $matrix=$config->{"low_shadow_committed_target_bias_matrix"} if(ref($matrix) ne "HASH" && ref($config->{"low_shadow_committed_target_bias_matrix"}) eq "HASH");
