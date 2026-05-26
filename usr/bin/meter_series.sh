@@ -242,6 +242,8 @@ for field in (
     "input_max", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
     "analysis_ire", "target_ire", "transport_stimulus",
     "target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
+    "dv_absolute_white_y", "dv_absolute_target_y", "dv_absolute_rolloff_pct",
+    "dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
     "series_target_white_y", "lg_target_white_y",
     "series_type", "series_color", "sat_pct", "point_role", "series_mode",
     "autocal_code", "autocal_white_reference", "autocal_reference_only",
@@ -316,7 +318,7 @@ m2 = 2523.0 / 32.0
 c1 = 3424.0 / 4096.0
 c2 = 2413.0 / 128.0
 c3 = 2392.0 / 128.0
-dv_tunnel_gamma = 3.8
+dv_tunnel_gamma = 2.2
 
 def pq_decode_normalized(code):
     code = max(0.0, min(1.0, float(code)))
@@ -328,6 +330,14 @@ def pq_decode_normalized(code):
     if den <= 0:
         return 10000.0
     return 10000.0 * ((num / den) ** (1 / m1))
+
+def pq_encode_normalized(nits):
+    nits = max(0.0, min(10000.0, float(nits)))
+    if nits <= 0:
+        return 0.0
+    linear = nits / 10000.0
+    p = linear ** m1
+    return ((c1 + c2 * p) / (1 + c3 * p)) ** m2
 
 def percent_from_step(step, channel):
     for key in ("signal_%s_pct" % channel, "stimulus", "analysis_ire", "target_ire", "ire"):
@@ -363,6 +373,7 @@ for step in steps:
     step["dv_absolute_white_y"] = white_y
     step["dv_absolute_st2084_precomp"] = True
     step["dv_absolute_target_y"] = target_y
+    step["dv_absolute_rolloff_pct"] = pq_encode_normalized(white_y) * 100
     step["dv_absolute_tunnel_gamma"] = dv_tunnel_gamma
 
 if not changed:
