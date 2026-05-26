@@ -9176,7 +9176,8 @@ sub post_cal_series_low_shadow_unstable_skip {
  my ($step,$lum_pct,$de,$target_delta)=@_;
  return 0 if(!autocal_step_is_low_shadow($step) || !defined($lum_pct));
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
- my $de_limit=($ire <= 2.3001) ? 1.25 : 1.0;
+ my $base_delta=(defined($target_delta) && ($target_delta+0) > 0) ? ($target_delta+0) : 0.5;
+ my $de_limit=($ire <= 2.3001) ? ($base_delta+0.75) : ($base_delta+0.25);
  return 0 if(defined($de) && $de > $de_limit);
  return 1 if($ire <= 2.3001 && abs($lum_pct+0) < 8.0);
  return 1 if($ire > 3.1001 && $ire <= 4.1001 && abs($lum_pct+0) < 8.0);
@@ -9763,12 +9764,25 @@ sub post_cal_series_adjustment {
    luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
    target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
 	  };
-	  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
-	  next if($outlier eq "");
-	  next if(autocal_step_is_peak_headroom($read_step));
-		  if(post_cal_series_low_shadow_unstable_skip($read_step,$lum_pct,$de,$target_delta)) {
-		   $evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_unstable_deadband" if(@evaluated);
-		   trace_109($read_step,"post_cal_series_low_shadow_unstable_deadband",{
+		  my $outlier=final_all_level_verify_outlier_reason($read_step,$de,$lum_pct,$target_delta);
+		  my $shared_legal_white_pair=(post_cal_series_shared_legal_white_target($target) && ref($legal_white_reading) eq "HASH") ? 1 : 0;
+		  my $legal_white_pair_worst_de=$de;
+		  if($shared_legal_white_pair) {
+		   $legal_white_pair_worst_de=$legal_white_de if(defined($legal_white_de) && (!defined($legal_white_pair_worst_de) || $legal_white_de > $legal_white_pair_worst_de));
+		   if(@evaluated) {
+		    $evaluated[-1]{"shared_legal_white_pair"}=JSON::PP::true;
+		    $evaluated[-1]{"legal_white_delta_e"}=defined($legal_white_de) ? $legal_white_de+0 : undef;
+		    $evaluated[-1]{"legal_white_luminance_error_pct"}=defined($legal_white_lum_pct) ? $legal_white_lum_pct+0 : undef;
+		    $evaluated[-1]{"pair_worst_delta_e"}=defined($legal_white_pair_worst_de) ? $legal_white_pair_worst_de+0 : undef;
+		   }
+		  }
+		  my $paired_outlier=$outlier;
+		  $paired_outlier=$legal_white_outlier if($shared_legal_white_pair && $paired_outlier eq "" && defined($legal_white_outlier) && $legal_white_outlier ne "");
+		  next if($paired_outlier eq "");
+		  next if(autocal_step_is_peak_headroom($read_step));
+			  if(post_cal_series_low_shadow_unstable_skip($read_step,$lum_pct,$de,$target_delta)) {
+			   $evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_unstable_deadband" if(@evaluated);
+			   trace_109($read_step,"post_cal_series_low_shadow_unstable_deadband",{
 		    label=>$target->{"label"},
 	    reason=>$outlier,
 	    delta_e=>defined($de)?$de+0:undef,
@@ -9778,16 +9792,14 @@ sub post_cal_series_adjustment {
 		   next;
 		  }
 		  my $adjust_read_step=$read_step;
-		  my $adjust_reading=$reading;
-		  my $adjust_de=$de;
-		  my $adjust_lum_pct=$lum_pct;
-		  my $adjust_outlier=$outlier;
-		  my $shared_legal_white_pair=0;
-		  my $legal_white_drives_adjustment=0;
-		  my $legal_white_pair_worst_de=$de;
-		  if($outlier eq "luminance") {
-		   my $luma_deadband=post_cal_series_luma_only_deadband($read_step);
-		   if(defined($lum_pct) && $luma_deadband > 0 && abs($lum_pct) <= $luma_deadband) {
+			  my $adjust_reading=$reading;
+			  my $adjust_de=$de;
+			  my $adjust_lum_pct=$lum_pct;
+			  my $adjust_outlier=$paired_outlier;
+			  my $legal_white_drives_adjustment=0;
+			  if($outlier eq "luminance") {
+			   my $luma_deadband=post_cal_series_luma_only_deadband($read_step);
+			   if(defined($lum_pct) && $luma_deadband > 0 && abs($lum_pct) <= $luma_deadband) {
 	    $evaluated[-1]{"skipped_reason"}="post_cal_luma_only_deadband" if(@evaluated);
 	    $evaluated[-1]{"post_cal_luma_only_deadband_pct"}=$luma_deadband+0 if(@evaluated);
 	    trace_109($read_step,"post_cal_series_luma_only_deadband",{
@@ -9800,16 +9812,8 @@ sub post_cal_series_adjustment {
 	    });
 		    next;
 		   }
-		  }
+			  }
 		  if(post_cal_series_shared_legal_white_target($target) && ref($legal_white_reading) eq "HASH") {
-		   $shared_legal_white_pair=1;
-		   $legal_white_pair_worst_de=$legal_white_de if(defined($legal_white_de) && (!defined($legal_white_pair_worst_de) || $legal_white_de > $legal_white_pair_worst_de));
-		   if(@evaluated) {
-		    $evaluated[-1]{"shared_legal_white_pair"}=JSON::PP::true;
-		    $evaluated[-1]{"legal_white_delta_e"}=defined($legal_white_de) ? $legal_white_de+0 : undef;
-		    $evaluated[-1]{"legal_white_luminance_error_pct"}=defined($legal_white_lum_pct) ? $legal_white_lum_pct+0 : undef;
-		    $evaluated[-1]{"pair_worst_delta_e"}=defined($legal_white_pair_worst_de) ? $legal_white_pair_worst_de+0 : undef;
-		   }
 		   if(defined($legal_white_de) && (!defined($de) || $legal_white_de > ($de+0.15) || (defined($legal_white_outlier) && $legal_white_outlier ne "" && $outlier eq ""))) {
 		    $adjust_read_step=$legal_white_read_step;
 		    $adjust_reading=$legal_white_reading;
