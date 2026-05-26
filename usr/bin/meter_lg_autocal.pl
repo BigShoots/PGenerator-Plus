@@ -9795,6 +9795,7 @@ sub post_cal_series_adjustment {
 			  my $adjust_reading=$reading;
 			  my $adjust_de=$de;
 			  my $adjust_lum_pct=$lum_pct;
+		  my $control_step=$read_step;
 			  my $adjust_outlier=$paired_outlier;
 			  my $legal_white_drives_adjustment=0;
 			  if($outlier eq "luminance") {
@@ -9819,6 +9820,12 @@ sub post_cal_series_adjustment {
 		    $adjust_reading=$legal_white_reading;
 		    $adjust_de=$legal_white_de;
 		    $adjust_lum_pct=$legal_white_lum_pct;
+		    # 100% legal white is read-only on LG, but it shares the 99% DDC slot.
+		    # Let its measurement drive the error while the writable 99% step drives
+		    # caps, luma eligibility, and tried-value policy.
+		    $control_step=$read_step;
+		    $control_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($control_step) eq "HASH");
+		    $adjust_read_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($adjust_read_step) eq "HASH");
 		    $adjust_outlier=defined($legal_white_outlier) && $legal_white_outlier ne "" ? $legal_white_outlier : $outlier;
 		    $legal_white_drives_adjustment=1;
 		   }
@@ -9837,31 +9844,31 @@ sub post_cal_series_adjustment {
 		  }
 		  my %tried_values;
 		  mark_tried_values(\%tried_values,$arrays,$target,$adjust_de);
-		  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$adjust_read_step,$adjust_lum_pct);
-		  $luma_cap=post_cal_series_neighbor_protected_luma_cap($luma_cap,$adjust_read_step,$adjust_lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state);
+		  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$control_step,$adjust_lum_pct);
+		  $luma_cap=post_cal_series_neighbor_protected_luma_cap($luma_cap,$control_step,$adjust_lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state);
 			  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
-			   $state,$arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,
+			   $state,$arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,
 			   $luma_cap
 		  );
 		  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
-		  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($adjust_read_step,$adjust_lum_pct)) {
+		  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)) {
 		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
-		    $arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_direct_luminance"
+		    $arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_direct_luminance"
 		   );
 		  }
 		  if(!$luma_adjustments) {
-		   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,$state);
+		   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state);
 		   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
 		  }
-		  if(!$luma_adjustments && post_cal_series_deltae_luminance_assist_enabled($adjust_read_step,$adjust_de,$adjust_lum_pct)) {
+		  if(!$luma_adjustments && post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)) {
 		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
-		    $arrays,$target,$adjust_read_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_deltae_luminance_assist"
+		    $arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_deltae_luminance_assist"
 		   );
 		  }
 		  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($adjust_reading,$adjust_read_step));
 		  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
-		  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($adjust_read_step,$learned_setting) : undef;
-		  my $rgb_adjustments=post_cal_series_allow_rgb_adjustment($adjust_read_step,$adjust_lum_pct,$luma_adjustments)
+		  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($control_step,$learned_setting) : undef;
+		  my $rgb_adjustments=post_cal_series_allow_rgb_adjustment($control_step,$adjust_lum_pct,$luma_adjustments)
 		   ? post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb")
 		   : undef;
 		  $rgb_adjustments=post_cal_series_generic_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$adjust_lum_pct,$target_delta,\%tried_values) if(!$rgb_adjustments);
