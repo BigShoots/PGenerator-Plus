@@ -1725,6 +1725,11 @@ sub webui_meter_lg_autocal_series_target_reference (@) {
 
 sub webui_meter_series_start (@) {
  my ($body)=@_;
+ # A series run owns its own persistent spotread process. Read Once /
+ # Continuous keeps a reusable meter_session daemon alive, so shut that down
+ # before launching the series helper or two spotread instances can fight over
+ # the same USB meter and produce intermittent bad/stale reads.
+ &webui_meter_session_stop_only() if(&webui_meter_session_alive());
  # Parse request
  my $type="greyscale";
  $type=$1 if($body=~/"type"\s*:\s*"(\w+)"/);
