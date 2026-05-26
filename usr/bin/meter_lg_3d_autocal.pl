@@ -853,7 +853,7 @@ sub read_request_id {
 
 sub read_step_once {
  my ($config,$step)=@_;
- my $delay_ms=int($config->{"delay_ms"}||500);
+ my $delay_ms=int($config->{"delay_ms"}||1000);
  $delay_ms=1800 if($delay_ms < 1800);
  my $request_id=read_request_id($step);
  my $payload={

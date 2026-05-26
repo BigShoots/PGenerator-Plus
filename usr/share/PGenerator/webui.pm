@@ -1312,7 +1312,7 @@ sub webui_meter_session_start (@) {
   my $final_start_ready=&webui_meter_session_start_ready() ? 1 : 0;
   return 1 if($final_config_ready && $final_fifo_ready && ($final_start_ready || $final_state=~/"awaiting_ready"\s*:\s*true/i));
   my $retryable=0;
-  $retryable=1 if($final_state=~/"message"\s*:\s*"[^"]*(?:communication failed during init|meter init failed)[^"]*"/i);
+  $retryable=1 if($final_state=~/"message"\s*:\s*"[^"]*(?:communication failed during init|meter init failed|meter enumeration failed|failed to enumerate)[^"]*"/i);
   $retryable=1 if($final_config_ready && $final_start_ready && !$final_fifo_ready);
   last if(!$retryable || $attempt >= $max_attempts);
   my $state_log=$final_state;
@@ -1324,7 +1324,7 @@ sub webui_meter_session_start (@) {
   system("sudo pkill -9 -x spotread 2>/dev/null");
   system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
   system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
-  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo, "/tmp/meter_session.lock");
+  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo, "/tmp/meter_session.lock", "/tmp/spotread_port_cache");
   my @stale=glob("/tmp/spotread_series_* /tmp/spotread_cmd_* /tmp/spotread_session_*");
   unlink(@stale) if @stale;
   Time::HiRes::sleep(1.5);
@@ -1332,6 +1332,7 @@ sub webui_meter_session_start (@) {
  &webui_meter_session_stop();
  system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
  system("sudo pkill -9 -x spotread 2>/dev/null");
+ unlink("/tmp/spotread_port_cache");
  return 0;
 }
 
@@ -1384,7 +1385,7 @@ sub webui_meter_read (@) {
 	 $patch_input_max=255 if($patch_input_max <= 0);
 	 my $patch_size=10;
 	 $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
-	 my $delay_ms=500;
+	 my $delay_ms=1000;
 	 $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
 	 my $read_timeout=0;
 	 $read_timeout=$1 if($body=~/"read_timeout"\s*:\s*(\d+)/);
@@ -1733,7 +1734,7 @@ sub webui_meter_series_start (@) {
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
  my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
- my $delay_ms=500;
+ my $delay_ms=1000;
  $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
  my $patch_size=10;
  $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
@@ -3015,7 +3016,7 @@ sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
-  display_type target_gamut delay delay_explicit patch_size patch_insert disable_aio
+  display_type target_gamut delay delay_user_set delay_explicit patch_size patch_insert disable_aio
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
@@ -3028,7 +3029,9 @@ sub webui_meter_settings_save (@) {
   push @parts, "\"$1\":$2" if($allowed{$1});
  }
  my $safe="{".join(",",@parts)."}";
- if($safe=~/"delay"\s*:/ && $safe!~/"delay_explicit"\s*:/) {
+ if($safe=~/"delay_user_set"\s*:\s*true/i) {
+  $safe=~s/,?\s*"delay_explicit"\s*:\s*(?:true|false|null|"[^"]*"|-?\d+(?:\.\d+)?)//g;
+  $safe=~s/\{\s*,/\{/g;
   $safe=~s/\}\s*$//;
   $safe.="," if($safe!~/\{\s*$/);
   $safe.='"delay_explicit":true}';
@@ -3045,7 +3048,7 @@ sub webui_meter_settings_load (@) {
  $peak=1000 if(!defined $peak || $peak eq "");
  my $min=$pgenerator_conf{"min_luma"};
  $min=0.005 if(!defined $min || $min eq "");
- my $delay_default_ms=500;
+ my $delay_default_ms=1000;
  my $meter_target_gamma_auto="";
  my $meter_target_gamut_auto="";
  if(($pgenerator_conf{"dv_status"}||"0") eq "1") {
@@ -3060,18 +3063,31 @@ sub webui_meter_settings_load (@) {
   my $json="";
   if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "" && $json=~/^\{/) {
-     my $delay_explicit=($json=~/"delay_explicit"\s*:\s*true/i) ? 1 : 0;
+     my $delay_user_set=($json=~/"delay_user_set"\s*:\s*true/i) ? 1 : 0;
+     my $delay_explicit=$delay_user_set ? 1 : 0;
+     my $delay_value;
+     my $has_delay=0;
+     if($json=~/"delay"\s*:\s*"?(-?\d+(?:\.\d+)?)"?/) {
+      $delay_value=$1+0;
+      $has_delay=1;
+     }
    $json=~s/,?\s*"hdr_master_peak"\s*:\s*"[^"]*"//g;
    $json=~s/,?\s*"hdr_master_min"\s*:\s*"[^"]*"//g;
    $json=~s/,?\s*"boot_id"\s*:\s*"[^"]*"//g;
      if(!$delay_explicit) {
-      if($json=~/"delay"\s*:\s*"?0+(?:\.0+)?"?/) {
-       $json=~s/"delay"\s*:\s*"?0+(?:\.0+)?"?/"delay":"$delay_default_ms"/g;
-      } elsif($json!~/"delay"\s*:/) {
+      if(!$has_delay) {
        $json=~s/\{\s*/{"delay":"$delay_default_ms",/;
+      } elsif(!defined($delay_value) || $delay_value <= 0 || abs($delay_value-500) < 0.0001 || abs($delay_value-0.5) < 0.0001) {
+       $json=~s/"delay"\s*:\s*"?0+(?:\.0+)?"?/"delay":"$delay_default_ms"/g;
+       $json=~s/"delay"\s*:\s*"?500(?:\.0+)?"?/"delay":"$delay_default_ms"/g;
+       $json=~s/"delay"\s*:\s*"?0\.5(?:0+)?"?/"delay":"$delay_default_ms"/g;
       }
      }
      $json=~s/,?\s*"delay_explicit"\s*:\s*(?:true|false|null|"[^"]*"|-?\d+(?:\.\d+)?)//g;
+     $json=~s/,?\s*"delay_user_set"\s*:\s*(?:true|false|null|"[^"]*"|-?\d+(?:\.\d+)?)//g;
+     if($delay_user_set) {
+      $json=~s/\{\s*/{"delay_user_set":true,"delay_explicit":true,/;
+     }
   if($meter_target_gamma_auto ne "") {
    if($json=~/"target_gamma"\s*:/) {
     $json=~s/"target_gamma"\s*:\s*"[^"]*"/"target_gamma":"$meter_target_gamma_auto"/g;
@@ -7145,7 +7161,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    <div class="field field-delay">
     <label>Meter Delay</label>
     <div class="meter-inline-value">
-     <input id="meterDelay" type="text" value="0.5" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied before each meter reading" aria-label="Meter Delay in seconds" oninput="meterDelaySyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,0.5))">
+     <input id="meterDelay" type="text" value="1.0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied before each meter reading" aria-label="Meter Delay in seconds" oninput="meterDelaySyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1.0))">
      <span class="meter-inline-unit">sec</span>
     </div>
    </div>
@@ -15413,6 +15429,20 @@ function meterFullAutoCalStageLabel(){
  }
 }
 
+function meterFullAutoCalReportPhaseActive(){
+ const phase=String(meterFullAutoCalPhase||'');
+ return !!(meterFullAutoCalRunning&&(phase==='precal-report'||phase==='postcal-report'));
+}
+
+function meterClearAutoCalStatusPollingForReport(){
+ if(!meterFullAutoCalReportPhaseActive()) return;
+ if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
+ if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
+ meterAutoCalRunning=false;
+ meterLg3dAutoCalRunning=false;
+ if(meterAutoCalPhase==='running'||meterAutoCalPhase==='complete'||meterAutoCalPhase==='error') meterAutoCalPhase='';
+}
+
 function meterWorkflowPercent(status,workflow){
  const fraction=meterWorkflowPhaseFraction(status);
  if(workflow==='full'){
@@ -19845,6 +19875,7 @@ async function meterFullAutoCalCaptureReportSet(stage){
  meterFullAutoCalSaveReportData();
  meterFullAutoCalArchiveReportData(stage+'-started');
  meterFullAutoCalSaveState();
+ meterClearAutoCalStatusPollingForReport();
  if(!(await meterEnsureDetected())) throw new Error('No meter detected');
  if(!meterEnsureAppliedGeneratorSettings()) throw new Error('Apply & Restart first so measurements match the live signal mode');
  await meterStopContinuous();
@@ -20005,6 +20036,7 @@ async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalRunning=true;
  meterFullAutoCalPhase='postcal-report';
  meterFullAutoCalSaveState();
+ meterClearAutoCalStatusPollingForReport();
  try{
   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:METER_FULL_AUTOCAL_REPORT_SERIES.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
   const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff('post-cal report');
@@ -20794,6 +20826,13 @@ function meterFullAutoCalComplete(touchupStatus,options){
 
 async function meterPollAutoCal(options){
 	 if(meterAutoCalPollInFlight) return;
+	 if(meterFullAutoCalReportPhaseActive()){
+	  if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
+	  meterAutoCalRunning=false;
+	  if(meterAutoCalPhase==='running'||meterAutoCalPhase==='complete'||meterAutoCalPhase==='error') meterAutoCalPhase='';
+	  meterUpdateReadButtons();
+	  return;
+	 }
 	 const initial=options===true||!!(options&&options.initial);
 	 const watchdog=!!(options&&options.watchdog);
 	 const recover=!!(options&&options.recover);
@@ -20948,11 +20987,13 @@ async function meterPollAutoCal(options){
 }
 
 async function meterAutoCalBackendRecoveryWatchdog(){
+ if(meterFullAutoCalReportPhaseActive()) return;
  if(meterAutoCalSetupOverlayActive()||meterAutoCalRunning||meterAutoCalPolling||meterActionPending||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling) return;
  await meterPollAutoCal({initial:true,recover:true,timeoutMs:15000});
 }
 
 async function meterAutoCalInitialRecoveryPoll(){
+ if(meterFullAutoCalReportPhaseActive()) return;
  if(meterAutoCalSetupOverlayActive()||meterAutoCalRunning||meterAutoCalPolling||meterActionPending||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling) return;
  await meterPollAutoCal({initial:true,recover:true,timeoutMs:15000});
 }
@@ -21333,6 +21374,12 @@ function meterLg3dApplyStatus(status){
 
 async function meterPollLg3dAutoCal(options){
  if(meterLg3dAutoCalPollInFlight) return;
+ if(meterFullAutoCalReportPhaseActive()){
+  if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
+  meterLg3dAutoCalRunning=false;
+  meterUpdateReadButtons();
+  return;
+ }
  const initial=options===true||!!(options&&options.initial);
  const watchdog=!!(options&&options.watchdog);
  const full3dPhase=!!(meterFullAutoCalRunning&&meterFullAutoCalPhase==='3d-lut');
@@ -21404,6 +21451,11 @@ async function meterPollLg3dAutoCal(options){
 
 async function meterAutoCalStatusWatchdog(){
  if(meterAutoCalWatchdogInFlight) return;
+ if(meterFullAutoCalReportPhaseActive()){
+  meterClearAutoCalStatusPollingForReport();
+  meterUpdateReadButtons();
+  return;
+ }
  const greyActive=!!(meterAutoCalPolling||meterAutoCalPhase==='running');
  const lutActive=!!(meterLg3dAutoCalRunning||meterLg3dAutoCalPolling||(meterFullAutoCalRunning&&meterFullAutoCalPhase==='3d-lut'));
  if(!greyActive&&!lutActive) return;
@@ -25656,7 +25708,7 @@ function meterDelaySanitize(raw){
 }
 
 function meterDelayParseSeconds(raw,fallbackSeconds){
- const fallback=(fallbackSeconds!=null)?fallbackSeconds:0.5;
+ const fallback=(fallbackSeconds!=null)?fallbackSeconds:1.0;
  const sanitized=meterDelaySanitize(raw);
  if(!sanitized||sanitized==='.') return fallback;
  const value=parseFloat(sanitized);
@@ -25665,7 +25717,7 @@ function meterDelayParseSeconds(raw,fallbackSeconds){
 }
 
 function meterDelayFormatSeconds(seconds,fallbackSeconds){
- const fallback=(fallbackSeconds!=null)?fallbackSeconds:0.5;
+ const fallback=(fallbackSeconds!=null)?fallbackSeconds:1.0;
  let value=Number(seconds);
  if(!(Number.isFinite(value)&&value>=0)) value=fallback;
  value=Math.round(value*1000)/1000;
@@ -25673,28 +25725,32 @@ function meterDelayFormatSeconds(seconds,fallbackSeconds){
 }
 
 function meterDelaySyncInput(el){
+ meterDelayExplicit=true;
  if(!el) return;
  el.value=meterDelaySanitize(el.value);
 }
 
 function meterDelayMs(){
  const el=document.getElementById('meterDelay');
- return Math.round(meterDelayParseSeconds(el?el.value:'',0.5)*1000);
+ return Math.round(meterDelayParseSeconds(el?el.value:'',1.0)*1000);
 }
 
-function meterDelayLoadValue(raw){
+function meterDelayLoadValue(raw,explicit){
  const el=document.getElementById('meterDelay');
  if(!el) return;
+ meterDelayExplicit=!!explicit;
  if(raw==null||raw===''){
-  el.value=meterDelayFormatSeconds(0.5);
+  el.value=meterDelayFormatSeconds(1.0);
   return;
  }
  const numeric=Number(raw);
  if(Number.isFinite(numeric)&&numeric>=0){
-  el.value=meterDelayFormatSeconds(numeric>99?(numeric/1000):numeric);
+  const seconds=numeric>99?(numeric/1000):numeric;
+  if(!meterDelayExplicit&&Math.abs(seconds-1.0)>0.0005) meterDelayExplicit=true;
+  el.value=meterDelayFormatSeconds(seconds);
   return;
  }
- el.value=meterDelayFormatSeconds(meterDelayParseSeconds(raw,0.5));
+ el.value=meterDelayFormatSeconds(meterDelayParseSeconds(raw,1.0));
 }
 
 async function deleteCustomCcss(filename){
@@ -25721,6 +25777,7 @@ async function deleteCustomCcss(filename){
 // Meter settings persistence — save to server so all clients share the same settings
 let meterSettingsLoaded=false;
 let meterSettingsSavePromise=Promise.resolve(null);
+let meterDelayExplicit=false;
 function saveMeterSettings(){
  if(!meterSettingsLoaded) return Promise.resolve(null);
  const val=(id,def)=>{ const e=document.getElementById(id); return e?(e.value||def||''):(def||''); };
@@ -25736,6 +25793,8 @@ function saveMeterSettings(){
   simulate_spectro:chk('meterSimulateSpectro'),
   target_gamut:val('meterTargetGamut','auto')||'auto',
   delay:String(meterDelayMs()),
+  delay_user_set:!!meterDelayExplicit,
+  delay_explicit:!!meterDelayExplicit,
   patch_size:val('meterPatchSize'),
   grey_two_point_low:val('meterTwoPointLow',String(METER_TWO_POINT_DEFAULTS.low)),
   grey_two_point_high:val('meterTwoPointHigh',String(METER_TWO_POINT_DEFAULTS.high)),
@@ -25818,7 +25877,7 @@ async function loadMeterSettings(){
  if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
  applyMeterTargetGamutDefault(false);
  updateMeterTargetWhitepointVisibility();
- meterDelayLoadValue(s.delay);
+ meterDelayLoadValue(s.delay,s.delay_user_set===true||s.delay_explicit===true);
  if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
  setVal('meterTwoPointLow', s.grey_two_point_low, String(METER_TWO_POINT_DEFAULTS.low));
  setVal('meterTwoPointHigh', s.grey_two_point_high, String(METER_TWO_POINT_DEFAULTS.high));
