@@ -2061,14 +2061,15 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 		    }
     return $c;
    };
-   # Reference first, then the remaining steps. LG AutoCal 26 reads legal
-   # white before walking down from 109% so post-cal charts use the same
-   # 100% white basis as the reference workflow while still evaluating headroom patches.
+   # Reference first, then black for contrast, then the remaining LG 26pt
+   # steps ascend from near black through headroom. The delayed legal-white
+   # read gives post-cal charts a fresh target-Y basis before any low-level
+   # reads are taken.
   my @ordered;
   if($points==2) {
    @ordered=((sort { $a <=> $b } @ire_vals)[1], (sort { $a <=> $b } @ire_vals)[0]);
   } elsif($lg_autocal_26_codes) {
-   @ordered=(100,sort { $b <=> $a } grep { abs($_-100)>0.001 } @ire_vals);
+   @ordered=(100,0,sort { $a <=> $b } grep { $_>0 && abs($_-100)>0.001 } @ire_vals);
   } else {
    @ordered=(100, sort { $a <=> $b } grep { $_ != 100 } @ire_vals);
   }
@@ -2106,6 +2107,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 		    $extra.=",\"input_max\":1023" if($lg_autocal_26_codes);
 		    if($lg_autocal_26_codes) {
 		     my $step_read_delay_ms=0;
+		     $step_read_delay_ms=3000 if(abs($v-100)<0.001);
 		     $step_read_delay_ms=6000 if($v > 0 && $v <= 10);
 		     $step_read_delay_ms=3200 if($v > 10 && $v <= 25);
 		     $extra.=",\"read_delay_ms\":$step_read_delay_ms" if($step_read_delay_ms > $delay_ms);
@@ -16948,13 +16950,11 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 			 const zeroMeta=meterLgAutoCalTargetMetaForCode(zeroCode);
 			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true};
  const whiteCode=mode==='sdr'?meterLgSdrLegalHeadroomCodeFromPercent(100):meterCodeFromSignalPercentWithOptions(100,null);
- const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode),autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
- const headroom=makeDdcStep(109);
+ const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
  const body=METER_LG_GREY_AUTOCAL_26_SLOTS
-  .filter(slot=>Math.abs(slot-109)>0.001)
-  .sort((a,b)=>b-a)
+  .sort((a,b)=>a-b)
   .map(makeDdcStep);
- return [...(includeWhiteReference?[white]:[]),headroom,...body,zero,...passthrough];
+ return [...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
 function meterSelectSeries(type,points,opts){
