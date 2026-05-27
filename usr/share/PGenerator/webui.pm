@@ -18614,7 +18614,7 @@ function meterAutoCalSetOverlay(active,status){
   startBtn.style.display=(showConfirm||showOptions)?'':'none';
   startBtn.textContent=showOptions?'\u25B6 Continue':'\u25B6 Start';
  }
- if(backBtn) backBtn.style.display=showConfirm?'':'none';
+ if(backBtn) backBtn.style.display=(showConfirm&&meterAutoCalRequiresLuminanceSetup())?'':'none';
  if(fullCancelBtn) fullCancelBtn.style.display='none';
  if(fullSkipBtn) fullSkipBtn.style.display='none';
  if(fullContinueBtn) fullContinueBtn.style.display='none';
@@ -18651,6 +18651,10 @@ function meterAutoCalSetupOverlayActive(){
  const phase=String(meterAutoCalPhase||'');
  if(phase==='running'||phase==='complete'||phase==='error') return false;
  return !!(meterAutoCalPendingConfig||meterAutoCalResetInProgress||meterAutoCalLuminanceSetupActive||phase==='options'||phase==='disclaimer'||phase==='preflight'||phase==='luminance'||phase==='confirm');
+}
+
+function meterAutoCalRequiresLuminanceSetup(){
+ return meterLgAutoCalRequestedSignalMode()!=='hdr10';
 }
 
 function meterAutoCalTargetDeltaValue(){
@@ -18740,6 +18744,10 @@ function meterAutoCalContinueFromLuminanceSetup(){
 
 async function meterAutoCalBackToLuminance(){
  if(!meterAutoCalPendingConfig||!meterAutoCalPendingConfig.whiteStep) return;
+ if(!meterAutoCalRequiresLuminanceSetup()){
+  meterAutoCalShowConfirm();
+  return;
+ }
  meterAutoCalPhase='luminance';
  meterAutoCalLuminanceContinue=false;
  const btn=document.getElementById('meterAutoCalContinueBtn');
@@ -18765,13 +18773,16 @@ function meterAutoCalShowPreflightOptions(){
  if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow) return;
  meterAutoCalPhase='options';
  meterAutoCalLuminanceSetupActive=false;
+ const needsLuminanceSetup=meterAutoCalRequiresLuminanceSetup();
  meterAutoCalSetGreyscaleOptionControls();
  const description=document.getElementById('meterAutoCalConfirmDescription');
  const targetRow=document.getElementById('meterAutoCalTargetRow');
  const summary=document.getElementById('meterAutoCalConfirmSummary');
- if(description) description.textContent='Choose the standalone greyscale Auto Cal cleanup options before the LG DDC reset. These choices will be carried through reset, luminance setup, and the final Auto Cal payload.';
+ if(description) description.textContent=needsLuminanceSetup
+  ? 'Choose the standalone greyscale Auto Cal cleanup options before the LG DDC reset. These choices will be carried through reset, luminance setup, and the final Auto Cal payload.'
+  : 'Choose the standalone greyscale Auto Cal cleanup options before the LG DDC reset. HDR uses the calibrated 100% point as its peak reference, so no SDR luminance setup is required.';
  if(targetRow) targetRow.style.display='none';
- if(summary) summary.textContent='The DDC reset and 100% luminance setup will follow.';
+ if(summary) summary.textContent=needsLuminanceSetup?'The DDC reset and 100% luminance setup will follow.':'The DDC reset will follow.';
  meterAutoCalSetOverlay(true,{phase:'options',current_name:'Greyscale Auto Cal options',message:'Choose post-cal cleanup before reset.'});
 }
 
@@ -18796,14 +18807,14 @@ function meterAutoCalShowConfirm(){
  const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
  meterAutoCalSetGreyscaleOptionControls();
  if(description) description.textContent=hdrWorkflow
-  ? 'The active LG picture mode has been reset. HDR Auto Cal will use the current 100% white luminance with an ST 2084 target, then calibrate the LG greyscale DDC slots from top to bottom without the SDR super-white spine. 0% is read for black level/charts. The closest result is kept when the target cannot be reached.'
+  ? 'The active LG picture mode has been reset. HDR Auto Cal will calibrate 100% first and use that measured peak as the ST 2084 reference, then calibrate the LG greyscale DDC slots from top to bottom without the SDR super-white spine. 0% is read for black level/charts. The closest result is kept when the target cannot be reached.'
   : 'The active LG picture mode has been reset. Auto Cal will use the current 100% white luminance and selected gamma target, derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high. 100% is used for setup and then checked internally as the legal-white anchor; 0% is read for black level/charts. The closest result is kept when the target cannot be reached.';
  if(targetRow) targetRow.style.display='flex';
  if(summary){
   const levels=meterAutoCalLevelPreflight;
   const levelText=(levels&&!levels.skipped)?(' Levels: brightness '+(levels.brightness!=null?levels.brightness:'--')+', contrast '+(levels.contrast!=null?levels.contrast:'--')+'.'):'';
   summary.textContent=hdrWorkflow
-   ? 'Setup 100% HDR white: '+setupY.toFixed(2)+' cd/m\u00B2. ST 2084 target peak: '+targetY.toFixed(2)+' cd/m\u00B2. Panel light: '+((meterAutoCalPanelLight.label||'Panel light')+' '+(meterAutoCalPanelLight.value!=null?Math.round(Number(meterAutoCalPanelLight.value)):'--'))+'.'+levelText
+   ? 'HDR uses 100% panel light. The first calibrated 100% read sets the ST 2084 peak reference.'+levelText
    : 'Setup 100%: '+setupY.toFixed(2)+' cd/m\u00B2. Cal target 100%: '+targetY.toFixed(2)+' cd/m\u00B2. 109% target: '+headroomY.toFixed(2)+' cd/m\u00B2. Panel light: '+((meterAutoCalPanelLight.label||'Panel light')+' '+(meterAutoCalPanelLight.value!=null?Math.round(Number(meterAutoCalPanelLight.value)):'--'))+'.'+levelText;
  }
  meterAutoCalSetOverlay(true,{phase:'confirm',current_name:'Ready to start LG Auto Cal',message:'Review the workflow and choose the target error.'});
@@ -21388,12 +21399,18 @@ async function meterAutoCalAcceptDisclaimer(){
   // Auto Cal must not change those TV picture controls implicitly.
   meterAutoCalLevelPreflight={skipped:true};
   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
-  const setupReading=await meterAutoCalLuminanceSetupLoop(whiteStep);
-  if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
-  if(setupReading){
-   meterAutoCalSetupReading=setupReading;
-   meterUpsertSeriesReading(setupReading,whiteStep);
-   meterWhiteReading=setupReading;
+  if(meterAutoCalRequiresLuminanceSetup()){
+   const setupReading=await meterAutoCalLuminanceSetupLoop(whiteStep);
+   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
+   if(setupReading){
+    meterAutoCalSetupReading=setupReading;
+    meterUpsertSeriesReading(setupReading,whiteStep);
+    meterWhiteReading=setupReading;
+   }
+  }else{
+   meterAutoCalLuminanceSetupActive=false;
+   meterAutoCalSetupReading=null;
+   meterAutoCalCapturedTargetY=0;
   }
   meterActionPending=false;
   meterAutoCalShowConfirm();
@@ -21424,12 +21441,12 @@ async function meterAutoCalConfirmAndStart(){
 	 }
 	 const target=meterAutoCalTargetDeltaValue();
 	 const deltaEFormula='deitp';
-	 const setupY=meterAutoCalSetupYValue();
-	 const targetY=meterAutoCalTargetYValue();
-	 const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
 	 const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
 	 const signalMode=meterLgAutoCalRequestedSignalMode();
 	 const hdrWorkflow=signalMode==='hdr10';
+	 const setupY=hdrWorkflow?undefined:meterAutoCalSetupYValue();
+	 const targetY=hdrWorkflow?undefined:meterAutoCalTargetYValue();
+	 const headroomY=hdrWorkflow?undefined:meterAutoCalHeadroomTargetYValue(setupY);
 		 const firstFullGreyscalePass=!!(fullWorkflow&&meterFullAutoCalRunning&&meterFullAutoCalPhase==='first-greyscale');
 		 const capturedGreyscaleOptions=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
 		 const postCommitPolishEnabled=firstFullGreyscalePass?false:(capturedGreyscaleOptions?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:meterAutoCalPostCommitPolishChoiceValue());
@@ -21438,7 +21455,7 @@ async function meterAutoCalConfirmAndStart(){
 		 meterAutoCalPendingConfig.postCommitPolishEnabled=postCommitPolishEnabled;
 		 meterAutoCalPendingConfig.magicWandEnabled=magicWandEnabled;
 		 meterAutoCalStandaloneMagicWandEnabled=magicWandEnabled;
-	 meterStoreLgTargetWhiteReference(targetY,meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow?'full-autocal':'greyscale-autocal',meterFullAutoCalRunId||null);
+	 if(!hdrWorkflow&&Number.isFinite(targetY)&&targetY>0) meterStoreLgTargetWhiteReference(targetY,meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow?'full-autocal':'greyscale-autocal',meterFullAutoCalRunId||null);
  const dtype=meterAutoCalPendingConfig.dtype;
  const patternSignalRange=meterAutoCalPendingConfig.patternSignalRange;
  const wp=meterAutoCalPendingConfig.wp;
@@ -21449,9 +21466,9 @@ async function meterAutoCalConfirmAndStart(){
 	   targetDelta:target,
 	   deltaEFormula:deltaEFormula,
 	   signalMode:signalMode,
-	   targetY:targetY,
-	   setupY:setupY,
-	   headroomY:hdrWorkflow?undefined:headroomY,
+	   targetY:hdrWorkflow?undefined:targetY,
+	   setupY:hdrWorkflow?undefined:setupY,
+	   headroomY:headroomY,
 	   dtype:dtype,
    patternSignalRange:patternSignalRange,
    wp:wp,
@@ -21465,7 +21482,7 @@ async function meterAutoCalConfirmAndStart(){
  meterAutoCalSetOverlay(true,{
   current_name:'Starting RGB Auto Cal...',
   message:hdrWorkflow
-   ? 'Using HDR 100% ST 2084 target '+targetY.toFixed(2)+' cd/m\u00B2'
+   ? 'HDR 100% will set the ST 2084 peak reference'
    : 'Using 100% target '+targetY.toFixed(2)+' cd/m\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\u00B2',
   total_steps:meterAutoCalPendingConfig.adjustable.length,
   current_step:0
@@ -21490,9 +21507,9 @@ async function meterAutoCalConfirmAndStart(){
     patch_insert:document.getElementById('meterPatchInsert').checked,
     target_delta_e:target,
     delta_e_formula:deltaEFormula,
-    target_luminance:targetY,
-    setup_luminance_reference:setupY,
-    headroom_target_luminance:hdrWorkflow?undefined:headroomY,
+    target_luminance:hdrWorkflow?undefined:targetY,
+    setup_luminance_reference:hdrWorkflow?undefined:setupY,
+    headroom_target_luminance:headroomY,
     target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
