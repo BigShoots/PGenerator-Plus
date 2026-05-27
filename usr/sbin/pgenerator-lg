@@ -1626,6 +1626,17 @@ sub lg_picture_mode_for_calibration (@) {
   "hdr_technicolorexpert" => "hdr_technicolorExpert",
   "hdr_filmmaker" => "hdr_filmMaker",
   "hdr_filmmakermode" => "hdr_filmMaker",
+  "hdrcinema" => "hdr_cinema",
+  "hdrgame" => "hdr_game",
+  "hdrtechnicolorexpert" => "hdr_technicolorExpert",
+  "hdrfilmmaker" => "hdr_filmMaker",
+  "hdrfilmmakermode" => "hdr_filmMaker",
+  "dolby_hdr_cinema" => "dolby_hdr_cinema",
+  "dolby_hdr_cinema_bright" => "dolby_hdr_cinema_bright",
+  "dolby_hdr_game" => "dolby_hdr_game",
+  "dolbyhdrcinema" => "dolby_hdr_cinema",
+  "dolbyhdrcinemabright" => "dolby_hdr_cinema_bright",
+  "dolbyhdrgame" => "dolby_hdr_game",
  );
  return $map{$mode_lc}||"";
 }
@@ -2993,8 +3004,8 @@ sub lg_picture_set_workflow (@) {
    last;
   }
  }
- my $mode_lc=lc($active_picture_mode);
-	 my $mode_writable=($mode_lc ne "" && $mode_lc =~ /$WRITABLE_PICTURE_MODES_RE/) ? 1 : 0;
+ my $mode_lc=lc(&lg_picture_mode_for_calibration($active_picture_mode) || $active_picture_mode);
+ my $mode_writable=($mode_lc ne "" && $mode_lc =~ /$WRITABLE_PICTURE_MODES_RE/) ? 1 : 0;
  if(($ddc_white_balance_only || $native_white_balance) && !$picture_mode_only && !$panel_light_only && $active_picture_mode ne "" && !$mode_writable) {
   &websocket_close($session);
   &diag_log_append("picture_set:preflight",{ ip => $ip, picture_mode => $active_picture_mode, blocked => "non-writable picture mode" });
