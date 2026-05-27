@@ -1972,8 +1972,8 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	    @ire_vals=(0..100);
 			   } elsif($points==30 && $signal_mode eq "hdr10") {
 				    @ire_vals=(0,1,1.4,2,2.3,2.7,3,3.7,4,6,8,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
-			   } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
-					    @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99);
+				   } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
+						    @ire_vals=(100,0,1.4,2,2.7,4,5,7,10,15,20,25,30,40,50,60,70,80,85,90,95);
 			   } elsif($points==26 && $lg_autocal_26) {
 					    @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 			   } elsif($points==21 && $lg_greyscale_21) {
