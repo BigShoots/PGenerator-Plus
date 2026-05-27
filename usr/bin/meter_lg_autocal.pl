@@ -6392,9 +6392,11 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	 $needs_luma_help=1 if(defined($de) && $de > ($target_delta+2.0) && abs($lum_pct) >= 0.75);
 	 return undef if(!$needs_luma_help);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
-	 return undef if(hdr20_body_family_suppressed($tried,"rgb_luminance",$direction));
-	 my $base=$micro ? 0.25 : 0.50;
 	 my $abs_lum=abs($lum_pct);
+	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0;
+	 my $force_luma_clamp=(!$micro && $direction < 0 && $ire >= 70 && $abs_lum >= 8.0) ? 1 : 0;
+	 return undef if(!$force_luma_clamp && hdr20_body_family_suppressed($tried,"rgb_luminance",$direction));
+	 my $base=$micro ? 0.25 : 0.50;
 	 if(!$micro) {
 	  $base=1.0 if($abs_lum >= 2.0 || (defined($de) && $de >= 3.0));
 	  $base=2.0 if($abs_lum >= 5.0 || (defined($de) && $de >= 7.0));
@@ -6402,6 +6404,10 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	  $base=4.0 if($abs_lum >= 14.0);
 	  $base=6.0 if($abs_lum >= 22.0);
 	  $base+=0.5*($stalls||0) if(($stalls||0) >= 2);
+	  if($force_luma_clamp) {
+	   $base=6.0 if($base < 6.0);
+	   $base+=1.0*($stalls||0) if(($stalls||0) >= 1);
+	  }
 	 }
 	 my $cap=$micro ? 1.0 : 8.0;
 	 $base=$cap if($base > $cap);
@@ -6418,7 +6424,9 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	  my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	  my $err=$error->{$ch}||0;
 	  my $scale=0.80;
-	  if($direction < 0) {
+	  if($force_luma_clamp) {
+	   $scale=1.0;
+	  } elsif($direction < 0) {
 	   $scale=1.35 if($err > 0.003);
 	   $scale=0.45 if($err < -0.010 && $chroma > 0.025);
 	  } else {
@@ -6440,6 +6448,7 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	   damped=>$damped ? 1 : 0,
 	   hdr20_body_luminance_rgb=>1,
 	   hdr20_body_balanced_chroma_luma=>1,
+	   hdr20_body_force_luma_clamp=>$force_luma_clamp ? 1 : undef,
 	   luminance_error_pct=>$lum_pct+0,
 	   chroma_error=>$chroma+0,
 	   source=>$reason||"hdr20_body_rgb_luminance_vector",
@@ -6451,7 +6460,8 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
 	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	   my $mag=$micro ? 0.25 : $base;
-	   $mag=6.0 if($mag > 6.0);
+	   my $luma_cap=$force_luma_clamp ? 8.0 : 6.0;
+	   $mag=$luma_cap if($mag > $luma_cap);
 	   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
 	   if(
 	    defined($next) &&
@@ -6469,6 +6479,7 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	     neutral_luminance=>1,
 	     hdr20_body_luminance_rgb=>1,
 	     hdr20_body_balanced_chroma_luma=>1,
+	     hdr20_body_force_luma_clamp=>$force_luma_clamp ? 1 : undef,
 	     luminance_error_pct=>$lum_pct+0,
 	     source=>$reason||"hdr20_body_rgb_luminance_vector",
 	     micro=>$micro ? 1 : 0
@@ -6482,6 +6493,7 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	  delta_e=>defined($de)?$de+0:undef,
 	  base_step=>$base+0,
 	  direction=>$direction+0,
+	  force_luma_clamp=>$force_luma_clamp ? 1 : 0,
 	  adjustment_count=>scalar(@out),
 	  reason=>$reason||"hdr20_body_rgb_luminance_vector",
 	  target_values=>trace_target_values($arrays,$target)
@@ -12655,9 +12667,15 @@ eval {
 			    $pair_target_step_y=$best_pair_target_step_y;
 			    $state->{"readings"}=merge_reading($state->{"readings"},$pair_reading);
 				   }
-				   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$reading,$white_y);
+			   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$reading,$white_y);
 				   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
 				   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+			   $state->{"current_delta_e"}=defined($de) ? $de+0 : undef;
+			   $state->{"current_luminance"}=luminance($reading);
+			   set_state_target_step_luminance($state,$target_step_y);
+			   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct+0 : undef;
+			   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+			   write_state($state);
 			   return 1;
 			  };
 			  my $restore_headroom_105_near_y_cleanup_branch=sub {
