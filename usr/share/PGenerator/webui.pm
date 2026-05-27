@@ -14851,7 +14851,11 @@ function meterStampReadingStepMeta(reading,step){
 function meterAttachSeriesMeta(readings){
  if(!Array.isArray(readings)||!meterSeriesSteps) return readings||[];
  return readings.map(rd=>{
-  const step=meterSeriesSteps.find(s=>(meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')))&&meterReadingMatchesStepForPlot(rd,s));
+  const matches=meterSeriesSteps.filter(s=>(meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')))&&meterReadingMatchesStepForPlot(rd,s));
+  const wantsReference=!!(rd&&(rd.autocal_white_reference||rd.autocal_reference_only||rd.autocal_read_only)&&rd.ddc_target_ire==null);
+  const step=wantsReference
+   ? (matches.find(s=>meterReadingIsAutoCalReferenceOnly(s)||s.autocal_read_only)||matches[0])
+   : (matches.find(s=>!meterReadingIsAutoCalReferenceOnly(s)&&!s.autocal_read_only)||matches[0]);
   const reading=step?meterStampReadingStepMeta(rd,step):rd;
   return meterNormalizeOledBlackReading(meterNormalizeMeasuredReading(reading));
  });
