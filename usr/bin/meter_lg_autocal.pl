@@ -6072,6 +6072,29 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 $mag+=1.0 if($stalls >= 2 && $mag < 5.0);
 	 $mag=6.0 if($mag > 6.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
+	 my $ire=(defined($target->{"ire"}) ? ($target->{"ire"}+0) : ((ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0));
+	 if($ire >= 80) {
+	  my @rgb_out;
+	  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
+	   my $arr=$arrays->{$setting};
+	   next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,$setting,$min_step,0);
+	   next if(!defined($next) || abs($next-$current) < 0.0001);
+	   push @rgb_out,{
+	    channel=>($setting eq "whiteBalanceRed" ? "r" : ($setting eq "whiteBalanceGreen" ? "g" : "b")),
+	    setting=>$setting,
+	    current=>$current,
+	    next=>$next,
+	    delta=>$next-$current,
+	    damped=>$damped ? 1 : 0,
+	    hdr20_body_luminance_rgb=>1,
+	    hdr20_body_top_rgb_luminance=>1,
+	    luminance_error_pct=>$lum_pct+0
+	   };
+	  }
+	  return \@rgb_out if(@rgb_out == 3);
+	 }
 	 if(has_luminance_channel($arrays,$target)) {
 	  my $arr=$arrays->{"adjustingLuminance"};
 	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
