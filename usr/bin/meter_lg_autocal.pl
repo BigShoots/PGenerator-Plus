@@ -767,6 +767,15 @@ sub autocal_step_suppresses_luminance_adjustment {
  return ($ire >= 99.9 && !autocal_step_is_fast_headroom($step)) ? 1 : 0;
 }
 
+sub autocal_step_is_hdr20_top_white {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $layout=lc($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "");
+ return 0 if($layout ne "hdr20");
+ my $ire=$step->{"ire"}+0;
+ return ($ire >= 99.9 && $ire <= 100.1) ? 1 : 0;
+}
+
 sub autocal_step_ignores_luminance_error {
  my ($step)=@_;
  return autocal_step_is_peak_headroom($step) ? 1 : 0;
@@ -7052,6 +7061,7 @@ sub choose_adjustments {
 			 }
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
+			 my $hdr20_top_white=autocal_step_is_hdr20_top_white($step);
 			 my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err);
 			 my $headroom_105_luma_priority=headroom_105_luma_priority_active($step,$arrays,$target,$tried,$luminance_err);
 			 if($headroom_105_luma_priority) {
@@ -7091,6 +7101,11 @@ sub choose_adjustments {
 				 if($ire < 90 && has_luminance_channel($arrays,$target) && abs($lum_pct) > (($luma_tol*3) > 8 ? ($luma_tol*3) : 8)) {
 				  my $max_luma_step=abs($luminance_err) >= 0.20 ? 6 : 4;
 				  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step,$strict_tried,$step,"main_luminance");
+				  return $neutral if($neutral);
+				 }
+				 if($hdr20_top_white && has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.35)) {
+				  my $max_luma_step=abs($luminance_err) >= 0.05 ? 3 : (abs($luminance_err) >= 0.02 ? 2 : 1);
+				  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_step,$max_luma_step,$strict_tried,$step,"main_hdr100_luminance");
 				  return $neutral if($neutral);
 				 }
 			 my $luminance_drive=has_luminance_channel($arrays,$target) ? 0 : luminance_adjustment_drive($luminance_err);
@@ -7184,6 +7199,7 @@ sub choose_micro_adjustments {
 				 my $min_micro_step=($max_step < 0.20) ? $max_step : 0.20;
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
+			 my $hdr20_top_white=autocal_step_is_hdr20_top_white($step);
 			 if(autocal_step_is_low_shadow($step)) {
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);
 			  return $shadow_luma if($shadow_luma);
@@ -7300,6 +7316,13 @@ sub choose_micro_adjustments {
 					  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$luma_max_step,$strict_tried,$step,"fine_luminance");
 					  return ($headroom_105_body ? mark_headroom_105_body_refinement_adjustments($neutral) : $neutral) if($neutral && ((defined($de) && $de <= 3.0) || chroma_error_magnitude($error) < 0.015));
 					 }
+				 if($hdr20_top_white && has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.30)) {
+				  my $luma_max_step=$max_step;
+				  $luma_max_step=2 if(abs($luminance_err) >= 0.05 && $luma_max_step < 2);
+				  $luma_max_step=1 if(abs($luminance_err) >= 0.02 && $luma_max_step < 1);
+				  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.20,$luma_max_step,$strict_tried,$step,"fine_hdr100_luminance");
+				  return ($headroom_105_body ? mark_headroom_105_body_refinement_adjustments($neutral) : $neutral) if($neutral);
+				 }
 				 if(abs($lum_pct) > ($luma_tol*0.45) && chroma_error_magnitude($error) < 0.016) {
 				  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,$strict_tried,$step,"fine_luminance");
 				  return ($headroom_105_body ? mark_headroom_105_body_refinement_adjustments($neutral) : $neutral) if($neutral);
@@ -7350,7 +7373,7 @@ sub choose_micro_adjustments {
 				  }
 			 }
 			 my @sweep_channels=qw(r g b);
-			 push @sweep_channels,"lum" if(has_luminance_channel($arrays,$target) && ($ire < 99.9 || autocal_step_is_fast_headroom($step)));
+			 push @sweep_channels,"lum" if(has_luminance_channel($arrays,$target) && ($ire < 99.9 || autocal_step_is_fast_headroom($step) || $hdr20_top_white));
 			 foreach my $mag (@magnitudes) {
 			  foreach my $ch (@sweep_channels) {
 			   my $setting=channel_setting($ch);
