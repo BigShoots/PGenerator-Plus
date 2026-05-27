@@ -6010,13 +6010,11 @@ sub hdr20_body_chroma_luma_adjustments {
 	 my $lum_pct=defined($luminance_err) ? ($luminance_err+0)*100 : 0;
 	 my $tol=luminance_tolerance_percent($step);
 	 $tol=2 if(!defined($tol) || $tol <= 0);
-	 my $far_luma=$tol*3;
-	 $far_luma=8 if($far_luma < 8);
-	 return undef if(abs($lum_pct) >= $far_luma);
 	 my $max_step=($micro ? 0.5 : ((defined($de) && $de > 12) ? 2.0 : ((defined($de) && $de > 4) ? 1.0 : 0.5)));
 	 my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
 	 $floor=0.0030 if(!$micro && $floor < 0.0030);
 	 $floor=0.0020 if($micro && $floor < 0.0020);
+	 my $max_channels=($chroma >= 0.060 && !$micro) ? 1 : ($micro ? 1 : 2);
 	 my @channels=sort {
 	  my $sa=tried_setting_value_count($tried,channel_setting($a));
 	  my $sb=tried_setting_value_count($tried,channel_setting($b));
@@ -6028,8 +6026,6 @@ sub hdr20_body_chroma_luma_adjustments {
 	 foreach my $ch (@channels) {
 	  my $err=$error->{$ch}||0;
 	  next if(abs($err) < $floor);
-	  next if($lum_pct > $tol && $err < 0);
-	  next if($lum_pct < -$tol && $err > 0);
 	  my $setting=channel_setting($ch);
 	  my $arr=$arrays->{$setting};
 	  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
@@ -6040,7 +6036,7 @@ sub hdr20_body_chroma_luma_adjustments {
 	  my ($next,$damped)=next_untried_value($current,$direction*$step_size,$tried,$setting,$min_step,0);
 	  next if(!defined($next) || abs($next-$current) < 0.0001);
 	  push @out,{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, hdr20_body_chroma_luma=>1, hdr20_body_chroma_priority=>1, chroma_error=>$chroma+0, luminance_error_pct=>$lum_pct+0, micro=>$micro ? 1 : 0 };
-	  last if($micro || @out >= 3);
+	  last if(@out >= $max_channels);
 	 }
 	 return undef if(!@out);
 	 return \@out;
@@ -12956,7 +12952,7 @@ eval {
 						     $low_shadow_next_adjustments=$low_shadow_restore_next_adjustments if(ref($low_shadow_restore_next_adjustments) eq "ARRAY");
 						     $body_luminance_next_adjustments=$body_restore_next_adjustments if(ref($body_restore_next_adjustments) eq "ARRAY");
 						     exhaust_adjustment_next_values(\%tried_values,$adjustments,$de)
-						      if(lg_autocal_26_full_ddc_spine_enabled($config) || $seeded_move_damping);
+						      if(lg_autocal_26_full_ddc_spine_enabled($config) || $seeded_move_damping || autocal_step_is_hdr20_body($read_step));
 						     $restore_best_branch->("Backtracking to best $label result after rejected adjustment");
 						    }
 						    if(
