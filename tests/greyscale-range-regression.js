@@ -425,12 +425,12 @@ assert(
 );
 assert(
   autoCalTargetGammaSource.includes("function meterLgAutoCalGreyscaleTargetGammaValue()") &&
-    autoCalTargetGammaSource.includes("return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();") &&
+    autoCalTargetGammaSource.includes("return meterAutoCalTargetGammaValue();") &&
     lgAutoCalGreyscalePayloadGammaCount >= 5 &&
     source.includes("return mode==='hdr10'?'hdr10':'sdr';") &&
     source.includes("if(requested==='hdr10'){\n  setVal('eotf','2');") &&
     source.includes('requested_signal_mode:signalMode'),
-  'WebUI HDR LG Auto Cal should calibrate with relative gamma 2.2 while keeping requested output transport HDR10/PQ'
+  'WebUI HDR LG Auto Cal should send the selected HDR/PQ target gamma while keeping requested output transport HDR10/PQ'
 );
 assert(
   source.includes('const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];') &&
@@ -919,6 +919,9 @@ assert(
 );
 assert(
     autocalWorkerSource.includes('sub target_luminance_for_step') &&
+    autocalWorkerSource.includes('sub pq_decode_nits') &&
+    autocalWorkerSource.includes('if($mode eq "hdr10" && lc($target_gamma||"") eq "st2084")') &&
+    autocalWorkerSource.includes('return $white_y if($pq_nits >= $white_y);') &&
     autocalWorkerSource.includes('sub target_luminance_for_autocal_step') &&
     autocalWorkerSource.includes('sub update_white_reference_for_step') &&
     autocalWorkerSource.includes('sub set_state_white_reference') &&

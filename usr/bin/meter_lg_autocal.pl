@@ -702,6 +702,11 @@ sub pq_decode_normalized {
  return clamp_unit($l ** (1/$m1));
 }
 
+sub pq_decode_nits {
+ my ($signal)=@_;
+ return pq_decode_normalized($signal) * 10000;
+}
+
 sub target_gamma_linear {
  my ($signal,$target_gamma,$signal_mode)=@_;
  $signal=0 if(!defined($signal));
@@ -734,6 +739,11 @@ sub target_luminance_for_step {
 	 my $signal=$stimulus/100;
 	 $signal=1 if($signal > 1 && $mode ne "sdr");
 	 $signal=1.1 if($signal > 1.1);
+	 if($mode eq "hdr10" && lc($target_gamma||"") eq "st2084") {
+	  my $pq_nits=pq_decode_nits($signal);
+	  return $white_y if($pq_nits >= $white_y);
+	  return $pq_nits;
+	 }
 	 return $white_y * target_gamma_linear($signal,$target_gamma,$signal_mode);
 }
 
