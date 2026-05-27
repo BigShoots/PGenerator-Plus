@@ -2005,15 +2005,19 @@ sub committed_low_shadow_good_enough {
 }
 
 sub body_itp_near_target_reached {
- my ($step,$de,$lum_pct,$target_delta)=@_;
- return 0 if(!autocal_uses_itp());
- return 0 if(!defined($de));
- return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
- return 0 if(autocal_step_is_fast_headroom($step) || autocal_step_is_low_shadow($step) || autocal_step_is_white($step));
- my $ire=$step->{"ire"}+0;
- return 0 if($ire <= 10.0001 || $ire >= 99);
- $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
- return ($de <= ($target_delta+0.25)) ? 1 : 0;
+	 my ($step,$de,$lum_pct,$target_delta)=@_;
+	 return 0 if(!autocal_uses_itp());
+	 return 0 if(!defined($de));
+	 return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+	 return 0 if(autocal_step_is_fast_headroom($step) || autocal_step_is_low_shadow($step) || autocal_step_is_white($step));
+	 my $ire=$step->{"ire"}+0;
+	 return 0 if($ire <= 10.0001 || $ire >= 99);
+	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+	 if(autocal_step_is_hdr20_body($step)) {
+	  return 0 if(!defined($lum_pct));
+	  return 0 if(abs($lum_pct) > luminance_tolerance_percent($step));
+	 }
+	 return ($de <= ($target_delta+0.25)) ? 1 : 0;
 }
 
 sub target_reached {
@@ -2119,11 +2123,18 @@ sub close_enough_stalled {
 sub autocal_result_score {
 		 my ($de,$lum_pct,$step)=@_;
 			 my $score=defined($de) ? ($de+0) : 9999;
-			 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
-				 if(autocal_uses_itp()) {
-					 if(autocal_step_is_low_shadow($step) && autocal_uses_itp() && defined($lum_pct)) {
-					  my $shadow_lum_excess=abs($lum_pct)-low_shadow_luminance_acceptance_percent($step);
-					  return $score if($shadow_lum_excess <= 0);
+				 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+					 if(autocal_uses_itp()) {
+						 if(autocal_step_is_hdr20_body($step) && defined($lum_pct)) {
+						  my $excess=abs($lum_pct)-luminance_tolerance_percent($step);
+						  return $score if($excess <= 0);
+						  my $penalty=$excess*0.45;
+						  $penalty=8 if($penalty > 8);
+						  return $score+$penalty;
+						 }
+						 if(autocal_step_is_low_shadow($step) && autocal_uses_itp() && defined($lum_pct)) {
+						  my $shadow_lum_excess=abs($lum_pct)-low_shadow_luminance_acceptance_percent($step);
+						  return $score if($shadow_lum_excess <= 0);
 					  my $shadow_lum_penalty=$shadow_lum_excess*0.45;
 					  $shadow_lum_penalty=4 if($shadow_lum_penalty > 4);
 					  return $score+$shadow_lum_penalty;
@@ -6142,22 +6153,23 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 return undef if(!defined($luminance_err));
 	 $min_step ||= 0.25;
 	 my $lum_pct=($luminance_err+0)*100;
-	 my $tol=luminance_tolerance_percent($step);
-	 $tol=2 if(!defined($tol) || $tol <= 0);
-	 my $threshold=$tol*1.20;
-	 $threshold=3 if($threshold < 3);
-	 $threshold=8 if($threshold > 8);
-	 return undef if(abs($lum_pct) < $threshold);
-	 my $idx=$target->{"index"};
-	 return undef if(!defined($idx));
+		 my $tol=luminance_tolerance_percent($step);
+		 $tol=2 if(!defined($tol) || $tol <= 0);
+		 my $threshold=$tol*1.20;
+		 my $ire=(defined($target->{"ire"}) ? ($target->{"ire"}+0) : ((ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0));
+		 my $floor=($ire >= 80) ? 0.6 : 3;
+		 $threshold=$floor if($threshold < $floor);
+		 $threshold=8 if($threshold > 8);
+		 return undef if(abs($lum_pct) < $threshold);
+		 my $idx=$target->{"index"};
+		 return undef if(!defined($idx));
 	 my $mag=1.0;
 	 $mag=2.0 if(abs($lum_pct) >= 6);
 	 $mag=4.0 if(abs($lum_pct) >= 12);
 	 $mag+=1.0 if($stalls >= 2 && $mag < 5.0);
 	 $mag=6.0 if($mag > 6.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
-	 my $ire=(defined($target->{"ire"}) ? ($target->{"ire"}+0) : ((ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0));
-	 if($ire >= 80 && !hdr20_body_family_suppressed($tried,"rgb_luminance",$direction)) {
+		 if($ire >= 80 && !hdr20_body_family_suppressed($tried,"rgb_luminance",$direction)) {
 	  my @rgb_out;
 	  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
 	   my $arr=$arrays->{$setting};
