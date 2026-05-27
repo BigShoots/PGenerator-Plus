@@ -9920,6 +9920,7 @@ let meterAutoCalRunning=false;
 let meterAutoCalPolling=null;
 let meterAutoCalPollInFlight=false;
 let meterAutoCalPollErrors=0;
+let meterAutoCalLatestStatus=null;
 let meterLg3dAutoCalRunning=false;
 let meterLg3dAutoCalPolling=null;
 let meterLg3dAutoCalPollInFlight=false;
@@ -11008,11 +11009,20 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
  if(mode!=='hdr10') return false;
  if(meterActiveSeriesType!=='greyscale') return false;
  if(typeof meterUseLgAutoCal26==='function'&&!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
- const active=!!((typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)||
+ const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
+ const active=!!((typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning&&phase!=='complete'&&phase!=='error')||
   (typeof meterAutoCalPolling!=='undefined'&&meterAutoCalPolling)||
-  (typeof meterActionPending!=='undefined'&&meterActionPending));
- const calActive=!!(typeof window!=='undefined'&&window.lgStatusState&&window.lgStatusState.calibrationMode);
- return active&&calActive;
+  (typeof meterActionPending!=='undefined'&&meterActionPending)||
+  (typeof meterAutoCalPendingConfig!=='undefined'&&meterAutoCalPendingConfig));
+ if(!active) return false;
+ const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
+ if(status&&String(status.status||'').toLowerCase()==='running'){
+  const target=String(status.target_gamma||'').toLowerCase();
+  const layout=String(status.ddc_layout||'').toLowerCase();
+  const signal=String(status.signal_mode||'').toLowerCase();
+  return target==='2.2'&&(layout==='hdr20'||signal==='hdr10');
+ }
+ return !!(meterAutoCalPendingConfig&&meterLgAutoCalRequestedSignalMode()==='hdr10');
 }
 
 function meterGreyChartTargetGammaSelection(){
@@ -19502,6 +19512,7 @@ function meterAutoCalSyncLgCalibrationMode(status){
 
 function meterAutoCalApplyStatus(status){
 		 if(!status) return;
+		 meterAutoCalLatestStatus=status;
 		 meterAutoCalSyncLgCalibrationMode(status);
 		 if(status.autocal){
 	  if(meterActiveSeriesType!=='greyscale'||Number(meterActiveSeriesPoints)!==26){
@@ -21187,6 +21198,7 @@ async function meterPollAutoCal(options){
 	 try{
 	  const r=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:timeoutMs});
 	  if(!r) return;
+	  meterAutoCalLatestStatus=r;
 	  if(r.full_workflow&&!meterFullAutoCalStatusMatchesRun(r)) return;
 	  meterAutoCalSyncLgCalibrationMode(r);
 	  if(r.status==='complete'&&r.full_workflow&&meterFullAutoCalCompletionHandled(r)){
