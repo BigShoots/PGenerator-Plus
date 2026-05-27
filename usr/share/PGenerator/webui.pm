@@ -16350,6 +16350,7 @@ const METER_TWO_POINT_DEFAULTS={low:30,high:100};
 const METER_LG_GREY_MANUAL_22_ENABLED=false;
 		const METER_LG_GREY_DDC_SLOTS_22=[2.5,5,7.5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
 			const METER_LG_GREY_AUTOCAL_26_SLOTS=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
+			const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3];
 				const METER_LG_GREY_AUTOCAL_26_CODES=[84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023];
 				const METER_LG_GREY_EXTENDED_26_CODES=[64,...METER_LG_GREY_AUTOCAL_26_CODES];
 			const METER_LG_GREY_EXTENDED_26_SLOTS=[0,...METER_LG_GREY_AUTOCAL_26_SLOTS];
@@ -17046,6 +17047,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	 if(mode==='hdr10'){
 	  const makeHdrStep=(slot)=>{
 	   const code=meterCodeFromSignalPercentWithOptions(slot,null);
+	   const ddcArrayIre=Math.abs(Number(slot)-100)<0.001?99:slot;
 	   return {
 	    ire:slot,
 	    stimulus:slot,
@@ -17063,6 +17065,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	    ddc_slot_locked:true,
 	    autocal_slot_locked:true,
 	    ddc_target_ire:slot,
+	    ddc_array_ire:ddcArrayIre,
 	    autocal_order_ire:slot
 	   };
 	  };
@@ -17070,10 +17073,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true};
 	  const whiteCode=meterCodeFromSignalPercentWithOptions(100,null);
 	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,255),read_delay_ms:3000,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_target_label:'100% HDR white'};
-	  const body=METER_LG_GREY_AUTOCAL_26_SLOTS
-	   .filter(slot=>slot<=99)
-	   .sort((a,b)=>b-a)
-	   .map(makeHdrStep);
+	  const body=METER_LG_GREY_HDR_AUTOCAL_SLOTS.map(makeHdrStep);
 	  return [...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
 	 }
 	 const makeDdcStep=(slot)=>{
