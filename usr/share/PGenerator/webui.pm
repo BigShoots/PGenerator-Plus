@@ -17432,7 +17432,8 @@ function meterGreyTvTarget(step){
 	 const ire=Number(resolved.ire);
 	 if(!Number.isFinite(ire)) return null;
 	 const autoCal26=meterUseLgAutoCal26(meterActiveSeriesPoints);
-	 const stops=autoCal26?[...METER_LG_GREY_AUTOCAL_26_SLOTS]:meterGreyTvIreStops();
+	 const autoCalHdr=autoCal26&&String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='hdr10';
+	 const stops=autoCal26?(autoCalHdr?[...METER_LG_GREY_HDR_AUTOCAL_SLOTS]:[...METER_LG_GREY_AUTOCAL_26_SLOTS]):meterGreyTvIreStops();
 		 let idx=stops.findIndex(v=>Math.abs(v-ire)<0.001);
 	 let patchStop=null;
 	 if(idx < 0 && !autoCal26 && meterUseLgGreyscale21(meterActiveSeriesPoints)){
@@ -18837,6 +18838,16 @@ function meterAutoCalWhiteStep(){
   };
  }
  return null;
+}
+
+function meterAutoCalBuildBackendSteps(whiteStep,seriesSteps){
+ const steps=Array.isArray(seriesSteps)?seriesSteps:[];
+ const body=steps.filter(step=>{
+  if(!step||step===whiteStep) return false;
+  if(step.autocal_white_reference||step.autocal_reference_only) return false;
+  return true;
+ });
+ return whiteStep?[whiteStep,...body]:body;
 }
 
 function meterAutoCalClipCodes(){
@@ -20514,8 +20525,7 @@ function meterFullAutoCalTouchupTargetY(){
 	  if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
 	  const ctx=meterAutoCalMagicWandContext(status,fullWorkflow);
 	  const deltaEFormula='deitp';
-	  const whiteKey=meterStepNameKey(whiteStep);
-	  const autocalSteps=[whiteStep,...(meterSeriesSteps||[]).filter(step=>meterStepNameKey(step)!==whiteKey)];
+	  const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
 	  meterAutoCalPendingConfig={dtype:ctx.dtype,patternSignalRange:ctx.patternSignalRange,wp:ctx.wp,adjustable,whiteStep,magicWand:true,fullWorkflowMagicWand:fullWorkflow};
 	  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Starting Magic Wand'},{workflow:fullWorkflow?'full':'greyscale',label:'Starting Magic Wand'});
 	  await meterStopContinuous();
@@ -20668,8 +20678,7 @@ function meterFullAutoCalTouchupTargetY(){
 	 const whiteStep=meterAutoCalWhiteStep();
 	 if(!whiteStep) throw new Error('100% white is required before Magic Wand failsafe can start');
 	 const ctx=meterAutoCalMagicWandContext(meterAutoCalMagicWandBaseStatus||adjustStatus,fullWorkflow);
-	 const whiteKey=meterStepNameKey(whiteStep);
-	 const autocalSteps=[whiteStep,...(meterSeriesSteps||[]).filter(step=>meterStepNameKey(step)!==whiteKey)];
+	 const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
  const body=JSON.stringify(meterMeasurementSignalContext({
    type:'greyscale',
    points:26,
@@ -20796,8 +20805,7 @@ function meterFullAutoCalTouchupTargetY(){
   const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
   const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
-  const whiteKey=meterStepNameKey(whiteStep);
-  const autocalSteps=[whiteStep,...(meterSeriesSteps||[]).filter(step=>meterStepNameKey(step)!==whiteKey)];
+  const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
   meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
   meterReadings=[];
   meterWhiteReading=null;
@@ -20949,8 +20957,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
 	  const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
   const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
-  const whiteKey=meterStepNameKey(whiteStep);
-  const autocalSteps=[whiteStep,...(meterSeriesSteps||[]).filter(step=>meterStepNameKey(step)!==whiteKey)];
+  const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
   meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowTouchup:true};
   meterReadings=[];
   meterWhiteReading=null;
@@ -21417,8 +21424,7 @@ async function meterAutoCalConfirmAndStart(){
  const dtype=meterAutoCalPendingConfig.dtype;
  const patternSignalRange=meterAutoCalPendingConfig.patternSignalRange;
  const wp=meterAutoCalPendingConfig.wp;
- const whiteKey=meterStepNameKey(meterAutoCalPendingConfig.whiteStep);
- const autocalSteps=[meterAutoCalPendingConfig.whiteStep,...(meterSeriesSteps||[]).filter(step=>meterStepNameKey(step)!==whiteKey)];
+ const autocalSteps=meterAutoCalBuildBackendSteps(meterAutoCalPendingConfig.whiteStep,meterSeriesSteps);
  if(meterFullAutoCalRunning&&meterFullAutoCalPhase==='first-greyscale'){
   meterFullAutoCalConfig={
 	   ...(meterFullAutoCalConfig||{}),
