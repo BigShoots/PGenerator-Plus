@@ -1095,15 +1095,6 @@ sub update_white_reference_for_step {
 sub target_luminance_for_autocal_step {
 				 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
 				 return $white_y if(autocal_step_is_white($step));
-				 if(lc($signal_mode||"") eq "hdr10" && lc($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "") eq "hdr20") {
-				  my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : (defined($step->{"ire"}) ? ($step->{"ire"}+0) : undef);
-				  if(defined($stimulus)) {
-				   my $signal=$stimulus/100;
-				   $signal=0 if($signal < 0);
-				   $signal=1 if($signal > 1);
-				   return $white_y * target_gamma_linear($signal,"2.2","sdr");
-				  }
-				 }
 				 if(autocal_step_is_peak_headroom($step)) {
 				  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
 				  return $target_lum_y if(defined($target_lum_y));
