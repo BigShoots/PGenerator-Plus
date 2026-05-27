@@ -6062,13 +6062,11 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 return undef if(abs($lum_pct) < $threshold);
 	 my $idx=$target->{"index"};
 	 return undef if(!defined($idx));
-	 my $mag=round_ddc_quarter(abs($lum_pct)*0.85);
-	 $mag=1.0 if($mag < 1.0);
-	 $mag=4.0 if(abs($lum_pct) >= 5 && $mag < 4.0);
-	 $mag=8.0 if(abs($lum_pct) >= 9 && $mag < 8.0);
-	 $mag=10.0 if(abs($lum_pct) >= 14 && $mag < 10.0);
-	 $mag+=2.0 if($stalls >= 2 && $mag < 12.0);
-	 $mag=12.0 if($mag > 12.0);
+	 my $mag=1.0;
+	 $mag=2.0 if(abs($lum_pct) >= 6);
+	 $mag=4.0 if(abs($lum_pct) >= 12);
+	 $mag+=1.0 if($stalls >= 2 && $mag < 5.0);
+	 $mag=6.0 if($mag > 6.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
 	 if(has_luminance_channel($arrays,$target)) {
 	  my $arr=$arrays->{"adjustingLuminance"};
@@ -7234,13 +7232,13 @@ sub choose_adjustments {
 			 }
 				 my $lum_pct=$luminance_err*100;
 				 my $luma_tol=luminance_tolerance_percent($step);
-				 my $hdr20_top_white=autocal_step_is_hdr20_top_white($step);
-				 if(autocal_step_is_hdr20_body($step)) {
-				  my $hdr_body_luma=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
-				  return $hdr_body_luma if($hdr_body_luma);
-				  my $hdr_body=hdr20_body_chroma_luma_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0);
-				  return $hdr_body if($hdr_body);
-				 }
+					 my $hdr20_top_white=autocal_step_is_hdr20_top_white($step);
+					 if(autocal_step_is_hdr20_body($step)) {
+					  my $hdr_body=hdr20_body_chroma_luma_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0);
+					  return $hdr_body if($hdr_body);
+					  my $hdr_body_luma=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
+					  return $hdr_body_luma if($hdr_body_luma);
+					 }
 				 my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err);
 				 my $headroom_105_luma_priority=headroom_105_luma_priority_active($step,$arrays,$target,$tried,$luminance_err);
 			 if($headroom_105_luma_priority) {
@@ -12429,10 +12427,10 @@ eval {
 								    }
 								   }
 										   if(!$adjustments) {
-										    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
+										    $adjustments=hdr20_body_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
 										   }
 										   if(!$adjustments) {
-										    $adjustments=hdr20_body_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
+										    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
 										   }
 									   if(!$adjustments) {
 									    $adjustments=lg_autocal_26_initial_learned_target_adjustments(
