@@ -41,6 +41,11 @@ const autoCalTargetGammaSource = autoCalTargetGammaStart >= 0 && autoCalTargetGa
   ? source.slice(autoCalTargetGammaStart, autoCalTargetGammaEnd)
   : '';
 const lgAutoCalGreyscalePayloadGammaCount = (source.match(/target_gamma:meterLgAutoCalGreyscaleTargetGammaValue\(\)/g) || []).length;
+const autoCalTargetLuminanceStart = autocalWorkerSource.indexOf('sub target_luminance_for_autocal_step');
+const autoCalTargetLuminanceEnd = autocalWorkerSource.indexOf('sub body_luma_bias_display_allowed', autoCalTargetLuminanceStart);
+const autoCalTargetLuminanceSource = autoCalTargetLuminanceStart >= 0 && autoCalTargetLuminanceEnd > autoCalTargetLuminanceStart
+  ? autocalWorkerSource.slice(autoCalTargetLuminanceStart, autoCalTargetLuminanceEnd)
+  : '';
 
 assert(
   !source.includes('int($level*255/219+.5)'),
@@ -438,8 +443,9 @@ assert(
     autocalWorkerSource.includes('return (1.37,1.83,2.74,4.11,5.02,6.85,10.05,15.07,20.09,25.11,30.14,40.18,50.23,59.82,69.86,79.91,84.93,89.95,94.98,100) if($layout eq "hdr20");') &&
     autocalWorkerSource.includes('sub hdr20_top_white_chroma_priority_needed') &&
     autocalWorkerSource.includes('hdr20_body_luminance=>1') &&
-    autocalWorkerSource.includes('!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed'),
-  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, and avoid luma-only HDR100 moves while chroma is still high'
+    autocalWorkerSource.includes('!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed') &&
+    !autoCalTargetLuminanceSource.includes('target_gamma_linear($signal,"2.2","sdr")'),
+  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, keep PQ/ST2084 target Y, and avoid luma-only HDR100 moves while chroma is still high'
 );
 assert(
   /function meterGreyscaleRotateXLabels\(stepCount\)\s*\{\s*return Number\(stepCount\)>=21;\s*\}/.test(source),
