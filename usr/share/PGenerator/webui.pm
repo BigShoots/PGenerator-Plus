@@ -12469,14 +12469,13 @@ function meterReadingIsAutoCalReferenceOnly(item){
 }
 
 function meterLgAutoCalChartReferenceWhite(item){
- if(!item||meterActiveSeriesType!=='greyscale') return false;
- const plotIre=meterReadingPlotIre(item);
- const ire=Number(plotIre!=null?plotIre:item.ire);
- if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
-  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
- }
- if(!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
- return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
+	 if(!item||meterActiveSeriesType!=='greyscale') return false;
+	 const plotIre=meterReadingPlotIre(item);
+	 const ire=Number(plotIre!=null?plotIre:item.ire);
+	 if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
+	  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
+	 }
+	 return false;
 }
 
 function meterFilterLgAutoCalChartItems(items){
