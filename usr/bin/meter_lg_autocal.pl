@@ -6169,7 +6169,13 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	 my $rgb_cap=$micro ? 1.0 : 4.0;
 	 $rgb_cap=6.0 if(!$micro && (defined($de) && $de > 10 || $chroma >= 0.120));
 	 $rgb_cap=8.0 if(!$micro && $chroma >= 0.220);
-	 $rgb_cap=2.0 if($ire < 80 && $rgb_cap > 2.0);
+	 if($ire < 80 && $rgb_cap > 2.0) {
+	  my $keep_fast_body=(defined($de) && $de > ($target_delta+2.0) && $chroma >= 0.035) ? 1 : 0;
+	  $rgb_cap=$keep_fast_body ? 4.0 : 2.0;
+	 }
+	 if($micro && defined($de) && $de > ($target_delta+2.0) && $chroma >= 0.035) {
+	  $rgb_cap=1.5;
+	 }
 	 $rgb_cap+=1.0 if(!$micro && ($stalls||0) >= 2 && $rgb_cap < 8.0);
 	 my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
 	 $floor=0.0060 if(!$micro && $floor < 0.0060);
@@ -6211,7 +6217,8 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	  $tol=2 if(!defined($tol) || $tol <= 0);
 	  my $luma_gate=$micro ? ($tol*0.45) : ($tol*0.65);
 	  $luma_gate=0.35 if($luma_gate < 0.35);
-		  if(abs($lum_pct) >= $luma_gate) {
+		  my $chroma_luma_compensation=(@out && defined($de) && $de > ($target_delta+1.5) && $chroma >= 0.030 && abs($lum_pct) >= ($micro ? 0.45 : 0.25)) ? 1 : 0;
+		  if(abs($lum_pct) >= $luma_gate || $chroma_luma_compensation) {
 		   my $arr=$arrays->{"adjustingLuminance"};
 		   if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
 		    my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
@@ -6221,12 +6228,13 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	    $luma_cap=8.0 if(!$micro && abs($lum_pct) >= 14.0);
 		    my $mag=round_ddc_quarter(abs($lum_pct)*0.45);
 		    $mag=$min_step if($mag < $min_step);
+		    $mag=0.50 if($chroma_luma_compensation && $mag < 0.50);
 		    $mag=$luma_cap if($mag > $luma_cap);
 		    my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
 		    if(
 		     defined($next) &&
 		     abs($next-$current) >= 0.0001 &&
-		     !hdr20_body_family_suppressed($tried,"luminance",$direction) &&
+		     ($chroma_luma_compensation || !hdr20_body_family_suppressed($tried,"luminance",$direction)) &&
 		     hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,"hdr20_body_balanced_chroma_luma") &&
 		     !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_balanced_chroma_luma",$LG_AUTOCAL_STATE)
 		    ) {
@@ -6240,6 +6248,7 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	      neutral_luminance=>1,
 	      hdr20_body_luminance=>1,
 	      hdr20_body_balanced_chroma_luma=>1,
+	      hdr20_body_chroma_luma_compensation=>$chroma_luma_compensation ? 1 : undef,
 	      luminance_error_pct=>$lum_pct+0,
 	      micro=>$micro ? 1 : 0
 	     };
