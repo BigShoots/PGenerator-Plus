@@ -2261,6 +2261,13 @@ sub lg_ddc_1d_index_for_ire (@) {
  for(my $i=0;$i<@LG_DDC_1D_LABELS;$i++) {
   return $i if(abs($LG_DDC_1D_LABELS[$i]-$ire) < 0.001);
  }
+ # HDR LG 1D AutoCal exposes the top control as 100%, but the virtual
+ # 26-slot DDC array position is the same slot SDR uses for 99%.
+ if(abs($ire-100) < 0.001) {
+  for(my $i=0;$i<@LG_DDC_1D_LABELS;$i++) {
+   return $i if(abs($LG_DDC_1D_LABELS[$i]-99) < 0.001);
+  }
+ }
  return -1;
 }
 

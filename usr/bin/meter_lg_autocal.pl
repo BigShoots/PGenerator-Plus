@@ -341,11 +341,12 @@ sub ddc_target_for_step {
  return undef if(ref($step) ne "HASH");
  my $ire=defined($step->{"ddc_target_ire"}) ? $step->{"ddc_target_ire"} : $step->{"ire"};
  return undef if(!defined($ire));
+ my $array_ire=defined($step->{"ddc_array_ire"}) ? $step->{"ddc_array_ire"} : $ire;
  my @slots=ddc_slots();
  for(my $i=0;$i<@slots;$i++) {
-  my $label=$step->{"autocal_target_label"} || format_percent($slots[$i])."%";
-  return { index=>$i, ire=>format_percent($slots[$i]), label=>$label }
-   if(abs(($ire+0)-$slots[$i]) < 0.001);
+  my $label=$step->{"autocal_target_label"} || format_percent($ire)."%";
+  return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), label=>$label }
+   if(abs(($array_ire+0)-$slots[$i]) < 0.001);
  }
  return undef;
 }
