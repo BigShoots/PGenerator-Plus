@@ -23673,7 +23673,8 @@ function drawEOTFChart(gs,allSteps,readingMap){
  });
  const tgtPts=meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
- const measureSteps=plotSteps.length?plotSteps:valid;
+	 const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
+	 const measureSteps=(directMeasured&&valid.length)?valid:(plotSteps.length?plotSteps:valid);
  let mSegments=meterMeasuredEotfLuminanceSegments(
  measureSteps,
  readingMap,
@@ -23686,8 +23687,12 @@ function drawEOTFChart(gs,allSteps,readingMap){
   },
   lum=>meterEotfScaleValue(meterGreyMeasuredEotfChartValue(lum||0,eotfMeasuredRef),yTop)
  );
- // Draw measured EOTF curve
- mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25); });
+	 // Draw measured EOTF curve. HDR/DV live AutoCal spine anchors are sparse,
+	 // so single-point segments still need visible dots until adjacent anchors exist.
+	 mSegments.forEach(seg=>{
+	  if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
+	  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
+	 });
  ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
@@ -23731,7 +23736,8 @@ function drawGammaChart(gs,allSteps,readingMap){
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  drawGammaContrastLabel(ctx,chart,(Array.isArray(meterReadings)&&meterReadings.length)?meterReadings:gs);
  const validG=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
- const measureSteps=plotSteps.length?plotSteps:validG;
+	 const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
+	 const measureSteps=(directMeasured&&validG.length)?validG:(plotSteps.length?plotSteps:validG);
  const scaleMeasuredLuminance=lum=>{
   const value=Number(lum);
   if(!Number.isFinite(value)) return null;
@@ -23744,7 +23750,10 @@ function drawGammaChart(gs,allSteps,readingMap){
   (signal,point)=>meterLuminanceScaleValue(meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point),yTop),
   scaleMeasuredLuminance
  );
- mSegments.forEach(seg=>{ if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25); });
+	 mSegments.forEach(seg=>{
+	  if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
+	  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
+	 });
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
  ctx.textAlign='left';
  ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
