@@ -1645,7 +1645,8 @@ sub webui_meter_lg_autocal_series_target_reference (@) {
  return undef unless(&_webui_meter_lg_autocal_norm_text($opts{"type"}) eq "greyscale");
  return undef unless(int($opts{"points"}||0)==26);
  return undef unless($opts{"lg_autocal_26"});
- return undef unless(&_webui_meter_lg_autocal_norm_text($opts{"signal_mode"}||"sdr") eq "sdr");
+ my $req_signal_mode=&_webui_meter_lg_autocal_norm_text($opts{"signal_mode"}||"sdr");
+ return undef unless($req_signal_mode eq "sdr" || $req_signal_mode eq "hdr10");
 
  my $state_file=$opts{"state_file"} || $_meter_lg_autocal_file;
  return undef if(!$state_file || !-f $state_file);
@@ -1831,6 +1832,8 @@ if($signal_mode eq "dv") {
 	 $grey_steps_11=$1 if($body=~/"grey_steps_11"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_21="";
  $grey_steps_21=$1 if($body=~/"grey_steps_21"\s*:\s*"([0-9.,\s]+)"/);
+ my $grey_steps_30="";
+ $grey_steps_30=$1 if($body=~/"grey_steps_30"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_100="";
  $grey_steps_100=$1 if($body=~/"grey_steps_100"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_11_r="";
@@ -1845,6 +1848,12 @@ if($signal_mode eq "dv") {
  $grey_steps_21_g=$1 if($body=~/"grey_steps_21_g"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_21_b="";
  $grey_steps_21_b=$1 if($body=~/"grey_steps_21_b"\s*:\s*"([0-9.,\s]+)"/);
+ my $grey_steps_30_r="";
+ $grey_steps_30_r=$1 if($body=~/"grey_steps_30_r"\s*:\s*"([0-9.,\s]+)"/);
+ my $grey_steps_30_g="";
+ $grey_steps_30_g=$1 if($body=~/"grey_steps_30_g"\s*:\s*"([0-9.,\s]+)"/);
+ my $grey_steps_30_b="";
+ $grey_steps_30_b=$1 if($body=~/"grey_steps_30_b"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_100_r="";
  $grey_steps_100_r=$1 if($body=~/"grey_steps_100_r"\s*:\s*"([0-9.,\s]+)"/);
  my $grey_steps_100_g="";
@@ -1873,6 +1882,9 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
   if($target_gamma eq "srgb") {
    return ($v<=0.0031308) ? 12.92*$v : 1.055*($v**(1/2.4))-0.055;
   }
+  if($signal_mode eq "hdr10" && $target_gamma eq "st2084") {
+   return &webui_pattern_pq_encode_normalized($v*10000);
+  }
   return $v**(1/$target_gamma_exp_resolved);
  };
  my $target_signal_to_linear=sub {
@@ -1884,6 +1896,9 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
   }
   if($target_gamma eq "srgb") {
    return ($v<=0.04045) ? $v/12.92 : ((($v+0.055)/1.055)**2.4);
+  }
+  if($signal_mode eq "hdr10" && $target_gamma eq "st2084") {
+   return &webui_pattern_pq_decode_normalized($v)/10000;
   }
   return $v**$target_gamma_exp_resolved;
  };
@@ -1899,6 +1914,9 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
   }
   if($signal_mode eq "dv" && $target_gamma eq "st2084") {
    return $signal**2.2;
+  }
+  if($signal_mode eq "hdr10" && $target_gamma eq "st2084") {
+   return &webui_pattern_pq_decode_normalized($signal)/10000;
   }
   my $gamma=($target_gamma eq "2.2") ? 2.2 : 2.4;
   return $signal**$gamma;
@@ -1949,9 +1967,13 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
      $step_names{$v}="$role ${label}%";
     }
    } elsif($points==11) {
-    @ire_vals=(0,10,20,30,40,50,60,70,80,90,100);
+   @ire_vals=(0,10,20,30,40,50,60,70,80,90,100);
 	   } elsif($points==100) {
 	    @ire_vals=(0..100);
+			   } elsif($points==30 && $signal_mode eq "hdr10") {
+				    @ire_vals=(0,1,1.4,2,2.3,2.7,3,3.7,4,6,8,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
+			   } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
+					    @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99);
 			   } elsif($points==26 && $lg_autocal_26) {
 					    @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 			   } elsif($points==21 && $lg_greyscale_21) {
@@ -1974,7 +1996,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 				    my $code=$lg_autocal_26_code{$key};
 				    $lg_autocal_26_stimulus{$key}=($code-64)*100/876;
 			   }
-			   if($points==26 && $lg_autocal_26) {
+			   if($points==26 && $lg_autocal_26 && $signal_mode eq "sdr") {
 			    foreach my $slot (@ire_vals) {
 			     my $key=$slot;
 			     $key=~s/\.0$//;
@@ -1995,7 +2017,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 			   }
   my %channel_stimulus_for_slot;
 	   if($grey_custom_allowed && $points!=2) {
-   my $csv=$points==11 ? $grey_steps_11 : ($points==100 ? $grey_steps_100 : $grey_steps_21);
+   my $csv=$points==11 ? $grey_steps_11 : ($points==30 ? $grey_steps_30 : ($points==100 ? $grey_steps_100 : $grey_steps_21));
     my @vals=grep { $_ ne "" } map { my $v=$_; $v=~s/^\s+|\s+$//g; $v } split(/,/,$csv || "");
     if(@vals == @ire_vals) {
      my $prev=-1;
@@ -2014,9 +2036,9 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
    }
 	   if($grey_custom_allowed && $points!=2) {
     my %channel_csv=(
-     "r" => ($points==11 ? $grey_steps_11_r : ($points==100 ? $grey_steps_100_r : $grey_steps_21_r)),
-     "g" => ($points==11 ? $grey_steps_11_g : ($points==100 ? $grey_steps_100_g : $grey_steps_21_g)),
-     "b" => ($points==11 ? $grey_steps_11_b : ($points==100 ? $grey_steps_100_b : $grey_steps_21_b))
+     "r" => ($points==11 ? $grey_steps_11_r : ($points==30 ? $grey_steps_30_r : ($points==100 ? $grey_steps_100_r : $grey_steps_21_r))),
+     "g" => ($points==11 ? $grey_steps_11_g : ($points==30 ? $grey_steps_30_g : ($points==100 ? $grey_steps_100_g : $grey_steps_21_g))),
+     "b" => ($points==11 ? $grey_steps_11_b : ($points==30 ? $grey_steps_30_b : ($points==100 ? $grey_steps_100_b : $grey_steps_21_b)))
     );
     foreach my $channel (keys %channel_csv) {
      my @vals=grep { $_ ne "" } map { my $v=$_; $v=~s/^\s+|\s+$//g; $v } split(/,/,$channel_csv{$channel} || "");
@@ -2745,6 +2767,7 @@ sub webui_meter_lg_autocal_body_with_defaults (@) {
  my ($body)=@_;
  return $body if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  return $body unless($body=~/"type"\s*:\s*"greyscale"/i && $body=~/"points"\s*:\s*26\b/ && $body=~/"lg_autocal_26"\s*:\s*true/i);
+ return $body if($body=~/"signal_mode"\s*:\s*"hdr10"/i);
  return $body if($body=~/"lg_autocal_26_full_ddc_spine"\s*:/ || $body=~/"lg_autocal_26_anchor_predrive"\s*:/);
  $body=~s/\}\s*\z/,"lg_autocal_26_full_ddc_spine":true,"lg_autocal_26_anchor_predrive":false}/;
  return $body;
@@ -7263,8 +7286,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
      <div id="meterSeriesGroupGreyscale" style="display:flex;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" data-series="greyscale-2" onclick="meterSelectSeries('greyscale',2)">Greyscale 2pt</button>
-      <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
+	      <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-21" onclick="meterSelectSeries('greyscale',21)">Greyscale 21pt</button>
+	      <button class="btn btn-sm btn-secondary" data-series="greyscale-30" onclick="meterSelectSeries('greyscale',30)" style="display:none">Greyscale HDR 30pt</button>
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-26" onclick="meterSelectSeries('greyscale',26)">Greyscale 26pt</button>
       <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
      </div>
@@ -8425,6 +8449,7 @@ function updateModeVisibility(){
 
 function meterDefaultTargetGamutForMode(){
  const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
+ if(sm==='hdr10'||sm==='hlg') return 'bt2020';
  return sm==='sdr' ? 'bt709' : 'p3d65';
 }
 
@@ -8460,7 +8485,8 @@ function applyMeterTargetGammaDefault(){
   meterSyncTargetGammaControl();
   return;
  }
- if(displayType.startsWith('projector')) g.value='2.2';
+ if(sm==='hdr10') g.value='st2084';
+ else if(displayType.startsWith('projector')) g.value='2.2';
  else g.value='bt1886';
  meterSyncTargetGammaControl();
 }
@@ -9941,6 +9967,18 @@ const METER_FULL_AUTOCAL_REPORT_SERIES=[
  {key:'colors-30',type:'colors',points:30,label:'ColorChecker'},
  {key:'saturations-24',type:'saturations',points:24,label:'Sat Sweep'}
 ];
+function meterFullAutoCalRunSignalMode(){
+ const cfg=meterFullAutoCalConfig||null;
+ const data=meterFullAutoCalReportData||((typeof meterFullAutoCalLoadReportData==='function')?meterFullAutoCalLoadReportData():null);
+ return String((cfg&&cfg.signalMode)||(data&&data.signal_mode)||((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
+}
+function meterFullAutoCalReportSeries(){
+ const mode=meterFullAutoCalRunSignalMode();
+ const greyscale=mode==='hdr10'
+  ? {key:'greyscale-30',type:'greyscale',points:30,label:'Greyscale HDR 30pt'}
+  : {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale 21pt'};
+ return [greyscale,{key:'colors-30',type:'colors',points:30,label:'ColorChecker'},{key:'saturations-24',type:'saturations',points:24,label:'Sat Sweep'}];
+}
 let meterActionPending=false;
 let meterPingBusy=false;
 let meterSeriesAwaitingReady=false;
@@ -15384,7 +15422,7 @@ function meterBuildManualReadPayload(step,ctx){
   refresh_rate:opts.rr||undefined,
   delay_ms:opts.delay,
   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
-  target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'
+  target_gamma:meterAutoCalTargetGammaValue()
  });
  if(step){
   meterApplyReadStepPayload(readPayload,step);
@@ -15817,7 +15855,7 @@ async function meterContinuousLoop(){
   const delay=meterDelayMs();
 	  const requestedStep=meterClonePatchStep(meterCurrentPatchStep);
   const patternSignalRange=meterMeasurementPatchSignalRange();
-	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'});
+	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue()});
 	  if(requestedStep){
 	   meterApplyReadStepPayload(readPayload,requestedStep);
 	   readPayload.patch_size=getMeterPatchSize();
@@ -16308,6 +16346,7 @@ const METER_TWO_POINT_DEFAULTS={low:30,high:100};
 
 		const METER_GREY_SLOTS_11=[0,10,20,30,40,50,60,70,80,90,100];
 		const METER_GREY_SLOTS_21=[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
+		const METER_GREY_SLOTS_HDR30=[0,1,1.4,2,2.3,2.7,3,3.7,4,6,8,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
 const METER_LG_GREY_MANUAL_22_ENABLED=false;
 		const METER_LG_GREY_DDC_SLOTS_22=[2.5,5,7.5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
 			const METER_LG_GREY_AUTOCAL_26_SLOTS=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
@@ -16381,6 +16420,16 @@ function meterGreyscale26SeriesLabel(){
  return meterUseLgAutoCal26(26)?'Greyscale LG 26pt AutoCal':'Greyscale 26pt';
 }
 
+function meterHdrGreyscaleSeriesAvailable(){
+ return String((meterChartSignalMode&&meterChartSignalMode())||'sdr').toLowerCase()==='hdr10';
+}
+
+function meterUseHdrGreyscale30(points){
+ const normalized=(points===256)?100:Number(points);
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ return normalized===30&&mode==='hdr10';
+}
+
 function meterSetSeriesButtonVisible(seriesKey,visible){
  const btn=document.querySelector('#meterSeriesBtnRow button[data-series="'+seriesKey+'"]');
  if(!btn) return null;
@@ -16396,6 +16445,10 @@ function meterUpdateSeriesLabels(){
  if(grey21) grey21.textContent=meterGreyscale21SeriesLabel();
  const grey26=meterSetSeriesButtonVisible('greyscale-26',false);
  if(grey26) grey26.textContent=meterGreyscale26SeriesLabel();
+ meterSetSeriesButtonVisible('greyscale-30',meterHdrGreyscaleSeriesAvailable());
+ if(meterActiveSeriesKey==='greyscale-30'&&!meterHdrGreyscaleSeriesAvailable()){
+  meterActiveSeriesKey='';
+ }
  const edit21=document.getElementById('meterGreyEdit21Btn');
  if(edit21) edit21.textContent=meterUseLgGreyscale21(21)?'LG 22pt':'21pt';
 }
@@ -16504,6 +16557,7 @@ function meterUpdateGreyscaleChartMode(){
 
 function meterGreyDefaultSlots(points){
  if(points===100) return Array.from({length:101},(_,idx)=>idx);
+ if(points===30) return [...METER_GREY_SLOTS_HDR30];
  return points===11?[...METER_GREY_SLOTS_11]:[...METER_GREY_SLOTS_21];
 }
 
@@ -16543,6 +16597,7 @@ function meterLgAutoCalUsesExtendedSdr(){
 
 function meterGreySeriesSlots(points){
  if(points===256) points=100;
+ if(meterUseHdrGreyscale30(points)) return [...METER_GREY_SLOTS_HDR30];
  if(meterUseLgAutoCal26(points)) return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
  if(meterUseLgGreyscale21(points)) return [...METER_LG_GREY_SERIES_SLOTS];
  return meterGreyDefaultSlots(points);
@@ -16550,6 +16605,7 @@ function meterGreySeriesSlots(points){
 
 function meterGreyProfileSlots(points){
  const normalized=(points===256)?100:Number(points);
+ if(normalized===30) return [...METER_GREY_SLOTS_HDR30];
  if(meterUseLgAutoCal26(normalized)) return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
  if(meterUseLgGreyscale21(normalized)) return [...METER_LG_GREY_SERIES_SLOTS];
  return meterGreyDefaultSlots(normalized);
@@ -16634,7 +16690,7 @@ function meterGreyProfileTemplate(){
   meterGreyProfileSlots(points).forEach(slot=>{out[String(slot)]=meterGreyNormalizeEntry(slot,null);});
   return out;
  };
- return {enabled:false,steps_11:makeSteps(11),steps_21:makeSteps(21),steps_100:makeSteps(100)};
+ return {enabled:false,steps_11:makeSteps(11),steps_21:makeSteps(21),steps_30:makeSteps(30),steps_100:makeSteps(100)};
 }
 
 function meterGreyModeSignature(){
@@ -16657,7 +16713,7 @@ function meterGreyNormalizeProfilesState(){
   const base=meterGreyProfileTemplate();
   const src=(profile&&typeof profile==='object')?profile:{};
   base.enabled=!!src.enabled;
-  [11,21,100].forEach(points=>{
+  [11,21,30,100].forEach(points=>{
    const key=meterGreyProfileStepsKey(points);
    const slots=meterGreyProfileSlots(points);
    const out={};
@@ -16975,8 +17031,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	 const passthrough=input.filter(step=>step&&!meterSeriesStepIsGreyscale(step));
 	 const black=input.find(step=>step&&meterSeriesStepIsGreyscale(step)&&Math.abs(Number(step.ire)||0)<0.001);
 	 const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
-		 const previewCodesForCode=(code)=>{
-		  const preview=Math.max(0,Math.min(255,Math.round(Number(code||0)/4)));
+		 const previewCodesForCode=(code,inputMax)=>{
+		  const max=Number(inputMax)||1023;
+		  const preview=Math.max(0,Math.min(255,Math.round(max>255?Number(code||0)*255/max:Number(code||0))));
 		  return {preview_r:preview,preview_g:preview,preview_b:preview,series_mode:'lg-autocal-26'};
 		 };
  const inputByDdcSlot={};
@@ -16986,6 +17043,39 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const slot=METER_LG_GREY_AUTOCAL_26_SLOTS.find(v=>Math.abs(v-ire)<0.001);
 	  if(slot!=null&&step.autocal_slot_locked&&meterLgDdcStepHasCustomStimulus(step,slot)) inputByDdcSlot[String(slot)]=step;
 	 });
+	 if(mode==='hdr10'){
+	  const makeHdrStep=(slot)=>{
+	   const code=meterCodeFromSignalPercentWithOptions(slot,null);
+	   return {
+	    ire:slot,
+	    stimulus:slot,
+	    signal_r_pct:slot,
+	    signal_g_pct:slot,
+	    signal_b_pct:slot,
+	    r:code,
+	    g:code,
+	    b:code,
+	    name:meterFormatPercentValue(slot)+'%',
+	    series_type:'greyscale',
+	    autocal_code:code,
+	    input_max:255,
+	    ...previewCodesForCode(code,255),
+	    ddc_slot_locked:true,
+	    autocal_slot_locked:true,
+	    ddc_target_ire:slot,
+	    autocal_order_ire:slot
+	   };
+	  };
+	  const zeroCode=meterCodeFromSignalPercentWithOptions(0,null);
+	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true};
+	  const whiteCode=meterCodeFromSignalPercentWithOptions(100,null);
+	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% HDR white'};
+	  const body=METER_LG_GREY_AUTOCAL_26_SLOTS
+	   .filter(slot=>slot<=99)
+	   .sort((a,b)=>b-a)
+	   .map(makeHdrStep);
+	  return [...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
+	 }
 	 const makeDdcStep=(slot)=>{
 	  const source=inputByDdcSlot[String(slot)];
 	  const code=meterLgAutoCalCodeForSlot(slot);
@@ -17006,7 +17096,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		    autocal_code:code,
 		    input_max:1023,
 		    ...targetMeta,
-		    ...previewCodesForCode(code),
+		    ...previewCodesForCode(code,1023),
 		    ddc_slot_locked:true,
 	    autocal_slot_locked:true
 	   };
@@ -17025,17 +17115,17 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		   autocal_code:code,
 		   input_max:1023,
 	   ...targetMeta,
-	   ...previewCodesForCode(code),
+	   ...previewCodesForCode(code,1023),
 	   ddc_slot_locked:true,
 	   autocal_slot_locked:true
 	  };
 	 };
 			 const zeroCode=mode==='sdr'?64:meterCodeFromSignalPercentWithOptions(0,null);
 			 const zeroMeta=meterLgAutoCalTargetMetaForCode(zeroCode);
-			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode),autocal_slot_locked:false,autocal_read_only:true};
+			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?1023:(black.input_max||255)),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?1023:255),autocal_slot_locked:false,autocal_read_only:true};
  const whiteCode=mode==='sdr'?meterLgSdrLegalHeadroomCodeFromPercent(100):meterCodeFromSignalPercentWithOptions(100,null);
- const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
- const body=METER_LG_GREY_AUTOCAL_26_SLOTS
+ const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?1023:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
+ const body=[...METER_LG_GREY_AUTOCAL_26_SLOTS]
   .sort((a,b)=>a-b)
   .map(makeDdcStep);
  return [...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
@@ -17172,6 +17262,27 @@ function meterMeasurementSignalContext(payload){
   }
  return body;
 }
+
+function meterLgAutoCalRequestedSignalMode(){
+ const mode=String((meterChartSignalMode&&meterChartSignalMode())||'sdr').toLowerCase();
+ return mode==='hdr10'?'hdr10':'sdr';
+}
+
+function meterAutoCalTargetGammaValue(){
+ return meterLgAutoCalRequestedSignalMode()==='hdr10'?'st2084':((document.getElementById('meterTargetGamma')||{}).value||'bt1886');
+}
+
+function meterAutoCalTargetGamutValue(){
+ const mode=meterLgAutoCalRequestedSignalMode();
+ const raw=String((document.getElementById('meterTargetGamut')||{}).value||'auto').toLowerCase();
+ if(raw==='bt709'||raw==='bt2020'||raw==='p3d65'||raw==='p3dci') return raw;
+ return mode==='hdr10'?'bt2020':'bt709';
+}
+
+function meterAutoCalUseFullDdcSpine(){
+ return meterLgAutoCalRequestedSignalMode()==='sdr';
+}
+
 function meterEnsureAppliedGeneratorSettings(){
  if(!meterEnsureExtendedVideoTransport()) return false;
  if(!hasUnsavedSettings()) return true;
@@ -17184,12 +17295,16 @@ function meterEnsureAppliedGeneratorSettings(){
 }
 
 function meterLgAutoCalTransportReady(){
- return getVal('signal_mode')==='sdr'
+ const requested=meterLgAutoCalRequestedSignalMode();
+ const base=getVal('signal_mode')===requested
   && getVal('max_bpc')==='10'
   && getVal('color_format')==='1'
-  && getVal('rgb_quant_range')==='1'
-  && getVal('colorimetry')==='2'
-  && getVal('eotf')==='0';
+  && getVal('rgb_quant_range')==='1';
+ if(!base) return false;
+ if(requested==='hdr10'){
+  return getVal('colorimetry')==='9'&&getVal('primaries')==='1'&&getVal('eotf')==='2';
+ }
+ return getVal('colorimetry')==='2'&&getVal('eotf')==='0';
 }
 
 function meterLgAutoCalTransportAvailable(){
@@ -17200,10 +17315,17 @@ function meterLgAutoCalTransportAvailable(){
 }
 
 function meterSetLgAutoCalTransportValues(){
- setVal('signal_mode','sdr');
- setVal('eotf','0');
- setVal('primaries','0');
- setVal('colorimetry','2');
+ const requested=meterLgAutoCalRequestedSignalMode();
+ setVal('signal_mode',requested);
+ if(requested==='hdr10'){
+  setVal('eotf','2');
+  setVal('primaries','1');
+  setVal('colorimetry','9');
+ }else{
+  setVal('eotf','0');
+  setVal('primaries','0');
+  setVal('colorimetry','2');
+ }
  setVal('max_bpc','10');
  setVal('color_format','1');
  setVal('rgb_quant_range','1');
@@ -17214,25 +17336,33 @@ function meterSetLgAutoCalTransportValues(){
  setVal('max_bpc','10');
  setVal('color_format','1');
  setVal('rgb_quant_range','1');
- setVal('colorimetry','2');
- setVal('eotf','0');
- setVal('primaries','0');
+ if(requested==='hdr10'){
+  setVal('colorimetry','9');
+  setVal('eotf','2');
+  setVal('primaries','1');
+ }else{
+  setVal('colorimetry','2');
+  setVal('eotf','0');
+  setVal('primaries','0');
+ }
  checkSettingsChanged();
  saveMeterSettings();
 }
 
 async function meterEnsureLgAutoCalTransport(workflowName){
  if(meterLgAutoCalTransportReady()&&!hasUnsavedSettings()) return true;
+ const requested=meterLgAutoCalRequestedSignalMode();
+ const transportLabel=requested==='hdr10'?'HDR10 YCbCr 4:4:4 10-bit limited BT.2020':'SDR YCbCr 4:4:4 10-bit limited BT.709';
  if(!meterLgAutoCalTransportAvailable()){
-  toast('SDR YCbCr 4:4:4 10-bit limited output is not available for the current resolution. Choose a lower-bandwidth display mode, then try AutoCal again.',true);
+  toast(transportLabel+' output is not available for the current resolution. Choose a lower-bandwidth display mode, then try AutoCal again.',true);
   return false;
  }
  const label=workflowName||'LG Auto Cal';
- const accepted=window.confirm(label+' works best with SDR YCbCr 4:4:4 10-bit limited BT.709 output. Switch output and restart PGenerator now?');
+ const accepted=window.confirm(label+' works best with '+transportLabel+' output. Switch output and restart PGenerator now?');
  if(!accepted) return false;
  meterSetLgAutoCalTransportValues();
  if(!meterLgAutoCalTransportReady()){
-  toast('Unable to select SDR YCbCr 4:4:4 10-bit limited output for the current display mode.',true);
+  toast('Unable to select '+transportLabel+' output for the current display mode.',true);
   return false;
  }
  const applied=await applySettings();
@@ -18325,7 +18455,8 @@ function meterAutoCalRenderResults(status){
    const sorted=[...rows].sort((a,b)=>b.de-a.de);
    greyText=' Touch-up greyscale avg ΔE '+avg.toFixed(2)+', max '+sorted[0].de.toFixed(2)+' at '+sorted[0].label+'.';
   }
-  const reportText=hasPreReport?' Click Generate Post-Cal Report to read Greyscale 21pt, ColorChecker, and Sat Sweep again and build a before/after report.':' Click Generate Post-Cal Report to read Greyscale 21pt, ColorChecker, and Sat Sweep and build a post-cal report.';
+  const reportNames=meterFullAutoCalReportSeries().map(item=>item.label).join(', ');
+  const reportText=hasPreReport?' Click Generate Post-Cal Report to read '+reportNames+' again and build a before/after report.':' Click Generate Post-Cal Report to read '+reportNames+' and build a post-cal report.';
   const doneText=status.touchup_skipped?'Full Auto Cal complete: greyscale and 3D LUT finished.':'Full Auto Cal complete: greyscale, 3D LUT, and greyscale touch-up finished.';
   if(summary) summary.textContent=doneText+uploadText+greyText+reportText;
   const post=lut.post_check_summary||{};
@@ -18526,6 +18657,7 @@ function meterAutoCalHeadroomTargetYValue(setupY){
 }
 
 function meterAutoCalHeadroomTargetRatio(){
+ if(meterLgAutoCalRequestedSignalMode()==='hdr10') return 1;
  const steps=(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length)?meterSeriesSteps:meterBuildStepsJS('greyscale',26);
  const peak=(steps||[]).find(step=>step&&Number(step.ire)>=108.5);
  const ire=peak?Number(peak.ire):109;
@@ -18637,13 +18769,18 @@ function meterAutoCalShowConfirm(){
  const setupY=meterAutoCalSetupYValue();
  const targetY=meterAutoCalTargetYValue();
  const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
+ const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
  meterAutoCalSetGreyscaleOptionControls();
- if(description) description.textContent='The active LG picture mode has been reset. Auto Cal will use the current 100% white luminance and selected gamma target, derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high. 100% is used for setup and then checked internally as the legal-white anchor; 0% is read for black level/charts. The closest result is kept when the target cannot be reached.';
+ if(description) description.textContent=hdrWorkflow
+  ? 'The active LG picture mode has been reset. HDR Auto Cal will use the current 100% white luminance with an ST 2084 target, then calibrate the LG greyscale DDC slots from top to bottom without the SDR super-white spine. 0% is read for black level/charts. The closest result is kept when the target cannot be reached.'
+  : 'The active LG picture mode has been reset. Auto Cal will use the current 100% white luminance and selected gamma target, derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high. 100% is used for setup and then checked internally as the legal-white anchor; 0% is read for black level/charts. The closest result is kept when the target cannot be reached.';
  if(targetRow) targetRow.style.display='flex';
  if(summary){
   const levels=meterAutoCalLevelPreflight;
   const levelText=(levels&&!levels.skipped)?(' Levels: brightness '+(levels.brightness!=null?levels.brightness:'--')+', contrast '+(levels.contrast!=null?levels.contrast:'--')+'.'):'';
-  summary.textContent='Setup 100%: '+setupY.toFixed(2)+' cd/m\u00B2. Cal target 100%: '+targetY.toFixed(2)+' cd/m\u00B2. 109% target: '+headroomY.toFixed(2)+' cd/m\u00B2. Panel light: '+((meterAutoCalPanelLight.label||'Panel light')+' '+(meterAutoCalPanelLight.value!=null?Math.round(Number(meterAutoCalPanelLight.value)):'--'))+'.'+levelText;
+  summary.textContent=hdrWorkflow
+   ? 'Setup 100% HDR white: '+setupY.toFixed(2)+' cd/m\u00B2. ST 2084 target peak: '+targetY.toFixed(2)+' cd/m\u00B2. Panel light: '+((meterAutoCalPanelLight.label||'Panel light')+' '+(meterAutoCalPanelLight.value!=null?Math.round(Number(meterAutoCalPanelLight.value)):'--'))+'.'+levelText
+   : 'Setup 100%: '+setupY.toFixed(2)+' cd/m\u00B2. Cal target 100%: '+targetY.toFixed(2)+' cd/m\u00B2. 109% target: '+headroomY.toFixed(2)+' cd/m\u00B2. Panel light: '+((meterAutoCalPanelLight.label||'Panel light')+' '+(meterAutoCalPanelLight.value!=null?Math.round(Number(meterAutoCalPanelLight.value)):'--'))+'.'+levelText;
  }
  meterAutoCalSetOverlay(true,{phase:'confirm',current_name:'Ready to start LG Auto Cal',message:'Review the workflow and choose the target error.'});
 }
@@ -18652,6 +18789,29 @@ function meterAutoCalWhiteStep(){
  const existing=(meterSeriesSteps||[]).find(step=>meterSeriesStepIsGreyscale(step)&&Math.abs((Number(step.ire)||0)-100)<0.001);
  if(existing) return existing;
  if(meterUseLgAutoCal26(meterActiveSeriesPoints)){
+  if(meterLgAutoCalRequestedSignalMode()==='hdr10'){
+   const code=meterCodeFromSignalPercentWithOptions(100,null);
+   return {
+    ire:100,
+    stimulus:100,
+    signal_r_pct:100,
+    signal_g_pct:100,
+    signal_b_pct:100,
+    r:code,
+    g:code,
+    b:code,
+    input_max:255,
+    name:'100%',
+    series_type:'greyscale',
+    autocal_white_reference:true,
+    autocal_reference_only:true,
+    autocal_read_only:true,
+    autocal_legal_white_anchor:true,
+    ddc_target_ire:99,
+    autocal_order_ire:98.95,
+    autocal_target_label:'100% HDR white'
+   };
+  }
   const code=meterLgSdrLegalHeadroomCodeFromPercent(100);
   return {
    ire:100,
@@ -18723,7 +18883,7 @@ async function meterAutoCalReadCodePatch(code,label,range,dtype){
   name:label,
   patch_size:getMeterPatchSize(),
   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
-  target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+  target_gamma:meterAutoCalTargetGammaValue(),
   signal_range:range,
   transport_signal_range:range
  });
@@ -19154,7 +19314,7 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
 	   name:whiteStep.name||'100%',
 	   patch_size:getMeterPatchSize(),
 	   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
-	   target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'
+	   target_gamma:meterAutoCalTargetGammaValue()
 	  });
 	  meterApplyReadStepPayload(readPayload,whiteStep);
   const patternSignalRange=meterMeasurementPatchSignalRange();
@@ -19341,7 +19501,7 @@ function meterFullAutoCalCloneValue(value){
 }
 
 function meterFullAutoCalDefaultReportData(){
- return {pre:null,post:null,updated_at:Date.now(),run_id:null,started_at:null,pre_cal_skipped:null,stages:{},reset:null};
+ return {pre:null,post:null,updated_at:Date.now(),run_id:null,started_at:null,signal_mode:null,pre_cal_skipped:null,stages:{},reset:null};
 }
 
 function meterFullAutoCalLoadReportData(){
@@ -19361,6 +19521,7 @@ function meterFullAutoCalSaveReportData(){
   meterFullAutoCalReportData.updated_at=Date.now();
   if(!meterFullAutoCalReportData.run_id&&meterFullAutoCalRunId) meterFullAutoCalReportData.run_id=meterFullAutoCalRunId;
   if(!meterFullAutoCalReportData.started_at&&meterFullAutoCalStartedAt) meterFullAutoCalReportData.started_at=meterFullAutoCalStartedAt;
+  if(!meterFullAutoCalReportData.signal_mode) meterFullAutoCalReportData.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||meterLgAutoCalRequestedSignalMode();
   if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
   localStorage.setItem(METER_FULL_AUTOCAL_REPORT_KEY,JSON.stringify(meterFullAutoCalReportData));
  }catch(e){}
@@ -19375,6 +19536,7 @@ function meterFullAutoCalBeginReportData(skipPreCal){
  meterFullAutoCalReportData=meterFullAutoCalDefaultReportData();
  meterFullAutoCalReportData.run_id=meterFullAutoCalRunId||null;
  meterFullAutoCalReportData.started_at=meterFullAutoCalStartedAt||Date.now();
+ meterFullAutoCalReportData.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||meterLgAutoCalRequestedSignalMode();
  meterFullAutoCalReportData.pre_cal_skipped=!!skipPreCal;
  meterFullAutoCalSaveReportData();
  meterFullAutoCalArchiveReportData('started');
@@ -19456,29 +19618,34 @@ function meterFullAutoCalSnapshotForKey(key){
 function meterFullAutoCalReportSetHasData(stage){
  const data=meterFullAutoCalLoadReportData();
  const set=data&&data[stage];
- return !!(set&&METER_FULL_AUTOCAL_REPORT_SERIES.every(item=>meterSeriesSnapshotHasReadings(set[item.key])));
+ const series=meterFullAutoCalReportSeries();
+ return !!(set&&series.every(item=>meterSeriesSnapshotHasReadings(set[item.key])));
 }
 
 function meterFullAutoCalReportSetAnyData(stage){
  const data=meterFullAutoCalLoadReportData();
  const set=data&&data[stage];
- return !!(set&&METER_FULL_AUTOCAL_REPORT_SERIES.some(item=>meterSeriesSnapshotHasReadings(set[item.key])));
+ const series=meterFullAutoCalReportSeries();
+ return !!(set&&series.some(item=>meterSeriesSnapshotHasReadings(set[item.key])));
 }
 
 function meterFullAutoCalReportStatusText(stage){
  const data=meterFullAutoCalLoadReportData();
  const set=data&&data[stage];
  if(!set) return '';
- return METER_FULL_AUTOCAL_REPORT_SERIES.map(item=>{
+ return meterFullAutoCalReportSeries().map(item=>{
   const count=(set[item.key]&&Array.isArray(set[item.key].readings))?set[item.key].readings.filter(rd=>meterReadingHasLuminance(rd)).length:0;
   return item.label+': '+count;
  }).join(' | ');
 }
 
 function meterFullAutoCalPromptDefaults(){
+ const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
  return {
   title:'Full Auto Cal',
-		  message:'This will first switch PGenerator to the AutoCal video transport and optionally measure the current state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run a fast LG 26-point greyscale AutoCal pass, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT.',
+		  message:hdrWorkflow
+		   ? 'This will first switch PGenerator to the HDR10 AutoCal video transport and optionally measure the current HDR state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run HDR greyscale AutoCal, then run HDR10 matrix 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT.'
+		   : 'This will first switch PGenerator to the AutoCal video transport and optionally measure the current state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run a fast LG 26-point greyscale AutoCal pass, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT.',
   continueText:'\u25B6 Continue',
   skipText:'',
   cancelText:'Cancel',
@@ -19488,6 +19655,7 @@ function meterFullAutoCalPromptDefaults(){
 
 function meterFullAutoCalDefaultConfig(){
  return {
+  signalMode:meterLgAutoCalRequestedSignalMode(),
   method:meterFullAutoCalMethodValue(),
   upload:true,
   targetDelta:null,
@@ -19747,9 +19915,10 @@ function meterFullAutoCalRestoreSavedState(){
  if(meterFullAutoCalPhase==='3d-lut'){
   meterLg3dAutoCalRunning=true;
  }else if(meterFullAutoCalPhase==='precal-report'||meterFullAutoCalPhase==='postcal-report'){
+  const series=meterFullAutoCalReportSeries();
   meterSeriesRunning=true;
   if(!meterSeriesPolling) meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
-  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:METER_FULL_AUTOCAL_REPORT_SERIES.length,current_name:'Reconnecting to '+meterFullAutoCalStageLabel()+'...'},{workflow:'full',label:'Reconnecting to '+meterFullAutoCalStageLabel()+'...'});
+  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:series.length,current_name:'Reconnecting to '+meterFullAutoCalStageLabel()+'...'},{workflow:'full',label:'Reconnecting to '+meterFullAutoCalStageLabel()+'...'});
  }else{
   meterAutoCalRunning=true;
   meterAutoCalPhase='running';
@@ -19927,7 +20096,8 @@ function meterFullAutoCalSleep(ms){
 	 meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:label},{workflow:fullWorkflow?'full':'greyscale',label:label});
 	 const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff(label);
 	 if(!calibrationOff) throw new Error('LG calibration mode must be off before '+label);
-	 meterSelectSeries('greyscale',26);
+	 const magicPoints=26;
+	 meterSelectSeries('greyscale',magicPoints);
 	 await meterFullAutoCalSleep(100);
 	 const started=await meterRunSeries();
 	 if(!started) throw new Error('Unable to start '+label);
@@ -19935,8 +20105,8 @@ function meterFullAutoCalSleep(ms){
 	 if(!status||status.status!=='complete'){
 	  throw new Error((status&&status.current_name)||label+' did not complete');
 	 }
-	 const snap=meterFullAutoCalSnapshotForKey('greyscale-26');
-	 if(!snap) throw new Error('No LG 26pt series data was captured for '+label);
+	 const snap=meterFullAutoCalSnapshotForKey('greyscale-'+magicPoints);
+	 if(!snap) throw new Error('No greyscale series data was captured for '+label);
 	 if(fullWorkflow){
 	  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
 	  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
@@ -19952,6 +20122,7 @@ async function meterFullAutoCalCaptureReportSet(stage){
  const isPre=stage==='pre';
  const phase=isPre?'precal-report':'postcal-report';
  const set={};
+ const series=meterFullAutoCalReportSeries();
  meterFullAutoCalPhase=phase;
  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
@@ -19964,13 +20135,13 @@ async function meterFullAutoCalCaptureReportSet(stage){
  if(!(await meterEnsureDetected())) throw new Error('No meter detected');
  if(!meterEnsureAppliedGeneratorSettings()) throw new Error('Apply & Restart first so measurements match the live signal mode');
  await meterStopContinuous();
- for(let i=0;i<METER_FULL_AUTOCAL_REPORT_SERIES.length;i++){
-  const item=METER_FULL_AUTOCAL_REPORT_SERIES[i];
+ for(let i=0;i<series.length;i++){
+  const item=series[i];
   if(!meterFullAutoCalRunning) return false;
   meterFullAutoCalPhase=phase;
   meterFullAutoCalSaveState();
   const prefix=isPre?'Pre-Cal':'Post-Cal';
-  meterSetWorkflowProgress({status:'running',current_step:i,total_steps:METER_FULL_AUTOCAL_REPORT_SERIES.length,current_name:prefix+' '+item.label},{workflow:'full',label:prefix+' '+item.label});
+  meterSetWorkflowProgress({status:'running',current_step:i,total_steps:series.length,current_name:prefix+' '+item.label},{workflow:'full',label:prefix+' '+item.label});
   meterSelectSeries(item.type,item.points);
   await meterFullAutoCalSleep(100);
   const started=await meterRunSeries();
@@ -19995,7 +20166,7 @@ async function meterFullAutoCalCaptureReportSet(stage){
  meterFullAutoCalReportData.stages[stage]={...(meterFullAutoCalReportData.stages[stage]||{}),status:'complete',completed_at:Date.now()};
  meterFullAutoCalSaveReportData();
  meterFullAutoCalArchiveReportData(stage+'-complete');
- meterSetWorkflowProgress({status:'running',current_step:METER_FULL_AUTOCAL_REPORT_SERIES.length,total_steps:METER_FULL_AUTOCAL_REPORT_SERIES.length,current_name:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'},{workflow:'full',label:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'});
+ meterSetWorkflowProgress({status:'running',current_step:series.length,total_steps:series.length,current_name:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'},{workflow:'full',label:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'});
  return true;
 }
 
@@ -20054,20 +20225,21 @@ async function meterFullAutoCalBuildSnapshotReportSections(entries){
 function meterFullAutoCalReportEntries(){
  const data=meterFullAutoCalLoadReportData();
  const entries=[];
+ const series=meterFullAutoCalReportSeries();
  const hasPre=meterFullAutoCalReportSetHasData('pre');
  const anyPre=meterFullAutoCalReportSetAnyData('pre');
  const hasPost=meterFullAutoCalReportSetHasData('post');
  const preExpected=data&&data.pre_cal_skipped===false;
  if(data&&data.pre_cal_skipped===true){
-  entries.push({title:'Pre-Cal Measurements',notice:'Pre-Cal measurements were skipped for this Full AutoCal run, so this report has no before charts.'});
+ entries.push({title:'Pre-Cal Measurements',notice:'Pre-Cal measurements were skipped for this Full AutoCal run, so this report has no before charts.'});
  }else if(preExpected||hasPre||anyPre){
-  METER_FULL_AUTOCAL_REPORT_SERIES.forEach(item=>{
+  series.forEach(item=>{
    entries.push({title:'Pre-Cal '+item.label,snapshot:data&&data.pre?data.pre[item.key]:null});
   });
  }else if(hasPost){
   entries.push({title:'Pre-Cal Measurements',notice:'No Pre-Cal measurements were saved for this run. This usually means the Pre-Cal step was skipped or the page was running an older workflow before the report-state tracking was added.'});
  }
- METER_FULL_AUTOCAL_REPORT_SERIES.forEach(item=>{
+ series.forEach(item=>{
   if(hasPost||!hasPre&&!anyPre) entries.push({title:'Post-Cal '+item.label,snapshot:data&&data.post?data.post[item.key]:null});
  });
  return entries;
@@ -20111,6 +20283,7 @@ async function meterFullAutoCalEnsureCalibrationModeOff(reason){
 async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalLoadReportData();
  const filename=meterDefaultExportFilename('report','pgenerator_full_autocal_report','html');
+ const series=meterFullAutoCalReportSeries();
  const btn=document.getElementById('meterFullAutoCalPostReportBtn');
  const skipBtn=document.getElementById('meterFullAutoCalSkipReportBtn');
  if(btn){btn.disabled=true;btn.textContent='Reading Post-Cal...';}
@@ -20123,7 +20296,7 @@ async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalSaveState();
  meterClearAutoCalStatusPollingForReport();
  try{
-  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:METER_FULL_AUTOCAL_REPORT_SERIES.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
+  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:series.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
   const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff('post-cal report');
   if(!calibrationOff) throw new Error('LG calibration mode must be off before post-cal report measurements');
   const ok=await meterFullAutoCalCaptureReportSet('post');
@@ -20162,6 +20335,7 @@ async function meterStartFullAutoCal(){
  if(!(await meterEnsureLgAutoCalTransport('Full Auto Cal'))) return;
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
+ const signalMode=meterLgAutoCalRequestedSignalMode();
 	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true});
 	 if(!accepted) return;
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
@@ -20172,7 +20346,7 @@ async function meterStartFullAutoCal(){
 		  : meterFullAutoCalMagicWandChoiceValue();
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
-  message:'Before calibration, PGenerator will measure Greyscale 21pt, ColorChecker, and Sat Sweep and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
+  message:'Before calibration, PGenerator will measure '+meterFullAutoCalReportSeries().map(item=>item.label).join(', ')+' and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
   continueText:'\u25B6 Measure Pre-Cal',
   skipText:'Skip Pre-Cal',
   statusText:'Capture the before measurements for the Full AutoCal report.'
@@ -20188,6 +20362,7 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
 	 meterFullAutoCalConfig={
 		  ...meterFullAutoCalDefaultConfig(),
+		  signalMode:signalMode,
 		  preCalSkipped:skipPreCal,
 		  postCommitPolishEnabled:postCommitPolishEnabled,
 		  magicWandEnabled:magicWandEnabled
@@ -20349,7 +20524,7 @@ function meterFullAutoCalTouchupTargetY(){
 	    pattern_signal_range:ctx.patternSignalRange||undefined,
 	    lg_greyscale_21:false,
 	    lg_autocal_26:true,
-	    lg_autocal_26_full_ddc_spine:true,
+	    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
 	    lg_autocal_26_anchor_predrive:false,
 	    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
 	    patch_insert:document.getElementById('meterPatchInsert').checked,
@@ -20357,8 +20532,8 @@ function meterFullAutoCalTouchupTargetY(){
 	    delta_e_formula:deltaEFormula,
 	    target_luminance:ctx.targetY,
 	    setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
-	    headroom_target_luminance:(Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	    target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+	    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
+	    target_gamma:meterAutoCalTargetGammaValue(),
 	    target_white:{x:ctx.wp.x,y:ctx.wp.y},
 	    picture_mode:meterLgPictureModeValue(),
 	    ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
@@ -20500,7 +20675,7 @@ function meterFullAutoCalTouchupTargetY(){
 	   pattern_signal_range:ctx.patternSignalRange||undefined,
    lg_greyscale_21:false,
    lg_autocal_26:true,
-   lg_autocal_26_full_ddc_spine:true,
+   lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
    lg_autocal_26_anchor_predrive:false,
    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
    patch_insert:document.getElementById('meterPatchInsert').checked,
@@ -20508,8 +20683,8 @@ function meterFullAutoCalTouchupTargetY(){
 	   delta_e_formula:'deitp',
 	   target_luminance:ctx.targetY,
 	   setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
-	   headroom_target_luminance:(Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	   target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+	   headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
+	   target_gamma:meterAutoCalTargetGammaValue(),
 	   target_white:{x:ctx.wp.x,y:ctx.wp.y},
 	   picture_mode:meterLgPictureModeValue(),
 	   ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
@@ -20639,7 +20814,7 @@ function meterFullAutoCalTouchupTargetY(){
     pattern_signal_range:patternSignalRange||undefined,
     lg_greyscale_21:false,
     lg_autocal_26:true,
-    lg_autocal_26_full_ddc_spine:true,
+    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     patch_insert:document.getElementById('meterPatchInsert').checked,
@@ -20648,7 +20823,7 @@ function meterFullAutoCalTouchupTargetY(){
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
     headroom_target_luminance:(Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
-    target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+    target_gamma:meterAutoCalTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
@@ -20792,7 +20967,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     pattern_signal_range:patternSignalRange||undefined,
     lg_greyscale_21:false,
     lg_autocal_26:true,
-    lg_autocal_26_full_ddc_spine:true,
+    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     patch_insert:document.getElementById('meterPatchInsert').checked,
@@ -20801,7 +20976,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
     headroom_target_luminance:(Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
-    target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+    target_gamma:meterAutoCalTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
@@ -21223,6 +21398,8 @@ async function meterAutoCalConfirmAndStart(){
 	 const targetY=meterAutoCalTargetYValue();
 	 const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
 	 const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
+	 const signalMode=meterLgAutoCalRequestedSignalMode();
+	 const hdrWorkflow=signalMode==='hdr10';
 		 const firstFullGreyscalePass=!!(fullWorkflow&&meterFullAutoCalRunning&&meterFullAutoCalPhase==='first-greyscale');
 		 const capturedGreyscaleOptions=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
 		 const postCommitPolishEnabled=firstFullGreyscalePass?false:(capturedGreyscaleOptions?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:meterAutoCalPostCommitPolishChoiceValue());
@@ -21242,9 +21419,10 @@ async function meterAutoCalConfirmAndStart(){
 	   ...(meterFullAutoCalConfig||{}),
 	   targetDelta:target,
 	   deltaEFormula:deltaEFormula,
+	   signalMode:signalMode,
 	   targetY:targetY,
 	   setupY:setupY,
-	   headroomY:headroomY,
+	   headroomY:hdrWorkflow?undefined:headroomY,
 	   dtype:dtype,
    patternSignalRange:patternSignalRange,
    wp:wp,
@@ -21255,7 +21433,14 @@ async function meterAutoCalConfirmAndStart(){
  }
  meterAutoCalPhase='running';
  meterActionPending=true;
- meterAutoCalSetOverlay(true,{current_name:'Starting RGB Auto Cal...',message:'Using 100% target '+targetY.toFixed(2)+' cd/m\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\u00B2',total_steps:meterAutoCalPendingConfig.adjustable.length,current_step:0});
+ meterAutoCalSetOverlay(true,{
+  current_name:'Starting RGB Auto Cal...',
+  message:hdrWorkflow
+   ? 'Using HDR 100% ST 2084 target '+targetY.toFixed(2)+' cd/m\u00B2'
+   : 'Using 100% target '+targetY.toFixed(2)+' cd/m\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\u00B2',
+  total_steps:meterAutoCalPendingConfig.adjustable.length,
+  current_step:0
+ });
  try{
   const r=await fetchJSON('/api/meter/lg-autocal',{
    method:'POST',
@@ -21270,7 +21455,7 @@ async function meterAutoCalConfirmAndStart(){
     pattern_signal_range:patternSignalRange||undefined,
     lg_greyscale_21:false,
     lg_autocal_26:true,
-    lg_autocal_26_full_ddc_spine:true,
+    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     patch_insert:document.getElementById('meterPatchInsert').checked,
@@ -21278,8 +21463,8 @@ async function meterAutoCalConfirmAndStart(){
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:setupY,
-    headroom_target_luminance:headroomY,
-    target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+    headroom_target_luminance:hdrWorkflow?undefined:headroomY,
+    target_gamma:meterAutoCalTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
@@ -21424,7 +21609,7 @@ function meterLg3dApplyPostCheckStatus(status){
  meterActiveSeriesType='colors';
  meterActiveSeriesPoints=readings.length;
  meterActiveSeriesKey='lg-3d-post-check';
- meterActiveSeriesSignalMode='sdr';
+ meterActiveSeriesSignalMode=String((status&&status.signal_mode)||meterChartSignalMode()||'sdr').toLowerCase();
  meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
  meterSeriesSteps=readings.map(meterLg3dPostCheckStep);
@@ -21555,6 +21740,7 @@ async function meterAutoCalStatusWatchdog(){
 
 async function meterStartLg3dAutoCal(options){
  const fullWorkflow=!!(options&&options.fullWorkflow);
+ const signalMode=meterLgAutoCalRequestedSignalMode();
  const fail=(message)=>{
   if(message) toast(message,true);
   if(fullWorkflow) meterFullAutoCalResetState(false);
@@ -21565,12 +21751,13 @@ async function meterStartLg3dAutoCal(options){
  if(!meterLg3dAutoCalAvailable()) return fail('Connect an LG TV before starting 3D LUT AutoCal');
  if(!(await meterEnsureLgAutoCalTransport('LG 3D LUT AutoCal'))) return fail('');
  if(!meterEnsureAppliedGeneratorSettings()) return fail('');
- if(meterChartSignalMode()!=='sdr') return fail('3D LUT AutoCal v1 is SDR-only');
+ const method=signalMode==='hdr10'?'matrix':(String((options&&options.method)||'matrix').toLowerCase()==='ramp'?'ramp':'matrix');
+ if(signalMode!=='sdr'&&signalMode!=='hdr10') return fail('LG 3D LUT AutoCal supports SDR and HDR10 only');
+ if(signalMode==='hdr10'&&String((options&&options.method)||'matrix').toLowerCase()==='ramp') return fail('HDR10 3D LUT AutoCal is matrix-only in this version');
  if(!(options&&options.skipConfirm)){
-  const accepted=window.confirm('LG 3D LUT AutoCal assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?');
+  const accepted=window.confirm((signalMode==='hdr10'?'HDR10 matrix':'LG 3D LUT')+' AutoCal assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?');
   if(!accepted) return false;
  }
- const method=String((options&&options.method)||'matrix').toLowerCase()==='ramp'?'ramp':'matrix';
  const upload=(options&&Object.prototype.hasOwnProperty.call(options,'upload'))?!!options.upload:true;
  const dtype=getEffectiveDisplayType();
  const pictureMode=meterLgPictureModeValue();
@@ -21588,12 +21775,12 @@ async function meterStartLg3dAutoCal(options){
   signal_range:getVal('rgb_quant_range'),
   pattern_signal_range:'1',
   transport_signal_range:getVal('rgb_quant_range'),
-  target_gamut:'bt709',
-  target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',
+  target_gamut:meterAutoCalTargetGamutValue(),
+  target_gamma:meterAutoCalTargetGammaValue(),
   picture_mode:pictureMode,
   refresh_rate:getMeterRefreshRate()||undefined,
  require_device_ready:meterSelectedMeasurementRequiresReady(),
- requested_signal_mode:meterChartSignalMode(),
+ requested_signal_mode:signalMode,
  patch_insert:document.getElementById('meterPatchInsert').checked,
  upload:upload,
   full_workflow:fullWorkflow?true:undefined,
@@ -21712,7 +21899,7 @@ async function meterRunSeries(){
  const requireDeviceReady=meterSelectedMeasurementRequiresReady();
  try{
   const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886',picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
   if(!r||r.status!=='started'){
    toast(r&&r.message?r.message:'Failed to start series',true);
    meterSeriesRunning=false;
@@ -24507,6 +24694,7 @@ function meterSeriesLabelFromKey(key){
 	  'greyscale-100':'Greyscale 101pt',
 	  'greyscale-256':'Greyscale 101pt',
 	  'greyscale-21':meterGreyscale21SeriesLabel(),
+	  'greyscale-30':'Greyscale HDR 30pt',
 	  'greyscale-26':meterGreyscale26SeriesLabel(),
 	  'greyscale-11':'Greyscale 11pt',
   'colors-30':'ColorChecker',
@@ -24530,6 +24718,7 @@ function meterAllSeriesReportOptions(){
   {key:'greyscale-2',label:'Greyscale 2pt'},
 	  {key:'greyscale-100',label:'Greyscale 101pt'},
 	  {key:'greyscale-21',label:meterGreyscale21SeriesLabel()},
+	  {key:'greyscale-30',label:'Greyscale HDR 30pt'},
 	  {key:'greyscale-26',label:meterGreyscale26SeriesLabel()},
 	  {key:'greyscale-11',label:'Greyscale 11pt'},
   {key:'colors-30',label:'ColorChecker'},

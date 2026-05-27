@@ -357,7 +357,14 @@ sub autocal_skip_duplicate_ddc_slot {
 
 sub lg_autocal_26_full_ddc_spine_enabled {
  my ($config)=@_;
- return (ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $config->{"lg_autocal_26_full_ddc_spine"}) ? 1 : 0;
+ return (ref($config) eq "HASH" && lg_autocal_26_sdr_headroom_enabled($config) && $config->{"lg_autocal_26_full_ddc_spine"}) ? 1 : 0;
+}
+
+sub lg_autocal_26_sdr_headroom_enabled {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ my $signal_mode=lc($config->{"signal_mode"}||"sdr");
+ return ($signal_mode eq "sdr") ? 1 : 0;
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_ires {
@@ -391,7 +398,7 @@ sub lg_autocal_26_full_ddc_spine_anchor_revisit_step {
 
 sub lg_autocal_26_anchor_predrive_enabled {
  my ($config)=@_;
- return (ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $config->{"lg_autocal_26_anchor_predrive"}) ? 1 : 0;
+ return (ref($config) eq "HASH" && lg_autocal_26_sdr_headroom_enabled($config) && $config->{"lg_autocal_26_anchor_predrive"}) ? 1 : 0;
 }
 
 sub lg_autocal_26_anchor_predrive_anchor_ires {
@@ -415,6 +422,11 @@ sub apply_lg_autocal_26_default_modes {
  my ($config)=@_;
  return if(ref($config) ne "HASH");
  return if(!$config->{"lg_autocal_26"});
+ if(!lg_autocal_26_sdr_headroom_enabled($config)) {
+  $config->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::false;
+  $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false;
+  return;
+ }
  # Standalone and Full AutoCal greyscale now share the same LG 26pt
  # full-DDC spine path. Explicit callers can still override both flags.
  if(!exists($config->{"lg_autocal_26_full_ddc_spine"}) && !exists($config->{"lg_autocal_26_anchor_predrive"})) {
@@ -653,6 +665,23 @@ sub clamp_unit {
  return $value;
 }
 
+sub pq_decode_normalized {
+ my ($signal)=@_;
+ $signal=clamp_unit($signal);
+ return 0 if($signal <= 0);
+ my $m1=2610/16384;
+ my $m2=2523/32;
+ my $c1=3424/4096;
+ my $c2=2413/128;
+ my $c3=2392/128;
+ my $n=$signal ** (1/$m2);
+ my $den=$c2 - $c3*$n;
+ return 0 if($den <= 0);
+ my $l=($n - $c1)/$den;
+ $l=0 if($l < 0);
+ return clamp_unit($l ** (1/$m1));
+}
+
 sub target_gamma_linear {
  my ($signal,$target_gamma,$signal_mode)=@_;
  $signal=0 if(!defined($signal));
@@ -667,6 +696,9 @@ sub target_gamma_linear {
  }
  if($signal_mode eq "dv" && $target_gamma eq "st2084") {
   return $signal ** 2.2;
+ }
+ if($target_gamma eq "st2084") {
+  return pq_decode_normalized($signal);
  }
  my $gamma=($target_gamma eq "2.2") ? 2.2 : 2.4;
  return $signal ** $gamma;
@@ -1294,7 +1326,7 @@ sub headroom_reference_white_from_target {
 
 sub committed_polish_reference_white_y {
  my ($config,$state,$steps,$target_gamma,$signal_mode,$fallback)=@_;
- my $prefer_headroom=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 1 : 0;
+ my $prefer_headroom=lg_autocal_26_sdr_headroom_enabled($config) ? 1 : 0;
  my $committed_ref=(ref($state) eq "HASH" && defined($state->{"committed_polish_white_y"}) && ($state->{"committed_polish_white_y"}+0) > 0)
   ? ($state->{"committed_polish_white_y"}+0) : undef;
  my $peak_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0)
@@ -1340,20 +1372,21 @@ sub patch_code_for_stimulus {
 	 my ($config,$stimulus)=@_;
 	 $stimulus=0 if(!defined($stimulus));
 	 $stimulus=0 if($stimulus < 0);
-	 my $headroom=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 109.5 : 100;
+	 my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
+	 my $headroom=$sdr_headroom ? 109.5 : 100;
 	 $stimulus=$headroom if($stimulus > $headroom);
 	 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"";
 	 my $limited=($pattern_range ne "" && int($pattern_range)==1) ? 1 : 0;
 	 my $code;
-	 if($limited && ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
+	 if($limited && $sdr_headroom) {
 	  $code=int(64 + ($stimulus/100)*876 + .5);
 	 } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
 	  $code=($stimulus <= 0) ? 0 : int(16 + ($stimulus/100)*239 + .5);
 	 } else {
 	  $code=$limited ? int(16 + ($stimulus/100)*219 + .5) : int(($stimulus/100)*255 + .5);
 	 }
-	 $code=($limited && ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 64 : 0 if($code < 0);
-	 $code=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 1023 : 255 if($code > ((ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 1023 : 255));
+	 $code=($limited && $sdr_headroom) ? 64 : 0 if($code < 0);
+	 $code=$sdr_headroom ? 1023 : 255 if($code > ($sdr_headroom ? 1023 : 255));
 	 return $code;
 }
 
@@ -1361,7 +1394,8 @@ sub shifted_stimulus_step {
 	 my ($config,$step,$stimulus)=@_;
 	 return undef if(ref($step) ne "HASH" || !defined($stimulus));
 	 $stimulus=0 if($stimulus < 0);
-	 my $headroom=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 109.5 : 100;
+	 my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
+	 my $headroom=$sdr_headroom ? 109.5 : 100;
 	 $stimulus=$headroom if($stimulus > $headroom);
 	 my $clone=clone_picture($step);
 	 my $code=patch_code_for_stimulus($config,$stimulus);
@@ -1374,7 +1408,7 @@ sub shifted_stimulus_step {
 	 $clone->{"r"}=$code;
 	 $clone->{"g"}=$code;
 	 $clone->{"b"}=$code;
-	 $clone->{"input_max"}=1023 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
+	 $clone->{"input_max"}=1023 if($sdr_headroom);
 	 $clone->{"autocal_probe_stimulus"}=JSON::PP::true if(abs(($stimulus+0)-(($step->{"ire"}||0)+0))>0.001);
 		 return $clone;
 }
@@ -1471,7 +1505,7 @@ sub stimulus_probe_steps {
 		 return () if(autocal_step_is_white($step));
 		 my $base=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : ($step->{"ire"}+0);
 		 my $anchor=defined($step->{"expected_stimulus"}) ? ($step->{"expected_stimulus"}+0) : $base;
-		 my $headroom=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 109.5 : 100;
+		 my $headroom=lg_autocal_26_sdr_headroom_enabled($config) ? 109.5 : 100;
 		 my @offsets=($base >= 100) ? (-2,-4,-6,-8) : (($base <= 20) ? (-2,-4,-6,-8,2,4,6,8) : (2,-2,4,-4,6,-6,8,-8));
 		 my @out;
 		 my %seen;
@@ -1496,7 +1530,7 @@ sub stimulus_scan_steps {
 		 return () if(autocal_step_is_white($step));
 		 my $base=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : ($step->{"ire"}+0);
 		 my $anchor=defined($step->{"expected_stimulus"}) ? ($step->{"expected_stimulus"}+0) : $base;
-		 my $headroom=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 109.5 : 100;
+		 my $headroom=lg_autocal_26_sdr_headroom_enabled($config) ? 109.5 : 100;
 		 my @offsets=($base >= 100) ? (0,-2,-4,-6,-8) : (($base <= 20) ? (0,-2,-4,-6,-8,2,4,6,8) : (0,2,-2,4,-4,6,-6,8,-8));
 		 my @out;
 	 my %seen;
