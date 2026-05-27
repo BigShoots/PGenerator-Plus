@@ -1861,6 +1861,11 @@ sub autocal_itp_precision_stall_limit {
 	  return 3 if($ire <= 5.1001);
 	  return 4;
 	 }
+	 if(autocal_step_is_hdr20_body($step)) {
+	  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+	  return 3 if(defined($de) && $de <= ($target_delta+1.5));
+	  return 5;
+	 }
 	 return autocal_itp_precision_polish_needed($de,$target_delta,$step) ? 28 : 14;
 }
 
