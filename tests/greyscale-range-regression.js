@@ -40,6 +40,7 @@ const autoCalTargetGammaEnd = source.indexOf('function meterAutoCalTargetGamutVa
 const autoCalTargetGammaSource = autoCalTargetGammaStart >= 0 && autoCalTargetGammaEnd > autoCalTargetGammaStart
   ? source.slice(autoCalTargetGammaStart, autoCalTargetGammaEnd)
   : '';
+const lgAutoCalGreyscalePayloadGammaCount = (source.match(/target_gamma:meterLgAutoCalGreyscaleTargetGammaValue\(\)/g) || []).length;
 
 assert(
   !source.includes('int($level*255/219+.5)'),
@@ -390,10 +391,10 @@ assert(
 }
 assert(
     source.includes('function meterLgAutoCalBodyLumaBiasPayload(dtype)') &&
-    source.includes('body_luma_bias_mode:\'apply\'') &&
+    source.includes('body_luma_bias_mode:\'observe\'') &&
     source.includes('10:-0.006') &&
     (source.match(/\.\.\.meterLgAutoCalBodyLumaBiasPayload\(dtype\)/g) || []).length >= 2,
-  'LG C2 greyscale AutoCal and touch-up should send the validated body luminance bias matrix'
+  'LG C2 greyscale AutoCal and touch-up should send the validated body luminance bias matrix for observation'
 );
 assert(
   source.includes("const savedTargetGamma=(s.target_gamma!=null)?String(s.target_gamma):'';") &&
@@ -423,8 +424,9 @@ assert(
   'LG Auto Cal fixed/shifted stimulus remapping should stay disabled for HDR/non-SDR workflows'
 );
 assert(
-  autoCalTargetGammaSource.includes("return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':") &&
-    !autoCalTargetGammaSource.includes("?'st2084':") &&
+  autoCalTargetGammaSource.includes("function meterLgAutoCalGreyscaleTargetGammaValue()") &&
+    autoCalTargetGammaSource.includes("return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();") &&
+    lgAutoCalGreyscalePayloadGammaCount >= 5 &&
     source.includes("return mode==='hdr10'?'hdr10':'sdr';") &&
     source.includes("if(requested==='hdr10'){\n  setVal('eotf','2');") &&
     source.includes('requested_signal_mode:signalMode'),
