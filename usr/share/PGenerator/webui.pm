@@ -17274,9 +17274,10 @@ function meterAutoCalTargetGammaValue(){
 
 function meterAutoCalTargetGamutValue(){
  const mode=meterLgAutoCalRequestedSignalMode();
+ if(mode==='hdr10') return 'bt2020';
  const raw=String((document.getElementById('meterTargetGamut')||{}).value||'auto').toLowerCase();
  if(raw==='bt709'||raw==='bt2020'||raw==='p3d65'||raw==='p3dci') return raw;
- return mode==='hdr10'?'bt2020':'bt709';
+ return 'bt709';
 }
 
 function meterAutoCalUseFullDdcSpine(){
@@ -20822,7 +20823,7 @@ function meterFullAutoCalTouchupTargetY(){
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
-    headroom_target_luminance:(Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
+    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
     target_gamma:meterAutoCalTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
@@ -20975,7 +20976,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
-    headroom_target_luminance:(Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
+    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
     target_gamma:meterAutoCalTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
