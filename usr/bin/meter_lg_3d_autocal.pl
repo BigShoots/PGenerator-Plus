@@ -42,6 +42,10 @@ sub describe_and_exit {
   payload_endianness => "little-endian uint16",
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
+  signal_modes => ["sdr","hdr10"],
+  hdr10_methods => ["matrix"],
+  target_gamuts => ["bt709","p3d65","p3dci","bt2020"],
+  target_gammas => ["bt1886","2.2","2.4","srgb","st2084"],
   ramp_levels => [ramp_levels()],
   ramp_profile_patch_count => 65,
   ramp_drift => "start/end WRGB anchors with time-interpolated 3x3 correction",
@@ -176,6 +180,85 @@ sub format_percent {
  $s=~s/0+$//;
  $s=~s/\.$//;
  return $s;
+}
+
+sub first_nonempty {
+ foreach my $value (@_) {
+  next if(!defined($value));
+  my $text="$value";
+  $text=~s/^\s+|\s+$//g;
+  return $text if($text ne "");
+ }
+ return "";
+}
+
+sub compact_token {
+ my ($value)=@_;
+ $value="" if(!defined($value));
+ $value=lc($value);
+ $value=~s/^\s+|\s+$//g;
+ $value=~s/[^a-z0-9]+//g;
+ return $value;
+}
+
+sub sanitize_signal_mode {
+ my $raw=first_nonempty(@_);
+ $raw="sdr" if($raw eq "");
+ my $token=compact_token($raw);
+ return ("sdr",undef) if($token eq "" || $token eq "sdr" || $token eq "rec709" || $token eq "bt709");
+ return ("hdr10",undef) if($token eq "hdr" || $token eq "hdr10" || $token eq "pq" || $token eq "st2084");
+ return ("sdr","Unsupported signal mode '$raw' for LG 3D LUT Auto Cal");
+}
+
+sub sanitize_target_gamut {
+ my ($raw,$signal_mode)=@_;
+ $raw=first_nonempty($raw);
+ my $default=(defined($signal_mode) && lc($signal_mode) eq "hdr10") ? "bt2020" : "bt709";
+ my $token=compact_token($raw);
+ return $default if($token eq "" || $token eq "auto");
+ return "p3d65" if($token eq "p3" || $token eq "p3d65" || $token eq "displayp3");
+ return "p3dci" if($token eq "dci" || $token eq "dcip3" || $token eq "p3dci");
+ return "bt2020" if($token eq "2020" || $token eq "rec2020" || $token eq "bt2020");
+ return $default;
+}
+
+sub sanitize_target_gamma {
+ my ($raw,$signal_mode)=@_;
+ my $default=(defined($signal_mode) && lc($signal_mode) eq "hdr10") ? "st2084" : "bt1886";
+ $raw=first_nonempty($raw);
+ return $default if($raw eq "");
+ my $token=compact_token($raw);
+ return "bt1886" if($token eq "bt1886" || $token eq "1886");
+ return "srgb" if($token eq "srgb");
+ return "2.2" if($token eq "22" || $token eq "gamma22");
+ return "2.4" if($token eq "24" || $token eq "gamma24");
+ return "st2084" if($token eq "st2084" || $token eq "smpte2084" || $token eq "pq");
+ return $default;
+}
+
+sub signal_mode_label {
+ my ($signal_mode)=@_;
+ $signal_mode=lc($signal_mode||"sdr");
+ return "HDR10" if($signal_mode eq "hdr10");
+ return "SDR";
+}
+
+sub target_gamut_label {
+ my ($target_gamut)=@_;
+ $target_gamut=sanitize_target_gamut($target_gamut);
+ return "P3-D65" if($target_gamut eq "p3d65");
+ return "P3-DCI" if($target_gamut eq "p3dci");
+ return "BT.2020" if($target_gamut eq "bt2020");
+ return "BT.709";
+}
+
+sub target_gamma_label {
+ my ($target_gamma)=@_;
+ $target_gamma=lc($target_gamma||"bt1886");
+ return "BT.1886" if($target_gamma eq "bt1886");
+ return "sRGB" if($target_gamma eq "srgb");
+ return "ST2084" if($target_gamma eq "st2084");
+ return $target_gamma;
 }
 
 sub patch_code_for_percent {
@@ -336,11 +419,94 @@ sub matrix_inverse {
  ];
 }
 
+my %rgb_to_xyz_matrix_cache;
+
+sub xy_to_xyz_unit {
+ my ($x,$y)=@_;
+ $y=1 if(!defined($y) || $y <= 0);
+ return [ $x/$y, 1, (1-$x-$y)/$y ];
+}
+
+sub gamut_xy_definition {
+ my ($target_gamut)=@_;
+ $target_gamut=sanitize_target_gamut($target_gamut);
+ return {
+  red => [0.680,0.320], green => [0.265,0.690], blue => [0.150,0.060], white => [0.3127,0.3290],
+ } if($target_gamut eq "p3d65");
+ return {
+  red => [0.680,0.320], green => [0.265,0.690], blue => [0.150,0.060], white => [0.314,0.351],
+ } if($target_gamut eq "p3dci");
+ return {
+  red => [0.708,0.292], green => [0.170,0.797], blue => [0.131,0.046], white => [0.3127,0.3290],
+ } if($target_gamut eq "bt2020");
+ return {
+  red => [0.640,0.330], green => [0.300,0.600], blue => [0.150,0.060], white => [0.3127,0.3290],
+ };
+}
+
+sub rgb_to_xyz_matrix_for_gamut {
+ my ($target_gamut)=@_;
+ $target_gamut=sanitize_target_gamut($target_gamut);
+ return $rgb_to_xyz_matrix_cache{$target_gamut} if($rgb_to_xyz_matrix_cache{$target_gamut});
+ my $def=gamut_xy_definition($target_gamut);
+ my $r=xy_to_xyz_unit(@{$def->{"red"}});
+ my $g=xy_to_xyz_unit(@{$def->{"green"}});
+ my $b=xy_to_xyz_unit(@{$def->{"blue"}});
+ my $w=xy_to_xyz_unit(@{$def->{"white"}});
+ my $m=matrix_from_columns($r,$g,$b);
+ my $inv=matrix_inverse($m);
+ my $scale=$inv ? matrix_mul_vec($inv,$w) : [1,1,1];
+ my $matrix=matrix_from_columns(vec_scale($r,$scale->[0]),vec_scale($g,$scale->[1]),vec_scale($b,$scale->[2]));
+ $rgb_to_xyz_matrix_cache{$target_gamut}=$matrix;
+ return $matrix;
+}
+
+sub rgb_to_xyz_for_gamut {
+ my ($target_gamut,$r,$g,$b,$white_y)=@_;
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ my $m=rgb_to_xyz_matrix_for_gamut($target_gamut);
+ return [
+  ($m->[0][0]*$r + $m->[0][1]*$g + $m->[0][2]*$b) * $white_y,
+  ($m->[1][0]*$r + $m->[1][1]*$g + $m->[1][2]*$b) * $white_y,
+  ($m->[2][0]*$r + $m->[2][1]*$g + $m->[2][2]*$b) * $white_y,
+ ];
+}
+
+sub xyz_to_rgb_inverse_for_gamut {
+ my ($target_gamut,$white_y)=@_;
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ my $inv=matrix_inverse(rgb_to_xyz_matrix_for_gamut($target_gamut));
+ return undef if(!$inv);
+ foreach my $row (@{$inv}) {
+  foreach my $v (@{$row}) {
+   $v/=$white_y;
+  }
+ }
+ return $inv;
+}
+
+sub st2084_pq_to_linear {
+ my ($signal)=@_;
+ $signal=clamp($signal,0,1);
+ my $m1=2610/16384;
+ my $m2=2523/32;
+ my $c1=3424/4096;
+ my $c2=2413/128;
+ my $c3=2392/128;
+ my $n=$signal ** (1/$m2);
+ my $den=$c2 - $c3*$n;
+ return 0 if($den <= 0);
+ my $l=($n - $c1)/$den;
+ $l=0 if($l < 0);
+ return clamp($l ** (1/$m1),0,1);
+}
+
 sub target_gamma_linear {
  my ($signal,$gamma)=@_;
  $signal=clamp($signal,0,1);
  $gamma=lc($gamma||"bt1886");
  return ($signal <= 0.04045) ? ($signal/12.92) : ((($signal+0.055)/1.055) ** 2.4) if($gamma eq "srgb");
+ return st2084_pq_to_linear($signal) if($gamma eq "st2084");
  my $g=($gamma eq "2.2") ? 2.2 : 2.4;
  return $signal ** $g;
 }
@@ -371,20 +537,13 @@ sub target_relative_luminance {
  return target_gamma_linear($signal,$gamma);
 }
 
-sub bt709_rgb_to_xyz {
- my ($r,$g,$b,$white_y)=@_;
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- return [
-  (0.4123908*$r + 0.3575843*$g + 0.1804808*$b) * $white_y,
-  (0.2126390*$r + 0.7151687*$g + 0.0721923*$b) * $white_y,
-  (0.0193308*$r + 0.1191948*$g + 0.9505322*$b) * $white_y,
- ];
-}
+sub bt709_rgb_to_xyz { return rgb_to_xyz_for_gamut("bt709",@_); }
 
 sub target_rgb_to_xyz {
- my ($r,$g,$b,$gamma,$white_y,$black)=@_;
+ my ($r,$g,$b,$gamma,$white_y,$black,$target_gamut)=@_;
  $white_y=100 if(!defined($white_y) || $white_y <= 0);
  $gamma=lc($gamma||"bt1886");
+ $target_gamut=sanitize_target_gamut($target_gamut);
  if($gamma eq "bt1886") {
   $black=[0,0,0] if(ref($black) ne "ARRAY");
   my $black_y=$black->[1] || 0;
@@ -393,12 +552,12 @@ sub target_rgb_to_xyz {
   my $lr=target_relative_luminance($r,$gamma,$white_y,$black_y);
   my $lg=target_relative_luminance($g,$gamma,$white_y,$black_y);
   my $lb=target_relative_luminance($b,$gamma,$white_y,$black_y);
-  return vec_add($black,bt709_rgb_to_xyz($lr,$lg,$lb,$range));
+  return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$lr,$lg,$lb,$range));
  }
  my $lr=target_gamma_linear($r,$gamma);
  my $lg=target_gamma_linear($g,$gamma);
  my $lb=target_gamma_linear($b,$gamma);
- return bt709_rgb_to_xyz($lr,$lg,$lb,$white_y);
+ return rgb_to_xyz_for_gamut($target_gamut,$lr,$lg,$lb,$white_y);
 }
 
 sub interpolate_vec_by_level {
@@ -465,7 +624,7 @@ sub target_xyz_for_node {
  if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
   return interpolate_vec_by_level($model->{"white_axis"},$r*100);
  }
- return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$model->{"white_y"},$model->{"black"});
+ return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$model->{"white_y"},$model->{"black"},$model->{"target_gamut"});
 }
 
 sub srgb_to_linear {
@@ -475,18 +634,19 @@ sub srgb_to_linear {
 }
 
 sub post_check_target_xyz {
-	 my ($step,$white_y,$target_gamma,$black)=@_;
+	 my ($step,$white_y,$target_gamma,$black,$target_gamut)=@_;
 	 $white_y=100 if(!defined($white_y) || $white_y <= 0);
 	 $target_gamma||="bt1886";
+	 $target_gamut=sanitize_target_gamut($target_gamut);
 	 my $gamma=lc($target_gamma);
 	 my ($r,$g,$b)=(0,0,0);
 	 if($gamma eq "bt1886" && (defined($step->{"signal_r_pct"}) || defined($step->{"signal_g_pct"}) || defined($step->{"signal_b_pct"}))) {
-	  return target_rgb_to_xyz(($step->{"signal_r_pct"}||0)/100,($step->{"signal_g_pct"}||0)/100,($step->{"signal_b_pct"}||0)/100,$target_gamma,$white_y,$black);
+	  return target_rgb_to_xyz(($step->{"signal_r_pct"}||0)/100,($step->{"signal_g_pct"}||0)/100,($step->{"signal_b_pct"}||0)/100,$target_gamma,$white_y,$black,$target_gamut);
 	 } elsif(defined($step->{"target_linear_r"}) && defined($step->{"target_linear_g"}) && defined($step->{"target_linear_b"})) {
 	  $r=clamp($step->{"target_linear_r"}+0,0,1);
 	  $g=clamp($step->{"target_linear_g"}+0,0,1);
 	  $b=clamp($step->{"target_linear_b"}+0,0,1);
-	  return bt709_rgb_to_xyz($r,$g,$b,$white_y);
+	  return rgb_to_xyz_for_gamut($target_gamut,$r,$g,$b,$white_y);
 	 } elsif(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {
 	  my $color=lc($1);
 	  my $sat=clamp(($2+0)/100,0,1);
@@ -498,7 +658,7 @@ sub post_check_target_xyz {
 	  $g=($step->{"signal_g_pct"}||0)/100;
 	  $b=($step->{"signal_b_pct"}||0)/100;
 	 }
- return target_rgb_to_xyz($r,$g,$b,$target_gamma,$white_y,$black);
+ return target_rgb_to_xyz($r,$g,$b,$target_gamma,$white_y,$black,$target_gamut);
 }
 
 sub lab_f {
@@ -650,8 +810,9 @@ sub apply_drift_correction {
 
 sub model_from_readings {
  my ($method,$readings,$config)=@_;
- my $target_gamma=lc($config->{"target_gamma"}||"bt1886");
- $target_gamma="bt1886" unless($target_gamma =~ /^(?:bt1886|2\.2|2\.4|srgb)$/);
+ my $signal_mode=$config->{"signal_mode"}||"sdr";
+ my $target_gamma=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
+ my $target_gamut=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
  my %by;
  foreach my $entry (@{$readings}) {
   next if(ref($entry) ne "HASH");
@@ -667,7 +828,8 @@ sub model_from_readings {
  }
  my $black=$by{"profile"}{"black"}{0}{xyz} || [0,0,0];
  my $black_y=$black->[1] || 0;
- my $profile_white=$by{"profile"}{"white"}{100}{xyz} || [95.047,100,108.883];
+ my $fallback_white=rgb_to_xyz_for_gamut($target_gamut,1,1,1,100);
+ my $profile_white=$by{"profile"}{"white"}{100}{xyz} || $fallback_white;
  my $profile_white_y=$profile_white->[1] || 100;
  my %start; my %end;
  foreach my $kind (qw(white red green blue)) {
@@ -714,7 +876,7 @@ sub model_from_readings {
    $white_axis{$level}=vec_add($black,vec_add($contrib{"red"}{$level}||[0,0,0],vec_add($contrib{"green"}{$level}||[0,0,0],$contrib{"blue"}{$level}||[0,0,0])));
   }
  }
- my $white100=$white_axis{100} || $by{"profile"}{"white"}{100}{xyz} || [95.047,100,108.883];
+ my $white100=$white_axis{100} || $by{"profile"}{"white"}{100}{xyz} || $fallback_white;
  my $white_y=$white100->[1] || 100;
  my $peak_matrix=matrix_for_level({
   method=>$method,
@@ -724,6 +886,7 @@ sub model_from_readings {
   white_y=>$white_y,
  },100);
  my $peak_inverse=matrix_inverse($peak_matrix);
+ $peak_inverse ||= xyz_to_rgb_inverse_for_gamut($target_gamut,$white_y);
  $peak_inverse ||= [
   [ 3.2406/$white_y, -1.5372/$white_y, -0.4986/$white_y ],
   [ -0.9689/$white_y, 1.8758/$white_y, 0.0415/$white_y ],
@@ -735,7 +898,9 @@ sub model_from_readings {
  }
  return {
   method => $method,
+  signal_mode => $signal_mode,
   target_gamma => $target_gamma,
+  target_gamut => $target_gamut,
   black => $black,
   black_y => $black_y,
   contrib => \%contrib,
@@ -813,16 +978,22 @@ sub export_lut {
  my $stamp=strftime("%Y%m%d_%H%M%S",localtime());
  my $method=sanitize_name($model->{"method"}||"ramp");
  my $picture=sanitize_name($config->{"picture_mode"}||"active");
- my $gamut="bt709";
- my $base="$dir/${stamp}_${method}_${picture}_${gamut}";
+ my ($signal_mode)=sanitize_signal_mode($model->{"signal_mode"}||$config->{"signal_mode"}||"sdr");
+ my $gamut=sanitize_target_gamut($model->{"target_gamut"}||$config->{"target_gamut"},$signal_mode);
+ my $gamma=sanitize_target_gamma($model->{"target_gamma"}||$config->{"target_gamma"},$signal_mode);
+ my $base="$dir/${stamp}_".sanitize_name($signal_mode)."_${method}_${picture}_".sanitize_name($gamut)."_".sanitize_name($gamma);
+ my $title="PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma);
  my $binary=pack("v*",@{$payload_u16});
  write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
- write_file("$base.cube",cube_text($cube_u16,17,"PGenerator LG SDR $method $picture $gamut"),0) or die "Unable to write cube export\n";
+ write_file("$base.cube",cube_text($cube_u16,17,$title),0) or die "Unable to write cube export\n";
  write_file("$base.json",$json->encode({
   status => "ok",
   method => $method,
   picture_mode => $picture,
+  signal_mode => $signal_mode,
   target_gamut => $gamut,
+  target_gamma => $gamma,
+  title => $title,
   lut_size => 17,
   cube_lut_size => 17,
   payload_lut_size => 33,
@@ -872,9 +1043,9 @@ sub read_step_once {
   delay_ms => $delay_ms,
   signal_range => $config->{"pattern_signal_range"}||$config->{"signal_range"}||"1",
   transport_signal_range => $config->{"transport_signal_range"}||$config->{"signal_range"}||"1",
-  signal_mode => "sdr",
+  signal_mode => $config->{"signal_mode"}||"sdr",
   target_gamma => $config->{"target_gamma"}||"bt1886",
-  target_gamut => "bt709",
+  target_gamut => $config->{"target_gamut"}||"bt709",
   max_luma => $config->{"max_luma"}||1000,
   refresh_rate => $config->{"refresh_rate"}||"",
   measurement_meter_port => $config->{"measurement_meter_port"}||"",
@@ -914,30 +1085,41 @@ sub fixture_reading_for_step {
  my $level=($step->{"level"}||0)/100;
  my $white_y=$config->{"fixture_white_y"} || 100;
  my $black_y=$config->{"fixture_black_y"} || 0;
+ my $target_gamut=$config->{"target_gamut"}||"bt709";
  $white_y=100 if($white_y <= 0);
  $black_y=0 if($black_y < 0 || $black_y >= $white_y);
  my $range_y=$white_y-$black_y;
- my $black=bt709_rgb_to_xyz(1,1,1,$black_y);
+ my $black=rgb_to_xyz_for_gamut($target_gamut,1,1,1,$black_y);
  my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
  my $kind=$step->{"kind"}||"black";
  my $xyz;
  if($kind eq "black") { $xyz=$black; }
- elsif($kind eq "white") { $xyz=vec_add($black,bt709_rgb_to_xyz($gamma,$gamma,$gamma,$range_y)); }
- elsif($kind eq "red") { $xyz=vec_add($black,bt709_rgb_to_xyz($gamma,0,0,$range_y)); }
- elsif($kind eq "green") { $xyz=vec_add($black,bt709_rgb_to_xyz(0,$gamma,0,$range_y)); }
- else { $xyz=vec_add($black,bt709_rgb_to_xyz(0,0,$gamma,$range_y)); }
+ elsif($kind eq "white") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,$gamma,$gamma,$range_y)); }
+ elsif($kind eq "red") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,0,0,$range_y)); }
+ elsif($kind eq "green") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,$gamma,0,$range_y)); }
+ else { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,0,$gamma,$range_y)); }
  return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>0, y=>0, luminance=>$xyz->[1], timestamp=>time() };
 }
 
 sub read_step {
  my ($config,$step,$state)=@_;
  my $fixture=fixture_reading_for_step($step,$config);
- return ($fixture,undef) if($fixture);
+ if($fixture) {
+  $fixture->{"signal_mode"}=$config->{"signal_mode"}||"sdr";
+  $fixture->{"target_gamut"}=$config->{"target_gamut"}||"bt709";
+  $fixture->{"target_gamma"}=$config->{"target_gamma"}||"bt1886";
+  return ($fixture,undef);
+ }
  my $attempts=3;
  my $last="";
  for(my $i=1;$i<=$attempts;$i++) {
   my ($reading,$error)=read_step_once($config,$step);
-  return ($reading,undef) if(!$error);
+  if(!$error) {
+   $reading->{"signal_mode"}=$config->{"signal_mode"}||"sdr";
+   $reading->{"target_gamut"}=$config->{"target_gamut"}||"bt709";
+   $reading->{"target_gamma"}=$config->{"target_gamma"}||"bt1886";
+   return ($reading,undef);
+  }
   return (undef,$error) if($error eq "cancelled");
   $last=$error;
   $state->{"message"}="Retrying ".($step->{"name"}||"patch")." ($i/$attempts)";
@@ -1053,8 +1235,10 @@ my $config=decode_json_safe(read_file($config_file),{});
 unlink($stop_file);
 my $method=lc($config->{"method"}||"matrix");
 $method="matrix" unless($method eq "matrix" || $method eq "ramp");
-$config->{"signal_mode"}="sdr";
-$config->{"target_gamut"}="bt709";
+my ($signal_mode,$signal_mode_error)=sanitize_signal_mode($config->{"requested_signal_mode"},$config->{"ui_signal_mode"},$config->{"signal_mode"});
+$config->{"signal_mode"}=$signal_mode;
+$config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
+$config->{"target_gamma"}=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
 $config->{"signal_range"}=$config->{"signal_range"}||"1";
 $config->{"pattern_signal_range"}=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
 $config->{"transport_signal_range"}=$config->{"transport_signal_range"}||$config->{"signal_range"}||"1";
@@ -1073,8 +1257,9 @@ my $state={
  message => "Starting",
  readings => [],
  steps => \@steps,
- target_gamut => "bt709",
- target_gamma => $config->{"target_gamma"}||"bt1886",
+ signal_mode => $config->{"signal_mode"},
+ target_gamut => $config->{"target_gamut"},
+ target_gamma => $config->{"target_gamma"},
 };
 if($config->{"full_workflow"}) {
  $state->{"full_workflow"}=json_true();
@@ -1087,7 +1272,8 @@ write_state($state);
 my $upload_requested=upload_requested($config);
 
 eval {
- die "LG 3D LUT Auto Cal is SDR-only in this version\n" if(lc($config->{"requested_signal_mode"}||$config->{"ui_signal_mode"}||"sdr") ne "sdr");
+ die "$signal_mode_error\n" if($signal_mode_error);
+ die "LG 3D LUT Auto Cal HDR10 runs are matrix-only in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix");
  my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
  for(my $i=0;$i<@steps;$i++) {
@@ -1121,6 +1307,9 @@ eval {
  my $payload_u16=generate_lut_lg_payload($model,33);
  my $export=export_lut($cube_u16,$payload_u16,$model,$config);
  $state->{"export"}=$export;
+ $state->{"signal_mode"}=$model->{"signal_mode"};
+ $state->{"target_gamut"}=$model->{"target_gamut"};
+ $state->{"target_gamma"}=$model->{"target_gamma"};
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
  $state->{"cube_lut_size"}=17;
@@ -1157,7 +1346,7 @@ eval {
   if(ref($probe) eq "HASH" && $probe->{"status"} eq "ok" && $probe->{"upload_supported"}) {
    $state->{"phase"}="upload";
    $state->{"current_name"}="Uploading LG 3D LUT";
-   $state->{"message"}="Writing generated BT.709 3D LUT";
+   $state->{"message"}="Writing generated ".signal_mode_label($config->{"signal_mode"})." ".target_gamut_label($config->{"target_gamut"})." 3D LUT";
    write_state($state);
    my $upload=api_json("POST","/api/lg/3d-lut/upload",{
    picture_mode => $config->{"picture_mode"}||"",
@@ -1193,7 +1382,7 @@ eval {
    my $post_entry={ %{$reading}, name=>$step->{"name"} };
    eval {
    my $measured=reading_xyz($reading);
-   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"});
+   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709");
    $post_entry->{"target_X"}=$target->[0];
    $post_entry->{"target_Y"}=$target->[1];
    $post_entry->{"target_Z"}=$target->[2];
