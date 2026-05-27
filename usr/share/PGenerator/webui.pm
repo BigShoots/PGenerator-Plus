@@ -17408,7 +17408,7 @@ function meterGreyTvIreStops(){
 }
 
 function meterGreyTvPictureKeys(){
-	 return ['pictureMode','whiteBalanceMethod','whiteBalanceIre','whiteBalancePoint','whiteBalanceRed','whiteBalanceGreen','whiteBalanceBlue','adjustingLuminance'];
+	 return ['pictureMode','ddc_layout','whiteBalanceMethod','whiteBalanceIre','whiteBalancePoint','whiteBalanceRed','whiteBalanceGreen','whiteBalanceBlue','adjustingLuminance'];
 }
 
 function meterAutoCalDdcResetReadbackKeys(){
@@ -19100,7 +19100,9 @@ async function meterAutoCalRunLevelPreflight(){
 }
 
 async function meterAutoCalResetDdc(){
- const zero=METER_LG_GREY_AUTOCAL_26_SLOTS.map(()=>0);
+ const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
+ const ddcSlots=hdrWorkflow?METER_LG_GREY_HDR_AUTOCAL_SLOTS:METER_LG_GREY_AUTOCAL_26_SLOTS;
+ const zero=ddcSlots.map(()=>0);
 	 const pictureMode=meterLgPictureModeValue((meterLgGreyState&&meterLgGreyState.picture&&meterLgGreyState.picture.pictureMode)||'');
  meterAutoCalResetNotice='';
  let response=null;
@@ -19114,7 +19116,8 @@ async function meterAutoCalResetDdc(){
     body:JSON.stringify({
 	     settings:{
 	      whiteBalanceMethod:'22',
-	      whiteBalanceIre:'109',
+	      whiteBalanceIre:hdrWorkflow?'100':'109',
+	      ddc_layout:hdrWorkflow?'hdr20':'sdr26',
 	      whiteBalanceRed:zero,
 	      whiteBalanceGreen:zero,
 	      whiteBalanceBlue:zero,
