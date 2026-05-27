@@ -920,9 +920,8 @@ assert(
 );
 assert(
     autocalWorkerSource.includes('sub target_luminance_for_step') &&
-    autocalWorkerSource.includes('sub pq_decode_nits') &&
     autocalWorkerSource.includes('if($mode eq "hdr10" && lc($target_gamma||"") eq "st2084")') &&
-    autocalWorkerSource.includes('return $white_y if($pq_nits >= $white_y);') &&
+    autocalWorkerSource.includes('return $white_y * ($signal ** 2.2);') &&
     autocalWorkerSource.includes('sub target_luminance_for_autocal_step') &&
     autocalWorkerSource.includes('sub update_white_reference_for_step') &&
     autocalWorkerSource.includes('sub set_state_white_reference') &&
