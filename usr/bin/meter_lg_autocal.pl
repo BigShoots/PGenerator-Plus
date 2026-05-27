@@ -758,6 +758,15 @@ sub autocal_step_is_peak_headroom {
  return $ire >= 108.5 ? 1 : 0;
 }
 
+sub autocal_step_suppresses_luminance_adjustment {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $layout=lc($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "");
+ return 0 if($layout eq "hdr20");
+ my $ire=$step->{"ire"}+0;
+ return ($ire >= 99.9 && !autocal_step_is_fast_headroom($step)) ? 1 : 0;
+}
+
 sub autocal_step_ignores_luminance_error {
  my ($step)=@_;
  return autocal_step_is_peak_headroom($step) ? 1 : 0;
@@ -6970,7 +6979,7 @@ sub choose_adjustments {
 				 $luminance_err=0 if(!defined($luminance_err));
 				 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
 				 my $strict_tried=strict_tried_for_step($step);
-				 $luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));
+				 $luminance_err=0 if(autocal_step_suppresses_luminance_adjustment($step));
 				 my $headroom_105_body=headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried);
 				 if(autocal_step_is_fast_headroom($step) && !$headroom_105_body) {
 				  my $lum_pct=$luminance_err*100;
@@ -7159,7 +7168,7 @@ sub choose_micro_adjustments {
 					 $luminance_err=0 if(!defined($luminance_err));
 						 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
 						 my $strict_tried=strict_tried_for_step($step);
-						 $luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));
+						 $luminance_err=0 if(autocal_step_suppresses_luminance_adjustment($step));
 				 my $headroom_105_body=headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried);
 				 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
 				 my $itp_precision=autocal_itp_precision_polish_needed($de,$target_delta,$step);
