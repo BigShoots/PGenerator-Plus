@@ -342,6 +342,16 @@ sub ddc_slots_for_layout {
  return (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 }
 
+sub hdr20_effective_ddc_array_ire {
+ my ($ire)=@_;
+ return undef if(!defined($ire));
+ my $value=$ire+0;
+ return 84.93 if(abs($value-79.91) < 0.001);
+ return 89.95 if(abs($value-84.93) < 0.001);
+ return 94.98 if(abs($value-89.95) < 0.001);
+ return $value;
+}
+
 sub ddc_slots {
  return ddc_slots_for_layout($LG_AUTOCAL_DDC_LAYOUT);
 }
@@ -359,8 +369,13 @@ sub ddc_target_for_step {
  }
  my $ire=defined($step->{"ddc_target_ire"}) ? $step->{"ddc_target_ire"} : $step->{"ire"};
  return undef if(!defined($ire));
+ my $layout=$step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT;
  my $array_ire=defined($step->{"ddc_array_ire"}) ? $step->{"ddc_array_ire"} : $ire;
- my @slots=ddc_slots_for_layout($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT);
+ if(lc($layout||"") eq "hdr20" && abs(($array_ire+0)-($ire+0)) < 0.001) {
+  my $effective=hdr20_effective_ddc_array_ire($ire);
+  $array_ire=$effective if(defined($effective));
+ }
+ my @slots=ddc_slots_for_layout($layout);
  for(my $i=0;$i<@slots;$i++) {
   my $label=$step->{"autocal_target_label"} || format_percent($ire)."%";
   return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), label=>$label }
@@ -424,7 +439,8 @@ sub lg_autocal_26_full_ddc_spine_anchor {
  my ($target)=@_;
  return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
  my $layout=$target->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
- my $ire=defined($target->{"array_ire"}) ? ($target->{"array_ire"}+0) : ($target->{"ire"}+0);
+ my $ire=(lc($layout||"") eq "hdr20") ? ($target->{"ire"}+0) :
+  (defined($target->{"array_ire"}) ? ($target->{"array_ire"}+0) : ($target->{"ire"}+0));
  my $match=grep { abs($ire-$_) < 0.001 } lg_autocal_26_full_ddc_spine_anchor_ires_for_layout($layout);
  return $match ? 1 : 0;
 }
@@ -590,8 +606,8 @@ sub order_autocal_steps {
 	  my $target_key=sub {
 	   my ($step)=@_;
 	   my $target=ddc_target_for_step($step);
-	   return undef if(ref($target) ne "HASH" || !defined($target->{"array_ire"}));
-	   return format_percent($target->{"array_ire"});
+	   return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}));
+	   return format_percent($target->{"ire"});
 	  };
 	  foreach my $wanted (@hdr_autocal_26_order) {
 	   my $wanted_key=format_percent($wanted);
@@ -623,8 +639,8 @@ sub order_autocal_steps {
 	  my @leftovers=sort {
 	   my $at=ddc_target_for_step($a);
 	   my $bt=ddc_target_for_step($b);
-	   (($bt && defined($bt->{"array_ire"})) ? ($bt->{"array_ire"}+0) : 0) <=>
-	    (($at && defined($at->{"array_ire"})) ? ($at->{"array_ire"}+0) : 0)
+	   (($bt && defined($bt->{"ire"})) ? ($bt->{"ire"}+0) : 0) <=>
+	    (($at && defined($at->{"ire"})) ? ($at->{"ire"}+0) : 0)
 	  } grep {
 	   my $key=$target_key->($_);
 	   defined($key) && !$seen_target{$key}
