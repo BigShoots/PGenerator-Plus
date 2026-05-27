@@ -354,6 +354,9 @@ sub ddc_slot_count {
 sub ddc_target_for_step {
  my ($step)=@_;
  return undef if(ref($step) ne "HASH");
+ if(($step->{"autocal_reference_only"} || $step->{"autocal_read_only"}) && !defined($step->{"ddc_target_ire"}) && !defined($step->{"ddc_array_ire"})) {
+  return undef;
+ }
  my $ire=defined($step->{"ddc_target_ire"}) ? $step->{"ddc_target_ire"} : $step->{"ire"};
  return undef if(!defined($ire));
  my $array_ire=defined($step->{"ddc_array_ire"}) ? $step->{"ddc_array_ire"} : $ire;
