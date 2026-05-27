@@ -6432,6 +6432,36 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	   micro=>$micro ? 1 : 0
 	  };
 	 }
+	 if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
+	  my $arr=$arrays->{"adjustingLuminance"};
+	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
+	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	   my $mag=$micro ? 0.25 : $base;
+	   $mag=6.0 if($mag > 6.0);
+	   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
+	   if(
+	    defined($next) &&
+	    abs($next-$current) >= 0.0001 &&
+	    hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,"hdr20_body_rgb_luminance_vector") &&
+	    !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_rgb_luminance_vector",$LG_AUTOCAL_STATE)
+	   ) {
+	    push @out,{
+	     channel=>"lum",
+	     setting=>"adjustingLuminance",
+	     current=>$current,
+	     next=>$next,
+	     delta=>$next-$current,
+	     damped=>$damped ? 1 : 0,
+	     neutral_luminance=>1,
+	     hdr20_body_luminance_rgb=>1,
+	     hdr20_body_balanced_chroma_luma=>1,
+	     luminance_error_pct=>$lum_pct+0,
+	     source=>$reason||"hdr20_body_rgb_luminance_vector",
+	     micro=>$micro ? 1 : 0
+	    };
+	   }
+	  }
+	 }
 	 return undef if(@out < 2);
 	 trace_109($step,"hdr20_body_rgb_luminance_vector_plan",{
 	  luminance_error_pct=>$lum_pct+0,
@@ -7470,6 +7500,13 @@ sub full_ddc_spine_anchor_adjustments {
  my $idx=$target->{"index"};
  return undef if(!defined($idx));
  my $lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : 0;
+ if(autocal_step_is_hdr20_body($step)) {
+  my $vector=hdr20_body_rgb_luminance_vector_adjustments(
+   $error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,0.25,0,
+   "full_ddc_spine_anchor_rgb_luma"
+  );
+  return $vector if(ref($vector) eq "ARRAY" && @{$vector});
+ }
  my @channels=sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
  my $ch=$channels[0];
  my $err=$error->{$ch}||0;
