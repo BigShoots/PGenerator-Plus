@@ -6205,6 +6205,7 @@ sub hdr20_body_luminance_rgb_adjustments {
 	   }
 	  }
 	 }
+	 return undef if($ire >= 80 && hdr20_body_family_suppressed($tried,"rgb_luminance",$direction));
 	 my @out;
 	 foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
 	  my $arr=$arrays->{$setting};
