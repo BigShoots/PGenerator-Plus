@@ -6049,6 +6049,84 @@ sub hdr20_body_chroma_luma_adjustments {
 	 }
 	 return undef if(!@out);
 	 return \@out;
+	}
+
+sub hdr20_body_family_suppressed {
+	 my ($tried,$family,$direction)=@_;
+	 return 0 if(ref($tried) ne "HASH" || !$family);
+	 $direction=0 if(!defined($direction));
+	 return 0 if(ref($tried->{"__hdr20_body_suppressed_family"}) ne "HASH");
+	 return $tried->{"__hdr20_body_suppressed_family"}{$family."|".$direction} ? 1 : 0;
+}
+
+sub suppress_hdr20_body_family {
+	 my ($tried,$step,$family,$direction,$reason,$before_lum_pct,$after_lum_pct,$before_de,$after_de)=@_;
+	 return 0 if(ref($tried) ne "HASH" || !$family);
+	 $direction=0 if(!defined($direction));
+	 my $key=$family."|".$direction;
+	 $tried->{"__hdr20_body_suppressed_family"}={} if(ref($tried->{"__hdr20_body_suppressed_family"}) ne "HASH");
+	 return 0 if($tried->{"__hdr20_body_suppressed_family"}{$key});
+	 $tried->{"__hdr20_body_suppressed_family"}{$key}=1;
+	 trace_109($step,"hdr20_body_family_suppressed",{
+	  family=>$family,
+	  direction=>$direction+0,
+	  reason=>$reason||"rejected",
+	  before_luminance_error_pct=>defined($before_lum_pct)?$before_lum_pct+0:undef,
+	  after_luminance_error_pct=>defined($after_lum_pct)?$after_lum_pct+0:undef,
+	  before_delta_e=>defined($before_de)?$before_de+0:undef,
+	  after_delta_e=>defined($after_de)?$after_de+0:undef
+	 });
+	 return 1;
+}
+
+sub hdr20_body_luminance_rgb_direction {
+	 my ($adjustments)=@_;
+	 return undef if(ref($adjustments) ne "ARRAY" || @{$adjustments} < 3);
+	 my $direction;
+	 my $count=0;
+	 foreach my $adj (@{$adjustments}) {
+	  return undef if(ref($adj) ne "HASH" || !$adj->{"hdr20_body_luminance_rgb"});
+	  my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : undef;
+	  return undef if(!defined($delta) || abs($delta) < 0.0001);
+	  my $dir=$delta < 0 ? -1 : 1;
+	  $direction=$dir if(!defined($direction));
+	  return undef if($direction != $dir);
+	  $count++;
+	 }
+	 return undef if($count < 3);
+	 return $direction;
+}
+
+sub hdr20_body_luma_direction {
+	 my ($adjustments)=@_;
+	 my $adj=luma_only_adjustment($adjustments);
+	 return undef if(ref($adj) ne "HASH");
+	 my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : undef;
+	 return undef if(!defined($delta) || abs($delta) < 0.0001);
+	 return $delta < 0 ? -1 : 1;
+}
+
+sub record_hdr20_body_bad_adjustment_family {
+	 my ($tried,$step,$adjustments,$before_lum_pct,$after_lum_pct,$before_de,$after_de,$before_score,$after_score)=@_;
+	 return undef if(ref($step) ne "HASH" || !autocal_step_is_hdr20_body($step));
+	 return undef if(ref($tried) ne "HASH" || ref($adjustments) ne "ARRAY");
+	 my $family;
+	 my $direction;
+	 $direction=hdr20_body_luminance_rgb_direction($adjustments);
+	 $family="rgb_luminance" if(defined($direction));
+	 if(!$family) {
+	  $direction=hdr20_body_luma_direction($adjustments);
+	  $family="luminance" if(defined($direction));
+	 }
+	 return undef if(!$family || !defined($direction));
+	 my $before_abs=defined($before_lum_pct) ? abs($before_lum_pct+0) : undef;
+	 my $after_abs=defined($after_lum_pct) ? abs($after_lum_pct+0) : undef;
+	 my $y_worse=(defined($before_abs) && defined($after_abs) && $after_abs > $before_abs+0.05) ? 1 : 0;
+	 my $de_worse=(defined($before_de) && defined($after_de) && ($after_de+0) > ($before_de+0)+0.05) ? 1 : 0;
+	 my $score_worse=(defined($before_score) && defined($after_score) && ($after_score+0) > ($before_score+0)+0.05) ? 1 : 0;
+	 return undef if(!$y_worse && !$de_worse && !$score_worse);
+	 suppress_hdr20_body_family($tried,$step,$family,$direction,$y_worse ? "luminance_worse" : "score_worse",$before_lum_pct,$after_lum_pct,$before_de,$after_de);
+	 return { family=>$family, direction=>$direction+0, reason=>$y_worse ? "luminance_worse" : "score_worse" };
 }
 
 sub hdr20_body_luminance_rgb_adjustments {
@@ -6073,7 +6151,7 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 $mag=6.0 if($mag > 6.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
 	 my $ire=(defined($target->{"ire"}) ? ($target->{"ire"}+0) : ((ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0));
-	 if($ire >= 80) {
+	 if($ire >= 80 && !hdr20_body_family_suppressed($tried,"rgb_luminance",$direction)) {
 	  my @rgb_out;
 	  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
 	   my $arr=$arrays->{$setting};
@@ -6107,7 +6185,7 @@ sub hdr20_body_luminance_rgb_adjustments {
 	  });
 	  return \@rgb_out if(@rgb_out == 3);
 	 }
-	 if(has_luminance_channel($arrays,$target)) {
+	 if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
 	  my $arr=$arrays->{"adjustingLuminance"};
 	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
 	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
@@ -12503,9 +12581,11 @@ eval {
 								   }
 								   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
 								    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
+								    $adjustments=undef if($adjustments && autocal_step_is_hdr20_body($read_step) && ref(luma_only_adjustment($adjustments)) eq "HASH");
 								   }
 								   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
 								    $adjustments=full_ddc_spine_seeded_body_luminance_priority_adjustments($config,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
+								    $adjustments=undef if($adjustments && autocal_step_is_hdr20_body($read_step) && ref(luma_only_adjustment($adjustments)) eq "HASH");
 								   }
 								   if(
 								    !$adjustments &&
@@ -12523,6 +12603,7 @@ eval {
 								     $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls,$lum_err) if(!$adjustments && !$headroom_105_luma_blocking);
 								    }
 								    $adjustments=lg_autocal_26_adaptive_headroom_luminance_adjustment($state,$arrays,$target,$read_step,$lum_pct,\%tried_values,$stalls,"main_headroom_luminance") if(!$adjustments && !$headroom_105_near_y_cleanup_active);
+								    $adjustments=undef if($adjustments && autocal_step_is_hdr20_body($read_step) && ref(luma_only_adjustment($adjustments)) eq "HASH");
 								    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step) if(!$adjustments);
 								   }
 					   if(!$adjustments && stimulus_probe_enabled($config) && !autocal_step_is_peak_headroom($read_step) && !$pair_target_reached_now->()) {
@@ -12837,14 +12918,20 @@ eval {
 				    if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step)) {
 				     $luma_anchor_working=headroom_105_luminance_progress_working_state($read_step,$arrays,$target,\%tried_values,$lum_pct,$best_lum_pct,$de,$best_de,$candidate_score_after,$best_score);
 				    }
-				    my $bad_luma_probe=record_bad_luma_probe_family(
-				     \%tried_values,$target,$adjustments,
-				     $before_de_for_adjustment,$de,
-				     $before_lum_pct_for_adjustment,$lum_pct,
-				     $before_score_for_adjustment,$candidate_score_after,
-				     $read_step,"main",$state
-				    );
-				    my $headroom_105_near_y_working=headroom_105_near_y_cleanup_working_candidate(
+					    my $bad_luma_probe=record_bad_luma_probe_family(
+					     \%tried_values,$target,$adjustments,
+					     $before_de_for_adjustment,$de,
+					     $before_lum_pct_for_adjustment,$lum_pct,
+					     $before_score_for_adjustment,$candidate_score_after,
+					     $read_step,"main",$state
+					    );
+					    my $bad_hdr20_body_family=record_hdr20_body_bad_adjustment_family(
+					     \%tried_values,$read_step,$adjustments,
+					     $before_lum_pct_for_adjustment,$lum_pct,
+					     $before_de_for_adjustment,$de,
+					     $before_score_for_adjustment,$candidate_score_after
+					    );
+					    my $headroom_105_near_y_working=headroom_105_near_y_cleanup_working_candidate(
 				     $read_step,$arrays,$target,\%tried_values,$adjustments,
 				     $before_lum_pct_for_adjustment,$lum_pct,
 				     $before_de_for_adjustment,$de,
@@ -12931,9 +13018,10 @@ eval {
 			     delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
 					     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 					     best_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
-					     luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
-					     bad_luma_probe=>$bad_luma_probe,
-					     bad_headroom_105_family=>$bad_headroom_105_family,
+				     luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
+				     bad_luma_probe=>$bad_luma_probe,
+				     bad_hdr20_body_family=>$bad_hdr20_body_family,
+				     bad_headroom_105_family=>$bad_headroom_105_family,
 					     $pair_side_trace_fields->(),
 					     candidate_values=>trace_target_values($arrays,$target),
 					     best_values=>trace_target_values($best_arrays,$target)
