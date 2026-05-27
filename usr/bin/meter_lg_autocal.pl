@@ -386,6 +386,14 @@ sub lg_autocal_26_sdr_headroom_enabled {
  return ($signal_mode eq "sdr") ? 1 : 0;
 }
 
+sub lg_autocal_26_hdr20_seed_enabled {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ my $signal_mode=lc($config->{"signal_mode"}||"sdr");
+ return 0 if($signal_mode ne "hdr10");
+ return (lc($config->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "") eq "hdr20") ? 1 : 0;
+}
+
 sub lg_autocal_26_full_ddc_spine_anchor_ires {
  return (109,20,40,60,80);
 }
@@ -3949,9 +3957,13 @@ sub apply_full_ddc_spine_headroom_seed_overrides {
 sub refresh_propagated_uncalibrated_26pt_slots {
 	 my ($config,$arrays,$calibrated_slot_mask)=@_;
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
-	 return 0 if(lc($config->{"signal_mode"}||"sdr") eq "hdr10");
+	 my $hdr20_seed=lg_autocal_26_hdr20_seed_enabled($config);
+	 return 0 if(lc($config->{"signal_mode"}||"sdr") eq "hdr10" && !$hdr20_seed);
 	 my $minimum_anchors=3;
 	 my $source_slot_mask=$calibrated_slot_mask;
+	 if($hdr20_seed) {
+	  $minimum_anchors=2;
+	 }
 	 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
 	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask);
 	  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires();
@@ -3988,6 +4000,7 @@ sub lg_autocal_26_seeded_move_damping_for_step {
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 return 0 if(ref($target) ne "HASH" || ref($step) ne "HASH");
 	 return 0 if(strict_tried_for_step($step) || autocal_step_is_fast_headroom($step));
+	 return 1 if(lg_autocal_26_hdr20_seed_enabled($config) && autocal_step_is_hdr20_body($step) && $seed_from_prior_slot);
 	 my $anchor_revisit=lg_autocal_26_full_ddc_spine_anchor_revisit_step($step);
 	 return 0 if(lg_autocal_26_full_ddc_spine_enabled($config) && lg_autocal_26_full_ddc_spine_anchor($target) && !$anchor_revisit);
 	 my $idx=$target->{"index"};
@@ -4002,7 +4015,7 @@ sub lg_autocal_26_seeded_move_damping_for_step {
 sub seed_target_from_prior_slot {
 			 my ($arrays,$target,$calibrated_slot_mask,$config)=@_;
 	 return 0 if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
-	 return 0 if(ref($config) eq "HASH" && lc($config->{"signal_mode"}||"sdr") eq "hdr10");
+	 my $hdr20_seed=lg_autocal_26_hdr20_seed_enabled($config);
 	 my $idx=$target->{"index"};
 	 return 0 if(!defined($idx));
 	 my @settings=ddc_adjustment_settings($arrays);
@@ -4025,7 +4038,9 @@ sub seed_target_from_prior_slot {
 	 }
 	 if($all_zero) {
 	  my @probe_indices;
-	  if(target_is_low_shadow_slot($target)) {
+	  if($hdr20_seed) {
+	   @probe_indices=($idx+1)..(ddc_slot_count()-1) if($idx+1 < ddc_slot_count());
+	  } elsif(target_is_low_shadow_slot($target)) {
 	   @probe_indices=reverse(0..($idx-1)) if($idx > 0);
 	  } else {
 	   @probe_indices=($idx+1)..(ddc_slot_count()-1) if($idx+1 < ddc_slot_count());
@@ -4070,7 +4085,7 @@ sub seed_target_from_prior_slot {
 	   $target_after{$setting}=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	  }
 	  return {
-	   mode=>"full-copy",
+	   mode=>$hdr20_seed ? "hdr20-adjacent-copy" : "full-copy",
 	   source_index=>$source_idx+0,
 	   source_ire=>defined($slots[$source_idx]) ? ($slots[$source_idx]+0) : undef,
 	   target_index=>$idx+0,
