@@ -1463,7 +1463,7 @@ sub lg_picture_reset_workflow (@) {
 ###############################################
 $DIAG_LOG_PATH="/var/lib/PGenerator/lg/last-write.log";
 $DIAG_LOG_MAX_BYTES=131072;
-$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|game)$';
+$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|game|hdr_(?:technicolorexpert|filmmaker|filmmakermode|cinema|game)|dolby_hdr_(?:cinema|cinema_bright|game))$';
 
 sub diag_log_append (@) {
  my ($label,$data)=@_;
