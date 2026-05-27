@@ -1973,7 +1973,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 			   } elsif($points==30 && $signal_mode eq "hdr10") {
 				    @ire_vals=(0,1,1.4,2,2.3,2.7,3,3.7,4,6,8,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
 				   } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
-						    @ire_vals=(100,0,1.4,2,2.7,4,5,7,10,15,20,25,30,40,50,60,70,80,85,90,95);
+						    @ire_vals=(100,0,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37);
 			   } elsif($points==26 && $lg_autocal_26) {
 					    @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 			   } elsif($points==21 && $lg_greyscale_21) {
@@ -16600,6 +16600,8 @@ function meterLgAutoCalUsesExtendedSdr(){
 function meterGreySeriesSlots(points){
  if(points===256) points=100;
  if(meterUseHdrGreyscale30(points)) return [...METER_GREY_SLOTS_HDR30];
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ if(Number(points)===26&&meterUseLgAutoCal26(points)&&mode==='hdr10') return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
  if(meterUseLgAutoCal26(points)) return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
  if(meterUseLgGreyscale21(points)) return [...METER_LG_GREY_SERIES_SLOTS];
  return meterGreyDefaultSlots(points);
@@ -16608,6 +16610,8 @@ function meterGreySeriesSlots(points){
 function meterGreyProfileSlots(points){
  const normalized=(points===256)?100:Number(points);
  if(normalized===30) return [...METER_GREY_SLOTS_HDR30];
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ if(normalized===26&&meterUseLgAutoCal26(normalized)&&mode==='hdr10') return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
  if(meterUseLgAutoCal26(normalized)) return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
  if(meterUseLgGreyscale21(normalized)) return [...METER_LG_GREY_SERIES_SLOTS];
  return meterGreyDefaultSlots(normalized);
