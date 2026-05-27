@@ -12719,9 +12719,12 @@ eval {
 								     $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$pair_lum_pct,0);
 								    }
 								   }
-											   if(!$adjustments && autocal_step_is_hdr20_body($read_step) && abs(($lum_err||0)*100) >= 8) {
-											    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
-											   }
+												   if(!$adjustments && autocal_step_is_hdr20_body($read_step)) {
+												    $adjustments=hdr20_body_balanced_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
+												   }
+												   if(!$adjustments && autocal_step_is_hdr20_body($read_step) && abs(($lum_err||0)*100) >= 8) {
+												    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
+												   }
 											   if(!$adjustments) {
 											    $adjustments=hdr20_body_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
 											   }
