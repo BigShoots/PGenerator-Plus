@@ -94,3 +94,4 @@ This file is a working reminder for future sessions in this repo. Treat it as lo
   - `node tests/lg-autocal-26-anchor-predrive-regression.js`
   - `node tests/lg-autocal-seeded-move-damping-regression.js`
   - `node tests/lg-autocal-high-end-paired-luma-regression.js`
+2026-05-27: HDR AutoCal target check - browser payload already sends `st2084` for HDR greyscale AutoCal, so the worker should honor ST2084 by using PQ nits clipped to the measured/entered peak luminance. The relative 2.2 override caused 94.98/89.95 to fight the 100% endpoint by targeting much lower Y.

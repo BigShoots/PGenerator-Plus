@@ -919,10 +919,11 @@ assert(
   'LG Auto Cal RGB adjustment should use larger multi-channel steps, show iteration progress, and avoid endless 100% fine-tuning'
 );
 assert(
-    autocalWorkerSource.includes('sub target_luminance_for_step') &&
-    autocalWorkerSource.includes('if($mode eq "hdr10" && lc($target_gamma||"") eq "st2084")') &&
-    autocalWorkerSource.includes('return $white_y * ($signal ** 2.2);') &&
-    autocalWorkerSource.includes('sub target_luminance_for_autocal_step') &&
+	    autocalWorkerSource.includes('sub target_luminance_for_step') &&
+	    autocalWorkerSource.includes('if($mode eq "hdr10" && lc($target_gamma||"") eq "st2084")') &&
+	    autocalWorkerSource.includes('my $pq_y=pq_decode_nits($signal);') &&
+	    autocalWorkerSource.includes('return ($pq_y > $white_y) ? $white_y : $pq_y;') &&
+	    autocalWorkerSource.includes('sub target_luminance_for_autocal_step') &&
     autocalWorkerSource.includes('sub update_white_reference_for_step') &&
     autocalWorkerSource.includes('sub set_state_white_reference') &&
     autocalWorkerSource.includes('sub delta_e_luv_gamma') &&
