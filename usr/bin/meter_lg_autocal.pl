@@ -7515,6 +7515,17 @@ sub full_ddc_spine_anchor_adjustments {
    "full_ddc_spine_anchor_rgb_luma"
   );
   return $vector if(ref($vector) eq "ARRAY" && @{$vector});
+  my $balanced=hdr20_body_balanced_chroma_luma_adjustments(
+   $error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,0.25,0
+  );
+  if(ref($balanced) eq "ARRAY" && @{$balanced}) {
+   foreach my $adj (@{$balanced}) {
+    next if(ref($adj) ne "HASH");
+    $adj->{"full_ddc_spine_anchor"}=1;
+    $adj->{"source"}="full_ddc_spine_anchor_balanced_chroma_luma" if(!defined($adj->{"source"}));
+   }
+   return $balanced;
+  }
  }
  my @channels=sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
  my $ch=$channels[0];
