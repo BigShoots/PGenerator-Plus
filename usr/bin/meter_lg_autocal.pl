@@ -10848,7 +10848,7 @@ sub reset_ddc_baseline_for_autocal {
    reset_ddc_baseline => JSON::PP::true,
    force_ddc_white_balance => JSON::PP::true,
    helper_timeout => 170,
-   readback_keys => ["pictureMode","whiteBalanceMethod","whiteBalanceIre","whiteBalanceRed","whiteBalanceGreen","whiteBalanceBlue","adjustingLuminance"],
+   readback_keys => ["pictureMode","ddc_layout","whiteBalanceMethod","whiteBalanceIre","whiteBalanceRed","whiteBalanceGreen","whiteBalanceBlue","adjustingLuminance"],
   },190);
   if(ref($response) eq "HASH" && ($response->{"status"}||"") eq "ok") {
    return undef if($response->{"ddc_baseline_reset"} && $response->{"ddc_1d_lut"} && $response->{"ddc_reset_verified"});

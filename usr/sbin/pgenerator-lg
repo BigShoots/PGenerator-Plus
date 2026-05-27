@@ -1596,13 +1596,15 @@ sub lg_ddc_token (@) {
 }
 
 sub lg_ddc_state_path (@) {
- my ($ip,$picture_mode)=@_;
- return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).".json";
+ my ($ip,$picture_mode,$layout)=@_;
+ my $suffix=($layout||"") ne "" ? "-".&lg_ddc_token($layout) : "";
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).$suffix.".json";
 }
 
 sub lg_ddc_baseline_path (@) {
- my ($ip,$picture_mode)=@_;
- return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).".baseline.1dlut";
+ my ($ip,$picture_mode,$layout)=@_;
+ my $suffix=($layout||"") ne "" ? "-".&lg_ddc_token($layout) : "";
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).$suffix.".baseline.1dlut";
 }
 
 sub lg_picture_mode_for_calibration (@) {
@@ -2220,8 +2222,8 @@ sub lg_3d_lut_reset_workflow (@) {
 }
 
 sub lg_ddc_baseline_lut (@) {
- my ($session,$ip,$picture_mode,$timeout,$reset_to_unity)=@_;
- my $path=&lg_ddc_baseline_path($ip,$picture_mode);
+ my ($session,$ip,$picture_mode,$timeout,$reset_to_unity,$layout)=@_;
+ my $path=&lg_ddc_baseline_path($ip,$picture_mode,$layout);
  if($reset_to_unity) {
   my $unity=&lg_unity_1d_lut();
   &lg_write_1d_lut_file($path,$unity);
@@ -2557,22 +2559,44 @@ sub lg_ddc_state_from_settings (@) {
 sub lg_ddc_save_state (@) {
  my ($ip,$picture_mode,$settings)=@_;
  my $state=&lg_ddc_state_from_settings($settings,$picture_mode);
- &file_write_json(&lg_ddc_state_path($ip,$picture_mode),$state);
+ &file_write_json(&lg_ddc_state_path($ip,$picture_mode,$state->{"ddc_layout"}),$state);
  return $state;
 }
 
 sub lg_ddc_clear_state (@) {
  my ($ip,$picture_mode)=@_;
- unlink(&lg_ddc_state_path($ip,$picture_mode));
- unlink(&lg_ddc_baseline_path($ip,$picture_mode));
+ foreach my $layout ("","sdr26","hdr20") {
+  unlink(&lg_ddc_state_path($ip,$picture_mode,$layout));
+  unlink(&lg_ddc_baseline_path($ip,$picture_mode,$layout));
+ }
+ return 1;
+}
+
+sub lg_ddc_state_compatible (@) {
+ my ($state,$layout)=@_;
+ return 0 if(ref($state) ne "HASH");
+ $layout=&lg_ddc_token($layout||"sdr26");
+ my $state_layout=&lg_ddc_token($state->{"ddc_layout"}||"");
+ return 0 if($state_layout ne "" && $state_layout ne $layout);
+ my $expected=($layout eq "hdr20") ? scalar(@LG_DDC_1D_LABELS_HDR20) : scalar(@LG_DDC_1D_LABELS_SDR);
+ foreach my $key ("whiteBalanceRed","whiteBalanceGreen","whiteBalanceBlue") {
+  return 0 if(ref($state->{$key}) ne "ARRAY" || @{$state->{$key}} != $expected);
+ }
+ return 0 if(ref($state->{"adjustingLuminance"}) eq "ARRAY" && @{$state->{"adjustingLuminance"}} != $expected);
  return 1;
 }
 
 sub lg_ddc_load_state (@) {
- my ($ip,$picture_mode)=@_;
- my $state=&file_read_json(&lg_ddc_state_path($ip,$picture_mode));
- return {} if(ref($state) ne "HASH");
- return $state;
+ my ($ip,$picture_mode,$layout)=@_;
+ $layout=&lg_ddc_layout_name({ ddc_layout => $layout||"" },$picture_mode);
+ foreach my $path (&lg_ddc_state_path($ip,$picture_mode,$layout),&lg_ddc_state_path($ip,$picture_mode)) {
+  my $state=&file_read_json($path);
+  next if(ref($state) ne "HASH");
+  next if(!&lg_ddc_state_compatible($state,$layout));
+  $state->{"ddc_layout"}=$layout if(($state->{"ddc_layout"}||"") eq "");
+  return $state;
+ }
+ return {};
 }
 
 sub lg_ddc_merge_picture_settings (@) {
@@ -2734,7 +2758,7 @@ sub lg_ddc_1d_white_balance_set (@) {
  }
 
  &lg_ddc_clear_state($ip,$picture_mode) if($reset_ddc_baseline);
- my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline);
+ my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline,$ddc_layout);
  my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
 
  my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
@@ -2837,7 +2861,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   # payload (observed green max 32682 vs 32767). Treat that stable
 		   # linear readback as the TV's post-reset contract and use it as
 		   # the DDC baseline for future offsets.
-		   &lg_write_1d_lut_file(&lg_ddc_baseline_path($ip,$picture_mode),$verify_lut);
+		   &lg_write_1d_lut_file(&lg_ddc_baseline_path($ip,$picture_mode,$ddc_layout),$verify_lut);
 		   $baseline=$verify_lut;
 		   $lut=$verify_lut;
 		   $reset_readback_contract="linear-unity-readback";
@@ -2861,7 +2885,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 
 		 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
 		 $state->{"ddc_layout"}=$ddc_layout;
-		 &file_write_json(&lg_ddc_state_path($ip,$picture_mode),$state);
+		 &file_write_json(&lg_ddc_state_path($ip,$picture_mode,$ddc_layout),$state);
 		 my @reference_slot_samples=map { &lg_ddc_reference_video_10bit_for_ire($_) } @LG_DDC_1D_LABELS;
 	 return (1,&json_ok({
 	  active_picture_mode => $picture_mode,
