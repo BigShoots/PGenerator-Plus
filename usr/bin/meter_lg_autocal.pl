@@ -3906,6 +3906,7 @@ sub apply_full_ddc_spine_headroom_seed_overrides {
 sub refresh_propagated_uncalibrated_26pt_slots {
 	 my ($config,$arrays,$calibrated_slot_mask)=@_;
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	 return 0 if(lc($config->{"signal_mode"}||"sdr") eq "hdr10");
 	 my $minimum_anchors=3;
 	 my $source_slot_mask=$calibrated_slot_mask;
 	 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
@@ -3958,6 +3959,7 @@ sub lg_autocal_26_seeded_move_damping_for_step {
 sub seed_target_from_prior_slot {
 			 my ($arrays,$target,$calibrated_slot_mask,$config)=@_;
 	 return 0 if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+	 return 0 if(ref($config) eq "HASH" && lc($config->{"signal_mode"}||"sdr") eq "hdr10");
 	 my $idx=$target->{"index"};
 	 return 0 if(!defined($idx));
 	 my @settings=ddc_adjustment_settings($arrays);
