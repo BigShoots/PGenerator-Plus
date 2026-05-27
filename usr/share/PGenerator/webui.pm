@@ -17069,7 +17069,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const zeroCode=meterCodeFromSignalPercentWithOptions(0,null);
 	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true};
 	  const whiteCode=meterCodeFromSignalPercentWithOptions(100,null);
-	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% HDR white'};
+	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,255),read_delay_ms:3000,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_target_label:'100% HDR white'};
 	  const body=METER_LG_GREY_AUTOCAL_26_SLOTS
 	   .filter(slot=>slot<=99)
 	   .sort((a,b)=>b-a)
@@ -17270,6 +17270,10 @@ function meterLgAutoCalRequestedSignalMode(){
 
 function meterAutoCalTargetGammaValue(){
  return meterLgAutoCalRequestedSignalMode()==='hdr10'?'st2084':((document.getElementById('meterTargetGamma')||{}).value||'bt1886');
+}
+
+function meterLgAutoCalGreyscaleTargetGammaValue(){
+ return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();
 }
 
 function meterAutoCalTargetGamutValue(){
@@ -18807,9 +18811,6 @@ function meterAutoCalWhiteStep(){
     autocal_white_reference:true,
     autocal_reference_only:true,
     autocal_read_only:true,
-    autocal_legal_white_anchor:true,
-    ddc_target_ire:99,
-    autocal_order_ire:98.95,
     autocal_target_label:'100% HDR white'
    };
   }
@@ -20534,7 +20535,7 @@ function meterFullAutoCalTouchupTargetY(){
 	    target_luminance:ctx.targetY,
 	    setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
 	    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	    target_gamma:meterAutoCalTargetGammaValue(),
+	    target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
 	    target_white:{x:ctx.wp.x,y:ctx.wp.y},
 	    picture_mode:meterLgPictureModeValue(),
 	    ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
@@ -20685,7 +20686,7 @@ function meterFullAutoCalTouchupTargetY(){
 	   target_luminance:ctx.targetY,
 	   setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
 	   headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
-	   target_gamma:meterAutoCalTargetGammaValue(),
+	   target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
 	   target_white:{x:ctx.wp.x,y:ctx.wp.y},
 	   picture_mode:meterLgPictureModeValue(),
 	   ...meterLgAutoCalBodyLumaBiasPayload(ctx.dtype),
@@ -20824,7 +20825,7 @@ function meterFullAutoCalTouchupTargetY(){
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
     headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
-    target_gamma:meterAutoCalTargetGammaValue(),
+    target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
@@ -20977,7 +20978,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
     headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
-    target_gamma:meterAutoCalTargetGammaValue(),
+    target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
@@ -21465,7 +21466,7 @@ async function meterAutoCalConfirmAndStart(){
     target_luminance:targetY,
     setup_luminance_reference:setupY,
     headroom_target_luminance:hdrWorkflow?undefined:headroomY,
-    target_gamma:meterAutoCalTargetGammaValue(),
+    target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
