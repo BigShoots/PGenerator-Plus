@@ -5700,7 +5700,6 @@ sub body_luminance_priority_adjustments {
 	 my ($arrays,$target,$luminance_err,$de,$stalls,$tried,$step)=@_;
 	 my $headroom_105_body=headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried);
 	 return undef if(autocal_step_is_low_shadow($step) || (autocal_step_is_fast_headroom($step) && !$headroom_105_body) || autocal_step_is_white($step) || strict_tried_for_step($step));
-	 return undef if(autocal_step_is_hdr20_body($step));
 	 return undef if(!has_luminance_channel($arrays,$target));
 	 $luminance_err=0 if(!defined($luminance_err));
 	 my $lum_pct=$luminance_err*100;
@@ -5725,7 +5724,6 @@ sub full_ddc_spine_seeded_body_luminance_priority_adjustments {
 	 return undef if(ref($step) ne "HASH" || !$step->{"lg_autocal_26_seeded_move_damping"});
 	 return undef if(ref($target) ne "HASH" || lg_autocal_26_full_ddc_spine_body_anchor($target));
 	 return undef if(autocal_step_is_low_shadow($step) || autocal_step_is_fast_headroom($step) || autocal_step_is_white($step) || strict_tried_for_step($step));
-	 return undef if(autocal_step_is_hdr20_body($step));
 	 return undef if(!has_luminance_channel($arrays,$target));
  $luminance_err=0 if(!defined($luminance_err));
  my $lum_pct=$luminance_err*100;
@@ -6001,6 +5999,11 @@ sub hdr20_body_chroma_luma_adjustments {
 	 return undef if(!defined($idx));
 	 my $chroma=chroma_error_magnitude($error);
 	 my $lum_pct=defined($luminance_err) ? ($luminance_err+0)*100 : 0;
+	 my $tol=luminance_tolerance_percent($step);
+	 $tol=2 if(!defined($tol) || $tol <= 0);
+	 my $far_luma=$tol*3;
+	 $far_luma=8 if($far_luma < 8);
+	 return undef if(abs($lum_pct) >= $far_luma);
 	 my $max_step=($micro ? 0.5 : ((defined($de) && $de > 12) ? 2.0 : ((defined($de) && $de > 4) ? 1.0 : 0.5)));
 	 my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
 	 $floor=0.0030 if(!$micro && $floor < 0.0030);
@@ -6016,6 +6019,8 @@ sub hdr20_body_chroma_luma_adjustments {
 	 foreach my $ch (@channels) {
 	  my $err=$error->{$ch}||0;
 	  next if(abs($err) < $floor);
+	  next if($lum_pct > $tol && $err < 0);
+	  next if($lum_pct < -$tol && $err > 0);
 	  my $setting=channel_setting($ch);
 	  my $arr=$arrays->{$setting};
 	  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
