@@ -6056,16 +6056,19 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 my $lum_pct=($luminance_err+0)*100;
 	 my $tol=luminance_tolerance_percent($step);
 	 $tol=2 if(!defined($tol) || $tol <= 0);
-	 my $threshold=$tol*3;
-	 $threshold=8 if($threshold < 8);
+	 my $threshold=$tol*1.20;
+	 $threshold=3 if($threshold < 3);
+	 $threshold=8 if($threshold > 8);
 	 return undef if(abs($lum_pct) < $threshold);
 	 my $idx=$target->{"index"};
 	 return undef if(!defined($idx));
-	 my $mag=1.0;
-	 $mag=2.0 if(abs($lum_pct) >= 10);
-	 $mag=4.0 if(abs($lum_pct) >= 18);
-	 $mag+=1.0 if($stalls >= 2 && $mag < 5.0);
-	 $mag=6.0 if($mag > 6.0);
+	 my $mag=round_ddc_quarter(abs($lum_pct)*0.85);
+	 $mag=1.0 if($mag < 1.0);
+	 $mag=4.0 if(abs($lum_pct) >= 5 && $mag < 4.0);
+	 $mag=8.0 if(abs($lum_pct) >= 9 && $mag < 8.0);
+	 $mag=10.0 if(abs($lum_pct) >= 14 && $mag < 10.0);
+	 $mag+=2.0 if($stalls >= 2 && $mag < 12.0);
+	 $mag=12.0 if($mag > 12.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
 	 if(has_luminance_channel($arrays,$target)) {
 	  my $arr=$arrays->{"adjustingLuminance"};
@@ -12425,17 +12428,17 @@ eval {
 								     $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$pair_lum_pct,0);
 								    }
 								   }
+										   if(!$adjustments) {
+										    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
+										   }
+										   if(!$adjustments) {
+										    $adjustments=hdr20_body_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
+										   }
 									   if(!$adjustments) {
 									    $adjustments=lg_autocal_26_initial_learned_target_adjustments(
 									     $state,$arrays,$target,$read_step,$reading,$de,$target_delta,$lum_pct,\%tried_values,
 									     $iter,$iteration_limit,$stalls,$paired_white_step
 									    );
-									   }
-									   if(!$adjustments) {
-									    $adjustments=hdr20_body_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
-									   }
-									   if(!$adjustments) {
-									    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
 									   }
 									   if(!$adjustments) {
 									    $adjustments=headroom_105_main_polish_refine_adjustments($state,$arrays,$target,$read_step,$reading,$de,$lum_pct,$target_delta,\%tried_values,$stalls,$lum_err,\%rgb_response_model,$err);
