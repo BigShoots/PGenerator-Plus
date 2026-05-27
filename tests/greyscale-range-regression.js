@@ -430,12 +430,12 @@ assert(
 );
 assert(
   autoCalTargetGammaSource.includes("function meterLgAutoCalGreyscaleTargetGammaValue()") &&
-    autoCalTargetGammaSource.includes("return meterAutoCalTargetGammaValue();") &&
+    autoCalTargetGammaSource.includes("return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();") &&
     lgAutoCalGreyscalePayloadGammaCount >= 5 &&
     source.includes("return mode==='hdr10'?'hdr10':'sdr';") &&
     source.includes("if(requested==='hdr10'){\n  setVal('eotf','2');") &&
     source.includes('requested_signal_mode:signalMode'),
-  'WebUI HDR LG Auto Cal should send the selected HDR/PQ target gamma while keeping requested output transport HDR10/PQ'
+  'WebUI HDR LG Auto Cal should use Power 2.2 targets while keeping requested output transport HDR10/PQ'
 );
 assert(
     source.includes('const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];') &&
@@ -448,7 +448,7 @@ assert(
 	    autocalWorkerSource.includes('my $floor=($ire >= 80) ? 0.6 : 3;') &&
 	    autocalWorkerSource.includes('!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed') &&
 	    !autoCalTargetLuminanceSource.includes('target_gamma_linear($signal,"2.2","sdr")'),
-	  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, keep PQ/ST2084 target Y, and avoid luma-only HDR100 moves while chroma is still high'
+	  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, use the supplied AutoCal target curve, and avoid luma-only HDR100 moves while chroma is still high'
 	);
 assert(
   /function meterGreyscaleRotateXLabels\(stepCount\)\s*\{\s*return Number\(stepCount\)>=21;\s*\}/.test(source),
