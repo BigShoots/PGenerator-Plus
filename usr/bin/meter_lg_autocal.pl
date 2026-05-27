@@ -425,6 +425,7 @@ sub apply_lg_autocal_26_default_modes {
  if(!lg_autocal_26_sdr_headroom_enabled($config)) {
   $config->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::false;
   $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false;
+  $config->{"patch_insert"}=JSON::PP::false;
   return;
  }
  # Standalone and Full AutoCal greyscale now share the same LG 26pt
@@ -466,7 +467,7 @@ sub order_autocal_steps {
 	 my ($steps,$config)=@_;
 	 return () if(ref($steps) ne "ARRAY");
 	 my @valid=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)) >= 0.001 && ddc_target_for_step($_) && !autocal_skip_duplicate_ddc_slot($_) } @{$steps};
-	 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
+	 if(ref($config) eq "HASH" && lg_autocal_26_sdr_headroom_enabled($config)) {
   my %normal_ddc_slot;
   foreach my $step (@valid) {
    next if($step->{"autocal_white_reference"});
@@ -1232,7 +1233,7 @@ sub apply_peak_headroom_reference {
 
 sub keep_peak_headroom_white_reference {
 	 my ($config,$state)=@_;
-	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+	 return 0 if(ref($config) ne "HASH" || !lg_autocal_26_sdr_headroom_enabled($config));
 	 return 0 if(ref($state) ne "HASH");
 	 return (defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0) ? 1 : 0;
 }
@@ -1332,7 +1333,7 @@ sub committed_polish_reference_white_y {
  my $peak_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0)
   ? ($state->{"peak_headroom_reference"}+0) : undef;
  return $peak_ref if($prefer_headroom && defined($peak_ref));
- if(ref($state) eq "HASH" && ref($state->{"readings"}) eq "ARRAY") {
+ if($prefer_headroom && ref($state) eq "HASH" && ref($state->{"readings"}) eq "ARRAY") {
   my $best_ire=-1;
   my $best_ref=undef;
   foreach my $reading (@{$state->{"readings"}}) {
@@ -1352,8 +1353,8 @@ sub committed_polish_reference_white_y {
  my $from_headroom=headroom_reference_white_from_target($config,$steps,$target_gamma,$signal_mode);
  return $from_headroom if($prefer_headroom && defined($from_headroom) && $from_headroom > 0);
  return $committed_ref if(defined($committed_ref));
- return $peak_ref if(defined($peak_ref));
- return $from_headroom if(defined($from_headroom) && $from_headroom > 0);
+ return $peak_ref if($prefer_headroom && defined($peak_ref));
+ return $from_headroom if($prefer_headroom && defined($from_headroom) && $from_headroom > 0);
  if(ref($state) eq "HASH" && defined($state->{"target_luminance"}) && ($state->{"target_luminance"}+0) > 0) {
   return $state->{"target_luminance"}+0;
  }
@@ -1393,6 +1394,7 @@ sub patch_code_for_stimulus {
 sub shifted_stimulus_step {
 	 my ($config,$step,$stimulus)=@_;
 	 return undef if(ref($step) ne "HASH" || !defined($stimulus));
+	 return undef if(!lg_autocal_26_sdr_headroom_enabled($config));
 	 $stimulus=0 if($stimulus < 0);
 	 my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
 	 my $headroom=$sdr_headroom ? 109.5 : 100;
@@ -1465,6 +1467,7 @@ sub target_is_low_shadow_slot {
 sub fixed_lg_autocal_step {
 	 my ($config,$step)=@_;
 	 return $step if(ref($step) ne "HASH");
+	 return $step if(!lg_autocal_26_sdr_headroom_enabled($config));
 	 return $step if(!$config->{"use_shifted_lg_autocal_stimulus"});
 	 return $step if(!ddc_target_for_step($step));
 	 my $stimulus=fixed_lg_autocal_stimulus($step);
@@ -2797,7 +2800,7 @@ sub guarded_target_reached {
 
 sub legal_white_pair_reference_step {
  my ($steps,$target,$step,$config)=@_;
- return undef if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return undef if(ref($config) ne "HASH" || !lg_autocal_26_sdr_headroom_enabled($config));
  # Full-DDC spine still needs the hidden 100% legal-white read while solving
  # the shared 99% LG DDC slot. Otherwise 99 can look clean while the user's
  # visible 100% white read keeps a red/blue imbalance.
