@@ -17291,7 +17291,7 @@ function meterAutoCalTargetGammaValue(){
 }
 
 function meterLgAutoCalGreyscaleTargetGammaValue(){
- return meterAutoCalTargetGammaValue();
+ return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();
 }
 
 function meterAutoCalTargetGamutValue(){
