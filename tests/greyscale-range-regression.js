@@ -441,12 +441,15 @@ assert(
     source.includes('const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];') &&
     source.includes('const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,224,213,202,191,169,147,126,104,82,71,60,49,38,31,27,25,22,20,19];') &&
     autocalWorkerSource.includes('return (1.37,1.83,2.74,4.11,5.02,6.85,10.05,15.07,20.09,25.11,30.14,40.18,50.23,59.82,69.86,79.91,84.93,89.95,94.98,100) if($layout eq "hdr20");') &&
-    autocalWorkerSource.includes('sub hdr20_top_white_chroma_priority_needed') &&
-    autocalWorkerSource.includes('hdr20_body_luminance=>1') &&
-    autocalWorkerSource.includes('!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed') &&
-    !autoCalTargetLuminanceSource.includes('target_gamma_linear($signal,"2.2","sdr")'),
-  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, keep PQ/ST2084 target Y, and avoid luma-only HDR100 moves while chroma is still high'
-);
+	    autocalWorkerSource.includes('sub hdr20_top_white_chroma_priority_needed') &&
+	    autocalWorkerSource.includes('hdr20_body_luminance=>1') &&
+	    autocalWorkerSource.includes('if(autocal_step_is_hdr20_body($step)) {') &&
+	    autocalWorkerSource.includes('return 0 if(abs($lum_pct) > luminance_tolerance_percent($step));') &&
+	    autocalWorkerSource.includes('my $floor=($ire >= 80) ? 0.6 : 3;') &&
+	    autocalWorkerSource.includes('!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed') &&
+	    !autoCalTargetLuminanceSource.includes('target_gamma_linear($signal,"2.2","sdr")'),
+	  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, keep PQ/ST2084 target Y, and avoid luma-only HDR100 moves while chroma is still high'
+	);
 assert(
   /function meterGreyscaleRotateXLabels\(stepCount\)\s*\{\s*return Number\(stepCount\)>=21;\s*\}/.test(source),
   'Dense greyscale RGB and Delta E chart x-axis labels should use the angled color-series label style'
