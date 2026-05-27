@@ -6039,8 +6039,34 @@ sub hdr20_body_chroma_luma_adjustments {
 	  last if(@out >= $max_channels);
 	 }
 	 return undef if(!@out);
+	 if(!$micro && abs($lum_pct) >= (($tol*1.20) > 3 ? ($tol*1.20) : 3) && has_luminance_channel($arrays,$target)) {
+	  my $arr=$arrays->{"adjustingLuminance"};
+	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
+	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	   my $direction=($lum_pct > 0) ? -1 : 1;
+	   my $mag=1.0;
+	   $mag=2.0 if(abs($lum_pct) >= 6);
+	   $mag=4.0 if(abs($lum_pct) >= 12);
+	   $mag=5.0 if($stalls >= 2 && $mag < 5.0);
+	   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
+	   if(defined($next) && abs($next-$current) >= 0.0001 && !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_chroma_luma",$LG_AUTOCAL_STATE)) {
+	    push @out,{
+	     channel=>"lum",
+	     setting=>"adjustingLuminance",
+	     current=>$current,
+	     next=>$next,
+	     delta=>$next-$current,
+	     damped=>$damped ? 1 : 0,
+	     neutral_luminance=>1,
+	     hdr20_body_luminance=>1,
+	     hdr20_body_chroma_luma=>1,
+	     luminance_error_pct=>$lum_pct+0
+	    };
+	   }
+	  }
+	 }
 	 return \@out;
-}
+	}
 
 sub hdr20_body_luminance_rgb_adjustments {
 	 my ($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step)=@_;
