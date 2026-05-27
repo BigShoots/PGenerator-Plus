@@ -7261,6 +7261,8 @@ sub choose_adjustments {
 				 my $luma_tol=luminance_tolerance_percent($step);
 					 my $hdr20_top_white=autocal_step_is_hdr20_top_white($step);
 					 if(autocal_step_is_hdr20_body($step)) {
+					  my $hdr_body_luma_first=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
+					  return $hdr_body_luma_first if($hdr_body_luma_first && abs($lum_pct) >= 8);
 					  my $hdr_body=hdr20_body_chroma_luma_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0);
 					  return $hdr_body if($hdr_body);
 					  my $hdr_body_luma=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
