@@ -6093,6 +6093,18 @@ sub hdr20_body_luminance_rgb_adjustments {
 	    luminance_error_pct=>$lum_pct+0
 	   };
 	  }
+	  trace_109($step,"hdr20_body_luminance_rgb_probe",{
+	   ire=>$ire+0,
+	   index=>$idx+0,
+	   luminance_error_pct=>$lum_pct+0,
+	   direction=>$direction+0,
+	   magnitude=>$mag+0,
+	   rgb_move_count=>scalar(@rgb_out),
+	   values=>trace_target_values($arrays,$target),
+	   tried_red=>tried_setting_value_count($tried,"whiteBalanceRed"),
+	   tried_green=>tried_setting_value_count($tried,"whiteBalanceGreen"),
+	   tried_blue=>tried_setting_value_count($tried,"whiteBalanceBlue")
+	  });
 	  return \@rgb_out if(@rgb_out == 3);
 	 }
 	 if(has_luminance_channel($arrays,$target)) {
@@ -12459,12 +12471,15 @@ eval {
 								     $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$pair_lum_pct,0);
 								    }
 								   }
-										   if(!$adjustments) {
-										    $adjustments=hdr20_body_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
-										   }
-										   if(!$adjustments) {
-										    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
-										   }
+											   if(!$adjustments && autocal_step_is_hdr20_body($read_step) && abs(($lum_err||0)*100) >= 8) {
+											    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
+											   }
+											   if(!$adjustments) {
+											    $adjustments=hdr20_body_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
+											   }
+											   if(!$adjustments) {
+											    $adjustments=hdr20_body_luminance_rgb_adjustments($arrays,$target,$read_step,$lum_err,$de,$stalls,\%tried_values,0.25);
+											   }
 									   if(!$adjustments) {
 									    $adjustments=lg_autocal_26_initial_learned_target_adjustments(
 									     $state,$arrays,$target,$read_step,$reading,$de,$target_delta,$lum_pct,\%tried_values,
