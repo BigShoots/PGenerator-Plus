@@ -17343,7 +17343,8 @@ function meterAutoCalTargetGamutValue(){
 }
 
 function meterAutoCalUseFullDdcSpine(){
- return meterLgAutoCalRequestedSignalMode()==='sdr';
+ const mode=meterLgAutoCalRequestedSignalMode();
+ return mode==='sdr'||mode==='hdr10';
 }
 
 function meterEnsureAppliedGeneratorSettings(){

@@ -376,7 +376,10 @@ sub autocal_skip_duplicate_ddc_slot {
 
 sub lg_autocal_26_full_ddc_spine_enabled {
  my ($config)=@_;
- return (ref($config) eq "HASH" && lg_autocal_26_sdr_headroom_enabled($config) && $config->{"lg_autocal_26_full_ddc_spine"}) ? 1 : 0;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"} || !$config->{"lg_autocal_26_full_ddc_spine"});
+ return 1 if(lg_autocal_26_sdr_headroom_enabled($config));
+ return 1 if(lg_autocal_26_hdr20_seed_enabled($config));
+ return 0;
 }
 
 sub lg_autocal_26_sdr_headroom_enabled {
@@ -391,11 +394,25 @@ sub lg_autocal_26_hdr20_seed_enabled {
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  my $signal_mode=lc($config->{"signal_mode"}||"sdr");
  return 0 if($signal_mode ne "hdr10");
- return (lc($config->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "") eq "hdr20") ? 1 : 0;
+ my $layout=lc($config->{"ddc_layout"} || ddc_layout_for_signal_mode($signal_mode) || $LG_AUTOCAL_DDC_LAYOUT || "");
+ return ($layout eq "hdr20") ? 1 : 0;
+}
+
+sub lg_autocal_26_full_ddc_spine_anchor_ires_for_layout {
+ my ($layout)=@_;
+ $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
+ return (100,20.09,40.18,59.82,79.91) if($layout eq "hdr20");
+ return (109,20,40,60,80);
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_ires {
- return (109,20,40,60,80);
+ my ($config)=@_;
+ my $layout;
+ if(ref($config) eq "HASH") {
+  $layout=$config->{"ddc_layout"} || ddc_layout_for_signal_mode(lc($config->{"signal_mode"}||"sdr"));
+ }
+ $layout ||= $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
+ return lg_autocal_26_full_ddc_spine_anchor_ires_for_layout($layout);
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_count {
@@ -406,8 +423,9 @@ sub lg_autocal_26_full_ddc_spine_anchor_count {
 sub lg_autocal_26_full_ddc_spine_anchor {
  my ($target)=@_;
  return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
- my $ire=$target->{"ire"}+0;
- my $match=grep { abs($ire-$_) < 0.001 } lg_autocal_26_full_ddc_spine_anchor_ires();
+ my $layout=$target->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
+ my $ire=defined($target->{"array_ire"}) ? ($target->{"array_ire"}+0) : ($target->{"ire"}+0);
+ my $match=grep { abs($ire-$_) < 0.001 } lg_autocal_26_full_ddc_spine_anchor_ires_for_layout($layout);
  return $match ? 1 : 0;
 }
 
@@ -449,6 +467,12 @@ sub apply_lg_autocal_26_default_modes {
  my ($config)=@_;
  return if(ref($config) ne "HASH");
  return if(!$config->{"lg_autocal_26"});
+ if(lg_autocal_26_hdr20_seed_enabled($config)) {
+  $config->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::true if(!exists($config->{"lg_autocal_26_full_ddc_spine"}));
+  $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false if(!exists($config->{"lg_autocal_26_anchor_predrive"}));
+  $config->{"patch_insert"}=JSON::PP::false;
+  return;
+ }
  if(!lg_autocal_26_sdr_headroom_enabled($config)) {
   $config->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::false;
   $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false;
@@ -555,7 +579,57 @@ sub order_autocal_steps {
    my $key=$target_key->($_);
    defined($key) && !$seen_target{$key}
   } @valid;
-  return (@ordered,@leftovers);
+	  return (@ordered,@leftovers);
+	 }
+	 if(ref($config) eq "HASH" && lg_autocal_26_hdr20_seed_enabled($config) && lg_autocal_26_full_ddc_spine_enabled($config)) {
+	  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
+	  my @top_down=sort { $b <=> $a } ddc_slots_for_layout("hdr20");
+	  my @hdr_autocal_26_order=(lg_autocal_26_full_ddc_spine_anchor_ires_for_layout("hdr20"),@top_down);
+	  my %seen_target;
+	  my @ordered;
+	  my $target_key=sub {
+	   my ($step)=@_;
+	   my $target=ddc_target_for_step($step);
+	   return undef if(ref($target) ne "HASH" || !defined($target->{"array_ire"}));
+	   return format_percent($target->{"array_ire"});
+	  };
+	  foreach my $wanted (@hdr_autocal_26_order) {
+	   my $wanted_key=format_percent($wanted);
+	   if($seen_target{$wanted_key}) {
+	    my ($anchor_match)=grep {
+	     my $key=$target_key->($_);
+	     defined($key) && $key eq $wanted_key
+	    } @valid;
+	    if($anchor_match) {
+	     my $anchor_target=ddc_target_for_step($anchor_match);
+	     if(lg_autocal_26_full_ddc_spine_body_anchor($anchor_target)) {
+	      my $revisit=clone_picture($anchor_match);
+	      $revisit->{"lg_autocal_26_full_ddc_spine_anchor_revisit"}=JSON::PP::true;
+	      $revisit->{"lg_autocal_26_seeded_move_damping"}=JSON::PP::true;
+	      $revisit->{"autocal_target_label"}=format_percent($anchor_target->{"ire"})."% HDR anchor revisit";
+	      push @ordered,$revisit;
+	     }
+	    }
+	    next;
+	   }
+	   my ($match)=grep {
+	    my $key=$target_key->($_);
+	    defined($key) && !$seen_target{$key} && $key eq $wanted_key
+	   } @valid;
+	   next if(!$match);
+	   push @ordered,$match;
+	   $seen_target{$wanted_key}=1;
+	  }
+	  my @leftovers=sort {
+	   my $at=ddc_target_for_step($a);
+	   my $bt=ddc_target_for_step($b);
+	   (($bt && defined($bt->{"array_ire"})) ? ($bt->{"array_ire"}+0) : 0) <=>
+	    (($at && defined($at->{"array_ire"})) ? ($at->{"array_ire"}+0) : 0)
+	  } grep {
+	   my $key=$target_key->($_);
+	   defined($key) && !$seen_target{$key}
+	  } @valid;
+	  return (@ordered,@leftovers);
 	 }
 	 return sort {
 	  my $av=defined($a->{"autocal_order_ire"}) ? ($a->{"autocal_order_ire"}+0) : ($a->{"ire"}||0);
@@ -3868,6 +3942,7 @@ sub full_ddc_spine_shadow_seed_links {
 sub apply_full_ddc_spine_shadow_seeds {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
  return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
  return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
  return 0 if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,20));
  my $changed=0;
@@ -3919,6 +3994,7 @@ sub full_ddc_spine_seed_correction_deltas {
 sub apply_full_ddc_spine_seed_corrections {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
  return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
  return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
  my $changed=0;
  $changed+=apply_full_ddc_spine_shadow_seeds($config,$arrays,$calibrated_slot_mask);
