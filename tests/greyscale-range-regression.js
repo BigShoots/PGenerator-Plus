@@ -433,6 +433,14 @@ assert(
   'WebUI HDR LG Auto Cal should calibrate with relative gamma 2.2 while keeping requested output transport HDR10/PQ'
 );
 assert(
+  source.includes('const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];') &&
+    source.includes('const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,224,213,202,191,169,147,126,104,82,71,60,49,38,31,27,25,22,20,19];') &&
+    autocalWorkerSource.includes('return (1.37,1.83,2.74,4.11,5.02,6.85,10.05,15.07,20.09,25.11,30.14,40.18,50.23,59.82,69.86,79.91,84.93,89.95,94.98,100) if($layout eq "hdr20");') &&
+    autocalWorkerSource.includes('sub hdr20_top_white_chroma_priority_needed') &&
+    autocalWorkerSource.includes('!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed'),
+  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, and avoid luma-only HDR100 moves while chroma is still high'
+);
+assert(
   /function meterGreyscaleRotateXLabels\(stepCount\)\s*\{\s*return Number\(stepCount\)>=21;\s*\}/.test(source),
   'Dense greyscale RGB and Delta E chart x-axis labels should use the angled color-series label style'
 );
@@ -557,12 +565,12 @@ assert(
   'LG Auto Cal should clear the DDC table, Full Auto Cal should also reset the LG 3D LUT baseline before greyscale, refresh retained panel light silently, and continue to the luminance setup step'
 );
 assert(
-  lgSource.includes('my ($session,$ip,$picture_mode,$timeout,$reset_to_unity)=@_;') &&
+  /my \(\$session,\$ip,\$picture_mode,\$timeout,\$reset_to_unity(?:,\$layout)?\)=@_;/.test(lgSource) &&
     lgSource.includes('&lg_write_1d_lut_file($path,$unity);') &&
     lgSource.includes('$reset_ddc_baseline=$reset_ddc_baseline ? 1 : 0;') &&
     lgSource.includes('$calibration_mode_active=0 if($reset_ddc_baseline);') &&
     lgSource.includes('sub lg_lut_matches') &&
-    lgSource.includes('&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline)') &&
+    /&lg_ddc_baseline_lut\(\$session,\$ip,\$picture_mode,\$timeout,\$reset_ddc_baseline(?:,\$ddc_layout)?\)/.test(lgSource) &&
     lgSource.includes('my $verify_lut=&lg_get_current_1d_lut($session,$timeout);') &&
     lgSource.includes('LG DDC reset upload did not verify against the TV 1D LUT readback.') &&
 	    lgSource.includes('ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified)') &&
@@ -826,7 +834,7 @@ assert(
 		    autocalWorkerSource.includes('read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label)') &&
 	    autocalWorkerSource.includes('sub chroma_error_magnitude') &&
 	    autocalWorkerSource.includes('neutral_luminance=>1') &&
-	    autocalWorkerSource.includes('$luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));') &&
+		    autocalWorkerSource.includes('$luminance_err=0 if(autocal_step_suppresses_luminance_adjustment($step));') &&
 	    autocalWorkerSource.includes('$near_fine=0 if($ire >= 99.9 && defined($de) && $de > 0.75);') &&
 	    autocalWorkerSource.includes('return 1 if($ire >= 99.9 && !defined($lum_pct));') &&
 	    autocalWorkerSource.includes('return 0.45;') &&
@@ -1006,9 +1014,10 @@ assert(
 	    autocalWorkerSource.includes('choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\\%tried_values,$read_step)') &&
     autocalWorkerSource.includes('choose_micro_adjustments($err,$arrays,$target,$lum_err,\\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step,$target_delta)') &&
     autocalWorkerSource.includes('my $final_reached=$pair_target_reached_now->();') &&
-    source.includes("target_gamma:(document.getElementById('meterTargetGamma')||{}).value||'bt1886'") &&
-    source.includes('return Math.max(10,Math.min(10000,setup*peakRatio));') &&
-    source.includes("message:'Using 100% target '+targetY.toFixed(2)+' cd/m\\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\\u00B2'"),
+	    source.includes('target_gamma:meterAutoCalTargetGammaValue()') &&
+	    source.includes('return Math.max(10,Math.min(10000,setup*peakRatio));') &&
+	    source.includes("message:hdrWorkflow") &&
+	    source.includes("'Using 100% target '+targetY.toFixed(2)+' cd/m\\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\\u00B2'"),
   'LG Auto Cal/manual reads should include gamma/luminance error, reject stale results, and keep meter sessions healthy'
 );
 	assert(
@@ -1090,7 +1099,7 @@ assert(
     autocalWorkerSource.includes('return 1 if($ire >= 99.9 && !defined($lum_pct));') &&
     autocalWorkerSource.includes('return 1 if($ire >= 99.9 && !defined($best_lum_pct));') &&
     !autocalWorkerSource.includes('$luminance_err=0 if($ire >= 99.9);') &&
-    autocalWorkerSource.includes('$luminance_err=0 if($ire >= 99.9 && !autocal_step_is_fast_headroom($step));') &&
+	    autocalWorkerSource.includes('$luminance_err=0 if(autocal_step_suppresses_luminance_adjustment($step));') &&
 	    autocalWorkerSource.includes('my $fine=($ire >= 108.5) ? $target_delta : 0.28;') &&
 	    autocalWorkerSource.includes('my $headroom_score=headroom_autocal_result_score($de,$reading,$step);') &&
 	    autocalWorkerSource.includes('$headroom_score+=$penalty;') &&
@@ -1148,7 +1157,7 @@ assert(
       autocalWorkerSource.includes('committed_state_polish(') &&
       committedPolishReferenceSource.includes('$state->{"peak_headroom_reference"}+0') &&
       autocalWorkerSource.includes('derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);') &&
-      committedPolishReferenceSource.includes('my $prefer_headroom=(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) ? 1 : 0;') &&
+      committedPolishReferenceSource.includes('my $prefer_headroom=lg_autocal_26_sdr_headroom_enabled($config) ? 1 : 0;') &&
       peakRefReturnIdx > -1 &&
       committedRefReturnIdx > peakRefReturnIdx &&
       committedPolishSource.includes('my $white_y=committed_polish_reference_white_y($config,$state,$steps,$target_gamma,$signal_mode,undef);') &&
@@ -2143,10 +2152,12 @@ const code = [
   extractFunction('meterLgSdrLegalStimulusFromCode'),
 	  extractFunction('meterCodeFromSignalPercentWithOptions'),
 	  extractConst('METER_LG_GREY_MANUAL_22_ENABLED'),
-	  extractFunction('meterGreyDefaultSlots'),
-	  extractFunction('meterUseLgGreyscale21'),
-	  extractFunction('meterUseLgAutoCal26'),
-	  extractFunction('meterLgGreyscaleUsesExtendedSdr'),
+		  extractFunction('meterGreyDefaultSlots'),
+		  extractFunction('meterUseLgGreyscale21'),
+		  extractFunction('meterUseLgAutoCal26'),
+		  extractConst('METER_GREY_SLOTS_HDR30'),
+		  extractFunction('meterUseHdrGreyscale30'),
+		  extractFunction('meterLgGreyscaleUsesExtendedSdr'),
   extractFunction('meterLgGreyscaleUsesLegalSdrDdcCodes'),
   extractFunction('meterLgAutoCalUsesExtendedSdr'),
   extractFunction('meterGreySeriesSlots'),
