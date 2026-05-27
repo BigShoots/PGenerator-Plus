@@ -833,6 +833,7 @@ sub hdr20_body_chroma_priority_needed {
 
 sub autocal_step_ignores_luminance_error {
 	 my ($step)=@_;
+	 return 1 if(autocal_step_is_hdr20_top_white($step));
 	 return autocal_step_is_peak_headroom($step) ? 1 : 0;
 }
 
@@ -1334,6 +1335,7 @@ sub update_white_reference_for_autocal_step {
 	 my ($config,$state,$step,$reading,$white_y)=@_;
 	 return $white_y if(keep_peak_headroom_white_reference($config,$state) && !autocal_step_is_peak_headroom($step));
 	 if(ref($config) eq "HASH" && lc($config->{"signal_mode"}||"sdr") ne "sdr" && autocal_step_is_white($step) && !$step->{"autocal_white_reference"} && ddc_target_for_step($step)) {
+	  return update_white_reference_for_step($step,$reading,$white_y) if(autocal_step_is_hdr20_top_white($step));
 	  return $white_y;
 	 }
 	 return update_white_reference_for_step($step,$reading,$white_y);
