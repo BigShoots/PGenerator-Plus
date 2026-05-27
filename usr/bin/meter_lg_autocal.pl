@@ -6067,6 +6067,26 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 $mag+=1.0 if($stalls >= 2 && $mag < 5.0);
 	 $mag=6.0 if($mag > 6.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
+	 if(has_luminance_channel($arrays,$target)) {
+	  my $arr=$arrays->{"adjustingLuminance"};
+	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
+	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
+	   if(defined($next) && abs($next-$current) >= 0.0001 && !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_luminance",$LG_AUTOCAL_STATE)) {
+	    return [{
+	     channel=>"lum",
+	     setting=>"adjustingLuminance",
+	     current=>$current,
+	     next=>$next,
+	     delta=>$next-$current,
+	     damped=>$damped ? 1 : 0,
+	     neutral_luminance=>1,
+	     hdr20_body_luminance=>1,
+	     luminance_error_pct=>$lum_pct+0
+	    }];
+	   }
+	  }
+	 }
 	 my @out;
 	 foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
 	  my $arr=$arrays->{$setting};
