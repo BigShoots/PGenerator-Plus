@@ -740,9 +740,8 @@ sub target_luminance_for_step {
 	 $signal=1 if($signal > 1 && $mode ne "sdr");
 	 $signal=1.1 if($signal > 1.1);
 	 if($mode eq "hdr10" && lc($target_gamma||"") eq "st2084") {
-	  # LG HDR greyscale AutoCal uses a relative 2.2 target during the
-	  # calibration pass. PQ/EOTF targets are for verification charts.
-	  return $white_y * ($signal ** 2.2);
+	  my $pq_y=pq_decode_nits($signal);
+	  return ($pq_y > $white_y) ? $white_y : $pq_y;
 	 }
 	 return $white_y * target_gamma_linear($signal,$target_gamma,$signal_mode);
 }
