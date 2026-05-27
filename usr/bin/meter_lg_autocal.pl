@@ -6035,6 +6035,9 @@ sub hdr20_body_chroma_luma_adjustments {
 	 my $tol=luminance_tolerance_percent($step);
 	 $tol=2 if(!defined($tol) || $tol <= 0);
 	 my $max_step=($micro ? 0.5 : ((defined($de) && $de > 12) ? 2.0 : ((defined($de) && $de > 4) ? 1.0 : 0.5)));
+	 if(!$micro && ($chroma >= 0.120 || (defined($de) && $de > 12))) {
+	  $max_step=4.0;
+	 }
 	 my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
 	 $floor=0.0030 if(!$micro && $floor < 0.0030);
 	 $floor=0.0020 if($micro && $floor < 0.0020);
