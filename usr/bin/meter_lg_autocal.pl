@@ -1242,6 +1242,9 @@ sub keep_peak_headroom_white_reference {
 sub update_white_reference_for_autocal_step {
 	 my ($config,$state,$step,$reading,$white_y)=@_;
 	 return $white_y if(keep_peak_headroom_white_reference($config,$state) && !autocal_step_is_peak_headroom($step));
+	 if(ref($config) eq "HASH" && lc($config->{"signal_mode"}||"sdr") ne "sdr" && autocal_step_is_white($step) && !$step->{"autocal_white_reference"} && ddc_target_for_step($step)) {
+	  return $white_y;
+	 }
 	 return update_white_reference_for_step($step,$reading,$white_y);
 }
 
