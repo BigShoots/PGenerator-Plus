@@ -776,6 +776,16 @@ sub autocal_step_is_hdr20_top_white {
  return ($ire >= 99.9 && $ire <= 100.1) ? 1 : 0;
 }
 
+sub hdr20_top_white_luminance_priority_needed {
+ my ($step,$lum_pct,$fraction)=@_;
+ return 0 if(!autocal_step_is_hdr20_top_white($step));
+ return 0 if(!defined($lum_pct));
+ $fraction=0.35 if(!defined($fraction) || $fraction <= 0);
+ my $tol=luminance_tolerance_percent($step);
+ $tol=0.45 if(!defined($tol) || $tol <= 0);
+ return abs($lum_pct+0) > ($tol*$fraction) ? 1 : 0;
+}
+
 sub autocal_step_ignores_luminance_error {
  my ($step)=@_;
  return autocal_step_is_peak_headroom($step) ? 1 : 0;
@@ -2580,6 +2590,7 @@ sub lg_autocal_26_initial_learned_target_adjustments {
   return annotate_lg_autocal_26_initial_target_move($adjustments,"luminance",$activation,$remaining_pct) if(ref($adjustments) eq "ARRAY");
   return undef if(autocal_step_is_low_shadow($step) && $luma_very_far);
  }
+ return undef if(hdr20_top_white_luminance_priority_needed($step,$lum_pct,0.35));
  my $error=autocal_adjustment_error($reading,$step);
  my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
  if($ch && lg_autocal_26_response_axis_samples($state,$step,"rgb",$ch) >= 2) {
@@ -6750,6 +6761,8 @@ sub choose_rgb_response_adjustments {
 	 return undef if(autocal_step_is_fast_headroom($step) && !$headroom_105_body);
 	 return undef if(headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err));
 	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+	 my $response_lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;
+	 return undef if(hdr20_top_white_luminance_priority_needed($step,$response_lum_pct,0.35));
 	 my $paired_white=strict_tried_for_step($step);
 		 my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
 		 return undef if(!$ch);
