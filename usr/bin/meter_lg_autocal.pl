@@ -7336,17 +7336,17 @@ sub choose_micro_adjustments {
 				  my $pair_seed=legal_white_pair_wrgb_seed_adjustment($arrays,$target,$de,$tried,$step);
 				  return $pair_seed if($pair_seed);
 				 }
-					 if(has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.35)) {
-					  my $luma_max_step=$max_step;
-					  $luma_max_step=4 if(abs($luminance_err) >= 0.20 && $luma_max_step < 4);
-					  $luma_max_step=2 if(abs($luminance_err) >= 0.08 && $luma_max_step < 2);
-					  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$luma_max_step,$strict_tried,$step,"fine_luminance");
-					  return ($headroom_105_body ? mark_headroom_105_body_refinement_adjustments($neutral) : $neutral) if($neutral && ((defined($de) && $de <= 3.0) || chroma_error_magnitude($error) < 0.015));
-					 }
 					 if($hdr20_top_white && hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta)) {
 					  my $chroma=headroom_chroma_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_micro_step,$max_step > 1 ? 1 : $max_step,1);
 					  return $chroma if($chroma);
 					 }
+						 if(has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.35) && !hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta)) {
+						  my $luma_max_step=$max_step;
+						  $luma_max_step=4 if(abs($luminance_err) >= 0.20 && $luma_max_step < 4);
+						  $luma_max_step=2 if(abs($luminance_err) >= 0.08 && $luma_max_step < 2);
+						  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$luma_max_step,$strict_tried,$step,"fine_luminance");
+						  return ($headroom_105_body ? mark_headroom_105_body_refinement_adjustments($neutral) : $neutral) if($neutral && ((defined($de) && $de <= 3.0) || chroma_error_magnitude($error) < 0.015));
+						 }
 					 if($hdr20_top_white && has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*0.30) && !hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta)) {
 					  my $luma_max_step=$max_step;
 					  $luma_max_step=2 if(abs($luminance_err) >= 0.05 && $luma_max_step < 2);
