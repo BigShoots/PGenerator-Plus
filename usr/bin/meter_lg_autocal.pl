@@ -19,6 +19,7 @@ my $cancelled = 0;
 our $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE = 0;
 our $LG_AUTOCAL_SETUP_LUMINANCE = 0;
 our $LG_AUTOCAL_DELTA_E_FORMULA = "deitp";
+our $LG_AUTOCAL_DDC_LAYOUT = "sdr26";
 our $LG_AUTOCAL_CONFIG;
 our $LG_AUTOCAL_STATE;
 
@@ -327,8 +328,22 @@ sub format_percent {
  return $text;
 }
 
-sub ddc_slots {
+sub ddc_layout_for_signal_mode {
+ my ($signal_mode)=@_;
+ $signal_mode=lc($signal_mode||"sdr");
+ return "hdr20" if($signal_mode eq "hdr10");
+ return "sdr26";
+}
+
+sub ddc_slots_for_layout {
+ my ($layout)=@_;
+ $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
+ return (1.4,2,2.7,4,5,7,10,15,20,25,30,40,50,60,70,80,85,90,95,100) if($layout eq "hdr20");
  return (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+}
+
+sub ddc_slots {
+ return ddc_slots_for_layout($LG_AUTOCAL_DDC_LAYOUT);
 }
 
 sub ddc_slot_count {
@@ -342,7 +357,7 @@ sub ddc_target_for_step {
  my $ire=defined($step->{"ddc_target_ire"}) ? $step->{"ddc_target_ire"} : $step->{"ire"};
  return undef if(!defined($ire));
  my $array_ire=defined($step->{"ddc_array_ire"}) ? $step->{"ddc_array_ire"} : $ire;
- my @slots=ddc_slots();
+ my @slots=ddc_slots_for_layout($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT);
  for(my $i=0;$i<@slots;$i++) {
   my $label=$step->{"autocal_target_label"} || format_percent($ire)."%";
   return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), label=>$label }
@@ -7421,9 +7436,10 @@ sub set_picture_values {
  my ($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state,$verify_ddc_upload,$keep_calibration_mode)=@_;
  $keep_calibration_mode=1 if(!defined($keep_calibration_mode));
 	 my $settings={
-	  whiteBalanceMethod => "22",
-	  whiteBalanceIre => $target->{"ire"},
-	  whiteBalanceRed => $arrays->{"whiteBalanceRed"},
+		  whiteBalanceMethod => "22",
+		  whiteBalanceIre => $target->{"ire"},
+		  ddc_layout => $LG_AUTOCAL_DDC_LAYOUT,
+		  whiteBalanceRed => $arrays->{"whiteBalanceRed"},
 		  whiteBalanceGreen => $arrays->{"whiteBalanceGreen"},
 		  whiteBalanceBlue => $arrays->{"whiteBalanceBlue"},
 		 };
@@ -10822,6 +10838,7 @@ sub reset_ddc_baseline_for_autocal {
    settings => {
     whiteBalanceMethod => "22",
     whiteBalanceIre => "100",
+    ddc_layout => $LG_AUTOCAL_DDC_LAYOUT,
     whiteBalanceRed => \@zero,
     whiteBalanceGreen => \@zero,
     whiteBalanceBlue => \@zero,
@@ -10969,6 +10986,7 @@ $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$headroom_target_luminance;
 my $target_gamma=lc($config->{"target_gamma"}||"bt1886");
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
 my $signal_mode=lc($config->{"signal_mode"}||"sdr");
+$LG_AUTOCAL_DDC_LAYOUT=ddc_layout_for_signal_mode($signal_mode);
 my $max_iterations=defined($config->{"max_iterations"}) ? int($config->{"max_iterations"}) : 80;
 my $min_iterations=autocal_config_is_touchup($config) ? 4 : 12;
 $max_iterations=$min_iterations if($max_iterations < $min_iterations);
@@ -11001,8 +11019,9 @@ my $state={
 		 target_luminance=>$target_luminance||undef,
 		 setup_luminance_reference=>$setup_luminance_reference||$target_luminance||undef,
 		 headroom_target_luminance=>$headroom_target_luminance||undef,
-		 target_gamma=>$target_gamma,
-		 display_type=>$config->{"display_type"}||"lcd",
+			 target_gamma=>$target_gamma,
+			 ddc_layout=>$LG_AUTOCAL_DDC_LAYOUT,
+			 display_type=>$config->{"display_type"}||"lcd",
 		 configured_delay_ms=>int($config->{"delay_ms"}||1000),
 		 full_workflow=>$full_workflow ? JSON::PP::true : JSON::PP::false,
 		 full_autocal_phase=>$full_autocal_phase||undef,

@@ -1523,6 +1523,8 @@ $LG_DDC_1D_MIN_STEP_UNITS=64;
 $LG_DDC_1D_STEP_RATIO=0.018;
 $LG_DDC_1D_BLACK_SAMPLE=0;
 @LG_DDC_1D_LABELS=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+@LG_DDC_1D_LABELS_SDR=@LG_DDC_1D_LABELS;
+@LG_DDC_1D_LABELS_HDR20=(1.4,2,2.7,4,5,7,10,15,20,25,30,40,50,60,70,80,85,90,95,100);
 
 sub lg_ddc_round_to_even (@) {
  my $value=shift;
@@ -1569,6 +1571,19 @@ sub lg_ddc_extended_video_8bit_for_ire (@) {
 @LG_DDC_1D_PATCH_CODES_8BIT=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
 @LG_DDC_1D_INDEXES=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
 @LG_DDC_1D_PATCH_INDEXES_8BIT=@LG_DDC_1D_PATCH_CODES_8BIT;
+@LG_DDC_1D_INDEXES_SDR=@LG_DDC_1D_INDEXES;
+@LG_DDC_1D_PATCH_INDEXES_8BIT_SDR=@LG_DDC_1D_PATCH_INDEXES_8BIT;
+@LG_DDC_1D_INDEXES_HDR20=(76,80,88,100,108,124,152,196,240,284,328,416,504,588,676,764,808,852,896,940);
+@LG_DDC_1D_PATCH_INDEXES_8BIT_HDR20=@LG_DDC_1D_INDEXES_HDR20;
+
+sub lg_ddc_layout_name (@) {
+ my ($settings,$picture_mode)=@_;
+ my $layout=(ref($settings) eq "HASH") ? lc($settings->{"ddc_layout"}||"") : "";
+ return "hdr20" if($layout eq "hdr20");
+ $picture_mode=lc($picture_mode||"");
+ return "hdr20" if($picture_mode =~ /^hdr_/);
+ return "sdr26";
+}
 
 sub lg_ddc_token (@) {
  my $value=shift;
@@ -2524,8 +2539,10 @@ sub lg_ddc_enable_1d_pipeline (@) {
 
 sub lg_ddc_state_from_settings (@) {
  my ($settings,$picture_mode)=@_;
+ my $layout=&lg_ddc_layout_name($settings,$picture_mode);
  return {
   pictureMode => $picture_mode,
+  ddc_layout => $layout,
   whiteBalanceMethod => "22",
   whiteBalanceIre => $settings->{"whiteBalanceIre"}||"",
 	  whiteBalanceRed => &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceRed"}),
@@ -2655,16 +2672,20 @@ sub lg_ddc_virtual_picture_settings (@) {
  my ($ip,$picture_mode)=@_;
  $picture_mode=&lg_resolve_ddc_picture_mode($ip,$picture_mode);
  my $state=&lg_ddc_load_state($ip,$picture_mode);
-	 if(ref($state) eq "HASH" && ref($state->{"whiteBalanceRed"}) eq "ARRAY") {
-	  $state->{"pictureMode"}=$picture_mode if(($state->{"pictureMode"}||"") eq "");
-	  $state->{"whiteBalanceMethod"}="22" if(($state->{"whiteBalanceMethod"}||"") eq "");
-	  $state->{"adjustingLuminance"}=[map { 0 } @LG_DDC_1D_LABELS] if(ref($state->{"adjustingLuminance"}) ne "ARRAY");
-	  $state->{"ddc_1d_lut"}=&json_true();
-	  return $state;
-	 }
- my @zero=map { 0 } @LG_DDC_1D_LABELS;
-	 return {
-	  pictureMode => $picture_mode,
+ my $layout=&lg_ddc_layout_name($state,$picture_mode);
+ my @layout_labels=($layout eq "hdr20") ? @LG_DDC_1D_LABELS_HDR20 : @LG_DDC_1D_LABELS_SDR;
+		 if(ref($state) eq "HASH" && ref($state->{"whiteBalanceRed"}) eq "ARRAY") {
+		  $state->{"pictureMode"}=$picture_mode if(($state->{"pictureMode"}||"") eq "");
+		  $state->{"whiteBalanceMethod"}="22" if(($state->{"whiteBalanceMethod"}||"") eq "");
+		  $state->{"ddc_layout"}=$layout;
+		  $state->{"adjustingLuminance"}=[map { 0 } @layout_labels] if(ref($state->{"adjustingLuminance"}) ne "ARRAY");
+		  $state->{"ddc_1d_lut"}=&json_true();
+		  return $state;
+		 }
+ my @zero=map { 0 } @layout_labels;
+		 return {
+		  pictureMode => $picture_mode,
+		  ddc_layout => $layout,
 	  whiteBalanceMethod => "22",
 	  whiteBalanceIre => "50",
 	  whiteBalanceRed => [@zero],
@@ -2676,8 +2697,12 @@ sub lg_ddc_virtual_picture_settings (@) {
 }
 
 sub lg_ddc_1d_white_balance_set (@) {
- my ($session,$ip,$picture_mode,$settings,$timeout,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload)=@_;
- $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
+	 my ($session,$ip,$picture_mode,$settings,$timeout,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload)=@_;
+	 my $ddc_layout=&lg_ddc_layout_name($settings,$picture_mode);
+	 local @LG_DDC_1D_LABELS=($ddc_layout eq "hdr20") ? @LG_DDC_1D_LABELS_HDR20 : @LG_DDC_1D_LABELS_SDR;
+	 local @LG_DDC_1D_INDEXES=($ddc_layout eq "hdr20") ? @LG_DDC_1D_INDEXES_HDR20 : @LG_DDC_1D_INDEXES_SDR;
+	 local @LG_DDC_1D_PATCH_INDEXES_8BIT=($ddc_layout eq "hdr20") ? @LG_DDC_1D_PATCH_INDEXES_8BIT_HDR20 : @LG_DDC_1D_PATCH_INDEXES_8BIT_SDR;
+	 $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
  $reset_ddc_baseline=$reset_ddc_baseline ? 1 : 0;
  $verify_ddc_upload=$verify_ddc_upload ? 1 : 0;
@@ -2834,16 +2859,19 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  }
 		 }
 
-	 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
-	 my @reference_slot_samples=map { &lg_ddc_reference_video_10bit_for_ire($_) } @LG_DDC_1D_LABELS;
+		 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
+		 $state->{"ddc_layout"}=$ddc_layout;
+		 &file_write_json(&lg_ddc_state_path($ip,$picture_mode),$state);
+		 my @reference_slot_samples=map { &lg_ddc_reference_video_10bit_for_ire($_) } @LG_DDC_1D_LABELS;
 	 return (1,&json_ok({
 	  active_picture_mode => $picture_mode,
 	  calibration_picture_mode => $cal_mode,
 	 picture_settings => $state,
 	  ddc_target => &lg_ddc_1d_target_info($settings),
 	  ddc_nonzero => &lg_ddc_1d_nonzero_map($settings),
-	  ddc_slot_labels => \@LG_DDC_1D_LABELS,
-	  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
+		  ddc_slot_labels => \@LG_DDC_1D_LABELS,
+		  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
+		  ddc_layout => $ddc_layout,
 	  ddc_slot_samples_reference => \@reference_slot_samples,
 	  ddc_response => $upload,
 	  ddc_end_response => $end,
