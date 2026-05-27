@@ -12197,12 +12197,21 @@ function meterEnsureDeltaECache(readings){
  const greyForm=meterDeltaEForm();
  const colorForm=meterColorDeltaEForm();
  const greyMode=meterGreyRefMode();
- const gw=meterGrayWorldWeight();
- const tgtGamma=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''))||'';
- const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+meterChartSignalMode()+':'+tgtGamma;
- readings.forEach(rd=>{
-  if(!rd) return;
-  if(rd._dE_cache_key===key) return;
+	const gw=meterGrayWorldWeight();
+	const tgtGamma=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''))||'';
+	const targetContext=[
+	 meterChartSignalMode(),
+	 tgtGamma,
+	 (typeof meterDvMapModeValue==='function')?meterDvMapModeValue():'',
+	 (typeof meterChartHdrPeak==='function')?meterChartHdrPeak():'',
+	 (typeof meterChartMasterMin==='function')?meterChartMasterMin():'',
+	 (typeof meterChartBt2390Enabled==='function'&&meterChartBt2390Enabled())?'bt2390':'',
+	 (typeof meterHdrDiffuseWhiteOverride==='function')?meterHdrDiffuseWhiteOverride():''
+	].join(':');
+	const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+targetContext;
+	readings.forEach(rd=>{
+	 if(!rd) return;
+	 if(rd._dE_cache_key===key) return;
   const formForReading=meterReadingUsesColorDeltaForm(rd)?colorForm:greyForm;
   const pair=meterColorDeltaE2000Pair(rd,formForReading,gw);
   rd._dE_raw=pair.raw;
@@ -13122,14 +13131,14 @@ function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
 }
 
 function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
- if(meterChartIsDv()){
-  const row=point||{};
-  const stimulus=Number(row.stimulus);
-  const ire=Number.isFinite(stimulus) ? stimulus : (Number.isFinite(Number(signal)) ? Number(signal)*100 : 0);
-  const code=(row.code!=null)?row.code:null;
-  return meterGreyTargetLuminance(ire,Lw,Lb||0,code);
- }
- return meterChartTargetLuminance(signal,Lw,Lb||0);
+	const row=point||{};
+	if(row&&('stimulus' in row || 'code' in row)){
+	 const stimulus=Number(row.stimulus);
+	 const ire=Number.isFinite(stimulus) ? stimulus : (Number.isFinite(Number(signal)) ? Number(signal)*100 : 0);
+	 const code=(row.code!=null)?row.code:null;
+	 return meterGreyTargetLuminance(ire,Lw,Lb||0,code);
+	}
+	return meterChartTargetLuminance(signal,Lw,Lb||0);
 }
 
 function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
@@ -22669,11 +22678,11 @@ function meterUniqueMeasuredRowsByPlotX(rows){
 }
 
 function meterUseTargetShapedMeasuredEotfLuminanceCurve(){
- // DV Relative is calibrated as a relative/gamma trace. Bending the measured
- // line along the target between measured samples can create a visible chart
- // kink even when the measured points themselves are smooth.
- if(meterChartIsDv() && meterDvMapModeValue()==='2') return false;
- return true;
+	// HDR/DV measured traces should connect measured points directly. Bending
+	// them along the target curve between samples can create visible chart kinks
+	// even when the measured points themselves are smooth.
+	if((typeof meterChartIsHdr==='function' && meterChartIsHdr()) || (typeof meterChartIsDv==='function' && meterChartIsDv())) return false;
+	return true;
 }
 
 function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance){
