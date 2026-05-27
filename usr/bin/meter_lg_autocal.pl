@@ -12503,7 +12503,10 @@ eval {
 							    $headroom_next_adjustments=undef;
 								   } else {
 								    $headroom_next_adjustments=undef if(autocal_step_is_fast_headroom($read_step));
-								    $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls,$lum_err) if(!$adjustments && !$headroom_105_luma_blocking);
+								    my $hdr20_body_far_luma=(autocal_step_is_hdr20_body($read_step) && abs(($lum_err||0)*100) >= 8) ? 1 : 0;
+								    if(!$hdr20_body_far_luma) {
+								     $adjustments=choose_rgb_response_adjustments($err,$arrays,$target,\%rgb_response_model,\%tried_values,$de,$read_step,$target_delta,$stalls,$lum_err) if(!$adjustments && !$headroom_105_luma_blocking);
+								    }
 								    $adjustments=lg_autocal_26_adaptive_headroom_luminance_adjustment($state,$arrays,$target,$read_step,$lum_pct,\%tried_values,$stalls,"main_headroom_luminance") if(!$adjustments && !$headroom_105_near_y_cleanup_active);
 								    $adjustments=choose_adjustments($err,$arrays,$target,$de,0.25,$stalls,$lum_err,\%tried_values,$read_step) if(!$adjustments);
 								   }
