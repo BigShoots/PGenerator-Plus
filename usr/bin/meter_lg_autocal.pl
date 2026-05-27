@@ -1857,9 +1857,10 @@ sub itp_luminance_included_acceptance_limit {
 }
 
 sub within_itp_luminance_included_acceptance {
- my ($de,$step)=@_;
+ my ($de,$step,$target_delta)=@_;
  my $limit=itp_luminance_included_acceptance_limit($step);
  return 1 if(!defined($limit));
+ return (defined($de) && $de <= $target_delta) ? 1 : 0 if(defined($target_delta) && $target_delta > $limit);
  return (defined($de) && $de <= $limit) ? 1 : 0;
 }
 
@@ -1952,7 +1953,7 @@ sub target_reached {
 					 return 0 if(near_white_95_luma_needs_fine_tune($step,$lum_pct,$de,$target_delta,0));
 					 return 1 if(autocal_step_is_low_shadow($step) && $de <= low_shadow_delta_acceptance($step,$target_delta));
 					 return 1 if(body_itp_near_target_reached($step,$de,$lum_pct,$target_delta));
-				 return 0 if(!within_itp_luminance_included_acceptance($de,$step));
+				 return 0 if(!within_itp_luminance_included_acceptance($de,$step,$target_delta));
 				 my $low_delta_allow=autocal_uses_itp() ? 0 : (($ire <= 10) ? 0.75 : 0.30);
 				 return 0 if($de > $target_delta && !($ire <= 10 && $de <= $target_delta+$low_delta_allow));
 			 return 1 if($ire >= 99.9 && !defined($lum_pct));
@@ -7469,6 +7470,7 @@ sub set_picture_values {
 	   $state->{"ddc_1d_lut"}=JSON::PP::true if($response->{"ddc_1d_lut"});
 	   $state->{"ddc_upload_verified"}=$response->{"ddc_upload_verified"} ? JSON::PP::true : JSON::PP::false
 	    if(exists($response->{"ddc_upload_verified"}) || $verify_ddc_upload);
+	   $state->{"ddc_picture_write_count"}=($state->{"ddc_picture_write_count"}||0)+1;
 	  }
 	  set_state_calibration_mode($state,$response->{"calibration_mode"} ? 1 : 0,$response->{"calibration_picture_mode"}||$picture_mode||($picture->{"pictureMode"}||"")) if(exists($response->{"calibration_mode"}));
 	  my $pic=$response->{"picture_settings"};
@@ -7504,6 +7506,14 @@ sub set_picture_values {
 sub commit_final_1d_lut {
 	 my ($state,$picture,$arrays,$picture_mode,$ordered,$calibration_mode_active)=@_;
 	 if(!$calibration_mode_active) {
+	  if(ref($state) eq "HASH" && !($state->{"ddc_picture_write_count"}||0)) {
+	   $state->{"final_1d_lut_uploaded"}=JSON::PP::false;
+	   $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
+	   $state->{"final_1d_lut_skipped"}=JSON::PP::true;
+	   $state->{"message"}="No LG DDC adjustments were needed; final 1D LUT upload skipped";
+	   write_state($state);
+	   return ($picture,undef,0);
+	  }
 	  $state->{"final_1d_lut_uploaded"}=JSON::PP::false if(ref($state) eq "HASH");
 	  return ($picture,"Final LG 1D LUT was not uploaded because calibration mode was not active",0);
 	 }
@@ -10992,7 +11002,11 @@ my $signal_mode=lc($config->{"signal_mode"}||"sdr");
 $LG_AUTOCAL_DDC_LAYOUT=ddc_layout_for_signal_mode($signal_mode);
 my $max_iterations=defined($config->{"max_iterations"}) ? int($config->{"max_iterations"}) : 80;
 my $min_iterations=autocal_config_is_touchup($config) ? 4 : 12;
-$max_iterations=$min_iterations if($max_iterations < $min_iterations);
+if(defined($config->{"max_iterations"})) {
+ $max_iterations=1 if($max_iterations < 1);
+} else {
+ $max_iterations=$min_iterations if($max_iterations < $min_iterations);
+}
 my ($target_x,$target_y)=(0.3127,0.3290);
 if(ref($config->{"target_white"}) eq "HASH" && ($config->{"target_white"}{"x"}||0)>0 && ($config->{"target_white"}{"y"}||0)>0) {
  ($target_x,$target_y)=($config->{"target_white"}{"x"}+0,$config->{"target_white"}{"y"}+0);
