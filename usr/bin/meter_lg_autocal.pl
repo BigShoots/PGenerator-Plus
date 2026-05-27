@@ -6285,66 +6285,9 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 $mag+=1.0 if($stalls >= 2 && $mag < 6.0);
 	 $mag=8.0 if($mag > 8.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
-		 if($ire >= 80 && !hdr20_body_family_suppressed($tried,"rgb_luminance",$direction)) {
-	  my @rgb_out;
-	  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
-	   my $arr=$arrays->{$setting};
-	   next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
-	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
-	   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,$setting,$min_step,0);
-	   next if(!defined($next) || abs($next-$current) < 0.0001);
-	   push @rgb_out,{
-	    channel=>($setting eq "whiteBalanceRed" ? "r" : ($setting eq "whiteBalanceGreen" ? "g" : "b")),
-	    setting=>$setting,
-	    current=>$current,
-	    next=>$next,
-	    delta=>$next-$current,
-	    damped=>$damped ? 1 : 0,
-	    hdr20_body_luminance_rgb=>1,
-	    hdr20_body_top_rgb_luminance=>1,
-	    luminance_error_pct=>$lum_pct+0
-	   };
-	  }
-		  trace_109($step,"hdr20_body_luminance_rgb_probe",{
-	   ire=>$ire+0,
-	   index=>$idx+0,
-	   luminance_error_pct=>$lum_pct+0,
-	   direction=>$direction+0,
-	   magnitude=>$mag+0,
-	   rgb_move_count=>scalar(@rgb_out),
-	   values=>trace_target_values($arrays,$target),
-	   tried_red=>tried_setting_value_count($tried,"whiteBalanceRed"),
-	   tried_green=>tried_setting_value_count($tried,"whiteBalanceGreen"),
-	   tried_blue=>tried_setting_value_count($tried,"whiteBalanceBlue")
-		  });
-		  if(@rgb_out == 3) {
-		   if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
-		    my $arr=$arrays->{"adjustingLuminance"};
-		    if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
-		     my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
-		     my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
-		     if(defined($next) && abs($next-$current) >= 0.0001 && !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_luminance",$LG_AUTOCAL_STATE)) {
-		      push @rgb_out,{
-		       channel=>"lum",
-		       setting=>"adjustingLuminance",
-		       current=>$current,
-		       next=>$next,
-		       delta=>$next-$current,
-		       damped=>$damped ? 1 : 0,
-		       neutral_luminance=>1,
-		       hdr20_body_luminance=>1,
-		       hdr20_body_luminance_coupled=>1,
-		       luminance_error_pct=>$lum_pct+0
-		      };
-		     }
-		    }
-		   }
-		   return \@rgb_out;
-		  }
-		 }
-	 if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
-	  my $arr=$arrays->{"adjustingLuminance"};
-	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
+		 if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
+		  my $arr=$arrays->{"adjustingLuminance"};
+		  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
 	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
 	   if(defined($next) && abs($next-$current) >= 0.0001 && !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_luminance",$LG_AUTOCAL_STATE)) {
@@ -6358,32 +6301,21 @@ sub hdr20_body_luminance_rgb_adjustments {
 	     neutral_luminance=>1,
 	     hdr20_body_luminance=>1,
 	     luminance_error_pct=>$lum_pct+0
-	    }];
-	   }
-	  }
-	 }
-	 return undef if($ire >= 80 && hdr20_body_family_suppressed($tried,"rgb_luminance",$direction));
-	 my @out;
-	 foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue)) {
-	  my $arr=$arrays->{$setting};
-	  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
-	  my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
-	  my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,$setting,$min_step,0);
-	  next if(!defined($next) || abs($next-$current) < 0.0001);
-	  push @out,{
-	   channel=>($setting eq "whiteBalanceRed" ? "r" : ($setting eq "whiteBalanceGreen" ? "g" : "b")),
-	   setting=>$setting,
-	   current=>$current,
-	   next=>$next,
-	   delta=>$next-$current,
-	   damped=>$damped ? 1 : 0,
-	   hdr20_body_luminance_rgb=>1,
-	   luminance_error_pct=>$lum_pct+0
-	  };
-	 }
-	 return undef if(!@out);
-	 return \@out;
-}
+		    }];
+		   }
+		  }
+		 }
+		 trace_109($step,"hdr20_body_luminance_no_adjustment",{
+		  ire=>$ire+0,
+		  index=>$idx+0,
+		  luminance_error_pct=>$lum_pct+0,
+		  direction=>$direction+0,
+		  magnitude=>$mag+0,
+		  has_luminance=>has_luminance_channel($arrays,$target) ? 1 : 0,
+		  luminance_suppressed=>hdr20_body_family_suppressed($tried,"luminance",$direction) ? 1 : 0
+		 });
+		 return undef;
+	}
 
 sub headroom_reduce_only_chroma_adjustment {
 	 my ($error,$arrays,$target,$de,$stalls,$tried,$min_step,$max_step,$micro)=@_;
