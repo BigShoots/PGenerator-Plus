@@ -7188,6 +7188,18 @@ sub choose_adjustments {
 				 my $strict_tried=strict_tried_for_step($step);
 				 $luminance_err=0 if(autocal_step_suppresses_luminance_adjustment($step));
 				 my $headroom_105_body=headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried);
+				 if(autocal_step_is_hdr20_body($step)) {
+				  my $lum_pct=$luminance_err*100;
+				  if(abs($lum_pct) >= 8) {
+				   my $hdr_body_luma_first=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
+				   return $hdr_body_luma_first if($hdr_body_luma_first);
+				  }
+				  my $hdr_body=hdr20_body_chroma_luma_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0);
+				  return $hdr_body if($hdr_body);
+				  my $hdr_body_luma=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
+				  return $hdr_body_luma if($hdr_body_luma);
+				  return undef;
+				 }
 				 if(autocal_step_is_fast_headroom($step) && !$headroom_105_body) {
 				  my $lum_pct=$luminance_err*100;
 				  my $luma_tol=headroom_luminance_control_gate_percent($step,1);
@@ -7260,14 +7272,6 @@ sub choose_adjustments {
 				 my $lum_pct=$luminance_err*100;
 				 my $luma_tol=luminance_tolerance_percent($step);
 					 my $hdr20_top_white=autocal_step_is_hdr20_top_white($step);
-					 if(autocal_step_is_hdr20_body($step)) {
-					  my $hdr_body_luma_first=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
-					  return $hdr_body_luma_first if($hdr_body_luma_first && abs($lum_pct) >= 8);
-					  my $hdr_body=hdr20_body_chroma_luma_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0);
-					  return $hdr_body if($hdr_body);
-					  my $hdr_body_luma=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
-					  return $hdr_body_luma if($hdr_body_luma);
-					 }
 				 my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err);
 				 my $headroom_105_luma_priority=headroom_105_luma_priority_active($step,$arrays,$target,$tried,$luminance_err);
 			 if($headroom_105_luma_priority) {
