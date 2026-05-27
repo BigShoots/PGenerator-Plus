@@ -6164,10 +6164,17 @@ sub hdr20_body_luminance_rgb_adjustments {
 		 my $idx=$target->{"index"};
 		 return undef if(!defined($idx));
 	 my $mag=1.0;
-	 $mag=2.0 if(abs($lum_pct) >= 6);
-	 $mag=4.0 if(abs($lum_pct) >= 12);
-	 $mag+=1.0 if($stalls >= 2 && $mag < 5.0);
-	 $mag=6.0 if($mag > 6.0);
+	 if($ire >= 80) {
+	  $mag=2.0 if(abs($lum_pct) >= 2);
+	  $mag=4.0 if(abs($lum_pct) >= 6);
+	  $mag=6.0 if(abs($lum_pct) >= 12);
+	  $mag=8.0 if(abs($lum_pct) >= 20);
+	 } else {
+	  $mag=2.0 if(abs($lum_pct) >= 6);
+	  $mag=4.0 if(abs($lum_pct) >= 12);
+	 }
+	 $mag+=1.0 if($stalls >= 2 && $mag < 6.0);
+	 $mag=8.0 if($mag > 8.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
 		 if($ire >= 80 && !hdr20_body_family_suppressed($tried,"rgb_luminance",$direction)) {
 	  my @rgb_out;
@@ -6189,7 +6196,7 @@ sub hdr20_body_luminance_rgb_adjustments {
 	    luminance_error_pct=>$lum_pct+0
 	   };
 	  }
-	  trace_109($step,"hdr20_body_luminance_rgb_probe",{
+		  trace_109($step,"hdr20_body_luminance_rgb_probe",{
 	   ire=>$ire+0,
 	   index=>$idx+0,
 	   luminance_error_pct=>$lum_pct+0,
@@ -6200,9 +6207,32 @@ sub hdr20_body_luminance_rgb_adjustments {
 	   tried_red=>tried_setting_value_count($tried,"whiteBalanceRed"),
 	   tried_green=>tried_setting_value_count($tried,"whiteBalanceGreen"),
 	   tried_blue=>tried_setting_value_count($tried,"whiteBalanceBlue")
-	  });
-	  return \@rgb_out if(@rgb_out == 3);
-	 }
+		  });
+		  if(@rgb_out == 3) {
+		   if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
+		    my $arr=$arrays->{"adjustingLuminance"};
+		    if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
+		     my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+		     my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
+		     if(defined($next) && abs($next-$current) >= 0.0001 && !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_luminance",$LG_AUTOCAL_STATE)) {
+		      push @rgb_out,{
+		       channel=>"lum",
+		       setting=>"adjustingLuminance",
+		       current=>$current,
+		       next=>$next,
+		       delta=>$next-$current,
+		       damped=>$damped ? 1 : 0,
+		       neutral_luminance=>1,
+		       hdr20_body_luminance=>1,
+		       hdr20_body_luminance_coupled=>1,
+		       luminance_error_pct=>$lum_pct+0
+		      };
+		     }
+		    }
+		   }
+		   return \@rgb_out;
+		  }
+		 }
 	 if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
 	  my $arr=$arrays->{"adjustingLuminance"};
 	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
@@ -7523,6 +7553,10 @@ sub choose_micro_adjustments {
 			 my $lum_pct=$luminance_err*100;
 			 my $luma_tol=luminance_tolerance_percent($step);
 			 my $hdr20_top_white=autocal_step_is_hdr20_top_white($step);
+			 if(autocal_step_is_hdr20_body($step) && abs($lum_pct) > ($luma_tol*1.20)) {
+			  my $hdr_body_luma=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_micro_step);
+			  return $hdr_body_luma if($hdr_body_luma);
+			 }
 			 if(autocal_step_is_low_shadow($step)) {
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);
 			  return $shadow_luma if($shadow_luma);
@@ -12719,10 +12753,16 @@ eval {
 						     $body_luminance_next_adjustments=undef;
 						    }
 						   }
-					   my $candidate_score_after=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
-					   my $headroom_105_response_update=record_headroom_105_response(
-					    \%tried_values,$target,$read_step,$adjustments,
-					    $before_adjustment_reading,$reading,
+						   my $candidate_score_after=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+						   my $hdr20_luminance_progress=0;
+						   if(autocal_step_is_hdr20_body($read_step) && defined($before_lum_pct_for_adjustment) && defined($lum_pct)) {
+						    my $before_abs=abs($before_lum_pct_for_adjustment+0);
+						    my $after_abs=abs($lum_pct+0);
+						    $hdr20_luminance_progress=1 if($after_abs + 0.08 < $before_abs);
+						   }
+						   my $headroom_105_response_update=record_headroom_105_response(
+						    \%tried_values,$target,$read_step,$adjustments,
+						    $before_adjustment_reading,$reading,
 					    $before_lum_pct_for_adjustment,$lum_pct,
 					    $before_de_for_adjustment,$de,
 					    $before_score_for_adjustment,$candidate_score_after
@@ -12741,9 +12781,10 @@ eval {
 					    best_delta_e=>defined($best_de)?$best_de+0:undef,
 					    best_score=>$best_score+0,
 					    rgb_error=>rgb_error($reading),
-							    response_score=>$response_score+0,
-								    rgb_response_model=>$rgb_response_update,
-								    saved_response_model=>$saved_response_model,
+								    response_score=>$response_score+0,
+								    hdr20_luminance_progress=>$hdr20_luminance_progress?JSON::PP::true:JSON::PP::false,
+									    rgb_response_model=>$rgb_response_update,
+									    saved_response_model=>$saved_response_model,
 								    headroom_105_response_update=>$headroom_105_response_update,
 								    $pair_side_trace_fields->(),
 							    target_values=>trace_target_values($arrays,$target)
@@ -12764,7 +12805,7 @@ eval {
 				    last;
 				   }
 				   my $no_response_threshold=(ref($read_step) eq "HASH" && defined($read_step->{"ire"}) && ($read_step->{"ire"}+0) <= 25) ? 0.012 : 0.006;
-			   if(adjustment_total($adjustments) >= 1 && $response_score < $no_response_threshold) {
+				   if(adjustment_total($adjustments) >= 1 && $response_score < $no_response_threshold && !$hdr20_luminance_progress) {
 			    $no_response_stalls++;
 			   } else {
 			    $no_response_stalls=0;
