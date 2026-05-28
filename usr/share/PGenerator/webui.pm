@@ -16423,14 +16423,11 @@ const METER_LG_GREY_MANUAL_22_ENABLED=false;
 			const METER_LG_GREY_AUTOCAL_26_SLOTS=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
 				const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];
 				const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,224,213,202,191,169,147,126,104,82,71,60,49,38,31,27,25,22,20,19];
-				function meterLgHdrAutoCalDdcArrayIre(slot){
-				 const value=Number(slot);
-				 if(!Number.isFinite(value)) return slot;
-				 if(Math.abs(value-79.91)<0.001) return 84.93;
-				 if(Math.abs(value-84.93)<0.001) return 89.95;
-				 if(Math.abs(value-89.95)<0.001) return 94.98;
-				 return slot;
-				}
+					function meterLgHdrAutoCalDdcArrayIre(slot){
+					 const value=Number(slot);
+					 if(!Number.isFinite(value)) return slot;
+					 return slot;
+					}
 				const METER_LG_GREY_AUTOCAL_26_CODES=[84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023];
 				const METER_LG_GREY_EXTENDED_26_CODES=[64,...METER_LG_GREY_AUTOCAL_26_CODES];
 			const METER_LG_GREY_EXTENDED_26_SLOTS=[0,...METER_LG_GREY_AUTOCAL_26_SLOTS];
