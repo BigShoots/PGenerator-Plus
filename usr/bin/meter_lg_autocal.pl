@@ -6569,7 +6569,7 @@ sub record_hdr20_body_bad_adjustment_family {
 	 }
 	 if(!$family) {
 	  $direction=hdr20_body_compound_luma_direction($adjustments);
-	  $family="luminance" if(defined($direction));
+	  $family="compound_luminance" if(defined($direction));
 	 }
 	 return undef if(!$family || !defined($direction));
 	 my $before_abs=defined($before_lum_pct) ? abs($before_lum_pct+0) : undef;
@@ -6603,7 +6603,11 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0;
 	 my $mixed_chroma=hdr20_body_mixed_rgb_error($error,0.018);
 	 my $force_luma_clamp=hdr20_body_force_luma_clamp_needed($step,$luminance_err,$micro);
-	 return undef if(!$force_luma_clamp && hdr20_body_family_suppressed($tried,"rgb_luminance",$direction,$step));
+	 if(hdr20_body_family_suppressed($tried,"rgb_luminance",$direction,$step)) {
+	  my $opposite=-$direction;
+	  return undef if(hdr20_body_family_suppressed($tried,"rgb_luminance",$opposite,$step));
+	  $direction=$opposite;
+	 }
 	 my $base=$micro ? 0.25 : 0.50;
 	 if(!$micro) {
 	  $base=1.0 if($abs_lum >= 2.0 || (defined($de) && $de >= 3.0));
