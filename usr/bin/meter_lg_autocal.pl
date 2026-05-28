@@ -346,6 +346,10 @@ sub hdr20_effective_ddc_array_ire {
  my ($ire)=@_;
  return undef if(!defined($ire));
  my $value=$ire+0;
+ return 100 if(abs($value-94.98) < 0.02);
+ return 94.98 if(abs($value-89.95) < 0.02);
+ return 89.95 if(abs($value-84.93) < 0.02);
+ return 84.93 if(abs($value-79.91) < 0.02);
  return $value;
 }
 
@@ -393,7 +397,7 @@ sub ddc_target_for_step {
  my @slots=ddc_slots_for_layout($layout);
  for(my $i=0;$i<@slots;$i++) {
   my $label=$step->{"autocal_target_label"} || format_percent($ire)."%";
-  return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), label=>$label }
+  return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), write_ire=>format_percent($slots[$i]), label=>$label }
    if(abs(($array_ire+0)-$slots[$i]) < 0.001);
  }
  return undef;
@@ -3507,7 +3511,7 @@ sub apply_pattern_insert_before_read {
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"} || $read_sequence <= 0);
  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
- my $insert_code=64;
+ my $insert_code=128;
  my $payload={
   name => "patch",
   r => $insert_code,
@@ -6291,6 +6295,16 @@ sub hdr20_body_mixed_rgb_error {
 	 return ($pos && $neg && $max_abs >= $floor) ? 1 : 0;
 }
 
+sub hdr20_body_force_luma_clamp_needed {
+	 my ($step,$luminance_err,$micro)=@_;
+	 return 0 if($micro);
+	 return 0 if(!autocal_step_is_hdr20_body($step));
+	 return 0 if(!defined($luminance_err));
+	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0;
+	 my $lum_pct=($luminance_err+0)*100;
+	 return ($lum_pct > 0 && $ire >= 70 && abs($lum_pct) >= 8.0) ? 1 : 0;
+}
+
 sub hdr20_body_balanced_chroma_luma_adjustments {
 	 my ($error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,$min_step,$micro)=@_;
 	 return undef if(!autocal_step_is_hdr20_body($step));
@@ -6584,7 +6598,7 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	 my $abs_lum=abs($lum_pct);
 	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0;
 	 my $mixed_chroma=hdr20_body_mixed_rgb_error($error,0.018);
-	 my $force_luma_clamp=(!$micro && $direction < 0 && $ire >= 70 && $abs_lum >= 8.0) ? 1 : 0;
+	 my $force_luma_clamp=hdr20_body_force_luma_clamp_needed($step,$luminance_err,$micro);
 	 return undef if(!$force_luma_clamp && hdr20_body_family_suppressed($tried,"rgb_luminance",$direction,$step));
 	 my $base=$micro ? 0.25 : 0.50;
 	 if(!$micro) {
@@ -6615,14 +6629,14 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 		  my $err=$error->{$ch}||0;
 		  my $scale=0.80;
 		  my $rgb_direction=$direction;
-		  if($mixed_chroma) {
+		  if($force_luma_clamp) {
+		   $scale=1.0;
+		  } elsif($mixed_chroma) {
 		   $rgb_direction=($err > 0) ? -1 : 1;
 		   my $ratio=$max_abs > 0 ? abs($err)/$max_abs : 1;
 		   $scale=0.25+(0.75*$ratio);
 		   $scale=1.15 if($scale > 1.15);
 		   $scale=0.35 if($scale < 0.35);
-		  } elsif($force_luma_clamp) {
-		   $scale=1.0;
 		  } elsif($direction < 0) {
 	   $scale=1.35 if($err > 0.003);
 	   $scale=0.45 if($err < -0.010 && $chroma > 0.025);
@@ -7840,6 +7854,13 @@ sub full_ddc_spine_anchor_adjustments {
  return undef if(!defined($idx));
 	 my $lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : 0;
 	 if(autocal_step_is_hdr20_body($step)) {
+	  if(hdr20_body_force_luma_clamp_needed($step,$luminance_err,0)) {
+	   my $vector=hdr20_body_rgb_luminance_vector_adjustments(
+	    $error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,0.25,0,
+	    "full_ddc_spine_anchor_force_luma_clamp"
+	   );
+	   return $vector if(ref($vector) eq "ARRAY" && @{$vector});
+	  }
 	  my $mixed_chroma=hdr20_body_mixed_rgb_error($error,0.018);
 	  if($mixed_chroma) {
 	   my $balanced=hdr20_body_balanced_chroma_luma_adjustments(
@@ -8476,9 +8497,9 @@ sub lg_write_error_is_transient {
 sub set_picture_values {
  my ($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state,$verify_ddc_upload,$keep_calibration_mode)=@_;
  $keep_calibration_mode=1 if(!defined($keep_calibration_mode));
-	 my $settings={
+	my $settings={
 		  whiteBalanceMethod => "22",
-		  whiteBalanceIre => $target->{"ire"},
+		  whiteBalanceIre => $target->{"write_ire"}||$target->{"array_ire"}||$target->{"ire"},
 		  ddc_layout => $LG_AUTOCAL_DDC_LAYOUT,
 		  whiteBalanceRed => $arrays->{"whiteBalanceRed"},
 		  whiteBalanceGreen => $arrays->{"whiteBalanceGreen"},
@@ -13334,6 +13355,9 @@ eval {
 								   ) {
 								    $adjustments=full_ddc_spine_anchor_adjustments($config,$err,$arrays,$target,$read_step,$de,$lum_err,$stalls,\%tried_values,$target_delta);
 								   }
+												   if(!$adjustments && autocal_step_is_hdr20_body($read_step) && hdr20_body_force_luma_clamp_needed($read_step,$lum_err,0)) {
+												    $adjustments=hdr20_body_rgb_luminance_vector_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0,"main_hdr20_body_force_luma_clamp");
+												   }
 												   if(!$adjustments && autocal_step_is_hdr20_body($read_step)) {
 												    $adjustments=hdr20_body_balanced_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
 												   }
