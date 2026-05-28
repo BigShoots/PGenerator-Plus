@@ -16426,6 +16426,10 @@ const METER_LG_GREY_MANUAL_22_ENABLED=false;
 					function meterLgHdrAutoCalDdcArrayIre(slot){
 					 const value=Number(slot);
 					 if(!Number.isFinite(value)) return slot;
+					 if(Math.abs(value-94.98)<0.02) return 100;
+					 if(Math.abs(value-89.95)<0.02) return 94.98;
+					 if(Math.abs(value-84.93)<0.02) return 89.95;
+					 if(Math.abs(value-79.91)<0.02) return 84.93;
 					 return slot;
 					}
 				const METER_LG_GREY_AUTOCAL_26_CODES=[84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023];
