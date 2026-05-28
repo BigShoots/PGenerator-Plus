@@ -420,6 +420,14 @@ sub lg_autocal_26_full_ddc_spine_anchor_ires_for_layout {
  return (109,20,40,60,80);
 }
 
+sub lg_autocal_26_full_ddc_spine_anchor_ddc_ires_for_layout {
+ my ($layout)=@_;
+ $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
+ my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires_for_layout($layout);
+ return map { hdr20_effective_ddc_array_ire($_) || $_ } @anchors if($layout eq "hdr20");
+ return @anchors;
+}
+
 sub lg_autocal_26_full_ddc_spine_anchor_ires {
  my ($config)=@_;
  my $layout;
@@ -428,6 +436,16 @@ sub lg_autocal_26_full_ddc_spine_anchor_ires {
  }
  $layout ||= $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
  return lg_autocal_26_full_ddc_spine_anchor_ires_for_layout($layout);
+}
+
+sub lg_autocal_26_full_ddc_spine_anchor_ddc_ires {
+ my ($config)=@_;
+ my $layout;
+ if(ref($config) eq "HASH") {
+  $layout=$config->{"ddc_layout"} || ddc_layout_for_signal_mode(lc($config->{"signal_mode"}||"sdr"));
+ }
+ $layout ||= $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
+ return lg_autocal_26_full_ddc_spine_anchor_ddc_ires_for_layout($layout);
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_count {
@@ -3409,11 +3427,17 @@ sub apply_pattern_insert_before_read {
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"} || $read_sequence <= 0);
  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
+ my $signal_mode=lc($config->{"signal_mode"}||"sdr");
+ my $insert_code=64;
+ # In HDR, mid-grey insertion is still a neutral RGB payload, but active
+ # per-slot white-balance can tint it heavily. Use black insertion so the
+ # panel break is visually neutral and does not inherit the current slot cast.
+ $insert_code=(defined($pattern_range) && $pattern_range ne "" && int($pattern_range)==1) ? 16 : 0 if($signal_mode eq "hdr10");
  my $payload={
   name => "patch",
-  r => 64,
-  g => 64,
-  b => 64,
+  r => $insert_code,
+  g => $insert_code,
+  b => $insert_code,
   size => 100,
   input_max => 255,
   signal_mode => $config->{"signal_mode"}||"sdr",
@@ -3692,6 +3716,9 @@ sub clone_arrays {
 }
 
 sub lg_autocal_26_lut_indexes {
+ my ($layout)=@_;
+ $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
+ return ddc_slots_for_layout("hdr20") if($layout eq "hdr20");
  return (21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
 }
 
@@ -3765,7 +3792,7 @@ sub calibrated_26pt_slot_ires {
 sub completed_lg_autocal_26_full_ddc_spine_anchor_ires {
  my ($calibrated_slot_mask)=@_;
  my %calibrated=map { format_percent($_) => 1 } calibrated_26pt_slot_ires($calibrated_slot_mask);
- return grep { $calibrated{format_percent($_)} } lg_autocal_26_full_ddc_spine_anchor_ires();
+ return grep { $calibrated{format_percent($_)} } lg_autocal_26_full_ddc_spine_anchor_ddc_ires();
 }
 
 sub completed_lg_autocal_26_anchor_predrive_anchor_ires {
@@ -4142,6 +4169,7 @@ sub seed_target_from_prior_slot {
 	  }
 	 }
 	 if($all_zero) {
+	  return 0 if($hdr20_seed && lg_autocal_26_full_ddc_spine_enabled($config));
 	  my @probe_indices;
 	  if($hdr20_seed) {
 	   @probe_indices=($idx+1)..(ddc_slot_count()-1) if($idx+1 < ddc_slot_count());
