@@ -349,6 +349,7 @@ sub hdr20_effective_ddc_array_ire {
  return 84.93 if(abs($value-79.91) < 0.001);
  return 89.95 if(abs($value-84.93) < 0.001);
  return 94.98 if(abs($value-89.95) < 0.001);
+ return 100 if(abs($value-94.98) < 0.001);
  return $value;
 }
 
