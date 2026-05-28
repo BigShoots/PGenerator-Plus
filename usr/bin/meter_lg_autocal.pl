@@ -346,10 +346,6 @@ sub hdr20_effective_ddc_array_ire {
  my ($ire)=@_;
  return undef if(!defined($ire));
  my $value=$ire+0;
- return 84.93 if(abs($value-79.91) < 0.001);
- return 89.95 if(abs($value-84.93) < 0.001);
- return 94.98 if(abs($value-89.95) < 0.001);
- return 100 if(abs($value-94.98) < 0.001);
  return $value;
 }
 
@@ -1449,9 +1445,8 @@ sub keep_peak_headroom_white_reference {
 sub update_white_reference_for_autocal_step {
 	 my ($config,$state,$step,$reading,$white_y)=@_;
 	 return $white_y if(keep_peak_headroom_white_reference($config,$state) && !autocal_step_is_peak_headroom($step));
-	 # HDR 94.98/100 share the 100% DDC slot. While balancing the pair,
-	 # candidate 100% reads are used for local scoring only; rejected
-	 # candidates must not redefine the global white reference for the curve.
+	 # If a workflow supplies an explicit paired legal-white target, keep
+	 # paired readbacks local so rejected candidates do not redefine the curve.
 	 return $white_y if(
 	  ref($step) eq "HASH" &&
 	  $step->{"legal_white_pair_active"} &&
