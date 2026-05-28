@@ -345,12 +345,7 @@ sub ddc_slots_for_layout {
 sub hdr20_effective_ddc_array_ire {
 	 my ($ire)=@_;
 	 return undef if(!defined($ire));
-	 my $value=$ire+0;
-	 return 100 if(abs($value-94.98) < 0.02);
-	 return 94.98 if(abs($value-89.95) < 0.02);
-	 return 89.95 if(abs($value-84.93) < 0.02);
-	 return 84.93 if(abs($value-79.91) < 0.02);
-	 return $value;
+	 return $ire+0;
 }
 
 sub hdr20_shared_top_white_pair_target {
@@ -480,7 +475,8 @@ sub lg_autocal_26_full_ddc_spine_source_slot_mask {
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_count {
- my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires();
+ my ($config)=@_;
+ my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires($config);
  return scalar(@anchors);
 }
 
@@ -3870,8 +3866,13 @@ sub calibrated_non_black_26pt_anchor_count {
 
 sub calibrated_26pt_slot_ires {
  my ($calibrated_slot_mask)=@_;
+ return calibrated_26pt_slot_ires_for_layout($calibrated_slot_mask,$LG_AUTOCAL_DDC_LAYOUT);
+}
+
+sub calibrated_26pt_slot_ires_for_layout {
+ my ($calibrated_slot_mask,$layout)=@_;
  return () if(ref($calibrated_slot_mask) ne "ARRAY");
- my @slots=ddc_slots();
+ my @slots=ddc_slots_for_layout($layout);
  my @ires;
  for(my $idx=0;$idx<@slots;$idx++) {
   next if(!$calibrated_slot_mask->[$idx]);
@@ -3880,10 +3881,27 @@ sub calibrated_26pt_slot_ires {
  return @ires;
 }
 
+sub calibrated_26pt_slot_ires_for_config {
+ my ($calibrated_slot_mask,$config)=@_;
+ my $layout;
+ if(ref($config) eq "HASH") {
+  $layout=$config->{"ddc_layout"} || ddc_layout_for_signal_mode(lc($config->{"signal_mode"}||"sdr"));
+ }
+ $layout ||= $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
+ return calibrated_26pt_slot_ires_for_layout($calibrated_slot_mask,$layout);
+}
+
 sub completed_lg_autocal_26_full_ddc_spine_anchor_ires {
- my ($calibrated_slot_mask)=@_;
- my %calibrated=map { format_percent($_) => 1 } calibrated_26pt_slot_ires($calibrated_slot_mask);
- return grep { $calibrated{format_percent($_)} } lg_autocal_26_full_ddc_spine_anchor_ddc_ires();
+ my ($calibrated_slot_mask,$config)=@_;
+ my %calibrated=map { format_percent($_) => 1 } calibrated_26pt_slot_ires_for_config($calibrated_slot_mask,$config);
+ return grep { $calibrated{format_percent($_)} } lg_autocal_26_full_ddc_spine_anchor_ddc_ires($config);
+}
+
+sub lg_autocal_26_full_ddc_spine_anchors_complete {
+ my ($calibrated_slot_mask,$config)=@_;
+ return 0 if(ref($calibrated_slot_mask) ne "ARRAY");
+ my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask,$config);
+ return scalar(@completed) >= lg_autocal_26_full_ddc_spine_anchor_count($config) ? 1 : 0;
 }
 
 sub completed_lg_autocal_26_anchor_predrive_anchor_ires {
@@ -4188,10 +4206,10 @@ sub refresh_propagated_uncalibrated_26pt_slots {
 	  $minimum_anchors=2;
 	 }
 	 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
-	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask);
-	  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires();
+	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask,$config);
+	  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires($config);
 	  $minimum_anchors=scalar(@anchors);
-	  return 0 if(scalar(@completed) < $minimum_anchors);
+	  return 0 if(!lg_autocal_26_full_ddc_spine_anchors_complete($calibrated_slot_mask,$config));
 	  $source_slot_mask=lg_autocal_26_full_ddc_spine_source_slot_mask($calibrated_slot_mask,$config) if($hdr20_seed);
 	 }
  if(lg_autocal_26_anchor_predrive_enabled($config)) {
@@ -4213,8 +4231,8 @@ sub lg_autocal_26_seeded_move_damping_ready {
 	  return scalar(@completed) >= lg_autocal_26_anchor_predrive_anchor_count() ? 1 : 0;
 	 }
 	 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
-	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask);
-	  return scalar(@completed) >= lg_autocal_26_full_ddc_spine_anchor_count() ? 1 : 0;
+	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask,$config);
+	  return lg_autocal_26_full_ddc_spine_anchors_complete($calibrated_slot_mask,$config) ? 1 : 0;
 	 }
 	 return 0;
 }
@@ -12318,7 +12336,7 @@ eval {
 			  my $anchor_predrive_mode=lg_autocal_26_anchor_predrive_enabled($config);
 			  my $full_ddc_spine_mode=lg_autocal_26_full_ddc_spine_enabled($config) && !$anchor_predrive_mode;
 			  my @completed_anchor_ires=calibrated_26pt_slot_ires(\@calibrated_ddc_slots);
-			  my @completed_spine_anchors=completed_lg_autocal_26_full_ddc_spine_anchor_ires(\@calibrated_ddc_slots);
+			  my @completed_spine_anchors=completed_lg_autocal_26_full_ddc_spine_anchor_ires(\@calibrated_ddc_slots,$config);
 			  my @completed_predrive_anchors=completed_lg_autocal_26_anchor_predrive_anchor_ires(\@calibrated_ddc_slots);
 			  my $anchor_predrive_anchors_complete=(scalar(@completed_predrive_anchors) >= lg_autocal_26_anchor_predrive_anchor_count()) ? 1 : 0;
 			  if($anchor_predrive_mode) {
