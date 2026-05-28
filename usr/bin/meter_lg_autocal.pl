@@ -12636,10 +12636,11 @@ eval {
 				  my $hdr20_pair_evaluation_white_y=sub {
 				   my ($active_step,$active_reading,$other_step,$other_reading,$fallback)=@_;
 				   return $fallback if(!$hdr20_shared_top_pair);
-				   my $eval_y;
-				   $eval_y=luminance($active_reading) if(autocal_step_is_hdr20_top_white($active_step));
-				   $eval_y=luminance($other_reading) if((!defined($eval_y) || $eval_y <= 0) && autocal_step_is_hdr20_top_white($other_step));
-				   return (defined($eval_y) && $eval_y > 0) ? $eval_y : $fallback;
+				   # The HDR 94.98/100 shared slot must be evaluated against the
+				   # frozen 100% reference from the start of the run. A candidate
+				   # 100% paired read still gets chroma-scored with no Y error, but
+				   # it must not redefine the 94.98% target curve mid-iteration.
+				   return $fallback;
 				  };
 				  my $recalculate_active_against_pair_white=sub {
 				   my ($eval_white_y)=@_;
