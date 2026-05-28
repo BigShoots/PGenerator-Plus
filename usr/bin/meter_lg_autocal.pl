@@ -2359,6 +2359,66 @@ sub lg_autocal_26_best_known_for_step {
 	 return (ref($entry) eq "HASH") ? $entry : undef;
 	}
 
+sub lg_autocal_26_full_ddc_spine_anchor_seed_gate {
+ my ($config,$target,$entry,$target_delta)=@_;
+ my %decision=(accepted=>JSON::PP::true,reason=>"not_hdr_full_ddc_spine");
+ return \%decision if(ref($config) ne "HASH" || !lg_autocal_26_full_ddc_spine_enabled($config));
+ return \%decision if(ref($target) ne "HASH");
+ return \%decision if(lc($config->{"signal_mode"}||"sdr") ne "hdr10");
+ if(ref($entry) ne "HASH") {
+  return {
+   accepted=>JSON::PP::false,
+   reason=>"missing_best_known_anchor_result",
+  };
+ }
+ my $de=defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef;
+ my $lum=defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef;
+ my $reached=$entry->{"reached_target"} ? 1 : 0;
+ my $de_limit=defined($target_delta) ? (($target_delta+0)+3.5) : 4.0;
+ $de_limit=4.0 if($de_limit < 4.0);
+ my $lum_limit=10.0;
+ if($reached) {
+  return {
+   accepted=>JSON::PP::true,
+   reason=>"anchor_reached_target",
+   delta_e=>defined($de) ? $de+0 : undef,
+   luminance_error_pct=>defined($lum) ? $lum+0 : undef,
+   reached_target=>JSON::PP::true,
+  };
+ }
+ if(defined($de) && $de > $de_limit) {
+  return {
+   accepted=>JSON::PP::false,
+   reason=>"anchor_delta_e_too_high_for_spine_seed",
+   delta_e=>$de+0,
+   luminance_error_pct=>defined($lum) ? $lum+0 : undef,
+   delta_e_limit=>$de_limit+0,
+   luminance_error_limit=>$lum_limit+0,
+   reached_target=>JSON::PP::false,
+  };
+ }
+ if(defined($lum) && abs($lum) > $lum_limit) {
+  return {
+   accepted=>JSON::PP::false,
+   reason=>"anchor_luminance_error_too_high_for_spine_seed",
+   delta_e=>defined($de) ? $de+0 : undef,
+   luminance_error_pct=>$lum+0,
+   delta_e_limit=>$de_limit+0,
+   luminance_error_limit=>$lum_limit+0,
+   reached_target=>JSON::PP::false,
+  };
+ }
+ return {
+  accepted=>JSON::PP::true,
+  reason=>"anchor_within_spine_seed_guard",
+  delta_e=>defined($de) ? $de+0 : undef,
+  luminance_error_pct=>defined($lum) ? $lum+0 : undef,
+  delta_e_limit=>$de_limit+0,
+  luminance_error_limit=>$lum_limit+0,
+  reached_target=>JSON::PP::false,
+ };
+}
+
 sub lg_autocal_26_is_105_step {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
@@ -3424,12 +3484,7 @@ sub apply_pattern_insert_before_read {
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"} || $read_sequence <= 0);
  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
- my $signal_mode=lc($config->{"signal_mode"}||"sdr");
  my $insert_code=64;
- # In HDR, mid-grey insertion is still a neutral RGB payload, but active
- # per-slot white-balance can tint it heavily. Use black insertion so the
- # panel break is visually neutral and does not inherit the current slot cast.
- $insert_code=(defined($pattern_range) && $pattern_range ne "" && int($pattern_range)==1) ? 16 : 0 if($signal_mode eq "hdr10");
  my $payload={
   name => "patch",
   r => $insert_code,
@@ -12068,6 +12123,31 @@ eval {
 			 } else {
 		 my $finalize_calibrated_26pt_slot=sub {
 		  my ($final_target,$final_read_step,$final_label)=@_;
+		  if(
+		   ref($config) eq "HASH" &&
+		   ref($final_target) eq "HASH" &&
+		   lg_autocal_26_full_ddc_spine_enabled($config)
+		  ) {
+		   my $anchor_entry=lg_autocal_26_best_known_for_step($state,$final_read_step || $final_target);
+		   my $anchor_gate=lg_autocal_26_full_ddc_spine_anchor_seed_gate($config,$final_target,$anchor_entry,$target_delta);
+		   if(ref($anchor_gate) eq "HASH" && !$anchor_gate->{"accepted"}) {
+		    $state->{"lg_autocal_26_full_ddc_spine_last_rejected_anchor"}={
+		     label=>$final_label||$final_target->{"label"}||"",
+		     target=>$final_target,
+		     gate=>$anchor_gate,
+		    };
+		    $state->{"message"}=($final_label||$final_target->{"label"}||"Anchor")." failed spine seed guard; leaving pending slots unseeded";
+		    trace_109($final_read_step || $final_target,"full_ddc_spine_anchor_seed_guard_rejected",{
+		     mode=>"full_ddc_spine",
+		     label=>$final_label||$final_target->{"label"}||"",
+		     target=>$final_target,
+		     gate=>$anchor_gate,
+		     best_known=>$anchor_entry,
+		    });
+		    write_state($state);
+		    return 0;
+		   }
+		  }
 		  mark_calibrated_26pt_slot(\@calibrated_ddc_slots,$final_target);
 		  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 			  return 0 if(ref($arrays) ne "HASH" || ref($final_target) ne "HASH");
