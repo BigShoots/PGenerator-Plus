@@ -467,6 +467,18 @@ sub lg_autocal_26_full_ddc_spine_anchor_ddc_ires {
  return lg_autocal_26_full_ddc_spine_anchor_ddc_ires_for_layout($layout);
 }
 
+sub lg_autocal_26_full_ddc_spine_source_slot_mask {
+ my ($calibrated_slot_mask,$config)=@_;
+ my @mask=map { 0 } (1..ddc_slot_count());
+ return \@mask if(ref($calibrated_slot_mask) ne "ARRAY");
+ foreach my $ire (lg_autocal_26_full_ddc_spine_anchor_ddc_ires($config)) {
+  my $idx=ddc_slot_index_for_ire($ire);
+  next if(!defined($idx) || $idx >= @mask);
+  $mask[$idx]=1 if($calibrated_slot_mask->[$idx]);
+ }
+ return \@mask;
+}
+
 sub lg_autocal_26_full_ddc_spine_anchor_count {
  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires();
  return scalar(@anchors);
@@ -4180,6 +4192,7 @@ sub refresh_propagated_uncalibrated_26pt_slots {
 	  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires();
 	  $minimum_anchors=scalar(@anchors);
 	  return 0 if(scalar(@completed) < $minimum_anchors);
+	  $source_slot_mask=lg_autocal_26_full_ddc_spine_source_slot_mask($calibrated_slot_mask,$config) if($hdr20_seed);
 	 }
  if(lg_autocal_26_anchor_predrive_enabled($config)) {
   $minimum_anchors=lg_autocal_26_anchor_predrive_anchor_count();
