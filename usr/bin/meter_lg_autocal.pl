@@ -349,7 +349,26 @@ sub hdr20_effective_ddc_array_ire {
  return 84.93 if(abs($value-79.91) < 0.001);
  return 89.95 if(abs($value-84.93) < 0.001);
  return 94.98 if(abs($value-89.95) < 0.001);
+ return 100 if(abs($value-94.98) < 0.001);
  return $value;
+}
+
+sub hdr20_shared_top_white_pair_target {
+ my ($target)=@_;
+ return 0 if(ref($target) ne "HASH");
+ my $layout=lc($target->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "");
+ return 0 if($layout ne "hdr20");
+ return 0 if(!defined($target->{"ire"}) || !defined($target->{"array_ire"}));
+ return (abs(($target->{"ire"}+0)-94.98) < 0.02 && abs(($target->{"array_ire"}+0)-100) < 0.02) ? 1 : 0;
+}
+
+sub hdr20_shared_top_white_pair_step {
+ my ($target,$step)=@_;
+ return 0 if(!hdr20_shared_top_white_pair_target($target));
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $layout=lc($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "");
+ return 0 if($layout ne "hdr20");
+ return abs(($step->{"ire"}+0)-94.98) < 0.02 ? 1 : 0;
 }
 
 sub ddc_slots {
@@ -3072,18 +3091,31 @@ sub guarded_target_reached {
 
 sub legal_white_pair_reference_step {
  my ($steps,$target,$step,$config)=@_;
- return undef if(ref($config) ne "HASH" || !lg_autocal_26_sdr_headroom_enabled($config));
- # Full-DDC spine still needs the hidden 100% legal-white read while solving
- # the shared 99% LG DDC slot. Otherwise 99 can look clean while the user's
- # visible 100% white read keeps a red/blue imbalance.
- return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}) || abs(($target->{"ire"}+0)-99) > 0.001);
+ return undef if(ref($config) ne "HASH");
+ return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}));
  return undef if(ref($step) ne "HASH" || $step->{"autocal_white_reference"});
  return undef if(ref($steps) ne "ARRAY");
- foreach my $candidate (@{$steps}) {
-  next if(ref($candidate) ne "HASH" || !$candidate->{"autocal_white_reference"});
-  my $candidate_target=ddc_target_for_step($candidate);
-  next if(!$candidate_target || abs(($candidate_target->{"ire"}+0)-99) > 0.001);
-  return $candidate;
+ if(lg_autocal_26_sdr_headroom_enabled($config)) {
+  # Full-DDC spine still needs the hidden 100% legal-white read while solving
+  # the shared 99% LG DDC slot. Otherwise 99 can look clean while the user's
+  # visible 100% white read keeps a red/blue imbalance.
+  return undef if(abs(($target->{"ire"}+0)-99) > 0.001);
+  foreach my $candidate (@{$steps}) {
+   next if(ref($candidate) ne "HASH" || !$candidate->{"autocal_white_reference"});
+   my $candidate_target=ddc_target_for_step($candidate);
+   next if(!$candidate_target || abs(($candidate_target->{"ire"}+0)-99) > 0.001);
+   return $candidate;
+  }
+  return undef;
+ }
+ if(lg_autocal_26_hdr20_seed_enabled($config) && hdr20_shared_top_white_pair_target($target)) {
+  foreach my $candidate (@{$steps}) {
+   next if(ref($candidate) ne "HASH" || $candidate->{"autocal_reference_only"} || $candidate->{"autocal_read_only"});
+   next if(!defined($candidate->{"ire"}) || abs(($candidate->{"ire"}+0)-100) > 0.02);
+   my $candidate_target=ddc_target_for_step($candidate);
+   next if(!$candidate_target || abs(($candidate_target->{"array_ire"}+0)-100) > 0.02);
+   return $candidate;
+  }
  }
  return undef;
 }
@@ -3149,6 +3181,7 @@ sub legal_white_pair_side_ire {
 	 return undef if(ref($step) ne "HASH");
 	 if(defined($step->{"ire"})) {
 	  my $ire=$step->{"ire"}+0;
+	  return 95 if(abs($ire-94.98) < 0.02);
 	  return 99 if(abs($ire-99) < 0.001);
 	  return 100 if(abs($ire-100) < 0.001);
 	 }
@@ -4171,6 +4204,7 @@ sub lg_autocal_26_seeded_move_damping_for_step {
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 return 0 if(ref($target) ne "HASH" || ref($step) ne "HASH");
 	 return 0 if(strict_tried_for_step($step) || autocal_step_is_fast_headroom($step));
+	 return 1 if(hdr20_shared_top_white_pair_step($target,$step));
 	 return 1 if(lg_autocal_26_hdr20_seed_enabled($config) && autocal_step_is_hdr20_body($step) && $seed_from_prior_slot);
 	 my $anchor_revisit=lg_autocal_26_full_ddc_spine_anchor_revisit_step($step);
 	 return 0 if(lg_autocal_26_full_ddc_spine_enabled($config) && lg_autocal_26_full_ddc_spine_anchor($target) && !$anchor_revisit);
@@ -12508,12 +12542,16 @@ eval {
 				   my $candidate_metrics=legal_white_pair_side_metrics($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading);
 				   my $best_metrics=legal_white_pair_side_metrics($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading);
 				   return (
+				    candidate_95_delta_e=>legal_white_pair_metric_delta($candidate_metrics,95),
 				    candidate_99_delta_e=>legal_white_pair_metric_delta($candidate_metrics,99),
 				    candidate_100_delta_e=>legal_white_pair_metric_delta($candidate_metrics,100),
+				    best_95_delta_e=>legal_white_pair_metric_delta($best_metrics,95),
 				    best_99_delta_e=>legal_white_pair_metric_delta($best_metrics,99),
 				    best_100_delta_e=>legal_white_pair_metric_delta($best_metrics,100),
+				    candidate_95_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($candidate_metrics,95),
 				    candidate_99_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($candidate_metrics,99),
 				    candidate_100_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($candidate_metrics,100),
+				    best_95_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($best_metrics,95),
 				    best_99_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($best_metrics,99),
 				    best_100_rgb_imbalance=>legal_white_pair_metric_rgb_imbalance($best_metrics,100),
 				    pair_update_reject_reason=>defined($pair_best_reject_reason)?$pair_best_reject_reason:""
@@ -12529,7 +12567,7 @@ eval {
 							   }
 						   my $candidate_metrics=legal_white_pair_side_metrics($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading);
 						   my $best_metrics=legal_white_pair_side_metrics($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading);
-						   foreach my $ire (99,100) {
+						   foreach my $ire (95,99,100) {
 						    my $candidate_side=ref($candidate_metrics) eq "HASH" ? $candidate_metrics->{$ire} : undef;
 						    my $best_side=ref($best_metrics) eq "HASH" ? $best_metrics->{$ire} : undef;
 						    next if(ref($candidate_side) ne "HASH" || ref($best_side) ne "HASH");
