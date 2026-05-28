@@ -11005,13 +11005,19 @@ function meterDvRelativeUsesGammaChartMath(){
 }
 
 function meterHdrAutoCalUsesPowerGammaChartMath(){
+ const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
+ const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
+ const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
+ if(statusRunning){
+  const target=String(status.target_gamma||'').toLowerCase();
+  const layout=String(status.ddc_layout||'').toLowerCase();
+  const signal=String(status.signal_mode||'').toLowerCase();
+  return (target===''||target==='2.2')&&(layout==='hdr20'||signal==='hdr10');
+ }
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  if(mode!=='hdr10') return false;
  if(meterActiveSeriesType!=='greyscale') return false;
  if(typeof meterUseLgAutoCal26==='function'&&!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
- const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
- const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
- const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
  const lgCalibrationMode=!!(
   (typeof window!=='undefined'&&window.lgStatusState&&window.lgStatusState.calibrationMode)||
   (status&&(status.calibration_mode||status.calibrationMode))
@@ -11021,12 +11027,6 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
   (typeof meterAutoCalPendingConfig!=='undefined'&&meterAutoCalPendingConfig)||
   statusRunning);
  if(!active) return false;
- if(statusRunning){
-  const target=String(status.target_gamma||'').toLowerCase();
-  const layout=String(status.ddc_layout||'').toLowerCase();
-  const signal=String(status.signal_mode||'').toLowerCase();
-  return lgCalibrationMode&&(target===''||target==='2.2')&&(layout==='hdr20'||signal==='hdr10');
- }
  if(!lgCalibrationMode&&!(typeof meterAutoCalPendingConfig!=='undefined'&&meterAutoCalPendingConfig)) return false;
  const requested=(typeof meterLgAutoCalRequestedSignalMode==='function')?meterLgAutoCalRequestedSignalMode():mode;
  return requested==='hdr10';
@@ -13191,7 +13191,8 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 	 const code=(row.code!=null)?row.code:null;
 	 return meterGreyTargetLuminance(ire,Lw,Lb||0,code);
 	}
-	return meterChartTargetLuminance(signal,Lw,Lb||0);
+	const frac=Number(signal);
+	return meterGreyTargetLuminance(Number.isFinite(frac)?frac*100:0,Lw,Lb||0,null);
 }
 
 function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
@@ -13437,7 +13438,8 @@ function meterGreyTargetPeak(refWhite){
  // HDR10/PQ greyscale charts should keep the same target-curve shape but
  // normalize it to the actual measured white so the target luminance and
  // EOTF views line up with the display's real peak after a series run.
- if(meterChartIsPq()) return meterApplyHdrDiffuseOverridePeak((refWhite>0)?refWhite:meterChartHdrPeak());
+ const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
+ if(usesPqTarget) return meterApplyHdrDiffuseOverridePeak((refWhite>0)?refWhite:meterChartHdrPeak());
  return (refWhite>0)?refWhite:100;
 }
 
@@ -16427,7 +16429,6 @@ const METER_LG_GREY_MANUAL_22_ENABLED=false;
 				 if(Math.abs(value-79.91)<0.001) return 84.93;
 				 if(Math.abs(value-84.93)<0.001) return 89.95;
 				 if(Math.abs(value-89.95)<0.001) return 94.98;
-				 if(Math.abs(value-94.98)<0.001) return 100;
 				 return slot;
 				}
 				const METER_LG_GREY_AUTOCAL_26_CODES=[84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023];
