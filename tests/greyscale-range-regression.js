@@ -419,6 +419,12 @@ assert(
   'DV should keep HDMI EOTF forced to PQ while defaulting Relative target gamma to 2.2 and Absolute to ST2084 without adding a duplicate DV-card target control'
 );
 assert(
+  autocalWorkerSource.includes('hdr20_body_luminance_opposite_probe') &&
+    autocalWorkerSource.includes('opposite_luminance_suppressed') &&
+    autocalWorkerSource.includes('foreach my $try_direction ($direction,-$direction)'),
+  'HDR body AutoCal should probe the opposite luminance DDC direction when the expected sign is blocked or has proven to move Y the wrong way'
+);
+assert(
   legalWhitePairReferenceSource.includes('lg_autocal_26_sdr_headroom_enabled($config)') &&
     legalWhitePairReferenceSource.includes('lg_autocal_26_hdr20_seed_enabled($config)') &&
     legalWhitePairReferenceSource.includes('hdr20_shared_top_white_pair_target($target)') &&
