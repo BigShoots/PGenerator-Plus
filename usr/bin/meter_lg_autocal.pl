@@ -6337,8 +6337,14 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	 $rgb_cap=6.0 if(!$micro && (defined($de) && $de > 10 || $chroma >= 0.120));
 	 $rgb_cap=8.0 if(!$micro && $chroma >= 0.220);
 	 if($ire < 80 && $rgb_cap > 2.0) {
-	  my $keep_fast_body=(defined($de) && $de > ($target_delta+2.0) && $chroma >= 0.035) ? 1 : 0;
-	  $rgb_cap=$keep_fast_body ? 4.0 : 2.0;
+	  my $severe_body=(defined($de) && $de > 10.0) || $chroma >= 0.120 ? 1 : 0;
+	  if($severe_body) {
+	   $rgb_cap=($ire <= 60.0001) ? 12.0 : 8.0;
+	   $rgb_cap=14.0 if($ire <= 30.2001 && (defined($de) && $de > 40.0 || $chroma >= 0.250));
+	  } else {
+	   my $keep_fast_body=(defined($de) && $de > ($target_delta+2.0) && $chroma >= 0.035) ? 1 : 0;
+	   $rgb_cap=$keep_fast_body ? 4.0 : 2.0;
+	  }
 	 }
 	 if($micro && defined($de) && $de > ($target_delta+2.0) && $chroma >= 0.035) {
 	  $rgb_cap=1.5;
