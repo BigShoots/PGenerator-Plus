@@ -346,6 +346,9 @@ sub hdr20_effective_ddc_array_ire {
  my ($ire)=@_;
  return undef if(!defined($ire));
  my $value=$ire+0;
+ return 84.93 if(abs($value-79.91) < 0.001);
+ return 89.95 if(abs($value-84.93) < 0.001);
+ return 94.98 if(abs($value-89.95) < 0.001);
  return $value;
 }
 
