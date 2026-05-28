@@ -2386,6 +2386,10 @@ sub lg_autocal_26_full_ddc_spine_anchor_seed_gate {
  return \%decision if(ref($config) ne "HASH" || !lg_autocal_26_full_ddc_spine_enabled($config));
  return \%decision if(ref($target) ne "HASH");
  return \%decision if(lc($config->{"signal_mode"}||"sdr") ne "hdr10");
+ return {
+  accepted=>JSON::PP::true,
+  reason=>"not_full_ddc_spine_anchor",
+ } if(!lg_autocal_26_full_ddc_spine_anchor($target));
  if(ref($entry) ne "HASH") {
   return {
    accepted=>JSON::PP::false,
