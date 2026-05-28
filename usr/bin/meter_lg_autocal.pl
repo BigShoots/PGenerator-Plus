@@ -342,6 +342,13 @@ sub ddc_slots_for_layout {
  return (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 }
 
+sub ddc_write_slots_for_layout {
+ my ($layout)=@_;
+ $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
+ return (1.4,2,2.7,4,5,7,10,15,20,25,30,40,50,60,70,80,85,90,95,100) if($layout eq "hdr20");
+ return ddc_slots_for_layout($layout);
+}
+
 sub hdr20_effective_ddc_array_ire {
 	 my ($ire)=@_;
 	 return undef if(!defined($ire));
@@ -390,9 +397,11 @@ sub ddc_target_for_step {
 	  $array_ire=$effective if(defined($effective));
 	 }
  my @slots=ddc_slots_for_layout($layout);
+ my @write_slots=ddc_write_slots_for_layout($layout);
  for(my $i=0;$i<@slots;$i++) {
   my $label=$step->{"autocal_target_label"} || format_percent($ire)."%";
-  return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), write_ire=>format_percent($slots[$i]), label=>$label }
+  my $write_ire=defined($write_slots[$i]) ? $write_slots[$i] : $slots[$i];
+  return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), write_ire=>format_percent($write_ire), label=>$label }
    if(abs(($array_ire+0)-$slots[$i]) < 0.001);
  }
  return undef;
