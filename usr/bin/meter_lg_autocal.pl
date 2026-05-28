@@ -345,7 +345,12 @@ sub ddc_slots_for_layout {
 sub hdr20_effective_ddc_array_ire {
 	 my ($ire)=@_;
 	 return undef if(!defined($ire));
-	 return $ire+0;
+	 my $value=$ire+0;
+	 return 100 if(abs($value-94.98) < 0.02);
+	 return 94.98 if(abs($value-89.95) < 0.02);
+	 return 89.95 if(abs($value-84.93) < 0.02);
+	 return 84.93 if(abs($value-79.91) < 0.02);
+	 return $value;
 }
 
 sub hdr20_shared_top_white_pair_target {
@@ -385,7 +390,7 @@ sub ddc_target_for_step {
  return undef if(!defined($ire));
  my $layout=$step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT;
 	 my $array_ire=defined($step->{"ddc_array_ire"}) ? $step->{"ddc_array_ire"} : $ire;
-	 if(lc($layout||"") eq "hdr20") {
+	 if(lc($layout||"") eq "hdr20" && abs(($array_ire+0)-($ire+0)) < 0.001) {
 	  my $effective=hdr20_effective_ddc_array_ire($ire);
 	  $array_ire=$effective if(defined($effective));
 	 }
