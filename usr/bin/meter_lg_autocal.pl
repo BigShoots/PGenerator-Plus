@@ -349,7 +349,6 @@ sub hdr20_effective_ddc_array_ire {
  return 84.93 if(abs($value-79.91) < 0.001);
  return 89.95 if(abs($value-84.93) < 0.001);
  return 94.98 if(abs($value-89.95) < 0.001);
- return 100 if(abs($value-94.98) < 0.001);
  return $value;
 }
 
@@ -1353,6 +1352,10 @@ sub low_shadow_committed_target_bias_decision {
 
 sub effective_target_luminance_for_autocal_reading {
 	 my ($white_y,$step,$reading,$target_gamma,$signal_mode,$config,$state)=@_;
+	 if(autocal_step_ignores_luminance_error($step)) {
+	  my $Y=luminance($reading);
+	  return $Y if(defined($Y) && $Y > 0);
+	 }
 	 my $target=target_luminance_for_autocal_step($white_y,$step,$target_gamma,$signal_mode);
 	 if(!defined($target) && autocal_step_is_peak_headroom($step)) {
 	  my $Y=luminance($reading);
@@ -12152,7 +12155,7 @@ eval {
 			  $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$ref_reading,$white_y);
 			  $white_y ||= 100;
 			  refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
-			  my $target_lum_y=target_luminance_for_step($white_y,$read_step,$target_gamma,$signal_mode);
+				  my $target_lum_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$ref_reading,$target_gamma,$signal_mode,$config,$state);
 		  annotate_reading_target($ref_reading,$white_y,$target_lum_y,$target_x,$target_y);
 		  $state->{"readings"}=merge_reading($state->{"readings"},$ref_reading);
 		  $state->{"current_luminance"}=luminance($ref_reading);
@@ -12624,10 +12627,16 @@ eval {
 					    set_state_target_step_luminance($state,$target_step_y);
 					    $state->{"readings"}=merge_reading($state->{"readings"},$reading);
 					    write_state($state);
-					   } elsif(autocal_step_is_white($read_step)) {
-					    set_state_white_reference($state,$white_y);
-					    write_state($state);
-					   }
+						   } elsif(autocal_step_is_white($read_step)) {
+						    set_state_white_reference($state,$white_y);
+						    if(autocal_step_ignores_luminance_error($read_step)) {
+						     $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+						     annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+						     $lum_pct=luminance_error_percent($reading,$target_step_y);
+						     set_state_target_step_luminance($state,$target_step_y);
+						    }
+						    write_state($state);
+						   }
 				   if($pair_target_reached_now->()) {
 					    remember_lg_autocal_26_best_known(
 					     $config,$state,$read_step,$reading,$de,$lum_pct,
@@ -13917,13 +13926,20 @@ eval {
 					   }
 					   set_state_white_reference($state,$white_y);
 					   set_state_target_step_luminance($state,$target_step_y);
-					  } elsif(autocal_step_is_white($read_step)) {
-					   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$best_reading,$white_y);
-					   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
-					   set_state_white_reference($state,$white_y);
-				   $best_lum_pct=undef;
-				   set_state_target_step_luminance($state,undef);
-				  } elsif(autocal_step_is_peak_headroom($read_step)) {
+						  } elsif(autocal_step_is_white($read_step)) {
+						   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$best_reading,$white_y);
+						   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+						   set_state_white_reference($state,$white_y);
+						   if(autocal_step_ignores_luminance_error($read_step)) {
+						    $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode,$config,$state);
+						    annotate_reading_target($best_reading,$white_y,$target_step_y,$target_x,$target_y);
+						    $best_lum_pct=luminance_error_percent($best_reading,$target_step_y);
+						    set_state_target_step_luminance($state,$target_step_y);
+						   } else {
+					    $best_lum_pct=undef;
+					    set_state_target_step_luminance($state,undef);
+						   }
+					  } elsif(autocal_step_is_peak_headroom($read_step)) {
 				   apply_peak_headroom_reference($state,$read_step,$best_reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
 				   $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$best_reading,$target_gamma,$signal_mode);
 				   $best_lum_pct=luminance_error_percent($best_reading,$target_step_y);
@@ -13988,7 +14004,7 @@ eval {
 			   die $verify_error if($verify_error && $verify_error ne "cancelled");
 			   last if($verify_error && $verify_error eq "cancelled");
 			   next if(ref($verify_reading) ne "HASH");
-			   my $verify_target_y=target_luminance_for_step($white_y,$verify_step,$target_gamma,$signal_mode);
+				   my $verify_target_y=effective_target_luminance_for_autocal_reading($white_y,$verify_step,$verify_reading,$target_gamma,$signal_mode,$config,$state);
 			   annotate_reading_target($verify_reading,$white_y,$verify_target_y,$target_x,$target_y);
 			   my $verify_de=autocal_delta_e_for_step($config,$verify_reading,$verify_step,$white_y,$target_x,$target_y,$verify_target_y);
 			   my $verify_lum_pct=luminance_error_percent($verify_reading,$verify_target_y);
