@@ -1449,6 +1449,14 @@ sub keep_peak_headroom_white_reference {
 sub update_white_reference_for_autocal_step {
 	 my ($config,$state,$step,$reading,$white_y)=@_;
 	 return $white_y if(keep_peak_headroom_white_reference($config,$state) && !autocal_step_is_peak_headroom($step));
+	 # HDR 94.98/100 share the 100% DDC slot. While balancing the pair,
+	 # candidate 100% reads are used for local scoring only; rejected
+	 # candidates must not redefine the global white reference for the curve.
+	 return $white_y if(
+	  ref($step) eq "HASH" &&
+	  $step->{"legal_white_pair_active"} &&
+	  autocal_step_is_hdr20_top_white($step)
+	 );
 	 if(ref($config) eq "HASH" && lc($config->{"signal_mode"}||"sdr") ne "sdr" && autocal_step_is_white($step) && !$step->{"autocal_white_reference"} && ddc_target_for_step($step)) {
 	  return update_white_reference_for_step($step,$reading,$white_y) if(autocal_step_is_hdr20_top_white($step));
 	  return $white_y;
@@ -12442,6 +12450,7 @@ eval {
 					  }
 					  my $paired_white_step=legal_white_pair_reference_step($steps,$target,$step,$config);
 				  $paired_white_step=fixed_lg_autocal_step($config,$paired_white_step) if($paired_white_step);
+				  my $hdr20_shared_top_pair=($paired_white_step && hdr20_shared_top_white_pair_target($target)) ? 1 : 0;
 				  if($paired_white_step) {
 				   $slot_read_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($slot_read_step) eq "HASH");
 				   $read_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($read_step) eq "HASH");
@@ -12536,6 +12545,23 @@ eval {
 				   $best_pair_lum_pct=$pair_lum_pct;
 				   $best_pair_target_step_y=$pair_target_step_y;
 				  };
+				  my $hdr20_pair_evaluation_white_y=sub {
+				   my ($active_step,$active_reading,$other_step,$other_reading,$fallback)=@_;
+				   return $fallback if(!$hdr20_shared_top_pair);
+				   my $eval_y;
+				   $eval_y=luminance($active_reading) if(autocal_step_is_hdr20_top_white($active_step));
+				   $eval_y=luminance($other_reading) if((!defined($eval_y) || $eval_y <= 0) && autocal_step_is_hdr20_top_white($other_step));
+				   return (defined($eval_y) && $eval_y > 0) ? $eval_y : $fallback;
+				  };
+				  my $recalculate_active_against_pair_white=sub {
+				   my ($eval_white_y)=@_;
+				   return if(!$hdr20_shared_top_pair || ref($reading) ne "HASH");
+				   $eval_white_y ||= $white_y || 100;
+				   $target_step_y=effective_target_luminance_for_autocal_reading($eval_white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+				   annotate_reading_target($reading,$eval_white_y,$target_step_y,$target_x,$target_y);
+				   $de=autocal_delta_e_for_step($config,$reading,$read_step,$eval_white_y,$target_x,$target_y,$target_step_y);
+				   $lum_pct=luminance_error_percent($reading,$target_step_y);
+				  };
 				  my $pair_best_reject_reason;
 				  my $pair_side_trace_fields=sub {
 				   return () if(!$paired_white_step);
@@ -12623,13 +12649,21 @@ eval {
 			   die $other_error if($other_error && $other_error ne "cancelled");
 			   return 0 if($other_error && $other_error eq "cancelled");
 				   return 0 if(ref($other_reading) ne "HASH");
-					   $white_y=update_white_reference_for_autocal_step($config,$state,$other_step,$other_reading,$white_y);
-				   $white_y ||= 100;
-				   refresh_headroom_targets_after_white_reference($state,$other_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
-				   my $other_target_step_y=defined($other_guarded_y) ? $other_guarded_y : effective_target_luminance_for_autocal_reading($white_y,$other_step,$other_reading,$target_gamma,$signal_mode);
-			   annotate_reading_target($other_reading,$white_y,$other_target_step_y,$target_x,$target_y);
-			   my $other_de=autocal_delta_e_for_step($config,$other_reading,$other_step,$white_y,$target_x,$target_y,$other_target_step_y);
+				   my $pair_eval_white_y=$white_y;
+				   if($hdr20_shared_top_pair) {
+				    $pair_eval_white_y=$hdr20_pair_evaluation_white_y->($read_step,$reading,$other_step,$other_reading,$white_y);
+				   } else {
+				    $white_y=update_white_reference_for_autocal_step($config,$state,$other_step,$other_reading,$white_y);
+				    $white_y ||= 100;
+				    refresh_headroom_targets_after_white_reference($state,$other_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+				    $pair_eval_white_y=$white_y;
+				   }
+				   $pair_eval_white_y ||= 100;
+				   my $other_target_step_y=(!$hdr20_shared_top_pair && defined($other_guarded_y)) ? $other_guarded_y : effective_target_luminance_for_autocal_reading($pair_eval_white_y,$other_step,$other_reading,$target_gamma,$signal_mode,$config,$state);
+			   annotate_reading_target($other_reading,$pair_eval_white_y,$other_target_step_y,$target_x,$target_y);
+			   my $other_de=autocal_delta_e_for_step($config,$other_reading,$other_step,$pair_eval_white_y,$target_x,$target_y,$other_target_step_y);
 			   my $other_lum_pct=luminance_error_percent($other_reading,$other_target_step_y);
+			   $recalculate_active_against_pair_white->($pair_eval_white_y);
 			   $pair_step=$other_step;
 			   $pair_reading=$other_reading;
 			   $pair_de=$other_de;
@@ -12639,6 +12673,9 @@ eval {
 			   $state->{"paired_delta_e"}=defined($pair_de) ? $pair_de : undef;
 			   $state->{"paired_luminance_error_pct"}=defined($pair_lum_pct) ? $pair_lum_pct : undef;
 			   $state->{"paired_current_name"}=$other_label;
+			   $state->{"current_delta_e"}=defined($de) ? $de : undef;
+			   $state->{"current_luminance"}=luminance($reading);
+			   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
 			   set_state_target_step_luminance($state,$target_step_y);
 			   write_state($state);
 			   trace_109($other_step,"legal_white_pair_measurement",{
@@ -12648,6 +12685,7 @@ eval {
 			    reading=>trace_reading_summary($other_reading),
 			    target_luminance=>$other_target_step_y,
 			    white_y=>$white_y,
+			    pair_evaluation_white_y=>$pair_eval_white_y,
 				    delta_e=>defined($pair_de)?$pair_de+0:undef,
 				    luminance_error_pct=>defined($pair_lum_pct)?$pair_lum_pct+0:undef,
 				    pair_score=>$pair_score_now->()+0,
@@ -14194,10 +14232,21 @@ eval {
 					  if($paired_white_step) {
 					   if(ref($best_pair_reading) eq "HASH") {
 					    $state->{"readings"}=merge_reading($state->{"readings"},$best_pair_reading);
-					    if(ref($best_pair_step) eq "HASH") {
-						     $white_y=update_white_reference_for_autocal_step($config,$state,$best_pair_step,$best_pair_reading,$white_y);
-					     refresh_headroom_targets_after_white_reference($state,$best_pair_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+					   }
+					   my ($accepted_pair_white_step,$accepted_pair_white_reading);
+					   if($hdr20_shared_top_pair) {
+					    if(ref($best_read_step) eq "HASH" && ref($best_reading) eq "HASH" && autocal_step_is_hdr20_top_white($best_read_step)) {
+					     ($accepted_pair_white_step,$accepted_pair_white_reading)=($best_read_step,$best_reading);
+					    } elsif(ref($best_pair_step) eq "HASH" && ref($best_pair_reading) eq "HASH" && autocal_step_is_hdr20_top_white($best_pair_step)) {
+					     ($accepted_pair_white_step,$accepted_pair_white_reading)=($best_pair_step,$best_pair_reading);
 					    }
+					    if(ref($accepted_pair_white_step) eq "HASH" && ref($accepted_pair_white_reading) eq "HASH") {
+					     $white_y=update_white_reference_for_step($accepted_pair_white_step,$accepted_pair_white_reading,$white_y);
+					     refresh_headroom_targets_after_white_reference($state,$accepted_pair_white_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+					    }
+					   } elsif(ref($best_pair_step) eq "HASH" && ref($best_pair_reading) eq "HASH") {
+					    $white_y=update_white_reference_for_autocal_step($config,$state,$best_pair_step,$best_pair_reading,$white_y);
+					    refresh_headroom_targets_after_white_reference($state,$best_pair_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
 					   }
 					   set_state_white_reference($state,$white_y);
 					   set_state_target_step_luminance($state,$target_step_y);
