@@ -6305,6 +6305,15 @@ sub hdr20_body_force_luma_clamp_needed {
 	 return ($lum_pct > 0 && $ire >= 70 && abs($lum_pct) >= 8.0) ? 1 : 0;
 }
 
+sub hdr20_body_far_luma_priority_needed {
+	 my ($step,$luminance_err,$micro)=@_;
+	 return 0 if($micro);
+	 return 0 if(!autocal_step_is_hdr20_body($step));
+	 return 0 if(!defined($luminance_err));
+	 my $lum_pct=($luminance_err+0)*100;
+	 return (abs($lum_pct) >= 3.0) ? 1 : 0;
+}
+
 sub hdr20_body_balanced_chroma_luma_adjustments {
 	 my ($error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,$min_step,$micro)=@_;
 	 return undef if(!autocal_step_is_hdr20_body($step));
@@ -7861,6 +7870,13 @@ sub full_ddc_spine_anchor_adjustments {
 	   );
 	   return $vector if(ref($vector) eq "ARRAY" && @{$vector});
 	  }
+	  if(hdr20_body_far_luma_priority_needed($step,$luminance_err,0)) {
+	   my $vector=hdr20_body_rgb_luminance_vector_adjustments(
+	    $error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,0.25,0,
+	    "full_ddc_spine_anchor_far_luma"
+	   );
+	   return $vector if(ref($vector) eq "ARRAY" && @{$vector});
+	  }
 	  my $mixed_chroma=hdr20_body_mixed_rgb_error($error,0.018);
 	  if($mixed_chroma) {
 	   my $balanced=hdr20_body_balanced_chroma_luma_adjustments(
@@ -7982,9 +7998,15 @@ sub choose_adjustments {
 				 my $headroom_105_body=headroom_105_post_seed_body_refinement($step,$arrays,$target,$tried);
 						 if(autocal_step_is_hdr20_body($step)) {
 						  my $lum_pct=$luminance_err*100;
+						  my $far_luma=hdr20_body_far_luma_priority_needed($step,$luminance_err,0);
+						  my $hdr_body_vector;
+						  if($far_luma) {
+						   $hdr_body_vector=hdr20_body_rgb_luminance_vector_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0,"choose_adjustments_far_luma");
+						   return $hdr_body_vector if($hdr_body_vector);
+						  }
 						  my $hdr_body_balanced=hdr20_body_balanced_chroma_luma_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0);
 						  return $hdr_body_balanced if($hdr_body_balanced);
-						  my $hdr_body_vector=hdr20_body_rgb_luminance_vector_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0,"choose_adjustments");
+						  $hdr_body_vector=hdr20_body_rgb_luminance_vector_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0,"choose_adjustments");
 						  return $hdr_body_vector if($hdr_body_vector);
 						  if(abs($lum_pct) >= 8) {
 						   my $hdr_body_luma_first=hdr20_body_luminance_rgb_adjustments($arrays,$target,$step,$luminance_err,$de,$stalls,$tried,$min_step);
