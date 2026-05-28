@@ -420,8 +420,10 @@ assert(
 );
 assert(
   legalWhitePairReferenceSource.includes('lg_autocal_26_sdr_headroom_enabled($config)') &&
+    legalWhitePairReferenceSource.includes('lg_autocal_26_hdr20_seed_enabled($config)') &&
+    legalWhitePairReferenceSource.includes('hdr20_shared_top_white_pair_target($target)') &&
     !legalWhitePairReferenceSource.includes('!$config->{"lg_autocal_26"}'),
-  'LG Auto Cal 99/100 legal-white pair balancing should be gated to SDR headroom mode, not just lg_autocal_26'
+  'LG Auto Cal paired white balancing should be gated to SDR 99/100 or HDR 95/100 shared-slot modes, not just lg_autocal_26'
 );
 assert(
   shiftedStimulusStepSource.includes('return undef if(!lg_autocal_26_sdr_headroom_enabled($config));') &&
@@ -440,7 +442,10 @@ assert(
 assert(
     source.includes('const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];') &&
     source.includes('const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,224,213,202,191,169,147,126,104,82,71,60,49,38,31,27,25,22,20,19];') &&
+    source.includes('if(Math.abs(value-94.98)<0.001) return 100;') &&
     autocalWorkerSource.includes('return (1.37,1.83,2.74,4.11,5.02,6.85,10.05,15.07,20.09,25.11,30.14,40.18,50.23,59.82,69.86,79.91,84.93,89.95,94.98,100) if($layout eq "hdr20");') &&
+    autocalWorkerSource.includes('return 100 if(abs($value-94.98) < 0.001);') &&
+    autocalWorkerSource.includes('sub hdr20_shared_top_white_pair_target') &&
 	    autocalWorkerSource.includes('sub hdr20_top_white_chroma_priority_needed') &&
 	    autocalWorkerSource.includes('hdr20_body_luminance=>1') &&
 	    autocalWorkerSource.includes('if(autocal_step_is_hdr20_body($step)) {') &&
