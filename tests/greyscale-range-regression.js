@@ -442,10 +442,19 @@ assert(
 assert(
     source.includes('const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];') &&
     source.includes('const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,224,213,202,191,169,147,126,104,82,71,60,49,38,31,27,25,22,20,19];') &&
-    source.includes('if(Math.abs(value-94.98)<0.001) return 100;') &&
+    source.includes('function meterLgHdrAutoCalDdcArrayIre(slot)') &&
+    source.includes('return slot;') &&
+    !source.includes('if(Math.abs(value-94.98)<0.001) return 100;') &&
+    !source.includes('if(Math.abs(value-89.95)<0.001) return 94.98;') &&
+    !source.includes('if(Math.abs(value-84.93)<0.001) return 89.95;') &&
+    !source.includes('if(Math.abs(value-79.91)<0.001) return 84.93;') &&
     autocalWorkerSource.includes('return (1.37,1.83,2.74,4.11,5.02,6.85,10.05,15.07,20.09,25.11,30.14,40.18,50.23,59.82,69.86,79.91,84.93,89.95,94.98,100) if($layout eq "hdr20");') &&
-    autocalWorkerSource.includes('return 100 if(abs($value-94.98) < 0.001);') &&
-    autocalWorkerSource.includes('sub hdr20_shared_top_white_pair_target') &&
+    autocalWorkerSource.includes('sub hdr20_effective_ddc_array_ire') &&
+    autocalWorkerSource.includes('return $value;') &&
+    !autocalWorkerSource.includes('return 100 if(abs($value-94.98) < 0.001);') &&
+    !autocalWorkerSource.includes('return 94.98 if(abs($value-89.95) < 0.001);') &&
+    !autocalWorkerSource.includes('return 89.95 if(abs($value-84.93) < 0.001);') &&
+    !autocalWorkerSource.includes('return 84.93 if(abs($value-79.91) < 0.001);') &&
 	    autocalWorkerSource.includes('sub hdr20_top_white_chroma_priority_needed') &&
 	    autocalWorkerSource.includes('hdr20_body_luminance=>1') &&
 	    autocalWorkerSource.includes('if(autocal_step_is_hdr20_body($step)) {') &&
@@ -453,7 +462,7 @@ assert(
 	    autocalWorkerSource.includes('my $floor=($ire >= 80) ? 0.6 : 3;') &&
 	    autocalWorkerSource.includes('!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed') &&
 	    !autoCalTargetLuminanceSource.includes('target_gamma_linear($signal,"2.2","sdr")'),
-	  'HDR20 AutoCal should use exact code-derived HDR weighted slots, calibrate 100% instead of 99%, use the supplied AutoCal target curve, and avoid luma-only HDR100 moves while chroma is still high'
+	  'HDR20 AutoCal should use exact code-derived HDR weighted slots with identity DDC mapping, calibrate 100% instead of SDR-style paired 99/100, use the supplied AutoCal target curve, and avoid luma-only HDR100 moves while chroma is still high'
 	);
 assert(
   /function meterGreyscaleRotateXLabels\(stepCount\)\s*\{\s*return Number\(stepCount\)>=21;\s*\}/.test(source),
