@@ -6641,10 +6641,10 @@ sub hdr20_top_window_luma_adjustments {
 	 $mag+=0.5*($stalls||0) if(($stalls||0) >= 2);
 	 $mag=5.0 if($mag > 5.0);
 	 my @magnitudes=($mag,round_ddc_quarter($mag*0.5),$min_step);
-	 # During the anchor pass this rescue must only move the active anchor.
-	 # The full-DDC spine propagation pass seeds future top-window slots after
-	 # all anchors complete; pre-writing them here can poison later patches.
-	 my @window_ires=($ire);
+	 # HDR 79.91 is controlled by the top bridge, not by its own slot alone.
+	 # Use the uncalibrated bridge slots as support while solving the anchor;
+	 # guarded full-DDC propagation reseeds them after all anchors complete.
+	 my @window_ires=(79.91,84.93,89.95,94.98);
 	 my $signature=hdr20_top_window_luma_signature($arrays,@window_ires);
 	 $tried->{"__hdr20_top_window_luma"}={} if(ref($tried) eq "HASH" && ref($tried->{"__hdr20_top_window_luma"}) ne "HASH");
 	 my $chosen_mag;
@@ -6725,9 +6725,9 @@ sub hdr20_top_window_chroma_adjustments {
 	 my @channels=grep { abs($error->{$_}||0) >= $floor } sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b);
 	 return undef if(!@channels);
 	 $min_step=0.25 if(!defined($min_step) || $min_step <= 0);
-	 # Keep the anchor rescue scoped to the active anchor. Future top-window
-	 # slots are seeded later by the guarded full-DDC spine propagation pass.
-	 my @window_ires=($ire);
+	 # HDR 79.91 needs the same uncalibrated bridge support for chroma as for
+	 # luma. Do not mark those slots calibrated; later propagation owns them.
+	 my @window_ires=(79.91,84.93,89.95,94.98);
 	 my $signature=hdr20_top_window_luma_signature($arrays,@window_ires);
 	 my @base_moves;
 	 foreach my $ch (@channels) {
