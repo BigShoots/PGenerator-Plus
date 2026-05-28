@@ -629,23 +629,7 @@ sub order_autocal_steps {
 	  };
 	  foreach my $wanted (@hdr_autocal_26_order) {
 	   my $wanted_key=format_percent($wanted);
-	   if($seen_target{$wanted_key}) {
-	    my ($anchor_match)=grep {
-	     my $key=$target_key->($_);
-	     defined($key) && $key eq $wanted_key
-	    } @valid;
-	    if($anchor_match) {
-	     my $anchor_target=ddc_target_for_step($anchor_match);
-	     if(lg_autocal_26_full_ddc_spine_body_anchor($anchor_target)) {
-	      my $revisit=clone_picture($anchor_match);
-	      $revisit->{"lg_autocal_26_full_ddc_spine_anchor_revisit"}=JSON::PP::true;
-	      $revisit->{"lg_autocal_26_seeded_move_damping"}=JSON::PP::true;
-	      $revisit->{"autocal_target_label"}=format_percent($anchor_target->{"ire"})."% HDR anchor revisit";
-	      push @ordered,$revisit;
-	     }
-	    }
-	    next;
-	   }
+		   next if($seen_target{$wanted_key});
 	   my ($match)=grep {
 	    my $key=$target_key->($_);
 	    defined($key) && !$seen_target{$key} && $key eq $wanted_key
