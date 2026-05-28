@@ -73,7 +73,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+  foreach my $key (qw(channel setting current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -6772,14 +6772,30 @@ sub hdr20_body_luminance_rgb_adjustments {
 	 $mag+=1.0 if($stalls >= 2 && $mag < 6.0);
 	 $mag=8.0 if($mag > 8.0);
 	 my $direction=($lum_pct > 0) ? -1 : 1;
-		 if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction)) {
-		  my $arr=$arrays->{"adjustingLuminance"};
-			  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
-		   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
-		   my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
-		   if(defined($next) && abs($next-$current) >= 0.0001 && hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,"hdr20_body_luminance") && !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_luminance",$LG_AUTOCAL_STATE)) {
-		    return [{
-		     channel=>"lum",
+	 if(has_luminance_channel($arrays,$target)) {
+	  my $arr=$arrays->{"adjustingLuminance"};
+	  if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
+	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	   my $expected_failed=0;
+	   foreach my $try_direction ($direction,-$direction) {
+	    my $opposite_probe=($try_direction != $direction) ? 1 : 0;
+	    next if($opposite_probe && !$expected_failed);
+	    next if(hdr20_body_family_suppressed($tried,"luminance",$try_direction));
+	    my ($next,$damped)=next_untried_value($current,$try_direction*$mag,$tried,"adjustingLuminance",$min_step,0);
+	    if(!defined($next) || abs($next-$current) < 0.0001) {
+	     $expected_failed=1 if(!$opposite_probe);
+	     next;
+	    }
+	    if(!hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,$opposite_probe ? "hdr20_body_luminance_opposite_probe" : "hdr20_body_luminance")) {
+	     $expected_failed=1 if(!$opposite_probe);
+	     next;
+	    }
+	    if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,$opposite_probe ? "hdr20_body_luminance_opposite_probe" : "hdr20_body_luminance",$LG_AUTOCAL_STATE)) {
+	     $expected_failed=1 if(!$opposite_probe);
+	     next;
+	    }
+	    return [{
+	     channel=>"lum",
 	     setting=>"adjustingLuminance",
 	     current=>$current,
 	     next=>$next,
@@ -6787,11 +6803,13 @@ sub hdr20_body_luminance_rgb_adjustments {
 	     damped=>$damped ? 1 : 0,
 	     neutral_luminance=>1,
 	     hdr20_body_luminance=>1,
-	     luminance_error_pct=>$lum_pct+0
-		    }];
-		   }
-		  }
-		 }
+	     hdr20_body_luminance_opposite_probe=>$opposite_probe ? 1 : undef,
+	     luminance_error_pct=>$lum_pct+0,
+	     source=>$opposite_probe ? "hdr20_body_luminance_opposite_probe" : "hdr20_body_luminance"
+	    }];
+	   }
+	  }
+	 }
 		 trace_109($step,"hdr20_body_luminance_no_adjustment",{
 		  ire=>$ire+0,
 		  index=>$idx+0,
@@ -6799,7 +6817,8 @@ sub hdr20_body_luminance_rgb_adjustments {
 		  direction=>$direction+0,
 		  magnitude=>$mag+0,
 		  has_luminance=>has_luminance_channel($arrays,$target) ? 1 : 0,
-		  luminance_suppressed=>hdr20_body_family_suppressed($tried,"luminance",$direction) ? 1 : 0
+		  luminance_suppressed=>hdr20_body_family_suppressed($tried,"luminance",$direction) ? 1 : 0,
+		  opposite_luminance_suppressed=>hdr20_body_family_suppressed($tried,"luminance",-$direction) ? 1 : 0
 		 });
 		 return undef;
 	}
