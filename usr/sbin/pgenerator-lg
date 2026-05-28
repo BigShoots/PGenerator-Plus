@@ -1581,7 +1581,7 @@ sub lg_ddc_layout_name (@) {
  my $layout=(ref($settings) eq "HASH") ? lc($settings->{"ddc_layout"}||"") : "";
  return "hdr20" if($layout eq "hdr20");
  $picture_mode=lc($picture_mode||"");
- return "hdr20" if($picture_mode =~ /^hdr_/);
+ return "hdr20" if($picture_mode =~ /^(?:hdr|dolby_hdr|dolbyhdr)/);
  return "sdr26";
 }
 
