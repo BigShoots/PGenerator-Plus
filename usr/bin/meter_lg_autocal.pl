@@ -6710,7 +6710,9 @@ sub hdr20_top_window_chroma_adjustments {
 	 my $ire=defined($target->{"ire"}) ? ($target->{"ire"}+0) : (defined($step->{"ire"}) ? ($step->{"ire"}+0) : undef);
 	 return undef if(!defined($ire) || abs($ire-79.91) >= 0.02);
 	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
-	 return undef if(!defined($de) || $de <= ($target_delta+4.0));
+	 my $activation_delta=$target_delta+0.5;
+	 $activation_delta=1.0 if($activation_delta < 1.0);
+	 return undef if(!defined($de) || $de <= $activation_delta);
 	 my $lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : 0;
 	 my $tol=luminance_tolerance_percent($step);
 	 $tol=2 if(!defined($tol) || $tol <= 0);
@@ -6722,31 +6724,54 @@ sub hdr20_top_window_chroma_adjustments {
 	 $min_step=0.25 if(!defined($min_step) || $min_step <= 0);
 	 my @window_ires=(79.91,84.93,89.95,94.98);
 	 my $signature=hdr20_top_window_luma_signature($arrays,@window_ires);
-	 my @parts;
+	 my @base_moves;
 	 foreach my $ch (@channels) {
 	  my $err=$error->{$ch}||0;
 	  my $direction=($err > 0) ? -1 : 1;
-	  my $mag=headroom_adjustment_step(abs($err),$stalls,$min_step,6.0,0);
+	  my $cap=(defined($de) && $de >= 18.0) ? 6.0 : ((defined($de) && $de >= 10.0) ? 4.0 : 2.0);
+	  my $mag=headroom_adjustment_step(abs($err),$stalls,$min_step,$cap,0);
 	  $mag=2.0 if(defined($de) && $de >= 10.0 && $mag < 2.0);
 	  $mag=4.0 if(defined($de) && $de >= 18.0 && abs($err) >= 0.020 && $mag < 4.0);
-	  push @parts,join(":",$ch,$direction,ddc_value_key($mag));
+	  push @base_moves,{
+	   channel=>$ch,
+	   direction=>$direction,
+	   magnitude=>$mag
+	  };
 	 }
-	 my $key=join("|",$signature,@parts);
 	 $tried->{"__hdr20_top_window_chroma"}={} if(ref($tried) eq "HASH" && ref($tried->{"__hdr20_top_window_chroma"}) ne "HASH");
-	 return undef if(ref($tried) eq "HASH" && $tried->{"__hdr20_top_window_chroma"}{$key});
+	 my ($chosen_scale,$chosen_key,@chosen_parts);
+	 foreach my $scale (1.0,0.5,0.25,0.125) {
+	  my @parts;
+	  foreach my $move (@base_moves) {
+	   next if(ref($move) ne "HASH");
+	   my $scaled=round_ddc_quarter(($move->{"magnitude"}||0)*$scale);
+	   $scaled=$min_step if($scaled > 0 && $scaled < $min_step);
+	   next if($scaled < $min_step-0.0001);
+	   push @parts,join(":",$move->{"channel"},$move->{"direction"},ddc_value_key($scaled),ddc_value_key($scale));
+	  }
+	  next if(!@parts);
+	  my $key=join("|",$signature,@parts);
+	  next if(ref($tried) eq "HASH" && $tried->{"__hdr20_top_window_chroma"}{$key});
+	  $chosen_scale=$scale;
+	  $chosen_key=$key;
+	  @chosen_parts=@parts;
+	  last;
+	 }
+	 return undef if(!defined($chosen_scale));
 	 my @out;
 	 foreach my $window_ire (@window_ires) {
 	  my $idx=ddc_slot_index_for_ire($window_ire);
 	  next if(!defined($idx));
-	  foreach my $ch (@channels) {
+	  foreach my $move (@base_moves) {
+	   next if(ref($move) ne "HASH");
+	   my $ch=$move->{"channel"};
 	   my $setting=channel_setting($ch);
 	   my $arr=$arrays->{$setting};
 	   next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
-	   my $err=$error->{$ch}||0;
-	   my $direction=($err > 0) ? -1 : 1;
-	   my $mag=headroom_adjustment_step(abs($err),$stalls,$min_step,6.0,0);
-	   $mag=2.0 if(defined($de) && $de >= 10.0 && $mag < 2.0);
-	   $mag=4.0 if(defined($de) && $de >= 18.0 && abs($err) >= 0.020 && $mag < 4.0);
+	   my $direction=$move->{"direction"}||0;
+	   my $mag=round_ddc_quarter(($move->{"magnitude"}||0)*$chosen_scale);
+	   $mag=$min_step if($mag > 0 && $mag < $min_step);
+	   next if($mag < $min_step-0.0001);
 	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	   my $next=clamp_ddc_value($current+($direction*$mag));
 	   next if(abs($next-$current) < 0.0001);
@@ -6767,11 +6792,13 @@ sub hdr20_top_window_chroma_adjustments {
 	  }
 	 }
 	 return undef if(!@out);
-	 $tried->{"__hdr20_top_window_chroma"}{$key}=1 if(ref($tried) eq "HASH");
+	 $tried->{"__hdr20_top_window_chroma"}{$chosen_key}=1 if(ref($tried) eq "HASH" && defined($chosen_key));
 	 trace_109($step,"hdr20_top_window_chroma_plan",{
 	  luminance_error_pct=>$lum_pct+0,
 	  delta_e=>defined($de)?$de+0:undef,
-	  channels=>\@parts,
+	  activation_delta=>$activation_delta+0,
+	  channels=>\@chosen_parts,
+	  scale=>$chosen_scale+0,
 	  window=>[map { $_+0 } @window_ires],
 	  adjustment_count=>scalar(@out),
 	  target_values=>trace_target_values($arrays,$target)
