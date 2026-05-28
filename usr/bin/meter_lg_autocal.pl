@@ -6374,14 +6374,29 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 		    $mag=$min_step if($mag < $min_step);
 		    $mag=0.50 if($chroma_luma_compensation && $mag < 0.50);
 		    $mag=$luma_cap if($mag > $luma_cap);
-		    my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",$min_step,0);
-		    if(
-		     defined($next) &&
-		     abs($next-$current) >= 0.0001 &&
-		     ($chroma_luma_compensation || !hdr20_body_family_suppressed($tried,"luminance",$direction)) &&
-		     hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,"hdr20_body_balanced_chroma_luma") &&
-		     !luma_probe_family_suppressed($tried,$target,$current,$next,$step,"hdr20_body_balanced_chroma_luma",$LG_AUTOCAL_STATE)
-		    ) {
+		    my $expected_failed=0;
+		    foreach my $try_direction ($direction,-$direction) {
+		     my $opposite_probe=($try_direction != $direction) ? 1 : 0;
+		     next if($opposite_probe && !$expected_failed);
+		     if(!$chroma_luma_compensation && hdr20_body_family_suppressed($tried,"luminance",$try_direction)) {
+		      $expected_failed=1 if(!$opposite_probe);
+		      next;
+		     }
+		     my ($next,$damped)=next_untried_value($current,$try_direction*$mag,$tried,"adjustingLuminance",$min_step,0);
+		     if(!defined($next) || abs($next-$current) < 0.0001) {
+		      $expected_failed=1 if(!$opposite_probe);
+		      next;
+		     }
+		     my $source=$opposite_probe ? "hdr20_body_balanced_chroma_luma_opposite_probe" : "hdr20_body_balanced_chroma_luma";
+		     my $response_ok=hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,$source);
+		     if(!$response_ok && !($opposite_probe && hdr20_body_family_suppressed($tried,"luminance",$direction))) {
+		      $expected_failed=1 if(!$opposite_probe);
+		      next;
+		     }
+		     if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,$source,$LG_AUTOCAL_STATE)) {
+		      $expected_failed=1 if(!$opposite_probe);
+		      next;
+		     }
 		     push @out,{
 		      channel=>"lum",
 		      setting=>"adjustingLuminance",
@@ -6391,12 +6406,15 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	      damped=>$damped ? 1 : 0,
 	      neutral_luminance=>1,
 	      hdr20_body_luminance=>1,
+	      hdr20_body_luminance_opposite_probe=>$opposite_probe ? 1 : undef,
 	      hdr20_body_balanced_chroma_luma=>1,
 	      hdr20_body_chroma_luma_compensation=>$chroma_luma_compensation ? 1 : undef,
 	      luminance_error_pct=>$lum_pct+0,
+	      source=>$source,
 	      micro=>$micro ? 1 : 0
 	     };
-	    }
+		     last;
+		    }
 	   }
 	  }
 	 }
@@ -6491,6 +6509,27 @@ sub hdr20_body_luma_direction {
 	 return $delta < 0 ? -1 : 1;
 }
 
+sub hdr20_body_compound_luma_direction {
+	 my ($adjustments)=@_;
+	 return undef if(ref($adjustments) ne "ARRAY" || @{$adjustments} < 2);
+	 my ($direction,$has_luma,$is_compound);
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH");
+	  $is_compound=1 if($adj->{"hdr20_body_balanced_chroma_luma"} || $adj->{"hdr20_body_luminance_rgb"} || $adj->{"full_ddc_spine_anchor"});
+	  my $source=$adj->{"source"}||"";
+	  $is_compound=1 if($source =~ /(?:hdr20_body|full_ddc_spine_anchor).*(?:luma|luminance)/);
+	  next if(($adj->{"setting"}||"") ne "adjustingLuminance");
+	  my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : undef;
+	  next if(!defined($delta) || abs($delta) < 0.0001);
+	  my $dir=$delta < 0 ? -1 : 1;
+	  $direction=$dir if(!defined($direction));
+	  return undef if($direction != $dir);
+	  $has_luma=1;
+	 }
+	 return undef if(!$is_compound || !$has_luma || !defined($direction));
+	 return $direction;
+}
+
 sub record_hdr20_body_bad_adjustment_family {
 	 my ($tried,$step,$adjustments,$before_lum_pct,$after_lum_pct,$before_de,$after_de,$before_score,$after_score)=@_;
 	 return undef if(ref($step) ne "HASH" || !autocal_step_is_hdr20_body($step));
@@ -6501,6 +6540,10 @@ sub record_hdr20_body_bad_adjustment_family {
 	 $family="rgb_luminance" if(defined($direction));
 	 if(!$family) {
 	  $direction=hdr20_body_luma_direction($adjustments);
+	  $family="luminance" if(defined($direction));
+	 }
+	 if(!$family) {
+	  $direction=hdr20_body_compound_luma_direction($adjustments);
 	  $family="luminance" if(defined($direction));
 	 }
 	 return undef if(!$family || !defined($direction));
@@ -6780,13 +6823,16 @@ sub hdr20_body_luminance_rgb_adjustments {
 	   foreach my $try_direction ($direction,-$direction) {
 	    my $opposite_probe=($try_direction != $direction) ? 1 : 0;
 	    next if($opposite_probe && !$expected_failed);
-	    next if(hdr20_body_family_suppressed($tried,"luminance",$try_direction));
+	    if(hdr20_body_family_suppressed($tried,"luminance",$try_direction)) {
+	     $expected_failed=1 if(!$opposite_probe);
+	     next;
+	    }
 	    my ($next,$damped)=next_untried_value($current,$try_direction*$mag,$tried,"adjustingLuminance",$min_step,0);
 	    if(!defined($next) || abs($next-$current) < 0.0001) {
 	     $expected_failed=1 if(!$opposite_probe);
 	     next;
 	    }
-	    if(!hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,$opposite_probe ? "hdr20_body_luminance_opposite_probe" : "hdr20_body_luminance")) {
+	    if(!hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,$opposite_probe ? "hdr20_body_luminance_opposite_probe" : "hdr20_body_luminance") && !($opposite_probe && hdr20_body_family_suppressed($tried,"luminance",$direction))) {
 	     $expected_failed=1 if(!$opposite_probe);
 	     next;
 	    }
