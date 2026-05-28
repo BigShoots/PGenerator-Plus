@@ -6420,23 +6420,64 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	 }
 	 return undef if(!@out);
 
+	 my %high_window_y_weight=(
+	  whiteBalanceRed=>0.2126,
+	  whiteBalanceGreen=>0.7152,
+	  whiteBalanceBlue=>0.0722,
+	 );
+	 my $high_window_rgb_y_push=0;
+	 foreach my $adj (@out) {
+	  next if(ref($adj) ne "HASH");
+	  my $setting=$adj->{"setting"}||"";
+	  next if(!exists($high_window_y_weight{$setting}));
+	  $high_window_rgb_y_push+=($adj->{"delta"}||0)*$high_window_y_weight{$setting};
+	 }
+	 my $high_window_chroma_luma_hold=0;
+	 my $high_window_hold_direction;
+	 if(
+	  $ire >= 84.9 && $ire < 99.9 &&
+	  !lg_autocal_26_full_ddc_spine_body_anchor($target) &&
+	  defined($de) && $de > ($target_delta+1.0) &&
+	  $chroma >= 0.025 &&
+	  abs($high_window_rgb_y_push) >= 0.05
+	 ) {
+	  my $near_y=(abs($lum_pct) <= 1.0) ? 1 : 0;
+	  my $rgb_pushes_y_away=($lum_pct*$high_window_rgb_y_push > 0) ? 1 : 0;
+	  if($near_y || $rgb_pushes_y_away) {
+	   $high_window_chroma_luma_hold=1;
+	   $high_window_hold_direction=($high_window_rgb_y_push > 0) ? -1 : 1;
+	   $high_window_hold_direction=($lum_pct > 0) ? -1 : 1 if(abs($lum_pct) > 1.0);
+	  }
+	 }
+
 	 if(has_luminance_channel($arrays,$target)) {
 	  my $tol=luminance_tolerance_percent($step);
 	  $tol=2 if(!defined($tol) || $tol <= 0);
 	  my $luma_gate=$micro ? ($tol*0.45) : ($tol*0.65);
 	  $luma_gate=0.35 if($luma_gate < 0.35);
 		  my $chroma_luma_compensation=(@out && defined($de) && $de > ($target_delta+1.5) && $chroma >= 0.030 && abs($lum_pct) >= ($micro ? 0.45 : 0.25)) ? 1 : 0;
+		  $chroma_luma_compensation=1 if($high_window_chroma_luma_hold);
 		  if(abs($lum_pct) >= $luma_gate || $chroma_luma_compensation) {
 		   my $arr=$arrays->{"adjustingLuminance"};
 		   if(ref($arr) eq "ARRAY" && $idx < @{$arr}) {
 		    my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 		    my $direction=($lum_pct > 0) ? -1 : 1;
+		    $direction=$high_window_hold_direction if($high_window_chroma_luma_hold && defined($high_window_hold_direction));
 	    my $luma_cap=$micro ? 1.0 : 4.0;
 	    $luma_cap=6.0 if(!$micro && abs($lum_pct) >= 8.0);
 	    $luma_cap=8.0 if(!$micro && abs($lum_pct) >= 14.0);
 		    my $mag=round_ddc_quarter(abs($lum_pct)*0.45);
 		    $mag=$min_step if($mag < $min_step);
 		    $mag=0.50 if($chroma_luma_compensation && $mag < 0.50);
+		    if($high_window_chroma_luma_hold) {
+		     my $min_hold=$micro ? 0.75 : ((defined($de) && $de > ($target_delta+4.0)) ? 1.50 : 1.00);
+		     $min_hold+=0.50*($stalls||0) if(!$micro && ($stalls||0) >= 1);
+		     $min_hold+=0.25*($stalls||0) if($micro && ($stalls||0) >= 1);
+		     my $hold_from_rgb=round_ddc_quarter(abs($high_window_rgb_y_push)*2.50);
+		     $mag=$hold_from_rgb if($hold_from_rgb > $mag);
+		     $mag=$min_hold if($mag < $min_hold);
+		     $luma_cap=$micro ? 2.0 : 4.0 if($luma_cap < ($micro ? 2.0 : 4.0));
+		    }
 		    $mag=$luma_cap if($mag > $luma_cap);
 		    my $expected_failed=0;
 		    foreach my $try_direction ($direction,-$direction) {
@@ -6452,6 +6493,7 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 		      next;
 		     }
 		     my $source=$opposite_probe ? "hdr20_body_balanced_chroma_luma_opposite_probe" : "hdr20_body_balanced_chroma_luma";
+		     $source="hdr20_body_high_window_chroma_luma_hold" if(!$opposite_probe && $high_window_chroma_luma_hold);
 		     my $response_ok=hdr20_body_luminance_response_allows_move($step,$lum_pct,$next-$current,$source);
 		     if(!$response_ok && !($opposite_probe && hdr20_body_family_suppressed($tried,"luminance",$direction,$step))) {
 		      $expected_failed=1 if(!$opposite_probe);
@@ -6472,8 +6514,10 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	      hdr20_body_luminance=>1,
 	      hdr20_body_luminance_opposite_probe=>$opposite_probe ? 1 : undef,
 	      hdr20_body_balanced_chroma_luma=>1,
+	      hdr20_body_high_window_chroma_luma_hold=>($high_window_chroma_luma_hold && !$opposite_probe) ? 1 : undef,
 	      hdr20_body_chroma_luma_compensation=>$chroma_luma_compensation ? 1 : undef,
 	      luminance_error_pct=>$lum_pct+0,
+	      rgb_y_push=>$high_window_chroma_luma_hold ? ($high_window_rgb_y_push+0) : undef,
 	      source=>$source,
 	      micro=>$micro ? 1 : 0
 	     };
@@ -6907,9 +6951,30 @@ sub record_hdr20_body_bad_adjustment_family {
 	 my $de_worse=(defined($before_de) && defined($after_de) && ($after_de+0) > ($before_de+0)+0.05) ? 1 : 0;
 	 my $score_worse=(defined($before_score) && defined($after_score) && ($after_score+0) > ($before_score+0)+0.05) ? 1 : 0;
 	 return undef if(!$y_worse && !$de_worse && !$score_worse);
+	 my ($high_window_hold,$luma_delta_abs)=(0,undef);
+	 foreach my $adj (@{$adjustments}) {
+	  next if(ref($adj) ne "HASH");
+	  $high_window_hold=1 if($adj->{"hdr20_body_high_window_chroma_luma_hold"});
+	  if(($adj->{"setting"}||"") eq "adjustingLuminance" && defined($adj->{"delta"})) {
+	   my $abs=abs($adj->{"delta"}+0);
+	   $luma_delta_abs=$abs if(!defined($luma_delta_abs) || $abs > $luma_delta_abs);
+	  }
+	 }
+	 if($high_window_hold && $family eq "compound_luminance" && $y_worse && defined($luma_delta_abs) && $luma_delta_abs < 1.5) {
+	  trace_109($step,"hdr20_body_high_window_hold_retry_escalated",{
+	   family=>$family,
+	   direction=>$direction+0,
+	   luminance_delta_abs=>$luma_delta_abs+0,
+	   before_luminance_error_pct=>defined($before_lum_pct)?$before_lum_pct+0:undef,
+	   after_luminance_error_pct=>defined($after_lum_pct)?$after_lum_pct+0:undef,
+	   before_delta_e=>defined($before_de)?$before_de+0:undef,
+	   after_delta_e=>defined($after_de)?$after_de+0:undef
+	  });
+	  return { family=>$family, direction=>$direction+0, reason=>"high_window_hold_needs_larger_counter", not_suppressed=>JSON::PP::true };
+	 }
 	 suppress_hdr20_body_family($tried,$step,$family,$direction,$y_worse ? "luminance_worse" : "score_worse",$before_lum_pct,$after_lum_pct,$before_de,$after_de);
 	 return { family=>$family, direction=>$direction+0, reason=>$y_worse ? "luminance_worse" : "score_worse" };
-}
+	}
 
 sub hdr20_body_rgb_luminance_vector_adjustments {
 	 my ($error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,$min_step,$micro,$reason)=@_;
@@ -13663,11 +13728,12 @@ eval {
 				  };
 				  my $iteration_limit=iteration_limit_for_step($step,$max_iterations,$config);
 				  $iteration_limit=48 if($paired_white_step && !autocal_config_is_touchup($config) && $iteration_limit < 48);
-					  for(my $iter=1;$iter<=$iteration_limit;$iter++) {
-					   last if(cancelled());
-					   my $err=autocal_adjustment_error($reading,$read_step);
-					   my $lum_err=luminance_error_ratio($reading,$target_step_y);
-					   my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($read_step,$arrays,$target,\%tried_values,$lum_err);
+						  for(my $iter=1;$iter<=$iteration_limit;$iter++) {
+						   last if(cancelled());
+						   my $err=autocal_adjustment_error($reading,$read_step);
+						   my $lum_err=luminance_error_ratio($reading,$target_step_y);
+						   my $hdr20_planner_lum_err=(autocal_step_is_hdr20_body($read_step) && defined($lum_pct)) ? (($lum_pct+0)/100.0) : $lum_err;
+						   my $headroom_105_luma_blocking=headroom_105_luma_blocking_active($read_step,$arrays,$target,\%tried_values,$lum_err);
 					   my $headroom_105_luma_priority=headroom_105_luma_priority_active($read_step,$arrays,$target,\%tried_values,$lum_err);
 					   my $headroom_105_near_y_cleanup_active=headroom_105_near_y_cleanup_branch_active(\%tried_values,$read_step,$arrays,$target,$lum_err);
 							   my $adjustments;
@@ -13716,10 +13782,10 @@ eval {
 								   }
 												   if(!$adjustments && autocal_step_is_hdr20_body($read_step) && hdr20_body_force_luma_clamp_needed($read_step,$lum_err,0)) {
 												    $adjustments=hdr20_body_rgb_luminance_vector_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0,"main_hdr20_body_force_luma_clamp");
-												   }
-												   if(!$adjustments && autocal_step_is_hdr20_body($read_step)) {
-												    $adjustments=hdr20_body_balanced_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
-												   }
+													   }
+													   if(!$adjustments && autocal_step_is_hdr20_body($read_step)) {
+													    $adjustments=hdr20_body_balanced_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$hdr20_planner_lum_err,$stalls,\%tried_values,0.25,0);
+													   }
 												   if(!$adjustments && autocal_step_is_hdr20_body($read_step)) {
 												    $adjustments=hdr20_body_rgb_luminance_vector_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0,"main_hdr20_body");
 												   }
@@ -14452,6 +14518,7 @@ eval {
 			    last if($pair_target_reached_now->());
 				    my $err=autocal_adjustment_error($reading,$read_step);
 				    my $lum_err=luminance_error_ratio($reading,$target_step_y);
+				    my $hdr20_planner_lum_err=(autocal_step_is_hdr20_body($read_step) && defined($lum_pct)) ? (($lum_pct+0)/100.0) : $lum_err;
 				    my $micro_step=(defined($best_de) && $best_de <= ($target_delta+0.15)) ? 0.20 : ((defined($best_de) && $best_de > ($target_delta*2)) ? 0.5 : 0.20);
 				    if($paired_white_step) {
 				     $micro_step=(defined($best_de) && $best_de > ($target_delta+0.75)) ? 0.25 : 0.10;
@@ -14465,7 +14532,7 @@ eval {
 					      $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$best_de,$polish_stalls,\%polish_tried,$read_step,$pair_lum_pct,1);
 					     }
 					    }
-					    $adjustments=choose_micro_adjustments($err,$arrays,$target,$lum_err,\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step,$target_delta) if(!$adjustments);
+						    $adjustments=choose_micro_adjustments($err,$arrays,$target,$hdr20_planner_lum_err,\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step,$target_delta) if(!$adjustments);
 			    if(!$adjustments) {
 			     trace_109($read_step,"no_fine_tune_adjustment_chosen",{
 			      label=>$label,
