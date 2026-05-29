@@ -58,6 +58,28 @@ assert(
   propagateSource.includes('next if($calibrated_slot_mask->[$idx]);'),
   'full-DDC spine propagation should not overwrite calibrated/best slots'
 );
+assert(
+  propagateSource.includes('my $source_slot_masks_by_setting=(ref($source_slot_mask) eq "HASH") ? $source_slot_mask : undef;') &&
+    propagateSource.includes('my $setting_source_slot_mask=$source_slot_masks_by_setting ? ($source_slot_mask->{$setting} || $default_source_slot_mask) : $default_source_slot_mask;') &&
+    propagateSource.includes('$source_slot_masks_by_setting->{"__hold_last_source_to_end"}{$setting}') &&
+    propagateSource.includes('push @knots,{ x=>$lut_indexes[-1]+0, y=>$arr->[$last_source_idx]+0 };'),
+  'HDR full-DDC spine propagation should support per-channel source masks and hold the last RGB body knot to the DPG end'
+);
+
+const fullDdcSourceMaskSource = block(
+  'sub lg_autocal_26_full_ddc_spine_source_slot_mask {',
+  'sub lg_autocal_26_full_ddc_spine_anchor_count {'
+);
+assert(
+  fullDdcSourceMaskSource.includes('sub lg_autocal_26_full_ddc_spine_setting_source_slot_masks') &&
+    fullDdcSourceMaskSource.includes('return $base if(lc($layout||"") ne "hdr20");') &&
+    fullDdcSourceMaskSource.includes('my $rgb_source_slot_mask=clone_slot_mask_without_ires($base,100);') &&
+    fullDdcSourceMaskSource.includes('adjustingLuminance=>$base') &&
+    fullDdcSourceMaskSource.includes('whiteBalanceRed=>$rgb_source_slot_mask') &&
+    fullDdcSourceMaskSource.includes('whiteBalanceGreen=>$rgb_source_slot_mask') &&
+    fullDdcSourceMaskSource.includes('whiteBalanceBlue=>$rgb_source_slot_mask'),
+  'HDR20 full-DDC spine should exclude 100% from RGB/chroma propagation while preserving it for luminance and SDR'
+);
 
 const fullDdcSkipSource = block(
   'sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask {',
@@ -75,8 +97,9 @@ const refreshSource = block(
 );
 assert(
   refreshSource.includes('lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask($config,$calibrated_slot_mask)') &&
-    refreshSource.includes('propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask)'),
-  'full-DDC spine refresh should pass the anchor skip mask into interpolation'
+    refreshSource.includes('lg_autocal_26_full_ddc_spine_setting_source_slot_masks($calibrated_slot_mask,$config)') &&
+    refreshSource.includes('propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$propagation_source_slot_mask,$skip_slot_mask)'),
+  'full-DDC spine refresh should pass the anchor skip mask and HDR channel-specific source masks into interpolation'
 );
 
 const seedSource = block(
