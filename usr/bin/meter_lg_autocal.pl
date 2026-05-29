@@ -73,7 +73,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -6358,6 +6358,68 @@ sub hdr20_body_chroma_luma_adjustments {
 	  last if(@out >= $max_channels);
 	 }
 	 return undef if(!@out);
+		 return \@out;
+		}
+
+sub hdr20_top_body_shift_up_chroma_adjustments {
+	 my ($step,$adjustments,$arrays,$target)=@_;
+	 return $adjustments if(!autocal_step_is_hdr20_body($step));
+	 return $adjustments if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+	 return $adjustments if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0;
+	 return $adjustments if($ire < 89.9 || $ire >= 99.9);
+	 my $target_idx=$target->{"index"};
+	 return $adjustments if(!defined($target_idx));
+	 my @slots=ddc_slots_for_layout("hdr20");
+	 my $bridge_idx=$target_idx+1;
+	 return $adjustments if($bridge_idx >= @slots);
+	 return $adjustments if(abs(($slots[$bridge_idx]+0)-100) > 0.001);
+
+	 my @out;
+	 my $shifted=0;
+	 foreach my $adj (@{$adjustments}) {
+	  if(
+	   ref($adj) eq "HASH" &&
+	   (($adj->{"setting"}||"") =~ /^whiteBalance(?:Red|Green|Blue)$/) &&
+	   defined($adj->{"delta"})
+	  ) {
+	   my $setting=$adj->{"setting"};
+	   my $arr=$arrays->{$setting};
+	   if(ref($arr) eq "ARRAY" && $bridge_idx < @{$arr}) {
+	    my $delta=$adj->{"delta"}+0;
+	    if(abs($delta) >= 0.0001) {
+	     my $current=defined($arr->[$bridge_idx]) ? ($arr->[$bridge_idx]+0) : 0;
+	     my $next=round_ddc_quarter(clamp_ddc_value($current+$delta));
+	     if(abs($next-$current) >= 0.0001) {
+	      my %shifted_adj=%{$adj};
+	      $shifted_adj{"index"}=$bridge_idx;
+	      $shifted_adj{"current"}=$current;
+	      $shifted_adj{"next"}=$next;
+	      $shifted_adj{"delta"}=$next-$current;
+	      $shifted_adj{"hdr20_top_body_shift_up_chroma"}=1;
+	      $shifted_adj{"bridge_from_index"}=$target_idx+0;
+	      $shifted_adj{"bridge_to_index"}=$bridge_idx+0;
+	      $shifted_adj{"bridge_weight"}=1;
+	      $shifted_adj{"source"}="hdr20_top_body_shift_up_chroma";
+	      push @out,\%shifted_adj;
+	      $shifted=1;
+	      next;
+	     }
+	    }
+	   }
+	  }
+	  push @out,$adj;
+	 }
+	 if($shifted) {
+	  trace_109($step,"hdr20_top_body_shift_up_chroma_plan",{
+	   ire=>$ire+0,
+	   bridge_from_index=>$target_idx+0,
+	   bridge_to_index=>$bridge_idx+0,
+	   bridge_to_ire=>$slots[$bridge_idx]+0,
+	   original_adjustments=>trace_adjustments_summary($adjustments),
+	   shifted_adjustments=>trace_adjustments_summary(\@out)
+	  });
+	 }
 	 return \@out;
 	}
 
@@ -13600,8 +13662,8 @@ eval {
 					     next;
 					    }
 				   }
-					   if(!$adjustments) {
-					    trace_109($read_step,"no_adjustment_chosen",{
+				   if(!$adjustments) {
+				    trace_109($read_step,"no_adjustment_chosen",{
 					     label=>$label,
 					     iteration=>$iter+0,
 					     iteration_limit=>$iteration_limit+0,
@@ -13610,11 +13672,12 @@ eval {
 					     rgb_error=>$err,
 					     luminance_error_ratio=>defined($lum_err)?$lum_err+0:undef,
 					     target_values=>trace_target_values($arrays,$target)
-					    });
-					    last;
-					   }
-					   my $before_adjustment_reading=clone_picture($reading);
-					   my $before_de_for_adjustment=$de;
+				    });
+				    last;
+				   }
+				   $adjustments=hdr20_top_body_shift_up_chroma_adjustments($read_step,$adjustments,$arrays,$target);
+				   my $before_adjustment_reading=clone_picture($reading);
+				   my $before_de_for_adjustment=$de;
 					   my $before_lum_pct_for_adjustment=$lum_pct;
 					   my $before_score_for_adjustment=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
 		   my $before_values=trace_target_values($arrays,$target);
