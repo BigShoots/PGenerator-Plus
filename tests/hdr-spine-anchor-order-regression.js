@@ -28,6 +28,28 @@ assert(
 const orderStart = source.indexOf('my @hdr_autocal_26_order=(lg_autocal_26_full_ddc_spine_anchor_ires_for_layout("hdr20"),@top_down);');
 assert(orderStart >= 0, 'HDR20 AutoCal order should be built from the HDR full-DDC spine anchor helper');
 
+const effectiveHdrSource = block(
+  'sub hdr20_effective_ddc_array_ire {',
+  'sub ddc_slots {'
+);
+assert(
+  effectiveHdrSource.includes('return 1.4 if(abs(($ire+0)-2.0) < 0.001);') &&
+    effectiveHdrSource.includes('return $ire+0;'),
+  'HDR20 displayed 2% should resolve to the effective 1.4 DDC slot while other HDR points stay direct'
+);
+
+const ddcTargetSource = block(
+  'sub ddc_target_for_step {',
+  'sub lg_autocal_hdr20_sdr_adjustment_method_configured {'
+);
+assert(
+  ddcTargetSource.includes('my $ire=defined($step->{"ddc_target_ire"}) ? $step->{"ddc_target_ire"} : $step->{"ire"};') &&
+    ddcTargetSource.includes('my $array_ire=defined($step->{"ddc_array_ire"}) ? $step->{"ddc_array_ire"} : $ire;') &&
+    ddcTargetSource.includes('my $effective=hdr20_effective_ddc_array_ire($ire);') &&
+    ddcTargetSource.includes('return { index=>$i, ire=>format_percent($ire), array_ire=>format_percent($slots[$i]), write_ire=>format_percent($write_ire), label=>$label }'),
+  'ddc_target_for_step should keep displayed ire separate from resolved HDR20 array/write slot'
+);
+
 const propagateStart = source.indexOf('sub propagate_uncalibrated_26pt_slots {');
 const propagateEnd = source.indexOf('sub lg_autocal_26_hdr20_propagation_skip_slot_mask', propagateStart);
 assert(propagateStart >= 0 && propagateEnd > propagateStart, '26pt propagation helper should exist');
