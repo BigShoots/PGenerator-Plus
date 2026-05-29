@@ -1247,31 +1247,9 @@ sub update_white_reference_for_step {
 				 return (defined($Y) && $Y > 0) ? $Y : $white_y;
 		}
 
-sub hdr20_autocal_gamma_reference_luminance {
-	 return 100;
-}
-
-sub hdr20_autocal_target_luminance_for_step {
-	 my ($step,$target_gamma)=@_;
-	 return undef if(ref($step) ne "HASH");
-	 my $layout=lc($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "");
-	 return undef if($layout ne "hdr20");
-	 return undef if(autocal_step_is_hdr20_top_white($step));
-	 my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : (defined($step->{"ire"}) ? ($step->{"ire"}+0) : undef);
-	 return undef if(!defined($stimulus));
-	 return 0 if($stimulus <= 0);
-	 my $signal=$stimulus/100;
-	 $signal=1 if($signal > 1);
-	 my $gamma=lc($target_gamma||"2.2");
-	 $gamma="2.2" if($gamma eq "st2084" || $gamma eq "pq");
-	 return hdr20_autocal_gamma_reference_luminance() * target_gamma_linear($signal,$gamma,"sdr");
-}
-
 sub target_luminance_for_autocal_step {
 				 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
 				 return $white_y if(autocal_step_is_white($step));
-				 my $hdr20_target=hdr20_autocal_target_luminance_for_step($step,$target_gamma);
-				 return $hdr20_target if(defined($hdr20_target));
 				 if(autocal_step_is_peak_headroom($step)) {
 				  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
 				  return $target_lum_y if(defined($target_lum_y));
