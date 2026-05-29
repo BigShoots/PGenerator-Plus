@@ -6582,6 +6582,10 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 		    foreach my $try_direction ($direction,-$direction) {
 		     my $opposite_probe=($try_direction != $direction) ? 1 : 0;
 		     next if($opposite_probe && !$expected_failed);
+		     if(hdr20_body_family_suppressed($tried,"compound_luminance",$try_direction,$step)) {
+		      $expected_failed=1 if(!$opposite_probe);
+		      next;
+		     }
 		     if(hdr20_body_family_suppressed($tried,"luminance",$try_direction,$step)) {
 		      $expected_failed=1 if(!$opposite_probe);
 		      next;
@@ -8107,7 +8111,6 @@ sub full_ddc_spine_anchor_adjustments {
  return undef if(lg_autocal_26_full_ddc_spine_anchor_revisit_step($step));
  my $spine_body_anchor=lg_autocal_26_full_ddc_spine_body_anchor($target);
  return undef if(!$spine_body_anchor);
- return undef if(autocal_step_is_hdr20_body($step) && lg_autocal_hdr20_use_sdr_adjustment_method($config,$step));
 	 my $lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : 0;
 	 if(autocal_step_is_hdr20_body($step) && !lg_autocal_hdr20_use_sdr_adjustment_method($config,$step)) {
 	  if(hdr20_body_force_luma_clamp_needed($step,$luminance_err,0)) {
@@ -13747,9 +13750,6 @@ eval {
 								   }
 								   if(!$adjustments) {
 								    $adjustments=full_ddc_spine_anchor_adjustments($config,$err,$arrays,$target,$read_step,$de,$lum_err,$stalls,\%tried_values,$target_delta);
-								   }
-								   if(!$adjustments && $hdr20_sdr_method && autocal_step_is_hdr20_body($read_step) && defined($lum_pct) && abs($lum_pct) >= 1.0 && chroma_error_magnitude($err) >= 0.025) {
-								    $adjustments=hdr20_body_balanced_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
 								   }
 									   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
 									    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
