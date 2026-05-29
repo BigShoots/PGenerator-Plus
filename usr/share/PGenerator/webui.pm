@@ -19909,9 +19909,81 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 	 return cb ? !!cb.checked : meterFullAutoCalMagicWandEnabled();
 	}
 
-	function meterFullAutoCalPostSeriesAdjustChoiceValue(){
-	 return meterFullAutoCalMagicWandChoiceValue();
-	}
+		function meterFullAutoCalPostSeriesAdjustChoiceValue(){
+		 return meterFullAutoCalMagicWandChoiceValue();
+		}
+
+function meterFullAutoCalHdrWorkflowActive(){
+ const cfgMode=String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'').toLowerCase();
+ const reportMode=String((meterFullAutoCalReportData&&meterFullAutoCalReportData.signal_mode)||'').toLowerCase();
+ const requested=(typeof meterLgAutoCalRequestedSignalMode==='function')?String(meterLgAutoCalRequestedSignalMode()||'').toLowerCase():'';
+ return cfgMode==='hdr10'||reportMode==='hdr10'||requested==='hdr10';
+}
+
+function meterFullAutoCalToneMapPeakLuminance(status){
+ const candidates=[
+  status&&status.hdr_tone_map_peak_luminance,
+  status&&status.peak_headroom_luminance,
+  status&&status.calibrated_white_luminance,
+  status&&status.target_luminance,
+  meterFullAutoCalResults&&meterFullAutoCalResults.first&&meterFullAutoCalResults.first.peak_headroom_luminance,
+  meterFullAutoCalResults&&meterFullAutoCalResults.first&&meterFullAutoCalResults.first.calibrated_white_luminance,
+  meterFullAutoCalResults&&meterFullAutoCalResults.first&&meterFullAutoCalResults.first.target_luminance,
+  meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY,
+  meterFullAutoCalConfig&&meterFullAutoCalConfig.targetY
+ ];
+ for(const value of candidates){
+  const n=Number(value);
+  if(Number.isFinite(n)&&n>0) return n;
+ }
+ return null;
+}
+
+async function meterFullAutoCalUploadHdrToneMap(status,source){
+ if(!meterFullAutoCalHdrWorkflowActive()) return status||{};
+ if(status&&status.hdr_tone_map_uploaded) return status;
+ const peak=meterFullAutoCalToneMapPeakLuminance(status);
+ if(!(Number.isFinite(peak)&&peak>0)) throw new Error('HDR tone-map upload needs a measured 100% peak luminance.');
+ meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Uploading HDR tone map',message:'Writing HDR tone-map parameters from measured peak luminance.'},{workflow:'full',label:'HDR tone map'});
+ const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({
+   picture_mode:meterLgPictureModeValue(),
+   peak_luminance:peak,
+   helper_timeout:90
+  }),
+  _timeoutMs:100000
+ });
+ if(!response||response.status!=='ok') throw new Error((response&&response.message)||'HDR tone-map upload failed');
+ meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+ meterFullAutoCalReportData.stages=meterFullAutoCalReportData.stages||{};
+ meterFullAutoCalReportData.stages.tone_map={
+  status:'complete',
+  source:source||'full-autocal',
+  completed_at:Date.now(),
+  peak_luminance:peak,
+  response:response
+ };
+ meterFullAutoCalSaveReportData();
+ return {
+  ...(status||{}),
+  hdr_tone_map_uploaded:true,
+  hdr_tone_map_peak_luminance:peak,
+  hdr_tone_map:response
+ };
+}
+
+async function meterFullAutoCalCompleteAfterHdrToneMap(status,options,source){
+ try{
+  const finalStatus=await meterFullAutoCalUploadHdrToneMap(status,source);
+  meterFullAutoCalComplete(finalStatus,options);
+  return true;
+ }catch(e){
+  meterFullAutoCalAbort((e&&e.message)||'HDR tone-map upload failed',true);
+  return false;
+ }
+}
 
 function meterFullAutoCalTouchupChoiceValue(){
  return false;
@@ -20773,13 +20845,13 @@ function meterFullAutoCalTouchupTargetY(){
 	   post_series_after:afterSnap
 	  };
 	  meterAutoCalMagicWandActive=false;
-	  meterAutoCalMagicWandBaseStatus=null;
-	  meterAutoCalMagicWandFullWorkflow=false;
-	  if(fullWorkflow){
-	   meterFullAutoCalComplete(mergedStatus);
-	  }else{
-	   meterAutoCalPhase='complete';
-	   meterAutoCalRunning=true;
+		  meterAutoCalMagicWandBaseStatus=null;
+		  meterAutoCalMagicWandFullWorkflow=false;
+		  if(fullWorkflow){
+		   await meterFullAutoCalCompleteAfterHdrToneMap(mergedStatus,undefined,'magic-wand');
+		  }else{
+		   meterAutoCalPhase='complete';
+		   meterAutoCalRunning=true;
 	   meterAutoCalClearSavedState();
 	   meterAutoCalSetOverlay(true,{...mergedStatus,phase:'complete',current_name:'Greyscale Auto Cal complete',message:'Greyscale Auto Cal and Magic Wand complete.'});
 	   toast('LG Auto Cal complete');
@@ -21048,17 +21120,18 @@ async function meterFullAutoCalStartTouchup(lutStatus){
   if(await meterFullAutoCalStartPost3dPolish(lutStatus)) return true;
   meterLg3dAutoCalRunning=false;
   meterActionPending=false;
-  meterFullAutoCalComplete({
+  const completeStatus={
    ...(lutStatus||{}),
    full_autocal:true,
    full_workflow:true,
    full_autocal_run_id:meterFullAutoCalRunId,
    run_id:meterFullAutoCalRunId,
-	   full_autocal_phase:'3d-lut',
-	   completed_at:Number(lutStatus&&lutStatus.completed_at)||Date.now(),
-	   touchup_skipped:true,
-		   message:'Greyscale and 3D LUT complete.'
-	  },{skipTouchup:true});
+		   full_autocal_phase:'3d-lut',
+		   completed_at:Number(lutStatus&&lutStatus.completed_at)||Date.now(),
+		   touchup_skipped:true,
+			   message:'Greyscale and 3D LUT complete.'
+		  };
+  await meterFullAutoCalCompleteAfterHdrToneMap(completeStatus,{skipTouchup:true},'3d-lut');
   return true;
  }
  meterFullAutoCalPhase='touchup-greyscale';
@@ -21295,7 +21368,7 @@ async function meterPollAutoCal(options){
 	   meterAutoCalPendingConfig=null;
 	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
 	   else if(meterFullAutoCalMagicWandEnabled()) await meterAutoCalStartMagicWand(r,{fullWorkflow:true,afterPolish:true});
-	   else meterFullAutoCalComplete(r);
+		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 	   return;
 	  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
@@ -21304,7 +21377,7 @@ async function meterPollAutoCal(options){
 	   meterAutoCalRunning=false;
 	   meterAutoCalPendingConfig=null;
 	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-	   else meterFullAutoCalComplete(r);
+		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
 	   return;
 	  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
@@ -21312,7 +21385,7 @@ async function meterPollAutoCal(options){
 	   meterActionPending=false;
 	   meterAutoCalRunning=false;
 	   meterAutoCalPendingConfig=null;
-	   meterFullAutoCalComplete(r);
+		   await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'touchup-greyscale');
 	   return;
 	  }
 	  const backendGreyscaleActive=!!(r.status==='running'||meterAutoCalPolling||meterAutoCalPhase==='running');
@@ -21345,7 +21418,7 @@ async function meterPollAutoCal(options){
 		    if(meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
 		     meterAutoCalRunning=false;
 		     meterAutoCalPendingConfig=null;
-		     meterFullAutoCalComplete(r);
+			     await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'touchup-greyscale');
 		     return;
 		    }
 			    if(meterFullAutoCalEnsureStatusPhase(r,'post-3d-polish')){
@@ -21353,14 +21426,14 @@ async function meterPollAutoCal(options){
 			     meterAutoCalPendingConfig=null;
 			     if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
 			     else if(meterFullAutoCalMagicWandEnabled()) await meterAutoCalStartMagicWand(r,{fullWorkflow:true,afterPolish:true});
-			     else meterFullAutoCalComplete(r);
+				     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 			     return;
 			    }
 			    if(meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
 			     meterAutoCalRunning=false;
 			     meterAutoCalPendingConfig=null;
 			     if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-			     else meterFullAutoCalComplete(r);
+				     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
 			     return;
 			    }
 			    if(r.full_autocal_post_series_adjust&&meterAutoCalMagicWandActive&&!meterAutoCalMagicWandFullWorkflow){
