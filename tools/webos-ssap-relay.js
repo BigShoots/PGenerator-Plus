@@ -16,6 +16,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
 const path = require('path');
 const tls = require('tls');
@@ -29,6 +30,9 @@ function usage(exitCode = 0) {
 Options:
   --listen-host <host>  Host/IP to bind for Calman clients (default 0.0.0.0)
   --listen-port <port>  Port to bind for Calman clients (default 3000)
+  --listen-tls          Accept secure WebSocket clients (webOS port 3001)
+  --tls-cert <path>     Certificate for --listen-tls
+  --tls-key <path>      Private key for --listen-tls
   --target <uri>        Target webOS WebSocket URI (default ws://192.168.1.177:3000)
   --target-ip <ip>      Shortcut for --target ws://<ip>:3000
   --log <path>          JSONL log path (default tmp/webos-relay-<timestamp>.jsonl)
@@ -44,6 +48,9 @@ function parseArgs(argv) {
   const args = {
     listenHost: '0.0.0.0',
     listenPort: 3000,
+    listenTls: false,
+    tlsCert: null,
+    tlsKey: null,
     target: 'ws://192.168.1.177:3000',
     logPath: defaultLogPath()
   };
@@ -56,6 +63,9 @@ function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') usage(0);
     else if (arg === '--listen-host') args.listenHost = next();
     else if (arg === '--listen-port') args.listenPort = Number(next());
+    else if (arg === '--listen-tls') args.listenTls = true;
+    else if (arg === '--tls-cert') args.tlsCert = next();
+    else if (arg === '--tls-key') args.tlsKey = next();
     else if (arg === '--target') args.target = next();
     else if (arg === '--target-ip') args.target = `ws://${next()}:3000`;
     else if (arg === '--log') args.logPath = next();
@@ -66,6 +76,9 @@ function parseArgs(argv) {
   }
   if (!Number.isInteger(args.listenPort) || args.listenPort < 1 || args.listenPort > 65535) {
     throw new Error(`Invalid --listen-port: ${args.listenPort}`);
+  }
+  if (args.listenTls && (!args.tlsCert || !args.tlsKey)) {
+    throw new Error('--listen-tls requires --tls-cert and --tls-key');
   }
   return args;
 }
@@ -355,17 +368,39 @@ async function bridgeClient(clientSocket, req, upgradeHead, targetUri, logger) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const logger = new JsonlLogger(args.logPath);
-  const server = http.createServer((req, res) => {
+  const requestHandler = (req, res) => {
+    logger.log({ event: 'http_request', method: req.method, url: req.url, remote: req.socket.remoteAddress });
     res.writeHead(426, { 'Content-Type': 'text/plain' });
     res.end('WebSocket upgrade required\n');
-  });
+  };
+  const server = args.listenTls
+    ? https.createServer({
+        cert: fs.readFileSync(args.tlsCert),
+        key: fs.readFileSync(args.tlsKey)
+      }, requestHandler)
+    : http.createServer(requestHandler);
   const sockets = new Set();
 
   server.on('connection', socket => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
   });
+  server.on('clientError', (err, socket) => {
+    logger.log({
+      event: 'client_http_error',
+      error: err.message,
+      code: err.code || null,
+      bytes: err.rawPacket ? err.rawPacket.subarray(0, 16).toString('hex') : null
+    });
+    if (socket && !socket.destroyed) socket.destroy();
+  });
   server.on('upgrade', (req, socket, head) => {
+    logger.log({
+      event: 'client_upgrade',
+      remote: req.socket.remoteAddress,
+      url: req.url,
+      headers: req.headers
+    });
     const key = req.headers['sec-websocket-key'];
     if (!key) {
       socket.end('HTTP/1.1 400 Bad Request\r\n\r\nMissing Sec-WebSocket-Key');
