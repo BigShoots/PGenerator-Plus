@@ -2161,6 +2161,22 @@ sub low_shadow_good_enough {
  return ($de <= low_shadow_delta_acceptance($step,$target_delta)) ? 1 : 0;
 }
 
+sub low_shadow_luminance_progress_keep {
+ my ($step,$de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$candidate_score,$best_score)=@_;
+ return 0 if(!autocal_step_is_low_shadow($step));
+ return 0 if(!defined($de) || !defined($lum_pct) || !defined($best_de) || !defined($best_lum_pct));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $candidate_abs=abs($lum_pct+0);
+ my $best_abs=abs($best_lum_pct+0);
+ return 0 if($candidate_abs + 0.75 >= $best_abs);
+ my $tol=luminance_tolerance_percent($step);
+ my $near_y=($candidate_abs <= $tol+0.50) ? 1 : 0;
+ my $de_allowance=$near_y ? 0.40 : 0.20;
+ return 0 if(($de+0) > ($best_de+0)+$de_allowance);
+ return 0 if(defined($candidate_score) && defined($best_score) && ($candidate_score+0) > ($best_score+0)+0.75);
+ return 1;
+}
+
 sub committed_low_shadow_good_enough {
  my ($step,$de,$lum_pct,$target_delta)=@_;
  return 0 if(!autocal_step_is_low_shadow($step));
@@ -4662,6 +4678,46 @@ sub record_bad_luma_probe_family {
  return $entry;
 }
 
+sub copy_autocal_suppression_state {
+ my ($from,$to)=@_;
+ return if(ref($from) ne "HASH" || ref($to) ne "HASH");
+ foreach my $key (qw(__hdr20_body_suppressed_family __bad_luma_family)) {
+  next if(ref($from->{$key}) ne "HASH");
+  $to->{$key}={} if(ref($to->{$key}) ne "HASH");
+  foreach my $entry_key (keys %{$from->{$key}}) {
+   if(ref($from->{$key}{$entry_key}) eq "HASH") {
+    $to->{$key}{$entry_key}=clone_luma_probe_entry($from->{$key}{$entry_key});
+   } else {
+    $to->{$key}{$entry_key}=$from->{$key}{$entry_key};
+   }
+  }
+ }
+}
+
+sub bad_luma_probe_family_count {
+ my ($tried)=@_;
+ return 0 if(ref($tried) ne "HASH" || ref($tried->{"__bad_luma_family"}) ne "HASH");
+ my $count=0;
+ foreach my $entry (values %{$tried->{"__bad_luma_family"}}) {
+  next if(ref($entry) ne "HASH");
+  $count+=($entry->{"severe_count"}||0);
+  $count+=($entry->{"count"}||0);
+ }
+ return $count;
+}
+
+sub hdr20_low_shadow_body_vector_needed {
+ my ($step,$tried,$lum_err,$de,$target_delta,$stalls)=@_;
+ return 0 if(!autocal_step_is_hdr20_body($step) || !autocal_step_is_low_shadow($step));
+ return 0 if(!defined($de));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $lum_pct=defined($lum_err) ? abs(($lum_err+0)*100) : 0;
+ my $bad_luma=bad_luma_probe_family_count($tried);
+ return 1 if($bad_luma >= 2 && $de > ($target_delta+0.75));
+ return 1 if(($stalls||0) >= 2 && $de > ($target_delta+1.25) && $lum_pct >= 4.0);
+ return 0;
+}
+
 sub next_new_headroom_value {
 	 my ($current,$delta,$tried,$setting,$min_step)=@_;
 	 $current=0 if(!defined($current));
@@ -6149,7 +6205,13 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  my $luma_tol=luminance_tolerance_percent($step);
  my $wild_luma_gate=$luma_tol*1.25;
  $wild_luma_gate=5.0 if($wild_luma_gate < 5.0);
- return undef if(abs($lum_pct) > $wild_luma_gate);
+ my $hdr20_deep_shadow_escape=(
+  autocal_step_is_hdr20_body($step) &&
+  $ire > 0 && $ire <= 2.5001 &&
+  defined($de) && $de > ($target_delta+1.25)
+ ) ? 1 : 0;
+ return undef if($ire > 0 && $ire <= 2.5001 && !$hdr20_deep_shadow_escape);
+ return undef if(abs($lum_pct) > $wild_luma_gate && !$hdr20_deep_shadow_escape);
  my $chroma_mag=chroma_error_magnitude($error);
  return undef if($chroma_mag < 0.035 && (!defined($de) || $de <= ($target_delta+1.0)));
  my $far_3_4_luma=(!$micro && low_shadow_3_4_luma_far_from_target($step,$lum_pct) && defined($de) && $de > ($target_delta+1.0)) ? 1 : 0;
@@ -6157,6 +6219,7 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  $rgb_cap=1.0 if($ire <= 5.1001);
  $rgb_cap=0.5 if($ire <= 4.1001);
  $rgb_cap=0.25 if($ire <= 2.5001);
+ $rgb_cap=1.0 if($hdr20_deep_shadow_escape && $rgb_cap < 1.0);
  $rgb_cap=0.5 if($micro && $rgb_cap > 0.5);
  my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
  $floor=0.004 if($floor < 0.004);
@@ -8294,6 +8357,10 @@ sub choose_adjustments {
 			 my $near_white_95_luma=near_white_95_luma_adjustments($arrays,$target,$step,$lum_pct,$de,0.5,$tried,$stalls,"near_white_95_luma",$LG_AUTOCAL_STATE,0);
 			 return $near_white_95_luma if($near_white_95_luma);
 			 if(autocal_step_is_low_shadow($step)) {
+			  if(hdr20_low_shadow_body_vector_needed($step,$tried,$luminance_err,$de,0.5,$stalls)) {
+			   my $hdr_shadow_vector=hdr20_body_rgb_luminance_vector_adjustments($error,$arrays,$target,$step,$de,0.5,$luminance_err,$stalls,$tried,$min_step,0,"choose_hdr20_low_shadow_luma_unresponsive");
+			   return $hdr_shadow_vector if($hdr_shadow_vector);
+			  }
 			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,0);
 			  return $shadow_luma if($shadow_luma);
 			  my $shadow_chroma_luma=low_shadow_chroma_luminance_coupled_adjustments($error,$arrays,$target,$luminance_err,$de,0.5,$tried,$step,0);
@@ -8479,7 +8546,12 @@ sub choose_micro_adjustments {
 				  return $hdr_body_balanced if($hdr_body_balanced);
 				 }
 			 if(autocal_step_is_low_shadow($step)) {
-			  my $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);
+			  my $shadow_luma;
+			  if(hdr20_low_shadow_body_vector_needed($step,$tried,$luminance_err,$de,$target_delta,$stalls)) {
+			   my $hdr_shadow_vector=hdr20_body_rgb_luminance_vector_adjustments($error,$arrays,$target,$step,$de,$target_delta,$luminance_err,$stalls,$tried,$min_micro_step,1,"fine_hdr20_low_shadow_luma_unresponsive");
+			   return $hdr_shadow_vector if($hdr_shadow_vector);
+			  }
+			  $shadow_luma=low_shadow_luminance_priority_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$step,1);
 			  return $shadow_luma if($shadow_luma);
 			  my $shadow_chroma_luma=low_shadow_chroma_luminance_coupled_adjustments($error,$arrays,$target,$luminance_err,$de,$target_delta,$tried,$step,1);
 			  return $shadow_chroma_luma if($shadow_chroma_luma);
@@ -13609,7 +13681,13 @@ eval {
 								    $hdr20_body_vector_next_adjustments=undef;
 								   }
 								   if(!$adjustments && autocal_step_is_low_shadow($read_step)) {
-								    $adjustments=low_shadow_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,0);
+								    if(hdr20_low_shadow_body_vector_needed($read_step,\%tried_values,$lum_err,$de,$target_delta,$stalls)) {
+								     $adjustments=hdr20_body_rgb_luminance_vector_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0,"main_hdr20_low_shadow_luma_unresponsive");
+								    }
+								    $adjustments=low_shadow_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,0) if(!$adjustments);
+								    if(!$adjustments && hdr20_low_shadow_body_vector_needed($read_step,\%tried_values,$lum_err,$de,$target_delta,$stalls)) {
+								     $adjustments=hdr20_body_rgb_luminance_vector_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0,"main_hdr20_low_shadow_after_luma");
+								    }
 								    $adjustments=low_shadow_chroma_luminance_coupled_adjustments($err,$arrays,$target,$lum_err,$de,$target_delta,\%tried_values,$read_step,0) if(!$adjustments);
 								   }
 							   if(!$adjustments && $paired_white_step) {
@@ -13915,6 +13993,7 @@ eval {
 								    my $headroom_105_main_polish_refine=headroom_105_main_polish_refine_adjustment($adjustments);
 								    my $headroom_105_main_polish_keep=0;
 								    my $full_ddc_spine_anchor_y_keep=0;
+								    my $low_shadow_y_keep=0;
 								    my $headroom_105_luma_blocking_after=(!$paired_white_step && defined($lum_pct))
 								     ? headroom_105_luma_blocking_active($read_step,$arrays,$target,\%tried_values,$lum_pct/100)
 								     : 0;
@@ -13964,11 +14043,21 @@ eval {
 								     $full_ddc_spine_anchor_y_keep=1;
 								     $best_update_reason="full_ddc_spine_anchor_y_keep" if(!defined($best_update_reason));
 								    }
+								    if(
+								     !$paired_white_step &&
+								     !$full_ddc_spine_anchor_y_keep &&
+								     low_shadow_luminance_progress_keep(
+								      $read_step,$de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$candidate_score_after,$best_score
+								     )
+								    ) {
+								     $low_shadow_y_keep=1;
+								     $best_update_reason="low_shadow_luminance_progress_keep" if(!defined($best_update_reason));
+								    }
 								    my $keep_candidate=$paired_white_step
 								     ? defined($best_update_reason)
 								     : (defined($de) && ($headroom_105_luma_blocking_after
 								      ? ($headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)
-								      : (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep)));
+								      : (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep || $low_shadow_y_keep)));
 					    if($keep_candidate) {
 					    if($headroom_105_score_branch_promote) {
 					     trace_109($read_step,"headroom_105_score_branch_promoted",{
@@ -14029,6 +14118,7 @@ eval {
 					     headroom_105_score_branch_promoted=>$headroom_105_score_branch_promote?JSON::PP::true:JSON::PP::false,
 					     headroom_105_main_polish_refine=>$headroom_105_main_polish_refine?JSON::PP::true:JSON::PP::false,
 					     full_ddc_spine_anchor_y_keep=>$full_ddc_spine_anchor_y_keep?JSON::PP::true:JSON::PP::false,
+					     low_shadow_luminance_progress_keep=>$low_shadow_y_keep?JSON::PP::true:JSON::PP::false,
 						     not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 						     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 						     previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
@@ -14360,6 +14450,7 @@ eval {
 			   });
 			   $restore_best_branch->("Starting final fine tune for $label");
 		   my %polish_tried;
+		   copy_autocal_suppression_state(\%tried_values,\%polish_tried);
 		   mark_tried_values(\%polish_tried,$arrays,$target,$de);
 			   my $polish_limit=headroom_polish_limit_for_step($read_step,$config);
 			   $polish_limit=48 if(!defined($polish_limit));
@@ -14510,6 +14601,7 @@ eval {
 				    my $not_worse_measurement=autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct);
 					    my $best_update_reason=$paired_white_step ? $pair_best_update_reason->($candidate_score) : undef;
 					    my $headroom_105_score_keep=0;
+					    my $low_shadow_y_keep=0;
 					    my $headroom_105_luma_blocking_after=(!$paired_white_step && defined($lum_pct))
 					     ? headroom_105_luma_blocking_active($read_step,$arrays,$target,\%polish_tried,$lum_pct/100)
 					     : 0;
@@ -14525,11 +14617,21 @@ eval {
 					     $headroom_105_score_keep=1;
 					     $best_update_reason="headroom_105_y_score_keep";
 					    }
+					    if(
+					     !$paired_white_step &&
+					     !$headroom_105_score_keep &&
+					     low_shadow_luminance_progress_keep(
+					      $read_step,$de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$candidate_score,$best_score
+					     )
+					    ) {
+					     $low_shadow_y_keep=1;
+					     $best_update_reason="low_shadow_luminance_progress_keep";
+					    }
 					    my $keep_candidate=$paired_white_step
 					     ? defined($best_update_reason)
 					     : (defined($de) && ($headroom_105_luma_blocking_after
 					      ? $headroom_105_score_keep
-					      : (($not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep)));
+					      : (($not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $low_shadow_y_keep)));
 			    if($keep_candidate) {
 			     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
@@ -14548,6 +14650,7 @@ eval {
 				      reason=>defined($best_update_reason)?$best_update_reason:($chroma_keep?"chroma_keep":($delta_keep?"delta_keep":"score_improved")),
 						      chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
 					      delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
+					      low_shadow_luminance_progress_keep=>$low_shadow_y_keep?JSON::PP::true:JSON::PP::false,
 					      not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 					      candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 				      previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
