@@ -4074,9 +4074,10 @@ sub interpolated_26pt_curve_value {
 }
 
 sub propagate_uncalibrated_26pt_slots {
- my ($arrays,$calibrated_slot_mask,$source_slot_mask)=@_;
+ my ($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask)=@_;
  return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
  $source_slot_mask=$calibrated_slot_mask if(ref($source_slot_mask) ne "ARRAY");
+ $skip_slot_mask=[] if(ref($skip_slot_mask) ne "ARRAY");
  my @lut_indexes=lg_autocal_26_lut_indexes();
  my $black_anchor=lg_autocal_26_black_lut_anchor();
  my @settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
@@ -4096,6 +4097,7 @@ sub propagate_uncalibrated_26pt_slots {
  my $filled=0;
  for(my $idx=0;$idx<@lut_indexes;$idx++) {
   next if($calibrated_slot_mask->[$idx]);
+  next if($skip_slot_mask->[$idx]);
   my $slot_filled=0;
   foreach my $setting (@settings) {
    my $arr=$arrays->{$setting};
@@ -4108,6 +4110,23 @@ sub propagate_uncalibrated_26pt_slots {
   $filled++ if($slot_filled);
  }
  return $filled;
+}
+
+sub lg_autocal_26_hdr20_propagation_skip_slot_mask {
+ my ($config,$calibrated_slot_mask)=@_;
+ my @mask=map { 0 } (1..ddc_slot_count());
+ return \@mask if(ref($config) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ return \@mask if(!lg_autocal_26_hdr20_seed_enabled($config));
+ return \@mask if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ my @slots=ddc_slots_for_layout("hdr20");
+ for(my $idx=0;$idx<@slots;$idx++) {
+  next if($calibrated_slot_mask->[$idx]);
+  my $ire=$slots[$idx]+0;
+  next if($ire < 70 || $ire > 99.999);
+  next if(abs($ire-80) < 0.001);
+  $mask[$idx]=1;
+ }
+ return \@mask;
 }
 
 sub calibrated_26pt_slot_for_ire {
@@ -4247,7 +4266,8 @@ sub refresh_propagated_uncalibrated_26pt_slots {
   $source_slot_mask=lg_autocal_26_anchor_predrive_source_slot_mask($calibrated_slot_mask);
  }
 	 return 0 if(calibrated_non_black_26pt_anchor_count($source_slot_mask) < $minimum_anchors);
-	 my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask);
+	 my $skip_slot_mask=lg_autocal_26_hdr20_propagation_skip_slot_mask($config,$calibrated_slot_mask);
+	 my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask);
 	 my $overrides=apply_full_ddc_spine_headroom_seed_overrides($config,$arrays,$calibrated_slot_mask);
 	 return $filled+$overrides;
 	}
