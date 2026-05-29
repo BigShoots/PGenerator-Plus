@@ -438,6 +438,8 @@ sub lg_autocal_hdr20_use_sdr_adjustment_method {
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 return 0 if(ref($step) ne "HASH" || !autocal_step_is_hdr20_body($step));
 	 return 0 if(exists($config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}) && !$config->{"lg_autocal_hdr20_use_sdr_adjustment_method"});
+	 return 1 if(exists($config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}) && $config->{"lg_autocal_hdr20_use_sdr_adjustment_method"});
+	 return 1 if(lg_autocal_26_hdr20_seed_enabled($config));
 	 return $step->{"lg_autocal_hdr20_use_sdr_adjustment_method"} ? 1 : 0;
 }
 
