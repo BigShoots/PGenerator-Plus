@@ -7306,6 +7306,57 @@ sub headroom_peak_wrgb_seed_adjustment {
 	 return \@out;
 }
 
+sub hdr20_top_white_rgb_vector_adjustment {
+	 my ($error,$arrays,$target,$step,$de,$stalls,$tried,$min_step,$micro)=@_;
+	 return undef if(!autocal_step_is_hdr20_top_white($step));
+	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+	 return undef if(ref($tried) ne "HASH");
+	 my $idx=$target->{"index"};
+	 return undef if(!defined($idx));
+	 my $chroma=chroma_error_magnitude($error);
+	 return undef if($chroma < ($micro ? 0.010 : 0.020));
+	 return undef if(defined($de) && $de < ($micro ? 1.25 : 3.0));
+	 $min_step ||= ($micro ? 0.20 : 0.25);
+	 $stalls=0 if(!defined($stalls));
+	 my $max_step=$micro ? 1.0 : 4.0;
+	 $max_step=8.0 if(!$micro && defined($de) && $de >= 12);
+	 $max_step=6.0 if(!$micro && defined($de) && $de >= 6 && $max_step < 6.0);
+	 my $floor=rgb_error_floor($de,0.5,$micro ? 1 : 0);
+	 $floor=$micro ? 0.0020 : 0.0030 if($floor < ($micro ? 0.0020 : 0.0030));
+	 my @channels=grep { abs($error->{$_}||0) >= $floor } qw(r g b);
+	 return undef if(@channels < 2);
+	 foreach my $scale (1.0,0.5,0.25) {
+	  my @out;
+	  foreach my $ch (@channels) {
+	   my $err=$error->{$ch}||0;
+	   my $setting=channel_setting($ch);
+	   my $arr=$arrays->{$setting};
+	   next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+	   my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	   my $step_size=headroom_adjustment_step(abs($err),$stalls,$min_step,$max_step,$micro ? 1 : 0);
+	   $step_size*=$scale;
+	   $step_size=$min_step if($step_size < $min_step && $scale >= 0.999);
+	   next if($step_size < $min_step-0.0001);
+	   my $direction=($err > 0) ? -1 : 1;
+	   my $next=clamp_ddc_value($current+($direction*$step_size));
+	   next if(abs($next-$current) < 0.0001);
+	   push @out,{
+	    channel=>$ch,
+	    setting=>$setting,
+	    current=>$current,
+	    next=>$next,
+	    delta=>$next-$current,
+	    hdr20_top_white_rgb_vector=>1,
+	    micro=>$micro ? 1 : 0
+	   };
+	  }
+	  next if(@out < 2);
+	  next if(headroom_peak_adjustment_combo_seen($tried,$arrays,$target,\@out));
+	  return \@out;
+	 }
+	 return undef;
+}
+
 sub ddc_seed_adjustment {
 	 my ($arrays,$target,$tried,$seed,$flag)=@_;
 	 return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($seed) ne "HASH");
@@ -8392,6 +8443,8 @@ sub choose_adjustments {
 				  return $neutral if($neutral);
 				 }
 					 if($hdr20_top_white && hdr20_top_white_chroma_priority_needed($step,$error,$de,0.5)) {
+					  my $vector=hdr20_top_white_rgb_vector_adjustment($error,$arrays,$target,$step,$de,$stalls,$tried,$min_step,0);
+					  return $vector if($vector);
 					  my $chroma=headroom_chroma_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_step,8,0);
 					  return $chroma if($chroma);
 					 }
@@ -8662,6 +8715,9 @@ sub choose_micro_adjustments {
 				  return $pair_seed if($pair_seed);
 				 }
 					 if($hdr20_top_white && hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta)) {
+					  my $vector=hdr20_top_white_rgb_vector_adjustment($error,$arrays,$target,$step,$de,$stalls,$tried,$min_micro_step,1);
+					  return $vector if($vector);
+					  return undef if(defined($de) && $de > ($target_delta+2.0));
 					  my $chroma=headroom_chroma_adjustment($error,$arrays,$target,$de,$stalls,$tried,$min_micro_step,$max_step > 1 ? 1 : $max_step,1);
 					  return $chroma if($chroma);
 					 }
