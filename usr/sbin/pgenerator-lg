@@ -2395,7 +2395,7 @@ sub lg_hdr_tone_map_upload_workflow (@) {
   return &json_error("HDR tone-map upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
  my @tone_map=($peak,1000,70,4000,60,10000,50);
- my $upload=&lg_calibration_request($session,"hdr_tone_map_upload","1D_TONEMAP_PARAM",&lg_force_pic_mode_payload(&lg_typed_uint16_payload(\@tone_map)),1,$cal_mode,$connect_timeout + 6);
+ my $upload=&lg_calibration_request($session,"hdr_tone_map_upload","1D_TONEMAP_PARAM",&lg_typed_uint16_payload(\@tone_map),1,"",$connect_timeout + 6);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
  if($upload_failed || ref($upload) ne "HASH") {
   &websocket_close($session);
