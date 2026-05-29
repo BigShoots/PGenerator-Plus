@@ -1973,7 +1973,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 			   } elsif($points==30 && $signal_mode eq "hdr10") {
 				    @ire_vals=(0,1,1.4,2,2.3,2.7,3,3.7,4,6,8,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
 				   } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
-						    @ire_vals=(100,0,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37);
+						    @ire_vals=(100,0,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4);
 			   } elsif($points==26 && $lg_autocal_26) {
 					    @ire_vals=(100,0,2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 			   } elsif($points==21 && $lg_greyscale_21) {
@@ -1983,6 +1983,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	   }
 	   my %stimulus_for_slot=map { $_ => $_ } @ire_vals;
 			   my $lg_autocal_26_codes=($points==26 && $lg_autocal_26 && $signal_mode eq "sdr") ? 1 : 0;
+			   my $lg_hdr20_codes=($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") ? 1 : 0;
 			   my $lg_extended_sdr_codes=(!$lg_autocal_26_codes && (($points==26 && $lg_autocal_26) || ($points==21 && $lg_greyscale_21)) && $signal_mode eq "sdr") ? 1 : 0;
 			   my $lg_legal_sdr_ddc_codes=0;
 				   # LG manual greyscale follows the TV's 22-point white-balance menu.
@@ -1996,11 +1997,26 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 				    my $code=$lg_autocal_26_code{$key};
 				    $lg_autocal_26_stimulus{$key}=($code-64)*100/876;
 			   }
+				   my %lg_hdr20_code=(
+				    "1.4"=>19,"2"=>20,"2.7"=>22,"4"=>25,"5"=>27,"7"=>31,"10"=>38,"15"=>49,"20"=>60,"25"=>71,
+				    "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
+				   );
+				   my %lg_hdr20_stimulus=();
+				   foreach my $key (keys %lg_hdr20_code) {
+				    my $code=$lg_hdr20_code{$key};
+				    $lg_hdr20_stimulus{$key}=($code-16)*100/219;
+				   }
 			   if($points==26 && $lg_autocal_26 && $signal_mode eq "sdr") {
 			    foreach my $slot (@ire_vals) {
 			     my $key=$slot;
 			     $key=~s/\.0$//;
 			     $stimulus_for_slot{$slot}=$lg_autocal_26_stimulus{$key} if(exists($lg_autocal_26_stimulus{$key}));
+			    }
+			   } elsif($lg_hdr20_codes) {
+			    foreach my $slot (@ire_vals) {
+			     my $key=$slot;
+			     $key=~s/\.0$//;
+			     $stimulus_for_slot{$slot}=$lg_hdr20_stimulus{$key} if(exists($lg_hdr20_stimulus{$key}));
 			    }
 			   } elsif($points==21 && $lg_greyscale_21) {
 			    my %lg_autocal_stimulus=(
@@ -2068,6 +2084,21 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	     $c=exists($lg_autocal_26_code{$slot_key}) ? $lg_autocal_26_code{$slot_key} : int(64 + $stimulus_pct/100*876 + .5);
 	     $c=64 if($c < 64);
 	     $c=1023 if($c > 1023);
+	     return $c;
+	    }
+	    if($lg_hdr20_codes) {
+     my $slot_key="";
+     foreach my $slot (@ire_vals) {
+      my $key=$slot;
+      $key=~s/\.0$//;
+      if(exists($lg_hdr20_stimulus{$key}) && abs(($lg_hdr20_stimulus{$key}+0)-($stimulus_pct+0)) < 0.01) {
+       $slot_key=$key;
+       last;
+      }
+     }
+	     $c=exists($lg_hdr20_code{$slot_key}) ? $lg_hdr20_code{$slot_key} : int(16 + $stimulus_pct/100*219 + .5);
+	     $c=16 if($c < 16);
+	     $c=235 if($c > 235);
 	     return $c;
 	    }
 	    if($dv_series) {
@@ -16421,12 +16452,13 @@ const METER_TWO_POINT_DEFAULTS={low:30,high:100};
 const METER_LG_GREY_MANUAL_22_ENABLED=false;
 		const METER_LG_GREY_DDC_SLOTS_22=[2.5,5,7.5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
 			const METER_LG_GREY_AUTOCAL_26_SLOTS=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
-				const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,94.98,89.95,84.93,79.91,69.86,59.82,50.23,40.18,30.14,25.11,20.09,15.07,10.05,6.85,5.02,4.11,2.74,1.83,1.37];
-				const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,224,213,202,191,169,147,126,104,82,71,60,49,38,31,27,25,22,20,19];
-							function meterLgHdrAutoCalDdcArrayIre(slot){
-							 const value=Number(slot);
-							 if(!Number.isFinite(value)) return slot;
-							 return slot;
+				const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4];
+				const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,213,191,169,147,126,115,104,93,82,71,60,49,38,31,27,25,22,20,19];
+				const METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES=[100,89.9543378995434,79.9086757990868,69.8630136986301,59.8173515981735,50.2283105022831,45.2054794520548,40.1826484018265,35.1598173515982,30.1369863013699,25.1141552511416,20.0913242009132,15.0684931506849,10.0456621004566,6.84931506849315,5.02283105022831,4.10958904109589,2.73972602739726,1.82648401826484,1.36986301369863];
+							function meterLgHdrAutoCalStimulusFromCode(code){
+							 const value=(Number(code)-16)*100/219;
+							 if(!Number.isFinite(value)) return 0;
+							 return Math.max(0,Math.min(100,value));
 							}
 				const METER_LG_GREY_AUTOCAL_26_CODES=[84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023];
 				const METER_LG_GREY_EXTENDED_26_CODES=[64,...METER_LG_GREY_AUTOCAL_26_CODES];
@@ -17126,15 +17158,17 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  if(slot!=null&&step.autocal_slot_locked&&meterLgDdcStepHasCustomStimulus(step,slot)) inputByDdcSlot[String(slot)]=step;
 	 });
 	 if(mode==='hdr10'){
-		  const makeHdrStep=(slot)=>{
+	  const makeHdrStep=(slot)=>{
 		   const hdrIdx=METER_LG_GREY_HDR_AUTOCAL_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
 		   const code=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_CODES[hdrIdx]:meterCodeFromSignalPercentWithOptions(slot,null);
+		   const stimulus=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES[hdrIdx]:meterLgHdrAutoCalStimulusFromCode(code);
+		   const ddcArrayIre=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES[hdrIdx]:stimulus;
 		   return {
 		    ire:slot,
-	    stimulus:slot,
-	    signal_r_pct:slot,
-	    signal_g_pct:slot,
-	    signal_b_pct:slot,
+	    stimulus:stimulus,
+	    signal_r_pct:stimulus,
+	    signal_g_pct:stimulus,
+	    signal_b_pct:stimulus,
 	    r:code,
 	    g:code,
 	    b:code,
@@ -17146,9 +17180,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		    ddc_slot_locked:true,
 		    autocal_slot_locked:true,
 		    ddc_layout:'hdr20',
-		    ddc_target_ire:slot,
-		    ddc_array_ire:meterLgHdrAutoCalDdcArrayIre(slot),
-		    autocal_order_ire:slot
+		    ddc_target_ire:ddcArrayIre,
+		    ddc_array_ire:ddcArrayIre,
+		    autocal_order_ire:ddcArrayIre
 		   };
 		  };
 	  const zeroCode=meterCodeFromSignalPercentWithOptions(0,null);
@@ -21879,17 +21913,21 @@ async function meterStartLg3dAutoCal(options){
  const skipPreprofileUnityReset=!!(fullWorkflow&&upload&&preflightLut3d&&preflightLut3d.upload_verified&&(!preflightPictureMode||!pictureMode||preflightPictureMode===pictureMode));
  const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
  const fullMagicWand=(options&&Object.prototype.hasOwnProperty.call(options,'magicWandEnabled'))?options.magicWandEnabled===true:meterFullAutoCalMagicWandEnabled();
+ const rawTargetGamma=meterAutoCalTargetGammaValue();
+ const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
+ const targetGamut=signalMode==='hdr10'?'bt2020':(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
+ const transportRange=(signalMode==='sdr'&&fullWorkflow)?'1':getVal('rgb_quant_range');
  const payload=meterMeasurementSignalContext({
   method:method,
   type:'lg-3d-lut',
   display_type:dtype,
   delay_ms:meterDelayMs(),
   patch_size:getMeterPatchSize(),
-  signal_range:getVal('rgb_quant_range'),
+  signal_range:transportRange,
   pattern_signal_range:'1',
-  transport_signal_range:getVal('rgb_quant_range'),
-  target_gamut:meterAutoCalTargetGamutValue(),
-  target_gamma:meterAutoCalTargetGammaValue(),
+  transport_signal_range:transportRange,
+  target_gamut:targetGamut,
+  target_gamma:targetGamma,
   picture_mode:pictureMode,
   refresh_rate:getMeterRefreshRate()||undefined,
  require_device_ready:false,
