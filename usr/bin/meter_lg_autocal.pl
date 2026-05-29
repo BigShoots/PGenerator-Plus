@@ -9074,16 +9074,12 @@ sub park_black_for_settle {
 
 sub post_commit_polish_enabled {
  my ($config)=@_;
- return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- return 1 if(!exists($config->{"post_commit_polish"}));
- return $config->{"post_commit_polish"} ? 1 : 0;
+ return 0;
 }
 
 sub post_3d_committed_polish_requested {
  my ($config)=@_;
- return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
- return 0 if(!autocal_config_is_post_3d_polish($config));
- return (exists($config->{"post_commit_polish"}) && $config->{"post_commit_polish"}) ? 1 : 0;
+ return 0;
 }
 
 sub post_commit_verify_enabled {
@@ -12637,11 +12633,18 @@ eval {
 		   $target_gamma,
 		   $signal_mode,
 		   $target_delta
-		  );
-		  die $adjust_error if($adjust_error && $adjust_error ne "cancelled");
-			 } elsif(autocal_config_is_post_3d_polish($config)) {
-			  if(!post_3d_committed_polish_requested($config)) {
-				   $state->{"current_name"}="Committed polish skipped";
+			  );
+			  die $adjust_error if($adjust_error && $adjust_error ne "cancelled");
+				 } elsif(autocal_config_is_touchup($config)) {
+				  $state->{"current_name"}="Greyscale touch-up skipped";
+				  $state->{"phase"}="complete";
+				  $state->{"message"}="Greyscale touch-up disabled";
+				  $state->{"full_autocal_touchup"}=JSON::PP::false;
+				  $state->{"full_autocal_touchup_skipped"}=JSON::PP::true;
+				  write_state($state);
+				 } elsif(autocal_config_is_post_3d_polish($config)) {
+				  if(!post_3d_committed_polish_requested($config)) {
+					   $state->{"current_name"}="Committed polish skipped";
 			   $state->{"phase"}="complete";
 			   $state->{"message"}="Committed polish disabled by Full AutoCal options";
 			   $state->{"post_3d_committed_polish"}=JSON::PP::false;
