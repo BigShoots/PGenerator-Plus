@@ -5940,7 +5940,7 @@ sub low_shadow_luminance_max_step {
 }
 
 sub force_low_shadow_luminance_adjustment {
- my ($arrays,$target,$luminance_err,$tried,$min_step,$max_step)=@_;
+ my ($arrays,$target,$luminance_err,$tried,$min_step,$max_step,$step)=@_;
  return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
  return undef if(!has_luminance_channel($arrays,$target));
  my $idx=$target->{"index"};
@@ -5962,6 +5962,7 @@ sub force_low_shadow_luminance_adjustment {
   my $next=clamp_ddc_value($current+($direction*$mag));
   next if(abs($next-$current) < 0.0001);
   next if(tried_value_exists($tried,"adjustingLuminance",$next));
+  next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"force_low_shadow_luminance",$LG_AUTOCAL_STATE));
   return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, low_shadow_luminance=>1, forced_luminance=>1 }];
  }
  return undef;
@@ -6046,6 +6047,7 @@ sub low_shadow_luminance_response_adjustment {
  my $next=round_ddc_quarter($current+$delta);
  return undef if(abs($next-$current) < 0.0001);
  return undef if(tried_value_exists($tried,"adjustingLuminance",$next));
+ return undef if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"low_shadow_luminance_response",$LG_AUTOCAL_STATE));
  return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, low_shadow_luminance=>1, low_shadow_luminance_response_scaled=>($response_multiplier > 1.0001 ? 1 : undef), response_multiplier=>$response_multiplier+0, cap_reason=>$cap_reason, insufficient_luminance_response=>$insufficient ? 1 : undef, response_model=>1, slope=>$slope+0, predicted_error=>($after_lum_pct+($slope*($next-$end)))+0, previous_delta=>$end-$start, previous_before_error=>$before_lum_pct+0, previous_after_error=>$after_lum_pct+0, remaining_error=>abs($after_lum_pct)+0 }];
 }
 
@@ -6107,6 +6109,7 @@ sub body_luminance_response_adjustment {
   next if(tried_value_exists($tried,"adjustingLuminance",$next));
   my $predicted=$before_lum_pct+($slope*($next-$start));
   next if(abs($predicted) + 0.0001 >= abs($current_error));
+  next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"body_luminance_response",$LG_AUTOCAL_STATE));
   return [{ channel=>"lum", setting=>"adjustingLuminance", current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, body_luminance=>1, response_model=>1, slope=>$slope+0, predicted_error=>$predicted+0, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef }];
  }
  return undef;
@@ -6245,9 +6248,9 @@ sub low_shadow_luminance_priority_adjustments {
  return undef if(abs($lum_pct) <= $threshold);
 	 my $max_step=low_shadow_luminance_max_step($luminance_err,$stalls,$step);
 	 $max_step=1 if($micro && $max_step > 1);
-	 my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,1,$step,($micro ? "fine_low_shadow_luminance" : "main_low_shadow_luminance"));
+ my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,1,$step,($micro ? "fine_low_shadow_luminance" : "main_low_shadow_luminance"));
  if(!$adjustments && abs($lum_pct) > ($tol*2.0)) {
-  $adjustments=force_low_shadow_luminance_adjustment($arrays,$target,$luminance_err,$tried,0.25,$max_step);
+  $adjustments=force_low_shadow_luminance_adjustment($arrays,$target,$luminance_err,$tried,0.25,$max_step,$step);
  }
  if(ref($adjustments) eq "ARRAY") {
   foreach my $adj (@{$adjustments}) {
@@ -8217,6 +8220,7 @@ sub full_ddc_spine_anchor_luminance_adjustment {
  my $direction=($luminance_err > 0) ? -1 : 1;
  my ($next,$damped)=next_untried_value($current,$direction*$cap,$tried,"adjustingLuminance",0.25,0);
  return undef if(!defined($next) || abs($next-$current) < 0.0001);
+ return undef if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,($paired ? "full_ddc_spine_anchor_paired_luminance" : "full_ddc_spine_anchor_luminance"),$LG_AUTOCAL_STATE));
  return {
   channel=>"lum",
   setting=>"adjustingLuminance",
