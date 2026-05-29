@@ -4205,6 +4205,25 @@ sub lg_autocal_26_hdr20_propagation_skip_slot_mask {
  return \@mask;
 }
 
+sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask {
+ my ($config,$calibrated_slot_mask)=@_;
+ my @mask=map { 0 } (1..ddc_slot_count());
+ return \@mask if(ref($config) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ return \@mask if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ foreach my $ire (lg_autocal_26_full_ddc_spine_anchor_ddc_ires($config)) {
+  my $idx=ddc_slot_index_for_ire($ire);
+  next if(!defined($idx) || $idx >= @mask);
+  $mask[$idx]=1;
+ }
+ my $hdr20_skip=lg_autocal_26_hdr20_propagation_skip_slot_mask($config,$calibrated_slot_mask);
+ if(ref($hdr20_skip) eq "ARRAY") {
+  for(my $idx=0;$idx<@mask && $idx<@{$hdr20_skip};$idx++) {
+   $mask[$idx]=1 if($hdr20_skip->[$idx]);
+  }
+ }
+ return \@mask;
+}
+
 sub calibrated_26pt_slot_for_ire {
  my ($calibrated_slot_mask,$ire)=@_;
  return 0 if(ref($calibrated_slot_mask) ne "ARRAY" || !defined($ire));
@@ -4342,7 +4361,9 @@ sub refresh_propagated_uncalibrated_26pt_slots {
   $source_slot_mask=lg_autocal_26_anchor_predrive_source_slot_mask($calibrated_slot_mask);
  }
 	 return 0 if(calibrated_non_black_26pt_anchor_count($source_slot_mask) < $minimum_anchors);
-	 my $skip_slot_mask=lg_autocal_26_hdr20_propagation_skip_slot_mask($config,$calibrated_slot_mask);
+	 my $skip_slot_mask=lg_autocal_26_full_ddc_spine_enabled($config)
+	  ? lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask($config,$calibrated_slot_mask)
+	  : lg_autocal_26_hdr20_propagation_skip_slot_mask($config,$calibrated_slot_mask);
 	 my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask);
 	 my $overrides=apply_full_ddc_spine_headroom_seed_overrides($config,$arrays,$calibrated_slot_mask);
 	 return $filled+$overrides;
@@ -4390,6 +4411,7 @@ sub seed_target_from_prior_slot {
 	 my @slots=ddc_slots();
 	 return 0 if(!defined($slots[$idx]));
 	 my $target_slot_ire=$slots[$idx]+0;
+	 return 0 if(lg_autocal_26_full_ddc_spine_enabled($config) && lg_autocal_26_full_ddc_spine_anchor($target));
 	 return 0 if(ref($calibrated_slot_mask) eq "ARRAY" && $calibrated_slot_mask->[$idx]);
 	 my %target_before;
 	 foreach my $setting (@settings) {
