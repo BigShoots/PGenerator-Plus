@@ -2002,10 +2002,9 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 				    "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
 				   );
 				   my %lg_hdr20_stimulus=();
-				   foreach my $key (keys %lg_hdr20_code) {
-				    my $code=$lg_hdr20_code{$key};
-				    $lg_hdr20_stimulus{$key}=($code-16)*100/219;
-				   }
+					   foreach my $key (keys %lg_hdr20_code) {
+					    $lg_hdr20_stimulus{$key}=$key+0;
+					   }
 			   if($points==26 && $lg_autocal_26 && $signal_mode eq "sdr") {
 			    foreach my $slot (@ire_vals) {
 			     my $key=$slot;
@@ -17201,7 +17200,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const makeHdrStep=(slot)=>{
 		   const hdrIdx=METER_LG_GREY_HDR_AUTOCAL_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
 		   const code=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_CODES[hdrIdx]:meterCodeFromSignalPercentWithOptions(slot,null);
-		   const stimulus=meterLgHdrAutoCalStimulusFromCode(code);
+		   const stimulus=Number(slot);
 		   const ddcArrayIre=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES[hdrIdx]:stimulus;
 		   return {
 		    ire:slot,
