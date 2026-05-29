@@ -73,7 +73,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_body_chroma_redirect hdr20_body_chroma_source_index hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -937,39 +937,6 @@ sub autocal_step_is_hdr20_body {
 	 return 0 if($layout ne "hdr20");
 	 my $ire=$step->{"ire"}+0;
 	 return ($ire > 0.001 && $ire < 99.9) ? 1 : 0;
-}
-
-sub hdr20_body_chroma_write_index {
-	 my ($step,$target)=@_;
-	 return undef if(ref($step) ne "HASH" || ref($target) ne "HASH");
-	 return undef if(!autocal_step_is_hdr20_body($step));
-	 my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : undef;
-	 return undef if(!defined($ire));
-	 # Hardware probing on the LG HDR20 map showed that the displayed 90%
-	 # patch gets its usable RGB/chroma response from the 100 slot. Keep luma on
-	 # the nominal 90 slot, but compute RGB moves from the responsive slot.
-	 return undef if(abs($ire-90) > 0.001);
-	 my @slots=ddc_slots_for_layout("hdr20");
-	 for(my $i=0;$i<@slots;$i++) {
-	  return $i if(abs(($slots[$i]+0)-100) < 0.001);
-	 }
-	 return undef;
-}
-
-sub hdr20_body_rgb_index_for_adjustment {
-	 my ($step,$target)=@_;
-	 my $redirect=hdr20_body_chroma_write_index($step,$target);
-	 return defined($redirect) ? $redirect : $target->{"index"};
-}
-
-sub mark_hdr20_body_chroma_redirect_adjustment {
-	 my ($adj,$step,$target,$rgb_idx)=@_;
-	 return if(ref($adj) ne "HASH" || ref($target) ne "HASH");
-	 return if(!defined($rgb_idx) || !defined($target->{"index"}));
-	 return if(($rgb_idx+0) == ($target->{"index"}+0));
-	 $adj->{"index"}=$rgb_idx+0;
-	 $adj->{"hdr20_body_chroma_redirect"}=1;
-	 $adj->{"hdr20_body_chroma_source_index"}=$target->{"index"}+0;
 }
 
 sub hdr20_top_white_luminance_priority_needed {
@@ -6358,8 +6325,6 @@ sub hdr20_body_chroma_luma_adjustments {
 	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
 	 my $idx=$target->{"index"};
 	 return undef if(!defined($idx));
-	 my $rgb_idx=hdr20_body_rgb_index_for_adjustment($step,$target);
-	 $rgb_idx=$idx if(!defined($rgb_idx));
 	 my $chroma=chroma_error_magnitude($error);
 	 my $lum_pct=defined($luminance_err) ? ($luminance_err+0)*100 : 0;
 	 my $tol=luminance_tolerance_percent($step);
@@ -6382,16 +6347,14 @@ sub hdr20_body_chroma_luma_adjustments {
 	  next if(abs($err) < $floor);
 	  my $setting=channel_setting($ch);
 	  my $arr=$arrays->{$setting};
-	  next if(ref($arr) ne "ARRAY" || $rgb_idx >= @{$arr});
-	  my $current=defined($arr->[$rgb_idx]) ? ($arr->[$rgb_idx]+0) : 0;
+	  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+	  my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	  my $step_size=headroom_adjustment_step(abs($err),$stalls,$min_step,$max_step,$micro ? 1 : 0);
 	  $step_size=$max_step if($step_size > $max_step);
 	  my $direction=($err > 0) ? -1 : 1;
 	  my ($next,$damped)=next_untried_value($current,$direction*$step_size,$tried,$setting,$min_step,0);
 	  next if(!defined($next) || abs($next-$current) < 0.0001);
-	  my $adj={ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, hdr20_body_chroma_luma=>1, hdr20_body_chroma_priority=>1, chroma_error=>$chroma+0, luminance_error_pct=>$lum_pct+0, micro=>$micro ? 1 : 0 };
-	  mark_hdr20_body_chroma_redirect_adjustment($adj,$step,$target,$rgb_idx);
-	  push @out,$adj;
+	  push @out,{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, hdr20_body_chroma_luma=>1, hdr20_body_chroma_priority=>1, chroma_error=>$chroma+0, luminance_error_pct=>$lum_pct+0, micro=>$micro ? 1 : 0 };
 	  last if(@out >= $max_channels);
 	 }
 	 return undef if(!@out);
@@ -6441,8 +6404,6 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
 	 my $idx=$target->{"index"};
 	 return undef if(!defined($idx));
-	 my $rgb_idx=hdr20_body_rgb_index_for_adjustment($step,$target);
-	 $rgb_idx=$idx if(!defined($rgb_idx));
 	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0;
 	 my $lum_pct=defined($luminance_err) ? ($luminance_err+0)*100 : 0;
 	 my $chroma=chroma_error_magnitude($error);
@@ -6480,15 +6441,15 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	  next if(abs($err) < $floor);
 	  my $setting=channel_setting($ch);
 	  my $arr=$arrays->{$setting};
-	  next if(ref($arr) ne "ARRAY" || $rgb_idx >= @{$arr});
-	  my $current=defined($arr->[$rgb_idx]) ? ($arr->[$rgb_idx]+0) : 0;
+	  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+	  my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	  my $direction=($err > 0) ? -1 : 1;
 	  my $mag=round_ddc_quarter($rgb_cap*(abs($err)/$max_abs));
 	  $mag=$min_step if($mag < $min_step);
 	  $mag=$rgb_cap if($mag > $rgb_cap);
 	  my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,$setting,$min_step,0);
 	  next if(!defined($next) || abs($next-$current) < 0.0001);
-	  my $adj={
+	  push @out,{
 	   channel=>$ch,
 	   setting=>$setting,
 	   current=>$current,
@@ -6502,8 +6463,6 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	   remaining_error=>abs($err),
 	   micro=>$micro ? 1 : 0
 	  };
-	  mark_hdr20_body_chroma_redirect_adjustment($adj,$step,$target,$rgb_idx);
-	  push @out,$adj;
 	 }
 	 return undef if(!@out);
 
@@ -6724,8 +6683,6 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
 	 my $idx=$target->{"index"};
 	 return undef if(!defined($idx));
-	 my $rgb_idx=hdr20_body_rgb_index_for_adjustment($step,$target);
-	 $rgb_idx=$idx if(!defined($rgb_idx));
 	 my $lum_pct=($luminance_err+0)*100;
 	 my $tol=luminance_tolerance_percent($step);
 	 $tol=2 if(!defined($tol) || $tol <= 0);
@@ -6767,8 +6724,8 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	 foreach my $ch (sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b)) {
 	  my $setting=channel_setting($ch);
 	  my $arr=$arrays->{$setting};
-	  next if(ref($arr) ne "ARRAY" || $rgb_idx >= @{$arr});
-		  my $current=defined($arr->[$rgb_idx]) ? ($arr->[$rgb_idx]+0) : 0;
+	  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+		  my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 		  my $err=$error->{$ch}||0;
 		  my $scale=0.80;
 		  my $rgb_direction=$direction;
@@ -6793,7 +6750,7 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 		  $mag=$cap if($mag > $cap);
 		  my ($next,$damped)=next_untried_value($current,$rgb_direction*$mag,$tried,$setting,$min_step,0);
 	  next if(!defined($next) || abs($next-$current) < 0.0001);
-	  my $adj={
+	  push @out,{
 	   channel=>$ch,
 	   setting=>$setting,
 	   current=>$current,
@@ -6809,8 +6766,6 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	   source=>$reason||"hdr20_body_rgb_luminance_vector",
 	   micro=>$micro ? 1 : 0
 	  };
-	  mark_hdr20_body_chroma_redirect_adjustment($adj,$step,$target,$rgb_idx);
-	  push @out,$adj;
 	 }
 	 if(has_luminance_channel($arrays,$target) && !hdr20_body_family_suppressed($tried,"luminance",$direction,$step)) {
 	  my $arr=$arrays->{"adjustingLuminance"};
