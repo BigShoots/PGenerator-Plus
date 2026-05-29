@@ -13528,7 +13528,15 @@ eval {
 									    $adjustments=full_ddc_spine_seeded_body_luminance_priority_adjustments($config,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
 									    $adjustments=undef if($adjustments && autocal_step_is_hdr20_body($read_step) && !$hdr20_sdr_method && ref(luma_only_adjustment($adjustments)) eq "HASH");
 								   }
-								   if($adjustments && hdr20_sdr_method_chroma_active($config,$read_step,$err,$de,$target_delta) && ref(luma_only_adjustment($adjustments)) eq "HASH") {
+								   my $hdr20_sdr_far_luma_cleanup=(
+								    $adjustments &&
+								    $hdr20_sdr_method &&
+								    autocal_step_is_hdr20_body($read_step) &&
+								    ref(luma_only_adjustment($adjustments)) eq "HASH" &&
+								    defined($lum_pct) &&
+								    abs($lum_pct) >= 8
+								   ) ? 1 : 0;
+								   if($adjustments && !$hdr20_sdr_far_luma_cleanup && hdr20_sdr_method_chroma_active($config,$read_step,$err,$de,$target_delta) && ref(luma_only_adjustment($adjustments)) eq "HASH") {
 								    trace_109($read_step,"hdr20_sdr_method_suppressed_luma_only",{
 								     delta_e=>defined($de)?$de+0:undef,
 								     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
