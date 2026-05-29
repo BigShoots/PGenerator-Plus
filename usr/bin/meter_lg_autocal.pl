@@ -6361,68 +6361,6 @@ sub hdr20_body_chroma_luma_adjustments {
 		 return \@out;
 		}
 
-sub hdr20_top_body_shift_up_chroma_adjustments {
-	 my ($step,$adjustments,$arrays,$target)=@_;
-	 return $adjustments if(!autocal_step_is_hdr20_body($step));
-	 return $adjustments if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
-	 return $adjustments if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
-	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 0;
-	 return $adjustments if($ire < 89.9 || $ire >= 99.9);
-	 my $target_idx=$target->{"index"};
-	 return $adjustments if(!defined($target_idx));
-	 my @slots=ddc_slots_for_layout("hdr20");
-	 my $bridge_idx=$target_idx+1;
-	 return $adjustments if($bridge_idx >= @slots);
-	 return $adjustments if(abs(($slots[$bridge_idx]+0)-100) > 0.001);
-
-	 my @out;
-	 my $shifted=0;
-	 foreach my $adj (@{$adjustments}) {
-	  if(
-	   ref($adj) eq "HASH" &&
-	   (($adj->{"setting"}||"") =~ /^whiteBalance(?:Red|Green|Blue)$/) &&
-	   defined($adj->{"delta"})
-	  ) {
-	   my $setting=$adj->{"setting"};
-	   my $arr=$arrays->{$setting};
-	   if(ref($arr) eq "ARRAY" && $bridge_idx < @{$arr}) {
-	    my $delta=$adj->{"delta"}+0;
-	    if(abs($delta) >= 0.0001) {
-	     my $current=defined($arr->[$bridge_idx]) ? ($arr->[$bridge_idx]+0) : 0;
-	     my $next=round_ddc_quarter(clamp_ddc_value($current+$delta));
-	     if(abs($next-$current) >= 0.0001) {
-	      my %shifted_adj=%{$adj};
-	      $shifted_adj{"index"}=$bridge_idx;
-	      $shifted_adj{"current"}=$current;
-	      $shifted_adj{"next"}=$next;
-	      $shifted_adj{"delta"}=$next-$current;
-	      $shifted_adj{"hdr20_top_body_shift_up_chroma"}=1;
-	      $shifted_adj{"bridge_from_index"}=$target_idx+0;
-	      $shifted_adj{"bridge_to_index"}=$bridge_idx+0;
-	      $shifted_adj{"bridge_weight"}=1;
-	      $shifted_adj{"source"}="hdr20_top_body_shift_up_chroma";
-	      push @out,\%shifted_adj;
-	      $shifted=1;
-	      next;
-	     }
-	    }
-	   }
-	  }
-	  push @out,$adj;
-	 }
-	 if($shifted) {
-	  trace_109($step,"hdr20_top_body_shift_up_chroma_plan",{
-	   ire=>$ire+0,
-	   bridge_from_index=>$target_idx+0,
-	   bridge_to_index=>$bridge_idx+0,
-	   bridge_to_ire=>$slots[$bridge_idx]+0,
-	   original_adjustments=>trace_adjustments_summary($adjustments),
-	   shifted_adjustments=>trace_adjustments_summary(\@out)
-	  });
-	 }
-	 return \@out;
-	}
-
 sub hdr20_body_mixed_rgb_error {
 	 my ($error,$floor)=@_;
 	 return 0 if(ref($error) ne "HASH");
@@ -13675,8 +13613,7 @@ eval {
 				    });
 				    last;
 				   }
-				   $adjustments=hdr20_top_body_shift_up_chroma_adjustments($read_step,$adjustments,$arrays,$target);
-				   my $before_adjustment_reading=clone_picture($reading);
+					   my $before_adjustment_reading=clone_picture($reading);
 				   my $before_de_for_adjustment=$de;
 					   my $before_lum_pct_for_adjustment=$lum_pct;
 					   my $before_score_for_adjustment=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
@@ -14357,9 +14294,13 @@ eval {
 			    my $before_lum_pct_for_polish=$lum_pct;
 			    my $before_score_for_polish=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
 			    my $before_values=trace_target_values($arrays,$target);
-			    foreach my $adj (@{$adjustments}) {
-			     $arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
-			    }
+				    foreach my $adj (@{$adjustments}) {
+				     next if(ref($adj) ne "HASH");
+				     my $setting=$adj->{"setting"};
+				     my $adj_idx=defined($adj->{"index"}) ? $adj->{"index"} : $target->{"index"};
+				     next if(!defined($setting) || !defined($adj_idx) || ref($arrays->{$setting}) ne "ARRAY");
+				     $arrays->{$setting}[$adj_idx]=$adj->{"next"};
+				    }
 			    trace_109($read_step,"fine_tune_plan",{
 			     label=>$label,
 			     polish=>$polish+0,
