@@ -2870,12 +2870,26 @@ sub lg_autocal_26_initial_target_move_active {
 }
 
 sub lg_autocal_26_initial_target_move_cap {
- my ($step,$setting,$lum_pct,$de,$target_delta)=@_;
- my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
- my $is_luma=($setting||"") eq "adjustingLuminance" ? 1 : 0;
- if($ire >= 99 && $ire <= 105.0001) {
-  return $is_luma ? 1.50 : 0.75;
- }
+	 my ($step,$setting,$lum_pct,$de,$target_delta)=@_;
+	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+	 my $is_luma=($setting||"") eq "adjustingLuminance" ? 1 : 0;
+	 if(lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step)) {
+	  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+	  my $de_excess=defined($de) ? (($de+0)-$target_delta) : 0;
+	  my $abs_lum=defined($lum_pct) ? abs($lum_pct+0) : 0;
+	  if($is_luma) {
+	   return 8.00 if($abs_lum >= 20 || $de_excess >= 8.0);
+	   return 6.00 if($abs_lum >= 12 || $de_excess >= 5.0);
+	   return 4.00 if($abs_lum >= 8 || $de_excess >= 3.0);
+	  } else {
+	   return 4.00 if($de_excess >= 8.0);
+	   return 3.00 if($de_excess >= 5.0);
+	   return 2.00 if($de_excess >= 3.0);
+	  }
+	 }
+	 if($ire >= 99 && $ire <= 105.0001) {
+	  return $is_luma ? 1.50 : 0.75;
+	 }
  if($ire <= 4.1001) {
   return $is_luma ? 0.75 : 0.50;
  }
@@ -13369,24 +13383,65 @@ eval {
 			    $best_score=$pair_score_now->();
 			    $store_best_pair->();
 			   }
-			  }
-			  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
-			  $state->{"best_score"}=$best_score;
-			  trace_109($read_step,"initial_measurement",{
-			   label=>$label,
-			   reading=>trace_reading_summary($reading),
-			   target_luminance=>$target_step_y,
-			   white_y=>$white_y,
+				  }
+				  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+				  $state->{"best_score"}=$best_score;
+				  my $full_ddc_spine_seeded_initial=0;
+				  if(lg_autocal_26_hdr20_seed_enabled($config) && lg_autocal_26_full_ddc_spine_enabled($config)) {
+				   my $target_ire=defined($target->{"ire"}) ? ($target->{"ire"}+0) : undef;
+				   my $seeded_ires=(ref($state->{"lg_autocal_26_full_ddc_spine_synthesized_ires"}) eq "ARRAY") ? $state->{"lg_autocal_26_full_ddc_spine_synthesized_ires"} : [];
+				   foreach my $seeded_ire (@{$seeded_ires}) {
+				    next if(!defined($target_ire) || !defined($seeded_ire));
+				    if(abs($target_ire-($seeded_ire+0)) < 0.001) {
+				     $full_ddc_spine_seeded_initial=1;
+				     last;
+				    }
+				   }
+				   if($full_ddc_spine_seeded_initial) {
+				    my @completed_spine_anchors=completed_lg_autocal_26_full_ddc_spine_anchor_ires(\@calibrated_ddc_slots,$config);
+				    my $seeded_initial={
+				     ire=>defined($target_ire) ? $target_ire+0 : undef,
+				     label=>$label,
+				     delta_e=>defined($de) ? $de+0 : undef,
+				     luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+				     score=>$best_score+0,
+				     completed_spine_anchors=>\@completed_spine_anchors,
+				     propagated_slots=>defined($state->{"lg_autocal_26_full_ddc_spine_propagated_slots"}) ? ($state->{"lg_autocal_26_full_ddc_spine_propagated_slots"}+0) : undef,
+				     spine_applied_after_anchors=>(scalar(@completed_spine_anchors) >= lg_autocal_26_full_ddc_spine_anchor_count($config)) ? JSON::PP::true : JSON::PP::false,
+				    };
+				    $state->{"lg_autocal_26_full_ddc_spine_last_seeded_initial_reading"}=$seeded_initial;
+				    $state->{"lg_autocal_26_full_ddc_spine_seeded_initial_readings"}=[] if(ref($state->{"lg_autocal_26_full_ddc_spine_seeded_initial_readings"}) ne "ARRAY");
+				    push @{$state->{"lg_autocal_26_full_ddc_spine_seeded_initial_readings"}},$seeded_initial;
+				    trace_109($read_step,"full_ddc_spine_seeded_initial_measurement",{
+				     label=>$label,
+				     target=>$target,
+				     delta_e=>defined($de)?$de+0:undef,
+				     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				     score=>$best_score+0,
+				     completed_spine_anchors=>\@completed_spine_anchors,
+				     synthesized_seeded_ires=>$seeded_ires,
+				     propagated_slots=>$seeded_initial->{"propagated_slots"},
+				     spine_applied_after_anchors=>$seeded_initial->{"spine_applied_after_anchors"},
+				     target_values=>trace_target_values($arrays,$target)
+				    });
+				   }
+				  }
+				  trace_109($read_step,"initial_measurement",{
+				   label=>$label,
+				   reading=>trace_reading_summary($reading),
+				   target_luminance=>$target_step_y,
+				   white_y=>$white_y,
 			   delta_e=>defined($de)?$de+0:undef,
 			   luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
 			   score=>$best_score+0,
 					   best_delta_e=>$best_de+0,
-					   best_score=>$best_score+0,
-					   rgb_error=>rgb_error($reading),
-					   seeded_move_damping=>$seeded_move_damping?JSON::PP::true:JSON::PP::false,
-					   $pair_side_trace_fields->(),
-					   target_values=>trace_target_values($arrays,$target)
-					  });
+						   best_score=>$best_score+0,
+						   rgb_error=>rgb_error($reading),
+						   seeded_move_damping=>$seeded_move_damping?JSON::PP::true:JSON::PP::false,
+						   full_ddc_spine_seeded_initial=>$full_ddc_spine_seeded_initial?JSON::PP::true:JSON::PP::false,
+						   $pair_side_trace_fields->(),
+						   target_values=>trace_target_values($arrays,$target)
+						  });
 				  write_state($state);
 						  if(touchup_delta_skip_reached($config,$de,$target_delta,$read_step,$lum_pct) && (!$paired_white_step || $pair_target_reached_now->())) {
 						   $state->{"message"}="$label already within touch-up target; moving to next patch";
