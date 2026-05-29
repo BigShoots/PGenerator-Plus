@@ -224,7 +224,8 @@ sub sanitize_target_gamut {
 
 sub sanitize_target_gamma {
  my ($raw,$signal_mode)=@_;
- my $default=(defined($signal_mode) && lc($signal_mode) eq "hdr10") ? "st2084" : "bt1886";
+ my $is_hdr=(defined($signal_mode) && lc($signal_mode) eq "hdr10") ? 1 : 0;
+ my $default=$is_hdr ? "st2084" : "bt1886";
  $raw=first_nonempty($raw);
  return $default if($raw eq "");
  my $token=compact_token($raw);
@@ -232,7 +233,7 @@ sub sanitize_target_gamma {
  return "srgb" if($token eq "srgb");
  return "2.2" if($token eq "22" || $token eq "gamma22");
  return "2.4" if($token eq "24" || $token eq "gamma24");
- return "st2084" if($token eq "st2084" || $token eq "smpte2084" || $token eq "pq");
+ return $is_hdr ? "st2084" : "bt1886" if($token eq "st2084" || $token eq "smpte2084" || $token eq "pq");
  return $default;
 }
 
