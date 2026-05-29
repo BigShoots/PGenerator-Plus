@@ -281,9 +281,11 @@ assert(
   );
 }
 assert(
-  propagate26Source.includes('my ($arrays,$calibrated_slot_mask,$source_slot_mask)=@_;') &&
+  propagate26Source.includes('my ($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask)=@_;') &&
     propagate26Source.includes('$source_slot_mask=$calibrated_slot_mask if(ref($source_slot_mask) ne "ARRAY");') &&
+    propagate26Source.includes('$skip_slot_mask=[] if(ref($skip_slot_mask) ne "ARRAY");') &&
     propagate26Source.includes('next if($calibrated_slot_mask->[$idx]);') &&
+    propagate26Source.includes('next if($skip_slot_mask->[$idx]);') &&
     propagate26Source.includes('lg_autocal_26_lut_indexes()') &&
     propagate26Source.includes('my $black_anchor=lg_autocal_26_black_lut_anchor();') &&
     autocalWorkerSource.includes('sub linear_interpolated_26pt_curve_value') &&
@@ -329,11 +331,33 @@ assert(
   refresh26Source.includes('my ($config,$arrays,$calibrated_slot_mask)=@_;') &&
     refresh26Source.includes('return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});') &&
     refresh26Source.includes('my $source_slot_mask=$calibrated_slot_mask;') &&
-    refresh26Source.includes('my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask);') &&
+    refresh26Source.includes('my $skip_slot_mask=lg_autocal_26_hdr20_propagation_skip_slot_mask($config,$calibrated_slot_mask);') &&
+    refresh26Source.includes('my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask);') &&
     refresh26Source.includes('my $overrides=apply_full_ddc_spine_headroom_seed_overrides($config,$arrays,$calibrated_slot_mask);') &&
     refresh26Source.includes('return $filled+$overrides;'),
   'LG 26-point propagation refresh should be wrapped in a named helper with mask plumbing'
 );
+{
+  const hdrOrderStart = autocalWorkerSource.indexOf('if(ref($config) eq "HASH" && lg_autocal_26_hdr20_seed_enabled($config) && lg_autocal_26_full_ddc_spine_enabled($config))');
+  const hdrOrderEnd = autocalWorkerSource.indexOf('return sort {', hdrOrderStart);
+  const hdrOrderSource = hdrOrderStart >= 0 && hdrOrderEnd > hdrOrderStart
+    ? autocalWorkerSource.slice(hdrOrderStart, hdrOrderEnd)
+    : '';
+  const hdrSkipStart = autocalWorkerSource.indexOf('sub lg_autocal_26_hdr20_propagation_skip_slot_mask');
+  const hdrSkipEnd = autocalWorkerSource.indexOf('sub calibrated_26pt_slot_for_ire', hdrSkipStart);
+  const hdrSkipSource = hdrSkipStart >= 0 && hdrSkipEnd > hdrSkipStart
+    ? autocalWorkerSource.slice(hdrSkipStart, hdrSkipEnd)
+    : '';
+  assert(
+    hdrOrderSource.includes('lg_autocal_26_full_ddc_spine_anchor_revisit') &&
+      hdrOrderSource.includes('lg_autocal_26_seeded_move_damping') &&
+      hdrOrderSource.includes('"% anchor revisit"') &&
+      hdrOrderSource.includes('next;') &&
+      !hdrSkipSource.includes('$mask[$idx]=1') &&
+      !hdrSkipSource.includes('$ire < 70 || $ire > 99.999'),
+    'HDR20 full-DDC spine should calibrate anchors first, revisit body anchors during descent, and allow spine seeds for 70/90 while propagation still protects calibrated slots'
+  );
+}
 assert(
     dynamicFinalizeSource.includes('my $before_arrays=clone_arrays($arrays);') &&
     dynamicFinalizeSource.includes('refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\\@calibrated_ddc_slots);') &&
