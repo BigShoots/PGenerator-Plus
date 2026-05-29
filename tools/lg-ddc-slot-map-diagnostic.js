@@ -40,7 +40,11 @@ const channelKey = {
   green: 'whiteBalanceGreen',
   g: 'whiteBalanceGreen',
   blue: 'whiteBalanceBlue',
-  b: 'whiteBalanceBlue'
+  b: 'whiteBalanceBlue',
+  luminance: 'adjustingLuminance',
+  luma: 'adjustingLuminance',
+  lum: 'adjustingLuminance',
+  y: 'adjustingLuminance'
 }[channel] || 'whiteBalanceRed';
 let lastReadPostAt = 0;
 
