@@ -6607,10 +6607,13 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 		#chartsGreyscaleFullWrap.lg-calibration-mode .meter-lg-rgb-column{grid-template-rows:auto 24px minmax(250px,1fr) 24px 26px auto;gap:6px}
 		#chartsGreyscaleFullWrap.lg-calibration-mode .meter-lg-rgb-column.is-readonly{grid-template-rows:auto minmax(334px,1fr) auto}
 	#chartsGreyscaleFullWrap.lg-calibration-mode .meter-lg-rgb-button{height:24px}
-	@media(max-width:700px){
+	 @media(max-width:700px){
 	 #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{grid-template-columns:1fr}
 	 #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap,#chartsGreyscaleFullWrap.lg-calibration-mode #meterRgbChartScroller,#chartsGreyscaleFullWrap.lg-calibration-mode #meterDeltaEBlock{grid-column:1;grid-row:auto}
 	 #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{min-height:360px}
+	 #meterGreyscaleRgbRow,#colorTopLayout{align-items:stretch}
+	 #meterGreyRgbLegacyWrap,#meterRGBColorWrap{flex:1 1 100%!important;width:100%!important;height:112px!important}
+	 #meterRGBCanvasGrey,#meterRGBCanvasColor{height:72px!important}
 	}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
@@ -11546,7 +11549,7 @@ function meterEffectiveGreyscaleWhiteReference(readings){
 function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
  if(meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
  const phase=String(meterFullAutoCalPhase||'');
- const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish';
+ const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish'||phase==='magic-wand';
  return !!(meterAutoCalRunning||meterAutoCalPolling||meterActionPending||(meterFullAutoCalRunning&&fullGreyscalePhase));
 }
 
@@ -15274,6 +15277,7 @@ function drawDeltaBarsVertical(canvasId,spec){
   ctx.fillText('--',W/2,H/2);
   return;
  }
+ const useHorizontal=(canvasId==='meterRGBCanvasGrey'||canvasId==='meterRGBCanvasColor')&&window.matchMedia&&window.matchMedia('(max-width:700px)').matches;
  const padTop=18,padBot=24,padL=6,padR=6;
  const plotH=H-padTop-padBot;
  const plotW=W-padL-padR;
@@ -15292,6 +15296,40 @@ function drawDeltaBarsVertical(canvasId,spec){
  const headroom=(spec.scaleHeadroom!=null)?spec.scaleHeadroom:1.6;
  const halfRange=Math.max(minHalfRange,niceDeltaHalfRange(maxAbs*headroom));
  const lo=-halfRange,hi=halfRange;
+ if(useHorizontal){
+  const rowH=plotH/spec.entries.length;
+  const padLabel=16;
+  const x0=padL+padLabel;
+  const x1=W-padR-30;
+  const cx=x0+(0-lo)/(hi-lo)*(x1-x0);
+  const cxPx=Math.round(cx)+0.5;
+  ctx.strokeStyle=labelColor;ctx.lineWidth=1.2;
+  ctx.beginPath();ctx.moveTo(cxPx,padTop);ctx.lineTo(cxPx,H-padBot);ctx.stroke();
+  spec.entries.forEach((e,i)=>{
+   const cy=padTop+rowH*i+rowH/2;
+   ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';
+   ctx.fillText(e.label,padL,cy);
+   if(e.v==null){
+    ctx.textAlign='right';
+    ctx.fillText('--',W-padR,cy);
+    return;
+   }
+   const xV=x0+(e.v-lo)/(hi-lo)*(x1-x0);
+   const left=Math.round(Math.min(cx,xV));
+   const width=Math.max(Math.round(Math.abs(xV-cx)),1);
+   const barH=Math.max(6,Math.min(14,rowH*0.42));
+   ctx.fillStyle=e.color;ctx.globalAlpha=0.88;
+   ctx.fillRect(left,Math.round(cy-barH/2),width,Math.round(barH));
+   ctx.globalAlpha=1;
+   ctx.beginPath();ctx.arc(Math.round(xV),Math.round(cy),3,0,Math.PI*2);ctx.fillStyle=e.color;ctx.fill();
+   const dec=(spec.decimals!=null)?spec.decimals:1;
+   const labelVal=(e.labelV!=null)?e.labelV:e.v;
+   const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
+   ctx.fillStyle=labelColor;ctx.font='10px sans-serif';ctx.textAlign='right';
+   ctx.fillText(prefix+labelVal.toFixed(dec),W-padR,cy);
+  });
+  return;
+ }
  function valToY(v){return padTop+(hi-v)/(hi-lo)*plotH;}
  const cy=valToY(0);
  const cyPx=Math.round(cy)+0.5;
@@ -15637,7 +15675,8 @@ function meterFullAutoCalStageOrder(){
  if(!skipPre) stages.push('precal-report');
  stages.push('first-greyscale','3d-lut');
  if(meterFullAutoCalPostTouchupEnabled()) stages.push('touchup-greyscale');
- if(meterFullAutoCalPost3dCleanupEnabled()) stages.push('post-3d-polish');
+ if(!meterFullAutoCalPostTouchupEnabled()&&meterFullAutoCalPostCommitPolishEnabled()) stages.push('post-3d-polish');
+ if(!meterFullAutoCalPostTouchupEnabled()&&meterFullAutoCalMagicWandEnabled()) stages.push('magic-wand');
  stages.push('postcal-report','complete');
  return stages;
 }
@@ -15648,7 +15687,8 @@ function meterFullAutoCalStageLabel(){
 		  case 'first-greyscale': return 'Greyscale';
 		  case '3d-lut': return '3D LUT';
 		  case 'touchup-greyscale': return 'Greyscale touch-up';
-		  case 'post-3d-polish': return (meterFullAutoCalPostCommitPolishEnabled()&&meterFullAutoCalMagicWandEnabled())?'Post-cal cleanup':(meterFullAutoCalMagicWandEnabled()?'Magic Wand':'Committed polish');
+		  case 'post-3d-polish': return 'Committed polish';
+		  case 'magic-wand': return 'Magic Wand';
 	  case 'postcal-report': return 'Post-Cal measurements';
   case 'complete': return 'Complete';
   default: return 'Greyscale';
@@ -20229,7 +20269,7 @@ function meterFullAutoCalSleep(ms){
 	 const fullWorkflow=!!(options&&options.fullWorkflow);
 	 const stage='magic_wand';
 	 if(fullWorkflow){
-	  meterFullAutoCalPhase='post-3d-polish';
+	  meterFullAutoCalPhase='magic-wand';
 	  meterFullAutoCalSaveState();
 	  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
 	  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
@@ -20622,7 +20662,7 @@ function meterFullAutoCalTouchupTargetY(){
 	  if(runId) meterFullAutoCalRunId=runId;
 	  if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
 	  meterFullAutoCalMarkCompletionHandled(status);
-	  meterFullAutoCalPhase='post-3d-polish';
+	  meterFullAutoCalPhase='magic-wand';
 	  meterFullAutoCalSaveState();
 	  meterLg3dAutoCalRunning=false;
 	 }
@@ -20689,7 +20729,7 @@ function meterFullAutoCalTouchupTargetY(){
 	    full_autocal_post_series_adjust:true,
 	    full_workflow:fullWorkflow?true:undefined,
 	    full_autocal_run_id:fullWorkflow?(meterFullAutoCalRunId||undefined):undefined,
-	    full_autocal_phase:fullWorkflow?'post-3d-polish':undefined,
+	    full_autocal_phase:fullWorkflow?'magic-wand':undefined,
 	    full_autocal_post_commit_polish:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():undefined,
 	    full_autocal_magic_wand:fullWorkflow?meterFullAutoCalMagicWandEnabled():undefined,
 	    post_cal_series_readings:beforeSnap.readings,
@@ -20839,7 +20879,7 @@ function meterFullAutoCalTouchupTargetY(){
 	   full_autocal_post_series_revert:true,
 	   full_workflow:fullWorkflow?true:undefined,
 	   full_autocal_run_id:fullWorkflow?(meterFullAutoCalRunId||undefined):undefined,
-	   full_autocal_phase:fullWorkflow?'post-3d-polish':undefined,
+	   full_autocal_phase:fullWorkflow?'magic-wand':undefined,
    post_cal_series_after_readings:afterSnap.readings,
    post_cal_series_adjustment_status:adjustment,
    post_commit_polish:false,
@@ -21239,7 +21279,7 @@ async function meterPollAutoCal(options){
 	 const recover=!!(options&&options.recover);
 	 const timeoutMs=Number((options&&options.timeoutMs)||0)|| (initial?15000:8000);
 	 const setupOverlayActiveBeforeFetch=meterAutoCalSetupOverlayActive();
-		 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'));
+		 const fullGreyscalePhase=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand'));
 	 const fullGreyscaleBackendActive=!!(fullGreyscalePhase&&(meterAutoCalPolling||meterAutoCalPhase==='running'));
 	 if(setupOverlayActiveBeforeFetch&&!fullGreyscaleBackendActive) return;
 	 meterAutoCalPollInFlight=true;
@@ -21287,6 +21327,15 @@ async function meterPollAutoCal(options){
 	   else meterFullAutoCalComplete(r);
 	   return;
 	  }
+	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
+	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
+	   meterActionPending=false;
+	   meterAutoCalRunning=false;
+	   meterAutoCalPendingConfig=null;
+	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
+	   else meterFullAutoCalComplete(r);
+	   return;
+	  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
 	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
 	   meterActionPending=false;
@@ -21296,7 +21345,7 @@ async function meterPollAutoCal(options){
 	   return;
 	  }
 	  const backendGreyscaleActive=!!(r.status==='running'||meterAutoCalPolling||meterAutoCalPhase==='running');
-		  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
+		  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand')&&backendGreyscaleActive);
 	  const localAutoCalActive=!!(backendGreyscaleActive||fullGreyscaleActive);
 	  if(initial&&r.status!=='running'&&!localAutoCalActive){
 	   meterAutoCalRunning=false;
@@ -21336,6 +21385,13 @@ async function meterPollAutoCal(options){
 			     else meterFullAutoCalComplete(r);
 			     return;
 			    }
+			    if(meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
+			     meterAutoCalRunning=false;
+			     meterAutoCalPendingConfig=null;
+			     if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
+			     else meterFullAutoCalComplete(r);
+			     return;
+			    }
 			    if(r.full_autocal_post_series_adjust&&meterAutoCalMagicWandActive&&!meterAutoCalMagicWandFullWorkflow){
 			     meterAutoCalRunning=false;
 			     meterAutoCalPendingConfig=null;
@@ -21370,7 +21426,7 @@ async function meterPollAutoCal(options){
 	  }
  }catch(e){
   const backendGreyscaleActive=!!(meterAutoCalPolling||meterAutoCalPhase==='running');
-	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish')&&backendGreyscaleActive);
+	  const fullGreyscaleActive=!!(meterFullAutoCalRunning&&(meterFullAutoCalPhase==='first-greyscale'||meterFullAutoCalPhase==='touchup-greyscale'||meterFullAutoCalPhase==='post-3d-polish'||meterFullAutoCalPhase==='magic-wand')&&backendGreyscaleActive);
   const active=!!(backendGreyscaleActive||fullGreyscaleActive);
   if(active){
    meterAutoCalPollErrors++;
