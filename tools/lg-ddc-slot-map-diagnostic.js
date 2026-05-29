@@ -6,12 +6,14 @@ const fs = require('fs');
 const baseUrl = process.env.PGEN_URL || 'http://192.168.1.179';
 const outputPath = process.env.PGEN_DDC_MAP_OUT || 'tmp/lg-ddc-slot-map-diagnostic.json';
 const diagnosticToken = process.env.PGEN_DDC_MAP_TOKEN || 'codexdiag';
+const ddcLayout = String(process.env.PGEN_DDC_MAP_LAYOUT || 'sdr26').toLowerCase() === 'hdr20' ? 'hdr20' : 'sdr26';
 const channel = (process.env.PGEN_DDC_MAP_CHANNEL || 'blue').toLowerCase();
 const delta = Number(process.env.PGEN_DDC_MAP_DELTA || '-30');
 const minReadDelayMs = Number(process.env.PGEN_DDC_MAP_DELAY_MS || '700');
 const readRetries = Math.max(0, Number(process.env.PGEN_DDC_MAP_READ_RETRIES || '2') || 0);
 const defaultPatchPoints = [0, 2.5, 5, 7.5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100];
-const defaultDdcSlots = defaultPatchPoints.filter(v => v !== 0);
+const hdr20DdcSlots = [1.4, 2, 2.7, 4, 5, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100];
+const defaultDdcSlots = ddcLayout === 'hdr20' ? hdr20DdcSlots : defaultPatchPoints.filter(v => v !== 0);
 const mapWindowBelow = Math.max(0, Number(process.env.PGEN_DDC_MAP_WINDOW_BELOW || '10') || 0);
 const mapWindowAbove = Math.max(0, Number(process.env.PGEN_DDC_MAP_WINDOW_ABOVE || '12.5') || 0);
 const mapCandidateStep = Math.max(0.5, Number(process.env.PGEN_DDC_MAP_CANDIDATE_STEP || '2.5') || 2.5);
@@ -108,7 +110,8 @@ function zeroArrays() {
   return {
     whiteBalanceRed: [...zero],
     whiteBalanceGreen: [...zero],
-    whiteBalanceBlue: [...zero]
+    whiteBalanceBlue: [...zero],
+    adjustingLuminance: [...zero]
   };
 }
 
@@ -240,12 +243,15 @@ async function setWhiteBalance(originalPicture, arrays, ire, calibrationModeActi
     settings: {
       whiteBalanceMethod: '22',
       whiteBalanceIre: pctLabel(ire),
+      ddc_layout: ddcLayout,
       whiteBalanceRed: arrays.whiteBalanceRed,
       whiteBalanceGreen: arrays.whiteBalanceGreen,
-      whiteBalanceBlue: arrays.whiteBalanceBlue
+      whiteBalanceBlue: arrays.whiteBalanceBlue,
+      adjustingLuminance: arrays.adjustingLuminance
     },
     picture_mode: originalPicture.pictureMode || '',
-    readback_keys: ['pictureMode', 'whiteBalanceMethod', 'whiteBalanceIre', 'whiteBalanceRed', 'whiteBalanceGreen', 'whiteBalanceBlue'],
+    force_ddc_white_balance: true,
+    readback_keys: ['pictureMode', 'ddc_layout', 'whiteBalanceMethod', 'whiteBalanceIre', 'whiteBalanceRed', 'whiteBalanceGreen', 'whiteBalanceBlue', 'adjustingLuminance'],
     keep_calibration_mode: true,
     calibration_mode_active: !!calibrationModeActive,
     reset_ddc_baseline: !!resetBaseline
@@ -272,6 +278,7 @@ async function main() {
     delta,
     explicit_patch_points: explicitPatchPoints,
     ddc_slots: ddcSlots,
+    ddc_layout: ddcLayout,
     map_window_below: mapWindowBelow,
     map_window_above: mapWindowAbove,
     map_candidate_step: mapCandidateStep,
@@ -298,7 +305,10 @@ async function main() {
     results.lg_status = lgStatus;
     const picResponse = await api('/api/lg/picture-settings', {
       method: 'POST',
-      body: { keys: ['pictureMode', 'whiteBalanceMethod', 'whiteBalanceIre', 'whiteBalanceRed', 'whiteBalanceGreen', 'whiteBalanceBlue'] },
+      body: {
+        keys: ['pictureMode', 'ddc_layout', 'whiteBalanceMethod', 'whiteBalanceIre', 'whiteBalanceRed', 'whiteBalanceGreen', 'whiteBalanceBlue', 'adjustingLuminance'],
+        force_ddc_white_balance: true
+      },
       timeoutMs: 30000
     });
     if (!picResponse || picResponse.status !== 'ok') throw new Error('Could not read LG picture settings');
@@ -306,14 +316,16 @@ async function main() {
     restoreArrays = {
       whiteBalanceRed: normalizeArray(restorePicture.whiteBalanceRed),
       whiteBalanceGreen: normalizeArray(restorePicture.whiteBalanceGreen),
-      whiteBalanceBlue: normalizeArray(restorePicture.whiteBalanceBlue)
+      whiteBalanceBlue: normalizeArray(restorePicture.whiteBalanceBlue),
+      adjustingLuminance: normalizeArray(restorePicture.adjustingLuminance)
     };
     originalPicture = restorePicture;
     results.original_picture = clone(restorePicture);
     let originalArrays = {
       whiteBalanceRed: normalizeArray(originalPicture.whiteBalanceRed),
       whiteBalanceGreen: normalizeArray(originalPicture.whiteBalanceGreen),
-      whiteBalanceBlue: normalizeArray(originalPicture.whiteBalanceBlue)
+      whiteBalanceBlue: normalizeArray(originalPicture.whiteBalanceBlue),
+      adjustingLuminance: normalizeArray(originalPicture.adjustingLuminance)
     };
     if (resetBeforeMap) {
       process.stdout.write('Resetting LG DDC table to zero before mapping...\n');
