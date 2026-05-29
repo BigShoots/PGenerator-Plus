@@ -16454,7 +16454,7 @@ const METER_LG_GREY_MANUAL_22_ENABLED=false;
 			const METER_LG_GREY_AUTOCAL_26_SLOTS=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
 				const METER_LG_GREY_HDR_AUTOCAL_SLOTS=[100,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4];
 				const METER_LG_GREY_HDR_AUTOCAL_CODES=[235,213,191,169,147,126,115,104,93,82,71,60,49,38,31,27,25,22,20,19];
-				const METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES=[100,89.9543378995434,79.9086757990868,69.8630136986301,59.8173515981735,50.2283105022831,45.2054794520548,40.1826484018265,35.1598173515982,30.1369863013699,25.1141552511416,20.0913242009132,15.0684931506849,10.0456621004566,6.84931506849315,5.02283105022831,4.10958904109589,2.73972602739726,1.82648401826484,1.36986301369863];
+				const METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES=[100,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4];
 							function meterLgHdrAutoCalStimulusFromCode(code){
 							 const value=(Number(code)-16)*100/219;
 							 if(!Number.isFinite(value)) return 0;
@@ -17161,7 +17161,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const makeHdrStep=(slot)=>{
 		   const hdrIdx=METER_LG_GREY_HDR_AUTOCAL_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
 		   const code=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_CODES[hdrIdx]:meterCodeFromSignalPercentWithOptions(slot,null);
-		   const stimulus=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES[hdrIdx]:meterLgHdrAutoCalStimulusFromCode(code);
+		   const stimulus=meterLgHdrAutoCalStimulusFromCode(code);
 		   const ddcArrayIre=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES[hdrIdx]:stimulus;
 		   return {
 		    ire:slot,
