@@ -2900,6 +2900,10 @@ sub lg_autocal_26_initial_target_move_active {
  return 1 if($stalls >= 2);
  return 1 if($iteration_limit > 0 && $remaining_pct <= 35);
  return 1 if(autocal_step_is_low_shadow($step) && defined($de) && $de > $target_delta+1.0 && $iter >= 4);
+ if(lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step) && autocal_step_is_hdr20_body($step) && defined($de)) {
+  return 1 if($de > $target_delta+3.0 && $iter >= 1);
+  return 1 if($de > $target_delta+1.5 && $stalls >= 1);
+ }
  return 1 if(legal_white_pair_side_ire($step) && defined($de) && $de > $target_delta+0.50 && $iter >= 6);
  return 0;
 }
@@ -2963,7 +2967,7 @@ sub lg_autocal_26_initial_learned_target_adjustments {
 	 my $luma_very_far=(defined($lum_pct) && defined($tol) && abs($lum_pct) > ($tol*1.75)) ? 1 : 0;
 	 my $error=autocal_adjustment_error($reading,$step);
 	 my $hdr20_sdr_method=lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step);
-		 my $hdr20_chroma_priority=$hdr20_sdr_method ? 0 : (hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) || hdr20_body_chroma_priority_needed($step,$error,$de,$target_delta));
+	 my $hdr20_chroma_priority=(hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) || hdr20_body_chroma_priority_needed($step,$error,$de,$target_delta));
  if($luma_far && !$hdr20_chroma_priority && lg_autocal_26_response_axis_samples($state,$step,"luminance","adjustingLuminance") >= 2) {
   my $cap=lg_autocal_26_initial_target_move_cap($step,"adjustingLuminance",$lum_pct,$de,$target_delta);
   my $adjustments=lg_autocal_26_learned_luminance_adjustment($state,$arrays,$target,$step,$lum_pct,$tried,$cap,"initial_learned_luminance");
@@ -9605,6 +9609,8 @@ sub remember_lg_autocal_26_window_best_known {
 sub committed_top_window_polish {
  my ($config,$state,$picture,$arrays,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$calibrated_slot_mask)=@_;
  return ($picture,$arrays,undef) if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ my $layout=ddc_layout_for_signal_mode($signal_mode || $config->{"signal_mode"});
+ return ($picture,$arrays,undef) if($layout eq "hdr20");
  return ($picture,$arrays,undef) if(exists($config->{"post_commit_top_window"}) && !$config->{"post_commit_top_window"});
  return ($picture,$arrays,undef) if(ref($steps) ne "ARRAY" || ref($arrays) ne "HASH");
  my %steps_by_ire;
@@ -13947,15 +13953,17 @@ eval {
 									    $adjustments=full_ddc_spine_seeded_body_luminance_priority_adjustments($config,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
 									    $adjustments=undef if($adjustments && autocal_step_is_hdr20_body($read_step) && !$hdr20_sdr_method && ref(luma_only_adjustment($adjustments)) eq "HASH");
 									    $adjustments=undef if($adjustments && hdr20_sdr_method_luma_close_rgb_preferred($config,$read_step,$err,$de,$lum_pct,$target_delta) && ref(luma_only_adjustment($adjustments)) eq "HASH");
-								   }
-								   my $hdr20_sdr_far_luma_cleanup=(
-								    $adjustments &&
-								    $hdr20_sdr_method &&
-								    autocal_step_is_hdr20_body($read_step) &&
-								    ref(luma_only_adjustment($adjustments)) eq "HASH" &&
-								    defined($lum_pct) &&
-								    abs($lum_pct) >= 8
-								   ) ? 1 : 0;
+									   }
+									   my $hdr20_sdr_far_luma_cleanup_chroma=(ref($err) eq "HASH") ? chroma_error_magnitude($err) : 999;
+									   my $hdr20_sdr_far_luma_cleanup=(
+									    $adjustments &&
+									    $hdr20_sdr_method &&
+									    autocal_step_is_hdr20_body($read_step) &&
+									    ref(luma_only_adjustment($adjustments)) eq "HASH" &&
+									    defined($lum_pct) &&
+									    abs($lum_pct) >= 8 &&
+									    $hdr20_sdr_far_luma_cleanup_chroma < 0.050
+									   ) ? 1 : 0;
 								   if($adjustments && !$hdr20_sdr_far_luma_cleanup && hdr20_sdr_method_chroma_active($config,$read_step,$err,$de,$target_delta) && ref(luma_only_adjustment($adjustments)) eq "HASH") {
 								    trace_109($read_step,"hdr20_sdr_method_suppressed_luma_only",{
 								     delta_e=>defined($de)?$de+0:undef,
