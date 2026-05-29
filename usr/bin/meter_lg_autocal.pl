@@ -3920,7 +3920,7 @@ sub clone_arrays {
 sub lg_autocal_26_lut_indexes {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
- return ddc_slots_for_layout("hdr20") if($layout eq "hdr20");
+ return (14,19,28,42,51,70,103,154,206,257,308,360,411,462,514,612,715,817,920,1023) if($layout eq "hdr20");
  return (21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
 }
 
