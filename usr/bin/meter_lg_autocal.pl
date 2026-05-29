@@ -6599,6 +6599,25 @@ sub suppress_hdr20_body_family {
 	 return 1;
 }
 
+sub hdr20_body_single_rgb_family_name {
+	 my ($setting)=@_;
+	 return undef if(!defined($setting) || $setting !~ /^whiteBalance(?:Red|Green|Blue)$/);
+	 return "rgb_".$setting;
+}
+
+sub hdr20_body_single_rgb_direction {
+	 my ($adjustments)=@_;
+	 return undef if(ref($adjustments) ne "ARRAY" || @{$adjustments} != 1);
+	 my $adj=$adjustments->[0];
+	 return undef if(ref($adj) ne "HASH");
+	 my $family=hdr20_body_single_rgb_family_name($adj->{"setting"});
+	 return undef if(!defined($family));
+	 my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : undef;
+	 return undef if(!defined($delta) || abs($delta) < 0.0001);
+	 my $direction=$delta < 0 ? -1 : 1;
+	 return ($family,$direction);
+}
+
 sub hdr20_body_luminance_rgb_direction {
 	 my ($adjustments)=@_;
 	 return undef if(ref($adjustments) ne "ARRAY" || @{$adjustments} < 3);
@@ -6662,6 +6681,9 @@ sub record_hdr20_body_bad_adjustment_family {
 	 if(!$family) {
 	  $direction=hdr20_body_compound_luma_direction($adjustments);
 	  $family="compound_luminance" if(defined($direction));
+	 }
+	 if(!$family) {
+	  ($family,$direction)=hdr20_body_single_rgb_direction($adjustments);
 	 }
 	 return undef if(!$family || !defined($direction));
 	 my $before_abs=defined($before_lum_pct) ? abs($before_lum_pct+0) : undef;
@@ -7815,10 +7837,36 @@ sub choose_rgb_response_adjustments {
 	  return undef;
 	 }
 		 return undef if(!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed($step,$response_lum_pct,0.35));
-	 my $paired_white=strict_tried_for_step($step);
-		 my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
-		 return undef if(!$ch);
 	 my $threshold=rgb_response_close_threshold($de,$target_delta);
+	 my $paired_white=strict_tried_for_step($step);
+	 my ($ch,$err,$max_err);
+	 foreach my $candidate (sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b)) {
+	  my $candidate_err=$error->{$candidate}||0;
+	  my $candidate_max=abs($candidate_err);
+	  next if($candidate_max < $threshold);
+	  my $candidate_setting=channel_setting($candidate);
+	  my $candidate_direction=($candidate_err > 0) ? -1 : 1;
+	  my $candidate_family=hdr20_body_single_rgb_family_name($candidate_setting);
+	  if(
+	   autocal_step_is_hdr20_body($step) &&
+	   defined($candidate_family) &&
+	   hdr20_body_family_suppressed($tried,$candidate_family,$candidate_direction,$step)
+	  ) {
+	   trace_109($step,"hdr20_body_rgb_response_family_skipped",{
+	    channel=>$candidate,
+	    setting=>$candidate_setting,
+	    direction=>$candidate_direction+0,
+	    rgb_error=>$candidate_err+0,
+	    delta_e=>defined($de)?$de+0:undef,
+	    luminance_error_pct=>defined($response_lum_pct)?$response_lum_pct+0:undef,
+	    reason=>"previous_candidate_worsened"
+	   });
+	   next;
+	  }
+	  ($ch,$err,$max_err)=($candidate,$candidate_err,$candidate_max);
+	  last;
+	 }
+	 return undef if(!$ch);
 	 return undef if($max_err < $threshold);
 	 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,$target_delta,$stalls);
 	 my $near_y_cleanup_cap=headroom_105_near_y_cleanup_rgb_cap($tried,$step,$arrays,$target,$luminance_err,0);
@@ -8524,8 +8572,30 @@ sub choose_micro_adjustments {
 		  next if(!defined($idx) || $idx >= @{$arr});
 		  my $current=$arr->[$idx]||0;
 				  my $direction=($err > 0) ? -1 : 1;
+				  my $family=hdr20_body_single_rgb_family_name($setting);
+				  if(
+				   autocal_step_is_hdr20_body($step) &&
+				   defined($family) &&
+				   hdr20_body_family_suppressed($tried,$family,$direction,$step)
+				  ) {
+				   trace_109($step,"hdr20_body_fine_rgb_family_skipped",{
+				    channel=>$ch,
+				    setting=>$setting,
+				    direction=>$direction+0,
+				    rgb_error=>$err+0,
+				    delta_e=>defined($de)?$de+0:undef,
+				    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				    reason=>"previous_candidate_worsened"
+				   });
+				   next;
+				  }
 				  foreach my $mag (@magnitudes) {
 				   foreach my $dir ($direction,-$direction) {
+				    next if(
+				     autocal_step_is_hdr20_body($step) &&
+				     defined($family) &&
+				     hdr20_body_family_suppressed($tried,$family,$dir,$step)
+				    );
 				    my $effective_mag=$mag;
 				    my ($response_multiplier,$response_cap_reason,$response_entry);
 				    if($headroom_105_body && !$strict_tried) {
@@ -8562,6 +8632,12 @@ sub choose_micro_adjustments {
 			   next if(!defined($idx) || $idx >= @{$arr});
 					   my $current=$arr->[$idx]||0;
 					   foreach my $dir (1,-1) {
+					    my $family=hdr20_body_single_rgb_family_name($setting);
+					    next if(
+					     autocal_step_is_hdr20_body($step) &&
+					     defined($family) &&
+					     hdr20_body_family_suppressed($tried,$family,$dir,$step)
+					    );
 					    my $effective_mag=$mag;
 					    my ($response_multiplier,$response_cap_reason,$response_entry);
 					    if($headroom_105_body && !$strict_tried) {
