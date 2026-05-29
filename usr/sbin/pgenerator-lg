@@ -1663,6 +1663,24 @@ sub lg_calibration_request (@) {
   # reports "not a string" when this is sent as the older numeric code.
   $payload->{"dataType"}="unsigned integer16";
   $payload->{"dataOpt"}=defined($data_opt) ? int($data_opt) : 1;
+ } elsif(ref($data) eq "HASH" && ref($data->{"values"}) eq "ARRAY") {
+  my $values=$data->{"values"};
+  my $type=lc($data->{"data_type"}||$data->{"dataType"}||"unsigned integer16");
+  $type="unsigned integer16" if($type eq "uint16" || $type eq "unsigned_integer16" || $type eq "unsigned integer 16");
+  my $packed="";
+  if($type eq "float" || $type eq "float32") {
+   $packed=pack("f<*",map { 0+$_ } @{$values});
+   $payload->{"dataType"}="float";
+  } elsif($type eq "unsigned integer16") {
+   $packed=pack("v*",map { int($_) } @{$values});
+   $payload->{"dataType"}="unsigned integer16";
+  } else {
+   $packed=pack("v*",map { int($_) } @{$values});
+   $payload->{"dataType"}="unsigned integer16";
+  }
+  $payload->{"data"}=encode_base64($packed,"");
+  $payload->{"dataCount"}=scalar(@{$values});
+  $payload->{"dataOpt"}=defined($data->{"data_opt"}) ? int($data->{"data_opt"}) : (defined($data->{"dataOpt"}) ? int($data->{"dataOpt"}) : (defined($data_opt) ? int($data_opt) : 1));
  }
  return &lg_request($session,$id,"externalpq/setExternalPqData",$payload,$timeout);
 }
@@ -2233,6 +2251,113 @@ sub lg_3d_lut_reset_workflow (@) {
  $result->{"reset_to_unity"}=&json_true() if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok");
  $result->{"message"}="LG 3D LUT reset to unity and verified." if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok");
  return $result;
+}
+
+sub lg_bt2020_identity_3x3_payload (@) {
+ return { values => [1,0,0,0,1,0,0,0,1], data_type => "float" };
+}
+
+sub lg_hdr_calman_float_payload (@) {
+ return { values => [0,0,0,0,0,0,0.0044,-0.0453,1.0410], data_type => "float" };
+}
+
+sub lg_hdr_picture_reset_apply_dynamic_contrast_off (@) {
+ my ($session,$active_picture_mode,$tv_input,$timeout)=@_;
+ my @attempts=();
+ foreach my $attempt (&lg_picture_apply_settings_payloads({ dynamicContrast => "off" },$active_picture_mode,$tv_input,"hdr10")) {
+  my $path=$attempt->{"path"}||"settings/setSystemSettings";
+  next if(index($path,"settings/setSystemSettings") < 0);
+  my $response=$attempt->{"luna"}
+   ? &lg_luna_request($session,"hdr_calman_reset_dynamic_contrast_off_luna",$path,$attempt->{"payload"},$timeout)
+   : &lg_request($session,"hdr_calman_reset_dynamic_contrast_off",$path,$attempt->{"payload"},$timeout);
+  my ($failed,$message)=&response_is_app_failure($response);
+  push(@attempts,{ path => $path, payload => $attempt->{"payload"}, response => $response, failed => &json_bool($failed), message => $message||"" });
+  return (1,\@attempts) if(!$failed && ref($response) eq "HASH");
+ }
+ return (0,\@attempts);
+}
+
+sub lg_hdr_calman_reset_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$tv_input)=@_;
+ return &json_error("Connect / Pair the LG TV before resetting HDR calibration data",{ ip => $ip }) if($client_key eq "");
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+  &websocket_close($session);
+  return &json_error("HDR reset requires an active HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ my @steps=();
+ my $cal_payload=&lg_hdr_calman_float_payload();
+ my $start=&lg_calibration_request($session,"hdr_calman_reset_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ push(@steps,{ command => "CAL_START", response => $start, failed => &json_bool($start_failed), message => $start_message||"" });
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected HDR calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
+ }
+
+ foreach my $item (
+  ["BRIGHTNESS_UI_DATA",50],
+  ["CONTRAST_UI_DATA",100],
+  ["BACKLIGHT_UI_DATA",100],
+  ["COLOR_UI_DATA",50],
+ ) {
+  my ($command,$value)=@{$item};
+  my $response=&lg_calibration_request($session,"hdr_calman_reset_".lc($command),$command,[$value],1,"",$connect_timeout + 4);
+  my ($failed,$message)=&response_is_app_failure($response);
+  push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
+ }
+
+ my ($dc_ok,$dc_attempts)=&lg_hdr_picture_reset_apply_dynamic_contrast_off($session,$active_picture_mode,$tv_input,$connect_timeout + 3);
+ push(@steps,{ command => "dynamicContrast", value => "off", response => $dc_attempts, failed => &json_bool(!$dc_ok), message => $dc_ok ? "" : "LG TV rejected dynamicContrast off." });
+
+ my $matrix=&lg_bt2020_identity_3x3_payload();
+ my $matrix_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3by3","BT2020_3BY3_GAMUT_DATA",$matrix,1,"",$connect_timeout + 6);
+ my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+ push(@steps,{ command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
+
+ my $unity3d=&lg_unity_3d_lut(33);
+ my $lut3d_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3d_lut","BT2020_3D_LUT_DATA",$unity3d,1,"",$connect_timeout + 18);
+ my ($lut3d_failed,$lut3d_message)=&response_is_app_failure($lut3d_response);
+ push(@steps,{ command => "BT2020_3D_LUT_DATA", response => $lut3d_response, failed => &json_bool($lut3d_failed), message => $lut3d_message||"" });
+
+ my $unity1d=&lg_unity_1d_lut();
+ my $lut1d_response=&lg_calibration_request($session,"hdr_calman_reset_1d_dpg","1D_DPG_DATA",$unity1d,1,"",$connect_timeout + 10);
+ my ($lut1d_failed,$lut1d_message)=&response_is_app_failure($lut1d_response);
+ push(@steps,{ command => "1D_DPG_DATA", response => $lut1d_response, failed => &json_bool($lut1d_failed), message => $lut1d_message||"" });
+
+ my $end=&lg_calibration_request($session,"hdr_calman_reset_cal_end","CAL_END",$cal_payload,1,"",$connect_timeout + 4);
+ my ($end_failed,$end_message)=&response_is_app_failure($end);
+ push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
+ &websocket_close($session);
+
+ my @failed=grep { $_->{"failed"} } @steps;
+ if(@failed) {
+  return &json_error("LG HDR reset completed with one or more rejected commands.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   steps => \@steps,
+  });
+ }
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  hdr_calman_reset => &json_true(),
+  bt2020_matrix_identity => &json_true(),
+  bt2020_3d_lut_unity => &json_true(),
+  dpg_1d_unity => &json_true(),
+  steps => \@steps,
+  hello_info => $auth->{"hello_info"},
+  system_info => $auth->{"system_info"},
+  software_info => $auth->{"software_info"},
+  message => "LG HDR calibration data reset with HDR CAL_START/CAL_END payloads.",
+ });
 }
 
 sub lg_hdr_tone_map_upload_workflow (@) {
@@ -3851,6 +3976,8 @@ sub main (@) {
   $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command);
 	 } elsif($action eq "3d_lut_reset") {
 	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command);
+	 } elsif($action eq "hdr_picture_reset" || $action eq "hdr_calman_reset") {
+	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
 	 } elsif($action eq "hdr_tone_map_upload") {
 	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance);
 	 } elsif($action eq "connect_pin_wait") {
