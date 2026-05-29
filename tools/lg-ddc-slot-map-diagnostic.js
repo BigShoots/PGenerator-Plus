@@ -11,6 +11,10 @@ const channel = (process.env.PGEN_DDC_MAP_CHANNEL || 'blue').toLowerCase();
 const delta = Number(process.env.PGEN_DDC_MAP_DELTA || '-30');
 const minReadDelayMs = Number(process.env.PGEN_DDC_MAP_DELAY_MS || '700');
 const readRetries = Math.max(0, Number(process.env.PGEN_DDC_MAP_READ_RETRIES || '2') || 0);
+const envDisplayType = process.env.PGEN_DISPLAY_TYPE || process.env.PGEN_DDC_MAP_DISPLAY_TYPE || '';
+const envSignalMode = process.env.PGEN_SIGNAL_MODE || process.env.PGEN_DDC_MAP_SIGNAL_MODE || '';
+const envMaxLuma = process.env.PGEN_MAX_LUMA || process.env.PGEN_DDC_MAP_MAX_LUMA || '';
+const envPatchSize = process.env.PGEN_PATCH_SIZE || process.env.PGEN_DDC_MAP_PATCH_SIZE || '';
 const defaultPatchPoints = [0, 2.5, 5, 7.5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100];
 const hdr20DdcSlots = [1.4, 2, 2.7, 4, 5, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100];
 const defaultDdcSlots = ddcLayout === 'hdr20' ? hdr20DdcSlots : defaultPatchPoints.filter(v => v !== 0);
@@ -172,21 +176,23 @@ async function readPatch(point, settings, config, runId) {
       const code = codeForPercent(point, range);
       const requestId = `${diagnosticToken}_${runId}_try${attempt + 1}_${pctLabel(point).replace('.', 'p')}_${Date.now()}`;
       const payload = {
-        display_type: settings.display_type || 'lcd',
+        display_type: envDisplayType || settings.display_type || 'lcd',
         refresh_rate: settings.refresh_rate || undefined,
         measurement_meter_port: settings.measurement_meter_port || undefined,
         patch_r: code,
         patch_g: code,
         patch_b: code,
-        patch_size: Number(settings.patch_size || 10) || 10,
+        patch_size: Number(envPatchSize || settings.patch_size || 10) || 10,
         ire: point,
         stimulus: point,
         name: `${pctLabel(point)}%`,
         delay_ms: Math.max(Number(settings.delay || 500) || 500, minReadDelayMs),
         signal_range: range,
         transport_signal_range: range,
-        target_gamut: settings.target_gamut || 'bt709',
-        target_gamma: settings.target_gamma || 'bt1886',
+        signal_mode: envSignalMode || settings.signal_mode || (ddcLayout === 'hdr20' ? 'hdr10' : 'sdr'),
+        max_luma: envMaxLuma || settings.max_luma || (ddcLayout === 'hdr20' ? '1000' : ''),
+        target_gamut: settings.target_gamut || (ddcLayout === 'hdr20' ? 'bt2020' : 'bt709'),
+        target_gamma: settings.target_gamma || (ddcLayout === 'hdr20' ? '2.2' : 'bt1886'),
         request_id: requestId
       };
       lastReadPostAt = Date.now();
