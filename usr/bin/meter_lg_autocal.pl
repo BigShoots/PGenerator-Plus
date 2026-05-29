@@ -352,6 +352,7 @@ sub ddc_write_slots_for_layout {
 sub hdr20_effective_ddc_array_ire {
 	 my ($ire)=@_;
 	 return undef if(!defined($ire));
+	 return 1.4 if(abs(($ire+0)-2.0) < 0.001);
 	 return $ire+0;
 }
 
