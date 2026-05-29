@@ -9982,6 +9982,7 @@ const METER_FULL_AUTOCAL_STATE_KEY='meterFullAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
 const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
 const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=true;
+const METER_LG_HDR_CALMAN_RESET_ENDPOINT='/api/lg/hdr-calman-reset';
 const METER_AUTOCAL_STATE_KEY='meterAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_SERIES=[
  {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale 21pt'},
@@ -19273,6 +19274,10 @@ async function meterAutoCalResetDdc(){
  const zero=ddcSlots.map(()=>0);
 	 const pictureMode=meterLgPictureModeValue((meterLgGreyState&&meterLgGreyState.picture&&meterLgGreyState.picture.pictureMode)||'');
  meterAutoCalResetNotice='';
+ let hdrCalmanReset=null;
+ if(hdrWorkflow){
+  hdrCalmanReset=await meterAutoCalHdrCalmanReset(pictureMode);
+ }
  let response=null;
  let lastMessage='Unable to reset LG DDC.';
  for(let attempt=1;attempt<=3;attempt++){
@@ -19317,6 +19322,7 @@ async function meterAutoCalResetDdc(){
  if(response.ddc_reset_verified!==true){
   throw new Error('LG DDC reset did not verify against the TV 1D LUT readback.');
  }
+ if(hdrCalmanReset) response.hdr_calman_reset=hdrCalmanReset;
  const resetPicture=response.picture_settings||{};
  let panel=meterAutoCalPanelLightFromPicture(resetPicture);
  if(!panel){
@@ -19331,6 +19337,35 @@ async function meterAutoCalResetDdc(){
  }
  meterLgGreyState={status:'ok',picture:resetPicture,message:'',needsRepair:false};
  return response;
+}
+
+async function meterAutoCalHdrCalmanReset(pictureMode){
+ let response=null;
+ let lastMessage='Unable to run LG HDR Calman reset.';
+ for(let attempt=1;attempt<=3;attempt++){
+  meterAutoCalSetOverlay(true,{current_name:'Performing LG HDR reset...',message:'Preparing HDR calibration state'+(attempt>1?' (retry '+attempt+'/3)':'')});
+  try{
+   response=await fetchJSON(METER_LG_HDR_CALMAN_RESET_ENDPOINT,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+     picture_mode:pictureMode||meterLgPictureModeValue(),
+     action:'hdr_calman_reset',
+     ddc_layout:'hdr20',
+     helper_timeout:170
+    }),
+    _quiet:true,
+    _timeoutMs:180000
+   });
+  }catch(e){
+   response=null;
+   lastMessage=(e&&e.message)?e.message:lastMessage;
+  }
+  if(response&&response.status==='ok') return response;
+  lastMessage=(response&&(response.repair_hint||response.message))||lastMessage;
+  if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
+ }
+ throw new Error(lastMessage||'Unable to run LG HDR Calman reset.');
 }
 
 async function meterAutoCalReset3dLutBaseline(){
@@ -19393,6 +19428,10 @@ async function meterAutoCalRunPreflightReset(){
      ddc_baseline_reset:!!(ddcReset&&ddcReset.ddc_baseline_reset),
      ddc_1d_lut:!!(ddcReset&&ddcReset.ddc_1d_lut),
      ddc_reset_verified:!!(ddcReset&&ddcReset.ddc_reset_verified),
+     hdr_calman_reset:ddcReset&&ddcReset.hdr_calman_reset?{
+      status:ddcReset.hdr_calman_reset.status||null,
+      completed_at:Date.now()
+     }:null,
      picture_mode:(ddcReset&&ddcReset.picture_settings&&ddcReset.picture_settings.pictureMode)||meterLgPictureModeValue()
     },
     lut3d:lutReset?{
