@@ -7780,6 +7780,20 @@ sub choose_rgb_response_adjustments {
 	 return undef if(headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err));
 	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
 	 my $response_lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;
+	 if(lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step) &&
+	    autocal_step_is_hdr20_body($step) &&
+	    has_luminance_channel($arrays,$target) &&
+	    defined($response_lum_pct) &&
+	    abs($response_lum_pct) > (luminance_tolerance_percent($step)*1.25) &&
+	    chroma_error_magnitude($error) < 0.050) {
+	  trace_109($step,"hdr20_sdr_rgb_response_defer_to_luma",{
+	   delta_e=>defined($de) ? $de+0 : undef,
+	   luminance_error_pct=>$response_lum_pct+0,
+	   chroma=>chroma_error_magnitude($error)+0,
+	   target_values=>trace_target_values($arrays,$target)
+	  });
+	  return undef;
+	 }
 		 return undef if(!hdr20_top_white_chroma_priority_needed($step,$error,$de,$target_delta) && hdr20_top_white_luminance_priority_needed($step,$response_lum_pct,0.35));
 	 my $paired_white=strict_tried_for_step($step);
 		 my ($ch,$err,$max_err)=furthest_rgb_error_channel($error);
