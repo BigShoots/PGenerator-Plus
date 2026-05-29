@@ -1982,7 +1982,9 @@ sub lg_3d_lut_ordered_candidates (@) {
  my ($upload_command,$get_command)=@_;
  my @candidates=@{&lg_3d_lut_candidate_commands()};
  if(($upload_command||"") ne "" && ($get_command||"") ne "") {
-  unshift(@candidates,{ upload => $upload_command, get => $get_command, caller_selected => &json_true() });
+  my $selected={ upload => $upload_command, get => $get_command, caller_selected => &json_true() };
+  return [ $selected ] if($upload_command eq "BT2020_3D_LUT_DATA");
+  unshift(@candidates,$selected);
  }
  my @ordered=();
  my %seen=();
@@ -2172,9 +2174,30 @@ sub lg_3d_lut_upload_workflow (@) {
   return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
  }
  my @attempts=();
+ my @bt2020_matrix_steps=();
  my $uploaded=0;
  my $selected=undef;
  my $last_message="";
+ my $hdr_bt2020_upload=(($upload_command||"") eq "BT2020_3D_LUT_DATA") ? 1 : 0;
+ if($hdr_bt2020_upload) {
+  my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
+  my $matrix_response=&lg_calibration_request($session,"3d_lut_upload_bt2020_3by3_pre","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
+  my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+  push(@bt2020_matrix_steps,{ phase => "pre_upload", command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
+  if($matrix_failed || ref($matrix_response) ne "HASH") {
+   my $end=&lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
+   &websocket_close($session);
+   return &json_error($matrix_message||"LG TV rejected HDR BT.2020 3x3 setup before 3D LUT upload.",{
+    ip => $ip,
+    active_picture_mode => $active_picture_mode,
+    calibration_picture_mode => $cal_mode,
+    payload_path => $payload_path,
+    bt2020_matrix_steps => \@bt2020_matrix_steps,
+    cal_start_response => $start,
+    cal_end_response => $end,
+   });
+  }
+ }
  foreach my $candidate (@{&lg_3d_lut_ordered_candidates($upload_command,$get_command)}) {
   my $idx=scalar(@attempts)+1;
   my %attempt=( upload_command => $candidate->{"upload"}, get_command => $candidate->{"get"}, endpoint_write => "externalpq/setExternalPqData", endpoint_read => "externalpq/getExternalPqData" );
@@ -2205,6 +2228,16 @@ sub lg_3d_lut_upload_workflow (@) {
   }
   push(@attempts,\%attempt);
  }
+ if($uploaded && $hdr_bt2020_upload) {
+  my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
+  my $matrix_response=&lg_calibration_request($session,"3d_lut_upload_bt2020_3by3_post","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
+  my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+  push(@bt2020_matrix_steps,{ phase => "post_upload", command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
+  if($matrix_failed || ref($matrix_response) ne "HASH") {
+   $uploaded=0;
+   $last_message=$matrix_message||"LG TV rejected HDR BT.2020 3x3 setup after 3D LUT upload.";
+  }
+ }
  my $end=&lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
  &websocket_close($session);
  if(!$uploaded) {
@@ -2214,6 +2247,7 @@ sub lg_3d_lut_upload_workflow (@) {
    calibration_picture_mode => $cal_mode,
    payload_path => $payload_path,
    attempts => \@attempts,
+   bt2020_matrix_steps => \@bt2020_matrix_steps,
    cal_start_response => $start,
    cal_end_response => $end,
   });
@@ -2236,6 +2270,7 @@ sub lg_3d_lut_upload_workflow (@) {
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
   attempts => \@attempts,
+  bt2020_matrix_steps => \@bt2020_matrix_steps,
   cal_start_response => $start,
   cal_end_response => $end,
   message => "LG 3D LUT upload verified.",

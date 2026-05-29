@@ -19369,17 +19369,19 @@ async function meterAutoCalHdrCalmanReset(pictureMode){
 }
 
 async function meterAutoCalReset3dLutBaseline(){
+ const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
  const pictureMode=meterLgPictureModeValue((meterLgGreyState&&meterLgGreyState.picture&&meterLgGreyState.picture.pictureMode)||'');
  let response=null;
  let lastMessage='Unable to reset LG 3D LUT.';
  for(let attempt=1;attempt<=3;attempt++){
-  meterAutoCalSetOverlay(true,{current_name:'Resetting LG 3D LUT...',message:'Writing unity 3D LUT baseline before greyscale'+(attempt>1?' (retry '+attempt+'/3)':'')});
+  meterAutoCalSetOverlay(true,{current_name:'Resetting LG 3D LUT...',message:'Writing '+(hdrWorkflow?'BT.2020 ':'')+'unity 3D LUT baseline before greyscale'+(attempt>1?' (retry '+attempt+'/3)':'')});
   try{
    response=await fetchJSON('/api/lg/3d-lut/reset',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
      picture_mode:pictureMode,
+     ...meterLg3dLutCommandPayload(hdrWorkflow?'hdr10':'sdr'),
      helper_timeout:220
     }),
     _quiet:true,
@@ -21935,6 +21937,11 @@ function meterLg3dApplyStatus(status){
  }
 }
 
+function meterLg3dLutCommandPayload(signalMode){
+ const mode=String(signalMode||meterLgAutoCalRequestedSignalMode()||'').toLowerCase();
+ return mode==='hdr10' ? {upload_command:'BT2020_3D_LUT_DATA',get_command:'GET_3D_LUT_DATA'} : {};
+}
+
 async function meterPollLg3dAutoCal(options){
  if(meterLg3dAutoCalPollInFlight) return;
  if(meterFullAutoCalReportPhaseActive()){
@@ -22075,6 +22082,7 @@ async function meterStartLg3dAutoCal(options){
   target_gamut:targetGamut,
   target_gamma:targetGamma,
   picture_mode:pictureMode,
+  ...meterLg3dLutCommandPayload(signalMode),
   refresh_rate:getMeterRefreshRate()||undefined,
  require_device_ready:false,
  requested_signal_mode:signalMode,
