@@ -1573,7 +1573,10 @@ sub lg_ddc_extended_video_8bit_for_ire (@) {
 @LG_DDC_1D_PATCH_INDEXES_8BIT=@LG_DDC_1D_PATCH_CODES_8BIT;
 @LG_DDC_1D_INDEXES_SDR=@LG_DDC_1D_INDEXES;
 @LG_DDC_1D_PATCH_INDEXES_8BIT_SDR=@LG_DDC_1D_PATCH_INDEXES_8BIT;
-@LG_DDC_1D_INDEXES_HDR20=(76,80,88,100,108,124,152,196,240,284,328,372,416,460,504,588,676,764,852,940);
+# HDR20 patch labels use legal-range video codes on the wire, but LG's
+# uploaded 1D_DPG_DATA table is indexed after the legal range is expanded
+# into the TV's normalized 0-1023 LUT domain.
+@LG_DDC_1D_INDEXES_HDR20=(14,19,28,42,51,70,103,154,206,257,308,360,411,462,514,612,715,817,920,1023);
 @LG_DDC_1D_PATCH_INDEXES_8BIT_HDR20=@LG_DDC_1D_INDEXES_HDR20;
 
 sub lg_ddc_layout_name (@) {
