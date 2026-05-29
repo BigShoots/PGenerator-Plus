@@ -671,13 +671,29 @@ sub order_autocal_steps {
 	   return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}));
 	   return format_percent($target->{"ire"});
 	  };
-	  foreach my $wanted (@hdr_autocal_26_order) {
-	   my $wanted_key=format_percent($wanted);
-		   next if($seen_target{$wanted_key});
-	   my ($match)=grep {
-	    my $key=$target_key->($_);
-	    defined($key) && !$seen_target{$key} && $key eq $wanted_key
-	   } @valid;
+		  foreach my $wanted (@hdr_autocal_26_order) {
+		   my $wanted_key=format_percent($wanted);
+		   if($seen_target{$wanted_key}) {
+		    my ($anchor_match)=grep {
+		     my $key=$target_key->($_);
+		     defined($key) && $key eq $wanted_key
+		    } @valid;
+		    if($anchor_match) {
+		     my $anchor_target=ddc_target_for_step($anchor_match);
+		     if(lg_autocal_26_full_ddc_spine_body_anchor($anchor_target)) {
+		      my $revisit=clone_picture($anchor_match);
+		      $revisit->{"lg_autocal_26_full_ddc_spine_anchor_revisit"}=JSON::PP::true;
+		      $revisit->{"lg_autocal_26_seeded_move_damping"}=JSON::PP::true;
+		      $revisit->{"autocal_target_label"}=format_percent($anchor_target->{"ire"})."% anchor revisit";
+		      push @ordered,$revisit;
+		     }
+		    }
+		    next;
+		   }
+		   my ($match)=grep {
+		    my $key=$target_key->($_);
+		    defined($key) && !$seen_target{$key} && $key eq $wanted_key
+		   } @valid;
 	   next if(!$match);
 	   push @ordered,$match;
 	   $seen_target{$wanted_key}=1;
@@ -4168,14 +4184,6 @@ sub lg_autocal_26_hdr20_propagation_skip_slot_mask {
  return \@mask if(ref($config) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
  return \@mask if(!lg_autocal_26_hdr20_seed_enabled($config));
  return \@mask if(!lg_autocal_26_full_ddc_spine_enabled($config));
- my @slots=ddc_slots_for_layout("hdr20");
- for(my $idx=0;$idx<@slots;$idx++) {
-  next if($calibrated_slot_mask->[$idx]);
-  my $ire=$slots[$idx]+0;
-  next if($ire < 70 || $ire > 99.999);
-  next if(abs($ire-80) < 0.001);
-  $mask[$idx]=1;
- }
  return \@mask;
 }
 
@@ -8247,11 +8255,12 @@ sub full_ddc_spine_anchor_adjustments {
  my $setting=channel_setting($ch);
  my $arr=$arrays->{$setting};
  return undef if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
- my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
- my $cap=1;
- if(defined($de) && $de > ($target_delta+5.0)) {
-  $cap=8;
- } elsif(defined($de) && $de > ($target_delta+3.0)) {
+	 my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+	 my $cap=1;
+	 my $high_de_initial=(defined($de) && $de > ($target_delta+8.0) && !repeated_value($tried,$setting,$current)) ? 1 : 0;
+	 if(defined($de) && $de > ($target_delta+5.0)) {
+	  $cap=8;
+	 } elsif(defined($de) && $de > ($target_delta+3.0)) {
   $cap=6;
  } elsif($abs_err >= 0.060) {
   $cap=8;
@@ -8259,10 +8268,10 @@ sub full_ddc_spine_anchor_adjustments {
   $cap=6;
  } elsif($abs_err >= 0.026) {
   $cap=4;
- } elsif($abs_err >= 0.016) {
-  $cap=2;
- }
- $cap=4 if(!$luma_aligned && $cap > 4);
+	 } elsif($abs_err >= 0.016) {
+	  $cap=2;
+	 }
+	 $cap=4 if(!$high_de_initial && !$luma_aligned && $cap > 4);
  my $tries=(ref($tried) eq "HASH" && ref($tried->{$setting}) eq "HASH") ? scalar(keys %{$tried->{$setting}}) : 0;
  $cap=4 if($tries >= 1 && $cap > 4);
  $cap=2 if($tries >= 2 && $cap > 2);
