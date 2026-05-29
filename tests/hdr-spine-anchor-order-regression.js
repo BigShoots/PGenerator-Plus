@@ -73,12 +73,13 @@ const fullDdcSourceMaskSource = block(
 assert(
   fullDdcSourceMaskSource.includes('sub lg_autocal_26_full_ddc_spine_setting_source_slot_masks') &&
     fullDdcSourceMaskSource.includes('return $base if(lc($layout||"") ne "hdr20");') &&
-    fullDdcSourceMaskSource.includes('my $rgb_source_slot_mask=clone_slot_mask_without_ires($base,100);') &&
-    fullDdcSourceMaskSource.includes('adjustingLuminance=>$base') &&
-    fullDdcSourceMaskSource.includes('whiteBalanceRed=>$rgb_source_slot_mask') &&
-    fullDdcSourceMaskSource.includes('whiteBalanceGreen=>$rgb_source_slot_mask') &&
-    fullDdcSourceMaskSource.includes('whiteBalanceBlue=>$rgb_source_slot_mask'),
-  'HDR20 full-DDC spine should exclude 100% from RGB/chroma propagation while preserving it for luminance and SDR'
+    fullDdcSourceMaskSource.includes('my $body_source_slot_mask=clone_slot_mask_without_ires($base,100);') &&
+    fullDdcSourceMaskSource.includes('adjustingLuminance=>$body_source_slot_mask') &&
+    fullDdcSourceMaskSource.includes('whiteBalanceRed=>$body_source_slot_mask') &&
+    fullDdcSourceMaskSource.includes('whiteBalanceGreen=>$body_source_slot_mask') &&
+    fullDdcSourceMaskSource.includes('whiteBalanceBlue=>$body_source_slot_mask') &&
+    fullDdcSourceMaskSource.includes('adjustingLuminance=>1'),
+  'HDR20 full-DDC spine should exclude 100% from body-point RGB/luma propagation while preserving SDR'
 );
 
 const fullDdcSkipSource = block(
