@@ -16559,6 +16559,7 @@ function meterHdrGreyscaleSeriesAvailable(){
 }
 
 function meterUseHdrGreyscale30(points){
+ if(!meterHdrGreyscaleSeriesAvailable()) return false;
  const normalized=(points===256)?100:Number(points);
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  return normalized===30&&mode==='hdr10';
