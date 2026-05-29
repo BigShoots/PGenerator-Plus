@@ -21910,7 +21910,7 @@ async function meterStartLg3dAutoCal(options){
  const pictureMode=meterLgPictureModeValue();
  const preflightLut3d=meterFullAutoCalConfig&&meterFullAutoCalConfig.preflightReset&&meterFullAutoCalConfig.preflightReset.lut3d;
  const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
- const skipPreprofileUnityReset=!!(fullWorkflow&&upload&&preflightLut3d&&preflightLut3d.upload_verified&&(!preflightPictureMode||!pictureMode||preflightPictureMode===pictureMode));
+ const skipPreprofileUnityReset=false;
  const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
  const fullMagicWand=(options&&Object.prototype.hasOwnProperty.call(options,'magicWandEnabled'))?options.magicWandEnabled===true:meterFullAutoCalMagicWandEnabled();
  const rawTargetGamma=meterAutoCalTargetGammaValue();
