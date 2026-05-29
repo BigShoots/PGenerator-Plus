@@ -1215,6 +1215,17 @@ sub autocal_step_allows_final_fine_tune {
  return 0;
 }
 
+sub sdr_peak_headroom_extra_fine_tune_needed {
+ my ($config,$step,$best_de,$target_delta)=@_;
+ return 0 if(!lg_autocal_26_sdr_headroom_enabled($config));
+ return 0 if(!autocal_step_is_peak_headroom($step));
+ return 0 if(!defined($best_de));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $excellent=$target_delta*0.65;
+ $excellent=0.08 if($excellent < 0.08);
+ return ($best_de <= $target_delta && $best_de > $excellent) ? 1 : 0;
+}
+
 sub autocal_step_allows_body_final_micro {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
@@ -12721,6 +12732,9 @@ eval {
 			  my $pair_target_reached_now=sub {
 			   return legal_white_pair_target_reached($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading,$target_delta,$white_guard_y);
 			  };
+			  my $sdr_peak_extra_fine_tune_now=sub {
+			   return sdr_peak_headroom_extra_fine_tune_needed($config,$read_step,$best_de,$target_delta);
+			  };
 				  my $store_best_pair=sub {
 				   $best_pair_step=clone_picture($pair_step) if(ref($pair_step) eq "HASH");
 				   $best_pair_reading=clone_picture($pair_reading) if(ref($pair_reading) eq "HASH");
@@ -13097,7 +13111,7 @@ eval {
 						    }
 						    write_state($state);
 						   }
-				   if($pair_target_reached_now->()) {
+				   if($pair_target_reached_now->() && !$sdr_peak_extra_fine_tune_now->()) {
 					    remember_lg_autocal_26_best_known(
 					     $config,$state,$read_step,$reading,$de,$lum_pct,
 						     $target_step_y,$arrays,$target,"main_initial_target_reached",1
@@ -14034,7 +14048,7 @@ eval {
 		   $state->{"best_delta_e"}=$best_de;
 		   $state->{"best_score"}=$best_score;
 		   write_state($state);
-			   last if($pair_target_reached_now->());
+			   last if($pair_target_reached_now->() && !$sdr_peak_extra_fine_tune_now->());
 			   if($paired_white_step && legal_white_pair_close_enough_stalled($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading,$target_delta,$white_guard_y,$stalls,$iter)) {
 		    $state->{"message"}="$label and 100% legal white close pair kept after stalled fine-tune";
 		    trace_109($read_step,"legal_white_pair_close_enough_stalled",{
@@ -14130,7 +14144,8 @@ eval {
 			   });
 			   write_state($state);
 			  }
-			  if(!cancelled() && !$legal_white_pair_score_stalled && autocal_step_allows_final_fine_tune($read_step,$best_de,$target_delta) && !low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta) && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH" && !$pair_target_reached_now->() && !$paired_white_close_enough) {
+			  my $sdr_peak_extra_fine_tune=$sdr_peak_extra_fine_tune_now->();
+			  if(!cancelled() && !$legal_white_pair_score_stalled && (autocal_step_allows_final_fine_tune($read_step,$best_de,$target_delta) || $sdr_peak_extra_fine_tune) && !low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta) && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH" && (!$pair_target_reached_now->() || $sdr_peak_extra_fine_tune) && !$paired_white_close_enough) {
 			   trace_109($read_step,"start_final_fine_tune",{
 			    label=>$label,
 			    best_delta_e=>defined($best_de)?$best_de+0:undef,
@@ -14162,10 +14177,13 @@ eval {
 					    my $paired_polish_limit=config_positive_int($config,"paired_white_polish_iterations",8,1,28);
 					    $polish_limit=$paired_polish_limit if($polish_limit > $paired_polish_limit);
 					   }
+					   if($sdr_peak_extra_fine_tune && $polish_limit > 2) {
+					    $polish_limit=2;
+					   }
 			   my $polish_stalls=0;
 			   for(my $polish=1;$polish<=$polish_limit;$polish++) {
 			    last if(cancelled());
-			    last if($pair_target_reached_now->());
+			    last if($pair_target_reached_now->() && !$sdr_peak_extra_fine_tune);
 				    my $err=autocal_adjustment_error($reading,$read_step);
 				    my $lum_err=luminance_error_ratio($reading,$target_step_y);
 				    my $hdr20_planner_lum_err=(autocal_step_is_hdr20_body($read_step) && defined($lum_pct)) ? (($lum_pct+0)/100.0) : $lum_err;
