@@ -13520,6 +13520,9 @@ eval {
 								   if(!$adjustments) {
 								    $adjustments=full_ddc_spine_anchor_adjustments($config,$err,$arrays,$target,$read_step,$de,$lum_err,$stalls,\%tried_values,$target_delta);
 								   }
+								   if(!$adjustments && $hdr20_sdr_method && autocal_step_is_hdr20_body($read_step) && defined($lum_pct) && abs($lum_pct) >= 1.0 && chroma_error_magnitude($err) >= 0.025) {
+								    $adjustments=hdr20_body_balanced_chroma_luma_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0);
+								   }
 									   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
 									    $adjustments=body_luminance_priority_adjustments($arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
 									    $adjustments=undef if($adjustments && autocal_step_is_hdr20_body($read_step) && !$hdr20_sdr_method && ref(luma_only_adjustment($adjustments)) eq "HASH");
