@@ -1667,6 +1667,7 @@ sub lg_calibration_request (@) {
   my $values=$data->{"values"};
   my $type=lc($data->{"data_type"}||$data->{"dataType"}||"unsigned integer16");
   $type="unsigned integer16" if($type eq "uint16" || $type eq "unsigned_integer16" || $type eq "unsigned integer 16");
+  $payload->{"picMode"}=$picture_mode if($data->{"force_pic_mode"} && defined($picture_mode) && $picture_mode ne "");
   my $packed="";
   if($type eq "float" || $type eq "float32") {
    $packed=pack("f<*",map { 0+$_ } @{$values});
@@ -2261,9 +2262,27 @@ sub lg_hdr_calman_float_payload (@) {
  return { values => [0,0,0,0,0,0,0.0044,-0.0453,1.0410], data_type => "float" };
 }
 
+sub lg_typed_uint16_payload (@) {
+ my $values=shift;
+ $values=[] if(ref($values) ne "ARRAY");
+ return { values => $values, data_type => "unsigned integer16" };
+}
+
+sub lg_force_pic_mode_payload (@) {
+ my $payload=shift;
+ $payload={} if(ref($payload) ne "HASH");
+ $payload->{"force_pic_mode"}=&json_true();
+ return $payload;
+}
+
 sub lg_hdr_picture_reset_apply_dynamic_contrast_off (@) {
  my ($session,$active_picture_mode,$tv_input,$timeout)=@_;
  my @attempts=();
+ my $plain_payload={ category => "picture", settings => { dynamicContrast => "off" } };
+ my $plain_response=&lg_request($session,"hdr_calman_reset_dynamic_contrast_off_plain","settings/setSystemSettings",$plain_payload,$timeout);
+ my ($plain_failed,$plain_message)=&response_is_app_failure($plain_response);
+ push(@attempts,{ path => "settings/setSystemSettings", payload => $plain_payload, response => $plain_response, failed => &json_bool($plain_failed), message => $plain_message||"" });
+ return (1,\@attempts) if(!$plain_failed && ref($plain_response) eq "HASH");
  foreach my $attempt (&lg_picture_apply_settings_payloads({ dynamicContrast => "off" },$active_picture_mode,$tv_input,"hdr10")) {
   my $path=$attempt->{"path"}||"settings/setSystemSettings";
   next if(index($path,"settings/setSystemSettings") < 0);
@@ -2290,7 +2309,7 @@ sub lg_hdr_calman_reset_workflow (@) {
   return &json_error("HDR reset requires an active HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
  my @steps=();
- my $cal_payload=&lg_hdr_calman_float_payload();
+ my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
  my $start=&lg_calibration_request($session,"hdr_calman_reset_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
  my ($start_failed,$start_message)=&response_is_app_failure($start);
  push(@steps,{ command => "CAL_START", response => $start, failed => &json_bool($start_failed), message => $start_message||"" });
@@ -2305,8 +2324,8 @@ sub lg_hdr_calman_reset_workflow (@) {
   ["BACKLIGHT_UI_DATA",100],
   ["COLOR_UI_DATA",50],
  ) {
-  my ($command,$value)=@{$item};
-  my $response=&lg_calibration_request($session,"hdr_calman_reset_".lc($command),$command,[$value],1,"",$connect_timeout + 4);
+ my ($command,$value)=@{$item};
+  my $response=&lg_calibration_request($session,"hdr_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
   my ($failed,$message)=&response_is_app_failure($response);
   push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
  }
@@ -2314,22 +2333,22 @@ sub lg_hdr_calman_reset_workflow (@) {
  my ($dc_ok,$dc_attempts)=&lg_hdr_picture_reset_apply_dynamic_contrast_off($session,$active_picture_mode,$tv_input,$connect_timeout + 3);
  push(@steps,{ command => "dynamicContrast", value => "off", response => $dc_attempts, failed => &json_bool(!$dc_ok), message => $dc_ok ? "" : "LG TV rejected dynamicContrast off." });
 
- my $matrix=&lg_bt2020_identity_3x3_payload();
- my $matrix_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3by3","BT2020_3BY3_GAMUT_DATA",$matrix,1,"",$connect_timeout + 6);
+ my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
+ my $matrix_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3by3","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
  my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
  push(@steps,{ command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
 
  my $unity3d=&lg_unity_3d_lut(33);
- my $lut3d_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3d_lut","BT2020_3D_LUT_DATA",$unity3d,1,"",$connect_timeout + 18);
+ my $lut3d_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3d_lut","BT2020_3D_LUT_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity3d)),1,$cal_mode,$connect_timeout + 18);
  my ($lut3d_failed,$lut3d_message)=&response_is_app_failure($lut3d_response);
  push(@steps,{ command => "BT2020_3D_LUT_DATA", response => $lut3d_response, failed => &json_bool($lut3d_failed), message => $lut3d_message||"" });
 
  my $unity1d=&lg_unity_1d_lut();
- my $lut1d_response=&lg_calibration_request($session,"hdr_calman_reset_1d_dpg","1D_DPG_DATA",$unity1d,1,"",$connect_timeout + 10);
+ my $lut1d_response=&lg_calibration_request($session,"hdr_calman_reset_1d_dpg","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity1d)),1,$cal_mode,$connect_timeout + 10);
  my ($lut1d_failed,$lut1d_message)=&response_is_app_failure($lut1d_response);
  push(@steps,{ command => "1D_DPG_DATA", response => $lut1d_response, failed => &json_bool($lut1d_failed), message => $lut1d_message||"" });
 
- my $end=&lg_calibration_request($session,"hdr_calman_reset_cal_end","CAL_END",$cal_payload,1,"",$connect_timeout + 4);
+ my $end=&lg_calibration_request($session,"hdr_calman_reset_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
  my ($end_failed,$end_message)=&response_is_app_failure($end);
  push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
  &websocket_close($session);
@@ -2375,18 +2394,11 @@ sub lg_hdr_tone_map_upload_workflow (@) {
   &websocket_close($session);
   return &json_error("HDR tone-map upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
- my $start=&lg_calibration_request($session,"hdr_tone_map_cal_start","CAL_START",undef,1,$cal_mode,$connect_timeout + 4);
- my ($start_failed,$start_message)=&response_is_app_failure($start);
- if($start_failed || ref($start) ne "HASH") {
-  &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for HDR tone-map upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
- }
  my @tone_map=($peak,1000,70,4000,60,10000,50);
- my $upload=&lg_calibration_request($session,"hdr_tone_map_upload","1D_TONEMAP_PARAM",\@tone_map,1,"",$connect_timeout + 6);
+ my $upload=&lg_calibration_request($session,"hdr_tone_map_upload","1D_TONEMAP_PARAM",&lg_force_pic_mode_payload(&lg_typed_uint16_payload(\@tone_map)),1,$cal_mode,$connect_timeout + 6);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
- my $end=&lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
- &websocket_close($session);
  if($upload_failed || ref($upload) ne "HASH") {
+  &websocket_close($session);
   return &json_error($upload_message||"LG TV rejected HDR tone-map upload.",{
    ip => $ip,
    active_picture_mode => $active_picture_mode,
@@ -2394,9 +2406,17 @@ sub lg_hdr_tone_map_upload_workflow (@) {
    command => "1D_TONEMAP_PARAM",
    payload => \@tone_map,
    raw_response => $upload,
-   cal_end_response => $end,
   });
  }
+ my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
+ my $start=&lg_calibration_request($session,"hdr_tone_map_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected calibration mode start after HDR tone-map upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start, upload_response => $upload });
+ }
+ my $end=&lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ &websocket_close($session);
  return &json_ok({
   tone_map_uploaded => &json_true(),
   peak_luminance => $peak,
