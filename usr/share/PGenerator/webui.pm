@@ -9977,6 +9977,7 @@ let meterAutoCalMagicWandActive=false;
 let meterAutoCalMagicWandBaseStatus=null;
 let meterAutoCalMagicWandFullWorkflow=false;
 let meterAutoCalStandaloneMagicWandEnabled=false;
+let meterHdrAutoCalChartContextHeld=false;
 const METER_FULL_AUTOCAL_STATE_KEY='meterFullAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
 const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
@@ -9993,10 +9994,7 @@ function meterFullAutoCalRunSignalMode(){
  return String((cfg&&cfg.signalMode)||(data&&data.signal_mode)||((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
 }
 function meterFullAutoCalReportSeries(){
- const mode=meterFullAutoCalRunSignalMode();
- const greyscale=mode==='hdr10'
-  ? {key:'greyscale-30',type:'greyscale',points:30,label:'Greyscale HDR 30pt'}
-  : {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale 21pt'};
+ const greyscale={key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale 21pt'};
  return [greyscale,{key:'colors-30',type:'colors',points:30,label:'ColorChecker'},{key:'saturations-24',type:'saturations',points:24,label:'Sat Sweep'}];
 }
 let meterActionPending=false;
@@ -11037,6 +11035,7 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
  if(mode!=='hdr10') return false;
  if(meterActiveSeriesType!=='greyscale') return false;
  if(typeof meterUseLgAutoCal26==='function'&&!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
+ if(typeof meterHdrAutoCalChartContextHeld!=='undefined'&&meterHdrAutoCalChartContextHeld) return true;
  const lgCalibrationMode=!!(
   (typeof window!=='undefined'&&window.lgStatusState&&window.lgStatusState.calibrationMode)||
   (status&&(status.calibration_mode||status.calibrationMode))
@@ -16555,7 +16554,7 @@ function meterGreyscale26SeriesLabel(){
 }
 
 function meterHdrGreyscaleSeriesAvailable(){
- return String((meterChartSignalMode&&meterChartSignalMode())||'sdr').toLowerCase()==='hdr10';
+ return false;
 }
 
 function meterUseHdrGreyscale30(points){
@@ -17275,6 +17274,10 @@ function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
  if(type==='greyscale' && points===256) points=100;
+ if(type==='greyscale' && Number(points)===30 && !meterHdrGreyscaleSeriesAvailable()){
+  toast('Greyscale HDR 30pt is unavailable',true);
+  return;
+ }
  const key=type+'-'+points;
  if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
  if(meterSeriesRunning){
@@ -18648,6 +18651,10 @@ function meterAutoCalClearCompleteAutoClose(){
 function meterAutoCalCloseComplete(){
  meterAutoCalClearCompleteAutoClose();
  meterAutoCalClearSavedState();
+ const holdHdrChartContext=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='hdr10'&&
+  meterActiveSeriesType==='greyscale'&&
+  typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints);
+ if(holdHdrChartContext) meterHdrAutoCalChartContextHeld=true;
  meterAutoCalRunning=false;
  meterAutoCalPhase='';
  meterFullAutoCalRunning=false;
@@ -22112,6 +22119,7 @@ async function meterRunSeries(){
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return false;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
  if(!meterEnsureAppliedGeneratorSettings()) return false;
+ meterHdrAutoCalChartContextHeld=false;
  // Rebuild the local preview steps from the current UI state before starting.
  // Without this, rerunning the same series key can keep stale step codes from
  // a previous mode/range selection and then stamp them back onto fresh reads.
