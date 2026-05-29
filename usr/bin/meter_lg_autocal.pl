@@ -2788,10 +2788,30 @@ sub lg_autocal_26_learned_rgb_adjustment {
 	 $raw_delta=-$cap if($raw_delta < -$cap);
 	 foreach my $scale (1,0.75,0.50,0.25) {
 	  my $next=round_ddc_quarter($current+($raw_delta*$scale));
-	  next if(abs($next-$current) < 0.0999);
-	  next if(tried_value_exists($tried,$setting,$next));
-	  my $actual_delta=$next-$current;
-	  my $predicted=($err+0)+($slope*$actual_delta);
+		  next if(abs($next-$current) < 0.0999);
+		  next if(tried_value_exists($tried,$setting,$next));
+		  my $actual_delta=$next-$current;
+		  my $family=hdr20_body_single_rgb_family_name($setting);
+		  my $direction=$actual_delta < 0 ? -1 : 1;
+		  if(
+		   autocal_step_is_hdr20_body($step) &&
+		   defined($family) &&
+		   hdr20_body_family_suppressed($tried,$family,$direction,$step)
+		  ) {
+		   trace_109($step,"hdr20_body_learned_rgb_family_skipped",{
+		    source=>$source||"learned_rgb",
+		    channel=>$ch,
+		    setting=>$setting,
+		    direction=>$direction+0,
+		    current=>$current+0,
+		    next=>$next+0,
+		    delta=>$actual_delta+0,
+		    delta_e=>defined($de)?$de+0:undef,
+		    reason=>"previous_candidate_worsened"
+		   });
+		   next;
+		  }
+		  my $predicted=($err+0)+($slope*$actual_delta);
 	  next if(abs($predicted) >= abs($err)*0.92 && abs($actual_delta) > 0.21);
 	  my $ddc_per_error=(abs($slope) >= 0.000001) ? (1/$slope) : undef;
 	  return [{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, learned_response_model=>1, slope=>$slope, ddc_per_error=>defined($ddc_per_error)?$ddc_per_error:undef, predicted_error=>$predicted, source=>$source||"learned_rgb", samples=>$entry->{"samples"}||1 }];
@@ -4464,6 +4484,7 @@ sub tried_value_exists {
 
 sub luma_probe_guarded_target {
  my ($target,$step)=@_;
+ return 1 if(ref($step) eq "HASH" && autocal_step_is_hdr20_body($step));
  my $ire;
  $ire=$target->{"ire"} if(ref($target) eq "HASH" && defined($target->{"ire"}));
  $ire=$step->{"ire"} if(!defined($ire) && ref($step) eq "HASH" && defined($step->{"ire"}));
@@ -5622,9 +5643,19 @@ sub neutral_luminance_adjustments {
 	 $min_step ||= 0.25;
 	 my $cap=(autocal_step_is_hdr20_body($step) && lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step))
 	  ? undef : neutral_luminance_step_cap_for_target($target);
-	 $max_step=$cap if(defined($cap) && (!defined($max_step) || $max_step > $cap));
-	 my $direction=($luminance_err > 0) ? -1 : 1;
-	 my $planned_step=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
+		 $max_step=$cap if(defined($cap) && (!defined($max_step) || $max_step > $cap));
+		 my $direction=($luminance_err > 0) ? -1 : 1;
+		 if(autocal_step_is_hdr20_body($step) && hdr20_body_family_suppressed($tried,"luminance",$direction,$step)) {
+		  trace_109($step,"hdr20_body_luminance_family_skipped",{
+		   source=>$source||"neutral_luminance",
+		   direction=>$direction+0,
+		   luminance_error_pct=>($luminance_err*100)+0,
+		   delta_e=>defined($de)?$de+0:undef,
+		   reason=>"previous_candidate_worsened"
+		  });
+		  return undef;
+		 }
+		 my $planned_step=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
 	 my ($capped_step,$seed_luma_capped)=apply_headroom_105_seed_luma_refine_cap($arrays,$target,$step,$luminance_err,$planned_step,$source||"neutral_luminance");
 	 $planned_step=$capped_step;
 	 my ($near_target_capped_step,$near_target_luma_capped)=headroom_105_near_target_luma_cap($step,$arrays,$target,$tried,$luminance_err,$planned_step,$source||"neutral_luminance");
@@ -8336,10 +8367,27 @@ sub choose_adjustments {
 	  next if(ref($arr) ne "ARRAY");
 	  my $idx=$target->{"index"};
 		  my $current=$arr->[$idx]||0;
-						  my $rgb_step=adjustment_step(abs($err),$de,$stalls,$min_step);
-						  $rgb_step=$seeded_cap if(defined($seeded_cap) && $rgb_step > $seeded_cap);
-						  my $direction=($err > 0) ? -1 : 1;
-						  my ($response_multiplier,$response_cap_reason,$response_entry);
+							  my $rgb_step=adjustment_step(abs($err),$de,$stalls,$min_step);
+							  $rgb_step=$seeded_cap if(defined($seeded_cap) && $rgb_step > $seeded_cap);
+							  my $direction=($err > 0) ? -1 : 1;
+							  my $family=hdr20_body_single_rgb_family_name($setting);
+							  if(
+							   autocal_step_is_hdr20_body($step) &&
+							   defined($family) &&
+							   hdr20_body_family_suppressed($tried,$family,$direction,$step)
+							  ) {
+							   trace_109($step,"hdr20_body_main_rgb_family_skipped",{
+							    channel=>$ch,
+							    setting=>$setting,
+							    direction=>$direction+0,
+							    rgb_error=>$err+0,
+							    delta_e=>defined($de)?$de+0:undef,
+							    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+							    reason=>"previous_candidate_worsened"
+							   });
+							   next;
+							  }
+							  my ($response_multiplier,$response_cap_reason,$response_entry);
 						  if($headroom_105_body && !$strict_tried) {
 						   my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
 						   my ($scaled_step,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
@@ -8353,9 +8401,15 @@ sub choose_adjustments {
 						    $response_entry=$scaled_entry;
 						   }
 						  }
-					  my $delta = $direction*$rgb_step;
-					  foreach my $try_delta ($delta,-$delta) {
-					   my ($next,$damped)=next_untried_value($current,$try_delta,$tried,$setting,$min_step,$strict_tried);
+						  my $delta = $direction*$rgb_step;
+						  foreach my $try_delta ($delta,-$delta) {
+						   my $try_direction=$try_delta < 0 ? -1 : 1;
+						   next if(
+						    autocal_step_is_hdr20_body($step) &&
+						    defined($family) &&
+						    hdr20_body_family_suppressed($tried,$family,$try_direction,$step)
+						   );
+						   my ($next,$damped)=next_untried_value($current,$try_delta,$tried,$setting,$min_step,$strict_tried);
 					   next if(!defined($next));
 					   next if(abs($next-$current) < 0.0001);
 				   my $adj={ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, remaining_error=>abs($err) };
@@ -14506,14 +14560,20 @@ eval {
 				     if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step)) {
 				      $luma_anchor_working=headroom_105_luminance_progress_working_state($read_step,$arrays,$target,\%polish_tried,$lum_pct,$best_lum_pct,$de,$best_de,$candidate_score,$best_score);
 				     }
-				     my $bad_luma_probe=record_bad_luma_probe_family(
-				      \%polish_tried,$target,$adjustments,
-				      $before_de_for_polish,$de,
-				      $before_lum_pct_for_polish,$lum_pct,
-				      $before_score_for_polish,$candidate_score,
-				      $read_step,"fine_tune",$state
-				     );
-				     $luma_anchor_working=0 if(ref($bad_luma_probe) eq "HASH");
+					     my $bad_luma_probe=record_bad_luma_probe_family(
+					      \%polish_tried,$target,$adjustments,
+					      $before_de_for_polish,$de,
+					      $before_lum_pct_for_polish,$lum_pct,
+					      $before_score_for_polish,$candidate_score,
+					      $read_step,"fine_tune",$state
+					     );
+					     my $bad_hdr20_body_family=record_hdr20_body_bad_adjustment_family(
+					      \%polish_tried,$read_step,$adjustments,
+					      $before_lum_pct_for_polish,$lum_pct,
+					      $before_de_for_polish,$de,
+					      $before_score_for_polish,$candidate_score
+					     );
+					     $luma_anchor_working=0 if(ref($bad_luma_probe) eq "HASH");
 				     trace_109($read_step,"fine_tune_candidate_rejected",{
 			      label=>$label,
 			      polish=>$polish+0,
@@ -14526,10 +14586,11 @@ eval {
 				      best_score=>$best_score+0,
 					      candidate_values=>trace_target_values($arrays,$target),
 					      best_values=>trace_target_values($best_arrays,$target),
-					      luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
-					      bad_luma_probe=>$bad_luma_probe,
-					      $pair_side_trace_fields->()
-					     });
+						      luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
+						      bad_luma_probe=>$bad_luma_probe,
+						      bad_hdr20_body_family=>$bad_hdr20_body_family,
+						      $pair_side_trace_fields->()
+						     });
 						     my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%polish_tried,"fine_tune",$polish);
 						     if($paired_luma_kept) {
 						      $polish_stalls=0;
