@@ -422,7 +422,7 @@ sub lg_autocal_hdr20_sdr_adjustment_method_configured {
 	 my ($config)=@_;
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 return $config->{"lg_autocal_hdr20_use_sdr_adjustment_method"} ? 1 : 0 if(exists($config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}));
-	 return lg_autocal_26_hdr20_seed_enabled($config);
+	 return 0;
 }
 
 sub mark_lg_autocal_hdr20_sdr_adjustment_method_step {
@@ -439,7 +439,6 @@ sub lg_autocal_hdr20_use_sdr_adjustment_method {
 	 return 0 if(ref($step) ne "HASH" || !autocal_step_is_hdr20_body($step));
 	 return 0 if(exists($config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}) && !$config->{"lg_autocal_hdr20_use_sdr_adjustment_method"});
 	 return 1 if(exists($config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}) && $config->{"lg_autocal_hdr20_use_sdr_adjustment_method"});
-	 return 1 if(lg_autocal_26_hdr20_seed_enabled($config));
 	 return $step->{"lg_autocal_hdr20_use_sdr_adjustment_method"} ? 1 : 0;
 }
 
@@ -547,7 +546,7 @@ sub apply_lg_autocal_26_default_modes {
 	 if(lg_autocal_26_hdr20_seed_enabled($config)) {
 	  $config->{"lg_autocal_26_full_ddc_spine"}=JSON::PP::true if(!exists($config->{"lg_autocal_26_full_ddc_spine"}));
 	  $config->{"lg_autocal_26_anchor_predrive"}=JSON::PP::false if(!exists($config->{"lg_autocal_26_anchor_predrive"}));
-	  $config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}=JSON::PP::true if(!exists($config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}));
+	  $config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}=JSON::PP::false if(!exists($config->{"lg_autocal_hdr20_use_sdr_adjustment_method"}));
 	  $config->{"patch_insert"}=JSON::PP::false if(!$config->{"patch_insert"});
 	  return;
 	 }
@@ -2209,6 +2208,17 @@ sub target_reached {
 			 return 1 if(!defined($lum_pct));
 			 return 1 if(autocal_result_score($de,$lum_pct,$step) <= $target_delta+0.08);
 		 return abs($lum_pct) <= luminance_tolerance_percent($step);
+	}
+
+sub hdr20_body_final_result_allows_seed_propagation {
+ my ($step,$de,$lum_pct,$target_delta,$final_reached)=@_;
+ return 1 if(!autocal_step_is_hdr20_body($step));
+ return 1 if($final_reached);
+ return 0 if(!defined($de));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return 0 if($de > ($target_delta+0.25));
+ return 0 if(!defined($lum_pct));
+ return abs($lum_pct) <= luminance_tolerance_percent($step);
 }
 
 sub max_defined_delta {
@@ -14553,12 +14563,31 @@ eval {
 				   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
 				   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
 				  );
-					  remember_lg_autocal_26_best_known(
-					   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
-					   $target_step_y,$best_arrays,$target,"main_final_step_result",$final_reached
-							  );
-					  $finalize_calibrated_26pt_slot->($target,$read_step,$label);
-					  write_state($state);
+						  remember_lg_autocal_26_best_known(
+						   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
+						   $target_step_y,$best_arrays,$target,"main_final_step_result",$final_reached
+								  );
+						  if(hdr20_body_final_result_allows_seed_propagation($read_step,$best_de,$best_lum_pct,$target_delta,$final_reached)) {
+						   $finalize_calibrated_26pt_slot->($target,$read_step,$label);
+						  } else {
+						   $state->{"lg_autocal_26_last_unseeded_hdr20_body"}={
+						    label=>$label,
+						    delta_e=>defined($best_de)?$best_de+0:undef,
+						    luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+						    target_delta=>$target_delta+0,
+						    luminance_tolerance_pct=>luminance_tolerance_percent($read_step)+0,
+						   };
+						   trace_109($read_step,"hdr20_body_seed_propagation_skipped",{
+						    label=>$label,
+						    reached_target=>JSON::PP::false,
+						    best_delta_e=>defined($best_de)?$best_de+0:undef,
+						    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+						    target_delta=>$target_delta+0,
+						    luminance_tolerance_pct=>luminance_tolerance_percent($read_step)+0,
+						    reason=>"final_result_outside_hdr20_body_seed_guard"
+						   });
+						  }
+						  write_state($state);
 					  if(
 					   !$white_refreshed_after_headroom &&
 					   $refresh_white_after_headroom &&
