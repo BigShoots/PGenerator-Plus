@@ -480,21 +480,56 @@ sub lg_autocal_26_full_ddc_spine_anchor_ddc_ires {
 }
 
 sub lg_autocal_26_full_ddc_spine_source_slot_mask {
- my ($calibrated_slot_mask,$config)=@_;
- my @mask=map { 0 } (1..ddc_slot_count());
- return \@mask if(ref($calibrated_slot_mask) ne "ARRAY");
+	 my ($calibrated_slot_mask,$config)=@_;
+	 my @mask=map { 0 } (1..ddc_slot_count());
+	 return \@mask if(ref($calibrated_slot_mask) ne "ARRAY");
  foreach my $ire (lg_autocal_26_full_ddc_spine_anchor_ddc_ires($config)) {
   my $idx=ddc_slot_index_for_ire($ire);
   next if(!defined($idx) || $idx >= @mask);
   $mask[$idx]=1 if($calibrated_slot_mask->[$idx]);
  }
- return \@mask;
+	 return \@mask;
+}
+
+sub clone_slot_mask_without_ires {
+	 my ($mask,@ires)=@_;
+	 my @out=(ref($mask) eq "ARRAY") ? @{$mask} : ();
+	 foreach my $ire (@ires) {
+	  my $idx=ddc_slot_index_for_ire($ire);
+	  next if(!defined($idx) || $idx >= @out);
+	  $out[$idx]=0;
+	 }
+	 return \@out;
+}
+
+sub lg_autocal_26_full_ddc_spine_setting_source_slot_masks {
+	 my ($calibrated_slot_mask,$config)=@_;
+	 my $base=lg_autocal_26_full_ddc_spine_source_slot_mask($calibrated_slot_mask,$config);
+	 my $layout;
+	 if(ref($config) eq "HASH") {
+	  $layout=$config->{"ddc_layout"} || ddc_layout_for_signal_mode(lc($config->{"signal_mode"}||"sdr"));
+	 }
+	 $layout ||= $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
+	 return $base if(lc($layout||"") ne "hdr20");
+	 my $rgb_source_slot_mask=clone_slot_mask_without_ires($base,100);
+	 return {
+	  default=>$base,
+	  adjustingLuminance=>$base,
+	  whiteBalanceRed=>$rgb_source_slot_mask,
+	  whiteBalanceGreen=>$rgb_source_slot_mask,
+	  whiteBalanceBlue=>$rgb_source_slot_mask,
+	  __hold_last_source_to_end=>{
+	   whiteBalanceRed=>1,
+	   whiteBalanceGreen=>1,
+	   whiteBalanceBlue=>1
+	  }
+	 };
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor_count {
- my ($config)=@_;
- my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires($config);
- return scalar(@anchors);
+	 my ($config)=@_;
+	 my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires($config);
+	 return scalar(@anchors);
 }
 
 sub lg_autocal_26_full_ddc_spine_anchor {
@@ -4163,26 +4198,38 @@ sub interpolated_26pt_curve_value {
 }
 
 sub propagate_uncalibrated_26pt_slots {
- my ($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask)=@_;
- return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
- $source_slot_mask=$calibrated_slot_mask if(ref($source_slot_mask) ne "ARRAY");
- $skip_slot_mask=[] if(ref($skip_slot_mask) ne "ARRAY");
- my @lut_indexes=lg_autocal_26_lut_indexes();
- my $black_anchor=lg_autocal_26_black_lut_anchor();
- my @settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
- my %setting_knots;
- foreach my $setting (@settings) {
-  my $arr=$arrays->{$setting};
-	  next if(ref($arr) ne "ARRAY");
-	  my @knots=({ x=>$black_anchor+0, y=>0 });
-	  for(my $idx=0;$idx<@lut_indexes;$idx++) {
-	   next if(!$source_slot_mask->[$idx]);
-	   next if(!defined($arr->[$idx]));
-	   push @knots,{ x=>$lut_indexes[$idx]+0, y=>$arr->[$idx]+0 };
-	  }
-  @knots=sort { ($a->{"x"}||0) <=> ($b->{"x"}||0) } @knots;
-  $setting_knots{$setting}=\@knots;
- }
+	 my ($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask)=@_;
+	 return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+	 my $source_slot_masks_by_setting=(ref($source_slot_mask) eq "HASH") ? $source_slot_mask : undef;
+	 my $default_source_slot_mask=$source_slot_masks_by_setting ? $source_slot_mask->{"default"} : $source_slot_mask;
+	 $default_source_slot_mask=$calibrated_slot_mask if(ref($default_source_slot_mask) ne "ARRAY");
+	 $skip_slot_mask=[] if(ref($skip_slot_mask) ne "ARRAY");
+	 my @lut_indexes=lg_autocal_26_lut_indexes();
+	 my $black_anchor=lg_autocal_26_black_lut_anchor();
+	 my @settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
+	 my %setting_knots;
+	 foreach my $setting (@settings) {
+	  my $arr=$arrays->{$setting};
+		  next if(ref($arr) ne "ARRAY");
+		  my $setting_source_slot_mask=$source_slot_masks_by_setting ? ($source_slot_mask->{$setting} || $default_source_slot_mask) : $default_source_slot_mask;
+		  next if(ref($setting_source_slot_mask) ne "ARRAY");
+		  my @knots=({ x=>$black_anchor+0, y=>0 });
+		  my $last_source_idx;
+		  for(my $idx=0;$idx<@lut_indexes;$idx++) {
+		   next if(!$setting_source_slot_mask->[$idx]);
+		   next if(!defined($arr->[$idx]));
+		   push @knots,{ x=>$lut_indexes[$idx]+0, y=>$arr->[$idx]+0 };
+		   $last_source_idx=$idx;
+		  }
+		  if($source_slot_masks_by_setting &&
+		     ref($source_slot_masks_by_setting->{"__hold_last_source_to_end"}) eq "HASH" &&
+		     $source_slot_masks_by_setting->{"__hold_last_source_to_end"}{$setting} &&
+		     defined($last_source_idx) && $last_source_idx < @lut_indexes-1 && defined($arr->[$last_source_idx])) {
+		   push @knots,{ x=>$lut_indexes[-1]+0, y=>$arr->[$last_source_idx]+0 };
+		  }
+	  @knots=sort { ($a->{"x"}||0) <=> ($b->{"x"}||0) } @knots;
+	  $setting_knots{$setting}=\@knots;
+	 }
  my $filled=0;
  for(my $idx=0;$idx<@lut_indexes;$idx++) {
   next if($calibrated_slot_mask->[$idx]);
@@ -4355,21 +4402,25 @@ sub refresh_propagated_uncalibrated_26pt_slots {
 	  $minimum_anchors=2;
 	 }
 	 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
-	  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask,$config);
-	  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires($config);
-	  $minimum_anchors=scalar(@anchors);
-	  return 0 if(!lg_autocal_26_full_ddc_spine_anchors_complete($calibrated_slot_mask,$config));
-	  $source_slot_mask=lg_autocal_26_full_ddc_spine_source_slot_mask($calibrated_slot_mask,$config) if($hdr20_seed);
-	 }
+		  my @completed=completed_lg_autocal_26_full_ddc_spine_anchor_ires($calibrated_slot_mask,$config);
+		  my @anchors=lg_autocal_26_full_ddc_spine_anchor_ires($config);
+		  $minimum_anchors=scalar(@anchors);
+		  return 0 if(!lg_autocal_26_full_ddc_spine_anchors_complete($calibrated_slot_mask,$config));
+		  $source_slot_mask=lg_autocal_26_full_ddc_spine_source_slot_mask($calibrated_slot_mask,$config) if($hdr20_seed);
+		 }
  if(lg_autocal_26_anchor_predrive_enabled($config)) {
   $minimum_anchors=lg_autocal_26_anchor_predrive_anchor_count();
   $source_slot_mask=lg_autocal_26_anchor_predrive_source_slot_mask($calibrated_slot_mask);
  }
 	 return 0 if(calibrated_non_black_26pt_anchor_count($source_slot_mask) < $minimum_anchors);
-	 my $skip_slot_mask=lg_autocal_26_full_ddc_spine_enabled($config)
-	  ? lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask($config,$calibrated_slot_mask)
-	  : lg_autocal_26_hdr20_propagation_skip_slot_mask($config,$calibrated_slot_mask);
-	 my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$source_slot_mask,$skip_slot_mask);
+		 my $skip_slot_mask=lg_autocal_26_full_ddc_spine_enabled($config)
+		  ? lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask($config,$calibrated_slot_mask)
+		  : lg_autocal_26_hdr20_propagation_skip_slot_mask($config,$calibrated_slot_mask);
+		 my $propagation_source_slot_mask=$source_slot_mask;
+		 if($hdr20_seed && lg_autocal_26_full_ddc_spine_enabled($config)) {
+		  $propagation_source_slot_mask=lg_autocal_26_full_ddc_spine_setting_source_slot_masks($calibrated_slot_mask,$config);
+		 }
+		 my $filled=propagate_uncalibrated_26pt_slots($arrays,$calibrated_slot_mask,$propagation_source_slot_mask,$skip_slot_mask);
 	 my $overrides=apply_full_ddc_spine_headroom_seed_overrides($config,$arrays,$calibrated_slot_mask);
 	 return $filled+$overrides;
 	}
