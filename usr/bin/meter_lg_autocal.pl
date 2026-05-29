@@ -511,14 +511,15 @@ sub lg_autocal_26_full_ddc_spine_setting_source_slot_masks {
 	 }
 	 $layout ||= $LG_AUTOCAL_DDC_LAYOUT || "sdr26";
 	 return $base if(lc($layout||"") ne "hdr20");
-	 my $rgb_source_slot_mask=clone_slot_mask_without_ires($base,100);
+	 my $body_source_slot_mask=clone_slot_mask_without_ires($base,100);
 	 return {
 	  default=>$base,
-	  adjustingLuminance=>$base,
-	  whiteBalanceRed=>$rgb_source_slot_mask,
-	  whiteBalanceGreen=>$rgb_source_slot_mask,
-	  whiteBalanceBlue=>$rgb_source_slot_mask,
+	  adjustingLuminance=>$body_source_slot_mask,
+	  whiteBalanceRed=>$body_source_slot_mask,
+	  whiteBalanceGreen=>$body_source_slot_mask,
+	  whiteBalanceBlue=>$body_source_slot_mask,
 	  __hold_last_source_to_end=>{
+	   adjustingLuminance=>1,
 	   whiteBalanceRed=>1,
 	   whiteBalanceGreen=>1,
 	   whiteBalanceBlue=>1
