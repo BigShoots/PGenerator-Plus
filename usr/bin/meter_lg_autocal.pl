@@ -915,8 +915,9 @@ sub autocal_step_suppresses_luminance_adjustment {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $layout=lc($step->{"ddc_layout"} || $LG_AUTOCAL_DDC_LAYOUT || "");
- return 0 if($layout eq "hdr20");
  my $ire=$step->{"ire"}+0;
+ return 1 if($layout eq "hdr20" && $ire >= 99.9 && $ire <= 100.1);
+ return 0 if($layout eq "hdr20");
  return ($ire >= 99.9 && !autocal_step_is_fast_headroom($step)) ? 1 : 0;
 }
 
