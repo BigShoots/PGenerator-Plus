@@ -125,7 +125,7 @@ class Runner:
                 if "white reference" in low or "reflective" in low:
                     self.write_state(
                         "running",
-                        "Rotate the i1 Pro to its white calibration tile (closed position) and press the i1 Pro button to calibrate.",
+                        "Seat the i1 Pro on its white calibration base (aperture down on the white tile), then press the i1 Pro button to calibrate.",
                         detail=text,
                     )
                 else:
