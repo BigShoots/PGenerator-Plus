@@ -112,6 +112,47 @@ assert(
   'full-DDC spine anchors and anchor revisits should not receive adjacent/synthesized seed writes'
 );
 
+const anchorRevisitSource = block(
+  'sub full_ddc_spine_anchor_revisit_luminance_adjustments {',
+  'sub full_ddc_spine_anchor_luminance_adjustment {'
+);
+assert(
+  anchorRevisitSource.includes('lg_autocal_26_full_ddc_spine_anchor_revisit_step($step)') &&
+    anchorRevisitSource.includes('autocal_step_is_hdr20_body($step)') &&
+    anchorRevisitSource.includes('luma_probe_family_suppressed($tried,$target,$current,$next,$step,"full_ddc_spine_anchor_revisit_luminance",$state)') &&
+    !anchorRevisitSource.includes('hdr20_body_family_suppressed'),
+  'HDR full-DDC anchor revisits should retry smaller luma moves after an overshoot instead of falling into RGB-only thrash'
+);
+
+const anchorRevisitKeepGuardSource = block(
+  'sub full_ddc_spine_anchor_revisit_rgb_keep_blocked {',
+  'sub full_ddc_spine_anchor_luminance_adjustment {'
+);
+assert(
+  anchorRevisitKeepGuardSource.includes('lg_autocal_26_full_ddc_spine_anchor_revisit_step($step)') &&
+    anchorRevisitKeepGuardSource.includes('return 0 if(adjustments_have_setting($adjustments,"adjustingLuminance"));') &&
+    anchorRevisitKeepGuardSource.includes('return 0 if($after_abs + 0.35 < $before_abs);'),
+  'HDR full-DDC anchor revisits should not accept RGB-only moves that fail to materially improve a large luminance error'
+);
+
+const mainRevisitPlannerIndex = source.indexOf('full_ddc_spine_anchor_revisit_luminance_adjustments');
+const mainHdrBodyVectorIndex = source.indexOf('hdr20_body_rgb_luminance_vector_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\\%tried_values,0.25,0,"main_hdr20_body")');
+assert(
+  mainRevisitPlannerIndex >= 0 &&
+    mainHdrBodyVectorIndex > mainRevisitPlannerIndex,
+  'anchor revisit luma recovery should run before generic HDR20 body vectors'
+);
+
+const keepCandidateSource = block(
+  'my $full_ddc_spine_anchor_revisit_rgb_keep_blocked=full_ddc_spine_anchor_revisit_rgb_keep_blocked',
+  'if($keep_candidate) {'
+);
+assert(
+  keepCandidateSource.includes('$full_ddc_spine_anchor_revisit_rgb_keep_blocked') &&
+    keepCandidateSource.includes('!$full_ddc_spine_anchor_revisit_rgb_keep_blocked &&'),
+  'candidate keep logic should apply the HDR anchor revisit RGB-only luminance guard'
+);
+
 for (const hdrAnchor of [100, 5, 20, 40, 60, 80]) {
   assert(anchorSource.includes(`${hdrAnchor}`), `HDR anchor ${hdrAnchor}% should be represented in the anchor helper`);
 }
