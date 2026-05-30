@@ -11043,6 +11043,22 @@ sub post_cal_series_reference_white_y {
  if(ref($readings) eq "ARRAY") {
   foreach my $reading (@{$readings}) {
    next if(ref($reading) ne "HASH");
+   my $ire=undef;
+   foreach my $key (qw(ire nominal_ire patch_ire)) {
+    if(defined($reading->{$key}) && $reading->{$key}=~/^-?[0-9.]+$/) {
+     $ire=$reading->{$key}+0;
+     last;
+    }
+   }
+   if(!defined($ire) && defined($reading->{"name"}) && $reading->{"name"}=~/^\s*100(?:\.0+)?%?\s*$/) {
+    $ire=100;
+   }
+   next if(!defined($ire) || abs($ire-100) > 0.001);
+   my $white_y=luminance($reading);
+   return $white_y+0 if(defined($white_y) && $white_y > 0);
+  }
+  foreach my $reading (@{$readings}) {
+   next if(ref($reading) ne "HASH");
    foreach my $key (qw(lg_target_white_y series_target_white_y autocal_white_y)) {
     my $value=$reading->{$key};
     return $value+0 if(defined($value) && $value > 0);
