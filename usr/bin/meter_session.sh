@@ -313,6 +313,14 @@ rm -f "$OUTFILE" "$CMDPIPE"
 touch "$OUTFILE"
 mkfifo "$CMDPIPE"
 
+# ArgyllCMS persists the spectro wavelength calibration under the XDG dirs.
+# If they are missing ("xdg_bds failed to locate file"), the i1 Pro 2 cannot
+# save its cal and re-calibrates on every read. Ensure they exist so the cal is
+# done once and reused. (A stable system clock is also required -- Argyll ages
+# the cal by wall-clock time, so an unsynced/jumping clock re-invalidates it.)
+export HOME="${HOME:-/root}"
+mkdir -p "$HOME/.cache" "$HOME/.local/share" "$HOME/.config" 2>/dev/null
+
 SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
 # A CCSS (Colorimeter Calibration Spectral Sample) only corrects COLORIMETERS.
 # A spectrophotometer (i1 Pro 2, etc.) measures spectrally and rejects -X with
