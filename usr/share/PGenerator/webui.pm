@@ -20505,9 +20505,12 @@ function meterFullAutoCalSleep(ms){
    last=r;
     if(r.status==='complete'||r.status==='cancelled'||r.status==='error'){
      if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
-     if(r.status==='complete') meterRecoverSeries(r);
-     else await meterPollSeries();
-     return r;
+	    if(r.status==='complete'){
+	     meterRecoverSeries(r);
+	     meterClearSeriesRunUiState();
+	    }
+	    else await meterPollSeries();
+	    return r;
     }
    }
   }catch(e){}
@@ -20517,9 +20520,12 @@ function meterFullAutoCalSleep(ms){
   const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:8000});
   if(r&&(r.status==='complete'||r.status==='cancelled'||r.status==='error')){
    if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
-   if(r.status==='complete') meterRecoverSeries(r);
-   else await meterPollSeries();
-   return r;
+	   if(r.status==='complete'){
+	    meterRecoverSeries(r);
+	    meterClearSeriesRunUiState();
+	   }
+	   else await meterPollSeries();
+	   return r;
   }
  }catch(e){}
  return {status:'error',current_name:'Timed out waiting for '+(label||'series')};
@@ -20542,11 +20548,17 @@ function meterFullAutoCalSleep(ms){
 	 const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff(label);
 	 if(!calibrationOff) throw new Error('LG calibration mode must be off before '+label);
 	 const magicPoints=26;
-	 meterSelectSeries('greyscale',magicPoints);
-	 await meterFullAutoCalSleep(100);
-	 const started=await meterRunSeries();
-	 if(!started) throw new Error('Unable to start '+label);
-	 const status=await meterFullAutoCalWaitForSeriesComplete(label,{allowStandalone:!fullWorkflow});
+	 let status=null;
+	 meterInternalSeriesWorkflow={workflow:fullWorkflow?'full':'greyscale',label:label};
+	 try{
+	  meterSelectSeries('greyscale',magicPoints);
+	  await meterFullAutoCalSleep(100);
+	  const started=await meterRunSeries();
+	  if(!started) throw new Error('Unable to start '+label);
+	  status=await meterFullAutoCalWaitForSeriesComplete(label,{allowStandalone:!fullWorkflow});
+	 }finally{
+	  meterInternalSeriesWorkflow=null;
+	 }
 	 if(!status||status.status!=='complete'){
 	  throw new Error((status&&status.current_name)||label+' did not complete');
 	 }
@@ -20586,12 +20598,19 @@ async function meterFullAutoCalCaptureReportSet(stage){
   meterFullAutoCalPhase=phase;
   meterFullAutoCalSaveState();
   const prefix=isPre?'Pre-Cal':'Post-Cal';
-  meterSetWorkflowProgress({status:'running',current_step:i,total_steps:series.length,current_name:prefix+' '+item.label},{workflow:'full',label:prefix+' '+item.label});
-  meterSelectSeries(item.type,item.points);
-  await meterFullAutoCalSleep(100);
-  const started=await meterRunSeries();
-  if(!started) throw new Error('Unable to start '+prefix+' '+item.label+' measurement');
-  const status=await meterFullAutoCalWaitForSeriesComplete(item.label);
+  const reportLabel=prefix+' '+item.label;
+  meterSetWorkflowProgress({status:'running',current_step:i,total_steps:series.length,current_name:reportLabel},{workflow:'full',label:reportLabel});
+  let status=null;
+  meterInternalSeriesWorkflow={workflow:'full',label:reportLabel};
+  try{
+   meterSelectSeries(item.type,item.points);
+   await meterFullAutoCalSleep(100);
+   const started=await meterRunSeries();
+   if(!started) throw new Error('Unable to start '+prefix+' '+item.label+' measurement');
+   status=await meterFullAutoCalWaitForSeriesComplete(item.label);
+  }finally{
+   meterInternalSeriesWorkflow=null;
+  }
   if(!status||status.status!=='complete'){
    throw new Error((status&&status.current_name)||((isPre?'Pre-cal':'Post-cal')+' '+item.label+' measurement did not complete'));
   }
@@ -20752,6 +20771,7 @@ async function meterFullAutoCalGeneratePostReport(){
   await meterFullAutoCalArchiveReportData(downloaded?'report-downloaded':'report-built',{filename:filename,downloaded:!!downloaded});
   meterFullAutoCalResetState(true);
   meterFullAutoCalClearReportData();
+  meterClearSeriesRunUiState();
   meterHideWorkflowProgress();
  if(downloaded) toast('Full AutoCal report downloaded');
  }catch(e){
@@ -21547,6 +21567,13 @@ async function meterPollAutoCal(options){
 	 try{
 	  const r=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:timeoutMs});
 	  if(!r) return;
+	  if(meterFullAutoCalReportPhaseActive()){
+	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
+	   meterAutoCalRunning=false;
+	   if(meterAutoCalPhase==='running'||meterAutoCalPhase==='complete'||meterAutoCalPhase==='error') meterAutoCalPhase='';
+	   meterUpdateReadButtons();
+	   return;
+	  }
 	  meterAutoCalLatestStatus=r;
 	  if(r.full_workflow&&!meterFullAutoCalStatusMatchesRun(r)) return;
 	  meterAutoCalSyncLgCalibrationMode(r);
@@ -22137,6 +22164,12 @@ async function meterPollLg3dAutoCal(options){
  try{
 	  const r=await fetchJSON('/api/meter/lg-3d-autocal/status',{_quiet:true,_timeoutMs:5000});
 	  if(!r) return;
+  if(meterFullAutoCalReportPhaseActive()){
+   if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
+   meterLg3dAutoCalRunning=false;
+   meterUpdateReadButtons();
+   return;
+  }
   if(r.full_workflow&&!meterFullAutoCalStatusMatchesRun(r)) return;
   if(r.status==='complete'&&r.full_workflow&&meterFullAutoCalCompletionHandled(r)){
    if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
@@ -22339,6 +22372,28 @@ async function meterStopLg3dAutoCal(){
  meterUpdateReadButtons();
  toast('LG 3D LUT AutoCal stopped');
 }
+let meterInternalSeriesWorkflow=null;
+
+function meterClearSeriesRunUiState(){
+ if(meterSeriesPolling){
+  clearInterval(meterSeriesPolling);
+  meterSeriesPolling=null;
+ }
+ meterSeriesRunning=false;
+ meterSeriesAwaitingReady=false;
+ meterReadySignalPending=false;
+ meterGreyscaleLowEndPinned=false;
+ meterGreyscaleLastCurrentKey=null;
+ meterSharedSeriesId=null;
+ const btn=document.getElementById('meterReadSeriesBtn');
+ if(btn){
+  btn.innerHTML='&#9654; Read Series';
+  btn.classList.add('btn-secondary');
+  btn.classList.remove('btn-success');
+ }
+ meterUpdateReadButtons();
+}
+
 // Run full automated series (Read Series button)
 async function meterRunSeries(){
  if(meterActionPending){toast('Meter operation already in progress',true);return false;}
@@ -22486,7 +22541,11 @@ async function meterPollSeries(){
 
  if(r.total_steps>0){
   const label=r.current_name||('Step '+r.current_step+'/'+r.total_steps);
-  document.getElementById('meterProgressLabel').textContent=label;
+  if(meterInternalSeriesWorkflow&&meterInternalSeriesWorkflow.workflow){
+   meterSetWorkflowProgress(r,{workflow:meterInternalSeriesWorkflow.workflow,label:meterInternalSeriesWorkflow.label||label});
+  }else{
+   document.getElementById('meterProgressLabel').textContent=label;
+  }
   currentIre=meterCurrentSeriesStepKeyFromStatus(r);
  }
 
@@ -22521,7 +22580,9 @@ async function meterPollSeries(){
    const sortedSteps2=isColor3?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
    meterBuildPatchThumbs(sortedSteps2,completedIres,null);
   }
-  document.getElementById('meterProgress').style.display='none';
+  if(!(meterInternalSeriesWorkflow&&meterFullAutoCalRunning)){
+   document.getElementById('meterProgress').style.display='none';
+  }
   toast(r.status==='complete'?'Series complete!':r.status==='error'?'Series error: '+(r.current_name||'process died'):'Series cancelled');
  }
  meterUpdateReadButtons();
