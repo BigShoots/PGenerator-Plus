@@ -171,6 +171,11 @@ class Runner:
 
         cmd = [
             ccxxmake_bin,
+            # PGenerator is headless and drives the TV via the -C patch command
+            # (POST /api/pattern), so ccxxmake must not try to open an X11
+            # display. "dummy" is Argyll's invisible no-op display.
+            "-d",
+            "dummy",
             "-S",
             "-t",
             self.args.disptech,
