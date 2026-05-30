@@ -15892,33 +15892,10 @@ async function meterReadOnce(){
   const patternSignalRange=meterMeasurementPatchSignalRange();
   const requireDeviceReady=meterSelectedMeasurementRequiresReady();
   const readContext={dtype,rr,delay,patternSignalRange,requireDeviceReady};
-  if(requireDeviceReady){
-   const firstStep=(readReferenceWhiteFirst&&referenceWhiteStep)?referenceWhiteStep:requestedStep;
-	   if(firstStep) await meterDisplayPatch(firstStep,{fresh:false});
-   meterPendingDeviceReadyAction=async()=>{
-    try{
-     meterSeriesAwaitingReady=false;
-     meterReadySignalPending=false;
-     meterUpdateReadButtons();
-     if(readReferenceWhiteFirst&&referenceWhiteStep){
-      const whiteResult=await meterRunManualReadStep(referenceWhiteStep,{...readContext,displayFirst:false});
-      if(!meterReadResultOk(whiteResult)) return;
-      if(requestedStep) await meterRunManualReadStep(requestedStep,{...readContext,displayFirst:true});
-     } else {
-      await meterRunManualReadStep(requestedStep,{...readContext,displayFirst:false});
-     }
-    }catch(e){
-     toast('Meter read error: '+e.message,true);
-    }finally{
-     await meterFinishSingleRead();
-    }
-   };
-   meterSeriesAwaitingReady=true;
-   meterReadySignalPending=false;
-   document.getElementById('meterProgressLabel').textContent=(firstStep?(firstStep.name||firstStep.ire+'%'):'Patch')+' (click Device Ready)';
-   meterUpdateReadButtons();
-   return;
-  }
+  // No separate "Device Ready" pre-gate for spectro single reads: the session
+  // surfaces its own interactive setup prompts (place on white tile -> Continue,
+  // aim at screen -> Continue), which is the real readiness gate. requireDeviceReady
+  // just flows through readContext to the read below.
   if(readReferenceWhiteFirst&&referenceWhiteStep){
    const whiteResult=await meterRunManualReadStep(referenceWhiteStep,{...readContext,displayFirst:true});
    if(!meterReadResultOk(whiteResult)) return;

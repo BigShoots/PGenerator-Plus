@@ -314,7 +314,15 @@ touch "$OUTFILE"
 mkfifo "$CMDPIPE"
 
 SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
-if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
+# A CCSS (Colorimeter Calibration Spectral Sample) only corrects COLORIMETERS.
+# A spectrophotometer (i1 Pro 2, etc.) measures spectrally and rejects -X with
+# "Instrument doesn't have Colorimeter Calibration Spectral Sample capability",
+# which aborts init. require_device_ready==1 is set only for spectros, so use it
+# to keep the CCSS off them. (Colorimeters keep their CCSS unchanged.)
+if [[ "$REQUIRE_DEVICE_READY" == "1" && -n "$CCSS_FILE" ]]; then
+ log "spectrophotometer selected: skipping CCSS ($CCSS_FILE) -- spectros measure spectrally"
+fi
+if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
  # Match the actual DISPLAY_TYPE_REFRESH value, not the KEYWORD line.
  # Fall back to CCSS metadata when the explicit refresh hint is absent.
  CCSS_REFRESH=$(grep -iE '^[[:space:]]*DISPLAY_TYPE_REFRESH[[:space:]]' "$CCSS_FILE" 2>/dev/null | head -1)
