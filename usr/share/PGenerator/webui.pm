@@ -11023,20 +11023,26 @@ function meterDvRelativeUsesGammaChartMath(){
 }
 
 function meterHdrAutoCalUsesPowerGammaChartMath(){
- const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
- const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
- const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
- if(statusRunning){
+	 const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
+	 const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
+	 const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
+	 if(statusRunning){
   const target=String(status.target_gamma||'').toLowerCase();
   const layout=String(status.ddc_layout||'').toLowerCase();
-  const signal=String(status.signal_mode||'').toLowerCase();
-  return (target===''||target==='2.2')&&(layout==='hdr20'||signal==='hdr10');
- }
- const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- if(mode!=='hdr10') return false;
- if(meterActiveSeriesType!=='greyscale') return false;
- if(typeof meterUseLgAutoCal26==='function'&&!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
- if(typeof meterHdrAutoCalChartContextHeld!=='undefined'&&meterHdrAutoCalChartContextHeld) return true;
+	  const signal=String(status.signal_mode||'').toLowerCase();
+	  return (target===''||target==='2.2')&&(layout==='hdr20'||signal==='hdr10');
+	 }
+	 const held=!!(typeof meterHdrAutoCalChartContextHeld!=='undefined'&&meterHdrAutoCalChartContextHeld);
+	 const statusMode=String(status&&(status.signal_mode||status.requested_signal_mode)||'').toLowerCase();
+	 const statusLayout=String(status&&status.ddc_layout||'').toLowerCase();
+	 if(held&&meterActiveSeriesType==='greyscale'&&typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints)){
+	  if(statusMode==='hdr10'||statusLayout==='hdr20'||String((meterChartSignalMode()||meterActiveSeriesSignalMode||'sdr')).toLowerCase()==='hdr10') return true;
+	 }
+	 const mode=String((statusMode||meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+	 if(mode!=='hdr10') return false;
+	 if(meterActiveSeriesType!=='greyscale') return false;
+	 if(typeof meterUseLgAutoCal26==='function'&&!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
+	 if(held) return true;
  const lgCalibrationMode=!!(
   (typeof window!=='undefined'&&window.lgStatusState&&window.lgStatusState.calibrationMode)||
   (status&&(status.calibration_mode||status.calibrationMode))
@@ -18654,11 +18660,14 @@ function meterAutoCalClearCompleteAutoClose(){
 }
 
 function meterAutoCalCloseComplete(){
- meterAutoCalClearCompleteAutoClose();
- meterAutoCalClearSavedState();
- const holdHdrChartContext=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='hdr10'&&
-  meterActiveSeriesType==='greyscale'&&
-  typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints);
+	 meterAutoCalClearCompleteAutoClose();
+	 meterAutoCalClearSavedState();
+	 const status=meterAutoCalLatestStatus||{};
+	 const statusMode=String(status.signal_mode||status.requested_signal_mode||'').toLowerCase();
+	 const statusLayout=String(status.ddc_layout||'').toLowerCase();
+	 const holdHdrChartContext=(statusMode==='hdr10'||statusLayout==='hdr20'||String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='hdr10')&&
+	  meterActiveSeriesType==='greyscale'&&
+	  typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints);
  if(holdHdrChartContext) meterHdrAutoCalChartContextHeld=true;
  meterAutoCalRunning=false;
  meterAutoCalPhase='';
@@ -19633,11 +19642,13 @@ function meterAutoCalSyncLgCalibrationMode(status){
 }
 
 function meterAutoCalApplyStatus(status){
-		 if(!status) return;
-		 meterAutoCalLatestStatus=status;
-		 meterAutoCalSyncLgCalibrationMode(status);
-		 if(status.autocal){
-	  if(meterActiveSeriesType!=='greyscale'||Number(meterActiveSeriesPoints)!==26){
+			 if(!status) return;
+			 meterAutoCalLatestStatus=status;
+			 meterAutoCalSyncLgCalibrationMode(status);
+			 if(status.autocal){
+		  const statusSignalMode=String(status.signal_mode||status.requested_signal_mode||'').toLowerCase();
+		  if(statusSignalMode) meterActiveSeriesSignalMode=statusSignalMode;
+		  if(meterActiveSeriesType!=='greyscale'||Number(meterActiveSeriesPoints)!==26){
 	   meterActiveSeriesType='greyscale';
 	   meterActiveSeriesPoints=26;
 	   meterActiveSeriesKey='greyscale-26';
@@ -22748,10 +22759,10 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
   thumb.style.opacity='1';
   const isReading=(currentIre!=null&&key===currentIre);
   const isSelected=(meterSelectedThumbIre!=null&&key===meterSelectedThumbIre);
-  if(isReading){
-   thumb.style.boxShadow='';
-   thumb.style.animation='thumbPulse 1s ease-in-out infinite';
-   thumb.style.zIndex='1';
+	  if(isReading){
+	   thumb.style.animation='none';
+	   thumb.style.boxShadow='inset 0 0 0 3px #fff';
+	   thumb.style.zIndex='1';
   } else if(isSelected){
    thumb.style.animation='none';
     thumb.style.boxShadow='inset 0 0 0 3px #fff';
