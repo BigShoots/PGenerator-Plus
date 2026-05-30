@@ -8230,6 +8230,101 @@ sub choose_rgb_response_adjustments {
 			 return append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,0,$LG_AUTOCAL_STATE);
 		}
 
+sub adjustments_have_setting {
+ my ($adjustments,$setting)=@_;
+ return 0 if(ref($adjustments) ne "ARRAY" || !defined($setting));
+ foreach my $adj (@{$adjustments}) {
+  return 1 if(ref($adj) eq "HASH" && (($adj->{"setting"}||"") eq $setting));
+ }
+ return 0;
+}
+
+sub full_ddc_spine_anchor_revisit_luminance_adjustments {
+ my ($state,$config,$arrays,$target,$step,$lum_pct,$de,$stalls,$tried)=@_;
+ return undef if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return undef if(ref($step) ne "HASH" || !lg_autocal_26_full_ddc_spine_anchor_revisit_step($step));
+ return undef if(!autocal_step_is_hdr20_body($step));
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ return undef if(!has_luminance_channel($arrays,$target));
+ return undef if(!defined($lum_pct));
+ my $tol=luminance_tolerance_percent($step);
+ $tol=0.75 if(!defined($tol) || $tol < 0.75);
+ return undef if(abs($lum_pct) <= $tol);
+ my $cap=abs($lum_pct) >= 7.0 ? 2.0 : (abs($lum_pct) >= 3.0 ? 1.0 : 0.5);
+ my $learned=lg_autocal_26_learned_luminance_adjustment($state,$arrays,$target,$step,$lum_pct,$tried,$cap,"full_ddc_spine_anchor_revisit_luminance");
+ if(ref($learned) eq "ARRAY" && @{$learned}) {
+  foreach my $adj (@{$learned}) {
+   next if(ref($adj) ne "HASH");
+   $adj->{"full_ddc_spine_anchor"}=1;
+   $adj->{"full_ddc_spine_anchor_revisit"}=1;
+   $adj->{"anchor_luminance_only"}=1;
+  }
+  return $learned;
+ }
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my $arr=$arrays->{"adjustingLuminance"};
+ return undef if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+ my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+ my $direction=($lum_pct > 0) ? -1 : 1;
+ my @magnitudes;
+ if(abs($lum_pct) >= 7.0) {
+  @magnitudes=(2.0,1.5,1.0,0.75,0.5,0.25);
+ } elsif(abs($lum_pct) >= 3.0) {
+  @magnitudes=(1.0,0.75,0.5,0.25);
+ } elsif(abs($lum_pct) >= 1.5) {
+  @magnitudes=(0.5,0.25);
+ } else {
+  @magnitudes=(0.25);
+ }
+ foreach my $mag (@magnitudes) {
+  my ($next,$damped)=next_untried_value($current,$direction*$mag,$tried,"adjustingLuminance",0.25,0);
+  next if(!defined($next) || abs($next-$current) < 0.0001);
+  next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"full_ddc_spine_anchor_revisit_luminance",$state));
+  return [{
+   channel=>"lum",
+   setting=>"adjustingLuminance",
+   current=>$current,
+   next=>$next,
+   delta=>$next-$current,
+   damped=>$damped ? 1 : 0,
+   neutral_luminance=>1,
+   full_ddc_spine_anchor=>1,
+   full_ddc_spine_anchor_revisit=>1,
+   anchor_luminance_only=>1,
+   anchor_move_cap=>$mag+0,
+   remaining_error=>abs($lum_pct)+0,
+   source=>"full_ddc_spine_anchor_revisit_luminance"
+  }];
+ }
+ return undef;
+}
+
+sub full_ddc_spine_anchor_revisit_rgb_keep_blocked {
+ my ($config,$target,$step,$adjustments,$before_lum_pct,$after_lum_pct,$before_de,$after_de)=@_;
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(ref($target) ne "HASH" || !lg_autocal_26_full_ddc_spine_anchor($target));
+ return 0 if(ref($step) ne "HASH" || !lg_autocal_26_full_ddc_spine_anchor_revisit_step($step));
+ return 0 if(!autocal_step_is_hdr20_body($step));
+ return 0 if(ref($adjustments) ne "ARRAY");
+ return 0 if(adjustments_have_setting($adjustments,"adjustingLuminance"));
+ return 0 if(!defined($before_lum_pct) || !defined($after_lum_pct));
+ my $before_abs=abs($before_lum_pct+0);
+ my $after_abs=abs($after_lum_pct+0);
+ my $tol=luminance_tolerance_percent($step);
+ $tol=1.5 if(!defined($tol) || $tol < 1.5);
+ return 0 if($before_abs <= $tol);
+ return 0 if($after_abs + 0.35 < $before_abs);
+ trace_109($step,"full_ddc_spine_anchor_revisit_rgb_keep_blocked",{
+  before_luminance_error_pct=>$before_lum_pct+0,
+  after_luminance_error_pct=>$after_lum_pct+0,
+  before_delta_e=>defined($before_de)?$before_de+0:undef,
+  after_delta_e=>defined($after_de)?$after_de+0:undef,
+  adjustments=>trace_adjustments_summary($adjustments)
+ });
+ return 1;
+}
+
 sub full_ddc_spine_anchor_luminance_adjustment {
  my ($arrays,$target,$step,$de,$luminance_err,$stalls,$tried,$paired,$luma_aligned)=@_;
  return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -13954,6 +14049,11 @@ eval {
 								   ) {
 								    $adjustments=full_ddc_spine_anchor_adjustments($config,$err,$arrays,$target,$read_step,$de,$lum_err,$stalls,\%tried_values,$target_delta);
 								   }
+								   if(!$adjustments) {
+								    $adjustments=full_ddc_spine_anchor_revisit_luminance_adjustments(
+								     $state,$config,$arrays,$target,$read_step,$lum_pct,$de,$stalls,\%tried_values
+								    );
+								   }
 										   if(!$adjustments) {
 										    $adjustments=lg_autocal_26_initial_learned_target_adjustments(
 										     $state,$arrays,$target,$read_step,$reading,$de,$target_delta,$lum_pct,\%tried_values,
@@ -14242,6 +14342,11 @@ eval {
 								    my $headroom_105_main_polish_refine=headroom_105_main_polish_refine_adjustment($adjustments);
 								    my $headroom_105_main_polish_keep=0;
 								    my $full_ddc_spine_anchor_y_keep=0;
+								    my $full_ddc_spine_anchor_revisit_rgb_keep_blocked=full_ddc_spine_anchor_revisit_rgb_keep_blocked(
+								     $config,$target,$read_step,$adjustments,
+								     $before_lum_pct_for_adjustment,$lum_pct,
+								     $before_de_for_adjustment,$de
+								    );
 								    my $low_shadow_y_keep=0;
 								    my $headroom_105_luma_blocking_after=(!$paired_white_step && defined($lum_pct))
 								     ? headroom_105_luma_blocking_active($read_step,$arrays,$target,\%tried_values,$lum_pct/100)
@@ -14306,7 +14411,7 @@ eval {
 								     ? defined($best_update_reason)
 								     : (defined($de) && ($headroom_105_luma_blocking_after
 								      ? ($headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)
-								      : (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep || $low_shadow_y_keep)));
+								      : (!$full_ddc_spine_anchor_revisit_rgb_keep_blocked && (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep || $low_shadow_y_keep))));
 					    if($keep_candidate) {
 					    if($headroom_105_score_branch_promote) {
 					     trace_109($read_step,"headroom_105_score_branch_promoted",{
