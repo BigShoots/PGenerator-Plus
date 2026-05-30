@@ -10228,25 +10228,8 @@ function meterReadingUsesAlternateStimulus(reading,step){
 
 function meterReadingMatchesStepForPlot(reading,step){
  if(!reading||!step) return false;
- if(meterHdrAutoCalWhiteReadingMatchesStep(reading,step)) return true;
  if(meterReadingCodesMatchStep(reading,step)) return true;
  return meterReadingUsesAlternateStimulus(reading,step);
-}
-
-function meterHdrAutoCalWhiteReadingMatchesStep(reading,step){
- if(!reading||!step) return false;
- if(meterActiveSeriesType!=='greyscale') return false;
- if(!(typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints))) return false;
- const mode=String((reading.signal_mode||meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- const layout=String(reading.ddc_layout||step.ddc_layout||'').toLowerCase();
- if(mode!=='hdr10'&&layout!=='hdr20') return false;
- const stepIre=Number(step.ire);
- if(!Number.isFinite(stepIre)||Math.abs(stepIre-100)>0.001) return false;
- const candidates=[reading.plot_ire,reading.nominal_ire,reading.slot_ire,reading.ddc_target_ire,reading.ire,reading.stimulus];
- return candidates.some(value=>{
-  const ire=Number(value);
-  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
- });
 }
 
 function meterReadingPlotIre(reading){
@@ -12565,34 +12548,21 @@ function meterReadingIsAutoCalReferenceOnly(item){
 }
 
 function meterLgAutoCalChartReferenceWhite(item){
- if(!item||meterActiveSeriesType!=='greyscale') return false;
- const plotIre=meterReadingPlotIre(item);
- const ire=Number(plotIre!=null?plotIre:item.ire);
- const label=String(item.autocal_target_label||item.name||'').toLowerCase();
- const layout=String(item.ddc_layout||'').toLowerCase();
- const mode=String(item.signal_mode||meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toLowerCase();
- if((mode==='hdr10'||layout==='hdr20')&&typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints)&&Number.isFinite(ire)&&Math.abs(ire-100)<0.001) return false;
- if(layout==='hdr20'||label.indexOf('hdr white')>=0||label.indexOf('hdr white ref')>=0) return false;
- if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
-  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
+	 if(!item||meterActiveSeriesType!=='greyscale') return false;
+	 const plotIre=meterReadingPlotIre(item);
+	 const ire=Number(plotIre!=null?plotIre:item.ire);
+	 const label=String(item.autocal_target_label||item.name||'').toLowerCase();
+	 const layout=String(item.ddc_layout||'').toLowerCase();
+	 if(layout==='hdr20'||label.indexOf('hdr white')>=0||label.indexOf('hdr white ref')>=0) return false;
+	 if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
+	  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
 	 }
 	 return false;
 }
 
 function meterFilterLgAutoCalChartItems(items){
  const list=Array.isArray(items)?items:[];
- const hasNonReferenceAt={};
- list.forEach(item=>{
-  if(!item||meterLgAutoCalChartReferenceWhite(item)||meterReadingIsAutoCalReferenceOnly(item)||item.autocal_read_only) return;
-  const plot=meterReadingPlotIre(item);
-  if(plot!=null) hasNonReferenceAt[String(Number(plot).toFixed(4))]=true;
- });
- return list.filter(item=>{
-  if(!item) return false;
-  const plot=meterReadingPlotIre(item);
-  const duplicateReference=plot!=null&&hasNonReferenceAt[String(Number(plot).toFixed(4))]&&(meterReadingIsAutoCalReferenceOnly(item)||item.autocal_read_only);
-  return !duplicateReference&&!meterLgAutoCalChartReferenceWhite(item);
- });
+ return list.filter(item=>!meterLgAutoCalChartReferenceWhite(item));
 }
 
 function meterGreyscaleReportReadings(readings){
@@ -14968,7 +14938,7 @@ function meterStampReadingStepMeta(reading,step){
 function meterAttachSeriesMeta(readings){
  if(!Array.isArray(readings)||!meterSeriesSteps) return readings||[];
  return readings.map(rd=>{
-  const matches=meterSeriesSteps.filter(s=>meterGreyscaleReadingMatchesStep(rd,s));
+  const matches=meterSeriesSteps.filter(s=>(meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')))&&meterReadingMatchesStepForPlot(rd,s));
   const wantsReference=!!(rd&&(rd.autocal_white_reference||rd.autocal_reference_only||rd.autocal_read_only)&&rd.ddc_target_ire==null);
   const step=wantsReference
    ? (matches.find(s=>meterReadingIsAutoCalReferenceOnly(s)||s.autocal_read_only)||matches[0])
@@ -15107,7 +15077,6 @@ function meterFindReadingForStep(step){
   if(!rd||!meterReadingHasLuminance(rd)) continue;
   if(key&&meterStepNameKey(rd)===key&&meterReadingMatchesStepForPlot(rd,canon)) return rd;
   if(name&&(rd.name||'')===name&&meterReadingMatchesStepForPlot(rd,canon)) return rd;
-  if(meterGreyscaleReadingMatchesStep(rd,canon)) return rd;
   if(!name&&canon.ire!=null&&rd.ire===canon.ire&&meterReadingMatchesStepForPlot(rd,canon)) return rd;
  }
  return null;
@@ -17613,8 +17582,7 @@ function meterLgPictureModeValue(fallback){
 
 function meterGreyTvTarget(step){
  const resolved=meterCanonicalSeriesStep(step)||step;
- const autoCalActive=!!(meterAutoCalRunning||(meterAutoCalLatestStatus&&meterAutoCalLatestStatus.autocal));
- if(!resolved||(meterSeriesRunning&&!autoCalActive)||meterActiveSeriesType!=='greyscale'||meterIsTwoPointGreyscale()) return null;
+ if(!resolved||meterSeriesRunning||meterActiveSeriesType!=='greyscale'||meterIsTwoPointGreyscale()) return null;
 	 if(!meterSeriesStepIsGreyscale(resolved)) return null;
 	 const ire=Number(resolved.ire);
 	 if(!Number.isFinite(ire)) return null;
@@ -19631,49 +19599,15 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
 }
 
 function meterAutoCalCurrentKeyFromStatus(status){
- const step=meterAutoCalCurrentStepFromStatus(status);
- return step?meterStepNameKey(step):null;
-}
-
-function meterAutoCalCurrentStepFromStatus(status){
- if(!status||!Array.isArray(meterSeriesSteps)) return null;
- const steps=meterSeriesSteps;
- const name=String(status.current_name||status.patch_name||status.name||'');
- if(name){
-  const exact=steps.find(step=>String(step.name||'')===name||String(step.autocal_target_label||'')===name);
-  if(exact) return exact;
-  const match=name.match(/([0-9]+(?:\.[0-9]+)?)%/);
-  if(match){
-   const step=meterAutoCalStepForIre(Number(match[1]),steps);
-   if(step) return step;
-  }
+	 if(!status) return null;
+	 const name=String(status.current_name||'');
+ const match=name.match(/([0-9]+(?:\.[0-9]+)?)%/);
+ if(match){
+  const ire=Number(match[1]);
+  const step=(meterSeriesSteps||[]).find(s=>Math.abs((Number(s.ire)||0)-ire)<0.001);
+  if(step) return meterStepNameKey(step);
  }
- const nested=(status.current_step&&typeof status.current_step==='object')?status.current_step:null;
- const candidates=[
-  status.current_ire,status.current_step_ire,status.current_stimulus,status.current_patch_ire,
-  status.patch_ire,status.target_ire,status.ddc_target_ire,status.ire,status.stimulus,
-  nested&&nested.ire,nested&&nested.stimulus,nested&&nested.patch_ire,nested&&nested.ddc_target_ire
- ];
- for(const value of candidates){
-  const step=meterAutoCalStepForIre(value,steps);
-  if(step) return step;
- }
- return null;
-}
-
-function meterAutoCalStepForIre(value,steps){
- const ire=Number(value);
- if(!Number.isFinite(ire)) return null;
- const list=Array.isArray(steps)?steps:[];
- const matches=list.filter(step=>{
-  const candidates=[step.ire,step.stimulus,step.plot_ire,step.nominal_ire,step.ddc_target_ire,step.signal_r_pct,step.signal_g_pct,step.patch_stimulus];
-  return candidates.some(candidate=>{
-   const numeric=Number(candidate);
-   return Number.isFinite(numeric)&&Math.abs(numeric-ire)<0.001;
-  });
- });
- if(!matches.length) return null;
- return matches.find(step=>!meterReadingIsAutoCalReferenceOnly(step)&&!step.autocal_read_only)||matches[0];
+	 return null;
 }
 
 function meterAutoCalSyncLgGreyState(status,currentKey){
@@ -19730,18 +19664,11 @@ function meterAutoCalApplyStatus(status){
   meterSetThumbsVisible(true);
  }
 	 if(Array.isArray(status.steps)&&status.steps.length>0){
-			  meterSeriesSteps=meterCanonicalRecoveredSteps('greyscale',26,status.steps,status.status||'running');
-			 }
-		 const currentStep=meterAutoCalCurrentStepFromStatus(status);
-		 const currentKey=currentStep?meterStepNameKey(currentStep):null;
-		 const activeKey=status.autocal?(currentKey||meterSelectedThumbIre):currentKey;
-		 if(status.autocal&&currentKey) meterSelectedThumbIre=currentKey;
-		 if(status.autocal&&activeKey&&Array.isArray(meterSeriesSteps)){
-		  const activeStep=meterSeriesSteps.find(step=>meterStepNameKey(step)===activeKey);
-		  if(activeStep) meterCurrentPatchStep=meterClonePatchStep(activeStep)||activeStep;
+		  meterSeriesSteps=meterCanonicalRecoveredSteps('greyscale',26,status.steps,status.status||'running');
 		 }
-		 if(Array.isArray(status.readings)){
-		  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(status.readings,'greyscale'));
+	 const currentKey=meterAutoCalCurrentKeyFromStatus(status);
+	 if(Array.isArray(status.readings)){
+	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(status.readings,'greyscale'));
 	  const white=meterFindSeriesWhiteReading(meterReadings);
 	  const statusTargetY=Number(status.target_luminance||status.calibrated_white_luminance);
 	  if(Number.isFinite(statusTargetY)&&statusTargetY>0){
@@ -19761,25 +19688,23 @@ function meterAutoCalApplyStatus(status){
 	  else if(white) meterWhiteReading=white;
 	  const completed=new Set(meterReadings.filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
   const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
-	  if(sorted.length) {
-	   drawAllCharts(sorted);
-	   const activeReading=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;
-	   const lastValid=activeReading||[...meterReadings].reverse().find(rd=>rd&&rd.luminance!=null);
-	   if(lastValid) updateLiveReading(lastValid);
-	   meterCacheSeriesState(status.status||'running');
-	  }
-	  if(meterSeriesSteps){
-	   const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
-	   meterBuildPatchThumbs(sortedSteps,completed,activeKey);
-	  }
+  if(sorted.length) {
+   drawAllCharts(sorted);
+   const lastValid=[...meterReadings].reverse().find(rd=>rd&&rd.luminance!=null);
+   if(lastValid) updateLiveReading(lastValid);
+   meterCacheSeriesState(status.status||'running');
+  }
+  if(meterSeriesSteps){
+   const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
+   meterBuildPatchThumbs(sortedSteps,completed,currentKey);
+  }
+ }
+ if((!Array.isArray(status.readings)||!status.readings.length)&&meterSeriesSteps&&status.autocal){
+  const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
+	  drawAllChartsPreset(sortedSteps);
+	  meterBuildPatchThumbs(sortedSteps,new Set(),currentKey);
 	 }
-	 if((!Array.isArray(status.readings)||!status.readings.length)&&meterSeriesSteps&&status.autocal){
-	  const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
-		  drawAllChartsPreset(sortedSteps);
-		  meterBuildPatchThumbs(sortedSteps,new Set(),activeKey);
-		 }
-			 if(status.status==='running'||status.status==='complete'||meterAutoCalRunning||meterActionPending) meterAutoCalSyncLgGreyState(status,activeKey);
-	 if(status.autocal&&meterCurrentPatchStep) meterRenderGreyTvControls(meterFindReadingForStep(meterCurrentPatchStep));
+		 if(status.status==='running'||status.status==='complete'||meterAutoCalRunning||meterActionPending) meterAutoCalSyncLgGreyState(status,currentKey);
  let progressText=status.current_name||status.message||'LG Auto Cal';
  const y=Number(status.current_luminance);
  const ty=Number(status.target_step_luminance);
