@@ -423,11 +423,20 @@ while (( WAITED < 900 )); do
   WAITED=0
   continue
  fi
- if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUT"); then
-  log "interactive init prompt: reason=$PROMPT_REASON"
-  startup_marker "interactive init prompt: $PROMPT_REASON"
+ if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
+  log "calibration failed during startup, surfacing retry"
   STARTUP_HINT="interactive_setup"
-  wait_for_device_ready "$PROMPT_REASON"
+  await_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectro flat on its white tile, then click Retry."
+  printf " " >&3
+  HANDLED_OFFSET=$(output_size)
+  WAITED=0
+  continue
+ fi
+ if manual_calibration_setup_prompt "$NEW_OUT"; then
+  log "calibrate_tile prompt during startup"
+  startup_marker "calibrate_tile prompt seen"
+  STARTUP_HINT="interactive_setup"
+  await_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate."
   printf " " >&3
   HANDLED_OFFSET=$(output_size)
   WAITED=0
@@ -467,6 +476,12 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
  sleep 2
  printf " " >&3
  sleep 2
+fi
+
+# Spectros are on the calibration tile after init; have the operator aim at the
+# screen ONCE before reads begin. Colorimeters (REQUIRE_DEVICE_READY=0) skip this.
+if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+ await_setup_step "position_screen" "Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
 
 signal_startup_ready
@@ -523,13 +538,9 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    # Trigger reading and wait for it
    PARSED_RESULT=""
    READ_OUTPUT=""
-   # A spectro sits on the calibration tile after init, so have the operator aim
-   # it at the patch on screen BEFORE we trigger the reading -- otherwise the
-   # read fires while it's still on the tile and returns 0,0,0. (Colorimeters
-   # have REQUIRE_DEVICE_READY=0 and skip this.)
-   if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-    wait_for_device_ready "initial_measurement"
-   fi
+   # Positioning is now a one-time post-init setup step (position_screen), so the
+   # spectro is already aimed at the screen; reads auto-fire without a per-read
+   # prompt.
    SCAN_OFFSET=$(output_size)
    printf " " >&3
 	  READ_TIMEOUT=90
