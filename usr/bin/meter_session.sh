@@ -312,13 +312,36 @@ else:
 
 cleanup() {
  log "cleanup: tearing down spotread"
+ # Ask spotread to quit cleanly, then close its stdin (EOF via the cat pipe).
+ # spotread may be mid-reading (an active USB transaction); SIGKILLing it now
+ # wedges the Pi's dwc2 USB controller, which then fails the NEXT session with
+ # "communication failed during init". So give it time to finish the in-flight
+ # read, process the quit, and release the device before escalating to a kill.
  printf "Q" >&3 2>/dev/null
  exec 3>&- 2>/dev/null
  exec 4>&- 2>/dev/null
- [[ -n "$BG_PID" ]] && kill "$BG_PID" 2>/dev/null
- [[ -n "$BG_PID" ]] && pkill -9 -P "$BG_PID" 2>/dev/null
- [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
- pkill -9 -x spotread 2>/dev/null
+ # Wait up to ~6s for the spotread pipeline to exit on its own.
+ local _w=0
+ while (( _w < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
+  sleep 0.1
+  _w=$(( _w + 1 ))
+ done
+ # Still alive: ask politely (TERM) and let the USB transaction unwind.
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  kill "$BG_PID" 2>/dev/null
+  pkill -TERM -x spotread 2>/dev/null
+  local _t=0
+  while (( _t < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
+   sleep 0.1
+   _t=$(( _t + 1 ))
+  done
+ fi
+ # Last resort only if it ignored both the quit and TERM (genuinely stuck).
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  pkill -9 -P "$BG_PID" 2>/dev/null
+  kill -9 "$BG_PID" 2>/dev/null
+ fi
+ pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
 trap cleanup EXIT INT TERM
