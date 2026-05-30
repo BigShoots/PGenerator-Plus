@@ -19587,15 +19587,24 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
 }
 
 function meterAutoCalCurrentKeyFromStatus(status){
-	 if(!status) return null;
-	 const name=String(status.current_name||'');
- const match=name.match(/([0-9]+(?:\.[0-9]+)?)%/);
+		 if(!status) return null;
+		 const name=String(status.current_name||'');
+	 const match=name.match(/([0-9]+(?:\.[0-9]+)?)%/);
  if(match){
   const ire=Number(match[1]);
   const step=(meterSeriesSteps||[]).find(s=>Math.abs((Number(s.ire)||0)-ire)<0.001);
   if(step) return meterStepNameKey(step);
  }
-	 return null;
+		 return null;
+	}
+
+function meterAutoCalStatusActive(){
+ const status=meterAutoCalLatestStatus;
+ return !!(
+  meterAutoCalRunning||
+  meterAutoCalPolling||
+  (status&&status.autocal&&String(status.status||'').toLowerCase()==='running')
+ );
 }
 
 function meterAutoCalSyncLgGreyState(status,currentKey){
@@ -19652,8 +19661,9 @@ function meterAutoCalApplyStatus(status){
 	 if(Array.isArray(status.steps)&&status.steps.length>0){
 		  meterSeriesSteps=meterCanonicalRecoveredSteps('greyscale',26,status.steps,status.status||'running');
 		 }
-	 const currentKey=meterAutoCalCurrentKeyFromStatus(status);
-	 if(Array.isArray(status.readings)){
+		 const currentKey=meterAutoCalCurrentKeyFromStatus(status);
+		 if(status.autocal&&String(status.status||'').toLowerCase()==='running') meterSelectedThumbIre=null;
+		 if(Array.isArray(status.readings)){
 	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(status.readings,'greyscale'));
 	  const white=meterFindSeriesWhiteReading(meterReadings);
 	  const statusTargetY=Number(status.target_luminance||status.calibrated_white_luminance);
@@ -22724,10 +22734,10 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   thumb.dataset.thumbWidth=scrollMode?String(thumbWidth):'';
   thumb.dataset.key=meterStepNameKey(step);
 	  thumb.dataset.colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
-   thumb.addEventListener('click',function(){
-    if(meterSeriesRunning) return;
-    meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true});
-   });
+	   thumb.addEventListener('click',function(){
+	    if(meterSeriesRunning||meterAutoCalStatusActive()) return;
+	    meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true});
+	   });
    container.appendChild(thumb);
   });
  }
@@ -22743,8 +22753,8 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
   const done=completedIres&&completedIres.has(key);
   // All thumbs fully visible always; completed ones get a checkmark overlay
   thumb.style.opacity='1';
-  const isReading=(currentIre!=null&&key===currentIre);
-  const isSelected=(meterSelectedThumbIre!=null&&key===meterSelectedThumbIre);
+	  const isReading=(currentIre!=null&&key===currentIre);
+	  const isSelected=(!meterAutoCalStatusActive()&&meterSelectedThumbIre!=null&&key===meterSelectedThumbIre);
   if(isReading){
    thumb.style.boxShadow='';
    thumb.style.animation='thumbPulse 1s ease-in-out infinite';
