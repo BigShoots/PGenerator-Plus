@@ -3647,6 +3647,20 @@ sub reset_meter_session_after_read_error {
 }
 
 my $read_sequence=0;
+my $last_autocal_read_step_key="";
+
+sub autocal_read_step_key {
+ my ($step)=@_;
+ return "" if(ref($step) ne "HASH");
+ return join("|",
+  defined($step->{"ire"}) ? sprintf("%.4f",$step->{"ire"}+0) : "",
+  defined($step->{"stimulus"}) ? sprintf("%.4f",$step->{"stimulus"}+0) : "",
+  defined($step->{"r"}) ? int($step->{"r"}) : "",
+  defined($step->{"g"}) ? int($step->{"g"}) : "",
+  defined($step->{"b"}) ? int($step->{"b"}) : "",
+  defined($step->{"input_max"}) ? int($step->{"input_max"}) : ""
+ );
+}
 
 sub patch_payload_for_step {
 	 my ($config,$step)=@_;
@@ -3670,8 +3684,10 @@ sub patch_payload_for_step {
 }
 
 sub apply_pattern_insert_before_read {
- my ($config,$step)=@_;
+ my ($config,$step,$step_key)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"} || $read_sequence <= 0);
+ $step_key=autocal_read_step_key($step) if(!defined($step_key));
+ return undef if($step_key ne "" && $last_autocal_read_step_key ne "" && $last_autocal_read_step_key eq $step_key);
  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
 	 my $insert_code=64;
@@ -12634,8 +12650,10 @@ sub read_step_once {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
 		 my $read_started=time();
-			 my $insert_error=apply_pattern_insert_before_read($config,$step);
+			 my $step_key=autocal_read_step_key($step);
+			 my $insert_error=apply_pattern_insert_before_read($config,$step,$step_key);
 			 return (undef,$insert_error) if(defined($insert_error) && $insert_error ne "");
+			 $last_autocal_read_step_key=$step_key if($step_key ne "");
 			 $read_sequence++;
 			 my $start_timeout=(ref($step) eq "HASH" && $step->{"autocal_probe_stimulus"}) ? 35 : 55;
 			 $start_timeout=70 if($ire <= 5 && !(ref($step) eq "HASH" && $step->{"autocal_probe_stimulus"}));
