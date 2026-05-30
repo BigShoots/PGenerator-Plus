@@ -215,8 +215,10 @@ class Runner:
         comport = re.sub(r"[^0-9]", "", str(self.args.comport or ""))
         if comport:
             cmd.extend(["-c", comport])
-        if self.args.refresh_rate:
-            cmd.extend(["-Y", "R:%s" % self.args.refresh_rate])
+        # NOTE: do NOT pass "-Y R:<rate>" here. On the i1 Pro 2 the refresh-rate
+        # override puts ccxxmake into a mode where it rejects the instrument with
+        # "Instrument has no CCSS capability". CCSS only captures spectral shape,
+        # so the refresh lock isn't needed for it. (Verified on-device.)
         cmd.append(self.args.output_path)
         self.append_log("Command: %s\n" % " ".join([utf8_text(part) for part in cmd]))
 
