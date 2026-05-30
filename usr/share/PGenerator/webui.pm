@@ -3822,6 +3822,8 @@ sub webui_ccss_create_start (@) {
  $patch_size=$1 if($body=~/"patch_size"\s*:\s*(\d+)/);
  my $refresh_rate="";
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
+ my $profiling_port="";
+ $profiling_port=$1 if($body=~/"profiling_meter_port"\s*:\s*"?(\d+)"?/);
 
  return '{"status":"error","message":"Enter a profile name"}' if($name eq "");
  return '{"status":"error","message":"Interactive CCSS creator is not installed on this image"}' if(!-x $_ccss_create_ccxxmake_bin);
@@ -3841,7 +3843,14 @@ sub webui_ccss_create_start (@) {
  }
  my @spectros=grep { ($_->{meter_type}||"") eq "spectro" } @meters;
  return '{"status":"error","message":"Connect a spectrophotometer before creating a CCSS"}' if(!@spectros);
- return '{"status":"error","message":"Connect only the spectrophotometer you want to use for live CCSS creation"}' if(scalar(@meters) != 1 || scalar(@spectros) != 1);
+ # Other meters (e.g. a colorimeter) may stay connected during a calibration.
+ # Pick the requested spectro by port; fall back to the sole spectro if unambiguous.
+ my ($chosen)=grep { $_->{port_num} eq $profiling_port } @spectros;
+ ($chosen)=@spectros if(!$chosen && scalar(@spectros) == 1);
+ return '{"status":"error","message":"Select which spectrophotometer to use for CCSS creation"}' if(!$chosen);
+ my $chosen_port=$chosen->{port_num};
+ $chosen_port=~s/[^0-9]//g;
+ return '{"status":"error","message":"Selected spectrophotometer has no usable port"}' if($chosen_port eq "");
 
  my $custom_storage_dir=&_webui_custom_ccss_storage_dir();
  return '{"status":"error","message":"Custom storage unavailable"}' if($custom_storage_dir eq "");
@@ -3863,6 +3872,7 @@ sub webui_ccss_create_start (@) {
  $profile_label=~s/'/'"'"'/g;
  my $cmd="setsid sudo $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size' --ccxxmake-bin '$_ccss_create_ccxxmake_bin'";
  $cmd.=" --refresh-rate '$refresh_rate'" if($refresh_rate ne "");
+ $cmd.=" --comport '$chosen_port'" if($chosen_port ne "");
  $cmd.=" </dev/null >/dev/null 2>&1 &";
  system($cmd);
 
@@ -7480,7 +7490,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Name</label>
     <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
     </div>
-    <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Connect a spectrophotometer to begin.</div>
+    <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Select your spectrophotometer and display type, then start.</div>
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
       <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
@@ -14434,8 +14444,9 @@ function meterCcssCreateDisplayTypeValue(){
 }
 
 function meterCcssCreateCanStart(){
- const spectros=meterCcssCreateSpectros();
- return spectros.length===1 && (meterInventory||[]).length===1;
+ // Only a spectrophotometer must be selected; other meters (e.g. a colorimeter)
+ // may stay connected during a calibration.
+ return !!meterCcssCreateSelectedMeter();
 }
 
 function meterCcssCreateSetUi(status){
@@ -14476,11 +14487,9 @@ function meterRenderCcssCreateChoices(){
  const chosen=(selected&&meterFindByPort(selected)&&meterIsSpectrophotometer(meterFindByPort(selected)))?meterFindByPort(selected):(spectros[0]||null);
  if(chosen) meterProfilingPort=meterNormalizePortValue(chosen.port_num);
  if(spectros.length>1){
-  status.textContent='Connect only one spectrophotometer at a time for CCSS creation.';
- }else if((meterInventory||[]).length>spectros.length){
-  status.textContent='Disconnect other meters before starting live CCSS creation.';
+  status.textContent=chosen?('Using '+meterOptionLabel(chosen)+' for CCSS creation. Tap another to switch.'):'Select which spectrophotometer to use for CCSS creation.';
  }else if(chosen){
-  status.textContent='Selected spectrophotometer: '+meterOptionLabel(chosen);
+  status.textContent='Selected spectrophotometer: '+meterOptionLabel(chosen)+(((meterInventory||[]).length>spectros.length)?' (other meters can stay connected).':'');
  }else {
   status.textContent='Choose which attached spectrophotometer to use for custom CCSS creation.';
  }
@@ -14577,7 +14586,6 @@ async function meterStartCcssCreate(){
  meterRenderCcssCreateChoices();
  const spectros=meterCcssCreateSpectros();
  if(!spectros.length){toast('Connect a spectrophotometer first',true);return;}
- if(spectros.length!==1||((meterInventory||[]).length!==1)){toast('Connect only the reference spectrophotometer before starting CCSS creation',true);return;}
  const meter=meterCcssCreateSelectedMeter();
  if(!meter){toast('No spectrophotometer selected',true);return;}
  if(!meterEnsureAppliedGeneratorSettings()) return;
