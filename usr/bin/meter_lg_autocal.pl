@@ -3699,9 +3699,8 @@ sub patch_payload_for_step {
 
 sub apply_pattern_insert_before_read {
  my ($config,$step,$step_key)=@_;
- return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"} || $read_sequence <= 0);
+ return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"});
  $step_key=autocal_read_step_key($step) if(!defined($step_key));
- return undef if($step_key ne "" && $last_autocal_read_step_key ne "" && $last_autocal_read_step_key eq $step_key);
  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
 	 my $insert_code=64;
