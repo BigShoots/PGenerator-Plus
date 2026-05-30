@@ -1327,7 +1327,7 @@ sub webui_meter_session_start (@) {
     if(open(my $fh,"<",$_meter_read_file)) { local $/; $state=<$fh>; close($fh); }
     $state_mtime=(stat($_meter_read_file))[9] || 0;
     if($state_mtime >= $started_at) {
-     $awaiting_ready=1 if($state=~/"awaiting_ready"\s*:\s*true/i);
+     $awaiting_ready=1 if($state=~/"awaiting_ready"\s*:\s*true/i || $state=~/"status"\s*:\s*"setup"/i);
      $state_error=1 if($state=~/"status"\s*:\s*"error"/);
     }
    }
@@ -1340,7 +1340,7 @@ sub webui_meter_session_start (@) {
   my $final_config_ready=&webui_meter_session_config_matches($config) ? 1 : 0;
   my $final_fifo_ready=&webui_meter_session_fifo_ready() ? 1 : 0;
   my $final_start_ready=&webui_meter_session_start_ready() ? 1 : 0;
-  return 1 if($final_config_ready && $final_fifo_ready && ($final_start_ready || $final_state=~/"awaiting_ready"\s*:\s*true/i));
+  return 1 if($final_config_ready && $final_fifo_ready && ($final_start_ready || $final_state=~/"awaiting_ready"\s*:\s*true/i || $final_state=~/"status"\s*:\s*"setup"/i));
   my $retryable=0;
   $retryable=1 if($final_state=~/"message"\s*:\s*"[^"]*(?:communication failed during init|meter init failed|meter enumeration failed|failed to enumerate)[^"]*"/i);
   $retryable=1 if($final_config_ready && $final_start_ready && !$final_fifo_ready);
@@ -1517,7 +1517,7 @@ sub webui_meter_read (@) {
  # Mark measuring so the polling endpoint sees a fresh in-flight state and
  # can't return the previous reading by mistake.
  my $state_before_send=&webui_meter_read_state_read();
- if($state_before_send!~/"awaiting_ready"\s*:\s*true/i) {
+ if($state_before_send!~/"awaiting_ready"\s*:\s*true/i && $state_before_send!~/"status"\s*:\s*"setup"/i) {
 	  if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$read_timeout.'}'; close($fh); }
  }
 
