@@ -495,6 +495,13 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    # Trigger reading and wait for it
    PARSED_RESULT=""
    READ_OUTPUT=""
+   # A spectro sits on the calibration tile after init, so have the operator aim
+   # it at the patch on screen BEFORE we trigger the reading -- otherwise the
+   # read fires while it's still on the tile and returns 0,0,0. (Colorimeters
+   # have REQUIRE_DEVICE_READY=0 and skip this.)
+   if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+    wait_for_device_ready "initial_measurement"
+   fi
    SCAN_OFFSET=$(output_size)
    printf " " >&3
 	  READ_TIMEOUT=90
@@ -521,8 +528,27 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
         SCAN_OFFSET=$(output_size)
         continue
        fi
+       # Result first: once spotread returns a reading we're done. spotread
+       # reprints its normal "Place instrument on spot ... to take a reading"
+       # prompt after every read; that is NOT an operator step and must not be
+       # mistaken for one (doing so caused an endless re-prompt loop).
+       if [[ "$READ_OUTPUT" == *"Result is XYZ:"* ]]; then
+        PARSED_RESULT=$(parse_latest_result_text "$READ_OUTPUT")
+        if [[ -n "$PARSED_RESULT" ]]; then
+         GOT_RESULT=true
+         break
+        fi
+       fi
        if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-        if PROMPT_REASON=$(manual_ready_prompt_reason "$READ_OUTPUT"); then
+        # Only surface a genuine re-calibration (white tile) or reposition
+        # prompt -- never the normal ready-to-read prompt.
+        PROMPT_REASON=""
+        if manual_calibration_setup_prompt "$READ_OUTPUT"; then
+         PROMPT_REASON="calibration_setup"
+        elif printf '%s' "$READ_OUTPUT" | grep -qiE 'incorrect position|meter is in incorrect position'; then
+         PROMPT_REASON="incorrect_position"
+        fi
+        if [[ -n "$PROMPT_REASON" ]]; then
          log "manual prompt during read: reason=$PROMPT_REASON name=$NAME"
          wait_for_device_ready "$PROMPT_REASON"
          printf " " >&3
@@ -531,13 +557,6 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
          READ_OUTPUT=""
          SCAN_OFFSET=$(output_size)
          continue
-        fi
-       fi
-       if [[ "$READ_OUTPUT" == *"Result is XYZ:"* ]]; then
-        PARSED_RESULT=$(parse_latest_result_text "$READ_OUTPUT")
-        if [[ -n "$PARSED_RESULT" ]]; then
-         GOT_RESULT=true
-         break
         fi
        fi
        SCAN_OFFSET="$CUR_SIZE"
