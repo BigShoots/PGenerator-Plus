@@ -12543,6 +12543,8 @@ function meterReadingIsAutoCalReferenceOnly(item){
 
 function meterLgAutoCalChartReferenceWhite(item){
 	 if(!item||meterActiveSeriesType!=='greyscale') return false;
+	 const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+	 if(mode==='hdr10') return false;
 	 const plotIre=meterReadingPlotIre(item);
 	 const ire=Number(plotIre!=null?plotIre:item.ire);
 	 if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
@@ -16274,6 +16276,7 @@ let meterActiveSeriesPoints=null; // series point count
 let meterActiveSeriesSignalMode=null; // signal mode tied to active series snapshot
 let meterCurrentPatchStep=null; // currently displayed patch step object
 let meterSeriesRunning=false; // true when Read Series is actively running
+let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
 function meterUpdateDeltaEFormControl(){
  const greySel=document.getElementById('meterDeltaEForm');
  const colorSel=document.getElementById('meterColorDeltaEForm');
@@ -19588,11 +19591,30 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
 
 function meterAutoCalCurrentKeyFromStatus(status){
 		 if(!status) return null;
+		 const numericCandidates=[
+		  status.current_ire,
+		  status.current_step_ire,
+		  status.patch_ire,
+		  status.current_stimulus,
+		  status.active_stimulus
+		 ];
+		 for(const value of numericCandidates){
+		  const numeric=Number(value);
+		  if(!Number.isFinite(numeric)) continue;
+		  const step=(meterSeriesSteps||[]).find(s=>{
+		   const candidates=[s.ire,s.stimulus,s.patch_stimulus,s.signal_r_pct,s.ddc_target_ire,s.ddc_array_ire,s.autocal_order_ire];
+		   return candidates.some(candidate=>Number.isFinite(Number(candidate))&&Math.abs(Number(candidate)-numeric)<0.001);
+		  });
+		  if(step) return meterStepNameKey(step);
+		 }
 		 const name=String(status.current_name||'');
 	 const match=name.match(/([0-9]+(?:\.[0-9]+)?)%/);
  if(match){
   const ire=Number(match[1]);
-  const step=(meterSeriesSteps||[]).find(s=>Math.abs((Number(s.ire)||0)-ire)<0.001);
+  const step=(meterSeriesSteps||[]).find(s=>{
+   const candidates=[s.ire,s.stimulus,s.patch_stimulus,s.signal_r_pct,s.ddc_target_ire,s.ddc_array_ire,s.autocal_order_ire];
+   return candidates.some(candidate=>Number.isFinite(Number(candidate))&&Math.abs(Number(candidate)-ire)<0.001);
+  });
   if(step) return meterStepNameKey(step);
  }
 		 return null;
@@ -19603,6 +19625,7 @@ function meterAutoCalStatusActive(){
  return !!(
   meterAutoCalRunning||
   meterAutoCalPolling||
+  meterAutoCalRecoveryInFlight||
   (status&&status.autocal&&String(status.status||'').toLowerCase()==='running')
  );
 }
@@ -19643,6 +19666,9 @@ function meterAutoCalApplyStatus(status){
 		 meterAutoCalLatestStatus=status;
 		 meterAutoCalSyncLgCalibrationMode(status);
 		 if(status.autocal){
+	  const statusSignal=String(status.signal_mode||status.requested_signal_mode||'').toLowerCase();
+	  const inferredSignal=statusSignal||(String(status.ddc_layout||'').toLowerCase()==='hdr20'?'hdr10':'');
+	  if(inferredSignal) meterActiveSeriesSignalMode=inferredSignal;
 	  if(meterActiveSeriesType!=='greyscale'||Number(meterActiveSeriesPoints)!==26){
 	   meterActiveSeriesType='greyscale';
 	   meterActiveSeriesPoints=26;
@@ -21550,13 +21576,23 @@ async function meterPollAutoCal(options){
 async function meterAutoCalBackendRecoveryWatchdog(){
  if(meterFullAutoCalReportPhaseActive()) return;
  if(meterAutoCalSetupOverlayActive()||meterAutoCalRunning||meterAutoCalPolling||meterActionPending||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling) return;
- await meterPollAutoCal({initial:true,recover:true,timeoutMs:15000});
+ meterAutoCalRecoveryInFlight=true;
+ try{
+  await meterPollAutoCal({initial:true,recover:true,timeoutMs:15000});
+ }finally{
+  meterAutoCalRecoveryInFlight=false;
+ }
 }
 
 async function meterAutoCalInitialRecoveryPoll(){
  if(meterFullAutoCalReportPhaseActive()) return;
  if(meterAutoCalSetupOverlayActive()||meterAutoCalRunning||meterAutoCalPolling||meterActionPending||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling) return;
- await meterPollAutoCal({initial:true,recover:true,timeoutMs:15000});
+ meterAutoCalRecoveryInFlight=true;
+ try{
+  await meterPollAutoCal({initial:true,recover:true,timeoutMs:15000});
+ }finally{
+  meterAutoCalRecoveryInFlight=false;
+ }
 }
 
 async function meterStartAutoCal(options){
@@ -26574,7 +26610,7 @@ meterRenderGreyTvControls(null);
 });
 
 function meterRefreshActiveSeriesCharts(){
- if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning) return;
+ if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||meterAutoCalStatusActive()) return;
  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
@@ -26608,6 +26644,7 @@ window.addEventListener('resize',()=>{
  if(meterActiveSeriesType!=='greyscale') return;
  if(meterGreyscaleResizeTimer) clearTimeout(meterGreyscaleResizeTimer);
  meterGreyscaleResizeTimer=setTimeout(()=>{
+  if(meterAutoCalStatusActive()&&!meterAutoCalLatestStatus) return;
   if(meterReadings&&meterReadings.length){
    const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
    drawAllCharts(sorted);

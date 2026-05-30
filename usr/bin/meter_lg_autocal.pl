@@ -9162,6 +9162,44 @@ sub clear_state_step_measurements {
  }
 }
 
+sub set_state_active_step {
+ my ($state,$step,$target)=@_;
+ return if(ref($state) ne "HASH");
+ foreach my $key (qw(current_ire current_step_ire patch_ire current_stimulus stimulus active_stimulus current_signal_r_pct current_signal_g_pct current_signal_b_pct current_ddc_target_ire current_ddc_array_ire current_ddc_write_ire current_ddc_index current_ddc_label)) {
+  delete($state->{$key});
+ }
+ if(ref($step) eq "HASH") {
+  foreach my $pair (
+   ["current_ire","ire"],
+   ["current_step_ire","ire"],
+   ["patch_ire","ire"],
+   ["current_stimulus","stimulus"],
+   ["stimulus","stimulus"],
+   ["active_stimulus","stimulus"],
+   ["current_signal_r_pct","signal_r_pct"],
+   ["current_signal_g_pct","signal_g_pct"],
+   ["current_signal_b_pct","signal_b_pct"]
+  ) {
+   my ($dst,$src)=@$pair;
+   next unless(defined($step->{$src}) && $step->{$src}=~/^-?\d+(?:\.\d+)?$/);
+   $state->{$dst}=$step->{$src}+0;
+  }
+ }
+ if(ref($target) eq "HASH") {
+  foreach my $pair (
+   ["current_ddc_target_ire","ire"],
+   ["current_ddc_array_ire","array_ire"],
+   ["current_ddc_write_ire","write_ire"],
+   ["current_ddc_index","index"]
+  ) {
+   my ($dst,$src)=@$pair;
+   next unless(defined($target->{$src}) && $target->{$src}=~/^-?\d+(?:\.\d+)?$/);
+   $state->{$dst}=$target->{$src}+0;
+  }
+  $state->{"current_ddc_label"}=$target->{"label"} if(defined($target->{"label"}) && $target->{"label"} ne "");
+ }
+}
+
 sub set_state_calibration_mode {
  my ($state,$active,$picture_mode)=@_;
  return if(ref($state) ne "HASH");
@@ -12780,6 +12818,8 @@ my $state={
 		 setup_luminance_reference=>$setup_luminance_reference||$target_luminance||undef,
 		 headroom_target_luminance=>$headroom_target_luminance||undef,
 			 target_gamma=>$target_gamma,
+			 signal_mode=>$signal_mode,
+			 requested_signal_mode=>$signal_mode,
 			 ddc_layout=>$LG_AUTOCAL_DDC_LAYOUT,
 			 display_type=>$config->{"display_type"}||"lcd",
 		 configured_delay_ms=>int($config->{"delay_ms"}||1000),
@@ -13192,7 +13232,7 @@ eval {
 		  $state->{"current_name"}=$label;
 		  $state->{"phase"}="reading";
 		  $state->{"message"}=$message;
-		  $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+		  set_state_active_step($state,$read_step,undef);
 		  write_state($state);
 		  my ($ref_reading,$ref_error)=read_step($config,$read_step,$state);
 		  die $ref_error if($ref_error && $ref_error ne "cancelled");
@@ -13258,6 +13298,7 @@ eval {
 		   $state->{"message"}=(ref($seed_from_prior_slot) eq "HASH" && ($seed_from_prior_slot->{"mode"}||"") eq "luma-only")
 		    ? "Refining $label spline seed from nearest calibrated anchor"
 		    : "Seeding $label from nearest calibrated point";
+		   set_state_active_step($state,$read_step,$target);
 		   write_state($state);
 		   my $seed_error;
 			   ($picture,$seed_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
@@ -13277,7 +13318,7 @@ eval {
 			  $state->{"current_name"}="Auto Cal $label";
   $state->{"phase"}="reading";
   $state->{"message"}="Reading $label";
-  $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+  set_state_active_step($state,$read_step,$target);
   clear_state_step_measurements($state);
   write_state($state);
 
@@ -13410,7 +13451,7 @@ eval {
 			   $state->{"phase"}="reading";
 			   $state->{"current_name"}="Auto Cal $label";
 			   $state->{"message"}=($reason||"Balancing paired 99% and 100% reads").": reading $other_label";
-			   $state->{"active_stimulus"}=$other_step->{"stimulus"}+0 if(defined($other_step->{"stimulus"}));
+			   set_state_active_step($state,$other_step,$target);
 			   write_state($state);
 			   my ($other_reading,$other_error,$other_guarded_y)=read_step_guarded($config,$other_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$other_label);
 			   die $other_error if($other_error && $other_error ne "cancelled");
@@ -13491,7 +13532,7 @@ eval {
 			   $state->{"current_delta_e"}=defined($de) ? $de : undef;
 			   $state->{"current_luminance"}=luminance($reading);
 			   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
-			   $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(defined($read_step->{"stimulus"}));
+			   set_state_active_step($state,$read_step,$target);
 			   set_state_target_step_luminance($state,$target_step_y);
 			   trace_109($read_step,"legal_white_pair_switch",{
 			    label=>$label,
@@ -15236,7 +15277,7 @@ eval {
 			   $state->{"current_name"}="Auto Cal $verify_label";
 			   $state->{"phase"}="reading";
 			   $state->{"message"}="Reading verification $verify_label";
-			   $state->{"active_stimulus"}=$verify_step->{"stimulus"}+0 if(defined($verify_step->{"stimulus"}));
+			   set_state_active_step($state,$verify_step,undef);
 			   write_state($state);
 			   my ($verify_reading,$verify_error)=read_step($config,$verify_step,$state);
 			   die $verify_error if($verify_error && $verify_error ne "cancelled");
