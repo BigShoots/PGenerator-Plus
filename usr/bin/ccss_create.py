@@ -181,6 +181,9 @@ class Runner:
             "-E",
             self.args.display_name,
         ]
+        comport = re.sub(r"[^0-9]", "", str(self.args.comport or ""))
+        if comport:
+            cmd.extend(["-c", comport])
         if self.args.refresh_rate:
             cmd.extend(["-Y", "R:%s" % self.args.refresh_rate])
         cmd.append(self.args.output_path)
@@ -266,6 +269,7 @@ def main():
     parser.add_argument("--patch-size", default="18")
     parser.add_argument("--refresh-rate", default="")
     parser.add_argument("--ccxxmake-bin", default="")
+    parser.add_argument("--comport", default="")
     args = parser.parse_args()
 
     runner = Runner(args)
