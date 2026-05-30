@@ -986,6 +986,11 @@ sub webui_http (@) {
    my $len=length($result);
    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
   }
+  elsif($path eq "/api/ccss/create/setup/ack" && $method eq "POST") {
+   my $result=&webui_ccss_create_setup_ack($body);
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+  }
   elsif($path eq "/api/ccss/create/continue" && $method eq "POST") {
    my $result=&webui_ccss_create_continue();
    my $len=length($result);
@@ -3946,6 +3951,24 @@ sub webui_ccss_create_continue (@) {
   return '{"status":"ok"}';
  }
  return '{"status":"error","message":"Could not signal continue"}';
+}
+
+sub webui_ccss_create_setup_ack (@) {
+ # Step-ID ack for the CCSS-create setup wizard (mirrors webui_meter_setup_ack):
+ # only the current step's id may advance the runner; stale acks are ignored.
+ my ($body)=@_;
+ my $step_id="";
+ $step_id=$1 if($body=~/"step_id"\s*:\s*"?(\d+)"?/);
+ return '{"status":"error","message":"Missing step_id"}' if($step_id eq "");
+ my $json=&_webui_ccss_create_read_state();
+ return '{"status":"ignored","message":"No setup step active"}' if($json eq "" || $json!~/"status"\s*:\s*"setup"/i);
+ return '{"status":"ignored","message":"Step already advanced"}' if($json!~/"step_id"\s*:\s*$step_id\b/);
+ if(open(my $fh,">",$_ccss_create_continue_file)) {
+  print $fh $step_id;
+  close($fh);
+  return '{"status":"ok"}';
+ }
+ return '{"status":"error","message":"Could not signal setup ack"}';
 }
 
 sub webui_ccss_delete (@) {
@@ -14623,6 +14646,14 @@ async function meterCcssCreateRefreshStatus(quiet){
   if(progress&&!quiet) progress.textContent='Unable to load CCSS creation status.';
   return null;
  }
+ if(r.status==='setup'){
+  // Reuse the shared spectro setup wizard INSIDE the Create-CCSS popup, acking
+  // through the CCSS-create endpoint. Skip the normal CCSS UI update this tick.
+  meterSpectroSetupApply(r,'/api/ccss/create/setup/ack');
+  if(progress&&r.message) progress.textContent=r.message;
+  return r;
+ }
+ meterSpectroSetupApply(null);
  meterCcssCreateSetUi(r);
  const token=[r.status||'',r.filename||'',r.message||''].join('|');
  if(r.status==='complete'&&token!==meterCcssCreateHandledToken){
@@ -15885,6 +15916,7 @@ async function meterFinishSingleRead(){
 }
 
 let meterSpectroSetupStepId=0;
+let meterSpectroSetupAckEndpoint='/api/meter/setup/ack';
 function meterSpectroSetupLabel(step){
  return ({calibrate_tile:'Calibrate',position_screen:'Ready',calibrate_retry:'Retry'})[step]||'Continue';
 }
@@ -15893,10 +15925,11 @@ function meterSpectroSetupStepText(step){
 }
 // Driven by the read-result poll. Shows the modal during status:"setup",
 // updates per step, hides it otherwise.
-function meterSpectroSetupApply(r){
+function meterSpectroSetupApply(r,ackEndpoint){
  const modal=document.getElementById('meterSpectroSetupModal');
  if(!modal) return;
  if(r && r.status==='setup' && r.step_id){
+  meterSpectroSetupAckEndpoint=ackEndpoint||'/api/meter/setup/ack';
   meterSpectroSetupStepId=Number(r.step_id)||0;
   const lbl=document.getElementById('meterSpectroSetupStepLabel');
   const msg=document.getElementById('meterSpectroSetupMessage');
@@ -15915,7 +15948,7 @@ async function meterSpectroSetupAck(){
  const id=meterSpectroSetupStepId;
  if(!id) return;
  if(btn) btn.disabled=true;
- const r=await fetchJSON('/api/meter/setup/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({step_id:id}),_timeoutMs:5000});
+ const r=await fetchJSON(meterSpectroSetupAckEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({step_id:id}),_timeoutMs:5000});
  if(!r||r.status==='error'){ if(btn) btn.disabled=false; toast(r&&r.message?r.message:'Could not continue setup',true); }
  // On ok/ignored the next read-result poll updates or hides the modal.
 }
@@ -16003,7 +16036,7 @@ async function meterPollRead(timeoutMs,shouldCancel){
   }
   try{
    const r=await fetchJSON('/api/meter/read/result',{_quiet:true,_timeoutMs:5000});
-   meterSpectroSetupApply(r);
+   meterSpectroSetupApply(r,'/api/meter/setup/ack');
    if(r&&r.status==='setup'){ await new Promise(res=>setTimeout(res,300)); continue; }
    if(r&&r.awaiting_ready){
     await meterWaitForManualPromptClear(r);
