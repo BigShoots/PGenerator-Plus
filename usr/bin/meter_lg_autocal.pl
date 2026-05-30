@@ -4914,16 +4914,17 @@ sub seeded_move_damping_cap {
 	 return undef if(!defined($de));
 	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
 	 $stalls=0 if(!defined($stalls));
-	 return undef if($stalls >= 4);
 	 my $chroma=chroma_error_magnitude($error);
-	 my $cap;
-	 if($de <= ($target_delta+0.50) && $chroma <= 0.012) {
-	  $cap=0.25;
-	 } elsif($de <= ($target_delta+1.25) && $chroma <= 0.020) {
-	  $cap=0.50;
-	 }
-	 return undef if(!defined($cap));
+	 return undef if($de > ($target_delta+3.0));
+	 return undef if($chroma > 0.040);
+	 my $drive=($chroma-0.008)/(0.040-0.008);
+	 $drive=0 if($drive < 0);
+	 $drive=1 if($drive > 1);
+	 my $cap=0.25+($drive*(1.00-0.25));
+	 $cap=round_ddc_quarter($cap);
+	 $cap=0.25 if($cap < 0.25);
 	 $cap=0.50 if($stalls >= 2 && $cap < 0.50);
+	 $cap=1.00 if($stalls >= 4 && $cap < 1.00);
 	 return $cap;
 }
 
@@ -6577,6 +6578,8 @@ sub hdr20_body_chroma_luma_adjustments {
 	 my $tol=luminance_tolerance_percent($step);
 	 $tol=2 if(!defined($tol) || $tol <= 0);
 	 my $max_step=($micro ? 0.5 : ((defined($de) && $de > 12) ? 2.0 : ((defined($de) && $de > 4) ? 1.0 : 0.5)));
+	 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,$target_delta,$stalls);
+	 $max_step=$seeded_cap if(defined($seeded_cap) && $max_step > $seeded_cap);
 	 my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
 	 $floor=0.0030 if(!$micro && $floor < 0.0030);
 	 $floor=0.0020 if($micro && $floor < 0.0020);
@@ -6678,6 +6681,8 @@ sub hdr20_body_balanced_chroma_luma_adjustments {
 	  $rgb_cap=1.5;
 	 }
 	 $rgb_cap+=1.0 if(!$micro && ($stalls||0) >= 2 && $rgb_cap < 8.0);
+	 my $seeded_cap=seeded_move_damping_cap($step,$error,$de,$target_delta,$stalls);
+	 $rgb_cap=$seeded_cap if(defined($seeded_cap) && $rgb_cap > $seeded_cap);
 	 my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
 	 $floor=0.0060 if(!$micro && $floor < 0.0060);
 	 $floor=0.0030 if($micro && $floor < 0.0030);
@@ -6988,6 +6993,7 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 	 }
 	 my $cap=$micro ? 1.0 : 8.0;
 	 $base=$cap if($base > $cap);
+	 my $seeded_rgb_cap=seeded_move_damping_cap($step,$error,$de,$target_delta,$stalls);
 	 my $max_abs=0;
 	 foreach my $ch (qw(r g b)) {
 	  my $abs=abs($error->{$ch}||0);
@@ -7021,6 +7027,7 @@ sub hdr20_body_rgb_luminance_vector_adjustments {
 		  my $mag=round_ddc_quarter($base*$scale);
 		  $mag=$min_step if($mag < $min_step);
 		  $mag=$cap if($mag > $cap);
+		  $mag=$seeded_rgb_cap if(defined($seeded_rgb_cap) && $mag > $seeded_rgb_cap);
 		  my ($next,$damped)=next_untried_value($current,$rgb_direction*$mag,$tried,$setting,$min_step,0);
 	  next if(!defined($next) || abs($next-$current) < 0.0001);
 	  push @out,{
@@ -13634,12 +13641,12 @@ eval {
 			    $best_de=$de;
 			    $best_lum_pct=$lum_pct;
 			    $best_score=$candidate_score;
-			    $best_arrays=clone_arrays($arrays);
-			    $best_reading=clone_picture($reading);
-			    $best_read_step=clone_picture($read_step);
-			    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
-			    $state->{"current_delta_e"}=defined($de) ? $de : undef;
-			    $state->{"current_luminance"}=luminance($reading);
+				    $best_arrays=clone_arrays($arrays);
+				    $best_reading=clone_picture($reading);
+				    $best_read_step=clone_picture($read_step);
+				    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+				    $state->{"current_delta_e"}=defined($de) ? $de : undef;
+				    $state->{"current_luminance"}=luminance($reading);
 			    $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
 			    $state->{"best_delta_e"}=$best_de;
 			    $state->{"best_score"}=$best_score;
@@ -14394,8 +14401,9 @@ eval {
 				     $best_arrays=clone_arrays($arrays);
 				     $best_reading=clone_picture($reading);
 				     $best_read_step=clone_picture($read_step);
-				     $store_best_pair->() if($paired_white_step);
-				    }
+					     $store_best_pair->() if($paired_white_step);
+					    }
+					    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 					    $state->{"message"}="$label within touch-up target; closest result kept";
 				    write_state($state);
 				    last;
@@ -14516,8 +14524,9 @@ eval {
 								     : (defined($de) && ($headroom_105_luma_blocking_after
 								      ? ($headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)
 								      : (!$full_ddc_spine_anchor_revisit_rgb_keep_blocked && (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep || $low_shadow_y_keep))));
-					    if($keep_candidate) {
-					    if($headroom_105_score_branch_promote) {
+				    if($keep_candidate) {
+				     $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+				    if($headroom_105_score_branch_promote) {
 					     trace_109($read_step,"headroom_105_score_branch_promoted",{
 					      label=>$label,
 					      iteration=>$iter+0,
@@ -15017,8 +15026,7 @@ eval {
 		    $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
 		    $lum_pct=luminance_error_percent($reading,$target_step_y);
 		    mark_tried_values(\%polish_tried,$arrays,$target,$de);
-		    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
-		    $state->{"current_delta_e"}=defined($de) ? $de : undef;
+			    $state->{"current_delta_e"}=defined($de) ? $de : undef;
 		    $state->{"current_luminance"}=luminance($reading);
 		    set_state_target_step_luminance($state,$target_step_y);
 		    $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
@@ -15090,8 +15098,9 @@ eval {
 					     : (defined($de) && ($headroom_105_luma_blocking_after
 					      ? $headroom_105_score_keep
 					      : (($not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $low_shadow_y_keep)));
-			    if($keep_candidate) {
-			     $best_de=$de;
+				    if($keep_candidate) {
+				     $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+				     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
 			     $best_score=$candidate_score;
 			     $best_arrays=clone_arrays($arrays);
