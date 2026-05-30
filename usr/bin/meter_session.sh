@@ -43,6 +43,8 @@ LOCK_FILE="/tmp/meter_session.lock"
 LOG_FILE="/tmp/meter_session.log"
 READY_FILE="/tmp/meter_session_ready.signal"
 STARTUP_READY_FILE="/tmp/meter_session_start_ready.signal"
+ACK_FILE="/tmp/meter_session.ack"
+SETUP_STEP_ID=0
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
 startup_marker() { log "startup marker: $*"; }
@@ -145,6 +147,28 @@ wait_for_device_ready() {
  # Clear awaiting_ready immediately so the UI hides the Continue button while the
  # (slow) calibration/measurement runs -- otherwise the operator keeps seeing the
  # prompt and clicks it several times. "measuring" keeps the result poll waiting.
+ write_state "{\"status\":\"measuring\"}"
+}
+
+# Race-free interactive setup step. Emits a numbered setup state and waits for an
+# ack whose id matches; stale/duplicate acks are read and discarded so a click
+# can't be lost and double-clicks are no-ops. $1=step key, $2=operator message.
+await_setup_step() {
+ local step="$1" message="$2"
+ SETUP_STEP_ID=$((SETUP_STEP_ID + 1))
+ local sid=$SETUP_STEP_ID
+ rm -f "$ACK_FILE"
+ write_state "{\"status\":\"setup\",\"step_id\":$sid,\"step\":\"$step\",\"message\":\"$message\"}"
+ while true; do
+  if [ -f "$ACK_FILE" ]; then
+   local acked
+   acked=$(tr -dc '0-9' < "$ACK_FILE" 2>/dev/null)
+   rm -f "$ACK_FILE"
+   [ "$acked" = "$sid" ] && break
+  fi
+  sleep 0.2
+ done
+ # Clear the setup state so the wizard hides its button while work proceeds.
  write_state "{\"status\":\"measuring\"}"
 }
 
