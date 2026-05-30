@@ -1271,19 +1271,34 @@ sub webui_meter_session_stop (@) {
  # Try graceful STOP via FIFO first (lets the daemon quit spotread cleanly).
  &webui_meter_session_send_command("STOP\n") if(-p $_meter_session_fifo);
  # Wait briefly for the daemon to exit on its own.
+ # Wait for the daemon to tear down on its own. Its cleanup quits spotread
+ # cleanly and waits for any in-flight USB read to finish before killing it;
+ # force-killing spotread mid-transaction wedges the Pi's USB controller
+ # ("communication failed during init" next time), so allow several seconds.
  my $waited=0;
- while($waited < 20 && &webui_meter_session_alive()) {
+ while($waited < 130 && &webui_meter_session_alive()) {
   Time::HiRes::sleep(0.1);
   $waited++;
  }
- # Hard kill anything still hanging on.
-	 if(&webui_meter_session_alive()) {
-	  system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
-	  Time::HiRes::sleep(0.2);
-	 }
-	 system("sudo pkill -9 -x spotread 2>/dev/null");
-	 system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
-	 system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ # Still alive after the graceful path: TERM (its trap re-runs the graceful
+ # teardown), then escalate to SIGKILL only as a last resort.
+ if(&webui_meter_session_alive()) {
+  system("sudo pkill -TERM -f 'meter_session.sh' 2>/dev/null");
+  my $tw=0;
+  while($tw < 30 && &webui_meter_session_alive()) {
+   Time::HiRes::sleep(0.1);
+   $tw++;
+  }
+ }
+ if(&webui_meter_session_alive()) {
+  system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
+  Time::HiRes::sleep(0.2);
+ }
+ # Backstop: only -9 a spotread/helper that is STILL running (orphaned), so we
+ # never kill a fresh read mid-USB transaction.
+ system("sudo bash -c \"pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread\" 2>/dev/null");
+ system("sudo bash -c \"pgrep -f 'script.*spotread' >/dev/null 2>&1 && pkill -9 -f 'script.*spotread'\" 2>/dev/null");
+ system("sudo bash -c \"pgrep -f 'cat.*spotread_cmd' >/dev/null 2>&1 && pkill -9 -f 'cat.*spotread_cmd'\" 2>/dev/null");
 		 &webui_meter_session_ready_cleanup();
 		 unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
 	}
@@ -16065,15 +16080,22 @@ async function meterToggleContinuous(){
   if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
   if(!meterEnsureAppliedGeneratorSettings()) return;
   // Enter manual continuous mode and cut off any leftover series state.
+  const _priorSeriesRunning=meterSeriesRunning;
   meterSharedSeriesId=null;
   meterSeriesRunning=false;
   if(meterSeriesPolling){
    clearInterval(meterSeriesPolling);
    meterSeriesPolling=null;
   }
-	  try{
-	   await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
-	  }catch(e){}
+  // Only tear down the backend session if a series scan owned it. A calibrated
+  // single-read / idle session is reused by the first continuous read (config-
+  // matched), so a spectrophotometer does NOT re-run the calibrate/aim wizard
+  // every time continuous starts (which would block the loop on the setup step).
+	  if(_priorSeriesRunning){
+	   try{
+	    await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+	   }catch(e){}
+	  }
 	  meterContinuousActive=true;
 	  meterContinuousRetryDelayMs=50;
 	  meterContinuousStartupErrors=0;
