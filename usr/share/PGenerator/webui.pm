@@ -15884,6 +15884,46 @@ async function meterFinishSingleRead(){
  await meterCheckStatus();
 }
 
+let meterSpectroSetupStepId=0;
+function meterSpectroSetupLabel(step){
+ return ({calibrate_tile:'Calibrate',position_screen:'Ready',calibrate_retry:'Retry'})[step]||'Continue';
+}
+function meterSpectroSetupStepText(step){
+ return ({calibrate_tile:'Step 1 of 2 — Calibrate on the white tile',position_screen:'Step 2 of 2 — Aim at the screen',calibrate_retry:'Calibration retry'})[step]||'Setup';
+}
+// Driven by the read-result poll. Shows the modal during status:"setup",
+// updates per step, hides it otherwise.
+function meterSpectroSetupApply(r){
+ const modal=document.getElementById('meterSpectroSetupModal');
+ if(!modal) return;
+ if(r && r.status==='setup' && r.step_id){
+  meterSpectroSetupStepId=Number(r.step_id)||0;
+  const lbl=document.getElementById('meterSpectroSetupStepLabel');
+  const msg=document.getElementById('meterSpectroSetupMessage');
+  const btn=document.getElementById('meterSpectroSetupBtn');
+  if(lbl) lbl.textContent=meterSpectroSetupStepText(r.step||'');
+  if(msg) msg.textContent=String(r.message||'');
+  if(btn){ btn.textContent=meterSpectroSetupLabel(r.step||''); btn.disabled=false; }
+  modal.style.display='flex';
+  uiSyncBodyScrollLock();
+ } else {
+  if(modal.style.display!=='none'){ modal.style.display='none'; uiSyncBodyScrollLock(); }
+ }
+}
+async function meterSpectroSetupAck(){
+ const btn=document.getElementById('meterSpectroSetupBtn');
+ const id=meterSpectroSetupStepId;
+ if(!id) return;
+ if(btn) btn.disabled=true;
+ const r=await fetchJSON('/api/meter/setup/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({step_id:id}),_timeoutMs:5000});
+ if(!r||r.status==='error'){ if(btn) btn.disabled=false; toast(r&&r.message?r.message:'Could not continue setup',true); }
+ // On ok/ignored the next read-result poll updates or hides the modal.
+}
+function meterSpectroSetupCancel(){
+ const modal=document.getElementById('meterSpectroSetupModal');
+ if(modal){ modal.style.display='none'; uiSyncBodyScrollLock(); }
+ fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+}
 async function meterReadOnce(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
@@ -15963,6 +16003,8 @@ async function meterPollRead(timeoutMs,shouldCancel){
   }
   try{
    const r=await fetchJSON('/api/meter/read/result',{_quiet:true,_timeoutMs:5000});
+   meterSpectroSetupApply(r);
+   if(r&&r.status==='setup'){ await new Promise(res=>setTimeout(res,300)); continue; }
    if(r&&r.awaiting_ready){
     await meterWaitForManualPromptClear(r);
     start=Date.now();
