@@ -18,6 +18,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 MENU_RE = re.compile(r"Press\s+1\s*\.\.\s*\d+", re.I)
 CONTINUE_RE = re.compile(r"(press|hit).*(any )?key|press return|key to continue", re.I)
 ERROR_RE = re.compile(r"(no instrument|no device|instrument.*not connected|communications failure|initialisation failed|can't open|failed)", re.I)
+# Prompts that require the user to physically position the instrument. These
+# must NOT be auto-dismissed: the i1 Pro is calibrated on its white tile and
+# then aimed at the screen, and the user's button press satisfies the prompt.
+PLACEMENT_RE = re.compile(r"place the instrument|white reference|reflective|on the (?:test|display|spot|screen)|reposition|spot reading", re.I)
 
 
 try:
@@ -54,6 +58,7 @@ class Runner:
         self.cancel_requested = False
         self.last_continue = 0.0
         self.last_message = ""
+        self.recent = ""
 
     def write_state(self, status, message, **extra):
         payload = {"status": status, "message": message, "filename": os.path.basename(self.args.output_path)}
@@ -111,23 +116,40 @@ class Runner:
         text = line.strip()
         if not text:
             return
+        self.recent = (self.recent + " " + text)[-800:]
         if text.startswith("3)"):
             self.last_option3 = text
         if CONTINUE_RE.search(text):
+            if PLACEMENT_RE.search(self.recent):
+                low = self.recent.lower()
+                if "white reference" in low or "reflective" in low:
+                    self.write_state(
+                        "running",
+                        "Rotate the i1 Pro to its white calibration tile (closed position) and press the i1 Pro button to calibrate.",
+                        detail=text,
+                    )
+                else:
+                    self.write_state(
+                        "running",
+                        "Point the i1 Pro at the patch on the screen and press the i1 Pro button to take the reading.",
+                        detail=text,
+                    )
+                # Physical action required: wait for the user's button press;
+                # do NOT auto-advance (that would calibrate/measure mid-air).
+                return
             now = time.time()
             if now - self.last_continue > 0.8:
                 self.send("\n")
                 self.last_continue = now
+            return
         if ERROR_RE.search(text):
             self.write_state("running", "ccxxmake reported a problem", detail=text)
             return
         lowered = text.lower()
-        if "calibrat" in lowered:
-            self.write_state("running", "Calibrate the spectrophotometer if prompted, then continue", detail=text)
-        elif "button" in lowered or "switch" in lowered:
-            self.write_state("running", "Press the spectrophotometer button to take the current reading", detail=text)
+        if "button" in lowered or "switch" in lowered:
+            self.write_state("running", "Press the i1 Pro button to take the current reading", detail=text)
         elif "measure" in lowered or "reading" in lowered:
-            self.write_state("running", "Measuring display patches with the spectrophotometer", detail=text)
+            self.write_state("running", "Measuring display patches with the i1 Pro", detail=text)
         elif "comput" in lowered or "save" in lowered:
             self.write_state("running", "Computing and saving the CCSS profile", detail=text)
 
@@ -135,11 +157,15 @@ class Runner:
         if not MENU_RE.search(window):
             return
         if not self.measure_sent:
+            # Wait for the full menu to render before selecting, otherwise the
+            # keystroke can land mid-redraw and the instrument open misfires.
+            if "2) Measure" not in window:
+                return
             self.send("2\n")
             self.measure_sent = True
             self.write_state(
                 "running",
-                "Showing measurement patches. Follow the spectrophotometer prompts and press its button for each read.",
+                "Starting measurement. When prompted, calibrate the i1 Pro on its white tile, then aim it at the screen and use its button.",
             )
             return
         if self.measure_sent and not self.compute_sent and self.last_option3 and "[" not in self.last_option3:
