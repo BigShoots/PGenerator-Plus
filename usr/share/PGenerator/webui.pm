@@ -12545,9 +12545,6 @@ function meterLgAutoCalChartReferenceWhite(item){
 	 if(!item||meterActiveSeriesType!=='greyscale') return false;
 	 const plotIre=meterReadingPlotIre(item);
 	 const ire=Number(plotIre!=null?plotIre:item.ire);
-	 const label=String(item.autocal_target_label||item.name||'').toLowerCase();
-	 const layout=String(item.ddc_layout||'').toLowerCase();
-	 if(layout==='hdr20'||label.indexOf('hdr white')>=0||label.indexOf('hdr white ref')>=0) return false;
 	 if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
 	  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
 	 }
