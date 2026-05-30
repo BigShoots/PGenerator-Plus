@@ -59,7 +59,8 @@ class Runner:
         self.last_continue = 0.0
         self.last_message = ""
         self.recent = ""
-        self.awaiting_continue = False
+        self.setup_step_id = 0
+        self.positioned = False
 
     def write_state(self, status, message, **extra):
         payload = {"status": status, "message": message, "filename": os.path.basename(self.args.output_path)}
@@ -70,6 +71,41 @@ class Runner:
             handle.write(json_text)
         os.rename(tmp_path, self.args.state_file)
         self.last_message = message
+
+    def await_setup_step(self, step, message):
+        # Race-free interactive setup step (mirrors meter_session.sh's
+        # await_setup_step): publish a numbered setup state, then block until an
+        # ack whose id matches the current step arrives. Stale/duplicate acks are
+        # read and discarded so a click can't be lost and double-clicks are
+        # no-ops. The continue-file is the ack channel (now carrying a step id).
+        self.setup_step_id += 1
+        sid = self.setup_step_id
+        cont = self.args.continue_file
+        if cont:
+            try:
+                os.unlink(cont)
+            except Exception:
+                pass
+        self.write_state("setup", message, step_id=sid, step=step)
+        while True:
+            if self.cancel_requested:
+                return
+            if cont and os.path.exists(cont):
+                acked = ""
+                try:
+                    with io.open(cont, "r", encoding="utf-8", errors="ignore") as handle:
+                        acked = re.sub(r"\D", "", handle.read())
+                except Exception:
+                    acked = ""
+                try:
+                    os.unlink(cont)
+                except Exception:
+                    pass
+                if acked == str(sid):
+                    break
+            time.sleep(0.2)
+        # Clear the setup state so the wizard hides its button while work runs.
+        self.write_state("running", "Continuing with the spectrophotometer...")
 
     def append_log(self, text):
         if not text:
@@ -120,18 +156,48 @@ class Runner:
         self.recent = (self.recent + " " + text)[-800:]
         if text.startswith("3)"):
             self.last_option3 = text
+        low = self.recent.lower()
+        # Calibration failure: re-seat the spectro on its tile and retry. Surface
+        # this BEFORE the generic continue handling so a failed cal isn't silently
+        # auto-advanced into another bad reading.
+        if "reading is too low" in low or "calibration failed" in low:
+            self.await_setup_step(
+                "calibrate_retry",
+                "Calibration failed. Re-seat the spectro flat on its tile, then click Retry.",
+            )
+            self.recent = ""
+            self.send("\n")
+            return
         if CONTINUE_RE.search(text):
             if PLACEMENT_RE.search(self.recent):
-                low = self.recent.lower()
-                if "white reference" in low or "reflective" in low:
-                    msg = "Place the i1 Pro on its white calibration reference, then click Continue."
-                else:
-                    msg = "Aim the i1 Pro at the patch on the screen, then click Continue."
                 # Headless: no keyboard, and the instrument button isn't
-                # delivered to ccxxmake's stdin. Surface a Continue control and
-                # let the run loop inject the keypress when the user signals.
-                self.awaiting_continue = True
-                self.write_state("running", msg, detail=text, awaiting_continue=True)
+                # delivered to ccxxmake's stdin. Surface a wizard step and let
+                # await_setup_step inject the keypress once the operator acks.
+                if "white reference" in low or "reflective" in low:
+                    self.await_setup_step(
+                        "calibrate_tile",
+                        "Place the spectrophotometer flat on its white calibration tile, then click Calibrate.",
+                    )
+                    self.recent = ""
+                    self.send("\n")
+                    return
+                if not self.positioned:
+                    # FIRST screen prompt: have the operator aim at the screen once.
+                    self.positioned = True
+                    self.await_setup_step(
+                        "position_screen",
+                        "Aim the meter at where the test patches appear on the screen, then click Ready.",
+                    )
+                    self.recent = ""
+                    self.send("\n")
+                    return
+                # SUBSEQUENT "to take a reading" prompts during the patch sweep:
+                # the meter is already aimed at the screen, so auto-advance so
+                # ccxxmake measures the patch set without a per-patch step.
+                now = time.time()
+                if now - self.last_continue > 0.8:
+                    self.send("\n")
+                    self.last_continue = now
                 return
             now = time.time()
             if now - self.last_continue > 0.8:
@@ -243,15 +309,6 @@ class Runner:
         while True:
             if self.cancel_requested:
                 break
-            if self.awaiting_continue and self.args.continue_file and os.path.exists(self.args.continue_file):
-                try:
-                    os.unlink(self.args.continue_file)
-                except Exception:
-                    pass
-                self.awaiting_continue = False
-                self.recent = ""
-                self.send("\n")
-                self.write_state("running", "Continuing with the i1 Pro...")
             ready, _, _ = select.select([master_fd], [], [], 0.25)
             if master_fd in ready:
                 try:
