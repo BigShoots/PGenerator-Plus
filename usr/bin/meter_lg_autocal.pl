@@ -1383,6 +1383,8 @@ sub body_luma_bias_decision {
   ($eligible,$reason)=(0,"not_sdr");
 	 } elsif(!body_luma_bias_display_allowed($config)) {
 	  ($eligible,$reason)=(0,"display_not_c2");
+	 } elsif(defined($ire) && $ire > 0 && $ire < 10) {
+	  ($eligible,$reason)=(0,"low_shadow_bias_retired");
 	 } elsif(!defined($ire) || ($bias_source ne "matrix" && !grep { abs($ire-$_) < 0.001 } (55,60,65,70,75,80,85))) {
 	  ($eligible,$reason)=(0,"ire_not_eligible");
 	 } elsif(!defined($base_target_y) || $base_target_y <= 0) {
@@ -1414,6 +1416,7 @@ sub low_shadow_committed_target_bias_pct_for_step {
  return (0,"not_low_shadow") if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
  return (0,"not_low_shadow") if($ire <= 0 || $ire > 10.0001);
+ return (0,"low_shadow_bias_retired");
  my $mode=defined($config->{"low_shadow_committed_target_bias_mode"}) ? lc($config->{"low_shadow_committed_target_bias_mode"}) : "off";
  return (0,"disabled") if($mode eq "off" || $mode eq "disabled" || $mode eq "none");
  my %default=();
@@ -14328,9 +14331,8 @@ eval {
 			   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
 			   $target_step_y=defined($guarded_target_step_y) ? $guarded_target_step_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
 		   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-		   $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
-	   $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
-	   $state->{"current_delta_e"}=defined($de) ? $de : undef;
+			   $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+		   $state->{"current_delta_e"}=defined($de) ? $de : undef;
 	   $state->{"current_luminance"}=luminance($reading);
 	   set_state_target_step_luminance($state,$target_step_y);
 			   $lum_pct=luminance_error_percent($reading,$target_step_y);
