@@ -15856,15 +15856,19 @@ async function meterReadOnce(){
  const requestedStep=meterClonePatchStep(meterCurrentPatchStep);
  const referenceWhiteStep=meterReferenceWhitePromptStep(requestedStep);
  const readReferenceWhiteFirst=referenceWhiteStep?meterConfirmReferenceWhiteRead(requestedStep,referenceWhiteStep):false;
- // Enter manual mode: shut down any leftover series poller/state so stale
- // series snapshots cannot repaint the charts after this manual read.
+ // Enter manual mode: clear any leftover series poller/state so stale series
+ // snapshots cannot repaint the charts after this manual read.
+ const _priorRunActive=meterContinuousActive||meterSeriesRunning;
  meterSharedSeriesId=null;
  meterSeriesRunning=false;
  if(meterSeriesPolling){
   clearInterval(meterSeriesPolling);
   meterSeriesPolling=null;
  }
- fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ // Only tear the meter session down if a series/continuous run was active.
+ // For back-to-back single reads, reuse the long-lived session so a spectro
+ // calibrates ONCE at session start instead of re-calibrating on every read.
+ if(_priorRunActive) fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
  meterActionPending=true;
  meterUpdateReadButtons();
  document.getElementById('meterStopBtn').style.display='none';

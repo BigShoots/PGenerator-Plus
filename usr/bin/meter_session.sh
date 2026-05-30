@@ -142,6 +142,10 @@ wait_for_device_ready() {
   sleep 0.2
  done
  rm -f "$READY_FILE"
+ # Clear awaiting_ready immediately so the UI hides the Continue button while the
+ # (slow) calibration/measurement runs -- otherwise the operator keeps seeing the
+ # prompt and clicks it several times. "measuring" keeps the result poll waiting.
+ write_state "{\"status\":\"measuring\"}"
 }
 
 patch_request_body() {
