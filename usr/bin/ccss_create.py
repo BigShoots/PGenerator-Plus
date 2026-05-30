@@ -59,6 +59,7 @@ class Runner:
         self.last_continue = 0.0
         self.last_message = ""
         self.recent = ""
+        self.awaiting_continue = False
 
     def write_state(self, status, message, **extra):
         payload = {"status": status, "message": message, "filename": os.path.basename(self.args.output_path)}
@@ -123,19 +124,14 @@ class Runner:
             if PLACEMENT_RE.search(self.recent):
                 low = self.recent.lower()
                 if "white reference" in low or "reflective" in low:
-                    self.write_state(
-                        "running",
-                        "Seat the i1 Pro on its white calibration base (aperture down on the white tile), then press the i1 Pro button to calibrate.",
-                        detail=text,
-                    )
+                    msg = "Place the i1 Pro on its white calibration reference, then click Continue."
                 else:
-                    self.write_state(
-                        "running",
-                        "Point the i1 Pro at the patch on the screen and press the i1 Pro button to take the reading.",
-                        detail=text,
-                    )
-                # Physical action required: wait for the user's button press;
-                # do NOT auto-advance (that would calibrate/measure mid-air).
+                    msg = "Aim the i1 Pro at the patch on the screen, then click Continue."
+                # Headless: no keyboard, and the instrument button isn't
+                # delivered to ccxxmake's stdin. Surface a Continue control and
+                # let the run loop inject the keypress when the user signals.
+                self.awaiting_continue = True
+                self.write_state("running", msg, detail=text, awaiting_continue=True)
                 return
             now = time.time()
             if now - self.last_continue > 0.8:
@@ -239,9 +235,23 @@ class Runner:
         os.close(slave_fd)
 
         window = ""
+        if self.args.continue_file:
+            try:
+                os.unlink(self.args.continue_file)
+            except Exception:
+                pass
         while True:
             if self.cancel_requested:
                 break
+            if self.awaiting_continue and self.args.continue_file and os.path.exists(self.args.continue_file):
+                try:
+                    os.unlink(self.args.continue_file)
+                except Exception:
+                    pass
+                self.awaiting_continue = False
+                self.recent = ""
+                self.send("\n")
+                self.write_state("running", "Continuing with the i1 Pro...")
             ready, _, _ = select.select([master_fd], [], [], 0.25)
             if master_fd in ready:
                 try:
@@ -303,6 +313,7 @@ def main():
     parser.add_argument("--refresh-rate", default="")
     parser.add_argument("--ccxxmake-bin", default="")
     parser.add_argument("--comport", default="")
+    parser.add_argument("--continue-file", default="")
     args = parser.parse_args()
 
     runner = Runner(args)
