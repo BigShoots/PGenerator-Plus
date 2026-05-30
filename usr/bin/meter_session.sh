@@ -114,13 +114,16 @@ manual_ready_prompt_reason() {
 manual_ready_prompt_message() {
  case "$1" in
   calibration_setup)
-   printf '%s' 'Place the meter on its white calibration tile'
+   printf '%s' 'Place the spectrophotometer on its white calibration tile, then click Continue'
+   ;;
+  initial_measurement)
+   printf '%s' 'Aim the meter at the patch on the screen, then click Continue'
    ;;
   incorrect_position)
-   printf '%s' 'Reposition the meter and continue the reading'
+   printf '%s' 'Reposition the meter on the patch, then click Continue'
    ;;
   *)
-   printf '%s' 'Position the meter and continue when ready'
+   printf '%s' 'Position the meter, then click Continue when ready'
    ;;
 	 esac
 }
@@ -351,36 +354,42 @@ startup_marker "command FIFO created"
 # manual read after a Pi restart doesn't fail during slow USB bring-up.
 WAITED=0
 REFRESH_CAL_DONE=0
-WHITE_REF_DONE=0
+HANDLED_OFFSET=0
 STARTUP_HINT=""
-while (( WAITED < 600 )); do
+# Spectros such as the i1 Pro 2 need a multi-step interactive bring-up (place on
+# the white calibration tile, keypress; then aim at the screen, keypress) before
+# they reach the "to take a reading:" prompt. Colorimeters (i1d3) report ready
+# immediately. Surface every interactive prompt through the device-ready UI and
+# only inject the keypress once the operator resumes, so nobody is left guessing
+# and we never blindly drive the meter mid-air. WAITED gates spotread
+# responsiveness only (it is reset after each handled step); operator think-time
+# is unbounded because wait_for_device_ready blocks without advancing it.
+while (( WAITED < 900 )); do
  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
  echo "$CLEAN_OUT" | grep -q "to take a reading:" && break
- if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+ NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")
+ if (( REFRESH_CAL_DONE == 0 )) && echo "$NEW_OUT" | grep -qi "calibrate refresh"; then
   log "performing refresh-rate calibration during startup"
   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
   sleep 2
   printf " " >&3
   REFRESH_CAL_DONE=1
+  HANDLED_OFFSET=$(output_size)
   sleep 2
-  WAITED=$((WAITED + 20))
+  WAITED=0
   continue
  fi
- if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$CLEAN_OUT"; then
-  log "detected white-reference calibration prompt during startup"
-  startup_marker "white-reference prompt seen"
-  STARTUP_HINT="white_reference_prompt"
-    # Startup white-reference prompts require explicit operator setup on
-    # spectros and can otherwise hold the single-threaded Web UI request open
-    # long enough that the page looks offline. Always surface the prompt and
-    # let the queued manual READ continue after the operator resumes.
-    wait_for_device_ready "calibration_setup"
+ if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUT"); then
+  log "interactive init prompt: reason=$PROMPT_REASON"
+  startup_marker "interactive init prompt: $PROMPT_REASON"
+  STARTUP_HINT="interactive_setup"
+  wait_for_device_ready "$PROMPT_REASON"
   printf " " >&3
-  WHITE_REF_DONE=1
-  WAITED=$((WAITED + 40))
+  HANDLED_OFFSET=$(output_size)
+  WAITED=0
   continue
  fi
- if echo "$CLEAN_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
+ if echo "$NEW_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
   STARTUP_HINT="communications_failure"
   break
  fi
@@ -389,9 +398,9 @@ while (( WAITED < 600 )); do
 done
 if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
  FAIL_CONTEXT=$(startup_output_excerpt)
- if [[ "$STARTUP_HINT" == "white_reference_prompt" ]]; then
-  log "spotread init failed after white-reference prompt${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
-  write_state '{"status":"error","message":"Meter init failed after white-reference prompt"}'
+ if [[ "$STARTUP_HINT" == "interactive_setup" ]]; then
+  log "spotread init failed after interactive setup${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
+  write_state '{"status":"error","message":"Meter setup did not complete. Re-seat the spectro on its tile, then aim at the screen, and try the read again."}'
  elif [[ "$STARTUP_HINT" == "communications_failure" ]]; then
   log "spotread init failed after communications failure${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
   write_state '{"status":"error","message":"Meter communication failed during init"}'
