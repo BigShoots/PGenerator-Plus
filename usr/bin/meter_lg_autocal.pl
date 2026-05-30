@@ -4931,6 +4931,54 @@ sub seeded_move_damping_cap {
 	 return $cap;
 }
 
+sub near_target_move_cap {
+	 my ($step,$error,$de,$lum_pct,$target_delta,$stalls)=@_;
+	 return undef if(ref($step) ne "HASH" || !defined($de));
+	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+	 $stalls=0 if(!defined($stalls));
+	 my $chroma=chroma_error_magnitude($error);
+	 return undef if($chroma > 0.060);
+	 my $lum_tol=luminance_tolerance_percent($step);
+	 $lum_tol=1.0 if(!defined($lum_tol) || $lum_tol <= 0);
+	 my $abs_lum=defined($lum_pct) ? abs($lum_pct+0) : 0;
+	 return undef if(defined($lum_pct) && $abs_lum > ($lum_tol*2.0) && $abs_lum > 1.0);
+	 my $cap;
+	 if($de <= $target_delta+0.25 && $chroma <= 0.018 && (!defined($lum_pct) || $abs_lum <= $lum_tol*1.1)) {
+	  $cap=0.25;
+	 } elsif($de <= $target_delta+0.75 && $chroma <= 0.030 && (!defined($lum_pct) || $abs_lum <= $lum_tol*1.5)) {
+	  $cap=0.50;
+	 } elsif($de <= $target_delta+1.50 && $chroma <= 0.045 && (!defined($lum_pct) || $abs_lum <= $lum_tol*2.0)) {
+	  $cap=1.00;
+	 }
+	 return undef if(!defined($cap));
+	 $cap=0.50 if($stalls >= 3 && $cap < 0.50);
+	 $cap=1.00 if($stalls >= 5 && $cap < 1.00);
+	 return $cap;
+}
+
+sub near_target_luminance_move_cap {
+	 my ($step,$de,$luminance_err,$target_delta,$stalls)=@_;
+	 return undef if(ref($step) ne "HASH" || !defined($de) || !defined($luminance_err));
+	 $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+	 $stalls=0 if(!defined($stalls));
+	 my $lum_tol=luminance_tolerance_percent($step);
+	 $lum_tol=1.0 if(!defined($lum_tol) || $lum_tol <= 0);
+	 my $abs_lum=abs(($luminance_err+0)*100);
+	 return undef if($abs_lum > ($lum_tol*2.0) && $abs_lum > 1.0);
+	 my $cap;
+	 if($de <= $target_delta+0.25 && $abs_lum <= $lum_tol*1.1) {
+	  $cap=0.25;
+	 } elsif($de <= $target_delta+0.75 && $abs_lum <= $lum_tol*1.5) {
+	  $cap=0.50;
+	 } elsif($de <= $target_delta+1.50 && $abs_lum <= $lum_tol*2.0) {
+	  $cap=1.00;
+	 }
+	 return undef if(!defined($cap));
+	 $cap=0.50 if($stalls >= 3 && $cap < 0.50);
+	 $cap=1.00 if($stalls >= 5 && $cap < 1.00);
+	 return $cap;
+}
+
 sub neutral_luminance_step {
 	 my ($luminance_err,$de,$stalls,$min_step,$max_step)=@_;
 	 $luminance_err=0 if(!defined($luminance_err));
@@ -5860,8 +5908,12 @@ sub neutral_luminance_adjustments {
 		   reason=>"previous_candidate_worsened"
 		  });
 		  return undef;
-		 }
-		 my $planned_step=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
+			 }
+			 my $planned_step=neutral_luminance_step($luminance_err,$de,$stalls,$min_step,$max_step);
+	 my $near_target_luma_cap=near_target_luminance_move_cap($step,$de,$luminance_err,0.5,$stalls);
+	 if(defined($near_target_luma_cap) && $planned_step > $near_target_luma_cap) {
+	  $planned_step=$near_target_luma_cap;
+	 }
 	 my ($capped_step,$seed_luma_capped)=apply_headroom_105_seed_luma_refine_cap($arrays,$target,$step,$luminance_err,$planned_step,$source||"neutral_luminance");
 	 $planned_step=$capped_step;
 	 my ($near_target_capped_step,$near_target_luma_capped)=headroom_105_near_target_luma_cap($step,$arrays,$target,$tried,$luminance_err,$planned_step,$source||"neutral_luminance");
@@ -5885,7 +5937,7 @@ sub neutral_luminance_adjustments {
 				   my $seen=$strict_tried ? tried_value_exists($tried,$setting,$next) : repeated_value($tried,$setting,$next);
 				   $seen=1 if(!$seen && luma_probe_family_suppressed($tried,$target,$current,$next,$step,$source||"neutral_luminance",$state));
 				   next if(abs($next-$current) < 0.0001 || $seen);
-				   return [{ channel=>"lum", setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, headroom_105_seed_luma_refine_cap=>$seed_luma_capped ? 1 : undef, headroom_105_near_target_luma_cap=>$near_target_luma_capped ? 1 : undef, source=>$source||"neutral_luminance" }];
+				   return [{ channel=>"lum", setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, neutral_luminance=>1, headroom_105_seed_luma_refine_cap=>$seed_luma_capped ? 1 : undef, headroom_105_near_target_luma_cap=>($near_target_luma_capped || defined($near_target_luma_cap)) ? 1 : undef, source=>$source||"neutral_luminance" }];
 				  }
 		  return undef;
 		 }
@@ -8399,13 +8451,15 @@ sub full_ddc_spine_anchor_luminance_adjustment {
   $cap=3 if($tries >= 3 && $cap > 3);
   $cap=2 if(($stalls||0) >= 2 && $cap > 2);
   $cap=1 if(($stalls||0) >= 4 && $cap > 1);
- } else {
-  $cap=4 if($tries >= 1 && $cap > 4);
-  $cap=2 if($tries >= 2 && $cap > 2);
-  $cap=1 if(($tries >= 3 || ($stalls||0) >= 2) && $cap > 1);
-  $cap=0.5 if(($stalls||0) >= 4 && $cap > 0.5);
- }
- my $direction=($luminance_err > 0) ? -1 : 1;
+	 } else {
+	  $cap=4 if($tries >= 1 && $cap > 4);
+	  $cap=2 if($tries >= 2 && $cap > 2);
+	  $cap=1 if(($tries >= 3 || ($stalls||0) >= 2) && $cap > 1);
+	  $cap=0.5 if(($stalls||0) >= 4 && $cap > 0.5);
+	 }
+	 my $near_target_cap=near_target_luminance_move_cap($step,$de,$luminance_err,0.5,$stalls);
+	 $cap=$near_target_cap if(defined($near_target_cap) && $cap > $near_target_cap);
+	 my $direction=($luminance_err > 0) ? -1 : 1;
  my ($next,$damped)=next_untried_value($current,$direction*$cap,$tried,"adjustingLuminance",0.25,0);
  return undef if(!defined($next) || abs($next-$current) < 0.0001);
  return undef if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,($paired ? "full_ddc_spine_anchor_paired_luminance" : "full_ddc_spine_anchor_luminance"),$LG_AUTOCAL_STATE));
@@ -8523,6 +8577,8 @@ sub full_ddc_spine_anchor_adjustments {
  $cap=2 if($tries >= 2 && $cap > 2);
  $cap=1 if(($tries >= 3 || ($stalls||0) >= 2) && $cap > 1);
  $cap=0.5 if(($stalls||0) >= 4 && $cap > 0.5);
+ my $near_target_cap=near_target_move_cap($step,$error,$de,$lum_pct,$target_delta,$stalls);
+ $cap=$near_target_cap if(defined($near_target_cap) && $cap > $near_target_cap);
  my ($next,$damped)=next_untried_value($current,$direction*$cap,$tried,$setting,0.25,0);
  return undef if(!defined($next) || abs($next-$current) < 0.0001);
  my @out=({
@@ -8785,9 +8841,9 @@ sub choose_adjustments {
 							   next;
 							  }
 							  my ($response_multiplier,$response_cap_reason,$response_entry);
-						  if($headroom_105_body && !$strict_tried) {
-						   my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
-						   my ($scaled_step,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
+							  if($headroom_105_body && !$strict_tried) {
+							   my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
+							   my ($scaled_step,$scaled_mult,$scaled_reason,$scaled_entry)=headroom_105_response_scaled_step(
 						    $tried,$step,$setting,$direction,$rgb_step,$response_cap,abs($err),"main_rgb"
 						   );
 						   next if(!defined($scaled_step));
@@ -8795,9 +8851,11 @@ sub choose_adjustments {
 						    $rgb_step=$scaled_step;
 						    $response_multiplier=$scaled_mult;
 						    $response_cap_reason=$scaled_reason;
-						    $response_entry=$scaled_entry;
-						   }
-						  }
+							    $response_entry=$scaled_entry;
+							   }
+							  }
+						  my $near_target_cap=near_target_move_cap($step,$error,$de,$lum_pct,0.5,$stalls);
+						  $rgb_step=$near_target_cap if(defined($near_target_cap) && $rgb_step > $near_target_cap);
 						  my $delta = $direction*$rgb_step;
 						  foreach my $try_delta ($delta,-$delta) {
 						   my $try_direction=$try_delta < 0 ? -1 : 1;
@@ -8809,7 +8867,7 @@ sub choose_adjustments {
 						   my ($next,$damped)=next_untried_value($current,$try_delta,$tried,$setting,$min_step,$strict_tried);
 					   next if(!defined($next));
 					   next if(abs($next-$current) < 0.0001);
-				   my $adj={ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, remaining_error=>abs($err) };
+				   my $adj={ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, damped=>$damped ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, near_target_move_cap=>defined($near_target_cap) ? $near_target_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, remaining_error=>abs($err) };
 				   my $single=[$adj];
 				   mark_headroom_105_response_scaled_adjustments($single,$setting,$response_multiplier,$response_cap_reason,$response_entry,$rgb_step);
 				   push @out,$adj;
