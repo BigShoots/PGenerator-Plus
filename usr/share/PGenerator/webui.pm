@@ -339,6 +339,7 @@ my $_meter_session_fifo="/tmp/meter_session.cmd";
 my $_meter_session_config_file="/tmp/meter_session.config";
 my $_meter_session_ready_file="/tmp/meter_session_ready.signal";
 my $_meter_session_start_ready_file="/tmp/meter_session_start_ready.signal";
+my $_meter_session_ack_file="/tmp/meter_session.ack";
 my $_meter_diagnostic_read_lock="/tmp/meter_diagnostic_read.lock";
 my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
 my $_ccss_create_state_file="/tmp/ccss_create.json";
@@ -854,6 +855,11 @@ sub webui_http (@) {
 	   my $len=length($result);
 	   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
 	  }
+	  elsif($path eq "/api/meter/setup/ack" && $method eq "POST") {
+	   my $result=&webui_meter_setup_ack($body);
+	   my $len=length($result);
+	   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+	  }
 	  elsif($path eq "/api/meter/session/stop" && $method eq "POST") {
 	   my $result=&webui_meter_session_stop_only();
 	   my $len=length($result);
@@ -1210,6 +1216,24 @@ sub webui_meter_series_ready_cleanup (@) {
 sub webui_meter_session_ready_cleanup () {
  unlink($_meter_session_ready_file) if(-e $_meter_session_ready_file);
  unlink($_meter_session_start_ready_file) if(-e $_meter_session_start_ready_file);
+}
+
+sub webui_meter_setup_ack (@) {
+ my ($body)=@_;
+ my $step_id="";
+ $step_id=$1 if($body=~/"step_id"\s*:\s*"?(\d+)"?/);
+ return '{"status":"error","message":"Missing step_id"}' if($step_id eq "");
+ my $json=&webui_meter_read_state_read();
+ return '{"status":"ignored","message":"No setup step active"}' if($json eq "" || $json!~/"status"\s*:\s*"setup"/i);
+ # Only the current step's id may advance the session; stale acks are ignored.
+ return '{"status":"ignored","message":"Step already advanced"}' if($json!~/"step_id"\s*:\s*$step_id\b/);
+ if(open(my $fh,">",$_meter_session_ack_file)) {
+  print $fh $step_id;
+  close($fh);
+  chmod(0666,$_meter_session_ack_file);
+  return '{"status":"ok"}';
+ }
+ return '{"status":"error","message":"Could not signal setup ack"}';
 }
 
 sub webui_meter_read_ready (@) {
