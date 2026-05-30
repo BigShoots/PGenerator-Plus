@@ -344,6 +344,7 @@ my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
 my $_ccss_create_state_file="/tmp/ccss_create.json";
 my $_ccss_create_pid_file="/tmp/ccss_create.pid";
 my $_ccss_create_log_file="/tmp/ccss_create.log";
+my $_ccss_create_continue_file="/tmp/ccss_create.cont";
 my $_ccss_create_runner="/usr/bin/ccss_create.py";
 my $_ccss_create_patch_cmd="/usr/bin/ccss_create_patch.sh";
 my $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
@@ -976,6 +977,11 @@ sub webui_http (@) {
   }
   elsif($path eq "/api/ccss/create/status") {
    my $result=&webui_ccss_create_status();
+   my $len=length($result);
+   print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+  }
+  elsif($path eq "/api/ccss/create/continue" && $method eq "POST") {
+   my $result=&webui_ccss_create_continue();
    my $len=length($result);
    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
   }
@@ -3864,6 +3870,7 @@ sub webui_ccss_create_start (@) {
  system("sudo bash $_meter_wrapper --kill 2>/dev/null");
  unlink($_ccss_create_pid_file);
  unlink($_ccss_create_log_file);
+ unlink($_ccss_create_continue_file);
 
  my $escaped_name=&_webui_json_escape($safe_name);
  &_webui_ccss_create_write_state("{\"status\":\"starting\",\"message\":\"Preparing CCSS creation...\",\"filename\":\"$escaped_name\"}");
@@ -3873,6 +3880,7 @@ sub webui_ccss_create_start (@) {
  my $cmd="setsid sudo $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size' --ccxxmake-bin '$_ccss_create_ccxxmake_bin'";
  $cmd.=" --refresh-rate '$refresh_rate'" if($refresh_rate ne "");
  $cmd.=" --comport '$chosen_port'" if($chosen_port ne "");
+ $cmd.=" --continue-file '$_ccss_create_continue_file'";
  $cmd.=" </dev/null >/dev/null 2>&1 &";
  system($cmd);
 
@@ -3902,6 +3910,18 @@ sub webui_ccss_create_start (@) {
   $waited++;
  }
  return &webui_ccss_create_status();
+}
+
+sub webui_ccss_create_continue (@) {
+ # Headless "press any key" bridge: the UI calls this when the user has
+ # positioned the meter, and the runner injects the keypress into ccxxmake.
+ return '{"status":"error","message":"No CCSS creation job is running"}' if(!&_webui_ccss_create_alive());
+ if(open(my $fh,">",$_ccss_create_continue_file)) {
+  print $fh "1";
+  close($fh);
+  return '{"status":"ok"}';
+ }
+ return '{"status":"error","message":"Could not signal continue"}';
 }
 
 sub webui_ccss_delete (@) {
@@ -7494,6 +7514,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
       <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
+      <button class="btn btn-sm btn-success" id="meterCcssCreateContinueBtn" onclick="meterCcssCreateContinue()" style="display:none">Continue</button>
       <button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()">Start Creation</button>
     </div>
    </div>
@@ -14461,8 +14482,19 @@ function meterCcssCreateSetUi(status){
  }
  if(startBtn) startBtn.disabled=running||!meterCcssCreateCanStart();
  if(stopBtn) stopBtn.style.display=running?'':'none';
+ const continueBtn=document.getElementById('meterCcssCreateContinueBtn');
+ if(continueBtn) continueBtn.style.display=(status&&status.awaiting_continue)?'':'none';
  if(nameInput) nameInput.disabled=running;
  if(displayTypeSel) displayTypeSel.disabled=running;
+}
+
+async function meterCcssCreateContinue(){
+ const btn=document.getElementById('meterCcssCreateContinueBtn');
+ if(btn) btn.disabled=true;
+ const r=await fetchJSON('/api/ccss/create/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',_timeoutMs:5000});
+ if(btn){btn.disabled=false;}
+ if(!r||r.status==='error'){toast(r&&r.message?r.message:'Could not continue',true);return;}
+ if(btn) btn.style.display='none';
 }
 
 function meterRenderCcssCreateChoices(){
