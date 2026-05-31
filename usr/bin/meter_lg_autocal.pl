@@ -13228,8 +13228,11 @@ eval {
 			  );
 			  die $polish_error if($polish_error && $polish_error ne "cancelled");
 			  }
-			 } else {
-		 my $finalize_calibrated_26pt_slot=sub {
+				 } else {
+			 my $start_error=start_calibration_mode($picture_mode,$state,"LG calibration mode enabled for Auto Cal");
+			 die $start_error if($start_error);
+			 $calibration_mode_active=1;
+			 my $finalize_calibrated_26pt_slot=sub {
 		  my ($final_target,$final_read_step,$final_label)=@_;
 		  if(
 		   ref($config) eq "HASH" &&

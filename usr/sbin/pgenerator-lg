@@ -3009,7 +3009,7 @@ sub lg_ddc_1d_white_balance_set (@) {
   return (1,&json_error("LG DDC 1D LUT white-balance writes are not mapped for picture mode '$picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ active_picture_mode => $picture_mode }));
  }
 
-	 my $cal_start_sent=($keep_calibration_mode || !$calibration_mode_active) ? 1 : 0;
+	 my $cal_start_sent=$calibration_mode_active ? 0 : 1;
 	 my $start=$cal_start_sent
 	  ? &lg_calibration_request($session,"ddc_cal_start","CAL_START",undef,1,$cal_mode,$timeout)
 	  : { type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
@@ -3042,6 +3042,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 			   keep_calibration_mode => &json_bool($keep_calibration_mode),
 			   calibration_mode_active => &json_bool($calibration_mode_active),
 			   calibration_mode_requested => &json_bool($keep_calibration_mode),
+			   calibration_mode_ensured => &json_bool($cal_start_sent),
 			   cal_start_sent => &json_bool($cal_start_sent),
 			   reset_ddc_baseline => &json_bool($reset_ddc_baseline),
 			   verify_ddc_upload => &json_bool($verify_ddc_upload),
@@ -3053,7 +3054,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		 my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
 		 my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
 	 my $late_start=undef;
-	 if(!$enable_ok && ($calibration_mode_active || $keep_calibration_mode)) {
+	 if(!$enable_ok && $calibration_mode_active) {
 	  $late_start=&lg_calibration_request($session,"ddc_cal_start_late","CAL_START",undef,1,$cal_mode,$timeout);
   my ($late_start_failed,$late_start_message)=&response_is_app_failure($late_start);
   if(!$late_start_failed && ref($late_start) eq "HASH") {
@@ -3076,7 +3077,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 	 my $first_message=$upload_message||"";
 	 my $first_end=&lg_calibration_request($session,"ddc_cal_end_after_upload_fail","CAL_END",undef,1,"",$timeout);
 	 $end=$first_end;
-		 if($calibration_mode_active || $keep_calibration_mode || $first_message =~ /(500\s+Application error|not a string)/i) {
+		 if($calibration_mode_active || $first_message =~ /(500\s+Application error|not a string)/i) {
 	  select(undef,undef,undef,0.35);
 	  my $retry_start=&lg_calibration_request($session,"ddc_cal_start_retry","CAL_START",undef,1,$cal_mode,$timeout);
 	  my ($retry_start_failed,$retry_start_message)=&response_is_app_failure($retry_start);
@@ -3192,7 +3193,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  ddc_start_response => $start,
 		  ddc_late_start_response => $late_start,
 		  calibration_mode_requested => &json_bool($keep_calibration_mode),
-		  calibration_mode_ensured => &json_bool($keep_calibration_mode && $cal_start_sent),
+		  calibration_mode_ensured => &json_bool($cal_start_sent),
 		  cal_start_sent => &json_bool($cal_start_sent),
 		  caller_calibration_mode_active => &json_bool($calibration_mode_active),
 		  pipeline_responses => $enable_responses,
