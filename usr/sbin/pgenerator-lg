@@ -3009,10 +3009,11 @@ sub lg_ddc_1d_white_balance_set (@) {
   return (1,&json_error("LG DDC 1D LUT white-balance writes are not mapped for picture mode '$picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ active_picture_mode => $picture_mode }));
  }
 
- my $start=$calibration_mode_active
-  ? { type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() }
-  : &lg_calibration_request($session,"ddc_cal_start","CAL_START",undef,1,$cal_mode,$timeout);
- my ($start_failed,$start_message)=&response_is_app_failure($start);
+	 my $cal_start_sent=($keep_calibration_mode || !$calibration_mode_active) ? 1 : 0;
+	 my $start=$cal_start_sent
+	  ? &lg_calibration_request($session,"ddc_cal_start","CAL_START",undef,1,$cal_mode,$timeout)
+	  : { type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
+	 my ($start_failed,$start_message)=&response_is_app_failure($start);
  if($start_failed || ref($start) ne "HASH") {
   my $message=$start_message||"LG TV rejected calibration mode start.";
   if($message =~ /insufficient permissions/i) {
@@ -3038,10 +3039,12 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   ddc_layout => $ddc_layout,
 		   picture_mode => $picture_mode,
 		   whiteBalanceIre => $settings->{"whiteBalanceIre"}||"",
-		   keep_calibration_mode => &json_bool($keep_calibration_mode),
-		   calibration_mode_active => &json_bool($calibration_mode_active),
-		   reset_ddc_baseline => &json_bool($reset_ddc_baseline),
-		   verify_ddc_upload => &json_bool($verify_ddc_upload),
+			   keep_calibration_mode => &json_bool($keep_calibration_mode),
+			   calibration_mode_active => &json_bool($calibration_mode_active),
+			   calibration_mode_requested => &json_bool($keep_calibration_mode),
+			   cal_start_sent => &json_bool($cal_start_sent),
+			   reset_ddc_baseline => &json_bool($reset_ddc_baseline),
+			   verify_ddc_upload => &json_bool($verify_ddc_upload),
 		   ddc_target => &lg_ddc_1d_target_info($normalized_state),
 		   ddc_nonzero => &lg_ddc_1d_nonzero_map($normalized_state),
 		   diagnostic_slots => &lg_ddc_sdr_diagnostic_slot_snapshot($normalized_state),
@@ -3049,9 +3052,9 @@ sub lg_ddc_1d_white_balance_set (@) {
 		 }
 		 my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
 		 my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
- my $late_start=undef;
- if(!$enable_ok && $calibration_mode_active) {
-  $late_start=&lg_calibration_request($session,"ddc_cal_start_late","CAL_START",undef,1,$cal_mode,$timeout);
+	 my $late_start=undef;
+	 if(!$enable_ok && ($calibration_mode_active || $keep_calibration_mode)) {
+	  $late_start=&lg_calibration_request($session,"ddc_cal_start_late","CAL_START",undef,1,$cal_mode,$timeout);
   my ($late_start_failed,$late_start_message)=&response_is_app_failure($late_start);
   if(!$late_start_failed && ref($late_start) eq "HASH") {
    ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
@@ -3073,7 +3076,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 	 my $first_message=$upload_message||"";
 	 my $first_end=&lg_calibration_request($session,"ddc_cal_end_after_upload_fail","CAL_END",undef,1,"",$timeout);
 	 $end=$first_end;
-	 if($calibration_mode_active || $first_message =~ /(500\s+Application error|not a string)/i) {
+		 if($calibration_mode_active || $keep_calibration_mode || $first_message =~ /(500\s+Application error|not a string)/i) {
 	  select(undef,undef,undef,0.35);
 	  my $retry_start=&lg_calibration_request($session,"ddc_cal_start_retry","CAL_START",undef,1,$cal_mode,$timeout);
 	  my ($retry_start_failed,$retry_start_message)=&response_is_app_failure($retry_start);
@@ -3184,18 +3187,22 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
 		  ddc_layout => $ddc_layout,
 	  ddc_slot_samples_reference => \@reference_slot_samples,
-	  ddc_response => $upload,
-	  ddc_end_response => $end,
-	  ddc_start_response => $start,
-	  ddc_late_start_response => $late_start,
-	  pipeline_responses => $enable_responses,
+		  ddc_response => $upload,
+		  ddc_end_response => $end,
+		  ddc_start_response => $start,
+		  ddc_late_start_response => $late_start,
+		  calibration_mode_requested => &json_bool($keep_calibration_mode),
+		  calibration_mode_ensured => &json_bool($keep_calibration_mode && $cal_start_sent),
+		  cal_start_sent => &json_bool($cal_start_sent),
+		  caller_calibration_mode_active => &json_bool($calibration_mode_active),
+		  pipeline_responses => $enable_responses,
 		  ddc_baseline_reset => &json_bool($reset_ddc_baseline),
 		  ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified),
 		  ddc_upload_verified => &json_bool($upload_verified),
 		  ddc_reset_verify_contract => $reset_readback_contract,
 		  ddc_upload_verify_contract => $upload_readback_contract,
-	  calibration_mode => &json_bool($keep_calibration_mode),
-	 }));
+		  calibration_mode => &json_bool($keep_calibration_mode),
+		 }));
 }
 
 sub lg_picture_set_workflow (@) {
@@ -3334,10 +3341,14 @@ sub lg_picture_set_workflow (@) {
 	    ddc_nonzero => $ddc_result->{"ddc_nonzero"}||{},
 		    ddc_slot_samples => $ddc_result->{"ddc_slot_samples"}||[],
 		    ddc_slot_samples_reference => $ddc_result->{"ddc_slot_samples_reference"}||[],
-		    ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
-		    ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
-		    pipeline_responses => $ddc_result->{"pipeline_responses"}||[],
-		   });
+			    ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
+			    ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
+			    calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
+			    calibration_mode_ensured => &json_bool($ddc_result->{"calibration_mode_ensured"}),
+			    cal_start_sent => &json_bool($ddc_result->{"cal_start_sent"}),
+			    caller_calibration_mode_active => &json_bool($ddc_result->{"caller_calibration_mode_active"}),
+			    pipeline_responses => $ddc_result->{"pipeline_responses"}||[],
+			   });
    return &json_ok({
     ip => $ip,
     client_key => $auth->{"client_key"},
@@ -3348,10 +3359,14 @@ sub lg_picture_set_workflow (@) {
     ddc_1d_lut => &json_true(),
 	   ddc_baseline_reset => &json_bool($reset_ddc_baseline),
 	   ddc_reset_verified => &json_bool($ddc_result->{"ddc_reset_verified"}),
-	   ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
-	   ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
-	   calibration_mode => &json_bool($keep_calibration_mode),
-   hello_info => $auth->{"hello_info"},
+		   ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
+		   ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
+		   calibration_mode => &json_bool($keep_calibration_mode),
+		   calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
+		   calibration_mode_ensured => &json_bool($ddc_result->{"calibration_mode_ensured"}),
+		   cal_start_sent => &json_bool($ddc_result->{"cal_start_sent"}),
+		   caller_calibration_mode_active => &json_bool($ddc_result->{"caller_calibration_mode_active"}),
+	   hello_info => $auth->{"hello_info"},
    system_info => $auth->{"system_info"},
    software_info => $auth->{"software_info"},
    lg_generation => $generation,
