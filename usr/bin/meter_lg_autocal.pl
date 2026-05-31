@@ -13569,7 +13569,7 @@ eval {
 		  return $ref_reading;
 				 };
 				 my $white_refreshed_after_headroom=0;
-				 my $low_shadow_calibration_settled=0;
+					 my $low_shadow_calibration_announced=0;
 				 foreach my $step (@ordered) {
 		  last if(cancelled());
 		  $step_num++;
@@ -13582,11 +13582,13 @@ eval {
 						  my $read_step=clone_picture($slot_read_step);
 						  mark_lg_autocal_hdr20_sdr_adjustment_method_step($config,$slot_read_step);
 						  mark_lg_autocal_hdr20_sdr_adjustment_method_step($config,$read_step);
-					  if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && autocal_step_is_low_shadow($read_step) && !$low_shadow_calibration_settled) {
-				   my $settle_ms=config_positive_int($config,"low_shadow_pre_settle_ms",12000,0,60000);
-				   park_black_for_settle($config,$state,"Settling panel before low-shadow greyscale calibration",$settle_ms);
-				   $low_shadow_calibration_settled=1;
-					  }
+						  if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && autocal_step_is_low_shadow($read_step) && !$low_shadow_calibration_announced) {
+					   $state->{"phase"}="reading";
+					   $state->{"message"}="Continuing directly into low-shadow greyscale calibration";
+					   write_state($state);
+					   log_line("Skipping pre-low-shadow black settle; continuing directly into low-shadow greyscale calibration");
+					   $low_shadow_calibration_announced=1;
+						  }
 					  my $paired_white_step=legal_white_pair_reference_step($steps,$target,$step,$config);
 				  $paired_white_step=fixed_lg_autocal_step($config,$paired_white_step) if($paired_white_step);
 				  if($paired_white_step) {
