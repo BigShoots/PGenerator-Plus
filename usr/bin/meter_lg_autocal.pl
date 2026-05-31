@@ -1075,6 +1075,14 @@ sub autocal_step_is_low_shadow {
  return ($ire > 0 && $ire <= 10.0001) ? 1 : 0;
 }
 
+sub autocal_step_is_sdr_deep_low_shadow {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ return 0 if(autocal_step_is_hdr20_body($step));
+ my $ire=$step->{"ire"}+0;
+ return ($ire > 0 && $ire <= 2.5001) ? 1 : 0;
+}
+
 sub autocal_config_is_touchup {
  my ($config)=@_;
  return (ref($config) eq "HASH" && $config->{"full_autocal_touchup"}) ? 1 : 0;
@@ -1240,11 +1248,12 @@ sub low_shadow_iteration_limit_for_step {
  my ($step,$config)=@_;
  return undef if(!autocal_step_is_low_shadow($step));
 		 my $ire=$step->{"ire"}+0;
-		 if(autocal_config_is_touchup($config)) {
-		  return 3 if($ire <= 3.1);
-		  return 5 if($ire <= 5.1);
-		  return 7;
-		 }
+	 if(autocal_config_is_touchup($config)) {
+	  return 3 if($ire <= 3.1);
+	  return 5 if($ire <= 5.1);
+	  return 7;
+	 }
+ return 5 if(autocal_step_is_sdr_deep_low_shadow($step));
  return 8 if($ire <= 3.1);
  return 10 if($ire <= 4.1);
  return 16 if($ire <= 5.1);
@@ -6512,17 +6521,30 @@ sub low_shadow_luminance_priority_adjustments {
  }
  $threshold=0.6 if($threshold < 0.6);
  return undef if(abs($lum_pct) <= $threshold);
-	 my $max_step=low_shadow_luminance_max_step($luminance_err,$stalls,$step);
-	 $max_step=1 if($micro && $max_step > 1);
- my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,1,$step,($micro ? "fine_low_shadow_luminance" : "main_low_shadow_luminance"));
+		 my $max_step=low_shadow_luminance_max_step($luminance_err,$stalls,$step);
+		 my $sdr_23_luma_cap=0;
+		 if(
+		  autocal_step_is_sdr_deep_low_shadow($step) &&
+		  defined($de) &&
+		  ($de+0) <= 1.0 &&
+		  abs($lum_pct) <= 8.0 &&
+		  $max_step > 0.25
+		 ) {
+		  $max_step=0.25;
+		  $sdr_23_luma_cap=1;
+		 }
+		 $max_step=1 if($micro && $max_step > 1);
+	 my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,1,$step,($micro ? "fine_low_shadow_luminance" : "main_low_shadow_luminance"));
  if(!$adjustments && abs($lum_pct) > ($tol*2.0)) {
   $adjustments=force_low_shadow_luminance_adjustment($arrays,$target,$luminance_err,$tried,0.25,$max_step,$step);
  }
- if(ref($adjustments) eq "ARRAY") {
-  foreach my $adj (@{$adjustments}) {
-   $adj->{"low_shadow_luminance"}=1 if(ref($adj) eq "HASH");
-  }
- }
+	 if(ref($adjustments) eq "ARRAY") {
+	  foreach my $adj (@{$adjustments}) {
+	   next if(ref($adj) ne "HASH");
+	   $adj->{"low_shadow_luminance"}=1;
+	   $adj->{"cap_reason"}="sdr_23_near_target_luma_cap" if($sdr_23_luma_cap);
+	  }
+	 }
 	 return $adjustments;
 }
 
@@ -8360,8 +8382,15 @@ sub choose_rgb_response_adjustments {
 	 return undef if(autocal_step_is_fast_headroom($step) && !$headroom_105_body);
 	 return undef if(headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err));
 	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
-	 my $response_lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;
-	 my $hdr20_sdr_close_rgb=hdr20_sdr_method_luma_close_rgb_preferred($LG_AUTOCAL_CONFIG,$step,$error,$de,$response_lum_pct,$target_delta);
+		 my $response_lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;
+		 my $sdr_23_rgb_cap;
+		 if(autocal_step_is_sdr_deep_low_shadow($step)) {
+		  $sdr_23_rgb_cap=0.5;
+		  my $tol=luminance_tolerance_percent($step);
+		  $tol=0 if(!defined($tol));
+		  $sdr_23_rgb_cap=0.25 if(defined($response_lum_pct) && abs($response_lum_pct) > $tol);
+		 }
+		 my $hdr20_sdr_close_rgb=hdr20_sdr_method_luma_close_rgb_preferred($LG_AUTOCAL_CONFIG,$step,$error,$de,$response_lum_pct,$target_delta);
 	 if(lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step) &&
 	    autocal_step_is_hdr20_body($step) &&
 	    has_luminance_channel($arrays,$target) &&
@@ -8434,11 +8463,12 @@ sub choose_rgb_response_adjustments {
 	  my $max_jump=(defined($de) && $de > 4) ? 10 : ((defined($de) && $de > 2) ? 6 : 4);
 		  if($paired_white) {
 		   $max_jump=(defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 1.0 : 0.5;
-		  } else {
-		   $max_jump=12 if(($stalls||0) >= 2 && $max_jump < 12);
-		   $max_jump=$seeded_cap if(defined($seeded_cap) && $max_jump > $seeded_cap);
-		   $max_jump=$near_y_cleanup_cap if(defined($near_y_cleanup_cap) && $max_jump > $near_y_cleanup_cap);
-		  }
+			  } else {
+			   $max_jump=12 if(($stalls||0) >= 2 && $max_jump < 12);
+			   $max_jump=$seeded_cap if(defined($seeded_cap) && $max_jump > $seeded_cap);
+			   $max_jump=$near_y_cleanup_cap if(defined($near_y_cleanup_cap) && $max_jump > $near_y_cleanup_cap);
+			   $max_jump=$sdr_23_rgb_cap if(defined($sdr_23_rgb_cap) && $max_jump > $sdr_23_rgb_cap);
+			  }
 		  my ($response_multiplier,$response_cap_reason,$response_entry);
 		  if($headroom_105_body && !$paired_white) {
 		   my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
@@ -8464,15 +8494,16 @@ sub choose_rgb_response_adjustments {
 		   my $actual_delta=$next-$current;
 		   my $predicted=$err+($slope*$actual_delta);
 		   next if(abs($predicted) >= abs($err)*0.92 && abs($actual_delta) > 0.21 && !defined($response_multiplier));
-			   my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, slope=>$slope, predicted_error=>$predicted, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef, remaining_error=>abs($err) }];
+				   my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$actual_delta, response_model=>1, slope=>$slope, predicted_error=>$predicted, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef, cap_reason=>defined($sdr_23_rgb_cap) ? "sdr_23_rgb_response_cap" : undef, remaining_error=>abs($err) }];
 			   mark_headroom_105_response_scaled_adjustments($out,$setting,$response_multiplier,$response_cap_reason,$response_entry,$max_jump);
 			   return append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,0,$LG_AUTOCAL_STATE);
 			  }
 			 }
 				 my $probe_step=$paired_white ? ((defined($de) && $de > (($target_delta||0.5)+1.0) && $max_err > 0.018) ? 0.5 : 0.25) : ($hdr20_seeded_close_rgb ? 0.5 : 1);
 				 $probe_step=0.25 if($hdr20_seeded_close_rgb && defined($de) && $de <= 2.0);
-			 $probe_step=$seeded_cap if(!$paired_white && defined($seeded_cap) && $probe_step > $seeded_cap);
-			 $probe_step=$near_y_cleanup_cap if(!$paired_white && defined($near_y_cleanup_cap) && $probe_step > $near_y_cleanup_cap);
+				 $probe_step=$seeded_cap if(!$paired_white && defined($seeded_cap) && $probe_step > $seeded_cap);
+				 $probe_step=$near_y_cleanup_cap if(!$paired_white && defined($near_y_cleanup_cap) && $probe_step > $near_y_cleanup_cap);
+				 $probe_step=$sdr_23_rgb_cap if(!$paired_white && defined($sdr_23_rgb_cap) && $probe_step > $sdr_23_rgb_cap);
 			 my ($response_multiplier,$response_cap_reason,$response_entry);
 			 if($headroom_105_body && !$paired_white) {
 			  my $response_cap=defined($near_y_cleanup_cap) ? $near_y_cleanup_cap : 2.0;
@@ -8489,7 +8520,7 @@ sub choose_rgb_response_adjustments {
 			 }
 			 my ($next,$damped)=next_untried_value($current,$direction*$probe_step,$tried,$setting,0.25,$paired_white);
 			 return undef if(!defined($next) || abs($next-$current) < 0.0001);
-			 my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, response_probe=>1, damped=>$damped ? 1 : 0, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef, remaining_error=>abs($err) }];
+				 my $out=[{ channel=>$ch, setting=>$setting, current=>$current, next=>$next, delta=>$next-$current, response_probe=>1, damped=>$damped ? 1 : 0, paired_white=>$paired_white ? 1 : 0, seeded_move_damping=>defined($seeded_cap) ? $seeded_cap+0 : undef, headroom_105_near_y_cleanup=>defined($near_y_cleanup_cap) ? 1 : undef, headroom_105_body_refinement=>$headroom_105_body ? 1 : undef, cap_reason=>defined($sdr_23_rgb_cap) ? "sdr_23_rgb_response_cap" : undef, remaining_error=>abs($err) }];
 			 mark_headroom_105_response_scaled_adjustments($out,$setting,$response_multiplier,$response_cap_reason,$response_entry,$probe_step);
 			 return append_headroom_105_luma_coupling($out,$arrays,$target,$step,$luminance_err,$tried,0,$LG_AUTOCAL_STATE);
 		}
