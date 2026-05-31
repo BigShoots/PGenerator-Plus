@@ -2246,6 +2246,33 @@ sub low_shadow_good_enough {
  return ($de <= low_shadow_delta_acceptance($step,$target_delta)) ? 1 : 0;
 }
 
+sub sdr_low_shadow_final_acceptance_verify_required {
+ my ($config,$step)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(!autocal_step_is_low_shadow($step));
+ return 0 if(autocal_config_is_touchup($config));
+ return 0 if(autocal_config_is_post_3d_polish($config));
+ return 0 if(autocal_config_is_post_series_adjust($config));
+ return 0 if(autocal_config_is_post_series_revert($config));
+ my $phase=lc($config->{"full_autocal_phase"}||"");
+ return 0 if($phase =~ /(magic|post|polish|touchup)/);
+ return 1;
+}
+
+sub low_shadow_fresh_final_materially_worse {
+ my ($step,$fresh_de,$fresh_lum_pct,$best_de,$best_lum_pct,$fresh_score,$best_score)=@_;
+ return 1 if(!defined($fresh_de));
+ return 0 if(!defined($best_de));
+ return 1 if(defined($fresh_score) && defined($best_score) && ($fresh_score+0) > ($best_score+0)+0.75);
+ return 1 if(($fresh_de+0) > ($best_de+0)+0.50);
+ if(defined($fresh_lum_pct) && defined($best_lum_pct)) {
+  return 1 if(abs($fresh_lum_pct+0) > abs($best_lum_pct+0)+1.00);
+  return 1 if(($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($step) && ($fresh_lum_pct+0) > ($best_lum_pct+0)+0.50);
+ }
+ return 0;
+}
+
 sub low_shadow_luminance_progress_keep {
  my ($step,$de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$candidate_score,$best_score)=@_;
  return 0 if(!autocal_step_is_low_shadow($step));
@@ -13942,7 +13969,7 @@ eval {
 						    }
 						    write_state($state);
 						   }
-				   if($pair_target_reached_now->() && !$sdr_peak_extra_fine_tune_now->()) {
+				   if($pair_target_reached_now->() && !$sdr_peak_extra_fine_tune_now->() && !sdr_low_shadow_final_acceptance_verify_required($config,$read_step)) {
 					    remember_lg_autocal_26_best_known(
 					     $config,$state,$read_step,$reading,$de,$lum_pct,
 						     $target_step_y,$arrays,$target,"main_initial_target_reached",1
@@ -15372,6 +15399,78 @@ eval {
 				  $state->{"current_delta_e"}=$best_de;
 		  $state->{"best_delta_e"}=$best_de;
 		  $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct : undef;
+				  if(sdr_low_shadow_final_acceptance_verify_required($config,$read_step) && !cancelled()) {
+				   $state->{"phase"}="reading";
+				   $state->{"message"}="Verifying restored $label before final acceptance";
+				   write_state($state);
+				   my ($fresh_reading,$fresh_error,$fresh_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
+				   die $fresh_error if($fresh_error);
+				   die "Fresh final low-shadow verification failed for $label" if(ref($fresh_reading) ne "HASH");
+				   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$fresh_reading,$white_y);
+				   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+				   $fresh_target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$fresh_reading,$target_gamma,$signal_mode,$config,$state) if(!defined($fresh_target_step_y));
+				   annotate_reading_target($fresh_reading,$white_y,$fresh_target_step_y,$target_x,$target_y);
+				   my $fresh_de=calculate_delta($fresh_reading,$target_x,$target_y,$fresh_target_step_y,$target_gamma,$signal_mode);
+				   my $fresh_lum_pct=luminance_error_percent($fresh_reading,$fresh_target_step_y);
+				   my $fresh_score=guarded_autocal_result_score($fresh_de,$fresh_lum_pct,$read_step,$fresh_reading,$white_guard_y);
+				   my $fresh_over_target=(defined($fresh_lum_pct) && ($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
+				   my $fresh_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$fresh_de,$fresh_lum_pct,$best_de,$best_lum_pct,$fresh_score,$best_score);
+				   my $fresh_pass=(!$fresh_over_target && !$fresh_materially_worse) ? 1 : 0;
+				   my $measured_y=defined($fresh_reading->{"y"}) ? $fresh_reading->{"y"}+0 : undef;
+				   my $measured_x=defined($fresh_reading->{"x"}) ? $fresh_reading->{"x"}+0 : undef;
+				   my $target_chromaticity_y=defined($target_y) ? $target_y+0 : undef;
+				   my $target_chromaticity_x=defined($target_x) ? $target_x+0 : undef;
+				   my $fresh_verify_record={
+				    label=>$label,
+				    ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef,
+				    accepted=>$fresh_pass ? JSON::PP::true : JSON::PP::false,
+				    over_target=>$fresh_over_target ? JSON::PP::true : JSON::PP::false,
+				    materially_worse=>$fresh_materially_worse ? JSON::PP::true : JSON::PP::false,
+				    target_y=>$target_chromaticity_y,
+				    measured_y=>$measured_y,
+				    target_y_delta=>(defined($measured_y) && defined($target_chromaticity_y)) ? $measured_y-$target_chromaticity_y : undef,
+				    target_x=>$target_chromaticity_x,
+				    measured_x=>$measured_x,
+				    target_x_delta=>(defined($measured_x) && defined($target_chromaticity_x)) ? $measured_x-$target_chromaticity_x : undef,
+				    target_luminance=>defined($fresh_target_step_y) ? $fresh_target_step_y+0 : undef,
+				    measured_luminance=>luminance($fresh_reading),
+				    fresh_delta_e=>defined($fresh_de) ? $fresh_de+0 : undef,
+				    fresh_luminance_error_pct=>defined($fresh_lum_pct) ? $fresh_lum_pct+0 : undef,
+				    fresh_score=>defined($fresh_score) ? $fresh_score+0 : undef,
+				    cached_delta_e=>defined($best_de) ? $best_de+0 : undef,
+				    cached_luminance_error_pct=>defined($best_lum_pct) ? $best_lum_pct+0 : undef,
+				    cached_score=>defined($best_score) ? $best_score+0 : undef,
+				    final_values=>trace_target_values($best_arrays,$target),
+				    reading=>trace_reading_summary($fresh_reading)
+				   };
+				   $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
+				   trace_109($read_step,"low_shadow_final_fresh_verification",$fresh_verify_record);
+				   if(!$fresh_pass) {
+				    $state->{"phase"}="adjusting";
+				    $state->{"message"}="$label fresh final verification needs more adjustment";
+				    $state->{"low_shadow_final_requires_more_adjustment"}=JSON::PP::true;
+				    write_state($state);
+				    die "$label fresh final verification rejected cached best";
+				   }
+				   delete $state->{"low_shadow_final_requires_more_adjustment"};
+				   $best_reading=clone_picture($fresh_reading);
+				   $best_read_step=clone_picture($read_step);
+				   $best_de=$fresh_de;
+				   $best_lum_pct=$fresh_lum_pct;
+				   $best_score=$fresh_score;
+				   $reading=clone_picture($fresh_reading);
+				   $de=$fresh_de;
+				   $lum_pct=$fresh_lum_pct;
+				   $target_step_y=$fresh_target_step_y;
+				   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading);
+				   $state->{"current_luminance"}=luminance($best_reading);
+				   $state->{"current_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+				   $state->{"best_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+				   $state->{"best_score"}=defined($best_score) ? $best_score+0 : undef;
+				   $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct+0 : undef;
+				   set_state_target_step_luminance($state,$target_step_y);
+				   write_state($state);
+				  }
 				  my $final_reached=$pair_target_reached_now->();
 				  $state->{"message"}=$paired_white_step
 				   ? ($final_reached ? "$label and 100% legal white reached target" : "$label paired closest result kept")
