@@ -550,6 +550,17 @@ sub lg_autocal_26_full_ddc_spine_body_anchor {
  return ($ire > 0 && $ire < 99.9) ? 1 : 0;
 }
 
+sub lg_autocal_26_full_ddc_spine_shadow_propagation_retired {
+ my ($config,$target)=@_;
+ return 0 if(ref($config) ne "HASH" || !lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
+ return 0 if(lg_autocal_26_full_ddc_spine_anchor($target));
+ my $signal_mode=lc($config->{"signal_mode"}||"sdr");
+ return 0 if($signal_mode ne "sdr");
+ my $ire=$target->{"ire"}+0;
+ return ($ire > 0 && $ire <= 15.0001) ? 1 : 0;
+}
+
 sub lg_autocal_26_full_ddc_spine_anchor_revisit_step {
  my ($step)=@_;
  return (ref($step) eq "HASH" && $step->{"lg_autocal_26_full_ddc_spine_anchor_revisit"}) ? 1 : 0;
@@ -4315,43 +4326,12 @@ sub calibrated_26pt_slot_for_ire {
 }
 
 sub full_ddc_spine_shadow_seed_links {
- return (
-  { source=>20, target=>15, offsets=>{ adjustingLuminance=>-0.50, whiteBalanceRed=>-0.40, whiteBalanceGreen=>-0.60, whiteBalanceBlue=>-0.60 } },
-  { source=>15, target=>10, offsets=>{ adjustingLuminance=> 3.50, whiteBalanceRed=>-0.10, whiteBalanceGreen=> 0.50, whiteBalanceBlue=> 0.40 } },
-  { source=>10, target=>7,  offsets=>{ adjustingLuminance=> 2.25, whiteBalanceRed=>-0.10, whiteBalanceGreen=> 0.20, whiteBalanceBlue=> 2.50 } },
-  { source=>7,  target=>5,  offsets=>{ adjustingLuminance=> 3.25, whiteBalanceRed=>-0.60, whiteBalanceGreen=>-0.10, whiteBalanceBlue=> 2.00 } },
-  { source=>5,  target=>4,  offsets=>{ adjustingLuminance=>-0.50, whiteBalanceRed=> 0.65, whiteBalanceGreen=> 0.30, whiteBalanceBlue=>-0.20 } },
-  { source=>4,  target=>3,  offsets=>{ adjustingLuminance=> 1.00, whiteBalanceRed=>-0.60, whiteBalanceGreen=> 0.40, whiteBalanceBlue=> 1.75 } },
-  { source=>3,  target=>2.3,offsets=>{ adjustingLuminance=> 3.25, whiteBalanceRed=> 0.00, whiteBalanceGreen=> 0.60, whiteBalanceBlue=> 0.00 } },
- );
+ return ();
 }
 
 sub apply_full_ddc_spine_shadow_seeds {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
- return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
- return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
- return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
- return 0 if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,20));
- my $changed=0;
- foreach my $link (full_ddc_spine_shadow_seed_links()) {
-  next if(ref($link) ne "HASH" || ref($link->{"offsets"}) ne "HASH");
-  my $source_idx=ddc_slot_index_for_ire($link->{"source"});
-  my $target_idx=ddc_slot_index_for_ire($link->{"target"});
-  next if(!defined($source_idx) || !defined($target_idx));
-  next if($calibrated_slot_mask->[$target_idx]);
-  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
-   next if(!defined($link->{"offsets"}{$setting}));
-   next if(ref($arrays->{$setting}) ne "ARRAY" || $source_idx >= @{$arrays->{$setting}} || $target_idx >= @{$arrays->{$setting}});
-   next if(!defined($arrays->{$setting}[$source_idx]));
-   my $before=defined($arrays->{$setting}[$target_idx]) ? ($arrays->{$setting}[$target_idx]+0) : 0;
-   my $after=clamp_ddc_value(($arrays->{$setting}[$source_idx]+0)+($link->{"offsets"}{$setting}+0));
-   $after=round_ddc_quarter($after);
-   next if(abs($after-$before) < 0.0001);
-   $arrays->{$setting}[$target_idx]=$after;
-   $changed++;
-  }
- }
- return $changed;
+ return 0;
 }
 
 sub full_ddc_spine_seed_correction_deltas {
@@ -13145,7 +13125,7 @@ eval {
 				    legal_white_seed_gate=>$adjacent_seed_source_gate
 				   });
 				  }
-				  if(ref($adjacent_seed) eq "HASH" && ref($adjacent_seed_target) eq "HASH" && defined($adjacent_seed_target->{"index"})) {
+		  if(ref($adjacent_seed) eq "HASH" && ref($adjacent_seed_target) eq "HASH" && defined($adjacent_seed_target->{"index"})) {
 			   $state->{"lg_autocal_26_anchor_predrive_last_adjacent_seed"}=$adjacent_seed;
 			   $state->{"lg_autocal_26_anchor_predrive_adjacent_seed_message"}=$adjacent_seed->{"message"};
 			   trace_109($final_read_step || $final_target,"anchor_predrive_adjacent_seed",{
@@ -13177,6 +13157,23 @@ eval {
 		    $calibration_mode_active=1;
 		    sync_state_picture($state,$picture,$picture_mode);
 		   }
+		  }
+		  if(lg_autocal_26_full_ddc_spine_shadow_propagation_retired($config,$final_target)) {
+		   $state->{"lg_autocal_26_full_ddc_spine_shadow_propagation_retired"}={
+		    label=>$final_label||$final_target->{"label"}||"",
+		    target=>$final_target,
+		    completed_slots=>\@completed_anchor_ires,
+		    completed_spine_anchors=>\@completed_spine_anchors
+		   };
+		   trace_109($final_read_step || $final_target,"full_ddc_spine_shadow_propagation_retired",{
+		    mode=>"full_ddc_spine",
+		    label=>$final_label||$final_target->{"label"}||"",
+		    target=>$final_target,
+		    completed_slots=>\@completed_anchor_ires,
+		    completed_spine_anchors=>\@completed_spine_anchors
+		   });
+		   write_state($state) if($full_ddc_spine_mode);
+		   return 0;
 		  }
 		  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
 		  my $before_arrays=clone_arrays($arrays);
