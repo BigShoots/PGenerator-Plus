@@ -8037,9 +8037,9 @@ sub headroom_proportional_adjustment {
 	}
 
 sub headroom_queued_adjustment_still_best {
- my ($adjustments,$error,$de,$target_delta,$step)=@_;
- return 0 if(!autocal_step_is_fast_headroom($step));
- return 0 if(ref($adjustments) ne "ARRAY" || @{$adjustments} != 1 || ref($error) ne "HASH");
+	 my ($adjustments,$error,$de,$target_delta,$step)=@_;
+	 return 0 if(!autocal_step_is_fast_headroom($step));
+	 return 0 if(ref($adjustments) ne "ARRAY" || @{$adjustments} != 1 || ref($error) ne "HASH");
  my $adj=$adjustments->[0];
  return 0 if(ref($adj) ne "HASH");
  my $ch=$adj->{"channel"}||"";
@@ -8052,8 +8052,56 @@ sub headroom_queued_adjustment_still_best {
   next if($other eq $ch);
   my $other_err=abs($error->{$other}||0);
   return 0 if($other_err > $ch_err+0.00025);
- }
- return 1;
+	 }
+	 return 1;
+}
+
+sub queued_adjustments_rebased_to_current_arrays {
+	 my ($adjustments,$arrays,$target,$tried,$step,$source)=@_;
+	 return undef if(ref($adjustments) ne "ARRAY" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+	 my @out;
+	 my @rebased;
+	 foreach my $adj (@{$adjustments}) {
+	  return undef if(ref($adj) ne "HASH");
+	  my $setting=$adj->{"setting"};
+	  my $idx=defined($adj->{"index"}) ? $adj->{"index"} : $target->{"index"};
+	  return undef if(!defined($setting) || !defined($idx) || ref($arrays->{$setting}) ne "ARRAY" || $idx >= @{$arrays->{$setting}});
+	  my $current=defined($arrays->{$setting}[$idx]) ? ($arrays->{$setting}[$idx]+0) : 0;
+	  my $planned_current=defined($adj->{"current"}) ? ($adj->{"current"}+0) : $current;
+	  my $delta=defined($adj->{"delta"}) ? ($adj->{"delta"}+0) : (defined($adj->{"next"}) ? (($adj->{"next"}+0)-$planned_current) : undef);
+	  return undef if(!defined($delta));
+	  my $copy=clone_picture($adj);
+	  if(abs($current-$planned_current) > 0.0001) {
+	   my $next=clamp_ddc_value($current+$delta);
+	   return undef if(abs($next-$current) < 0.0001);
+	   return undef if(tried_value_exists($tried,$setting,$next));
+	   $copy->{"queued_original_current"}=$planned_current+0;
+	   $copy->{"queued_original_next"}=defined($adj->{"next"}) ? ($adj->{"next"}+0) : undef;
+	   $copy->{"current"}=$current+0;
+	   $copy->{"next"}=$next+0;
+	   $copy->{"delta"}=($next-$current)+0;
+	   $copy->{"queued_rebased"}=1;
+	   push @rebased,{
+	    setting=>$setting,
+	    index=>$idx+0,
+	    original_current=>$planned_current+0,
+	    original_next=>defined($adj->{"next"}) ? ($adj->{"next"}+0) : undef,
+	    current=>$current+0,
+	    next=>$next+0,
+	    delta=>($next-$current)+0
+	   };
+	  }
+	  push @out,$copy;
+	 }
+	 if(@rebased) {
+	  trace_109($step,"queued_adjustment_rebased",{
+	   source=>$source,
+	   rebased=>\@rebased,
+	   adjustments=>trace_adjustments_summary(\@out),
+	   target_values=>trace_target_values($arrays,$target)
+	  });
+	 }
+	 return \@out;
 }
 
 sub rgb_response_close_threshold {
@@ -14184,29 +14232,36 @@ eval {
 						   my $hdr20_sdr_method=lg_autocal_hdr20_use_sdr_adjustment_method($config,$read_step);
 								   my $adjustments;
 									   if(
-									    autocal_step_is_low_shadow($read_step) &&
-									    ref($low_shadow_next_adjustments) eq "ARRAY"
-								   ) {
-								    $adjustments=$low_shadow_next_adjustments;
-								    $low_shadow_next_adjustments=undef;
-								   }
+										    autocal_step_is_low_shadow($read_step) &&
+										    ref($low_shadow_next_adjustments) eq "ARRAY"
+									   ) {
+									    $adjustments=queued_adjustments_rebased_to_current_arrays(
+									     $low_shadow_next_adjustments,$arrays,$target,\%tried_values,$read_step,"low_shadow_next_adjustments"
+									    );
+									    $low_shadow_next_adjustments=undef;
+									   }
 								   if(
 									    !$adjustments &&
-									    !autocal_step_is_low_shadow($read_step) &&
-									    ref($body_luminance_next_adjustments) eq "ARRAY"
-									   ) {
-										    $adjustments=$body_luminance_next_adjustments if(!$headroom_105_near_y_cleanup_active && (!$headroom_105_luma_priority || ref(luma_only_adjustment($body_luminance_next_adjustments)) eq "HASH"));
-										    $body_luminance_next_adjustments=undef;
-										   }
+										    !autocal_step_is_low_shadow($read_step) &&
+										    ref($body_luminance_next_adjustments) eq "ARRAY"
+										   ) {
+											    my $queued_body_luminance_next_adjustments=queued_adjustments_rebased_to_current_arrays(
+											     $body_luminance_next_adjustments,$arrays,$target,\%tried_values,$read_step,"body_luminance_next_adjustments"
+											    );
+											    $adjustments=$queued_body_luminance_next_adjustments if(ref($queued_body_luminance_next_adjustments) eq "ARRAY" && !$headroom_105_near_y_cleanup_active && (!$headroom_105_luma_priority || ref(luma_only_adjustment($queued_body_luminance_next_adjustments)) eq "HASH"));
+											    $body_luminance_next_adjustments=undef;
+											   }
 								   if(
 								    !$adjustments &&
-								    autocal_step_is_hdr20_body($read_step) &&
-								    !$hdr20_sdr_method &&
-								    ref($hdr20_body_vector_next_adjustments) eq "ARRAY"
-								   ) {
-								    $adjustments=$hdr20_body_vector_next_adjustments;
-								    $hdr20_body_vector_next_adjustments=undef;
-									   }
+									    autocal_step_is_hdr20_body($read_step) &&
+									    !$hdr20_sdr_method &&
+									    ref($hdr20_body_vector_next_adjustments) eq "ARRAY"
+									   ) {
+									    $adjustments=queued_adjustments_rebased_to_current_arrays(
+									     $hdr20_body_vector_next_adjustments,$arrays,$target,\%tried_values,$read_step,"hdr20_body_vector_next_adjustments"
+									    );
+									    $hdr20_body_vector_next_adjustments=undef;
+										   }
 									   if(!$adjustments && autocal_step_is_low_shadow($read_step)) {
 									    if(!$hdr20_sdr_method && hdr20_low_shadow_body_vector_needed($read_step,\%tried_values,$lum_err,$de,$target_delta,$stalls)) {
 									     $adjustments=hdr20_body_rgb_luminance_vector_adjustments($err,$arrays,$target,$read_step,$de,$target_delta,$lum_err,$stalls,\%tried_values,0.25,0,"main_hdr20_low_shadow_luma_unresponsive");
@@ -14310,15 +14365,20 @@ eval {
 								    });
 								    $adjustments=undef;
 								   }
-								   if(
-								    !$adjustments &&
-								    !$headroom_105_luma_blocking &&
-								    autocal_step_is_fast_headroom($read_step) &&
-							    ref($headroom_next_adjustments) eq "ARRAY" &&
-							    headroom_queued_adjustment_still_best($headroom_next_adjustments,$err,$de,$target_delta,$read_step)
-							   ) {
-							    $adjustments=$headroom_next_adjustments;
-							    $headroom_next_adjustments=undef;
+									   my $queued_headroom_next_adjustments=ref($headroom_next_adjustments) eq "ARRAY"
+									    ? queued_adjustments_rebased_to_current_arrays(
+									     $headroom_next_adjustments,$arrays,$target,\%tried_values,$read_step,"headroom_next_adjustments"
+									    )
+									    : undef;
+									   if(
+									    !$adjustments &&
+										    !$headroom_105_luma_blocking &&
+										    autocal_step_is_fast_headroom($read_step) &&
+									    ref($queued_headroom_next_adjustments) eq "ARRAY" &&
+									    headroom_queued_adjustment_still_best($queued_headroom_next_adjustments,$err,$de,$target_delta,$read_step)
+									   ) {
+								    $adjustments=$queued_headroom_next_adjustments;
+								    $headroom_next_adjustments=undef;
 								   } else {
 								    $headroom_next_adjustments=undef if(autocal_step_is_fast_headroom($read_step));
 								    my $hdr20_body_far_luma=(autocal_step_is_hdr20_body($read_step) && abs(($lum_err||0)*100) >= 8) ? 1 : 0;
