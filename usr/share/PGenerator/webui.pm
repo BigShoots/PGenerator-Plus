@@ -20553,6 +20553,72 @@ function meterFullAutoCalSleep(ms){
  return {status:'error',current_name:'Timed out waiting for '+(label||'series')};
 }
 
+	function meterAutoCalCapturedSeriesSnapshotForKey(key){
+	 if(key===meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
+	  meterCacheSeriesState('complete');
+	 }
+	 const snap=(meterSeriesCache&&meterSeriesCache[key])?meterFullAutoCalCloneValue(meterSeriesCache[key]):null;
+	 if(!snap||!Array.isArray(snap.readings)) return null;
+	 snap.readings=snap.readings.filter(rd=>meterReadingHasLuminance(rd));
+	 snap.status='complete';
+	 snap.report_key=key;
+	 return snap.readings.length?snap:null;
+	}
+
+	function meterAutoCalMagicWandLg26Validation(snap){
+	 if(!snap||!Array.isArray(snap.readings)) return {ok:false,message:'no readings'};
+	 let steps=Array.isArray(snap.steps)&&snap.steps.length?snap.steps:meterBuildStepsJS('greyscale',26);
+	 steps=meterGreyscaleSeriesSteps(steps);
+	 if(steps.length<26) return {ok:false,message:'expected 26 LG greyscale patches, found '+steps.length};
+	 const readings=snap.readings.filter(rd=>meterReadingHasLuminance(rd));
+	 const missing=[];
+	 steps.forEach(step=>{
+	  const found=readings.find(rd=>meterGreyscaleReadingMatchesStep(rd,step));
+	  if(!found){
+	   const label=String(step.name||'').trim()||(((step.stimulus!=null)?step.stimulus:step.ire)+'%');
+	   missing.push(label);
+	  }
+	 });
+	 if(missing.length) return {ok:false,message:'missing '+missing.slice(0,4).join(', ')+(missing.length>4?' and '+(missing.length-4)+' more':'')};
+	 return {ok:true,message:''};
+	}
+
+	function meterAutoCalMagicWandReadingLooks100(reading){
+	 if(!reading) return false;
+	 const name=String(reading.name||reading.patch_name||'').toLowerCase();
+	 if(name==='white'||name==='100%'||/\b100(?:\.0+)?\s*%/.test(name)||/\b100(?:\.0+)?\s*(?:legal\s*)?white\b/.test(name)) return true;
+	 const values=[reading.stimulus,reading.level,reading.ire,reading.signal_r_pct,reading.patch_stimulus,reading.ddc_target_ire,reading.autocal_order_ire];
+	 return values.some(value=>{
+	  const n=Number(value);
+	  return Number.isFinite(n)&&Math.abs(n-100)<0.001;
+	 });
+	}
+
+	function meterAutoCalMagicWandTargetLuminanceFromSnapshot(snap){
+	 const readings=Array.isArray(snap&&snap.readings)?snap.readings:[];
+	 let best=null;
+	 let bestScore=-1;
+	 readings.forEach(rd=>{
+	  const y=meterReadingLuminanceNits(rd);
+	  if(!(Number.isFinite(Number(y))&&Number(y)>0)) return;
+	  if(!meterAutoCalMagicWandReadingLooks100(rd)) return;
+	  const name=String(rd.name||rd.patch_name||'').toLowerCase();
+	  let score=10;
+	  if(name==='white'||name==='100%') score+=30;
+	  if(/\b100(?:\.0+)?\s*%/.test(name)||/\b100(?:\.0+)?\s*(?:legal\s*)?white\b/.test(name)) score+=25;
+	  if(rd.autocal_white_reference||rd.autocal_legal_white_anchor) score+=20;
+	  if(name.indexOf('109')>=0) score-=100;
+	  if(score>bestScore){
+	   bestScore=score;
+	   best=Number(y);
+	  }
+	 });
+	 if(best>0) return best;
+	 const white=snap&&snap.white_reading;
+	 const whiteY=white&&meterAutoCalMagicWandReadingLooks100(white)?Number(meterReadingLuminanceNits(white)):NaN;
+	 return (Number.isFinite(whiteY)&&whiteY>0)?whiteY:null;
+	}
+
 	async function meterAutoCalCaptureMagicWandLg26Series(stageKey,label,options){
 	 const fullWorkflow=!!(options&&options.fullWorkflow);
 	 const stage='magic_wand';
@@ -20570,22 +20636,36 @@ function meterFullAutoCalSleep(ms){
 	 const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff(label);
 	 if(!calibrationOff) throw new Error('LG calibration mode must be off before '+label);
 	 const magicPoints=26;
-	 let status=null;
-	 meterInternalSeriesWorkflow={workflow:fullWorkflow?'full':'greyscale',label:label};
-	 try{
-	  meterSelectSeries('greyscale',magicPoints);
-	  await meterFullAutoCalSleep(100);
-	  const started=await meterRunSeries();
-	  if(!started) throw new Error('Unable to start '+label);
-	  status=await meterFullAutoCalWaitForSeriesComplete(label,{allowStandalone:!fullWorkflow});
-	 }finally{
-	  meterInternalSeriesWorkflow=null;
+	 let snap=null;
+	 let lastValidation=null;
+	 for(let attempt=0;attempt<2;attempt++){
+	  let status=null;
+	  const attemptLabel=attempt>0?(label+' retry'):label;
+	  if(attempt>0){
+	   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:attemptLabel},{workflow:fullWorkflow?'full':'greyscale',label:attemptLabel});
+	   if(fullWorkflow) meterFullAutoCalArchiveReportData(stage+'-'+stageKey+'-retry',{reason:lastValidation&&lastValidation.message});
+	  }
+	  meterInternalSeriesWorkflow={workflow:fullWorkflow?'full':'greyscale',label:attemptLabel};
+	  try{
+	   meterSelectSeries('greyscale',magicPoints);
+	   await meterFullAutoCalSleep(100);
+	   const started=await meterRunSeries();
+	   if(!started) throw new Error('Unable to start '+label);
+	   status=await meterFullAutoCalWaitForSeriesComplete(label,{allowStandalone:!fullWorkflow});
+	  }finally{
+	   meterInternalSeriesWorkflow=null;
+	  }
+	  if(!status||status.status!=='complete'){
+	   throw new Error((status&&status.current_name)||label+' did not complete');
+	  }
+	  const candidate=meterAutoCalCapturedSeriesSnapshotForKey('greyscale-'+magicPoints)||meterFullAutoCalSnapshotForKey('greyscale-'+magicPoints);
+	  lastValidation=meterAutoCalMagicWandLg26Validation(candidate);
+	  if(lastValidation.ok){
+	   snap=candidate;
+	   break;
+	  }
 	 }
-	 if(!status||status.status!=='complete'){
-	  throw new Error((status&&status.current_name)||label+' did not complete');
-	 }
-	 const snap=meterFullAutoCalSnapshotForKey('greyscale-'+magicPoints);
-	 if(!snap) throw new Error('No greyscale series data was captured for '+label);
+	 if(!snap) throw new Error('Magic Wand '+label+' did not capture a complete LG 26pt series: '+((lastValidation&&lastValidation.message)||'missing readings'));
 	 if(fullWorkflow){
 	  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
 	  if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
@@ -20781,6 +20861,7 @@ async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalPhase='postcal-report';
  meterFullAutoCalSaveState();
  meterClearAutoCalStatusPollingForReport();
+ let reportCompleted=false;
  try{
   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:series.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
   const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff('post-cal report');
@@ -20793,8 +20874,18 @@ async function meterFullAutoCalGeneratePostReport(){
   await meterFullAutoCalArchiveReportData(downloaded?'report-downloaded':'report-built',{filename:filename,downloaded:!!downloaded});
   meterFullAutoCalResetState(true);
   meterFullAutoCalClearReportData();
+  meterAutoCalClearCompleteAutoClose();
+  meterAutoCalClearSavedState();
+  meterAutoCalRunning=false;
+  meterAutoCalPhase='';
+  meterActionPending=false;
+  meterAutoCalMagicWandActive=false;
+  meterAutoCalMagicWandBaseStatus=null;
+  meterAutoCalMagicWandFullWorkflow=false;
+  meterAutoCalSetOverlay(false,null);
   meterClearSeriesRunUiState();
   meterHideWorkflowProgress();
+  reportCompleted=true;
  if(downloaded) toast('Full AutoCal report downloaded');
  }catch(e){
   meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
@@ -20805,6 +20896,15 @@ async function meterFullAutoCalGeneratePostReport(){
   try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(_e){}
   meterFullAutoCalAbort((e&&e.message)||'Full AutoCal report failed',true);
  }finally{
+  if(reportCompleted){
+   meterFullAutoCalRunning=false;
+   meterFullAutoCalPhase='';
+   meterAutoCalRunning=false;
+   meterAutoCalPhase='';
+   meterActionPending=false;
+   meterClearSeriesRunUiState();
+   meterHideWorkflowProgress();
+  }
   if(btn){btn.disabled=false;btn.textContent='\uD83D\uDCC4 Generate Post-Cal Report';}
   if(skipBtn) skipBtn.disabled=false;
   meterUpdateReadButtons();
@@ -20981,6 +21081,8 @@ function meterFullAutoCalTouchupTargetY(){
 	  if(!meterEnsureLgAutoCalExtendedVideoTransport()) throw new Error('LG Auto Cal transport is not ready');
 	  if(!meterEnsureAppliedGeneratorSettings()) throw new Error('Apply & Restart first so measurements match the live signal mode');
 	  const beforeSnap=await meterAutoCalCaptureMagicWandLg26Series('before','Magic Wand LG 26pt read',{fullWorkflow});
+	  const beforeTargetY=meterAutoCalMagicWandTargetLuminanceFromSnapshot(beforeSnap);
+	  if(!(Number.isFinite(beforeTargetY)&&beforeTargetY>0)) throw new Error('Magic Wand LG 26pt read did not include a usable 100% white luminance');
 	  meterActiveSeriesType='greyscale';
 	  meterActiveSeriesPoints=26;
 	  meterActiveSeriesKey='greyscale-26';
@@ -21016,7 +21118,7 @@ function meterFullAutoCalTouchupTargetY(){
 	    patch_insert:document.getElementById('meterPatchInsert').checked,
 	    target_delta_e:ctx.target,
 	    delta_e_formula:deltaEFormula,
-	    target_luminance:ctx.targetY,
+	    target_luminance:beforeTargetY,
 	    setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
 	    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
 	    target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
@@ -21138,6 +21240,8 @@ function meterFullAutoCalTouchupTargetY(){
 	 const adjustment=adjustStatus&&adjustStatus.post_cal_series_adjustment;
 	 if(!adjustment||!Array.isArray(adjustment.changes)||!adjustment.changes.length) return null;
 	 if(!afterSnap||!Array.isArray(afterSnap.readings)||!afterSnap.readings.length) return null;
+	 const afterTargetY=meterAutoCalMagicWandTargetLuminanceFromSnapshot(afterSnap);
+	 if(!(Number.isFinite(afterTargetY)&&afterTargetY>0)) throw new Error('Magic Wand verification did not include a usable 100% white luminance');
 	 meterSetWorkflowProgress({status:'running',current_step:0,total_steps:adjustment.changes.length,current_name:'Magic Wand failsafe'},{workflow:fullWorkflow?'full':'greyscale',label:'Magic Wand failsafe'});
 	 meterActiveSeriesType='greyscale';
  meterActiveSeriesPoints=26;
@@ -21166,7 +21270,7 @@ function meterFullAutoCalTouchupTargetY(){
    patch_insert:document.getElementById('meterPatchInsert').checked,
 	   target_delta_e:ctx.target,
 	   delta_e_formula:'deitp',
-	   target_luminance:ctx.targetY,
+	   target_luminance:afterTargetY,
 	   setup_luminance_reference:(Number.isFinite(ctx.setupY)&&ctx.setupY>0)?ctx.setupY:undefined,
 	   headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(ctx.headroomY)&&ctx.headroomY>0)?ctx.headroomY:undefined,
 	   target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
@@ -22297,7 +22401,7 @@ async function meterStartLg3dAutoCal(options){
  const pictureMode=meterLgPictureModeValue();
  const preflightLut3d=meterFullAutoCalConfig&&meterFullAutoCalConfig.preflightReset&&meterFullAutoCalConfig.preflightReset.lut3d;
  const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
- const skipPreprofileUnityReset=false;
+ const skipPreprofileUnityReset=!!(fullWorkflow&&preflightLut3d&&preflightLut3d.upload_verified===true&&(!preflightPictureMode||preflightPictureMode===pictureMode));
  const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
  const fullMagicWand=(options&&Object.prototype.hasOwnProperty.call(options,'magicWandEnabled'))?options.magicWandEnabled===true:meterFullAutoCalMagicWandEnabled();
  const rawTargetGamma=meterAutoCalTargetGammaValue();
