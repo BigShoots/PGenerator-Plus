@@ -2676,10 +2676,17 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
  my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' </dev/null >/dev/null 2>&1 &";
- open(my $debug_log,">>/tmp/webui_series_debug.log");
- print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
- print $debug_log "[".scalar(localtime())."] Command: $cmd\n";
- close($debug_log);
+	 open(my $debug_log,">>/tmp/webui_series_debug.log");
+	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
+	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
+	  my $autocal_ref_source=(ref($series_target_white_reference) eq "HASH") ? ($series_target_white_reference->{"source"}||"") : "";
+	  my $autocal_ref_field=(ref($series_target_white_reference) eq "HASH") ? ($series_target_white_reference->{"field"}||"") : "";
+	  my $autocal_ref_run=(ref($series_target_white_reference) eq "HASH") ? ($series_target_white_reference->{"run_id"}||"") : "";
+	  my $autocal_ref_white=(ref($series_target_white_reference) eq "HASH" && defined($series_target_white_reference->{"white_y"})) ? ($series_target_white_reference->{"white_y"}+0) : "";
+	  print $debug_log "[".scalar(localtime())."] LG26 series target context: signal_mode=$signal_mode target_gamma=$target_gamma target_gamut=".($target_gamut||"auto")." target_white_x=0.3127 target_white_y=0.329 explicit_series_target_white_y=$series_target_white_y_provided series_target_white_y_num=$series_target_white_y_num stamp_series_target_white_y=$stamp_series_target_white_y autocal_ref_source=$autocal_ref_source autocal_ref_field=$autocal_ref_field autocal_ref_run_id=$autocal_ref_run autocal_ref_white_y=$autocal_ref_white\n";
+	 }
+	 print $debug_log "[".scalar(localtime())."] Command: $cmd\n";
+	 close($debug_log);
  system($cmd);
 
  return "{\"status\":\"started\",\"series_id\":\"$series_id\",\"total_steps\":$total,\"steps\":[".join(",",@steps)."]}";

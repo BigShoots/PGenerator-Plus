@@ -35,6 +35,7 @@ sub log_line {
 }
 
 my $trace_109_file="/var/log/PGenerator/lg-autocal-109-trace.log";
+my $sdr_low_shadow_ddc_trace_file="/tmp/lg-autocal-sdr-low-shadow-ddc.jsonl";
 
 sub trace_number {
  my ($value)=@_;
@@ -4159,6 +4160,67 @@ sub ddc_slot_index_for_ire {
   return $idx if(abs(($wanted_ire+0)-($slots[$idx]+0)) < 0.001);
  }
  return undef;
+}
+
+sub trace_sdr_low_shadow_ddc_snapshot {
+ my ($phase,$config,$state,$arrays,$step,$target,$extra)=@_;
+ return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return if(ref($arrays) ne "HASH");
+ my @wanted_ires=(2.3,3,4,5,7,10,15,20);
+ my @settings=(
+  ["whiteBalanceRed","red"],
+  ["whiteBalanceGreen","green"],
+  ["whiteBalanceBlue","blue"],
+  ["adjustingLuminance","luminance"],
+ );
+ my @slots;
+ foreach my $ire (@wanted_ires) {
+  my $idx=ddc_slot_index_for_ire($ire);
+  next if(!defined($idx));
+  my %slot=(ire=>$ire+0,index=>$idx+0);
+  foreach my $item (@settings) {
+   my ($setting,$name)=@{$item};
+   my $arr=$arrays->{$setting};
+   next if(ref($arr) ne "ARRAY");
+   $slot{$name}=trace_number($arr->[$idx]) if(defined($arr->[$idx]));
+  }
+  push @slots,\%slot;
+ }
+ my %row=(
+  timestamp_ms=>int(time()*1000),
+  pid=>$$+0,
+  phase=>defined($phase) ? $phase : "",
+  signal_mode=>lc($config->{"signal_mode"}||"sdr"),
+  ddc_layout=>$LG_AUTOCAL_DDC_LAYOUT||"",
+  run_id=>(ref($state) eq "HASH" ? ($state->{"run_id"}||"") : ""),
+  full_autocal_run_id=>(ref($state) eq "HASH" ? ($state->{"full_autocal_run_id"}||"") : ""),
+  slots=>\@slots,
+ );
+ if(ref($step) eq "HASH") {
+  my %step_out;
+  foreach my $key (qw(name ire nominal_ire plot_ire stimulus ddc_target_ire ddc_array_ire autocal_target_label autocal_order_ire)) {
+   $step_out{$key}=trace_number($step->{$key}) if(defined($step->{$key}));
+  }
+  $row{"step"}=\%step_out;
+ }
+ if(ref($target) eq "HASH") {
+  my %target_out;
+  foreach my $key (qw(index ire array_ire write_ire label)) {
+   $target_out{$key}=trace_number($target->{$key}) if(defined($target->{$key}));
+  }
+  $row{"target"}=\%target_out;
+ }
+ $row{"extra"}=$extra if(ref($extra) eq "HASH");
+ eval {
+  open(my $fh,">>",$sdr_low_shadow_ddc_trace_file) or die $!;
+  print $fh $json->encode(\%row)."\n";
+  close($fh);
+  chmod(0666,$sdr_low_shadow_ddc_trace_file);
+  1;
+ } or do {
+  log_line("Unable to write SDR low-shadow DDC trace: $@");
+ };
 }
 
 sub copy_lg_26pt_ddc_slot_values {
@@ -15487,14 +15549,23 @@ eval {
 				   paired_reading=>trace_reading_summary($best_pair_reading),
 				   final_values=>trace_target_values($best_arrays,$target)
 				  });
-				  trace_drift_matrix_final_kept(
-				   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
-				   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
-				  );
-					  remember_lg_autocal_26_best_known(
-					   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
-					   $target_step_y,$best_arrays,$target,"main_final_step_result",$final_reached
-							  );
+					  trace_drift_matrix_final_kept(
+					   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
+					   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
+					  );
+					  trace_sdr_low_shadow_ddc_snapshot(
+					   "fresh_verify_accept",$config,$state,$best_arrays,$read_step,$target,{
+					    fresh_delta_e=>defined($best_de) ? trace_number($best_de) : undef,
+					    fresh_luminance_error_pct=>defined($best_lum_pct) ? trace_number($best_lum_pct) : undef,
+					    fresh_score=>defined($best_score) ? trace_number($best_score) : undef,
+					    target_luminance=>defined($target_step_y) ? trace_number($target_step_y) : undef,
+					    reading=>trace_reading_summary($best_reading),
+					   }
+					  ) if(sdr_low_shadow_final_acceptance_verify_required($config,$read_step));
+						  remember_lg_autocal_26_best_known(
+						   $config,$state,$read_step,$best_reading,$best_de,$best_lum_pct,
+						   $target_step_y,$best_arrays,$target,"main_final_step_result",$final_reached
+								  );
 					  $finalize_calibrated_26pt_slot->($target,$read_step,$label);
 					  write_state($state);
 					  if(
@@ -15573,18 +15644,39 @@ eval {
 						   my $shadow_detail_adjusted=apply_lg_autocal_26_oled_shadow_detail_compensation(
 						    $config,$state,$arrays,\@ordered,\@calibrated_ddc_slots
 						   );
-						   if($shadow_detail_adjusted) {
-						    $state->{"message"}="Applied OLED shadow detail pre-commit compensation";
-						    write_state($state);
-						   }
-						   my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
-						   if($propagated_slots) {
-						    $state->{"propagated_26pt_slots"}=$propagated_slots+0;
-						    write_state($state);
-						   }
-						  }
-						  ($picture,$commit_error,$commit_ended_calibration)=commit_final_1d_lut($state,$picture,$arrays,$picture_mode,\@ordered,$calibration_mode_active);
-						  die $commit_error if($commit_error);
+							   if($shadow_detail_adjusted) {
+							    $state->{"message"}="Applied OLED shadow detail pre-commit compensation";
+							    write_state($state);
+							   }
+							   trace_sdr_low_shadow_ddc_snapshot(
+							    "pre_commit_propagation_before",$config,$state,$arrays,undef,undef,{
+							     committed_polish_white_y=>defined($white_y) ? trace_number($white_y) : undef,
+							     calibrated_slots=>[ calibrated_26pt_slot_ires(\@calibrated_ddc_slots) ],
+							     oled_shadow_detail_adjusted=>$shadow_detail_adjusted ? JSON::PP::true : JSON::PP::false,
+							    }
+							   );
+							   my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
+							   if($propagated_slots) {
+							    $state->{"propagated_26pt_slots"}=$propagated_slots+0;
+							    write_state($state);
+							   }
+							  }
+							  trace_sdr_low_shadow_ddc_snapshot(
+							   "pre_final_commit",$config,$state,$arrays,undef,undef,{
+							    committed_polish_white_y=>defined($white_y) ? trace_number($white_y) : undef,
+							    propagated_26pt_slots=>defined($state->{"propagated_26pt_slots"}) ? trace_number($state->{"propagated_26pt_slots"}) : undef,
+							   }
+							  );
+							  ($picture,$commit_error,$commit_ended_calibration)=commit_final_1d_lut($state,$picture,$arrays,$picture_mode,\@ordered,$calibration_mode_active);
+							  trace_sdr_low_shadow_ddc_snapshot(
+							   "post_final_commit",$config,$state,$arrays,undef,undef,{
+							    commit_error=>$commit_error,
+							    commit_ended_calibration=>$commit_ended_calibration ? JSON::PP::true : JSON::PP::false,
+							    final_1d_lut_uploaded=>$state->{"final_1d_lut_uploaded"} ? JSON::PP::true : JSON::PP::false,
+							    final_1d_lut_upload_verified=>$state->{"final_1d_lut_upload_verified"} ? JSON::PP::true : JSON::PP::false,
+							   }
+							  );
+							  die $commit_error if($commit_error);
 						  $calibration_mode_active=0 if($commit_ended_calibration);
 						  log_line("Final 1D LUT commit result: ended_calibration=".($commit_ended_calibration?1:0).", uploaded=".(($state->{"final_1d_lut_uploaded"})?1:0).", verified=".(($state->{"final_1d_lut_upload_verified"})?1:0));
 						  if(($commit_ended_calibration || $state->{"final_1d_lut_uploaded"}) && ref($config) eq "HASH" && $config->{"lg_autocal_26"} && !cancelled()) {
