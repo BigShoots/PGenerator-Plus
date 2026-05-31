@@ -2599,6 +2599,32 @@ sub lg_ddc_1d_nonzero_map (@) {
  return \%out;
 }
 
+sub lg_ddc_sdr_low_shadow_snapshot (@) {
+ my $settings=shift;
+ return [] if(ref($settings) ne "HASH");
+ return [] if(($settings->{"ddc_layout"}||"sdr26") ne "sdr26");
+ my %channels=(
+  red => "whiteBalanceRed",
+  green => "whiteBalanceGreen",
+  blue => "whiteBalanceBlue",
+  luminance => "adjustingLuminance",
+ );
+ my @wanted_ires=(2.3,3,4,5,7,10,15,20);
+ my @out=();
+ foreach my $ire (@wanted_ires) {
+  my $slot=&lg_ddc_1d_index_for_ire($ire);
+  next if($slot < 0);
+  my $info=&lg_ddc_1d_slot_info($slot);
+  next if(ref($info) ne "HASH");
+  foreach my $name (keys %channels) {
+   my $values=&lg_ddc_normalize_rgb_array($settings->{$channels{$name}});
+   $info->{$name}=0+$values->[$slot] if(defined($values->[$slot]));
+  }
+  push(@out,$info);
+ }
+ return \@out;
+}
+
 sub lg_ddc_has_22pt_rgb (@) {
  my $settings=shift;
  return 0 if(ref($settings) ne "HASH");
@@ -3003,10 +3029,26 @@ sub lg_ddc_1d_white_balance_set (@) {
   return (1,&json_error($message,{ active_picture_mode => $picture_mode, raw_response => $start }));
  }
 
-	 &lg_ddc_clear_state($ip,$picture_mode) if($reset_ddc_baseline);
-	 my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline,$ddc_layout);
-	 my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
-	 my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
+		 &lg_ddc_clear_state($ip,$picture_mode) if($reset_ddc_baseline);
+		 my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline,$ddc_layout);
+		 my $normalized_state=&lg_ddc_state_from_settings($settings,$picture_mode);
+		 if($ddc_layout eq "sdr26") {
+		  &diag_log_append("ddc1d:normalized-sdr-low-shadow",{
+		   phase => "pre_lut_build",
+		   ddc_layout => $ddc_layout,
+		   picture_mode => $picture_mode,
+		   whiteBalanceIre => $settings->{"whiteBalanceIre"}||"",
+		   keep_calibration_mode => &json_bool($keep_calibration_mode),
+		   calibration_mode_active => &json_bool($calibration_mode_active),
+		   reset_ddc_baseline => &json_bool($reset_ddc_baseline),
+		   verify_ddc_upload => &json_bool($verify_ddc_upload),
+		   ddc_target => &lg_ddc_1d_target_info($normalized_state),
+		   ddc_nonzero => &lg_ddc_1d_nonzero_map($normalized_state),
+		   low_shadow_slots => &lg_ddc_sdr_low_shadow_snapshot($normalized_state),
+		  });
+		 }
+		 my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
+		 my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
  my $late_start=undef;
  if(!$enable_ok && $calibration_mode_active) {
   $late_start=&lg_calibration_request($session,"ddc_cal_start_late","CAL_START",undef,1,$cal_mode,$timeout);
