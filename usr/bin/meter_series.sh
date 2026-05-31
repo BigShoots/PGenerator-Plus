@@ -471,6 +471,7 @@ FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
 DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=5
 ZERO_READ_RETRIES=2
+NO_READING_RETRIES=1
 
 daemon_elapsed_sec() {
  local pid
@@ -1074,6 +1075,69 @@ EOJSON
   fi
  fi
 
+ if [[ -z "$READING" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
+  for (( no_reading_retry=1; no_reading_retry<=NO_READING_RETRIES; no_reading_retry++ )); do
+   echo "[$(date '+%H:%M:%S.%3N')] no reading retry: step=$STEP_NUM ire=$IRE retry=$no_reading_retry/$NO_READING_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
+   cat > "$STATE_FILE" << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $no_reading_retry/$NO_READING_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+   sleep "$STEP_DELAY"
+   PREV_COUNT=$(count_results)
+   SCAN_OFFSET=$(output_size)
+   printf " " >&3
+   READ_START=$SECONDS
+   RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
+   GOT_RETRY=false
+   RETRIED_COMM=0
+   while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
+    CUR_COUNT=$(count_results)
+    if (( CUR_COUNT > PREV_COUNT )); then
+     GOT_RETRY=true
+     break
+    fi
+    NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
+    if [[ -n "$NEW_OUTPUT" ]]; then
+     CUR_SIZE=$(output_size)
+     if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+      printf " " >&3
+      RETRIED_COMM=1
+      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
+      SCAN_OFFSET=$(output_size)
+      continue
+     fi
+     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+      echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
+      if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+       wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
+      else
+       sleep 1
+      fi
+      printf " " >&3
+      READ_START=$SECONDS
+      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 30))
+      SCAN_OFFSET=$(output_size)
+      continue
+     fi
+     SCAN_OFFSET="$CUR_SIZE"
+    fi
+    sleep 0.3
+   done
+   if $GOT_RETRY; then
+    PARSED=$(parse_latest_result)
+    if [[ -n "$PARSED" ]]; then
+     READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
+    fi
+   fi
+   if [[ -n "$READING" ]]; then
+    echo "[$(date '+%H:%M:%S.%3N')] no reading retry recovered: step=$STEP_NUM ire=$IRE retry=$no_reading_retry name=$NAME" >> /tmp/meter_series_debug.log
+    break
+   fi
+   echo "[$(date '+%H:%M:%S.%3N')] no reading retry failed: step=$STEP_NUM ire=$IRE retry=$no_reading_retry timeout=${RETRY_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
+  done
+ fi
+
  if [[ -n "$READING" ]] && nonblack_zero_reading "$READING" "$IRE" "$R" "$G" "$B"; then
   echo "[$(date '+%H:%M:%S.%3N')] zero read guard: step=$STEP_NUM ire=$IRE name=$NAME parsed all-zero XYZ/luminance" >> /tmp/meter_series_debug.log
   ZERO_RETRY_READING=""
@@ -1146,7 +1210,7 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
-  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout final: step=$STEP_NUM ire=$IRE retries=$NO_READING_RETRIES timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}")
  fi
 
