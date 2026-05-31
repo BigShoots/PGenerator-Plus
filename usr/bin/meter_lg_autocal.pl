@@ -5018,8 +5018,8 @@ sub sdr_23_backoff_magnitudes {
  my ($failed_mag)=@_;
  return () if(!defined($failed_mag) || $failed_mag <= 0.2501);
  my @out;
- foreach my $mag (($failed_mag/2),($failed_mag/4),0.25) {
-  $mag=round_ddc_quarter($mag);
+ foreach my $candidate (($failed_mag/2),($failed_mag/4),0.25) {
+  my $mag=round_ddc_quarter($candidate);
   next if($mag < 0.2499 || $mag >= $failed_mag-0.0001);
   next if(grep { abs($_-$mag) < 0.0001 } @out);
   push @out,$mag;
@@ -8734,8 +8734,8 @@ sub choose_rgb_response_adjustments {
 			 my ($next,$damped);
 			 my @probe_magnitudes=($probe_step);
 			 if(defined($sdr_23_rgb_cap)) {
-			  foreach my $mag (($probe_step/2),($probe_step/4),0.25) {
-			   $mag=round_ddc_quarter($mag);
+			  foreach my $candidate (($probe_step/2),($probe_step/4),0.25) {
+			   my $mag=round_ddc_quarter($candidate);
 			   next if($mag < 0.2499 || $mag > $probe_step+0.0001);
 			   next if(grep { abs($_-$mag) < 0.0001 } @probe_magnitudes);
 			   push @probe_magnitudes,$mag;
