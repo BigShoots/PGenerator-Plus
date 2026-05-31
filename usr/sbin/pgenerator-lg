@@ -2599,7 +2599,7 @@ sub lg_ddc_1d_nonzero_map (@) {
  return \%out;
 }
 
-sub lg_ddc_sdr_low_shadow_snapshot (@) {
+sub lg_ddc_sdr_diagnostic_slot_snapshot (@) {
  my $settings=shift;
  return [] if(ref($settings) ne "HASH");
  return [] if(($settings->{"ddc_layout"}||"sdr26") ne "sdr26");
@@ -2609,7 +2609,7 @@ sub lg_ddc_sdr_low_shadow_snapshot (@) {
   blue => "whiteBalanceBlue",
   luminance => "adjustingLuminance",
  );
- my @wanted_ires=(2.3,3,4,5,7,10,15,20);
+ my @wanted_ires=(109,105,99,95,80,60,40,20,15,10,7,5,4,3,2.3);
  my @out=();
  foreach my $ire (@wanted_ires) {
   my $slot=&lg_ddc_1d_index_for_ire($ire);
@@ -3044,7 +3044,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   verify_ddc_upload => &json_bool($verify_ddc_upload),
 		   ddc_target => &lg_ddc_1d_target_info($normalized_state),
 		   ddc_nonzero => &lg_ddc_1d_nonzero_map($normalized_state),
-		   low_shadow_slots => &lg_ddc_sdr_low_shadow_snapshot($normalized_state),
+		   diagnostic_slots => &lg_ddc_sdr_diagnostic_slot_snapshot($normalized_state),
 		  });
 		 }
 		 my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
