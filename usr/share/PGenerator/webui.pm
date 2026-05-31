@@ -11585,6 +11585,11 @@ function meterEffectiveGreyscaleWhiteReference(readings){
  const list=meterGreyscaleReferenceReadings(readings);
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
  const referenceList=lgAutoCalChartRef?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
+ const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
+ if(lgAutoCalChartRef&&magicWandPhase){
+  const magicWandWhite=meterFindSeriesWhiteReading(list);
+  if(magicWandWhite) return magicWandWhite;
+ }
  const activeAutoCalTargetY=meterAutoCalGreyscaleTargetWhiteReferenceNits(list);
  if(activeAutoCalTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(activeAutoCalTargetY);
@@ -20413,6 +20418,11 @@ function meterFullAutoCalAbort(message,isError){
  meterAutoCalRunning=false;
  meterLg3dAutoCalRunning=false;
  meterAutoCalPhase=isError?'error':'';
+ meterAutoCalMagicWandActive=false;
+ meterAutoCalMagicWandBaseStatus=null;
+ meterAutoCalMagicWandFullWorkflow=false;
+ meterClearSeriesRunUiState();
+ meterHideWorkflowProgress();
  if(isError){
   meterAutoCalSetOverlay(true,{phase:'running',current_name:'Full Auto Cal error',message:text,status:'error'});
  }else{
