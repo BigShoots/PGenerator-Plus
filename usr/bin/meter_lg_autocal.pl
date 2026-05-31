@@ -13854,10 +13854,18 @@ eval {
 					  $state->{"final_context_low_shadow_revisit"}={
 					   status=>"running",
 					   order=>[ map { ($_+0) } (2.3,3,4,5,7,10) ],
+					   passes=>2,
+					   iteration_budget=>config_positive_int($config,"final_context_low_shadow_revisit_iterations",4,0,8),
 					   adjusted=>0,
 					   skipped=>0,
 					  };
 					  write_state($state);
+					  my $base_iteration_limit=$state->{"final_context_low_shadow_revisit"}{"iteration_budget"}+0;
+					  my %revisit_iterations_used;
+					  for(my $revisit_pass=1;$revisit_pass<=2;$revisit_pass++) {
+					   last if(cancelled());
+					   $state->{"final_context_low_shadow_revisit"}{"pass"}=$revisit_pass+0;
+					   write_state($state);
 					  foreach my $source_step (@revisit_steps) {
 					   last if(cancelled());
 					   my $target=ddc_target_for_step($source_step);
@@ -13869,6 +13877,9 @@ eval {
 					   my $prior_best=lg_autocal_26_best_known_for_step($state,$read_step);
 					   delete($state->{"lg_autocal_26_best_known"}{$best_key})
 					    if(defined($best_key) && ref($state->{"lg_autocal_26_best_known"}) eq "HASH");
+					   my $budget_key=defined($best_key) ? $best_key : $label;
+					   my $remaining_iterations=$base_iteration_limit-($revisit_iterations_used{$budget_key}||0);
+					   $remaining_iterations=0 if($remaining_iterations < 0);
 					   $state->{"current_name"}="Final context $label";
 					   $state->{"phase"}="reading";
 					   $state->{"message"}="Final-context low-shadow verify $label";
@@ -13891,26 +13902,34 @@ eval {
 					   my $score=guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,undef);
 					   my $tol=luminance_tolerance_percent($read_step);
 					   my $accept=low_shadow_luminance_acceptance_percent($read_step);
+					   my $delta_target=(defined($target_delta) && $target_delta > 0) ? ($target_delta+0) : 0.5;
 					   my $over_target=(defined($lum_pct) && ($lum_pct+0) > 0) ? 1 : 0;
-					   my $near_danger=(
-					    $over_target &&
-					    (
-					     (defined($lum_pct) && defined($tol) && ($lum_pct+0) > ($tol*0.45)) ||
-					     (defined($de) && ($de+0) > ($target_delta+0.10)) ||
-					     (defined($score) && ($score+0) > ($target_delta+0.10))
-					    )
-					   ) ? 1 : 0;
-					   my $should_adjust=$near_danger ? 1 : 0;
+					   my $abs_lum_pct=defined($lum_pct) ? abs($lum_pct+0) : undef;
+					   my $de_above_target=(defined($de) && ($de+0) > $delta_target) ? 1 : 0;
+					   my $score_above_target=(defined($score) && ($score+0) > $delta_target) ? 1 : 0;
+					   my $luma_outside_tolerance=(defined($abs_lum_pct) && defined($tol) && $abs_lum_pct > ($tol+0)) ? 1 : 0;
+					   my $luma_near_danger=(defined($abs_lum_pct) && defined($tol) && $abs_lum_pct > (($tol+0)*0.45)) ? 1 : 0;
+					   my $outside_final_context_tolerance=($de_above_target || $score_above_target || $luma_outside_tolerance || $luma_near_danger) ? 1 : 0;
+					   my $should_adjust=($outside_final_context_tolerance && $remaining_iterations > 0) ? 1 : 0;
 					   my $verify_record={
 					    label=>$label,
+					    pass=>$revisit_pass+0,
 					    ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef,
 					    delta_e=>defined($de) ? $de+0 : undef,
 					    luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+					    luminance_abs_error_pct=>defined($abs_lum_pct) ? $abs_lum_pct+0 : undef,
+					    luminance_tolerance_pct=>defined($tol) ? $tol+0 : undef,
 					    score=>defined($score) ? $score+0 : undef,
 					    target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
 					    measured_luminance=>luminance($reading),
 					    over_target=>$over_target ? JSON::PP::true : JSON::PP::false,
-					    near_danger=>$near_danger ? JSON::PP::true : JSON::PP::false,
+					    de_above_target=>$de_above_target ? JSON::PP::true : JSON::PP::false,
+					    score_above_target=>$score_above_target ? JSON::PP::true : JSON::PP::false,
+					    luminance_outside_tolerance=>$luma_outside_tolerance ? JSON::PP::true : JSON::PP::false,
+					    luminance_near_danger=>$luma_near_danger ? JSON::PP::true : JSON::PP::false,
+					    outside_final_context_tolerance=>$outside_final_context_tolerance ? JSON::PP::true : JSON::PP::false,
+					    iteration_budget=>$base_iteration_limit+0,
+					    iteration_budget_remaining=>$remaining_iterations+0,
 					    prior_best_ignored=>ref($prior_best) eq "HASH" ? JSON::PP::true : JSON::PP::false,
 					    prior_best_delta_e=>ref($prior_best) eq "HASH" && defined($prior_best->{"delta_e"}) ? ($prior_best->{"delta_e"}+0) : undef,
 					    prior_best_luminance_error_pct=>ref($prior_best) eq "HASH" && defined($prior_best->{"luminance_error_pct"}) ? ($prior_best->{"luminance_error_pct"}+0) : undef,
@@ -13934,7 +13953,7 @@ eval {
 					   my $best_target_y=$target_step_y;
 					   my $adjusted=0;
 					   if(!$should_adjust) {
-					    my $skip_record={ %{$verify_record}, reason=>($over_target ? "below_final_context_adjust_gate" : "not_over_target") };
+					    my $skip_record={ %{$verify_record}, reason=>($outside_final_context_tolerance ? "final_context_revisit_budget_exhausted" : "within_final_context_tolerance") };
 					    trace_109($read_step,"final_context_low_shadow_skip",$skip_record);
 					    trace_sdr_low_shadow_ddc_snapshot("final_context_low_shadow_skip",$config,$state,$arrays,$read_step,$target,$skip_record);
 					    remember_lg_autocal_26_best_known(
@@ -13943,17 +13962,18 @@ eval {
 					     low_shadow_good_enough($read_step,$de,$lum_pct,$target_delta)
 					    );
 					    $state->{"final_context_low_shadow_revisit"}{"skipped"}=($state->{"final_context_low_shadow_revisit"}{"skipped"}||0)+1;
-					    push @summary,{ label=>$label, ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef, skipped=>JSON::PP::true, delta_e=>defined($de)?$de+0:undef, luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef };
+					    push @summary,{ label=>$label, pass=>$revisit_pass+0, ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef, skipped=>JSON::PP::true, reason=>$skip_record->{"reason"}, delta_e=>defined($de)?$de+0:undef, luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef };
 					    write_state($state);
 					    next;
 					   }
 					   my %tried_values;
 					   mark_tried_values(\%tried_values,$arrays,$target,$de);
-					   my $limit=config_positive_int($config,"final_context_low_shadow_revisit_iterations",2,0,6);
+					   my $limit=$remaining_iterations+0;
 					   my $stalls=0;
 					   my $queued_adjustments;
 					   for(my $iter=1;$iter<=$limit;$iter++) {
 					    last if(cancelled());
+					    my $absolute_iter=($revisit_iterations_used{$budget_key}||0)+1;
 					    last if(defined($best_lum_pct) && ($best_lum_pct+0) <= 0 && low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta));
 					    my $err=autocal_adjustment_error($reading,$read_step);
 					    my $lum_err=luminance_error_ratio($reading,$target_step_y);
@@ -13968,8 +13988,10 @@ eval {
 					    if(!$adjustments) {
 					     trace_109($read_step,"final_context_low_shadow_skip",{
 					      label=>$label,
+					      pass=>$revisit_pass+0,
 					      reason=>"no_adjustment_chosen",
-					      iteration=>$iter+0,
+					      iteration=>$absolute_iter+0,
+					      pass_iteration=>$iter+0,
 					      delta_e=>defined($de)?$de+0:undef,
 					      luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
 					      target_values=>trace_target_values($arrays,$target)
@@ -13990,8 +14012,11 @@ eval {
 					    }
 					    trace_109($read_step,"final_context_low_shadow_revisit",{
 					     label=>$label,
-					     iteration=>$iter+0,
-					     iteration_limit=>$limit+0,
+					     pass=>$revisit_pass+0,
+					     iteration=>$absolute_iter+0,
+					     pass_iteration=>$iter+0,
+					     iteration_limit=>$base_iteration_limit+0,
+					     iteration_budget_remaining=>($base_iteration_limit-$absolute_iter),
 					     delta_e=>defined($de)?$de+0:undef,
 					     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
 					     adjustments=>trace_adjustments_summary($adjustments),
@@ -14000,14 +14025,17 @@ eval {
 					    });
 					    trace_sdr_low_shadow_ddc_snapshot("final_context_low_shadow_revisit",$config,$state,$arrays,$read_step,$target,{
 					     label=>$label,
-					     iteration=>$iter+0,
-					     iteration_limit=>$limit+0,
+					     pass=>$revisit_pass+0,
+					     iteration=>$absolute_iter+0,
+					     pass_iteration=>$iter+0,
+					     iteration_limit=>$base_iteration_limit+0,
 					     before_delta_e=>defined($before_de)?$before_de+0:undef,
 					     before_luminance_error_pct=>defined($before_lum_pct)?$before_lum_pct+0:undef,
 					     adjustments=>trace_adjustments_summary($adjustments),
 					    });
+					    $revisit_iterations_used{$budget_key}=$absolute_iter+0;
 					    $state->{"phase"}="writing";
-					    $state->{"message"}="Final-context low-shadow revisit $label ".describe_adjustments($adjustments)." ($iter/$limit)";
+					    $state->{"message"}="Final-context low-shadow revisit $label ".describe_adjustments($adjustments)." ($absolute_iter/$base_iteration_limit)";
 					    write_state($state);
 					    my $write_error;
 					    ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
@@ -14054,7 +14082,9 @@ eval {
 					    my $keep=($not_worse && $score_improved) || $y_progress ? 1 : 0;
 					    trace_109($read_step,$keep ? "final_context_low_shadow_revisit_keep" : "final_context_low_shadow_revisit_reject",{
 					     label=>$label,
-					     iteration=>$iter+0,
+					     pass=>$revisit_pass+0,
+					     iteration=>$absolute_iter+0,
+					     pass_iteration=>$iter+0,
 					     reading=>trace_reading_summary($candidate_reading),
 					     previous_reading=>trace_reading_summary($before_reading),
 					     target_luminance=>defined($candidate_target_y)?$candidate_target_y+0:undef,
@@ -14131,16 +14161,19 @@ eval {
 					    low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta)
 					   );
 					   $state->{"final_context_low_shadow_revisit"}{"adjusted"}=($state->{"final_context_low_shadow_revisit"}{"adjusted"}||0)+($adjusted ? 1 : 0);
-					   push @summary,{ label=>$label, ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef, adjusted=>$adjusted?JSON::PP::true:JSON::PP::false, delta_e=>defined($best_de)?$best_de+0:undef, luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef, target_values=>trace_target_values($best_arrays,$target) };
+					   push @summary,{ label=>$label, pass=>$revisit_pass+0, ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef, adjusted=>$adjusted?JSON::PP::true:JSON::PP::false, iterations_used=>($revisit_iterations_used{$budget_key}||0)+0, delta_e=>defined($best_de)?$best_de+0:undef, luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef, target_values=>trace_target_values($best_arrays,$target) };
 					   trace_sdr_low_shadow_ddc_snapshot("final_context_low_shadow_result",$config,$state,$best_arrays,$read_step,$target,{
 					    label=>$label,
+					    pass=>$revisit_pass+0,
 					    adjusted=>$adjusted ? JSON::PP::true : JSON::PP::false,
+					    iterations_used=>($revisit_iterations_used{$budget_key}||0)+0,
 					    delta_e=>defined($best_de)?$best_de+0:undef,
 					    luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 					    target_luminance=>defined($best_target_y)?$best_target_y+0:undef,
 					    reading=>trace_reading_summary($best_reading),
 					   });
 					   write_state($state);
+					  }
 					  }
 					  $state->{"final_context_low_shadow_revisit"}{"status"}=cancelled() ? "cancelled" : "complete";
 					  $state->{"final_context_low_shadow_revisit"}{"summary"}=\@summary;
