@@ -4167,7 +4167,7 @@ sub trace_sdr_low_shadow_ddc_snapshot {
  return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  return if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
  return if(ref($arrays) ne "HASH");
- my @wanted_ires=(2.3,3,4,5,7,10,15,20);
+ my @wanted_ires=(109,105,99,95,80,60,40,20,15,10,7,5,4,3,2.3);
  my @settings=(
   ["whiteBalanceRed","red"],
   ["whiteBalanceGreen","green"],
@@ -4415,12 +4415,43 @@ sub calibrated_26pt_slot_for_ire {
 }
 
 sub full_ddc_spine_shadow_seed_links {
- return ();
+ return (
+  { source=>20, target=>15, offsets=>{ adjustingLuminance=>-0.50, whiteBalanceRed=>-0.40, whiteBalanceGreen=>-0.60, whiteBalanceBlue=>-0.60 } },
+  { source=>15, target=>10, offsets=>{ adjustingLuminance=> 3.50, whiteBalanceRed=>-0.10, whiteBalanceGreen=> 0.50, whiteBalanceBlue=> 0.40 } },
+  { source=>10, target=>7,  offsets=>{ adjustingLuminance=> 2.25, whiteBalanceRed=>-0.10, whiteBalanceGreen=> 0.20, whiteBalanceBlue=> 2.50 } },
+  { source=>7,  target=>5,  offsets=>{ adjustingLuminance=> 3.25, whiteBalanceRed=>-0.60, whiteBalanceGreen=>-0.10, whiteBalanceBlue=> 2.00 } },
+  { source=>5,  target=>4,  offsets=>{ adjustingLuminance=>-0.50, whiteBalanceRed=> 0.65, whiteBalanceGreen=> 0.30, whiteBalanceBlue=>-0.20 } },
+  { source=>4,  target=>3,  offsets=>{ adjustingLuminance=> 1.00, whiteBalanceRed=>-0.60, whiteBalanceGreen=> 0.40, whiteBalanceBlue=> 1.75 } },
+  { source=>3,  target=>2.3,offsets=>{ adjustingLuminance=> 3.25, whiteBalanceRed=> 0.00, whiteBalanceGreen=> 0.60, whiteBalanceBlue=> 0.00 } },
+ );
 }
 
 sub apply_full_ddc_spine_shadow_seeds {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
- return 0;
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ return 0 if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,20));
+ my $changed=0;
+ foreach my $link (full_ddc_spine_shadow_seed_links()) {
+  next if(ref($link) ne "HASH" || ref($link->{"offsets"}) ne "HASH");
+  my $source_idx=ddc_slot_index_for_ire($link->{"source"});
+  my $target_idx=ddc_slot_index_for_ire($link->{"target"});
+  next if(!defined($source_idx) || !defined($target_idx));
+  next if($calibrated_slot_mask->[$target_idx]);
+  foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+   next if(!defined($link->{"offsets"}{$setting}));
+   next if(ref($arrays->{$setting}) ne "ARRAY" || $source_idx >= @{$arrays->{$setting}} || $target_idx >= @{$arrays->{$setting}});
+   next if(!defined($arrays->{$setting}[$source_idx]));
+   my $before=defined($arrays->{$setting}[$target_idx]) ? ($arrays->{$setting}[$target_idx]+0) : 0;
+   my $after=clamp_ddc_value(($arrays->{$setting}[$source_idx]+0)+($link->{"offsets"}{$setting}+0));
+   $after=round_ddc_quarter($after);
+   next if(abs($after-$before) < 0.0001);
+   $arrays->{$setting}[$target_idx]=$after;
+   $changed++;
+  }
+ }
+ return $changed;
 }
 
 sub full_ddc_spine_seed_correction_deltas {
