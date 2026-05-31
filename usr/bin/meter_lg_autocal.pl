@@ -14047,7 +14047,6 @@ eval {
 				    });
 				   }
 				  }
-				  my $anchor_revisit_prior_best_seeded=0;
 				  trace_109($read_step,"initial_measurement",{
 				   label=>$label,
 				   reading=>trace_reading_summary($reading),
@@ -14064,40 +14063,31 @@ eval {
 						   $pair_side_trace_fields->(),
 						   target_values=>trace_target_values($arrays,$target)
 						  });
-				  write_state($state);
-				  if(lg_autocal_26_full_ddc_spine_anchor_revisit_step($read_step)) {
-				   my $prior_best_entry=lg_autocal_26_best_known_for_step($state,$read_step);
-				   if(
-				    lg_autocal_26_entry_better_than_measurement($read_step,$prior_best_entry,$best_de,$best_lum_pct,$best_score) &&
-				    lg_autocal_26_best_known_values_available($prior_best_entry,$target,$arrays)
-				   ) {
-				    my $prior_best_arrays=lg_autocal_26_arrays_with_best_known_values($arrays,$target,$prior_best_entry);
-				    if(ref($prior_best_arrays) eq "HASH") {
-				     $best_de=$prior_best_entry->{"delta_e"}+0;
-				     $best_lum_pct=defined($prior_best_entry->{"luminance_error_pct"}) ? ($prior_best_entry->{"luminance_error_pct"}+0) : undef;
-				     $best_score=defined($prior_best_entry->{"score"}) ? ($prior_best_entry->{"score"}+0) : lg_autocal_26_measurement_score($read_step,$best_de,$best_lum_pct);
-				     $best_arrays=$prior_best_arrays;
-				     $best_reading=clone_picture($prior_best_entry->{"reading"}) if(ref($prior_best_entry->{"reading"}) eq "HASH");
-				     $best_read_step=clone_picture($read_step);
-				     $anchor_revisit_prior_best_seeded=1;
-				     $state->{"best_delta_e"}=$best_de;
-				     $state->{"best_score"}=$best_score;
-				     trace_109($read_step,"full_ddc_spine_anchor_revisit_prior_best_seeded",{
-				      label=>$label,
-				      current_delta_e=>defined($de)?$de+0:undef,
-				      current_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-				      current_score=>lg_autocal_26_measurement_score($read_step,$de,$lum_pct)+0,
-				      prior_best_delta_e=>defined($best_de)?$best_de+0:undef,
-				      prior_best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-				      prior_best_score=>$best_score+0,
-				      prior_best_reason=>$prior_best_entry->{"reason"},
-				      preserving_values=>trace_target_values($best_arrays,$target)
-				     });
-				     write_state($state);
-				    }
-				   }
-				  }
-				  my $initial_result_not_worse_than_best=(!$anchor_revisit_prior_best_seeded || autocal_measurement_not_worse_than_best($de,$lum_pct,$best_de,$best_lum_pct)) ? 1 : 0;
+					  write_state($state);
+					  if(lg_autocal_26_full_ddc_spine_anchor_revisit_step($read_step)) {
+					   my $prior_best_entry=lg_autocal_26_best_known_for_step($state,$read_step);
+					   if(ref($prior_best_entry) eq "HASH") {
+					    trace_109($read_step,"anchor_revisit_prior_best_ignored",{
+					     label=>$label,
+					     current_delta_e=>defined($de)?$de+0:undef,
+					     current_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					     current_score=>lg_autocal_26_measurement_score($read_step,$de,$lum_pct)+0,
+					     prior_best_delta_e=>defined($prior_best_entry->{"delta_e"}) ? ($prior_best_entry->{"delta_e"}+0) : undef,
+					     prior_best_luminance_error_pct=>defined($prior_best_entry->{"luminance_error_pct"}) ? ($prior_best_entry->{"luminance_error_pct"}+0) : undef,
+					     prior_best_score=>defined($prior_best_entry->{"score"}) ? ($prior_best_entry->{"score"}+0) : undef,
+					     prior_best_reason=>$prior_best_entry->{"reason"}||"",
+					     prior_best_values=>$prior_best_entry->{"ddc_values"},
+					     current_values=>trace_target_values($arrays,$target),
+					     reason=>"anchor_revisit_uses_current_context_baseline"
+					    });
+					    my $prior_best_key=lg_autocal_26_best_known_key($read_step);
+					    delete($state->{"lg_autocal_26_best_known"}{$prior_best_key})
+					     if(defined($prior_best_key) && ref($state->{"lg_autocal_26_best_known"}) eq "HASH");
+					    $state->{"message"}="$label anchor revisit using current-context baseline";
+					    write_state($state);
+					   }
+					  }
+					  my $initial_result_not_worse_than_best=1;
 						  if($initial_result_not_worse_than_best && touchup_delta_skip_reached($config,$de,$target_delta,$read_step,$lum_pct) && (!$paired_white_step || $pair_target_reached_now->())) {
 						   $state->{"message"}="$label already within touch-up target; moving to next patch";
 					   $state->{"best_delta_e"}=$best_de;
