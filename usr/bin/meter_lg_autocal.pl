@@ -2274,6 +2274,33 @@ sub low_shadow_fresh_final_materially_worse {
  return 0;
 }
 
+sub low_shadow_fresh_final_soft_delta_limit {
+ my ($step,$target_delta)=@_;
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $limit=autocal_uses_itp() ? 1.0 : low_shadow_delta_acceptance($step,$target_delta)+0.50;
+ $limit=$target_delta+0.50 if($limit < $target_delta+0.50);
+ $limit=1.0 if($limit < 1.0);
+ $limit=1.5 if($limit > 1.5);
+ return $limit;
+}
+
+sub low_shadow_fresh_final_soft_accept {
+ my ($step,$fresh_de,$fresh_lum_pct,$target_delta)=@_;
+ return 0 if(!autocal_step_is_low_shadow($step));
+ return 0 if(!defined($fresh_de));
+ return 0 if(($fresh_de+0) > low_shadow_fresh_final_soft_delta_limit($step,$target_delta));
+ return 1 if(!defined($fresh_lum_pct));
+ return abs($fresh_lum_pct+0) <= low_shadow_luminance_acceptance_percent($step)+1.00 ? 1 : 0;
+}
+
+sub low_shadow_fresh_final_hard_reject {
+ my ($step,$fresh_de,$fresh_lum_pct)=@_;
+ return 1 if(!defined($fresh_de));
+ return 1 if(($fresh_de+0) > 1.5);
+ return 0 if(!defined($fresh_lum_pct));
+ return abs($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($step)+3.00 ? 1 : 0;
+}
+
 sub low_shadow_luminance_progress_keep {
  my ($step,$de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$candidate_score,$best_score)=@_;
  return 0 if(!autocal_step_is_low_shadow($step));
@@ -4435,10 +4462,11 @@ sub apply_full_ddc_spine_shadow_seeds {
  my $changed=0;
  foreach my $link (full_ddc_spine_shadow_seed_links()) {
   next if(ref($link) ne "HASH" || ref($link->{"offsets"}) ne "HASH");
-  my $source_idx=ddc_slot_index_for_ire($link->{"source"});
-  my $target_idx=ddc_slot_index_for_ire($link->{"target"});
-  next if(!defined($source_idx) || !defined($target_idx));
-  next if($calibrated_slot_mask->[$target_idx]);
+	  my $source_idx=ddc_slot_index_for_ire($link->{"source"});
+	  my $target_idx=ddc_slot_index_for_ire($link->{"target"});
+	  next if(!defined($source_idx) || !defined($target_idx));
+	  next if(!$calibrated_slot_mask->[$source_idx]);
+	  next if($calibrated_slot_mask->[$target_idx]);
   foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
    next if(!defined($link->{"offsets"}{$setting}));
    next if(ref($arrays->{$setting}) ne "ARRAY" || $source_idx >= @{$arrays->{$setting}} || $target_idx >= @{$arrays->{$setting}});
@@ -13326,23 +13354,64 @@ eval {
 		    sync_state_picture($state,$picture,$picture_mode);
 		   }
 		  }
-		  if(lg_autocal_26_full_ddc_spine_shadow_propagation_retired($config,$final_target)) {
-		   $state->{"lg_autocal_26_full_ddc_spine_shadow_propagation_retired"}={
-		    label=>$final_label||$final_target->{"label"}||"",
-		    target=>$final_target,
-		    completed_slots=>\@completed_anchor_ires,
-		    completed_spine_anchors=>\@completed_spine_anchors
-		   };
-		   trace_109($final_read_step || $final_target,"full_ddc_spine_shadow_propagation_retired",{
-		    mode=>"full_ddc_spine",
-		    label=>$final_label||$final_target->{"label"}||"",
-		    target=>$final_target,
-		    completed_slots=>\@completed_anchor_ires,
-		    completed_spine_anchors=>\@completed_spine_anchors
-		   });
-		   write_state($state) if($full_ddc_spine_mode);
-		   return 0;
-		  }
+			  if(lg_autocal_26_full_ddc_spine_shadow_propagation_retired($config,$final_target)) {
+			   my @shadow_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
+			   my $before_shadow_seed_arrays=clone_arrays($arrays);
+			   my $shadow_seeded_slots=apply_full_ddc_spine_shadow_seeds($config,$arrays,\@calibrated_ddc_slots);
+			   my $after_shadow_seed_arrays=clone_arrays($arrays);
+			   my @shadow_seed_details;
+			   for(my $idx=0;$idx<@dynamic_seed_slots;$idx++) {
+			    next if($calibrated_ddc_slots[$idx]);
+			    my %changed_settings;
+			    foreach my $setting (@shadow_seed_settings) {
+			     next if(ref($before_shadow_seed_arrays->{$setting}) ne "ARRAY" || ref($after_shadow_seed_arrays->{$setting}) ne "ARRAY");
+			     my $before=defined($before_shadow_seed_arrays->{$setting}[$idx]) ? ($before_shadow_seed_arrays->{$setting}[$idx]+0) : 0;
+			     my $after=defined($after_shadow_seed_arrays->{$setting}[$idx]) ? ($after_shadow_seed_arrays->{$setting}[$idx]+0) : 0;
+			     $changed_settings{$setting}={ before=>$before+0, after=>$after+0 } if(abs($after-$before) > 0.0001);
+			    }
+			    push @shadow_seed_details,{
+			     index=>$idx+0,
+			     ire=>defined($dynamic_seed_slots[$idx]) ? ($dynamic_seed_slots[$idx]+0) : undef,
+			     settings=>\%changed_settings
+			    } if(%changed_settings);
+			   }
+			   $state->{"lg_autocal_26_full_ddc_spine_shadow_propagation_retired"}={
+			    label=>$final_label||$final_target->{"label"}||"",
+			    target=>$final_target,
+			    completed_slots=>\@completed_anchor_ires,
+			    completed_spine_anchors=>\@completed_spine_anchors,
+			    guarded_seeded_slots=>$shadow_seeded_slots+0,
+			    guarded_seed_details=>\@shadow_seed_details
+			   };
+			   trace_109($final_read_step || $final_target,"full_ddc_spine_shadow_propagation_retired",{
+			    mode=>"full_ddc_spine",
+			    label=>$final_label||$final_target->{"label"}||"",
+			    target=>$final_target,
+			    completed_slots=>\@completed_anchor_ires,
+			    completed_spine_anchors=>\@completed_spine_anchors,
+			    guarded_seeded_slots=>$shadow_seeded_slots+0,
+			    guarded_seed_details=>\@shadow_seed_details
+			   });
+			   if($shadow_seeded_slots && !cancelled()) {
+			    trace_sdr_low_shadow_ddc_snapshot(
+			     "retired_shadow_guarded_seed_refresh",$config,$state,$arrays,$final_read_step,$final_target,{
+			      label=>$final_label||$final_target->{"label"}||"",
+			      guarded_seeded_slots=>$shadow_seeded_slots+0,
+			      guarded_seed_details=>\@shadow_seed_details,
+			     }
+			    );
+			    $state->{"phase"}="writing";
+			    $state->{"message"}="Guarded low-shadow seed refresh updated $shadow_seeded_slots pending slot".($shadow_seeded_slots==1?"":"s");
+			    write_state($state);
+			    my $shadow_seed_error;
+			    ($picture,$shadow_seed_error)=set_picture_values($picture,$arrays,$final_target,$picture_mode,$calibration_mode_active,$state);
+			    die $shadow_seed_error if($shadow_seed_error);
+			    $calibration_mode_active=1;
+			    sync_state_picture($state,$picture,$picture_mode);
+			   }
+			   write_state($state) if($full_ddc_spine_mode);
+			   return 0;
+			  }
 		  my @dynamic_seed_settings=qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance);
 		  my $before_arrays=clone_arrays($arrays);
 		  my $propagated_slots=refresh_propagated_uncalibrated_26pt_slots($config,$arrays,\@calibrated_ddc_slots);
@@ -15536,15 +15605,111 @@ eval {
 				    final_values=>trace_target_values($best_arrays,$target),
 				    reading=>trace_reading_summary($fresh_reading)
 				   };
-				   $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
-				   trace_109($read_step,"low_shadow_final_fresh_verification",$fresh_verify_record);
-				   if(!$fresh_pass) {
-				    $state->{"phase"}="adjusting";
-				    $state->{"message"}="$label fresh final verification needs more adjustment";
-				    $state->{"low_shadow_final_requires_more_adjustment"}=JSON::PP::true;
-				    write_state($state);
-				    die "$label fresh final verification rejected cached best";
-				   }
+					   $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
+					   trace_109($read_step,"low_shadow_final_fresh_verification",$fresh_verify_record);
+					   if(!$fresh_pass) {
+					    trace_sdr_low_shadow_ddc_snapshot(
+					     "fresh_verify_reject_initial",$config,$state,$best_arrays,$read_step,$target,{
+					      verification=>$fresh_verify_record,
+					      soft_delta_limit=>low_shadow_fresh_final_soft_delta_limit($read_step,$target_delta),
+					     }
+					    );
+					    my $confirm_record;
+					    if(!cancelled()) {
+					     my $settle_ms=config_positive_int($config,"low_shadow_fresh_verify_retry_settle_ms",2500,0,30000);
+					     park_black_for_settle($config,$state,"Settling before confirming $label fresh verification",$settle_ms);
+					     $state->{"phase"}="reading";
+					     $state->{"message"}="Confirming $label fresh verification";
+					     write_state($state);
+					     my ($confirm_reading,$confirm_error,$confirm_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
+					     die $confirm_error if($confirm_error);
+					     if(ref($confirm_reading) eq "HASH") {
+					      my $confirm_white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$confirm_reading,$white_y);
+					      $confirm_white_y=$white_y if(!defined($confirm_white_y));
+					      refresh_headroom_targets_after_white_reference($state,$read_step,$confirm_white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+					      $confirm_target_step_y=effective_target_luminance_for_autocal_reading($confirm_white_y,$read_step,$confirm_reading,$target_gamma,$signal_mode,$config,$state) if(!defined($confirm_target_step_y));
+					      annotate_reading_target($confirm_reading,$confirm_white_y,$confirm_target_step_y,$target_x,$target_y);
+					      my $confirm_de=autocal_delta_e_for_step($config,$confirm_reading,$read_step,$confirm_white_y,$target_x,$target_y,$confirm_target_step_y);
+					      my $confirm_lum_pct=luminance_error_percent($confirm_reading,$confirm_target_step_y);
+					      my $confirm_score=guarded_autocal_result_score($confirm_de,$confirm_lum_pct,$read_step,$confirm_reading,$white_guard_y);
+					      my $confirm_over_target=(defined($confirm_lum_pct) && ($confirm_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
+					      my $confirm_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$confirm_de,$confirm_lum_pct,$best_de,$best_lum_pct,$confirm_score,$best_score);
+					      my $confirm_pass=(!$confirm_over_target && !$confirm_materially_worse) ? 1 : 0;
+					      my $confirm_soft_accept=low_shadow_fresh_final_soft_accept($read_step,$confirm_de,$confirm_lum_pct,$target_delta);
+					      $confirm_record={
+					       label=>$label,
+					       ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef,
+					       accepted=>$confirm_pass ? JSON::PP::true : JSON::PP::false,
+					       soft_accepted=>(!$confirm_pass && $confirm_soft_accept) ? JSON::PP::true : JSON::PP::false,
+					       over_target=>$confirm_over_target ? JSON::PP::true : JSON::PP::false,
+					       materially_worse=>$confirm_materially_worse ? JSON::PP::true : JSON::PP::false,
+					       target_luminance=>defined($confirm_target_step_y) ? $confirm_target_step_y+0 : undef,
+					       measured_luminance=>luminance($confirm_reading),
+					       fresh_delta_e=>defined($confirm_de) ? $confirm_de+0 : undef,
+					       fresh_luminance_error_pct=>defined($confirm_lum_pct) ? $confirm_lum_pct+0 : undef,
+					       fresh_score=>defined($confirm_score) ? $confirm_score+0 : undef,
+					       cached_delta_e=>defined($best_de) ? $best_de+0 : undef,
+					       cached_luminance_error_pct=>defined($best_lum_pct) ? $best_lum_pct+0 : undef,
+					       cached_score=>defined($best_score) ? $best_score+0 : undef,
+					       soft_delta_limit=>low_shadow_fresh_final_soft_delta_limit($read_step,$target_delta),
+					       final_values=>trace_target_values($best_arrays,$target),
+					       reading=>trace_reading_summary($confirm_reading)
+					      };
+					      $fresh_verify_record->{"confirmation"}=$confirm_record;
+					      trace_109($read_step,"low_shadow_final_fresh_verification_confirmation",$confirm_record);
+					      trace_sdr_low_shadow_ddc_snapshot(
+					       "fresh_verify_confirmation",$config,$state,$best_arrays,$read_step,$target,{
+					        initial=>$fresh_verify_record,
+					        confirmation=>$confirm_record,
+					       }
+					      );
+					      if($confirm_pass || $confirm_soft_accept) {
+					       $fresh_reading=$confirm_reading;
+					       $fresh_target_step_y=$confirm_target_step_y;
+					       $fresh_de=$confirm_de;
+					       $fresh_lum_pct=$confirm_lum_pct;
+					       $fresh_score=$confirm_score;
+					       $fresh_over_target=$confirm_over_target;
+					       $fresh_materially_worse=$confirm_materially_worse;
+					       $fresh_pass=1;
+					       $fresh_verify_record->{"accepted"}=JSON::PP::true;
+					       $fresh_verify_record->{"accepted_after_confirmation"}=JSON::PP::true;
+					       $fresh_verify_record->{"soft_accepted"}=(!$confirm_pass && $confirm_soft_accept) ? JSON::PP::true : JSON::PP::false;
+					       $fresh_verify_record->{"final_source"}="confirmation";
+					       $fresh_verify_record->{"fresh_delta_e"}=defined($fresh_de) ? $fresh_de+0 : undef;
+					       $fresh_verify_record->{"fresh_luminance_error_pct"}=defined($fresh_lum_pct) ? $fresh_lum_pct+0 : undef;
+					       $fresh_verify_record->{"fresh_score"}=defined($fresh_score) ? $fresh_score+0 : undef;
+					       $fresh_verify_record->{"target_luminance"}=defined($fresh_target_step_y) ? $fresh_target_step_y+0 : undef;
+					       $fresh_verify_record->{"measured_luminance"}=luminance($fresh_reading);
+					      }
+					     }
+					    }
+					    if(!$fresh_pass && low_shadow_fresh_final_soft_accept($read_step,$fresh_de,$fresh_lum_pct,$target_delta)) {
+					     $fresh_pass=1;
+					     $fresh_verify_record->{"accepted"}=JSON::PP::true;
+					     $fresh_verify_record->{"soft_accepted"}=JSON::PP::true;
+					     $fresh_verify_record->{"final_source"}="initial";
+					    }
+					    if(!$fresh_pass) {
+					     my $hard_reject=low_shadow_fresh_final_hard_reject($read_step,$fresh_de,$fresh_lum_pct);
+					     $state->{"phase"}="adjusting";
+					     $state->{"message"}="$label fresh final verification needs more adjustment";
+					     $state->{"low_shadow_final_requires_more_adjustment"}=JSON::PP::true;
+					     $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
+					     write_state($state);
+					     trace_sdr_low_shadow_ddc_snapshot(
+					      "fresh_verify_reject_final",$config,$state,$best_arrays,$read_step,$target,{
+					       verification=>$fresh_verify_record,
+					       hard_reject=>$hard_reject ? JSON::PP::true : JSON::PP::false,
+					      }
+					     );
+					     my $confirm_de=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_delta_e"})) ? $confirm_record->{"fresh_delta_e"} : "none";
+					     my $confirm_lum=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_luminance_error_pct"})) ? $confirm_record->{"fresh_luminance_error_pct"} : "none";
+					     die "$label fresh final verification rejected cached best: cached dE=".(defined($best_de)?$best_de:"undef").", cached lum=".(defined($best_lum_pct)?$best_lum_pct:"undef").", fresh dE=".(defined($fresh_de)?$fresh_de:"undef").", fresh lum=".(defined($fresh_lum_pct)?$fresh_lum_pct:"undef").", confirm dE=$confirm_de, confirm lum=$confirm_lum";
+					    }
+					    $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
+					    write_state($state);
+					   }
 				   delete $state->{"low_shadow_final_requires_more_adjustment"};
 				   $best_reading=clone_picture($fresh_reading);
 				   $best_read_step=clone_picture($read_step);
