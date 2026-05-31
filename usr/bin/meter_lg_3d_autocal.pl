@@ -1187,6 +1187,22 @@ sub upload_requested {
 sub reset_3d_lut_to_unity_before_profile {
  my ($config,$state)=@_;
  return undef if(!upload_requested($config) || $config->{"fixture_mode"});
+ if($config->{"full_workflow"} && $config->{"skip_preprofile_unity_reset"} && $config->{"preflight_3d_lut_verified"}) {
+  my $reset={
+   status => "ok",
+   skipped => json_true(),
+   upload_verified => json_true(),
+   source => "full_autocal_preflight",
+   completed_at => $config->{"preflight_3d_lut_completed_at"}||undef,
+   upload_command => $config->{"preflight_3d_lut_upload_command"}||"",
+   get_command => $config->{"preflight_3d_lut_get_command"}||"",
+  };
+  $state->{"unity_reset"}=$reset;
+  $state->{"unity_reset_verified"}=json_true();
+  $state->{"upload_supported"}=json_true();
+  write_state($state);
+  return $reset;
+ }
  die "cancelled\n" if(cancelled());
  $state->{"phase"}="unity_reset";
  $state->{"current_step"}=0;
