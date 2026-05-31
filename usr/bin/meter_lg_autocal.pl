@@ -15410,7 +15410,7 @@ eval {
 				   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
 				   $fresh_target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$fresh_reading,$target_gamma,$signal_mode,$config,$state) if(!defined($fresh_target_step_y));
 				   annotate_reading_target($fresh_reading,$white_y,$fresh_target_step_y,$target_x,$target_y);
-				   my $fresh_de=calculate_delta($fresh_reading,$target_x,$target_y,$fresh_target_step_y,$target_gamma,$signal_mode);
+				   my $fresh_de=autocal_delta_e_for_step($config,$fresh_reading,$read_step,$white_y,$target_x,$target_y,$fresh_target_step_y);
 				   my $fresh_lum_pct=luminance_error_percent($fresh_reading,$fresh_target_step_y);
 				   my $fresh_score=guarded_autocal_result_score($fresh_de,$fresh_lum_pct,$read_step,$fresh_reading,$white_guard_y);
 				   my $fresh_over_target=(defined($fresh_lum_pct) && ($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
