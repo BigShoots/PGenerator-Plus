@@ -74,7 +74,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_luminance_priority low_shadow_luminance low_shadow_neighbor_guard_damped post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -4894,6 +4894,118 @@ sub sdr_low_shadow_live_preseed_mark_result {
   after_delta_e=>defined($after_de) ? ($after_de+0) : undef,
   before_luminance_error_pct=>defined($before_lum_pct) ? ($before_lum_pct+0) : undef,
   after_luminance_error_pct=>defined($after_lum_pct) ? ($after_lum_pct+0) : undef
+ };
+}
+
+sub sdr_low_shadow_neighbor_guard_active {
+ my ($config,$step)=@_;
+ return 0 if(!sdr_initial_low_shadow_context_enabled($config,$step));
+ return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ return abs(($step->{"ire"}+0)-2.3) < 0.001 ? 1 : 0;
+}
+
+sub sdr_low_shadow_neighbor_guard_candidate_delta {
+ my ($arrays,$target,$before_values)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($before_values) ne "HASH");
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my (%before,%after,%delta);
+ my $max_delta=0;
+ foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+  next if(!exists($before_values->{$setting}) || !defined($arr->[$idx]));
+  my $b=$before_values->{$setting}+0;
+  my $a=$arr->[$idx]+0;
+  my $d=$a-$b;
+  $before{$setting}=$b;
+  $after{$setting}=$a;
+  $delta{$setting}=$d+0;
+  $max_delta=abs($d) if(abs($d) > $max_delta);
+ }
+ return undef if(!%delta);
+ return {
+  before=>\%before,
+  after=>\%after,
+  delta=>\%delta,
+  max_delta=>$max_delta+0,
+  luma_delta=>defined($delta{"adjustingLuminance"}) ? ($delta{"adjustingLuminance"}+0) : undef,
+  trivial=>($max_delta <= 0.2501) ? JSON::PP::true : JSON::PP::false
+ };
+}
+
+sub sdr_low_shadow_neighbor_guard_damped_adjustments {
+ my ($target,$adjustments)=@_;
+ return undef if(ref($target) ne "HASH" || ref($adjustments) ne "ARRAY");
+ my $target_idx=$target->{"index"};
+ return undef if(!defined($target_idx));
+ my @damped;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  my $setting=$adj->{"setting"};
+  my $adj_idx=defined($adj->{"index"}) ? $adj->{"index"} : $target_idx;
+  next if(!defined($setting) || !defined($adj_idx) || $adj_idx != $target_idx || !defined($adj->{"next"}));
+  my $current=defined($adj->{"current"}) ? ($adj->{"current"}+0) : (($adj->{"next"}+0)-($adj->{"delta"}||0));
+  my $delta=($adj->{"next"}+0)-$current;
+  next if(abs($delta) <= 0.2501);
+  my $next=round_ddc_quarter($current+($delta*0.5));
+  next if(abs($next-$current) < 0.0001 || abs($next-($adj->{"next"}+0)) < 0.0001);
+  my %copy=%{$adj};
+  $copy{"current"}=$current+0;
+  $copy{"next"}=$next+0;
+  $copy{"delta"}=($next-$current)+0;
+  $copy{"low_shadow_neighbor_guard_damped"}=JSON::PP::true;
+  $copy{"damped"}=1;
+  push @damped,\%copy;
+ }
+ return @damped ? \@damped : undef;
+}
+
+sub sdr_low_shadow_neighbor_guard_state_entry {
+ my ($tried)=@_;
+ return undef if(ref($tried) ne "HASH");
+ $tried->{"__sdr_low_shadow_neighbor_guard"}={} if(ref($tried->{"__sdr_low_shadow_neighbor_guard"}) ne "HASH");
+ return $tried->{"__sdr_low_shadow_neighbor_guard"};
+}
+
+sub sdr_low_shadow_neighbor_guard_evaluate {
+ my ($tried,$guard_de,$guard_lum_pct,$guarded_best_entry,$candidate_delta)=@_;
+ return undef if(ref($guarded_best_entry) ne "HASH");
+ my $best_de=defined($guarded_best_entry->{"delta_e"}) ? ($guarded_best_entry->{"delta_e"}+0) : undef;
+ my $best_lum_pct=defined($guarded_best_entry->{"luminance_error_pct"}) ? ($guarded_best_entry->{"luminance_error_pct"}+0) : undef;
+ my $entry=sdr_low_shadow_neighbor_guard_state_entry($tried);
+ my $prev_de=(ref($entry) eq "HASH" && defined($entry->{"last_delta_e"})) ? ($entry->{"last_delta_e"}+0) : $best_de;
+ my $prev_lum_pct=(ref($entry) eq "HASH" && defined($entry->{"last_luminance_error_pct"})) ? ($entry->{"last_luminance_error_pct"}+0) : $best_lum_pct;
+ my $de_limit=1.0;
+ $de_limit=($best_de+0.75) if(defined($best_de) && ($best_de+0.75) > $de_limit);
+ my $de_reject=(defined($guard_de) && ($guard_de+0) > $de_limit+0.0001) ? 1 : 0;
+ my $luma_high=(defined($guard_lum_pct) && ($guard_lum_pct+0) > 12.0) ? 1 : 0;
+ my $luma_worse=(defined($guard_lum_pct) && defined($prev_lum_pct) && ($guard_lum_pct+0) > ($prev_lum_pct+0)+0.50) ? 1 : 0;
+ my $luma_reject=($luma_high && $luma_worse) ? 1 : 0;
+ my @reasons;
+ push @reasons,"guarded_de_over_limit" if($de_reject);
+ push @reasons,"guarded_luminance_high_and_worse" if($luma_reject);
+ my $reject=(@reasons ? 1 : 0);
+ if(ref($entry) eq "HASH") {
+  $entry->{"last_delta_e"}=defined($guard_de) ? ($guard_de+0) : undef;
+  $entry->{"last_luminance_error_pct"}=defined($guard_lum_pct) ? ($guard_lum_pct+0) : undef;
+  $entry->{"last_rejected"}=$reject ? JSON::PP::true : JSON::PP::false;
+  $entry->{"rejects"}=($entry->{"rejects"}||0)+1 if($reject);
+ }
+ return {
+  reject=>$reject ? JSON::PP::true : JSON::PP::false,
+  reasons=>\@reasons,
+  de_limit=>$de_limit+0,
+  guarded_delta_e=>defined($guard_de) ? ($guard_de+0) : undef,
+  guarded_luminance_error_pct=>defined($guard_lum_pct) ? ($guard_lum_pct+0) : undef,
+  best_delta_e=>$best_de,
+  best_luminance_error_pct=>$best_lum_pct,
+  previous_guard_delta_e=>$prev_de,
+  previous_guard_luminance_error_pct=>$prev_lum_pct,
+  luma_high=>$luma_high ? JSON::PP::true : JSON::PP::false,
+  luma_worse=>$luma_worse ? JSON::PP::true : JSON::PP::false,
+  candidate_delta=>$candidate_delta
  };
 }
 
@@ -15152,6 +15264,105 @@ eval {
 				   });
 				   return $keep;
 				  };
+				  my $read_sdr_low_shadow_neighbor_guard=sub {
+				   my (%args)=@_;
+				   my $phase=$args{"phase"}||"candidate";
+				   my $candidate_delta=$args{"candidate_delta"};
+				   my $attempt_adjustments=$args{"adjustments"};
+				   my $tried_ref=$args{"tried"};
+				   return undef if(!sdr_low_shadow_neighbor_guard_active($config,$read_step));
+				   return undef if(ref($candidate_delta) ne "HASH");
+				   my $guarded_best=lg_autocal_26_best_known_for_step($state,{ ire=>3 });
+				   return undef if(ref($guarded_best) ne "HASH" || !defined($guarded_best->{"delta_e"}));
+				   if($candidate_delta->{"trivial"}) {
+				    my $skip_record={
+				     active_ire=>2.3,
+				     guarded_ire=>3,
+				     phase=>$phase,
+				     skipped=>JSON::PP::true,
+				     reason=>"trivial_candidate_ddc_delta",
+				     candidate_delta=>$candidate_delta,
+				     candidate_delta_e=>defined($de)?$de+0:undef,
+				     candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				     candidate_target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+				     candidate_measured_luminance=>(ref($reading) eq "HASH") ? luminance($reading) : undef,
+				     active_values=>trace_target_values($arrays,$target),
+				     guarded_best_delta_e=>defined($guarded_best->{"delta_e"}) ? $guarded_best->{"delta_e"}+0 : undef,
+				     guarded_best_luminance_error_pct=>defined($guarded_best->{"luminance_error_pct"}) ? $guarded_best->{"luminance_error_pct"}+0 : undef,
+				    };
+				    trace_109($read_step,"sdr_low_shadow_neighbor_guard_accept",$skip_record);
+				    return { skipped=>JSON::PP::true, reject=>JSON::PP::false, record=>$skip_record };
+				   }
+				   my ($guard_source_step)=grep {
+				    ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)-3) < 0.001
+				   } @ordered;
+				   my $fallback_guard_code=patch_code_for_stimulus($config,3);
+				   my $guard_step=clone_picture($guard_source_step || {
+				    ire=>3, stimulus=>3,
+				    signal_r_pct=>3, signal_g_pct=>3, signal_b_pct=>3,
+				    r=>$fallback_guard_code, g=>$fallback_guard_code, b=>$fallback_guard_code
+				   });
+				   $guard_step=fixed_lg_autocal_step($config,$guard_step);
+				   my $guard_target=ddc_target_for_step($guard_step);
+				   return undef if(ref($guard_target) ne "HASH");
+				   my $guard_label=$guard_target->{"label"}||"3%";
+				   $state->{"phase"}="reading";
+				   $state->{"message"}="Guard reading $guard_label before accepting $label";
+				   write_state($state);
+				   my ($guard_reading,$guard_error,$guard_target_step_y)=read_step_guarded($config,$guard_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$guard_label);
+				   die $guard_error if($guard_error && $guard_error ne "cancelled");
+				   return { cancelled=>JSON::PP::true } if($guard_error && $guard_error eq "cancelled");
+				   die "SDR low-shadow neighbor guard read failed for $label" if(ref($guard_reading) ne "HASH");
+				   my $guard_white_y=update_white_reference_for_autocal_step($config,$state,$guard_step,$guard_reading,$white_y);
+				   $guard_white_y=$white_y if(!defined($guard_white_y));
+				   refresh_headroom_targets_after_white_reference($state,$guard_step,$guard_white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+				   $guard_target_step_y=effective_target_luminance_for_autocal_reading($guard_white_y,$guard_step,$guard_reading,$target_gamma,$signal_mode,$config,$state) if(!defined($guard_target_step_y));
+				   annotate_reading_target($guard_reading,$guard_white_y,$guard_target_step_y,$target_x,$target_y);
+				   my $guard_de=autocal_delta_e_for_step($config,$guard_reading,$guard_step,$guard_white_y,$target_x,$target_y,$guard_target_step_y);
+				   my $guard_lum_pct=luminance_error_percent($guard_reading,$guard_target_step_y);
+				   my $evaluation=sdr_low_shadow_neighbor_guard_evaluate($tried_ref,$guard_de,$guard_lum_pct,$guarded_best,$candidate_delta);
+				   my $damped=sdr_low_shadow_neighbor_guard_damped_adjustments($target,$attempt_adjustments);
+				   my $record={
+				    active_ire=>2.3,
+				    guarded_ire=>3,
+				    phase=>$phase,
+				    skipped=>JSON::PP::false,
+				    reject=>(ref($evaluation) eq "HASH" && $evaluation->{"reject"}) ? JSON::PP::true : JSON::PP::false,
+				    candidate_delta=>$candidate_delta,
+				    candidate_delta_e=>defined($de)?$de+0:undef,
+				    candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				    candidate_target_luminance=>defined($target_step_y)?$target_step_y+0:undef,
+				    candidate_measured_luminance=>(ref($reading) eq "HASH") ? luminance($reading) : undef,
+				    candidate_reading=>trace_reading_summary($reading),
+				    guarded_delta_e=>defined($guard_de)?$guard_de+0:undef,
+				    guarded_luminance_error_pct=>defined($guard_lum_pct)?$guard_lum_pct+0:undef,
+				    guarded_target_luminance=>defined($guard_target_step_y)?$guard_target_step_y+0:undef,
+				    guarded_measured_luminance=>luminance($guard_reading),
+				    guarded_reading=>trace_reading_summary($guard_reading),
+				    guarded_best_delta_e=>defined($guarded_best->{"delta_e"}) ? $guarded_best->{"delta_e"}+0 : undef,
+				    guarded_best_luminance_error_pct=>defined($guarded_best->{"luminance_error_pct"}) ? $guarded_best->{"luminance_error_pct"}+0 : undef,
+				    guarded_best_target_luminance=>defined($guarded_best->{"target_luminance"}) ? $guarded_best->{"target_luminance"}+0 : undef,
+				    guarded_best_values=>$guarded_best->{"ddc_values"},
+				    active_values=>trace_target_values($arrays,$target),
+				    guarded_values=>trace_target_values($arrays,$guard_target),
+				    evaluation=>$evaluation,
+				    damped_adjustments=>trace_adjustments_summary($damped),
+				   };
+				   trace_109($guard_step,"sdr_low_shadow_neighbor_guard_read",$record);
+				   trace_109($guard_step,$record->{"reject"} ? "sdr_low_shadow_neighbor_guard_reject" : "sdr_low_shadow_neighbor_guard_accept",$record);
+				   trace_sdr_low_shadow_ddc_snapshot(
+				    $record->{"reject"} ? "neighbor_guard_reject" : "neighbor_guard_accept",
+				    $config,$state,$arrays,$read_step,$target,{
+				     label=>$label,
+				     guard=>$record
+				    }
+				   );
+				   return {
+				    reject=>$record->{"reject"},
+				    record=>$record,
+				    damped_adjustments_raw=>$damped
+				   };
+				  };
 				  my $iteration_limit=iteration_limit_for_step($step,$max_iterations,$config);
 				  $iteration_limit=48 if($paired_white_step && !autocal_config_is_touchup($config) && $iteration_limit < 48);
 						  for(my $iter=1;$iter<=$iteration_limit;$iter++) {
@@ -15653,6 +15864,25 @@ eval {
 								     : (defined($de) && ($headroom_105_luma_blocking_after
 								      ? ($headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)
 								      : (!$full_ddc_spine_anchor_revisit_rgb_keep_blocked && (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep || $low_shadow_y_keep))));
+								    my $neighbor_guard_result;
+								    my $neighbor_guard_rejected=0;
+								    if($keep_candidate) {
+								     my $neighbor_guard_candidate_delta=sdr_low_shadow_neighbor_guard_candidate_delta($arrays,$target,$before_values);
+								     $neighbor_guard_result=$read_sdr_low_shadow_neighbor_guard->(
+								      phase=>"main_candidate",
+								      candidate_delta=>$neighbor_guard_candidate_delta,
+								      adjustments=>$adjustments,
+								      tried=>\%tried_values
+								     );
+								     last if(ref($neighbor_guard_result) eq "HASH" && $neighbor_guard_result->{"cancelled"});
+								     if(ref($neighbor_guard_result) eq "HASH" && $neighbor_guard_result->{"reject"}) {
+								      $keep_candidate=0;
+								      $neighbor_guard_rejected=1;
+								      $best_update_reason="sdr_low_shadow_neighbor_guard_reject";
+								      $low_shadow_restore_next_adjustments=$neighbor_guard_result->{"damped_adjustments_raw"}
+								       if(ref($neighbor_guard_result->{"damped_adjustments_raw"}) eq "ARRAY");
+								     }
+								    }
 				    if($keep_candidate) {
 				     $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 				    if($headroom_105_score_branch_promote) {
@@ -15727,6 +15957,7 @@ eval {
 					     headroom_105_main_polish_refine=>$headroom_105_main_polish_refine?JSON::PP::true:JSON::PP::false,
 					     full_ddc_spine_anchor_y_keep=>$full_ddc_spine_anchor_y_keep?JSON::PP::true:JSON::PP::false,
 					     low_shadow_luminance_progress_keep=>$low_shadow_y_keep?JSON::PP::true:JSON::PP::false,
+					     sdr_low_shadow_neighbor_guard=>$neighbor_guard_result,
 						     not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 						     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 						     previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
@@ -15746,7 +15977,7 @@ eval {
 				     \%tried_values,$forward_low_shadow_preseed,0,
 				     $before_de_for_adjustment,$de,$before_lum_pct_for_adjustment,$lum_pct
 				    );
-				    $luma_anchor_working=0 if($coupled_low_shadow_read);
+				    $luma_anchor_working=0 if($coupled_low_shadow_read || $neighbor_guard_rejected);
 				    trace_109($read_step,"coupled_low_shadow_preseed_rejected",{
 				     label=>$label,
 				     iteration=>$iter+0,
@@ -15756,21 +15987,21 @@ eval {
 				     candidate_values=>trace_target_values($arrays,$target),
 				     best_values=>trace_target_values($best_arrays,$target)
 				    }) if($coupled_low_shadow_read);
-					    my $bad_luma_probe=$coupled_low_shadow_read ? undef : record_bad_luma_probe_family(
+					    my $bad_luma_probe=($coupled_low_shadow_read || $neighbor_guard_rejected) ? undef : record_bad_luma_probe_family(
 					     \%tried_values,$target,$adjustments,
 					     $before_de_for_adjustment,$de,
 					     $before_lum_pct_for_adjustment,$lum_pct,
 					     $before_score_for_adjustment,$candidate_score_after,
 					     $read_step,"main",$state
 					    );
-					    my $bad_hdr20_body_family=$coupled_low_shadow_read ? undef : record_hdr20_body_bad_adjustment_family(
+					    my $bad_hdr20_body_family=($coupled_low_shadow_read || $neighbor_guard_rejected) ? undef : record_hdr20_body_bad_adjustment_family(
 					     \%tried_values,$read_step,$adjustments,
 					     $before_lum_pct_for_adjustment,$lum_pct,
 					     $before_de_for_adjustment,$de,
 					     $before_score_for_adjustment,$candidate_score_after
 					    );
-					    my $bad_sdr_low_shadow_rgb_family=$coupled_low_shadow_read
-					     ? { skipped=>JSON::PP::true, reason=>"coupled_low_shadow_preseed" }
+					    my $bad_sdr_low_shadow_rgb_family=($coupled_low_shadow_read || $neighbor_guard_rejected)
+					     ? { skipped=>JSON::PP::true, reason=>$neighbor_guard_rejected ? "sdr_low_shadow_neighbor_guard_reject" : "coupled_low_shadow_preseed" }
 					     : record_sdr_low_shadow_bad_rgb_adjustment_family(
 					      $config,\%tried_values,$read_step,$adjustments,
 					      $before_de_for_adjustment,$de,
@@ -15868,6 +16099,7 @@ eval {
 				     luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
 				     coupled_low_shadow_preseed=>$forward_low_shadow_preseed,
 				     coupled_low_shadow_preseed_result=>$coupled_preseed_result,
+				     sdr_low_shadow_neighbor_guard=>$neighbor_guard_result,
 				     bad_luma_probe=>$bad_luma_probe,
 				     bad_hdr20_body_family=>$bad_hdr20_body_family,
 				     bad_sdr_low_shadow_rgb_family=>$bad_sdr_low_shadow_rgb_family,
@@ -15899,7 +16131,7 @@ eval {
 					    my $near_y_cleanup_branch=headroom_105_near_y_cleanup_branch(\%tried_values);
 					    my $near_y_cleanup_rgb_failed=(ref($near_y_cleanup_branch) eq "HASH" && $near_y_cleanup_branch->{"active"} && headroom_105_rgb_cleanup_adjustment($adjustments)) ? 1 : 0;
 					    my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%tried_values,"iteration",$iter);
-					    $paired_luma_kept=0 if($coupled_low_shadow_read);
+					    $paired_luma_kept=0 if($coupled_low_shadow_read || $neighbor_guard_rejected);
 					    if($near_y_cleanup_rgb_failed) {
 					     my $branch=headroom_105_near_y_cleanup_branch(\%tried_values);
 					     $branch->{"attempts"}=($branch->{"attempts"}||0)+1 if(ref($branch) eq "HASH");
@@ -15948,7 +16180,7 @@ eval {
 						     $body_luminance_next_adjustments=$body_restore_next_adjustments if(ref($body_restore_next_adjustments) eq "ARRAY");
 							     $hdr20_body_vector_next_adjustments=undef;
 							     exhaust_adjustment_next_values(\%tried_values,$adjustments,$de)
-						      if(!$coupled_low_shadow_read && (lg_autocal_26_full_ddc_spine_enabled($config) || $seeded_move_damping || autocal_step_is_hdr20_body($read_step)));
+						      if(!$coupled_low_shadow_read && !$neighbor_guard_rejected && (lg_autocal_26_full_ddc_spine_enabled($config) || $seeded_move_damping || autocal_step_is_hdr20_body($read_step)));
 						     $restore_best_branch->("Backtracking to best $label result after rejected adjustment");
 						    }
 						    if(
@@ -16112,6 +16344,7 @@ eval {
 					    $polish_limit=2;
 					   }
 			   my $polish_stalls=0;
+			   my $neighbor_guard_fine_tune_next_adjustments;
 			   for(my $polish=1;$polish<=$polish_limit;$polish++) {
 			    last if(cancelled());
 			    last if($pair_target_reached_now->() && !$sdr_peak_extra_fine_tune);
@@ -16125,6 +16358,12 @@ eval {
 				     $micro_step=(defined($best_de) && $best_de <= ($target_delta+0.15)) ? 0.20 : ((defined($best_de) && $best_de > ($target_delta*1.8)) ? 1.0 : 0.5);
 				    }
 					    my $adjustments;
+					    if(ref($neighbor_guard_fine_tune_next_adjustments) eq "ARRAY") {
+					     $adjustments=queued_adjustments_rebased_to_current_arrays(
+					      $neighbor_guard_fine_tune_next_adjustments,$arrays,$target,\%polish_tried,$read_step,"sdr_low_shadow_neighbor_guard_damped"
+					     );
+					     $neighbor_guard_fine_tune_next_adjustments=undef;
+					    }
 					    if($paired_white_step) {
 					     my $pair_chroma_mag=chroma_error_magnitude($err);
 					     if($pair_chroma_mag < 0.025 || (defined($best_de) && $best_de <= ($target_delta+0.75)) || (defined($lum_err) && abs($lum_err*100) > 12)) {
@@ -16302,6 +16541,25 @@ eval {
 					     : (defined($de) && ($headroom_105_luma_blocking_after
 					      ? $headroom_105_score_keep
 					      : (($not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $low_shadow_y_keep)));
+					    my $neighbor_guard_result;
+					    my $neighbor_guard_rejected=0;
+					    if($keep_candidate) {
+					     my $neighbor_guard_candidate_delta=sdr_low_shadow_neighbor_guard_candidate_delta($arrays,$target,$before_values);
+					     $neighbor_guard_result=$read_sdr_low_shadow_neighbor_guard->(
+					      phase=>"fine_tune_candidate",
+					      candidate_delta=>$neighbor_guard_candidate_delta,
+					      adjustments=>$adjustments,
+					      tried=>\%polish_tried
+					     );
+					     last if(ref($neighbor_guard_result) eq "HASH" && $neighbor_guard_result->{"cancelled"});
+					     if(ref($neighbor_guard_result) eq "HASH" && $neighbor_guard_result->{"reject"}) {
+					      $keep_candidate=0;
+					      $neighbor_guard_rejected=1;
+					      $best_update_reason="sdr_low_shadow_neighbor_guard_reject";
+					      $neighbor_guard_fine_tune_next_adjustments=$neighbor_guard_result->{"damped_adjustments_raw"}
+					       if(ref($neighbor_guard_result->{"damped_adjustments_raw"}) eq "ARRAY");
+					     }
+					    }
 				    if($keep_candidate) {
 				     $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 				     $best_de=$de;
@@ -16334,6 +16592,7 @@ eval {
 						      chroma_keep=>$chroma_keep?JSON::PP::true:JSON::PP::false,
 					      delta_keep=>$delta_keep?JSON::PP::true:JSON::PP::false,
 					      low_shadow_luminance_progress_keep=>$low_shadow_y_keep?JSON::PP::true:JSON::PP::false,
+					      sdr_low_shadow_neighbor_guard=>$neighbor_guard_result,
 					      not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
 					      candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
 				      previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
@@ -16350,7 +16609,7 @@ eval {
 				      \%polish_tried,$forward_low_shadow_preseed,0,
 				      $before_de_for_polish,$de,$before_lum_pct_for_polish,$lum_pct
 				     );
-				     $luma_anchor_working=0 if($coupled_low_shadow_read);
+				     $luma_anchor_working=0 if($coupled_low_shadow_read || $neighbor_guard_rejected);
 				     trace_109($read_step,"coupled_low_shadow_preseed_rejected",{
 				      label=>$label,
 				      polish=>$polish+0,
@@ -16360,21 +16619,21 @@ eval {
 				      candidate_values=>trace_target_values($arrays,$target),
 				      best_values=>trace_target_values($best_arrays,$target)
 				     }) if($coupled_low_shadow_read);
-					     my $bad_luma_probe=$coupled_low_shadow_read ? undef : record_bad_luma_probe_family(
+					     my $bad_luma_probe=($coupled_low_shadow_read || $neighbor_guard_rejected) ? undef : record_bad_luma_probe_family(
 					      \%polish_tried,$target,$adjustments,
 					      $before_de_for_polish,$de,
 					      $before_lum_pct_for_polish,$lum_pct,
 					      $before_score_for_polish,$candidate_score,
 					      $read_step,"fine_tune",$state
 					     );
-					     my $bad_hdr20_body_family=$coupled_low_shadow_read ? undef : record_hdr20_body_bad_adjustment_family(
+					     my $bad_hdr20_body_family=($coupled_low_shadow_read || $neighbor_guard_rejected) ? undef : record_hdr20_body_bad_adjustment_family(
 					      \%polish_tried,$read_step,$adjustments,
 					      $before_lum_pct_for_polish,$lum_pct,
 					      $before_de_for_polish,$de,
 					      $before_score_for_polish,$candidate_score
 					     );
-						     my $bad_sdr_low_shadow_rgb_family=$coupled_low_shadow_read
-						      ? { skipped=>JSON::PP::true, reason=>"coupled_low_shadow_preseed" }
+						     my $bad_sdr_low_shadow_rgb_family=($coupled_low_shadow_read || $neighbor_guard_rejected)
+						      ? { skipped=>JSON::PP::true, reason=>$neighbor_guard_rejected ? "sdr_low_shadow_neighbor_guard_reject" : "coupled_low_shadow_preseed" }
 						      : record_sdr_low_shadow_bad_rgb_adjustment_family(
 						       $config,\%polish_tried,$read_step,$adjustments,
 						       $before_de_for_polish,$de,
@@ -16398,13 +16657,14 @@ eval {
 						      luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
 						      coupled_low_shadow_preseed=>$forward_low_shadow_preseed,
 						      coupled_low_shadow_preseed_result=>$coupled_preseed_result,
+						      sdr_low_shadow_neighbor_guard=>$neighbor_guard_result,
 						      bad_luma_probe=>$bad_luma_probe,
 						      bad_hdr20_body_family=>$bad_hdr20_body_family,
 						      bad_sdr_low_shadow_rgb_family=>$bad_sdr_low_shadow_rgb_family,
 						      $pair_side_trace_fields->()
 						     });
 						     my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%polish_tried,"fine_tune",$polish);
-						     $paired_luma_kept=0 if($coupled_low_shadow_read);
+						     $paired_luma_kept=0 if($coupled_low_shadow_read || $neighbor_guard_rejected);
 						     if($paired_luma_kept) {
 						      $polish_stalls=0;
 						     } elsif($luma_anchor_working) {
