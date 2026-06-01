@@ -110,27 +110,34 @@ assert.strictEqual(
 );
 assert.strictEqual(
   vm.runInContext("meterEotfLuminanceLogPointAllowed('eotf',0.5,0,null)", context),
-  false,
-  'Explicit 0% plot should still be skipped in log mode'
+  true,
+  'Explicit 0% plot should remain available for the black origin in log mode'
 );
 assert.strictEqual(
-  vm.runInContext("meterEotfLuminanceLogPointAllowed('luminance',0,null,null)", context),
+  vm.runInContext("meterScaleEotfLuminancePlotValue('luminance',0,100,0,0)!=null", context),
+  true,
+  'Log luminance scaling should keep an explicit black origin point'
+);
+assert.strictEqual(
+  vm.runInContext("meterEotfLuminanceLogPointAllowed('luminance',-0.01,null,null)", context),
   false,
-  'Non-positive luminance value should still be skipped in log mode'
+  'Negative luminance value should still be skipped in log mode'
 );
 
-function assertStartsAtFirstPositivePoint(points, label) {
+function assertBlackToFirstPositiveSegment(points, label) {
   assert(Array.isArray(points) && points.length > 0, `${label} should produce points`);
   assert(points.every(point => Array.isArray(point) && point.length >= 2), `${label} points should be x/y pairs`);
-  assert(points.every(point => point[0] > 0), `${label} should not include an artificial 0% roll-on point`);
-  assert(Math.abs(points[0][0] - 0.05) < 1e-9, `${label} should start at the first valid positive 5% point`);
+  assert(Math.abs(points[0][0]) < 1e-12, `${label} should keep the real 0% black origin`);
+  assert(points.length > 1, `${label} should include the first positive point`);
+  assert(Math.abs(points[1][0] - 0.05) < 1e-9, `${label} should connect directly from 0% to the first valid positive 5% point`);
+  assert(!points.some((point, idx) => idx > 0 && point[0] > 0 && point[0] < 0.05), `${label} should not include dense roll-on points between 0% and 5%`);
 }
 
 const targetEotf = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,1,'eotf',100,steps)", context);
-assertStartsAtFirstPositivePoint(targetEotf, 'Log EOTF target curve');
+assertBlackToFirstPositiveSegment(targetEotf, 'Log EOTF target curve');
 
 const targetLuminance = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,100,'luminance',100,steps)", context);
-assertStartsAtFirstPositivePoint(targetLuminance, 'Log luminance target curve');
+assertBlackToFirstPositiveSegment(targetLuminance, 'Log luminance target curve');
 
 const measuredEotf = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
@@ -143,7 +150,7 @@ meterMeasuredEotfLuminanceSegments(
 )
 `, context);
 assert.strictEqual(measuredEotf.length, 1, 'Log EOTF measured curve should produce one positive segment');
-assertStartsAtFirstPositivePoint(measuredEotf[0], 'Log EOTF measured curve');
+assertBlackToFirstPositiveSegment(measuredEotf[0], 'Log EOTF measured curve');
 
 const measuredLuminance = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
@@ -156,7 +163,7 @@ meterMeasuredEotfLuminanceSegments(
 )
 `, context);
 assert.strictEqual(measuredLuminance.length, 1, 'Log luminance measured curve should produce one positive segment');
-assertStartsAtFirstPositivePoint(measuredLuminance[0], 'Log luminance measured curve');
+assertBlackToFirstPositiveSegment(measuredLuminance[0], 'Log luminance measured curve');
 
 context.document.elements.meterEotfLogScale.checked = false;
 const linearEotf = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,1,'eotf',100,steps)", context);
