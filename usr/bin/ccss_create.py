@@ -64,7 +64,10 @@ class Runner:
 
     def write_state(self, status, message, **extra):
         payload = {"status": status, "message": message, "filename": os.path.basename(self.args.output_path)}
-        payload.update(dict((key, value) for key, value in extra.items() if value not in (None, "")))
+        # Never surface raw ccxxmake text to the operator. The raw output is kept
+        # in the log file for diagnostics; the state carries only curated fields.
+        # Drop any 'detail' so even a stale/cached UI cannot render it.
+        payload.update(dict((key, value) for key, value in extra.items() if value not in (None, "") and key != "detail"))
         tmp_path = "%s.tmp" % self.args.state_file
         json_text = utf8_text(json.dumps(payload, ensure_ascii=True))
         with io.open(tmp_path, "w", encoding="utf-8") as handle:
