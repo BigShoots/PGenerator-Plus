@@ -14639,7 +14639,7 @@ function meterCcssCreateSetUi(status){
   // output for the log/diagnostics and must NOT be surfaced to the operator.
   progress.textContent=status.message;
  }
- if(startBtn) startBtn.disabled=running||!meterCcssCreateCanStart();
+ if(startBtn){ startBtn.style.display=running?'none':''; startBtn.disabled=!meterCcssCreateCanStart(); }
  if(stopBtn) stopBtn.style.display=running?'':'none';
  // The action button is driven by meterCcssCreateRefreshStatus for setup steps;
  // for any non-setup status (handled here) keep it hidden.
@@ -14760,7 +14760,7 @@ async function meterCcssCreateRefreshStatus(quiet){
   meterCcssSetupStepId=Number(r.step_id)||0;
   if(progress) progress.textContent=r.message||'';
   if(contBtn){ contBtn.textContent=meterSpectroSetupLabel(r.step||''); contBtn.style.display=''; contBtn.disabled=false; }
-  const sBtn=document.getElementById('meterCcssCreateStartBtn'); if(sBtn) sBtn.disabled=true;
+  const sBtn=document.getElementById('meterCcssCreateStartBtn'); if(sBtn) sBtn.style.display='none';
   const stBtn=document.getElementById('meterCcssCreateStopBtn'); if(stBtn) stBtn.style.display='';
   return r;
  }
