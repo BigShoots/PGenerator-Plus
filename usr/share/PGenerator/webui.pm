@@ -3884,6 +3884,9 @@ sub webui_ccss_create_stop (@) {
    system("sudo kill -KILL $pid 2>/dev/null");
   }
  }
+ # Also clear any orphaned ccxxmake: a SIGKILLed helper can leave its child
+ # behind, holding the meter so the next read/CCSS fails to claim it.
+ system("sudo pkill -9 -f 'ccxxmake' 2>/dev/null");
  unlink($_ccss_create_pid_file);
  my $json='{"status":"cancelled","message":"CCSS creation cancelled"}';
  &_webui_ccss_create_write_state($json);
@@ -14722,7 +14725,12 @@ function meterCloseCcssCreateModal(restoreSelection){
  const modal=document.getElementById('meterCcssCreateModal');
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
+ const _wasRunning=!!meterCcssCreatePolling;
  if(meterCcssCreatePolling){clearInterval(meterCcssCreatePolling);meterCcssCreatePolling=null;}
+ // If a CCSS job was in progress, closing the window must stop it -- otherwise it
+ // keeps running (e.g. parked at a wizard step), holds the meter, and blocks every
+ // subsequent read via the "busy creating a CCSS" guard.
+ if(_wasRunning){ try{ fetchJSON('/api/ccss/create/stop',{method:'POST',_quiet:true,_timeoutMs:5000}); }catch(e){} }
  if(restoreSelection){
   const sel=document.getElementById('meterDisplayType');
   if(sel){
