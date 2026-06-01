@@ -23386,7 +23386,7 @@ function meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t){
  return Math.max(0,Math.min(1,(mv-av)/(bv-av)));
 }
 
-function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSignal,mode){
+function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSignal,mode,scaleLuminance){
  const list=Array.isArray(rows)?rows:[];
  if(list.length<2) return list.map(row=>[row.x,row.y]);
  const out=[[list[0].x,list[0].y]];
@@ -23407,7 +23407,15 @@ function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSign
     : null;
    const shaped=meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t);
    const x=(Number(a.x)||0)+((Number(b.x)||0)-(Number(a.x)||0))*t;
-   const y=(Number(a.y)||0)+((Number(b.y)||0)-(Number(a.y)||0))*shaped;
+   let y=null;
+   const rawA=Number(a.rawY);
+   const rawB=Number(b.rawY);
+   if(Number.isFinite(rawA)&&Number.isFinite(rawB)&&typeof scaleLuminance==='function'){
+    const rawY=rawA+(rawB-rawA)*shaped;
+    const scaled=scaleLuminance(rawY);
+    if(scaled!=null&&Number.isFinite(Number(scaled))) y=Number(scaled);
+   }
+   if(y==null) y=(Number(a.y)||0)+((Number(b.y)||0)-(Number(a.y)||0))*shaped;
    out.push([x,y]);
   }
  }
@@ -23432,7 +23440,6 @@ function meterUniqueMeasuredRowsByPlotX(rows){
 }
 
 function meterUseTargetShapedMeasuredEotfLuminanceCurve(mode){
- if(meterEotfLuminanceLogScaleEnabledForMode(mode)) return false;
  // HDR/DV measured traces should connect measured points directly. Bending
  // them along the target curve between samples can create visible chart kinks
  // even when the measured points themselves are smooth.
@@ -23477,7 +23484,7 @@ function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scale
  return segments;
 }
 
-function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode){
+function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode,rawMeasuredValue){
  const segments=[];
  let current=[];
  const flushCurrent=()=>{
@@ -23512,15 +23519,25 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
    flushCurrent();
    return;
   }
-  current.push({x,y:Number(y),luminance:Number(lum),signal,stimulus:targetIre,ire:targetIre,code});
+  const rawY=typeof rawMeasuredValue==='function'?rawMeasuredValue(lum,step,reading):Number(lum);
+  current.push({
+   x,
+   y:Number(y),
+   rawY:Number.isFinite(Number(rawY))?Number(rawY):null,
+   luminance:Number(lum),
+   signal,
+   stimulus:targetIre,
+   ire:targetIre,
+   code
+  });
  });
  flushCurrent();
- return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal,mode));
+ return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal,mode,scaleLuminance));
 }
 
-function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode){
+function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode,rawMeasuredValue){
  if(meterUseTargetShapedMeasuredEotfLuminanceCurve(mode)){
-  return meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode);
+  return meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode,rawMeasuredValue);
  }
  return meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance,mode);
 }
@@ -24382,17 +24399,21 @@ function drawEOTFChart(gs,allSteps,readingMap){
   axisMax,
   (signal,point)=>{
    const targetLum=meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
-   const rawValue=meterEotfNormalizedEnabled()
+   return meterEotfNormalizedEnabled()
     ? meterGreyMeasuredNormalizedEotfValue(targetLum,eotfMeasuredRef)
     : meterGreyMeasuredEotfValue(targetLum,eotfMeasuredRef);
-   return meterScaleEotfLuminancePlotValue('eotf',rawValue,yTop,point&&point.ire!=null?point.ire:point&&point.stimulus,signal);
   },
   lum=>{
    const value=Number(lum);
    if(!Number.isFinite(value)) return null;
    return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
   },
-  'eotf'
+  'eotf',
+  lum=>{
+   const value=Number(lum);
+   if(!Number.isFinite(value)) return null;
+   return meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef);
+  }
  );
  // Draw measured EOTF curve. HDR/DV live AutoCal spine anchors are sparse,
  // so single-point segments still need visible dots until adjacent anchors exist.
@@ -24455,11 +24476,14 @@ function drawGammaChart(gs,allSteps,readingMap){
   readingMap,
   axisMax,
   (signal,point)=>{
-   const targetLum=meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
-   return meterScaleEotfLuminancePlotValue('luminance',targetLum,yTop,point&&point.ire!=null?point.ire:point&&point.stimulus,signal);
+   return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
   },
   scaleMeasuredLuminance,
-  'luminance'
+  'luminance',
+  lum=>{
+   const value=Number(lum);
+   return Number.isFinite(value)?value:null;
+  }
  );
  mSegments.forEach(seg=>{
   if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
