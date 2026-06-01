@@ -23431,7 +23431,8 @@ function meterUniqueMeasuredRowsByPlotX(rows){
  return out;
 }
 
-function meterUseTargetShapedMeasuredEotfLuminanceCurve(){
+function meterUseTargetShapedMeasuredEotfLuminanceCurve(mode){
+ if(meterEotfLuminanceLogScaleEnabledForMode(mode)) return false;
  // HDR/DV measured traces should connect measured points directly. Bending
  // them along the target curve between samples can create visible chart kinks
  // even when the measured points themselves are smooth.
@@ -23518,7 +23519,7 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
 }
 
 function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode){
- if(meterUseTargetShapedMeasuredEotfLuminanceCurve()){
+ if(meterUseTargetShapedMeasuredEotfLuminanceCurve(mode)){
   return meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode);
  }
  return meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance,mode);
