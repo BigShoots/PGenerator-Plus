@@ -3835,7 +3835,12 @@ sub _webui_ccss_create_alive (@) {
  if(open(my $fh,"<",$_ccss_create_pid_file)) { local $/; $pid=<$fh>; close($fh); }
  $pid=~s/\D//g;
  return 0 if($pid eq "");
- return kill(0,$pid) ? 1 : 0;
+ # The helper runs as root (sudo) but the web daemon runs as 'pgenerator', so
+ # kill(0,$pid) returns EPERM (not ESRCH) on a LIVE helper and falsely reports
+ # it dead -- which made webui_ccss_create_status rewrite every 'running' state
+ # to error, hiding the wizard popup mid-flow. Check /proc instead; /proc/$pid
+ # is readable by anyone on Linux. (Same fix as webui_meter_session_alive.)
+ return (-d "/proc/$pid") ? 1 : 0;
 }
 
 sub webui_ccss_create_status (@) {
