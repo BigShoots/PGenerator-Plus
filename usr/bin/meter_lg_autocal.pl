@@ -657,10 +657,10 @@ sub order_autocal_steps {
 	   !($_->{"autocal_white_reference"} && $target && $normal_ddc_slot{format_percent($target->{"ire"})})
 		 } @valid;
 		  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
-			  my @lg_autocal_26_order=(109,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
-				  @lg_autocal_26_order=(109,20,40,60,80,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
+			  my @lg_autocal_26_order=(109,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,2.3,3);
+				  @lg_autocal_26_order=(109,20,40,60,80,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,2.3,3)
 			   if(lg_autocal_26_full_ddc_spine_enabled($config));
-		  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,4,3,2.3)
+		  @lg_autocal_26_order=(109,105,99,75,50,25,5,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,4,2.3,3)
 		   if(lg_autocal_26_anchor_predrive_enabled($config));
 		  my %seen_target;
 		  my @ordered;
@@ -706,6 +706,18 @@ sub order_autocal_steps {
    my $key=$target_key->($_);
    defined($key) && !$seen_target{$key}
   } @valid;
+  my @selected_low_shadow_order;
+  foreach my $ordered_step (@ordered,@leftovers) {
+   my $target=ddc_target_for_step($ordered_step);
+   next if(ref($target) ne "HASH" || !defined($target->{"ire"}));
+   my $ire=$target->{"ire"}+0;
+   push @selected_low_shadow_order,$ire if($ire <= 10.0001);
+  }
+  trace_109({ire=>3,name=>"SDR LG26 low-shadow order"},"sdr_lg26_low_shadow_order_selected",{
+   mode=>lg_autocal_26_anchor_predrive_enabled($config) ? "anchor_predrive" : (lg_autocal_26_full_ddc_spine_enabled($config) ? "full_ddc_spine" : "standard"),
+   low_shadow_order=>\@selected_low_shadow_order,
+   reason=>"calibrate_2p3_before_3_to_stabilize_3_neighbor_context"
+  }) if(@selected_low_shadow_order);
 	  return (@ordered,@leftovers);
 	 }
 	 if(ref($config) eq "HASH" && lg_autocal_26_hdr20_seed_enabled($config) && lg_autocal_26_full_ddc_spine_enabled($config)) {
