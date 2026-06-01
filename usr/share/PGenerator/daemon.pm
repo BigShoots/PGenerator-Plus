@@ -320,7 +320,9 @@ sub pattern_daemon {
      &log("Accept failed: $!");
      next;
     }
-    $client_socket->setsockopt(SOL_SOCKET, SO_RCVTIMEO, pack('l!l!', 30, 0));
+    my $pattern_socket_type=($connection == $server_rpc) ? "rpc" : (($connection == $server_calman) ? "calman" : "classic");
+    $pattern_socket_kind{$client_socket}=$pattern_socket_type;
+    $client_socket->setsockopt(SOL_SOCKET, SO_RCVTIMEO, pack('l!l!', 30, 0)) if($pattern_socket_type ne "classic");
     $client_address=$client_socket->peerhost();
     $client_port=$client_socket->peerport();
     $client_ip{$client_socket}=$client_address;
@@ -337,8 +339,13 @@ sub pattern_daemon {
     ############################
     my $rv=$connection->recv($key,1024);
     if(!defined $rv) {
-     &log("recv failed: $!");
-     &close_connection($connection);
+     my $recv_error="$!";
+     my $recv_timeout=($!{EAGAIN} || $!{EWOULDBLOCK} || $recv_error=~/timed out|temporarily unavailable|would block/i) ? 1 : 0;
+     if($recv_timeout && ($pattern_socket_kind{$connection} || "") eq "classic") {
+      next;
+     }
+     my $close_reason=$recv_timeout ? "recv timeout" : "recv error: $recv_error";
+     &close_connection($connection,$close_reason);
      last;
     }
     #&stats("bytes",length($key));
@@ -422,10 +429,7 @@ sub pattern_daemon {
     #
     if($key eq "") {
      $command_found=1;
-     $log_string="Received close command";
-     $log_string.=" ($key)" if($key ne "");
-     &log($log_string);
-     &close_connection($connection);
+     &close_connection($connection,"client eof");
      last;
     }
     #
@@ -450,10 +454,7 @@ sub pattern_daemon {
     # CLOSE COMMAND
     #
     if($key eq "" || $key=~/^$close_command/) {
-     $log_string="Received close command";
-     $log_string.=" ($key)" if($key ne "");
-     &log($log_string);
-     &close_connection($connection);
+     &close_connection($connection,"client close command");
      last;
     }
     #
@@ -501,12 +502,12 @@ sub pattern_daemon {
     # TERM — graceful disconnect (no colon, handle separately)
     #
     if($calman{$connection} && $key=~/TERM/) {
-      &calman_reset_pattern_state("TERM");
-      &release_source_rgb_quant_range("calman");
+     &calman_reset_pattern_state("TERM");
+     &release_source_rgb_quant_range("calman");
      $calibration_client_ip="";
      $calibration_client_software="";
      &send_key_to_client($connection,"");
-     &close_connection($connection);
+     &close_connection($connection,"calman TERM");
      last;
     }
     #
@@ -536,7 +537,7 @@ sub pattern_daemon {
       &log("Calman: SN request, returning $sn");
       if($rpc_client{$connection}) {
        eval { $connection->send("$sn"); };
-       &close_connection($connection) if($@);
+       &close_connection($connection,"send error: $@") if($@);
       } else {
        &send_key_to_client($connection,$sn);
       }
@@ -548,7 +549,7 @@ sub pattern_daemon {
       &log("Calman: CAP request, returning $caps");
       if($rpc_client{$connection}) {
        eval { $connection->send("$caps"); };
-       &close_connection($connection) if($@);
+       &close_connection($connection,"send error: $@") if($@);
       } else {
        &send_key_to_client($connection,$caps);
       }
@@ -568,7 +569,7 @@ sub pattern_daemon {
       &log("Calman: FIRMWARE request, returning $version");
       if($rpc_client{$connection}) {
        eval { $connection->send("$version"); };
-       &close_connection($connection) if($@);
+       &close_connection($connection,"send error: $@") if($@);
       } else {
        &send_key_to_client($connection,"");
       }
@@ -579,7 +580,7 @@ sub pattern_daemon {
       &log("Calman: STATUS request, returning $status_caps");
       if($rpc_client{$connection}) {
        eval { $connection->send("$status_caps"); };
-       &close_connection($connection) if($@);
+       &close_connection($connection,"send error: $@") if($@);
       } else {
        &send_key_to_client($connection,"");
       }
@@ -592,7 +593,7 @@ sub pattern_daemon {
       $calibration_client_ip="";
       $calibration_client_software="";
       &send_key_to_client($connection,"");
-      &close_connection($connection);
+      &close_connection($connection,"calman $clean_key");
       last;
      }
      if($clean_key eq "UPDATE") {
@@ -632,7 +633,7 @@ sub pattern_daemon {
       &log("Calman: GET_SETTINGS returning: $settings");
       if($rpc_client{$connection}) {
        eval { $connection->send("$settings"); };
-       &close_connection($connection) if($@);
+       &close_connection($connection,"send error: $@") if($@);
       } else {
        &send_key_to_client($connection,"");
       }
@@ -1767,7 +1768,11 @@ sub send_key_to_client (@) {
  $response.=$end_cmd_string;
  $response=$ack_cmd_string if($calman{$connection});
  eval { $connection->send("$response"); };
- &close_connection($connection) if($@);
+ if($@) {
+  my $send_error="$@";
+  $send_error=~s/\s+$//;
+  &close_connection($connection,"send error: $send_error");
+ }
 }
 
 ###############################################
@@ -1775,8 +1780,15 @@ sub send_key_to_client (@) {
 ###############################################
 sub close_connection {
  my $connection = shift;
+ my $reason = shift || "";
  return if(!$connection);
+ $reason=~s/\s+$//;
  my $conn_ip=$client_ip{$connection} || "";
+ my $socket_kind=delete $pattern_socket_kind{$connection};
+ $socket_kind="rpc" if($socket_kind eq "" && $rpc_client{$connection});
+ $socket_kind="calman" if($socket_kind eq "" && $calman{$connection});
+ $socket_kind="classic" if($socket_kind eq "");
+ &log("Pattern socket close: type=$socket_kind peer=$conn_ip reason=$reason") if($reason ne "");
  my $is_hcfr=delete $hcfr_client{$connection};
  if($calman{$connection} || ($conn_ip ne "" && $conn_ip eq $calibration_client_ip)) {
   &calman_reset_pattern_state("disconnect");
