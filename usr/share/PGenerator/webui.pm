@@ -13434,14 +13434,14 @@ function meterGreyTargetEotfChartValue(ire,Lw,Lb,code){
 function meterLuminanceScaleValue(v,yTop){
  const top=Math.max(1e-6,yTop||1);
  const val=Math.max(0,Math.min(top,v||0));
- if(meterLuminanceLogScaleEnabled()) return meterLogScaleValue(val,top,meterLuminanceLogFloor(top));
+ if(meterLuminanceLogScaleEnabled()) return meterLogScaleValue(val,top);
  return val/top;
 }
 
 function meterLuminanceUnscaleValue(norm,yTop){
  const top=Math.max(1e-6,yTop||1);
  const n=Math.max(0,Math.min(1,norm||0));
- if(meterLuminanceLogScaleEnabled()) return meterLogUnscaleValue(n,top,meterLuminanceLogFloor(top));
+ if(meterLuminanceLogScaleEnabled()) return meterLogUnscaleValue(n,top);
  return n*top;
 }
 
@@ -13701,7 +13701,6 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
   return scaled==null?null:[Math.max(0,Math.min(end,plot))/end,scaled];
  };
  const pts=[];
- const logMode=meterEotfLuminanceLogScaleEnabledForMode(mode);
  for(let i=0;i<unique.length-1;i++){
   const a=unique[i];
   const b=unique[i+1];
@@ -13709,7 +13708,6 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
   const segments=Math.max(1,Math.ceil(span*8));
   for(let j=0;j<=segments;j++){
    if(i>0&&j===0) continue;
-   if(logMode&&(Number(a.plot)<=0||Number(a.signal)<=0)&&j>0&&j<segments) continue;
    const t=segments>0?j/segments:0;
    const mid={stimulus:a.stimulus+(b.stimulus-a.stimulus)*t};
    if(Number.isFinite(Number(a.code))&&Number.isFinite(Number(b.code))) mid.code=Number(a.code)+(Number(b.code)-Number(a.code))*t;
@@ -23393,16 +23391,11 @@ function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSign
  if(list.length<2) return list.map(row=>[row.x,row.y]);
  const out=[[list[0].x,list[0].y]];
  const maxPct=Math.max(1,Number(axisMax)||100);
- const logMode=meterEotfLuminanceLogScaleEnabledForMode(mode);
  for(let i=0;i<list.length-1;i++){
   const a=list[i];
   const b=list[i+1];
   const spanPct=Math.abs((Number(b.x)||0)-(Number(a.x)||0))*maxPct;
   const segments=Math.max(1,Math.min(80,Math.ceil(spanPct*6)));
-  if(logMode&&(Number(a.x)<=0||Number(a.signal)<=0||Number(a.stimulus)<=0||Number(a.ire)<=0)){
-   out.push([b.x,b.y]);
-   continue;
-  }
   for(let j=1;j<=segments;j++){
    const t=j/segments;
    if(j===segments){
