@@ -154,7 +154,7 @@ wait_for_device_ready() {
 # ack whose id matches; stale/duplicate acks are read and discarded so a click
 # can't be lost and double-clicks are no-ops. $1=step key, $2=operator message.
 await_setup_step() {
- local step="$1" message="$2"
+ local step="$1" message="$2" working="${3:-}"
  SETUP_STEP_ID=$((SETUP_STEP_ID + 1))
  local sid=$SETUP_STEP_ID
  rm -f "$ACK_FILE"
@@ -168,8 +168,16 @@ await_setup_step() {
   fi
   sleep 0.2
  done
- # Clear the setup state so the wizard hides its button while work proceeds.
- write_state "{\"status\":\"measuring\"}"
+ # After the ack, keep the wizard popup visible (no button) with a 'working'
+ # message while the slow step runs (wavelength calibration takes several
+ # seconds) instead of vanishing. Steps with no working text fall back to a
+ # bare measuring state so the popup closes (e.g. after positioning, the read
+ # proceeds and the result is shown).
+ if [ -n "$working" ]; then
+  write_state "{\"status\":\"measuring\",\"setup_busy\":true,\"message\":\"$working\"}"
+ else
+  write_state "{\"status\":\"measuring\"}"
+ fi
 }
 
 patch_request_body() {
@@ -449,7 +457,7 @@ while (( WAITED < 900 )); do
  if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
   log "calibration failed during startup, surfacing retry"
   STARTUP_HINT="interactive_setup"
-  await_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectro flat on its white tile, then click Retry."
+  await_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectro flat on its white tile, then click Retry." "Re-calibrating the meter - please wait..."
   printf " " >&3
   HANDLED_OFFSET=$(output_size)
   WAITED=0
@@ -459,7 +467,7 @@ while (( WAITED < 900 )); do
   log "calibrate_tile prompt during startup"
   startup_marker "calibrate_tile prompt seen"
   STARTUP_HINT="interactive_setup"
-  await_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate."
+  await_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait a few seconds..."
   printf " " >&3
   HANDLED_OFFSET=$(output_size)
   WAITED=0
