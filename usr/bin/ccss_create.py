@@ -21,7 +21,7 @@ ERROR_RE = re.compile(r"(no instrument|no device|instrument.*not connected|commu
 # Prompts that require the user to physically position the instrument. These
 # must NOT be auto-dismissed: the i1 Pro is calibrated on its white tile and
 # then aimed at the screen, and the user's button press satisfies the prompt.
-PLACEMENT_RE = re.compile(r"place the instrument|white reference|reflective|on the (?:test|display|spot|screen)|reposition|spot reading", re.I)
+PLACEMENT_RE = re.compile(r"place the instrument|place instrument|white reference|reflective|on (?:the )?(?:test|display|spot|screen)|test window|reposition|spot reading", re.I)
 
 
 try:
@@ -161,11 +161,14 @@ class Runner:
             self.last_option3 = text
         low = self.recent.lower()
         # ccxxmake cannot open the instrument (held by another process or a USB
-        # wedge). Retrying never recovers, so give up cleanly with a curated
-        # message instead of spinning forever while still holding the meter.
-        if "instrument access failed" in low or "claiming usb port" in low:
+        # wedge). A single failure is usually transient -- ccxxmake retries and
+        # recovers -- so only give up after several CONSECUTIVE failures. Match
+        # the CURRENT line (not the rolling buffer) so a stale failure isn't
+        # re-counted, and the counter is reset on any real prompt (progress).
+        tl = text.lower()
+        if "instrument access failed" in tl or "claiming usb port" in tl:
             self.access_fail_count = getattr(self, "access_fail_count", 0) + 1
-            if self.access_fail_count >= 2:
+            if self.access_fail_count >= 4:
                 self.write_state(
                     "error",
                     "Could not open the spectrophotometer for measurement. Make sure no other measurement is running and only the reference spectro is connected, then try again.",
@@ -190,6 +193,9 @@ class Runner:
             return
         if CONTINUE_RE.search(text):
             if PLACEMENT_RE.search(self.recent):
+                # A real placement prompt means ccxxmake opened the meter and is
+                # progressing, so clear any earlier transient access-fail count.
+                self.access_fail_count = 0
                 # Headless: no keyboard, and the instrument button isn't
                 # delivered to ccxxmake's stdin. Surface a wizard step and let
                 # await_setup_step inject the keypress once the operator acks.
