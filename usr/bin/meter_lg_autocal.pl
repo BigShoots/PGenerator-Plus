@@ -962,6 +962,18 @@ sub autocal_step_is_white {
 		 return abs(($step->{"ire"}+0)-100) < 0.001 ? 1 : 0;
 }
 
+sub sdr_target_white_reference_read_delay_ms {
+ my ($config,$step)=@_;
+ return undef if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ return undef if(abs(($step->{"ire"}+0)-100) >= 0.001);
+ return undef if(!$step->{"autocal_white_reference"} && !$step->{"autocal_reference_only"} && !$step->{"autocal_legal_white_anchor"});
+ my $delay=defined($config->{"sdr_target_white_read_delay_ms"}) ? int($config->{"sdr_target_white_read_delay_ms"}) : 3000;
+ $delay=3000 if($delay < 3000);
+ $delay=30000 if($delay > 30000);
+ return $delay;
+}
+
 sub autocal_step_is_fast_headroom {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
@@ -4669,7 +4681,7 @@ sub apply_sdr_low_shadow_local_spine_preseed {
  };
 }
 
-sub apply_sdr_top_local_seed_105_from_109 {
+sub apply_sdr_top_local_seed_105_from_80 {
  my ($config,$arrays,$calibrated_slot_mask,$step)=@_;
  return 0 if(!sdr_initial_autocal_context_enabled($config,$step));
  return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
@@ -4678,20 +4690,26 @@ sub apply_sdr_top_local_seed_105_from_109 {
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
  return 0 if(abs($ire-105) >= 0.001);
- my $source_ire=109;
+ my $source_ire=80;
+ my $trend_ire=109;
  my $target_ire=105;
  return 0 if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,$source_ire));
  return 0 if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));
  my $source_idx=ddc_slot_index_for_ire($source_ire);
+ my $trend_idx=ddc_slot_index_for_ire($trend_ire);
  my $target_idx=ddc_slot_index_for_ire($target_ire);
  return 0 if(!defined($source_idx) || !defined($target_idx));
+ my $trend_available=(defined($trend_idx) && calibrated_26pt_slot_for_ire($calibrated_slot_mask,$trend_ire)) ? 1 : 0;
  my %offsets=(
-  whiteBalanceRed=>1.50,
-  whiteBalanceGreen=>1.25,
+  whiteBalanceRed=>1.25,
+  whiteBalanceGreen=>1.10,
   whiteBalanceBlue=>1.50,
-  adjustingLuminance=>0.00,
+  adjustingLuminance=>-0.75,
  );
+ my $trend_weight=0.20;
+ my $trend_cap=0.75;
  my (%before,%after,%source,%changed_settings);
+ my %trend;
  my $max_delta=0;
  my $material_threshold=1.00;
  foreach my $setting (ddc_adjustment_settings($arrays)) {
@@ -4699,11 +4717,23 @@ sub apply_sdr_top_local_seed_105_from_109 {
   next if(ref($arr) ne "ARRAY" || $source_idx >= @{$arr} || $target_idx >= @{$arr});
   next if(!defined($arr->[$source_idx]) || !defined($offsets{$setting}));
   my $source_value=$arr->[$source_idx]+0;
+  my $trend_delta=0;
+  if($trend_available && $trend_idx < @{$arr} && defined($arr->[$trend_idx])) {
+   $trend_delta=($arr->[$trend_idx]+0)-$source_value;
+   $trend_delta=$trend_cap if($trend_delta > $trend_cap);
+   $trend_delta=-$trend_cap if($trend_delta < -$trend_cap);
+  }
   my $before_value=defined($arr->[$target_idx]) ? ($arr->[$target_idx]+0) : 0;
-  my $after_value=round_ddc_quarter($source_value+($offsets{$setting}+0));
+  my $after_value=round_ddc_quarter($source_value+($offsets{$setting}+0)+($trend_delta*$trend_weight));
   my $delta=abs($before_value-$after_value);
   $max_delta=$delta if($delta > $max_delta);
   $source{$setting}=$source_value+0;
+  $trend{$setting}={
+   source_ire=>$trend_ire+0,
+   delta=>$trend_delta+0,
+   weight=>$trend_weight+0,
+   contribution=>($trend_delta*$trend_weight)+0,
+  } if($trend_available);
   $before{$setting}=$before_value+0;
   $after{$setting}=$after_value+0;
  }
@@ -4717,19 +4747,24 @@ sub apply_sdr_top_local_seed_105_from_109 {
  }
  return 0 if(!%changed_settings);
  return {
-  mode=>"sdr-top-local-seed-105-from-109",
+  mode=>"sdr-top-local-seed-105-from-80",
   source_ire=>$source_ire+0,
   source_index=>$source_idx+0,
+  trend_ire=>$trend_available ? ($trend_ire+0) : undef,
+  trend_index=>$trend_available ? ($trend_idx+0) : undef,
   target_ire=>$target_ire+0,
   target_index=>$target_idx+0,
   offsets=>\%offsets,
+  trend_weight=>$trend_weight+0,
+  trend_cap=>$trend_cap+0,
   material_threshold=>$material_threshold+0,
   max_delta=>$max_delta+0,
   source=>\%source,
+  trend=>\%trend,
   before=>\%before,
   after=>\%after,
   changed_settings=>\%changed_settings,
-  reason=>"prepare_105_from_calibrated_109_reference"
+  reason=>"prepare_105_from_calibrated_80_with_bounded_top_trend"
  };
 }
 
@@ -13171,6 +13206,10 @@ sub read_step_once {
 		 my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : 100;
 		 my $delay_ms=int($config->{"delay_ms"}||1000);
 		 $delay_ms=1800 if($delay_ms < 1800);
+		 my $step_delay_ms=(ref($step) eq "HASH" && defined($step->{"read_delay_ms"})) ? int($step->{"read_delay_ms"}) : 0;
+		 $delay_ms=$step_delay_ms if($step_delay_ms > $delay_ms);
+		 my $target_white_delay_ms=sdr_target_white_reference_read_delay_ms($config,$step);
+		 $delay_ms=$target_white_delay_ms if(defined($target_white_delay_ms) && $target_white_delay_ms > $delay_ms);
 		 $delay_ms=5000 if($ire <= 5 && $delay_ms < 5000);
 		 $delay_ms=4200 if($ire > 5 && $ire <= 10 && $delay_ms < 4200);
 		 $delay_ms=3200 if($ire > 10 && $ire <= 25 && $delay_ms < 3200);
@@ -13924,16 +13963,16 @@ eval {
 				   $calibration_mode_active=1;
 				   sync_state_picture($state,$picture,$picture_mode);
 				  }
-				  my $sdr_top_local_seed=apply_sdr_top_local_seed_105_from_109($config,$arrays,\@calibrated_ddc_slots,$read_step);
+				  my $sdr_top_local_seed=apply_sdr_top_local_seed_105_from_80($config,$arrays,\@calibrated_ddc_slots,$read_step);
 				  if(ref($sdr_top_local_seed) eq "HASH") {
-				   trace_109($read_step,"sdr_top_local_seed_105_from_109",{
+				   trace_109($read_step,"sdr_top_local_seed_105_from_80",{
 				    label=>$label,
 				    target=>$target,
 				    seed=>$sdr_top_local_seed,
 				    target_values=>trace_target_values($arrays,$target)
 				   });
 				   trace_sdr_low_shadow_ddc_snapshot(
-				    "sdr_top_local_seed_105_from_109",$config,$state,$arrays,$read_step,$target,{
+				    "sdr_top_local_seed_105_from_80",$config,$state,$arrays,$read_step,$target,{
 				     label=>$label,
 				     seed=>$sdr_top_local_seed
 				    }
@@ -13942,7 +13981,7 @@ eval {
 				   $state->{"total_steps"}=$total_ordered_steps;
 				   $state->{"current_name"}="Auto Cal $label";
 				   $state->{"phase"}="writing";
-				   $state->{"message"}="Seeding 105% from calibrated 109% reference";
+				   $state->{"message"}="Seeding 105% from calibrated 80% spine";
 				   set_state_active_step($state,$read_step,$target);
 				   write_state($state);
 				   my $top_seed_error;
