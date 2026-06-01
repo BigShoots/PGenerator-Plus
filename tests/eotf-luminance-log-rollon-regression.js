@@ -149,15 +149,34 @@ function assertDenseTargetLowEnd(points, label) {
   assert(onePercent && onePercent[1] > 0.04, `${label} should lift a real 1% target visibly above black in log mode`);
 }
 
-function assertDirectMeasuredLogSegment(segments, label) {
+function scaledLogValue(mode, value, yTop) {
+  return vm.runInContext(
+    `meterScaleEotfLuminancePlotValue(${JSON.stringify(mode)},${value},${yTop},null,${value})`,
+    context
+  );
+}
+
+function assertSimulatedMeasuredLogSegment(segments, label, mode, yTop, endpointValue) {
   assert.strictEqual(segments.length, 1, `${label} should produce one measured segment`);
   const seg = segments[0];
-  assert.strictEqual(seg.length, 3, `${label} should contain only real measured points in log mode`);
+  assert(seg.length > 3, `${label} should keep simulated target-shaped measured points in log mode`);
   assert(Math.abs(seg[0][0]) < 1e-12, `${label} should keep measured black at 0%`);
-  assert(Math.abs(seg[1][0] - 0.05) < 1e-12, `${label} should keep the real 5% measured point`);
-  assert(Math.abs(seg[2][0] - 0.10) < 1e-12, `${label} should keep the real 10% measured point`);
-  assert(!seg.some(point => point[0] > 0 && point[0] < 0.05), `${label} should not add synthetic measured points between 0% and 5% in log mode`);
-  assert(seg[1][1] > seg[0][1], `${label} 5% measured point should rise above black`);
+  assert(seg.some(point => point[0] > 0 && point[0] < 0.05), `${label} should add simulated measured points between 0% and 5% in log mode`);
+  const low = seg.filter(point => point[0] >= -1e-12 && point[0] <= 0.05 + 1e-12);
+  assert(low.length > 4, `${label} should have a dense low-end measured segment`);
+  for (let i = 1; i < low.length; i++) {
+    assert(low[i][0] > low[i - 1][0], `${label} low-end x values should increase monotonically`);
+    assert(low[i][1] >= low[i - 1][1] - 1e-12, `${label} low-end y values should increase monotonically`);
+  }
+  const onePercent = low.find(point => Math.abs(point[0] - 0.01) < 1e-9);
+  assert(onePercent, `${label} should include a simulated 1% measured point`);
+  const rawFraction = Math.pow(0.01 / 0.05, 2.4);
+  const expectedOnePercent = scaledLogValue(mode, endpointValue * rawFraction, yTop);
+  assert(
+    Math.abs(onePercent[1] - expectedOnePercent) < 1e-9,
+    `${label} should shape measured interpolation in raw luminance/EOTF space before log projection`
+  );
+  assert(onePercent[1] > 0.1, `${label} 1% simulated point should rise visibly above black`);
 }
 
 function assertTargetShapedMeasuredSegment(segments, label) {
@@ -169,6 +188,16 @@ function assertTargetShapedMeasuredSegment(segments, label) {
 
 const logEotfX5 = vm.runInContext("meterGreyEotfLuminanceChartX({ire:5,stimulus:5,plot_ire:5},steps,1,100)", context);
 assert(Math.abs(logEotfX5 - 0.05) < 1e-12, 'Log EOTF should keep linear stimulus x projection');
+assert.strictEqual(
+  vm.runInContext("meterUseTargetShapedMeasuredEotfLuminanceCurve('eotf')", context),
+  true,
+  'Log EOTF should still use simulated target-shaped measured traces'
+);
+assert.strictEqual(
+  vm.runInContext("meterUseTargetShapedMeasuredEotfLuminanceCurve('luminance')", context),
+  true,
+  'Log luminance should still use simulated target-shaped measured traces'
+);
 
 const targetEotf = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,1,'eotf',100,steps)", context);
 assertDenseTargetLowEnd(targetEotf, 'Log EOTF target curve');
@@ -181,24 +210,26 @@ meterMeasuredEotfLuminanceSegments(
   steps,
   readingMap,
   100,
-  signal => Number(signal),
+  signal => Math.pow(Math.max(0, Number(signal) || 0), 2.4),
   lum => meterScaleEotfLuminancePlotValue('eotf', Number(lum), 1, null, Number(lum)),
-  'eotf'
+  'eotf',
+  lum => Number(lum)
 )
 `, context);
-assertDirectMeasuredLogSegment(measuredEotf, 'Log EOTF measured curve');
+assertSimulatedMeasuredLogSegment(measuredEotf, 'Log EOTF measured curve', 'eotf', 1, 0.2);
 
 const measuredLuminance = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
   steps,
   readingMap,
   100,
-  signal => Number(signal) * 100,
+  signal => Math.pow(Math.max(0, Number(signal) || 0), 2.4) * 100,
   lum => meterScaleEotfLuminancePlotValue('luminance', Number(lum), 100, null, Number(lum)),
-  'luminance'
+  'luminance',
+  lum => Number(lum)
 )
 `, context);
-assertDirectMeasuredLogSegment(measuredLuminance, 'Log luminance measured curve');
+assertSimulatedMeasuredLogSegment(measuredLuminance, 'Log luminance measured curve', 'luminance', 100, 0.2);
 
 context.document.elements.meterEotfLogScale.checked = false;
 context.document.elements.meterLuminanceLogScale.checked = false;
@@ -214,7 +245,8 @@ meterMeasuredEotfLuminanceSegments(
   100,
   signal => Number(signal),
   lum => meterScaleEotfLuminancePlotValue('eotf', Number(lum), 1, null, Number(lum)),
-  'eotf'
+  'eotf',
+  lum => Number(lum)
 )
 `, context);
 assertTargetShapedMeasuredSegment(nonLogMeasuredEotf, 'Non-log EOTF measured curve');
