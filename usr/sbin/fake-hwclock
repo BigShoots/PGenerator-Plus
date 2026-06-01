@@ -1,0 +1,46 @@
+#!/bin/sh
+
+# Simple script to load/save the current contents of the kernel clock
+# from/to a file. A *poor* substitute for a real RTC on boards (e.g. the
+# Raspberry Pi) that have none: it keeps the clock monotonic across reboots
+# so it never resets to the build date. This matters for PGenerator+ because
+# ArgyllCMS ages the spectrophotometer wavelength calibration by wall-clock
+# time -- a clock that jumps backward on every boot invalidates the cal and
+# forces a re-calibration on the next read.
+
+FILE=/etc/fake-hwclock.data
+
+COMMAND="$1"
+if [ -z "$COMMAND" ]; then
+    COMMAND=save
+fi
+
+FORCE=no
+if [ "$2" = "force" ]; then
+    FORCE=yes
+fi
+
+case "$COMMAND" in
+    save)
+        date -u '+%Y-%m-%d %H:%M:%S' > "$FILE"
+        ;;
+    load)
+        if [ -e "$FILE" ]; then
+            SAVED="$(cat "$FILE")"
+            if [ "$(date -u '+%s' -d "$SAVED" 2>/dev/null)" -gt "$(date -u '+%s')" ] 2>/dev/null || [ "$FORCE" = "yes" ]; then
+                date -u -s "$SAVED" >/dev/null
+                [ -x /sbin/hwclock ] && /sbin/hwclock --systohc 2>/dev/null
+            else
+                echo "Current system time: $(date -u '+%Y-%m-%d %H:%M:%S')" >&2
+                echo "fake-hwclock saved clock is in the past ($SAVED); leaving clock as-is." >&2
+                echo "To force it anyway: fake-hwclock load force" >&2
+            fi
+        else
+            echo "Unable to read saved clock information: $FILE" >&2
+        fi
+        ;;
+    *)
+        echo "Usage: fake-hwclock [save|load [force]]" >&2
+        exit 1
+        ;;
+esac

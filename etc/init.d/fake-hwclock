@@ -1,0 +1,39 @@
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides:          fake-hwclock
+# Required-Start:    $local_fs
+# Required-Stop:     $local_fs
+# Default-Start:     S
+# Default-Stop:      0 6
+# Short-Description: Restore/save the system clock using a file (no RTC)
+# Description:       On boards without a battery-backed RTC, restore the saved
+#                    clock at boot so it never resets to the build date, and
+#                    save it again on shutdown. Keeps the clock monotonic so
+#                    ArgyllCMS does not invalidate the spectro calibration.
+### END INIT INFO
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+case "$1" in
+    start)
+        echo "Restoring saved system clock (fake-hwclock)"
+        /usr/sbin/fake-hwclock load
+        ;;
+    stop|restart|reload|force-reload)
+        echo "Saving system clock (fake-hwclock)"
+        /usr/sbin/fake-hwclock save
+        ;;
+    status)
+        if [ -e /etc/fake-hwclock.data ]; then
+            echo "fake-hwclock saved: $(cat /etc/fake-hwclock.data) (UTC)"
+        else
+            echo "fake-hwclock: no saved data"
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status}" >&2
+        exit 1
+        ;;
+esac
+
+exit 0
