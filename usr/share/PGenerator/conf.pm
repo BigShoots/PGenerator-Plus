@@ -133,10 +133,13 @@ sub set_conf_pattern (@) {
  }
  # Start Patch for HCFR
  if($pattern eq "HCFR") {
-  $val=~/(.*)(DRAW=.*)(DRAW=.*)/s;
-  $val="$1$3\n$2";
-  $val=~s/BG=-1,-1,-1/BG=DYNAMIC/;
-  $val=~s/(BG=DYNAMIC.*)BG=DYNAMIC/\1BG=-1,-1,-1/s;
+  # HCFR v3.5.x sends a DRAW=TEXT block with DIM=18,0 (zero height).
+  # The KMS C renderer crashes on this with std::length_error in
+  # basic_string::_M_create during text rendering.  Strip the TEXT
+  # block and keep only the RECTANGLE so the renderer stays alive.
+  $val=~s/^DRAW=TEXT\b[^\n]*(\n[^\n]*)*?\nEND=1\n?//mg;
+  $val=~s/\nDRAW=TEXT\b[^\n]*(\n[^\n]*)*?\nEND=1\n?//sg;
+  $val=~s/BG=-1,-1,-1/BG=DYNAMIC/g;
   chomp($val);
  }
  # End Patch for HCFR
