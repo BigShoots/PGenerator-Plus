@@ -13453,7 +13453,7 @@ function meterLuminanceLogFloor(yTop){
 function meterEotfLuminanceLogPointAllowed(mode,value,plot,signal){
  if(!meterEotfLuminanceLogScaleEnabledForMode(mode)) return true;
  const val=Number(value);
- if(!(Number.isFinite(val)&&val>0)) return false;
+ if(!(Number.isFinite(val)&&val>=0)) return false;
  const explicitNumber=value=>{
   if(value==null) return null;
   if(typeof value==='string'&&value.trim()==='') return null;
@@ -13461,9 +13461,9 @@ function meterEotfLuminanceLogPointAllowed(mode,value,plot,signal){
   return Number.isFinite(n)?n:null;
  };
  const plotValue=explicitNumber(plot);
- if(plotValue!=null&&plotValue<=0) return false;
+ if(plotValue!=null&&plotValue<0) return false;
  const signalValue=explicitNumber(signal);
- if(signalValue!=null&&signalValue<=0) return false;
+ if(signalValue!=null&&signalValue<0) return false;
  return true;
 }
 
@@ -13709,7 +13709,7 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
   const segments=Math.max(1,Math.ceil(span*8));
   for(let j=0;j<=segments;j++){
    if(i>0&&j===0) continue;
-   if(logMode&&(Number(a.plot)<=0||Number(a.signal)<=0)&&j<segments) continue;
+   if(logMode&&(Number(a.plot)<=0||Number(a.signal)<=0)&&j>0&&j<segments) continue;
    const t=segments>0?j/segments:0;
    const mid={stimulus:a.stimulus+(b.stimulus-a.stimulus)*t};
    if(Number.isFinite(Number(a.code))&&Number.isFinite(Number(b.code))) mid.code=Number(a.code)+(Number(b.code)-Number(a.code))*t;
@@ -23261,13 +23261,13 @@ function meterGreyEotfLuminancePlotIre(item){
 function meterEotfLuminanceMeasuredStepAllowed(mode,step){
  if(!meterEotfLuminanceLogScaleEnabledForMode(mode)) return true;
  const plot=Number(meterGreyEotfLuminancePlotIre(step));
- if(Number.isFinite(plot)&&plot<=0) return false;
+ if(Number.isFinite(plot)&&plot<0) return false;
  const stimulus=Number(meterGreyChartStimulusIre(step));
- if(Number.isFinite(stimulus)&&stimulus<=0) return false;
+ if(Number.isFinite(stimulus)&&stimulus<0) return false;
  const code=meterGreyChartTargetCode(step);
  const targetIre=Number.isFinite(stimulus)?stimulus:plot;
  const signal=meterGreyTargetSignal(targetIre,code);
- return !(Number.isFinite(Number(signal))&&Number(signal)<=0);
+ return !(Number.isFinite(Number(signal))&&Number(signal)<0);
 }
 
 function meterGreyEotfLuminanceChartX(step,steps,idx,axisMax){
@@ -23388,16 +23388,21 @@ function meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t){
  return Math.max(0,Math.min(1,(mv-av)/(bv-av)));
 }
 
-function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSignal){
+function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSignal,mode){
  const list=Array.isArray(rows)?rows:[];
  if(list.length<2) return list.map(row=>[row.x,row.y]);
  const out=[[list[0].x,list[0].y]];
  const maxPct=Math.max(1,Number(axisMax)||100);
+ const logMode=meterEotfLuminanceLogScaleEnabledForMode(mode);
  for(let i=0;i<list.length-1;i++){
   const a=list[i];
   const b=list[i+1];
   const spanPct=Math.abs((Number(b.x)||0)-(Number(a.x)||0))*maxPct;
   const segments=Math.max(1,Math.min(80,Math.ceil(spanPct*6)));
+  if(logMode&&(Number(a.x)<=0||Number(a.signal)<=0||Number(a.stimulus)<=0||Number(a.ire)<=0)){
+   out.push([b.x,b.y]);
+   continue;
+  }
   for(let j=1;j<=segments;j++){
    const t=j/segments;
    if(j===segments){
@@ -23516,7 +23521,7 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
   current.push({x,y:Number(y),luminance:Number(lum),signal,stimulus:targetIre,ire:targetIre,code});
  });
  flushCurrent();
- return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal));
+ return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal,mode));
 }
 
 function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode){
