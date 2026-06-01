@@ -1584,6 +1584,12 @@ sub webui_meter_read_result (@) {
     if($json=~/"awaiting_ready"\s*:\s*true/i) {
       return $json;
      }
+    if($json=~/"setup_busy"\s*:\s*true/i) {
+      # 'Working...' state between setup steps (e.g. calibrating after the tile
+      # ack). Pass it through with its message so the wizard popup can stay
+      # visible, instead of reconstructing a bare 'measuring' that hides it.
+      return $json;
+     }
   if($json=~/"status"\s*:\s*"(starting|measuring|running)"/) {
     my $age=time() - (stat($_meter_read_file))[9];
     my $timeout_sec=170;
@@ -16158,7 +16164,14 @@ async function meterPollRead(timeoutMs,shouldCancel){
   }
   try{
    const r=await fetchJSON('/api/meter/read/result',{_quiet:true,_timeoutMs:5000});
-   meterSpectroSetupApply(r,'/api/meter/setup/ack');
+   if(r && r.setup_busy){
+    // Keep the wizard popup visible with a 'working' message between setup
+    // steps (e.g. while the meter calibrates after the tile step) instead of
+    // hiding it and leaving the operator staring at a blank screen.
+    meterSpectroSetupApply({keepBusy:true,message:r.message},'/api/meter/setup/ack');
+   } else {
+    meterSpectroSetupApply(r,'/api/meter/setup/ack');
+   }
    if(r&&r.status==='setup'){ await new Promise(res=>setTimeout(res,300)); continue; }
    if(r&&r.awaiting_ready){
     await meterWaitForManualPromptClear(r);
