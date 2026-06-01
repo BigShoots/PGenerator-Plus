@@ -379,7 +379,12 @@ class Runner:
                     pending = self.line_buffer
                     self.line_buffer = ""
                     self.handle_line(pending)
-                self.maybe_advance_menu(window)
+            # Run menu navigation every iteration, not only when new output
+            # arrives. Once ccxxmake is parked at the menu (e.g. after a
+            # successful save) it emits nothing more, so the Exit retry must
+            # still fire here -- otherwise the run hangs forever on
+            # 'Computing and saving the CCSS profile' even though the file is done.
+            self.maybe_advance_menu(window)
             if self.child.poll() is not None and master_fd not in ready:
                 break
 
