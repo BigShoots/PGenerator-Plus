@@ -351,7 +351,13 @@ class Runner:
                 pass
         if returncode not in (None, 0):
             detail = "ccxxmake exited with status %s: %s" % (returncode, detail)
-        self.write_state("error", detail)
+        # Surface only a curated message to the operator; keep the raw ccxxmake
+        # output in `detail` for the log/diagnostics (the UI does not show it).
+        self.write_state(
+            "error",
+            "CCSS creation failed. Make sure the reference spectrophotometer (and its serial-matched calibration tile) is connected, then try again.",
+            detail=detail,
+        )
         return 1
 
 
