@@ -13379,6 +13379,12 @@ function meterLuminanceLogScaleEnabled(){
 const METER_CHART_LOG_KNEE_DIVISOR=10000;
 const METER_LUMINANCE_LOG_FLOOR_DIVISOR=1000000;
 
+function meterEotfLuminanceLogScaleEnabledForMode(mode){
+ if(mode==='eotf') return meterEotfLogScaleEnabled();
+ if(mode==='luminance') return meterLuminanceLogScaleEnabled();
+ return false;
+}
+
 function meterLogScaleValue(v,yTop,floorValue){
  const top=Math.max(1e-6,yTop||1);
  const floor=Math.max(0,Math.min(top*0.999,Number(floorValue)||0));
@@ -13442,6 +13448,30 @@ function meterLuminanceUnscaleValue(norm,yTop){
 function meterLuminanceLogFloor(yTop){
  const top=Math.max(1e-6,yTop||1);
  return Math.max(1e-6,top/METER_LUMINANCE_LOG_FLOOR_DIVISOR);
+}
+
+function meterEotfLuminanceLogPointAllowed(mode,value,plot,signal){
+ if(!meterEotfLuminanceLogScaleEnabledForMode(mode)) return true;
+ const val=Number(value);
+ if(!(Number.isFinite(val)&&val>0)) return false;
+ const explicitNumber=value=>{
+  if(value==null) return null;
+  if(typeof value==='string'&&value.trim()==='') return null;
+  const n=Number(value);
+  return Number.isFinite(n)?n:null;
+ };
+ const plotValue=explicitNumber(plot);
+ if(plotValue!=null&&plotValue<=0) return false;
+ const signalValue=explicitNumber(signal);
+ if(signalValue!=null&&signalValue<=0) return false;
+ return true;
+}
+
+function meterScaleEotfLuminancePlotValue(mode,value,yTop,plot,signal){
+ const val=Number(value);
+ if(!Number.isFinite(val)) return null;
+ if(!meterEotfLuminanceLogPointAllowed(mode,val,plot,signal)) return null;
+ return mode==='eotf' ? meterEotfScaleValue(val,yTop) : meterLuminanceScaleValue(val,yTop);
 }
 
 function meterLuminanceAxisLabel(v){
@@ -13663,13 +13693,15 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
   }
  });
  if(unique.length<2) return null;
- const pointFor=(plot,signal,point)=>[
-  Math.max(0,Math.min(end,plot))/end,
-  mode==='eotf'
-   ? meterEotfScaleValue(meterGreyTargetEotfChartValueForSignal(signal,targetPeak,Lb||0,point),top)
-   : meterLuminanceScaleValue(meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point),top)
- ];
+ const pointFor=(plot,signal,point)=>{
+  const rawValue=mode==='eotf'
+   ? meterGreyTargetEotfChartValueForSignal(signal,targetPeak,Lb||0,point)
+   : meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
+  const scaled=meterScaleEotfLuminancePlotValue(mode,rawValue,top,plot,signal);
+  return scaled==null?null:[Math.max(0,Math.min(end,plot))/end,scaled];
+ };
  const pts=[];
+ const logMode=meterEotfLuminanceLogScaleEnabledForMode(mode);
  for(let i=0;i<unique.length-1;i++){
   const a=unique[i];
   const b=unique[i+1];
@@ -13677,10 +13709,12 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
   const segments=Math.max(1,Math.ceil(span*8));
   for(let j=0;j<=segments;j++){
    if(i>0&&j===0) continue;
+   if(logMode&&(Number(a.plot)<=0||Number(a.signal)<=0)&&j<segments) continue;
    const t=segments>0?j/segments:0;
    const mid={stimulus:a.stimulus+(b.stimulus-a.stimulus)*t};
    if(Number.isFinite(Number(a.code))&&Number.isFinite(Number(b.code))) mid.code=Number(a.code)+(Number(b.code)-Number(a.code))*t;
-   pts.push(pointFor(a.plot+(b.plot-a.plot)*t,a.signal+(b.signal-a.signal)*t,mid));
+   const pt=pointFor(a.plot+(b.plot-a.plot)*t,a.signal+(b.signal-a.signal)*t,mid);
+   if(pt) pts.push(pt);
   }
  }
  return pts.length>1?pts:null;
@@ -13697,10 +13731,12 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
    const code=meterGreyChartTargetCode(s);
    const ire=Number(meterGreyChartStimulusIre(s));
    const x=meterGreyEotfLuminanceChartX(s,stepList,idx,end);
-   const value=(mode==='eotf')
-    ? meterEotfScaleValue(meterGreyTargetEotfChartValue(ire,targetPeak,Lb,code),top)
-    : meterLuminanceScaleValue(meterGreyTargetChartValue(ire,targetPeak,Lb,code),top);
-  return [x,value];
+   const signal=meterGreyTargetSignal(ire,code);
+   const rawValue=(mode==='eotf')
+    ? meterGreyTargetEotfChartValue(ire,targetPeak,Lb,code)
+    : meterGreyTargetChartValue(ire,targetPeak,Lb,code);
+   const value=meterScaleEotfLuminancePlotValue(mode,rawValue,top,x*end,signal);
+   return value==null?null:[x,value];
   })
   .filter(p=>p&&isFinite(p[0])&&isFinite(p[1]));
  if(coded.length>1){
@@ -13708,19 +13744,24 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
   if(dense&&dense.length>1) return dense;
   const hasBlack=coded.some(p=>p[0]<=0.0001);
   if(!hasBlack){
-   const value=(mode==='eotf')
-    ? meterEotfScaleValue(meterGreyTargetEotfChartValue(0,targetPeak,Lb,meterPatchRangeMin()),top)
-    : meterLuminanceScaleValue(meterGreyTargetChartValue(0,targetPeak,Lb,meterPatchRangeMin()),top);
-   coded.unshift([0,value]);
+   const code=meterPatchRangeMin();
+   const signal=meterGreyTargetSignal(0,code);
+   const rawValue=(mode==='eotf')
+    ? meterGreyTargetEotfChartValue(0,targetPeak,Lb,code)
+    : meterGreyTargetChartValue(0,targetPeak,Lb,code);
+   const value=meterScaleEotfLuminancePlotValue(mode,rawValue,top,0,signal);
+   if(value!=null) coded.unshift([0,value]);
   }
   coded.sort((a,b)=>a[0]-b[0]);
   return coded;
  }
  for(let pct=0;pct<=end;pct+=1){
-  const value=(mode==='eotf')
-   ? meterEotfScaleValue(meterGreyTargetEotfChartValue(pct,targetPeak,Lb,null),top)
-   : meterLuminanceScaleValue(meterGreyTargetChartValue(pct,targetPeak,Lb,null),top);
-  pts.push([pct/end,value]);
+  const signal=meterGreyTargetSignal(pct,null);
+  const rawValue=(mode==='eotf')
+   ? meterGreyTargetEotfChartValue(pct,targetPeak,Lb,null)
+   : meterGreyTargetChartValue(pct,targetPeak,Lb,null);
+  const value=meterScaleEotfLuminancePlotValue(mode,rawValue,top,pct,signal);
+  if(value!=null) pts.push([pct/end,value]);
  }
  return pts;
 }
@@ -23217,6 +23258,18 @@ function meterGreyEotfLuminancePlotIre(item){
  return Number.isFinite(Number(stimulus))?Number(stimulus):null;
 }
 
+function meterEotfLuminanceMeasuredStepAllowed(mode,step){
+ if(!meterEotfLuminanceLogScaleEnabledForMode(mode)) return true;
+ const plot=Number(meterGreyEotfLuminancePlotIre(step));
+ if(Number.isFinite(plot)&&plot<=0) return false;
+ const stimulus=Number(meterGreyChartStimulusIre(step));
+ if(Number.isFinite(stimulus)&&stimulus<=0) return false;
+ const code=meterGreyChartTargetCode(step);
+ const targetIre=Number.isFinite(stimulus)?stimulus:plot;
+ const signal=meterGreyTargetSignal(targetIre,code);
+ return !(Number.isFinite(Number(signal))&&Number(signal)<=0);
+}
+
 function meterGreyEotfLuminanceChartX(step,steps,idx,axisMax){
  const maxPct=Math.max(1,Number(axisMax)||meterEotfLuminanceAxisMax(steps));
  if(step){
@@ -23325,9 +23378,12 @@ function meterTargetShapedCurveFraction(a,b,signal,targetValueForSignal,t){
   const bv=Number(b[key]);
   if(Number.isFinite(av)&&Number.isFinite(bv)) mid[key]=av+(bv-av)*(Number(t)||0);
  });
- const av=Number(targetValueForSignal(aSignal,a));
- const bv=Number(targetValueForSignal(bSignal,b));
- const mv=Number(targetValueForSignal(midSignal,mid));
+ const rawA=targetValueForSignal(aSignal,a);
+ const rawB=targetValueForSignal(bSignal,b);
+ const rawM=targetValueForSignal(midSignal,mid);
+ const av=rawA==null?NaN:Number(rawA);
+ const bv=rawB==null?NaN:Number(rawB);
+ const mv=rawM==null?NaN:Number(rawM);
  if(!Number.isFinite(av)||!Number.isFinite(bv)||!Number.isFinite(mv)||Math.abs(bv-av)<1e-12) return t;
  return Math.max(0,Math.min(1,(mv-av)/(bv-av)));
 }
@@ -23378,14 +23434,14 @@ function meterUniqueMeasuredRowsByPlotX(rows){
 }
 
 function meterUseTargetShapedMeasuredEotfLuminanceCurve(){
-	// HDR/DV measured traces should connect measured points directly. Bending
-	// them along the target curve between samples can create visible chart kinks
-	// even when the measured points themselves are smooth.
-	if((typeof meterChartIsHdr==='function' && meterChartIsHdr()) || (typeof meterChartIsDv==='function' && meterChartIsDv())) return false;
-	return true;
+ // HDR/DV measured traces should connect measured points directly. Bending
+ // them along the target curve between samples can create visible chart kinks
+ // even when the measured points themselves are smooth.
+ if((typeof meterChartIsHdr==='function' && meterChartIsHdr()) || (typeof meterChartIsDv==='function' && meterChartIsDv())) return false;
+ return true;
 }
 
-function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance){
+function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance,mode){
  const segments=[];
  let current=[];
  const flushCurrent=()=>{
@@ -23398,6 +23454,10 @@ function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scale
  (steps||[]).forEach((step,idx)=>{
   const reading=readingMap?readingMap[step.ire]:null;
   if(!reading){
+   flushCurrent();
+   return;
+  }
+  if(!meterEotfLuminanceMeasuredStepAllowed(mode,step)){
    flushCurrent();
    return;
   }
@@ -23418,7 +23478,7 @@ function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scale
  return segments;
 }
 
-function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance){
+function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode){
  const segments=[];
  let current=[];
  const flushCurrent=()=>{
@@ -23431,6 +23491,10 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
  (steps||[]).forEach((step,idx)=>{
   const reading=readingMap?readingMap[step.ire]:null;
   if(!reading){
+   flushCurrent();
+   return;
+  }
+  if(!meterEotfLuminanceMeasuredStepAllowed(mode,step)){
    flushCurrent();
    return;
   }
@@ -23455,11 +23519,11 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
  return segments.map(seg=>meterDensifyTargetShapedMeasuredSegment(seg,axisMax,targetValueForSignal));
 }
 
-function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance){
+function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode){
  if(meterUseTargetShapedMeasuredEotfLuminanceCurve()){
-  return meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance);
+  return meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueForSignal,scaleLuminance,mode);
  }
- return meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance);
+ return meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance,mode);
 }
 
 function meterGammaPlotAnchorStep(steps,idx){
@@ -24311,26 +24375,32 @@ function drawEOTFChart(gs,allSteps,readingMap){
  });
  const tgtPts=meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
-	 const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
-	 const measureSteps=(directMeasured&&valid.length)?valid:(plotSteps.length?plotSteps:valid);
+ const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
+ const measureSteps=(directMeasured&&valid.length)?valid:(plotSteps.length?plotSteps:valid);
  let mSegments=meterMeasuredEotfLuminanceSegments(
- measureSteps,
- readingMap,
- axisMax,
+  measureSteps,
+  readingMap,
+  axisMax,
   (signal,point)=>{
    const targetLum=meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
-   return meterEotfScaleValue(meterEotfNormalizedEnabled()
+   const rawValue=meterEotfNormalizedEnabled()
     ? meterGreyMeasuredNormalizedEotfValue(targetLum,eotfMeasuredRef)
-    : meterGreyMeasuredEotfValue(targetLum,eotfMeasuredRef),yTop);
+    : meterGreyMeasuredEotfValue(targetLum,eotfMeasuredRef);
+   return meterScaleEotfLuminancePlotValue('eotf',rawValue,yTop,point&&point.ire!=null?point.ire:point&&point.stimulus,signal);
   },
-  lum=>meterEotfScaleValue(meterGreyMeasuredEotfChartValue(lum||0,eotfMeasuredRef),yTop)
+  lum=>{
+   const value=Number(lum);
+   if(!Number.isFinite(value)) return null;
+   return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
+  },
+  'eotf'
  );
-	 // Draw measured EOTF curve. HDR/DV live AutoCal spine anchors are sparse,
-	 // so single-point segments still need visible dots until adjacent anchors exist.
-	 mSegments.forEach(seg=>{
-	  if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
-	  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
-	 });
+ // Draw measured EOTF curve. HDR/DV live AutoCal spine anchors are sparse,
+ // so single-point segments still need visible dots until adjacent anchors exist.
+ mSegments.forEach(seg=>{
+  if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
+  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
+ });
  ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
@@ -24374,24 +24444,28 @@ function drawGammaChart(gs,allSteps,readingMap){
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  drawGammaContrastLabel(ctx,chart,(Array.isArray(meterReadings)&&meterReadings.length)?meterReadings:gs);
  const validG=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
-	 const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
-	 const measureSteps=(directMeasured&&validG.length)?validG:(plotSteps.length?plotSteps:validG);
+ const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
+ const measureSteps=(directMeasured&&validG.length)?validG:(plotSteps.length?plotSteps:validG);
  const scaleMeasuredLuminance=lum=>{
   const value=Number(lum);
   if(!Number.isFinite(value)) return null;
-  return meterLuminanceScaleValue(value,yTop);
+  return meterScaleEotfLuminancePlotValue('luminance',value,yTop,null,value);
  };
  let mSegments=meterMeasuredEotfLuminanceSegments(
- measureSteps,
- readingMap,
- axisMax,
-  (signal,point)=>meterLuminanceScaleValue(meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point),yTop),
-  scaleMeasuredLuminance
+  measureSteps,
+  readingMap,
+  axisMax,
+  (signal,point)=>{
+   const targetLum=meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
+   return meterScaleEotfLuminancePlotValue('luminance',targetLum,yTop,point&&point.ire!=null?point.ire:point&&point.stimulus,signal);
+  },
+  scaleMeasuredLuminance,
+  'luminance'
  );
-	 mSegments.forEach(seg=>{
-	  if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
-	  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
-	 });
+ mSegments.forEach(seg=>{
+  if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
+  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
+ });
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
  ctx.textAlign='left';
  ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
