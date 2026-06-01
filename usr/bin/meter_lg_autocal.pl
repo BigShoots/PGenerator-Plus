@@ -2604,17 +2604,23 @@ sub lg_autocal_26_best_known_for_step {
 		 return (ref($entry) eq "HASH") ? $entry : undef;
 		}
 
-sub sdr_initial_low_shadow_context_enabled {
+sub sdr_initial_autocal_context_enabled {
  my ($config,$step)=@_;
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
- return 0 if(!autocal_step_is_low_shadow($step));
  return 0 if(autocal_config_is_touchup($config));
  return 0 if(autocal_config_is_post_3d_polish($config));
  return 0 if(autocal_config_is_post_series_adjust($config));
  return 0 if(autocal_config_is_post_series_revert($config));
  my $phase=lc($config->{"full_autocal_phase"}||"");
  return 0 if($phase =~ /(magic|post|polish|touchup)/);
+ return 1;
+}
+
+sub sdr_initial_low_shadow_context_enabled {
+ my ($config,$step)=@_;
+ return 0 if(!sdr_initial_autocal_context_enabled($config,$step));
+ return 0 if(!autocal_step_is_low_shadow($step));
  return 1;
 }
 
@@ -4620,27 +4626,110 @@ sub apply_sdr_low_shadow_local_spine_preseed {
  my $source_idx=ddc_slot_index_for_ire($source_ire);
  my $target_idx=ddc_slot_index_for_ire($target_ire);
  return 0 if(!defined($source_idx) || !defined($target_idx));
- return 0 if(ref($arrays->{"adjustingLuminance"}) ne "ARRAY");
- my $luma_arr=$arrays->{"adjustingLuminance"};
- return 0 if($source_idx >= @{$luma_arr} || $target_idx >= @{$luma_arr});
- return 0 if(!defined($luma_arr->[$source_idx]));
- my $source_luma=$luma_arr->[$source_idx]+0;
- my $before=defined($luma_arr->[$target_idx]) ? ($luma_arr->[$target_idx]+0) : 0;
- return 0 if(abs($before-$source_luma) <= 1.0001);
- my $after=round_ddc_quarter($source_luma);
- return 0 if(abs($after-$before) <= 0.0001);
- $luma_arr->[$target_idx]=$after;
+ my @settings=ddc_adjustment_settings($arrays);
+ return 0 if(!@settings);
+ my (%before,%after,%source,%changed_settings);
+ my $max_delta=0;
+ my $material_threshold=0.75;
+ foreach my $setting (@settings) {
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $source_idx >= @{$arr} || $target_idx >= @{$arr});
+  next if(!defined($arr->[$source_idx]));
+  my $source_value=round_ddc_quarter($arr->[$source_idx]+0);
+  my $before_value=defined($arr->[$target_idx]) ? ($arr->[$target_idx]+0) : 0;
+  my $delta=abs($before_value-$source_value);
+  $max_delta=$delta if($delta > $max_delta);
+  $source{$setting}=$source_value+0;
+  $before{$setting}=$before_value+0;
+  $after{$setting}=$source_value+0;
+ }
+ return 0 if($max_delta <= $material_threshold+0.0001);
+ foreach my $setting (@settings) {
+  next if(!exists($after{$setting}));
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $target_idx >= @{$arr});
+  next if(abs(($after{$setting}+0)-($before{$setting}+0)) <= 0.0001);
+  $arr->[$target_idx]=$after{$setting}+0;
+  $changed_settings{$setting}={ before=>$before{$setting}+0, after=>$after{$setting}+0 };
+ }
+ return 0 if(!%changed_settings);
  return {
   mode=>"sdr-low-shadow-local-spine-preseed",
   source_ire=>$source_ire+0,
   source_index=>$source_idx+0,
   target_ire=>$target_ire+0,
   target_index=>$target_idx+0,
-  setting=>"adjustingLuminance",
-  before=>$before+0,
-  after=>$after+0,
-  delta=>$after-$before,
+  material_threshold=>$material_threshold+0,
+  max_delta=>$max_delta+0,
+  source=>\%source,
+  before=>\%before,
+  after=>\%after,
+  changed_settings=>\%changed_settings,
   reason=>"prepare_2_3_neighbor_before_3"
+ };
+}
+
+sub apply_sdr_top_local_seed_105_from_109 {
+ my ($config,$arrays,$calibrated_slot_mask,$step)=@_;
+ return 0 if(!sdr_initial_autocal_context_enabled($config,$step));
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return 0 if(abs($ire-105) >= 0.001);
+ my $source_ire=109;
+ my $target_ire=105;
+ return 0 if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,$source_ire));
+ return 0 if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));
+ my $source_idx=ddc_slot_index_for_ire($source_ire);
+ my $target_idx=ddc_slot_index_for_ire($target_ire);
+ return 0 if(!defined($source_idx) || !defined($target_idx));
+ my %offsets=(
+  whiteBalanceRed=>1.50,
+  whiteBalanceGreen=>1.25,
+  whiteBalanceBlue=>1.50,
+  adjustingLuminance=>0.00,
+ );
+ my (%before,%after,%source,%changed_settings);
+ my $max_delta=0;
+ my $material_threshold=1.00;
+ foreach my $setting (ddc_adjustment_settings($arrays)) {
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $source_idx >= @{$arr} || $target_idx >= @{$arr});
+  next if(!defined($arr->[$source_idx]) || !defined($offsets{$setting}));
+  my $source_value=$arr->[$source_idx]+0;
+  my $before_value=defined($arr->[$target_idx]) ? ($arr->[$target_idx]+0) : 0;
+  my $after_value=round_ddc_quarter($source_value+($offsets{$setting}+0));
+  my $delta=abs($before_value-$after_value);
+  $max_delta=$delta if($delta > $max_delta);
+  $source{$setting}=$source_value+0;
+  $before{$setting}=$before_value+0;
+  $after{$setting}=$after_value+0;
+ }
+ return 0 if($max_delta <= $material_threshold+0.0001);
+ foreach my $setting (keys %after) {
+  my $arr=$arrays->{$setting};
+  next if(ref($arr) ne "ARRAY" || $target_idx >= @{$arr});
+  next if(abs(($after{$setting}+0)-($before{$setting}+0)) <= 0.0001);
+  $arr->[$target_idx]=$after{$setting}+0;
+  $changed_settings{$setting}={ before=>$before{$setting}+0, after=>$after{$setting}+0 };
+ }
+ return 0 if(!%changed_settings);
+ return {
+  mode=>"sdr-top-local-seed-105-from-109",
+  source_ire=>$source_ire+0,
+  source_index=>$source_idx+0,
+  target_ire=>$target_ire+0,
+  target_index=>$target_idx+0,
+  offsets=>\%offsets,
+  material_threshold=>$material_threshold+0,
+  max_delta=>$max_delta+0,
+  source=>\%source,
+  before=>\%before,
+  after=>\%after,
+  changed_settings=>\%changed_settings,
+  reason=>"prepare_105_from_calibrated_109_reference"
  };
 }
 
@@ -13658,6 +13747,41 @@ eval {
 		    changed_slots=>$changed_slots+0,
 			    calibrated_non_black_anchors=>$calibrated_non_black_anchors+0
 			   });
+			   if(
+			    defined($final_ire) &&
+			    abs(($final_ire+0)-105) < 0.001 &&
+			    lc($config->{"signal_mode"}||"sdr") eq "sdr"
+			   ) {
+			    my ($seeded_99)=grep {
+			     ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)-99) < 0.001
+			    } @changed_slot_details;
+			    if(ref($seeded_99) eq "HASH") {
+			     $state->{"sdr_top_spine_seed_99_from_105"}={
+			      label=>$final_label||$final_target->{"label"}||"",
+			      source_ire=>105,
+			      target_ire=>99,
+			      changed_slot=>$seeded_99,
+			      completed_slots=>\@completed_anchor_ires,
+			      completed_spine_anchors=>\@completed_spine_anchors
+			     };
+			     trace_109($final_read_step || $final_target,"sdr_top_spine_seed_99_from_105",{
+			      mode=>"full_ddc_spine",
+			      label=>$final_label||$final_target->{"label"}||"",
+			      source_ire=>105,
+			      target_ire=>99,
+			      changed_slot=>$seeded_99,
+			      target=>$final_target,
+			      target_values=>trace_target_values($arrays,{ index=>ddc_slot_index_for_ire(99), ire=>format_percent(99), label=>"99% legal-white" })
+			     });
+			     trace_sdr_low_shadow_ddc_snapshot(
+			      "sdr_top_spine_seed_99_from_105",$config,$state,$arrays,$final_read_step,$final_target,{
+			       source_ire=>105,
+			       target_ire=>99,
+			       changed_slot=>$seeded_99
+			      }
+			     );
+			    }
+			   }
 			  }
 			  write_state($state) if($anchor_predrive_mode || $full_ddc_spine_mode);
 			  return 0 if(!$propagated_slots);
@@ -13797,9 +13921,36 @@ eval {
 		   my $seed_error;
 				   ($picture,$seed_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
 				   die $seed_error if($seed_error);
-					   $calibration_mode_active=1;
-					   sync_state_picture($state,$picture,$picture_mode);
-					  }
+				   $calibration_mode_active=1;
+				   sync_state_picture($state,$picture,$picture_mode);
+				  }
+				  my $sdr_top_local_seed=apply_sdr_top_local_seed_105_from_109($config,$arrays,\@calibrated_ddc_slots,$read_step);
+				  if(ref($sdr_top_local_seed) eq "HASH") {
+				   trace_109($read_step,"sdr_top_local_seed_105_from_109",{
+				    label=>$label,
+				    target=>$target,
+				    seed=>$sdr_top_local_seed,
+				    target_values=>trace_target_values($arrays,$target)
+				   });
+				   trace_sdr_low_shadow_ddc_snapshot(
+				    "sdr_top_local_seed_105_from_109",$config,$state,$arrays,$read_step,$target,{
+				     label=>$label,
+				     seed=>$sdr_top_local_seed
+				    }
+				   );
+				   $state->{"current_step"}=$step_num;
+				   $state->{"total_steps"}=$total_ordered_steps;
+				   $state->{"current_name"}="Auto Cal $label";
+				   $state->{"phase"}="writing";
+				   $state->{"message"}="Seeding 105% from calibrated 109% reference";
+				   set_state_active_step($state,$read_step,$target);
+				   write_state($state);
+				   my $top_seed_error;
+				   ($picture,$top_seed_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+				   die $top_seed_error if($top_seed_error);
+				   $calibration_mode_active=1;
+				   sync_state_picture($state,$picture,$picture_mode);
+				  }
 				  my $low_shadow_local_spine_preseed=apply_sdr_low_shadow_local_spine_preseed($config,$arrays,\@calibrated_ddc_slots,$read_step);
 				  if(ref($low_shadow_local_spine_preseed) eq "HASH") {
 				   trace_109($read_step,"sdr_low_shadow_local_spine_preseed",{
