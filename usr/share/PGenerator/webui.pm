@@ -16643,6 +16643,11 @@ function meterHideSeriesControlsForAutoCal(){
  return !!(greyscaleAutoCalActive||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling||meterFullAutoCalRunning);
 }
 
+function meterAutoCalControlsAllowedForSignal(){
+ const mode=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():((document.getElementById('signal_mode')||{}).value||'sdr'))||'sdr').toLowerCase();
+ return mode==='sdr';
+}
+
 function meterUpdateReadButtons(){
  meterAutoCalRepairOverlayPointerState();
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -16655,6 +16660,7 @@ function meterUpdateReadButtons(){
  const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||continuousUiActive;
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
  const hideSeriesControlsForAutoCal=meterHideSeriesControlsForAutoCal();
+ const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
  const showClear=hasData&&meterDetected;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
@@ -16680,19 +16686,19 @@ function meterUpdateReadButtons(){
  if(continuousBtn) continuousBtn.style.display=show?'':'none';
  if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal)?'':'none';
  const autoCalTabActive=meterSeriesTab==='autocal';
- const showAutoCal=autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&meterDetected&&meterGreyTvControlsActive()&&!continuousUiActive;
+ const showAutoCal=autoCalSignalAllowed&&autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&meterDetected&&meterGreyTvControlsActive()&&!continuousUiActive;
  if(autoCalBtn){
   autoCalBtn.style.display=showAutoCal?'':'none';
   autoCalBtn.disabled=!showAutoCal||settingsDirty||busy;
   autoCalBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
- const showFullAutoCal=meterDetected&&meterFullAutoCalAvailable()&&!continuousUiActive;
+ const showFullAutoCal=autoCalSignalAllowed&&meterDetected&&meterFullAutoCalAvailable()&&!continuousUiActive;
  if(fullAutoCalBtn){
   fullAutoCalBtn.style.display=showFullAutoCal?'':'none';
   fullAutoCalBtn.disabled=!showFullAutoCal||settingsDirty||busy;
   fullAutoCalBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
- const showLg3d=autoCalTabActive&&meterAutoCalSeriesChoice==='3d-lut'&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
+ const showLg3d=autoCalSignalAllowed&&autoCalTabActive&&meterAutoCalSeriesChoice==='3d-lut'&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
  if(lg3dColorControls) lg3dColorControls.style.display=showLg3d?'flex':'none';
  if(lg3dBtn){
   lg3dBtn.style.display=showLg3d?'':'none';
@@ -16886,7 +16892,12 @@ function meterHandleTwoPointLevelChange(){
 }
 
 function meterUpdateSeriesTabUi(){
- const tab=meterNormalizeSeriesTab(meterSeriesTab);
+ let tab=meterNormalizeSeriesTab(meterSeriesTab);
+ const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
+ if(tab==='autocal'&&!autoCalSignalAllowed){
+  tab=meterSeriesTabForType(meterActiveSeriesType);
+  meterSeriesTab=tab;
+ }
  const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
  const colorGroup=document.getElementById('meterSeriesGroupColor');
  const autoCalGroup=document.getElementById('meterSeriesGroupAutoCal');
@@ -16895,15 +16906,20 @@ function meterUpdateSeriesTabUi(){
 	 const twoPointActive=meterIsTwoPointGreyscale();
 	 const autoCal26Active=meterActiveSeriesType==='greyscale'&&Number(meterActiveSeriesPoints)===26&&meterGreyTvControlsActive();
  document.querySelectorAll('#meterSeriesTabRow button[data-series-tab]').forEach(btn=>{
-  const active=(btn.dataset.seriesTab||'')===tab;
+  const tabKey=btn.dataset.seriesTab||'';
+  const visible=tabKey!=='autocal'||autoCalSignalAllowed;
+  btn.style.display=visible?'':'none';
+  btn.hidden=!visible;
+  btn.disabled=!visible;
+  const active=visible&&tabKey===tab;
   btn.classList.toggle('btn-primary',active);
   btn.classList.toggle('btn-secondary',!active);
  });
  meterUpdateSeriesLabels();
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
- if(autoCalGroup) autoCalGroup.style.display=tab==='autocal'?'flex':'none';
- if(tab==='autocal') meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
+ if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed)?'flex':'none';
+ if(tab==='autocal'&&autoCalSignalAllowed) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
 	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active)?'flex':'none';
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
@@ -27116,7 +27132,7 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
 ['signal_mode','color_format','rgb_quant_range','colorimetry','primaries','eotf'].forEach(id=>{
  const el=document.getElementById(id);
- if(el) el.addEventListener('change',()=>{meterGreySyncUi();meterRefreshActiveSeriesCharts();});
+ if(el) el.addEventListener('change',()=>{meterGreySyncUi();meterUpdateSeriesTabUi();meterRefreshActiveSeriesCharts();meterUpdateReadButtons();});
 });
 
 function meterRefreshActiveSeriesCharts(){
