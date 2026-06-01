@@ -7316,15 +7316,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <option value="projector_ccss">Projector</option>
       <option value="crt">CRT</option>
       <option value="lcd">None (no correction)</option>
-      <option value="custom_create">Create Custom CCSS...</option>
-      <option value="custom_import">Import Custom CCSS...</option>
+      <option value="custom_editor">CCSS Editor...</option>
      </optgroup>
      <optgroup label="Display-specific CCSS" id="meterDtCcss"></optgroup>
     </select>
       <div id="customCcssPanel" class="custom-ccss-panel">
        <div class="custom-ccss-panel-row">
         <div class="custom-ccss-panel-copy">
-         <div style="font-size:.76rem;color:#dfe6f6;font-weight:600;letter-spacing:.02em">Custom CCSS Importer</div>
+         <div style="font-size:.76rem;color:#dfe6f6;font-weight:600;letter-spacing:.02em">CCSS Editor</div>
          <div id="customCcssPanelSummary" style="font-size:.7rem;color:var(--text2);margin-top:3px;line-height:1.45">Open the importer to upload CCSS, TI3, or spectral CSV files, preview curves, and manage custom profiles.</div>
         </div>
         <button id="customCcssPanelBtn" class="btn btn-sm btn-secondary custom-ccss-panel-btn" onclick="meterOpenCustomCcssEditor()">Open Editor</button>
@@ -7637,8 +7636,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
-      <div style="font-size:1rem;font-weight:700;color:#eee">Custom CCSS Importer</div>
-      <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">This image supports importing existing CCSS, TI3, or spectral CSV files, then choosing the active custom profile and inspecting its spectral curves. Live CCSS capture is not available in this popup.</div>
+      <div style="font-size:1rem;font-weight:700;color:#eee">CCSS Editor</div>
+      <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">PGenerator+ supports importing existing CCSS, TI3, or spectral CSV files, then choosing the active custom profile and inspecting its spectral curves.</div>
      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
        <button class="btn btn-sm btn-secondary" onclick="meterOpenCcssCreateModal()">Create With Spectro</button>
@@ -14617,7 +14616,7 @@ function meterCcssCreateDisplayTypeValue(){
  if(meterCcssCreateDisplayType) return meterCcssCreateDisplayType;
  const sel=document.getElementById('meterDisplayType');
  let value=String((sel&&sel.value)||'');
- if(value==='custom_create'||value==='custom_import') value=String((sel&&sel.dataset.lastStableValue)||'lcd');
+ if(value==='custom_editor') value=String((sel&&sel.dataset.lastStableValue)||'lcd');
  return value;
 }
 
@@ -26187,7 +26186,7 @@ function meterUpdateCustomCcssPanel(value){
   summaryText='Selected installed CCSS: '+ccssPreviewDisplayLabelForValue('system\t'+current.slice(5))+'.';
  }
  if(summary) summary.textContent=summaryText;
- if(button) button.textContent=(current.startsWith('ccss_')?'Open CCSS Viewer':'Open Custom CCSS Importer');
+ if(button) button.textContent=(current.startsWith('ccss_')?'Open CCSS Viewer':'Open CCSS Editor');
 }
 
 function meterSelectCustomCcssValue(filename){
@@ -26231,14 +26230,7 @@ const meterDisplayTypeEl=document.getElementById('meterDisplayType');
 meterDisplayTypeEl.dataset.lastStableValue=meterDisplayTypeEl.value||'lcd';
 meterDisplayTypeEl.addEventListener('change',function(){
  const v=this.value;
- if(v==='custom_create'){
-  const stable=this.dataset.lastStableValue||'lcd';
-  this.value=stable;
-  meterApplyDisplayTypeSelection(stable);
-  meterOpenCcssCreateModal();
-  return;
- }
- if(v==='custom_import'){
+ if(v==='custom_editor'){
   const stable=this.dataset.lastStableValue||'lcd';
   this.value=stable;
   meterApplyDisplayTypeSelection(stable);
@@ -26930,7 +26922,7 @@ function saveMeterSettings(){
  meterProfilingPort=meterSelectedProfilingPort();
  const displayTypeValue=val('meterDisplayType');
  const s={
-  display_type:(displayTypeValue==='custom_create'||displayTypeValue==='custom_import')?((document.getElementById('meterDisplayType')||{}).dataset.lastStableValue||'lcd'):displayTypeValue,
+  display_type:(displayTypeValue==='custom_editor')?((document.getElementById('meterDisplayType')||{}).dataset.lastStableValue||'lcd'):displayTypeValue,
   ccss_create_display_type:meterCcssCreateDisplayTypeValue(),
   measurement_meter_port:meterMeasurementPort,
   profiling_meter_port:meterProfilingPort,
