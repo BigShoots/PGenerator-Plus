@@ -560,6 +560,8 @@ fix_permissions() {
   chown root:root "$path" 2>/dev/null || true
   chmod 0644 "$path" 2>/dev/null || true
  done
+ set_root_mode "usr/share/PGenerator/bash.pm" 0755
+ set_root_mode "usr/share/PGenerator/daemon.pm" 0755
 
  for rel in \
   "etc/ntp.conf" \
@@ -582,9 +584,9 @@ fix_permissions() {
  done
 
  ensure_pgenerator_dir "var/lib/PGenerator/running" 0770
- ensure_pgenerator_dir "var/lib/PGenerator/running/tmp" 0770
- ensure_pgenerator_dir "var/lib/PGenerator/ccss" 0775
- ensure_pgenerator_dir "var/lib/PGenerator/ccss/custom" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/running/tmp" 0755
+ ensure_pgenerator_dir "var/lib/PGenerator/ccss" 0755
+ ensure_pgenerator_dir "var/lib/PGenerator/ccss/custom" 0755
  ensure_pgenerator_dir "var/lib/PGenerator/lg" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/lg/ddc" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/lg/luts" 0775
