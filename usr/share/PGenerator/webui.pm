@@ -12304,27 +12304,6 @@ function meterReadingXYZ(reading){
  return null;
 }
 
-function meterReadingIsFailedNonZeroBlack(reading){
- if(!reading||!meterReadingIsGreyscale(reading)||meterReadingIsZeroBlack(reading)) return false;
- const measuredY=Number(meterReadingLuminanceNits(reading));
- if(!(Number.isFinite(measuredY)&&measuredY<=0.000001)) return false;
- let targetY=null;
- try{
-  const target=meterTargetXYZForReading(reading);
-  if(target&&target.Y!=null) targetY=Number(target.Y);
- }catch(e){}
- if(Number.isFinite(targetY)&&targetY>0.000001) return true;
- const ire=Number(meterReadingAnalysisIre(reading));
- return Number.isFinite(ire)&&ire>0.05;
-}
-
-function meterZeroXYZForFailedNonZeroBlack(reading){
- if(!meterReadingIsFailedNonZeroBlack(reading)) return null;
- const X=Number(reading&&reading.X);
- const Z=Number(reading&&reading.Z);
- return {X:Number.isFinite(X)?X:0,Y:0,Z:Number.isFinite(Z)?Z:0};
-}
-
 function meterColorLuminanceInfo(reading){
  if(!reading) return {measuredY:null,targetY:null,deltaY:null,deltaPct:null};
  let targetY=null;
@@ -12360,16 +12339,11 @@ function meterColorDeltaEForm(){
 }
 
 function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
- const mode=meterResolveGreyRefMode(modeOrIncl);
- let xyz=meterReadingXYZ(reading);
- if(!reading) return {value:0,de2000:0};
- if(!xyz&&meterReadingIsFailedNonZeroBlack(reading)){
-  if(mode!=='eotf') return {value:NaN,de2000:NaN,invalid_zero_luminance:true};
-  xyz=meterZeroXYZForFailedNonZeroBlack(reading);
- }
- if(!xyz||xyz.Y<0) return {value:0,de2000:0};
+ const xyz=meterReadingXYZ(reading);
+ if(!reading||!xyz||!(xyz.Y>0)) return {value:0,de2000:0};
  form = form || meterDeltaEForm();
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
+ const mode=meterResolveGreyRefMode(modeOrIncl);
  let wR=meterColorLabWhite();
  const _gw=(gwWeight>0&&gwWeight<=1)?gwWeight:1;
  if(_gw<1) wR={X:wR.X*_gw,Y:wR.Y*_gw,Z:wR.Z*_gw};
@@ -12397,14 +12371,13 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
 function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
  if(!reading) return 0;
  const xyz=meterReadingXYZ(reading);
- const failedNonZeroBlack=meterReadingIsFailedNonZeroBlack(reading);
  const useColorForm=meterReadingUsesColorDeltaForm(reading);
  form = form || (useColorForm ? meterColorDeltaEForm() : meterDeltaEForm());
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
- if(!useColorForm && meterReadingIsGreyscale(reading) && ((xyz && xyz.Y>=0)||failedNonZeroBlack)){
+ if(!useColorForm && meterReadingIsGreyscale(reading) && xyz && xyz.Y>0){
   return meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight).value;
  }
- if(!xyz||!(xyz.Y>0)) return useColorForm||failedNonZeroBlack ? NaN : 0;
+ if(!xyz||!(xyz.Y>0)) return useColorForm ? NaN : 0;
  const wR=meterColorLabWhite();
  const mode=meterResolveGreyRefMode(modeOrIncl);
  const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
@@ -12967,7 +12940,7 @@ function meterRgbBalanceFormula(){
 function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
- if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return meterReadingIsFailedNonZeroBlack(reading)?null:{R:100,G:100,B:100};
+ if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
  const mode = meterResolveGreyRefMode(modeOrIncl);
  // Use the absolute D65 white target for greyscale RGB balance in all modes
  // so HDR/DV 100% white shows its real white-point error instead of being
@@ -13018,12 +12991,12 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
 function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
- if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return meterReadingIsFailedNonZeroBlack(reading)?null:{R:100,G:100,B:100};
+ if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
  const mode = meterResolveGreyRefMode(modeOrIncl);
  const s = readingXYZ.X+readingXYZ.Y+readingXYZ.Z;
- if(!(s>0)) return meterReadingIsFailedNonZeroBlack(reading)?null:{R:100,G:100,B:100};
+ if(!(s>0)) return {R:100,G:100,B:100};
  const x = readingXYZ.X/s, y = readingXYZ.Y/s;
- if(!(y>0)) return meterReadingIsFailedNonZeroBlack(reading)?null:{R:100,G:100,B:100};
+ if(!(y>0)) return {R:100,G:100,B:100};
  let fact = 1.0;
  if(mode==='eotf'){
   const Lb = meterBlackReadingY();
@@ -13052,8 +13025,7 @@ function meterLiveRgbData(reading){
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  if(!isColorSeries||!measured||!(measured.Y>0)){
   const whiteRef=meterEffectiveGreyscaleWhiteReference(Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading]);
-  const balance=whiteRef?rgbBalance(reading,whiteRef,meterGreyRefMode()):null;
-  return balance?{mode:'balance',...balance}:{mode:'balance',R:null,G:null,B:null};
+  return whiteRef?{mode:'balance',...rgbBalance(reading,whiteRef,meterGreyRefMode())}:{mode:'balance',R:100,G:100,B:100};
  }
  const gamut=meterAnalysisGamut();
  const target=meterColorDeltaTargetXYZ(reading,meterColorIncludeLum());
@@ -15246,11 +15218,6 @@ function meterReadingHasLuminance(rd){
 function meterReadingHasChromaticity(rd){
  meterNormalizeMeasuredReading(rd);
  return !!rd&&rd.x!=null&&rd.y!=null&&rd.x>0&&rd.y>0;
-}
-
-function meterFormatFixedOrDash(value,digits){
- const n=Number(value);
- return Number.isFinite(n)?n.toFixed(digits==null?1:digits):'--';
 }
 
 function meterIsWhiteReferenceReading(rd){
@@ -23921,7 +23888,6 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  }
  const xSteps=gammaFixedAxis?meterFilterGammaChartItems(rawXSteps):rawXSteps;
  const gammaMap={};
- const gammaInvalidMap={};
  const targetMap={};
 	 sorted.forEach((rd,idx)=>{
 	  const y=rd.luminance!=null?rd.luminance:rd.Y;
@@ -23940,7 +23906,6 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 	      ? effectiveGammaTopSlope(y,chartYw,analysisIre,prevY,prevIre)
 	      : meterGreyscaleGammaValue(rd,chartYw));
 	   if(g!=null&&isFinite(g)) gammaMap[rd.ire]=g;
-	   else if(meterReadingIsFailedNonZeroBlack(rd)) gammaInvalidMap[rd.ire]=true;
 	  }
 	  const tg=meterGreyTargetGamma(analysisIre,chartYw,Lb,rd.r_code,prevIre,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
 	  if(tg!=null&&isFinite(tg)) targetMap[rd.ire]=tg;
@@ -23977,7 +23942,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(2),
   rotateX:rotateX
  });
- const tgtPts=[],mPts=[],invalidPts=[];
+ const tgtPts=[],mPts=[];
  xSteps.forEach((step,idx)=>{
   const x=meterGammaChartX(step,xSteps,idx);
   const tg=targetMap[step.ire];
@@ -23987,14 +23952,9 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   }
   const mg=gammaMap[step.ire];
   if(mg!=null&&isFinite(mg)) mPts.push([x,Math.max(0,Math.min(1,(mg-yMin)/(yMax-yMin)))]);
-  else if(gammaInvalidMap[step.ire]||(readingMap&&meterReadingIsFailedNonZeroBlack(readingMap[step.ire]))){
-   mPts.push(null);
-   invalidPts.push([x,0]);
-  }
  });
  if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
- if(mPts.length>0) drawLineSegments(ctx,chart,mPts,'#7ecbff',2);
- if(invalidPts.length>0) drawDots(ctx,chart,invalidPts,'#ffeb3b',3.5);
+ if(mPts.length>1) drawLine(ctx,chart,mPts,'#7ecbff',2);
  // Optional per-channel gamma overlay (R/G/B from the cached
  // meterPerChannelGamma computed in drawAllCharts).
  const pcToggle=document.getElementById('meterPerChannelGamma');
@@ -24007,14 +23967,13 @@ function drawGammaValueChart(gs,allSteps,readingMap){
    const x=meterGammaChartX(step,xSteps,idx);
    const toY=(v)=>(v!=null&&isFinite(v))?Math.max(0,Math.min(1,(v-yMin)/(yMax-yMin))):null;
    const yr=toY(gr.r), yg=toY(gr.g), yb=toY(gr.b);
-   if(gammaInvalidMap[step.ire]){rPts.push(null);gPts.push(null);bPts.push(null);return;}
    if(yr!=null) rPts.push([x,yr]);
    if(yg!=null) gPts.push([x,yg]);
    if(yb!=null) bPts.push([x,yb]);
   });
-  if(rPts.length>0) drawLineSegments(ctx,chart,rPts,'#ff5555',1.5);
-  if(gPts.length>0) drawLineSegments(ctx,chart,gPts,'#55dd55',1.5);
-  if(bPts.length>0) drawLineSegments(ctx,chart,bPts,'#5588ff',1.5);
+  if(rPts.length>1) drawLine(ctx,chart,rPts,'#ff5555',1.5);
+  if(gPts.length>1) drawLine(ctx,chart,gPts,'#55dd55',1.5);
+  if(bPts.length>1) drawLine(ctx,chart,bPts,'#5588ff',1.5);
  }
  let avgText='';
  if(mPts.length>0){
@@ -24358,28 +24317,6 @@ function drawLine(ctx,chart,points,color,width){
  ctx.stroke();
 }
 
-function meterSplitChartLineSegments(points){
- const segments=[];
- let current=[];
- (points||[]).forEach(point=>{
-  if(point&&Number.isFinite(point[0])&&Number.isFinite(point[1])){
-   current.push(point);
-  } else {
-   if(current.length>0) segments.push(current);
-   current=[];
-  }
- });
- if(current.length>0) segments.push(current);
- return segments;
-}
-
-function drawLineSegments(ctx,chart,points,color,width,dotRadius){
- meterSplitChartLineSegments(points).forEach(seg=>{
-  if(seg.length>1) drawLine(ctx,chart,seg,color,width);
-  else drawDots(ctx,chart,seg,color,dotRadius||2.5);
- });
-}
-
 function drawDots(ctx,chart,points,color,radius){
  ctx.fillStyle=color;
  points.forEach(p=>{
@@ -24424,13 +24361,9 @@ function drawRGBChart(gs,allSteps,readingMap){
  // Compute RGB balance for all available readings (include 0%)
  const balMap={};
  const greyMode=meterGreyRefMode();
- gs.forEach(rd=>{
-  const balance=rgbBalance(rd,effectiveWhiteRGB,greyMode);
-  if(balance&&Number.isFinite(balance.R)&&Number.isFinite(balance.G)&&Number.isFinite(balance.B)) balMap[rd.ire]=balance;
-  else if(meterReadingIsFailedNonZeroBlack(rd)) balMap[rd.ire]=null;
- });
+ gs.forEach(rd=>{balMap[rd.ire]=rgbBalance(rd,effectiveWhiteRGB,greyMode);});
  // Auto-scale Y axis based on actual data, but keep the chart centered on 100.
- const allVals=Object.values(balMap).filter(Boolean).flatMap(b=>[b.R,b.G,b.B]);
+ const allVals=Object.values(balMap).flatMap(b=>[b.R,b.G,b.B]);
  let yMin,yMax;
  if(allVals.length>0){
   const dataMin=Math.min(...allVals),dataMax=Math.max(...allVals);
@@ -24453,7 +24386,6 @@ function drawRGBChart(gs,allSteps,readingMap){
  const refY=(100-yMin)/(yMax-yMin);
  drawDashedLine(ctx,chart,[[0,refY],[1,refY]],'#555');
  const rPts=[],gPts=[],bPts=[];
- const invalidPts=[];
  xSteps.forEach((step,idx)=>{
   const x=meterGreyCategoryChartX(xSteps,idx);
   const bal=balMap[step.ire];
@@ -24461,27 +24393,17 @@ function drawRGBChart(gs,allSteps,readingMap){
    rPts.push([x,Math.max(0,Math.min(1,(bal.R-yMin)/(yMax-yMin)))]);
    gPts.push([x,Math.max(0,Math.min(1,(bal.G-yMin)/(yMax-yMin)))]);
    bPts.push([x,Math.max(0,Math.min(1,(bal.B-yMin)/(yMax-yMin)))]);
-  } else if(readingMap&&meterReadingIsFailedNonZeroBlack(readingMap[step.ire])){
-   rPts.push(null);gPts.push(null);bPts.push(null);
-   invalidPts.push([x,refY]);
   }
  });
- if(rPts.length>0){
-  drawLineSegments(ctx,chart,rPts,'#f44',2);
-  drawLineSegments(ctx,chart,gPts,'#4caf50',2);
-  drawLineSegments(ctx,chart,bPts,'#42a5f5',2);
- }
- if(invalidPts.length>0) drawDots(ctx,chart,invalidPts,'#ffeb3b',3.5);
+ if(rPts.length>1){drawLine(ctx,chart,rPts,'#f44',2);drawLine(ctx,chart,gPts,'#4caf50',2);drawLine(ctx,chart,bPts,'#42a5f5',2);}
  // R/G/B label at right
- const lastR=[...rPts].reverse().find(Boolean);
- const lastG=[...gPts].reverse().find(Boolean);
- const lastB=[...bPts].reverse().find(Boolean);
- if(lastR&&lastG&&lastB){
+ if(rPts.length>0){
+  const last=rPts.length-1;
   ctx.font='11px sans-serif';ctx.textAlign='left';
-  const xOff=chart.toX(lastR[0])+6;
-  ctx.fillStyle='#f44';ctx.fillText('R',xOff,chart.toY(lastR[1])+3);
-  ctx.fillStyle='#4caf50';ctx.fillText('G',xOff,chart.toY(lastG[1])+3);
-  ctx.fillStyle='#42a5f5';ctx.fillText('B',xOff,chart.toY(lastB[1])+3);
+  const xOff=chart.toX(rPts[last][0])+6;
+  ctx.fillStyle='#f44';ctx.fillText('R',xOff,chart.toY(rPts[last][1])+3);
+  ctx.fillStyle='#4caf50';ctx.fillText('G',xOff,chart.toY(gPts[last][1])+3);
+  ctx.fillStyle='#42a5f5';ctx.fillText('B',xOff,chart.toY(bPts[last][1])+3);
  }
 }
 
@@ -24653,11 +24575,11 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  const deMap={};
  const rawDeltaReadings=Array.isArray(rawGs)?rawGs:gs;
  gs.forEach(rd=>{
+  if((rd.Y||0)<=0){deMap[rd.ire]=0;return;}
   const paired=meterLgAutoCal26PairedDeltaEFor99(rd,rawDeltaReadings,greyMode,deForm,gwWeight);
-  const value=paired?paired.value:meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
-  deMap[rd.ire]=Number.isFinite(value)?value:null;
+  deMap[rd.ire]=paired?paired.value:meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
  });
- const deValues=Object.values(deMap).filter(v=>Number.isFinite(v));
+ const deValues=Object.values(deMap);
  // Auto-scale Y: zoom to fit tightest range
  let yMax;
  if(deValues.length>0){
@@ -24685,7 +24607,7 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  xSteps.forEach((step,i)=>{
   const cx=chart.toX(meterGreyCategoryChartX(xSteps,i));
   const dE=deMap[step.ire];
-  if(dE!=null&&Number.isFinite(dE)){
+  if(dE!=null){
    const barH=Math.max(0.005,Math.min(dE/yMax,1));
    const y=chart.pad.t+chart.h-barH*chart.h;
    ctx.fillStyle=dE<1?'#4caf50':dE<3?'#ff9800':'#f44';
@@ -24739,18 +24661,16 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  const deMap={};
  gs.forEach(rd=>{
   const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
-  if(Y<=0&&!meterReadingIsFailedNonZeroBlack(rd)){deMap[rd.ire]=0;return;} // true black: no chroma target
-  if(Y<=0&&meterResolveGreyRefMode(greyMode)!=='eotf'){deMap[rd.ire]=null;return;}
+  if(Y<=0){deMap[rd.ire]=0;return;} // true black: no chroma target
   const ref=hcfrGreyRef(meterReadingAnalysisIre(rd)||rd.ire, Y, Lw, Lb, greyMode, rd.r_code, gwWeight);
     const wp=meterTargetWhitePoint();
     const XnM=(ref.wxN||wp.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||wp.Z)*ref.YWhite;
     const XnR=(ref.wxN||wp.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||wp.Z)*ref.YWhiteRef;
   const labM=xyzToLab(X,Y,Z,XnM,YnM,ZnM);
   const labR=xyzToLab(ref.refX,ref.refY,ref.refZ,XnR,YnR,ZnR);
-  const value=deltaE2000(labM,labR);
-  deMap[rd.ire]=Number.isFinite(value)?value:null;
+  deMap[rd.ire]=deltaE2000(labM,labR);
  });
- const deValues=Object.values(deMap).filter(v=>Number.isFinite(v));
+ const deValues=Object.values(deMap);
  let yMax;
  if(deValues.length>0){
   const maxDE=Math.max(...deValues);
@@ -24772,7 +24692,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  xSteps.forEach((step,i)=>{
   const cx=chart.toX(meterGreyCategoryChartX(xSteps,i));
   const dE=deMap[step.ire];
-  if(dE!=null&&Number.isFinite(dE)){
+  if(dE!=null){
    const barH=Math.max(0.005,Math.min(dE/yMax,1));
    const y=chart.pad.t+chart.h-barH*chart.h;
    ctx.fillStyle=dE<1?'#4caf50':dE<3?'#ff9800':'#f44';
@@ -25609,7 +25529,7 @@ function chartHandleHover(e,canvasId){
  html+='<span>Read Y: '+readY+' cd/m\u00B2</span> &nbsp; <span>Target Y: '+targetY+' cd/m\u00B2</span>';
  if(rd.cct) html+='<br>CCT: '+rd.cct+'K';
  html+='<br>x: '+(rd.x!=null?rd.x.toFixed(4):'--')+' &nbsp;y: '+(rd.y!=null?rd.y.toFixed(4):'--');
- html+='<br>R: '+meterFormatFixedOrDash(bal&&bal.R,1)+' &nbsp;G: '+meterFormatFixedOrDash(bal&&bal.G,1)+' &nbsp;B: '+meterFormatFixedOrDash(bal&&bal.B,1);
+ html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
  if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);
  if(hit.deSelected!=null){
   if(hit.dePaired){
@@ -25832,9 +25752,10 @@ function meterBuildGreyscaleReportTable(){
   const bal=white?rgbBalance(rd,white,greyMode):{R:100,G:100,B:100};
   const gamma=effectiveGamma(rd.luminance,white?(white.Y||white.luminance||rd.Y):rd.Y,rd.ire);
   let de='--';
-  if(Lw>0){
-   const deValue=meterColorDeltaE2000(rd,greyMode,deForm,meterGrayWorldWeight());
-   if(Number.isFinite(deValue)) de=deValue.toFixed(2);
+  if(Lw>0 && (rd.Y||0)>0){
+     de=meterColorDeltaE2000(rd,greyMode,deForm,meterGrayWorldWeight()).toFixed(2);
+  } else if((rd.Y||0)===0){
+   de='0.00';
   }
   rows+='<tr>'
     +'<td>'+(rd.name||((rd.ire!=null)?(Math.round(rd.ire*100)/100)+'%':'--'))+'</td>'
@@ -25843,9 +25764,9 @@ function meterBuildGreyscaleReportTable(){
    +'<td>'+(rd.y!=null?rd.y.toFixed(4):'--')+'</td>'
    +'<td>'+(rd.cct?rd.cct+'K':'--')+'</td>'
    +'<td>'+(gamma!=null&&isFinite(gamma)?gamma.toFixed(2):'--')+'</td>'
-   +'<td>'+meterFormatFixedOrDash(bal&&bal.R,1)+'</td>'
-   +'<td>'+meterFormatFixedOrDash(bal&&bal.G,1)+'</td>'
-   +'<td>'+meterFormatFixedOrDash(bal&&bal.B,1)+'</td>'
+   +'<td>'+bal.R.toFixed(1)+'</td>'
+   +'<td>'+bal.G.toFixed(1)+'</td>'
+   +'<td>'+bal.B.toFixed(1)+'</td>'
    +'<td>'+de+'</td>'
    +'</tr>';
  });
@@ -26042,17 +25963,14 @@ function meterExportCSV(){
     dE=Math.sqrt(du*du+dv*dv)*1000; // scaled u'v' distance — rough dEuv stand-in
     dE2k=meterColorDeltaE2000(rd,colorRefMode);
    }
-  } else if(isGrey(rd)&&meterReadingIsFailedNonZeroBlack(rd)){
-   dE=meterColorDeltaE2000(rd,greyMode,'deluv76',meterGrayWorldWeight());
-   dE2k=meterColorDeltaE2000(rd,greyMode,'de2000',meterGrayWorldWeight());
   }
   const g=effectiveGamma(rd.luminance,Lw,rd.ire);
   const bal=whiteR?rgbBalance(rd,whiteR,greyMode):{R:100,G:100,B:100};
   csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
-   rd.cct||'',g!==null?g.toFixed(2):'',meterFormatFixedOrDash(bal&&bal.R,1),meterFormatFixedOrDash(bal&&bal.G,1),meterFormatFixedOrDash(bal&&bal.B,1),
-   meterFormatFixedOrDash(dE,2),meterFormatFixedOrDash(dE2k,2)
+   rd.cct||'',g!==null?g.toFixed(2):'',bal.R.toFixed(1),bal.G.toFixed(1),bal.B.toFixed(1),
+   dE.toFixed(2),dE2k.toFixed(2)
   ].join(',')+'\n';
  });
  const blob=new Blob([csv],{type:'text/csv'});
