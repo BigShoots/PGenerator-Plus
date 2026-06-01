@@ -1508,8 +1508,52 @@ sub low_shadow_committed_target_bias_decision {
    applied=>$applied?JSON::PP::true:JSON::PP::false,
    reason=>$reason
   });
+	 }
+	 return $effective_target_y;
+	}
+
+sub trace_sdr_autocal_target_y_reference {
+ my ($config,$state,$step,$reading,$white_y,$target_gamma,$signal_mode,$target_y,$source)=@_;
+ $config=$LG_AUTOCAL_CONFIG if(ref($config) ne "HASH");
+ $state=$LG_AUTOCAL_STATE if(ref($state) ne "HASH");
+ return if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return if(lc($config->{"signal_mode"}||$signal_mode||"sdr") ne "sdr");
+ return if(!sdr_initial_autocal_context_enabled($config,$step));
+ return if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return if($ire <= 0 || $ire > 15.0001);
+ if(ref($state) eq "HASH") {
+  return if($state->{"final_1d_lut_uploaded"});
+  my $phase=lc($state->{"phase"}||"");
+  my $name=lc($state->{"current_name"}||"");
+  return if($phase =~ /(committed|post|series|polish)/ || $name =~ /(committed|post|series|magic wand)/);
  }
- return $effective_target_y;
+ my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : $ire;
+ my $signal=$stimulus/100;
+ $signal=1.1 if($signal > 1.1);
+ my $linear=target_gamma_linear($signal,$target_gamma,$signal_mode);
+ my $recomputed=(defined($white_y) && $white_y > 0 && defined($linear)) ? (($white_y+0)*($linear+0)) : undef;
+ my $peak_y=(ref($state) eq "HASH" && defined($state->{"peak_headroom_luminance"})) ? ($state->{"peak_headroom_luminance"}+0) : undef;
+ my $peak_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"})) ? ($state->{"peak_headroom_reference"}+0) : undef;
+ my $peak_measured_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_measured_reference"})) ? ($state->{"peak_headroom_measured_reference"}+0) : undef;
+ my $raw_headroom_target=(defined($peak_y) && defined($linear)) ? (($peak_y+0)*($linear+0)) : undef;
+ trace_109($step,"sdr_autocal_target_y_reference",{
+  source=>$source||"effective_target_luminance",
+  ire=>$ire+0,
+  stimulus=>$stimulus+0,
+  signal=>$signal+0,
+  target_gamma=>$target_gamma||"bt1886",
+  signal_mode=>$signal_mode||"sdr",
+  target_linear=>defined($linear) ? $linear+0 : undef,
+  white_y=>defined($white_y) ? $white_y+0 : undef,
+  target_luminance=>defined($target_y) ? $target_y+0 : undef,
+  target_luminance_recomputed=>defined($recomputed) ? $recomputed+0 : undef,
+  peak_headroom_luminance=>defined($peak_y) ? $peak_y+0 : undef,
+  peak_headroom_reference=>defined($peak_ref) ? $peak_ref+0 : undef,
+  peak_headroom_measured_reference=>defined($peak_measured_ref) ? $peak_measured_ref+0 : undef,
+  raw_headroom_as_white_target_luminance=>defined($raw_headroom_target) ? $raw_headroom_target+0 : undef,
+  reading=>trace_reading_summary($reading),
+ });
 }
 
 sub effective_target_luminance_for_autocal_reading {
@@ -1525,6 +1569,11 @@ sub effective_target_luminance_for_autocal_reading {
 	 }
 	 $target=body_luma_bias_decision($config || $LG_AUTOCAL_CONFIG,$state || $LG_AUTOCAL_STATE,$step,$target_gamma,$signal_mode,$target);
 	 $target=low_shadow_committed_target_bias_decision($config || $LG_AUTOCAL_CONFIG,$state || $LG_AUTOCAL_STATE,$step,$signal_mode,$target);
+	 trace_sdr_autocal_target_y_reference(
+	  $config || $LG_AUTOCAL_CONFIG,$state || $LG_AUTOCAL_STATE,
+	  $step,$reading,$white_y,$target_gamma,$signal_mode,$target,
+	  "effective_target_luminance"
+	 );
 	 return $target;
 	}
 
@@ -4694,146 +4743,6 @@ sub apply_sdr_low_shadow_local_spine_preseed {
   reason=>"prepare_2_3_neighbor_before_3"
 	 };
 	}
-
-sub sdr_low_shadow_forward_preseed_neighbor_ire {
- my ($ire)=@_;
- return undef if(!defined($ire));
- $ire+=0;
- return 7 if(abs($ire-10) < 0.001);
- return 5 if(abs($ire-7) < 0.001);
- return 4 if(abs($ire-5) < 0.001);
- return 3 if(abs($ire-4) < 0.001);
- return 2.3 if(abs($ire-3) < 0.001);
- return undef;
-}
-
-sub sdr_low_shadow_forward_preseed_fraction {
- my ($config)=@_;
- my $fraction=0.50;
- $fraction=$config->{"sdr_low_shadow_forward_preseed_fraction"}+0
-  if(ref($config) eq "HASH" && defined($config->{"sdr_low_shadow_forward_preseed_fraction"}));
- $fraction=0 if($fraction < 0);
- $fraction=1 if($fraction > 1);
- return $fraction;
-}
-
-sub sdr_low_shadow_forward_preseed_enabled {
- my ($config,$step)=@_;
- return 0 if(ref($config) ne "HASH");
- return 0 if(exists($config->{"sdr_low_shadow_forward_preseed"}) && !$config->{"sdr_low_shadow_forward_preseed"});
- return 0 if(!sdr_initial_low_shadow_context_enabled($config,$step));
- return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
- return sdr_low_shadow_forward_preseed_fraction($config) > 0 ? 1 : 0;
-}
-
-sub sdr_low_shadow_forward_preseed_target {
- my ($ordered,$active_target)=@_;
- return undef if(ref($ordered) ne "ARRAY" || ref($active_target) ne "HASH" || !defined($active_target->{"ire"}));
- my $neighbor_ire=sdr_low_shadow_forward_preseed_neighbor_ire($active_target->{"ire"});
- return undef if(!defined($neighbor_ire));
- foreach my $step (@{$ordered}) {
-  next if(ref($step) ne "HASH");
-  my $target=ddc_target_for_step($step);
-  next if(ref($target) ne "HASH" || !defined($target->{"ire"}));
-  return $target if(abs(($target->{"ire"}+0)-($neighbor_ire+0)) < 0.001);
- }
- return undef;
-}
-
-sub apply_sdr_low_shadow_forward_preseed {
- my ($config,$state,$arrays,$step,$active_target,$adjustments,$ordered,$calibrated_slot_mask,$phase)=@_;
- return undef if(!sdr_low_shadow_forward_preseed_enabled($config,$step));
- return undef if(ref($arrays) ne "HASH" || ref($active_target) ne "HASH" || ref($adjustments) ne "ARRAY");
- return undef if(ref($calibrated_slot_mask) ne "ARRAY");
- my $active_idx=$active_target->{"index"};
- return undef if(!defined($active_idx));
- my $neighbor_target=sdr_low_shadow_forward_preseed_target($ordered,$active_target);
- return undef if(ref($neighbor_target) ne "HASH");
- my $neighbor_idx=$neighbor_target->{"index"};
- return undef if(!defined($neighbor_idx));
- return undef if($calibrated_slot_mask->[$neighbor_idx]);
- my $fraction=sdr_low_shadow_forward_preseed_fraction($config);
- return undef if($fraction <= 0);
- my @changes;
- foreach my $adj (@{$adjustments}) {
-  next if(ref($adj) ne "HASH");
-  my $setting=$adj->{"setting"};
-  next if(!defined($setting) || ref($arrays->{$setting}) ne "ARRAY");
-  my $adj_idx=defined($adj->{"index"}) ? $adj->{"index"} : $active_idx;
-  next if(!defined($adj_idx) || $adj_idx != $active_idx);
-  next if($neighbor_idx >= @{$arrays->{$setting}});
-  my $active_delta;
-  if(defined($adj->{"next"}) && defined($adj->{"current"})) {
-   $active_delta=($adj->{"next"}+0)-($adj->{"current"}+0);
-  } elsif(defined($adj->{"delta"})) {
-   $active_delta=$adj->{"delta"}+0;
-  }
-  next if(!defined($active_delta) || abs($active_delta) < 0.0001);
-  my $before=defined($arrays->{$setting}[$neighbor_idx]) ? ($arrays->{$setting}[$neighbor_idx]+0) : 0;
-  my $requested_delta=$active_delta*$fraction;
-  my $after=round_ddc_quarter($before+$requested_delta);
-  $after=clamp_ddc_value($after);
-  next if(abs($after-$before) < 0.0001);
-  $arrays->{$setting}[$neighbor_idx]=$after;
-  push @changes,{
-   setting=>$setting,
-   channel=>defined($adj->{"channel"}) ? $adj->{"channel"} : $setting,
-   active_index=>$active_idx+0,
-   neighbor_index=>$neighbor_idx+0,
-   active_ire=>defined($active_target->{"ire"}) ? ($active_target->{"ire"}+0) : undef,
-   neighbor_ire=>defined($neighbor_target->{"ire"}) ? ($neighbor_target->{"ire"}+0) : undef,
-   active_current=>defined($adj->{"current"}) ? ($adj->{"current"}+0) : undef,
-   active_next=>defined($adj->{"next"}) ? ($adj->{"next"}+0) : undef,
-   active_delta=>$active_delta+0,
-   fraction=>$fraction+0,
-   requested_neighbor_delta=>$requested_delta+0,
-   applied_neighbor_delta=>($after-$before)+0,
-   neighbor_before=>$before+0,
-   neighbor_after=>$after+0,
-  };
- }
- return undef if(!@changes);
- my $record={
-  phase=>$phase||"candidate",
-  result=>"candidate",
-  active_label=>$active_target->{"label"}||"",
-  active_ire=>defined($active_target->{"ire"}) ? ($active_target->{"ire"}+0) : undef,
-  active_index=>$active_idx+0,
-  neighbor_label=>$neighbor_target->{"label"}||"",
-  neighbor_ire=>defined($neighbor_target->{"ire"}) ? ($neighbor_target->{"ire"}+0) : undef,
-  neighbor_index=>$neighbor_idx+0,
-  fraction=>$fraction+0,
-  changes=>\@changes,
-  active_values=>trace_target_values($arrays,$active_target),
-  neighbor_values=>trace_target_values($arrays,$neighbor_target),
- };
- trace_109($step,"sdr_low_shadow_forward_preseed",$record);
- trace_sdr_low_shadow_ddc_snapshot(
-  "sdr_low_shadow_forward_preseed",$config,$state,$arrays,$step,$active_target,{
-   forward_preseed=>$record,
-   neighbor_target=>$neighbor_target
-  }
- );
- return $record;
-}
-
-sub trace_sdr_low_shadow_forward_preseed_result {
- my ($config,$state,$arrays,$step,$target,$preseed,$result,$extra)=@_;
- return if(ref($preseed) ne "HASH");
- my %record=%{$preseed};
- $record{"result"}=$result||"";
- if(ref($extra) eq "HASH") {
-  foreach my $key (keys %{$extra}) {
-   $record{$key}=$extra->{$key};
-  }
- }
- trace_109($step,"sdr_low_shadow_forward_preseed_result",\%record);
- trace_sdr_low_shadow_ddc_snapshot(
-  "sdr_low_shadow_forward_preseed_".($result||"result"),$config,$state,$arrays,$step,$target,{
-   forward_preseed=>\%record
-  }
- );
-}
 
 sub apply_sdr_top_local_seed_105_from_80 {
  my ($config,$arrays,$calibrated_slot_mask,$step)=@_;
@@ -15316,9 +15225,6 @@ eval {
 			    next if(!defined($setting) || !defined($adj_idx) || ref($arrays->{$setting}) ne "ARRAY");
 			    $arrays->{$setting}[$adj_idx]=$adj->{"next"};
 			   }
-			   my $forward_low_shadow_preseed=apply_sdr_low_shadow_forward_preseed(
-			    $config,$state,$arrays,$read_step,$target,$adjustments,\@ordered,\@calibrated_ddc_slots,"main_candidate"
-			   );
 			   trace_109($read_step,"adjustment_plan",{
 			    label=>$label,
 			    iteration=>$iter+0,
@@ -15328,10 +15234,9 @@ eval {
 		    score=>guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y)+0,
 		    best_delta_e=>defined($best_de)?$best_de+0:undef,
 		    best_score=>$best_score+0,
-		    rgb_error=>$err,
+			    rgb_error=>$err,
 			    luminance_error_ratio=>defined($lum_err)?$lum_err+0:undef,
 			    adjustments=>trace_adjustments_summary($adjustments),
-			    forward_low_shadow_preseed=>$forward_low_shadow_preseed,
 			    values_before=>$before_values,
 			    values_after=>trace_target_values($arrays,$target)
 			   });
@@ -15427,28 +15332,7 @@ eval {
 				     $best_arrays=clone_arrays($arrays);
 				     $best_reading=clone_picture($reading);
 				     $best_read_step=clone_picture($read_step);
-					     trace_sdr_low_shadow_forward_preseed_result(
-					      $config,$state,$arrays,$read_step,$target,$forward_low_shadow_preseed,"accepted",{
-					       iteration=>$iter+0,
-					       reason=>$best_update_reason,
-					       touchup_target_exit=>JSON::PP::true,
-					       delta_e=>defined($de)?$de+0:undef,
-					       luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-					       score=>defined($candidate_score_after)?$candidate_score_after+0:undef
-					      }
-					     );
 					     $store_best_pair->() if($paired_white_step);
-					    } elsif(ref($forward_low_shadow_preseed) eq "HASH") {
-					     trace_sdr_low_shadow_forward_preseed_result(
-					      $config,$state,$arrays,$read_step,$target,$forward_low_shadow_preseed,"not_promoted",{
-					       iteration=>$iter+0,
-					       touchup_target_exit=>JSON::PP::true,
-					       restore_expected=>JSON::PP::true,
-					       delta_e=>defined($de)?$de+0:undef,
-					       luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-					       score=>defined($candidate_score_after)?$candidate_score_after+0:undef
-					      }
-					     );
 					    }
 					    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 					    $state->{"message"}="$label within touch-up target; closest result kept";
@@ -15615,15 +15499,6 @@ eval {
 							    $best_reading=clone_picture($reading);
 							    $best_read_step=clone_picture($read_step);
 							    delete($tried_values{"__headroom_105_near_y_cleanup"});
-							    trace_sdr_low_shadow_forward_preseed_result(
-							     $config,$state,$arrays,$read_step,$target,$forward_low_shadow_preseed,"accepted",{
-							      iteration=>$iter+0,
-							      reason=>defined($best_update_reason)?$best_update_reason:($chroma_keep?"chroma_keep":($delta_keep?"delta_keep":"score_improved")),
-							      delta_e=>defined($de)?$de+0:undef,
-							      luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-							      score=>defined($candidate_score_after)?$candidate_score_after+0:undef
-							     }
-							    );
 								    $store_best_pair->() if($paired_white_step);
 								    $low_shadow_next_adjustments=$low_shadow_candidate_next_adjustments if(ref($low_shadow_candidate_next_adjustments) eq "ARRAY");
 								    $body_luminance_next_adjustments=$body_candidate_next_adjustments if(ref($body_candidate_next_adjustments) eq "ARRAY");
@@ -15744,21 +15619,6 @@ eval {
 					    } else {
 					     $luma_anchor_working=0 if(ref($bad_luma_probe) eq "HASH");
 					    }
-					    if(ref($forward_low_shadow_preseed) eq "HASH") {
-					     $luma_anchor_working=0;
-					     trace_sdr_low_shadow_forward_preseed_result(
-					      $config,$state,$arrays,$read_step,$target,$forward_low_shadow_preseed,"rejected",{
-					       iteration=>$iter+0,
-					       restore_expected=>JSON::PP::true,
-					       delta_e=>defined($de)?$de+0:undef,
-					       luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-					       score=>defined($candidate_score_after)?$candidate_score_after+0:undef,
-					       best_delta_e=>defined($best_de)?$best_de+0:undef,
-					       best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-					       best_score=>defined($best_score)?$best_score+0:undef
-					      }
-					     );
-					    }
 				    my $bad_headroom_105_family=record_headroom_105_bad_adjustment_family(
 				     \%tried_values,$target,$adjustments,
 				     $before_lum_pct_for_adjustment,$lum_pct,
@@ -15784,7 +15644,6 @@ eval {
 				     bad_hdr20_body_family=>$bad_hdr20_body_family,
 				     bad_sdr_low_shadow_rgb_family=>$bad_sdr_low_shadow_rgb_family,
 				     bad_headroom_105_family=>$bad_headroom_105_family,
-				     forward_low_shadow_preseed=>$forward_low_shadow_preseed,
 					     $pair_side_trace_fields->(),
 					     candidate_values=>trace_target_values($arrays,$target),
 					     best_values=>trace_target_values($best_arrays,$target)
@@ -15858,19 +15717,10 @@ eval {
 						    } else {
 							     $low_shadow_next_adjustments=$low_shadow_restore_next_adjustments if(ref($low_shadow_restore_next_adjustments) eq "ARRAY");
 						     $body_luminance_next_adjustments=$body_restore_next_adjustments if(ref($body_restore_next_adjustments) eq "ARRAY");
-						     $hdr20_body_vector_next_adjustments=undef;
-						     exhaust_adjustment_next_values(\%tried_values,$adjustments,$de)
-					      if(lg_autocal_26_full_ddc_spine_enabled($config) || $seeded_move_damping || autocal_step_is_hdr20_body($read_step));
-						     my $restored=$restore_best_branch->("Backtracking to best $label result after rejected adjustment");
-						     trace_sdr_low_shadow_forward_preseed_result(
-						      $config,$state,$arrays,$read_step,$target,$forward_low_shadow_preseed,"restored",{
-						       iteration=>$iter+0,
-						       restore_performed=>$restored ? JSON::PP::true : JSON::PP::false,
-						       best_delta_e=>defined($best_de)?$best_de+0:undef,
-						       best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-						       best_score=>defined($best_score)?$best_score+0:undef
-						      }
-						     );
+							     $hdr20_body_vector_next_adjustments=undef;
+							     exhaust_adjustment_next_values(\%tried_values,$adjustments,$de)
+						      if(lg_autocal_26_full_ddc_spine_enabled($config) || $seeded_move_damping || autocal_step_is_hdr20_body($read_step));
+						     $restore_best_branch->("Backtracking to best $label result after rejected adjustment");
 						    }
 						    if(
 						     $paired_white_step &&
@@ -16097,9 +15947,6 @@ eval {
 				     next if(!defined($setting) || !defined($adj_idx) || ref($arrays->{$setting}) ne "ARRAY");
 				     $arrays->{$setting}[$adj_idx]=$adj->{"next"};
 				    }
-				    my $fine_tune_forward_low_shadow_preseed=apply_sdr_low_shadow_forward_preseed(
-				     $config,$state,$arrays,$read_step,$target,$adjustments,\@ordered,\@calibrated_ddc_slots,"fine_tune_candidate"
-				    );
 				    trace_109($read_step,"fine_tune_plan",{
 				     label=>$label,
 				     polish=>$polish+0,
@@ -16112,7 +15959,6 @@ eval {
 			     luminance_error_ratio=>defined($lum_err)?$lum_err+0:undef,
 				     micro_step=>$micro_step+0,
 				     adjustments=>trace_adjustments_summary($adjustments),
-				     forward_low_shadow_preseed=>$fine_tune_forward_low_shadow_preseed,
 				     values_before=>$before_values,
 				     values_after=>trace_target_values($arrays,$target)
 				    });
@@ -16214,20 +16060,11 @@ eval {
 				     $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 				     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
-			     $best_score=$candidate_score;
-				     $best_arrays=clone_arrays($arrays);
-				     $best_reading=clone_picture($reading);
-				     $best_read_step=clone_picture($read_step);
-				     trace_sdr_low_shadow_forward_preseed_result(
-				      $config,$state,$arrays,$read_step,$target,$fine_tune_forward_low_shadow_preseed,"accepted",{
-				       polish=>$polish+0,
-				       reason=>defined($best_update_reason)?$best_update_reason:($chroma_keep?"chroma_keep":($delta_keep?"delta_keep":"score_improved")),
-				       delta_e=>defined($de)?$de+0:undef,
-				       luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-				       score=>defined($candidate_score)?$candidate_score+0:undef
-				      }
-				     );
-				     $store_best_pair->() if($paired_white_step);
+				     $best_score=$candidate_score;
+					     $best_arrays=clone_arrays($arrays);
+					     $best_reading=clone_picture($reading);
+					     $best_read_step=clone_picture($read_step);
+					     $store_best_pair->() if($paired_white_step);
 				     $polish_stalls=0;
 			     trace_109($read_step,"fine_tune_best_updated",{
 			      label=>$label,
@@ -16272,21 +16109,6 @@ eval {
 						      "fine_tune"
 						     );
 						     $luma_anchor_working=0 if(ref($bad_luma_probe) eq "HASH");
-						     if(ref($fine_tune_forward_low_shadow_preseed) eq "HASH") {
-						      $luma_anchor_working=0;
-						      trace_sdr_low_shadow_forward_preseed_result(
-						       $config,$state,$arrays,$read_step,$target,$fine_tune_forward_low_shadow_preseed,"rejected",{
-						        polish=>$polish+0,
-						        restore_expected=>JSON::PP::true,
-						        delta_e=>defined($de)?$de+0:undef,
-						        luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-						        score=>defined($candidate_score)?$candidate_score+0:undef,
-						        best_delta_e=>defined($best_de)?$best_de+0:undef,
-						        best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-						        best_score=>defined($best_score)?$best_score+0:undef
-						       }
-						      );
-						     }
 					     trace_109($read_step,"fine_tune_candidate_rejected",{
 				      label=>$label,
 			      polish=>$polish+0,
@@ -16303,7 +16125,6 @@ eval {
 						      bad_luma_probe=>$bad_luma_probe,
 						      bad_hdr20_body_family=>$bad_hdr20_body_family,
 						      bad_sdr_low_shadow_rgb_family=>$bad_sdr_low_shadow_rgb_family,
-						      forward_low_shadow_preseed=>$fine_tune_forward_low_shadow_preseed,
 						      $pair_side_trace_fields->()
 						     });
 						     my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%polish_tried,"fine_tune",$polish);
@@ -16321,16 +16142,7 @@ eval {
 						       working_values=>trace_target_values($arrays,$target)
 						      });
 						     } else {
-						      my $restored=$restore_best_branch->("Backtracking $label fine tune after rejected adjustment");
-						      trace_sdr_low_shadow_forward_preseed_result(
-						       $config,$state,$arrays,$read_step,$target,$fine_tune_forward_low_shadow_preseed,"restored",{
-						        polish=>$polish+0,
-						        restore_performed=>$restored ? JSON::PP::true : JSON::PP::false,
-						        best_delta_e=>defined($best_de)?$best_de+0:undef,
-						        best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
-						        best_score=>defined($best_score)?$best_score+0:undef
-						       }
-						      );
+						      $restore_best_branch->("Backtracking $label fine tune after rejected adjustment");
 						     }
 		     if($paired_white_step && legal_white_pair_close_enough_stalled($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading,$target_delta,$white_guard_y,$polish_stalls,$polish)) {
 		      $state->{"message"}="$label and 100% legal white close pair kept after stalled polish";
