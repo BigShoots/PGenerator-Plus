@@ -3107,7 +3107,11 @@ sub webui_meter_stop (@) {
 }
 
 sub webui_meter_clear (@) {
- &webui_meter_stop();
+ # Clearing CHART DATA must not tear down the meter session. Previously this
+ # called webui_meter_stop(), which killed spotread -- so a spectrophotometer
+ # had to re-run the calibrate/aim wizard after every clear. The frontend
+ # already halts any active read loop; the idle session is reused by the next
+ # read. (Series/AutoCal/explicit-Stop still free the meter when they need it.)
  &webui_meter_read_state_write('{"status":"idle"}');
 	 unlink("${_meter_read_file}.tmp");
 	 unlink("/tmp/meter_series_steps.json");
@@ -16058,7 +16062,8 @@ async function meterPollRead(timeoutMs,shouldCancel){
  while(Date.now()-start<timeoutMs){
   if(typeof shouldCancel==='function'&&shouldCancel()) {
    meterClearManualPromptAwaiting(false);
-   try{ await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000}); }catch(e){}
+   // Don't tear down the session on cancel -- it idles and is reused, so the
+   // spectro keeps its calibration. Explicit Stop / series / AutoCal free it.
    return {status:'cancelled'};
   }
   try{
@@ -16257,10 +16262,12 @@ function meterStopContinuous(options){
   document.getElementById('meterContinuous').classList.remove('btn-success');
   document.getElementById('meterContinuous').classList.add('btn-secondary');
  }
+ // Stopping continuous no longer tears down the meter session. The spotread
+ // session idles between reads and is reused by the next read, so a
+ // spectrophotometer keeps its calibration across stop/switch-series/clear.
+ // The meter is freed only by explicit Stop, by series/AutoCal startup, by a
+ // config change (display/CCSS/port), or by the session's idle timeout.
  let stopPromise=null;
- if(wasActive){
-  stopPromise=fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
- }
  if(!silent){
   document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
   meterHideProgressIfIdle();
