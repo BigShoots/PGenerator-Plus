@@ -268,9 +268,17 @@ class Runner:
             self.compute_sent = True
             self.write_state("running", "Computing and saving the CCSS profile")
             return
-        if self.compute_sent and not self.exit_sent:
-            self.send("4\n")
-            self.exit_sent = True
+        if self.compute_sent:
+            # Keep nudging Exit until ccxxmake actually quits. The first '4' can
+            # be lost if it lands while ccxxmake is still writing the file,
+            # leaving it parked at the menu -- the run then hangs forever on
+            # 'Computing and saving the CCSS profile' even though the file was
+            # already written. Re-send '4' on each menu (throttled) until it exits.
+            now = time.time()
+            if now - getattr(self, "last_exit_send", 0.0) > 1.5:
+                self.send("4\n")
+                self.last_exit_send = now
+                self.exit_sent = True
 
     def run(self):
         self.write_state("starting", "Starting CCSS creation")
