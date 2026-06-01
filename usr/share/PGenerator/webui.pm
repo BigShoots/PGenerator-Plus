@@ -13377,6 +13377,7 @@ function meterLuminanceLogScaleEnabled(){
 }
 
 const METER_CHART_LOG_KNEE_DIVISOR=10000;
+const METER_EOTF_LUMINANCE_LOG_X_KNEE_DIVISOR=100;
 const METER_LUMINANCE_LOG_FLOOR_DIVISOR=1000000;
 
 function meterEotfLuminanceLogScaleEnabledForMode(mode){
@@ -13385,24 +13386,56 @@ function meterEotfLuminanceLogScaleEnabledForMode(mode){
  return false;
 }
 
-function meterLogScaleValue(v,yTop,floorValue){
+function meterLogScaleValue(v,yTop,floorValue,kneeDivisor){
  const top=Math.max(1e-6,yTop||1);
  const floor=Math.max(0,Math.min(top*0.999,Number(floorValue)||0));
  const val=Math.max(floor,Math.min(top,v||0));
- const knee=Math.max(top/METER_CHART_LOG_KNEE_DIVISOR,1e-9);
+ const divisor=Math.max(1,Number(kneeDivisor)||METER_CHART_LOG_KNEE_DIVISOR);
+ const knee=Math.max(top/divisor,1e-9);
  const lo=floor>0?Math.log1p(floor/knee):0;
  const hi=Math.log1p(top/knee);
  return (Math.log1p(val/knee)-lo)/Math.max(1e-9,hi-lo);
 }
 
-function meterLogUnscaleValue(norm,yTop,floorValue){
+function meterLogUnscaleValue(norm,yTop,floorValue,kneeDivisor){
  const top=Math.max(1e-6,yTop||1);
  const n=Math.max(0,Math.min(1,norm||0));
  const floor=Math.max(0,Math.min(top*0.999,Number(floorValue)||0));
- const knee=Math.max(top/METER_CHART_LOG_KNEE_DIVISOR,1e-9);
+ const divisor=Math.max(1,Number(kneeDivisor)||METER_CHART_LOG_KNEE_DIVISOR);
+ const knee=Math.max(top/divisor,1e-9);
  const lo=floor>0?Math.log1p(floor/knee):0;
  const hi=Math.log1p(top/knee);
  return knee*(Math.exp(lo+n*Math.max(1e-9,hi-lo))-1);
+}
+
+function meterEotfLuminanceScaleXPercent(pct,axisMax,mode){
+ const top=Math.max(1,Number(axisMax)||100);
+ const value=Math.max(0,Math.min(top,Number(pct)||0));
+ if(meterEotfLuminanceLogScaleEnabledForMode(mode)){
+  return meterLogScaleValue(value,top,0,METER_EOTF_LUMINANCE_LOG_X_KNEE_DIVISOR);
+ }
+ return value/top;
+}
+
+function meterEotfLuminanceTickLabel(value){
+ const n=Number(value)||0;
+ if(Math.abs(n-Math.round(n))<0.001) return String(Math.round(n));
+ return n.toFixed(1).replace(/\.0$/,'');
+}
+
+function meterEotfLuminanceChartXTicks(axisMax,mode){
+ const top=Math.max(1,Number(axisMax)||100);
+ if(!meterEotfLuminanceLogScaleEnabledForMode(mode)) return null;
+ const base=[0,1,2,5,10,20,50,100,110];
+ const values=[];
+ base.forEach(v=>{ if(v<=top+0.001) values.push(v); });
+ if(!values.some(v=>Math.abs(v-top)<0.001)) values.push(top);
+ values.sort((a,b)=>a-b);
+ return values.map(v=>({
+  value:v,
+  x:meterEotfLuminanceScaleXPercent(v,top,mode),
+  label:meterEotfLuminanceTickLabel(v)
+ }));
 }
 
 function meterEotfScaleValue(v,yTop){
@@ -13698,7 +13731,7 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
    ? meterGreyTargetEotfChartValueForSignal(signal,targetPeak,Lb||0,point)
    : meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
   const scaled=meterScaleEotfLuminancePlotValue(mode,rawValue,top,plot,signal);
-  return scaled==null?null:[Math.max(0,Math.min(end,plot))/end,scaled];
+  return scaled==null?null:[meterEotfLuminanceScaleXPercent(plot,end,mode),scaled];
  };
  const pts=[];
  for(let i=0;i<unique.length-1;i++){
@@ -13728,7 +13761,7 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
   .map((s,idx)=>{
    const code=meterGreyChartTargetCode(s);
    const ire=Number(meterGreyChartStimulusIre(s));
-   const x=meterGreyEotfLuminanceChartX(s,stepList,idx,end);
+   const x=meterGreyEotfLuminanceChartX(s,stepList,idx,end,mode);
    const signal=meterGreyTargetSignal(ire,code);
    const rawValue=(mode==='eotf')
     ? meterGreyTargetEotfChartValue(ire,targetPeak,Lb,code)
@@ -13759,7 +13792,7 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
    ? meterGreyTargetEotfChartValue(pct,targetPeak,Lb,null)
    : meterGreyTargetChartValue(pct,targetPeak,Lb,null);
   const value=meterScaleEotfLuminancePlotValue(mode,rawValue,top,pct,signal);
-  if(value!=null) pts.push([pct/end,value]);
+  if(value!=null) pts.push([meterEotfLuminanceScaleXPercent(pct,end,mode),value]);
  }
  return pts;
 }
@@ -23268,11 +23301,11 @@ function meterEotfLuminanceMeasuredStepAllowed(mode,step){
  return !(Number.isFinite(Number(signal))&&Number(signal)<0);
 }
 
-function meterGreyEotfLuminanceChartX(step,steps,idx,axisMax){
+function meterGreyEotfLuminanceChartX(step,steps,idx,axisMax,mode){
  const maxPct=Math.max(1,Number(axisMax)||meterEotfLuminanceAxisMax(steps));
  if(step){
   const ire=meterGreyEotfLuminancePlotIre(step);
-  if(Number.isFinite(ire)) return Math.max(0,Math.min(maxPct,ire))/maxPct;
+  if(Number.isFinite(ire)) return meterEotfLuminanceScaleXPercent(ire,maxPct,mode);
  }
  if(Array.isArray(steps) && steps.length>1) return idx/(steps.length-1);
  return 0.5;
@@ -23337,7 +23370,10 @@ function meterGreyscaleInteractionPadForChart(canvasId,stepCount){
 }
 
 function meterGreyscaleInteractionXForChart(canvasId,step,steps,idx){
- if(canvasId==='chartEOTF'||canvasId==='chartGamma') return meterGreyEotfLuminanceChartX(step,steps,idx,meterEotfLuminanceAxisMax(steps));
+ if(canvasId==='chartEOTF'||canvasId==='chartGamma'){
+  const mode=canvasId==='chartEOTF'?'eotf':'luminance';
+  return meterGreyEotfLuminanceChartX(step,steps,idx,meterEotfLuminanceAxisMax(steps),mode);
+ }
  if(canvasId==='chartGammaValue') return meterGammaChartX(step,steps,idx);
  return meterGreyCategoryChartX(steps,idx);
 }
@@ -23464,7 +23500,7 @@ function meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scale
    flushCurrent();
    return;
   }
-  const x=meterGreyEotfLuminanceChartX(step,steps,idx,axisMax);
+  const x=meterGreyEotfLuminanceChartX(step,steps,idx,axisMax,mode);
   const y=typeof scaleLuminance==='function'?scaleLuminance(lum):lum;
   if(!(y!=null&&Number.isFinite(Number(y)))){
    flushCurrent();
@@ -23505,7 +23541,7 @@ function meterTargetShapedMeasuredSegments(steps,readingMap,axisMax,targetValueF
   const code=meterGreyChartTargetCode(step);
   const targetIre=Number.isFinite(Number(stimulus))?Number(stimulus):meterGreyEotfLuminancePlotIre(step);
   const signal=meterGreyTargetSignal(targetIre,code);
-  const x=meterGreyEotfLuminanceChartX(step,steps,idx,axisMax);
+  const x=meterGreyEotfLuminanceChartX(step,steps,idx,axisMax,mode);
   const y=typeof scaleLuminance==='function'?scaleLuminance(lum):lum;
   if(!(y!=null&&Number.isFinite(Number(y)))){
    flushCurrent();
@@ -23689,6 +23725,7 @@ function drawEOTFPreset(gsSteps){
  const chart=drawChartGrid(ctx,{
   pad:{t:34,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:5,
+  xTicks:meterEotfLuminanceChartXTicks(axisMax,'eotf'),
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterEotfAxisLabel(meterEotfUnscaleValue(i/n,yTop))
  });
@@ -23708,6 +23745,7 @@ function drawGammaPreset(gsSteps){
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:5,
+  xTicks:meterEotfLuminanceChartXTicks(axisMax,'luminance'),
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterLuminanceAxisLabel(meterLuminanceUnscaleValue(i/n,yTop))
  });
@@ -24200,9 +24238,19 @@ function drawChartGrid(ctx,opts){
  ctx.strokeStyle='#1d1d29';
  ctx.lineWidth=1;
  const xSteps=opts.xSteps||10, ySteps=opts.ySteps||5;
- for(let i=0;i<=xSteps;i++){
-  const x=pad.l+xIn+dw*(i/xSteps);
-  ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
+ const customXTicks=Array.isArray(opts.xTicks)
+  ? opts.xTicks.filter(t=>t&&Number.isFinite(Number(t.x))).map(t=>({x:Math.max(0,Math.min(1,Number(t.x))),label:t.label!=null?String(t.label):''}))
+  : null;
+ if(customXTicks&&customXTicks.length){
+  customXTicks.forEach(t=>{
+   const x=pad.l+xIn+dw*t.x;
+   ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
+  });
+ } else {
+  for(let i=0;i<=xSteps;i++){
+   const x=pad.l+xIn+dw*(i/xSteps);
+   ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
+  }
  }
  for(let i=0;i<=ySteps;i++){
   const y=pad.t+h*(i/ySteps);
@@ -24215,22 +24263,29 @@ function drawChartGrid(ctx,opts){
  // (e.g. "Magenta 100%") don't overlap on dense series.
  ctx.fillStyle='#888898';ctx.font='11px sans-serif';
  if(opts.rotateX){
-  for(let i=0;i<=xSteps;i++){
-   const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
-   if(!lbl) continue;
-   const x=pad.l+xIn+dw*(i/xSteps);
+  const ticks=customXTicks&&customXTicks.length
+   ? customXTicks
+   : Array.from({length:xSteps+1},(_,i)=>({x:i/xSteps,label:opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0)}));
+  ticks.forEach(t=>{
+   const lbl=t.label;
+   if(!lbl) return;
+   const x=pad.l+xIn+dw*t.x;
    ctx.save();
    ctx.translate(x,pad.t+h+6);
    ctx.rotate(-Math.PI/4);
    ctx.textAlign='right';
    ctx.fillText(lbl,0,4);
    ctx.restore();
-  }
+  });
  } else {
   ctx.textAlign='center';
-  for(let i=0;i<=xSteps;i++){
-   const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
-   ctx.fillText(lbl,pad.l+xIn+dw*(i/xSteps),pad.t+h+14);
+  if(customXTicks&&customXTicks.length){
+   customXTicks.forEach(t=>ctx.fillText(t.label,pad.l+xIn+dw*t.x,pad.t+h+14));
+  } else {
+   for(let i=0;i<=xSteps;i++){
+    const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
+    ctx.fillText(lbl,pad.l+xIn+dw*(i/xSteps),pad.t+h+14);
+   }
   }
  }
  // Y labels
@@ -24368,6 +24423,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
  const chart=drawChartGrid(ctx,{
   pad:{t:34,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:5,
+  xTicks:meterEotfLuminanceChartXTicks(axisMax,'eotf'),
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterEotfAxisLabel(meterEotfUnscaleValue(i/n,yTop))
  });
@@ -24433,6 +24489,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:5,
+  xTicks:meterEotfLuminanceChartXTicks(axisMax,'luminance'),
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterLuminanceAxisLabel(meterLuminanceUnscaleValue(i/n,yTop))
  });
