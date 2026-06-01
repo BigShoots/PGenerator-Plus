@@ -465,19 +465,122 @@ EOF
 }
 
 fix_permissions() {
- local bin
+ local bin rel
 
  log "Fixing ownership and permissions for release image"
+
+ set_root_mode() {
+  local rel_path="$1"
+  local mode="$2"
+  local path="$ROOT_MOUNT/$rel_path"
+  [[ -e "$path" ]] || return 0
+  chown root:root "$path" 2>/dev/null || true
+  chmod "$mode" "$path" 2>/dev/null || true
+ }
+
+ set_root_symlink_owner() {
+  local rel_path="$1"
+  local path="$ROOT_MOUNT/$rel_path"
+  [[ -L "$path" ]] || return 0
+  chown -h root:root "$path" 2>/dev/null || true
+ }
+
+ ensure_pgenerator_dir() {
+  local rel_path="$1"
+  local mode="$2"
+  local path="$ROOT_MOUNT/$rel_path"
+  install -d -o pgenerator -g pgenerator -m "$mode" "$path" 2>/dev/null || mkdir -p "$path"
+  chown pgenerator:pgenerator "$path" 2>/dev/null || true
+  chmod "$mode" "$path" 2>/dev/null || true
+ }
+
  chown root:root "$ROOT_MOUNT/etc/sudo/sudoers" 2>/dev/null || true
  chown root:root "$ROOT_MOUNT/etc/sudo/sudoers.d" 2>/dev/null || true
  chown root:root "$ROOT_MOUNT/etc/sudo/sudoers.d/PGenerator" 2>/dev/null || true
  chmod 755 "$ROOT_MOUNT/etc/sudo" "$ROOT_MOUNT/etc/sudo/sudoers.d" 2>/dev/null || true
  chmod 440 "$ROOT_MOUNT/etc/sudo/sudoers" "$ROOT_MOUNT/etc/sudo/sudoers.d/PGenerator" 2>/dev/null || true
- chmod +x "$ROOT_MOUNT/usr/sbin/pgenerator-update" 2>/dev/null || true
- chmod +x "$ROOT_MOUNT/usr/bin/spotread_wrapper.sh" "$ROOT_MOUNT/usr/bin/meter_session.sh" "$ROOT_MOUNT/usr/bin/meter_series.sh" 2>/dev/null || true
+
+ local root_execs=(
+  "etc/init.d/PGenerator"
+  "etc/init.d/rcPGenerator"
+  "etc/init.d/fake-hwclock"
+  "etc/cron.hourly/fake-hwclock"
+  "usr/bin/PGeneratorDisplayMirror"
+  "usr/bin/PGenerator_bash.pl"
+  "usr/bin/PGenerator_bluez.sh"
+  "usr/bin/PGenerator_cmd.pl"
+  "usr/bin/PGenerator_serial.pl"
+  "usr/bin/ccss_create.py"
+  "usr/bin/ccss_create_patch.sh"
+  "usr/bin/ccxxmake"
+  "usr/bin/ccxxmake_interactive"
+  "usr/bin/chartread"
+  "usr/bin/colprof"
+  "usr/bin/fix_ccss_keywords.pl"
+  "usr/bin/i1d3ccss"
+  "usr/bin/meter_lg_3d_autocal.pl"
+  "usr/bin/meter_lg_autocal.pl"
+  "usr/bin/meter_series.sh"
+  "usr/bin/meter_session.sh"
+  "usr/bin/meter_usb_reset.sh"
+  "usr/bin/oeminst"
+  "usr/bin/pgenerator-bnep-hook.sh"
+  "usr/bin/pgenerator-bt-agent"
+  "usr/bin/resize_PGenerator_disk"
+  "usr/bin/spotread"
+  "usr/bin/spotread_measure.py"
+  "usr/bin/spotread_wrapper.sh"
+  "usr/sbin/PGeneratord"
+  "usr/sbin/PGeneratord.dv"
+  "usr/sbin/PGeneratord.pl"
+  "usr/sbin/disable_csc"
+  "usr/sbin/drm_player"
+  "usr/sbin/fake-hwclock"
+  "usr/sbin/fb_player"
+  "usr/sbin/pg_diag_video_player"
+  "usr/sbin/pgenerator-cec"
+  "usr/sbin/pgenerator-lg"
+  "usr/sbin/pgenerator-slim.sh"
+  "usr/sbin/pgenerator-update"
+ )
+ for rel in "${root_execs[@]}"; do
+  set_root_mode "$rel" 0755
+ done
+
+ for rel in \
+  "etc/ntp.conf" \
+  "etc/default/ntp" \
+  "etc/default/ntpdate"; do
+  set_root_mode "$rel" 0644
+ done
+
+ for rel in \
+  "etc/rc0.d/K01fake-hwclock" \
+  "etc/rc0.d/K02ntp" \
+  "etc/rc2.d/S98ntp" \
+  "etc/rc3.d/S98ntp" \
+  "etc/rc4.d/S98ntp" \
+  "etc/rc5.d/S98ntp" \
+  "etc/rc6.d/K01fake-hwclock" \
+  "etc/rc6.d/K02ntp" \
+  "etc/rcS.d/S08fake-hwclock"; do
+  set_root_symlink_owner "$rel"
+ done
+
+ ensure_pgenerator_dir "var/lib/PGenerator/running" 0770
+ ensure_pgenerator_dir "var/lib/PGenerator/running/tmp" 0770
+ ensure_pgenerator_dir "var/lib/PGenerator/ccss" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/ccss/custom" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/lg" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/lg/ddc" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/lg/luts" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/lg/pin-sessions" 0775
+ ensure_pgenerator_dir "var/log/PGenerator" 0775
+
  for bin in "${ARGYLL_RUNTIME_REQUIRED_BINS[@]}" "${ARGYLL_RUNTIME_OPTIONAL_BINS[@]}"; do
   [[ -f "$ROOT_MOUNT/usr/bin/$bin" ]] || continue
-  chmod +x "$ROOT_MOUNT/usr/bin/$bin" 2>/dev/null || true
+  chown root:root "$ROOT_MOUNT/usr/bin/$bin" 2>/dev/null || true
+  chmod 0755 "$ROOT_MOUNT/usr/bin/$bin" 2>/dev/null || true
  done
 }
 
