@@ -18729,7 +18729,8 @@ async function meterAutoCalAdjustBrightness(delta){
 }
 
 function meterAutoCalResultRows(status){
- const readings=(status&&Array.isArray(status.readings)?status.readings:(Array.isArray(meterReadings)?meterReadings:[]))
+ const source=(status&&status.magic_wand&&status.post_series_after&&Array.isArray(status.post_series_after.readings))?status.post_series_after:status;
+ const readings=(source&&Array.isArray(source.readings)?source.readings:(Array.isArray(meterReadings)?meterReadings:[]))
  .filter(rd=>rd&&meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd));
  const greyMode=meterGreyRefMode();
  const deForm='deitp';
@@ -21251,7 +21252,11 @@ function meterFullAutoCalTouchupTargetY(){
 	   magic_wand:true,
 	   post_series_revert:revertStatus&&revertStatus.post_cal_series_revert?revertStatus.post_cal_series_revert:null,
 	   post_series_before:meterFullAutoCalReportData&&meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.magic_wand?meterFullAutoCalReportData.stages.magic_wand.before:null,
-	   post_series_after:afterSnap
+	   post_series_after:afterSnap,
+	   readings:afterSnap&&Array.isArray(afterSnap.readings)?afterSnap.readings:[],
+	   steps:afterSnap&&Array.isArray(afterSnap.steps)?afterSnap.steps:[],
+	   white_reading:afterSnap&&afterSnap.white_reading?afterSnap.white_reading:null,
+	   summary_readings_source:'magic_wand_after_snapshot'
 	  };
 	  meterAutoCalMagicWandActive=false;
 		  meterAutoCalMagicWandBaseStatus=null;
