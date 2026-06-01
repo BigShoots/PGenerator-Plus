@@ -7615,7 +7615,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
       <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
-      <button class="btn btn-sm btn-success" id="meterCcssCreateContinueBtn" onclick="meterCcssCreateContinue()" style="display:none">Continue</button>
+      <button class="btn btn-sm btn-success" id="meterCcssCreateContinueBtn" onclick="meterCcssCreateSetupAck()" style="display:none">Continue</button>
       <button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()">Start Creation</button>
     </div>
    </div>
@@ -14669,19 +14669,24 @@ function meterCcssCreateSetUi(status){
  }
  if(startBtn) startBtn.disabled=running||!meterCcssCreateCanStart();
  if(stopBtn) stopBtn.style.display=running?'':'none';
+ // The action button is driven by meterCcssCreateRefreshStatus for setup steps;
+ // for any non-setup status (handled here) keep it hidden.
  const continueBtn=document.getElementById('meterCcssCreateContinueBtn');
- if(continueBtn) continueBtn.style.display=(status&&status.awaiting_continue)?'':'none';
+ if(continueBtn) continueBtn.style.display='none';
  if(nameInput) nameInput.disabled=running;
  if(displayTypeSel) displayTypeSel.disabled=running;
 }
 
-async function meterCcssCreateContinue(){
+let meterCcssSetupStepId=0;
+async function meterCcssCreateSetupAck(){
+ // Acks the current calibrate/aim step for the in-modal CCSS wizard.
  const btn=document.getElementById('meterCcssCreateContinueBtn');
+ const id=meterCcssSetupStepId;
+ if(!id) return;
  if(btn) btn.disabled=true;
- const r=await fetchJSON('/api/ccss/create/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',_timeoutMs:5000});
- if(btn){btn.disabled=false;}
- if(!r||r.status==='error'){toast(r&&r.message?r.message:'Could not continue',true);return;}
- if(btn) btn.style.display='none';
+ const r=await fetchJSON('/api/ccss/create/setup/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({step_id:id}),_timeoutMs:5000});
+ if(!r||r.status==='error'){ if(btn) btn.disabled=false; toast(r&&r.message?r.message:'Could not continue',true); }
+ // The next status poll re-labels or hides the button as the step advances.
 }
 
 function meterRenderCcssCreateChoices(){
@@ -14774,20 +14779,20 @@ async function meterCcssCreateRefreshStatus(quiet){
   if(progress&&!quiet) progress.textContent='Unable to load CCSS creation status.';
   return null;
  }
+ // CCSS runs entirely inside THIS modal -- never the separate shared wizard
+ // popup (that one is only for meter reads). One popup, one theme: the
+ // calibrate/aim steps and the working messages all render here.
+ meterSpectroSetupApply(null);
+ const contBtn=document.getElementById('meterCcssCreateContinueBtn');
  if(r.status==='setup'){
-  // Reuse the shared spectro setup wizard INSIDE the Create-CCSS popup, acking
-  // through the CCSS-create endpoint. Skip the normal CCSS UI update this tick.
-  meterSpectroSetupApply(r,'/api/ccss/create/setup/ack');
-  if(progress&&r.message) progress.textContent=r.message;
+  meterCcssSetupStepId=Number(r.step_id)||0;
+  if(progress) progress.textContent=r.message||'';
+  if(contBtn){ contBtn.textContent=meterSpectroSetupLabel(r.step||''); contBtn.style.display=''; contBtn.disabled=false; }
+  const sBtn=document.getElementById('meterCcssCreateStartBtn'); if(sBtn) sBtn.disabled=true;
+  const stBtn=document.getElementById('meterCcssCreateStopBtn'); if(stBtn) stBtn.style.display='';
   return r;
  }
- if(r.status==='running'||r.status==='starting'){
-  // Between wizard steps (calibrating, measuring, saving): keep the popup up
-  // with the current working message so the operator knows what's happening.
-  meterSpectroSetupApply({keepBusy:true,message:r.message},'/api/ccss/create/setup/ack');
- } else {
-  meterSpectroSetupApply(null);
- }
+ if(contBtn) contBtn.style.display='none';
  meterCcssCreateSetUi(r);
  const token=[r.status||'',r.filename||'',r.message||''].join('|');
  if(r.status==='complete'&&token!==meterCcssCreateHandledToken){
