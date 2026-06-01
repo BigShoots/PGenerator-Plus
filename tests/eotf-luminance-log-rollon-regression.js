@@ -26,13 +26,14 @@ function extractFunction(name) {
 
 const code = [
   'const METER_CHART_LOG_KNEE_DIVISOR=10000;',
+  'const METER_EOTF_LUMINANCE_LOG_X_KNEE_DIVISOR=100;',
   'const METER_LUMINANCE_LOG_FLOOR_DIVISOR=1000000;',
   'function meterGreyChartStimulusIre(item){ return item&&item.stimulus!=null?Number(item.stimulus):(item&&item.ire!=null?Number(item.ire):null); }',
   'function meterGreyChartPlotIre(item){ return item&&item.plot_ire!=null?Number(item.plot_ire):(item&&item.ire!=null?Number(item.ire):null); }',
   'function meterGreyChartTargetCode(){ return null; }',
   'function meterPatchRangeMin(){ return 0; }',
   'function meterGreyTargetSignal(ire){ const n=Number(ire); return Number.isFinite(n)?Math.max(0,n/100):NaN; }',
-  'function meterGreyEotfLuminanceChartX(step,steps,idx,axisMax){ const plot=meterGreyEotfLuminancePlotIre(step); const max=Math.max(1,Number(axisMax)||100); return Number.isFinite(Number(plot))?Math.max(0,Math.min(max,Number(plot)))/max:0; }',
+  'function meterEotfLuminanceAxisMax(){ return 100; }',
   'function meterGreyTargetEotfChartValueForSignal(signal){ return Number(signal); }',
   'function meterGreyTargetLuminanceForChartPoint(signal,targetPeak){ return Number(signal)*(Number(targetPeak)||100); }',
   'function meterGreyTargetEotfChartValue(ire){ return meterGreyTargetSignal(ire); }',
@@ -43,6 +44,9 @@ const code = [
   extractFunction('meterLuminanceLogScaleEnabled'),
   extractFunction('meterEotfLuminanceLogScaleEnabledForMode'),
   extractFunction('meterLogScaleValue'),
+  extractFunction('meterEotfLuminanceScaleXPercent'),
+  extractFunction('meterEotfLuminanceTickLabel'),
+  extractFunction('meterEotfLuminanceChartXTicks'),
   extractFunction('meterLuminanceLogFloor'),
   extractFunction('meterEotfScaleValue'),
   extractFunction('meterLuminanceScaleValue'),
@@ -51,6 +55,7 @@ const code = [
   extractFunction('meterGreyDenseTargetCurvePoints'),
   extractFunction('meterGreyNominalTargetCurvePoints'),
   extractFunction('meterGreyEotfLuminancePlotIre'),
+  extractFunction('meterGreyEotfLuminanceChartX'),
   extractFunction('meterEotfLuminanceMeasuredStepAllowed'),
   extractFunction('meterTargetShapedCurveFraction'),
   extractFunction('meterDensifyTargetShapedMeasuredSegment'),
@@ -128,14 +133,16 @@ assert.strictEqual(
   'Negative luminance value should still be skipped in log mode'
 );
 
-function assertSmoothLowEnd(points, label) {
+function assertSmoothLowEnd(points, label, firstPositiveX) {
   assert(Array.isArray(points) && points.length > 0, `${label} should produce points`);
   assert(points.every(point => Array.isArray(point) && point.length >= 2), `${label} points should be x/y pairs`);
-  const low = points.filter(point => point[0] >= -1e-12 && point[0] <= 0.05 + 1e-12);
+  const limit = Number(firstPositiveX);
+  assert(Number.isFinite(limit) && limit > 0, `${label} should have a finite first positive x`);
+  const low = points.filter(point => point[0] >= -1e-12 && point[0] <= limit + 1e-12);
   assert(low.length > 4, `${label} should include dense low-end points between 0% and 5%`);
   assert(Math.abs(low[0][0]) < 1e-12, `${label} should keep the real 0% black origin`);
-  assert(low.some(point => point[0] > 0 && point[0] < 0.05), `${label} should not jump directly from 0% to 5%`);
-  assert(low.some(point => Math.abs(point[0] - 0.05) < 1e-9), `${label} should include the first measured/target 5% point`);
+  assert(low.some(point => point[0] > 0 && point[0] < limit), `${label} should not jump directly from 0% to 5%`);
+  assert(low.some(point => Math.abs(point[0] - limit) < 1e-9), `${label} should include the first measured/target 5% point`);
   for (let i = 1; i < low.length; i++) {
     assert(low[i][0] > low[i - 1][0], `${label} low-end x values should increase monotonically`);
     assert(low[i][1] >= low[i - 1][1] - 1e-12, `${label} low-end y values should not fall`);
@@ -146,11 +153,18 @@ function assertSmoothLowEnd(points, label) {
   assert(new Set(earlyY).size > 1, `${label} should not flatten early positives onto a log floor`);
 }
 
+const logEotfX5 = vm.runInContext("meterGreyEotfLuminanceChartX({ire:5,stimulus:5,plot_ire:5},steps,1,100,'eotf')", context);
+const logLuminanceX5 = vm.runInContext("meterGreyEotfLuminanceChartX({ire:5,stimulus:5,plot_ire:5},steps,1,100,'luminance')", context);
+assert(logEotfX5 > 0.2, 'Log EOTF should use log-aware x projection rather than bunching 5% near the linear x=0.05 origin');
+assert(logLuminanceX5 > 0.2, 'Log luminance should use log-aware x projection rather than bunching 5% near the linear x=0.05 origin');
+const logTicks = vm.runInContext("meterEotfLuminanceChartXTicks(100,'eotf')", context);
+assert(logTicks.some(t => t.label === '5' && Math.abs(t.x - logEotfX5) < 1e-12), 'Log EOTF x-axis ticks should use the same warped projection as curve points');
+
 const targetEotf = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,1,'eotf',100,steps)", context);
-assertSmoothLowEnd(targetEotf, 'Log EOTF target curve');
+assertSmoothLowEnd(targetEotf, 'Log EOTF target curve', logEotfX5);
 
 const targetLuminance = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,100,'luminance',100,steps)", context);
-assertSmoothLowEnd(targetLuminance, 'Log luminance target curve');
+assertSmoothLowEnd(targetLuminance, 'Log luminance target curve', logLuminanceX5);
 
 const measuredEotf = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
@@ -163,7 +177,7 @@ meterMeasuredEotfLuminanceSegments(
 )
 `, context);
 assert.strictEqual(measuredEotf.length, 1, 'Log EOTF measured curve should produce one positive segment');
-assertSmoothLowEnd(measuredEotf[0], 'Log EOTF measured curve');
+assertSmoothLowEnd(measuredEotf[0], 'Log EOTF measured curve', logEotfX5);
 
 const measuredLuminance = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
@@ -176,10 +190,12 @@ meterMeasuredEotfLuminanceSegments(
 )
 `, context);
 assert.strictEqual(measuredLuminance.length, 1, 'Log luminance measured curve should produce one positive segment');
-assertSmoothLowEnd(measuredLuminance[0], 'Log luminance measured curve');
+assertSmoothLowEnd(measuredLuminance[0], 'Log luminance measured curve', logLuminanceX5);
 
 context.document.elements.meterEotfLogScale.checked = false;
 const linearEotf = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,1,'eotf',100,steps)", context);
 assert(linearEotf.some(point => Math.abs(point[0]) < 1e-12), 'Linear EOTF target curve should keep the 0% point');
+const linearX5 = vm.runInContext("meterGreyEotfLuminanceChartX({ire:5,stimulus:5,plot_ire:5},steps,1,100,'eotf')", context);
+assert(Math.abs(linearX5 - 0.05) < 1e-12, 'Non-log EOTF x projection should remain linear');
 
 console.log('EOTF/luminance log roll-on regression passed');
