@@ -359,6 +359,18 @@ class Runner:
                 while "\n" in self.line_buffer:
                     line, self.line_buffer = self.line_buffer.split("\n", 1)
                     self.handle_line(line)
+                # ccxxmake's interactive prompts (e.g. "Place instrument on test
+                # window. ... any other key to continue:") end with ':' and NO
+                # trailing newline, so they never reach handle_line above and the
+                # wizard step never fires (the run gets stuck after calibration).
+                # When the pending buffer holds such a prompt, process it once.
+                # ccxxmake is now blocked waiting for input and won't emit more
+                # until we respond, so consuming the buffer is safe and avoids
+                # re-processing the same prompt on the next read.
+                if self.line_buffer.strip() and CONTINUE_RE.search(self.line_buffer):
+                    pending = self.line_buffer
+                    self.line_buffer = ""
+                    self.handle_line(pending)
                 self.maybe_advance_menu(window)
             if self.child.poll() is not None and master_fd not in ready:
                 break
