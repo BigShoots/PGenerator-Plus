@@ -24398,10 +24398,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
   readingMap,
   axisMax,
   (signal,point)=>{
-   const targetLum=meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
-   return meterEotfNormalizedEnabled()
-    ? meterGreyMeasuredNormalizedEotfValue(targetLum,eotfMeasuredRef)
-    : meterGreyMeasuredEotfValue(targetLum,eotfMeasuredRef);
+   return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
   },
   lum=>{
    const value=Number(lum);
@@ -24411,8 +24408,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
   'eotf',
   lum=>{
    const value=Number(lum);
-   if(!Number.isFinite(value)) return null;
-   return meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef);
+   return Number.isFinite(value)?value:null;
   }
  );
  // Draw measured EOTF curve. HDR/DV live AutoCal spine anchors are sparse,

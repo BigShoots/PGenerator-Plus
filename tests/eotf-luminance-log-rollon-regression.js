@@ -156,7 +156,7 @@ function scaledLogValue(mode, value, yTop) {
   );
 }
 
-function assertSimulatedMeasuredLogSegment(segments, label, mode, yTop, endpointValue) {
+function assertSimulatedMeasuredLogSegment(segments, label, mode, yTop, endpointValue, rawToPlotValue = value => value) {
   assert.strictEqual(segments.length, 1, `${label} should produce one measured segment`);
   const seg = segments[0];
   assert(seg.length > 3, `${label} should keep simulated target-shaped measured points in log mode`);
@@ -171,12 +171,26 @@ function assertSimulatedMeasuredLogSegment(segments, label, mode, yTop, endpoint
   const onePercent = low.find(point => Math.abs(point[0] - 0.01) < 1e-9);
   assert(onePercent, `${label} should include a simulated 1% measured point`);
   const rawFraction = Math.pow(0.01 / 0.05, 2.4);
-  const expectedOnePercent = scaledLogValue(mode, endpointValue * rawFraction, yTop);
+  const expectedOnePercent = scaledLogValue(mode, rawToPlotValue(endpointValue * rawFraction), yTop);
   assert(
     Math.abs(onePercent[1] - expectedOnePercent) < 1e-9,
     `${label} should shape measured interpolation in raw luminance/EOTF space before log projection`
   );
   assert(onePercent[1] > 0.1, `${label} 1% simulated point should rise visibly above black`);
+}
+
+function assertNoVerticalTeeth(segments, label) {
+  segments.forEach((seg, segIdx) => {
+    for (let i = 1; i < seg.length; i++) {
+      const prev = seg[i - 1];
+      const point = seg[i];
+      const dx = point[0] - prev[0];
+      const dy = point[1] - prev[1];
+      assert(dx > 1e-12, `${label} segment ${segIdx} should not emit duplicate/non-increasing x at point ${i}`);
+      assert(dy >= -1e-6, `${label} segment ${segIdx} should not create downward EOTF teeth at point ${i}`);
+      assert(Math.abs(dy) < 0.08, `${label} segment ${segIdx} should not create vertical EOTF spikes at point ${i}`);
+    }
+  });
 }
 
 function assertTargetShapedMeasuredSegment(segments, label) {
@@ -210,13 +224,35 @@ meterMeasuredEotfLuminanceSegments(
   steps,
   readingMap,
   100,
-  signal => Math.pow(Math.max(0, Number(signal) || 0), 2.4),
-  lum => meterScaleEotfLuminancePlotValue('eotf', Number(lum), 1, null, Number(lum)),
+  signal => Math.pow(Math.max(0, Number(signal) || 0), 2.4) * 100,
+  lum => meterScaleEotfLuminancePlotValue('eotf', Number(lum) / 100, 1, null, Number(lum)),
   'eotf',
   lum => Number(lum)
 )
 `, context);
-assertSimulatedMeasuredLogSegment(measuredEotf, 'Log EOTF measured curve', 'eotf', 1, 0.2);
+assertSimulatedMeasuredLogSegment(measuredEotf, 'Log EOTF measured curve', 'eotf', 1, 0.2, value => value / 100);
+assertNoVerticalTeeth(measuredEotf, 'Log EOTF measured curve');
+
+const lowShadowSteps = [2.3, 3, 4, 5, 7, 10].map(ire => ({ ire, stimulus: ire, plot_ire: ire }));
+context.lowShadowSteps = lowShadowSteps;
+context.lowShadowReadingMap = Object.fromEntries(lowShadowSteps.map(step => {
+  const signal = step.ire / 100;
+  const luminance = Math.pow(signal, 2.4) * 100 * (1 + 0.02 * signal);
+  return [step.ire, { ire: step.ire, luminance }];
+}));
+
+const lowShadowMeasuredEotf = vm.runInContext(`
+meterMeasuredEotfLuminanceSegments(
+  lowShadowSteps,
+  lowShadowReadingMap,
+  100,
+  signal => Math.pow(Math.max(0, Number(signal) || 0), 2.4) * 100,
+  lum => meterScaleEotfLuminancePlotValue('eotf', Number(lum) / 100, 1, null, Number(lum)),
+  'eotf',
+  lum => Number(lum)
+)
+`, context);
+assertNoVerticalTeeth(lowShadowMeasuredEotf, 'LG low-shadow log EOTF measured curve');
 
 const measuredLuminance = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
