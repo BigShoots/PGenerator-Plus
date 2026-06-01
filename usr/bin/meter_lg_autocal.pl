@@ -16446,7 +16446,7 @@ eval {
 				   write_state($state);
 				  }
 				 }
-				 my $reconfirm_sdr_low_shadow_final_context=sub {
+				 my $trace_sdr_low_shadow_final_context_skip=sub {
 				  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 				  return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
 				  return 0 if(autocal_config_is_touchup($config));
@@ -16470,86 +16470,30 @@ eval {
 				   my $context_diff=sdr_low_shadow_neighbor_context_diff($entry->{"low_shadow_neighbor_context"},$current_context);
 				   next if(ref($context_diff) ne "HASH" || !$context_diff->{"material"});
 				   my $label=$reconfirm_target->{"label"} || format_percent($wanted_ire)."%";
-				   trace_109($reconfirm_step,"sdr_low_shadow_neighbor_context_changed",{
+				   my $record={
 				    label=>$label,
+				    ire=>$wanted_ire+0,
 				    prior_best_delta_e=>defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef,
 				    prior_best_luminance_error_pct=>defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef,
 				    prior_best_reason=>$entry->{"reason"}||"",
 				    prior_neighbor_context=>$entry->{"low_shadow_neighbor_context"},
 				    current_neighbor_context=>$current_context,
 				    context_diff=>$context_diff,
-				    action=>"final_context_reconfirm"
-				   });
-				   trace_sdr_low_shadow_ddc_snapshot(
-				    "final_context_neighbor_changed",$config,$state,$arrays,$reconfirm_step,$reconfirm_target,{
-				     label=>$label,
-				     prior_best=>$entry,
-				     current_neighbor_context=>$current_context,
-				     context_diff=>$context_diff
-				    }
-				   );
-				   my $key=lg_autocal_26_best_known_key($reconfirm_step);
-				   delete($state->{"lg_autocal_26_best_known"}{$key})
-				    if(defined($key) && ref($state->{"lg_autocal_26_best_known"}) eq "HASH");
-				   $state->{"phase"}="reading";
-				   $state->{"current_name"}="Auto Cal $label";
-				   $state->{"message"}="Reconfirming $label in final low-shadow context";
-				   set_state_active_step($state,$reconfirm_step,$reconfirm_target);
-				   write_state($state);
-				   my ($reconfirm_reading,$reconfirm_error,$reconfirm_target_step_y)=read_step_guarded(
-				    $config,$reconfirm_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label
-				   );
-				   die $reconfirm_error if($reconfirm_error && $reconfirm_error ne "cancelled");
-				   last if($reconfirm_error && $reconfirm_error eq "cancelled");
-				   next if(ref($reconfirm_reading) ne "HASH");
-				   $white_y=update_white_reference_for_autocal_step($config,$state,$reconfirm_step,$reconfirm_reading,$white_y);
-				   $white_y ||= 100;
-				   refresh_headroom_targets_after_white_reference($state,$reconfirm_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
-				   $reconfirm_target_step_y=effective_target_luminance_for_autocal_reading($white_y,$reconfirm_step,$reconfirm_reading,$target_gamma,$signal_mode,$config,$state)
-				    if(!defined($reconfirm_target_step_y));
-				   annotate_reading_target($reconfirm_reading,$white_y,$reconfirm_target_step_y,$target_x,$target_y);
-				   my $reconfirm_de=autocal_delta_e_for_step($config,$reconfirm_reading,$reconfirm_step,$white_y,$target_x,$target_y,$reconfirm_target_step_y);
-				   my $reconfirm_lum_pct=luminance_error_percent($reconfirm_reading,$reconfirm_target_step_y);
-				   my $accepted=low_shadow_good_enough($reconfirm_step,$reconfirm_de,$reconfirm_lum_pct,$target_delta)
-				    || low_shadow_fresh_final_soft_accept($reconfirm_step,$reconfirm_de,$reconfirm_lum_pct,$target_delta);
-				   my $hard_reject=low_shadow_fresh_final_hard_reject($reconfirm_step,$reconfirm_de,$reconfirm_lum_pct);
-				   my $record={
-				    label=>$label,
-				    ire=>$wanted_ire+0,
-				    accepted=>$accepted ? JSON::PP::true : JSON::PP::false,
-				    hard_reject=>$hard_reject ? JSON::PP::true : JSON::PP::false,
-				    delta_e=>defined($reconfirm_de) ? $reconfirm_de+0 : undef,
-				    luminance_error_pct=>defined($reconfirm_lum_pct) ? $reconfirm_lum_pct+0 : undef,
-				    target_luminance=>defined($reconfirm_target_step_y) ? $reconfirm_target_step_y+0 : undef,
-				    measured_luminance=>luminance($reconfirm_reading),
-				    prior_best_delta_e=>defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef,
-				    prior_best_luminance_error_pct=>defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef,
-				    prior_best_reason=>$entry->{"reason"}||"",
-				    context_diff=>$context_diff,
 				    target_values=>trace_target_values($arrays,$reconfirm_target),
-				    reading=>trace_reading_summary($reconfirm_reading)
+				    action=>"skipped_final_context_reconfirm",
+				    reason=>"initial_low_shadow_first_calibration_stands_magic_wand_cleanup_only"
 				   };
 				   push @records,$record;
-				   $state->{"readings"}=merge_reading($state->{"readings"},$reconfirm_reading);
-				   $state->{"current_luminance"}=luminance($reconfirm_reading);
-				   $state->{"current_delta_e"}=defined($reconfirm_de) ? $reconfirm_de+0 : undef;
-				   $state->{"luminance_error_pct"}=defined($reconfirm_lum_pct) ? $reconfirm_lum_pct+0 : undef;
-				   set_state_target_step_luminance($state,$reconfirm_target_step_y);
-				   $state->{"sdr_low_shadow_final_context_reconfirm"}=\@records;
-				   write_state($state);
-				   remember_lg_autocal_26_best_known(
-				    $config,$state,$reconfirm_step,$reconfirm_reading,$reconfirm_de,$reconfirm_lum_pct,
-				    $reconfirm_target_step_y,$arrays,$reconfirm_target,"final_context_neighbor_reconfirm",$accepted
-				   );
-				   trace_109($reconfirm_step,"sdr_low_shadow_final_context_reconfirm",$record);
+				   trace_109($reconfirm_step,"sdr_low_shadow_final_context_reconfirm_skipped",$record);
 				   trace_sdr_low_shadow_ddc_snapshot(
-				    "final_context_low_shadow_reconfirm",$config,$state,$arrays,$reconfirm_step,$reconfirm_target,{
-				     reconfirm=>$record,
-				     current_neighbor_context=>sdr_low_shadow_neighbor_context_for_step($config,$reconfirm_step,$arrays)
+				    "final_context_neighbor_changed_no_reconfirm",$config,$state,$arrays,$reconfirm_step,$reconfirm_target,{
+				     skip=>$record
 				    }
 				   );
-				   die "$label final low-shadow context reconfirm failed: dE=".(defined($reconfirm_de)?$reconfirm_de:"undef").", lum=".(defined($reconfirm_lum_pct)?$reconfirm_lum_pct:"undef")
-				    if($hard_reject);
+				  }
+				  if(@records) {
+				   $state->{"sdr_low_shadow_final_context_reconfirm_skipped"}=\@records;
+				   write_state($state);
 				  }
 				  return scalar(@records);
 				 };
@@ -16581,9 +16525,9 @@ eval {
 								    $state->{"propagated_26pt_slots"}=$propagated_slots+0;
 								    write_state($state);
 								   }
-								   my $reconfirmed_slots=$reconfirm_sdr_low_shadow_final_context->();
-								   if($reconfirmed_slots) {
-								    $state->{"sdr_low_shadow_final_context_reconfirmed_slots"}=$reconfirmed_slots+0;
+								   my $skipped_final_context_slots=$trace_sdr_low_shadow_final_context_skip->();
+								   if($skipped_final_context_slots) {
+								    $state->{"sdr_low_shadow_final_context_reconfirm_skipped_slots"}=$skipped_final_context_slots+0;
 								    write_state($state);
 								   }
 								  }
@@ -16591,7 +16535,7 @@ eval {
 								   "pre_final_commit",$config,$state,$arrays,undef,undef,{
 								    committed_polish_white_y=>defined($white_y) ? trace_number($white_y) : undef,
 								    propagated_26pt_slots=>defined($state->{"propagated_26pt_slots"}) ? trace_number($state->{"propagated_26pt_slots"}) : undef,
-								    sdr_low_shadow_final_context_reconfirmed_slots=>defined($state->{"sdr_low_shadow_final_context_reconfirmed_slots"}) ? trace_number($state->{"sdr_low_shadow_final_context_reconfirmed_slots"}) : undef,
+								    sdr_low_shadow_final_context_reconfirm_skipped_slots=>defined($state->{"sdr_low_shadow_final_context_reconfirm_skipped_slots"}) ? trace_number($state->{"sdr_low_shadow_final_context_reconfirm_skipped_slots"}) : undef,
 								   }
 								  );
 							  ($picture,$commit_error,$commit_ended_calibration)=commit_final_1d_lut($state,$picture,$arrays,$picture_mode,\@ordered,$calibration_mode_active);
