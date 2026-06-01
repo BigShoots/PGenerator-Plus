@@ -1,0 +1,5 @@
+#!/bin/sh
+# Periodically persist the system clock so an unclean power-off only loses up
+# to an hour, not the whole uptime. (No-op if cron is not running; the boot
+# restore and shutdown save still apply.)
+/usr/sbin/fake-hwclock save
