@@ -465,9 +465,17 @@ EOF
 }
 
 fix_permissions() {
- local bin rel
+ local bin rel path pgenerator_uid pgenerator_gid
 
  log "Fixing ownership and permissions for release image"
+
+ pgenerator_uid="$(awk -F: '$1=="pgenerator" {print $3; exit}' "$ROOT_MOUNT/etc/passwd" 2>/dev/null || true)"
+ pgenerator_gid="$(awk -F: '$1=="pgenerator" {print $3; exit}' "$ROOT_MOUNT/etc/group" 2>/dev/null || true)"
+ if [[ -z "$pgenerator_uid" ]] || [[ -z "$pgenerator_gid" ]]; then
+  log "WARNING: pgenerator user/group missing from mounted image; falling back to numeric 1000:1000 for writable runtime paths"
+  pgenerator_uid=1000
+  pgenerator_gid=1000
+ fi
 
  set_root_mode() {
   local rel_path="$1"
@@ -489,9 +497,9 @@ fix_permissions() {
   local rel_path="$1"
   local mode="$2"
   local path="$ROOT_MOUNT/$rel_path"
-  install -d -o pgenerator -g pgenerator -m "$mode" "$path" 2>/dev/null || mkdir -p "$path"
-  chown pgenerator:pgenerator "$path" 2>/dev/null || true
-  chmod "$mode" "$path" 2>/dev/null || true
+  mkdir -p "$path"
+  chown "$pgenerator_uid:$pgenerator_gid" "$path" || die "Could not set $rel_path owner to $pgenerator_uid:$pgenerator_gid"
+  chmod "$mode" "$path" || die "Could not set $rel_path mode to $mode"
  }
 
  chown root:root "$ROOT_MOUNT/etc/sudo/sudoers" 2>/dev/null || true
@@ -547,12 +555,18 @@ fix_permissions() {
   set_root_mode "$rel" 0755
  done
 
+ for path in "$ROOT_MOUNT"/usr/share/PGenerator/*.pm; do
+  [[ -e "$path" ]] || continue
+  chown root:root "$path" 2>/dev/null || true
+  chmod 0644 "$path" 2>/dev/null || true
+ done
+
  for rel in \
   "etc/ntp.conf" \
-  "etc/default/ntp" \
-  "etc/default/ntpdate"; do
+  "etc/default/ntp"; do
   set_root_mode "$rel" 0644
  done
+ set_root_mode "etc/default/ntpdate" 0755
 
  for rel in \
   "etc/rc0.d/K01fake-hwclock" \
@@ -575,7 +589,7 @@ fix_permissions() {
  ensure_pgenerator_dir "var/lib/PGenerator/lg/ddc" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/lg/luts" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/lg/pin-sessions" 0775
- ensure_pgenerator_dir "var/log/PGenerator" 0775
+ ensure_pgenerator_dir "var/log/PGenerator" 0755
 
  for bin in "${ARGYLL_RUNTIME_REQUIRED_BINS[@]}" "${ARGYLL_RUNTIME_OPTIONAL_BINS[@]}"; do
   [[ -f "$ROOT_MOUNT/usr/bin/$bin" ]] || continue
