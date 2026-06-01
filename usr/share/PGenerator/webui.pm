@@ -1389,6 +1389,14 @@ sub webui_meter_session_start (@) {
 sub webui_meter_read (@) {
  my ($body)=@_;
 
+ # The meter is exclusively owned by ccxxmake during CCSS creation. Refuse to
+ # (re)start the spotread session so a stray continuous-read loop (e.g. a stale
+ # browser tab still polling) cannot reclaim the instrument out from under
+ # ccxxmake -- that contention is what produces "Instrument Access Failed".
+ if(&_webui_ccss_create_alive()) {
+  return '{"status":"idle","message":"Spectrophotometer is busy creating a CCSS"}';
+ }
+
  # Refuse single reads while a series is actively running
  if(-f $_meter_series_file) {
   my $scheck="";
