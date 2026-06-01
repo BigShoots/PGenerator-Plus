@@ -7620,18 +7620,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
-  <div id="meterSpectroSetupModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
-   <div style="width:min(460px,100%);background:#111723;border:1px solid #2a3140;border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
-    <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:4px">Spectrophotometer Setup</div>
-    <div id="meterSpectroSetupStepLabel" style="font-size:.72rem;color:var(--text2);margin-bottom:10px">Step</div>
-    <div id="meterSpectroSetupMessage" style="font-size:.86rem;color:var(--text);line-height:1.5;margin-bottom:16px;min-height:3em">Preparing the meter…</div>
-    <div style="display:flex;justify-content:flex-end;gap:8px">
-     <button class="btn btn-sm btn-secondary" id="meterSpectroSetupCancelBtn" onclick="meterSpectroSetupCancel()">Cancel</button>
-     <button class="btn btn-sm btn-primary" id="meterSpectroSetupBtn" onclick="meterSpectroSetupAck()">Continue</button>
-    </div>
-   </div>
-  </div>
-
   <div id="customCcssEditorModal" onclick="if(event.target===this) meterCloseCustomCcssEditor()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
@@ -8118,6 +8106,18 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 </div>
 </div>
 
+  <!-- Spectro setup wizard: kept at body level (sibling of the AutoCal overlay) so its z-index beats the AutoCal mask; inside the Calibration card it was stacking-capped behind it. -->
+  <div id="meterSpectroSetupModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(460px,100%);background:#111723;border:1px solid #2a3140;border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
+    <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:4px">Spectrophotometer Setup</div>
+    <div id="meterSpectroSetupStepLabel" style="font-size:.72rem;color:var(--text2);margin-bottom:10px">Step</div>
+    <div id="meterSpectroSetupMessage" style="font-size:.86rem;color:var(--text);line-height:1.5;margin-bottom:16px;min-height:3em">Preparing the meter…</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+     <button class="btn btn-sm btn-secondary" id="meterSpectroSetupCancelBtn" onclick="meterSpectroSetupCancel()">Cancel</button>
+     <button class="btn btn-sm btn-primary" id="meterSpectroSetupBtn" onclick="meterSpectroSetupAck()">Continue</button>
+    </div>
+   </div>
+  </div>
 <div class="meter-autocal-mask" id="meterAutoCalOverlay" aria-hidden="true">
  <div class="meter-autocal-card">
 	  <div class="meter-autocal-title">LG Auto Cal</div>
