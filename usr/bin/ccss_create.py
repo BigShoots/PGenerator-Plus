@@ -160,6 +160,23 @@ class Runner:
         if text.startswith("3)"):
             self.last_option3 = text
         low = self.recent.lower()
+        # ccxxmake cannot open the instrument (held by another process or a USB
+        # wedge). Retrying never recovers, so give up cleanly with a curated
+        # message instead of spinning forever while still holding the meter.
+        if "instrument access failed" in low or "claiming usb port" in low:
+            self.access_fail_count = getattr(self, "access_fail_count", 0) + 1
+            if self.access_fail_count >= 2:
+                self.write_state(
+                    "error",
+                    "Could not open the spectrophotometer for measurement. Make sure no other measurement is running and only the reference spectro is connected, then try again.",
+                )
+                self.cancel_requested = True
+                try:
+                    if self.child and self.child.poll() is None:
+                        self.child.terminate()
+                except Exception:
+                    pass
+            return
         # Calibration failure: re-seat the spectro on its tile and retry. Surface
         # this BEFORE the generic continue handling so a failed cal isn't silently
         # auto-advanced into another bad reading.

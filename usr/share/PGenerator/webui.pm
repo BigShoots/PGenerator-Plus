@@ -3841,17 +3841,17 @@ sub _webui_ccss_create_alive (@) {
 sub webui_ccss_create_status (@) {
  my $json=&_webui_ccss_create_read_state();
  if($json=~/"status"\s*:\s*"(starting|running)"/ && !&_webui_ccss_create_alive()) {
-  my $detail="CCSS creation stopped unexpectedly";
+  # The helper exited with state still 'running'. Surface a CURATED message --
+  # never the raw ccxxmake log (it reads like a wall of internal errors). Keep
+  # the raw tail in the daemon log for our own diagnostics only.
   if(-f $_ccss_create_log_file) {
    my $tail=`tail -n 20 $_ccss_create_log_file 2>/dev/null`;
-   chomp($tail);
-   $tail=~s/\r/ /g;
-   $tail=~s/\n+/ /g;
    $tail=~s/\s+/ /g;
    $tail=~s/^\s+|\s+$//g;
-   $detail=$tail if($tail ne "");
+   &log("WebUI: CCSS create helper exited unexpectedly; ccxxmake log tail: $tail") if($tail ne "");
   }
-  my $escaped=&_webui_json_escape($detail);
+  my $msg="CCSS creation could not access the spectrophotometer. Make sure no other measurement is running and only the reference spectro is connected, then try again.";
+  my $escaped=&_webui_json_escape($msg);
   $json="{\"status\":\"error\",\"message\":\"$escaped\"}";
   &_webui_ccss_create_write_state($json);
  }
@@ -3931,9 +3931,14 @@ sub webui_ccss_create_start (@) {
 
  &webui_meter_stop();
  system("sudo bash $_meter_wrapper --kill 2>/dev/null");
+ # Kill any stray helper/ccxxmake from a prior attempt. If a previous run's
+ # python helper was force-killed, its ccxxmake child orphans and keeps the
+ # i1 Pro's interface 0 claimed, so the next ccxxmake fails with "Instrument
+ # Access Failed". Clear them before launching a fresh one.
+ system("sudo pkill -9 -f 'ccss_create.py' 2>/dev/null");
+ system("sudo pkill -9 -f 'ccxxmake' 2>/dev/null");
  # Give the kernel a moment to release the i1 Pro USB interface after spotread
- # exits, so ccxxmake can claim it (otherwise it loops on "Instrument Access
- # Failed: Claiming USB port interface 0 failed").
+ # and ccxxmake exit, so the new ccxxmake can claim it.
  select(undef,undef,undef,1.5);
  unlink($_ccss_create_pid_file);
  unlink($_ccss_create_log_file);
