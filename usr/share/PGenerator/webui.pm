@@ -3923,6 +3923,10 @@ sub webui_ccss_create_start (@) {
 
  &webui_meter_stop();
  system("sudo bash $_meter_wrapper --kill 2>/dev/null");
+ # Give the kernel a moment to release the i1 Pro USB interface after spotread
+ # exits, so ccxxmake can claim it (otherwise it loops on "Instrument Access
+ # Failed: Claiming USB port interface 0 failed").
+ select(undef,undef,undef,1.5);
  unlink($_ccss_create_pid_file);
  unlink($_ccss_create_log_file);
  unlink($_ccss_create_continue_file);
@@ -14568,7 +14572,9 @@ function meterCcssCreateSetUi(status){
  const displayTypeSel=document.getElementById('meterCcssCreateDisplayType');
  const running=!!(status&&(status.status==='starting'||status.status==='running'));
  if(progress&&status&&status.message){
-  progress.textContent=status.detail?`${status.message} ${status.detail}`:status.message;
+  // Show only our curated message. status.detail carries the raw ccxxmake
+  // output for the log/diagnostics and must NOT be surfaced to the operator.
+  progress.textContent=status.message;
  }
  if(startBtn) startBtn.disabled=running||!meterCcssCreateCanStart();
  if(stopBtn) stopBtn.style.display=running?'':'none';
@@ -14712,6 +14718,11 @@ async function meterCcssCreateRefreshStatus(quiet){
 
 async function meterStartCcssCreate(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
+ // Stop any continuous read loop first. Otherwise it keeps re-POSTing reads,
+ // which restarts the spotread session and re-claims the instrument -- ccxxmake
+ // then fails with "Instrument Access Failed" because the meter is still held.
+ // (The backend webui_ccss_create_start also frees the session before launch.)
+ meterStopContinuous();
  await meterCheckStatus();
  meterRenderCcssCreateChoices();
  const spectros=meterCcssCreateSpectros();
