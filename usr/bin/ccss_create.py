@@ -107,8 +107,15 @@ class Runner:
                 if acked == str(sid):
                     break
             time.sleep(0.2)
-        # Clear the setup state so the wizard hides its button while work runs.
-        self.write_state("running", "Continuing with the spectrophotometer...")
+        # Publish a 'working' state so the wizard popup stays visible (no button)
+        # with an informative message while the slow step runs -- calibration and
+        # the patch sweep each take several seconds -- instead of vanishing.
+        working = {
+            "calibrate_tile": "Calibrating the spectrophotometer on its tile - please wait a few seconds...",
+            "position_screen": "Measuring the test patches - keep the meter aimed at the screen...",
+            "calibrate_retry": "Re-calibrating the spectrophotometer - please wait...",
+        }.get(step, "Working with the spectrophotometer - please wait...")
+        self.write_state("running", working)
 
     def append_log(self, text):
         if not text:

@@ -14742,7 +14742,13 @@ async function meterCcssCreateRefreshStatus(quiet){
   if(progress&&r.message) progress.textContent=r.message;
   return r;
  }
- meterSpectroSetupApply(null);
+ if(r.status==='running'||r.status==='starting'){
+  // Between wizard steps (calibrating, measuring, saving): keep the popup up
+  // with the current working message so the operator knows what's happening.
+  meterSpectroSetupApply({keepBusy:true,message:r.message},'/api/ccss/create/setup/ack');
+ } else {
+  meterSpectroSetupApply(null);
+ }
  meterCcssCreateSetUi(r);
  const token=[r.status||'',r.filename||'',r.message||''].join('|');
  if(r.status==='complete'&&token!==meterCcssCreateHandledToken){
@@ -16011,6 +16017,7 @@ async function meterFinishSingleRead(){
 
 let meterSpectroSetupStepId=0;
 let meterSpectroSetupAckEndpoint='/api/meter/setup/ack';
+let meterSpectroSetupCancelEndpoint='/api/meter/stop';
 function meterSpectroSetupLabel(step){
  return ({calibrate_tile:'Calibrate',position_screen:'Ready',calibrate_retry:'Retry'})[step]||'Continue';
 }
@@ -16022,15 +16029,28 @@ function meterSpectroSetupStepText(step){
 function meterSpectroSetupApply(r,ackEndpoint){
  const modal=document.getElementById('meterSpectroSetupModal');
  if(!modal) return;
+ const lbl=document.getElementById('meterSpectroSetupStepLabel');
+ const msg=document.getElementById('meterSpectroSetupMessage');
+ const btn=document.getElementById('meterSpectroSetupBtn');
+ if(ackEndpoint){
+  meterSpectroSetupAckEndpoint=ackEndpoint;
+  meterSpectroSetupCancelEndpoint=(ackEndpoint.indexOf('/ccss/')>=0)?'/api/ccss/create/stop':'/api/meter/stop';
+ }
  if(r && r.status==='setup' && r.step_id){
-  meterSpectroSetupAckEndpoint=ackEndpoint||'/api/meter/setup/ack';
   meterSpectroSetupStepId=Number(r.step_id)||0;
-  const lbl=document.getElementById('meterSpectroSetupStepLabel');
-  const msg=document.getElementById('meterSpectroSetupMessage');
-  const btn=document.getElementById('meterSpectroSetupBtn');
   if(lbl) lbl.textContent=meterSpectroSetupStepText(r.step||'');
   if(msg) msg.textContent=String(r.message||'');
-  if(btn){ btn.textContent=meterSpectroSetupLabel(r.step||''); btn.disabled=false; }
+  if(btn){ btn.textContent=meterSpectroSetupLabel(r.step||''); btn.disabled=false; btn.style.display=''; }
+  modal.style.display='flex';
+  uiSyncBodyScrollLock();
+ } else if(r && r.keepBusy){
+  // Keep the popup visible BETWEEN steps. Calibration and the patch sweep each
+  // take several seconds; hiding the modal here left the operator staring at a
+  // blank screen. Show a 'working' message and no action button instead.
+  meterSpectroSetupStepId=0;
+  if(lbl) lbl.textContent='Working…';
+  if(msg) msg.textContent=String(r.message||'Please wait…');
+  if(btn){ btn.style.display='none'; }
   modal.style.display='flex';
   uiSyncBodyScrollLock();
  } else {
@@ -16049,7 +16069,9 @@ async function meterSpectroSetupAck(){
 function meterSpectroSetupCancel(){
  const modal=document.getElementById('meterSpectroSetupModal');
  if(modal){ modal.style.display='none'; uiSyncBodyScrollLock(); }
- fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ // Cancel the right job: the CCSS helper during CCSS creation, otherwise the
+ // meter session.
+ fetchJSON(meterSpectroSetupCancelEndpoint||'/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
 }
 async function meterReadOnce(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
