@@ -118,26 +118,39 @@ assert.strictEqual(
   true,
   'Log luminance scaling should keep an explicit black origin point'
 );
+assert(
+  vm.runInContext("meterScaleEotfLuminancePlotValue('luminance',0.00005,100,null,null)", context) > 0,
+  'Tiny positive luminance below the old log floor should map continuously above black'
+);
 assert.strictEqual(
   vm.runInContext("meterEotfLuminanceLogPointAllowed('luminance',-0.01,null,null)", context),
   false,
   'Negative luminance value should still be skipped in log mode'
 );
 
-function assertBlackToFirstPositiveSegment(points, label) {
+function assertSmoothLowEnd(points, label) {
   assert(Array.isArray(points) && points.length > 0, `${label} should produce points`);
   assert(points.every(point => Array.isArray(point) && point.length >= 2), `${label} points should be x/y pairs`);
-  assert(Math.abs(points[0][0]) < 1e-12, `${label} should keep the real 0% black origin`);
-  assert(points.length > 1, `${label} should include the first positive point`);
-  assert(Math.abs(points[1][0] - 0.05) < 1e-9, `${label} should connect directly from 0% to the first valid positive 5% point`);
-  assert(!points.some((point, idx) => idx > 0 && point[0] > 0 && point[0] < 0.05), `${label} should not include dense roll-on points between 0% and 5%`);
+  const low = points.filter(point => point[0] >= -1e-12 && point[0] <= 0.05 + 1e-12);
+  assert(low.length > 4, `${label} should include dense low-end points between 0% and 5%`);
+  assert(Math.abs(low[0][0]) < 1e-12, `${label} should keep the real 0% black origin`);
+  assert(low.some(point => point[0] > 0 && point[0] < 0.05), `${label} should not jump directly from 0% to 5%`);
+  assert(low.some(point => Math.abs(point[0] - 0.05) < 1e-9), `${label} should include the first measured/target 5% point`);
+  for (let i = 1; i < low.length; i++) {
+    assert(low[i][0] > low[i - 1][0], `${label} low-end x values should increase monotonically`);
+    assert(low[i][1] >= low[i - 1][1] - 1e-12, `${label} low-end y values should not fall`);
+  }
+  const positiveLow = low.filter(point => point[0] > 0);
+  assert(positiveLow[0][1] > low[0][1], `${label} first positive point should rise above true black`);
+  const earlyY = positiveLow.slice(0, Math.min(5, positiveLow.length)).map(point => point[1].toFixed(12));
+  assert(new Set(earlyY).size > 1, `${label} should not flatten early positives onto a log floor`);
 }
 
 const targetEotf = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,1,'eotf',100,steps)", context);
-assertBlackToFirstPositiveSegment(targetEotf, 'Log EOTF target curve');
+assertSmoothLowEnd(targetEotf, 'Log EOTF target curve');
 
 const targetLuminance = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,100,'luminance',100,steps)", context);
-assertBlackToFirstPositiveSegment(targetLuminance, 'Log luminance target curve');
+assertSmoothLowEnd(targetLuminance, 'Log luminance target curve');
 
 const measuredEotf = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
@@ -150,7 +163,7 @@ meterMeasuredEotfLuminanceSegments(
 )
 `, context);
 assert.strictEqual(measuredEotf.length, 1, 'Log EOTF measured curve should produce one positive segment');
-assertBlackToFirstPositiveSegment(measuredEotf[0], 'Log EOTF measured curve');
+assertSmoothLowEnd(measuredEotf[0], 'Log EOTF measured curve');
 
 const measuredLuminance = vm.runInContext(`
 meterMeasuredEotfLuminanceSegments(
@@ -163,7 +176,7 @@ meterMeasuredEotfLuminanceSegments(
 )
 `, context);
 assert.strictEqual(measuredLuminance.length, 1, 'Log luminance measured curve should produce one positive segment');
-assertBlackToFirstPositiveSegment(measuredLuminance[0], 'Log luminance measured curve');
+assertSmoothLowEnd(measuredLuminance[0], 'Log luminance measured curve');
 
 context.document.elements.meterEotfLogScale.checked = false;
 const linearEotf = vm.runInContext("meterGreyNominalTargetCurvePoints(100,0,1,'eotf',100,steps)", context);
