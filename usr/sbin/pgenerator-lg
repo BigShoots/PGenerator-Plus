@@ -1593,27 +1593,31 @@ sub lg_picture_reset_workflow (@) {
 	   lg_generation => $generation,
 	  });
 	 }
+	 my $white_balance_reset_warning="";
 	 if($require_white_balance_reset && (!$white_balance_reset_ok || !@white_balance_reset_keys_succeeded)) {
-	  return &json_error("LG picture mode reset did not clear white-balance settings. The TV rejected the manual white-balance reset keys.",{
-		   ip => $ip,
-		   active_picture_mode => $active_picture_mode,
-		   require_white_balance_reset => &json_true(),
-		   reset_attempts => \@reset_attempts,
-		   reset_keys_requested => $keys,
-		   reset_keys_succeeded => \@reset_keys_succeeded,
-		   reset_keys_failed => \%reset_key_failed,
-		   basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
-		   panel_light_reset_ok => &json_bool($panel_reset_ok),
-		   panel_light_reset_attempts => \@panel_reset_attempts,
-		   white_balance_reset_ok => &json_bool($white_balance_reset_ok),
-		   white_balance_reset_keys_requested => $white_balance_reset_keys,
-		   white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
-		   white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
-		   white_balance_reset_attempts => \@white_balance_reset_attempts,
-		   ddc_attempted => &json_bool($ddc_attempted),
-		   ddc_response => $ddc_result,
-		   lg_generation => $generation,
-	  });
+	  if(!$generation->{"ddc_only_white_balance"}) {
+	   return &json_error("LG picture mode reset did not clear white-balance settings. The TV rejected the manual white-balance reset keys.",{
+		    ip => $ip,
+		    active_picture_mode => $active_picture_mode,
+		    require_white_balance_reset => &json_true(),
+		    reset_attempts => \@reset_attempts,
+		    reset_keys_requested => $keys,
+		    reset_keys_succeeded => \@reset_keys_succeeded,
+		    reset_keys_failed => \%reset_key_failed,
+		    basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
+		    panel_light_reset_ok => &json_bool($panel_reset_ok),
+		    panel_light_reset_attempts => \@panel_reset_attempts,
+		    white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+		    white_balance_reset_keys_requested => $white_balance_reset_keys,
+		    white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+		    white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
+		    white_balance_reset_attempts => \@white_balance_reset_attempts,
+		    ddc_attempted => &json_bool($ddc_attempted),
+		    ddc_response => $ddc_result,
+		    lg_generation => $generation,
+	   });
+	  }
+	  $white_balance_reset_warning="LG user-menu white-balance reset keys were rejected by this DDC-only TV; DDC calibration state was reset instead.";
 	 }
  return &json_ok({
   ip => $ip,
@@ -1636,6 +1640,7 @@ sub lg_picture_reset_workflow (@) {
 		  panel_light_reset_ok => &json_bool($panel_reset_ok),
 		  require_white_balance_reset => &json_bool($require_white_balance_reset),
 		  white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+		  white_balance_reset_warning => $white_balance_reset_warning,
 		  white_balance_reset_keys_requested => $white_balance_reset_keys,
 		  white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
 		  white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
