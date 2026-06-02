@@ -55,10 +55,15 @@ const seedCorrectionSource = sliceBetween(
   'sub apply_sdr_top_body_blend_seed_overrides'
 );
 assert(
-  !seedCorrectionSource.includes('"99" => { adjustingLuminance => 1.20') &&
-    !seedCorrectionSource.includes('"95" => { adjustingLuminance => 1.00') &&
-    seedCorrectionSource.includes('return undef if($key eq "99" || $key eq "95");'),
-  'post-105 99%/95% seeds should no longer use the old large fixed RGB pushes'
+  seedCorrectionSource.includes('"99"  => { adjustingLuminance => -0.75 }') &&
+    seedCorrectionSource.includes('"95"  => { adjustingLuminance => -0.50 }') &&
+    seedCorrectionSource.includes('"90"  => { adjustingLuminance => -0.25 }') &&
+    !seedCorrectionSource.includes('whiteBalanceRed => -2.00') &&
+    !seedCorrectionSource.includes('whiteBalanceGreen => 5.50') &&
+    !seedCorrectionSource.includes('whiteBalanceBlue => 5.50') &&
+    seedCorrectionSource.includes('my %post_105_deltas=();') &&
+    !seedCorrectionSource.includes('return undef if($key eq "99" || $key eq "95");'),
+  'post-105 99%/95%/90% seeds should use display-safe luma-only local offsets, not fixed RGB pushes'
 );
 
 const topBlendSource = sliceBetween(
@@ -74,13 +79,16 @@ assert(
     topBlendSource.includes('offsets=>$deltas') &&
     topBlendSource.includes('if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,99))') &&
     !topBlendSource.includes('"99" => { top_weight=>0.22') &&
-    topBlendSource.includes('"95" => { top_weight=>0.12') &&
+    topBlendSource.includes('"95" => { top_weight=>0.08, rgb_top_weight=>0.00') &&
+    topBlendSource.includes('mode=>"sdr-top-local-seed-90-from-80-safe"') &&
+    topBlendSource.includes('source_quality_gate=>$quality_99_for_90') &&
     topBlendSource.includes('body_weight=>$body_weight+0') &&
     topBlendSource.includes('top_weight=>$top_weight+0') &&
+    topBlendSource.includes('rgb_top_weight=>defined($entry->{"rgb_top_weight"})') &&
     topBlendSource.includes('max_from_body=>$entry->{"max_from_body"}') &&
     topBlendSource.includes('record_full_ddc_spine_seed_detail') &&
     topBlendSource.includes('sdr_top_body_weighted_seed_from_80_and_measured_105'),
-  '99% seed should be traceable local-from-80 while 95% remains a body-weighted blend from 80% and measured 105%'
+  '99% seed should be traceable local-from-80 while 95% keeps only a luma-weighted 105 blend and 90 gates bad 99'
 );
 
 function blendFromBody(body, top, weight, maxFromBody) {
