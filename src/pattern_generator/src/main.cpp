@@ -56,6 +56,13 @@ std::string dv_color_space="0";
 #include "ofxRPI4Window.h"
 // End Patch RPI p4
 
+static bool usesPGeneratorKmsWindow(const std::string &model) {
+ return model.find("Raspberry Pi 4") != string::npos ||
+        model.find("Raspberry Pi Compute Module 4") != string::npos ||
+        model.find("Raspberry Pi 5") != string::npos ||
+        model.find("Raspberry Pi Compute Module 5") != string::npos;
+}
+
 int main(int argc, char **argv){
  int w=1920;
  int h=1080;
@@ -91,11 +98,11 @@ int main(int argc, char **argv){
   h=atoi(argv[2]);
  }
  //ofLog() << "PGenerator version " << pgenCodeVersion;
- if (str.find("Raspberry Pi 4") == string::npos) {
+ if (!usesPGeneratorKmsWindow(str)) {
   ofSetupOpenGL(w,h, OF_FULLSCREEN);
   ofRunApp( new ofApp());
  } else {
-// Start Patch RPI p4
+// Start Patch RPI KMS
   /* Get var from PGenerator Conf */
   std::ifstream file(PGenerator_conf);
   while (std::getline(file, str)) {
@@ -156,7 +163,7 @@ int main(int argc, char **argv){
   ofApp::dv_diagonal=atoi(dv_diagonal.c_str());
   ofApp::dv_color_space=atoi(dv_color_space.c_str());
 
-  /* RPI4 Run App */
+  /* Raspberry Pi KMS Run App */
   ofGLESWindowSettings settings;
   settings.glesVersion = 3;
   ofApp *cs_data;
@@ -168,6 +175,6 @@ int main(int argc, char **argv){
 
   ofRunApp(window, app);
   ofRunMainLoop();
-// End Patch RPI p4
+// End Patch RPI KMS
  }
 }
