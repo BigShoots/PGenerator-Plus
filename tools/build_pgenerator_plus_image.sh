@@ -19,6 +19,7 @@ PI5_OUTPUT_SUFFIX="pi5_bookworm_armhf"
 PI5_BOOT_LABEL="BOOT_PG"
 PI5_ROOT_LABEL="/_PG"
 PI5_REQUIRED_BOOT_KERNELS="kernel_2712.img kernel8.img"
+PI5_ROOT_PASSWORD_HASH='$6$pgenerator$tEOE1qfYZlUf/.8wT.zgYKKMlRZCb/qEPvczRS/GqoNMXXqSO9a8Vhi1G6eN7prcHdONB96F2RtRNm6ZvlWTB/'
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -593,6 +594,49 @@ configure_pi5_bookworm_boot() {
  fi
 }
 
+configure_pi5_headless_ssh() {
+ local shadow_file="$ROOT_MOUNT/etc/shadow"
+ local ssh_dropin_dir="$ROOT_MOUNT/etc/ssh/sshd_config.d"
+ local ssh_wants_dir="$ROOT_MOUNT/etc/systemd/system/multi-user.target.wants"
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ [[ -f "$shadow_file" ]] || die "Pi 5 rootfs is missing /etc/shadow"
+
+ log "Enabling Raspberry Pi 5 headless SSH access"
+
+ awk -F: -v hash="$PI5_ROOT_PASSWORD_HASH" '
+  BEGIN { OFS = FS }
+  $1 == "root" { $2 = hash; found = 1 }
+  { print }
+  END {
+   if (!found) {
+    print "root", hash, "20221", "0", "99999", "7", "", "", ""
+   }
+  }
+ ' "$shadow_file" > "$shadow_file.tmp"
+ install -m 0640 -o 0 -g 42 "$shadow_file.tmp" "$shadow_file" 2>/dev/null || install -m 0640 "$shadow_file.tmp" "$shadow_file"
+ rm -f "$shadow_file.tmp"
+
+ mkdir -p "$ssh_dropin_dir"
+ cat > "$ssh_dropin_dir/99-pgenerator-headless.conf" <<'EOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+EOF
+ chown root:root "$ssh_dropin_dir/99-pgenerator-headless.conf" 2>/dev/null || true
+ chmod 0644 "$ssh_dropin_dir/99-pgenerator-headless.conf"
+
+ mkdir -p "$ssh_wants_dir"
+ if [[ -f "$ROOT_MOUNT/lib/systemd/system/ssh.service" ]]; then
+  ln -sfn /lib/systemd/system/ssh.service "$ssh_wants_dir/ssh.service"
+ fi
+ if [[ -f "$ROOT_MOUNT/lib/systemd/system/regenerate_ssh_host_keys.service" ]]; then
+  ln -sfn /lib/systemd/system/regenerate_ssh_host_keys.service "$ssh_wants_dir/regenerate_ssh_host_keys.service"
+ fi
+
+ : > "$BOOT_MOUNT/ssh"
+ chmod 0644 "$BOOT_MOUNT/ssh" 2>/dev/null || true
+}
+
 label_pi5_partitions() {
  [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
 
@@ -992,6 +1036,7 @@ main() {
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_bookworm_boot
+ configure_pi5_headless_ssh
  if [[ "$TARGET" != "pi5-bookworm-armhf" ]]; then
   ensure_boot_ramdisk_size
   patch_boot_initramfs_rootwait
