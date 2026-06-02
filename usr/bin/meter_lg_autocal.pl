@@ -3144,6 +3144,7 @@ sub lg_autocal_26_learned_rgb_adjustment {
 	 my $setting=channel_setting($ch);
 	 my $idx=$target->{"index"};
 	 return undef if(!defined($idx) || ref($arrays->{$setting}) ne "ARRAY");
+	 return undef if(sdr_body_rgb_family_suppressed($LG_AUTOCAL_CONFIG,$tried,$step,$target,$arrays,$setting,$source||"learned_rgb"));
 	 my $current=$arrays->{$setting}[$idx]||0;
 	 my $raw_delta=-($err+0)/$slope;
 	 return undef if(abs($raw_delta) < 0.10);
@@ -4203,6 +4204,20 @@ sub has_luminance_channel {
 	 return 1;
 }
 
+sub autocal_target_ddc_signature {
+ my ($arrays,$target)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my @parts;
+ foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+  my $arr=$arrays->{$setting};
+  my $value=(ref($arr) eq "ARRAY" && defined($arr->[$idx])) ? ($arr->[$idx]+0) : 0;
+  push @parts,$setting."=".ddc_value_key($value);
+ }
+ return join("|",@parts);
+}
+
 sub mark_tried_values {
 	 my ($tried,$arrays,$target,$de)=@_;
 	 return if(ref($tried) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -5126,6 +5141,7 @@ sub tried_value_exists {
 sub luma_probe_guarded_target {
  my ($target,$step)=@_;
  return 1 if(ref($step) eq "HASH" && autocal_step_is_hdr20_body($step));
+ return 1 if(sdr_body_rgb_suppression_enabled($LG_AUTOCAL_CONFIG,$step,$target));
  my $ire;
  $ire=$target->{"ire"} if(ref($target) eq "HASH" && defined($target->{"ire"}));
  $ire=$step->{"ire"} if(!defined($ire) && ref($step) eq "HASH" && defined($step->{"ire"}));
@@ -5199,6 +5215,19 @@ sub luma_only_adjustment {
  return $adj;
 }
 
+sub luma_bearing_adjustment {
+ my ($adjustments)=@_;
+ return undef if(ref($adjustments) ne "ARRAY");
+ my $found;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  next if(($adj->{"setting"}||"") ne "adjustingLuminance");
+  return undef if(defined($found));
+  $found=$adj;
+ }
+ return $found;
+}
+
 sub luma_probe_family_suppressed {
  my ($tried,$target,$current,$next,$step,$source,$state)=@_;
  return 0 if(!luma_probe_guarded_target($target,$step));
@@ -5235,11 +5264,99 @@ sub luma_probe_family_suppressed {
  return 0;
 }
 
+sub luma_overshoot_entries {
+ my ($tried,$target,$step,$state)=@_;
+ my @entries;
+ my $target_key=luma_probe_target_key($target,$step);
+ return @entries if(!defined($target_key));
+ if(ref($tried) eq "HASH" && ref($tried->{"__bad_luma_family"}) eq "HASH") {
+  foreach my $entry (values %{$tried->{"__bad_luma_family"}}) {
+   next if(ref($entry) ne "HASH" || !$entry->{"luma_overshoot"});
+   next if(($entry->{"target"}||"") ne $target_key);
+   push @entries,$entry;
+  }
+ }
+ my $state_store=luma_probe_state_family_store($state,$target,$step,0);
+ if(ref($state_store) eq "HASH") {
+  foreach my $entry (values %{$state_store}) {
+   next if(ref($entry) ne "HASH" || !$entry->{"luma_overshoot"});
+   next if(($entry->{"target"}||"") ne $target_key);
+   push @entries,$entry;
+  }
+ }
+ return @entries;
+}
+
+sub luma_overshoot_retry_adjustments {
+ my ($arrays,$target,$luminance_err,$tried,$min_step,$strict_tried,$step,$source,$state)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || !defined($luminance_err));
+ return undef if(!luma_probe_guarded_target($target,$step));
+ return undef if(!has_luminance_channel($arrays,$target));
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my $arr=$arrays->{"adjustingLuminance"};
+ return undef if(ref($arr) ne "ARRAY");
+ my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+ my $direction=($luminance_err > 0) ? -1 : 1;
+ my $signature=autocal_target_ddc_signature($arrays,$target);
+ $min_step ||= 0.25;
+ foreach my $entry (luma_overshoot_entries($tried,$target,$step,$state)) {
+  next if(!defined($entry->{"current"}) || abs(($entry->{"current"}+0)-$current) > 0.0001);
+  next if(!defined($entry->{"direction"}) || ($entry->{"direction"}+0) != $direction);
+  if(defined($entry->{"best_signature"}) && defined($signature) && $entry->{"best_signature"} ne $signature) {
+   next;
+  }
+  my $attempted=defined($entry->{"magnitude"}) ? abs($entry->{"magnitude"}+0) : 0;
+  next if($attempted < $min_step+0.0001);
+  my @magnitudes=($attempted/2,$attempted/4,$min_step);
+  my %seen_mag;
+  foreach my $mag (@magnitudes) {
+   next if(!defined($mag) || $mag < $min_step-0.0001);
+   $mag=round_ddc_quarter($mag);
+   next if($seen_mag{ddc_value_key($mag)}++);
+   my $next=round_ddc_quarter($current+($direction*$mag));
+   next if(abs($next-$current) < 0.0001);
+   my $seen=$strict_tried ? tried_value_exists($tried,"adjustingLuminance",$next) : repeated_value($tried,"adjustingLuminance",$next);
+   next if($seen);
+   next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,$source||"luma_overshoot_retry",$state));
+   my $trace_step=(ref($step) eq "HASH") ? $step : $target;
+   trace_109($trace_step,"luma_overshoot_retry",{
+    target=>luma_probe_target_key($target,$step),
+    source=>$source||$entry->{"source"}||"luma_overshoot_retry",
+    family_key=>$entry->{"family_key"},
+    current=>$current+0,
+    next=>$next+0,
+    attempted_magnitude=>$attempted+0,
+    retry_magnitude=>abs($next-$current)+0,
+    direction=>$direction+0,
+    before_luminance_error_pct=>$entry->{"before_luminance_error_pct"},
+    after_luminance_error_pct=>$entry->{"after_luminance_error_pct"},
+    before_delta_e=>$entry->{"before_delta_e"},
+    after_delta_e=>$entry->{"after_delta_e"},
+    best_signature=>$signature
+   });
+   return [{
+    channel=>"lum",
+    setting=>"adjustingLuminance",
+    current=>$current,
+    next=>$next,
+    delta=>$next-$current,
+    neutral_luminance=>1,
+    luma_overshoot_retry=>1,
+    source=>$source||"luma_overshoot_retry",
+    overshoot_family_key=>$entry->{"family_key"},
+    attempted_magnitude=>$attempted+0
+   }];
+  }
+ }
+ return undef;
+}
+
 sub record_bad_luma_probe_family {
- my ($tried,$target,$adjustments,$before_de,$after_de,$before_lum_pct,$after_lum_pct,$before_score,$after_score,$step,$source,$state)=@_;
+ my ($tried,$target,$adjustments,$before_de,$after_de,$before_lum_pct,$after_lum_pct,$before_score,$after_score,$step,$source,$state,$best_arrays)=@_;
  return undef if(ref($tried) ne "HASH" || !luma_probe_guarded_target($target,$step));
  return undef if(ref($step) eq "HASH" && autocal_step_is_peak_headroom($step));
- my $adj=luma_only_adjustment($adjustments);
+ my $adj=luma_bearing_adjustment($adjustments);
  return undef if(ref($adj) ne "HASH");
  return undef if(!defined($before_de) || !defined($after_de));
  return undef if(!defined($before_lum_pct) || !defined($after_lum_pct));
@@ -5250,6 +5367,8 @@ sub record_bad_luma_probe_family {
 	 my $de_worse=(($after_de+0) > ($before_de+0)+0.35) ? 1 : 0;
 	 my $score_worse=0;
 	 $score_worse=1 if(defined($before_score) && defined($after_score) && ($after_score+0) > ($before_score+0)+0.35);
+	 my $sign_crossed=((($before_lum_pct+0) > 0 && ($after_lum_pct+0) < 0) || (($before_lum_pct+0) < 0 && ($after_lum_pct+0) > 0)) ? 1 : 0;
+	 my $overshoot=($sign_crossed && ($de_worse || $score_worse)) ? 1 : 0;
 	 return undef if(!$y_worse && (!$y_improved || (!$de_worse && !$score_worse)));
  my $current=defined($adj->{"current"}) ? ($adj->{"current"}+0) : undef;
  my $next=defined($adj->{"next"}) ? ($adj->{"next"}+0) : undef;
@@ -5278,11 +5397,16 @@ sub record_bad_luma_probe_family {
  $entry->{"before_score"}=$before_score+0 if(defined($before_score));
  $entry->{"after_score"}=$after_score+0 if(defined($after_score));
  $entry->{"family_key"}=$key;
+ $entry->{"luma_bearing"}=((ref($adjustments) eq "ARRAY" && @{$adjustments} > 1) ? JSON::PP::true : JSON::PP::false);
+ $entry->{"sign_crossed"}=$sign_crossed ? JSON::PP::true : JSON::PP::false;
+ $entry->{"luma_overshoot"}=$overshoot ? JSON::PP::true : JSON::PP::false;
+ my $best_signature=autocal_target_ddc_signature($best_arrays,$target);
+ $entry->{"best_signature"}=$best_signature if(defined($best_signature));
  $tried->{"__bad_luma_family"}{$key}=clone_luma_probe_entry($entry);
  $state_store->{$key}=clone_luma_probe_entry($entry) if(ref($state_store) eq "HASH");
  $entry->{"suppressed"}=luma_probe_family_suppressed($tried,$target,$current,$next,$step,$source,$state) ? JSON::PP::true : JSON::PP::false;
  my $trace_step=(ref($step) eq "HASH") ? $step : $target;
- trace_109($trace_step,"bad_luma_probe",{
+ trace_109($trace_step,$overshoot ? "luma_overshoot_family" : "bad_luma_probe",{
   target=>$entry->{"target"},
   source=>$entry->{"source"},
   family_key=>$key,
@@ -5296,10 +5420,14 @@ sub record_bad_luma_probe_family {
   after_delta_e=>$after_de+0,
   before_luminance_error_pct=>$before_lum_pct+0,
   after_luminance_error_pct=>$after_lum_pct+0,
-  before_score=>defined($before_score)?$before_score+0:undef,
-  after_score=>defined($after_score)?$after_score+0:undef,
-  suppressed=>$entry->{"suppressed"}
- });
+	  before_score=>defined($before_score)?$before_score+0:undef,
+	  after_score=>defined($after_score)?$after_score+0:undef,
+	  luma_bearing=>$entry->{"luma_bearing"},
+	  sign_crossed=>$entry->{"sign_crossed"},
+	  luma_overshoot=>$entry->{"luma_overshoot"},
+	  best_signature=>$entry->{"best_signature"},
+	  suppressed=>$entry->{"suppressed"}
+	 });
  return $entry;
 }
 
@@ -5413,6 +5541,180 @@ sub record_sdr_low_shadow_bad_rgb_adjustment_family {
  return $entry;
 }
 
+sub sdr_body_rgb_suppression_enabled {
+ my ($config,$step,$target)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(autocal_config_is_touchup($config));
+ return 0 if(autocal_config_is_post_3d_polish($config));
+ return 0 if(autocal_config_is_post_series_adjust($config));
+ return 0 if(autocal_config_is_post_series_revert($config));
+ return 0 if(ref($target) ne "HASH" || !lg_autocal_26_full_ddc_spine_body_anchor($target));
+ my $ire=(ref($target) eq "HASH" && defined($target->{"ire"})) ? ($target->{"ire"}+0) :
+  ((ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef);
+ return 0 if(!defined($ire));
+ return ($ire >= 19.999 && $ire <= 80.0001) ? 1 : 0;
+}
+
+sub sdr_body_rgb_best_signature {
+ my ($arrays,$target)=@_;
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my @parts;
+ foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
+  my $arr=$arrays->{$setting};
+  my $value=(ref($arr) eq "ARRAY" && defined($arr->[$idx])) ? ($arr->[$idx]+0) : 0;
+  push @parts,$setting."=".ddc_value_key($value);
+ }
+ return join("|",@parts);
+}
+
+sub sdr_body_rgb_active_signature {
+ my ($tried,$arrays,$target)=@_;
+ if(ref($tried) eq "HASH" && defined($tried->{"__sdr_body_rgb_best_signature"})) {
+  return $tried->{"__sdr_body_rgb_best_signature"};
+ }
+ return sdr_body_rgb_best_signature($arrays,$target);
+}
+
+sub update_sdr_body_rgb_best_signature {
+ my ($config,$tried,$step,$target,$arrays)=@_;
+ return if(ref($tried) ne "HASH");
+ if(!sdr_body_rgb_suppression_enabled($config,$step,$target)) {
+  delete($tried->{"__sdr_body_rgb_best_signature"});
+  return;
+ }
+ my $signature=sdr_body_rgb_best_signature($arrays,$target);
+ if(defined($signature)) {
+  $tried->{"__sdr_body_rgb_best_signature"}=$signature;
+ } else {
+  delete($tried->{"__sdr_body_rgb_best_signature"});
+ }
+}
+
+sub sdr_body_rgb_family_key {
+ my ($setting,$signature)=@_;
+ return undef if(!defined($setting) || $setting !~ /^(?:whiteBalanceRed|whiteBalanceGreen|whiteBalanceBlue)$/);
+ return undef if(!defined($signature) || $signature eq "");
+ return join("|",$signature,$setting);
+}
+
+sub sdr_body_rgb_entry_suppressed {
+ my ($entry)=@_;
+ return 0 if(ref($entry) ne "HASH");
+ return (($entry->{"count"}||0) >= 2) ? 1 : 0;
+}
+
+sub sdr_body_rgb_family_suppressed {
+ my ($config,$tried,$step,$target,$arrays,$setting,$source)=@_;
+ return 0 if(ref($tried) ne "HASH" || !sdr_body_rgb_suppression_enabled($config,$step,$target));
+ my $signature=sdr_body_rgb_active_signature($tried,$arrays,$target);
+ my $key=sdr_body_rgb_family_key($setting,$signature);
+ return 0 if(!defined($key) || ref($tried->{"__sdr_body_bad_rgb_family"}) ne "HASH");
+ my $entry=$tried->{"__sdr_body_bad_rgb_family"}{$key};
+ return 0 if(!sdr_body_rgb_entry_suppressed($entry));
+ trace_109($step,"sdr_body_family_suppressed",{
+  source=>$source||$entry->{"source"}||"sdr_body_rgb",
+  family_key=>$key,
+  setting=>$setting,
+  best_signature=>$signature,
+  count=>$entry->{"count"}||0,
+  before_delta_e=>$entry->{"before_delta_e"},
+  after_delta_e=>$entry->{"after_delta_e"},
+  before_rgb_spread=>$entry->{"before_rgb_spread"},
+  after_rgb_spread=>$entry->{"after_rgb_spread"},
+  best_delta_e=>$entry->{"best_delta_e"},
+  best_luminance_error_pct=>$entry->{"best_luminance_error_pct"},
+  reason=>"repeated_same_family_rejects_at_small_rgb_spread"
+ });
+ return 1;
+}
+
+sub record_sdr_body_bad_rgb_adjustment_family {
+ my ($config,$tried,$step,$target,$adjustments,$best_arrays,$before,$after,$before_de,$after_de,$before_lum_pct,$after_lum_pct,$before_score,$after_score,$best_de,$best_lum_pct,$source)=@_;
+ return undef if(ref($tried) ne "HASH" || !sdr_body_rgb_suppression_enabled($config,$step,$target));
+ my $adj=rgb_only_adjustment($adjustments);
+ return undef if(ref($adj) ne "HASH");
+ return undef if(ref($before) ne "HASH" || ref($after) ne "HASH");
+ my $signature=sdr_body_rgb_best_signature($best_arrays,$target);
+ return undef if(!defined($signature));
+ my $key=sdr_body_rgb_family_key($adj->{"setting"},$signature);
+ return undef if(!defined($key));
+ my $before_rgb=chroma_error_magnitude(autocal_adjustment_error($before,$step));
+ my $after_rgb=chroma_error_magnitude(autocal_adjustment_error($after,$step));
+ my $near_small_rgb=($before_rgb <= 0.020 || $after_rgb <= 0.020) ? 1 : 0;
+ my $near_low_de=(defined($before_de) && ($before_de+0) <= 2.0) ? 1 : 0;
+ return undef if(!$near_small_rgb && !$near_low_de);
+ my $de_worse=(defined($before_de) && defined($after_de) && ($after_de+0) > ($before_de+0)+0.03) ? 1 : 0;
+ my $score_worse=(defined($before_score) && defined($after_score) && ($after_score+0) > ($before_score+0)+0.05) ? 1 : 0;
+ my $rgb_worse=($after_rgb > $before_rgb+0.0015) ? 1 : 0;
+ my $weak_gain=($after_rgb + 0.0010 >= $before_rgb && !$de_worse && !$score_worse) ? 1 : 0;
+ return undef if(!$de_worse && !$score_worse && !$rgb_worse && !$weak_gain);
+ $tried->{"__sdr_body_bad_rgb_family"}={} if(ref($tried->{"__sdr_body_bad_rgb_family"}) ne "HASH");
+ my $entry=clone_luma_probe_entry(
+  ref($tried->{"__sdr_body_bad_rgb_family"}{$key}) eq "HASH"
+   ? $tried->{"__sdr_body_bad_rgb_family"}{$key}
+   : {}
+ );
+ my $current=defined($adj->{"current"}) ? ($adj->{"current"}+0) : undef;
+ my $next=defined($adj->{"next"}) ? ($adj->{"next"}+0) : undef;
+ $entry->{"count"}=($entry->{"count"}||0)+1;
+ $entry->{"source"}=$source||$adj->{"source"}||"sdr_body_rgb";
+ $entry->{"family_key"}=$key;
+ $entry->{"best_signature"}=$signature;
+ $entry->{"setting"}=$adj->{"setting"};
+ $entry->{"current"}=defined($current) ? $current+0 : undef;
+ $entry->{"next"}=defined($next) ? $next+0 : undef;
+ $entry->{"magnitude"}=abs(($next+0)-($current+0)) if(defined($current) && defined($next));
+ $entry->{"direction"}=(($next-$current) < 0) ? -1 : 1 if(defined($current) && defined($next));
+ $entry->{"before_delta_e"}=defined($before_de) ? $before_de+0 : undef;
+ $entry->{"after_delta_e"}=defined($after_de) ? $after_de+0 : undef;
+ $entry->{"before_luminance_error_pct"}=defined($before_lum_pct) ? $before_lum_pct+0 : undef;
+ $entry->{"after_luminance_error_pct"}=defined($after_lum_pct) ? $after_lum_pct+0 : undef;
+ $entry->{"before_score"}=defined($before_score) ? $before_score+0 : undef;
+ $entry->{"after_score"}=defined($after_score) ? $after_score+0 : undef;
+ $entry->{"best_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+ $entry->{"best_luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct+0 : undef;
+ $entry->{"before_rgb_spread"}=$before_rgb+0;
+ $entry->{"after_rgb_spread"}=$after_rgb+0;
+ $entry->{"de_worse"}=$de_worse ? JSON::PP::true : JSON::PP::false;
+ $entry->{"score_worse"}=$score_worse ? JSON::PP::true : JSON::PP::false;
+ $entry->{"rgb_worse"}=$rgb_worse ? JSON::PP::true : JSON::PP::false;
+ $entry->{"weak_gain"}=$weak_gain ? JSON::PP::true : JSON::PP::false;
+ $entry->{"suppressed"}=sdr_body_rgb_entry_suppressed($entry) ? JSON::PP::true : JSON::PP::false;
+ $tried->{"__sdr_body_bad_rgb_family"}{$key}=clone_luma_probe_entry($entry);
+ trace_109($step,"sdr_body_rgb_bad_move_family",{
+  source=>$entry->{"source"},
+  family_key=>$key,
+  best_signature=>$signature,
+  setting=>$entry->{"setting"},
+  current=>$entry->{"current"},
+  next=>$entry->{"next"},
+  magnitude=>$entry->{"magnitude"},
+  direction=>$entry->{"direction"},
+  count=>$entry->{"count"}||0,
+  before_delta_e=>$entry->{"before_delta_e"},
+  after_delta_e=>$entry->{"after_delta_e"},
+  before_luminance_error_pct=>$entry->{"before_luminance_error_pct"},
+  after_luminance_error_pct=>$entry->{"after_luminance_error_pct"},
+  before_score=>$entry->{"before_score"},
+  after_score=>$entry->{"after_score"},
+  best_delta_e=>$entry->{"best_delta_e"},
+  best_luminance_error_pct=>$entry->{"best_luminance_error_pct"},
+  before_rgb_spread=>$entry->{"before_rgb_spread"},
+  after_rgb_spread=>$entry->{"after_rgb_spread"},
+  de_worse=>$entry->{"de_worse"},
+  score_worse=>$entry->{"score_worse"},
+  rgb_worse=>$entry->{"rgb_worse"},
+  weak_gain=>$entry->{"weak_gain"},
+  suppressed=>$entry->{"suppressed"},
+  adjustments=>trace_adjustments_summary($adjustments)
+ });
+ return $entry;
+}
+
 sub sdr_low_shadow_suppressed_rgb_adjustment {
  my ($config,$tried,$step,$adjustments,$source)=@_;
  return undef if(ref($tried) ne "HASH" || !sdr_low_shadow_rgb_suppression_enabled($config,$step));
@@ -5432,7 +5734,7 @@ sub sdr_low_shadow_suppressed_rgb_adjustment {
 sub copy_autocal_suppression_state {
  my ($from,$to)=@_;
  return if(ref($from) ne "HASH" || ref($to) ne "HASH");
- foreach my $key (qw(__hdr20_body_suppressed_family __bad_luma_family __sdr_low_shadow_bad_rgb_family)) {
+ foreach my $key (qw(__hdr20_body_suppressed_family __bad_luma_family __sdr_low_shadow_bad_rgb_family __sdr_body_bad_rgb_family)) {
   next if(ref($from->{$key}) ne "HASH");
   $to->{$key}={} if(ref($to->{$key}) ne "HASH");
   foreach my $entry_key (keys %{$from->{$key}}) {
@@ -6527,13 +6829,15 @@ sub neutral_luminance_adjustments {
 	  return undef if(!defined($guarded_step));
 	  $planned_step=$guarded_step if($guarded_step < $planned_step);
 	 }
-		 my @magnitudes=($planned_step);
-		 push @magnitudes,0.5 if($planned_step > 0.5);
-		 push @magnitudes,0.25 if($planned_step > 0.25);
-			 if(has_luminance_channel($arrays,$target)) {
-			  my $setting="adjustingLuminance";
-				  my $arr=$arrays->{$setting};
-				  foreach my $mag (@magnitudes) {
+	 my @magnitudes=($planned_step);
+	 push @magnitudes,0.5 if($planned_step > 0.5);
+	 push @magnitudes,0.25 if($planned_step > 0.25);
+		 if(has_luminance_channel($arrays,$target)) {
+		  my $overshoot_retry=luma_overshoot_retry_adjustments($arrays,$target,$luminance_err,$tried,$min_step,$strict_tried,$step,$source||"neutral_luminance",$state);
+		  return $overshoot_retry if($overshoot_retry);
+		  my $setting="adjustingLuminance";
+		  my $arr=$arrays->{$setting};
+		  foreach my $mag (@magnitudes) {
 				   my $current=$arr->[$idx]||0;
 				   my $next=clamp_ddc_value($current+($direction*$mag));
 				   my $seen=$strict_tried ? tried_value_exists($tried,$setting,$next) : repeated_value($tried,$setting,$next);
@@ -8872,6 +9176,7 @@ sub choose_rgb_response_adjustments {
 	  next if($candidate_max < $threshold);
 	  my $candidate_setting=channel_setting($candidate);
 	  my $candidate_direction=($candidate_err > 0) ? -1 : 1;
+	  next if(sdr_body_rgb_family_suppressed($LG_AUTOCAL_CONFIG,$tried,$step,$target,$arrays,$candidate_setting,"rgb_response_model"));
 	  my $candidate_family=hdr20_body_single_rgb_family_name($candidate_setting);
 	  if(
 	   autocal_step_is_hdr20_body($step) &&
@@ -9205,7 +9510,11 @@ sub full_ddc_spine_anchor_adjustments {
  my $setting=channel_setting($ch);
  my $arr=$arrays->{$setting};
  return undef if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
-	 my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+ if(sdr_body_rgb_family_suppressed($config,$tried,$step,$target,$arrays,$setting,"full_ddc_spine_anchor_rgb")) {
+  return [$luma_adj] if(ref($luma_adj) eq "HASH");
+  return undef;
+ }
+ my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
 	 my $cap=1;
 	 my $high_de_initial=(defined($de) && $de > ($target_delta+8.0) && !repeated_value($tried,$setting,$current)) ? 1 : 0;
 	 if(defined($de) && $de > ($target_delta+5.0)) {
@@ -9468,6 +9777,7 @@ sub choose_adjustments {
   my $setting=channel_setting($ch);
   my $arr=$arrays->{$setting};
 	  next if(ref($arr) ne "ARRAY");
+	  next if(sdr_body_rgb_family_suppressed($LG_AUTOCAL_CONFIG,$tried,$step,$target,$arrays,$setting,"main_rgb"));
 	  my $idx=$target->{"index"};
 		  my $current=$arr->[$idx]||0;
 							  my $rgb_step=adjustment_step(abs($err),$de,$stalls,$min_step);
@@ -12943,11 +13253,11 @@ sub committed_state_polish {
 			   if(!$keep_committed_candidate) {
 			    $bad_luma_probe=record_bad_luma_probe_family(
 			     \%tried_values,$target,$adjustments,
-			     $before_de_for_committed_polish,$de,
-			     $before_lum_pct_for_committed_polish,$lum_pct,
-			     $before_score_for_committed_polish,$score,
-			     $read_step,"committed_polish",$state
-			    );
+				     $before_de_for_committed_polish,$de,
+				     $before_lum_pct_for_committed_polish,$lum_pct,
+				     $before_score_for_committed_polish,$score,
+				     $read_step,"committed_polish",$state,$best_arrays
+				    );
 			   }
 			   trace_109($read_step,"committed_polish_best_candidate",{
 			    label=>$label,
@@ -14979,11 +15289,11 @@ eval {
 				   if(!$keep) {
 				    $bad_luma_probe=record_bad_luma_probe_family(
 				     $tried_ref,$target,[$luma_adj],
-				     $before_probe_de,$de,
-				     $before_probe_lum_pct,$lum_pct,
-				     $before_probe_score,$paired_score,
-				     $read_step,"high_end_paired_luma",$state
-				    );
+						     $before_probe_de,$de,
+						     $before_probe_lum_pct,$lum_pct,
+						     $before_probe_score,$paired_score,
+						     $read_step,"high_end_paired_luma",$state,$best_arrays
+						    );
 				   }
 				   trace_109($read_step,$keep ? "high_end_paired_luma_kept" : "high_end_paired_luma_rejected",{
 				    label=>$label,
@@ -15018,6 +15328,7 @@ eval {
 						   my $headroom_105_luma_priority=headroom_105_luma_priority_active($read_step,$arrays,$target,\%tried_values,$lum_err);
 						   my $headroom_105_near_y_cleanup_active=headroom_105_near_y_cleanup_branch_active(\%tried_values,$read_step,$arrays,$target,$lum_err);
 						   my $hdr20_sdr_method=lg_autocal_hdr20_use_sdr_adjustment_method($config,$read_step);
+						   update_sdr_body_rgb_best_signature($config,\%tried_values,$read_step,$target,$best_arrays);
 								   my $adjustments;
 									   if(
 										    autocal_step_is_low_shadow($read_step) &&
@@ -15542,11 +15853,11 @@ eval {
 				    }
 					    my $bad_luma_probe=record_bad_luma_probe_family(
 					     \%tried_values,$target,$adjustments,
-					     $before_de_for_adjustment,$de,
-					     $before_lum_pct_for_adjustment,$lum_pct,
-					     $before_score_for_adjustment,$candidate_score_after,
-					     $read_step,"main",$state
-					    );
+							     $before_de_for_adjustment,$de,
+							     $before_lum_pct_for_adjustment,$lum_pct,
+							     $before_score_for_adjustment,$candidate_score_after,
+							     $read_step,"main",$state,$best_arrays
+							    );
 					    my $bad_hdr20_body_family=record_hdr20_body_bad_adjustment_family(
 					     \%tried_values,$read_step,$adjustments,
 					     $before_lum_pct_for_adjustment,$lum_pct,
@@ -15558,6 +15869,15 @@ eval {
 					     $before_de_for_adjustment,$de,
 					     $before_lum_pct_for_adjustment,$lum_pct,
 					     $before_score_for_adjustment,$candidate_score_after,
+					     "main"
+					    );
+					    my $bad_sdr_body_rgb_family=record_sdr_body_bad_rgb_adjustment_family(
+					     $config,\%tried_values,$read_step,$target,$adjustments,$best_arrays,
+					     $before_adjustment_reading,$reading,
+					     $before_de_for_adjustment,$de,
+					     $before_lum_pct_for_adjustment,$lum_pct,
+					     $before_score_for_adjustment,$candidate_score_after,
+					     $best_de,$best_lum_pct,
 					     "main"
 					    );
 					    my $headroom_105_near_y_working=headroom_105_near_y_cleanup_working_candidate(
@@ -15651,6 +15971,7 @@ eval {
 				     bad_luma_probe=>$bad_luma_probe,
 				     bad_hdr20_body_family=>$bad_hdr20_body_family,
 				     bad_sdr_low_shadow_rgb_family=>$bad_sdr_low_shadow_rgb_family,
+				     bad_sdr_body_rgb_family=>$bad_sdr_body_rgb_family,
 				     bad_headroom_105_family=>$bad_headroom_105_family,
 					     $pair_side_trace_fields->(),
 					     candidate_values=>trace_target_values($arrays,$target),
@@ -16098,11 +16419,11 @@ eval {
 				     }
 					     my $bad_luma_probe=record_bad_luma_probe_family(
 					      \%polish_tried,$target,$adjustments,
-					      $before_de_for_polish,$de,
-					      $before_lum_pct_for_polish,$lum_pct,
-					      $before_score_for_polish,$candidate_score,
-					      $read_step,"fine_tune",$state
-					     );
+							      $before_de_for_polish,$de,
+							      $before_lum_pct_for_polish,$lum_pct,
+							      $before_score_for_polish,$candidate_score,
+							      $read_step,"fine_tune",$state,$best_arrays
+							     );
 					     my $bad_hdr20_body_family=record_hdr20_body_bad_adjustment_family(
 					      \%polish_tried,$read_step,$adjustments,
 					      $before_lum_pct_for_polish,$lum_pct,
