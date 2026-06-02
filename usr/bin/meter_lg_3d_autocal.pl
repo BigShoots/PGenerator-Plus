@@ -50,7 +50,7 @@ sub describe_and_exit {
   ramp_profile_patch_count => 65,
   ramp_drift => "start/end WRGB anchors with time-interpolated 3x3 correction",
   model => "per-luminance-level additive XYZ contributions",
-  neutral_axis => "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path",
+  neutral_axis => "exact diagonal identity after current 1D greyscale path",
   inverse => "per-level native matrix inverse, channel EOTF lookup, clamp, peak normalize",
  });
  exit 0;
@@ -910,7 +910,7 @@ sub model_from_readings {
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
   drift => $drift,
-  neutral_axis_source => "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path",
+  neutral_axis_source => "exact diagonal identity after current 1D greyscale path",
  };
 }
 
@@ -923,9 +923,9 @@ sub generate_lut_cube {
   for(my $g=0;$g<$size;$g++) {
    for(my $b=0;$b<$size;$b++) {
     my $out;
-    my $neutral_identity=neutral_neighborhood_identity_output($r,$g,$b,$size);
-    if($neutral_identity) {
-     $out=$neutral_identity;
+    if($r==$g && $g==$b) {
+     my $pct=100*$r/($size-1);
+     $out=[$pct,$pct,$pct];
     } else {
      my $target=target_xyz_for_node($model,$r,$g,$b,$size);
      $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
@@ -939,22 +939,6 @@ sub generate_lut_cube {
  return (\@u16,\@nodes);
 }
 
-sub neutral_neighborhood_identity_output {
- my ($r,$g,$b,$size)=@_;
- my $min=$r;
- $min=$g if($g < $min);
- $min=$b if($b < $min);
- my $max=$r;
- $max=$g if($g > $max);
- $max=$b if($b > $max);
- return undef if(($max-$min) > 1);
- return [
-  100*$r/($size-1),
-  100*$g/($size-1),
-  100*$b/($size-1),
- ];
-}
-
 sub generate_lut_lg_payload {
  my ($model,$size)=@_;
  $size ||= 33;
@@ -963,9 +947,9 @@ sub generate_lut_lg_payload {
   for(my $g=0;$g<$size;$g++) {
    for(my $r=0;$r<$size;$r++) {
     my $out;
-    my $neutral_identity=neutral_neighborhood_identity_output($r,$g,$b,$size);
-    if($neutral_identity) {
-     $out=$neutral_identity;
+    if($r==$g && $g==$b) {
+     my $pct=100*$r/($size-1);
+     $out=[$pct,$pct,$pct];
     } else {
      my $target=target_xyz_for_node($model,$r,$g,$b,$size);
      $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
