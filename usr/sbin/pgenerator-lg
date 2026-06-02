@@ -1222,10 +1222,11 @@ sub lg_picture_delete_settings_reset (@) {
 }
 
 sub lg_picture_reset_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode)=@_;
+ my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset)=@_;
  $tv_input="" if(!defined($tv_input));
  $fallback_picture_mode="" if(!defined($fallback_picture_mode));
  $signal_mode="" if(!defined($signal_mode));
+ $require_white_balance_reset=$require_white_balance_reset ? 1 : 0;
  $tv_input=lc($tv_input);
  $tv_input="" if($tv_input !~ /^hdmi[1-4](?:_pc)?$/);
  my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
@@ -1529,8 +1530,9 @@ sub lg_picture_reset_workflow (@) {
   ip => $ip,
 	  picture_mode => $active_picture_mode,
 	  tv_input => $tv_input,
-  signal_mode => $signal_mode,
-		  ok => $ok,
+	  signal_mode => $signal_mode,
+	  require_white_balance_reset => &json_bool($require_white_balance_reset),
+	  ok => $ok,
 	  reset_keys_requested => $keys,
 	  reset_keys_succeeded => \@reset_keys_succeeded,
 	  reset_keys_failed => \%reset_key_failed,
@@ -1591,6 +1593,28 @@ sub lg_picture_reset_workflow (@) {
 	   lg_generation => $generation,
 	  });
 	 }
+	 if($require_white_balance_reset && (!$white_balance_reset_ok || !@white_balance_reset_keys_succeeded)) {
+	  return &json_error("LG picture mode reset did not clear white-balance settings. The TV rejected the manual white-balance reset keys.",{
+		   ip => $ip,
+		   active_picture_mode => $active_picture_mode,
+		   require_white_balance_reset => &json_true(),
+		   reset_attempts => \@reset_attempts,
+		   reset_keys_requested => $keys,
+		   reset_keys_succeeded => \@reset_keys_succeeded,
+		   reset_keys_failed => \%reset_key_failed,
+		   basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
+		   panel_light_reset_ok => &json_bool($panel_reset_ok),
+		   panel_light_reset_attempts => \@panel_reset_attempts,
+		   white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+		   white_balance_reset_keys_requested => $white_balance_reset_keys,
+		   white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+		   white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
+		   white_balance_reset_attempts => \@white_balance_reset_attempts,
+		   ddc_attempted => &json_bool($ddc_attempted),
+		   ddc_response => $ddc_result,
+		   lg_generation => $generation,
+	  });
+	 }
  return &json_ok({
   ip => $ip,
   client_key => $auth->{"client_key"},
@@ -1610,6 +1634,7 @@ sub lg_picture_reset_workflow (@) {
 		  builtin_apply_ok => &json_bool($builtin_apply_ok),
 		  builtin_apply_keys => $builtin_apply_keys,
 		  panel_light_reset_ok => &json_bool($panel_reset_ok),
+		  require_white_balance_reset => &json_bool($require_white_balance_reset),
 		  white_balance_reset_ok => &json_bool($white_balance_reset_ok),
 		  white_balance_reset_keys_requested => $white_balance_reset_keys,
 		  white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
@@ -4439,6 +4464,7 @@ sub main (@) {
 	 my $reset_ddc_baseline=$request->{"reset_ddc_baseline"}||$request->{"clear_ddc_baseline"} ? 1 : 0;
 	 my $verify_ddc_upload=$request->{"verify_ddc_upload"} ? 1 : 0;
 	 my $force_ddc_white_balance=$request->{"force_ddc_white_balance"}||$request->{"ddc_white_balance"} ? 1 : 0;
+	 my $require_white_balance_reset=$request->{"require_white_balance_reset"} ? 1 : 0;
  my $picture_mode=$request->{"picture_mode"}||"";
  my $signal_mode=$request->{"signal_mode"}||"";
  my $command=$request->{"command"}||"";
@@ -4461,7 +4487,7 @@ sub main (@) {
 	 } elsif($action eq "picture_set") {
 		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance);
  } elsif($action eq "picture_reset") {
-  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode);
+  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset);
    } elsif($action eq "remote_enter") {
     $result=&lg_remote_enter_workflow($ip,$client_key,$connect_timeout);
  } elsif($action eq "remote_control") {
