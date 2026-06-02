@@ -4695,6 +4695,12 @@ sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask {
    $mask[$idx]=1 if($hdr20_skip->[$idx]);
   }
  }
+ if(!lg_autocal_26_hdr20_seed_enabled($config) &&
+    calibrated_26pt_slot_for_ire($calibrated_slot_mask,99) &&
+    !calibrated_26pt_slot_for_ire($calibrated_slot_mask,90)) {
+  my $top90_idx=ddc_slot_index_for_ire(90);
+  $mask[$top90_idx]=1 if(defined($top90_idx) && $top90_idx < @mask);
+ }
  return \@mask;
 }
 
@@ -7473,7 +7479,7 @@ sub body_luminance_priority_adjustments {
 }
 
 sub full_ddc_spine_seeded_body_luminance_priority_adjustments {
-	 my ($config,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step)=@_;
+	 my ($config,$arrays,$target,$luminance_err,$de,$stalls,$tried,$step,$error)=@_;
 	 return undef if(!lg_autocal_26_full_ddc_spine_enabled($config));
 	 return undef if(ref($step) ne "HASH" || !$step->{"lg_autocal_26_seeded_move_damping"});
 	 return undef if(ref($target) ne "HASH" || lg_autocal_26_full_ddc_spine_body_anchor($target));
@@ -7486,6 +7492,16 @@ sub full_ddc_spine_seeded_body_luminance_priority_adjustments {
  my $threshold=$tol*1.05;
  $threshold=2.0 if($threshold < 2.0);
  return undef if(abs($lum_pct) < $threshold);
+ my $chroma_mag=(ref($error) eq "HASH") ? chroma_error_magnitude($error) : 0;
+ if($chroma_mag >= 0.055 && (!defined($de) || $de > 1.50) && abs($lum_pct) < 8.0) {
+  trace_109($step,"full_ddc_spine_seeded_body_luma_deferred_to_chroma",{
+   delta_e=>defined($de) ? $de+0 : undef,
+   luminance_error_pct=>$lum_pct+0,
+   chroma_error=>$chroma_mag+0,
+   target_values=>trace_target_values($arrays,$target)
+  });
+  return undef;
+ }
  my $ire=(defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
  my $max_step=1;
  $max_step=2 if(abs($lum_pct) >= 10 && $ire >= 15);
@@ -15697,7 +15713,7 @@ eval {
 									    $adjustments=undef if($adjustments && hdr20_sdr_method_luma_close_rgb_preferred($config,$read_step,$err,$de,$lum_pct,$target_delta) && ref(luma_only_adjustment($adjustments)) eq "HASH");
 									   }
 									   if(!$adjustments && !$headroom_105_luma_blocking && !$headroom_105_near_y_cleanup_active) {
-									    $adjustments=full_ddc_spine_seeded_body_luminance_priority_adjustments($config,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step);
+									    $adjustments=full_ddc_spine_seeded_body_luminance_priority_adjustments($config,$arrays,$target,$lum_err,$de,$stalls,\%tried_values,$read_step,$err);
 									    $adjustments=undef if($adjustments && autocal_step_is_hdr20_body($read_step) && !$hdr20_sdr_method && ref(luma_only_adjustment($adjustments)) eq "HASH");
 									    $adjustments=undef if($adjustments && hdr20_sdr_method_luma_close_rgb_preferred($config,$read_step,$err,$de,$lum_pct,$target_delta) && ref(luma_only_adjustment($adjustments)) eq "HASH");
 									   }
