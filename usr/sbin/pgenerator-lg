@@ -854,11 +854,38 @@ sub lg_picture_reset_unique_keys (@) {
   next if(!defined($key) || ref($key));
   $key="$key";
   next if($key eq "" || $key eq "pictureMode");
-  next if($key =~ /^whiteBalance/i);
+  next if($key =~ /^whiteBalance/i || $key =~ /^adjustingLuminance/i);
   next if($seen{$key}++);
   push(@unique,$key);
  }
  return \@unique;
+}
+
+sub lg_picture_reset_white_balance_keys (@) {
+ return [
+  "whiteBalanceMethod",
+  "whiteBalancePoint",
+  "whiteBalanceIre",
+  "whiteBalanceIre10pt",
+  "whiteBalanceCodeValue",
+  "whiteBalanceCodeValue10pt",
+  "whiteBalanceLuminance",
+  "whiteBalanceColorTemperature",
+  "whiteBalanceRed",
+  "whiteBalanceGreen",
+  "whiteBalanceBlue",
+  "whiteBalanceRed10pt",
+  "whiteBalanceGreen10pt",
+  "whiteBalanceBlue10pt",
+  "whiteBalanceRedGain",
+  "whiteBalanceGreenGain",
+  "whiteBalanceBlueGain",
+  "whiteBalanceRedOffset",
+  "whiteBalanceGreenOffset",
+  "whiteBalanceBlueOffset",
+  "adjustingLuminance",
+  "adjustingLuminance10pt",
+ ];
 }
 
 sub lg_picture_signal_suffixes (@) {
@@ -1241,6 +1268,69 @@ sub lg_picture_reset_workflow (@) {
 	  last;
 	 }
 	}
+ my $white_balance_reset_keys=&lg_picture_reset_white_balance_keys();
+ my @white_balance_reset_attempts=();
+ my @white_balance_reset_keys_succeeded=();
+ my %white_balance_reset_key_succeeded=();
+ my %white_balance_reset_keys_failed=();
+ my $white_balance_reset_ok=0;
+ my @white_balance_payloads=();
+ foreach my $dimension (@dimensions) {
+  my $payload={
+   category => "picture",
+   keys => $white_balance_reset_keys,
+  };
+  $payload->{"dimension"}=$dimension if(ref($dimension) eq "HASH" && %{$dimension});
+  push(@white_balance_payloads,{ path => "settings/resetSystemSettings", payload => $payload, luna => 0 });
+  push(@white_balance_payloads,{ path => "com.webos.settingsservice/resetSystemSettings", payload => $payload, luna => 1 }) if(ref($dimension) eq "HASH" && %{$dimension});
+ }
+ foreach my $category (&lg_picture_scoped_categories($tv_input,$active_picture_mode,$signal_mode)) {
+  my $payload={
+   category => $category,
+   keys => $white_balance_reset_keys,
+  };
+  push(@white_balance_payloads,{ path => "settings/resetSystemSettings", payload => $payload, luna => 0 });
+  push(@white_balance_payloads,{ path => "com.webos.settingsservice/resetSystemSettings", payload => $payload, luna => 1 });
+ }
+ my $try_white_balance_reset=sub {
+  my ($attempt,$payload,$key)=@_;
+  my $use_luna=$attempt->{"luna"} ? 1 : 0;
+  my $path=$attempt->{"path"}||"settings/resetSystemSettings";
+  my $response=$use_luna
+   ? &lg_luna_request($session,"reset_picture_white_balance_luna",$path,$payload,$connect_timeout + 3)
+   : &lg_request($session,"reset_picture_white_balance",$path,$payload,$connect_timeout + 3);
+  my ($failed,$message)=&response_is_app_failure($response);
+  my $entry={ path => $path, payload => $payload, response => $response, failed => &json_bool($failed), message => $message };
+  $entry->{"key"}=$key if(defined($key) && $key ne "");
+  push(@white_balance_reset_attempts,$entry);
+  return ($failed ? 0 : 1,$message,$response);
+ };
+ foreach my $attempt (@white_balance_payloads) {
+  last if(@white_balance_reset_keys_succeeded == @{$white_balance_reset_keys});
+  my $payload=(ref($attempt->{"payload"}) eq "HASH") ? $attempt->{"payload"} : {};
+  my ($bulk_ok,$bulk_message,$bulk_response)=$try_white_balance_reset->($attempt,$payload,"");
+  if($bulk_ok && ref($bulk_response) eq "HASH") {
+   $white_balance_reset_ok=1;
+   foreach my $key (@{$white_balance_reset_keys}) {
+    next if($white_balance_reset_key_succeeded{$key}++);
+    push(@white_balance_reset_keys_succeeded,$key);
+   }
+   last;
+  }
+  next if(($bulk_message||"") !~ /(?:doesn'?t support the key|not support|undefined|-1000|Application error|invalid key|no result|key\(s\))/i);
+  foreach my $key (@{$white_balance_reset_keys}) {
+   next if($white_balance_reset_key_succeeded{$key});
+   my $single_payload={ %{$payload}, keys => [$key] };
+   my ($single_ok,$single_message,$single_response)=$try_white_balance_reset->($attempt,$single_payload,$key);
+   if($single_ok && ref($single_response) eq "HASH") {
+    $white_balance_reset_ok=1;
+    $white_balance_reset_key_succeeded{$key}=1;
+    push(@white_balance_reset_keys_succeeded,$key);
+   } else {
+    $white_balance_reset_keys_failed{$key}=$single_message||$bulk_message||"LG TV rejected this reset key." if(!exists($white_balance_reset_keys_failed{$key}));
+   }
+  }
+ }
  my @panel_reset_attempts=();
  my $panel_reset_ok=0;
  my $try_panel_reset=sub {
@@ -1337,7 +1427,8 @@ sub lg_picture_reset_workflow (@) {
 	 my ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$ddc_settings,$connect_timeout + 4,0,0,1,0,$generation);
 	 &lg_ddc_clear_state($ip,$active_picture_mode);
 	 my $picture_settings_after=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
-	 my @readback_keys=("pictureMode",@{&lg_picture_reset_default_keys()});
+	 my %readback_seen=();
+	 my @readback_keys=grep { !$readback_seen{$_}++ } ("pictureMode",@{&lg_picture_reset_default_keys()},@{$white_balance_reset_keys});
 	 my $readback=&lg_request($session,"get_picture_settings_after_reset","settings/getSystemSettings",{
 	  category => "picture",
 	  keys => \@readback_keys,
@@ -1394,6 +1485,11 @@ sub lg_picture_reset_workflow (@) {
 	  builtin_apply_keys => $builtin_apply_keys,
 	  builtin_apply_attempts => $builtin_apply_attempts,
 	  attempts => \@reset_attempts,
+	  white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+	  white_balance_reset_keys_requested => $white_balance_reset_keys,
+	  white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+	  white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
+	  white_balance_reset_attempts => \@white_balance_reset_attempts,
 	  basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
 	  panel_light_reset_ok => &json_bool($panel_reset_ok),
   panel_light_attempts => \@panel_reset_attempts,
@@ -1423,6 +1519,11 @@ sub lg_picture_reset_workflow (@) {
 	   basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
 	   panel_light_reset_ok => &json_bool($panel_reset_ok),
 	   panel_light_reset_attempts => \@panel_reset_attempts,
+	   white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+	   white_balance_reset_keys_requested => $white_balance_reset_keys,
+	   white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+	   white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
+	   white_balance_reset_attempts => \@white_balance_reset_attempts,
 	   ddc_attempted => &json_bool($ddc_attempted),
 	   ddc_response => $ddc_result,
 	   lg_generation => $generation,
@@ -1447,6 +1548,10 @@ sub lg_picture_reset_workflow (@) {
 		  builtin_apply_ok => &json_bool($builtin_apply_ok),
 		  builtin_apply_keys => $builtin_apply_keys,
 		  panel_light_reset_ok => &json_bool($panel_reset_ok),
+		  white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+		  white_balance_reset_keys_requested => $white_balance_reset_keys,
+		  white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+		  white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
 		  clean_picture_mode_reset => &json_bool($basic_picture_reset_ok),
   ddc_attempted => &json_bool($ddc_attempted),
   ddc_response => $ddc_result,
