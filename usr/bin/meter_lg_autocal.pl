@@ -9969,6 +9969,12 @@ sub set_picture_values {
 	   $state->{"ddc_1d_lut"}=JSON::PP::true if($response->{"ddc_1d_lut"});
 	   $state->{"ddc_upload_verified"}=$response->{"ddc_upload_verified"} ? JSON::PP::true : JSON::PP::false
 	    if(exists($response->{"ddc_upload_verified"}) || $verify_ddc_upload);
+	   $state->{"ddc_upload_verify_contract"}=$response->{"ddc_upload_verify_contract"}||""
+	    if(exists($response->{"ddc_upload_verify_contract"}) || $verify_ddc_upload);
+	   $state->{"ddc_upload_readback_unavailable"}=$response->{"ddc_upload_readback_unavailable"} ? JSON::PP::true : JSON::PP::false
+	    if(exists($response->{"ddc_upload_readback_unavailable"}) || $verify_ddc_upload);
+	   $state->{"ddc_readback_unavailable"}=$response->{"ddc_readback_unavailable"} ? JSON::PP::true : JSON::PP::false
+	    if(exists($response->{"ddc_readback_unavailable"}) || $verify_ddc_upload);
 	   $state->{"ddc_picture_write_count"}=($state->{"ddc_picture_write_count"}||0)+1;
 	  }
 	  set_state_calibration_mode($state,$response->{"calibration_mode"} ? 1 : 0,$response->{"calibration_picture_mode"}||$picture_mode||($picture->{"pictureMode"}||"")) if(exists($response->{"calibration_mode"}));
@@ -10033,16 +10039,18 @@ sub commit_final_1d_lut {
  $state->{"phase"}="writing";
  $state->{"message"}="Uploading final 1024-point LG 1D LUT";
  write_state($state);
-			 my ($next_picture,$error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,0);
-			 return ($picture,$error,0) if($error);
-			 sync_state_picture($state,$next_picture,$picture_mode);
-			 end_calibration_mode($picture_mode);
-			 set_state_calibration_mode($state,0,"");
-			 $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
-			 $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
-			 $state->{"message"}="Final 1D LUT uploaded, verified, and calibration mode ended";
-		 write_state($state);
-		 return ($next_picture,undef,1);
+	 my ($next_picture,$error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,0);
+	 return ($picture,$error,0) if($error);
+	 sync_state_picture($state,$next_picture,$picture_mode);
+	 end_calibration_mode($picture_mode);
+	 set_state_calibration_mode($state,0,"");
+	 $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
+	 $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
+	 $state->{"final_1d_lut_upload_verify_contract"}=$state->{"ddc_upload_verify_contract"}||"";
+	 $state->{"final_1d_lut_readback_unavailable"}=$state->{"ddc_upload_readback_unavailable"} ? JSON::PP::true : JSON::PP::false;
+	 $state->{"message"}="Final 1D LUT uploaded, verified, and calibration mode ended";
+	 write_state($state);
+	 return ($next_picture,undef,1);
 	}
 
 sub park_black_for_settle {
