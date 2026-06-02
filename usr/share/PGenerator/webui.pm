@@ -17893,10 +17893,20 @@ function meterGreyTvTarget(step){
 	  idx=METER_LG_GREY_DDC_PATCH_SLOTS_22.findIndex(v=>Math.abs(v-ire)<0.001);
 	  if(idx >= 0) patchStop=METER_LG_GREY_DDC_PATCH_SLOTS_22[idx];
 	 }
+	 if(idx < 0 && Math.abs(ire)<0.001) {
+	  return {
+	   key:'readonly:0',
+	   method:'22',
+	   ire:'0',
+	   index:-1,
+	   label:'0%',
+	   patch_ire:'0',
+	   read_only:true,
+	   force_ddc:!!autoCal26
+	  };
+	 }
 	 if(idx < 0) {
-	  const reason=Math.abs(ire)<0.001
-	   ? '0% is read for black level and contrast ratio. LG white-balance controls start at 2.5%.'
-   : 'This greyscale step does not map to an LG white-balance control.';
+	  const reason='This greyscale step does not map to an LG white-balance control.';
   return {unsupported:true,key:'unsupported:'+meterFormatPercentValue(ire),reason:reason};
  }
  const stop=stops[idx];
@@ -17909,6 +17919,10 @@ function meterGreyTvTarget(step){
 	  patch_ire:patchStop==null?null:meterFormatPercentValue(patchStop),
 	  force_ddc:!!autoCal26
 	 };
+}
+
+function meterGreyTvTargetAdjustable(target){
+ return !!(target&&!target.unsupported&&!target.read_only);
 }
 
 function meterGreyTvSettingKey(channel){
@@ -18188,12 +18202,12 @@ function meterRenderGreyTvControls(reading){
   return;
  }
  const state=meterLgGreyState||{status:'idle',picture:null,message:'',needsRepair:false};
- if((state.status==='loading'||state.status==='idle')&&!state.picture){
+ if((state.status==='loading'||state.status==='idle')&&!state.picture&&!target.read_only){
   host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">Loading...</div>';
   if(meta) meta.textContent='LG '+target.label;
   return;
  }
- if(state.status==='error'&&!state.picture){
+ if(state.status==='error'&&!state.picture&&!target.read_only){
   host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:#f7b0b0;padding:8px">'+(state.message||'Unable to read LG white-balance values.')+'</div>';
   if(meta) meta.textContent=state.needsRepair?'LG pairing required':'LG read failed';
   return;
@@ -18205,7 +18219,8 @@ function meterRenderGreyTvControls(reading){
 	 const busy=meterGreyTvBusyActive();
 	 const disabled=busy||state.status!=='ok';
  const ddcReadOnly=!!(
-  (target&&target.force_ddc) ||
+ (target&&target.force_ddc) ||
+  (target&&target.read_only) ||
   meterAutoCalRunning ||
   state.source==='autocal' ||
   (meterCurrentPatchStep&&(meterCurrentPatchStep.ddc_slot_locked||meterCurrentPatchStep.autocal_slot_locked||String(meterCurrentPatchStep.series_mode||'')==='lg-autocal-26'))
@@ -18250,7 +18265,7 @@ async function meterLgGreySyncForCurrentStep(forceRefresh){
   meterRenderGreyTvControls(meterFindReadingForStep(meterCurrentPatchStep));
   return;
  }
- if(!target||target.unsupported){
+ if(!target||target.unsupported||target.read_only){
   meterLgGreyLoadToken++;
   meterRenderGreyTvControls(meterFindReadingForStep(meterCurrentPatchStep));
   return;
@@ -18317,6 +18332,7 @@ async function meterGreyAdjustCurrentStepChannel(channel,deltaStep){
 		 const targetStep=meterClonePatchStep(selectedStep);
 		 const target=meterGreyTvTarget(targetStep);
 		 if(!target||target.unsupported){toast('Select an LG greyscale point before changing white balance.',true);return false;}
+		 if(target.read_only){toast('0% is read-only for LG greyscale; select a manually adjustable point first.',true);return false;}
 		 if(target.force_ddc){toast('LG 26pt AutoCal DDC offsets are read-only. Start AutoCal to adjust them.',true);return false;}
 		 if(!meterGreyTvControlsActive()){toast('Connect the LG TV before changing white balance.',true);return false;}
 				 const channelLabel=meterGreyTvChannelLabel(key);
@@ -21294,7 +21310,7 @@ function meterFullAutoCalTouchupTargetY(){
 	  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
 	  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
 	  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
-	  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported);
+	  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
 	  if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
 	  const whiteStep=meterAutoCalWhiteStep();
 	  if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
@@ -21454,7 +21470,7 @@ function meterFullAutoCalTouchupTargetY(){
  meterActiveSeriesKey='greyscale-26';
  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
- const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported);
+ const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
 	 if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available for Magic Wand failsafe');
 	 const whiteStep=meterAutoCalWhiteStep();
 	 if(!whiteStep) throw new Error('100% white is required before Magic Wand failsafe can start');
@@ -21574,7 +21590,7 @@ function meterFullAutoCalTouchupTargetY(){
   if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
   meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
-  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported);
+  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
   if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
   const whiteStep=meterAutoCalWhiteStep();
   if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
@@ -21725,7 +21741,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
   if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
   meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
-  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported);
+  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
   if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
   const whiteStep=meterAutoCalWhiteStep();
   if(!whiteStep) throw new Error('100% white is required before LG Auto Cal can start');
@@ -22114,7 +22130,7 @@ async function meterStartAutoCal(options){
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
-	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported);
+	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
  if(!adjustable.length) return fail('No LG-adjustable greyscale points are available');
  const whiteStep=meterAutoCalWhiteStep();
  if(!whiteStep) return fail('100% white is required before LG Auto Cal can start');
