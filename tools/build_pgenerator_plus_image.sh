@@ -18,7 +18,7 @@ PI5_TARGET_DESCRIPTION="Raspberry Pi 5 Bookworm armhf"
 PI5_OUTPUT_SUFFIX="pi5_bookworm_armhf"
 PI5_BOOT_LABEL="BOOT_PG"
 PI5_ROOT_LABEL="/_PG"
-PI5_REQUIRED_BOOT_KERNEL="kernel_2712.img"
+PI5_REQUIRED_BOOT_KERNELS="kernel_2712.img kernel8.img"
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -121,7 +121,7 @@ load_target_manifest() {
  [[ -n "$PI5_OUTPUT_SUFFIX" ]] || die "Pi 5 target manifest is missing PI5_OUTPUT_SUFFIX"
  [[ -n "$PI5_BOOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_BOOT_LABEL"
  [[ -n "$PI5_ROOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_ROOT_LABEL"
- [[ -n "$PI5_REQUIRED_BOOT_KERNEL" ]] || die "Pi 5 target manifest is missing PI5_REQUIRED_BOOT_KERNEL"
+ [[ -n "$PI5_REQUIRED_BOOT_KERNELS" ]] || die "Pi 5 target manifest is missing PI5_REQUIRED_BOOT_KERNELS"
  log "Loaded target manifest: $PI5_TARGET_MANIFEST ($PI5_TARGET_DESCRIPTION)"
 }
 
@@ -371,7 +371,9 @@ check_pi5_bookworm_base_image() {
  [[ -f "$ROOT_MOUNT/etc/group" ]] || problems+=("missing /etc/group")
  [[ -f "$BOOT_MOUNT/config.txt" ]] || problems+=("missing boot config.txt")
  [[ -f "$BOOT_MOUNT/cmdline.txt" ]] || problems+=("missing boot cmdline.txt")
- [[ -f "$BOOT_MOUNT/$PI5_REQUIRED_BOOT_KERNEL" ]] || problems+=("missing boot $PI5_REQUIRED_BOOT_KERNEL")
+ if ! pi5_required_boot_kernel_present; then
+  problems+=("missing one of boot kernels: $PI5_REQUIRED_BOOT_KERNELS")
+ fi
 
  if [[ -f "$os_release" ]]; then
   if ! grep -Eq '^VERSION_CODENAME=bookworm$|^VERSION=.*bookworm' "$os_release"; then
@@ -393,6 +395,17 @@ check_pi5_bookworm_base_image() {
   printf '  - %s\n' "${problems[@]}" >&2
   die "Use a Raspberry Pi OS Bookworm Lite armhf base image or rerun with --skip-base-check"
  fi
+}
+
+pi5_required_boot_kernel_present() {
+ local kernel
+
+ for kernel in $PI5_REQUIRED_BOOT_KERNELS; do
+  if [[ -f "$BOOT_MOUNT/$kernel" ]]; then
+   return 0
+  fi
+ done
+ return 1
 }
 
 overlay_tree() {
