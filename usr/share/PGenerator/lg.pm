@@ -1352,6 +1352,7 @@ sub webui_lg_picture_reset (@) {
 	  client_key => $client_key,
 	  picture_mode => $payload->{"picture_mode"}||"",
 	  signal_mode => $payload->{"signal_mode"}||"",
+	  require_white_balance_reset => $payload->{"require_white_balance_reset"} ? &lg_json_true() : &lg_json_false(),
 	  tv_input => &lg_input_from_cec(),
 	  connect_timeout => 5,
 	 });

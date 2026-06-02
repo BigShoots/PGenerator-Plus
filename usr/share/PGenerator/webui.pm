@@ -19622,6 +19622,7 @@ async function meterAutoCalResetPictureMode(){
     body:JSON.stringify({
      picture_mode:pictureMode,
      signal_mode:hdrWorkflow?'hdr10':'sdr',
+     require_white_balance_reset:true,
      helper_timeout:170
     }),
     _quiet:true,
