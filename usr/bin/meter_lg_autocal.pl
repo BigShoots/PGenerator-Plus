@@ -75,7 +75,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error sdr_top_99_luma_cleanup low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -9591,6 +9591,40 @@ sub sdr_top_99_high_error_rgb_adjustment {
  return \@out;
 }
 
+sub sdr_top_99_luma_cleanup_adjustments {
+ my ($config,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,$luminance_err,$source)=@_;
+ return undef if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return undef if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
+ return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}) || abs(($step->{"ire"}+0)-99) >= 0.001);
+ return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
+ return undef if(!has_luminance_channel($arrays,$target) || !defined($luminance_err));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $lum_pct=($luminance_err+0)*100;
+ return undef if($lum_pct >= -2.25);
+ return undef if(defined($de) && $de <= ($target_delta+0.30));
+ my $chroma=chroma_error_magnitude($error);
+ return undef if($chroma > 0.090 && defined($de) && $de > 5.0);
+ my $abs_lum=abs($lum_pct);
+ my $max_step=($abs_lum >= 6.0) ? 1.0 : (($abs_lum >= 3.0) ? 0.75 : 0.50);
+ my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,0,$step,$source||"sdr_top_99_luma_cleanup",$LG_AUTOCAL_STATE);
+ return undef if(ref($adjustments) ne "ARRAY");
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  $adj->{"sdr_top_99_luma_cleanup"}=1;
+  $adj->{"remaining_error"}=$abs_lum+0;
+  $adj->{"source"}=$source||"sdr_top_99_luma_cleanup";
+ }
+ trace_109($step,"sdr_top_99_luma_cleanup_plan",{
+  delta_e=>defined($de) ? $de+0 : undef,
+  luminance_error_pct=>$lum_pct+0,
+  chroma=>$chroma+0,
+  max_step=>$max_step+0,
+  adjustments=>trace_adjustments_summary($adjustments),
+  target_values=>trace_target_values($arrays,$target)
+ });
+ return $adjustments;
+}
+
 sub body_final_micro_threshold {
  my ($de,$target_delta)=@_;
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
@@ -9677,6 +9711,8 @@ sub choose_rgb_response_adjustments {
 	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
 	 my $sdr_top_99_high=sdr_top_99_high_error_rgb_adjustment($LG_AUTOCAL_CONFIG,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,0.25,8.0,"sdr_top_99_high_error_response",$luminance_err);
 	 return $sdr_top_99_high if($sdr_top_99_high);
+	 my $sdr_top_99_luma=sdr_top_99_luma_cleanup_adjustments($LG_AUTOCAL_CONFIG,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,$luminance_err,"sdr_top_99_luma_cleanup_response");
+	 return $sdr_top_99_luma if($sdr_top_99_luma);
 	 my $response_lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;
 	 my $hdr20_sdr_close_rgb=hdr20_sdr_method_luma_close_rgb_preferred($LG_AUTOCAL_CONFIG,$step,$error,$de,$response_lum_pct,$target_delta);
 	 if(lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step) &&
@@ -10417,6 +10453,8 @@ sub choose_micro_adjustments {
 						 my $hdr20_sdr_chroma_active=hdr20_sdr_method_chroma_active($LG_AUTOCAL_CONFIG,$step,$error,$de,$target_delta);
 						 my $chroma_mag=chroma_error_magnitude($error);
 						 my $hdr20_sdr_close_rgb=hdr20_sdr_method_luma_close_rgb_preferred($LG_AUTOCAL_CONFIG,$step,$error,$de,$lum_pct,$target_delta);
+						 my $sdr_top_99_luma=sdr_top_99_luma_cleanup_adjustments($LG_AUTOCAL_CONFIG,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,$luminance_err,"sdr_top_99_luma_cleanup_fine");
+						 return $sdr_top_99_luma if($sdr_top_99_luma);
 						 if(!$hdr20_sdr_close_rgb && $hdr20_sdr_method && autocal_step_is_hdr20_body($step) && has_luminance_channel($arrays,$target) && abs($lum_pct) > ($luma_tol*1.10) && $chroma_mag < 0.050) {
 						  my $luma_max_step=abs($luminance_err) >= 0.20 ? 6 : (abs($luminance_err) >= 0.08 ? 4 : $max_step);
 						  my $neutral=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,$min_micro_step,$luma_max_step,$strict_tried,$step,"fine_hdr20_sdr_luminance_cleanup");
@@ -16817,6 +16855,7 @@ eval {
 					      $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$best_de,$polish_stalls,\%polish_tried,$read_step,$pair_lum_pct,1);
 					     }
 					    }
+					    $adjustments=sdr_top_99_luma_cleanup_adjustments($config,$err,$arrays,$target,\%polish_tried,$best_de,$read_step,$target_delta,$polish_stalls,$lum_err,"sdr_top_99_luma_cleanup_fine_tune") if(!$adjustments);
 					    $adjustments=sdr_top_99_high_error_rgb_adjustment($config,$err,$arrays,$target,\%polish_tried,$best_de,$read_step,$target_delta,$polish_stalls,0.25,4.0,"sdr_top_99_high_error_fine_tune",$lum_err) if(!$adjustments);
 						    $adjustments=choose_micro_adjustments($err,$arrays,$target,$hdr20_planner_lum_err,\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step,$target_delta) if(!$adjustments);
 			    if($adjustments) {
