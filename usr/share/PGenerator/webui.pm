@@ -20446,6 +20446,22 @@ function meterFullAutoCalMarkCompletionHandled(status){
  }catch(e){}
 }
 
+async function meterFullAutoCalMarkCurrentCompletionStatusesHandled(){
+ const candidates=[];
+ if(meterAutoCalLatestStatus) candidates.push(meterAutoCalLatestStatus);
+ for(const endpoint of ['/api/meter/lg-autocal/status','/api/meter/lg-3d-autocal/status']){
+  try{
+   const status=await fetchJSON(endpoint,{_quiet:true,_timeoutMs:5000});
+   if(status) candidates.push(status);
+  }catch(e){}
+ }
+ candidates.forEach(status=>{
+  if(status&&status.status==='complete'&&status.full_workflow&&meterFullAutoCalStatusMatchesRun(status)){
+   meterFullAutoCalMarkCompletionHandled(status);
+  }
+ });
+}
+
 function meterFullAutoCalClearCompletionHandled(){
  try{ localStorage.removeItem(METER_FULL_AUTOCAL_COMPLETE_KEY); }catch(e){}
 }
@@ -21028,6 +21044,8 @@ async function meterFullAutoCalGeneratePostReport(){
   const downloaded=await meterFullAutoCalDownloadReport(filename);
   await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
   await meterFullAutoCalArchiveReportData(downloaded?'report-downloaded':'report-built',{filename:filename,downloaded:!!downloaded});
+  await meterFullAutoCalMarkCurrentCompletionStatusesHandled();
+  meterClearAutoCalStatusPollingForReport();
   meterFullAutoCalResetState(true);
   meterFullAutoCalClearReportData();
   meterAutoCalClearCompleteAutoClose();
