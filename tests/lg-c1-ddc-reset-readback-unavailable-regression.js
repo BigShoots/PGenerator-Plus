@@ -29,12 +29,29 @@ const fallback = bodyOf("lg_1d_write_accepted_readback_unavailable_ok");
 assert(fallback.includes('return 0 if(ref($verify_info->{"lut"}) eq "ARRAY");'), "1D fallback must not accept non-empty mismatched LUT readbacks");
 assert(fallback.includes('return 0 if(ref($expected_lut) ne "ARRAY");'), "fallback must require an expected LUT");
 assert(
-  fallback.includes('return 0 if(!$verify_info->{"readback_empty"});'),
-  "1D fallback should only accept empty/unavailable readback"
+  fallback.includes("lg_1d_lut_readback_unavailable_reason($verify_info)"),
+  "1D fallback should be driven by the observed unreadable readback contract"
+);
+
+const lut1dUnavailable = bodyOf("lg_1d_lut_readback_unavailable_reason");
+assert(
+  lut1dUnavailable.includes('"empty-lut-readback"') &&
+    lut1dUnavailable.includes('"failed-getter"') &&
+    lut1dUnavailable.includes('"unreadable-lut-payload"'),
+  "1D readback-unavailable reason should cover empty payload, failed getter, and unreadable payload"
+);
+assert(
+  lut1dUnavailable.includes("no-file-path-from-tvservice") &&
+    lut1dUnavailable.includes("no\\s+file\\s+path\\s+from\\s+tvservice"),
+  "1D readback-unavailable reason should classify tvservice no-file-path getter failures"
+);
+assert(
+  lut1dUnavailable.indexOf('return "failed-getter";') < lut1dUnavailable.indexOf('return "empty-lut-readback"'),
+  "1D failed getters should not be flattened into generic empty payload diagnostics"
 );
 assert(
   fallback.includes("lg_generation_write_accepted_readback_unavailable_ok"),
-  "1D fallback should use the shared capability predicate"
+  "1D fallback should require the legacy/DDC-only capability gate in addition to an unavailable getter"
 );
 
 const ddcSet = bodyOf("lg_ddc_1d_white_balance_set");
@@ -53,6 +70,7 @@ assert(
   ddcSet.includes('ddc_reset_readback_unavailable => &json_bool($reset_readback_unavailable)') &&
     ddcSet.includes('ddc_upload_readback_unavailable => &json_bool($upload_readback_unavailable)') &&
     ddcSet.includes('ddc_readback_unavailable => &json_bool($ddc_readback_unavailable)') &&
+    ddcSet.includes("ddc_readback_unavailable_reason => $ddc_readback_unavailable_reason") &&
     ddcSet.includes("ddc_verify_mismatch => $ddc_readback_unavailable ? $ddc_verify_mismatch : undef"),
   "1D helper response should include explicit fallback diagnostics"
 );
@@ -115,6 +133,7 @@ assert(
 assert(
   workflow.includes('ddc_upload_readback_unavailable => &json_bool($ddc_result->{"ddc_upload_readback_unavailable"})') &&
     workflow.includes('ddc_readback_unavailable => &json_bool($ddc_result->{"ddc_readback_unavailable"})') &&
+    workflow.includes('ddc_readback_unavailable_reason => $ddc_result->{"ddc_readback_unavailable_reason"}||""') &&
   workflow.includes('ddc_verify_mismatch => $ddc_result->{"ddc_verify_mismatch"}||undef') &&
     workflow.includes('ddc_linear_unity_diagnostics => $ddc_result->{"ddc_linear_unity_diagnostics"}||undef'),
   "outer picture-set result should preserve fallback diagnostics"
