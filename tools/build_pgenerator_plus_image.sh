@@ -12,6 +12,7 @@ MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof i1d3ccss oeminst dispread dispcal)
 ARGYLL_RUNTIME_DIR=""
+TARGET="pi4-biasi"
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -45,6 +46,12 @@ Required:
 Optional:
   --output PATH          Output image path.
                          Default: build/PGenerator_Plus_v<version>_from_biasi.img
+  --target NAME          Image target to prepare.
+                         pi4-biasi             Existing behavior; requires a
+                                               compatible Biasi/PGenerator base.
+                         pi5-bookworm-armhf    Prepare a Raspberry Pi OS
+                                               Bookworm Lite armhf base for
+                                               Raspberry Pi 5.
   --force                Overwrite the output image if it already exists.
   --skip-base-check      Skip compatibility checks on the mounted rootfs.
   --keep-workdir         Keep the temporary mount/work directory for inspection.
@@ -56,8 +63,10 @@ Notes:
   - This script does not build a full OS from scratch.
   - It copies a user-supplied base image, mounts its Linux root partition,
     and overlays this repository's runtime filesystem onto it.
-  - The base image should already be a compatible BiasiLinux/PGenerator image
-    with the expected distro dependencies and account setup.
+  - The default target expects a compatible BiasiLinux/PGenerator image with
+    the expected distro dependencies and account setup.
+  - The pi5-bookworm-armhf target expects a Raspberry Pi OS Bookworm Lite
+    armhf base image and seeds the PGenerator account/compatibility state.
   - In the current source tree only `spotread` is bundled. Use
     --argyll-runtime-dir to add the headless Argyll runtime slice used for
     on-device TI3 -> CCSS conversion. `ccxxmake` is required; matching helper
@@ -134,6 +143,11 @@ parse_args() {
     OUTPUT_IMAGE="$2"
     shift 2
     ;;
+   --target)
+    [[ $# -ge 2 ]] || die "Missing value for --target"
+    TARGET="$2"
+    shift 2
+    ;;
    --force)
     FORCE_OUTPUT=1
     shift
@@ -162,6 +176,13 @@ parse_args() {
  done
 
  [[ -n "$BASE_IMAGE" ]] || die "--base-image is required"
+ case "$TARGET" in
+  pi4-biasi|pi5-bookworm-armhf)
+   ;;
+  *)
+   die "Unknown --target: $TARGET"
+   ;;
+ esac
 }
 
 prepare_paths() {
@@ -175,7 +196,14 @@ prepare_paths() {
  fi
 
  if [[ -z "$OUTPUT_IMAGE" ]]; then
-  OUTPUT_IMAGE="$REPO_ROOT/build/PGenerator_Plus_v${version}_from_biasi.img"
+  case "$TARGET" in
+   pi5-bookworm-armhf)
+    OUTPUT_IMAGE="$REPO_ROOT/build/PGenerator_Plus_v${version}_pi5_bookworm_armhf.img"
+    ;;
+   *)
+    OUTPUT_IMAGE="$REPO_ROOT/build/PGenerator_Plus_v${version}_from_biasi.img"
+    ;;
+  esac
  fi
  OUTPUT_IMAGE="$(abs_target_path "$OUTPUT_IMAGE")"
 
@@ -275,6 +303,11 @@ check_base_image() {
   return
  fi
 
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  check_pi5_bookworm_base_image
+  return
+ fi
+
  local problems=()
 
  [[ -x "$ROOT_MOUNT/usr/bin/perl" ]] || problems+=("missing /usr/bin/perl")
@@ -292,6 +325,24 @@ check_base_image() {
   printf 'Base image compatibility check failed:\n' >&2
   printf '  - %s\n' "${problems[@]}" >&2
   die "Use a compatible BiasiLinux/PGenerator image or rerun with --skip-base-check"
+ fi
+}
+
+check_pi5_bookworm_base_image() {
+ local problems=()
+
+ [[ -x "$ROOT_MOUNT/usr/bin/perl" ]] || problems+=("missing /usr/bin/perl")
+ [[ -x "$ROOT_MOUNT/usr/bin/sudo" ]] || problems+=("missing /usr/bin/sudo")
+ [[ -d "$ROOT_MOUNT/etc/init.d" ]] || problems+=("missing /etc/init.d")
+ [[ -f "$ROOT_MOUNT/etc/passwd" ]] || problems+=("missing /etc/passwd")
+ [[ -f "$ROOT_MOUNT/etc/group" ]] || problems+=("missing /etc/group")
+ [[ -f "$BOOT_MOUNT/config.txt" ]] || problems+=("missing boot config.txt")
+ [[ -f "$BOOT_MOUNT/cmdline.txt" ]] || problems+=("missing boot cmdline.txt")
+
+ if [[ ${#problems[@]} -gt 0 ]]; then
+  printf 'Pi 5 Bookworm base compatibility check failed:\n' >&2
+  printf '  - %s\n' "${problems[@]}" >&2
+  die "Use a Raspberry Pi OS Bookworm Lite armhf base image or rerun with --skip-base-check"
  fi
 }
 
@@ -354,6 +405,144 @@ reset_runtime_state() {
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/running/tmp"
  find "$ROOT_MOUNT/var/lib/PGenerator/running" -mindepth 1 -maxdepth 1 ! -name 'tmp' -exec rm -rf {} + 2>/dev/null || true
  : > "$ROOT_MOUNT/var/lib/PGenerator/operations.txt"
+}
+
+ensure_config_line() {
+ local file="$1"
+ local key="$2"
+ local value="$3"
+
+ touch "$file"
+ if grep -Eq "^[[:space:]]*${key}=" "$file"; then
+  sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$file"
+ else
+  printf '%s=%s\n' "$key" "$value" >> "$file"
+ fi
+}
+
+next_free_id() {
+ local file="$1"
+ local field="$2"
+ local id
+
+ for id in $(seq 995 -1 900); do
+  if ! awk -F: -v field="$field" -v id="$id" '$field == id { found=1 } END { exit found ? 0 : 1 }' "$file"; then
+   echo "$id"
+   return
+  fi
+ done
+ die "Could not find an unused system id in $file"
+}
+
+ensure_pi5_pgenerator_identity() {
+ local passwd_file="$ROOT_MOUNT/etc/passwd"
+ local group_file="$ROOT_MOUNT/etc/group"
+ local shadow_file="$ROOT_MOUNT/etc/shadow"
+ local gid uid
+
+ if grep -q '^pgenerator:' "$group_file"; then
+  gid="$(awk -F: '$1=="pgenerator" {print $3; exit}' "$group_file")"
+ else
+  gid="$(next_free_id "$group_file" 3)"
+  printf 'pgenerator:x:%s:\n' "$gid" >> "$group_file"
+ fi
+
+ if grep -q '^pgenerator:' "$passwd_file"; then
+  uid="$(awk -F: '$1=="pgenerator" {print $3; exit}' "$passwd_file")"
+ else
+  uid="$(next_free_id "$passwd_file" 3)"
+  printf 'pgenerator:x:%s:%s:PGenerator service:/var/lib/PGenerator:/usr/sbin/nologin\n' "$uid" "$gid" >> "$passwd_file"
+ fi
+
+ if [[ -f "$shadow_file" ]] && ! grep -q '^pgenerator:' "$shadow_file"; then
+  printf 'pgenerator:*:19700:0:99999:7:::\n' >> "$shadow_file"
+ fi
+}
+
+install_pi5_compat_script() {
+ local rel="$1"
+ local body="$2"
+ local dst="$ROOT_MOUNT/$rel"
+
+ mkdir -p "$(dirname "$dst")"
+ printf '%s\n' "$body" > "$dst"
+ chown root:root "$dst" 2>/dev/null || true
+ chmod 0755 "$dst"
+}
+
+configure_pi5_bookworm_root() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ log "Preparing Raspberry Pi 5 Bookworm armhf rootfs compatibility"
+ ensure_pi5_pgenerator_identity
+
+ mkdir -p "$ROOT_MOUNT/etc/BiasiLinux" "$ROOT_MOUNT/var/lib/BiasiLinux" "$ROOT_MOUNT/boot/loader"
+ touch "$ROOT_MOUNT/etc/BiasiLinux/packages.conf"
+ touch "$ROOT_MOUNT/etc/BiasiLinux/boot_device.conf"
+ touch "$ROOT_MOUNT/var/lib/BiasiLinux/PGenerator"
+ touch "$ROOT_MOUNT/var/lib/BiasiLinux/linux"
+ printf 'DISTRO="Raspberry Pi OS Bookworm"\nIMAGE_TARGET="pi5-bookworm-armhf"\n' > "$ROOT_MOUNT/etc/BiasiLinux/system_info"
+
+ mkdir -p "$ROOT_MOUNT/boot/firmware"
+ ln -sfn /boot/firmware "$ROOT_MOUNT/boot/loader/boot_dir"
+
+ install_pi5_compat_script "usr/bin/pkg" '#!/bin/sh
+exit 0'
+ install_pi5_compat_script "usr/bin/rcset" '#!/bin/sh
+exit 0'
+ install_pi5_compat_script "usr/bin/bootloader" '#!/bin/sh
+# Bookworm mounts the firmware partition at /boot/firmware. PGenerator writes
+# config.txt through /boot/loader/boot_dir, which is a symlink to that mount.
+sync
+exit 0'
+}
+
+configure_pi5_bookworm_boot() {
+ local config_file="$BOOT_MOUNT/config.txt"
+ local cmdline_file="$BOOT_MOUNT/cmdline.txt"
+ local cmdline
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ [[ -f "$config_file" ]] || die "Boot partition is missing config.txt"
+ [[ -f "$cmdline_file" ]] || die "Boot partition is missing cmdline.txt"
+
+ log "Applying Raspberry Pi 5 Bookworm boot defaults"
+ ensure_config_line "$config_file" "arm_64bit" "1"
+ if [[ -f "$BOOT_MOUNT/kernel_2712.img" ]]; then
+  ensure_config_line "$config_file" "kernel" "kernel_2712.img"
+ else
+  log "WARNING: kernel_2712.img was not found on the boot partition"
+ fi
+ if ! grep -Eq '^[[:space:]]*dtoverlay=vc4-kms-v3d(,.*)?[[:space:]]*$' "$config_file"; then
+  printf '%s\n' "dtoverlay=vc4-kms-v3d" >> "$config_file"
+ fi
+ sed -i -E '/^[[:space:]]*(dtoverlay=vc4-fkms-v3d|hdmi_enable_4kp60=)/d' "$config_file"
+
+ cmdline="$(tr -d '\n' < "$cmdline_file")"
+ for token in quiet splash plymouth.ignore-serial-consoles; do
+  cmdline=" ${cmdline} "
+  cmdline="${cmdline// $token / }"
+  cmdline="${cmdline#" "}"
+  cmdline="${cmdline%" "}"
+ done
+ grep -qw 'loglevel=1' <<<"$cmdline" || cmdline="$cmdline loglevel=1"
+ printf '%s\n' "$cmdline" > "$cmdline_file"
+}
+
+label_pi5_partitions() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ if command -v fatlabel >/dev/null 2>&1; then
+  fatlabel "$BOOT_PARTITION" BOOT_PG || log "WARNING: could not set boot partition label to BOOT_PG"
+ else
+  log "WARNING: fatlabel not installed; boot partition label was not changed to BOOT_PG"
+ fi
+
+ if command -v e2label >/dev/null 2>&1; then
+  e2label "$ROOT_PARTITION" /_PG || log "WARNING: could not set root partition label to /_PG"
+ else
+  log "WARNING: e2label not installed; root partition label was not changed to /_PG"
+ fi
 }
 
 ensure_boot_ramdisk_size() {
@@ -626,9 +815,12 @@ main() {
  mount_root_partition
  mount_boot_partition
  check_base_image
- overlay_tree
+  overlay_tree
  stage_argyll_runtime
  reset_runtime_state
+ configure_pi5_bookworm_root
+ configure_pi5_bookworm_boot
+ label_pi5_partitions
  ensure_boot_ramdisk_size
  patch_boot_initramfs_rootwait
  fix_permissions
