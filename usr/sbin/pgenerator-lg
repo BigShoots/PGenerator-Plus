@@ -1865,12 +1865,35 @@ sub lg_generation_write_accepted_readback_unavailable_ok (@) {
  return 0;
 }
 
+sub lg_1d_lut_readback_unavailable_reason (@) {
+ my $verify_info=shift;
+ return "" if(ref($verify_info) ne "HASH");
+ return "" if(ref($verify_info->{"lut"}) eq "ARRAY");
+ my $response=(ref($verify_info->{"response"}) eq "HASH") ? $verify_info->{"response"} : {};
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ my ($failed,$message)=&response_is_app_failure($response);
+ if($verify_info->{"failed"} || $failed) {
+  my $detail=join(" ",grep { defined($_) && $_ ne "" } (
+   $verify_info->{"message"},
+   $message,
+   $response->{"error"},
+   $payload->{"errorMessage"},
+   $payload->{"errorText"},
+  ));
+  return "no-file-path-from-tvservice" if($detail =~ /no\s+file\s+path\s+from\s+tvservice/i);
+  return "failed-getter";
+ }
+ my $encoded=$payload->{"data"}||"";
+ return "empty-lut-readback" if($verify_info->{"readback_empty"} || $encoded eq "");
+ return "unreadable-lut-payload";
+}
+
 sub lg_1d_write_accepted_readback_unavailable_ok (@) {
  my ($generation,$verify_info,$expected_lut)=@_;
  return 0 if(ref($expected_lut) ne "ARRAY");
  return 0 if(ref($verify_info) ne "HASH");
  return 0 if(ref($verify_info->{"lut"}) eq "ARRAY");
- return 0 if(!$verify_info->{"readback_empty"});
+ return 0 if(&lg_1d_lut_readback_unavailable_reason($verify_info) eq "");
  return &lg_generation_write_accepted_readback_unavailable_ok($generation);
 }
 
@@ -3232,6 +3255,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		 my $reset_readback_unavailable=0;
 		 my $upload_readback_unavailable=0;
 		 my $ddc_readback_unavailable=0;
+		 my $ddc_readback_unavailable_reason="";
 		 my $ddc_verify_mismatch=undef;
 		 my $reset_linear_diagnostics=undef;
 		 if($reset_ddc_baseline || $verify_ddc_upload) {
@@ -3261,6 +3285,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   $upload_verified=1;
 		  }
 		  if(!$upload_verified && ($reset_ddc_baseline || $verify_ddc_upload) && &lg_1d_write_accepted_readback_unavailable_ok($generation,$verify_info,$lut)) {
+		   $ddc_readback_unavailable_reason=&lg_1d_lut_readback_unavailable_reason($verify_info)||"readback-unavailable";
 		   $ddc_verify_mismatch=&lg_lut_mismatch_summary($verify_lut,$lut);
 		   $reset_linear_diagnostics=&lg_lut_linear_unity_diagnostics($verify_lut);
 		   $reset_readback_contract="write-accepted-readback-unavailable" if($reset_ddc_baseline);
@@ -3317,6 +3342,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 			  ddc_upload_verify_contract => $upload_readback_contract,
 			  ddc_upload_readback_unavailable => &json_bool($upload_readback_unavailable),
 			  ddc_readback_unavailable => &json_bool($ddc_readback_unavailable),
+			  ddc_readback_unavailable_reason => $ddc_readback_unavailable_reason,
 			  ddc_verify_mismatch => $ddc_readback_unavailable ? $ddc_verify_mismatch : undef,
 			  ddc_linear_unity_diagnostics => $reset_readback_unavailable ? $reset_linear_diagnostics : undef,
 			  calibration_mode => &json_bool($keep_calibration_mode),
@@ -3465,6 +3491,7 @@ sub lg_picture_set_workflow (@) {
 				    ddc_upload_verify_contract => $ddc_result->{"ddc_upload_verify_contract"}||"",
 				    ddc_upload_readback_unavailable => &json_bool($ddc_result->{"ddc_upload_readback_unavailable"}),
 				    ddc_readback_unavailable => &json_bool($ddc_result->{"ddc_readback_unavailable"}),
+				    ddc_readback_unavailable_reason => $ddc_result->{"ddc_readback_unavailable_reason"}||"",
 				    ddc_verify_mismatch => $ddc_result->{"ddc_verify_mismatch"}||undef,
 					    calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
 			    calibration_mode_ensured => &json_bool($ddc_result->{"calibration_mode_ensured"}),
@@ -3488,6 +3515,7 @@ sub lg_picture_set_workflow (@) {
 		   ddc_upload_verify_contract => $ddc_result->{"ddc_upload_verify_contract"}||"",
 		   ddc_upload_readback_unavailable => &json_bool($ddc_result->{"ddc_upload_readback_unavailable"}),
 		   ddc_readback_unavailable => &json_bool($ddc_result->{"ddc_readback_unavailable"}),
+		   ddc_readback_unavailable_reason => $ddc_result->{"ddc_readback_unavailable_reason"}||"",
 		   ddc_verify_mismatch => $ddc_result->{"ddc_verify_mismatch"}||undef,
 		   ddc_linear_unity_diagnostics => $ddc_result->{"ddc_linear_unity_diagnostics"}||undef,
 		   calibration_mode => &json_bool($keep_calibration_mode),
