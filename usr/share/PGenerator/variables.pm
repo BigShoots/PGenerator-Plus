@@ -58,11 +58,13 @@ $wpa_passphrase="/usr/bin/wpa_passphrase";
 $ip="/sbin/ip";
 $hcitool="/usr/bin/hcitool";
 $vcgencmd="/opt/vc/bin/vcgencmd";
+$vcgencmd="/usr/bin/vcgencmd" if(-x "/usr/bin/vcgencmd");
 $tar="/bin/tar";
 $file_command="/usr/bin/file";
 $setsid="/usr/bin/setsid";
 $unzip="/usr/bin/unzip";
 $tvservice="/opt/vc/bin/tvservice";
+$tvservice="/usr/bin/tvservice" if(-x "/usr/bin/tvservice");
 $modetest="/usr/bin/modetest -M vc4";
 $edidparser="/usr/bin/edid-decode";
 $init_hdmi_command="$tvservice -e";
@@ -82,6 +84,7 @@ $identify="identify -ping -format '%w %h'";
 $boot_loader_bin="/usr/bin/bootloader";
 $bootloader_config_file="config.txt";
 $bootloader_file="/boot/loader/boot_dir/$bootloader_config_file";
+$bootloader_file="/boot/firmware/$bootloader_config_file" if(!-f $bootloader_file && -f "/boot/firmware/$bootloader_config_file");
 
 $pg_cmd_env="PG_CMD";
 
