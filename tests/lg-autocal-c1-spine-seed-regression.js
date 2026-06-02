@@ -108,6 +108,24 @@ assert(
   'retired 99% body blend should stay retired; 99% now uses local 80% offsets instead of 105% shape'
 );
 
+const high99Source = sliceBetween(
+  'sub sdr_top_99_high_error_rgb_adjustment',
+  'sub body_final_micro_threshold'
+);
+assert(
+  high99Source.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
+    high99Source.includes('abs(($step->{"ire"}+0)-99) >= 0.001') &&
+    high99Source.includes('my $lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;') &&
+    high99Source.includes('if(defined($lum_pct) && $lum_pct < -10.0 && has_luminance_channel($arrays,$target))') &&
+    high99Source.includes('my $luma_step=abs($lum_pct) >= 18.0 ? 6.0 : (abs($lum_pct) >= 14.0 ? 4.0 : 3.0);') &&
+    high99Source.includes('my $luma_next=clamp_ddc_value($luma_current+$luma_step);') &&
+    high99Source.includes('source=>"sdr_top_99_high_error_luma"') &&
+    high99Source.includes('luma_coupled=>$luma_added ? JSON::PP::true : JSON::PP::false') &&
+    source.includes('sdr_top_99_high_error_rgb_adjustment($LG_AUTOCAL_CONFIG,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,0.25,8.0,"sdr_top_99_high_error_response",$luminance_err)') &&
+    source.includes('sdr_top_99_high_error_rgb_adjustment($config,$err,$arrays,$target,\\%polish_tried,$best_de,$read_step,$target_delta,$polish_stalls,0.25,4.0,"sdr_top_99_high_error_fine_tune",$lum_err)'),
+  'high-error SDR 99% with low luminance should choose a coupled RGB + positive adjustingLuminance move, not RGB-only'
+);
+
 const lowShadowEndpointSource = sliceBetween(
   'sub apply_sdr_low_shadow_endpoint_seed_2_3',
   'sub apply_sdr_low_shadow_local_spine_preseed'
