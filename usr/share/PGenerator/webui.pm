@@ -19615,7 +19615,7 @@ async function meterAutoCalResetPictureMode(){
   hdrCalmanReset=await meterAutoCalHdrCalmanReset(pictureMode);
  }
  let response=null;
- let lastMessage='Unable to reset LG DDC.';
+ let lastMessage='Unable to clear LG picture mode calibration state.';
  for(let attempt=1;attempt<=3;attempt++){
   meterAutoCalSetOverlay(true,{current_name:'Performing LG picture mode reset...',message:'Clearing DDC calibration data before Auto Cal'+(attempt>1?' (retry '+attempt+'/3)':'')});
   try{
@@ -19650,13 +19650,13 @@ async function meterAutoCalResetPictureMode(){
   if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
  }
  if(!response||response.status!=='ok'){
-  throw new Error(lastMessage||'Unable to reset LG DDC.');
+  throw new Error(lastMessage||'Unable to clear LG picture mode calibration state.');
  }
  if(response.ddc_baseline_reset!==true||response.ddc_1d_lut!==true){
-  throw new Error('LG DDC reset did not confirm a 1D LUT baseline reset.');
+  throw new Error('LG picture mode reset did not confirm a 1D LUT baseline reset.');
  }
  if(response.ddc_reset_verified!==true){
-  throw new Error('LG DDC reset did not verify against the TV 1D LUT readback.');
+  throw new Error('LG picture mode reset did not verify against the TV 1D LUT readback.');
  }
  response.picture_mode_reset=pictureModeReset;
  if(hdrCalmanReset) response.hdr_calman_reset=hdrCalmanReset;
