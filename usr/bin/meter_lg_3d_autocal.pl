@@ -1342,17 +1342,35 @@ eval {
    $state->{"phase"}="upload";
    $state->{"current_name"}="Uploading LG 3D LUT";
    $state->{"message"}="Writing generated ".signal_mode_label($config->{"signal_mode"})." ".target_gamut_label($config->{"target_gamut"})." 3D LUT";
-   write_state($state);
-   my $upload=api_json("POST","/api/lg/3d-lut/upload",{
-   picture_mode => $config->{"picture_mode"}||"",
-   payload_path => $export->{"payload_path"},
+   $state->{"upload_status"}="requesting";
+   $state->{"upload_started_at"}=int(time()*1000);
+   $state->{"upload_request"}={
+    picture_mode => $config->{"picture_mode"}||"",
+    payload_path => $export->{"payload_path"},
     upload_command => $probe->{"upload_command"}||"",
     get_command => $probe->{"get_command"}||"",
     helper_timeout => 220,
-   },240);
+    api_timeout => 240,
+   };
+   $state->{"upload_supported"}=json_true();
+   log_line("3D LUT upload request start: payload=".($export->{"payload_path"}||"").", upload=".($probe->{"upload_command"}||"").", get=".($probe->{"get_command"}||""));
+   write_state($state);
+   my $upload=api_json("POST","/api/lg/3d-lut/upload",$state->{"upload_request"},240);
    $state->{"upload"}=$upload;
+   $state->{"upload_completed_at"}=int(time()*1000);
+   $state->{"upload_status"}=(ref($upload) eq "HASH" && ($upload->{"status"}||"") ne "") ? ($upload->{"status"}||"") : "invalid-response";
+   $state->{"upload_message"}=(ref($upload) eq "HASH") ? ($upload->{"message"}||"") : "";
    $state->{"upload_supported"}=(ref($upload) eq "HASH" && $upload->{"status"} eq "ok") ? json_true() : json_false();
    $state->{"upload_verified"}=(ref($upload) eq "HASH" && $upload->{"upload_verified"}) ? json_true() : json_false();
+   $state->{"upload_verify_contract"}=(ref($upload) eq "HASH") ? ($upload->{"upload_verify_contract"}||"") : "";
+   $state->{"upload_readback_unavailable"}=(ref($upload) eq "HASH" && $upload->{"readback_unavailable"}) ? json_true() : json_false();
+   $state->{"upload_readback_unavailable_reason"}=(ref($upload) eq "HASH") ? ($upload->{"readback_unavailable_reason"}||"") : "";
+   my $upload_message=$state->{"upload_message"}||"";
+   $state->{"upload_api_timeout"}=($upload_message=~/Web UI API timed out/i) ? json_true() : json_false();
+   $state->{"upload_helper_timeout"}=($upload_message=~/did not finish .* within \d+s|timed out/i && $upload_message!~/Web UI API timed out/i) ? json_true() : json_false();
+   $state->{"upload_json_error"}=($upload_message=~/Invalid Web UI API response|LG helper execution failed/i) ? json_true() : json_false();
+   log_line("3D LUT upload response: status=".($state->{"upload_status"}||"").", verified=".($state->{"upload_verified"}?1:0).", contract=".($state->{"upload_verify_contract"}||"").", readback_unavailable=".($state->{"upload_readback_unavailable"}?1:0).", reason=".($state->{"upload_readback_unavailable_reason"}||"").", message=".$upload_message);
+   write_state($state);
   } else {
    $state->{"upload_supported"}=json_false();
    $state->{"message"}="3D LUT upload probe did not verify; export kept";
