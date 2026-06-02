@@ -86,8 +86,10 @@ assert(
   "3D readback-unavailable reason should cover C1 tvservice no-file-path readback errors"
 );
 assert(
-  lut3dUnavailable.includes('"empty-lut-readback"'),
-  "3D readback-unavailable reason should still cover empty payload readbacks"
+  lut3dUnavailable.includes('"empty-lut-readback"') &&
+    lut3dUnavailable.includes('"failed-getter"') &&
+    lut3dUnavailable.includes('"unreadable-lut-payload"'),
+  "3D readback-unavailable reason should cover empty payload, failed getter, and unreadable payload"
 );
 
 const lut3dFallback = bodyOf("lg_3d_write_accepted_readback_unavailable_ok");
@@ -96,9 +98,14 @@ assert(
   "3D fallback must not accept non-empty mismatched LUT readbacks"
 );
 assert(
-  lut3dFallback.includes("lg_3d_lut_readback_unavailable_reason($read_response)") &&
-    lut3dFallback.includes("lg_generation_write_accepted_readback_unavailable_ok"),
-  "3D fallback should be limited to unavailable readbacks on capable generations"
+  lut3dFallback.includes('return 0 if(ref($expected_lut) ne "ARRAY");') &&
+    lut3dFallback.includes("lg_3d_lut_readback_unavailable_reason($read_response)") &&
+    lut3dFallback.includes("return 1;"),
+  "3D fallback should accept write-accepted/readback-unavailable without requiring model-name metadata"
+);
+assert(
+  !lut3dFallback.includes("lg_generation_write_accepted_readback_unavailable_ok"),
+  "3D fallback should not depend on generation metadata when the getter is observably unavailable"
 );
 
 const upload3d = bodyOf("lg_3d_lut_upload_workflow");
@@ -114,11 +121,36 @@ assert(
     upload3d.includes("readback_unavailable => &json_bool($selected->{\"readback_unavailable\"})"),
   "3D upload response should expose fallback diagnostics"
 );
+assert(
+  upload3d.includes('diag_log_append("3d_lut_upload:start"') &&
+    upload3d.includes('diag_log_append("3d_lut_upload:attempt"') &&
+    upload3d.includes('diag_log_append("3d_lut_upload:ok"') &&
+    upload3d.includes('diag_log_append("3d_lut_upload:failure"'),
+  "3D upload should leave compact helper breadcrumbs for start, attempts, success, and failure"
+);
 
 const reset3d = bodyOf("lg_3d_lut_reset_workflow");
 assert(
   reset3d.includes('"LG 3D LUT reset write accepted; readback unavailable on this generation."'),
   "3D reset should preserve the fallback contract in its message"
+);
+
+const worker3d = fs.readFileSync("usr/bin/meter_lg_3d_autocal.pl", "utf8");
+assert(
+  worker3d.includes('$state->{"upload_started_at"}') &&
+    worker3d.includes('$state->{"upload_request"}') &&
+    worker3d.includes('$state->{"upload_completed_at"}') &&
+    worker3d.includes('$state->{"upload_status"}') &&
+    worker3d.includes('$state->{"upload_api_timeout"}') &&
+    worker3d.includes('$state->{"upload_helper_timeout"}') &&
+    worker3d.includes('$state->{"upload_json_error"}'),
+  "3D worker should persist upload request/result markers that distinguish worker death from returned helper failures"
+);
+assert(
+  worker3d.indexOf('$state->{"upload_started_at"}') < worker3d.indexOf('api_json("POST","/api/lg/3d-lut/upload"') &&
+    worker3d.indexOf('$state->{"upload"}=$upload;') > worker3d.indexOf('api_json("POST","/api/lg/3d-lut/upload"') &&
+    worker3d.indexOf('write_state($state);', worker3d.indexOf('$state->{"upload_json_error"}')) > worker3d.indexOf('$state->{"upload"}=$upload;'),
+  "3D worker should write upload-start state before the call and upload-result state immediately after the call"
 );
 
 const workflow = bodyOf("lg_picture_set_workflow");
