@@ -100,7 +100,9 @@ require_commands() {
    missing+=("e2label")
   fi
   if ! command -v fatlabel >/dev/null 2>&1 && ! command -v dosfslabel >/dev/null 2>&1; then
-   missing+=("fatlabel or dosfslabel")
+   if ! command -v perl >/dev/null 2>&1; then
+    missing+=("fatlabel, dosfslabel, or perl")
+   fi
   fi
  fi
  if [[ ${#missing[@]} -gt 0 ]]; then
@@ -586,7 +588,7 @@ label_pi5_partitions() {
  elif command -v dosfslabel >/dev/null 2>&1; then
   dosfslabel "$BOOT_PARTITION" "$PI5_BOOT_LABEL" || die "Could not set boot partition label to $PI5_BOOT_LABEL"
  else
-  die "fatlabel/dosfslabel not installed; boot partition label was not changed to $PI5_BOOT_LABEL"
+  set_fat_volume_label_with_perl "$BOOT_PARTITION" "$PI5_BOOT_LABEL"
  fi
 
  if command -v e2label >/dev/null 2>&1; then
@@ -594,6 +596,110 @@ label_pi5_partitions() {
  else
   die "e2label not installed; root partition label was not changed to $PI5_ROOT_LABEL"
  fi
+}
+
+set_fat_volume_label_with_perl() {
+ local device="$1"
+ local label="$2"
+
+ perl - "$device" "$label" <<'PERL'
+use strict;
+use warnings;
+
+my ($device, $label) = @ARGV;
+die "missing FAT device\n" if !defined $device || $device eq "";
+die "missing FAT label\n" if !defined $label || $label eq "";
+
+$label = uc($label);
+$label =~ s/[^A-Z0-9_ -]/_/g;
+$label = substr($label, 0, 11);
+$label = sprintf("%-11s", $label);
+
+open(my $fh, "+<", $device) or die "open $device: $!\n";
+binmode($fh);
+read_exact($fh, my $boot, 512, 0);
+
+my $bps = le16(substr($boot, 11, 2));
+my $spc = ord(substr($boot, 13, 1));
+my $reserved = le16(substr($boot, 14, 2));
+my $fats = ord(substr($boot, 16, 1));
+my $root_entries = le16(substr($boot, 17, 2));
+my $fat16_sectors = le16(substr($boot, 22, 2));
+my $fat32_sectors = le32(substr($boot, 36, 4));
+my $fat_sectors = $fat16_sectors || $fat32_sectors;
+
+die "unsupported FAT BPB in $device\n" if $bps <= 0 || $spc <= 0 || $reserved <= 0 || $fats <= 0 || $fat_sectors <= 0;
+
+my $boot_label_offset = $root_entries ? 43 : 71;
+write_at($fh, $boot_label_offset, $label);
+
+if (!$root_entries) {
+  my $backup_sector = le16(substr($boot, 50, 2));
+  write_at($fh, ($backup_sector * $bps) + $boot_label_offset, $label) if $backup_sector > 0;
+}
+
+my ($root_offset, $root_len);
+if ($root_entries) {
+  $root_offset = ($reserved + ($fats * $fat_sectors)) * $bps;
+  $root_len = $root_entries * 32;
+} else {
+  my $root_cluster = le32(substr($boot, 44, 4));
+  my $data_offset = ($reserved + ($fats * $fat_sectors)) * $bps;
+  my $cluster_size = $spc * $bps;
+  die "invalid FAT32 root cluster in $device\n" if $root_cluster < 2;
+  $root_offset = $data_offset + (($root_cluster - 2) * $cluster_size);
+  $root_len = $cluster_size;
+}
+
+read_exact($fh, my $root, $root_len, $root_offset);
+my $slot = -1;
+for (my $off = 0; $off + 32 <= length($root); $off += 32) {
+  my $first = ord(substr($root, $off, 1));
+  my $attr = ord(substr($root, $off + 11, 1));
+  if ($first != 0x00 && $first != 0xe5 && $attr == 0x08) {
+    $slot = $off;
+    last;
+  }
+}
+if ($slot < 0) {
+  for (my $off = 0; $off + 32 <= length($root); $off += 32) {
+    my $first = ord(substr($root, $off, 1));
+    if ($first == 0x00 || $first == 0xe5) {
+      $slot = $off;
+      last;
+    }
+  }
+}
+die "no root directory slot available for FAT volume label\n" if $slot < 0;
+
+my $entry = $label . chr(0x08) . ("\0" x 20);
+write_at($fh, $root_offset + $slot, $entry);
+close($fh) or die "close $device: $!\n";
+
+sub le16 {
+  return unpack("v", $_[0]);
+}
+
+sub le32 {
+  return unpack("V", $_[0]);
+}
+
+sub read_exact {
+  my ($fh, undef, $len, $offset) = @_;
+  seek($fh, $offset, 0) or die "seek $offset: $!\n";
+  my $buf = "";
+  my $got = read($fh, $buf, $len);
+  die "short read at $offset\n" if !defined $got || $got != $len;
+  $_[1] = $buf;
+}
+
+sub write_at {
+  my ($fh, $offset, $data) = @_;
+  seek($fh, $offset, 0) or die "seek $offset: $!\n";
+  my $written = print {$fh} $data;
+  die "write at $offset failed: $!\n" if !$written;
+}
+PERL
 }
 
 ensure_boot_ramdisk_size() {
