@@ -9512,7 +9512,7 @@ sub furthest_rgb_error_channel {
 }
 
 sub sdr_top_99_high_error_rgb_adjustment {
- my ($config,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,$min_step,$max_step,$source)=@_;
+ my ($config,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,$min_step,$max_step,$source,$luminance_err)=@_;
  return undef if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
  return undef if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
  return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}) || abs(($step->{"ire"}+0)-99) >= 0.001);
@@ -9537,7 +9537,7 @@ sub sdr_top_99_high_error_rgb_adjustment {
  my ($next,$damped)=next_untried_value($current,$direction*$step_size,$tried,$setting,$min_step,0);
  return undef if(!defined($next) || abs($next-$current) < 0.0001);
  my $actual_delta=$next-$current;
- my $out=[{
+ my @out=({
   channel=>$ch,
   setting=>$setting,
   current=>$current,
@@ -9547,9 +9547,36 @@ sub sdr_top_99_high_error_rgb_adjustment {
   sdr_top_99_high_error=>1,
   remaining_error=>$max_err+0,
   source=>$source||"sdr_top_99_high_error_rgb"
- }];
+ });
+ my $lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;
+ my $luma_added=0;
+ if(defined($lum_pct) && $lum_pct < -10.0 && has_luminance_channel($arrays,$target)) {
+  my $luma_arr=$arrays->{"adjustingLuminance"};
+  if(ref($luma_arr) eq "ARRAY" && $idx < @{$luma_arr}) {
+   my $luma_current=defined($luma_arr->[$idx]) ? ($luma_arr->[$idx]+0) : 0;
+   my $luma_step=abs($lum_pct) >= 18.0 ? 6.0 : (abs($lum_pct) >= 14.0 ? 4.0 : 3.0);
+   my $luma_next=clamp_ddc_value($luma_current+$luma_step);
+   if(abs($luma_next-$luma_current) >= 0.0001 &&
+      !tried_value_exists($tried,"adjustingLuminance",$luma_next) &&
+      !luma_probe_family_suppressed($tried,$target,$luma_current,$luma_next,$step,"sdr_top_99_high_error_luma",$LG_AUTOCAL_STATE)) {
+    push @out,{
+     channel=>"lum",
+     setting=>"adjustingLuminance",
+     current=>$luma_current,
+     next=>$luma_next,
+     delta=>$luma_next-$luma_current,
+     neutral_luminance=>1,
+     sdr_top_99_high_error=>1,
+     remaining_error=>abs($lum_pct)+0,
+     source=>"sdr_top_99_high_error_luma"
+    };
+    $luma_added=1;
+   }
+  }
+ }
  trace_109($step,"sdr_top_99_high_error_rgb_plan",{
   delta_e=>defined($de) ? $de+0 : undef,
+  luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
   rgb_error=>$error,
   channel=>$ch,
   setting=>$setting,
@@ -9557,9 +9584,11 @@ sub sdr_top_99_high_error_rgb_adjustment {
   next=>$next+0,
   delta=>$actual_delta+0,
   max_step=>$max_step+0,
+  luma_coupled=>$luma_added ? JSON::PP::true : JSON::PP::false,
+  adjustments=>trace_adjustments_summary(\@out),
   target_values=>trace_target_values($arrays,$target)
  });
- return $out;
+ return \@out;
 }
 
 sub body_final_micro_threshold {
@@ -9646,7 +9675,7 @@ sub choose_rgb_response_adjustments {
 	 return undef if(autocal_step_is_fast_headroom($step) && !$headroom_105_body);
 	 return undef if(headroom_105_luma_blocking_active($step,$arrays,$target,$tried,$luminance_err));
 	 return undef if(ref($error) ne "HASH" || ref($arrays) ne "HASH" || ref($target) ne "HASH");
-	 my $sdr_top_99_high=sdr_top_99_high_error_rgb_adjustment($LG_AUTOCAL_CONFIG,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,0.25,8.0,"sdr_top_99_high_error_response");
+	 my $sdr_top_99_high=sdr_top_99_high_error_rgb_adjustment($LG_AUTOCAL_CONFIG,$error,$arrays,$target,$tried,$de,$step,$target_delta,$stalls,0.25,8.0,"sdr_top_99_high_error_response",$luminance_err);
 	 return $sdr_top_99_high if($sdr_top_99_high);
 	 my $response_lum_pct=defined($luminance_err) ? (($luminance_err+0)*100) : undef;
 	 my $hdr20_sdr_close_rgb=hdr20_sdr_method_luma_close_rgb_preferred($LG_AUTOCAL_CONFIG,$step,$error,$de,$response_lum_pct,$target_delta);
@@ -16788,7 +16817,7 @@ eval {
 					      $adjustments=legal_white_pair_luminance_priority_adjustments($arrays,$target,$lum_err,$best_de,$polish_stalls,\%polish_tried,$read_step,$pair_lum_pct,1);
 					     }
 					    }
-					    $adjustments=sdr_top_99_high_error_rgb_adjustment($config,$err,$arrays,$target,\%polish_tried,$best_de,$read_step,$target_delta,$polish_stalls,0.25,4.0,"sdr_top_99_high_error_fine_tune") if(!$adjustments);
+					    $adjustments=sdr_top_99_high_error_rgb_adjustment($config,$err,$arrays,$target,\%polish_tried,$best_de,$read_step,$target_delta,$polish_stalls,0.25,4.0,"sdr_top_99_high_error_fine_tune",$lum_err) if(!$adjustments);
 						    $adjustments=choose_micro_adjustments($err,$arrays,$target,$hdr20_planner_lum_err,\%polish_tried,$micro_step,$best_de,$polish_stalls,$read_step,$target_delta) if(!$adjustments);
 			    if($adjustments) {
 			     for(my $suppress_attempt=1;$suppress_attempt<=3;$suppress_attempt++) {
