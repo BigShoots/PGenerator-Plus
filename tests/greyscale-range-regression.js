@@ -10,7 +10,7 @@ const hybridAutocalWorkerSource = fs.readFileSync('tmp/hybrid-topend/meter_lg_au
 const meterSessionSource = fs.readFileSync('usr/bin/meter_session.sh', 'utf8');
 const meterSeriesSource = fs.readFileSync('usr/bin/meter_series.sh', 'utf8');
 const lgAutocalAbHarnessSource = fs.readFileSync('tests/lg-autocal-ab-harness.sh', 'utf8');
-const autoCalDdcResetStart = source.indexOf('async function meterAutoCalResetDdc()');
+const autoCalDdcResetStart = source.indexOf('async function meterAutoCalResetPictureMode()');
 const autoCalDdcResetEnd = source.indexOf('async function meterAutoCalRunPreflightReset()', autoCalDdcResetStart);
 const autoCalDdcResetSource = autoCalDdcResetStart >= 0 && autoCalDdcResetEnd > autoCalDdcResetStart
   ? source.slice(autoCalDdcResetStart, autoCalDdcResetEnd)
@@ -600,8 +600,15 @@ assert(
     lgSource.includes('picture\\$".$tv_input.".".$active_picture_mode.".2d.".$suffix') &&
     lgSource.includes('needs_picture_mode') &&
     lgSource.includes('push(@panel_payloads,{ path => "com.webos.settingsservice/resetSystemSettings", payload => $payload, luna => 1 })') &&
+    lgSource.includes('sub lg_picture_reset_white_balance_keys') &&
+    lgSource.includes('next if($key =~ /^whiteBalance/i || $key =~ /^adjustingLuminance/i);') &&
+    lgSource.includes('reset_picture_white_balance') &&
+    lgSource.includes('white_balance_reset_ok') &&
+    lgSource.includes('white_balance_reset_keys_succeeded') &&
+    lgSource.includes('"adjustingLuminance10pt"') &&
+    lgSource.includes('("pictureMode",@{&lg_picture_reset_default_keys()},@{$white_balance_reset_keys})') &&
     !lgSource.includes('$panel_factory_apply_ok,$panel_factory_apply_attempts)=&lg_picture_set_panel_light_values'),
-  'LG picture-mode reset should require an explicit mode, try scoped reset categories, and avoid manual factory-value fallback'
+  'LG picture-mode reset should require an explicit mode, try scoped reset categories, reset white-balance/luma controls separately, and avoid manual factory-value fallback'
 );
 assert(
   source.includes('function meterAutoCalPanelLightFromPicture(picture)') &&
@@ -609,15 +616,19 @@ assert(
     !source.includes('LG kept ') &&
     !source.includes('Adjust TV settings now if needed') &&
     !source.includes('message:meterAutoCalResetNotice+') &&
+    autoCalDdcResetSource.includes('/api/lg/picture-settings/reset') &&
     autoCalDdcResetSource.includes('/api/lg/picture-settings/set') &&
+    autoCalDdcResetSource.indexOf('/api/lg/picture-settings/reset') < autoCalDdcResetSource.indexOf('/api/lg/picture-settings/set') &&
     autoCalDdcResetSource.includes('reset_ddc_baseline:true') &&
+    source.includes('Picture mode reset required') &&
+    source.includes('The picture mode reset will follow.') &&
+    source.includes('LG picture mode reset complete') &&
     source.includes('async function meterAutoCalReset3dLutBaseline()') &&
     source.includes("/api/lg/3d-lut/reset") &&
     source.includes('Writing unity 3D LUT baseline before greyscale') &&
     source.includes('if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)') &&
-    source.indexOf('await meterAutoCalResetDdc();') < source.indexOf('await meterAutoCalReset3dLutBaseline();') &&
-    !autoCalDdcResetSource.includes('/api/lg/picture-settings/reset'),
-  'LG Auto Cal should clear the DDC table, Full Auto Cal should also reset the LG 3D LUT baseline before greyscale, refresh retained panel light silently, and continue to the luminance setup step'
+    source.indexOf('await meterAutoCalResetPictureMode();') < source.indexOf('await meterAutoCalReset3dLutBaseline();'),
+  'LG Auto Cal should reset the picture mode before clearing the DDC table, Full Auto Cal should also reset the LG 3D LUT baseline before greyscale, refresh retained panel light silently, and continue to the luminance setup step'
 );
 assert(
   /my \(\$session,\$ip,\$picture_mode,\$timeout,\$reset_to_unity(?:,\$layout)?\)=@_;/.test(lgSource) &&
@@ -699,8 +710,8 @@ assert(
 	    source.includes('function meterAutoCalSetupOverlayActive()') &&
 	    source.includes("current_name:'Reset failed'") &&
 	    source.includes("const message=meterAutoCalPreflightResetDone?'Click Continue when ready.'") &&
-	    source.includes("'Run the LG DDC reset first.'") &&
-	    source.includes("'Run the LG DDC and 3D LUT reset first.'"),
+	    source.includes("'Run the LG picture mode reset first.'") &&
+	    source.includes("'Run the LG picture mode and 3D LUT reset first.'"),
   'LG Auto Cal preflight should expose Reset first, skip automatic clipping changes, then park on a simple Continue path'
 );
 assert(
