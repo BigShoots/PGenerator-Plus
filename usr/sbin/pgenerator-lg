@@ -1910,10 +1910,11 @@ sub lg_3d_lut_readback_unavailable_reason (@) {
    $payload->{"errorText"},
   ));
   return "no-file-path-from-tvservice" if($detail =~ /no\s+file\s+path\s+from\s+tvservice/i);
-  return "";
+  return "failed-getter";
  }
  my $encoded=$payload->{"data"}||"";
- return ($encoded eq "") ? "empty-lut-readback" : "";
+ return "empty-lut-readback" if($encoded eq "");
+ return "unreadable-lut-payload";
 }
 
 sub lg_3d_write_accepted_readback_unavailable_ok (@) {
@@ -1921,7 +1922,7 @@ sub lg_3d_write_accepted_readback_unavailable_ok (@) {
  return 0 if(ref($expected_lut) ne "ARRAY");
  return 0 if($read_ok && ref($read_lut) eq "ARRAY");
  return 0 if(&lg_3d_lut_readback_unavailable_reason($read_response) eq "");
- return &lg_generation_write_accepted_readback_unavailable_ok($generation);
+ return 1;
 }
 
 sub lg_lut_linear_unity_readback (@) {
@@ -2259,6 +2260,16 @@ sub lg_3d_lut_upload_workflow (@) {
   &websocket_close($session);
   return &json_error("LG SDR 3D LUT writes are not mapped for picture mode '$active_picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ ip => $ip, active_picture_mode => $active_picture_mode });
  }
+ &diag_log_append("3d_lut_upload:start",{
+  ip => $ip,
+  picture_mode => $picture_mode,
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  payload_path => $payload_path,
+  payload_values => scalar(@{$lut}),
+  upload_command => $upload_command||"",
+  get_command => $get_command||"",
+ });
  my $start=&lg_calibration_request($session,"3d_lut_upload_cal_start","CAL_START",undef,1,$cal_mode,$connect_timeout + 4);
  my ($start_failed,$start_message)=&response_is_app_failure($start);
  if($start_failed || ref($start) ne "HASH") {
@@ -2295,40 +2306,39 @@ sub lg_3d_lut_upload_workflow (@) {
   my %attempt=( upload_command => $candidate->{"upload"}, get_command => $candidate->{"get"}, endpoint_write => "externalpq/setExternalPqData", endpoint_read => "externalpq/getExternalPqData" );
   my ($put_ok,$put_message,$put_response)=&lg_3d_lut_put($session,"3d_lut_upload_${idx}",$candidate,$lut,$cal_mode,$connect_timeout + 10);
   $attempt{"upload_response"}=$put_response;
+  my $read_ok=0;
+  my $read_message="";
+  my $readback_unavailable_reason="";
   if($put_ok) {
    select(undef,undef,undef,0.35);
-   my ($read_ok,$read_lut,$read_message,$read_response)=&lg_3d_lut_get($session,"3d_lut_upload_verify_${idx}",$candidate,$connect_timeout + 8);
+   my ($candidate_read_ok,$read_lut,$candidate_read_message,$read_response)=&lg_3d_lut_get($session,"3d_lut_upload_verify_${idx}",$candidate,$connect_timeout + 8);
+   $read_ok=$candidate_read_ok ? 1 : 0;
+   $read_message=$candidate_read_message||"";
    $attempt{"read_response"}=$read_response;
-	   if($read_ok && &lg_3d_lut_matches($read_lut,$lut)) {
-	    $attempt{"status"}="ok";
-	    $attempt{"upload_verified"}=&json_true();
-	    $attempt{"upload_verify_contract"}="exact-readback";
+   if($read_ok && &lg_3d_lut_matches($read_lut,$lut)) {
+    $attempt{"status"}="ok";
+    $attempt{"upload_verified"}=&json_true();
+    $attempt{"upload_verify_contract"}="exact-readback";
     $attempt{"readback_unavailable"}=&json_false();
     $attempt{"message"}="3D LUT upload verified by readback.";
-    push(@attempts,\%attempt);
-    $uploaded=1;
-	    $selected=\%attempt;
-	    last;
-	   }
-	   my $readback_unavailable_reason=&lg_3d_lut_readback_unavailable_reason($read_response);
-	   if(&lg_3d_write_accepted_readback_unavailable_ok($generation,$read_ok,$read_lut,$read_response,$lut)) {
-	    $attempt{"status"}="ok";
-	    $attempt{"upload_verified"}=&json_true();
-	    $attempt{"upload_verify_contract"}="write-accepted-readback-unavailable";
-	    $attempt{"readback_unavailable"}=&json_true();
-	    $attempt{"readback_unavailable_reason"}=$readback_unavailable_reason||"readback-unavailable";
-	    $attempt{"message"}="3D LUT upload write was accepted; TV readback is unavailable on this generation.";
-    push(@attempts,\%attempt);
-    $uploaded=1;
-    $selected=\%attempt;
-    last;
+   } else {
+    $readback_unavailable_reason=&lg_3d_lut_readback_unavailable_reason($read_response);
+    if(&lg_3d_write_accepted_readback_unavailable_ok($generation,$read_ok,$read_lut,$read_response,$lut)) {
+     $attempt{"status"}="ok";
+     $attempt{"upload_verified"}=&json_true();
+     $attempt{"upload_verify_contract"}="write-accepted-readback-unavailable";
+     $attempt{"readback_unavailable"}=&json_true();
+     $attempt{"readback_unavailable_reason"}=$readback_unavailable_reason||"readback-unavailable";
+     $attempt{"message"}="3D LUT upload write was accepted; TV readback is unavailable on this generation.";
+    } else {
+     $attempt{"status"}="error";
+     $attempt{"upload_verified"}=&json_false();
+     $attempt{"upload_verify_contract"}="";
+     $attempt{"readback_unavailable"}=&json_false();
+     $attempt{"message"}=$read_message||"3D LUT upload readback did not match the payload.";
+     $last_message=$attempt{"message"};
+    }
    }
-   $attempt{"status"}="error";
-   $attempt{"upload_verified"}=&json_false();
-   $attempt{"upload_verify_contract"}="";
-   $attempt{"readback_unavailable"}=&json_false();
-   $attempt{"message"}=$read_message||"3D LUT upload readback did not match the payload.";
-   $last_message=$attempt{"message"};
   } else {
    $attempt{"status"}="error";
    $attempt{"upload_verified"}=&json_false();
@@ -2337,7 +2347,29 @@ sub lg_3d_lut_upload_workflow (@) {
    $attempt{"message"}=$put_message;
    $last_message=$put_message;
   }
+  &diag_log_append("3d_lut_upload:attempt",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   index => $idx,
+   upload_command => $candidate->{"upload"}||"",
+   get_command => $candidate->{"get"}||"",
+   put_ok => &json_bool($put_ok),
+   put_message => $put_message||"",
+   read_ok => &json_bool($read_ok),
+   read_message => $read_message||"",
+   status => $attempt{"status"}||"",
+   upload_verified => &json_bool($attempt{"upload_verified"}),
+   upload_verify_contract => $attempt{"upload_verify_contract"}||"",
+   readback_unavailable => &json_bool($attempt{"readback_unavailable"}),
+   readback_unavailable_reason => $readback_unavailable_reason||$attempt{"readback_unavailable_reason"}||"",
+   message => $attempt{"message"}||"",
+  });
   push(@attempts,\%attempt);
+  if(($attempt{"status"}||"") eq "ok") {
+   $uploaded=1;
+   $selected=\%attempt;
+   last;
+  }
  }
  if($uploaded && $hdr_bt2020_upload) {
   my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
@@ -2352,6 +2384,13 @@ sub lg_3d_lut_upload_workflow (@) {
  my $end=&lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
  &websocket_close($session);
  if(!$uploaded) {
+  &diag_log_append("3d_lut_upload:failure",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   payload_path => $payload_path,
+   attempts => scalar(@attempts),
+   message => $last_message||"LG TV rejected all known 3D LUT upload commands.",
+  });
   return &json_error($last_message||"LG TV rejected all known 3D LUT upload commands.",{
    ip => $ip,
    active_picture_mode => $active_picture_mode,
@@ -2363,6 +2402,16 @@ sub lg_3d_lut_upload_workflow (@) {
    cal_end_response => $end,
   });
  }
+ &diag_log_append("3d_lut_upload:ok",{
+  ip => $ip,
+  picture_mode => $active_picture_mode,
+  payload_path => $payload_path,
+  upload_command => $selected->{"upload_command"}||"",
+  get_command => $selected->{"get_command"}||"",
+  upload_verify_contract => $selected->{"upload_verify_contract"}||"",
+  readback_unavailable => &json_bool($selected->{"readback_unavailable"}),
+  readback_unavailable_reason => $selected->{"readback_unavailable_reason"}||"",
+ });
  return &json_ok({
   ip => $ip,
   client_key => $auth->{"client_key"},
