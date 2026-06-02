@@ -17561,8 +17561,28 @@ eval {
 				     current_neighbor_context=>sdr_low_shadow_neighbor_context_for_step($config,$reconfirm_step,$arrays)
 				    }
 				   );
-				   die "$label final low-shadow context reconfirm failed: dE=".(defined($reconfirm_de)?$reconfirm_de:"undef").", lum=".(defined($reconfirm_lum_pct)?$reconfirm_lum_pct:"undef")
-				    if($hard_reject);
+				   if($hard_reject) {
+				    my $failure_message="$label final low-shadow context reconfirm failed: dE=".(defined($reconfirm_de)?$reconfirm_de:"undef").", lum=".(defined($reconfirm_lum_pct)?$reconfirm_lum_pct:"undef");
+				    $state->{"status"}="error";
+				    $state->{"current_name"}="Auto Cal error";
+				    $state->{"message"}=$failure_message;
+				    $state->{"best_delta_e"}=defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef;
+				    $state->{"best_score"}=defined($entry->{"score"}) ? ($entry->{"score"}+0) : undef;
+				    $state->{"best_luminance_error_pct"}=defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef;
+				    $state->{"low_shadow_final_requires_more_adjustment"}=JSON::PP::true;
+				    trace_109($reconfirm_step,"sdr_low_shadow_final_context_hard_reject_controlled_error",{
+				     label=>$label,
+				     delta_e=>defined($reconfirm_de) ? $reconfirm_de+0 : undef,
+				     luminance_error_pct=>defined($reconfirm_lum_pct) ? $reconfirm_lum_pct+0 : undef,
+				     prior_best_delta_e=>defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef,
+				     prior_best_luminance_error_pct=>defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef,
+				     prior_best_score=>defined($entry->{"score"}) ? ($entry->{"score"}+0) : undef,
+				     context_diff=>$context_diff,
+				     target_values=>trace_target_values($arrays,$reconfirm_target)
+				    });
+				    write_state($state);
+				    die $failure_message;
+				   }
 				  }
 				  return scalar(@records);
 				 };

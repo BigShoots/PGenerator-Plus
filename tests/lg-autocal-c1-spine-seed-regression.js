@@ -173,6 +173,23 @@ assert(
   'fine-tune loop should continue SDR 99% low-Y recovery from the best state before spending attempts on high-error RGB'
 );
 
+const lowShadowFinalContextSource = sliceBetween(
+  'my $reconfirm_sdr_low_shadow_final_context=sub',
+  'return scalar(@records);'
+);
+assert(
+  lowShadowFinalContextSource.includes('sdr_low_shadow_final_context_hard_reject_controlled_error') &&
+    lowShadowFinalContextSource.includes('$state->{"status"}="error";') &&
+    lowShadowFinalContextSource.includes('$state->{"current_name"}="Auto Cal error";') &&
+    lowShadowFinalContextSource.includes('$state->{"message"}=$failure_message;') &&
+    lowShadowFinalContextSource.includes('$state->{"best_delta_e"}=defined($entry->{"delta_e"})') &&
+    lowShadowFinalContextSource.includes('$state->{"best_luminance_error_pct"}=defined($entry->{"luminance_error_pct"})') &&
+    lowShadowFinalContextSource.includes('$state->{"low_shadow_final_requires_more_adjustment"}=JSON::PP::true;') &&
+    lowShadowFinalContextSource.includes('write_state($state);') &&
+    lowShadowFinalContextSource.includes('die $failure_message;'),
+  'hard low-shadow final-context reconfirm rejects should preserve a controlled error status and prior slot best before aborting'
+);
+
 const lowShadowEndpointSource = sliceBetween(
   'sub apply_sdr_low_shadow_endpoint_seed_2_3',
   'sub apply_sdr_low_shadow_local_spine_preseed'
