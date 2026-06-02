@@ -123,6 +123,10 @@ $w_s=1920;
 $h_s=1080;
 
 # START PI4 VARIABLES
+$is_rpi_4=0;
+$is_rpi_kms_model=0;
+$is_kms=0;
+$tvservice_is_working=0;
 $hdmi_1="HDMI-A-1";
 $hdmi_2="HDMI-A-2";
 $edid_prefix="/sys/devices/platform/gpu/drm";
