@@ -899,6 +899,74 @@ sub lg_picture_signal_suffixes (@) {
  return ($signal_mode,"x");
 }
 
+sub lg_picture_readback_payloads (@) {
+ my ($keys,$active_picture_mode,$tv_input,$signal_mode)=@_;
+ $keys=[] if(ref($keys) ne "ARRAY");
+ $active_picture_mode="" if(!defined($active_picture_mode));
+ $tv_input="" if(!defined($tv_input));
+ $signal_mode="" if(!defined($signal_mode));
+ my @payloads=();
+ my %seen=();
+ my $add_payload=sub {
+  my $payload=shift;
+  return if(ref($payload) ne "HASH");
+  my $category=$payload->{"category"}||"";
+  return if($category eq "");
+  my $dimension=(ref($payload->{"dimension"}) eq "HASH") ? $payload->{"dimension"} : undef;
+  my $sig=$category."|".(defined($dimension) ? (eval { JSON::PP->new->canonical(1)->utf8(1)->encode($dimension); } || "") : "");
+  return if($seen{$sig}++);
+  my $entry={ category => $category, keys => $keys };
+  $entry->{"dimension"}=$dimension if(defined($dimension));
+  push(@payloads,$entry);
+ };
+ my @inputs=();
+ push(@inputs,$tv_input) if($tv_input ne "");
+ if(!@inputs && $active_picture_mode ne "" && &lg_picture_keys_panel_light_only($keys)) {
+  @inputs=("hdmi1","hdmi2","hdmi3","hdmi4");
+ }
+ foreach my $input (@inputs) {
+  if($input ne "" && $active_picture_mode ne "") {
+   foreach my $suffix (&lg_picture_signal_suffixes($signal_mode)) {
+    next if($suffix eq "");
+    $add_payload->({ category => "picture\$".$input.".".$active_picture_mode.".2d.".$suffix });
+   }
+   $add_payload->({ category => "picture", dimension => { input => $input, pictureMode => $active_picture_mode, "_3dStatus" => "2d" } });
+  }
+ }
+ $add_payload->({ category => "picture", dimension => { pictureMode => $active_picture_mode } }) if($active_picture_mode ne "");
+ $add_payload->({ category => "picture" });
+ return @payloads;
+}
+
+sub lg_picture_readback_settings (@) {
+ my ($session,$label,$keys,$active_picture_mode,$tv_input,$signal_mode,$timeout)=@_;
+ $keys=[] if(ref($keys) ne "ARRAY");
+ my %settings=();
+ return \%settings if(!@{$keys});
+ my @payloads=&lg_picture_readback_payloads($keys,$active_picture_mode,$tv_input,$signal_mode);
+ foreach my $payload (@payloads) {
+  my $response=&lg_request($session,$label,"settings/getSystemSettings",$payload,$timeout);
+  if(ref($response) eq "HASH" && ($response->{"type"}||"") ne "error" && ref($response->{"payload"}) eq "HASH" && ref($response->{"payload"}{"settings"}) eq "HASH") {
+   foreach my $key (keys(%{$response->{"payload"}{"settings"}})) {
+    $settings{$key}=$response->{"payload"}{"settings"}{$key};
+   }
+   return \%settings if(%settings);
+  }
+  foreach my $key (@{$keys}) {
+   next if(exists($settings{$key}));
+   my $single_payload={ %{$payload}, keys => [$key] };
+   my $safe_key=$key;
+   $safe_key =~ s/[^A-Za-z0-9_]/_/g;
+   my $single=&lg_request($session,$label."_".$safe_key,"settings/getSystemSettings",$single_payload,$timeout);
+   if(ref($single) eq "HASH" && ($single->{"type"}||"") ne "error" && ref($single->{"payload"}) eq "HASH" && ref($single->{"payload"}{"settings"}) eq "HASH" && exists($single->{"payload"}{"settings"}{$key})) {
+    $settings{$key}=$single->{"payload"}{"settings"}{$key};
+   }
+  }
+  return \%settings if(%settings);
+ }
+ return \%settings;
+}
+
 sub lg_picture_scoped_categories (@) {
  my ($tv_input,$active_picture_mode,$signal_mode)=@_;
  $tv_input="" if(!defined($tv_input));
@@ -1450,16 +1518,10 @@ sub lg_picture_reset_workflow (@) {
 	   }
 	  }
 	 }
- foreach my $category (&lg_picture_scoped_categories($tv_input,$active_picture_mode,$signal_mode)) {
-  my $panel_readback=&lg_request($session,"get_picture_panel_light_after_reset","settings/getSystemSettings",{
-   category => $category,
-   keys => $panel_light_keys,
-  },$connect_timeout + 2);
-  if(ref($panel_readback) eq "HASH" && ($panel_readback->{"type"}||"") ne "error" && ref($panel_readback->{"payload"}) eq "HASH" && ref($panel_readback->{"payload"}{"settings"}) eq "HASH") {
-   foreach my $key (keys(%{$panel_readback->{"payload"}{"settings"}})) {
-    $picture_settings_after->{$key}=$panel_readback->{"payload"}{"settings"}{$key};
-   }
-   last;
+ my $panel_readback_settings=&lg_picture_readback_settings($session,"get_picture_panel_light_after_reset",$panel_light_keys,$active_picture_mode,$tv_input,$signal_mode,$connect_timeout + 2);
+ if(ref($panel_readback_settings) eq "HASH") {
+  foreach my $key (keys(%{$panel_readback_settings})) {
+   $picture_settings_after->{$key}=$panel_readback_settings->{$key};
   }
  }
  &websocket_close($session);
@@ -3628,6 +3690,19 @@ sub lg_picture_set_workflow (@) {
  if($ddc_attempted) {
   if(ref($ddc_result) eq "HASH" && ($ddc_result->{"status"}||"") eq "ok") {
    my $settings_after=(ref($ddc_result->{"picture_settings"}) eq "HASH") ? $ddc_result->{"picture_settings"} : &lg_ddc_state_from_settings($settings_to_apply,$active_picture_mode);
+   if(@{$readback_keys}) {
+    my @native_readback_keys=grep { $_ !~ /^(?:whiteBalance|adjustingLuminance|ddc_layout|ddc_1d_lut)$/ } @{$readback_keys};
+    my %native_seen=();
+    @native_readback_keys=grep { !$native_seen{$_}++ } @native_readback_keys;
+    if(@native_readback_keys) {
+     my $native_readback=&lg_picture_readback_settings($session,"get_picture_settings_after_ddc",$native_readback_keys,$active_picture_mode,$tv_input,$signal_mode,$connect_timeout + 2);
+     if(ref($native_readback) eq "HASH") {
+      foreach my $key (keys(%{$native_readback})) {
+       $settings_after->{$key}=$native_readback->{$key};
+      }
+     }
+    }
+   }
    &websocket_close($session);
    &diag_log_append("picture_set:ddc1d-ok",{
     ip => $ip,
