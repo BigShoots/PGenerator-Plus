@@ -604,16 +604,28 @@ configure_pi5_headless_ssh() {
 
  log "Enabling Raspberry Pi 5 headless SSH access"
 
- awk -F: -v hash="$PI5_ROOT_PASSWORD_HASH" '
-  BEGIN { OFS = FS }
-  $1 == "root" { $2 = hash; found = 1 }
-  { print }
-  END {
-   if (!found) {
-    print "root", hash, "20221", "0", "99999", "7", "", "", ""
-   }
-  }
- ' "$shadow_file" > "$shadow_file.tmp"
+ perl - "$PI5_ROOT_PASSWORD_HASH" < "$shadow_file" > "$shadow_file.tmp" <<'PERL'
+use strict;
+use warnings;
+
+my $hash = shift @ARGV;
+my $found = 0;
+
+while (my $line = <STDIN>) {
+ chomp $line;
+ my @fields = split /:/, $line, -1;
+ if (($fields[0] // "") eq "root") {
+  $fields[1] = $hash;
+  push @fields, "" while @fields < 9;
+  $found = 1;
+ }
+ print join(":", @fields), "\n";
+}
+
+if (!$found) {
+ print join(":", "root", $hash, "20221", "0", "99999", "7", "", "", ""), "\n";
+}
+PERL
  install -m 0640 -o 0 -g 42 "$shadow_file.tmp" "$shadow_file" 2>/dev/null || install -m 0640 "$shadow_file.tmp" "$shadow_file"
  rm -f "$shadow_file.tmp"
 
