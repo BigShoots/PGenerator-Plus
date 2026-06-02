@@ -126,6 +126,53 @@ assert(
   'high-error SDR 99% with low luminance should choose a coupled RGB + positive adjustingLuminance move, not RGB-only'
 );
 
+const top99LumaCleanupSource = sliceBetween(
+  'sub sdr_top_99_luma_cleanup_adjustments',
+  'sub body_final_micro_threshold'
+);
+assert(
+  top99LumaCleanupSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
+    top99LumaCleanupSource.includes('abs(($step->{"ire"}+0)-99) >= 0.001') &&
+    top99LumaCleanupSource.includes('return undef if($lum_pct >= -2.25);') &&
+    top99LumaCleanupSource.includes('return undef if($chroma > 0.090 && defined($de) && $de > 5.0);') &&
+    top99LumaCleanupSource.includes('my $max_step=($abs_lum >= 6.0) ? 1.0 : (($abs_lum >= 3.0) ? 0.75 : 0.50);') &&
+    top99LumaCleanupSource.includes('neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,0,$step,$source||"sdr_top_99_luma_cleanup",$LG_AUTOCAL_STATE)') &&
+    top99LumaCleanupSource.includes('$adj->{"sdr_top_99_luma_cleanup"}=1;') &&
+    top99LumaCleanupSource.includes('trace_109($step,"sdr_top_99_luma_cleanup_plan"'),
+  'SDR 99% luma cleanup should prioritize positive adjustingLuminance when Y is still low after the high-error seed'
+);
+
+const rgbResponseSource = sliceBetween(
+  'sub choose_rgb_response_adjustments',
+  'sub choose_micro_adjustments'
+);
+assert(
+  rgbResponseSource.indexOf('sdr_top_99_high_error_rgb_adjustment($LG_AUTOCAL_CONFIG') >= 0 &&
+    rgbResponseSource.indexOf('sdr_top_99_luma_cleanup_adjustments($LG_AUTOCAL_CONFIG') > rgbResponseSource.indexOf('sdr_top_99_high_error_rgb_adjustment($LG_AUTOCAL_CONFIG') &&
+    rgbResponseSource.indexOf('sdr_top_99_luma_cleanup_adjustments($LG_AUTOCAL_CONFIG') < rgbResponseSource.indexOf('my $response_lum_pct='),
+  'main SDR 99% response planning should try luma cleanup immediately after the high-error coupled path and before generic RGB response'
+);
+
+const microSource = sliceBetween(
+  'sub choose_micro_adjustments',
+  'sub describe_adjustments'
+);
+assert(
+  microSource.indexOf('sdr_top_99_luma_cleanup_adjustments($LG_AUTOCAL_CONFIG') >= 0 &&
+    microSource.indexOf('sdr_top_99_luma_cleanup_adjustments($LG_AUTOCAL_CONFIG') < microSource.indexOf('my %combined=map'),
+  'fine SDR 99% polish should try luma cleanup before RGB micro sweeps so low-Y stalls do not burn polish budget'
+);
+
+const fineTuneSource = sliceBetween(
+  'my $polish_stalls=0;',
+  '$state->{"best_delta_e"}=$best_de;'
+);
+assert(
+  fineTuneSource.indexOf('sdr_top_99_luma_cleanup_adjustments($config') >= 0 &&
+    fineTuneSource.indexOf('sdr_top_99_luma_cleanup_adjustments($config') < fineTuneSource.indexOf('sdr_top_99_high_error_rgb_adjustment($config'),
+  'fine-tune loop should continue SDR 99% low-Y recovery from the best state before spending attempts on high-error RGB'
+);
+
 const lowShadowEndpointSource = sliceBetween(
   'sub apply_sdr_low_shadow_endpoint_seed_2_3',
   'sub apply_sdr_low_shadow_local_spine_preseed'
