@@ -2,9 +2,11 @@
 # Phase 10 acceptance gate — eight-point gate, parity vs 2.2.2
 set -euo pipefail
 
-PI='root@192.168.1.177'
-PASS='PGenerator!!$'
-LOG="/tmp/phase10_gate_$(date +%Y%m%d_%H%M%S).log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PI="${PI:-root@192.168.1.179}"
+PASS="${PASS:-PGenerator!!\$}"
+LOG="${LOG:-/tmp/phase10_gate_$(date +%Y%m%d_%H%M%S).log}"
 
 remote(){ SSHPASS="$PASS" sshpass -e ssh -o StrictHostKeyChecking=no "$PI" "$1"; }
 
@@ -27,22 +29,68 @@ meter_probe(){
 capture_drm_state(){
   local label="$1"
   echo "=== DRM state: $label ===" | tee -a "$LOG"
-  remote "
-    echo 63 > /sys/module/drm/parameters/debug
+  remote "$(cat <<'REMOTE'
+    echo 63 > /sys/module/drm/parameters/debug 2>/dev/null || true
     sleep 2
-    echo '--connector33--'
-    awk '/connector\[33\]/{f=1;print;next}/connector\[[0-9]+\]/{if(f)exit}f{print}' /sys/kernel/debug/dri/1/state
-    echo '--plane102--'
-    awk '/plane\[102\]/{f=1;print;next}/plane\[[0-9]+\]/{if(f)exit}f{print}' /sys/kernel/debug/dri/1/state
-    echo 0 > /sys/module/drm/parameters/debug
-  " | tee -a "$LOG"
+    echo '--device-model--'
+    tr -d '\0' < /proc/device-tree/model 2>/dev/null || true
+    echo
+    echo '--connected-connectors--'
+    if command -v modetest >/dev/null 2>&1; then
+      timeout 3 modetest -M vc4 -c 2>/dev/null | awk '/^[0-9]+[[:space:]]+[0-9]+[[:space:]]+connected[[:space:]]+HDMI/{print; found=1; next} found && /^[[:space:]]+[0-9]+[[:space:]]+/{print; next} found && /^[0-9]+[[:space:]]+[0-9]+/{found=0}'
+    fi
+    state_file=""
+    for f in /sys/kernel/debug/dri/*/state; do
+      if [ -r "$f" ]; then
+        state_file="$f"
+        break
+      fi
+    done
+    echo "--debugfs-state-file=$state_file--"
+    if [ -n "$state_file" ]; then
+      connector_id=""
+      if command -v modetest >/dev/null 2>&1; then
+        connector_id=$(timeout 3 modetest -M vc4 -c 2>/dev/null | awk '/^[0-9]+[[:space:]]+[0-9]+[[:space:]]+connected[[:space:]]+HDMI/{print $1; exit}')
+      fi
+      if [ -n "$connector_id" ]; then
+        echo "--connector[$connector_id]--"
+        awk -v id="$connector_id" '/connector\[/ { if(f) exit; f=($0 ~ "connector\\[" id "\\]") } f { print }' "$state_file"
+      fi
+      echo '--active-non-cursor-planes--'
+      awk '
+        /^plane\[[0-9]+\]/ {
+          if(block != "" && block !~ /type=Cursor/ && block ~ /fb=[1-9][0-9]*/) {
+            print block
+          }
+          block=$0 "\n"
+          next
+        }
+        block != "" { block=block $0 "\n" }
+        END {
+          if(block != "" && block !~ /type=Cursor/ && block ~ /fb=[1-9][0-9]*/) {
+            print block
+          }
+        }
+      ' "$state_file"
+    fi
+    echo 0 > /sys/module/drm/parameters/debug 2>/dev/null || true
+REMOTE
+  )" | tee -a "$LOG"
 }
 
 {
   echo "=== PHASE 10 GATE START $(date '+%F %T.%N') ===" | tee -a "$LOG"
+  echo "TARGET=$PI" | tee -a "$LOG"
 
-  echo "=== [1] FOUR-HASH INTEGRITY ===" | tee -a "$LOG"
-  sha256sum /mnt/homestorage/Projects/PGenerator_reference/PGenerator_plus/src/ofxRPI4Window/src/ofxRPI4Window.cpp | tee -a "$LOG"
+  echo "=== [1] SOURCE + BINARY INTEGRITY ===" | tee -a "$LOG"
+  sha256sum \
+    "$REPO_ROOT/src/ofxRPI4Window/src/ofxRPI4Window.cpp" \
+    "$REPO_ROOT/src/pattern_generator/src/main.cpp" \
+    "$REPO_ROOT/usr/share/PGenerator/conf.pm" \
+    "$REPO_ROOT/usr/share/PGenerator/variables.pm" \
+    "$REPO_ROOT/usr/share/PGenerator/command.pm" \
+    "$REPO_ROOT/build/phase10_gate.sh" | tee -a "$LOG"
+  remote "tr -d '\0' < /proc/device-tree/model 2>/dev/null; echo" | tee -a "$LOG"
   remote "sha256sum /opt/openFrameworks/apps/myApps/PGeneratorBuild/pattern_generator/bin/pattern_generator /usr/sbin/PGeneratord /usr/sbin/PGeneratord.dv" | tee -a "$LOG"
 
   echo "=== [2] SERVICE RESTART + YCbCr SWITCH ===" | tee -a "$LOG"

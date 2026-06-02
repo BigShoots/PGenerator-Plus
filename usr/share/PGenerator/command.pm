@@ -18,7 +18,7 @@
 #
 
 ###############################################
-#   Auto-Select 4K 30Hz Mode (Pi 4 KMS)      #
+#   Auto-Select 4K 30Hz Mode (Pi KMS)        #
 ###############################################
 sub auto_select_4k_mode (@) {
  return if($pgenerator_conf{"mode_idx"} ne "");

@@ -60,7 +60,8 @@ static bool usesPGeneratorKmsWindow(const std::string &model) {
  return model.find("Raspberry Pi 4") != string::npos ||
         model.find("Raspberry Pi Compute Module 4") != string::npos ||
         model.find("Raspberry Pi 5") != string::npos ||
-        model.find("Raspberry Pi Compute Module 5") != string::npos;
+        model.find("Raspberry Pi Compute Module 5") != string::npos ||
+        model.find("BCM2712") != string::npos;
 }
 
 int main(int argc, char **argv){
