@@ -68,14 +68,19 @@ const topBlendSource = sliceBetween(
 assert(
   topBlendSource.includes('my $body_ire=80;') &&
     topBlendSource.includes('my $top_ire=105;') &&
-    topBlendSource.includes('"99" => { top_weight=>0.22') &&
+    topBlendSource.includes('mode=>"sdr-top-local-seed-99-from-80"') &&
+    topBlendSource.includes('reason=>"sdr_99_seed_from_80_without_105_shape"') &&
+    topBlendSource.includes('source_ire=>$body_ire+0') &&
+    topBlendSource.includes('offsets=>$deltas') &&
+    topBlendSource.includes('if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,99))') &&
+    !topBlendSource.includes('"99" => { top_weight=>0.22') &&
     topBlendSource.includes('"95" => { top_weight=>0.12') &&
     topBlendSource.includes('body_weight=>$body_weight+0') &&
     topBlendSource.includes('top_weight=>$top_weight+0') &&
     topBlendSource.includes('max_from_body=>$entry->{"max_from_body"}') &&
     topBlendSource.includes('record_full_ddc_spine_seed_detail') &&
     topBlendSource.includes('sdr_top_body_weighted_seed_from_80_and_measured_105'),
-  '99%/95% seeds should be traceable body-weighted blends from 80% and measured 105%'
+  '99% seed should be traceable local-from-80 while 95% remains a body-weighted blend from 80% and measured 105%'
 );
 
 function blendFromBody(body, top, weight, maxFromBody) {
@@ -90,8 +95,9 @@ const oldInterpolationWeight99 = 0.76;
 const old99 = body + ((top - body) * oldInterpolationWeight99);
 const new99 = blendFromBody(body, top, 0.22, 1.5);
 assert(
-  Math.abs(new99 - body) < Math.abs(old99 - body) * 0.4,
-  '99% body blend should stay much closer to 80% than the raw 80->105 interpolation'
+  Math.abs(new99 - body) < Math.abs(old99 - body) * 0.4 &&
+    !topBlendSource.includes('top_weight=>0.22'),
+  'retired 99% body blend should stay retired; 99% now uses local 80% offsets instead of 105% shape'
 );
 
 const lowShadowEndpointSource = sliceBetween(
