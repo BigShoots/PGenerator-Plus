@@ -75,7 +75,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error sdr_top_99_luma_cleanup low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma low_shadow_live_neighbor response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error sdr_top_99_luma_cleanup low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -4741,6 +4741,23 @@ sub apply_sdr_low_shadow_endpoint_seed_2_3 {
  return 0 if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));
  my $target_idx=ddc_slot_index_for_ire($target_ire);
  return 0 if(!defined($target_idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY" || $target_idx >= @{$arrays->{"adjustingLuminance"}});
+ my $live_neighbor=(
+  ref($LG_AUTOCAL_STATE) eq "HASH" &&
+  ref($LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}) eq "HASH"
+ ) ? $LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)} : undef;
+ if(ref($live_neighbor) eq "HASH") {
+  my $current=defined($arrays->{"adjustingLuminance"}[$target_idx]) ? ($arrays->{"adjustingLuminance"}[$target_idx]+0) : 0;
+  return {
+   mode=>"sdr-low-shadow-endpoint-seed-2.3-skipped-live-neighbor",
+   target_ire=>$target_ire+0,
+   target_index=>$target_idx+0,
+   before=>{ adjustingLuminance=>$current+0 },
+   after=>{ adjustingLuminance=>$current+0 },
+   changed_settings=>{},
+   live_neighbor_preseed=>$live_neighbor,
+   reason=>"2.3_already_shaped_by_live_3_neighbor"
+  };
+ }
  my @source_ires=grep { calibrated_26pt_slot_for_ire($calibrated_slot_mask,$_) } (5,10,15);
  return 0 if(!@source_ires);
  my (%before,%after,%source,%changed_settings,%source_luminance);
@@ -4788,6 +4805,85 @@ sub apply_sdr_low_shadow_endpoint_seed_2_3 {
  };
  record_full_ddc_spine_seed_detail($detail);
  return $detail;
+}
+
+sub sdr_low_shadow_lower_neighbor_ire {
+ my ($ire)=@_;
+ return undef if(!defined($ire));
+ $ire+=0;
+ return 4 if(abs($ire-5) < 0.001);
+ return 3 if(abs($ire-4) < 0.001);
+ return 2.3 if(abs($ire-3) < 0.001);
+ return undef;
+}
+
+sub sdr_low_shadow_live_neighbor_preseed_adjustments {
+ my ($config,$arrays,$target,$step,$calibrated_slot_mask,$adjustments,$source)=@_;
+ return undef if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return undef if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($step) ne "HASH");
+ return undef if(ref($calibrated_slot_mask) ne "ARRAY" || ref($adjustments) ne "ARRAY");
+ return undef if(!autocal_step_is_low_shadow($step) || !defined($step->{"ire"}));
+ my $source_ire=$step->{"ire"}+0;
+ my $neighbor_ire=sdr_low_shadow_lower_neighbor_ire($source_ire);
+ return undef if(!defined($neighbor_ire));
+ return undef if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$neighbor_ire));
+ my $source_idx=$target->{"index"};
+ my $neighbor_idx=ddc_slot_index_for_ire($neighbor_ire);
+ return undef if(!defined($source_idx) || !defined($neighbor_idx));
+ my @out;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  my $setting=$adj->{"setting"};
+  next if(!defined($setting) || ref($arrays->{$setting}) ne "ARRAY");
+  my $adj_idx=defined($adj->{"index"}) ? ($adj->{"index"}+0) : $source_idx;
+  next if(abs($adj_idx-$source_idx) > 0.001);
+  next if(!defined($adj->{"delta"}));
+  next if($neighbor_idx >= @{$arrays->{$setting}});
+  my $current=defined($arrays->{$setting}[$neighbor_idx]) ? ($arrays->{$setting}[$neighbor_idx]+0) : 0;
+  my $delta=$adj->{"delta"}+0;
+  my $scale=($setting eq "adjustingLuminance") ? 1.0 : 0.50;
+  my $cap=($setting eq "adjustingLuminance") ? 1.25 : 0.50;
+  my $neighbor_delta=$delta*$scale;
+  $neighbor_delta=$cap if($neighbor_delta > $cap);
+  $neighbor_delta=-$cap if($neighbor_delta < -$cap);
+  my $next=round_ddc_quarter(clamp_ddc_value($current+$neighbor_delta));
+  next if(abs($next-$current) < 0.0001);
+  push @out,{
+   channel=>$adj->{"channel"},
+   setting=>$setting,
+   index=>$neighbor_idx+0,
+   ire=>$neighbor_ire+0,
+   current=>$current+0,
+   next=>$next+0,
+   delta=>$next-$current,
+   low_shadow_live_neighbor=>1,
+   source=>$source||"sdr_low_shadow_live_neighbor_preseed",
+   bridge_from_index=>$source_idx+0,
+   bridge_to_index=>$neighbor_idx+0,
+   bridge_weight=>$scale+0
+  };
+ }
+ return undef if(!@out);
+ $LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}={} if(ref($LG_AUTOCAL_STATE) eq "HASH" && ref($LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}) ne "HASH");
+ if(ref($LG_AUTOCAL_STATE) eq "HASH") {
+  $LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($neighbor_ire)}={
+   source_ire=>$source_ire+0,
+   target_ire=>$neighbor_ire+0,
+   source=>$source||"sdr_low_shadow_live_neighbor_preseed",
+   adjustments=>trace_adjustments_summary(\@out)
+  };
+ }
+ trace_109($step,"sdr_low_shadow_live_neighbor_preseed_plan",{
+  source=>$source||"sdr_low_shadow_live_neighbor_preseed",
+  source_ire=>$source_ire+0,
+  target_ire=>$neighbor_ire+0,
+  source_index=>$source_idx+0,
+  target_index=>$neighbor_idx+0,
+  adjustments=>trace_adjustments_summary(\@out),
+  current_values=>trace_target_values($arrays,$target)
+ });
+ return \@out;
 }
 
 sub apply_sdr_low_shadow_local_spine_preseed {
@@ -16149,6 +16245,8 @@ eval {
 				   my $before_de_for_adjustment=$de;
 					   my $before_lum_pct_for_adjustment=$lum_pct;
 					   my $before_score_for_adjustment=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+					   my $live_neighbor_adjustments=sdr_low_shadow_live_neighbor_preseed_adjustments($config,$arrays,$target,$read_step,\@calibrated_ddc_slots,$adjustments,"main_plan");
+					   push @{$adjustments},@{$live_neighbor_adjustments} if(ref($live_neighbor_adjustments) eq "ARRAY");
 		   my $before_values=trace_target_values($arrays,$target);
 			   foreach my $adj (@{$adjustments}) {
 			    next if(ref($adj) ne "HASH");
@@ -16894,6 +16992,8 @@ eval {
 			    my $before_de_for_polish=$de;
 			    my $before_lum_pct_for_polish=$lum_pct;
 			    my $before_score_for_polish=$paired_white_step ? $pair_score_now->() : guarded_autocal_result_score($de,$lum_pct,$read_step,$reading,$white_guard_y);
+			    my $live_neighbor_adjustments=sdr_low_shadow_live_neighbor_preseed_adjustments($config,$arrays,$target,$read_step,\@calibrated_ddc_slots,$adjustments,"fine_tune_plan");
+			    push @{$adjustments},@{$live_neighbor_adjustments} if(ref($live_neighbor_adjustments) eq "ARRAY");
 			    my $before_values=trace_target_values($arrays,$target);
 				    foreach my $adj (@{$adjustments}) {
 				     next if(ref($adj) ne "HASH");

@@ -192,7 +192,7 @@ assert(
 
 const lowShadowEndpointSource = sliceBetween(
   'sub apply_sdr_low_shadow_endpoint_seed_2_3',
-  'sub apply_sdr_low_shadow_local_spine_preseed'
+  'sub sdr_low_shadow_lower_neighbor_ire'
 );
 assert(
   lowShadowEndpointSource.includes('my $target_ire=2.3;') &&
@@ -202,11 +202,34 @@ assert(
     lowShadowEndpointSource.includes('my $scale=0.55;') &&
     lowShadowEndpointSource.includes('my $max_lift=7.00;') &&
     lowShadowEndpointSource.includes('$changed_settings{"adjustingLuminance"}') &&
+    lowShadowEndpointSource.includes('$LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)}') &&
+    lowShadowEndpointSource.includes('mode=>"sdr-low-shadow-endpoint-seed-2.3-skipped-live-neighbor"') &&
+    lowShadowEndpointSource.includes('reason=>"2.3_already_shaped_by_live_3_neighbor"') &&
     lowShadowEndpointSource.includes('pre_first_read_2_3_from_calibrated_low_anchors') &&
     !lowShadowEndpointSource.includes('whiteBalanceRed') &&
     !lowShadowEndpointSource.includes('whiteBalanceGreen') &&
     !lowShadowEndpointSource.includes('whiteBalanceBlue'),
   '2.3% should get a pre-first-read luma endpoint seed from calibrated 5/10/15 anchors, not a fixed RGB/offset chain'
+);
+
+const lowShadowLiveNeighborSource = sliceBetween(
+  'sub sdr_low_shadow_lower_neighbor_ire',
+  'sub apply_sdr_low_shadow_local_spine_preseed'
+);
+assert(
+  lowShadowLiveNeighborSource.includes('return 4 if(abs($ire-5) < 0.001);') &&
+    lowShadowLiveNeighborSource.includes('return 3 if(abs($ire-4) < 0.001);') &&
+    lowShadowLiveNeighborSource.includes('return 2.3 if(abs($ire-3) < 0.001);') &&
+    lowShadowLiveNeighborSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
+    lowShadowLiveNeighborSource.includes('lg_autocal_26_hdr20_seed_enabled($config)') &&
+    lowShadowLiveNeighborSource.includes('!autocal_step_is_low_shadow($step)') &&
+    lowShadowLiveNeighborSource.includes('return undef if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$neighbor_ire));') &&
+    lowShadowLiveNeighborSource.includes('my $scale=($setting eq "adjustingLuminance") ? 1.0 : 0.50;') &&
+    lowShadowLiveNeighborSource.includes('my $cap=($setting eq "adjustingLuminance") ? 1.25 : 0.50;') &&
+    lowShadowLiveNeighborSource.includes('low_shadow_live_neighbor=>1') &&
+    lowShadowLiveNeighborSource.includes('trace_109($step,"sdr_low_shadow_live_neighbor_preseed_plan"') &&
+    lowShadowLiveNeighborSource.includes('$LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($neighbor_ire)}'),
+  'SDR low-shadow writes should conservatively pre-shape only the next lower uncalibrated neighbor'
 );
 
 const mainLoopSource = sliceBetween(
@@ -218,6 +241,26 @@ assert(
     mainLoopSource.includes('trace_109($read_step,"sdr_low_shadow_endpoint_seed_2_3"') &&
     mainLoopSource.indexOf('apply_sdr_low_shadow_endpoint_seed_2_3') < mainLoopSource.indexOf('apply_sdr_low_shadow_local_spine_preseed'),
   '2.3% endpoint seed should run before the existing 3%-neighbor preseed and before the first measurement'
+);
+
+const mainAdjustmentApplySource = sliceBetween(
+  'my $before_adjustment_reading=clone_picture($reading);',
+  'trace_109($read_step,"adjustment_plan"'
+);
+assert(
+  mainAdjustmentApplySource.includes('sdr_low_shadow_live_neighbor_preseed_adjustments($config,$arrays,$target,$read_step,\\@calibrated_ddc_slots,$adjustments,"main_plan")') &&
+    mainAdjustmentApplySource.indexOf('sdr_low_shadow_live_neighbor_preseed_adjustments') < mainAdjustmentApplySource.indexOf('foreach my $adj (@{$adjustments})'),
+  'main low-shadow adjustment writes should append live lower-neighbor preseed adjustments before uploading DDC arrays'
+);
+
+const fineAdjustmentApplySource = sliceBetween(
+  'my $before_polish=clone_picture($reading);',
+  'trace_109($read_step,"fine_tune_plan"'
+);
+assert(
+  fineAdjustmentApplySource.includes('sdr_low_shadow_live_neighbor_preseed_adjustments($config,$arrays,$target,$read_step,\\@calibrated_ddc_slots,$adjustments,"fine_tune_plan")') &&
+    fineAdjustmentApplySource.indexOf('sdr_low_shadow_live_neighbor_preseed_adjustments') < fineAdjustmentApplySource.indexOf('foreach my $adj (@{$adjustments})'),
+  'fine low-shadow adjustment writes should also keep the lower neighbor shaped before measuring the current patch'
 );
 
 assert(
