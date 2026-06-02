@@ -1334,7 +1334,7 @@ sub lg_picture_reset_workflow (@) {
   whiteBalanceGreen => \@zero,
   whiteBalanceBlue => \@zero,
  };
-	 my ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$ddc_settings,$connect_timeout + 4,0,0,1);
+	 my ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$ddc_settings,$connect_timeout + 4,0,0,1,0,$generation);
 	 &lg_ddc_clear_state($ip,$active_picture_mode);
 	 my $picture_settings_after=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
 	 my @readback_keys=("pictureMode",@{&lg_picture_reset_default_keys()});
@@ -1830,6 +1830,19 @@ sub lg_lut_mismatch_summary (@) {
   first_mismatch => $first,
   sample_mismatches => \@samples,
  };
+}
+
+sub lg_ddc_reset_readback_unavailable_ok (@) {
+ my ($generation,$verify_lut,$expected_lut)=@_;
+ return 0 if(ref($verify_lut) eq "ARRAY");
+ return 0 if(ref($expected_lut) ne "ARRAY");
+ return 0 if(ref($generation) ne "HASH");
+ my $series=uc($generation->{"series"}||"");
+ my $webos_major=int($generation->{"webos_major"}||0);
+ my $ddc_only=$generation->{"ddc_only_white_balance"} ? 1 : 0;
+ return 1 if($series eq "C1");
+ return 1 if($ddc_only && $webos_major && $webos_major <= 6);
+ return 0;
 }
 
 sub lg_lut_linear_unity_readback (@) {
@@ -2993,7 +3006,7 @@ sub lg_ddc_virtual_picture_settings (@) {
 }
 
 sub lg_ddc_1d_white_balance_set (@) {
-	 my ($session,$ip,$picture_mode,$settings,$timeout,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload)=@_;
+	 my ($session,$ip,$picture_mode,$settings,$timeout,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$generation)=@_;
 	 my $ddc_layout=&lg_ddc_layout_name($settings,$picture_mode);
 	 local @LG_DDC_1D_LABELS=($ddc_layout eq "hdr20") ? @LG_DDC_1D_LABELS_HDR20 : @LG_DDC_1D_LABELS_SDR;
 	 local @LG_DDC_1D_INDEXES=($ddc_layout eq "hdr20") ? @LG_DDC_1D_INDEXES_HDR20 : @LG_DDC_1D_INDEXES_SDR;
@@ -3134,6 +3147,9 @@ sub lg_ddc_1d_white_balance_set (@) {
 		 my $upload_verified=0;
 		 my $reset_readback_contract="";
 		 my $upload_readback_contract="";
+		 my $reset_readback_unavailable=0;
+		 my $reset_verify_mismatch=undef;
+		 my $reset_linear_diagnostics=undef;
 		 if($reset_ddc_baseline || $verify_ddc_upload) {
 		  select(undef,undef,undef,0.35);
 		  my $verify_lut=&lg_get_current_1d_lut($session,$timeout);
@@ -3156,6 +3172,13 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   $baseline=$verify_lut;
 		   $lut=$verify_lut;
 		   $reset_readback_contract="linear-unity-readback";
+		   $upload_verified=1;
+		  }
+		  if(!$upload_verified && $reset_ddc_baseline && &lg_ddc_reset_readback_unavailable_ok($generation,$verify_lut,$lut)) {
+		   $reset_verify_mismatch=&lg_lut_mismatch_summary($verify_lut,$lut);
+		   $reset_linear_diagnostics=&lg_lut_linear_unity_diagnostics($verify_lut);
+		   $reset_readback_contract="write-accepted-readback-unavailable";
+		   $reset_readback_unavailable=1;
 		   $upload_verified=1;
 		  }
 		  if(!$upload_verified) {
@@ -3201,6 +3224,9 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified),
 		  ddc_upload_verified => &json_bool($upload_verified),
 		  ddc_reset_verify_contract => $reset_readback_contract,
+		  ddc_reset_readback_unavailable => &json_bool($reset_readback_unavailable),
+		  ddc_verify_mismatch => $reset_readback_unavailable ? $reset_verify_mismatch : undef,
+		  ddc_linear_unity_diagnostics => $reset_readback_unavailable ? $reset_linear_diagnostics : undef,
 		  ddc_upload_verify_contract => $upload_readback_contract,
 		  calibration_mode => &json_bool($keep_calibration_mode),
 		 }));
@@ -3326,7 +3352,7 @@ sub lg_picture_set_workflow (@) {
 
 		 my ($ddc_attempted,$ddc_result)=(0,undef);
 		 if($ddc_white_balance_only) {
-		  ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$settings_to_apply,$connect_timeout + 4,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload);
+		  ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$settings_to_apply,$connect_timeout + 4,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$generation);
 		 }
  if($ddc_attempted) {
   if(ref($ddc_result) eq "HASH" && ($ddc_result->{"status"}||"") eq "ok") {
@@ -3340,11 +3366,13 @@ sub lg_picture_set_workflow (@) {
     calibration_picture_mode => $ddc_result->{"calibration_picture_mode"}||"",
 	    ddc_target => $ddc_result->{"ddc_target"}||{},
 	    ddc_nonzero => $ddc_result->{"ddc_nonzero"}||{},
-		    ddc_slot_samples => $ddc_result->{"ddc_slot_samples"}||[],
-		    ddc_slot_samples_reference => $ddc_result->{"ddc_slot_samples_reference"}||[],
-			    ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
-			    ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
-			    calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
+			    ddc_slot_samples => $ddc_result->{"ddc_slot_samples"}||[],
+			    ddc_slot_samples_reference => $ddc_result->{"ddc_slot_samples_reference"}||[],
+				    ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
+				    ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
+				    ddc_reset_readback_unavailable => &json_bool($ddc_result->{"ddc_reset_readback_unavailable"}),
+				    ddc_verify_mismatch => $ddc_result->{"ddc_verify_mismatch"}||undef,
+				    calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
 			    calibration_mode_ensured => &json_bool($ddc_result->{"calibration_mode_ensured"}),
 			    cal_start_sent => &json_bool($ddc_result->{"cal_start_sent"}),
 			    caller_calibration_mode_active => &json_bool($ddc_result->{"caller_calibration_mode_active"}),
@@ -3362,6 +3390,9 @@ sub lg_picture_set_workflow (@) {
 	   ddc_reset_verified => &json_bool($ddc_result->{"ddc_reset_verified"}),
 		   ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
 		   ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
+		   ddc_reset_readback_unavailable => &json_bool($ddc_result->{"ddc_reset_readback_unavailable"}),
+		   ddc_verify_mismatch => $ddc_result->{"ddc_verify_mismatch"}||undef,
+		   ddc_linear_unity_diagnostics => $ddc_result->{"ddc_linear_unity_diagnostics"}||undef,
 		   calibration_mode => &json_bool($keep_calibration_mode),
 		   calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
 		   calibration_mode_ensured => &json_bool($ddc_result->{"calibration_mode_ensured"}),
