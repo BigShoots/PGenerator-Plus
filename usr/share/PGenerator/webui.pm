@@ -18533,8 +18533,11 @@ function meterAutoCalPanelLightCandidates(){
  const model=String(state.modelName||state.model_name||'').toLowerCase();
  const display=String((typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'').toLowerCase();
  const oled=(model.indexOf('oled')!==-1||display.indexOf('oled')!==-1||display.indexOf('qdoled')!==-1);
+ const legacyOled=/oled\d{2}(?:a1|b1|c1|g1|z1|r1|w1|a9|b9|c9|e9|g9|w9|b8|c8|e8|g8|w8)|(?:^|[^a-z0-9])(?:a1|b1|c1|g1|z1|r1|w1|cx|gx|bx|c9|b9|e9|w9|c8|b8|e8|w8)(?:[^a-z0-9]|$)/i.test(model);
  return oled
-  ? [{key:'backlight',label:'OLED pixel brightness'},{key:'oledLight',label:'OLED light'},{key:'oledPixelBrightness',label:'OLED pixel brightness'}]
+  ? (legacyOled
+   ? [{key:'oledLight',label:'OLED light'},{key:'backlight',label:'Backlight'},{key:'oledPixelBrightness',label:'OLED pixel brightness'}]
+   : [{key:'oledPixelBrightness',label:'OLED pixel brightness'},{key:'oledLight',label:'OLED light'},{key:'backlight',label:'Backlight'}])
   : [{key:'backlight',label:'Backlight'},{key:'oledPixelBrightness',label:'OLED pixel brightness'},{key:'oledLight',label:'OLED light'}];
 }
 
@@ -18578,11 +18581,17 @@ function meterAutoCalSetPanelLight(panel){
  if(!panel) return false;
  const value=Number(panel.value);
  if(!panel.key||!Number.isFinite(value)) return false;
+ const previousKey=meterAutoCalPanelLight.key;
+ const previousValue=meterAutoCalPanelLight.value;
  meterAutoCalPanelLight.key=panel.key;
  meterAutoCalPanelLight.label=panel.label||meterAutoCalPanelLightLabel(panel.key);
  meterAutoCalPanelLight.value=value;
  if(!Array.isArray(meterAutoCalPanelLight.candidates)||!meterAutoCalPanelLight.candidates.length){
   meterAutoCalPanelLight.candidates=meterAutoCalPanelLightCandidates();
+ }
+ if((previousKey!==panel.key||Number(previousValue)!==value)&&typeof console!=='undefined'&&console&&console.debug){
+  const state=window.lgStatusState||{};
+  console.debug('LG AutoCal panel-light key selected',{key:panel.key,label:meterAutoCalPanelLight.label,value:value,model:state.modelName||state.model_name||'',candidates:meterAutoCalPanelLight.candidates});
  }
  return true;
 }
@@ -18622,6 +18631,8 @@ function meterAutoCalUpdatePanelLightUi(){
  const input=document.getElementById('meterAutoCalPanelLightInput');
  if(labelEl) labelEl.textContent=label;
  if(valueEl) valueEl.textContent=String(displayValue)+(panelBusy?' ...':(queued?' queued':''));
+ if(labelEl) labelEl.title=meterAutoCalPanelLight.key?('LG key: '+meterAutoCalPanelLight.key):'';
+ if(valueEl) valueEl.title=meterAutoCalPanelLight.key?('LG key: '+meterAutoCalPanelLight.key):'';
  if(range&&Number.isFinite(numericValue)&&document.activeElement!==range) range.value=String(Math.round(numericValue));
  if(input&&Number.isFinite(numericValue)&&document.activeElement!==input) input.value=String(Math.round(numericValue));
  const continueBtn=document.getElementById('meterAutoCalContinueBtn');
@@ -18632,6 +18643,7 @@ function meterAutoCalUpdatePanelLightUi(){
  const text=document.getElementById('meterAutoCalBrightnessText');
  if(!text) return;
  text.textContent=label+': '+displayValue+(panelBusy?' (updating...)':(queued?' (queued...)':''));
+ text.title=meterAutoCalPanelLight.key?('LG key: '+meterAutoCalPanelLight.key):'';
 }
 
 function meterAutoCalPanelLightOverlayMessage(message,isError){
@@ -19848,10 +19860,8 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
  meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Watch the live 100% white reading, then click Continue when ready.'});
  meterAutoCalSeedPanelLightFromDisplayControl();
  meterAutoCalUpdatePanelLightUi();
- if(!meterAutoCalPanelLight.key||meterAutoCalPanelLight.value==null||!Number.isFinite(Number(meterAutoCalPanelLight.value))){
-  meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Loading the LG panel-light control before the live white read...'});
-  await meterAutoCalLoadPanelLightValue(true);
- }
+ meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Loading the LG panel-light control before the live white read...'});
+ await meterAutoCalLoadPanelLightValue(true);
  meterAutoCalUpdatePanelLightUi();
  await meterDisplayPatch(whiteStep,{fresh:false});
  meterCurrentPatchStep=null;
