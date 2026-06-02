@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # build_pgenerator_plus_image.sh — Overlay PGenerator+ onto a compatible
-# user-supplied BiasiLinux/PGenerator base image.
+# user-supplied base image.
 
 set -euo pipefail
 
@@ -13,6 +13,12 @@ ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof i1d3ccss oeminst dispread dispcal)
 ARGYLL_RUNTIME_DIR=""
 TARGET="pi4-biasi"
+PI5_TARGET_MANIFEST="$REPO_ROOT/tools/image-targets/pi5-bookworm-armhf.env"
+PI5_TARGET_DESCRIPTION="Raspberry Pi 5 Bookworm armhf"
+PI5_OUTPUT_SUFFIX="pi5_bookworm_armhf"
+PI5_BOOT_LABEL="BOOT_PG"
+PI5_ROOT_LABEL="/_PG"
+PI5_REQUIRED_BOOT_KERNEL="kernel_2712.img"
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -38,14 +44,14 @@ die() {
 usage() {
  cat <<'EOF'
 Usage:
-  sudo ./tools/build_pgenerator_plus_image.sh --base-image /path/to/BiasiLinux.img [options]
+  sudo ./tools/build_pgenerator_plus_image.sh --base-image /path/to/base.img [options]
 
 Required:
-  --base-image PATH      Compatible BiasiLinux/PGenerator base image to copy.
+  --base-image PATH      Compatible base image to copy.
 
 Optional:
   --output PATH          Output image path.
-                         Default: build/PGenerator_Plus_v<version>_from_biasi.img
+                         Default depends on --target.
   --target NAME          Image target to prepare.
                          pi4-biasi             Existing behavior; requires a
                                                compatible Biasi/PGenerator base.
@@ -67,6 +73,7 @@ Notes:
     the expected distro dependencies and account setup.
   - The pi5-bookworm-armhf target expects a Raspberry Pi OS Bookworm Lite
     armhf base image and seeds the PGenerator account/compatibility state.
+    Its target manifest is tools/image-targets/pi5-bookworm-armhf.env.
   - In the current source tree only `spotread` is bundled. Use
     --argyll-runtime-dir to add the headless Argyll runtime slice used for
     on-device TI3 -> CCSS conversion. `ccxxmake` is required; matching helper
@@ -88,9 +95,32 @@ require_commands() {
    missing+=("$cmd")
   fi
  done
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  if ! command -v e2label >/dev/null 2>&1; then
+   missing+=("e2label")
+  fi
+  if ! command -v fatlabel >/dev/null 2>&1 && ! command -v dosfslabel >/dev/null 2>&1; then
+   missing+=("fatlabel or dosfslabel")
+  fi
+ fi
  if [[ ${#missing[@]} -gt 0 ]]; then
   die "Missing required tools: ${missing[*]}"
  fi
+}
+
+load_target_manifest() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ [[ -f "$PI5_TARGET_MANIFEST" ]] || die "Missing target manifest: $PI5_TARGET_MANIFEST"
+ # shellcheck disable=SC1090
+ . "$PI5_TARGET_MANIFEST"
+
+ [[ -n "$PI5_TARGET_DESCRIPTION" ]] || die "Pi 5 target manifest is missing PI5_TARGET_DESCRIPTION"
+ [[ -n "$PI5_OUTPUT_SUFFIX" ]] || die "Pi 5 target manifest is missing PI5_OUTPUT_SUFFIX"
+ [[ -n "$PI5_BOOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_BOOT_LABEL"
+ [[ -n "$PI5_ROOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_ROOT_LABEL"
+ [[ -n "$PI5_REQUIRED_BOOT_KERNEL" ]] || die "Pi 5 target manifest is missing PI5_REQUIRED_BOOT_KERNEL"
+ log "Loaded target manifest: $PI5_TARGET_MANIFEST ($PI5_TARGET_DESCRIPTION)"
 }
 
 repo_version() {
@@ -198,7 +228,7 @@ prepare_paths() {
  if [[ -z "$OUTPUT_IMAGE" ]]; then
   case "$TARGET" in
    pi5-bookworm-armhf)
-    OUTPUT_IMAGE="$REPO_ROOT/build/PGenerator_Plus_v${version}_pi5_bookworm_armhf.img"
+    OUTPUT_IMAGE="$REPO_ROOT/build/PGenerator_Plus_v${version}_${PI5_OUTPUT_SUFFIX}.img"
     ;;
    *)
     OUTPUT_IMAGE="$REPO_ROOT/build/PGenerator_Plus_v${version}_from_biasi.img"
@@ -330,6 +360,7 @@ check_base_image() {
 
 check_pi5_bookworm_base_image() {
  local problems=()
+ local os_release="$ROOT_MOUNT/etc/os-release"
 
  [[ -x "$ROOT_MOUNT/usr/bin/perl" ]] || problems+=("missing /usr/bin/perl")
  [[ -x "$ROOT_MOUNT/usr/bin/sudo" ]] || problems+=("missing /usr/bin/sudo")
@@ -338,6 +369,22 @@ check_pi5_bookworm_base_image() {
  [[ -f "$ROOT_MOUNT/etc/group" ]] || problems+=("missing /etc/group")
  [[ -f "$BOOT_MOUNT/config.txt" ]] || problems+=("missing boot config.txt")
  [[ -f "$BOOT_MOUNT/cmdline.txt" ]] || problems+=("missing boot cmdline.txt")
+ [[ -f "$BOOT_MOUNT/$PI5_REQUIRED_BOOT_KERNEL" ]] || problems+=("missing boot $PI5_REQUIRED_BOOT_KERNEL")
+
+ if [[ -f "$os_release" ]]; then
+  if ! grep -Eq '^VERSION_CODENAME=bookworm$|^VERSION=.*bookworm' "$os_release"; then
+   problems+=("base is not Debian/Raspberry Pi OS Bookworm")
+  fi
+  if ! grep -Eq '^ID=(raspbian|debian)$|^ID_LIKE=.*debian' "$os_release"; then
+   problems+=("base is not Raspberry Pi OS/Debian-like")
+  fi
+ else
+  problems+=("missing /etc/os-release")
+ fi
+
+ if [[ ! -e "$ROOT_MOUNT/lib/ld-linux-armhf.so.3" ]] && [[ ! -e "$ROOT_MOUNT/lib/arm-linux-gnueabihf/ld-linux-armhf.so.3" ]]; then
+  problems+=("missing armhf dynamic loader")
+ fi
 
  if [[ ${#problems[@]} -gt 0 ]]; then
   printf 'Pi 5 Bookworm base compatibility check failed:\n' >&2
@@ -507,41 +554,45 @@ configure_pi5_bookworm_boot() {
  [[ -f "$cmdline_file" ]] || die "Boot partition is missing cmdline.txt"
 
  log "Applying Raspberry Pi 5 Bookworm boot defaults"
- ensure_config_line "$config_file" "arm_64bit" "1"
- if [[ -f "$BOOT_MOUNT/kernel_2712.img" ]]; then
-  ensure_config_line "$config_file" "kernel" "kernel_2712.img"
+
+ if grep -Ev '^[[:space:]]*(#|$)' "$config_file" | grep -Eq '^[[:space:]]*dtoverlay=vc4-fkms-v3d([,[:space:]]|$)'; then
+  die "Pi 5 target requires full KMS; boot config still enables vc4-fkms-v3d"
+ fi
+
+ if grep -Ev '^[[:space:]]*(#|$)' "$config_file" | grep -Eq '^[[:space:]]*dtoverlay=vc4-kms-v3d([,[:space:]]|$)'; then
+  log "Boot config already enables vc4-kms-v3d"
  else
-  log "WARNING: kernel_2712.img was not found on the boot partition"
+  {
+   printf '\n# PGenerator+ Pi 5 Bookworm target\n'
+   printf '[pi5]\n'
+   printf 'dtoverlay=vc4-kms-v3d\n'
+   printf '[all]\n'
+  } >> "$config_file"
+  log "Added Pi 5 vc4-kms-v3d boot config block"
  fi
- if ! grep -Eq '^[[:space:]]*dtoverlay=vc4-kms-v3d(,.*)?[[:space:]]*$' "$config_file"; then
-  printf '%s\n' "dtoverlay=vc4-kms-v3d" >> "$config_file"
- fi
- sed -i -E '/^[[:space:]]*(dtoverlay=vc4-fkms-v3d|hdmi_enable_4kp60=)/d' "$config_file"
 
  cmdline="$(tr -d '\n' < "$cmdline_file")"
- for token in quiet splash plymouth.ignore-serial-consoles; do
-  cmdline=" ${cmdline} "
-  cmdline="${cmdline// $token / }"
-  cmdline="${cmdline#" "}"
-  cmdline="${cmdline%" "}"
- done
- grep -qw 'loglevel=1' <<<"$cmdline" || cmdline="$cmdline loglevel=1"
- printf '%s\n' "$cmdline" > "$cmdline_file"
+ if ! grep -Eq '(^| )rootwait( |$)' <<<"$cmdline"; then
+  printf '%s\n' "$cmdline rootwait" > "$cmdline_file"
+  log "Ensured rootwait in Pi 5 boot cmdline.txt"
+ fi
 }
 
 label_pi5_partitions() {
  [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
 
  if command -v fatlabel >/dev/null 2>&1; then
-  fatlabel "$BOOT_PARTITION" BOOT_PG || log "WARNING: could not set boot partition label to BOOT_PG"
+  fatlabel "$BOOT_PARTITION" "$PI5_BOOT_LABEL" || die "Could not set boot partition label to $PI5_BOOT_LABEL"
+ elif command -v dosfslabel >/dev/null 2>&1; then
+  dosfslabel "$BOOT_PARTITION" "$PI5_BOOT_LABEL" || die "Could not set boot partition label to $PI5_BOOT_LABEL"
  else
-  log "WARNING: fatlabel not installed; boot partition label was not changed to BOOT_PG"
+  die "fatlabel/dosfslabel not installed; boot partition label was not changed to $PI5_BOOT_LABEL"
  fi
 
  if command -v e2label >/dev/null 2>&1; then
-  e2label "$ROOT_PARTITION" /_PG || log "WARNING: could not set root partition label to /_PG"
+  e2label "$ROOT_PARTITION" "$PI5_ROOT_LABEL" || die "Could not set root partition label to $PI5_ROOT_LABEL"
  else
-  log "WARNING: e2label not installed; root partition label was not changed to /_PG"
+  die "e2label not installed; root partition label was not changed to $PI5_ROOT_LABEL"
  fi
 }
 
@@ -805,6 +856,7 @@ finalize_image() {
 
 main() {
  parse_args "$@"
+ load_target_manifest
  require_root
  require_commands
  prepare_paths
@@ -812,6 +864,7 @@ main() {
  attach_loop_device
  discover_root_partition
  discover_boot_partition
+ label_pi5_partitions
  mount_root_partition
  mount_boot_partition
  check_base_image
@@ -820,9 +873,10 @@ main() {
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_bookworm_boot
- label_pi5_partitions
- ensure_boot_ramdisk_size
- patch_boot_initramfs_rootwait
+ if [[ "$TARGET" != "pi5-bookworm-armhf" ]]; then
+  ensure_boot_ramdisk_size
+  patch_boot_initramfs_rootwait
+ fi
  fix_permissions
  validate_release_root
  finalize_image
