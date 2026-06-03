@@ -4711,6 +4711,13 @@ sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask {
    $mask[$idx]=1 if(defined($idx) && $idx < @mask);
   }
  }
+ if(sdr_top_cluster_preshape_protection_enabled($config)) {
+  foreach my $ire (sdr_top_cluster_preshape_ires()) {
+   next if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$ire));
+   my $idx=ddc_slot_index_for_ire($ire);
+   $mask[$idx]=1 if(defined($idx) && $idx < @mask);
+  }
+ }
  return \@mask;
 }
 
@@ -5121,7 +5128,7 @@ sub apply_sdr_top_body_blend_seed_overrides {
  return 0 if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,$body_ire));
  my $body_idx=ddc_slot_index_for_ire($body_ire);
  return 0 if(!defined($body_idx));
- if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,99)) {
+ if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,99) && !sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,99)) {
   my $target_ire=99;
   my $target_idx=ddc_slot_index_for_ire($target_ire);
   my $deltas=full_ddc_spine_seed_correction_deltas($target_ire,$calibrated_slot_mask);
@@ -5250,6 +5257,7 @@ sub apply_sdr_top_body_blend_seed_overrides {
  foreach my $target_ire (qw(99 95)) {
   next if(!exists($spec{$target_ire}));
   next if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));
+  next if(sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,$target_ire));
   my $target_idx=ddc_slot_index_for_ire($target_ire);
   next if(!defined($target_idx));
   my $entry=$spec{$target_ire};
@@ -5317,6 +5325,7 @@ sub apply_full_ddc_spine_seed_corrections {
  foreach my $ire (qw(105 99 95 90)) {
   my $idx=ddc_slot_index_for_ire($ire);
   next if(!defined($idx) || $calibrated_slot_mask->[$idx]);
+  next if(sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,$ire));
   my $deltas=full_ddc_spine_seed_correction_deltas($ire,$calibrated_slot_mask);
   next if(ref($deltas) ne "HASH");
   if(abs(($ire+0)-105) < 0.001) {
@@ -9849,6 +9858,26 @@ sub sdr_top_cluster_preshape_enabled {
 
 sub sdr_top_cluster_preshape_ires {
  return (105,99,95);
+}
+
+sub sdr_top_cluster_preshape_protection_enabled {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config) || autocal_config_is_post_series_adjust($config) || autocal_config_is_post_series_revert($config));
+ return 0 if(ref($LG_AUTOCAL_STATE) ne "HASH" || ref($LG_AUTOCAL_STATE->{"sdr_top_cluster_preshape"}) ne "HASH");
+ return (($LG_AUTOCAL_STATE->{"sdr_top_cluster_preshape"}{"status"}||"") eq "complete") ? 1 : 0;
+}
+
+sub sdr_top_cluster_preshape_slot_protected {
+ my ($config,$calibrated_slot_mask,$ire)=@_;
+ return 0 if(!defined($ire));
+ return 0 if(!sdr_top_cluster_preshape_protection_enabled($config));
+ return 0 if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$ire));
+ foreach my $protected_ire (sdr_top_cluster_preshape_ires()) {
+  return 1 if(abs(($ire+0)-($protected_ire+0)) < 0.001);
+ }
+ return 0;
 }
 
 sub sdr_top_cluster_preshape_rgb_adjustments {
@@ -15332,11 +15361,63 @@ eval {
 			   });
 			   return;
 			  }
+			  my $active_best_entry=lg_autocal_26_best_known_for_step($state,$final_read_step);
+			  my $active_best_de=(ref($active_best_entry) eq "HASH" && defined($active_best_entry->{"delta_e"})) ? ($active_best_entry->{"delta_e"}+0) : undef;
+			  my $active_guard_limit=defined($active_best_de) ? ($active_best_de+0.40) : ($target_delta+0.50);
+			  my $active_guard_floor=$target_delta+0.35;
+			  $active_guard_limit=$active_guard_floor if($active_guard_limit < $active_guard_floor);
+			  my $read_active_top_slot_guard=sub {
+			   my ($iteration,$reason)=@_;
+			   my $active_step=fixed_lg_autocal_step($config,$final_read_step);
+			   $active_step=clone_picture($active_step);
+			   mark_lg_autocal_hdr20_sdr_adjustment_method_step($config,$active_step);
+			   $state->{"phase"}="reading";
+			   $state->{"current_name"}="Auto Cal $final_label";
+			   $state->{"message"}="Verifying $final_label after 100% legal-white recovery";
+			   set_state_active_step($state,$active_step,$final_target);
+			   write_state($state);
+			   my ($active_reading,$active_error,$active_target_y)=read_step_guarded(
+			    $config,$active_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$final_label
+			   );
+			   die $active_error if($active_error && $active_error ne "cancelled");
+			   return undef if($active_error && $active_error eq "cancelled");
+			   return undef if(ref($active_reading) ne "HASH");
+			   $active_target_y=effective_target_luminance_for_autocal_reading($white_y,$active_step,$active_reading,$target_gamma,$signal_mode,$config,$state)
+			    if(!defined($active_target_y));
+			   annotate_reading_target($active_reading,$white_y,$active_target_y,$target_x,$target_y);
+			   my $active_de=autocal_delta_e_for_step($config,$active_reading,$active_step,$white_y,$target_x,$target_y,$active_target_y);
+			   my $active_lum_pct=luminance_error_percent($active_reading,$active_target_y);
+			   my $active_metrics=sdr_top_legal_white_rgb_metrics($active_reading,$active_step);
+			   my $accepted=(defined($active_de) && $active_de <= $active_guard_limit) ? 1 : 0;
+			   my $guard={
+			    iteration=>defined($iteration) ? $iteration+0 : undef,
+			    reason=>$reason||"legal_white_recovery_candidate",
+			    accepted=>$accepted ? JSON::PP::true : JSON::PP::false,
+			    delta_e=>defined($active_de) ? $active_de+0 : undef,
+			    luminance_error_pct=>defined($active_lum_pct) ? $active_lum_pct+0 : undef,
+			    target_luminance=>defined($active_target_y) ? $active_target_y+0 : undef,
+			    measured_luminance=>luminance($active_reading),
+			    guard_limit=>$active_guard_limit+0,
+			    prior_best_delta_e=>defined($active_best_de) ? $active_best_de+0 : undef,
+			    metrics=>$active_metrics,
+			    reading=>trace_reading_summary($active_reading),
+			    target_values=>trace_target_values($arrays,$final_target)
+			   };
+			   $state->{"readings"}=merge_reading($state->{"readings"},$active_reading);
+			   $state->{"current_luminance"}=luminance($active_reading);
+			   $state->{"current_delta_e"}=defined($active_de) ? $active_de+0 : undef;
+			   $state->{"luminance_error_pct"}=defined($active_lum_pct) ? $active_lum_pct+0 : undef;
+			   set_state_target_step_luminance($state,$active_target_y);
+			   trace_109($active_step,"sdr_top_legal_white_active_slot_verify",$guard);
+			   write_state($state);
+			   return $guard;
+			  };
 			  my %tried;
 			  my $best_score=$metrics->{"score"}+0;
 			  my $best_metrics=clone_picture($metrics);
 			  my $best_arrays=clone_arrays($arrays);
 			  my $best_reading=clone_picture($legal_reading);
+			  my $best_active_guard;
 			  my $accepted=0;
 			  my $restored=0;
 			  for(my $iter=1;$iter<=$limit;$iter++) {
@@ -15377,16 +15458,23 @@ eval {
 			   my $improved=0;
 			   $improved=1 if($candidate_score + 0.002 < $best_score);
 			   $improved=1 if(($candidate_metrics->{"max_abs"}||0)+0.003 < ($best_metrics->{"max_abs"}||999) && $candidate_score <= $best_score+0.010);
+			   my $active_guard;
+			   if($improved) {
+			    $active_guard=$read_active_top_slot_guard->($iter,"candidate_improved_legal_white");
+			    $improved=0 if(ref($active_guard) ne "HASH" || !$active_guard->{"accepted"});
+			   }
 			   if($improved) {
 			    $accepted++;
 			    $best_score=$candidate_score;
 			    $best_metrics=clone_picture($candidate_metrics);
 			    $best_arrays=clone_arrays($arrays);
 			    $best_reading=clone_picture($candidate_reading);
+			    $best_active_guard=clone_picture($active_guard) if(ref($active_guard) eq "HASH");
 			    $metrics=$candidate_metrics;
 			    trace_109($candidate_step,"sdr_top_legal_white_rgb_recovery_accept",{
 			     iteration=>$iter+0,
 			     candidate_metrics=>$candidate_metrics,
+			     active_slot_guard=>$active_guard,
 			     best_score=>$best_score+0,
 			     values=>trace_target_values($arrays,$final_target),
 			     luminance_ignored=>JSON::PP::true
@@ -15398,6 +15486,7 @@ eval {
 			     iteration=>$iter+0,
 			     candidate_metrics=>$candidate_metrics,
 			     best_metrics=>$best_metrics,
+			     active_slot_guard=>$active_guard,
 			     candidate_score=>$candidate_score+0,
 			     best_score=>$best_score+0,
 			     restore_values=>trace_target_values($best_arrays,$final_target),
@@ -15416,6 +15505,7 @@ eval {
 			   accepted=>$accepted+0,
 			   restored=>$restored+0,
 			   best_metrics=>$best_metrics,
+			   active_slot_guard=>$best_active_guard,
 			   top_cluster_slope=>$slope,
 			   target_values=>trace_target_values($arrays,$final_target)
 			  };
@@ -15424,6 +15514,7 @@ eval {
 			   accepted=>$accepted+0,
 			   restored=>$restored+0,
 			   best_metrics=>$best_metrics,
+			   active_slot_guard=>$best_active_guard,
 			   top_cluster_slope=>$slope,
 			   target_values=>trace_target_values($arrays,$final_target),
 			   best_reading=>trace_reading_summary($best_reading)
@@ -15433,6 +15524,7 @@ eval {
 			    accepted=>$accepted+0,
 			    restored=>$restored+0,
 			    best_metrics=>$best_metrics,
+			    active_slot_guard=>$best_active_guard,
 			    top_cluster_slope=>$slope
 			   }
 				  );
