@@ -6449,6 +6449,84 @@ sub webui_pattern_uploaded_diag_video_sequence_pattern (@) {
  return &webui_pattern_frame_sequence_pattern($dir,$w,$h);
 }
 
+sub webui_pattern_patch_request_log_path (@) {
+ my $path=$calman_patch_log || "/var/log/PGenerator/calman-patches.log";
+ my $dir=$path;
+ $dir=~s|/[^/]+$||;
+ $dir="/var/log/PGenerator" if($dir eq "");
+ if($dir ne "" && ! -d $dir) {
+  mkdir $dir;
+ }
+ return (-d $dir) ? "$dir/patch-requests.log" : "/tmp/patch-requests.log";
+}
+
+sub webui_pattern_patch_log_clean (@) {
+ my $value=shift;
+ my $limit=int(shift || 0);
+ $value="" if(!defined $value);
+ $value=~s/[\r\n\t]/ /g;
+ $value=~s/\s+/ /g;
+ $value=~s/^\s+|\s+$//g;
+ $value=substr($value,0,$limit) if($limit > 0 && length($value) > $limit);
+ return $value;
+}
+
+sub webui_pattern_patch_body_meta (@) {
+ my $body=shift;
+ my @keys=("request_id","ire","patch_ire","stimulus","transport_stimulus",
+           "analysis_ire","target_ire","percent","pct","signal_pct",
+           "signal_r_pct","signal_g_pct","signal_b_pct","r_pct","g_pct",
+           "b_pct","r_percent","g_percent","b_percent","series_type");
+ my @meta=();
+ foreach my $key (@keys) {
+  my $value;
+  if($body =~ /"\Q$key\E"\s*:\s*"([^"]{0,160})"/) {
+   $value=$1;
+  }
+  elsif($body =~ /"\Q$key\E"\s*:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/) {
+   $value=$1;
+  }
+  next if(!defined $value);
+  push(@meta,"$key=".&webui_pattern_patch_log_clean($value,160));
+ }
+ return join(";",@meta);
+}
+
+sub webui_pattern_log_patch_request (@) {
+ my %f=@_;
+ my $path=&webui_pattern_patch_request_log_path();
+ my $ts=Time::HiRes::time();
+ my $local=scalar(localtime());
+ my $pattern=defined($f{pattern}) ? $f{pattern} : "";
+ $pattern=~s/[\r\n]+/|/g;
+ $pattern=&webui_pattern_patch_log_clean($pattern,1800);
+ $pattern=~s/\s*\|\s*/|/g;
+ my $range="source_range=".($f{source_range}//"")
+          .";signal_range=".($f{signal_range}//"")
+          .";pattern_signal_range=".($f{pattern_signal_range}//"")
+          .";transport_signal_range=".($f{transport_signal_range}//"");
+ my @fields=(
+  sprintf("%.6f",$ts),
+  "local=".&webui_pattern_patch_log_clean($local,80),
+  "source=webui",
+  "handler=webui_pattern",
+  "raw=".&webui_pattern_patch_log_clean($f{raw},80),
+  "scaled=".&webui_pattern_patch_log_clean($f{scaled},80),
+  "input_max=".&webui_pattern_patch_log_clean($f{input_max},40),
+  "bits=".&webui_pattern_patch_log_clean($f{bits},40),
+  "range=".&webui_pattern_patch_log_clean($range,180),
+  "win=".&webui_pattern_patch_log_clean($f{win},40),
+  "size=".&webui_pattern_patch_log_clean($f{size},40),
+  "bg=".&webui_pattern_patch_log_clean($f{bg},80),
+  "meta=".&webui_pattern_patch_log_clean($f{meta},700),
+  "pattern=$pattern"
+ );
+ if(open(my $fh,">>",$path)) {
+  print $fh join("\t",@fields)."\n";
+  close($fh);
+ }
+}
+
 sub webui_pattern_diag_video_fallback_name (@) {
  my $name=shift;
  return "black_clipping" if($name eq "avs_hd_709_black_clipping");
@@ -6481,6 +6559,9 @@ sub webui_pattern (@) {
 	 my $w=$w_s || 1920; my $h=$h_s || 1080;
  my $pat=""; my $img=&webui_pattern_diag_image_file($name); my $pat_bits=&webui_pattern_effective_bits("",$signal_mode);
  my $pattern_debug_extra="";
+ my $patch_raw_rgb=""; my $patch_scaled_rgb=""; my $patch_input_max="";
+ my $patch_win_pct=""; my $patch_size_token=""; my $patch_bg_rgb="";
+ my $patch_body_meta="";
 my $diag_video=&webui_pattern_diag_video_path($name);
  my $diag_video_fallback=&webui_pattern_diag_video_fallback_name($name);
  my $white_rgb=&webui_pattern_scale_triplet(255,255,255,255,$pat_bits);
@@ -6631,6 +6712,13 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
    my $px=int(($w-$pw)/2); my $py=int(($h-$ph)/2);
    $pat="DRAW=RECTANGLE\nDIM=$pw,$ph\nRGB=$pr,$pg,$pb\nBG=$bg_rgb\nPOSITION=$px,$py\nEND=1\n";
   }
+  $patch_raw_rgb="$raw_pr,$raw_pg,$raw_pb";
+  $patch_scaled_rgb="$pr,$pg,$pb";
+  $patch_input_max=$input_max;
+  $patch_win_pct=$win_pct;
+  $patch_size_token=$sz;
+  $patch_bg_rgb=$bg_rgb;
+  $patch_body_meta=&webui_pattern_patch_body_meta($body);
  }
  # Stop — full black (idle)
  elsif($pat eq "" && $name eq "stop") { $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$black_rgb\nBG=$black_rgb\nPOSITION=0,0\nEND=1\n"; }
@@ -6653,6 +6741,21 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
  }
  # Write the pattern
  $pat="PATTERN_NAME=$name\nBITS=$pat_bits\n".$pat."FRAME=$frame_default\n";
+ if($name eq "patch") {
+  &webui_pattern_log_patch_request(raw=>$patch_raw_rgb,
+                                   scaled=>$patch_scaled_rgb,
+                                   input_max=>$patch_input_max,
+                                   bits=>$pat_bits,
+                                   source_range=>$source_range,
+                                   signal_range=>$signal_range,
+                                   pattern_signal_range=>$pattern_signal_range,
+                                   transport_signal_range=>$transport_signal_range,
+                                   win=>$patch_win_pct,
+                                   size=>$patch_size_token,
+                                   bg=>$patch_bg_rgb,
+                                   meta=>$patch_body_meta,
+                                   pattern=>$pat);
+ }
  open(my $fh,">","$command_file.tmp");
  print $fh $pat;
  close($fh);
