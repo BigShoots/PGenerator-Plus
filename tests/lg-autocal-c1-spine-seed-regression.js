@@ -17,8 +17,21 @@ const skipMaskSource = sliceBetween(
 );
 assert(
   skipMaskSource.includes('foreach my $ire (lg_autocal_26_full_ddc_spine_anchor_ddc_ires($config))') &&
-    skipMaskSource.includes('$mask[$idx]=1;'),
-  'full-DDC spine propagation must keep calibrated spine anchors protected'
+    skipMaskSource.includes('$mask[$idx]=1;') &&
+    skipMaskSource.includes('sdr_full_spine_below_5_seed_skip_ires') &&
+    skipMaskSource.includes('lc($config->{"signal_mode"}||"sdr") eq "sdr"') &&
+    skipMaskSource.includes('!lg_autocal_26_hdr20_seed_enabled($config)'),
+  'full-DDC spine propagation must keep calibrated spine anchors protected and skip SDR-only below-5 shadow slots'
+);
+
+const below5SkipSource = sliceBetween(
+  'sub sdr_full_spine_below_5_seed_skip_ires',
+  'sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask'
+);
+assert(
+  /return \(2\.3,3,4\);\s*}/.test(below5SkipSource) &&
+    !/return \(2\.3,3,4,5\)/.test(below5SkipSource),
+  'SDR full-spine seed skip should exclude only 2.3/3/4 while preserving 5% seeding'
 );
 
 const shadowSource = sliceBetween(
@@ -87,7 +100,15 @@ assert(
     topBlendSource.includes('rgb_top_weight=>defined($entry->{"rgb_top_weight"})') &&
     topBlendSource.includes('max_from_body=>$entry->{"max_from_body"}') &&
     topBlendSource.includes('record_full_ddc_spine_seed_detail') &&
-    topBlendSource.includes('sdr_top_body_weighted_seed_from_80_and_measured_105'),
+    topBlendSource.includes('sdr_top_body_weighted_seed_from_80_and_measured_105') &&
+    topBlendSource.includes('sub apply_sdr_top_seed_red_shape_guard') &&
+    topBlendSource.includes('mode=>"sdr-top-red-shape-guard"') &&
+    topBlendSource.includes('reason=>"damp_sdr_top_seed_red_shape_from_calibrated_80"') &&
+    topBlendSource.includes('my %max_from_body=(95=>1.25,99=>1.00,105=>1.25);') &&
+    topBlendSource.includes('foreach my $target_ire (qw(95 99 105))') &&
+    topBlendSource.includes('next if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));') &&
+    topBlendSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
+    topBlendSource.includes('lg_autocal_26_hdr20_seed_enabled($config)'),
   '99% seed should be traceable local-from-80 while 95% keeps only a luma-weighted 105 blend and 90 gates bad 99'
 );
 
@@ -107,6 +128,26 @@ assert(
     !topBlendSource.includes('top_weight=>0.22'),
   'retired 99% body blend should stay retired; 99% now uses local 80% offsets instead of 105% shape'
 );
+
+function clampTopRedSeed(bodyRed, current, maxFromBody) {
+  const min = bodyRed - maxFromBody;
+  const max = bodyRed + maxFromBody;
+  const clamped = Math.max(min, Math.min(max, current));
+  return Math.round(clamped * 4) / 4;
+}
+
+{
+  const bodyRed = -1.6;
+  const raw = { 95: 3.32, 99: -1.5, 105: 1.25 };
+  const guarded = {
+    95: clampTopRedSeed(bodyRed, raw[95], 1.25),
+    99: clampTopRedSeed(bodyRed, raw[99], 1.0),
+    105: clampTopRedSeed(bodyRed, raw[105], 1.25)
+  };
+  assert.strictEqual(guarded[99], -1.5, '99% red seed near calibrated 80% should be preserved');
+  assert(guarded[95] <= -0.25 && guarded[105] <= -0.25, 'C1-like 95/105 red overshoots should be damped toward 80%');
+  assert(Math.abs(guarded[105] - guarded[99]) <= 1.5, 'guarded 99/105 red seeds should not keep a large opposing swing');
+}
 
 const high99Source = sliceBetween(
   'sub sdr_top_99_high_error_rgb_adjustment',
