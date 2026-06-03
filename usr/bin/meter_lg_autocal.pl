@@ -4679,6 +4679,10 @@ sub lg_autocal_26_hdr20_propagation_skip_slot_mask {
  return \@mask;
 }
 
+sub sdr_full_spine_below_5_seed_skip_ires {
+ return (2.3,3,4);
+}
+
 sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask {
  my ($config,$calibrated_slot_mask)=@_;
  my @mask=map { 0 } (1..ddc_slot_count());
@@ -4700,6 +4704,12 @@ sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask {
     !calibrated_26pt_slot_for_ire($calibrated_slot_mask,90)) {
   my $top90_idx=ddc_slot_index_for_ire(90);
   $mask[$top90_idx]=1 if(defined($top90_idx) && $top90_idx < @mask);
+ }
+ if(!lg_autocal_26_hdr20_seed_enabled($config) && lc($config->{"signal_mode"}||"sdr") eq "sdr") {
+  foreach my $ire (sdr_full_spine_below_5_seed_skip_ires()) {
+   my $idx=ddc_slot_index_for_ire($ire);
+   $mask[$idx]=1 if(defined($idx) && $idx < @mask);
+  }
  }
  return \@mask;
 }
@@ -5297,6 +5307,54 @@ sub apply_sdr_top_body_blend_seed_overrides {
  return $changed;
 }
 
+sub apply_sdr_top_seed_red_shape_guard {
+ my ($config,$arrays,$calibrated_slot_mask)=@_;
+ return 0 if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ my $arr=$arrays->{"whiteBalanceRed"};
+ return 0 if(ref($arr) ne "ARRAY");
+ my $body_ire=80;
+ my $body_idx=ddc_slot_index_for_ire($body_ire);
+ return 0 if(!defined($body_idx) || $body_idx >= @{$arr});
+ return 0 if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,$body_ire));
+ return 0 if(!defined($arr->[$body_idx]));
+ my $body_red=$arr->[$body_idx]+0;
+ my %max_from_body=(95=>1.25,99=>1.00,105=>1.25);
+ my $changed=0;
+ foreach my $target_ire (qw(95 99 105)) {
+  my $idx=ddc_slot_index_for_ire($target_ire);
+  next if(!defined($idx) || $idx >= @{$arr});
+  next if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));
+  my $before=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+  my $max=$max_from_body{$target_ire}+0;
+  my $min_allowed=$body_red-$max;
+  my $max_allowed=$body_red+$max;
+  my $after=$before;
+  $after=$min_allowed if($after < $min_allowed);
+  $after=$max_allowed if($after > $max_allowed);
+  $after=round_ddc_quarter(clamp_ddc_value($after));
+  next if(abs($after-$before) < 0.0001);
+  $arr->[$idx]=$after;
+  $changed++;
+  record_full_ddc_spine_seed_detail({
+   mode=>"sdr-top-red-shape-guard",
+   setting=>"whiteBalanceRed",
+   target_ire=>$target_ire+0,
+   target_index=>$idx+0,
+   body_source_ire=>$body_ire+0,
+   body_source_index=>$body_idx+0,
+   body_red=>$body_red+0,
+   max_from_body=>$max+0,
+   before=>{ whiteBalanceRed=>$before+0 },
+   after=>{ whiteBalanceRed=>$after+0 },
+   changed_settings=>{ whiteBalanceRed=>{ before=>$before+0, after=>$after+0 } },
+   reason=>"damp_sdr_top_seed_red_shape_from_calibrated_80"
+  });
+ }
+ return $changed;
+}
+
 sub apply_full_ddc_spine_seed_corrections {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
  return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
@@ -5334,6 +5392,7 @@ sub apply_full_ddc_spine_seed_corrections {
   }
  }
  $changed+=apply_sdr_top_body_blend_seed_overrides($config,$arrays,$calibrated_slot_mask);
+ $changed+=apply_sdr_top_seed_red_shape_guard($config,$arrays,$calibrated_slot_mask);
  return $changed;
 }
 
