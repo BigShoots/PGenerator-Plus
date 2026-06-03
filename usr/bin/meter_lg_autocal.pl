@@ -2619,6 +2619,16 @@ sub lg_autocal_26_entry_better_than_measurement {
  return autocal_measurement_not_worse_than_best($entry->{"delta_e"},$entry->{"luminance_error_pct"},$de,$lum_pct);
 }
 
+sub lg_autocal_26_main_final_prior_blocks_publish {
+ my ($step,$de,$lum_pct,$entry,$reason,$reached_target)=@_;
+ return undef if(($reason||"") ne "main_final_step_result");
+ return undef if(!defined($reached_target) || $reached_target);
+ return undef if(ref($entry) ne "HASH" || !defined($entry->{"delta_e"}));
+ return "prior_reached_target" if($entry->{"reached_target"});
+ return "prior_best_known_better" if(lg_autocal_26_entry_better_than_measurement($step,$entry,$de,$lum_pct));
+ return undef;
+}
+
 sub lg_autocal_26_best_known_entry {
  my ($step,$reading,$de,$lum_pct,$target_luminance,$arrays,$target,$reason,$reached_target)=@_;
  return undef if(ref($step) ne "HASH" || ref($reading) ne "HASH" || !defined($de));
@@ -2651,6 +2661,24 @@ sub remember_lg_autocal_26_best_known {
  return if(!defined($key));
  $state->{"lg_autocal_26_best_known"}={} if(ref($state->{"lg_autocal_26_best_known"}) ne "HASH");
  my $existing=$state->{"lg_autocal_26_best_known"}{$key};
+ my $main_final_block=lg_autocal_26_main_final_prior_blocks_publish($step,$de,$lum_pct,$existing,$reason,$reached_target);
+ if(defined($main_final_block)) {
+  trace_109($step,"main_final_best_known_publish_blocked",{
+   reason=>$main_final_block,
+   candidate_reason=>$reason||"best_known",
+   candidate_reached_target=>$reached_target ? JSON::PP::true : JSON::PP::false,
+   candidate_delta_e=>$de+0,
+   candidate_luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+   prior_delta_e=>defined($existing->{"delta_e"}) ? ($existing->{"delta_e"}+0) : undef,
+   prior_luminance_error_pct=>defined($existing->{"luminance_error_pct"}) ? ($existing->{"luminance_error_pct"}+0) : undef,
+   prior_score=>defined($existing->{"score"}) ? ($existing->{"score"}+0) : undef,
+   prior_reached_target=>$existing->{"reached_target"} ? JSON::PP::true : JSON::PP::false,
+   prior_reason=>$existing->{"reason"}||"",
+   prior_values=>$existing->{"ddc_values"},
+   candidate_values=>trace_target_values($arrays,$target)
+  });
+  return $existing;
+ }
  return if(!lg_autocal_26_candidate_better_than_entry($step,$de,$lum_pct,$existing));
  $state->{"lg_autocal_26_best_known"}{$key}=$entry;
  if(ref($neighbor_context) eq "HASH") {
@@ -2671,6 +2699,7 @@ sub remember_lg_autocal_26_best_known {
    }
   );
  }
+ return $entry;
 }
 
 sub lg_autocal_26_best_known_for_step {
@@ -15423,6 +15452,32 @@ eval {
 			   top_cluster_slope=>$slope,
 			   target_values=>trace_target_values($arrays,$final_target)
 			  };
+			  if($needs_recovery) {
+			   my $best_entry=lg_autocal_26_best_known_for_step($state,$final_read_step);
+			   if(ref($best_entry) eq "HASH") {
+			    $best_entry->{"reached_target"}=JSON::PP::false;
+			    $best_entry->{"legal_white_validation_status"}="diagnostic_only_failed";
+			    $best_entry->{"legal_white_failure_reason"}="legal_white_diagnostic_only_failed";
+			    $best_entry->{"legal_white_diagnostic_only"}=JSON::PP::true;
+			    $best_entry->{"legal_white_recovery_disabled"}=JSON::PP::true;
+			    $best_entry->{"legal_white_would_have_recovered"}=JSON::PP::true;
+			    $best_entry->{"legal_white_delta_e"}=$legal_de+0 if(defined($legal_de));
+			    $best_entry->{"paired_legal_white_delta_e"}=$legal_de+0 if(defined($legal_de));
+			    $best_entry->{"paired_current_name"}="100% legal white";
+			    $best_entry->{"legal_white_target_luminance"}=$legal_target_y+0 if(defined($legal_target_y));
+			    $best_entry->{"legal_white_metrics"}=$metrics;
+			    $best_entry->{"legal_white_reading"}=trace_reading_summary($legal_reading);
+			    trace_109($final_read_step,"sdr_top_legal_white_best_known_flagged",{
+			     status=>"diagnostic_only_failed",
+			     reason=>"legal_white_diagnostic_only_failed",
+			     delta_e=>defined($legal_de) ? $legal_de+0 : undef,
+			     metrics=>$metrics,
+			     best_known_delta_e=>defined($best_entry->{"delta_e"}) ? ($best_entry->{"delta_e"}+0) : undef,
+			     best_known_reason=>$best_entry->{"reason"}||"",
+			     target_values=>trace_target_values($arrays,$final_target)
+			    });
+			   }
+			  }
 			  trace_109($final_read_step,"sdr_top_legal_white_validation_done",{
 			   status=>$needs_recovery ? "diagnostic_only_failed" : "diagnostic_only_passed",
 			   diagnostic_only=>JSON::PP::true,
@@ -15735,6 +15790,7 @@ eval {
 				 };
 				 my $white_refreshed_after_headroom=0;
 					 my $low_shadow_calibration_announced=0;
+					 my %anchor_revisit_prior_best_known;
 				 foreach my $step (@ordered) {
 		  last if(cancelled());
 		  $step_num++;
@@ -15778,6 +15834,9 @@ eval {
 				  }
 				  if(lg_autocal_26_full_ddc_spine_anchor_revisit_step($read_step)) {
 				   my $prior_best_entry=delete_lg_autocal_26_best_known_for_step($state,$read_step);
+				   my $prior_best_key=lg_autocal_26_best_known_key($read_step);
+				   $anchor_revisit_prior_best_known{$prior_best_key}=clone_picture($prior_best_entry)
+				    if(defined($prior_best_key) && ref($prior_best_entry) eq "HASH");
 				   trace_109($read_step,"anchor_revisit_best_invalidated_at_start",{
 				    label=>$label,
 				    prior_best_present=>(ref($prior_best_entry) eq "HASH") ? JSON::PP::true : JSON::PP::false,
@@ -18250,6 +18309,73 @@ eval {
 				   paired_reading=>trace_reading_summary($best_pair_reading),
 				   final_values=>trace_target_values($best_arrays,$target)
 				  });
+				  my $main_final_restore_entry;
+				  my $main_final_restore_reason;
+				  if(!$final_reached) {
+				   my @main_final_prior_entries;
+				   my $current_prior_entry=lg_autocal_26_best_known_for_step($state,$read_step);
+				   push @main_final_prior_entries,$current_prior_entry if(ref($current_prior_entry) eq "HASH");
+				   my $anchor_prior_key=lg_autocal_26_best_known_key($read_step);
+				   my $anchor_prior_entry=defined($anchor_prior_key) ? $anchor_revisit_prior_best_known{$anchor_prior_key} : undef;
+				   push @main_final_prior_entries,$anchor_prior_entry
+				    if(ref($anchor_prior_entry) eq "HASH" && (!ref($current_prior_entry) || $anchor_prior_entry ne $current_prior_entry));
+				   foreach my $prior_entry (@main_final_prior_entries) {
+				    my $block_reason=lg_autocal_26_main_final_prior_blocks_publish(
+				     $read_step,$best_de,$best_lum_pct,$prior_entry,"main_final_step_result",$final_reached
+				    );
+				    next if(!defined($block_reason));
+				    next if(!lg_autocal_26_best_known_values_available($prior_entry,$target,$best_arrays));
+				    $main_final_restore_entry=$prior_entry;
+				    $main_final_restore_reason=$block_reason;
+				    last;
+				   }
+				  }
+				  if(ref($main_final_restore_entry) eq "HASH") {
+				   my $restore_arrays=lg_autocal_26_arrays_with_best_known_values($best_arrays,$target,$main_final_restore_entry);
+				   if(ref($restore_arrays) eq "HASH") {
+				    trace_109($read_step,"main_final_best_known_restored",{
+				     label=>$label,
+				     reason=>$main_final_restore_reason||"prior_best_known_better",
+				     rejected_delta_e=>defined($best_de)?$best_de+0:undef,
+				     rejected_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+				     rejected_score=>defined($best_score)?$best_score+0:undef,
+				     restored_delta_e=>defined($main_final_restore_entry->{"delta_e"}) ? ($main_final_restore_entry->{"delta_e"}+0) : undef,
+				     restored_luminance_error_pct=>defined($main_final_restore_entry->{"luminance_error_pct"}) ? ($main_final_restore_entry->{"luminance_error_pct"}+0) : undef,
+				     restored_score=>defined($main_final_restore_entry->{"score"}) ? ($main_final_restore_entry->{"score"}+0) : undef,
+				     restored_reached_target=>$main_final_restore_entry->{"reached_target"} ? JSON::PP::true : JSON::PP::false,
+				     restored_reason=>$main_final_restore_entry->{"reason"}||"",
+				     rejected_values=>trace_target_values($best_arrays,$target),
+				     restored_values=>trace_target_values($restore_arrays,$target)
+				    });
+				    $arrays=clone_arrays($restore_arrays);
+				    $best_arrays=clone_arrays($restore_arrays);
+				    $best_de=$main_final_restore_entry->{"delta_e"}+0 if(defined($main_final_restore_entry->{"delta_e"}));
+				    $best_lum_pct=$main_final_restore_entry->{"luminance_error_pct"}+0 if(defined($main_final_restore_entry->{"luminance_error_pct"}));
+				    $best_score=$main_final_restore_entry->{"score"}+0 if(defined($main_final_restore_entry->{"score"}));
+				    $best_reading=clone_picture($main_final_restore_entry->{"reading"}) if(ref($main_final_restore_entry->{"reading"}) eq "HASH");
+				    $reading=clone_picture($best_reading) if(ref($best_reading) eq "HASH");
+				    $de=$best_de;
+				    $lum_pct=$best_lum_pct;
+				    $target_step_y=$main_final_restore_entry->{"target_luminance"}+0 if(defined($main_final_restore_entry->{"target_luminance"}));
+				    my $restore_key=lg_autocal_26_best_known_key($read_step);
+				    $state->{"lg_autocal_26_best_known"}={} if(ref($state->{"lg_autocal_26_best_known"}) ne "HASH");
+				    $state->{"lg_autocal_26_best_known"}{$restore_key}=clone_picture($main_final_restore_entry) if(defined($restore_key));
+				    $state->{"phase"}="writing";
+				    $state->{"message"}="$label prior best restored after failed final read";
+				    $state->{"current_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+				    $state->{"best_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+				    $state->{"best_score"}=defined($best_score) ? $best_score+0 : undef;
+				    $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct+0 : undef;
+				    $state->{"current_luminance"}=$best_reading->{"luminance"}+0 if(ref($best_reading) eq "HASH" && defined($best_reading->{"luminance"}));
+				    set_state_target_step_luminance($state,$target_step_y);
+				    write_state($state);
+				    my $main_final_restore_error;
+				    ($picture,$main_final_restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+				    die $main_final_restore_error if($main_final_restore_error);
+				    $calibration_mode_active=1;
+				    sync_state_picture($state,$picture,$picture_mode);
+				   }
+				  }
 					  trace_drift_matrix_final_kept(
 					   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
 					   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
