@@ -36,6 +36,22 @@ assert(
   'top-cluster pre-shape should read only 105/99/95 before their normal descent'
 );
 
+const protectionSource = sliceBetween(
+  'sub sdr_top_cluster_preshape_protection_enabled',
+  'sub sdr_top_cluster_preshape_rgb_adjustments'
+);
+assert(
+  protectionSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
+    protectionSource.includes('!lg_autocal_26_full_ddc_spine_enabled($config)') &&
+    protectionSource.includes('lg_autocal_26_hdr20_seed_enabled($config)') &&
+    protectionSource.includes('autocal_config_is_touchup($config)') &&
+    protectionSource.includes('autocal_config_is_post_3d_polish($config)') &&
+    protectionSource.includes('($LG_AUTOCAL_STATE->{"sdr_top_cluster_preshape"}{"status"}||"") eq "complete"') &&
+    protectionSource.includes('foreach my $protected_ire (sdr_top_cluster_preshape_ires())') &&
+    protectionSource.includes('calibrated_26pt_slot_for_ire($calibrated_slot_mask,$ire)'),
+  'completed SDR top-cluster pre-shape should protect pending 105/99/95 slots from later seed refresh without marking them calibrated'
+);
+
 const adjustmentSource = sliceBetween(
   'sub sdr_top_cluster_preshape_rgb_adjustments',
   'sub body_final_micro_threshold'
@@ -95,6 +111,37 @@ assert(
   source.includes('sub sdr_full_spine_below_5_seed_skip_ires') &&
     source.includes('return (2.3,3,4);'),
   'successful below-5 SDR seed exclusion must remain intact'
+);
+
+const skipMaskSource = sliceBetween(
+  'sub lg_autocal_26_full_ddc_spine_propagation_skip_slot_mask',
+  'sub calibrated_26pt_slot_for_ire'
+);
+assert(
+  skipMaskSource.includes('if(sdr_top_cluster_preshape_protection_enabled($config))') &&
+    skipMaskSource.includes('foreach my $ire (sdr_top_cluster_preshape_ires())') &&
+    skipMaskSource.includes('next if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$ire));') &&
+    skipMaskSource.includes('$mask[$idx]=1 if(defined($idx) && $idx < @mask);'),
+  'generic full-spine propagation should skip pre-shaped top slots until their normal calibration step owns them'
+);
+
+const topBlendSource = sliceBetween(
+  'sub apply_sdr_top_body_blend_seed_overrides',
+  'sub apply_full_ddc_spine_seed_corrections'
+);
+assert(
+  topBlendSource.includes('!sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,99)') &&
+    topBlendSource.includes('next if(sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,$target_ire));'),
+  'local top blend overrides should not rewrite pre-shaped 99/95 before normal calibration'
+);
+
+const seedCorrectionSource = sliceBetween(
+  'sub apply_full_ddc_spine_seed_corrections',
+  'sub apply_full_ddc_spine_headroom_seed_overrides'
+);
+assert(
+  seedCorrectionSource.includes('next if(sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,$ire));'),
+  'headroom/top seed correction loop should not overwrite pre-shaped pending 105/99/95 slots'
 );
 
 console.log('LG AutoCal SDR top-cluster pre-shape regression checks passed.');

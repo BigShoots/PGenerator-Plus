@@ -92,12 +92,20 @@ const validationRunSource = sliceBetween(
 assert(
   validationRunSource.includes('sdr_top_legal_white_validation_enabled($config,$final_target,$final_read_step,$white_reference_step)') &&
     validationRunSource.includes('sdr_top_cluster_99_105_channel_divergence($arrays)') &&
+    validationRunSource.includes('lg_autocal_26_best_known_for_step($state,$final_read_step)') &&
+    validationRunSource.includes('my $read_active_top_slot_guard=sub') &&
+    validationRunSource.includes('read_step_guarded(') &&
+    validationRunSource.includes('sdr_top_legal_white_active_slot_verify') &&
+    validationRunSource.includes('$active_guard_limit') &&
     validationRunSource.includes('sdr_top_legal_white_needs_rgb_recovery($metrics)') &&
     validationRunSource.includes('sdr_top_legal_white_rgb_recovery_adjustments($arrays,$final_target,$metrics,\\%tried)') &&
     validationRunSource.includes('set_picture_values($picture,$arrays,$final_target,$picture_mode,$calibration_mode_active,$state)') &&
+    validationRunSource.includes('$active_guard=$read_active_top_slot_guard->($iter,"candidate_improved_legal_white");') &&
+    validationRunSource.includes('$improved=0 if(ref($active_guard) ne "HASH" || !$active_guard->{"accepted"});') &&
+    validationRunSource.includes('active_slot_guard=>$active_guard') &&
     validationRunSource.includes('sdr_top_legal_white_rgb_recovery_accept') &&
     validationRunSource.includes('sdr_top_legal_white_rgb_recovery_reject'),
-  'post-99 validation should read legal 100%, recover only when RGB spread is high, and restore rejected candidates'
+  'post-99 validation should read legal 100%, verify the active 99% slot before accepting a recovery move, and restore rejected candidates'
 );
 
 const finalStepSource = sliceBetween(

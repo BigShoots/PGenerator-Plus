@@ -90,7 +90,7 @@ assert(
     topBlendSource.includes('reason=>"sdr_99_seed_from_80_without_105_shape"') &&
     topBlendSource.includes('source_ire=>$body_ire+0') &&
     topBlendSource.includes('offsets=>$deltas') &&
-    topBlendSource.includes('if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,99))') &&
+    topBlendSource.includes('if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,99) && !sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,99))') &&
     !topBlendSource.includes('"99" => { top_weight=>0.22') &&
     topBlendSource.includes('"95" => { top_weight=>0.08, rgb_top_weight=>0.00') &&
     topBlendSource.includes('mode=>"sdr-top-local-seed-90-from-80-safe"') &&
@@ -103,7 +103,7 @@ assert(
     topBlendSource.includes('sdr_top_body_weighted_seed_from_80_and_measured_105') &&
     !topBlendSource.includes('sdr-top-red-shape-guard') &&
     !topBlendSource.includes('damp_sdr_top_seed_red_shape_from_calibrated_80'),
-  '99% seed should be traceable local-from-80 while 95% keeps only a luma-weighted 105 blend and 90 gates bad 99, without the retired 80-relative red guard'
+  '99% seed should be traceable local-from-80 only before top pre-shape protection, while 95% keeps only a luma-weighted 105 blend and 90 gates bad 99, without the retired 80-relative red guard'
 );
 
 function blendFromBody(body, top, weight, maxFromBody) {
