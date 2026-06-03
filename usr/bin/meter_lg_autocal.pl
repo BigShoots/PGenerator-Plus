@@ -9835,7 +9835,48 @@ sub sdr_top_legal_white_rgb_recovery_adjustments {
   remaining_error=>$max_abs+0,
   rgb_spread=>$spread+0,
   source=>"sdr_top_legal_white_rgb_recovery"
- }];
+	 }];
+}
+
+sub sdr_top_cluster_preshape_enabled {
+ my ($config,$calibrated_slot_mask)=@_;
+ return 0 if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config) || autocal_config_is_post_series_adjust($config) || autocal_config_is_post_series_revert($config));
+ return 0 if(ref($calibrated_slot_mask) ne "ARRAY");
+ return lg_autocal_26_full_ddc_spine_anchors_complete($calibrated_slot_mask,$config) ? 1 : 0;
+}
+
+sub sdr_top_cluster_preshape_ires {
+ return (105,99,95);
+}
+
+sub sdr_top_cluster_preshape_rgb_adjustments {
+ my ($arrays,$target,$metrics,$tried)=@_;
+ my $adjustments=sdr_top_legal_white_rgb_recovery_adjustments($arrays,$target,$metrics,$tried);
+ return undef if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+ my @out;
+ my $max_delta=0.50;
+ foreach my $adj (@{$adjustments}) {
+  next if(ref($adj) ne "HASH");
+  return undef if(($adj->{"setting"}||"") eq "adjustingLuminance");
+  my %copy=%{$adj};
+  my $delta=defined($copy{"delta"}) ? ($copy{"delta"}+0) : undef;
+  my $current=defined($copy{"current"}) ? ($copy{"current"}+0) : undef;
+  next if(!defined($delta) || !defined($current));
+  if(abs($delta) > $max_delta) {
+   $delta=($delta > 0) ? $max_delta : -$max_delta;
+   $copy{"next"}=round_ddc_quarter(clamp_ddc_value($current+$delta));
+   $copy{"delta"}=($copy{"next"}-$current)+0;
+   $copy{"preshape_delta_cap"}=$max_delta+0;
+  }
+  next if(abs($copy{"delta"}||0) < 0.0001);
+  $copy{"sdr_top_cluster_preshape"}=1;
+  $copy{"source"}="sdr_top_cluster_preshape_rgb";
+  $copy{"luminance_ignored"}=JSON::PP::true;
+  push @out,\%copy;
+ }
+ return @out ? \@out : undef;
 }
 
 sub body_final_micro_threshold {
@@ -15394,10 +15435,284 @@ eval {
 			    best_metrics=>$best_metrics,
 			    top_cluster_slope=>$slope
 			   }
-			  );
-			  write_state($state);
-			 };
-					 my $white_refreshed_after_headroom=0;
+				  );
+				  write_state($state);
+				 };
+				 my $sdr_top_cluster_preshape_done=0;
+				 my $run_sdr_top_cluster_preshape=sub {
+				  my ($trigger_step)=@_;
+				  return 0 if($sdr_top_cluster_preshape_done);
+				  return 0 if(ref($trigger_step) ne "HASH" || !defined($trigger_step->{"ire"}) || abs(($trigger_step->{"ire"}+0)-105) >= 0.001);
+				  return 0 if(!sdr_top_cluster_preshape_enabled($config,\@calibrated_ddc_slots));
+				  $sdr_top_cluster_preshape_done=1;
+				  my $limit=config_positive_int($config,"sdr_top_cluster_preshape_iterations",2,0,2);
+				  my @records;
+				  $state->{"sdr_top_cluster_preshape"}={
+				   status=>"running",
+				   limit=>$limit+0,
+				   ires=>[sdr_top_cluster_preshape_ires()],
+				   completed_spine_anchors=>[completed_lg_autocal_26_full_ddc_spine_anchor_ires(\@calibrated_ddc_slots,$config)]
+				  };
+				  trace_109($trigger_step,"sdr_top_cluster_preshape_start",{
+				   limit=>$limit+0,
+				   ires=>[sdr_top_cluster_preshape_ires()],
+				   completed_spine_anchors=>[completed_lg_autocal_26_full_ddc_spine_anchor_ires(\@calibrated_ddc_slots,$config)],
+				   reason=>"measured_top_cluster_before_normal_descent"
+				  });
+				  write_state($state);
+				  my $find_preshape_step=sub {
+				   my ($wanted_ire)=@_;
+				   foreach my $candidate (@ordered,@{$steps}) {
+				    next if(ref($candidate) ne "HASH" || $candidate->{"autocal_white_reference"});
+				    my $candidate_target=ddc_target_for_step($candidate);
+				    next if(ref($candidate_target) ne "HASH" || !defined($candidate_target->{"ire"}));
+				    return $candidate if(abs(($candidate_target->{"ire"}+0)-($wanted_ire+0)) < 0.001);
+				   }
+				   return undef;
+				  };
+				  my $read_preshape_step=sub {
+				   my ($base_step,$target,$label,$iteration,$reason)=@_;
+				   return (undef,undef,undef,undef,undef) if(ref($base_step) ne "HASH" || ref($target) ne "HASH");
+				   my $read_step=fixed_lg_autocal_step($config,$base_step);
+				   $read_step=clone_picture($read_step);
+				   mark_lg_autocal_hdr20_sdr_adjustment_method_step($config,$read_step);
+				   $state->{"phase"}="reading";
+				   $state->{"current_name"}="Auto Cal top pre-shape $label";
+				   $state->{"message"}="Reading seeded $label top-cluster pre-shape";
+				   set_state_active_step($state,$read_step,$target);
+				   write_state($state);
+				   my ($reading,$read_error,$guarded_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
+				   die $read_error if($read_error && $read_error ne "cancelled");
+				   return (undef,undef,undef,undef,undef) if($read_error && $read_error eq "cancelled");
+				   return (undef,undef,undef,undef,undef) if(ref($reading) ne "HASH");
+				   my $target_step_y=defined($guarded_y) ? $guarded_y : effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+				   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+				   my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+				   my $metrics=sdr_top_legal_white_rgb_metrics($reading,$read_step);
+				   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+				   $state->{"current_delta_e"}=defined($de) ? $de : undef;
+				   $state->{"current_luminance"}=luminance($reading);
+				   set_state_target_step_luminance($state,$target_step_y);
+				   trace_109($read_step,"sdr_top_cluster_preshape_read",{
+				    label=>$label,
+				    iteration=>defined($iteration) ? $iteration+0 : undef,
+				    reason=>$reason||"seeded_top_cluster_read",
+				    reading=>trace_reading_summary($reading),
+				    delta_e=>defined($de) ? $de+0 : undef,
+				    target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
+				    metrics=>$metrics,
+				    target_values=>trace_target_values($arrays,$target)
+				   });
+				   write_state($state);
+				   return ($reading,$read_step,$metrics,$de,$target_step_y);
+				  };
+				  foreach my $preshape_ire (sdr_top_cluster_preshape_ires()) {
+				   last if(cancelled());
+				   my $base_step=$find_preshape_step->($preshape_ire);
+				   if(ref($base_step) ne "HASH") {
+				    my $record={ ire=>$preshape_ire+0, status=>"skipped", reason=>"missing_step" };
+				    push @records,$record;
+				    trace_109($trigger_step,"sdr_top_cluster_preshape_skip",$record);
+				    next;
+				   }
+				   my $target=ddc_target_for_step($base_step);
+				   my $label=(ref($target) eq "HASH" && $target->{"label"}) ? $target->{"label"} : format_percent($preshape_ire)."%";
+				   if(ref($target) ne "HASH" || !defined($target->{"index"})) {
+				    my $record={ ire=>$preshape_ire+0, status=>"skipped", reason=>"missing_target" };
+				    push @records,$record;
+				    trace_109($trigger_step,"sdr_top_cluster_preshape_skip",$record);
+				    next;
+				   }
+				   if(calibrated_26pt_slot_for_ire(\@calibrated_ddc_slots,$preshape_ire)) {
+				    my $record={ ire=>$preshape_ire+0, status=>"skipped", reason=>"already_calibrated" };
+				    push @records,$record;
+				    trace_109($trigger_step,"sdr_top_cluster_preshape_skip",$record);
+				    next;
+				   }
+				   my ($reading,$read_step,$metrics,$de,$target_step_y)=$read_preshape_step->($base_step,$target,$label,0,"initial");
+				   if(ref($metrics) ne "HASH") {
+				    my $record={ ire=>$preshape_ire+0, status=>"skipped", reason=>"missing_metrics" };
+				    push @records,$record;
+				    trace_109($trigger_step,"sdr_top_cluster_preshape_skip",$record);
+				    next;
+				   }
+				   my $drive_metrics=$metrics;
+				   my $drive_step=$read_step;
+				   my $drive_kind="slot";
+				   my $drive_de=$de;
+				   if(abs(($preshape_ire+0)-99) < 0.001 && ref($white_reference_step) eq "HASH") {
+				    my ($legal_reading,$legal_step,$legal_metrics,$legal_de,$legal_target_y)=$read_sdr_top_legal_white_validation->(
+				     $white_reference_step,
+				     "Auto Cal 100% top pre-shape check",
+				     "Reading 100% legal white during top-cluster pre-shape",
+				     0
+				    );
+				    if(ref($legal_metrics) eq "HASH") {
+				     trace_109($legal_step,"sdr_top_cluster_preshape_legal_white_read",{
+				      label=>$label,
+				      slot_metrics=>$metrics,
+				      legal_white_metrics=>$legal_metrics,
+				      legal_delta_e=>defined($legal_de) ? $legal_de+0 : undef,
+				      legal_target_luminance=>defined($legal_target_y) ? $legal_target_y+0 : undef,
+				      luminance_ignored=>JSON::PP::true,
+				      target_values=>trace_target_values($arrays,$target)
+				     });
+				     if(($legal_metrics->{"score"}||0) > ($drive_metrics->{"score"}||0)) {
+				      $drive_metrics=$legal_metrics;
+				      $drive_step=$legal_step;
+				      $drive_kind="legal100";
+				      $drive_de=$legal_de;
+				     }
+				    }
+				   }
+				   if(!sdr_top_legal_white_needs_rgb_recovery($drive_metrics) || $limit <= 0) {
+				    my $record={
+				     ire=>$preshape_ire+0,
+				     status=>"skipped",
+				     reason=>$limit <= 0 ? "iteration_limit_zero" : "rgb_within_preshape_tolerance",
+				     metrics=>$metrics,
+				     drive_metrics=>$drive_metrics,
+				     drive_kind=>$drive_kind,
+				     target_values=>trace_target_values($arrays,$target)
+				    };
+				    push @records,$record;
+				    trace_109($read_step,"sdr_top_cluster_preshape_skip",$record);
+				    next;
+				   }
+				   my %tried;
+				   my $best_score=$drive_metrics->{"score"}+0;
+				   my $best_metrics=clone_picture($drive_metrics);
+				   my $best_arrays=clone_arrays($arrays);
+				   my $accepted=0;
+				   my $restored=0;
+				   for(my $iter=1;$iter<=$limit;$iter++) {
+				    last if(cancelled());
+				    my $adjustments=sdr_top_cluster_preshape_rgb_adjustments($arrays,$target,$drive_metrics,\%tried);
+				    last if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+				    my $candidate_arrays=clone_arrays($arrays);
+				    foreach my $adj (@{$adjustments}) {
+				     next if(ref($adj) ne "HASH");
+				     next if(($adj->{"setting"}||"") eq "adjustingLuminance");
+				     $candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
+				    }
+				    mark_tried_values(\%tried,$candidate_arrays,$target,undef);
+				    $arrays=$candidate_arrays;
+				    $state->{"phase"}="writing";
+				    $state->{"message"}="Pre-shaping $label top RGB ".describe_adjustments($adjustments)." ($iter/$limit)";
+				    trace_109($read_step,"sdr_top_cluster_preshape_move",{
+				     label=>$label,
+				     iteration=>$iter+0,
+				     drive_kind=>$drive_kind,
+				     metrics=>$drive_metrics,
+				     adjustments=>trace_adjustments_summary($adjustments),
+				     values_after=>trace_target_values($arrays,$target),
+				     luminance_ignored=>JSON::PP::true
+				    });
+				    write_state($state);
+				    my $write_error;
+				    ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+				    die $write_error if($write_error);
+				    $calibration_mode_active=1;
+				    sync_state_picture($state,$picture,$picture_mode);
+				    my ($candidate_metrics,$candidate_de,$candidate_step);
+				    if($drive_kind eq "legal100" && ref($white_reference_step) eq "HASH") {
+				     my ($candidate_reading,$legal_step,$legal_metrics,$legal_de,$legal_target_y)=$read_sdr_top_legal_white_validation->(
+				      $white_reference_step,
+				      "Auto Cal 100% top pre-shape check",
+				      "Reading 100% legal white top pre-shape move ($iter/$limit)",
+				      $iter
+				     );
+				     $candidate_metrics=$legal_metrics if(ref($legal_metrics) eq "HASH");
+				     $candidate_de=$legal_de;
+				     $candidate_step=$legal_step;
+				    } else {
+				     my ($candidate_reading,$candidate_read_step,$slot_metrics,$slot_de,$slot_target_y)=$read_preshape_step->($base_step,$target,$label,$iter,"candidate");
+				     $candidate_metrics=$slot_metrics if(ref($slot_metrics) eq "HASH");
+				     $candidate_de=$slot_de;
+				     $candidate_step=$candidate_read_step;
+				    }
+				    if(ref($candidate_metrics) ne "HASH") {
+				     $restored++;
+				     $arrays=clone_arrays($best_arrays);
+				     ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+				     die $write_error if($write_error);
+				     $calibration_mode_active=1;
+				     sync_state_picture($state,$picture,$picture_mode);
+				     last;
+				    }
+				    my $candidate_score=$candidate_metrics->{"score"}+0;
+				    my $improved=0;
+				    $improved=1 if($candidate_score + 0.002 < $best_score);
+				    $improved=1 if(($candidate_metrics->{"max_abs"}||0)+0.003 < ($best_metrics->{"max_abs"}||999) && $candidate_score <= $best_score+0.010);
+				    if($improved) {
+				     $accepted++;
+				     $best_score=$candidate_score;
+				     $best_metrics=clone_picture($candidate_metrics);
+				     $best_arrays=clone_arrays($arrays);
+				     $drive_metrics=$candidate_metrics;
+				     $drive_step=$candidate_step if(ref($candidate_step) eq "HASH");
+				     $drive_de=$candidate_de;
+				     trace_109($drive_step || $read_step,"sdr_top_cluster_preshape_accept",{
+				      label=>$label,
+				      iteration=>$iter+0,
+				      drive_kind=>$drive_kind,
+				      candidate_delta_e=>defined($candidate_de) ? $candidate_de+0 : undef,
+				      candidate_metrics=>$candidate_metrics,
+				      best_score=>$best_score+0,
+				      target_values=>trace_target_values($arrays,$target),
+				      luminance_ignored=>JSON::PP::true
+				     });
+				     last if(!sdr_top_legal_white_needs_rgb_recovery($drive_metrics));
+				    } else {
+				     $restored++;
+				     trace_109($candidate_step || $read_step,"sdr_top_cluster_preshape_reject",{
+				      label=>$label,
+				      iteration=>$iter+0,
+				      drive_kind=>$drive_kind,
+				      candidate_delta_e=>defined($candidate_de) ? $candidate_de+0 : undef,
+				      candidate_metrics=>$candidate_metrics,
+				      best_metrics=>$best_metrics,
+				      candidate_score=>$candidate_score+0,
+				      best_score=>$best_score+0,
+				      restore_values=>trace_target_values($best_arrays,$target),
+				      luminance_ignored=>JSON::PP::true
+				     });
+				     $arrays=clone_arrays($best_arrays);
+				     ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+				     die $write_error if($write_error);
+				     $calibration_mode_active=1;
+				     sync_state_picture($state,$picture,$picture_mode);
+				     $drive_metrics=clone_picture($best_metrics);
+				    }
+				   }
+				   my $record={
+				    ire=>$preshape_ire+0,
+				    status=>$accepted ? "shaped" : "kept",
+				    accepted=>$accepted+0,
+				    restored=>$restored+0,
+				    drive_kind=>$drive_kind,
+				    best_metrics=>$best_metrics,
+				    target_values=>trace_target_values($arrays,$target)
+				   };
+				   push @records,$record;
+				  }
+				  $state->{"sdr_top_cluster_preshape"}={
+				   status=>"complete",
+				   records=>\@records,
+				   target_values=>{
+				    "105"=>trace_target_values($arrays,{ index=>ddc_slot_index_for_ire(105), ire=>105, label=>"105%" }),
+				    "99"=>trace_target_values($arrays,{ index=>ddc_slot_index_for_ire(99), ire=>99, label=>"99%" }),
+				    "95"=>trace_target_values($arrays,{ index=>ddc_slot_index_for_ire(95), ire=>95, label=>"95%" }),
+				   }
+				  };
+				  trace_109($trigger_step,"sdr_top_cluster_preshape_complete",{
+				   records=>\@records,
+				   target_values=>$state->{"sdr_top_cluster_preshape"}{"target_values"}
+				  });
+				  write_state($state);
+				  return scalar(@records);
+				 };
+				 my $white_refreshed_after_headroom=0;
 					 my $low_shadow_calibration_announced=0;
 				 foreach my $step (@ordered) {
 		  last if(cancelled());
@@ -15503,11 +15818,12 @@ eval {
 				   write_state($state);
 				   my $top_seed_error;
 				   ($picture,$top_seed_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
-				   die $top_seed_error if($top_seed_error);
-					   $calibration_mode_active=1;
-					   sync_state_picture($state,$picture,$picture_mode);
-					  }
-					  my $low_shadow_endpoint_seed=apply_sdr_low_shadow_endpoint_seed_2_3($config,$arrays,\@calibrated_ddc_slots,$read_step);
+					   die $top_seed_error if($top_seed_error);
+						   $calibration_mode_active=1;
+						   sync_state_picture($state,$picture,$picture_mode);
+						  }
+						  $run_sdr_top_cluster_preshape->($read_step);
+						  my $low_shadow_endpoint_seed=apply_sdr_low_shadow_endpoint_seed_2_3($config,$arrays,\@calibrated_ddc_slots,$read_step);
 					  if(ref($low_shadow_endpoint_seed) eq "HASH") {
 					   trace_109($read_step,"sdr_low_shadow_endpoint_seed_2_3",{
 					    label=>$label,
