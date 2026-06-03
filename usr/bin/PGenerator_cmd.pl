@@ -272,11 +272,7 @@ sub wifi_forget (@) {
 sub apply_bootloader () {
  my $no_reboot = shift;
  $ENV{COPY_ONLY_FILES}=$bootloader_config_file;
- if(-x $boot_loader_bin) {
-  system("$boot_loader_bin");
- } else {
-  system("timeout 3 $sync >/dev/null 2>&1");
- }
+ system("$boot_loader_bin");
  return if($no_reboot);
  &reboot();
 }
