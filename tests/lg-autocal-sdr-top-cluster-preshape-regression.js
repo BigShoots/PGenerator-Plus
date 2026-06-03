@@ -29,7 +29,7 @@ assert(
 
 const ireSource = sliceBetween(
   'sub sdr_top_cluster_preshape_ires',
-  'sub sdr_top_cluster_preshape_rgb_adjustments'
+  'sub sdr_top_cluster_preshape_99_far_low_luminance'
 );
 assert(
   ireSource.includes('return (105,99,95);'),
@@ -38,7 +38,7 @@ assert(
 
 const protectionSource = sliceBetween(
   'sub sdr_top_cluster_preshape_protection_enabled',
-  'sub sdr_top_cluster_preshape_rgb_adjustments'
+  'sub sdr_top_cluster_preshape_99_far_low_luminance'
 );
 assert(
   protectionSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
@@ -52,6 +52,22 @@ assert(
   'completed SDR top-cluster pre-shape should protect pending 105/99/95 slots from later seed refresh without marking them calibrated'
 );
 
+const lumaGuardSource = sliceBetween(
+  'sub sdr_top_cluster_preshape_99_far_low_luminance',
+  'sub sdr_top_cluster_preshape_rgb_adjustments'
+);
+assert(
+  lumaGuardSource.includes('abs(($ire+0)-99) >= 0.001') &&
+    lumaGuardSource.includes('<= -6.0') &&
+    lumaGuardSource.includes('($candidate_lum_pct+0) < ($best_lum_pct+0)-0.10') &&
+    lumaGuardSource.includes('($candidate_lum_pct+0) > ($best_lum_pct+0)+0.25') &&
+    lumaGuardSource.includes('setting=>"adjustingLuminance"') &&
+    lumaGuardSource.includes('my $max_delta=abs($lum_pct+0) >= 10.0 ? 2.0 : 1.25;') &&
+    lumaGuardSource.includes('sdr_top_cluster_preshape_luma_repair=>1') &&
+    lumaGuardSource.includes('source=>"sdr_top_cluster_preshape_99_luma"'),
+  '99 top pre-shape should detect far-low luminance, reject worse-Y candidates, and plan a bounded local luminance repair'
+);
+
 const adjustmentSource = sliceBetween(
   'sub sdr_top_cluster_preshape_rgb_adjustments',
   'sub body_final_micro_threshold'
@@ -63,7 +79,7 @@ assert(
     adjustmentSource.includes('$copy{"sdr_top_cluster_preshape"}=1;') &&
     adjustmentSource.includes('$copy{"source"}="sdr_top_cluster_preshape_rgb";') &&
     adjustmentSource.includes('$copy{"luminance_ignored"}=JSON::PP::true;'),
-  'top-cluster pre-shape should reuse small RGB/chroma moves capped to 0.5 DDC and must not write adjustingLuminance'
+  'top-cluster pre-shape RGB helper should reuse small RGB/chroma moves capped to 0.5 DDC and leave luminance moves to the 99 far-low repair helper'
 );
 
 const runSource = sliceBetween(
@@ -84,7 +100,13 @@ for (const event of [
 assert(
   runSource.includes('foreach my $preshape_ire (sdr_top_cluster_preshape_ires())') &&
     runSource.includes('my $limit=config_positive_int($config,"sdr_top_cluster_preshape_iterations",2,0,2);') &&
+    runSource.includes('my $drive_lum_pct=luminance_error_percent($reading,$target_step_y);') &&
+    runSource.includes('!sdr_top_cluster_preshape_99_far_low_luminance($preshape_ire,$drive_lum_pct)') &&
+    runSource.includes('sdr_top_cluster_preshape_99_luma_adjustments($arrays,$target,$drive_lum_pct,\\%tried,$preshape_ire)') &&
     runSource.includes('sdr_top_cluster_preshape_rgb_adjustments($arrays,$target,$drive_metrics,\\%tried)') &&
+    runSource.includes('whiteBalanceRed|whiteBalanceGreen|whiteBalanceBlue|adjustingLuminance') &&
+    runSource.includes('sdr_top_cluster_preshape_99_luma_worse($preshape_ire,$best_lum_pct,$candidate_lum_pct)') &&
+    runSource.includes('reject_reason=>$luma_worse ? "far_low_luminance_worsened" : "rgb_score_not_improved"') &&
     runSource.includes('read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label)') &&
     runSource.includes('$read_sdr_top_legal_white_validation->(') &&
     runSource.includes('sdr_top_cluster_preshape_legal_white_read') &&
@@ -95,7 +117,19 @@ assert(
     !runSource.includes('$drive_kind="legal100";') &&
     !runSource.includes('remember_lg_autocal_26_best_known') &&
     !runSource.includes('mark_calibrated_26pt_slot'),
-  'pre-shape pass should read/try bounded slot RGB moves, log legal 100 for 99 as diagnostic-only, write arrays, but not mark final bests or calibrated slots'
+  'pre-shape pass should read/try bounded slot moves, repair far-low 99 luminance before RGB fallback, log legal 100 for 99 as diagnostic-only, write arrays, but not mark final bests or calibrated slots'
+);
+
+const fixtureBestLum = -14.1;
+const fixtureRgbBetterButDarker = -14.6;
+const fixtureLumaRepair = -13.7;
+assert(
+  fixtureRgbBetterButDarker < fixtureBestLum - 0.10,
+  'fixture should represent the stopped-run failure: RGB/chroma can improve while already-far-low 99 luminance gets worse'
+);
+assert(
+  fixtureLumaRepair > fixtureBestLum + 0.25,
+  'fixture should represent the bounded 99 pre-shape luma repair acceptance band'
 );
 
 const mainPreludeSource = sliceBetween(
