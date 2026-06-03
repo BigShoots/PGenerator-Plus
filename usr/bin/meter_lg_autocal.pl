@@ -2383,6 +2383,18 @@ sub low_shadow_luminance_progress_keep {
  return 1;
 }
 
+sub sdr_low_shadow_2_3_luma_best_ready_for_fresh_verify {
+ my ($config,$step,$best_de,$best_lum_pct,$target_delta,$best_from_luma_only)=@_;
+ return 0 if(!$best_from_luma_only);
+ return 0 if(!sdr_low_shadow_final_acceptance_verify_required($config,$step));
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || abs(($step->{"ire"}+0)-2.3) >= 0.001);
+ return 0 if(!defined($best_de));
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return 0 if(($best_de+0) > ($target_delta+0.15));
+ return 0 if(!low_shadow_luminance_close_enough($step,$best_lum_pct));
+ return 1;
+}
+
 sub committed_low_shadow_good_enough {
  my ($step,$de,$lum_pct,$target_delta)=@_;
  return 0 if(!autocal_step_is_low_shadow($step));
@@ -15918,10 +15930,14 @@ eval {
 	  $state->{"best_delta_e"}=$best_de;
 	  $state->{"current_luminance"}=luminance($reading);
 	  set_state_target_step_luminance($state,$target_step_y);
-		  my $lum_pct=luminance_error_percent($reading,$target_step_y);
-		  $best_lum_pct=$lum_pct;
-		  my $best_score=guarded_autocal_result_score($best_de,$best_lum_pct,$read_step,$best_reading,$white_guard_y);
-			  my ($pair_step,$pair_reading,$pair_de,$pair_lum_pct,$pair_target_step_y);
+			  my $lum_pct=luminance_error_percent($reading,$target_step_y);
+			  $best_lum_pct=$lum_pct;
+			  my $best_score=guarded_autocal_result_score($best_de,$best_lum_pct,$read_step,$best_reading,$white_guard_y);
+				  my $best_from_luma_only=0;
+				  my $sdr_low_shadow_2_3_luma_ready_for_fresh_verify=sub {
+				   return sdr_low_shadow_2_3_luma_best_ready_for_fresh_verify($config,$read_step,$best_de,$best_lum_pct,$target_delta,$best_from_luma_only);
+				  };
+				  my ($pair_step,$pair_reading,$pair_de,$pair_lum_pct,$pair_target_step_y);
 			  my ($best_pair_step,$best_pair_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_target_step_y);
 			  my $pair_score_now=sub {
 			   return legal_white_pair_score($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading,$white_guard_y);
@@ -16199,14 +16215,15 @@ eval {
 			    kept=>$keep?JSON::PP::true:JSON::PP::false,
 			    target_values=>trace_target_values($arrays,$target)
 			   });
-			   if($keep) {
-			    $best_de=$de;
-			    $best_lum_pct=$lum_pct;
-			    $best_score=$candidate_score;
-				    $best_arrays=clone_arrays($arrays);
-				    $best_reading=clone_picture($reading);
-				    $best_read_step=clone_picture($read_step);
-				    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
+				   if($keep) {
+				    $best_de=$de;
+				    $best_lum_pct=$lum_pct;
+				    $best_score=$candidate_score;
+					    $best_arrays=clone_arrays($arrays);
+					    $best_reading=clone_picture($reading);
+					    $best_read_step=clone_picture($read_step);
+					    $best_from_luma_only=0;
+					    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 				    $state->{"current_delta_e"}=defined($de) ? $de : undef;
 				    $state->{"current_luminance"}=luminance($reading);
 			    $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
@@ -16994,10 +17011,10 @@ eval {
 					     $store_best_pair->() if($paired_white_step);
 					    }
 					    $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
-					    $state->{"message"}="$label within touch-up target; closest result kept";
-				    write_state($state);
-				    last;
-				   }
+						    $state->{"message"}="$label within touch-up target; closest result kept";
+					    write_state($state);
+					    last;
+					   }
 				   my $no_response_threshold=(ref($read_step) eq "HASH" && defined($read_step->{"ire"}) && ($read_step->{"ire"}+0) <= 25) ? 0.012 : 0.006;
 				   if(adjustment_total($adjustments) >= 1 && $response_score < $no_response_threshold && !$hdr20_luminance_progress) {
 			    $no_response_stalls++;
@@ -17160,12 +17177,13 @@ eval {
 					     });
 					    }
 				    $best_de=$de;
-				    $best_lum_pct=$lum_pct;
-				    $best_score=$candidate_score_after;
-						    $best_arrays=clone_arrays($arrays);
-							    $best_reading=clone_picture($reading);
-							    $best_read_step=clone_picture($read_step);
-							    delete($tried_values{"__headroom_105_near_y_cleanup"});
+					    $best_lum_pct=$lum_pct;
+					    $best_score=$candidate_score_after;
+							    $best_arrays=clone_arrays($arrays);
+								    $best_reading=clone_picture($reading);
+								    $best_read_step=clone_picture($read_step);
+								    $best_from_luma_only=ref(luma_only_adjustment($adjustments)) eq "HASH" ? 1 : 0;
+								    delete($tried_values{"__headroom_105_near_y_cleanup"});
 								    $store_best_pair->() if($paired_white_step);
 								    $low_shadow_next_adjustments=$low_shadow_candidate_next_adjustments if(ref($low_shadow_candidate_next_adjustments) eq "ARRAY");
 								    $body_luminance_next_adjustments=$body_candidate_next_adjustments if(ref($body_candidate_next_adjustments) eq "ARRAY");
@@ -17186,12 +17204,26 @@ eval {
 							     low_shadow_luminance_progress_keep=>$low_shadow_y_keep?JSON::PP::true:JSON::PP::false,
 							     kept_luma_overshoot_probe=>$kept_luma_overshoot_probe,
 							     not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
-						     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
-						     previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
-						     $pair_side_trace_fields->(),
-						     best_values=>trace_target_values($best_arrays,$target)
-						    });
-			   } else {
+							     candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
+							     previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
+							     best_from_luma_only=>$best_from_luma_only?JSON::PP::true:JSON::PP::false,
+							     $pair_side_trace_fields->(),
+							     best_values=>trace_target_values($best_arrays,$target)
+							    });
+						    if($sdr_low_shadow_2_3_luma_ready_for_fresh_verify->()) {
+						     trace_109($read_step,"sdr_low_shadow_2_3_luma_best_fresh_verify_handoff",{
+						      label=>$label,
+						      iteration=>$iter+0,
+						      best_delta_e=>defined($best_de)?$best_de+0:undef,
+						      best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+						      best_score=>$best_score+0,
+						      reason=>defined($best_update_reason)?$best_update_reason:"luma_only_best_near_target",
+						      adjustments=>trace_adjustments_summary($adjustments),
+						      best_values=>trace_target_values($best_arrays,$target)
+						     });
+						     last;
+						    }
+				   } else {
 				    $stalls++;
 				    my $candidate_score=$candidate_score_after;
 				    my ($chroma_keep,$candidate_chroma,$best_chroma)=$candidate_chroma_keep->();
@@ -17507,8 +17539,19 @@ eval {
 		   $state->{"readings"}=merge_reading($state->{"readings"},$best_reading) if(ref($best_reading) eq "HASH");
 		   return 1;
 		  };
-			  $restore_best_if_better->($paired_white_step ? "Restoring closest 99/100 paired result" : "Restoring closest $label result");
-		  $run_body_final_micro_once->("Final micro-balancing $label before moving on");
+				  $restore_best_if_better->($paired_white_step ? "Restoring closest 99/100 paired result" : "Restoring closest $label result");
+			  if($sdr_low_shadow_2_3_luma_ready_for_fresh_verify->()) {
+			   trace_109($read_step,"sdr_low_shadow_2_3_final_micro_suppressed",{
+			    label=>$label,
+			    best_delta_e=>defined($best_de)?$best_de+0:undef,
+			    best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+			    best_score=>$best_score+0,
+			    reason=>"luma_only_best_ready_for_fresh_verification",
+			    best_values=>trace_target_values($best_arrays,$target)
+			   });
+			  } else {
+			   $run_body_final_micro_once->("Final micro-balancing $label before moving on");
+			  }
 			  my $paired_white_close_enough=$paired_white_step ? legal_white_pair_close_enough($best_de,$best_lum_pct,$best_read_step,$best_reading,$best_pair_de,$best_pair_lum_pct,$best_pair_step,$best_pair_reading,$target_delta,$white_guard_y) : 0;
 			  if($paired_white_close_enough) {
 			   $state->{"message"}="$label and 100% legal white close pair kept";
@@ -17524,7 +17567,7 @@ eval {
 			   write_state($state);
 			  }
 			  my $sdr_peak_extra_fine_tune=$sdr_peak_extra_fine_tune_now->();
-			  if(!cancelled() && !$legal_white_pair_score_stalled && (autocal_step_allows_final_fine_tune($read_step,$best_de,$target_delta) || $sdr_peak_extra_fine_tune) && !low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta) && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH" && (!$pair_target_reached_now->() || $sdr_peak_extra_fine_tune) && !$paired_white_close_enough) {
+				  if(!cancelled() && !$legal_white_pair_score_stalled && !$sdr_low_shadow_2_3_luma_ready_for_fresh_verify->() && (autocal_step_allows_final_fine_tune($read_step,$best_de,$target_delta) || $sdr_peak_extra_fine_tune) && !low_shadow_good_enough($read_step,$best_de,$best_lum_pct,$target_delta) && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH" && (!$pair_target_reached_now->() || $sdr_peak_extra_fine_tune) && !$paired_white_close_enough) {
 			   trace_109($read_step,"start_final_fine_tune",{
 			    label=>$label,
 			    best_delta_e=>defined($best_de)?$best_de+0:undef,
@@ -17752,11 +17795,12 @@ eval {
 					     $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($reading) eq "HASH");
 				     $best_de=$de;
 		     $best_lum_pct=$lum_pct;
-				     $best_score=$candidate_score;
-					     $best_arrays=clone_arrays($arrays);
-					     $best_reading=clone_picture($reading);
-					     $best_read_step=clone_picture($read_step);
-					     $store_best_pair->() if($paired_white_step);
+					     $best_score=$candidate_score;
+						     $best_arrays=clone_arrays($arrays);
+						     $best_reading=clone_picture($reading);
+						     $best_read_step=clone_picture($read_step);
+						     $best_from_luma_only=ref(luma_only_adjustment($adjustments)) eq "HASH" ? 1 : 0;
+						     $store_best_pair->() if($paired_white_step);
 				     $polish_stalls=0;
 			     trace_109($read_step,"fine_tune_best_updated",{
 			      label=>$label,
@@ -17770,12 +17814,26 @@ eval {
 						      low_shadow_luminance_progress_keep=>$low_shadow_y_keep?JSON::PP::true:JSON::PP::false,
 						      kept_luma_overshoot_probe=>$kept_luma_overshoot_probe,
 						      not_worse_measurement=>$not_worse_measurement?JSON::PP::true:JSON::PP::false,
-					      candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
-				      previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
-				      $pair_side_trace_fields->(),
-				      best_values=>trace_target_values($best_arrays,$target)
-				     });
-				    } else {
+						      candidate_chroma_delta_e=>defined($candidate_chroma)?$candidate_chroma+0:undef,
+					      previous_chroma_delta_e=>defined($best_chroma)?$best_chroma+0:undef,
+						      best_from_luma_only=>$best_from_luma_only?JSON::PP::true:JSON::PP::false,
+					      $pair_side_trace_fields->(),
+					      best_values=>trace_target_values($best_arrays,$target)
+					     });
+					     if($sdr_low_shadow_2_3_luma_ready_for_fresh_verify->()) {
+					      trace_109($read_step,"sdr_low_shadow_2_3_luma_best_fresh_verify_handoff",{
+					       label=>$label,
+					       polish=>$polish+0,
+					       best_delta_e=>defined($best_de)?$best_de+0:undef,
+					       best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+					       best_score=>$best_score+0,
+					       reason=>defined($best_update_reason)?$best_update_reason:"fine_tune_luma_only_best_near_target",
+					       adjustments=>trace_adjustments_summary($adjustments),
+					       best_values=>trace_target_values($best_arrays,$target)
+					      });
+					      last;
+					     }
+					    } else {
 				     $polish_stalls++;
 				     my $luma_anchor_working=headroom_luminance_anchor_working_state($read_step,$lum_pct,$best_lum_pct,$de,$best_de);
 				     if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step)) {
