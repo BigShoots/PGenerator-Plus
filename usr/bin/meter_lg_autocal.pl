@@ -15455,7 +15455,6 @@ eval {
 			  if($needs_recovery) {
 			   my $best_entry=lg_autocal_26_best_known_for_step($state,$final_read_step);
 			   if(ref($best_entry) eq "HASH") {
-			    $best_entry->{"reached_target"}=JSON::PP::false;
 			    $best_entry->{"legal_white_validation_status"}="diagnostic_only_failed";
 			    $best_entry->{"legal_white_failure_reason"}="legal_white_diagnostic_only_failed";
 			    $best_entry->{"legal_white_diagnostic_only"}=JSON::PP::true;
