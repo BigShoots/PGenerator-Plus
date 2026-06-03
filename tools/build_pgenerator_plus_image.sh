@@ -20,6 +20,7 @@ PI5_BOOT_LABEL="BOOT_PG"
 PI5_ROOT_LABEL="/_PG"
 PI5_REQUIRED_BOOT_KERNELS="kernel_2712.img kernel8.img"
 PI5_ROOT_PASSWORD_HASH='$6$pgenerator$tEOE1qfYZlUf/.8wT.zgYKKMlRZCb/qEPvczRS/GqoNMXXqSO9a8Vhi1G6eN7prcHdONB96F2RtRNm6ZvlWTB/'
+TARGET_OVERLAY_REL=""
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -413,6 +414,7 @@ overlay_tree() {
  local rel
  local src
  local dst
+ local target_overlay
 
  for rel in etc usr var lib; do
   src="$REPO_ROOT/$rel"
@@ -422,6 +424,19 @@ overlay_tree() {
   log "Overlaying /$rel"
   rsync -aHAX --no-owner --no-group -- "$src/" "$dst/"
  done
+
+ if [[ -n "$TARGET_OVERLAY_REL" ]]; then
+  target_overlay="$REPO_ROOT/$TARGET_OVERLAY_REL"
+  [[ -d "$target_overlay" ]] || die "Target overlay directory not found: $target_overlay"
+  for rel in etc usr var lib; do
+   src="$target_overlay/$rel"
+   [[ -d "$src" ]] || continue
+   dst="$ROOT_MOUNT/$rel"
+   mkdir -p "$dst"
+   log "Overlaying target /$rel from $TARGET_OVERLAY_REL"
+   rsync -aHAX --no-owner --no-group -- "$src/" "$dst/"
+  done
+ fi
 }
 
 stage_argyll_runtime() {
