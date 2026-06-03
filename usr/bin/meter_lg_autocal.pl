@@ -75,7 +75,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma low_shadow_live_neighbor response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error sdr_top_99_luma_cleanup low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma low_shadow_live_neighbor response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error sdr_top_99_luma_cleanup sdr_top_cluster_preshape_luma_repair low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -9880,6 +9880,55 @@ sub sdr_top_cluster_preshape_slot_protected {
  return 0;
 }
 
+sub sdr_top_cluster_preshape_99_far_low_luminance {
+ my ($ire,$lum_pct)=@_;
+ return 0 if(!defined($ire) || abs(($ire+0)-99) >= 0.001);
+ return 0 if(!defined($lum_pct));
+ return ($lum_pct+0) <= -6.0 ? 1 : 0;
+}
+
+sub sdr_top_cluster_preshape_99_luma_worse {
+ my ($ire,$best_lum_pct,$candidate_lum_pct)=@_;
+ return 0 if(!sdr_top_cluster_preshape_99_far_low_luminance($ire,$best_lum_pct));
+ return 0 if(!defined($candidate_lum_pct));
+ return ($candidate_lum_pct+0) < ($best_lum_pct+0)-0.10 ? 1 : 0;
+}
+
+sub sdr_top_cluster_preshape_99_luma_improved {
+ my ($ire,$best_lum_pct,$candidate_lum_pct)=@_;
+ return 0 if(!sdr_top_cluster_preshape_99_far_low_luminance($ire,$best_lum_pct));
+ return 0 if(!defined($candidate_lum_pct));
+ return ($candidate_lum_pct+0) > ($best_lum_pct+0)+0.25 ? 1 : 0;
+}
+
+sub sdr_top_cluster_preshape_99_luma_adjustments {
+ my ($arrays,$target,$lum_pct,$tried,$ire)=@_;
+ $ire=$target->{"ire"} if(!defined($ire) && ref($target) eq "HASH");
+ return undef if(!sdr_top_cluster_preshape_99_far_low_luminance($ire,$lum_pct));
+ return undef if(!has_luminance_channel($arrays,$target));
+ my $idx=$target->{"index"};
+ my $arr=$arrays->{"adjustingLuminance"};
+ return undef if(ref($arr) ne "ARRAY" || !defined($idx) || $idx >= @{$arr});
+ my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+ my $max_delta=abs($lum_pct+0) >= 10.0 ? 2.0 : 1.25;
+ my $next=round_ddc_quarter(clamp_ddc_value($current+$max_delta));
+ return undef if(abs($next-$current) < 0.0001);
+ return undef if(tried_value_exists($tried,"adjustingLuminance",$next));
+ return [{
+  channel=>"lum",
+  setting=>"adjustingLuminance",
+  current=>$current,
+  next=>$next,
+  delta=>$next-$current,
+  neutral_luminance=>1,
+  sdr_top_cluster_preshape=>1,
+  sdr_top_cluster_preshape_luma_repair=>1,
+  remaining_error=>abs($lum_pct+0),
+  preshape_delta_cap=>$max_delta+0,
+  source=>"sdr_top_cluster_preshape_99_luma"
+ }];
+}
+
 sub sdr_top_cluster_preshape_rgb_adjustments {
  my ($arrays,$target,$metrics,$tried)=@_;
  my $adjustments=sdr_top_legal_white_rgb_recovery_adjustments($arrays,$target,$metrics,$tried);
@@ -15474,6 +15523,7 @@ eval {
 				   my $drive_step=$read_step;
 				   my $drive_kind="slot";
 				   my $drive_de=$de;
+				   my $drive_lum_pct=luminance_error_percent($reading,$target_step_y);
 				   if(abs(($preshape_ire+0)-99) < 0.001 && ref($white_reference_step) eq "HASH") {
 				    my ($legal_reading,$legal_step,$legal_metrics,$legal_de,$legal_target_y)=$read_sdr_top_legal_white_validation->(
 				     $white_reference_step,
@@ -15495,7 +15545,7 @@ eval {
 					     });
 					    }
 					   }
-				   if(!sdr_top_legal_white_needs_rgb_recovery($drive_metrics) || $limit <= 0) {
+				   if((!sdr_top_legal_white_needs_rgb_recovery($drive_metrics) && !sdr_top_cluster_preshape_99_far_low_luminance($preshape_ire,$drive_lum_pct)) || $limit <= 0) {
 				    my $record={
 				     ire=>$preshape_ire+0,
 				     status=>"skipped",
@@ -15503,6 +15553,7 @@ eval {
 				     metrics=>$metrics,
 				     drive_metrics=>$drive_metrics,
 				     drive_kind=>$drive_kind,
+				     luminance_error_pct=>defined($drive_lum_pct) ? $drive_lum_pct+0 : undef,
 				     target_values=>trace_target_values($arrays,$target)
 				    };
 				    push @records,$record;
@@ -15513,30 +15564,38 @@ eval {
 				   my $best_score=$drive_metrics->{"score"}+0;
 				   my $best_metrics=clone_picture($drive_metrics);
 				   my $best_arrays=clone_arrays($arrays);
+				   my $best_lum_pct=$drive_lum_pct;
+				   my $best_de=$drive_de;
 				   my $accepted=0;
 				   my $restored=0;
 				   for(my $iter=1;$iter<=$limit;$iter++) {
 				    last if(cancelled());
-				    my $adjustments=sdr_top_cluster_preshape_rgb_adjustments($arrays,$target,$drive_metrics,\%tried);
+				    my $far_low_99=sdr_top_cluster_preshape_99_far_low_luminance($preshape_ire,$drive_lum_pct);
+				    my $adjustments=$far_low_99 ? sdr_top_cluster_preshape_99_luma_adjustments($arrays,$target,$drive_lum_pct,\%tried,$preshape_ire) : undef;
+				    $adjustments=sdr_top_cluster_preshape_rgb_adjustments($arrays,$target,$drive_metrics,\%tried) if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
 				    last if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
 				    my $candidate_arrays=clone_arrays($arrays);
 				    foreach my $adj (@{$adjustments}) {
 				     next if(ref($adj) ne "HASH");
-				     next if(($adj->{"setting"}||"") eq "adjustingLuminance");
-				     $candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
+				     my $setting=$adj->{"setting"}||"";
+				     next if($setting !~ /^(?:whiteBalanceRed|whiteBalanceGreen|whiteBalanceBlue|adjustingLuminance)$/);
+				     next if(ref($candidate_arrays->{$setting}) ne "ARRAY");
+				     $candidate_arrays->{$setting}[$target->{"index"}]=$adj->{"next"};
 				    }
 				    mark_tried_values(\%tried,$candidate_arrays,$target,undef);
 				    $arrays=$candidate_arrays;
 				    $state->{"phase"}="writing";
-				    $state->{"message"}="Pre-shaping $label top RGB ".describe_adjustments($adjustments)." ($iter/$limit)";
+				    $state->{"message"}="Pre-shaping $label top ".($far_low_99 ? "luma" : "RGB")." ".describe_adjustments($adjustments)." ($iter/$limit)";
 				    trace_109($read_step,"sdr_top_cluster_preshape_move",{
 				     label=>$label,
 				     iteration=>$iter+0,
 				     drive_kind=>$drive_kind,
 				     metrics=>$drive_metrics,
+				     luminance_error_pct=>defined($drive_lum_pct) ? $drive_lum_pct+0 : undef,
+				     far_low_luminance=>$far_low_99 ? JSON::PP::true : JSON::PP::false,
 				     adjustments=>trace_adjustments_summary($adjustments),
 				     values_after=>trace_target_values($arrays,$target),
-				     luminance_ignored=>JSON::PP::true
+				     luminance_ignored=>$far_low_99 ? JSON::PP::false : JSON::PP::true
 				    });
 				    write_state($state);
 				    my $write_error;
@@ -15559,26 +15618,39 @@ eval {
 				     last;
 				    }
 				    my $candidate_score=$candidate_metrics->{"score"}+0;
+				    my $candidate_lum_pct=luminance_error_percent($candidate_reading,$slot_target_y);
+				    my $luma_worse=sdr_top_cluster_preshape_99_luma_worse($preshape_ire,$best_lum_pct,$candidate_lum_pct);
+				    my $luma_improved=sdr_top_cluster_preshape_99_luma_improved($preshape_ire,$best_lum_pct,$candidate_lum_pct);
 				    my $improved=0;
-				    $improved=1 if($candidate_score + 0.002 < $best_score);
-				    $improved=1 if(($candidate_metrics->{"max_abs"}||0)+0.003 < ($best_metrics->{"max_abs"}||999) && $candidate_score <= $best_score+0.010);
+				    if(!$luma_worse) {
+				     $improved=1 if($candidate_score + 0.002 < $best_score);
+				     $improved=1 if(($candidate_metrics->{"max_abs"}||0)+0.003 < ($best_metrics->{"max_abs"}||999) && $candidate_score <= $best_score+0.010);
+				     $improved=1 if($luma_improved && (!defined($candidate_de) || !defined($best_de) || $candidate_de <= $best_de+0.50));
+				    }
 				    if($improved) {
 				     $accepted++;
 				     $best_score=$candidate_score;
 				     $best_metrics=clone_picture($candidate_metrics);
 				     $best_arrays=clone_arrays($arrays);
+				     $best_lum_pct=$candidate_lum_pct;
+				     $best_de=$candidate_de;
 				     $drive_metrics=$candidate_metrics;
 				     $drive_step=$candidate_step if(ref($candidate_step) eq "HASH");
 				     $drive_de=$candidate_de;
+				     $drive_lum_pct=$candidate_lum_pct;
 				     trace_109($drive_step || $read_step,"sdr_top_cluster_preshape_accept",{
 				      label=>$label,
 				      iteration=>$iter+0,
 				      drive_kind=>$drive_kind,
 				      candidate_delta_e=>defined($candidate_de) ? $candidate_de+0 : undef,
+				      candidate_luminance_error_pct=>defined($candidate_lum_pct) ? $candidate_lum_pct+0 : undef,
+				      best_luminance_error_pct=>defined($best_lum_pct) ? $best_lum_pct+0 : undef,
+				      far_low_luminance=>sdr_top_cluster_preshape_99_far_low_luminance($preshape_ire,$best_lum_pct) ? JSON::PP::true : JSON::PP::false,
+				      luma_repair=>$luma_improved ? JSON::PP::true : JSON::PP::false,
 				      candidate_metrics=>$candidate_metrics,
 				      best_score=>$best_score+0,
 				      target_values=>trace_target_values($arrays,$target),
-				      luminance_ignored=>JSON::PP::true
+				      luminance_ignored=>sdr_top_cluster_preshape_99_far_low_luminance($preshape_ire,$best_lum_pct) ? JSON::PP::false : JSON::PP::true
 				     });
 				     last if(!sdr_top_legal_white_needs_rgb_recovery($drive_metrics));
 				    } else {
@@ -15588,12 +15660,16 @@ eval {
 				      iteration=>$iter+0,
 				      drive_kind=>$drive_kind,
 				      candidate_delta_e=>defined($candidate_de) ? $candidate_de+0 : undef,
+				      candidate_luminance_error_pct=>defined($candidate_lum_pct) ? $candidate_lum_pct+0 : undef,
+				      best_luminance_error_pct=>defined($best_lum_pct) ? $best_lum_pct+0 : undef,
+				      far_low_luminance=>sdr_top_cluster_preshape_99_far_low_luminance($preshape_ire,$best_lum_pct) ? JSON::PP::true : JSON::PP::false,
+				      reject_reason=>$luma_worse ? "far_low_luminance_worsened" : "rgb_score_not_improved",
 				      candidate_metrics=>$candidate_metrics,
 				      best_metrics=>$best_metrics,
 				      candidate_score=>$candidate_score+0,
 				      best_score=>$best_score+0,
 				      restore_values=>trace_target_values($best_arrays,$target),
-				      luminance_ignored=>JSON::PP::true
+				      luminance_ignored=>sdr_top_cluster_preshape_99_far_low_luminance($preshape_ire,$best_lum_pct) ? JSON::PP::false : JSON::PP::true
 				     });
 				     $arrays=clone_arrays($best_arrays);
 				     ($picture,$write_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
@@ -15601,6 +15677,8 @@ eval {
 				     $calibration_mode_active=1;
 				     sync_state_picture($state,$picture,$picture_mode);
 				     $drive_metrics=clone_picture($best_metrics);
+				     $drive_de=$best_de;
+				     $drive_lum_pct=$best_lum_pct;
 				    }
 				   }
 				   my $record={
