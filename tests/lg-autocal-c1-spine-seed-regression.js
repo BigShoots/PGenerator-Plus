@@ -65,7 +65,7 @@ assert(
 
 const seedCorrectionSource = sliceBetween(
   'sub full_ddc_spine_seed_correction_deltas',
-  'sub apply_sdr_top_body_blend_seed_overrides'
+  'sub sdr_top_cluster_99_seed_red_continuity_clamp'
 );
 assert(
   seedCorrectionSource.includes('"99"  => { adjustingLuminance => -0.75 }') &&
@@ -79,6 +79,24 @@ assert(
   'post-105 99%/95%/90% seeds should use display-safe luma-only local offsets, not fixed RGB pushes'
 );
 
+const top99RedContinuityClampSource = sliceBetween(
+  'sub sdr_top_cluster_99_seed_red_continuity_clamp',
+  'sub apply_sdr_top_body_blend_seed_overrides'
+);
+assert(
+  top99RedContinuityClampSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
+    top99RedContinuityClampSource.includes('!lg_autocal_26_full_ddc_spine_enabled($config)') &&
+    top99RedContinuityClampSource.includes('lg_autocal_26_hdr20_seed_enabled($config)') &&
+    top99RedContinuityClampSource.includes('abs(($target_ire+0)-99) >= 0.001') &&
+    top99RedContinuityClampSource.includes('$setting ne "whiteBalanceRed"') &&
+    top99RedContinuityClampSource.includes('ddc_slot_index_for_ire(95)') &&
+    top99RedContinuityClampSource.includes('ddc_slot_index_for_ire(105)') &&
+    top99RedContinuityClampSource.includes('my $margin=1.00;') &&
+    top99RedContinuityClampSource.includes('sdr_99_red_seed_continuity_from_95_105_range') &&
+    !top99RedContinuityClampSource.includes('C1'),
+  '99 red continuity clamp should be SDR full-spine top-cluster only, neighbor-range based, and not model-hardcoded'
+);
+
 const topBlendSource = sliceBetween(
   'sub apply_sdr_top_body_blend_seed_overrides',
   'sub apply_full_ddc_spine_seed_corrections'
@@ -90,6 +108,9 @@ assert(
     topBlendSource.includes('reason=>"sdr_99_seed_from_80_without_105_shape"') &&
     topBlendSource.includes('source_ire=>$body_ire+0') &&
     topBlendSource.includes('offsets=>$deltas') &&
+    topBlendSource.includes('sdr_top_cluster_99_seed_red_continuity_clamp($config,$arrays,$calibrated_slot_mask,$target_ire,$setting,$candidate)') &&
+    topBlendSource.includes('clamps=>\\%clamps') &&
+    topBlendSource.includes('return 0 if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");') &&
     topBlendSource.includes('if(!calibrated_26pt_slot_for_ire($calibrated_slot_mask,99) && !sdr_top_cluster_preshape_slot_protected($config,$calibrated_slot_mask,99))') &&
     !topBlendSource.includes('"99" => { top_weight=>0.22') &&
     topBlendSource.includes('"95" => { top_weight=>0.08, rgb_top_weight=>0.00') &&
@@ -105,6 +126,51 @@ assert(
     !topBlendSource.includes('damp_sdr_top_seed_red_shape_from_calibrated_80'),
   '99% seed should be traceable local-from-80 only before top pre-shape protection, while 95% keeps only a luma-weighted 105 blend and 90 gates bad 99, without the retired 80-relative red guard'
 );
+
+function sdrTopCluster99RedContinuityClamp({
+  signalMode = 'sdr',
+  fullSpine = true,
+  hdr20Seed = false,
+  targetIre = 99,
+  setting = 'whiteBalanceRed',
+  candidate,
+  red95,
+  red105,
+  margin = 1.0
+}) {
+  if (signalMode !== 'sdr' || !fullSpine || hdr20Seed) return null;
+  if (Math.abs(targetIre - 99) >= 0.001 || setting !== 'whiteBalanceRed') return null;
+  if (candidate === undefined || red95 === undefined || red105 === undefined) return null;
+  const floor = Math.min(red95, red105) - margin;
+  const ceiling = Math.max(red95, red105) + margin;
+  const after = Math.max(floor, Math.min(ceiling, candidate));
+  return Math.abs(after - candidate) < 0.0001 ? null : { after, floor, ceiling, margin };
+}
+
+{
+  const nietzscheSeed = sdrTopCluster99RedContinuityClamp({
+    candidate: -1.5,
+    red95: -4.8,
+    red105: -10.75
+  });
+  assert(nietzscheSeed, 'fixture should clamp the 99-from-80 red seed when it opposes both top neighbors');
+  assert.strictEqual(nietzscheSeed.after, -3.8, '99 red seed should clamp to the 95/105 neighbor range plus a 1.0 margin');
+  assert(nietzscheSeed.after >= nietzscheSeed.floor && nietzscheSeed.after <= nietzscheSeed.ceiling, 'clamped 99 red seed should remain inside the neighbor continuity band');
+
+  const highFinalOscillationSeed = sdrTopCluster99RedContinuityClamp({
+    candidate: 8,
+    red95: -4.8,
+    red105: -10.75
+  });
+  assert.strictEqual(highFinalOscillationSeed.after, -3.8, 'positive 99 red excursions should be pulled back to the same conservative continuity band');
+
+  assert.strictEqual(sdrTopCluster99RedContinuityClamp({ candidate: -5.25, red95: -4.8, red105: -10.75 }), null, 'in-band 99 red seed should not be clamped');
+  assert.strictEqual(sdrTopCluster99RedContinuityClamp({ signalMode: 'hdr10', candidate: -1.5, red95: -4.8, red105: -10.75 }), null, 'HDR should not use the SDR 99 red continuity clamp');
+  assert.strictEqual(sdrTopCluster99RedContinuityClamp({ targetIre: 95, candidate: -1.5, red95: -4.8, red105: -10.75 }), null, '95 red should not be clamped by the 99 helper');
+  assert.strictEqual(sdrTopCluster99RedContinuityClamp({ targetIre: 105, candidate: -1.5, red95: -4.8, red105: -10.75 }), null, '105 red should not be clamped by the 99 helper');
+  assert.strictEqual(sdrTopCluster99RedContinuityClamp({ setting: 'whiteBalanceGreen', candidate: -1.5, red95: -4.8, red105: -10.75 }), null, 'non-red channels should not be clamped by the 99 red helper');
+  assert.strictEqual(sdrTopCluster99RedContinuityClamp({ setting: 'adjustingLuminance', candidate: -1.5, red95: -4.8, red105: -10.75 }), null, 'luminance should not be clamped by the 99 red helper');
+}
 
 function blendFromBody(body, top, weight, maxFromBody) {
   const raw = body + ((top - body) * weight);
