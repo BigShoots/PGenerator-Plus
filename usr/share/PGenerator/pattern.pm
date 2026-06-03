@@ -20,6 +20,59 @@
 ###############################################
 #       Create Pattern File Function          #
 ###############################################
+sub pattern_patch_request_log_path (@) {
+ my $path=$calman_patch_log || "/var/log/PGenerator/calman-patches.log";
+ my $dir=$path;
+ $dir=~s|/[^/]+$||;
+ $dir="/var/log/PGenerator" if($dir eq "");
+ if($dir ne "" && ! -d $dir) {
+  mkdir $dir;
+ }
+ return (-d $dir) ? "$dir/patch-requests.log" : "/tmp/patch-requests.log";
+}
+
+sub pattern_patch_log_clean (@) {
+ my $value=shift;
+ my $limit=int(shift || 0);
+ $value="" if(!defined $value);
+ $value=~s/[\r\n]+/|/g;
+ $value=~s/[\t]/ /g;
+ $value=~s/\s+/ /g;
+ $value=~s/\s*\|\s*/|/g;
+ $value=~s/^\s+|\s+$//g;
+ $value=substr($value,0,$limit) if($limit > 0 && length($value) > $limit);
+ return $value;
+}
+
+sub pattern_log_patch_request (@) {
+ my %f=@_;
+ my $path=&pattern_patch_request_log_path();
+ my $ts=eval { require Time::HiRes; Time::HiRes::time(); };
+ $ts=time() if(!$ts);
+ my $local=scalar(localtime());
+ my $range="source_range=".($f{source_range}//"");
+ my @fields=(
+  sprintf("%.6f",$ts),
+  "local=".&pattern_patch_log_clean($local,80),
+  "source=".&pattern_patch_log_clean($f{source},80),
+  "handler=create_pattern_file",
+  "raw=".&pattern_patch_log_clean($f{raw},80),
+  "scaled=".&pattern_patch_log_clean($f{scaled},80),
+  "input_max=".&pattern_patch_log_clean($f{input_max},40),
+  "bits=".&pattern_patch_log_clean($f{bits},40),
+  "range=".&pattern_patch_log_clean($range,120),
+  "win=".&pattern_patch_log_clean($f{win},80),
+  "size=",
+  "bg=".&pattern_patch_log_clean($f{bg},80),
+  "meta=".&pattern_patch_log_clean($f{meta},700),
+  "pattern=".&pattern_patch_log_clean($f{pattern},1800)
+ );
+ if(open(my $fh,">>",$path)) {
+  print $fh join("\t",@fields)."\n";
+  close($fh);
+ }
+}
+
 sub create_pattern_file (@) {
  my $draw=shift;
  my $dim=shift;
@@ -71,6 +124,16 @@ sub create_pattern_file (@) {
  $pattern_string.="$options=$text\nEND=1\n";
  $pattern_string.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n" if($simple);
  return $pattern_string if($return_str);
+ &pattern_log_patch_request(source=>$requested_by,
+                            raw=>$rgb,
+                            scaled=>$new_rgb,
+                            input_max=>$max_rgb,
+                            bits=>$bits,
+                            source_range=>$source_range,
+                            win=>$dim,
+                            bg=>$bg,
+                            meta=>"draw=$draw;position=$position;simple=$simple;resolution=$resolution",
+                            pattern=>$pattern_string);
  open(FILE,">$command_file.tmp");
  print FILE $pattern_string;
  close(FILE);
