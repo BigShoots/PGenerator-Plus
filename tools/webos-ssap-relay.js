@@ -31,8 +31,9 @@ Options:
   --listen-host <host>  Host/IP to bind for Calman clients (default 0.0.0.0)
   --listen-port <port>  Port to bind for Calman clients (default 3000)
   --listen-tls          Accept secure WebSocket clients (webOS port 3001)
-  --tls-cert <path>     Certificate for --listen-tls
-  --tls-key <path>      Private key for --listen-tls
+  --listen-auto-tls     Accept either plain or secure WebSocket clients on one port
+  --tls-cert <path>     Certificate for --listen-tls or --listen-auto-tls
+  --tls-key <path>      Private key for --listen-tls or --listen-auto-tls
   --target <uri>        Target webOS WebSocket URI (default ws://192.168.1.177:3000)
   --target-ip <ip>      Shortcut for --target ws://<ip>:3000
   --log <path>          JSONL log path (default tmp/webos-relay-<timestamp>.jsonl)
@@ -49,6 +50,7 @@ function parseArgs(argv) {
     listenHost: '0.0.0.0',
     listenPort: 3000,
     listenTls: false,
+    listenAutoTls: false,
     tlsCert: null,
     tlsKey: null,
     target: 'ws://192.168.1.177:3000',
@@ -64,6 +66,7 @@ function parseArgs(argv) {
     else if (arg === '--listen-host') args.listenHost = next();
     else if (arg === '--listen-port') args.listenPort = Number(next());
     else if (arg === '--listen-tls') args.listenTls = true;
+    else if (arg === '--listen-auto-tls') args.listenAutoTls = true;
     else if (arg === '--tls-cert') args.tlsCert = next();
     else if (arg === '--tls-key') args.tlsKey = next();
     else if (arg === '--target') args.target = next();
@@ -77,8 +80,11 @@ function parseArgs(argv) {
   if (!Number.isInteger(args.listenPort) || args.listenPort < 1 || args.listenPort > 65535) {
     throw new Error(`Invalid --listen-port: ${args.listenPort}`);
   }
-  if (args.listenTls && (!args.tlsCert || !args.tlsKey)) {
-    throw new Error('--listen-tls requires --tls-cert and --tls-key');
+  if (args.listenTls && args.listenAutoTls) {
+    throw new Error('--listen-tls and --listen-auto-tls are mutually exclusive');
+  }
+  if ((args.listenTls || args.listenAutoTls) && (!args.tlsCert || !args.tlsKey)) {
+    throw new Error('--listen-tls/--listen-auto-tls require --tls-cert and --tls-key');
   }
   return args;
 }
@@ -365,29 +371,15 @@ async function bridgeClient(clientSocket, req, upgradeHead, targetUri, logger) {
   }
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const logger = new JsonlLogger(args.logPath);
-  const requestHandler = (req, res) => {
-    logger.log({ event: 'http_request', method: req.method, url: req.url, remote: req.socket.remoteAddress });
-    res.writeHead(426, { 'Content-Type': 'text/plain' });
-    res.end('WebSocket upgrade required\n');
-  };
-  const server = args.listenTls
-    ? https.createServer({
-        cert: fs.readFileSync(args.tlsCert),
-        key: fs.readFileSync(args.tlsKey)
-      }, requestHandler)
-    : http.createServer(requestHandler);
-  const sockets = new Set();
+function looksLikeTlsClientHello(chunk) {
+  return chunk && chunk.length >= 3 && chunk[0] === 0x16 && chunk[1] === 0x03;
+}
 
-  server.on('connection', socket => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  });
+function attachClientServerHandlers(server, args, logger, protocol) {
   server.on('clientError', (err, socket) => {
     logger.log({
       event: 'client_http_error',
+      protocol,
       error: err.message,
       code: err.code || null,
       bytes: err.rawPacket ? err.rawPacket.subarray(0, 16).toString('hex') : null
@@ -397,6 +389,7 @@ async function main() {
   server.on('upgrade', (req, socket, head) => {
     logger.log({
       event: 'client_upgrade',
+      protocol,
       remote: req.socket.remoteAddress,
       url: req.url,
       headers: req.headers
@@ -414,17 +407,92 @@ async function main() {
       '\r\n'
     ].join('\r\n'));
     bridgeClient(socket, req, head, args.target, logger).catch(err => {
-      logger.log({ event: 'bridge_failed', error: err.message });
+      logger.log({ event: 'bridge_failed', protocol, error: err.message });
       closeSocket(socket);
     });
   });
+}
+
+function createAutoTlsServer(httpServer, tlsHttpServer, secureContext, logger, sockets) {
+  return net.createServer(socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+
+    const remote = `${socket.remoteAddress || 'unknown'}:${socket.remotePort || ''}`;
+    const onError = err => {
+      logger.log({ event: 'client_protocol_detect_error', remote, error: err.message });
+    };
+    socket.once('error', onError);
+    socket.once('data', chunk => {
+      socket.removeListener('error', onError);
+      socket.pause();
+      socket.unshift(chunk);
+
+      const protocol = looksLikeTlsClientHello(chunk) ? 'tls' : 'plain';
+      logger.log({
+        event: 'client_protocol_detected',
+        remote,
+        protocol,
+        bytes: chunk.subarray(0, 16).toString('hex')
+      });
+      if (protocol === 'tls') {
+        const tlsSocket = new tls.TLSSocket(socket, { isServer: true, secureContext });
+        tlsSocket.once('error', err => {
+          logger.log({ event: 'client_tls_error', remote, error: err.message, code: err.code || null });
+        });
+        tlsHttpServer.emit('connection', tlsSocket);
+        tlsSocket.resume();
+      } else {
+        httpServer.emit('connection', socket);
+        socket.resume();
+      }
+    });
+  });
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const logger = new JsonlLogger(args.logPath);
+  const requestHandler = (req, res) => {
+    logger.log({ event: 'http_request', method: req.method, url: req.url, remote: req.socket.remoteAddress });
+    res.writeHead(426, { 'Content-Type': 'text/plain' });
+    res.end('WebSocket upgrade required\n');
+  };
+  const sockets = new Set();
+  const tlsOptions = (args.listenTls || args.listenAutoTls)
+    ? {
+        cert: fs.readFileSync(args.tlsCert),
+        key: fs.readFileSync(args.tlsKey)
+      }
+    : null;
+  const server = (() => {
+    if (args.listenAutoTls) {
+      const plainServer = http.createServer(requestHandler);
+      const tlsHttpServer = http.createServer(requestHandler);
+      const secureContext = tls.createSecureContext(tlsOptions);
+      attachClientServerHandlers(plainServer, args, logger, 'plain');
+      attachClientServerHandlers(tlsHttpServer, args, logger, 'tls');
+      return createAutoTlsServer(plainServer, tlsHttpServer, secureContext, logger, sockets);
+    }
+    const clientServer = args.listenTls
+      ? https.createServer(tlsOptions, requestHandler)
+      : http.createServer(requestHandler);
+    clientServer.on('connection', socket => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    attachClientServerHandlers(clientServer, args, logger, args.listenTls ? 'tls' : 'plain');
+    return clientServer;
+  })();
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(args.listenPort, args.listenHost, resolve);
   });
-  logger.log({ event: 'relay_started', listen_host: args.listenHost, listen_port: args.listenPort, target: args.target, log_path: args.logPath });
+  const listenMode = args.listenAutoTls ? 'auto-tls' : (args.listenTls ? 'tls' : 'plain');
+  logger.log({ event: 'relay_started', listen_host: args.listenHost, listen_port: args.listenPort, listen_mode: listenMode, target: args.target, log_path: args.logPath });
   process.stdout.write(`WebOS SSAP relay listening on ${args.listenHost}:${args.listenPort}\n`);
+  process.stdout.write(`Client listen mode: ${listenMode}\n`);
   process.stdout.write(`Forwarding to ${args.target}\n`);
   process.stdout.write(`Logging JSONL to ${args.logPath}\n`);
 
