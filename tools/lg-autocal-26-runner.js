@@ -18,6 +18,7 @@ const targetGamma = process.env.PGEN_TARGET_GAMMA || 'bt1886';
 const runAutocal = process.env.PGEN_RUN_AUTOCAL !== '0';
 const runSeries = process.env.PGEN_RUN_SERIES !== '0';
 const patchInsert = process.env.PGEN_PATCH_INSERT === '1';
+const malformedStatusJsonRetries = Number(process.env.PGEN_STATUS_JSON_RETRIES || '3');
 
 const ddcSlots = [
   2.3, 3, 4, 5, 7, 10, 15, 20, 25, 30, 35, 40, 45,
@@ -62,7 +63,11 @@ async function api(endpoint, options = {}) {
     try {
       return JSON.parse(text);
     } catch {
-      throw new Error(`${endpoint} returned non-JSON: ${text.slice(0, 240)}`);
+      const error = new Error(`${endpoint} returned non-JSON: ${text.slice(0, 240)}`);
+      error.nonJson = true;
+      error.endpoint = endpoint;
+      error.responseText = text;
+      throw error;
     }
   } finally {
     clearTimeout(timeout);
@@ -233,8 +238,24 @@ async function parkBlack() {
 async function pollStatus(endpoint, outName, label) {
   let last = null;
   const started = Date.now();
+  const maxMalformedRetries = Number.isFinite(malformedStatusJsonRetries) && malformedStatusJsonRetries >= 0
+    ? Math.floor(malformedStatusJsonRetries)
+    : 3;
+  let malformedRetries = 0;
   while (Date.now() - started < 6 * 60 * 60 * 1000) {
-    const status = await api(endpoint, { timeoutMs: 30000 });
+    let status;
+    try {
+      status = await api(endpoint, { timeoutMs: 30000 });
+      malformedRetries = 0;
+    } catch (error) {
+      if (!error || !error.nonJson || malformedRetries >= maxMalformedRetries) throw error;
+      malformedRetries++;
+      process.stderr.write(
+        `[${new Date().toLocaleTimeString()}] ${label}: malformed status JSON from ${endpoint}; retry ${malformedRetries}/${maxMalformedRetries}\n`
+      );
+      await sleep(1000);
+      continue;
+    }
     last = status;
     save(outName, status);
     const state = status.status || 'unknown';
