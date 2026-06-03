@@ -12,11 +12,6 @@ function sliceBetween(source, startNeedle, endNeedle) {
   return source.slice(start, end);
 }
 
-const pairedHelper = sliceBetween(
-  webuiSource,
-  'function meterLgAutoCal26PairedDeltaEActive()',
-  'function meterPerChannelGamma('
-);
 const drawAllCharts = sliceBetween(webuiSource, 'function drawAllCharts(readings)', 'function getChartCtx(id)');
 const drawDeltaEChart = sliceBetween(webuiSource, 'function drawDeltaEChart(gs,allSteps,readingMap,rawGs)', 'function drawDeltaE2000Chart');
 const drawRGBChart = sliceBetween(webuiSource, 'function drawRGBChart(gs,allSteps,readingMap)', 'function drawEOTFChart');
@@ -26,28 +21,23 @@ const chartInteraction = sliceBetween(webuiSource, 'function chartRegisterIntera
 const chartHover = sliceBetween(webuiSource, 'function chartHandleHover(e,canvasId)', 'function chartHandleClick');
 
 assert(
-  pairedHelper.includes("meterActiveSeriesType==='greyscale'") &&
-    pairedHelper.includes('meterUseLgAutoCal26(meterActiveSeriesPoints)') &&
-    pairedHelper.includes("mode==='sdr'"),
-  'paired 99/100 chart Delta E helper should be gated to SDR LG 26pt greyscale'
-);
-assert(
-  pairedHelper.includes('Math.abs(Number(plotIre)-99)>0.001') &&
-    pairedHelper.includes('meterLgAutoCal26DeltaEReadingAt(readings,100)') &&
-    pairedHelper.includes('value:(result99.value+result100.value)/2'),
-  'paired helper should average actual 99 and 100 Delta E only when the 99 reading is present'
+  !webuiSource.includes('function meterLgAutoCal26PairedDeltaEActive()') &&
+    !webuiSource.includes('function meterLgAutoCal26PairedDeltaEFor99(') &&
+    !webuiSource.includes('function meterLgAutoCal26DeltaEReadingAt('),
+  'WebUI chart code should not keep a 99/100 paired Delta E helper'
 );
 assert(
   drawAllCharts.includes('const rawGs=meterGreyscaleReadings(readings);') &&
     drawAllCharts.includes('const gs=meterFilterLgAutoCalChartItems(rawGs);') &&
     drawAllCharts.includes('drawDeltaEChart(gs,allSteps,readingMap,rawGs);'),
-  'Delta E chart should receive raw greyscale readings so the hidden 100% legal-white reference can pair with visible 99%'
+  'Delta E chart may receive raw greyscale readings, but visible point scoring should stay direct'
 );
 assert(
-  drawDeltaEChart.includes('const rawDeltaReadings=Array.isArray(rawGs)?rawGs:gs;') &&
-    drawDeltaEChart.includes('meterLgAutoCal26PairedDeltaEFor99(rd,rawDeltaReadings,greyMode,deForm,gwWeight)') &&
-    drawDeltaEChart.includes('deMap[rd.ire]=paired?paired.value:meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;'),
-  'visible 99% Delta E bar should use the paired 99/100 average while other Delta E points use their actual reading'
+  drawDeltaEChart.includes('deMap[rd.ire]=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;') &&
+    !drawDeltaEChart.includes('rawDeltaReadings') &&
+    !drawDeltaEChart.includes('PairedDeltaE') &&
+    !drawDeltaEChart.includes('paired.value'),
+  'visible 99% Delta E bar should use the direct 99% reading, not the 99/100 paired average'
 );
 assert(
   !drawRGBChart.includes('PairedDeltaE') &&
@@ -61,11 +51,22 @@ assert(
   'RGB balance and luminance/EOTF/gamma charts should remain based on the actual 99% reading'
 );
 assert(
-  chartInteraction.includes('meterLgAutoCal26PairedDeltaEFor99(rd,gs,greyMode,deForm,gwWeight)') &&
-    chartInteraction.includes('dePaired:deSelected[String(rd.ire)+\'_paired\']||null') &&
-    chartHover.includes('99/100 avg'),
-  '99% Delta E tooltip should expose that the displayed value is the paired 99/100 average'
+  chartInteraction.includes('deSelected[rd.ire]=result.value;') &&
+    chartInteraction.includes('de2000[rd.ire]=result.de2000;') &&
+    !chartInteraction.includes('PairedDeltaE') &&
+    !chartInteraction.includes('dePaired') &&
+    !chartHover.includes('99/100 avg'),
+  '99% Delta E tooltip should display direct 99% Delta E and not expose a paired average'
 );
+
+{
+  const direct99 = 0.309;
+  const legalWhite = 19.26;
+  const chartValue = direct99;
+  const pairedAverage = (direct99 + legalWhite) / 2;
+  assert.strictEqual(chartValue, direct99, 'fixture should show the visible 99% bar using direct 99% Delta E');
+  assert.notStrictEqual(chartValue, pairedAverage, 'fixture should not use the legal-white paired average for the visible 99% bar');
+}
 
 const pairScore = sliceBetween(autocalSource, 'sub legal_white_pair_score {', 'sub legal_white_pair_worst_delta');
 const bestUpdate = sliceBetween(autocalSource, 'sub legal_white_pair_best_update_allowed {', 'sub legal_white_pair_target_reached');

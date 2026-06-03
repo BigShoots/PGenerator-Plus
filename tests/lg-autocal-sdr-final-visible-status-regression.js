@@ -68,13 +68,13 @@ const validationSource = sliceBetween(
 assert(
   validationSource.includes('if($needs_recovery)') &&
     validationSource.includes('lg_autocal_26_best_known_for_step($state,$final_read_step)') &&
-    validationSource.includes('$best_entry->{"reached_target"}=JSON::PP::false;') &&
+    !validationSource.includes('$best_entry->{"reached_target"}=JSON::PP::false;') &&
     validationSource.includes('$best_entry->{"legal_white_validation_status"}="diagnostic_only_failed";') &&
     validationSource.includes('$best_entry->{"legal_white_failure_reason"}="legal_white_diagnostic_only_failed";') &&
     validationSource.includes('$best_entry->{"paired_legal_white_delta_e"}=$legal_de+0') &&
     validationSource.includes('"sdr_top_legal_white_best_known_flagged"') &&
     !validationSource.includes('sdr_top_legal_white_rgb_recovery_adjustments($arrays,$final_target,$metrics'),
-  '99 legal-white diagnostic failures should be exposed on best-known/status without re-enabling recovery writes'
+  '99 legal-white diagnostic failures should be exposed on best-known/status without changing direct 99 reached state or re-enabling recovery writes'
 );
 
 function score(de, lum = 0) {
@@ -104,12 +104,11 @@ function priorBlocks(candidate, prior, reachedTarget, reason = 'main_final_step_
   const bestKnown99 = { deltaE: 0.309, reachedTarget: true };
   const legalWhiteFailed = true;
   if (legalWhiteFailed) {
-    bestKnown99.reachedTarget = false;
     bestKnown99.legalWhiteValidationStatus = 'diagnostic_only_failed';
     bestKnown99.legalWhiteFailureReason = 'legal_white_diagnostic_only_failed';
     bestKnown99.pairedLegalWhiteDeltaE = 19.26;
   }
-  assert.strictEqual(bestKnown99.reachedTarget, false, '99 best-known should not remain reached/good after legal-white diagnostic failure');
+  assert.strictEqual(bestKnown99.reachedTarget, true, 'direct 99 best-known can remain reached/good after legal-white diagnostic failure');
   assert.strictEqual(bestKnown99.legalWhiteValidationStatus, 'diagnostic_only_failed');
   assert.strictEqual(bestKnown99.pairedLegalWhiteDeltaE, 19.26);
 }

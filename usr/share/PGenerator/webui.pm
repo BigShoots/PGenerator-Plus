@@ -12435,37 +12435,6 @@ function meterEnsureDeltaECache(readings){
  });
 }
 
-function meterLgAutoCal26PairedDeltaEActive(){
- const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- return meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints)&&mode==='sdr';
-}
-
-function meterLgAutoCal26DeltaEReadingAt(readings,ire){
- const target=Number(ire);
- if(!Array.isArray(readings)||!Number.isFinite(target)) return null;
- return readings.find(rd=>{
-  const plotIre=meterReadingPlotIre(rd);
-  return plotIre!=null&&Math.abs(Number(plotIre)-target)<0.001;
- })||null;
-}
-
-function meterLgAutoCal26PairedDeltaEFor99(reading,readings,greyMode,deForm,gwWeight){
- if(!meterLgAutoCal26PairedDeltaEActive()) return null;
- const plotIre=meterReadingPlotIre(reading);
- if(plotIre==null||Math.abs(Number(plotIre)-99)>0.001) return null;
- const partner=meterLgAutoCal26DeltaEReadingAt(readings,100);
- if(!partner) return null;
- const result99=meterGreyDeltaResult(reading,greyMode,deForm,gwWeight);
- const result100=meterGreyDeltaResult(partner,greyMode,deForm,gwWeight);
- if(!Number.isFinite(result99.value)||!Number.isFinite(result100.value)) return null;
- return {
-  value:(result99.value+result100.value)/2,
-  de99:result99.value,
-  de100:result100.value,
-  de2000:(Number.isFinite(result99.de2000)&&Number.isFinite(result100.de2000))?((result99.de2000+result100.de2000)/2):result99.de2000
- };
-}
-
 // Compute per-channel effective gamma for a single reading vs the active
 // measured white. Returns {r,g,b} of the effective gamma exponent per
 // channel. Values are null when a channel has non-positive linear Y or
@@ -24669,11 +24638,9 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
  // Compute deltaE for available readings
  const deMap={};
- const rawDeltaReadings=Array.isArray(rawGs)?rawGs:gs;
  gs.forEach(rd=>{
   if((rd.Y||0)<=0){deMap[rd.ire]=0;return;}
-  const paired=meterLgAutoCal26PairedDeltaEFor99(rd,rawDeltaReadings,greyMode,deForm,gwWeight);
-  deMap[rd.ire]=paired?paired.value:meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
+  deMap[rd.ire]=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
  });
  const deValues=Object.values(deMap);
  // Auto-scale Y: zoom to fit tightest range
@@ -25555,10 +25522,8 @@ function chartRegisterInteraction(){
  const deLabel=meterDeltaEFormLabel(deForm);
  gs.forEach(rd=>{
   const result=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight);
-  const paired=meterLgAutoCal26PairedDeltaEFor99(rd,gs,greyMode,deForm,gwWeight);
-  deSelected[rd.ire]=paired?paired.value:result.value;
-  de2000[rd.ire]=paired?paired.de2000:result.de2000;
-  if(paired) deSelected[String(rd.ire)+'_paired']=paired;
+  deSelected[rd.ire]=result.value;
+  de2000[rd.ire]=result.de2000;
  });
  // Register hit zones for each chart canvas
  const canvasIds=['chartRGB','chartDeltaE','chartGammaValue','chartEOTF','chartGamma'];
@@ -25583,7 +25548,7 @@ function chartRegisterInteraction(){
    const xNorm=meterGreyscaleInteractionXForChart(cid,step,chartSteps,idx);
    const cx=pad.l+xInset+xNorm*dw;
    _chartHitZones.push({canvasId:cid, cx:cx, cy:cH/2, radius:isBarChart?18:8, ire:step.ire, reading:rd,
-    deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deLabel:deLabel, dePaired:deSelected[String(rd.ire)+'_paired']||null});
+    deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deLabel:deLabel});
   });
   // Attach event handlers (remove old ones first)
   canvas.onmousemove=function(e){chartHandleHover(e,cid);};
@@ -25628,11 +25593,7 @@ function chartHandleHover(e,canvasId){
  html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
  if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);
  if(hit.deSelected!=null){
-  if(hit.dePaired){
-   html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+' 99/100 avg: '+hit.deSelected.toFixed(2)+' <span style="color:#9aa">(99 '+hit.dePaired.de99.toFixed(2)+', 100 '+hit.dePaired.de100.toFixed(2)+')</span>';
-  } else {
-   html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+hit.deSelected.toFixed(2);
-  }
+  html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+hit.deSelected.toFixed(2);
  }
  if(hit.de2000!=null && meterDeltaEForm()!=='de2000') html+='<br>Reference ΔE 2000: '+hit.de2000.toFixed(2);
  if(canvasId==='chartDeltaE'){
