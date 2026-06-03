@@ -10287,6 +10287,19 @@ sub full_ddc_spine_anchor_revisit_rgb_keep_blocked {
  return 1;
 }
 
+sub full_ddc_spine_anchor_revisit_severe_fine_reject {
+ my ($config,$target,$step,$candidate_score,$best_score,$candidate_lum_pct,$best_lum_pct)=@_;
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(ref($target) ne "HASH" || !lg_autocal_26_full_ddc_spine_body_anchor($target));
+ return 0 if(ref($step) ne "HASH" || !lg_autocal_26_full_ddc_spine_anchor_revisit_step($step));
+ my $score_worse=(defined($candidate_score) && defined($best_score) && ($candidate_score+0) > ($best_score+0)+1.00) ? 1 : 0;
+ my $luma_worse=0;
+ if(defined($candidate_lum_pct) && defined($best_lum_pct)) {
+  $luma_worse=1 if(abs($candidate_lum_pct+0) > abs($best_lum_pct+0)+5.00);
+ }
+ return ($score_worse || $luma_worse) ? 1 : 0;
+}
+
 sub full_ddc_spine_anchor_luminance_adjustment {
  my ($arrays,$target,$step,$de,$luminance_err,$stalls,$tried,$paired,$luma_aligned)=@_;
  return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH");
@@ -16406,13 +16419,14 @@ eval {
 					  my %tried_values;
 					  my %rgb_response_model;
 						  my $headroom_next_adjustments;
-						  my $low_shadow_next_adjustments;
-							  my $body_luminance_next_adjustments;
-							  my $hdr20_body_vector_next_adjustments;
-							  my $legal_white_pair_score_stalled=0;
-					  update_luma_probe_best_signature($config,\%tried_values,$read_step,$target,$best_arrays);
-					  mark_tried_values(\%tried_values,$arrays,$target,$de);
-				  my $restore_best_branch=sub {
+							  my $low_shadow_next_adjustments;
+								  my $body_luminance_next_adjustments;
+								  my $hdr20_body_vector_next_adjustments;
+								  my $legal_white_pair_score_stalled=0;
+								  my $anchor_revisit_force_fresh_restore_verify=0;
+						  update_luma_probe_best_signature($config,\%tried_values,$read_step,$target,$best_arrays);
+						  mark_tried_values(\%tried_values,$arrays,$target,$de);
+					  my $restore_best_branch=sub {
 				   my ($reason)=@_;
 				   return 0 if(ref($best_arrays) ne "HASH" || ref($best_reading) ne "HASH");
 				   trace_109($read_step,"restore_best_branch",{
@@ -16456,10 +16470,59 @@ eval {
 			   set_state_target_step_luminance($state,$target_step_y);
 			   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct+0 : undef;
 			   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
-			   write_state($state);
-			   return 1;
-			  };
-			  my $restore_headroom_105_near_y_cleanup_branch=sub {
+				   write_state($state);
+				   return 1;
+				  };
+				  my $verify_anchor_revisit_restored_best=sub {
+				   my ($reason)=@_;
+				   return 0 if(!$anchor_revisit_force_fresh_restore_verify || cancelled());
+				   return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+				   return 0 if(ref($target) ne "HASH" || !lg_autocal_26_full_ddc_spine_body_anchor($target));
+				   return 0 if(ref($read_step) ne "HASH" || !lg_autocal_26_full_ddc_spine_anchor_revisit_step($read_step));
+				   $restore_best_branch->($reason||"Restoring best $label before anchor revisit fresh verification");
+				   $state->{"phase"}="reading";
+				   $state->{"message"}="Verifying restored anchor revisit $label best";
+				   write_state($state);
+				   my ($fresh_reading,$fresh_error,$fresh_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
+				   die $fresh_error if($fresh_error);
+				   die "Fresh restored anchor revisit verification failed for $label" if(ref($fresh_reading) ne "HASH");
+				   $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$fresh_reading,$white_y);
+				   refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+				   $fresh_target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$fresh_reading,$target_gamma,$signal_mode,$config,$state) if(!defined($fresh_target_step_y));
+				   annotate_reading_target($fresh_reading,$white_y,$fresh_target_step_y,$target_x,$target_y);
+				   my $fresh_de=autocal_delta_e_for_step($config,$fresh_reading,$read_step,$white_y,$target_x,$target_y,$fresh_target_step_y);
+				   my $fresh_lum_pct=luminance_error_percent($fresh_reading,$fresh_target_step_y);
+				   my $fresh_score=guarded_autocal_result_score($fresh_de,$fresh_lum_pct,$read_step,$fresh_reading,$white_guard_y);
+				   $best_reading=clone_picture($fresh_reading);
+				   $best_read_step=clone_picture($read_step);
+				   $best_de=$fresh_de;
+				   $best_lum_pct=$fresh_lum_pct;
+				   $best_score=$fresh_score;
+				   $reading=clone_picture($fresh_reading);
+				   $de=$fresh_de;
+				   $lum_pct=$fresh_lum_pct;
+				   $target_step_y=$fresh_target_step_y;
+				   $state->{"readings"}=merge_reading($state->{"readings"},$fresh_reading);
+				   $state->{"current_luminance"}=luminance($fresh_reading);
+				   $state->{"current_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+				   $state->{"best_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+				   $state->{"best_score"}=defined($best_score) ? $best_score+0 : undef;
+				   $state->{"luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct+0 : undef;
+				   set_state_target_step_luminance($state,$target_step_y);
+				   trace_109($read_step,"full_ddc_spine_anchor_revisit_fresh_restored_best",{
+				    label=>$label,
+				    reason=>$reason||"severe_fine_reject_restore_verify",
+				    fresh_delta_e=>defined($fresh_de)?$fresh_de+0:undef,
+				    fresh_luminance_error_pct=>defined($fresh_lum_pct)?$fresh_lum_pct+0:undef,
+				    fresh_score=>defined($fresh_score)?$fresh_score+0:undef,
+				    reading=>trace_reading_summary($fresh_reading),
+				    final_values=>trace_target_values($best_arrays,$target)
+				   });
+				   write_state($state);
+				   $anchor_revisit_force_fresh_restore_verify=0;
+				   return 1;
+				  };
+				  my $restore_headroom_105_near_y_cleanup_branch=sub {
 			   my ($reason)=@_;
 			   my $branch=headroom_105_near_y_cleanup_branch(\%tried_values);
 			   return 0 if(ref($branch) ne "HASH" || ref($branch->{"arrays"}) ne "HASH" || ref($branch->{"reading"}) ne "HASH");
@@ -17835,6 +17898,9 @@ eval {
 					     }
 					    } else {
 				     $polish_stalls++;
+				     my $anchor_revisit_severe_fine_reject=full_ddc_spine_anchor_revisit_severe_fine_reject(
+				      $config,$target,$read_step,$candidate_score,$best_score,$lum_pct,$best_lum_pct
+				     );
 				     my $luma_anchor_working=headroom_luminance_anchor_working_state($read_step,$lum_pct,$best_lum_pct,$de,$best_de);
 				     if(autocal_step_is_fast_headroom($read_step) && !autocal_step_is_peak_headroom($read_step)) {
 				      $luma_anchor_working=headroom_105_luminance_progress_working_state($read_step,$arrays,$target,\%polish_tried,$lum_pct,$best_lum_pct,$de,$best_de,$candidate_score,$best_score);
@@ -17873,11 +17939,30 @@ eval {
 					      candidate_values=>trace_target_values($arrays,$target),
 					      best_values=>trace_target_values($best_arrays,$target),
 						      luma_anchor_working=>$luma_anchor_working?JSON::PP::true:JSON::PP::false,
+						      anchor_revisit_severe_fine_reject=>$anchor_revisit_severe_fine_reject?JSON::PP::true:JSON::PP::false,
 						      bad_luma_probe=>$bad_luma_probe,
 						      bad_hdr20_body_family=>$bad_hdr20_body_family,
 						      bad_sdr_low_shadow_rgb_family=>$bad_sdr_low_shadow_rgb_family,
 						      $pair_side_trace_fields->()
 						     });
+						     if($anchor_revisit_severe_fine_reject) {
+						      $anchor_revisit_force_fresh_restore_verify=1;
+						      trace_109($read_step,"full_ddc_spine_anchor_revisit_severe_fine_reject",{
+						       label=>$label,
+						       polish=>$polish+0,
+						       candidate_delta_e=>defined($de)?$de+0:undef,
+						       candidate_luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+						       candidate_score=>$candidate_score+0,
+						       best_delta_e=>defined($best_de)?$best_de+0:undef,
+						       best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
+						       best_score=>$best_score+0,
+						       adjustments=>trace_adjustments_summary($adjustments),
+						       candidate_values=>trace_target_values($arrays,$target),
+						       best_values=>trace_target_values($best_arrays,$target)
+						      });
+						      $restore_best_branch->("Anchor revisit severe fine-tune reject; restoring best $label for fresh verification");
+						      last;
+						     }
 						     my $paired_luma_kept=$try_high_end_paired_luma_probe->($adjustments,$candidate_score,$candidate_chroma,$best_chroma,\%polish_tried,"fine_tune",$polish);
 						     if($paired_luma_kept) {
 						      $polish_stalls=0;
@@ -17918,6 +18003,8 @@ eval {
 		    $state->{"best_score"}=$best_score;
 		    write_state($state);
 		   }
+		   $verify_anchor_revisit_restored_best->("Verifying restored anchor revisit best after severe fine-tune rejection")
+		    if($anchor_revisit_force_fresh_restore_verify);
 			   $restore_best_if_better->($paired_white_step ? "Restoring closest 99/100 paired result after fine tune" : "Restoring closest $label result after fine tune");
 			  }
 				  $restore_best_branch->($paired_white_step ? "Keeping best 99/100 paired result" : "Keeping best $label result") if(!cancelled() && ref($best_arrays) eq "HASH" && ref($best_reading) eq "HASH");
