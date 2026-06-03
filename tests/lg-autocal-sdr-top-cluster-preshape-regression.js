@@ -87,10 +87,15 @@ assert(
     runSource.includes('sdr_top_cluster_preshape_rgb_adjustments($arrays,$target,$drive_metrics,\\%tried)') &&
     runSource.includes('read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label)') &&
     runSource.includes('$read_sdr_top_legal_white_validation->(') &&
+    runSource.includes('sdr_top_cluster_preshape_legal_white_read') &&
+    runSource.includes('diagnostic_only=>JSON::PP::true') &&
+    runSource.includes('recovery_disabled=>JSON::PP::true') &&
     runSource.includes('set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state)') &&
+    !runSource.includes('$drive_metrics=$legal_metrics;') &&
+    !runSource.includes('$drive_kind="legal100";') &&
     !runSource.includes('remember_lg_autocal_26_best_known') &&
     !runSource.includes('mark_calibrated_26pt_slot'),
-  'pre-shape pass should read/try bounded RGB moves, optionally read legal 100 for 99, write arrays, but not mark final bests or calibrated slots'
+  'pre-shape pass should read/try bounded slot RGB moves, log legal 100 for 99 as diagnostic-only, write arrays, but not mark final bests or calibrated slots'
 );
 
 const mainPreludeSource = sliceBetween(

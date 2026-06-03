@@ -15337,194 +15337,36 @@ eval {
 			   0
 			  );
 			  return if(ref($metrics) ne "HASH");
-			  if(!sdr_top_legal_white_needs_rgb_recovery($metrics)) {
-			   $state->{"sdr_top_legal_white_validation"}={
-			    status=>"passed",
-			    metrics=>$metrics,
-			    top_cluster_slope=>$slope,
-			    target_values=>trace_target_values($arrays,$final_target)
-			   };
-			   trace_109($legal_step,"sdr_top_legal_white_validation_pass",{
-			    metrics=>$metrics,
-			    top_cluster_slope=>$slope,
-			    target_values=>trace_target_values($arrays,$final_target)
-			   });
-			   write_state($state);
-			   return;
-			  }
-			  my $limit=config_positive_int($config,"sdr_top_legal_white_rgb_recovery_iterations",3,0,6);
-			  if($limit <= 0) {
-			   trace_109($legal_step,"sdr_top_legal_white_validation_recovery_skipped",{
-			    reason=>"iteration_limit_zero",
-			    metrics=>$metrics,
-			    top_cluster_slope=>$slope
-			   });
-			   return;
-			  }
-			  my $active_best_entry=lg_autocal_26_best_known_for_step($state,$final_read_step);
-			  my $active_best_de=(ref($active_best_entry) eq "HASH" && defined($active_best_entry->{"delta_e"})) ? ($active_best_entry->{"delta_e"}+0) : undef;
-			  my $active_guard_limit=defined($active_best_de) ? ($active_best_de+0.40) : ($target_delta+0.50);
-			  my $active_guard_floor=$target_delta+0.35;
-			  $active_guard_limit=$active_guard_floor if($active_guard_limit < $active_guard_floor);
-			  my $read_active_top_slot_guard=sub {
-			   my ($iteration,$reason)=@_;
-			   my $active_step=fixed_lg_autocal_step($config,$final_read_step);
-			   $active_step=clone_picture($active_step);
-			   mark_lg_autocal_hdr20_sdr_adjustment_method_step($config,$active_step);
-			   $state->{"phase"}="reading";
-			   $state->{"current_name"}="Auto Cal $final_label";
-			   $state->{"message"}="Verifying $final_label after 100% legal-white recovery";
-			   set_state_active_step($state,$active_step,$final_target);
-			   write_state($state);
-			   my ($active_reading,$active_error,$active_target_y)=read_step_guarded(
-			    $config,$active_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$final_label
-			   );
-			   die $active_error if($active_error && $active_error ne "cancelled");
-			   return undef if($active_error && $active_error eq "cancelled");
-			   return undef if(ref($active_reading) ne "HASH");
-			   $active_target_y=effective_target_luminance_for_autocal_reading($white_y,$active_step,$active_reading,$target_gamma,$signal_mode,$config,$state)
-			    if(!defined($active_target_y));
-			   annotate_reading_target($active_reading,$white_y,$active_target_y,$target_x,$target_y);
-			   my $active_de=autocal_delta_e_for_step($config,$active_reading,$active_step,$white_y,$target_x,$target_y,$active_target_y);
-			   my $active_lum_pct=luminance_error_percent($active_reading,$active_target_y);
-			   my $active_metrics=sdr_top_legal_white_rgb_metrics($active_reading,$active_step);
-			   my $accepted=(defined($active_de) && $active_de <= $active_guard_limit) ? 1 : 0;
-			   my $guard={
-			    iteration=>defined($iteration) ? $iteration+0 : undef,
-			    reason=>$reason||"legal_white_recovery_candidate",
-			    accepted=>$accepted ? JSON::PP::true : JSON::PP::false,
-			    delta_e=>defined($active_de) ? $active_de+0 : undef,
-			    luminance_error_pct=>defined($active_lum_pct) ? $active_lum_pct+0 : undef,
-			    target_luminance=>defined($active_target_y) ? $active_target_y+0 : undef,
-			    measured_luminance=>luminance($active_reading),
-			    guard_limit=>$active_guard_limit+0,
-			    prior_best_delta_e=>defined($active_best_de) ? $active_best_de+0 : undef,
-			    metrics=>$active_metrics,
-			    reading=>trace_reading_summary($active_reading),
-			    target_values=>trace_target_values($arrays,$final_target)
-			   };
-			   $state->{"readings"}=merge_reading($state->{"readings"},$active_reading);
-			   $state->{"current_luminance"}=luminance($active_reading);
-			   $state->{"current_delta_e"}=defined($active_de) ? $active_de+0 : undef;
-			   $state->{"luminance_error_pct"}=defined($active_lum_pct) ? $active_lum_pct+0 : undef;
-			   set_state_target_step_luminance($state,$active_target_y);
-			   trace_109($active_step,"sdr_top_legal_white_active_slot_verify",$guard);
-			   write_state($state);
-			   return $guard;
-			  };
-			  my %tried;
-			  my $best_score=$metrics->{"score"}+0;
-			  my $best_metrics=clone_picture($metrics);
-			  my $best_arrays=clone_arrays($arrays);
-			  my $best_reading=clone_picture($legal_reading);
-			  my $best_active_guard;
-			  my $accepted=0;
-			  my $restored=0;
-			  for(my $iter=1;$iter<=$limit;$iter++) {
-			   last if(cancelled());
-			   my $adjustments=sdr_top_legal_white_rgb_recovery_adjustments($arrays,$final_target,$metrics,\%tried);
-			   last if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
-			   my $candidate_arrays=clone_arrays($arrays);
-			   foreach my $adj (@{$adjustments}) {
-			    next if(ref($adj) ne "HASH");
-			    $candidate_arrays->{$adj->{"setting"}}[$final_target->{"index"}]=$adj->{"next"};
-			   }
-			   mark_tried_values(\%tried,$candidate_arrays,$final_target,undef);
-			   $arrays=$candidate_arrays;
-			   $state->{"phase"}="writing";
-			   $state->{"message"}="Correcting 100% legal-white RGB via 99% ".describe_adjustments($adjustments)." ($iter/$limit)";
-			   trace_109($legal_step,"sdr_top_legal_white_rgb_recovery_adjustment",{
-			    iteration=>$iter+0,
-			    before_metrics=>$metrics,
-			    best_metrics=>$best_metrics,
-			    adjustments=>trace_adjustments_summary($adjustments),
-			    values_after=>trace_target_values($arrays,$final_target),
-			    luminance_ignored=>JSON::PP::true
-			   });
-			   write_state($state);
-			   my $write_error;
-			   ($picture,$write_error)=set_picture_values($picture,$arrays,$final_target,$picture_mode,$calibration_mode_active,$state);
-			   die $write_error if($write_error);
-			   $calibration_mode_active=1;
-			   sync_state_picture($state,$picture,$picture_mode);
-			   my ($candidate_reading,$candidate_step,$candidate_metrics,$candidate_de,$candidate_target_y)=$read_sdr_top_legal_white_validation->(
-			    $white_reference_step,
-			    "Auto Cal 100% legal-white validation",
-			    "Reading 100% legal white RGB recovery ($iter/$limit)",
-			    $iter
-			   );
-			   last if(ref($candidate_metrics) ne "HASH");
-			   my $candidate_score=$candidate_metrics->{"score"}+0;
-			   my $improved=0;
-			   $improved=1 if($candidate_score + 0.002 < $best_score);
-			   $improved=1 if(($candidate_metrics->{"max_abs"}||0)+0.003 < ($best_metrics->{"max_abs"}||999) && $candidate_score <= $best_score+0.010);
-			   my $active_guard;
-			   if($improved) {
-			    $active_guard=$read_active_top_slot_guard->($iter,"candidate_improved_legal_white");
-			    $improved=0 if(ref($active_guard) ne "HASH" || !$active_guard->{"accepted"});
-			   }
-			   if($improved) {
-			    $accepted++;
-			    $best_score=$candidate_score;
-			    $best_metrics=clone_picture($candidate_metrics);
-			    $best_arrays=clone_arrays($arrays);
-			    $best_reading=clone_picture($candidate_reading);
-			    $best_active_guard=clone_picture($active_guard) if(ref($active_guard) eq "HASH");
-			    $metrics=$candidate_metrics;
-			    trace_109($candidate_step,"sdr_top_legal_white_rgb_recovery_accept",{
-			     iteration=>$iter+0,
-			     candidate_metrics=>$candidate_metrics,
-			     active_slot_guard=>$active_guard,
-			     best_score=>$best_score+0,
-			     values=>trace_target_values($arrays,$final_target),
-			     luminance_ignored=>JSON::PP::true
-			    });
-			    last if(!sdr_top_legal_white_needs_rgb_recovery($metrics));
-			   } else {
-			    $restored++;
-			    trace_109($candidate_step,"sdr_top_legal_white_rgb_recovery_reject",{
-			     iteration=>$iter+0,
-			     candidate_metrics=>$candidate_metrics,
-			     best_metrics=>$best_metrics,
-			     active_slot_guard=>$active_guard,
-			     candidate_score=>$candidate_score+0,
-			     best_score=>$best_score+0,
-			     restore_values=>trace_target_values($best_arrays,$final_target),
-			     luminance_ignored=>JSON::PP::true
-			    });
-			    $arrays=clone_arrays($best_arrays);
-			    ($picture,$write_error)=set_picture_values($picture,$arrays,$final_target,$picture_mode,$calibration_mode_active,$state);
-			    die $write_error if($write_error);
-			    $calibration_mode_active=1;
-			    sync_state_picture($state,$picture,$picture_mode);
-			    $metrics=clone_picture($best_metrics);
-			   }
-			  }
+			  my $needs_recovery=sdr_top_legal_white_needs_rgb_recovery($metrics) ? 1 : 0;
 			  $state->{"sdr_top_legal_white_validation"}={
-			   status=>$accepted ? "recovered" : "kept",
-			   accepted=>$accepted+0,
-			   restored=>$restored+0,
-			   best_metrics=>$best_metrics,
-			   active_slot_guard=>$best_active_guard,
+			   status=>$needs_recovery ? "diagnostic_only_failed" : "diagnostic_only_passed",
+			   diagnostic_only=>JSON::PP::true,
+			   recovery_disabled=>JSON::PP::true,
+			   would_have_recovered=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
+			   metrics=>$metrics,
+			   delta_e=>defined($legal_de) ? $legal_de+0 : undef,
+			   legal_target_luminance=>defined($legal_target_y) ? $legal_target_y+0 : undef,
 			   top_cluster_slope=>$slope,
 			   target_values=>trace_target_values($arrays,$final_target)
 			  };
 			  trace_109($final_read_step,"sdr_top_legal_white_validation_done",{
-			   status=>$accepted ? "recovered" : "kept",
-			   accepted=>$accepted+0,
-			   restored=>$restored+0,
-			   best_metrics=>$best_metrics,
-			   active_slot_guard=>$best_active_guard,
+			   status=>$needs_recovery ? "diagnostic_only_failed" : "diagnostic_only_passed",
+			   diagnostic_only=>JSON::PP::true,
+			   recovery_disabled=>JSON::PP::true,
+			   would_have_recovered=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
+			   metrics=>$metrics,
+			   delta_e=>defined($legal_de) ? $legal_de+0 : undef,
+			   legal_target_luminance=>defined($legal_target_y) ? $legal_target_y+0 : undef,
 			   top_cluster_slope=>$slope,
 			   target_values=>trace_target_values($arrays,$final_target),
-			   best_reading=>trace_reading_summary($best_reading)
+			   reading=>trace_reading_summary($legal_reading)
 			  });
 			  trace_sdr_low_shadow_ddc_snapshot(
 			   "sdr_top_legal_white_validation_done",$config,$state,$arrays,$final_read_step,$final_target,{
-			    accepted=>$accepted+0,
-			    restored=>$restored+0,
-			    best_metrics=>$best_metrics,
-			    active_slot_guard=>$best_active_guard,
+			    diagnostic_only=>JSON::PP::true,
+			    recovery_disabled=>JSON::PP::true,
+			    would_have_recovered=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
+			    metrics=>$metrics,
 			    top_cluster_slope=>$slope
 			   }
 				  );
@@ -15638,25 +15480,21 @@ eval {
 				     "Auto Cal 100% top pre-shape check",
 				     "Reading 100% legal white during top-cluster pre-shape",
 				     0
-				    );
-				    if(ref($legal_metrics) eq "HASH") {
-				     trace_109($legal_step,"sdr_top_cluster_preshape_legal_white_read",{
-				      label=>$label,
-				      slot_metrics=>$metrics,
-				      legal_white_metrics=>$legal_metrics,
-				      legal_delta_e=>defined($legal_de) ? $legal_de+0 : undef,
-				      legal_target_luminance=>defined($legal_target_y) ? $legal_target_y+0 : undef,
-				      luminance_ignored=>JSON::PP::true,
-				      target_values=>trace_target_values($arrays,$target)
-				     });
-				     if(($legal_metrics->{"score"}||0) > ($drive_metrics->{"score"}||0)) {
-				      $drive_metrics=$legal_metrics;
-				      $drive_step=$legal_step;
-				      $drive_kind="legal100";
-				      $drive_de=$legal_de;
-				     }
-				    }
-				   }
+					    );
+					    if(ref($legal_metrics) eq "HASH") {
+					     trace_109($legal_step,"sdr_top_cluster_preshape_legal_white_read",{
+					      label=>$label,
+					      slot_metrics=>$metrics,
+					      legal_white_metrics=>$legal_metrics,
+					      legal_delta_e=>defined($legal_de) ? $legal_de+0 : undef,
+					      legal_target_luminance=>defined($legal_target_y) ? $legal_target_y+0 : undef,
+					      diagnostic_only=>JSON::PP::true,
+					      recovery_disabled=>JSON::PP::true,
+					      luminance_ignored=>JSON::PP::true,
+					      target_values=>trace_target_values($arrays,$target)
+					     });
+					    }
+					   }
 				   if(!sdr_top_legal_white_needs_rgb_recovery($drive_metrics) || $limit <= 0) {
 				    my $record={
 				     ire=>$preshape_ire+0,
@@ -15706,23 +15544,11 @@ eval {
 				    die $write_error if($write_error);
 				    $calibration_mode_active=1;
 				    sync_state_picture($state,$picture,$picture_mode);
-				    my ($candidate_metrics,$candidate_de,$candidate_step);
-				    if($drive_kind eq "legal100" && ref($white_reference_step) eq "HASH") {
-				     my ($candidate_reading,$legal_step,$legal_metrics,$legal_de,$legal_target_y)=$read_sdr_top_legal_white_validation->(
-				      $white_reference_step,
-				      "Auto Cal 100% top pre-shape check",
-				      "Reading 100% legal white top pre-shape move ($iter/$limit)",
-				      $iter
-				     );
-				     $candidate_metrics=$legal_metrics if(ref($legal_metrics) eq "HASH");
-				     $candidate_de=$legal_de;
-				     $candidate_step=$legal_step;
-				    } else {
-				     my ($candidate_reading,$candidate_read_step,$slot_metrics,$slot_de,$slot_target_y)=$read_preshape_step->($base_step,$target,$label,$iter,"candidate");
-				     $candidate_metrics=$slot_metrics if(ref($slot_metrics) eq "HASH");
-				     $candidate_de=$slot_de;
-				     $candidate_step=$candidate_read_step;
-				    }
+					    my ($candidate_metrics,$candidate_de,$candidate_step);
+					    my ($candidate_reading,$candidate_read_step,$slot_metrics,$slot_de,$slot_target_y)=$read_preshape_step->($base_step,$target,$label,$iter,"candidate");
+					    $candidate_metrics=$slot_metrics if(ref($slot_metrics) eq "HASH");
+					    $candidate_de=$slot_de;
+					    $candidate_step=$candidate_read_step;
 				    if(ref($candidate_metrics) ne "HASH") {
 				     $restored++;
 				     $arrays=clone_arrays($best_arrays);
