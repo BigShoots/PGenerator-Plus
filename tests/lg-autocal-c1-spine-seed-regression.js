@@ -101,15 +101,9 @@ assert(
     topBlendSource.includes('max_from_body=>$entry->{"max_from_body"}') &&
     topBlendSource.includes('record_full_ddc_spine_seed_detail') &&
     topBlendSource.includes('sdr_top_body_weighted_seed_from_80_and_measured_105') &&
-    topBlendSource.includes('sub apply_sdr_top_seed_red_shape_guard') &&
-    topBlendSource.includes('mode=>"sdr-top-red-shape-guard"') &&
-    topBlendSource.includes('reason=>"damp_sdr_top_seed_red_shape_from_calibrated_80"') &&
-    topBlendSource.includes('my %max_from_body=(95=>1.25,99=>1.00,105=>1.25);') &&
-    topBlendSource.includes('foreach my $target_ire (qw(95 99 105))') &&
-    topBlendSource.includes('next if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));') &&
-    topBlendSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
-    topBlendSource.includes('lg_autocal_26_hdr20_seed_enabled($config)'),
-  '99% seed should be traceable local-from-80 while 95% keeps only a luma-weighted 105 blend and 90 gates bad 99'
+    !topBlendSource.includes('sdr-top-red-shape-guard') &&
+    !topBlendSource.includes('damp_sdr_top_seed_red_shape_from_calibrated_80'),
+  '99% seed should be traceable local-from-80 while 95% keeps only a luma-weighted 105 blend and 90 gates bad 99, without the retired 80-relative red guard'
 );
 
 function blendFromBody(body, top, weight, maxFromBody) {
@@ -129,24 +123,23 @@ assert(
   'retired 99% body blend should stay retired; 99% now uses local 80% offsets instead of 105% shape'
 );
 
-function clampTopRedSeed(bodyRed, current, maxFromBody) {
-  const min = bodyRed - maxFromBody;
-  const max = bodyRed + maxFromBody;
-  const clamped = Math.max(min, Math.min(max, current));
-  return Math.round(clamped * 4) / 4;
-}
-
 {
+  assert(
+    !source.includes('sub apply_sdr_top_seed_red_shape_guard') &&
+      !source.includes('sdr-top-red-shape-guard') &&
+      !source.includes('damp_sdr_top_seed_red_shape_from_calibrated_80') &&
+      !source.includes('my %max_from_body=(95=>1.25,99=>1.00,105=>1.25);'),
+    'failed top red guard should stay removed; it did not fix 99/105 and regressed 95 on C1'
+  );
+
   const bodyRed = -1.6;
-  const raw = { 95: 3.32, 99: -1.5, 105: 1.25 };
-  const guarded = {
-    95: clampTopRedSeed(bodyRed, raw[95], 1.25),
-    99: clampTopRedSeed(bodyRed, raw[99], 1.0),
-    105: clampTopRedSeed(bodyRed, raw[105], 1.25)
-  };
-  assert.strictEqual(guarded[99], -1.5, '99% red seed near calibrated 80% should be preserved');
-  assert(guarded[95] <= -0.25 && guarded[105] <= -0.25, 'C1-like 95/105 red overshoots should be damped toward 80%');
-  assert(Math.abs(guarded[105] - guarded[99]) <= 1.5, 'guarded 99/105 red seeds should not keep a large opposing swing');
+  const knownGood95RedBeforeGuard = 3.32;
+  const oldGuarded95 = Math.round(Math.min(bodyRed + 1.25, knownGood95RedBeforeGuard) * 4) / 4;
+  assert.strictEqual(oldGuarded95, -0.25, 'fixture should model the removed guard that dragged 95 red toward 80');
+  assert(
+    Math.abs(oldGuarded95 - knownGood95RedBeforeGuard) > 3.0,
+    'removed guard would have caused a large 95 red seed jump, matching the hardware regression risk'
+  );
 }
 
 const high99Source = sliceBetween(
