@@ -5158,10 +5158,51 @@ sub sdr_full_spine_seed_source_quality_gate {
  };
 }
 
+sub sdr_top_cluster_99_seed_red_continuity_clamp {
+ my ($config,$arrays,$calibrated_slot_mask,$target_ire,$setting,$candidate)=@_;
+ return undef if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return undef if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
+ return undef if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ return undef if(!defined($target_ire) || abs(($target_ire+0)-99) >= 0.001);
+ return undef if(!defined($setting) || $setting ne "whiteBalanceRed");
+ return undef if(!defined($candidate));
+ my $red_arr=$arrays->{"whiteBalanceRed"};
+ return undef if(ref($red_arr) ne "ARRAY");
+ my $lower_idx=ddc_slot_index_for_ire(95);
+ my $upper_idx=ddc_slot_index_for_ire(105);
+ return undef if(!defined($lower_idx) || !defined($upper_idx));
+ return undef if($lower_idx >= @{$red_arr} || $upper_idx >= @{$red_arr});
+ return undef if(!defined($red_arr->[$lower_idx]) || !defined($red_arr->[$upper_idx]));
+ my $lower_value=$red_arr->[$lower_idx]+0;
+ my $upper_value=$red_arr->[$upper_idx]+0;
+ my $min=$lower_value < $upper_value ? $lower_value : $upper_value;
+ my $max=$lower_value > $upper_value ? $lower_value : $upper_value;
+ my $margin=1.00;
+ my $floor=$min-$margin;
+ my $ceiling=$max+$margin;
+ my $after=$candidate+0;
+ $after=$floor if($after < $floor);
+ $after=$ceiling if($after > $ceiling);
+ return undef if(abs($after-($candidate+0)) < 0.0001);
+ return {
+  before=>$candidate+0,
+  after=>$after+0,
+  margin=>$margin+0,
+  lower_neighbor_ire=>95,
+  upper_neighbor_ire=>105,
+  lower_neighbor_value=>$lower_value+0,
+  upper_neighbor_value=>$upper_value+0,
+  floor=>$floor+0,
+  ceiling=>$ceiling+0,
+  reason=>"sdr_99_red_seed_continuity_from_95_105_range"
+ };
+}
+
 sub apply_sdr_top_body_blend_seed_overrides {
  my ($config,$arrays,$calibrated_slot_mask)=@_;
  return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
  return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
  return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
  my $body_ire=80;
  my $top_ire=105;
@@ -5174,7 +5215,7 @@ sub apply_sdr_top_body_blend_seed_overrides {
   my $target_idx=ddc_slot_index_for_ire($target_ire);
   my $deltas=full_ddc_spine_seed_correction_deltas($target_ire,$calibrated_slot_mask);
   if(defined($target_idx) && ref($deltas) eq "HASH") {
-   my (%before,%after,%source,%changed_settings);
+   my (%before,%after,%source,%changed_settings,%clamps);
    foreach my $setting (qw(whiteBalanceRed whiteBalanceGreen whiteBalanceBlue adjustingLuminance)) {
     next if(ref($arrays->{$setting}) ne "ARRAY");
     next if($body_idx >= @{$arrays->{$setting}} || $target_idx >= @{$arrays->{$setting}});
@@ -5182,7 +5223,13 @@ sub apply_sdr_top_body_blend_seed_overrides {
     my $body_value=$arrays->{$setting}[$body_idx]+0;
     my $before_value=defined($arrays->{$setting}[$target_idx]) ? ($arrays->{$setting}[$target_idx]+0) : 0;
     my $delta=defined($deltas->{$setting}) ? ($deltas->{$setting}+0) : 0;
-    my $after_value=round_ddc_quarter(clamp_ddc_value($body_value+$delta));
+    my $candidate=$body_value+$delta;
+    my $continuity_clamp=sdr_top_cluster_99_seed_red_continuity_clamp($config,$arrays,$calibrated_slot_mask,$target_ire,$setting,$candidate);
+    if(ref($continuity_clamp) eq "HASH") {
+     $candidate=$continuity_clamp->{"after"}+0;
+     $clamps{$setting}=$continuity_clamp;
+    }
+    my $after_value=round_ddc_quarter(clamp_ddc_value($candidate));
     $source{$setting}=$body_value+0;
     $before{$setting}=$before_value+0;
     $after{$setting}=$after_value+0;
@@ -5202,6 +5249,7 @@ sub apply_sdr_top_body_blend_seed_overrides {
      source=>\%source,
      before=>\%before,
      after=>\%after,
+     clamps=>\%clamps,
      changed_settings=>\%changed_settings,
      reason=>"sdr_99_seed_from_80_without_105_shape"
     });
