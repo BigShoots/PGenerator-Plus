@@ -1,0 +1,121 @@
+const assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+
+const source = fs.readFileSync('usr/share/PGenerator/webui.pm', 'utf8');
+
+function extractFunction(name) {
+  const token = `function ${name}(`;
+  const start = source.indexOf(token);
+  assert(start >= 0, `Missing function ${name}`);
+  let i = source.indexOf('{', start);
+  let depth = 0;
+  for (; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  throw new Error(`Failed to extract function ${name}`);
+}
+
+const applyStatus = source.slice(
+  source.indexOf('function meterAutoCalApplyStatus(status)'),
+  source.indexOf('function meterFullAutoCalCloneValue')
+);
+assert(
+  applyStatus.includes('const statusChartReadings=meterAutoCalStatusChartReadings(status);') &&
+    applyStatus.includes('if(statusChartReadings.length){') &&
+    applyStatus.includes('meterReadings=statusChartReadings;') &&
+    applyStatus.includes('if(!statusChartReadings.length&&meterSeriesSteps&&status.autocal)'),
+  'AutoCal status should drive chart readings from merged status/best-known data, not only raw status.readings'
+);
+
+const statusSync = source.slice(
+  source.indexOf('// Sync shared series state across browsers.'),
+  source.indexOf('function meterRecoverSeries(s)')
+);
+assert(
+  statusSync.includes('if(meterAutoCalStatusActive()) return;') &&
+    statusSync.indexOf('if(meterAutoCalStatusActive()) return;') < statusSync.indexOf("fetchJSON('/api/meter/series/status'"),
+  'shared series recovery should not fetch/recover stale completed series while AutoCal status is active or recent'
+);
+
+const context = {
+  console,
+  JSON,
+  Object,
+  Array,
+  Number,
+  String,
+  Date,
+};
+
+vm.createContext(context);
+vm.runInContext([
+  `
+    var meterSeriesSteps = [
+      { ire: 95, stimulus: 94.977, name: '95%' },
+      { ire: 99, stimulus: 99.087, name: '99%' },
+      { ire: 100, stimulus: 100, name: '100%', autocal_white_reference: true, autocal_reference_only: true }
+    ];
+    function meterFullAutoCalCloneValue(value){ return JSON.parse(JSON.stringify(value)); }
+    function meterFormatPercentValue(value){ return String(Number(value)); }
+    function meterAttachSeriesMeta(readings){ return readings || []; }
+    function meterFilterReadingsForCurrentSteps(readings){ return readings || []; }
+    function meterStampReadingStepMeta(reading, step){
+      if (step.ire != null) reading.ire = step.ire;
+      if (step.name != null) reading.name = step.name;
+      if (step.stimulus != null) reading.stimulus = step.stimulus;
+      return reading;
+    }
+    function meterNormalizeMeasuredReading(reading){
+      if (reading && reading.luminance == null && reading.Y != null) reading.luminance = reading.Y;
+      return reading;
+    }
+    function meterReadingHasLuminance(reading){
+      meterNormalizeMeasuredReading(reading);
+      return !!(reading && reading.luminance != null && reading.luminance >= 0);
+    }
+    function meterStepNameKey(value){ return value && value.ire != null ? String(Number(value.ire)) : ''; }
+  `,
+  extractFunction('meterAutoCalStepForIre'),
+  extractFunction('meterAutoCalBestKnownReadings'),
+  extractFunction('meterAutoCalStatusChartReadings'),
+  `
+    const status = {
+      autocal: true,
+      status: 'complete',
+      readings: [
+        { ire: 99, name: '99%', luminance: 148, x: 0.30, y: 0.31, request_id: 'stale-series-99' },
+        { ire: 95, name: '95%', luminance: 140, x: 0.312, y: 0.329, request_id: 'status-95' }
+      ],
+      lg_autocal_26_best_known: {
+        '99': {
+          ire: 99,
+          delta_e: 0.2478727,
+          reached_target: true,
+          target_luminance: 150.5,
+          legal_white_validation_status: 'diagnostic_only_failed',
+          paired_legal_white_delta_e: 19.26,
+          reading: { ire: 99, name: '99%', luminance: 150.2, x: 0.3127, y: 0.329, request_id: 'current-autocal-99' }
+        }
+      }
+    };
+    const chartReadings = meterAutoCalStatusChartReadings(status);
+    globalThis.chartReadings = chartReadings;
+    globalThis.reading99 = chartReadings.find(reading => Number(reading.ire) === 99);
+    globalThis.reading95 = chartReadings.find(reading => Number(reading.ire) === 95);
+  `
+].join('\n'), context);
+
+assert.strictEqual(context.reading99.request_id, 'current-autocal-99', 'AutoCal chart should prefer current best-known direct 99 over stale series/status 99');
+assert.strictEqual(context.reading99.best_known_delta_e, 0.2478727, 'best-known direct 99 delta should remain attached for status/report context');
+assert.strictEqual(context.reading99.best_known_reached_target, true, 'direct 99 reached/good status should remain available');
+assert.strictEqual(context.reading99.legal_white_validation_status, 'diagnostic_only_failed', 'legal-white diagnostic status should remain recorded separately');
+assert.strictEqual(context.reading95.request_id, 'status-95', 'non-best-known status readings should still be shown for current AutoCal context');
+assert.strictEqual(context.chartReadings.length, 2, 'AutoCal chart should contain merged current status/best-known readings only');
+
+console.log('WebUI LG AutoCal chart source regression checks passed.');
