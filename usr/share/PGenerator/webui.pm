@@ -20324,6 +20324,13 @@ function meterAutoCalApplyStatus(status){
 	  meterAutoCalSaveState();
 	  meterAutoCalSetOverlay(false,status);
 	 }else if(status.status==='complete'){
+	  if(meterFullAutoCalMagicWandPendingBeforeCompletion(status)){
+	   meterAutoCalPhase='';
+	   meterAutoCalRunning=false;
+	   meterAutoCalPendingConfig=null;
+	   meterAutoCalSetOverlay(false,status);
+	   return;
+	  }
 	  meterAutoCalPhase='complete';
 	  meterAutoCalRunning=true;
 	  meterAutoCalSaveState();
@@ -20772,6 +20779,14 @@ function meterFullAutoCalStatusPhase(status){
  if(phase) return phase;
  if(status.full_autocal_touchup) return 'touchup-greyscale';
  return '';
+}
+
+function meterFullAutoCalMagicWandPendingBeforeCompletion(status){
+ if(!(status&&status.status==='complete'&&status.full_workflow)) return false;
+ const phase=meterFullAutoCalStatusPhase(status);
+ if(phase==='magic-wand'||status.full_autocal_post_series_adjust||status.magic_wand) return false;
+ if(status.full_autocal_magic_wand===true) return true;
+ return !!(meterFullAutoCalRunning&&meterFullAutoCalMagicWandEnabled());
 }
 
 function meterFullAutoCalStatusRunId(status){
@@ -22277,6 +22292,13 @@ async function meterPollAutoCal(options){
 			     await meterAutoCalStartMagicWand(r,{fullWorkflow:false});
 			     return;
 			    }
+				    if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){
+				     meterAutoCalRunning=false;
+				     meterAutoCalPhase='';
+				     meterAutoCalPendingConfig=null;
+				     meterAutoCalSetOverlay(false,r);
+				     return;
+				    }
 			    meterAutoCalPhase='complete';
 	    meterAutoCalRunning=true;
 	    meterAutoCalPendingConfig=null;
@@ -22780,6 +22802,11 @@ async function meterPollLg3dAutoCal(options){
    if(r.status==='complete'){
     if(meterFullAutoCalEnsureStatusPhase(r,'3d-lut')){
      await meterFullAutoCalStartTouchup(r);
+     return;
+    }
+    if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){
+     meterAutoCalPhase='';
+     meterAutoCalSetOverlay(false,r);
      return;
     }
     meterAutoCalPhase='complete';
