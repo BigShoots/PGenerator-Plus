@@ -871,6 +871,42 @@ sub luminance {
  return undef;
 }
 
+sub normalize_final_sdr_oled_black_reading {
+ my ($config,$step,$reading,$target_luminance)=@_;
+ return (0,undef) if(ref($config) ne "HASH" || ref($step) ne "HASH" || ref($reading) ne "HASH");
+ return (0,undef) if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return (0,undef) if(($config->{"display_type"}||"") !~ /oled/i && ($reading->{"display_type"}||"") !~ /oled/i);
+ return (0,undef) if(defined($target_luminance) && abs($target_luminance+0) > 0.000001);
+ my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : (defined($reading->{"ire"}) ? ($reading->{"ire"}+0) : undef);
+ my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : (defined($reading->{"stimulus"}) ? ($reading->{"stimulus"}+0) : undef);
+ return (0,undef) if(defined($ire) && abs($ire) > 0.001);
+ return (0,undef) if(defined($stimulus) && abs($stimulus) > 0.001);
+ my $original={
+  X=>defined($reading->{"X"}) ? ($reading->{"X"}+0) : undef,
+  Y=>defined($reading->{"Y"}) ? ($reading->{"Y"}+0) : undef,
+  Z=>defined($reading->{"Z"}) ? ($reading->{"Z"}+0) : undef,
+  x=>defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef,
+  y=>defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef,
+  luminance=>defined($reading->{"luminance"}) ? ($reading->{"luminance"}+0) : undef,
+ };
+ $reading->{"raw_X"}=$original->{"X"} if(defined($original->{"X"}) && !defined($reading->{"raw_X"}));
+ $reading->{"raw_Y"}=$original->{"Y"} if(defined($original->{"Y"}) && !defined($reading->{"raw_Y"}));
+ $reading->{"raw_Z"}=$original->{"Z"} if(defined($original->{"Z"}) && !defined($reading->{"raw_Z"}));
+ $reading->{"raw_x"}=$original->{"x"} if(defined($original->{"x"}) && !defined($reading->{"raw_x"}));
+ $reading->{"raw_y"}=$original->{"y"} if(defined($original->{"y"}) && !defined($reading->{"raw_y"}));
+ $reading->{"raw_luminance"}=$original->{"luminance"} if(defined($original->{"luminance"}) && !defined($reading->{"raw_luminance"}));
+ $reading->{"X"}=0;
+ $reading->{"Y"}=0;
+ $reading->{"Z"}=0;
+ $reading->{"luminance"}=0;
+ delete($reading->{"x"});
+ delete($reading->{"y"});
+ $reading->{"synthetic_black"}=JSON::PP::true;
+ $reading->{"normalized_black"}=JSON::PP::true;
+ $reading->{"black_normalization_reason"}="sdr_oled_final_zero_target";
+ return (1,$original);
+}
+
 sub uv_prime {
  my ($x,$y)=@_;
  return (0,0) if(!defined($x) || !defined($y));
@@ -19326,23 +19362,36 @@ eval {
 			  $black_read_step->{"name"}="0%" if(!defined($black_read_step->{"name"}) || $black_read_step->{"name"} eq "");
 			  $state->{"current_step"}=$step_num;
 			  $state->{"total_steps"}=$total_ordered_steps;
-			  $state->{"current_name"}="Auto Cal 0%";
-			  $state->{"phase"}="reading";
-			  $state->{"message"}="Reading final 0% black";
-			  $state->{"active_stimulus"}=0;
-			  write_state($state);
-			  my ($black_reading,$black_error)=read_step($config,$black_read_step,$state);
-			  die $black_error if($black_error && $black_error ne "cancelled");
-			  if(ref($black_reading) eq "HASH") {
-			   my $black_target_y=target_luminance_for_step($white_y,$black_read_step,$target_gamma,$signal_mode);
-			   annotate_reading_target($black_reading,$white_y,$black_target_y,$target_x,$target_y);
-			   $state->{"readings"}=merge_reading($state->{"readings"},$black_reading);
-			   $state->{"current_luminance"}=luminance($black_reading);
-			   $state->{"current_delta_e"}=undef;
-			   $state->{"luminance_error_pct"}=undef;
-			   $state->{"message"}="Final 0% black read complete";
-				   write_state($state);
-				  }
+				  $state->{"current_name"}="Auto Cal 0%";
+				  $state->{"phase"}="reading";
+				  $state->{"message"}="Reading final 0% black";
+				  set_state_active_step($state,$black_read_step,undef);
+				  write_state($state);
+				  my ($black_reading,$black_error)=read_step($config,$black_read_step,$state);
+				  die $black_error if($black_error && $black_error ne "cancelled");
+				  if(ref($black_reading) eq "HASH") {
+				   my $black_target_y=target_luminance_for_step($white_y,$black_read_step,$target_gamma,$signal_mode);
+				   annotate_reading_target($black_reading,$white_y,$black_target_y,$target_x,$target_y);
+				   my ($black_normalized,$original_black)=normalize_final_sdr_oled_black_reading($config,$black_read_step,$black_reading,$black_target_y);
+				   if($black_normalized) {
+				    trace_109($black_read_step,"final_black_read_normalized",{
+				     reason=>$black_reading->{"black_normalization_reason"}||"sdr_oled_final_zero_target",
+				     original_Y=>defined($original_black->{"Y"}) ? ($original_black->{"Y"}+0) : undef,
+				     original_luminance=>defined($original_black->{"luminance"}) ? ($original_black->{"luminance"}+0) : undef,
+				     original_x=>defined($original_black->{"x"}) ? ($original_black->{"x"}+0) : undef,
+				     original_y=>defined($original_black->{"y"}) ? ($original_black->{"y"}+0) : undef,
+				     target_luminance=>defined($black_target_y) ? ($black_target_y+0) : undef,
+				     reading=>trace_reading_summary($black_reading)
+				    });
+				   }
+				   $state->{"readings"}=merge_reading($state->{"readings"},$black_reading);
+				   $state->{"current_luminance"}=luminance($black_reading);
+				   $state->{"current_delta_e"}=undef;
+				   set_state_target_step_luminance($state,$black_target_y);
+				   $state->{"luminance_error_pct"}=undef;
+				   $state->{"message"}="Final 0% black read complete";
+					   write_state($state);
+					  }
 				 }
 				 my $reconfirm_sdr_low_shadow_final_context=sub {
 				  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
