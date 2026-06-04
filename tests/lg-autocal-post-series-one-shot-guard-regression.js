@@ -193,13 +193,50 @@ assert(
 
 assert(
   source.includes('sub post_cal_series_revert_worse_adjustments') &&
+    source.includes('sub post_cal_series_evaluated_entry_for_ire') &&
+    source.includes('sub post_cal_series_low_shadow_neighbor_ires') &&
+    source.includes('return (3) if(abs($ire-4) < 0.001);') &&
+    source.includes('return (4,7) if(abs($ire-5) < 0.001);') &&
+    source.includes('return (5) if(abs($ire-7) < 0.001);') &&
     source.includes('post_cal_series_after_readings') &&
     source.includes('post_cal_series_adjustment_status') &&
     source.includes('Magic Wand failsafe requires the verification series read') &&
+    source.includes('my $evaluated=(ref($adjustment->{"evaluated"}) eq "ARRAY") ? $adjustment->{"evaluated"} : [];') &&
     source.includes('my $compare_before=defined($pair_before_de) ? $pair_before_de : $before_de;') &&
     source.includes('my $compare_after=defined($pair_after_de) ? $pair_after_de : $after_de;') &&
     source.includes('my $worse=(defined($compare_before) && defined($compare_after) && $compare_after > ($compare_before+$margin)) ? 1 : 0;') &&
+    source.includes('foreach my $neighbor_ire (post_cal_series_low_shadow_neighbor_ires($read_step))') &&
+    source.includes('next if(ref(post_cal_series_adjustment_change_for_step($changes,{ ire=>$neighbor_ire })) eq "HASH");') &&
+    source.includes('post_cal_series_evaluated_entry_for_ire($evaluated,$neighbor_ire)') &&
+    source.includes('my $crossed_target=defined($neighbor_after_de) && $neighbor_before_de <= ($base_delta+0.25) && ($neighbor_after_de+0) > ($base_delta+0.75);') &&
+    source.includes('my $bad_worse=defined($neighbor_delta) && $neighbor_delta > $neighbor_margin && defined($neighbor_after_de) && ($neighbor_after_de+0) > ($base_delta+0.50);') &&
+    source.includes('post_cal_series_neighbor_protective_revert') &&
     source.includes('post_cal_series_restore_values_before($arrays,$target,$change->{"values_before"})') &&
     source.includes('set_picture_values($picture,$arrays,$write_target,$picture_mode,1,$state,1,1)'),
-  'post-series failsafe should reuse the existing post-adjust read and revert only DDC slots whose single or paired score reads worse'
+  'post-series failsafe should reuse the existing post-adjust read and revert DDC slots whose own score or protected low-shadow neighbor reads worse'
+);
+
+function neighborProtectiveRevert({ changedIre, neighborIre, neighborChanged = false, before, after, target = 0.5 }) {
+  const lowMap = { 4: [3], 5: [4, 7], 7: [5] };
+  if (!lowMap[changedIre] || !lowMap[changedIre].includes(neighborIre)) return false;
+  if (neighborChanged) return false;
+  const crossed = before <= target + 0.25 && after > target + 0.75;
+  const badWorse = after - before > 0.20 && after > target + 0.50;
+  return crossed || badWorse;
+}
+
+assert.strictEqual(
+  neighborProtectiveRevert({ changedIre: 4, neighborIre: 3, before: 0.398, after: 1.711 }),
+  true,
+  'run-2 4% change should be eligible for neighbor-protective revert because unchanged 3% crossed badly'
+);
+assert.strictEqual(
+  neighborProtectiveRevert({ changedIre: 5, neighborIre: 4, before: 2.86, after: 1.58 }),
+  false,
+  '5% should not be neighbor-reverted when adjacent 4% improved'
+);
+assert.strictEqual(
+  neighborProtectiveRevert({ changedIre: 7, neighborIre: 5, neighborChanged: true, before: 1.75, after: 3.73 }),
+  false,
+  '7% should not be blamed for 5% when 5% has its own changed slot and own failsafe decision'
 );
