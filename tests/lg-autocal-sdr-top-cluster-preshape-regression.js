@@ -138,13 +138,19 @@ const mainPreludeSource = sliceBetween(
   'my $low_shadow_endpoint_seed=apply_sdr_low_shadow_endpoint_seed_2_3'
 );
 const localSeedIndex = source.indexOf('my $sdr_top_local_seed=apply_sdr_top_local_seed_105_from_80');
-const preshapeCallIndex = source.indexOf('$run_sdr_top_cluster_preshape->($read_step);', localSeedIndex);
 const lowShadowSeedIndex = source.indexOf('my $low_shadow_endpoint_seed=apply_sdr_low_shadow_endpoint_seed_2_3', localSeedIndex);
+const normalReadStart = source.indexOf('$state->{"message"}="Reading $label";', lowShadowSeedIndex);
+const activeTopSegment = source.slice(localSeedIndex, normalReadStart);
 assert(
-  mainPreludeSource.includes('$run_sdr_top_cluster_preshape->($read_step);') &&
-    preshapeCallIndex > localSeedIndex &&
-    preshapeCallIndex < lowShadowSeedIndex,
-  'top-cluster pre-shape should run after the 105-from-80 local seed write and before normal 105/99/95 descent continues'
+  !source.includes('$run_sdr_top_cluster_preshape->($read_step);') &&
+    localSeedIndex >= 0 &&
+    lowShadowSeedIndex > localSeedIndex &&
+    normalReadStart > lowShadowSeedIndex &&
+    !mainPreludeSource.includes('sdr_top_cluster_preshape') &&
+    !activeTopSegment.includes('read_preshape_step') &&
+    !activeTopSegment.includes('sdr_top_cluster_preshape_read') &&
+    !activeTopSegment.includes('mark_autocal_diagnostic_reading($reading,"top_cluster_preshape"'),
+  'active SDR top descent should not invoke preliminary top-cluster pre-shape reads before normal 105/99 calibration'
 );
 
 assert(

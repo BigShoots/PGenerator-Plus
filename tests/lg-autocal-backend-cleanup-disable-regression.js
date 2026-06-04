@@ -58,4 +58,18 @@ assert(
   'Magic Wand adjust/revert modes should remain available before the cleanup disable gates'
 );
 
+const committedPolish = sliceBetween(
+  'sub committed_state_polish {',
+  'sub end_calibration_mode',
+  'committed state polish'
+);
+assert(
+  committedPolish.includes('my @shadow=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) }') &&
+    committedPolish.includes('$include_shadow=0;') &&
+    !committedPolish.includes('push @polish,@shadow if($include_shadow);') &&
+    !committedPolish.includes('post_commit_low_shadow_settle_ms') &&
+    !committedPolish.includes('Settling panel before committed low-shadow polish'),
+  'committed polish should not pause for a low-shadow committed-state settle after bottom patches'
+);
+
 console.log('LG AutoCal backend cleanup disable regression checks passed.');
