@@ -2642,7 +2642,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	 # LG 26pt greyscale post-cal reads must target the series' own 100% white
 	 # read. AutoCal-derived white is useful audit context, but stamping it as
 	 # series_target_white_y makes post-cal charts use the old calibration basis.
-	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $series_target_white_y_provided);
+	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $series_target_white_y_provided && !($points==26 && $lg_autocal_26));
  my $series_target_white_audit="";
  if($series_target_white_reference && $series_target_white_y_num>0) {
   my @audit_fields;
@@ -10618,6 +10618,25 @@ function meterFilterReadingsForSteps(readings,type,steps,options){
  return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
 }
 
+function meterSeriesStepHasLgAutoCal26Marker(step){
+ if(!step) return false;
+ return String(step.series_mode||'')==='lg-autocal-26'||!!(step.autocal_white_reference||step.autocal_reference_only||step.autocal_legal_white_anchor||step.autocal_slot_locked||step.ddc_slot_locked);
+}
+
+function meterSeriesStepsHaveLgAutoCal26Markers(steps){
+ return Array.isArray(steps)&&steps.some(step=>meterSeriesStepHasLgAutoCal26Marker(step));
+}
+
+function meterSeriesSnapshotHasLgAutoCal26Markers(snap){
+ if(!snap) return false;
+ const type=String(snap.type||'').toLowerCase();
+ if((!type||type==='greyscale')&&Number(snap.points)===26) return true;
+ if(meterSeriesStepsHaveLgAutoCal26Markers(snap.steps)) return true;
+ if(Array.isArray(snap.readings)&&snap.readings.some(rd=>meterSeriesStepHasLgAutoCal26Marker(rd))) return true;
+ const white=snap.white_reading;
+ return !!(white&&meterSeriesStepHasLgAutoCal26Marker(white));
+}
+
 function meterResolveSeriesSnapshotFromCache(key,options){
  if((!meterSeriesCache||Object.keys(meterSeriesCache).length===0) && key) meterLoadSeriesCache();
  const clone=(value)=>JSON.parse(JSON.stringify(value));
@@ -10645,6 +10664,7 @@ function meterResolveSeriesSnapshotFromCache(key,options){
  }
  const candidates=[];
  if(exactEligible) candidates.push({snap:exactEligible,exact:true});
+ const targetIsLgAutoCal26=points===26||meterSeriesStepsHaveLgAutoCal26Markers(steps)||meterSeriesSnapshotHasLgAutoCal26Markers(exact);
  if(meterSeriesCache&&typeof meterSeriesCache==='object'){
   Object.entries(meterSeriesCache).forEach(([cacheKey,snap])=>{
    if(cacheKey===key) return;
@@ -10652,6 +10672,8 @@ function meterResolveSeriesSnapshotFromCache(key,options){
    if(!meta||meta.type!=='greyscale') return;
    if(!snap||!Array.isArray(snap.readings)||snap.readings.length===0) return;
    if(meterSeriesSnapshotSignalMode(snap,signalMode)!==signalMode) return;
+   const candidateIsLgAutoCal26=meta.points===26||meterSeriesSnapshotHasLgAutoCal26Markers(snap);
+   if(targetIsLgAutoCal26||candidateIsLgAutoCal26) return;
    candidates.push({snap:snap,exact:false});
   });
  }
@@ -10758,7 +10780,7 @@ function meterSharedSeriesStatusKey(status){
  else if(type==='greyscale'){
   const total=Number(status.total_steps||0)||0;
   const stepCount=steps?steps.length:0;
-  if(steps&&steps.some(step=>step&&(String(step.series_mode||'')==='lg-autocal-26'||step.autocal_white_reference||step.autocal_slot_locked))) points=26;
+  if(steps&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) points=26;
   else {
    const basis=points||total||stepCount;
    if(basis>0&&basis<=2) points=2;
@@ -11719,9 +11741,22 @@ function meterGreyscaleReferenceReadings(readings){
  return list;
 }
 
+function meterFindLgAutoCalLegalWhiteReference(readings){
+ const list=Array.isArray(readings)?readings:[];
+ return list.find(rd=>{
+  if(!rd||!meterReadingIsGreyscale(rd)||!meterReadingHasLuminance(rd)) return false;
+  if(!(rd.autocal_legal_white_anchor||rd.autocal_white_reference||rd.autocal_reference_only)) return false;
+  const plot=meterReadingPlotIre(rd);
+  const ire=Number((plot!=null)?plot:rd.ire);
+  return Number.isFinite(ire)&&Math.abs(ire-100)<0.001;
+ })||null;
+}
+
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=meterGreyscaleReferenceReadings(readings);
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
+ const legalWhite=lgAutoCalChartRef?meterFindLgAutoCalLegalWhiteReference(list):null;
+ if(lgAutoCalChartRef&&legalWhite) return legalWhite;
  const referenceList=lgAutoCalChartRef?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
  const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
  if(lgAutoCalChartRef&&magicWandPhase){
