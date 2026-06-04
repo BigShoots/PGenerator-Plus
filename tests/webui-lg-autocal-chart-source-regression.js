@@ -43,6 +43,13 @@ assert(
   'shared series recovery should not fetch/recover stale completed series while AutoCal status is active or recent'
 );
 
+assert(
+  extractFunction('meterExplicitLgTargetWhiteReferenceNits').includes('meterReadingDisablesAutoCalTargetReference(rd)') &&
+    extractFunction('meterFindLgAutoCalLegalWhiteReference').includes('meterReadingDisablesAutoCalTargetReference(rd)') &&
+    extractFunction('meterLgAutoCalChartReferenceWhite').includes('meterReadingDisablesAutoCalTargetReference(item)'),
+  'legal-white validation reads disabled as AutoCal target references should not feed chart/reference target-Y selection'
+);
+
 const context = {
   console,
   JSON,
@@ -62,9 +69,14 @@ vm.runInContext([
       { ire: 100, stimulus: 100, name: '100%', autocal_white_reference: true, autocal_reference_only: true }
     ];
     var meterActiveSeriesType = 'greyscale';
+    var meterActiveSeriesPoints = 26;
     var meterActiveSeriesSignalMode = 'sdr';
     function meterChartSignalMode(){ return 'sdr'; }
     function meterReadingPlotIre(item){ return item && item.ire; }
+    function meterReadingIsGreyscale(){ return true; }
+    function meterUseLgAutoCal26(){ return true; }
+    function meterFindSeriesWhiteReading(){ return null; }
+    function meterReadingLuminanceNits(item){ return Number(item && (item.luminance != null ? item.luminance : item.Y)); }
     function meterFullAutoCalCloneValue(value){ return JSON.parse(JSON.stringify(value)); }
     function meterFormatPercentValue(value){ return String(Number(value)); }
     function meterAttachSeriesMeta(readings){ return readings || []; }
@@ -85,6 +97,9 @@ vm.runInContext([
     }
     function meterStepNameKey(value){ return value && value.ire != null ? String(Number(value.ire)) : ''; }
   `,
+  extractFunction('meterReadingDisablesAutoCalTargetReference'),
+  extractFunction('meterExplicitLgTargetWhiteReferenceNits'),
+  extractFunction('meterFindLgAutoCalLegalWhiteReference'),
   extractFunction('meterLgAutoCalChartReferenceWhite'),
   extractFunction('meterReadingIsAutoCalChartHidden'),
   extractFunction('meterFilterLgAutoCalChartItems'),
@@ -124,6 +139,12 @@ vm.runInContext([
       { ire: 95, name: '95% validation', luminance: 145, autocal_read_role: 'legal_white_validation' },
       { ire: 80, name: '80%', luminance: 95, request_id: 'normal-80' }
     ]);
+    const disabledValidationWhite = { ire: 100, luminance: 161, autocal_white_y: 161, autocal_white_reference: true, autocal_reference_only: true, autocal_legal_white_anchor: true, autocal_target_reference_disabled: true };
+    const normalReferenceWhite = { ire: 100, luminance: 162, autocal_white_y: 162, autocal_white_reference: true, autocal_reference_only: true, autocal_legal_white_anchor: true };
+    globalThis.disabledLegalWhiteReference = meterFindLgAutoCalLegalWhiteReference([disabledValidationWhite]);
+    globalThis.normalLegalWhiteReference = meterFindLgAutoCalLegalWhiteReference([normalReferenceWhite]);
+    globalThis.disabledExplicitTargetWhite = meterExplicitLgTargetWhiteReferenceNits([disabledValidationWhite]);
+    globalThis.normalExplicitTargetWhite = meterExplicitLgTargetWhiteReferenceNits([normalReferenceWhite]);
   `
 ].join('\n'), context);
 
@@ -138,5 +159,9 @@ assert.strictEqual(
   JSON.stringify(['normal-99', 'normal-105', 'normal-80']),
   'AutoCal chart filtering should hide diagnostic top-cluster/legal-white reads while preserving normal calibrated points'
 );
+assert.strictEqual(context.disabledLegalWhiteReference, null, 'disabled legal-white validation should not become the LG AutoCal chart legal-white reference');
+assert.strictEqual(context.disabledExplicitTargetWhite, null, 'disabled legal-white validation autocal_white_y should not become an explicit target white');
+assert.strictEqual(context.normalLegalWhiteReference && context.normalLegalWhiteReference.luminance, 162, 'normal series/reference 100% should remain eligible as legal white');
+assert.strictEqual(context.normalExplicitTargetWhite, 162, 'normal series/reference 100% should still provide explicit target white');
 
 console.log('WebUI LG AutoCal chart source regression checks passed.');

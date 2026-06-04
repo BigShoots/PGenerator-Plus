@@ -106,8 +106,9 @@ assert(
     validationReadSource.includes('legal_white_self_reference=>JSON::PP::true') &&
     validationReadSource.includes('luminance_ignored=>JSON::PP::true') &&
     validationReadSource.includes('mark_autocal_diagnostic_reading($legal_reading,"legal_white_validation","sdr_top_legal_white_validation")') &&
+    validationReadSource.includes('$legal_reading->{"autocal_target_reference_disabled"}=JSON::PP::true;') &&
     !validationReadSource.includes('update_white_reference_for_autocal_step'),
-  'legal 100% validation should self-reference measured 100% Y, stay chart-hidden, and must not rebase the AutoCal white reference'
+  'legal 100% validation should self-reference measured 100% Y, stay chart-hidden, and must not rebase the AutoCal/chart white reference'
 );
 
 const referenceReadSource = sliceBetween(

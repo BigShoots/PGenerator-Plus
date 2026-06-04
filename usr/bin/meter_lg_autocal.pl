@@ -15690,6 +15690,7 @@ eval {
 			   : undef;
 			  my $metrics=sdr_top_legal_white_rgb_metrics($legal_reading,$read_step);
 			  mark_autocal_diagnostic_reading($legal_reading,"legal_white_validation","sdr_top_legal_white_validation");
+			  $legal_reading->{"autocal_target_reference_disabled"}=JSON::PP::true;
 			  $state->{"readings"}=merge_reading($state->{"readings"},$legal_reading);
 			  $state->{"current_luminance"}=$legal_white_y if(defined($legal_white_y));
 			  $state->{"current_delta_e"}=defined($legal_de) ? $legal_de : undef;
