@@ -45,4 +45,9 @@ fi
 export DISPLAY_TYPE="lcd"
 assert_false normalize_oled_zero_black_reading "$TINY_BLACK"
 
+export CCSS_FILE="/usr/share/PGenerator/ccss/WRGB_OLED_LG.ccss"
+NORMALIZED=$(normalize_oled_zero_black_reading "$TINY_BLACK")
+printf '%s' "$NORMALIZED" | grep -q '"Y":0'
+printf '%s' "$NORMALIZED" | grep -q '"black_normalization_reason":"sdr_oled_series_zero_target"'
+
 echo "meter-series-zero-guard OK"

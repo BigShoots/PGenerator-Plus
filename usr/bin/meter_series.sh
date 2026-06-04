@@ -784,7 +784,7 @@ nonblack_zero_reading() {
 
 normalize_oled_zero_black_reading() {
  local reading="$1"
- READING_JSON="$reading" DISPLAY_TYPE_VALUE="$DISPLAY_TYPE" "${PYTHON_BIN:-python}" - <<'PY'
+ READING_JSON="$reading" DISPLAY_TYPE_VALUE="$DISPLAY_TYPE" CCSS_FILE_VALUE="${CCSS_FILE:-}" "${PYTHON_BIN:-python}" - <<'PY'
 import json, os, math, sys
 
 try:
@@ -793,7 +793,9 @@ except Exception:
     sys.exit(1)
 
 display_type = str(os.environ.get("DISPLAY_TYPE_VALUE", "") or rd.get("display_type", "")).lower()
-if "oled" not in display_type:
+ccss_file = str(os.environ.get("CCSS_FILE_VALUE", "") or rd.get("ccss_file", "")).lower()
+is_oled = "oled" in display_type or "oled" in ccss_file
+if not is_oled:
     sys.exit(1)
 if str(rd.get("series_type", "")).lower() not in ("", "greyscale"):
     sys.exit(1)
