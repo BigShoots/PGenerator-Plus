@@ -13964,6 +13964,44 @@ sub post_cal_series_revert_worse_adjustments {
 	    }
 	   }
 	  }
+	  if($neighbor_worse && !$worse) {
+	   my $group_margin=0.10;
+	   my $revert_worst=defined($compare_before) ? $compare_before+0 : undef;
+	   my $keep_worst=defined($compare_after) ? $compare_after+0 : undef;
+	   foreach my $impact (@neighbor_impacts) {
+	    next if(ref($impact) ne "HASH");
+	    if(defined($impact->{"neighbor_before_delta_e"})) {
+	     my $v=$impact->{"neighbor_before_delta_e"}+0;
+	     $revert_worst=$v if(!defined($revert_worst) || $v > $revert_worst);
+	    }
+	    if(defined($impact->{"neighbor_after_delta_e"})) {
+	     my $v=$impact->{"neighbor_after_delta_e"}+0;
+	     $keep_worst=$v if(!defined($keep_worst) || $v > $keep_worst);
+	    }
+	   }
+	   my $revert_improves_group=(defined($revert_worst) && defined($keep_worst) && $keep_worst > ($revert_worst+$group_margin)) ? 1 : 0;
+	   $entry{"neighbor_impacts"}=\@neighbor_impacts if(@neighbor_impacts);
+	   $entry{"neighbor_group_keep_worst_delta_e"}=defined($keep_worst) ? $keep_worst+0 : undef;
+	   $entry{"neighbor_group_revert_worst_delta_e"}=defined($revert_worst) ? $revert_worst+0 : undef;
+	   $entry{"neighbor_group_margin"}=$group_margin+0;
+	   if(!$revert_improves_group) {
+	    $entry{"neighbor_protective_keep"}=JSON::PP::true;
+	    $entry{"neighbor_protective_keep_reason"}="keep_improves_low_shadow_group_worst";
+	    trace_109($read_step,"post_cal_series_neighbor_protective_keep",{
+	     label=>$target->{"label"},
+	     before_delta_e=>defined($before_de) ? $before_de+0 : undef,
+	     after_delta_e=>defined($after_de) ? $after_de+0 : undef,
+	     neighbor_impacts=>@neighbor_impacts ? \@neighbor_impacts : undef,
+	     keep_worst_delta_e=>defined($keep_worst) ? $keep_worst+0 : undef,
+	     revert_worst_delta_e=>defined($revert_worst) ? $revert_worst+0 : undef,
+	     group_margin=>$group_margin+0,
+	     reason=>"keep_improves_low_shadow_group_worst"
+	    });
+	    $neighbor_worse=0;
+	   } else {
+	    $entry{"neighbor_protective_revert_reason"}="revert_improves_low_shadow_group_worst";
+	   }
+	  }
   if(($worse || $neighbor_worse) && post_cal_series_restore_values_before($arrays,$target,$change->{"values_before"})) {
    $entry{"reverted"}=JSON::PP::true;
    $entry{"neighbor_protective_revert"}=JSON::PP::true if($neighbor_worse && !$worse);
@@ -13974,6 +14012,10 @@ sub post_cal_series_revert_worse_adjustments {
     before_delta_e=>defined($before_de) ? $before_de+0 : undef,
     after_delta_e=>defined($after_de) ? $after_de+0 : undef,
     neighbor_impacts=>@neighbor_impacts ? \@neighbor_impacts : undef,
+    keep_worst_delta_e=>defined($entry{"neighbor_group_keep_worst_delta_e"}) ? $entry{"neighbor_group_keep_worst_delta_e"}+0 : undef,
+    revert_worst_delta_e=>defined($entry{"neighbor_group_revert_worst_delta_e"}) ? $entry{"neighbor_group_revert_worst_delta_e"}+0 : undef,
+    group_margin=>defined($entry{"neighbor_group_margin"}) ? $entry{"neighbor_group_margin"}+0 : undef,
+    reason=>$entry{"neighbor_protective_revert_reason"},
     values_restored=>$entry{"values_restored"}
    });
    push @reverted,{ %entry };
