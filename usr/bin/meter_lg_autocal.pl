@@ -3728,6 +3728,31 @@ sub guarded_target_reached {
  return target_reached($de,$lum_pct,$target_delta,$step);
 }
 
+sub sdr_main_greyscale_requires_strict_delta {
+ my ($config,$step)=@_;
+ return 0 if(ref($config) ne "HASH" || lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(autocal_config_is_touchup($config));
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ return 0 if(autocal_step_is_fast_headroom($step) || autocal_step_is_low_shadow($step) || autocal_step_is_white($step));
+ my $ire=$step->{"ire"}+0;
+ return ($ire > 10.0001 && $ire < 99) ? 1 : 0;
+}
+
+sub sdr_main_greyscale_strict_target_reached {
+ my ($config,$de,$lum_pct,$target_delta,$step,$reading,$white_guard_y)=@_;
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return 0 if(sdr_main_greyscale_requires_strict_delta($config,$step) && (!defined($de) || $de > $target_delta));
+ return guarded_target_reached($de,$lum_pct,$target_delta,$step,$reading,$white_guard_y);
+}
+
+sub sdr_main_greyscale_strict_delta_block_reason {
+ my ($config,$de,$target_delta,$step)=@_;
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return undef if(!sdr_main_greyscale_requires_strict_delta($config,$step));
+ return "missing_delta_e" if(!defined($de));
+ return ($de > $target_delta) ? "delta_e_above_target" : undef;
+}
+
 sub legal_white_pair_reference_step {
  my ($steps,$target,$step,$config)=@_;
  return undef if(ref($config) ne "HASH");
@@ -16255,6 +16280,9 @@ eval {
 			   return legal_white_pair_score($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading,$white_guard_y);
 			  };
 			  my $pair_target_reached_now=sub {
+			   if(ref($pair_step) ne "HASH" || ref($pair_reading) ne "HASH") {
+			    return sdr_main_greyscale_strict_target_reached($config,$de,$lum_pct,$target_delta,$read_step,$reading,$white_guard_y);
+			   }
 			   return legal_white_pair_target_reached($de,$lum_pct,$read_step,$reading,$pair_de,$pair_lum_pct,$pair_step,$pair_reading,$target_delta,$white_guard_y);
 			  };
 			  my $sdr_peak_extra_fine_tune_now=sub {
@@ -16679,38 +16707,53 @@ eval {
 						  }
 					  if($initial_result_not_worse_than_best && $pair_target_reached_now->()) {
 					   $run_body_final_micro_once->("Final micro-balancing $label before moving on");
-					   trace_109($read_step,"target_reached_initial",{
-				    label=>$label,
-				    delta_e=>defined($de)?$de+0:undef,
-				    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
-					    score=>$best_score+0,
-					    target_values=>trace_target_values($arrays,$target)
-					   });
-					   if(autocal_step_is_peak_headroom($read_step)) {
-					    apply_peak_headroom_reference($state,$read_step,$reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
-					    $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
-					    $lum_pct=luminance_error_percent($reading,$target_step_y);
-					    set_state_target_step_luminance($state,$target_step_y);
-					    $state->{"readings"}=merge_reading($state->{"readings"},$reading);
-					    write_state($state);
-						   } elsif(autocal_step_is_white($read_step)) {
-						    set_state_white_reference($state,$white_y);
-						    if(autocal_step_ignores_luminance_error($read_step)) {
-						     $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
-						     annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-						     $lum_pct=luminance_error_percent($reading,$target_step_y);
-						     set_state_target_step_luminance($state,$target_step_y);
+					   my $initial_reached_after_micro=$pair_target_reached_now->();
+					   if(!$initial_reached_after_micro) {
+					    my $block_reason=sdr_main_greyscale_strict_delta_block_reason($config,$de,$target_delta,$read_step) || "target_not_reached_after_micro";
+					    trace_109($read_step,"target_reached_initial_blocked",{
+					     label=>$label,
+					     reason=>$block_reason,
+					     delta_e=>defined($de)?$de+0:undef,
+					     target_delta_e=>$target_delta+0,
+					     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					     score=>$best_score+0,
+					     target_values=>trace_target_values($arrays,$target)
+					    });
+					   } else {
+					    trace_109($read_step,"target_reached_initial",{
+					     label=>$label,
+					     delta_e=>defined($de)?$de+0:undef,
+					     target_delta_e=>$target_delta+0,
+					     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+					     score=>$best_score+0,
+					     target_values=>trace_target_values($arrays,$target)
+					    });
+					    if(autocal_step_is_peak_headroom($read_step)) {
+					     apply_peak_headroom_reference($state,$read_step,$reading,\$white_y,$target_gamma,$signal_mode,$target_x,$target_y);
+					     $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode);
+					     $lum_pct=luminance_error_percent($reading,$target_step_y);
+					     set_state_target_step_luminance($state,$target_step_y);
+					     $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+					     write_state($state);
+						    } elsif(autocal_step_is_white($read_step)) {
+						     set_state_white_reference($state,$white_y);
+						     if(autocal_step_ignores_luminance_error($read_step)) {
+						      $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+						      annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+						      $lum_pct=luminance_error_percent($reading,$target_step_y);
+						      set_state_target_step_luminance($state,$target_step_y);
+						     }
+						     write_state($state);
 						    }
-						    write_state($state);
-						   }
-				   if($pair_target_reached_now->() && !$sdr_peak_extra_fine_tune_now->() && !sdr_low_shadow_final_acceptance_verify_required($config,$read_step)) {
-					    remember_lg_autocal_26_best_known(
-					     $config,$state,$read_step,$reading,$de,$lum_pct,
-						     $target_step_y,$arrays,$target,"main_initial_target_reached",1
-						    );
-				    $finalize_calibrated_26pt_slot->($target,$read_step,$label);
-				    next;
-				   }
+				    if(!$sdr_peak_extra_fine_tune_now->() && !sdr_low_shadow_final_acceptance_verify_required($config,$read_step)) {
+					     remember_lg_autocal_26_best_known(
+					      $config,$state,$read_step,$reading,$de,$lum_pct,
+						      $target_step_y,$arrays,$target,"main_initial_target_reached",1
+						     );
+				     $finalize_calibrated_26pt_slot->($target,$read_step,$label);
+				     next;
+				    }
+					   }
 				  }
 
 				  my $last_de=$best_de;
@@ -18716,12 +18759,15 @@ eval {
 				   write_state($state);
 				  }
 				  my $final_reached=$pair_target_reached_now->();
+				  my $final_reached_block_reason=$final_reached ? undef : sdr_main_greyscale_strict_delta_block_reason($config,$best_de,$target_delta,$read_step);
 				  $state->{"message"}=$paired_white_step
 				   ? ($final_reached ? "$label and 100% legal white reached target" : "$label paired closest result kept")
 				   : ($final_reached ? "$label reached target" : "$label closest result kept");
 				  trace_109($read_step,"final_step_result",{
 				   label=>$label,
 				   reached_target=>$final_reached?JSON::PP::true:JSON::PP::false,
+				   target_delta_e=>$target_delta+0,
+				   target_reached_blocked_reason=>$final_reached_block_reason,
 				   best_delta_e=>defined($best_de)?$best_de+0:undef,
 				   best_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 				   paired_delta_e=>defined($best_pair_de)?$best_pair_de+0:undef,
