@@ -98,6 +98,11 @@ assert(
     pairScore.includes('($worst*1.40)+($best*0.18)+($pair_avg*0.12)+($spread*1.20)+($worst_rgb*0.30)+($white_rgb*0.45)'),
   'backend legal-white pair scoring should preserve worst-side protection and include combined 99/100 average plus 100% RGB balance scoring'
 );
+
+assert(
+  pairCounterpartRead.includes('mark_autocal_diagnostic_reading($other_reading,"legal_white_pair_counterpart",$reason||"paired_counterpart")'),
+  'paired 99/100 counterpart reads should remain available for solver state while hidden from normal chart plotting'
+);
 assert(
   bestUpdate.includes('my $candidate_avg=legal_white_pair_delta_average($de_a,$de_b);') &&
     bestUpdate.includes('return "paired_score_improved" if($candidate_worst <= $best_worst + 0.0001 && $candidate_avg + 0.0001 < $best_avg);'),

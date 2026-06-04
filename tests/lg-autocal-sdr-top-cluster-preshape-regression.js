@@ -108,6 +108,7 @@ assert(
     runSource.includes('sdr_top_cluster_preshape_99_luma_worse($preshape_ire,$best_lum_pct,$candidate_lum_pct)') &&
     runSource.includes('reject_reason=>$luma_worse ? "far_low_luminance_worsened" : "rgb_score_not_improved"') &&
     runSource.includes('read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label)') &&
+    runSource.includes('mark_autocal_diagnostic_reading($reading,"top_cluster_preshape",$reason||"seeded_top_cluster_read")') &&
     runSource.includes('$read_sdr_top_legal_white_validation->(') &&
     runSource.includes('sdr_top_cluster_preshape_legal_white_read') &&
     runSource.includes('diagnostic_only=>JSON::PP::true') &&

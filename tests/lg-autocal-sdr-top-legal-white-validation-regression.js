@@ -60,6 +60,18 @@ assert(
   'legal-white validation should score RGB/chroma spread, not luminance'
 );
 
+const diagnosticMarkSource = sliceBetween(
+  'sub mark_autocal_diagnostic_reading',
+  'sub write_state'
+);
+assert(
+  diagnosticMarkSource.includes('$reading->{"autocal_diagnostic"}=JSON::PP::true;') &&
+    diagnosticMarkSource.includes('$reading->{"autocal_chart_hidden"}=JSON::PP::true;') &&
+    diagnosticMarkSource.includes('$reading->{"autocal_read_role"}=$role') &&
+    diagnosticMarkSource.includes('$reading->{"autocal_read_phase"}=$phase'),
+  'internal AutoCal diagnostic reads should carry explicit hidden/chart role metadata'
+);
+
 const recoverySource = sliceBetween(
   'sub sdr_top_legal_white_rgb_recovery_adjustments',
   'sub body_final_micro_threshold'
@@ -81,8 +93,19 @@ assert(
     validationReadSource.includes('annotate_reading_target($legal_reading,$legal_reference_y,$legal_target_y,$target_x,$target_y)') &&
     validationReadSource.includes('legal_white_self_reference=>JSON::PP::true') &&
     validationReadSource.includes('luminance_ignored=>JSON::PP::true') &&
+    validationReadSource.includes('mark_autocal_diagnostic_reading($legal_reading,"legal_white_validation","sdr_top_legal_white_validation")') &&
     !validationReadSource.includes('update_white_reference_for_autocal_step'),
-  'legal 100% validation should self-reference measured 100% Y and must not rebase the AutoCal white reference'
+  'legal 100% validation should self-reference measured 100% Y, stay chart-hidden, and must not rebase the AutoCal white reference'
+);
+
+const referenceReadSource = sliceBetween(
+  'my $read_reference_step=sub',
+  'my $read_sdr_top_legal_white_validation=sub'
+);
+assert(
+  referenceReadSource.includes('my ($ref_step,$label,$message,$diagnostic_role)=@_;') &&
+    referenceReadSource.includes('mark_autocal_diagnostic_reading($ref_reading,$diagnostic_role,"white_reference_refresh") if(defined($diagnostic_role) && $diagnostic_role ne "");'),
+  'reference reads should only become chart-hidden when a diagnostic role is explicitly passed'
 );
 
 const validationRunSource = sliceBetween(
@@ -111,8 +134,9 @@ const finalStepSource = sliceBetween(
 );
 assert(
   finalStepSource.includes('abs(($step->{"ire"}+0)-99) < 0.001') &&
-    finalStepSource.includes('$run_sdr_top_legal_white_validation->($target,$read_step,$label);'),
-  'initial greyscale AutoCal should schedule legal-white validation immediately after finalizing 99%'
+    finalStepSource.includes('$run_sdr_top_legal_white_validation->($target,$read_step,$label);') &&
+    finalStepSource.includes('$read_reference_step->($white_reference_step,"Auto Cal 100% calibrated reference","Refreshing 100% white after top-end calibration","white_reference_refresh");'),
+  'initial greyscale AutoCal should schedule legal-white validation and chart-hidden white refresh immediately after finalizing 99%'
 );
 
 console.log('LG AutoCal SDR top legal-white validation regression passed');

@@ -61,6 +61,10 @@ vm.runInContext([
       { ire: 99, stimulus: 99.087, name: '99%' },
       { ire: 100, stimulus: 100, name: '100%', autocal_white_reference: true, autocal_reference_only: true }
     ];
+    var meterActiveSeriesType = 'greyscale';
+    var meterActiveSeriesSignalMode = 'sdr';
+    function meterChartSignalMode(){ return 'sdr'; }
+    function meterReadingPlotIre(item){ return item && item.ire; }
     function meterFullAutoCalCloneValue(value){ return JSON.parse(JSON.stringify(value)); }
     function meterFormatPercentValue(value){ return String(Number(value)); }
     function meterAttachSeriesMeta(readings){ return readings || []; }
@@ -81,6 +85,9 @@ vm.runInContext([
     }
     function meterStepNameKey(value){ return value && value.ire != null ? String(Number(value.ire)) : ''; }
   `,
+  extractFunction('meterLgAutoCalChartReferenceWhite'),
+  extractFunction('meterReadingIsAutoCalChartHidden'),
+  extractFunction('meterFilterLgAutoCalChartItems'),
   extractFunction('meterAutoCalStepForIre'),
   extractFunction('meterAutoCalBestKnownReadings'),
   extractFunction('meterAutoCalStatusChartReadings'),
@@ -108,6 +115,15 @@ vm.runInContext([
     globalThis.chartReadings = chartReadings;
     globalThis.reading99 = chartReadings.find(reading => Number(reading.ire) === 99);
     globalThis.reading95 = chartReadings.find(reading => Number(reading.ire) === 95);
+    globalThis.filteredAutoCalChartItems = meterFilterLgAutoCalChartItems([
+      { ire: 99, name: '99% pre-shape', luminance: 149, autocal_diagnostic: true, autocal_chart_hidden: true, autocal_read_role: 'top_cluster_preshape' },
+      { ire: 99, name: '99%', luminance: 150, request_id: 'normal-99' },
+      { ire: 105, name: '105% pair counterpart', luminance: 170, autocal_read_role: 'legal_white_pair_counterpart' },
+      { ire: 105, name: '105%', luminance: 171, request_id: 'normal-105' },
+      { ire: 100, name: '100% legal white', luminance: 160, autocal_white_reference: true, autocal_reference_only: true, autocal_legal_white_anchor: true },
+      { ire: 95, name: '95% validation', luminance: 145, autocal_read_role: 'legal_white_validation' },
+      { ire: 80, name: '80%', luminance: 95, request_id: 'normal-80' }
+    ]);
   `
 ].join('\n'), context);
 
@@ -117,5 +133,10 @@ assert.strictEqual(context.reading99.best_known_reached_target, true, 'direct 99
 assert.strictEqual(context.reading99.legal_white_validation_status, 'diagnostic_only_failed', 'legal-white diagnostic status should remain recorded separately');
 assert.strictEqual(context.reading95.request_id, 'status-95', 'non-best-known status readings should still be shown for current AutoCal context');
 assert.strictEqual(context.chartReadings.length, 2, 'AutoCal chart should contain merged current status/best-known readings only');
+assert.strictEqual(
+  JSON.stringify(context.filteredAutoCalChartItems.map(item => item.request_id || item.name)),
+  JSON.stringify(['normal-99', 'normal-105', 'normal-80']),
+  'AutoCal chart filtering should hide diagnostic top-cluster/legal-white reads while preserving normal calibrated points'
+);
 
 console.log('WebUI LG AutoCal chart source regression checks passed.');
