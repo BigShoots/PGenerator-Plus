@@ -13360,6 +13360,10 @@ sub post_cal_series_adjustment_luma_cap {
   return 1.00 if($abs >= 8);
   return 0.50;
  }
+ if($ire > 3.1001 && $ire <= 4.1001) {
+  return 1.00 if($abs >= 8);
+  return 0.50;
+ }
  if($ire <= 5.1001) {
   return 2.00 if($abs >= 15);
   return 1.00 if($abs >= 8);
@@ -14202,29 +14206,31 @@ sub post_cal_series_adjustment {
 		  my $low_shadow_5_luma_suppressed=post_cal_series_low_shadow_5_luma_suppression($control_step,$adjust_lum_pct,$adjust_de,$target_delta);
 		  if(ref($low_shadow_5_luma_suppressed) eq "HASH") {
 		   $evaluated[-1]{"luma_suppressed_reason"}=$low_shadow_5_luma_suppressed->{"reason"} if(@evaluated);
-		   trace_109($read_step,"post_cal_series_low_shadow_5_luma_suppressed",{
+		   $evaluated[-1]{"skipped_reason"}=$low_shadow_5_luma_suppressed->{"reason"} if(@evaluated);
+		   trace_109($read_step,"post_cal_series_low_shadow_5_skipped",{
 		    label=>$target->{"label"},
 		    reason=>$adjust_outlier,
 		    delta_e=>defined($adjust_de)?$adjust_de+0:undef,
 		    luminance_error_pct=>defined($adjust_lum_pct)?$adjust_lum_pct+0:undef,
 		    suppressed_reason=>$low_shadow_5_luma_suppressed->{"reason"},
 		   });
+		   next;
 		  }
-			  my $luma_adjustments=ref($low_shadow_5_luma_suppressed) eq "HASH" ? undef : post_cal_series_learned_luminance_adjustment(
+			  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
 			   $state,$arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,
 			   $luma_cap
 		  );
 		  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
-		  if(!$luma_adjustments && ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)) {
+		  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)) {
 		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
 		    $arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_direct_luminance"
 		   );
 		  }
-		  if(!$luma_adjustments && ref($low_shadow_5_luma_suppressed) ne "HASH") {
+		  if(!$luma_adjustments) {
 		   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state);
 		   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
 		  }
-		  if(!$luma_adjustments && ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)) {
+		  if(!$luma_adjustments && post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)) {
 		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
 		    $arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_deltae_luminance_assist"
 		   );
