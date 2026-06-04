@@ -13452,6 +13452,22 @@ sub post_cal_series_low_shadow_unstable_skip {
  return 0;
 }
 
+sub post_cal_series_low_shadow_5_luma_suppression {
+ my ($step,$lum_pct,$de,$target_delta)=@_;
+ return undef if(!autocal_step_is_low_shadow($step) || !defined($lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
+ return undef if(!($ire > 4.1001 && $ire <= 5.1001));
+ my $base_delta=(defined($target_delta) && ($target_delta+0) > 0) ? ($target_delta+0) : 0.5;
+ return undef if(defined($de) && ($de+0) <= ($base_delta+0.75));
+ return undef if(abs($lum_pct+0) >= 8.0);
+ return {
+  reason=>"modest_5pct_luma_response_risk",
+  luminance_error_pct=>$lum_pct+0,
+  delta_e=>defined($de) ? $de+0 : undef,
+  target_delta_e=>$base_delta+0
+ };
+}
+
 sub post_cal_series_luma_scales {
  my ($step,$lum_pct)=@_;
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 50;
@@ -14183,21 +14199,32 @@ sub post_cal_series_adjustment {
 		  mark_tried_values(\%tried_values,$arrays,$target,$adjust_de);
 		  my $luma_cap=post_cal_series_adjustment_luma_cap($config,$control_step,$adjust_lum_pct);
 		  $luma_cap=post_cal_series_neighbor_protected_luma_cap($luma_cap,$control_step,$adjust_lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state);
-			  my $luma_adjustments=post_cal_series_learned_luminance_adjustment(
+		  my $low_shadow_5_luma_suppressed=post_cal_series_low_shadow_5_luma_suppression($control_step,$adjust_lum_pct,$adjust_de,$target_delta);
+		  if(ref($low_shadow_5_luma_suppressed) eq "HASH") {
+		   $evaluated[-1]{"luma_suppressed_reason"}=$low_shadow_5_luma_suppressed->{"reason"} if(@evaluated);
+		   trace_109($read_step,"post_cal_series_low_shadow_5_luma_suppressed",{
+		    label=>$target->{"label"},
+		    reason=>$adjust_outlier,
+		    delta_e=>defined($adjust_de)?$adjust_de+0:undef,
+		    luminance_error_pct=>defined($adjust_lum_pct)?$adjust_lum_pct+0:undef,
+		    suppressed_reason=>$low_shadow_5_luma_suppressed->{"reason"},
+		   });
+		  }
+			  my $luma_adjustments=ref($low_shadow_5_luma_suppressed) eq "HASH" ? undef : post_cal_series_learned_luminance_adjustment(
 			   $state,$arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,
 			   $luma_cap
 		  );
 		  $luma_adjustments=post_cal_series_mark_response_table_adjustments($luma_adjustments) if($luma_adjustments);
-		  if(!$luma_adjustments && post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)) {
+		  if(!$luma_adjustments && ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)) {
 		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
 		    $arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_direct_luminance"
 		   );
 		  }
-		  if(!$luma_adjustments) {
+		  if(!$luma_adjustments && ref($low_shadow_5_luma_suppressed) ne "HASH") {
 		   $luma_adjustments=final_all_level_verify_luminance_adjustment($arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state);
 		   $luma_adjustments=post_cal_series_cap_luminance_adjustments($luma_adjustments,$luma_cap) if($luma_adjustments);
 		  }
-		  if(!$luma_adjustments && post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)) {
+		  if(!$luma_adjustments && ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)) {
 		   $luma_adjustments=post_cal_series_direct_luminance_adjustment(
 		    $arrays,$target,$control_step,$adjust_lum_pct,\%tried_values,$state,$luma_cap,"post_cal_series_deltae_luminance_assist"
 		   );
