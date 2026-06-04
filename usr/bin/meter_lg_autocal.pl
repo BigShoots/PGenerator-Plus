@@ -75,7 +75,7 @@ sub trace_adjustments_summary {
 	 foreach my $adj (@{$adjustments}) {
 	  next if(ref($adj) ne "HASH");
 	  my %item;
-	  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma low_shadow_live_neighbor response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error sdr_top_99_luma_cleanup sdr_top_cluster_preshape_luma_repair low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
+		  foreach my $key (qw(channel setting index ire current next delta damped micro sweep neutral_luminance paired_luminance high_end_paired_luma near_white_95_luma committed_polish_near_white_95_luma headroom_chroma_luma headroom_105_luma_priority headroom_105_near_y_cleanup headroom_105_luma_coupled_rgb headroom_105_main_polish_refine headroom_105_response_scaled low_shadow_luminance_response_scaled low_shadow_chroma_luma low_shadow_live_neighbor low_shadow_final_fresh_recovery response_multiplier hdr20_body_balanced_chroma_luma hdr20_body_luminance_opposite_probe hdr20_top_body_shift_up_chroma bridge_from_index bridge_to_index bridge_weight cap_reason remaining_error headroom_105_all_down_luma headroom_105_floor_luma_coupled response_probe response_model learned_response_model learned_target_move target_move_reason activation_reason adaptive_luminance insufficient_luminance_response headroom_luminance headroom_105_body_refinement slope ddc_per_error x_delta x_per_ddc y_delta y_per_ddc Y_delta Y_per_ddc luminance_delta luminance_per_ddc predicted_error previous_delta previous_before_error previous_after_error peak_match_low peak_wrgb_seed headroom_105_seed headroom_105_seed_luma_refine_cap headroom_105_near_target_luma_cap legal_white_pair_seed seeded_move_damping full_ddc_spine_anchor full_ddc_spine_anchor_revisit anchor_dominant_chroma anchor_luma_aligned anchor_paired_luminance anchor_luminance_only anchor_move_cap frozen_channel error_gap body_final_micro body_luminance_priority full_ddc_spine_seeded_body_chroma_luma full_ddc_spine_seeded_body_luminance_priority sdr_top_99_high_error sdr_top_99_luma_cleanup sdr_top_cluster_preshape_luma_repair low_shadow_luminance post_commit_low_shadow capped_post_commit_low_shadow post_cal_one_shot post_cal_luma_cap post_cal_response_table smoothed_response_model smoothed_neighbors exact_samples source samples remaining_budget_pct)) {
 	   $item{$key}=trace_number($adj->{$key}) if(defined($adj->{$key}));
 	  }
 	  push @out,\%item;
@@ -2360,6 +2360,106 @@ sub low_shadow_fresh_final_hard_reject {
  return 1 if(($fresh_de+0) > 1.5);
  return 0 if(!defined($fresh_lum_pct));
  return abs($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($step)+3.00 ? 1 : 0;
+}
+
+sub sdr_low_shadow_far_luminance_max_step {
+ my ($config,$step,$luminance_err,$de,$micro)=@_;
+ return undef if($micro);
+ return undef if(!lg_autocal_26_sdr_headroom_enabled($config));
+ return undef if(!autocal_step_is_low_shadow($step));
+ return undef if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return undef if($ire <= 5.1001 || $ire > 10.1001);
+ my $lum_pct=defined($luminance_err) ? abs(($luminance_err+0)*100) : 0;
+ my $cap=0;
+ $cap=2.0 if($lum_pct >= 2.5 && defined($de) && ($de+0) >= 1.0);
+ $cap=3.0 if($lum_pct >= 5.0);
+ $cap=4.0 if($lum_pct >= 8.0);
+ $cap=3.0 if(defined($de) && ($de+0) >= 2.0 && $lum_pct >= 3.0 && $cap < 3.0);
+ return undef if($cap <= 0);
+ return $cap;
+}
+
+sub sdr_low_shadow_bad_rgb_family_present {
+ my ($config,$tried,$step)=@_;
+ return 0 if(ref($tried) ne "HASH" || !sdr_low_shadow_rgb_suppression_enabled($config,$step));
+ return 0 if(ref($tried->{"__sdr_low_shadow_bad_rgb_family"}) ne "HASH");
+ foreach my $entry (values %{$tried->{"__sdr_low_shadow_bad_rgb_family"}}) {
+  return 1 if(ref($entry) eq "HASH" && (($entry->{"count"}||0) > 0 || ($entry->{"severe_count"}||0) > 0));
+ }
+ return 0;
+}
+
+sub sdr_low_shadow_final_fresh_recovery_adjustments {
+ my ($config,$arrays,$target,$step,$reading,$target_step_y,$de,$lum_pct,$target_delta,$tried,$attempt)=@_;
+ return undef if(!lg_autocal_26_sdr_headroom_enabled($config));
+ return undef if(!autocal_step_is_low_shadow($step));
+ return undef if(ref($arrays) ne "HASH" || ref($target) ne "HASH" || ref($reading) ne "HASH");
+ return undef if(!has_luminance_channel($arrays,$target));
+ my $idx=$target->{"index"};
+ return undef if(!defined($idx));
+ my $arr=$arrays->{"adjustingLuminance"};
+ return undef if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
+ my $lum_err=defined($lum_pct) ? (($lum_pct+0)/100.0) : luminance_error_ratio($reading,$target_step_y);
+ return undef if(!defined($lum_err));
+ my $fresh_lum_pct=$lum_err*100;
+ my $abs_lum=abs($fresh_lum_pct);
+ my $accept=low_shadow_luminance_acceptance_percent($step);
+ return undef if($abs_lum <= $accept+0.05);
+ my $current=defined($arr->[$idx]) ? ($arr->[$idx]+0) : 0;
+ my $direction=($fresh_lum_pct > 0) ? -1 : 1;
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 7;
+ $attempt=1 if(!defined($attempt) || $attempt < 1);
+ my $cap=($attempt <= 1) ? 2.0 : (($attempt == 2) ? 1.0 : 0.5);
+ if($abs_lum >= 5.0 && $ire > 5.1001 && $ire <= 10.1001 && $attempt <= 1) {
+  $cap=3.0;
+ }
+ if($ire <= 5.1001) {
+  $cap=($attempt <= 1) ? 0.5 : 0.25;
+ }
+ if($ire <= 3.1001) {
+  $cap=0.25;
+ }
+ my $raw_mag=$abs_lum*0.35;
+ $raw_mag=0.25 if($raw_mag < 0.25);
+ $raw_mag=$cap if($raw_mag > $cap);
+ my @magnitudes;
+ foreach my $candidate ($raw_mag,$raw_mag*0.5,$raw_mag*0.25,0.25) {
+  next if(!defined($candidate) || $candidate < 0.25-0.0001);
+  my $mag=round_ddc_quarter($candidate);
+  next if($mag < 0.25-0.0001);
+  next if(grep { abs($_-$mag) < 0.0001 } @magnitudes);
+  push @magnitudes,$mag;
+ }
+ foreach my $mag (@magnitudes) {
+  my $next=clamp_ddc_value($current+($direction*$mag));
+  next if(abs($next-$current) < 0.0001);
+  next if(tried_value_exists($tried,"adjustingLuminance",$next));
+  next if(luma_probe_family_suppressed($tried,$target,$current,$next,$step,"low_shadow_final_fresh_recovery",$LG_AUTOCAL_STATE));
+  return [{
+   channel=>"lum",
+   setting=>"adjustingLuminance",
+   current=>$current,
+   next=>$next,
+   delta=>$next-$current,
+   neutral_luminance=>1,
+   low_shadow_luminance=>1,
+   low_shadow_final_fresh_recovery=>1,
+   source=>"low_shadow_final_fresh_recovery",
+   remaining_error=>$abs_lum+0
+  }];
+ }
+ my $error=autocal_adjustment_error($reading,$step);
+ my $coupled=low_shadow_chroma_luminance_coupled_adjustments($error,$arrays,$target,$lum_err,$de,$target_delta,$tried,$step,0);
+ if(ref($coupled) eq "ARRAY" && @{$coupled}) {
+  foreach my $adj (@{$coupled}) {
+   next if(ref($adj) ne "HASH");
+   $adj->{"low_shadow_final_fresh_recovery"}=1;
+   $adj->{"source"}="low_shadow_final_fresh_recovery_coupled" if(!defined($adj->{"source"}));
+  }
+  return $coupled;
+ }
+ return undef;
 }
 
 sub low_shadow_luminance_progress_keep {
@@ -6035,7 +6135,8 @@ sub sdr_low_shadow_rgb_suppression_enabled {
  return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
  return 0 if(!autocal_step_is_low_shadow($step));
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
- return abs(($step->{"ire"}+0)-10) < 0.001 ? 1 : 0;
+ my $ire=$step->{"ire"}+0;
+ return ($ire >= 6.5001 && $ire <= 10.1001) ? 1 : 0;
 }
 
 sub rgb_only_adjustment {
@@ -7428,6 +7529,7 @@ sub neutral_luminance_adjustments {
 	  $planned_step=$guarded_step if($guarded_step < $planned_step);
 	 }
 	 my @magnitudes=($planned_step);
+	 push @magnitudes,1 if($planned_step > 1 && autocal_step_is_low_shadow($step) && lg_autocal_26_sdr_headroom_enabled($LG_AUTOCAL_CONFIG));
 	 push @magnitudes,0.5 if($planned_step > 0.5);
 	 push @magnitudes,0.25 if($planned_step > 0.25);
 		 if(has_luminance_channel($arrays,$target)) {
@@ -7946,8 +8048,19 @@ sub low_shadow_luminance_priority_adjustments {
  }
  $threshold=0.6 if($threshold < 0.6);
  return undef if(abs($lum_pct) <= $threshold);
-	 my $max_step=low_shadow_luminance_max_step($luminance_err,$stalls,$step);
-	 $max_step=1 if($micro && $max_step > 1);
+		 my $max_step=low_shadow_luminance_max_step($luminance_err,$stalls,$step);
+		 my $sdr_far_max=sdr_low_shadow_far_luminance_max_step($LG_AUTOCAL_CONFIG,$step,$luminance_err,$de,$micro);
+		 if(defined($sdr_far_max) && $sdr_far_max > $max_step) {
+		  trace_109($step,"sdr_low_shadow_luminance_step_opened",{
+		   delta_e=>defined($de) ? $de+0 : undef,
+		   luminance_error_pct=>$lum_pct+0,
+		   prior_max_step=>$max_step+0,
+		   max_step=>$sdr_far_max+0,
+		   target_values=>trace_target_values($arrays,$target)
+		  });
+		  $max_step=$sdr_far_max;
+		 }
+		 $max_step=1 if($micro && $max_step > 1);
  my $adjustments=neutral_luminance_adjustments($arrays,$target,$luminance_err,$de,$stalls,$tried,0.25,$max_step,1,$step,($micro ? "fine_low_shadow_luminance" : "main_low_shadow_luminance"));
  if(!$adjustments && abs($lum_pct) > ($tol*2.0)) {
   $adjustments=force_low_shadow_luminance_adjustment($arrays,$target,$luminance_err,$tried,0.25,$max_step,$step);
@@ -7975,13 +8088,19 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  my $luma_tol=luminance_tolerance_percent($step);
  my $wild_luma_gate=$luma_tol*1.25;
  $wild_luma_gate=5.0 if($wild_luma_gate < 5.0);
+ my $sdr_bad_rgb_coupled_retry=(
+  !$micro &&
+  lg_autocal_26_sdr_headroom_enabled($LG_AUTOCAL_CONFIG) &&
+  $ire > 5.1001 && $ire <= 10.1001 &&
+  sdr_low_shadow_bad_rgb_family_present($LG_AUTOCAL_CONFIG,$tried,$step)
+ ) ? 1 : 0;
  my $hdr20_deep_shadow_escape=(
   autocal_step_is_hdr20_body($step) &&
   $ire > 0 && $ire <= 2.5001 &&
   defined($de) && $de > ($target_delta+1.25)
  ) ? 1 : 0;
  return undef if($ire > 0 && $ire <= 2.5001 && !$hdr20_deep_shadow_escape);
- return undef if(abs($lum_pct) > $wild_luma_gate && !$hdr20_deep_shadow_escape);
+ return undef if(abs($lum_pct) > $wild_luma_gate && !$hdr20_deep_shadow_escape && !$sdr_bad_rgb_coupled_retry);
  my $chroma_mag=chroma_error_magnitude($error);
  return undef if($chroma_mag < 0.035 && (!defined($de) || $de <= ($target_delta+1.0)));
  my $far_3_4_luma=(!$micro && low_shadow_3_4_luma_far_from_target($step,$lum_pct) && defined($de) && $de > ($target_delta+1.0)) ? 1 : 0;
@@ -7989,6 +8108,7 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  $rgb_cap=1.0 if($ire <= 5.1001);
  $rgb_cap=0.5 if($ire <= 4.1001);
  $rgb_cap=0.25 if($ire <= 2.5001);
+ $rgb_cap=2.0 if($sdr_bad_rgb_coupled_retry && defined($de) && ($de+0) > ($target_delta+1.5) && $rgb_cap < 2.0);
  $rgb_cap=1.0 if($hdr20_deep_shadow_escape && $rgb_cap < 1.0);
  $rgb_cap=0.5 if($micro && $rgb_cap > 0.5);
  my $floor=rgb_error_floor($de,$target_delta,$micro ? 1 : 0);
@@ -8032,6 +8152,8 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
    $luma_cap=0.5 if($ire <= 5.1001);
    $luma_cap=0.25 if($ire <= 4.1001);
    $luma_cap=0.5 if($far_3_4_luma && $luma_cap < 0.5);
+   $luma_cap=2.0 if($sdr_bad_rgb_coupled_retry && abs($lum_pct) >= 3.0 && $luma_cap < 2.0);
+   $luma_cap=3.0 if($sdr_bad_rgb_coupled_retry && abs($lum_pct) >= 6.0 && $luma_cap < 3.0);
    $luma_cap=0.25 if($micro && $luma_cap > 0.25);
    my $mag=round_ddc_quarter(abs($lum_pct)*0.20);
    $mag=0.25 if($mag < 0.25);
@@ -18224,6 +18346,9 @@ eval {
 				   my $fresh_de=autocal_delta_e_for_step($config,$fresh_reading,$read_step,$white_y,$target_x,$target_y,$fresh_target_step_y);
 				   my $fresh_lum_pct=luminance_error_percent($fresh_reading,$fresh_target_step_y);
 				   my $fresh_score=guarded_autocal_result_score($fresh_de,$fresh_lum_pct,$read_step,$fresh_reading,$white_guard_y);
+				   my ($latest_fresh_reading,$latest_fresh_target_step_y,$latest_fresh_de,$latest_fresh_lum_pct,$latest_fresh_score,$latest_fresh_white_y)=(
+				    $fresh_reading,$fresh_target_step_y,$fresh_de,$fresh_lum_pct,$fresh_score,$white_y
+				   );
 				   my $fresh_over_target=(defined($fresh_lum_pct) && ($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
 				   my $fresh_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$fresh_de,$fresh_lum_pct,$best_de,$best_lum_pct,$fresh_score,$best_score);
 				   my $fresh_pass=(!$fresh_over_target && !$fresh_materially_worse) ? 1 : 0;
@@ -18278,10 +18403,13 @@ eval {
 					      refresh_headroom_targets_after_white_reference($state,$read_step,$confirm_white_y,$target_x,$target_y,$target_gamma,$signal_mode);
 					      $confirm_target_step_y=effective_target_luminance_for_autocal_reading($confirm_white_y,$read_step,$confirm_reading,$target_gamma,$signal_mode,$config,$state) if(!defined($confirm_target_step_y));
 					      annotate_reading_target($confirm_reading,$confirm_white_y,$confirm_target_step_y,$target_x,$target_y);
-					      my $confirm_de=autocal_delta_e_for_step($config,$confirm_reading,$read_step,$confirm_white_y,$target_x,$target_y,$confirm_target_step_y);
-					      my $confirm_lum_pct=luminance_error_percent($confirm_reading,$confirm_target_step_y);
-					      my $confirm_score=guarded_autocal_result_score($confirm_de,$confirm_lum_pct,$read_step,$confirm_reading,$white_guard_y);
-					      my $confirm_over_target=(defined($confirm_lum_pct) && ($confirm_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
+						      my $confirm_de=autocal_delta_e_for_step($config,$confirm_reading,$read_step,$confirm_white_y,$target_x,$target_y,$confirm_target_step_y);
+						      my $confirm_lum_pct=luminance_error_percent($confirm_reading,$confirm_target_step_y);
+						      my $confirm_score=guarded_autocal_result_score($confirm_de,$confirm_lum_pct,$read_step,$confirm_reading,$white_guard_y);
+						      ($latest_fresh_reading,$latest_fresh_target_step_y,$latest_fresh_de,$latest_fresh_lum_pct,$latest_fresh_score,$latest_fresh_white_y)=(
+						       $confirm_reading,$confirm_target_step_y,$confirm_de,$confirm_lum_pct,$confirm_score,$confirm_white_y
+						      );
+						      my $confirm_over_target=(defined($confirm_lum_pct) && ($confirm_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
 					      my $confirm_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$confirm_de,$confirm_lum_pct,$best_de,$best_lum_pct,$confirm_score,$best_score);
 					      my $confirm_pass=(!$confirm_over_target && !$confirm_materially_worse) ? 1 : 0;
 					      my $confirm_soft_accept=low_shadow_fresh_final_soft_accept($read_step,$confirm_de,$confirm_lum_pct,$target_delta);
@@ -18369,15 +18497,190 @@ eval {
 					     $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
 					     write_state($state);
 					     trace_sdr_low_shadow_ddc_snapshot(
-					      "fresh_verify_reject_final",$config,$state,$best_arrays,$read_step,$target,{
-					       verification=>$fresh_verify_record,
-					       hard_reject=>$hard_reject ? JSON::PP::true : JSON::PP::false,
-					      }
-					     );
-					     my $confirm_de=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_delta_e"})) ? $confirm_record->{"fresh_delta_e"} : "none";
-					     my $confirm_lum=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_luminance_error_pct"})) ? $confirm_record->{"fresh_luminance_error_pct"} : "none";
-					     die "$label fresh final verification rejected cached best: cached dE=".(defined($best_de)?$best_de:"undef").", cached lum=".(defined($best_lum_pct)?$best_lum_pct:"undef").", fresh dE=".(defined($fresh_de)?$fresh_de:"undef").", fresh lum=".(defined($fresh_lum_pct)?$fresh_lum_pct:"undef").", confirm dE=$confirm_de, confirm lum=$confirm_lum";
-					    }
+						      "fresh_verify_reject_final",$config,$state,$best_arrays,$read_step,$target,{
+						       verification=>$fresh_verify_record,
+						       hard_reject=>$hard_reject ? JSON::PP::true : JSON::PP::false,
+						      }
+						     );
+						     my @recovery_records;
+						     if(!cancelled()) {
+						      my %fresh_recovery_tried;
+						      copy_autocal_suppression_state(\%tried_values,\%fresh_recovery_tried);
+						      update_luma_probe_best_signature($config,\%fresh_recovery_tried,$read_step,$target,$best_arrays);
+						      mark_tried_values(\%fresh_recovery_tried,$best_arrays,$target,$fresh_de);
+						      my $recovery_base_arrays=clone_arrays($best_arrays);
+						      my $recovery_base_reading=clone_picture($latest_fresh_reading);
+						      my $recovery_base_target_step_y=$latest_fresh_target_step_y;
+						      my $recovery_base_de=$latest_fresh_de;
+						      my $recovery_base_lum_pct=$latest_fresh_lum_pct;
+						      my $recovery_base_score=$latest_fresh_score;
+						      my $recovery_base_white_y=defined($latest_fresh_white_y) ? $latest_fresh_white_y : $white_y;
+						      my $recovery_attempt_limit=3;
+						      for(my $recovery_attempt=1;$recovery_attempt<=$recovery_attempt_limit;$recovery_attempt++) {
+						       last if(cancelled());
+						       my $recovery_adjustments=sdr_low_shadow_final_fresh_recovery_adjustments(
+						        $config,$recovery_base_arrays,$target,$read_step,$recovery_base_reading,$recovery_base_target_step_y,
+						        $recovery_base_de,$recovery_base_lum_pct,$target_delta,\%fresh_recovery_tried,$recovery_attempt
+						       );
+						       if(ref($recovery_adjustments) ne "ARRAY" || !@{$recovery_adjustments}) {
+						        trace_109($read_step,"low_shadow_final_fresh_recovery_no_adjustment",{
+						         label=>$label,
+						         attempt=>$recovery_attempt+0,
+						         base_delta_e=>defined($recovery_base_de)?$recovery_base_de+0:undef,
+						         base_luminance_error_pct=>defined($recovery_base_lum_pct)?$recovery_base_lum_pct+0:undef,
+						         base_score=>defined($recovery_base_score)?$recovery_base_score+0:undef,
+						         base_values=>trace_target_values($recovery_base_arrays,$target)
+						        });
+						        last;
+						       }
+						       my $trial_arrays=clone_arrays($recovery_base_arrays);
+						       my $before_values=trace_target_values($trial_arrays,$target);
+						       foreach my $adj (@{$recovery_adjustments}) {
+						        next if(ref($adj) ne "HASH");
+						        my $setting=$adj->{"setting"};
+						        my $adj_idx=defined($adj->{"index"}) ? $adj->{"index"} : $target->{"index"};
+						        next if(!defined($setting) || !defined($adj_idx) || ref($trial_arrays->{$setting}) ne "ARRAY");
+						        $trial_arrays->{$setting}[$adj_idx]=$adj->{"next"};
+						       }
+						       trace_109($read_step,"low_shadow_final_fresh_recovery_plan",{
+						        label=>$label,
+						        attempt=>$recovery_attempt+0,
+						        base_delta_e=>defined($recovery_base_de)?$recovery_base_de+0:undef,
+						        base_luminance_error_pct=>defined($recovery_base_lum_pct)?$recovery_base_lum_pct+0:undef,
+						        base_score=>defined($recovery_base_score)?$recovery_base_score+0:undef,
+						        adjustments=>trace_adjustments_summary($recovery_adjustments),
+						        values_before=>$before_values,
+						        values_after=>trace_target_values($trial_arrays,$target)
+						       });
+						       $state->{"phase"}="writing";
+						       $state->{"message"}="Recovering $label fresh verification ".describe_adjustments($recovery_adjustments)." ($recovery_attempt/$recovery_attempt_limit)";
+						       write_state($state);
+						       my $recovery_write_error;
+						       ($picture,$recovery_write_error)=set_picture_values($picture,$trial_arrays,$target,$picture_mode,$calibration_mode_active,$state);
+						       die $recovery_write_error if($recovery_write_error);
+						       $calibration_mode_active=1;
+						       sync_state_picture($state,$picture,$picture_mode);
+						       last if(cancelled());
+						       $state->{"phase"}="reading";
+						       $state->{"message"}="Reading $label fresh verification recovery ($recovery_attempt/$recovery_attempt_limit)";
+						       write_state($state);
+						       my ($candidate_reading,$candidate_error,$candidate_target_step_y)=read_step_guarded($config,$read_step,$state,$recovery_base_white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);
+						       die $candidate_error if($candidate_error && $candidate_error ne "cancelled");
+						       last if($candidate_error && $candidate_error eq "cancelled");
+						       last if(ref($candidate_reading) ne "HASH");
+						       my $candidate_white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$candidate_reading,$recovery_base_white_y);
+						       $candidate_white_y=$recovery_base_white_y if(!defined($candidate_white_y));
+						       refresh_headroom_targets_after_white_reference($state,$read_step,$candidate_white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+						       $candidate_target_step_y=effective_target_luminance_for_autocal_reading($candidate_white_y,$read_step,$candidate_reading,$target_gamma,$signal_mode,$config,$state) if(!defined($candidate_target_step_y));
+						       annotate_reading_target($candidate_reading,$candidate_white_y,$candidate_target_step_y,$target_x,$target_y);
+						       my $candidate_de=autocal_delta_e_for_step($config,$candidate_reading,$read_step,$candidate_white_y,$target_x,$target_y,$candidate_target_step_y);
+						       my $candidate_lum_pct=luminance_error_percent($candidate_reading,$candidate_target_step_y);
+						       my $candidate_score=guarded_autocal_result_score($candidate_de,$candidate_lum_pct,$read_step,$candidate_reading,$white_guard_y);
+						       mark_tried_values(\%fresh_recovery_tried,$trial_arrays,$target,$candidate_de);
+						       my $candidate_over_target=(defined($candidate_lum_pct) && ($candidate_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
+						       my $candidate_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$candidate_de,$candidate_lum_pct,$best_de,$best_lum_pct,$candidate_score,$best_score);
+						       my $candidate_soft_accept=low_shadow_fresh_final_soft_accept($read_step,$candidate_de,$candidate_lum_pct,$target_delta);
+						       my $candidate_good=low_shadow_good_enough($read_step,$candidate_de,$candidate_lum_pct,$target_delta);
+						       my $candidate_hard_reject=low_shadow_fresh_final_hard_reject($read_step,$candidate_de,$candidate_lum_pct);
+						       my $candidate_pass=($candidate_good || $candidate_soft_accept || (!$candidate_over_target && !$candidate_materially_worse && !$candidate_hard_reject)) ? 1 : 0;
+						       my $luma_progress=(defined($candidate_lum_pct) && defined($recovery_base_lum_pct) && abs($candidate_lum_pct+0)+0.10 < abs($recovery_base_lum_pct+0)) ? 1 : 0;
+						       my $score_progress=(defined($candidate_score) && defined($recovery_base_score) && ($candidate_score+0)+0.05 < ($recovery_base_score+0)) ? 1 : 0;
+						       my $bad_luma_probe;
+						       if(!$candidate_pass) {
+						        $bad_luma_probe=record_bad_luma_probe_family(
+						         \%fresh_recovery_tried,$target,$recovery_adjustments,
+						         $recovery_base_de,$candidate_de,
+						         $recovery_base_lum_pct,$candidate_lum_pct,
+						         $recovery_base_score,$candidate_score,
+						         $read_step,"fresh_verify_recovery",$state,$best_arrays
+						        );
+						       }
+						       my $recovery_record={
+						        label=>$label,
+						        ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef,
+						        attempt=>$recovery_attempt+0,
+						        accepted=>$candidate_pass ? JSON::PP::true : JSON::PP::false,
+						        soft_accepted=>(!$candidate_good && $candidate_soft_accept) ? JSON::PP::true : JSON::PP::false,
+						        over_target=>$candidate_over_target ? JSON::PP::true : JSON::PP::false,
+						        materially_worse=>$candidate_materially_worse ? JSON::PP::true : JSON::PP::false,
+						        hard_reject=>$candidate_hard_reject ? JSON::PP::true : JSON::PP::false,
+						        luma_progress=>$luma_progress ? JSON::PP::true : JSON::PP::false,
+						        score_progress=>$score_progress ? JSON::PP::true : JSON::PP::false,
+						        base_delta_e=>defined($recovery_base_de)?$recovery_base_de+0:undef,
+						        base_luminance_error_pct=>defined($recovery_base_lum_pct)?$recovery_base_lum_pct+0:undef,
+						        base_score=>defined($recovery_base_score)?$recovery_base_score+0:undef,
+						        fresh_delta_e=>defined($candidate_de) ? $candidate_de+0 : undef,
+						        fresh_luminance_error_pct=>defined($candidate_lum_pct) ? $candidate_lum_pct+0 : undef,
+						        fresh_score=>defined($candidate_score) ? $candidate_score+0 : undef,
+						        target_luminance=>defined($candidate_target_step_y) ? $candidate_target_step_y+0 : undef,
+						        measured_luminance=>luminance($candidate_reading),
+						        adjustments=>trace_adjustments_summary($recovery_adjustments),
+						        final_values=>trace_target_values($trial_arrays,$target),
+						        bad_luma_probe=>$bad_luma_probe,
+						        reading=>trace_reading_summary($candidate_reading)
+						       };
+						       push @recovery_records,$recovery_record;
+						       trace_109($read_step,"low_shadow_final_fresh_recovery_measurement",$recovery_record);
+						       trace_sdr_low_shadow_ddc_snapshot(
+						        "fresh_verify_recovery_measurement",$config,$state,$trial_arrays,$read_step,$target,{
+						         recovery=>$recovery_record
+						        }
+						       );
+						       if($candidate_pass) {
+						        $fresh_reading=$candidate_reading;
+						        $fresh_target_step_y=$candidate_target_step_y;
+						        $fresh_de=$candidate_de;
+						        $fresh_lum_pct=$candidate_lum_pct;
+						        $fresh_score=$candidate_score;
+						        $fresh_over_target=$candidate_over_target;
+						        $fresh_materially_worse=$candidate_materially_worse;
+						        $fresh_pass=1;
+						        $white_y=$candidate_white_y if(defined($candidate_white_y));
+						        $arrays=clone_arrays($trial_arrays);
+						        $best_arrays=clone_arrays($trial_arrays);
+						        $best_from_luma_only=1 if(ref(luma_only_adjustment($recovery_adjustments)) eq "HASH");
+						        $fresh_verify_record->{"accepted"}=JSON::PP::true;
+						        $fresh_verify_record->{"accepted_after_recovery"}=JSON::PP::true;
+						        $fresh_verify_record->{"soft_accepted"}=(!$candidate_good && $candidate_soft_accept) ? JSON::PP::true : JSON::PP::false;
+						        $fresh_verify_record->{"final_source"}="fresh_recovery";
+						        $fresh_verify_record->{"fresh_delta_e"}=defined($fresh_de) ? $fresh_de+0 : undef;
+						        $fresh_verify_record->{"fresh_luminance_error_pct"}=defined($fresh_lum_pct) ? $fresh_lum_pct+0 : undef;
+						        $fresh_verify_record->{"fresh_score"}=defined($fresh_score) ? $fresh_score+0 : undef;
+						        $fresh_verify_record->{"target_luminance"}=defined($fresh_target_step_y) ? $fresh_target_step_y+0 : undef;
+						        $fresh_verify_record->{"measured_luminance"}=luminance($fresh_reading);
+						        $fresh_verify_record->{"final_values"}=trace_target_values($best_arrays,$target);
+						        last;
+						       }
+						       if(($luma_progress || $score_progress) && !$candidate_hard_reject) {
+						        $recovery_base_arrays=clone_arrays($trial_arrays);
+						        $recovery_base_reading=clone_picture($candidate_reading);
+						        $recovery_base_target_step_y=$candidate_target_step_y;
+						        $recovery_base_de=$candidate_de;
+						        $recovery_base_lum_pct=$candidate_lum_pct;
+						        $recovery_base_score=$candidate_score;
+						        $recovery_base_white_y=$candidate_white_y;
+						       }
+						      }
+						      $fresh_verify_record->{"recovery"}=\@recovery_records if(@recovery_records);
+						     }
+						     if(!$fresh_pass) {
+						      if(ref($best_arrays) eq "HASH") {
+						       $arrays=clone_arrays($best_arrays);
+						       $state->{"phase"}="restoring";
+						       $state->{"message"}="Restoring $label cached best after failed fresh verification recovery";
+						       write_state($state);
+						       my $recovery_restore_error;
+						       ($picture,$recovery_restore_error)=set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state);
+						       die $recovery_restore_error if($recovery_restore_error);
+						       $calibration_mode_active=1;
+						       sync_state_picture($state,$picture,$picture_mode);
+						      }
+						      my $confirm_de=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_delta_e"})) ? $confirm_record->{"fresh_delta_e"} : "none";
+						      my $confirm_lum=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_luminance_error_pct"})) ? $confirm_record->{"fresh_luminance_error_pct"} : "none";
+						      my $recovery_count=@recovery_records;
+						      die "$label fresh final verification rejected cached best: cached dE=".(defined($best_de)?$best_de:"undef").", cached lum=".(defined($best_lum_pct)?$best_lum_pct:"undef").", fresh dE=".(defined($fresh_de)?$fresh_de:"undef").", fresh lum=".(defined($fresh_lum_pct)?$fresh_lum_pct:"undef").", confirm dE=$confirm_de, confirm lum=$confirm_lum, recovery attempts=$recovery_count";
+						     }
+						    }
 					    $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
 					    write_state($state);
 					   }
