@@ -10090,6 +10090,20 @@ sub sdr_top_legal_white_needs_rgb_recovery {
  return 0;
 }
 
+sub sdr_top_legal_white_needs_recovery {
+ my ($metrics,$legal_de,$target_delta)=@_;
+ $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ return 1 if(sdr_top_legal_white_needs_rgb_recovery($metrics));
+ return 1 if(defined($legal_de) && ($legal_de+0) > ($target_delta+0.0001));
+ if(ref($metrics) eq "HASH" && ref($metrics->{"rgb_error"}) eq "HASH") {
+  my $r=$metrics->{"rgb_error"}{"r"};
+  my $g=$metrics->{"rgb_error"}{"g"};
+  my $b=$metrics->{"rgb_error"}{"b"};
+  return 1 if(defined($r) && ($r+0) <= -0.010 && ($metrics->{"spread"}||0) >= 0.018 && ((defined($g) && ($g+0) > 0) || (defined($b) && ($b+0) > 0)));
+ }
+ return 0;
+}
+
 sub sdr_top_99_legal_white_final_acceptance {
  my ($reading_99,$legal_reading,$metrics,$slope,$needs_recovery)=@_;
  my @reasons;
@@ -15721,7 +15735,7 @@ eval {
 			   0
 			  );
 			  return { rejected=>JSON::PP::false, reason=>"legal_white_validation_unavailable" } if(ref($metrics) ne "HASH");
-			  my $needs_recovery=sdr_top_legal_white_needs_rgb_recovery($metrics) ? 1 : 0;
+			  my $needs_recovery=sdr_top_legal_white_needs_recovery($metrics,$legal_de,$target_delta) ? 1 : 0;
 			  my $final_acceptance=sdr_top_99_legal_white_final_acceptance(
 			   $final_reading,$legal_reading,$metrics,$slope,$needs_recovery
 			  );
@@ -15734,12 +15748,14 @@ eval {
 			   $final_acceptance->{"target_values"}=trace_target_values($arrays,$final_target);
 			  }
 			  my $final_rejected=(ref($final_acceptance) eq "HASH" && $final_acceptance->{"rejected"}) ? 1 : 0;
-			  $state->{"sdr_top_legal_white_validation"}={
-			   status=>$final_rejected ? "final_acceptance_failed" : ($needs_recovery ? "diagnostic_only_failed" : "diagnostic_only_passed"),
-			   diagnostic_only=>JSON::PP::true,
-			   recovery_disabled=>JSON::PP::true,
-			   would_have_recovered=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
-			   final_acceptance_rejected=>$final_rejected ? JSON::PP::true : JSON::PP::false,
+				  my $validation_status=$final_rejected ? "final_acceptance_failed" : ($needs_recovery ? "recovery_needed" : "diagnostic_only_passed");
+				  $state->{"sdr_top_legal_white_validation"}={
+				   status=>$validation_status,
+				   diagnostic_only=>$needs_recovery ? JSON::PP::false : JSON::PP::true,
+				   recovery_disabled=>$needs_recovery ? JSON::PP::false : JSON::PP::true,
+				   recovery_available=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
+				   would_have_recovered=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
+				   final_acceptance_rejected=>$final_rejected ? JSON::PP::true : JSON::PP::false,
 			   final_acceptance=>$final_acceptance,
 			   metrics=>$metrics,
 			   delta_e=>defined($legal_de) ? $legal_de+0 : undef,
@@ -15751,11 +15767,12 @@ eval {
 			   if($flag_best_known) {
 			   my $best_entry=lg_autocal_26_best_known_for_step($state,$final_read_step);
 			   if(ref($best_entry) eq "HASH") {
-			    $best_entry->{"legal_white_validation_status"}="diagnostic_only_failed";
-			    $best_entry->{"legal_white_failure_reason"}="legal_white_diagnostic_only_failed";
-			    $best_entry->{"legal_white_diagnostic_only"}=JSON::PP::true;
-			    $best_entry->{"legal_white_recovery_disabled"}=JSON::PP::true;
-			    $best_entry->{"legal_white_would_have_recovered"}=JSON::PP::true;
+				    $best_entry->{"legal_white_validation_status"}=$validation_status;
+				    $best_entry->{"legal_white_failure_reason"}="legal_white_recovery_needed";
+				    $best_entry->{"legal_white_diagnostic_only"}=JSON::PP::false;
+				    $best_entry->{"legal_white_recovery_disabled"}=JSON::PP::false;
+				    $best_entry->{"legal_white_recovery_available"}=JSON::PP::true;
+				    $best_entry->{"legal_white_would_have_recovered"}=JSON::PP::true;
 			    $best_entry->{"legal_white_delta_e"}=$legal_de+0 if(defined($legal_de));
 			    $best_entry->{"paired_legal_white_delta_e"}=$legal_de+0 if(defined($legal_de));
 			    $best_entry->{"paired_current_name"}="100% legal white";
@@ -15763,8 +15780,8 @@ eval {
 			    $best_entry->{"legal_white_metrics"}=$metrics;
 			    $best_entry->{"legal_white_reading"}=trace_reading_summary($legal_reading);
 			    trace_109($final_read_step,"sdr_top_legal_white_best_known_flagged",{
-			     status=>"diagnostic_only_failed",
-			     reason=>"legal_white_diagnostic_only_failed",
+				     status=>$validation_status,
+				     reason=>"legal_white_recovery_needed",
 			     delta_e=>defined($legal_de) ? $legal_de+0 : undef,
 			     metrics=>$metrics,
 			     best_known_delta_e=>defined($best_entry->{"delta_e"}) ? ($best_entry->{"delta_e"}+0) : undef,
@@ -15775,9 +15792,10 @@ eval {
 			   }
 			  }
 			  trace_109($final_read_step,"sdr_top_legal_white_validation_done",{
-			   status=>$final_rejected ? "final_acceptance_failed" : ($needs_recovery ? "diagnostic_only_failed" : "diagnostic_only_passed"),
-			   diagnostic_only=>JSON::PP::true,
-			   recovery_disabled=>JSON::PP::true,
+				   status=>$validation_status,
+				   diagnostic_only=>$needs_recovery ? JSON::PP::false : JSON::PP::true,
+				   recovery_disabled=>$needs_recovery ? JSON::PP::false : JSON::PP::true,
+				   recovery_available=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
 			   would_have_recovered=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
 			   final_acceptance_rejected=>$final_rejected ? JSON::PP::true : JSON::PP::false,
 			   final_acceptance=>$final_acceptance,
@@ -15790,8 +15808,9 @@ eval {
 			  });
 			  trace_sdr_low_shadow_ddc_snapshot(
 			   "sdr_top_legal_white_validation_done",$config,$state,$arrays,$final_read_step,$final_target,{
-			    diagnostic_only=>JSON::PP::true,
-			    recovery_disabled=>JSON::PP::true,
+				    diagnostic_only=>$needs_recovery ? JSON::PP::false : JSON::PP::true,
+				    recovery_disabled=>$needs_recovery ? JSON::PP::false : JSON::PP::true,
+				    recovery_available=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
 			    would_have_recovered=>$needs_recovery ? JSON::PP::true : JSON::PP::false,
 			    final_acceptance_rejected=>$final_rejected ? JSON::PP::true : JSON::PP::false,
 			    final_acceptance=>$final_acceptance,
@@ -18815,9 +18834,11 @@ eval {
 				  });
 				  my $sdr_99_final_validation;
 				  my $sdr_99_final_rejected=0;
+				  my $sdr_99_final_needs_recovery=0;
 				  if(defined($step->{"ire"}) && abs(($step->{"ire"}+0)-99) < 0.001) {
 				   # Regression marker: $run_sdr_top_legal_white_validation->($target,$read_step,$label);
 				   $sdr_99_final_validation=$run_sdr_top_legal_white_validation->($target,$read_step,$label,$best_reading);
+				   $sdr_99_final_needs_recovery=1 if(ref($sdr_99_final_validation) eq "HASH" && $sdr_99_final_validation->{"needs_recovery"});
 				   if(ref($sdr_99_final_validation) eq "HASH" && $sdr_99_final_validation->{"rejected"}) {
 				    $sdr_99_final_rejected=1;
 				    $final_reached=0;
@@ -19122,10 +19143,10 @@ eval {
 				     $iteration
 				    );
 				    my $candidate_slope=sdr_top_cluster_99_105_channel_divergence($arrays);
-				    my $needs_recovery=sdr_top_legal_white_needs_rgb_recovery($legal_metrics) ? 1 : 0;
-				    my $candidate_acceptance=sdr_top_99_legal_white_final_acceptance(
-				     $candidate_reading,$legal_reading,$legal_metrics,$candidate_slope,$needs_recovery
-				    );
+					    my $needs_recovery=sdr_top_legal_white_needs_recovery($legal_metrics,$legal_de,$target_delta) ? 1 : 0;
+					    my $candidate_acceptance=sdr_top_99_legal_white_final_acceptance(
+					     $candidate_reading,$legal_reading,$legal_metrics,$candidate_slope,$needs_recovery
+					    );
 				    if(ref($candidate_acceptance) eq "HASH") {
 				     $candidate_acceptance->{"metrics"}=$legal_metrics;
 				     $candidate_acceptance->{"legal_delta_e"}=defined($legal_de) ? $legal_de+0 : undef;
@@ -19135,12 +19156,10 @@ eval {
 				     $candidate_acceptance->{"target_values"}=trace_target_values($arrays,$target);
 				    }
 				    my $candidate_score=$score_record->($candidate_de,$legal_de,$candidate_reading,$candidate_acceptance,$legal_metrics,$candidate_slope);
-				    my $legal_materially_improved=(defined($legal_de) && (($legal_de+0)+1.0 < $baseline_legal)) ? 1 : 0;
-				    my $worst_materially_improved=(($candidate_score->{"worst_delta_e"}||9999)+0.25 < ($base_score->{"worst_delta_e"}||9999)) ? 1 : 0;
-				    my $de99_much_worse=(defined($candidate_de) && ($candidate_de+0) > ($baseline_de99+2.0)) ? 1 : 0;
+				    my $de99_worse_than_best=(defined($candidate_de) && ($candidate_de+0) > ($baseline_de99+0.05)) ? 1 : 0;
 				    my $reject_reason;
-				    if($de99_much_worse && !$legal_materially_improved && !$worst_materially_improved) {
-				     $reject_reason="99_delta_e_worse_without_legal100_improvement";
+				    if($de99_worse_than_best) {
+				     $reject_reason="99_delta_e_worse_than_best_observed";
 				    } elsif(($candidate_score->{"score"}+0.01) >= ($best_combined->{"score"}{"score"}+0)) {
 				     $reject_reason="combined_score_not_improved";
 				    }
@@ -19197,7 +19216,7 @@ eval {
 				   die $restore_error if($restore_error);
 				   $calibration_mode_active=1;
 				   sync_state_picture($state,$picture,$picture_mode);
-				   trace_109($read_step,$improved ? "sdr_top_legal_white_recovery_selected" : "sdr_top_legal_white_recovery_failed",{
+					   trace_109($read_step,$improved ? "sdr_top_legal_white_recovery_selected" : "sdr_top_legal_white_recovery_failed",{
 				    label=>$label,
 				    source_reason=>$source_reason||"",
 				    improved=>$improved ? JSON::PP::true : JSON::PP::false,
@@ -19208,11 +19227,19 @@ eval {
 				    selected_values=>trace_target_values($arrays,$target),
 				    validation=>$best_combined->{"validation"},
 				    candidates=>\@records
-				   });
-				   if(!$improved) {
-				    return {
-				     recovered=>JSON::PP::false,
-				     selected=>$best_combined,
+					   });
+					   if(!$improved) {
+					    $state->{"sdr_top_legal_white_recovery"}={
+					     status=>"no_safer_state",
+					     selected_iteration=>0,
+					     baseline_score=>$base_score,
+					     candidates=>\@records,
+					     validation=>$best_combined->{"validation"}
+					    };
+					    write_state($state);
+					    return {
+					     recovered=>JSON::PP::false,
+					     selected=>$best_combined,
 				     candidates=>\@records,
 				     baseline_score=>$base_score
 				    };
@@ -19251,12 +19278,12 @@ eval {
 				    baseline_score=>$base_score
 				   };
 				  };
-				  if($sdr_99_final_rejected) {
-				   my $restore_validation;
-				   if($main_final_restored) {
-				    $restore_validation=$run_sdr_top_legal_white_validation->($target,$read_step,$label,$best_reading);
-				    if(ref($restore_validation) eq "HASH" && !$restore_validation->{"rejected"}) {
-				     trace_109($read_step,"sdr_top_legal_white_restored_fallback_accepted",{
+					  if($sdr_99_final_rejected || $sdr_99_final_needs_recovery) {
+					   my $restore_validation;
+					   if($sdr_99_final_rejected && $main_final_restored) {
+					    $restore_validation=$run_sdr_top_legal_white_validation->($target,$read_step,$label,$best_reading);
+					    if(ref($restore_validation) eq "HASH" && !$restore_validation->{"rejected"}) {
+					     trace_109($read_step,"sdr_top_legal_white_restored_fallback_accepted",{
 				      label=>$label,
 				      validation=>$restore_validation,
 				      restored_reason=>$main_final_restore_reason||"",
@@ -19276,27 +19303,37 @@ eval {
 				     });
 				    }
 				   }
-				   if($sdr_99_final_rejected) {
-				    my $recovery_validation=(ref($restore_validation) eq "HASH") ? $restore_validation : $sdr_99_final_validation;
-				    my $recovery=$sdr_99_combined_recovery->($recovery_validation,$main_final_restored ? "restored_fallback_rejected" : "no_safe_prior_best");
-				    if(ref($recovery) eq "HASH" && $recovery->{"recovered"}) {
-				     $sdr_99_final_rejected=0;
-				     $final_reached=0;
-				    } else {
-				     trace_109($read_step,"sdr_top_legal_white_final_reject_no_safe_recovery",{
-				      label=>$label,
-				      validation=>$recovery_validation,
+					   if($sdr_99_final_rejected || $sdr_99_final_needs_recovery) {
+					    my $recovery_validation=(ref($restore_validation) eq "HASH") ? $restore_validation : $sdr_99_final_validation;
+					    my $recovery=$sdr_99_combined_recovery->($recovery_validation,$sdr_99_final_rejected ? ($main_final_restored ? "restored_fallback_rejected" : "no_safe_prior_best") : "legal_white_recovery_needed");
+					    if(ref($recovery) eq "HASH" && $recovery->{"recovered"}) {
+					     $sdr_99_final_rejected=0;
+					     $sdr_99_final_needs_recovery=0;
+					     $final_reached=0;
+					    } elsif($sdr_99_final_rejected) {
+					     trace_109($read_step,"sdr_top_legal_white_final_reject_no_safe_recovery",{
+					      label=>$label,
+					      validation=>$recovery_validation,
 				      restored_reason=>$main_final_restore_reason||"",
 				      restored=>$main_final_restored ? JSON::PP::true : JSON::PP::false,
 				      rejected_values=>trace_target_values($best_arrays,$target),
 				      rejected_delta_e=>defined($best_de)?$best_de+0:undef,
 				      rejected_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef,
 				      recovery=>$recovery
-				     });
-				     die "$label legal-white validation rejected final candidate and recovery found no safer combined state";
-				    }
-				   }
-				  }
+					     });
+					     die "$label legal-white validation rejected final candidate and recovery found no safer combined state";
+					    } else {
+					     trace_109($read_step,"sdr_top_legal_white_recovery_no_safe_change",{
+					      label=>$label,
+					      validation=>$recovery_validation,
+					      recovery=>$recovery,
+					      kept_values=>trace_target_values($best_arrays,$target),
+					      kept_delta_e=>defined($best_de)?$best_de+0:undef,
+					      kept_luminance_error_pct=>defined($best_lum_pct)?$best_lum_pct+0:undef
+					     });
+					    }
+					   }
+					  }
 					  trace_drift_matrix_final_kept(
 					   $config,$state,$read_step,$picture_mode,$target_gamma,$target_step_y,
 					   $best_de,$best_lum_pct,$best_reading,$best_arrays,$target
