@@ -61,15 +61,6 @@ assert(
 );
 
 assert(
-  helperSource.includes('sub post_cal_series_low_shadow_5_luma_suppression') &&
-    helperSource.includes('return undef if(!($ire > 4.1001 && $ire <= 5.1001));') &&
-    helperSource.includes('return undef if(defined($de) && ($de+0) <= ($base_delta+0.75));') &&
-    helperSource.includes('return undef if(abs($lum_pct+0) >= 8.0);') &&
-    helperSource.includes('reason=>"modest_5pct_luma_response_risk"'),
-  'post-cal 5% should suppress modest direct luma-only moves that repeatedly turn into Magic Wand reverts'
-);
-
-assert(
   helperSource.includes('sub post_cal_series_deltae_luminance_assist_enabled') &&
     helperSource.includes('return 0 if($de <= 1.0);') &&
     helperSource.includes('return 0 if($ire > 50.1001);') &&
@@ -120,13 +111,10 @@ assert(
 );
 
 assert(
-  adjustmentSource.includes('my $luma_adjustments=ref($low_shadow_5_luma_suppressed) eq "HASH" ? undef : post_cal_series_learned_luminance_adjustment(') &&
-    adjustmentSource.includes('post_cal_series_low_shadow_5_luma_suppression($control_step,$adjust_lum_pct,$adjust_de,$target_delta)') &&
-    adjustmentSource.includes('post_cal_series_low_shadow_5_luma_suppressed') &&
-    adjustmentSource.includes('ref($low_shadow_5_luma_suppressed) eq "HASH" ? undef : post_cal_series_learned_luminance_adjustment') &&
+  adjustmentSource.includes('my $luma_adjustments=post_cal_series_learned_luminance_adjustment(') &&
     adjustmentSource.includes('post_cal_series_neighbor_protected_luma_cap($luma_cap,$control_step,$adjust_lum_pct,$readings,$steps') &&
-    adjustmentSource.includes('ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)') &&
-    adjustmentSource.includes('ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)') &&
+    adjustmentSource.includes('post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)') &&
+    adjustmentSource.includes('post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)') &&
     adjustmentSource.includes('post_cal_series_low_shadow_neighbor_risk($control_step,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state)') &&
     adjustmentSource.includes('my $suppress_rgb_for_low_shadow_neighbor=ref($low_shadow_neighbor_risk) eq "HASH" ? 1 : 0;') &&
     adjustmentSource.includes('post_cal_series_low_shadow_rgb_suppressed') &&
@@ -136,29 +124,6 @@ assert(
     adjustmentSource.includes('if(!$suppress_rgb_for_low_shadow_neighbor && !$rgb_adjustments)') &&
     adjustmentSource.includes('my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);'),
   'post-series compensation should prefer learned luma, suppress stacked 5% RGB when lower shadow is stable, and use generic RGB fallback for dE>1 misses'
-);
-
-function lowShadow5LumaSuppression(ire, lumPct, de, targetDelta = 0.5) {
-  if (!(ire > 4.1001 && ire <= 5.1001)) return false;
-  if (de <= targetDelta + 0.75) return false;
-  if (Math.abs(lumPct) >= 8.0) return false;
-  return true;
-}
-
-assert.strictEqual(
-  lowShadow5LumaSuppression(5, 6.87839228455236, 1.79698275222276),
-  true,
-  'run-3 5% modest high-luma miss should avoid the direct luma move that reverted'
-);
-assert.strictEqual(
-  lowShadow5LumaSuppression(5, 11.0, 1.8),
-  false,
-  '5% should remain luma-eligible when luminance error is large enough to need real luminance correction'
-);
-assert.strictEqual(
-  lowShadow5LumaSuppression(4, 6.8, 1.8),
-  false,
-  '4% useful low-shadow correction should not inherit the 5% luma suppression'
 );
 
 function lowShadowNeighborRisk(ire, neighborLums) {
