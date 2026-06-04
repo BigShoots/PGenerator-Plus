@@ -32,7 +32,7 @@ assert(
 
 const pendingMagicWandHelper = sliceBetween(
   'function meterFullAutoCalMagicWandPendingBeforeCompletion',
-  'function meterFullAutoCalStatusRunId',
+  'function meterAutoCalMagicWandCompletionRequiresVerification',
   'Full AutoCal Magic Wand pending completion helper'
 );
 assert(
@@ -42,6 +42,19 @@ assert(
     pendingMagicWandHelper.includes('status.full_autocal_magic_wand===true') &&
     pendingMagicWandHelper.includes('meterFullAutoCalRunning&&meterFullAutoCalMagicWandEnabled()'),
   'Full AutoCal should treat selected pre-Magic-Wand worker completions as non-final, while allowing actual Magic Wand completion'
+);
+
+const magicWandVerificationHelper = sliceBetween(
+  'function meterAutoCalMagicWandCompletionRequiresVerification',
+  'function meterFullAutoCalStatusRunId',
+  'Magic Wand completion verification helper'
+);
+assert(
+  magicWandVerificationHelper.includes("status.status==='complete'") &&
+    magicWandVerificationHelper.includes('status.full_autocal_post_series_adjust') &&
+    magicWandVerificationHelper.includes('meterAutoCalMagicWandActive||meterAutoCalMagicWandFullWorkflow') &&
+    magicWandVerificationHelper.includes("meterFullAutoCalStatusPhase(status)==='magic-wand'"),
+  'Magic Wand completion should require after-series verification/revert even when the backend omits the adjustment marker'
 );
 
 const autoCalApplyStatus = sliceBetween(
@@ -64,6 +77,22 @@ assert(
   autoCalPoll.includes('if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){') &&
     autoCalPoll.indexOf('if(meterFullAutoCalMagicWandPendingBeforeCompletion(r)){') < autoCalPoll.indexOf("meterAutoCalSetOverlay(true,{...r,phase:'complete'})"),
   'LG AutoCal polling fallback should suppress generic completion before selected Magic Wand runs'
+);
+assert(
+  (autoCalPoll.match(/meterAutoCalMagicWandCompletionRequiresVerification\(r\)/g)||[]).length >= 2 &&
+    autoCalPoll.includes('await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});') &&
+    autoCalPoll.indexOf('meterAutoCalMagicWandCompletionRequiresVerification(r)') < autoCalPoll.indexOf("meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand')"),
+  'LG AutoCal polling should run Magic Wand after-series verification/revert before completing, even without the backend marker'
+);
+
+const post3dPolish = sliceBetween(
+  'async function meterFullAutoCalStartPost3dPolish',
+  'async function meterFullAutoCalStartTouchup',
+  'Full AutoCal post-3D cleanup function'
+);
+assert(
+  /if\(magicWandEnabled\)\s*\{\s*await meterAutoCalStartMagicWand\(lutStatus,\{fullWorkflow:true\}\);\s*return true;\s*\}/.test(post3dPolish),
+  'Post-3D cleanup handoff should await Magic Wand start and report that the next stage was started'
 );
 
 const lutPoll = sliceBetween(
