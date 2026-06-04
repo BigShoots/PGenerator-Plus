@@ -1690,6 +1690,10 @@ sub keep_peak_headroom_white_reference {
 
 sub update_white_reference_for_autocal_step {
 	 my ($config,$state,$step,$reading,$white_y)=@_;
+	 return $white_y if(
+	  (ref($step) eq "HASH" && $step->{"autocal_target_reference_disabled"}) ||
+	  (ref($reading) eq "HASH" && $reading->{"autocal_target_reference_disabled"})
+	 );
 	 # If a workflow supplies an explicit paired legal-white target, keep
 	 # paired readbacks local so rejected candidates do not redefine the curve.
 	 return $white_y if(
@@ -15633,35 +15637,38 @@ eval {
 		 my $white_y=($target_luminance > 0) ? $target_luminance : undef;
 		 set_state_white_reference($state,$white_y) if(defined($white_y) && $white_y > 0);
 		 my $step_num=0;
-		 my $read_reference_step=sub {
-		  my ($ref_step,$label,$message,$diagnostic_role)=@_;
-		  return undef if(ref($ref_step) ne "HASH");
-		  $step_num++;
-		  my $read_step=clone_picture($ref_step);
-		  $state->{"current_step"}=$step_num;
-		  $state->{"total_steps"}=$total_ordered_steps;
-		  $state->{"current_name"}=$label;
+	 my $read_reference_step=sub {
+	  my ($ref_step,$label,$message,$diagnostic_role)=@_;
+	  return undef if(ref($ref_step) ne "HASH");
+	  $step_num++;
+	  my $read_step=clone_picture($ref_step);
+	  my $disable_target_reference=(defined($diagnostic_role) && $diagnostic_role eq "white_reference_refresh") ? 1 : 0;
+	  $read_step->{"autocal_target_reference_disabled"}=JSON::PP::true if($disable_target_reference);
+	  $state->{"current_step"}=$step_num;
+	  $state->{"total_steps"}=$total_ordered_steps;
+	  $state->{"current_name"}=$label;
 		  $state->{"phase"}="reading";
 		  $state->{"message"}=$message;
 		  set_state_active_step($state,$read_step,undef);
 		  write_state($state);
 		  my ($ref_reading,$ref_error)=read_step($config,$read_step,$state);
-		  die $ref_error if($ref_error && $ref_error ne "cancelled");
-		  return undef if($ref_error && $ref_error eq "cancelled");
-			  return undef if(ref($ref_reading) ne "HASH");
-			  $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$ref_reading,$white_y);
-			  $white_y ||= 100;
-			  refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
-				  my $target_lum_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$ref_reading,$target_gamma,$signal_mode,$config,$state);
-		  annotate_reading_target($ref_reading,$white_y,$target_lum_y,$target_x,$target_y);
+	  die $ref_error if($ref_error && $ref_error ne "cancelled");
+	  return undef if($ref_error && $ref_error eq "cancelled");
+		  return undef if(ref($ref_reading) ne "HASH");
+		  $ref_reading->{"autocal_target_reference_disabled"}=JSON::PP::true if($disable_target_reference);
 		  mark_autocal_diagnostic_reading($ref_reading,$diagnostic_role,"white_reference_refresh") if(defined($diagnostic_role) && $diagnostic_role ne "");
-		  $state->{"readings"}=merge_reading($state->{"readings"},$ref_reading);
-		  $state->{"current_luminance"}=luminance($ref_reading);
-		  $state->{"current_delta_e"}=undef;
-		  set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step));
-		  set_state_target_step_luminance($state,$target_lum_y);
-			  write_state($state);
-			  return $ref_reading;
+		  $white_y=update_white_reference_for_autocal_step($config,$state,$read_step,$ref_reading,$white_y);
+		  $white_y ||= 100;
+		  refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
+			  my $target_lum_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$ref_reading,$target_gamma,$signal_mode,$config,$state);
+	  annotate_reading_target($ref_reading,$white_y,$target_lum_y,$target_x,$target_y);
+	  $state->{"readings"}=merge_reading($state->{"readings"},$ref_reading);
+	  $state->{"current_luminance"}=luminance($ref_reading);
+	  $state->{"current_delta_e"}=undef;
+	  set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step) && !$disable_target_reference);
+	  set_state_target_step_luminance($state,$target_lum_y);
+		  write_state($state);
+		  return $ref_reading;
 					 };
 			 my $read_sdr_top_legal_white_validation=sub {
 			  my ($ref_step,$label,$message,$iteration)=@_;
@@ -16424,21 +16431,23 @@ eval {
 					   return $reason;
 				  };
 			  my $read_legal_white_pair_counterpart=sub {
-			   my ($reason)=@_;
-			   return 1 if(!$paired_white_step);
-			   my $other_step=autocal_step_is_white($read_step) ? clone_picture($slot_read_step) : clone_picture($paired_white_step);
-			   return 0 if(ref($other_step) ne "HASH");
-			   my $other_label=autocal_step_is_white($other_step) ? "100% legal white" : $label;
-			   $state->{"phase"}="reading";
+				   my ($reason)=@_;
+				   return 1 if(!$paired_white_step);
+				   my $other_step=autocal_step_is_white($read_step) ? clone_picture($slot_read_step) : clone_picture($paired_white_step);
+				   return 0 if(ref($other_step) ne "HASH");
+				   $other_step->{"autocal_target_reference_disabled"}=JSON::PP::true;
+				   my $other_label=autocal_step_is_white($other_step) ? "100% legal white" : $label;
+				   $state->{"phase"}="reading";
 			   $state->{"current_name"}="Auto Cal $label";
 			   $state->{"message"}=($reason||"Balancing paired 99% and 100% reads").": reading $other_label";
 			   set_state_active_step($state,$other_step,$target);
 			   write_state($state);
 			   my ($other_reading,$other_error,$other_guarded_y)=read_step_guarded($config,$other_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$other_label);
-			   die $other_error if($other_error && $other_error ne "cancelled");
-			   return 0 if($other_error && $other_error eq "cancelled");
-				   return 0 if(ref($other_reading) ne "HASH");
-				   $white_y=update_white_reference_for_autocal_step($config,$state,$other_step,$other_reading,$white_y);
+				   die $other_error if($other_error && $other_error ne "cancelled");
+				   return 0 if($other_error && $other_error eq "cancelled");
+					   return 0 if(ref($other_reading) ne "HASH");
+					   $other_reading->{"autocal_target_reference_disabled"}=JSON::PP::true;
+					   $white_y=update_white_reference_for_autocal_step($config,$state,$other_step,$other_reading,$white_y);
 				   $white_y ||= 100;
 				   refresh_headroom_targets_after_white_reference($state,$other_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
 				   my $pair_eval_white_y=$white_y;
