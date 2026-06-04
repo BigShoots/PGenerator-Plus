@@ -11672,6 +11672,7 @@ function meterExplicitLgTargetWhiteReferenceNits(readings){
   if(white&&!white.synthetic_target&&whiteY>0) return null;
  }
  for(const rd of list){
+  if(meterReadingDisablesAutoCalTargetReference(rd)) continue;
   const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
   if(Number.isFinite(y)&&y>0) return y;
  }
@@ -11745,6 +11746,7 @@ function meterFindLgAutoCalLegalWhiteReference(readings){
  const list=Array.isArray(readings)?readings:[];
  return list.find(rd=>{
   if(!rd||!meterReadingIsGreyscale(rd)||!meterReadingHasLuminance(rd)) return false;
+  if(meterReadingDisablesAutoCalTargetReference(rd)) return false;
   if(!(rd.autocal_legal_white_anchor||rd.autocal_white_reference||rd.autocal_reference_only)) return false;
   const plot=meterReadingPlotIre(rd);
   const ire=Number((plot!=null)?plot:rd.ire);
@@ -12793,10 +12795,15 @@ function meterReadingIsAutoCalReferenceOnly(item){
  return !!(item&&(item.autocal_white_reference||item.autocal_reference_only));
 }
 
+function meterReadingDisablesAutoCalTargetReference(item){
+ return !!(item&&item.autocal_target_reference_disabled);
+}
+
 function meterLgAutoCalChartReferenceWhite(item){
-	 if(!item||meterActiveSeriesType!=='greyscale') return false;
-	 const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
-	 if(mode==='hdr10') return false;
+ if(!item||meterActiveSeriesType!=='greyscale') return false;
+ if(meterReadingDisablesAutoCalTargetReference(item)) return false;
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ if(mode==='hdr10') return false;
 	 const plotIre=meterReadingPlotIre(item);
 	 const ire=Number(plotIre!=null?plotIre:item.ire);
 	 if(item.autocal_white_reference||item.autocal_reference_only||item.autocal_legal_white_anchor){
