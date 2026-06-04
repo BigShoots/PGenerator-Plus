@@ -18339,10 +18339,11 @@ function meterRenderGreyTvControls(reading){
 	 const halfRange=meterGreyTvHalfRange(spec);
 	 const busy=meterGreyTvBusyActive();
 	 const disabled=busy||state.status!=='ok';
- const ddcReadOnly=!!(
- (target&&target.force_ddc) ||
-  (target&&target.read_only) ||
-  meterAutoCalRunning ||
+	 const ddcReadOnly=!!(
+	 (target&&target.unsupported) ||
+	 (target&&target.force_ddc) ||
+	  (target&&target.read_only) ||
+	  meterAutoCalRunning ||
   state.source==='autocal' ||
   (meterCurrentPatchStep&&(meterCurrentPatchStep.ddc_slot_locked||meterCurrentPatchStep.autocal_slot_locked||String(meterCurrentPatchStep.series_mode||'')==='lg-autocal-26'))
  );
@@ -18365,13 +18366,17 @@ function meterRenderGreyTvControls(reading){
 	 }
 	 syncMeterLgRgbBusyIndicator();
 	 const pictureMode=(state.picture&&state.picture.pictureMode)?state.picture.pictureMode:'';
- if(meta){
-  if(state.status==='loading') meta.textContent='LG '+target.label+' applying';
-  else if(state.status==='error'&&state.needsRepair) meta.textContent='LG pairing required';
-  else if(state.status==='error'&&state.message) meta.textContent=state.message;
-  else meta.textContent=(pictureMode?('LG '+pictureMode+' - '):'LG ')+target.label;
- }
-}
+	 if(meta){
+	  if(state.status==='loading') meta.textContent='LG '+target.label+' applying';
+	  else if(state.status==='error'&&state.needsRepair) meta.textContent='LG pairing required';
+	  else if(state.status==='error'&&state.message) meta.textContent=state.message;
+	  else if(target.unsupported) {
+	   const unsupportedLabel=String(target.key||'').replace(/^unsupported:/,'');
+	   meta.textContent=unsupportedLabel?('LG '+unsupportedLabel+'% read-only'):'LG read-only';
+	  }
+	  else meta.textContent=(pictureMode?('LG '+pictureMode+' - '):'LG ')+target.label;
+	 }
+	}
 
 async function meterLgGreySyncForCurrentStep(forceRefresh){
  const target=meterGreyTvTarget(meterCurrentPatchStep);
