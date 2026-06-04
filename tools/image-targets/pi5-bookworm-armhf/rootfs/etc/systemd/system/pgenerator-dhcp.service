@@ -1,0 +1,14 @@
+[Unit]
+Description=PGenerator internal DHCP service
+After=rcPGenerator.service network-pre.target
+Wants=rcPGenerator.service
+ConditionPathExists=/etc/init.d/dhcp
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/etc/init.d/dhcp start
+ExecStop=/etc/init.d/dhcp stop
+
+[Install]
+WantedBy=multi-user.target

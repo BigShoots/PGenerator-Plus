@@ -1,0 +1,16 @@
+[Unit]
+Description=PGenerator boot hardware and network setup
+DefaultDependencies=no
+After=local-fs.target systemd-modules-load.service
+Before=network-pre.target NetworkManager.service multi-user.target
+Wants=network-pre.target
+ConditionPathExists=/etc/init.d/rcPGenerator
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/etc/init.d/rcPGenerator start
+ExecStop=/etc/init.d/rcPGenerator stop
+
+[Install]
+WantedBy=multi-user.target

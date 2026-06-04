@@ -1,0 +1,14 @@
+[Unit]
+Description=PGenerator web and pattern services
+After=network-online.target rcPGenerator.service
+Wants=network-online.target rcPGenerator.service
+ConditionPathExists=/etc/init.d/PGenerator
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/etc/init.d/PGenerator start
+ExecStop=/etc/init.d/PGenerator stop
+
+[Install]
+WantedBy=multi-user.target

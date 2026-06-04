@@ -20,6 +20,11 @@ PI5_BOOT_LABEL="BOOT_PG"
 PI5_ROOT_LABEL="/_PG"
 PI5_REQUIRED_BOOT_KERNELS="kernel_2712.img kernel8.img"
 PI5_ROOT_PASSWORD_HASH='$6$pgenerator$tEOE1qfYZlUf/.8wT.zgYKKMlRZCb/qEPvczRS/GqoNMXXqSO9a8Vhi1G6eN7prcHdONB96F2RtRNm6ZvlWTB/'
+PI5_ADMIN_USER="pi"
+PI5_ADMIN_PASSWORD_HASH="$PI5_ROOT_PASSWORD_HASH"
+PI5_ADMIN_GROUPS="adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,render,netdev,gpio,i2c,spi"
+PI5_KEYBOARD_LAYOUT="us"
+PI5_LOCALE="en_US.UTF-8"
 TARGET_OVERLAY_REL=""
 
 KEEP_WORKDIR=0
@@ -512,6 +517,109 @@ next_free_id() {
  die "Could not find an unused system id in $file"
 }
 
+next_free_regular_id() {
+ local file="$1"
+ local field="$2"
+ local id
+
+ for id in $(seq 1000 60000); do
+  if ! awk -F: -v field="$field" -v id="$id" '$field == id { found=1 } END { exit found ? 0 : 1 }' "$file"; then
+   echo "$id"
+   return
+  fi
+ done
+ die "Could not find an unused regular id in $file"
+}
+
+ensure_user_group_membership() {
+ local file="$1"
+ local group="$2"
+ local user="$3"
+
+ [[ -f "$file" ]] || return 0
+ perl -0pi -e '
+  my ($group, $user) = @ARGV;
+  s{^(\Q$group\E:[^:\n]*:[^:\n]*:)([^\n]*)$}{
+   my %seen = map { $_ => 1 } grep { $_ ne "" } split /,/, $2;
+   $seen{$user} = 1;
+   $1 . join(",", sort keys %seen);
+  }gme;
+ ' "$group" "$user" "$file"
+}
+
+ensure_pi5_admin_identity() {
+ local passwd_file="$ROOT_MOUNT/etc/passwd"
+ local group_file="$ROOT_MOUNT/etc/group"
+ local shadow_file="$ROOT_MOUNT/etc/shadow"
+ local gshadow_file="$ROOT_MOUNT/etc/gshadow"
+ local user="${PI5_ADMIN_USER:-pi}"
+ local hash="${PI5_ADMIN_PASSWORD_HASH:-$PI5_ROOT_PASSWORD_HASH}"
+ local groups="${PI5_ADMIN_GROUPS:-sudo,adm,dialout,audio,video,plugdev,users,input,render,netdev,gpio,i2c,spi}"
+ local uid gid group
+
+ [[ -f "$passwd_file" ]] || die "Pi 5 rootfs is missing /etc/passwd"
+ [[ -f "$group_file" ]] || die "Pi 5 rootfs is missing /etc/group"
+ [[ -f "$shadow_file" ]] || die "Pi 5 rootfs is missing /etc/shadow"
+ [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Invalid Pi 5 admin username: $user"
+
+ if grep -q "^$user:" "$group_file"; then
+  gid="$(awk -F: -v user="$user" '$1==user {print $3; exit}' "$group_file")"
+ else
+  gid="$(next_free_regular_id "$group_file" 3)"
+  printf '%s:x:%s:\n' "$user" "$gid" >> "$group_file"
+  if [[ -f "$gshadow_file" ]]; then
+   printf '%s:!::\n' "$user" >> "$gshadow_file"
+  fi
+ fi
+
+ if grep -q "^$user:" "$passwd_file"; then
+  uid="$(awk -F: -v user="$user" '$1==user {print $3; exit}' "$passwd_file")"
+  perl -0pi -e '
+   my $user = shift @ARGV;
+   s{^(\Q$user\E:[^:\n]*:[^:\n]*:[^:\n]*:[^:\n]*:)[^:\n]*:[^:\n]*$}{$1 . "/home/$user:/bin/bash"}gme;
+  ' "$user" "$passwd_file"
+ else
+  uid="$(next_free_regular_id "$passwd_file" 3)"
+  printf '%s:x:%s:%s:PGenerator administrator:/home/%s:/bin/bash\n' "$user" "$uid" "$gid" "$user" >> "$passwd_file"
+ fi
+
+ if grep -q "^$user:" "$shadow_file"; then
+  perl - "$user" "$hash" < "$shadow_file" > "$shadow_file.tmp" <<'PERL'
+use strict;
+use warnings;
+my ($user, $hash) = @ARGV;
+while (my $line = <STDIN>) {
+ chomp $line;
+ my @fields = split /:/, $line, -1;
+ if (($fields[0] // "") eq $user) {
+  $fields[1] = $hash;
+  push @fields, "" while @fields < 9;
+ }
+ print join(":", @fields), "\n";
+}
+PERL
+  install -m 0640 -o 0 -g 42 "$shadow_file.tmp" "$shadow_file" 2>/dev/null || install -m 0640 "$shadow_file.tmp" "$shadow_file"
+  rm -f "$shadow_file.tmp"
+ else
+  printf '%s:%s:20221:0:99999:7:::\n' "$user" "$hash" >> "$shadow_file"
+ fi
+
+ mkdir -p "$ROOT_MOUNT/home/$user"
+ chown "$uid:$gid" "$ROOT_MOUNT/home/$user" 2>/dev/null || true
+ chmod 0755 "$ROOT_MOUNT/home/$user"
+
+ IFS=',' read -r -a group_array <<<"$groups"
+ for group in "${group_array[@]}"; do
+  [[ -n "$group" ]] || continue
+  if grep -q "^$group:" "$group_file"; then
+   ensure_user_group_membership "$group_file" "$group" "$user"
+  fi
+  if grep -q "^$group:" "$gshadow_file" 2>/dev/null; then
+   ensure_user_group_membership "$gshadow_file" "$group" "$user"
+  fi
+ done
+}
+
 ensure_pi5_pgenerator_identity() {
  local passwd_file="$ROOT_MOUNT/etc/passwd"
  local group_file="$ROOT_MOUNT/etc/group"
@@ -552,6 +660,7 @@ configure_pi5_bookworm_root() {
  [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
 
  log "Preparing Raspberry Pi 5 Bookworm armhf rootfs compatibility"
+ ensure_pi5_admin_identity
  ensure_pi5_pgenerator_identity
 
  mkdir -p "$ROOT_MOUNT/etc/BiasiLinux" "$ROOT_MOUNT/var/lib/BiasiLinux" "$ROOT_MOUNT/boot/loader"
@@ -573,6 +682,45 @@ exit 0'
 # config.txt through /boot/loader/boot_dir, which is a symlink to that mount.
 sync
 exit 0'
+}
+
+configure_pi5_headless_first_boot() {
+ local keyboard_file="$ROOT_MOUNT/etc/default/keyboard"
+ local locale_file="$ROOT_MOUNT/etc/default/locale"
+ local userconfig_wants="$ROOT_MOUNT/etc/systemd/system/multi-user.target.wants/userconfig.service"
+ local userconfig_mask="$ROOT_MOUNT/etc/systemd/system/userconfig.service"
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ log "Disabling Raspberry Pi OS first-login setup prompts"
+
+ mkdir -p "$ROOT_MOUNT/etc/default" "$ROOT_MOUNT/etc/systemd/system/multi-user.target.wants"
+ touch "$keyboard_file"
+ ensure_config_line "$keyboard_file" "XKBLAYOUT" "\"${PI5_KEYBOARD_LAYOUT:-us}\""
+ touch "$locale_file"
+ ensure_config_line "$locale_file" "LANG" "${PI5_LOCALE:-en_US.UTF-8}"
+
+ rm -f "$userconfig_wants"
+ ln -sfn /dev/null "$userconfig_mask"
+ rm -f "$BOOT_MOUNT/userconf" "$BOOT_MOUNT/userconf.txt" "$BOOT_MOUNT/firstrun.sh"
+}
+
+enable_pi5_systemd_unit() {
+ local unit="$1"
+ local wants_dir="$ROOT_MOUNT/etc/systemd/system/multi-user.target.wants"
+
+ [[ -f "$ROOT_MOUNT/etc/systemd/system/$unit" ]] || die "Missing Pi 5 systemd unit: $unit"
+ mkdir -p "$wants_dir"
+ ln -sfn "/etc/systemd/system/$unit" "$wants_dir/$unit"
+}
+
+configure_pi5_pgenerator_services() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ log "Enabling Raspberry Pi 5 PGenerator services"
+ enable_pi5_systemd_unit "rcPGenerator.service"
+ enable_pi5_systemd_unit "pgenerator-dhcp.service"
+ enable_pi5_systemd_unit "PGenerator.service"
 }
 
 configure_pi5_bookworm_boot() {
@@ -1063,7 +1211,9 @@ main() {
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_bookworm_boot
+ configure_pi5_headless_first_boot
  configure_pi5_headless_ssh
+ configure_pi5_pgenerator_services
  if [[ "$TARGET" != "pi5-bookworm-armhf" ]]; then
   ensure_boot_ramdisk_size
   patch_boot_initramfs_rootwait
