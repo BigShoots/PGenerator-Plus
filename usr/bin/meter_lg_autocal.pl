@@ -13410,6 +13410,25 @@ sub post_cal_series_neighbor_protected_luma_cap {
  return $cap;
 }
 
+sub post_cal_series_low_shadow_neighbor_risk {
+ my ($read_step,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state)=@_;
+ return undef if(!autocal_step_is_low_shadow($read_step));
+ my $ire=(ref($read_step) eq "HASH" && defined($read_step->{"ire"})) ? ($read_step->{"ire"}+0) : 50;
+ return undef if(!($ire > 4.1001 && $ire <= 5.1001));
+ foreach my $neighbor_ire (4,3,2.3) {
+  my $neighbor_lum=post_cal_series_luminance_error_for_ire($readings,$steps,$neighbor_ire,$white_y,$target_gamma,$signal_mode,$config,$state);
+  next if(!defined($neighbor_lum));
+  if(abs($neighbor_lum+0) <= 2.5) {
+   return {
+    neighbor_ire=>$neighbor_ire+0,
+    neighbor_luminance_error_pct=>$neighbor_lum+0,
+    reason=>"stable_lower_shadow_neighbor"
+   };
+  }
+ }
+ return undef;
+}
+
 sub post_cal_series_direct_luminance_fallback_enabled {
 	 my ($step,$lum_pct)=@_;
 	 return 0 if(!defined($lum_pct));
@@ -14117,10 +14136,26 @@ sub post_cal_series_adjustment {
 		  my ($learned_ch)=furthest_rgb_error_channel(autocal_adjustment_error($adjust_reading,$adjust_read_step));
 		  my $learned_setting=$learned_ch ? channel_setting($learned_ch) : undef;
 		  my $learned_rgb_cap=$learned_setting ? final_all_level_verify_adjustment_cap($control_step,$learned_setting) : undef;
-		  my $rgb_adjustments=post_cal_series_allow_rgb_adjustment($control_step,$adjust_lum_pct,$luma_adjustments)
+		  my $low_shadow_neighbor_risk=(ref($luma_adjustments) eq "ARRAY" && @{$luma_adjustments})
+		   ? post_cal_series_low_shadow_neighbor_risk($control_step,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state)
+		   : undef;
+		  my $suppress_rgb_for_low_shadow_neighbor=ref($low_shadow_neighbor_risk) eq "HASH" ? 1 : 0;
+		  if($suppress_rgb_for_low_shadow_neighbor) {
+		   trace_109($read_step,"post_cal_series_low_shadow_rgb_suppressed",{
+		    label=>$target->{"label"},
+		    reason=>$adjust_outlier,
+		    delta_e=>defined($de)?$de+0:undef,
+		    luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+		    adjust_luminance_error_pct=>defined($adjust_lum_pct)?$adjust_lum_pct+0:undef,
+		    neighbor_ire=>$low_shadow_neighbor_risk->{"neighbor_ire"},
+		    neighbor_luminance_error_pct=>$low_shadow_neighbor_risk->{"neighbor_luminance_error_pct"},
+		    suppressed_reason=>$low_shadow_neighbor_risk->{"reason"},
+		   });
+		  }
+		  my $rgb_adjustments=(!$suppress_rgb_for_low_shadow_neighbor && post_cal_series_allow_rgb_adjustment($control_step,$adjust_lum_pct,$luma_adjustments))
 		   ? post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$target_delta,\%tried_values,$learned_rgb_cap,"post_cal_series_rgb")
 		   : undef;
-		  $rgb_adjustments=post_cal_series_generic_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$adjust_lum_pct,$target_delta,\%tried_values) if(!$rgb_adjustments);
+		  $rgb_adjustments=post_cal_series_generic_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$adjust_lum_pct,$target_delta,\%tried_values) if(!$suppress_rgb_for_low_shadow_neighbor && !$rgb_adjustments);
 	  $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
 	  my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
   next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
