@@ -5712,6 +5712,18 @@ sub seed_target_from_prior_slot {
 	 my $luma_arr=$arrays->{"adjustingLuminance"};
 	 my $source_luma=defined($luma_arr->[$source_idx]) ? ($luma_arr->[$source_idx]+0) : 0;
 	 my $current_luma=defined($luma_arr->[$idx]) ? ($luma_arr->[$idx]+0) : 0;
+	 if(lg_autocal_26_full_ddc_spine_enabled($config) && $target_slot_ire <= 5.0001 && abs($current_luma) > 0.0001) {
+	  trace_109($target,"seed_from_prior_slot_luma_only_skipped",{
+	   mode=>"preserve-full-ddc-spine-low-shadow-luma",
+	   source_index=>$source_idx+0,
+	   source_ire=>defined($slots[$source_idx]) ? ($slots[$source_idx]+0) : undef,
+	   target_index=>$idx+0,
+	   target_ire=>$target_slot_ire+0,
+	   current_luma=>$current_luma+0,
+	   source_luma=>$source_luma+0
+	  });
+	  return 0;
+	 }
 	 return 0 if(abs($source_luma) <= 0.0001);
 	 return 0 if(abs($source_luma) <= abs($current_luma)+0.0001);
 	 return 0 if(abs($current_luma) > 0.0001 && (($current_luma > 0) != ($source_luma > 0)));
