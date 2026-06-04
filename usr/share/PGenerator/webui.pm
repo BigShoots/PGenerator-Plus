@@ -18316,27 +18316,22 @@ function meterRenderGreyTvControls(reading){
   return;
  }
  const target=meterGreyTvTarget(meterCurrentPatchStep);
- if(!target){
-  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">No greyscale patch selected.</div>';
-  if(meta) meta.textContent='LG TV';
-  return;
- }
- if(target.unsupported){
-  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">'+target.reason+'</div>';
-  const unsupportedLabel=String(target.key||'').replace(/^unsupported:/,'');
-  if(meta) meta.textContent=unsupportedLabel?('LG '+unsupportedLabel+'%'):'LG TV';
-  return;
- }
- const state=meterLgGreyState||{status:'idle',picture:null,message:'',needsRepair:false};
- if((state.status==='loading'||state.status==='idle')&&!state.picture&&!target.read_only){
-  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">Loading...</div>';
-  if(meta) meta.textContent='LG '+target.label;
-  return;
- }
- if(state.status==='error'&&!state.picture&&!target.read_only){
-  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:#f7b0b0;padding:8px">'+(state.message||'Unable to read LG white-balance values.')+'</div>';
-  if(meta) meta.textContent=state.needsRepair?'LG pairing required':'LG read failed';
-  return;
+	 if(!target){
+	  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">No greyscale patch selected.</div>';
+	  if(meta) meta.textContent='LG TV';
+	  return;
+	 }
+	 const targetAdjustable=meterGreyTvTargetAdjustable(target);
+	 const state=meterLgGreyState||{status:'idle',picture:null,message:'',needsRepair:false};
+	 if((state.status==='loading'||state.status==='idle')&&!state.picture&&targetAdjustable){
+	  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">Loading...</div>';
+	  if(meta) meta.textContent='LG '+target.label;
+	  return;
+	 }
+	 if(state.status==='error'&&!state.picture&&targetAdjustable){
+	  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:#f7b0b0;padding:8px">'+(state.message||'Unable to read LG white-balance values.')+'</div>';
+	  if(meta) meta.textContent=state.needsRepair?'LG pairing required':'LG read failed';
+	  return;
  }
  const selected=meterGreyTvSelectedValues(state);
 	 const liveRgb=meterLiveRgbData(reading);
