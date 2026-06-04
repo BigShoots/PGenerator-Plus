@@ -1592,6 +1592,16 @@ sub derived_white_reference_from_peak_headroom {
  return $Y/$linear;
 }
 
+sub sdr_initial_109_target_y_rebase_enabled {
+ my ($config,$signal_mode)=@_;
+ return 0 if(ref($config) ne "HASH");
+ return 0 if(lc($config->{"signal_mode"}||$signal_mode||"sdr") ne "sdr");
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config));
+ return 0 if(autocal_config_is_post_series_adjust($config) || autocal_config_is_post_series_revert($config));
+ return 1;
+}
+
 sub apply_peak_headroom_reference {
 	 my ($state,$step,$reading,$white_y_ref,$target_gamma,$signal_mode,$target_x,$target_y)=@_;
 	 return undef if(ref($white_y_ref) ne "SCALAR");
@@ -1603,6 +1613,13 @@ sub apply_peak_headroom_reference {
 	  $state->{"peak_headroom_luminance"}=$reading_y if(defined($reading_y));
 	  $state->{"peak_headroom_reference"}=$derived if(defined($derived) && $derived > 0);
 	  $state->{"peak_headroom_measured_reference"}=$derived if(defined($derived) && $derived > 0);
+	 }
+	 if(defined($derived) && $derived > 0 && sdr_initial_109_target_y_rebase_enabled($LG_AUTOCAL_CONFIG,$signal_mode)) {
+	  $$white_y_ref=$derived;
+	  if(ref($state) eq "HASH") {
+	   $state->{"sdr_autocal_target_y_basis"}="calibrated_109";
+	   $state->{"sdr_autocal_target_y_reference"}=$derived+0;
+	  }
 	 }
 	 my $peak_target_y=(defined($effective_white) && $effective_white > 0) ? target_luminance_for_step($effective_white,$step,$target_gamma,$signal_mode) : undef;
 	 if(defined($peak_target_y) && $peak_target_y > 0) {

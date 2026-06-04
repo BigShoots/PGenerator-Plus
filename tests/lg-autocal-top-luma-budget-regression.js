@@ -18,10 +18,26 @@ const applyPeakReference = sliceBetween(
 assert(
   applyPeakReference.includes('my $effective_white=(defined($derived) && $derived > 0) ? $derived : $$white_y_ref;') &&
     applyPeakReference.includes('$state->{"peak_headroom_reference"}=$derived if(defined($derived) && $derived > 0);') &&
-    !applyPeakReference.includes('$$white_y_ref=$derived') &&
-    !applyPeakReference.includes('set_state_white_reference($state,$effective_white)') &&
+    applyPeakReference.includes('sdr_initial_109_target_y_rebase_enabled($LG_AUTOCAL_CONFIG,$signal_mode)') &&
+    applyPeakReference.includes('$$white_y_ref=$derived;') &&
+    applyPeakReference.includes('$state->{"sdr_autocal_target_y_basis"}="calibrated_109";') &&
+    applyPeakReference.includes('$state->{"sdr_autocal_target_y_reference"}=$derived+0;') &&
+    !applyPeakReference.includes('set_state_white_reference') &&
     applyPeakReference.includes('return $$white_y_ref;'),
-  '109 peak-headroom reads should store the derived headroom reference without rebasing the global legal-white target'
+  'normal SDR initial 109 peak-headroom reads should rebase active target-Y math to calibrated 109 without updating stored legal-white state'
+);
+
+const targetYRebaseGate = sliceBetween(
+  'sub sdr_initial_109_target_y_rebase_enabled {',
+  'sub apply_peak_headroom_reference {'
+);
+assert(
+  targetYRebaseGate.includes('lc($config->{"signal_mode"}||$signal_mode||"sdr") ne "sdr"') &&
+    targetYRebaseGate.includes('!lg_autocal_26_full_ddc_spine_enabled($config) || lg_autocal_26_hdr20_seed_enabled($config)') &&
+    targetYRebaseGate.includes('autocal_config_is_touchup($config) || autocal_config_is_post_3d_polish($config)') &&
+    targetYRebaseGate.includes('autocal_config_is_post_series_adjust($config) || autocal_config_is_post_series_revert($config)') &&
+    targetYRebaseGate.includes('return 1;'),
+  '109 target-Y rebase should be gated to SDR LG26 initial full-spine AutoCal only'
 );
 
 const updateWhiteReference = sliceBetween(
@@ -55,13 +71,13 @@ function gammaLinear(stimulus, gamma = 2.4) {
 const legalWhiteY = 100;
 const measured109Y = 128;
 const derived109WhiteY = measured109Y / gammaLinear(109.474885844749);
-const whiteYAfter109Read = legalWhiteY;
+const whiteYAfter109Read = derived109WhiteY;
 const peakReferenceAfter109Read = derived109WhiteY;
 const targetYFromLegalWhite = stimulus => legalWhiteY * gammaLinear(stimulus);
 const targetYFromPeakWhite = stimulus => derived109WhiteY * gammaLinear(stimulus);
 
 assert(Math.abs(derived109WhiteY - legalWhiteY) > 1, 'test fixture should distinguish legal and peak-derived white bases');
-assert.strictEqual(whiteYAfter109Read, legalWhiteY, 'applying a 109 read should keep the global white reference legal-white based');
+assert.strictEqual(whiteYAfter109Read, derived109WhiteY, 'normal SDR initial 109 read should rebase active AutoCal target-Y to calibrated 109');
 assert.strictEqual(peakReferenceAfter109Read, derived109WhiteY, 'applying a 109 read should still store the headroom-specific reference');
 for (const [label, stimulus] of [
   ['low shadow 2.3', 2.28310502283105],
@@ -75,9 +91,9 @@ for (const [label, stimulus] of [
     `${label} fixture should expose the old 109-derived target-Y mismatch`
   );
   assert.strictEqual(
-    targetYFromLegalWhite(stimulus),
-    legalWhiteY * gammaLinear(stimulus),
-    `${label} target-Y should stay based on legal/configured 100 white after a 109 read`
+    targetYFromPeakWhite(stimulus),
+    whiteYAfter109Read * gammaLinear(stimulus),
+    `${label} target-Y should follow calibrated 109 white after a normal SDR initial 109 read`
   );
 }
 assert.notStrictEqual(
