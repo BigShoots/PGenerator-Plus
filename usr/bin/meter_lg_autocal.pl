@@ -11199,6 +11199,16 @@ sub merge_reading {
  return $readings;
 }
 
+sub mark_autocal_diagnostic_reading {
+ my ($reading,$role,$phase)=@_;
+ return $reading if(ref($reading) ne "HASH");
+ $reading->{"autocal_diagnostic"}=JSON::PP::true;
+ $reading->{"autocal_chart_hidden"}=JSON::PP::true;
+ $reading->{"autocal_read_role"}=$role if(defined($role) && $role ne "");
+ $reading->{"autocal_read_phase"}=$phase if(defined($phase) && $phase ne "");
+ return $reading;
+}
+
 sub write_state {
  my ($state)=@_;
  $state={} if(ref($state) ne "HASH");
@@ -15404,7 +15414,7 @@ eval {
 		 set_state_white_reference($state,$white_y) if(defined($white_y) && $white_y > 0);
 		 my $step_num=0;
 		 my $read_reference_step=sub {
-		  my ($ref_step,$label,$message)=@_;
+		  my ($ref_step,$label,$message,$diagnostic_role)=@_;
 		  return undef if(ref($ref_step) ne "HASH");
 		  $step_num++;
 		  my $read_step=clone_picture($ref_step);
@@ -15424,6 +15434,7 @@ eval {
 			  refresh_headroom_targets_after_white_reference($state,$read_step,$white_y,$target_x,$target_y,$target_gamma,$signal_mode);
 				  my $target_lum_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$ref_reading,$target_gamma,$signal_mode,$config,$state);
 		  annotate_reading_target($ref_reading,$white_y,$target_lum_y,$target_x,$target_y);
+		  mark_autocal_diagnostic_reading($ref_reading,$diagnostic_role,"white_reference_refresh") if(defined($diagnostic_role) && $diagnostic_role ne "");
 		  $state->{"readings"}=merge_reading($state->{"readings"},$ref_reading);
 		  $state->{"current_luminance"}=luminance($ref_reading);
 		  $state->{"current_delta_e"}=undef;
@@ -15458,6 +15469,7 @@ eval {
 			   ? autocal_delta_e_for_step($config,$legal_reading,$read_step,$legal_reference_y,$target_x,$target_y,$legal_target_y)
 			   : undef;
 			  my $metrics=sdr_top_legal_white_rgb_metrics($legal_reading,$read_step);
+			  mark_autocal_diagnostic_reading($legal_reading,"legal_white_validation","sdr_top_legal_white_validation");
 			  $state->{"readings"}=merge_reading($state->{"readings"},$legal_reading);
 			  $state->{"current_luminance"}=$legal_white_y if(defined($legal_white_y));
 			  $state->{"current_delta_e"}=defined($legal_de) ? $legal_de : undef;
@@ -15635,6 +15647,7 @@ eval {
 				   annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
 				   my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
 				   my $metrics=sdr_top_legal_white_rgb_metrics($reading,$read_step);
+				   mark_autocal_diagnostic_reading($reading,"top_cluster_preshape",$reason||"seeded_top_cluster_read");
 				   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
 				   $state->{"current_delta_e"}=defined($de) ? $de : undef;
 				   $state->{"current_luminance"}=luminance($reading);
@@ -16211,6 +16224,7 @@ eval {
 			   $pair_de=$other_de;
 			   $pair_lum_pct=$other_lum_pct;
 			   $pair_target_step_y=$other_target_step_y;
+			   mark_autocal_diagnostic_reading($other_reading,"legal_white_pair_counterpart",$reason||"paired_counterpart");
 			   $state->{"readings"}=merge_reading($state->{"readings"},$other_reading);
 			   $state->{"paired_delta_e"}=defined($pair_de) ? $pair_de : undef;
 			   $state->{"paired_luminance_error_pct"}=defined($pair_lum_pct) ? $pair_lum_pct : undef;
@@ -18902,7 +18916,7 @@ eval {
 					   abs(($step->{"ire"}+0)-99) < 0.001
 					  ) {
 					   $white_refreshed_after_headroom=1;
-					   $read_reference_step->($white_reference_step,"Auto Cal 100% calibrated reference","Refreshing 100% white after top-end calibration");
+					   $read_reference_step->($white_reference_step,"Auto Cal 100% calibrated reference","Refreshing 100% white after top-end calibration","white_reference_refresh");
 					  }
 					 }
 			 if(!cancelled() && @verification) {
