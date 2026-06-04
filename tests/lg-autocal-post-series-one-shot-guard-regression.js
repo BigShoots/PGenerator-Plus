@@ -28,6 +28,7 @@ assert(
     helperSource.includes('return 1.50 if($abs >= 25);') &&
     helperSource.includes('return 1.25 if($abs >= 15);') &&
     helperSource.includes('return 2.50 if($abs >= 12);') &&
+    helperSource.includes('if($ire > 3.1001 && $ire <= 4.1001)') &&
     helperSource.includes('return 2.00 if($abs >= 15);') &&
     helperSource.includes('return 1.00 if($abs >= 8);') &&
     helperSource.includes('return 0.50 if($ire <= 10.1001);') &&
@@ -120,13 +121,14 @@ assert(
 );
 
 assert(
-  adjustmentSource.includes('my $luma_adjustments=ref($low_shadow_5_luma_suppressed) eq "HASH" ? undef : post_cal_series_learned_luminance_adjustment(') &&
+  adjustmentSource.includes('my $luma_adjustments=post_cal_series_learned_luminance_adjustment(') &&
     adjustmentSource.includes('post_cal_series_low_shadow_5_luma_suppression($control_step,$adjust_lum_pct,$adjust_de,$target_delta)') &&
-    adjustmentSource.includes('post_cal_series_low_shadow_5_luma_suppressed') &&
-    adjustmentSource.includes('ref($low_shadow_5_luma_suppressed) eq "HASH" ? undef : post_cal_series_learned_luminance_adjustment') &&
+    adjustmentSource.includes('post_cal_series_low_shadow_5_skipped') &&
+    adjustmentSource.includes('$evaluated[-1]{"skipped_reason"}=$low_shadow_5_luma_suppressed->{"reason"}') &&
+    adjustmentSource.includes('next;') &&
     adjustmentSource.includes('post_cal_series_neighbor_protected_luma_cap($luma_cap,$control_step,$adjust_lum_pct,$readings,$steps') &&
-    adjustmentSource.includes('ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)') &&
-    adjustmentSource.includes('ref($low_shadow_5_luma_suppressed) ne "HASH" && post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)') &&
+    adjustmentSource.includes('post_cal_series_direct_luminance_fallback_enabled($control_step,$adjust_lum_pct)') &&
+    adjustmentSource.includes('post_cal_series_deltae_luminance_assist_enabled($control_step,$adjust_de,$adjust_lum_pct)') &&
     adjustmentSource.includes('post_cal_series_low_shadow_neighbor_risk($control_step,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state)') &&
     adjustmentSource.includes('my $suppress_rgb_for_low_shadow_neighbor=ref($low_shadow_neighbor_risk) eq "HASH" ? 1 : 0;') &&
     adjustmentSource.includes('post_cal_series_low_shadow_rgb_suppressed') &&
