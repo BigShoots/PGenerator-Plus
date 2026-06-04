@@ -1597,14 +1597,12 @@ sub apply_peak_headroom_reference {
 	 return undef if(ref($white_y_ref) ne "SCALAR");
 	 return $$white_y_ref if(!autocal_step_is_peak_headroom($step));
 	 my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
-		 $$white_y_ref=$derived if(defined($derived) && $derived > 0);
-		 my $effective_white=$$white_y_ref;
+	 my $effective_white=(defined($derived) && $derived > 0) ? $derived : $$white_y_ref;
 	 my $reading_y=luminance($reading);
 	 if(ref($state) eq "HASH") {
 	  $state->{"peak_headroom_luminance"}=$reading_y if(defined($reading_y));
-	  $state->{"peak_headroom_reference"}=$effective_white if(defined($effective_white));
+	  $state->{"peak_headroom_reference"}=$derived if(defined($derived) && $derived > 0);
 	  $state->{"peak_headroom_measured_reference"}=$derived if(defined($derived) && $derived > 0);
-	  set_state_white_reference($state,$effective_white) if(defined($effective_white) && $effective_white > 0);
 	 }
 	 my $peak_target_y=(defined($effective_white) && $effective_white > 0) ? target_luminance_for_step($effective_white,$step,$target_gamma,$signal_mode) : undef;
 	 if(defined($peak_target_y) && $peak_target_y > 0) {
@@ -1614,7 +1612,7 @@ sub apply_peak_headroom_reference {
 	   set_state_target_step_luminance($state,$peak_target_y);
 	  }
 	  annotate_reading_target($reading,$effective_white,$peak_target_y,$target_x,$target_y) if(ref($reading) eq "HASH");
-	  return $effective_white;
+	  return $$white_y_ref;
 	 }
 	 if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0) {
 	  if(ref($state) eq "HASH") {
@@ -1623,11 +1621,11 @@ sub apply_peak_headroom_reference {
 	  }
 	  annotate_reading_target($reading,$effective_white,$LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE,$target_x,$target_y)
 	   if(ref($reading) eq "HASH" && defined($effective_white) && $effective_white > 0);
-	  return $effective_white;
+	  return $$white_y_ref;
 	 }
 	 return $$white_y_ref if(!defined($effective_white) || $effective_white <= 0);
-		 annotate_reading_target($reading,$effective_white,$reading_y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($reading_y) && $reading_y > 0);
-		 return $effective_white;
+	 annotate_reading_target($reading,$effective_white,$reading_y,$target_x,$target_y) if(ref($reading) eq "HASH" && defined($reading_y) && $reading_y > 0);
+	 return $$white_y_ref;
 	}
 
 sub keep_peak_headroom_white_reference {
@@ -1639,7 +1637,6 @@ sub keep_peak_headroom_white_reference {
 
 sub update_white_reference_for_autocal_step {
 	 my ($config,$state,$step,$reading,$white_y)=@_;
-	 return $white_y if(keep_peak_headroom_white_reference($config,$state) && !autocal_step_is_peak_headroom($step));
 	 # If a workflow supplies an explicit paired legal-white target, keep
 	 # paired readbacks local so rejected candidates do not redefine the curve.
 	 return $white_y if(
@@ -1737,36 +1734,17 @@ sub headroom_reference_white_from_target {
 
 sub committed_polish_reference_white_y {
  my ($config,$state,$steps,$target_gamma,$signal_mode,$fallback)=@_;
- my $prefer_headroom=lg_autocal_26_sdr_headroom_enabled($config) ? 1 : 0;
  my $committed_ref=(ref($state) eq "HASH" && defined($state->{"committed_polish_white_y"}) && ($state->{"committed_polish_white_y"}+0) > 0)
   ? ($state->{"committed_polish_white_y"}+0) : undef;
- my $peak_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"}) && ($state->{"peak_headroom_reference"}+0) > 0)
-  ? ($state->{"peak_headroom_reference"}+0) : undef;
- return $peak_ref if($prefer_headroom && defined($peak_ref));
- if($prefer_headroom && ref($state) eq "HASH" && ref($state->{"readings"}) eq "ARRAY") {
-  my $best_ire=-1;
-  my $best_ref=undef;
-  foreach my $reading (@{$state->{"readings"}}) {
-   next if(ref($reading) ne "HASH" || !defined($reading->{"ire"}));
-   my $step=fixed_lg_autocal_step($config,clone_picture($reading));
-   next if(!autocal_step_is_peak_headroom($step));
-   my $derived=derived_white_reference_from_peak_headroom($step,$reading,$target_gamma,$signal_mode);
-   next if(!defined($derived) || $derived <= 0);
-   my $ire=$step->{"ire"}+0;
-   if($ire > $best_ire) {
-    $best_ire=$ire;
-    $best_ref=$derived;
-   }
-  }
-  return $best_ref if(defined($best_ref) && $best_ref > 0);
- }
- my $from_headroom=headroom_reference_white_from_target($config,$steps,$target_gamma,$signal_mode);
- return $from_headroom if($prefer_headroom && defined($from_headroom) && $from_headroom > 0);
  return $committed_ref if(defined($committed_ref));
- return $peak_ref if($prefer_headroom && defined($peak_ref));
- return $from_headroom if($prefer_headroom && defined($from_headroom) && $from_headroom > 0);
  if(ref($state) eq "HASH" && defined($state->{"target_luminance"}) && ($state->{"target_luminance"}+0) > 0) {
   return $state->{"target_luminance"}+0;
+ }
+ if(ref($state) eq "HASH" && defined($state->{"calibrated_white_luminance"}) && ($state->{"calibrated_white_luminance"}+0) > 0) {
+  return $state->{"calibrated_white_luminance"}+0;
+ }
+ if(ref($state) eq "HASH" && defined($state->{"setup_luminance_reference"}) && ($state->{"setup_luminance_reference"}+0) > 0) {
+  return $state->{"setup_luminance_reference"}+0;
  }
  return (defined($fallback) && $fallback > 0) ? $fallback : undef;
 }
@@ -13998,7 +13976,7 @@ sub committed_state_polish {
  my $white_y=committed_polish_reference_white_y($config,$state,$steps,$target_gamma,$signal_mode,undef);
  return ($picture,undef) if(!defined($white_y) || $white_y <= 0);
  set_state_white_reference($state,$white_y);
-	 $state->{"message"}="Committed polish using committed headroom white reference";
+	 $state->{"message"}="Committed polish using committed legal white reference";
  write_state($state);
 
 		 my $candidate_steps=(ref($polish_steps) eq "ARRAY") ? $polish_steps : $steps;
