@@ -20789,6 +20789,13 @@ function meterFullAutoCalMagicWandPendingBeforeCompletion(status){
  return !!(meterFullAutoCalRunning&&meterFullAutoCalMagicWandEnabled());
 }
 
+function meterAutoCalMagicWandCompletionRequiresVerification(status){
+ if(!(status&&status.status==='complete')) return false;
+ if(status.full_autocal_post_series_adjust) return true;
+ if(meterAutoCalMagicWandActive||meterAutoCalMagicWandFullWorkflow) return true;
+ return meterFullAutoCalStatusPhase(status)==='magic-wand';
+}
+
 function meterFullAutoCalStatusRunId(status){
  if(!status) return '';
  return String(status.full_autocal_run_id||status.run_id||'');
@@ -21807,13 +21814,16 @@ function meterFullAutoCalTouchupTargetY(){
 	async function meterFullAutoCalStartPost3dPolish(lutStatus){
 	 if(!meterFullAutoCalRunning) return false;
 	 meterFullAutoCalMergeCleanupConfigFromStatus(lutStatus);
-	 const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
-	 const post3dPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
-	 const post3dPostCommitVerifyEnabled=false;
-	 if(!post3dPostCommitPolishEnabled){
-	  if(magicWandEnabled) return meterAutoCalStartMagicWand(lutStatus,{fullWorkflow:true});
-	  return false;
-	 }
+		 const magicWandEnabled=meterFullAutoCalMagicWandEnabled();
+		 const post3dPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
+		 const post3dPostCommitVerifyEnabled=false;
+		 if(!post3dPostCommitPolishEnabled){
+		  if(magicWandEnabled) {
+		   await meterAutoCalStartMagicWand(lutStatus,{fullWorkflow:true});
+		   return true;
+		  }
+		  return false;
+		 }
  meterFullAutoCalResults.lut3d=lutStatus||null;
  const lutRunId=lutStatus&&(lutStatus.full_autocal_run_id||lutStatus.run_id);
  if(lutRunId) meterFullAutoCalRunId=lutRunId;
@@ -22214,15 +22224,15 @@ async function meterPollAutoCal(options){
 		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 	   return;
 	  }
-	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
-	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
-	   meterActionPending=false;
-	   meterAutoCalRunning=false;
-	   meterAutoCalPendingConfig=null;
-	   if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-		   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
-	   return;
-	  }
+		  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
+		   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
+		   meterActionPending=false;
+		   meterAutoCalRunning=false;
+		   meterAutoCalPendingConfig=null;
+		   if(meterAutoCalMagicWandCompletionRequiresVerification(r)) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
+			   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
+		   return;
+		  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
 	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
 	   meterActionPending=false;
@@ -22272,11 +22282,11 @@ async function meterPollAutoCal(options){
 				     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'post-3d-polish');
 			     return;
 			    }
-			    if(meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
-			     meterAutoCalRunning=false;
-			     meterAutoCalPendingConfig=null;
-			     if(r.full_autocal_post_series_adjust) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
-				     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
+				    if(meterFullAutoCalEnsureStatusPhase(r,'magic-wand')){
+				     meterAutoCalRunning=false;
+				     meterAutoCalPendingConfig=null;
+				     if(meterAutoCalMagicWandCompletionRequiresVerification(r)) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
+					     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
 			     return;
 			    }
 			    if(r.full_autocal_post_series_adjust&&meterAutoCalMagicWandActive&&!meterAutoCalMagicWandFullWorkflow){
