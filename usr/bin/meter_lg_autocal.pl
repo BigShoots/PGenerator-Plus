@@ -14010,7 +14010,7 @@ sub committed_state_polish {
 	  : (autocal_config_is_touchup($config) ? 0 : 1);
 	 my $include_shadow=!(ref($config) eq "HASH" && exists($config->{"post_commit_true_low_shadow"}) && !$config->{"post_commit_true_low_shadow"});
 		 my @polish=$include_body ? (@headroom,@legal_white,@body) : (@headroom,@legal_white);
-		 push @polish,@shadow if($include_shadow);
+		 $include_shadow=0;
 		 @polish=() if(!$polish_enabled);
 			 my $limit=defined($config->{"post_commit_polish_iterations"}) ? int($config->{"post_commit_polish_iterations"}) : 8;
 		 $limit=1 if($limit < 1);
@@ -14047,7 +14047,6 @@ sub committed_state_polish {
 	  $state->{"committed_polish_white_y"}=$updated+0;
 	  $state->{"committed_polish_reference_locked"}=JSON::PP::true;
 	 };
-	 my $low_shadow_polish_settled=0;
 	 foreach my $step (@polish) {
 	  last if(cancelled());
 	  my $target=ddc_target_for_step($step);
@@ -14056,11 +14055,6 @@ sub committed_state_polish {
 		  my $label=$target->{"label"};
 		  $polish_index++;
 		  $state->{"committed_polish"}={ status=>"running", total=>$polish_total+0, current_index=>$polish_index+0, current=>$label, touches=>$polish_touches+0, kept=>$polish_kept+0, restored=>$polish_restored+0 };
-		  if(autocal_step_is_low_shadow($read_step) && !$low_shadow_polish_settled) {
-		   my $settle_ms=config_positive_int($config,"post_commit_low_shadow_settle_ms",12000,0,60000);
-	   park_black_for_settle($config,$state,"Settling panel before committed low-shadow polish",$settle_ms);
-	   $low_shadow_polish_settled=1;
-	  }
 	  $state->{"current_name"}="Committed polish $label";
 	  $state->{"phase"}="reading";
 	  $state->{"message"}="Reading committed $label";
@@ -15998,7 +15992,6 @@ eval {
 						   $calibration_mode_active=1;
 						   sync_state_picture($state,$picture,$picture_mode);
 						  }
-						  $run_sdr_top_cluster_preshape->($read_step);
 						  my $low_shadow_endpoint_seed=apply_sdr_low_shadow_endpoint_seed_2_3($config,$arrays,\@calibrated_ddc_slots,$read_step);
 					  if(ref($low_shadow_endpoint_seed) eq "HASH") {
 					   trace_109($read_step,"sdr_low_shadow_endpoint_seed_2_3",{
