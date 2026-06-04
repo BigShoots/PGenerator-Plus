@@ -13841,6 +13841,26 @@ sub post_cal_series_adjustment_change_for_step {
  return undef;
 }
 
+sub post_cal_series_evaluated_entry_for_ire {
+ my ($evaluated,$ire)=@_;
+ return undef if(ref($evaluated) ne "ARRAY" || !defined($ire));
+ foreach my $entry (@{$evaluated}) {
+  next if(ref($entry) ne "HASH" || !defined($entry->{"ire"}));
+  return $entry if(abs(($entry->{"ire"}+0)-($ire+0)) < 0.001);
+ }
+ return undef;
+}
+
+sub post_cal_series_low_shadow_neighbor_ires {
+ my ($step)=@_;
+ return () if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ return (3) if(abs($ire-4) < 0.001);
+ return (4,7) if(abs($ire-5) < 0.001);
+ return (5) if(abs($ire-7) < 0.001);
+ return ();
+}
+
 sub post_cal_series_revert_worse_adjustments {
  my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta)=@_;
  return ($picture,"Post-cal revert requires LG 26pt steps") if(ref($steps) ne "ARRAY" || !@{$steps});
@@ -13849,6 +13869,7 @@ sub post_cal_series_revert_worse_adjustments {
  return ($picture,"Magic Wand failsafe requires the verification series read") if(!@{$after_readings});
  my $adjustment=(ref($config) eq "HASH" && ref($config->{"post_cal_series_adjustment_status"}) eq "HASH") ? $config->{"post_cal_series_adjustment_status"} : {};
  my $changes=(ref($adjustment->{"changes"}) eq "ARRAY") ? $adjustment->{"changes"} : [];
+ my $evaluated=(ref($adjustment->{"evaluated"}) eq "ARRAY") ? $adjustment->{"evaluated"} : [];
  return ($picture,"Post-cal revert requires adjustment change metadata") if(!@{$changes});
 	 my $white_y=post_cal_series_reference_white_y($config,$state,$after_readings);
 	 return ($picture,"Post-cal revert is missing a target white reference") if(!defined($white_y) || $white_y <= 0);
@@ -13904,9 +13925,57 @@ sub post_cal_series_revert_worse_adjustments {
 	  my $compare_before=defined($pair_before_de) ? $pair_before_de : $before_de;
 	  my $compare_after=defined($pair_after_de) ? $pair_after_de : $after_de;
 	  my $worse=(defined($compare_before) && defined($compare_after) && $compare_after > ($compare_before+$margin)) ? 1 : 0;
-  if($worse && post_cal_series_restore_values_before($arrays,$target,$change->{"values_before"})) {
+	  my $neighbor_worse=0;
+	  my @neighbor_impacts;
+	  if(!$worse && autocal_step_is_low_shadow($read_step)) {
+	   my $neighbor_margin=0.20;
+	   my $base_delta=(defined($target_delta) && ($target_delta+0) > 0) ? ($target_delta+0) : 0.5;
+	   foreach my $neighbor_ire (post_cal_series_low_shadow_neighbor_ires($read_step)) {
+	    next if(ref(post_cal_series_adjustment_change_for_step($changes,{ ire=>$neighbor_ire })) eq "HASH");
+	    my $before_entry=post_cal_series_evaluated_entry_for_ire($evaluated,$neighbor_ire);
+	    next if(ref($before_entry) ne "HASH" || !defined($before_entry->{"delta_e"}));
+	    my $neighbor_step;
+	    foreach my $candidate (@{$steps}) {
+	     next if(ref($candidate) ne "HASH" || !defined($candidate->{"ire"}));
+	     if(abs(($candidate->{"ire"}+0)-($neighbor_ire+0)) < 0.001) { $neighbor_step=$candidate; last; }
+	    }
+	    next if(ref($neighbor_step) ne "HASH");
+	    my $neighbor_read_step=fixed_lg_autocal_step($config,clone_picture($neighbor_step));
+	    my $neighbor_reading=post_cal_series_reading_for_step($after_readings,$neighbor_read_step);
+	    next if(ref($neighbor_reading) ne "HASH" || $neighbor_reading->{"error"});
+	    my $neighbor_target_y=effective_target_luminance_for_autocal_reading($white_y,$neighbor_read_step,$neighbor_reading,$target_gamma,$signal_mode,$config,$state);
+	    annotate_reading_target($neighbor_reading,$white_y,$neighbor_target_y,$target_x,$target_y);
+	    my $neighbor_after_de=autocal_delta_e_for_step($config,$neighbor_reading,$neighbor_read_step,$white_y,$target_x,$target_y,$neighbor_target_y);
+	    my $neighbor_after_lum_pct=luminance_error_percent($neighbor_reading,$neighbor_target_y);
+	    my $neighbor_before_de=$before_entry->{"delta_e"}+0;
+	    my $neighbor_delta=defined($neighbor_after_de) ? (($neighbor_after_de+0)-$neighbor_before_de) : undef;
+	    my $crossed_target=defined($neighbor_after_de) && $neighbor_before_de <= ($base_delta+0.25) && ($neighbor_after_de+0) > ($base_delta+0.75);
+	    my $bad_worse=defined($neighbor_delta) && $neighbor_delta > $neighbor_margin && defined($neighbor_after_de) && ($neighbor_after_de+0) > ($base_delta+0.50);
+	    if($crossed_target || $bad_worse) {
+	     $neighbor_worse=1;
+	     push @neighbor_impacts,{
+	      neighbor_ire=>$neighbor_ire+0,
+	      neighbor_before_delta_e=>$neighbor_before_de+0,
+	      neighbor_after_delta_e=>defined($neighbor_after_de) ? $neighbor_after_de+0 : undef,
+	      neighbor_delta_e=>defined($neighbor_delta) ? $neighbor_delta+0 : undef,
+	      neighbor_after_luminance_error_pct=>defined($neighbor_after_lum_pct) ? $neighbor_after_lum_pct+0 : undef,
+	      reason=>$crossed_target ? "neighbor_crossed_target" : "neighbor_worsened"
+	     };
+	    }
+	   }
+	  }
+  if(($worse || $neighbor_worse) && post_cal_series_restore_values_before($arrays,$target,$change->{"values_before"})) {
    $entry{"reverted"}=JSON::PP::true;
+   $entry{"neighbor_protective_revert"}=JSON::PP::true if($neighbor_worse && !$worse);
+   $entry{"neighbor_impacts"}=\@neighbor_impacts if(@neighbor_impacts);
    $entry{"values_restored"}=trace_target_values($arrays,$target);
+   trace_109($read_step,$neighbor_worse && !$worse ? "post_cal_series_neighbor_protective_revert" : "post_cal_series_revert_worse",{
+    label=>$target->{"label"},
+    before_delta_e=>defined($before_de) ? $before_de+0 : undef,
+    after_delta_e=>defined($after_de) ? $after_de+0 : undef,
+    neighbor_impacts=>@neighbor_impacts ? \@neighbor_impacts : undef,
+    values_restored=>$entry{"values_restored"}
+   });
    push @reverted,{ %entry };
   }
   push @verified,\%entry;
