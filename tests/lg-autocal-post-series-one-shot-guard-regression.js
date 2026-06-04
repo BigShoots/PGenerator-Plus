@@ -210,33 +210,86 @@ assert(
     source.includes('post_cal_series_evaluated_entry_for_ire($evaluated,$neighbor_ire)') &&
     source.includes('my $crossed_target=defined($neighbor_after_de) && $neighbor_before_de <= ($base_delta+0.25) && ($neighbor_after_de+0) > ($base_delta+0.75);') &&
     source.includes('my $bad_worse=defined($neighbor_delta) && $neighbor_delta > $neighbor_margin && defined($neighbor_after_de) && ($neighbor_after_de+0) > ($base_delta+0.50);') &&
+    source.includes('my $revert_worst=defined($compare_before) ? $compare_before+0 : undef;') &&
+    source.includes('my $keep_worst=defined($compare_after) ? $compare_after+0 : undef;') &&
+    source.includes('post_cal_series_neighbor_protective_keep') &&
+    source.includes('keep_improves_low_shadow_group_worst') &&
+    source.includes('revert_improves_low_shadow_group_worst') &&
+    source.includes('neighbor_group_keep_worst_delta_e') &&
+    source.includes('neighbor_group_revert_worst_delta_e') &&
     source.includes('post_cal_series_neighbor_protective_revert') &&
     source.includes('post_cal_series_restore_values_before($arrays,$target,$change->{"values_before"})') &&
     source.includes('set_picture_values($picture,$arrays,$write_target,$picture_mode,1,$state,1,1)'),
-  'post-series failsafe should reuse the existing post-adjust read and revert DDC slots whose own score or protected low-shadow neighbor reads worse'
+  'post-series failsafe should reuse the existing post-adjust read and revert DDC slots only when own score or protected low-shadow group outcome is worse'
 );
 
-function neighborProtectiveRevert({ changedIre, neighborIre, neighborChanged = false, before, after, target = 0.5 }) {
+function neighborProtectiveDecision({
+  changedIre,
+  neighborIre,
+  neighborChanged = false,
+  changedBefore,
+  changedAfter,
+  neighborBefore,
+  neighborAfter,
+  target = 0.5,
+}) {
   const lowMap = { 4: [3], 5: [4, 7], 7: [5] };
-  if (!lowMap[changedIre] || !lowMap[changedIre].includes(neighborIre)) return false;
-  if (neighborChanged) return false;
-  const crossed = before <= target + 0.25 && after > target + 0.75;
-  const badWorse = after - before > 0.20 && after > target + 0.50;
-  return crossed || badWorse;
+  if (!lowMap[changedIre] || !lowMap[changedIre].includes(neighborIre)) return 'ignore';
+  if (neighborChanged) return 'ignore';
+  const crossed = neighborBefore <= target + 0.25 && neighborAfter > target + 0.75;
+  const badWorse = neighborAfter - neighborBefore > 0.20 && neighborAfter > target + 0.50;
+  if (!crossed && !badWorse) return 'keep';
+  const keepWorst = Math.max(changedAfter, neighborAfter);
+  const revertWorst = Math.max(changedBefore, neighborBefore);
+  return keepWorst > revertWorst + 0.10 ? 'revert' : 'keep';
 }
 
 assert.strictEqual(
-  neighborProtectiveRevert({ changedIre: 4, neighborIre: 3, before: 0.398, after: 1.711 }),
-  true,
-  'run-2 4% change should be eligible for neighbor-protective revert because unchanged 3% crossed badly'
+  neighborProtectiveDecision({
+    changedIre: 4,
+    neighborIre: 3,
+    changedBefore: 2.818,
+    changedAfter: 1.680,
+    neighborBefore: 0.419,
+    neighborAfter: 1.755,
+  }),
+  'keep',
+  'run-4 4% should be kept because reverting restores 3% but leaves the low-shadow group worst at 4%'
 );
 assert.strictEqual(
-  neighborProtectiveRevert({ changedIre: 5, neighborIre: 4, before: 2.86, after: 1.58 }),
-  false,
+  neighborProtectiveDecision({
+    changedIre: 5,
+    neighborIre: 4,
+    changedBefore: 1.75,
+    changedAfter: 1.58,
+    neighborBefore: 2.86,
+    neighborAfter: 1.58,
+  }),
+  'keep',
   '5% should not be neighbor-reverted when adjacent 4% improved'
 );
 assert.strictEqual(
-  neighborProtectiveRevert({ changedIre: 7, neighborIre: 5, neighborChanged: true, before: 1.75, after: 3.73 }),
-  false,
+  neighborProtectiveDecision({
+    changedIre: 7,
+    neighborIre: 5,
+    changedBefore: 1.894,
+    changedAfter: 0.999,
+    neighborBefore: 1.781,
+    neighborAfter: 3.504,
+  }),
+  'revert',
+  'run-4 7% should still revert because keeping it makes damaged 5% worse than the restored 7% baseline'
+);
+assert.strictEqual(
+  neighborProtectiveDecision({
+    changedIre: 7,
+    neighborIre: 5,
+    neighborChanged: true,
+    changedBefore: 1.75,
+    changedAfter: 1.00,
+    neighborBefore: 1.75,
+    neighborAfter: 3.73,
+  }),
+  'ignore',
   '7% should not be blamed for 5% when 5% has its own changed slot and own failsafe decision'
 );
