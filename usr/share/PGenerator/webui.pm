@@ -12805,9 +12805,19 @@ function meterLgAutoCalChartReferenceWhite(item){
 	 return false;
 }
 
+function meterReadingIsAutoCalChartHidden(item){
+ if(!item) return false;
+ if(item.autocal_chart_hidden||item.autocal_diagnostic) return true;
+ const role=String(item.autocal_read_role||'');
+ return role==='top_cluster_preshape'||
+  role==='legal_white_validation'||
+  role==='legal_white_pair_counterpart'||
+  role==='white_reference_refresh';
+}
+
 function meterFilterLgAutoCalChartItems(items){
  const list=Array.isArray(items)?items:[];
- return list.filter(item=>!meterLgAutoCalChartReferenceWhite(item));
+ return list.filter(item=>!meterReadingIsAutoCalChartHidden(item)&&!meterLgAutoCalChartReferenceWhite(item));
 }
 
 function meterGreyscaleReportReadings(readings){
