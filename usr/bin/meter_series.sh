@@ -782,6 +782,56 @@ nonblack_zero_reading() {
   }'
 }
 
+normalize_oled_zero_black_reading() {
+ local reading="$1"
+ READING_JSON="$reading" DISPLAY_TYPE_VALUE="$DISPLAY_TYPE" "${PYTHON_BIN:-python}" - <<'PY'
+import json, os, math, sys
+
+try:
+    rd = json.loads(os.environ.get("READING_JSON", "") or "{}")
+except Exception:
+    sys.exit(1)
+
+display_type = str(os.environ.get("DISPLAY_TYPE_VALUE", "") or rd.get("display_type", "")).lower()
+if "oled" not in display_type:
+    sys.exit(1)
+if str(rd.get("series_type", "")).lower() not in ("", "greyscale"):
+    sys.exit(1)
+
+def num(value):
+    try:
+        n = float(value)
+        return n if math.isfinite(n) else None
+    except Exception:
+        return None
+
+name = str(rd.get("name", "")).strip().lower()
+ire_values = [num(rd.get(key)) for key in ("ire", "nominal_ire", "plot_ire", "stimulus")]
+is_zero = name in ("0%", "black") or any(value is not None and abs(value) < 0.05 for value in ire_values)
+target_yn = num(rd.get("target_Yn"))
+if not is_zero or (target_yn is not None and abs(target_yn) > 1e-9):
+    sys.exit(1)
+
+for src, dst in (
+    ("X", "raw_X"), ("Y", "raw_Y"), ("Z", "raw_Z"),
+    ("x", "raw_x"), ("y", "raw_y"), ("luminance", "raw_luminance"),
+):
+    if src in rd and dst not in rd:
+        rd[dst] = rd[src]
+
+rd["X"] = 0
+rd["Y"] = 0
+rd["Z"] = 0
+rd["luminance"] = 0
+rd.pop("x", None)
+rd.pop("y", None)
+rd["synthetic_black"] = True
+rd["normalized_black"] = True
+rd["black_normalization_reason"] = "sdr_oled_series_zero_target"
+print(json.dumps(rd, separators=(",", ":")))
+PY
+}
+
 replace_series_reading() {
  local target_ire="$1"
  local target_name="$2"
@@ -1207,6 +1257,12 @@ EOJSON
    echo "[$(date '+%H:%M:%S.%3N')] zero read guard excluded: step=$STEP_NUM ire=$IRE retries=$ZERO_READ_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
    READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}")
   fi
+ fi
+
+ NORMALIZED_READING=$(normalize_oled_zero_black_reading "$READING" 2>/dev/null || true)
+ if [[ -n "$NORMALIZED_READING" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] oled zero black normalized: step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+  READING="$NORMALIZED_READING"
  fi
 
  if [[ -z "$READING" ]]; then
