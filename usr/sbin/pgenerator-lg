@@ -1719,6 +1719,8 @@ $LG_DDC_DIR="/var/lib/PGenerator/lg/ddc";
 $LG_DDC_1D_MIN_STEP_UNITS=64;
 $LG_DDC_1D_STEP_RATIO=0.018;
 $LG_DDC_1D_BLACK_SAMPLE=0;
+$LG_DDC_SDR26_LEGAL_100_SAMPLE=940;
+$LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA=4.0;
 @LG_DDC_1D_LABELS=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
 @LG_DDC_1D_LABELS_SDR=@LG_DDC_1D_LABELS;
 @LG_DDC_1D_LABELS_HDR20=(1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100);
@@ -3113,8 +3115,87 @@ sub lg_ddc_interpolated_offset_at_index (@) {
 	  $ratio=1 if($ratio > 1);
 	  return $left_offset+(($right_offset-$left_offset)*$ratio);
 	 }
-	 return &lg_ddc_offset_units_for_slot($slots[$#slots],$offsets,$baseline,$channel);
-	}
+		 return &lg_ddc_offset_units_for_slot($slots[$#slots],$offsets,$baseline,$channel);
+		}
+
+sub lg_ddc_sdr26_top_continuity_guard_settings (@) {
+		 my ($baseline,$settings)=@_;
+		 my %diagnostics=(
+		  ddc_layout => (ref($settings) eq "HASH" ? ($settings->{"ddc_layout"}||"sdr26") : "sdr26"),
+		  legal_100_sample => $LG_DDC_SDR26_LEGAL_100_SAMPLE+0,
+		  max_legal_100_delta_ddc => $LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA+0,
+		  applied => &json_false(),
+		  changes => [],
+		 );
+		 return ($settings,\%diagnostics) if(ref($settings) ne "HASH");
+		 return ($settings,\%diagnostics) if(($settings->{"ddc_layout"}||"sdr26") ne "sdr26");
+		 return ($settings,\%diagnostics) if(@LG_DDC_1D_INDEXES != 26);
+		 my $slot99=&lg_ddc_1d_index_for_ire(99);
+		 my $slot105=&lg_ddc_1d_index_for_ire(105);
+		 return ($settings,\%diagnostics) if($slot99 < 0 || $slot105 < 0);
+		 my $sample99=$LG_DDC_1D_INDEXES[$slot99];
+		 my $sample105=$LG_DDC_1D_INDEXES[$slot105];
+		 my $sample100=$LG_DDC_SDR26_LEGAL_100_SAMPLE;
+		 return ($settings,\%diagnostics) if($sample100 <= $sample99 || $sample100 >= $sample105);
+		 my $ratio=($sample100-$sample99)/($sample105-$sample99);
+		 $diagnostics{"slot_99"}=$slot99+0;
+		 $diagnostics{"slot_105"}=$slot105+0;
+		 $diagnostics{"sample_99"}=$sample99+0;
+		 $diagnostics{"sample_105"}=$sample105+0;
+		 $diagnostics{"legal_100_ratio"}=$ratio+0;
+
+		 my %guarded=%{$settings};
+		 my @specs=(
+		  [ "whiteBalanceRed", 0 ],
+		  [ "whiteBalanceGreen", 1 ],
+		  [ "whiteBalanceBlue", 2 ],
+		  [ "adjustingLuminance", 1 ],
+		 );
+		 my @changes=();
+		 foreach my $spec (@specs) {
+		  my ($setting,$channel)=@{$spec};
+		  my $values=&lg_ddc_normalize_rgb_array($settings->{$setting});
+		  next if($slot99 >= @{$values} || $slot105 >= @{$values});
+		  my $left_units=&lg_ddc_offset_units_for_slot($slot99,$values,$baseline,$channel);
+		  my $right_units=&lg_ddc_offset_units_for_slot($slot105,$values,$baseline,$channel);
+		  my $legal_units=$left_units+(($right_units-$left_units)*$ratio);
+		  my $delta_units=$legal_units-$left_units;
+		  my $limit_units=&lg_ddc_step_units_for_point($baseline,$channel,$sample100)*$LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA;
+		  next if($limit_units <= 0 || abs($delta_units) <= $limit_units);
+		  my $direction=$delta_units < 0 ? -1 : 1;
+		  my $target_legal_units=$left_units+($direction*$limit_units);
+		  my $new_right_units=$left_units+(($target_legal_units-$left_units)/$ratio);
+		  my $right_step_units=&lg_ddc_step_units_for_point($baseline,$channel,$sample105);
+		  next if($right_step_units <= 0);
+		  my $before=$values->[$slot105]+0;
+		  my $after=$new_right_units/$right_step_units;
+		  $after=-50 if($after < -50);
+		  $after=50 if($after > 50);
+		  $after=int($after*100+($after < 0 ? -0.5 : 0.5))/100;
+		  next if(abs($after-$before) < 0.0001);
+		  $values->[$slot105]=$after;
+		  $guarded{$setting}=$values;
+		  my $after_right_units=&lg_ddc_offset_units_for_slot($slot105,$values,$baseline,$channel);
+		  my $after_legal_units=$left_units+(($after_right_units-$left_units)*$ratio);
+		  push(@changes,{
+		   setting => $setting,
+		   channel => $channel+0,
+		   slot_99_value => $values->[$slot99]+0,
+		   slot_105_before => $before+0,
+		   slot_105_after => $after+0,
+		   legal_100_delta_units_before => $delta_units+0,
+		   legal_100_delta_units_after => ($after_legal_units-$left_units)+0,
+		   legal_100_delta_ddc_limit => $LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA+0,
+		   legal_100_delta_unit_limit => $limit_units+0,
+		   reason => "sdr26_top_linear_continuity_guard",
+		  });
+		 }
+		 if(@changes) {
+		  $diagnostics{"applied"}=&json_true();
+		  $diagnostics{"changes"}=\@changes;
+		 }
+		 return (\%guarded,\%diagnostics);
+		}
 
 sub lg_ddc_build_1d_lut (@) {
 	 my ($baseline,$settings)=@_;
@@ -3141,8 +3222,35 @@ sub lg_ddc_build_1d_lut (@) {
 	   $adjusted=32767 if($adjusted > 32767);
 	   $lut[$pos]=int($adjusted+0.5);
 	  }
-	 }
-	 return \@lut;
+		 }
+		 return \@lut;
+	}
+
+sub lg_ddc_lut_top_sample_snapshot (@) {
+ my ($lut,$baseline)=@_;
+ return [] if(ref($lut) ne "ARRAY" || @{$lut} != 3072);
+ my @samples=();
+ foreach my $ire (99,105,109) {
+  my $slot=&lg_ddc_1d_index_for_ire($ire);
+  next if($slot < 0 || $slot >= @LG_DDC_1D_INDEXES);
+  push(@samples,$LG_DDC_1D_INDEXES[$slot]);
+ }
+ push(@samples,$LG_DDC_SDR26_LEGAL_100_SAMPLE);
+ @samples=sort { $a <=> $b } @samples;
+ my @out=();
+ foreach my $sample (@samples) {
+  next if(!defined($sample) || $sample < 0 || $sample > 1023);
+  my %item=(sample=>$sample+0);
+  foreach my $pair ([red=>0],[green=>1],[blue=>2]) {
+   my ($name,$channel)=@{$pair};
+   my $pos=($channel*1024)+$sample;
+   $item{$name}=int($lut->[$pos]||0);
+   $item{$name."_baseline"}=int($baseline->[$pos]||0) if(ref($baseline) eq "ARRAY" && @{$baseline} == 3072);
+   $item{$name."_delta"}=$item{$name}-($item{$name."_baseline"}||0) if(exists($item{$name."_baseline"}));
+  }
+  push(@out,\%item);
+ }
+ return \@out;
 }
 
 sub lg_ddc_enable_1d_pipeline (@) {
@@ -3395,10 +3503,11 @@ sub lg_ddc_1d_white_balance_set (@) {
  }
 
 		 &lg_ddc_clear_state($ip,$picture_mode) if($reset_ddc_baseline);
-		 my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline,$ddc_layout);
-		 my $normalized_state=&lg_ddc_state_from_settings($settings,$picture_mode);
-		 if($ddc_layout eq "sdr26") {
-		  &diag_log_append("ddc1d:normalized-sdr-low-shadow",{
+			 my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline,$ddc_layout);
+			 my ($effective_settings,$top_continuity)=&lg_ddc_sdr26_top_continuity_guard_settings($baseline,$settings);
+			 my $normalized_state=&lg_ddc_state_from_settings($effective_settings,$picture_mode);
+			 if($ddc_layout eq "sdr26") {
+			  &diag_log_append("ddc1d:normalized-sdr-low-shadow",{
 		   phase => "pre_lut_build",
 		   ddc_layout => $ddc_layout,
 		   picture_mode => $picture_mode,
@@ -3410,12 +3519,24 @@ sub lg_ddc_1d_white_balance_set (@) {
 			   cal_start_sent => &json_bool($cal_start_sent),
 			   reset_ddc_baseline => &json_bool($reset_ddc_baseline),
 			   verify_ddc_upload => &json_bool($verify_ddc_upload),
-		   ddc_target => &lg_ddc_1d_target_info($normalized_state),
-		   ddc_nonzero => &lg_ddc_1d_nonzero_map($normalized_state),
-		   diagnostic_slots => &lg_ddc_sdr_diagnostic_slot_snapshot($normalized_state),
-		  });
-		 }
-		 my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
+			   ddc_target => &lg_ddc_1d_target_info($normalized_state),
+			   ddc_nonzero => &lg_ddc_1d_nonzero_map($normalized_state),
+			   diagnostic_slots => &lg_ddc_sdr_diagnostic_slot_snapshot($normalized_state),
+			   top_continuity => $top_continuity,
+			  });
+			 }
+			 my $lut=&lg_ddc_build_1d_lut($baseline,$effective_settings);
+			 my $top_lut_samples=($ddc_layout eq "sdr26") ? &lg_ddc_lut_top_sample_snapshot($lut,$baseline) : [];
+			 if($ddc_layout eq "sdr26") {
+			  $top_continuity->{"lut_samples"}=$top_lut_samples if(ref($top_continuity) eq "HASH");
+			  &diag_log_append("ddc1d:sdr26-top-continuity",{
+			   phase => "post_lut_build",
+			   ddc_layout => $ddc_layout,
+			   picture_mode => $picture_mode,
+			   top_continuity => $top_continuity,
+			   lut_samples => $top_lut_samples,
+			  });
+			 }
 		 my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
 	 my $late_start=undef;
 	 if(!$enable_ok && $calibration_mode_active) {
@@ -3557,7 +3678,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  }
 		 }
 
-		 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
+			 my $state=&lg_ddc_save_state($ip,$picture_mode,$effective_settings);
 		 $state->{"ddc_layout"}=$ddc_layout;
 		 &file_write_json(&lg_ddc_state_path($ip,$picture_mode,$ddc_layout),$state);
 		 my @reference_slot_samples=map { &lg_ddc_reference_video_10bit_for_ire($_) } @LG_DDC_1D_LABELS;
@@ -3565,13 +3686,15 @@ sub lg_ddc_1d_white_balance_set (@) {
 	  active_picture_mode => $picture_mode,
 	  calibration_picture_mode => $cal_mode,
 	 picture_settings => $state,
-	  ddc_target => &lg_ddc_1d_target_info($settings),
-	  ddc_nonzero => &lg_ddc_1d_nonzero_map($settings),
-		  ddc_slot_labels => \@LG_DDC_1D_LABELS,
-		  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
-		  ddc_layout => $ddc_layout,
-	  ddc_slot_samples_reference => \@reference_slot_samples,
-		  ddc_response => $upload,
+		  ddc_target => &lg_ddc_1d_target_info($effective_settings),
+		  ddc_nonzero => &lg_ddc_1d_nonzero_map($effective_settings),
+			  ddc_slot_labels => \@LG_DDC_1D_LABELS,
+			  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
+			  ddc_layout => $ddc_layout,
+		  ddc_slot_samples_reference => \@reference_slot_samples,
+			  ddc_top_continuity => $top_continuity,
+			  ddc_lut_top_samples => $top_lut_samples,
+			  ddc_response => $upload,
 		  ddc_end_response => $end,
 		  ddc_start_response => $start,
 		  ddc_late_start_response => $late_start,
