@@ -139,9 +139,9 @@ save_local_integrity() {
   echo "--- renderer source hashes ---"
   sha256sum \
    src/pattern_generator/src/ofApp.cpp \
-   src/pattern_generator/src/main.cpp \
+   tools/image-targets/pi5-bookworm-armhf/src/pattern_generator/src/main.cpp \
    src/pattern_generator/src/rgb2ycbcr.h \
-   src/ofxRPI4Window/src/ofxRPI4Window.cpp
+   tools/image-targets/pi5-bookworm-armhf/src/ofxRPI4Window/src/ofxRPI4Window.cpp
  } > "$OUT_DIR/local_integrity.txt"
 }
 

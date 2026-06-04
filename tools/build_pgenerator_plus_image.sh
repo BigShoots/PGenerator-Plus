@@ -538,7 +538,9 @@ ensure_user_group_membership() {
 
  [[ -f "$file" ]] || return 0
  perl -0pi -e '
-  my ($group, $user) = @ARGV;
+  BEGIN {
+   ($group, $user) = splice(@ARGV, 0, 2);
+  }
   s{^(\Q$group\E:[^:\n]*:[^:\n]*:)([^\n]*)$}{
    my %seen = map { $_ => 1 } grep { $_ ne "" } split /,/, $2;
    $seen{$user} = 1;
@@ -556,6 +558,7 @@ ensure_pi5_admin_identity() {
  local hash="${PI5_ADMIN_PASSWORD_HASH:-$PI5_ROOT_PASSWORD_HASH}"
  local groups="${PI5_ADMIN_GROUPS:-sudo,adm,dialout,audio,video,plugdev,users,input,render,netdev,gpio,i2c,spi}"
  local uid gid group
+ local -a group_array
 
  [[ -f "$passwd_file" ]] || die "Pi 5 rootfs is missing /etc/passwd"
  [[ -f "$group_file" ]] || die "Pi 5 rootfs is missing /etc/group"
@@ -624,7 +627,10 @@ ensure_pi5_pgenerator_identity() {
  local passwd_file="$ROOT_MOUNT/etc/passwd"
  local group_file="$ROOT_MOUNT/etc/group"
  local shadow_file="$ROOT_MOUNT/etc/shadow"
- local gid uid
+ local gshadow_file="$ROOT_MOUNT/etc/gshadow"
+ local groups="${PI5_PGENERATOR_GROUPS:-audio,video,input,render,gpio,i2c,spi}"
+ local gid uid group
+ local -a group_array
 
  if grep -q '^pgenerator:' "$group_file"; then
   gid="$(awk -F: '$1=="pgenerator" {print $3; exit}' "$group_file")"
@@ -643,6 +649,17 @@ ensure_pi5_pgenerator_identity() {
  if [[ -f "$shadow_file" ]] && ! grep -q '^pgenerator:' "$shadow_file"; then
   printf 'pgenerator:*:19700:0:99999:7:::\n' >> "$shadow_file"
  fi
+
+ IFS=',' read -r -a group_array <<<"$groups"
+ for group in "${group_array[@]}"; do
+  [[ -n "$group" ]] || continue
+  if grep -q "^$group:" "$group_file"; then
+   ensure_user_group_membership "$group_file" "$group" "pgenerator"
+  fi
+  if grep -q "^$group:" "$gshadow_file" 2>/dev/null; then
+   ensure_user_group_membership "$gshadow_file" "$group" "pgenerator"
+  fi
+ done
 }
 
 install_pi5_compat_script() {
