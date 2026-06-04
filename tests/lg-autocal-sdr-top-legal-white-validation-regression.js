@@ -117,8 +117,36 @@ const referenceReadSource = sliceBetween(
 );
 assert(
   referenceReadSource.includes('my ($ref_step,$label,$message,$diagnostic_role)=@_;') &&
-    referenceReadSource.includes('mark_autocal_diagnostic_reading($ref_reading,$diagnostic_role,"white_reference_refresh") if(defined($diagnostic_role) && $diagnostic_role ne "");'),
-  'reference reads should only become chart-hidden when a diagnostic role is explicitly passed'
+    referenceReadSource.includes('my $disable_target_reference=(defined($diagnostic_role) && $diagnostic_role eq "white_reference_refresh") ? 1 : 0;') &&
+    referenceReadSource.includes('$read_step->{"autocal_target_reference_disabled"}=JSON::PP::true if($disable_target_reference);') &&
+    referenceReadSource.includes('$ref_reading->{"autocal_target_reference_disabled"}=JSON::PP::true if($disable_target_reference);') &&
+    referenceReadSource.includes('mark_autocal_diagnostic_reading($ref_reading,$diagnostic_role,"white_reference_refresh") if(defined($diagnostic_role) && $diagnostic_role ne "");') &&
+    referenceReadSource.indexOf('$ref_reading->{"autocal_target_reference_disabled"}=JSON::PP::true if($disable_target_reference);') <
+      referenceReadSource.indexOf('update_white_reference_for_autocal_step($config,$state,$read_step,$ref_reading,$white_y)') &&
+    referenceReadSource.includes('set_state_white_reference($state,$white_y) if(autocal_step_is_white($read_step) && !$disable_target_reference);'),
+  'diagnostic white-reference refresh reads should be hidden and must not rebase the AutoCal/chart white reference'
+);
+
+const whiteReferenceUpdateSource = sliceBetween(
+  'sub update_white_reference_for_autocal_step',
+  'sub refresh_headroom_targets_from_white_reference'
+);
+assert(
+  whiteReferenceUpdateSource.includes('$step->{"autocal_target_reference_disabled"}') &&
+    whiteReferenceUpdateSource.includes('$reading->{"autocal_target_reference_disabled"}'),
+  'white-reference updates must ignore reads or steps flagged as AutoCal target-reference disabled'
+);
+
+const pairCounterpartReadSource = sliceBetween(
+  'my $read_legal_white_pair_counterpart=sub',
+  'my $switch_to_worst_pair_step=sub'
+);
+assert(
+  pairCounterpartReadSource.includes('$other_step->{"autocal_target_reference_disabled"}=JSON::PP::true;') &&
+    pairCounterpartReadSource.includes('$other_reading->{"autocal_target_reference_disabled"}=JSON::PP::true;') &&
+    pairCounterpartReadSource.indexOf('$other_reading->{"autocal_target_reference_disabled"}=JSON::PP::true;') <
+      pairCounterpartReadSource.indexOf('update_white_reference_for_autocal_step($config,$state,$other_step,$other_reading,$white_y)'),
+  'paired legal-white/counterpart reads must not update the shared AutoCal/chart white reference'
 );
 
 const validationRunSource = sliceBetween(
