@@ -11,6 +11,85 @@ function sliceBetween(startNeedle, endNeedle) {
   return source.slice(start, end);
 }
 
+const applyPeakReference = sliceBetween(
+  'sub apply_peak_headroom_reference {',
+  'sub keep_peak_headroom_white_reference {'
+);
+assert(
+  applyPeakReference.includes('my $effective_white=(defined($derived) && $derived > 0) ? $derived : $$white_y_ref;') &&
+    applyPeakReference.includes('$state->{"peak_headroom_reference"}=$derived if(defined($derived) && $derived > 0);') &&
+    !applyPeakReference.includes('$$white_y_ref=$derived') &&
+    !applyPeakReference.includes('set_state_white_reference($state,$effective_white)') &&
+    applyPeakReference.includes('return $$white_y_ref;'),
+  '109 peak-headroom reads should store the derived headroom reference without rebasing the global legal-white target'
+);
+
+const updateWhiteReference = sliceBetween(
+  'sub update_white_reference_for_autocal_step {',
+  'sub refresh_headroom_targets_from_white_reference {'
+);
+assert(
+  !updateWhiteReference.includes('keep_peak_headroom_white_reference($config,$state) && !autocal_step_is_peak_headroom($step)'),
+  'a stored 109 peak reference must not block later legal-white reference updates'
+);
+
+const committedPolishReference = sliceBetween(
+  'sub committed_polish_reference_white_y {',
+  'sub lg_extended_sdr_16_255_enabled {'
+);
+assert(
+  committedPolishReference.includes('return $committed_ref if(defined($committed_ref));') &&
+    committedPolishReference.includes('$state->{"target_luminance"}+0') &&
+    committedPolishReference.includes('$state->{"calibrated_white_luminance"}+0') &&
+    committedPolishReference.includes('$state->{"setup_luminance_reference"}+0') &&
+    !committedPolishReference.includes('return $peak_ref') &&
+    !committedPolishReference.includes('headroom_reference_white_from_target'),
+  'committed verification should prefer committed/legal white references, not 109-derived headroom white'
+);
+
+function gammaLinear(stimulus, gamma = 2.4) {
+  const signal = Math.min(stimulus / 100, 1.1);
+  return signal ** gamma;
+}
+
+const legalWhiteY = 100;
+const measured109Y = 128;
+const derived109WhiteY = measured109Y / gammaLinear(109.474885844749);
+const whiteYAfter109Read = legalWhiteY;
+const peakReferenceAfter109Read = derived109WhiteY;
+const targetYFromLegalWhite = stimulus => legalWhiteY * gammaLinear(stimulus);
+const targetYFromPeakWhite = stimulus => derived109WhiteY * gammaLinear(stimulus);
+
+assert(Math.abs(derived109WhiteY - legalWhiteY) > 1, 'test fixture should distinguish legal and peak-derived white bases');
+assert.strictEqual(whiteYAfter109Read, legalWhiteY, 'applying a 109 read should keep the global white reference legal-white based');
+assert.strictEqual(peakReferenceAfter109Read, derived109WhiteY, 'applying a 109 read should still store the headroom-specific reference');
+for (const [label, stimulus] of [
+  ['low shadow 2.3', 2.28310502283105],
+  ['body 50', 50.2283105022831],
+  ['direct 99', 99.0867579908676],
+  ['headroom 105', 105.022831050228],
+]) {
+  assert.notStrictEqual(
+    targetYFromLegalWhite(stimulus),
+    targetYFromPeakWhite(stimulus),
+    `${label} fixture should expose the old 109-derived target-Y mismatch`
+  );
+  assert.strictEqual(
+    targetYFromLegalWhite(stimulus),
+    legalWhiteY * gammaLinear(stimulus),
+    `${label} target-Y should stay based on legal/configured 100 white after a 109 read`
+  );
+}
+assert.notStrictEqual(
+  measured109Y,
+  targetYFromLegalWhite(109.474885844749),
+  '109 fixture should differ from a legal-white target'
+);
+assert(
+  Math.abs(measured109Y - peakReferenceAfter109Read * gammaLinear(109.474885844749)) < 1e-9,
+  '109 remains self/headroom referenced for luminance scoring'
+);
+
 const lumaGuard = sliceBetween(
   'sub luma_probe_guarded_target {',
   'sub next_new_headroom_value {'
@@ -614,7 +693,8 @@ assert(
   'final verify should poison rejected luma-only touches before restoring best'
 );
 assert(
-  source.includes('!$legal_white_pair_score_stalled && (autocal_step_allows_final_fine_tune') &&
+  source.includes('!$legal_white_pair_score_stalled') &&
+    source.includes('autocal_step_allows_final_fine_tune($read_step,$best_de,$target_delta)') &&
     source.includes('Keeping best 99/100 paired result'),
   'paired 99/100 should skip extra fine tune after pair-score stall and still restore the best measured pair'
 );
