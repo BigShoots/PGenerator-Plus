@@ -18077,9 +18077,10 @@ function meterLgPictureModeValue(fallback){
  return fallback||'';
 }
 
-function meterGreyTvTarget(step){
+function meterGreyTvTarget(step,opts){
+ const allowSeriesRunning=!!(opts&&opts.allow_series_running);
  const resolved=meterCanonicalSeriesStep(step)||step;
- if(!resolved||meterSeriesRunning||meterActiveSeriesType!=='greyscale'||meterIsTwoPointGreyscale()) return null;
+ if(!resolved||(!allowSeriesRunning&&meterSeriesRunning)||meterActiveSeriesType!=='greyscale'||meterIsTwoPointGreyscale()) return null;
 	 if(!meterSeriesStepIsGreyscale(resolved)) return null;
 	 const ire=Number(resolved.ire);
 	 if(!Number.isFinite(ire)) return null;
@@ -18374,7 +18375,9 @@ function meterRenderGreyTvControls(reading){
   if(meta) meta.textContent='LG paused';
   return;
  }
- const target=meterGreyTvTarget(meterCurrentPatchStep);
+ const seriesReadOnly=!!(meterSeriesRunning&&reading&&meterReadingIsGreyscale(reading));
+ const renderStep=seriesReadOnly?(meterCanonicalSeriesStep(reading)||reading):meterCurrentPatchStep;
+ const target=meterGreyTvTarget(renderStep,{allow_series_running:seriesReadOnly});
  if(!target){
   host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">No greyscale patch selected.</div>';
   if(meta) meta.textContent='LG TV';
@@ -18387,23 +18390,24 @@ function meterRenderGreyTvControls(reading){
   return;
  }
  const state=meterLgGreyState||{status:'idle',picture:null,message:'',needsRepair:false};
- if((state.status==='loading'||state.status==='idle')&&!state.picture){
+ if((state.status==='loading'||state.status==='idle')&&!state.picture&&!seriesReadOnly){
   host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">Loading...</div>';
   if(meta) meta.textContent='LG '+target.label;
   return;
  }
- if(state.status==='error'&&!state.picture){
+ if(state.status==='error'&&!state.picture&&!seriesReadOnly){
   host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:#f7b0b0;padding:8px">'+(state.message||'Unable to read LG white-balance values.')+'</div>';
   if(meta) meta.textContent=state.needsRepair?'LG pairing required':'LG read failed';
   return;
  }
- const selected=meterGreyTvSelectedValues(state);
+ const selected=seriesReadOnly?null:meterGreyTvSelectedValues(state);
 	 const liveRgb=meterLiveRgbData(reading);
 	 const spec=meterRgbDeltasForLive(reading,liveRgb);
 	 const halfRange=meterGreyTvHalfRange(spec);
-	 const busy=meterGreyTvBusyActive();
-	 const disabled=busy||state.status!=='ok';
+ const busy=meterGreyTvBusyActive();
+ const disabled=busy||state.status!=='ok';
  const ddcReadOnly=!!(
+  seriesReadOnly ||
   (target&&target.force_ddc) ||
   meterAutoCalRunning ||
   state.source==='autocal' ||
@@ -18429,7 +18433,8 @@ function meterRenderGreyTvControls(reading){
 	 syncMeterLgRgbBusyIndicator();
 	 const pictureMode=(state.picture&&state.picture.pictureMode)?state.picture.pictureMode:'';
  if(meta){
-  if(state.status==='loading') meta.textContent='LG '+target.label+' applying';
+  if(seriesReadOnly) meta.textContent='LG '+target.label+' read-only';
+  else if(state.status==='loading') meta.textContent='LG '+target.label+' applying';
   else if(state.status==='error'&&state.needsRepair) meta.textContent='LG pairing required';
   else if(state.status==='error'&&state.message) meta.textContent=state.message;
   else meta.textContent=(pictureMode?('LG '+pictureMode+' - '):'LG ')+target.label;
@@ -23045,6 +23050,8 @@ async function meterPollSeries(){
    document.getElementById('meterProgressLabel').textContent=label;
   }
   currentIre=meterCurrentSeriesStepKeyFromStatus(r);
+  const currentStep=meterFindCurrentSeriesStep(currentIre);
+  if(currentStep&&meterActiveSeriesType==='greyscale') meterCurrentPatchStep=meterClonePatchStep(currentStep)||currentStep;
  }
 
  // Update patch thumbnails with completion state
@@ -23054,10 +23061,18 @@ async function meterPollSeries(){
   meterBuildPatchThumbs(sortedSteps,completedIres,currentIre);
  }
 
- // Update live reading with latest valid reading
+ // Update live reading with the status-current patch when its reading has
+ // landed; otherwise keep showing the latest completed patch during the
+ // in-flight read.
+ let liveSeriesReading=null;
  if(meterReadings&&meterReadings.length>0){
+  const currentReading=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;
   const lastValid=[...meterReadings].reverse().find(rd=>rd.luminance!=null);
-  if(lastValid) updateLiveReading(lastValid);
+  liveSeriesReading=currentReading||lastValid||null;
+  if(liveSeriesReading) updateLiveReading(liveSeriesReading);
+ }
+ if(!liveSeriesReading&&meterSeriesRunning&&meterActiveSeriesType==='greyscale'&&meterCurrentPatchStep){
+  meterRenderGreyTvControls(meterCurrentPatchStep);
  }
 
  if(r.status==='complete'||r.status==='cancelled'||r.status==='error'){
@@ -23286,6 +23301,16 @@ function meterCurrentSeriesStepKeyFromStatus(status){
  if(!name) return null;
  const stripped=name.replace(/\s+\((displaying|reading|click Device Ready when positioned|reposition meter and click Device Ready|complete meter setup\/calibration and click Device Ready)\)$/i,'');
  return stripped||name;
+}
+
+function meterFindCurrentSeriesStep(key){
+ if(!key||!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return null;
+ const text=String(key);
+ return meterSeriesSteps.find(step=>{
+  if(meterStepNameKey(step)===text) return true;
+  if(String(step&&step.name||'')===text) return true;
+  return meterReadingPatchLabel(step)===text;
+ })||null;
 }
 
 function meterQueueGreyscaleTargetSync(){
