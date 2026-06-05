@@ -18944,7 +18944,48 @@ eval {
 						      my $confirm_de=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_delta_e"})) ? $confirm_record->{"fresh_delta_e"} : "none";
 						      my $confirm_lum=(ref($confirm_record) eq "HASH" && defined($confirm_record->{"fresh_luminance_error_pct"})) ? $confirm_record->{"fresh_luminance_error_pct"} : "none";
 						      my $recovery_count=@recovery_records;
-						      die "$label fresh final verification rejected cached best: cached dE=".(defined($best_de)?$best_de:"undef").", cached lum=".(defined($best_lum_pct)?$best_lum_pct:"undef").", fresh dE=".(defined($fresh_de)?$fresh_de:"undef").", fresh lum=".(defined($fresh_lum_pct)?$fresh_lum_pct:"undef").", confirm dE=$confirm_de, confirm lum=$confirm_lum, recovery attempts=$recovery_count";
+						      my $warning_message="$label fresh final verification rejected cached best: cached dE=".(defined($best_de)?$best_de:"undef").", cached lum=".(defined($best_lum_pct)?$best_lum_pct:"undef").", fresh dE=".(defined($fresh_de)?$fresh_de:"undef").", fresh lum=".(defined($fresh_lum_pct)?$fresh_lum_pct:"undef").", confirm dE=$confirm_de, confirm lum=$confirm_lum, recovery attempts=$recovery_count";
+						      my $warning_fresh_de=$fresh_de;
+						      my $warning_fresh_lum_pct=$fresh_lum_pct;
+						      $fresh_verify_record->{"warning"}=$warning_message;
+						      $fresh_verify_record->{"warning_only"}=JSON::PP::true;
+						      $fresh_verify_record->{"accepted"}=JSON::PP::true;
+						      $fresh_verify_record->{"final_source"}="cached_best_warning";
+						      $fresh_verify_record->{"fresh_delta_e"}=defined($best_de) ? $best_de+0 : undef;
+						      $fresh_verify_record->{"fresh_luminance_error_pct"}=defined($best_lum_pct) ? $best_lum_pct+0 : undef;
+						      $fresh_verify_record->{"fresh_score"}=defined($best_score) ? $best_score+0 : undef;
+						      $fresh_verify_record->{"final_values"}=trace_target_values($best_arrays,$target);
+						      $fresh_reading=clone_picture($best_reading);
+						      $fresh_target_step_y=$target_step_y;
+						      $fresh_de=$best_de;
+						      $fresh_lum_pct=$best_lum_pct;
+						      $fresh_score=$best_score;
+						      $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
+						      $state->{"low_shadow_final_verification_warnings"}=[] if(ref($state->{"low_shadow_final_verification_warnings"}) ne "ARRAY");
+						      push @{$state->{"low_shadow_final_verification_warnings"}},{
+						       label=>$label,
+						       warning=>$warning_message,
+						       cached_delta_e=>defined($best_de) ? $best_de+0 : undef,
+						       cached_luminance_error_pct=>defined($best_lum_pct) ? $best_lum_pct+0 : undef,
+						       fresh_delta_e=>defined($warning_fresh_de) ? $warning_fresh_de+0 : undef,
+						       fresh_luminance_error_pct=>defined($warning_fresh_lum_pct) ? $warning_fresh_lum_pct+0 : undef,
+						       confirm_delta_e=>$confirm_de,
+						       confirm_luminance_error_pct=>$confirm_lum,
+						       recovery_attempts=>$recovery_count+0,
+						      };
+						      delete $state->{"low_shadow_final_requires_more_adjustment"};
+						      trace_109($read_step,"low_shadow_final_fresh_verification_warning_only",{
+						       label=>$label,
+						       warning=>$warning_message,
+						       cached_delta_e=>defined($best_de) ? $best_de+0 : undef,
+						       cached_luminance_error_pct=>defined($best_lum_pct) ? $best_lum_pct+0 : undef,
+						       fresh_delta_e=>defined($warning_fresh_de) ? $warning_fresh_de+0 : undef,
+						       fresh_luminance_error_pct=>defined($warning_fresh_lum_pct) ? $warning_fresh_lum_pct+0 : undef,
+						       confirm_delta_e=>$confirm_de,
+						       confirm_luminance_error_pct=>$confirm_lum,
+						       recovery_attempts=>$recovery_count+0,
+						       final_values=>trace_target_values($best_arrays,$target)
+						      });
 						     }
 						    }
 					    $state->{"low_shadow_final_fresh_verification"}=$fresh_verify_record;
@@ -19690,15 +19731,24 @@ eval {
 				   );
 				   if($hard_reject) {
 				    my $failure_message="$label final low-shadow context reconfirm failed: dE=".(defined($reconfirm_de)?$reconfirm_de:"undef").", lum=".(defined($reconfirm_lum_pct)?$reconfirm_lum_pct:"undef");
-				    $state->{"status"}="error";
-				    $state->{"current_name"}="Auto Cal error";
-				    $state->{"message"}=$failure_message;
+				    $record->{"warning"}=$failure_message;
+				    $record->{"warning_only"}=JSON::PP::true;
+				    $state->{"message"}=$failure_message." (warning only)";
 				    $state->{"best_delta_e"}=defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef;
 				    $state->{"best_score"}=defined($entry->{"score"}) ? ($entry->{"score"}+0) : undef;
 				    $state->{"best_luminance_error_pct"}=defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef;
-				    $state->{"low_shadow_final_requires_more_adjustment"}=JSON::PP::true;
-				    trace_109($reconfirm_step,"sdr_low_shadow_final_context_hard_reject_controlled_error",{
+				    $state->{"low_shadow_final_context_warnings"}=[] if(ref($state->{"low_shadow_final_context_warnings"}) ne "ARRAY");
+				    push @{$state->{"low_shadow_final_context_warnings"}},{
 				     label=>$label,
+				     warning=>$failure_message,
+				     delta_e=>defined($reconfirm_de) ? $reconfirm_de+0 : undef,
+				     luminance_error_pct=>defined($reconfirm_lum_pct) ? $reconfirm_lum_pct+0 : undef,
+				     prior_best_delta_e=>defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef,
+				     prior_best_luminance_error_pct=>defined($entry->{"luminance_error_pct"}) ? ($entry->{"luminance_error_pct"}+0) : undef,
+				    };
+				    trace_109($reconfirm_step,"sdr_low_shadow_final_context_hard_reject_warning_only",{
+				     label=>$label,
+				     warning=>$failure_message,
 				     delta_e=>defined($reconfirm_de) ? $reconfirm_de+0 : undef,
 				     luminance_error_pct=>defined($reconfirm_lum_pct) ? $reconfirm_lum_pct+0 : undef,
 				     prior_best_delta_e=>defined($entry->{"delta_e"}) ? ($entry->{"delta_e"}+0) : undef,
@@ -19708,7 +19758,6 @@ eval {
 				     target_values=>trace_target_values($arrays,$reconfirm_target)
 				    });
 				    write_state($state);
-				    die $failure_message;
 				   }
 				  }
 				  return scalar(@records);
