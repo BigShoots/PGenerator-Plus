@@ -975,17 +975,41 @@ sub target_gamma_linear {
  return $signal ** $gamma;
 }
 
+sub bt1886_eotf_luminance {
+ my ($signal,$white_y,$black_y)=@_;
+ return undef if(!defined($signal) || !defined($white_y) || $white_y <= 0);
+ $black_y=0 if(!defined($black_y) || $black_y < 0);
+ return $white_y * (($signal+0) ** 2.4) if($black_y <= 0);
+ return $white_y if($black_y >= $white_y);
+ my $gamma=2.4;
+ my $white_root=$white_y ** (1/$gamma);
+ my $black_root=$black_y ** (1/$gamma);
+ my $den=$white_root-$black_root;
+ return $white_y * (($signal+0) ** $gamma) if($den <= 0);
+ my $a=$den ** $gamma;
+ my $b=$black_root/$den;
+ my $v=$signal+$b;
+ $v=0 if($v < 0);
+ return $a * ($v ** $gamma);
+}
+
 sub target_luminance_for_step {
-	 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
+	 my ($white_y,$step,$target_gamma,$signal_mode,$black_y)=@_;
 	 return undef if(ref($step) ne "HASH" || !defined($white_y) || $white_y <= 0);
 	 my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : (defined($step->{"ire"}) ? ($step->{"ire"}+0) : undef);
 	 return undef if(!defined($stimulus));
-	 return 0 if($stimulus <= 0);
 	 my $mode=lc($signal_mode||"sdr");
+	 $target_gamma=lc($target_gamma||"bt1886");
 	 my $signal=$stimulus/100;
+	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
+	  $signal=0 if($signal < 0);
+	  $signal=1.1 if($signal > 1.1);
+	  return bt1886_eotf_luminance($signal,$white_y,$black_y+0);
+	 }
+	 return 0 if($stimulus <= 0);
 	 $signal=1 if($signal > 1 && $mode ne "sdr");
 	 $signal=1.1 if($signal > 1.1);
-	 if($mode eq "hdr10" && lc($target_gamma||"") eq "st2084") {
+	 if($mode eq "hdr10" && $target_gamma eq "st2084") {
 	  my $pq_y=pq_decode_nits($signal);
 	  return ($pq_y > $white_y) ? $white_y : $pq_y;
 	 }
@@ -1379,16 +1403,35 @@ sub update_white_reference_for_step {
 				 return (defined($Y) && $Y > 0) ? $Y : $white_y;
 		}
 
+sub autocal_state_black_luminance {
+ my ($state)=@_;
+ return undef if(ref($state) ne "HASH");
+ if(defined($state->{"target_black_luminance"})) {
+  my $Y=$state->{"target_black_luminance"}+0;
+  return $Y if($Y >= 0);
+ }
+ return undef if(ref($state->{"readings"}) ne "ARRAY");
+ my $best;
+ foreach my $reading (@{$state->{"readings"}}) {
+  next if(ref($reading) ne "HASH" || !defined($reading->{"ire"}));
+  next if(abs(($reading->{"ire"}+0)) > 0.001);
+  my $Y=luminance($reading);
+  next if(!defined($Y) || $Y < 0);
+  $best=$Y+0 if(!defined($best) || $Y < $best);
+ }
+ return $best;
+}
+
 sub target_luminance_for_autocal_step {
-				 my ($white_y,$step,$target_gamma,$signal_mode)=@_;
+				 my ($white_y,$step,$target_gamma,$signal_mode,$black_y)=@_;
 				 return $white_y if(autocal_step_is_white($step));
 				 if(autocal_step_is_peak_headroom($step)) {
-				  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+				  my $target_lum_y=target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode,$black_y);
 				  return $target_lum_y if(defined($target_lum_y));
 			  return $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE if($LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE > 0);
 			  return undef;
 			 }
-			 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode);
+			 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode,$black_y);
 		}
 
 sub body_luma_bias_display_allowed {
@@ -1568,8 +1611,10 @@ sub trace_sdr_autocal_target_y_reference {
  my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : $ire;
  my $signal=$stimulus/100;
  $signal=1.1 if($signal > 1.1);
+ my $black_y=autocal_state_black_luminance($state);
  my $linear=target_gamma_linear($signal,$target_gamma,$signal_mode);
- my $recomputed=(defined($white_y) && $white_y > 0 && defined($linear)) ? (($white_y+0)*($linear+0)) : undef;
+ my $recomputed=(defined($white_y) && $white_y > 0) ? target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode,$black_y) : undef;
+ my $effective_linear=(defined($recomputed) && defined($white_y) && $white_y > 0) ? (($recomputed+0)/($white_y+0)) : undef;
  my $peak_y=(ref($state) eq "HASH" && defined($state->{"peak_headroom_luminance"})) ? ($state->{"peak_headroom_luminance"}+0) : undef;
  my $peak_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_reference"})) ? ($state->{"peak_headroom_reference"}+0) : undef;
  my $peak_measured_ref=(ref($state) eq "HASH" && defined($state->{"peak_headroom_measured_reference"})) ? ($state->{"peak_headroom_measured_reference"}+0) : undef;
@@ -1582,7 +1627,9 @@ sub trace_sdr_autocal_target_y_reference {
   target_gamma=>$target_gamma||"bt1886",
   signal_mode=>$signal_mode||"sdr",
   target_linear=>defined($linear) ? $linear+0 : undef,
+  target_effective_linear=>defined($effective_linear) ? $effective_linear+0 : undef,
   white_y=>defined($white_y) ? $white_y+0 : undef,
+  black_y=>defined($black_y) ? $black_y+0 : undef,
   target_luminance=>defined($target_y) ? $target_y+0 : undef,
   target_luminance_recomputed=>defined($recomputed) ? $recomputed+0 : undef,
   peak_headroom_luminance=>defined($peak_y) ? $peak_y+0 : undef,
@@ -1599,7 +1646,8 @@ sub effective_target_luminance_for_autocal_reading {
 	  my $Y=luminance($reading);
 	  return $Y if(defined($Y) && $Y > 0);
 	 }
-	 my $target=target_luminance_for_autocal_step($white_y,$step,$target_gamma,$signal_mode);
+	 my $black_y=autocal_state_black_luminance($state || $LG_AUTOCAL_STATE);
+	 my $target=target_luminance_for_autocal_step($white_y,$step,$target_gamma,$signal_mode,$black_y);
 	 if(!defined($target) && autocal_step_is_peak_headroom($step)) {
 	  my $Y=luminance($reading);
 	  return $Y if(defined($Y) && $Y > 0);
@@ -16042,7 +16090,8 @@ eval {
 			 my ($white_reference_step)=grep { ref($_) eq "HASH" && $_->{"autocal_white_reference"} } @{$steps};
 			 my $white_reference_is_adjustable=($white_reference_step && ddc_target_for_step($white_reference_step)) ? 1 : 0;
 			 my $refresh_white_after_headroom=0;
-			 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0);
+			 my $initial_black_reference_enabled=(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $black_step) ? 1 : 0;
+			 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0)+($initial_black_reference_enabled ? 1 : 0);
 
 		 my $white_y=($target_luminance > 0) ? $target_luminance : undef;
 		 set_state_white_reference($state,$white_y) if(defined($white_y) && $white_y > 0);
@@ -16080,6 +16129,73 @@ eval {
 		  write_state($state);
 		  return $ref_reading;
 					 };
+			 my $read_black_reference_step=sub {
+			  my ($label,$message,$complete_message,$normalize_event,$trace_event,$initial_reference)=@_;
+			  return undef if(ref($black_step) ne "HASH");
+			  $step_num++;
+			  my $black_read_step=clone_picture($black_step);
+			  $black_read_step->{"stimulus"}=0 if(!defined($black_read_step->{"stimulus"}));
+			  $black_read_step->{"name"}="0%" if(!defined($black_read_step->{"name"}) || $black_read_step->{"name"} eq "");
+			  $state->{"current_step"}=$step_num;
+			  $state->{"total_steps"}=$total_ordered_steps;
+			  $state->{"current_name"}=$label;
+			  $state->{"phase"}="reading";
+			  $state->{"message"}=$message;
+			  set_state_active_step($state,$black_read_step,undef);
+			  write_state($state);
+			  my ($black_reading,$black_error)=read_step($config,$black_read_step,$state);
+			  die $black_error if($black_error && $black_error ne "cancelled");
+			  return undef if($black_error && $black_error eq "cancelled");
+			  return undef if(ref($black_reading) ne "HASH");
+			  my $black_target_y=target_luminance_for_step($white_y,$black_read_step,$target_gamma,$signal_mode,autocal_state_black_luminance($state));
+			  annotate_reading_target($black_reading,$white_y,$black_target_y,$target_x,$target_y);
+			  $black_reading->{"autocal_black_reference"}=JSON::PP::true if($initial_reference);
+			  my ($black_normalized,$original_black)=normalize_final_sdr_oled_black_reading($config,$black_read_step,$black_reading,$black_target_y);
+			  if($black_normalized) {
+			   trace_109($black_read_step,$normalize_event||"black_read_normalized",{
+			    reason=>$black_reading->{"black_normalization_reason"}||"sdr_oled_final_zero_target",
+			    original_Y=>defined($original_black->{"Y"}) ? ($original_black->{"Y"}+0) : undef,
+			    original_luminance=>defined($original_black->{"luminance"}) ? ($original_black->{"luminance"}+0) : undef,
+			    original_x=>defined($original_black->{"x"}) ? ($original_black->{"x"}+0) : undef,
+			    original_y=>defined($original_black->{"y"}) ? ($original_black->{"y"}+0) : undef,
+			    target_luminance=>defined($black_target_y) ? ($black_target_y+0) : undef,
+			    reading=>trace_reading_summary($black_reading)
+			   });
+			  }
+			  my $measured_black_y=luminance($black_reading);
+			  if(defined($measured_black_y) && $measured_black_y >= 0) {
+			   if($initial_reference) {
+			    my $measured_black_target_y=target_luminance_for_step($white_y,$black_read_step,$target_gamma,$signal_mode,$measured_black_y);
+			    if(defined($measured_black_target_y)) {
+			     $black_target_y=$measured_black_target_y;
+			     annotate_reading_target($black_reading,$white_y,$black_target_y,$target_x,$target_y);
+			    }
+			   }
+			   if($initial_reference || !defined($state->{"target_black_luminance"})) {
+			    $state->{"target_black_luminance"}=$measured_black_y+0;
+			   }
+			   if($initial_reference) {
+			    $state->{"setup_black_luminance"}=$measured_black_y+0;
+			    $state->{"initial_black_reference_luminance"}=$measured_black_y+0;
+			   } else {
+			    $state->{"final_black_luminance"}=$measured_black_y+0;
+			   }
+			  }
+			  $state->{"readings"}=merge_reading($state->{"readings"},$black_reading);
+			  $state->{"current_luminance"}=luminance($black_reading);
+			  $state->{"current_delta_e"}=undef;
+			  set_state_target_step_luminance($state,$black_target_y);
+			  $state->{"luminance_error_pct"}=undef;
+			  $state->{"message"}=$complete_message;
+			  trace_109($black_read_step,$trace_event||"black_reference_read",{
+			   target_luminance=>defined($black_target_y) ? ($black_target_y+0) : undef,
+			   measured_luminance=>defined($measured_black_y) ? ($measured_black_y+0) : undef,
+			   initial_reference=>$initial_reference ? JSON::PP::true : JSON::PP::false,
+			   reading=>trace_reading_summary($black_reading)
+			  });
+			  write_state($state);
+			  return $black_reading;
+			 };
 			 my $read_sdr_top_legal_white_validation=sub {
 			  my ($ref_step,$label,$message,$iteration)=@_;
 			  return (undef,undef,undef,undef,undef) if(ref($ref_step) ne "HASH");
@@ -16530,6 +16646,16 @@ eval {
 				 my $white_refreshed_after_headroom=0;
 					 my $low_shadow_calibration_announced=0;
 					 my %anchor_revisit_prior_best_known;
+				 if(!cancelled() && $initial_black_reference_enabled) {
+				  $read_black_reference_step->(
+				   "Auto Cal 0% black reference",
+				   "Reading initial 0% black reference for target curve",
+				   "Initial 0% black reference read complete",
+				   "initial_black_read_normalized",
+				   "initial_black_reference_read",
+				   1
+				  );
+				 }
 				 foreach my $step (@ordered) {
 		  last if(cancelled());
 		  $step_num++;
@@ -19884,42 +20010,14 @@ eval {
 			  }
 			 }
 				 if(!cancelled() && $black_step) {
-				  $step_num++;
-				  my $black_read_step=clone_picture($black_step);
-				  $black_read_step->{"stimulus"}=0 if(!defined($black_read_step->{"stimulus"}));
-			  $black_read_step->{"name"}="0%" if(!defined($black_read_step->{"name"}) || $black_read_step->{"name"} eq "");
-			  $state->{"current_step"}=$step_num;
-			  $state->{"total_steps"}=$total_ordered_steps;
-				  $state->{"current_name"}="Auto Cal 0%";
-				  $state->{"phase"}="reading";
-				  $state->{"message"}="Reading final 0% black";
-				  set_state_active_step($state,$black_read_step,undef);
-				  write_state($state);
-				  my ($black_reading,$black_error)=read_step($config,$black_read_step,$state);
-				  die $black_error if($black_error && $black_error ne "cancelled");
-				  if(ref($black_reading) eq "HASH") {
-				   my $black_target_y=target_luminance_for_step($white_y,$black_read_step,$target_gamma,$signal_mode);
-				   annotate_reading_target($black_reading,$white_y,$black_target_y,$target_x,$target_y);
-				   my ($black_normalized,$original_black)=normalize_final_sdr_oled_black_reading($config,$black_read_step,$black_reading,$black_target_y);
-				   if($black_normalized) {
-				    trace_109($black_read_step,"final_black_read_normalized",{
-				     reason=>$black_reading->{"black_normalization_reason"}||"sdr_oled_final_zero_target",
-				     original_Y=>defined($original_black->{"Y"}) ? ($original_black->{"Y"}+0) : undef,
-				     original_luminance=>defined($original_black->{"luminance"}) ? ($original_black->{"luminance"}+0) : undef,
-				     original_x=>defined($original_black->{"x"}) ? ($original_black->{"x"}+0) : undef,
-				     original_y=>defined($original_black->{"y"}) ? ($original_black->{"y"}+0) : undef,
-				     target_luminance=>defined($black_target_y) ? ($black_target_y+0) : undef,
-				     reading=>trace_reading_summary($black_reading)
-				    });
-				   }
-				   $state->{"readings"}=merge_reading($state->{"readings"},$black_reading);
-				   $state->{"current_luminance"}=luminance($black_reading);
-				   $state->{"current_delta_e"}=undef;
-				   set_state_target_step_luminance($state,$black_target_y);
-				   $state->{"luminance_error_pct"}=undef;
-				   $state->{"message"}="Final 0% black read complete";
-					   write_state($state);
-					  }
+				  $read_black_reference_step->(
+				   "Auto Cal 0%",
+				   "Reading final 0% black",
+				   "Final 0% black read complete",
+				   "final_black_read_normalized",
+				   "final_black_reference_read",
+				   0
+				  );
 				 }
 				 my $reconfirm_sdr_low_shadow_final_context=sub {
 				  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
