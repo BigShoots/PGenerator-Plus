@@ -183,6 +183,12 @@ rc_PGenerator_start () {
  fi
  # End Patch for RPI 3 Model B Plus to fix bluetooth mac address 
  if [ "$1" == "start" ]; then
+  if [ "$PROJECT" == "RPI5" ]; then
+   ensure_pgenerator_service_account
+   sanitize_pi5_display_config
+   /bin/sync
+   return 0
+  fi
 
   # Suppress kernel console messages so splash stays clean.
   # cmdline.txt has "quiet loglevel=1" for early boot; this catches
