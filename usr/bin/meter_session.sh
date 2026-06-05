@@ -54,12 +54,15 @@ signal_startup_ready() {
  chmod 666 "$STARTUP_READY_FILE" 2>/dev/null
 }
 
-# Atomic-ish state file writer that keeps the file world-writable so the
-# webui daemon (running as the unprivileged pgenerator user) can overwrite
-# our "measuring" marker between READ commands.
+# The helper runs as root while the WebUI runs as pgenerator. On Bookworm,
+# fs.protected_regular blocks root from truncating a pgenerator-owned file in
+# /tmp, even when it is 0666, so publish by replacing with a fresh file.
 write_state() {
- echo "$1" > "$STATE_FILE"
- chmod 666 "$STATE_FILE" 2>/dev/null
+ local tmp="${STATE_FILE}.$$.$RANDOM.tmp"
+ printf '%s\n' "$1" > "$tmp" || return 1
+ chmod 666 "$tmp" 2>/dev/null || true
+ chown pgenerator:pgenerator "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$STATE_FILE"
 }
 
 startup_output_excerpt() {

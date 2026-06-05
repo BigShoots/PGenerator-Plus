@@ -1271,18 +1271,21 @@ sub webui_meter_session_send_command (@) {
 }
 
 sub webui_meter_session_stop (@) {
- # Try graceful STOP via FIFO first (lets the daemon quit spotread cleanly).
- &webui_meter_session_send_command("STOP\n") if(-p $_meter_session_fifo);
+	 my $state=&webui_meter_read_state_read();
+	 my $setup_blocked=($state=~/"status"\s*:\s*"setup"/i || $state=~/"setup_busy"\s*:\s*true/i) ? 1 : 0;
+	 # Try graceful STOP via FIFO first (lets the daemon quit spotread cleanly).
+	 &webui_meter_session_send_command("STOP\n") if(-p $_meter_session_fifo);
  # Wait briefly for the daemon to exit on its own.
  # Wait for the daemon to tear down on its own. Its cleanup quits spotread
  # cleanly and waits for any in-flight USB read to finish before killing it;
  # force-killing spotread mid-transaction wedges the Pi's USB controller
  # ("communication failed during init" next time), so allow several seconds.
  my $waited=0;
- while($waited < 130 && &webui_meter_session_alive()) {
-  Time::HiRes::sleep(0.1);
-  $waited++;
- }
+	 my $wait_limit=$setup_blocked ? 5 : 130;
+	 while($waited < $wait_limit && &webui_meter_session_alive()) {
+	  Time::HiRes::sleep(0.1);
+	  $waited++;
+	 }
  # Still alive after the graceful path: TERM (its trap re-runs the graceful
  # teardown), then escalate to SIGKILL only as a last resort.
  if(&webui_meter_session_alive()) {
@@ -1299,9 +1302,9 @@ sub webui_meter_session_stop (@) {
  }
  # Backstop: only -9 a spotread/helper that is STILL running (orphaned), so we
  # never kill a fresh read mid-USB transaction.
- system("sudo bash -c \"pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread\" 2>/dev/null");
- system("sudo bash -c \"pgrep -f 'script.*spotread' >/dev/null 2>&1 && pkill -9 -f 'script.*spotread'\" 2>/dev/null");
- system("sudo bash -c \"pgrep -f 'cat.*spotread_cmd' >/dev/null 2>&1 && pkill -9 -f 'cat.*spotread_cmd'\" 2>/dev/null");
+	 system("sudo pkill -9 -x spotread 2>/dev/null");
+	 system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
+	 system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
 		 &webui_meter_session_ready_cleanup();
 		 unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
 	}
