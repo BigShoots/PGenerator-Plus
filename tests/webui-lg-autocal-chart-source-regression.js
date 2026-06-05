@@ -206,6 +206,15 @@ vm.runInContext([
     globalThis.completePhaseTargetReferenceActive = meterAutoCalGreyscaleTargetWhiteReferenceActive([
       { ire: 99, name: '99%', luminance: 149 }
     ]);
+    meterFindSeriesWhiteReading = function(readings){
+      return (readings || []).find(reading => Number(reading && reading.ire) === 100 && meterReadingHasLuminance(reading)) || null;
+    };
+    const completedSeriesWhite = meterEffectiveGreyscaleWhiteReference([
+      normalReferenceWhite,
+      { ire: 109, name: '109%', luminance: 230, Y: 230, series_mode: 'lg-autocal-26' }
+    ]);
+    globalThis.completedSeriesWhiteY = meterReadingLuminanceNits(completedSeriesWhite);
+    globalThis.completedSeriesWhiteSynthetic = completedSeriesWhite && completedSeriesWhite.synthetic_target;
   `
 ].join('\n'), context);
 
@@ -241,6 +250,95 @@ assert.strictEqual(
   false,
   'AutoCal complete popup state should not keep target-white override active for existing chart readings'
 );
+assert.strictEqual(context.completedSeriesWhiteY, 162, 'completed LG26 series reads should keep the measured 100% legal-white chart reference even after 109% arrives');
+assert.strictEqual(context.completedSeriesWhiteSynthetic, undefined, 'completed LG26 series reads should not synthesize chart white from the 109% read');
+
+const headroomContext = {
+  console,
+  JSON,
+  Object,
+  Array,
+  Number,
+  String,
+};
+vm.createContext(headroomContext);
+vm.runInContext([
+  `
+    var meterActiveSeriesType = 'greyscale';
+    var meterActiveSeriesPoints = 26;
+    var meterActiveSeriesSignalMode = 'sdr';
+    var meterAutoCalRunning = false;
+    var meterAutoCalPolling = false;
+    var meterActionPending = false;
+    var meterFullAutoCalRunning = false;
+    var meterFullAutoCalPhase = '';
+    const document = { getElementById: () => ({ value: 'bt1886' }) };
+    function meterUseLgAutoCal26(){ return true; }
+    function meterGreyAllowsHeadroomTargets(){ return true; }
+    function meterReadingIsGreyscale(){ return true; }
+    function meterReadingHasLuminance(reading){ return !!(reading && ((reading.luminance != null && reading.luminance >= 0) || (reading.Y != null && reading.Y >= 0))); }
+    function meterReadingLuminanceNits(reading){ return Number(reading && (reading.luminance != null ? reading.luminance : reading.Y)); }
+    function meterReadingPlotIre(reading){ return reading && (reading.plot_ire != null ? reading.plot_ire : reading.ire); }
+    function meterHdrDiffuseWhiteOverride(){ return null; }
+    function meterChartIsPq(){ return false; }
+    function meterChartIsDv(){ return false; }
+    function meterChartIsHdr(){ return false; }
+    function meterChartIsHlg(){ return false; }
+    function meterDvMapModeValue(){ return '0'; }
+    function meterGreyChartUsesPqTarget(){ return false; }
+    function meterPatchUsesVideoRange(){ return true; }
+    function meterPatchRangeMin(){ return 16; }
+    function meterPatchRangeSpan(){ return 219; }
+    function meterGreySignalFractionFromCode(code){ return (Number(code) - 64) / 876; }
+    function meterGreyCodeLooksHeadroom(code){ return Number(code) > 255; }
+    function meterGreyChartTargetGammaSelection(){ return 'bt1886'; }
+    function meterGreyChartTargetCode(step){ return step && (step.r_code != null ? step.r_code : step.r); }
+    function meterExplicitLgTargetWhiteReferenceNits(){ return null; }
+    function meterStoredLgTargetWhiteReferenceNits(){ return null; }
+    function meterColorReferenceNits(){ return 200; }
+    function meterChartBlackLevel(){ return 0; }
+    function meterFindSeriesWhiteReading(readings){
+      return (readings || []).find(reading => Number(reading && reading.ire) === 100 && meterReadingHasLuminance(reading)) || null;
+    }
+    function meterGreyscaleReferenceReadings(readings){
+      return (readings || []).filter(reading => reading && meterReadingIsGreyscale(reading) && meterReadingHasLuminance(reading));
+    }
+  `,
+  extractFunction('meterAutoCalGreyscaleTargetWhiteReferenceActive'),
+  extractFunction('meterReadingsUseLgHeadroomReference'),
+  extractFunction('meterReadingsHaveLgAutoCal26SeriesMarker'),
+  extractFunction('meterLgAutoCal26SeriesReadUsesInitialWhite'),
+  extractFunction('meterGreyHeadroomReferenceReading'),
+  extractFunction('bt1886Eotf'),
+  extractFunction('gammaEotf'),
+  extractFunction('srgbEotf'),
+  extractFunction('targetEotf'),
+  extractFunction('meterGreyTargetSignal'),
+  extractFunction('meterGreyTargetLuminance'),
+  extractFunction('meterGreyStepCodeForIre'),
+  extractFunction('meterGreySolvePeakFromHeadroomReading'),
+  extractFunction('meterLgHeadroomDerivedWhiteReferenceNits'),
+  extractFunction('meterGreyTargetPeakForReadings'),
+  `
+    const steps = [{ ire: 100, r: 940 }, { ire: 109, r: 1023 }];
+    const readings = [
+      { ire: 100, name: '100% legal white', luminance: 200, Y: 200, autocal_white_reference: true, autocal_reference_only: true, autocal_legal_white_anchor: true },
+      { ire: 109, name: '109%', luminance: 230, Y: 230, r_code: 1023, series_mode: 'lg-autocal-26' }
+    ];
+    globalThis.seriesHeadroomReference = meterLgHeadroomDerivedWhiteReferenceNits(readings);
+    globalThis.seriesPeak = meterGreyTargetPeakForReadings(readings, steps, 200, 0);
+    meterAutoCalRunning = true;
+    meterFullAutoCalRunning = true;
+    meterFullAutoCalPhase = 'post-3d-polish';
+    globalThis.autoCalHeadroomReference = meterLgHeadroomDerivedWhiteReferenceNits(readings);
+    globalThis.autoCalPeak = meterGreyTargetPeakForReadings(readings, steps, 200, 0);
+  `
+].join('\n'), headroomContext);
+
+assert.strictEqual(headroomContext.seriesHeadroomReference, null, '26pt series reads should not derive chart white from 109% headroom');
+assert.strictEqual(headroomContext.seriesPeak, 200, '26pt series reads should keep the initial 100% white target peak after 109% is read');
+assert(Number.isFinite(headroomContext.autoCalHeadroomReference) && Math.abs(headroomContext.autoCalHeadroomReference - 200) > 0.01, 'active AutoCal should still be allowed to derive target white from 109%');
+assert(Number.isFinite(headroomContext.autoCalPeak) && Math.abs(headroomContext.autoCalPeak - 200) > 0.01, 'active AutoCal chart targets should still use the 109%-derived white peak');
 assert(
   extractFunction('meterEnsureDeltaECache').includes('greyWhiteStamp') &&
     extractFunction('meterEnsureDeltaECache').includes('meterGreyscaleChartWhiteReference(readings)'),
