@@ -154,6 +154,7 @@ sub drm_mode_info_for_idx(@) {
 sub requested_hdmi_tmds_khz(@) {
  my ($pixel_clock,$color_fmt,$max_bpc,$is_dv)=@_;
  return 0 if($pixel_clock eq "" || $pixel_clock <= 0);
+ return $pixel_clock if($is_dv && $color_fmt == 2);
  return int($pixel_clock * 1.5 + 0.5) if($is_dv);
  return $pixel_clock if($color_fmt == 2);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
@@ -166,7 +167,8 @@ sub ensure_hdmi_bandwidth_mode(@) {
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=0 if($is_dv || $color_fmt eq "");
+ $color_fmt=2 if($is_dv);
+ $color_fmt=0 if($color_fmt eq "");
  $max_bpc=12 if($is_dv);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
@@ -274,7 +276,8 @@ sub prearm_drm_mode(@) {
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=0 if($is_dv || $color_fmt eq "");
+ $color_fmt=2 if($is_dv);
+ $color_fmt=0 if($color_fmt eq "");
  $max_bpc=12 if($is_dv);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
@@ -352,7 +355,7 @@ sub apply_drm_properties (@) {
  # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
- $color_fmt=0 if($is_dv);
+ $color_fmt=2 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
  if($color_fmt > 2) {
   &log("DRM: output format=$color_fmt is unsupported on Pi 5; using RGB output");
@@ -423,7 +426,7 @@ sub pattern_generator_start(@) {
  &auto_select_4k_mode();
  &ensure_hdmi_bandwidth_mode();
  &apply_drm_properties();
- &log("DRM: skipping modetest pre-arm; renderer owns the modeset");
+ &prearm_drm_mode();
  &get_hdmi_info();
  if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry") && !&kms_connector_has_property("output format")) {
   $use_drm_override=0;
