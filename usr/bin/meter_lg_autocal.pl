@@ -15121,7 +15121,7 @@ sub read_step_once {
 		 $delay_ms=$step_delay_ms if($step_delay_ms > $delay_ms);
 		 my $target_white_delay_ms=sdr_target_white_reference_read_delay_ms($config,$step);
 		 $delay_ms=$target_white_delay_ms if(defined($target_white_delay_ms) && $target_white_delay_ms > $delay_ms);
-		 $delay_ms=5000 if($ire <= 5 && $delay_ms < 5000);
+		 $delay_ms=3000 if($ire <= 5 && $delay_ms < 3000);
 		 $delay_ms=4200 if($ire > 5 && $ire <= 10 && $delay_ms < 4200);
 		 $delay_ms=3200 if($ire > 10 && $ire <= 25 && $delay_ms < 3200);
 		 $delay_ms=2400 if($ire > 25 && $ire <= 50 && $delay_ms < 2400);
