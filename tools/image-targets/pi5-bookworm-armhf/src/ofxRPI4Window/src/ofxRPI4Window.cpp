@@ -30,6 +30,23 @@ static bool pi5_avi_infoframe_uses_ycbcr(const avi_infoframe &avi_infoframe)
 	return avi_infoframe.output_format != 0;
 }
 
+static bool pi5_lldv_uses_10bit_surface(const avi_infoframe &avi_infoframe,
+	int bit_depth, bool is_dovi, bool is_std_dovi)
+{
+	return is_dovi && !is_std_dovi &&
+		avi_infoframe.output_format == 2 &&
+		avi_infoframe.max_bpc == 12 &&
+		bit_depth >= 8 && bit_depth <= 12;
+}
+
+static bool pi5_lldv_needs_rgb2ycbcr_shader(const avi_infoframe &avi_infoframe,
+	bool is_dovi, bool is_std_dovi)
+{
+	return is_dovi && !is_std_dovi &&
+		(avi_infoframe.output_format != 0 ||
+		 (avi_infoframe.output_format == 0 && avi_infoframe.rgb_quant_range == 2));
+}
+
 static uint64_t pi5_connector_colorspace_from_avi(const char *property_name,
 	const avi_infoframe &avi_infoframe)
 {
@@ -1599,21 +1616,28 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 		ofLog() << "DRM: panel is HDR and DoVi capable";
 		if (isHDR && isDoVi && !is_std_DoVi) {
 
-			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
-				ofLog() << "DRM: setting up Low Latency DoVi(10 bit) window/surface";
-				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
-				HDRWindowSetup();
-			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
-				ofLog() << "DRM: setting up Low Latency DoVi(12 bit) window/surface"; 
+				if (((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) ||
+					pi5_lldv_uses_10bit_surface(avi_info, bit_depth, isDoVi, is_std_DoVi)) {
+					if (avi_info.max_bpc == 12)
+						ofLog() << "DRM: setting up Low Latency DoVi(12 bpc YCbCr 4:2:2 transport, 10 bit surface)";
+					else
+						ofLog() << "DRM: setting up Low Latency DoVi(10 bit) window/surface";
+					FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
+					if (!ofxRPI4Window::shader_init &&
+						pi5_lldv_needs_rgb2ycbcr_shader(avi_info, isDoVi, is_std_DoVi))
+						shader_init = 1;
+					HDRWindowSetup();
+				} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
+					ofLog() << "DRM: setting up Low Latency DoVi(12 bit) window/surface";
 
-				FindModifiers(DRM_FORMAT_ABGR16161616F, HDRplaneId);
-				Bit10_16WindowSetup();
-			} else {
-				ofLog() << "DRM: setting up Low Latency DoVi(8 bit) window/surface"; 
+					FindModifiers(DRM_FORMAT_ABGR16161616F, HDRplaneId);
+					Bit10_16WindowSetup();
+				} else {
+					ofLog() << "DRM: setting up Low Latency DoVi(8 bit) window/surface";
 
-				FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
-				SDRWindowSetup();
-			}
+					FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
+					SDRWindowSetup();
+				}
 		} else if (isHDR && !isDoVi && !is_std_DoVi) {
 
 
@@ -1630,16 +1654,10 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 				FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
 				SDRWindowSetup();
 			}
-		} else if (isHDR && isDoVi && is_std_DoVi) {
-			if (bit_depth == 10 && avi_info.max_bpc == 10) {
-				ofLog() << "DRM: setting up Standard DoVi(10 bit) window/surface";
-				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
-				HDRWindowSetup();
-			} else {
-			    ofLog() << "DRM: setting up Standard DoVi(8 bit) window/surface";
+			} else if (isHDR && isDoVi && is_std_DoVi) {
+				ofLog() << "DRM: setting up Standard DoVi(8 bit) window/surface";
 				FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
 				SDRWindowSetup();
-			}
 		} else {
 			if (bit_depth == 10 && avi_info.max_bpc == 10) {
 				ofLog() << "DRM: setting up SDR(10 bit) window/surface";
@@ -2968,40 +2986,39 @@ void ofxRPI4Window::update()
 		}
 		else if (isHDR && isDoVi && !is_std_DoVi) {
 
-			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
-				ofLog() << "DRM: updating Low Latency DoVi(10 bit) window/surface";
-				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
-				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
-					shader_init = 1;
-				HDRWindowSetup();
-			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
-				ofLog() << "DRM: updating Low Latency DoVi(12 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ABGR16161616F, HDRplaneId);
-				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
-					shader_init = 1;
-				Bit10_16WindowSetup();
-			} else {
-				ofLog() << "DRM: updating Low Latency Dovi(8 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
-				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
-					shader_init = 1;
-				SDRWindowSetup();				
-			}	
+				if (((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) ||
+					pi5_lldv_uses_10bit_surface(avi_info, bit_depth, isDoVi, is_std_DoVi)) {
+					if (avi_info.max_bpc == 12)
+						ofLog() << "DRM: updating Low Latency DoVi(12 bpc YCbCr 4:2:2 transport, 10 bit surface)";
+					else
+						ofLog() << "DRM: updating Low Latency DoVi(10 bit) window/surface";
+					FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
+					if (!ofxRPI4Window::shader_init &&
+						pi5_lldv_needs_rgb2ycbcr_shader(avi_info, isDoVi, is_std_DoVi))
+						shader_init = 1;
+					HDRWindowSetup();
+				} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
+					ofLog() << "DRM: updating Low Latency DoVi(12 bit) window/surface";
+					FindModifiers(DRM_FORMAT_ABGR16161616F, HDRplaneId);
+					if (!ofxRPI4Window::shader_init &&
+						pi5_lldv_needs_rgb2ycbcr_shader(avi_info, isDoVi, is_std_DoVi))
+						shader_init = 1;
+					Bit10_16WindowSetup();
+				} else {
+					ofLog() << "DRM: updating Low Latency Dovi(8 bit) window/surface";
+					FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
+					if (!ofxRPI4Window::shader_init &&
+						pi5_lldv_needs_rgb2ycbcr_shader(avi_info, isDoVi, is_std_DoVi))
+						shader_init = 1;
+					SDRWindowSetup();
+				}
 
-		} else if (isHDR && isDoVi && is_std_DoVi) {
-		 	if (bit_depth == 10) {
-				ofLog() << "DRM: updating Standard DoVi(10 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
-				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
-					shader_init =1;
-				HDRWindowSetup();
-			} else {
-				ofLog() << "DRM: updating Standard DoVi(8 bit) window/surface"; 
+			} else if (isHDR && isDoVi && is_std_DoVi) {
+				ofLog() << "DRM: updating Standard DoVi(8 bit) window/surface";
 				FindModifiers(DRM_FORMAT_ARGB8888, SDRplaneId);
 				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
-					shader_init = 1;				
+					shader_init = 1;
 				SDRWindowSetup();
-			}
 
 		} 
 		else {

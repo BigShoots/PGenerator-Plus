@@ -160,15 +160,29 @@ sub requested_hdmi_tmds_khz(@) {
  return int($pixel_clock * $max_bpc / 8 + 0.5);
 }
 
+sub dv_low_latency_enabled(@) {
+ return 0 if(!int($pgenerator_conf{"dv_status"} || 0));
+ return 1 if(int($pgenerator_conf{"dv_interface"} || 0) == 1);
+ return 1 if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
+ return 0;
+}
+
 sub ensure_hdmi_bandwidth_mode(@) {
  return if(!$is_kms);
  my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
+ my $is_lldv=&dv_low_latency_enabled();
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=0 if($is_dv);
+ $color_fmt=($is_lldv ? 2 : 0) if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- $max_bpc=8 if($is_dv);
+ if($is_dv) {
+  if($is_lldv) {
+   $max_bpc=12 if($max_bpc ne "10" && $max_bpc ne "12");
+  } else {
+   $max_bpc=8;
+  }
+ }
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
 
@@ -271,13 +285,20 @@ sub drm_primary_plane_for_crtc(@) {
 sub prearm_drm_mode(@) {
  return if(!$is_kms);
  my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
+ my $is_lldv=&dv_low_latency_enabled();
  my $is_hdr=int($pgenerator_conf{"is_hdr"} || 0);
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=0 if($is_dv);
+ $color_fmt=($is_lldv ? 2 : 0) if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- $max_bpc=8 if($is_dv);
+ if($is_dv) {
+  if($is_lldv) {
+   $max_bpc=12 if($max_bpc ne "10" && $max_bpc ne "12");
+  } else {
+   $max_bpc=8;
+  }
+ }
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
  return if($color_fmt == 0 && $max_bpc <= 8 && !$is_hdr && !$is_dv);
@@ -329,6 +350,7 @@ sub prearm_drm_mode(@) {
 sub apply_drm_properties (@) {
  return if(!$is_kms);
  my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
+ my $is_lldv=&dv_low_latency_enabled();
  # Find connected HDMI connector ID
  my $connector_id="";
  open(MT,"timeout 3 $modetest -c 2>/dev/null|");
@@ -342,7 +364,13 @@ sub apply_drm_properties (@) {
  return if($connector_id eq "");
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
- $max_bpc=8 if($is_dv);
+ if($is_dv) {
+  if($is_lldv) {
+   $max_bpc=12 if($max_bpc ne "10" && $max_bpc ne "12");
+  } else {
+   $max_bpc=8;
+  }
+ }
  if($max_bpc ne "" && $max_bpc > 0) {
   if(&modetest_connector_write($connector_id,"max bpc",$max_bpc)) {
    &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
@@ -354,7 +382,7 @@ sub apply_drm_properties (@) {
  # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
- $color_fmt=0 if($is_dv);
+ $color_fmt=($is_lldv ? 2 : 0) if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
  if($color_fmt > 2) {
   &log("DRM: output format=$color_fmt is unsupported on Pi 5; using RGB output");
