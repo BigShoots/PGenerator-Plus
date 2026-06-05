@@ -51,8 +51,12 @@ assert(
   freshVerifySource.includes('read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label)') &&
     freshVerifySource.includes('die "Fresh final low-shadow verification failed for $label" if(ref($fresh_reading) ne "HASH");') &&
     freshVerifySource.includes('low_shadow_final_fresh_verification') &&
-    freshVerifySource.includes('if(!$fresh_pass)'),
-  '2.3 handoff must still rely on the existing fresh final verification and fail bad or missing rereads'
+    freshVerifySource.includes('if(!$fresh_pass)') &&
+    freshVerifySource.includes('low_shadow_final_fresh_verification_warning_only') &&
+    freshVerifySource.includes('$fresh_verify_record->{"warning_only"}=JSON::PP::true;') &&
+    freshVerifySource.includes('$fresh_verify_record->{"final_source"}="cached_best_warning";') &&
+    !freshVerifySource.includes('die "$label fresh final verification rejected cached best:'),
+  '2.3 handoff should still trace fresh final verification but must keep cached best as warning-only instead of aborting'
 );
 
 console.log('LG AutoCal SDR 2.3 low-shadow luma handoff regression checks passed.');

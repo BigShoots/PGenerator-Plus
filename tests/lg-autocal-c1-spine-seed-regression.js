@@ -278,16 +278,18 @@ const lowShadowFinalContextSource = sliceBetween(
   'return scalar(@records);'
 );
 assert(
-  lowShadowFinalContextSource.includes('sdr_low_shadow_final_context_hard_reject_controlled_error') &&
-    lowShadowFinalContextSource.includes('$state->{"status"}="error";') &&
-    lowShadowFinalContextSource.includes('$state->{"current_name"}="Auto Cal error";') &&
-    lowShadowFinalContextSource.includes('$state->{"message"}=$failure_message;') &&
+  lowShadowFinalContextSource.includes('sdr_low_shadow_final_context_hard_reject_warning_only') &&
+    lowShadowFinalContextSource.includes('$record->{"warning"}=$failure_message;') &&
+    lowShadowFinalContextSource.includes('$record->{"warning_only"}=JSON::PP::true;') &&
+    lowShadowFinalContextSource.includes('$state->{"message"}=$failure_message." (warning only)";') &&
     lowShadowFinalContextSource.includes('$state->{"best_delta_e"}=defined($entry->{"delta_e"})') &&
     lowShadowFinalContextSource.includes('$state->{"best_luminance_error_pct"}=defined($entry->{"luminance_error_pct"})') &&
-    lowShadowFinalContextSource.includes('$state->{"low_shadow_final_requires_more_adjustment"}=JSON::PP::true;') &&
+    lowShadowFinalContextSource.includes('$state->{"low_shadow_final_context_warnings"}=[]') &&
     lowShadowFinalContextSource.includes('write_state($state);') &&
-    lowShadowFinalContextSource.includes('die $failure_message;'),
-  'hard low-shadow final-context reconfirm rejects should preserve a controlled error status and prior slot best before aborting'
+    !lowShadowFinalContextSource.includes('$state->{"status"}="error";') &&
+    !lowShadowFinalContextSource.includes('$state->{"current_name"}="Auto Cal error";') &&
+    !lowShadowFinalContextSource.includes('die $failure_message;'),
+  'hard low-shadow final-context reconfirm rejects should become trace/status warnings and must not abort AutoCal'
 );
 
 const lowShadowEndpointSource = sliceBetween(
