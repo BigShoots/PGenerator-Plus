@@ -20285,11 +20285,13 @@ function meterAutoCalSyncLgCalibrationMode(status){
 function meterAutoCalStepForIre(ire){
  const wanted=Number(ire);
  if(!Number.isFinite(wanted)||!Array.isArray(meterSeriesSteps)) return null;
- return meterSeriesSteps.find(step=>{
+ const matches=(step,values)=>{
   if(!step) return false;
-  const values=[step.ire,step.plot_ire,step.stimulus,step.signal_r_pct,step.ddc_target_ire,step.ddc_array_ire];
   return values.some(value=>Number.isFinite(Number(value))&&Math.abs(Number(value)-wanted)<0.001);
- })||null;
+ };
+ return meterSeriesSteps.find(step=>matches(step,[step.ire,step.plot_ire,step.nominal_ire,step.patch_ire,step.stimulus,step.signal_r_pct]))
+  || meterSeriesSteps.find(step=>!meterReadingIsAutoCalReferenceOnly(step)&&matches(step,[step.ddc_target_ire,step.ddc_array_ire]))
+  || null;
 }
 
 function meterAutoCalBestKnownReadings(status){
