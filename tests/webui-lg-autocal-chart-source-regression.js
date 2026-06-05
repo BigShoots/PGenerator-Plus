@@ -186,6 +186,8 @@ vm.runInContext([
 ].join('\n'), context);
 
 assert.strictEqual(context.reading99.request_id, 'current-autocal-99', 'AutoCal chart should prefer current best-known direct 99 over stale series/status 99');
+assert.strictEqual(context.reading99.name, '99%', 'LG26 chart labels should stay on nominal slot labels instead of showing code-derived stimulus values');
+assert(Math.abs(Number(context.reading99.stimulus) - 99.087) < 0.001, 'LG26 chart analysis should still retain the code-derived 99% stimulus separately from the label');
 assert.strictEqual(context.bestKnown99ForChart.name, '99%', 'Best-known 99 should match the actual 99 step, not the 100% legal-white DDC alias');
 assert.strictEqual(context.bestKnown99ForChart.autocal_reference_only, undefined, 'Best-known 99 should not inherit reference-only metadata from the 100% legal-white alias');
 assert.strictEqual(context.reading99.best_known_delta_e, 0.2478727, 'best-known direct 99 delta should remain attached for status/report context');
