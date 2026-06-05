@@ -14270,6 +14270,21 @@ sub post_cal_series_adjustment {
 	  $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
 	  my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
   next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
+  if(ref($low_shadow_neighbor_risk) eq "HASH" && ref($control_step) eq "HASH" && defined($control_step->{"ire"}) && abs(($control_step->{"ire"}+0)-5) < 0.001) {
+   $evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_5_direct_neighbor_risk" if(@evaluated);
+   $evaluated[-1]{"neighbor_risk"}=$low_shadow_neighbor_risk if(@evaluated);
+   trace_109($read_step,"post_cal_series_low_shadow_5_direct_skipped",{
+    label=>$target->{"label"},
+    reason=>$adjust_outlier,
+    delta_e=>defined($adjust_de)?$adjust_de+0:undef,
+    luminance_error_pct=>defined($adjust_lum_pct)?$adjust_lum_pct+0:undef,
+    neighbor_ire=>$low_shadow_neighbor_risk->{"neighbor_ire"},
+    neighbor_luminance_error_pct=>$low_shadow_neighbor_risk->{"neighbor_luminance_error_pct"},
+    skipped_reason=>"post_cal_low_shadow_5_direct_neighbor_risk",
+    adjustments=>trace_adjustments_summary($adjustments),
+   });
+   next;
+  }
   foreach my $adj (@{$adjustments}) {
    next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
    next if(ref($arrays->{$adj->{"setting"}}) ne "ARRAY");
