@@ -11757,12 +11757,14 @@ function meterFindLgAutoCalLegalWhiteReference(readings){
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=meterGreyscaleReferenceReadings(readings);
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
- const legalWhite=lgAutoCalChartRef?meterFindLgAutoCalLegalWhiteReference(list):null;
+ const globalList=(lgAutoCalChartRef&&Array.isArray(meterReadings)&&meterReadings!==readings)?meterGreyscaleReferenceReadings(meterReadings):[];
+ const legalWhite=lgAutoCalChartRef?(meterFindLgAutoCalLegalWhiteReference(list)||meterFindLgAutoCalLegalWhiteReference(globalList)):null;
  if(lgAutoCalChartRef&&legalWhite) return legalWhite;
  const referenceList=lgAutoCalChartRef?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
+ const globalReferenceList=lgAutoCalChartRef?globalList.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):globalList;
  const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
  if(lgAutoCalChartRef&&magicWandPhase){
-  const magicWandWhite=meterFindSeriesWhiteReading(referenceList);
+  const magicWandWhite=meterFindSeriesWhiteReading(referenceList)||meterFindSeriesWhiteReading(globalReferenceList);
   if(magicWandWhite) return magicWandWhite;
  }
  const activeAutoCalTargetY=meterAutoCalGreyscaleTargetWhiteReferenceNits(list);
@@ -11772,6 +11774,10 @@ function meterEffectiveGreyscaleWhiteReference(readings){
  }
  const white=meterFindSeriesWhiteReading(referenceList);
  if(white) return white;
+ if(lgAutoCalChartRef){
+  const globalWhite=meterFindSeriesWhiteReading(globalReferenceList);
+  if(globalWhite) return globalWhite;
+ }
  const explicitTargetY=meterExplicitLgTargetWhiteReferenceNits(list);
  if(explicitTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(explicitTargetY);
@@ -11819,6 +11825,8 @@ function meterEffectiveGreyscaleWhiteReference(readings){
 function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
  if(meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
  const phase=String(meterFullAutoCalPhase||'');
+ const autoPhase=String(meterAutoCalPhase||'');
+ if(autoPhase==='complete'||autoPhase==='error') return false;
  const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish'||phase==='magic-wand';
  return !!(meterAutoCalRunning||meterAutoCalPolling||meterActionPending||(meterFullAutoCalRunning&&fullGreyscalePhase));
 }
@@ -12548,6 +12556,18 @@ function meterEnsureDeltaECache(readings){
  const greyMode=meterGreyRefMode();
 	const gw=meterGrayWorldWeight();
 	const tgtGamma=((typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||'')))||'';
+	let greyWhiteStamp='';
+	try{
+	 const greyWhite=meterGreyscaleChartWhiteReference(readings);
+	 const greyWhiteY=meterReadingLuminanceNits(greyWhite);
+	 if(greyWhiteY>0){
+	  greyWhiteStamp=[
+	   Number(greyWhiteY).toFixed(6),
+	   greyWhite&&greyWhite.synthetic_target?'synthetic':'measured',
+	   greyWhite&&(greyWhite.request_id||greyWhite.run_id||greyWhite.timestamp||greyWhite.name||'')
+	  ].join('|');
+	 }
+	}catch(e){}
 	const targetContext=[
 	 meterChartSignalMode(),
 	 tgtGamma,
@@ -12555,7 +12575,8 @@ function meterEnsureDeltaECache(readings){
 	 (typeof meterChartHdrPeak==='function')?meterChartHdrPeak():'',
 	 (typeof meterChartMasterMin==='function')?meterChartMasterMin():'',
 	 (typeof meterChartBt2390Enabled==='function'&&meterChartBt2390Enabled())?'bt2390':'',
-	 (typeof meterHdrDiffuseWhiteOverride==='function')?meterHdrDiffuseWhiteOverride():''
+	 (typeof meterHdrDiffuseWhiteOverride==='function')?meterHdrDiffuseWhiteOverride():'',
+	 greyWhiteStamp
 	].join(':');
 	const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+targetContext;
 	readings.forEach(rd=>{

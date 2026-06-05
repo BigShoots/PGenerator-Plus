@@ -71,6 +71,17 @@ vm.runInContext([
     var meterActiveSeriesType = 'greyscale';
     var meterActiveSeriesPoints = 26;
     var meterActiveSeriesSignalMode = 'sdr';
+    var meterReadings = [
+      { ire: 99, name: '99%', luminance: 149, request_id: 'magic-wand-visible-99' },
+      { ire: 100, name: '100% legal white', luminance: 158, Y: 158, autocal_white_reference: true, autocal_reference_only: true, autocal_legal_white_anchor: true, request_id: 'magic-wand-verify-white' }
+    ];
+    var meterFullAutoCalPhase = '';
+    var meterAutoCalPhase = 'complete';
+    var meterAutoCalMagicWandActive = false;
+    var meterAutoCalRunning = true;
+    var meterAutoCalPolling = false;
+    var meterActionPending = false;
+    var meterFullAutoCalRunning = false;
     function meterChartSignalMode(){ return 'sdr'; }
     function meterReadingPlotIre(item){ return item && item.ire; }
     function meterReadingIsGreyscale(){ return true; }
@@ -96,10 +107,22 @@ vm.runInContext([
       return !!(reading && reading.luminance != null && reading.luminance >= 0);
     }
     function meterStepNameKey(value){ return value && value.ire != null ? String(Number(value.ire)) : ''; }
+    function meterAutoCalGreyscaleTargetWhiteReferenceNits(){ return 200; }
+    function meterSyntheticGreyWhiteReading(luminance){ return { luminance, Y: luminance, synthetic_target: true }; }
+    function meterLgHeadroomDerivedWhiteReferenceNits(){ return null; }
+    function meterLgTargetWhiteReferenceNits(){ return null; }
+    function meterFindMeasuredWhiteReading(){ return null; }
+    function meterReadingXYZ(reading){ return reading ? { X: reading.X || 0, Y: reading.Y || reading.luminance || 0, Z: reading.Z || 0 } : null; }
+    function meterColorReferenceNits(){ return 100; }
+    function targetEotf(){ return 1; }
   `,
+  extractFunction('meterGreyscaleReferenceReadings'),
+  extractFunction('meterReadingIsAutoCalReferenceOnly'),
   extractFunction('meterReadingDisablesAutoCalTargetReference'),
   extractFunction('meterExplicitLgTargetWhiteReferenceNits'),
   extractFunction('meterFindLgAutoCalLegalWhiteReference'),
+  extractFunction('meterEffectiveGreyscaleWhiteReference'),
+  extractFunction('meterAutoCalGreyscaleTargetWhiteReferenceActive'),
   extractFunction('meterLgAutoCalChartReferenceWhite'),
   extractFunction('meterReadingIsAutoCalChartHidden'),
   extractFunction('meterFilterLgAutoCalChartItems'),
@@ -145,6 +168,13 @@ vm.runInContext([
     globalThis.normalLegalWhiteReference = meterFindLgAutoCalLegalWhiteReference([normalReferenceWhite]);
     globalThis.disabledExplicitTargetWhite = meterExplicitLgTargetWhiteReferenceNits([disabledValidationWhite]);
     globalThis.normalExplicitTargetWhite = meterExplicitLgTargetWhiteReferenceNits([normalReferenceWhite]);
+    globalThis.visibleMagicWandReference = meterEffectiveGreyscaleWhiteReference([
+      { ire: 3, name: '3%', luminance: 0.4 },
+      { ire: 99, name: '99%', luminance: 149, request_id: 'visible-only-99' }
+    ]);
+    globalThis.completePhaseTargetReferenceActive = meterAutoCalGreyscaleTargetWhiteReferenceActive([
+      { ire: 99, name: '99%', luminance: 149 }
+    ]);
   `
 ].join('\n'), context);
 
@@ -163,5 +193,20 @@ assert.strictEqual(context.disabledLegalWhiteReference, null, 'disabled legal-wh
 assert.strictEqual(context.disabledExplicitTargetWhite, null, 'disabled legal-white validation autocal_white_y should not become an explicit target white');
 assert.strictEqual(context.normalLegalWhiteReference && context.normalLegalWhiteReference.luminance, 162, 'normal series/reference 100% should remain eligible as legal white');
 assert.strictEqual(context.normalExplicitTargetWhite, 162, 'normal series/reference 100% should still provide explicit target white');
+assert.strictEqual(
+  context.visibleMagicWandReference && context.visibleMagicWandReference.request_id,
+  'magic-wand-verify-white',
+  'Magic Wand charts that hide reference-only white should still use the raw verification legal-white reference'
+);
+assert.strictEqual(
+  context.completePhaseTargetReferenceActive,
+  false,
+  'AutoCal complete popup state should not keep target-white override active for existing chart readings'
+);
+assert(
+  extractFunction('meterEnsureDeltaECache').includes('greyWhiteStamp') &&
+    extractFunction('meterEnsureDeltaECache').includes('meterGreyscaleChartWhiteReference(readings)'),
+  'DeltaE cache key should include the active greyscale white/reference so popup-only target changes cannot reuse stale dE'
+);
 
 console.log('WebUI LG AutoCal chart source regression checks passed.');
