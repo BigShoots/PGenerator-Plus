@@ -394,9 +394,9 @@ case "$cmd" in
   chmod +x /usr/bin/spotread_wrapper.sh 2>/dev/null || true
   chmod +x /usr/bin/meter_*.sh 2>/dev/null || true
   chmod +x /usr/bin/spotread_measure.py 2>/dev/null || true
-  chown root:root /etc/sudo/sudoers /etc/sudo/sudoers.d /etc/sudo/sudoers.d/PGenerator 2>/dev/null || true
-  chmod 755 /etc/sudo /etc/sudo/sudoers.d 2>/dev/null || true
-  chmod 440 /etc/sudo/sudoers /etc/sudo/sudoers.d/PGenerator 2>/dev/null || true
+  chown root:root /etc/sudo/sudoers /etc/sudo/sudoers.d /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d /etc/sudoers.d/PGenerator 2>/dev/null || true
+  chmod 755 /etc/sudo /etc/sudo/sudoers.d /etc/sudoers.d 2>/dev/null || true
+  chmod 440 /etc/sudo/sudoers /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d/PGenerator 2>/dev/null || true
 
   run_update_migrations "$current" "$latest"
 
