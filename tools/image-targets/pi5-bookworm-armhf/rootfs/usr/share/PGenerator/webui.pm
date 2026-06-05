@@ -4880,8 +4880,23 @@ sub webui_apply_config (@) {
    $changes{"signal_mode"}="dv";
   } elsif(int($effective{"is_hdr"} || 0)) {
    $changes{"signal_mode"}=(int($effective{"eotf"} || 0) == 3) ? "hlg" : "hdr10";
-  } else {
+ } else {
    $changes{"signal_mode"}="sdr";
+  }
+ }
+ my $requested_mode_clock=0;
+ if(defined $changes{"mode_idx"} && $changes{"mode_idx"} ne "" && $changes{"mode_idx"} ne "-1") {
+  if($changes{"mode_idx"} !~ /^\d+$/) {
+   my $result='{"status":"error","message":"Invalid display mode index."}';
+   return wantarray ? ($result,0) : $result;
+  }
+  my $mode_idx=$changes{"mode_idx"};
+  my $mt=`timeout 3 $modetest -c 2>/dev/null`;
+  if($mt=~/^\s*#$mode_idx\s+\S+\s+[\d.]+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+/m) {
+   $requested_mode_clock=$1;
+  } else {
+   my $result='{"status":"error","message":"Display mode is no longer available. Refresh the page and choose a connected HDMI mode."}';
+   return wantarray ? ($result,0) : $result;
   }
  }
  my $dv_on=int($effective{"dv_status"} || 0);
@@ -4900,13 +4915,8 @@ sub webui_apply_config (@) {
   $changes{"dv_metadata"}=$dv_metadata;
   # DV 12-bit RGB tunneling needs 1.5× the pixel clock — reject modes that
   # exceed HDMI 2.0 TMDS bandwidth (600 MHz) to avoid green-screen artifacts.
-  if(defined $changes{"mode_idx"} && $changes{"mode_idx"} ne "") {
-   my $mode_clk=0;
-   my $mt=`timeout 5 $modetest -c 2>/dev/null`;
-   if($mt=~/^\s*#$changes{"mode_idx"}\s+\S+\s+[\d.]+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+/m) {
-    $mode_clk=$1;
-   }
-   if($mode_clk > 0 && $mode_clk * 1.5 > 600000) {
+  if($requested_mode_clock > 0) {
+   if($requested_mode_clock * 1.5 > 600000) {
     my $result='{"status":"error","message":"This resolution exceeds HDMI bandwidth for Dolby Vision (12-bit RGB tunneling). Use 4K@30Hz or lower."}';
     return wantarray ? ($result,0) : $result;
    }
