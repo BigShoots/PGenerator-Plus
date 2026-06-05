@@ -406,11 +406,9 @@ etc/
   PGenerator/lut.txt             # LUT color correction table
   udev/rules.d/99-colorimeter.rules # USB permissions for supported meters
   sudo/sudoers.d/PGenerator      # Allows meter helpers and privileged commands
-usr/
+usr/                               # Shared runtime copied into every target
   sbin/
     PGeneratord.pl               # Main daemon (Perl, forks + threads)
-    PGeneratord                  # Pattern renderer (C/C++ binary)
-    PGeneratord.dv               # Dolby Vision renderer variant
     pgenerator-update            # OTA update script (GitHub Releases)
   bin/
     PGenerator_cmd.pl            # Privileged command handler (runs as root)
@@ -422,19 +420,25 @@ usr/
   share/PGenerator/
     daemon.pm                    # TCP server, request routing, thread management
     pattern.pm                   # Pattern file creation, LUT, scaling
-    command.pm                   # System commands (HDMI, temp, WiFi, process mgmt)
     client.pm                    # LightSpace / Calman protocol handling
     resolve.pm                   # Resolve calibration XML protocol (client mode)
     discovery.pm                 # UDP broadcast discovery responder
     webui.pm                     # Web UI: HTTP server, JSON API, HTML/CSS/JS SPA
-    conf.pm                      # Configuration file parser
-    variables.pm                 # Global variables, paths, defaults
     version.pm                   # Version info ($version, $version_plus)
     info.pm                      # Device info collection
     log.pm                       # Logging
     file.pm                      # File utilities
     ccss/                        # Bundled generic and display-specific CCSS profiles
+tools/image-targets/
+  pi4-biasi/rootfs/              # Pi 4 renderer, display backend, CEC/hardware overlay
+  pi5-bookworm-armhf/rootfs/     # Pi 5 renderer, display backend, CEC/hardware overlay
 ```
+
+The top-level `usr/share/PGenerator/webui.pm`, meter helpers, LG calibration
+workers, and CCSS profiles are the shared UI/calibration source for both images.
+Target overlays own the renderer binaries and hardware/display backend files,
+including `command.pm`, `conf.pm`, `variables.pm`, CEC helpers, DRM override
+libraries, and renderer executables.
 
 ### Key Modules
 
@@ -442,13 +446,13 @@ usr/
 |--------|---------|
 | [daemon.pm](usr/share/PGenerator/daemon.pm) | TCP socket server, fork + thread management, request routing |
 | [pattern.pm](usr/share/PGenerator/pattern.pm) | Pattern DSL file creation, LUT application, resolution scaling |
-| [command.pm](usr/share/PGenerator/command.pm) | HDMI mode detection (KMS/modetest), 4K auto-select, process management |
 | [client.pm](usr/share/PGenerator/client.pm) | LightSpace XML protocol, Calman protocol handling |
 | [resolve.pm](usr/share/PGenerator/resolve.pm) | Resolve calibration XML protocol (outbound client to CalMAN/HCFR/DisplayCAL) |
 | [discovery.pm](usr/share/PGenerator/discovery.pm) | UDP broadcast discovery for DeviceControl, LightSpace, and RPC |
 | [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
-| [conf.pm](usr/share/PGenerator/conf.pm) | `key=value` configuration file reader/writer |
-| [variables.pm](usr/share/PGenerator/variables.pm) | All global paths, defaults, shared state declarations |
+| `tools/image-targets/*/rootfs/usr/share/PGenerator/command.pm` | Target-specific HDMI/KMS/tvservice, renderer startup, and process management |
+| `tools/image-targets/*/rootfs/usr/share/PGenerator/conf.pm` | Target-specific runtime/platform detection around shared `key=value` config |
+| `tools/image-targets/*/rootfs/usr/share/PGenerator/variables.pm` | Target-specific paths, display defaults, and hardware flags |
 | [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.4.1`) and product name (`PGenerator+`) |
 
 ### Meter Runtime Notes
