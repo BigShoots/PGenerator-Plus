@@ -11628,6 +11628,8 @@ function meterColorLevelPercent(){
 
 function meterFindMeasuredWhiteReading(){
  const currentMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
+ const activeLgAutoCal=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive();
  const readingMatchesMode=(rd)=>{
   if(!rd) return false;
   const rdMode=String((rd.signal_mode||'')).toLowerCase();
@@ -11644,6 +11646,8 @@ function meterFindMeasuredWhiteReading(){
  const isWhiteReading=(rd)=>{
   if(!rd) return false;
   if(rd.synthetic_target) return false;
+  if(lgAutoCalChartRef&&meterReadingDisablesAutoCalTargetReference(rd)) return false;
+  if(activeLgAutoCal&&meterReadingIsAutoCalReferenceOnly(rd)) return false;
   if(!readingMatchesMode(rd)) return false;
   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
   if(!(lum>0)) return false;
@@ -11713,12 +11717,16 @@ function meterStoredLgTargetWhiteReferenceNits(){
 
 function meterExplicitLgTargetWhiteReferenceNits(readings){
  const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
- if(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints)){
-  const white=(typeof meterFindSeriesWhiteReading==='function')?meterFindSeriesWhiteReading(list):null;
+ const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
+ const activeLgAutoCal=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
+ if(lgAutoCalChartRef){
+  const white=(typeof meterFindLgAutoCalLegalWhiteReference==='function')?meterFindLgAutoCalLegalWhiteReference(list):((typeof meterFindSeriesWhiteReading==='function')?meterFindSeriesWhiteReading(list):null);
   const whiteY=white?meterReadingLuminanceNits(white):null;
-  if(white&&!white.synthetic_target&&whiteY>0) return null;
+  if(activeLgAutoCal&&white&&!white.synthetic_target&&whiteY>0) return null;
  }
  for(const rd of list){
+  if(meterReadingDisablesAutoCalTargetReference(rd)) continue;
+  if(activeLgAutoCal&&meterReadingIsAutoCalReferenceOnly(rd)) continue;
   const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
   if(Number.isFinite(y)&&y>0) return y;
  }
@@ -11810,7 +11818,7 @@ function meterEffectiveGreyscaleWhiteReference(readings){
   const synthetic=meterSyntheticGreyWhiteReading(activeAutoCalTargetY);
   if(synthetic) return synthetic;
  }
- const white=meterFindSeriesWhiteReading(list);
+ const white=meterFindSeriesWhiteReading(lgAutoCalChartRef?referenceList:list);
  if(white) return white;
  const explicitTargetY=meterExplicitLgTargetWhiteReferenceNits(list);
  if(explicitTargetY>0){
@@ -12601,16 +12609,22 @@ function meterEnsureDeltaECache(readings){
  const greyMode=meterGreyRefMode();
 	const gw=meterGrayWorldWeight();
 	const tgtGamma=((typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||'')))||'';
-	const targetContext=[
-	 meterChartSignalMode(),
-	 tgtGamma,
+		const targetContext=[
+		 meterChartSignalMode(),
+		 tgtGamma,
 	 (typeof meterDvMapModeValue==='function')?meterDvMapModeValue():'',
 	 (typeof meterChartHdrPeak==='function')?meterChartHdrPeak():'',
 	 (typeof meterChartMasterMin==='function')?meterChartMasterMin():'',
 	 (typeof meterChartBt2390Enabled==='function'&&meterChartBt2390Enabled())?'bt2390':'',
-	 (typeof meterHdrDiffuseWhiteOverride==='function')?meterHdrDiffuseWhiteOverride():''
-	].join(':');
-	const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+targetContext;
+		 (typeof meterHdrDiffuseWhiteOverride==='function')?meterHdrDiffuseWhiteOverride():''
+		].join(':');
+		const greyWhite=meterGreyscaleChartWhiteReference(readings);
+		const greyWhiteStamp=greyWhite?[
+		 meterReadingLuminanceNits(greyWhite)||0,
+		 greyWhite.synthetic_target?'synthetic':'measured',
+		 greyWhite.autocal_target_reference_disabled?'disabled':'active'
+		].join('@'):'none';
+		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp;
 	readings.forEach(rd=>{
 	 if(!rd) return;
 	 if(rd._dE_cache_key===key) return;
@@ -12620,37 +12634,6 @@ function meterEnsureDeltaECache(readings){
   rd._dE_lc=pair.lc;
   rd._dE_cache_key=key;
  });
-}
-
-function meterLgAutoCal26PairedDeltaEActive(){
- const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- return meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints)&&mode==='sdr';
-}
-
-function meterLgAutoCal26DeltaEReadingAt(readings,ire){
- const target=Number(ire);
- if(!Array.isArray(readings)||!Number.isFinite(target)) return null;
- return readings.find(rd=>{
-  const plotIre=meterReadingPlotIre(rd);
-  return plotIre!=null&&Math.abs(Number(plotIre)-target)<0.001;
- })||null;
-}
-
-function meterLgAutoCal26PairedDeltaEFor99(reading,readings,greyMode,deForm,gwWeight){
- if(!meterLgAutoCal26PairedDeltaEActive()) return null;
- const plotIre=meterReadingPlotIre(reading);
- if(plotIre==null||Math.abs(Number(plotIre)-99)>0.001) return null;
- const partner=meterLgAutoCal26DeltaEReadingAt(readings,100);
- if(!partner) return null;
- const result99=meterGreyDeltaResult(reading,greyMode,deForm,gwWeight);
- const result100=meterGreyDeltaResult(partner,greyMode,deForm,gwWeight);
- if(!Number.isFinite(result99.value)||!Number.isFinite(result100.value)) return null;
- return {
-  value:(result99.value+result100.value)/2,
-  de99:result99.value,
-  de100:result100.value,
-  de2000:(Number.isFinite(result99.de2000)&&Number.isFinite(result100.de2000))?((result99.de2000+result100.de2000)/2):result99.de2000
- };
 }
 
 // Compute per-channel effective gamma for a single reading vs the active
@@ -12879,8 +12862,25 @@ function meterReadingIsAutoCalReferenceOnly(item){
  return !!(item&&(item.autocal_white_reference||item.autocal_reference_only));
 }
 
+function meterReadingDisablesAutoCalTargetReference(item){
+ return !!(item&&(item.autocal_target_reference_disabled||item.autocal_diagnostic||item.autocal_chart_hidden));
+}
+
+function meterReadingIsAutoCalChartHidden(item){
+ if(!item) return false;
+ if(item.autocal_chart_hidden||item.autocal_diagnostic) return true;
+ const role=String(item.autocal_read_role||'').toLowerCase();
+ return role==='legal_white_validation'||role==='legal_white_pair_counterpart'||role==='top_cluster_preshape';
+}
+
+function meterFindLgAutoCalLegalWhiteReference(readings){
+ const list=Array.isArray(readings)?readings:[];
+ return list.find(rd=>!meterReadingDisablesAutoCalTargetReference(rd)&&meterLgAutoCalChartReferenceWhite(rd))||null;
+}
+
 function meterLgAutoCalChartReferenceWhite(item){
 	 if(!item||meterActiveSeriesType!=='greyscale') return false;
+	 if(meterReadingDisablesAutoCalTargetReference(item)) return false;
 	 const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
 	 if(mode==='hdr10') return false;
 	 const plotIre=meterReadingPlotIre(item);
@@ -12893,7 +12893,7 @@ function meterLgAutoCalChartReferenceWhite(item){
 
 function meterFilterLgAutoCalChartItems(items){
  const list=Array.isArray(items)?items:[];
- return list.filter(item=>!meterLgAutoCalChartReferenceWhite(item));
+ return list.filter(item=>!meterReadingIsAutoCalChartHidden(item)&&!meterLgAutoCalChartReferenceWhite(item));
 }
 
 function meterGreyscaleReportReadings(readings){
@@ -15163,6 +15163,7 @@ async function meterCheckStatus(){
  // snapshot from the current session so a manual reread survives refresh and
  // stale backend series JSON cannot immediately overwrite it.
  if(!meterSeriesRunning && !meterSeriesPolling && !meterContinuousActive){
+  if(meterAutoCalStatusActive()) return;
   if(!meterSeriesCacheBootId) return;
   let restoredLocal=false;
   if(!meterActiveSeriesKey){
@@ -20245,9 +20246,58 @@ function meterAutoCalSyncLgCalibrationMode(status){
  }
 }
 
+function meterAutoCalStepForIre(ire){
+ const wanted=Number(ire);
+ if(!Number.isFinite(wanted)||!Array.isArray(meterSeriesSteps)) return null;
+ return meterSeriesSteps.find(step=>{
+  if(!step) return false;
+  const values=[step.ire,step.plot_ire,step.stimulus,step.signal_r_pct,step.ddc_target_ire,step.ddc_array_ire];
+  return values.some(value=>Number.isFinite(Number(value))&&Math.abs(Number(value)-wanted)<0.001);
+ })||null;
+}
+
+function meterAutoCalBestKnownReadings(status){
+ const known=status&&status.lg_autocal_26_best_known;
+ if(!known||typeof known!=='object'||Array.isArray(known)) return [];
+ const out=[];
+ Object.keys(known).forEach(key=>{
+  const entry=known[key];
+  if(!entry||typeof entry!=='object'||!entry.reading) return;
+  const reading=meterFullAutoCalCloneValue(entry.reading);
+  if(!reading||typeof reading!=='object') return;
+  if(reading.ire==null&&entry.ire!=null) reading.ire=entry.ire;
+  const step=meterAutoCalStepForIre(reading.ire!=null?reading.ire:entry.ire);
+  if(step) meterStampReadingStepMeta(reading,step);
+  if(entry.delta_e!=null) reading.best_known_delta_e=entry.delta_e;
+  if(entry.reached_target!=null) reading.best_known_reached_target=entry.reached_target;
+  if(entry.target_luminance!=null) reading.target_luminance=entry.target_luminance;
+  if(entry.legal_white_validation_status!=null) reading.legal_white_validation_status=entry.legal_white_validation_status;
+  if(entry.paired_legal_white_delta_e!=null) reading.paired_legal_white_delta_e=entry.paired_legal_white_delta_e;
+  if(entry.paired_current_name!=null) reading.paired_current_name=entry.paired_current_name;
+  out.push(reading);
+ });
+ return out;
+}
+
+function meterAutoCalStatusChartReadings(status){
+ const raw=Array.isArray(status&&status.readings)?status.readings:[];
+ const base=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(raw,'greyscale'));
+ const best=meterAttachSeriesMeta(meterAutoCalBestKnownReadings(status));
+ const byKey=new Map();
+ const addReading=reading=>{
+  if(!reading||!meterReadingHasLuminance(reading)) return;
+  if(meterReadingIsAutoCalChartHidden(reading)||meterLgAutoCalChartReferenceWhite(reading)) return;
+  const key=meterStepNameKey(reading)||String(reading.ire||reading.name||byKey.size);
+  byKey.set(key,reading);
+ };
+ base.forEach(addReading);
+ best.forEach(addReading);
+ return Array.from(byKey.values()).sort((a,b)=>(meterReadingPlotIre(a)||a.ire||0)-(meterReadingPlotIre(b)||b.ire||0));
+}
+
 function meterAutoCalApplyStatus(status){
-		 if(!status) return;
-		 meterAutoCalLatestStatus=status;
+			 if(!status) return;
+			 meterAutoCalLatestStatus=status;
 		 meterAutoCalSyncLgCalibrationMode(status);
 		 if(status.autocal){
 	  const statusSignal=String(status.signal_mode||status.requested_signal_mode||'').toLowerCase();
@@ -20273,8 +20323,9 @@ function meterAutoCalApplyStatus(status){
 		 }
 		 const currentKey=meterAutoCalCurrentKeyFromStatus(status);
 		 if(status.autocal&&String(status.status||'').toLowerCase()==='running') meterSelectedThumbIre=null;
-		 if(Array.isArray(status.readings)){
-	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(status.readings,'greyscale'));
+		 const statusChartReadings=meterAutoCalStatusChartReadings(status);
+		 if(statusChartReadings.length){
+	  meterReadings=statusChartReadings;
 	  const white=meterFindSeriesWhiteReading(meterReadings);
 	  const statusTargetY=Number(status.target_luminance||status.calibrated_white_luminance);
 	  if(Number.isFinite(statusTargetY)&&statusTargetY>0){
@@ -20305,7 +20356,7 @@ function meterAutoCalApplyStatus(status){
    meterBuildPatchThumbs(sortedSteps,completed,currentKey);
   }
  }
- if((!Array.isArray(status.readings)||!status.readings.length)&&meterSeriesSteps&&status.autocal){
+	 if(!statusChartReadings.length&&meterSeriesSteps&&status.autocal){
   const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
 	  drawAllChartsPreset(sortedSteps);
 	  meterBuildPatchThumbs(sortedSteps,new Set(),currentKey);
@@ -24668,9 +24719,7 @@ function drawDashedLine(ctx,chart,points,color,width){
  ctx.setLineDash([]);
 }
 
-function drawRGBChart(gs,allSteps,readingMap){
- const ctx=getChartCtx('chartRGB');
- if(!ctx) return;
+function meterGreyscaleRgbBalanceReference(gs){
  let effectiveWhiteRGB=meterEffectiveGreyscaleWhiteReference(gs);
  // For manual single reads before 100% is measured, still plot RGB balance
  // using a stable white level inferred from the brightest available grey
@@ -24687,6 +24736,13 @@ function drawRGBChart(gs,allSteps,readingMap){
    effectiveWhiteRGB=meterSyntheticGreyWhiteReading(inferredYw);
   }
  }
+ return effectiveWhiteRGB;
+}
+
+function drawRGBChart(gs,allSteps,readingMap){
+ const ctx=getChartCtx('chartRGB');
+ if(!ctx) return;
+ let effectiveWhiteRGB=meterGreyscaleRgbBalanceReference(gs);
  if(!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0){
   if(allSteps) drawRGBChartPreset(allSteps);
   return;
@@ -24952,11 +25008,9 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
  // Compute deltaE for available readings
  const deMap={};
- const rawDeltaReadings=Array.isArray(rawGs)?rawGs:gs;
  gs.forEach(rd=>{
   if((rd.Y||0)<=0){deMap[rd.ire]=0;return;}
-  const paired=meterLgAutoCal26PairedDeltaEFor99(rd,rawDeltaReadings,greyMode,deForm,gwWeight);
-  deMap[rd.ire]=paired?paired.value:meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
+  deMap[rd.ire]=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
  });
  const deValues=Object.values(deMap);
  // Auto-scale Y: zoom to fit tightest range
@@ -25822,10 +25876,12 @@ let _chartHitZones=[];
 function chartRegisterInteraction(){
  _chartHitZones=[];
  if(!meterReadings||meterReadings.length===0) return;
- const gs=meterGreyscaleReadings(meterReadings);
+ const rawGs=meterGreyscaleReadings(meterReadings);
+ const gs=meterFilterLgAutoCalChartItems(rawGs);
  if(gs.length===0) return;
  const greyMode=meterGreyRefMode();
  const gwWeight=meterGrayWorldWeight();
+ const effectiveWhiteRGB=meterGreyscaleRgbBalanceReference(gs);
  const allStepsRaw=meterSeriesSteps?meterGreyscaleSeriesSteps(meterSeriesSteps):null;
  const allSteps=allStepsRaw?meterFilterLgAutoCalChartItems(allStepsRaw):null;
  const xStepsBase=allSteps||[...meterFilterLgAutoCalChartItems(gs)].sort((a,b)=>a.ire-b.ire);
@@ -25837,10 +25893,8 @@ function chartRegisterInteraction(){
  const deLabel=meterDeltaEFormLabel(deForm);
  gs.forEach(rd=>{
   const result=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight);
-  const paired=meterLgAutoCal26PairedDeltaEFor99(rd,gs,greyMode,deForm,gwWeight);
-  deSelected[rd.ire]=paired?paired.value:result.value;
-  de2000[rd.ire]=paired?paired.de2000:result.de2000;
-  if(paired) deSelected[String(rd.ire)+'_paired']=paired;
+  deSelected[rd.ire]=result.value;
+  de2000[rd.ire]=result.de2000;
  });
  // Register hit zones for each chart canvas
  const canvasIds=['chartRGB','chartDeltaE','chartGammaValue','chartEOTF','chartGamma'];
@@ -25864,8 +25918,9 @@ function chartRegisterInteraction(){
    if(!rd) return;
    const xNorm=meterGreyscaleInteractionXForChart(cid,step,chartSteps,idx);
    const cx=pad.l+xInset+xNorm*dw;
+   const bal=effectiveWhiteRGB?rgbBalance(rd,effectiveWhiteRGB,greyMode):{R:100,G:100,B:100};
    _chartHitZones.push({canvasId:cid, cx:cx, cy:cH/2, radius:isBarChart?18:8, ire:step.ire, reading:rd,
-    deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deLabel:deLabel, dePaired:deSelected[String(rd.ire)+'_paired']||null});
+    rgbBalance:bal, deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deLabel:deLabel});
   });
   // Attach event handlers (remove old ones first)
   canvas.onmousemove=function(e){chartHandleHover(e,cid);};
@@ -25896,7 +25951,7 @@ function chartHandleHover(e,canvasId){
  const tip=document.getElementById('chartTooltip');
  if(!hit){tip.style.display='none';return;}
  const rd=hit.reading;
- const bal=meterWhiteReading?rgbBalance(rd,meterWhiteReading,meterGreyRefMode()):{R:100,G:100,B:100};
+ const bal=hit.rgbBalance||{R:100,G:100,B:100};
  const lumInfo=meterColorLuminanceInfo(rd);
  const readY=(rd.luminance!=null&&Number.isFinite(Number(rd.luminance)))?Number(rd.luminance).toFixed(3):'--';
  const targetY=(lumInfo.targetY!=null&&Number.isFinite(Number(lumInfo.targetY)))?Number(lumInfo.targetY).toFixed(3):'--';
@@ -25910,11 +25965,7 @@ function chartHandleHover(e,canvasId){
  html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
  if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);
  if(hit.deSelected!=null){
-  if(hit.dePaired){
-   html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+' 99/100 avg: '+hit.deSelected.toFixed(2)+' <span style="color:#9aa">(99 '+hit.dePaired.de99.toFixed(2)+', 100 '+hit.dePaired.de100.toFixed(2)+')</span>';
-  } else {
-   html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+hit.deSelected.toFixed(2);
-  }
+  html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+hit.deSelected.toFixed(2);
  }
  if(hit.de2000!=null && meterDeltaEForm()!=='de2000') html+='<br>Reference ΔE 2000: '+hit.de2000.toFixed(2);
  if(canvasId==='chartDeltaE'){
