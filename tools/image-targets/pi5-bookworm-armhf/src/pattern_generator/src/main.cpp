@@ -144,7 +144,7 @@ int main(int argc, char **argv){
    ofxRPI4Window::avi_info.colorimetry=atoi(colorimetry.c_str());  /* YCbCr: use configured value */
   }
   ofxRPI4Window::isHDR=atoi(is_hdr.c_str());
-  ofxRPI4Window::isDoVi=atoi(is_ll_dovi.c_str());
+  ofxRPI4Window::isDoVi=(atoi(is_ll_dovi.c_str()) || atoi(is_std_dovi.c_str())) ? 1 : 0;
   ofxRPI4Window::is_std_DoVi=atoi(is_std_dovi.c_str());
   ofxRPI4Window::eotf=(static_cast<hdmi_eotf>(atoi(eotf.c_str())));
   ofxRPI4Window::hdr_primaries=atoi(primaries.c_str());

@@ -4860,14 +4860,14 @@ sub webui_apply_config (@) {
   } elsif($signal_mode eq "dv") {
    $changes{"is_sdr"}="0";
    $changes{"is_hdr"}="1";
-   $changes{"is_ll_dovi"}="1";
-   $changes{"is_std_dovi"}="0";
+   $changes{"is_ll_dovi"}="0";
+   $changes{"is_std_dovi"}="1";
    $changes{"dv_status"}="1";
-   $changes{"dv_interface"}="1";
+   $changes{"dv_interface"}="0";
    $changes{"eotf"}="2";
    $changes{"primaries"}="1";
-   $changes{"max_bpc"}="12";
-   $changes{"color_format"}="2";
+   $changes{"max_bpc"}="8";
+   $changes{"color_format"}="0";
    $changes{"colorimetry"}="9";
    $changes{"rgb_quant_range"}="2";
   }
@@ -4905,24 +4905,24 @@ sub webui_apply_config (@) {
  if($dv_on) {
   my $dv_map_mode=(defined $changes{"dv_map_mode"} && $changes{"dv_map_mode"} ne "") ? $changes{"dv_map_mode"} : ($effective{"dv_map_mode"} || "2");
     my $dv_metadata=(defined $changes{"dv_metadata"} && $changes{"dv_metadata"} ne "") ? $changes{"dv_metadata"} : ($dv_map_mode eq "1" ? "3" : ($dv_map_mode eq "2" ? "4" : "2"));
-  $changes{"max_bpc"}="12";
-  $changes{"is_ll_dovi"}="1";
-  $changes{"is_std_dovi"}="0";
+  $changes{"max_bpc"}="8";
+  $changes{"is_ll_dovi"}="0";
+  $changes{"is_std_dovi"}="1";
   $changes{"dv_status"}="1";
-  $changes{"color_format"}="2";
+  $changes{"color_format"}="0";
   $changes{"colorimetry"}="9";
   $changes{"eotf"}="2";
   $changes{"primaries"}="1";
   $changes{"rgb_quant_range"}="2";
   $changes{"dv_profile"}="1";
   $changes{"dv_color_space"}="0";
-  $changes{"dv_interface"}="1";
+  $changes{"dv_interface"}="0";
   $changes{"dv_metadata"}=$dv_metadata;
-  # DV YCbCr 4:2:2 transport uses 8-bit TMDS bandwidth — reject modes that
+  # DV RGB Full 8-bit tunneling uses normal 8-bit TMDS bandwidth — reject modes that
   # exceed HDMI 2.0 TMDS bandwidth (600 MHz) to avoid green-screen artifacts.
   if($requested_mode_clock > 0) {
    if($requested_mode_clock > 600000) {
-    my $result='{"status":"error","message":"This resolution exceeds HDMI bandwidth for Dolby Vision YCbCr 4:2:2. Use 4K@60Hz or lower."}';
+    my $result='{"status":"error","message":"This resolution exceeds HDMI bandwidth for Dolby Vision RGB Full 8-bit tunneling. Use 4K@60Hz or lower."}';
     return wantarray ? ($result,0) : $result;
    }
   }
@@ -7295,7 +7295,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <!-- Dolby Vision Settings -->
  <div class="card" id="dvCard">
   <h2><span class="dv-badge">DV</span> Dolby Vision</h2>
-  <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px;line-height:1.4">Enables Dolby Vision LLDV output. YCbCr 4:2:2 transport and BT.2020 primaries are set automatically.</div>
+  <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px;line-height:1.4">Enables Dolby Vision RGB Full 8-bit tunneling and BT.2020 primaries automatically.</div>
   <div class="grid">
    <div class="field">
     <label>Map Mode</label>
@@ -7320,7 +7320,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <label>MaxFALL</label>
       <input type="number" id="dv_max_fall" min="0" max="10000" step="1">
      </div>
-  <input type="hidden" id="dv_interface" value="1">
+  <input type="hidden" id="dv_interface" value="0">
   </div>
  </div>
 
@@ -8527,8 +8527,8 @@ function applyConfigState(nextConfig){
  setVal('dv_map_mode',config.dv_map_mode||'2');
  if(sm==='dv'){
   syncDvOutputEotfState();
-  setVal('max_bpc','12');
-  setVal('color_format','2');
+  setVal('max_bpc','8');
+  setVal('color_format','0');
   setVal('colorimetry','9');
   setVal('primaries','1');
   setVal('rgb_quant_range','2');
@@ -8775,10 +8775,10 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('max_bpc','10');
  }else if(sm==='dv'){
   setVal('eotf','2');
-  setVal('color_format','2');
+  setVal('color_format','0');
   setVal('colorimetry','9');
   setVal('primaries','1');
-  setVal('max_bpc','12');
+  setVal('max_bpc','8');
   setVal('rgb_quant_range','2');
  }
  applyMeterTargetGamutDefault(true);
@@ -8878,21 +8878,21 @@ function updateDropdowns(){
   : {sdr:true,hdr10:true,hlg:true,dv:false};
  Array.from(smSel.options).forEach(function(o){o.disabled=!smOpts[o.value];o.style.display=smOpts[o.value]?'':'none';});
 
- // In DV mode, color format is forced to YCbCr 4:2:2
+ // In DV mode, color format is forced to RGB Full 8-bit tunneling
  const fmtSel=document.getElementById('color_format');
  const bpcSel=document.getElementById('max_bpc');
  const modeSel=document.getElementById('mode_idx');
  if(sm==='dv'){
-  Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!=='2';o.style.display=o.value==='2'?'':'none';});
-  fmtSel.value='2';
-  // Dolby Vision LLDV uses a 12-bit YCbCr 4:2:2 HDMI link.
-  Array.from(bpcSel.options).forEach(function(o){o.disabled=o.value!=='12';o.style.display=o.value==='12'?'':'none';});
-  bpcSel.value='12';
+  Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!=='0';o.style.display=o.value==='0'?'':'none';});
+  fmtSel.value='0';
+  // Dolby Vision calibration data is tunneled through an RGB Full 8-bit HDMI link.
+  Array.from(bpcSel.options).forEach(function(o){o.disabled=o.value!=='8';o.style.display=o.value==='8'?'':'none';});
+  bpcSel.value='8';
   // DV requires Full range
   const rngSel=document.getElementById('rgb_quant_range');
   Array.from(rngSel.options).forEach(function(o){o.disabled=o.value!=='2';o.style.display=o.value==='2'?'':'none';});
   rngSel.value='2';
-  // DV YCbCr 4:2:2 transport uses 8-bit TMDS bandwidth.
+  // DV RGB Full 8-bit tunneling uses normal 8-bit TMDS bandwidth.
   const maxTmds=caps.max_tmds?caps.max_tmds*1000:600000;
   let curModeValid=false;
   Array.from(modeSel.options).forEach(function(o){
@@ -9674,10 +9674,10 @@ async function applySettings(){
    max_fall:meterHdrMetadataFieldValue('max_fall','hdr10')});
  }else if(sm==='dv'){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
-   is_ll_dovi:'1',is_std_dovi:'0',
-   dv_status:'1',primaries:'1',color_format:'2',colorimetry:'9',max_bpc:'12',
+   is_ll_dovi:'0',is_std_dovi:'1',
+   dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'8',
    rgb_quant_range:'2',eotf:'2',
-   dv_interface:'1',
+   dv_interface:'0',
    dv_map_mode:getVal('dv_map_mode'),
    max_luma:meterHdrMetadataFieldValue('max_luma','dv'),
    min_luma:meterHdrMetadataFieldValue('min_luma','dv'),

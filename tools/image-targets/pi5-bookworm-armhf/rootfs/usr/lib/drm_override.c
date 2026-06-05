@@ -401,13 +401,12 @@ static int should_suppress(uint32_t prop_id, uint64_t value) {
  * Create the fallback DOVI_OUTPUT_METADATA blob (one-time).
  * Returns blob_id, or 0 on failure.
  *
- * The 12-byte blob format matches the legacy low-latency blob previously
- * synthesized here. Keep it only as a last-resort fallback for commits that
- * omit DOVI_OUTPUT_METADATA entirely.
+ * Keep this only as a last-resort fallback for commits that omit
+ * DOVI_OUTPUT_METADATA entirely.
  *
  * For drm_hdmi_infoframe_set_dovi_source_metadata():
  *   bytes 0-3: header (zeroes)
- *   byte 4:   low_latency flag (0=Standard, 1=LL)
+ *   byte 4:   interface flag (0=Standard, 1=Low-Latency)
  *   bytes 5-10: reserved (zeroes)
  *   byte 11:  DV param (0xb6)
  */
@@ -415,12 +414,13 @@ static uint32_t create_dovi_blob(int fd) {
     if (dovi_blob_id) return dovi_blob_id;
 
     uint8_t metadata[12] = {
-        0x46, 0xD0, 0x00, 0x00, /* Dolby OUI 00-D0-46 (LE u32) → frame.oui */
-        0x01,  /* always Low-Latency — RPi4 can't do Standard DV */
+        0x46, 0xD0, 0x00, 0x00, /* Dolby OUI 00-D0-46 (LE u32) -> frame.oui */
+        0x00,  /* interface flag, filled from config below */
         0x01,  /* DV version (vc4 requires == 1 to write VSIF) */
         0x00, 0x00, 0x00, 0x00, 0x00,
         0xb6
     };
+    metadata[4] = dv_interface ? 0x01 : 0x00;
 
     struct drm_mode_create_blob cb;
     cb.data = (uint64_t)(uintptr_t)metadata;
@@ -437,7 +437,7 @@ static uint32_t create_dovi_blob(int fd) {
         itoa_simple(dovi_blob_id, num);
         write_log("DRM_OVERRIDE: created DOVI blob_id=");
         write_log(num);
-        write_log(" (LL)");
+        write_log(dv_interface ? " (Low-Latency)" : " (Standard)");
         write_log(" bytes=");
         for (int i = 0; i < 12; i++) {
             char hex[4];

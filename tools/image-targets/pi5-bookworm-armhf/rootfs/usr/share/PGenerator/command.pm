@@ -154,8 +154,7 @@ sub drm_mode_info_for_idx(@) {
 sub requested_hdmi_tmds_khz(@) {
  my ($pixel_clock,$color_fmt,$max_bpc,$is_dv)=@_;
  return 0 if($pixel_clock eq "" || $pixel_clock <= 0);
- return $pixel_clock if($is_dv && $color_fmt == 2);
- return int($pixel_clock * 1.5 + 0.5) if($is_dv);
+ return $pixel_clock if($is_dv);
  return $pixel_clock if($color_fmt == 2);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return int($pixel_clock * $max_bpc / 8 + 0.5);
@@ -167,9 +166,9 @@ sub ensure_hdmi_bandwidth_mode(@) {
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=2 if($is_dv);
+ $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- $max_bpc=12 if($is_dv);
+ $max_bpc=8 if($is_dv);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
 
@@ -276,9 +275,9 @@ sub prearm_drm_mode(@) {
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=2 if($is_dv);
+ $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- $max_bpc=12 if($is_dv);
+ $max_bpc=8 if($is_dv);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
  return if($color_fmt == 0 && $max_bpc <= 8 && !$is_hdr && !$is_dv);
@@ -343,7 +342,7 @@ sub apply_drm_properties (@) {
  return if($connector_id eq "");
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
- $max_bpc=12 if($is_dv);
+ $max_bpc=8 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
   if(&modetest_connector_write($connector_id,"max bpc",$max_bpc)) {
    &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
@@ -355,7 +354,7 @@ sub apply_drm_properties (@) {
  # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
- $color_fmt=2 if($is_dv);
+ $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
  if($color_fmt > 2) {
   &log("DRM: output format=$color_fmt is unsupported on Pi 5; using RGB output");

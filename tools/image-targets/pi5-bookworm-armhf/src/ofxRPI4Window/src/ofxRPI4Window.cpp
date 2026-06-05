@@ -30,23 +30,6 @@ static bool pi5_avi_infoframe_uses_ycbcr(const avi_infoframe &avi_infoframe)
 	return avi_infoframe.output_format != 0;
 }
 
-static bool pi5_lldv_uses_10bit_surface(const avi_infoframe &avi_infoframe,
-	int bit_depth, bool is_dovi, bool is_std_dovi)
-{
-	return is_dovi && !is_std_dovi &&
-		avi_infoframe.output_format == 2 &&
-		avi_infoframe.max_bpc == 12 &&
-		bit_depth >= 8 && bit_depth <= 12;
-}
-
-static bool pi5_lldv_needs_rgb2ycbcr_shader(const avi_infoframe &avi_infoframe,
-	bool is_dovi, bool is_std_dovi)
-{
-	return is_dovi && !is_std_dovi &&
-		(avi_infoframe.output_format != 0 ||
-		 (avi_infoframe.output_format == 0 && avi_infoframe.rgb_quant_range == 2));
-}
-
 static uint64_t pi5_connector_colorspace_from_avi(const char *property_name,
 	const avi_infoframe &avi_infoframe)
 {
@@ -450,7 +433,7 @@ void dovi_output_metadata_info(int fd, uint32_t blob_id)
 											 << "-" << setfill('0') << (((dovi->oui & 0xff) < 0x10) ? setw(1) : setw(0)) << (dovi->oui &0xff); 
 
 		ofLog() << "    DV Status = " << (dovi->dv_status ? "active" : "not active"); 
-		ofLog() << "    DV Interface = " << (dovi->dv_interface >> 1 ? "LLDV" : "standard"); //fix
+		ofLog() << "    DV Interface = " << (dovi->dv_interface ? "LLDV" : "standard");
 		ofLog() << "    Backlight Metadata = " << (dovi->backlight_metadata ? "present" : "not present");
 		ofLog() << "    Backlight Max Luminance = " << (dovi->backlight_max_luminance  ? "present" : "not present");
 		ofLog() << "    Auxillary runmode = " << (dovi->aux_runmode  ? "present" : "not present");
@@ -1616,17 +1599,9 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 		ofLog() << "DRM: panel is HDR and DoVi capable";
 		if (isHDR && isDoVi && !is_std_DoVi) {
 
-			if (((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) ||
-				pi5_lldv_uses_10bit_surface(avi_info, bit_depth, isDoVi, is_std_DoVi)) {
-				if (avi_info.max_bpc == 12)
-					ofLog() << "DRM: setting up Low Latency DoVi(12 bpc YCbCr 4:2:2 transport, 10 bit surface)";
-				else
-					ofLog() << "DRM: setting up Low Latency DoVi(10 bit) window/surface";
-
+			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
+				ofLog() << "DRM: setting up Low Latency DoVi(10 bit) window/surface";
 				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
-				if (!ofxRPI4Window::shader_init &&
-					pi5_lldv_needs_rgb2ycbcr_shader(avi_info, isDoVi, is_std_DoVi))
-					shader_init = 1;
 				HDRWindowSetup();
 			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
 				ofLog() << "DRM: setting up Low Latency DoVi(12 bit) window/surface"; 
@@ -2993,15 +2968,10 @@ void ofxRPI4Window::update()
 		}
 		else if (isHDR && isDoVi && !is_std_DoVi) {
 
-			if (((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) ||
-				pi5_lldv_uses_10bit_surface(avi_info, bit_depth, isDoVi, is_std_DoVi)) {
-				if (avi_info.max_bpc == 12)
-					ofLog() << "DRM: updating Low Latency DoVi(12 bpc YCbCr 4:2:2 transport, 10 bit surface)";
-				else
-					ofLog() << "DRM: updating Low Latency DoVi(10 bit) window/surface";
+			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
+				ofLog() << "DRM: updating Low Latency DoVi(10 bit) window/surface";
 				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
-				if (!ofxRPI4Window::shader_init &&
-					pi5_lldv_needs_rgb2ycbcr_shader(avi_info, isDoVi, is_std_DoVi))
+				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
 					shader_init = 1;
 				HDRWindowSetup();
 			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
@@ -3580,7 +3550,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 
 			updateDoVi_Infoframe(dv_status, dv_interface); // Enable Standard DOVI infoframe
 			struct avi_infoframe avi_infoframe;
-			avi_infoframe.colorimetry = avi_info.colorimetry; //Default
+			avi_infoframe.colorimetry = 9; // BT.2020 RGB for standard Dolby Vision tunneling
 			avi_infoframe.rgb_quant_range = 2; //Full range [0-255]
 			avi_infoframe.output_format = avi_info.output_format; //0 RGB444; //YCrCb422, doesnt work with YCrCb420
 			avi_infoframe.max_bpc = avi_info.max_bpc; // only works in 8 bit
@@ -3797,12 +3767,8 @@ void ofxRPI4Window::updateDoVi_Infoframe(int enable, int dv_interface)
 			return; 
 		}
 		struct dovi_output_metadata dovi = {};
-		if (dv_interface == 2)
-			dovi.oui = 0x00D046;
-		else {
-			dv_interface = 1;
-			dovi.oui = 0x000C03;
-		}
+		dv_interface = dv_interface ? 1 : 0;
+		dovi.oui = 0x00D046;
 		dovi.dv_status = enable; //set to 1 to enable dovi infoframe 
 		dovi.dv_interface = dv_interface; 
 		dovi.backlight_metadata = 0;
