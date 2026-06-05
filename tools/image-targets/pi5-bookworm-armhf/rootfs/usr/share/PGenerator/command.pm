@@ -18,11 +18,9 @@
 #
 
 ###############################################
-#   Auto-Select 4K 30Hz Mode (Pi 4 KMS)      #
+#      Auto-Select 4K 30Hz Mode (KMS)        #
 ###############################################
-sub auto_select_4k_mode (@) {
- return if($pgenerator_conf{"mode_idx"} ne "");
- return if(!$is_kms);
+sub find_4k30_mode_idx (@) {
  my $target_idx="";
  my $found_connector=0;
  open(CMD_MODETEST,"timeout 3 $modetest 2>/dev/null|");
@@ -36,6 +34,13 @@ sub auto_select_4k_mode (@) {
   }
  }
  close(CMD_MODETEST);
+ return $target_idx;
+}
+
+sub auto_select_4k_mode (@) {
+ return if($pgenerator_conf{"mode_idx"} ne "");
+ return if(!$is_kms);
+ my $target_idx=&find_4k30_mode_idx();
  if($target_idx ne "") {
   &sudo("SET_PGENERATOR_CONF","mode_idx","$target_idx");
   $pgenerator_conf{"mode_idx"}="$target_idx";
@@ -104,6 +109,13 @@ sub kms_connector_has_property(@) {
  return 0;
 }
 
+sub modetest_connector_write(@) {
+ my ($connector_id,$prop_name,$value)=@_;
+ return 0 if(!$is_kms || $connector_id eq "" || $prop_name eq "");
+ system("timeout 3 $modetest -a -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ return ($? == 0) ? 1 : 0;
+}
+
 sub map_kms_colorspace(@) {
  my $colorimetry=shift;
  my $color_fmt=shift;
@@ -122,6 +134,192 @@ sub map_broadcast_rgb(@) {
  return 2 if($quant_range == 1);
  return 1 if($quant_range == 2);
  return 0;
+}
+
+sub drm_mode_info_for_idx(@) {
+ my $mode_idx=shift;
+ return () if($mode_idx eq "" || $mode_idx !~/^\d+$/);
+ open(MT_MODE,"timeout 3 $modetest -c 2>/dev/null|");
+ while(<MT_MODE>) {
+  if(/^\s*#\Q$mode_idx\E\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+/) {
+   my @mode=($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11);
+   close(MT_MODE);
+   return @mode;
+  }
+ }
+ close(MT_MODE);
+ return ();
+}
+
+sub requested_hdmi_tmds_khz(@) {
+ my ($pixel_clock,$color_fmt,$max_bpc,$is_dv)=@_;
+ return 0 if($pixel_clock eq "" || $pixel_clock <= 0);
+ return int($pixel_clock * 1.5 + 0.5) if($is_dv);
+ return $pixel_clock if($color_fmt == 2);
+ $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
+ return int($pixel_clock * $max_bpc / 8 + 0.5);
+}
+
+sub ensure_hdmi_bandwidth_mode(@) {
+ return if(!$is_kms);
+ my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
+ my $color_fmt=$pgenerator_conf{"color_format"};
+ my $max_bpc=$pgenerator_conf{"max_bpc"};
+ my $mode_idx=$pgenerator_conf{"mode_idx"};
+ $color_fmt=0 if($is_dv || $color_fmt eq "");
+ $max_bpc=12 if($is_dv);
+ $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
+ return if($mode_idx eq "");
+
+ my @mode=&drm_mode_info_for_idx($mode_idx);
+ return if(!@mode);
+ my $pixel_clock=$mode[10];
+ my $tmds=&requested_hdmi_tmds_khz($pixel_clock,$color_fmt,$max_bpc,$is_dv);
+ return if($tmds <= 600000);
+
+ my $target_idx=&find_4k30_mode_idx();
+ if($target_idx ne "" && $target_idx ne $mode_idx) {
+  &sudo("SET_PGENERATOR_CONF","mode_idx","$target_idx");
+  $pgenerator_conf{"mode_idx"}="$target_idx";
+  &log("Adjusted mode_idx from $mode_idx to 4K30 mode_idx=$target_idx for requested HDMI bandwidth ${tmds}kHz");
+ } else {
+  &log("Requested HDMI bandwidth ${tmds}kHz exceeds 600000kHz and no 4K30 fallback mode was found");
+ }
+}
+
+sub drm_current_crtc_for_connector(@) {
+ my $connector_id=shift;
+ my $inside=0;
+ my $want_value=0;
+ return "" if($connector_id eq "");
+ open(MT_CONN,"timeout 3 $modetest -a -c 2>/dev/null|");
+ while(<MT_CONN>) {
+  if(/^(\d+)\s+\d+\s+(connected|disconnected)\s+/) {
+   $inside=($1 == $connector_id) ? 1 : 0;
+   $want_value=0;
+   next;
+  }
+  next if(!$inside);
+  if(/^\s+\d+\s+CRTC_ID:/) {
+   $want_value=1;
+   next;
+  }
+  if($want_value && /^\s+value:\s+(\d+)/) {
+   my $crtc_id=$1;
+   close(MT_CONN);
+   return $crtc_id;
+  }
+ }
+ close(MT_CONN);
+ return "";
+}
+
+sub drm_primary_plane_for_crtc(@) {
+ my $crtc_id=shift;
+ return "" if($crtc_id eq "");
+ my $mt=`timeout 3 $modetest -a -p 2>/dev/null`;
+ my @crtc_ids=();
+ my $section="";
+ foreach my $line (split(/\n/,$mt)) {
+  if($line=~/^CRTCs:/) { $section="crtcs"; next; }
+  if($line=~/^Planes:/) { last; }
+  if($section eq "crtcs" && $line=~/^(\d+)\s+/) {
+   push(@crtc_ids,$1);
+  }
+ }
+ my $crtc_bit=-1;
+ for(my $i=0;$i<@crtc_ids;$i++) {
+  if($crtc_ids[$i] == $crtc_id) {
+   $crtc_bit=1 << $i;
+   last;
+  }
+ }
+ return "" if($crtc_bit < 0);
+
+ $section="";
+ my $candidate_id="";
+ my $candidate_possible=0;
+ my $fallback_id="";
+ my $reading_type=0;
+ foreach my $line (split(/\n/,$mt)) {
+  if($line=~/^Planes:/) { $section="planes"; next; }
+  next if($section ne "planes");
+  if($line=~/^(\d+)\s+\d+\s+\d+\s+.*\s(0x[0-9a-fA-F]+)\s*$/) {
+   $candidate_id=$1;
+   $candidate_possible=hex($2);
+   $reading_type=0;
+   if(($candidate_possible & $crtc_bit) && $fallback_id eq "") {
+    $fallback_id=$candidate_id;
+   }
+   next;
+  }
+  if($candidate_id ne "" && $line=~/^\s+\d+\s+type:/) {
+   $reading_type=1;
+   next;
+  }
+  if($reading_type && $line=~/^\s+value:\s+(\d+)/) {
+   if($1 == 1 && ($candidate_possible & $crtc_bit)) {
+    return $candidate_id;
+   }
+   $reading_type=0;
+  }
+ }
+ return $fallback_id;
+}
+
+sub prearm_drm_mode(@) {
+ return if(!$is_kms);
+ my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
+ my $is_hdr=int($pgenerator_conf{"is_hdr"} || 0);
+ my $color_fmt=$pgenerator_conf{"color_format"};
+ my $max_bpc=$pgenerator_conf{"max_bpc"};
+ my $mode_idx=$pgenerator_conf{"mode_idx"};
+ $color_fmt=0 if($is_dv || $color_fmt eq "");
+ $max_bpc=12 if($is_dv);
+ $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
+ return if($mode_idx eq "");
+ return if($color_fmt == 0 && $max_bpc <= 8 && !$is_hdr && !$is_dv);
+
+ my $connector_id="";
+ open(MT,"timeout 3 $modetest -a -c 2>/dev/null|");
+ while(<MT>) {
+  if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
+   $connector_id=$1;
+   last;
+  }
+ }
+ close(MT);
+ return if($connector_id eq "");
+
+ my @mode=&drm_mode_info_for_idx($mode_idx);
+ if(!@mode) {
+  &log("DRM: pre-arm skipped; mode_idx=$mode_idx was not found");
+  return;
+ }
+ my ($mode_name,$refresh,$hdisp,$hss,$hse,$htot,$vdisp,$vss,$vse,$vtot,$clock)=@mode;
+ my $crtc_id=&drm_current_crtc_for_connector($connector_id);
+ my $plane_id=&drm_primary_plane_for_crtc($crtc_id);
+ if($crtc_id eq "" || $plane_id eq "") {
+  &log("DRM: pre-arm skipped; connector=$connector_id crtc=$crtc_id plane=$plane_id");
+  return;
+ }
+
+ my $colorspace=&map_kms_colorspace($pgenerator_conf{"colorimetry"},$color_fmt);
+ my $broadcast_rgb=&map_broadcast_rgb($pgenerator_conf{"rgb_quant_range"});
+ my $fb_fmt=($max_bpc > 8) ? "XR30" : "XR24";
+ my $refresh_int=int($refresh + 0.5);
+ $refresh_int=30 if($refresh_int < 1);
+ my $mode_arg="$hdisp,$hss,$hse,$htot,$vdisp,$vss,$vse,$vtot-$refresh_int";
+ my $cmd="timeout 3 $modetest -a -v ".
+  "-w '$connector_id:max bpc:$max_bpc' ".
+  "-w '$connector_id:output format:$color_fmt' ".
+  "-w '$connector_id:Colorspace:$colorspace' ".
+  "-w '$connector_id:Broadcast RGB:$broadcast_rgb' ".
+  "-s '$connector_id\@$crtc_id:$mode_arg\@$fb_fmt' ".
+  "-P '$plane_id\@$crtc_id:${hdisp}x${vdisp}\@$fb_fmt' ".
+  ">/tmp/pgenerator_prearm.log 2>&1";
+ system($cmd);
+ &log("DRM: pre-armed connector=$connector_id crtc=$crtc_id plane=$plane_id mode=$mode_name/${refresh}Hz bpc=$max_bpc output_format=$color_fmt fb=$fb_fmt");
 }
 
 ###############################################
@@ -145,8 +343,11 @@ sub apply_drm_properties (@) {
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  $max_bpc=12 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
-  system("timeout 3 $modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
-  &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
+  if(&modetest_connector_write($connector_id,"max bpc",$max_bpc)) {
+   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
+  } else {
+   &log("DRM: Failed to set max bpc=$max_bpc on connector $connector_id");
+  }
  }
  # Reset output format — kernel retains previous value across binary
  # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
@@ -159,8 +360,7 @@ sub apply_drm_properties (@) {
   $color_fmt=0;
  }
  if(&kms_connector_has_property("output format")) {
-  system("timeout 3 $modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
-  if($? == 0) {
+  if(&modetest_connector_write($connector_id,"output format",$color_fmt)) {
    &log("DRM: Set output format=$color_fmt on connector $connector_id");
   } else {
    &log("DRM: Failed to set output format=$color_fmt on connector $connector_id");
@@ -171,9 +371,9 @@ sub apply_drm_properties (@) {
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
  if($quant_range ne "") {
-  system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
+  &modetest_connector_write($connector_id,"rgb quant range",$quant_range);
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
-  system("timeout 3 $modetest -w '$connector_id:Broadcast RGB:$broadcast_rgb' 2>/dev/null");
+  &modetest_connector_write($connector_id,"Broadcast RGB",$broadcast_rgb);
   &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
  }
  # Set colorimetry / colorspace.
@@ -182,8 +382,8 @@ sub apply_drm_properties (@) {
  $colorimetry=9 if($is_dv);
  if($colorimetry ne "" && $colorimetry > 0) {
   my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
-  system("timeout 3 $modetest -w '$connector_id:Colorimetry:$colorimetry' 2>/dev/null");
-  system("timeout 3 $modetest -w '$connector_id:Colorspace:$colorspace' 2>/dev/null");
+  &modetest_connector_write($connector_id,"Colorimetry",$colorimetry);
+  &modetest_connector_write($connector_id,"Colorspace",$colorspace);
   &log("DRM: Set Colorimetry=$colorimetry / Colorspace=$colorspace on connector $connector_id");
  }
 }
@@ -222,7 +422,9 @@ sub pattern_generator_start(@) {
   close(OPS);
  }
  &auto_select_4k_mode();
+ &ensure_hdmi_bandwidth_mode();
  &apply_drm_properties();
+ &prearm_drm_mode();
  &get_hdmi_info();
  if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry") && !&kms_connector_has_property("output format")) {
   $use_drm_override=0;
@@ -263,13 +465,15 @@ sub pattern_generator_start(@) {
   &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
   return;
  }
-	   # Some displays miss the first pre-launch RGB/colorspace programming and stay
-	   # on the splash screen until a later format toggle forces HDMI state back in.
-	   # Reapply connector properties once the renderer is alive so the first pattern
-   # push lands on the intended format without requiring a manual YCbCr detour.
-   &apply_drm_properties();
  my $startup_color_fmt=$pgenerator_conf{"color_format"};
  $startup_color_fmt=0 if($startup_color_fmt eq "");
+ if($startup_color_fmt == 0) {
+   # Some displays miss the first pre-launch RGB/colorspace programming and stay
+   # on the splash screen until a later format toggle forces HDMI state back in.
+   # YCbCr modes are already pre-programmed above and the renderer performs its
+   # own modeset; a second modetest pass can race DRM master setup on Pi5.
+   &apply_drm_properties();
+ }
  if($is_kms && ($pgenerator_conf{"dv_status"}||"0") ne "1" && $startup_color_fmt == 0) {
   # Some monitor-class RGB sinks take longer than TVs to latch the connector
   # state after the renderer grabs DRM master. Retry once more after the link

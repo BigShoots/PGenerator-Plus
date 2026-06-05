@@ -17,6 +17,8 @@ SOURCE_DIR_SET=0
 DOWNLOAD_HEADERS=0
 INSTALL_LIVE=0
 INSTALL_DESTDIR=""
+INSTALL_BOOT_DIR=""
+SKIP_INITRAMFS=0
 
 if [[ -n "$SOURCE_DIR" ]]; then
 	SOURCE_DIR_SET=1
@@ -38,8 +40,12 @@ Options:
   --source PATH            Use an existing Raspberry Pi linux source directory.
   --build-dir PATH         Override the build/cache directory.
   --install-live           Replace the running system's vc4.ko.xz after build.
-                           Backs up the stock module first. Reboot required.
+                           Backs up the stock module first and updates the live
+                           boot initramfs when one is found. Reboot required.
   --install-destdir PATH   Install into an image/rootfs directory instead.
+  --install-boot-dir PATH  Repack a boot initramfs with the patched vc4 module.
+                           PATH may be a boot mount directory or initramfs file.
+  --no-initramfs           Skip initramfs updates during install steps.
   -j, --jobs N             Parallel build jobs.
   -h, --help               Show this help.
 
@@ -74,6 +80,14 @@ while [[ $# -gt 0 ]]; do
 		--install-destdir)
 			INSTALL_DESTDIR="$2"
 			shift 2
+			;;
+		--install-boot-dir)
+			INSTALL_BOOT_DIR="$2"
+			shift 2
+			;;
+		--no-initramfs)
+			SKIP_INITRAMFS=1
+			shift
 			;;
 		-j|--jobs)
 			JOBS="$2"
@@ -158,8 +172,16 @@ if [[ ! -d "$SOURCE_DIR/drivers/gpu/drm/vc4" ]]; then
 	tar -xzf "$archive" --strip-components=1 -C "$SOURCE_DIR"
 fi
 
+patch_marker_present() {
+	grep -q "vc4_hdmi_pgenerator_output_format" "$SOURCE_DIR/drivers/gpu/drm/vc4/vc4_hdmi.c" &&
+	grep -q "PGenerator" "$SOURCE_DIR/drivers/gpu/drm/vc4/vc4_hdmi.c" &&
+	grep -q "output_format_property" "$SOURCE_DIR/drivers/gpu/drm/vc4/vc4_hdmi.h"
+}
+
 if git -C "$SOURCE_DIR" apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
 	echo "Patch already applied in $SOURCE_DIR"
+elif patch_marker_present; then
+	echo "Patch markers already present in $SOURCE_DIR"
 else
 	git -C "$SOURCE_DIR" apply --check "$PATCH_FILE"
 	git -C "$SOURCE_DIR" apply "$PATCH_FILE"
@@ -229,6 +251,7 @@ install_module_to_root() {
 		cp -a "$dest" "$backup"
 		echo "Backed up stock module: $backup"
 	fi
+	need xz
 	install -m 0644 "$module" "${dest%.xz}"
 	xz -f "${dest%.xz}"
 	if command -v depmod >/dev/null 2>&1; then
@@ -241,15 +264,209 @@ install_module_to_root() {
 	echo "Installed patched module: $dest"
 }
 
+kernel_flavour_suffix() {
+	case "$KERNEL_VERSION" in
+		*-rpi-v8) printf '8\n' ;;
+		*-rpi-v7l) printf '7l\n' ;;
+		*-rpi-v7) printf '7\n' ;;
+		*-rpi-v6) printf '\n' ;;
+		*) printf '\n' ;;
+	esac
+}
+
+resolve_initramfs_target() {
+	local target="$1"
+	local suffix
+	local candidate
+
+	if [[ -f "$target" ]]; then
+		printf '%s\n' "$target"
+		return 0
+	fi
+	if [[ ! -d "$target" ]]; then
+		return 1
+	fi
+
+	suffix="$(kernel_flavour_suffix)"
+	for candidate in \
+		"$target/initramfs$suffix" \
+		"$target/initramfs.gz" \
+		"$target/initrd.img-$KERNEL_VERSION"; do
+		if [[ -n "$candidate" && -f "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+find_live_initramfs() {
+	local suffix
+	local candidate
+
+	suffix="$(kernel_flavour_suffix)"
+	for candidate in \
+		"/boot/firmware/initramfs$suffix" \
+		"/boot/firmware/initramfs.gz" \
+		"/boot/initramfs.gz" \
+		"/boot/initrd.img-$KERNEL_VERSION"; do
+		if [[ -n "$candidate" && -f "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+detect_initramfs_codec() {
+	local initramfs_file="$1"
+
+	if command -v zstd >/dev/null 2>&1 &&
+	   zstd -q -t "$initramfs_file" >/dev/null 2>&1; then
+		printf 'zstd\n'
+		return 0
+	fi
+	if gzip -t "$initramfs_file" >/dev/null 2>&1; then
+		printf 'gzip\n'
+		return 0
+	fi
+
+	return 1
+}
+
+install_module_to_initramfs() {
+	local initramfs_file="$1"
+	local module="$2"
+	local work=""
+	local root=""
+	local repacked="$initramfs_file.repacked"
+	local backup=""
+	local module_rel="modules/$KERNEL_VERSION/kernel/drivers/gpu/drm/vc4/vc4.ko"
+	local module_paths=()
+	local codec=""
+	local rel
+
+	[[ -n "$initramfs_file" ]] || return 0
+	if [[ ! -f "$initramfs_file" ]]; then
+		echo "Boot initramfs not found: $initramfs_file" >&2
+		exit 1
+	fi
+
+	need cpio
+	need xz
+	need gzip
+	codec="$(detect_initramfs_codec "$initramfs_file")" || {
+		echo "Unsupported initramfs compression: $initramfs_file" >&2
+		exit 1
+	}
+	if [[ "$codec" == "zstd" ]]; then
+		need zstd
+	fi
+
+	work="$(mktemp -d)"
+	root="$work/root"
+	repacked="$work/initramfs"
+	mkdir -p "$root"
+
+	(
+		cd "$root"
+		case "$codec" in
+			zstd) zstd -q -dc "$initramfs_file" ;;
+			gzip) gzip -dc "$initramfs_file" ;;
+		esac | cpio -id --quiet --no-absolute-filenames || true
+	)
+
+	if [[ ! -e "$root/init" && ! -d "$root/lib" && ! -d "$root/usr/lib" ]]; then
+		rm -rf "$work"
+		echo "Could not unpack a recognizable initramfs from $initramfs_file" >&2
+		exit 1
+	fi
+
+	for rel in "lib/$module_rel" "lib/$module_rel.xz" \
+		   "usr/lib/$module_rel" "usr/lib/$module_rel.xz"; do
+		if [[ -e "$root/$rel" ]]; then
+			module_paths+=("$rel")
+		fi
+	done
+	if [[ "${#module_paths[@]}" -eq 0 ]]; then
+		if [[ -d "$root/usr/lib" || ( -L "$root/lib" && "$(readlink "$root/lib")" == "usr/lib" ) ]]; then
+			module_paths+=("usr/lib/$module_rel")
+		else
+			module_paths+=("lib/$module_rel")
+		fi
+	fi
+
+	for rel in "${module_paths[@]}"; do
+		mkdir -p "$(dirname "$root/$rel")"
+		if [[ "$rel" == *.xz ]]; then
+			xz -c "$module" > "$root/$rel"
+			chmod 0644 "$root/$rel"
+		else
+			install -m 0644 "$module" "$root/$rel"
+		fi
+	done
+
+	(
+		cd "$root"
+		case "$codec" in
+			zstd) find . -print | LC_ALL=C sort | cpio -o -H newc --quiet | zstd -q -19 -T0 -o "$repacked" ;;
+			gzip) find . -print | LC_ALL=C sort | cpio -o -H newc --quiet | gzip -9n > "$repacked" ;;
+		esac
+	)
+
+	backup="$initramfs_file.pgenerator-backup-$(date +%Y%m%d%H%M%S)"
+	cp -a "$initramfs_file" "$backup"
+	install -m 0644 "$repacked" "$initramfs_file"
+	rm -rf "$work"
+
+	echo "Backed up initramfs: $backup"
+	echo "Installed patched module into initramfs: $initramfs_file (${module_paths[*]})"
+}
+
+INITRAMFS_INSTALLED=0
+
+install_requested_initramfs() {
+	local initramfs_file=""
+
+	if [[ "$SKIP_INITRAMFS" -eq 1 ]]; then
+		return 0
+	fi
+	if [[ -n "$INSTALL_BOOT_DIR" ]]; then
+		if ! initramfs_file="$(resolve_initramfs_target "$INSTALL_BOOT_DIR")"; then
+			echo "No initramfs found at --install-boot-dir target: $INSTALL_BOOT_DIR" >&2
+			exit 1
+		fi
+	else
+		if ! initramfs_file="$(find_live_initramfs)"; then
+			echo "No live initramfs found under /boot/firmware or /boot; pass --install-boot-dir PATH if needed."
+			return 0
+		fi
+	fi
+
+	install_module_to_initramfs "$initramfs_file" "$MODULE"
+	INITRAMFS_INSTALLED=1
+}
+
 if [[ "$INSTALL_LIVE" -eq 1 ]]; then
 	if [[ "$(id -u)" -ne 0 ]]; then
 		echo "--install-live must run as root" >&2
 		exit 1
 	fi
 	install_module_to_root "" "$MODULE"
+	install_requested_initramfs
 	echo "Reboot the Pi to load the patched vc4 module."
 fi
 
 if [[ -n "$INSTALL_DESTDIR" ]]; then
 	install_module_to_root "$INSTALL_DESTDIR" "$MODULE"
+fi
+
+if [[ -n "$INSTALL_BOOT_DIR" && "$SKIP_INITRAMFS" -eq 0 && "$INITRAMFS_INSTALLED" -eq 0 ]]; then
+	initramfs_file="$(resolve_initramfs_target "$INSTALL_BOOT_DIR")" || {
+		echo "No initramfs found at --install-boot-dir target: $INSTALL_BOOT_DIR" >&2
+		exit 1
+	}
+	install_module_to_initramfs "$initramfs_file" "$MODULE"
 fi

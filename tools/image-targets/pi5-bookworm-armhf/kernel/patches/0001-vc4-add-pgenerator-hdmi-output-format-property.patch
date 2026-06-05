@@ -1,5 +1,5 @@
 diff --git a/drivers/gpu/drm/vc4/vc4_hdmi.c b/drivers/gpu/drm/vc4/vc4_hdmi.c
-index 206ecf4..61b6cde 100644
+index 206ecf4..5a84181 100644
 --- a/drivers/gpu/drm/vc4/vc4_hdmi.c
 +++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
 @@ -385,6 +385,196 @@ static int vc4_hdmi_reset_link(struct drm_connector *connector,
@@ -283,6 +283,112 @@ index 206ecf4..61b6cde 100644
  	drm_connector_attach_encoder(connector, encoder);
  
  	return 0;
+@@ -1208,7 +1447,6 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+ 	struct drm_device *drm = vc4_hdmi->connector.dev;
+ 	unsigned int lim_range = state->hdmi.is_limited_range ? 1 : 0;
+ 	unsigned long flags;
+-	const u16 (*csc)[4];
+ 	u32 if_cfg = 0;
+ 	u32 if_xbar = 0x543210;
+ 	u32 csc_chan_ctl = 0;
+@@ -1223,14 +1461,15 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+ 
+ 	switch (state->hdmi.output_format) {
+ 	case HDMI_COLORSPACE_YUV444:
+-		csc = vc5_hdmi_find_yuv_csc_coeffs(vc4_hdmi, state->colorspace, !!lim_range);
+-
+-		vc5_hdmi_set_csc_coeffs_swap(vc4_hdmi, csc);
++		/*
++		 * PGenerator pre-encodes RGB to Cb/Cr/Y in the fragment
++		 * shader. Keep the HDMI path in YCbCr mode, but avoid a second
++		 * RGB->YUV conversion in the VC5 CSC.
++		 */
++		vc5_hdmi_set_csc_coeffs(vc4_hdmi, vc5_hdmi_csc_full_rgb_to_rgb[0]);
+ 		break;
+ 
+ 	case HDMI_COLORSPACE_YUV422:
+-		csc = vc5_hdmi_find_yuv_csc_coeffs(vc4_hdmi, state->colorspace, !!lim_range);
+-
+ 		csc_ctl |= VC4_SET_FIELD(VC5_MT_CP_CSC_CTL_FILTER_MODE_444_TO_422_STANDARD,
+ 					 VC5_MT_CP_CSC_CTL_FILTER_MODE_444_TO_422) |
+ 			VC5_MT_CP_CSC_CTL_USE_444_TO_422 |
+@@ -1242,7 +1481,11 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+ 		if_cfg |= VC4_SET_FIELD(VC5_DVP_HT_VEC_INTERFACE_CFG_SEL_422_FORMAT_422_LEGACY,
+ 					VC5_DVP_HT_VEC_INTERFACE_CFG_SEL_422);
+ 
+-		vc5_hdmi_set_csc_coeffs(vc4_hdmi, csc);
++		/*
++		 * PGenerator pre-encodes RGB to Y/Cb/Cr in the fragment shader;
++		 * the hardware still performs the 4:4:4->4:2:2 packing.
++		 */
++		vc5_hdmi_set_csc_coeffs(vc4_hdmi, vc5_hdmi_csc_full_rgb_to_rgb[0]);
+ 		break;
+ 
+ 	case HDMI_COLORSPACE_RGB:
+@@ -1354,6 +1597,7 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
+ 					VC4_HDMI_VERTB_VBP));
+ 	unsigned long flags;
+ 	unsigned char gcp;
++	bool gcp_en;
+ 	u32 reg;
+ 	int idx;
+ 
+@@ -1388,22 +1632,41 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
+ 	switch (state->hdmi.output_bpc) {
+ 	case 12:
+ 		gcp = 6;
++		gcp_en = true;
+ 		break;
+ 	case 10:
+ 		gcp = 5;
++		gcp_en = true;
+ 		break;
+ 	case 8:
+ 	default:
+ 		gcp = 0;
++		gcp_en = false;
+ 		break;
+ 	}
+ 
+ 	/*
+-	 * YCC422 is always 36-bit and not considered deep colour so
+-	 * doesn't signal in GCP.
++	 * PGenerator needs the sink to see the requested 10/12-bit link depth
++	 * for YCC422. Upstream treats 4:2:2 as fixed 36-bit transport and
++	 * suppresses GCP deep-colour signalling, which leaves some displays
++	 * reporting the mode as 8-bit despite output_bpc being 10 or 12.
+ 	 */
+ 	if (state->hdmi.output_format == HDMI_COLORSPACE_YUV422) {
+-		gcp = 0;
++		switch (state->max_requested_bpc) {
++		case 12:
++			gcp = 6;
++			gcp_en = true;
++			break;
++		case 10:
++			gcp = 5;
++			gcp_en = true;
++			break;
++		case 8:
++		default:
++			gcp = 0;
++			gcp_en = false;
++			break;
++		}
+ 	}
+ 
+ 	reg = HDMI_READ(HDMI_DEEP_COLOR_CONFIG_1);
+@@ -1421,7 +1684,9 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
+ 	HDMI_WRITE(HDMI_GCP_WORD_1, reg);
+ 
+ 	reg = HDMI_READ(HDMI_GCP_CONFIG);
+-	reg |= VC5_HDMI_GCP_CONFIG_GCP_ENABLE;
++	reg &= ~VC5_HDMI_GCP_CONFIG_GCP_ENABLE;
++	if (gcp_en)
++		reg |= VC5_HDMI_GCP_CONFIG_GCP_ENABLE;
+ 	HDMI_WRITE(HDMI_GCP_CONFIG, reg);
+ 
+ 	reg = HDMI_READ(HDMI_MISC_CONTROL);
 diff --git a/drivers/gpu/drm/vc4/vc4_hdmi.h b/drivers/gpu/drm/vc4/vc4_hdmi.h
 index fb13f35..ad72f00 100644
 --- a/drivers/gpu/drm/vc4/vc4_hdmi.h
