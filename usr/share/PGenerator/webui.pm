@@ -22403,8 +22403,7 @@ async function meterAutoCalAcceptDisclaimer(){
  try{
   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
   if(meterAutoCalRequiresLuminanceSetup()){
-   meterAutoCalLevelPreflight=await meterAutoCalRunLevelPreflight();
-   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
+   meterAutoCalLevelPreflight={skipped:true};
    const setupReading=await meterAutoCalLuminanceSetupLoop(whiteStep);
    if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
    if(setupReading){
