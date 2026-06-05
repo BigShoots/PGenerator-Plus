@@ -100,6 +100,13 @@ spotread_help_output() {
  timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true
 }
 
+spotread_runtime_error() {
+ local help_out="$1"
+ local line
+ line=$(printf '%s\n' "$help_out" | grep -m1 -E 'error while loading shared libraries|cannot open shared object file|No such file or directory|Permission denied' || true)
+ printf '%s' "$line"
+}
+
 lsusb_line_for_path() {
  local device_path="$1"
  [[ "$device_path" =~ ^/dev/bus/usb/([0-9]+)/([0-9]+)$ ]] || return 1
@@ -159,13 +166,19 @@ detect_meter() {
  local sr_avail=false
  [[ -x "$SPOTREAD_BIN" ]] && sr_avail=true
  local help_out=""
+ local sr_error=""
  local -a meters=()
  local forced_meter_type=""
  LSUSB_CACHE=$(lsusb 2>/dev/null || true)
  forced_meter_type=$(meter_type_override)
  if $sr_avail; then
   help_out=$(spotread_help_output)
-  mapfile -t meters < <(spotread_usb_ports "$help_out" "$forced_meter_type")
+  sr_error=$(spotread_runtime_error "$help_out")
+  if [[ -n "$sr_error" ]]; then
+   sr_avail=false
+  else
+   mapfile -t meters < <(spotread_usb_ports "$help_out" "$forced_meter_type")
+  fi
  fi
 
  if (( ${#meters[@]} > 0 )); then
@@ -201,8 +214,13 @@ detect_meter() {
    "$(json_escape "$first_meter_type")" \
    "$meters_json" "$sr_avail"
  else
-  printf '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":%s}\n' \
-   "$sr_avail"
+  if [[ -n "$sr_error" ]]; then
+   printf '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false,"spotread_error":"%s"}\n' \
+    "$(json_escape "$sr_error")"
+  else
+   printf '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":%s}\n' \
+    "$sr_avail"
+  fi
  fi
 }
 

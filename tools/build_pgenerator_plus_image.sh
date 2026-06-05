@@ -24,6 +24,7 @@ PI5_ADMIN_PASSWORD_HASH="$PI5_ROOT_PASSWORD_HASH"
 PI5_ADMIN_GROUPS="adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,render,netdev,gpio,i2c,spi"
 PI5_KEYBOARD_LAYOUT="us"
 PI5_LOCALE="en_US.UTF-8"
+PI5_SPOTREAD_REQUIRED_LIBS=(libXss.so.1)
 TARGET_OVERLAY_REL=""
 TARGET_DESCRIPTION=""
 TARGET_OWNED_RUNTIME_PATHS=(
@@ -797,6 +798,27 @@ configure_pi5_display_defaults() {
  ensure_config_line "$conf" "max_bpc" "8"
 }
 
+validate_pi5_spotread_runtime() {
+ local lib found missing=()
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ [[ -x "$ROOT_MOUNT/usr/bin/spotread" ]] || return 0
+
+ for lib in "${PI5_SPOTREAD_REQUIRED_LIBS[@]}"; do
+  found=0
+  if find "$ROOT_MOUNT/lib" "$ROOT_MOUNT/usr/lib" -name "$lib" -print -quit 2>/dev/null | grep -q .; then
+   found=1
+  fi
+  [[ "$found" -eq 1 ]] || missing+=("$lib")
+ done
+
+ if [[ ${#missing[@]} -gt 0 ]]; then
+  printf 'Pi 5 Bookworm rootfs is missing shared libraries required by bundled spotread:\n' >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  die "Install libxss1 in the Pi 5 base image/rootfs before building PGenerator+"
+ fi
+}
+
 configure_pi5_headless_first_boot() {
  local keyboard_file="$ROOT_MOUNT/etc/default/keyboard"
  local locale_file="$ROOT_MOUNT/etc/default/locale"
@@ -1285,6 +1307,11 @@ fix_permissions() {
  done
  set_root_mode "usr/share/PGenerator/bash.pm" 0755
  set_root_mode "usr/share/PGenerator/daemon.pm" 0755
+ set_root_mode "usr/lib/arm-linux-gnueabihf/libXss.so.1.0.0" 0644
+ set_root_symlink_owner "usr/lib/arm-linux-gnueabihf/libXss.so.1"
+ set_root_mode "usr/share/doc/libxss1/changelog.Debian.gz" 0644
+ set_root_mode "usr/share/doc/libxss1/changelog.gz" 0644
+ set_root_mode "usr/share/doc/libxss1/copyright" 0644
 
  for rel in \
   "etc/ntp.conf" \
@@ -1357,6 +1384,7 @@ main() {
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_display_defaults
+ validate_pi5_spotread_runtime
  configure_pi5_bookworm_boot
  configure_pi5_headless_first_boot
  configure_pi5_headless_ssh
