@@ -4,6 +4,10 @@
    Commit your changes as you make them so we can revert.
 
    Deploying runtime changes to the Pi4:
+   - Do not deploy or restart during an active calibration, meter read, or pattern run unless explicitly asked.
+   - Before copying Perl changes, run local syntax checks such as `perl -c usr/share/PGenerator/webui.pm`, `perl -c usr/bin/meter_lg_autocal.pl`, and `perl -c usr/sbin/pgenerator-lg` for any touched files.
+   - Check Pi4 reachability/status first:
+     SSHPASS='PGenerator!!$' sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/pgen_known_hosts root@192.168.1.179 'pgrep -af "PGeneratord|meter_|spotread" || true'
    - Back up the target files before overwriting them:
      SSHPASS='PGenerator!!$' sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/pgen_known_hosts root@192.168.1.179 'ts=$(date +%Y%m%d-%H%M%S); mkdir -p /root/pgen-backups/$ts; cp -a /usr/bin/meter_lg_autocal.pl /usr/bin/meter_lg_3d_autocal.pl /usr/sbin/pgenerator-lg /usr/share/PGenerator/webui.pm /root/pgen-backups/$ts/ 2>/dev/null; echo $ts'
    - Copy only the changed runtime files to their matching absolute paths, for example:
