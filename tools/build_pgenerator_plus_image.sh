@@ -717,6 +717,8 @@ configure_pi5_bookworm_root() {
 
  mkdir -p "$ROOT_MOUNT/boot/firmware"
  ln -sfn /boot/firmware "$ROOT_MOUNT/boot/loader/boot_dir"
+ rm -f "$ROOT_MOUNT"/etc/rc?.d/*isc-dhcp-server
+ ln -sfn /dev/null "$ROOT_MOUNT/etc/systemd/system/isc-dhcp-server.service"
 
  install_pi5_compat_script "usr/bin/pkg" '#!/bin/sh
 exit 0'
