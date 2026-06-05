@@ -79,7 +79,7 @@ index 206ecf4..61b6cde 100644
 +		return true;
 +
 +	case HDMI_COLORSPACE_YUV444:
-+		if (!(info->color_formats & DRM_COLOR_FORMAT_YCRCB444))
++		if (!(info->color_formats & DRM_COLOR_FORMAT_YCBCR444))
 +			return false;
 +		if (bpc == 10 &&
 +		    !(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_30))
@@ -91,7 +91,7 @@ index 206ecf4..61b6cde 100644
 +		return true;
 +
 +	case HDMI_COLORSPACE_YUV422:
-+		if (!(info->color_formats & DRM_COLOR_FORMAT_YCRCB422))
++		if (!(info->color_formats & DRM_COLOR_FORMAT_YCBCR422))
 +			return false;
 +		if (bpc > 12)
 +			return false;
