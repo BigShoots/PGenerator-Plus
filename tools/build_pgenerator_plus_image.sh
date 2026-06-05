@@ -794,7 +794,7 @@ configure_pi5_pgenerator_services() {
 configure_pi5_bookworm_boot() {
  local config_file="$BOOT_MOUNT/config.txt"
  local cmdline_file="$BOOT_MOUNT/cmdline.txt"
- local cmdline
+ local cmdline token
 
  [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
  [[ -f "$config_file" ]] || die "Boot partition is missing config.txt"
@@ -818,11 +818,24 @@ configure_pi5_bookworm_boot() {
   log "Added Pi 5 vc4-kms-v3d boot config block"
  fi
 
+ ensure_config_line "$config_file" "auto_initramfs" "0"
+
  cmdline="$(tr -d '\n' < "$cmdline_file")"
- if ! grep -Eq '(^| )rootwait( |$)' <<<"$cmdline"; then
-  printf '%s\n' "$cmdline rootwait" > "$cmdline_file"
-  log "Ensured rootwait in Pi 5 boot cmdline.txt"
- fi
+ cmdline="$(perl -e '
+  my $cmd = join(" ", @ARGV);
+  $cmd =~ s/(^| )quiet(?= |$)/ /g;
+  $cmd =~ s/[[:space:]]+/ /g;
+  $cmd =~ s/^ //;
+  $cmd =~ s/ $//;
+  print $cmd;
+ ' "$cmdline")"
+ for token in rootwait rootdelay=5 systemd.show_status=1 loglevel=7 consoleblank=0; do
+  if [[ " $cmdline " != *" $token "* ]]; then
+   cmdline="$cmdline $token"
+  fi
+ done
+ printf '%s\n' "$cmdline" > "$cmdline_file"
+ log "Configured Pi 5 direct-root boot cmdline diagnostics"
 }
 
 configure_pi5_headless_ssh() {
