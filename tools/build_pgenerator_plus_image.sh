@@ -535,18 +535,30 @@ ensure_user_group_membership() {
  local file="$1"
  local group="$2"
  local user="$3"
+ local tmp mode owner group_id
 
  [[ -f "$file" ]] || return 0
- perl -0pi -e '
-  BEGIN {
-   ($group, $user) = splice(@ARGV, 0, 2);
-  }
+ tmp="${file}.tmp.$$"
+ perl - "$group" "$user" "$file" > "$tmp" <<'PERL'
+  use strict;
+  use warnings;
+  my ($group, $user, $file) = @ARGV;
+  open(my $fh, "<", $file) or die "Cannot open $file: $!\n";
+  local $/;
+  $_ = <$fh>;
+  close($fh);
   s{^(\Q$group\E:[^:\n]*:[^:\n]*:)([^\n]*)$}{
    my %seen = map { $_ => 1 } grep { $_ ne "" } split /,/, $2;
    $seen{$user} = 1;
    $1 . join(",", sort keys %seen);
   }gme;
- ' "$group" "$user" "$file"
+  print;
+PERL
+ mode="$(stat -c '%a' "$file" 2>/dev/null || echo 0644)"
+ owner="$(stat -c '%u' "$file" 2>/dev/null || echo 0)"
+ group_id="$(stat -c '%g' "$file" 2>/dev/null || echo 0)"
+ install -m "$mode" -o "$owner" -g "$group_id" "$tmp" "$file" 2>/dev/null || install -m "$mode" "$tmp" "$file"
+ rm -f "$tmp"
 }
 
 ensure_pi5_admin_identity() {
