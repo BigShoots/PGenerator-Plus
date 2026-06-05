@@ -238,12 +238,13 @@ assert(
   'OLED shadow detail pre-commit compensation should remain disabled so low-shadow DDC offsets are not applied before final commit'
 );
 assert(
-  autocalWorkerSource.includes('sub low_shadow_3_4_luma_far_from_target') &&
-    autocalWorkerSource.includes('$low_cap=1 if(low_shadow_3_4_luma_far_from_target($step,$luminance_err*100) && $low_cap < 1);') &&
-    autocalWorkerSource.includes('$luma_cap=0.5 if($far_3_4_luma && $luma_cap < 0.5);') &&
-    autocalWorkerSource.includes('return undef if($ire > 0 && $ire <= 2.5001);'),
-  'Low-shadow 3%/4% luma movement should loosen only when far from target while keeping the 2.3% point protected'
-);
+	    autocalWorkerSource.includes('sub low_shadow_3_4_luma_far_from_target') &&
+	    autocalWorkerSource.includes('$low_cap=1 if(low_shadow_3_4_luma_far_from_target($step,$luminance_err*100) && $low_cap < 1);') &&
+	    autocalWorkerSource.includes('$luma_cap=0.5 if($far_3_4_luma && $luma_cap < 0.5);') &&
+	    autocalWorkerSource.includes('my $sdr_deep_shadow_near_y_chroma=(') &&
+	    autocalWorkerSource.includes('return undef if($ire > 0 && $ire <= 2.5001 && !$hdr20_deep_shadow_escape && !$sdr_deep_shadow_near_y_chroma);'),
+	  'Low-shadow 3%/4% luma movement should loosen only when far from target while keeping the 2.3% point protected unless it is near target Y and needs chroma cleanup'
+	);
 assert(
   committedPolishSource.includes('my @shadow=sort { ($b->{"ire"}||0) <=> ($a->{"ire"}||0) }') &&
     !committedPolishSource.includes('my @shadow=sort { ($a->{"ire"}||0) <=> ($b->{"ire"}||0) }') &&
@@ -1136,7 +1137,8 @@ assert(
       outerLumaIdx > helperIdx &&
       outerCoupledIdx > outerLumaIdx &&
       outerResponseIdx > outerCoupledIdx &&
-      autocalWorkerSource.includes('return undef if($ire > 0 && $ire <= 2.5001);') &&
+	      autocalWorkerSource.includes('my $sdr_deep_shadow_near_y_chroma=(') &&
+	      autocalWorkerSource.includes('return undef if($ire > 0 && $ire <= 2.5001 && !$hdr20_deep_shadow_escape && !$sdr_deep_shadow_near_y_chroma);') &&
       autocalWorkerSource.includes('$rgb_cap=1.0 if($ire <= 5.1001);') &&
       autocalWorkerSource.includes('$rgb_cap=0.5 if($ire <= 4.1001);') &&
       autocalWorkerSource.includes('source=>"low_shadow_chroma_luma"') &&

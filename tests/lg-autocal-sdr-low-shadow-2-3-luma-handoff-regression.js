@@ -18,30 +18,33 @@ const helperSource = sliceBetween(
 assert(
   helperSource.includes('!$best_from_luma_only') &&
     helperSource.includes('sdr_low_shadow_final_acceptance_verify_required($config,$step)') &&
-    helperSource.includes('abs(($step->{"ire"}+0)-2.3) >= 0.001') &&
-    !helperSource.includes('<= 3.1001') &&
-    !helperSource.includes('<= 5.1001') &&
-    helperSource.includes('($best_de+0) > ($target_delta+0.15)') &&
-    helperSource.includes('low_shadow_luminance_close_enough($step,$best_lum_pct)'),
-  '2.3 luma handoff should require SDR fresh verification, exactly 2.3%, a luma-only best, and near-target Y/de without applying to 3/4/5'
-);
+	    helperSource.includes('abs(($step->{"ire"}+0)-2.3) >= 0.001') &&
+	    !helperSource.includes('<= 3.1001') &&
+	    !helperSource.includes('<= 5.1001') &&
+	    helperSource.includes('($best_de+0) > ($target_delta+0.15)') &&
+	    helperSource.includes('low_shadow_luminance_close_enough($step,$best_lum_pct)') &&
+	    helperSource.includes('sdr_low_shadow_near_y_chroma_state($config,$step,$best_lum_pct,$best_de,$target_delta,autocal_adjustment_error($best_reading,$step))'),
+	  '2.3 luma handoff should require SDR fresh verification, exactly 2.3%, a luma-only best, near-target Y/de, and no pending near-Y chroma cleanup'
+	);
 
 const runSource = sliceBetween(
   'my $best_from_luma_only=0;',
   'if(sdr_low_shadow_final_acceptance_verify_required($config,$read_step)'
 );
 assert(
-  runSource.includes('my $best_from_luma_only=0;') &&
-    runSource.includes('sdr_low_shadow_2_3_luma_best_ready_for_fresh_verify($config,$read_step,$best_de,$best_lum_pct,$target_delta,$best_from_luma_only)') &&
-    runSource.includes('low_shadow_luminance_progress_keep(') &&
-    runSource.includes('$best_update_reason="low_shadow_luminance_progress_keep"') &&
-    runSource.includes('$best_from_luma_only=ref(luma_only_adjustment($adjustments)) eq "HASH" ? 1 : 0;') &&
-    runSource.includes('sdr_low_shadow_2_3_luma_best_fresh_verify_handoff') &&
-    runSource.includes('sdr_low_shadow_2_3_final_micro_suppressed') &&
-    runSource.includes('!$sdr_low_shadow_2_3_luma_ready_for_fresh_verify->() && (autocal_step_allows_final_fine_tune') &&
-    runSource.includes('$best_from_luma_only=0;'),
-  '2.3 luma-only low-shadow best should stop further RGB/fine probing and fall through to final fresh verification'
-);
+	    runSource.includes('my $best_from_luma_only=0;') &&
+	    runSource.includes('sdr_low_shadow_2_3_luma_best_ready_for_fresh_verify($config,$read_step,$best_de,$best_lum_pct,$target_delta,$best_from_luma_only,$best_reading)') &&
+	    runSource.includes('low_shadow_luminance_progress_keep(') &&
+	    runSource.includes('$best_update_reason="low_shadow_luminance_progress_keep"') &&
+	    runSource.includes('$best_from_luma_only=ref(luma_only_adjustment($adjustments)) eq "HASH" ? 1 : 0;') &&
+	    runSource.includes('sdr_low_shadow_near_y_chroma_state($config,$read_step,$lum_pct,$de,$target_delta,$err)') &&
+	    source.includes('low_shadow_near_y_chroma_luma') &&
+	    runSource.includes('sdr_low_shadow_2_3_luma_best_fresh_verify_handoff') &&
+	    runSource.includes('sdr_low_shadow_2_3_final_micro_suppressed') &&
+	    runSource.includes('!$sdr_low_shadow_2_3_luma_ready_for_fresh_verify->() && (autocal_step_allows_final_fine_tune') &&
+	    runSource.includes('$best_from_luma_only=0;'),
+	  '2.3 luma-only low-shadow best should stop further probing only after the near-Y chroma cleanup lane has had a chance to run'
+	);
 
 const freshVerifySource = sliceBetween(
   'if(sdr_low_shadow_final_acceptance_verify_required($config,$read_step)',

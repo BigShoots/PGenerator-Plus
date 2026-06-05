@@ -2627,6 +2627,7 @@ sub lg_3d_lut_upload_workflow (@) {
   client_key => $auth->{"client_key"},
   active_picture_mode => $active_picture_mode,
   calibration_picture_mode => $cal_mode,
+  lg_generation => $generation,
   payload_path => $payload_path,
   upload_supported => &json_true(),
   upload_verified => &json_true(),
