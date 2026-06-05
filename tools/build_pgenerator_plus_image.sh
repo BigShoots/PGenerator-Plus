@@ -822,11 +822,12 @@ configure_pi5_bookworm_boot() {
 
  cmdline="$(tr -d '\n' < "$cmdline_file")"
  cmdline="$(perl -e '
-  my $cmd = join(" ", @ARGV);
-  $cmd =~ s/(^| )quiet(?= |$)/ /g;
-  $cmd =~ s/[[:space:]]+/ /g;
-  $cmd =~ s/^ //;
-  $cmd =~ s/ $//;
+ my $cmd = join(" ", @ARGV);
+ $cmd =~ s/(^| )quiet(?= |$)/ /g;
+ $cmd =~ s,(^| )init=/usr/lib/raspberrypi-sys-mods/firstboot(?= |$), ,g;
+ $cmd =~ s/[[:space:]]+/ /g;
+ $cmd =~ s/^ //;
+ $cmd =~ s/ $//;
   print $cmd;
  ' "$cmdline")"
  for token in rootwait rootdelay=5 systemd.show_status=1 loglevel=7 consoleblank=0; do
