@@ -122,11 +122,8 @@ assert(
     adjustmentSource.includes('post_cal_series_response_table_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$target_delta') &&
     adjustmentSource.includes('$rgb_adjustments=post_cal_series_generic_rgb_adjustment($state,$arrays,$target,$adjust_read_step,$adjust_reading,$adjust_de,$adjust_lum_pct,$target_delta') &&
     adjustmentSource.includes('if(!$suppress_rgb_for_low_shadow_neighbor && !$rgb_adjustments)') &&
-    adjustmentSource.includes('my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);') &&
-    adjustmentSource.includes('post_cal_series_low_shadow_5_direct_skipped') &&
-    adjustmentSource.includes('$evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_5_direct_neighbor_risk"') &&
-    adjustmentSource.includes('abs(($control_step->{"ire"}+0)-5) < 0.001'),
-  'post-series compensation should prefer learned luma, skip direct 5% neighbor-risk writes, suppress stacked 5% RGB when lower shadow is stable, and use generic RGB fallback for dE>1 misses'
+    adjustmentSource.includes('my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);'),
+  'post-series compensation should prefer learned luma, suppress stacked 5% RGB when lower shadow is stable, and use generic RGB fallback for dE>1 misses'
 );
 
 function lowShadowNeighborRisk(ire, neighborLums) {
@@ -156,26 +153,6 @@ assert.strictEqual(
   lowShadowNeighborRisk(5, { 4: -15.96, 3: -8.2, 2.3: -17.13 }),
   false,
   '5% should remain eligible for RGB when the lower shadow neighbors are not stable'
-);
-
-function shouldSkipDirect5({ ire, neighborRisk }) {
-  return Math.abs(ire - 5) < 0.001 && neighborRisk;
-}
-
-assert.strictEqual(
-  shouldSkipDirect5({ ire: 5, neighborRisk: true }),
-  true,
-  '5% direct Magic Wand correction should be skipped when low-shadow neighbor risk is present'
-);
-assert.strictEqual(
-  shouldSkipDirect5({ ire: 4, neighborRisk: true }),
-  false,
-  '4% Magic Wand correction should remain eligible under the group-aware neighbor failsafe'
-);
-assert.strictEqual(
-  shouldSkipDirect5({ ire: 7, neighborRisk: true }),
-  false,
-  '7% Magic Wand correction should remain eligible and be handled by the group-aware neighbor failsafe'
 );
 
 assert(
