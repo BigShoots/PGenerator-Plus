@@ -11693,12 +11693,15 @@ sub merge_reading {
  my ($readings,$reading)=@_;
  $readings=[] if(ref($readings) ne "ARRAY");
  return $readings if(ref($reading) ne "HASH");
+ my $reading_hidden=($reading->{"autocal_chart_hidden"}||$reading->{"autocal_diagnostic"}) ? 1 : 0;
  my $name=$reading->{"name"}||"";
  my $ire=defined($reading->{"ire"}) ? $reading->{"ire"} : "";
  for(my $i=0;$i<@{$readings};$i++) {
   my $item=$readings->[$i];
   next if(ref($item) ne "HASH");
   if(($name ne "" && ($item->{"name"}||"") eq $name) || ($ire ne "" && defined($item->{"ire"}) && abs(($item->{"ire"}+0)-($ire+0))<0.001)) {
+   my $item_hidden=($item->{"autocal_chart_hidden"}||$item->{"autocal_diagnostic"}) ? 1 : 0;
+   return $readings if($reading_hidden && !$item_hidden);
    $readings->[$i]=$reading;
    return $readings;
   }
@@ -16992,6 +16995,7 @@ eval {
 			   $state->{"current_delta_e"}=defined($de) ? $de : undef;
 			   $state->{"current_luminance"}=luminance($reading);
 			   $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+			   set_state_active_step($state,$read_step,$target);
 			   set_state_target_step_luminance($state,$target_step_y);
 			   write_state($state);
 			   trace_109($other_step,"legal_white_pair_measurement",{

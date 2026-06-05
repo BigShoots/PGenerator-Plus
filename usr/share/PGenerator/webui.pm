@@ -20211,35 +20211,41 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
 }
 
 function meterAutoCalCurrentKeyFromStatus(status){
-		 if(!status) return null;
-		 const numericCandidates=[
-		  status.current_ire,
-		  status.current_step_ire,
-		  status.patch_ire,
-		  status.current_stimulus,
-		  status.active_stimulus
-		 ];
-		 for(const value of numericCandidates){
-		  const numeric=Number(value);
-		  if(!Number.isFinite(numeric)) continue;
-		  const step=(meterSeriesSteps||[]).find(s=>{
-		   const candidates=[s.ire,s.stimulus,s.patch_stimulus,s.signal_r_pct,s.ddc_target_ire,s.ddc_array_ire,s.autocal_order_ire];
-		   return candidates.some(candidate=>Number.isFinite(Number(candidate))&&Math.abs(Number(candidate)-numeric)<0.001);
-		  });
-		  if(step) return meterStepNameKey(step);
-		 }
-		 const name=String(status.current_name||'');
-	 const match=name.match(/([0-9]+(?:\.[0-9]+)?)%/);
- if(match){
-  const ire=Number(match[1]);
-  const step=(meterSeriesSteps||[]).find(s=>{
-   const candidates=[s.ire,s.stimulus,s.patch_stimulus,s.signal_r_pct,s.ddc_target_ire,s.ddc_array_ire,s.autocal_order_ire];
-   return candidates.some(candidate=>Number.isFinite(Number(candidate))&&Math.abs(Number(candidate)-ire)<0.001);
-  });
-  if(step) return meterStepNameKey(step);
- }
-		 return null;
-	}
+			 if(!status) return null;
+			 const keyForValue=value=>{
+			  const numeric=Number(value);
+			  if(!Number.isFinite(numeric)) return null;
+			  const targetStep=(typeof meterAutoCalStepForIre==='function')?meterAutoCalStepForIre(numeric):null;
+			  if(targetStep) return meterStepNameKey(targetStep);
+			  const step=(meterSeriesSteps||[]).find(s=>{
+			   const candidates=[s.ire,s.stimulus,s.patch_stimulus,s.signal_r_pct,s.ddc_target_ire,s.ddc_array_ire,s.autocal_order_ire];
+			   return candidates.some(candidate=>Number.isFinite(Number(candidate))&&Math.abs(Number(candidate)-numeric)<0.001);
+			  });
+			  return step?meterStepNameKey(step):null;
+			 };
+			 const name=String(status.current_name||'');
+			 const match=name.match(/([0-9]+(?:\.[0-9]+)?)%/);
+			 const nameKey=match?keyForValue(match[1]):null;
+			 const ddcTargetKey=keyForValue(status.current_ddc_target_ire);
+			 if(nameKey&&ddcTargetKey&&nameKey===ddcTargetKey) return nameKey;
+			 if(nameKey&&/^Auto Cal\s+/i.test(name)) return nameKey;
+			 if(ddcTargetKey&&status.paired_current_name) return ddcTargetKey;
+			 const numericCandidates=[
+			  status.current_ire,
+			  status.current_step_ire,
+			  status.patch_ire,
+			  status.current_stimulus,
+			  status.active_stimulus,
+			  status.current_ddc_target_ire,
+			  status.current_ddc_array_ire
+			 ];
+			 for(const value of numericCandidates){
+			  const key=keyForValue(value);
+			  if(key) return key;
+			 }
+			 if(nameKey) return nameKey;
+			 return null;
+		}
 
 function meterAutoCalStatusActive(){
  const status=meterAutoCalLatestStatus;
@@ -20383,12 +20389,13 @@ function meterAutoCalApplyStatus(status){
 	  else if(white) meterWhiteReading=white;
 	  const completed=new Set(meterReadings.filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
   const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
-  if(sorted.length) {
-   drawAllCharts(sorted);
-   const lastValid=[...meterReadings].reverse().find(rd=>rd&&rd.luminance!=null);
-   if(lastValid) updateLiveReading(lastValid);
-   meterCacheSeriesState(status.status||'running');
-  }
+	  if(sorted.length) {
+	   drawAllCharts(sorted);
+	   const currentValid=currentKey?meterReadings.find(rd=>rd&&rd.luminance!=null&&meterStepNameKey(rd)===currentKey):null;
+	   const lastValid=currentValid||[...meterReadings].reverse().find(rd=>rd&&rd.luminance!=null);
+	   if(lastValid) updateLiveReading(lastValid);
+	   meterCacheSeriesState(status.status||'running');
+	  }
   if(meterSeriesSteps){
    const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
    meterBuildPatchThumbs(sortedSteps,completed,currentKey);
