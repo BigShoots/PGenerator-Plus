@@ -12,14 +12,14 @@ function sliceBetween(startNeedle, endNeedle, from = 0) {
 }
 
 const targetSource = sliceBetween(
-  'function meterGreyTvTarget(step)',
-  'function meterGreyTvTargetAdjustable(target)'
+  'function meterGreyTvTarget(step,opts)',
+  'function meterGreyTvSettingKey(channel)'
 );
 assert(
-  targetSource.includes("key:'readonly:0'") &&
-    targetSource.includes('read_only:true') &&
+  targetSource.includes('const allowSeriesRunning=!!(opts&&opts.allow_series_running);') &&
+    targetSource.includes('(!allowSeriesRunning&&meterSeriesRunning)') &&
     targetSource.includes("return {unsupported:true,key:'unsupported:'+meterFormatPercentValue(ire),reason:reason};"),
-  '0% should remain a read-only target and unmapped greyscale steps should still be represented as unsupported targets'
+  'LG RGB target lookup should stay disabled during series except for explicit read-only live rendering'
 );
 
 const renderSource = sliceBetween(
@@ -27,25 +27,38 @@ const renderSource = sliceBetween(
   'async function meterLgGreySyncForCurrentStep'
 );
 assert(
-  !renderSource.includes('if(target.unsupported){') &&
-    renderSource.includes('const targetAdjustable=meterGreyTvTargetAdjustable(target);') &&
-    renderSource.includes("!state.picture&&targetAdjustable") &&
-    renderSource.includes('(target&&target.unsupported) ||') &&
-    renderSource.includes("meterGreyTvColumnHtml('r','R','#f44'") &&
-    renderSource.includes("meterGreyTvColumnHtml('g','G','#4caf50'") &&
-    renderSource.includes("meterGreyTvColumnHtml('b','B','#42a5f5'") &&
-    renderSource.includes("meta.textContent=unsupportedLabel?('LG '+unsupportedLabel+'% read-only'):'LG read-only';"),
-  'LG RGB panel should render balance bars for unmapped/read-only greyscale patches while suppressing manual controls'
+  renderSource.includes('const seriesReadOnly=!!(meterSeriesRunning&&reading&&meterReadingIsGreyscale(reading));') &&
+    renderSource.includes('const renderStep=seriesReadOnly?(meterCanonicalSeriesStep(reading)||reading):meterCurrentPatchStep;') &&
+    renderSource.includes('const target=meterGreyTvTarget(renderStep,{allow_series_running:seriesReadOnly});') &&
+    renderSource.includes("&&!seriesReadOnly") &&
+    renderSource.includes('const selected=seriesReadOnly?null:meterGreyTvSelectedValues(state);') &&
+    renderSource.includes('seriesReadOnly ||') &&
+    renderSource.includes("if(seriesReadOnly) meta.textContent='LG '+target.label+' read-only';"),
+  'LG RGB panel should render read-only live RGB bars from the current greyscale series reading'
 );
 
-const syncSource = sliceBetween(
-  'async function meterLgGreySyncForCurrentStep(forceRefresh)',
-  'async function meterGreyAdjustCurrentStepChannel'
+const pollSource = sliceBetween(
+  'async function meterPollSeries()',
+  'let meterSelectedThumbIre=null;'
 );
 assert(
-  syncSource.includes('if(!target||target.unsupported||target.read_only)') &&
-    syncSource.includes('meterRenderGreyTvControls(meterFindReadingForStep(meterCurrentPatchStep));'),
-  'unmapped and 0% read-only patches should render locally without fetching LG DDC controls'
+  pollSource.includes('const currentStep=meterFindCurrentSeriesStep(currentIre);') &&
+    pollSource.includes("if(currentStep&&meterActiveSeriesType==='greyscale') meterCurrentPatchStep=meterClonePatchStep(currentStep)||currentStep;") &&
+    pollSource.includes('const currentReading=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;') &&
+    pollSource.includes('liveSeriesReading=currentReading||lastValid||null;') &&
+    pollSource.includes("meterRenderGreyTvControls(meterCurrentPatchStep);"),
+  'running series polls should track the status-current greyscale step and prefer its reading for the LG RGB panel'
 );
 
-console.log('WebUI LG RGB unmapped greyscale regression passed');
+const currentStepSource = sliceBetween(
+  'function meterFindCurrentSeriesStep(key)',
+  'function meterQueueGreyscaleTargetSync'
+);
+assert(
+  currentStepSource.includes('if(meterStepNameKey(step)===text) return true;') &&
+    currentStepSource.includes("if(String(step&&step.name||'')===text) return true;") &&
+    currentStepSource.includes('return meterReadingPatchLabel(step)===text;'),
+  'current series status keys should map back to canonical steps by key, name, or label'
+);
+
+console.log('WebUI LG RGB series read-only regression passed');
