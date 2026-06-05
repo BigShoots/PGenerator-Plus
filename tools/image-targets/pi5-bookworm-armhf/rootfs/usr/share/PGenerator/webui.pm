@@ -4871,6 +4871,10 @@ sub webui_apply_config (@) {
   $changes{"dv_metadata"}="0";
  }
  my $effective_color_format=(defined $changes{"color_format"} && $changes{"color_format"} ne "") ? int($changes{"color_format"}) : int($pgenerator_conf{"color_format"} || 0);
+ if($effective_color_format > 2) {
+  my $result='{"status":"error","message":"YCbCr 4:2:0 is not supported on the Raspberry Pi 5 driver yet. Use RGB, YCbCr 4:4:4, or YCbCr 4:2:2."}';
+  return wantarray ? ($result,0) : $result;
+ }
  if($effective_color_format == 2) {
   # YCbCr 4:2:2 renderer path is supported at 10-bit only.
   $changes{"max_bpc"}="10";
@@ -5383,8 +5387,10 @@ sub webui_capabilities_json (@) {
  if(!$kms_output_format) {
   $has_444=0;
   $has_422=0;
-  %vic_420=();
  }
+ $dc_420_10=0;
+ $dc_420_12=0;
+ %vic_420=();
  my @v420=map{"\"$_\""} sort keys %vic_420;
 
 	 return "{\"dc_30bit\":".($dc_30?"true":"false")
@@ -7149,7 +7155,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="0">RGB</option>
      <option value="1">YCbCr 4:4:4</option>
      <option value="2">YCbCr 4:2:2</option>
-     <option value="3">YCbCr 4:2:0</option>
     </select>
    </div>
   <div class="field field-gamut">
@@ -8737,14 +8742,10 @@ async function loadCapabilities(quiet){
 
 // Determine which color formats are valid for a given mode + bit depth
 function getValidFormats(modeIdx,bpc){
- if(!caps||caps.edid_decode_available===false)return [0,1,2,3]; // fallback: all formats
+ if(!caps||caps.edid_decode_available===false)return [0,1,2]; // fallback: Pi 5 supported formats
  const mode=modes.find(m=>String(m.idx)===String(modeIdx));
  const clock=mode?mode.clock:148500; // default 1080p60 if unknown
  const maxTmds=caps.max_tmds*1000; // MHz to kHz
- const res=mode?mode.resolution:'1920x1080';
- const hz=mode?Math.round(parseFloat(mode.refresh)):60;
- const vic420Key=res+'@'+hz;
- const has420=caps.vic_420&&caps.vic_420.indexOf(vic420Key)>=0;
  const valid=[];
 
  // RGB (format 0)
@@ -8758,12 +8759,6 @@ function getValidFormats(modeIdx,bpc){
  // YCbCr 4:2:2 (format 2) — always carries up to 12bpc in 8bpc bandwidth
  if(caps.has_ycbcr422&&clock<=maxTmds) valid.push(2);
 
- // YCbCr 4:2:0 (format 3) — only for modes in 4:2:0 VIC map
- if(has420){
-  const y420_ok=(bpc===8)||(bpc===10&&caps.dc_420_10bit)||(bpc===12&&caps.dc_420_12bit);
-  const tmds420=Math.ceil(clock/2*(bpc/8));
-  if(y420_ok&&tmds420<=maxTmds) valid.push(3);
- }
  return valid;
 }
 
@@ -8773,10 +8768,6 @@ function getValidBpc(modeIdx,fmt){
  const mode=modes.find(m=>String(m.idx)===String(modeIdx));
  const clock=mode?mode.clock:148500;
  const maxTmds=caps.max_tmds*1000;
- const res=mode?mode.resolution:'1920x1080';
- const hz=mode?Math.round(parseFloat(mode.refresh)):60;
- const vic420Key=res+'@'+hz;
- const has420=caps.vic_420&&caps.vic_420.indexOf(vic420Key)>=0;
  const valid=[];
 
  [8,10,12].forEach(function(bpc){
@@ -8789,12 +8780,6 @@ function getValidBpc(modeIdx,fmt){
    if(ok) ok=(bpc===8?clock:clock*bpc/8)<=maxTmds;
   }else if(fmt===2){ // YCbCr 4:2:2 — restricted to 10-bit
    ok=caps.has_ycbcr422&&bpc===10&&clock<=maxTmds;
-  }else if(fmt===3){ // YCbCr 4:2:0
-   if(!has420){ok=false;}
-   else{
-    ok=(bpc===8)||(bpc===10&&caps.dc_420_10bit)||(bpc===12&&caps.dc_420_12bit);
-    if(ok) ok=Math.ceil(clock/2*(bpc/8))<=maxTmds;
-   }
   }
   if(ok) valid.push(bpc);
  });

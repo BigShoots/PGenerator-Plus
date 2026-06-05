@@ -154,8 +154,20 @@ sub apply_drm_properties (@) {
  my $color_fmt=$pgenerator_conf{"color_format"};
  $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- system("timeout 3 $modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
- &log("DRM: Set output format=$color_fmt on connector $connector_id");
+ if($color_fmt > 2) {
+  &log("DRM: output format=$color_fmt is unsupported on Pi 5; using RGB output");
+  $color_fmt=0;
+ }
+ if(&kms_connector_has_property("output format")) {
+  system("timeout 3 $modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
+  if($? == 0) {
+   &log("DRM: Set output format=$color_fmt on connector $connector_id");
+  } else {
+   &log("DRM: Failed to set output format=$color_fmt on connector $connector_id");
+  }
+ } elsif($color_fmt != 0) {
+  &log("DRM: output format property missing; YCbCr request cannot change HDMI transport");
+ }
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
  if($quant_range ne "") {
@@ -961,7 +973,7 @@ sub get_hdmi_info() {
    $found=1           if(/\s+connected/);
    next               if(!$found);
    $found_range=1     if(/quant range/);   
-   $found_output=1    if(/active color format/);   
+   $found_output=1    if(/active color format|output format/);
    $range=$1          if($range  eq "" && $found_range && /value:(.*)/);
    $output=$1         if($output eq "" && $found_output && /value:(.*)/);
    next               if(!/#(\d+) (\d+)x(\d+)(.*)/);
