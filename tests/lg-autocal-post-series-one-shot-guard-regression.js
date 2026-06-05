@@ -126,6 +126,27 @@ assert(
   'post-series compensation should prefer learned luma, suppress stacked 5% RGB when lower shadow is stable, and use generic RGB fallback for dE>1 misses'
 );
 
+const mergeIndex = adjustmentSource.indexOf('my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);');
+const probeIndex = adjustmentSource.indexOf('post_cal_series_probe_5_candidate(');
+const mutateIndex = adjustmentSource.indexOf('foreach my $adj (@{$adjustments}) {', probeIndex);
+assert(
+  source.includes('sub post_cal_series_probe_5_candidate') &&
+    source.includes('sub post_cal_series_low_shadow_candidate_read') &&
+    source.includes('sub post_cal_series_low_shadow_group_score') &&
+    source.includes('post_cal_series_low_shadow_5_probe_start') &&
+    source.includes('post_cal_series_low_shadow_5_probe_accepted') &&
+    source.includes('post_cal_series_low_shadow_5_probe_rejected') &&
+    adjustmentSource.includes('abs(($read_step->{"ire"}+0)-5) < 0.001') &&
+    adjustmentSource.includes('my $candidate_arrays=clone_arrays($arrays);') &&
+    adjustmentSource.includes('$candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};') &&
+    adjustmentSource.includes('$evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_5_probe_rejected"') &&
+    adjustmentSource.includes('low_shadow_5_probe=>ref($low_shadow_5_probe) eq "HASH" ? $low_shadow_5_probe : undef') &&
+    mergeIndex >= 0 &&
+    probeIndex > mergeIndex &&
+    mutateIndex > probeIndex,
+  'post-series compensation should measured-gate direct 5% candidates after merge and before mutating the all-array write'
+);
+
 function lowShadowNeighborRisk(ire, neighborLums) {
   if (!(ire > 4.1001 && ire <= 5.1001)) return false;
   return [4, 3, 2.3].some((neighborIre) => {
@@ -153,6 +174,51 @@ assert.strictEqual(
   lowShadowNeighborRisk(5, { 4: -15.96, 3: -8.2, 2.3: -17.13 }),
   false,
   '5% should remain eligible for RGB when the lower shadow neighbors are not stable'
+);
+
+function measuredFiveGate(before, after) {
+  const beforeValues = [3, 4, 5, 7].map((ire) => before[ire]).filter(Number.isFinite);
+  const afterValues = [3, 4, 5, 7].map((ire) => after[ire]).filter(Number.isFinite);
+  assert.strictEqual(beforeValues.length, 4);
+  assert.strictEqual(afterValues.length, 4);
+  const beforeWorst = Math.max(...beforeValues);
+  const afterWorst = Math.max(...afterValues);
+  if (afterWorst < beforeWorst - 0.10) return 'accept';
+  if (after[5] < before[5] - 0.10 && afterWorst <= beforeWorst + 0.05) return 'accept';
+  return 'reject';
+}
+
+assert.strictEqual(
+  measuredFiveGate(
+    { 3: 0.48, 4: 1.93, 5: 1.80, 7: 1.53 },
+    { 3: 0.50, 4: 1.70, 5: 1.40, 7: 1.45 },
+  ),
+  'accept',
+  'measured 5% gate should accept when the low-shadow group worst improves'
+);
+assert.strictEqual(
+  measuredFiveGate(
+    { 3: 0.48, 4: 1.93, 5: 1.80, 7: 1.53 },
+    { 3: 0.50, 4: 1.94, 5: 1.55, 7: 1.54 },
+  ),
+  'accept',
+  'measured 5% gate should accept a 5% improvement when group worst does not meaningfully worsen'
+);
+assert.strictEqual(
+  measuredFiveGate(
+    { 3: 0.48, 4: 1.93, 5: 1.80, 7: 1.53 },
+    { 3: 0.50, 4: 2.40, 5: 1.30, 7: 1.54 },
+  ),
+  'reject',
+  'measured 5% gate should reject a 5% improvement that damages the group worst'
+);
+assert.strictEqual(
+  measuredFiveGate(
+    { 3: 0.48, 4: 1.93, 5: 1.80, 7: 1.53 },
+    { 3: 0.55, 4: 1.98, 5: 1.82, 7: 1.60 },
+  ),
+  'reject',
+  'measured 5% gate should reject candidates without a measured low-shadow benefit'
 );
 
 assert(
