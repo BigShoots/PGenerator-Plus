@@ -8288,8 +8288,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 		    <label style="display:flex;gap:8px;align-items:flex-start">
 		     <input type="checkbox" id="meterAutoCalMagicWandEnabled" style="margin-top:2px">
 		     <span>
-		      <span style="display:block;font-weight:700">Magic Wand</span>
-		      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Reads the committed LG 26pt greyscale with calibration mode off, applies one learned DDC correction pass, then verifies and reverts any worse slots.</span>
+		      <span style="display:block;font-weight:700">Magic Wand (experimental)</span>
+		      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Experimental feature: reads the committed LG 26pt greyscale with calibration mode off, applies one learned DDC correction pass, then verifies and reverts any worse slots.</span>
 		     </span>
 		    </label>
 	   </div>
@@ -8308,8 +8308,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 		    <label style="display:flex;gap:8px;align-items:flex-start">
 		     <input type="checkbox" id="meterFullAutoCalMagicWandEnabled" style="margin-top:2px">
 		     <span>
-		      <span style="display:block;font-weight:700">Magic Wand</span>
-		      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Reads the committed LG 26pt greyscale with calibration mode off, applies one learned DDC correction pass, then verifies and reverts any worse slots.</span>
+		      <span style="display:block;font-weight:700">Magic Wand (experimental)</span>
+		      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Experimental feature: reads the committed LG 26pt greyscale with calibration mode off, applies one learned DDC correction pass, then verifies and reverts any worse slots.</span>
 		     </span>
 		    </label>
 		   </div>
