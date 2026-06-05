@@ -12338,22 +12338,39 @@ function meterTargetXYZForReading(reading){
 	  return {X:absX,Y:absY,Z:absZ};
 	 }
 	 let targetMeta=null;
+	 let targetStep=null;
 	 if((reading.target_x==null||reading.target_y==null||reading.target_Yn==null) && typeof meterCanonicalSeriesStep==='function'){
-	  const step=meterCanonicalSeriesStep(reading);
-	  if(step&&(step.target_x!=null||step.target_y!=null||step.target_Yn!=null)) targetMeta=step;
+	  targetStep=meterCanonicalSeriesStep(reading);
+	  if(targetStep&&(targetStep.target_x!=null||targetStep.target_y!=null||targetStep.target_Yn!=null)) targetMeta=targetStep;
 	 }
 	 const tx=parseFloat(reading.target_x!=null?reading.target_x:(targetMeta?targetMeta.target_x:null));
 	 const ty=parseFloat(reading.target_y!=null?reading.target_y:(targetMeta?targetMeta.target_y:null));
 	 const tYn=parseFloat(reading.target_Yn!=null?reading.target_Yn:(targetMeta?targetMeta.target_Yn:null));
 	 if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
-  if(tYn<=0) return {X:0,Y:0,Z:0};
   let refY=meterColorSeriesReferenceNits();
+  let greyTargetY=null;
   if(meterReadingIsGreyscale(reading)){
    let greyWhite=null;
    try{ greyWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
    const greyY=meterReadingLuminanceNits(greyWhite);
    if(greyY>0) refY=greyY;
+   const step=targetStep||((typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null);
+   const stepIre=(step&&typeof meterGreyChartStimulusIre==='function')?meterGreyChartStimulusIre(step):null;
+   const ire=meterReadingAnalysisIre(reading);
+   const targetIre=ire!=null?ire:(stepIre!=null?stepIre:(reading&&reading.ire||0));
+   const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
+   const peak=(typeof meterGreyTargetPeak==='function')?meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits()):((refY>0)?refY:meterColorReferenceNits());
+   let black=0;
+   try{
+    if(typeof meterBlackReadingY==='function') black=meterBlackReadingY();
+    else if(typeof meterChartBlackLevel==='function') black=meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]);
+   }catch(e){}
+   const measuredDvTargetY=(typeof meterDvAbsoluteReadingTargetY==='function')?meterDvAbsoluteReadingTargetY(reading):null;
+   const targetY=measuredDvTargetY!=null?measuredDvTargetY:
+    ((typeof meterGreyTargetLuminance==='function')?meterGreyTargetLuminance(targetIre,peak,black||0,code):null);
+   if(Number.isFinite(targetY)&&targetY>=0) greyTargetY=targetY;
   }
+  if(tYn<=0&&greyTargetY==null) return {X:0,Y:0,Z:0};
   // Gamut-clip: for analysis/charting, solve in the selected target gamut so
   // the CIE chart and ΔE targets respect the Target Colorspace dropdown.
   const gamut=meterAnalysisGamut();
@@ -12365,11 +12382,11 @@ function meterTargetXYZForReading(reading){
    const cs=clipped.X+clipped.Y+clipped.Z;
    if(cs>0&&clipped.Y>0){
     const cx=clipped.X/cs,cy=clipped.Y/cs;
-    const Y=tYn*refY;
+    const Y=greyTargetY!=null?greyTargetY:tYn*refY;
     return {X:(cx/cy)*Y,Y:Y,Z:((1-cx-cy)/cy)*Y};
    }
   }
-	  const Y=tYn*refY;
+	  const Y=greyTargetY!=null?greyTargetY:tYn*refY;
 	  return {X:(tx/ty)*Y,Y:Y,Z:((1-tx-ty)/ty)*Y};
 	 }
 	 if(meterActiveSeriesType==='colors' && reading.series_color && reading.sat_pct!=null){
