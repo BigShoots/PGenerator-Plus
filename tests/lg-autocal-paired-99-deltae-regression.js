@@ -87,6 +87,11 @@ const mainBestUpdate = sliceBetween(
   'my $pair_best_update_reason=sub {',
   'my $read_legal_white_pair_counterpart=sub {'
 );
+const mainDirectReadStatus = sliceBetween(
+  autocalSource,
+  'my ($reading,$read_error,$guarded_target_step_y)=read_step_guarded($config,$read_step,$state,$white_y,$target_gamma,$signal_mode,$target_x,$target_y,$label);',
+  'my $read_legal_white_pair_counterpart=sub {'
+);
 const pairCounterpartRead = sliceBetween(
   autocalSource,
   'my $read_legal_white_pair_counterpart=sub {',
@@ -116,6 +121,21 @@ assert(
     mergeReading.includes('return $readings if($reading_hidden && !$item_hidden);'),
   'hidden AutoCal diagnostics should not replace an existing visible same-IRE reading in state.readings'
 );
+{
+  const mergePos = mainDirectReadStatus.indexOf('$state->{"readings"}=merge_reading($state->{"readings"},$reading);');
+  const currentDeltaPos = mainDirectReadStatus.indexOf('$state->{"current_delta_e"}=defined($de) ? $de : undef;', mergePos);
+  const lumPctPos = mainDirectReadStatus.indexOf('my $lum_pct=luminance_error_percent($reading,$target_step_y);', currentDeltaPos);
+  const lumErrPos = mainDirectReadStatus.indexOf('$state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;', lumPctPos);
+  const writeStatePos = mainDirectReadStatus.indexOf('write_state($state);', lumErrPos);
+  assert(
+    mergePos >= 0 &&
+      currentDeltaPos > mergePos &&
+      lumPctPos > currentDeltaPos &&
+      lumErrPos > lumPctPos &&
+      writeStatePos > lumErrPos,
+    'main AutoCal should publish the direct 99% measurement before starting hidden paired 100% validation'
+  );
+}
 {
   const currentDeltaPos = pairCounterpartRead.indexOf('$state->{"current_delta_e"}=defined($de) ? $de : undef;');
   const restoreActivePos = pairCounterpartRead.indexOf('set_state_active_step($state,$read_step,$target);', currentDeltaPos);

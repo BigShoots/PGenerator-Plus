@@ -26,7 +26,7 @@ const applyStatus = source.slice(
   source.indexOf('function meterFullAutoCalCloneValue')
 );
 assert(
-  applyStatus.includes('const statusChartReadings=meterAutoCalStatusChartReadings(status);') &&
+  applyStatus.includes('const statusChartReadings=meterAutoCalStatusChartReadings(status,currentKey);') &&
     applyStatus.includes('if(statusChartReadings.length){') &&
     applyStatus.includes('meterReadings=statusChartReadings;') &&
     applyStatus.includes('const currentValid=currentKey?meterReadings.find') &&
@@ -182,6 +182,70 @@ vm.runInContext([
     globalThis.reading99 = chartReadings.find(reading => Number(reading.ire) === 99);
     globalThis.bestKnown99ForChart = meterAutoCalBestKnownReadings(status).find(reading => Number(reading.ire) === 99);
     globalThis.reading95 = chartReadings.find(reading => Number(reading.ire) === 95);
+    const startingStatus = {
+      autocal: true,
+      status: 'running',
+      current_name: 'Auto Cal 99%',
+      current_ire: 99,
+      current_step_ire: 99,
+      current_ddc_target_ire: 99,
+      current_ddc_array_ire: 99,
+      readings: [
+        { ire: 99, name: '99%', luminance: 148.5, x: 0.30, y: 0.31, request_id: 'old-active-99' },
+        { ire: 95, name: '95%', luminance: 140.1, x: 0.312, y: 0.329, request_id: 'starting-status-95' }
+      ],
+      lg_autocal_26_best_known: {
+        '99': {
+          ire: 99,
+          delta_e: 0.85,
+          target_luminance: 150.5,
+          reading: { ire: 99, name: '99%', luminance: 149.9, x: 0.311, y: 0.327, request_id: 'stale-best-known-99-at-start' }
+        },
+        '95': {
+          ire: 95,
+          delta_e: 0.31,
+          target_luminance: 142.5,
+          reading: { ire: 95, name: '95%', luminance: 142.1, x: 0.313, y: 0.329, request_id: 'best-known-95-at-start' }
+        }
+      }
+    };
+    const startingChartReadings = meterAutoCalStatusChartReadings(startingStatus, meterAutoCalCurrentKeyFromStatus(startingStatus));
+    globalThis.startingReading99 = startingChartReadings.find(reading => Number(reading.ire) === 99);
+    globalThis.startingReading95 = startingChartReadings.find(reading => Number(reading.ire) === 95);
+    const liveStatus = {
+      autocal: true,
+      status: 'running',
+      current_name: 'Auto Cal 99%',
+      current_ire: 99,
+      current_step_ire: 99,
+      current_ddc_target_ire: 99,
+      current_ddc_array_ire: 99,
+      current_delta_e: 0.41,
+      current_luminance: 151.1,
+      luminance_error_pct: 0.07,
+      readings: [
+        { ire: 99, name: '99%', luminance: 151.1, x: 0.3128, y: 0.3289, request_id: 'live-autocal-99' },
+        { ire: 95, name: '95%', luminance: 140.1, x: 0.312, y: 0.329, request_id: 'live-status-95' }
+      ],
+      lg_autocal_26_best_known: {
+        '99': {
+          ire: 99,
+          delta_e: 0.85,
+          target_luminance: 150.5,
+          reading: { ire: 99, name: '99%', luminance: 149.9, x: 0.311, y: 0.327, request_id: 'stale-best-known-99' }
+        },
+        '95': {
+          ire: 95,
+          delta_e: 0.31,
+          target_luminance: 142.5,
+          reading: { ire: 95, name: '95%', luminance: 142.1, x: 0.313, y: 0.329, request_id: 'best-known-95' }
+        }
+      }
+    };
+    const liveCurrentKey = meterAutoCalCurrentKeyFromStatus(liveStatus);
+    const liveChartReadings = meterAutoCalStatusChartReadings(liveStatus, liveCurrentKey);
+    globalThis.liveReading99 = liveChartReadings.find(reading => Number(reading.ire) === 99);
+    globalThis.liveReading95 = liveChartReadings.find(reading => Number(reading.ire) === 95);
     globalThis.filteredAutoCalChartItems = meterFilterLgAutoCalChartItems([
       { ire: 99, name: '99% pre-shape', luminance: 149, autocal_diagnostic: true, autocal_chart_hidden: true, autocal_read_role: 'top_cluster_preshape' },
       { ire: 99, name: '99%', luminance: 150, request_id: 'normal-99' },
@@ -230,6 +294,11 @@ assert.strictEqual(context.reading99.best_known_reached_target, true, 'direct 99
 assert.strictEqual(context.reading99.legal_white_validation_status, 'diagnostic_only_failed', 'legal-white diagnostic status should remain recorded separately');
 assert.strictEqual(context.reading95.request_id, 'status-95', 'non-best-known status readings should still be shown for current AutoCal context');
 assert.strictEqual(context.chartReadings.length, 2, 'AutoCal chart should contain merged current status/best-known readings only');
+assert.strictEqual(context.startingReading99, undefined, 'running AutoCal should hide a stale active 99% value until a fresh current read is published');
+assert.strictEqual(context.startingReading95.request_id, 'best-known-95-at-start', 'hiding the pending active slot should not hide completed non-active slots');
+assert.strictEqual(context.liveReading99.request_id, 'live-autocal-99', 'running AutoCal chart should show the fresh active 99% read instead of stale best-known 99');
+assert.strictEqual(context.liveReading99.name, '99%', 'live 99% chart label should remain the nominal slot label');
+assert.strictEqual(context.liveReading95.request_id, 'best-known-95', 'non-active running AutoCal slots should still prefer best-known readings over stale status entries');
 assert.strictEqual(
   JSON.stringify(context.filteredAutoCalChartItems.map(item => item.request_id || item.name)),
   JSON.stringify(['normal-99', 'normal-105', 'normal-80']),
