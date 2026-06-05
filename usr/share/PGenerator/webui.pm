@@ -3311,6 +3311,7 @@ sub _webui_json_escape (@) {
  $s=~s/\r/\\r/g;
  $s=~s/\n/\\n/g;
  $s=~s/\t/\\t/g;
+ $s=~s/([\x00-\x08\x0b\x0c\x0e-\x1f\x7f])/sprintf("\\u%04x",ord($1))/ge;
  return $s;
 }
 
@@ -5691,7 +5692,7 @@ sub webui_cec_power_cache_read (@) {
  my ($phys)=($json =~ /"phys_addr"\s*:\s*"([^"]*)"/);
  my ($log)=($json =~ /"log_addr"\s*:\s*"([^"]*)"/);
  my ($osd)=($json =~ /"osd_name"\s*:\s*"([^"]*)"/);
- return { tv_power=>$power, phys_addr=>($phys||""), log_addr=>($log||""), osd_name=>($osd||"") };
+ return { tv_power=>$power, phys_addr=>($phys||""), log_addr=>($log||""), osd_name=>($osd||""), cache_age=>$age };
 }
 
 sub webui_cec (@) {
@@ -5711,7 +5712,7 @@ sub webui_cec (@) {
  }
  # scan returns JSON directly from pgcec scan-json
  if($cmd eq "scan") {
-  my $json=`timeout 12 $cec_bin scan-json 2>/dev/null`;
+  my $json=`timeout 5 $cec_bin scan-json 2>/dev/null`;
   my $rc=$?>>8;
   chomp($json);
   $json=~s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g;
@@ -5721,30 +5722,37 @@ sub webui_cec (@) {
     close($fh);
    }
    return "{\"status\":\"ok\",\"data\":$json}";
-  } else {
-   $json=~s/"/\\"/g;
-   return "{\"status\":\"error\",\"message\":\"Scan failed\",\"output\":\"$json\"}";
-  }
+	  } else {
+	   $json=&_webui_json_escape($json);
+	   return "{\"status\":\"error\",\"message\":\"Scan failed\",\"output\":\"$json\"}";
+	  }
  }
 	 # status returns structured JSON
 	 if($cmd eq "status") {
 	  my ($cached_phys,$cached_log,$cached_osd,$cached_power,$cache_age)=&webui_cec_scan_cache_info($cec_scan_cache);
-	  if($cache_age > 8) {
-	   my $lock_age=(-f $cec_scan_lock) ? (time() - ((stat($cec_scan_lock))[9]||0)) : 999999;
-	   unlink($cec_scan_lock) if($lock_age > 20);
-	   if(!-f $cec_scan_lock) {
-    my $script='lock="/tmp/pgenerator-cec-status.lock"; cache="/tmp/pgenerator-cec-scan.json"; cec="/usr/bin/pgcec"; '.
-     'date +%s > "$lock"; tmp="$cache.$$"; '.
-     '(timeout 12 "$cec" scan-json 2>/dev/null | tr -d "\000-\010\013\014\016-\037\177" > "$tmp"; '.
-     'if grep -q "^{" "$tmp"; then mv "$tmp" "$cache"; else printf "{\"devices\":[],\"self\":{},\"scan_error\":true}\n" > "$cache"; rm -f "$tmp"; fi; rm -f "$lock") >/dev/null 2>&1 &';
-    system("sh","-c",$script);
+	  my $cached_status=&webui_cec_power_cache_read($cec_power_cache,60);
+	  my $direct=&webui_cec_direct_status($cec_bin,4);
+	  if(ref($direct) eq "HASH") {
+	   my $phys=($direct->{"phys_addr"}||$cached_phys||"");
+	   my $log=($direct->{"log_addr"}||$cached_log||"");
+	   my $osd=($direct->{"osd_name"}||$cached_osd||"");
+	   if(ref($cached_status) eq "HASH") {
+	    my $pending_power=$cached_status->{"tv_power"}||"";
+	    my $pending_age=$cached_status->{"cache_age"}||999999;
+	    if($pending_power eq "powering-on" && $direct->{"tv_power"} eq "standby" && $pending_age < 45) {
+	     return &webui_cec_status_json("powering-on",$phys,$log,$osd,"cec-wake-pending");
+	    }
+	    if($pending_power eq "powering-off" && $direct->{"tv_power"} eq "on" && $pending_age < 20) {
+	     return &webui_cec_status_json("powering-off",$phys,$log,$osd,"cec-standby-pending");
+	    }
 	   }
+	   &webui_cec_power_cache_write($cec_power_cache,$direct->{"tv_power"},$phys,$log,$osd);
+	   return &webui_cec_status_json($direct->{"tv_power"},$phys,$log,$osd,"cec-status-direct");
 	  }
 	  if($cache_age <= 30 && $cached_power ne "unknown") {
 	   &webui_cec_power_cache_write($cec_power_cache,$cached_power,$cached_phys,$cached_log,$cached_osd);
 	   return &webui_cec_status_json($cached_power,$cached_phys,$cached_log,$cached_osd,"cec-scan-cache");
 	  }
-	  my $cached_status=&webui_cec_power_cache_read($cec_power_cache,60);
 	  if(ref($cached_status) eq "HASH") {
 	   return &webui_cec_status_json($cached_status->{"tv_power"},$cached_status->{"phys_addr"},$cached_status->{"log_addr"},$cached_status->{"osd_name"},"cec-status-cache");
 	  }
@@ -5769,18 +5777,19 @@ sub webui_cec (@) {
   }
  }
  # action commands
- my $output=`timeout 12 $cec_bin $cmd 2>&1`;
+ my $output=`timeout 8 $cec_bin $cmd 2>&1`;
  my $rc=$?>>8;
- $output=~s/"/\\"/g;
- $output=~s/\n/\\n/g;
+ $output=&_webui_json_escape($output);
  if($rc == 0) {
+  my $response_power="";
   if($cmd eq "off" || $cmd eq "on") {
    my ($cached_phys,$cached_log,$cached_osd)=&webui_cec_scan_cache_info($cec_scan_cache);
    my $power=($cmd eq "off") ? "standby" : "powering-on";
+   $response_power=$power;
    unlink($cec_scan_cache);
    &webui_cec_power_cache_write($cec_power_cache,$power,$cached_phys,$cached_log,$cached_osd);
   }
-  return "{\"status\":\"ok\",\"output\":\"$output\"}";
+  return "{\"status\":\"ok\",\"output\":\"$output\",\"tv_power\":\"$response_power\"}";
  } else {
   return "{\"status\":\"error\",\"output\":\"$output\"}";
  }
@@ -8490,12 +8499,13 @@ async function fetchJSON(url,opts){
   const r=await fetch(API+url,req);
   return await r.json();
 	 }
-	 catch(e){
-	  if(!quiet){
-	   if(lgIsCommandBusy()) noteLgBusyConnectionDelay();
-	   else toast('Connection error','err');
-	  }
-	  return null;
+ catch(e){
+  if(!quiet){
+   if(lgIsCommandBusy()) noteLgBusyConnectionDelay();
+   else if(typeof cecIsCommandBusy==='function'&&cecIsCommandBusy()){}
+   else toast('Connection error','err');
+  }
+  return null;
 	 }
  finally{
   if(timer)clearTimeout(timer);
@@ -9878,14 +9888,59 @@ async function forgetWifi(){
  }
 }
 
-async function cecCmd(cmd){
- const r=await fetchJSON('/api/cec/'+cmd);
- if(r){
-  if(r.status==='ok') toast('CEC: '+cmd+' OK');
-  else toast('CEC: '+(r.message||r.output||'error'),'err');
-  const delay=(cmd==='on')?2500:500;
-  setTimeout(loadCecStatus,delay);
+let cecCommandBusyUntil=0;
+let cecStatusFollowupTimer=null;
+let cecLastPhysAddr='';
+
+function cecIsCommandBusy(){
+ return Date.now()<cecCommandBusyUntil;
+}
+
+function cecExpectedPower(cmd){
+ if(cmd==='on') return 'powering-on';
+ if(cmd==='off') return 'powering-off';
+ return '';
+}
+
+function scheduleCecStatusFollowup(cmd){
+ if(cecStatusFollowupTimer){
+  clearInterval(cecStatusFollowupTimer);
+  cecStatusFollowupTimer=null;
  }
+ const timeoutMs=(cmd==='on')?60000:20000;
+ const intervalMs=(cmd==='on')?2000:1500;
+ const until=Date.now()+timeoutMs;
+ const target=(cmd==='on')?'on':(cmd==='off')?'standby':'';
+ const tick=async()=>{
+  const r=await loadCecStatus({force:true});
+  if((target&&r&&r.tv_power===target)||Date.now()>=until){
+   if(cecStatusFollowupTimer){
+    clearInterval(cecStatusFollowupTimer);
+    cecStatusFollowupTimer=null;
+   }
+  }
+ };
+ setTimeout(tick,(cmd==='on')?1500:500);
+ cecStatusFollowupTimer=setInterval(tick,intervalMs);
+}
+
+async function cecCmd(cmd){
+ const expectedPower=cecExpectedPower(cmd);
+ if(expectedPower) renderCecStatus(expectedPower,cecLastPhysAddr);
+ cecCommandBusyUntil=Date.now()+25000;
+ const r=await fetchJSON('/api/cec/'+cmd,{_quiet:true,_timeoutMs:20000});
+ if(r){
+  if(r.status==='ok'){
+   toast('CEC: '+cmd+' OK');
+   if(r.tv_power) renderCecStatus(r.tv_power,cecLastPhysAddr);
+  }else{
+   toast('CEC: '+(r.message||r.output||'error'),'err');
+  }
+ }else{
+  toast('CEC: '+cmd+' sent; waiting for status');
+ }
+ cecCommandBusyUntil=Date.now()+5000;
+ scheduleCecStatusFollowup(cmd);
 }
 
 async function cecScan(){
@@ -9934,30 +9989,36 @@ let cecStatusPending=false;
 function renderCecStatus(tvPower,physAddr){
  const el=document.getElementById('cecStatus');
  if(!el) return;
+ if(physAddr) cecLastPhysAddr=physAddr;
  const pwr=tvPower||'unknown';
  const pwrColors={on:'#4caf50',standby:'var(--orange)','powering-on':'var(--orange)','powering-off':'var(--orange)',unknown:'var(--text2)'};
  const pwrLabels={on:'On',standby:'Standby','powering-on':'Waking Up','powering-off':'Going to Standby',unknown:'Unknown'};
  const c=pwrColors[pwr]||'var(--text2)';
  const lbl=pwrLabels[pwr]||pwr;
- let html='TV: <span style="color:'+c+';font-weight:600">'+lbl+'</span>';
- if(physAddr) html+=' &bull; HDMI '+physAddr;
+  let html='TV: <span style="color:'+c+';font-weight:600">'+lbl+'</span>';
+ const shownPhys=physAddr||cecLastPhysAddr;
+ if(shownPhys) html+=' &bull; HDMI '+shownPhys;
  el.innerHTML=html;
  el.style.color='';
 }
 
-async function loadCecStatus(){
- if(shouldPauseAutoRefresh()) return;
+async function loadCecStatus(opts){
+ opts=opts||{};
+ if(!opts.force&&shouldPauseAutoRefresh()) return null;
  if(cecStatusPending) return;
  cecStatusPending=true;
  try{
   const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:8000});
   if(r&&r.status==='ok'){
    renderCecStatus(r.tv_power,r.phys_addr);
+   return r;
   }else{
    renderCecStatus('unknown','');
+   return null;
   }
  }catch(e){
   renderCecStatus('unknown','');
+  return null;
  }finally{
   cecStatusPending=false;
  }
