@@ -467,7 +467,7 @@ sub pattern_generator_start(@) {
  }
  my $startup_color_fmt=$pgenerator_conf{"color_format"};
  $startup_color_fmt=0 if($startup_color_fmt eq "");
- if($startup_color_fmt == 0) {
+ if($startup_color_fmt == 0 && ($pgenerator_conf{"dv_status"}||"0") ne "1") {
    # Some displays miss the first pre-launch RGB/colorspace programming and stay
    # on the splash screen until a later format toggle forces HDMI state back in.
    # YCbCr modes are already pre-programmed above and the renderer performs its

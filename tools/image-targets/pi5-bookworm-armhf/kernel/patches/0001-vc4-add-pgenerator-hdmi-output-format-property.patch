@@ -1,8 +1,24 @@
 diff --git a/drivers/gpu/drm/vc4/vc4_hdmi.c b/drivers/gpu/drm/vc4/vc4_hdmi.c
-index 206ecf4..5a84181 100644
+index 206ecf4..0088fde 100644
 --- a/drivers/gpu/drm/vc4/vc4_hdmi.c
 +++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
-@@ -385,6 +385,196 @@ static int vc4_hdmi_reset_link(struct drm_connector *connector,
+@@ -35,6 +35,7 @@
+ #include <drm/display/drm_hdmi_state_helper.h>
+ #include <drm/display/drm_scdc_helper.h>
+ #include <drm/drm_atomic_helper.h>
++#include <drm/drm_atomic_state_helper.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_edid.h>
+ #include <drm/drm_probe_helper.h>
+@@ -50,6 +51,7 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/rational.h>
+ #include <linux/reset.h>
++#include <linux/slab.h>
+ #include <sound/dmaengine_pcm.h>
+ #include <sound/hdmi-codec.h>
+ #include <sound/jack.h>
+@@ -385,6 +387,220 @@ static int vc4_hdmi_reset_link(struct drm_connector *connector,
  	return reset_pipe(crtc, ctx);
  }
  
@@ -16,6 +32,28 @@ index 206ecf4..5a84181 100644
 +	VC4_HDMI_PGENERATOR_OUTPUT_YCBCR444 = 1,
 +	VC4_HDMI_PGENERATOR_OUTPUT_YCBCR422 = 2,
 +};
++
++struct vc4_hdmi_connector_state {
++	struct drm_connector_state base;
++	struct drm_property_blob *dovi_output_metadata;
++};
++
++struct vc4_dovi_output_metadata {
++	u32 oui;
++	u8 dv_status;
++	u8 dv_interface;
++	u8 backlight_metadata;
++	u8 backlight_max_luminance;
++	u8 aux_runmode;
++	u8 aux_version;
++	u8 aux_debug;
++};
++
++static struct vc4_hdmi_connector_state *
++to_vc4_hdmi_connector_state(const struct drm_connector_state *state)
++{
++	return container_of(state, struct vc4_hdmi_connector_state, base);
++}
 +
 +static const struct drm_prop_enum_list vc4_hdmi_output_format_enum_list[] = {
 +	{ VC4_HDMI_PGENERATOR_OUTPUT_RGB444, "RGB444" },
@@ -170,8 +208,9 @@ index 206ecf4..5a84181 100644
 +	if (!tmds_char_rate)
 +		return -EINVAL;
 +
-+	mode_status = vc4_hdmi_connector_clock_valid(connector, mode,
-+						    tmds_char_rate);
++		mode_status =
++			vc4_hdmi_connector_clock_valid(connector, mode,
++						       tmds_char_rate);
 +	if (mode_status != MODE_OK)
 +		return -EINVAL;
 +
@@ -180,8 +219,9 @@ index 206ecf4..5a84181 100644
 +	if (requested_output_format != HDMI_COLORSPACE_RGB)
 +		new_state->hdmi.is_limited_range = true;
 +
-+	ret = vc4_hdmi_generate_forced_avi_infoframe(connector, new_state,
-+						    mode);
++		ret = vc4_hdmi_generate_forced_avi_infoframe(connector,
++							     new_state,
++							     mode);
 +	if (ret)
 +		return ret;
 +
@@ -199,27 +239,90 @@ index 206ecf4..5a84181 100644
  static void vc4_hdmi_handle_hotplug(struct vc4_hdmi *vc4_hdmi,
  				    struct drm_modeset_acquire_ctx *ctx,
  				    enum drm_connector_status status)
-@@ -540,6 +730,8 @@ static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
+@@ -539,7 +755,13 @@ static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
+ 		drm_atomic_get_old_connector_state(state, connector);
  	struct drm_connector_state *new_state =
  		drm_atomic_get_new_connector_state(state, connector);
++	struct vc4_hdmi_connector_state *old_vc4_state =
++		to_vc4_hdmi_connector_state(old_state);
++	struct vc4_hdmi_connector_state *new_vc4_state =
++		to_vc4_hdmi_connector_state(new_state);
  	struct drm_crtc *crtc = new_state->crtc;
 +	enum hdmi_colorspace requested_output_format =
 +		new_state->hdmi.output_format;
  
  	if (!crtc)
  		return 0;
-@@ -580,7 +772,9 @@ static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
+@@ -580,21 +802,129 @@ static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
  		crtc_state->mode_changed = true;
  	}
  
 -	return drm_atomic_helper_connector_hdmi_check(connector, state);
++	if (old_vc4_state->dovi_output_metadata !=
++	    new_vc4_state->dovi_output_metadata) {
++		struct drm_property_blob *old_blob =
++			old_vc4_state->dovi_output_metadata;
++		struct drm_property_blob *new_blob =
++			new_vc4_state->dovi_output_metadata;
++		struct drm_crtc_state *crtc_state;
++
++		if (!old_blob || !new_blob ||
++		    old_blob->length != new_blob->length ||
++		    memcmp(old_blob->data, new_blob->data, old_blob->length)) {
++			crtc_state = drm_atomic_get_crtc_state(state, crtc);
++			if (IS_ERR(crtc_state))
++				return PTR_ERR(crtc_state);
++
++			crtc_state->mode_changed = true;
++		}
++	}
++
 +	return drm_atomic_helper_connector_hdmi_check(connector, state) ?:
 +		vc4_hdmi_force_output_format(connector, state,
 +					     requested_output_format);
++}
++
++static void vc4_hdmi_connector_destroy_state(struct drm_connector *connector,
++					     struct drm_connector_state *state)
++{
++	struct vc4_hdmi_connector_state *vc4_state =
++		to_vc4_hdmi_connector_state(state);
++
++	drm_property_blob_put(vc4_state->dovi_output_metadata);
++	__drm_atomic_helper_connector_destroy_state(state);
++	kfree(vc4_state);
++}
++
++static struct drm_connector_state *
++vc4_hdmi_connector_duplicate_state(struct drm_connector *connector)
++{
++	struct vc4_hdmi_connector_state *state;
++
++	state = kmemdup(connector->state, sizeof(*state), GFP_KERNEL);
++	if (!state)
++		return NULL;
++
++	__drm_atomic_helper_connector_duplicate_state(connector, &state->base);
++	if (state->dovi_output_metadata)
++		drm_property_blob_get(state->dovi_output_metadata);
++
++	return &state->base;
  }
  
  static void vc4_hdmi_connector_reset(struct drm_connector *connector)
-@@ -590,11 +784,45 @@ static void vc4_hdmi_connector_reset(struct drm_connector *connector)
+ {
+-	drm_atomic_helper_connector_reset(connector);
++	struct vc4_hdmi_connector_state *state;
++
++	if (connector->state)
++		vc4_hdmi_connector_destroy_state(connector, connector->state);
++
++	state = kzalloc(sizeof(*state), GFP_KERNEL);
++	if (!state)
++		return;
++
++	__drm_atomic_helper_connector_reset(connector, &state->base);
+ 	__drm_atomic_helper_connector_hdmi_reset(connector, connector->state);
  	drm_atomic_helper_connector_tv_margins_reset(connector);
  }
  
@@ -229,6 +332,16 @@ index 206ecf4..5a84181 100644
 +					   uint64_t val)
 +{
 +	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
++	struct vc4_hdmi_connector_state *vc4_state =
++		to_vc4_hdmi_connector_state(state);
++	bool replaced = false;
++
++	if (property == vc4_hdmi->dovi_output_metadata_property) {
++		return drm_property_replace_blob_from_id(connector->dev,
++				&vc4_state->dovi_output_metadata,
++				val, sizeof(struct vc4_dovi_output_metadata),
++				-1, &replaced);
++	}
 +
 +	if (property != vc4_hdmi->output_format_property)
 +		return -EINVAL;
@@ -245,12 +358,19 @@ index 206ecf4..5a84181 100644
 +					   uint64_t *val)
 +{
 +	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
++	struct vc4_hdmi_connector_state *vc4_state =
++		to_vc4_hdmi_connector_state(state);
++
++	if (property == vc4_hdmi->dovi_output_metadata_property) {
++		*val = vc4_state->dovi_output_metadata ?
++			vc4_state->dovi_output_metadata->base.id : 0;
++		return 0;
++	}
 +
 +	if (property != vc4_hdmi->output_format_property)
 +		return -EINVAL;
 +
-+	*val = vc4_hdmi_colorspace_to_pgenerator_output(
-+		state->hdmi.output_format);
++	*val = vc4_hdmi_colorspace_to_pgenerator_output(state->hdmi.output_format);
 +
 +	return 0;
 +}
@@ -258,14 +378,16 @@ index 206ecf4..5a84181 100644
  static const struct drm_connector_funcs vc4_hdmi_connector_funcs = {
  	.fill_modes = drm_helper_probe_single_connector_modes,
  	.reset = vc4_hdmi_connector_reset,
- 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
- 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
+-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
+-	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++	.atomic_duplicate_state = vc4_hdmi_connector_duplicate_state,
++	.atomic_destroy_state = vc4_hdmi_connector_destroy_state,
 +	.atomic_get_property = vc4_hdmi_connector_get_property,
 +	.atomic_set_property = vc4_hdmi_connector_set_property,
  };
  
  static const struct drm_connector_helper_funcs vc4_hdmi_connector_helper_funcs = {
-@@ -661,6 +889,17 @@ static int vc4_hdmi_connector_init(struct drm_device *dev,
+@@ -661,6 +991,26 @@ static int vc4_hdmi_connector_init(struct drm_device *dev,
  	if (ret)
  		return ret;
  
@@ -280,10 +402,92 @@ index 206ecf4..5a84181 100644
 +				   vc4_hdmi->output_format_property,
 +				   VC4_HDMI_PGENERATOR_OUTPUT_RGB444);
 +
++	vc4_hdmi->dovi_output_metadata_property =
++		drm_property_create(dev, DRM_MODE_PROP_BLOB,
++				    "DOVI_OUTPUT_METADATA", 0);
++	if (!vc4_hdmi->dovi_output_metadata_property)
++		return -ENOMEM;
++
++	drm_object_attach_property(&connector->base,
++				   vc4_hdmi->dovi_output_metadata_property, 0);
++
  	drm_connector_attach_encoder(connector, encoder);
  
  	return 0;
-@@ -1208,7 +1447,6 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+@@ -790,6 +1140,72 @@ static int vc4_hdmi_clear_infoframe(struct drm_connector *connector,
+ 	drm_dev_exit(idx);
+ 	return ret;
+ }
++
++#define VC4_DOVI_INFOFRAME_PAYLOAD_LENGTH	27
++
++static u8 vc4_hdmi_infoframe_checksum(const u8 *buffer, size_t len)
++{
++	u8 sum = 0;
++	size_t i;
++
++	for (i = 0; i < len; i++)
++		sum += buffer[i];
++
++	return 0 - sum;
++}
++
++static void vc4_hdmi_update_dovi_infoframe(struct drm_connector *connector)
++{
++	struct vc4_hdmi_connector_state *vc4_state;
++	struct drm_property_blob *blob;
++	const struct vc4_dovi_output_metadata *dovi;
++	u8 buffer[HDMI_INFOFRAME_HEADER_SIZE +
++		  VC4_DOVI_INFOFRAME_PAYLOAD_LENGTH] = {};
++	u32 oui;
++
++	if (!connector->state)
++		return;
++
++	vc4_state = to_vc4_hdmi_connector_state(connector->state);
++	blob = vc4_state->dovi_output_metadata;
++	if (!blob) {
++		vc4_hdmi_clear_infoframe(connector, HDMI_INFOFRAME_TYPE_VENDOR);
++		return;
++	}
++
++	if (blob->length != sizeof(struct vc4_dovi_output_metadata)) {
++		drm_err(connector->dev,
++			"Ignoring DOVI_OUTPUT_METADATA blob with invalid length %zu\n",
++			blob->length);
++		vc4_hdmi_clear_infoframe(connector, HDMI_INFOFRAME_TYPE_VENDOR);
++		return;
++	}
++
++	dovi = blob->data;
++	if (!dovi->dv_status) {
++		vc4_hdmi_clear_infoframe(connector, HDMI_INFOFRAME_TYPE_VENDOR);
++		return;
++	}
++
++	oui = dovi->oui ? dovi->oui : 0x00d046;
++	buffer[0] = HDMI_INFOFRAME_TYPE_VENDOR;
++	buffer[1] = 1;
++	buffer[2] = VC4_DOVI_INFOFRAME_PAYLOAD_LENGTH;
++	buffer[4] = oui & 0xff;
++	buffer[5] = (oui >> 8) & 0xff;
++	buffer[6] = (oui >> 16) & 0xff;
++	buffer[7] = (dovi->dv_status << 1) | dovi->dv_interface;
++	buffer[8] = dovi->backlight_metadata;
++	buffer[9] = dovi->backlight_max_luminance;
++	buffer[10] = dovi->aux_runmode;
++	buffer[11] = dovi->aux_version;
++	buffer[12] = dovi->aux_debug;
++	buffer[3] = vc4_hdmi_infoframe_checksum(buffer, sizeof(buffer));
++
++	vc4_hdmi_write_infoframe(connector, HDMI_INFOFRAME_TYPE_VENDOR,
++				 buffer, sizeof(buffer));
++}
++
+ #define SCRAMBLING_POLLING_DELAY_MS	1000
+ 
+ static void vc4_hdmi_enable_scrambling(struct drm_encoder *encoder)
+@@ -1208,7 +1624,6 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
  	struct drm_device *drm = vc4_hdmi->connector.dev;
  	unsigned int lim_range = state->hdmi.is_limited_range ? 1 : 0;
  	unsigned long flags;
@@ -291,7 +495,7 @@ index 206ecf4..5a84181 100644
  	u32 if_cfg = 0;
  	u32 if_xbar = 0x543210;
  	u32 csc_chan_ctl = 0;
-@@ -1223,14 +1461,15 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+@@ -1223,14 +1638,15 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
  
  	switch (state->hdmi.output_format) {
  	case HDMI_COLORSPACE_YUV444:
@@ -312,7 +516,7 @@ index 206ecf4..5a84181 100644
  		csc_ctl |= VC4_SET_FIELD(VC5_MT_CP_CSC_CTL_FILTER_MODE_444_TO_422_STANDARD,
  					 VC5_MT_CP_CSC_CTL_FILTER_MODE_444_TO_422) |
  			VC5_MT_CP_CSC_CTL_USE_444_TO_422 |
-@@ -1242,7 +1481,11 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+@@ -1242,7 +1658,11 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
  		if_cfg |= VC4_SET_FIELD(VC5_DVP_HT_VEC_INTERFACE_CFG_SEL_422_FORMAT_422_LEGACY,
  					VC5_DVP_HT_VEC_INTERFACE_CFG_SEL_422);
  
@@ -325,7 +529,7 @@ index 206ecf4..5a84181 100644
  		break;
  
  	case HDMI_COLORSPACE_RGB:
-@@ -1354,6 +1597,7 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
+@@ -1354,6 +1774,7 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
  					VC4_HDMI_VERTB_VBP));
  	unsigned long flags;
  	unsigned char gcp;
@@ -333,7 +537,7 @@ index 206ecf4..5a84181 100644
  	u32 reg;
  	int idx;
  
-@@ -1388,22 +1632,41 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
+@@ -1388,22 +1809,41 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
  	switch (state->hdmi.output_bpc) {
  	case 12:
  		gcp = 6;
@@ -378,7 +582,7 @@ index 206ecf4..5a84181 100644
  	}
  
  	reg = HDMI_READ(HDMI_DEEP_COLOR_CONFIG_1);
-@@ -1421,7 +1684,9 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
+@@ -1421,7 +1861,9 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
  	HDMI_WRITE(HDMI_GCP_WORD_1, reg);
  
  	reg = HDMI_READ(HDMI_GCP_CONFIG);
@@ -389,11 +593,19 @@ index 206ecf4..5a84181 100644
  	HDMI_WRITE(HDMI_GCP_CONFIG, reg);
  
  	reg = HDMI_READ(HDMI_MISC_CONTROL);
+@@ -1699,6 +2141,7 @@ static void vc4_hdmi_encoder_post_crtc_enable(struct drm_encoder *encoder,
+ 		vc4_hdmi->packet_ram_enabled = true;
+ 
+ 		drm_atomic_helper_connector_hdmi_update_infoframes(connector, state);
++		vc4_hdmi_update_dovi_infoframe(connector);
+ 	}
+ 
+ 	vc4_hdmi_recenter_fifo(vc4_hdmi);
 diff --git a/drivers/gpu/drm/vc4/vc4_hdmi.h b/drivers/gpu/drm/vc4/vc4_hdmi.h
-index fb13f35..ad72f00 100644
+index fb13f35..8fa90b3 100644
 --- a/drivers/gpu/drm/vc4/vc4_hdmi.h
 +++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
-@@ -220,6 +220,12 @@ struct vc4_hdmi {
+@@ -220,6 +220,18 @@ struct vc4_hdmi {
  	 */
  	enum hdmi_colorspace output_format;
  
@@ -402,6 +614,12 @@ index fb13f35..ad72f00 100644
 +	 * connector property. Values are 0=RGB444, 1=YCbCr444, 2=YCbCr422.
 +	 */
 +	struct drm_property *output_format_property;
++
++	/**
++	 * @dovi_output_metadata_property: PGenerator Dolby Vision metadata
++	 * connector property.
++	 */
++	struct drm_property *dovi_output_metadata_property;
 +
  	/**
  	 * @plugged_cb: Callback provided by hdmi-codec to indicate that an
