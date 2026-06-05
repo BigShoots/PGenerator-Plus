@@ -33,14 +33,21 @@ POWER_STATUS = {
 
 def run(args, timeout=8):
     cmd = [CEC_CTL] + args
-    return subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        output += "\nTimeout waiting for: %s\n" % " ".join(cmd)
+        return subprocess.CompletedProcess(cmd, 124, output)
 
 
 def cec_device():
@@ -56,7 +63,7 @@ def cec_device():
 
 
 def claim(dev):
-    return run(["-d", dev, "--playback", "--osd-name", DEFAULT_OSD], timeout=8)
+    return run(["-d", dev, "-s", "--playback", "--osd-name", DEFAULT_OSD], timeout=3)
 
 
 def normalize_power(text):
@@ -170,10 +177,27 @@ def claimed_topology(dev, need_devices=False):
     return parse_topology(topology(dev, need_devices=need_devices))
 
 
+def quick_self_info(dev):
+    result = run(["-d", dev, "--list-devices"], timeout=3)
+    self_info, _ = parse_topology(result.stdout or "")
+    return self_info
+
+
+def query_tv_power(dev):
+    result = run(["-d", dev, "-s", "--to", "0", "--give-device-power-status"], timeout=3)
+    output = result.stdout or ""
+    m = re.search(r"pwr-state:\s*([a-zA-Z-]+|\d+)", output)
+    if m:
+        return normalize_power(m.group(1))
+    m = re.search(r"REPORT_POWER_STATUS.*?\(([0-3])\)", output, re.S)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def status(dev):
-    self_info, devices = claimed_topology(dev, need_devices=True)
-    tv = next((d for d in devices if d.get("addr") == 0 or d.get("type") == 0), {})
-    power = tv.get("power")
+    self_info = quick_self_info(dev)
+    power = query_tv_power(dev)
     power_text = "unknown"
     if power == 0:
         power_text = "on"
@@ -189,33 +213,44 @@ def status(dev):
     print("physical_addr: %s" % self_info.get("phys", ""))
     print("phys_addr: %s" % self_info.get("phys", ""))
     print("logical_addr: %s" % self_info.get("addr", ""))
-    print("osd_name: %s" % (tv.get("name") or self_info.get("name", "")))
+    print("osd_name: %s" % self_info.get("name", ""))
     print("tv_power: %s" % power_text)
     return 0
 
 
 def scan_json(dev):
-    self_info, devices = claimed_topology(dev, need_devices=True)
+    self_info = quick_self_info(dev)
+    power = query_tv_power(dev)
+    devices = []
+    if power is not None:
+        devices.append({
+            "addr": 0,
+            "type": 0,
+            "type_name": "TV",
+            "phys": "0.0.0.0",
+            "vendor": "",
+            "vendor_id": "",
+            "name": "TV",
+            "power": power,
+        })
     print(json.dumps({"self": self_info, "devices": devices}, separators=(",", ":")))
     return 0
 
 
 def tx(dev, args, timeout=8):
-    result = run(["-d", dev] + args, timeout=timeout)
+    result = run(["-d", dev, "-s"] + args, timeout=timeout)
     if result.stdout:
         sys.stdout.write(result.stdout)
     return result.returncode
 
 
 def self_phys(dev):
-    self_info, _ = claimed_topology(dev)
+    self_info = quick_self_info(dev)
     return self_info.get("phys") or "0.0.0.0"
 
 
 def audio_or_tv(dev):
-    _, devices = claimed_topology(dev, need_devices=True)
-    audio = next((d for d in devices if d.get("type") == 5), None)
-    return str(audio.get("addr")) if audio else "0"
+    return os.environ.get("PGCEC_AUDIO_ADDR", "0")
 
 
 def main():
@@ -235,16 +270,17 @@ def main():
         return scan_json(dev)
 
     if cmd in ("on", "wake"):
-        claimed_topology(dev)
+        claim(dev)
         rc = tx(dev, ["--to", "0", "--image-view-on"])
         time.sleep(0.4)
         phys = self_phys(dev)
         rc2 = tx(dev, ["--active-source", "phys-addr=%s" % phys])
         return 0 if rc == 0 and rc2 == 0 else 1
     if cmd == "off":
-        claimed_topology(dev)
+        claim(dev)
         return tx(dev, ["--to", "0", "--standby"])
     if cmd in ("active", "input", "as"):
+        claim(dev)
         phys = self_phys(dev)
         rc = tx(dev, ["--active-source", "phys-addr=%s" % phys])
         rc2 = tx(dev, ["--set-stream-path", "phys-addr=%s" % phys])
