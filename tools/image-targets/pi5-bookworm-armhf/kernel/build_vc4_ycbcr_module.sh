@@ -27,8 +27,9 @@ usage() {
 Usage: $0 [options]
 
 Build the Pi 5 Bookworm vc4 module with PGenerator HDMI YCbCr output-format
-support. Defaults target Raspberry Pi kernel $KERNEL_VERSION from tag
-$KERNEL_TAG.
+support. The helper builds from full Raspberry Pi kernel source, using the
+target kernel headers for .config, Module.symvers, and exact release metadata.
+Defaults target Raspberry Pi kernel $KERNEL_VERSION from tag $KERNEL_TAG.
 
 Options:
   --download-headers       Download/extract exact Raspberry Pi header debs into
@@ -164,7 +165,37 @@ else
 	git -C "$SOURCE_DIR" apply "$PATCH_FILE"
 fi
 
-make -C "$KERNEL_HEADERS" \
+if [[ ! -f "$KERNEL_HEADERS/.config" ]]; then
+	echo "Kernel headers are missing .config: $KERNEL_HEADERS" >&2
+	exit 1
+fi
+if [[ ! -f "$KERNEL_HEADERS/Module.symvers" ]]; then
+	echo "Kernel headers are missing Module.symvers: $KERNEL_HEADERS" >&2
+	exit 1
+fi
+
+cp "$KERNEL_HEADERS/.config" "$SOURCE_DIR/.config"
+cp "$KERNEL_HEADERS/Module.symvers" "$SOURCE_DIR/Module.symvers"
+
+make -C "$SOURCE_DIR" \
+	ARCH="$ARCH" \
+	CROSS_COMPILE="$CROSS_COMPILE" \
+	olddefconfig
+make -C "$SOURCE_DIR" \
+	ARCH="$ARCH" \
+	CROSS_COMPILE="$CROSS_COMPILE" \
+	modules_prepare
+
+if [[ -f "$KERNEL_HEADERS/include/generated/utsrelease.h" ]]; then
+	cp "$KERNEL_HEADERS/include/generated/utsrelease.h" \
+		"$SOURCE_DIR/include/generated/utsrelease.h"
+fi
+if [[ -f "$KERNEL_HEADERS/include/config/kernel.release" ]]; then
+	cp "$KERNEL_HEADERS/include/config/kernel.release" \
+		"$SOURCE_DIR/include/config/kernel.release"
+fi
+
+make -C "$SOURCE_DIR" \
 	M="$SOURCE_DIR/drivers/gpu/drm/vc4" \
 	ARCH="$ARCH" \
 	CROSS_COMPILE="$CROSS_COMPILE" \
