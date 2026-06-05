@@ -12,8 +12,33 @@ MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 
 FORCE_OUTPUT=0
 KEEP_STAGING=0
+TARGET="pi4-biasi"
+TARGET_OVERLAY_REL=""
+TARGET_DESCRIPTION=""
 OUTPUT_TARBALL=""
 STAGING_DIR=""
+TARGET_OWNED_RUNTIME_PATHS=(
+ "usr/share/PGenerator/command.pm"
+ "usr/share/PGenerator/conf.pm"
+ "usr/share/PGenerator/variables.pm"
+ "usr/bin/PGeneratorDisplayMirror"
+ "usr/bin/pgcec"
+ "usr/lib/drm_override.c"
+ "usr/lib/drm_override.so"
+ "usr/lib/scdc_tool"
+ "usr/lib/scdc_tool.c"
+ "usr/sbin/PGeneratord"
+ "usr/sbin/PGeneratord.dv"
+ "usr/sbin/disable_csc"
+ "usr/sbin/disable_csc.c"
+ "usr/sbin/drm_player"
+ "usr/sbin/drm_player.c"
+ "usr/sbin/fb_player"
+ "usr/sbin/fb_player.c"
+ "usr/sbin/pg_diag_video_player"
+ "usr/sbin/pgenerator-cec"
+ "usr/sbin/write_csc.c"
+)
 
 log() {
  echo "[build-ota] $*"
@@ -32,6 +57,8 @@ Usage:
 Options:
   --output PATH     Output tarball path.
                     Default: build/pgenerator-plus-<version>.tar.gz
+  --target NAME     OTA target to package. Default: pi4-biasi.
+                    Supported: pi4-biasi, pi5-bookworm-armhf.
   --force           Overwrite the output tarball if it already exists.
   --keep-staging    Keep the temporary staging directory for inspection.
   -h, --help        Show this help text.
@@ -41,6 +68,8 @@ Notes:
   - This tarball must therefore be a cumulative overlay, not a diff.
   - Versioned migration scripts in usr/share/PGenerator/update-migrations.d
     are shipped inside the tarball and run after extraction when needed.
+  - Shared UI/calibration files are staged first; renderer, display backend,
+    and hardware files are then supplied by tools/image-targets/<target>/rootfs.
 EOF
 }
 
@@ -95,6 +124,11 @@ parse_args() {
     KEEP_STAGING=1
     shift
     ;;
+   --target)
+    [[ $# -ge 2 ]] || die "Missing value for --target"
+    TARGET="$2"
+    shift 2
+    ;;
    -h|--help)
     usage
     exit 0
@@ -104,13 +138,35 @@ parse_args() {
     ;;
   esac
  done
+
+ case "$TARGET" in
+  pi4-biasi|pi5-bookworm-armhf)
+   ;;
+  *)
+   die "Unknown --target: $TARGET"
+   ;;
+ esac
+}
+
+load_target_manifest() {
+ local manifest="$REPO_ROOT/tools/image-targets/${TARGET}.env"
+
+ [[ -f "$manifest" ]] || die "Missing target manifest: $manifest"
+ # shellcheck disable=SC1090
+ . "$manifest"
+ log "Loaded target manifest: $manifest (${TARGET_DESCRIPTION:-$TARGET})"
+ [[ -n "$TARGET_OVERLAY_REL" ]] || die "Target manifest is missing TARGET_OVERLAY_REL"
 }
 
 prepare_paths() {
  local version
  version="$(repo_version)"
  if [[ -z "$OUTPUT_TARBALL" ]]; then
-  OUTPUT_TARBALL="$REPO_ROOT/build/pgenerator-plus-${version}.tar.gz"
+  if [[ "$TARGET" == "pi4-biasi" ]]; then
+   OUTPUT_TARBALL="$REPO_ROOT/build/pgenerator-plus-${version}.tar.gz"
+  else
+   OUTPUT_TARBALL="$REPO_ROOT/build/pgenerator-plus-${version}-${TARGET}.tar.gz"
+  fi
  fi
  OUTPUT_TARBALL="$(abs_target_path "$OUTPUT_TARBALL")"
  if [[ -e "$OUTPUT_TARBALL" ]] && [[ "$FORCE_OUTPUT" -ne 1 ]]; then
@@ -118,16 +174,41 @@ prepare_paths() {
  fi
 }
 
+shared_rsync_excludes_for_rel() {
+ local rel="$1"
+ local owned
+ for owned in "${TARGET_OWNED_RUNTIME_PATHS[@]}"; do
+  case "$owned" in
+   "$rel"/*)
+    printf '%s\n' "--exclude=/${owned#$rel/}"
+    ;;
+  esac
+ done
+}
+
 stage_overlay() {
- local rel src dst
+ local rel src dst target_overlay
+ local rsync_args=()
  STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pgenerator-ota-build.XXXXXX")"
  for rel in etc usr var lib; do
   src="$REPO_ROOT/$rel"
   [[ -d "$src" ]] || continue
   dst="$STAGING_DIR/$rel"
   mkdir -p "$dst"
-  log "Staging /$rel"
-  rsync -a --delete -- "$src/" "$dst/"
+  mapfile -t rsync_args < <(shared_rsync_excludes_for_rel "$rel")
+  log "Staging shared /$rel"
+  rsync -a --delete "${rsync_args[@]}" -- "$src/" "$dst/"
+ done
+
+ target_overlay="$REPO_ROOT/$TARGET_OVERLAY_REL"
+ [[ -d "$target_overlay" ]] || die "Target overlay directory not found: $target_overlay"
+ for rel in etc usr var lib; do
+  src="$target_overlay/$rel"
+  [[ -d "$src" ]] || continue
+  dst="$STAGING_DIR/$rel"
+  mkdir -p "$dst"
+  log "Staging target /$rel from $TARGET_OVERLAY_REL"
+  rsync -a -- "$src/" "$dst/"
  done
 
  # OTA bundles should not ship transient runtime state.
@@ -160,6 +241,7 @@ validate_tarball() {
 
 main() {
  parse_args "$@"
+ load_target_manifest
  require_commands
  prepare_paths
  stage_overlay

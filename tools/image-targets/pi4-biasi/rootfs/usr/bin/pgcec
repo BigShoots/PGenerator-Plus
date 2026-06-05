@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+CEC_CTL = shutil.which("cec-ctl") or "/usr/bin/cec-ctl"
+DEFAULT_OSD = "PGenerator"
+TOPOLOGY_RETRIES = 4
+
+DEVICE_TYPE = {
+    "TV": 0,
+    "Recording Device": 1,
+    "Recording": 1,
+    "Tuner": 3,
+    "Playback Device": 4,
+    "Playback": 4,
+    "Audio System": 5,
+}
+
+POWER_STATUS = {
+    "on": 0,
+    "standby": 1,
+    "standby-to-on": 2,
+    "to-on": 2,
+    "on-to-standby": 3,
+    "to-standby": 3,
+}
+
+
+def run(args, timeout=8):
+    cmd = [CEC_CTL] + args
+    return subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def cec_device():
+    if len(sys.argv) > 2:
+        return sys.argv[2]
+    env_dev = os.environ.get("PGCEC_DEVICE", "")
+    if env_dev:
+        return env_dev
+    for dev in ("/dev/cec0", "/dev/cec1"):
+        if os.path.exists(dev):
+            return dev
+    return "/dev/cec0"
+
+
+def claim(dev):
+    return run(["-d", dev, "--playback", "--osd-name", DEFAULT_OSD], timeout=8)
+
+
+def normalize_power(text):
+    value = (text or "").strip().lower().replace(" ", "-")
+    if value in POWER_STATUS:
+        return POWER_STATUS[value]
+    return None
+
+
+def parse_topology(output):
+    self_info = {"phys": "", "addr": "", "log": "", "name": "", "driver": "", "adapter": ""}
+    devices = []
+    current = None
+    in_self = True
+
+    for raw in output.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        m = re.match(r"Driver Name\s*:\s*(.*)", stripped)
+        if m and in_self:
+            self_info["driver"] = m.group(1).strip()
+            continue
+        m = re.match(r"Adapter Name\s*:\s*(.*)", stripped)
+        if m and in_self:
+            self_info["adapter"] = m.group(1).strip()
+            continue
+        m = re.match(r"Physical Address\s*:\s*([0-9a-fA-F.]+)", stripped)
+        if m and in_self:
+            self_info["phys"] = m.group(1)
+            continue
+        m = re.match(r"OSD Name\s*:\s*'?(.*?)'?$", stripped)
+        if m and in_self:
+            self_info["name"] = m.group(1)
+            continue
+        m = re.match(r"Logical Address\s*:\s*(\d+)", stripped)
+        if m and in_self and self_info["addr"] == "":
+            self_info["addr"] = int(m.group(1))
+            self_info["log"] = int(m.group(1))
+            continue
+
+        m = re.match(r"System Information for device\s+(\d+)\s+\((.*?)\)", stripped)
+        if m:
+            if current:
+                devices.append(current)
+            in_self = False
+            label = m.group(2).strip()
+            current = {
+                "addr": int(m.group(1)),
+                "type": DEVICE_TYPE.get(label, -1),
+                "type_name": label,
+                "phys": "",
+                "vendor": "",
+                "vendor_id": "",
+                "name": "",
+                "power": None,
+            }
+            continue
+
+        if not current:
+            continue
+
+        m = re.match(r"Physical Address\s*:\s*([0-9a-fA-F.]+)", stripped)
+        if m:
+            current["phys"] = m.group(1)
+            continue
+        m = re.match(r"Primary Device Type\s*:\s*(.*)", stripped)
+        if m:
+            label = m.group(1).strip()
+            current["type_name"] = label
+            current["type"] = DEVICE_TYPE.get(label, current["type"])
+            continue
+        m = re.match(r"Vendor ID\s*:\s*(0x[0-9a-fA-F]+)(?:\s+\((.*?)\))?", stripped)
+        if m:
+            current["vendor_id"] = m.group(1)
+            current["vendor"] = m.group(2) or m.group(1)
+            continue
+        m = re.match(r"OSD Name\s*:\s*'?(.*?)'?$", stripped)
+        if m:
+            current["name"] = m.group(1)
+            continue
+        m = re.match(r"Power Status\s*:\s*(.*)", stripped)
+        if m:
+            current["power"] = normalize_power(m.group(1))
+            continue
+
+    if current:
+        devices.append(current)
+
+    return self_info, devices
+
+
+def topology(dev, attempts=TOPOLOGY_RETRIES, need_devices=False):
+    last_output = ""
+    for attempt in range(max(1, attempts)):
+        claim(dev)
+        time.sleep(0.25 + (0.15 * attempt))
+        result = run(["-d", dev, "--show-topology"], timeout=12)
+        output = result.stdout or ""
+        last_output = output
+        self_info, devices = parse_topology(output)
+        if self_info.get("addr") != "" and (devices or not need_devices):
+            return output
+        time.sleep(0.35)
+    return last_output
+
+
+def claimed_topology(dev, need_devices=False):
+    return parse_topology(topology(dev, need_devices=need_devices))
+
+
+def status(dev):
+    self_info, devices = claimed_topology(dev, need_devices=True)
+    tv = next((d for d in devices if d.get("addr") == 0 or d.get("type") == 0), {})
+    power = tv.get("power")
+    power_text = "unknown"
+    if power == 0:
+        power_text = "on"
+    elif power == 1:
+        power_text = "standby"
+    elif power == 2:
+        power_text = "powering-on"
+    elif power == 3:
+        power_text = "powering-off"
+
+    print("driver: %s" % self_info.get("driver", ""))
+    print("adapter: %s" % self_info.get("adapter", ""))
+    print("physical_addr: %s" % self_info.get("phys", ""))
+    print("phys_addr: %s" % self_info.get("phys", ""))
+    print("logical_addr: %s" % self_info.get("addr", ""))
+    print("osd_name: %s" % (tv.get("name") or self_info.get("name", "")))
+    print("tv_power: %s" % power_text)
+    return 0
+
+
+def scan_json(dev):
+    self_info, devices = claimed_topology(dev, need_devices=True)
+    print(json.dumps({"self": self_info, "devices": devices}, separators=(",", ":")))
+    return 0
+
+
+def tx(dev, args, timeout=8):
+    result = run(["-d", dev] + args, timeout=timeout)
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    return result.returncode
+
+
+def self_phys(dev):
+    self_info, _ = claimed_topology(dev)
+    return self_info.get("phys") or "0.0.0.0"
+
+
+def audio_or_tv(dev):
+    _, devices = claimed_topology(dev, need_devices=True)
+    audio = next((d for d in devices if d.get("type") == 5), None)
+    return str(audio.get("addr")) if audio else "0"
+
+
+def main():
+    cmd = sys.argv[1].lower() if len(sys.argv) > 1 else "status"
+    dev = cec_device()
+
+    if not os.path.exists(dev):
+        sys.stderr.write("CEC device not found: %s\n" % dev)
+        return 1
+    if not os.path.exists(CEC_CTL):
+        sys.stderr.write("cec-ctl not found\n")
+        return 1
+
+    if cmd in ("status", "power"):
+        return status(dev)
+    if cmd in ("scan", "scan-json"):
+        return scan_json(dev)
+
+    if cmd in ("on", "wake"):
+        claimed_topology(dev)
+        rc = tx(dev, ["--to", "0", "--image-view-on"])
+        time.sleep(0.4)
+        phys = self_phys(dev)
+        rc2 = tx(dev, ["--active-source", "phys-addr=%s" % phys])
+        return 0 if rc == 0 and rc2 == 0 else 1
+    if cmd == "off":
+        claimed_topology(dev)
+        return tx(dev, ["--to", "0", "--standby"])
+    if cmd in ("active", "input", "as"):
+        phys = self_phys(dev)
+        rc = tx(dev, ["--active-source", "phys-addr=%s" % phys])
+        rc2 = tx(dev, ["--set-stream-path", "phys-addr=%s" % phys])
+        return 0 if rc == 0 and rc2 == 0 else 1
+    if cmd == "inactive":
+        phys = self_phys(dev)
+        return tx(dev, ["--inactive-source", "phys-addr=%s" % phys])
+    if cmd in ("volup", "voldown", "mute"):
+        ui_cmd = {"volup": "volume-up", "voldown": "volume-down", "mute": "mute"}[cmd]
+        dst = audio_or_tv(dev)
+        rc = tx(dev, ["--to", dst, "--user-control-pressed", "ui-cmd=%s" % ui_cmd])
+        time.sleep(0.1)
+        rc2 = tx(dev, ["--to", dst, "--user-control-released"])
+        return 0 if rc == 0 and rc2 == 0 else 1
+
+    sys.stderr.write("Usage: pgcec <status|scan-json|scan|on|off|active|input|inactive|volup|voldown|mute> [/dev/cecN]\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

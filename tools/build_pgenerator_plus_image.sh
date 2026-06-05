@@ -13,7 +13,6 @@ ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof i1d3ccss oeminst dispread dispcal)
 ARGYLL_RUNTIME_DIR=""
 TARGET="pi4-biasi"
-PI5_TARGET_MANIFEST="$REPO_ROOT/tools/image-targets/pi5-bookworm-armhf.env"
 PI5_TARGET_DESCRIPTION="Raspberry Pi 5 Bookworm armhf"
 PI5_OUTPUT_SUFFIX="pi5_bookworm_armhf"
 PI5_BOOT_LABEL="BOOT_PG"
@@ -26,6 +25,29 @@ PI5_ADMIN_GROUPS="adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,r
 PI5_KEYBOARD_LAYOUT="us"
 PI5_LOCALE="en_US.UTF-8"
 TARGET_OVERLAY_REL=""
+TARGET_DESCRIPTION=""
+TARGET_OWNED_RUNTIME_PATHS=(
+ "usr/share/PGenerator/command.pm"
+ "usr/share/PGenerator/conf.pm"
+ "usr/share/PGenerator/variables.pm"
+ "usr/bin/PGeneratorDisplayMirror"
+ "usr/bin/pgcec"
+ "usr/lib/drm_override.c"
+ "usr/lib/drm_override.so"
+ "usr/lib/scdc_tool"
+ "usr/lib/scdc_tool.c"
+ "usr/sbin/PGeneratord"
+ "usr/sbin/PGeneratord.dv"
+ "usr/sbin/disable_csc"
+ "usr/sbin/disable_csc.c"
+ "usr/sbin/drm_player"
+ "usr/sbin/drm_player.c"
+ "usr/sbin/fb_player"
+ "usr/sbin/fb_player.c"
+ "usr/sbin/pg_diag_video_player"
+ "usr/sbin/pgenerator-cec"
+ "usr/sbin/write_csc.c"
+)
 
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
@@ -80,7 +102,9 @@ Notes:
     the expected distro dependencies and account setup.
   - The pi5-bookworm-armhf target expects a Raspberry Pi OS Bookworm Lite
     armhf base image and seeds the PGenerator account/compatibility state.
-    Its target manifest is tools/image-targets/pi5-bookworm-armhf.env.
+  - Shared UI/calibration files are copied from the top-level runtime tree.
+    Renderer, display backend, and hardware files are copied from
+    tools/image-targets/<target>/rootfs.
   - In the current source tree only `spotread` is bundled. Use
     --argyll-runtime-dir to add the headless Argyll runtime slice used for
     on-device TI3 -> CCSS conversion. `ccxxmake` is required; matching helper
@@ -118,18 +142,23 @@ require_commands() {
 }
 
 load_target_manifest() {
- [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ local manifest="$REPO_ROOT/tools/image-targets/${TARGET}.env"
 
- [[ -f "$PI5_TARGET_MANIFEST" ]] || die "Missing target manifest: $PI5_TARGET_MANIFEST"
- # shellcheck disable=SC1090
- . "$PI5_TARGET_MANIFEST"
+ if [[ -f "$manifest" ]]; then
+  # shellcheck disable=SC1090
+  . "$manifest"
+  log "Loaded target manifest: $manifest (${TARGET_DESCRIPTION:-$TARGET})"
+ elif [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  die "Missing target manifest: $manifest"
+ fi
 
- [[ -n "$PI5_TARGET_DESCRIPTION" ]] || die "Pi 5 target manifest is missing PI5_TARGET_DESCRIPTION"
- [[ -n "$PI5_OUTPUT_SUFFIX" ]] || die "Pi 5 target manifest is missing PI5_OUTPUT_SUFFIX"
- [[ -n "$PI5_BOOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_BOOT_LABEL"
- [[ -n "$PI5_ROOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_ROOT_LABEL"
- [[ -n "$PI5_REQUIRED_BOOT_KERNELS" ]] || die "Pi 5 target manifest is missing PI5_REQUIRED_BOOT_KERNELS"
- log "Loaded target manifest: $PI5_TARGET_MANIFEST ($PI5_TARGET_DESCRIPTION)"
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  [[ -n "$PI5_TARGET_DESCRIPTION" ]] || die "Pi 5 target manifest is missing PI5_TARGET_DESCRIPTION"
+  [[ -n "$PI5_OUTPUT_SUFFIX" ]] || die "Pi 5 target manifest is missing PI5_OUTPUT_SUFFIX"
+  [[ -n "$PI5_BOOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_BOOT_LABEL"
+  [[ -n "$PI5_ROOT_LABEL" ]] || die "Pi 5 target manifest is missing PI5_ROOT_LABEL"
+  [[ -n "$PI5_REQUIRED_BOOT_KERNELS" ]] || die "Pi 5 target manifest is missing PI5_REQUIRED_BOOT_KERNELS"
+ fi
 }
 
 repo_version() {
@@ -415,19 +444,33 @@ pi5_required_boot_kernel_present() {
  return 1
 }
 
+shared_rsync_excludes_for_rel() {
+ local rel="$1"
+ local owned
+ for owned in "${TARGET_OWNED_RUNTIME_PATHS[@]}"; do
+  case "$owned" in
+   "$rel"/*)
+    printf '%s\n' "--exclude=/${owned#$rel/}"
+    ;;
+  esac
+ done
+}
+
 overlay_tree() {
  local rel
  local src
  local dst
  local target_overlay
+ local rsync_args=()
 
  for rel in etc usr var lib; do
   src="$REPO_ROOT/$rel"
   [[ -d "$src" ]] || continue
   dst="$ROOT_MOUNT/$rel"
   mkdir -p "$dst"
-  log "Overlaying /$rel"
-  rsync -aHAX --no-owner --no-group -- "$src/" "$dst/"
+  mapfile -t rsync_args < <(shared_rsync_excludes_for_rel "$rel")
+  log "Overlaying shared /$rel"
+  rsync -aHAX --no-owner --no-group "${rsync_args[@]}" -- "$src/" "$dst/"
  done
 
  if [[ -n "$TARGET_OVERLAY_REL" ]]; then

@@ -218,7 +218,7 @@ write_local_integrity() {
   echo "--- relevant source hashes ---"
   sha256sum \
    tools/pi5_display_output_gate.sh \
-   tools/image-targets/pi5-bookworm-armhf/rootfs/usr/share/PGenerator/webui.pm \
+   usr/share/PGenerator/webui.pm \
    tools/image-targets/pi5-bookworm-armhf/rootfs/usr/share/PGenerator/command.pm \
    tools/image-targets/pi5-bookworm-armhf/src/ofxRPI4Window/src/ofxRPI4Window.cpp
  } > "$OUT_DIR/local_integrity.txt"
