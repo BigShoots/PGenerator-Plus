@@ -299,7 +299,7 @@ collect_case_artifacts() {
  save_api_remote "config_${name}_readback.json" "/api/config"
  save_api_remote "info_${name}.json" "/api/info"
  save_api_remote "infoframes_${name}.json" "/api/infoframes"
- save_remote "modetest_${name}.txt" "modetest -M vc4 -c 2>/dev/null"
+ save_remote "modetest_${name}.txt" "modetest -M vc4 -a -c 2>/dev/null"
  save_remote "drm_state_${name}.txt" "for f in /sys/kernel/debug/dri/*/state; do echo '---' \$f; cat \$f; done 2>/dev/null"
  save_remote "operations_${name}.txt" "cat /var/lib/PGenerator/operations.txt 2>/dev/null"
  save_remote "renderer_log_${name}.txt" "journalctl -u pgenerator -u PGenerator -u lighttpd --no-pager -n 220 2>/dev/null || true; cat /var/log/PGenerator.log 2>/dev/null | tail -n 220 || true"
@@ -457,7 +457,7 @@ preflight() {
 
  save_remote "remote_identity.txt" "printf 'model='; tr -d '\\0' < /proc/device-tree/model 2>/dev/null; printf '\\n'; uname -a; cat /etc/os-release 2>/dev/null || true"
  save_remote "remote_drm_status.txt" "for d in /sys/class/drm/card*-HDMI-A-*; do echo '---' \$d; cat \$d/status 2>/dev/null; wc -c \$d/edid 2>/dev/null; done"
- save_remote "modetest_initial.txt" "modetest -M vc4 -c 2>/dev/null"
+ save_remote "modetest_initial.txt" "modetest -M vc4 -a -c 2>/dev/null"
  save_remote "drm_state_initial.txt" "for f in /sys/kernel/debug/dri/*/state; do echo '---' \$f; cat \$f; done 2>/dev/null"
  save_remote "renderer_initial.txt" "pgrep -af 'PGeneratord|PGenerator' 2>/dev/null || true; cat /etc/PGenerator/PGenerator.conf 2>/dev/null"
 

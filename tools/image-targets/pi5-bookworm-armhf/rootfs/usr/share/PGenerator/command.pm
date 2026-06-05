@@ -93,7 +93,7 @@ sub release_source_rgb_quant_range (@) {
 sub kms_connector_has_property(@) {
  my $prop_name=shift;
  return 0 if(!$is_kms || $prop_name eq "");
- open(MT_PROP,"timeout 3 $modetest -c 2>/dev/null|");
+ open(MT_PROP,"timeout 3 $modetest -a -c 2>/dev/null|");
  while(<MT_PROP>) {
   if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
    close(MT_PROP);
@@ -224,9 +224,9 @@ sub pattern_generator_start(@) {
  &auto_select_4k_mode();
  &apply_drm_properties();
  &get_hdmi_info();
- if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry")) {
+ if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry") && !&kms_connector_has_property("output format")) {
   $use_drm_override=0;
-  &log("DRM: Colorspace-based kernel detected; starting renderer without drm_override.so");
+  &log("DRM: Colorspace-only kernel detected; starting renderer without drm_override.so");
  }
  if($is_kms && !&kms_connector_has_property("DOVI_OUTPUT_METADATA")) {
   $has_dovi_metadata=0;
@@ -257,7 +257,7 @@ sub pattern_generator_start(@) {
  }
  usleep(250000);
  if(!$use_drm_override) {
-  &log("DRM: skipping post-launch modetest reapply on Colorspace-based kernel");
+  &log("DRM: skipping post-launch modetest reapply on Colorspace-only kernel");
   &apply_hdr_metadata_helper();
   unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
   &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);

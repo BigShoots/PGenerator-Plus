@@ -5330,7 +5330,7 @@ sub webui_capabilities_json (@) {
  my %vic_420; # "WxH@HZi" => 1
 
  if($is_kms) {
-  my $mt=`timeout 5 $modetest -c 2>/dev/null`;
+  my $mt=`timeout 5 $modetest -a -c 2>/dev/null`;
   $kms_output_format=1 if($mt=~/\boutput format\b/);
  }
 
