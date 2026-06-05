@@ -589,10 +589,22 @@ ensure_pi5_admin_identity() {
 
  if grep -q "^$user:" "$passwd_file"; then
   uid="$(awk -F: -v user="$user" '$1==user {print $3; exit}' "$passwd_file")"
-  perl -0pi -e '
-   my $user = shift @ARGV;
-   s{^(\Q$user\E:[^:\n]*:[^:\n]*:[^:\n]*:[^:\n]*:)[^:\n]*:[^:\n]*$}{$1 . "/home/$user:/bin/bash"}gme;
-  ' "$user" "$passwd_file"
+  perl - "$user" < "$passwd_file" > "$passwd_file.tmp" <<'PERL'
+use strict;
+use warnings;
+my $user = shift @ARGV;
+while (my $line = <STDIN>) {
+ chomp $line;
+ my @fields = split /:/, $line, -1;
+ if (($fields[0] // "") eq $user) {
+  $fields[5] = "/home/$user";
+  $fields[6] = "/bin/bash";
+ }
+ print join(":", @fields), "\n";
+}
+PERL
+  install -m 0644 -o 0 -g 0 "$passwd_file.tmp" "$passwd_file" 2>/dev/null || install -m 0644 "$passwd_file.tmp" "$passwd_file"
+  rm -f "$passwd_file.tmp"
  else
   uid="$(next_free_regular_id "$passwd_file" 3)"
   printf '%s:x:%s:%s:PGenerator administrator:/home/%s:/bin/bash\n' "$user" "$uid" "$gid" "$user" >> "$passwd_file"
