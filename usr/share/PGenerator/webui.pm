@@ -10227,6 +10227,9 @@ let meterAutoCalMagicWandActive=false;
 let meterAutoCalMagicWandBaseStatus=null;
 let meterAutoCalMagicWandFullWorkflow=false;
 let meterAutoCalStandaloneMagicWandEnabled=false;
+let meterAutoCalMagicWandRunToken='';
+let meterAutoCalMagicWandVerificationInFlight=false;
+let meterAutoCalMagicWandCompletedToken='';
 let meterHdrAutoCalChartContextHeld=false;
 const METER_FULL_AUTOCAL_STATE_KEY='meterFullAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
@@ -19098,7 +19101,7 @@ function meterAutoCalRenderResults(status){
    greyText=' Touch-up greyscale avg ΔE '+avg.toFixed(2)+', max '+sorted[0].de.toFixed(2)+' at '+sorted[0].label+'.';
   }
   const reportNames=meterFullAutoCalReportSeries().map(item=>item.label).join(', ');
-  const reportText=hasPreReport?' Click Generate Post-Cal Report to read '+reportNames+' again and build a before/after report.':' Click Generate Post-Cal Report to read '+reportNames+' and build a post-cal report.';
+  const reportText=meterFullAutoCalPostReportReady(status)?(hasPreReport?' Click Generate Post-Cal Report to read '+reportNames+' again and build a before/after report.':' Click Generate Post-Cal Report to read '+reportNames+' and build a post-cal report.'):'';
   const doneText=status.touchup_skipped?'Full Auto Cal complete: greyscale and 3D LUT finished.':'Full Auto Cal complete: greyscale, 3D LUT, and greyscale touch-up finished.';
   if(summary) summary.textContent=doneText+uploadText+greyText+reportText;
   const post=lut.post_check_summary||{};
@@ -19159,12 +19162,16 @@ function meterAutoCalCloseComplete(){
 	 meterAutoCalMagicWandBaseStatus=null;
 	 meterAutoCalMagicWandFullWorkflow=false;
 	 meterAutoCalStandaloneMagicWandEnabled=false;
+	 meterAutoCalMagicWandVerificationInFlight=false;
 	 meterFullAutoCalClearReportData();
 	 meterAutoCalSetOverlay(false,null);
 	}
 
 async function meterAutoCalCloseCompleteAction(){
+ if(meterAutoCalPhase==='complete'&&meterFullAutoCalReportData&&meterFullAutoCalReportData.completion_status) await meterFullAutoCalMarkCurrentCompletionStatusesHandled();
  try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
+ meterAutoCalLatestStatus=null;
+ meterAutoCalLatestStatusAt=0;
  meterAutoCalCloseComplete();
 }
 
@@ -19175,6 +19182,12 @@ function meterAutoCalScheduleCompleteAutoClose(postReportAvailable){
 function meterAutoCalOverlayVisible(){
  const overlay=document.getElementById('meterAutoCalOverlay');
  return !!(overlay&&overlay.getAttribute('aria-hidden')==='false');
+}
+
+function meterFullAutoCalPostReportReady(status){
+ if(!(status&&status.full_autocal)) return false;
+ if(status.full_autocal_magic_wand===true) return !!(status.magic_wand||status.post_series_after);
+ return true;
 }
 
 function meterAutoCalRepairOverlayPointerState(){
@@ -19218,7 +19231,8 @@ function meterAutoCalSetOverlay(active,status){
  const showLuminance=phase==='luminance';
  const showOptions=phase==='options';
  const showConfirm=phase==='confirm';
- const showComplete=phase==='complete'||(status&&status.status==='complete');
+ const rawComplete=phase==='complete'||(status&&status.status==='complete');
+ const showComplete=!!(rawComplete&&!(status&&status.full_autocal&&!meterFullAutoCalPostReportReady(status)));
  if(disclaimerBox) disclaimerBox.style.display=showDisclaimer?'':'none';
  if(lumBox) lumBox.style.display=showLuminance?'':'none';
  if(confirmBox) confirmBox.style.display=(showConfirm||showOptions)?'':'none';
@@ -19240,7 +19254,7 @@ function meterAutoCalSetOverlay(active,status){
  if(fullCancelBtn) fullCancelBtn.style.display='none';
  if(fullSkipBtn) fullSkipBtn.style.display='none';
  if(fullContinueBtn) fullContinueBtn.style.display='none';
- const postReportAvailable=!!(showComplete&&status&&status.full_autocal);
+ const postReportAvailable=!!(showComplete&&meterFullAutoCalPostReportReady(status));
  if(postReportBtn) postReportBtn.style.display=postReportAvailable?'':'none';
  if(skipReportBtn) skipReportBtn.style.display=showComplete?'':'none';
  if(skipReportBtn&&showComplete) skipReportBtn.textContent='Close';
@@ -20730,25 +20744,37 @@ function meterFullAutoCalCompletionToken(status){
  ].join('|');
 }
 
+function meterFullAutoCalCompletionStableToken(status){
+ if(!status) return '';
+ const runId=status.run_id||status.full_autocal_run_id||'';
+ if(!runId) return '';
+ const statusPhase=meterFullAutoCalStatusPhase(status)||(status.full_autocal?'complete':'');
+ return ['run',statusPhase,status.status||'',String(runId)].join(':');
+}
+
 function meterFullAutoCalCompletionHandled(status){
  const token=meterFullAutoCalCompletionToken(status);
- if(!token) return false;
+ const stableToken=meterFullAutoCalCompletionStableToken(status);
+ if(!token&&!stableToken) return false;
  try{
   const raw=localStorage.getItem(METER_FULL_AUTOCAL_COMPLETE_KEY)||'';
-  if(raw===token) return true;
+  if(raw===token||raw===stableToken) return true;
   const parsed=JSON.parse(raw||'{}');
-  return !!(parsed&&parsed[token]);
+  return !!(parsed&&(parsed[token]||(stableToken&&parsed[stableToken])));
  }catch(e){ return false; }
 }
 
 function meterFullAutoCalMarkCompletionHandled(status){
  const token=meterFullAutoCalCompletionToken(status);
- if(!token) return;
+ const stableToken=meterFullAutoCalCompletionStableToken(status);
+ if(!token&&!stableToken) return;
  try{
   let parsed={};
   const raw=localStorage.getItem(METER_FULL_AUTOCAL_COMPLETE_KEY)||'';
   try{ parsed=JSON.parse(raw||'{}')||{}; }catch(e){ parsed={}; }
-  parsed[token]=Date.now();
+  const now=Date.now();
+  if(token) parsed[token]=now;
+  if(stableToken) parsed[stableToken]=now;
   const entries=Object.entries(parsed).sort((a,b)=>Number(b[1]||0)-Number(a[1]||0)).slice(0,12);
   localStorage.setItem(METER_FULL_AUTOCAL_COMPLETE_KEY,JSON.stringify(Object.fromEntries(entries)));
  }catch(e){}
@@ -20810,8 +20836,20 @@ function meterFullAutoCalMagicWandPendingBeforeCompletion(status){
  return !!(meterFullAutoCalRunning&&meterFullAutoCalMagicWandEnabled());
 }
 
+function meterAutoCalMagicWandRunKey(status,fullWorkflow){
+ const runId=(status&&(status.full_autocal_run_id||status.run_id))||(fullWorkflow?meterFullAutoCalRunId:'')||'';
+ if(fullWorkflow&&runId) return 'full:'+String(runId);
+ const completed=status&&status.completed_at!=null?status.completed_at:'';
+ return ['standalone',status&&status.status||'',completed,status&&status.current_name||'',status&&status.message||''].join(':');
+}
+
+function meterAutoCalMagicWandStatusAlreadyFinal(status){
+ return !!(status&&(status.magic_wand||status.post_series_after||status.full_autocal_post_series_revert||status.post_cal_series_revert));
+}
+
 function meterAutoCalMagicWandCompletionRequiresVerification(status){
  if(!(status&&status.status==='complete')) return false;
+ if(meterAutoCalMagicWandStatusAlreadyFinal(status)) return false;
  if(status.full_autocal_post_series_adjust) return true;
  if(meterAutoCalMagicWandActive||meterAutoCalMagicWandFullWorkflow) return true;
  return meterFullAutoCalStatusPhase(status)==='magic-wand';
@@ -20906,6 +20944,8 @@ function meterFullAutoCalAbort(message,isError){
  meterAutoCalMagicWandActive=false;
  meterAutoCalMagicWandBaseStatus=null;
  meterAutoCalMagicWandFullWorkflow=false;
+ meterAutoCalMagicWandRunToken='';
+ meterAutoCalMagicWandVerificationInFlight=false;
  meterClearSeriesRunUiState();
  meterHideWorkflowProgress();
  if(isError){
@@ -21343,6 +21383,7 @@ async function meterFullAutoCalEnsureCalibrationModeOff(reason){
 
 async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalLoadReportData();
+ await meterFullAutoCalMarkCurrentCompletionStatusesHandled();
  const filename=meterDefaultExportFilename('report','pgenerator_full_autocal_report','html');
  const series=meterFullAutoCalReportSeries();
  const btn=document.getElementById('meterFullAutoCalPostReportBtn');
@@ -21356,6 +21397,7 @@ async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalPhase='postcal-report';
  meterFullAutoCalSaveState();
  meterClearAutoCalStatusPollingForReport();
+ meterClearSeriesRunUiState();
  let reportCompleted=false;
  try{
   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:series.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
@@ -21379,6 +21421,9 @@ async function meterFullAutoCalGeneratePostReport(){
   meterAutoCalMagicWandActive=false;
   meterAutoCalMagicWandBaseStatus=null;
   meterAutoCalMagicWandFullWorkflow=false;
+  meterAutoCalMagicWandVerificationInFlight=false;
+  meterAutoCalLatestStatus=null;
+  meterAutoCalLatestStatusAt=0;
   meterAutoCalSetOverlay(false,null);
   meterClearSeriesRunUiState();
   meterHideWorkflowProgress();
@@ -21439,6 +21484,9 @@ async function meterStartFullAutoCal(){
  const skipPreCal=preChoice==='skip';
  meterFullAutoCalClearReportData();
  meterFullAutoCalClearCompletionHandled();
+ meterAutoCalMagicWandRunToken='';
+ meterAutoCalMagicWandVerificationInFlight=false;
+ meterAutoCalMagicWandCompletedToken='';
  meterFullAutoCalRunning=true;
  meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalStartedAt=Date.now();
@@ -21555,6 +21603,11 @@ function meterFullAutoCalTouchupTargetY(){
 	 const fullWorkflow=!!(options&&options.fullWorkflow);
 	 const afterPolish=!!(options&&options.afterPolish);
 	 if(fullWorkflow&&!meterFullAutoCalRunning) return false;
+	 const magicToken=meterAutoCalMagicWandRunKey(status,fullWorkflow);
+	 if(magicToken&&meterAutoCalMagicWandCompletedToken===magicToken) return true;
+	 if(magicToken&&meterAutoCalMagicWandRunToken===magicToken&&(meterAutoCalMagicWandActive||meterAutoCalMagicWandVerificationInFlight)) return true;
+	 meterAutoCalMagicWandRunToken=magicToken;
+	 meterAutoCalMagicWandVerificationInFlight=false;
 	 if(fullWorkflow){
 	  if(!afterPolish) meterFullAutoCalResults.lut3d=status||null;
 	  const runId=status&&(status.full_autocal_run_id||status.run_id);
@@ -21671,6 +21724,8 @@ function meterFullAutoCalTouchupTargetY(){
 	  meterAutoCalMagicWandActive=false;
 	  meterAutoCalMagicWandBaseStatus=null;
 	  meterAutoCalMagicWandFullWorkflow=false;
+	  meterAutoCalMagicWandRunToken='';
+	  meterAutoCalMagicWandVerificationInFlight=false;
 	  if(fullWorkflow) meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal Magic Wand failed',true);
 	  else{
 	   meterAutoCalPhase='error';
@@ -21686,6 +21741,13 @@ function meterFullAutoCalTouchupTargetY(){
 
 	async function meterAutoCalFinishMagicWandAdjustment(adjustStatus,options){
 	 const fullWorkflow=!!(options&&options.fullWorkflow);
+	 const magicToken=meterAutoCalMagicWandRunToken||meterAutoCalMagicWandRunKey(adjustStatus,fullWorkflow);
+	 if(magicToken&&meterAutoCalMagicWandCompletedToken===magicToken){
+	  if(fullWorkflow) meterFullAutoCalMarkCompletionHandled(adjustStatus);
+	  return true;
+	 }
+	 if(meterAutoCalMagicWandVerificationInFlight) return true;
+	 meterAutoCalMagicWandVerificationInFlight=true;
 	 try{
 	  if(fullWorkflow) meterFullAutoCalMarkCompletionHandled(adjustStatus);
 	  meterAutoCalRunning=false;
@@ -21698,6 +21760,7 @@ function meterFullAutoCalTouchupTargetY(){
 	   ...(adjustStatus||{}),
 	   full_autocal_post_series_adjust:true,
 	   magic_wand:true,
+	   completed_at:Date.now(),
 	   post_series_revert:revertStatus&&revertStatus.post_cal_series_revert?revertStatus.post_cal_series_revert:null,
 	   post_series_before:meterFullAutoCalReportData&&meterFullAutoCalReportData.stages&&meterFullAutoCalReportData.stages.magic_wand?meterFullAutoCalReportData.stages.magic_wand.before:null,
 	   post_series_after:afterSnap,
@@ -21706,6 +21769,7 @@ function meterFullAutoCalTouchupTargetY(){
 	   white_reading:afterSnap&&afterSnap.white_reading?afterSnap.white_reading:null,
 	   summary_readings_source:'magic_wand_after_snapshot'
 	  };
+	  if(magicToken) meterAutoCalMagicWandCompletedToken=magicToken;
 	  meterAutoCalMagicWandActive=false;
 		  meterAutoCalMagicWandBaseStatus=null;
 		  meterAutoCalMagicWandFullWorkflow=false;
@@ -21723,6 +21787,7 @@ function meterFullAutoCalTouchupTargetY(){
 	  meterAutoCalMagicWandActive=false;
 	  meterAutoCalMagicWandBaseStatus=null;
 	  meterAutoCalMagicWandFullWorkflow=false;
+	  if(!fullWorkflow) meterAutoCalMagicWandRunToken='';
 	  if(fullWorkflow) meterFullAutoCalAbort((e&&e.message)||'Full Auto Cal Magic Wand verification failed',true);
 	  else{
 	   meterAutoCalPhase='error';
@@ -21732,6 +21797,7 @@ function meterFullAutoCalTouchupTargetY(){
 	  }
 	  return false;
 	 }finally{
+	  meterAutoCalMagicWandVerificationInFlight=false;
 	  meterUpdateReadButtons();
 	 }
 	}
@@ -22149,6 +22215,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
   full_workflow:true,
   full_autocal_run_id:runId,
   run_id:runId,
+	  full_autocal_magic_wand:(touchupStatus&&Object.prototype.hasOwnProperty.call(touchupStatus,'full_autocal_magic_wand'))?touchupStatus.full_autocal_magic_wand:meterFullAutoCalMagicWandEnabled(),
 	  completed_at:completedAt,
 	  started_at:startedAt||undefined,
 	  elapsed_ms:(startedAt&&completedAt>=startedAt)?(completedAt-startedAt):undefined,
@@ -22170,6 +22237,8 @@ function meterFullAutoCalComplete(touchupStatus,options){
  meterFullAutoCalArchiveReportData('complete',{completed_at:completedAt,elapsed_ms:status.elapsed_ms||null});
  meterFullAutoCalMarkCompletionHandled(status);
  meterFullAutoCalResetState(true);
+ meterClearSeriesRunUiState();
+ meterHideWorkflowProgress();
  meterAutoCalPhase='complete';
  meterAutoCalRunning=true;
  meterAutoCalSetOverlay(true,status);
@@ -22251,6 +22320,7 @@ async function meterPollAutoCal(options){
 		   meterAutoCalRunning=false;
 		   meterAutoCalPendingConfig=null;
 		   if(meterAutoCalMagicWandCompletionRequiresVerification(r)) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
+			   else if(meterAutoCalMagicWandStatusAlreadyFinal(r)) meterFullAutoCalMarkCompletionHandled(r);
 			   else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
 		   return;
 		  }
@@ -22307,6 +22377,7 @@ async function meterPollAutoCal(options){
 				     meterAutoCalRunning=false;
 				     meterAutoCalPendingConfig=null;
 				     if(meterAutoCalMagicWandCompletionRequiresVerification(r)) await meterAutoCalFinishMagicWandAdjustment(r,{fullWorkflow:true});
+					     else if(meterAutoCalMagicWandStatusAlreadyFinal(r)) meterFullAutoCalMarkCompletionHandled(r);
 					     else await meterFullAutoCalCompleteAfterHdrToneMap(r,undefined,'magic-wand');
 			     return;
 			    }
