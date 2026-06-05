@@ -5654,7 +5654,7 @@ sub webui_cec (@) {
 	 # status returns structured JSON
 	 if($cmd eq "status") {
 	  my ($cached_phys,$cached_log,$cached_osd,$cached_power,$cache_age)=&webui_cec_scan_cache_info($cec_scan_cache);
-	  my $direct=&webui_cec_direct_status($cec_bin,6);
+	  my $direct=&webui_cec_direct_status($cec_bin,10);
 	  if(ref($direct) eq "HASH") {
 	   my $phys=($cached_phys ne "") ? $cached_phys : ($direct->{"phys_addr"}||"");
 	   my $log=($cached_log ne "") ? $cached_log : ($direct->{"log_addr"}||"");
@@ -5707,6 +5707,12 @@ sub webui_cec (@) {
  $output=~s/"/\\"/g;
  $output=~s/\n/\\n/g;
  if($rc == 0) {
+  if($cmd eq "off" || $cmd eq "on") {
+   my ($cached_phys,$cached_log,$cached_osd)=&webui_cec_scan_cache_info($cec_scan_cache);
+   my $power=($cmd eq "off") ? "standby" : "powering-on";
+   unlink($cec_scan_cache);
+   &webui_cec_power_cache_write($cec_power_cache,$power,$cached_phys,$cached_log,$cached_osd);
+  }
   return "{\"status\":\"ok\",\"output\":\"$output\"}";
  } else {
   return "{\"status\":\"error\",\"output\":\"$output\"}";
@@ -9853,7 +9859,7 @@ async function loadCecStatus(){
  if(cecStatusPending) return;
  cecStatusPending=true;
  try{
-  const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:8000});
+  const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:15000});
   if(r&&r.status==='ok'){
    renderCecStatus(r.tv_power,r.phys_addr);
   }else{
