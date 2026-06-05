@@ -13861,197 +13861,6 @@ sub post_cal_series_low_shadow_neighbor_ires {
  return ();
 }
 
-sub post_cal_series_low_shadow_group_score {
- my ($points)=@_;
- return undef if(ref($points) ne "HASH");
- my ($sum,$count,$worst)=(0,0,undef);
- foreach my $ire (3,4,5,7) {
-  my $point=$points->{$ire};
-  next if(ref($point) ne "HASH" || !defined($point->{"delta_e"}));
-  my $de=$point->{"delta_e"}+0;
-  $sum+=$de;
-  $count++;
-  $worst=$de if(!defined($worst) || $de > $worst);
- }
- return undef if(!$count);
- return {
-  avg=>$sum/$count,
-  worst=>$worst+0,
-  count=>$count+0
- };
-}
-
-sub post_cal_series_low_shadow_points_from_evaluated {
- my ($evaluated)=@_;
- my %points;
- return \%points if(ref($evaluated) ne "ARRAY");
- foreach my $entry (@{$evaluated}) {
-  next if(ref($entry) ne "HASH" || !defined($entry->{"ire"}) || !defined($entry->{"delta_e"}));
-  my $ire=$entry->{"ire"}+0;
-  next if(abs($ire-3) >= 0.001 && abs($ire-4) >= 0.001 && abs($ire-5) >= 0.001 && abs($ire-7) >= 0.001);
-  $points{$ire+0}={
-   delta_e=>$entry->{"delta_e"}+0,
-   luminance_error_pct=>defined($entry->{"luminance_error_pct"}) ? $entry->{"luminance_error_pct"}+0 : undef,
-   target_luminance=>defined($entry->{"target_luminance"}) ? $entry->{"target_luminance"}+0 : undef
-  };
- }
- return \%points;
-}
-
-sub post_cal_series_low_shadow_points_from_readings {
- my ($readings,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$config,$state)=@_;
- my %points;
- return \%points if(ref($readings) ne "ARRAY" || ref($steps) ne "ARRAY");
- foreach my $wanted (3,4,5,7) {
-  my $step;
-  foreach my $candidate (@{$steps}) {
-   next if(ref($candidate) ne "HASH" || !defined($candidate->{"ire"}));
-   if(abs(($candidate->{"ire"}+0)-$wanted) < 0.001) { $step=$candidate; last; }
-  }
-  next if(ref($step) ne "HASH");
-  my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
-  my $reading=post_cal_series_reading_for_step($readings,$read_step);
-  next if(ref($reading) ne "HASH" || $reading->{"error"});
-  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
-  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
-  my $lum_pct=luminance_error_percent($reading,$target_step_y);
-  $points{$wanted+0}={
-   delta_e=>defined($de) ? $de+0 : undef,
-   luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
-   target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
-   reading=>trace_reading_summary($reading)
-  };
- }
- return \%points;
-}
-
-sub post_cal_series_low_shadow_candidate_read {
- my ($config,$state,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$tag)=@_;
- my %points;
- foreach my $wanted (3,4,5,7) {
-  last if(cancelled());
-  my $step;
-  foreach my $candidate (@{$steps||[]}) {
-   next if(ref($candidate) ne "HASH" || !defined($candidate->{"ire"}));
-   if(abs(($candidate->{"ire"}+0)-$wanted) < 0.001) { $step=$candidate; last; }
-  }
-  next if(ref($step) ne "HASH");
-  my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
-  $state->{"current_name"}="Magic Wand low-shadow probe" if(ref($state) eq "HASH");
-  $state->{"phase"}="reading" if(ref($state) eq "HASH");
-  $state->{"message"}="Reading ".$read_step->{"name"}." for 5% candidate probe".($tag ? " ($tag)" : "") if(ref($state) eq "HASH");
-  $state->{"active_stimulus"}=$read_step->{"stimulus"}+0 if(ref($state) eq "HASH" && defined($read_step->{"stimulus"}));
-  write_state($state) if(ref($state) eq "HASH");
-  my ($reading,$error)=read_step($config,$read_step,$state);
-  return (undef,$error) if($error);
-  next if(ref($reading) ne "HASH" || $reading->{"error"});
-  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
-  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
-  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
-  my $lum_pct=luminance_error_percent($reading,$target_step_y);
-  $points{$wanted+0}={
-   delta_e=>defined($de) ? $de+0 : undef,
-   luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
-   target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
-   reading=>trace_reading_summary($reading)
-  };
-  $state->{"readings"}=merge_reading($state->{"readings"},$reading) if(ref($state) eq "HASH");
-  $state->{"current_delta_e"}=defined($de) ? $de : undef if(ref($state) eq "HASH");
-  $state->{"current_luminance"}=luminance($reading) if(ref($state) eq "HASH");
-  set_state_target_step_luminance($state,$target_step_y) if(ref($state) eq "HASH");
-  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef if(ref($state) eq "HASH");
-  trace_109($read_step,"post_cal_series_low_shadow_5_probe_read",{
-   tag=>$tag,
-   delta_e=>defined($de) ? $de+0 : undef,
-   luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
-   target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
-   reading=>trace_reading_summary($reading)
-  });
- }
- return (\%points,undef);
-}
-
-sub post_cal_series_probe_5_candidate {
- my ($config,$state,$picture,$base_arrays,$candidate_arrays,$target,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$evaluated,$readings,$adjustments,$read_step)=@_;
- return ($picture,1,undef,undef) if(ref($read_step) ne "HASH" || !defined($read_step->{"ire"}) || abs(($read_step->{"ire"}+0)-5) >= 0.001);
- return ($picture,1,undef,undef) if(ref($base_arrays) ne "HASH" || ref($candidate_arrays) ne "HASH" || ref($target) ne "HASH");
- my $before_points=post_cal_series_low_shadow_points_from_evaluated($evaluated);
- if(ref(post_cal_series_low_shadow_group_score($before_points)) ne "HASH" || post_cal_series_low_shadow_group_score($before_points)->{"count"} < 4) {
-  $before_points=post_cal_series_low_shadow_points_from_readings($readings,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$config,$state);
- }
- my $before_score=post_cal_series_low_shadow_group_score($before_points);
- return ($picture,1,undef,undef) if(ref($before_score) ne "HASH" || $before_score->{"count"} < 4);
- trace_109($read_step,"post_cal_series_low_shadow_5_probe_start",{
-  label=>$target->{"label"},
-  before_score=>$before_score,
-  before_points=>$before_points,
-  adjustments=>trace_adjustments_summary($adjustments),
-  candidate_values=>trace_target_values($candidate_arrays,$target)
- });
- my $start_error=start_calibration_mode($picture_mode,$state,"Magic Wand 5% probe calibration mode enabled");
- return ($picture,0,{ rejected_reason=>"probe_calibration_mode_start_failed", before_score=>$before_score },$start_error) if($start_error);
- my ($write_picture,$write_error)=set_picture_values($picture,$candidate_arrays,$target,$picture_mode,1,$state,1,1);
- if($write_error) {
-  end_calibration_mode($picture_mode);
-  set_state_calibration_mode($state,0,"");
-  return ($picture,0,{ rejected_reason=>"probe_candidate_write_failed", before_score=>$before_score },$write_error);
- }
- sync_state_picture($state,$write_picture,$picture_mode);
- end_calibration_mode($picture_mode);
- set_state_calibration_mode($state,0,"");
- my $settle_ms=config_positive_int($config,"post_cal_series_low_shadow_probe_settle_ms",1200,0,10000);
- select(undef,undef,undef,$settle_ms/1000) if($settle_ms > 0);
- my ($after_points,$read_error)=post_cal_series_low_shadow_candidate_read($config,$state,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,"candidate_5");
- my $after_score=post_cal_series_low_shadow_group_score($after_points);
- my $restore_error;
- my $restored_picture=$write_picture;
- my $restore_target=$target;
- $state->{"phase"}="writing" if(ref($state) eq "HASH");
- $state->{"message"}="Restoring Magic Wand low-shadow probe baseline" if(ref($state) eq "HASH");
- write_state($state) if(ref($state) eq "HASH");
- my $restore_start_error=start_calibration_mode($picture_mode,$state,"Magic Wand 5% probe restore calibration mode enabled");
- if(!$restore_start_error) {
-  ($restored_picture,$restore_error)=set_picture_values($write_picture,$base_arrays,$restore_target,$picture_mode,1,$state,1,1);
-  sync_state_picture($state,$restored_picture,$picture_mode) if(!$restore_error);
-  end_calibration_mode($picture_mode);
-  set_state_calibration_mode($state,0,"");
- } else {
-  $restore_error=$restore_start_error;
- }
- my $before_5=(ref($before_points) eq "HASH" && ref($before_points->{5}) eq "HASH") ? $before_points->{5}{"delta_e"} : undef;
- my $after_5=(ref($after_points) eq "HASH" && ref($after_points->{5}) eq "HASH") ? $after_points->{5}{"delta_e"} : undef;
- my $accepted=0;
- my $accept_reason="";
- if(!$read_error && !$restore_error && ref($after_score) eq "HASH" && $after_score->{"count"} >= 4) {
-  if(($after_score->{"worst"}+0) < ($before_score->{"worst"}+0)-0.10) {
-   $accepted=1;
-   $accept_reason="group_worst_improved";
-  } elsif(defined($before_5) && defined($after_5) && ($after_5+0) < ($before_5+0)-0.10 && ($after_score->{"worst"}+0) <= ($before_score->{"worst"}+0)+0.05) {
-   $accepted=1;
-   $accept_reason="five_improved_group_worst_not_worse";
-  }
- }
- my $summary={
-  accepted=>$accepted ? JSON::PP::true : JSON::PP::false,
-  reason=>$accepted ? $accept_reason : ($read_error ? "probe_read_failed" : ($restore_error ? "probe_restore_failed" : "group_score_not_improved")),
-  before_score=>$before_score,
-  after_score=>$after_score,
-  before_points=>$before_points,
-  after_points=>$after_points,
-  before_5_delta_e=>defined($before_5) ? $before_5+0 : undef,
-  after_5_delta_e=>defined($after_5) ? $after_5+0 : undef,
-  settle_ms=>$settle_ms+0,
-  adjustments=>trace_adjustments_summary($adjustments),
- };
- trace_109($read_step,$accepted ? "post_cal_series_low_shadow_5_probe_accepted" : "post_cal_series_low_shadow_5_probe_rejected",{
-  %{$summary},
-  restored=>!$restore_error ? JSON::PP::true : JSON::PP::false,
-  restore_error=>$restore_error
- });
- return (ref($restored_picture) eq "HASH" ? $restored_picture : $write_picture,$accepted,$summary,$restore_error||$read_error);
-}
-
 sub post_cal_series_revert_worse_adjustments {
  my ($config,$state,$picture,$arrays,$picture_mode,$steps,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta)=@_;
  return ($picture,"Post-cal revert requires LG 26pt steps") if(ref($steps) ne "ARRAY" || !@{$steps});
@@ -14461,27 +14270,6 @@ sub post_cal_series_adjustment {
 	  $rgb_adjustments=post_cal_series_mark_response_table_adjustments($rgb_adjustments) if($rgb_adjustments);
 	  my $adjustments=post_cal_series_merge_adjustments($luma_adjustments,$rgb_adjustments);
   next if(ref($adjustments) ne "ARRAY" || !@{$adjustments});
-  my $low_shadow_5_probe;
-  if(ref($read_step) eq "HASH" && defined($read_step->{"ire"}) && abs(($read_step->{"ire"}+0)-5) < 0.001) {
-   my $candidate_arrays=clone_arrays($arrays);
-   foreach my $adj (@{$adjustments}) {
-    next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
-    next if(ref($candidate_arrays->{$adj->{"setting"}}) ne "ARRAY");
-    $candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
-   }
-   my ($probe_picture,$probe_accepted,$probe_summary,$probe_error)=post_cal_series_probe_5_candidate(
-   $config,$state,$picture,$arrays,$candidate_arrays,$target,$picture_mode,$steps,
-    $white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,\@evaluated,$readings,$adjustments,$read_step
-   );
-   $picture=$probe_picture if(ref($probe_picture) eq "HASH");
-   return ($picture,$probe_error) if($probe_error);
-   $low_shadow_5_probe=$probe_summary if(ref($probe_summary) eq "HASH");
-   if(!$probe_accepted) {
-    $evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_5_probe_rejected" if(@evaluated);
-    $evaluated[-1]{"low_shadow_5_probe"}=$low_shadow_5_probe if(@evaluated && ref($low_shadow_5_probe) eq "HASH");
-    next;
-   }
-  }
   foreach my $adj (@{$adjustments}) {
    next if(ref($adj) ne "HASH" || !defined($adj->{"setting"}));
    next if(ref($arrays->{$adj->{"setting"}}) ne "ARRAY");
@@ -14500,7 +14288,6 @@ sub post_cal_series_adjustment {
 		   pair_worst_before_delta_e=>defined($legal_white_pair_worst_de) && $shared_legal_white_pair ? $legal_white_pair_worst_de+0 : undef,
 		   legal_white_drives_adjustment=>$legal_white_drives_adjustment?JSON::PP::true:undef,
 		   adjustments=>trace_adjustments_summary($adjustments),
-		   low_shadow_5_probe=>ref($low_shadow_5_probe) eq "HASH" ? $low_shadow_5_probe : undef,
 		   target_index=>$target->{"index"}+0,
 		   ddc_ire=>$target->{"ire"},
 	   values_before=>trace_target_values($pre_adjust_arrays,$target),
@@ -14516,7 +14303,6 @@ sub post_cal_series_adjustment {
 	   legal_white_luminance_error_pct=>defined($legal_white_lum_pct) && $shared_legal_white_pair ? $legal_white_lum_pct+0 : undef,
 	   legal_white_drives_adjustment=>$legal_white_drives_adjustment?JSON::PP::true:JSON::PP::false,
 	   adjustments=>trace_adjustments_summary($adjustments),
-	   low_shadow_5_probe=>ref($low_shadow_5_probe) eq "HASH" ? $low_shadow_5_probe : undef,
 	   values_after=>trace_target_values($arrays,$target),
 	  });
  }
