@@ -171,7 +171,9 @@ sanitize_pi5_display_config () {
 rc_PGenerator_start () { 
  PROJECT="RPI3"
  MODEL=$(cat /proc/device-tree/model)
- if [[ $MODEL =~ "Pi 2" ]];then
+ if [[ $MODEL =~ "Raspberry Pi 5" ]];then
+  PROJECT="RPI5"
+ elif [[ $MODEL =~ "Pi 2" ]];then
   PROJECT="RPI2"
  fi
  # Start Patch for RPI 3 Model B Plus to fix bluetooth mac address 
@@ -330,7 +332,7 @@ rc_PGenerator_start () {
   fi
 
   # START RPI2 wifi
-  if [ $PROJECT == "RPI2" ];then
+  if [ "$PROJECT" == "RPI2" ];then
    if ifconfig ap0 &>/dev/null; then
     ifconfig ap0 $AP_NET".1" netmask 255.255.255.0
     ifconfig wlan0 0 0
@@ -347,10 +349,12 @@ rc_PGenerator_start () {
   fi
   # END RPI2 wifi
  
-  if [ $PROJECT == "RPI3" ];then
+  if [ "$PROJECT" == "RPI3" ];then
    # start for bluetooth
    #btattach -B /dev/ttyAMA0 -P bcm -S 921600 &
-   hciattach /dev/ttyAMA0 bcm43xx 921600 flow - $BT_MACADDRESS
+   if [ -c /dev/ttyAMA0 ] && printf '%s\n' "$BT_MACADDRESS" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'; then
+    timeout 5 hciattach /dev/ttyAMA0 bcm43xx 921600 flow - "$BT_MACADDRESS" || true
+   fi
    # end for bluetooth
  
    # Ensure wpa_supplicant control socket is accessible by pgenerator user
