@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 
 const source = fs.readFileSync('usr/share/PGenerator/webui.pm', 'utf8');
+const workerSource = fs.readFileSync('usr/bin/meter_lg_autocal.pl', 'utf8');
 
 function sliceFunction(name) {
   const token = `async function ${name}(`;
@@ -39,13 +40,22 @@ const levelIdx = disclaimer.indexOf('meterAutoCalLevelPreflight=await meterAutoC
 const setupIdx = disclaimer.indexOf('const setupReading=await meterAutoCalLuminanceSetupLoop(whiteStep);');
 const skipIdx = disclaimer.indexOf('meterAutoCalLevelPreflight={skipped:true};');
 
-assert(levelIdx >= 0, 'SDR greyscale AutoCal should run the black/white level preflight after reset');
-assert(setupIdx > levelIdx, 'Level preflight should finish before the live 100% luminance setup starts');
-assert(skipIdx > setupIdx, 'Only the non-luminance setup path should mark level preflight skipped');
+assert(levelIdx < 0, 'The AutoCal wizard should not run the black/white brightness clipping preflight');
+assert(setupIdx >= 0, 'The AutoCal wizard should still run the live 100% luminance setup');
+assert(skipIdx >= 0 && skipIdx < setupIdx, 'Wizard preflight should be marked skipped before 100% setup starts');
 
 assert(
-  !disclaimer.includes('Auto Cal must not change those TV picture controls implicitly'),
-  'Greyscale AutoCal should not carry the old forced-skip comment'
+  source.includes('async function meterAutoCalRunLevelPreflight()'),
+  'The level-preflight helper can remain available without being part of the wizard'
 );
 
-console.log('LG AutoCal level-preflight regression checks passed.');
+const workerInitialBlack = workerSource.indexOf('"Reading initial 0% black reference for target curve"');
+const workerOrderedLoop = workerSource.indexOf('foreach my $step (@ordered)', workerInitialBlack);
+assert(workerInitialBlack >= 0, 'LG26 worker should read an initial 0% black reference');
+assert(workerOrderedLoop > workerInitialBlack, 'Initial 0% black reference should run before ordered AutoCal calibration');
+assert(
+  /my\s+\@lg_autocal_26_order\s*=\s*\(\s*109\s*,/.test(workerSource),
+  'LG26 ordered calibration should still start at 109 after the initial black reference'
+);
+
+console.log('LG AutoCal picture-reset and initial-black regression checks passed.');
