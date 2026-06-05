@@ -1221,6 +1221,13 @@ sub lg_picture_delete_settings_reset (@) {
  return (@deleted_keys ? 1 : 0,\@deleted_keys,\@attempts);
 }
 
+sub lg_picture_reset_ddc_baseline_ok (@) {
+ my ($ddc_attempted,$ddc_result)=@_;
+ return 0 if(!$ddc_attempted || ref($ddc_result) ne "HASH");
+ return 0 if(($ddc_result->{"status"}||"") ne "ok");
+ return ($ddc_result->{"ddc_baseline_reset"} && $ddc_result->{"ddc_reset_verified"}) ? 1 : 0;
+}
+
 sub lg_picture_reset_workflow (@) {
  my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset)=@_;
  $tv_input="" if(!defined($tv_input));
@@ -1594,8 +1601,9 @@ sub lg_picture_reset_workflow (@) {
 	  });
 	 }
 	 my $white_balance_reset_warning="";
+	 my $white_balance_reset_satisfied_by_ddc=&lg_picture_reset_ddc_baseline_ok($ddc_attempted,$ddc_result);
 	 if($require_white_balance_reset && (!$white_balance_reset_ok || !@white_balance_reset_keys_succeeded)) {
-	  if(!$generation->{"ddc_only_white_balance"}) {
+	  if(!$generation->{"ddc_only_white_balance"} && !$white_balance_reset_satisfied_by_ddc) {
 	   return &json_error("LG picture mode reset did not clear white-balance settings. The TV rejected the manual white-balance reset keys.",{
 		    ip => $ip,
 		    active_picture_mode => $active_picture_mode,
@@ -1617,7 +1625,9 @@ sub lg_picture_reset_workflow (@) {
 		    lg_generation => $generation,
 	   });
 	  }
-	  $white_balance_reset_warning="LG user-menu white-balance reset keys were rejected by this DDC-only TV; DDC calibration state was reset instead.";
+	  $white_balance_reset_warning=$white_balance_reset_satisfied_by_ddc
+	   ? "LG user-menu white-balance reset keys were rejected; verified LG DDC baseline reset was used instead."
+	   : "LG user-menu white-balance reset keys were rejected by this DDC-only TV; DDC calibration state was reset instead.";
 	 }
  return &json_ok({
   ip => $ip,
@@ -1640,6 +1650,7 @@ sub lg_picture_reset_workflow (@) {
 		  panel_light_reset_ok => &json_bool($panel_reset_ok),
 		  require_white_balance_reset => &json_bool($require_white_balance_reset),
 		  white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+		  white_balance_reset_satisfied_by_ddc => &json_bool($white_balance_reset_satisfied_by_ddc),
 		  white_balance_reset_warning => $white_balance_reset_warning,
 		  white_balance_reset_keys_requested => $white_balance_reset_keys,
 		  white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
