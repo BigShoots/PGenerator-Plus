@@ -13898,6 +13898,34 @@ sub post_cal_series_low_shadow_points_from_evaluated {
  return \%points;
 }
 
+sub post_cal_series_low_shadow_points_from_readings {
+ my ($readings,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$config,$state)=@_;
+ my %points;
+ return \%points if(ref($readings) ne "ARRAY" || ref($steps) ne "ARRAY");
+ foreach my $wanted (3,4,5,7) {
+  my $step;
+  foreach my $candidate (@{$steps}) {
+   next if(ref($candidate) ne "HASH" || !defined($candidate->{"ire"}));
+   if(abs(($candidate->{"ire"}+0)-$wanted) < 0.001) { $step=$candidate; last; }
+  }
+  next if(ref($step) ne "HASH");
+  my $read_step=fixed_lg_autocal_step($config,clone_picture($step));
+  my $reading=post_cal_series_reading_for_step($readings,$read_step);
+  next if(ref($reading) ne "HASH" || $reading->{"error"});
+  my $target_step_y=effective_target_luminance_for_autocal_reading($white_y,$read_step,$reading,$target_gamma,$signal_mode,$config,$state);
+  annotate_reading_target($reading,$white_y,$target_step_y,$target_x,$target_y);
+  my $de=autocal_delta_e_for_step($config,$reading,$read_step,$white_y,$target_x,$target_y,$target_step_y);
+  my $lum_pct=luminance_error_percent($reading,$target_step_y);
+  $points{$wanted+0}={
+   delta_e=>defined($de) ? $de+0 : undef,
+   luminance_error_pct=>defined($lum_pct) ? $lum_pct+0 : undef,
+   target_luminance=>defined($target_step_y) ? $target_step_y+0 : undef,
+   reading=>trace_reading_summary($reading)
+  };
+ }
+ return \%points;
+}
+
 sub post_cal_series_low_shadow_candidate_read {
  my ($config,$state,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$tag)=@_;
  my %points;
@@ -13945,10 +13973,13 @@ sub post_cal_series_low_shadow_candidate_read {
 }
 
 sub post_cal_series_probe_5_candidate {
- my ($config,$state,$picture,$base_arrays,$candidate_arrays,$target,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$evaluated,$adjustments,$read_step)=@_;
+ my ($config,$state,$picture,$base_arrays,$candidate_arrays,$target,$picture_mode,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,$evaluated,$readings,$adjustments,$read_step)=@_;
  return ($picture,1,undef,undef) if(ref($read_step) ne "HASH" || !defined($read_step->{"ire"}) || abs(($read_step->{"ire"}+0)-5) >= 0.001);
  return ($picture,1,undef,undef) if(ref($base_arrays) ne "HASH" || ref($candidate_arrays) ne "HASH" || ref($target) ne "HASH");
  my $before_points=post_cal_series_low_shadow_points_from_evaluated($evaluated);
+ if(ref(post_cal_series_low_shadow_group_score($before_points)) ne "HASH" || post_cal_series_low_shadow_group_score($before_points)->{"count"} < 4) {
+  $before_points=post_cal_series_low_shadow_points_from_readings($readings,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$config,$state);
+ }
  my $before_score=post_cal_series_low_shadow_group_score($before_points);
  return ($picture,1,undef,undef) if(ref($before_score) ne "HASH" || $before_score->{"count"} < 4);
  trace_109($read_step,"post_cal_series_low_shadow_5_probe_start",{
@@ -14439,8 +14470,8 @@ sub post_cal_series_adjustment {
     $candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};
    }
    my ($probe_picture,$probe_accepted,$probe_summary,$probe_error)=post_cal_series_probe_5_candidate(
-    $config,$state,$picture,$arrays,$candidate_arrays,$target,$picture_mode,$steps,
-    $white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,\@evaluated,$adjustments,$read_step
+   $config,$state,$picture,$arrays,$candidate_arrays,$target,$picture_mode,$steps,
+    $white_y,$target_x,$target_y,$target_gamma,$signal_mode,$target_delta,\@evaluated,$readings,$adjustments,$read_step
    );
    $picture=$probe_picture if(ref($probe_picture) eq "HASH");
    return ($picture,$probe_error) if($probe_error);
