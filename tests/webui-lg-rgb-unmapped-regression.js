@@ -18,8 +18,11 @@ const targetSource = sliceBetween(
 assert(
   targetSource.includes('const allowSeriesRunning=!!(opts&&opts.allow_series_running);') &&
     targetSource.includes('(!allowSeriesRunning&&meterSeriesRunning)') &&
+    targetSource.includes("if(Math.abs(ire)<0.001) return {read_only:true,key:'readonly:0',method:'readonly',ire:'0',index:null,label:'0%'};") &&
+    targetSource.includes('function meterGreyTvTargetAdjustable(target)') &&
+    targetSource.includes('return !!(target&&!target.unsupported&&!target.read_only);') &&
     targetSource.includes("return {unsupported:true,key:'unsupported:'+meterFormatPercentValue(ire),reason:reason};"),
-  'LG RGB target lookup should stay disabled during series except for explicit read-only live rendering'
+  'LG RGB target lookup should keep 0% renderable as read-only while disabling normal lookup during series'
 );
 
 const renderSource = sliceBetween(
@@ -33,8 +36,34 @@ assert(
     renderSource.includes("&&!seriesReadOnly") &&
     renderSource.includes('const selected=seriesReadOnly?null:meterGreyTvSelectedValues(state);') &&
     renderSource.includes('seriesReadOnly ||') &&
+    renderSource.includes('(target&&target.read_only) ||') &&
     renderSource.includes("if(seriesReadOnly) meta.textContent='LG '+target.label+' read-only';"),
-  'LG RGB panel should render read-only live RGB bars from the current greyscale series reading'
+  'LG RGB panel should render read-only live RGB bars from the current greyscale series reading and from 0% read-only targets'
+);
+
+const syncSource = sliceBetween(
+  'async function meterLgGreySyncForCurrentStep(forceRefresh)',
+  'async function meterGreyAdjustCurrentStepChannel'
+);
+assert(
+  syncSource.includes('if(!target||target.unsupported||target.read_only)'),
+  '0% read-only targets should render locally without fetching LG DDC readback'
+);
+
+const writeSource = sliceBetween(
+  'async function meterGreyAdjustCurrentStepChannel(channel,deltaStep)',
+  'function meterGreyTvApplyInput(channel,button)'
+);
+assert(
+  writeSource.includes('if(!meterGreyTvTargetAdjustable(target))') &&
+    writeSource.includes('Select an LG-adjustable greyscale point before changing white balance.'),
+  'manual LG RGB writes should reject read-only targets such as 0%'
+);
+
+assert(
+  (source.match(/meterSeriesSteps\.filter\(step=>meterGreyTvTargetAdjustable\(meterGreyTvTarget\(step\)\)\)/g) || []).length >= 5 &&
+    !source.includes('meterSeriesSteps.filter(step=>meterGreyTvTarget(step)&&!meterGreyTvTarget(step).unsupported)'),
+  'AutoCal adjustable step lists should exclude read-only 0% targets'
 );
 
 const pollSource = sliceBetween(
