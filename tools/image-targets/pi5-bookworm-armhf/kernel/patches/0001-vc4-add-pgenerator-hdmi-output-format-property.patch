@@ -1,0 +1,302 @@
+diff --git a/drivers/gpu/drm/vc4/vc4_hdmi.c b/drivers/gpu/drm/vc4/vc4_hdmi.c
+index 206ecf4..61b6cde 100644
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -385,6 +385,196 @@ static int vc4_hdmi_reset_link(struct drm_connector *connector,
+ 	return reset_pipe(crtc, ctx);
+ }
+ 
++static enum drm_mode_status
++vc4_hdmi_connector_clock_valid(const struct drm_connector *connector,
++			       const struct drm_display_mode *mode,
++			       unsigned long long clock);
++
++enum vc4_hdmi_pgenerator_output_format {
++	VC4_HDMI_PGENERATOR_OUTPUT_RGB444 = 0,
++	VC4_HDMI_PGENERATOR_OUTPUT_YCBCR444 = 1,
++	VC4_HDMI_PGENERATOR_OUTPUT_YCBCR422 = 2,
++};
++
++static const struct drm_prop_enum_list vc4_hdmi_output_format_enum_list[] = {
++	{ VC4_HDMI_PGENERATOR_OUTPUT_RGB444, "RGB444" },
++	{ VC4_HDMI_PGENERATOR_OUTPUT_YCBCR444, "YCBCR444" },
++	{ VC4_HDMI_PGENERATOR_OUTPUT_YCBCR422, "YCBCR422" },
++};
++
++static enum hdmi_colorspace
++vc4_hdmi_pgenerator_output_to_colorspace(unsigned int output_format)
++{
++	switch (output_format) {
++	case VC4_HDMI_PGENERATOR_OUTPUT_YCBCR444:
++		return HDMI_COLORSPACE_YUV444;
++	case VC4_HDMI_PGENERATOR_OUTPUT_YCBCR422:
++		return HDMI_COLORSPACE_YUV422;
++	case VC4_HDMI_PGENERATOR_OUTPUT_RGB444:
++	default:
++		return HDMI_COLORSPACE_RGB;
++	}
++}
++
++static unsigned int
++vc4_hdmi_colorspace_to_pgenerator_output(enum hdmi_colorspace colorspace)
++{
++	switch (colorspace) {
++	case HDMI_COLORSPACE_YUV444:
++		return VC4_HDMI_PGENERATOR_OUTPUT_YCBCR444;
++	case HDMI_COLORSPACE_YUV422:
++		return VC4_HDMI_PGENERATOR_OUTPUT_YCBCR422;
++	case HDMI_COLORSPACE_RGB:
++	default:
++		return VC4_HDMI_PGENERATOR_OUTPUT_RGB444;
++	}
++}
++
++static bool
++vc4_hdmi_sink_supports_output_format(const struct drm_connector *connector,
++				     const struct drm_display_mode *mode,
++				     enum hdmi_colorspace output_format,
++				     unsigned int bpc)
++{
++	const struct drm_display_info *info = &connector->display_info;
++	u8 vic = drm_match_cea_mode(mode);
++
++	if (vic == 1 && bpc != 8)
++		return false;
++
++	if (!info->is_hdmi &&
++	    (output_format != HDMI_COLORSPACE_RGB || bpc != 8))
++		return false;
++
++	switch (output_format) {
++	case HDMI_COLORSPACE_RGB:
++		if (bpc == 10 &&
++		    !(info->edid_hdmi_rgb444_dc_modes & DRM_EDID_HDMI_DC_30))
++			return false;
++		if (bpc == 12 &&
++		    !(info->edid_hdmi_rgb444_dc_modes & DRM_EDID_HDMI_DC_36))
++			return false;
++
++		return true;
++
++	case HDMI_COLORSPACE_YUV444:
++		if (!(info->color_formats & DRM_COLOR_FORMAT_YCRCB444))
++			return false;
++		if (bpc == 10 &&
++		    !(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_30))
++			return false;
++		if (bpc == 12 &&
++		    !(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_36))
++			return false;
++
++		return true;
++
++	case HDMI_COLORSPACE_YUV422:
++		if (!(info->color_formats & DRM_COLOR_FORMAT_YCRCB422))
++			return false;
++		if (bpc > 12)
++			return false;
++
++		return true;
++
++	default:
++		return false;
++	}
++}
++
++static int
++vc4_hdmi_generate_forced_avi_infoframe(struct drm_connector *connector,
++				       struct drm_connector_state *conn_state,
++				       const struct drm_display_mode *mode)
++{
++	struct drm_connector_hdmi_infoframe *infoframe =
++		&conn_state->hdmi.infoframes.avi;
++	struct hdmi_avi_infoframe *frame = &infoframe->data.avi;
++	enum hdmi_quantization_range rgb_quant_range =
++		conn_state->hdmi.is_limited_range ?
++		HDMI_QUANTIZATION_RANGE_LIMITED :
++		HDMI_QUANTIZATION_RANGE_FULL;
++	int ret;
++
++	infoframe->set = false;
++
++	ret = drm_hdmi_avi_infoframe_from_display_mode(frame, connector, mode);
++	if (ret)
++		return ret;
++
++	frame->colorspace = conn_state->hdmi.output_format;
++	drm_hdmi_avi_infoframe_quant_range(frame, connector, mode,
++					   rgb_quant_range);
++	drm_hdmi_avi_infoframe_colorimetry(frame, conn_state);
++	drm_hdmi_avi_infoframe_bars(frame, conn_state);
++
++	infoframe->set = true;
++
++	return 0;
++}
++
++static int
++vc4_hdmi_force_output_format(struct drm_connector *connector,
++			     struct drm_atomic_state *state,
++			     enum hdmi_colorspace requested_output_format)
++{
++	struct drm_connector_state *old_state =
++		drm_atomic_get_old_connector_state(state, connector);
++	struct drm_connector_state *new_state =
++		drm_atomic_get_new_connector_state(state, connector);
++	struct drm_crtc *crtc = new_state->crtc;
++	struct drm_crtc_state *crtc_state;
++	const struct drm_display_mode *mode;
++	unsigned long long tmds_char_rate;
++	enum drm_mode_status mode_status;
++	int ret;
++
++	if (new_state->hdmi.output_format == requested_output_format)
++		return 0;
++
++	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
++	if (!crtc_state)
++		return -EINVAL;
++
++	mode = &crtc_state->mode;
++
++	if (!vc4_hdmi_sink_supports_output_format(connector, mode,
++						  requested_output_format,
++						  new_state->hdmi.output_bpc))
++		return -EINVAL;
++
++	tmds_char_rate = drm_hdmi_compute_mode_clock(mode,
++						     new_state->hdmi.output_bpc,
++						     requested_output_format);
++	if (!tmds_char_rate)
++		return -EINVAL;
++
++	mode_status = vc4_hdmi_connector_clock_valid(connector, mode,
++						    tmds_char_rate);
++	if (mode_status != MODE_OK)
++		return -EINVAL;
++
++	new_state->hdmi.output_format = requested_output_format;
++	new_state->hdmi.tmds_char_rate = tmds_char_rate;
++	if (requested_output_format != HDMI_COLORSPACE_RGB)
++		new_state->hdmi.is_limited_range = true;
++
++	ret = vc4_hdmi_generate_forced_avi_infoframe(connector, new_state,
++						    mode);
++	if (ret)
++		return ret;
++
++	if (old_state->hdmi.output_format != new_state->hdmi.output_format) {
++		crtc_state = drm_atomic_get_crtc_state(state, crtc);
++		if (IS_ERR(crtc_state))
++			return PTR_ERR(crtc_state);
++
++		crtc_state->mode_changed = true;
++	}
++
++	return 0;
++}
++
+ static void vc4_hdmi_handle_hotplug(struct vc4_hdmi *vc4_hdmi,
+ 				    struct drm_modeset_acquire_ctx *ctx,
+ 				    enum drm_connector_status status)
+@@ -540,6 +730,8 @@ static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
+ 	struct drm_connector_state *new_state =
+ 		drm_atomic_get_new_connector_state(state, connector);
+ 	struct drm_crtc *crtc = new_state->crtc;
++	enum hdmi_colorspace requested_output_format =
++		new_state->hdmi.output_format;
+ 
+ 	if (!crtc)
+ 		return 0;
+@@ -580,7 +772,9 @@ static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
+ 		crtc_state->mode_changed = true;
+ 	}
+ 
+-	return drm_atomic_helper_connector_hdmi_check(connector, state);
++	return drm_atomic_helper_connector_hdmi_check(connector, state) ?:
++		vc4_hdmi_force_output_format(connector, state,
++					     requested_output_format);
+ }
+ 
+ static void vc4_hdmi_connector_reset(struct drm_connector *connector)
+@@ -590,11 +784,45 @@ static void vc4_hdmi_connector_reset(struct drm_connector *connector)
+ 	drm_atomic_helper_connector_tv_margins_reset(connector);
+ }
+ 
++static int vc4_hdmi_connector_set_property(struct drm_connector *connector,
++					   struct drm_connector_state *state,
++					   struct drm_property *property,
++					   uint64_t val)
++{
++	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
++
++	if (property != vc4_hdmi->output_format_property)
++		return -EINVAL;
++
++	state->hdmi.output_format =
++		vc4_hdmi_pgenerator_output_to_colorspace(val);
++
++	return 0;
++}
++
++static int vc4_hdmi_connector_get_property(struct drm_connector *connector,
++					   const struct drm_connector_state *state,
++					   struct drm_property *property,
++					   uint64_t *val)
++{
++	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
++
++	if (property != vc4_hdmi->output_format_property)
++		return -EINVAL;
++
++	*val = vc4_hdmi_colorspace_to_pgenerator_output(
++		state->hdmi.output_format);
++
++	return 0;
++}
++
+ static const struct drm_connector_funcs vc4_hdmi_connector_funcs = {
+ 	.fill_modes = drm_helper_probe_single_connector_modes,
+ 	.reset = vc4_hdmi_connector_reset,
+ 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
+ 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++	.atomic_get_property = vc4_hdmi_connector_get_property,
++	.atomic_set_property = vc4_hdmi_connector_set_property,
+ };
+ 
+ static const struct drm_connector_helper_funcs vc4_hdmi_connector_helper_funcs = {
+@@ -661,6 +889,17 @@ static int vc4_hdmi_connector_init(struct drm_device *dev,
+ 	if (ret)
+ 		return ret;
+ 
++	vc4_hdmi->output_format_property =
++		drm_property_create_enum(dev, DRM_MODE_PROP_ATOMIC,
++					 "output format",
++					 vc4_hdmi_output_format_enum_list,
++					 ARRAY_SIZE(vc4_hdmi_output_format_enum_list));
++	if (!vc4_hdmi->output_format_property)
++		return -ENOMEM;
++	drm_object_attach_property(&connector->base,
++				   vc4_hdmi->output_format_property,
++				   VC4_HDMI_PGENERATOR_OUTPUT_RGB444);
++
+ 	drm_connector_attach_encoder(connector, encoder);
+ 
+ 	return 0;
+diff --git a/drivers/gpu/drm/vc4/vc4_hdmi.h b/drivers/gpu/drm/vc4/vc4_hdmi.h
+index fb13f35..ad72f00 100644
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -220,6 +220,12 @@ struct vc4_hdmi {
+ 	 */
+ 	enum hdmi_colorspace output_format;
+ 
++	/**
++	 * @output_format_property: PGenerator legacy HDMI output format
++	 * connector property. Values are 0=RGB444, 1=YCbCr444, 2=YCbCr422.
++	 */
++	struct drm_property *output_format_property;
++
+ 	/**
+ 	 * @plugged_cb: Callback provided by hdmi-codec to indicate that an
+ 	 * HDMI hotplug occurred and jack state should be updated. Protected by
