@@ -64,9 +64,9 @@ vm.createContext(context);
 vm.runInContext([
   `
     var meterSeriesSteps = [
+      { ire: 100, stimulus: 100, name: '100% legal white', autocal_white_reference: true, autocal_reference_only: true, autocal_legal_white_anchor: true, ddc_target_ire: 99 },
       { ire: 95, stimulus: 94.977, name: '95%' },
-      { ire: 99, stimulus: 99.087, name: '99%' },
-      { ire: 100, stimulus: 100, name: '100%', autocal_white_reference: true, autocal_reference_only: true }
+      { ire: 99, stimulus: 99.087, name: '99%', series_mode: 'lg-autocal-26' }
     ];
     var meterActiveSeriesType = 'greyscale';
     var meterActiveSeriesPoints = 26;
@@ -96,6 +96,10 @@ vm.runInContext([
       if (step.ire != null) reading.ire = step.ire;
       if (step.name != null) reading.name = step.name;
       if (step.stimulus != null) reading.stimulus = step.stimulus;
+      if (step.series_mode != null) reading.series_mode = step.series_mode;
+      if (step.autocal_white_reference != null) reading.autocal_white_reference = step.autocal_white_reference;
+      if (step.autocal_reference_only != null) reading.autocal_reference_only = step.autocal_reference_only;
+      if (step.autocal_legal_white_anchor != null) reading.autocal_legal_white_anchor = step.autocal_legal_white_anchor;
       return reading;
     }
     function meterNormalizeMeasuredReading(reading){
@@ -152,6 +156,7 @@ vm.runInContext([
     const chartReadings = meterAutoCalStatusChartReadings(status);
     globalThis.chartReadings = chartReadings;
     globalThis.reading99 = chartReadings.find(reading => Number(reading.ire) === 99);
+    globalThis.bestKnown99ForChart = meterAutoCalBestKnownReadings(status).find(reading => Number(reading.ire) === 99);
     globalThis.reading95 = chartReadings.find(reading => Number(reading.ire) === 95);
     globalThis.filteredAutoCalChartItems = meterFilterLgAutoCalChartItems([
       { ire: 99, name: '99% pre-shape', luminance: 149, autocal_diagnostic: true, autocal_chart_hidden: true, autocal_read_role: 'top_cluster_preshape' },
@@ -181,6 +186,8 @@ vm.runInContext([
 ].join('\n'), context);
 
 assert.strictEqual(context.reading99.request_id, 'current-autocal-99', 'AutoCal chart should prefer current best-known direct 99 over stale series/status 99');
+assert.strictEqual(context.bestKnown99ForChart.name, '99%', 'Best-known 99 should match the actual 99 step, not the 100% legal-white DDC alias');
+assert.strictEqual(context.bestKnown99ForChart.autocal_reference_only, undefined, 'Best-known 99 should not inherit reference-only metadata from the 100% legal-white alias');
 assert.strictEqual(context.reading99.best_known_delta_e, 0.2478727, 'best-known direct 99 delta should remain attached for status/report context');
 assert.strictEqual(context.reading99.best_known_reached_target, true, 'direct 99 reached/good status should remain available');
 assert.strictEqual(context.reading99.legal_white_validation_status, 'diagnostic_only_failed', 'legal-white diagnostic status should remain recorded separately');
