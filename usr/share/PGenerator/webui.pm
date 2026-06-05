@@ -19504,8 +19504,8 @@ function meterAutoCalShowPreflightOptions(){
  const targetRow=document.getElementById('meterAutoCalTargetRow');
  const summary=document.getElementById('meterAutoCalConfirmSummary');
  if(description) description.textContent=needsLuminanceSetup
-  ? 'Choose whether Magic Wand should run after the greyscale Auto Cal. This choice will be carried through reset, luminance setup, and the final Auto Cal payload.'
-  : 'Choose whether Magic Wand should run after the greyscale Auto Cal. HDR uses the calibrated 100% point as its peak reference, so no SDR luminance setup is required.';
+	  ? 'Choose whether the experimental Magic Wand feature should run after the greyscale Auto Cal. This choice will be carried through reset, luminance setup, and the final Auto Cal payload.'
+	  : 'Choose whether the experimental Magic Wand feature should run after the greyscale Auto Cal. HDR uses the calibrated 100% point as its peak reference, so no SDR luminance setup is required.';
  if(targetRow) targetRow.style.display='none';
  if(summary) summary.textContent=needsLuminanceSetup?'The picture mode reset and 100% luminance setup will follow.':'The picture mode reset will follow.';
  meterAutoCalSetOverlay(true,{phase:'options',current_name:'Greyscale Auto Cal options',message:'Choose post-cal cleanup before reset.'});
