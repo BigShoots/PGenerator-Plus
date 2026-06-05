@@ -736,7 +736,7 @@ configure_pi5_display_defaults() {
  [[ -f "$conf" ]] || die "Pi 5 rootfs is missing /etc/PGenerator/PGenerator.conf"
 
  log "Applying Raspberry Pi 5 safe display defaults"
- ensure_config_line "$conf" "mode_idx" ""
+ ensure_config_line "$conf" "mode_idx" "-1"
  ensure_config_line "$conf" "signal_mode" "sdr"
  ensure_config_line "$conf" "is_sdr" "1"
  ensure_config_line "$conf" "is_hdr" "0"

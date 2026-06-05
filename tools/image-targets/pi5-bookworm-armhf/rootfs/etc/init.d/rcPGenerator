@@ -93,8 +93,9 @@ sanitize_pi5_display_config () {
  [ -f "$conf" ] || return
 
  # Bookworm/modetest mode IDs are sink-dependent; a persisted Pi4-style index
- # can select the wrong mode on Pi5. Let KMS keep or choose the active mode.
- pgen_conf_set mode_idx ""
+ # can select the wrong mode on Pi5. -1 is the renderer's safe "current/default"
+ # sentinel, so boot never indexes an incompatible persisted mode.
+ pgen_conf_set mode_idx -1
 
  local mt
  mt="$(timeout 5 /usr/bin/modetest -M vc4 -c 2>/dev/null || true)"
