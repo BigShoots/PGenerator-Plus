@@ -33,15 +33,26 @@ assert(
 );
 
 const readOnlyPanel = sliceBetween(
+  'function meterGreyscaleRgbPanelReading(reading)',
+  'function meterRenderGreyTvControls(reading)'
+);
+assert(
+  readOnlyPanel.includes('const current=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;') &&
+    readOnlyPanel.includes('for(let i=meterReadings.length-1;i>=0;i--)') &&
+    readOnlyPanel.includes('const panelReading=meterGreyscaleRgbPanelReading(reading);') &&
+    readOnlyPanel.includes('const liveRgb=panelReading?meterLiveRgbData(panelReading):null;'),
+  'Disconnected greyscale RGB bars should fall back to the current or latest measured greyscale reading'
+);
+
+const readOnlyWidget = sliceBetween(
   'function meterRenderGreyRgbReadOnly(reading)',
   'function meterRenderGreyTvControls(reading)'
 );
 assert(
-  readOnlyPanel.includes('const liveRgb=reading?meterLiveRgbData(reading):null;') &&
-    (readOnlyPanel.match(/meterGreyTvColumnHtml\('[rgb]','[RGB]'/g) || []).length === 3 &&
-    (readOnlyPanel.match(/halfRange,true,true\)/g) || []).length === 3 &&
-    readOnlyPanel.includes("host.innerHTML='<div class=\"meter-lg-rgb-host meter-lg-rgb-readonly-host\">'") &&
-    readOnlyPanel.includes("meta.style.display='none';"),
+  (readOnlyWidget.match(/meterGreyTvColumnHtml\('[rgb]','[RGB]'/g) || []).length === 3 &&
+    (readOnlyWidget.match(/halfRange,true,true\)/g) || []).length === 3 &&
+    readOnlyWidget.includes("host.innerHTML='<div class=\"meter-lg-rgb-host meter-lg-rgb-readonly-host\">'") &&
+    readOnlyWidget.includes("meta.style.display='none';"),
   'Disconnected greyscale should render the same glowing RGB bars in read-only mode with no controls or picture-mode footer'
 );
 
