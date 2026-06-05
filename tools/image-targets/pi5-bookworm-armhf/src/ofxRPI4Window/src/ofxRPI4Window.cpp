@@ -25,6 +25,11 @@ static uint64_t pi5_broadcast_rgb_from_rgb_quant_range(uint64_t rgb_quant_range)
 	}
 }
 
+static bool pi5_avi_infoframe_uses_ycbcr(const avi_infoframe &avi_infoframe)
+{
+	return avi_infoframe.output_format != 0;
+}
+
 static const char *drm_enum_name(drmModePropertyPtr prop, uint64_t value)
 {
 	if (!prop)
@@ -811,19 +816,31 @@ ofxRPI4Window::drm_mode_atomic_set_property(int drm_fd, drmModeAtomicReq *freq, 
 	drmModeFreeProperty(prop);
 
 	if (last_req) {
-		success = drmModeAtomicCommit(drm_fd, req, flags, NULL);
-		if (success < 0) {
-			ofLogError() << "DRM: atomic commit failed " << strerror(errno);
-		} else {
-			ofLog() << "DRM: atomic commit successful";
-		}  
-
-		
-		drmModeAtomicFree(req);	
-			req = nullptr;
-		last_req = 0;
+		drm_mode_atomic_commit(drm_fd, flags);
 	}
 };
+
+void
+ofxRPI4Window::drm_mode_atomic_commit(int drm_fd, uint32_t flags)
+{
+	if (!req) {
+		first_req = 0;
+		last_req = 0;
+		return;
+	}
+
+	int success = drmModeAtomicCommit(drm_fd, req, flags, NULL);
+	if (success < 0) {
+		ofLogError() << "DRM: atomic commit failed " << strerror(errno);
+	} else {
+		ofLog() << "DRM: atomic commit successful";
+	}
+
+	drmModeAtomicFree(req);
+	req = nullptr;
+	first_req = 0;
+	last_req = 0;
+}
 
 bool  
 ofxRPI4Window::drm_mode_get_property(int drm_fd, uint32_t object_id, uint32_t object_type,
@@ -1539,7 +1556,7 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 		if (isHDR && !isDoVi && !is_std_DoVi) {
 			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
 				ofLog() << "DRM: setting up HDR(10 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 				HDRWindowSetup();
 			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
 				ofLog() << "DRM: setting up HDR(12 bit) window/surface"; 
@@ -1565,7 +1582,7 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
 				ofLog() << "DRM: setting up Low Latency DoVi(10 bit) window/surface"; 
 
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 				HDRWindowSetup();
 			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
 				ofLog() << "DRM: setting up Low Latency DoVi(12 bit) window/surface"; 
@@ -1583,7 +1600,7 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 
 			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
 				ofLog() << "DRM: setting up HDR(10 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 				HDRWindowSetup();
 			} else if ((bit_depth >=8) && (bit_depth <= 12)  && (avi_info.max_bpc == 12)) {
 				ofLog() << "DRM: setting up HDR(12 bit) window/surface"; 
@@ -1597,7 +1614,7 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 		} else if (isHDR && isDoVi && is_std_DoVi) {
 			if (bit_depth == 10 && avi_info.max_bpc == 10) {
 				ofLog() << "DRM: setting up Standard DoVi(10 bit) window/surface";
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 				HDRWindowSetup();
 			} else {
 			    ofLog() << "DRM: setting up Standard DoVi(8 bit) window/surface";
@@ -1607,7 +1624,7 @@ void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
 		} else {
 			if (bit_depth == 10 && avi_info.max_bpc == 10) {
 				ofLog() << "DRM: setting up SDR(10 bit) window/surface";
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 				HDRWindowSetup();
 			} else {
 				avi_info.max_bpc = 8;
@@ -1645,6 +1662,12 @@ void ofxRPI4Window::EGL_create_surface(EGLint attribs[], EGLConfig config)
 	}
 	if (createPlatformWindowSurfaceEXT) {
 		surface = createPlatformWindowSurfaceEXT(display, config, gbmSurface, attribs);
+		if (!surface && attribs && attribs[0] != EGL_NONE) {
+			auto error = eglGetError();
+			ofLogError() << "surface ERROR: " << eglErrorString(error)
+			             << "; retrying without EGL colorspace attributes";
+			surface = createPlatformWindowSurfaceEXT(display, config, gbmSurface, NULL);
+		}
 	} else {
 		ofLog() << "No eglCreatePlatformWindowSurface for GBM, falling back to eglCreateWindowSurface\n" ;
 		surface = eglCreateWindowSurface(display, config, (EGLNativeWindowType)gbmSurface, NULL);
@@ -2090,13 +2113,13 @@ void ofxRPI4Window::HDRWindowSetup()
 #if defined(HAS_GBM_MODIFIERS)
 	if (num_modifiers > 0)
 	{
-		gbmSurface = gbm_surface_create_with_modifiers(gbmDevice, (uint32_t)mode.hdisplay, (uint32_t)mode.vdisplay, GBM_FORMAT_ABGR2101010, modifiers,
+		gbmSurface = gbm_surface_create_with_modifiers(gbmDevice, (uint32_t)mode.hdisplay, (uint32_t)mode.vdisplay, GBM_FORMAT_ARGB2101010, modifiers,
                                                 num_modifiers);
 	}
 #endif
 	if (!gbmSurface)
 	{
-		gbmSurface = gbm_surface_create(gbmDevice, (uint32_t)mode.hdisplay, (uint32_t)mode.vdisplay,GBM_FORMAT_ABGR2101010,
+		gbmSurface = gbm_surface_create(gbmDevice, (uint32_t)mode.hdisplay, (uint32_t)mode.vdisplay,GBM_FORMAT_ARGB2101010,
 									GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 	}
 
@@ -2110,7 +2133,7 @@ void ofxRPI4Window::HDRWindowSetup()
 	}
 	free(modifiers);
 #else
-    gbmSurface = gbm_surface_create(gbmDevice, (uint32_t)mode.hdisplay, (uint32_t)mode.vdisplay, GBM_FORMAT_ABGR2101010, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    gbmSurface = gbm_surface_create(gbmDevice, (uint32_t)mode.hdisplay, (uint32_t)mode.vdisplay, GBM_FORMAT_ARGB2101010, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 
 	if (!gbmSurface)
 	{
@@ -2170,7 +2193,7 @@ void ofxRPI4Window::HDRWindowSetup()
 		EGL_NONE
 	};
 		//EGLint visualId = GBM_FORMAT_RGBX1010102; //??HDR  
-	EGLint visualId = GBM_FORMAT_ABGR2101010;
+	EGLint visualId = GBM_FORMAT_ARGB2101010;
 
 	if (ofGetLogLevel() == 0) PrintConfigs(display);
 	 
@@ -2296,6 +2319,7 @@ void ofxRPI4Window::HDRWindowSetup()
 			
 	} else {
         ofLogError() << "RIP";
+        exit(1);
     }
 	
 	
@@ -2587,6 +2611,7 @@ EGL_info();
 			
 	} else {
         ofLogError() << "RIP";
+        exit(1);
     }
 	
 	
@@ -2842,6 +2867,7 @@ int ret;
         }else
         {
             ofLogError() << "RIP";
+            exit(1);
         }
         
      
@@ -2898,7 +2924,7 @@ void ofxRPI4Window::update()
 		if (isHDR && !isDoVi && !is_std_DoVi) { 
 			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
 				ofLog() << "DRM: updating HDR(10 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 //				if (avi_info.rgb_quant_range == 1)
 				if (!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0)
 					shader_init = 1;
@@ -2920,7 +2946,7 @@ void ofxRPI4Window::update()
 
 			if ((bit_depth >= 8) && (bit_depth <= 10) && (avi_info.max_bpc == 10)) {
 				ofLog() << "DRM: updating Low Latency DoVi(10 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
 					shader_init = 1;
 				HDRWindowSetup();
@@ -2941,7 +2967,7 @@ void ofxRPI4Window::update()
 		} else if (isHDR && isDoVi && is_std_DoVi) {
 		 	if (bit_depth == 10) {
 				ofLog() << "DRM: updating Standard DoVi(10 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 				if (!ofxRPI4Window::shader_init && avi_info.output_format == 0 && avi_info.rgb_quant_range == 2)
 					shader_init =1;
 				HDRWindowSetup();
@@ -2957,7 +2983,7 @@ void ofxRPI4Window::update()
 		else {
 		 	if (bit_depth == 10) {
 				ofLog() << "DRM: updating SDR(10 bit) window/surface"; 
-				FindModifiers(DRM_FORMAT_ABGR2101010, HDRplaneId);
+				FindModifiers(DRM_FORMAT_ARGB2101010, HDRplaneId);
 //				if (avi_info.rgb_quant_range == 1)
 				if (!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0)
 					shader_init = 1;
@@ -3741,13 +3767,13 @@ void ofxRPI4Window::updateDoVi_Infoframe(int enable, int dv_interface)
 void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe avi_infoframe)
 {
 	bool ok;
-	int plane_color_encoding = avi_infoframe.c_enc;
-	int plane_color_range = avi_infoframe.c_range;
+	bool set_plane_ycbcr = pi5_avi_infoframe_uses_ycbcr(avi_infoframe);
 	const char *colorimetry_property = "Colorimetry";
 	const char *rgb_quant_property = "rgb quant range";
 	ofLog() << "DRM: Setting connector properties";
 		
 	first_req = 1; // allocate for atomic requests
+	last_req = 0;
 		
 	/* set colorimtery */	
 	ok = drm_mode_get_property(device, connectorId,	DRM_MODE_OBJECT_CONNECTOR, "Colorimetry", &prop_id, &colorimetry, &prop);
@@ -3767,7 +3793,11 @@ void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe 
 	ok = drm_mode_get_property(device, connectorId,	DRM_MODE_OBJECT_CONNECTOR, "output format",	&prop_id, &output_format, &prop);
 
 	if (!ok || !(output_format >=0)) {
-		ofLogError() << "DRM: Unable to find OUTPUT FORMAT";
+		if (avi_infoframe.output_format != 0) {
+			ofLogError() << "DRM: Unable to find OUTPUT FORMAT for requested YCbCr output";
+		} else {
+			ofLog() << "DRM: connector has no output format property; using RGB output";
+		}
 	} else {
 		output_format = avi_infoframe.output_format;
 		drm_mode_atomic_set_property(device, req, "output format" , connectorId, prop_id, output_format, prop, 0);
@@ -3800,29 +3830,31 @@ void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe 
 	}	
 
 	ofLog() << "DRM: Setting plane properties";
-	
-    /* set COLOR_ENCODING plane property, for multi-plane formats, does nothing for single plane formats*/
-	ok = drm_mode_get_property(device, plane_id, DRM_MODE_OBJECT_PLANE, "COLOR_ENCODING", &prop_id, &c_enc, &prop);
+	if (set_plane_ycbcr) {
+	    /* set COLOR_ENCODING plane property, for multi-plane formats, does nothing for single plane formats*/
+		ok = drm_mode_get_property(device, plane_id, DRM_MODE_OBJECT_PLANE, "COLOR_ENCODING", &prop_id, &c_enc, &prop);
 
-	if (!ok || !(c_enc >= 0)) {
-		ofLogError() << "DRM: Unable find COLOR_ENCODING";
+		if (!ok || !(c_enc >= 0)) {
+			ofLogError() << "DRM: Unable find COLOR_ENCODING";
+		} else {
+			c_enc = avi_infoframe.c_enc; //set to ITU-R BT.601 YCbCr or ITU-R BT.709 YCbCr or ITU-R BT.2020 YCbCr
+			drm_mode_atomic_set_property(device, req, "COLOR_ENCODING", plane_id, prop_id, c_enc, prop, 0);
+		}
+
+		/* set COLOR_RANGE plane property */
+		ok = drm_mode_get_property(device, plane_id, DRM_MODE_OBJECT_PLANE, "COLOR_RANGE", &prop_id, &c_range, &prop);
+
+		if (!ok || !(c_range >= 0)) {
+			ofLogError() << "DRM: Unable find COLOR_RANGE";
+		} else {
+			c_range = avi_infoframe.c_range; //set to YCbCr full range
+			drm_mode_atomic_set_property(device, req, "COLOR_RANGE", plane_id, prop_id, c_range, prop, 0);
+		}
 	} else {
-		c_enc = avi_infoframe.c_enc; //set to ITU-R BT.601 YCbCr or ITU-R BT.709 YCbCr or ITU-R BT.2020 YCbCr
-		drm_mode_atomic_set_property(device, req, "COLOR_ENCODING", plane_id, prop_id, c_enc, prop, 0);
+		ofLog() << "DRM: RGB output selected; skipping YCbCr plane color properties";
 	}
 
-	last_req = 1; // commit previous atomic requests	
-	
-	/* set COLOR_RANGE plane property */
-	ok = drm_mode_get_property(device, plane_id, DRM_MODE_OBJECT_PLANE, "COLOR_RANGE", &prop_id, &c_range, &prop);
-
-	if (!ok || !(c_range >= 0)) {
-		ofLogError() << "DRM: Unable find COLOR_RANGE";
-	} else {
-		c_range = avi_infoframe.c_range; //set to YCbCr full range	
-		drm_mode_atomic_set_property(device, req, "COLOR_RANGE", plane_id, prop_id, c_range, prop, DRM_MODE_ATOMIC_ALLOW_MODESET);
-	}
-
+	drm_mode_atomic_commit(device, DRM_MODE_ATOMIC_ALLOW_MODESET);
 }
 
 void ofxRPI4Window::draw()

@@ -384,6 +384,7 @@ public:
 							   
 	void drm_mode_atomic_set_property(int drm_fd, drmModeAtomicReq *freq, const char *name /* in */, uint32_t object_id /* in */,
 									  uint32_t prop_id /* in */, uint64_t value /* in */, drmModePropertyPtr prop /* in */, uint32_t flags);
+	void drm_mode_atomic_commit(int drm_fd, uint32_t flags);
 	int last_req = 0;
 	int first_req = 0;
 	bool flip = true;

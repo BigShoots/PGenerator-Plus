@@ -20,6 +20,34 @@ SUBNET=$(grep AP_NET /etc/default/rcPGenerator |awk -F . '{print $2}')
 #
 # Function
 #
+ensure_pgenerator_service_account () {
+ if ! id pgenerator >/dev/null 2>&1; then
+  return
+ fi
+
+ local needs_password=0
+ if [ -r /etc/shadow ]; then
+  if ! awk -F: '$1=="pgenerator" { found=1; if($2=="" || $2=="*" || $2 ~ /^!/) bad=1 } END { exit(found && !bad ? 0 : 1) }' /etc/shadow; then
+   needs_password=1
+  fi
+ else
+  needs_password=1
+ fi
+
+ if [ "$needs_password" = "1" ] && command -v chpasswd >/dev/null 2>&1; then
+  local service_password
+  service_password=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+  if [ -n "$service_password" ]; then
+   printf 'pgenerator:%s\n' "$service_password" | chpasswd 2>/dev/null || true
+  fi
+  unset service_password
+ fi
+
+ if command -v chage >/dev/null 2>&1; then
+  chage -M -1 -I -1 -E -1 pgenerator 2>/dev/null || true
+ fi
+}
+
 rc_PGenerator_start () { 
  PROJECT="RPI3"
  MODEL=$(cat /proc/device-tree/model)
@@ -266,6 +294,7 @@ rc_PGenerator_start () {
  fi
 
  # PGenerator 
+ ensure_pgenerator_service_account
  /etc/init.d/PGenerator restart
 
  # At the end a sync
