@@ -130,8 +130,9 @@ const mergeIndex = adjustmentSource.indexOf('my $adjustments=post_cal_series_mer
 const probeIndex = adjustmentSource.indexOf('post_cal_series_probe_5_candidate(');
 const mutateIndex = adjustmentSource.indexOf('foreach my $adj (@{$adjustments}) {', probeIndex);
 assert(
-  source.includes('sub post_cal_series_probe_5_candidate') &&
+    source.includes('sub post_cal_series_probe_5_candidate') &&
     source.includes('sub post_cal_series_low_shadow_candidate_read') &&
+    source.includes('sub post_cal_series_low_shadow_points_from_readings') &&
     source.includes('sub post_cal_series_low_shadow_group_score') &&
     source.includes('post_cal_series_low_shadow_5_probe_start') &&
     source.includes('post_cal_series_low_shadow_5_probe_accepted') &&
@@ -139,6 +140,7 @@ assert(
     adjustmentSource.includes('abs(($read_step->{"ire"}+0)-5) < 0.001') &&
     adjustmentSource.includes('my $candidate_arrays=clone_arrays($arrays);') &&
     adjustmentSource.includes('$candidate_arrays->{$adj->{"setting"}}[$target->{"index"}]=$adj->{"next"};') &&
+    source.includes('$before_points=post_cal_series_low_shadow_points_from_readings($readings,$steps,$white_y,$target_x,$target_y,$target_gamma,$signal_mode,$config,$state);') &&
     adjustmentSource.includes('$evaluated[-1]{"skipped_reason"}="post_cal_low_shadow_5_probe_rejected"') &&
     adjustmentSource.includes('low_shadow_5_probe=>ref($low_shadow_5_probe) eq "HASH" ? $low_shadow_5_probe : undef') &&
     mergeIndex >= 0 &&
