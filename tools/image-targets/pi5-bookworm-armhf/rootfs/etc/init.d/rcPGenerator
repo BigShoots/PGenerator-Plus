@@ -48,6 +48,125 @@ ensure_pgenerator_service_account () {
  fi
 }
 
+pgen_conf_set () {
+ local key="$1"
+ local value="$2"
+ local conf="/etc/PGenerator/PGenerator.conf"
+ [ -f "$conf" ] || return
+
+ if grep -q "^${key}=" "$conf"; then
+  sed -i "s|^${key}=.*|${key}=${value}|" "$conf"
+ else
+  printf '%s=%s\n' "$key" "$value" >> "$conf"
+ fi
+}
+
+pgen_conf_get () {
+ local key="$1"
+ local conf="/etc/PGenerator/PGenerator.conf"
+ [ -f "$conf" ] || return
+ sed -n "s/^${key}=//p" "$conf" | tail -n 1
+}
+
+reset_pgenerator_to_sdr_rgb () {
+ pgen_conf_set is_sdr 1
+ pgen_conf_set is_hdr 0
+ pgen_conf_set is_ll_dovi 0
+ pgen_conf_set is_std_dovi 0
+ pgen_conf_set dv_status 0
+ pgen_conf_set dv_metadata 0
+ pgen_conf_set eotf 0
+ pgen_conf_set primaries 0
+ pgen_conf_set color_format 0
+ pgen_conf_set colorimetry 2
+ pgen_conf_set rgb_quant_range 2
+ pgen_conf_set max_bpc 8
+}
+
+sanitize_pi5_display_config () {
+ case "$MODEL" in
+  *"Raspberry Pi 5"*) ;;
+  *) return ;;
+ esac
+
+ local conf="/etc/PGenerator/PGenerator.conf"
+ [ -f "$conf" ] || return
+
+ # Bookworm/modetest mode IDs are sink-dependent; a persisted Pi4-style index
+ # can select the wrong mode on Pi5. Let KMS keep or choose the active mode.
+ pgen_conf_set mode_idx ""
+
+ local mt
+ mt="$(timeout 5 /usr/bin/modetest -M vc4 -c 2>/dev/null || true)"
+ if ! printf '%s\n' "$mt" | grep -q ' connected .*HDMI'; then
+  echo "Pi5 display safe boot: no connected HDMI sink; forcing SDR RGB 8-bit"
+  reset_pgenerator_to_sdr_rgb
+  return
+ fi
+
+ local color_format
+ color_format="$(pgen_conf_get color_format)"
+ case "$color_format" in
+  ""|0|1|2) ;;
+  *)
+   echo "Pi5 display safe boot: unsupported color_format=$color_format; forcing RGB"
+   pgen_conf_set color_format 0
+   color_format=0
+   ;;
+ esac
+
+ if [ "$color_format" != "0" ] && ! printf '%s\n' "$mt" | grep -q 'output format'; then
+  echo "Pi5 display safe boot: KMS output format property missing; forcing RGB"
+  pgen_conf_set color_format 0
+  color_format=0
+ fi
+
+ local max_bpc
+ max_bpc="$(pgen_conf_get max_bpc)"
+ case "$max_bpc" in
+  8|10|12) ;;
+  *)
+   echo "Pi5 display safe boot: invalid max_bpc=$max_bpc; forcing 8"
+   pgen_conf_set max_bpc 8
+   ;;
+ esac
+
+ local edid_path=""
+ local d
+ for d in /sys/class/drm/card*-HDMI-A-*; do
+  [ -d "$d" ] || continue
+  if [ "$(cat "$d/status" 2>/dev/null)" = "connected" ] && [ -s "$d/edid" ]; then
+   edid_path="$d/edid"
+   break
+  fi
+ done
+
+ local edid=""
+ if [ -n "$edid_path" ] && command -v edid-decode >/dev/null 2>&1; then
+  edid="$(timeout 5 edid-decode "$edid_path" 2>/dev/null || true)"
+ fi
+
+ if [ "$(pgen_conf_get dv_status)" = "1" ] || [ "$(pgen_conf_get is_ll_dovi)" = "1" ] || [ "$(pgen_conf_get is_std_dovi)" = "1" ]; then
+  if ! printf '%s\n' "$mt" | grep -q 'DOVI_OUTPUT_METADATA' || ! printf '%s\n' "$edid" | grep -q 'Vendor-Specific Video Data Block (Dolby)'; then
+   echo "Pi5 display safe boot: DV requested but sink/kernel did not prove DV support; forcing SDR RGB 8-bit"
+   reset_pgenerator_to_sdr_rgb
+  fi
+ elif [ "$(pgen_conf_get is_hdr)" = "1" ]; then
+  if ! printf '%s\n' "$mt" | grep -q 'HDR_OUTPUT_METADATA'; then
+   echo "Pi5 display safe boot: HDR requested but HDR metadata property missing; forcing SDR RGB 8-bit"
+   reset_pgenerator_to_sdr_rgb
+  elif [ "$(pgen_conf_get eotf)" = "3" ]; then
+   if ! printf '%s\n' "$edid" | grep -q 'Hybrid Log-Gamma'; then
+    echo "Pi5 display safe boot: HLG requested but EDID did not prove HLG support; forcing SDR RGB 8-bit"
+    reset_pgenerator_to_sdr_rgb
+   fi
+  elif ! printf '%s\n' "$edid" | grep -q 'SMPTE ST2084'; then
+   echo "Pi5 display safe boot: HDR10 requested but EDID did not prove ST2084 support; forcing SDR RGB 8-bit"
+   reset_pgenerator_to_sdr_rgb
+  fi
+ fi
+}
+
 rc_PGenerator_start () { 
  PROJECT="RPI3"
  MODEL=$(cat /proc/device-tree/model)
@@ -295,6 +414,7 @@ rc_PGenerator_start () {
 
  # PGenerator 
  ensure_pgenerator_service_account
+ sanitize_pi5_display_config
  /etc/init.d/PGenerator restart
 
  # At the end a sync

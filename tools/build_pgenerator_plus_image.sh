@@ -729,6 +729,29 @@ sync
 exit 0'
 }
 
+configure_pi5_display_defaults() {
+ local conf="$ROOT_MOUNT/etc/PGenerator/PGenerator.conf"
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ [[ -f "$conf" ]] || die "Pi 5 rootfs is missing /etc/PGenerator/PGenerator.conf"
+
+ log "Applying Raspberry Pi 5 safe display defaults"
+ ensure_config_line "$conf" "mode_idx" ""
+ ensure_config_line "$conf" "signal_mode" "sdr"
+ ensure_config_line "$conf" "is_sdr" "1"
+ ensure_config_line "$conf" "is_hdr" "0"
+ ensure_config_line "$conf" "is_ll_dovi" "0"
+ ensure_config_line "$conf" "is_std_dovi" "0"
+ ensure_config_line "$conf" "dv_status" "0"
+ ensure_config_line "$conf" "dv_metadata" "0"
+ ensure_config_line "$conf" "eotf" "0"
+ ensure_config_line "$conf" "primaries" "0"
+ ensure_config_line "$conf" "color_format" "0"
+ ensure_config_line "$conf" "colorimetry" "2"
+ ensure_config_line "$conf" "rgb_quant_range" "2"
+ ensure_config_line "$conf" "max_bpc" "8"
+}
+
 configure_pi5_headless_first_boot() {
  local keyboard_file="$ROOT_MOUNT/etc/default/keyboard"
  local locale_file="$ROOT_MOUNT/etc/default/locale"
@@ -1260,6 +1283,7 @@ main() {
  stage_argyll_runtime
  reset_runtime_state
  configure_pi5_bookworm_root
+ configure_pi5_display_defaults
  configure_pi5_bookworm_boot
  configure_pi5_headless_first_boot
  configure_pi5_headless_ssh
