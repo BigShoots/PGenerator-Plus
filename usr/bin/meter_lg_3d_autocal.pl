@@ -50,7 +50,7 @@ sub describe_and_exit {
   ramp_profile_patch_count => 65,
   ramp_drift => "start/end WRGB anchors with time-interpolated 3x3 correction",
   model => "per-luminance-level additive XYZ contributions",
-  neutral_axis => "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path",
+  neutral_axis => "exact diagonal identity after current 1D greyscale path; adjacent neutral-neighborhood identity on legacy LG generations",
   inverse => "per-level native matrix inverse, channel EOTF lookup, clamp, peak normalize",
  });
  exit 0;
@@ -897,6 +897,7 @@ sub model_from_readings {
  foreach my $kind (qw(red green blue)) {
   $peak_y{$kind}=($contrib{$kind}{100} && $contrib{$kind}{100}[1] > 0) ? $contrib{$kind}{100}[1] : 1;
  }
+ my $neutral_neighborhood_identity=neutral_neighborhood_identity_enabled($config);
  return {
   method => $method,
   signal_mode => $signal_mode,
@@ -910,7 +911,10 @@ sub model_from_readings {
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
   drift => $drift,
-  neutral_axis_source => "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path",
+  neutral_neighborhood_identity_enabled => json_bool($neutral_neighborhood_identity),
+  neutral_axis_source => $neutral_neighborhood_identity
+   ? "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path"
+   : "exact diagonal identity after current 1D greyscale path",
  };
 }
 
@@ -923,7 +927,7 @@ sub generate_lut_cube {
   for(my $g=0;$g<$size;$g++) {
    for(my $b=0;$b<$size;$b++) {
     my $out;
-    my $neutral_identity=neutral_neighborhood_identity_output($r,$g,$b,$size);
+    my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
     if($neutral_identity) {
      $out=$neutral_identity;
     } else {
@@ -939,8 +943,12 @@ sub generate_lut_cube {
  return (\@u16,\@nodes);
 }
 
-sub neutral_neighborhood_identity_output {
- my ($r,$g,$b,$size)=@_;
+sub neutral_identity_output {
+ my ($model,$r,$g,$b,$size)=@_;
+ my $adjacent=(ref($model) eq "HASH" && $model->{"neutral_neighborhood_identity_enabled"}) ? 1 : 0;
+ if(!$adjacent) {
+  return undef if(!($r==$g && $g==$b));
+ } else {
  my $min=$r;
  $min=$g if($g < $min);
  $min=$b if($b < $min);
@@ -948,6 +956,7 @@ sub neutral_neighborhood_identity_output {
  $max=$g if($g > $max);
  $max=$b if($b > $max);
  return undef if(($max-$min) > 1);
+ }
  return [
   100*$r/($size-1),
   100*$g/($size-1),
@@ -963,7 +972,7 @@ sub generate_lut_lg_payload {
   for(my $g=0;$g<$size;$g++) {
    for(my $r=0;$r<$size;$r++) {
     my $out;
-    my $neutral_identity=neutral_neighborhood_identity_output($r,$g,$b,$size);
+    my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
     if($neutral_identity) {
      $out=$neutral_identity;
     } else {
@@ -1019,7 +1028,11 @@ sub export_lut {
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
   neutral_axis_source => $model->{"neutral_axis_source"},
-  neutral_axis_protection => "exact diagonal and adjacent neutral-neighborhood identity",
+  neutral_axis_protection => $model->{"neutral_neighborhood_identity_enabled"}
+   ? "exact diagonal and adjacent neutral-neighborhood identity"
+   : "exact diagonal identity",
+  neutral_neighborhood_identity_enabled => json_bool($model->{"neutral_neighborhood_identity_enabled"}),
+  lg_generation => (ref($config->{"lg_generation"}) eq "HASH") ? $config->{"lg_generation"} : undef,
   drift => $model->{"drift"},
  }),0);
  return {
@@ -1200,6 +1213,28 @@ sub upload_requested {
  return ($config->{"upload"} || ($config->{"output"}||"") eq "upload") ? 1 : 0;
 }
 
+sub lg_generation_legacy_neutral_guard_enabled {
+ my ($generation)=@_;
+ return 0 if(ref($generation) ne "HASH");
+ return 1 if($generation->{"ddc_only_white_balance"});
+ return 1 if($generation->{"picture_mode_read_forbidden"});
+ my $year=defined($generation->{"platform_year"}) ? ($generation->{"platform_year"}+0) : 0;
+ return 1 if($year && $year <= 2021);
+ my $webos_major=defined($generation->{"webos_major"}) ? ($generation->{"webos_major"}+0) : 0;
+ return 1 if($webos_major && $webos_major <= 6);
+ my $series=uc($generation->{"series"}||"");
+ return 1 if($series =~ /^[BCGZ]1$/);
+ return 0;
+}
+
+sub neutral_neighborhood_identity_enabled {
+ my ($config)=@_;
+ return 0 if(ref($config) ne "HASH");
+ return 1 if($config->{"neutral_neighborhood_identity_enabled"});
+ my $generation=(ref($config->{"lg_generation"}) eq "HASH") ? $config->{"lg_generation"} : $config->{"preflight_lg_generation"};
+ return lg_generation_legacy_neutral_guard_enabled($generation);
+}
+
 sub reset_3d_lut_to_unity_before_profile {
  my ($config,$state)=@_;
  return undef if(!upload_requested($config) || $config->{"fixture_mode"});
@@ -1212,7 +1247,9 @@ sub reset_3d_lut_to_unity_before_profile {
    completed_at => $config->{"preflight_3d_lut_completed_at"}||undef,
    upload_command => $config->{"preflight_3d_lut_upload_command"}||"",
    get_command => $config->{"preflight_3d_lut_get_command"}||"",
+   lg_generation => (ref($config->{"preflight_lg_generation"}) eq "HASH") ? $config->{"preflight_lg_generation"} : undef,
   };
+  $config->{"lg_generation"}=$reset->{"lg_generation"} if(ref($reset->{"lg_generation"}) eq "HASH");
   $state->{"unity_reset"}=$reset;
   $state->{"unity_reset_verified"}=json_true();
   $state->{"upload_supported"}=json_true();
@@ -1231,6 +1268,9 @@ sub reset_3d_lut_to_unity_before_profile {
   get_command => $config->{"get_command"}||"",
   helper_timeout => 220,
  },245);
+ if(ref($reset) eq "HASH" && ref($reset->{"lg_generation"}) eq "HASH") {
+  $config->{"lg_generation"}=$reset->{"lg_generation"};
+ }
  $state->{"unity_reset"}=$reset;
  $state->{"unity_reset_verified"}=(ref($reset) eq "HASH" && $reset->{"status"} eq "ok" && $reset->{"upload_verified"}) ? json_true() : json_false();
  $state->{"upload_supported"}=(ref($reset) eq "HASH" && $reset->{"status"} eq "ok") ? json_true() : json_false();
@@ -1323,6 +1363,8 @@ eval {
  $state->{"target_gamma"}=$model->{"target_gamma"};
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
+ $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
+ $state->{"lg_generation"}=$config->{"lg_generation"} if(ref($config->{"lg_generation"}) eq "HASH");
  $state->{"cube_lut_size"}=17;
  $state->{"payload_lut_size"}=33;
  $state->{"payload_bits"}=12;
