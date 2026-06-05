@@ -2880,9 +2880,19 @@ sub sdr_low_shadow_neighbor_ires_for_step {
  my ($step)=@_;
  return () if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
- return (2.3) if(abs($ire-3) < 0.001);
- return (3) if(abs($ire-4) < 0.001);
- return ();
+ my @ires;
+ push @ires,3 if(abs($ire-2.3) < 0.001);
+ push @ires,2.3 if(abs($ire-3) < 0.001);
+ push @ires,4 if(abs($ire-3) < 0.001);
+ push @ires,3 if(abs($ire-4) < 0.001);
+ push @ires,5 if(abs($ire-4) < 0.001);
+ push @ires,4 if(abs($ire-5) < 0.001);
+ push @ires,7 if(abs($ire-5) < 0.001);
+ push @ires,5 if(abs($ire-7) < 0.001);
+ push @ires,10 if(abs($ire-7) < 0.001);
+ push @ires,7 if(abs($ire-10) < 0.001);
+ my %seen;
+ return grep { !$seen{format_percent($_)}++ } @ires;
 }
 
 sub sdr_low_shadow_neighbor_context_for_step {
@@ -5029,6 +5039,8 @@ sub sdr_low_shadow_lower_neighbor_ire {
  my ($ire)=@_;
  return undef if(!defined($ire));
  $ire+=0;
+ return 7 if(abs($ire-10) < 0.001);
+ return 5 if(abs($ire-7) < 0.001);
  return 4 if(abs($ire-5) < 0.001);
  return 3 if(abs($ire-4) < 0.001);
  return 2.3 if(abs($ire-3) < 0.001);
@@ -13624,8 +13636,27 @@ sub post_cal_series_neighbor_protected_luma_cap {
  my ($cap,$read_step,$lum_pct,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state)=@_;
  return $cap if(!defined($cap) || !autocal_step_is_low_shadow($read_step) || !defined($lum_pct));
  my $ire=(ref($read_step) eq "HASH" && defined($read_step->{"ire"})) ? ($read_step->{"ire"}+0) : 50;
- return $cap if(!($ire > 4.1001 && $ire <= 5.1001 && ($lum_pct+0) > 0 && abs($lum_pct+0) >= 15));
- foreach my $neighbor_ire (4,3,2.3) {
+ return $cap if(($lum_pct+0) <= 0);
+ my @neighbor_ires;
+ if(abs($ire-3) < 0.001) {
+  return $cap if(abs($lum_pct+0) < 8);
+  @neighbor_ires=(2.3);
+ } elsif(abs($ire-4) < 0.001) {
+  return $cap if(abs($lum_pct+0) < 8);
+  @neighbor_ires=(3);
+ } elsif($ire > 4.1001 && $ire <= 5.1001) {
+  return $cap if(abs($lum_pct+0) < 15);
+  @neighbor_ires=(4,3,2.3);
+ } elsif(abs($ire-7) < 0.001) {
+  return $cap if(abs($lum_pct+0) < 8);
+  @neighbor_ires=(5);
+ } elsif(abs($ire-10) < 0.001) {
+  return $cap if(abs($lum_pct+0) < 8);
+  @neighbor_ires=(7);
+ } else {
+  return $cap;
+ }
+ foreach my $neighbor_ire (@neighbor_ires) {
   my $neighbor_lum=post_cal_series_luminance_error_for_ire($readings,$steps,$neighbor_ire,$white_y,$target_gamma,$signal_mode,$config,$state);
   next if(!defined($neighbor_lum));
   if($neighbor_lum < -4.0) {
@@ -13639,8 +13670,14 @@ sub post_cal_series_low_shadow_neighbor_risk {
  my ($read_step,$readings,$steps,$white_y,$target_gamma,$signal_mode,$config,$state)=@_;
  return undef if(!autocal_step_is_low_shadow($read_step));
  my $ire=(ref($read_step) eq "HASH" && defined($read_step->{"ire"})) ? ($read_step->{"ire"}+0) : 50;
- return undef if(!($ire > 4.1001 && $ire <= 5.1001));
- foreach my $neighbor_ire (4,3,2.3) {
+ my @neighbor_ires;
+ @neighbor_ires=(2.3) if(abs($ire-3) < 0.001);
+ @neighbor_ires=(3) if(abs($ire-4) < 0.001);
+ @neighbor_ires=(4,3,2.3) if($ire > 4.1001 && $ire <= 5.1001);
+ @neighbor_ires=(5) if(abs($ire-7) < 0.001);
+ @neighbor_ires=(7) if(abs($ire-10) < 0.001);
+ return undef if(!@neighbor_ires);
+ foreach my $neighbor_ire (@neighbor_ires) {
   my $neighbor_lum=post_cal_series_luminance_error_for_ire($readings,$steps,$neighbor_ire,$white_y,$target_gamma,$signal_mode,$config,$state);
   next if(!defined($neighbor_lum));
   if(abs($neighbor_lum+0) <= 2.5) {
@@ -14080,9 +14117,11 @@ sub post_cal_series_low_shadow_neighbor_ires {
  my ($step)=@_;
  return () if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
+ return (2.3) if(abs($ire-3) < 0.001);
  return (3) if(abs($ire-4) < 0.001);
  return (4,7) if(abs($ire-5) < 0.001);
  return (5) if(abs($ire-7) < 0.001);
+ return (7) if(abs($ire-10) < 0.001);
  return ();
 }
 
@@ -19892,7 +19931,7 @@ eval {
 				  my $phase=lc($config->{"full_autocal_phase"}||"");
 				  return 0 if($phase =~ /(magic|post|polish|touchup)/);
 				  my @records;
-				  foreach my $wanted_ire (3,4) {
+				  foreach my $wanted_ire (2.3,3,4,5,7,10) {
 				   last if(cancelled());
 				   my ($source_step)=grep { ref($_) eq "HASH" && defined($_->{"ire"}) && abs(($_->{"ire"}+0)-$wanted_ire) < 0.001 } @ordered;
 				   next if(ref($source_step) ne "HASH");

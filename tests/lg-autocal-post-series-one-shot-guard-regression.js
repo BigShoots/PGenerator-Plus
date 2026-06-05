@@ -47,17 +47,23 @@ assert(
 
 assert(
   helperSource.includes('sub post_cal_series_neighbor_protected_luma_cap') &&
-    helperSource.includes('foreach my $neighbor_ire (4,3,2.3)') &&
+    helperSource.includes('@neighbor_ires=(4,3,2.3);') &&
+    helperSource.includes('@neighbor_ires=(5) if(abs($ire-7) < 0.001);') &&
+    helperSource.includes('@neighbor_ires=(7) if(abs($ire-10) < 0.001);') &&
     helperSource.includes('return $cap < 2.0 ? $cap : 2.0;'),
-  'post-cal low-shadow luma caps should back off when lower dark-detail neighbors are already dim'
+  'post-cal low-shadow luma caps should back off when protected dark-detail neighbors are already dim'
 );
 
 assert(
   helperSource.includes('sub post_cal_series_low_shadow_neighbor_risk') &&
-    helperSource.includes('return undef if(!($ire > 4.1001 && $ire <= 5.1001));') &&
+    helperSource.includes('@neighbor_ires=(2.3) if(abs($ire-3) < 0.001);') &&
+    helperSource.includes('@neighbor_ires=(3) if(abs($ire-4) < 0.001);') &&
+    helperSource.includes('@neighbor_ires=(4,3,2.3) if($ire > 4.1001 && $ire <= 5.1001);') &&
+    helperSource.includes('@neighbor_ires=(5) if(abs($ire-7) < 0.001);') &&
+    helperSource.includes('@neighbor_ires=(7) if(abs($ire-10) < 0.001);') &&
     helperSource.includes('if(abs($neighbor_lum+0) <= 2.5)') &&
     helperSource.includes('reason=>"stable_lower_shadow_neighbor"'),
-  'post-cal 5% one-shot RGB should recognize stable lower shadow neighbors before stacking color moves with luma moves'
+  'post-cal low-shadow one-shot RGB should recognize stable protected neighbors before stacking color moves with luma moves'
 );
 
 assert(
@@ -195,9 +201,11 @@ assert(
   source.includes('sub post_cal_series_revert_worse_adjustments') &&
     source.includes('sub post_cal_series_evaluated_entry_for_ire') &&
     source.includes('sub post_cal_series_low_shadow_neighbor_ires') &&
+    source.includes('return (2.3) if(abs($ire-3) < 0.001);') &&
     source.includes('return (3) if(abs($ire-4) < 0.001);') &&
     source.includes('return (4,7) if(abs($ire-5) < 0.001);') &&
     source.includes('return (5) if(abs($ire-7) < 0.001);') &&
+    source.includes('return (7) if(abs($ire-10) < 0.001);') &&
     source.includes('post_cal_series_after_readings') &&
     source.includes('post_cal_series_adjustment_status') &&
     source.includes('Magic Wand failsafe requires the verification series read') &&
@@ -233,7 +241,7 @@ function neighborProtectiveDecision({
   neighborAfter,
   target = 0.5,
 }) {
-  const lowMap = { 4: [3], 5: [4, 7], 7: [5] };
+  const lowMap = { 3: [2.3], 4: [3], 5: [4, 7], 7: [5], 10: [7] };
   if (!lowMap[changedIre] || !lowMap[changedIre].includes(neighborIre)) return 'ignore';
   if (neighborChanged) return 'ignore';
   const crossed = neighborBefore <= target + 0.25 && neighborAfter > target + 0.75;
@@ -292,4 +300,16 @@ assert.strictEqual(
   }),
   'ignore',
   '7% should not be blamed for 5% when 5% has its own changed slot and own failsafe decision'
+);
+assert.strictEqual(
+  neighborProtectiveDecision({
+    changedIre: 10,
+    neighborIre: 7,
+    changedBefore: 1.70,
+    changedAfter: 0.95,
+    neighborBefore: 0.72,
+    neighborAfter: 2.10,
+  }),
+  'revert',
+  '10% should revert when keeping it damages an otherwise stable 7% neighbor'
 );

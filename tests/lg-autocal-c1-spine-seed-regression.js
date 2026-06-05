@@ -279,6 +279,7 @@ const lowShadowFinalContextSource = sliceBetween(
 );
 assert(
   lowShadowFinalContextSource.includes('sdr_low_shadow_final_context_hard_reject_warning_only') &&
+    lowShadowFinalContextSource.includes('foreach my $wanted_ire (2.3,3,4,5,7,10)') &&
     lowShadowFinalContextSource.includes('$record->{"warning"}=$failure_message;') &&
     lowShadowFinalContextSource.includes('$record->{"warning_only"}=JSON::PP::true;') &&
     lowShadowFinalContextSource.includes('$state->{"message"}=$failure_message." (warning only)";') &&
@@ -319,7 +320,9 @@ const lowShadowLiveNeighborSource = sliceBetween(
   'sub apply_sdr_low_shadow_local_spine_preseed'
 );
 assert(
-  lowShadowLiveNeighborSource.includes('return 4 if(abs($ire-5) < 0.001);') &&
+  lowShadowLiveNeighborSource.includes('return 7 if(abs($ire-10) < 0.001);') &&
+    lowShadowLiveNeighborSource.includes('return 5 if(abs($ire-7) < 0.001);') &&
+    lowShadowLiveNeighborSource.includes('return 4 if(abs($ire-5) < 0.001);') &&
     lowShadowLiveNeighborSource.includes('return 3 if(abs($ire-4) < 0.001);') &&
     lowShadowLiveNeighborSource.includes('return 2.3 if(abs($ire-3) < 0.001);') &&
     lowShadowLiveNeighborSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
