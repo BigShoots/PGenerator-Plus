@@ -20065,6 +20065,7 @@ async function meterAutoCalRunPreflightReset(){
      status:lutReset.status||null,
      upload_verified:!!lutReset.upload_verified,
      picture_mode:lutReset.picture_mode||meterLgPictureModeValue(),
+     lg_generation:lutReset.lg_generation||null,
      completed_at:Date.now(),
      upload_command:lutReset.upload_command||'',
      get_command:lutReset.get_command||''
@@ -22983,9 +22984,10 @@ async function meterStartLg3dAutoCal(options){
   skip_preprofile_unity_reset:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_verified:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
- preflight_3d_lut_upload_command:skipPreprofileUnityReset&&preflightLut3d.upload_command?preflightLut3d.upload_command:undefined,
- preflight_3d_lut_get_command:skipPreprofileUnityReset&&preflightLut3d.get_command?preflightLut3d.get_command:undefined,
- post_check:false
+  preflight_3d_lut_upload_command:skipPreprofileUnityReset&&preflightLut3d.upload_command?preflightLut3d.upload_command:undefined,
+  preflight_3d_lut_get_command:skipPreprofileUnityReset&&preflightLut3d.get_command?preflightLut3d.get_command:undefined,
+  preflight_lg_generation:skipPreprofileUnityReset&&preflightLut3d.lg_generation?preflightLut3d.lg_generation:undefined,
+  post_check:false
  });
  if(fullWorkflow){
   meterAutoCalRunning=false;
