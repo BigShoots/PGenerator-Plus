@@ -8252,8 +8252,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  <div class="meter-autocal-title">LG Auto Cal</div>
 	  <div class="meter-autocal-status" id="meterAutoCalStatusText">Preparing...</div>
 	  <div id="meterAutoCalDisclaimerBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
-	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">DDC reset required</div>
-	   <div style="font-size:.82rem;color:var(--text2);line-height:1.45">Click Reset to clear the LG DDC calibration state. After reset, leave this screen open while you adjust any TV settings needed before Auto Cal, then click Continue.</div>
+	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Picture mode reset required</div>
+	   <div style="font-size:.82rem;color:var(--text2);line-height:1.45">Click Reset to reset the active LG picture mode and clear greyscale DDC calibration state. After reset, leave this screen open while you adjust any TV settings needed before Auto Cal, then click Continue.</div>
   </div>
 	  <div id="meterAutoCalLuminanceBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
    <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap">
@@ -19448,7 +19448,7 @@ function meterAutoCalShowPreflightOptions(){
   ? 'Choose whether Magic Wand should run after the greyscale Auto Cal. This choice will be carried through reset, luminance setup, and the final Auto Cal payload.'
   : 'Choose whether Magic Wand should run after the greyscale Auto Cal. HDR uses the calibrated 100% point as its peak reference, so no SDR luminance setup is required.';
  if(targetRow) targetRow.style.display='none';
- if(summary) summary.textContent=needsLuminanceSetup?'The DDC reset and 100% luminance setup will follow.':'The DDC reset will follow.';
+ if(summary) summary.textContent=needsLuminanceSetup?'The picture mode reset and 100% luminance setup will follow.':'The picture mode reset will follow.';
  meterAutoCalSetOverlay(true,{phase:'options',current_name:'Greyscale Auto Cal options',message:'Choose post-cal cleanup before reset.'});
 }
 
@@ -19811,14 +19811,42 @@ async function meterAutoCalResetDdc(){
  const zero=ddcSlots.map(()=>0);
 	 const pictureMode=meterLgPictureModeValue((meterLgGreyState&&meterLgGreyState.picture&&meterLgGreyState.picture.pictureMode)||'');
  meterAutoCalResetNotice='';
+ let pictureModeReset=null;
+ let pictureResetMessage='Unable to reset LG picture mode.';
+ for(let attempt=1;attempt<=3;attempt++){
+  meterAutoCalSetOverlay(true,{current_name:'Performing LG picture mode reset...',message:'Resetting the active picture mode before Auto Cal'+(attempt>1?' (retry '+attempt+'/3)':'')});
+  try{
+   pictureModeReset=await fetchJSON('/api/lg/picture-settings/reset',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+     picture_mode:pictureMode,
+     signal_mode:hdrWorkflow?'hdr10':'sdr',
+     require_white_balance_reset:true,
+     helper_timeout:170
+    }),
+    _quiet:true,
+    _timeoutMs:180000
+   });
+  }catch(e){
+   pictureModeReset=null;
+   pictureResetMessage=(e&&e.message)?e.message:pictureResetMessage;
+  }
+  if(pictureModeReset&&pictureModeReset.status==='ok') break;
+  pictureResetMessage=(pictureModeReset&&(pictureModeReset.repair_hint||pictureModeReset.message))||pictureResetMessage;
+  if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
+ }
+ if(!pictureModeReset||pictureModeReset.status!=='ok'){
+  throw new Error(pictureResetMessage||'Unable to reset LG picture mode.');
+ }
  let hdrCalmanReset=null;
  if(hdrWorkflow){
   hdrCalmanReset=await meterAutoCalHdrCalmanReset(pictureMode);
  }
  let response=null;
- let lastMessage='Unable to reset LG DDC.';
+ let lastMessage='Unable to clear LG picture mode calibration state.';
  for(let attempt=1;attempt<=3;attempt++){
-  meterAutoCalSetOverlay(true,{current_name:'Performing LG DDC reset...',message:'Clearing calibration data before Auto Cal'+(attempt>1?' (retry '+attempt+'/3)':'')});
+  meterAutoCalSetOverlay(true,{current_name:'Performing LG picture mode reset...',message:'Clearing DDC calibration data before Auto Cal'+(attempt>1?' (retry '+attempt+'/3)':'')});
   try{
    response=await fetchJSON('/api/lg/picture-settings/set',{
     method:'POST',
@@ -19851,14 +19879,15 @@ async function meterAutoCalResetDdc(){
   if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
  }
  if(!response||response.status!=='ok'){
-  throw new Error(lastMessage||'Unable to reset LG DDC.');
+  throw new Error(lastMessage||'Unable to clear LG picture mode calibration state.');
  }
  if(response.ddc_baseline_reset!==true||response.ddc_1d_lut!==true){
-  throw new Error('LG DDC reset did not confirm a 1D LUT baseline reset.');
+  throw new Error('LG picture mode reset did not confirm a 1D LUT baseline reset.');
  }
  if(response.ddc_reset_verified!==true){
-  throw new Error('LG DDC reset did not verify against the TV 1D LUT readback.');
+  throw new Error('LG picture mode reset did not verify against the TV 1D LUT readback.');
  }
+ response.picture_mode_reset=pictureModeReset;
  if(hdrCalmanReset) response.hdr_calman_reset=hdrCalmanReset;
  const resetPicture=response.picture_settings||{};
  let panel=meterAutoCalPanelLightFromPicture(resetPicture);
@@ -19936,13 +19965,13 @@ async function meterAutoCalReset3dLutBaseline(){
 }
 
 function meterAutoCalPreflightResetCompleteTitle(){
- return (meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow) ? 'LG DDC and 3D LUT reset complete' : 'LG DDC reset complete';
+ return (meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow) ? 'LG picture mode and 3D LUT reset complete' : 'LG picture mode reset complete';
 }
 
 function meterAutoCalPreflightResetPrompt(){
  return (meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)
-  ? 'Click Reset to clear the LG DDC and 3D LUT calibration state.'
-  : 'Click Reset to clear the LG DDC calibration state.';
+  ? 'Click Reset to reset the LG picture mode and clear 3D LUT calibration state.'
+  : 'Click Reset to reset the LG picture mode before Auto Cal.';
 }
 
 async function meterAutoCalRunPreflightReset(){
@@ -19999,7 +20028,7 @@ async function meterAutoCalRunPreflightReset(){
    meterAutoCalRunning=false;
    toast('LG Auto Cal stopped');
   }else{
-   resetErrorMessage=(e&&e.message)?e.message:'Unable to reset LG DDC';
+   resetErrorMessage=(e&&e.message)?e.message:'Unable to reset LG picture mode';
    meterAutoCalRunning=true;
    meterAutoCalPhase='disclaimer';
    meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Reset failed',message:resetErrorMessage+'. Check the TV connection, then click Reset to try again.'});
@@ -22367,16 +22396,15 @@ async function meterStartAutoCal(options){
 
 async function meterAutoCalAcceptDisclaimer(){
  if(!meterAutoCalPendingConfig||!meterAutoCalPendingConfig.whiteStep){toast('Auto Cal setup is not ready',true);return;}
- if(!meterAutoCalPreflightResetDone){toast((meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'Run the LG DDC and 3D LUT reset first.':'Run the LG DDC reset first.',true);return;}
+ if(!meterAutoCalPreflightResetDone){toast((meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow)?'Run the LG picture mode and 3D LUT reset first.':'Run the LG picture mode reset first.',true);return;}
  meterAutoCalPhase='preflight';
  meterActionPending=true;
  const whiteStep=meterAutoCalPendingConfig.whiteStep;
  try{
-  // Brightness/contrast clipping is now handled manually in Display Control.
-  // Auto Cal must not change those TV picture controls implicitly.
-  meterAutoCalLevelPreflight={skipped:true};
   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
   if(meterAutoCalRequiresLuminanceSetup()){
+   meterAutoCalLevelPreflight=await meterAutoCalRunLevelPreflight();
+   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
    const setupReading=await meterAutoCalLuminanceSetupLoop(whiteStep);
    if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
    if(setupReading){
@@ -22385,6 +22413,7 @@ async function meterAutoCalAcceptDisclaimer(){
     meterWhiteReading=setupReading;
    }
   }else{
+   meterAutoCalLevelPreflight={skipped:true};
    meterAutoCalLuminanceSetupActive=false;
    meterAutoCalSetupReading=null;
    meterAutoCalCapturedTargetY=0;
