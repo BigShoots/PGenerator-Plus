@@ -167,11 +167,13 @@ vm.runInContext([
     globalThis.disabledLegalWhiteReference = meterFindLgAutoCalLegalWhiteReference([disabledValidationWhite]);
     globalThis.normalLegalWhiteReference = meterFindLgAutoCalLegalWhiteReference([normalReferenceWhite]);
     globalThis.disabledExplicitTargetWhite = meterExplicitLgTargetWhiteReferenceNits([disabledValidationWhite]);
-    globalThis.normalExplicitTargetWhite = meterExplicitLgTargetWhiteReferenceNits([normalReferenceWhite]);
-    globalThis.visibleMagicWandReference = meterEffectiveGreyscaleWhiteReference([
+    globalThis.normalExplicitTargetWhiteDuringAutoCal = meterExplicitLgTargetWhiteReferenceNits([normalReferenceWhite]);
+    globalThis.activeAutoCalReference = meterEffectiveGreyscaleWhiteReference([
       { ire: 3, name: '3%', luminance: 0.4 },
       { ire: 99, name: '99%', luminance: 149, request_id: 'visible-only-99' }
     ]);
+    meterAutoCalRunning = false;
+    globalThis.normalExplicitTargetWhiteAfterAutoCal = meterExplicitLgTargetWhiteReferenceNits([normalReferenceWhite]);
     globalThis.completePhaseTargetReferenceActive = meterAutoCalGreyscaleTargetWhiteReferenceActive([
       { ire: 99, name: '99%', luminance: 149 }
     ]);
@@ -192,12 +194,13 @@ assert.strictEqual(
 assert.strictEqual(context.disabledLegalWhiteReference, null, 'disabled legal-white validation should not become the LG AutoCal chart legal-white reference');
 assert.strictEqual(context.disabledExplicitTargetWhite, null, 'disabled legal-white validation autocal_white_y should not become an explicit target white');
 assert.strictEqual(context.normalLegalWhiteReference && context.normalLegalWhiteReference.luminance, 162, 'normal series/reference 100% should remain eligible as legal white');
-assert.strictEqual(context.normalExplicitTargetWhite, 162, 'normal series/reference 100% should still provide explicit target white');
+assert.strictEqual(context.normalExplicitTargetWhiteDuringAutoCal, null, 'normal read-only legal white should not provide the active AutoCal target-white basis');
 assert.strictEqual(
-  context.visibleMagicWandReference && context.visibleMagicWandReference.request_id,
-  'magic-wand-verify-white',
-  'Magic Wand charts that hide reference-only white should still use the raw verification legal-white reference'
+  context.activeAutoCalReference && context.activeAutoCalReference.synthetic_target,
+  true,
+  'active AutoCal charts should use the synthetic/derived target reference instead of a hidden legal-white read'
 );
+assert.strictEqual(context.normalExplicitTargetWhiteAfterAutoCal, 162, 'normal completed series/reference 100% should still provide explicit target white');
 assert.strictEqual(
   context.completePhaseTargetReferenceActive,
   false,

@@ -16,9 +16,12 @@ const pairDisableSource = sliceBetween(
   'sub legal_white_pair_spread_limit'
 );
 assert(
-  pairDisableSource.includes('return undef if(legal_white_pair_disabled_for_sdr_initial_99($config,$target,$step));') &&
-    pairDisableSource.includes('return abs(($target->{"ire"}+0)-99) <= 0.001 ? 1 : 0;'),
-  'initial SDR full-spine 99% must stay unpaired from hidden 100% luminance scoring'
+  pairDisableSource.includes('lg_autocal_26_sdr_headroom_enabled($config)') &&
+    pairDisableSource.includes('return undef if(abs(($target->{"ire"}+0)-99) > 0.001);') &&
+    pairDisableSource.includes('next if(ref($candidate) ne "HASH" || !$candidate->{"autocal_white_reference"});') &&
+    pairDisableSource.includes('return $candidate;') &&
+    !source.includes('sub legal_white_pair_disabled_for_sdr_initial_99'),
+  'initial SDR full-spine 99% should keep the hidden 100% legal-white guard read paired during AutoCal'
 );
 
 const validationGateSource = sliceBetween(
@@ -133,8 +136,10 @@ const whiteReferenceUpdateSource = sliceBetween(
 );
 assert(
   whiteReferenceUpdateSource.includes('$step->{"autocal_target_reference_disabled"}') &&
-    whiteReferenceUpdateSource.includes('$reading->{"autocal_target_reference_disabled"}'),
-  'white-reference updates must ignore reads or steps flagged as AutoCal target-reference disabled'
+    whiteReferenceUpdateSource.includes('$reading->{"autocal_target_reference_disabled"}') &&
+    whiteReferenceUpdateSource.includes('$step->{"autocal_reference_only"} || $step->{"autocal_read_only"}') &&
+    whiteReferenceUpdateSource.includes('$reading->{"autocal_reference_only"} || $reading->{"autocal_read_only"}'),
+  'white-reference updates must ignore target-reference-disabled and read-only/reference-only AutoCal reads'
 );
 
 const pairCounterpartReadSource = sliceBetween(

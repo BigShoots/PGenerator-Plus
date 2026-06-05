@@ -53,10 +53,16 @@ assert(
 assert(
   chartInteraction.includes('deSelected[rd.ire]=result.value;') &&
     chartInteraction.includes('de2000[rd.ire]=result.de2000;') &&
+    chartInteraction.includes('const rawGs=meterGreyscaleReadings(meterReadings);') &&
+    chartInteraction.includes('const gs=meterFilterLgAutoCalChartItems(rawGs);') &&
+    chartInteraction.includes('const effectiveWhiteRGB=meterGreyscaleRgbBalanceReference(gs);') &&
+    chartInteraction.includes('rgbBalance(rd,effectiveWhiteRGB,greyMode)') &&
     !chartInteraction.includes('PairedDeltaE') &&
     !chartInteraction.includes('dePaired') &&
+    !chartHover.includes('rgbBalance(rd,meterWhiteReading') &&
+    chartHover.includes('const bal=hit.rgbBalance||{R:100,G:100,B:100};') &&
     !chartHover.includes('99/100 avg'),
-  '99% Delta E tooltip should display direct 99% Delta E and not expose a paired average'
+  '99% tooltip should display direct 99% Delta E and the same RGB-balance reference as the visible chart'
 );
 
 {
@@ -131,13 +137,13 @@ assert(
 );
 
 assert(
-  autocalSource.includes('return undef if(legal_white_pair_disabled_for_sdr_initial_99($config,$target,$step));') &&
-    autocalSource.includes('sub legal_white_pair_disabled_for_sdr_initial_99') &&
-    autocalSource.includes('return abs(($target->{"ire"}+0)-99) <= 0.001 ? 1 : 0;') &&
-    autocalSource.includes('trace_109($read_step,"legal_white_pair_disabled_for_99"') &&
-    autocalSource.includes('reason=>"sdr_initial_autocal_99_unpaired"') &&
-    !autocalSource.includes('Full-DDC spine still needs the hidden 100% legal-white read'),
-  'initial SDR full-DDC spine 99% should disable the hidden 100% legal-white read and trace the unpaired mode'
+  !autocalSource.includes('sub legal_white_pair_disabled_for_sdr_initial_99') &&
+    !autocalSource.includes('legal_white_pair_disabled_for_99') &&
+    autocalSource.includes('$paired_white_step=legal_white_pair_reference_step($steps,$target,$step,$config);') &&
+    autocalSource.includes('$paired_white_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($paired_white_step) eq "HASH");') &&
+    autocalSource.includes('$other_step->{"autocal_target_reference_disabled"}=JSON::PP::true;') &&
+    autocalSource.includes('$other_reading->{"autocal_target_reference_disabled"}=JSON::PP::true;'),
+  'initial SDR full-DDC spine 99% should keep the hidden 100% legal-white guard read while keeping it target-reference disabled'
 );
 
 assert(
