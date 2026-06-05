@@ -30,6 +30,17 @@ static bool pi5_avi_infoframe_uses_ycbcr(const avi_infoframe &avi_infoframe)
 	return avi_infoframe.output_format != 0;
 }
 
+static uint64_t pi5_connector_colorspace_from_avi(const char *property_name,
+	const avi_infoframe &avi_infoframe)
+{
+	if (property_name && strcmp(property_name, "Colorspace") == 0 &&
+	    pi5_avi_infoframe_uses_ycbcr(avi_infoframe) &&
+	    avi_infoframe.colorimetry == 9)
+		return 10; // BT2020_YCC
+
+	return avi_infoframe.colorimetry;
+}
+
 static const char *drm_enum_name(drmModePropertyPtr prop, uint64_t value)
 {
 	if (!prop)
@@ -3788,7 +3799,8 @@ void ofxRPI4Window::updateAVI_Infoframe(uint32_t plane_id, struct avi_infoframe 
 	if (!ok || !(colorimetry >= 0)) {
 		ofLogError() << "Unable to find Colorimetry/Colorspace";
 	} else {
-		colorimetry = avi_infoframe.colorimetry; 
+		colorimetry = pi5_connector_colorspace_from_avi(colorimetry_property,
+			avi_infoframe);
 		drm_mode_atomic_set_property(device, req, colorimetry_property , connectorId,	prop_id, colorimetry, prop, 0);
     }			
 	
