@@ -2648,7 +2648,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	 # LG 26pt greyscale post-cal reads must target the series' own 100% white
 	 # read. AutoCal-derived white is useful audit context, but stamping it as
 	 # series_target_white_y makes post-cal charts use the old calibration basis.
-	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $series_target_white_y_provided);
+	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $series_target_white_y_provided && !($points==26 && $lg_autocal_26));
  my $series_target_white_audit="";
  if($series_target_white_reference && $series_target_white_y_num>0) {
   my @audit_fields;
@@ -10700,7 +10700,8 @@ function meterResolveSeriesSnapshotFromCache(key,options){
  if(exact&&meterSeriesSnapshotIsCleared(exact)&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode) return null;
  let steps=clone((Array.isArray(opts.steps)&&opts.steps.length)?opts.steps:((exact&&Array.isArray(exact.steps)&&exact.steps.length)?exact.steps:meterBuildStepsJS(type,points)));
  steps=meterCanonicalRecoveredSteps(type,points,steps,(exact&&exact.status)||'complete');
- const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode?exact:null;
+ const requestedLg26=type==='greyscale'&&(Number(points)===26||meterSeriesStepsHaveLgAutoCal26Markers(steps));
+ const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode&&(requestedLg26===(meterSeriesSnapshotHasLgAutoCal26Markers(exact)||Number((exact&&exact.points)||0)===26))?exact:null;
  if(type!=='greyscale'){
   if(!exactEligible) return null;
   return {
@@ -10722,6 +10723,8 @@ function meterResolveSeriesSnapshotFromCache(key,options){
    if(!meta||meta.type!=='greyscale') return;
    if(!snap||!Array.isArray(snap.readings)||snap.readings.length===0) return;
    if(meterSeriesSnapshotSignalMode(snap,signalMode)!==signalMode) return;
+   const snapshotLg26=meta.points===26||meterSeriesSnapshotHasLgAutoCal26Markers(snap);
+   if(snapshotLg26!==requestedLg26) return;
    candidates.push({snap:snap,exact:false});
   });
  }
@@ -10808,6 +10811,25 @@ function meterSeriesLuminanceReadingCount(readings){
  return (Array.isArray(readings)?readings:[]).filter(rd=>meterReadingHasLuminance(rd)).length;
 }
 
+function meterSeriesStepHasLgAutoCal26Marker(step){
+ if(!step) return false;
+ if(String(step.series_mode||'')==='lg-autocal-26') return true;
+ if(step.autocal_legal_white_anchor) return true;
+ if(step.autocal_white_reference&&(step.ddc_target_ire!=null||step.autocal_order_ire!=null||step.autocal_target_label!=null)) return true;
+ if(step.autocal_slot_locked&&(step.autocal_code!=null||step.ddc_target_ire!=null||step.autocal_order_ire!=null||step.ire>100)) return true;
+ return false;
+}
+
+function meterSeriesStepsHaveLgAutoCal26Markers(steps){
+ return Array.isArray(steps)&&steps.some(step=>meterSeriesStepHasLgAutoCal26Marker(step));
+}
+
+function meterSeriesSnapshotHasLgAutoCal26Markers(status){
+ if(!status) return false;
+ if(meterSeriesStepsHaveLgAutoCal26Markers(status.steps)) return true;
+ return meterSeriesStepsHaveLgAutoCal26Markers(status.readings);
+}
+
 function meterSharedSeriesStatusCanRecover(status){
  const s=String((status&&status.status)||'').toLowerCase();
  return !!(status&&status.series_id&&(s==='running'||s==='complete'||s==='cancelled'||s==='error'));
@@ -10828,7 +10850,7 @@ function meterSharedSeriesStatusKey(status){
  else if(type==='greyscale'){
   const total=Number(status.total_steps||0)||0;
   const stepCount=steps?steps.length:0;
-  if(steps&&steps.some(step=>step&&(String(step.series_mode||'')==='lg-autocal-26'||step.autocal_white_reference||step.autocal_slot_locked))) points=26;
+  if(meterSeriesSnapshotHasLgAutoCal26Markers(status)) points=26;
   else {
    const basis=points||total||stepCount;
    if(basis>0&&basis<=2) points=2;
@@ -10858,9 +10880,9 @@ function meterSharedSeriesShouldRecover(status,opts){
   return serverTs>0&&serverTs>localTs;
  }
  if(serverId&&!localId){
-  if(isRunning) return true;
   if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&!opts.restoredLocal) return false;
   if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&opts.restoredLocal) return serverTs>0&&(!localTs||serverTs>=localTs);
+  if(isRunning) return true;
   if(serverCount>0&&localCount===0) return true;
   if(serverTs>0&&(!localTs||serverTs>=localTs)) return true;
   if(serverCount>localCount&&(!localTs||serverTs+300>=localTs)) return true;
@@ -15198,7 +15220,7 @@ function meterRecoverSeries(s){
 	  const stepCount=Array.isArray(steps)?steps.length:0;
 	  if(seriesType==='colors') return 30;
 	  if(seriesType==='saturations') return 24;
-	  if(seriesType==='greyscale'&&Array.isArray(steps)&&steps.some(step=>step&&(String(step.series_mode||'')==='lg-autocal-26'||step.autocal_white_reference||step.autocal_slot_locked))) return 26;
+	  if(seriesType==='greyscale'&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) return 26;
 	  const basis=count||stepCount;
 	  if(basis>0&&basis<=2) return 2;
 	  if(seriesType==='greyscale'&&basis===26) return 26;
@@ -18375,12 +18397,26 @@ function meterUpdateGreyTvWidgetMode(useTvControls){
  meterUpdateSeriesLabels();
 }
 
+function meterGreyscaleRgbPanelReading(reading){
+ if(reading&&meterReadingHasLuminance(reading)&&meterReadingIsGreyscale(reading)) return reading;
+ if(Array.isArray(meterReadings)&&meterReadings.length>0){
+  const current=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;
+  if(current&&meterReadingHasLuminance(current)&&meterReadingIsGreyscale(current)) return current;
+  for(let i=meterReadings.length-1;i>=0;i--){
+   const rd=meterReadings[i];
+   if(rd&&meterReadingHasLuminance(rd)&&meterReadingIsGreyscale(rd)) return rd;
+  }
+ }
+ return null;
+}
+
 function meterRenderGreyRgbReadOnly(reading){
  const host=document.getElementById('meterGreyTvWidget');
  const meta=document.getElementById('meterGreyTvMeta');
  if(!host) return;
- const liveRgb=reading?meterLiveRgbData(reading):null;
- const spec=meterRgbDeltasForLive(reading,liveRgb);
+ const panelReading=meterGreyscaleRgbPanelReading(reading);
+ const liveRgb=panelReading?meterLiveRgbData(panelReading):null;
+ const spec=meterRgbDeltasForLive(panelReading,liveRgb);
  const halfRange=meterGreyTvHalfRange(spec);
  const columns=[
   meterGreyTvColumnHtml('r','R','#f44',null,meterGreyTvLiveEntry(spec,'R'),halfRange,true,true),
@@ -23079,6 +23115,7 @@ async function meterRunSeries(){
    return false;
   }
   toast('Series started: '+r.total_steps+' steps');
+  if(r.series_id) meterSharedSeriesId=String(r.series_id);
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
   meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
   await meterPollSeries();
