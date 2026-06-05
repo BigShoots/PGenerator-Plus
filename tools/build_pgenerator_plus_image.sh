@@ -589,11 +589,12 @@ ensure_pi5_admin_identity() {
 
  if grep -q "^$user:" "$passwd_file"; then
   uid="$(awk -F: -v user="$user" '$1==user {print $3; exit}' "$passwd_file")"
-  perl - "$user" < "$passwd_file" > "$passwd_file.tmp" <<'PERL'
+  perl - "$user" "$passwd_file" > "$passwd_file.tmp" <<'PERL'
 use strict;
 use warnings;
-my $user = shift @ARGV;
-while (my $line = <STDIN>) {
+my ($user, $file) = @ARGV;
+open(my $fh, "<", $file) or die "Cannot open $file: $!\n";
+while (my $line = <$fh>) {
  chomp $line;
  my @fields = split /:/, $line, -1;
  if (($fields[0] // "") eq $user) {
@@ -602,6 +603,7 @@ while (my $line = <STDIN>) {
  }
  print join(":", @fields), "\n";
 }
+close($fh);
 PERL
   install -m 0644 -o 0 -g 0 "$passwd_file.tmp" "$passwd_file" 2>/dev/null || install -m 0644 "$passwd_file.tmp" "$passwd_file"
   rm -f "$passwd_file.tmp"
@@ -611,11 +613,12 @@ PERL
  fi
 
  if grep -q "^$user:" "$shadow_file"; then
-  perl - "$user" "$hash" < "$shadow_file" > "$shadow_file.tmp" <<'PERL'
+  perl - "$user" "$hash" "$shadow_file" > "$shadow_file.tmp" <<'PERL'
 use strict;
 use warnings;
-my ($user, $hash) = @ARGV;
-while (my $line = <STDIN>) {
+my ($user, $hash, $file) = @ARGV;
+open(my $fh, "<", $file) or die "Cannot open $file: $!\n";
+while (my $line = <$fh>) {
  chomp $line;
  my @fields = split /:/, $line, -1;
  if (($fields[0] // "") eq $user) {
@@ -624,6 +627,7 @@ while (my $line = <STDIN>) {
  }
  print join(":", @fields), "\n";
 }
+close($fh);
 PERL
   install -m 0640 -o 0 -g 42 "$shadow_file.tmp" "$shadow_file" 2>/dev/null || install -m 0640 "$shadow_file.tmp" "$shadow_file"
   rm -f "$shadow_file.tmp"
@@ -808,14 +812,15 @@ configure_pi5_headless_ssh() {
 
  log "Enabling Raspberry Pi 5 headless SSH access"
 
- perl - "$PI5_ROOT_PASSWORD_HASH" < "$shadow_file" > "$shadow_file.tmp" <<'PERL'
+ perl - "$PI5_ROOT_PASSWORD_HASH" "$shadow_file" > "$shadow_file.tmp" <<'PERL'
 use strict;
 use warnings;
 
-my $hash = shift @ARGV;
+my ($hash, $file) = @ARGV;
 my $found = 0;
 
-while (my $line = <STDIN>) {
+open(my $fh, "<", $file) or die "Cannot open $file: $!\n";
+while (my $line = <$fh>) {
  chomp $line;
  my @fields = split /:/, $line, -1;
  if (($fields[0] // "") eq "root") {
@@ -825,6 +830,7 @@ while (my $line = <STDIN>) {
  }
  print join(":", @fields), "\n";
 }
+close($fh);
 
 if (!$found) {
  print join(":", "root", $hash, "20221", "0", "99999", "7", "", "", ""), "\n";
