@@ -5322,7 +5322,13 @@ sub webui_capabilities_json (@) {
  my $has_st2084=0; my $has_hlg=0;
  my $has_dv=0; my $dv_444_10b12b=0;
  my $edid_decode_available=(-x $edidparser) ? 1 : 0;
+ my $kms_output_format=0;
  my %vic_420; # "WxH@HZi" => 1
+
+ if($is_kms) {
+  my $mt=`timeout 5 $modetest -c 2>/dev/null`;
+  $kms_output_format=1 if($mt=~/\boutput format\b/);
+ }
 
  if($edid_decode_available && $edid_path ne "" && -e $edid_path) {
   my $e=`timeout 5 $edidparser $edid_path 2>/dev/null`;
@@ -5374,6 +5380,11 @@ sub webui_capabilities_json (@) {
  }
 
  # Build 4:2:0 VIC array
+ if(!$kms_output_format) {
+  $has_444=0;
+  $has_422=0;
+  %vic_420=();
+ }
  my @v420=map{"\"$_\""} sort keys %vic_420;
 
 	 return "{\"dc_30bit\":".($dc_30?"true":"false")
@@ -5383,6 +5394,7 @@ sub webui_capabilities_json (@) {
   .",\"dc_420_12bit\":".($dc_420_12?"true":"false")
   .",\"max_tmds\":$max_tmds"
   .",\"scdc\":".($scdc?"true":"false")
+  .",\"kms_output_format\":".($kms_output_format?"true":"false")
   .",\"has_ycbcr444\":".($has_444?"true":"false")
   .",\"has_ycbcr422\":".($has_422?"true":"false")
   .",\"has_hdr_st2084\":".($has_st2084?"true":"false")
