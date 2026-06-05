@@ -29,6 +29,7 @@ assert(
   applyStatus.includes('const statusChartReadings=meterAutoCalStatusChartReadings(status);') &&
     applyStatus.includes('if(statusChartReadings.length){') &&
     applyStatus.includes('meterReadings=statusChartReadings;') &&
+    applyStatus.includes('const currentValid=currentKey?meterReadings.find') &&
     applyStatus.includes('if(!statusChartReadings.length&&meterSeriesSteps&&status.autocal)'),
   'AutoCal status should drive chart readings from merged status/best-known data, not only raw status.readings'
 );
@@ -131,6 +132,7 @@ vm.runInContext([
   extractFunction('meterReadingIsAutoCalChartHidden'),
   extractFunction('meterFilterLgAutoCalChartItems'),
   extractFunction('meterAutoCalStepForIre'),
+  extractFunction('meterAutoCalCurrentKeyFromStatus'),
   extractFunction('meterAutoCalBestKnownReadings'),
   extractFunction('meterAutoCalStatusChartReadings'),
   `
@@ -153,6 +155,28 @@ vm.runInContext([
         }
       }
     };
+    globalThis.autocalPaired99CurrentKey = meterAutoCalCurrentKeyFromStatus({
+      autocal: true,
+      status: 'running',
+      current_name: 'Auto Cal 99%',
+      message: 'Balancing 99% and 100% after adjustment: reading 100% legal white',
+      current_ire: 100,
+      current_step_ire: 100,
+      patch_ire: 100,
+      current_ddc_target_ire: 99,
+      current_ddc_array_ire: 99,
+      paired_current_name: '100% legal white'
+    });
+    globalThis.autocalNormal95CurrentKey = meterAutoCalCurrentKeyFromStatus({
+      autocal: true,
+      status: 'running',
+      current_name: 'Auto Cal 95%',
+      message: 'Reading 95% after adjustment',
+      current_ire: 95,
+      current_step_ire: 95,
+      current_ddc_target_ire: 95,
+      current_ddc_array_ire: 95
+    });
     const chartReadings = meterAutoCalStatusChartReadings(status);
     globalThis.chartReadings = chartReadings;
     globalThis.reading99 = chartReadings.find(reading => Number(reading.ire) === 99);
@@ -185,6 +209,8 @@ vm.runInContext([
   `
 ].join('\n'), context);
 
+assert.strictEqual(context.autocalPaired99CurrentKey, '99', 'AutoCal 99/100 paired legal-white reads should keep the visible/current key on the calibrated 99% slot');
+assert.strictEqual(context.autocalNormal95CurrentKey, '95', 'normal AutoCal statuses should still resolve the active key from the current patch');
 assert.strictEqual(context.reading99.request_id, 'current-autocal-99', 'AutoCal chart should prefer current best-known direct 99 over stale series/status 99');
 assert.strictEqual(context.reading99.name, '99%', 'LG26 chart labels should stay on nominal slot labels instead of showing code-derived stimulus values');
 assert(Math.abs(Number(context.reading99.stimulus) - 99.087) < 0.001, 'LG26 chart analysis should still retain the code-derived 99% stimulus separately from the label');

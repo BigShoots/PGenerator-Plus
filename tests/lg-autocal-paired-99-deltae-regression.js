@@ -75,6 +75,7 @@ assert(
 }
 
 const pairScore = sliceBetween(autocalSource, 'sub legal_white_pair_score {', 'sub legal_white_pair_worst_delta');
+const mergeReading = sliceBetween(autocalSource, 'sub merge_reading {', 'sub mark_autocal_diagnostic_reading');
 const bestUpdate = sliceBetween(autocalSource, 'sub legal_white_pair_best_update_allowed {', 'sub legal_white_pair_target_reached');
 const committedPolish = sliceBetween(
   autocalSource,
@@ -109,6 +110,23 @@ assert(
   pairCounterpartRead.includes('mark_autocal_diagnostic_reading($other_reading,"legal_white_pair_counterpart",$reason||"paired_counterpart")'),
   'paired 99/100 counterpart reads should remain available for solver state while hidden from normal chart plotting'
 );
+assert(
+  mergeReading.includes('my $reading_hidden=($reading->{"autocal_chart_hidden"}||$reading->{"autocal_diagnostic"}) ? 1 : 0;') &&
+    mergeReading.includes('my $item_hidden=($item->{"autocal_chart_hidden"}||$item->{"autocal_diagnostic"}) ? 1 : 0;') &&
+    mergeReading.includes('return $readings if($reading_hidden && !$item_hidden);'),
+  'hidden AutoCal diagnostics should not replace an existing visible same-IRE reading in state.readings'
+);
+{
+  const currentDeltaPos = pairCounterpartRead.indexOf('$state->{"current_delta_e"}=defined($de) ? $de : undef;');
+  const restoreActivePos = pairCounterpartRead.indexOf('set_state_active_step($state,$read_step,$target);', currentDeltaPos);
+  const writeStatePos = pairCounterpartRead.indexOf('write_state($state);', currentDeltaPos);
+  assert(
+    currentDeltaPos >= 0 &&
+      restoreActivePos > currentDeltaPos &&
+      writeStatePos > restoreActivePos,
+    'after a hidden 100% legal-white counterpart read, status should restore the active visible step to the calibrated 99% slot before publishing the 99% Delta E'
+  );
+}
 assert(
   bestUpdate.includes('my $candidate_avg=legal_white_pair_delta_average($de_a,$de_b);') &&
     bestUpdate.includes('return "paired_score_improved" if($candidate_worst <= $best_worst + 0.0001 && $candidate_avg + 0.0001 < $best_avg);'),
