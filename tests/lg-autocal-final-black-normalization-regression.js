@@ -74,17 +74,23 @@ const setupBlock = source.slice(setupStart, orderedLoop);
 assert(
   setupBlock.includes('$config->{"lg_autocal_26"}') &&
     setupBlock.includes('$black_step') &&
-    setupBlock.includes('($black_step ? 1 : 0)+($initial_black_reference_enabled ? 1 : 0)'),
-  'Progress total should count both the initial LG26 black reference and final black read'
+    setupBlock.includes('my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0);') &&
+    !setupBlock.includes('($initial_black_reference_enabled ? 1 : 0)'),
+  'Progress total should count the final black read but keep the initial LG26 black reference internal to the series'
 );
 
 const blackHelper = sliceBetween('my $read_black_reference_step=sub', 'my $read_sdr_top_legal_white_validation=sub');
 assert(
-  blackHelper.includes('set_state_active_step($state,$black_read_step,undef);') &&
+  blackHelper.includes('my $count_in_workflow=$initial_reference ? 0 : 1;') &&
+    blackHelper.includes('$step_num++ if($count_in_workflow);') &&
+    blackHelper.includes('if($count_in_workflow)') &&
+    blackHelper.includes('$state->{"current_name"}=$label;') &&
+    blackHelper.includes('$state->{"message"}=$complete_message if($count_in_workflow);') &&
+    blackHelper.includes('set_state_active_step($state,$black_read_step,undef);') &&
     blackHelper.includes('read_step($config,$black_read_step,$state)') &&
     blackHelper.includes('target_luminance_for_step($white_y,$black_read_step,$target_gamma,$signal_mode,autocal_state_black_luminance($state))') &&
     blackHelper.includes('set_state_target_step_luminance($state,$black_target_y);'),
-  'Shared black-read helper should carry 0% active/current metadata and target luminance'
+  'Shared black-read helper should carry 0% active metadata and target luminance while hiding the initial reference from workflow progress'
 );
 
 assert(

@@ -16091,7 +16091,7 @@ eval {
 			 my $white_reference_is_adjustable=($white_reference_step && ddc_target_for_step($white_reference_step)) ? 1 : 0;
 			 my $refresh_white_after_headroom=0;
 			 my $initial_black_reference_enabled=(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $black_step) ? 1 : 0;
-			 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0)+($initial_black_reference_enabled ? 1 : 0);
+			 my $total_ordered_steps=scalar(@ordered)+scalar(@verification)+($black_step ? 1 : 0);
 
 		 my $white_y=($target_luminance > 0) ? $target_luminance : undef;
 		 set_state_white_reference($state,$white_y) if(defined($white_y) && $white_y > 0);
@@ -16132,15 +16132,18 @@ eval {
 			 my $read_black_reference_step=sub {
 			  my ($label,$message,$complete_message,$normalize_event,$trace_event,$initial_reference)=@_;
 			  return undef if(ref($black_step) ne "HASH");
-			  $step_num++;
+			  my $count_in_workflow=$initial_reference ? 0 : 1;
+			  $step_num++ if($count_in_workflow);
 			  my $black_read_step=clone_picture($black_step);
 			  $black_read_step->{"stimulus"}=0 if(!defined($black_read_step->{"stimulus"}));
 			  $black_read_step->{"name"}="0%" if(!defined($black_read_step->{"name"}) || $black_read_step->{"name"} eq "");
-			  $state->{"current_step"}=$step_num;
-			  $state->{"total_steps"}=$total_ordered_steps;
-			  $state->{"current_name"}=$label;
-			  $state->{"phase"}="reading";
-			  $state->{"message"}=$message;
+			  if($count_in_workflow) {
+			   $state->{"current_step"}=$step_num;
+			   $state->{"total_steps"}=$total_ordered_steps;
+			   $state->{"current_name"}=$label;
+			   $state->{"phase"}="reading";
+			   $state->{"message"}=$message;
+			  }
 			  set_state_active_step($state,$black_read_step,undef);
 			  write_state($state);
 			  my ($black_reading,$black_error)=read_step($config,$black_read_step,$state);
@@ -16186,7 +16189,7 @@ eval {
 			  $state->{"current_delta_e"}=undef;
 			  set_state_target_step_luminance($state,$black_target_y);
 			  $state->{"luminance_error_pct"}=undef;
-			  $state->{"message"}=$complete_message;
+			  $state->{"message"}=$complete_message if($count_in_workflow);
 			  trace_109($black_read_step,$trace_event||"black_reference_read",{
 			   target_luminance=>defined($black_target_y) ? ($black_target_y+0) : undef,
 			   measured_luminance=>defined($measured_black_y) ? ($measured_black_y+0) : undef,

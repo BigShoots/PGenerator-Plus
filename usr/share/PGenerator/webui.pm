@@ -7830,8 +7830,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	       <div style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
 	       <canvas id="meterRGBCanvasGrey" width="200" height="200" style="width:100%;flex:1;min-height:0;display:block"></canvas>
 	      </div>
-	      <div id="meterGreyTvWrap" style="flex:0 0 180px;width:180px;height:220px;background:#0d0d15;border-radius:6px;padding:6px;display:none;flex-direction:column;box-sizing:border-box">
-	       <div style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">LG RGB</div>
+	      <div id="meterGreyTvWrap" style="flex:0 0 180px;width:180px;height:220px;background:#0d0d15;border-radius:6px;padding:6px;display:flex;flex-direction:column;box-sizing:border-box">
+	       <div id="meterGreyTvTitle" style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
 	       <div id="meterGreyTvWidget" style="width:100%;flex:1;min-height:0;display:block"></div>
 	       <div id="meterGreyTvMeta" style="font-size:.6rem;color:var(--text2);line-height:1.35;margin-top:4px;text-align:center">LG TV</div>
 	      </div>
@@ -18364,10 +18364,33 @@ function meterUpdateGreyTvWidgetMode(useTvControls){
  const legacy=document.getElementById('meterGreyRgbLegacyWrap');
  const tv=document.getElementById('meterGreyTvWrap');
  const wrap=document.getElementById('chartsGreyscaleFullWrap');
- if(wrap) wrap.classList.toggle('lg-calibration-mode',!!useTvControls);
- if(legacy) legacy.style.display=useTvControls?'none':'flex';
- if(tv) tv.style.display=useTvControls?'flex':'none';
+ const title=document.getElementById('meterGreyTvTitle');
+ const meta=document.getElementById('meterGreyTvMeta');
+ if(wrap) wrap.classList.toggle('lg-calibration-mode',true);
+ if(legacy) legacy.style.display='none';
+ if(tv) tv.style.display='flex';
+ if(title) title.textContent=useTvControls?'LG RGB':'RGB';
+ if(meta) meta.style.display=useTvControls?'':'none';
  meterUpdateSeriesLabels();
+}
+
+function meterRenderGreyRgbReadOnly(reading){
+ const host=document.getElementById('meterGreyTvWidget');
+ const meta=document.getElementById('meterGreyTvMeta');
+ if(!host) return;
+ const liveRgb=reading?meterLiveRgbData(reading):null;
+ const spec=meterRgbDeltasForLive(reading,liveRgb);
+ const halfRange=meterGreyTvHalfRange(spec);
+ const columns=[
+  meterGreyTvColumnHtml('r','R','#f44',null,meterGreyTvLiveEntry(spec,'R'),halfRange,true,true),
+  meterGreyTvColumnHtml('g','G','#4caf50',null,meterGreyTvLiveEntry(spec,'G'),halfRange,true,true),
+  meterGreyTvColumnHtml('b','B','#42a5f5',null,meterGreyTvLiveEntry(spec,'B'),halfRange,true,true)
+ ];
+ host.innerHTML='<div class="meter-lg-rgb-host meter-lg-rgb-readonly-host">'+columns.join('')+'</div>';
+ if(meta){
+  meta.textContent='';
+  meta.style.display='none';
+ }
 }
 
 function meterRenderGreyTvControls(reading){
@@ -18389,8 +18412,7 @@ function meterRenderGreyTvControls(reading){
  }
  meterUpdateGreyTvWidgetMode(connected);
  if(!connected){
-  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">LG TV</div>';
-  if(meta) meta.textContent='LG TV';
+  meterRenderGreyRgbReadOnly(reading);
   return;
  }
  if(meterAutoCalLuminanceSetupActive){
