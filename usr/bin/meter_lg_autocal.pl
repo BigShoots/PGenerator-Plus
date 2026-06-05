@@ -20008,6 +20008,7 @@ eval {
 				 }
 				 my $reconfirm_sdr_low_shadow_final_context=sub {
 				  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+				  return 0 if(!$config->{"sdr_low_shadow_final_context_reconfirm"});
 				  return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
 				  return 0 if(autocal_config_is_touchup($config));
 				  return 0 if(autocal_config_is_post_3d_polish($config));
