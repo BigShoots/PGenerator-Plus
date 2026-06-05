@@ -1132,6 +1132,9 @@ fix_permissions() {
  chown root:root "$ROOT_MOUNT/etc/sudo/sudoers.d/PGenerator" 2>/dev/null || true
  chmod 755 "$ROOT_MOUNT/etc/sudo" "$ROOT_MOUNT/etc/sudo/sudoers.d" 2>/dev/null || true
  chmod 440 "$ROOT_MOUNT/etc/sudo/sudoers" "$ROOT_MOUNT/etc/sudo/sudoers.d/PGenerator" 2>/dev/null || true
+ chown root:root "$ROOT_MOUNT/etc/sudoers.d" "$ROOT_MOUNT/etc/sudoers.d/PGenerator" 2>/dev/null || true
+ chmod 755 "$ROOT_MOUNT/etc/sudoers.d" 2>/dev/null || true
+ chmod 440 "$ROOT_MOUNT/etc/sudoers.d/PGenerator" 2>/dev/null || true
 
  local root_execs=(
   "etc/init.d/PGenerator"
