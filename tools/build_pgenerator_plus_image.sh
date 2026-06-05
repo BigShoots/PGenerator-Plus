@@ -818,7 +818,7 @@ configure_pi5_bookworm_boot() {
   log "Added Pi 5 vc4-kms-v3d boot config block"
  fi
 
- ensure_config_line "$config_file" "auto_initramfs" "0"
+ ensure_config_line "$config_file" "auto_initramfs" "1"
 
  cmdline="$(tr -d '\n' < "$cmdline_file")"
  cmdline="$(perl -e '
@@ -835,7 +835,7 @@ configure_pi5_bookworm_boot() {
   fi
  done
  printf '%s\n' "$cmdline" > "$cmdline_file"
- log "Configured Pi 5 direct-root boot cmdline diagnostics"
+ log "Configured Pi 5 initramfs boot cmdline diagnostics"
 }
 
 configure_pi5_headless_ssh() {
