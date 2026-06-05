@@ -11930,11 +11930,7 @@ function meterColorSeriesReferenceNits(){
 }
 
 function meterBlackReadingY(){
- const readings=(Array.isArray(meterReadings)?meterReadings:[]).map(r=>meterNormalizeOledBlackReading(r));
- const blacks=readings.filter(r=>meterReadingIsGreyscale(r)&&(r.ire||0)<=5&&meterReadingHasLuminance(r))
-  .map(r=>meterReadingLuminanceNits(r)||0)
-  .filter(v=>v>=0);
- return blacks.length>0?Math.min(...blacks):0;
+ return meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]);
 }
 
 function meterDisplayIsOled(){
@@ -24851,8 +24847,7 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
   return;
  }
  const Lw=effectiveWhite.luminance||effectiveWhite.Y;
- const blacksL=gs.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
- const Lb=blacksL.length>0?Math.min(...blacksL.map(r=>r.luminance)):0;
+ const Lb=meterChartBlackLevel(gs);
  const gwWeight=meterGrayWorldWeight();
  // Use all series steps for x-axis
  const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
@@ -24937,8 +24932,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
   return;
  }
  const Lw=effectiveWhite2000.luminance||effectiveWhite2000.Y;
- const blacksL=gs.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
- const Lb=blacksL.length>0?Math.min(...blacksL.map(r=>r.luminance)):0;
+ const Lb=meterChartBlackLevel(gs);
  const gwWeight=meterGrayWorldWeight();
  const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
  // Lab normalization: Xn = D65.X * YWhite, Yn = YWhite, Zn = D65.Z * YWhite.
@@ -25963,8 +25957,7 @@ function meterBuildReportSummaryCards(){
   const rawGs=report.raw;
   const white=report.white;
   const peak=white?(white.luminance||white.Y||0):0;
-  const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
-  const black=blacks.length?Math.min(...blacks):0;
+  const black=meterChartBlackLevel(rawGs);
   let deVals=[];
   if(white&&(white.Y||white.luminance)>0){
     deVals=gs.map(rd=>meterColorDeltaE2000(rd,meterGreyRefMode(),meterDeltaEForm(),meterGrayWorldWeight())).filter(v=>isFinite(v));
@@ -26030,8 +26023,7 @@ function meterBuildGreyscaleReportTable(){
  const deLabel=meterDeltaEFormLabel(deForm);
  const white=report.white;
  const Lw=white?(white.luminance||white.Y||0):0;
- const blacks=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||r.Y||0).filter(v=>v>=0);
- const Lb=blacks.length?Math.min(...blacks):0;
+ const Lb=meterChartBlackLevel(report.raw);
  let rows='';
  gs.forEach(rd=>{
   const bal=white?rgbBalance(rd,white,greyMode):{R:100,G:100,B:100};
@@ -26218,8 +26210,7 @@ function meterExportCSV(){
  const Xn=whiteR?whiteR.X:(wp.X*Lw);
  const Yn=whiteR?whiteR.Y:Lw;
  const Zn=whiteR?whiteR.Z:(wp.Z*Lw);
- const blacks=meterReadings.filter(r=>(r.ire||0)<=5&&r.luminance!=null);
- const Lb=blacks.length>0?Math.min(...blacks.map(r=>r.luminance)):0;
+ const Lb=meterChartBlackLevel(meterReadings);
  const colorRefMode=meterColorRefMode();
  const greyMode=meterGreyRefMode();
  let csv='Step,Name,IRE,R_code,G_code,B_code,X,Y,Z,x,y,Luminance,CCT,Gamma,R_bal,G_bal,B_bal,dEuv,dE2000\n';
