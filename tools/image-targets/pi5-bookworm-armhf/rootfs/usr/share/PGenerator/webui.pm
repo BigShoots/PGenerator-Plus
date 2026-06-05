@@ -314,6 +314,9 @@ my $_CEC_CACHE_TTL=30;
 
 my $_caps_cache="";
 my $_caps_cache_time=0;
+my $_modes_cache="";
+my $_modes_cache_time=0;
+my $_MODES_CACHE_TTL=30;
 my $_stats_cache="";
 my $_stats_cache_time=0;
 my $_STATS_CACHE_TTL=2;
@@ -4832,9 +4835,54 @@ sub webui_apply_config (@) {
  while($body=~/"(\w+)"\s*:\s*"([^"]*)"/g) {
   $changes{$1}=$2;
  }
+ if(defined $changes{"signal_mode"}) {
+  my $signal_mode=lc($changes{"signal_mode"});
+  if($signal_mode eq "sdr") {
+   $changes{"is_sdr"}="1";
+   $changes{"is_hdr"}="0";
+   $changes{"is_ll_dovi"}="0";
+   $changes{"is_std_dovi"}="0";
+   $changes{"dv_status"}="0";
+   $changes{"dv_interface"}="0";
+   $changes{"dv_metadata"}="0";
+   $changes{"eotf"}="0";
+   $changes{"primaries"}="0";
+  } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+   $changes{"is_sdr"}="0";
+   $changes{"is_hdr"}="1";
+   $changes{"is_ll_dovi"}="0";
+   $changes{"is_std_dovi"}="0";
+   $changes{"dv_status"}="0";
+   $changes{"dv_interface"}="0";
+   $changes{"dv_metadata"}="0";
+   $changes{"eotf"}=($signal_mode eq "hlg") ? "3" : "2";
+   $changes{"primaries"}="1";
+  } elsif($signal_mode eq "dv") {
+   $changes{"is_sdr"}="0";
+   $changes{"is_hdr"}="1";
+   $changes{"is_ll_dovi"}="1";
+   $changes{"is_std_dovi"}="1";
+   $changes{"dv_status"}="1";
+   $changes{"eotf"}="2";
+   $changes{"primaries"}="1";
+   $changes{"max_bpc"}="12";
+   $changes{"color_format"}="0";
+   $changes{"colorimetry"}="9";
+   $changes{"rgb_quant_range"}="2";
+  }
+ }
  my %effective=%pgenerator_conf;
  foreach my $k (keys %changes) {
   $effective{$k}=$changes{$k};
+ }
+ if(!defined $changes{"signal_mode"}) {
+  if(int($effective{"dv_status"} || 0) || int($effective{"is_ll_dovi"} || 0) || int($effective{"is_std_dovi"} || 0)) {
+   $changes{"signal_mode"}="dv";
+  } elsif(int($effective{"is_hdr"} || 0)) {
+   $changes{"signal_mode"}=(int($effective{"eotf"} || 0) == 3) ? "hlg" : "hdr10";
+  } else {
+   $changes{"signal_mode"}="sdr";
+  }
  }
  my $dv_on=int($effective{"dv_status"} || 0);
  $dv_on=1 if(int($effective{"is_ll_dovi"} || 0) || int($effective{"is_std_dovi"} || 0));
@@ -5291,14 +5339,22 @@ sub webui_stats_json (@) {
 
 sub webui_modes_json (@) {
  my @modes;
- return "[]" if(!&webui_hdmi_connected());
- my $output=`timeout 5 $modetest -c 2>/dev/null`;
+ my $now=time();
+ return $_modes_cache if($_modes_cache ne "" && ($now - $_modes_cache_time) < $_MODES_CACHE_TTL);
+ return ($_modes_cache ne "" ? $_modes_cache : "[]") if(!&webui_hdmi_connected());
+ my $output=`timeout 3 $modetest -c 2>/dev/null`;
+ return ($_modes_cache ne "" ? $_modes_cache : "[]") if(!defined($output) || $output eq "");
  # Parse modes from modetest output — capture index, resolution, refresh, and pixel clock (kHz)
  while($output=~/^\s*#(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+/gm) {
   my ($idx,$res,$hz,$clock)=($1,$2,$3,$4);
   push @modes, "{\"idx\":$idx,\"resolution\":\"$res\",\"refresh\":\"$hz\",\"clock\":$clock}";
  }
- return "[".join(",",@modes)."]";
+ my $json="[".join(",",@modes)."]";
+ if(@modes) {
+  $_modes_cache=$json;
+  $_modes_cache_time=$now;
+ }
+ return $json;
 }
 
 sub webui_capabilities_json (@) {
@@ -5654,28 +5710,6 @@ sub webui_cec (@) {
 	 # status returns structured JSON
 	 if($cmd eq "status") {
 	  my ($cached_phys,$cached_log,$cached_osd,$cached_power,$cache_age)=&webui_cec_scan_cache_info($cec_scan_cache);
-	  my $direct=&webui_cec_direct_status($cec_bin,10);
-	  if(ref($direct) eq "HASH") {
-	   my $phys=($cached_phys ne "") ? $cached_phys : ($direct->{"phys_addr"}||"");
-	   my $log=($cached_log ne "") ? $cached_log : ($direct->{"log_addr"}||"");
-	   my $osd=($cached_osd ne "") ? $cached_osd : ($direct->{"osd_name"}||"");
-	   &webui_cec_power_cache_write($cec_power_cache,$direct->{"tv_power"},$phys,$log,$osd);
-	   return &webui_cec_status_json($direct->{"tv_power"},$phys,$log,$osd,"cec-status-direct");
-	  }
-	  if($cache_age <= 30 && $cached_power ne "unknown") {
-	   &webui_cec_power_cache_write($cec_power_cache,$cached_power,$cached_phys,$cached_log,$cached_osd);
-	   return &webui_cec_status_json($cached_power,$cached_phys,$cached_log,$cached_osd,"cec-scan-cache");
-	  }
-	  my $cached_status=&webui_cec_power_cache_read($cec_power_cache,20);
-	  if(ref($cached_status) eq "HASH") {
-	   return &webui_cec_status_json($cached_status->{"tv_power"},$cached_status->{"phys_addr"},$cached_status->{"log_addr"},$cached_status->{"osd_name"},"cec-status-cache");
-	  }
-	  if(!&webui_hdmi_connected()) {
-	   return &webui_cec_status_json("unknown","","","","");
-	  }
-	  if($cache_age <= 30 && ($cached_phys ne "" || $cached_log ne "" || $cached_osd ne "")) {
-	   return &webui_cec_status_json("unknown",$cached_phys,$cached_log,$cached_osd,"cec-cache");
-	  }
 	  if($cache_age > 8) {
 	   my $lock_age=(-f $cec_scan_lock) ? (time() - ((stat($cec_scan_lock))[9]||0)) : 999999;
 	   unlink($cec_scan_lock) if($lock_age > 20);
@@ -5686,6 +5720,20 @@ sub webui_cec (@) {
      'if grep -q "^{" "$tmp"; then mv "$tmp" "$cache"; else printf "{\"devices\":[],\"self\":{},\"scan_error\":true}\n" > "$cache"; rm -f "$tmp"; fi; rm -f "$lock") >/dev/null 2>&1 &';
     system("sh","-c",$script);
 	   }
+	  }
+	  if($cache_age <= 30 && $cached_power ne "unknown") {
+	   &webui_cec_power_cache_write($cec_power_cache,$cached_power,$cached_phys,$cached_log,$cached_osd);
+	   return &webui_cec_status_json($cached_power,$cached_phys,$cached_log,$cached_osd,"cec-scan-cache");
+	  }
+	  my $cached_status=&webui_cec_power_cache_read($cec_power_cache,60);
+	  if(ref($cached_status) eq "HASH") {
+	   return &webui_cec_status_json($cached_status->{"tv_power"},$cached_status->{"phys_addr"},$cached_status->{"log_addr"},$cached_status->{"osd_name"},"cec-status-cache");
+	  }
+	  if(!&webui_hdmi_connected()) {
+	   return &webui_cec_status_json("unknown","","","","");
+	  }
+	  if($cache_age <= 30 && ($cached_phys ne "" || $cached_log ne "" || $cached_osd ne "")) {
+	   return &webui_cec_status_json("unknown",$cached_phys,$cached_log,$cached_osd,"cec-cache");
 	  }
 	  return &webui_cec_status_json("unknown",$cached_phys,$cached_log,$cached_osd,"cec-status-background");
 	 }
@@ -8589,7 +8637,7 @@ function isSettingsFieldActive(){
 }
 
 function shouldPauseAutoRefresh(){
- return isSettingsFieldActive()||hasUnsavedSettings()||isCalibrationWorkflowActive();
+ return !!window._configApplyPending||isSettingsFieldActive()||hasUnsavedSettings()||isCalibrationWorkflowActive();
 }
 
 function checkSettingsChanged(){
@@ -9586,6 +9634,9 @@ function resetDefaults(){
 }
 
 async function applySettings(){
+ if(window._configApplyPending) return false;
+ window._configApplyPending=true;
+ meterUpdateReadButtons();
  const sm=getVal('signal_mode');
  const changes={
   mode_idx:getVal('mode_idx'),
@@ -9625,8 +9676,6 @@ async function applySettings(){
  const r=await fetchJSON('/api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(changes)});
  if(r&&r.status==='ok'){
-  window._configApplyPending=true;
-  meterUpdateReadButtons();
   toast('Applying settings...');
   document.getElementById('applyBar').style.display='none';
 	  try{
@@ -9642,6 +9691,8 @@ async function applySettings(){
   }
   return true;
  }else{
+  window._configApplyPending=false;
+  meterUpdateReadButtons();
   toast(r&&r.message?r.message:'Failed to apply','err');
   return false;
  }
@@ -9855,11 +9906,11 @@ function renderCecStatus(tvPower,physAddr){
 }
 
 async function loadCecStatus(){
- if(isCalibrationWorkflowActive()) return;
+ if(shouldPauseAutoRefresh()) return;
  if(cecStatusPending) return;
  cecStatusPending=true;
  try{
-  const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:15000});
+  const r=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:8000});
   if(r&&r.status==='ok'){
    renderCecStatus(r.tv_power,r.phys_addr);
   }else{

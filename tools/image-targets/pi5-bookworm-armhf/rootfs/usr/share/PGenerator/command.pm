@@ -316,7 +316,6 @@ sub prearm_drm_mode(@) {
   "-w '$connector_id:Colorspace:$colorspace' ".
   "-w '$connector_id:Broadcast RGB:$broadcast_rgb' ".
   "-s '$connector_id\@$crtc_id:$mode_arg\@$fb_fmt' ".
-  "-P '$plane_id\@$crtc_id:${hdisp}x${vdisp}\@$fb_fmt' ".
   ">/tmp/pgenerator_prearm.log 2>&1";
  system($cmd);
  &log("DRM: pre-armed connector=$connector_id crtc=$crtc_id plane=$plane_id mode=$mode_name/${refresh}Hz bpc=$max_bpc output_format=$color_fmt fb=$fb_fmt");
@@ -424,7 +423,7 @@ sub pattern_generator_start(@) {
  &auto_select_4k_mode();
  &ensure_hdmi_bandwidth_mode();
  &apply_drm_properties();
- &prearm_drm_mode();
+ &log("DRM: skipping modetest pre-arm; renderer owns the modeset");
  &get_hdmi_info();
  if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry") && !&kms_connector_has_property("output format")) {
   $use_drm_override=0;
@@ -453,11 +452,11 @@ sub pattern_generator_start(@) {
  # right after GBM init in the SOURCE_RANGE-aware renderer; without it the
  # renderer dies before any IMAGE pattern can be drawn (diagnostics break).
  if($use_drm_override) {
-  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/dev/null 2>&1 &");
  } else {
-  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/dev/null 2>&1 &");
  }
- usleep(250000);
+ usleep(750000);
  if(!$use_drm_override) {
   &log("DRM: skipping post-launch modetest reapply on Colorspace-only kernel");
   &apply_hdr_metadata_helper();
@@ -465,21 +464,8 @@ sub pattern_generator_start(@) {
   &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
   return;
  }
- my $startup_color_fmt=$pgenerator_conf{"color_format"};
- $startup_color_fmt=0 if($startup_color_fmt eq "");
- if($startup_color_fmt == 0 && ($pgenerator_conf{"dv_status"}||"0") ne "1") {
-   # Some displays miss the first pre-launch RGB/colorspace programming and stay
-   # on the splash screen until a later format toggle forces HDMI state back in.
-   # YCbCr modes are already pre-programmed above and the renderer performs its
-   # own modeset; a second modetest pass can race DRM master setup on Pi5.
-   &apply_drm_properties();
- }
- if($is_kms && ($pgenerator_conf{"dv_status"}||"0") ne "1" && $startup_color_fmt == 0) {
-  # Some monitor-class RGB sinks take longer than TVs to latch the connector
-  # state after the renderer grabs DRM master. Retry once more after the link
-  # has been stable a bit longer so a manual YCbCr toggle is not needed.
-  usleep(1000000);
-  &apply_drm_properties();
+ if(!$no_clean_files && !&pattern_generator_is_running()) {
+  &log("DRM: renderer did not stay running after launch");
  }
  &apply_hdr_metadata_helper();
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
