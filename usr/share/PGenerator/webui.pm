@@ -11829,13 +11829,14 @@ function meterGreyscaleReferenceReadings(readings){
 function meterEffectiveGreyscaleWhiteReference(readings){
  const list=meterGreyscaleReferenceReadings(readings);
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
- const referenceList=lgAutoCalChartRef?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
  const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
+ const activeAutoCalReference=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
+ const referenceList=(lgAutoCalChartRef&&activeAutoCalReference&&!magicWandPhase)?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
  if(lgAutoCalChartRef&&magicWandPhase){
   const magicWandWhite=meterFindSeriesWhiteReading(list);
   if(magicWandWhite) return magicWandWhite;
  }
- const activeAutoCalTargetY=meterAutoCalGreyscaleTargetWhiteReferenceNits(list);
+ const activeAutoCalTargetY=activeAutoCalReference?meterAutoCalGreyscaleTargetWhiteReferenceNits(list):null;
  if(activeAutoCalTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(activeAutoCalTargetY);
   if(synthetic) return synthetic;
@@ -11890,7 +11891,13 @@ function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
  if(meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
  const phase=String(meterFullAutoCalPhase||'');
  const fullGreyscalePhase=phase==='first-greyscale'||phase==='touchup-greyscale'||phase==='post-3d-polish'||phase==='magic-wand';
- return !!(meterAutoCalRunning||meterAutoCalPolling||meterActionPending||(meterFullAutoCalRunning&&fullGreyscalePhase));
+ const directAutoCal=!!((typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)||(typeof meterAutoCalPolling!=='undefined'&&meterAutoCalPolling));
+ const fullGreyscaleAutoCal=!!((typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)&&fullGreyscalePhase);
+ const autoCalPhase=String((typeof meterAutoCalPhase!=='undefined'?meterAutoCalPhase:'')||'');
+ const actionPending=!!(typeof meterActionPending!=='undefined'&&meterActionPending);
+ const seriesRunning=!!(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning);
+ const pendingAutoCal=!!(actionPending&&!seriesRunning&&(directAutoCal||fullGreyscaleAutoCal||autoCalPhase==='running'||autoCalPhase==='luminance'));
+ return !!(directAutoCal||fullGreyscaleAutoCal||pendingAutoCal);
 }
 
 function meterAutoCalGreyscaleTargetWhiteReferenceNits(readings){
@@ -13462,6 +13469,24 @@ function meterReadingsUseLgHeadroomReference(readings){
  });
 }
 
+function meterReadingsHaveLgAutoCal26SeriesMarker(readings){
+ const list=Array.isArray(readings)?readings:[];
+ return list.some(rd=>{
+  if(!rd) return false;
+  if(String(rd.series_mode||'')==='lg-autocal-26') return true;
+  if(rd.autocal_legal_white_anchor||rd.autocal_white_reference||rd.autocal_slot_locked||rd.ddc_slot_locked) return true;
+  const ire=Number(meterReadingPlotIre(rd));
+  const code=Number(rd.r_code!=null?rd.r_code:rd.r);
+  return Number.isFinite(ire)&&ire>=105&&Number.isFinite(code)&&code>255;
+ });
+}
+
+function meterLgAutoCal26SeriesReadUsesInitialWhite(readings){
+ if(meterActiveSeriesType!=='greyscale'||!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
+ if(meterAutoCalGreyscaleTargetWhiteReferenceActive(readings)) return false;
+ return meterReadingsHaveLgAutoCal26SeriesMarker(readings);
+}
+
 function meterGreyHeadroomReferenceReading(readings){
  if(!meterReadingsUseLgHeadroomReference(readings)) return null;
  const list=Array.isArray(readings)?readings:[];
@@ -13480,6 +13505,7 @@ function meterGreyHeadroomReferenceReading(readings){
 
 function meterLgHeadroomDerivedWhiteReferenceNits(readings){
  const list=Array.isArray(readings)?readings:[];
+ if(meterLgAutoCal26SeriesReadUsesInitialWhite(list)) return null;
  if(!meterReadingsUseLgHeadroomReference(list)) return null;
  const headroom=meterGreyHeadroomReferenceReading(list);
  if(!headroom) return null;
@@ -13529,6 +13555,8 @@ function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
  if(meterHdrDiffuseWhiteOverride()!=null && meterChartIsPq()) return fallbackPeak;
  const list=Array.isArray(readings)?readings:[];
  const referenceList=meterGreyscaleReferenceReadings(list);
+ const activeAutoCalReference=meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
+ const allowHeadroomPeak=meterReadingsUseLgHeadroomReference(list)&&!meterLgAutoCal26SeriesReadUsesInitialWhite(list);
  const hasMeasuredWhite=referenceList.some(rd=>{
   if(!rd || rd.synthetic_target) return false;
   const y=Number((rd.luminance!=null)?rd.luminance:rd.Y);
@@ -13537,11 +13565,12 @@ function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
   const name=String(rd.name||'').toLowerCase();
   return Math.abs((Number(raw)||0)-100)<0.05 || name==='white' || !!rd.autocal_white_reference;
  });
- if(hasMeasuredWhite) return fallbackPeak;
- if(meterReadingsUseLgHeadroomReference(list)){
+ if(hasMeasuredWhite&&!activeAutoCalReference) return fallbackPeak;
+ if(allowHeadroomPeak){
   const peak=meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(list),steps,fallbackPeak,Lb);
   if(peak>0&&isFinite(peak)) return peak;
  }
+ if(!allowHeadroomPeak) return fallbackPeak;
  const peak=meterGreySolvePeakFromHeadroomReading(meterGreyHeadroomReferenceReading(readings),steps,fallbackPeak,Lb);
  return (peak>0&&isFinite(peak))?peak:fallbackPeak;
 }
@@ -24867,7 +24896,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
  // implied peak from that reading so the target passes through it; otherwise
  // keep the measured-white target. The Y axis (1.0==200 nits) is just a display
  // reference and does not affect this target calculation.
- const _eotfHeadroom=meterGreyHeadroomReferenceReading(sorted);
+ const _eotfHeadroom=meterAutoCalGreyscaleTargetWhiteReferenceActive(sorted)?meterGreyHeadroomReferenceReading(sorted):null;
  if(_eotfHeadroom){
   const _eotfSolved=meterGreySolvePeakFromHeadroomReading(_eotfHeadroom,plotSteps.length?plotSteps:targetSteps,targetPeak,Lb);
   if(_eotfSolved>0&&isFinite(_eotfSolved)) targetPeak=_eotfSolved;
