@@ -216,6 +216,13 @@ install_module_to_root() {
 	local dest="$root/lib/modules/$KERNEL_VERSION/kernel/drivers/gpu/drm/vc4/vc4.ko.xz"
 	local backup=""
 
+	if [[ -n "$root" ]]; then
+		if [[ ! -L "$root/lib" ]] || [[ "$(readlink "$root/lib")" != "usr/lib" ]]; then
+			echo "Refusing to install vc4 module: $root/lib is not the Pi 5 Bookworm usrmerge symlink" >&2
+			exit 1
+		fi
+	fi
+
 	mkdir -p "$(dirname "$dest")"
 	if [[ -f "$dest" ]]; then
 		backup="$dest.pgenerator-backup-$(date +%Y%m%d%H%M%S)"

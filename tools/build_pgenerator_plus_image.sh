@@ -791,6 +791,19 @@ configure_pi5_pgenerator_services() {
  enable_pi5_systemd_unit "PGenerator.service"
 }
 
+validate_pi5_usrmerge_root() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ log "Validating Raspberry Pi 5 usrmerge rootfs layout"
+ [[ -L "$ROOT_MOUNT/bin" ]] || die "Pi 5 rootfs must keep /bin as the usrmerge symlink"
+ [[ -L "$ROOT_MOUNT/sbin" ]] || die "Pi 5 rootfs must keep /sbin as the usrmerge symlink"
+ [[ -L "$ROOT_MOUNT/lib" ]] || die "Pi 5 rootfs must keep /lib as the usrmerge symlink"
+ [[ "$(readlink "$ROOT_MOUNT/lib")" == "usr/lib" ]] || die "Pi 5 rootfs /lib must point to usr/lib"
+ [[ -x "$ROOT_MOUNT/lib/systemd/systemd" ]] || die "Pi 5 rootfs /sbin/init target is missing"
+ [[ -e "$ROOT_MOUNT/lib/ld-linux-armhf.so.3" ]] || die "Pi 5 rootfs armhf dynamic linker is missing"
+ [[ -d "$ROOT_MOUNT/lib/modules" ]] || die "Pi 5 rootfs kernel modules directory is missing"
+}
+
 configure_pi5_bookworm_boot() {
  local config_file="$BOOT_MOUNT/config.txt"
  local cmdline_file="$BOOT_MOUNT/cmdline.txt"
@@ -1293,7 +1306,8 @@ main() {
  mount_root_partition
  mount_boot_partition
  check_base_image
-  overlay_tree
+ overlay_tree
+ validate_pi5_usrmerge_root
  stage_argyll_runtime
  reset_runtime_state
  configure_pi5_bookworm_root
@@ -1307,6 +1321,7 @@ main() {
   patch_boot_initramfs_rootwait
  fi
  fix_permissions
+ validate_pi5_usrmerge_root
  validate_release_root
  finalize_image
 }
