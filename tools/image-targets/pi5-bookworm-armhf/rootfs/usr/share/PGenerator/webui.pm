@@ -5545,7 +5545,13 @@ sub webui_cec_scan_cache_info (@) {
    $json=<$fh>;
    close($fh);
   }
+  my ($self_obj)=($json =~ /"self"\s*:\s*(\{[^{}]*\})/);
   my ($self_phys)=($json =~ /"self"\s*:\s*\{[^{}]*"phys"\s*:\s*"([^"]+)"/);
+  my $self_log="";
+  if(defined($self_obj) && $self_obj ne "") {
+   ($self_log)=($self_obj =~ /"(?:log|addr)"\s*:\s*"?([^",}\s]+)"?/);
+   $self_log="" if(!defined($self_log));
+  }
   my ($tv_obj)=($json =~ /(\{[^{}]*"type"\s*:\s*0[^{}]*\})/);
   if(!defined($tv_obj) || $tv_obj eq "") {
    ($tv_obj)=($json =~ /(\{[^{}]*"addr"\s*:\s*0[^{}]*\})/);
@@ -5558,6 +5564,7 @@ sub webui_cec_scan_cache_info (@) {
    $cached_power=&webui_cec_power_label($power);
   }
   $cached_phys=$self_phys if((!defined($cached_phys) || $cached_phys eq "" || $cached_phys eq "0.0.0.0") && defined($self_phys));
+  $cached_log=$self_log if(defined($self_log) && $self_log ne "");
  }
  $cached_phys="" if(!defined($cached_phys));
  $cached_log="" if(!defined($cached_log));
@@ -5629,7 +5636,7 @@ sub webui_cec (@) {
  }
  # scan returns JSON directly from pgcec scan-json
  if($cmd eq "scan") {
-  my $json=`timeout 8 $cec_bin scan-json 2>/dev/null`;
+  my $json=`timeout 12 $cec_bin scan-json 2>/dev/null`;
   my $rc=$?>>8;
   chomp($json);
   $json=~s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g;
@@ -5647,7 +5654,7 @@ sub webui_cec (@) {
 	 # status returns structured JSON
 	 if($cmd eq "status") {
 	  my ($cached_phys,$cached_log,$cached_osd,$cached_power,$cache_age)=&webui_cec_scan_cache_info($cec_scan_cache);
-	  my $direct=&webui_cec_direct_status($cec_bin,2);
+	  my $direct=&webui_cec_direct_status($cec_bin,6);
 	  if(ref($direct) eq "HASH") {
 	   my $phys=($cached_phys ne "") ? $cached_phys : ($direct->{"phys_addr"}||"");
 	   my $log=($cached_log ne "") ? $cached_log : ($direct->{"log_addr"}||"");
@@ -5675,7 +5682,7 @@ sub webui_cec (@) {
 	   if(!-f $cec_scan_lock) {
     my $script='lock="/tmp/pgenerator-cec-status.lock"; cache="/tmp/pgenerator-cec-scan.json"; cec="/usr/bin/pgcec"; '.
      'date +%s > "$lock"; tmp="$cache.$$"; '.
-     '(timeout 8 "$cec" scan-json 2>/dev/null | tr -d "\000-\010\013\014\016-\037\177" > "$tmp"; '.
+     '(timeout 12 "$cec" scan-json 2>/dev/null | tr -d "\000-\010\013\014\016-\037\177" > "$tmp"; '.
      'if grep -q "^{" "$tmp"; then mv "$tmp" "$cache"; else printf "{\"devices\":[],\"self\":{},\"scan_error\":true}\n" > "$cache"; rm -f "$tmp"; fi; rm -f "$lock") >/dev/null 2>&1 &';
     system("sh","-c",$script);
 	   }
@@ -5695,7 +5702,7 @@ sub webui_cec (@) {
   }
  }
  # action commands
- my $output=`timeout 5 $cec_bin $cmd 2>&1`;
+ my $output=`timeout 12 $cec_bin $cmd 2>&1`;
  my $rc=$?>>8;
  $output=~s/"/\\"/g;
  $output=~s/\n/\\n/g;
