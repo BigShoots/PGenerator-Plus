@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import os
+import pwd
 import pty
 import re
 import select
@@ -68,10 +69,19 @@ class Runner:
         # in the log file for diagnostics; the state carries only curated fields.
         # Drop any 'detail' so even a stale/cached UI cannot render it.
         payload.update(dict((key, value) for key, value in extra.items() if value not in (None, "") and key != "detail"))
-        tmp_path = "%s.tmp" % self.args.state_file
+        tmp_path = "%s.%s.tmp" % (self.args.state_file, os.getpid())
         json_text = utf8_text(json.dumps(payload, ensure_ascii=True))
         with io.open(tmp_path, "w", encoding="utf-8") as handle:
             handle.write(json_text)
+        try:
+            os.chmod(tmp_path, 0o666)
+        except Exception:
+            pass
+        try:
+            user = pwd.getpwnam("pgenerator")
+            os.chown(tmp_path, user.pw_uid, user.pw_gid)
+        except Exception:
+            pass
         os.rename(tmp_path, self.args.state_file)
         self.last_message = message
 
