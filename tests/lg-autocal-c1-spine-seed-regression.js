@@ -279,6 +279,7 @@ const lowShadowFinalContextSource = sliceBetween(
 );
 assert(
   lowShadowFinalContextSource.includes('sdr_low_shadow_final_context_hard_reject_warning_only') &&
+    lowShadowFinalContextSource.includes('return 0 if(!$config->{"sdr_low_shadow_final_context_reconfirm"});') &&
     lowShadowFinalContextSource.includes('foreach my $wanted_ire (2.3,3,4,5,7,10)') &&
     lowShadowFinalContextSource.includes('$record->{"warning"}=$failure_message;') &&
     lowShadowFinalContextSource.includes('$record->{"warning_only"}=JSON::PP::true;') &&

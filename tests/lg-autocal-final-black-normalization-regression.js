@@ -121,7 +121,7 @@ assert(
 );
 
 const finalRead = source.indexOf('"Reading final 0% black"', orderedLoop);
-const finalBoundary = source.indexOf('my $reconfirm_sdr_low_shadow_final_context=sub', finalRead);
+const finalBoundary = source.indexOf('commit_final_1d_lut($state,$picture,$arrays', finalRead);
 assert(
   finalRead > orderedLoop &&
     finalBoundary > finalRead &&
