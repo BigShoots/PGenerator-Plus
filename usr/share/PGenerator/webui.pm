@@ -20353,19 +20353,24 @@ function meterAutoCalBestKnownReadings(status){
  return out;
 }
 
-function meterAutoCalStatusChartReadings(status){
+function meterAutoCalStatusChartReadings(status,currentKey){
  const raw=Array.isArray(status&&status.readings)?status.readings:[];
  const base=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(raw,'greyscale'));
  const best=meterAttachSeriesMeta(meterAutoCalBestKnownReadings(status));
  const byKey=new Map();
- const addReading=reading=>{
+ const statusRunning=String(status&&status.status||'').toLowerCase()==='running';
+ const currentSlotKey=statusRunning?(currentKey||meterAutoCalCurrentKeyFromStatus(status)):null;
+ const addReading=(reading,source)=>{
   if(!reading||!meterReadingHasLuminance(reading)) return;
   if(meterReadingIsAutoCalChartHidden(reading)||meterLgAutoCalChartReferenceWhite(reading)) return;
   const key=meterStepNameKey(reading)||String(reading.ire||reading.name||byKey.size);
+  const currentPending=currentSlotKey&&key===currentSlotKey&&status.current_delta_e==null&&status.current_luminance==null&&status.luminance_error_pct==null;
+  if(currentPending) return;
+  if(source==='best'&&currentSlotKey&&key===currentSlotKey&&byKey.has(key)) return;
   byKey.set(key,reading);
  };
- base.forEach(addReading);
- best.forEach(addReading);
+ base.forEach(reading=>addReading(reading,'status'));
+ best.forEach(reading=>addReading(reading,'best'));
  return Array.from(byKey.values()).sort((a,b)=>(meterReadingPlotIre(a)||a.ire||0)-(meterReadingPlotIre(b)||b.ire||0));
 }
 
@@ -20397,7 +20402,7 @@ function meterAutoCalApplyStatus(status){
 		 }
 		 const currentKey=meterAutoCalCurrentKeyFromStatus(status);
 		 if(status.autocal&&String(status.status||'').toLowerCase()==='running') meterSelectedThumbIre=null;
-		 const statusChartReadings=meterAutoCalStatusChartReadings(status);
+		 const statusChartReadings=meterAutoCalStatusChartReadings(status,currentKey);
 		 if(statusChartReadings.length){
 	  meterReadings=statusChartReadings;
 	  const white=meterFindSeriesWhiteReading(meterReadings);

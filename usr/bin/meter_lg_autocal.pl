@@ -16874,6 +16874,8 @@ eval {
 	  $state->{"current_luminance"}=luminance($reading);
 	  set_state_target_step_luminance($state,$target_step_y);
 			  my $lum_pct=luminance_error_percent($reading,$target_step_y);
+			  $state->{"luminance_error_pct"}=defined($lum_pct) ? $lum_pct : undef;
+			  write_state($state);
 			  $best_lum_pct=$lum_pct;
 			  my $best_score=guarded_autocal_result_score($best_de,$best_lum_pct,$read_step,$best_reading,$white_guard_y);
 					  my $best_from_luma_only=0;
