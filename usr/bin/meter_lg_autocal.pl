@@ -1740,7 +1740,9 @@ sub update_white_reference_for_autocal_step {
 	 my ($config,$state,$step,$reading,$white_y)=@_;
 	 return $white_y if(
 	  (ref($step) eq "HASH" && $step->{"autocal_target_reference_disabled"}) ||
-	  (ref($reading) eq "HASH" && $reading->{"autocal_target_reference_disabled"})
+	  (ref($reading) eq "HASH" && $reading->{"autocal_target_reference_disabled"}) ||
+	  (ref($step) eq "HASH" && ($step->{"autocal_reference_only"} || $step->{"autocal_read_only"})) ||
+	  (ref($reading) eq "HASH" && ($reading->{"autocal_reference_only"} || $reading->{"autocal_read_only"}))
 	 );
 	 # If a workflow supplies an explicit paired legal-white target, keep
 	 # paired readbacks local so rejected candidates do not redefine the curve.
@@ -3857,7 +3859,6 @@ sub legal_white_pair_reference_step {
  return undef if(ref($target) ne "HASH" || !defined($target->{"ire"}));
  return undef if(ref($step) ne "HASH" || $step->{"autocal_white_reference"});
  return undef if(ref($steps) ne "ARRAY");
- return undef if(legal_white_pair_disabled_for_sdr_initial_99($config,$target,$step));
  if(lg_autocal_26_sdr_headroom_enabled($config)) {
   return undef if(abs(($target->{"ire"}+0)-99) > 0.001);
   foreach my $candidate (@{$steps}) {
@@ -3869,14 +3870,6 @@ sub legal_white_pair_reference_step {
   return undef;
  }
  return undef;
-}
-
-sub legal_white_pair_disabled_for_sdr_initial_99 {
- my ($config,$target,$step)=@_;
- return 0 if(ref($config) ne "HASH" || !lg_autocal_26_sdr_headroom_enabled($config));
- return 0 if(ref($target) ne "HASH" || !defined($target->{"ire"}));
- return 0 if(ref($step) ne "HASH" || $step->{"autocal_white_reference"});
- return abs(($target->{"ire"}+0)-99) <= 0.001 ? 1 : 0;
 }
 
 sub legal_white_pair_spread_limit {
@@ -16678,29 +16671,20 @@ eval {
 					   log_line("Skipping pre-low-shadow black settle; continuing directly into low-shadow greyscale calibration");
 					   $low_shadow_calibration_announced=1;
 						  }
-					  my $legal_white_pair_disabled_for_99=legal_white_pair_disabled_for_sdr_initial_99($config,$target,$step);
-					  my $paired_white_step=legal_white_pair_reference_step($steps,$target,$step,$config);
+						  my $paired_white_step=legal_white_pair_reference_step($steps,$target,$step,$config);
 				  $paired_white_step=fixed_lg_autocal_step($config,$paired_white_step) if($paired_white_step);
 				  if($paired_white_step) {
 				   $slot_read_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($slot_read_step) eq "HASH");
 				   $read_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($read_step) eq "HASH");
 				   $paired_white_step->{"legal_white_pair_active"}=JSON::PP::true if(ref($paired_white_step) eq "HASH");
 				  }
-				  trace_109($read_step,"start_step",{
-				   label=>$label,
-				   target=>$target,
-				   legal_white_pair_disabled_for_99=>$legal_white_pair_disabled_for_99?JSON::PP::true:undef,
-				   target_values=>trace_target_values($arrays,$target)
-				  });
-				  if($legal_white_pair_disabled_for_99) {
-				   trace_109($read_step,"legal_white_pair_disabled_for_99",{
-				    label=>$label,
-				    reason=>"sdr_initial_autocal_99_unpaired",
-				    target=>$target,
-				    target_values=>trace_target_values($arrays,$target)
-				   });
-				  }
-				  if(lg_autocal_26_full_ddc_spine_anchor_revisit_step($read_step)) {
+					  trace_109($read_step,"start_step",{
+					   label=>$label,
+					   target=>$target,
+					   legal_white_pair_active=>$paired_white_step?JSON::PP::true:undef,
+					   target_values=>trace_target_values($arrays,$target)
+					  });
+					  if(lg_autocal_26_full_ddc_spine_anchor_revisit_step($read_step)) {
 				   my $prior_best_entry=delete_lg_autocal_26_best_known_for_step($state,$read_step);
 				   my $prior_best_key=lg_autocal_26_best_known_key($read_step);
 				   $anchor_revisit_prior_best_known{$prior_best_key}=clone_picture($prior_best_entry)
