@@ -247,6 +247,13 @@ stage_overlay() {
 
  # OTA bundles should not ship transient runtime state.
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/tmp"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/images"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/video/.diagseq"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/ccss/custom"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/lg/ddc"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/lg/luts"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/lg/pin-sessions"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/updates"
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/running/tmp"
  : > "$STAGING_DIR/var/lib/PGenerator/operations.txt"
  rm -f "$STAGING_DIR/usr/share/PGenerator/meter_settings.json"

@@ -637,6 +637,14 @@ reset_runtime_state() {
  log "Resetting transient runtime state for a fresh image"
  rm -f "$ROOT_MOUNT/usr/share/PGenerator/meter_settings.json"
  rm -f "$ROOT_MOUNT/usr/sbin/PGeneratord.hdr"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/tmp"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/images"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/video/.diagseq"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/ccss/custom"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/lg/ddc"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/lg/luts"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/lg/pin-sessions"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/updates"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/running/tmp"
  find "$ROOT_MOUNT/var/lib/PGenerator/running" -mindepth 1 -maxdepth 1 ! -name 'tmp' -exec rm -rf {} + 2>/dev/null || true
  : > "$ROOT_MOUNT/var/lib/PGenerator/operations.txt"
@@ -1579,14 +1587,20 @@ fix_permissions() {
   set_root_symlink_owner "$rel"
  done
 
+ ensure_pgenerator_dir "var/lib/PGenerator" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/running" 0770
  ensure_pgenerator_dir "var/lib/PGenerator/running/tmp" 0755
+ ensure_pgenerator_dir "var/lib/PGenerator/tmp" 0755
+ ensure_pgenerator_dir "var/lib/PGenerator/images" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/video" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/video/.diagseq" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/ccss" 0755
  ensure_pgenerator_dir "var/lib/PGenerator/ccss/custom" 0755
  ensure_pgenerator_dir "var/lib/PGenerator/lg" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/lg/ddc" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/lg/luts" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/lg/pin-sessions" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/updates" 0755
  ensure_pgenerator_dir "var/log/PGenerator" 0755
 
  for bin in "${ARGYLL_RUNTIME_REQUIRED_BINS[@]}" "${ARGYLL_RUNTIME_OPTIONAL_BINS[@]}"; do
