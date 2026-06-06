@@ -25759,12 +25759,12 @@ function showColorReadingDetail(rd,opts){
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Target</div></div>';
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
- h+='<tr><td style="padding:3px 0;color:#777">Target x</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Target y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.y.toFixed(4):'--')+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target x</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394Y</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+lumInfo.deltaY.toFixed(1)+' cd/m\u00B2')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394x</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
