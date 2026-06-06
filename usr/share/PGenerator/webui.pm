@@ -1084,10 +1084,9 @@ sub webui_meter_status_apply_overrides (@) {
 }
 
 sub webui_meter_status (@) {
- my $series_running=`pgrep -f meter_series.sh 2>/dev/null`;
  my $spotread_running=`pgrep -x spotread 2>/dev/null`;
  my $session_alive=&webui_meter_session_alive();
- my $busy=($series_running=~/\d/ || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
+ my $busy=(&webui_meter_series_alive() || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
  if($busy && $_meter_last_good_status =~ /"detected"\s*:\s*true/) {
   return &webui_meter_status_apply_overrides($_meter_last_good_status);
  }
@@ -1253,9 +1252,36 @@ sub webui_meter_series_stop_cleanup (@) {
  unlink(@paths) if(@paths);
 }
 
+sub webui_meter_series_pids (@) {
+ my @pids;
+ foreach my $path (glob("/proc/[0-9]*/cmdline")) {
+  next unless($path=~/\/proc\/(\d+)\/cmdline$/);
+  my $pid=$1;
+  my $cmd="";
+  if(open(my $fh,"<",$path)) {
+   local $/;
+   binmode($fh);
+   $cmd=<$fh>;
+   close($fh);
+  }
+  next if($cmd eq "");
+  push @pids,$pid if($cmd=~/(?:^|\0)\/usr\/bin\/meter_series\.sh(?:\0|$)/);
+ }
+ return @pids;
+}
+
 sub webui_meter_series_alive (@) {
- my $alive=`pgrep -f '[m]eter_series\\.sh' 2>/dev/null`;
- return ($alive=~/\d/) ? 1 : 0;
+ return scalar(&webui_meter_series_pids()) ? 1 : 0;
+}
+
+sub webui_meter_series_kill (@) {
+ my ($signal)=@_;
+ $signal="-TERM" if(!defined($signal) || $signal eq "");
+ my @pids=&webui_meter_series_pids();
+ return 0 unless(@pids);
+ my $pid_list=join(" ",map { int($_) } @pids);
+ system("sudo kill $signal $pid_list 2>/dev/null");
+ return scalar(@pids);
 }
 
 sub webui_meter_series_signal_stop (@) {
@@ -1475,12 +1501,11 @@ sub webui_meter_read (@) {
  if(-f $_meter_series_file) {
   my $scheck="";
   if(open(my $fh,"<",$_meter_series_file)) { local $/; $scheck=<$fh>; close($fh); }
-  if($scheck=~/"status"\s*:\s*"running"/) {
-   my $alive=`pgrep -f meter_series.sh 2>/dev/null`;
-   if($alive=~/\d/) {
-     &log("WebUI: manual meter read requested while series helper still running; stopping stale series first");
-     &webui_meter_stop();
-     select(undef,undef,undef,0.5);
+	  if($scheck=~/"status"\s*:\s*"running"/) {
+	   if(&webui_meter_series_alive()) {
+	     &log("WebUI: manual meter read requested while series helper still running; stopping stale series first");
+	     &webui_meter_stop();
+	     select(undef,undef,undef,0.5);
    }
   }
  }
@@ -2799,12 +2824,11 @@ sub webui_meter_series_status (@) {
   my $json="";
   if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "") {
-   # If status is "running", verify the process is still alive
-   if($json=~/"status"\s*:\s*"running"/) {
-    my $alive=`pgrep -f meter_series.sh 2>/dev/null`;
-    if($alive!~/\d/) {
-     # Process died — mark as error so client knows
-     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+	   # If status is "running", verify the process is still alive
+	   if($json=~/"status"\s*:\s*"running"/) {
+	    if(!&webui_meter_series_alive()) {
+	     # Process died — mark as error so client knows
+	     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Process died unexpectedly"/;
      if(open(my $wf,">",$_meter_series_file)) { print $wf $json; close($wf); }
     }
@@ -3189,19 +3213,19 @@ sub webui_meter_stop (@) {
   while($waited < 80 && &webui_meter_series_alive()) {
    Time::HiRes::sleep(0.1);
    $waited++;
-  }
-  if(&webui_meter_series_alive()) {
-   system("sudo pkill -TERM -f 'meter_series.sh' 2>/dev/null");
-   my $tw=0;
-   while($tw < 30 && &webui_meter_series_alive()) {
-    Time::HiRes::sleep(0.1);
+	  }
+	  if(&webui_meter_series_alive()) {
+	   &webui_meter_series_kill("-TERM");
+	   my $tw=0;
+	   while($tw < 30 && &webui_meter_series_alive()) {
+	    Time::HiRes::sleep(0.1);
     $tw++;
    }
   }
- }
- # Kill any running spotread/meter processes (sudo required: they run as root)
- system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
- system("sudo pkill -9 -f 'meter_series.sh' 2>/dev/null") if(&webui_meter_series_alive());
+	 }
+	 # Kill any running spotread/meter processes (sudo required: they run as root)
+	 system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
+	 &webui_meter_series_kill("-9") if(&webui_meter_series_alive());
  system("sudo pkill -9 -f 'spotread_wrapper' 2>/dev/null");
  if(&webui_meter_series_alive() || !$series_was_alive) {
   system("sudo pkill -9 -x spotread 2>/dev/null");
