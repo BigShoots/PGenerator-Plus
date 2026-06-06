@@ -7,6 +7,9 @@ const vm = require('vm');
 
 const source = fs.readFileSync('usr/share/PGenerator/webui.pm', 'utf8');
 
+assert(source.includes('my $stamp_series_target_white_y=0;'), 'Series route should not default-stamp ColorChecker/Sat Sweep with stored AutoCal target white');
+assert(!source.includes('my $stamp_series_target_white_y=($type eq "colors" || $type eq "saturations") ? 1 : 0;'), 'ColorChecker/Sat Sweep target Y should come from their own White read, not stale LG target-white stamps');
+
 function extractFunction(name) {
   const token = `function ${name}(`;
   const start = source.indexOf(token);
@@ -28,6 +31,7 @@ const context = {
   console,
   Math,
   meterReadings: [],
+  meterWhiteReading: null,
   displayType: 'lcd',
   meterActiveSeriesType: 'greyscale',
   meterColorSeriesReferenceNits(){ return 100; },
@@ -60,8 +64,21 @@ const context = {
   meterParseSaturationReading(){ return null; },
   meterColorCheckerFullSatTargetXYZ(){ return { X:0, Y:0, Z:0 }; },
   meterSaturationTargetXYZ(){ return { X:0, Y:0, Z:0 }; },
+  meterUseLgAutoCal26(points){ return Number(points) === 26; },
+  meterReadingDisablesAutoCalTargetReference(){ return false; },
+  meterReadingIsAutoCalReferenceOnly(){ return false; },
+  meterAutoCalGreyscaleTargetWhiteReferenceActive(){ return false; },
+  meterStoredLgTargetWhiteReferenceNits(){ return 180; },
+  meterDvMapModeValue(){ return '2'; },
+  meterChartMasterPeak(){ return 1000; },
+  meterFullAutoCalConfig: { targetY: 180 },
+  meterFullAutoCalPhase: '',
+  meterFullAutoCalRunning: false,
+  meterActiveSeriesPoints: 30,
+  window: {},
   targetColorXYZAbs(){ return { X:0, Y:0, Z:0 }; }
 };
+context.window = context;
 
 vm.createContext(context);
 vm.runInContext([
@@ -79,6 +96,11 @@ vm.runInContext([
   extractFunction('srgbEotf'),
   extractFunction('meterGreyTargetLuminance'),
   extractFunction('meterGreyTargetPeak'),
+  extractFunction('meterExplicitLgTargetWhiteReferenceNits'),
+  extractFunction('meterSeriesUsesLgTargetWhite'),
+  extractFunction('meterColorSeriesTargetWhiteForRun'),
+  extractFunction('meterApplyColorSeriesTargetWhiteReference'),
+  extractFunction('meterColorSeriesReferenceNits'),
   extractFunction('meterTargetXYZForReading')
 ].join('\n'), context);
 
@@ -132,13 +154,32 @@ assert.strictEqual(oledZero.Y, 0, 'OLED normalized 0% black should still target 
 
 context.displayType = 'lcd';
 context.meterActiveSeriesType = 'colors';
+context.meterActiveSeriesPoints = 30;
+context.meterReadings = [
+  {
+    name: 'White',
+    ire: 100,
+    r_code: 255,
+    g_code: 255,
+    b_code: 255,
+    luminance: 162,
+    Y: 162,
+    series_target_white_y: 180,
+    lg_target_white_y: 180
+  }
+];
+assert.strictEqual(context.meterSeriesUsesLgTargetWhite('colors', 30), false, 'ColorChecker should not opt into stored LG target-white injection');
+assert.strictEqual(context.meterColorSeriesTargetWhiteForRun('colors', 30), null, 'ColorChecker series starts should not send stored AutoCal target white');
+const colorSteps = context.meterApplyColorSeriesTargetWhiteReference([{ name: 'White' }], 'colors', 30);
+assert.strictEqual(colorSteps[0].series_target_white_y, undefined, 'ColorChecker steps should not be stamped with stored AutoCal target white');
+assert.strictEqual(context.meterColorSeriesReferenceNits(), 162, 'ColorChecker target Y should use the measured series White even if stale LG target fields are present');
 const color = context.meterTargetXYZForReading({
   name: 'Color patch',
   target_x: 0.3127,
   target_y: 0.329,
   target_Yn: 0.2
 });
-assert.strictEqual(color.Y, 20, 'Color target_Yn should remain normalized to the series white reference');
+assert.strictEqual(color.Y, 32.4, 'Color target_Yn should remain normalized to the measured series white reference');
 
 const colorCheckerGray = context.meterTargetXYZForReading({
   name: 'Gray 35',
@@ -150,6 +191,6 @@ const colorCheckerGray = context.meterTargetXYZForReading({
   target_y: 0.329,
   target_Yn: 0.09
 });
-assert(Math.abs(colorCheckerGray.Y - 9) < 1e-12, 'ColorChecker gray chips should use color-series target_Yn, not greyscale EOTF target Y');
+assert(Math.abs(colorCheckerGray.Y - 14.58) < 1e-12, 'ColorChecker gray chips should use color-series target_Yn and measured series White, not greyscale EOTF or stale LG target Y');
 
 console.log('LG 26 target-Y black regression checks passed.');
