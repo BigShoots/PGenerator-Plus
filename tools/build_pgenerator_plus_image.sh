@@ -25,7 +25,7 @@ PI5_ADMIN_PASSWORD_HASH="$PI5_ROOT_PASSWORD_HASH"
 PI5_ADMIN_GROUPS="adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,render,netdev,gpio,i2c,spi"
 PI5_KEYBOARD_LAYOUT="us"
 PI5_LOCALE="en_US.UTF-8"
-PI5_ARGYLL_REQUIRED_LIBS=(libXss.so.1 liblzma.so.5 liblzma.so.0)
+PI5_ARGYLL_REQUIRED_LIBS=(libXss.so.1 liblzma.so.5 liblzma.so.0 libXxf86vm.so.1 libXrandr.so.2)
 PI5_RUNTIME_PACKAGES=(
  liburi-perl
  libxml-simple-perl
@@ -39,6 +39,8 @@ PI5_RUNTIME_PACKAGES=(
  libgles2
  libgles1
  libegl1
+ libxxf86vm1
+ libxrandr2
 )
 PI5_RUNTIME_REQUIRED_PATHS=(
  usr/share/perl5/URI/Escape.pm
@@ -54,6 +56,8 @@ PI5_RUNTIME_REQUIRED_PATHS=(
  usr/lib/arm-linux-gnueabihf/libGLESv2.so.2
  usr/lib/arm-linux-gnueabihf/libGLESv1_CM.so.1
  usr/lib/arm-linux-gnueabihf/libEGL.so.1
+ usr/lib/arm-linux-gnueabihf/libXxf86vm.so.1
+ usr/lib/arm-linux-gnueabihf/libXrandr.so.2
 )
 TARGET_OVERLAY_REL=""
 TARGET_DESCRIPTION=""
