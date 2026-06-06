@@ -450,6 +450,21 @@ static int should_suppress(uint32_t prop_id, uint64_t value) {
     return 0;
 }
 
+static void log_display_prop_update(uint32_t obj_id, uint32_t prop_id,
+                                    uint64_t value) {
+    char num[24];
+    write_log("DRM_OVERRIDE: display prop obj=");
+    itoa_simple(obj_id, num);
+    write_log(num);
+    write_log(" prop=");
+    itoa_simple(prop_id, num);
+    write_log(num);
+    write_log(" value=");
+    itoa_simple(value, num);
+    write_log(num);
+    write_log("\n");
+}
+
 /*
  * Create the fallback DOVI_OUTPUT_METADATA blob (one-time).
  * Returns blob_id, or 0 on failure.
@@ -782,8 +797,11 @@ int ioctl(int fd, unsigned long request, ...) {
         int connector_override_added = 0;
 
         uint32_t total = 0, i;
-        for (i = 0; i < atomic->count_objs; i++)
-            total += count_props[i];
+        uint32_t prop_obj_ids[MAX_ATOMIC_PROPS];
+        for (i = 0; i < atomic->count_objs; i++) {
+            for (uint32_t j = 0; j < count_props[i] && total < MAX_ATOMIC_PROPS; j++)
+                prop_obj_ids[total++] = objs[i];
+        }
 
         /*
          * Pass 0: Discover connector_id from the object that owns tracked
@@ -810,29 +828,40 @@ int ioctl(int fd, unsigned long request, ...) {
 
         /* Pass 1: Apply value overrides (max_bpc, output_format, Colorimetry, DOVI) */
         for (i = 0; i < total; i++) {
+            int is_connector_prop = (!connector_id || prop_obj_ids[i] == connector_id);
+            if (!is_connector_prop)
+                continue;
             if (max_bpc_prop_id && props[i] == max_bpc_prop_id) {
                 uint64_t old = values[i];
                 override_max_bpc(&values[i], "atomic");
-                if (old != values[i] || last_max_bpc != values[i])
+                if (old != values[i] || last_max_bpc != values[i]) {
                     display_prop_changed = 1;
+                    log_display_prop_update(prop_obj_ids[i], props[i], values[i]);
+                }
             }
             if (output_fmt_prop_id && props[i] == output_fmt_prop_id) {
                 uint64_t old = values[i];
                 override_output_fmt(&values[i], "atomic");
-                if (old != values[i] || last_output_fmt != values[i])
+                if (old != values[i] || last_output_fmt != values[i]) {
                     display_prop_changed = 1;
+                    log_display_prop_update(prop_obj_ids[i], props[i], values[i]);
+                }
             }
             if (colorimetry_prop_id && props[i] == colorimetry_prop_id) {
                 uint64_t old = values[i];
                 override_colorimetry(&values[i], "atomic");
-                if (old != values[i] || last_colorimetry != values[i])
+                if (old != values[i] || last_colorimetry != values[i]) {
                     display_prop_changed = 1;
+                    log_display_prop_update(prop_obj_ids[i], props[i], values[i]);
+                }
             }
             if (rgb_qr_prop_id && props[i] == rgb_qr_prop_id) {
                 uint64_t old = values[i];
                 override_rgb_qr(&values[i], "atomic");
-                if (old != values[i] || last_rgb_qr != values[i])
+                if (old != values[i] || last_rgb_qr != values[i]) {
                     display_prop_changed = 1;
+                    log_display_prop_update(prop_obj_ids[i], props[i], values[i]);
+                }
             }
             if (dovi_meta_prop_id && props[i] == dovi_meta_prop_id) {
                 if (dv_status == 1 && values[i] != 0) {
@@ -894,7 +923,8 @@ int ioctl(int fd, unsigned long request, ...) {
                     uint32_t ri = read_idx + j;
                     int suppress = 0;
 
-                    if (is_tracked_prop(props[ri]))
+                    if (is_tracked_prop(props[ri]) &&
+                        (!connector_id || objs[obj] == connector_id))
                         suppress = should_suppress(props[ri], values[ri]);
 
                     if (suppress) {
