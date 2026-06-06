@@ -487,6 +487,9 @@ sub pattern_generator_start(@) {
   system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/dev/null 2>&1 &");
  }
  usleep(750000);
+ # The renderer performs the real KMS modeset. Reapply connector properties
+ # after launch so deep-color RGB/4:4:4 is checked against the new mode.
+ &apply_drm_properties();
  if(!$use_drm_override) {
   &log("DRM: skipping post-launch modetest reapply on Colorspace-only kernel");
   &apply_hdr_metadata_helper();
