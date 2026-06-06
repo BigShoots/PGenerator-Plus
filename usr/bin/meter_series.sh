@@ -420,6 +420,15 @@ float_le() {
  awk -v left="$left" -v right="$right" 'BEGIN { exit !((left + 0) <= (right + 0)) }'
 }
 
+patch_insert_settle_seconds() {
+ local ire="${1:-0}"
+ if float_le "$ire" 25; then
+  echo 3.0
+ else
+  echo 1.5
+ fi
+}
+
 read_timeout_seconds() {
  local ire="${1:-0}"
  if float_le "$ire" 1; then
@@ -1022,7 +1031,7 @@ EOJSON
  # ABL stabilization: flash mid-gray between patches
  if [[ "$PATCH_INSERT" == "1" ]] && (( i > 0 )); then
   post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-  sleep 1.5
+  sleep "$(patch_insert_settle_seconds "$IRE")"
  fi
 
  # Display pattern
@@ -1323,7 +1332,7 @@ EOJSON
 
   if [[ "$PATCH_INSERT" == "1" ]] && (( READING_COUNT > 0 )); then
    post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-   sleep 1.5
+   sleep "$(patch_insert_settle_seconds "$FIRST_IRE")"
   fi
 
 	  post_patch "$FIRST_R" "$FIRST_G" "$FIRST_B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$FIRST_INPUT_MAX"
