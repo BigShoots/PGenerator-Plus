@@ -3141,13 +3141,16 @@ sub webui_meter_stop (@) {
  &webui_meter_series_ready_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  &webui_meter_read_state_write('{"status":"idle","message":"Measurement stopped"}');
- # Mark state as cancelled (if still running)
+ # Mark state as cancelled (if still running or paused in a setup wizard)
  if(-f $_meter_series_file) {
   my $json="";
   if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
-  if($json=~/"status"\s*:\s*"running"/) {
-   $json=~s/"status"\s*:\s*"running"/"status":"cancelled"/;
-   if(open(my $fh,">",$_meter_series_file)) { print $fh $json; close($fh); }
+  if($json=~/"status"\s*:\s*"(?:running|setup)"/) {
+   $json=~s/"status"\s*:\s*"(?:running|setup)"/"status":"cancelled"/;
+   $json=~s/,\s*"awaiting_ready"\s*:\s*true//g;
+   $json=~s/,\s*"awaiting_ready_reason"\s*:\s*"[^"]*"//g;
+   $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Cancelled"/;
+   if(open(my $fh,">",$_meter_series_file)) { print $fh $json; close($fh); chmod(0666,$_meter_series_file); }
   }
  }
  # Clean up stale temp files so new series starts fresh
@@ -16465,6 +16468,10 @@ async function meterSpectroSetupAck(){
 function meterSpectroSetupCancel(){
  const modal=document.getElementById('meterSpectroSetupModal');
  if(modal){ modal.style.display='none'; uiSyncBodyScrollLock(); }
+ if(meterSpectroSetupAckEndpoint==='/api/meter/series/ready'||meterSeriesSpectroSetupActive){
+  meterStop();
+  return;
+ }
  // Cancel the right job: the CCSS helper during CCSS creation, otherwise the
  // meter session.
  fetchJSON(meterSpectroSetupCancelEndpoint||'/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
@@ -23354,6 +23361,17 @@ async function meterPollSeries(){
  try{
  const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
  if(!r) return;
+ if(!meterSeriesRunning&&r.status!=='cleared'){
+  if(meterSeriesPolling){
+   clearInterval(meterSeriesPolling);
+   meterSeriesPolling=null;
+  }
+  meterSeriesAwaitingReady=false;
+  meterSeriesSpectroSetupActive=false;
+  meterReadySignalPending=false;
+  meterSpectroSetupApply(null);
+  return;
+ }
 	 meterSeriesAwaitingReady=!!r.awaiting_ready;
 	 meterSeriesSpectroSetupApplyFromStatus(r);
 	 if(Array.isArray(r.steps)&&r.steps.length>0){
