@@ -15374,6 +15374,7 @@ async function meterCheckStatus(){
   document.getElementById('meterStatusText').style.color='var(--text)';
   document.getElementById('meterResetRow').style.display='none';
   meterUpdateCardMode();
+  meterUpdateSeriesTabUi();
   meterUpdateReadButtons();
  } else {
   meterStatusMisses++;
@@ -15386,6 +15387,7 @@ async function meterCheckStatus(){
    document.getElementById('meterStatusText').textContent=busy?(meterLastKnownName+' (initializing)'):meterLastKnownName;
    document.getElementById('meterStatusText').style.color='var(--text)';
    meterUpdateCardMode();
+   meterUpdateSeriesTabUi();
    meterUpdateReadButtons();
   } else {
    meterDetected=false;
@@ -15396,9 +15398,10 @@ async function meterCheckStatus(){
    document.getElementById('meterDot').style.background='var(--text2)';
    document.getElementById('meterStatusText').textContent='No Meter';
    document.getElementById('meterStatusText').style.color='var(--text2)';
-	   meterUpdateCardMode();
-	   meterUpdateReadButtons();
-	  }
+   meterUpdateCardMode();
+   meterUpdateSeriesTabUi();
+   meterUpdateReadButtons();
+  }
  }
  syncTopStatusStack();
  // Sync shared series state across browsers. First restore any browser-local
@@ -17177,6 +17180,10 @@ function meterAutoCalControlsAllowedForSignal(){
  return mode==='sdr';
 }
 
+function meterAutoCalSeriesAvailable(){
+ return !!(meterDetected&&meterGreyTvControlsActive());
+}
+
 function meterUpdateReadButtons(){
  meterAutoCalRepairOverlayPointerState();
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -17190,6 +17197,7 @@ function meterUpdateReadButtons(){
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
  const hideSeriesControlsForAutoCal=meterHideSeriesControlsForAutoCal();
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
+ const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
  const showClear=hasData&&meterDetected;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
@@ -17215,19 +17223,19 @@ function meterUpdateReadButtons(){
  if(continuousBtn) continuousBtn.style.display=show?'':'none';
  if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal)?'':'none';
  const autoCalTabActive=meterSeriesTab==='autocal';
- const showAutoCal=autoCalSignalAllowed&&autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&meterDetected&&meterGreyTvControlsActive()&&!continuousUiActive;
+ const showAutoCal=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&!continuousUiActive;
  if(autoCalBtn){
   autoCalBtn.style.display=showAutoCal?'':'none';
   autoCalBtn.disabled=!showAutoCal||settingsDirty||busy;
   autoCalBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
- const showFullAutoCal=autoCalSignalAllowed&&meterDetected&&meterFullAutoCalAvailable()&&!continuousUiActive;
+ const showFullAutoCal=autoCalSignalAllowed&&autoCalSeriesAvailable&&meterFullAutoCalAvailable()&&!continuousUiActive;
  if(fullAutoCalBtn){
   fullAutoCalBtn.style.display=showFullAutoCal?'':'none';
   fullAutoCalBtn.disabled=!showFullAutoCal||settingsDirty||busy;
   fullAutoCalBtn.title=settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
- const showLg3d=autoCalSignalAllowed&&autoCalTabActive&&meterAutoCalSeriesChoice==='3d-lut'&&meterDetected&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
+ const showLg3d=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='3d-lut'&&meterLg3dAutoCalAvailable()&&!continuousUiActive;
  if(lg3dColorControls) lg3dColorControls.style.display=showLg3d?'flex':'none';
  if(lg3dBtn){
   lg3dBtn.style.display=showLg3d?'':'none';
@@ -17423,7 +17431,8 @@ function meterHandleTwoPointLevelChange(){
 function meterUpdateSeriesTabUi(){
  let tab=meterNormalizeSeriesTab(meterSeriesTab);
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
- if(tab==='autocal'&&!autoCalSignalAllowed){
+ const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
+ if(tab==='autocal'&&!(autoCalSignalAllowed&&autoCalSeriesAvailable)){
   tab=meterSeriesTabForType(meterActiveSeriesType);
   meterSeriesTab=tab;
  }
@@ -17433,10 +17442,10 @@ function meterUpdateSeriesTabUi(){
 	 const greyBar=document.getElementById('meterGreyProfileBar');
 	 const twoPointControls=document.getElementById('meterTwoPointControls');
 	 const twoPointActive=meterIsTwoPointGreyscale();
-	 const autoCal26Active=meterActiveSeriesType==='greyscale'&&Number(meterActiveSeriesPoints)===26&&meterGreyTvControlsActive();
+ const autoCal26Active=meterActiveSeriesType==='greyscale'&&Number(meterActiveSeriesPoints)===26&&meterGreyTvControlsActive();
  document.querySelectorAll('#meterSeriesTabRow button[data-series-tab]').forEach(btn=>{
   const tabKey=btn.dataset.seriesTab||'';
-  const visible=tabKey!=='autocal'||autoCalSignalAllowed;
+  const visible=tabKey!=='autocal'||(autoCalSignalAllowed&&autoCalSeriesAvailable);
   btn.style.display=visible?'':'none';
   btn.hidden=!visible;
   btn.disabled=!visible;
@@ -17447,8 +17456,8 @@ function meterUpdateSeriesTabUi(){
  meterUpdateSeriesLabels();
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
- if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed)?'flex':'none';
- if(tab==='autocal'&&autoCalSignalAllowed) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
+ if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable)?'flex':'none';
+ if(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
 	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active)?'flex':'none';
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
