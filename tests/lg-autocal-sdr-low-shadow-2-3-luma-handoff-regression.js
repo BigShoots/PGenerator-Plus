@@ -45,8 +45,17 @@ assert(
 assert(
   lowShadowAcceptanceSource.includes('sub low_shadow_luminance_out_of_range') &&
     lowShadowAcceptanceSource.includes('sub sdr_low_shadow_unseeded_2_3_step') &&
+    lowShadowAcceptanceSource.includes('sub sdr_low_shadow_2_3_use_3pct_path') &&
+    lowShadowAcceptanceSource.includes('return 0 if(sdr_low_shadow_2_3_use_3pct_path($config,$step));') &&
     lowShadowAcceptanceSource.includes('return 0 if(lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));'),
-  'unseeded SDR LG26 2.3% should have an explicit generation-gated path for stricter Y handling'
+  'unseeded SDR LG26 2.3% should have an explicit generation-gated path for stricter Y handling plus an opt-in 3% path test bypass'
+);
+assert(
+  chromaLumaSource.includes('my $use_3pct_path=sdr_low_shadow_2_3_use_3pct_path($LG_AUTOCAL_CONFIG,$step);') &&
+    chromaLumaSource.includes('!$use_3pct_path &&') &&
+    chromaLumaSource.includes('return undef if($ire > 0 && $ire <= 2.5001 && !$use_3pct_path') &&
+    chromaLumaSource.includes('$rgb_cap=0.25 if($ire <= 2.5001 && !$use_3pct_path);'),
+  '2.3 test bypass should let the coupled chroma/luma planner use the 3% path without changing default 2.3 behavior'
 );
 assert(
   helperSource.includes('!$best_from_luma_only') &&

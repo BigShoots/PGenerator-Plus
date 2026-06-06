@@ -2368,7 +2368,17 @@ sub sdr_low_shadow_unseeded_2_3_step {
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || abs(($step->{"ire"}+0)-2.3) >= 0.001);
+ return 0 if(sdr_low_shadow_2_3_use_3pct_path($config,$step));
  return 0 if(lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));
+ return 1;
+}
+
+sub sdr_low_shadow_2_3_use_3pct_path {
+ my ($config,$step)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26_2_3_use_3pct_path"});
+ return 0 if(!$config->{"lg_autocal_26"});
+ return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || abs(($step->{"ire"}+0)-2.3) >= 0.001);
  return 1;
 }
 
@@ -8481,6 +8491,7 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
  $luminance_err=0 if(!defined($luminance_err));
  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
+ my $use_3pct_path=sdr_low_shadow_2_3_use_3pct_path($LG_AUTOCAL_CONFIG,$step);
  my $lum_pct=$luminance_err*100;
  my $luma_tol=luminance_tolerance_percent($step);
  my $wild_luma_gate=$luma_tol*1.25;
@@ -8501,18 +8512,19 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  my $near_y_chroma=sdr_low_shadow_near_y_chroma_state($LG_AUTOCAL_CONFIG,$step,$lum_pct,$de,$target_delta,$error);
  my $sdr_deep_shadow_near_y_chroma=(
   !$micro &&
+  !$use_3pct_path &&
   lg_autocal_26_sdr_headroom_enabled($LG_AUTOCAL_CONFIG) &&
   !autocal_step_is_hdr20_body($step) &&
   $ire > 0 && $ire <= 2.5001 &&
   $near_y_chroma
  ) ? 1 : 0;
- return undef if($ire > 0 && $ire <= 2.5001 && !$hdr20_deep_shadow_escape && !$sdr_deep_shadow_near_y_chroma);
+ return undef if($ire > 0 && $ire <= 2.5001 && !$use_3pct_path && !$hdr20_deep_shadow_escape && !$sdr_deep_shadow_near_y_chroma);
  return undef if(abs($lum_pct) > $wild_luma_gate && !$hdr20_deep_shadow_escape && !$sdr_bad_rgb_coupled_retry && !$sdr_deep_shadow_near_y_chroma);
  return undef if(!$sdr_deep_shadow_near_y_chroma && $chroma_mag < 0.035 && (!defined($de) || $de <= ($target_delta+1.0)));
  my $rgb_cap=1.5;
  $rgb_cap=1.0 if($ire <= 5.1001);
  $rgb_cap=0.5 if($ire <= 4.1001);
- $rgb_cap=0.25 if($ire <= 2.5001);
+ $rgb_cap=0.25 if($ire <= 2.5001 && !$use_3pct_path);
  $rgb_cap=2.0 if($sdr_bad_rgb_coupled_retry && defined($de) && ($de+0) > ($target_delta+1.5) && $rgb_cap < 2.0);
  $rgb_cap=1.0 if($hdr20_deep_shadow_escape && $rgb_cap < 1.0);
  $rgb_cap=0.5 if($micro && $rgb_cap > 0.5);
