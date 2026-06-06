@@ -5527,11 +5527,13 @@ sub webui_capabilities_json (@) {
  my $has_dv=0; my $dv_444_10b12b=0;
  my $edid_decode_available=(-x $edidparser) ? 1 : 0;
  my $kms_output_format=0;
+ my $kms_dovi_output_metadata=0;
  my %vic_420; # "WxH@HZi" => 1
 
  if($is_kms) {
   my $mt=`timeout 5 $modetest -a -c 2>/dev/null`;
   $kms_output_format=1 if($mt=~/\boutput format\b/);
+  $kms_dovi_output_metadata=1 if($mt=~/\bDOVI_OUTPUT_METADATA\b/);
  }
 
  if($edid_decode_available && $edid_path ne "" && -e $edid_path) {
@@ -5584,10 +5586,6 @@ sub webui_capabilities_json (@) {
  }
 
  # Build 4:2:0 VIC array
- if(!$kms_output_format) {
-  $has_444=0;
-  $has_422=0;
- }
  $dc_420_10=0;
  $dc_420_12=0;
  %vic_420=();
@@ -5601,6 +5599,7 @@ sub webui_capabilities_json (@) {
   .",\"max_tmds\":$max_tmds"
   .",\"scdc\":".($scdc?"true":"false")
   .",\"kms_output_format\":".($kms_output_format?"true":"false")
+  .",\"kms_dovi_output_metadata\":".($kms_dovi_output_metadata?"true":"false")
   .",\"has_ycbcr444\":".($has_444?"true":"false")
   .",\"has_ycbcr422\":".($has_422?"true":"false")
   .",\"has_hdr_st2084\":".($has_st2084?"true":"false")
@@ -9069,8 +9068,9 @@ function updateDropdowns(){
  // Signal mode filtering
  const smSel=document.getElementById('signal_mode');
  const capsKnown=!(caps&&caps.edid_decode_available===false);
+ const dvKernelOk=!(caps&&caps.kms_dovi_output_metadata===false);
  const smOpts=capsKnown
-  ? {sdr:true,hdr10:caps.has_hdr_st2084,hlg:caps.has_hdr_hlg,dv:caps.has_dv}
+  ? {sdr:true,hdr10:caps.has_hdr_st2084,hlg:caps.has_hdr_hlg,dv:caps.has_dv&&dvKernelOk}
   : {sdr:true,hdr10:true,hlg:true,dv:false};
  Array.from(smSel.options).forEach(function(o){o.disabled=!smOpts[o.value];o.style.display=smOpts[o.value]?'':'none';});
 
@@ -10748,14 +10748,15 @@ function meterReadingAnalysisIre(reading){
 
 function meterReadingGammaAnalysisIre(reading){
  if(!reading) return null;
- if(meterChartIsDv()&&meterReadingIsGreyscale(reading)){
+ if(meterReadingIsGreyscale(reading)&&(meterChartIsDv()||meterChartIsHdr()||meterChartIsHlg())){
   const analysis=meterReadingAnalysisIre(reading);
-  if(analysis!=null) return analysis;
+  if(meterChartIsDv()&&analysis!=null) return analysis;
   const code=reading.r_code!=null?reading.r_code:reading.r;
   if(code!=null){
    const signal=meterGreySignalFractionFromCode(code);
    if(Number.isFinite(signal)) return signal*100;
   }
+  if(analysis!=null) return analysis;
  }
  return meterReadingAnalysisIre(reading);
 }
@@ -12911,7 +12912,7 @@ function meterEnsureDeltaECache(readings){
 // when ire<=0.
 function meterPerChannelGamma(reading, whiteReading, ire, prevReading){
  if(!reading||!whiteReading||!(ire>0)) return {r:null,g:null,b:null};
- const analysisIre=(meterChartIsDv()&&meterReadingIsGreyscale(reading))?(meterReadingGammaAnalysisIre(reading)||ire):ire;
+ const analysisIre=((meterChartIsDv()||meterChartIsHdr()||meterChartIsHlg())&&meterReadingIsGreyscale(reading))?(meterReadingGammaAnalysisIre(reading)||ire):ire;
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteReading);
  const prevXYZ=prevReading?meterReadingXYZ(prevReading):null;
@@ -14122,13 +14123,14 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  // expected near-linear luminance-vs-step target in the chart view.
  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr();
  if(usesPqTarget||meterChartIsHlg()){
-	  const tgtLum=meterChartTargetLuminance(signal,peak,Lb||0);
-	  if(ire>=100){
-	   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
-	   const prevLum=meterChartTargetLuminance(prevSignal,peak,Lb||0);
-	   return effectiveGammaTopSlope(tgtLum,peak,ire,prevLum,prevStepIre);
-	  }
-  return effectiveGamma(tgtLum,peak,ire);
+  const tgtLum=meterChartTargetLuminance(signal,peak,Lb||0);
+  const analysisIre=signal*100;
+  if(analysisIre>=99.999){
+   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
+   const prevLum=meterChartTargetLuminance(prevSignal,peak,Lb||0);
+   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignal*100);
+  }
+  return effectiveGamma(tgtLum,peak,analysisIre);
  }
  let black=Lb||0;
  if(tgt==='bt1886'){
@@ -25274,7 +25276,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
  const tgtPts=meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,'eotf',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
- const measureSteps=(directMeasured&&valid.length)?valid:(plotSteps.length?plotSteps:valid);
+ const measureSteps=(directMeasured&&plotSteps.length)?plotSteps:(directMeasured&&valid.length)?valid:(plotSteps.length?plotSteps:valid);
  let mSegments=meterMeasuredEotfLuminanceSegments(
   measureSteps,
   readingMap,
@@ -25377,7 +25379,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  drawGammaContrastLabel(ctx,chart,(Array.isArray(meterReadings)&&meterReadings.length)?meterReadings:gs);
  const validG=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
  const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
- const measureSteps=(directMeasured&&validG.length)?validG:(plotSteps.length?plotSteps:validG);
+ const measureSteps=(directMeasured&&plotSteps.length)?plotSteps:(directMeasured&&validG.length)?validG:(plotSteps.length?plotSteps:validG);
  const scaleMeasuredLuminance=lum=>{
   const value=Number(lum);
   if(!Number.isFinite(value)) return null;
