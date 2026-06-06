@@ -2375,8 +2375,7 @@ sub sdr_low_shadow_unseeded_2_3_step {
 
 sub sdr_low_shadow_2_3_use_3pct_path {
  my ($config,$step)=@_;
- return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26_2_3_use_3pct_path"});
- return 0 if(!$config->{"lg_autocal_26"});
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || abs(($step->{"ire"}+0)-2.3) >= 0.001);
  return 1;
