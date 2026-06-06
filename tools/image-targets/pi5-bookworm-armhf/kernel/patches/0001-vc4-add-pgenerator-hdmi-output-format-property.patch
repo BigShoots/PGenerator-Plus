@@ -18,7 +18,7 @@ index 206ecf4..0088fde 100644
  #include <sound/dmaengine_pcm.h>
  #include <sound/hdmi-codec.h>
  #include <sound/jack.h>
-@@ -385,6 +387,220 @@ static int vc4_hdmi_reset_link(struct drm_connector *connector,
+@@ -385,6 +387,210 @@ static int vc4_hdmi_reset_link(struct drm_connector *connector,
  	return reset_pipe(crtc, ctx);
  }
  
@@ -107,11 +107,7 @@ index 206ecf4..0088fde 100644
 +
 +	switch (output_format) {
 +	case HDMI_COLORSPACE_RGB:
-+		if (bpc == 10 &&
-+		    !(info->edid_hdmi_rgb444_dc_modes & DRM_EDID_HDMI_DC_30))
-+			return false;
-+		if (bpc == 12 &&
-+		    !(info->edid_hdmi_rgb444_dc_modes & DRM_EDID_HDMI_DC_36))
++		if (bpc > 12)
 +			return false;
 +
 +		return true;
@@ -119,11 +115,7 @@ index 206ecf4..0088fde 100644
 +	case HDMI_COLORSPACE_YUV444:
 +		if (!(info->color_formats & DRM_COLOR_FORMAT_YCBCR444))
 +			return false;
-+		if (bpc == 10 &&
-+		    !(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_30))
-+			return false;
-+		if (bpc == 12 &&
-+		    !(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_36))
++		if (bpc > 12)
 +			return false;
 +
 +		return true;
@@ -208,9 +200,9 @@ index 206ecf4..0088fde 100644
 +	if (!tmds_char_rate)
 +		return -EINVAL;
 +
-+		mode_status =
-+			vc4_hdmi_connector_clock_valid(connector, mode,
-+						       tmds_char_rate);
++	mode_status =
++		vc4_hdmi_connector_clock_valid(connector, mode,
++					       tmds_char_rate);
 +	if (mode_status != MODE_OK)
 +		return -EINVAL;
 +
@@ -219,9 +211,7 @@ index 206ecf4..0088fde 100644
 +	if (requested_output_format != HDMI_COLORSPACE_RGB)
 +		new_state->hdmi.is_limited_range = true;
 +
-+		ret = vc4_hdmi_generate_forced_avi_infoframe(connector,
-+							     new_state,
-+							     mode);
++	ret = vc4_hdmi_generate_forced_avi_infoframe(connector, new_state, mode);
 +	if (ret)
 +		return ret;
 +
