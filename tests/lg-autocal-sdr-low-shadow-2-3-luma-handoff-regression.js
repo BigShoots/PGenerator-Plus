@@ -24,10 +24,10 @@ const chromaLumaSource = sliceBetween(
   'sub cap_post_commit_low_shadow_adjustment'
 );
 assert(
-  endpointSeedSource.includes('sub apply_sdr_low_shadow_endpoint_seed_2_3 {\n return 0;\n}\n') &&
-    !endpointSeedSource.includes('pre_first_read_2_3_from_calibrated_low_anchors') &&
-    !endpointSeedSource.includes('my @source_ires=grep'),
-  '2.3 endpoint luminance seed should be disabled so the first read starts from the actual DDC state'
+  endpointSeedSource.includes('return 0 if(!lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));') &&
+    endpointSeedSource.includes('my @source_ires=grep { calibrated_26pt_slot_for_ire($calibrated_slot_mask,$_) } (5,10,15);') &&
+    endpointSeedSource.includes('pre_first_read_2_3_from_calibrated_low_anchors'),
+  '2.3 endpoint luminance seed should remain available only behind the legacy-generation gate'
 );
 assert(
   chromaLumaSource.includes('abs($err) < ($max_abs*0.45)') &&

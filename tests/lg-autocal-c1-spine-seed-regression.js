@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 
 const source = fs.readFileSync('usr/bin/meter_lg_autocal.pl', 'utf8');
+const webui = fs.readFileSync('usr/share/PGenerator/webui.pm', 'utf8');
 
 function sliceBetween(startNeedle, endNeedle, from = 0) {
   const start = source.indexOf(startNeedle, from);
@@ -298,16 +299,38 @@ const lowShadowEndpointSource = sliceBetween(
   'sub apply_sdr_low_shadow_endpoint_seed_2_3',
   'sub sdr_low_shadow_lower_neighbor_ire'
 );
+const legacyLowShadow23SeedSource = sliceBetween(
+  'sub lg_autocal_26_legacy_low_shadow_2_3_seed_enabled',
+  'sub apply_sdr_low_shadow_endpoint_seed_2_3'
+);
 assert(
-  lowShadowEndpointSource.includes('sub apply_sdr_low_shadow_endpoint_seed_2_3 {\n return 0;\n}\n') &&
-    !lowShadowEndpointSource.includes('my @source_ires=grep') &&
-    !lowShadowEndpointSource.includes('$changed_settings{"adjustingLuminance"}') &&
-    !lowShadowEndpointSource.includes('$LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)}') &&
-    !lowShadowEndpointSource.includes('pre_first_read_2_3_from_calibrated_low_anchors') &&
+  legacyLowShadow23SeedSource.includes('foreach my $key (qw(lg_generation preflight_lg_generation))') &&
+    legacyLowShadow23SeedSource.includes('$generation->{"ddc_only_white_balance"}') &&
+    legacyLowShadow23SeedSource.includes('$generation->{"picture_mode_read_forbidden"}') &&
+    legacyLowShadow23SeedSource.includes('$year && $year <= 2021') &&
+    legacyLowShadow23SeedSource.includes('$year && $year >= 2022') &&
+    legacyLowShadow23SeedSource.includes('$webos_major && $webos_major <= 6') &&
+    legacyLowShadow23SeedSource.includes('$webos_major && $webos_major >= 7') &&
+    legacyLowShadow23SeedSource.includes('$series =~ /^[BCGZ]1$/') &&
+    legacyLowShadow23SeedSource.includes('$series =~ /^[BCGZ][2-9]$/') &&
+    legacyLowShadow23SeedSource.includes('OLED\\d*[BCGZ][2-9]') &&
+    legacyLowShadow23SeedSource.includes('LG[_ -]?[BCGZ][2-9]'),
+  '2.3% low-shadow seed gate should preserve C1/webOS6/2021-or-older behavior and disable C2/webOS7/2022-or-newer behavior'
+);
+assert(
+  /OLED\d*[BCGZ][2-9]/.test('OLED65C3PUA'),
+  'OLED65C3PUA should be recognized by the fallback model pattern as C2/newer, so 2.3 seeding stays disabled'
+);
+assert(
+  lowShadowEndpointSource.includes('return 0 if(!lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));') &&
+    lowShadowEndpointSource.includes('my @source_ires=grep { calibrated_26pt_slot_for_ire($calibrated_slot_mask,$_) } (5,10,15);') &&
+    lowShadowEndpointSource.includes('$changed_settings{"adjustingLuminance"}') &&
+    lowShadowEndpointSource.includes('$LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)}') &&
+    lowShadowEndpointSource.includes('pre_first_read_2_3_from_calibrated_low_anchors') &&
     !lowShadowEndpointSource.includes('whiteBalanceRed') &&
     !lowShadowEndpointSource.includes('whiteBalanceGreen') &&
     !lowShadowEndpointSource.includes('whiteBalanceBlue'),
-  '2.3% should not get a pre-first-read endpoint seed from higher anchors or a fixed RGB/offset chain'
+  'legacy 2.3% should keep the pre-first-read luma endpoint seed from calibrated 5/10/15 anchors, not a fixed RGB/offset chain'
 );
 
 const lowShadowLiveNeighborSource = sliceBetween(
@@ -319,7 +342,7 @@ assert(
     lowShadowLiveNeighborSource.includes('return 5 if(abs($ire-7) < 0.001);') &&
     lowShadowLiveNeighborSource.includes('return 4 if(abs($ire-5) < 0.001);') &&
     lowShadowLiveNeighborSource.includes('return 3 if(abs($ire-4) < 0.001);') &&
-    lowShadowLiveNeighborSource.includes('return 2.3 if(abs($ire-3) < 0.001);') &&
+    lowShadowLiveNeighborSource.includes('return 2.3 if(abs($ire-3) < 0.001 && lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));') &&
     lowShadowLiveNeighborSource.includes('lc($config->{"signal_mode"}||"sdr") ne "sdr"') &&
     lowShadowLiveNeighborSource.includes('lg_autocal_26_hdr20_seed_enabled($config)') &&
     lowShadowLiveNeighborSource.includes('!autocal_step_is_low_shadow($step)') &&
@@ -338,8 +361,16 @@ const mainLoopSource = sliceBetween(
 );
 assert(
   mainLoopSource.includes('my $low_shadow_endpoint_seed=apply_sdr_low_shadow_endpoint_seed_2_3') &&
+    mainLoopSource.includes('trace_109($read_step,"sdr_low_shadow_endpoint_seed_2_3"') &&
     mainLoopSource.indexOf('apply_sdr_low_shadow_endpoint_seed_2_3') < mainLoopSource.indexOf('apply_sdr_low_shadow_local_spine_preseed'),
-  'legacy 2.3% endpoint seed hook should remain ordered before local spine preseed, but the hook itself is disabled'
+  'legacy 2.3% endpoint seed should remain ordered before local spine preseed and before the first measurement'
+);
+
+assert(
+  webui.includes('let meterAutoCalPreflightLgGeneration=null;') &&
+    webui.includes('meterAutoCalPreflightLgGeneration=(ddcReset&&ddcReset.lg_generation)||(ddcReset&&ddcReset.picture_mode_reset&&ddcReset.picture_mode_reset.lg_generation)||null;') &&
+    webui.includes('lg_generation:meterAutoCalPreflightLgGeneration||undefined'),
+  'greyscale AutoCal should pass preflight LG generation metadata into the 1D worker so C2/newer skips 2.3 seeding while C1/older keeps it'
 );
 
 const mainAdjustmentApplySource = sliceBetween(
