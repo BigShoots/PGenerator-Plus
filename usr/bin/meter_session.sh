@@ -43,6 +43,8 @@ LOCK_FILE="/tmp/meter_session.lock"
 LOG_FILE="/tmp/meter_session.log"
 READY_FILE="/tmp/meter_session_ready.signal"
 STARTUP_READY_FILE="/tmp/meter_session_start_ready.signal"
+ACK_FILE="/tmp/meter_session.ack"
+SETUP_STEP_ID=0
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
 startup_marker() { log "startup marker: $*"; }
@@ -52,12 +54,15 @@ signal_startup_ready() {
  chmod 666 "$STARTUP_READY_FILE" 2>/dev/null
 }
 
-# Atomic-ish state file writer that keeps the file world-writable so the
-# webui daemon (running as the unprivileged pgenerator user) can overwrite
-# our "measuring" marker between READ commands.
+# The helper runs as root while the WebUI runs as pgenerator. On Bookworm,
+# fs.protected_regular blocks root from truncating a pgenerator-owned file in
+# /tmp, even when it is 0666, so publish by replacing with a fresh file.
 write_state() {
- echo "$1" > "$STATE_FILE"
- chmod 666 "$STATE_FILE" 2>/dev/null
+ local tmp="${STATE_FILE}.$$.$RANDOM.tmp"
+ printf '%s\n' "$1" > "$tmp" || return 1
+ chmod 666 "$tmp" 2>/dev/null || true
+ chown pgenerator:pgenerator "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$STATE_FILE"
 }
 
 startup_output_excerpt() {
@@ -114,13 +119,16 @@ manual_ready_prompt_reason() {
 manual_ready_prompt_message() {
  case "$1" in
   calibration_setup)
-   printf '%s' 'Place the meter on its white calibration tile'
+   printf '%s' 'Place the spectrophotometer on its white calibration tile, then click Continue'
+   ;;
+  initial_measurement)
+   printf '%s' 'Aim the meter at the patch on the screen, then click Continue'
    ;;
   incorrect_position)
-   printf '%s' 'Reposition the meter and continue the reading'
+   printf '%s' 'Reposition the meter on the patch, then click Continue'
    ;;
   *)
-   printf '%s' 'Position the meter and continue when ready'
+   printf '%s' 'Position the meter, then click Continue when ready'
    ;;
 	 esac
 }
@@ -139,6 +147,40 @@ wait_for_device_ready() {
   sleep 0.2
  done
  rm -f "$READY_FILE"
+ # Clear awaiting_ready immediately so the UI hides the Continue button while the
+ # (slow) calibration/measurement runs -- otherwise the operator keeps seeing the
+ # prompt and clicks it several times. "measuring" keeps the result poll waiting.
+ write_state "{\"status\":\"measuring\"}"
+}
+
+# Race-free interactive setup step. Emits a numbered setup state and waits for an
+# ack whose id matches; stale/duplicate acks are read and discarded so a click
+# can't be lost and double-clicks are no-ops. $1=step key, $2=operator message.
+await_setup_step() {
+ local step="$1" message="$2" working="${3:-}"
+ SETUP_STEP_ID=$((SETUP_STEP_ID + 1))
+ local sid=$SETUP_STEP_ID
+ rm -f "$ACK_FILE"
+ write_state "{\"status\":\"setup\",\"step_id\":$sid,\"step\":\"$step\",\"message\":\"$message\"}"
+ while true; do
+  if [ -f "$ACK_FILE" ]; then
+   local acked
+   acked=$(tr -dc '0-9' < "$ACK_FILE" 2>/dev/null)
+   rm -f "$ACK_FILE"
+   [ "$acked" = "$sid" ] && break
+  fi
+  sleep 0.2
+ done
+ # After the ack, keep the wizard popup visible (no button) with a 'working'
+ # message while the slow step runs (wavelength calibration takes several
+ # seconds) instead of vanishing. Steps with no working text fall back to a
+ # bare measuring state so the popup closes (e.g. after positioning, the read
+ # proceeds and the result is shown).
+ if [ -n "$working" ]; then
+  write_state "{\"status\":\"measuring\",\"setup_busy\":true,\"message\":\"$working\"}"
+ else
+  write_state "{\"status\":\"measuring\"}"
+ fi
 }
 
 patch_request_body() {
@@ -281,13 +323,36 @@ else:
 
 cleanup() {
  log "cleanup: tearing down spotread"
+ # Ask spotread to quit cleanly, then close its stdin (EOF via the cat pipe).
+ # spotread may be mid-reading (an active USB transaction); SIGKILLing it now
+ # wedges the Pi's dwc2 USB controller, which then fails the NEXT session with
+ # "communication failed during init". So give it time to finish the in-flight
+ # read, process the quit, and release the device before escalating to a kill.
  printf "Q" >&3 2>/dev/null
  exec 3>&- 2>/dev/null
  exec 4>&- 2>/dev/null
- [[ -n "$BG_PID" ]] && kill "$BG_PID" 2>/dev/null
- [[ -n "$BG_PID" ]] && pkill -9 -P "$BG_PID" 2>/dev/null
- [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
- pkill -9 -x spotread 2>/dev/null
+ # Wait up to ~6s for the spotread pipeline to exit on its own.
+ local _w=0
+ while (( _w < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
+  sleep 0.1
+  _w=$(( _w + 1 ))
+ done
+ # Still alive: ask politely (TERM) and let the USB transaction unwind.
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  kill "$BG_PID" 2>/dev/null
+  pkill -TERM -x spotread 2>/dev/null
+  local _t=0
+  while (( _t < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
+   sleep 0.1
+   _t=$(( _t + 1 ))
+  done
+ fi
+ # Last resort only if it ignored both the quit and TERM (genuinely stuck).
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  pkill -9 -P "$BG_PID" 2>/dev/null
+  kill -9 "$BG_PID" 2>/dev/null
+ fi
+ pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
 trap cleanup EXIT INT TERM
@@ -310,8 +375,24 @@ rm -f "$OUTFILE" "$CMDPIPE"
 touch "$OUTFILE"
 mkfifo "$CMDPIPE"
 
+# ArgyllCMS persists the spectro wavelength calibration under the XDG dirs.
+# If they are missing ("xdg_bds failed to locate file"), the i1 Pro 2 cannot
+# save its cal and re-calibrates on every read. Ensure they exist so the cal is
+# done once and reused. (A stable system clock is also required -- Argyll ages
+# the cal by wall-clock time, so an unsynced/jumping clock re-invalidates it.)
+export HOME="${HOME:-/root}"
+mkdir -p "$HOME/.cache" "$HOME/.local/share" "$HOME/.config" 2>/dev/null
+
 SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
-if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
+# A CCSS (Colorimeter Calibration Spectral Sample) only corrects COLORIMETERS.
+# A spectrophotometer (i1 Pro 2, etc.) measures spectrally and rejects -X with
+# "Instrument doesn't have Colorimeter Calibration Spectral Sample capability",
+# which aborts init. require_device_ready==1 is set only for spectros, so use it
+# to keep the CCSS off them. (Colorimeters keep their CCSS unchanged.)
+if [[ "$REQUIRE_DEVICE_READY" == "1" && -n "$CCSS_FILE" ]]; then
+ log "spectrophotometer selected: skipping CCSS ($CCSS_FILE) -- spectros measure spectrally"
+fi
+if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
  # Match the actual DISPLAY_TYPE_REFRESH value, not the KEYWORD line.
  # Fall back to CCSS metadata when the explicit refresh hint is absent.
  CCSS_REFRESH=$(grep -iE '^[[:space:]]*DISPLAY_TYPE_REFRESH[[:space:]]' "$CCSS_FILE" 2>/dev/null | head -1)
@@ -351,36 +432,51 @@ startup_marker "command FIFO created"
 # manual read after a Pi restart doesn't fail during slow USB bring-up.
 WAITED=0
 REFRESH_CAL_DONE=0
-WHITE_REF_DONE=0
+HANDLED_OFFSET=0
 STARTUP_HINT=""
-while (( WAITED < 600 )); do
+# Spectros such as the i1 Pro 2 need a multi-step interactive bring-up (place on
+# the white calibration tile, keypress; then aim at the screen, keypress) before
+# they reach the "to take a reading:" prompt. Colorimeters (i1d3) report ready
+# immediately. Surface every interactive prompt through the device-ready UI and
+# only inject the keypress once the operator resumes, so nobody is left guessing
+# and we never blindly drive the meter mid-air. WAITED gates spotread
+# responsiveness only (it is reset after each handled step); operator think-time
+# is unbounded because wait_for_device_ready blocks without advancing it.
+while (( WAITED < 900 )); do
  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
  echo "$CLEAN_OUT" | grep -q "to take a reading:" && break
- if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+ NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")
+ if (( REFRESH_CAL_DONE == 0 )) && echo "$NEW_OUT" | grep -qi "calibrate refresh"; then
   log "performing refresh-rate calibration during startup"
   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
   sleep 2
   printf " " >&3
   REFRESH_CAL_DONE=1
+  HANDLED_OFFSET=$(output_size)
   sleep 2
-  WAITED=$((WAITED + 20))
+  WAITED=0
   continue
  fi
- if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$CLEAN_OUT"; then
-  log "detected white-reference calibration prompt during startup"
-  startup_marker "white-reference prompt seen"
-  STARTUP_HINT="white_reference_prompt"
-    # Startup white-reference prompts require explicit operator setup on
-    # spectros and can otherwise hold the single-threaded Web UI request open
-    # long enough that the page looks offline. Always surface the prompt and
-    # let the queued manual READ continue after the operator resumes.
-    wait_for_device_ready "calibration_setup"
+ if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
+  log "calibration failed during startup, surfacing retry"
+  STARTUP_HINT="interactive_setup"
+  await_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectro flat on its white tile, then click Retry." "Re-calibrating the meter - please wait..."
   printf " " >&3
-  WHITE_REF_DONE=1
-  WAITED=$((WAITED + 40))
+  HANDLED_OFFSET=$(output_size)
+  WAITED=0
   continue
  fi
- if echo "$CLEAN_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
+ if manual_calibration_setup_prompt "$NEW_OUT"; then
+  log "calibrate_tile prompt during startup"
+  startup_marker "calibrate_tile prompt seen"
+  STARTUP_HINT="interactive_setup"
+  await_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait a few seconds..."
+  printf " " >&3
+  HANDLED_OFFSET=$(output_size)
+  WAITED=0
+  continue
+ fi
+ if echo "$NEW_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
   STARTUP_HINT="communications_failure"
   break
  fi
@@ -389,9 +485,9 @@ while (( WAITED < 600 )); do
 done
 if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
  FAIL_CONTEXT=$(startup_output_excerpt)
- if [[ "$STARTUP_HINT" == "white_reference_prompt" ]]; then
-  log "spotread init failed after white-reference prompt${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
-  write_state '{"status":"error","message":"Meter init failed after white-reference prompt"}'
+ if [[ "$STARTUP_HINT" == "interactive_setup" ]]; then
+  log "spotread init failed after interactive setup${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
+  write_state '{"status":"error","message":"Meter setup did not complete. Re-seat the spectro on its tile, then aim at the screen, and try the read again."}'
  elif [[ "$STARTUP_HINT" == "communications_failure" ]]; then
   log "spotread init failed after communications failure${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
   write_state '{"status":"error","message":"Meter communication failed during init"}'
@@ -414,6 +510,12 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
  sleep 2
  printf " " >&3
  sleep 2
+fi
+
+# Spectros are on the calibration tile after init; have the operator aim at the
+# screen ONCE before reads begin. Colorimeters (REQUIRE_DEVICE_READY=0) skip this.
+if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+ await_setup_step "position_screen" "Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
 
 signal_startup_ready
@@ -470,6 +572,9 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    # Trigger reading and wait for it
    PARSED_RESULT=""
    READ_OUTPUT=""
+   # Positioning is now a one-time post-init setup step (position_screen), so the
+   # spectro is already aimed at the screen; reads auto-fire without a per-read
+   # prompt.
    SCAN_OFFSET=$(output_size)
    printf " " >&3
 	  READ_TIMEOUT=90
@@ -496,8 +601,27 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
         SCAN_OFFSET=$(output_size)
         continue
        fi
+       # Result first: once spotread returns a reading we're done. spotread
+       # reprints its normal "Place instrument on spot ... to take a reading"
+       # prompt after every read; that is NOT an operator step and must not be
+       # mistaken for one (doing so caused an endless re-prompt loop).
+       if [[ "$READ_OUTPUT" == *"Result is XYZ:"* ]]; then
+        PARSED_RESULT=$(parse_latest_result_text "$READ_OUTPUT")
+        if [[ -n "$PARSED_RESULT" ]]; then
+         GOT_RESULT=true
+         break
+        fi
+       fi
        if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-        if PROMPT_REASON=$(manual_ready_prompt_reason "$READ_OUTPUT"); then
+        # Only surface a genuine re-calibration (white tile) or reposition
+        # prompt -- never the normal ready-to-read prompt.
+        PROMPT_REASON=""
+        if manual_calibration_setup_prompt "$READ_OUTPUT"; then
+         PROMPT_REASON="calibration_setup"
+        elif printf '%s' "$READ_OUTPUT" | grep -qiE 'incorrect position|meter is in incorrect position'; then
+         PROMPT_REASON="incorrect_position"
+        fi
+        if [[ -n "$PROMPT_REASON" ]]; then
          log "manual prompt during read: reason=$PROMPT_REASON name=$NAME"
          wait_for_device_ready "$PROMPT_REASON"
          printf " " >&3
@@ -506,13 +630,6 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
          READ_OUTPUT=""
          SCAN_OFFSET=$(output_size)
          continue
-        fi
-       fi
-       if [[ "$READ_OUTPUT" == *"Result is XYZ:"* ]]; then
-        PARSED_RESULT=$(parse_latest_result_text "$READ_OUTPUT")
-        if [[ -n "$PARSED_RESULT" ]]; then
-         GOT_RESULT=true
-         break
         fi
        fi
        SCAN_OFFSET="$CUR_SIZE"

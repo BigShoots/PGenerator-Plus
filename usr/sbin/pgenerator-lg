@@ -854,11 +854,38 @@ sub lg_picture_reset_unique_keys (@) {
   next if(!defined($key) || ref($key));
   $key="$key";
   next if($key eq "" || $key eq "pictureMode");
-  next if($key =~ /^whiteBalance/i);
+  next if($key =~ /^whiteBalance/i || $key =~ /^adjustingLuminance/i);
   next if($seen{$key}++);
   push(@unique,$key);
  }
  return \@unique;
+}
+
+sub lg_picture_reset_white_balance_keys (@) {
+ return [
+  "whiteBalanceMethod",
+  "whiteBalancePoint",
+  "whiteBalanceIre",
+  "whiteBalanceIre10pt",
+  "whiteBalanceCodeValue",
+  "whiteBalanceCodeValue10pt",
+  "whiteBalanceLuminance",
+  "whiteBalanceColorTemperature",
+  "whiteBalanceRed",
+  "whiteBalanceGreen",
+  "whiteBalanceBlue",
+  "whiteBalanceRed10pt",
+  "whiteBalanceGreen10pt",
+  "whiteBalanceBlue10pt",
+  "whiteBalanceRedGain",
+  "whiteBalanceGreenGain",
+  "whiteBalanceBlueGain",
+  "whiteBalanceRedOffset",
+  "whiteBalanceGreenOffset",
+  "whiteBalanceBlueOffset",
+  "adjustingLuminance",
+  "adjustingLuminance10pt",
+ ];
 }
 
 sub lg_picture_signal_suffixes (@) {
@@ -870,6 +897,74 @@ sub lg_picture_signal_suffixes (@) {
  return ("hlg","hdr","x") if($signal_mode eq "hlg");
  return ("dolby","dv","x") if($signal_mode eq "dv" || $signal_mode eq "dolby");
  return ($signal_mode,"x");
+}
+
+sub lg_picture_readback_payloads (@) {
+ my ($keys,$active_picture_mode,$tv_input,$signal_mode)=@_;
+ $keys=[] if(ref($keys) ne "ARRAY");
+ $active_picture_mode="" if(!defined($active_picture_mode));
+ $tv_input="" if(!defined($tv_input));
+ $signal_mode="" if(!defined($signal_mode));
+ my @payloads=();
+ my %seen=();
+ my $add_payload=sub {
+  my $payload=shift;
+  return if(ref($payload) ne "HASH");
+  my $category=$payload->{"category"}||"";
+  return if($category eq "");
+  my $dimension=(ref($payload->{"dimension"}) eq "HASH") ? $payload->{"dimension"} : undef;
+  my $sig=$category."|".(defined($dimension) ? (eval { JSON::PP->new->canonical(1)->utf8(1)->encode($dimension); } || "") : "");
+  return if($seen{$sig}++);
+  my $entry={ category => $category, keys => $keys };
+  $entry->{"dimension"}=$dimension if(defined($dimension));
+  push(@payloads,$entry);
+ };
+ my @inputs=();
+ push(@inputs,$tv_input) if($tv_input ne "");
+ if(!@inputs && $active_picture_mode ne "" && &lg_picture_keys_panel_light_only($keys)) {
+  @inputs=("hdmi1","hdmi2","hdmi3","hdmi4");
+ }
+ foreach my $input (@inputs) {
+  if($input ne "" && $active_picture_mode ne "") {
+   foreach my $suffix (&lg_picture_signal_suffixes($signal_mode)) {
+    next if($suffix eq "");
+    $add_payload->({ category => "picture\$".$input.".".$active_picture_mode.".2d.".$suffix });
+   }
+   $add_payload->({ category => "picture", dimension => { input => $input, pictureMode => $active_picture_mode, "_3dStatus" => "2d" } });
+  }
+ }
+ $add_payload->({ category => "picture", dimension => { pictureMode => $active_picture_mode } }) if($active_picture_mode ne "");
+ $add_payload->({ category => "picture" });
+ return @payloads;
+}
+
+sub lg_picture_readback_settings (@) {
+ my ($session,$label,$keys,$active_picture_mode,$tv_input,$signal_mode,$timeout)=@_;
+ $keys=[] if(ref($keys) ne "ARRAY");
+ my %settings=();
+ return \%settings if(!@{$keys});
+ my @payloads=&lg_picture_readback_payloads($keys,$active_picture_mode,$tv_input,$signal_mode);
+ foreach my $payload (@payloads) {
+  my $response=&lg_request($session,$label,"settings/getSystemSettings",$payload,$timeout);
+  if(ref($response) eq "HASH" && ($response->{"type"}||"") ne "error" && ref($response->{"payload"}) eq "HASH" && ref($response->{"payload"}{"settings"}) eq "HASH") {
+   foreach my $key (keys(%{$response->{"payload"}{"settings"}})) {
+    $settings{$key}=$response->{"payload"}{"settings"}{$key};
+   }
+   return \%settings if(%settings);
+  }
+  foreach my $key (@{$keys}) {
+   next if(exists($settings{$key}));
+   my $single_payload={ %{$payload}, keys => [$key] };
+   my $safe_key=$key;
+   $safe_key =~ s/[^A-Za-z0-9_]/_/g;
+   my $single=&lg_request($session,$label."_".$safe_key,"settings/getSystemSettings",$single_payload,$timeout);
+   if(ref($single) eq "HASH" && ($single->{"type"}||"") ne "error" && ref($single->{"payload"}) eq "HASH" && ref($single->{"payload"}{"settings"}) eq "HASH" && exists($single->{"payload"}{"settings"}{$key})) {
+    $settings{$key}=$single->{"payload"}{"settings"}{$key};
+   }
+  }
+  return \%settings if(%settings);
+ }
+ return \%settings;
 }
 
 sub lg_picture_scoped_categories (@) {
@@ -1126,11 +1221,19 @@ sub lg_picture_delete_settings_reset (@) {
  return (@deleted_keys ? 1 : 0,\@deleted_keys,\@attempts);
 }
 
+sub lg_picture_reset_ddc_baseline_ok (@) {
+ my ($ddc_attempted,$ddc_result)=@_;
+ return 0 if(!$ddc_attempted || ref($ddc_result) ne "HASH");
+ return 0 if(($ddc_result->{"status"}||"") ne "ok");
+ return ($ddc_result->{"ddc_baseline_reset"} && $ddc_result->{"ddc_reset_verified"}) ? 1 : 0;
+}
+
 sub lg_picture_reset_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode)=@_;
+ my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset)=@_;
  $tv_input="" if(!defined($tv_input));
  $fallback_picture_mode="" if(!defined($fallback_picture_mode));
  $signal_mode="" if(!defined($signal_mode));
+ $require_white_balance_reset=$require_white_balance_reset ? 1 : 0;
  $tv_input=lc($tv_input);
  $tv_input="" if($tv_input !~ /^hdmi[1-4](?:_pc)?$/);
  my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
@@ -1241,6 +1344,69 @@ sub lg_picture_reset_workflow (@) {
 	  last;
 	 }
 	}
+ my $white_balance_reset_keys=&lg_picture_reset_white_balance_keys();
+ my @white_balance_reset_attempts=();
+ my @white_balance_reset_keys_succeeded=();
+ my %white_balance_reset_key_succeeded=();
+ my %white_balance_reset_keys_failed=();
+ my $white_balance_reset_ok=0;
+ my @white_balance_payloads=();
+ foreach my $dimension (@dimensions) {
+  my $payload={
+   category => "picture",
+   keys => $white_balance_reset_keys,
+  };
+  $payload->{"dimension"}=$dimension if(ref($dimension) eq "HASH" && %{$dimension});
+  push(@white_balance_payloads,{ path => "settings/resetSystemSettings", payload => $payload, luna => 0 });
+  push(@white_balance_payloads,{ path => "com.webos.settingsservice/resetSystemSettings", payload => $payload, luna => 1 }) if(ref($dimension) eq "HASH" && %{$dimension});
+ }
+ foreach my $category (&lg_picture_scoped_categories($tv_input,$active_picture_mode,$signal_mode)) {
+  my $payload={
+   category => $category,
+   keys => $white_balance_reset_keys,
+  };
+  push(@white_balance_payloads,{ path => "settings/resetSystemSettings", payload => $payload, luna => 0 });
+  push(@white_balance_payloads,{ path => "com.webos.settingsservice/resetSystemSettings", payload => $payload, luna => 1 });
+ }
+ my $try_white_balance_reset=sub {
+  my ($attempt,$payload,$key)=@_;
+  my $use_luna=$attempt->{"luna"} ? 1 : 0;
+  my $path=$attempt->{"path"}||"settings/resetSystemSettings";
+  my $response=$use_luna
+   ? &lg_luna_request($session,"reset_picture_white_balance_luna",$path,$payload,$connect_timeout + 3)
+   : &lg_request($session,"reset_picture_white_balance",$path,$payload,$connect_timeout + 3);
+  my ($failed,$message)=&response_is_app_failure($response);
+  my $entry={ path => $path, payload => $payload, response => $response, failed => &json_bool($failed), message => $message };
+  $entry->{"key"}=$key if(defined($key) && $key ne "");
+  push(@white_balance_reset_attempts,$entry);
+  return ($failed ? 0 : 1,$message,$response);
+ };
+ foreach my $attempt (@white_balance_payloads) {
+  last if(@white_balance_reset_keys_succeeded == @{$white_balance_reset_keys});
+  my $payload=(ref($attempt->{"payload"}) eq "HASH") ? $attempt->{"payload"} : {};
+  my ($bulk_ok,$bulk_message,$bulk_response)=$try_white_balance_reset->($attempt,$payload,"");
+  if($bulk_ok && ref($bulk_response) eq "HASH") {
+   $white_balance_reset_ok=1;
+   foreach my $key (@{$white_balance_reset_keys}) {
+    next if($white_balance_reset_key_succeeded{$key}++);
+    push(@white_balance_reset_keys_succeeded,$key);
+   }
+   last;
+  }
+  next if(($bulk_message||"") !~ /(?:doesn'?t support the key|not support|undefined|-1000|Application error|invalid key|no result|key\(s\))/i);
+  foreach my $key (@{$white_balance_reset_keys}) {
+   next if($white_balance_reset_key_succeeded{$key});
+   my $single_payload={ %{$payload}, keys => [$key] };
+   my ($single_ok,$single_message,$single_response)=$try_white_balance_reset->($attempt,$single_payload,$key);
+   if($single_ok && ref($single_response) eq "HASH") {
+    $white_balance_reset_ok=1;
+    $white_balance_reset_key_succeeded{$key}=1;
+    push(@white_balance_reset_keys_succeeded,$key);
+   } else {
+    $white_balance_reset_keys_failed{$key}=$single_message||$bulk_message||"LG TV rejected this reset key." if(!exists($white_balance_reset_keys_failed{$key}));
+   }
+  }
+ }
  my @panel_reset_attempts=();
  my $panel_reset_ok=0;
  my $try_panel_reset=sub {
@@ -1334,10 +1500,11 @@ sub lg_picture_reset_workflow (@) {
   whiteBalanceGreen => \@zero,
   whiteBalanceBlue => \@zero,
  };
-	 my ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$ddc_settings,$connect_timeout + 4,0,0,1);
+	 my ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$ddc_settings,$connect_timeout + 4,0,0,1,0,$generation);
 	 &lg_ddc_clear_state($ip,$active_picture_mode);
 	 my $picture_settings_after=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
-	 my @readback_keys=("pictureMode",@{&lg_picture_reset_default_keys()});
+	 my %readback_seen=();
+	 my @readback_keys=grep { !$readback_seen{$_}++ } ("pictureMode",@{&lg_picture_reset_default_keys()},@{$white_balance_reset_keys});
 	 my $readback=&lg_request($session,"get_picture_settings_after_reset","settings/getSystemSettings",{
 	  category => "picture",
 	  keys => \@readback_keys,
@@ -1359,16 +1526,10 @@ sub lg_picture_reset_workflow (@) {
 	   }
 	  }
 	 }
- foreach my $category (&lg_picture_scoped_categories($tv_input,$active_picture_mode,$signal_mode)) {
-  my $panel_readback=&lg_request($session,"get_picture_panel_light_after_reset","settings/getSystemSettings",{
-   category => $category,
-   keys => $panel_light_keys,
-  },$connect_timeout + 2);
-  if(ref($panel_readback) eq "HASH" && ($panel_readback->{"type"}||"") ne "error" && ref($panel_readback->{"payload"}) eq "HASH" && ref($panel_readback->{"payload"}{"settings"}) eq "HASH") {
-   foreach my $key (keys(%{$panel_readback->{"payload"}{"settings"}})) {
-    $picture_settings_after->{$key}=$panel_readback->{"payload"}{"settings"}{$key};
-   }
-   last;
+ my $panel_readback_settings=&lg_picture_readback_settings($session,"get_picture_panel_light_after_reset",$panel_light_keys,$active_picture_mode,$tv_input,$signal_mode,$connect_timeout + 2);
+ if(ref($panel_readback_settings) eq "HASH") {
+  foreach my $key (keys(%{$panel_readback_settings})) {
+   $picture_settings_after->{$key}=$panel_readback_settings->{$key};
   }
  }
  &websocket_close($session);
@@ -1376,8 +1537,9 @@ sub lg_picture_reset_workflow (@) {
   ip => $ip,
 	  picture_mode => $active_picture_mode,
 	  tv_input => $tv_input,
-  signal_mode => $signal_mode,
-		  ok => $ok,
+	  signal_mode => $signal_mode,
+	  require_white_balance_reset => &json_bool($require_white_balance_reset),
+	  ok => $ok,
 	  reset_keys_requested => $keys,
 	  reset_keys_succeeded => \@reset_keys_succeeded,
 	  reset_keys_failed => \%reset_key_failed,
@@ -1394,6 +1556,11 @@ sub lg_picture_reset_workflow (@) {
 	  builtin_apply_keys => $builtin_apply_keys,
 	  builtin_apply_attempts => $builtin_apply_attempts,
 	  attempts => \@reset_attempts,
+	  white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+	  white_balance_reset_keys_requested => $white_balance_reset_keys,
+	  white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+	  white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
+	  white_balance_reset_attempts => \@white_balance_reset_attempts,
 	  basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
 	  panel_light_reset_ok => &json_bool($panel_reset_ok),
   panel_light_attempts => \@panel_reset_attempts,
@@ -1423,10 +1590,44 @@ sub lg_picture_reset_workflow (@) {
 	   basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
 	   panel_light_reset_ok => &json_bool($panel_reset_ok),
 	   panel_light_reset_attempts => \@panel_reset_attempts,
+	   white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+	   white_balance_reset_keys_requested => $white_balance_reset_keys,
+	   white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+	   white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
+	   white_balance_reset_attempts => \@white_balance_reset_attempts,
 	   ddc_attempted => &json_bool($ddc_attempted),
 	   ddc_response => $ddc_result,
 	   lg_generation => $generation,
 	  });
+	 }
+	 my $white_balance_reset_warning="";
+	 my $white_balance_reset_satisfied_by_ddc=&lg_picture_reset_ddc_baseline_ok($ddc_attempted,$ddc_result);
+	 if($require_white_balance_reset && (!$white_balance_reset_ok || !@white_balance_reset_keys_succeeded)) {
+	  if(!$generation->{"ddc_only_white_balance"} && !$white_balance_reset_satisfied_by_ddc) {
+	   return &json_error("LG picture mode reset did not clear white-balance settings. The TV rejected the manual white-balance reset keys.",{
+		    ip => $ip,
+		    active_picture_mode => $active_picture_mode,
+		    require_white_balance_reset => &json_true(),
+		    reset_attempts => \@reset_attempts,
+		    reset_keys_requested => $keys,
+		    reset_keys_succeeded => \@reset_keys_succeeded,
+		    reset_keys_failed => \%reset_key_failed,
+		    basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
+		    panel_light_reset_ok => &json_bool($panel_reset_ok),
+		    panel_light_reset_attempts => \@panel_reset_attempts,
+		    white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+		    white_balance_reset_keys_requested => $white_balance_reset_keys,
+		    white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+		    white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
+		    white_balance_reset_attempts => \@white_balance_reset_attempts,
+		    ddc_attempted => &json_bool($ddc_attempted),
+		    ddc_response => $ddc_result,
+		    lg_generation => $generation,
+	   });
+	  }
+	  $white_balance_reset_warning=$white_balance_reset_satisfied_by_ddc
+	   ? "LG user-menu white-balance reset keys were rejected; verified LG DDC baseline reset was used instead."
+	   : "LG user-menu white-balance reset keys were rejected by this DDC-only TV; DDC calibration state was reset instead.";
 	 }
  return &json_ok({
   ip => $ip,
@@ -1447,6 +1648,13 @@ sub lg_picture_reset_workflow (@) {
 		  builtin_apply_ok => &json_bool($builtin_apply_ok),
 		  builtin_apply_keys => $builtin_apply_keys,
 		  panel_light_reset_ok => &json_bool($panel_reset_ok),
+		  require_white_balance_reset => &json_bool($require_white_balance_reset),
+		  white_balance_reset_ok => &json_bool($white_balance_reset_ok),
+		  white_balance_reset_satisfied_by_ddc => &json_bool($white_balance_reset_satisfied_by_ddc),
+		  white_balance_reset_warning => $white_balance_reset_warning,
+		  white_balance_reset_keys_requested => $white_balance_reset_keys,
+		  white_balance_reset_keys_succeeded => \@white_balance_reset_keys_succeeded,
+		  white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
 		  clean_picture_mode_reset => &json_bool($basic_picture_reset_ok),
   ddc_attempted => &json_bool($ddc_attempted),
   ddc_response => $ddc_result,
@@ -1463,7 +1671,7 @@ sub lg_picture_reset_workflow (@) {
 ###############################################
 $DIAG_LOG_PATH="/var/lib/PGenerator/lg/last-write.log";
 $DIAG_LOG_MAX_BYTES=131072;
-$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|game)$';
+$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|game|hdr_(?:technicolorexpert|filmmaker|filmmakermode|cinema|game)|dolby_hdr_(?:cinema|cinema_bright|game))$';
 
 sub diag_log_append (@) {
  my ($label,$data)=@_;
@@ -1522,7 +1730,11 @@ $LG_DDC_DIR="/var/lib/PGenerator/lg/ddc";
 $LG_DDC_1D_MIN_STEP_UNITS=64;
 $LG_DDC_1D_STEP_RATIO=0.018;
 $LG_DDC_1D_BLACK_SAMPLE=0;
+$LG_DDC_SDR26_LEGAL_100_SAMPLE=940;
+$LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA=4.0;
 @LG_DDC_1D_LABELS=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+@LG_DDC_1D_LABELS_SDR=@LG_DDC_1D_LABELS;
+@LG_DDC_1D_LABELS_HDR20=(1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100);
 
 sub lg_ddc_round_to_even (@) {
  my $value=shift;
@@ -1569,6 +1781,22 @@ sub lg_ddc_extended_video_8bit_for_ire (@) {
 @LG_DDC_1D_PATCH_CODES_8BIT=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
 @LG_DDC_1D_INDEXES=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
 @LG_DDC_1D_PATCH_INDEXES_8BIT=@LG_DDC_1D_PATCH_CODES_8BIT;
+@LG_DDC_1D_INDEXES_SDR=@LG_DDC_1D_INDEXES;
+@LG_DDC_1D_PATCH_INDEXES_8BIT_SDR=@LG_DDC_1D_PATCH_INDEXES_8BIT;
+# HDR20 patch labels use legal-range video codes on the wire, but LG's
+# uploaded 1D_DPG_DATA table is indexed after the legal range is expanded
+# into the TV's normalized 0-1023 LUT domain.
+@LG_DDC_1D_INDEXES_HDR20=(14,19,28,42,51,70,103,154,206,257,308,360,411,462,514,612,715,817,920,1023);
+@LG_DDC_1D_PATCH_INDEXES_8BIT_HDR20=@LG_DDC_1D_INDEXES_HDR20;
+
+sub lg_ddc_layout_name (@) {
+ my ($settings,$picture_mode)=@_;
+ my $layout=(ref($settings) eq "HASH") ? lc($settings->{"ddc_layout"}||"") : "";
+ return "hdr20" if($layout eq "hdr20");
+ $picture_mode=lc($picture_mode||"");
+ return "hdr20" if($picture_mode =~ /^(?:hdr|dolby_hdr|dolbyhdr)/);
+ return "sdr26";
+}
 
 sub lg_ddc_token (@) {
  my $value=shift;
@@ -1581,13 +1809,15 @@ sub lg_ddc_token (@) {
 }
 
 sub lg_ddc_state_path (@) {
- my ($ip,$picture_mode)=@_;
- return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).".json";
+ my ($ip,$picture_mode,$layout)=@_;
+ my $suffix=($layout||"") ne "" ? "-".&lg_ddc_token($layout) : "";
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).$suffix.".json";
 }
 
 sub lg_ddc_baseline_path (@) {
- my ($ip,$picture_mode)=@_;
- return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).".baseline.1dlut";
+ my ($ip,$picture_mode,$layout)=@_;
+ my $suffix=($layout||"") ne "" ? "-".&lg_ddc_token($layout) : "";
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).$suffix.".baseline.1dlut";
 }
 
 sub lg_picture_mode_for_calibration (@) {
@@ -1609,6 +1839,17 @@ sub lg_picture_mode_for_calibration (@) {
   "hdr_technicolorexpert" => "hdr_technicolorExpert",
   "hdr_filmmaker" => "hdr_filmMaker",
   "hdr_filmmakermode" => "hdr_filmMaker",
+  "hdrcinema" => "hdr_cinema",
+  "hdrgame" => "hdr_game",
+  "hdrtechnicolorexpert" => "hdr_technicolorExpert",
+  "hdrfilmmaker" => "hdr_filmMaker",
+  "hdrfilmmakermode" => "hdr_filmMaker",
+  "dolby_hdr_cinema" => "dolby_hdr_cinema",
+  "dolby_hdr_cinema_bright" => "dolby_hdr_cinema_bright",
+  "dolby_hdr_game" => "dolby_hdr_game",
+  "dolbyhdrcinema" => "dolby_hdr_cinema",
+  "dolbyhdrcinemabright" => "dolby_hdr_cinema_bright",
+  "dolbyhdrgame" => "dolby_hdr_game",
  );
  return $map{$mode_lc}||"";
 }
@@ -1632,6 +1873,25 @@ sub lg_calibration_request (@) {
   # reports "not a string" when this is sent as the older numeric code.
   $payload->{"dataType"}="unsigned integer16";
   $payload->{"dataOpt"}=defined($data_opt) ? int($data_opt) : 1;
+ } elsif(ref($data) eq "HASH" && ref($data->{"values"}) eq "ARRAY") {
+  my $values=$data->{"values"};
+  my $type=lc($data->{"data_type"}||$data->{"dataType"}||"unsigned integer16");
+  $type="unsigned integer16" if($type eq "uint16" || $type eq "unsigned_integer16" || $type eq "unsigned integer 16");
+  $payload->{"picMode"}=$picture_mode if($data->{"force_pic_mode"} && defined($picture_mode) && $picture_mode ne "");
+  my $packed="";
+  if($type eq "float" || $type eq "float32") {
+   $packed=pack("f<*",map { 0+$_ } @{$values});
+   $payload->{"dataType"}="float";
+  } elsif($type eq "unsigned integer16") {
+   $packed=pack("v*",map { int($_) } @{$values});
+   $payload->{"dataType"}="unsigned integer16";
+  } else {
+   $packed=pack("v*",map { int($_) } @{$values});
+   $payload->{"dataType"}="unsigned integer16";
+  }
+  $payload->{"data"}=encode_base64($packed,"");
+  $payload->{"dataCount"}=scalar(@{$values});
+  $payload->{"dataOpt"}=defined($data->{"data_opt"}) ? int($data->{"data_opt"}) : (defined($data->{"dataOpt"}) ? int($data->{"dataOpt"}) : (defined($data_opt) ? int($data_opt) : 1));
  }
  return &lg_request($session,$id,"externalpq/setExternalPqData",$payload,$timeout);
 }
@@ -1681,13 +1941,35 @@ sub lg_write_1d_lut_file (@) {
  return &file_write_text($path,pack("v*",@{$lut}));
 }
 
-sub lg_get_current_1d_lut (@) {
+sub lg_get_current_1d_lut_info (@) {
  my ($session,$timeout)=@_;
  my $response=&lg_calibration_get($session,"ddc_get_1d_lut","GET_1D_DPG_DATA",$timeout);
  my ($failed,$message)=&response_is_app_failure($response);
- return undef if($failed || ref($response) ne "HASH");
+ return {
+  ok => &json_false(),
+  lut => undef,
+  response => $response,
+  failed => &json_bool($failed || ref($response) ne "HASH"),
+  readback_empty => &json_false(),
+  message => $message||"LG TV rejected 1D LUT readback.",
+ } if($failed || ref($response) ne "HASH");
  my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
- return &lg_decode_1d_lut_payload($payload);
+ my $encoded=$payload->{"data"}||"";
+ my $lut=&lg_decode_1d_lut_payload($payload);
+ return {
+  ok => (ref($lut) eq "ARRAY") ? &json_true() : &json_false(),
+  lut => $lut,
+  response => $response,
+  failed => &json_false(),
+  readback_empty => ($encoded eq "") ? &json_true() : &json_false(),
+  message => (ref($lut) eq "ARRAY") ? "" : "LG TV did not return a readable 1D LUT payload.",
+ };
+}
+
+sub lg_get_current_1d_lut (@) {
+ my ($session,$timeout)=@_;
+ my $info=&lg_get_current_1d_lut_info($session,$timeout);
+ return (ref($info) eq "HASH") ? $info->{"lut"} : undef;
 }
 
 sub lg_lut_matches (@) {
@@ -1780,6 +2062,77 @@ sub lg_lut_mismatch_summary (@) {
   first_mismatch => $first,
   sample_mismatches => \@samples,
  };
+}
+
+sub lg_generation_write_accepted_readback_unavailable_ok (@) {
+ my $generation=shift;
+ return 0 if(ref($generation) ne "HASH");
+ my $webos_major=int($generation->{"webos_major"}||0);
+ my $ddc_only=$generation->{"ddc_only_white_balance"} ? 1 : 0;
+ my $picture_mode_read_forbidden=$generation->{"picture_mode_read_forbidden"} ? 1 : 0;
+ return 1 if($ddc_only && $picture_mode_read_forbidden);
+ return 1 if($ddc_only && $webos_major && $webos_major <= 6);
+ return 0;
+}
+
+sub lg_1d_lut_readback_unavailable_reason (@) {
+ my $verify_info=shift;
+ return "" if(ref($verify_info) ne "HASH");
+ return "" if(ref($verify_info->{"lut"}) eq "ARRAY");
+ my $response=(ref($verify_info->{"response"}) eq "HASH") ? $verify_info->{"response"} : {};
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ my ($failed,$message)=&response_is_app_failure($response);
+ if($verify_info->{"failed"} || $failed) {
+  my $detail=join(" ",grep { defined($_) && $_ ne "" } (
+   $verify_info->{"message"},
+   $message,
+   $response->{"error"},
+   $payload->{"errorMessage"},
+   $payload->{"errorText"},
+  ));
+  return "no-file-path-from-tvservice" if($detail =~ /no\s+file\s+path\s+from\s+tvservice/i);
+  return "failed-getter";
+ }
+ my $encoded=$payload->{"data"}||"";
+ return "empty-lut-readback" if($verify_info->{"readback_empty"} || $encoded eq "");
+ return "unreadable-lut-payload";
+}
+
+sub lg_1d_write_accepted_readback_unavailable_ok (@) {
+ my ($generation,$verify_info,$expected_lut)=@_;
+ return 0 if(ref($expected_lut) ne "ARRAY");
+ return 0 if(ref($verify_info) ne "HASH");
+ return 0 if(ref($verify_info->{"lut"}) eq "ARRAY");
+ return 0 if(&lg_1d_lut_readback_unavailable_reason($verify_info) eq "");
+ return &lg_generation_write_accepted_readback_unavailable_ok($generation);
+}
+
+sub lg_3d_lut_readback_unavailable_reason (@) {
+ my $response=shift;
+ return "" if(ref($response) ne "HASH");
+ my ($failed,$message)=&response_is_app_failure($response);
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ if($failed) {
+  my $detail=join(" ",grep { defined($_) && $_ ne "" } (
+   $message,
+   $response->{"error"},
+   $payload->{"errorMessage"},
+   $payload->{"errorText"},
+  ));
+  return "no-file-path-from-tvservice" if($detail =~ /no\s+file\s+path\s+from\s+tvservice/i);
+  return "failed-getter";
+ }
+ my $encoded=$payload->{"data"}||"";
+ return "empty-lut-readback" if($encoded eq "");
+ return "unreadable-lut-payload";
+}
+
+sub lg_3d_write_accepted_readback_unavailable_ok (@) {
+ my ($generation,$read_ok,$read_lut,$read_response,$expected_lut)=@_;
+ return 0 if(ref($expected_lut) ne "ARRAY");
+ return 0 if($read_ok && ref($read_lut) eq "ARRAY");
+ return 0 if(&lg_3d_lut_readback_unavailable_reason($read_response) eq "");
+ return 1;
 }
 
 sub lg_lut_linear_unity_readback (@) {
@@ -1932,7 +2285,9 @@ sub lg_3d_lut_ordered_candidates (@) {
  my ($upload_command,$get_command)=@_;
  my @candidates=@{&lg_3d_lut_candidate_commands()};
  if(($upload_command||"") ne "" && ($get_command||"") ne "") {
-  unshift(@candidates,{ upload => $upload_command, get => $get_command, caller_selected => &json_true() });
+  my $selected={ upload => $upload_command, get => $get_command, caller_selected => &json_true() };
+  return [ $selected ] if($upload_command eq "BT2020_3D_LUT_DATA");
+  unshift(@candidates,$selected);
  }
  my @ordered=();
  my %seen=();
@@ -2115,6 +2470,16 @@ sub lg_3d_lut_upload_workflow (@) {
   &websocket_close($session);
   return &json_error("LG SDR 3D LUT writes are not mapped for picture mode '$active_picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ ip => $ip, active_picture_mode => $active_picture_mode });
  }
+ &diag_log_append("3d_lut_upload:start",{
+  ip => $ip,
+  picture_mode => $picture_mode,
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  payload_path => $payload_path,
+  payload_values => scalar(@{$lut}),
+  upload_command => $upload_command||"",
+  get_command => $get_command||"",
+ });
  my $start=&lg_calibration_request($session,"3d_lut_upload_cal_start","CAL_START",undef,1,$cal_mode,$connect_timeout + 4);
  my ($start_failed,$start_message)=&response_is_app_failure($start);
  if($start_failed || ref($start) ne "HASH") {
@@ -2122,60 +2487,153 @@ sub lg_3d_lut_upload_workflow (@) {
   return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
  }
  my @attempts=();
+ my @bt2020_matrix_steps=();
  my $uploaded=0;
  my $selected=undef;
  my $last_message="";
+ my $hdr_bt2020_upload=(($upload_command||"") eq "BT2020_3D_LUT_DATA") ? 1 : 0;
+ if($hdr_bt2020_upload) {
+  my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
+  my $matrix_response=&lg_calibration_request($session,"3d_lut_upload_bt2020_3by3_pre","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
+  my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+  push(@bt2020_matrix_steps,{ phase => "pre_upload", command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
+  if($matrix_failed || ref($matrix_response) ne "HASH") {
+   my $end=&lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
+   &websocket_close($session);
+   return &json_error($matrix_message||"LG TV rejected HDR BT.2020 3x3 setup before 3D LUT upload.",{
+    ip => $ip,
+    active_picture_mode => $active_picture_mode,
+    calibration_picture_mode => $cal_mode,
+    payload_path => $payload_path,
+    bt2020_matrix_steps => \@bt2020_matrix_steps,
+    cal_start_response => $start,
+    cal_end_response => $end,
+   });
+  }
+ }
  foreach my $candidate (@{&lg_3d_lut_ordered_candidates($upload_command,$get_command)}) {
   my $idx=scalar(@attempts)+1;
   my %attempt=( upload_command => $candidate->{"upload"}, get_command => $candidate->{"get"}, endpoint_write => "externalpq/setExternalPqData", endpoint_read => "externalpq/getExternalPqData" );
   my ($put_ok,$put_message,$put_response)=&lg_3d_lut_put($session,"3d_lut_upload_${idx}",$candidate,$lut,$cal_mode,$connect_timeout + 10);
   $attempt{"upload_response"}=$put_response;
+  my $read_ok=0;
+  my $read_message="";
+  my $readback_unavailable_reason="";
   if($put_ok) {
    select(undef,undef,undef,0.35);
-   my ($read_ok,$read_lut,$read_message,$read_response)=&lg_3d_lut_get($session,"3d_lut_upload_verify_${idx}",$candidate,$connect_timeout + 8);
+   my ($candidate_read_ok,$read_lut,$candidate_read_message,$read_response)=&lg_3d_lut_get($session,"3d_lut_upload_verify_${idx}",$candidate,$connect_timeout + 8);
+   $read_ok=$candidate_read_ok ? 1 : 0;
+   $read_message=$candidate_read_message||"";
    $attempt{"read_response"}=$read_response;
    if($read_ok && &lg_3d_lut_matches($read_lut,$lut)) {
     $attempt{"status"}="ok";
     $attempt{"upload_verified"}=&json_true();
+    $attempt{"upload_verify_contract"}="exact-readback";
+    $attempt{"readback_unavailable"}=&json_false();
     $attempt{"message"}="3D LUT upload verified by readback.";
-    push(@attempts,\%attempt);
-    $uploaded=1;
-    $selected=\%attempt;
-    last;
+   } else {
+    $readback_unavailable_reason=&lg_3d_lut_readback_unavailable_reason($read_response);
+    if(&lg_3d_write_accepted_readback_unavailable_ok($generation,$read_ok,$read_lut,$read_response,$lut)) {
+     $attempt{"status"}="ok";
+     $attempt{"upload_verified"}=&json_true();
+     $attempt{"upload_verify_contract"}="write-accepted-readback-unavailable";
+     $attempt{"readback_unavailable"}=&json_true();
+     $attempt{"readback_unavailable_reason"}=$readback_unavailable_reason||"readback-unavailable";
+     $attempt{"message"}="3D LUT upload write was accepted; TV readback is unavailable on this generation.";
+    } else {
+     $attempt{"status"}="error";
+     $attempt{"upload_verified"}=&json_false();
+     $attempt{"upload_verify_contract"}="";
+     $attempt{"readback_unavailable"}=&json_false();
+     $attempt{"message"}=$read_message||"3D LUT upload readback did not match the payload.";
+     $last_message=$attempt{"message"};
+    }
    }
-   $attempt{"status"}="error";
-   $attempt{"upload_verified"}=&json_false();
-   $attempt{"message"}=$read_message||"3D LUT upload readback did not match the payload.";
-   $last_message=$attempt{"message"};
   } else {
    $attempt{"status"}="error";
    $attempt{"upload_verified"}=&json_false();
+   $attempt{"upload_verify_contract"}="";
+   $attempt{"readback_unavailable"}=&json_false();
    $attempt{"message"}=$put_message;
    $last_message=$put_message;
   }
+  &diag_log_append("3d_lut_upload:attempt",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   index => $idx,
+   upload_command => $candidate->{"upload"}||"",
+   get_command => $candidate->{"get"}||"",
+   put_ok => &json_bool($put_ok),
+   put_message => $put_message||"",
+   read_ok => &json_bool($read_ok),
+   read_message => $read_message||"",
+   status => $attempt{"status"}||"",
+   upload_verified => &json_bool($attempt{"upload_verified"}),
+   upload_verify_contract => $attempt{"upload_verify_contract"}||"",
+   readback_unavailable => &json_bool($attempt{"readback_unavailable"}),
+   readback_unavailable_reason => $readback_unavailable_reason||$attempt{"readback_unavailable_reason"}||"",
+   message => $attempt{"message"}||"",
+  });
   push(@attempts,\%attempt);
+  if(($attempt{"status"}||"") eq "ok") {
+   $uploaded=1;
+   $selected=\%attempt;
+   last;
+  }
+ }
+ if($uploaded && $hdr_bt2020_upload) {
+  my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
+  my $matrix_response=&lg_calibration_request($session,"3d_lut_upload_bt2020_3by3_post","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
+  my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+  push(@bt2020_matrix_steps,{ phase => "post_upload", command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
+  if($matrix_failed || ref($matrix_response) ne "HASH") {
+   $uploaded=0;
+   $last_message=$matrix_message||"LG TV rejected HDR BT.2020 3x3 setup after 3D LUT upload.";
+  }
  }
  my $end=&lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
  &websocket_close($session);
  if(!$uploaded) {
+  &diag_log_append("3d_lut_upload:failure",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   payload_path => $payload_path,
+   attempts => scalar(@attempts),
+   message => $last_message||"LG TV rejected all known 3D LUT upload commands.",
+  });
   return &json_error($last_message||"LG TV rejected all known 3D LUT upload commands.",{
    ip => $ip,
    active_picture_mode => $active_picture_mode,
    calibration_picture_mode => $cal_mode,
    payload_path => $payload_path,
    attempts => \@attempts,
+   bt2020_matrix_steps => \@bt2020_matrix_steps,
    cal_start_response => $start,
    cal_end_response => $end,
   });
  }
+ &diag_log_append("3d_lut_upload:ok",{
+  ip => $ip,
+  picture_mode => $active_picture_mode,
+  payload_path => $payload_path,
+  upload_command => $selected->{"upload_command"}||"",
+  get_command => $selected->{"get_command"}||"",
+  upload_verify_contract => $selected->{"upload_verify_contract"}||"",
+  readback_unavailable => &json_bool($selected->{"readback_unavailable"}),
+  readback_unavailable_reason => $selected->{"readback_unavailable_reason"}||"",
+ });
  return &json_ok({
   ip => $ip,
   client_key => $auth->{"client_key"},
   active_picture_mode => $active_picture_mode,
   calibration_picture_mode => $cal_mode,
+  lg_generation => $generation,
   payload_path => $payload_path,
   upload_supported => &json_true(),
   upload_verified => &json_true(),
+  upload_verify_contract => $selected->{"upload_verify_contract"}||"",
+  readback_unavailable => &json_bool($selected->{"readback_unavailable"}),
+  readback_unavailable_reason => $selected->{"readback_unavailable_reason"}||"",
   upload_command => $selected->{"upload_command"}||"",
   get_command => $selected->{"get_command"}||"",
   endpoint_write => "externalpq/setExternalPqData",
@@ -2186,9 +2644,10 @@ sub lg_3d_lut_upload_workflow (@) {
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
   attempts => \@attempts,
+  bt2020_matrix_steps => \@bt2020_matrix_steps,
   cal_start_response => $start,
   cal_end_response => $end,
-  message => "LG 3D LUT upload verified.",
+  message => $selected->{"readback_unavailable"} ? "LG 3D LUT upload write accepted; readback unavailable on this generation." : "LG 3D LUT upload verified.",
  });
 }
 
@@ -2200,13 +2659,195 @@ sub lg_3d_lut_reset_workflow (@) {
  my $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tmp,$upload_command,$get_command);
  unlink($tmp);
  $result->{"reset_to_unity"}=&json_true() if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok");
- $result->{"message"}="LG 3D LUT reset to unity and verified." if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok");
+ if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok") {
+  $result->{"message"}=$result->{"readback_unavailable"}
+   ? "LG 3D LUT reset write accepted; readback unavailable on this generation."
+   : "LG 3D LUT reset to unity and verified.";
+ }
  return $result;
 }
 
+sub lg_bt2020_identity_3x3_payload (@) {
+ return { values => [1,0,0,0,1,0,0,0,1], data_type => "float" };
+}
+
+sub lg_hdr_calman_float_payload (@) {
+ return { values => [0,0,0,0,0,0,0.0044,-0.0453,1.0410], data_type => "float" };
+}
+
+sub lg_typed_uint16_payload (@) {
+ my $values=shift;
+ $values=[] if(ref($values) ne "ARRAY");
+ return { values => $values, data_type => "unsigned integer16" };
+}
+
+sub lg_force_pic_mode_payload (@) {
+ my $payload=shift;
+ $payload={} if(ref($payload) ne "HASH");
+ $payload->{"force_pic_mode"}=&json_true();
+ return $payload;
+}
+
+sub lg_hdr_picture_reset_apply_dynamic_contrast_off (@) {
+ my ($session,$active_picture_mode,$tv_input,$timeout)=@_;
+ my @attempts=();
+ my $plain_payload={ category => "picture", settings => { dynamicContrast => "off" } };
+ my $plain_response=&lg_request($session,"hdr_calman_reset_dynamic_contrast_off_plain","settings/setSystemSettings",$plain_payload,$timeout);
+ my ($plain_failed,$plain_message)=&response_is_app_failure($plain_response);
+ push(@attempts,{ path => "settings/setSystemSettings", payload => $plain_payload, response => $plain_response, failed => &json_bool($plain_failed), message => $plain_message||"" });
+ return (1,\@attempts) if(!$plain_failed && ref($plain_response) eq "HASH");
+ foreach my $attempt (&lg_picture_apply_settings_payloads({ dynamicContrast => "off" },$active_picture_mode,$tv_input,"hdr10")) {
+  my $path=$attempt->{"path"}||"settings/setSystemSettings";
+  next if(index($path,"settings/setSystemSettings") < 0);
+  my $response=$attempt->{"luna"}
+   ? &lg_luna_request($session,"hdr_calman_reset_dynamic_contrast_off_luna",$path,$attempt->{"payload"},$timeout)
+   : &lg_request($session,"hdr_calman_reset_dynamic_contrast_off",$path,$attempt->{"payload"},$timeout);
+  my ($failed,$message)=&response_is_app_failure($response);
+  push(@attempts,{ path => $path, payload => $attempt->{"payload"}, response => $response, failed => &json_bool($failed), message => $message||"" });
+  return (1,\@attempts) if(!$failed && ref($response) eq "HASH");
+ }
+ return (0,\@attempts);
+}
+
+sub lg_hdr_calman_reset_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$tv_input)=@_;
+ return &json_error("Connect / Pair the LG TV before resetting HDR calibration data",{ ip => $ip }) if($client_key eq "");
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+  &websocket_close($session);
+  return &json_error("HDR reset requires an active HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ my @steps=();
+ my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
+ my $start=&lg_calibration_request($session,"hdr_calman_reset_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ push(@steps,{ command => "CAL_START", response => $start, failed => &json_bool($start_failed), message => $start_message||"" });
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected HDR calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
+ }
+
+ foreach my $item (
+  ["BRIGHTNESS_UI_DATA",50],
+  ["CONTRAST_UI_DATA",100],
+  ["BACKLIGHT_UI_DATA",100],
+  ["COLOR_UI_DATA",50],
+ ) {
+ my ($command,$value)=@{$item};
+  my $response=&lg_calibration_request($session,"hdr_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
+  my ($failed,$message)=&response_is_app_failure($response);
+  push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
+ }
+
+ my ($dc_ok,$dc_attempts)=&lg_hdr_picture_reset_apply_dynamic_contrast_off($session,$active_picture_mode,$tv_input,$connect_timeout + 3);
+ push(@steps,{ command => "dynamicContrast", value => "off", response => $dc_attempts, failed => &json_bool(!$dc_ok), message => $dc_ok ? "" : "LG TV rejected dynamicContrast off." });
+
+ my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
+ my $matrix_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3by3","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
+ my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+ push(@steps,{ command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
+
+ my $unity3d=&lg_unity_3d_lut(33);
+ my $lut3d_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3d_lut","BT2020_3D_LUT_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity3d)),1,$cal_mode,$connect_timeout + 18);
+ my ($lut3d_failed,$lut3d_message)=&response_is_app_failure($lut3d_response);
+ push(@steps,{ command => "BT2020_3D_LUT_DATA", response => $lut3d_response, failed => &json_bool($lut3d_failed), message => $lut3d_message||"" });
+
+ my $unity1d=&lg_unity_1d_lut();
+ my $lut1d_response=&lg_calibration_request($session,"hdr_calman_reset_1d_dpg","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity1d)),1,$cal_mode,$connect_timeout + 10);
+ my ($lut1d_failed,$lut1d_message)=&response_is_app_failure($lut1d_response);
+ push(@steps,{ command => "1D_DPG_DATA", response => $lut1d_response, failed => &json_bool($lut1d_failed), message => $lut1d_message||"" });
+
+ my $end=&lg_calibration_request($session,"hdr_calman_reset_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($end_failed,$end_message)=&response_is_app_failure($end);
+ push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
+ &websocket_close($session);
+
+ my @failed=grep { $_->{"failed"} } @steps;
+ if(@failed) {
+  return &json_error("LG HDR reset completed with one or more rejected commands.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   steps => \@steps,
+  });
+ }
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  hdr_calman_reset => &json_true(),
+  bt2020_matrix_identity => &json_true(),
+  bt2020_3d_lut_unity => &json_true(),
+  dpg_1d_unity => &json_true(),
+  steps => \@steps,
+  hello_info => $auth->{"hello_info"},
+  system_info => $auth->{"system_info"},
+  software_info => $auth->{"software_info"},
+  message => "LG HDR calibration data reset with HDR CAL_START/CAL_END payloads.",
+ });
+}
+
+sub lg_hdr_tone_map_upload_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance)=@_;
+ return &json_error("Connect / Pair the LG TV before uploading HDR tone map data",{ ip => $ip }) if($client_key eq "");
+ my $peak=int((0+($peak_luminance||0))+0.5);
+ return &json_error("HDR tone-map upload requires a measured peak luminance.",{ ip => $ip, peak_luminance => $peak_luminance }) if($peak <= 0);
+ $peak=10000 if($peak > 10000);
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+  &websocket_close($session);
+  return &json_error("HDR tone-map upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ my @tone_map=($peak,1000,70,4000,60,10000,50);
+ my $upload=&lg_calibration_request($session,"hdr_tone_map_upload","1D_TONEMAP_PARAM",&lg_typed_uint16_payload(\@tone_map),1,"",$connect_timeout + 6);
+ my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
+ if($upload_failed || ref($upload) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($upload_message||"LG TV rejected HDR tone-map upload.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   command => "1D_TONEMAP_PARAM",
+   payload => \@tone_map,
+   raw_response => $upload,
+  });
+ }
+ my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
+ my $start=&lg_calibration_request($session,"hdr_tone_map_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected calibration mode start after HDR tone-map upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start, upload_response => $upload });
+ }
+ my $end=&lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ &websocket_close($session);
+ return &json_ok({
+  tone_map_uploaded => &json_true(),
+  peak_luminance => $peak,
+  command => "1D_TONEMAP_PARAM",
+  payload => \@tone_map,
+  endpoint_write => "externalpq/setExternalPqData",
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  upload_response => $upload,
+  cal_start_response => $start,
+  cal_end_response => $end,
+  message => "LG HDR tone-map parameters uploaded.",
+ });
+}
+
 sub lg_ddc_baseline_lut (@) {
- my ($session,$ip,$picture_mode,$timeout,$reset_to_unity)=@_;
- my $path=&lg_ddc_baseline_path($ip,$picture_mode);
+ my ($session,$ip,$picture_mode,$timeout,$reset_to_unity,$layout)=@_;
+ my $path=&lg_ddc_baseline_path($ip,$picture_mode,$layout);
  if($reset_to_unity) {
   my $unity=&lg_unity_1d_lut();
   &lg_write_1d_lut_file($path,$unity);
@@ -2260,6 +2901,13 @@ sub lg_ddc_1d_index_for_ire (@) {
  $ire=0+$ire;
  for(my $i=0;$i<@LG_DDC_1D_LABELS;$i++) {
   return $i if(abs($LG_DDC_1D_LABELS[$i]-$ire) < 0.001);
+ }
+ # HDR LG 1D AutoCal exposes the top control as 100%, but the virtual
+ # 26-slot DDC array position is the same slot SDR uses for 99%.
+ if(abs($ire-100) < 0.001) {
+  for(my $i=0;$i<@LG_DDC_1D_LABELS;$i++) {
+   return $i if(abs($LG_DDC_1D_LABELS[$i]-99) < 0.001);
+  }
  }
  return -1;
 }
@@ -2327,6 +2975,32 @@ sub lg_ddc_1d_nonzero_map (@) {
   $out{$name}=\@items if(@items);
  }
  return \%out;
+}
+
+sub lg_ddc_sdr_diagnostic_slot_snapshot (@) {
+ my $settings=shift;
+ return [] if(ref($settings) ne "HASH");
+ return [] if(($settings->{"ddc_layout"}||"sdr26") ne "sdr26");
+ my %channels=(
+  red => "whiteBalanceRed",
+  green => "whiteBalanceGreen",
+  blue => "whiteBalanceBlue",
+  luminance => "adjustingLuminance",
+ );
+ my @wanted_ires=(109,105,99,95,80,60,40,20,15,10,7,5,4,3,2.3);
+ my @out=();
+ foreach my $ire (@wanted_ires) {
+  my $slot=&lg_ddc_1d_index_for_ire($ire);
+  next if($slot < 0);
+  my $info=&lg_ddc_1d_slot_info($slot);
+  next if(ref($info) ne "HASH");
+  foreach my $name (keys %channels) {
+   my $values=&lg_ddc_normalize_rgb_array($settings->{$channels{$name}});
+   $info->{$name}=0+$values->[$slot] if(defined($values->[$slot]));
+  }
+  push(@out,$info);
+ }
+ return \@out;
 }
 
 sub lg_ddc_has_22pt_rgb (@) {
@@ -2453,8 +3127,87 @@ sub lg_ddc_interpolated_offset_at_index (@) {
 	  $ratio=1 if($ratio > 1);
 	  return $left_offset+(($right_offset-$left_offset)*$ratio);
 	 }
-	 return &lg_ddc_offset_units_for_slot($slots[$#slots],$offsets,$baseline,$channel);
-	}
+		 return &lg_ddc_offset_units_for_slot($slots[$#slots],$offsets,$baseline,$channel);
+		}
+
+sub lg_ddc_sdr26_top_continuity_guard_settings (@) {
+		 my ($baseline,$settings)=@_;
+		 my %diagnostics=(
+		  ddc_layout => (ref($settings) eq "HASH" ? ($settings->{"ddc_layout"}||"sdr26") : "sdr26"),
+		  legal_100_sample => $LG_DDC_SDR26_LEGAL_100_SAMPLE+0,
+		  max_legal_100_delta_ddc => $LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA+0,
+		  applied => &json_false(),
+		  changes => [],
+		 );
+		 return ($settings,\%diagnostics) if(ref($settings) ne "HASH");
+		 return ($settings,\%diagnostics) if(($settings->{"ddc_layout"}||"sdr26") ne "sdr26");
+		 return ($settings,\%diagnostics) if(@LG_DDC_1D_INDEXES != 26);
+		 my $slot99=&lg_ddc_1d_index_for_ire(99);
+		 my $slot105=&lg_ddc_1d_index_for_ire(105);
+		 return ($settings,\%diagnostics) if($slot99 < 0 || $slot105 < 0);
+		 my $sample99=$LG_DDC_1D_INDEXES[$slot99];
+		 my $sample105=$LG_DDC_1D_INDEXES[$slot105];
+		 my $sample100=$LG_DDC_SDR26_LEGAL_100_SAMPLE;
+		 return ($settings,\%diagnostics) if($sample100 <= $sample99 || $sample100 >= $sample105);
+		 my $ratio=($sample100-$sample99)/($sample105-$sample99);
+		 $diagnostics{"slot_99"}=$slot99+0;
+		 $diagnostics{"slot_105"}=$slot105+0;
+		 $diagnostics{"sample_99"}=$sample99+0;
+		 $diagnostics{"sample_105"}=$sample105+0;
+		 $diagnostics{"legal_100_ratio"}=$ratio+0;
+
+		 my %guarded=%{$settings};
+		 my @specs=(
+		  [ "whiteBalanceRed", 0 ],
+		  [ "whiteBalanceGreen", 1 ],
+		  [ "whiteBalanceBlue", 2 ],
+		  [ "adjustingLuminance", 1 ],
+		 );
+		 my @changes=();
+		 foreach my $spec (@specs) {
+		  my ($setting,$channel)=@{$spec};
+		  my $values=&lg_ddc_normalize_rgb_array($settings->{$setting});
+		  next if($slot99 >= @{$values} || $slot105 >= @{$values});
+		  my $left_units=&lg_ddc_offset_units_for_slot($slot99,$values,$baseline,$channel);
+		  my $right_units=&lg_ddc_offset_units_for_slot($slot105,$values,$baseline,$channel);
+		  my $legal_units=$left_units+(($right_units-$left_units)*$ratio);
+		  my $delta_units=$legal_units-$left_units;
+		  my $limit_units=&lg_ddc_step_units_for_point($baseline,$channel,$sample100)*$LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA;
+		  next if($limit_units <= 0 || abs($delta_units) <= $limit_units);
+		  my $direction=$delta_units < 0 ? -1 : 1;
+		  my $target_legal_units=$left_units+($direction*$limit_units);
+		  my $new_right_units=$left_units+(($target_legal_units-$left_units)/$ratio);
+		  my $right_step_units=&lg_ddc_step_units_for_point($baseline,$channel,$sample105);
+		  next if($right_step_units <= 0);
+		  my $before=$values->[$slot105]+0;
+		  my $after=$new_right_units/$right_step_units;
+		  $after=-50 if($after < -50);
+		  $after=50 if($after > 50);
+		  $after=int($after*100+($after < 0 ? -0.5 : 0.5))/100;
+		  next if(abs($after-$before) < 0.0001);
+		  $values->[$slot105]=$after;
+		  $guarded{$setting}=$values;
+		  my $after_right_units=&lg_ddc_offset_units_for_slot($slot105,$values,$baseline,$channel);
+		  my $after_legal_units=$left_units+(($after_right_units-$left_units)*$ratio);
+		  push(@changes,{
+		   setting => $setting,
+		   channel => $channel+0,
+		   slot_99_value => $values->[$slot99]+0,
+		   slot_105_before => $before+0,
+		   slot_105_after => $after+0,
+		   legal_100_delta_units_before => $delta_units+0,
+		   legal_100_delta_units_after => ($after_legal_units-$left_units)+0,
+		   legal_100_delta_ddc_limit => $LG_DDC_SDR26_TOP_CONTINUITY_MAX_LEGAL_100_DELTA+0,
+		   legal_100_delta_unit_limit => $limit_units+0,
+		   reason => "sdr26_top_linear_continuity_guard",
+		  });
+		 }
+		 if(@changes) {
+		  $diagnostics{"applied"}=&json_true();
+		  $diagnostics{"changes"}=\@changes;
+		 }
+		 return (\%guarded,\%diagnostics);
+		}
 
 sub lg_ddc_build_1d_lut (@) {
 	 my ($baseline,$settings)=@_;
@@ -2481,8 +3234,35 @@ sub lg_ddc_build_1d_lut (@) {
 	   $adjusted=32767 if($adjusted > 32767);
 	   $lut[$pos]=int($adjusted+0.5);
 	  }
-	 }
-	 return \@lut;
+		 }
+		 return \@lut;
+	}
+
+sub lg_ddc_lut_top_sample_snapshot (@) {
+ my ($lut,$baseline)=@_;
+ return [] if(ref($lut) ne "ARRAY" || @{$lut} != 3072);
+ my @samples=();
+ foreach my $ire (99,105,109) {
+  my $slot=&lg_ddc_1d_index_for_ire($ire);
+  next if($slot < 0 || $slot >= @LG_DDC_1D_INDEXES);
+  push(@samples,$LG_DDC_1D_INDEXES[$slot]);
+ }
+ push(@samples,$LG_DDC_SDR26_LEGAL_100_SAMPLE);
+ @samples=sort { $a <=> $b } @samples;
+ my @out=();
+ foreach my $sample (@samples) {
+  next if(!defined($sample) || $sample < 0 || $sample > 1023);
+  my %item=(sample=>$sample+0);
+  foreach my $pair ([red=>0],[green=>1],[blue=>2]) {
+   my ($name,$channel)=@{$pair};
+   my $pos=($channel*1024)+$sample;
+   $item{$name}=int($lut->[$pos]||0);
+   $item{$name."_baseline"}=int($baseline->[$pos]||0) if(ref($baseline) eq "ARRAY" && @{$baseline} == 3072);
+   $item{$name."_delta"}=$item{$name}-($item{$name."_baseline"}||0) if(exists($item{$name."_baseline"}));
+  }
+  push(@out,\%item);
+ }
+ return \@out;
 }
 
 sub lg_ddc_enable_1d_pipeline (@) {
@@ -2517,8 +3297,10 @@ sub lg_ddc_enable_1d_pipeline (@) {
 
 sub lg_ddc_state_from_settings (@) {
  my ($settings,$picture_mode)=@_;
+ my $layout=&lg_ddc_layout_name($settings,$picture_mode);
  return {
   pictureMode => $picture_mode,
+  ddc_layout => $layout,
   whiteBalanceMethod => "22",
   whiteBalanceIre => $settings->{"whiteBalanceIre"}||"",
 	  whiteBalanceRed => &lg_ddc_normalize_rgb_array($settings->{"whiteBalanceRed"}),
@@ -2533,22 +3315,44 @@ sub lg_ddc_state_from_settings (@) {
 sub lg_ddc_save_state (@) {
  my ($ip,$picture_mode,$settings)=@_;
  my $state=&lg_ddc_state_from_settings($settings,$picture_mode);
- &file_write_json(&lg_ddc_state_path($ip,$picture_mode),$state);
+ &file_write_json(&lg_ddc_state_path($ip,$picture_mode,$state->{"ddc_layout"}),$state);
  return $state;
 }
 
 sub lg_ddc_clear_state (@) {
  my ($ip,$picture_mode)=@_;
- unlink(&lg_ddc_state_path($ip,$picture_mode));
- unlink(&lg_ddc_baseline_path($ip,$picture_mode));
+ foreach my $layout ("","sdr26","hdr20") {
+  unlink(&lg_ddc_state_path($ip,$picture_mode,$layout));
+  unlink(&lg_ddc_baseline_path($ip,$picture_mode,$layout));
+ }
+ return 1;
+}
+
+sub lg_ddc_state_compatible (@) {
+ my ($state,$layout)=@_;
+ return 0 if(ref($state) ne "HASH");
+ $layout=&lg_ddc_token($layout||"sdr26");
+ my $state_layout=&lg_ddc_token($state->{"ddc_layout"}||"");
+ return 0 if($state_layout ne "" && $state_layout ne $layout);
+ my $expected=($layout eq "hdr20") ? scalar(@LG_DDC_1D_LABELS_HDR20) : scalar(@LG_DDC_1D_LABELS_SDR);
+ foreach my $key ("whiteBalanceRed","whiteBalanceGreen","whiteBalanceBlue") {
+  return 0 if(ref($state->{$key}) ne "ARRAY" || @{$state->{$key}} != $expected);
+ }
+ return 0 if(ref($state->{"adjustingLuminance"}) eq "ARRAY" && @{$state->{"adjustingLuminance"}} != $expected);
  return 1;
 }
 
 sub lg_ddc_load_state (@) {
- my ($ip,$picture_mode)=@_;
- my $state=&file_read_json(&lg_ddc_state_path($ip,$picture_mode));
- return {} if(ref($state) ne "HASH");
- return $state;
+ my ($ip,$picture_mode,$layout)=@_;
+ $layout=&lg_ddc_layout_name({ ddc_layout => $layout||"" },$picture_mode);
+ foreach my $path (&lg_ddc_state_path($ip,$picture_mode,$layout),&lg_ddc_state_path($ip,$picture_mode)) {
+  my $state=&file_read_json($path);
+  next if(ref($state) ne "HASH");
+  next if(!&lg_ddc_state_compatible($state,$layout));
+  $state->{"ddc_layout"}=$layout if(($state->{"ddc_layout"}||"") eq "");
+  return $state;
+ }
+ return {};
 }
 
 sub lg_ddc_merge_picture_settings (@) {
@@ -2648,16 +3452,20 @@ sub lg_ddc_virtual_picture_settings (@) {
  my ($ip,$picture_mode)=@_;
  $picture_mode=&lg_resolve_ddc_picture_mode($ip,$picture_mode);
  my $state=&lg_ddc_load_state($ip,$picture_mode);
-	 if(ref($state) eq "HASH" && ref($state->{"whiteBalanceRed"}) eq "ARRAY") {
-	  $state->{"pictureMode"}=$picture_mode if(($state->{"pictureMode"}||"") eq "");
-	  $state->{"whiteBalanceMethod"}="22" if(($state->{"whiteBalanceMethod"}||"") eq "");
-	  $state->{"adjustingLuminance"}=[map { 0 } @LG_DDC_1D_LABELS] if(ref($state->{"adjustingLuminance"}) ne "ARRAY");
-	  $state->{"ddc_1d_lut"}=&json_true();
-	  return $state;
-	 }
- my @zero=map { 0 } @LG_DDC_1D_LABELS;
-	 return {
-	  pictureMode => $picture_mode,
+ my $layout=&lg_ddc_layout_name($state,$picture_mode);
+ my @layout_labels=($layout eq "hdr20") ? @LG_DDC_1D_LABELS_HDR20 : @LG_DDC_1D_LABELS_SDR;
+		 if(ref($state) eq "HASH" && ref($state->{"whiteBalanceRed"}) eq "ARRAY") {
+		  $state->{"pictureMode"}=$picture_mode if(($state->{"pictureMode"}||"") eq "");
+		  $state->{"whiteBalanceMethod"}="22" if(($state->{"whiteBalanceMethod"}||"") eq "");
+		  $state->{"ddc_layout"}=$layout;
+		  $state->{"adjustingLuminance"}=[map { 0 } @layout_labels] if(ref($state->{"adjustingLuminance"}) ne "ARRAY");
+		  $state->{"ddc_1d_lut"}=&json_true();
+		  return $state;
+		 }
+ my @zero=map { 0 } @layout_labels;
+		 return {
+		  pictureMode => $picture_mode,
+		  ddc_layout => $layout,
 	  whiteBalanceMethod => "22",
 	  whiteBalanceIre => "50",
 	  whiteBalanceRed => [@zero],
@@ -2669,8 +3477,12 @@ sub lg_ddc_virtual_picture_settings (@) {
 }
 
 sub lg_ddc_1d_white_balance_set (@) {
- my ($session,$ip,$picture_mode,$settings,$timeout,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload)=@_;
- $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
+	 my ($session,$ip,$picture_mode,$settings,$timeout,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$generation)=@_;
+	 my $ddc_layout=&lg_ddc_layout_name($settings,$picture_mode);
+	 local @LG_DDC_1D_LABELS=($ddc_layout eq "hdr20") ? @LG_DDC_1D_LABELS_HDR20 : @LG_DDC_1D_LABELS_SDR;
+	 local @LG_DDC_1D_INDEXES=($ddc_layout eq "hdr20") ? @LG_DDC_1D_INDEXES_HDR20 : @LG_DDC_1D_INDEXES_SDR;
+	 local @LG_DDC_1D_PATCH_INDEXES_8BIT=($ddc_layout eq "hdr20") ? @LG_DDC_1D_PATCH_INDEXES_8BIT_HDR20 : @LG_DDC_1D_PATCH_INDEXES_8BIT_SDR;
+	 $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
  $reset_ddc_baseline=$reset_ddc_baseline ? 1 : 0;
  $verify_ddc_upload=$verify_ddc_upload ? 1 : 0;
@@ -2681,10 +3493,11 @@ sub lg_ddc_1d_white_balance_set (@) {
   return (1,&json_error("LG DDC 1D LUT white-balance writes are not mapped for picture mode '$picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ active_picture_mode => $picture_mode }));
  }
 
- my $start=$calibration_mode_active
-  ? { type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() }
-  : &lg_calibration_request($session,"ddc_cal_start","CAL_START",undef,1,$cal_mode,$timeout);
- my ($start_failed,$start_message)=&response_is_app_failure($start);
+	 my $cal_start_sent=$calibration_mode_active ? 0 : 1;
+	 my $start=$cal_start_sent
+	  ? &lg_calibration_request($session,"ddc_cal_start","CAL_START",undef,1,$cal_mode,$timeout)
+	  : { type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
+	 my ($start_failed,$start_message)=&response_is_app_failure($start);
  if($start_failed || ref($start) ne "HASH") {
   my $message=$start_message||"LG TV rejected calibration mode start.";
   if($message =~ /insufficient permissions/i) {
@@ -2701,14 +3514,45 @@ sub lg_ddc_1d_white_balance_set (@) {
   return (1,&json_error($message,{ active_picture_mode => $picture_mode, raw_response => $start }));
  }
 
- &lg_ddc_clear_state($ip,$picture_mode) if($reset_ddc_baseline);
- my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline);
- my $lut=&lg_ddc_build_1d_lut($baseline,$settings);
-
- my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
- my $late_start=undef;
- if(!$enable_ok && $calibration_mode_active) {
-  $late_start=&lg_calibration_request($session,"ddc_cal_start_late","CAL_START",undef,1,$cal_mode,$timeout);
+		 &lg_ddc_clear_state($ip,$picture_mode) if($reset_ddc_baseline);
+			 my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline,$ddc_layout);
+			 my ($effective_settings,$top_continuity)=&lg_ddc_sdr26_top_continuity_guard_settings($baseline,$settings);
+			 my $normalized_state=&lg_ddc_state_from_settings($effective_settings,$picture_mode);
+			 if($ddc_layout eq "sdr26") {
+			  &diag_log_append("ddc1d:normalized-sdr-low-shadow",{
+		   phase => "pre_lut_build",
+		   ddc_layout => $ddc_layout,
+		   picture_mode => $picture_mode,
+		   whiteBalanceIre => $settings->{"whiteBalanceIre"}||"",
+			   keep_calibration_mode => &json_bool($keep_calibration_mode),
+			   calibration_mode_active => &json_bool($calibration_mode_active),
+			   calibration_mode_requested => &json_bool($keep_calibration_mode),
+			   calibration_mode_ensured => &json_bool($cal_start_sent),
+			   cal_start_sent => &json_bool($cal_start_sent),
+			   reset_ddc_baseline => &json_bool($reset_ddc_baseline),
+			   verify_ddc_upload => &json_bool($verify_ddc_upload),
+			   ddc_target => &lg_ddc_1d_target_info($normalized_state),
+			   ddc_nonzero => &lg_ddc_1d_nonzero_map($normalized_state),
+			   diagnostic_slots => &lg_ddc_sdr_diagnostic_slot_snapshot($normalized_state),
+			   top_continuity => $top_continuity,
+			  });
+			 }
+			 my $lut=&lg_ddc_build_1d_lut($baseline,$effective_settings);
+			 my $top_lut_samples=($ddc_layout eq "sdr26") ? &lg_ddc_lut_top_sample_snapshot($lut,$baseline) : [];
+			 if($ddc_layout eq "sdr26") {
+			  $top_continuity->{"lut_samples"}=$top_lut_samples if(ref($top_continuity) eq "HASH");
+			  &diag_log_append("ddc1d:sdr26-top-continuity",{
+			   phase => "post_lut_build",
+			   ddc_layout => $ddc_layout,
+			   picture_mode => $picture_mode,
+			   top_continuity => $top_continuity,
+			   lut_samples => $top_lut_samples,
+			  });
+			 }
+		 my ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
+	 my $late_start=undef;
+	 if(!$enable_ok && $calibration_mode_active) {
+	  $late_start=&lg_calibration_request($session,"ddc_cal_start_late","CAL_START",undef,1,$cal_mode,$timeout);
   my ($late_start_failed,$late_start_message)=&response_is_app_failure($late_start);
   if(!$late_start_failed && ref($late_start) eq "HASH") {
    ($enable_ok,$enable_message,$enable_responses)=&lg_ddc_enable_1d_pipeline($session,$timeout,$cal_mode);
@@ -2730,7 +3574,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 	 my $first_message=$upload_message||"";
 	 my $first_end=&lg_calibration_request($session,"ddc_cal_end_after_upload_fail","CAL_END",undef,1,"",$timeout);
 	 $end=$first_end;
-	 if($calibration_mode_active || $first_message =~ /(500\s+Application error|not a string)/i) {
+		 if($calibration_mode_active || $first_message =~ /(500\s+Application error|not a string)/i) {
 	  select(undef,undef,undef,0.35);
 	  my $retry_start=&lg_calibration_request($session,"ddc_cal_start_retry","CAL_START",undef,1,$cal_mode,$timeout);
 	  my ($retry_start_failed,$retry_start_message)=&response_is_app_failure($retry_start);
@@ -2787,12 +3631,20 @@ sub lg_ddc_1d_white_balance_set (@) {
 		 my $upload_verified=0;
 		 my $reset_readback_contract="";
 		 my $upload_readback_contract="";
+		 my $reset_readback_unavailable=0;
+		 my $upload_readback_unavailable=0;
+		 my $ddc_readback_unavailable=0;
+		 my $ddc_readback_unavailable_reason="";
+		 my $ddc_verify_mismatch=undef;
+		 my $reset_linear_diagnostics=undef;
 		 if($reset_ddc_baseline || $verify_ddc_upload) {
 		  select(undef,undef,undef,0.35);
-		  my $verify_lut=&lg_get_current_1d_lut($session,$timeout);
+		  my $verify_info=&lg_get_current_1d_lut_info($session,$timeout);
+		  my $verify_lut=$verify_info->{"lut"};
 		  if(!&lg_lut_matches($verify_lut,$lut)) {
 		   select(undef,undef,undef,0.75);
-		   $verify_lut=&lg_get_current_1d_lut($session,$timeout);
+		   $verify_info=&lg_get_current_1d_lut_info($session,$timeout);
+		   $verify_lut=$verify_info->{"lut"};
 		  }
 		  $upload_verified=1 if(&lg_lut_matches($verify_lut,$lut));
 		  if(!$upload_verified && !$reset_ddc_baseline && &lg_lut_matches_tv_readback($verify_lut,$lut)) {
@@ -2805,10 +3657,21 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   # payload (observed green max 32682 vs 32767). Treat that stable
 		   # linear readback as the TV's post-reset contract and use it as
 		   # the DDC baseline for future offsets.
-		   &lg_write_1d_lut_file(&lg_ddc_baseline_path($ip,$picture_mode),$verify_lut);
+		   &lg_write_1d_lut_file(&lg_ddc_baseline_path($ip,$picture_mode,$ddc_layout),$verify_lut);
 		   $baseline=$verify_lut;
 		   $lut=$verify_lut;
 		   $reset_readback_contract="linear-unity-readback";
+		   $upload_verified=1;
+		  }
+		  if(!$upload_verified && ($reset_ddc_baseline || $verify_ddc_upload) && &lg_1d_write_accepted_readback_unavailable_ok($generation,$verify_info,$lut)) {
+		   $ddc_readback_unavailable_reason=&lg_1d_lut_readback_unavailable_reason($verify_info)||"readback-unavailable";
+		   $ddc_verify_mismatch=&lg_lut_mismatch_summary($verify_lut,$lut);
+		   $reset_linear_diagnostics=&lg_lut_linear_unity_diagnostics($verify_lut);
+		   $reset_readback_contract="write-accepted-readback-unavailable" if($reset_ddc_baseline);
+		   $upload_readback_contract="write-accepted-readback-unavailable" if(!$reset_ddc_baseline || $verify_ddc_upload);
+		   $reset_readback_unavailable=1 if($reset_ddc_baseline);
+		   $upload_readback_unavailable=1 if(!$reset_ddc_baseline || $verify_ddc_upload);
+		   $ddc_readback_unavailable=1;
 		   $upload_verified=1;
 		  }
 		  if(!$upload_verified) {
@@ -2827,29 +3690,44 @@ sub lg_ddc_1d_white_balance_set (@) {
 		  }
 		 }
 
-	 my $state=&lg_ddc_save_state($ip,$picture_mode,$settings);
-	 my @reference_slot_samples=map { &lg_ddc_reference_video_10bit_for_ire($_) } @LG_DDC_1D_LABELS;
+			 my $state=&lg_ddc_save_state($ip,$picture_mode,$effective_settings);
+		 $state->{"ddc_layout"}=$ddc_layout;
+		 &file_write_json(&lg_ddc_state_path($ip,$picture_mode,$ddc_layout),$state);
+		 my @reference_slot_samples=map { &lg_ddc_reference_video_10bit_for_ire($_) } @LG_DDC_1D_LABELS;
 	 return (1,&json_ok({
 	  active_picture_mode => $picture_mode,
 	  calibration_picture_mode => $cal_mode,
 	 picture_settings => $state,
-	  ddc_target => &lg_ddc_1d_target_info($settings),
-	  ddc_nonzero => &lg_ddc_1d_nonzero_map($settings),
-	  ddc_slot_labels => \@LG_DDC_1D_LABELS,
-	  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
-	  ddc_slot_samples_reference => \@reference_slot_samples,
-	  ddc_response => $upload,
-	  ddc_end_response => $end,
-	  ddc_start_response => $start,
-	  ddc_late_start_response => $late_start,
-	  pipeline_responses => $enable_responses,
-		  ddc_baseline_reset => &json_bool($reset_ddc_baseline),
-		  ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified),
-		  ddc_upload_verified => &json_bool($upload_verified),
-		  ddc_reset_verify_contract => $reset_readback_contract,
-		  ddc_upload_verify_contract => $upload_readback_contract,
-	  calibration_mode => &json_bool($keep_calibration_mode),
-	 }));
+		  ddc_target => &lg_ddc_1d_target_info($effective_settings),
+		  ddc_nonzero => &lg_ddc_1d_nonzero_map($effective_settings),
+			  ddc_slot_labels => \@LG_DDC_1D_LABELS,
+			  ddc_slot_samples => \@LG_DDC_1D_INDEXES,
+			  ddc_layout => $ddc_layout,
+		  ddc_slot_samples_reference => \@reference_slot_samples,
+			  ddc_top_continuity => $top_continuity,
+			  ddc_lut_top_samples => $top_lut_samples,
+			  ddc_response => $upload,
+		  ddc_end_response => $end,
+		  ddc_start_response => $start,
+		  ddc_late_start_response => $late_start,
+		  calibration_mode_requested => &json_bool($keep_calibration_mode),
+		  calibration_mode_ensured => &json_bool($cal_start_sent),
+		  cal_start_sent => &json_bool($cal_start_sent),
+		  caller_calibration_mode_active => &json_bool($calibration_mode_active),
+		  pipeline_responses => $enable_responses,
+			  ddc_baseline_reset => &json_bool($reset_ddc_baseline),
+			  ddc_reset_verified => &json_bool($reset_ddc_baseline && $upload_verified),
+			  ddc_upload_verified => &json_bool($upload_verified),
+			  ddc_reset_verify_contract => $reset_readback_contract,
+			  ddc_reset_readback_unavailable => &json_bool($reset_readback_unavailable),
+			  ddc_upload_verify_contract => $upload_readback_contract,
+			  ddc_upload_readback_unavailable => &json_bool($upload_readback_unavailable),
+			  ddc_readback_unavailable => &json_bool($ddc_readback_unavailable),
+			  ddc_readback_unavailable_reason => $ddc_readback_unavailable_reason,
+			  ddc_verify_mismatch => $ddc_readback_unavailable ? $ddc_verify_mismatch : undef,
+			  ddc_linear_unity_diagnostics => $reset_readback_unavailable ? $reset_linear_diagnostics : undef,
+			  calibration_mode => &json_bool($keep_calibration_mode),
+			 }));
 }
 
 sub lg_picture_set_workflow (@) {
@@ -2934,8 +3812,8 @@ sub lg_picture_set_workflow (@) {
    last;
   }
  }
- my $mode_lc=lc($active_picture_mode);
-	 my $mode_writable=($mode_lc ne "" && $mode_lc =~ /$WRITABLE_PICTURE_MODES_RE/) ? 1 : 0;
+ my $mode_lc=lc(&lg_picture_mode_for_calibration($active_picture_mode) || $active_picture_mode);
+ my $mode_writable=($mode_lc ne "" && $mode_lc =~ /$WRITABLE_PICTURE_MODES_RE/) ? 1 : 0;
  if(($ddc_white_balance_only || $native_white_balance) && !$picture_mode_only && !$panel_light_only && $active_picture_mode ne "" && !$mode_writable) {
   &websocket_close($session);
   &diag_log_append("picture_set:preflight",{ ip => $ip, picture_mode => $active_picture_mode, blocked => "non-writable picture mode" });
@@ -2972,11 +3850,24 @@ sub lg_picture_set_workflow (@) {
 
 		 my ($ddc_attempted,$ddc_result)=(0,undef);
 		 if($ddc_white_balance_only) {
-		  ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$settings_to_apply,$connect_timeout + 4,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload);
+		  ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$settings_to_apply,$connect_timeout + 4,$keep_calibration_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$generation);
 		 }
  if($ddc_attempted) {
   if(ref($ddc_result) eq "HASH" && ($ddc_result->{"status"}||"") eq "ok") {
    my $settings_after=(ref($ddc_result->{"picture_settings"}) eq "HASH") ? $ddc_result->{"picture_settings"} : &lg_ddc_state_from_settings($settings_to_apply,$active_picture_mode);
+   if(@{$readback_keys}) {
+    my @native_readback_keys=grep { $_ !~ /^(?:whiteBalance|adjustingLuminance|ddc_layout|ddc_1d_lut)$/ } @{$readback_keys};
+    my %native_seen=();
+    @native_readback_keys=grep { !$native_seen{$_}++ } @native_readback_keys;
+    if(@native_readback_keys) {
+     my $native_readback=&lg_picture_readback_settings($session,"get_picture_settings_after_ddc",$native_readback_keys,$active_picture_mode,$tv_input,$signal_mode,$connect_timeout + 2);
+     if(ref($native_readback) eq "HASH") {
+      foreach my $key (keys(%{$native_readback})) {
+       $settings_after->{$key}=$native_readback->{$key};
+      }
+     }
+    }
+   }
    &websocket_close($session);
    &diag_log_append("picture_set:ddc1d-ok",{
     ip => $ip,
@@ -2986,12 +3877,22 @@ sub lg_picture_set_workflow (@) {
     calibration_picture_mode => $ddc_result->{"calibration_picture_mode"}||"",
 	    ddc_target => $ddc_result->{"ddc_target"}||{},
 	    ddc_nonzero => $ddc_result->{"ddc_nonzero"}||{},
-		    ddc_slot_samples => $ddc_result->{"ddc_slot_samples"}||[],
-		    ddc_slot_samples_reference => $ddc_result->{"ddc_slot_samples_reference"}||[],
-		    ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
-		    ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
-		    pipeline_responses => $ddc_result->{"pipeline_responses"}||[],
-		   });
+			    ddc_slot_samples => $ddc_result->{"ddc_slot_samples"}||[],
+			    ddc_slot_samples_reference => $ddc_result->{"ddc_slot_samples_reference"}||[],
+				    ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
+				    ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
+				    ddc_reset_readback_unavailable => &json_bool($ddc_result->{"ddc_reset_readback_unavailable"}),
+				    ddc_upload_verify_contract => $ddc_result->{"ddc_upload_verify_contract"}||"",
+				    ddc_upload_readback_unavailable => &json_bool($ddc_result->{"ddc_upload_readback_unavailable"}),
+				    ddc_readback_unavailable => &json_bool($ddc_result->{"ddc_readback_unavailable"}),
+				    ddc_readback_unavailable_reason => $ddc_result->{"ddc_readback_unavailable_reason"}||"",
+				    ddc_verify_mismatch => $ddc_result->{"ddc_verify_mismatch"}||undef,
+					    calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
+			    calibration_mode_ensured => &json_bool($ddc_result->{"calibration_mode_ensured"}),
+			    cal_start_sent => &json_bool($ddc_result->{"cal_start_sent"}),
+			    caller_calibration_mode_active => &json_bool($ddc_result->{"caller_calibration_mode_active"}),
+			    pipeline_responses => $ddc_result->{"pipeline_responses"}||[],
+			   });
    return &json_ok({
     ip => $ip,
     client_key => $auth->{"client_key"},
@@ -3002,10 +3903,21 @@ sub lg_picture_set_workflow (@) {
     ddc_1d_lut => &json_true(),
 	   ddc_baseline_reset => &json_bool($reset_ddc_baseline),
 	   ddc_reset_verified => &json_bool($ddc_result->{"ddc_reset_verified"}),
-	   ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
-	   ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
-	   calibration_mode => &json_bool($keep_calibration_mode),
-   hello_info => $auth->{"hello_info"},
+		   ddc_upload_verified => &json_bool($ddc_result->{"ddc_upload_verified"}),
+		   ddc_reset_verify_contract => $ddc_result->{"ddc_reset_verify_contract"}||"",
+		   ddc_reset_readback_unavailable => &json_bool($ddc_result->{"ddc_reset_readback_unavailable"}),
+		   ddc_upload_verify_contract => $ddc_result->{"ddc_upload_verify_contract"}||"",
+		   ddc_upload_readback_unavailable => &json_bool($ddc_result->{"ddc_upload_readback_unavailable"}),
+		   ddc_readback_unavailable => &json_bool($ddc_result->{"ddc_readback_unavailable"}),
+		   ddc_readback_unavailable_reason => $ddc_result->{"ddc_readback_unavailable_reason"}||"",
+		   ddc_verify_mismatch => $ddc_result->{"ddc_verify_mismatch"}||undef,
+		   ddc_linear_unity_diagnostics => $ddc_result->{"ddc_linear_unity_diagnostics"}||undef,
+		   calibration_mode => &json_bool($keep_calibration_mode),
+		   calibration_mode_requested => &json_bool($ddc_result->{"calibration_mode_requested"}),
+		   calibration_mode_ensured => &json_bool($ddc_result->{"calibration_mode_ensured"}),
+		   cal_start_sent => &json_bool($ddc_result->{"cal_start_sent"}),
+		   caller_calibration_mode_active => &json_bool($ddc_result->{"caller_calibration_mode_active"}),
+	   hello_info => $auth->{"hello_info"},
    system_info => $auth->{"system_info"},
    software_info => $auth->{"software_info"},
    lg_generation => $generation,
@@ -3692,12 +4604,14 @@ sub main (@) {
 	 my $reset_ddc_baseline=$request->{"reset_ddc_baseline"}||$request->{"clear_ddc_baseline"} ? 1 : 0;
 	 my $verify_ddc_upload=$request->{"verify_ddc_upload"} ? 1 : 0;
 	 my $force_ddc_white_balance=$request->{"force_ddc_white_balance"}||$request->{"ddc_white_balance"} ? 1 : 0;
+	 my $require_white_balance_reset=$request->{"require_white_balance_reset"} ? 1 : 0;
  my $picture_mode=$request->{"picture_mode"}||"";
  my $signal_mode=$request->{"signal_mode"}||"";
  my $command=$request->{"command"}||"";
  my $payload_path=$request->{"payload_path"}||"";
  my $upload_command=$request->{"upload_command"}||"";
  my $get_command=$request->{"get_command"}||"";
+ my $peak_luminance=$request->{"peak_luminance"};
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
  my $result;
@@ -3713,7 +4627,7 @@ sub main (@) {
 	 } elsif($action eq "picture_set") {
 		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance);
  } elsif($action eq "picture_reset") {
-  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode);
+  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset);
    } elsif($action eq "remote_enter") {
     $result=&lg_remote_enter_workflow($ip,$client_key,$connect_timeout);
  } elsif($action eq "remote_control") {
@@ -3724,11 +4638,15 @@ sub main (@) {
   $result=&lg_3d_lut_probe_workflow($ip,$client_key,$connect_timeout,$picture_mode,$write_probe);
  } elsif($action eq "3d_lut_upload") {
   $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command);
- } elsif($action eq "3d_lut_reset") {
-  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command);
- } elsif($action eq "connect_pin_wait") {
-  $result=&lg_connect_pin_wait_workflow($ip,$client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type);
- } else {
+	 } elsif($action eq "3d_lut_reset") {
+	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command);
+	 } elsif($action eq "hdr_picture_reset" || $action eq "hdr_calman_reset") {
+	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
+	 } elsif($action eq "hdr_tone_map_upload") {
+	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance);
+	 } elsif($action eq "connect_pin_wait") {
+	  $result=&lg_connect_pin_wait_workflow($ip,$client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type);
+	 } else {
   $result=&json_error("Unknown LG helper action: $action",{ action => $action, ip => $ip });
  }
 

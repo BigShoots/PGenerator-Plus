@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import os
+import pwd
 import pty
 import re
 import select
@@ -18,6 +19,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 MENU_RE = re.compile(r"Press\s+1\s*\.\.\s*\d+", re.I)
 CONTINUE_RE = re.compile(r"(press|hit).*(any )?key|press return|key to continue", re.I)
 ERROR_RE = re.compile(r"(no instrument|no device|instrument.*not connected|communications failure|initialisation failed|can't open|failed)", re.I)
+# Prompts that require the user to physically position the instrument. These
+# must NOT be auto-dismissed: the i1 Pro is calibrated on its white tile and
+# then aimed at the screen, and the user's button press satisfies the prompt.
+PLACEMENT_RE = re.compile(r"place the instrument|place instrument|white reference|reflective|on (?:the )?(?:test|display|spot|screen)|test window|reposition|spot reading", re.I)
 
 
 try:
@@ -54,16 +59,73 @@ class Runner:
         self.cancel_requested = False
         self.last_continue = 0.0
         self.last_message = ""
+        self.recent = ""
+        self.setup_step_id = 0
+        self.positioned = False
 
     def write_state(self, status, message, **extra):
         payload = {"status": status, "message": message, "filename": os.path.basename(self.args.output_path)}
-        payload.update(dict((key, value) for key, value in extra.items() if value not in (None, "")))
-        tmp_path = "%s.tmp" % self.args.state_file
+        # Never surface raw ccxxmake text to the operator. The raw output is kept
+        # in the log file for diagnostics; the state carries only curated fields.
+        # Drop any 'detail' so even a stale/cached UI cannot render it.
+        payload.update(dict((key, value) for key, value in extra.items() if value not in (None, "") and key != "detail"))
+        tmp_path = "%s.%s.tmp" % (self.args.state_file, os.getpid())
         json_text = utf8_text(json.dumps(payload, ensure_ascii=True))
         with io.open(tmp_path, "w", encoding="utf-8") as handle:
             handle.write(json_text)
+        try:
+            os.chmod(tmp_path, 0o666)
+        except Exception:
+            pass
+        try:
+            user = pwd.getpwnam("pgenerator")
+            os.chown(tmp_path, user.pw_uid, user.pw_gid)
+        except Exception:
+            pass
         os.rename(tmp_path, self.args.state_file)
         self.last_message = message
+
+    def await_setup_step(self, step, message):
+        # Race-free interactive setup step (mirrors meter_session.sh's
+        # await_setup_step): publish a numbered setup state, then block until an
+        # ack whose id matches the current step arrives. Stale/duplicate acks are
+        # read and discarded so a click can't be lost and double-clicks are
+        # no-ops. The continue-file is the ack channel (now carrying a step id).
+        self.setup_step_id += 1
+        sid = self.setup_step_id
+        cont = self.args.continue_file
+        if cont:
+            try:
+                os.unlink(cont)
+            except Exception:
+                pass
+        self.write_state("setup", message, step_id=sid, step=step)
+        while True:
+            if self.cancel_requested:
+                return
+            if cont and os.path.exists(cont):
+                acked = ""
+                try:
+                    with io.open(cont, "r", encoding="utf-8", errors="ignore") as handle:
+                        acked = re.sub(r"\D", "", handle.read())
+                except Exception:
+                    acked = ""
+                try:
+                    os.unlink(cont)
+                except Exception:
+                    pass
+                if acked == str(sid):
+                    break
+            time.sleep(0.2)
+        # Publish a 'working' state so the wizard popup stays visible (no button)
+        # with an informative message while the slow step runs -- calibration and
+        # the patch sweep each take several seconds -- instead of vanishing.
+        working = {
+            "calibrate_tile": "Calibrating the spectrophotometer on its tile - please wait a few seconds...",
+            "position_screen": "Measuring the test patches - keep the meter aimed at the screen...",
+            "calibrate_retry": "Re-calibrating the spectrophotometer - please wait...",
+        }.get(step, "Working with the spectrophotometer - please wait...")
+        self.write_state("running", working)
 
     def append_log(self, text):
         if not text:
@@ -111,23 +173,88 @@ class Runner:
         text = line.strip()
         if not text:
             return
+        self.recent = (self.recent + " " + text)[-800:]
         if text.startswith("3)"):
             self.last_option3 = text
+        low = self.recent.lower()
+        # ccxxmake cannot open the instrument (held by another process or a USB
+        # wedge). A single failure is usually transient -- ccxxmake retries and
+        # recovers -- so only give up after several CONSECUTIVE failures. Match
+        # the CURRENT line (not the rolling buffer) so a stale failure isn't
+        # re-counted, and the counter is reset on any real prompt (progress).
+        tl = text.lower()
+        if "instrument access failed" in tl or "claiming usb port" in tl:
+            self.access_fail_count = getattr(self, "access_fail_count", 0) + 1
+            if self.access_fail_count >= 4:
+                self.write_state(
+                    "error",
+                    "Could not open the spectrophotometer for measurement. Make sure no other measurement is running and only the reference spectro is connected, then try again.",
+                )
+                self.cancel_requested = True
+                try:
+                    if self.child and self.child.poll() is None:
+                        self.child.terminate()
+                except Exception:
+                    pass
+            return
+        # Calibration failure: re-seat the spectro on its tile and retry. Surface
+        # this BEFORE the generic continue handling so a failed cal isn't silently
+        # auto-advanced into another bad reading.
+        if "reading is too low" in low or "calibration failed" in low:
+            self.await_setup_step(
+                "calibrate_retry",
+                "Calibration failed. Re-seat the spectro flat on its tile, then click Retry.",
+            )
+            self.recent = ""
+            self.send("\n")
+            return
         if CONTINUE_RE.search(text):
+            if PLACEMENT_RE.search(self.recent):
+                # A real placement prompt means ccxxmake opened the meter and is
+                # progressing, so clear any earlier transient access-fail count.
+                self.access_fail_count = 0
+                # Headless: no keyboard, and the instrument button isn't
+                # delivered to ccxxmake's stdin. Surface a wizard step and let
+                # await_setup_step inject the keypress once the operator acks.
+                if "white reference" in low or "reflective" in low:
+                    self.await_setup_step(
+                        "calibrate_tile",
+                        "Place the spectrophotometer flat on its white calibration tile, then click Calibrate.",
+                    )
+                    self.recent = ""
+                    self.send("\n")
+                    return
+                if not self.positioned:
+                    # FIRST screen prompt: have the operator aim at the screen once.
+                    self.positioned = True
+                    self.await_setup_step(
+                        "position_screen",
+                        "Aim the meter at where the test patches appear on the screen, then click Ready.",
+                    )
+                    self.recent = ""
+                    self.send("\n")
+                    return
+                # SUBSEQUENT "to take a reading" prompts during the patch sweep:
+                # the meter is already aimed at the screen, so auto-advance so
+                # ccxxmake measures the patch set without a per-patch step.
+                now = time.time()
+                if now - self.last_continue > 0.8:
+                    self.send("\n")
+                    self.last_continue = now
+                return
             now = time.time()
             if now - self.last_continue > 0.8:
                 self.send("\n")
                 self.last_continue = now
+            return
         if ERROR_RE.search(text):
             self.write_state("running", "ccxxmake reported a problem", detail=text)
             return
         lowered = text.lower()
-        if "calibrat" in lowered:
-            self.write_state("running", "Calibrate the spectrophotometer if prompted, then continue", detail=text)
-        elif "button" in lowered or "switch" in lowered:
-            self.write_state("running", "Press the spectrophotometer button to take the current reading", detail=text)
+        if "button" in lowered or "switch" in lowered:
+            self.write_state("running", "Press the i1 Pro button to take the current reading", detail=text)
         elif "measure" in lowered or "reading" in lowered:
-            self.write_state("running", "Measuring display patches with the spectrophotometer", detail=text)
+            self.write_state("running", "Measuring display patches with the i1 Pro", detail=text)
         elif "comput" in lowered or "save" in lowered:
             self.write_state("running", "Computing and saving the CCSS profile", detail=text)
 
@@ -135,11 +262,15 @@ class Runner:
         if not MENU_RE.search(window):
             return
         if not self.measure_sent:
+            # Wait for the full menu to render before selecting, otherwise the
+            # keystroke can land mid-redraw and the instrument open misfires.
+            if "2) Measure" not in window:
+                return
             self.send("2\n")
             self.measure_sent = True
             self.write_state(
                 "running",
-                "Showing measurement patches. Follow the spectrophotometer prompts and press its button for each read.",
+                "Starting measurement. When prompted, calibrate the i1 Pro on its white tile, then aim it at the screen and use its button.",
             )
             return
         if self.measure_sent and not self.compute_sent and self.last_option3 and "[" not in self.last_option3:
@@ -147,9 +278,17 @@ class Runner:
             self.compute_sent = True
             self.write_state("running", "Computing and saving the CCSS profile")
             return
-        if self.compute_sent and not self.exit_sent:
-            self.send("4\n")
-            self.exit_sent = True
+        if self.compute_sent:
+            # Keep nudging Exit until ccxxmake actually quits. The first '4' can
+            # be lost if it lands while ccxxmake is still writing the file,
+            # leaving it parked at the menu -- the run then hangs forever on
+            # 'Computing and saving the CCSS profile' even though the file was
+            # already written. Re-send '4' on each menu (throttled) until it exits.
+            now = time.time()
+            if now - getattr(self, "last_exit_send", 0.0) > 1.5:
+                self.send("4\n")
+                self.last_exit_send = now
+                self.exit_sent = True
 
     def run(self):
         self.write_state("starting", "Starting CCSS creation")
@@ -171,6 +310,11 @@ class Runner:
 
         cmd = [
             ccxxmake_bin,
+            # PGenerator is headless and drives the TV via the -C patch command
+            # (POST /api/pattern), so ccxxmake must not try to open an X11
+            # display. "dummy" is Argyll's invisible no-op display.
+            "-d",
+            "dummy",
             "-S",
             "-t",
             self.args.disptech,
@@ -181,8 +325,13 @@ class Runner:
             "-E",
             self.args.display_name,
         ]
-        if self.args.refresh_rate:
-            cmd.extend(["-Y", "R:%s" % self.args.refresh_rate])
+        comport = re.sub(r"[^0-9]", "", str(self.args.comport or ""))
+        if comport:
+            cmd.extend(["-c", comport])
+        # NOTE: do NOT pass "-Y R:<rate>" here. On the i1 Pro 2 the refresh-rate
+        # override puts ccxxmake into a mode where it rejects the instrument with
+        # "Instrument has no CCSS capability". CCSS only captures spectral shape,
+        # so the refresh lock isn't needed for it. (Verified on-device.)
         cmd.append(self.args.output_path)
         self.append_log("Command: %s\n" % " ".join([utf8_text(part) for part in cmd]))
 
@@ -203,6 +352,11 @@ class Runner:
         os.close(slave_fd)
 
         window = ""
+        if self.args.continue_file:
+            try:
+                os.unlink(self.args.continue_file)
+            except Exception:
+                pass
         while True:
             if self.cancel_requested:
                 break
@@ -223,7 +377,24 @@ class Runner:
                 while "\n" in self.line_buffer:
                     line, self.line_buffer = self.line_buffer.split("\n", 1)
                     self.handle_line(line)
-                self.maybe_advance_menu(window)
+                # ccxxmake's interactive prompts (e.g. "Place instrument on test
+                # window. ... any other key to continue:") end with ':' and NO
+                # trailing newline, so they never reach handle_line above and the
+                # wizard step never fires (the run gets stuck after calibration).
+                # When the pending buffer holds such a prompt, process it once.
+                # ccxxmake is now blocked waiting for input and won't emit more
+                # until we respond, so consuming the buffer is safe and avoids
+                # re-processing the same prompt on the next read.
+                if self.line_buffer.strip() and CONTINUE_RE.search(self.line_buffer):
+                    pending = self.line_buffer
+                    self.line_buffer = ""
+                    self.handle_line(pending)
+            # Run menu navigation every iteration, not only when new output
+            # arrives. Once ccxxmake is parked at the menu (e.g. after a
+            # successful save) it emits nothing more, so the Exit retry must
+            # still fire here -- otherwise the run hangs forever on
+            # 'Computing and saving the CCSS profile' even though the file is done.
+            self.maybe_advance_menu(window)
             if self.child.poll() is not None and master_fd not in ready:
                 break
 
@@ -248,7 +419,13 @@ class Runner:
                 pass
         if returncode not in (None, 0):
             detail = "ccxxmake exited with status %s: %s" % (returncode, detail)
-        self.write_state("error", detail)
+        # Surface only a curated message to the operator; keep the raw ccxxmake
+        # output in `detail` for the log/diagnostics (the UI does not show it).
+        self.write_state(
+            "error",
+            "CCSS creation failed. Make sure the reference spectrophotometer (and its serial-matched calibration tile) is connected, then try again.",
+            detail=detail,
+        )
         return 1
 
 
@@ -266,6 +443,8 @@ def main():
     parser.add_argument("--patch-size", default="18")
     parser.add_argument("--refresh-rate", default="")
     parser.add_argument("--ccxxmake-bin", default="")
+    parser.add_argument("--comport", default="")
+    parser.add_argument("--continue-file", default="")
     args = parser.parse_args()
 
     runner = Runner(args)

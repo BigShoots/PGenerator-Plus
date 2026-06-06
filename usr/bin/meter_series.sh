@@ -24,14 +24,59 @@ READY_FILE="${15:-/tmp/meter_series_ready_${SERIES_ID}.signal}"
 REQUIRE_DEVICE_READY="${16:-0}"
 PATTERN_SIGNAL_RANGE="${17:-}"
 TRANSPORT_SIGNAL_RANGE="${18:-}"
+STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
 INITIAL_READY_PENDING=0
 [[ "$REQUIRE_DEVICE_READY" == "1" ]] && INITIAL_READY_PENDING=1
+SETUP_STEP_ID=0
+METER_SERIES_FD_OPEN=0
 
 json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+write_state_json() {
+ local tmp="${STATE_FILE}.$$.$RANDOM.tmp"
+ cat > "$tmp" || return 1
+ chmod 666 "$tmp" 2>/dev/null || true
+ chown pgenerator:pgenerator "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$STATE_FILE"
+}
+
+series_stop_requested() {
+ [[ -f "$STOP_FILE" ]]
+}
+
+series_quit_spotread() {
+ if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" ]]; then
+  printf "Q" >&3 2>/dev/null || true
+  exec 3>&- 2>/dev/null || true
+  METER_SERIES_FD_OPEN=0
+ fi
+ if [[ -n "${BG_PID:-}" ]]; then
+  local waited=0
+  while (( waited < 20 )) && kill -0 "$BG_PID" 2>/dev/null; do
+   sleep 0.1
+   waited=$((waited + 1))
+  done
+  if kill -0 "$BG_PID" 2>/dev/null; then
+   kill "$BG_PID" 2>/dev/null || true
+   sleep 0.2
+  fi
+  wait "$BG_PID" 2>/dev/null || true
+ fi
+ rm -f "${OUTFILE:-}" "${CMDPIPE:-}" 2>/dev/null || true
+}
+
+series_cancel_exit() {
+ write_state_json << EOJSON
+{"status":"cancelled","series_id":"$SERIES_ID","current_step":0,"total_steps":${TOTAL:-0},"current_name":"Cancelled","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ series_quit_spotread
+ rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+ exit 0
 }
 
 cleanup_stale_series_step_files() {
@@ -75,13 +120,47 @@ wait_for_device_ready() {
    extra=",\"awaiting_ready_reason\":\"$(json_escape "$wait_reason")\""
   fi
  rm -f "$READY_FILE"
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$step_num,"total_steps":$TOTAL,"current_name":"$escaped_name","awaiting_ready":true${extra},"readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
  while [[ ! -f "$READY_FILE" ]]; do
+  series_stop_requested && series_cancel_exit
   sleep 0.2
  done
  rm -f "$READY_FILE"
+}
+
+series_setup_step() {
+ local step="$1" message="$2" working="${3:-}"
+ SETUP_STEP_ID=$((SETUP_STEP_ID + 1))
+ local sid=$SETUP_STEP_ID
+ local escaped_step escaped_message escaped_working ready_reason
+ ready_reason="initial_measurement"
+ case "$step" in
+  calibrate_tile|calibrate_retry) ready_reason="calibration_setup" ;;
+  position_screen) ready_reason="initial_measurement" ;;
+ esac
+ escaped_step=$(json_escape "$step")
+ escaped_message=$(json_escape "$message")
+ rm -f "$READY_FILE"
+ write_state_json << EOJSON
+{"status":"setup","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"$escaped_message","step_id":$sid,"step":"$escaped_step","message":"$escaped_message","awaiting_ready":true,"awaiting_ready_reason":"$ready_reason","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ while [[ ! -f "$READY_FILE" ]]; do
+  series_stop_requested && series_cancel_exit
+  sleep 0.2
+ done
+ rm -f "$READY_FILE"
+ if [[ -n "$working" ]]; then
+  escaped_working=$(json_escape "$working")
+  write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"$escaped_working","setup_busy":true,"message":"$escaped_working","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ else
+  write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ fi
 }
 
 maybe_wait_for_initial_ready() {
@@ -158,8 +237,9 @@ manual_ready_prompt_label() {
  esac
 }
 
-rm -f "$READY_FILE"
-trap 'rm -f "$READY_FILE"' EXIT
+rm -f "$READY_FILE" "$STOP_FILE"
+trap 'rm -f "$READY_FILE" "$STOP_FILE"' EXIT
+trap 'series_cancel_exit' TERM INT
 
 get_step_count() {
  python -c "
@@ -412,6 +492,15 @@ float_le() {
  awk -v left="$left" -v right="$right" 'BEGIN { exit !((left + 0) <= (right + 0)) }'
 }
 
+patch_insert_settle_seconds() {
+ local ire="${1:-0}"
+ if float_le "$ire" 25; then
+  echo 3.0
+ else
+  echo 1.5
+ fi
+}
+
 read_timeout_seconds() {
  local ire="${1:-0}"
  if float_le "$ire" 1; then
@@ -471,6 +560,7 @@ FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
 DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=5
 ZERO_READ_RETRIES=2
+NO_READING_RETRIES=1
 
 daemon_elapsed_sec() {
  local pid
@@ -513,7 +603,7 @@ series_uses_first_white_warmup() {
 
 # Publish an immediate startup state so the UI shows progress instead of
 # looking hung while spotread is performing its cold-start handshake.
-cat > "$STATE_FILE" << EOJSON
+write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[]}
 EOJSON
 
@@ -560,14 +650,14 @@ while : ; do
  if [[ -z "$PORT_NUM" ]]; then
   DBGOUT="Meter did not enumerate during initialization"
   if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
-   cat > "$STATE_FILE" << EOJSON
+   write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[]}
 EOJSON
    meter_full_cleanup
    sleep 2
    continue
   fi
-  cat > "$STATE_FILE" << EOJSON
+  write_state_json << EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter init failed","debug":"$DBGOUT","readings":[]}
 EOJSON
   exit 1
@@ -580,7 +670,10 @@ EOJSON
  mkfifo "$CMDPIPE"
 
  SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
- if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
+ if [[ "$REQUIRE_DEVICE_READY" == "1" && -n "$CCSS_FILE" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
+ fi
+ if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
   # Read the actual DISPLAY_TYPE_REFRESH value line, not the KEYWORD declaration.
   # If the field is missing, fall back to the CCSS metadata so OLED/Plasma/CRT
   # profiles don't get treated like generic LCDs (or vice versa).
@@ -612,6 +705,7 @@ EOJSON
  cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
  BG_PID=$!
  exec 3>"$CMDPIPE"
+ METER_SERIES_FD_OPEN=1
 
  # Wait for spotread to be ready. 120 x 0.5 s = 60 s, which avoids false
  # "Meter init failed" errors right after a reboot when USB bring-up is slow.
@@ -620,28 +714,36 @@ EOJSON
  WAITED=0
 REFRESH_CAL_DONE=0
 WHITE_REF_DONE=0
+HANDLED_OFFSET=0
  while (( WAITED < 120 )); do
- CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+  series_stop_requested && series_cancel_exit
+  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+ NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")
  if echo "$CLEAN_OUT" | grep -q "to take a reading:"; then
    break
   fi
- if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+ if (( REFRESH_CAL_DONE == 0 )) && echo "$NEW_OUT" | grep -qi "calibrate refresh"; then
   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
   sleep 2
   printf " " >&3
   REFRESH_CAL_DONE=1
+  HANDLED_OFFSET=$(output_size)
   sleep 2
   WAITED=$((WAITED + 4))
   continue
  fi
- if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$CLEAN_OUT"; then
-    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-     wait_for_device_ready 0 "$(manual_ready_prompt_label "Initializing meter" "calibration_setup")" "calibration_setup"
-    else
-     sleep 4
-    fi
+ if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
+    series_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectrophotometer flat on its white tile, then click Retry." "Re-calibrating the meter - please wait..."
+  printf " " >&3
+  HANDLED_OFFSET=$(output_size)
+  WAITED=$((WAITED + 1))
+  continue
+ fi
+ if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$NEW_OUT"; then
+    series_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait..."
   printf " " >&3
   WHITE_REF_DONE=1
+  HANDLED_OFFSET=$(output_size)
   WAITED=$((WAITED + 1))
   continue
  fi
@@ -660,11 +762,12 @@ WHITE_REF_DONE=0
  # Failure path — tear down this attempt
  DBGOUT=$(head -c 400 "$OUTFILE" 2>/dev/null | tr '"' "'" | tr '\n' ' ' | tr '\r' ' ')
  printf "Q" >&3 2>/dev/null; exec 3>&- 2>/dev/null
+ METER_SERIES_FD_OPEN=0
  kill -9 "$BG_PID" 2>/dev/null; wait "$BG_PID" 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE"
 
  if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
-  cat > "$STATE_FILE" << EOJSON
+  write_state_json << EOJSON
   {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[]}
 EOJSON
   # Force full cleanup and invalidate port cache before retrying.
@@ -677,7 +780,7 @@ EOJSON
  fi
 
  # All attempts exhausted — report error
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter init failed","debug":"$DBGOUT","readings":[]}
 EOJSON
  pkill -9 -x spotread 2>/dev/null
@@ -693,6 +796,12 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
  sleep 2
  printf " " >&3
  sleep 2
+fi
+
+series_stop_requested && series_cancel_exit
+if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+ series_setup_step "position_screen" "Aim the meter at where the test patches appear on the screen, then click Ready."
+ INITIAL_READY_PENDING=0
 fi
 
 # Helper: count result lines
@@ -781,6 +890,58 @@ nonblack_zero_reading() {
   }'
 }
 
+normalize_oled_zero_black_reading() {
+ local reading="$1"
+ READING_JSON="$reading" DISPLAY_TYPE_VALUE="$DISPLAY_TYPE" CCSS_FILE_VALUE="${CCSS_FILE:-}" "${PYTHON_BIN:-python}" - <<'PY'
+import json, os, math, sys
+
+try:
+    rd = json.loads(os.environ.get("READING_JSON", "") or "{}")
+except Exception:
+    sys.exit(1)
+
+display_type = str(os.environ.get("DISPLAY_TYPE_VALUE", "") or rd.get("display_type", "")).lower()
+ccss_file = str(os.environ.get("CCSS_FILE_VALUE", "") or rd.get("ccss_file", "")).lower()
+is_oled = "oled" in display_type or "oled" in ccss_file
+if not is_oled:
+    sys.exit(1)
+if str(rd.get("series_type", "")).lower() not in ("", "greyscale"):
+    sys.exit(1)
+
+def num(value):
+    try:
+        n = float(value)
+        return n if math.isfinite(n) else None
+    except Exception:
+        return None
+
+name = str(rd.get("name", "")).strip().lower()
+ire_values = [num(rd.get(key)) for key in ("ire", "nominal_ire", "plot_ire", "stimulus")]
+is_zero = name in ("0%", "black") or any(value is not None and abs(value) < 0.05 for value in ire_values)
+target_yn = num(rd.get("target_Yn"))
+if not is_zero or (target_yn is not None and abs(target_yn) > 1e-9):
+    sys.exit(1)
+
+for src, dst in (
+    ("X", "raw_X"), ("Y", "raw_Y"), ("Z", "raw_Z"),
+    ("x", "raw_x"), ("y", "raw_y"), ("luminance", "raw_luminance"),
+):
+    if src in rd and dst not in rd:
+        rd[dst] = rd[src]
+
+rd["X"] = 0
+rd["Y"] = 0
+rd["Z"] = 0
+rd["luminance"] = 0
+rd.pop("x", None)
+rd.pop("y", None)
+rd["synthetic_black"] = True
+rd["normalized_black"] = True
+rd["black_normalization_reason"] = "sdr_oled_series_zero_target"
+print(json.dumps(rd, separators=(",", ":")))
+PY
+}
+
 replace_series_reading() {
  local target_ire="$1"
  local target_name="$2"
@@ -829,10 +990,11 @@ if series_uses_initial_white_reference; then
   fi
  fi
 
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (displaying)","readings":[]}
 EOJSON
 
+ series_stop_requested && series_cancel_exit
  post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
  if should_apply_fresh_dv_first_white_warmup; then
   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
@@ -844,7 +1006,7 @@ EOJSON
   sleep "$PREREAD_DELAY"
  fi
 
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (reading)","readings":[]}
 EOJSON
 
@@ -859,6 +1021,7 @@ EOJSON
  ITERATIONS=0
  
  while (( SECONDS - READ_START < 20 )); do
+  series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
   ITERATIONS=$((ITERATIONS + 1))
   echo "[$(date '+%H:%M:%S.%3N')] Iteration $ITERATIONS (elapsed $((SECONDS - READ_START))s): PREV_COUNT=$PREV_COUNT CUR_COUNT=$CUR_COUNT" >> "$DEBUG_LOG"
@@ -915,7 +1078,7 @@ print(json.dumps(r))
  echo "[$(date '+%H:%M:%S')] Final WHITE_READING=$WHITE_READING" >> "$DEBUG_LOG"
  cat "$DEBUG_LOG" >> /tmp/white_read_series.log 2>/dev/null
 
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y","readings":[],"white_reading":$WHITE_READING,"debug":{"iterations":$ITERATIONS,"elapsed":$ELAPSED,"got_result":$GOT_RESULT}}
 EOJSON
 fi
@@ -936,13 +1099,14 @@ if series_uses_initial_white_reference && [[ "$WHITE_READING" != "null" ]] && ((
   READINGS="$FIRST_READING"
   READING_COUNT=1
   START_INDEX=1
-  cat > "$STATE_FILE" << EOJSON
+  write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
  fi
 fi
 
 for (( i=START_INDEX; i<TOTAL; i++ )); do
+	 series_stop_requested && series_cancel_exit
 	 R=$(get_step_field $i r)
 	 G=$(get_step_field $i g)
 	 B=$(get_step_field $i b)
@@ -954,14 +1118,14 @@ for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 STEP_NUM=$((i + 1))
 
  # Update state: displaying
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
  # ABL stabilization: flash mid-gray between patches
  if [[ "$PATCH_INSERT" == "1" ]] && (( i > 0 )); then
   post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-  sleep 1.5
+  sleep "$(patch_insert_settle_seconds "$IRE")"
  fi
 
  # Display pattern
@@ -996,7 +1160,7 @@ EOJSON
  fi
 
  # Update state: reading
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (reading)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
@@ -1012,7 +1176,7 @@ EOJSON
    READINGS="$READING"
   fi
   READING_COUNT=$((READING_COUNT + 1))
-  cat > "$STATE_FILE" << EOJSON
+  write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
   continue
@@ -1033,6 +1197,7 @@ EOJSON
  GOT_RESULT=false
  RETRIED_COMM=0
  while (( SECONDS - READ_START < READ_TIMEOUT )); do
+  series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
   if (( CUR_COUNT > PREV_COUNT )); then
    GOT_RESULT=true
@@ -1074,16 +1239,80 @@ EOJSON
   fi
  fi
 
+ if [[ -z "$READING" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
+  for (( no_reading_retry=1; no_reading_retry<=NO_READING_RETRIES; no_reading_retry++ )); do
+   echo "[$(date '+%H:%M:%S.%3N')] no reading retry: step=$STEP_NUM ire=$IRE retry=$no_reading_retry/$NO_READING_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
+   write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $no_reading_retry/$NO_READING_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+   sleep "$STEP_DELAY"
+   PREV_COUNT=$(count_results)
+   SCAN_OFFSET=$(output_size)
+   printf " " >&3
+   READ_START=$SECONDS
+   RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
+   GOT_RETRY=false
+   RETRIED_COMM=0
+   while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
+    series_stop_requested && series_cancel_exit
+    CUR_COUNT=$(count_results)
+    if (( CUR_COUNT > PREV_COUNT )); then
+     GOT_RETRY=true
+     break
+    fi
+    NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
+    if [[ -n "$NEW_OUTPUT" ]]; then
+     CUR_SIZE=$(output_size)
+     if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+      printf " " >&3
+      RETRIED_COMM=1
+      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
+      SCAN_OFFSET=$(output_size)
+      continue
+     fi
+     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
+      echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
+      if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+       wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
+      else
+       sleep 1
+      fi
+      printf " " >&3
+      READ_START=$SECONDS
+      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 30))
+      SCAN_OFFSET=$(output_size)
+      continue
+     fi
+     SCAN_OFFSET="$CUR_SIZE"
+    fi
+    sleep 0.3
+   done
+   if $GOT_RETRY; then
+    PARSED=$(parse_latest_result)
+    if [[ -n "$PARSED" ]]; then
+     READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
+    fi
+   fi
+   if [[ -n "$READING" ]]; then
+    echo "[$(date '+%H:%M:%S.%3N')] no reading retry recovered: step=$STEP_NUM ire=$IRE retry=$no_reading_retry name=$NAME" >> /tmp/meter_series_debug.log
+    break
+   fi
+   echo "[$(date '+%H:%M:%S.%3N')] no reading retry failed: step=$STEP_NUM ire=$IRE retry=$no_reading_retry timeout=${RETRY_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
+  done
+ fi
+
  if [[ -n "$READING" ]] && nonblack_zero_reading "$READING" "$IRE" "$R" "$G" "$B"; then
   echo "[$(date '+%H:%M:%S.%3N')] zero read guard: step=$STEP_NUM ire=$IRE name=$NAME parsed all-zero XYZ/luminance" >> /tmp/meter_series_debug.log
   ZERO_RETRY_READING=""
   for (( zero_retry=1; zero_retry<=ZERO_READ_RETRIES; zero_retry++ )); do
-   cat > "$STATE_FILE" << EOJSON
+   write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (redisplaying after zero read $zero_retry/$ZERO_READ_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
    post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
    sleep "$STEP_DELAY"
-   cat > "$STATE_FILE" << EOJSON
+   write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $zero_retry/$ZERO_READ_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
    PREV_COUNT=$(count_results)
@@ -1094,6 +1323,7 @@ EOJSON
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
+    series_stop_requested && series_cancel_exit
     CUR_COUNT=$(count_results)
     if (( CUR_COUNT > PREV_COUNT )); then
      GOT_RETRY=true
@@ -1145,8 +1375,14 @@ EOJSON
   fi
  fi
 
+ NORMALIZED_READING=$(normalize_oled_zero_black_reading "$READING" 2>/dev/null || true)
+ if [[ -n "$NORMALIZED_READING" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] oled zero black normalized: step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+  READING="$NORMALIZED_READING"
+ fi
+
  if [[ -z "$READING" ]]; then
-  echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout final: step=$STEP_NUM ire=$IRE retries=$NO_READING_RETRIES timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}")
  fi
 
@@ -1168,7 +1404,7 @@ EOJSON
  fi
 
  # Update state
- cat > "$STATE_FILE" << EOJSON
+ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 done
@@ -1187,19 +1423,19 @@ if series_requires_final_white_refresh && (( TOTAL > 0 )); then
  FIRST_NAME=$(get_step_field 0 name)
 
  if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  cat > "$STATE_FILE" << EOJSON
+  write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
   if [[ "$PATCH_INSERT" == "1" ]] && (( READING_COUNT > 0 )); then
    post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-   sleep 1.5
+   sleep "$(patch_insert_settle_seconds "$FIRST_IRE")"
   fi
 
 	  post_patch "$FIRST_R" "$FIRST_G" "$FIRST_B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$FIRST_INPUT_MAX"
   sleep "$DELAY_SEC"
 
-  cat > "$STATE_FILE" << EOJSON
+  write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh reading)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
@@ -1212,6 +1448,7 @@ EOJSON
   GOT_RESULT=false
   RETRIED_COMM=0
   while (( SECONDS - READ_START < READ_TIMEOUT )); do
+   series_stop_requested && series_cancel_exit
    CUR_COUNT=$(count_results)
    if (( CUR_COUNT > PREV_COUNT )); then
     GOT_RESULT=true
@@ -1256,7 +1493,7 @@ EOJSON
   if [[ -n "$REFRESH_READING" ]]; then
    if replace_series_reading "$FIRST_IRE" "$FIRST_NAME" "$REFRESH_READING"; then
     WHITE_READING="$REFRESH_READING"
-    cat > "$STATE_FILE" << EOJSON
+    write_state_json << EOJSON
   {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refreshed)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
    fi
@@ -1267,6 +1504,7 @@ fi
 # Quit spotread
 printf "Q" >&3 2>/dev/null
 exec 3>&- 2>/dev/null
+METER_SERIES_FD_OPEN=0
 sleep 0.5
 kill "$BG_PID" 2>/dev/null
 SR_KIDS=$(pgrep -P "$BG_PID" 2>/dev/null)
@@ -1285,6 +1523,6 @@ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
  -d '{"name":"stop"}' >/dev/null 2>&1
 
 # Mark complete
-cat > "$STATE_FILE" << EOJSON
+write_state_json << EOJSON
 {"status":"complete","series_id":"$SERIES_ID","current_step":$TOTAL,"total_steps":$TOTAL,"current_name":"Done","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON

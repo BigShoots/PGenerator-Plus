@@ -233,6 +233,31 @@ sub lg_primary_client (@) {
  return {};
 }
 
+sub lg_client_key_present (@) {
+ my $clients=shift;
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return $client_key ne "" ? 1 : 0;
+}
+
+sub lg_clients_disconnected (@) {
+ my $clients=shift;
+ $clients=&lg_load_clients() if(ref($clients) ne "HASH");
+ return ($clients->{"disconnected"} && &lg_client_key_present($clients)) ? 1 : 0;
+}
+
+sub lg_mark_disconnected (@) {
+ my $clients=&lg_load_clients();
+ my $pin_pairing=$clients->{"pin_pairing"};
+ if(ref($pin_pairing) eq "HASH" && ($pin_pairing->{"token"}||"") ne "") {
+  &lg_clear_pin_session_files($pin_pairing->{"token"});
+ }
+ delete($clients->{"pin_pairing"});
+ $clients->{"disconnected"}=&lg_json_true();
+ $clients->{"disconnected_at"}=time();
+ return &lg_save_clients($clients);
+}
+
 sub lg_cec_status (@) {
  my $raw="";
  eval { $raw=&webui_cec("status"); 1; };
@@ -759,7 +784,7 @@ sub lg_helper_timeout (@) {
  }
  return 180 if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
  return 130 if($action eq "picture_reset");
- return 75 if($action eq "calibration_mode");
+ return 75 if($action eq "calibration_mode" || $action eq "hdr_tone_map_upload" || $action eq "hdr_calman_reset");
  return 60 if($action eq "picture_get");
  return 90;
 }
@@ -770,6 +795,8 @@ sub lg_helper_timeout_message (@) {
  my $action=$request->{"action"}||"";
  return "LG TV did not finish the white-balance write within ${timeout}s." if($action eq "picture_set");
  return "LG TV did not finish the 3D LUT command within ${timeout}s." if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
+ return "LG TV did not finish the HDR tone-map upload within ${timeout}s." if($action eq "hdr_tone_map_upload");
+ return "LG TV did not finish the HDR calibration reset within ${timeout}s." if($action eq "hdr_calman_reset");
  return "LG TV did not finish the picture-mode reset within ${timeout}s." if($action eq "picture_reset");
  return "LG TV did not answer the picture-settings request within ${timeout}s." if($action eq "picture_get");
  return "LG TV command timed out after ${timeout}s.";
@@ -911,6 +938,8 @@ sub lg_update_connect_metadata (@) {
     $clients->{"system_info"}=$result->{"system_info"} if(ref($result->{"system_info"}) eq "HASH");
     $clients->{"software_info"}=$result->{"software_info"} if(ref($result->{"software_info"}) eq "HASH");
     $clients->{"last_seen"}=time();
+    delete($clients->{"disconnected"});
+    delete($clients->{"disconnected_at"});
     delete($clients->{"last_error"});
  } else {
     $clients->{"last_error"}=$result->{"message"}||"LG connection failed";
@@ -972,6 +1001,8 @@ sub lg_status_data (@) {
  my $detected=&lg_detect_from_cec($cec);
  my $pin_pending=(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") ? 1 : 0;
  my $paired=($client_key ne "" && !$pin_pending) ? 1 : 0;
+ my $disconnected=($clients->{"disconnected"} && $paired) ? 1 : 0;
+ my $connected=($paired && !$disconnected) ? 1 : 0;
  my $supported=($detected || $paired || $stored_ip ne "" || $manual_ip ne "" || $auto_ip ne "") ? 1 : 0;
  my $detection_source=$auto_ip ne "" ? ($auto->{"source"}||"mdns-hostname") : ($detected ? ($cec_tv_vendor ne "" ? "cec-vendor" : "cec-osd-name") : "manual-only");
  my $message=$message_override;
@@ -979,6 +1010,8 @@ sub lg_status_data (@) {
  if(!defined($message) || $message eq "") {
     if($pin_pending) {
      $message=$pin_state->{"message"}||"LG TV should now be showing a PIN. Enter it below and click Submit PIN to finish pairing.";
+    } elsif($disconnected) {
+     $message="LG TV is disconnected. Connect will reuse the saved key without another PIN.";
     } elsif($paired && $stored_name ne "") {
      $message="Stored LG WebOS pairing is ready for $stored_name. Click Connect to reconnect or refresh TV info.";
   } elsif($paired) {
@@ -1004,10 +1037,13 @@ sub lg_status_data (@) {
   detection_limited => ($auto_ip ne "") ? &lg_json_false() : &lg_json_true(),
   detection_source => $detection_source,
   paired => &lg_json_bool($paired),
+  connected => &lg_json_bool($connected),
+  disconnected => &lg_json_bool($disconnected),
       pair_prompted => $pin_pending ? &lg_json_true() : &lg_json_false(),
       prompt_style => $pin_pending ? ($pin_state->{"prompt_style"}||"controller-pin") : "tv-prompt",
    pairing_mode => $pin_pending ? ($pin_state->{"pairing_mode"}||"PIN") : "",
    client_key_present => &lg_json_bool(($client_key ne "") && !$pin_pending),
+   disconnected_at => $clients->{"disconnected_at"}||"",
    pin_pairing_pending => &lg_json_bool($pin_pending),
    pin_pairing_ip => $pin_state->{"ip"}||"",
   cec_osd_name => $osd_name,
@@ -1118,6 +1154,11 @@ sub webui_lg_forget (@) {
  return &webui_lg_status_json("Stored LG pairing metadata cleared.");
 }
 
+sub webui_lg_disconnect (@) {
+ return &lg_encode_json({ status => "error", message => "Unable to disconnect LG TV" }) if(!&lg_mark_disconnected());
+ return &webui_lg_status_json("LG TV disconnected. Saved pairing is kept for the next Connect.");
+}
+
 sub webui_lg_pin_pair_start (@) {
  my $body=shift;
  my $payload=&lg_decode_json($body);
@@ -1181,10 +1222,11 @@ sub webui_lg_calibration_mode (@) {
  my $enabled=$payload->{"enabled"} ? 1 : 0;
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
- if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before changing calibration mode." });
- }
- my $ip=&lg_target_ip($payload,$clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before changing calibration mode." });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before changing calibration mode." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before changing calibration mode." }) if($ip eq "");
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
@@ -1215,10 +1257,11 @@ sub webui_lg_picture_settings (@) {
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
- if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing first by entering the PIN shown on the TV.", needs_repair => &lg_json_true() });
- }
- my $ip=&lg_target_ip($payload,$clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing first by entering the PIN shown on the TV.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading picture settings." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading picture settings." }) if($ip eq "");
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
@@ -1258,15 +1301,16 @@ sub webui_lg_picture_settings_set (@) {
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
- if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-  return &lg_encode_json({
-   status => "error",
-   message => "Complete LG PIN pairing first by entering the PIN shown on the TV.",
-   needs_repair => &lg_json_true(),
-   repair_hint => "Use Display and click Submit PIN after typing the code shown on the TV.",
-  });
- }
- my $ip=&lg_target_ip($payload,$clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({
+	   status => "error",
+	   message => "Complete LG PIN pairing first by entering the PIN shown on the TV.",
+	   needs_repair => &lg_json_true(),
+	   repair_hint => "Use Display and click Submit PIN after typing the code shown on the TV.",
+	  });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before changing picture settings." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before changing picture settings." }) if($ip eq "");
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
@@ -1332,14 +1376,15 @@ sub webui_lg_picture_reset (@) {
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
- if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-  return &lg_encode_json({
-   status => "error",
-   message => "Complete LG PIN pairing first by entering the PIN shown on the TV.",
-   needs_repair => &lg_json_true(),
-  });
- }
- my $ip=&lg_target_ip($payload,$clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({
+	   status => "error",
+	   message => "Complete LG PIN pairing first by entering the PIN shown on the TV.",
+	   needs_repair => &lg_json_true(),
+	  });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting picture settings." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting picture settings." }) if($ip eq "");
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
@@ -1350,6 +1395,7 @@ sub webui_lg_picture_reset (@) {
 	  client_key => $client_key,
 	  picture_mode => $payload->{"picture_mode"}||"",
 	  signal_mode => $payload->{"signal_mode"}||"",
+	  require_white_balance_reset => $payload->{"require_white_balance_reset"} ? &lg_json_true() : &lg_json_false(),
 	  tv_input => &lg_input_from_cec(),
 	  connect_timeout => 5,
 	 });
@@ -1401,10 +1447,11 @@ sub webui_lg_3d_lut_probe (@) {
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
- if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before probing 3D LUT support.", needs_repair => &lg_json_true() });
- }
- my $ip=&lg_target_ip($payload,$clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before probing 3D LUT support.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before probing 3D LUT support." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before probing 3D LUT support." }) if($ip eq "");
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
@@ -1433,10 +1480,11 @@ sub webui_lg_3d_lut_upload (@) {
  return &lg_encode_json({ status => "error", message => "LG 3D LUT upload requires an exported payload under /var/lib/PGenerator/lg/luts." }) if(!&lg_3d_lut_payload_path_ok($payload_path) || !-f $payload_path);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
- if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before uploading a 3D LUT.", needs_repair => &lg_json_true() });
- }
- my $ip=&lg_target_ip($payload,$clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before uploading a 3D LUT.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a 3D LUT." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a 3D LUT." }) if($ip eq "");
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
@@ -1465,10 +1513,11 @@ sub webui_lg_3d_lut_reset (@) {
  my $payload=&lg_decode_json($body);
  my $clients=&lg_load_clients();
  ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
- if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before resetting the 3D LUT.", needs_repair => &lg_json_true() });
- }
- my $ip=&lg_target_ip($payload,$clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before resetting the 3D LUT.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting the 3D LUT." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting the 3D LUT." }) if($ip eq "");
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
@@ -1487,6 +1536,70 @@ sub webui_lg_3d_lut_reset (@) {
  return &lg_encode_json($result);
 }
 
+sub webui_lg_hdr_tone_map_upload (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $peak_luminance=0+$payload->{"peak_luminance"};
+ return &lg_encode_json({ status => "error", message => "HDR tone-map upload requires a measured peak luminance." }) if($peak_luminance <= 0);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before uploading HDR tone-map data.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading HDR tone-map data." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading HDR tone-map data." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading HDR tone-map data." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "hdr_tone_map_upload",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  peak_luminance => $peak_luminance,
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the HDR tone-map upload again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
+sub webui_lg_hdr_calman_reset (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before resetting HDR calibration state.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting HDR calibration state." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting HDR calibration state." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting HDR calibration state." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "hdr_calman_reset",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  ddc_layout => $payload->{"ddc_layout"}||"hdr20",
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the HDR calibration reset again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_api (@) {
  my $path=shift;
  my $method=shift;
@@ -1497,10 +1610,13 @@ sub webui_lg_api (@) {
  if($path eq "/api/lg/manual-ip" && $method eq "POST") {
   return &webui_lg_manual_ip($body);
  }
- if($path eq "/api/lg/connect" && $method eq "POST") {
-  return &webui_lg_connect($body);
- }
- if($path eq "/api/lg/scan" && $method eq "GET") {
+	 if($path eq "/api/lg/connect" && $method eq "POST") {
+	  return &webui_lg_connect($body);
+	 }
+	 if($path eq "/api/lg/disconnect" && $method eq "POST") {
+	  return &webui_lg_disconnect();
+	 }
+	 if($path eq "/api/lg/scan" && $method eq "GET") {
   return &webui_lg_scan();
  }
  if($path eq "/api/lg/calibration-mode" && $method eq "POST") {
@@ -1514,6 +1630,12 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/3d-lut/reset" && $method eq "POST") {
   return &webui_lg_3d_lut_reset($body);
+ }
+ if($path eq "/api/lg/hdr-tone-map/upload" && $method eq "POST") {
+  return &webui_lg_hdr_tone_map_upload($body);
+ }
+ if($path eq "/api/lg/hdr-calman-reset" && $method eq "POST") {
+  return &webui_lg_hdr_calman_reset($body);
  }
  if($path eq "/api/lg/pair-pin/start" && $method eq "POST") {
   return &webui_lg_pin_pair_start($body);
@@ -1637,9 +1759,10 @@ sub webui_lg_card_html (@) {
          <input type="text" id="lgPairPin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="one-time-code" placeholder="Enter PIN shown on TV" onkeydown="lgPinKeydown(event)">
     </div>
    </div>
-  <div class="btn-row" style="margin-top:8px">
-      <button class="btn btn-sm btn-success" id="lgConnectBtn" onclick="lgConnect()">Connect</button>
-    <button class="btn btn-sm btn-warning" id="lgPinSubmitBtn" style="display:none" onclick="lgSubmitPin()">Submit PIN</button>
+	  <div class="btn-row" style="margin-top:8px">
+	      <button class="btn btn-sm btn-success" id="lgConnectBtn" onclick="lgConnect()">Connect</button>
+	    <button class="btn btn-sm btn-secondary" id="lgDisconnectBtn" onclick="lgDisconnectClient()" disabled>Disconnect</button>
+	    <button class="btn btn-sm btn-warning" id="lgPinSubmitBtn" style="display:none" onclick="lgSubmitPin()">Submit PIN</button>
    <button class="btn btn-sm btn-primary" onclick="loadLgStatus()">Refresh</button>
    <button class="btn btn-sm btn-secondary" onclick="lgSaveManualIp()">Save IP</button>
    <button class="btn btn-sm btn-danger" onclick="lgForgetClient()">Forget Pairing</button>
@@ -1674,7 +1797,18 @@ let lgPictureModeSignalMode='';
 let lgPictureModeRefreshTimer=null;
 let lgScanPending=false;
 let lgCalibrationModePending=false;
-window.lgStatusState=window.lgStatusState||{paired:false,detected:false,hasIp:false,checked:false,clientKeyPresent:false,pinPending:false};
+window.lgStatusState=window.lgStatusState||{paired:false,connected:false,disconnected:false,detected:false,hasIp:false,checked:false,clientKeyPresent:false,pinPending:false};
+
+function lgStatusHasSavedKey(state){
+ state=state||{};
+ return !!(state.clientKeyPresent||state.client_key_present||state.paired);
+}
+
+function lgStatusConnected(state){
+ state=state||{};
+ if(Object.prototype.hasOwnProperty.call(state,'connected')) return !!state.connected&&!state.pinPending;
+ return !!(lgStatusHasSavedKey(state)&&!state.pinPending&&!state.disconnected);
+}
 
 function lgIsPGeneratorDisplayName(name){
  const normalized=String(name||'').trim().toLowerCase().replace(/[\s_-]+/g,'');
@@ -1704,7 +1838,7 @@ function renderLgTopStatus(r){
  const dot=document.getElementById('lgTopDot');
  const text=document.getElementById('lgTopStatusText');
  if(!wrap||!dot||!text) return;
- const paired=!!(r&&(r.paired||r.client_key_present||r.clientKeyPresent));
+ const paired=lgStatusConnected(r);
  const pinPending=!!(r&&(r.pin_pairing_pending||r.pinPending));
  if(!paired||pinPending){
   wrap.style.display='none';
@@ -1881,7 +2015,7 @@ function lgPopulatePictureModeSelect(current){
  options.forEach(item=>{html+='<option value="'+lgEscapeHtml(item[0])+'">'+lgEscapeHtml(item[1])+'</option>';});
  select.innerHTML=html;
  select.value=options.some(item=>item[0]===selected)?selected:'';
- select.disabled=lgPictureModePending||!(state.paired||state.clientKeyPresent);
+ select.disabled=lgPictureModePending||!lgStatusConnected(state);
 }
 
 function lgSelectedPairingMode(){
@@ -2154,7 +2288,7 @@ function lgBindDisplayModeControl(){
 
 function lgDisplayControlConnected(){
  const state=window.lgStatusState||{};
- return !!((state.paired||state.clientKeyPresent)&&!state.pinPending);
+ return lgStatusConnected(state);
 }
 
 function lgSelectedPictureModeValue(){
@@ -2388,6 +2522,7 @@ function renderLgStatus(r){
  const pinInput=document.getElementById('lgPairPin');
  const pairingModeSelect=document.getElementById('lgPairingMode');
  const connectBtn=document.getElementById('lgConnectBtn');
+ const disconnectBtn=document.getElementById('lgDisconnectBtn');
  const pinStartBtn=document.getElementById('lgPinStartBtn');
  const pinSubmitBtn=document.getElementById('lgPinSubmitBtn');
  const resetButtons=lgPictureResetButtons();
@@ -2402,11 +2537,15 @@ function renderLgStatus(r){
 	 const promptStyle=r.prompt_style||'';
 	 const hasIp=!!(r.manual_ip||r.stored_ip||r.auto_ip);
 	 const clientKeyPresent=!!r.client_key_present;
+	 const disconnected=!!r.disconnected;
+	 const connected=Object.prototype.hasOwnProperty.call(r,'connected')?!!r.connected:!!((paired||clientKeyPresent)&&!pinPending&&!disconnected);
 	 const previousPaired=!!(window.lgStatusState&&window.lgStatusState.paired);
 	 const promptKey=lgDetectedPromptKey(r);
 	 window.lgStatusState={
-	  paired:paired,
-	  detected:detected,
+		  paired:paired,
+		  connected:connected,
+		  disconnected:disconnected,
+		  detected:detected,
 	  hasIp:hasIp,
 	  checked:true,
 	  clientKeyPresent:clientKeyPresent,
@@ -2422,9 +2561,15 @@ function renderLgStatus(r){
 	 if(pinPending){
     badge.textContent=promptStyle==='controller-pin'?'Enter PIN':'Pairing';
    badge.style.background='var(--orange)';
- }else if(paired){
-    badge.textContent='Paired';
-  badge.style.background='var(--green)';
+	 }else if(connected){
+	    badge.textContent='Connected';
+	  badge.style.background='var(--green)';
+	 }else if(disconnected&&clientKeyPresent){
+	    badge.textContent='Disconnected';
+	  badge.style.background='var(--text2)';
+	 }else if(paired||clientKeyPresent){
+	    badge.textContent='Paired';
+	  badge.style.background='var(--green)';
  }else if(hasIp){
     badge.textContent='Ready to Pair';
   badge.style.background='var(--orange)';
@@ -2435,7 +2580,8 @@ function renderLgStatus(r){
     badge.textContent='Needs IP';
   badge.style.background='var(--text2)';
  }
-	 if(connectBtn) connectBtn.textContent=(paired||clientKeyPresent)?'Connect':'Pair With PIN';
+		 if(connectBtn) connectBtn.textContent=(paired||clientKeyPresent)?'Connect':'Pair With PIN';
+		 if(disconnectBtn) disconnectBtn.disabled=pinPending||!clientKeyPresent||!connected;
  const parts=[];
  if(r.cec_osd_name) parts.push('CEC OSD: '+r.cec_osd_name);
  if(r.cec_tv_vendor) parts.push('CEC TV vendor: '+r.cec_tv_vendor);
@@ -2447,8 +2593,9 @@ function renderLgStatus(r){
  if(r.stored_name) parts.push('TV: '+r.stored_name);
  else if(r.model_name) parts.push('Model: '+r.model_name);
  if(r.software_version) parts.push('SW: '+r.software_version);
- if(pairingMode) parts.push('Pairing: '+pairingMode);
- if(r.client_key_present) parts.push('Client key saved');
+	 if(pairingMode) parts.push('Pairing: '+pairingMode);
+	 if(r.client_key_present) parts.push('Client key saved');
+	 if(disconnected) parts.push('Disconnected');
     if(r.transport) parts.push('Transport: '+r.transport.toUpperCase());
  if(r.detection_source) parts.push('Detect: '+r.detection_source);
  text.textContent=r.message||'LG status unavailable';
@@ -2470,9 +2617,9 @@ function renderLgStatus(r){
   pinInput.disabled=!pinPending;
   if(!pinPending && document.activeElement!==pinInput) pinInput.value='';
  }
- if(calibrationMode){
-  calibrationMode.disabled=lgCalibrationModePending||pinPending||!(paired||clientKeyPresent);
-  calibrationMode.checked=!!r.calibration_mode;
+	 if(calibrationMode){
+	  calibrationMode.disabled=lgCalibrationModePending||pinPending||!connected;
+	  calibrationMode.checked=!!r.calibration_mode;
  }
  if(pinPending && !lgLastPinPending) lgRevealPinEntry();
 	 if(pinStartBtn){
@@ -2480,14 +2627,16 @@ function renderLgStatus(r){
 	  pinStartBtn.textContent=pinPending?'Pairing Active':'Pair With PIN';
 	 }
  if(pinSubmitBtn) pinSubmitBtn.style.display=pinPending?'':'none';
- resetButtons.forEach(button=>{button.disabled=pinPending||!(paired||clientKeyPresent)||lgPictureModePending||lgCalibrationModePending;});
+	 resetButtons.forEach(button=>{button.disabled=pinPending||!connected||lgPictureModePending||lgCalibrationModePending;});
 	 if(hint){
 	  if(pinPending){
 	   hint.textContent=promptStyle==='controller-pin'
 	    ? 'Enter the PIN shown on the LG TV to finish pairing.'
 	    : 'Finish the pairing prompt shown on the LG TV.';
-	  }else if(paired||clientKeyPresent){
-	   hint.textContent='Saved LG pairing is available. Connect uses the stored key without another PIN.';
+		  }else if(disconnected&&clientKeyPresent){
+		   hint.textContent='LG TV is disconnected. Connect reuses the saved key without another PIN.';
+		  }else if(connected){
+		   hint.textContent='Saved LG pairing is available. Connect uses the stored key without another PIN.';
 	  }else if(r.auto_ip){
 	   hint.textContent='LG TV auto-detected via '+(r.auto_host||'lgwebostv.local')+'.';
 	  }else if(hasIp){
@@ -2501,7 +2650,7 @@ function renderLgStatus(r){
 	 if(typeof meterUpdateSeriesTabUi==='function') meterUpdateSeriesTabUi();
 	 else if(typeof meterUpdateSeriesLabels==='function') meterUpdateSeriesLabels();
 	 if(typeof meterUpdateReadButtons==='function') meterUpdateReadButtons();
-	 if((paired||clientKeyPresent)&&!pinPending) {
+		 if(connected&&!pinPending) {
 	  lgSchedulePictureModeRefresh(false);
 	  setTimeout(()=>lgDisplayControlRefresh(false),650);
 	 } else {
@@ -2549,9 +2698,9 @@ async function lgSaveManualIp(){
 async function lgConnect(){
  const input=document.getElementById('lgManualIp');
  const button=document.getElementById('lgConnectBtn');
- const ip=input?input.value.trim():'';
- const state=window.lgStatusState||{};
- const hasSavedKey=!!(state.clientKeyPresent||state.paired);
+	 const ip=input?input.value.trim():'';
+	 const state=window.lgStatusState||{};
+	 const hasSavedKey=lgStatusHasSavedKey(state);
  if(ip&&!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){toast('Enter a valid LG TV IP','err');return;}
  if(!hasSavedKey){
   if(button){button.disabled=true;button.textContent='Starting Pairing...';}
@@ -2664,7 +2813,7 @@ function lgPinKeydown(event){
 async function lgRefreshPictureMode(force){
  const state=window.lgStatusState||{};
  const signal=lgSignalModeKey();
-		 if(!(state.paired||state.clientKeyPresent)){
+			 if(!lgStatusConnected(state)){
 		  lgPictureModeValue='';
 		  lgPictureModeSignalMode=signal;
 		  lgPopulatePictureModeSelect('');
@@ -2713,7 +2862,7 @@ async function lgSetPictureMode(){
  const state=window.lgStatusState||{};
  const signal=lgSignalModeKey();
  lgRememberPictureMode(value,signal);
- if(!(state.paired||state.clientKeyPresent)){
+	 if(!lgStatusConnected(state)){
   toast('Connect the LG TV first','err');
   lgPopulatePictureModeSelect(lgPictureModeValue);
   return;
@@ -2754,7 +2903,7 @@ async function lgSetPictureMode(){
 
 async function lgResetPictureMode(){
  const state=window.lgStatusState||{};
- if(!(state.paired||state.clientKeyPresent)){
+	 if(!lgStatusConnected(state)){
   toast('Connect the LG TV first','err');
   return;
 	 }
@@ -2805,7 +2954,7 @@ async function lgSetCalibrationMode(){
  if(!checkbox) return;
  const enabled=!!checkbox.checked;
  const state=window.lgStatusState||{};
- if(!(state.paired||state.clientKeyPresent)){
+	 if(!lgStatusConnected(state)){
   checkbox.checked=!enabled;
   toast('Connect the LG TV first','err');
   return;
@@ -2836,7 +2985,7 @@ async function lgSetCalibrationMode(){
 	  lgEndCommand(commandHandle);
 	  lgCalibrationModePending=false;
   const fresh=window.lgStatusState||{};
-  checkbox.disabled=!(fresh.paired||fresh.clientKeyPresent)||!!fresh.pinPending;
+	  checkbox.disabled=!lgStatusConnected(fresh)||!!fresh.pinPending;
  }
 }
 
@@ -2851,6 +3000,28 @@ async function lgForgetClient(){
   toast('Stored LG pairing cleared');
  }else{
   toast(r&&r.message?r.message:'Unable to clear LG pairing','err');
+ }
+}
+
+async function lgDisconnectClient(){
+ const button=document.getElementById('lgDisconnectBtn');
+ if(button) button.disabled=true;
+ try{
+  const r=await fetchJSON('/api/lg/disconnect',{method:'POST'});
+  if(r&&r.status==='ok'){
+   lgPictureModeValue='';
+   lgPictureModeSignalMode='';
+   lgDisplayControlInvalidate();
+   renderLgStatus(r);
+   toast('LG TV disconnected; pairing saved');
+  }else{
+   toast(r&&r.message?r.message:'Unable to disconnect LG TV','err');
+  }
+ }catch(e){
+  toast('Unable to disconnect LG TV','err');
+ }finally{
+  const fresh=window.lgStatusState||{};
+  if(button) button.disabled=!lgStatusConnected(fresh)||!lgStatusHasSavedKey(fresh)||!!fresh.pinPending;
  }
 }
 LG_JS
