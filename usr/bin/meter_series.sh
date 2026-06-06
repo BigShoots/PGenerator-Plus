@@ -29,6 +29,7 @@ API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
 INITIAL_READY_PENDING=0
 [[ "$REQUIRE_DEVICE_READY" == "1" ]] && INITIAL_READY_PENDING=1
+SETUP_STEP_ID=0
 
 json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -90,6 +91,38 @@ EOJSON
   sleep 0.2
  done
  rm -f "$READY_FILE"
+}
+
+series_setup_step() {
+ local step="$1" message="$2" working="${3:-}"
+ SETUP_STEP_ID=$((SETUP_STEP_ID + 1))
+ local sid=$SETUP_STEP_ID
+ local escaped_step escaped_message escaped_working ready_reason
+ ready_reason="initial_measurement"
+ case "$step" in
+  calibrate_tile|calibrate_retry) ready_reason="calibration_setup" ;;
+  position_screen) ready_reason="initial_measurement" ;;
+ esac
+ escaped_step=$(json_escape "$step")
+ escaped_message=$(json_escape "$message")
+ rm -f "$READY_FILE"
+ write_state_json << EOJSON
+{"status":"setup","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"$escaped_message","step_id":$sid,"step":"$escaped_step","message":"$escaped_message","awaiting_ready":true,"awaiting_ready_reason":"$ready_reason","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ while [[ ! -f "$READY_FILE" ]]; do
+  sleep 0.2
+ done
+ rm -f "$READY_FILE"
+ if [[ -n "$working" ]]; then
+  escaped_working=$(json_escape "$working")
+  write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"$escaped_working","setup_busy":true,"message":"$escaped_working","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ else
+  write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ fi
 }
 
 maybe_wait_for_initial_ready() {
@@ -598,7 +631,10 @@ EOJSON
  mkfifo "$CMDPIPE"
 
  SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
- if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
+ if [[ "$REQUIRE_DEVICE_READY" == "1" && -n "$CCSS_FILE" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
+ fi
+ if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
   # Read the actual DISPLAY_TYPE_REFRESH value line, not the KEYWORD declaration.
   # If the field is missing, fall back to the CCSS metadata so OLED/Plasma/CRT
   # profiles don't get treated like generic LCDs (or vice versa).
@@ -638,28 +674,35 @@ EOJSON
  WAITED=0
 REFRESH_CAL_DONE=0
 WHITE_REF_DONE=0
+HANDLED_OFFSET=0
  while (( WAITED < 120 )); do
  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+ NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")
  if echo "$CLEAN_OUT" | grep -q "to take a reading:"; then
    break
   fi
- if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+ if (( REFRESH_CAL_DONE == 0 )) && echo "$NEW_OUT" | grep -qi "calibrate refresh"; then
   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
   sleep 2
   printf " " >&3
   REFRESH_CAL_DONE=1
+  HANDLED_OFFSET=$(output_size)
   sleep 2
   WAITED=$((WAITED + 4))
   continue
  fi
- if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$CLEAN_OUT"; then
-    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-     wait_for_device_ready 0 "$(manual_ready_prompt_label "Initializing meter" "calibration_setup")" "calibration_setup"
-    else
-     sleep 4
-    fi
+ if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
+    series_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectrophotometer flat on its white tile, then click Retry." "Re-calibrating the meter - please wait..."
+  printf " " >&3
+  HANDLED_OFFSET=$(output_size)
+  WAITED=$((WAITED + 1))
+  continue
+ fi
+ if (( WHITE_REF_DONE == 0 )) && manual_calibration_setup_prompt "$NEW_OUT"; then
+    series_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait..."
   printf " " >&3
   WHITE_REF_DONE=1
+  HANDLED_OFFSET=$(output_size)
   WAITED=$((WAITED + 1))
   continue
  fi
@@ -711,6 +754,11 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
  sleep 2
  printf " " >&3
  sleep 2
+fi
+
+if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+ series_setup_step "position_screen" "Aim the meter at where the test patches appear on the screen, then click Ready."
+ INITIAL_READY_PENDING=0
 fi
 
 # Helper: count result lines

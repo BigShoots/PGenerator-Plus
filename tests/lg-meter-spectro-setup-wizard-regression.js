@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 
 const session = fs.readFileSync('usr/bin/meter_session.sh', 'utf8');
+const series = fs.readFileSync('usr/bin/meter_series.sh', 'utf8');
 const webui = fs.readFileSync('usr/share/PGenerator/webui.pm', 'utf8');
 const ccss = fs.readFileSync('usr/bin/ccss_create.py', 'utf8');
 
@@ -93,14 +94,42 @@ assert(webui.includes("'/api/meter/setup/ack'"), 'ack fn posts the endpoint');
 assert(webui.includes("meterSpectroSetupApply(r,'/api/meter/setup/ack')"), 'read poll feeds setup state to the wizard');
 assert(
   webui.includes('function meterSeriesSpectroSetupApplyFromStatus') &&
+    webui.includes("String(r.status||'').toLowerCase()==='setup'") &&
+    webui.includes("meterSpectroSetupApply(r,'/api/meter/series/ready')") &&
+    webui.includes("meterSpectroSetupApply({keepBusy:true,message:r.message},'/api/meter/series/ready')") &&
     webui.includes("meterSpectroSetupApply(setup,'/api/meter/series/ready')") &&
     webui.includes('meterSeriesSpectroSetupApplyFromStatus(r);'),
-  'Read Series should map spectro awaiting-ready states into the shared setup wizard'
+  'Read Series should map spectro setup, setup-busy, and awaiting-ready states into the shared setup wizard'
 );
 assert(
   webui.includes('!meterSeriesSpectroSetupActive') &&
     webui.includes('const readyVisible=meterSeriesAwaitingReady&&meterSelectedMeasurementRequiresReady()&&!meterSeriesSpectroSetupActive;'),
   'legacy Device Ready button should be hidden while the series spectro wizard is active'
+);
+assert(
+  !webui.includes('!r.awaiting_ready||!meterSelectedMeasurementRequiresReady()'),
+  'series backend wait states should not be hidden by stale client-side meter classification'
+);
+assert(
+  series.includes('series_setup_step()') &&
+    series.includes('spectrophotometer selected: skipping CCSS') &&
+    series.includes('&& "$REQUIRE_DEVICE_READY" != "1"') &&
+    series.includes('series_setup_step "calibrate_tile"') &&
+    series.includes('series_setup_step "position_screen"') &&
+    series.includes('series_setup_step "calibrate_retry"') &&
+    series.includes('"awaiting_ready":true,"awaiting_ready_reason":"$ready_reason"') &&
+    series.includes('NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")') &&
+    series.includes('INITIAL_READY_PENDING=0'),
+  'meter_series should surface spectro startup calibration and screen-positioning through setup states'
+);
+assert(
+  webui.includes('sub webui_meter_port_is_spectro') &&
+    webui.includes('$require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));'),
+  'backend should force the setup workflow when a series/read request targets a known spectro port'
+);
+assert(
+  webui.includes('$json=~/"awaiting_ready"\\s*:\\s*true/i || $json=~/"status"\\s*:\\s*"setup"/i'),
+  'series ready endpoint should accept setup-state wizard acks as well as legacy awaiting-ready prompts'
 );
 
 // --- Create-Custom-CCSS reuse of the same step-ID wizard ---------------------
