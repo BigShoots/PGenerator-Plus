@@ -4999,82 +4999,7 @@ sub apply_full_ddc_spine_shadow_seeds {
 }
 
 sub apply_sdr_low_shadow_endpoint_seed_2_3 {
- my ($config,$arrays,$calibrated_slot_mask,$step)=@_;
- return 0 if(!sdr_initial_low_shadow_context_enabled($config,$step));
- return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
- return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
- return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
- return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
- my $ire=$step->{"ire"}+0;
- my $target_ire=2.3;
- return 0 if(abs($ire-$target_ire) >= 0.001);
- return 0 if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));
- my $target_idx=ddc_slot_index_for_ire($target_ire);
- return 0 if(!defined($target_idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY" || $target_idx >= @{$arrays->{"adjustingLuminance"}});
- my $live_neighbor=(
-  ref($LG_AUTOCAL_STATE) eq "HASH" &&
-  ref($LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}) eq "HASH"
- ) ? $LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)} : undef;
- if(ref($live_neighbor) eq "HASH") {
-  my $current=defined($arrays->{"adjustingLuminance"}[$target_idx]) ? ($arrays->{"adjustingLuminance"}[$target_idx]+0) : 0;
-  return {
-   mode=>"sdr-low-shadow-endpoint-seed-2.3-skipped-live-neighbor",
-   target_ire=>$target_ire+0,
-   target_index=>$target_idx+0,
-   before=>{ adjustingLuminance=>$current+0 },
-   after=>{ adjustingLuminance=>$current+0 },
-   changed_settings=>{},
-   live_neighbor_preseed=>$live_neighbor,
-   reason=>"2.3_already_shaped_by_live_3_neighbor"
-  };
- }
- my @source_ires=grep { calibrated_26pt_slot_for_ire($calibrated_slot_mask,$_) } (5,10,15);
- return 0 if(!@source_ires);
- my (%before,%after,%source,%changed_settings,%source_luminance);
- my $weighted_luminance=0;
- my $weight_sum=0;
- foreach my $source_ire (@source_ires) {
-  my $source_idx=ddc_slot_index_for_ire($source_ire);
-  next if(!defined($source_idx) || $source_idx >= @{$arrays->{"adjustingLuminance"}});
-  my $value=defined($arrays->{"adjustingLuminance"}[$source_idx]) ? ($arrays->{"adjustingLuminance"}[$source_idx]+0) : 0;
-  my $weight=1/(abs(($source_ire+0)-$target_ire)+1);
-  $weighted_luminance+=abs($value)*$weight;
-  $weight_sum+=$weight;
-  $source_luminance{format_percent($source_ire)}=$value+0;
- }
- return 0 if($weight_sum <= 0);
- my $current=defined($arrays->{"adjustingLuminance"}[$target_idx]) ? ($arrays->{"adjustingLuminance"}[$target_idx]+0) : 0;
- my $scale=0.55;
- my $min_lift=1.50;
- my $max_lift=7.00;
- my $lift=($weighted_luminance/$weight_sum)*$scale;
- $lift=$min_lift if($lift < $min_lift);
- $lift=$max_lift if($lift > $max_lift);
- my $next=round_ddc_quarter(clamp_ddc_value($current+$lift));
- return 0 if(abs($next-$current) < 0.0001);
- $before{"adjustingLuminance"}=$current+0;
- $after{"adjustingLuminance"}=$next+0;
- $source{"adjustingLuminance"}=\%source_luminance;
- $arrays->{"adjustingLuminance"}[$target_idx]=$next;
- $changed_settings{"adjustingLuminance"}={ before=>$current+0, after=>$next+0 };
- return 0 if(!%changed_settings);
- my $detail={
-  mode=>"sdr-low-shadow-endpoint-seed-2.3",
-  source_ires=>[map { $_+0 } @source_ires],
-  target_ire=>$target_ire+0,
-  target_index=>$target_idx+0,
-  luminance_scale=>$scale+0,
-  min_lift=>$min_lift+0,
-  max_lift=>$max_lift+0,
-  lift=>$lift+0,
-  source=>\%source,
-  before=>\%before,
-  after=>\%after,
-  changed_settings=>\%changed_settings,
-  reason=>"pre_first_read_2_3_from_calibrated_low_anchors"
- };
- record_full_ddc_spine_seed_detail($detail);
- return $detail;
+ return 0;
 }
 
 sub sdr_low_shadow_lower_neighbor_ire {
@@ -8456,6 +8381,7 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
  foreach my $ch (sort { abs($error->{$b}||0) <=> abs($error->{$a}||0) } qw(r g b)) {
   my $err=$error->{$ch}||0;
   next if(abs($err) < $floor);
+  next if($sdr_deep_shadow_near_y_chroma && $max_abs > 0 && abs($err) < ($max_abs*0.45));
   my $setting=channel_setting($ch);
   my $arr=$arrays->{$setting};
   next if(ref($arr) ne "ARRAY" || $idx >= @{$arr});
@@ -8473,7 +8399,6 @@ sub low_shadow_chroma_luminance_coupled_adjustments {
 	   source=>$near_y_chroma ? "low_shadow_near_y_chroma_luma" : "low_shadow_chroma_luma",
 	   remaining_error=>abs($err)
 	  };
-  last if($sdr_deep_shadow_near_y_chroma && @out);
 	 }
 	 return undef if(!@out);
 	 my $luma_meaningful=$luma_tol*0.20;
