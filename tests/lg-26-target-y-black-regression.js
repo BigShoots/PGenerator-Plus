@@ -9,6 +9,8 @@ const source = fs.readFileSync('usr/share/PGenerator/webui.pm', 'utf8');
 
 assert(source.includes('my $stamp_series_target_white_y=0;'), 'Series route should not default-stamp ColorChecker/Sat Sweep with stored AutoCal target white');
 assert(!source.includes('my $stamp_series_target_white_y=($type eq "colors" || $type eq "saturations") ? 1 : 0;'), 'ColorChecker/Sat Sweep target Y should come from their own White read, not stale LG target-white stamps');
+assert(source.includes('const cr=readings.filter(r=>meterReadingHasLuminance(r)&&!meterIsWhiteReferenceReading(r));'), 'Color/saturation chart gate should accept zero-Y black readings that report Y but not luminance');
+assert(source.includes('if(useColorForm&&meterXyzIsBlack(xyz))'), 'Color/saturation DeltaE should plot true black as finite zero instead of dropping it as NaN');
 
 function extractFunction(name) {
   const token = `function ${name}(`;
@@ -90,6 +92,9 @@ vm.runInContext([
   extractFunction('meterChartBlackLevel'),
   extractFunction('meterBlackReadingY'),
   extractFunction('meterReadingLuminanceNits'),
+  extractFunction('meterReadingTargetsBlack'),
+  extractFunction('meterXyzIsBlack'),
+  extractFunction('meterReadingXYZ'),
   extractFunction('meterGreyTargetSignal'),
   extractFunction('bt1886Eotf'),
   extractFunction('gammaEotf'),
@@ -208,5 +213,26 @@ const colorCheckerGray = context.meterTargetXYZForReading({
   target_Yn: 0.09
 });
 assert(Math.abs(colorCheckerGray.Y - 14.58) < 1e-12, 'ColorChecker gray chips should use color-series target_Yn and measured series White, not greyscale EOTF or stale LG target Y');
+
+const colorCheckerBlackXyz = context.meterReadingXYZ({
+  name: 'Black',
+  r_code: 0,
+  g_code: 0,
+  b_code: 0,
+  X: 0,
+  Y: 0,
+  Z: 0,
+  luminance: 0,
+  target_Yn: 0
+});
+assert(colorCheckerBlackXyz && colorCheckerBlackXyz.X === 0 && colorCheckerBlackXyz.Y === 0 && colorCheckerBlackXyz.Z === 0, 'ColorChecker Black should remain a valid zero-XYZ reading for chart plotting');
+assert.strictEqual(context.meterReadingXYZ({
+  name: 'Blue',
+  X: 0,
+  Y: 0,
+  Z: 0,
+  luminance: 0,
+  target_Yn: 0.2
+}), null, 'All-zero non-black color reads should still be treated as missing/invalid');
 
 console.log('LG 26 target-Y black regression checks passed.');
