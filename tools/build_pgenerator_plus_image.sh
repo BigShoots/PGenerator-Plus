@@ -12,6 +12,7 @@ MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof i1d3ccss oeminst dispread dispcal)
 ARGYLL_RUNTIME_DIR=""
+PI5_VC4_MODULE=""
 TARGET="pi4-biasi"
 PI5_TARGET_DESCRIPTION="Raspberry Pi 5 Bookworm armhf"
 PI5_OUTPUT_SUFFIX="pi5_bookworm_armhf"
@@ -132,6 +133,10 @@ Optional:
   --keep-workdir         Keep the temporary mount/work directory for inspection.
   --argyll-runtime-dir   Directory containing cross-compiled or prebuilt armhf
                          ArgyllCMS binaries to stage into /usr/bin.
+  --pi5-vc4-module PATH  For pi5-bookworm-armhf images, install a patched
+                         vc4.ko or vc4.ko.xz into the image rootfs and v8
+                         initramfs. Use the module built by
+                         tools/image-targets/pi5-bookworm-armhf/kernel/build_vc4_ycbcr_module.sh.
   -h, --help             Show this help text.
 
 Notes:
@@ -283,6 +288,11 @@ parse_args() {
    ARGYLL_RUNTIME_DIR="$2"
    shift 2
    ;;
+  --pi5-vc4-module)
+   [[ $# -ge 2 ]] || die "Missing value for --pi5-vc4-module"
+   PI5_VC4_MODULE="$2"
+   shift 2
+   ;;
    -h|--help)
     usage
     exit 0
@@ -311,6 +321,10 @@ prepare_paths() {
  if [[ -n "$ARGYLL_RUNTIME_DIR" ]]; then
   ARGYLL_RUNTIME_DIR="$(abs_existing_path "$ARGYLL_RUNTIME_DIR")"
   [[ -d "$ARGYLL_RUNTIME_DIR" ]] || die "Argyll runtime path is not a directory: $ARGYLL_RUNTIME_DIR"
+ fi
+ if [[ -n "$PI5_VC4_MODULE" ]]; then
+  PI5_VC4_MODULE="$(abs_existing_path "$PI5_VC4_MODULE")"
+  [[ -f "$PI5_VC4_MODULE" ]] || die "Pi 5 vc4 module path is not a file: $PI5_VC4_MODULE"
  fi
 
  if [[ -z "$OUTPUT_IMAGE" ]]; then
@@ -911,6 +925,17 @@ validate_pi5_argyll_runtime() {
   printf '  - %s\n' "${missing[@]}" >&2
   die "Install libxss1/liblzma5 compatibility in the Pi 5 base image/rootfs before building PGenerator+"
  fi
+}
+
+install_pi5_vc4_module() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ [[ -n "$PI5_VC4_MODULE" ]] || return 0
+
+ log "Installing patched Pi 5 vc4 module into rootfs and initramfs"
+ "$REPO_ROOT/tools/image-targets/pi5-bookworm-armhf/kernel/build_vc4_ycbcr_module.sh" \
+  --module "$PI5_VC4_MODULE" \
+  --install-destdir "$ROOT_MOUNT" \
+  --install-boot-dir "$BOOT_MOUNT"
 }
 
 pi5_missing_runtime_paths() {
@@ -1613,6 +1638,7 @@ main() {
  configure_pi5_headless_first_boot
  configure_pi5_headless_ssh
  configure_pi5_pgenerator_services
+ install_pi5_vc4_module
  if [[ "$TARGET" != "pi5-bookworm-armhf" ]]; then
   ensure_boot_ramdisk_size
   patch_boot_initramfs_rootwait

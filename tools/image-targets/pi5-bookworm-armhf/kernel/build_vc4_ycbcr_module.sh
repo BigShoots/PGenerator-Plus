@@ -19,6 +19,7 @@ INSTALL_LIVE=0
 INSTALL_DESTDIR=""
 INSTALL_BOOT_DIR=""
 SKIP_INITRAMFS=0
+PREBUILT_MODULE=""
 
 if [[ -n "$SOURCE_DIR" ]]; then
 	SOURCE_DIR_SET=1
@@ -45,6 +46,8 @@ Options:
   --install-destdir PATH   Install into an image/rootfs directory instead.
   --install-boot-dir PATH  Repack a boot initramfs with the patched vc4 module.
                            PATH may be a boot mount directory or initramfs file.
+  --module PATH            Use an existing patched vc4.ko or vc4.ko.xz instead
+                           of building one from source.
   --no-initramfs           Skip initramfs updates during install steps.
   -j, --jobs N             Parallel build jobs.
   -h, --help               Show this help.
@@ -83,6 +86,10 @@ while [[ $# -gt 0 ]]; do
 			;;
 		--install-boot-dir)
 			INSTALL_BOOT_DIR="$2"
+			shift 2
+			;;
+		--module)
+			PREBUILT_MODULE="$2"
 			shift 2
 			;;
 		--no-initramfs)
@@ -127,6 +134,33 @@ if [[ ! -f "$PATCH_FILE" ]]; then
 fi
 
 mkdir -p "$BUILD_DIR"
+
+MODULE=""
+
+if [[ -n "$PREBUILT_MODULE" ]]; then
+	if [[ ! -f "$PREBUILT_MODULE" ]]; then
+		echo "Prebuilt module does not exist: $PREBUILT_MODULE" >&2
+		exit 1
+	fi
+	case "$PREBUILT_MODULE" in
+		*.xz)
+			need xz
+			MODULE="$BUILD_DIR/prebuilt-vc4.ko"
+			xz -dc "$PREBUILT_MODULE" > "$MODULE"
+			;;
+		*)
+			MODULE="$PREBUILT_MODULE"
+			;;
+	esac
+	if command -v modinfo >/dev/null 2>&1; then
+		vermagic="$(modinfo -F vermagic "$MODULE" 2>/dev/null || true)"
+		if [[ "$vermagic" != "$KERNEL_VERSION "* ]]; then
+			echo "Prebuilt module vermagic does not match $KERNEL_VERSION: $vermagic" >&2
+			exit 1
+		fi
+	fi
+	echo "Using prebuilt module: $MODULE"
+else
 
 if [[ "$DOWNLOAD_HEADERS" -eq 1 ]]; then
 	need apt-get
@@ -231,6 +265,7 @@ if [[ ! -f "$MODULE" ]]; then
 fi
 
 echo "Built: $MODULE"
+fi
 
 install_module_to_root() {
 	local root="$1"
