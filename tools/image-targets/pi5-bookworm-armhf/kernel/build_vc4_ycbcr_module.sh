@@ -123,14 +123,16 @@ need() {
 	fi
 }
 
-need git
-need make
-need curl
-need tar
+if [[ -z "$PREBUILT_MODULE" ]]; then
+	need git
+	need make
+	need curl
+	need tar
 
-if [[ ! -f "$PATCH_FILE" ]]; then
-	echo "Missing patch: $PATCH_FILE" >&2
-	exit 1
+	if [[ ! -f "$PATCH_FILE" ]]; then
+		echo "Missing patch: $PATCH_FILE" >&2
+		exit 1
+	fi
 fi
 
 mkdir -p "$BUILD_DIR"
