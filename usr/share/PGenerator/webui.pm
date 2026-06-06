@@ -18855,6 +18855,16 @@ function meterAutoCalPanelLightQueuePending(){
  return meterAutoCalPanelLightQueuedValuePending()||Math.abs(Number(meterAutoCalPanelLightQueuedDelta)||0)>0.001;
 }
 
+function meterAutoCalResetPanelLightState(){
+ meterAutoCalPanelLight={key:'',value:null,label:'Panel light',pending:false,candidates:[]};
+ meterAutoCalPanelLightReadPending=false;
+ meterAutoCalPanelLightWritePending=false;
+ meterAutoCalPanelLightQueuedDelta=0;
+ meterAutoCalPanelLightQueuedValue=null;
+ if(meterAutoCalPanelLightCommitTimer) clearTimeout(meterAutoCalPanelLightCommitTimer);
+ meterAutoCalPanelLightCommitTimer=null;
+}
+
 function meterAutoCalSyncPanelLightPending(){
  meterAutoCalPanelLight.pending=!!(meterAutoCalPanelLightReadPending||meterAutoCalPanelLightWritePending);
  return meterAutoCalPanelLight.pending;
@@ -19978,12 +19988,11 @@ async function meterAutoCalResetDdc(){
  }
  response.picture_mode_reset=pictureModeReset;
  if(hdrCalmanReset) response.hdr_calman_reset=hdrCalmanReset;
- const resetPicture=response.picture_settings||{};
+ if(typeof lgDisplayControlInvalidate==='function') lgDisplayControlInvalidate();
+ const resetPicture={...((pictureModeReset&&pictureModeReset.picture_settings)||{}),...((response&&response.picture_settings)||{})};
  let panel=meterAutoCalPanelLightFromPicture(resetPicture);
  if(!panel){
-  meterAutoCalPanelLight={key:'',value:null,label:'Panel light',pending:false,candidates:[]};
-  meterAutoCalPanelLightReadPending=false;
-  meterAutoCalPanelLightWritePending=false;
+  meterAutoCalResetPanelLightState();
   meterAutoCalUpdatePanelLightUi();
  }
  if(panel){
@@ -20152,12 +20161,10 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
  const continueBtn=document.getElementById('meterAutoCalContinueBtn');
  if(continueBtn) continueBtn.disabled=true;
  meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Watch the live 100% white reading, then click Continue when ready.'});
- meterAutoCalSeedPanelLightFromDisplayControl();
+ meterAutoCalResetPanelLightState();
  meterAutoCalUpdatePanelLightUi();
- if(!meterAutoCalPanelLight.key||meterAutoCalPanelLight.value==null||!Number.isFinite(Number(meterAutoCalPanelLight.value))){
-  meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Loading the LG panel-light control before the live white read...'});
-  await meterAutoCalLoadPanelLightValue(true);
- }
+ meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Loading the LG panel-light control before the live white read...'});
+ await meterAutoCalLoadPanelLightValue(true);
  meterAutoCalUpdatePanelLightUi();
  await meterDisplayPatch(whiteStep,{fresh:false});
  meterCurrentPatchStep=null;
@@ -22506,15 +22513,9 @@ async function meterStartAutoCal(options){
 	 meterAutoCalMagicWandActive=false;
 	 meterAutoCalMagicWandBaseStatus=null;
 	 meterAutoCalMagicWandFullWorkflow=false;
-		 meterAutoCalCapturedTargetY=0;
-	 meterAutoCalPanelLight={key:'',value:null,label:'Panel light',pending:false,candidates:[]};
-	 meterAutoCalPanelLightReadPending=false;
-	 meterAutoCalPanelLightWritePending=false;
-	 meterAutoCalPanelLightQueuedDelta=0;
-	 meterAutoCalPanelLightQueuedValue=null;
-	 if(meterAutoCalPanelLightCommitTimer) clearTimeout(meterAutoCalPanelLightCommitTimer);
-	 meterAutoCalPanelLightCommitTimer=null;
-	 meterAutoCalLuminanceReadBusy=false;
+			 meterAutoCalCapturedTargetY=0;
+		 meterAutoCalResetPanelLightState();
+		 meterAutoCalLuminanceReadBusy=false;
  meterAutoCalResetNotice='';
  meterAutoCalPreflightResetDone=false;
  meterAutoCalPreflightLgGeneration=null;
