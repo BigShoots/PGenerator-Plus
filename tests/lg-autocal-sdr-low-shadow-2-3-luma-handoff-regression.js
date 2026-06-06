@@ -15,6 +15,25 @@ const helperSource = sliceBetween(
   'sub sdr_low_shadow_2_3_luma_best_ready_for_fresh_verify',
   'sub committed_low_shadow_good_enough'
 );
+const endpointSeedSource = sliceBetween(
+  'sub apply_sdr_low_shadow_endpoint_seed_2_3',
+  'sub sdr_low_shadow_lower_neighbor_ire'
+);
+const chromaLumaSource = sliceBetween(
+  'sub low_shadow_chroma_luminance_coupled_adjustments',
+  'sub cap_post_commit_low_shadow_adjustment'
+);
+assert(
+  endpointSeedSource.includes('sub apply_sdr_low_shadow_endpoint_seed_2_3 {\n return 0;\n}\n') &&
+    !endpointSeedSource.includes('pre_first_read_2_3_from_calibrated_low_anchors') &&
+    !endpointSeedSource.includes('my @source_ires=grep'),
+  '2.3 endpoint luminance seed should be disabled so the first read starts from the actual DDC state'
+);
+assert(
+  chromaLumaSource.includes('abs($err) < ($max_abs*0.45)') &&
+    !chromaLumaSource.includes('last if($sdr_deep_shadow_near_y_chroma && @out);'),
+  '2.3 near-Y chroma cleanup should move dominant channels together instead of spending one meter read per channel'
+);
 assert(
   helperSource.includes('!$best_from_luma_only') &&
     helperSource.includes('sdr_low_shadow_final_acceptance_verify_required($config,$step)') &&

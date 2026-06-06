@@ -299,21 +299,15 @@ const lowShadowEndpointSource = sliceBetween(
   'sub sdr_low_shadow_lower_neighbor_ire'
 );
 assert(
-  lowShadowEndpointSource.includes('my $target_ire=2.3;') &&
-    lowShadowEndpointSource.includes('return 0 if(abs($ire-$target_ire) >= 0.001);') &&
-    lowShadowEndpointSource.includes('return 0 if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));') &&
-    lowShadowEndpointSource.includes('my @source_ires=grep { calibrated_26pt_slot_for_ire($calibrated_slot_mask,$_) } (5,10,15);') &&
-    lowShadowEndpointSource.includes('my $scale=0.55;') &&
-    lowShadowEndpointSource.includes('my $max_lift=7.00;') &&
-    lowShadowEndpointSource.includes('$changed_settings{"adjustingLuminance"}') &&
-    lowShadowEndpointSource.includes('$LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)}') &&
-    lowShadowEndpointSource.includes('mode=>"sdr-low-shadow-endpoint-seed-2.3-skipped-live-neighbor"') &&
-    lowShadowEndpointSource.includes('reason=>"2.3_already_shaped_by_live_3_neighbor"') &&
-    lowShadowEndpointSource.includes('pre_first_read_2_3_from_calibrated_low_anchors') &&
+  lowShadowEndpointSource.includes('sub apply_sdr_low_shadow_endpoint_seed_2_3 {\n return 0;\n}\n') &&
+    !lowShadowEndpointSource.includes('my @source_ires=grep') &&
+    !lowShadowEndpointSource.includes('$changed_settings{"adjustingLuminance"}') &&
+    !lowShadowEndpointSource.includes('$LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)}') &&
+    !lowShadowEndpointSource.includes('pre_first_read_2_3_from_calibrated_low_anchors') &&
     !lowShadowEndpointSource.includes('whiteBalanceRed') &&
     !lowShadowEndpointSource.includes('whiteBalanceGreen') &&
     !lowShadowEndpointSource.includes('whiteBalanceBlue'),
-  '2.3% should get a pre-first-read luma endpoint seed from calibrated 5/10/15 anchors, not a fixed RGB/offset chain'
+  '2.3% should not get a pre-first-read endpoint seed from higher anchors or a fixed RGB/offset chain'
 );
 
 const lowShadowLiveNeighborSource = sliceBetween(
@@ -344,9 +338,8 @@ const mainLoopSource = sliceBetween(
 );
 assert(
   mainLoopSource.includes('my $low_shadow_endpoint_seed=apply_sdr_low_shadow_endpoint_seed_2_3') &&
-    mainLoopSource.includes('trace_109($read_step,"sdr_low_shadow_endpoint_seed_2_3"') &&
     mainLoopSource.indexOf('apply_sdr_low_shadow_endpoint_seed_2_3') < mainLoopSource.indexOf('apply_sdr_low_shadow_local_spine_preseed'),
-  '2.3% endpoint seed should run before the existing 3%-neighbor preseed and before the first measurement'
+  'legacy 2.3% endpoint seed hook should remain ordered before local spine preseed, but the hook itself is disabled'
 );
 
 const mainAdjustmentApplySource = sliceBetween(
