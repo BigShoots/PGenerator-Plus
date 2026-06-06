@@ -11893,10 +11893,10 @@ function meterLgTargetWhiteReferenceNits(readings){
  if(Number.isFinite(cfg)&&cfg>0) return cfg;
  try{
   if((typeof meterChartIsHdr==='function'&&meterChartIsHdr())||(typeof meterChartIsDv==='function'&&meterChartIsDv())) return null;
- }catch(e){}
- const state=window.lgStatusState||{};
- const connected=!!((state.paired||state.clientKeyPresent)&&!state.pinPending);
- if(!connected) return null;
+	 }catch(e){}
+	 const state=window.lgStatusState||{};
+	 const connected=(typeof lgStatusConnected==='function')?lgStatusConnected(state):!!((state.paired||state.clientKeyPresent)&&!state.pinPending&&!state.disconnected);
+	 if(!connected) return null;
  return meterStoredLgTargetWhiteReferenceNits();
 }
 
@@ -11925,10 +11925,10 @@ function meterColorSeriesTargetWhiteForRun(type,points){
  if(Number.isFinite(cfg)&&cfg>0) return cfg;
  try{
   if((typeof meterChartIsHdr==='function'&&meterChartIsHdr())||(typeof meterChartIsDv==='function'&&meterChartIsDv())) return null;
- }catch(e){}
- const state=window.lgStatusState||{};
- const connected=!!((state.paired||state.clientKeyPresent)&&!state.pinPending);
- if(!connected) return null;
+	 }catch(e){}
+	 const state=window.lgStatusState||{};
+	 const connected=(typeof lgStatusConnected==='function')?lgStatusConnected(state):!!((state.paired||state.clientKeyPresent)&&!state.pinPending&&!state.disconnected);
+	 if(!connected) return null;
  return meterStoredLgTargetWhiteReferenceNits();
 }
 
@@ -18656,10 +18656,10 @@ function meterGreyTvColumnHtml(channelKey,label,color,tvValue,liveEntry,halfRang
   </div>`;
 }
 
-function meterGreyTvControlsActive(){
- const state=window.lgStatusState||{};
- return !!((state.paired||state.clientKeyPresent)&&!state.pinPending);
-}
+	function meterGreyTvControlsActive(){
+	 const state=window.lgStatusState||{};
+	 return (typeof lgStatusConnected==='function')?lgStatusConnected(state):!!((state.paired||state.clientKeyPresent)&&!state.pinPending&&!state.disconnected);
+	}
 
 function meterAutoCalAvailable(){
 	 return meterActiveSeriesType==='greyscale'
@@ -21661,9 +21661,9 @@ async function meterFullAutoCalDownloadReport(filename){
 }
 
 async function meterFullAutoCalEnsureCalibrationModeOff(reason){
- const state=window.lgStatusState||{};
- const canSend=!!(state.paired||state.clientKeyPresent||meterFullAutoCalAvailable());
- if(!canSend) return true;
+	 const state=window.lgStatusState||{};
+	 const canSend=!!(((typeof lgStatusConnected==='function')?lgStatusConnected(state):((state.paired||state.clientKeyPresent)&&!state.pinPending&&!state.disconnected))||meterFullAutoCalAvailable());
+	 if(!canSend) return true;
  const label=reason||'Full AutoCal report';
  try{
   const r=await fetchJSON('/api/lg/calibration-mode',{
