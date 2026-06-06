@@ -4998,19 +4998,123 @@ sub apply_full_ddc_spine_shadow_seeds {
  return 0;
 }
 
+sub lg_autocal_26_legacy_low_shadow_2_3_seed_enabled {
+ my ($config)=@_;
+ return 1 if(ref($config) ne "HASH");
+ foreach my $key (qw(lg_generation preflight_lg_generation)) {
+  my $generation=$config->{$key};
+  next if(ref($generation) ne "HASH");
+  return 1 if($generation->{"ddc_only_white_balance"});
+  return 1 if($generation->{"picture_mode_read_forbidden"});
+  my $year=defined($generation->{"platform_year"}) ? ($generation->{"platform_year"}+0) : 0;
+  return 1 if($year && $year <= 2021);
+  return 0 if($year && $year >= 2022);
+  my $webos_major=defined($generation->{"webos_major"}) ? ($generation->{"webos_major"}+0) : 0;
+  return 1 if($webos_major && $webos_major <= 6);
+  return 0 if($webos_major && $webos_major >= 7);
+  my $series=uc($generation->{"series"}||"");
+  return 1 if($series =~ /^[BCGZ]1$/);
+  return 0 if($series =~ /^[BCGZ][2-9]$/);
+  my $model=uc(join(" ",grep { defined($_) && $_ ne "" } map { $generation->{$_} } qw(model_name platform_model product_name)));
+  return 1 if($model =~ /OLED\d*[BCGZ]1/ || $model =~ /(?:^|[^A-Z0-9])(?:LG[_ -]?)?[BCGZ]1(?:[^0-9]|$)/);
+  return 0 if($model =~ /OLED\d*[BCGZ][2-9]/ || $model =~ /(?:^|[^A-Z0-9])(?:LG[_ -]?)?[BCGZ][2-9](?:[^0-9]|$)/);
+  return 0;
+ }
+ my $display=uc(join(" ",grep { defined($_) && $_ ne "" } map { $config->{$_} } qw(display_type model_name platform_model product_name)));
+ return 1 if($display =~ /OLED\d*[BCGZ]1/ || $display =~ /(?:^|[^A-Z0-9])LG[_ -]?[BCGZ]1(?:[^0-9]|$)/ || $display =~ /(?:^|[^A-Z0-9])[BCGZ]1(?:[^0-9]|$)/);
+ return 0 if($display =~ /OLED\d*[BCGZ][2-9]/ || $display =~ /(?:^|[^A-Z0-9])LG[_ -]?[BCGZ][2-9](?:[^0-9]|$)/ || $display =~ /(?:^|[^A-Z0-9])[BCGZ][2-9](?:[^0-9]|$)/);
+ return 1;
+}
+
 sub apply_sdr_low_shadow_endpoint_seed_2_3 {
- return 0;
+ my ($config,$arrays,$calibrated_slot_mask,$step)=@_;
+ return 0 if(!lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));
+ return 0 if(!sdr_initial_low_shadow_context_enabled($config,$step));
+ return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
+ return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
+ return 0 if(ref($arrays) ne "HASH" || ref($calibrated_slot_mask) ne "ARRAY");
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ my $ire=$step->{"ire"}+0;
+ my $target_ire=2.3;
+ return 0 if(abs($ire-$target_ire) >= 0.001);
+ return 0 if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$target_ire));
+ my $target_idx=ddc_slot_index_for_ire($target_ire);
+ return 0 if(!defined($target_idx) || ref($arrays->{"adjustingLuminance"}) ne "ARRAY" || $target_idx >= @{$arrays->{"adjustingLuminance"}});
+ my $live_neighbor=(
+  ref($LG_AUTOCAL_STATE) eq "HASH" &&
+  ref($LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}) eq "HASH"
+ ) ? $LG_AUTOCAL_STATE->{"sdr_low_shadow_live_neighbor_preseed"}{format_percent($target_ire)} : undef;
+ if(ref($live_neighbor) eq "HASH") {
+  my $current=defined($arrays->{"adjustingLuminance"}[$target_idx]) ? ($arrays->{"adjustingLuminance"}[$target_idx]+0) : 0;
+  return {
+   mode=>"sdr-low-shadow-endpoint-seed-2.3-skipped-live-neighbor",
+   target_ire=>$target_ire+0,
+   target_index=>$target_idx+0,
+   before=>{ adjustingLuminance=>$current+0 },
+   after=>{ adjustingLuminance=>$current+0 },
+   changed_settings=>{},
+   live_neighbor_preseed=>$live_neighbor,
+   reason=>"2.3_already_shaped_by_live_3_neighbor"
+  };
+ }
+ my @source_ires=grep { calibrated_26pt_slot_for_ire($calibrated_slot_mask,$_) } (5,10,15);
+ return 0 if(!@source_ires);
+ my (%before,%after,%source,%changed_settings,%source_luminance);
+ my $weighted_luminance=0;
+ my $weight_sum=0;
+ foreach my $source_ire (@source_ires) {
+  my $source_idx=ddc_slot_index_for_ire($source_ire);
+  next if(!defined($source_idx) || $source_idx >= @{$arrays->{"adjustingLuminance"}});
+  my $value=defined($arrays->{"adjustingLuminance"}[$source_idx]) ? ($arrays->{"adjustingLuminance"}[$source_idx]+0) : 0;
+  my $weight=1/(abs(($source_ire+0)-$target_ire)+1);
+  $weighted_luminance+=abs($value)*$weight;
+  $weight_sum+=$weight;
+  $source_luminance{format_percent($source_ire)}=$value+0;
+ }
+ return 0 if($weight_sum <= 0);
+ my $current=defined($arrays->{"adjustingLuminance"}[$target_idx]) ? ($arrays->{"adjustingLuminance"}[$target_idx]+0) : 0;
+ my $scale=0.55;
+ my $min_lift=1.50;
+ my $max_lift=7.00;
+ my $lift=($weighted_luminance/$weight_sum)*$scale;
+ $lift=$min_lift if($lift < $min_lift);
+ $lift=$max_lift if($lift > $max_lift);
+ my $next=round_ddc_quarter(clamp_ddc_value($current+$lift));
+ return 0 if(abs($next-$current) < 0.0001);
+ $before{"adjustingLuminance"}=$current+0;
+ $after{"adjustingLuminance"}=$next+0;
+ $source{"adjustingLuminance"}=\%source_luminance;
+ $arrays->{"adjustingLuminance"}[$target_idx]=$next;
+ $changed_settings{"adjustingLuminance"}={ before=>$current+0, after=>$next+0 };
+ return 0 if(!%changed_settings);
+ my $detail={
+  mode=>"sdr-low-shadow-endpoint-seed-2.3",
+  source_ires=>[map { $_+0 } @source_ires],
+  target_ire=>$target_ire+0,
+  target_index=>$target_idx+0,
+  luminance_scale=>$scale+0,
+  min_lift=>$min_lift+0,
+  max_lift=>$max_lift+0,
+  lift=>$lift+0,
+  source=>\%source,
+  before=>\%before,
+  after=>\%after,
+  changed_settings=>\%changed_settings,
+  reason=>"pre_first_read_2_3_from_calibrated_low_anchors"
+ };
+ record_full_ddc_spine_seed_detail($detail);
+ return $detail;
 }
 
 sub sdr_low_shadow_lower_neighbor_ire {
- my ($ire)=@_;
+ my ($ire,$config)=@_;
  return undef if(!defined($ire));
  $ire+=0;
  return 7 if(abs($ire-10) < 0.001);
  return 5 if(abs($ire-7) < 0.001);
  return 4 if(abs($ire-5) < 0.001);
  return 3 if(abs($ire-4) < 0.001);
- return 2.3 if(abs($ire-3) < 0.001);
+ return 2.3 if(abs($ire-3) < 0.001 && lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));
  return undef;
 }
 
@@ -5022,7 +5126,7 @@ sub sdr_low_shadow_live_neighbor_preseed_adjustments {
  return undef if(ref($calibrated_slot_mask) ne "ARRAY" || ref($adjustments) ne "ARRAY");
  return undef if(!autocal_step_is_low_shadow($step) || !defined($step->{"ire"}));
  my $source_ire=$step->{"ire"}+0;
- my $neighbor_ire=sdr_low_shadow_lower_neighbor_ire($source_ire);
+ my $neighbor_ire=sdr_low_shadow_lower_neighbor_ire($source_ire,$config);
  return undef if(!defined($neighbor_ire));
  return undef if(calibrated_26pt_slot_for_ire($calibrated_slot_mask,$neighbor_ire));
  my $source_idx=$target->{"index"};
@@ -5085,6 +5189,7 @@ sub sdr_low_shadow_live_neighbor_preseed_adjustments {
 
 sub apply_sdr_low_shadow_local_spine_preseed {
  my ($config,$arrays,$calibrated_slot_mask,$step)=@_;
+ return 0 if(!lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));
  return 0 if(!sdr_initial_low_shadow_context_enabled($config,$step));
  return 0 if(!lg_autocal_26_full_ddc_spine_enabled($config));
  return 0 if(lg_autocal_26_hdr20_seed_enabled($config));
@@ -5140,7 +5245,7 @@ sub apply_sdr_low_shadow_local_spine_preseed {
   changed_settings=>\%changed_settings,
   reason=>"prepare_2_3_neighbor_before_3"
 	 };
-	}
+}
 
 sub apply_sdr_top_local_seed_105_from_80 {
  my ($config,$arrays,$calibrated_slot_mask,$step)=@_;
@@ -15576,6 +15681,11 @@ eval {
  my $picture_response=read_initial_picture_settings($config,$state);
  die ($picture_response->{"message"}||"Unable to read LG white-balance settings")
   if(($picture_response->{"status"}||"") ne "ok" || ref($picture_response->{"picture_settings"}) ne "HASH");
+ if(ref($picture_response->{"lg_generation"}) eq "HASH") {
+  $config->{"lg_generation"}=$picture_response->{"lg_generation"};
+  $state->{"lg_generation"}=$picture_response->{"lg_generation"};
+  write_state($state);
+ }
  my $picture=$picture_response->{"picture_settings"};
  my $picture_mode=$config->{"picture_mode"}||$picture->{"pictureMode"}||"";
  $active_picture_mode_for_cleanup=$picture_mode;
