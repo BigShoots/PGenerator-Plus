@@ -24,12 +24,14 @@ READY_FILE="${15:-/tmp/meter_series_ready_${SERIES_ID}.signal}"
 REQUIRE_DEVICE_READY="${16:-0}"
 PATTERN_SIGNAL_RANGE="${17:-}"
 TRANSPORT_SIGNAL_RANGE="${18:-}"
+STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
 INITIAL_READY_PENDING=0
 [[ "$REQUIRE_DEVICE_READY" == "1" ]] && INITIAL_READY_PENDING=1
 SETUP_STEP_ID=0
+METER_SERIES_FD_OPEN=0
 
 json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -41,6 +43,40 @@ write_state_json() {
  chmod 666 "$tmp" 2>/dev/null || true
  chown pgenerator:pgenerator "$tmp" 2>/dev/null || true
  mv -f "$tmp" "$STATE_FILE"
+}
+
+series_stop_requested() {
+ [[ -f "$STOP_FILE" ]]
+}
+
+series_quit_spotread() {
+ if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" ]]; then
+  printf "Q" >&3 2>/dev/null || true
+  exec 3>&- 2>/dev/null || true
+  METER_SERIES_FD_OPEN=0
+ fi
+ if [[ -n "${BG_PID:-}" ]]; then
+  local waited=0
+  while (( waited < 20 )) && kill -0 "$BG_PID" 2>/dev/null; do
+   sleep 0.1
+   waited=$((waited + 1))
+  done
+  if kill -0 "$BG_PID" 2>/dev/null; then
+   kill "$BG_PID" 2>/dev/null || true
+   sleep 0.2
+  fi
+  wait "$BG_PID" 2>/dev/null || true
+ fi
+ rm -f "${OUTFILE:-}" "${CMDPIPE:-}" 2>/dev/null || true
+}
+
+series_cancel_exit() {
+ write_state_json << EOJSON
+{"status":"cancelled","series_id":"$SERIES_ID","current_step":0,"total_steps":${TOTAL:-0},"current_name":"Cancelled","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ series_quit_spotread
+ rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+ exit 0
 }
 
 cleanup_stale_series_step_files() {
@@ -88,6 +124,7 @@ wait_for_device_ready() {
 {"status":"running","series_id":"$SERIES_ID","current_step":$step_num,"total_steps":$TOTAL,"current_name":"$escaped_name","awaiting_ready":true${extra},"readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
  while [[ ! -f "$READY_FILE" ]]; do
+  series_stop_requested && series_cancel_exit
   sleep 0.2
  done
  rm -f "$READY_FILE"
@@ -110,6 +147,7 @@ series_setup_step() {
 {"status":"setup","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"$escaped_message","step_id":$sid,"step":"$escaped_step","message":"$escaped_message","awaiting_ready":true,"awaiting_ready_reason":"$ready_reason","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
  while [[ ! -f "$READY_FILE" ]]; do
+  series_stop_requested && series_cancel_exit
   sleep 0.2
  done
  rm -f "$READY_FILE"
@@ -199,8 +237,9 @@ manual_ready_prompt_label() {
  esac
 }
 
-rm -f "$READY_FILE"
-trap 'rm -f "$READY_FILE"' EXIT
+rm -f "$READY_FILE" "$STOP_FILE"
+trap 'rm -f "$READY_FILE" "$STOP_FILE"' EXIT
+trap 'series_cancel_exit' TERM INT
 
 get_step_count() {
  python -c "
@@ -666,6 +705,7 @@ EOJSON
  cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
  BG_PID=$!
  exec 3>"$CMDPIPE"
+ METER_SERIES_FD_OPEN=1
 
  # Wait for spotread to be ready. 120 x 0.5 s = 60 s, which avoids false
  # "Meter init failed" errors right after a reboot when USB bring-up is slow.
@@ -676,7 +716,8 @@ REFRESH_CAL_DONE=0
 WHITE_REF_DONE=0
 HANDLED_OFFSET=0
  while (( WAITED < 120 )); do
- CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+  series_stop_requested && series_cancel_exit
+  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
  NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")
  if echo "$CLEAN_OUT" | grep -q "to take a reading:"; then
    break
@@ -721,6 +762,7 @@ HANDLED_OFFSET=0
  # Failure path — tear down this attempt
  DBGOUT=$(head -c 400 "$OUTFILE" 2>/dev/null | tr '"' "'" | tr '\n' ' ' | tr '\r' ' ')
  printf "Q" >&3 2>/dev/null; exec 3>&- 2>/dev/null
+ METER_SERIES_FD_OPEN=0
  kill -9 "$BG_PID" 2>/dev/null; wait "$BG_PID" 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE"
 
@@ -756,6 +798,7 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
  sleep 2
 fi
 
+series_stop_requested && series_cancel_exit
 if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
  series_setup_step "position_screen" "Aim the meter at where the test patches appear on the screen, then click Ready."
  INITIAL_READY_PENDING=0
@@ -951,6 +994,7 @@ if series_uses_initial_white_reference; then
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (displaying)","readings":[]}
 EOJSON
 
+ series_stop_requested && series_cancel_exit
  post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
  if should_apply_fresh_dv_first_white_warmup; then
   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
@@ -977,6 +1021,7 @@ EOJSON
  ITERATIONS=0
  
  while (( SECONDS - READ_START < 20 )); do
+  series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
   ITERATIONS=$((ITERATIONS + 1))
   echo "[$(date '+%H:%M:%S.%3N')] Iteration $ITERATIONS (elapsed $((SECONDS - READ_START))s): PREV_COUNT=$PREV_COUNT CUR_COUNT=$CUR_COUNT" >> "$DEBUG_LOG"
@@ -1061,6 +1106,7 @@ EOJSON
 fi
 
 for (( i=START_INDEX; i<TOTAL; i++ )); do
+	 series_stop_requested && series_cancel_exit
 	 R=$(get_step_field $i r)
 	 G=$(get_step_field $i g)
 	 B=$(get_step_field $i b)
@@ -1151,6 +1197,7 @@ EOJSON
  GOT_RESULT=false
  RETRIED_COMM=0
  while (( SECONDS - READ_START < READ_TIMEOUT )); do
+  series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
   if (( CUR_COUNT > PREV_COUNT )); then
    GOT_RESULT=true
@@ -1209,6 +1256,7 @@ EOJSON
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
+    series_stop_requested && series_cancel_exit
     CUR_COUNT=$(count_results)
     if (( CUR_COUNT > PREV_COUNT )); then
      GOT_RETRY=true
@@ -1275,6 +1323,7 @@ EOJSON
    GOT_RETRY=false
    RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
+    series_stop_requested && series_cancel_exit
     CUR_COUNT=$(count_results)
     if (( CUR_COUNT > PREV_COUNT )); then
      GOT_RETRY=true
@@ -1399,6 +1448,7 @@ EOJSON
   GOT_RESULT=false
   RETRIED_COMM=0
   while (( SECONDS - READ_START < READ_TIMEOUT )); do
+   series_stop_requested && series_cancel_exit
    CUR_COUNT=$(count_results)
    if (( CUR_COUNT > PREV_COUNT )); then
     GOT_RESULT=true
@@ -1454,6 +1504,7 @@ fi
 # Quit spotread
 printf "Q" >&3 2>/dev/null
 exec 3>&- 2>/dev/null
+METER_SERIES_FD_OPEN=0
 sleep 0.5
 kill "$BG_PID" 2>/dev/null
 SR_KIDS=$(pgrep -P "$BG_PID" 2>/dev/null)
