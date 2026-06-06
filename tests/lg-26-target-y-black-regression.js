@@ -140,4 +140,16 @@ const color = context.meterTargetXYZForReading({
 });
 assert.strictEqual(color.Y, 20, 'Color target_Yn should remain normalized to the series white reference');
 
+const colorCheckerGray = context.meterTargetXYZForReading({
+  name: 'Gray 35',
+  ire: 9,
+  r_code: 96,
+  g_code: 96,
+  b_code: 96,
+  target_x: 0.3127,
+  target_y: 0.329,
+  target_Yn: 0.09
+});
+assert(Math.abs(colorCheckerGray.Y - 9) < 1e-12, 'ColorChecker gray chips should use color-series target_Yn, not greyscale EOTF target Y');
+
 console.log('LG 26 target-Y black regression checks passed.');

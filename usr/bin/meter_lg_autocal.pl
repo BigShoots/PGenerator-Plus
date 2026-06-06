@@ -2357,6 +2357,21 @@ sub low_shadow_luminance_close_enough {
  return abs($lum_pct) <= low_shadow_luminance_acceptance_percent($step) ? 1 : 0;
 }
 
+sub low_shadow_luminance_out_of_range {
+ my ($step,$lum_pct)=@_;
+ return 0 if(!defined($lum_pct));
+ return low_shadow_luminance_close_enough($step,$lum_pct) ? 0 : 1;
+}
+
+sub sdr_low_shadow_unseeded_2_3_step {
+ my ($config,$step)=@_;
+ return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
+ return 0 if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || abs(($step->{"ire"}+0)-2.3) >= 0.001);
+ return 0 if(lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));
+ return 1;
+}
+
 sub low_shadow_strict_itp_y_step {
  my ($step)=@_;
  return 0 if(!autocal_uses_itp());
@@ -2387,6 +2402,8 @@ sub low_shadow_good_enough {
  return 0 if(!autocal_step_is_low_shadow($step));
  return 0 if(!defined($de));
  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
+ return 0 if($ire <= 2.5001 && !low_shadow_luminance_close_enough($step,$lum_pct));
  if(autocal_uses_itp()) {
   return 0 if(!low_shadow_luminance_close_enough($step,$lum_pct));
   return ($de <= $target_delta) ? 1 : 0;
@@ -2441,6 +2458,8 @@ sub low_shadow_fresh_final_soft_accept {
  return 0 if(!defined($fresh_de));
  return 0 if(($fresh_de+0) > low_shadow_fresh_final_soft_delta_limit($step,$target_delta));
  return 1 if(!defined($fresh_lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
+ return low_shadow_luminance_close_enough($step,$fresh_lum_pct) ? 1 : 0 if($ire <= 2.5001);
  return abs($fresh_lum_pct+0) <= low_shadow_luminance_acceptance_percent($step)+1.00 ? 1 : 0;
 }
 
@@ -2449,6 +2468,8 @@ sub low_shadow_fresh_final_hard_reject {
  return 1 if(!defined($fresh_de));
  return 1 if(($fresh_de+0) > 1.5);
  return 0 if(!defined($fresh_lum_pct));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
+ return abs($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($step)+1.00 ? 1 : 0 if($ire <= 2.5001);
  return abs($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($step)+3.00 ? 1 : 0;
 }
 
@@ -2566,6 +2587,27 @@ sub low_shadow_luminance_progress_keep {
  return 0 if(($de+0) > ($best_de+0)+$de_allowance);
  return 0 if(defined($candidate_score) && defined($best_score) && ($candidate_score+0) > ($best_score+0)+0.75);
  return 1;
+}
+
+sub sdr_low_shadow_2_3_y_sensitive_keep_blocked {
+ my ($config,$step,$lum_pct,$best_lum_pct,$before_lum_pct,$adjustments,$low_shadow_y_keep)=@_;
+ return 0 if(!sdr_low_shadow_unseeded_2_3_step($config,$step));
+ return 0 if(!defined($lum_pct));
+ return 0 if(!low_shadow_luminance_out_of_range($step,$lum_pct));
+ my $candidate_abs=abs($lum_pct+0);
+ my $accept=low_shadow_luminance_acceptance_percent($step);
+ my $best_abs=defined($best_lum_pct) ? abs($best_lum_pct+0) : undef;
+ my $before_abs=defined($before_lum_pct) ? abs($before_lum_pct+0) : undef;
+ my $luma_adj=luma_bearing_adjustment($adjustments);
+ if(ref($luma_adj) eq "HASH") {
+  return 1 if(defined($before_lum_pct) && (($before_lum_pct+0)*($lum_pct+0) < 0) && $candidate_abs > $accept+0.25);
+  return 0 if($low_shadow_y_keep && defined($best_abs) && $candidate_abs+1.00 < $best_abs);
+  return 0 if(defined($before_abs) && $candidate_abs+0.75 < $before_abs);
+ }
+ return 1 if(defined($best_abs) && $best_abs <= $accept+0.25);
+ return 1 if(defined($best_abs) && $candidate_abs > $best_abs+0.25);
+ return 1 if(defined($before_abs) && $candidate_abs > $before_abs+0.25);
+ return 0;
 }
 
 sub sdr_low_shadow_2_3_luma_best_ready_for_fresh_verify {
@@ -8013,15 +8055,18 @@ sub low_shadow_luminance_max_step {
 	  $max=1;
 	 }
 	 my $low_cap=undef;
-		 if($ire > 0 && $ire <= 5.1001) {
-		  $low_cap=0.5;
-		  $low_cap=1 if($abs >= 0.08);
-		  $low_cap=2 if($abs >= 0.20);
-		  $low_cap=4 if($abs >= 0.40);
-		  if($ire <= 3.1001) {
-		   $low_cap=0.5;
-		   $low_cap=1 if($abs >= 0.20);
-		   $low_cap=2 if($abs >= 0.50);
+			 if($ire > 0 && $ire <= 5.1001) {
+			  $low_cap=0.5;
+			  $low_cap=1 if($abs >= 0.08);
+			  $low_cap=2 if($abs >= 0.20);
+			  $low_cap=4 if($abs >= 0.40);
+			  if(sdr_low_shadow_unseeded_2_3_step($LG_AUTOCAL_CONFIG,$step)) {
+			   $low_cap=0.25;
+			   $low_cap=0.5 if($abs >= 0.20);
+			  } elsif($ire <= 3.1001) {
+			   $low_cap=0.5;
+			   $low_cap=1 if($abs >= 0.20);
+			   $low_cap=2 if($abs >= 0.50);
 		   if(lg_autocal_hdr20_use_sdr_adjustment_method($LG_AUTOCAL_CONFIG,$step)) {
 		    $low_cap=4 if($abs >= 0.40);
 		    $low_cap=8 if($abs >= 0.60);
@@ -17910,15 +17955,31 @@ eval {
 					     last if(!$adjustments);
 					    }
 					    my $still_suppressed=sdr_low_shadow_suppressed_rgb_adjustment($config,\%tried_values,$read_step,$adjustments,"main_plan_final");
-					    if(ref($still_suppressed) eq "HASH") {
-					     $still_suppressed->{"fallback_adjustments"}=[];
-					     $still_suppressed->{"reason"}="no_unsuppressed_fallback";
-					     trace_109($read_step,"sdr_low_shadow_rgb_move_suppressed",$still_suppressed);
-					     $adjustments=undef;
-					    }
-					   }
-					   if(!$adjustments && stimulus_probe_enabled($config) && !autocal_step_is_peak_headroom($read_step) && !$pair_target_reached_now->()) {
-				    my ($probe_step,$probe_reading,$probe_arrays,$probe_picture,$probe_error)=probe_responsive_stimulus(
+						    if(ref($still_suppressed) eq "HASH") {
+						     $still_suppressed->{"fallback_adjustments"}=[];
+						     $still_suppressed->{"reason"}="no_unsuppressed_fallback";
+						     trace_109($read_step,"sdr_low_shadow_rgb_move_suppressed",$still_suppressed);
+						     $adjustments=undef;
+						    }
+						   }
+						   if(
+						    $adjustments &&
+						    sdr_low_shadow_unseeded_2_3_step($config,$read_step) &&
+						    low_shadow_luminance_out_of_range($read_step,$lum_pct) &&
+						    ref(luma_bearing_adjustment($adjustments)) ne "HASH"
+						   ) {
+						    trace_109($read_step,"sdr_low_shadow_2_3_rgb_probe_suppressed_for_y",{
+						     label=>$label,
+						     iteration=>$iter+0,
+						     delta_e=>defined($de)?$de+0:undef,
+						     luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+						     adjustments=>trace_adjustments_summary($adjustments),
+						     target_values=>trace_target_values($arrays,$target)
+						    });
+						    $adjustments=undef;
+						   }
+						   if(!$adjustments && stimulus_probe_enabled($config) && !autocal_step_is_peak_headroom($read_step) && !$pair_target_reached_now->()) {
+					    my ($probe_step,$probe_reading,$probe_arrays,$probe_picture,$probe_error)=probe_responsive_stimulus(
 				     $config,$state,$read_step,$arrays,$slot_default_arrays,$target,$picture,$picture_mode,$calibration_mode_active,$reading,
 				     $white_y,$target_gamma,$signal_mode,$target_x,$target_y,\%stimulus_probe_tried
 				    );
@@ -18177,15 +18238,22 @@ eval {
 								     low_shadow_luminance_progress_keep(
 								      $read_step,$de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$candidate_score_after,$best_score
 								     )
-								    ) {
-								     $low_shadow_y_keep=1;
-								     $best_update_reason="low_shadow_luminance_progress_keep" if(!defined($best_update_reason));
-								    }
-									    my $keep_candidate=$paired_white_step
-									     ? defined($best_update_reason)
-									     : (defined($de) && ($headroom_105_luma_blocking_after
-									      ? ($headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)
-									      : (!$full_ddc_spine_anchor_revisit_rgb_keep_blocked && (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep || $low_shadow_y_keep))));
+									    ) {
+									     $low_shadow_y_keep=1;
+									     $best_update_reason="low_shadow_luminance_progress_keep" if(!defined($best_update_reason));
+									    }
+									    my $low_shadow_2_3_y_keep_blocked=sdr_low_shadow_2_3_y_sensitive_keep_blocked(
+									     $config,$read_step,$lum_pct,$best_lum_pct,$before_lum_pct_for_adjustment,$adjustments,$low_shadow_y_keep
+									    );
+									    if($low_shadow_2_3_y_keep_blocked && $low_shadow_y_keep) {
+									     $low_shadow_y_keep=0;
+									     $best_update_reason=undef if(defined($best_update_reason) && $best_update_reason eq "low_shadow_luminance_progress_keep");
+									    }
+										    my $keep_candidate=$paired_white_step
+										     ? defined($best_update_reason)
+										     : (defined($de) && ($headroom_105_luma_blocking_after
+										      ? ($headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep)
+										      : (!$low_shadow_2_3_y_keep_blocked && !$full_ddc_spine_anchor_revisit_rgb_keep_blocked && (($not_worse_measurement && ($candidate_score_after + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $headroom_105_score_branch_promote || $headroom_105_main_polish_keep || $full_ddc_spine_anchor_y_keep || $low_shadow_y_keep))));
 									    my $kept_luma_overshoot_probe;
 					    if($keep_candidate) {
 					     $kept_luma_overshoot_probe=record_bad_luma_probe_family(
@@ -18715,15 +18783,31 @@ eval {
 			      last if(!$adjustments);
 			     }
 			     my $still_suppressed=sdr_low_shadow_suppressed_rgb_adjustment($config,\%polish_tried,$read_step,$adjustments,"fine_tune_plan_final");
-			     if(ref($still_suppressed) eq "HASH") {
-			      $still_suppressed->{"fallback_adjustments"}=[];
-			      $still_suppressed->{"reason"}="no_unsuppressed_fallback";
-			      trace_109($read_step,"sdr_low_shadow_rgb_move_suppressed",$still_suppressed);
-			      $adjustments=undef;
-			     }
-			    }
-			    if(!$adjustments) {
-			     trace_109($read_step,"no_fine_tune_adjustment_chosen",{
+				     if(ref($still_suppressed) eq "HASH") {
+				      $still_suppressed->{"fallback_adjustments"}=[];
+				      $still_suppressed->{"reason"}="no_unsuppressed_fallback";
+				      trace_109($read_step,"sdr_low_shadow_rgb_move_suppressed",$still_suppressed);
+				      $adjustments=undef;
+				     }
+				    }
+				    if(
+				     $adjustments &&
+				     sdr_low_shadow_unseeded_2_3_step($config,$read_step) &&
+				     low_shadow_luminance_out_of_range($read_step,$lum_pct) &&
+				     ref(luma_bearing_adjustment($adjustments)) ne "HASH"
+				    ) {
+				     trace_109($read_step,"sdr_low_shadow_2_3_rgb_probe_suppressed_for_y",{
+				      label=>$label,
+				      polish=>$polish+0,
+				      delta_e=>defined($de)?$de+0:undef,
+				      luminance_error_pct=>defined($lum_pct)?$lum_pct+0:undef,
+				      adjustments=>trace_adjustments_summary($adjustments),
+				      target_values=>trace_target_values($arrays,$target)
+				     });
+				     $adjustments=undef;
+				    }
+				    if(!$adjustments) {
+				     trace_109($read_step,"no_fine_tune_adjustment_chosen",{
 			      label=>$label,
 			      polish=>$polish+0,
 			      polish_limit=>$polish_limit+0,
@@ -18849,15 +18933,22 @@ eval {
 					     low_shadow_luminance_progress_keep(
 					      $read_step,$de,$lum_pct,$best_de,$best_lum_pct,$target_delta,$candidate_score,$best_score
 					     )
-					    ) {
-					     $low_shadow_y_keep=1;
-					     $best_update_reason="low_shadow_luminance_progress_keep";
-					    }
-						    my $keep_candidate=$paired_white_step
-						     ? defined($best_update_reason)
-						     : (defined($de) && ($headroom_105_luma_blocking_after
-						      ? $headroom_105_score_keep
-						      : (($not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $low_shadow_y_keep)));
+						    ) {
+						     $low_shadow_y_keep=1;
+						     $best_update_reason="low_shadow_luminance_progress_keep";
+						    }
+						    my $low_shadow_2_3_y_keep_blocked=sdr_low_shadow_2_3_y_sensitive_keep_blocked(
+						     $config,$read_step,$lum_pct,$best_lum_pct,$before_lum_pct_for_polish,$adjustments,$low_shadow_y_keep
+						    );
+						    if($low_shadow_2_3_y_keep_blocked && $low_shadow_y_keep) {
+						     $low_shadow_y_keep=0;
+						     $best_update_reason=undef if(defined($best_update_reason) && $best_update_reason eq "low_shadow_luminance_progress_keep");
+						    }
+							    my $keep_candidate=$paired_white_step
+							     ? defined($best_update_reason)
+							     : (defined($de) && ($headroom_105_luma_blocking_after
+							      ? $headroom_105_score_keep
+							      : (!$low_shadow_2_3_y_keep_blocked && (($not_worse_measurement && ($candidate_score + 0.0001 < $best_score || $chroma_keep || $delta_keep)) || $headroom_105_score_keep || $low_shadow_y_keep))));
 					    my $kept_luma_overshoot_probe;
 					    if($keep_candidate) {
 					     $kept_luma_overshoot_probe=record_bad_luma_probe_family(
@@ -19083,9 +19174,10 @@ eval {
 				   my ($latest_fresh_reading,$latest_fresh_target_step_y,$latest_fresh_de,$latest_fresh_lum_pct,$latest_fresh_score,$latest_fresh_white_y)=(
 				    $fresh_reading,$fresh_target_step_y,$fresh_de,$fresh_lum_pct,$fresh_score,$white_y
 				   );
-				   my $fresh_over_target=(defined($fresh_lum_pct) && ($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
-				   my $fresh_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$fresh_de,$fresh_lum_pct,$best_de,$best_lum_pct,$fresh_score,$best_score);
-				   my $fresh_pass=(!$fresh_over_target && !$fresh_materially_worse) ? 1 : 0;
+					   my $fresh_over_target=(defined($fresh_lum_pct) && ($fresh_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
+					   my $fresh_luminance_out_of_range=(defined($fresh_lum_pct) && low_shadow_luminance_out_of_range($read_step,$fresh_lum_pct)) ? 1 : 0;
+					   my $fresh_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$fresh_de,$fresh_lum_pct,$best_de,$best_lum_pct,$fresh_score,$best_score);
+					   my $fresh_pass=(!$fresh_luminance_out_of_range && !$fresh_materially_worse) ? 1 : 0;
 				   my $measured_y=defined($fresh_reading->{"y"}) ? $fresh_reading->{"y"}+0 : undef;
 				   my $measured_x=defined($fresh_reading->{"x"}) ? $fresh_reading->{"x"}+0 : undef;
 				   my $target_chromaticity_y=defined($target_y) ? $target_y+0 : undef;
@@ -19093,9 +19185,10 @@ eval {
 				   my $fresh_verify_record={
 				    label=>$label,
 				    ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef,
-				    accepted=>$fresh_pass ? JSON::PP::true : JSON::PP::false,
-				    over_target=>$fresh_over_target ? JSON::PP::true : JSON::PP::false,
-				    materially_worse=>$fresh_materially_worse ? JSON::PP::true : JSON::PP::false,
+					    accepted=>$fresh_pass ? JSON::PP::true : JSON::PP::false,
+					    over_target=>$fresh_over_target ? JSON::PP::true : JSON::PP::false,
+					    luminance_out_of_range=>$fresh_luminance_out_of_range ? JSON::PP::true : JSON::PP::false,
+					    materially_worse=>$fresh_materially_worse ? JSON::PP::true : JSON::PP::false,
 				    target_y=>$target_chromaticity_y,
 				    measured_y=>$measured_y,
 				    target_y_delta=>(defined($measured_y) && defined($target_chromaticity_y)) ? $measured_y-$target_chromaticity_y : undef,
@@ -19143,17 +19236,19 @@ eval {
 						      ($latest_fresh_reading,$latest_fresh_target_step_y,$latest_fresh_de,$latest_fresh_lum_pct,$latest_fresh_score,$latest_fresh_white_y)=(
 						       $confirm_reading,$confirm_target_step_y,$confirm_de,$confirm_lum_pct,$confirm_score,$confirm_white_y
 						      );
-						      my $confirm_over_target=(defined($confirm_lum_pct) && ($confirm_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
-					      my $confirm_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$confirm_de,$confirm_lum_pct,$best_de,$best_lum_pct,$confirm_score,$best_score);
-					      my $confirm_pass=(!$confirm_over_target && !$confirm_materially_worse) ? 1 : 0;
+							      my $confirm_over_target=(defined($confirm_lum_pct) && ($confirm_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
+							      my $confirm_luminance_out_of_range=(defined($confirm_lum_pct) && low_shadow_luminance_out_of_range($read_step,$confirm_lum_pct)) ? 1 : 0;
+						      my $confirm_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$confirm_de,$confirm_lum_pct,$best_de,$best_lum_pct,$confirm_score,$best_score);
+						      my $confirm_pass=(!$confirm_luminance_out_of_range && !$confirm_materially_worse) ? 1 : 0;
 					      my $confirm_soft_accept=low_shadow_fresh_final_soft_accept($read_step,$confirm_de,$confirm_lum_pct,$target_delta);
 					      $confirm_record={
 					       label=>$label,
 					       ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef,
-					       accepted=>$confirm_pass ? JSON::PP::true : JSON::PP::false,
-					       soft_accepted=>(!$confirm_pass && $confirm_soft_accept) ? JSON::PP::true : JSON::PP::false,
-					       over_target=>$confirm_over_target ? JSON::PP::true : JSON::PP::false,
-					       materially_worse=>$confirm_materially_worse ? JSON::PP::true : JSON::PP::false,
+						       accepted=>$confirm_pass ? JSON::PP::true : JSON::PP::false,
+						       soft_accepted=>(!$confirm_pass && $confirm_soft_accept) ? JSON::PP::true : JSON::PP::false,
+						       over_target=>$confirm_over_target ? JSON::PP::true : JSON::PP::false,
+						       luminance_out_of_range=>$confirm_luminance_out_of_range ? JSON::PP::true : JSON::PP::false,
+						       materially_worse=>$confirm_materially_worse ? JSON::PP::true : JSON::PP::false,
 					       target_luminance=>defined($confirm_target_step_y) ? $confirm_target_step_y+0 : undef,
 					       measured_luminance=>luminance($confirm_reading),
 					       fresh_delta_e=>defined($confirm_de) ? $confirm_de+0 : undef,
@@ -19311,12 +19406,13 @@ eval {
 						       my $candidate_lum_pct=luminance_error_percent($candidate_reading,$candidate_target_step_y);
 						       my $candidate_score=guarded_autocal_result_score($candidate_de,$candidate_lum_pct,$read_step,$candidate_reading,$white_guard_y);
 						       mark_tried_values(\%fresh_recovery_tried,$trial_arrays,$target,$candidate_de);
-						       my $candidate_over_target=(defined($candidate_lum_pct) && ($candidate_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
-						       my $candidate_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$candidate_de,$candidate_lum_pct,$best_de,$best_lum_pct,$candidate_score,$best_score);
-						       my $candidate_soft_accept=low_shadow_fresh_final_soft_accept($read_step,$candidate_de,$candidate_lum_pct,$target_delta);
-						       my $candidate_good=low_shadow_good_enough($read_step,$candidate_de,$candidate_lum_pct,$target_delta);
-						       my $candidate_hard_reject=low_shadow_fresh_final_hard_reject($read_step,$candidate_de,$candidate_lum_pct);
-						       my $candidate_pass=($candidate_good || $candidate_soft_accept || (!$candidate_over_target && !$candidate_materially_worse && !$candidate_hard_reject)) ? 1 : 0;
+							       my $candidate_over_target=(defined($candidate_lum_pct) && ($candidate_lum_pct+0) > low_shadow_luminance_acceptance_percent($read_step)) ? 1 : 0;
+							       my $candidate_luminance_out_of_range=(defined($candidate_lum_pct) && low_shadow_luminance_out_of_range($read_step,$candidate_lum_pct)) ? 1 : 0;
+							       my $candidate_materially_worse=low_shadow_fresh_final_materially_worse($read_step,$candidate_de,$candidate_lum_pct,$best_de,$best_lum_pct,$candidate_score,$best_score);
+							       my $candidate_soft_accept=low_shadow_fresh_final_soft_accept($read_step,$candidate_de,$candidate_lum_pct,$target_delta);
+							       my $candidate_good=low_shadow_good_enough($read_step,$candidate_de,$candidate_lum_pct,$target_delta);
+							       my $candidate_hard_reject=low_shadow_fresh_final_hard_reject($read_step,$candidate_de,$candidate_lum_pct);
+							       my $candidate_pass=($candidate_good || $candidate_soft_accept || (!$candidate_luminance_out_of_range && !$candidate_materially_worse && !$candidate_hard_reject)) ? 1 : 0;
 						       my $luma_progress=(defined($candidate_lum_pct) && defined($recovery_base_lum_pct) && abs($candidate_lum_pct+0)+0.10 < abs($recovery_base_lum_pct+0)) ? 1 : 0;
 						       my $score_progress=(defined($candidate_score) && defined($recovery_base_score) && ($candidate_score+0)+0.05 < ($recovery_base_score+0)) ? 1 : 0;
 						       my $bad_luma_probe;
@@ -19333,10 +19429,11 @@ eval {
 						        label=>$label,
 						        ire=>defined($read_step->{"ire"}) ? $read_step->{"ire"}+0 : undef,
 						        attempt=>$recovery_attempt+0,
-						        accepted=>$candidate_pass ? JSON::PP::true : JSON::PP::false,
-						        soft_accepted=>(!$candidate_good && $candidate_soft_accept) ? JSON::PP::true : JSON::PP::false,
-						        over_target=>$candidate_over_target ? JSON::PP::true : JSON::PP::false,
-						        materially_worse=>$candidate_materially_worse ? JSON::PP::true : JSON::PP::false,
+							        accepted=>$candidate_pass ? JSON::PP::true : JSON::PP::false,
+							        soft_accepted=>(!$candidate_good && $candidate_soft_accept) ? JSON::PP::true : JSON::PP::false,
+							        over_target=>$candidate_over_target ? JSON::PP::true : JSON::PP::false,
+							        luminance_out_of_range=>$candidate_luminance_out_of_range ? JSON::PP::true : JSON::PP::false,
+							        materially_worse=>$candidate_materially_worse ? JSON::PP::true : JSON::PP::false,
 						        hard_reject=>$candidate_hard_reject ? JSON::PP::true : JSON::PP::false,
 						        luma_progress=>$luma_progress ? JSON::PP::true : JSON::PP::false,
 						        score_progress=>$score_progress ? JSON::PP::true : JSON::PP::false,
