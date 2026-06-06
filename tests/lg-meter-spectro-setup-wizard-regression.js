@@ -108,9 +108,15 @@ assert(
 );
 assert(
   webui.includes("meterSpectroSetupAckEndpoint==='/api/meter/series/ready'||meterSeriesSpectroSetupActive") &&
-    webui.includes('meterStop();') &&
+    webui.includes('await meterStop();') &&
     webui.includes("if(!meterSeriesRunning&&r.status!=='cleared')"),
   'cancelling the series spectro setup popup should stop polling before stale setup status can reopen it'
+);
+assert(
+  webui.includes('async function meterStop()') &&
+    webui.includes("await fetchJSON('/api/meter/stop'") &&
+    webui.includes('meterActionPending=hadSeriesStop||hadContinuousStop'),
+  'explicit Stop should wait for backend cleanup before re-enabling Read Series'
 );
 assert(
   webui.includes('"status"\\s*:\\s*"(?:running|setup)"') &&
@@ -125,6 +131,10 @@ assert(
 );
 assert(
   series.includes('series_setup_step()') &&
+    series.includes('STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"') &&
+    series.includes('series_stop_requested()') &&
+    series.includes('series_cancel_exit()') &&
+    series.includes('series_stop_requested && series_cancel_exit') &&
     series.includes('spectrophotometer selected: skipping CCSS') &&
     series.includes('&& "$REQUIRE_DEVICE_READY" != "1"') &&
     series.includes('series_setup_step "calibrate_tile"') &&
@@ -134,6 +144,14 @@ assert(
     series.includes('NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")') &&
     series.includes('INITIAL_READY_PENDING=0'),
   'meter_series should surface spectro startup calibration and screen-positioning through setup states'
+);
+assert(
+  webui.includes('$_meter_series_stop_glob="/tmp/meter_series_stop_*.signal"') &&
+    webui.includes('sub webui_meter_series_signal_stop') &&
+    webui.includes('&webui_meter_series_signal_stop();') &&
+    webui.includes('sub webui_meter_series_cancel_state') &&
+    webui.includes('my $series_id="${type}_".int(Time::HiRes::time()*1000)."_".int(rand(1000000));'),
+  'backend meter stop should signal the active series to quit cleanly and use collision-resistant series ids'
 );
 assert(
   webui.includes('sub webui_meter_port_is_spectro') &&
