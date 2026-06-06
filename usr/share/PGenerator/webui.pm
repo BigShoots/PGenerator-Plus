@@ -8963,7 +8963,49 @@ async function loadModes(quiet){
   o.value=m.idx;o.textContent=m.resolution+' @ '+m.refresh+'Hz';
   sel.appendChild(o);
  });
- if(config.mode_idx)sel.value=config.mode_idx;
+ syncModeSelectValue();
+}
+
+function parseResolutionLabel(value){
+ const m=String(value||'').match(/(\d+x\d+i?)(?:\s*@\s*([\d.]+)\s*Hz?)?/i);
+ return m?{resolution:m[1],refresh:m[2]?parseFloat(m[2]):null}:{resolution:'',refresh:null};
+}
+
+function modeOptionExists(sel,value){
+ return !!Array.from(sel.options).find(o=>o.value===String(value));
+}
+
+function chooseDefaultModeIdx(){
+ if(!Array.isArray(modes)||!modes.length)return '';
+ const infoRes=parseResolutionLabel((window._lastInfo&&window._lastInfo.resolution)||'');
+ const wanted=infoRes.resolution||'1920x1080';
+ const candidates=modes.filter(m=>String(m.resolution)===wanted);
+ if(candidates.length){
+  if(infoRes.refresh!=null&&!Number.isNaN(infoRes.refresh)){
+   let best=candidates[0];
+   let bestDelta=Math.abs((parseFloat(best.refresh)||0)-infoRes.refresh);
+   candidates.forEach(m=>{
+    const delta=Math.abs((parseFloat(m.refresh)||0)-infoRes.refresh);
+    if(delta<bestDelta){best=m;bestDelta=delta;}
+   });
+   return String(best.idx);
+  }
+  const sixty=candidates.find(m=>Math.abs((parseFloat(m.refresh)||0)-60)<0.05);
+  return String((sixty||candidates[0]).idx);
+ }
+ const defaultMode=modes.find(m=>String(m.resolution)==='1920x1080'&&Math.abs((parseFloat(m.refresh)||0)-60)<0.05)
+  ||modes.find(m=>String(m.resolution)==='1920x1080')
+  ||modes[0];
+ return defaultMode?String(defaultMode.idx):'';
+}
+
+function syncModeSelectValue(){
+ const sel=document.getElementById('mode_idx');
+ if(!sel||!sel.options.length)return;
+ let target=(config&&config.mode_idx!=null&&config.mode_idx!=='')?String(config.mode_idx):'';
+ if(target&&!modeOptionExists(sel,target))target='';
+ if(!target)target=chooseDefaultModeIdx();
+ if(target)sel.value=target;
 }
 
 async function loadCapabilities(quiet){
@@ -9161,6 +9203,15 @@ async function loadInfo(quiet){
  if(quiet&&shouldPauseAutoRefresh()) return;
  const info=await fetchJSON('/api/info',{_quiet:!!quiet,_timeoutMs:10000});
  if(!info) return;
+ window._lastInfo=info;
+ if((!config||!config.mode_idx)&&Array.isArray(modes)&&modes.length&&!isSettingsFieldActive()&&!hasUnsavedSettings()){
+  const beforeMode=getVal('mode_idx');
+  syncModeSelectValue();
+  if(getVal('mode_idx')!==beforeMode){
+   updateDropdowns();
+   if(window._savedConfig) refreshSavedSettingsSnapshot();
+  }
+ }
  document.getElementById('tempDisplay').textContent=info.temperature?info.temperature+'\u00B0C':'';
  if(info.version){
   document.getElementById('verDisplay').textContent='v'+info.version;
@@ -28075,10 +28126,11 @@ function initCardCollapse(){
  initCardCollapse();
  await loadConfig(true);
  await diagRefreshCustomAssets();
+ await loadInfo(true);
  await Promise.all([loadModes(true),loadCapabilities(true)]);
  updateDropdowns();
  refreshSavedSettingsSnapshot();
- await Promise.all([checkPing(),loadStats(true),loadInfo()]);
+ await Promise.all([checkPing(),loadStats(true)]);
  loadMemory();
  setTimeout(()=>loadMeterSettings(),500);
  meterAutoCalLoadTargetYDefault();
