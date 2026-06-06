@@ -41,8 +41,12 @@ PI5_RUNTIME_PACKAGES=(
  libegl1
  libxxf86vm1
  libxrandr2
+ libdrm-tests
+ edid-decode
 )
 PI5_RUNTIME_REQUIRED_PATHS=(
+ usr/bin/modetest
+ usr/bin/edid-decode
  usr/share/perl5/URI/Escape.pm
  usr/share/perl5/XML/Simple.pm
  usr/lib/arm-linux-gnueabihf/libgbm.so.1
