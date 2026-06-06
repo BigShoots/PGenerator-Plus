@@ -1123,6 +1123,24 @@ sub webui_meter_status (@) {
  return &webui_meter_status_apply_overrides($json);
 }
 
+sub webui_meter_port_is_spectro (@) {
+ my ($port)=@_;
+ $port="" if(!defined($port));
+ $port=~s/[^0-9]//g;
+ my $json=&webui_meter_status();
+ return 0 if(!defined($json) || $json eq "");
+ while($json=~/\{"port_num":"([^"]*)","port":"[^"]*","usb_id":(?:null|"[^"]*"),"name":"[^"]*","meter_type":"([^"]*)"\}/g) {
+  my $meter_port=$1;
+  my $meter_type=lc($2||"");
+  next if($port ne "" && $meter_port ne $port);
+  return 1 if($meter_type eq "spectro");
+ }
+ if($port eq "" && $json=~/"meter_type"\s*:\s*"spectro"/i) {
+  return 1;
+ }
+ return 0;
+}
+
 sub webui_meter_session_alive (@) {
 	 return 0 unless(-f $_meter_session_pid_file);
 	 my $pid="";
@@ -1436,6 +1454,7 @@ sub webui_meter_read (@) {
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
+ $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
  my $patch_r="";
@@ -1832,6 +1851,7 @@ sub webui_meter_series_start (@) {
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
+ $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
  my $target_gamut="";
  $target_gamut=lc($1) if($body=~/"target_gamut"\s*:\s*"([A-Za-z0-9_]+)"/);
 $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65" || $target_gamut eq "p3dci" || $target_gamut eq "customd65");
@@ -2801,7 +2821,8 @@ sub webui_meter_series_ready (@) {
  return '{"status":"error","message":"No active series"}' if($json eq "");
  my $series_id="";
  $series_id=$1 if($json=~/"series_id"\s*:\s*"([^"]+)"/);
- return '{"status":"error","message":"Series is not waiting for device readiness"}' if($json!~/"awaiting_ready"\s*:\s*true/i || $series_id eq "");
+ my $waiting=($json=~/"awaiting_ready"\s*:\s*true/i || $json=~/"status"\s*:\s*"setup"/i) ? 1 : 0;
+ return '{"status":"error","message":"Series is not waiting for device readiness"}' if(!$waiting || $series_id eq "");
  my $ready_file=&webui_meter_series_ready_file($series_id);
  return '{"status":"error","message":"Series ready signal unavailable"}' if($ready_file eq "");
  if(open(my $fh,">",$ready_file)) {
@@ -16450,7 +16471,24 @@ function meterSpectroSetupCancel(){
 }
 
 function meterSeriesSpectroSetupApplyFromStatus(r){
- if(!r||!r.awaiting_ready||!meterSelectedMeasurementRequiresReady()){
+ if(!r){
+  if(meterSeriesSpectroSetupActive){
+   meterSeriesSpectroSetupActive=false;
+   meterSpectroSetupApply(null);
+  }
+  return false;
+ }
+ if(r.setup_busy){
+  meterSeriesSpectroSetupActive=true;
+  meterSpectroSetupApply({keepBusy:true,message:r.message},'/api/meter/series/ready');
+  return true;
+ }
+ if(String(r.status||'').toLowerCase()==='setup'){
+  meterSeriesSpectroSetupActive=true;
+  meterSpectroSetupApply(r,'/api/meter/series/ready');
+  return true;
+ }
+ if(!r.awaiting_ready){
   if(meterSeriesSpectroSetupActive){
    meterSeriesSpectroSetupActive=false;
    meterSpectroSetupApply(null);
