@@ -1,0 +1,59 @@
+#!/bin/sh
+
+FIRST_BOOT_FILE="/etc/BiasiLinux/BiasiLinux.FirstBoot"
+
+if [ ! -f "$FIRST_BOOT_FILE" ]; then
+ echo "This is not the First Boot, not executing"
+ exit 0
+fi
+
+ROOT_PARTITION=$(findmnt -n -o SOURCE / 2>/dev/null)
+if [ -z "$ROOT_PARTITION" ]; then
+ ROOT_PARTITION=$(blkid -L /_PG 2>/dev/null)
+fi
+if [ -z "$ROOT_PARTITION" ] || [ ! -b "$ROOT_PARTITION" ]; then
+ echo "Unable to determine root partition"
+ exit 1
+fi
+
+DISK=$(lsblk -pndo PKNAME "$ROOT_PARTITION" 2>/dev/null)
+if [ -z "$DISK" ] || [ ! -b "$DISK" ]; then
+ echo "Unable to determine parent disk for $ROOT_PARTITION"
+ exit 1
+fi
+
+PART_NAME=$(basename "$ROOT_PARTITION")
+PART_NUM=$(cat "/sys/class/block/$PART_NAME/partition" 2>/dev/null)
+PART_START=$(cat "/sys/class/block/$PART_NAME/start" 2>/dev/null)
+if [ -z "$PART_NUM" ] || [ -z "$PART_START" ]; then
+ echo "Unable to determine partition geometry for $ROOT_PARTITION"
+ exit 1
+fi
+
+DISK_SECTORS=$(blockdev --getsz "$DISK")
+PART_SECTORS=$(blockdev --getsz "$ROOT_PARTITION")
+TARGET_SECTORS=$((DISK_SECTORS - PART_START))
+
+if [ "$TARGET_SECTORS" -gt "$PART_SECTORS" ]; then
+ echo "Growing $ROOT_PARTITION on $DISK to fill the disk"
+ if command -v growpart >/dev/null 2>&1; then
+  growpart "$DISK" "$PART_NUM"
+ else
+  printf 'Yes\n' | parted ---pretend-input-tty "$DISK" resizepart "$PART_NUM" 100%
+ fi
+ partprobe "$DISK" 2>/dev/null || true
+ blockdev --rereadpt "$DISK" 2>/dev/null || true
+
+ i=0
+ while [ "$i" -lt 10 ]; do
+  PART_SECTORS=$(blockdev --getsz "$ROOT_PARTITION")
+  [ "$PART_SECTORS" -ge "$TARGET_SECTORS" ] && break
+  sleep 1
+  i=$((i + 1))
+ done
+else
+ echo "Root partition already fills the disk"
+fi
+
+resize2fs "$ROOT_PARTITION"
+sync

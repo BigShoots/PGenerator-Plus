@@ -18,6 +18,7 @@ PI5_OUTPUT_SUFFIX="pi5_bookworm_armhf"
 PI5_BOOT_LABEL="BOOT_PG"
 PI5_ROOT_LABEL="/_PG"
 PI5_REQUIRED_BOOT_KERNELS="kernel_2712.img kernel8.img"
+PI5_IMAGE_EXTRA_MB=1024
 PI5_ROOT_PASSWORD_HASH='$6$pgenerator$tEOE1qfYZlUf/.8wT.zgYKKMlRZCb/qEPvczRS/GqoNMXXqSO9a8Vhi1G6eN7prcHdONB96F2RtRNm6ZvlWTB/'
 PI5_ADMIN_USER="pi"
 PI5_ADMIN_PASSWORD_HASH="$PI5_ROOT_PASSWORD_HASH"
@@ -25,6 +26,35 @@ PI5_ADMIN_GROUPS="adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,r
 PI5_KEYBOARD_LAYOUT="us"
 PI5_LOCALE="en_US.UTF-8"
 PI5_ARGYLL_REQUIRED_LIBS=(libXss.so.1 liblzma.so.5 liblzma.so.0)
+PI5_RUNTIME_PACKAGES=(
+ liburi-perl
+ libxml-simple-perl
+ libgbm1
+ libgstreamer1.0-0
+ libgstreamer-plugins-base1.0-0
+ gstreamer1.0-plugins-base
+ libcairo2
+ libfreeimage3
+ liburiparser1
+ libgles2
+ libgles1
+ libegl1
+)
+PI5_RUNTIME_REQUIRED_PATHS=(
+ usr/share/perl5/URI/Escape.pm
+ usr/share/perl5/XML/Simple.pm
+ usr/lib/arm-linux-gnueabihf/libgbm.so.1
+ usr/lib/arm-linux-gnueabihf/libgstapp-1.0.so.0
+ usr/lib/arm-linux-gnueabihf/libgstvideo-1.0.so.0
+ usr/lib/arm-linux-gnueabihf/libgstbase-1.0.so.0
+ usr/lib/arm-linux-gnueabihf/libgstreamer-1.0.so.0
+ usr/lib/arm-linux-gnueabihf/libcairo.so.2
+ usr/lib/arm-linux-gnueabihf/libfreeimage.so.3
+ usr/lib/arm-linux-gnueabihf/liburiparser.so.1
+ usr/lib/arm-linux-gnueabihf/libGLESv2.so.2
+ usr/lib/arm-linux-gnueabihf/libGLESv1_CM.so.1
+ usr/lib/arm-linux-gnueabihf/libEGL.so.1
+)
 TARGET_OVERLAY_REL=""
 TARGET_DESCRIPTION=""
 TARGET_OWNED_RUNTIME_PATHS=(
@@ -33,6 +63,7 @@ TARGET_OWNED_RUNTIME_PATHS=(
  "usr/share/PGenerator/variables.pm"
  "usr/bin/PGeneratorDisplayMirror"
  "usr/bin/pgcec"
+ "usr/bin/resize_PGenerator_disk"
  "usr/lib/drm_override.c"
  "usr/lib/drm_override.so"
  "usr/lib/scdc_tool"
@@ -128,6 +159,16 @@ require_commands() {
   fi
  done
  if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  for cmd in apt-get dpkg-deb; do
+   if ! command -v "$cmd" >/dev/null 2>&1; then
+    missing+=("$cmd")
+   fi
+  done
+  for cmd in e2fsck partprobe parted resize2fs truncate; do
+   if ! command -v "$cmd" >/dev/null 2>&1; then
+    missing+=("$cmd")
+   fi
+  done
   if ! command -v e2label >/dev/null 2>&1; then
    missing+=("e2label")
   fi
@@ -346,6 +387,29 @@ discover_boot_partition() {
 
  [[ -n "$BOOT_PARTITION" ]] || die "Could not find a FAT boot partition in $OUTPUT_IMAGE"
  log "Using boot partition $BOOT_PARTITION"
+}
+
+expand_pi5_image_for_runtime() {
+ local part_name
+ local part_num
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ [[ "${PI5_IMAGE_EXTRA_MB:-0}" -gt 0 ]] || return 0
+
+ part_name="$(basename "$ROOT_PARTITION")"
+ part_num="$(cat "/sys/class/block/$part_name/partition" 2>/dev/null || true)"
+ [[ -n "$part_num" ]] || die "Could not determine partition number for $ROOT_PARTITION"
+
+ log "Expanding Pi 5 image by ${PI5_IMAGE_EXTRA_MB} MiB for baked runtime packages"
+ truncate -s "+${PI5_IMAGE_EXTRA_MB}M" "$OUTPUT_IMAGE"
+ losetup -c "$LOOP_DEVICE"
+ parted -s "$LOOP_DEVICE" resizepart "$part_num" 100%
+ partprobe "$LOOP_DEVICE" || true
+ if command -v udevadm >/dev/null 2>&1; then
+  udevadm settle || true
+ fi
+ e2fsck -pf "$ROOT_PARTITION" || e2fsck -fy "$ROOT_PARTITION"
+ resize2fs "$ROOT_PARTITION"
 }
 
 mount_root_partition() {
@@ -841,6 +905,130 @@ validate_pi5_argyll_runtime() {
  fi
 }
 
+pi5_missing_runtime_paths() {
+ local rel
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ for rel in "${PI5_RUNTIME_REQUIRED_PATHS[@]}"; do
+  [[ -e "$ROOT_MOUNT/$rel" ]] || printf '%s\n' "$rel"
+ done
+}
+
+copy_pi5_apt_sources() {
+ local apt_root="$1"
+
+ mkdir -p \
+  "$apt_root/etc/apt/apt.conf.d" \
+  "$apt_root/etc/apt/sources.list.d" \
+  "$apt_root/etc/apt/trusted.gpg.d" \
+  "$apt_root/var/lib/apt/lists/partial" \
+  "$apt_root/var/cache/apt/archives/partial" \
+  "$apt_root/var/lib/dpkg"
+
+ if [[ -f "$ROOT_MOUNT/etc/apt/sources.list" ]]; then
+  cp -a "$ROOT_MOUNT/etc/apt/sources.list" "$apt_root/etc/apt/sources.list"
+ else
+  cat > "$apt_root/etc/apt/sources.list" <<'EOF'
+deb [ arch=armhf ] http://raspbian.raspberrypi.com/raspbian/ bookworm main contrib non-free rpi
+deb http://archive.raspberrypi.com/debian/ bookworm main
+EOF
+ fi
+
+ if [[ -d "$ROOT_MOUNT/etc/apt/sources.list.d" ]]; then
+  rsync -a --include='*.list' --include='*.sources' --exclude='*' \
+   "$ROOT_MOUNT/etc/apt/sources.list.d/" "$apt_root/etc/apt/sources.list.d/"
+ fi
+
+ if [[ -f "$ROOT_MOUNT/etc/apt/trusted.gpg" ]]; then
+  cp -a "$ROOT_MOUNT/etc/apt/trusted.gpg" "$apt_root/etc/apt/trusted.gpg"
+ fi
+ if [[ -d "$ROOT_MOUNT/etc/apt/trusted.gpg.d" ]]; then
+  rsync -a "$ROOT_MOUNT/etc/apt/trusted.gpg.d/" "$apt_root/etc/apt/trusted.gpg.d/"
+ fi
+
+ if [[ -f "$ROOT_MOUNT/var/lib/dpkg/status" ]]; then
+  cp -a "$ROOT_MOUNT/var/lib/dpkg/status" "$apt_root/var/lib/dpkg/status"
+ else
+  : > "$apt_root/var/lib/dpkg/status"
+ fi
+}
+
+install_pi5_runtime_packages() {
+ local apt_root
+ local deb
+ local -a missing
+ local -a debs
+ local -a apt_opts
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ mapfile -t missing < <(pi5_missing_runtime_paths)
+ if [[ ${#missing[@]} -eq 0 ]]; then
+  log "Pi 5 Perl and renderer runtime dependencies already present"
+  return 0
+ fi
+
+ log "Installing Pi 5 runtime packages into image rootfs: ${PI5_RUNTIME_PACKAGES[*]}"
+ printf 'Missing before package staging:\n' >&2
+ printf '  - %s\n' "${missing[@]}" >&2
+
+ apt_root="$WORKDIR/pi5-apt"
+ rm -rf "$apt_root"
+ copy_pi5_apt_sources "$apt_root"
+
+ apt_opts=(
+  -o "Dir=$apt_root"
+  -o "Dir::Etc::sourcelist=sources.list"
+  -o "Dir::Etc::sourceparts=sources.list.d"
+  -o "Dir::Etc::main=apt.conf"
+  -o "Dir::Etc::parts=apt.conf.d"
+  -o "Dir::Etc::trusted=trusted.gpg"
+  -o "Dir::Etc::trustedparts=trusted.gpg.d"
+  -o "Dir::State::status=$apt_root/var/lib/dpkg/status"
+  -o "Dir::State::lists=lists"
+  -o "Dir::Cache::archives=archives"
+  -o "APT::Architecture=armhf"
+  -o "APT::Architectures=armhf"
+ )
+
+ apt-get "${apt_opts[@]}" update
+ apt-get "${apt_opts[@]}" --download-only --yes --no-install-recommends install "${PI5_RUNTIME_PACKAGES[@]}"
+
+ shopt -s nullglob
+ debs=("$apt_root"/var/cache/apt/archives/*.deb)
+ shopt -u nullglob
+ [[ ${#debs[@]} -gt 0 ]] || die "Pi 5 runtime package download produced no .deb files"
+
+ for deb in "${debs[@]}"; do
+  log "Extracting $(basename "$deb")"
+  dpkg-deb -x "$deb" "$ROOT_MOUNT"
+ done
+
+ mapfile -t missing < <(pi5_missing_runtime_paths)
+ if [[ ${#missing[@]} -gt 0 ]]; then
+  printf 'Pi 5 runtime dependency staging is incomplete:\n' >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  die "Could not stage all Pi 5 runtime dependencies"
+ fi
+
+ for rel in "${PI5_RUNTIME_REQUIRED_PATHS[@]}"; do
+  chown -h root:root "$ROOT_MOUNT/$rel" 2>/dev/null || true
+ done
+ log "Pi 5 runtime dependencies staged"
+}
+
+validate_pi5_runtime_dependencies() {
+ local -a missing
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ mapfile -t missing < <(pi5_missing_runtime_paths)
+ if [[ ${#missing[@]} -gt 0 ]]; then
+  printf 'Pi 5 image is missing required Perl/renderer runtime files:\n' >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  die "Pi 5 runtime dependencies are incomplete"
+ fi
+}
+
 configure_pi5_headless_first_boot() {
  local keyboard_file="$ROOT_MOUNT/etc/default/keyboard"
  local locale_file="$ROOT_MOUNT/etc/default/locale"
@@ -860,6 +1048,8 @@ configure_pi5_headless_first_boot() {
  rm -f "$userconfig_wants"
  ln -sfn /dev/null "$userconfig_mask"
  rm -f "$BOOT_MOUNT/userconf" "$BOOT_MOUNT/userconf.txt" "$BOOT_MOUNT/firstrun.sh"
+ rm -f "$ROOT_MOUNT/etc/ssh/sshd_config.d/rename_user.conf"
+ rm -f "$ROOT_MOUNT/usr/share/userconf-pi/sshd_banner"
 }
 
 enable_pi5_systemd_unit() {
@@ -1397,6 +1587,7 @@ main() {
  attach_loop_device
  discover_root_partition
  discover_boot_partition
+ expand_pi5_image_for_runtime
  label_pi5_partitions
  mount_root_partition
  mount_boot_partition
@@ -1407,6 +1598,8 @@ main() {
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_display_defaults
+ install_pi5_runtime_packages
+ validate_pi5_runtime_dependencies
  validate_pi5_argyll_runtime
  configure_pi5_bookworm_boot
  configure_pi5_headless_first_boot
