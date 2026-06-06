@@ -23,6 +23,14 @@ const endpointSeedSource = sliceBetween(
   'sub apply_sdr_low_shadow_endpoint_seed_2_3',
   'sub sdr_low_shadow_lower_neighbor_ire'
 );
+const lowerNeighborSource = sliceBetween(
+  'sub sdr_low_shadow_lower_neighbor_ire',
+  'sub sdr_low_shadow_live_neighbor_preseed_adjustments'
+);
+const localSpinePreseedSource = sliceBetween(
+  'sub apply_sdr_low_shadow_local_spine_preseed',
+  'sub apply_sdr_top_local_seed_105_from_80'
+);
 const chromaLumaSource = sliceBetween(
   'sub low_shadow_chroma_luminance_coupled_adjustments',
   'sub cap_post_commit_low_shadow_adjustment'
@@ -47,15 +55,26 @@ assert(
     lowShadowAcceptanceSource.includes('sub sdr_low_shadow_unseeded_2_3_step') &&
     lowShadowAcceptanceSource.includes('sub sdr_low_shadow_2_3_use_3pct_path') &&
     lowShadowAcceptanceSource.includes('return 0 if(sdr_low_shadow_2_3_use_3pct_path($config,$step));') &&
+    lowShadowAcceptanceSource.includes('return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});') &&
+    !lowShadowAcceptanceSource.includes('!$config->{"lg_autocal_26_2_3_use_3pct_path"}') &&
     lowShadowAcceptanceSource.includes('return 0 if(lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));'),
-  'unseeded SDR LG26 2.3% should have an explicit generation-gated path for stricter Y handling plus an opt-in 3% path test bypass'
+  'SDR LG26 2.3% should use the 3% low-shadow path by default while leaving the legacy seed gate present'
 );
 assert(
   chromaLumaSource.includes('my $use_3pct_path=sdr_low_shadow_2_3_use_3pct_path($LG_AUTOCAL_CONFIG,$step);') &&
     chromaLumaSource.includes('!$use_3pct_path &&') &&
     chromaLumaSource.includes('return undef if($ire > 0 && $ire <= 2.5001 && !$use_3pct_path') &&
     chromaLumaSource.includes('$rgb_cap=0.25 if($ire <= 2.5001 && !$use_3pct_path);'),
-  '2.3 test bypass should let the coupled chroma/luma planner use the 3% path without changing default 2.3 behavior'
+  '2.3 should let the coupled chroma/luma planner use the 3% path by default'
+);
+assert(
+  lowerNeighborSource.includes('return 2.3 if(abs($ire-3) < 0.001 && lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));') &&
+    localSpinePreseedSource.includes('return 0 if(!lg_autocal_26_legacy_low_shadow_2_3_seed_enabled($config));') &&
+    localSpinePreseedSource.includes('return 0 if(abs($ire-3) >= 0.001);') &&
+    localSpinePreseedSource.includes('my $source_ire=4;') &&
+    localSpinePreseedSource.includes('my $target_ire=2.3;') &&
+    localSpinePreseedSource.includes('prepare_2_3_neighbor_before_3'),
+  'legacy C1/older 3% setup should still be able to preseed the 2.3 neighbor before calibrating 3%'
 );
 assert(
   helperSource.includes('!$best_from_luma_only') &&
