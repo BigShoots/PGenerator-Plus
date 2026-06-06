@@ -2644,7 +2644,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	  }
 	 }
 
-	 my $stamp_series_target_white_y=($type eq "colors" || $type eq "saturations") ? 1 : 0;
+	 my $stamp_series_target_white_y=0;
 	 # LG 26pt greyscale post-cal reads must target the series' own 100% white
 	 # read. AutoCal-derived white is useful audit context, but stamping it as
 	 # series_target_white_y makes post-cal charts use the old calibration basis.
@@ -11773,7 +11773,8 @@ function meterLgTargetWhiteReferenceNits(readings){
 
 function meterSeriesUsesLgTargetWhite(type,points){
  const t=String(type||'').toLowerCase();
- if(t==='colors'||t==='saturations') return true;
+ // ColorChecker and Sat Sweep use the White patch from that same series for
+ // target Y; stored AutoCal target white can make normal series reads look bad.
  return t==='greyscale'&&meterUseLgAutoCal26(points!=null?points:meterActiveSeriesPoints);
 }
 
@@ -11935,13 +11936,14 @@ function meterColorReferenceNits(){
 }
 
 function meterColorSeriesReferenceNits(){
-	 if(meterChartIsDv() && meterDvMapModeValue()==='1'){
-	  // DV Absolute target luminance stays anchored to mastering peak. The
-	  // white pre-read is still useful diagnostically, but it is not the target
-	  // Y reference for color or saturation patches in absolute mode.
-	  return Math.max(1,meterColorReferenceNits());
-	 }
- const explicitLgTarget=meterExplicitLgTargetWhiteReferenceNits(meterReadings);
+ if(meterChartIsDv() && meterDvMapModeValue()==='1'){
+  // DV Absolute target luminance stays anchored to mastering peak. The
+  // white pre-read is still useful diagnostically, but it is not the target
+  // Y reference for color or saturation patches in absolute mode.
+  return Math.max(1,meterColorReferenceNits());
+ }
+ const activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ const explicitLgTarget=activeColorSeries?null:meterExplicitLgTargetWhiteReferenceNits(meterReadings);
  if(explicitLgTarget>0) return Math.max(1,explicitLgTarget);
  const isSeriesWhite=(rd)=>{
   if(!rd) return false;
