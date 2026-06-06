@@ -12388,11 +12388,12 @@ function meterTargetXYZForReading(reading){
 	 const ty=parseFloat(reading.target_y!=null?reading.target_y:(targetMeta?targetMeta.target_y:null));
 	 const tYn=parseFloat(reading.target_Yn!=null?reading.target_Yn:(targetMeta?targetMeta.target_Yn:null));
 	 if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
-  let refY=meterColorSeriesReferenceNits();
-  let greyTargetY=null;
-  if(meterReadingIsGreyscale(reading)){
-   let greyWhite=null;
-   try{ greyWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
+	  let refY=meterColorSeriesReferenceNits();
+	  let greyTargetY=null;
+	  const activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+	  if(!activeColorSeries&&meterReadingIsGreyscale(reading)){
+	   let greyWhite=null;
+	   try{ greyWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
    const greyY=meterReadingLuminanceNits(greyWhite);
    if(greyY>0) refY=greyY;
    const step=targetStep||((typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null);
