@@ -6,6 +6,7 @@ PROGRAM_CLIENT_SERIAL="/usr/bin/PGenerator_serial.pl"
 PROGRAM_DAEMON_VIDEO="/usr/sbin/PGeneratord"
 PROGRAM_CLIENT_CMD="/usr/bin/PGenerator_cmd.pl"
 PGENERATOR_USER_GROUP="pgenerator"
+PGENERATOR_VAR_DIR="/var/lib/PGenerator"
 PGENERATOR_MOUNT_POINT_DIR="/var/lib/PGenerator/running"
 PGENERATOR_MOUNT_POINT_NAME="PGeneratorTmpFs"
 PGENERATOR_TMPFS_SIZE="20M"
@@ -24,12 +25,17 @@ case "$1" in
         chmod 755 /etc/sudo /etc/sudo/sudoers.d /etc/sudoers.d 2>/dev/null
         chmod 440 /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d/PGenerator 2>/dev/null
         chmod +x /usr/sbin/pgenerator-update /usr/bin/spotread /usr/bin/spotread_wrapper.sh /usr/bin/meter_session.sh /usr/bin/meter_series.sh /usr/bin/ccss_create.py /usr/bin/ccss_create_patch.sh /usr/bin/ccxxmake_interactive 2>/dev/null
-        if [ ! -d "/var/lib/PGenerator" ]; then
-         mkdir -p /var/lib/PGenerator
-        fi
-        mkdir -p /var/lib/PGenerator/lg /var/lib/PGenerator/lg/ddc /var/lib/PGenerator/lg/luts /var/lib/PGenerator/lg/pin-sessions 2>/dev/null
-        chown -R $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP /var/lib/PGenerator/lg 2>/dev/null
-        chmod 775 /var/lib/PGenerator/lg /var/lib/PGenerator/lg/ddc /var/lib/PGenerator/lg/luts /var/lib/PGenerator/lg/pin-sessions 2>/dev/null
+        mkdir -p $PGENERATOR_VAR_DIR $PGENERATOR_MOUNT_POINT_DIR 2>/dev/null
+        chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_VAR_DIR $PGENERATOR_MOUNT_POINT_DIR 2>/dev/null
+        chmod 775 $PGENERATOR_VAR_DIR 2>/dev/null
+        chmod 770 $PGENERATOR_MOUNT_POINT_DIR 2>/dev/null
+        mkdir -p $PGENERATOR_VAR_DIR/tmp $PGENERATOR_VAR_DIR/images $PGENERATOR_VAR_DIR/video $PGENERATOR_VAR_DIR/video/.diagseq $PGENERATOR_VAR_DIR/ccss $PGENERATOR_VAR_DIR/ccss/custom $PGENERATOR_VAR_DIR/updates 2>/dev/null
+        chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_VAR_DIR/tmp $PGENERATOR_VAR_DIR/images $PGENERATOR_VAR_DIR/video $PGENERATOR_VAR_DIR/video/.diagseq $PGENERATOR_VAR_DIR/ccss $PGENERATOR_VAR_DIR/ccss/custom $PGENERATOR_VAR_DIR/updates 2>/dev/null
+        chmod 755 $PGENERATOR_VAR_DIR/tmp $PGENERATOR_VAR_DIR/ccss $PGENERATOR_VAR_DIR/ccss/custom $PGENERATOR_VAR_DIR/updates 2>/dev/null
+        chmod 775 $PGENERATOR_VAR_DIR/images $PGENERATOR_VAR_DIR/video $PGENERATOR_VAR_DIR/video/.diagseq 2>/dev/null
+        mkdir -p $PGENERATOR_VAR_DIR/lg $PGENERATOR_VAR_DIR/lg/ddc $PGENERATOR_VAR_DIR/lg/luts $PGENERATOR_VAR_DIR/lg/pin-sessions 2>/dev/null
+        chown -R $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_VAR_DIR/lg 2>/dev/null
+        chmod 775 $PGENERATOR_VAR_DIR/lg $PGENERATOR_VAR_DIR/lg/ddc $PGENERATOR_VAR_DIR/lg/luts $PGENERATOR_VAR_DIR/lg/pin-sessions 2>/dev/null
         if [ ! -d "$PGENERATOR_PID_DIR" ]; then
          mkdir $PGENERATOR_PID_DIR
         fi
