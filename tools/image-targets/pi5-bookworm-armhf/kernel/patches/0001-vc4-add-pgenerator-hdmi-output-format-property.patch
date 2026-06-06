@@ -250,7 +250,7 @@ index 206ecf4..0088fde 100644
  	struct drm_crtc *crtc = new_state->crtc;
 +	enum hdmi_colorspace requested_output_format =
 +		new_state->hdmi.output_format;
-+	unsigned int requested_bpc = new_state->max_bpc;
++	unsigned int requested_bpc = new_state->max_requested_bpc;
 +	u8 helper_max_bpc;
 +	int ret;
  
