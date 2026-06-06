@@ -216,8 +216,12 @@ index 206ecf4..0088fde 100644
 +	new_state->hdmi.output_format = requested_output_format;
 +	new_state->hdmi.output_bpc = requested_bpc;
 +	new_state->hdmi.tmds_char_rate = tmds_char_rate;
-+	if (requested_output_format != HDMI_COLORSPACE_RGB)
-+		new_state->hdmi.is_limited_range = true;
++	/*
++	 * Preserve the quantization range selected through the connector
++	 * property. PGenerator drives both RGB and YCbCr Full/Limited test
++	 * cases, so forcing non-RGB output to limited crushes near-black
++	 * full-range YCbCr patterns.
++	 */
 +
 +	ret = vc4_hdmi_generate_forced_avi_infoframe(connector, new_state, mode);
 +	if (ret)
