@@ -42,6 +42,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
+#include <errno.h>
 
 /* ---- DRM ioctl definitions (from drm.h / drm_mode.h) ---- */
 #define DRM_IOCTL_BASE 'd'
@@ -778,6 +779,7 @@ int ioctl(int fd, unsigned long request, ...) {
         int dovi_changed = 0;
         int display_prop_changed = 0;
         int renderer_dovi_in_commit = 0;
+        int connector_override_added = 0;
 
         uint32_t total = 0, i;
         for (i = 0; i < atomic->count_objs; i++)
@@ -942,12 +944,38 @@ int ioctl(int fd, unsigned long request, ...) {
                 && !renderer_dovi_seen && dovi_meta_prop_id)
                 dovi_blob = create_dovi_blob(fd);
 
-            ensure_connector_overrides(atomic, dovi_blob,
-                                       dovi_blob ? "DOVI fallback" :
-                                                   "display config");
+            connector_override_added =
+                ensure_connector_overrides(atomic, dovi_blob,
+                                           dovi_blob ? "DOVI fallback" :
+                                                       "display config");
         }
 
         long atomic_ret = raw_ioctl(fd, request, arg);
+
+        if ((display_prop_changed || connector_override_added) && !is_test) {
+            char num[24];
+            write_log("DRM_OVERRIDE: display atomic returned ");
+            if (atomic_ret == 0) {
+                write_log("0");
+            } else {
+                itoa_simple((uint32_t)(-(int)atomic_ret), num);
+                write_log("-");
+                write_log(num);
+                write_log(" errno=");
+                itoa_simple((uint64_t)errno, num);
+                write_log(num);
+            }
+            write_log(" flags=0x");
+            {
+                char hex[12];
+                uint32_t f = atomic->flags;
+                for (int h = 7; h >= 0; h--)
+                    hex[7-h] = "0123456789abcdef"[(f >> (h*4)) & 0xF];
+                hex[8] = 0;
+                write_log(hex);
+            }
+            write_log("\n");
+        }
 
         /* Log return for DOVI-related commits */
         if (dovi_injected && atomic_ret != 0) {
