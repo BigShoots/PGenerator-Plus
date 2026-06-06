@@ -20,4 +20,20 @@ assert(renderer.includes('>Measured Y<'), 'color detail should label measured Y'
 assert(!renderer.includes('>Meas. x<'), 'color detail should not abbreviate measured x');
 assert(!renderer.includes('>Meas. y<'), 'color detail should not abbreviate measured y');
 
+const rowOrder = [
+  '>Target y<',
+  '>Measured y<',
+  '>Target x<',
+  '>Measured x<',
+  '>Target Y<',
+  '>Measured Y<'
+].map(label => renderer.indexOf(label));
+
+rowOrder.forEach((index, i) => {
+  assert(index >= 0, `color detail row ${i + 1} exists`);
+});
+for (let i = 1; i < rowOrder.length; i++) {
+  assert(rowOrder[i - 1] < rowOrder[i], 'color detail should pair each target row directly above its measured row');
+}
+
 console.log('WebUI color detail labels regression passed.');
