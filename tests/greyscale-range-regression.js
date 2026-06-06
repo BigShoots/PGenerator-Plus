@@ -128,21 +128,24 @@ assert(
     : '';
   assert(
     source.includes('onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>') &&
+      source.includes('id="meterCustomD65Enabled"') &&
+      !source.includes('<option value="customd65">Custom / D65</option>') &&
       measuredWhiteSource.includes('meterFindMeasuredWhiteReading()') &&
-      measuredWhiteSource.includes("gamutEl.value='customd65'") &&
+      measuredWhiteSource.includes('customEl.checked=true') &&
       measuredWhiteSource.includes('saveMeterSettings();') &&
       measuredWhiteSource.includes('meterOnGreyRefChange();') &&
       measuredWhiteSource.includes('meterRefreshActiveSeriesCharts();'),
-    'Use measured values should snapshot measured white into Custom / D65 and refresh grey/chart analysis'
+    'Use measured values should enable Custom D65 and refresh grey/chart analysis without changing the target colorspace dropdown'
   );
   assert(
     source.includes('#meterSettingsGrid .field-gamut{width:148px;max-width:100%}') &&
-      source.includes('#meterSettingsGrid .field-gamut.has-whitepoint{width:360px}') &&
-      source.includes("gamutField.classList.toggle('has-whitepoint',enabled);") &&
+      source.includes('#meterSettingsGrid .field-display.has-whitepoint{width:360px}') &&
+      source.includes("displayField.classList.toggle('has-whitepoint',enabled);") &&
+      source.includes("toggle.style.display=usesD65?'flex':'none';") &&
       source.includes('.meter-matrix-field{display:none;margin-top:32px;max-width:240px}') &&
       source.includes('.meter-matrix-field.visible{display:block}') &&
       source.includes("field.classList.toggle('visible',enabled);"),
-    'Custom / D65 white-point controls should not reserve blank layout space when hidden'
+    'Custom D65 white-point controls should not reserve blank layout space when hidden'
   );
 }
 assert(
@@ -2211,8 +2214,16 @@ const code = [
   extractFunction('meterPatchRangeMin'),
   extractFunction('meterPatchRangeSpan'),
   extractFunction('meterDvRelativeSt2084UsesLegalRange'),
+  'function meterChartIsHlg(){ return false; }',
+  'function meterChartHdrPeak(){ return 1000; }',
+  'function meterChartMasterMin(){ return 0; }',
+  'function hlgSignalToDisplayLinear(signal){ return signal; }',
+  extractFunction('meterGreyAllowsHeadroomTargets'),
   extractFunction('meterGreyCodeRange'),
+  extractFunction('meterGreySignalFractionFromCode'),
   extractFunction('meterDvTunnelGamma'),
+  extractFunction('meterTargetSignalToLinear'),
+  extractFunction('meterGreyscaleTargetYnForCode'),
   extractFunction('meterChartPqEncodeNormalized'),
   extractFunction('meterCodeFromSignalPercent'),
   extractFunction('meterLgSdrExtendedCodeFromPercent'),
@@ -2387,6 +2398,10 @@ assert.strictEqual(
   lgSeries.find(step => step.ire === 5).r,
   expectedGreyscaleCode(5, { mode: 'sdr', range: '1' }),
   'Regular 21pt 5% slot should use the standard limited-range 5% code'
+);
+assert(
+  Math.abs(lgSeries.find(step => step.ire === 5).target_Yn - Math.pow((expectedGreyscaleCode(5, { mode: 'sdr', range: '1' }) - 16) / 219, 2.4)) < 1e-12,
+  'Regular 21pt 5% slot should carry target_Yn from its emitted patch code'
 );
 assert(
   lgSeries.every(step => step.analysis_ire == null && step.target_ire == null && step.transport_stimulus == null),

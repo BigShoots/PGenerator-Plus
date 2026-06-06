@@ -95,6 +95,7 @@ vm.runInContext([
   extractFunction('gammaEotf'),
   extractFunction('srgbEotf'),
   extractFunction('meterGreyTargetLuminance'),
+  extractFunction('meterGreyscaleTargetYFromYn'),
   extractFunction('meterGreyTargetPeak'),
   extractFunction('meterExplicitLgTargetWhiteReferenceNits'),
   extractFunction('meterSeriesUsesLgTargetWhite'),
@@ -151,6 +152,21 @@ const oledZero = context.meterTargetXYZForReading({
   series_type: 'greyscale'
 });
 assert.strictEqual(oledZero.Y, 0, 'OLED normalized 0% black should still target true black');
+
+context.meterReadings = [
+  { ire: 0, name: '0%', luminance: 0, Y: 0, normalized_black: true, series_type: 'greyscale' },
+  { ire: 100, name: '100%', luminance: 100, Y: 100, series_type: 'greyscale' }
+];
+const explicitGreyYn = context.meterTargetXYZForReading({
+  ire: 5,
+  name: '5%',
+  r_code: 27,
+  g_code: 27,
+  b_code: 27,
+  target_Yn: 0.01,
+  series_type: 'greyscale'
+});
+assert(Math.abs(explicitGreyYn.Y - 1) < 1e-12, 'Greyscale target_Yn metadata should directly define chart target Y from the measured white reference');
 
 context.displayType = 'lcd';
 context.meterActiveSeriesType = 'colors';

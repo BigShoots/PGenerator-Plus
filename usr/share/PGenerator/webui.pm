@@ -1835,6 +1835,9 @@ sub webui_meter_series_start (@) {
  my $target_gamut="";
  $target_gamut=lc($1) if($body=~/"target_gamut"\s*:\s*"([A-Za-z0-9_]+)"/);
 $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" || $target_gamut eq "p3d65" || $target_gamut eq "p3dci" || $target_gamut eq "customd65");
+ my $custom_d65_enabled=0;
+ $custom_d65_enabled=1 if($body=~/"custom_d65_enabled"\s*:\s*true/i || $target_gamut eq "customd65");
+ $target_gamut="bt709" if($target_gamut eq "customd65");
  my $target_white_x="";
  $target_white_x=$1 if($body=~/"target_white_x"\s*:\s*"?([0-9.]+)"?/);
  my $target_white_y="";
@@ -1844,7 +1847,7 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  my $series_target_white_y_provided=($body=~/"series_target_white_y"\s*:/) ? 1 : 0;
  my $series_target_white_y_num=($series_target_white_y ne "") ? ($series_target_white_y+0) : 0;
  my $custom_target_white;
- if($target_gamut eq "customd65" && $target_white_x ne "" && $target_white_y ne "") {
+ if($custom_d65_enabled && $target_white_x ne "" && $target_white_y ne "") {
   my $x=$target_white_x+0;
   my $y=$target_white_y+0;
   $custom_target_white=[$x,$y] if($x>0 && $y>0 && $x<1 && $y<1 && ($x+$y)<1);
@@ -2243,7 +2246,17 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 		     my $target_Yn_for_step=$lg_autocal_26_target_yn_for_stimulus->($stim);
 		     $extra.=",\"target_x\":0.3127,\"target_y\":0.329,\"target_Yn\":$target_Yn_for_step";
 		    }
-	    $extra.=",\"autocal_white_reference\":true,\"autocal_reference_only\":true,\"autocal_read_only\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_legal_white_anchor\":true,\"ddc_target_ire\":99,\"autocal_order_ire\":98.95,\"autocal_target_label\":\"100% legal white\"" if($lg_autocal_26_codes && abs($v-100)<0.001);
+		    if(!$lg_autocal_26_codes && $signal_mode eq "sdr" && $r_code==$g_code && $g_code==$b_code) {
+		     my $target_min_code=$dv_series ? 16 : ($lg_extended_sdr_codes ? 16 : ($lg_legal_sdr_ddc_codes ? 16 : ($lim ? 16 : 0)));
+		     my $target_span_code=$dv_series ? 219 : ($lg_extended_sdr_codes ? 239 : ($lg_legal_sdr_ddc_codes ? 219 : ($lim ? 219 : 255)));
+		     my $target_signal=$target_span_code>0 ? (($g_code-$target_min_code)/$target_span_code) : 0;
+		     $target_signal=0 if($target_signal < 0);
+		     $target_signal=1 if($target_signal > 1);
+		     my $target_Yn_for_step=$target_signal_to_linear->($target_signal);
+		     $target_Yn_for_step=0 if($target_Yn_for_step < 0);
+		     $extra.=",\"target_Yn\":$target_Yn_for_step";
+		    }
+		    $extra.=",\"autocal_white_reference\":true,\"autocal_reference_only\":true,\"autocal_read_only\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_legal_white_anchor\":true,\"ddc_target_ire\":99,\"autocal_order_ire\":98.95,\"autocal_target_label\":\"100% legal white\"" if($lg_autocal_26_codes && abs($v-100)<0.001);
     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$r_code,\"g\":$g_code,\"b\":$b_code,\"name\":\"$name\"$extra}";
    } @ordered;
  } elsif($type eq "colors") {
@@ -2269,16 +2282,15 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
       $auto_target_key="p3dci" if($primaries_idx == 3);
     }
     my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
-    $target_key="bt709" if($target_key eq "customd65");
     # DV ColorChecker patches are target-gamut driven even though the signal
     # rides in a BT.2020 tunnel. Solving them in the container makes DV
     # relative read undersaturated and DV absolute read oversaturated.
     my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg")) ? $container_key : $target_key;
     my @target_white=@{$primaries{$target_key}{WHITE}};
-    @target_white=@$custom_target_white if($target_gamut eq "customd65" && $custom_target_white);
+    @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
     my ($target_wx,$target_wy)=@target_white;
     my @solve_white=@{$primaries{$solve_key}{WHITE}};
-    @solve_white=@target_white if($target_gamut eq "customd65" && $custom_target_white);
+    @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
     my ($solve_wx,$solve_wy)=@solve_white;
     my @MI=@{$primaries{$solve_key}{M}};
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
@@ -2548,15 +2560,14 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
     $auto_target_key="p3dci" if($primaries_idx == 3);
   }
   my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
-  $target_key="bt709" if($target_key eq "customd65");
   my @target_white=@{$primaries{$target_key}{WHITE}};
-  @target_white=@$custom_target_white if($target_gamut eq "customd65" && $custom_target_white);
+  @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
   my ($target_wx,$target_wy)=@target_white;
   # DV absolute saturation sweeps follow the selected target hue axis, but
   # the emitted patch triplet still needs to be solved in the BT.2020 tunnel.
   my $solve_key=((($signal_mode eq "hdr10") || ($signal_mode eq "hlg"))) ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
-  @solve_white=@target_white if($target_gamut eq "customd65" && $custom_target_white);
+  @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
   my @MI=@{$primaries{$solve_key}{M}};
   my @AXIS_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
@@ -3203,7 +3214,7 @@ sub webui_meter_settings_save (@) {
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
-  target_white_x target_white_y
+  target_white_x target_white_y custom_d65_enabled
     xyz_matrix_enabled xyz_m11 xyz_m12 xyz_m13 xyz_m21 xyz_m22 xyz_m23 xyz_m31 xyz_m32 xyz_m33
   hdr_bt2390 incl_lum color_incl_lum simulate_spectro
  );
@@ -6970,10 +6981,10 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field > input[type="number"]{width:100%;min-height:34px}
 #meterSettingsGrid .field-display{width:170px;max-width:100%}
 #meterSettingsGrid .field-gamut{width:148px;max-width:100%}
-#meterSettingsGrid .field-gamut.has-whitepoint{width:360px}
 #meterSettingsGrid .field-gamut > select{width:148px;max-width:100%}
-#meterSettingsGrid .field-gamut .field-whitepoint{display:none;margin-top:10px;width:100%}
-#meterSettingsGrid .field-gamut .field-whitepoint.visible{display:block}
+#meterSettingsGrid .field-display.has-whitepoint{width:360px}
+#meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
+#meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
@@ -7465,6 +7476,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
         <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
        </div>
+       <label class="meter-toggle meter-field-label" id="meterCustomD65ToggleWrap"><input type="checkbox" id="meterCustomD65Enabled"> Custom D65 <span class="meter-help-tip" title="Use a measured or entered whitepoint for D65 target colorspaces only." aria-label="Custom D65 help">?</span></label>
+       <div class="field-whitepoint" id="meterTargetWhitePointField">
+        <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Custom values update the CIE target, greyscale target white, and color analysis for D65 target colorspaces." aria-label="Target white point help">?</span></label>
+        <div class="meter-whitepoint-row">
+         <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
+         <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
+         <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
+        </div>
+       </div>
       </div>
     </div>
    </div>
@@ -7476,16 +7496,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="bt2020">BT.2020</option>
      <option value="p3d65">DCI-P3 / D65</option>
       <option value="p3dci">DCI-P3 / DCI</option>
-    <option value="customd65">Custom / D65</option>
     </select>
-   <div class="field-whitepoint" id="meterTargetWhitePointField">
-    <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Leave blank for standard D65. Custom values update the CIE target, greyscale target white, and color analysis." aria-label="Target white point help">?</span></label>
-    <div class="meter-whitepoint-row">
-     <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
-     <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
-     <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
-    </div>
-   </div>
    <div class="meter-matrix-field">
     <div class="meter-matrix-fields" id="meterXyzMatrixFields">
      <div class="meter-matrix-grid">
@@ -11118,8 +11129,8 @@ function meterUseMeasuredWhiteTarget(){
  if(!xEl||!yEl) return false;
  xEl.value=xy.x.toFixed(4);
  yEl.value=xy.y.toFixed(4);
- const gamutEl=document.getElementById('meterTargetGamut');
- if(gamutEl&&String(gamutEl.value||'').toLowerCase()!=='customd65') gamutEl.value='customd65';
+ const customEl=document.getElementById('meterCustomD65Enabled');
+ if(customEl) customEl.checked=true;
  updateMeterTargetWhitepointVisibility();
  saveMeterSettings();
  meterOnGreyRefChange();
@@ -11167,18 +11178,25 @@ function meterSelectedTargetGamutKey(){
  return /^(bt709|bt2020|p3d65|p3dci)$/.test(val)?val:'';
 }
 
+function meterTargetGamutUsesD65(key){
+ return key==='bt709'||key==='bt2020'||key==='p3d65';
+}
+
 function meterTargetWhitePointEnabled(){
- const el=document.getElementById('meterTargetGamut');
- return String(el&&el.value||'').toLowerCase()==='customd65';
+ const customEl=document.getElementById('meterCustomD65Enabled');
+ return !!(customEl&&customEl.checked&&meterTargetGamutUsesD65(meterActiveGamutKey()));
 }
 
 function updateMeterTargetWhitepointVisibility(){
  const field=document.getElementById('meterTargetWhitePointField');
+ const toggle=document.getElementById('meterCustomD65ToggleWrap');
+ const usesD65=meterTargetGamutUsesD65(meterActiveGamutKey());
+ if(toggle) toggle.style.display=usesD65?'flex':'none';
  if(!field) return;
  const enabled=meterTargetWhitePointEnabled();
  field.classList.toggle('visible',enabled);
- const gamutField=field.closest('.field-gamut');
- if(gamutField) gamutField.classList.toggle('has-whitepoint',enabled);
+ const displayField=field.closest('.field-display');
+ if(displayField) displayField.classList.toggle('has-whitepoint',enabled);
 }
 
 function meterActiveGamutKey(){
@@ -12034,6 +12052,12 @@ function meterTargetSignalToLinear(v){
  return Math.pow(c,g);
 }
 
+function meterGreyscaleTargetYnForCode(code){
+ const signal=(typeof meterGreySignalFractionFromCode==='function')?meterGreySignalFractionFromCode(code):null;
+ if(!Number.isFinite(Number(signal))) return null;
+ return Math.max(0,meterTargetSignalToLinear(signal));
+}
+
 function meterDvClassicColorCheckerScale(){
  return 0.68;
 }
@@ -12357,6 +12381,21 @@ function meterDvAbsoluteReadingTargetY(reading){
  return null;
 }
 
+function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
+ const tYn=Number(targetYn);
+ const peak=(refY>0)?refY:meterColorReferenceNits();
+ if(!Number.isFinite(tYn)||tYn<0||!(peak>0)) return null;
+ const Lb=Math.max(0,Number(blackLevel)||0);
+ if(tYn<=0) return Lb>0?Lb:0;
+ const targetGamma=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
+ if(!meterChartIsHdr()&&!meterChartIsDv()&&targetGamma==='bt1886'&&Lb>0){
+  const signal=Math.pow(Math.max(0,tYn),1/2.4);
+  const y=bt1886Eotf(signal,peak,Lb);
+  if(Number.isFinite(y)&&y>=0) return y;
+ }
+ return tYn*peak;
+}
+
 function meterGreyChartTargetXYZForReading(reading){
  const wp=meterTargetWhitePoint();
  let refWhite=null;
@@ -12386,13 +12425,18 @@ function meterTargetXYZForReading(reading){
 	  targetStep=meterCanonicalSeriesStep(reading);
 	  if(targetStep&&(targetStep.target_x!=null||targetStep.target_y!=null||targetStep.target_Yn!=null)) targetMeta=targetStep;
 	 }
-	 const tx=parseFloat(reading.target_x!=null?reading.target_x:(targetMeta?targetMeta.target_x:null));
-	 const ty=parseFloat(reading.target_y!=null?reading.target_y:(targetMeta?targetMeta.target_y:null));
-	 const tYn=parseFloat(reading.target_Yn!=null?reading.target_Yn:(targetMeta?targetMeta.target_Yn:null));
-	 if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
-	  let refY=meterColorSeriesReferenceNits();
-	  let greyTargetY=null;
-	  const activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ let tx=parseFloat(reading.target_x!=null?reading.target_x:(targetMeta?targetMeta.target_x:null));
+ let ty=parseFloat(reading.target_y!=null?reading.target_y:(targetMeta?targetMeta.target_y:null));
+ const tYn=parseFloat(reading.target_Yn!=null?reading.target_Yn:(targetMeta?targetMeta.target_Yn:null));
+ if((!Number.isFinite(tx)||!Number.isFinite(ty)||ty<=0)&&meterReadingIsGreyscale(reading)&&Number.isFinite(tYn)&&tYn>=0){
+  const wp=meterTargetWhitePoint();
+  tx=wp.x;
+  ty=wp.y;
+ }
+ if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
+  let refY=meterColorSeriesReferenceNits();
+  let greyTargetY=null;
+  const activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
 	  if(!activeColorSeries&&meterReadingIsGreyscale(reading)){
 	   let greyWhite=null;
 	   try{ greyWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
@@ -12408,12 +12452,14 @@ function meterTargetXYZForReading(reading){
    try{
     if(typeof meterBlackReadingY==='function') black=meterBlackReadingY();
     else if(typeof meterChartBlackLevel==='function') black=meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]);
-   }catch(e){}
-   const measuredDvTargetY=(typeof meterDvAbsoluteReadingTargetY==='function')?meterDvAbsoluteReadingTargetY(reading):null;
-   const targetY=measuredDvTargetY!=null?measuredDvTargetY:
-    ((typeof meterGreyTargetLuminance==='function')?meterGreyTargetLuminance(targetIre,peak,black||0,code):null);
-   if(Number.isFinite(targetY)&&targetY>=0) greyTargetY=targetY;
-  }
+	   }catch(e){}
+	   const measuredDvTargetY=(typeof meterDvAbsoluteReadingTargetY==='function')?meterDvAbsoluteReadingTargetY(reading):null;
+	   const targetY=measuredDvTargetY!=null?measuredDvTargetY:
+	    (Number.isFinite(tYn)?meterGreyscaleTargetYFromYn(tYn,peak,black||0):null);
+	   const fallbackTargetY=(targetY!=null&&Number.isFinite(targetY))?targetY:
+	    ((typeof meterGreyTargetLuminance==='function')?meterGreyTargetLuminance(targetIre,peak,black||0,code):null);
+	   if(Number.isFinite(fallbackTargetY)&&fallbackTargetY>=0) greyTargetY=fallbackTargetY;
+	  }
   if(tYn<=0&&greyTargetY==null) return {X:0,Y:0,Z:0};
   // Gamut-clip: for analysis/charting, solve in the selected target gamut so
   // the CIE chart and ΔE targets respect the Target Colorspace dropdown.
@@ -13609,11 +13655,13 @@ function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
 }
 
 function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
-	const row=point||{};
-	if(row&&('stimulus' in row || 'code' in row)){
-	 const stimulus=Number(row.stimulus);
-	 const ire=Number.isFinite(stimulus) ? stimulus : (Number.isFinite(Number(signal)) ? Number(signal)*100 : 0);
-	 const code=(row.code!=null)?row.code:null;
+		const row=point||{};
+		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
+		if(Number.isFinite(metadataY)&&metadataY>=0) return metadataY;
+		if(row&&('stimulus' in row || 'code' in row)){
+		 const stimulus=Number(row.stimulus);
+		 const ire=Number.isFinite(stimulus) ? stimulus : (Number.isFinite(Number(signal)) ? Number(signal)*100 : 0);
+		 const code=(row.code!=null)?row.code:null;
 	 return meterGreyTargetLuminance(ire,Lw,Lb||0,code);
 	}
 	const frac=Number(signal);
@@ -14015,9 +14063,9 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
    const ire=Number(meterGreyChartStimulusIre(s));
    const x=meterGreyEotfLuminanceChartX(s,stepList,idx,end);
    const signal=meterGreyTargetSignal(ire,code);
-   const rawValue=(mode==='eotf')
-    ? meterGreyTargetEotfChartValue(ire,targetPeak,Lb,code)
-    : meterGreyTargetChartValue(ire,targetPeak,Lb,code);
+	   const rawValue=(mode==='eotf')
+	    ? meterGreyTargetEotfChartValueForSignal(signal,targetPeak,Lb,s)
+	    : meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb,s);
    const value=meterScaleEotfLuminancePlotValue(mode,rawValue,top,x*end,signal);
    return value==null?null:[x,value];
   })
@@ -17712,22 +17760,27 @@ function meterBuildStepsJS(type,points){
    ordered.forEach(v=>{
 	    const entry=entryBySlot[v]||meterGreyNormalizeEntry(v,null);
 	    const ddcSlotLocked=lgSlotLocked&&METER_LG_GREY_DDC_SLOTS_22.some(slot=>Math.abs(slot-v)<0.001);
-	    const step={
-	     ire:v,
-	     stimulus:entry.stimulus,
-	     signal_r_pct:entry.r,
-	     signal_g_pct:entry.g,
+		    const step={
+		     ire:v,
+		     stimulus:entry.stimulus,
+		     signal_r_pct:entry.r,
+		     signal_g_pct:entry.g,
      signal_b_pct:entry.b,
 	     r:meterCodeFromSignalPercentWithOptions(entry.r,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc}),
 		     g:meterCodeFromSignalPercentWithOptions(entry.g,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc}),
 		     b:meterCodeFromSignalPercentWithOptions(entry.b,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc}),
 		     name:meterFormatPercentValue(v)+'%',
 	     series_type:'greyscale',
-	     ddc_slot_locked:ddcSlotLocked
-	    };
-	    if(lgSlotLocked){
-	     const analysisIre=meterLgSdrLegalStimulusFromCode(step.g);
-	     step.analysis_ire=analysisIre;
+		     ddc_slot_locked:ddcSlotLocked
+		    };
+		    const stepSignalMode=String((typeof meterChartSignalMode==='function')?meterChartSignalMode():(getVal('signal_mode')||'sdr')).toLowerCase();
+		    if(stepSignalMode==='sdr'&&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b)){
+		     const targetYn=meterGreyscaleTargetYnForCode(step.g);
+		     if(Number.isFinite(targetYn)&&targetYn>=0) step.target_Yn=targetYn;
+		    }
+		    if(lgSlotLocked){
+		     const analysisIre=meterLgSdrLegalStimulusFromCode(step.g);
+		     step.analysis_ire=analysisIre;
 	     step.target_ire=analysisIre;
 	     step.transport_stimulus=entry.stimulus;
 	    }
@@ -17983,7 +18036,8 @@ function meterMeasurementSignalContext(payload){
  if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
  if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
-  if(String(body.target_gamut||'').toLowerCase()==='customd65'){
+  if(meterTargetWhitePointEnabled()){
+   body.custom_d65_enabled=true;
    body.target_white_x=(document.getElementById('meterTargetWhiteX')||{}).value||'';
    body.target_white_y=(document.getElementById('meterTargetWhiteY')||{}).value||'';
   }
@@ -25186,9 +25240,14 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
  // Reference Y per hcfrGreyRef's HCFR mode 0/1/2 semantics.
  const deMap={};
  gs.forEach(rd=>{
-  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
-  if(Y<=0){deMap[rd.ire]=0;return;} // true black: no chroma target
-  const ref=hcfrGreyRef(meterReadingAnalysisIre(rd)||rd.ire, Y, Lw, Lb, greyMode, rd.r_code, gwWeight);
+	  const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
+	  if(Y<=0){deMap[rd.ire]=0;return;} // true black: no chroma target
+	  let targetYOverride=null;
+	  try{
+	   const targetXYZ=meterTargetXYZForReading(rd);
+	   if(targetXYZ&&targetXYZ.Y!=null&&targetXYZ.Y>=0) targetYOverride=targetXYZ.Y;
+	  }catch(e){}
+	  const ref=hcfrGreyRef(meterReadingAnalysisIre(rd)||rd.ire, Y, Lw, Lb, greyMode, rd.r_code, gwWeight, targetYOverride);
     const wp=meterTargetWhitePoint();
     const XnM=(ref.wxN||wp.X)*ref.YWhite, YnM=ref.YWhite, ZnM=(ref.wzN||wp.Z)*ref.YWhite;
     const XnR=(ref.wxN||wp.X)*ref.YWhiteRef, YnR=ref.YWhiteRef, ZnR=(ref.wzN||wp.Z)*ref.YWhiteRef;
@@ -26466,9 +26525,14 @@ function meterExportCSV(){
  sorted.forEach((rd,i)=>{
   const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
   let dE=0,dE2k=0;
-  if(Y>0){
-   if(isGrey(rd)){
-    const ref=hcfrGreyRef(meterReadingAnalysisIre(rd)||rd.ire||0,Y,Lw,Lb,greyMode,rd.r_code,meterGrayWorldWeight());
+	  if(Y>0){
+	   if(isGrey(rd)){
+	    let targetYOverride=null;
+	    try{
+	     const targetXYZ=meterTargetXYZForReading(rd);
+	     if(targetXYZ&&targetXYZ.Y!=null&&targetXYZ.Y>=0) targetYOverride=targetXYZ.Y;
+	    }catch(e){}
+	    const ref=hcfrGreyRef(meterReadingAnalysisIre(rd)||rd.ire||0,Y,Lw,Lb,greyMode,rd.r_code,meterGrayWorldWeight(),targetYOverride);
     dE=deltaELuvHCFR(X,Y,Z,ref.YWhite, ref.refX,ref.refY,ref.refZ,ref.YWhiteRef);
     const wp2=meterTargetWhitePoint();
     const labM=xyzToLab(X,Y,Z, wp2.X*ref.YWhite, ref.YWhite, wp2.Z*ref.YWhite);
@@ -27467,6 +27531,7 @@ function saveMeterSettings(){
   color_de_form:val('meterColorDeltaEForm','de2000'),
     color_incl_lum:chk('meterColorIncludeLumError'),
   target_gamma:val('meterTargetGamma'),
+    custom_d65_enabled:chk('meterCustomD65Enabled'),
     target_white_x:val('meterTargetWhiteX'),
     target_white_y:val('meterTargetWhiteY'),
     xyz_matrix_enabled:chk('meterXyzMatrixEnabled'),
@@ -27531,9 +27596,12 @@ async function loadMeterSettings(){
   sel.dataset.lastStableValue=normalizedDisplayType;
   if(sel.value===normalizedDisplayType) delete sel.dataset.pendingValue;
  }
- if(s.target_gamut!=null) document.getElementById('meterTargetGamut').value=s.target_gamut||'auto';
+ if(s.target_gamut!=null){
+  const savedTargetGamut=String(s.target_gamut||'auto').toLowerCase();
+  document.getElementById('meterTargetGamut').value=(savedTargetGamut==='customd65')?'bt709':savedTargetGamut;
+  if(savedTargetGamut==='customd65'&&s.custom_d65_enabled==null) s.custom_d65_enabled=true;
+ }
  applyMeterTargetGamutDefault(false);
- updateMeterTargetWhitepointVisibility();
  meterDelayLoadValue(s.delay,s.delay_user_set===true||s.delay_explicit===true);
  if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
  setVal('meterTwoPointLow', s.grey_two_point_low, String(METER_TWO_POINT_DEFAULTS.low));
@@ -27559,8 +27627,10 @@ async function loadMeterSettings(){
  }
  if(getVal('signal_mode')==='dv') applyMeterTargetGammaDefault();
  meterSyncTargetGammaControl();
+ setChk('meterCustomD65Enabled', s.custom_d65_enabled);
  setVal('meterTargetWhiteX', s.target_white_x);
  setVal('meterTargetWhiteY', s.target_white_y);
+ updateMeterTargetWhitepointVisibility();
  setVal('meterXyzM11', s.xyz_m11);
  setVal('meterXyzM12', s.xyz_m12);
  setVal('meterXyzM13', s.xyz_m13);
@@ -27618,7 +27688,7 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await saveMeterSettings();
  await meterCheckStatus();
 });
-['meterPatchInsert','meterXyzMatrixEnabled','meterIncludeLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
+['meterPatchInsert','meterXyzMatrixEnabled','meterCustomD65Enabled','meterIncludeLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -27629,7 +27699,7 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
 ['signal_mode','color_format','rgb_quant_range','colorimetry','primaries','eotf'].forEach(id=>{
  const el=document.getElementById(id);
- if(el) el.addEventListener('change',()=>{meterGreySyncUi();meterUpdateSeriesTabUi();meterRefreshActiveSeriesCharts();meterUpdateReadButtons();});
+ if(el) el.addEventListener('change',()=>{meterGreySyncUi();meterUpdateSeriesTabUi();updateMeterTargetWhitepointVisibility();meterRefreshActiveSeriesCharts();meterUpdateReadButtons();});
 });
 
 function meterRefreshActiveSeriesCharts(){
@@ -27679,6 +27749,12 @@ window.addEventListener('resize',()=>{
 });
 
 document.getElementById('meterTargetGamut').addEventListener('change',()=>{
+ updateMeterTargetWhitepointVisibility();
+ meterOnGreyRefChange();
+ meterRefreshActiveSeriesCharts();
+});
+
+document.getElementById('meterCustomD65Enabled').addEventListener('change',()=>{
  updateMeterTargetWhitepointVisibility();
  meterOnGreyRefChange();
  meterRefreshActiveSeriesCharts();
