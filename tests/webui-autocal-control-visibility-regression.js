@@ -36,8 +36,9 @@ function extractFunction(name) {
 
 const updateSeriesTabUiSource = extractFunction('meterUpdateSeriesTabUi');
 assert(updateSeriesTabUiSource.includes('meterAutoCalControlsAllowedForSignal()'), 'series tab UI is gated by current signal mode');
-assert(updateSeriesTabUiSource.includes("tabKey!=='autocal'||autoCalSignalAllowed"), 'Auto Cal tab button is hidden outside SDR');
-assert(updateSeriesTabUiSource.includes("(tab==='autocal'&&autoCalSignalAllowed)?'flex':'none'"), 'Auto Cal series group is hidden outside SDR');
+assert(updateSeriesTabUiSource.includes('const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();'), 'series tab UI is gated by LG/meter AutoCal availability');
+assert(updateSeriesTabUiSource.includes("tabKey!=='autocal'||(autoCalSignalAllowed&&autoCalSeriesAvailable)"), 'Auto Cal tab button is hidden outside SDR or without LG/meter availability');
+assert(updateSeriesTabUiSource.includes("(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable)?'flex':'none'"), 'Auto Cal series group is hidden outside SDR or without LG/meter availability');
 
 function makeElement() {
   return {
@@ -76,6 +77,7 @@ const code = [
   'var meterSelectedThumbIre = 100;',
   'var meterSeriesSteps = [{ ire: 100, name: "100%" }];',
   'var meterDetected = true;',
+  'var lgConnected = true;',
   'var meterContinuousActive = false;',
   'var meterContinuousSuspendedForLgWrite = false;',
   'var meterSeriesRunning = false;',
@@ -97,11 +99,12 @@ const code = [
   'function meterAutoCalAvailable() { return true; }',
   'function meterFullAutoCalAvailable() { return true; }',
   'function meterLg3dAutoCalAvailable() { return true; }',
-  'function meterGreyTvControlsActive() { return true; }',
+  'function meterGreyTvControlsActive() { return lgConnected; }',
   'function meterSelectedMeasurementRequiresReady() { return false; }',
   'function meterManualPromptActionLabel() { return "Continue"; }',
   extractFunction('meterHideSeriesControlsForAutoCal'),
   extractFunction('meterAutoCalControlsAllowedForSignal'),
+  extractFunction('meterAutoCalSeriesAvailable'),
   extractFunction('meterUpdateReadButtons')
 ].join('\n');
 
@@ -133,6 +136,7 @@ function resetState(overrides = {}) {
     meterSeriesSteps: [{ ire: 100, name: '100%' }],
     meterSelectedThumbIre: 100,
     meterDetected: true,
+    lgConnected: true,
     meterReadings: [{ ire: 100, luminance: 120 }],
     meterContinuousActive: false,
     meterContinuousSuspendedForLgWrite: false,
@@ -212,6 +216,16 @@ assert.strictEqual(elements.meterAutoCalBtn.style.display, '', 'greyscale AutoCa
 assert.strictEqual(elements.meterFullAutoCalBtn.style.display, '', 'Full AutoCal start is visible for SDR');
 assert.strictEqual(elements.meterLg3dAutoCalBtn.style.display, 'none', '3D LUT AutoCal start is hidden for AutoCal Greyscale choice');
 
+resetState({ meterSeriesTab: 'autocal', meterActiveSeriesType: 'greyscale', lgConnected: false });
+context.meterUpdateReadButtons();
+assert.strictEqual(elements.meterAutoCalBtn.style.display, 'none', 'greyscale AutoCal start is hidden when LG is disconnected');
+assert.strictEqual(elements.meterFullAutoCalBtn.style.display, 'none', 'Full AutoCal start is hidden when LG is disconnected');
+
+resetState({ meterSeriesTab: 'autocal', meterActiveSeriesType: 'greyscale', meterDetected: false });
+context.meterUpdateReadButtons();
+assert.strictEqual(elements.meterAutoCalBtn.style.display, 'none', 'greyscale AutoCal start is hidden when meter is disconnected');
+assert.strictEqual(elements.meterFullAutoCalBtn.style.display, 'none', 'Full AutoCal start is hidden when meter is disconnected');
+
 resetState({ meterSeriesTab: 'autocal', meterActiveSeriesType: 'greyscale', signalMode: 'hdr10' });
 context.meterUpdateReadButtons();
 assert.strictEqual(elements.meterAutoCalBtn.style.display, 'none', 'greyscale AutoCal start is hidden in HDR mode');
@@ -233,6 +247,11 @@ context.meterUpdateReadButtons();
 assert.strictEqual(elements.meterLg3dColorControls.style.display, 'flex', '3D LUT AutoCal start is visible in Auto Cal tab');
 assert.strictEqual(elements.meterLg3dAutoCalBtn.style.display, '', '3D LUT AutoCal button is visible in Auto Cal tab');
 assert.strictEqual(elements.meterAutoCalBtn.style.display, 'none', 'greyscale AutoCal start is hidden for AutoCal 3D LUT choice');
+
+resetState({ meterSeriesTab: 'autocal', meterActiveSeriesType: 'colors', meterAutoCalSeriesChoice: '3d-lut', lgConnected: false });
+context.meterUpdateReadButtons();
+assert.strictEqual(elements.meterLg3dColorControls.style.display, 'none', '3D LUT AutoCal controls are hidden when LG is disconnected');
+assert.strictEqual(elements.meterLg3dAutoCalBtn.style.display, 'none', '3D LUT AutoCal button is hidden when LG is disconnected');
 
 resetState({ meterSeriesTab: 'autocal', meterActiveSeriesType: 'colors', meterAutoCalSeriesChoice: '3d-lut', signalMode: 'hdr10' });
 context.meterUpdateReadButtons();
