@@ -186,18 +186,48 @@ shared_rsync_excludes_for_rel() {
  done
 }
 
+stage_destination_for_rel() {
+ local rel="$1"
+
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && [[ "$rel" == "lib" ]]; then
+  # Raspberry Pi OS Bookworm is usrmerged. Shipping a top-level lib/
+  # directory in a tar overlay can replace /lib -> usr/lib on extraction and
+  # leave /sbin/init unable to resolve /lib/systemd/systemd.
+  printf '%s\n' "$STAGING_DIR/usr/lib"
+  return
+ fi
+
+ printf '%s\n' "$STAGING_DIR/$rel"
+}
+
+rsync_delete_args_for_rel() {
+ local rel="$1"
+
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && [[ "$rel" == "lib" ]]; then
+  return
+ fi
+
+ printf '%s\n' "--delete"
+}
+
 stage_overlay() {
  local rel src dst target_overlay
  local rsync_args=()
+ local delete_args=()
  STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pgenerator-ota-build.XXXXXX")"
  for rel in etc usr var lib; do
   src="$REPO_ROOT/$rel"
   [[ -d "$src" ]] || continue
-  dst="$STAGING_DIR/$rel"
+  dst="$(stage_destination_for_rel "$rel")"
   mkdir -p "$dst"
   mapfile -t rsync_args < <(shared_rsync_excludes_for_rel "$rel")
-  log "Staging shared /$rel"
-  rsync -a --delete "${rsync_args[@]}" -- "$src/" "$dst/"
+  mapfile -t delete_args < <(rsync_delete_args_for_rel "$rel")
+  if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && [[ "$rel" == "lib" ]]; then
+   log "Staging shared /lib into /usr/lib for Pi 5 usrmerge"
+  else
+   log "Staging shared /$rel"
+  fi
+  rsync -a "${delete_args[@]}" "${rsync_args[@]}" -- "$src/" "$dst/"
  done
 
  target_overlay="$REPO_ROOT/$TARGET_OVERLAY_REL"
@@ -205,9 +235,13 @@ stage_overlay() {
  for rel in etc usr var lib; do
   src="$target_overlay/$rel"
   [[ -d "$src" ]] || continue
-  dst="$STAGING_DIR/$rel"
+  dst="$(stage_destination_for_rel "$rel")"
   mkdir -p "$dst"
-  log "Staging target /$rel from $TARGET_OVERLAY_REL"
+  if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && [[ "$rel" == "lib" ]]; then
+   log "Staging target /lib into /usr/lib from $TARGET_OVERLAY_REL"
+  else
+   log "Staging target /$rel from $TARGET_OVERLAY_REL"
+  fi
   rsync -a -- "$src/" "$dst/"
  done
 
@@ -217,6 +251,14 @@ stage_overlay() {
  : > "$STAGING_DIR/var/lib/PGenerator/operations.txt"
  rm -f "$STAGING_DIR/usr/share/PGenerator/meter_settings.json"
  rm -f "$STAGING_DIR/usr/sbin/PGeneratord.hdr"
+}
+
+validate_pi5_staging_tree() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+
+ if [[ -e "$STAGING_DIR/lib" || -L "$STAGING_DIR/lib" ]]; then
+  die "Pi 5 OTA staging must not contain a root /lib entry; use /usr/lib to preserve usrmerge"
+ fi
 }
 
 build_tarball() {
@@ -237,6 +279,9 @@ build_tarball() {
 validate_tarball() {
  log "Validating release manifest"
  "$MANIFEST_CHECKER" --tarball "$OUTPUT_TARBALL"
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && tar -tzf "$OUTPUT_TARBALL" | grep -Eq '^lib(/|$)'; then
+  die "Pi 5 OTA tarball contains root /lib entries and would break Bookworm usrmerge"
+ fi
 }
 
 main() {
@@ -245,6 +290,7 @@ main() {
  require_commands
  prepare_paths
  stage_overlay
+ validate_pi5_staging_tree
  build_tarball
  validate_tarball
  log "Build complete: $OUTPUT_TARBALL"

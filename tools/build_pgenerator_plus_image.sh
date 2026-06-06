@@ -457,6 +457,20 @@ shared_rsync_excludes_for_rel() {
  done
 }
 
+overlay_destination_for_rel() {
+ local rel="$1"
+
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && [[ "$rel" == "lib" ]]; then
+  # Raspberry Pi OS Bookworm is usrmerged. Keep /lib as the symlink to
+  # usr/lib; copying repository /lib content through /usr/lib avoids turning
+  # the symlink into a real directory and breaking /sbin/init.
+  printf '%s\n' "$ROOT_MOUNT/usr/lib"
+  return
+ fi
+
+ printf '%s\n' "$ROOT_MOUNT/$rel"
+}
+
 overlay_tree() {
  local rel
  local src
@@ -467,10 +481,14 @@ overlay_tree() {
  for rel in etc usr var lib; do
   src="$REPO_ROOT/$rel"
   [[ -d "$src" ]] || continue
-  dst="$ROOT_MOUNT/$rel"
+  dst="$(overlay_destination_for_rel "$rel")"
   mkdir -p "$dst"
   mapfile -t rsync_args < <(shared_rsync_excludes_for_rel "$rel")
-  log "Overlaying shared /$rel"
+  if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && [[ "$rel" == "lib" ]]; then
+   log "Overlaying shared /lib into /usr/lib for Pi 5 usrmerge"
+  else
+   log "Overlaying shared /$rel"
+  fi
   rsync -aHAX --no-owner --no-group "${rsync_args[@]}" -- "$src/" "$dst/"
  done
 
@@ -480,9 +498,13 @@ overlay_tree() {
   for rel in etc usr var lib; do
    src="$target_overlay/$rel"
    [[ -d "$src" ]] || continue
-   dst="$ROOT_MOUNT/$rel"
+   dst="$(overlay_destination_for_rel "$rel")"
    mkdir -p "$dst"
-   log "Overlaying target /$rel from $TARGET_OVERLAY_REL"
+   if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && [[ "$rel" == "lib" ]]; then
+    log "Overlaying target /lib into /usr/lib from $TARGET_OVERLAY_REL"
+   else
+    log "Overlaying target /$rel from $TARGET_OVERLAY_REL"
+   fi
    rsync -aHAX --no-owner --no-group -- "$src/" "$dst/"
   done
  fi
