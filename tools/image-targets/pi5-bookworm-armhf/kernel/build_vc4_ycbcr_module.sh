@@ -214,13 +214,13 @@ patch_marker_present() {
 	grep -q "output_format_property" "$SOURCE_DIR/drivers/gpu/drm/vc4/vc4_hdmi.h"
 }
 
-if git -C "$SOURCE_DIR" apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
+if git -C "$SOURCE_DIR" apply --recount --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
 	echo "Patch already applied in $SOURCE_DIR"
 elif patch_marker_present; then
 	echo "Patch markers already present in $SOURCE_DIR"
 else
-	git -C "$SOURCE_DIR" apply --check "$PATCH_FILE"
-	git -C "$SOURCE_DIR" apply "$PATCH_FILE"
+	git -C "$SOURCE_DIR" apply --recount --check "$PATCH_FILE"
+	git -C "$SOURCE_DIR" apply --recount "$PATCH_FILE"
 fi
 
 if [[ ! -f "$KERNEL_HEADERS/.config" ]]; then
