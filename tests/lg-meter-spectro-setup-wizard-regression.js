@@ -147,8 +147,11 @@ assert(
 );
 assert(
   webui.includes('$_meter_series_stop_glob="/tmp/meter_series_stop_*.signal"') &&
+    webui.includes('sub webui_meter_series_pids') &&
+    webui.includes('(?:^|\\0)\\/usr\\/bin\\/meter_series\\.sh(?:\\0|$)') &&
     webui.includes('sub webui_meter_series_signal_stop') &&
     webui.includes('&webui_meter_series_signal_stop();') &&
+    webui.includes('sub webui_meter_series_kill') &&
     webui.includes('sub webui_meter_series_cancel_state') &&
     webui.includes('my $series_id="${type}_".int(Time::HiRes::time()*1000)."_".int(rand(1000000));'),
   'backend meter stop should signal the active series to quit cleanly and use collision-resistant series ids'
