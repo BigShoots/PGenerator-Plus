@@ -107,6 +107,19 @@ assert(
   'legacy Device Ready button should be hidden while the series spectro wizard is active'
 );
 assert(
+  webui.includes("meterSpectroSetupAckEndpoint==='/api/meter/series/ready'||meterSeriesSpectroSetupActive") &&
+    webui.includes('meterStop();') &&
+    webui.includes("if(!meterSeriesRunning&&r.status!=='cleared')"),
+  'cancelling the series spectro setup popup should stop polling before stale setup status can reopen it'
+);
+assert(
+  webui.includes('"status"\\s*:\\s*"(?:running|setup)"') &&
+    webui.includes('"status":"cancelled"') &&
+    webui.includes('"awaiting_ready"\\s*:\\s*true') &&
+    webui.includes('"awaiting_ready_reason"\\s*:\\s*"[^"]*"'),
+  'backend meter stop should cancel setup-state series and remove ready prompts'
+);
+assert(
   !webui.includes('!r.awaiting_ready||!meterSelectedMeasurementRequiresReady()'),
   'series backend wait states should not be hidden by stale client-side meter classification'
 );
