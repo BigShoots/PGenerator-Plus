@@ -465,6 +465,14 @@ static void log_display_prop_update(uint32_t obj_id, uint32_t prop_id,
     write_log("\n");
 }
 
+static void reset_last_connector_overrides(void) {
+    last_output_fmt = (uint64_t)-1;
+    last_max_bpc = (uint64_t)-1;
+    last_colorimetry = (uint64_t)-1;
+    last_rgb_qr = (uint64_t)-1;
+    last_dovi = (uint64_t)-1;
+}
+
 /*
  * Create the fallback DOVI_OUTPUT_METADATA blob (one-time).
  * Returns blob_id, or 0 on failure.
@@ -984,6 +992,8 @@ int ioctl(int fd, unsigned long request, ...) {
 
         if ((display_prop_changed || connector_override_added) && !is_test) {
             char num[24];
+            if (atomic_ret != 0)
+                reset_last_connector_overrides();
             write_log("DRM_OVERRIDE: display atomic returned ");
             if (atomic_ret == 0) {
                 write_log("0");
