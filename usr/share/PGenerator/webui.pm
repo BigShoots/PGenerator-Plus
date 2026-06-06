@@ -345,6 +345,7 @@ my $_meter_session_start_ready_file="/tmp/meter_session_start_ready.signal";
 my $_meter_session_ack_file="/tmp/meter_session.ack";
 my $_meter_diagnostic_read_lock="/tmp/meter_diagnostic_read.lock";
 my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
+my $_meter_series_stop_glob="/tmp/meter_series_stop_*.signal";
 my $_ccss_create_state_file="/tmp/ccss_create.json";
 my $_ccss_create_pid_file="/tmp/ccss_create.pid";
 my $_ccss_create_log_file="/tmp/ccss_create.log";
@@ -1237,6 +1238,55 @@ sub webui_meter_series_ready_file (@) {
 sub webui_meter_series_ready_cleanup (@) {
  my @paths=glob($_meter_series_ready_glob);
  unlink(@paths) if(@paths);
+}
+
+sub webui_meter_series_stop_file (@) {
+ my ($series_id)=@_;
+ $series_id="" if(!defined($series_id));
+ $series_id=~s/[^A-Za-z0-9_.-]//g;
+ return "" if($series_id eq "");
+ return "/tmp/meter_series_stop_${series_id}.signal";
+}
+
+sub webui_meter_series_stop_cleanup (@) {
+ my @paths=glob($_meter_series_stop_glob);
+ unlink(@paths) if(@paths);
+}
+
+sub webui_meter_series_alive (@) {
+ my $alive=`pgrep -f '[m]eter_series\\.sh' 2>/dev/null`;
+ return ($alive=~/\d/) ? 1 : 0;
+}
+
+sub webui_meter_series_signal_stop (@) {
+ return 0 unless(-f $_meter_series_file);
+ my $json="";
+ if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
+ my $series_id="";
+ $series_id=$1 if($json=~/"series_id"\s*:\s*"([^"]+)"/);
+ return 0 if($series_id eq "");
+ my $stop_file=&webui_meter_series_stop_file($series_id);
+ return 0 if($stop_file eq "");
+ if(open(my $fh,">",$stop_file)) {
+  print $fh time();
+  close($fh);
+  chmod(0666,$stop_file);
+  return 1;
+ }
+ return 0;
+}
+
+sub webui_meter_series_cancel_state (@) {
+ return unless(-f $_meter_series_file);
+ my $json="";
+ if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
+ if($json=~/"status"\s*:\s*"(?:running|setup)"/) {
+  $json=~s/"status"\s*:\s*"(?:running|setup)"/"status":"cancelled"/;
+  $json=~s/,\s*"awaiting_ready"\s*:\s*true//g;
+  $json=~s/,\s*"awaiting_ready_reason"\s*:\s*"[^"]*"//g;
+  $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Cancelled"/;
+  if(open(my $fh,">",$_meter_series_file)) { print $fh $json; close($fh); chmod(0666,$_meter_series_file); }
+ }
 }
 
 sub webui_meter_session_ready_cleanup () {
@@ -2704,7 +2754,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	  } @steps;
 	 }
 
-	 my $series_id="${type}_".time();
+	 my $series_id="${type}_".int(Time::HiRes::time()*1000)."_".int(rand(1000000));
 	 my $total=scalar(@steps);
 
 	 # Write steps to temp file for helper script
@@ -2722,6 +2772,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
  if(open(my $fh,">",$_meter_series_file)) { print $fh $init_json; close($fh); }
  my $ready_file=&webui_meter_series_ready_file($series_id);
  &webui_meter_series_ready_cleanup();
+ &webui_meter_series_stop_cleanup();
  unlink($ready_file) if($ready_file ne "");
 
  # Launch series helper script in background (setsid to detach from daemon threads)
@@ -3130,29 +3181,40 @@ sub webui_meter_stop (@) {
  &webui_meter_lg_autocal_kill(1) if(&webui_meter_lg_autocal_running());
  # Stop the persistent session daemon first (graceful, then force).
  &webui_meter_session_stop() if(&webui_meter_session_alive());
+ my $series_was_alive=&webui_meter_series_alive();
+ if($series_was_alive) {
+  &webui_meter_series_signal_stop();
+  &webui_meter_series_cancel_state();
+  my $waited=0;
+  while($waited < 80 && &webui_meter_series_alive()) {
+   Time::HiRes::sleep(0.1);
+   $waited++;
+  }
+  if(&webui_meter_series_alive()) {
+   system("sudo pkill -TERM -f 'meter_series.sh' 2>/dev/null");
+   my $tw=0;
+   while($tw < 30 && &webui_meter_series_alive()) {
+    Time::HiRes::sleep(0.1);
+    $tw++;
+   }
+  }
+ }
  # Kill any running spotread/meter processes (sudo required: they run as root)
  system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
- system("sudo pkill -9 -f 'meter_series.sh' 2>/dev/null");
+ system("sudo pkill -9 -f 'meter_series.sh' 2>/dev/null") if(&webui_meter_series_alive());
  system("sudo pkill -9 -f 'spotread_wrapper' 2>/dev/null");
- system("sudo pkill -9 -x spotread 2>/dev/null");
- system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
- system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ if(&webui_meter_series_alive() || !$series_was_alive) {
+  system("sudo pkill -9 -x spotread 2>/dev/null");
+  system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
+  system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ }
  &webui_meter_session_ready_cleanup();
  &webui_meter_series_ready_cleanup();
+ &webui_meter_series_stop_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  &webui_meter_read_state_write('{"status":"idle","message":"Measurement stopped"}');
  # Mark state as cancelled (if still running or paused in a setup wizard)
- if(-f $_meter_series_file) {
-  my $json="";
-  if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
-  if($json=~/"status"\s*:\s*"(?:running|setup)"/) {
-   $json=~s/"status"\s*:\s*"(?:running|setup)"/"status":"cancelled"/;
-   $json=~s/,\s*"awaiting_ready"\s*:\s*true//g;
-   $json=~s/,\s*"awaiting_ready_reason"\s*:\s*"[^"]*"//g;
-   $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Cancelled"/;
-   if(open(my $fh,">",$_meter_series_file)) { print $fh $json; close($fh); chmod(0666,$_meter_series_file); }
-  }
- }
+ &webui_meter_series_cancel_state();
  # Clean up stale temp files so new series starts fresh
  unlink("/tmp/spotread_port_cache");
  # Remove any leftover spotread pipes/output files
@@ -16465,16 +16527,16 @@ async function meterSpectroSetupAck(){
  if(!r||r.status==='error'){ if(btn) btn.disabled=false; toast(r&&r.message?r.message:'Could not continue setup',true); }
  // On ok/ignored the next read-result poll updates or hides the modal.
 }
-function meterSpectroSetupCancel(){
+async function meterSpectroSetupCancel(){
  const modal=document.getElementById('meterSpectroSetupModal');
  if(modal){ modal.style.display='none'; uiSyncBodyScrollLock(); }
  if(meterSpectroSetupAckEndpoint==='/api/meter/series/ready'||meterSeriesSpectroSetupActive){
-  meterStop();
+  await meterStop();
   return;
  }
  // Cancel the right job: the CCSS helper during CCSS creation, otherwise the
  // meter session.
- fetchJSON(meterSpectroSetupCancelEndpoint||'/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ await fetchJSON(meterSpectroSetupCancelEndpoint||'/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000}).catch(()=>null);
 }
 
 function meterSeriesSpectroSetupApplyFromStatus(r){
@@ -16882,22 +16944,21 @@ function meterResumeContinuousAfterPriorityWrite(pauseState){
  },75);
 }
 
-function meterStop(){
+async function meterStop(){
  const fullReportSeriesActive=!!(meterFullAutoCalRunning&&meterSeriesRunning&&!meterLg3dAutoCalRunning&&!meterAutoCalRunning);
  if(meterLg3dAutoCalRunning){
-  meterStopLg3dAutoCal();
-  return;
+  return meterStopLg3dAutoCal();
  }
  if(meterAutoCalRunning){
-  meterStopAutoCal();
-  return;
+  return meterStopAutoCal();
  }
  if(meterFullAutoCalRunning&&!fullReportSeriesActive){
-  meterFullAutoCalAbort('Full Auto Cal stopped',false);
-  return;
+  return meterFullAutoCalAbort('Full Auto Cal stopped',false);
  }
+ const hadContinuousStop=meterContinuousActive||meterContinuousSuspendedForLgWrite||meterManualPromptAwaiting;
  meterStopContinuous();
  if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
+ const hadSeriesStop=meterSeriesRunning||meterSeriesAwaitingReady||meterSeriesSpectroSetupActive;
  meterSeriesRunning=false;
  meterSeriesAwaitingReady=false;
  meterSeriesSpectroSetupActive=false;
@@ -16905,8 +16966,7 @@ function meterStop(){
  meterPendingDeviceReadyAction=null;
  meterClearManualPromptAwaiting(true);
  meterSpectroSetupApply(null);
- meterActionPending=false;
- fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ meterActionPending=hadSeriesStop||hadContinuousStop;
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
@@ -16923,6 +16983,13 @@ function meterStop(){
  }
  meterHideWorkflowProgress();
  meterUpdateReadButtons();
+ try{
+  await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
+ }catch(e){
+ }finally{
+  meterActionPending=false;
+  meterUpdateReadButtons();
+ }
  if(fullReportSeriesActive) meterFullAutoCalAbort('Full Auto Cal stopped',false);
 }
 
