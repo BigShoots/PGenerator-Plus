@@ -10287,6 +10287,7 @@ let meterAutoCalPanelLightCommitTimer=null;
 let meterAutoCalLuminanceReadBusy=false;
 let meterAutoCalResetNotice='';
 let meterAutoCalPreflightResetDone=false;
+let meterAutoCalPreflightLgGeneration=null;
 let meterAutoCalResetInProgress=false;
 let meterAutoCalSetupReading=null;
 let meterAutoCalPendingConfig=null;
@@ -20071,6 +20072,7 @@ async function meterAutoCalRunPreflightReset(){
  let resetErrorMessage='';
  try{
   const ddcReset=await meterAutoCalResetDdc();
+  meterAutoCalPreflightLgGeneration=(ddcReset&&ddcReset.lg_generation)||(ddcReset&&ddcReset.picture_mode_reset&&ddcReset.picture_mode_reset.lg_generation)||null;
   let lutReset=null;
   if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow){
    if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
@@ -20084,6 +20086,7 @@ async function meterAutoCalRunPreflightReset(){
      ddc_baseline_reset:!!(ddcReset&&ddcReset.ddc_baseline_reset),
      ddc_1d_lut:!!(ddcReset&&ddcReset.ddc_1d_lut),
      ddc_reset_verified:!!(ddcReset&&ddcReset.ddc_reset_verified),
+     lg_generation:meterAutoCalPreflightLgGeneration||null,
      hdr_calman_reset:ddcReset&&ddcReset.hdr_calman_reset?{
       status:ddcReset.hdr_calman_reset.status||null,
       completed_at:Date.now()
@@ -20111,6 +20114,7 @@ async function meterAutoCalRunPreflightReset(){
   meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:meterAutoCalPreflightResetCompleteTitle(),message:'Click Continue when ready.'});
  }catch(e){
   meterAutoCalPreflightResetDone=false;
+  meterAutoCalPreflightLgGeneration=null;
   meterActionPending=false;
   if(meterAutoCalStopRequested){
    meterAutoCalSetOverlay(false,null);
@@ -21984,6 +21988,7 @@ function meterFullAutoCalTouchupTargetY(){
     target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
+    lg_generation:meterAutoCalPreflightLgGeneration||undefined,
     ...meterLgAutoCalBodyLumaBiasPayload(dtype),
     force_ddc_white_balance:true,
     restore_factory_levels:false,
@@ -22512,6 +22517,7 @@ async function meterStartAutoCal(options){
 	 meterAutoCalLuminanceReadBusy=false;
  meterAutoCalResetNotice='';
  meterAutoCalPreflightResetDone=false;
+ meterAutoCalPreflightLgGeneration=null;
  meterAutoCalResetInProgress=false;
  meterReadings=[];
  meterAutoCalLevelPreflight=null;
