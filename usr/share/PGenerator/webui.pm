@@ -12562,11 +12562,33 @@ function meterReadingLuminanceNits(reading){
  return null;
 }
 
+function meterReadingTargetsBlack(reading){
+ if(!reading) return false;
+ const name=String(reading.name||'').trim().toLowerCase();
+ if(name==='black'||name==='0%') return true;
+ const tYn=Number(reading.target_Yn);
+ return Number.isFinite(tYn)&&Math.abs(tYn)<1e-12;
+}
+
+function meterXyzIsBlack(xyz){
+ if(!xyz) return false;
+ const X=Number(xyz.X), Y=Number(xyz.Y), Z=Number(xyz.Z);
+ return Number.isFinite(X)&&Number.isFinite(Y)&&Number.isFinite(Z)&&
+  Math.abs(X)<1e-9&&Math.abs(Y)<1e-9&&Math.abs(Z)<1e-9;
+}
+
 function meterReadingXYZ(reading){
  if(!reading) return null;
  meterNormalizeMeasuredReading(reading);
  const Y=meterReadingLuminanceNits(reading);
- if(!(Y>0)) return null;
+ if(!(Y>0)){
+  if(Number(Y)===0&&meterReadingTargetsBlack(reading)){
+   const X=(reading.X!=null)?Number(reading.X):0;
+   const Z=(reading.Z!=null)?Number(reading.Z):0;
+   if(Number.isFinite(X)&&Number.isFinite(Z)&&Math.abs(X)<1e-9&&Math.abs(Z)<1e-9) return {X:0,Y:0,Z:0};
+  }
+  return null;
+ }
  if(reading.X!=null && reading.Y!=null && reading.Z!=null) return {X:reading.X,Y:reading.Y,Z:reading.Z};
  const x=(reading.x!=null)?Number(reading.x):NaN;
  const y=(reading.y!=null)?Number(reading.y):NaN;
@@ -12653,9 +12675,15 @@ function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
  if(!useColorForm && meterReadingIsGreyscale(reading) && xyz && xyz.Y>0){
   return meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight).value;
  }
- if(!xyz||!(xyz.Y>0)) return useColorForm ? NaN : 0;
- const wR=meterColorLabWhite();
  const mode=meterResolveGreyRefMode(modeOrIncl);
+ if(!xyz||!(xyz.Y>0)){
+  if(useColorForm&&meterXyzIsBlack(xyz)){
+   const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
+   if(meterXyzIsBlack(target)) return 0;
+  }
+  return useColorForm ? NaN : 0;
+ }
+ const wR=meterColorLabWhite();
  const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
  const labM=xyzToLab(xyz.X,xyz.Y,xyz.Z,wR.X,wR.Y,wR.Z);
  const labT=xyzToLab(target.X,target.Y,target.Z,wR.X,wR.Y,wR.Z);
@@ -24528,7 +24556,7 @@ function drawAllCharts(readings){
  meterEnsureChannelGammaCache(readings);
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
   // Color/saturation series — CIE chromaticity + color ΔE + readings table
-  const cr=readings.filter(r=>r.luminance!=null&&r.luminance>=0&&!meterIsWhiteReferenceReading(r));
+  const cr=readings.filter(r=>meterReadingHasLuminance(r)&&!meterIsWhiteReferenceReading(r));
   if(cr.length>0){
    drawCIEChart(cr);
    drawColorDeltaE2000Chart(cr);
@@ -25675,6 +25703,7 @@ function meterIsSelectedColorReading(rd){
  return !!(rd&&_selectedColorReadingName&&rd.name===_selectedColorReadingName);
 }
 function meterSelectedCIETargetColor(rd,baseColor){
+ if(meterReadingTargetsBlack(rd)) return meterIsSelectedColorReading(rd)?'#ffffff':'#aab6cb';
  return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
 }
 
@@ -25735,25 +25764,32 @@ function drawCIEChart(readings){
  // Plot target and measured points
  readings.forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
-  if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
-  const tgt=meterTargetChromaticityForReading(rd);
+  const hasMeasuredXY=!!(rd.x&&rd.y&&rd.x>0&&rd.y>0);
+  const targetXYZ=meterTargetXYZForReading(rd);
+  const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
+  if(!hasMeasuredXY&&!hasTarget) return;
+  const tgt=hasTarget?meterTargetChromaticityForReading(rd):null;
   const lumInfo=meterColorLuminanceInfo(rd);
-  const mx=rd.x, my=rd.y;
+  const mx=hasMeasuredXY?rd.x:null, my=hasMeasuredXY?rd.y:null;
   const targetColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
   const targetStrokeColor=meterSelectedCIETargetColor(rd,targetColor);
   const measuredColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
-  const tx=toX(tgt.x), ty=toY(tgt.y);
-  const px=toX(mx), py=toY(my);
-  // Error line
-  ctx.save();
-  ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(px,py);ctx.stroke();
-  ctx.restore();
+  const tx=tgt?toX(tgt.x):null, ty=tgt?toY(tgt.y):null;
+  const px=hasMeasuredXY?toX(mx):null, py=hasMeasuredXY?toY(my):null;
+  if(tgt&&hasMeasuredXY){
+   // Error line
+   ctx.save();
+   ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(px,py);ctx.stroke();
+   ctx.restore();
+  }
   // Target: crisp hollow square
-  const sq=6;
-  ctx.save();
-  ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
-  ctx.restore();
-  if(colorInclLum&&lumInfo.deltaPct!=null&&isFinite(lumInfo.deltaPct)){
+  if(tgt){
+   const sq=6;
+   ctx.save();
+   ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+   ctx.restore();
+  }
+  if(hasMeasuredXY&&colorInclLum&&lumInfo.deltaPct!=null&&isFinite(lumInfo.deltaPct)){
    const haloRadius=6+Math.min(16,Math.abs(lumInfo.deltaPct)*0.12);
    const haloColor=lumInfo.deltaPct>=0?'rgba(82,196,255,0.9)':'rgba(255,176,84,0.9)';
    ctx.save();
@@ -25764,11 +25800,13 @@ function drawCIEChart(readings){
    ctx.restore();
   }
   // Measured: solid circle
-  ctx.save();
-  ctx.fillStyle=measuredColor;ctx.beginPath();
-  ctx.arc(px,py,4.6,0,Math.PI*2);
-  ctx.fill();
-  ctx.restore();
+  if(hasMeasuredXY){
+   ctx.save();
+   ctx.fillStyle=measuredColor;ctx.beginPath();
+   ctx.arc(px,py,4.6,0,Math.PI*2);
+   ctx.fill();
+   ctx.restore();
+  }
  });
  drawCIETargetInset(ctx,readings,pad);
 }
