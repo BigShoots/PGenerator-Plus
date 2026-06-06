@@ -10333,6 +10333,7 @@ function meterFullAutoCalReportSeries(){
 let meterActionPending=false;
 let meterPingBusy=false;
 let meterSeriesAwaitingReady=false;
+let meterSeriesSpectroSetupActive=false;
 let meterReadySignalPending=false;
 let meterPendingDeviceReadyAction=null;
 let meterManualPromptAwaiting=false;
@@ -16447,6 +16448,45 @@ function meterSpectroSetupCancel(){
  // meter session.
  fetchJSON(meterSpectroSetupCancelEndpoint||'/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
 }
+
+function meterSeriesSpectroSetupApplyFromStatus(r){
+ if(!r||!r.awaiting_ready||!meterSelectedMeasurementRequiresReady()){
+  if(meterSeriesSpectroSetupActive){
+   meterSeriesSpectroSetupActive=false;
+   meterSpectroSetupApply(null);
+  }
+  return false;
+ }
+ const reason=String(r.awaiting_ready_reason||'').toLowerCase();
+ let setup=null;
+ if(reason==='calibration_setup'){
+  setup={
+   status:'setup',
+   step_id:1,
+   step:'calibrate_tile',
+   message:'Place the spectrophotometer flat on its white calibration tile, then click Calibrate.'
+  };
+ } else if(reason==='initial_measurement'){
+  setup={
+   status:'setup',
+   step_id:2,
+   step:'position_screen',
+   message:'Aim the meter at where the test patches appear on the screen, then click Ready.'
+  };
+ } else if(reason==='incorrect_position'){
+  setup={
+   status:'setup',
+   step_id:3,
+   step:'position_screen',
+   message:'Reposition the meter at the test patch area, then click Ready.'
+  };
+ }
+ if(!setup) return false;
+ meterSeriesSpectroSetupActive=true;
+ meterSpectroSetupApply(setup,'/api/meter/series/ready');
+ return true;
+}
+
 async function meterReadOnce(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
@@ -16815,9 +16855,11 @@ function meterStop(){
  if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
  meterSeriesRunning=false;
  meterSeriesAwaitingReady=false;
+ meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
  meterClearManualPromptAwaiting(true);
+ meterSpectroSetupApply(null);
  meterActionPending=false;
  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
@@ -17071,7 +17113,7 @@ function meterUpdateReadButtons(){
   stopBtn.disabled=!showStop;
  }
  if(readyBtn){
-  const readyVisible=meterSeriesAwaitingReady&&meterSelectedMeasurementRequiresReady();
+  const readyVisible=meterSeriesAwaitingReady&&meterSelectedMeasurementRequiresReady()&&!meterSeriesSpectroSetupActive;
   readyBtn.style.display=readyVisible?'':'none';
   readyBtn.disabled=!readyVisible||meterReadySignalPending;
   readyBtn.textContent=meterReadySignalPending?'Sending...':'Device Ready';
@@ -23184,7 +23226,9 @@ function meterClearSeriesRunUiState(){
  }
  meterSeriesRunning=false;
  meterSeriesAwaitingReady=false;
+ meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
+ meterSpectroSetupApply(null);
  meterGreyscaleLowEndPinned=false;
  meterGreyscaleLastCurrentKey=null;
  meterSharedSeriesId=null;
@@ -23217,6 +23261,7 @@ async function meterRunSeries(){
  _colorDetailPinned=false;
  meterSeriesRunning=true;
  meterSeriesAwaitingReady=false;
+ meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
  meterLastChartCount=0;
  meterGreyscaleLowEndPinned=false;
@@ -23272,6 +23317,7 @@ async function meterPollSeries(){
  const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
  if(!r) return;
 	 meterSeriesAwaitingReady=!!r.awaiting_ready;
+	 meterSeriesSpectroSetupApplyFromStatus(r);
 	 if(Array.isArray(r.steps)&&r.steps.length>0){
 	  meterSeriesSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
 	  meterSeriesSteps=meterApplyColorSeriesTargetWhiteReference(meterSeriesSteps,meterActiveSeriesType);
@@ -23288,7 +23334,9 @@ async function meterPollSeries(){
   }
   meterSeriesRunning=false;
   meterSeriesAwaitingReady=false;
+  meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
+  meterSpectroSetupApply(null);
     meterGreyscaleLowEndPinned=false;
     meterGreyscaleLastCurrentKey=null;
   meterSharedSeriesId=null;
@@ -23303,7 +23351,9 @@ async function meterPollSeries(){
    meterSeriesPolling=null;
   }
   meterSeriesAwaitingReady=false;
+  meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
+  meterSpectroSetupApply(null);
   return;
  }
  // Build set of completed IRE values for thumbnail highlighting
@@ -23381,7 +23431,9 @@ async function meterPollSeries(){
   meterSeriesPolling=null;
   meterSeriesRunning=false;
   meterSeriesAwaitingReady=false;
+  meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
+  meterSpectroSetupApply(null);
     meterGreyscaleLowEndPinned=false;
     meterGreyscaleLastCurrentKey=null;
   document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
