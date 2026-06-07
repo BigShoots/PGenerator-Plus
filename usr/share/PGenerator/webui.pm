@@ -5541,6 +5541,7 @@ sub webui_capabilities_json (@) {
  my $has_st2084=0; my $has_hlg=0;
  my $has_dv=0; my $dv_444_10b12b=0;
  my $edid_decode_available=(-x $edidparser) ? 1 : 0;
+ my $edid_parsed=0;
  my $kms_output_format=0;
  my $kms_dovi_output_metadata=0;
  my %vic_420; # "WxH@HZi" => 1
@@ -5553,10 +5554,11 @@ sub webui_capabilities_json (@) {
 
  if($edid_decode_available && $edid_path ne "" && -e $edid_path) {
   my $e=`timeout 5 $edidparser $edid_path 2>/dev/null`;
+  $edid_parsed=1 if(defined($e) && $e ne "");
 
   # Base color format support (CTA header)
-  $has_444=1 if($e=~/Supports YCbCr 4:4:4/);
-  $has_422=1 if($e=~/Supports YCbCr 4:2:2/);
+  $has_444=1 if($e=~/(?:Supports\s+)?YCbCr\s+4:4:4/i);
+  $has_422=1 if($e=~/(?:Supports\s+)?YCbCr\s+4:2:2/i);
 
   # HDMI VSDB deep color flags
   $dc_30=1 if($e=~/DC_30bit/);
@@ -5618,10 +5620,11 @@ sub webui_capabilities_json (@) {
   .",\"has_ycbcr444\":".($has_444?"true":"false")
   .",\"has_ycbcr422\":".($has_422?"true":"false")
   .",\"has_hdr_st2084\":".($has_st2084?"true":"false")
-	  .",\"has_hdr_hlg\":".($has_hlg?"true":"false")
+  .",\"has_hdr_hlg\":".($has_hlg?"true":"false")
 	  .",\"has_dv\":".($has_dv?"true":"false")
 	  .",\"dv_444_10b12b\":".($dv_444_10b12b?"true":"false")
   .",\"edid_decode_available\":".($edid_decode_available?"true":"false")
+  .",\"edid_parsed\":".($edid_parsed?"true":"false")
 	  .",\"vic_420\":[".join(",",@v420)."]}";
 }
 
@@ -8968,8 +8971,12 @@ document.getElementById('dv_map_mode').addEventListener('change',function(){
 });
 
 async function loadModes(quiet){
- modes=await fetchJSON('/api/modes',{_quiet:!!quiet,_timeoutMs:10000});
- if(!modes)return;
+ const fetched=await fetchJSON('/api/modes',{_quiet:!!quiet,_timeoutMs:10000});
+ if(!Array.isArray(fetched)||!fetched.length){
+  if(!quiet) toast('No display modes reported yet',true);
+  return;
+ }
+ modes=fetched;
  const sel=document.getElementById('mode_idx');
  sel.innerHTML='';
  modes.forEach(m=>{
@@ -9028,7 +9035,7 @@ async function loadCapabilities(quiet){
 
 // Determine which color formats are valid for a given mode + bit depth
 function getValidFormats(modeIdx,bpc){
- if(!caps||caps.edid_decode_available===false)return [0,1,2]; // fallback: Pi 5 supported formats
+ if(!caps||caps.edid_decode_available===false||caps.edid_parsed===false)return [0,1,2]; // fallback: Pi 5 supported formats
  const mode=modes.find(m=>String(m.idx)===String(modeIdx));
  const clock=mode?mode.clock:148500; // default 1080p60 if unknown
  const maxTmds=caps.max_tmds*1000; // MHz to kHz
@@ -9050,7 +9057,7 @@ function getValidFormats(modeIdx,bpc){
 
 // Determine which bit depths are valid for a given mode + color format
 function getValidBpc(modeIdx,fmt){
- if(!caps||caps.edid_decode_available===false)return [8,10,12];
+ if(!caps||caps.edid_decode_available===false||caps.edid_parsed===false)return [8,10,12];
  const mode=modes.find(m=>String(m.idx)===String(modeIdx));
  const clock=mode?mode.clock:148500;
  const maxTmds=caps.max_tmds*1000;
