@@ -2007,7 +2007,7 @@ my $request_dv_map_mode="";
 $request_dv_map_mode=$1 if($body=~/"dv_map_mode"\s*:\s*"?([0-9])"?/);
 $request_dv_map_mode="" unless($request_dv_map_mode eq "1" || $request_dv_map_mode eq "2");
 my $request_dv_interface="";
-$request_dv_interface=$1 if($body=~/"dv_interface"\s*:\s*"?([01])"?/);
+$request_dv_interface=$1 if($body=~/"dv_interface"\s*:\s*"?([012])"?/);
 if($signal_mode eq "dv") {
  $target_gamma="st2084";
 }
@@ -2087,7 +2087,7 @@ if($signal_mode eq "dv") {
  # shift outward (measured appears oversaturated vs target xy).
  my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
-my $dv_interface=0;
+my $dv_interface=($signal_mode eq "dv") ? &pg_dv_standard_interface() : 0;
  my $dv_tunnel_gamma=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 3.8 : 2.2;
  my $target_linear_to_signal=sub {
   my ($v)=@_;
@@ -5058,13 +5058,14 @@ sub webui_apply_config (@) {
    $changes{"dv_metadata"}="0";
    $changes{"eotf"}=($signal_mode eq "hlg") ? "3" : "2";
    $changes{"primaries"}="1";
-  } elsif($signal_mode eq "dv") {
+ } elsif($signal_mode eq "dv") {
+   my $dv_standard_interface=&pg_dv_standard_interface();
    $changes{"is_sdr"}="0";
    $changes{"is_hdr"}="1";
    $changes{"is_ll_dovi"}="0";
    $changes{"is_std_dovi"}="1";
    $changes{"dv_status"}="1";
-   $changes{"dv_interface"}="0";
+   $changes{"dv_interface"}=$dv_standard_interface;
    $changes{"eotf"}="2";
    $changes{"primaries"}="1";
    $changes{"max_bpc"}="8";
@@ -5120,9 +5121,9 @@ sub webui_apply_config (@) {
   $changes{"eotf"}="2";
   $changes{"primaries"}="1";
   $changes{"rgb_quant_range"}="2";
-  $changes{"dv_profile"}="1";
-  $changes{"dv_color_space"}="0";
-  $changes{"dv_interface"}="0";
+ $changes{"dv_profile"}="1";
+ $changes{"dv_color_space"}="0";
+  $changes{"dv_interface"}=&pg_dv_standard_interface();
   $changes{"dv_map_mode"}=$dv_map_mode;
   $changes{"dv_metadata"}=$dv_metadata;
   # Dolby Vision calibration uses RGB Full 8-bit tunneling; reject modes above
