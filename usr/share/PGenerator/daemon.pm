@@ -666,10 +666,39 @@ sub pattern_daemon {
       &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
      };
      #
+     # Helper: Dolby Vision over Calman is carried as RGB Full 8-bit tunneling.
+     # Later generic Calman format/range/bit-depth commands must not undo this.
+     #
+     my $calman_dv_active = sub {
+      return 1 if(int($pgenerator_conf{"dv_status"} || 0) == 1);
+      return 1 if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
+      return 1 if(int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
+      return 0;
+     };
+     my $calman_force_dv_rgb = sub {
+      return if(!$calman_dv_active->());
+      $calman_save_setting->("is_sdr","0");
+      $calman_save_setting->("is_hdr","1");
+      $calman_save_setting->("eotf","2");
+      $calman_save_setting->("is_ll_dovi","0");
+      $calman_save_setting->("is_std_dovi","1");
+      $calman_save_setting->("dv_status","1");
+      $calman_save_setting->("dv_interface","0");
+      $calman_save_setting->("dv_color_space","0");
+      $calman_save_setting->("color_format","0");
+      $calman_save_setting->("colorimetry","9");
+      $calman_save_setting->("primaries","1");
+      $calman_save_setting->("max_bpc","8");
+      $calman_save_setting->("rgb_quant_range","2");
+      $calman_rgb_quant_range=2;
+      &apply_source_rgb_quant_range("calman",2);
+     };
+     #
      # Helper: apply pending settings — restart pattern generator if dirty
      #
      my $calman_apply = sub {
       if($calman_settings_dirty) {
+       $calman_force_dv_rgb->();
        &log("Calman: applying pending settings (restarting pattern generator)");
        &pattern_generator_stop();
        &pattern_generator_start();
@@ -677,26 +706,27 @@ sub pattern_daemon {
       }
      };
     #
-    # Helper: align external DV mode requests with the existing Dolby Vision path used by
-    # the Web UI / legacy DeviceControl profiles. Preserve that transport
-    # combination and only switch the renderer map mode between
-    # 0=Perceptual, 1=Absolute, and 2=Relative.
+    # Helper: Calman DV calibration uses standard RGB Full 8-bit tunneling.
+    # Absolute/Relative select the renderer map mode only; they do not change
+    # the HDMI transport away from RGB 8-bit.
     #
     my $calman_set_dv_rgb = sub {
      my ($dv_map_mode,$dv_metadata)=@_;
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
-     $calman_save_setting->("is_ll_dovi","1");
-      $calman_save_setting->("is_std_dovi","1");
+     $calman_save_setting->("is_ll_dovi","0");
+     $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
-      $calman_save_setting->("dv_interface","1");
-      $calman_save_setting->("dv_color_space","0");
+     $calman_save_setting->("dv_interface","0");
+     $calman_save_setting->("dv_color_space","0");
      $calman_save_setting->("color_format","0");
      $calman_save_setting->("colorimetry","9");
      $calman_save_setting->("primaries","1");
-     $calman_save_setting->("max_bpc","12");
+     $calman_save_setting->("max_bpc","8");
      $calman_save_setting->("rgb_quant_range","2");
+     $calman_rgb_quant_range=2;
+     &apply_source_rgb_quant_range("calman",2);
      $calman_save_setting->("dv_map_mode","$dv_map_mode") if(defined $dv_map_mode && $dv_map_mode ne "");
      $calman_save_setting->("dv_metadata","$dv_metadata") if(defined $dv_metadata && $dv_metadata ne "");
     };
