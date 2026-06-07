@@ -120,7 +120,7 @@ sub normalize_dv_transport_conf(@) {
   is_sdr=>"0",
   is_hdr=>"1",
   eotf=>"2",
-  is_ll_dovi=>"0",
+  is_ll_dovi=>&pg_dv_standard_ll_flag(),
   is_std_dovi=>"1",
   dv_status=>"1",
   dv_interface=>&pg_dv_standard_interface(),
