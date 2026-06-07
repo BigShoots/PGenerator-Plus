@@ -298,7 +298,26 @@ def build_hdr_metadata(eotf, primaries, min_luma, max_luma, max_cll, max_fall):
     blob += struct.pack("<H", min_luma_raw)
     blob += struct.pack("<H", max_cll)
     blob += struct.pack("<H", max_fall)
-    return blob
+    # drm_hdr_output_metadata is 4-byte aligned by the kernel C struct.
+    return blob + (b"\x00" * ((4 - (len(blob) % 4)) % 4))
+
+def kms_colorspace_value(colorimetry, color_format):
+    if colorimetry == 2 and color_format == 0:
+        return 0
+    if colorimetry == 2:
+        return 2
+    if colorimetry == 9 and color_format == 0:
+        return 9
+    if colorimetry == 9:
+        return 10
+    return colorimetry
+
+def broadcast_rgb_value(quant_range):
+    if quant_range == 1:
+        return 2
+    if quant_range == 2:
+        return 1
+    return 0
 
 # ──────── Main ────────
 def main():
@@ -310,6 +329,8 @@ def main():
     is_hdr      = conf_int(cfg, "is_hdr", 0)
     eotf        = conf_int(cfg, "eotf", 0)
     colorimetry = conf_int(cfg, "colorimetry", 0)
+    color_format = conf_int(cfg, "color_format", 0)
+    quant_range = conf_int(cfg, "rgb_quant_range", 0)
     max_bpc     = conf_int(cfg, "max_bpc", 8)
     primaries   = conf_int(cfg, "primaries", 1)
     min_luma    = conf_float(cfg, "min_luma", 0.0)
@@ -365,15 +386,21 @@ def main():
         else:
             sys.stderr.write("drm_hdr_set: failed max_bpc (err=%d)\n" % ret)
 
-    # Set Colorimetry
-    pid_color = name_to_id.get("Colorimetry")
+    # Set Colorimetry/Colorspace
+    color_prop_name = "Colorimetry" if "Colorimetry" in name_to_id else "Colorspace"
+    pid_color = name_to_id.get(color_prop_name)
+    color_value = colorimetry if color_prop_name == "Colorimetry" else kms_colorspace_value(colorimetry, color_format)
     if pid_color:
         ret = set_object_property(fd, conn_id, DRM_MODE_OBJECT_CONNECTOR,
-                                  pid_color, colorimetry)
+                                  pid_color, color_value)
         if ret == 0:
-            sys.stderr.write("drm_hdr_set: colorimetry=%d\n" % colorimetry)
+            sys.stderr.write("drm_hdr_set: %s=%d\n" % (color_prop_name, color_value))
         else:
-            sys.stderr.write("drm_hdr_set: failed colorimetry (err=%d)\n" % ret)
+            sys.stderr.write("drm_hdr_set: failed %s (err=%d)\n" % (color_prop_name, ret))
+
+    pid_output = name_to_id.get("output format")
+    pid_range = name_to_id.get("rgb quant range") or name_to_id.get("Broadcast RGB")
+    range_value = broadcast_rgb_value(quant_range) if "Broadcast RGB" in name_to_id and not name_to_id.get("rgb quant range") else quant_range
 
     # Set HDR_OUTPUT_METADATA via atomic commit (blob props need atomic API)
     pid_hdr = name_to_id.get("HDR_OUTPUT_METADATA")
@@ -393,7 +420,11 @@ def main():
                 if pid_max_bpc:
                     atomic_props[pid_max_bpc] = max_bpc
                 if pid_color:
-                    atomic_props[pid_color] = colorimetry
+                    atomic_props[pid_color] = color_value
+                if pid_output:
+                    atomic_props[pid_output] = color_format
+                if pid_range:
+                    atomic_props[pid_range] = range_value
                 # Test first
                 ret = atomic_commit(fd, conn_id, atomic_props,
                     DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET)
