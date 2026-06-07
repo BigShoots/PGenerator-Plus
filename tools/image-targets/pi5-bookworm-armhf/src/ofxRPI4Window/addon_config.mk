@@ -23,7 +23,7 @@ meta:
 common:
 
 	ADDON_INCLUDES = src
-    ADDON_CFLAGS = -I/usr/include/libdrm -Wno-unused-variable -Wno-unused-value -Wno-unused-function
+    ADDON_CFLAGS = -I$(SYSROOT)/usr/include/libdrm -Wno-unused-variable -Wno-unused-value -Wno-unused-function
 	ADDON_LDFLAGS = -ldrm
     ADDON_LDFLAGS += -lgbm
 	ADDON_SOURCES_EXCLUDE += src/ofxRPI4Window/%
