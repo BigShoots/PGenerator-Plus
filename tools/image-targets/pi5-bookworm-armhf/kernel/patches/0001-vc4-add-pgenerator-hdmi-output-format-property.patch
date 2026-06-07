@@ -527,7 +527,7 @@ index 206ecf4..0088fde 100644
 -
 -		vc5_hdmi_set_csc_coeffs_swap(vc4_hdmi, csc);
 +		/*
-+		 * PGenerator pre-encodes RGB to Cb/Cr/Y in the fragment
++		 * PGenerator pre-encodes RGB to Y/Cb/Cr in the fragment
 +		 * shader. Keep the HDMI path in YCbCr mode, but avoid a second
 +		 * RGB->YUV conversion in the VC5 CSC.
 +		 */
