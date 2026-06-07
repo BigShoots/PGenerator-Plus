@@ -363,6 +363,18 @@ static void read_config(void) {
         if (*p == '\n') p++;
     }
 
+    if (dv_status == 1) {
+        max_bpc_override = 8;
+        output_fmt_override = 0;
+        output_fmt_found = 1;
+        colorimetry_override = 9;
+        colorimetry_found = 1;
+        rgb_qr_override = 2;
+        rgb_qr_found = 1;
+        dv_interface = 0;
+        write_log("DRM_OVERRIDE: Dolby Vision forcing RGB Full 8-bit transport\n");
+    }
+
     if (max_bpc_override > 0) {
         char num[24];
         itoa_simple(max_bpc_override, num);

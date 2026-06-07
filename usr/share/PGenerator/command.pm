@@ -87,6 +87,39 @@ sub release_source_rgb_quant_range (@) {
  return &apply_source_rgb_quant_range("webui",&webui_preferred_rgb_quant_range());
 }
 
+sub set_pgenerator_conf_runtime(@) {
+ my ($key,$value)=@_;
+ &sudo("SET_PGENERATOR_CONF",$key,$value);
+ $pgenerator_conf{$key}="$value";
+}
+
+sub normalize_dv_transport_conf(@) {
+ return if(
+  int($pgenerator_conf{"dv_status"} || 0) != 1 &&
+  int($pgenerator_conf{"is_ll_dovi"} || 0) != 1 &&
+  int($pgenerator_conf{"is_std_dovi"} || 0) != 1
+ );
+ my %wanted=(
+  is_sdr=>"0",
+  is_hdr=>"1",
+  eotf=>"2",
+  is_ll_dovi=>"0",
+  is_std_dovi=>"1",
+  dv_status=>"1",
+  dv_interface=>"0",
+  dv_color_space=>"0",
+  color_format=>"0",
+  colorimetry=>"9",
+  primaries=>"1",
+  max_bpc=>"8",
+  rgb_quant_range=>"2"
+ );
+ for my $key (sort keys %wanted) {
+  next if(($pgenerator_conf{$key} || "") eq $wanted{$key});
+  &set_pgenerator_conf_runtime($key,$wanted{$key});
+ }
+}
+
 ###############################################
 #  Apply DRM Connector Properties (KMS only)  #
 ###############################################
@@ -143,7 +176,7 @@ sub apply_drm_properties (@) {
  return if($connector_id eq "");
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
- $max_bpc=12 if($is_dv);
+ $max_bpc=8 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
   system("timeout 3 $modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
@@ -158,6 +191,7 @@ sub apply_drm_properties (@) {
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
+ $quant_range=2 if($is_dv);
  if($quant_range ne "") {
   system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
@@ -209,6 +243,7 @@ sub pattern_generator_start(@) {
   open(OPS,">$command_file");
   close(OPS);
  }
+ &normalize_dv_transport_conf();
  &auto_select_4k_mode();
  &apply_drm_properties();
  &get_hdmi_info();
@@ -392,8 +427,15 @@ sub pgenerator_cmd (@) {
   &sudo("SET_DISCOVERABLE","$1");
  }
  if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE):(.*)/) {
-  &sudo("SET_PGENERATOR_CONF",lc($1),$2);
-  $pgenerator_conf{lc($1)}=$2;
+  my $conf_key=lc($1);
+  my $conf_value=$2;
+  &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
+  $pgenerator_conf{$conf_key}=$conf_value;
+  if(($conf_key eq "dv_status" && $conf_value eq "1") ||
+     ($conf_key=~/^(is_ll_dovi|is_std_dovi)$/ && $conf_value eq "1") ||
+     ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {
+   &normalize_dv_transport_conf();
+  }
   unlink("$info_dir/GET_PGENERATOR_CONF_".uc($1).".info");
   unlink("$info_dir/GET_PGENERATOR_CONF_ALL.info");
  }

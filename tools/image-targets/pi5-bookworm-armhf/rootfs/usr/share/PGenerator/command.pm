@@ -160,29 +160,15 @@ sub requested_hdmi_tmds_khz(@) {
  return int($pixel_clock * $max_bpc / 8 + 0.5);
 }
 
-sub dv_low_latency_enabled(@) {
- return 0 if(!int($pgenerator_conf{"dv_status"} || 0));
- return 1 if(int($pgenerator_conf{"dv_interface"} || 0) == 1);
- return 1 if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
- return 0;
-}
-
 sub ensure_hdmi_bandwidth_mode(@) {
  return if(!$is_kms);
  my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
- my $is_lldv=&dv_low_latency_enabled();
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=($is_lldv ? 2 : 0) if($is_dv);
+ $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- if($is_dv) {
-  if($is_lldv) {
-   $max_bpc=12 if($max_bpc ne "10" && $max_bpc ne "12");
-  } else {
-   $max_bpc=8;
-  }
- }
+ $max_bpc=8 if($is_dv);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
 
@@ -285,20 +271,13 @@ sub drm_primary_plane_for_crtc(@) {
 sub prearm_drm_mode(@) {
  return if(!$is_kms);
  my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
- my $is_lldv=&dv_low_latency_enabled();
  my $is_hdr=int($pgenerator_conf{"is_hdr"} || 0);
  my $color_fmt=$pgenerator_conf{"color_format"};
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=($is_lldv ? 2 : 0) if($is_dv);
+ $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
- if($is_dv) {
-  if($is_lldv) {
-   $max_bpc=12 if($max_bpc ne "10" && $max_bpc ne "12");
-  } else {
-   $max_bpc=8;
-  }
- }
+ $max_bpc=8 if($is_dv);
  $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
  return if($mode_idx eq "");
  return if($color_fmt == 0 && $max_bpc <= 8 && !$is_hdr && !$is_dv);
@@ -350,7 +329,6 @@ sub prearm_drm_mode(@) {
 sub apply_drm_properties (@) {
  return if(!$is_kms);
  my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
- my $is_lldv=&dv_low_latency_enabled();
  # Find connected HDMI connector ID
  my $connector_id="";
  open(MT,"timeout 3 $modetest -c 2>/dev/null|");
@@ -364,13 +342,7 @@ sub apply_drm_properties (@) {
  return if($connector_id eq "");
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
- if($is_dv) {
-  if($is_lldv) {
-   $max_bpc=12 if($max_bpc ne "10" && $max_bpc ne "12");
-  } else {
-   $max_bpc=8;
-  }
- }
+ $max_bpc=8 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
   if(&modetest_connector_write($connector_id,"max bpc",$max_bpc)) {
    &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
@@ -382,7 +354,7 @@ sub apply_drm_properties (@) {
  # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
- $color_fmt=($is_lldv ? 2 : 0) if($is_dv);
+ $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
  if($color_fmt > 2) {
   &log("DRM: output format=$color_fmt is unsupported on Pi 5; using RGB output");
@@ -470,6 +442,33 @@ sub set_pgenerator_conf_runtime(@) {
  $pgenerator_conf{$key}="$value";
 }
 
+sub normalize_dv_transport_conf(@) {
+ return if(
+  int($pgenerator_conf{"dv_status"} || 0) != 1 &&
+  int($pgenerator_conf{"is_ll_dovi"} || 0) != 1 &&
+  int($pgenerator_conf{"is_std_dovi"} || 0) != 1
+ );
+ my %wanted=(
+  is_sdr=>"0",
+  is_hdr=>"1",
+  eotf=>"2",
+  is_ll_dovi=>"0",
+  is_std_dovi=>"1",
+  dv_status=>"1",
+  dv_interface=>"0",
+  dv_color_space=>"0",
+  color_format=>"0",
+  colorimetry=>"9",
+  primaries=>"1",
+  max_bpc=>"8",
+  rgb_quant_range=>"2"
+ );
+ for my $key (sort keys %wanted) {
+  next if(($pgenerator_conf{$key} || "") eq $wanted{$key});
+  &set_pgenerator_conf_runtime($key,$wanted{$key});
+ }
+}
+
 sub warm_hdr_rgb_transport(@) {
  return if(!$is_kms);
  return if(int($pgenerator_conf{"is_hdr"} || 0) != 1);
@@ -529,6 +528,7 @@ sub pattern_generator_start(@) {
   open(OPS,">$command_file");
   close(OPS);
  }
+ &normalize_dv_transport_conf();
  &auto_select_4k_mode();
  &ensure_hdmi_bandwidth_mode();
  &apply_drm_properties();
@@ -716,8 +716,15 @@ sub pgenerator_cmd (@) {
   &sudo("SET_DISCOVERABLE","$1");
  }
  if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE):(.*)/) {
-  &sudo("SET_PGENERATOR_CONF",lc($1),$2);
-  $pgenerator_conf{lc($1)}=$2;
+  my $conf_key=lc($1);
+  my $conf_value=$2;
+  &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
+  $pgenerator_conf{$conf_key}=$conf_value;
+  if(($conf_key eq "dv_status" && $conf_value eq "1") ||
+     ($conf_key=~/^(is_ll_dovi|is_std_dovi)$/ && $conf_value eq "1") ||
+     ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {
+   &normalize_dv_transport_conf();
+  }
   unlink("$info_dir/GET_PGENERATOR_CONF_".uc($1).".info");
   unlink("$info_dir/GET_PGENERATOR_CONF_ALL.info");
  }
