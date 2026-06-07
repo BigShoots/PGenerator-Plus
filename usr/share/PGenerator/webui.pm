@@ -2087,7 +2087,7 @@ if($signal_mode eq "dv") {
  # shift outward (measured appears oversaturated vs target xy).
  my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
-my $dv_interface=($signal_mode eq "dv") ? 1 : 0;
+my $dv_interface=0;
  my $dv_tunnel_gamma=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 3.8 : 2.2;
  my $target_linear_to_signal=sub {
   my ($v)=@_;
@@ -5107,7 +5107,7 @@ sub webui_apply_config (@) {
   my $dv_map_mode=(defined $changes{"dv_map_mode"} && $changes{"dv_map_mode"} ne "") ? $changes{"dv_map_mode"} : ($effective{"dv_map_mode"} || "2");
   my $dv_metadata="2";
   $changes{"max_bpc"}="8";
-  $changes{"is_ll_dovi"}="1";
+  $changes{"is_ll_dovi"}="0";
   $changes{"is_std_dovi"}="1";
   $changes{"dv_status"}="1";
   $changes{"color_format"}="0";
@@ -5117,7 +5117,7 @@ sub webui_apply_config (@) {
   $changes{"rgb_quant_range"}="2";
   $changes{"dv_profile"}="1";
   $changes{"dv_color_space"}="0";
-  $changes{"dv_interface"}="1";
+  $changes{"dv_interface"}="0";
   $changes{"dv_metadata"}=$dv_metadata;
   # Dolby Vision calibration uses RGB Full 8-bit tunneling; reject modes above
   # HDMI 2.0 TMDS bandwidth (600 MHz).
@@ -8887,7 +8887,7 @@ function applyConfigState(nextConfig){
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
  // DV settings
- setVal('dv_interface',config.dv_interface||'1');
+ setVal('dv_interface',config.dv_interface||'0');
  setVal('dv_map_mode',config.dv_map_mode||'2');
  if(sm==='dv'){
   syncDvOutputEotfState();
@@ -9136,7 +9136,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('primaries','1');
   setVal('max_bpc','10');
  }else if(sm==='dv'){
-  setVal('dv_interface','1');
+  setVal('dv_interface','0');
   setVal('eotf','2');
   setVal('color_format','0');
   setVal('colorimetry','9');
@@ -9293,7 +9293,7 @@ function updateDropdowns(){
  const bpcSel=document.getElementById('max_bpc');
  const modeSel=document.getElementById('mode_idx');
  if(sm==='dv'){
-  setVal('dv_interface','1');
+  setVal('dv_interface','0');
   const allowedBpc=['8'];
   const targetFmt='0';
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!==targetFmt;o.style.display=o.value===targetFmt?'':'none';});
@@ -10063,7 +10063,7 @@ function resetDefaults(){
  document.getElementById('max_cll').value='1000';
  document.getElementById('max_fall').value='400';
  setVal('dv_map_mode','2');
- setVal('dv_interface','1');
+ setVal('dv_interface','0');
  updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
@@ -10096,10 +10096,10 @@ async function applySettings(){
    max_fall:meterHdrMetadataFieldValue('max_fall','hdr10')});
  }else if(sm==='dv'){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
-   is_ll_dovi:'1',is_std_dovi:'1',
+   is_ll_dovi:'0',is_std_dovi:'1',
    dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'8',
    rgb_quant_range:'2',eotf:'2',
-   dv_interface:'1',
+   dv_interface:'0',
    dv_map_mode:getVal('dv_map_mode'),
    max_luma:meterHdrMetadataFieldValue('max_luma','dv'),
    min_luma:meterHdrMetadataFieldValue('min_luma','dv'),
@@ -18627,7 +18627,7 @@ function meterMeasurementSignalContext(payload){
  if(body.signal_mode==='dv'){
   body.target_gamma=meterDvAutoTargetGamma();
   body.dv_map_mode=getVal('dv_map_mode')||((config&&config.dv_map_mode)||'2');
-  body.dv_interface='1';
+  body.dv_interface='0';
  }
  body.max_luma=(document.getElementById('max_luma')||{}).value||((config&&config.max_luma)||'1000');
  if(body.measurement_meter_port==null){
