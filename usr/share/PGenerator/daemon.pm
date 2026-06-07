@@ -181,6 +181,57 @@ sub calman_reset_pattern_state (@) {
  &log("Calman: reset pattern state ($source)") if($source ne "");
 }
 
+sub calman_find_mode_idx (@) {
+ my ($req_w,$req_h,$req_ip,$req_rate)=@_;
+ return -1 if(!$req_h || !$req_rate);
+ $req_ip=defined($req_ip) && $req_ip ne "" ? lc($req_ip) : "p";
+ my $best_idx=-1;
+ my $best_score=0;
+ open(my $mt_fh,"$modetest 2>/dev/null|");
+ my $mt_connected=0;
+ while(my $ml=<$mt_fh>) {
+  $mt_connected=1 if($ml =~/\s+connected/);
+  next if(!$mt_connected);
+  next if($ml !~/^\s*#(\d+)\s+(\d+)x(\d+)(i?)\s+([\d.]+)\s+.*type:\s*(.*)/);
+  my ($m_idx,$m_w,$m_h,$m_i,$m_rate,$m_type)=($1,int($2),int($3),$4,$5,$6);
+  next if($m_h != $req_h);
+  my $m_ip=($m_i eq "i") ? "i" : "p";
+  next if($m_ip ne $req_ip);
+  my $m_rate_num=$m_rate + 0;
+  my $rate_match=(int($m_rate_num) == int($req_rate)) || (abs($m_rate_num - ($req_rate + 0)) < 0.25);
+  next if(!$rate_match);
+  my $score=0;
+  $score+=100 if($req_w && $m_w == $req_w);
+  $score+=10  if($m_type =~/userdef/);
+  $score+=5   if($m_type =~/preferred/);
+  $score+=1;
+  if($score > $best_score) {
+   $best_idx=$m_idx;
+   $best_score=$score;
+  }
+ }
+ close($mt_fh);
+ return $best_idx;
+}
+
+sub calman_apply_init_mode (@) {
+ my $init_mode_idx=$pgenerator_conf{"calman_mode_idx"} || "";
+ if($init_mode_idx eq "" || $init_mode_idx !~/^\d+$/) {
+  my $default_idx=&calman_find_mode_idx(1920,1080,"p",24);
+  if($default_idx >= 0) {
+   $init_mode_idx=$default_idx;
+   &sudo("SET_PGENERATOR_CONF","calman_mode_idx","$init_mode_idx");
+   $pgenerator_conf{"calman_mode_idx"}="$init_mode_idx";
+   &log("Calman: default init mode remembered as 1080p24 mode_idx=$init_mode_idx");
+  }
+ }
+ return if($init_mode_idx eq "" || $init_mode_idx !~/^\d+$/);
+ if(($pgenerator_conf{"mode_idx"} || "") ne $init_mode_idx) {
+  &log("Calman: INIT applying remembered mode_idx=$init_mode_idx");
+  &pgenerator_cmd("SET_MODE:$init_mode_idx");
+ }
+}
+
 sub calman_pattern_source_range (@) {
  return "LIMITED" if($calman_rgb_quant_range == 1);
  return "";
@@ -860,10 +911,12 @@ sub pattern_daemon {
      $type=~s/^\x02//;
      &log("Calman UPGCI: type=$type cmd=$pattern_cmd");
      #
-    # INIT — client handshake (just ACK, no state change)
+    # INIT — client handshake. Calman does not always send its selected
+    # resolution on connect, so apply the remembered/default Calman mode.
      #
      if($type eq "INIT") {
       &calman_reset_pattern_state("INIT");
+      &calman_apply_init_mode();
       &send_key_to_client($connection,"");
       last;
      }
@@ -1444,11 +1497,14 @@ sub pattern_daemon {
         }
        }
        close($mt_fh);
-       if($best_idx >= 0) {
-        &log("Calman: CONF_FORMAT matched mode_idx=$best_idx for ${req_h}${req_ip}${req_rate}");
-        &pgenerator_cmd("SET_MODE:$best_idx");
-        # Update cached resolution
-        &get_hdmi_info();
+      if($best_idx >= 0) {
+       &log("Calman: CONF_FORMAT matched mode_idx=$best_idx for ${req_h}${req_ip}${req_rate}");
+       &pgenerator_cmd("SET_MODE:$best_idx");
+       &sudo("SET_PGENERATOR_CONF","calman_mode_idx","$best_idx");
+       $pgenerator_conf{"calman_mode_idx"}="$best_idx";
+       &log("Calman: remembered CONF_FORMAT mode_idx=$best_idx");
+       # Update cached resolution
+       &get_hdmi_info();
        } else {
         &log("Calman: CONF_FORMAT no matching mode for ${req_h}${req_ip}${req_rate}");
        }
