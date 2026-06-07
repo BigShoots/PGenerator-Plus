@@ -59,8 +59,8 @@ sub pg_dv_standard_interface(@) {
    $model=~s/\0|\r|\n//g;
   }
  }
- # The Pi 4 patched vc4 DV stack emits the Dolby OUI only for interface 2.
- return "2" if($model =~/Raspberry Pi 4|Raspberry Pi Compute Module 4/);
+ # The Pi 4/400/CM4 patched vc4 DV stack emits the Dolby OUI only for interface 2.
+ return "2" if($model =~/Raspberry Pi 4|Raspberry Pi 400|Raspberry Pi Compute Module 4/);
  return "0";
 }
 
@@ -74,7 +74,7 @@ sub pg_dv_standard_ll_flag(@) {
    $model=~s/\0|\r|\n//g;
   }
  }
- return "1" if($model =~/Raspberry Pi 4|Raspberry Pi Compute Module 4/);
+ return "1" if($model =~/Raspberry Pi 4|Raspberry Pi 400|Raspberry Pi Compute Module 4/);
  return "0";
 }
 
