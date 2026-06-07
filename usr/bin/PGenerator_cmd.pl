@@ -217,6 +217,100 @@ sub ensure_wlan_client_ready(@) {
  }
 }
 
+sub wifi_ipv4(@) {
+ my $interface=shift;
+ return "" if(!defined $interface || $interface eq "");
+ if(defined $ip && &pgen_cmd_exists($ip)) {
+  my $addr=&pgen_capture($ip,"-o","-4","addr","show","dev",$interface,"scope","global");
+  foreach my $line (split(/\n/,$addr)) {
+   return $1 if($line=~/\sinet\s+(\d+\.\d+\.\d+\.\d+)\/\d+/);
+  }
+ } elsif(defined $ifconfig && &pgen_cmd_exists($ifconfig)) {
+  my $addr=&pgen_capture($ifconfig,$interface);
+  return $1 if($addr=~/inet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)/);
+ }
+ return "";
+}
+
+sub wifi_dhcp_process_running(@) {
+ my $interface=shift;
+ return 0 if(!defined $interface || $interface eq "");
+ my $ps=`ps aux 2>/dev/null`;
+ return ($ps=~/\bdhclient\b[^\n]*\b\Q$interface\E\b/ || $ps=~/\bdhcpcd\b[^\n]*\b\Q$interface\E\b/ || $ps=~/\budhcpc\b[^\n]*\b\Q$interface\E\b/) ? 1 : 0;
+}
+
+sub wifi_set_route_metric(@) {
+ my ($interface,$metric)=@_;
+ return if(!defined $interface || $interface eq "" || !defined $metric || $metric eq "");
+ return if(!defined $ip || !&pgen_cmd_exists($ip));
+ my $routes=&pgen_capture($ip,"-o","route","show","default","dev",$interface);
+ foreach my $line (split(/\n/,$routes)) {
+  next if($line !~ /\bvia\s+(\d+\.\d+\.\d+\.\d+)/);
+  my $gateway=$1;
+  &pgen_system_quiet($ip,"route","del","default","via",$gateway,"dev",$interface);
+  &pgen_system_quiet($ip,"route","replace","default","via",$gateway,"dev",$interface,"metric",$metric);
+ }
+}
+
+sub wifi_start_dhcp(@) {
+ my ($interface,$wait_seconds)=@_;
+ $wait_seconds=0 if(!defined $wait_seconds);
+ my $addr=&wifi_ipv4($interface);
+ if($addr ne "") {
+  &wifi_set_route_metric($interface,600) if($interface ne $eth_interface);
+  return $addr;
+ }
+ return "" if(!defined $interface || $interface eq "");
+
+ if(defined $dhclient && &pgen_cmd_exists($dhclient)) {
+  if($wait_seconds > 0 && defined $timeout && &pgen_cmd_exists($timeout)) {
+   &pgen_system_quiet($timeout,"$wait_seconds",$dhclient,"-1","-q",$interface);
+  } elsif(!&wifi_dhcp_process_running($interface)) {
+   &pgen_system_quiet($dhclient,"-nw",$interface);
+  }
+ } elsif(defined $dhcpcd && &pgen_cmd_exists($dhcpcd)) {
+  if($wait_seconds > 0 && defined $timeout && &pgen_cmd_exists($timeout)) {
+   &pgen_system_quiet($timeout,"$wait_seconds",$dhcpcd,"-n",$interface);
+  } elsif(!&wifi_dhcp_process_running($interface)) {
+   &pgen_system_quiet($dhcpcd,"-n",$interface);
+  }
+ } elsif(defined $udhcpc && &pgen_cmd_exists($udhcpc)) {
+  if($wait_seconds > 0 && defined $timeout && &pgen_cmd_exists($timeout)) {
+   &pgen_system_quiet($timeout,"$wait_seconds",$udhcpc,"-i",$interface,"-q");
+  } elsif(!&wifi_dhcp_process_running($interface)) {
+   &pgen_system_quiet($udhcpc,"-i",$interface,"-q","-b");
+  }
+ }
+
+ $addr=&wifi_ipv4($interface);
+ &wifi_set_route_metric($interface,600) if($addr ne "" && $interface ne $eth_interface);
+ return $addr;
+}
+
+sub wifi_release_dhcp(@) {
+ my $interface=shift;
+ return if(!defined $interface || $interface eq "");
+ &pgen_system_quiet($dhclient,"-r",$interface) if(defined $dhclient && &pgen_cmd_exists($dhclient));
+ &pgen_system_quiet($dhcpcd,"-k",$interface) if(defined $dhcpcd && &pgen_cmd_exists($dhcpcd));
+ &pgen_system_quiet($ip,"addr","flush","dev",$interface,"scope","global") if(defined $ip && &pgen_cmd_exists($ip));
+}
+
+sub wifi_wait_completed(@) {
+ my ($interface,$ssid,$seconds)=@_;
+ $seconds=15 if(!defined $seconds || $seconds <= 0);
+ my $tries=$seconds*2;
+ for(my $i=0;$i<$tries;$i++) {
+  my $status=&pgen_capture($wpa_cli,"-i",$interface,"status");
+  my $state="";
+  my $connected_ssid="";
+  $state=$1 if($status=~/^wpa_state=(.*)$/m);
+  $connected_ssid=$1 if($status=~/^ssid=(.*)$/m);
+  return 1 if($state eq "COMPLETED" && (!defined $ssid || $ssid eq "" || $connected_ssid eq $ssid));
+  usleep(500000);
+ }
+ return 0;
+}
+
 ###############################################
 #             Wifi Scan function              #
 ###############################################
@@ -233,6 +327,19 @@ sub wifi_status (@) {
  &ensure_wlan_client_ready($interface);
  $response=&pgen_capture($wpa_cli,"-i",$interface,"status");
  chomp($response);
+ my $has_ip=($response=~/^ip_address=/m) ? 1 : 0;
+ my $state="";
+ $state=$1 if($response=~/^wpa_state=(.*)$/m);
+ if($state eq "COMPLETED" && $has_ip) {
+  &wifi_set_route_metric($interface,600) if($interface ne $eth_interface);
+ } elsif($state eq "COMPLETED" && !$has_ip) {
+  my $addr=&wifi_ipv4($interface);
+  $addr=&wifi_start_dhcp($interface,0) if($addr eq "");
+  if($addr ne "") {
+   $response.="\n" if($response ne "" && $response!~/\n$/);
+   $response.="ip_address=$addr";
+  }
+ }
  print $response;
 }
 
@@ -543,9 +650,19 @@ sub wifi_apply_conf (@) {
  &pgen_system_quiet($wpa_cli,"-i",$interface,"enable_network",$netid);
  &pgen_system_quiet($wpa_cli,"-i",$interface,"select_network",$netid);
  &pgen_system_quiet($wpa_cli,"-i",$interface,"save_config");
+ &wifi_release_dhcp($interface);
  &pgen_system_quiet($wpa_cli,"-i",$interface,"reconfigure");
  &pgen_system_quiet($wpa_cli,"-i",$interface,"reconnect");
- print "OK";
+ if(!&wifi_wait_completed($interface,$ssid,20)) {
+  print "ERR:WiFi association timed out";
+  return;
+ }
+ my $addr=&wifi_start_dhcp($interface,18);
+ if($addr ne "") {
+  print "OK\nip_address=$addr";
+ } else {
+  print "OK\nwarning=Associated but no IPv4 lease yet";
+ }
 }
 
 ###############################################
@@ -558,6 +675,7 @@ sub wifi_disconnect (@) {
  return if($interface eq "");
  return print "ERR:wpa_cli not found" if(!&pgen_cmd_exists($wpa_cli));
  &pgen_system_quiet($wpa_cli,"-i",$interface,"disconnect");
+ &wifi_release_dhcp($interface);
  print "OK";
 }
 
@@ -569,6 +687,7 @@ sub wifi_forget (@) {
  &pgen_system_quiet($wpa_cli,"-i",$interface,"remove_network","all");
  &pgen_system_quiet($wpa_cli,"-i",$interface,"save_config");
  &pgen_system_quiet($wpa_cli,"-i",$interface,"disconnect");
+ &wifi_release_dhcp($interface);
  print "OK";
 }
 
