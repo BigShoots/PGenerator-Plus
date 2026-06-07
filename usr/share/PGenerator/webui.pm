@@ -28090,7 +28090,8 @@ meterRenderGreyTvControls(null);
 
 function meterRefreshActiveSeriesCharts(){
 	 if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||meterAutoCalStatusActive()) return;
-	 meterSetActiveSeriesChartContext();
+	 const hasReadingContext=Array.isArray(meterReadings)&&meterReadings.some(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode));
+	 meterSetActiveSeriesChartContext(hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:null);
 	 meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
