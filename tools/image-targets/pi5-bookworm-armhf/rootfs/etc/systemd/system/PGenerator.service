@@ -7,6 +7,8 @@ ConditionPathExists=/etc/init.d/PGenerator
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
 ExecStart=/etc/init.d/PGenerator start
 ExecStop=/etc/init.d/PGenerator stop
 

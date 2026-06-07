@@ -63,6 +63,9 @@ sub pg_find_executable(@) {
 $wpa_cli=&pg_find_executable("/usr/bin/wpa_cli","/usr/sbin/wpa_cli");
 $wpa_passphrase=&pg_find_executable("/usr/bin/wpa_passphrase","/usr/sbin/wpa_passphrase");
 $wpa_supplicant=&pg_find_executable("/usr/sbin/wpa_supplicant","/usr/bin/wpa_supplicant");
+$dhclient=&pg_find_executable("/usr/sbin/dhclient","/sbin/dhclient","/usr/bin/dhclient","/bin/dhclient");
+$dhcpcd=&pg_find_executable("/usr/sbin/dhcpcd","/sbin/dhcpcd","/usr/bin/dhcpcd","/bin/dhcpcd");
+$udhcpc=&pg_find_executable("/usr/sbin/udhcpc","/sbin/udhcpc","/usr/bin/udhcpc","/bin/udhcpc");
 $ip=&pg_find_executable("/sbin/ip","/usr/sbin/ip","/bin/ip","/usr/bin/ip");
 $ifconfig=&pg_find_executable("/sbin/ifconfig","/usr/sbin/ifconfig","/bin/ifconfig","/usr/bin/ifconfig");
 $iw=&pg_find_executable("/usr/sbin/iw","/sbin/iw","/usr/bin/iw");

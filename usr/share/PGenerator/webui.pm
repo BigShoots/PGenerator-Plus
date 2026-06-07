@@ -5221,6 +5221,7 @@ sub webui_info_json (@) {
 
  # Read network info from device_info cached .info files (non-blocking)
  my @ips;
+ my %ip_seen;
  my @ip_files=glob("$info_dir/GET_IP-*.info");
  foreach my $f (@ip_files) {
   my ($iface)=$f=~/GET_IP-(.+)\.info$/;
@@ -5230,6 +5231,17 @@ sub webui_info_json (@) {
   next if(!$addr || $addr eq "N/A" || $addr eq "None" || $addr eq "");
   $addr=~s/"/\\"/g;
   push @ips, "\"$iface\":\"$addr\"";
+  $ip_seen{$iface}=1;
+ }
+ my $live_ip_out=`ip -o -4 addr show scope global 2>/dev/null`;
+ foreach my $line (split(/\n/,$live_ip_out)) {
+  next if($line !~ /^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)\/\d+/);
+  my ($iface,$addr)=($1,$2);
+  next if(!$iface || $iface eq "lo" || $ip_seen{$iface});
+  $iface=~s/"/\\"/g;
+  $addr=~s/"/\\"/g;
+  push @ips, "\"$iface\":\"$addr\"";
+  $ip_seen{$iface}=1;
  }
  my $ip_json="{".join(",",@ips)."}";
  my $ver=$version;
@@ -5726,8 +5738,18 @@ sub webui_wifi_connect (@) {
  if(!$ssid) {
   return '{"status":"error","message":"Missing SSID"}';
  }
- &sudo("WIFI_APPLYCONF","wlan0",$ssid,$psk||"");
- return "{\"status\":\"ok\",\"message\":\"Connecting to $ssid\"}";
+ my $raw=&sudo("WIFI_APPLYCONF","wlan0",$ssid,$psk||"");
+ chomp($raw);
+ if($raw!~/^OK\b/) {
+  $raw=~s/^ERR:?//;
+  $raw=&_webui_json_escape($raw||"WiFi connection failed");
+  return "{\"status\":\"error\",\"message\":\"$raw\"}";
+ }
+ my $safe_ssid=&_webui_json_escape($ssid);
+ my $ip="";
+ $ip=$1 if($raw=~/^ip_address=([0-9.]+)/m);
+ my $message=($ip ne "") ? "Connected to $safe_ssid" : "Connecting to $safe_ssid";
+ return "{\"status\":\"ok\",\"message\":\"$message\",\"ip\":\"$ip\"}";
 }
 
 sub webui_wifi_ap_json (@) {
@@ -5809,10 +5831,10 @@ sub webui_wifi_status_json (@) {
   if($line=~/^(\w+)\s*=\s*(.*)/) { $info{$1}=$2; }
  }
  my $ssid=$info{ssid}||"";
- $ssid=~s/"/\\"/g;
+ $ssid=&_webui_json_escape($ssid);
  my $state=$info{wpa_state}||"UNKNOWN";
  my $freq=$info{freq}||"";
- my $ip=$info{ip_address}||"";
+ my $ip=$info{ip_address}||&webui_mdns_iface_ip("wlan0")||"";
  my $bssid=$info{bssid}||"";
  # Get signal strength via iw
  my $signal="";
@@ -5822,6 +5844,12 @@ sub webui_wifi_status_json (@) {
  if($freq=~/^\d+$/) {
   $band=($freq>=5000)?"5 GHz":"2.4 GHz";
  }
+ $state=&_webui_json_escape($state);
+ $freq=&_webui_json_escape($freq);
+ $band=&_webui_json_escape($band);
+ $signal=&_webui_json_escape($signal);
+ $ip=&_webui_json_escape($ip);
+ $bssid=&_webui_json_escape($bssid);
  return "{\"status\":\"ok\",\"wpa_state\":\"$state\",\"ssid\":\"$ssid\",\"freq\":\"$freq\",\"band\":\"$band\",\"signal\":\"$signal\",\"ip\":\"$ip\",\"bssid\":\"$bssid\"}";
 }
 
@@ -10288,29 +10316,32 @@ async function connectWifi(){
  const psk=document.getElementById('wifiPsk').value;
  const btn=event.target;btn.disabled=true;btn.textContent='Connecting...';
  const r=await fetchJSON('/api/wifi/connect',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,psk})});
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,psk}),_timeoutMs:30000});
  if(r&&r.status==='ok'){
-  toast('Connecting to '+ssid+'...');
+  toast((r.message||('Connecting to '+ssid))+'...');
   hideWifiForm();
-  // Poll wifi status for up to 15 seconds
+  // Poll long enough for association plus DHCP lease acquisition.
   let attempts=0;
   const poll=setInterval(async()=>{
    attempts++;
    const ws=await fetchJSON('/api/wifi/status');
-   if(ws&&ws.wpa_state==='COMPLETED'&&ws.ssid===ssid){
+   if(ws&&ws.wpa_state==='COMPLETED'&&ws.ssid===ssid&&ws.ip){
     clearInterval(poll);
     const bandInfo=ws.band?' on '+ws.band:'';
     const sigInfo=ws.signal?' ('+ws.signal+' dBm)':'';
-    toast('Connected to '+ssid+bandInfo+sigInfo);
+    toast('Connected to '+ssid+bandInfo+sigInfo+' - '+ws.ip);
     loadInfo();
-   }else if(attempts>=10){
+   }else if(ws&&ws.wpa_state==='COMPLETED'&&ws.ssid===ssid&&attempts===4){
+    toast('Connected to '+ssid+', waiting for IP...');
+   }else if(attempts>=24){
     clearInterval(poll);
-    if(ws&&ws.wpa_state==='COMPLETED') toast('Connected to '+ws.ssid);
-    else toast('Connection to '+ssid+' may have failed — check status','err');
+    if(ws&&ws.wpa_state==='COMPLETED'&&ws.ip) toast('Connected to '+ws.ssid+' - '+ws.ip);
+    else if(ws&&ws.wpa_state==='COMPLETED') toast('Connected to '+ws.ssid+', but no IP lease yet','err');
+    else toast('Connection to '+ssid+' may have failed - check status','err');
     loadInfo();
    }
   },1500);
- }else toast('Connection failed','err');
+ }else toast((r&&r.message)?r.message:'Connection failed','err');
  btn.disabled=false;btn.textContent='Connect';
 }
 

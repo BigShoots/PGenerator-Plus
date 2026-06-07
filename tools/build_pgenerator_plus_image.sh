@@ -26,7 +26,7 @@ PI5_ADMIN_USER="pi"
 PI5_ADMIN_PASSWORD_HASH="$PI5_ROOT_PASSWORD_HASH"
 PI5_ADMIN_GROUPS="adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,render,netdev,gpio,i2c,spi"
 PI5_KEYBOARD_LAYOUT="us"
-PI5_LOCALE="en_US.UTF-8"
+PI5_LOCALE="C.UTF-8"
 PI5_ARGYLL_REQUIRED_LIBS=(libXss.so.1 liblzma.so.5 liblzma.so.0 libXxf86vm.so.1 libXrandr.so.2)
 PI5_RUNTIME_PACKAGES=(
  liburi-perl
@@ -1111,7 +1111,7 @@ configure_pi5_headless_first_boot() {
  touch "$keyboard_file"
  ensure_config_line "$keyboard_file" "XKBLAYOUT" "\"${PI5_KEYBOARD_LAYOUT:-us}\""
  touch "$locale_file"
- ensure_config_line "$locale_file" "LANG" "${PI5_LOCALE:-en_US.UTF-8}"
+ ensure_config_line "$locale_file" "LANG" "${PI5_LOCALE:-C.UTF-8}"
 
  rm -f "$userconfig_wants"
  ln -sfn /dev/null "$userconfig_mask"
