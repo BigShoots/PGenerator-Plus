@@ -734,23 +734,30 @@ sub pattern_daemon {
 
     #
     # HDR_ENABLE — external HDR toggle
-    # HDR_ENABLE:True → prepare for HDR (CONF_HDR follows with details)
-    # HDR_ENABLE:False → switch to SDR
+    # HDR_ENABLE:True -> prepare for HDR (CONF_HDR follows with details)
+    # HDR_ENABLE:False -> switch to SDR unless an active Dolby Vision workflow is
+    # already using HDR_ENABLE only to mean "not HDR10".
     #
      if($type eq "HDR_ENABLE") {
       if($pattern_cmd =~/^False$/i) {
-       &log("Calman: HDR_ENABLE=False — switching to SDR");
-       $calman_save_setting->("is_sdr","1");
-       $calman_save_setting->("is_hdr","0");
-       $calman_save_setting->("is_ll_dovi","0");
-       $calman_save_setting->("is_std_dovi","0");
-       $calman_save_setting->("dv_status","0");
-       $calman_save_setting->("eotf","0");
-       $calman_save_setting->("color_format","0");
-       $calman_save_setting->("colorimetry","2");
-       $calman_save_setting->("max_bpc","8");
-       # Apply immediately — DRM properties must change now, not on next pattern
-       $calman_apply->();
+       if($calman_dv_active->()) {
+        &log("Calman: HDR_ENABLE=False while Dolby Vision active — preserving DV tunnel");
+        $calman_force_dv_rgb->();
+        $calman_apply->();
+       } else {
+        &log("Calman: HDR_ENABLE=False — switching to SDR");
+        $calman_save_setting->("is_sdr","1");
+        $calman_save_setting->("is_hdr","0");
+        $calman_save_setting->("is_ll_dovi","0");
+        $calman_save_setting->("is_std_dovi","0");
+        $calman_save_setting->("dv_status","0");
+        $calman_save_setting->("eotf","0");
+        $calman_save_setting->("color_format","0");
+        $calman_save_setting->("colorimetry","2");
+        $calman_save_setting->("max_bpc","8");
+        # Apply immediately — DRM properties must change now, not on next pattern
+        $calman_apply->();
+       }
       }
       if($pattern_cmd =~/^True$/i) {
        &log("Calman: HDR_ENABLE=True — HDR requested, awaiting CONF_HDR");
@@ -1448,7 +1455,7 @@ sub pattern_daemon {
       my $sp_signal_mode=&webui_pattern_signal_mode("");
       my $sp_max_luma=&webui_pattern_max_luma("");
       if($sp_name eq "BRIGHTNESS") {
-       my $img="$var_dir/running/calman_brightness.png";
+       my $img=&webui_pattern_diag_image_file("calman_brightness");
        if(&webui_pattern_render_black_clipping($img,$w_s,$h_s,$sp_signal_mode,$sp_max_luma)) {
         my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
         $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
@@ -1460,7 +1467,7 @@ sub pattern_daemon {
         &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$black_rgb","$calman_bg","","","",1,"calman",$source_range);
        }
       } elsif($sp_name eq "CONTRAST") {
-       my $img="$var_dir/running/calman_contrast.png";
+       my $img=&webui_pattern_diag_image_file("calman_contrast");
        if(&webui_pattern_render_white_clipping($img,$w_s,$h_s,$sp_signal_mode,$sp_max_luma)) {
         my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
         $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
@@ -1472,7 +1479,7 @@ sub pattern_daemon {
         &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$white_rgb","$calman_bg","","","",1,"calman",$source_range);
        }
       } elsif($sp_name eq "ALIGNMENT" || $sp_name eq "OVERSCAN") {
-       my $img="$var_dir/running/calman_alignment.png";
+       my $img=&webui_pattern_diag_image_file("calman_alignment");
        if(&webui_pattern_render_overscan($img,$w_s,$h_s)) {
         my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
         $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
