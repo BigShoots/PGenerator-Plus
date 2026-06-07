@@ -1137,12 +1137,15 @@ bool ofxRPI4Window::InitDRM()
 	device = find_device();
 	/* give up drm master in case we are first */
 	ret =		drmDropMaster(device);
-	if (ret < 0)
-    {
-      ofLogError() << "DRM: - failed to drop drm master: " << strerror(errno);
-	  exit(1);
-      } else {
-        ofLog() << "DRM: - successfully dropped drm master";		
+	if (ret < 0) {
+		if (errno == EINVAL || errno == EPERM || errno == EACCES) {
+			ofLogWarning() << "DRM: - continuing after drmDropMaster: " << strerror(errno);
+		} else {
+			ofLogError() << "DRM: - failed to drop drm master: " << strerror(errno);
+			exit(1);
+		}
+	} else {
+		ofLog() << "DRM: - successfully dropped drm master";
 	}
     /* Programmer!! Save your sanity!!
      * VERY important or we won't get all the available planes on drmGetPlaneResources()!
@@ -3971,4 +3974,3 @@ ofxRPI4Window::~ofxRPI4Window()
     drmDropMaster(device);
     ::close(device); 
 }
-
