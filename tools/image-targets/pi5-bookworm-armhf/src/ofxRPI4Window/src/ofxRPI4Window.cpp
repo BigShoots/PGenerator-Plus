@@ -3450,20 +3450,22 @@ void ofxRPI4Window::ResetConnectorProperties()
 		drm_mode_atomic_set_property(device, req, rgb_quant_property, connectorId, prop_id, rgb_quant_range, prop, 0);
 	}		
 
-    //disable HDR Metadata
-	ok = drm_mode_get_property(device, connectorId,	DRM_MODE_OBJECT_CONNECTOR, "HDR_OUTPUT_METADATA", &prop_id, &blob_id, &prop);
-		
-	if (!ok) {
-		ofLogError() << "Unable to find or HDR_OUTPUT_METADATA not set";
-	} else {
+    //disable HDR Metadata unless the renderer is about to drive HDR/HLG
+	if (!isHDR || isDoVi || is_std_DoVi) {
+		ok = drm_mode_get_property(device, connectorId,	DRM_MODE_OBJECT_CONNECTOR, "HDR_OUTPUT_METADATA", &prop_id, &blob_id, &prop);
+			
+		if (!ok) {
+			ofLogError() << "Unable to find or HDR_OUTPUT_METADATA not set";
+		} else {
 
-		if (blob_id) {
-			drmModeDestroyPropertyBlob(device, blob_id);
-			blob_id = 0;
+			if (blob_id) {
+				drmModeDestroyPropertyBlob(device, blob_id);
+				blob_id = 0;
+			}
+			first_req = 1;
+			last_req = 1;
+			drm_mode_atomic_set_property(device, req, "HDR_OUTPUT_METADATA", connectorId, prop_id, blob_id, prop, DRM_MODE_ATOMIC_ALLOW_MODESET);
 		}
-		first_req = 1;
-		last_req = 1;
-		drm_mode_atomic_set_property(device, req, "HDR_OUTPUT_METADATA", connectorId, prop_id, blob_id, prop, DRM_MODE_ATOMIC_ALLOW_MODESET);
 	}
 		
     //disable DOVI Metadata
