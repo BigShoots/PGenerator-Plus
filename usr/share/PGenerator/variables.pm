@@ -64,6 +64,10 @@ sub pg_dv_standard_interface(@) {
  return "0";
 }
 
+sub pg_dv_standard_ll_flag(@) {
+ return (&pg_dv_standard_interface() eq "2") ? "1" : "0";
+}
+
 
 $not_connected="Disconnected";
 $no_info_available="No info available";

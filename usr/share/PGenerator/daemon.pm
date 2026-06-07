@@ -954,7 +954,7 @@ sub pattern_daemon {
       $calman_save_setting->("is_sdr","0");
       $calman_save_setting->("is_hdr","1");
       $calman_save_setting->("eotf","2");
-      $calman_save_setting->("is_ll_dovi","0");
+      $calman_save_setting->("is_ll_dovi",&pg_dv_standard_ll_flag());
       $calman_save_setting->("is_std_dovi","1");
       $calman_save_setting->("dv_status","1");
       $calman_save_setting->("dv_interface",&pg_dv_standard_interface());
@@ -997,7 +997,7 @@ sub pattern_daemon {
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
-     $calman_save_setting->("is_ll_dovi","0");
+     $calman_save_setting->("is_ll_dovi",&pg_dv_standard_ll_flag());
      $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
      $calman_save_setting->("dv_interface",&pg_dv_standard_interface());
