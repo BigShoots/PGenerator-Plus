@@ -123,7 +123,7 @@ sub normalize_dv_transport_conf(@) {
   is_ll_dovi=>"0",
   is_std_dovi=>"1",
   dv_status=>"1",
-  dv_interface=>"0",
+  dv_interface=>&pg_dv_standard_interface(),
   dv_metadata=>"$dv_metadata",
   dv_color_space=>"0",
   color_format=>"0",

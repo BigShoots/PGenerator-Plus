@@ -957,7 +957,7 @@ sub pattern_daemon {
       $calman_save_setting->("is_ll_dovi","0");
       $calman_save_setting->("is_std_dovi","1");
       $calman_save_setting->("dv_status","1");
-      $calman_save_setting->("dv_interface","0");
+      $calman_save_setting->("dv_interface",&pg_dv_standard_interface());
       $calman_save_setting->("dv_color_space","0");
       $calman_save_setting->("color_format","0");
       $calman_save_setting->("colorimetry","9");
@@ -1000,7 +1000,7 @@ sub pattern_daemon {
      $calman_save_setting->("is_ll_dovi","0");
      $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
-     $calman_save_setting->("dv_interface","0");
+     $calman_save_setting->("dv_interface",&pg_dv_standard_interface());
      $calman_save_setting->("dv_color_space","0");
      $calman_save_setting->("color_format","0");
      $calman_save_setting->("colorimetry","9");
