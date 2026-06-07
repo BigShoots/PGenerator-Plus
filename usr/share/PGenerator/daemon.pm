@@ -1387,12 +1387,18 @@ sub pattern_daemon {
       # Parse resolution string: <height><p|i><rate> or WxH, with optional Hz/@ spacing.
       my ($req_w,$req_h,$req_ip,$req_rate);
       my $default_rate=60;
+      my %std_w=(2160=>3840,1080=>1920,720=>1280,576=>720,480=>720);
       $default_rate=int($1 + 0) if($preferred_mode =~/\s([\d.]+)Hz/);
       if($fmt =~/Resolution\s*=\s*(\d+)\s*x\s*(\d+).*Refresh\s*=\s*([\d.]+)/i) {
        $req_w=int($1);
        $req_h=int($2);
        $req_ip="p";
        $req_rate=$3 + 0;
+      } elsif($fmt =~/Resolution\s*=\s*(\d+)\s*([pi])?.*Refresh\s*=\s*([\d.]+)/i && exists $std_w{int($1)}) {
+       $req_h=int($1);
+       $req_ip=defined($2) && $2 ne "" ? lc($2) : "p";
+       $req_rate=$3 + 0;
+       $req_w=$std_w{$req_h};
       } elsif($fmt =~/^(\d+)\s*x\s*(\d+)\s*([pi])?\s*(?:@|\/|\s)*\s*([\d.]+)?\s*(?:Hz)?/i) {
        $req_w=int($1);
        $req_h=int($2);
@@ -1403,8 +1409,12 @@ sub pattern_daemon {
        $req_ip=lc($2);
        $req_rate=defined($3) && $3 ne "" ? $3 + 0 : $default_rate;
        # Standard TV widths for each height (prefer these over non-standard like 4096x2160)
-       my %std_w=(2160=>3840,1080=>1920,720=>1280,576=>720,480=>720);
        $req_w=$std_w{$req_h} if(exists $std_w{$req_h});
+      } elsif($fmt =~/^(\d+)\s*(?:@|\/|\s)*\s*([\d.]+)?\s*(?:Hz)?$/i && exists $std_w{int($1)}) {
+       $req_h=int($1);
+       $req_ip="p";
+       $req_rate=defined($2) && $2 ne "" ? $2 + 0 : $default_rate;
+       $req_w=$std_w{$req_h};
       }
       &log("Calman: CONF_FORMAT parsed width=".($req_w||"")." height=".($req_h||"")." scan=".($req_ip||"")." rate=".($req_rate||"")) if($req_h);
       if($req_h && $req_rate) {
