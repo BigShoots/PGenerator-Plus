@@ -154,6 +154,7 @@ static uint16_t hdr_max_cll = 1000;
 static uint16_t hdr_max_fall = 400;
 static int dv_status = 0;
 static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
+static int dv_map_mode = 2;      /* 0=Perceptual, 1=Absolute, 2=Relative */
 static int conf_read = 0;
 
 /* DOVI blob injection state */
@@ -336,6 +337,11 @@ static void read_config(void) {
             p[12] == '=') {
             dv_interface = (p[13] - '0');
         }
+        if (p[0] == 'd' && p[1] == 'v' && p[2] == '_' && p[3] == 'm' &&
+            p[4] == 'a' && p[5] == 'p' && p[6] == '_' && p[7] == 'm' &&
+            p[8] == 'o' && p[9] == 'd' && p[10] == 'e' && p[11] == '=') {
+            dv_map_mode = (int)parse_uint_value(p + 12);
+        }
         if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
             p[4] == 'r' && p[5] == 'i' && p[6] == 'm' && p[7] == 'e' &&
             p[8] == 't' && p[9] == 'r' && p[10] == 'y' && p[11] == '=') {
@@ -371,7 +377,6 @@ static void read_config(void) {
         colorimetry_found = 1;
         rgb_qr_override = 2;
         rgb_qr_found = 1;
-        dv_interface = 0;
         write_log("DRM_OVERRIDE: Dolby Vision forcing RGB Full 8-bit transport\n");
     }
 
@@ -639,23 +644,27 @@ static uint32_t create_hdr_blob(int fd) {
  * Keep this only as a last-resort fallback for commits that omit
  * DOVI_OUTPUT_METADATA entirely.
  *
- * For drm_hdmi_infoframe_set_dovi_source_metadata():
- *   bytes 0-3: header (zeroes)
- *   byte 4:   interface flag (0=Standard, 1=Low-Latency)
- *   bytes 5-10: reserved (zeroes)
- *   byte 11:  DV param (0xb6)
+ * The Pi5 kernel patch reads this as struct vc4_dovi_output_metadata:
+ *   bytes 0-3:  Dolby OUI, little-endian
+ *   byte 4:     DV status
+ *   byte 5:     interface flag (0=Standard, 1=Low-Latency)
+ *   bytes 6-7:  backlight metadata
+ *   byte 8:     aux runmode / source mapping mode
+ *   bytes 9-10: aux version/debug
+ *   byte 11:    struct padding
  */
 static uint32_t create_dovi_blob(int fd) {
     if (dovi_blob_id) return dovi_blob_id;
 
     uint8_t metadata[12] = {
         0x46, 0xD0, 0x00, 0x00, /* Dolby OUI 00-D0-46 (LE u32) -> frame.oui */
+        0x01,  /* dv_status */
         0x00,  /* interface flag, filled from config below */
-        0x01,  /* DV version (vc4 requires == 1 to write VSIF) */
         0x00, 0x00, 0x00, 0x00, 0x00,
-        0xb6
+        0x00
     };
-    metadata[4] = dv_interface ? 0x01 : 0x00;
+    metadata[5] = dv_interface ? 0x01 : 0x00;
+    metadata[8] = (uint8_t)(dv_map_mode & 0xff);
 
     struct drm_mode_create_blob cb;
     cb.data = (uint64_t)(uintptr_t)metadata;
