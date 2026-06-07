@@ -5086,6 +5086,11 @@ sub webui_apply_config (@) {
   # YCbCr 4:2:2 renderer path is supported at 10-bit only.
   $changes{"max_bpc"}="10";
  }
+ if(!$dv_on && ($changes{"signal_mode"} eq "hdr10" || $changes{"signal_mode"} eq "hlg") && $effective_color_format == 0) {
+  # Pi HDMI/TV HDR handshakes are reliable with RGB Full; RGB Limited can
+  # leave some displays in SDR even when HDR metadata is present.
+  $changes{"rgb_quant_range"}="2";
+ }
  # Keys that require pattern generator restart
  my %restart_keys=map{$_=>1} qw(mode_idx eotf is_hdr is_sdr colorimetry primaries
   min_luma max_luma max_cll max_fall color_format max_bpc rgb_quant_range
@@ -9148,6 +9153,13 @@ function updateDropdowns(){
 
  // Bit depth filtering based on current mode + format
  const activeFmt=parseInt(getVal('color_format'))||0;
+ const hdrRgbFullOnly=(sm==='hdr10'||sm==='hlg')&&activeFmt===0;
+ Array.from(rngSel.options).forEach(function(o){
+  const ok=!hdrRgbFullOnly||o.value==='2';
+  o.disabled=!ok;
+  o.style.display=ok?'':'none';
+ });
+ if(hdrRgbFullOnly) rngSel.value='2';
  const validBpc=getValidBpc(modeIdx,activeFmt);
  Array.from(bpcSel.options).forEach(function(o){
   const v=parseInt(o.value);
