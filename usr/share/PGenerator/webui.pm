@@ -742,6 +742,51 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/wifi/ap/status" && $method eq "GET") {
+    my $json=&webui_wifi_ap_status_json();
+    my $len=length($json);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$json";
+   }
+   elsif($path eq "/api/wifi/ap/enable" && $method eq "POST") {
+    my $result=&webui_wifi_ap_control("enable");
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/wifi/ap/disable" && $method eq "POST") {
+    my $result=&webui_wifi_ap_control("disable");
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/bluetooth/status" && $method eq "GET") {
+    my $json=&webui_bluetooth_status_json();
+    my $len=length($json);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$json";
+   }
+   elsif($path eq "/api/bluetooth/power" && $method eq "POST") {
+    my $result=&webui_bluetooth_bool_control($body,"BT_SET_POWERED","Bluetooth power");
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/bluetooth/discoverable" && $method eq "POST") {
+    my $result=&webui_bluetooth_bool_control($body,"BT_SET_DISCOVERABLE","Bluetooth discoverable");
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/bluetooth/agent" && $method eq "POST") {
+    my $result=&webui_bluetooth_bool_control($body,"BT_SET_AGENT","Bluetooth pairing agent");
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/bluetooth/name" && $method eq "POST") {
+    my $result=&webui_bluetooth_set_name($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/bluetooth/pan/restart" && $method eq "POST") {
+    my $result=&webui_bluetooth_pan_restart();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/infoframes") {
     my $json=&webui_infoframes_json();
     my $len=length($json);
@@ -5693,12 +5738,54 @@ sub webui_wifi_ap_apply (@) {
  if(length($pass)<8) {
   return '{"status":"error","message":"Password must be at least 8 characters"}';
  }
- &sudo("WIFI_AP_APPLYCONF","$ssid","$pass");
- return '{"status":"ok","message":"WiFi AP updated and restarted"}';
+ my $raw=&sudo("WIFI_AP_APPLYCONF","$ssid","$pass");
+ chomp($raw);
+ if($raw=~/^OK/) {
+  return '{"status":"ok","message":"WiFi AP updated and restarted"}';
+ }
+ $raw=~s/^ERR:?//;
+ $raw=&_webui_json_escape($raw||"WiFi AP apply failed");
+ return '{"status":"error","message":"'.$raw.'"}';
+}
+
+sub webui_wifi_ap_control (@) {
+ my $action=shift;
+ my $raw="";
+ if($action eq "enable") {
+  $raw=&sudo("WIFI_AP_ENABLE","wlan0");
+ } elsif($action eq "disable") {
+  $raw=&sudo("WIFI_AP_DISABLE");
+ } else {
+  return '{"status":"error","message":"Unknown AP action"}';
+ }
+ chomp($raw);
+ if($raw=~/^OK/) {
+  return '{"status":"ok","message":"WiFi AP '.$action.'d"}';
+ }
+ $raw=~s/^ERR:?//;
+ $raw=&_webui_json_escape($raw||"WiFi AP $action failed");
+ return '{"status":"error","message":"'.$raw.'"}';
+}
+
+sub webui_wifi_ap_status_json (@) {
+ my $raw=&sudo("WIFI_AP_STATUS");
+ my %kv;
+ foreach my $line (split(/\n/,$raw)) {
+  if($line=~/^([A-Z_]+)=(.*)$/) { $kv{$1}=$2; }
+ }
+ my $available=($kv{AP_AVAILABLE} && $kv{AP_AVAILABLE} eq "1") ? "true" : "false";
+ my $active=($kv{AP_ACTIVE} && $kv{AP_ACTIVE} eq "1") ? "true" : "false";
+ my $dnsmasq_available=($kv{DNSMASQ_AVAILABLE} && $kv{DNSMASQ_AVAILABLE} eq "1") ? "true" : "false";
+ my $dnsmasq_active=($kv{DNSMASQ_ACTIVE} && $kv{DNSMASQ_ACTIVE} eq "1") ? "true" : "false";
+ my $gateway_ready=($kv{AP_GATEWAY_READY} && $kv{AP_GATEWAY_READY} eq "1") ? "true" : "false";
+ my $iface=&_webui_json_escape($kv{AP_INTERFACE}||"");
+ my $ap_net=&_webui_json_escape($kv{AP_NET}||"10.10.10");
+ my $address=&_webui_json_escape($kv{AP_ADDRESS}||(($kv{AP_NET}||"10.10.10").".1"));
+ return "{\"status\":\"ok\",\"available\":$available,\"active\":$active,\"interface\":\"$iface\",\"ap_net\":\"$ap_net\",\"address\":\"$address\",\"gateway_ready\":$gateway_ready,\"dnsmasq_available\":$dnsmasq_available,\"dnsmasq_active\":$dnsmasq_active}";
 }
 
 sub webui_wifi_status_json (@) {
- my $status=`timeout 3 wpa_cli -i wlan0 status 2>/dev/null`;
+ my $status=&sudo("GET_WIFI_STATUS","wlan0");
  my %info;
  foreach my $line (split(/\n/,$status)) {
   if($line=~/^(\w+)\s*=\s*(.*)/) { $info{$1}=$2; }
@@ -5718,6 +5805,82 @@ sub webui_wifi_status_json (@) {
   $band=($freq>=5000)?"5 GHz":"2.4 GHz";
  }
  return "{\"status\":\"ok\",\"wpa_state\":\"$state\",\"ssid\":\"$ssid\",\"freq\":\"$freq\",\"band\":\"$band\",\"signal\":\"$signal\",\"ip\":\"$ip\",\"bssid\":\"$bssid\"}";
+}
+
+sub webui_bluetooth_status_json (@) {
+ my $raw=&sudo("BT_STATUS");
+ my %kv;
+ foreach my $line (split(/\n/,$raw)) {
+  if($line=~/^([A-Z_]+)=(.*)$/) { $kv{$1}=$2; }
+ }
+ my ($adapter)="";
+ if($raw=~/ADAPTER_BEGIN\n(.*?)\nADAPTER_END/s) { $adapter=$1; }
+ my ($devices_raw)="";
+ if($raw=~/DEVICES_BEGIN\n(.*?)\nDEVICES_END/s) { $devices_raw=$1; }
+ my ($pan_raw)="";
+ if($raw=~/PAN_BEGIN\n(.*?)\nPAN_END/s) { $pan_raw=$1; }
+
+ my $powered=($raw=~/\bUP\b/i || $adapter=~/Powered:\s*yes/i) ? "true" : "false";
+ my $discoverable=($adapter=~/Discoverable:\s*yes/i) ? "true" : "false";
+ my $agent=($kv{AGENT} && $kv{AGENT} eq "1") ? "true" : "false";
+ my $pan_running=(($kv{NAP_RUNNING} && $kv{NAP_RUNNING} eq "1") || $pan_raw=~/\b(?:pan0|bnep\d+)\b.*\b(?:flags|inet)\b/s) ? "true" : "false";
+ my $available=(($kv{BLUETOOTHCTL_AVAILABLE} && $kv{BLUETOOTHCTL_AVAILABLE} eq "1") || $raw=~/HCI_BEGIN\n.+?\nHCI_END/s) ? "true" : "false";
+ my $pan_available=(($kv{PAND_AVAILABLE} && $kv{PAND_AVAILABLE} eq "1") || ($kv{BT_NETWORK_AVAILABLE} && $kv{BT_NETWORK_AVAILABLE} eq "1")) ? "true" : "false";
+ my $pan_net=&_webui_json_escape($kv{PAND_NET}||"10.10.11");
+ my @devices;
+ foreach my $line (split(/\n/,$devices_raw)) {
+  next if($line=~/^\s*$/);
+  my ($mac,$name);
+  if($line=~/Device\s+(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s+(.+)/) {
+   $mac=$1; $name=$3;
+  } elsif($line=~/(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s+(.+)/) {
+   $mac=$1; $name=$3;
+  }
+  next if(!$mac);
+  $mac=&_webui_json_escape($mac);
+  $name=&_webui_json_escape($name||"");
+  push @devices, "{\"mac\":\"$mac\",\"name\":\"$name\"}";
+ }
+ return "{\"status\":\"ok\",\"available\":$available,\"powered\":$powered,\"discoverable\":$discoverable,\"agent\":$agent,\"pan_running\":$pan_running,\"pan_available\":$pan_available,\"pan_net\":\"$pan_net\",\"devices\":[".join(",",@devices)."]}";
+}
+
+sub webui_bluetooth_bool_control (@) {
+ my ($body,$cmd,$label)=@_;
+ my $enabled=($body=~/"(?:enabled|value|on)"\s*:\s*(true|1|"true"|"1"|"on")/i) ? "on" : "off";
+ my $raw=&sudo($cmd,$enabled);
+ chomp($raw);
+ if($raw=~/^OK/) {
+  return '{"status":"ok","message":"'.&_webui_json_escape($label)." ".$enabled.'"}';
+ }
+ $raw=~s/^ERR:?//;
+ $raw=&_webui_json_escape($raw||"$label failed");
+ return '{"status":"error","message":"'.$raw.'"}';
+}
+
+sub webui_bluetooth_set_name (@) {
+ my $body=shift;
+ my ($name)=$body=~/"name"\s*:\s*"([^"]*)"/;
+ $name=~s/[^a-zA-Z0-9_ -]//g if(defined $name);
+ return '{"status":"error","message":"Name required"}' if(!defined $name || $name eq "");
+ my $raw=&sudo("BT_SET_NAME",$name);
+ chomp($raw);
+ if($raw=~/^OK/) {
+  return '{"status":"ok","message":"Bluetooth name updated"}';
+ }
+ $raw=~s/^ERR:?//;
+ $raw=&_webui_json_escape($raw||"Bluetooth name update failed");
+ return '{"status":"error","message":"'.$raw.'"}';
+}
+
+sub webui_bluetooth_pan_restart (@) {
+ my $raw=&sudo("BT_RESTART_PAN");
+ chomp($raw);
+ if($raw=~/^OK/) {
+  return '{"status":"ok","message":"Bluetooth PAN restarted"}';
+ }
+ $raw=~s/^ERR:?//;
+ $raw=&_webui_json_escape($raw||"Bluetooth PAN restart failed");
+ return '{"status":"error","message":"'.$raw.'"}';
 }
 
 sub webui_infoframes_json (@) {
@@ -8281,6 +8444,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <!-- WiFi AP (PAN) -->
  <div class="card" data-widget="ap" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>WiFi Access Point</h2>
+  <div class="info-grid" id="apStatus" style="margin-bottom:8px"></div>
   <div class="grid">
    <div class="field">
     <label>SSID</label>
@@ -8293,8 +8457,26 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
   <div class="btn-row" style="margin-top:8px">
    <button class="btn btn-sm btn-primary" onclick="applyAP()">Save AP Settings</button>
+   <button class="btn btn-sm btn-success" onclick="controlAP('enable')">Start AP</button>
+   <button class="btn btn-sm btn-danger" onclick="controlAP('disable')">Stop AP</button>
   </div>
   <div style="margin-top:6px;font-size:.7rem;color:var(--text2)">Connect to this AP at 10.10.10.1</div>
+ </div>
+
+ <!-- Bluetooth PAN -->
+ <div class="card" data-widget="bluetooth" draggable="true">
+  <h2><span class="drag-handle">&#9776;</span>Bluetooth PAN</h2>
+  <div class="info-grid" id="btStatus" style="margin-bottom:8px"></div>
+  <div class="btn-row" style="margin-bottom:8px">
+   <button class="btn btn-sm btn-success" onclick="btSet('power',true)">Power On</button>
+   <button class="btn btn-sm btn-danger" onclick="btSet('power',false)">Power Off</button>
+   <button class="btn btn-sm btn-secondary" onclick="btSet('discoverable',true)">Discoverable</button>
+   <button class="btn btn-sm btn-secondary" onclick="btSet('agent',true)">Pairing Agent</button>
+  </div>
+  <div class="btn-row">
+   <button class="btn btn-sm btn-primary" onclick="btRestartPan()">Restart PAN</button>
+   <button class="btn btn-sm btn-secondary" onclick="loadBluetooth()">Refresh</button>
+  </div>
  </div>
 
  <!-- HDMI Infoframes -->
@@ -10235,6 +10417,16 @@ async function loadAP(){
   document.getElementById('apSsid').value=r.ssid||'';
   document.getElementById('apPass').value=r.password||'';
  }
+ const s=await fetchJSON('/api/wifi/ap/status',{_quiet:true,_timeoutMs:10000});
+ const el=document.getElementById('apStatus');
+ if(el&&s&&s.status==='ok'){
+  el.innerHTML='';
+  addInfo(el,'State',s.active?'Running':'Stopped');
+  addInfo(el,'Interface',s.interface||'-');
+  addInfo(el,'DHCP',s.dnsmasq_active?'Running':'Stopped');
+  addInfo(el,'Gateway',s.gateway_ready?'Ready':'Unavailable');
+  addInfo(el,'Address',s.address||((s.ap_net||'10.10.10')+'.1'));
+ }
 }
 
 async function applyAP(){
@@ -10244,8 +10436,42 @@ async function applyAP(){
  if(password.length<8){toast('Password must be at least 8 characters','err');return;}
  const r=await fetchJSON('/api/wifi/ap',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password})});
- if(r&&r.status==='ok') toast('AP settings saved — reconnect to new SSID');
- else toast(r&&r.error?r.error:'AP apply failed','err');
+ if(r&&r.status==='ok'){toast('AP settings saved');loadAP();}
+ else toast(r&&(r.message||r.error)?(r.message||r.error):'AP apply failed','err');
+}
+
+async function controlAP(action){
+ const r=await fetchJSON('/api/wifi/ap/'+action,{method:'POST'});
+ if(r&&r.status==='ok'){toast(r.message||'AP '+action+'d');setTimeout(loadAP,1000);}
+ else toast(r&&(r.message||r.error)?(r.message||r.error):'AP '+action+' failed','err');
+}
+
+async function loadBluetooth(){
+ const r=await fetchJSON('/api/bluetooth/status',{_quiet:true,_timeoutMs:10000});
+ const el=document.getElementById('btStatus');
+ if(!el||!r||r.status!=='ok') return;
+ el.innerHTML='';
+ addInfo(el,'Power',r.powered?'On':'Off');
+ addInfo(el,'Visible',r.discoverable?'Yes':'No');
+ addInfo(el,'Agent',r.agent?'Running':'Stopped');
+ addInfo(el,'PAN',r.pan_running?'Running':'Stopped');
+ addInfo(el,'Network',(r.pan_net||'10.10.11')+'.1');
+ if(Array.isArray(r.devices)&&r.devices.length) addInfo(el,'Devices',r.devices.length);
+}
+
+async function btSet(kind,enabled){
+ const map={power:'/api/bluetooth/power',discoverable:'/api/bluetooth/discoverable',agent:'/api/bluetooth/agent'};
+ const path=map[kind];
+ if(!path)return;
+ const r=await fetchJSON(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+ if(r&&r.status==='ok'){toast(r.message||'Bluetooth updated');setTimeout(loadBluetooth,800);}
+ else toast(r&&(r.message||r.error)?(r.message||r.error):'Bluetooth command failed','err');
+}
+
+async function btRestartPan(){
+ const r=await fetchJSON('/api/bluetooth/pan/restart',{method:'POST'});
+ if(r&&r.status==='ok'){toast(r.message||'Bluetooth PAN restarted');setTimeout(loadBluetooth,1000);}
+ else toast(r&&(r.message||r.error)?(r.message||r.error):'Bluetooth PAN restart failed','err');
 }
 
 async function resolveConnect(){
@@ -28249,6 +28475,7 @@ function initCardCollapse(){
  setTimeout(()=>loadCecStatus(),500);
  __PG_LG_INIT__
  setTimeout(()=>loadAP(),1000);
+ setTimeout(()=>loadBluetooth(),1200);
  setTimeout(()=>loadInfoframes(),1500);
  setTimeout(()=>checkUpdate(),60000);
  setInterval(checkPing,10000);
@@ -28256,6 +28483,7 @@ function initCardCollapse(){
  setInterval(syncRemoteConfig,10000);
  setInterval(()=>loadInfo(true),30000);
  setInterval(()=>loadCecStatus(),5000);
+ setInterval(()=>loadBluetooth(),30000);
  // Meter: check immediately on load, then repoll shortly after and every 10s
  meterCheckStatus();
  setTimeout(()=>meterCheckStatus(),2000);
