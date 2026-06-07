@@ -3541,7 +3541,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			updateHDR_Infoframe(ofxRPI4Window::eotf, hdr_primaries);// Display Gamut P3D65
 			struct avi_infoframe avi_infoframe;
 //			if (hdr_primaries == 1)
-				avi_infoframe.colorimetry = 9; //BT2020_RGB
+			avi_infoframe.colorimetry = 9; //BT2020_RGB
 //			if (hdr_primaries == 2)
 //				avi_infoframe.colorimetry = 11; //P3-D65	
 			avi_infoframe.rgb_quant_range = avi_info.rgb_quant_range; //Full range [0-255]
@@ -3550,6 +3550,9 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.c_enc = (avi_infoframe.colorimetry == 9) ? 2 : ((avi_infoframe.colorimetry == 2) ? 1 : 0); // match plane YCbCr encoding to selected colorimetry
 			avi_infoframe.c_range = (avi_infoframe.rgb_quant_range == 2) ? 1 : 0;
 			updateAVI_Infoframe(HDRplaneId, avi_infoframe);	  
+			// Reassert HDR metadata after the final AVI/range commit so RGB
+			// Limited does not remain latched in SDR on some Pi 5 sinks.
+			updateHDR_Infoframe(ofxRPI4Window::eotf, hdr_primaries);
 
 		} else if (isHDR && isDoVi && !is_std_DoVi) {
 
