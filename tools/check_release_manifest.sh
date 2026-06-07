@@ -31,6 +31,7 @@ REQUIRED_PATHS=(
   usr/share/PGenerator/version.pm
   usr/share/PGenerator/webui.pm
   var/lib/PGenerator/operations.txt
+  var/lib/PGenerator/frames
   var/lib/PGenerator/running/tmp
 )
 

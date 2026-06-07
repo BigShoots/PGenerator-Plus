@@ -640,6 +640,7 @@ reset_runtime_state() {
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/tmp"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/images"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/video/.diagseq"
+ mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/frames"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/ccss/custom"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/lg/ddc"
  mkdir -p "$ROOT_MOUNT/var/lib/PGenerator/lg/luts"
@@ -1594,6 +1595,7 @@ fix_permissions() {
  ensure_pgenerator_dir "var/lib/PGenerator/images" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/video" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/video/.diagseq" 0775
+ ensure_pgenerator_dir "var/lib/PGenerator/frames" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/ccss" 0755
  ensure_pgenerator_dir "var/lib/PGenerator/ccss/custom" 0755
  ensure_pgenerator_dir "var/lib/PGenerator/lg" 0775

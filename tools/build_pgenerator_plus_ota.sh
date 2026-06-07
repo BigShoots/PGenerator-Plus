@@ -249,6 +249,7 @@ stage_overlay() {
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/tmp"
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/images"
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/video/.diagseq"
+ mkdir -p "$STAGING_DIR/var/lib/PGenerator/frames"
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/ccss/custom"
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/lg/ddc"
  mkdir -p "$STAGING_DIR/var/lib/PGenerator/lg/luts"
