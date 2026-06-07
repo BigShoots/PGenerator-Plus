@@ -444,7 +444,7 @@ sub pgenerator_cmd (@) {
   unlink("$info_dir/GET_DISCOVERABLE.info");
   &sudo("SET_DISCOVERABLE","$1");
  }
- if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE):(.*)/) {
+ if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE|SIGNAL_MODE):(.*)/) {
   my $conf_key=lc($1);
   my $conf_value=$2;
   &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
@@ -517,6 +517,7 @@ sub pgenerator_cmd (@) {
    unlink("$info_dir/GET_REFRESH.info");
    unlink("$info_dir/GET_OUTPUT_RANGE.info");
    unlink("$info_dir/GET_RESOLUTION.info");
+   &invalidate_hdmi_info_cache();
   }
   # End for RPI p4
   &pattern_generator_stop();
@@ -985,6 +986,11 @@ sub sync(@) {
 #         Get Hdmi Info function              #
 ###############################################
 my $_hdmi_info_cache_time = 0;
+sub invalidate_hdmi_info_cache() {
+ $_hdmi_info_cache_time=0;
+ $hdmi_info="";
+}
+
 sub get_hdmi_info() {
  # Cache for 3 seconds to avoid redundant modetest calls within the same info cycle
  if(time() - $_hdmi_info_cache_time < 3 && $hdmi_info ne "") {
