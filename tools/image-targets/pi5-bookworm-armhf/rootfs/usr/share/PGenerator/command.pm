@@ -472,13 +472,13 @@ sub set_pgenerator_conf_runtime(@) {
 
 sub warm_hdr_rgb_transport(@) {
  return if(!$is_kms);
- return if(&kms_connector_has_hdr_metadata());
  return if(int($pgenerator_conf{"is_hdr"} || 0) != 1);
  return if(int($pgenerator_conf{"dv_status"} || 0) == 1);
  return if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
  return if(int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
  return if(($pgenerator_conf{"color_format"} || "0") ne "0");
  return if(($pgenerator_conf{"max_bpc"} || 8) < 10);
+ &log("DRM: HDR metadata is present before warm-up; reasserting anyway") if(&kms_connector_has_hdr_metadata());
 
  my %orig=(
   color_format => ($pgenerator_conf{"color_format"} || "0"),
@@ -495,6 +495,7 @@ sub warm_hdr_rgb_transport(@) {
 
  &apply_drm_properties();
  &prearm_drm_mode();
+ &apply_hdr_metadata_helper();
  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $pattern_generator $w_s $h_s >/dev/null 2>&1 &");
  usleep(2200000);
  &apply_drm_properties();
@@ -507,6 +508,7 @@ sub warm_hdr_rgb_transport(@) {
  }
  &apply_drm_properties();
  &prearm_drm_mode();
+ &apply_hdr_metadata_helper();
  &log("DRM: restored requested HDR RGB output after warm-up");
 }
 
@@ -531,7 +533,9 @@ sub pattern_generator_start(@) {
  &ensure_hdmi_bandwidth_mode();
  &apply_drm_properties();
  &prearm_drm_mode();
+ &apply_hdr_metadata_helper();
  &warm_hdr_rgb_transport();
+ &apply_hdr_metadata_helper();
  &get_hdmi_info();
  if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry") && !&kms_connector_has_property("output format")) {
   $use_drm_override=0;
