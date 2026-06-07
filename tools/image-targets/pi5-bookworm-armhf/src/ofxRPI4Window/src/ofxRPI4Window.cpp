@@ -1749,7 +1749,13 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		vec4 RGBtoYCbCr(vec4 rgb)
 		{
 			float Y, Cb, Cr, a;
-			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
+			float y_scale = float(scale);
+			float y_offset = 0.0;
+			if (scalar1 != (scale + 1)) {
+				y_scale = float(scalar2);
+				y_offset = float(offset) / 8.0;
+			}
+			Y = round(coeffs_num.x * rgb.r*y_scale + coeffs_num.y* rgb.g*y_scale + coeffs_num.z * rgb.b*y_scale + y_offset);
 			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
 			Cr = round((coeffs_div.z * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.y) * rgb.g*float(scale) - (coeffs_num.z/coeffs_div.y) * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
 			a = 1.0;

@@ -186,10 +186,40 @@ modetest_prop_value() {
  awk -v prop="$prop" '
   $0 ~ "^[[:space:]]*[0-9]+[[:space:]]+" && index($0, prop ":") {
    capture=1
+   waiting_blob_value=0
+   is_blob=0
    next
   }
+  capture && $1 == "flags:" && index($0, "blob") {
+   is_blob=1
+  }
   capture && $1 == "value:" {
-   print $2
+   if (NF > 1) {
+    print $2
+    exit
+   }
+   if (is_blob) {
+    waiting_blob_value=1
+    next
+   }
+   print ""
+   exit
+  }
+  capture && waiting_blob_value && $0 ~ /^[[:space:]]*$/ {
+   next
+  }
+  capture && waiting_blob_value && $0 ~ "^[[:space:]]*[0-9]+[[:space:]][^:]+:" {
+   print ""
+   exit
+  }
+  capture && waiting_blob_value && $0 ~ "^[0-9]+[[:space:]][0-9]+[[:space:]]" {
+   print ""
+   exit
+  }
+  capture && waiting_blob_value {
+   value=$1
+   gsub(/[^0-9A-Fa-f]/, "", value)
+   print value
    exit
   }
   capture && $0 ~ "^[[:space:]]*[0-9]+[[:space:]][^:]+:" {
@@ -203,7 +233,13 @@ blob_is_set() {
  local prop="$2"
  local value
  value="$(modetest_prop_value "$file" "$prop" || true)"
- [[ "$value" =~ ^[0-9]+$ ]] && [[ "$value" -gt 0 ]]
+ if [[ "$value" =~ ^[0-9A-Fa-f]{8,}$ ]]; then
+  [[ "$value" =~ [1-9A-Fa-f] ]]
+ elif [[ "$value" =~ ^[0-9]+$ ]]; then
+  [[ "$value" -gt 0 ]]
+ else
+  false
+ fi
 }
 
 write_local_integrity() {
@@ -276,8 +312,16 @@ config_body_for_case() {
     "$signal" "$color_format" "$quant_range" "$max_bpc" "$colorimetry" "$eotf" "$primaries"
    ;;
   dv)
-   printf '{"signal_mode":"dv","is_sdr":"0","is_hdr":"1","is_ll_dovi":"1","is_std_dovi":"1","dv_status":"1","dv_interface":"0","dv_profile":"1","dv_color_space":"0","dv_map_mode":"%s","dv_metadata":"%s","color_format":"0","rgb_quant_range":"2","max_bpc":"12","colorimetry":"9","eotf":"2","primaries":"1","max_luma":"1000","min_luma":"0.005","max_cll":"1000","max_fall":"400"}' \
-    "$dv_map_mode" "$dv_metadata"
+   local dv_interface="0"
+   local is_ll_dovi="0"
+   local is_std_dovi="1"
+   if [[ "$color_format" == "2" ]]; then
+    dv_interface="1"
+    is_ll_dovi="1"
+    is_std_dovi="0"
+   fi
+   printf '{"signal_mode":"dv","is_sdr":"0","is_hdr":"1","is_ll_dovi":"%s","is_std_dovi":"%s","dv_status":"1","dv_interface":"%s","dv_profile":"1","dv_color_space":"0","dv_map_mode":"%s","dv_metadata":"%s","color_format":"%s","rgb_quant_range":"%s","max_bpc":"%s","colorimetry":"%s","eotf":"2","primaries":"1","max_luma":"1000","min_luma":"0.005","max_cll":"1000","max_fall":"400"}' \
+    "$is_ll_dovi" "$is_std_dovi" "$dv_interface" "$dv_map_mode" "$dv_metadata" "$color_format" "$quant_range" "$max_bpc" "$colorimetry"
    ;;
   *)
    die "Unknown signal for config: $signal"
@@ -489,10 +533,18 @@ run_matrix() {
  run_case "sdr_y444_8_limited"      "sdr"   "1" "1" "8"  "2" "0" "0" "0" "0" "1" "0" "0" "128" "255"
  run_case "sdr_y444_10_limited"     "sdr"   "1" "1" "10" "2" "0" "0" "0" "0" "1" "0" "0" "512" "1023"
  run_case "sdr_y422_10_limited"     "sdr"   "2" "1" "10" "2" "0" "0" "0" "0" "2" "0" "0" "512" "1023"
+ run_case "hdr10_rgb_10_limited"    "hdr10" "0" "1" "10" "9" "2" "1" "0" "0" "0" "1" "0" "512" "1023"
  run_case "hdr10_y444_10_limited"   "hdr10" "1" "1" "10" "9" "2" "1" "0" "0" "1" "1" "0" "512" "1023"
+ run_case "hdr10_y422_10_limited"   "hdr10" "2" "1" "10" "9" "2" "1" "0" "0" "2" "1" "0" "512" "1023"
+ run_case "hlg_rgb_10_limited"      "hlg"   "0" "1" "10" "9" "3" "1" "0" "0" "0" "1" "0" "512" "1023"
  run_case "hlg_y444_10_limited"     "hlg"   "1" "1" "10" "9" "3" "1" "0" "0" "1" "1" "0" "512" "1023"
- run_case "dv_relative_rgb12_full"  "dv"    "0" "2" "12" "9" "2" "1" "2" "4" "0" "0" "1" "128" "255"
- run_case "dv_absolute_rgb12_full"  "dv"    "0" "2" "12" "9" "2" "1" "1" "3" "0" "0" "1" "128" "255"
+ run_case "hlg_y422_10_limited"     "hlg"   "2" "1" "10" "9" "3" "1" "0" "0" "2" "1" "0" "512" "1023"
+ run_case "dv_standard_relative_rgb8_full"  "dv" "0" "2" "8"  "9" "2" "1" "2" "4" "0" "0" "1" "128" "255"
+ run_case "dv_standard_absolute_rgb8_full"  "dv" "0" "2" "8"  "9" "2" "1" "1" "3" "0" "0" "1" "128" "255"
+ run_case "dv_lldv_relative_y422_10_full"  "dv" "2" "2" "10" "9" "2" "1" "2" "4" "2" "0" "1" "512" "1023"
+ run_case "dv_lldv_absolute_y422_10_full"  "dv" "2" "2" "10" "9" "2" "1" "1" "3" "2" "0" "1" "512" "1023"
+ run_case "dv_lldv_relative_y422_12_full"  "dv" "2" "2" "12" "9" "2" "1" "2" "4" "2" "0" "1" "512" "1023"
+ run_case "dv_lldv_absolute_y422_12_full"  "dv" "2" "2" "12" "9" "2" "1" "1" "3" "2" "0" "1" "512" "1023"
 }
 
 main() {

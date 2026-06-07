@@ -44,6 +44,17 @@ PI5_RUNTIME_PACKAGES=(
  libxrandr2
  libdrm-tests
  edid-decode
+ wpasupplicant
+ hostapd
+ dnsmasq
+ isc-dhcp-server
+ bluez
+ bluez-tools
+ python3-dbus
+ python3-gi
+ rfkill
+ iw
+ net-tools
 )
 PI5_RUNTIME_REQUIRED_PATHS=(
  usr/bin/modetest
@@ -63,6 +74,17 @@ PI5_RUNTIME_REQUIRED_PATHS=(
  usr/lib/arm-linux-gnueabihf/libEGL.so.1
  usr/lib/arm-linux-gnueabihf/libXxf86vm.so.1
  usr/lib/arm-linux-gnueabihf/libXrandr.so.2
+ usr/sbin/wpa_cli
+ usr/sbin/hostapd
+ usr/sbin/dnsmasq
+ usr/sbin/dhcpd
+ usr/bin/bluetoothctl
+ usr/bin/bt-network
+ usr/lib/python3/dist-packages/dbus
+ usr/lib/python3/dist-packages/gi
+ usr/sbin/rfkill
+ usr/sbin/iw
+ usr/sbin/ifconfig
 )
 TARGET_OVERLAY_REL=""
 TARGET_DESCRIPTION=""

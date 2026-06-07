@@ -937,9 +937,9 @@ sub wpa_cli () {
  my $cmd = shift;
  my $interface = "wlan0";
  my @el=split(":",$cmd,2);
- return if(($process_pid=&process_pid("$wpa_cli","get")) eq "");
  return &sudo("$el[0]","$interface") if($el[0] eq "WIFI_SCAN" || $el[0] eq "GET_WIFI_STATUS");
  if($el[0] eq "GETNETCONFIGURED") {
+  return "" if(!-f $wifi_conf);
   open(CONF,"$wifi_conf");
   while(<CONF>) {
    next if($_=~/^#/);
@@ -951,6 +951,7 @@ sub wpa_cli () {
   @info=split(":",$el[1],2);
   return &sudo("$el[0]","$info[0]","$info[1]");
  }
+ return &sudo("$el[0]","$interface") if($el[0] eq "WIFI_AP_STATUS" || $el[0] eq "WIFI_AP_ENABLE" || $el[0] eq "WIFI_AP_DISABLE");
  if($el[0] eq "WIFI_APPLYCONF") {
   @info=split(":",$el[1],2);
   return &sudo("$el[0]","$interface","$info[0]","$info[1]");

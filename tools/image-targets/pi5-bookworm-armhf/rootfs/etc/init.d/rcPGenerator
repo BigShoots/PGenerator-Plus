@@ -168,6 +168,53 @@ sanitize_pi5_display_config () {
  fi
 }
 
+pgenerator_cmd () {
+ local encoded=""
+ local arg
+ for arg in "$@"; do
+  encoded="$encoded $(printf '%s' "$arg" | base64 | tr -d '\n')"
+ done
+ PG_CMD="${encoded# }" /usr/bin/PGenerator_cmd.pl 2>/dev/null || true
+}
+
+init_pi5_network_services () {
+ local wpa_conf="/etc/wpa_supplicant/wpa_supplicant.conf"
+ local wpa_dir="/var/run/wpa_supplicant"
+
+ mkdir -p "$(dirname "$wpa_conf")" "$wpa_dir" /var/log/PGenerator
+ if [ ! -f "$wpa_conf" ]; then
+  {
+   echo "ctrl_interface=DIR=$wpa_dir GROUP=pgenerator"
+   echo "update_config=1"
+   echo "country=US"
+  } > "$wpa_conf"
+  chmod 0600 "$wpa_conf"
+ fi
+
+ command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi || true
+ command -v ip >/dev/null 2>&1 && ip link set wlan0 up 2>/dev/null || true
+ command -v iw >/dev/null 2>&1 && iw dev wlan0 set power_save off 2>/dev/null || true
+
+ if command -v systemctl >/dev/null 2>&1; then
+  systemctl start wpa_supplicant >/dev/null 2>&1 || true
+ fi
+ if command -v wpa_supplicant >/dev/null 2>&1 && [ ! -S "$wpa_dir/wlan0" ]; then
+  wpa_supplicant -B -i wlan0 -c "$wpa_conf" >/dev/null 2>&1 || true
+  sleep 1
+ fi
+
+ if command -v hostapd >/dev/null 2>&1; then
+  pgenerator_cmd WIFI_AP_ENABLE wlan0 >/dev/null 2>&1 || true
+ fi
+
+ if command -v bluetoothctl >/dev/null 2>&1; then
+  pgenerator_cmd BT_SET_POWERED on >/dev/null 2>&1 || true
+  pgenerator_cmd BT_SET_DISCOVERABLE on >/dev/null 2>&1 || true
+  pgenerator_cmd BT_SET_AGENT on >/dev/null 2>&1 || true
+  pgenerator_cmd BT_RESTART_PAN >/dev/null 2>&1 || true
+ fi
+}
+
 rc_PGenerator_start () { 
  PROJECT="RPI3"
  MODEL=$(cat /proc/device-tree/model)
@@ -184,8 +231,10 @@ rc_PGenerator_start () {
  # End Patch for RPI 3 Model B Plus to fix bluetooth mac address 
  if [ "$1" == "start" ]; then
   if [ "$PROJECT" == "RPI5" ]; then
+   exec > /tmp/rcPGenerator.log 2>&1
    ensure_pgenerator_service_account
    sanitize_pi5_display_config
+   init_pi5_network_services
    /bin/sync
    return 0
   fi
