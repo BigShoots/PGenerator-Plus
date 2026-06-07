@@ -319,8 +319,9 @@ for dst, src in (("r_code", "r"), ("g_code", "g"), ("b_code", "b")):
         reading[dst] = step[src]
 
 for field in (
-    "input_max", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
-    "analysis_ire", "target_ire", "transport_stimulus",
+	"input_max", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
+	"signal_mode", "target_gamma", "max_luma", "dv_map_mode",
+	"analysis_ire", "target_ire", "transport_stimulus",
     "target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
     "dv_absolute_white_y", "dv_absolute_target_y", "dv_absolute_rolloff_pct",
     "dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
