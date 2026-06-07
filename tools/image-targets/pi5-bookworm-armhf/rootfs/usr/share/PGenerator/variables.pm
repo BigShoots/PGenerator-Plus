@@ -65,7 +65,7 @@ sub pg_dv_standard_interface(@) {
 }
 
 sub pg_dv_standard_ll_flag(@) {
- return (&pg_dv_standard_interface() eq "2") ? "1" : "0";
+ return "0";
 }
 
 
