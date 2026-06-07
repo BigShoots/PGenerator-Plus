@@ -1553,6 +1553,7 @@ fix_permissions() {
   "usr/bin/meter_session.sh"
   "usr/bin/meter_usb_reset.sh"
   "usr/bin/oeminst"
+  "usr/bin/pgsethdr"
   "usr/bin/pgenerator-bnep-hook.sh"
   "usr/bin/pgenerator-bt-agent"
   "usr/bin/resize_PGenerator_disk"

@@ -1766,7 +1766,7 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		//	    Cr = dot(rgb.rgb, vec3(coeffs_div.z, -coeffs_num.y/coeffs_div.y, -coeffs_num.z/coeffs_div.y)) + 0.5;
 
 			if (color_format == 1) {
-				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);
+				return vec4(Cb/float(normalizer),Cr/float(normalizer),Y/float(normalizer), a);
 			}
 			if (color_format == 2) {
 				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);

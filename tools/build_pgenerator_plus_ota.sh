@@ -23,6 +23,7 @@ TARGET_OWNED_RUNTIME_PATHS=(
  "usr/share/PGenerator/variables.pm"
  "usr/bin/PGeneratorDisplayMirror"
  "usr/bin/pgcec"
+ "usr/bin/pgsethdr"
  "usr/lib/drm_override.c"
  "usr/lib/drm_override.so"
  "usr/lib/scdc_tool"
