@@ -884,9 +884,16 @@ sub pattern_daemon {
       my ($conf_key,$conf_val)=@_;
       &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
       $pgenerator_conf{$conf_key}="$conf_val";
-        &sync_pattern_bits_default();
+      &sync_pattern_bits_default();
       $calman_settings_dirty=1;
       &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
+     };
+     my $calman_dv_metadata_for_map_mode = sub {
+      my $map_mode=shift;
+      return "2" if(defined $map_mode && $map_mode eq "0");
+      return "3" if(defined $map_mode && $map_mode eq "1");
+      return "4" if(defined $map_mode && $map_mode eq "2");
+      return "2";
      };
      #
      # Helper: Dolby Vision over Calman is carried as RGB Full 8-bit tunneling.
@@ -913,7 +920,7 @@ sub pattern_daemon {
       $calman_save_setting->("primaries","1");
       $calman_save_setting->("max_bpc","8");
       $calman_save_setting->("rgb_quant_range","2");
-      $calman_save_setting->("dv_metadata","2");
+      $calman_save_setting->("dv_metadata",$calman_dv_metadata_for_map_mode->($pgenerator_conf{"dv_map_mode"}));
       $calman_rgb_quant_range=2;
       &apply_source_rgb_quant_range("calman",2);
      };
@@ -936,8 +943,9 @@ sub pattern_daemon {
      };
     #
     # Helper: Calman DV calibration uses RGB Full 8-bit tunneling.
-    # Absolute/Relative select the renderer map mode only; they do not change
-    # the HDMI transport away from RGB 8-bit.
+    # Absolute/Relative select the renderer map mode and matching legacy
+    # metadata-mode value; they do not change the HDMI transport away from
+    # RGB 8-bit.
     #
     my $calman_set_dv_rgb = sub {
      my ($dv_map_mode,$dv_metadata)=@_;
@@ -957,7 +965,10 @@ sub pattern_daemon {
      $calman_rgb_quant_range=2;
      &apply_source_rgb_quant_range("calman",2);
      $calman_save_setting->("dv_map_mode","$dv_map_mode") if(defined $dv_map_mode && $dv_map_mode ne "");
-     $calman_save_setting->("dv_metadata","2");
+     if(!defined $dv_metadata || $dv_metadata eq "") {
+      $dv_metadata=$calman_dv_metadata_for_map_mode->((defined $dv_map_mode && $dv_map_mode ne "") ? $dv_map_mode : $pgenerator_conf{"dv_map_mode"});
+     }
+     $calman_save_setting->("dv_metadata","$dv_metadata");
     };
 
     #
@@ -1130,21 +1141,21 @@ sub pattern_daemon {
        $calman_save_setting->("color_format","0");
        $calman_save_setting->("colorimetry","2");
        $calman_save_setting->("max_bpc","8");
-      } elsif($mm_val >= 1 && $mm_val <= 4) {
-      # Dolby Vision modes — drive the renderer map mode. The validated tunnel
-      # metadata path keeps dv_metadata fixed at 2 for Absolute/Relative.
-      if($mm_val == 2) {
-       $calman_set_dv_rgb->("0","2"); # Perceptual
-      } elsif($mm_val == 3) {
-        $calman_set_dv_rgb->("1","3"); # Absolute
-       } elsif($mm_val == 4) {
-        $calman_set_dv_rgb->("2","4"); # Relative
-       } else {
-       # 1=RGB tunneling. Preserve current map mode because transport mode is
-       # separate from the renderer's Perceptual/Absolute/Relative selector.
-        $calman_set_dv_rgb->("","$mm_val");
-        &log("Calman: 21_HDR_MetadataMode=$mm_val requested — preserving dv_map_mode=$pgenerator_conf{'dv_map_mode'}");
-       }
+	      } elsif($mm_val >= 1 && $mm_val <= 4) {
+	       # Dolby Vision modes — drive both the renderer map mode and Calman's
+	       # legacy metadata-mode bookkeeping.
+	       if($mm_val == 2) {
+	        $calman_set_dv_rgb->("0","2"); # Perceptual
+	       } elsif($mm_val == 3) {
+	        $calman_set_dv_rgb->("1","3"); # Absolute
+	       } elsif($mm_val == 4) {
+	        $calman_set_dv_rgb->("2","4"); # Relative
+	       } else {
+	        # 1=RGB tunneling. Preserve current map mode because transport mode is
+	        # separate from the renderer's Perceptual/Absolute/Relative selector.
+	        $calman_set_dv_rgb->("","$mm_val");
+	        &log("Calman: 21_HDR_MetadataMode=$mm_val requested — preserving dv_map_mode=$pgenerator_conf{'dv_map_mode'}");
+	       }
       }
         # This SetControl path is used for live DV mode changes, so apply
         # immediately rather than waiting for a later explicit update command.
@@ -1526,8 +1537,9 @@ sub pattern_daemon {
          #   0 = Perceptual
          #   1 = Absolute
          #   2 = Relative
-         # Keep dv_metadata fixed at the validated tunnel baseline; the renderer
-         # consumes dv_map_mode for Perceptual/Absolute/Relative.
+         # Keep dv_metadata aligned for clients that key off the legacy
+         # Calman metadata mode values:
+         #   2 = Perceptual, 3 = Absolute, 4 = Relative
          if($dv_mode eq "PERCEPTUAL") {
           $calman_set_dv_rgb->("0","2");
          } elsif($dv_mode eq "ABSOLUTE") {
