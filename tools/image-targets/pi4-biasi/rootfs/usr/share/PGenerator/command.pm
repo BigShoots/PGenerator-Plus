@@ -87,6 +87,57 @@ sub release_source_rgb_quant_range (@) {
  return &apply_source_rgb_quant_range("webui",&webui_preferred_rgb_quant_range());
 }
 
+sub set_pgenerator_conf_runtime(@) {
+ my ($key,$value)=@_;
+ &sudo("SET_PGENERATOR_CONF",$key,$value);
+ $pgenerator_conf{$key}="$value";
+}
+
+sub dv_metadata_for_map_mode(@) {
+ my $dv_map_mode=shift;
+ return "3" if(defined $dv_map_mode && $dv_map_mode eq "1");
+ return "4" if(defined $dv_map_mode && $dv_map_mode eq "2");
+ return "2";
+}
+
+sub dv_map_mode_for_metadata(@) {
+ my $dv_metadata=shift;
+ return "0" if(defined $dv_metadata && $dv_metadata eq "2");
+ return "1" if(defined $dv_metadata && $dv_metadata eq "3");
+ return "2" if(defined $dv_metadata && $dv_metadata eq "4");
+ return "";
+}
+
+sub normalize_dv_transport_conf(@) {
+ return if(
+  int($pgenerator_conf{"dv_status"} || 0) != 1 &&
+  int($pgenerator_conf{"is_ll_dovi"} || 0) != 1 &&
+  int($pgenerator_conf{"is_std_dovi"} || 0) != 1
+ );
+ my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
+ my $dv_metadata=&dv_metadata_for_map_mode($dv_map_mode);
+ my %wanted=(
+  is_sdr=>"0",
+  is_hdr=>"1",
+  eotf=>"2",
+  is_ll_dovi=>"0",
+  is_std_dovi=>"1",
+  dv_status=>"1",
+  dv_interface=>"0",
+  dv_metadata=>"$dv_metadata",
+  dv_color_space=>"0",
+  color_format=>"0",
+  colorimetry=>"9",
+  primaries=>"1",
+  max_bpc=>"8",
+  rgb_quant_range=>"2"
+ );
+ for my $key (sort keys %wanted) {
+  next if(($pgenerator_conf{$key} || "") eq $wanted{$key});
+  &set_pgenerator_conf_runtime($key,$wanted{$key});
+ }
+}
+
 ###############################################
 #  Apply DRM Connector Properties (KMS only)  #
 ###############################################
@@ -143,7 +194,7 @@ sub apply_drm_properties (@) {
  return if($connector_id eq "");
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
- $max_bpc=12 if($is_dv);
+ $max_bpc=8 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
   system("timeout 3 $modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
@@ -158,6 +209,7 @@ sub apply_drm_properties (@) {
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
+ $quant_range=2 if($is_dv);
  if($quant_range ne "") {
   system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
@@ -209,6 +261,7 @@ sub pattern_generator_start(@) {
   open(OPS,">$command_file");
   close(OPS);
  }
+ &normalize_dv_transport_conf();
  &auto_select_4k_mode();
  &apply_drm_properties();
  &get_hdmi_info();
@@ -391,9 +444,29 @@ sub pgenerator_cmd (@) {
   unlink("$info_dir/GET_DISCOVERABLE.info");
   &sudo("SET_DISCOVERABLE","$1");
  }
- if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE):(.*)/) {
-  &sudo("SET_PGENERATOR_CONF",lc($1),$2);
-  $pgenerator_conf{lc($1)}=$2;
+ if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE|SIGNAL_MODE|CALMAN_MODE_IDX):(.*)/) {
+  my $conf_key=lc($1);
+  my $conf_value=$2;
+  &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
+  $pgenerator_conf{$conf_key}=$conf_value;
+  if($conf_key eq "dv_metadata") {
+   my $map_mode=&dv_map_mode_for_metadata($conf_value);
+   if($map_mode ne "" && (($pgenerator_conf{"dv_map_mode"} || "") ne $map_mode)) {
+    &sudo("SET_PGENERATOR_CONF","dv_map_mode",$map_mode);
+    $pgenerator_conf{"dv_map_mode"}=$map_mode;
+   }
+  } elsif($conf_key eq "dv_map_mode") {
+   my $metadata=&dv_metadata_for_map_mode($conf_value);
+   if(($pgenerator_conf{"dv_metadata"} || "") ne $metadata) {
+    &sudo("SET_PGENERATOR_CONF","dv_metadata",$metadata);
+    $pgenerator_conf{"dv_metadata"}=$metadata;
+   }
+  }
+  if(($conf_key eq "dv_status" && $conf_value eq "1") ||
+     ($conf_key=~/^(is_ll_dovi|is_std_dovi)$/ && $conf_value eq "1") ||
+     ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {
+   &normalize_dv_transport_conf();
+  }
   unlink("$info_dir/GET_PGENERATOR_CONF_".uc($1).".info");
   unlink("$info_dir/GET_PGENERATOR_CONF_ALL.info");
  }
@@ -444,6 +517,7 @@ sub pgenerator_cmd (@) {
    unlink("$info_dir/GET_REFRESH.info");
    unlink("$info_dir/GET_OUTPUT_RANGE.info");
    unlink("$info_dir/GET_RESOLUTION.info");
+   &invalidate_hdmi_info_cache();
   }
   # End for RPI p4
   &pattern_generator_stop();
@@ -613,9 +687,9 @@ sub wpa_cli () {
  my $cmd = shift;
  my $interface = "wlan0";
  my @el=split(":",$cmd,2);
- return if(($process_pid=&process_pid("$wpa_cli","get")) eq "");
  return &sudo("$el[0]","$interface") if($el[0] eq "WIFI_SCAN" || $el[0] eq "GET_WIFI_STATUS");
  if($el[0] eq "GETNETCONFIGURED") {
+  return "" if(!-f $wifi_conf);
   open(CONF,"$wifi_conf");
   while(<CONF>) {
    next if($_=~/^#/);
@@ -627,6 +701,7 @@ sub wpa_cli () {
   @info=split(":",$el[1],2);
   return &sudo("$el[0]","$info[0]","$info[1]");
  }
+ return &sudo("$el[0]","$interface") if($el[0] eq "WIFI_AP_STATUS" || $el[0] eq "WIFI_AP_ENABLE" || $el[0] eq "WIFI_AP_DISABLE");
  if($el[0] eq "WIFI_APPLYCONF") {
   @info=split(":",$el[1],2);
   return &sudo("$el[0]","$interface","$info[0]","$info[1]");
@@ -911,6 +986,11 @@ sub sync(@) {
 #         Get Hdmi Info function              #
 ###############################################
 my $_hdmi_info_cache_time = 0;
+sub invalidate_hdmi_info_cache() {
+ $_hdmi_info_cache_time=0;
+ $hdmi_info="";
+}
+
 sub get_hdmi_info() {
  # Cache for 3 seconds to avoid redundant modetest calls within the same info cycle
  if(time() - $_hdmi_info_cache_time < 3 && $hdmi_info ne "") {

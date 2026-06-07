@@ -53,10 +53,30 @@ $hostname_file="/etc/hostname";
 $not_connected="Disconnected";
 $no_info_available="No info available";
 
-$wpa_cli="/usr/bin/wpa_cli";
-$wpa_passphrase="/usr/bin/wpa_passphrase";
-$ip="/sbin/ip";
-$hcitool="/usr/bin/hcitool";
+sub pg_find_executable(@) {
+ foreach my $candidate (@_) {
+  return $candidate if(defined $candidate && $candidate ne "" && -x $candidate);
+ }
+ return defined $_[0] ? $_[0] : "";
+}
+
+$wpa_cli=&pg_find_executable("/usr/bin/wpa_cli","/usr/sbin/wpa_cli");
+$wpa_passphrase=&pg_find_executable("/usr/bin/wpa_passphrase","/usr/sbin/wpa_passphrase");
+$wpa_supplicant=&pg_find_executable("/usr/sbin/wpa_supplicant","/usr/bin/wpa_supplicant");
+$dhclient=&pg_find_executable("/usr/sbin/dhclient","/sbin/dhclient","/usr/bin/dhclient","/bin/dhclient");
+$dhcpcd=&pg_find_executable("/usr/sbin/dhcpcd","/sbin/dhcpcd","/usr/bin/dhcpcd","/bin/dhcpcd");
+$udhcpc=&pg_find_executable("/usr/sbin/udhcpc","/sbin/udhcpc","/usr/bin/udhcpc","/bin/udhcpc");
+$ip=&pg_find_executable("/sbin/ip","/usr/sbin/ip","/bin/ip","/usr/bin/ip");
+$ifconfig=&pg_find_executable("/sbin/ifconfig","/usr/sbin/ifconfig","/bin/ifconfig","/usr/bin/ifconfig");
+$iw=&pg_find_executable("/usr/sbin/iw","/sbin/iw","/usr/bin/iw");
+$rfkill=&pg_find_executable("/usr/sbin/rfkill","/sbin/rfkill","/usr/bin/rfkill");
+$hostapd_bin=&pg_find_executable("/usr/sbin/hostapd","/sbin/hostapd","/usr/bin/hostapd");
+$dnsmasq_bin=&pg_find_executable("/usr/sbin/dnsmasq","/sbin/dnsmasq","/usr/bin/dnsmasq");
+$systemctl=&pg_find_executable("/bin/systemctl","/usr/bin/systemctl");
+$service_cmd=&pg_find_executable("/sbin/service","/usr/sbin/service","/usr/bin/service");
+$bluetoothctl=&pg_find_executable("/usr/bin/bluetoothctl","/usr/sbin/bluetoothctl");
+$hciconfig=&pg_find_executable("/usr/bin/hciconfig","/usr/sbin/hciconfig");
+$hcitool=&pg_find_executable("/usr/bin/hcitool","/usr/sbin/hcitool");
 $vcgencmd="/opt/vc/bin/vcgencmd";
 $tar="/bin/tar";
 $file_command="/usr/bin/file";
@@ -212,6 +232,10 @@ $calman_apl_enabled=0;
 $calman_bg="0,0,0";
 $calman_settings_dirty=0;
 $calman_win_size=10;
+$calman_last_pattern_kind="";
+$calman_last_pattern_type="";
+$calman_last_pattern_cmd="";
+$calman_replaying_last_pattern=0;
 $calibration_client_ip="";
 $calibration_client_software="";
 
@@ -278,6 +302,10 @@ share($calman_apl);
 share($calman_apl_enabled);
 share($calman_settings_dirty);
 share($calman_win_size);
+share($calman_last_pattern_kind);
+share($calman_last_pattern_type);
+share($calman_last_pattern_cmd);
+share($calman_replaying_last_pattern);
 share($calibration_client_ip);
 share($calibration_client_software);
 share(%rpc_client);
