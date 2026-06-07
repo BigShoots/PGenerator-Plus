@@ -71,12 +71,15 @@ def do_ioctl(fd, req, buf):
     except IOError:
         return False
 
+def array_bytes(buf):
+    return buf.tobytes() if hasattr(buf, 'tobytes') else buf.tostring()
+
 def get_caps(fd):
     """Get CEC adapter capabilities."""
     buf = array.array('B', [0] * CEC_CAPS_SZ)
     if not do_ioctl(fd, CEC_ADAP_G_CAPS, buf):
         return None
-    data = buf.tostring()
+    data = array_bytes(buf)
     driver = data[0:32].split(b'\x00')[0]
     name = data[32:64].split(b'\x00')[0]
     avail_la, caps, ver = struct.unpack_from('<III', data, 64)
@@ -88,7 +91,7 @@ def get_phys_addr(fd):
     buf = array.array('B', [0xFF, 0xFF])
     if not do_ioctl(fd, CEC_ADAP_G_PHYS_ADDR, buf):
         return 0xFFFF
-    return struct.unpack('<H', buf.tostring())[0]
+    return struct.unpack('<H', array_bytes(buf))[0]
 
 def get_log_addrs(fd):
     """Get current logical addresses."""
@@ -99,7 +102,7 @@ def get_log_addrs(fd):
     mask = buf[4] | (buf[5] << 8)
     cec_ver = buf[6]
     num = buf[7]
-    osd = buf[16:31].tostring().split(b'\x00')[0]
+    osd = array_bytes(buf[16:31]).split(b'\x00')[0]
     return {'log_addr': addrs, 'mask': mask, 'cec_version': cec_ver,
             'num_log_addrs': num, 'osd_name': osd}
 
