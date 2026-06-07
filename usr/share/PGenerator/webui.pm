@@ -2087,8 +2087,7 @@ if($signal_mode eq "dv") {
  # shift outward (measured appears oversaturated vs target xy).
  my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
-my $dv_interface=($signal_mode eq "dv") ? (($request_dv_interface ne "") ? int($request_dv_interface) : int($pgenerator_conf{"dv_interface"} || 0)) : 0;
-my $dv_is_lldv=($signal_mode eq "dv" && ($dv_interface == 1 || int($pgenerator_conf{"is_ll_dovi"} || 0) == 1)) ? 1 : 0;
+my $dv_interface=0;
  my $dv_tunnel_gamma=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 3.8 : 2.2;
  my $target_linear_to_signal=sub {
   my ($v)=@_;
@@ -2164,10 +2163,10 @@ my $dv_is_lldv=($signal_mode eq "dv" && ($dv_interface == 1 || int($pgenerator_c
  # Measurement order: WHITE first (reference), then 0%→95% ascending
  my @steps;
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
- my $dv_series_code_bits=$dv_is_lldv ? 10 : 8;
- my $dv_series_code_max=($dv_series_code_bits == 10) ? 1023 : 255;
- my $dv_series_code_min=$dv_is_lldv ? 64 : 0;
- my $dv_series_code_span=$dv_is_lldv ? 876 : $dv_series_code_max;
+ my $dv_series_code_bits=8;
+ my $dv_series_code_max=255;
+ my $dv_series_code_min=0;
+ my $dv_series_code_span=255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
  if($type eq "greyscale") {
    my @ire_vals;
@@ -5060,20 +5059,18 @@ sub webui_apply_config (@) {
    $changes{"eotf"}=($signal_mode eq "hlg") ? "3" : "2";
    $changes{"primaries"}="1";
   } elsif($signal_mode eq "dv") {
-   my $dv_interface=(defined $changes{"dv_interface"} && $changes{"dv_interface"} eq "1") ? "1" : "0";
-   my $dv_bpc=(defined $changes{"max_bpc"} && ($changes{"max_bpc"} eq "10" || $changes{"max_bpc"} eq "12")) ? $changes{"max_bpc"} : "12";
    $changes{"is_sdr"}="0";
    $changes{"is_hdr"}="1";
-   $changes{"is_ll_dovi"}=($dv_interface eq "1") ? "1" : "0";
-   $changes{"is_std_dovi"}=($dv_interface eq "1") ? "0" : "1";
+   $changes{"is_ll_dovi"}="0";
+   $changes{"is_std_dovi"}="1";
    $changes{"dv_status"}="1";
-   $changes{"dv_interface"}=$dv_interface;
+   $changes{"dv_interface"}="0";
    $changes{"eotf"}="2";
    $changes{"primaries"}="1";
-   $changes{"max_bpc"}=($dv_interface eq "1") ? $dv_bpc : "8";
-   $changes{"color_format"}=($dv_interface eq "1") ? "2" : "0";
+   $changes{"max_bpc"}="8";
+   $changes{"color_format"}="0";
    $changes{"colorimetry"}="9";
-   $changes{"rgb_quant_range"}=($dv_interface eq "1") ? "1" : "2";
+   $changes{"rgb_quant_range"}="2";
   }
  }
  my %effective=%pgenerator_conf;
@@ -5109,23 +5106,21 @@ sub webui_apply_config (@) {
  if($dv_on) {
   my $dv_map_mode=(defined $changes{"dv_map_mode"} && $changes{"dv_map_mode"} ne "") ? $changes{"dv_map_mode"} : ($effective{"dv_map_mode"} || "2");
   my $dv_metadata=(defined $changes{"dv_metadata"} && $changes{"dv_metadata"} ne "") ? $changes{"dv_metadata"} : ($dv_map_mode eq "1" ? "3" : ($dv_map_mode eq "2" ? "4" : "2"));
-  my $dv_interface=(defined $changes{"dv_interface"} && $changes{"dv_interface"} eq "1") ? "1" : ((int($effective{"dv_interface"} || 0) == 1 || int($effective{"is_ll_dovi"} || 0) == 1) ? "1" : "0");
-  my $dv_bpc=(defined $changes{"max_bpc"} && ($changes{"max_bpc"} eq "10" || $changes{"max_bpc"} eq "12")) ? $changes{"max_bpc"} : (($effective{"max_bpc"} eq "10" || $effective{"max_bpc"} eq "12") ? $effective{"max_bpc"} : "12");
-  $changes{"max_bpc"}=($dv_interface eq "1") ? $dv_bpc : "8";
-  $changes{"is_ll_dovi"}=($dv_interface eq "1") ? "1" : "0";
-  $changes{"is_std_dovi"}=($dv_interface eq "1") ? "0" : "1";
+  $changes{"max_bpc"}="8";
+  $changes{"is_ll_dovi"}="0";
+  $changes{"is_std_dovi"}="1";
   $changes{"dv_status"}="1";
-  $changes{"color_format"}=($dv_interface eq "1") ? "2" : "0";
+  $changes{"color_format"}="0";
   $changes{"colorimetry"}="9";
   $changes{"eotf"}="2";
   $changes{"primaries"}="1";
-  $changes{"rgb_quant_range"}=($dv_interface eq "1") ? "1" : "2";
+  $changes{"rgb_quant_range"}="2";
   $changes{"dv_profile"}="1";
   $changes{"dv_color_space"}="0";
-  $changes{"dv_interface"}=$dv_interface;
+  $changes{"dv_interface"}="0";
   $changes{"dv_metadata"}=$dv_metadata;
-  # DV standard RGB 8-bit and Low Latency YCbCr 4:2:2 use normal 8-bit TMDS
-  # bandwidth; reject modes above HDMI 2.0 TMDS bandwidth (600 MHz).
+  # Dolby Vision calibration uses RGB Full 8-bit tunneling; reject modes above
+  # HDMI 2.0 TMDS bandwidth (600 MHz).
   if($requested_mode_clock > 0) {
    if($requested_mode_clock > 600000) {
     my $result='{"status":"error","message":"This resolution exceeds HDMI bandwidth for the selected Dolby Vision transport. Use 4K@60Hz or lower."}';
@@ -6553,13 +6548,11 @@ sub webui_pattern_effective_bits (@) {
  return 8 if($draw eq "IMAGE");
  my $bits=int($bits_default || 8);
  my $link_bits=int($pgenerator_conf{"max_bpc"} || 8);
- my $is_lldv=(int($pgenerator_conf{"dv_interface"} || 0) == 1 || int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
  # The native renderer only has distinct 8-bit and 10-bit drawing paths.
  # HDR10 and HLG use the 10-bit rectangle path when the link is above 8 bpc.
- # Standard Dolby Vision stays on the 8-bit RGB-PC tunnel.  Low Latency
- # Dolby Vision uses the 10-bit drawing path for 10/12 bpc YCbCr 4:2:2 links.
+ # Dolby Vision calibration uses the 8-bit RGB Full tunnel.
  return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
- return 10 if($signal_mode eq "dv" && $is_lldv && $link_bits >= 10);
+ return 8 if($signal_mode eq "dv");
  return 8 if($bits != 10 && $bits != 12);
  return $bits == 12 ? 10 : $bits;
 }
@@ -7637,13 +7630,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <!-- Dolby Vision Settings -->
  <div class="card" id="dvCard">
   <h2><span class="dv-badge">DV</span> Dolby Vision</h2>
-  <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px;line-height:1.4">Applies Standard RGB-PC 8-bit or Low Latency YCbCr 4:2:2 transport automatically.</div>
+  <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px;line-height:1.4">Uses RGB-PC Full 8-bit tunneling for Relative and Absolute calibration modes.</div>
   <div class="grid">
    <div class="field">
     <label>Interface</label>
-    <select id="dv_interface">
-     <option value="0">Standard (RGB-PC 8-bit)</option>
-     <option value="1">Low Latency (YCbCr 4:2:2)</option>
+    <select id="dv_interface" disabled>
+     <option value="0">RGB Full 8-bit Tunnel</option>
     </select>
    </div>
    <div class="field">
@@ -8895,14 +8887,12 @@ function applyConfigState(nextConfig){
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
  // DV settings
- setVal('dv_interface',(config.dv_interface==='1'||config.is_ll_dovi==='1')?'1':'0');
+ setVal('dv_interface','0');
  setVal('dv_map_mode',config.dv_map_mode||'2');
  if(sm==='dv'){
   syncDvOutputEotfState();
-  const dvInterface=getVal('dv_interface')==='1';
-  const cfgBpc=String(config.max_bpc||'');
-  setVal('max_bpc',dvInterface?((cfgBpc==='10'||cfgBpc==='12')?cfgBpc:'12'):'8');
-  setVal('color_format',dvInterface?'2':'0');
+  setVal('max_bpc','8');
+  setVal('color_format','0');
   setVal('colorimetry','9');
   setVal('primaries','1');
   setVal('rgb_quant_range','2');
@@ -9301,24 +9291,23 @@ function updateDropdowns(){
   : {sdr:true,hdr10:true,hlg:true,dv:false};
  Array.from(smSel.options).forEach(function(o){o.disabled=!smOpts[o.value];o.style.display=smOpts[o.value]?'':'none';});
 
- // In DV mode, transport follows the selected Dolby Vision interface.
+ // In DV mode, calibration uses the RGB Full 8-bit Dolby Vision tunnel.
  const fmtSel=document.getElementById('color_format');
  const bpcSel=document.getElementById('max_bpc');
  const modeSel=document.getElementById('mode_idx');
  if(sm==='dv'){
-  const dvInterface=getVal('dv_interface')==='1';
-  const allowedBpc=dvInterface?['10','12']:['8'];
-  const targetFmt=dvInterface?'2':'0';
+  setVal('dv_interface','0');
+  const allowedBpc=['8'];
+  const targetFmt='0';
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!==targetFmt;o.style.display=o.value===targetFmt?'':'none';});
   fmtSel.value=targetFmt;
   Array.from(bpcSel.options).forEach(function(o){o.disabled=!allowedBpc.includes(o.value);o.style.display=allowedBpc.includes(o.value)?'':'none';});
-  if(!allowedBpc.includes(bpcSel.value)) bpcSel.value=dvInterface?'12':'8';
-  // Standard DV is RGB-PC full; LLDV rides video-range YCbCr 4:2:2.
+  if(!allowedBpc.includes(bpcSel.value)) bpcSel.value='8';
   const rngSel=document.getElementById('rgb_quant_range');
-  const targetRange=dvInterface?'1':'2';
+  const targetRange='2';
   Array.from(rngSel.options).forEach(function(o){o.disabled=o.value!==targetRange;o.style.display=o.value===targetRange?'':'none';});
   rngSel.value=targetRange;
-  // Standard RGB 8-bit and Low Latency 4:2:2 use normal 8-bit TMDS bandwidth.
+  // RGB 8-bit tunneling uses normal 8-bit TMDS bandwidth.
   const maxTmds=(caps&&caps.max_tmds)?caps.max_tmds*1000:600000;
   let curModeValid=false;
   Array.from(modeSel.options).forEach(function(o){
@@ -10109,13 +10098,11 @@ async function applySettings(){
    max_cll:meterHdrMetadataFieldValue('max_cll','hdr10'),
    max_fall:meterHdrMetadataFieldValue('max_fall','hdr10')});
  }else if(sm==='dv'){
-  const dvInterface=getVal('dv_interface')==='1';
-  const dvBpc=dvInterface?((getVal('max_bpc')==='10'||getVal('max_bpc')==='12')?getVal('max_bpc'):'12'):'8';
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
-   is_ll_dovi:dvInterface?'1':'0',is_std_dovi:dvInterface?'0':'1',
-   dv_status:'1',primaries:'1',color_format:dvInterface?'2':'0',colorimetry:'9',max_bpc:dvBpc,
-   rgb_quant_range:dvInterface?'1':'2',eotf:'2',
-   dv_interface:dvInterface?'1':'0',
+   is_ll_dovi:'0',is_std_dovi:'1',
+   dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'8',
+   rgb_quant_range:'2',eotf:'2',
+   dv_interface:'0',
    dv_map_mode:getVal('dv_map_mode'),
    max_luma:meterHdrMetadataFieldValue('max_luma','dv'),
    min_luma:meterHdrMetadataFieldValue('min_luma','dv'),
@@ -11662,10 +11649,7 @@ function meterDvMapModeValue(){
 }
 
 function meterDvInterfaceValue(){
- const active=(typeof meterActiveSeriesDvInterface!=='undefined')?String(meterActiveSeriesDvInterface||''):'';
- if(active) return active;
- const el=document.getElementById('dv_interface');
- return String((el&&el.value) || (config&&config.dv_interface) || ((config&&config.is_ll_dovi)==='1'?'1':'0') || '0');
+ return '0';
 }
 
 // Analysis targets and chart overlays must follow the currently selected
@@ -11888,7 +11872,7 @@ function meterGreyEotfUsesPqCurve(){
 }
 
 function meterGreyCodeRange(){
- if(meterChartIsDv()) return meterDvInterfaceValue()==='1' ? {min:64,span:876} : {min:0,span:255};
+ if(meterChartIsDv()) return {min:0,span:255};
  if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return {min:16,span:239};
  if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return {min:16,span:219};
  if(meterGreyscaleUsesFullSourceRange()) return {min:0,span:255};
@@ -18365,7 +18349,6 @@ function meterBuildStepsJS(type,points){
     const c=meterCodeFromSignalPercent(entry.value);
     const label=(entry.role==='low'?'Low ':'High ')+meterFormatPercentValue(entry.value)+'%';
     const step={ire:entry.value,stimulus:entry.value,signal_r_pct:entry.value,signal_g_pct:entry.value,signal_b_pct:entry.value,r:c,g:c,b:c,name:label,point_role:entry.role,series_type:'greyscale'};
-    if(meterChartIsDv()&&meterDvInterfaceValue()==='1') step.input_max=1023;
     steps.push(step);
    });
 			  } else if(points===26&&meterUseLgAutoCal26(points)){
@@ -18401,8 +18384,7 @@ function meterBuildStepsJS(type,points){
 		     const targetYn=meterGreyscaleTargetYnForCode(step.g);
 		     if(Number.isFinite(targetYn)&&targetYn>=0) step.target_Yn=targetYn;
 		    }
-		    if(stepSignalMode==='dv'&&meterDvInterfaceValue()==='1') step.input_max=1023;
-		    if(lgSlotLocked){
+			    if(lgSlotLocked){
 		     const analysisIre=meterLgSdrLegalStimulusFromCode(step.g);
 		     step.analysis_ire=analysisIre;
 	     step.target_ire=analysisIre;
@@ -18648,7 +18630,7 @@ function meterMeasurementSignalContext(payload){
  if(body.signal_mode==='dv'){
   body.target_gamma=meterDvAutoTargetGamma();
   body.dv_map_mode=getVal('dv_map_mode')||((config&&config.dv_map_mode)||'2');
-  body.dv_interface=getVal('dv_interface')||((config&&config.dv_interface)||(((config&&config.is_ll_dovi)==='1')?'1':'0'));
+  body.dv_interface='0';
  }
  body.max_luma=(document.getElementById('max_luma')||{}).value||((config&&config.max_luma)||'1000');
  if(body.measurement_meter_port==null){

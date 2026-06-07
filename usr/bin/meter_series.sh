@@ -431,16 +431,6 @@ def percent_from_step(step, channel):
     return 0.0
 
 def code_range_for_step(step):
-    try:
-        max_code = int(float(step.get("input_max", 0)))
-    except Exception:
-        max_code = 0
-    if max_code <= 0:
-        max_code = 1023 if str(step.get("dv_interface", "")).strip() == "1" else 255
-    if max_code > 1023:
-        return 256, 3504
-    if max_code > 255:
-        return 64, 876
     return 0, 255
 
 def code_for_absolute_percent(step, percent):
