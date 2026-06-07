@@ -174,7 +174,7 @@ pgenerator_cmd () {
  for arg in "$@"; do
   encoded="$encoded $(printf '%s' "$arg" | base64 | tr -d '\n')"
  done
- PG_CMD="${encoded# }" /usr/bin/PGenerator_cmd.pl 2>/dev/null || true
+ PG_CMD="${encoded# }" timeout 5 /usr/bin/PGenerator_cmd.pl 2>/dev/null || true
 }
 
 init_pi5_network_services () {

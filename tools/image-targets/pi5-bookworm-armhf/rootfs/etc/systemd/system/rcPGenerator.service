@@ -9,7 +9,7 @@ ConditionPathExists=/etc/init.d/rcPGenerator
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-TimeoutStartSec=30
+TimeoutStartSec=60
 ExecStart=/etc/init.d/rcPGenerator start
 ExecStop=/etc/init.d/rcPGenerator stop
 
