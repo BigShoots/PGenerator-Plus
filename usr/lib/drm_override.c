@@ -425,7 +425,7 @@ static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
         return 0;
 
     uint32_t oui = (dv_interface == 2) ? 0x00D046 : 0x000C03;
-    uint8_t iface = (uint8_t)(dv_interface & 0xff);
+    uint8_t iface = (dv_interface == 2) ? 0x00 : (uint8_t)(dv_interface & 0xff);
     int changed = 0;
 
     if (metadata[0] != (uint8_t)(oui & 0xff) ||
