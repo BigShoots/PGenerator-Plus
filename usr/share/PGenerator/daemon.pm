@@ -177,12 +177,235 @@ sub calman_reset_pattern_state (@) {
  $calman_bg="0,0,0";
  $calman_win_size=10;
  $calman_rgb_quant_range=($pgenerator_conf{"rgb_quant_range"}||"2") + 0;
+ &calman_clear_last_pattern();
  &log("Calman: reset pattern state ($source)") if($source ne "");
 }
 
 sub calman_pattern_source_range (@) {
  return "LIMITED" if($calman_rgb_quant_range == 1);
  return "";
+}
+
+sub calman_clear_last_pattern (@) {
+ $calman_last_pattern_kind="";
+ $calman_last_pattern_type="";
+ $calman_last_pattern_cmd="";
+}
+
+sub calman_remember_pattern (@) {
+ my $kind=shift;
+ my $type=shift;
+ my $cmd=shift;
+ return if($calman_replaying_last_pattern);
+ $calman_last_pattern_kind="$kind";
+ $calman_last_pattern_type="$type";
+ $calman_last_pattern_cmd="$cmd";
+ &log("Calman: remembered last pattern kind=$kind type=$type");
+}
+
+sub calman_render_commandrgb_pattern (@) {
+ my $pattern_cmd=shift;
+ my $connection=shift;
+ my @el_cmd=split(",",$pattern_cmd);
+ my $cr_r_in=int($el_cmd[0]);
+ my $cr_g_in=int($el_cmd[1]);
+ my $cr_b_in=int($el_cmd[2]);
+ my $cr_tenBit=int($el_cmd[3]);
+ my $cr_size=int($el_cmd[4]);
+ my $target_max=&calman_target_max();
+ my $input_max=$cr_tenBit ? 1023 : 255;
+ my $cr_r=&calman_scale_value($cr_r_in,$input_max);
+ my $cr_g=&calman_scale_value($cr_g_in,$input_max);
+ my $cr_b=&calman_scale_value($cr_b_in,$input_max);
+ my ($cr_size_effective,$cr_bg)=&calman_commandrgb_window("$cr_r,$cr_g,$cr_b",$cr_size,"CommandRGB");
+ my $cr_rgb="$cr_r,$cr_g,$cr_b";
+ &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+ my $cr_source_range=&calman_pattern_source_range();
+ &log_calman_patch(type=>"CommandRGB",
+                   raw=>"$cr_r_in,$cr_g_in,$cr_b_in",
+                   scaled=>"$cr_r,$cr_g,$cr_b",
+                   win=>$cr_size_effective,
+                   bg=>$cr_bg,
+                   range=>$cr_source_range,
+                   peer=>$connection ? $client_ip{$connection} : "",
+                   extra=>"tenBit=$cr_tenBit size_token=$cr_size target_max=$target_max input_max=$input_max");
+ &clean_pattern_files();
+ if($cr_size_effective >= 100) {
+  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_rgb","$cr_bg","","","",1,"calman",$cr_source_range);
+ } else {
+  my $sqrt_val=sqrt($cr_size_effective/100);
+  my $win_w=int($sqrt_val*$max_x);
+  my $win_h=int($sqrt_val*$max_y);
+  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$cr_rgb","$cr_bg","$position_default","","",1,"calman",$cr_source_range);
+ }
+ return 1;
+}
+
+sub calman_render_rgb_pattern (@) {
+ my $type=shift;
+ my $pattern_cmd=shift;
+ my $full_key=shift;
+ my $connection=shift;
+ my @el_cmd=split(",",$pattern_cmd);
+ my $calman_max=1023;
+ my $target_max=&calman_target_max();
+ my $rgb_raw="$el_cmd[0],$el_cmd[1],$el_cmd[2]";
+ &log("Calman PATTERN: type=$type raw=$rgb_raw bits_default=$bits_default target_max=$target_max");
+ my $r=&calman_scale_value($el_cmd[0],$calman_max);
+ my $g=&calman_scale_value($el_cmd[1],$calman_max);
+ my $b=&calman_scale_value($el_cmd[2],$calman_max);
+ &log("Calman PATTERN: scaled=$r,$g,$b bg=$calman_bg max_bpc=$pgenerator_conf{'max_bpc'}");
+ &log_calman_patch(type=>$type,
+                   raw=>$rgb_raw,
+                   scaled=>"$r,$g,$b",
+                   win=>$calman_win_size,
+                   bg=>$calman_bg,
+                   range=>&calman_pattern_source_range(),
+                   peer=>$connection ? $client_ip{$connection} : "",
+                   extra=>"raw_extra=".join(",",@el_cmd[3..$#el_cmd])." target_max=$target_max calman_max=$calman_max");
+ if($full_key eq "") {
+  $full_key=$start_cmd_string_calman.$type.":".$pattern_cmd;
+ }
+ if($calman_special_pattern{$full_key} ne "" && -f "$pattern_templates/$calman_special_pattern{$full_key}") {
+  &get_pattern("TESTTEMPLATE","$calman_special_pattern{$full_key}","","TESTTEMPLATE:$calman_special_pattern{$full_key}");
+  &clean_pattern_files();
+  return 1;
+ }
+ my $source_range=&calman_pattern_source_range();
+ if($type =~/RGB_B/) {
+  my $bg_val=&calman_scale_value($el_cmd[3],$calman_max);
+  $calman_apl_enabled=0;
+  $calman_bg="$bg_val,$bg_val,$bg_val";
+  &clean_pattern_files();
+  &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$calman_bg","calman",$source_range);
+  return 1;
+ }
+ if($type =~/RGB_S/) {
+  my $win_pct=int($el_cmd[3]);
+  $win_pct=$calman_win_size if($win_pct < 1);
+  $win_pct=100 if($win_pct > 100);
+  $calman_win_size=$win_pct if($win_pct > 0);
+  my $effective_bg=$calman_bg;
+  &log("Calman: RGB_S direct window size=$win_pct% bg=$effective_bg");
+  if($win_pct >= 100) {
+   $pname_file="FullField";
+   &clean_pattern_files();
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range);
+   return 1;
+  }
+  my $sqrt_val=sqrt($win_pct/100);
+  my $win_w=int($sqrt_val*$max_x);
+  my $win_h=int($sqrt_val*$max_y);
+  &clean_pattern_files();
+  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range);
+  return 1;
+ }
+ if($type =~/RGB_A/) {
+  my $win_pct=$calman_win_size;
+  my $effective_bg=$calman_bg;
+  if(scalar(@el_cmd) >= 7) {
+   my $bg_r=&calman_scale_value($el_cmd[3],$calman_max);
+   my $bg_g=&calman_scale_value($el_cmd[4],$calman_max);
+   my $bg_b=&calman_scale_value($el_cmd[5],$calman_max);
+   $effective_bg="$bg_r,$bg_g,$bg_b";
+   $win_pct=int($el_cmd[6]);
+  } elsif(scalar(@el_cmd) >= 4) {
+   $win_pct=int($el_cmd[3]);
+  }
+  $win_pct=$calman_win_size if($win_pct < 1);
+  $win_pct=100 if($win_pct > 100);
+  $calman_win_size=$win_pct if($win_pct > 0);
+  &log("Calman: RGB_A explicit bg=$effective_bg size=$win_pct%");
+  if($win_pct >= 100) {
+   $pname_file="FullField";
+   &clean_pattern_files();
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range);
+   return 1;
+  }
+  my $sqrt_val=sqrt($win_pct/100);
+  my $win_w=int($sqrt_val*$max_x);
+  my $win_h=int($sqrt_val*$max_y);
+  &clean_pattern_files();
+  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range);
+  return 1;
+ }
+ my $effective_bg=&calman_apl_bg("$r,$g,$b",$calman_win_size,$type);
+ &clean_pattern_files();
+ &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$effective_bg","calman",$source_range);
+ return 1;
+}
+
+sub calman_render_specialty_pattern (@) {
+ my $pattern_cmd=shift;
+ my $sp_name=uc($pattern_cmd);
+ $sp_name=~s/^\s+|\s+$//g;
+ &clean_pattern_files();
+ my $source_range=&calman_pattern_source_range();
+ my $black_rgb=&calman_scale_triplet_8bit(0,0,0);
+ my $white_rgb=&calman_scale_triplet_8bit(255,255,255);
+ my $gray128_rgb=&calman_scale_triplet_8bit(128,128,128);
+ my $sp_signal_mode=&webui_pattern_signal_mode("");
+ my $sp_max_luma=&webui_pattern_max_luma("");
+ if($sp_name eq "BRIGHTNESS") {
+  my $img=&webui_pattern_diag_image_file("calman_brightness");
+  if(&webui_pattern_render_black_clipping($img,$w_s,$h_s,$sp_signal_mode,$sp_max_luma)) {
+   my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
+   $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
+   $ps.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n";
+   &create_tmp_file($ps,$source_range);
+   &load_new_pattern_file("calman");
+  } else {
+   &log("Calman: BRIGHTNESS image render failed, falling back to flat patch");
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$black_rgb","$calman_bg","","","",1,"calman",$source_range);
+  }
+ } elsif($sp_name eq "CONTRAST") {
+  my $img=&webui_pattern_diag_image_file("calman_contrast");
+  if(&webui_pattern_render_white_clipping($img,$w_s,$h_s,$sp_signal_mode,$sp_max_luma)) {
+   my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
+   $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
+   $ps.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n";
+   &create_tmp_file($ps,$source_range);
+   &load_new_pattern_file("calman");
+  } else {
+   &log("Calman: CONTRAST image render failed, falling back to flat patch");
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$white_rgb","$calman_bg","","","",1,"calman",$source_range);
+  }
+ } elsif($sp_name eq "ALIGNMENT" || $sp_name eq "OVERSCAN") {
+  my $img=&webui_pattern_diag_image_file("calman_alignment");
+  if(&webui_pattern_render_overscan($img,$w_s,$h_s)) {
+   my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
+   $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
+   $ps.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n";
+   &create_tmp_file($ps,$source_range);
+   &load_new_pattern_file("calman");
+  } else {
+   &log("Calman: ALIGNMENT image render failed, falling back to flat patch");
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range);
+  }
+ } else {
+  &log("Calman: unknown specialty pattern: $sp_name");
+  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range);
+ }
+ return 1;
+}
+
+sub calman_replay_last_pattern (@) {
+ my $source=shift;
+ return 0 if($calman_replaying_last_pattern);
+ return 0 if($calman_last_pattern_kind eq "");
+ $calman_replaying_last_pattern=1;
+ my $ok=0;
+ &log("Calman: replaying last pattern after $source kind=$calman_last_pattern_kind type=$calman_last_pattern_type");
+ if($calman_last_pattern_kind eq "CommandRGB") {
+  $ok=&calman_render_commandrgb_pattern($calman_last_pattern_cmd,"");
+ } elsif($calman_last_pattern_kind eq "RGB") {
+  $ok=&calman_render_rgb_pattern($calman_last_pattern_type,$calman_last_pattern_cmd,"","");
+ } elsif($calman_last_pattern_kind eq "SPECIALTY") {
+  $ok=&calman_render_specialty_pattern($calman_last_pattern_cmd);
+ }
+ $calman_replaying_last_pattern=0;
+ &log("Calman: replay last pattern ".($ok ? "complete" : "skipped"));
+ return $ok;
 }
 
 sub legacy_external_set_status (@) {
@@ -698,13 +921,18 @@ sub pattern_daemon {
      # Helper: apply pending settings — restart pattern generator if dirty
      #
      my $calman_apply = sub {
+      my $replay_after=shift;
+      $replay_after=1 if(!defined $replay_after);
       if($calman_settings_dirty) {
        $calman_force_dv_rgb->();
        &log("Calman: applying pending settings (restarting pattern generator)");
        &pattern_generator_stop();
        &pattern_generator_start();
        $calman_settings_dirty=0;
+       &calman_replay_last_pattern("settings apply") if($replay_after);
+       return 1;
       }
+      return 0;
      };
     #
     # Helper: Calman DV calibration uses RGB Full 8-bit tunneling.
@@ -879,9 +1107,7 @@ sub pattern_daemon {
        $need_restart=1;
       }
       if($need_restart) {
-       &pattern_generator_stop();
-       &pattern_generator_start();
-       $calman_settings_dirty=0;
+       $calman_apply->();
       }
       &send_key_to_client($connection,"");
       last;
@@ -1024,6 +1250,7 @@ sub pattern_daemon {
        &release_source_rgb_quant_range("calman");
        $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
       }
+      &calman_replay_last_pattern("QRNG");
       &send_key_to_client($connection,"");
       last;
      }
@@ -1081,6 +1308,7 @@ sub pattern_daemon {
       }
           &log("Calman: external range set to $calman_rgb_quant_range");
           &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+      &calman_replay_last_pattern("SetRange");
       &send_key_to_client($connection,"");
       last;
      }
@@ -1092,6 +1320,7 @@ sub pattern_daemon {
       $calman_win_size=10 if($calman_win_size < 1);
       $calman_win_size=100 if($calman_win_size > 100);
       &log("Calman: window size set to $calman_win_size%");
+      &calman_replay_last_pattern("10_SIZE");
       &send_key_to_client($connection,"");
       last;
      }
@@ -1105,6 +1334,7 @@ sub pattern_daemon {
       $calman_apl=100 if($calman_apl > 100);
       $calman_apl_enabled=1;
       &log("Calman: APL target set to $calman_apl%");
+      &calman_replay_last_pattern("11_APL");
       &send_key_to_client($connection,"");
       last;
      }
@@ -1112,7 +1342,8 @@ sub pattern_daemon {
      # 303_UPDATE / APPLY — Force apply pending settings now
      #
      if($type eq "303_UPDATE" || $type eq "APPLY") {
-      $calman_apply->();
+      my $applied=$calman_apply->();
+      &calman_replay_last_pattern($type) if(!$applied);
       &send_key_to_client($connection,"");
       last;
      }
@@ -1121,45 +1352,10 @@ sub pattern_daemon {
      # Format: CommandRGB:R,G,B,tenBit,size
      #
      if($type eq "CommandRGB") {
-      @el_cmd=split(",",$pattern_cmd);
-      my $cr_r_in=int($el_cmd[0]);
-      my $cr_g_in=int($el_cmd[1]);
-      my $cr_b_in=int($el_cmd[2]);
-      my $cr_tenBit=int($el_cmd[3]);
-      my $cr_size=int($el_cmd[4]);
-      my $cr_r=$cr_r_in;
-      my $cr_g=$cr_g_in;
-      my $cr_b=$cr_b_in;
-        my $target_max=&calman_target_max();
-      my $input_max=$cr_tenBit ? 1023 : 255;
-      # Scale CommandRGB to the current output bit depth.  Only reduce to 8-bit
-      # when output is explicitly configured for 8bpc.
-        $cr_r=&calman_scale_value($cr_r,$input_max);
-        $cr_g=&calman_scale_value($cr_g,$input_max);
-        $cr_b=&calman_scale_value($cr_b,$input_max);
-        my ($cr_size_effective,$cr_bg)=&calman_commandrgb_window("$cr_r,$cr_g,$cr_b",$cr_size,"CommandRGB");
-      my $cr_rgb="$cr_r,$cr_g,$cr_b";
       # Apply any pending settings before showing pattern
-      $calman_apply->();
-      &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-        my $cr_source_range=&calman_pattern_source_range();
-      &log_calman_patch(type=>"CommandRGB",
-                        raw=>"$cr_r_in,$cr_g_in,$cr_b_in",
-                        scaled=>"$cr_r,$cr_g,$cr_b",
-                        win=>$cr_size_effective,
-                        bg=>$cr_bg,
-                        range=>$cr_source_range,
-                        peer=>$client_ip{$connection},
-                        extra=>"tenBit=$cr_tenBit size_token=$cr_size target_max=$target_max input_max=$input_max");
-      &clean_pattern_files();
-        if($cr_size_effective >= 100) {
-         &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_rgb","$cr_bg","","","",1,"calman",$cr_source_range);
-      } else {
-         my $sqrt_val=sqrt($cr_size_effective/100);
-       my $win_w=int($sqrt_val*$max_x);
-       my $win_h=int($sqrt_val*$max_y);
-         &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$cr_rgb","$cr_bg","$position_default","","",1,"calman",$cr_source_range);
-      }
+      $calman_apply->(0);
+      &calman_render_commandrgb_pattern($pattern_cmd,$connection);
+      &calman_remember_pattern("CommandRGB",$type,$pattern_cmd);
       &send_key_to_client($connection,"");
       last;
      }
@@ -1169,103 +1365,12 @@ sub pattern_daemon {
     # The client sends 10-bit values (0-1023); scale to the current output depth
      #
      if($type =~/RGB_/) {
-      @el_cmd=split(",",$pattern_cmd);
-      my $calman_max=1023;
-        my $target_max=&calman_target_max();
-      my $rgb_raw="$el_cmd[0],$el_cmd[1],$el_cmd[2]";
-      &log("Calman PATTERN: type=$type raw=$rgb_raw bits_default=$bits_default target_max=$target_max");
-        $r=&calman_scale_value($el_cmd[0],$calman_max);
-        $g=&calman_scale_value($el_cmd[1],$calman_max);
-        $b=&calman_scale_value($el_cmd[2],$calman_max);
-      &log("Calman PATTERN: scaled=$r,$g,$b bg=$calman_bg max_bpc=$pgenerator_conf{'max_bpc'}");
-      &log_calman_patch(type=>$type,
-                        raw=>$rgb_raw,
-                        scaled=>"$r,$g,$b",
-                        win=>$calman_win_size,
-                        bg=>$calman_bg,
-                        range=>&calman_pattern_source_range(),
-                        peer=>$client_ip{$connection},
-                        extra=>"raw_extra=".join(",",@el_cmd[3..$#el_cmd])." target_max=$target_max calman_max=$calman_max");
-      if($calman_special_pattern{$key} ne "" &&  -f "$pattern_templates/$calman_special_pattern{$key}") {
-       $response=&get_pattern("TESTTEMPLATE","$calman_special_pattern{$key}","","TESTTEMPLATE:$calman_special_pattern{$key}");
-       &send_key_to_client($connection,$response);
-       &clean_pattern_files();
-       last;
-      }
       # Apply any pending display mode settings before showing pattern
-      $calman_apply->();
-      my $source_range=&calman_pattern_source_range();
-      # RGB_B: 4th field is background grey level (10-bit, scale to target bits)
-      if($type =~/RGB_B/) {
-        my $bg_val=&calman_scale_value($el_cmd[3],$calman_max);
-        $calman_apl_enabled=0;
-       $calman_bg="$bg_val,$bg_val,$bg_val";
-       &clean_pattern_files();
-        &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$calman_bg","calman",$source_range);
-       &send_key_to_client($connection,"");
-       last;
-      }
-            # RGB_S: 4th field is window size percentage (direct window path)
-      if($type =~/RGB_S/) {
-       my $win_pct=int($el_cmd[3]);
-        $win_pct=$calman_win_size if($win_pct < 1);
-        $win_pct=100 if($win_pct > 100);
-       $calman_win_size=$win_pct if($win_pct > 0);
-        my $effective_bg=$calman_bg;
-        &log("Calman: RGB_S direct window size=$win_pct% bg=$effective_bg");
-       # full field pattern
-       if($win_pct >= 100) {
-        $pname_file="FullField";
-        &clean_pattern_files();
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range);
-        &send_key_to_client($connection,"");
-        last;
-       }
-       # windowed pattern - calculate dimensions from percentage
-       my $sqrt_val=sqrt($win_pct/100);
-       my $win_w=int($sqrt_val*$max_x);
-       my $win_h=int($sqrt_val*$max_y);
-       &clean_pattern_files();
-      &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range);
-       &send_key_to_client($connection,"");
-       last;
-      }
-      # RGB_A: explicit background RGB and window size
-      if($type =~/RGB_A/) {
-       my $win_pct=$calman_win_size;
-       my $effective_bg=$calman_bg;
-       if(scalar(@el_cmd) >= 7) {
-        my $bg_r=&calman_scale_value($el_cmd[3],$calman_max);
-        my $bg_g=&calman_scale_value($el_cmd[4],$calman_max);
-        my $bg_b=&calman_scale_value($el_cmd[5],$calman_max);
-        $effective_bg="$bg_r,$bg_g,$bg_b";
-        $win_pct=int($el_cmd[6]);
-       } elsif(scalar(@el_cmd) >= 4) {
-        $win_pct=int($el_cmd[3]);
-       }
-       $win_pct=$calman_win_size if($win_pct < 1);
-       $win_pct=100 if($win_pct > 100);
-       $calman_win_size=$win_pct if($win_pct > 0);
-       &log("Calman: RGB_A explicit bg=$effective_bg size=$win_pct%");
-       if($win_pct >= 100) {
-        $pname_file="FullField";
-        &clean_pattern_files();
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range);
-        &send_key_to_client($connection,"");
-        last;
-       }
-       my $sqrt_val=sqrt($win_pct/100);
-       my $win_w=int($sqrt_val*$max_x);
-       my $win_h=int($sqrt_val*$max_y);
-       &clean_pattern_files();
-      &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range);
-       &send_key_to_client($connection,"");
-       last;
-      }
-      # Default fallback
-      my $effective_bg=&calman_apl_bg("$r,$g,$b",$calman_win_size,$type);
-      &clean_pattern_files();
-      &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$effective_bg","calman",$source_range);
+      $calman_apply->(0);
+      &calman_render_rgb_pattern($type,$pattern_cmd,$key,$connection);
+      &calman_remember_pattern("RGB",$type,$pattern_cmd);
+      &send_key_to_client($connection,"");
+      last;
      }
      #
      # CONF_FORMAT — Resolution/format configuration
@@ -1335,6 +1440,7 @@ sub pattern_daemon {
       } else {
        &log("Calman: CONF_FORMAT unrecognized format: $fmt");
       }
+      &calman_replay_last_pattern("CONF_FORMAT");
       &send_key_to_client($connection,"");
       last;
      }
@@ -1355,17 +1461,20 @@ sub pattern_daemon {
       } elsif($cl =~/^Range\s+(.*)/i) {
        my $rv=lc($1);
        if($rv =~/full/) {
-        $calman_rgb_quant_range=2;
+       $calman_rgb_quant_range=2;
         &log("Calman: external range set to $calman_rgb_quant_range via CONF_LEVEL");
         &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+        &calman_replay_last_pattern("CONF_LEVEL range");
        } elsif($rv =~/limit/) {
         $calman_rgb_quant_range=1;
         &log("Calman: external range set to $calman_rgb_quant_range via CONF_LEVEL");
         &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+        &calman_replay_last_pattern("CONF_LEVEL range");
        } else {
         &log("Calman: releasing external range via CONF_LEVEL=$cl");
         &release_source_rgb_quant_range("calman");
         $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+        &calman_replay_last_pattern("CONF_LEVEL range");
        }
       } elsif($cl =~/^Format\s+(.*)/i) {
        my $fv=$1;
@@ -1441,59 +1550,9 @@ sub pattern_daemon {
      #
      if($type eq "SPECIALTY") {
       &log("Calman: SPECIALTY=$pattern_cmd");
-      $calman_apply->();
-      &clean_pattern_files();
-        my $source_range=&calman_pattern_source_range();
-      my $sp_name=uc($pattern_cmd);
-      $sp_name=~s/^\s+|\s+$//g;
-      my $black_rgb=&calman_scale_triplet_8bit(0,0,0);
-      my $white_rgb=&calman_scale_triplet_8bit(255,255,255);
-      my $gray128_rgb=&calman_scale_triplet_8bit(128,128,128);
-      # Image-based specialty patterns — PGeneratord clears the entire frame
-      # for each DRAW=RECTANGLE, so multi-bar patterns must use DRAW=IMAGE.
-      # Reuse the WebUI clipping pattern renderers which produce proper PNGs.
-      my $sp_signal_mode=&webui_pattern_signal_mode("");
-      my $sp_max_luma=&webui_pattern_max_luma("");
-      if($sp_name eq "BRIGHTNESS") {
-       my $img=&webui_pattern_diag_image_file("calman_brightness");
-       if(&webui_pattern_render_black_clipping($img,$w_s,$h_s,$sp_signal_mode,$sp_max_luma)) {
-        my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
-        $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
-        $ps.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n";
-        &create_tmp_file($ps,$source_range);
-        &load_new_pattern_file("calman");
-       } else {
-        &log("Calman: BRIGHTNESS image render failed, falling back to flat patch");
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$black_rgb","$calman_bg","","","",1,"calman",$source_range);
-       }
-      } elsif($sp_name eq "CONTRAST") {
-       my $img=&webui_pattern_diag_image_file("calman_contrast");
-       if(&webui_pattern_render_white_clipping($img,$w_s,$h_s,$sp_signal_mode,$sp_max_luma)) {
-        my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
-        $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
-        $ps.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n";
-        &create_tmp_file($ps,$source_range);
-        &load_new_pattern_file("calman");
-       } else {
-        &log("Calman: CONTRAST image render failed, falling back to flat patch");
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$white_rgb","$calman_bg","","","",1,"calman",$source_range);
-       }
-      } elsif($sp_name eq "ALIGNMENT" || $sp_name eq "OVERSCAN") {
-       my $img=&webui_pattern_diag_image_file("calman_alignment");
-       if(&webui_pattern_render_overscan($img,$w_s,$h_s)) {
-        my $ps="MOVIE_NAME=TestPattern\nBITS=8\n";
-        $ps.=&webui_pattern_image_pattern($w_s,$h_s,$img);
-        $ps.="FRAME_NAME=TestPattern\nFRAME=$frame_default\n";
-        &create_tmp_file($ps,$source_range);
-        &load_new_pattern_file("calman");
-       } else {
-        &log("Calman: ALIGNMENT image render failed, falling back to flat patch");
-        &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range);
-       }
-      } else {
-       &log("Calman: unknown specialty pattern: $sp_name");
-       &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range);
-      }
+      $calman_apply->(0);
+      &calman_render_specialty_pattern($pattern_cmd);
+      &calman_remember_pattern("SPECIALTY",$type,$pattern_cmd);
       &send_key_to_client($connection,"");
       last;
      }
