@@ -3463,7 +3463,7 @@ void ofxRPI4Window::ResetConnectorProperties()
 		}
 		first_req = 1;
 		last_req = 1;
-		drm_mode_atomic_set_property(device, req, "HDR_OUTPUT_METADATA", connectorId, prop_id, blob_id, prop, 0);
+		drm_mode_atomic_set_property(device, req, "HDR_OUTPUT_METADATA", connectorId, prop_id, blob_id, prop, DRM_MODE_ATOMIC_ALLOW_MODESET);
 	}
 		
     //disable DOVI Metadata
