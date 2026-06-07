@@ -519,7 +519,7 @@ index 206ecf4..0088fde 100644
  	u32 if_cfg = 0;
  	u32 if_xbar = 0x543210;
  	u32 csc_chan_ctl = 0;
-@@ -1223,14 +1638,15 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+@@ -1223,18 +1638,18 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
  
  	switch (state->hdmi.output_format) {
  	case HDMI_COLORSPACE_YUV444:
@@ -539,8 +539,13 @@ index 206ecf4..0088fde 100644
 -
  		csc_ctl |= VC4_SET_FIELD(VC5_MT_CP_CSC_CTL_FILTER_MODE_444_TO_422_STANDARD,
  					 VC5_MT_CP_CSC_CTL_FILTER_MODE_444_TO_422) |
- 			VC5_MT_CP_CSC_CTL_USE_444_TO_422 |
-@@ -1242,7 +1658,11 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
+-			VC5_MT_CP_CSC_CTL_USE_444_TO_422 |
+-			VC5_MT_CP_CSC_CTL_USE_RNG_SUPPRESSION;
++			VC5_MT_CP_CSC_CTL_USE_444_TO_422;
+ 
+ 		csc_chan_ctl |= VC4_SET_FIELD(VC5_MT_CP_CHANNEL_CTL_OUTPUT_REMAP_LEGACY_STYLE,
+ 					      VC5_MT_CP_CHANNEL_CTL_OUTPUT_REMAP);
+@@ -1242,7 +1657,11 @@ static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
  		if_cfg |= VC4_SET_FIELD(VC5_DVP_HT_VEC_INTERFACE_CFG_SEL_422_FORMAT_422_LEGACY,
  					VC5_DVP_HT_VEC_INTERFACE_CFG_SEL_422);
  
