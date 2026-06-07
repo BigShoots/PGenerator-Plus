@@ -13852,7 +13852,7 @@ function meterGreyTargetWhiteValue(Lw,Lb){
 
 const METER_SDR_EOTF_REFERENCE_NITS=200;
 function meterEotfSdrChartActive(){
- return (typeof meterGreyEotfUsesPqCurve==='function'?!meterGreyEotfUsesPqCurve():true) && (typeof meterChartIsDv==='function'?!meterChartIsDv():true);
+ return !(typeof meterChartIsHdr==='function'&&meterChartIsHdr());
 }
 function meterEotfChartNormRef(peak){
  // For the SDR EOTF chart, normalize against a fixed reference white so the Y
@@ -14060,19 +14060,15 @@ function meterGreyInverseEotfSignalFromLuminance(luminance,refWhite,blackLevel){
 }
 
 function meterGreyEotfValueFromLuminance(luminance,refWhite,blackLevel){
- const y=Math.max(0,luminance||0);
- if(meterGreyEotfUsesPqCurve()) return meterChartPqEncodeNormalized(y);
- return meterGreyInverseEotfSignalFromLuminance(y,refWhite,blackLevel);
+	 const y=Math.max(0,luminance||0);
+	 if(meterGreyEotfUsesPqCurve()) return meterChartPqEncodeNormalized(y);
+	 if(meterChartIsHlg()) return hlgInverseEotfSignal(y,blackLevel,refWhite);
+	 return meterGreyInverseEotfSignalFromLuminance(y,refWhite,blackLevel);
 }
 
 function meterGreyNormalizedEotfValueFromLuminance(luminance,refWhite,blackLevel){
- const y=Math.max(0,luminance||0);
- if(meterGreyEotfUsesPqCurve()){
-  const peak=(refWhite>0)?refWhite:100;
-  const peakEotf=meterGreyEotfValueFromLuminance(peak,refWhite,blackLevel);
-  return peakEotf>0 ? meterGreyEotfValueFromLuminance(y,refWhite,blackLevel)/peakEotf : meterGreyEotfValueFromLuminance(y,refWhite,blackLevel);
- }
- return meterGreyNormalizedLuminanceValue(y,refWhite);
+	 const y=Math.max(0,luminance||0);
+	 return meterGreyNormalizedLuminanceValue(y,refWhite);
 }
 
 function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
@@ -14186,9 +14182,10 @@ function meterGreyTargetPeak(refWhite){
 function meterTargetGammaLabel(){
  const sel=document.getElementById('meterTargetGamma');
  const autoPower=(typeof meterHdrAutoCalUsesPowerGammaChartMath==='function')&&meterHdrAutoCalUsesPowerGammaChartMath();
- const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
- if(autoPower) return 'Gamma 2.2';
- if(!sel) return meterChartIsDv() ? (meterDvMapModeValue()==='2'?'Gamma 2.2':'ST 2084') : (usesPqTarget ? 'PQ' : 'Gamma');
+	 const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
+	 if(autoPower) return 'Gamma 2.2';
+	 if(meterChartIsHlg()) return 'HLG';
+	 if(!sel) return meterChartIsDv() ? (meterDvMapModeValue()==='2'?'Gamma 2.2':'ST 2084') : (usesPqTarget ? 'PQ' : 'Gamma');
  const opt=sel.options[sel.selectedIndex];
  if(meterChartIsDv()) return meterDvMapModeValue()==='2'?'Gamma 2.2':'ST 2084';
  if(usesPqTarget) return 'PQ';
@@ -14539,13 +14536,24 @@ function hlgOetf(linearLight){
 }
 
 function hlgEotf(stim,minY,maxY){
- const peak=maxY>0?maxY:1000;
- const black=Math.max(0,minY||0);
- const gamma=hlgOotf(peak);
- const clamped=Math.max(0,Math.min(1,stim||0));
+	 const peak=maxY>0?maxY:1000;
+	 const black=Math.max(0,minY||0);
+	 const gamma=hlgOotf(peak);
+	 const clamped=Math.max(0,Math.min(1,stim||0));
  const a=peak-black;
  const b=Math.sqrt(3*Math.pow(Math.max(black/peak,0),1/gamma));
- return a*Math.pow(clamped,gamma)+b;
+	 return a*Math.pow(clamped,gamma)+b;
+}
+
+function hlgInverseEotfSignal(luminance,minY,maxY){
+	 const peak=maxY>0?maxY:1000;
+	 const black=Math.max(0,minY||0);
+	 const gamma=hlgOotf(peak);
+	 const a=peak-black;
+	 if(!(a>0)) return 0;
+	 const b=Math.sqrt(3*Math.pow(Math.max(black/peak,0),1/gamma));
+	 const normalized=(Math.max(0,luminance||0)-b)/a;
+	 return Math.max(0,Math.min(1,Math.pow(Math.max(0,normalized),1/gamma)));
 }
 
 function hlgSignalToDisplayLinear(stim,minY,maxY){
@@ -24731,10 +24739,10 @@ function drawGammaLegend(ctx,chart,targetLabel,avgText){
 }
 
 function drawGammaValuePreset(gsSteps){
- const ctx=getChartCtx('chartGammaValue');
- if(!ctx) return;
- const lbl=document.getElementById('chartGammaValueLabel');
- if(lbl) lbl.textContent='Gamma';
+	 const ctx=getChartCtx('chartGammaValue');
+	 if(!ctx) return;
+	 const lbl=document.getElementById('chartGammaValueLabel');
+	 if(lbl) lbl.textContent=meterChartIsHlg()?'Gamma (HLG-equivalent)':'Gamma';
  const targetLabel=meterTargetGammaLabel();
  const gammaFixedAxis=meterUseLgAutoCal26GammaAxis();
  const sourceSteps=Array.isArray(gsSteps)?gsSteps:[];
@@ -24743,7 +24751,7 @@ function drawGammaValuePreset(gsSteps){
   return (targetIre||0)>0&&(targetIre||0)<100;
  });
  const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyChartStimulusIre(s),100,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
- const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterGreyTargetUsesPq());
+	 const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterGreyTargetUsesPq()||meterChartIsHlg());
  let yMin=axis.min;
  let yMax=axis.max;
  ({min:yMin,max:yMax}=meterApplyLinearYZoom('chartGammaValue',yMin,yMax,(yMin+yMax)/2));
@@ -24769,10 +24777,10 @@ function drawGammaValuePreset(gsSteps){
 }
 
 function drawGammaValueChart(gs,allSteps,readingMap){
- const ctx=getChartCtx('chartGammaValue');
- if(!ctx) return;
- const lbl=document.getElementById('chartGammaValueLabel');
- if(lbl) lbl.textContent=meterGreyTargetUsesPq()?'Gamma (PQ-equivalent)':'Gamma';
+	 const ctx=getChartCtx('chartGammaValue');
+	 if(!ctx) return;
+	 const lbl=document.getElementById('chartGammaValueLabel');
+	 if(lbl) lbl.textContent=meterChartIsHlg()?'Gamma (HLG-equivalent)':(meterGreyTargetUsesPq()?'Gamma (PQ-equivalent)':'Gamma');
  const targetLabel=meterTargetGammaLabel();
  const gammaFixedAxis=meterUseLgAutoCal26GammaAxis();
  const sortedAll=[...gs].sort((a,b)=>(a.ire||0)-(b.ire||0));
@@ -24830,7 +24838,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  if(allVals.length===0){ drawGammaValuePreset(xSteps); return; }
  // HDR/PQ measured "gamma" has much wider range than SDR (0.3–4+), so we
  // can't clamp at 1.6–2.8 there. Fit the visible axis to actual data.
- const isHdr=meterGreyTargetUsesPq();
+	 const isHdr=meterGreyTargetUsesPq()||meterChartIsHlg();
  let yMin,yMax;
  const axis=meterGammaAxisCenteredOnTarget(measuredVals,targetVals,isHdr);
  yMin=axis.min;
