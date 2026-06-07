@@ -65,6 +65,16 @@ sub pg_dv_standard_interface(@) {
 }
 
 sub pg_dv_standard_ll_flag(@) {
+ my $model=$device_model || "";
+ if($model eq "" && -f $proc_device_model) {
+  if(open(my $fh,"<",$proc_device_model)) {
+   local $/;
+   $model=<$fh>;
+   close($fh);
+   $model=~s/\0|\r|\n//g;
+  }
+ }
+ return "1" if($model =~/Raspberry Pi 4|Raspberry Pi Compute Module 4/);
  return "0";
 }
 
