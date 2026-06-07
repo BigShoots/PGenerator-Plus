@@ -2166,6 +2166,9 @@ my $dv_is_lldv=($signal_mode eq "dv" && ($dv_interface == 1 || int($pgenerator_c
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
  my $dv_series_code_bits=$dv_is_lldv ? 10 : 8;
  my $dv_series_code_max=($dv_series_code_bits == 10) ? 1023 : 255;
+ my $dv_series_code_min=$dv_is_lldv ? 64 : 0;
+ my $dv_series_code_span=$dv_is_lldv ? 876 : $dv_series_code_max;
+ my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
  if($type eq "greyscale") {
    my @ire_vals;
    my %step_names;
@@ -2327,9 +2330,9 @@ my $dv_is_lldv=($signal_mode eq "dv" && ($dv_interface == 1 || int($pgenerator_c
 	      $stim=0 if($stim < 0);
 	      $stim=1 if($stim > 1);
 	      my $encoded=$target_linear_to_signal->($stim);
-	      $c=int($encoded*$dv_series_code_max + .5);
-	      $c=0 if($c < 0);
-	      $c=$dv_series_code_max if($c > $dv_series_code_max);
+	      $c=int($dv_series_code_min + $encoded*$dv_series_code_span + .5);
+	      $c=$dv_series_code_min if($c < $dv_series_code_min);
+	      $c=$dv_series_code_limit if($c > $dv_series_code_limit);
 			    } else {
 			     if($lg_extended_sdr_codes) {
 			      $c=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
@@ -5070,7 +5073,7 @@ sub webui_apply_config (@) {
    $changes{"max_bpc"}=($dv_interface eq "1") ? $dv_bpc : "8";
    $changes{"color_format"}=($dv_interface eq "1") ? "2" : "0";
    $changes{"colorimetry"}="9";
-   $changes{"rgb_quant_range"}="2";
+   $changes{"rgb_quant_range"}=($dv_interface eq "1") ? "1" : "2";
   }
  }
  my %effective=%pgenerator_conf;
@@ -5116,7 +5119,7 @@ sub webui_apply_config (@) {
   $changes{"colorimetry"}="9";
   $changes{"eotf"}="2";
   $changes{"primaries"}="1";
-  $changes{"rgb_quant_range"}="2";
+  $changes{"rgb_quant_range"}=($dv_interface eq "1") ? "1" : "2";
   $changes{"dv_profile"}="1";
   $changes{"dv_color_space"}="0";
   $changes{"dv_interface"}=$dv_interface;
@@ -9310,10 +9313,11 @@ function updateDropdowns(){
   fmtSel.value=targetFmt;
   Array.from(bpcSel.options).forEach(function(o){o.disabled=!allowedBpc.includes(o.value);o.style.display=allowedBpc.includes(o.value)?'':'none';});
   if(!allowedBpc.includes(bpcSel.value)) bpcSel.value=dvInterface?'12':'8';
-  // DV requires Full range
+  // Standard DV is RGB-PC full; LLDV rides video-range YCbCr 4:2:2.
   const rngSel=document.getElementById('rgb_quant_range');
-  Array.from(rngSel.options).forEach(function(o){o.disabled=o.value!=='2';o.style.display=o.value==='2'?'':'none';});
-  rngSel.value='2';
+  const targetRange=dvInterface?'1':'2';
+  Array.from(rngSel.options).forEach(function(o){o.disabled=o.value!==targetRange;o.style.display=o.value===targetRange?'':'none';});
+  rngSel.value=targetRange;
   // Standard RGB 8-bit and Low Latency 4:2:2 use normal 8-bit TMDS bandwidth.
   const maxTmds=(caps&&caps.max_tmds)?caps.max_tmds*1000:600000;
   let curModeValid=false;
@@ -10110,7 +10114,7 @@ async function applySettings(){
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
    is_ll_dovi:dvInterface?'1':'0',is_std_dovi:dvInterface?'0':'1',
    dv_status:'1',primaries:'1',color_format:dvInterface?'2':'0',colorimetry:'9',max_bpc:dvBpc,
-   rgb_quant_range:'2',eotf:'2',
+   rgb_quant_range:dvInterface?'1':'2',eotf:'2',
    dv_interface:dvInterface?'1':'0',
    dv_map_mode:getVal('dv_map_mode'),
    max_luma:meterHdrMetadataFieldValue('max_luma','dv'),
@@ -11884,7 +11888,7 @@ function meterGreyEotfUsesPqCurve(){
 }
 
 function meterGreyCodeRange(){
- if(meterChartIsDv()) return meterDvInterfaceValue()==='1' ? {min:0,span:1023} : {min:0,span:255};
+ if(meterChartIsDv()) return meterDvInterfaceValue()==='1' ? {min:64,span:876} : {min:0,span:255};
  if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return {min:16,span:239};
  if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return {min:16,span:219};
  if(meterGreyscaleUsesFullSourceRange()) return {min:0,span:255};
@@ -11972,10 +11976,12 @@ function meterDvAbsoluteTargetRollOffFraction(peak){
 }
 
 function meterDvTargetSignalFraction(ire,code){
+ const pct=Number(ire);
+ if(Number.isFinite(pct)) return clampNum(pct/100,0,1);
  if(code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function'){
   return meterGreySignalFractionFromCode(Number(code));
  }
- return meterGreySignalFractionFromCode(meterCodeFromSignalPercent(ire||0));
+ return 0;
 }
 
 function meterDvAbsoluteChartTargetLuminance(ire, peak, code){

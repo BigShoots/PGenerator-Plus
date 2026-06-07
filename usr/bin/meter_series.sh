@@ -437,9 +437,11 @@ def code_range_for_step(step):
         max_code = 0
     if max_code <= 0:
         max_code = 1023 if str(step.get("dv_interface", "")).strip() == "1" else 255
-    if max_code not in (255, 1023):
-        max_code = 1023 if max_code > 255 else 255
-    return 0, max_code
+    if max_code > 1023:
+        return 256, 3504
+    if max_code > 255:
+        return 64, 876
+    return 0, 255
 
 def code_for_absolute_percent(step, percent):
     stim = max(0.0, min(1.0, float(percent) / 100.0))
