@@ -121,6 +121,7 @@ static int rgb_qr_found = 0;
 static uint32_t dovi_meta_prop_id = 0;
 static int dv_status = 0;
 static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
+static int dv_map_mode = -1;
 static int conf_read = 0;
 
 /* DOVI blob injection state */
@@ -206,6 +207,11 @@ static void read_config(void) {
             p[12] == '=') {
             dv_interface = (p[13] - '0');
         }
+        if (p[0] == 'd' && p[1] == 'v' && p[2] == '_' && p[3] == 'm' &&
+            p[4] == 'a' && p[5] == 'p' && p[6] == '_' && p[7] == 'm' &&
+            p[8] == 'o' && p[9] == 'd' && p[10] == 'e' && p[11] == '=') {
+            dv_map_mode = (p[12] - '0');
+        }
         if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
             p[4] == 'r' && p[5] == 'i' && p[6] == 'm' && p[7] == 'e' &&
             p[8] == 't' && p[9] == 'r' && p[10] == 'y' && p[11] == '=') {
@@ -286,8 +292,16 @@ static void read_config(void) {
         write_log("DRM_OVERRIDE: config dv_interface=");
         write_log(num);
         write_log(" (");
-        write_log(dv_interface == 0 ? "Standard" : "Low-Latency");
+        write_log(dv_interface == 2 ? "Dolby-OUI" :
+                  (dv_interface == 0 ? "Standard" : "Low-Latency"));
         write_log(")\n");
+    }
+    if (dv_map_mode >= 0) {
+        char num[24];
+        itoa_simple(dv_map_mode, num);
+        write_log("DRM_OVERRIDE: config dv_map_mode=");
+        write_log(num);
+        write_log("\n");
     }
 }
 
@@ -398,6 +412,66 @@ static int should_suppress(uint32_t prop_id, uint64_t value) {
     return 0;
 }
 
+static void set_dovi_oui(uint8_t *metadata, uint32_t oui) {
+    metadata[0] = (uint8_t)(oui & 0xff);
+    metadata[1] = (uint8_t)((oui >> 8) & 0xff);
+    metadata[2] = (uint8_t)((oui >> 16) & 0xff);
+    metadata[3] = 0x00;
+}
+
+static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
+                                   const char *reason) {
+    if (!metadata || length != 12 || dv_status != 1)
+        return 0;
+
+    uint32_t oui = (dv_interface == 2) ? 0x00D046 : 0x000C03;
+    uint8_t iface = (uint8_t)(dv_interface & 0xff);
+    int changed = 0;
+
+    if (metadata[0] != (uint8_t)(oui & 0xff) ||
+        metadata[1] != (uint8_t)((oui >> 8) & 0xff) ||
+        metadata[2] != (uint8_t)((oui >> 16) & 0xff) ||
+        metadata[3] != 0x00) {
+        set_dovi_oui(metadata, oui);
+        changed = 1;
+    }
+    if (metadata[4] != 0x01) {
+        metadata[4] = 0x01;
+        changed = 1;
+    }
+    if (metadata[5] != iface) {
+        metadata[5] = iface;
+        changed = 1;
+    }
+    if (dv_map_mode >= 0 && metadata[8] != (uint8_t)(dv_map_mode & 0xff)) {
+        metadata[8] = (uint8_t)(dv_map_mode & 0xff);
+        changed = 1;
+    }
+
+    if (changed) {
+        char num[24];
+        write_log("DRM_OVERRIDE: normalized renderer DOVI metadata");
+        if (reason) {
+            write_log(" (");
+            write_log(reason);
+            write_log(")");
+        }
+        write_log(" oui=");
+        write_log(dv_interface == 2 ? "00d046" : "000c03");
+        write_log(" status=1 iface=");
+        itoa_simple((uint64_t)iface, num);
+        write_log(num);
+        if (dv_map_mode >= 0) {
+            write_log(" map=");
+            itoa_simple((uint64_t)dv_map_mode, num);
+            write_log(num);
+        }
+        write_log("\n");
+    }
+
+    return changed;
+}
+
 /*
  * Create the fallback DOVI_OUTPUT_METADATA blob (one-time).
  * Returns blob_id, or 0 on failure.
@@ -422,6 +496,7 @@ static uint32_t create_dovi_blob(int fd) {
         0x00, 0x00, 0x00, 0x00, 0x00,
         0xb6
     };
+    normalize_dovi_metadata(metadata, sizeof(metadata), "fallback");
 
     struct drm_mode_create_blob cb;
     cb.data = (uint64_t)(uintptr_t)metadata;
@@ -616,6 +691,23 @@ int ioctl(int fd, unsigned long request, ...) {
     va_end(ap);
 
     read_config();
+
+    if (request == DRM_IOCTL_MODE_CREATEPROPBLOB) {
+        struct drm_mode_create_blob *cb = (struct drm_mode_create_blob *)arg;
+        if (cb && cb->data && cb->length == 12) {
+            uint8_t metadata[12];
+            memcpy(metadata, (uint8_t *)(uintptr_t)cb->data, sizeof(metadata));
+            if (normalize_dovi_metadata(metadata, cb->length, "createblob")) {
+                uint64_t original_data = cb->data;
+                long ret;
+                cb->data = (uint64_t)(uintptr_t)metadata;
+                ret = raw_ioctl(fd, request, arg);
+                cb->data = original_data;
+                return ret;
+            }
+        }
+        return raw_ioctl(fd, request, arg);
+    }
 
     /* Intercept DRM_IOCTL_MODE_GETPROPERTY to discover property IDs */
     if (request == DRM_IOCTL_MODE_GETPROPERTY) {
