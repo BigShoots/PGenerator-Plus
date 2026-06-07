@@ -5062,7 +5062,7 @@ sub webui_apply_config (@) {
    my $dv_standard_interface=&pg_dv_standard_interface();
    $changes{"is_sdr"}="0";
    $changes{"is_hdr"}="1";
-   $changes{"is_ll_dovi"}="0";
+   $changes{"is_ll_dovi"}=&pg_dv_standard_ll_flag();
    $changes{"is_std_dovi"}="1";
    $changes{"dv_status"}="1";
    $changes{"dv_interface"}=$dv_standard_interface;
@@ -5113,7 +5113,7 @@ sub webui_apply_config (@) {
    $dv_map_mode="2" if($dv_metadata eq "4");
   }
   $changes{"max_bpc"}="8";
-  $changes{"is_ll_dovi"}="0";
+  $changes{"is_ll_dovi"}=&pg_dv_standard_ll_flag();
   $changes{"is_std_dovi"}="1";
   $changes{"dv_status"}="1";
   $changes{"color_format"}="0";
