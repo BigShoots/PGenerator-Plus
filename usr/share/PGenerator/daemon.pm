@@ -940,6 +940,7 @@ sub pattern_daemon {
     #
     my $calman_set_dv_rgb = sub {
      my ($dv_map_mode,$dv_metadata)=@_;
+     $calman_save_setting->("signal_mode","dv");
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
@@ -962,42 +963,64 @@ sub pattern_daemon {
      $calman_save_setting->("dv_metadata","$dv_metadata");
     };
 
+    my $calman_set_non_dv_mode = sub {
+     my ($mode,$eotf_val,$colorimetry,$max_bpc)=@_;
+     $mode=lc($mode || "sdr");
+     $eotf_val=0 if(!defined $eotf_val || $eotf_val eq "");
+     $colorimetry=($eotf_val >= 2) ? "9" : "2" if(!defined $colorimetry || $colorimetry eq "");
+     $max_bpc=($eotf_val >= 2) ? "10" : "8" if(!defined $max_bpc || $max_bpc eq "");
+     $calman_save_setting->("signal_mode",$mode);
+     $calman_save_setting->("is_sdr",$eotf_val >= 2 ? "0" : "1");
+     $calman_save_setting->("is_hdr",$eotf_val >= 2 ? "1" : "0");
+     $calman_save_setting->("is_ll_dovi","0");
+     $calman_save_setting->("is_std_dovi","0");
+     $calman_save_setting->("dv_status","0");
+     $calman_save_setting->("eotf","$eotf_val");
+     $calman_save_setting->("color_format","0");
+     $calman_save_setting->("colorimetry","$colorimetry");
+     $calman_save_setting->("max_bpc","$max_bpc");
+     $calman_save_setting->("primaries",$eotf_val >= 2 ? "1" : "0");
+    };
+
+    if($key =~/^\x02?SPECIALTY:([^\x02\x03]+)\x02CONF_LEVEL:Range\s+([^\x03]+)\x03?$/i) {
+     my ($specialty,$range_val)=($1,$2);
+     $specialty=~s/^\s+|\s+$//g;
+     $range_val=~s/^\s+|\s+$//g;
+     &log("Calman: split combined SPECIALTY=$specialty + CONF_LEVEL=Range $range_val");
+     if($range_val =~/full/i) {
+      $calman_rgb_quant_range=2;
+      &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+     } elsif($range_val =~/limit/i) {
+      $calman_rgb_quant_range=1;
+      &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+     } else {
+      &release_source_rgb_quant_range("calman");
+      $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+     }
+     $calman_apply->(0);
+     &calman_render_specialty_pattern($specialty);
+     &calman_remember_pattern("SPECIALTY","SPECIALTY",$specialty);
+     &send_key_to_client($connection,"");
+     last;
+    }
+
     #
     # HDR_ENABLE — external HDR toggle
     # HDR_ENABLE:True -> prepare for HDR (CONF_HDR follows with details)
-    # HDR_ENABLE:False -> switch to SDR unless an active Dolby Vision workflow is
-    # already using HDR_ENABLE only to mean "not HDR10".
+    # HDR_ENABLE:False -> switch to SDR. A later CONF_DV command can re-enter DV.
     #
      if($type eq "HDR_ENABLE") {
       if($pattern_cmd =~/^False$/i) {
-       if($calman_dv_active->()) {
-        &log("Calman: HDR_ENABLE=False while Dolby Vision active — preserving DV tunnel");
-        $calman_force_dv_rgb->();
-        $calman_apply->();
-       } else {
         &log("Calman: HDR_ENABLE=False — switching to SDR");
-        $calman_save_setting->("is_sdr","1");
-        $calman_save_setting->("is_hdr","0");
-        $calman_save_setting->("is_ll_dovi","0");
-        $calman_save_setting->("is_std_dovi","0");
-        $calman_save_setting->("dv_status","0");
-        $calman_save_setting->("eotf","0");
-        $calman_save_setting->("color_format","0");
-        $calman_save_setting->("colorimetry","2");
-        $calman_save_setting->("max_bpc","8");
+        $calman_set_non_dv_mode->("sdr",0,"2","8");
         # Apply immediately — DRM properties must change now, not on next pattern
         $calman_apply->();
-       }
       }
       if($pattern_cmd =~/^True$/i) {
        &log("Calman: HDR_ENABLE=True — HDR requested, awaiting CONF_HDR");
        # Don't set HDR yet; CONF_HDR will follow with full metadata
        # But mark HDR intent so if no CONF_HDR comes, next pattern apply will enable HDR
-       $calman_save_setting->("is_sdr","0");
-       $calman_save_setting->("is_hdr","1");
-       $calman_save_setting->("eotf","2");
-       $calman_save_setting->("colorimetry","9");
-       $calman_save_setting->("max_bpc","10");
+       $calman_set_non_dv_mode->("hdr",2,"9","10");
       }
       &send_key_to_client($connection,"");
       last;
@@ -1027,11 +1050,9 @@ sub pattern_daemon {
       $eotf_val=3 if($hdr_eotf =~/^HLG$/i);
       $calman_save_setting->("eotf","$eotf_val");
       if($eotf_val >= 2) {
-       $calman_save_setting->("is_hdr","1");
-       $calman_save_setting->("is_sdr","0");
+       $calman_set_non_dv_mode->($eotf_val == 3 ? "hlg" : "hdr",$eotf_val,"9","10");
       } else {
-       $calman_save_setting->("is_hdr","0");
-       $calman_save_setting->("is_sdr","1");
+       $calman_set_non_dv_mode->("sdr",0,"2","8");
       }
       # Match primaries to known gamuts by checking Red x coordinate
       # BT.2020: Rx=0.708  P3: Rx=0.680  BT.709: Rx=0.640
@@ -1064,43 +1085,17 @@ sub pattern_daemon {
      # DSMD — Display signal mode (SDR/HDR10/HLG/DolbyVision)
      # Composite command: sets multiple config keys and restarts immediately
      if($type eq "DSMD") {
-      my $need_restart=0;
-      if($pattern_cmd =~/^SDR$/i) {
-       $calman_save_setting->("is_sdr","1");
-       $calman_save_setting->("is_hdr","0");
-       $calman_save_setting->("is_ll_dovi","0");
-       $calman_save_setting->("is_std_dovi","0");
-       $calman_save_setting->("dv_status","0");
-       $calman_save_setting->("eotf","0");
-       $calman_save_setting->("color_format","0");
-       $calman_save_setting->("colorimetry","2");
-       $calman_save_setting->("max_bpc","8");
+     my $need_restart=0;
+     if($pattern_cmd =~/^SDR$/i) {
+       $calman_set_non_dv_mode->("sdr",0,"2","8");
        $need_restart=1;
       }
       if($pattern_cmd =~/^HDR10$/i) {
-       $calman_save_setting->("is_sdr","0");
-       $calman_save_setting->("is_hdr","1");
-       $calman_save_setting->("is_ll_dovi","0");
-       $calman_save_setting->("is_std_dovi","0");
-       $calman_save_setting->("dv_status","0");
-       $calman_save_setting->("eotf","2");
-       $calman_save_setting->("color_format","0");
-       $calman_save_setting->("colorimetry","9");
-       $calman_save_setting->("primaries","1");
-       $calman_save_setting->("max_bpc","10");
+       $calman_set_non_dv_mode->("hdr",2,"9","10");
        $need_restart=1;
       }
       if($pattern_cmd =~/^HLG$/i) {
-       $calman_save_setting->("is_sdr","0");
-       $calman_save_setting->("is_hdr","1");
-       $calman_save_setting->("is_ll_dovi","0");
-       $calman_save_setting->("is_std_dovi","0");
-       $calman_save_setting->("dv_status","0");
-       $calman_save_setting->("eotf","3");
-       $calman_save_setting->("color_format","0");
-       $calman_save_setting->("colorimetry","9");
-       $calman_save_setting->("primaries","1");
-       $calman_save_setting->("max_bpc","10");
+       $calman_set_non_dv_mode->("hlg",3,"9","10");
        $need_restart=1;
       }
       if($pattern_cmd =~/^DOLBYVISION$/i || $pattern_cmd =~/^DV$/i) {
@@ -1123,15 +1118,7 @@ sub pattern_daemon {
       my $mm_val=int($pattern_cmd);
       if($mm_val == 0) {
        # NoMetadata — SDR mode
-       $calman_save_setting->("is_sdr","1");
-       $calman_save_setting->("is_hdr","0");
-       $calman_save_setting->("is_ll_dovi","0");
-       $calman_save_setting->("is_std_dovi","0");
-       $calman_save_setting->("dv_status","0");
-       $calman_save_setting->("eotf","0");
-       $calman_save_setting->("color_format","0");
-       $calman_save_setting->("colorimetry","2");
-       $calman_save_setting->("max_bpc","8");
+       $calman_set_non_dv_mode->("sdr",0,"2","8");
 	      } elsif($mm_val >= 1 && $mm_val <= 4) {
 	       # Dolby Vision modes — drive both the renderer map mode and Calman's
 	       # legacy metadata-mode bookkeeping.
@@ -1164,11 +1151,9 @@ sub pattern_daemon {
        $calman_save_setting->("eotf","$eotf_val");
        # PQ or HLG → enable HDR output so C binary sets HDR_OUTPUT_METADATA
        if($eotf_val >= 2) {
-        $calman_save_setting->("is_hdr","1");
-        $calman_save_setting->("is_sdr","0");
+        $calman_set_non_dv_mode->($eotf_val == 3 ? "hlg" : "hdr",$eotf_val,"9","10");
        } else {
-        $calman_save_setting->("is_hdr","0");
-        $calman_save_setting->("is_sdr","1");
+        $calman_set_non_dv_mode->("sdr",0,"2","8");
        }
       }
       &send_key_to_client($connection,"");
@@ -1386,6 +1371,7 @@ sub pattern_daemon {
       &log("Calman: CONF_FORMAT=$fmt");
       # Parse resolution string: <height><p|i><rate> or WxH, with optional Hz/@ spacing.
       my ($req_w,$req_h,$req_ip,$req_rate);
+      my $explicit_rate=0;
       my $default_rate=60;
       my %std_w=(2160=>3840,1080=>1920,720=>1280,576=>720,480=>720);
       $default_rate=int($1 + 0) if($preferred_mode =~/\s([\d.]+)Hz/);
@@ -1394,27 +1380,35 @@ sub pattern_daemon {
        $req_h=int($2);
        $req_ip="p";
        $req_rate=$3 + 0;
+       $explicit_rate=1;
       } elsif($fmt =~/Resolution\s*=\s*(\d+)\s*([pi])?.*Refresh\s*=\s*([\d.]+)/i && exists $std_w{int($1)}) {
        $req_h=int($1);
        $req_ip=defined($2) && $2 ne "" ? lc($2) : "p";
        $req_rate=$3 + 0;
+       $explicit_rate=1;
        $req_w=$std_w{$req_h};
       } elsif($fmt =~/^(\d+)\s*x\s*(\d+)\s*([pi])?\s*(?:@|\/|\s)*\s*([\d.]+)?\s*(?:Hz)?/i) {
        $req_w=int($1);
        $req_h=int($2);
        $req_ip=defined($3) && $3 ne "" ? lc($3) : "p";
        $req_rate=defined($4) && $4 ne "" ? $4 + 0 : $default_rate;
+       $explicit_rate=1 if(defined($4) && $4 ne "");
       } elsif($fmt =~/^(\d+)\s*([pi])\s*(?:@|\/|\s)*\s*([\d.]+)?\s*(?:Hz)?/i) {
        $req_h=int($1);
        $req_ip=lc($2);
        $req_rate=defined($3) && $3 ne "" ? $3 + 0 : $default_rate;
+       $explicit_rate=1 if(defined($3) && $3 ne "");
        # Standard TV widths for each height (prefer these over non-standard like 4096x2160)
        $req_w=$std_w{$req_h} if(exists $std_w{$req_h});
       } elsif($fmt =~/^(\d+)\s*(?:@|\/|\s)*\s*([\d.]+)?\s*(?:Hz)?$/i && exists $std_w{int($1)}) {
        $req_h=int($1);
        $req_ip="p";
        $req_rate=defined($2) && $2 ne "" ? $2 + 0 : $default_rate;
+       $explicit_rate=1 if(defined($2) && $2 ne "");
        $req_w=$std_w{$req_h};
+      }
+      if($req_h && !$explicit_rate && $req_h <= 1080) {
+       $req_rate=60;
       }
       &log("Calman: CONF_FORMAT parsed width=".($req_w||"")." height=".($req_h||"")." scan=".($req_ip||"")." rate=".($req_rate||"")) if($req_h);
       if($req_h && $req_rate) {
@@ -1512,20 +1506,12 @@ sub pattern_daemon {
         # No bit depth suffix (e.g. "RGB", "YCC420") — default to 8bpc
         $calman_save_setting->("max_bpc","8");
        }
-       # Apply immediately — DRM output format must change now
-       $calman_apply->();
-      } elsif($cl =~/^Gamma-HDR$/i) {
-       $calman_save_setting->("is_sdr","0");
-       $calman_save_setting->("is_hdr","1");
-       $calman_save_setting->("eotf","2");
-       $calman_save_setting->("colorimetry","9");
-       $calman_save_setting->("max_bpc","10");
-      } elsif($cl =~/^Gamma-SDR$/i) {
-       $calman_save_setting->("is_sdr","1");
-       $calman_save_setting->("is_hdr","0");
-       $calman_save_setting->("eotf","0");
-       $calman_save_setting->("colorimetry","2");
-       $calman_save_setting->("max_bpc","8");
+      # Apply immediately — DRM output format must change now
+      $calman_apply->();
+     } elsif($cl =~/^Gamma-HDR$/i) {
+       $calman_set_non_dv_mode->("hdr",2,"9","10");
+     } elsif($cl =~/^Gamma-SDR$/i) {
+       $calman_set_non_dv_mode->("sdr",0,"2","8");
       } else {
        &log("Calman: unknown CONF_LEVEL param: $cl");
       }
