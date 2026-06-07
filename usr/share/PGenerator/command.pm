@@ -715,8 +715,8 @@ sub wpa_cli () {
 ###############################################
 sub pgenerator_is_executed(@) {
  my $response="Not executed";
- my $ps_proc = "";
  my $ps_proc=&process_pid("$pattern_generator","get");
+ $ps_proc=&process_pid("${pattern_generator}.dv","get") if(!$ps_proc && -x "${pattern_generator}.dv");
  $response="Pid $ps_proc" if($ps_proc);
  chomp($response);
  return $response;
