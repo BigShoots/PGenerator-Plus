@@ -144,12 +144,22 @@ static uint64_t rgb_qr_override = 0;
 static int rgb_qr_found = 0;
 static int rgb_qr_is_broadcast = 0;
 static uint32_t dovi_meta_prop_id = 0;
+static uint32_t hdr_meta_prop_id = 0;
+static int is_hdr = 0;
+static int hdr_eotf = 0;
+static uint64_t hdr_primaries = 1;
+static uint32_t hdr_min_luma_raw = 0;
+static uint16_t hdr_max_luma = 1000;
+static uint16_t hdr_max_cll = 1000;
+static uint16_t hdr_max_fall = 400;
 static int dv_status = 0;
 static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
 static int conf_read = 0;
 
 /* DOVI blob injection state */
 static uint32_t dovi_blob_id = 0;       /* fallback blob created by us */
+static uint32_t hdr_blob_id = 0;        /* HDR static metadata blob */
+static uint32_t hdr_injection_count = 0;
 static int dovi_injected = 0;           /* 1 after successful fallback injection */
 static uint32_t connector_id = 0;       /* discovered from atomic commits */
 static int dovi_passthrough_logged = 0; /* log renderer-owned DOVI once */
@@ -164,6 +174,7 @@ static uint64_t last_max_bpc = (uint64_t)-1;
 static uint64_t last_colorimetry = (uint64_t)-1;
 static uint64_t last_rgb_qr = (uint64_t)-1;
 static uint64_t last_dovi = (uint64_t)-1;
+static uint64_t last_hdr = (uint64_t)-1;
 static uint32_t suppressed_commits = 0;
 
 /* ---- Logging to file ---- */
@@ -194,6 +205,47 @@ static void itoa_simple(uint64_t val, char *buf) {
     int j = 0;
     while (i > 0) { buf[j++] = tmp[--i]; }
     buf[j] = 0;
+}
+
+static uint64_t parse_uint_value(const char *v) {
+    uint64_t out = 0;
+    while (*v >= '0' && *v <= '9') {
+        out = out * 10 + (*v - '0');
+        v++;
+    }
+    return out;
+}
+
+static uint32_t parse_decimal_10000_value(const char *v) {
+    uint32_t whole = 0;
+    uint32_t frac = 0;
+    uint32_t scale = 10000;
+
+    while (*v >= '0' && *v <= '9') {
+        whole = whole * 10 + (*v - '0');
+        v++;
+    }
+    if (*v == '.') {
+        v++;
+        while (*v >= '0' && *v <= '9' && scale > 1) {
+            scale /= 10;
+            frac += (uint32_t)(*v - '0') * scale;
+            v++;
+        }
+    }
+    return whole * 10000 + frac;
+}
+
+static void put_le16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xff);
+    p[1] = (uint8_t)((v >> 8) & 0xff);
+}
+
+static void put_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xff);
+    p[1] = (uint8_t)((v >> 8) & 0xff);
+    p[2] = (uint8_t)((v >> 16) & 0xff);
+    p[3] = (uint8_t)((v >> 24) & 0xff);
 }
 
 static uint64_t effective_colorimetry_override(void) {
@@ -239,11 +291,39 @@ static void read_config(void) {
         if (p[0] == 'm' && p[1] == 'a' && p[2] == 'x' && p[3] == '_' &&
             p[4] == 'b' && p[5] == 'p' && p[6] == 'c' && p[7] == '=') {
             char *v = p + 8;
-            max_bpc_override = 0;
-            while (*v >= '0' && *v <= '9') {
-                max_bpc_override = max_bpc_override * 10 + (*v - '0');
-                v++;
-            }
+            max_bpc_override = parse_uint_value(v);
+        }
+        if (p[0] == 'i' && p[1] == 's' && p[2] == '_' && p[3] == 'h' &&
+            p[4] == 'd' && p[5] == 'r' && p[6] == '=') {
+            is_hdr = (p[7] - '0');
+        }
+        if (p[0] == 'e' && p[1] == 'o' && p[2] == 't' && p[3] == 'f' &&
+            p[4] == '=') {
+            hdr_eotf = (int)parse_uint_value(p + 5);
+        }
+        if (p[0] == 'p' && p[1] == 'r' && p[2] == 'i' && p[3] == 'm' &&
+            p[4] == 'a' && p[5] == 'r' && p[6] == 'i' && p[7] == 'e' &&
+            p[8] == 's' && p[9] == '=') {
+            hdr_primaries = parse_uint_value(p + 10);
+        }
+        if (p[0] == 'm' && p[1] == 'i' && p[2] == 'n' && p[3] == '_' &&
+            p[4] == 'l' && p[5] == 'u' && p[6] == 'm' && p[7] == 'a' &&
+            p[8] == '=') {
+            hdr_min_luma_raw = parse_decimal_10000_value(p + 9);
+        }
+        if (p[0] == 'm' && p[1] == 'a' && p[2] == 'x' && p[3] == '_' &&
+            p[4] == 'l' && p[5] == 'u' && p[6] == 'm' && p[7] == 'a' &&
+            p[8] == '=') {
+            hdr_max_luma = (uint16_t)parse_uint_value(p + 9);
+        }
+        if (p[0] == 'm' && p[1] == 'a' && p[2] == 'x' && p[3] == '_' &&
+            p[4] == 'c' && p[5] == 'l' && p[6] == 'l' && p[7] == '=') {
+            hdr_max_cll = (uint16_t)parse_uint_value(p + 8);
+        }
+        if (p[0] == 'm' && p[1] == 'a' && p[2] == 'x' && p[3] == '_' &&
+            p[4] == 'f' && p[5] == 'a' && p[6] == 'l' && p[7] == 'l' &&
+            p[8] == '=') {
+            hdr_max_fall = (uint16_t)parse_uint_value(p + 9);
         }
         if (p[0] == 'd' && p[1] == 'v' && p[2] == '_' && p[3] == 's' &&
             p[4] == 't' && p[5] == 'a' && p[6] == 't' && p[7] == 'u' &&
@@ -260,11 +340,7 @@ static void read_config(void) {
             p[4] == 'r' && p[5] == 'i' && p[6] == 'm' && p[7] == 'e' &&
             p[8] == 't' && p[9] == 'r' && p[10] == 'y' && p[11] == '=') {
             char *v = p + 12;
-            colorimetry_override = 0;
-            while (*v >= '0' && *v <= '9') {
-                colorimetry_override = colorimetry_override * 10 + (*v - '0');
-                v++;
-            }
+            colorimetry_override = parse_uint_value(v);
             colorimetry_found = 1;
         }
         if (p[0] == 'r' && p[1] == 'g' && p[2] == 'b' && p[3] == '_' &&
@@ -272,11 +348,7 @@ static void read_config(void) {
             p[8] == 't' && p[9] == '_' && p[10] == 'r' && p[11] == 'a' &&
             p[12] == 'n' && p[13] == 'g' && p[14] == 'e' && p[15] == '=') {
             char *v = p + 16;
-            rgb_qr_override = 0;
-            while (*v >= '0' && *v <= '9') {
-                rgb_qr_override = rgb_qr_override * 10 + (*v - '0');
-                v++;
-            }
+            rgb_qr_override = parse_uint_value(v);
             rgb_qr_found = 1;
         }
         if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
@@ -284,11 +356,7 @@ static void read_config(void) {
             p[8] == 'r' && p[9] == 'm' && p[10] == 'a' && p[11] == 't' &&
             p[12] == '=') {
             char *v = p + 13;
-            output_fmt_override = 0;
-            while (*v >= '0' && *v <= '9') {
-                output_fmt_override = output_fmt_override * 10 + (*v - '0');
-                v++;
-            }
+            output_fmt_override = parse_uint_value(v);
             output_fmt_found = 1;
         }
         while (*p && *p != '\n') p++;
@@ -320,6 +388,16 @@ static void read_config(void) {
         char num[24];
         itoa_simple(rgb_qr_override, num);
         write_log("DRM_OVERRIDE: config rgb_quant_range=");
+        write_log(num);
+        write_log("\n");
+    }
+    {
+        char num[24];
+        itoa_simple(is_hdr, num);
+        write_log("DRM_OVERRIDE: config is_hdr=");
+        write_log(num);
+        write_log(" eotf=");
+        itoa_simple(hdr_eotf, num);
         write_log(num);
         write_log("\n");
     }
@@ -471,6 +549,75 @@ static void reset_last_connector_overrides(void) {
     last_colorimetry = (uint64_t)-1;
     last_rgb_qr = (uint64_t)-1;
     last_dovi = (uint64_t)-1;
+    last_hdr = (uint64_t)-1;
+    hdr_injection_count = 0;
+}
+
+static uint32_t create_hdr_blob(int fd) {
+    if (hdr_blob_id) return hdr_blob_id;
+    if (!is_hdr || dv_status == 1 || hdr_eotf <= 0)
+        return 0;
+
+    uint8_t metadata[32];
+    for (int i = 0; i < 32; i++)
+        metadata[i] = 0;
+
+    put_le32(metadata + 0, 0);
+    metadata[4] = (uint8_t)hdr_eotf;
+    metadata[5] = 0;
+
+    if (hdr_eotf != 3) {
+        if (hdr_primaries == 2) {
+            put_le16(metadata + 6, 13250);
+            put_le16(metadata + 8, 34500);
+            put_le16(metadata + 10, 7500);
+            put_le16(metadata + 12, 3000);
+            put_le16(metadata + 14, 34000);
+            put_le16(metadata + 16, 16000);
+        } else if (hdr_primaries == 0) {
+            put_le16(metadata + 6, 15000);
+            put_le16(metadata + 8, 30000);
+            put_le16(metadata + 10, 7500);
+            put_le16(metadata + 12, 3000);
+            put_le16(metadata + 14, 32000);
+            put_le16(metadata + 16, 16500);
+        } else {
+            put_le16(metadata + 6, 8500);
+            put_le16(metadata + 8, 39850);
+            put_le16(metadata + 10, 6550);
+            put_le16(metadata + 12, 2300);
+            put_le16(metadata + 14, 35400);
+            put_le16(metadata + 16, 14600);
+        }
+        put_le16(metadata + 18, 15635);
+        put_le16(metadata + 20, 16450);
+        put_le16(metadata + 22, hdr_max_luma);
+        put_le16(metadata + 24, (uint16_t)hdr_min_luma_raw);
+        put_le16(metadata + 26, hdr_max_cll);
+        put_le16(metadata + 28, hdr_max_fall);
+    }
+
+    struct drm_mode_create_blob cb;
+    cb.data = (uint64_t)(uintptr_t)metadata;
+    cb.length = sizeof(metadata);
+    cb.blob_id = 0;
+    long ret = raw_ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &cb);
+    if (ret != 0) {
+        write_log("DRM_OVERRIDE: HDR CREATEPROPBLOB failed\n");
+        return 0;
+    }
+    hdr_blob_id = cb.blob_id;
+    {
+        char num[24];
+        write_log("DRM_OVERRIDE: created HDR blob_id=");
+        itoa_simple(hdr_blob_id, num);
+        write_log(num);
+        write_log(" eotf=");
+        itoa_simple((uint64_t)hdr_eotf, num);
+        write_log(num);
+        write_log("\n");
+    }
+    return hdr_blob_id;
 }
 
 /*
@@ -544,6 +691,7 @@ static uint64_t inj_values[MAX_ATOMIC_PROPS];
 
 static int ensure_connector_overrides(struct drm_mode_atomic *atomic,
                                       uint32_t dovi_blob,
+                                      uint32_t hdr_blob,
                                       const char *reason) {
     if (!connector_id)
         return 0;
@@ -552,8 +700,8 @@ static int ensure_connector_overrides(struct drm_mode_atomic *atomic,
     uint32_t *orig_cnts = (uint32_t *)(uintptr_t)atomic->count_props_ptr;
     uint32_t *orig_props = (uint32_t *)(uintptr_t)atomic->props_ptr;
     uint64_t *orig_values = (uint64_t *)(uintptr_t)atomic->prop_values_ptr;
-    uint32_t add_props[5];
-    uint64_t add_values[5];
+    uint32_t add_props[6];
+    uint64_t add_values[6];
     uint32_t add_count = 0;
     uint32_t total = 0;
     int conn_obj_idx = -1;
@@ -564,6 +712,7 @@ static int ensure_connector_overrides(struct drm_mode_atomic *atomic,
     int has_colorimetry = 0;
     int has_rgb_qr = 0;
     int has_dovi = 0;
+    int has_hdr = 0;
 
     for (uint32_t i = 0; i < atomic->count_objs; i++)
         total += orig_cnts[i];
@@ -584,6 +733,8 @@ static int ensure_connector_overrides(struct drm_mode_atomic *atomic,
                     has_rgb_qr = 1;
                 if (dovi_meta_prop_id && prop == dovi_meta_prop_id)
                     has_dovi = 1;
+                if (hdr_meta_prop_id && prop == hdr_meta_prop_id)
+                    has_hdr = 1;
             }
             break;
         }
@@ -628,6 +779,14 @@ static int ensure_connector_overrides(struct drm_mode_atomic *atomic,
         last_dovi = dovi_blob;
         add_count++;
         dovi_injected = 1;
+    }
+    if (!has_hdr && hdr_blob && hdr_meta_prop_id &&
+        hdr_injection_count < 16 && add_count < 6) {
+        add_props[add_count] = hdr_meta_prop_id;
+        add_values[add_count] = hdr_blob;
+        last_hdr = hdr_blob;
+        add_count++;
+        hdr_injection_count++;
     }
 
     if (add_count == 0)
@@ -784,6 +943,14 @@ int ioctl(int fd, unsigned long request, ...) {
                 char num[24];
                 itoa_simple(prop->prop_id, num);
                 write_log("DRM_OVERRIDE: found DOVI_OUTPUT_METADATA prop_id=");
+                write_log(num);
+                write_log("\n");
+            }
+            if (strcmp(prop->name, "HDR_OUTPUT_METADATA") == 0) {
+                hdr_meta_prop_id = prop->prop_id;
+                char num[24];
+                itoa_simple(prop->prop_id, num);
+                write_log("DRM_OVERRIDE: found HDR_OUTPUT_METADATA prop_id=");
                 write_log(num);
                 write_log("\n");
             }
@@ -977,15 +1144,20 @@ int ioctl(int fd, unsigned long request, ...) {
 
         if (!is_test && connector_id) {
             uint32_t dovi_blob = 0;
+            uint32_t hdr_blob = 0;
 
             if (dv_status == 1 && !dovi_injected && !renderer_dovi_in_commit
                 && !renderer_dovi_seen && dovi_meta_prop_id)
                 dovi_blob = create_dovi_blob(fd);
+            if (dv_status == 0 && is_hdr == 1 && hdr_meta_prop_id &&
+                hdr_injection_count < 16)
+                hdr_blob = create_hdr_blob(fd);
 
             connector_override_added =
-                ensure_connector_overrides(atomic, dovi_blob,
+                ensure_connector_overrides(atomic, dovi_blob, hdr_blob,
                                            dovi_blob ? "DOVI fallback" :
-                                                       "display config");
+                                           (hdr_blob ? "HDR metadata" :
+                                                       "display config"));
         }
 
         long atomic_ret = raw_ioctl(fd, request, arg);

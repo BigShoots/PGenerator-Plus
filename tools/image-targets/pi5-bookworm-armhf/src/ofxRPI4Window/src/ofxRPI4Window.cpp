@@ -1125,11 +1125,13 @@ bool ofxRPI4Window::cta_is_hdr_static_metadata_block(const char *edid_ext)
 	 *	             ET_4 to ET_5: Reserved for future use
 	 */
 
-	if ((((edid_ext[0] & 0xe0) >> 5 == USE_EXTENDED_TAG) &&
-	      (edid_ext[1] == HDR_STATIC_METADATA_BLOCK)) &&
-	     ((edid_ext[2] & HDMI_EOTF_TRADITIONAL_GAMMA_HDR) ||
-	      (edid_ext[2] & HDMI_EOTF_SMPTE_ST2084)))
+	if (((edid_ext[0] & 0xe0) >> 5 == USE_EXTENDED_TAG) &&
+	    (edid_ext[1] == HDR_STATIC_METADATA_BLOCK)) {
+		uint8_t eotfs = edid_ext[2];
+		if ((eotfs & (1 << HDMI_EOTF_SMPTE_ST2084)) ||
+		    (eotfs & (1 << HDMI_EOTF_BT_2100_HLG)))
 			return true;
+	}
 
 	return false;
 }
@@ -1766,7 +1768,7 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		//	    Cr = dot(rgb.rgb, vec3(coeffs_div.z, -coeffs_num.y/coeffs_div.y, -coeffs_num.z/coeffs_div.y)) + 0.5;
 
 			if (color_format == 1) {
-				return vec4(Cb/float(normalizer),Cr/float(normalizer),Y/float(normalizer), a);
+				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);
 			}
 			if (color_format == 2) {
 				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);
