@@ -5105,7 +5105,12 @@ sub webui_apply_config (@) {
  $dv_on=1 if(int($effective{"is_ll_dovi"} || 0) || int($effective{"is_std_dovi"} || 0));
  if($dv_on) {
   my $dv_map_mode=(defined $changes{"dv_map_mode"} && $changes{"dv_map_mode"} ne "") ? $changes{"dv_map_mode"} : ($effective{"dv_map_mode"} || "2");
-  my $dv_metadata="2";
+  my $dv_metadata=(defined $changes{"dv_metadata"} && $changes{"dv_metadata"} ne "") ? $changes{"dv_metadata"} : (($dv_map_mode eq "1") ? "3" : (($dv_map_mode eq "2") ? "4" : "2"));
+  if(!defined $changes{"dv_map_mode"} || $changes{"dv_map_mode"} eq "") {
+   $dv_map_mode="0" if($dv_metadata eq "2");
+   $dv_map_mode="1" if($dv_metadata eq "3");
+   $dv_map_mode="2" if($dv_metadata eq "4");
+  }
   $changes{"max_bpc"}="8";
   $changes{"is_ll_dovi"}="0";
   $changes{"is_std_dovi"}="1";
@@ -5118,6 +5123,7 @@ sub webui_apply_config (@) {
   $changes{"dv_profile"}="1";
   $changes{"dv_color_space"}="0";
   $changes{"dv_interface"}="0";
+  $changes{"dv_map_mode"}=$dv_map_mode;
   $changes{"dv_metadata"}=$dv_metadata;
   # Dolby Vision calibration uses RGB Full 8-bit tunneling; reject modes above
   # HDMI 2.0 TMDS bandwidth (600 MHz).
@@ -8924,6 +8930,9 @@ function setVal(id,v){const el=document.getElementById(id);if(el)el.value=v;}
 function getVal(id){const el=document.getElementById(id);return el?el.value:'';}
 
 function dvMetadataForMapMode(mapMode){
+ mapMode=String(mapMode||'');
+ if(mapMode==='1') return '3';
+ if(mapMode==='2') return '4';
  return '2';
 }
 

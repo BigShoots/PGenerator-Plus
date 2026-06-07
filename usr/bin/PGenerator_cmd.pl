@@ -870,14 +870,29 @@ sub set_pgenerator_conf (@) {
  my $var_to_set = $ARGV[1];
  my $value = $ARGV[2];
  my $content = "";
+ my $paired_var = "";
+ my $paired_value = "";
  return print $error_response if($var_to_set =~/^(ip_pattern|^port_pattern)$/);
+ if($var_to_set eq "dv_metadata") {
+  $paired_var = "dv_map_mode";
+  $paired_value = "0" if($value eq "2");
+  $paired_value = "1" if($value eq "3");
+  $paired_value = "2" if($value eq "4");
+ } elsif($var_to_set eq "dv_map_mode") {
+  $paired_var = "dv_metadata";
+  $paired_value = "3" if($value eq "1");
+  $paired_value = "4" if($value eq "2");
+  $paired_value = "2" if($paired_value eq "");
+ }
  open(CONF,"$pattern_conf");
  while(<CONF>) {
-  next if (/^$var_to_set=/);
+  next if(/^$var_to_set=/);
+  next if($paired_var ne "" && /^$paired_var=/);
   $content.=$_;
  }
  chomp($content);
  $content.="\n$var_to_set=$value" if($value ne "");
+ $content.="\n$paired_var=$paired_value" if($paired_var ne "" && $paired_value ne "");
  &write_file("$pattern_conf.tmp","$pattern_conf","$content\n");
  print $ok_response;
 }
