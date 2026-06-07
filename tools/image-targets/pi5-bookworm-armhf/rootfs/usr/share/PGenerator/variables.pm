@@ -49,6 +49,21 @@ $load_avg_file="/proc/loadavg ";
 $dir_wpa="/var/run/wpa_supplicant";
 $hostname_file="/etc/hostname";
 
+sub pg_dv_standard_interface(@) {
+ my $model=$device_model || "";
+ if($model eq "" && -f $proc_device_model) {
+  if(open(my $fh,"<",$proc_device_model)) {
+   local $/;
+   $model=<$fh>;
+   close($fh);
+   $model=~s/\0|\r|\n//g;
+  }
+ }
+ # The Pi 4 patched vc4 DV stack emits the Dolby OUI only for interface 2.
+ return "2" if($model =~/Raspberry Pi 4|Raspberry Pi Compute Module 4/);
+ return "0";
+}
+
 
 $not_connected="Disconnected";
 $no_info_available="No info available";
