@@ -10333,7 +10333,7 @@ async function connectWifi(){
     loadInfo();
    }else if(ws&&ws.wpa_state==='COMPLETED'&&ws.ssid===ssid&&attempts===4){
     toast('Connected to '+ssid+', waiting for IP...');
-   }else if(attempts>=24){
+   }else if(attempts>=40){
     clearInterval(poll);
     if(ws&&ws.wpa_state==='COMPLETED'&&ws.ip) toast('Connected to '+ws.ssid+' - '+ws.ip);
     else if(ws&&ws.wpa_state==='COMPLETED') toast('Connected to '+ws.ssid+', but no IP lease yet','err');
