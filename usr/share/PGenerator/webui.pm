@@ -10214,7 +10214,7 @@ async function applySettings(){
  clearActive();
  var di=document.getElementById('diagInfo');if(di)di.style.display='none';
  const r=await fetchJSON('/api/config',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify(changes)});
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(changes),_timeoutMs:30000});
  if(r&&r.status==='ok'){
   toast('Applying settings...');
   document.getElementById('applyBar').style.display='none';
