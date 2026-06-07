@@ -5078,9 +5078,15 @@ sub webui_apply_config (@) {
   $changes{"dv_metadata"}="0";
  }
  my $effective_color_format=(defined $changes{"color_format"} && $changes{"color_format"} ne "") ? int($changes{"color_format"}) : int($pgenerator_conf{"color_format"} || 0);
+ my $effective_signal_mode=lc($changes{"signal_mode"} || "");
+ my $effective_rgb_quant_range=(defined $changes{"rgb_quant_range"} && $changes{"rgb_quant_range"} ne "") ? int($changes{"rgb_quant_range"}) : int($pgenerator_conf{"rgb_quant_range"} || 0);
  if($effective_color_format > 2) {
   my $result='{"status":"error","message":"YCbCr 4:2:0 is not supported by the current HDMI driver. Use RGB, YCbCr 4:4:4, or YCbCr 4:2:2."}';
   return wantarray ? ($result,0) : $result;
+ }
+ if(($effective_signal_mode eq "hdr10" || $effective_signal_mode eq "hlg") && $effective_rgb_quant_range == 1 && !$dv_on) {
+  # HDR/HLG Limited range requires 10-bit transport on the Pi 5 HDMI path.
+  $changes{"max_bpc"}="10";
  }
  if($effective_color_format == 2 && !$dv_on) {
   # YCbCr 4:2:2 renderer path is supported at 10-bit only.
