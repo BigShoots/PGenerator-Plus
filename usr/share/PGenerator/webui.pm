@@ -2781,6 +2781,21 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 
 	 my $series_id="${type}_".int(Time::HiRes::time()*1000)."_".int(rand(1000000));
 	 my $total=scalar(@steps);
+	 my $series_type_json=&_webui_json_escape($type);
+	 my $series_signal_mode_json=&_webui_json_escape($signal_mode);
+	 my $series_target_gamma_json=&_webui_json_escape($target_gamma);
+	 my $series_dv_map_mode_json=&_webui_json_escape($dv_map_mode);
+	 my $series_max_luma_num=($max_luma+0);
+	 my $series_meta_json="\"type\":\"$series_type_json\",\"points\":".($points+0).",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\"";
+	 my $series_step_meta=",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\"";
+	 @steps=map {
+	  my $step=$_;
+	  if($step!~/"signal_mode"\s*:/) {
+	   $step=~s/\}\s*$//;
+	   $step.=$series_step_meta."}";
+	  }
+	  $step;
+	 } @steps;
 
 	 # Write steps to temp file for helper script
 	 my $steps_file="/tmp/meter_series_steps_${series_id}.json";
@@ -2792,8 +2807,8 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	  return "{\"status\":\"error\",\"message\":\"Failed to write series steps file\"}";
 	 }
 
- # Write initial state
- my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[]}";
+	 # Write initial state
+	 my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[],$series_meta_json}";
  if(open(my $fh,">",$_meter_series_file)) { print $fh $init_json; close($fh); }
  my $ready_file=&webui_meter_series_ready_file($series_id);
  &webui_meter_series_ready_cleanup();
@@ -2816,7 +2831,7 @@ my $dv_map_mode=($signal_mode eq "dv") ? ($pgenerator_conf{"dv_map_mode"} || "2"
 	 close($debug_log);
  system($cmd);
 
- return "{\"status\":\"started\",\"series_id\":\"$series_id\",\"total_steps\":$total,\"steps\":[".join(",",@steps)."]}";
+	 return "{\"status\":\"started\",\"series_id\":\"$series_id\",\"total_steps\":$total,$series_meta_json,\"steps\":[".join(",",@steps)."]}";
 }
 
 sub webui_meter_series_status (@) {
@@ -10879,15 +10894,18 @@ function meterResolveSeriesSnapshotFromCache(key,options){
  const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode&&(requestedLg26===(meterSeriesSnapshotHasLgAutoCal26Markers(exact)||Number((exact&&exact.points)||0)===26))?exact:null;
  if(type!=='greyscale'){
   if(!exactEligible) return null;
-  return {
-   type:type,
-   points:points,
-   signal_mode:signalMode,
-   steps:steps,
-   readings:clone((exactEligible.readings||[]).filter(rd=>meterReadingHasLuminance(rd))),
-   white_reading:exactEligible.white_reading?clone(exactEligible.white_reading):null,
-   status:exactEligible.status||'complete'
-  };
+	  return {
+	   type:type,
+	   points:points,
+	   signal_mode:signalMode,
+	   target_gamma:exactEligible.target_gamma||null,
+	   max_luma:exactEligible.max_luma||null,
+	   dv_map_mode:exactEligible.dv_map_mode||null,
+	   steps:steps,
+	   readings:clone((exactEligible.readings||[]).filter(rd=>meterReadingHasLuminance(rd))),
+	   white_reading:exactEligible.white_reading?clone(exactEligible.white_reading):null,
+	   status:exactEligible.status||'complete'
+	  };
  }
  const candidates=[];
  if(exactEligible) candidates.push({snap:exactEligible,exact:true});
@@ -10921,9 +10939,10 @@ function meterResolveSeriesSnapshotFromCache(key,options){
   }
  });
  if(mergedReadings.length===0) return null;
- if(!mergedReadings.some(rd=>!meterReadingIsBlackStep(rd))&&candidates.some(candidate=>meterReadingsWouldRecoverAsBlackOnly(candidate.snap.readings,type,steps))) return null;
-	 let white=null;
-	 const mergedWhite=meterFindSeriesWhiteReading(mergedReadings);
+	 if(!mergedReadings.some(rd=>!meterReadingIsBlackStep(rd))&&candidates.some(candidate=>meterReadingsWouldRecoverAsBlackOnly(candidate.snap.readings,type,steps))) return null;
+	 const contextSnap=exactEligible||((candidates[0]&&candidates[0].snap)?candidates[0].snap:{});
+		 let white=null;
+		 const mergedWhite=meterFindSeriesWhiteReading(mergedReadings);
 	 if(mergedWhite) white=clone(mergedWhite);
 	 if(!white&&exactEligible&&exactEligible.white_reading&&meterReadingHasLuminance(exactEligible.white_reading)&&meterReadingMatchesStepList(exactEligible.white_reading,type,steps)) white=clone(exactEligible.white_reading);
 	 if(!white){
@@ -10934,14 +10953,17 @@ function meterResolveSeriesSnapshotFromCache(key,options){
 	   }
   }
  }
- return {
-  type:type,
-  points:points,
-  signal_mode:signalMode,
-  steps:steps,
-  readings:mergedReadings,
-  white_reading:white,
-  status:(exactEligible&&exactEligible.status)||'complete'
+	 return {
+	  type:type,
+	  points:points,
+	  signal_mode:signalMode,
+	  target_gamma:contextSnap.target_gamma||null,
+	  max_luma:contextSnap.max_luma||null,
+	  dv_map_mode:contextSnap.dv_map_mode||null,
+	  steps:steps,
+	  readings:mergedReadings,
+	  white_reading:white,
+	  status:(exactEligible&&exactEligible.status)||'complete'
  };
 }
 
@@ -11376,6 +11398,8 @@ function meterActiveGamut(){
 }
 
 function meterDvMapModeValue(){
+ const active=(typeof meterActiveSeriesDvMapMode!=='undefined')?String(meterActiveSeriesDvMapMode||''):'';
+ if(active) return active;
  const el=document.getElementById('dv_map_mode');
  return String((el&&el.value) || (config&&config.dv_map_mode) || '2');
 }
@@ -11534,6 +11558,8 @@ function meterDvRelativeSt2084UsesLegalRange(){
 }
 
 function meterGreyTargetGammaSelection(){
+ const active=(typeof meterActiveSeriesTargetGamma!=='undefined')?String(meterActiveSeriesTargetGamma||''):'';
+ if(active) return active;
  const el=document.getElementById('meterTargetGamma');
  const selected=String((el&&el.value) || '');
  if(meterChartIsDv()){
@@ -14331,30 +14357,57 @@ function meterChartSignalMode(){
  return 'sdr';
 }
 
+function meterActiveChartSignalMode(){
+ const active=(typeof meterActiveSeriesSignalMode!=='undefined')?String(meterActiveSeriesSignalMode||'').toLowerCase():'';
+ return active||meterChartSignalMode();
+}
+
 function meterChartIsHdr(){
- return meterChartSignalMode()!=='sdr';
+ return meterActiveChartSignalMode()!=='sdr';
 }
 
 function meterChartIsPq(){
- const sm=meterChartSignalMode();
+ const sm=meterActiveChartSignalMode();
  return sm==='hdr10'||sm==='dv';
 }
 
 function meterChartIsHlg(){
- return meterChartSignalMode()==='hlg';
+ return meterActiveChartSignalMode()==='hlg';
 }
 
 function meterChartIsDv(){
- return meterChartSignalMode()==='dv';
+ return meterActiveChartSignalMode()==='dv';
 }
 
 function meterChartHdrPeak(){
+ const active=(typeof meterActiveSeriesMaxLuma!=='undefined')?Number(meterActiveSeriesMaxLuma):NaN;
+ if(active>0&&isFinite(active)) return Math.min(10000,active);
  const top=document.getElementById('max_luma');
  const live=top?parseFloat(top.value):NaN;
  const cfg=parseFloat((config&&config.max_luma)||'1000');
  const peak=live>0?live:cfg;
  if(!(peak>0)) return 1000;
  return Math.min(10000,peak);
+}
+
+function meterSetActiveSeriesChartContext(source){
+ const src=source||{};
+ const metaStep=(Array.isArray(src.steps)?src.steps.find(st=>st&&(st.signal_mode||st.target_gamma||st.max_luma||st.dv_map_mode)):null)||{};
+ const metaReading=(Array.isArray(src.readings)?src.readings.find(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode)):null)||{};
+ const signal=String((src.signal_mode||src.requested_signal_mode||metaStep.signal_mode||metaReading.signal_mode||meterChartSignalMode()||'sdr')).toLowerCase();
+ meterActiveSeriesSignalMode=signal;
+ const target=String(src.target_gamma||metaStep.target_gamma||metaReading.target_gamma||'').toLowerCase();
+ if(target) meterActiveSeriesTargetGamma=target;
+ else if(signal==='dv'&&typeof meterDvAutoTargetGamma==='function') meterActiveSeriesTargetGamma=String(meterDvAutoTargetGamma()||'').toLowerCase()||null;
+ else {
+  const targetGammaEl=document.getElementById('meterTargetGamma');
+  meterActiveSeriesTargetGamma=String((targetGammaEl&&targetGammaEl.value)||'').toLowerCase()||null;
+ }
+ const maxLumaEl=document.getElementById('max_luma');
+ const maxLuma=Number((src.max_luma!=null)?src.max_luma:((metaStep.max_luma!=null)?metaStep.max_luma:((metaReading.max_luma!=null)?metaReading.max_luma:(maxLumaEl&&maxLumaEl.value))));
+ meterActiveSeriesMaxLuma=(maxLuma>0&&isFinite(maxLuma))?maxLuma:null;
+ const dvMapEl=document.getElementById('dv_map_mode');
+ meterActiveSeriesDvMapMode=String((src.dv_map_mode!=null)?src.dv_map_mode:((metaStep.dv_map_mode!=null)?metaStep.dv_map_mode:((metaReading.dv_map_mode!=null)?metaReading.dv_map_mode:((dvMapEl&&dvMapEl.value)||'')))).toLowerCase()||null;
 }
 
 // The meter pane mirrors the main HDR metadata controls so peak/min only
@@ -15527,10 +15580,16 @@ function meterRecoverSeries(s){
 	 }
 	 steps=meterCanonicalRecoveredSteps(type,points,steps,s.status||'complete');
 	 if(s.series_id) steps=meterApplyColorSeriesTargetWhiteReference(steps,type);
-	 meterSeriesSteps=steps;
+ meterSeriesSteps=steps;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
- meterActiveSeriesSignalMode=String((s.signal_mode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const metaStep=(Array.isArray(steps)?steps.find(st=>st&&(st.signal_mode||st.target_gamma||st.max_luma||st.dv_map_mode)):null)||{};
+ const metaReading=(s.readings&&Array.isArray(s.readings)?s.readings.find(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode)):null)||{};
+ meterActiveSeriesSignalMode=String((s.signal_mode||metaStep.signal_mode||metaReading.signal_mode||meterChartSignalMode()||'sdr')).toLowerCase();
+ meterActiveSeriesTargetGamma=String((s.target_gamma||metaStep.target_gamma||metaReading.target_gamma||'')).toLowerCase()||null;
+ const activeMaxLuma=Number((s.max_luma!=null?s.max_luma:(metaStep.max_luma!=null?metaStep.max_luma:metaReading.max_luma)));
+ meterActiveSeriesMaxLuma=(activeMaxLuma>0&&isFinite(activeMaxLuma))?activeMaxLuma:null;
+ meterActiveSeriesDvMapMode=String((s.dv_map_mode||metaStep.dv_map_mode||metaReading.dv_map_mode||'')).toLowerCase()||null;
  meterActiveSeriesKey=type+'-'+points;
  meterSharedSeriesId=s.series_id||null;
    meterCurrentPatchStep=null;
@@ -15640,10 +15699,14 @@ function meterStampReadingStepMeta(reading,step){
  if(step.series_type!=null) reading.series_type=step.series_type;
  if(!alternateStimulus&&step.stimulus!=null) reading.stimulus=step.stimulus;
  if(!alternateStimulus&&step.input_max!=null) reading.input_max=step.input_max;
- if(!alternateStimulus&&step.signal_r_pct!=null) reading.signal_r_pct=step.signal_r_pct;
- if(!alternateStimulus&&step.signal_g_pct!=null) reading.signal_g_pct=step.signal_g_pct;
- if(!alternateStimulus&&step.signal_b_pct!=null) reading.signal_b_pct=step.signal_b_pct;
- if(step.analysis_ire!=null) reading.analysis_ire=step.analysis_ire;
+	 if(!alternateStimulus&&step.signal_r_pct!=null) reading.signal_r_pct=step.signal_r_pct;
+	 if(!alternateStimulus&&step.signal_g_pct!=null) reading.signal_g_pct=step.signal_g_pct;
+	 if(!alternateStimulus&&step.signal_b_pct!=null) reading.signal_b_pct=step.signal_b_pct;
+	 if(step.signal_mode!=null) reading.signal_mode=step.signal_mode;
+	 if(step.target_gamma!=null) reading.target_gamma=step.target_gamma;
+	 if(step.max_luma!=null) reading.max_luma=step.max_luma;
+	 if(step.dv_map_mode!=null) reading.dv_map_mode=step.dv_map_mode;
+	 if(step.analysis_ire!=null) reading.analysis_ire=step.analysis_ire;
  if(step.target_ire!=null) reading.target_ire=step.target_ire;
  if(step.transport_stimulus!=null) reading.transport_stimulus=step.transport_stimulus;
  if(step.point_role!=null) reading.point_role=step.point_role;
@@ -15760,11 +15823,14 @@ function meterCacheSeriesState(status){
   meterPersistSeriesCache();
   return;
  }
- meterSeriesCache[meterActiveSeriesKey]={
-  type:meterActiveSeriesType,
-  points:meterActiveSeriesPoints,
-  signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
-  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
+	 meterSeriesCache[meterActiveSeriesKey]={
+	  type:meterActiveSeriesType,
+	  points:meterActiveSeriesPoints,
+	  signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
+	  target_gamma:meterActiveSeriesTargetGamma||null,
+	  max_luma:meterActiveSeriesMaxLuma||null,
+	  dv_map_mode:meterActiveSeriesDvMapMode||null,
+	  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
   steps:JSON.parse(JSON.stringify(meterSeriesSteps||[])),
   readings:readings,
   status:status||(meterSeriesRunning?'running':'complete'),
@@ -15782,9 +15848,12 @@ function meterRestoreSeriesFromCache(key){
   type:cached.type,
   points:cached.points,
   status:cached.status||'complete',
-  total_steps:cached.steps.length,
-  signal_mode:cached.signal_mode,
-  steps:JSON.parse(JSON.stringify(cached.steps)),
+	  total_steps:cached.steps.length,
+	  signal_mode:cached.signal_mode,
+	  target_gamma:cached.target_gamma,
+	  max_luma:cached.max_luma,
+	  dv_map_mode:cached.dv_map_mode,
+	  steps:JSON.parse(JSON.stringify(cached.steps)),
   readings:JSON.parse(JSON.stringify(cached.readings||[])),
   white_reading:cached.white_reading?JSON.parse(JSON.stringify(cached.white_reading)):null
  });
@@ -17147,6 +17216,9 @@ let meterActiveSeriesKey=null; // track which series button is active
 let meterActiveSeriesType=null; // series type (greyscale/colors/saturations)
 let meterActiveSeriesPoints=null; // series point count
 let meterActiveSeriesSignalMode=null; // signal mode tied to active series snapshot
+let meterActiveSeriesTargetGamma=null; // target transfer function tied to active series snapshot
+let meterActiveSeriesMaxLuma=null; // HDR/DV peak tied to active series snapshot
+let meterActiveSeriesDvMapMode=null; // DV absolute/relative mode tied to active series snapshot
 let meterCurrentPatchStep=null; // currently displayed patch step object
 let meterSeriesRunning=false; // true when Read Series is actively running
 let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
@@ -18235,7 +18307,7 @@ function meterSelectSeries(type,points,opts){
  meterGreyscaleLastCurrentKey=null;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
- meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+ meterSetActiveSeriesChartContext();
  meterLastChartCount=0;
  if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
  // Highlight the clicked button
@@ -20717,7 +20789,7 @@ function meterAutoCalApplyStatus(status){
 		 if(status.autocal){
 	  const statusSignal=String(status.signal_mode||status.requested_signal_mode||'').toLowerCase();
 	  const inferredSignal=statusSignal||(String(status.ddc_layout||'').toLowerCase()==='hdr20'?'hdr10':'');
-	  if(inferredSignal) meterActiveSeriesSignalMode=inferredSignal;
+	  if(inferredSignal) meterSetActiveSeriesChartContext({...status,signal_mode:inferredSignal});
 	  if(meterActiveSeriesType!=='greyscale'||Number(meterActiveSeriesPoints)!==26){
 	   meterActiveSeriesType='greyscale';
 	   meterActiveSeriesPoints=26;
@@ -21664,12 +21736,15 @@ async function meterFullAutoCalBuildSnapshotReportSections(entries){
     series_id:null,
     type:snap.type,
     points:snap.points,
-    status:'complete',
-    total_steps:Array.isArray(snap.steps)?snap.steps.length:0,
-    signal_mode:snap.signal_mode,
-    steps:meterFullAutoCalCloneValue(snap.steps||[]),
-    readings:meterFullAutoCalCloneValue(snap.readings||[]),
-    white_reading:snap.white_reading?meterFullAutoCalCloneValue(snap.white_reading):null
+	    status:'complete',
+	    total_steps:Array.isArray(snap.steps)?snap.steps.length:0,
+	    signal_mode:snap.signal_mode,
+	    target_gamma:snap.target_gamma,
+	    max_luma:snap.max_luma,
+	    dv_map_mode:snap.dv_map_mode,
+	    steps:meterFullAutoCalCloneValue(snap.steps||[]),
+	    readings:meterFullAutoCalCloneValue(snap.readings||[]),
+	    white_reading:snap.white_reading?meterFullAutoCalCloneValue(snap.white_reading):null
    });
    await meterPrepareCurrentSeriesForReport();
    sectionHtml+=meterBuildCurrentSeriesReportSection(title);
@@ -21992,7 +22067,7 @@ function meterFullAutoCalTouchupTargetY(){
 	  meterResetSeriesButtons();
 	  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
 	  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
-	  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+	  meterSetActiveSeriesChartContext();
 	  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
 	  if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
@@ -22152,7 +22227,7 @@ function meterFullAutoCalTouchupTargetY(){
 	 meterActiveSeriesType='greyscale';
  meterActiveSeriesPoints=26;
  meterActiveSeriesKey='greyscale-26';
- meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+ meterSetActiveSeriesChartContext();
  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
 	 if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available for Magic Wand failsafe');
@@ -22272,7 +22347,7 @@ function meterFullAutoCalTouchupTargetY(){
   meterResetSeriesButtons();
   const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
   if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
-  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+  meterSetActiveSeriesChartContext();
   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
   const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
   if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
@@ -22424,7 +22499,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
   meterResetSeriesButtons();
   const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
   if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
-  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+  meterSetActiveSeriesChartContext();
   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
   const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
   if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
@@ -22808,7 +22883,7 @@ async function meterStartAutoCal(options){
   meterActiveSeriesType='greyscale';
   meterActiveSeriesPoints=26;
   meterActiveSeriesKey='greyscale-26';
-  meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+  meterSetActiveSeriesChartContext();
  }
 	 if(!meterAutoCalAvailable()) return fail(fullWorkflow?'Connect an LG TV before starting Full Auto Cal':'Connect an LG TV and select Greyscale LG 26pt AutoCal first');
 	 if(!(await meterEnsureLgAutoCalTransport(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
@@ -22821,7 +22896,7 @@ async function meterStartAutoCal(options){
  meterResetSeriesButtons();
  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
- meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+ meterSetActiveSeriesChartContext();
  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
  if(!adjustable.length) return fail('No LG-adjustable greyscale points are available');
@@ -22853,7 +22928,7 @@ async function meterStartAutoCal(options){
  meterLastChartCount=0;
  meterLastChartSignature='';
  meterActiveSeriesType='greyscale';
- meterActiveSeriesSignalMode=String((meterChartSignalMode()||'sdr')).toLowerCase();
+ meterSetActiveSeriesChartContext();
  document.getElementById('meterExportRow').style.display='';
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:adjustable.length||26,current_name:'LG Auto Cal setup...'},{workflow:fullWorkflow?'full':'greyscale',label:'LG Auto Cal setup...'});
  const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
@@ -23144,11 +23219,11 @@ function meterLg3dPostCheckStep(rd){
 function meterLg3dApplyPostCheckStatus(status){
  const readings=meterLg3dPostCheckReadings(status);
  if(!readings.length) return;
- meterActiveSeriesType='colors';
- meterActiveSeriesPoints=readings.length;
- meterActiveSeriesKey='lg-3d-post-check';
- meterActiveSeriesSignalMode=String((status&&status.signal_mode)||meterChartSignalMode()||'sdr').toLowerCase();
- meterShow3dLutAutoCalContext();
+	 meterActiveSeriesType='colors';
+	 meterActiveSeriesPoints=readings.length;
+	 meterActiveSeriesKey='lg-3d-post-check';
+	 meterSetActiveSeriesChartContext(status);
+	 meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
  meterSeriesSteps=readings.map(meterLg3dPostCheckStep);
  meterReadings=readings;
@@ -23446,10 +23521,11 @@ async function meterRunSeries(){
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
  if(!meterEnsureAppliedGeneratorSettings()) return false;
  meterHdrAutoCalChartContextHeld=false;
- // Rebuild the local preview steps from the current UI state before starting.
- // Without this, rerunning the same series key can keep stale step codes from
- // a previous mode/range selection and then stamp them back onto fresh reads.
- meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	 // Rebuild the local preview steps from the current UI state before starting.
+	 // Without this, rerunning the same series key can keep stale step codes from
+	 // a previous mode/range selection and then stamp them back onto fresh reads.
+	 meterSetActiveSeriesChartContext();
+	 meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
  meterStopContinuous();
  meterSelectedThumbIre=null;
  meterReadings=[];
@@ -23495,9 +23571,10 @@ async function meterRunSeries(){
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
    return false;
-  }
-  toast('Series started: '+r.total_steps+' steps');
-  if(r.series_id) meterSharedSeriesId=String(r.series_id);
+	  }
+	  toast('Series started: '+r.total_steps+' steps');
+	  meterSetActiveSeriesChartContext(r);
+	  if(r.series_id) meterSharedSeriesId=String(r.series_id);
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
   meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
   await meterPollSeries();
@@ -23525,9 +23602,10 @@ async function meterPollSeries(){
   meterSpectroSetupApply(null);
   return;
  }
-	 meterSeriesAwaitingReady=!!r.awaiting_ready;
-	 meterSeriesSpectroSetupApplyFromStatus(r);
-	 if(Array.isArray(r.steps)&&r.steps.length>0){
+		 meterSeriesAwaitingReady=!!r.awaiting_ready;
+		 meterSeriesSpectroSetupApplyFromStatus(r);
+		 meterSetActiveSeriesChartContext(r);
+		 if(Array.isArray(r.steps)&&r.steps.length>0){
 	  meterSeriesSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
 	  meterSeriesSteps=meterApplyColorSeriesTargetWhiteReference(meterSeriesSteps,meterActiveSeriesType);
 	 }
@@ -26901,13 +26979,16 @@ function meterPreserveOtherSeriesCacheOnClear(clearedKey){
    : meterBuildStepsJS(meta.type,meta.points);
   const resolved=meterResolveSeriesSnapshotFromCache(key,{type:meta.type,points:meta.points,signalMode:signalMode,steps:steps});
   if(!resolved||!Array.isArray(resolved.readings)||resolved.readings.length===0) return;
-  meterSeriesCache[key]={
-   type:meta.type,
-   points:meta.points,
-   signal_mode:signalMode,
-   white_reading:resolved.white_reading?JSON.parse(JSON.stringify(resolved.white_reading)):null,
-   steps:JSON.parse(JSON.stringify(steps)),
-   readings:JSON.parse(JSON.stringify(resolved.readings||[])),
+	  meterSeriesCache[key]={
+	   type:meta.type,
+	   points:meta.points,
+	   signal_mode:signalMode,
+	   target_gamma:resolved.target_gamma||((current&&current.target_gamma)?current.target_gamma:null),
+	   max_luma:(resolved.max_luma!=null)?resolved.max_luma:((current&&current.max_luma!=null)?current.max_luma:null),
+	   dv_map_mode:resolved.dv_map_mode||((current&&current.dv_map_mode)?current.dv_map_mode:null),
+	   white_reading:resolved.white_reading?JSON.parse(JSON.stringify(resolved.white_reading)):null,
+	   steps:JSON.parse(JSON.stringify(steps)),
+	   readings:JSON.parse(JSON.stringify(resolved.readings||[])),
    status:(resolved.status||((current&&current.status)||'complete')),
    series_id:(current&&current.series_id)?current.series_id:null,
    updated_at:Date.now()
@@ -26921,12 +27002,15 @@ function meterApplyClearedState(showToastMsg){
   const clearedAt=Date.now();
   const clearedSteps=Array.isArray(meterSeriesSteps)?JSON.parse(JSON.stringify(meterSeriesSteps)):[];
   meterPreserveOtherSeriesCacheOnClear(meterActiveSeriesKey);
-  meterSeriesCache[clearedKey]={
-   type:meterActiveSeriesType,
-   points:meterActiveSeriesPoints,
-   signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
-   white_reading:null,
-   steps:clearedSteps,
+	  meterSeriesCache[clearedKey]={
+	   type:meterActiveSeriesType,
+	   points:meterActiveSeriesPoints,
+	   signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
+	   target_gamma:meterActiveSeriesTargetGamma||null,
+	   max_luma:meterActiveSeriesMaxLuma||null,
+	   dv_map_mode:meterActiveSeriesDvMapMode||null,
+	   white_reading:null,
+	   steps:clearedSteps,
    readings:[],
    status:'cleared',
    series_id:null,
@@ -26966,10 +27050,13 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
  } else {
   meterResetSeriesButtons();
   meterActiveSeriesKey=null;
-  meterActiveSeriesType=null;
-  meterActiveSeriesPoints=null;
-  meterActiveSeriesSignalMode=null;
-  document.getElementById('meterPatchThumbs').innerHTML='';
+	  meterActiveSeriesType=null;
+	  meterActiveSeriesPoints=null;
+	  meterActiveSeriesSignalMode=null;
+	  meterActiveSeriesTargetGamma=null;
+	  meterActiveSeriesMaxLuma=null;
+	  meterActiveSeriesDvMapMode=null;
+	  document.getElementById('meterPatchThumbs').innerHTML='';
   meterSetThumbsVisible(false);
   document.getElementById('meterReadSeriesBtn').style.display='none';
   document.getElementById('meterCharts').style.display='none';
@@ -28002,8 +28089,9 @@ meterRenderGreyTvControls(null);
 });
 
 function meterRefreshActiveSeriesCharts(){
- if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||meterAutoCalStatusActive()) return;
- meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	 if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||meterAutoCalStatusActive()) return;
+	 meterSetActiveSeriesChartContext();
+	 meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
 	 meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(meterReadings||[],meterActiveSeriesType));
