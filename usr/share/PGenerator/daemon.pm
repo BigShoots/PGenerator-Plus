@@ -680,16 +680,17 @@ sub pattern_daemon {
       $calman_save_setting->("is_sdr","0");
       $calman_save_setting->("is_hdr","1");
       $calman_save_setting->("eotf","2");
-      $calman_save_setting->("is_ll_dovi","0");
+      $calman_save_setting->("is_ll_dovi","1");
       $calman_save_setting->("is_std_dovi","1");
       $calman_save_setting->("dv_status","1");
-      $calman_save_setting->("dv_interface","0");
+      $calman_save_setting->("dv_interface","1");
       $calman_save_setting->("dv_color_space","0");
       $calman_save_setting->("color_format","0");
       $calman_save_setting->("colorimetry","9");
       $calman_save_setting->("primaries","1");
       $calman_save_setting->("max_bpc","8");
       $calman_save_setting->("rgb_quant_range","2");
+      $calman_save_setting->("dv_metadata","2");
       $calman_rgb_quant_range=2;
       &apply_source_rgb_quant_range("calman",2);
      };
@@ -706,7 +707,7 @@ sub pattern_daemon {
       }
      };
     #
-    # Helper: Calman DV calibration uses standard RGB Full 8-bit tunneling.
+    # Helper: Calman DV calibration uses RGB Full 8-bit tunneling.
     # Absolute/Relative select the renderer map mode only; they do not change
     # the HDMI transport away from RGB 8-bit.
     #
@@ -715,10 +716,10 @@ sub pattern_daemon {
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
-     $calman_save_setting->("is_ll_dovi","0");
+     $calman_save_setting->("is_ll_dovi","1");
      $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
-     $calman_save_setting->("dv_interface","0");
+     $calman_save_setting->("dv_interface","1");
      $calman_save_setting->("dv_color_space","0");
      $calman_save_setting->("color_format","0");
      $calman_save_setting->("colorimetry","9");
@@ -728,7 +729,7 @@ sub pattern_daemon {
      $calman_rgb_quant_range=2;
      &apply_source_rgb_quant_range("calman",2);
      $calman_save_setting->("dv_map_mode","$dv_map_mode") if(defined $dv_map_mode && $dv_map_mode ne "");
-     $calman_save_setting->("dv_metadata","$dv_metadata") if(defined $dv_metadata && $dv_metadata ne "");
+     $calman_save_setting->("dv_metadata","2");
     };
 
     #
@@ -897,9 +898,8 @@ sub pattern_daemon {
        $calman_save_setting->("colorimetry","2");
        $calman_save_setting->("max_bpc","8");
       } elsif($mm_val >= 1 && $mm_val <= 4) {
-      # Dolby Vision modes — keep dv_metadata in sync for logging and
-      # compatibility, and drive the renderer map mode where the runtime
-      # exposes an explicit choice.
+      # Dolby Vision modes — drive the renderer map mode. The validated tunnel
+      # metadata path keeps dv_metadata fixed at 2 for Absolute/Relative.
       if($mm_val == 2) {
        $calman_set_dv_rgb->("0","2"); # Perceptual
       } elsif($mm_val == 3) {
@@ -1410,7 +1410,8 @@ sub pattern_daemon {
          #   0 = Perceptual
          #   1 = Absolute
          #   2 = Relative
-         # Preserve the incoming client enum in dv_metadata for visibility.
+         # Keep dv_metadata fixed at the validated tunnel baseline; the renderer
+         # consumes dv_map_mode for Perceptual/Absolute/Relative.
          if($dv_mode eq "PERCEPTUAL") {
           $calman_set_dv_rgb->("0","2");
          } elsif($dv_mode eq "ABSOLUTE") {
