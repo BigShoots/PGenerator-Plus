@@ -680,10 +680,10 @@ sub pattern_daemon {
       $calman_save_setting->("is_sdr","0");
       $calman_save_setting->("is_hdr","1");
       $calman_save_setting->("eotf","2");
-      $calman_save_setting->("is_ll_dovi","1");
+      $calman_save_setting->("is_ll_dovi","0");
       $calman_save_setting->("is_std_dovi","1");
       $calman_save_setting->("dv_status","1");
-      $calman_save_setting->("dv_interface","1");
+      $calman_save_setting->("dv_interface","0");
       $calman_save_setting->("dv_color_space","0");
       $calman_save_setting->("color_format","0");
       $calman_save_setting->("colorimetry","9");
@@ -716,10 +716,10 @@ sub pattern_daemon {
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
-     $calman_save_setting->("is_ll_dovi","1");
+     $calman_save_setting->("is_ll_dovi","0");
      $calman_save_setting->("is_std_dovi","1");
      $calman_save_setting->("dv_status","1");
-     $calman_save_setting->("dv_interface","1");
+     $calman_save_setting->("dv_interface","0");
      $calman_save_setting->("dv_color_space","0");
      $calman_save_setting->("color_format","0");
      $calman_save_setting->("colorimetry","9");
