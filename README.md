@@ -486,7 +486,7 @@ libraries, and renderer executables.
 | `is_ll_dovi` / `is_std_dovi` | `0` / `1` | Dolby Vision mode flags |
 | `dv_interface` | `0`=Standard, `1`=Low Latency | DV interface type |
 | `dv_map_mode` | `1`=Absolute, `2`=Relative | DV source-mapping mode used by the current `.dv` renderer |
-| `dv_metadata` | `2`=Perceptual, `3`=Absolute, `4`=Relative | Calman metadata-mode bookkeeping; the current `.dv` renderer uses `dv_map_mode` for live source mapping |
+| `dv_metadata` | `2`=Perceptual, `3`=Absolute, `4`=Relative | Calman metadata-mode bookkeeping; Pi5 keeps this aligned with `dv_map_mode` so legacy and renderer paths select the same DV mode |
 | `dv_color_space` | `0`=YCbCr422, `1`=RGB444, `2`=YCbCr444 | DV color space |
 
 ---

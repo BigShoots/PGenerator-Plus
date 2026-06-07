@@ -93,12 +93,29 @@ sub set_pgenerator_conf_runtime(@) {
  $pgenerator_conf{$key}="$value";
 }
 
+sub dv_metadata_for_map_mode(@) {
+ my $dv_map_mode=shift;
+ return "3" if(defined $dv_map_mode && $dv_map_mode eq "1");
+ return "4" if(defined $dv_map_mode && $dv_map_mode eq "2");
+ return "2";
+}
+
+sub dv_map_mode_for_metadata(@) {
+ my $dv_metadata=shift;
+ return "0" if(defined $dv_metadata && $dv_metadata eq "2");
+ return "1" if(defined $dv_metadata && $dv_metadata eq "3");
+ return "2" if(defined $dv_metadata && $dv_metadata eq "4");
+ return "";
+}
+
 sub normalize_dv_transport_conf(@) {
  return if(
   int($pgenerator_conf{"dv_status"} || 0) != 1 &&
   int($pgenerator_conf{"is_ll_dovi"} || 0) != 1 &&
   int($pgenerator_conf{"is_std_dovi"} || 0) != 1
  );
+ my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
+ my $dv_metadata=&dv_metadata_for_map_mode($dv_map_mode);
  my %wanted=(
   is_sdr=>"0",
   is_hdr=>"1",
@@ -107,6 +124,7 @@ sub normalize_dv_transport_conf(@) {
   is_std_dovi=>"1",
   dv_status=>"1",
   dv_interface=>"0",
+  dv_metadata=>"$dv_metadata",
   dv_color_space=>"0",
   color_format=>"0",
   colorimetry=>"9",
@@ -431,6 +449,19 @@ sub pgenerator_cmd (@) {
   my $conf_value=$2;
   &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
   $pgenerator_conf{$conf_key}=$conf_value;
+  if($conf_key eq "dv_metadata") {
+   my $map_mode=&dv_map_mode_for_metadata($conf_value);
+   if($map_mode ne "" && (($pgenerator_conf{"dv_map_mode"} || "") ne $map_mode)) {
+    &sudo("SET_PGENERATOR_CONF","dv_map_mode",$map_mode);
+    $pgenerator_conf{"dv_map_mode"}=$map_mode;
+   }
+  } elsif($conf_key eq "dv_map_mode") {
+   my $metadata=&dv_metadata_for_map_mode($conf_value);
+   if(($pgenerator_conf{"dv_metadata"} || "") ne $metadata) {
+    &sudo("SET_PGENERATOR_CONF","dv_metadata",$metadata);
+    $pgenerator_conf{"dv_metadata"}=$metadata;
+   }
+  }
   if(($conf_key eq "dv_status" && $conf_value eq "1") ||
      ($conf_key=~/^(is_ll_dovi|is_std_dovi)$/ && $conf_value eq "1") ||
      ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {

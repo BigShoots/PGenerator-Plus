@@ -155,6 +155,7 @@ static uint16_t hdr_max_fall = 400;
 static int dv_status = 0;
 static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
 static int dv_map_mode = 2;      /* 0=Perceptual, 1=Absolute, 2=Relative */
+static int dv_metadata = 0;      /* 2=Perceptual, 3=Absolute, 4=Relative */
 static int conf_read = 0;
 
 /* DOVI blob injection state */
@@ -341,6 +342,14 @@ static void read_config(void) {
             p[4] == 'a' && p[5] == 'p' && p[6] == '_' && p[7] == 'm' &&
             p[8] == 'o' && p[9] == 'd' && p[10] == 'e' && p[11] == '=') {
             dv_map_mode = (int)parse_uint_value(p + 12);
+        }
+        if (p[0] == 'd' && p[1] == 'v' && p[2] == '_' && p[3] == 'm' &&
+            p[4] == 'e' && p[5] == 't' && p[6] == 'a' && p[7] == 'd' &&
+            p[8] == 'a' && p[9] == 't' && p[10] == 'a' && p[11] == '=') {
+            dv_metadata = (int)parse_uint_value(p + 12);
+            if (dv_metadata == 2) dv_map_mode = 0;
+            if (dv_metadata == 3) dv_map_mode = 1;
+            if (dv_metadata == 4) dv_map_mode = 2;
         }
         if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
             p[4] == 'r' && p[5] == 'i' && p[6] == 'm' && p[7] == 'e' &&
