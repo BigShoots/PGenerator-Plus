@@ -399,7 +399,7 @@ m2 = 2523.0 / 32.0
 c1 = 3424.0 / 4096.0
 c2 = 2413.0 / 128.0
 c3 = 2392.0 / 128.0
-dv_tunnel_gamma = 2.2
+dv_tunnel_gamma = 3.8
 
 def pq_decode_normalized(code):
     code = max(0.0, min(1.0, float(code)))
@@ -430,14 +430,26 @@ def percent_from_step(step, channel):
             return value
     return 0.0
 
-def legal_code_for_absolute_percent(percent):
+def code_range_for_step(step):
+    try:
+        max_code = int(float(step.get("input_max", 0)))
+    except Exception:
+        max_code = 0
+    if max_code <= 0:
+        max_code = 1023 if str(step.get("dv_interface", "")).strip() == "1" else 255
+    if max_code not in (255, 1023):
+        max_code = 1023 if max_code > 255 else 255
+    return 0, max_code
+
+def code_for_absolute_percent(step, percent):
     stim = max(0.0, min(1.0, float(percent) / 100.0))
+    min_code, span_code = code_range_for_step(step)
     if stim <= 0:
-        return 16, 0.0
+        return min_code, 0.0
     target_y = min(white_y, pq_decode_normalized(stim))
     encoded = 0.0 if target_y <= 0 else (target_y / white_y) ** (1 / dv_tunnel_gamma)
-    code = int(round(16 + max(0.0, min(1.0, encoded)) * 219))
-    return max(16, min(235, code)), target_y
+    code = int(round(min_code + max(0.0, min(1.0, encoded)) * span_code))
+    return max(min_code, min(min_code + span_code, code)), target_y
 
 changed = False
 for step in steps:
@@ -446,11 +458,11 @@ for step in steps:
     if str(step.get("series_type", "")).lower() != "greyscale":
         continue
     for channel in ("r", "g", "b"):
-        code, target_y = legal_code_for_absolute_percent(percent_from_step(step, channel))
+        code, target_y = code_for_absolute_percent(step, percent_from_step(step, channel))
         if step.get(channel) != code:
             changed = True
         step[channel] = code
-    _, target_y = legal_code_for_absolute_percent(percent_from_step(step, "g"))
+    _, target_y = code_for_absolute_percent(step, percent_from_step(step, "g"))
     step["dv_absolute_white_y"] = white_y
     step["dv_absolute_st2084_precomp"] = True
     step["dv_absolute_target_y"] = target_y
