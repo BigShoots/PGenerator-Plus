@@ -1888,7 +1888,7 @@ sub close_connection {
  &log("Pattern socket close: type=$socket_kind peer=$conn_ip reason=$reason") if($reason ne "");
  my $is_hcfr=delete $hcfr_client{$connection};
  if($calman{$connection} || ($conn_ip ne "" && $conn_ip eq $calibration_client_ip)) {
-  &calman_reset_pattern_state("disconnect");
+  &log("Calman: socket disconnected, preserving pattern state");
   $calibration_client_ip="";
   $calibration_client_software="";
  }
