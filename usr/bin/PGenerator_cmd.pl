@@ -334,6 +334,7 @@ sub wifi_status (@) {
   &wifi_set_route_metric($interface,600) if($interface ne $eth_interface);
  } elsif($state eq "COMPLETED" && !$has_ip) {
   my $addr=&wifi_ipv4($interface);
+  $addr=&wifi_start_dhcp($interface,5) if($addr eq "");
   $addr=&wifi_start_dhcp($interface,0) if($addr eq "");
   if($addr ne "") {
    $response.="\n" if($response ne "" && $response!~/\n$/);
