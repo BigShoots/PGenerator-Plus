@@ -186,6 +186,21 @@ sub calman_pattern_source_range (@) {
  return "";
 }
 
+sub calman_patch_context (@) {
+ return "mode_idx=".($pgenerator_conf{"mode_idx"}||"").
+        " renderer=${w_s}x${h_s}".
+        " is_hdr=".($pgenerator_conf{"is_hdr"}||"0").
+        " eotf=".($pgenerator_conf{"eotf"}||"").
+        " dv_status=".($pgenerator_conf{"dv_status"}||"0").
+        " is_std_dovi=".($pgenerator_conf{"is_std_dovi"}||"0").
+        " dv_map_mode=".($pgenerator_conf{"dv_map_mode"}||"").
+        " dv_metadata=".($pgenerator_conf{"dv_metadata"}||"").
+        " color_format=".($pgenerator_conf{"color_format"}||"").
+        " colorimetry=".($pgenerator_conf{"colorimetry"}||"").
+        " max_bpc=".($pgenerator_conf{"max_bpc"}||"").
+        " rgb_quant_range=".($pgenerator_conf{"rgb_quant_range"}||"");
+}
+
 sub calman_clear_last_pattern (@) {
  $calman_last_pattern_kind="";
  $calman_last_pattern_type="";
@@ -228,7 +243,7 @@ sub calman_render_commandrgb_pattern (@) {
                    bg=>$cr_bg,
                    range=>$cr_source_range,
                    peer=>$connection ? $client_ip{$connection} : "",
-                   extra=>"tenBit=$cr_tenBit size_token=$cr_size target_max=$target_max input_max=$input_max");
+                   extra=>"tenBit=$cr_tenBit size_token=$cr_size target_max=$target_max input_max=$input_max ".&calman_patch_context());
  &clean_pattern_files();
  if($cr_size_effective >= 100) {
   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_rgb","$cr_bg","","","",1,"calman",$cr_source_range);
@@ -254,7 +269,8 @@ sub calman_render_rgb_pattern (@) {
  my $r=&calman_scale_value($el_cmd[0],$calman_max);
  my $g=&calman_scale_value($el_cmd[1],$calman_max);
  my $b=&calman_scale_value($el_cmd[2],$calman_max);
- &log("Calman PATTERN: scaled=$r,$g,$b bg=$calman_bg max_bpc=$pgenerator_conf{'max_bpc'}");
+ my $patch_context=&calman_patch_context();
+ &log("Calman PATTERN: scaled=$r,$g,$b bg=$calman_bg max_bpc=$pgenerator_conf{'max_bpc'} $patch_context");
  &log_calman_patch(type=>$type,
                    raw=>$rgb_raw,
                    scaled=>"$r,$g,$b",
@@ -262,7 +278,7 @@ sub calman_render_rgb_pattern (@) {
                    bg=>$calman_bg,
                    range=>&calman_pattern_source_range(),
                    peer=>$connection ? $client_ip{$connection} : "",
-                   extra=>"raw_extra=".join(",",@el_cmd[3..$#el_cmd])." target_max=$target_max calman_max=$calman_max");
+                   extra=>"raw_extra=".join(",",@el_cmd[3..$#el_cmd])." target_max=$target_max calman_max=$calman_max $patch_context");
  if($full_key eq "") {
   $full_key=$start_cmd_string_calman.$type.":".$pattern_cmd;
  }
@@ -758,24 +774,14 @@ sub pattern_daemon {
       $sn=~s/\s+//g;
         $sn=$version_plus if($sn eq "");
       &log("Calman: SN request, returning $sn");
-      if($rpc_client{$connection}) {
-       eval { $connection->send("$sn"); };
-       &close_connection($connection,"send error: $@") if($@);
-      } else {
-       &send_key_to_client($connection,$sn);
-      }
+      &send_calman_payload_to_client($connection,$sn);
       last;
      }
      if($clean_key eq "CAP") {
       # Capabilities — report HDR, DV, window size, bit depth, colorspace, range
-      my $caps="HDR,DOLBYVISION,CONF_HDR,SIZE,10_SIZE,11_APL,CommandRGB,BITDEPTH,COLORSPACE,RANGE";
+      my $caps="HDR,DOLBYVISION,CONF_FORMAT,CONF_HDR,SIZE,10_SIZE,11_APL,CommandRGB,BITDEPTH,COLORSPACE,RANGE";
       &log("Calman: CAP request, returning $caps");
-      if($rpc_client{$connection}) {
-       eval { $connection->send("$caps"); };
-       &close_connection($connection,"send error: $@") if($@);
-      } else {
-       &send_key_to_client($connection,$caps);
-      }
+      &send_calman_payload_to_client($connection,$caps);
       last;
      }
      if($clean_key eq "ENABLE PATTERNS" || $clean_key eq "ENABLEPATTERNS") {
@@ -790,23 +796,13 @@ sub pattern_daemon {
      }
      if($clean_key eq "FIRMWARE") {
       &log("Calman: FIRMWARE request, returning $version");
-      if($rpc_client{$connection}) {
-       eval { $connection->send("$version"); };
-       &close_connection($connection,"send error: $@") if($@);
-      } else {
-       &send_key_to_client($connection,"");
-      }
+      &send_calman_payload_to_client($connection,$version);
       last;
      }
      if($clean_key eq "STATUS") {
       my $status_caps="STATUS,CONF_FORMAT,CONF_HDR,CONF_LEVEL,CONF_DV,HDR_ENABLE,IMAGE,PUSH,RGB_S,RGB_B,RGB_A,CommandRGB,10_SIZE,11_APL,SPECIALTY,UPDATE,YCC_A,YCC_B,YCC_S";
       &log("Calman: STATUS request, returning $status_caps");
-      if($rpc_client{$connection}) {
-       eval { $connection->send("$status_caps"); };
-       &close_connection($connection,"send error: $@") if($@);
-      } else {
-       &send_key_to_client($connection,"");
-      }
+      &send_calman_payload_to_client($connection,$status_caps);
       last;
      }
      if($clean_key eq "SHUTDOWN" || $clean_key eq "QUIT") {
@@ -854,12 +850,7 @@ sub pattern_daemon {
       $cur_range="Full"    if($rq eq "2");
       my $settings="Resolution=$cur_res,Refresh=$cur_refresh,1_FORMAT=$cur_format,Range=$cur_range,Bits=$cur_bits,Dolby=$cur_dolby";
       &log("Calman: GET_SETTINGS returning: $settings");
-      if($rpc_client{$connection}) {
-       eval { $connection->send("$settings"); };
-       &close_connection($connection,"send error: $@") if($@);
-      } else {
-       &send_key_to_client($connection,"");
-      }
+      &send_calman_payload_to_client($connection,$settings);
       last;
      }
     }
@@ -1393,22 +1384,29 @@ sub pattern_daemon {
       my $fmt=$pattern_cmd;
       $fmt=~s/^\s+|\s+$//g;
       &log("Calman: CONF_FORMAT=$fmt");
-      # Parse resolution string: <height><p|i><rate> e.g. 1080p60, 720p50, 480i30
-      # Also accept WxH format: 1920x1080p60, 1920x1080p 60, 3840x2160p30
+      # Parse resolution string: <height><p|i><rate> or WxH, with optional Hz/@ spacing.
       my ($req_w,$req_h,$req_ip,$req_rate);
-      if($fmt =~/^(\d+)x(\d+)\s*(p|i)\s*(\d+)/i) {
+      my $default_rate=60;
+      $default_rate=int($1 + 0) if($preferred_mode =~/\s([\d.]+)Hz/);
+      if($fmt =~/Resolution\s*=\s*(\d+)\s*x\s*(\d+).*Refresh\s*=\s*([\d.]+)/i) {
        $req_w=int($1);
        $req_h=int($2);
-       $req_ip=lc($3);
-       $req_rate=int($4);
-      } elsif($fmt =~/^(\d+)\s*(p|i)\s*(\d+)/i) {
+       $req_ip="p";
+       $req_rate=$3 + 0;
+      } elsif($fmt =~/^(\d+)\s*x\s*(\d+)\s*([pi])?\s*(?:@|\/|\s)*\s*([\d.]+)?\s*(?:Hz)?/i) {
+       $req_w=int($1);
+       $req_h=int($2);
+       $req_ip=defined($3) && $3 ne "" ? lc($3) : "p";
+       $req_rate=defined($4) && $4 ne "" ? $4 + 0 : $default_rate;
+      } elsif($fmt =~/^(\d+)\s*([pi])\s*(?:@|\/|\s)*\s*([\d.]+)?\s*(?:Hz)?/i) {
        $req_h=int($1);
        $req_ip=lc($2);
-       $req_rate=int($3);
+       $req_rate=defined($3) && $3 ne "" ? $3 + 0 : $default_rate;
        # Standard TV widths for each height (prefer these over non-standard like 4096x2160)
        my %std_w=(2160=>3840,1080=>1920,720=>1280,576=>720,480=>720);
        $req_w=$std_w{$req_h} if(exists $std_w{$req_h});
       }
+      &log("Calman: CONF_FORMAT parsed width=".($req_w||"")." height=".($req_h||"")." scan=".($req_ip||"")." rate=".($req_rate||"")) if($req_h);
       if($req_h && $req_rate) {
        # Scan modetest for matching mode
        my $best_idx=-1;
@@ -1426,8 +1424,10 @@ sub pattern_daemon {
         # Match interlaced/progressive
         my $m_ip=($m_i eq "i") ? "i" : "p";
         next if($m_ip ne $req_ip);
-        # Match refresh rate (the client uses integers: 59=59.94, 60=60.00, 23=23.98, 24=24.00)
-        next if(int($m_rate) != $req_rate);
+        # Match refresh rate; tolerate Calman integer labels for fractional HDMI modes.
+        my $m_rate_num=$m_rate + 0;
+        my $rate_match=(int($m_rate_num) == int($req_rate)) || (abs($m_rate_num - ($req_rate + 0)) < 0.25);
+        next if(!$rate_match);
         # Score: exact width match > standard width > any width; userdef > preferred > driver
         my $score=0;
         $score+=100 if($req_w && $m_w == $req_w);
@@ -1876,6 +1876,22 @@ sub send_key_to_client (@) {
  my $response = shift;
  $response.=$end_cmd_string;
  $response=$ack_cmd_string if($calman{$connection});
+ eval { $connection->send("$response"); };
+ if($@) {
+  my $send_error="$@";
+  $send_error=~s/\s+$//;
+  &close_connection($connection,"send error: $send_error");
+ }
+}
+
+###############################################
+#        Send Calman Payload To Client        #
+###############################################
+sub send_calman_payload_to_client (@) {
+ my $connection = shift;
+ my $response = shift;
+ $response="" if(!defined($response));
+ $response.=$end_cmd_string_calman if(!$rpc_client{$connection});
  eval { $connection->send("$response"); };
  if($@) {
   my $send_error="$@";

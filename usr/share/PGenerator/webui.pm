@@ -7277,6 +7277,11 @@ padding:6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:bord
 .field select,.inline-select{cursor:pointer;-webkit-appearance:none;appearance:none;
 background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");
 background-repeat:no-repeat;background-position:right 8px center;padding-right:24px}
+.mode-select-wrap{position:relative;width:100%;min-width:0}
+.mode-select-wrap select{width:100%;min-width:0;color:transparent}
+.mode-select-wrap select option{color:var(--text);background:#0d0d15}
+.mode-select-value{position:absolute;left:10px;right:24px;top:50%;transform:translateY(-50%);
+pointer-events:none;color:var(--text);font-size:.82rem;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .inline-select{background-color:#0d0d15;border:1px solid var(--border);color:var(--text);
 padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transition:border .2s,box-shadow .2s;min-height:28px}
 .inline-select:focus{outline:none}
@@ -7547,7 +7552,10 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div class="grid">
   <div class="field field-display">
     <label>Resolution</label>
-    <select id="mode_idx"></select>
+    <div class="mode-select-wrap">
+     <select id="mode_idx"></select>
+     <span id="mode_idx_text" class="mode-select-value"></span>
+    </div>
    </div>
   <div class="field field-gamut">
     <label>Signal Mode</label>
@@ -7638,12 +7646,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <h2><span class="dv-badge">DV</span> Dolby Vision</h2>
   <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px;line-height:1.4">Uses RGB-PC Full 8-bit tunneling for Relative and Absolute calibration modes.</div>
   <div class="grid">
-   <div class="field">
-    <label>Interface</label>
-    <select id="dv_interface" disabled>
-     <option value="1">RGB Full 8-bit Tunnel</option>
-    </select>
-   </div>
+   <input type="hidden" id="dv_interface" value="0">
    <div class="field">
     <label>Map Mode</label>
     <select id="dv_map_mode">
@@ -9081,6 +9084,7 @@ function updateModeVisibility(){
 ['mode_idx','max_bpc','color_format','dv_interface'].forEach(function(id){
  document.getElementById(id).addEventListener('change',updateDropdowns);
 });
+document.getElementById('mode_idx').addEventListener('change',updateModeSelectLabel);
 
 function meterDefaultTargetGamutForMode(){
  const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
@@ -9182,10 +9186,21 @@ async function loadModes(quiet){
  sel.innerHTML='';
  modes.forEach(m=>{
   const o=document.createElement('option');
-  o.value=m.idx;o.textContent=m.resolution+' @ '+m.refresh+'Hz';
+  o.value=m.idx;
+  o.textContent=formatModeLabel(m);
+  o.title=m.resolution+' @ '+m.refresh+'Hz';
   sel.appendChild(o);
  });
  syncModeSelectValue();
+}
+
+function formatModeLabel(m){
+ const refresh=parseFloat(m&&m.refresh);
+ let hz=String((m&&m.refresh)||'');
+ if(!Number.isNaN(refresh)){
+  hz=(Math.abs(refresh-Math.round(refresh))<0.01)?String(Math.round(refresh)):String(refresh).replace(/0+$/,'').replace(/\.$/,'');
+ }
+ return String((m&&m.resolution)||'')+' '+hz+'Hz';
 }
 
 function parseResolutionLabel(value){
@@ -9197,17 +9212,54 @@ function modeOptionExists(sel,value){
  return !!Array.from(sel.options).find(o=>o.value===String(value));
 }
 
+function modeOptionIsSelectable(sel,value){
+ const opt=Array.from(sel.options).find(o=>o.value===String(value));
+ return !!(opt&&!opt.disabled&&opt.style.display!=='none');
+}
+
+function firstEnabledModeIdx(){
+ const sel=document.getElementById('mode_idx');
+ if(!sel||!sel.options.length)return '';
+ const first=Array.from(sel.options).find(o=>!o.disabled&&o.style.display!=='none');
+ return first?String(first.value):'';
+}
+
+function updateModeSelectLabel(){
+ const sel=document.getElementById('mode_idx');
+ const label=document.getElementById('mode_idx_text');
+ if(!sel||!label)return;
+ const opt=sel.options[sel.selectedIndex];
+ label.textContent=opt?opt.textContent:'';
+ label.title=opt?(opt.title||opt.textContent):'';
+}
+
+function setModeSelectValue(value){
+ const sel=document.getElementById('mode_idx');
+ if(!sel||!sel.options.length||value==null||value==='')return;
+ sel.value=String(value);
+ Array.from(sel.options).forEach(o=>{
+  const selected=o.value===sel.value;
+  o.selected=selected;
+  if(selected)o.setAttribute('selected','selected');
+  else o.removeAttribute('selected');
+ });
+ updateModeSelectLabel();
+}
+
 function chooseDefaultModeIdx(){
  if(!Array.isArray(modes)||!modes.length)return '';
- const infoRes=parseResolutionLabel((window._lastInfo&&window._lastInfo.resolution)||'');
- const wanted=infoRes.resolution||'1920x1080';
+ return chooseModeIdxForInfo()||choosePreferredModeIdx('1920x1080',null)||'';
+}
+
+function choosePreferredModeIdx(wanted,refresh){
+ if(!Array.isArray(modes)||!modes.length||!wanted)return '';
  const candidates=modes.filter(m=>String(m.resolution)===wanted);
  if(candidates.length){
-  if(infoRes.refresh!=null&&!Number.isNaN(infoRes.refresh)){
+  if(refresh!=null&&!Number.isNaN(refresh)){
    let best=candidates[0];
-   let bestDelta=Math.abs((parseFloat(best.refresh)||0)-infoRes.refresh);
+   let bestDelta=Math.abs((parseFloat(best.refresh)||0)-refresh);
    candidates.forEach(m=>{
-    const delta=Math.abs((parseFloat(m.refresh)||0)-infoRes.refresh);
+    const delta=Math.abs((parseFloat(m.refresh)||0)-refresh);
     if(delta<bestDelta){best=m;bestDelta=delta;}
    });
    return String(best.idx);
@@ -9215,6 +9267,16 @@ function chooseDefaultModeIdx(){
   const sixty=candidates.find(m=>Math.abs((parseFloat(m.refresh)||0)-60)<0.05);
   return String((sixty||candidates[0]).idx);
  }
+ return '';
+}
+
+function chooseModeIdxForInfo(){
+ const infoRes=parseResolutionLabel((window._lastInfo&&window._lastInfo.resolution)||'');
+ if(!infoRes.resolution)return '';
+ return choosePreferredModeIdx(infoRes.resolution,infoRes.refresh);
+}
+
+function chooseFallbackModeIdx(){
  const defaultMode=modes.find(m=>String(m.resolution)==='1920x1080'&&Math.abs((parseFloat(m.refresh)||0)-60)<0.05)
   ||modes.find(m=>String(m.resolution)==='1920x1080')
   ||modes[0];
@@ -9225,9 +9287,12 @@ function syncModeSelectValue(){
  const sel=document.getElementById('mode_idx');
  if(!sel||!sel.options.length)return;
  let target=(config&&config.mode_idx!=null&&config.mode_idx!=='')?String(config.mode_idx):'';
+ const liveTarget=(!isSettingsFieldActive()&&!hasUnsavedSettings())?chooseModeIdxForInfo():'';
+ if(liveTarget)target=liveTarget;
  if(target&&!modeOptionExists(sel,target))target='';
- if(!target)target=chooseDefaultModeIdx();
- if(target)sel.value=target;
+ if(!target)target=chooseDefaultModeIdx()||chooseFallbackModeIdx();
+ if(target)setModeSelectValue(target);
+ if(!sel.value||!modeOptionIsSelectable(sel,sel.value))setModeSelectValue(firstEnabledModeIdx());
 }
 
 async function loadCapabilities(quiet){
@@ -9323,9 +9388,9 @@ function updateDropdowns(){
    if(ok&&o.value===modeIdx)curModeValid=true;
   });
   if(!curModeValid){
-   const first=Array.from(modeSel.options).find(o=>!o.disabled);
-   if(first)modeSel.value=first.value;
+   setModeSelectValue(firstEnabledModeIdx());
   }
+  updateModeSelectLabel();
   checkSettingsChanged();
   return;
  }
@@ -9427,7 +9492,7 @@ async function loadInfo(quiet){
  const info=await fetchJSON('/api/info',{_quiet:!!quiet,_timeoutMs:10000});
  if(!info) return;
  window._lastInfo=info;
- if((!config||!config.mode_idx)&&Array.isArray(modes)&&modes.length&&!isSettingsFieldActive()&&!hasUnsavedSettings()){
+ if(Array.isArray(modes)&&modes.length&&!isSettingsFieldActive()&&!hasUnsavedSettings()){
   const beforeMode=getVal('mode_idx');
   syncModeSelectValue();
   if(getVal('mode_idx')!==beforeMode){
