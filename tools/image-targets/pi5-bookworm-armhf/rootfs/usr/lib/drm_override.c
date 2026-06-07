@@ -560,6 +560,63 @@ static void log_display_prop_update(uint32_t obj_id, uint32_t prop_id,
     write_log("\n");
 }
 
+static void set_dovi_oui(uint8_t *metadata, uint32_t oui) {
+    metadata[0] = (uint8_t)(oui & 0xff);
+    metadata[1] = (uint8_t)((oui >> 8) & 0xff);
+    metadata[2] = (uint8_t)((oui >> 16) & 0xff);
+    metadata[3] = 0x00;
+}
+
+static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
+                                   const char *reason) {
+    if (!metadata || length != 12 || dv_status != 1)
+        return 0;
+    if (metadata[4] != 0x01)
+        return 0;
+
+    uint32_t oui = dv_interface ? 0x00D046 : 0x000C03;
+    uint8_t iface = dv_interface ? 0x01 : 0x00;
+    uint8_t map_mode = (uint8_t)(dv_map_mode & 0xff);
+    int changed = 0;
+
+    if (metadata[0] != (uint8_t)(oui & 0xff) ||
+        metadata[1] != (uint8_t)((oui >> 8) & 0xff) ||
+        metadata[2] != (uint8_t)((oui >> 16) & 0xff) ||
+        metadata[3] != 0x00) {
+        set_dovi_oui(metadata, oui);
+        changed = 1;
+    }
+    if (metadata[5] != iface) {
+        metadata[5] = iface;
+        changed = 1;
+    }
+    if (metadata[8] != map_mode) {
+        metadata[8] = map_mode;
+        changed = 1;
+    }
+
+    if (changed) {
+        char num[24];
+        write_log("DRM_OVERRIDE: normalized renderer DOVI metadata");
+        if (reason) {
+            write_log(" (");
+            write_log(reason);
+            write_log(")");
+        }
+        write_log(" oui=");
+        write_log(dv_interface ? "00d046" : "000c03");
+        write_log(" iface=");
+        itoa_simple((uint64_t)iface, num);
+        write_log(num);
+        write_log(" map=");
+        itoa_simple((uint64_t)map_mode, num);
+        write_log(num);
+        write_log("\n");
+    }
+
+    return changed;
+}
+
 static void reset_last_connector_overrides(void) {
     last_output_fmt = (uint64_t)-1;
     last_max_bpc = (uint64_t)-1;
@@ -645,7 +702,7 @@ static uint32_t create_hdr_blob(int fd) {
  * DOVI_OUTPUT_METADATA entirely.
  *
  * The Pi5 kernel patch reads this as struct vc4_dovi_output_metadata:
- *   bytes 0-3:  Dolby OUI, little-endian
+ *   bytes 0-3:  OUI, little-endian (HDMI for Standard, Dolby for Low-Latency)
  *   byte 4:     DV status
  *   byte 5:     interface flag (0=Standard, 1=Low-Latency)
  *   bytes 6-7:  backlight metadata
@@ -657,14 +714,13 @@ static uint32_t create_dovi_blob(int fd) {
     if (dovi_blob_id) return dovi_blob_id;
 
     uint8_t metadata[12] = {
-        0x46, 0xD0, 0x00, 0x00, /* Dolby OUI 00-D0-46 (LE u32) -> frame.oui */
+        0x03, 0x0C, 0x00, 0x00, /* OUI, filled from config below */
         0x01,  /* dv_status */
         0x00,  /* interface flag, filled from config below */
         0x00, 0x00, 0x00, 0x00, 0x00,
         0x00
     };
-    metadata[5] = dv_interface ? 0x01 : 0x00;
-    metadata[8] = (uint8_t)(dv_map_mode & 0xff);
+    normalize_dovi_metadata(metadata, sizeof(metadata), "fallback");
 
     struct drm_mode_create_blob cb;
     cb.data = (uint64_t)(uintptr_t)metadata;
@@ -891,6 +947,14 @@ int ioctl(int fd, unsigned long request, ...) {
     va_end(ap);
 
     read_config();
+
+    if (request == DRM_IOCTL_MODE_CREATEPROPBLOB) {
+        struct drm_mode_create_blob *cb = (struct drm_mode_create_blob *)arg;
+        if (cb && cb->data && cb->length == 12)
+            normalize_dovi_metadata((uint8_t *)(uintptr_t)cb->data,
+                                    cb->length, "createblob");
+        return raw_ioctl(fd, request, arg);
+    }
 
     /* Discover the connected HDMI connector before renderer commits start. */
     if (request == DRM_IOCTL_MODE_GETCONNECTOR) {

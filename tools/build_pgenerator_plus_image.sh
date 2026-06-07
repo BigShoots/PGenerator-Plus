@@ -13,6 +13,7 @@ ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof i1d3ccss oeminst dispread dispcal)
 ARGYLL_RUNTIME_DIR=""
 PI5_VC4_MODULE=""
+PI5_DEFAULT_VC4_MODULE="$REPO_ROOT/tools/image-targets/pi5-bookworm-armhf/kernel/artifacts/vc4-6.12.25-rpt-rpi-v8-dv-vsif.ko.xz"
 TARGET="pi4-biasi"
 PI5_TARGET_DESCRIPTION="Raspberry Pi 5 Bookworm armhf"
 PI5_OUTPUT_SUFFIX="pi5_bookworm_armhf"
@@ -343,6 +344,9 @@ prepare_paths() {
  if [[ -n "$ARGYLL_RUNTIME_DIR" ]]; then
   ARGYLL_RUNTIME_DIR="$(abs_existing_path "$ARGYLL_RUNTIME_DIR")"
   [[ -d "$ARGYLL_RUNTIME_DIR" ]] || die "Argyll runtime path is not a directory: $ARGYLL_RUNTIME_DIR"
+ fi
+ if [[ "$TARGET" == "pi5-bookworm-armhf" && -z "$PI5_VC4_MODULE" && -f "$PI5_DEFAULT_VC4_MODULE" ]]; then
+  PI5_VC4_MODULE="$PI5_DEFAULT_VC4_MODULE"
  fi
  if [[ -n "$PI5_VC4_MODULE" ]]; then
   PI5_VC4_MODULE="$(abs_existing_path "$PI5_VC4_MODULE")"
