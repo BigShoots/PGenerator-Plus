@@ -1861,36 +1861,36 @@ function renderLgTopStatus(r){
 
 const LG_PICTURE_MODES_BY_SIGNAL={
  sdr:[
-  ['expert1','Expert Bright'],
-  ['expert2','Expert Dark'],
-  ['cinema','Cinema'],
-  ['filmMaker','Filmmaker'],
-  ['technicolorExpert','Technicolor Expert'],
-  ['game','Game Optimizer'],
-  ['standard','Standard'],
-  ['vivid','Vivid']
+  ['expert1','SDR Expert Bright'],
+  ['expert2','SDR Expert Dark'],
+  ['cinema','SDR Cinema'],
+  ['filmMaker','SDR Filmmaker'],
+  ['technicolorExpert','SDR Technicolor Expert'],
+  ['game','SDR Game Optimizer'],
+  ['standard','SDR Standard'],
+  ['vivid','SDR Vivid']
  ],
  hdr10:[
-  ['hdr_cinema','Cinema'],
-  ['hdr_filmMaker','Filmmaker'],
-  ['hdr_game','Game Optimizer'],
-  ['hdr_standard','Standard'],
-  ['hdr_vivid','Vivid'],
-  ['hdr_technicolorExpert','Technicolor Expert']
+  ['hdr_cinema','HDR Cinema'],
+  ['hdr_filmMaker','HDR Filmmaker'],
+  ['hdr_game','HDR Game Optimizer'],
+  ['hdr_standard','HDR Standard'],
+  ['hdr_vivid','HDR Vivid'],
+  ['hdr_technicolorExpert','HDR Technicolor Expert']
  ],
  hlg:[
-  ['hdr_cinema','Cinema'],
-  ['hdr_filmMaker','Filmmaker'],
-  ['hdr_game','Game Optimizer'],
-  ['hdr_standard','Standard'],
-  ['hdr_vivid','Vivid'],
-  ['hdr_technicolorExpert','Technicolor Expert']
+  ['hdr_cinema','HLG Cinema'],
+  ['hdr_filmMaker','HLG Filmmaker'],
+  ['hdr_game','HLG Game Optimizer'],
+  ['hdr_standard','HLG Standard'],
+  ['hdr_vivid','HLG Vivid'],
+  ['hdr_technicolorExpert','HLG Technicolor Expert']
  ],
  dv:[
-  ['dolby_hdr_cinema','Cinema'],
-  ['dolby_hdr_cinema_bright','Cinema Home'],
-  ['dolby_hdr_game','Game Optimizer'],
-  ['dolby_hdr_vivid','Vivid']
+  ['dolby_hdr_cinema','DV Cinema'],
+  ['dolby_hdr_cinema_bright','DV Cinema Home'],
+  ['dolby_hdr_game','DV Game Optimizer'],
+  ['dolby_hdr_vivid','DV Vivid']
  ]
 };
 
