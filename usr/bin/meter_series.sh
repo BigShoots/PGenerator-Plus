@@ -2,7 +2,7 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range] [pattern_delay_ms] [patch_insert_patch_enabled] [patch_insert_patch_every] [patch_insert_patch_duration_ms] [patch_insert_patch_level] [patch_insert_time_enabled] [patch_insert_time_frequency_ms] [patch_insert_time_duration_ms] [patch_insert_time_level]
 
 set -o pipefail
 
@@ -24,6 +24,17 @@ READY_FILE="${15:-/tmp/meter_series_ready_${SERIES_ID}.signal}"
 REQUIRE_DEVICE_READY="${16:-0}"
 PATTERN_SIGNAL_RANGE="${17:-}"
 TRANSPORT_SIGNAL_RANGE="${18:-}"
+PATTERN_DELAY_MS="${19:-0}"
+PATCH_INSERT_PATCH_ENABLED="${20:-}"
+PATCH_INSERT_PATCH_EVERY="${21:-1}"
+PATCH_INSERT_PATCH_DURATION_PROVIDED=0
+[[ ${22+x} ]] && PATCH_INSERT_PATCH_DURATION_PROVIDED=1
+PATCH_INSERT_PATCH_DURATION_MS="${22:-0}"
+PATCH_INSERT_PATCH_LEVEL="${23:-25}"
+PATCH_INSERT_TIME_ENABLED="${24:-0}"
+PATCH_INSERT_TIME_FREQUENCY_MS="${25:-5000}"
+PATCH_INSERT_TIME_DURATION_MS="${26:-5000}"
+PATCH_INSERT_TIME_LEVEL="${27:-25}"
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
@@ -547,12 +558,108 @@ float_le() {
  awk -v left="$left" -v right="$right" 'BEGIN { exit !((left + 0) <= (right + 0)) }'
 }
 
+clamp_int() {
+ local value="${1:-0}" min="${2:-0}" max="${3:-255}"
+ awk -v value="$value" -v min="$min" -v max="$max" 'BEGIN {
+  value = int(value + 0.5)
+  if (value < min) value = min
+  if (value > max) value = max
+  print value
+ }'
+}
+
+milliseconds_to_seconds() {
+ local ms="${1:-0}"
+ awk -v ms="$ms" 'BEGIN {
+  if (ms < 0) ms = 0
+  printf "%.3f", ms / 1000.0
+ }'
+}
+
 patch_insert_settle_seconds() {
  local ire="${1:-0}"
  if float_le "$ire" 25; then
   echo 3.0
  else
   echo 1.5
+ fi
+}
+
+sanitize_ms() {
+ local raw="${1:-0}" fallback="${2:-0}" max="${3:-120000}"
+ if [[ ! "$raw" =~ ^[0-9]+$ ]]; then raw="$fallback"; fi
+ if (( raw < 0 )); then raw=0; fi
+ if (( raw > max )); then raw="$max"; fi
+ echo "$raw"
+}
+
+sanitize_count() {
+ local raw="${1:-1}" fallback="${2:-1}" max="${3:-999}"
+ if [[ ! "$raw" =~ ^[0-9]+$ ]]; then raw="$fallback"; fi
+ if (( raw < 1 )); then raw=1; fi
+ if (( raw > max )); then raw="$max"; fi
+ echo "$raw"
+}
+
+sanitize_level() {
+ local raw="${1:-25}" fallback="${2:-25}"
+ if ! is_number "$raw"; then raw="$fallback"; fi
+ awk -v raw="$raw" 'BEGIN {
+  value = raw + 0
+  if (value < 0) value = 0
+  if (value > 100) value = 100
+  printf "%.3f", value
+ }'
+}
+
+patch_insert_code_for_level() {
+ local level="${1:-25}"
+ awk -v level="$level" 'BEGIN {
+  value = int((level / 100.0) * 255.0 + 0.5)
+  if (value < 0) value = 0
+  if (value > 255) value = 255
+  print value
+ }'
+}
+
+post_insert_patch() {
+ local level="${1:-25}" duration_ms="${2:-0}" reason="${3:-patch}"
+ local code duration_sec
+ code=$(patch_insert_code_for_level "$level")
+ duration_sec=$(milliseconds_to_seconds "$duration_ms")
+ echo "[$(date '+%H:%M:%S.%3N')] pattern insertion: reason=$reason level=${level}% code=$code duration=${duration_sec}s" >> /tmp/meter_series_debug.log
+ post_patch "$code" "$code" "$code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" 255
+ sleep "$duration_sec"
+}
+
+current_millis() {
+ python - <<'PY' 2>/dev/null || date +%s000
+import time
+print(int(time.time() * 1000))
+PY
+}
+
+maybe_pattern_insert_before_step() {
+ local step_index="${1:-0}" ire="${2:-0}"
+ (( step_index > 0 )) || return 0
+ local now elapsed
+ if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
+  now=$(current_millis)
+  elapsed=$(( now - PATCH_INSERT_LAST_TIME_TS ))
+  if (( elapsed >= PATCH_INSERT_TIME_FREQUENCY_MS )); then
+   post_insert_patch "$PATCH_INSERT_TIME_LEVEL" "$PATCH_INSERT_TIME_DURATION_MS" "time"
+   PATCH_INSERT_LAST_TIME_TS=$(current_millis)
+  fi
+ fi
+ if [[ "$PATCH_INSERT_PATCH_ENABLED" == "1" ]]; then
+  PATCH_INSERT_PATCH_COUNTER=$((PATCH_INSERT_PATCH_COUNTER + 1))
+  if (( PATCH_INSERT_PATCH_COUNTER % PATCH_INSERT_PATCH_EVERY == 0 )); then
+   local duration_ms="$PATCH_INSERT_PATCH_DURATION_MS"
+   if (( PATCH_INSERT_DYNAMIC_SETTLE == 1 )); then
+    duration_ms=$(awk -v seconds="$(patch_insert_settle_seconds "$ire")" 'BEGIN { printf "%d", seconds * 1000 }')
+   fi
+   post_insert_patch "$PATCH_INSERT_PATCH_LEVEL" "$duration_ms" "patch"
+  fi
  fi
 }
 
@@ -610,6 +717,25 @@ cleanup_stale_series_step_files
 
 TOTAL=$(get_step_count)
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
+PATTERN_DELAY_MS=$(sanitize_ms "$PATTERN_DELAY_MS" 0 120000)
+PATTERN_DELAY_SEC=$(milliseconds_to_seconds "$PATTERN_DELAY_MS")
+if [[ -z "$PATCH_INSERT_PATCH_ENABLED" ]]; then
+ PATCH_INSERT_PATCH_ENABLED="$PATCH_INSERT"
+fi
+[[ "$PATCH_INSERT_PATCH_ENABLED" == "true" ]] && PATCH_INSERT_PATCH_ENABLED=1
+[[ "$PATCH_INSERT_TIME_ENABLED" == "true" ]] && PATCH_INSERT_TIME_ENABLED=1
+[[ "$PATCH_INSERT_PATCH_ENABLED" == "1" ]] || PATCH_INSERT_PATCH_ENABLED=0
+[[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]] || PATCH_INSERT_TIME_ENABLED=0
+PATCH_INSERT_PATCH_EVERY=$(sanitize_count "$PATCH_INSERT_PATCH_EVERY" 1 999)
+PATCH_INSERT_PATCH_LEVEL=$(sanitize_level "$PATCH_INSERT_PATCH_LEVEL" 25)
+PATCH_INSERT_TIME_LEVEL=$(sanitize_level "$PATCH_INSERT_TIME_LEVEL" 25)
+PATCH_INSERT_TIME_FREQUENCY_MS=$(sanitize_ms "$PATCH_INSERT_TIME_FREQUENCY_MS" 5000 120000)
+PATCH_INSERT_TIME_DURATION_MS=$(sanitize_ms "$PATCH_INSERT_TIME_DURATION_MS" 5000 120000)
+PATCH_INSERT_DYNAMIC_SETTLE=0
+(( PATCH_INSERT_PATCH_DURATION_PROVIDED == 0 )) && PATCH_INSERT_DYNAMIC_SETTLE=1
+PATCH_INSERT_PATCH_DURATION_MS=$(sanitize_ms "$PATCH_INSERT_PATCH_DURATION_MS" 1000 120000)
+PATCH_INSERT_LAST_TIME_TS=$(date +%s%3N 2>/dev/null || date +%s000)
+PATCH_INSERT_PATCH_COUNTER=0
 FIRST_STEP_EXTRA_SEC=2
 FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
@@ -1051,14 +1177,15 @@ if series_uses_initial_white_reference; then
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Reading 100% white for target Y (displaying)","readings":[]}
 EOJSON
 
- series_stop_requested && series_cancel_exit
- post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
- if should_apply_fresh_dv_first_white_warmup; then
-  sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
-  post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
- fi
- PREREAD_DELAY="$DELAY_SEC"
- PREREAD_DELAY=$(python -c "print(float('$PREREAD_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
+	 series_stop_requested && series_cancel_exit
+	 post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+	 if should_apply_fresh_dv_first_white_warmup; then
+	  sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
+	  post_patch "$WHITE_CODE" "$WHITE_CODE" "$WHITE_CODE" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+	 fi
+	 sleep "$PATTERN_DELAY_SEC"
+	 PREREAD_DELAY="$DELAY_SEC"
+	 PREREAD_DELAY=$(python -c "print(float('$PREREAD_DELAY') + $FIRST_STEP_EXTRA_SEC)" 2>/dev/null)
  if ! maybe_wait_for_initial_ready 0 "Reading 100% white for target Y"; then
   sleep "$PREREAD_DELAY"
  fi
@@ -1189,14 +1316,10 @@ EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
- # ABL stabilization: flash mid-gray between patches
- if [[ "$PATCH_INSERT" == "1" ]] && (( i > 0 )); then
-  post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-  sleep "$(patch_insert_settle_seconds "$IRE")"
- fi
+	 maybe_pattern_insert_before_step "$i" "$IRE"
 
- # Display pattern
-	 post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	 # Display pattern
+		 post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 
  # DV greyscale derives chart/patch targets from the first 100% read. Warm
  # that first white in place and do not replace it with a different final
@@ -1205,11 +1328,12 @@ EOJSON
   if series_uses_first_white_warmup; then
    sleep "$DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC"
 	  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
-  elif should_apply_fresh_dv_first_white_warmup; then
-   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
-	  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
-  fi
- fi
+	  elif should_apply_fresh_dv_first_white_warmup; then
+	   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
+		  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	  fi
+	 fi
+	 sleep "$PATTERN_DELAY_SEC"
 
 	 # Settle delay — use the user-configured value by default, but allow
 	 # per-step overrides for very dark or otherwise slow-settling patches.
@@ -1313,8 +1437,9 @@ EOJSON
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $no_reading_retry/$NO_READING_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
-   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
-   sleep "$STEP_DELAY"
+	   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	   sleep "$PATTERN_DELAY_SEC"
+	   sleep "$STEP_DELAY"
    PREV_COUNT=$(count_results)
    SCAN_OFFSET=$(output_size)
    printf " " >&3
@@ -1377,8 +1502,9 @@ EOJSON
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (redisplaying after zero read $zero_retry/$ZERO_READ_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
-   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
-   sleep "$STEP_DELAY"
+	   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	   sleep "$PATTERN_DELAY_SEC"
+	   sleep "$STEP_DELAY"
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $zero_retry/$ZERO_READ_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
@@ -1493,13 +1619,11 @@ if series_requires_final_white_refresh && (( TOTAL > 0 )); then
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
-  if [[ "$PATCH_INSERT" == "1" ]] && (( READING_COUNT > 0 )); then
-   post_patch 64 64 64 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-   sleep "$(patch_insert_settle_seconds "$FIRST_IRE")"
-  fi
+	  maybe_pattern_insert_before_step "$READING_COUNT" "$FIRST_IRE"
 
-	  post_patch "$FIRST_R" "$FIRST_G" "$FIRST_B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$FIRST_INPUT_MAX"
-  sleep "$DELAY_SEC"
+		  post_patch "$FIRST_R" "$FIRST_G" "$FIRST_B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$FIRST_INPUT_MAX"
+	  sleep "$PATTERN_DELAY_SEC"
+	  sleep "$DELAY_SEC"
 
   write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh reading)","readings":[$READINGS],"white_reading":$WHITE_READING}
