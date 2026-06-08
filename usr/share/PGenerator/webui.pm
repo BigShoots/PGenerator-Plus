@@ -7515,15 +7515,16 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-pattern-insert-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-pattern-insert-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 	.meter-pattern-insert-popover.open{display:block}
-	.meter-xyz-gear-wrap{position:relative;display:inline-block}
-	.meter-xyz-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s;margin-left:6px}
+	.meter-xyz-gear-wrap{position:relative;display:inline-flex;align-items:center;flex:0 0 auto}
+	.meter-xyz-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s;flex:0 0 auto}
 	.meter-xyz-gear:hover{color:var(--text);border-color:var(--accent)}
 	.meter-xyz-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
 	.meter-xyz-gear-popover.open{display:block}
-	.meter-xyz-toggle-row{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
-	.meter-field-label{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
-.meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%}
+	.meter-xyz-toggle-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;white-space:nowrap}
+	.meter-xyz-toggle-row .meter-toggle{flex:0 1 auto;min-width:0}
+	.meter-field-label{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap}
+.meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%;min-width:340px}
 .meter-xyz-action-row{display:none;gap:8px;flex-wrap:wrap;padding-left:22px}
 .meter-xyz-action-row.visible{display:flex}
 #meterSettingsGrid .field-display .meter-toggle-row{gap:2px 10px;margin-top:4px}
