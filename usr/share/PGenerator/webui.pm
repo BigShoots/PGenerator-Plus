@@ -7508,6 +7508,13 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-pattern-insert-grid input[type="text"],
 	.meter-pattern-insert-grid input[type="number"]{width:100%;min-width:0;min-height:28px;padding:4px 6px;font-size:.72rem}
 	.meter-pattern-insert-grid span{font-size:.55rem;color:var(--text2);text-transform:uppercase;letter-spacing:.35px}
+	.meter-pattern-insert-header{display:inline-flex;align-items:center;gap:6px}
+	.meter-pattern-insert-wrap{position:relative;display:inline-block}
+	.meter-pattern-insert-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s}
+	.meter-pattern-insert-gear:hover{color:var(--text);border-color:var(--accent)}
+	.meter-pattern-insert-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
+	.meter-pattern-insert-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+	.meter-pattern-insert-popover.open{display:block}
 	.meter-field-label{display:inline-flex;align-items:flex-start;gap:6px;flex-wrap:wrap}
 .meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%}
 .meter-xyz-action-row{display:none;gap:8px;flex-wrap:wrap;padding-left:22px}
@@ -7975,18 +7982,25 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     </div>
 	    <div class="meter-toggle-row">
 	     <div class="meter-pattern-insert-block">
-	      <label class="meter-note-toggle" title="Insert neutral patches between measurement patterns to stabilize display response">
-	       <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
-	      </label>
-	      <div class="meter-pattern-insert-grid">
-	       <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertTimeEnabled" checked> Time</label>
-	       <label>Frequency <input id="meterPatchInsertTimeFrequency" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
-	       <label>Duration <input id="meterPatchInsertTimeDuration" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
-	       <label>Level <input id="meterPatchInsertTimeLevel" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
-	       <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertPatchEnabled" checked> Patch</label>
-	       <label>Patches <input id="meterPatchInsertPatchEvery" type="number" min="1" max="999" step="1" value="1"></label>
-	       <label>Duration <input id="meterPatchInsertPatchDuration" type="text" value="1" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1))"><span>sec</span></label>
-	       <label>Level <input id="meterPatchInsertPatchLevel" type="number" min="0" max="100" step="1" value="10"><span>%</span></label>
+	      <div class="meter-pattern-insert-header">
+	       <label class="meter-note-toggle" title="Insert neutral patches between measurement patterns to stabilize display response">
+	        <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
+	       </label>
+	       <span class="meter-pattern-insert-wrap">
+	        <button type="button" id="meterPatternInsertGear" class="meter-pattern-insert-gear" aria-label="Pattern insertion options" aria-expanded="false" title="Pattern insertion options">&#9881;</button>
+	        <div class="meter-pattern-insert-popover" id="meterPatternInsertPopover" role="dialog" aria-label="Pattern insertion options">
+	         <div class="meter-pattern-insert-grid">
+	          <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertTimeEnabled" checked> Time</label>
+	          <label>Frequency <input id="meterPatchInsertTimeFrequency" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
+	          <label>Duration <input id="meterPatchInsertTimeDuration" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
+	          <label>Level <input id="meterPatchInsertTimeLevel" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
+	          <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertPatchEnabled" checked> Patch</label>
+	          <label>Patches <input id="meterPatchInsertPatchEvery" type="number" min="1" max="999" step="1" value="1"></label>
+	          <label>Duration <input id="meterPatchInsertPatchDuration" type="text" value="1" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1))"><span>sec</span></label>
+	          <label>Level <input id="meterPatchInsertPatchLevel" type="number" min="0" max="100" step="1" value="10"><span>%</span></label>
+	         </div>
+	        </div>
+	       </span>
 	      </div>
 	     </div>
 	      <div class="meter-xyz-toggle-block">
@@ -28808,6 +28822,16 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  if(label) label.textContent=meterLastKnownName;
  meterUpdateReadButtons();
 });
+(function(){
+ const gear=document.getElementById('meterPatternInsertGear');
+ const pop=document.getElementById('meterPatternInsertPopover');
+ if(!gear||!pop) return;
+ const close=()=>{pop.classList.remove('open');gear.classList.remove('active');gear.setAttribute('aria-expanded','false');};
+ const open=()=>{pop.classList.add('open');gear.classList.add('active');gear.setAttribute('aria-expanded','true');};
+ gear.addEventListener('click',e=>{e.stopPropagation();pop.classList.contains('open')?close():open();});
+ document.addEventListener('click',e=>{if(!pop.contains(e.target)&&e.target!==gear) close();});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
+})();
 const meterSimulateSpectroEl=document.getElementById('meterSimulateSpectro');
 if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',async()=>{
  meterUpdateReadButtons();
