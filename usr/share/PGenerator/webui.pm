@@ -1325,7 +1325,11 @@ sub webui_pattern_stop_guard_allows_patch (@) {
 }
 
 sub webui_meter_series_pids (@) {
- my @pids;
+ return map { $_->{"pid"} } &webui_meter_series_processes();
+}
+
+sub webui_meter_series_processes (@) {
+ my @procs;
  foreach my $path (glob("/proc/[0-9]*/cmdline")) {
   next unless($path=~/\/proc\/(\d+)\/cmdline$/);
   my $pid=$1;
@@ -1337,9 +1341,34 @@ sub webui_meter_series_pids (@) {
    close($fh);
   }
   next if($cmd eq "");
-  push @pids,$pid if($cmd=~/(?:^|\0)\/usr\/bin\/meter_series\.sh(?:\0|$)/);
+  next unless($cmd=~/(?:^|\0)\/usr\/bin\/meter_series\.sh(?:\0|$)/);
+  my @args=split(/\0/,$cmd);
+  my $series_id="";
+  for(my $i=0;$i<=$#args;$i++) {
+   if($args[$i] eq "/usr/bin/meter_series.sh" && defined($args[$i+1])) {
+    $series_id=$args[$i+1];
+    last;
+   }
+  }
+  $series_id=~s/[^A-Za-z0-9_.-]//g;
+  push @procs,{ "pid"=>int($pid), "series_id"=>$series_id };
  }
- return @pids;
+ return @procs;
+}
+
+sub webui_proc_pgrp (@) {
+ my ($pid)=@_;
+ $pid=int($pid || 0);
+ return 0 if($pid<=0);
+ my $stat="";
+ if(open(my $fh,"<","/proc/$pid/stat")) {
+  local $/;
+  $stat=<$fh>;
+  close($fh);
+ }
+ return 0 if($stat eq "");
+ return int($1) if($stat=~/^\d+\s+\(.*\)\s+\S+\s+\d+\s+(\d+)/);
+ return 0;
 }
 
 sub webui_meter_series_alive (@) {
@@ -1351,27 +1380,43 @@ sub webui_meter_series_kill (@) {
  $signal="-TERM" if(!defined($signal) || $signal eq "");
  my @pids=&webui_meter_series_pids();
  return 0 unless(@pids);
- my $pid_list=join(" ",map { int($_) } @pids);
- system("sudo kill $signal $pid_list 2>/dev/null");
+ my %targets;
+ my $self_pgrp=getpgrp(0);
+ foreach my $pid (@pids) {
+  $pid=int($pid);
+  next if($pid<=0);
+  $targets{$pid}=1;
+  my $pgrp=&webui_proc_pgrp($pid);
+  $targets{"-$pgrp"}=1 if($pgrp>1 && $pgrp!=$self_pgrp);
+ }
+ my $target_list=join(" ",sort { $a <=> $b } keys %targets);
+ system("sudo kill $signal $target_list 2>/dev/null") if($target_list ne "");
  return scalar(@pids);
 }
 
 sub webui_meter_series_signal_stop (@) {
- return 0 unless(-f $_meter_series_file);
- my $json="";
- if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
- my $series_id="";
- $series_id=$1 if($json=~/"series_id"\s*:\s*"([^"]+)"/);
- return 0 if($series_id eq "");
- my $stop_file=&webui_meter_series_stop_file($series_id);
- return 0 if($stop_file eq "");
- if(open(my $fh,">",$stop_file)) {
-  print $fh time();
-  close($fh);
-  chmod(0666,$stop_file);
-  return 1;
+ my %series_ids;
+ if(-f $_meter_series_file) {
+  my $json="";
+  if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
+  $series_ids{$1}=1 if($json=~/"series_id"\s*:\s*"([^"]+)"/);
  }
- return 0;
+ foreach my $proc (&webui_meter_series_processes()) {
+  my $series_id=$proc->{"series_id"} || "";
+  $series_ids{$series_id}=1 if($series_id ne "");
+ }
+ my $count=0;
+ foreach my $series_id (keys %series_ids) {
+  my $stop_file=&webui_meter_series_stop_file($series_id);
+  next if($stop_file eq "");
+  if(open(my $fh,">",$stop_file)) {
+   print $fh time();
+   close($fh);
+   chmod(0666,$stop_file);
+   $count++;
+  }
+ }
+ return $count;
 }
 
 sub webui_meter_series_cancel_state (@) {
@@ -2177,6 +2222,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  &webui_pattern_stop_guard_clear();
  # Brief pause to let killed processes release USB device
  select(undef,undef,undef,0.5);
+ if(&webui_meter_series_alive()) {
+  return '{"status":"error","message":"Previous meter series is still stopping"}';
+ }
 
  my $series_colorimetry=2;
  $series_colorimetry=$1 if($body=~/"colorimetry"\s*:\s*"?(\d+)"?/);
@@ -3333,11 +3381,10 @@ sub webui_meter_stop (@) {
 	 system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
 	 &webui_meter_series_kill("-9") if(&webui_meter_series_alive());
  system("sudo pkill -9 -f 'spotread_wrapper' 2>/dev/null");
- if(&webui_meter_series_alive() || !$series_was_alive) {
-  system("sudo pkill -9 -x spotread 2>/dev/null");
-  system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
-  system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
- }
+ system("sudo pkill -9 -x spotread 2>/dev/null");
+ system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
+ system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ system("sudo pkill -9 -f 'sudo.*spotread' 2>/dev/null");
  &webui_meter_session_ready_cleanup();
  &webui_meter_series_ready_cleanup();
  &webui_meter_series_stop_cleanup();
