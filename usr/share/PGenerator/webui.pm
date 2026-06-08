@@ -9343,7 +9343,7 @@ document.getElementById('mode_idx').addEventListener('change',updateModeSelectLa
 
 function meterDefaultTargetGamutForMode(){
  const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
- if(sm==='hdr10'||sm==='hlg') return 'bt2020';
+ if(sm==='hdr10'||sm==='hlg') return 'p3d65';
  return sm==='sdr' ? 'bt709' : 'p3d65';
 }
 
