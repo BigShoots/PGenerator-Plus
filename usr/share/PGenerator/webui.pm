@@ -7504,7 +7504,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-pattern-insert-block{display:flex;flex-direction:column;gap:4px;max-width:360px}
 	.meter-pattern-insert-grid{display:grid;grid-template-columns:repeat(4,minmax(58px,1fr));gap:4px 6px;align-items:end;max-width:360px}
 	.meter-pattern-insert-grid label{display:flex;flex-direction:column;gap:2px;font-size:.58rem;color:var(--text2);text-transform:uppercase;letter-spacing:.35px;white-space:normal !important}
-	.meter-pattern-insert-grid label.meter-toggle{flex-direction:row;align-items:center;min-height:28px;color:var(--text);font-size:.68rem;text-transform:none !important;letter-spacing:0 !important}
+	.meter-pattern-insert-grid label.meter-toggle{flex-direction:row;align-items:center;align-self:start;justify-content:flex-start;min-height:28px;height:28px;box-sizing:border-box;padding-top:2px;color:var(--text);font-size:.68rem;text-transform:none !important;letter-spacing:0 !important;line-height:1}
 	.meter-pattern-insert-grid input[type="text"],
 	.meter-pattern-insert-grid input[type="number"]{width:100%;min-width:0;min-height:28px;padding:4px 6px;font-size:.72rem}
 	.meter-pattern-insert-grid span{font-size:.55rem;color:var(--text2);text-transform:uppercase;letter-spacing:.35px}
@@ -7515,7 +7515,14 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-pattern-insert-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-pattern-insert-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 	.meter-pattern-insert-popover.open{display:block}
-	.meter-field-label{display:inline-flex;align-items:flex-start;gap:6px;flex-wrap:wrap}
+	.meter-xyz-gear-wrap{position:relative;display:inline-block}
+	.meter-xyz-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s;margin-left:6px}
+	.meter-xyz-gear:hover{color:var(--text);border-color:var(--accent)}
+	.meter-xyz-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
+	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
+	.meter-xyz-gear-popover.open{display:block}
+	.meter-xyz-toggle-row{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
+	.meter-field-label{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 .meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%}
 .meter-xyz-action-row{display:none;gap:8px;flex-wrap:wrap;padding-left:22px}
 .meter-xyz-action-row.visible{display:flex}
@@ -8004,19 +8011,33 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	      </div>
 	     </div>
 	      <div class="meter-xyz-toggle-block">
-       <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
-       <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
-        <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
-        <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
+       <div class="meter-xyz-toggle-row">
+        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
+        <span class="meter-xyz-gear-wrap">
+         <button type="button" id="meterXyzGear" class="meter-xyz-gear" aria-label="XYZ correction matrix options" aria-expanded="false" title="XYZ correction matrix options">&#9881;</button>
+         <div class="meter-xyz-gear-popover" id="meterXyzGearPopover" role="dialog" aria-label="XYZ correction matrix options">
+          <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
+           <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
+           <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
+          </div>
+         </div>
+        </span>
        </div>
-       <label class="meter-toggle meter-field-label" id="meterCustomD65ToggleWrap"><input type="checkbox" id="meterCustomD65Enabled"> Custom D65 <span class="meter-help-tip" title="Use a measured or entered whitepoint for D65 target colorspaces only." aria-label="Custom D65 help">?</span></label>
-       <div class="field-whitepoint" id="meterTargetWhitePointField">
-        <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Custom values update the CIE target, greyscale target white, and color analysis for D65 target colorspaces." aria-label="Target white point help">?</span></label>
-        <div class="meter-whitepoint-row">
-         <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
-         <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
-         <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
-        </div>
+       <div class="meter-xyz-toggle-row" id="meterCustomD65ToggleWrap">
+        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterCustomD65Enabled"> Custom D65 <span class="meter-help-tip" title="Use a measured or entered whitepoint for D65 target colorspaces only." aria-label="Custom D65 help">?</span></label>
+        <span class="meter-xyz-gear-wrap">
+         <button type="button" id="meterCustomD65Gear" class="meter-xyz-gear" aria-label="Custom D65 options" aria-expanded="false" title="Custom D65 options">&#9881;</button>
+         <div class="meter-xyz-gear-popover" id="meterCustomD65GearPopover" role="dialog" aria-label="Custom D65 options">
+          <div class="field-whitepoint" id="meterTargetWhitePointField">
+           <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Custom values update the CIE target, greyscale target white, and color analysis for D65 target colorspaces." aria-label="Target white point help">?</span></label>
+           <div class="meter-whitepoint-row">
+            <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
+            <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
+            <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
+           </div>
+          </div>
+         </div>
+        </span>
        </div>
       </div>
     </div>
@@ -28823,14 +28844,19 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  meterUpdateReadButtons();
 });
 (function(){
- const gear=document.getElementById('meterPatternInsertGear');
- const pop=document.getElementById('meterPatternInsertPopover');
- if(!gear||!pop) return;
- const close=()=>{pop.classList.remove('open');gear.classList.remove('active');gear.setAttribute('aria-expanded','false');};
- const open=()=>{pop.classList.add('open');gear.classList.add('active');gear.setAttribute('aria-expanded','true');};
- gear.addEventListener('click',e=>{e.stopPropagation();pop.classList.contains('open')?close():open();});
- document.addEventListener('click',e=>{if(!pop.contains(e.target)&&e.target!==gear) close();});
- document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
+ const setupGear=(gearId,popId)=>{
+  const gear=document.getElementById(gearId);
+  const pop=document.getElementById(popId);
+  if(!gear||!pop) return;
+  const close=()=>{pop.classList.remove('open');gear.classList.remove('active');gear.setAttribute('aria-expanded','false');};
+  const open=()=>{pop.classList.add('open');gear.classList.add('active');gear.setAttribute('aria-expanded','true');};
+  gear.addEventListener('click',e=>{e.stopPropagation();pop.classList.contains('open')?close():open();});
+  document.addEventListener('click',e=>{if(!pop.contains(e.target)&&e.target!==gear) close();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
+ };
+ setupGear('meterPatternInsertGear','meterPatternInsertPopover');
+ setupGear('meterXyzGear','meterXyzGearPopover');
+ setupGear('meterCustomD65Gear','meterCustomD65GearPopover');
 })();
 const meterSimulateSpectroEl=document.getElementById('meterSimulateSpectro');
 if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',async()=>{
