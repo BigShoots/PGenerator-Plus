@@ -952,18 +952,20 @@ sub pattern_daemon {
      };
      my $calman_force_dv_rgb = sub {
       return if(!$calman_dv_active->());
-      $calman_save_setting->("is_sdr","0");
-      $calman_save_setting->("is_hdr","1");
-      $calman_save_setting->("eotf","2");
-      $calman_save_setting->("is_ll_dovi",&pg_dv_transport_ll_flag());
-      $calman_save_setting->("is_std_dovi",&pg_dv_transport_std_flag());
+     $calman_save_setting->("is_sdr","0");
+     $calman_save_setting->("is_hdr","1");
+     $calman_save_setting->("eotf","2");
+      my $dv_transport="standard";
+      $calman_save_setting->("dv_transport",$dv_transport);
+      $calman_save_setting->("is_ll_dovi",&pg_dv_transport_ll_flag($dv_transport));
+      $calman_save_setting->("is_std_dovi",&pg_dv_transport_std_flag($dv_transport));
       $calman_save_setting->("dv_status","1");
-      $calman_save_setting->("dv_interface",&pg_dv_transport_interface());
+      $calman_save_setting->("dv_interface",&pg_dv_transport_interface($dv_transport));
       $calman_save_setting->("dv_color_space","0");
-      $calman_save_setting->("color_format",&pg_dv_transport_color_format());
+      $calman_save_setting->("color_format",&pg_dv_transport_color_format($dv_transport));
       $calman_save_setting->("colorimetry","9");
       $calman_save_setting->("primaries","1");
-      $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc());
+      $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc($dv_transport));
       $calman_save_setting->("rgb_quant_range","2");
       $calman_save_setting->("dv_metadata",$calman_dv_metadata_for_map_mode->($pgenerator_conf{"dv_map_mode"}));
       $calman_rgb_quant_range=2;
@@ -987,26 +989,27 @@ sub pattern_daemon {
       return 0;
      };
     #
-    # Helper: Calman DV calibration uses the platform DV transport.
+    # Helper: Calman DV calibration uses Standard Dolby Vision transport.
     # Absolute/Relative select the renderer map mode and matching legacy
-    # metadata-mode value; they do not change the HDMI transport away from
-    # the platform default.
+    # metadata-mode value; they do not switch to Low Latency transport.
     #
     my $calman_set_dv_rgb = sub {
      my ($dv_map_mode,$dv_metadata)=@_;
+     my $dv_transport="standard";
      $calman_save_setting->("signal_mode","dv");
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
-     $calman_save_setting->("is_ll_dovi",&pg_dv_transport_ll_flag());
-     $calman_save_setting->("is_std_dovi",&pg_dv_transport_std_flag());
+     $calman_save_setting->("dv_transport",$dv_transport);
+     $calman_save_setting->("is_ll_dovi",&pg_dv_transport_ll_flag($dv_transport));
+     $calman_save_setting->("is_std_dovi",&pg_dv_transport_std_flag($dv_transport));
      $calman_save_setting->("dv_status","1");
-     $calman_save_setting->("dv_interface",&pg_dv_transport_interface());
+     $calman_save_setting->("dv_interface",&pg_dv_transport_interface($dv_transport));
      $calman_save_setting->("dv_color_space","0");
-     $calman_save_setting->("color_format",&pg_dv_transport_color_format());
+     $calman_save_setting->("color_format",&pg_dv_transport_color_format($dv_transport));
      $calman_save_setting->("colorimetry","9");
      $calman_save_setting->("primaries","1");
-     $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc());
+     $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc($dv_transport));
      $calman_save_setting->("rgb_quant_range","2");
      $calman_rgb_quant_range=2;
      &apply_source_rgb_quant_range("calman",2);
@@ -1254,7 +1257,7 @@ sub pattern_daemon {
 	     if($type eq "BITD") {
 	      my $bitd_val=int($pattern_cmd);
 	      if($calman_dv_active->()) {
-	       $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc());
+	       $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc("standard"));
 	      } elsif($bitd_val == 8 || $bitd_val == 10 || $bitd_val == 12) {
 	       $calman_save_setting->("max_bpc","$bitd_val");
 	      }
