@@ -56,8 +56,8 @@ assert.strictEqual(
 );
 assert.strictEqual(
   context.lgPictureModeLabel('hdrFilmMaker'),
-  'Filmmaker',
-  'LG HDR picture mode aliases should reuse canonical labels'
+  'HDR Filmmaker',
+  'LG HDR picture mode aliases should reuse signal-prefixed canonical labels'
 );
 
 context.lgPopulatePictureModeSelect('hdrFilmMaker');
@@ -83,8 +83,23 @@ elements.signal_mode.value = 'hlg';
 context.lgPopulatePictureModeSelect('hdrFilmMaker');
 assert(
   elements.lgPictureMode.innerHTML.includes('value="hdr_filmMaker"') &&
+    elements.lgPictureMode.innerHTML.includes('HLG Filmmaker') &&
     !elements.lgPictureMode.innerHTML.includes('value="expert1"'),
-  'HLG should use the HDR picture-mode family when the TV reports HDR-style modes'
+  'HLG should use signal-prefixed HDR picture-mode options when the TV reports HDR-style modes'
+);
+
+elements.signal_mode.value = 'dv';
+context.lgPopulatePictureModeSelect('dolbyHdrCinemaBright');
+assert.strictEqual(
+  elements.lgPictureMode.value,
+  'dolby_hdr_cinema_bright',
+  'Dropdown should select the canonical DV mode for a TV-returned alias'
+);
+assert(
+  elements.lgPictureMode.innerHTML.includes('DV Cinema Home') &&
+    elements.lgPictureMode.innerHTML.includes('DV Game Optimizer') &&
+    !elements.lgPictureMode.innerHTML.includes('HDR Filmmaker'),
+  'DV dropdown options should carry DV labels instead of generic picture-mode names'
 );
 
 console.log('LG picture-mode signal options regression checks passed.');
