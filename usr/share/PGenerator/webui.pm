@@ -2123,13 +2123,12 @@ if($signal_mode eq "dv") {
  my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
 my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv_transport) : 0;
- my $dv_tunnel_gamma=3.8;
  my $target_linear_to_signal=sub {
   my ($v)=@_;
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
   if($signal_mode eq "dv") {
-   return $v**(1/$dv_tunnel_gamma);
+   return $v;
   }
   if($target_gamma eq "srgb") {
    return ($v<=0.0031308) ? 12.92*$v : 1.055*($v**(1/2.4))-0.055;
@@ -2144,7 +2143,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
   if($signal_mode eq "dv") {
-   return $v**$dv_tunnel_gamma;
+   return $v;
   }
   if($target_gamma eq "srgb") {
    return ($v<=0.04045) ? $v/12.92 : ((($v+0.055)/1.055)**2.4);
@@ -2199,8 +2198,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
  my $dv_series_code_bits=8;
  my $dv_series_code_max=255;
- my $dv_series_code_min=0;
- my $dv_series_code_span=255;
+ my $dv_series_code_min=$dv_series ? 16 : 0;
+ my $dv_series_code_span=$dv_series ? 219 : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
  if($type eq "greyscale") {
    my @ire_vals;
@@ -2362,8 +2361,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	      my $stim=$stimulus_pct/100;
 	      $stim=0 if($stim < 0);
 	      $stim=1 if($stim > 1);
-	      my $encoded=$target_linear_to_signal->($stim);
-	      $c=int($dv_series_code_min + $encoded*$dv_series_code_span + .5);
+	      $c=int($dv_series_code_min + $stim*$dv_series_code_span + .5);
 	      $c=$dv_series_code_min if($c < $dv_series_code_min);
 	      $c=$dv_series_code_limit if($c > $dv_series_code_limit);
 			    } else {
@@ -2665,9 +2663,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     if($signal_mode eq "hdr10") {
      return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
     }
-   if($signal_mode eq "dv") {
-    return int($min_code + (($linear>0)?($linear**(1/$dv_tunnel_gamma)):0)*$span_code + .5);
-   }
+	   if($signal_mode eq "dv") {
+	    return int($min_code + $linear*$span_code + .5);
+	   }
     return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
    };
    my $series_level_request=$series_level_pct/100;
@@ -2682,7 +2680,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    $series_level_code=int($min_code + $series_level_encoded*$span_code + .5);
    }
    my $series_level_signal=$span_code>0?($series_level_code-$min_code)/$span_code:0;
-  my $series_level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : (($signal_mode eq "dv" && $dv_map_mode eq "1") ? ($series_level_signal**$dv_tunnel_gamma) : $target_signal_to_linear->($series_level_signal));
+	  my $series_level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
    my $build_color_series_full_sat_codes=sub {
     my ($r_mix,$g_mix,$b_mix)=@_;
     my $mix_X=$STIM_RGB_TO_XYZ[0][0]*$r_mix+$STIM_RGB_TO_XYZ[0][1]*$g_mix+$STIM_RGB_TO_XYZ[0][2]*$b_mix;
@@ -2764,20 +2762,16 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $max_code=$min_code+$span_code;
 	  # White first (reference Y), then saturation sweeps.
 	  push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1}";
-  my $dv_saturation_tunnel_gamma=sub {
-   return $dv_tunnel_gamma;
-  };
-  my $encode_channel=sub {
+	  my $encode_channel=sub {
    my ($linear,$color_name)=@_;
    $linear=0 if(!defined $linear || $linear < 0);
    $linear=1 if($linear > 1);
    if($signal_mode eq "hdr10") {
     return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
    }
-   if($signal_mode eq "dv" && $dv_map_mode eq "1") {
-    my $gamma=$dv_saturation_tunnel_gamma->($color_name);
-    return int($min_code + (($linear>0)?($linear**(1/$gamma)):0)*$span_code + .5);
-   }
+	   if($signal_mode eq "dv") {
+	    return int($min_code + $linear*$span_code + .5);
+	   }
    return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
   };
   # Match frontend meterActualSignalPercent()/meterCodeFromSignalPercent().
@@ -2804,11 +2798,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   };
   foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
    my ($name,$r_mix,$g_mix,$b_mix)=@$color;
-    my $level_linear=($signal_mode eq "hdr10")
-     ? (&webui_pattern_pq_decode_normalized($level_signal)/10000)
-     : (($signal_mode eq "dv" && $dv_map_mode eq "1")
-       ? ($level_signal**$dv_saturation_tunnel_gamma->($name))
-       : $target_signal_to_linear->($level_signal));
+	    my $level_linear=($signal_mode eq "hdr10")
+	     ? (&webui_pattern_pq_decode_normalized($level_signal)/10000)
+	     : $target_signal_to_linear->($level_signal);
     my $mix_X=$AXIS_RGB_TO_XYZ[0][0]*$r_mix+$AXIS_RGB_TO_XYZ[0][1]*$g_mix+$AXIS_RGB_TO_XYZ[0][2]*$b_mix;
     my $mix_Y=$AXIS_RGB_TO_XYZ[1][0]*$r_mix+$AXIS_RGB_TO_XYZ[1][1]*$g_mix+$AXIS_RGB_TO_XYZ[1][2]*$b_mix;
     my $mix_Z=$AXIS_RGB_TO_XYZ[2][0]*$r_mix+$AXIS_RGB_TO_XYZ[2][1]*$g_mix+$AXIS_RGB_TO_XYZ[2][2]*$b_mix;
@@ -12087,7 +12079,7 @@ function meterGreyEotfUsesPqCurve(){
 }
 
 function meterGreyCodeRange(){
- if(meterChartIsDv()) return {min:0,span:255};
+ if(meterChartIsDv()) return {min:16,span:219};
  if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return {min:16,span:239};
  if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return {min:16,span:219};
  if(meterGreyscaleUsesFullSourceRange()) return {min:0,span:255};
@@ -12116,20 +12108,12 @@ function meterSignalFractionFromCode(code){
  return Math.max(0,Math.min(1,((code||0)-min)/span));
 }
 
-function meterDvPatchTunnelGamma(){
- return 3.8;
-}
-
 function meterDvTargetGamma(){
  return meterChartIsDv() && meterDvMapModeValue()==='1' ? 3.8 : 2.2;
 }
 
 function meterDvTunnelGamma(){
  return meterDvTargetGamma();
-}
-
-function meterDvSaturationTunnelGamma(colorName){
- return meterDvPatchTunnelGamma();
 }
 
 function meterDecodeSignalChannel(code){
@@ -12303,8 +12287,7 @@ function meterCodeFromSignalPercentWithOptions(percent,opts){
  const clamped=clampNum(percent,0,100)/100;
  const range=meterGreyCodeRange();
  if(meterChartIsDv()){
-  const encoded=clamped>0?Math.pow(clamped,1/meterDvPatchTunnelGamma()):0;
-  return Math.round(range.min+encoded*range.span);
+  return Math.round(range.min+clamped*range.span);
  }
  return Math.round(range.min+clamped*range.span);
 }
@@ -12679,13 +12662,13 @@ function meterColorLabWhite(){
 }
 
 // Forward/inverse of the active SDR/DV target signal model used by the meter
-// series builders. DV patch codes use a fixed tunneled ramp; chart targets can
-// still analyze Relative against gamma 2.2.
+// series builders. DV greyscale patches use the same direct 16-235 ramp for
+// Absolute and Relative; chart targets still analyze Relative against gamma 2.2.
 function meterTargetLinearToSignal(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
  if(meterChartIsDv()){
-  return Math.pow(c,1/meterDvPatchTunnelGamma());
+  return c;
  }
  if(meterChartIsHlg()) return hlgOetf(c);
  const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
@@ -12697,7 +12680,7 @@ function meterTargetSignalToLinear(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
  if(meterChartIsDv()){
-  return Math.pow(c,meterDvPatchTunnelGamma());
+  return c;
  }
  if(meterChartIsHlg()){
   const peak=meterChartHdrPeak();
@@ -12754,7 +12737,7 @@ function meterEncodeSaturationLinear(linear,colorName){
  const span=meterChromaPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
- if(meterChartIsDv() && meterDvMapModeValue()==='1') return Math.round(min+Math.pow(clamped,1/meterDvSaturationTunnelGamma(colorName))*span);
+ if(meterChartIsDv()) return Math.round(min+clamped*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
@@ -12764,10 +12747,6 @@ function meterGamutStimulusLinearLevel(){
 }
 
 function meterSaturationStimulusLinearLevel(colorName){
- if(meterChartIsDv() && meterDvMapModeValue()==='1'){
-  const actualPercent=meterActualCodePercent(meterColorLevelPercent())/100;
-  return Math.pow(actualPercent,meterDvSaturationTunnelGamma(colorName));
- }
  const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
  if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
  return meterTargetSignalToLinear(actualPercent);
