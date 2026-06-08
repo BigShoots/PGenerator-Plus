@@ -2196,9 +2196,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # Measurement order: WHITE first (reference), then 0%→95% ascending
  my @steps;
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
+ my $dv_greyscale_tunnel_codes=($dv_series && $type eq "greyscale") ? 1 : 0;
  my $dv_series_code_bits=8;
  my $dv_series_code_max=255;
- my $dv_series_full_range=$dv_series && int($pattern_signal_range || $signal_range || $transport_signal_range || 2)==2 ? 1 : 0;
+ my $dv_series_full_range=$dv_series && !$dv_greyscale_tunnel_codes && int($pattern_signal_range || $signal_range || $transport_signal_range || 2)==2 ? 1 : 0;
  my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : 16) : 0;
  my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? 255 : 219) : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
@@ -12079,7 +12080,7 @@ function meterGreyEotfUsesPqCurve(){
 }
 
 function meterGreyCodeRange(){
- if(meterChartIsDv()) return {min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
+ if(meterChartIsDv()) return {min:16,span:219};
  if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return {min:16,span:239};
  if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return {min:16,span:219};
  if(meterGreyscaleUsesFullSourceRange()) return {min:0,span:255};
