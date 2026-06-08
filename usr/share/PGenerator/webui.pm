@@ -6633,10 +6633,9 @@ sub webui_pattern_effective_bits (@) {
  my $link_bits=int($pgenerator_conf{"max_bpc"} || 8);
  # The native renderer only has distinct 8-bit and 10-bit drawing paths.
  # HDR10 and HLG use the 10-bit rectangle path when the link is above 8 bpc.
- # Standard Dolby Vision uses 8-bit RGB tunnel codes. Low-Latency Dolby Vision
- # is rendered on the 10-bit 4:2:2 transport path, so scale patch commands to it.
+ # Dolby Vision patterns are RGB tunnel codes; Standard uses an 8-bit link,
+ # while Low-Latency uses the 12-bit RGB transport path.
  return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
- return 10 if($signal_mode eq "dv" && &pg_dv_transport_mode() eq "ll" && $link_bits >= 10);
  return 8 if($signal_mode eq "dv");
  return 8 if($bits != 10 && $bits != 12);
  return $bits == 12 ? 10 : $bits;
@@ -10251,7 +10250,7 @@ function dvTransportMode(value){
 function dvTransportDefaults(mode){
  const transport=dvTransportMode(mode||getVal('dv_transport'));
  if(transport==='ll'){
-  return {dv_transport:'ll',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:'1',color_format:'2',max_bpc:'10'};
+  return {dv_transport:'ll',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:'1',color_format:'0',max_bpc:'12'};
  }
  return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:'0',color_format:'0',max_bpc:'8'};
 }
