@@ -66,33 +66,44 @@ sub pg_is_pi4_family(@) {
  return (&pg_device_model() =~/Raspberry Pi 4|Raspberry Pi 400|Raspberry Pi Compute Module 4/) ? 1 : 0;
 }
 
+sub pg_dv_transport_mode(@) {
+ my $mode=lc(shift || $pgenerator_conf{"dv_transport"} || "");
+ $mode=~s/[^a-z0-9]//g;
+ return "standard" unless(&pg_is_pi4_family());
+ return "ll" if($mode eq "ll" || $mode eq "lldv" || $mode eq "lowlatency");
+ return "standard" if($mode eq "standard" || $mode eq "std");
+ if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 && int($pgenerator_conf{"is_std_dovi"} || 0) == 0) {
+  return "ll";
+ }
+ return "standard";
+}
+
 sub pg_dv_transport_ll_flag(@) {
- return &pg_is_pi4_family() ? "1" : "0";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "1" : "0";
 }
 
 sub pg_dv_transport_std_flag(@) {
- return "1";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "0" : "1";
 }
 
 sub pg_dv_transport_interface(@) {
- # Pi 4 uses the renderer's Standard DV pixel mux with the patched Dolby VSIF path.
  return &pg_is_pi4_family() ? "2" : "0";
 }
 
 sub pg_dv_transport_color_format(@) {
- return "0";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "2" : "0";
 }
 
 sub pg_dv_transport_max_bpc(@) {
- return "8";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "12" : "8";
 }
 
 sub pg_dv_standard_interface(@) {
- return &pg_dv_transport_interface();
+ return &pg_dv_transport_interface("standard");
 }
 
 sub pg_dv_standard_ll_flag(@) {
- return &pg_dv_transport_ll_flag();
+ return &pg_dv_transport_ll_flag("standard");
 }
 
 

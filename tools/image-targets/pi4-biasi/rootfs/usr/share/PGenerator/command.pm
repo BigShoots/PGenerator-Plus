@@ -116,20 +116,22 @@ sub normalize_dv_transport_conf(@) {
  );
  my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
  my $dv_metadata=&dv_metadata_for_map_mode($dv_map_mode);
+ my $dv_transport=&pg_dv_transport_mode();
  my %wanted=(
   is_sdr=>"0",
   is_hdr=>"1",
   eotf=>"2",
-  is_ll_dovi=>&pg_dv_transport_ll_flag(),
-  is_std_dovi=>&pg_dv_transport_std_flag(),
+  dv_transport=>"$dv_transport",
+  is_ll_dovi=>&pg_dv_transport_ll_flag($dv_transport),
+  is_std_dovi=>&pg_dv_transport_std_flag($dv_transport),
   dv_status=>"1",
-  dv_interface=>&pg_dv_transport_interface(),
+  dv_interface=>&pg_dv_transport_interface($dv_transport),
   dv_metadata=>"$dv_metadata",
   dv_color_space=>"0",
-  color_format=>&pg_dv_transport_color_format(),
+  color_format=>&pg_dv_transport_color_format($dv_transport),
   colorimetry=>"9",
   primaries=>"1",
-  max_bpc=>&pg_dv_transport_max_bpc(),
+  max_bpc=>&pg_dv_transport_max_bpc($dv_transport),
   rgb_quant_range=>"2"
  );
  for my $key (sort keys %wanted) {
@@ -442,7 +444,7 @@ sub pgenerator_cmd (@) {
   unlink("$info_dir/GET_DISCOVERABLE.info");
   &sudo("SET_DISCOVERABLE","$1");
  }
- if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE|SIGNAL_MODE|CALMAN_MODE_IDX):(.*)/) {
+ if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE|DV_TRANSPORT|SIGNAL_MODE|CALMAN_MODE_IDX):(.*)/) {
   my $conf_key=lc($1);
   my $conf_value=$2;
   &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
@@ -462,7 +464,7 @@ sub pgenerator_cmd (@) {
   }
   if(($conf_key eq "dv_status" && $conf_value eq "1") ||
      ($conf_key=~/^(is_ll_dovi|is_std_dovi)$/ && $conf_value eq "1") ||
-     ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {
+     ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface|dv_transport)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {
    &normalize_dv_transport_conf();
   }
   unlink("$info_dir/GET_PGENERATOR_CONF_".uc($1).".info");
