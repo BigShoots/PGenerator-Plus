@@ -71,12 +71,12 @@ sub pg_dv_transport_ll_flag(@) {
 }
 
 sub pg_dv_transport_std_flag(@) {
- return "1";
+ return &pg_is_pi4_family() ? "0" : "1";
 }
 
 sub pg_dv_transport_interface(@) {
  # Pi 4 2.6.x DV used the renderer's Standard mux with the LL interface flag.
- return &pg_is_pi4_family() ? "1" : "0";
+ return &pg_is_pi4_family() ? "2" : "0";
 }
 
 sub pg_dv_transport_color_format(@) {
@@ -84,7 +84,7 @@ sub pg_dv_transport_color_format(@) {
 }
 
 sub pg_dv_transport_max_bpc(@) {
- return "8";
+ return &pg_is_pi4_family() ? "12" : "8";
 }
 
 sub pg_dv_standard_interface(@) {
