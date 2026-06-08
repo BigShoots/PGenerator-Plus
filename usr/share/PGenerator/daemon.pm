@@ -941,7 +941,7 @@ sub pattern_daemon {
      };
      #
      # Helper: Dolby Vision transport is platform-specific. Pi 5 uses RGB
-     # tunneling; Pi 4-family uses the historical LL YCbCr 4:2:2 path.
+     # tunneling; Pi 4-family keeps the historical 2.6.x RGB/full/12b path.
      # Later generic Calman format/range/bit-depth commands must not undo it.
      #
      my $calman_dv_active = sub {
