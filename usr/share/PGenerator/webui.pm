@@ -7497,7 +7497,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-chart-inline-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.25)}
 .meter-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);text-transform:none !important;letter-spacing:0 !important;cursor:pointer;line-height:1.25}
 .meter-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
-	.meter-note-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;line-height:1.25}
+	.meter-note-toggle{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;line-height:1.25}
 	.meter-note-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
 	.meter-toggle-row{display:flex;align-items:flex-start;gap:8px 14px;flex-wrap:wrap;margin-top:6px}
 	.meter-toggle-row label{max-width:100%}
