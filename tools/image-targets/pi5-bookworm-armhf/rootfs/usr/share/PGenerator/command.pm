@@ -467,6 +467,7 @@ sub normalize_dv_transport_conf(@) {
   is_std_dovi=>&pg_dv_transport_std_flag(),
   dv_status=>"1",
   dv_interface=>&pg_dv_transport_interface(),
+  dv_profile=>"1",
   dv_metadata=>"$dv_metadata",
   dv_color_space=>"0",
   color_format=>&pg_dv_transport_color_format(),
