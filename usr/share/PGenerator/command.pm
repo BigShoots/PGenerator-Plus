@@ -120,16 +120,16 @@ sub normalize_dv_transport_conf(@) {
   is_sdr=>"0",
   is_hdr=>"1",
   eotf=>"2",
-  is_ll_dovi=>&pg_dv_standard_ll_flag(),
-  is_std_dovi=>"1",
+  is_ll_dovi=>&pg_dv_transport_ll_flag(),
+  is_std_dovi=>&pg_dv_transport_std_flag(),
   dv_status=>"1",
-  dv_interface=>&pg_dv_standard_interface(),
+  dv_interface=>&pg_dv_transport_interface(),
   dv_metadata=>"$dv_metadata",
   dv_color_space=>"0",
-  color_format=>"0",
+  color_format=>&pg_dv_transport_color_format(),
   colorimetry=>"9",
   primaries=>"1",
-  max_bpc=>"8",
+  max_bpc=>&pg_dv_transport_max_bpc(),
   rgb_quant_range=>"2"
  );
  for my $key (sort keys %wanted) {
@@ -194,7 +194,6 @@ sub apply_drm_properties (@) {
  return if($connector_id eq "");
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
- $max_bpc=8 if($is_dv);
  if($max_bpc ne "" && $max_bpc > 0) {
   system("timeout 3 $modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
@@ -203,7 +202,6 @@ sub apply_drm_properties (@) {
  # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
- $color_fmt=0 if($is_dv);
  $color_fmt=0 if($color_fmt eq "");
  system("timeout 3 $modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
