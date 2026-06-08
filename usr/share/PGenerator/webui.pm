@@ -8941,10 +8941,11 @@ function isCalibrationWorkflowActive(){
 	   ||lgIsCommandBusy()
 	   ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning)
    ||(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
-   ||(typeof meterActionPending!=='undefined'&&meterActionPending)
-   ||(typeof meterPingBusy!=='undefined'&&meterPingBusy)
-   ||(typeof meterSeriesAwaitingReady!=='undefined'&&meterSeriesAwaitingReady)
-   ||(typeof meterManualPromptAwaiting!=='undefined'&&meterManualPromptAwaiting));
+	   ||(typeof meterActionPending!=='undefined'&&meterActionPending)
+	   ||(typeof meterPingBusy!=='undefined'&&meterPingBusy)
+	   ||(typeof meterSeriesAwaitingReady!=='undefined'&&meterSeriesAwaitingReady)
+   ||(typeof meterSeriesSpectroSetupActive!=='undefined'&&meterSeriesSpectroSetupActive)
+	   ||(typeof meterManualPromptAwaiting!=='undefined'&&meterManualPromptAwaiting));
  }catch(e){
   return false;
  }
@@ -11528,7 +11529,7 @@ function meterSeriesSnapshotHasLgAutoCal26Markers(status){
 
 function meterSharedSeriesStatusCanRecover(status){
  const s=String((status&&status.status)||'').toLowerCase();
- return !!(status&&status.series_id&&(s==='running'||s==='complete'||s==='cancelled'||s==='error'));
+ return !!(status&&status.series_id&&(s==='running'||s==='setup'||s==='complete'||s==='cancelled'||s==='error'));
 }
 
 function meterSharedSeriesStatusKey(status){
@@ -11569,7 +11570,8 @@ function meterSharedSeriesShouldRecover(status,opts){
  const localCount=meterSeriesLuminanceReadingCount(meterReadings);
  const serverTs=meterSeriesStatusLatestTimestamp(status);
  const localTs=meterCurrentSeriesLatestTimestamp();
- const isRunning=String(status.status||'').toLowerCase()==='running';
+ const state=String(status.status||'').toLowerCase();
+ const isActive=(state==='running'||state==='setup');
  if(serverId&&localId){
   if(serverId!==localId) return true;
   if(serverCount>localCount) return true;
@@ -11578,7 +11580,7 @@ function meterSharedSeriesShouldRecover(status,opts){
  if(serverId&&!localId){
   if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&!opts.restoredLocal) return false;
   if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&opts.restoredLocal) return serverTs>0&&(!localTs||serverTs>=localTs);
-  if(isRunning) return true;
+  if(isActive) return true;
   if(serverCount>0&&localCount===0) return true;
   if(serverTs>0&&(!localTs||serverTs>=localTs)) return true;
   if(serverCount>localCount&&(!localTs||serverTs+300>=localTs)) return true;
@@ -16154,9 +16156,11 @@ function meterRecoverSeries(s){
   drawAllChartsPreset(sortedSteps);
  }
  meterCacheSeriesState(s.status||'complete');
- if(s.status==='running'){
+ if(s.status==='running'||s.status==='setup'){
   // Series is still running — start polling and show stop button
   meterSeriesRunning=true;
+  meterSeriesAwaitingReady=!!s.awaiting_ready;
+  meterSeriesSpectroSetupApplyFromStatus(s);
   document.getElementById('meterProgress').style.display='';
   document.getElementById('meterStopBtn').style.display='';
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
@@ -24084,14 +24088,30 @@ async function meterRunSeries(){
  const psize=getMeterPatchSize();
  const patternSignalRange=meterMeasurementPatchSignalRange();
  const requireDeviceReady=meterSelectedMeasurementRequiresReady();
+ const recoverStartedSeries=async()=>{
+  try{
+   const s=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:8000});
+   const state=String((s&&s.status)||'').toLowerCase();
+   if(s&&s.series_id&&(state==='running'||state==='setup')){
+    meterSetActiveSeriesChartContext(s);
+    meterSharedSeriesId=String(s.series_id);
+    if(meterSeriesPolling) clearInterval(meterSeriesPolling);
+    meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
+    await meterPollSeries();
+    return true;
+   }
+  }catch(_e){}
+  return false;
+ };
  try{
-  const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-	   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
-  if(!r||r.status!=='started'){
-   toast(r&&r.message?r.message:'Failed to start series',true);
-   meterSeriesRunning=false;
-   meterSeriesAwaitingReady=false;
-   meterReadySignalPending=false;
+	  const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
+		   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+	  if(!r||r.status!=='started'){
+   if(await recoverStartedSeries()) return true;
+	   toast(r&&r.message?r.message:'Failed to start series',true);
+	   meterSeriesRunning=false;
+	   meterSeriesAwaitingReady=false;
+	   meterReadySignalPending=false;
    document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
@@ -24102,12 +24122,24 @@ async function meterRunSeries(){
 	  if(r.series_id) meterSharedSeriesId=String(r.series_id);
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
   meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
-  await meterPollSeries();
-  return true;
- } finally {
-  meterActionPending=false;
-  meterUpdateReadButtons();
- }
+	  await meterPollSeries();
+	  return true;
+ }catch(e){
+  if(await recoverStartedSeries()) return true;
+  toast((e&&e.message)?('Failed to start series: '+e.message):'Failed to start series',true);
+  meterSeriesRunning=false;
+  meterSeriesAwaitingReady=false;
+  meterSeriesSpectroSetupActive=false;
+  meterReadySignalPending=false;
+  meterSpectroSetupApply(null);
+  document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+  document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+  document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+  return false;
+	 } finally {
+	  meterActionPending=false;
+	  meterUpdateReadButtons();
+	 }
 }
 
 async function meterPollSeries(){
