@@ -121,6 +121,8 @@ static int rgb_qr_found = 0;
 static uint32_t dovi_meta_prop_id = 0;
 static int dv_status = 0;
 static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
+static int is_ll_dovi = 0;
+static int is_std_dovi = 0;
 static int dv_map_mode = -1;
 static int conf_read = 0;
 
@@ -207,6 +209,16 @@ static void read_config(void) {
             p[12] == '=') {
             dv_interface = (p[13] - '0');
         }
+        if (p[0] == 'i' && p[1] == 's' && p[2] == '_' && p[3] == 'l' &&
+            p[4] == 'l' && p[5] == '_' && p[6] == 'd' && p[7] == 'o' &&
+            p[8] == 'v' && p[9] == 'i' && p[10] == '=') {
+            is_ll_dovi = (p[11] - '0');
+        }
+        if (p[0] == 'i' && p[1] == 's' && p[2] == '_' && p[3] == 's' &&
+            p[4] == 't' && p[5] == 'd' && p[6] == '_' && p[7] == 'd' &&
+            p[8] == 'o' && p[9] == 'v' && p[10] == 'i' && p[11] == '=') {
+            is_std_dovi = (p[12] - '0');
+        }
         if (p[0] == 'd' && p[1] == 'v' && p[2] == '_' && p[3] == 'm' &&
             p[4] == 'a' && p[5] == 'p' && p[6] == '_' && p[7] == 'm' &&
             p[8] == 'o' && p[9] == 'd' && p[10] == 'e' && p[11] == '=') {
@@ -292,7 +304,7 @@ static void read_config(void) {
         write_log("DRM_OVERRIDE: config dv_interface=");
         write_log(num);
         write_log(" (");
-        write_log(dv_interface == 0 ? "Standard" : "Low-Latency");
+        write_log((is_ll_dovi == 1 && is_std_dovi != 1) ? "Low-Latency" : "Standard");
         write_log(")\n");
     }
     if (dv_map_mode >= 0) {
@@ -418,13 +430,25 @@ static void set_dovi_oui(uint8_t *metadata, uint32_t oui) {
     metadata[3] = 0x00;
 }
 
+static int is_dovi_ll_transport(void) {
+    return (is_ll_dovi == 1 && is_std_dovi != 1);
+}
+
+static uint32_t dovi_transport_oui(void) {
+    return is_dovi_ll_transport() ? 0x00D046 : 0x000C03;
+}
+
+static uint8_t dovi_kernel_interface_byte(void) {
+    return is_dovi_ll_transport() ? 0x01 : 0x01;
+}
+
 static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
                                    const char *reason) {
     if (!metadata || length != 12 || dv_status != 1)
         return 0;
 
-    uint32_t oui = dv_interface ? 0x00D046 : 0x000C03;
-    uint8_t iface = dv_interface ? 0x01 : 0x00;
+    uint32_t oui = dovi_transport_oui();
+    uint8_t iface = dovi_kernel_interface_byte();
     int changed = 0;
 
     if (metadata[0] != (uint8_t)(oui & 0xff) ||
@@ -456,7 +480,7 @@ static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
             write_log(")");
         }
         write_log(" oui=");
-        write_log(dv_interface ? "00d046" : "000c03");
+        write_log(is_dovi_ll_transport() ? "00d046" : "000c03");
         write_log(" status=1 iface=");
         itoa_simple((uint64_t)iface, num);
         write_log(num);
@@ -512,7 +536,7 @@ static uint32_t create_dovi_blob(int fd) {
         itoa_simple(dovi_blob_id, num);
         write_log("DRM_OVERRIDE: created DOVI blob_id=");
         write_log(num);
-        write_log(dv_interface ? " (Low-Latency)" : " (Standard)");
+        write_log(is_dovi_ll_transport() ? " (Low-Latency)" : " (Standard)");
         write_log(" bytes=");
         for (int i = 0; i < 12; i++) {
             char hex[4];

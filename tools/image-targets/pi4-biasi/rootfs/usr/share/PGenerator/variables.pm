@@ -96,7 +96,7 @@ sub pg_dv_transport_color_format(@) {
 }
 
 sub pg_dv_transport_max_bpc(@) {
- return (&pg_dv_transport_mode(@_) eq "ll") ? "12" : "8";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "10" : "8";
 }
 
 sub pg_dv_standard_interface(@) {
