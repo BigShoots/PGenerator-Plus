@@ -2008,6 +2008,9 @@ $request_dv_map_mode=$1 if($body=~/"dv_map_mode"\s*:\s*"?([0-9])"?/);
 $request_dv_map_mode="" unless($request_dv_map_mode eq "1" || $request_dv_map_mode eq "2");
 my $request_dv_interface="";
 $request_dv_interface=$1 if($body=~/"dv_interface"\s*:\s*"?([012])"?/);
+my $request_dv_transport="";
+$request_dv_transport=$1 if($body=~/"dv_transport"\s*:\s*"([^"\\]{1,32})"/);
+$request_dv_transport=&pg_dv_transport_mode($request_dv_transport);
 if($signal_mode eq "dv") {
  $target_gamma="st2084";
 }
@@ -2087,7 +2090,7 @@ if($signal_mode eq "dv") {
  # shift outward (measured appears oversaturated vs target xy).
  my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
-my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface() : 0;
+my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv_transport) : 0;
  my $dv_tunnel_gamma=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 3.8 : 2.2;
  my $target_linear_to_signal=sub {
   my ($v)=@_;
@@ -5013,11 +5016,13 @@ sub webui_reload_pgenerator_conf (@) {
 
 sub webui_config_json (@) {
  &webui_reload_pgenerator_conf();
+ my %json_conf=%pgenerator_conf;
+ $json_conf{"dv_transport"}=&pg_dv_transport_mode();
  my $json="{";
  my $first=1;
- foreach my $k (sort keys %pgenerator_conf) {
+ foreach my $k (sort keys %json_conf) {
   $json.="," if(!$first);
-  my $v=$pgenerator_conf{$k};
+  my $v=$json_conf{$k};
   $v=&webui_preferred_rgb_quant_range() if($k eq "rgb_quant_range" && $external_rgb_quant_range_active);
   $v=~s/"/\\"/g;
   $json.="\"$k\":\"$v\"";
@@ -5036,6 +5041,7 @@ sub webui_apply_config (@) {
  while($body=~/"(\w+)"\s*:\s*"([^"]*)"/g) {
   $changes{$1}=$2;
  }
+ my $requested_dv_transport=&pg_dv_transport_mode($changes{"dv_transport"} || $pgenerator_conf{"dv_transport"});
  if(defined $changes{"signal_mode"}) {
   my $signal_mode=lc($changes{"signal_mode"});
   if($signal_mode eq "sdr") {
@@ -5061,14 +5067,15 @@ sub webui_apply_config (@) {
   } elsif($signal_mode eq "dv") {
    $changes{"is_sdr"}="0";
    $changes{"is_hdr"}="1";
-   $changes{"is_ll_dovi"}=&pg_dv_transport_ll_flag();
-   $changes{"is_std_dovi"}=&pg_dv_transport_std_flag();
+   $changes{"dv_transport"}=$requested_dv_transport;
+   $changes{"is_ll_dovi"}=&pg_dv_transport_ll_flag($requested_dv_transport);
+   $changes{"is_std_dovi"}=&pg_dv_transport_std_flag($requested_dv_transport);
    $changes{"dv_status"}="1";
-   $changes{"dv_interface"}=&pg_dv_transport_interface();
+   $changes{"dv_interface"}=&pg_dv_transport_interface($requested_dv_transport);
    $changes{"eotf"}="2";
    $changes{"primaries"}="1";
-   $changes{"max_bpc"}=&pg_dv_transport_max_bpc();
-   $changes{"color_format"}=&pg_dv_transport_color_format();
+   $changes{"max_bpc"}=&pg_dv_transport_max_bpc($requested_dv_transport);
+   $changes{"color_format"}=&pg_dv_transport_color_format($requested_dv_transport);
    $changes{"colorimetry"}="9";
    $changes{"rgb_quant_range"}="2";
   }
@@ -5104,6 +5111,7 @@ sub webui_apply_config (@) {
  my $dv_on=int($effective{"dv_status"} || 0);
  $dv_on=1 if(int($effective{"is_ll_dovi"} || 0) || int($effective{"is_std_dovi"} || 0));
  if($dv_on) {
+  my $dv_transport=&pg_dv_transport_mode($effective{"dv_transport"} || $requested_dv_transport);
   my $dv_map_mode=(defined $changes{"dv_map_mode"} && $changes{"dv_map_mode"} ne "") ? $changes{"dv_map_mode"} : ($effective{"dv_map_mode"} || "2");
   my $dv_metadata=(defined $changes{"dv_metadata"} && $changes{"dv_metadata"} ne "") ? $changes{"dv_metadata"} : (($dv_map_mode eq "1") ? "3" : (($dv_map_mode eq "2") ? "4" : "2"));
   if(!defined $changes{"dv_map_mode"} || $changes{"dv_map_mode"} eq "") {
@@ -5111,18 +5119,19 @@ sub webui_apply_config (@) {
    $dv_map_mode="1" if($dv_metadata eq "3");
    $dv_map_mode="2" if($dv_metadata eq "4");
   }
-  $changes{"max_bpc"}=&pg_dv_transport_max_bpc();
-  $changes{"is_ll_dovi"}=&pg_dv_transport_ll_flag();
-  $changes{"is_std_dovi"}=&pg_dv_transport_std_flag();
+  $changes{"dv_transport"}=$dv_transport;
+  $changes{"max_bpc"}=&pg_dv_transport_max_bpc($dv_transport);
+  $changes{"is_ll_dovi"}=&pg_dv_transport_ll_flag($dv_transport);
+  $changes{"is_std_dovi"}=&pg_dv_transport_std_flag($dv_transport);
   $changes{"dv_status"}="1";
-  $changes{"color_format"}=&pg_dv_transport_color_format();
+  $changes{"color_format"}=&pg_dv_transport_color_format($dv_transport);
   $changes{"colorimetry"}="9";
   $changes{"eotf"}="2";
   $changes{"primaries"}="1";
   $changes{"rgb_quant_range"}="2";
  $changes{"dv_profile"}="1";
  $changes{"dv_color_space"}="0";
-  $changes{"dv_interface"}=&pg_dv_transport_interface();
+  $changes{"dv_interface"}=&pg_dv_transport_interface($dv_transport);
   $changes{"dv_map_mode"}=$dv_map_mode;
   $changes{"dv_metadata"}=$dv_metadata;
   # Dolby Vision calibration uses a platform-specific transport; reject modes
@@ -5158,7 +5167,7 @@ sub webui_apply_config (@) {
  # Keys that require pattern generator restart
  my %restart_keys=map{$_=>1} qw(mode_idx eotf is_hdr is_sdr colorimetry primaries
   min_luma max_luma max_cll max_fall color_format max_bpc rgb_quant_range
-    dv_status is_ll_dovi is_std_dovi dv_interface dv_profile dv_metadata dv_color_space dv_map_mode);
+    dv_status is_ll_dovi is_std_dovi dv_interface dv_profile dv_metadata dv_color_space dv_map_mode dv_transport);
 
  foreach my $k (sort keys %changes) {
   next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
@@ -5694,6 +5703,8 @@ sub webui_capabilities_json (@) {
 	 my $dv_transport_interface=&pg_dv_transport_interface();
 	 my $dv_transport_color_format=&pg_dv_transport_color_format();
 	 my $dv_transport_max_bpc=&pg_dv_transport_max_bpc();
+	 my $dv_transport_mode=&pg_dv_transport_mode();
+	 my $dv_transport_modes=&pg_is_pi4_family() ? '"standard","ll"' : '"standard"';
 
 		 return "{\"dc_30bit\":".($dc_30?"true":"false")
 		  .",\"dc_36bit\":".($dc_36?"true":"false")
@@ -5715,6 +5726,8 @@ sub webui_capabilities_json (@) {
 		  .",\"dv_transport_interface\":\"$dv_transport_interface\""
 		  .",\"dv_transport_color_format\":\"$dv_transport_color_format\""
 		  .",\"dv_transport_max_bpc\":\"$dv_transport_max_bpc\""
+		  .",\"dv_transport\":\"$dv_transport_mode\""
+		  .",\"dv_transport_modes\":[$dv_transport_modes]"
 	  .",\"edid_decode_available\":".($edid_decode_available?"true":"false")
   .",\"edid_parsed\":".($edid_parsed?"true":"false")
 	  .",\"vic_420\":[".join(",",@v420)."]}";
@@ -7683,11 +7696,18 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
  <!-- Dolby Vision Settings -->
  <div class="card" id="dvCard">
-  <h2><span class="dv-badge">DV</span> Dolby Vision</h2>
-  <div class="grid">
-   <input type="hidden" id="dv_interface" value="0">
-   <div class="field">
-    <label>Map Mode</label>
+	  <h2><span class="dv-badge">DV</span> Dolby Vision</h2>
+	  <div class="grid">
+	   <input type="hidden" id="dv_interface" value="0">
+	   <div class="field">
+	    <label>Transport</label>
+	    <select id="dv_transport">
+	     <option value="standard">Standard</option>
+	     <option value="ll">Low Latency</option>
+	    </select>
+	   </div>
+	   <div class="field">
+	    <label>Map Mode</label>
     <select id="dv_map_mode">
      <option value="2">Relative (Calibration)</option>
      <option value="1">Absolute (Mastering)</option>
@@ -8934,14 +8954,16 @@ function applyConfigState(nextConfig){
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
- // DV settings
- setVal('dv_interface',config.dv_interface||'0');
- setVal('dv_map_mode',config.dv_map_mode||'2');
- if(sm==='dv'){
-  syncDvOutputEotfState();
-  const dvTransport=dvTransportDefaults();
-  setVal('max_bpc',dvTransport.max_bpc);
-  setVal('color_format',dvTransport.color_format);
+	 // DV settings
+	 setVal('dv_transport',dvTransportMode(config.dv_transport));
+	 setVal('dv_interface',config.dv_interface||'0');
+	 setVal('dv_map_mode',config.dv_map_mode||'2');
+	 if(sm==='dv'){
+	  syncDvOutputEotfState();
+	  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
+	  setVal('dv_transport',dvTransport.dv_transport);
+	  setVal('max_bpc',dvTransport.max_bpc);
+	  setVal('color_format',dvTransport.color_format);
   setVal('dv_interface',dvTransport.dv_interface);
   setVal('colorimetry','9');
   setVal('primaries','1');
@@ -9039,13 +9061,14 @@ function captureSettings(){
   max_bpc:getVal('max_bpc'),color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),rgb_quant_range:getVal('rgb_quant_range'),
   eotf:getVal('eotf'),primaries:getVal('primaries'),
-  max_luma:meterHdrMetadataFieldValue('max_luma'),
-  min_luma:meterHdrMetadataFieldValue('min_luma'),
-  max_cll:meterHdrMetadataFieldValue('max_cll'),
-  max_fall:meterHdrMetadataFieldValue('max_fall'),
-  dv_interface:getVal('dv_interface'),
-  dv_map_mode:getVal('dv_map_mode')
- });
+	  max_luma:meterHdrMetadataFieldValue('max_luma'),
+	  min_luma:meterHdrMetadataFieldValue('min_luma'),
+	  max_cll:meterHdrMetadataFieldValue('max_cll'),
+	  max_fall:meterHdrMetadataFieldValue('max_fall'),
+	  dv_transport:getVal('dv_transport'),
+	  dv_interface:getVal('dv_interface'),
+	  dv_map_mode:getVal('dv_map_mode')
+	 });
 }
 
 function refreshSavedSettingsSnapshot(){
@@ -9061,9 +9084,9 @@ function hasUnsavedSettings(){
 function isSettingsFieldActive(){
  const el=document.activeElement;
  if(!el||!el.id)return false;
- return ['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
-  'eotf','primaries','dv_interface','dv_map_mode','max_luma','min_luma','max_cll','max_fall',
-  'dv_max_luma','dv_min_luma','dv_max_cll','dv_max_fall'].includes(el.id);
+	 return ['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
+	  'eotf','primaries','dv_transport','dv_interface','dv_map_mode','max_luma','min_luma','max_cll','max_fall',
+	  'dv_max_luma','dv_min_luma','dv_max_cll','dv_max_fall'].includes(el.id);
 }
 
 function shouldPauseAutoRefresh(){
@@ -9087,10 +9110,10 @@ function updateModeVisibility(){
  meterSyncHdrMetadata();
 }
 
-['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
- 'eotf','primaries','dv_interface','dv_map_mode'].forEach(function(id){
- document.getElementById(id).addEventListener('change',checkSettingsChanged);
-});
+	['mode_idx','signal_mode','max_bpc','color_format','colorimetry','rgb_quant_range',
+	 'eotf','primaries','dv_transport','dv_interface','dv_map_mode'].forEach(function(id){
+	 document.getElementById(id).addEventListener('change',checkSettingsChanged);
+	});
 ['max_luma','min_luma','max_cll','max_fall'].forEach(function(id){
  const el=document.getElementById(id);
  if(!el) return;
@@ -9121,10 +9144,10 @@ function updateModeVisibility(){
  el.addEventListener('input',sync);
  el.addEventListener('change',sync);
 });
-// Re-filter dropdowns when mode, bit depth, color format, or DV interface changes
-['mode_idx','max_bpc','color_format','dv_interface'].forEach(function(id){
- document.getElementById(id).addEventListener('change',updateDropdowns);
-});
+	// Re-filter dropdowns when mode, bit depth, color format, or DV transport changes
+	['mode_idx','max_bpc','color_format','dv_transport','dv_interface'].forEach(function(id){
+	 document.getElementById(id).addEventListener('change',updateDropdowns);
+	});
 document.getElementById('mode_idx').addEventListener('change',updateModeSelectLabel);
 
 function meterDefaultTargetGamutForMode(){
@@ -9189,10 +9212,11 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('colorimetry','9');
   setVal('primaries','1');
   setVal('max_bpc','10');
- }else if(sm==='dv'){
-  const dvTransport=dvTransportDefaults();
-  setVal('dv_interface',dvTransport.dv_interface);
-  setVal('eotf','2');
+	 }else if(sm==='dv'){
+	  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
+	  setVal('dv_transport',dvTransport.dv_transport);
+	  setVal('dv_interface',dvTransport.dv_interface);
+	  setVal('eotf','2');
   setVal('color_format',dvTransport.color_format);
   setVal('colorimetry','9');
   setVal('primaries','1');
@@ -9408,9 +9432,13 @@ function updateDropdowns(){
  const fmtSel=document.getElementById('color_format');
  const bpcSel=document.getElementById('max_bpc');
  const modeSel=document.getElementById('mode_idx');
- if(sm==='dv'){
-  const dvTransport=dvTransportDefaults();
-  setVal('dv_interface',dvTransport.dv_interface);
+	 if(sm==='dv'){
+	  const transportSel=document.getElementById('dv_transport');
+	  const modes=Array.isArray(caps&&caps.dv_transport_modes)?caps.dv_transport_modes.map(v=>String(v).toLowerCase()):['standard'];
+	  Array.from(transportSel.options).forEach(function(o){const ok=modes.includes(String(o.value).toLowerCase());o.disabled=!ok;o.style.display=ok?'':'none';});
+	  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
+	  setVal('dv_transport',dvTransport.dv_transport);
+	  setVal('dv_interface',dvTransport.dv_interface);
   const allowedBpc=[dvTransport.max_bpc];
   const targetFmt=dvTransport.color_format;
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!==targetFmt;o.style.display=o.value===targetFmt?'':'none';});
@@ -10172,14 +10200,25 @@ function dvTransportDefault(configKey,capsKey,fallback){
  if(config&&config[configKey]!=null) return String(config[configKey]);
  return fallback;
 }
-function dvTransportDefaults(){
- return {
-  is_ll_dovi:dvTransportDefault('is_ll_dovi','dv_transport_is_ll_dovi','0'),
-  is_std_dovi:dvTransportDefault('is_std_dovi','dv_transport_is_std_dovi','1'),
-  dv_interface:dvTransportDefault('dv_interface','dv_transport_interface','0'),
-  color_format:dvTransportDefault('color_format','dv_transport_color_format','0'),
-  max_bpc:dvTransportDefault('max_bpc','dv_transport_max_bpc','8')
- };
+function dvTransportMode(value){
+ let mode=String(value||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+ if(!mode){
+  mode=String((config&&config.dv_transport)||(caps&&caps.dv_transport)||'standard').toLowerCase().replace(/[^a-z0-9]/g,'');
+  if(mode!=='ll'&&mode!=='lldv'&&mode!=='lowlatency'&&mode!=='standard'&&mode!=='std'){
+   mode=(config&&config.is_ll_dovi==='1'&&config.is_std_dovi!=='1')?'ll':'standard';
+  }
+ }
+ mode=(mode==='ll'||mode==='lldv'||mode==='lowlatency')?'ll':'standard';
+ const modes=Array.isArray(caps&&caps.dv_transport_modes)?caps.dv_transport_modes.map(v=>String(v).toLowerCase()):['standard'];
+ return modes.includes(mode)?mode:'standard';
+}
+function dvTransportDefaults(mode){
+ const transport=dvTransportMode(mode||getVal('dv_transport'));
+ const iface=dvTransportDefault('dv_interface','dv_transport_interface','0');
+ if(transport==='ll'){
+  return {dv_transport:'ll',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:iface,color_format:'2',max_bpc:'12'};
+ }
+ return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:iface,color_format:'0',max_bpc:'8'};
 }
 
 function resetDefaults(){
@@ -10193,9 +10232,10 @@ function resetDefaults(){
  document.getElementById('max_luma').value='1000';
  document.getElementById('min_luma').value='0.005';
  document.getElementById('max_cll').value='1000';
- document.getElementById('max_fall').value='400';
- setVal('dv_map_mode','2');
- setVal('dv_interface','0');
+	 document.getElementById('max_fall').value='400';
+	 setVal('dv_transport','standard');
+	 setVal('dv_map_mode','2');
+	 setVal('dv_interface','0');
  updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
@@ -10226,10 +10266,11 @@ async function applySettings(){
    min_luma:meterHdrMetadataFieldValue('min_luma','hdr10'),
    max_cll:meterHdrMetadataFieldValue('max_cll','hdr10'),
    max_fall:meterHdrMetadataFieldValue('max_fall','hdr10')});
- }else if(sm==='dv'){
-  const dvTransport=dvTransportDefaults();
-  Object.assign(changes,{is_sdr:'0',is_hdr:'1',
-   is_ll_dovi:dvTransport.is_ll_dovi,is_std_dovi:dvTransport.is_std_dovi,
+	 }else if(sm==='dv'){
+	  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
+	  Object.assign(changes,{is_sdr:'0',is_hdr:'1',
+	   dv_transport:dvTransport.dv_transport,
+	   is_ll_dovi:dvTransport.is_ll_dovi,is_std_dovi:dvTransport.is_std_dovi,
    dv_status:'1',primaries:'1',color_format:dvTransport.color_format,colorimetry:'9',max_bpc:dvTransport.max_bpc,
    rgb_quant_range:'2',eotf:'2',
    dv_interface:dvTransport.dv_interface,
@@ -18761,9 +18802,10 @@ function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
  body.signal_mode=getVal('signal_mode')||'sdr';
  if(body.signal_mode==='dv'){
-  const dvTransport=dvTransportDefaults();
+  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
   body.target_gamma=meterDvAutoTargetGamma();
   body.dv_map_mode=getVal('dv_map_mode')||((config&&config.dv_map_mode)||'2');
+  body.dv_transport=dvTransport.dv_transport;
   body.dv_interface=dvTransport.dv_interface;
  }
  body.max_luma=(document.getElementById('max_luma')||{}).value||((config&&config.max_luma)||'1000');
