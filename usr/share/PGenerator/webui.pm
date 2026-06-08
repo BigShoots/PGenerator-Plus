@@ -346,6 +346,7 @@ my $_meter_session_ack_file="/tmp/meter_session.ack";
 my $_meter_diagnostic_read_lock="/tmp/meter_diagnostic_read.lock";
 my $_meter_series_ready_glob="/tmp/meter_series_ready_*.signal";
 my $_meter_series_stop_glob="/tmp/meter_series_stop_*.signal";
+my $_webui_pattern_stop_guard_file="/tmp/webui_pattern_stop_guard";
 my $_ccss_create_state_file="/tmp/ccss_create.json";
 my $_ccss_create_pid_file="/tmp/ccss_create.pid";
 my $_ccss_create_log_file="/tmp/ccss_create.log";
@@ -1297,6 +1298,32 @@ sub webui_meter_series_stop_cleanup (@) {
  unlink(@paths) if(@paths);
 }
 
+sub webui_pattern_stop_guard_set (@) {
+ my ($reason)=@_;
+ $reason="" if(!defined($reason));
+ $reason=~s/[^A-Za-z0-9_.:-]+/_/g;
+ if(open(my $fh,">",$_webui_pattern_stop_guard_file)) {
+  print $fh time()." ".$reason;
+  close($fh);
+  chmod(0666,$_webui_pattern_stop_guard_file);
+ }
+}
+
+sub webui_pattern_stop_guard_clear (@) {
+ unlink($_webui_pattern_stop_guard_file) if(-e $_webui_pattern_stop_guard_file);
+}
+
+sub webui_pattern_stop_guard_active (@) {
+ return (-f $_webui_pattern_stop_guard_file) ? 1 : 0;
+}
+
+sub webui_pattern_stop_guard_allows_patch (@) {
+ my ($body)=@_;
+ return 0 if(!defined($body));
+ return 1 if($body=~/"allow_after_stop"\s*:\s*true/i);
+ return 0;
+}
+
 sub webui_meter_series_pids (@) {
  my @pids;
  foreach my $path (glob("/proc/[0-9]*/cmdline")) {
@@ -1541,6 +1568,8 @@ sub webui_meter_read (@) {
  if(&_webui_ccss_create_alive()) {
   return '{"status":"idle","message":"Spectrophotometer is busy creating a CCSS"}';
  }
+
+ &webui_pattern_stop_guard_clear();
 
  # Refuse single reads while a series is actively running
  if(-f $_meter_series_file) {
@@ -1940,6 +1969,7 @@ sub webui_meter_series_start (@) {
  # before launching the series helper or two spotread instances can fight over
  # the same USB meter and produce intermittent bad/stale reads.
  &webui_meter_session_stop_only() if(&webui_meter_session_alive());
+ &webui_pattern_stop_guard_clear();
  # Parse request
  my $type="greyscale";
  $type=$1 if($body=~/"type"\s*:\s*"(\w+)"/);
@@ -3280,6 +3310,7 @@ sub webui_meter_lg_3d_autocal_stop (@) {
 }
 
 sub webui_meter_stop (@) {
+ &webui_pattern_stop_guard_set("meter_stop");
  &webui_meter_lg_3d_autocal_kill(1) if(&webui_meter_lg_3d_autocal_running());
  &webui_meter_lg_autocal_kill(1) if(&webui_meter_lg_autocal_running());
  # Stop the persistent session daemon first (graceful, then force).
@@ -6953,6 +6984,14 @@ sub webui_pattern (@) {
  my ($name)=$body=~/"name"\s*:\s*"([^"]+)"/;
  return '{"status":"error","message":"Missing pattern name"}' if(!$name);
  $name=~s/[^a-zA-Z0-9_ -]//g;
+ if($name eq "patch" && &webui_pattern_stop_guard_active()) {
+  if(&webui_pattern_stop_guard_allows_patch($body)) {
+   &webui_pattern_stop_guard_clear();
+  } else {
+   &log("WebUI: replacing stale patch request with idle pattern after meter stop");
+   $name="stop";
+  }
+ }
  my $signal_mode=&webui_pattern_signal_mode($body);
  my $max_luma=&webui_pattern_max_luma($body);
  my ($signal_range)=$body=~/"signal_range"\s*:\s*"?(\d+)"?/;
@@ -16817,7 +16856,7 @@ function meterBuildManualReadPayload(step,ctx){
 
 async function meterRunManualReadStep(step,ctx){
  const opts=ctx||{};
- if(step&&opts.displayFirst) await meterDisplayPatch(step,{fresh:false});
+ if(step&&opts.displayFirst) await meterDisplayPatch(step,{fresh:false,allowAfterStop:true});
  const label=document.getElementById('meterProgressLabel');
  if(label&&step) label.textContent=(step.name||step.ire+'%')+' (reading)';
  const result=await meterStartSingleRead(meterBuildManualReadPayload(step,opts));
@@ -17544,6 +17583,7 @@ async function meterStop(){
  }
  const hadContinuousStop=meterContinuousActive||meterContinuousSuspendedForLgWrite||meterManualPromptAwaiting;
  meterStopContinuous();
+ meterClearInteractiveSelection(true);
  if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
  const hadSeriesStop=meterSeriesRunning||meterSeriesAwaitingReady||meterSeriesSpectroSetupActive;
  meterSeriesRunning=false;
@@ -17574,6 +17614,9 @@ async function meterStop(){
   await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
  }catch(e){
  }finally{
+  try{
+   await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+  }catch(e){}
   meterActionPending=false;
   meterUpdateReadButtons();
  }
@@ -17659,6 +17702,7 @@ let meterActiveSeriesMaxLuma=null; // HDR/DV peak tied to active series snapshot
 let meterActiveSeriesDvMapMode=null; // DV absolute/relative mode tied to active series snapshot
 let meterActiveSeriesDvInterface=null; // DV standard/low-latency interface tied to active series snapshot
 let meterCurrentPatchStep=null; // currently displayed patch step object
+let meterPatternDisplayToken=0; // invalidates queued patch-display requests
 let meterSeriesRunning=false; // true when Read Series is actively running
 let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
 function meterUpdateDeltaEFormControl(){
@@ -17678,6 +17722,7 @@ function meterUpdateDeltaEFormControl(){
 }
 
 function meterClearInteractiveSelection(keepLiveReading){
+ meterPatternDisplayToken++;
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
  _selectedColorReadingName=null;
@@ -17727,7 +17772,7 @@ function meterSelectPatchFromInteraction(step,reading,opts){
  }
  if(resolvedReading) updateLiveReading(resolvedReading);
  else meterClearLiveReading(resolvedStep);
-	 meterDisplayPatch(resolvedStep,{fresh:false});
+	 meterDisplayPatch(resolvedStep,{fresh:false,allowAfterStop:true});
  document.getElementById('meterLiveReading').style.display='';
  meterHideProgressIfIdle();
  meterUpdateReadButtons();
@@ -18955,14 +19000,19 @@ function meterMeasurementPatchSignalRange(){
 }
 
 async function meterDisplayPatch(step,options){
+	 const displayToken=++meterPatternDisplayToken;
 	 if(!meterEnsureAppliedGeneratorSettings()) return;
 	 const freshStep=(options&&options.fresh===false)?step:(meterFreshSeriesStep(step)||step);
 	 if(!freshStep) return;
+	 if(displayToken!==meterPatternDisplayToken) return;
 	 meterCurrentPatchStep=freshStep;
 	 const psize=getMeterPatchSize();
  const signalRange=meterMeasurementPatchSignalRange();
+	 const payload=meterMeasurementSignalContext({name:'patch',r:freshStep.r,g:freshStep.g,b:freshStep.b,size:psize,input_max:meterStepInputMax(freshStep),signal_range:signalRange||undefined,pattern_session:String(displayToken)});
+	 if(options&&options.allowAfterStop) payload.allow_after_stop=true;
+	 if(displayToken!==meterPatternDisplayToken) return;
 	 await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(meterMeasurementSignalContext({name:'patch',r:freshStep.r,g:freshStep.g,b:freshStep.b,size:psize,input_max:meterStepInputMax(freshStep),signal_range:signalRange||undefined})),_quiet:true,_timeoutMs:10000});
+  body:JSON.stringify(payload),_quiet:true,_timeoutMs:10000});
 }
 
 let meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
