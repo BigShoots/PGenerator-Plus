@@ -7567,7 +7567,7 @@ index c0beaa2..2006738 100644
 +	if (!prop)
 +		return -ENOMEM;
 +	dev->mode_config.dovi_output_metadata_property = prop;
-+	
++
  	return 0;
  }
  
@@ -8043,7 +8043,7 @@ index b7ddf50..d5fa7b1 100644
 +		return false;
 +		
 +	oui = db[4] << 16 | db[3] << 8 | db[2];
-+	
++
 +	return oui == HDMI_DOLBY_OUI;
 +}
 +
@@ -8054,8 +8054,8 @@ index b7ddf50..d5fa7b1 100644
 +	unsigned char version, dm_version;
 +//	double xmin, xstep, ymin, ystep, lm;
 +	unsigned pq;
-+	
-+	
++
++
 +	len = cea_db_payload_len(db);
 +	version = (db[5] >> 5) & 0x07;
 +	connector->hdmi_dovi_vsvdb_info.dv_version = version;
@@ -8098,7 +8098,7 @@ index b7ddf50..d5fa7b1 100644
 +			connector->hdmi_dovi_vsvdb_info.display_primaries[0].x = db[9];// / 256.0;
 +
 +			connector->hdmi_dovi_vsvdb_info.display_primaries[0].y = db[10];// / 256.0;
-+	
++
 +			connector->hdmi_dovi_vsvdb_info.display_primaries[1].x = db[11];// / 256.0;
 +			connector->hdmi_dovi_vsvdb_info.display_primaries[1].y = db[12];// / 256.0;
 +			connector->hdmi_dovi_vsvdb_info.display_primaries[2].x = db[13];// / 256.0;
@@ -8277,9 +8277,9 @@ index b7ddf50..d5fa7b1 100644
 +
 +	if (cea_db_payload_len(db) == 0)
 +		return false;
-+	
++
 +	oui = db[4] << 16 | db[3] << 8 | db[2];
-+	
++
 +	return oui == HDMI_HDR10_PLUS_OUI;
 +}
 +
@@ -8321,7 +8321,7 @@ index b7ddf50..d5fa7b1 100644
 +
 +	if (cea_db_payload_len(db) == 0)
 +		return false;
-+	
++
 +	return true;
 +}
 +
@@ -8332,9 +8332,9 @@ index b7ddf50..d5fa7b1 100644
 +	u32 type_len;
 +	u32 type;
 +	u32 version;
-+	
++
 +	length = cea_db_payload_len(db);
-+	
++
 +	while (length >= 3) {
 +		type_len = db[2];
 +		type = db[3] | (db[4] << 8);
@@ -8443,6 +8443,7 @@ index b7ddf50..d5fa7b1 100644
 +	if (err < 0)
 +		return err;
 +
++	frame->oui = dovi_metadata->oui ? dovi_metadata->oui : HDMI_DOLBY_OUI;
 +	frame->dv_status = dovi_metadata->dv_status;
 +	frame->dv_interface = dovi_metadata->dv_interface;
 +
@@ -9823,10 +9824,10 @@ index 81ea1fb..d632260 100644
  	if (vc4_hdmi->variant->supports_hdr)
  		drm_connector_attach_hdr_output_metadata_property(connector);
 -
-+	
++
 +	if (vc4_hdmi->variant->supports_hdr)
 +		drm_connector_attach_dovi_output_metadata_property(connector);
-+	
++
  	drm_connector_attach_encoder(connector, encoder);
  
  	return 0;
@@ -9926,7 +9927,7 @@ index 81ea1fb..d632260 100644
 +	const struct drm_display_mode *mode = &crtc->state->adjusted_mode;
 +	union hdmi_infoframe frame;
 +	int ret;
-+	
++
 +	ret = drm_hdmi_vendor_infoframe_from_display_mode(&frame.vendor.hdmi,
 +						       connector, mode);
 +	if (ret < 0) {
@@ -9971,7 +9972,7 @@ index 81ea1fb..d632260 100644
 +	struct drm_connector_state *conn_state = connector->state;
 +	union hdmi_infoframe frame;
 +	int ret;
-+	
++
 +	if (!vc4_hdmi->variant->supports_hdr)
 +		return;
 +
@@ -12215,21 +12216,21 @@ index 7538b84..ac0c837 100644
  	HVS_PIXEL_FORMAT_AYUV444_RGB = 15,
  	HVS_PIXEL_FORMAT_RGBA1010102 = 16,
  	HVS_PIXEL_FORMAT_YCBCR_10BIT = 17,
-+	
++
 +	/* HACK */
 +	HVS_PIXEL_FORMAT_XRGB2101010 = 18,
-+	
++
 +	HVS_PIXEL_FORMAT_XBGR2101010 = 19,
-+	
++
 +	HVS_PIXEL_FORMAT_RGBX1010102 = 20,
-+	
++
 +	HVS_PIXEL_FORMAT_BGRX1010102 = 21,
 +	HVS_PIXEL_FORMAT_ARGB2101010 = 22,
-+	
++
 +	HVS_PIXEL_FORMAT_ABGR2101010 = 23,
-+	
++
 +//	HVS_PIXEL_FORMAT_RGBA1010102 = 24,
-+	
++
 +	HVS_PIXEL_FORMAT_BGRA1010102 = 24,
  };
  
@@ -12701,14 +12702,14 @@ index b7a1d6f..e1dab06 100644
 +
 +static int hdmi_dovi_vendor_infoframe_length(const struct hdmi_dovi_vendor_infoframe *frame)
 +{
-+		return 27;
++	return (frame->oui == HDMI_IEEE_OUI) ? 24 : 27;
 +} 
 +
 +static int hdmi_dovi_vendor_infoframe_check_only(const struct hdmi_dovi_vendor_infoframe *frame)
 +{
 +	if (frame->type != HDMI_INFOFRAME_TYPE_VENDOR ||
 +	    frame->version != 1 ||
-+	    frame->oui != HDMI_DOLBY_OUI)
++	    (frame->oui != HDMI_DOLBY_OUI && frame->oui != HDMI_IEEE_OUI))
 +		return -EINVAL;
 +
 +printk(KERN_ERR "hdmi driver :  %s:%d %d %d %06x %d %d \n", __FILE__, __LINE__, frame->type, frame->version, frame->oui, frame->length, frame->dv_status);
@@ -12741,6 +12742,16 @@ index b7a1d6f..e1dab06 100644
 +	return hdmi_dovi_vendor_infoframe_check_only(frame);
 +}
 +EXPORT_SYMBOL(hdmi_dovi_vendor_infoframe_check);
++
++static u8 hdmi_dovi_standard_mode_byte(u8 aux_runmode)
++{
++	if (aux_runmode == 2)
++		return 0x01;
++	if (aux_runmode == 1)
++		return 0x02;
++
++	return 0x00;
++}
 +
 +/**
 + * hdmi_dovi_vendor_infoframe_pack_only() - write a HDMI Dobly vendor infoframe to binary buffer
@@ -12779,12 +12790,14 @@ index b7a1d6f..e1dab06 100644
 +	ptr[2] = frame->length;
 +	ptr[3] = 0; /* checksum */
 +
-+	/* HDMI OUI *///0x00d046
-+	ptr[4] = 0x46;
-+	ptr[5] = 0xd0;
-+	ptr[6] = 0x00;
++	ptr[4] = frame->oui & 0xff;
++	ptr[5] = (frame->oui >> 8) & 0xff;
++	ptr[6] = (frame->oui >> 16) & 0xff;
 +
-+
++	if (frame->oui == HDMI_IEEE_OUI) {
++		ptr[7] = 0x20;
++		ptr[8] = hdmi_dovi_standard_mode_byte(frame->aux_runmode);
++	} else {
 +		ptr[7] = frame->dv_status << 0x01;	/* dv status */
 +		ptr[7] |= frame->dv_interface; /* dv interface */
 +		ptr[8] = frame->backlight_metadata; /* backlight_metadata */
@@ -12793,6 +12806,7 @@ index b7a1d6f..e1dab06 100644
 +
 +		ptr[11] = frame->aux_version;	/* aux version */
 +		ptr[12] = frame->aux_debug; /* aux debug */
++	}
 +
 +
 +
@@ -12850,11 +12864,12 @@ index b7a1d6f..e1dab06 100644
  		return -EINVAL;
 +	printk(KERN_ERR "hdmi driver : after IEEE dolby %s:%d\n", __FILE__, __LINE__);
 +
++	if (frame->any.oui == HDMI_DOLBY_OUI ||
++	    (frame->any.oui == HDMI_IEEE_OUI && frame->any.length > 6))
++		return hdmi_dovi_vendor_infoframe_check(&frame->dovi);
++
 +	if (frame->any.oui == HDMI_IEEE_OUI)
 +		return hdmi_vendor_infoframe_check(&frame->hdmi);
-+	
-+	if (frame->any.oui == HDMI_DOLBY_OUI)
-+		return hdmi_dovi_vendor_infoframe_check(&frame->dovi);
 +	printk(KERN_ERR "hdmi driver : after dolby check dolby %s:%d\n", __FILE__, __LINE__);
  
 -	return hdmi_vendor_infoframe_check(&frame->hdmi);
@@ -12876,12 +12891,13 @@ index b7a1d6f..e1dab06 100644
 +	printk(KERN_ERR "hdmi driver : after check %s:%d\n", __FILE__, __LINE__);
  
 -	return hdmi_vendor_infoframe_pack_only(&frame->hdmi, buffer, size);
-+	if (frame->any.oui == HDMI_IEEE_OUI) 
-+		return hdmi_vendor_infoframe_pack_only(&frame->hdmi, buffer, size);
-+printk(KERN_ERR "hdmi driver : after IEEE %s:%d\n", __FILE__, __LINE__);
-+	
-+	if (frame->any.oui == HDMI_DOLBY_OUI)
++	if (frame->any.oui == HDMI_DOLBY_OUI ||
++	    (frame->any.oui == HDMI_IEEE_OUI && frame->any.length > 6))
 +		return hdmi_dovi_vendor_infoframe_pack_only(&frame->dovi, buffer, size);
++printk(KERN_ERR "hdmi driver : after IEEE %s:%d\n", __FILE__, __LINE__);
++
++	if (frame->any.oui == HDMI_IEEE_OUI)
++		return hdmi_vendor_infoframe_pack_only(&frame->hdmi, buffer, size);
 +	printk(KERN_ERR "hdmi driver : after dolby %s:%d\n", __FILE__, __LINE__);
 +
 +	return 0;
@@ -12978,7 +12994,7 @@ index b7a1d6f..e1dab06 100644
 +	int ret;
 +
 +	struct hdmi_dovi_vendor_infoframe *dvf = &frame->dovi;
-+	
++
 +	if (size < HDMI_INFOFRAME_HEADER_SIZE)
 +		return -EINVAL;
 +
@@ -13045,11 +13061,11 @@ index b7a1d6f..e1dab06 100644
 +	int ret;
 +
 +
-+	
++
 +	if(frame->any.oui == HDMI_IEEE_OUI)
 +
 +		ret = hdmi_vendor_infoframe_unpack_only(frame, buffer, size);
-+	
++
 +	if (frame->any.oui == HDMI_DOLBY_OUI) 
 +   
 +		ret = hdmi_dovi_vendor_infoframe_unpack_only(frame, buffer, size);
@@ -13159,7 +13175,7 @@ index 42cbacd..ea2a634 100644
  	 * and the connector bpc limitations obtained from edid.
  	 */
  	u8 max_bpc;
-+	
++
 +	/**
 +	 * @active_bpc: Read only property set by the GPU driver to the actually
 +	 * applied bit depth of the pixels after evaluating all hardware
@@ -13200,7 +13216,7 @@ index 42cbacd..ea2a634 100644
  	 * driven out of the connector.
  	 */
  	struct drm_property *max_bpc_property;
-+	
++
 +	/**
 +	 * @active_bpc_property: Default connector property for the active bpc
 +	 * to be driven out of the connector.
@@ -13222,10 +13238,10 @@ index 42cbacd..ea2a634 100644
 +
 +	/** @hdr_dynamic_metadata_block: HDR Dynamic Metadata Information read from sink */
 +	struct hdr_dynamic_metadata_block hdr_dynamic_metadata_block; 
-+	
++
 +	/** @hdr10_plus_vsvdb: HDR10 Plus VSVDB Information read from sink */
 +	struct hdr10_plus_vsvdb hdr10_plus_vsvdb; 
-+	
++
 +	/** @hdmi_dovi_vendor_infoframe: Dolby Vision VSDB information read from sink */
 +	struct hdmi_dovi_vsvdb_info hdmi_dovi_vsvdb_info;
 +
@@ -13324,7 +13340,7 @@ index a18f73e..a2937c6 100644
 +	 * on Dolby Vision content
 +	 */
 +	struct drm_property *dovi_output_metadata_property;
-+	
++
 +	/**
  	 * @content_protection_property: DRM ENUM property for content
  	 * protection. See drm_connector_attach_content_protection_property().
@@ -13434,7 +13450,7 @@ index c8ec982..fbbe5f2 100644
  };
  
  struct hdmi_spd_infoframe {
-+	
++
  	enum hdmi_infoframe_type type;
  	unsigned char version;
  	unsigned char length;
