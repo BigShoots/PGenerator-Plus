@@ -2123,14 +2123,12 @@ if($signal_mode eq "dv") {
  my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
 my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv_transport) : 0;
- my $dv_tunnel_gamma=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 3.8 : 2.2;
+ my $dv_tunnel_gamma=3.8;
  my $target_linear_to_signal=sub {
   my ($v)=@_;
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
   if($signal_mode eq "dv") {
-   # DV absolute needs a steeper tunnel response than DV relative to land the
-   # live panel chromaticities on the requested saturation axis.
    return $v**(1/$dv_tunnel_gamma);
   }
   if($target_gamma eq "srgb") {
@@ -2667,7 +2665,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     if($signal_mode eq "hdr10") {
      return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
     }
-   if($signal_mode eq "dv" && $dv_map_mode eq "1") {
+   if($signal_mode eq "dv") {
     return int($min_code + (($linear>0)?($linear**(1/$dv_tunnel_gamma)):0)*$span_code + .5);
    }
     return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
@@ -12118,12 +12116,20 @@ function meterSignalFractionFromCode(code){
  return Math.max(0,Math.min(1,((code||0)-min)/span));
 }
 
-function meterDvTunnelGamma(){
+function meterDvPatchTunnelGamma(){
+ return 3.8;
+}
+
+function meterDvTargetGamma(){
  return meterChartIsDv() && meterDvMapModeValue()==='1' ? 3.8 : 2.2;
 }
 
+function meterDvTunnelGamma(){
+ return meterDvTargetGamma();
+}
+
 function meterDvSaturationTunnelGamma(colorName){
- return meterDvTunnelGamma();
+ return meterDvPatchTunnelGamma();
 }
 
 function meterDecodeSignalChannel(code){
@@ -12202,10 +12208,7 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak, code){
 function meterDvRelativeChartTargetLuminance(ire, peak, code){
  const targetPeak=(peak>0)?peak:100;
  const frac=clampNum((ire||0)/100,0,1);
- const signal=(code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
-  ? meterGreySignalFractionFromCode(Number(code))
-  : frac;
- return Math.min(targetPeak,gammaEotf(signal,2.2)*targetPeak);
+ return Math.min(targetPeak,gammaEotf(frac,2.2)*targetPeak);
 }
 
 function meterCodeFromSignalPercent(percent){
@@ -12300,7 +12303,7 @@ function meterCodeFromSignalPercentWithOptions(percent,opts){
  const clamped=clampNum(percent,0,100)/100;
  const range=meterGreyCodeRange();
  if(meterChartIsDv()){
-  const encoded=clamped>0?Math.pow(clamped,1/meterDvTunnelGamma()):0;
+  const encoded=clamped>0?Math.pow(clamped,1/meterDvPatchTunnelGamma()):0;
   return Math.round(range.min+encoded*range.span);
  }
  return Math.round(range.min+clamped*range.span);
@@ -12676,13 +12679,13 @@ function meterColorLabWhite(){
 }
 
 // Forward/inverse of the active SDR/DV target signal model used by the meter
-// series builders. DV relative keeps the classic 2.2 tunnel. DV absolute
-// needs a steeper inverse to match the live panel chromaticities.
+// series builders. DV patch codes use a fixed tunneled ramp; chart targets can
+// still analyze Relative against gamma 2.2.
 function meterTargetLinearToSignal(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
  if(meterChartIsDv()){
-  return Math.pow(c,1/meterDvTunnelGamma());
+  return Math.pow(c,1/meterDvPatchTunnelGamma());
  }
  if(meterChartIsHlg()) return hlgOetf(c);
  const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
@@ -12694,7 +12697,7 @@ function meterTargetSignalToLinear(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
  if(meterChartIsDv()){
-  return Math.pow(c,meterDvTunnelGamma());
+  return Math.pow(c,meterDvPatchTunnelGamma());
  }
  if(meterChartIsHlg()){
   const peak=meterChartHdrPeak();
@@ -14109,8 +14112,8 @@ function meterGreyTargetSignal(ire,code){
 
 function meterGreyInputFraction(ire,code){
  const nominal=Math.max(0,Math.min(1,(ire||0)/100));
+ if(meterChartIsDv()&&meterDvMapModeValue()==='2') return nominal;
  if(code!=null && meterChartIsHdr()) return meterGreySignalFractionFromCode(code);
- if(meterChartIsDv()&&meterDvMapModeValue()==='2') return meterGreyStimulusFraction(ire);
  return nominal;
 }
 
