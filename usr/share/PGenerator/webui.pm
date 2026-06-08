@@ -2037,8 +2037,44 @@ sub webui_meter_series_start (@) {
  $transport_signal_range=$1 if($body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/);
  my $series_color_format=0;
  $series_color_format=$1 if($body=~/"color_format"\s*:\s*"?(\d+)"?/);
- my $patch_insert=0;
- $patch_insert=1 if($body=~/"patch_insert"\s*:\s*true/i);
+my $patch_insert=0;
+$patch_insert=1 if($body=~/"patch_insert"\s*:\s*true/i);
+my $pattern_delay_ms=0;
+$pattern_delay_ms=$1 if($body=~/"pattern_delay_ms"\s*:\s*(\d+)/);
+$pattern_delay_ms=0 if($pattern_delay_ms < 0);
+$pattern_delay_ms=120000 if($pattern_delay_ms > 120000);
+my $patch_insert_patch_enabled=0;
+if($body=~/"patch_insert_patch_enabled"\s*:/i) {
+ $patch_insert_patch_enabled=1 if($body=~/"patch_insert_patch_enabled"\s*:\s*true/i);
+} else {
+ $patch_insert_patch_enabled=$patch_insert ? 1 : 0;
+}
+my $patch_insert_patch_every=1;
+$patch_insert_patch_every=$1 if($body=~/"patch_insert_patch_every"\s*:\s*(\d+)/);
+$patch_insert_patch_every=1 if($patch_insert_patch_every < 1);
+$patch_insert_patch_every=999 if($patch_insert_patch_every > 999);
+my $patch_insert_patch_duration_ms=1000;
+$patch_insert_patch_duration_ms=$1 if($body=~/"patch_insert_patch_duration_ms"\s*:\s*(\d+)/);
+$patch_insert_patch_duration_ms=0 if($patch_insert_patch_duration_ms < 0);
+$patch_insert_patch_duration_ms=120000 if($patch_insert_patch_duration_ms > 120000);
+my $patch_insert_patch_level=10;
+$patch_insert_patch_level=$1 if($body=~/"patch_insert_patch_level"\s*:\s*([0-9.]+)/);
+$patch_insert_patch_level=0 if($patch_insert_patch_level < 0);
+$patch_insert_patch_level=100 if($patch_insert_patch_level > 100);
+my $patch_insert_time_enabled=0;
+$patch_insert_time_enabled=1 if($body=~/"patch_insert_time_enabled"\s*:\s*true/i);
+my $patch_insert_time_frequency_ms=5000;
+$patch_insert_time_frequency_ms=$1 if($body=~/"patch_insert_time_frequency_ms"\s*:\s*(\d+)/);
+$patch_insert_time_frequency_ms=1 if($patch_insert_time_frequency_ms < 1);
+$patch_insert_time_frequency_ms=120000 if($patch_insert_time_frequency_ms > 120000);
+my $patch_insert_time_duration_ms=5000;
+$patch_insert_time_duration_ms=$1 if($body=~/"patch_insert_time_duration_ms"\s*:\s*(\d+)/);
+$patch_insert_time_duration_ms=0 if($patch_insert_time_duration_ms < 0);
+$patch_insert_time_duration_ms=120000 if($patch_insert_time_duration_ms > 120000);
+my $patch_insert_time_level=25;
+$patch_insert_time_level=$1 if($body=~/"patch_insert_time_level"\s*:\s*([0-9.]+)/);
+$patch_insert_time_level=0 if($patch_insert_time_level < 0);
+$patch_insert_time_level=100 if($patch_insert_time_level > 100);
  my $refresh_rate="";
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
  my $measurement_meter_port="";
@@ -2955,7 +2991,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -3473,7 +3509,9 @@ sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
-  display_type target_gamut delay delay_user_set delay_explicit patch_size patch_insert disable_aio
+	 display_type target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
+	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
+	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
@@ -7459,11 +7497,18 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-chart-inline-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.25)}
 .meter-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);text-transform:none !important;letter-spacing:0 !important;cursor:pointer;line-height:1.25}
 .meter-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
-.meter-note-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;line-height:1.25}
-.meter-note-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
-.meter-toggle-row{display:flex;align-items:flex-start;gap:8px 14px;flex-wrap:wrap;margin-top:6px}
-.meter-toggle-row label{max-width:100%}
-.meter-field-label{display:inline-flex;align-items:flex-start;gap:6px;flex-wrap:wrap}
+	.meter-note-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;line-height:1.25}
+	.meter-note-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
+	.meter-toggle-row{display:flex;align-items:flex-start;gap:8px 14px;flex-wrap:wrap;margin-top:6px}
+	.meter-toggle-row label{max-width:100%}
+	.meter-pattern-insert-block{display:flex;flex-direction:column;gap:4px;max-width:360px}
+	.meter-pattern-insert-grid{display:grid;grid-template-columns:repeat(4,minmax(58px,1fr));gap:4px 6px;align-items:end;max-width:360px}
+	.meter-pattern-insert-grid label{display:flex;flex-direction:column;gap:2px;font-size:.58rem;color:var(--text2);text-transform:uppercase;letter-spacing:.35px;white-space:normal !important}
+	.meter-pattern-insert-grid label.meter-toggle{flex-direction:row;align-items:center;min-height:28px;color:var(--text);font-size:.68rem;text-transform:none !important;letter-spacing:0 !important}
+	.meter-pattern-insert-grid input[type="text"],
+	.meter-pattern-insert-grid input[type="number"]{width:100%;min-width:0;min-height:28px;padding:4px 6px;font-size:.72rem}
+	.meter-pattern-insert-grid span{font-size:.55rem;color:var(--text2);text-transform:uppercase;letter-spacing:.35px}
+	.meter-field-label{display:inline-flex;align-items:flex-start;gap:6px;flex-wrap:wrap}
 .meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%}
 .meter-xyz-action-row{display:none;gap:8px;flex-wrap:wrap;padding-left:22px}
 .meter-xyz-action-row.visible{display:flex}
@@ -7928,11 +7973,23 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         <button id="customCcssPanelBtn" class="btn btn-sm btn-secondary custom-ccss-panel-btn" onclick="meterOpenCustomCcssEditor()">Open Editor</button>
        </div>
     </div>
-    <div class="meter-toggle-row">
-     <label class="meter-note-toggle" title="Insert a neutral patch between measurement patterns to stabilize OLED ABL">
-      <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
-     </label>
-      <div class="meter-xyz-toggle-block">
+	    <div class="meter-toggle-row">
+	     <div class="meter-pattern-insert-block">
+	      <label class="meter-note-toggle" title="Insert neutral patches between measurement patterns to stabilize display response">
+	       <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
+	      </label>
+	      <div class="meter-pattern-insert-grid">
+	       <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertTimeEnabled" checked> Time</label>
+	       <label>Frequency <input id="meterPatchInsertTimeFrequency" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
+	       <label>Duration <input id="meterPatchInsertTimeDuration" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
+	       <label>Level <input id="meterPatchInsertTimeLevel" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
+	       <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertPatchEnabled" checked> Patch</label>
+	       <label>Patches <input id="meterPatchInsertPatchEvery" type="number" min="1" max="999" step="1" value="1"></label>
+	       <label>Duration <input id="meterPatchInsertPatchDuration" type="text" value="1" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1))"><span>sec</span></label>
+	       <label>Level <input id="meterPatchInsertPatchLevel" type="number" min="0" max="100" step="1" value="10"><span>%</span></label>
+	      </div>
+	     </div>
+	      <div class="meter-xyz-toggle-block">
        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
        <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
         <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
@@ -7992,13 +8049,20 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
     </label>
    </div>
-   <div class="field field-delay">
-    <label>Meter Delay</label>
-    <div class="meter-inline-value">
-     <input id="meterDelay" type="text" value="1.0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied before each meter reading" aria-label="Meter Delay in seconds" oninput="meterDelaySyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1.0))">
-     <span class="meter-inline-unit">sec</span>
-    </div>
-   </div>
+	   <div class="field field-delay">
+	    <label>Meter Delay</label>
+	    <div class="meter-inline-value">
+	     <input id="meterDelay" type="text" value="1.0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied before each meter reading" aria-label="Meter Delay in seconds" oninput="meterDelaySyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1.0))">
+	     <span class="meter-inline-unit">sec</span>
+	    </div>
+	   </div>
+	   <div class="field field-delay">
+	    <label>Pattern Delay</label>
+	    <div class="meter-inline-value">
+	     <input id="meterPatternDelay" type="text" value="0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied after each pattern is displayed and before meter delay" aria-label="Pattern Delay in seconds" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,0))">
+	     <span class="meter-inline-unit">sec</span>
+	    </div>
+	   </div>
   <div class="field field-patch">
     <label>Patch Size</label>
     <select id="meterPatchSize">
@@ -9252,6 +9316,46 @@ function applyMeterTargetGamutDefault(force){
  if(force || !g.value || g.value==='auto') g.value=meterDefaultTargetGamutForMode();
 }
 
+function meterPatternInsertionDefaultsForMode(){
+ const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
+ const hdrLike=sm==='hdr10'||sm==='hlg'||sm==='dv';
+ return {
+  timeEnabled:true,
+  timeFrequency:hdrLike?5:45,
+  timeDuration:5,
+  timeLevel:25,
+  patchEnabled:hdrLike,
+  patchEvery:1,
+  patchDuration:1,
+  patchLevel:10
+ };
+}
+
+function meterApplyPatternInsertionDefaults(force){
+ const d=meterPatternInsertionDefaultsForMode();
+ const setChkIf=(id,value)=>{ const el=document.getElementById(id); if(el&&(force||el.dataset.defaulted==='1'||el.dataset.defaulted==null)){ el.checked=!!value; el.dataset.defaulted='1'; } };
+ const setValIf=(id,value)=>{ const el=document.getElementById(id); if(el&&(force||el.dataset.defaulted==='1'||el.dataset.defaulted==null)){ el.value=meterDelayFormatSeconds(value); el.dataset.defaulted='1'; } };
+ setChkIf('meterPatchInsertTimeEnabled',d.timeEnabled);
+ setValIf('meterPatchInsertTimeFrequency',d.timeFrequency);
+ setValIf('meterPatchInsertTimeDuration',d.timeDuration);
+ setValIf('meterPatchInsertTimeLevel',d.timeLevel);
+ setChkIf('meterPatchInsertPatchEnabled',d.patchEnabled);
+ setValIf('meterPatchInsertPatchEvery',d.patchEvery);
+ setValIf('meterPatchInsertPatchDuration',d.patchDuration);
+ setValIf('meterPatchInsertPatchLevel',d.patchLevel);
+}
+
+function meterPatternInsertionControlIds(){
+ return [
+  'meterPatchInsertTimeEnabled','meterPatchInsertTimeFrequency','meterPatchInsertTimeDuration','meterPatchInsertTimeLevel',
+  'meterPatchInsertPatchEnabled','meterPatchInsertPatchEvery','meterPatchInsertPatchDuration','meterPatchInsertPatchLevel'
+ ];
+}
+
+function meterMarkPatternInsertionControlsUserSet(){
+ meterPatternInsertionControlIds().forEach(id=>{ const el=document.getElementById(id); if(el) el.dataset.defaulted='0'; });
+}
+
 function meterDvAutoTargetGamma(){
  return meterDvMapModeValue()==='2' ? '2.2' : 'st2084';
 }
@@ -9314,10 +9418,11 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('primaries','1');
   setVal('max_bpc',dvTransport.max_bpc);
   setVal('rgb_quant_range','2');
- }
- applyMeterTargetGamutDefault(true);
- applyMeterTargetGammaDefault();
- updateModeVisibility();
+	 }
+	 applyMeterTargetGamutDefault(true);
+	 applyMeterTargetGammaDefault();
+	 meterApplyPatternInsertionDefaults(false);
+	 updateModeVisibility();
  updateDropdowns();
  meterRefreshActiveSeriesCharts();
  saveMeterSettings();
@@ -22621,7 +22726,7 @@ function meterFullAutoCalTouchupTargetY(){
 	    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
 	    lg_autocal_26_anchor_predrive:false,
 	    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-	    patch_insert:document.getElementById('meterPatchInsert').checked,
+	    ...meterPatternInsertionPayload(),
 	    target_delta_e:ctx.target,
 	    delta_e_formula:deltaEFormula,
 	    target_luminance:beforeTargetY,
@@ -22777,7 +22882,7 @@ function meterFullAutoCalTouchupTargetY(){
    lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
    lg_autocal_26_anchor_predrive:false,
    lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-   patch_insert:document.getElementById('meterPatchInsert').checked,
+   ...meterPatternInsertionPayload(),
 	   target_delta_e:ctx.target,
 	   delta_e_formula:'deitp',
 	   target_luminance:afterTargetY,
@@ -22915,7 +23020,7 @@ function meterFullAutoCalTouchupTargetY(){
     lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-    patch_insert:document.getElementById('meterPatchInsert').checked,
+    ...meterPatternInsertionPayload(),
     target_delta_e:target,
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
@@ -23069,7 +23174,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-    patch_insert:document.getElementById('meterPatchInsert').checked,
+    ...meterPatternInsertionPayload(),
     target_delta_e:target,
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
@@ -23598,7 +23703,7 @@ async function meterAutoCalConfirmAndStart(){
     lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
-    patch_insert:document.getElementById('meterPatchInsert').checked,
+    ...meterPatternInsertionPayload(),
     target_delta_e:target,
     delta_e_formula:deltaEFormula,
     target_luminance:hdrWorkflow?undefined:targetY,
@@ -23944,7 +24049,7 @@ async function meterStartLg3dAutoCal(options){
   refresh_rate:getMeterRefreshRate()||undefined,
  require_device_ready:false,
  requested_signal_mode:signalMode,
- patch_insert:document.getElementById('meterPatchInsert').checked,
+ ...meterPatternInsertionPayload(),
  upload:upload,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
@@ -24105,7 +24210,7 @@ async function meterRunSeries(){
  };
  try{
 	  const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-		   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,patch_insert:document.getElementById('meterPatchInsert').checked,refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+		   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
 	  if(!r||r.status!=='started'){
    if(await recoverStartedSeries()) return true;
 	   toast(r&&r.message?r.message:'Failed to start series',true);
@@ -28395,9 +28500,61 @@ function meterDelaySyncInput(el){
  el.value=meterDelaySanitize(el.value);
 }
 
+function meterSecondsSyncInput(el){
+ if(!el) return;
+ el.value=meterDelaySanitize(el.value);
+}
+
 function meterDelayMs(){
  const el=document.getElementById('meterDelay');
  return Math.round(meterDelayParseSeconds(el?el.value:'',1.0)*1000);
+}
+
+function meterSecondsInputMs(id,fallbackSeconds){
+ const el=document.getElementById(id);
+ return Math.round(meterDelayParseSeconds(el?el.value:'',fallbackSeconds)*1000);
+}
+
+function meterSecondsLoadValue(id,raw,fallbackSeconds){
+ const el=document.getElementById(id);
+ if(!el) return;
+ const fallback=(fallbackSeconds!=null)?fallbackSeconds:0;
+ if(raw==null||raw===''){
+  el.value=meterDelayFormatSeconds(fallback);
+  return;
+ }
+ const numeric=Number(raw);
+ if(Number.isFinite(numeric)&&numeric>=0){
+  const seconds=numeric>99?(numeric/1000):numeric;
+  el.value=meterDelayFormatSeconds(seconds,fallback);
+  return;
+ }
+ el.value=meterDelayFormatSeconds(meterDelayParseSeconds(raw,fallback),fallback);
+}
+
+function meterNumberInput(id,fallback,min,max){
+ const el=document.getElementById(id);
+ let value=Number(el?el.value:'');
+ if(!Number.isFinite(value)) value=fallback;
+ if(min!=null&&value<min) value=min;
+ if(max!=null&&value>max) value=max;
+ return value;
+}
+
+function meterPatternInsertionPayload(){
+ const master=document.getElementById('meterPatchInsert');
+ return {
+  pattern_delay_ms:meterSecondsInputMs('meterPatternDelay',0),
+  patch_insert:!!(master&&master.checked),
+  patch_insert_patch_enabled:!!(master&&master.checked&&document.getElementById('meterPatchInsertPatchEnabled')&&document.getElementById('meterPatchInsertPatchEnabled').checked),
+  patch_insert_patch_every:Math.round(meterNumberInput('meterPatchInsertPatchEvery',1,1,999)),
+  patch_insert_patch_duration_ms:meterSecondsInputMs('meterPatchInsertPatchDuration',1),
+  patch_insert_patch_level:meterNumberInput('meterPatchInsertPatchLevel',10,0,100),
+  patch_insert_time_enabled:!!(master&&master.checked&&document.getElementById('meterPatchInsertTimeEnabled')&&document.getElementById('meterPatchInsertTimeEnabled').checked),
+  patch_insert_time_frequency_ms:meterSecondsInputMs('meterPatchInsertTimeFrequency',5),
+  patch_insert_time_duration_ms:meterSecondsInputMs('meterPatchInsertTimeDuration',5),
+  patch_insert_time_level:meterNumberInput('meterPatchInsertTimeLevel',25,0,100)
+ };
 }
 
 function meterDelayLoadValue(raw,explicit){
@@ -28457,14 +28614,23 @@ function saveMeterSettings(){
   profiling_meter_port:meterProfilingPort,
   simulate_spectro:chk('meterSimulateSpectro'),
   target_gamut:val('meterTargetGamut','auto')||'auto',
-  delay:String(meterDelayMs()),
-  delay_user_set:!!meterDelayExplicit,
-  delay_explicit:!!meterDelayExplicit,
-  patch_size:val('meterPatchSize'),
-  grey_two_point_low:val('meterTwoPointLow',String(METER_TWO_POINT_DEFAULTS.low)),
-  grey_two_point_high:val('meterTwoPointHigh',String(METER_TWO_POINT_DEFAULTS.high)),
-  patch_insert:chk('meterPatchInsert'),
-  refresh_rate:val('meterRefreshRate'),
+	  delay:String(meterDelayMs()),
+	  delay_user_set:!!meterDelayExplicit,
+	  delay_explicit:!!meterDelayExplicit,
+	  pattern_delay:String(meterSecondsInputMs('meterPatternDelay',0)),
+	  patch_size:val('meterPatchSize'),
+	  grey_two_point_low:val('meterTwoPointLow',String(METER_TWO_POINT_DEFAULTS.low)),
+	  grey_two_point_high:val('meterTwoPointHigh',String(METER_TWO_POINT_DEFAULTS.high)),
+	  patch_insert:chk('meterPatchInsert'),
+	  patch_insert_patch_enabled:chk('meterPatchInsertPatchEnabled'),
+	  patch_insert_patch_every:val('meterPatchInsertPatchEvery','1')||'1',
+	  patch_insert_patch_duration:String(meterSecondsInputMs('meterPatchInsertPatchDuration',1)),
+	  patch_insert_patch_level:val('meterPatchInsertPatchLevel','10')||'10',
+	  patch_insert_time_enabled:chk('meterPatchInsertTimeEnabled'),
+	  patch_insert_time_frequency:String(meterSecondsInputMs('meterPatchInsertTimeFrequency',5)),
+	  patch_insert_time_duration:String(meterSecondsInputMs('meterPatchInsertTimeDuration',5)),
+	  patch_insert_time_level:val('meterPatchInsertTimeLevel','25')||'25',
+	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
   // Color-science selections
@@ -28545,14 +28711,28 @@ async function loadMeterSettings(){
   document.getElementById('meterTargetGamut').value=(savedTargetGamut==='customd65')?'bt709':savedTargetGamut;
   if(savedTargetGamut==='customd65'&&s.custom_d65_enabled==null) s.custom_d65_enabled=true;
  }
- applyMeterTargetGamutDefault(false);
- meterDelayLoadValue(s.delay,s.delay_user_set===true||s.delay_explicit===true);
- if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
+	 applyMeterTargetGamutDefault(false);
+	 meterDelayLoadValue(s.delay,s.delay_user_set===true||s.delay_explicit===true);
+	 meterApplyPatternInsertionDefaults(true);
+	 meterSecondsLoadValue('meterPatternDelay',s.pattern_delay,0);
+	 if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
  setVal('meterTwoPointLow', s.grey_two_point_low, String(METER_TWO_POINT_DEFAULTS.low));
  setVal('meterTwoPointHigh', s.grey_two_point_high, String(METER_TWO_POINT_DEFAULTS.high));
  meterSyncTwoPointInputs();
- if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
- if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
+	 if(s.patch_insert!=null) document.getElementById('meterPatchInsert').checked=!!s.patch_insert;
+		 setChk('meterPatchInsertPatchEnabled', s.patch_insert_patch_enabled);
+		 setVal('meterPatchInsertPatchEvery', s.patch_insert_patch_every, '1');
+		 if(s.patch_insert_patch_duration!=null) meterSecondsLoadValue('meterPatchInsertPatchDuration',s.patch_insert_patch_duration,1);
+		 setVal('meterPatchInsertPatchLevel', s.patch_insert_patch_level, '10');
+		 setChk('meterPatchInsertTimeEnabled', s.patch_insert_time_enabled);
+		 if(s.patch_insert_time_frequency!=null) meterSecondsLoadValue('meterPatchInsertTimeFrequency',s.patch_insert_time_frequency,5);
+		 if(s.patch_insert_time_duration!=null) meterSecondsLoadValue('meterPatchInsertTimeDuration',s.patch_insert_time_duration,5);
+		 setVal('meterPatchInsertTimeLevel', s.patch_insert_time_level, '25');
+	 if(s.patch_insert_patch_enabled!=null||s.patch_insert_patch_every!=null||s.patch_insert_patch_duration!=null||s.patch_insert_patch_level!=null||
+	    s.patch_insert_time_enabled!=null||s.patch_insert_time_frequency!=null||s.patch_insert_time_duration!=null||s.patch_insert_time_level!=null){
+	  meterMarkPatternInsertionControlsUserSet();
+	 }
+	 if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
  // Color-science selections (server values win)
  const greyMode=meterNormalizeSavedGreyRefMode(s.grey_ref_mode,s.incl_lum);
  setVal('meterGreyRefMode', greyMode);
@@ -28600,10 +28780,12 @@ async function loadMeterSettings(){
  meterSetSeriesTab(meterSeriesTab,true);
 }
 // Add change listeners for auto-save
-['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatchSize','meterRefreshRate',
- 'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
- 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
- 'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33','meterSimulateSpectro'].forEach(id=>{
+['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatternDelay','meterPatchSize','meterRefreshRate',
+	 'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
+	 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
+	 'meterPatchInsertPatchEvery','meterPatchInsertPatchDuration','meterPatchInsertPatchLevel',
+	 'meterPatchInsertTimeFrequency','meterPatchInsertTimeDuration','meterPatchInsertTimeLevel',
+	 'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33','meterSimulateSpectro'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -28632,9 +28814,13 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await saveMeterSettings();
  await meterCheckStatus();
 });
-['meterPatchInsert','meterXyzMatrixEnabled','meterCustomD65Enabled','meterIncludeLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
+['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterXyzMatrixEnabled','meterCustomD65Enabled','meterIncludeLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
+});
+meterPatternInsertionControlIds().forEach(id=>{
+ const el=document.getElementById(id);
+ if(el) el.addEventListener('change',meterMarkPatternInsertionControlsUserSet);
 });
 const meterGreyImportInput=document.getElementById('meterGreyProfileImportInput');
 if(meterGreyImportInput) meterGreyImportInput.addEventListener('change',meterImportGreyProfile);
