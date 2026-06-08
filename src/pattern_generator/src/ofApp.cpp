@@ -59,10 +59,7 @@ inline bool usesDolbyVisionTransport() {
 }
 
 inline bool usesLowLatencyDoVi422Transport() {
-	return ofxRPI4Window::isHDR &&
-		ofxRPI4Window::isDoVi &&
-		!ofxRPI4Window::is_std_DoVi &&
-		ofxRPI4Window::avi_info.output_format == 2;
+	return false;
 }
 }
 
