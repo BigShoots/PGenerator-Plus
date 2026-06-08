@@ -90,11 +90,13 @@ const context = {
     return state.rgb_quant_range === '1' ? 219 : 255;
   },
   meterGreyCodeRange() {
-    return { min: state.rgb_quant_range === '1' ? 16 : 0, span: state.rgb_quant_range === '1' ? 219 : 255 };
+    return state.signal_mode === 'dv'
+      ? { min: 16, span: 219 }
+      : { min: state.rgb_quant_range === '1' ? 16 : 0, span: state.rgb_quant_range === '1' ? 219 : 255 };
   },
   meterGreySignalFractionFromCode(code) {
-    const min = state.rgb_quant_range === '1' ? 16 : 0;
-    const span = state.rgb_quant_range === '1' ? 219 : 255;
+    const min = state.signal_mode === 'dv' || state.rgb_quant_range === '1' ? 16 : 0;
+    const span = state.signal_mode === 'dv' || state.rgb_quant_range === '1' ? 219 : 255;
     return Math.max(0, Math.min(1, ((Number(code) || 0) - min) / span));
   },
   meterDvRelativeSt2084UsesLegalRange() {
@@ -158,35 +160,20 @@ context.window = context;
 vm.createContext(context);
 vm.runInContext(code, context);
 
-const expected45 = Math.round(0.45 * 255);
-assert.strictEqual(context.meterCodeFromSignalPercent(45), expected45, 'DV absolute 45% greyscale should emit full-range RGB tunnel level');
-assert(Math.abs(context.meterGreyStimulusFraction(45) - (expected45 / 255)) < 1e-12, 'DV absolute 45% greyscale stimulus fraction mismatch');
+const expectedLegal45 = Math.round(16 + 0.45 * 219);
+assert.strictEqual(context.meterCodeFromSignalPercent(45), expectedLegal45, 'DV absolute 45% greyscale should emit legal RGB tunnel level');
+assert(Math.abs(context.meterGreyStimulusFraction(45) - ((expectedLegal45 - 16) / 219)) < 1e-12, 'DV absolute 45% greyscale stimulus fraction mismatch');
 
 const steps = context.meterBuildStepsJS('greyscale', 21);
 assert.strictEqual(steps[0].ire, 100, 'DV absolute greyscale should measure White first');
-assert.strictEqual(steps[0].r, 255, 'DV absolute White should emit full-range white');
+assert.strictEqual(steps[0].r, 235, 'DV absolute White should emit legal white');
 const step45 = steps.find(step => step.ire === 45);
 assert(step45, 'Missing DV absolute 45% greyscale step');
-assert.strictEqual(step45.r, expected45, 'DV absolute 45% greyscale series code mismatch');
+assert.strictEqual(step45.r, expectedLegal45, 'DV absolute 45% greyscale series code mismatch');
 
 assert(
-  seriesSource.includes('dv_tunnel_gamma = 2.2') &&
-    seriesSource.includes('(target_y / white_y) ** (1 / dv_tunnel_gamma)') &&
-    seriesSource.includes('step["dv_absolute_rolloff_pct"] = pq_encode_normalized(white_y) * 100') &&
-    seriesSource.includes('step["dv_absolute_tunnel_gamma"] = dv_tunnel_gamma'),
-  'DV absolute helper-side greyscale rewrite should use measured white with the 2.2 tunnel exponent'
-);
-
-function dvAbsoluteHelperCode(percent, whiteY) {
-  const targetY = Math.min(whiteY, context.meterChartPqDecodeNormalized(percent / 100));
-  const encoded = targetY <= 0 ? 0 : Math.pow(targetY / whiteY, 1 / 2.2);
-  return Math.max(0, Math.min(255, Math.round(encoded * 255)));
-}
-
-assert.deepStrictEqual(
-  [15, 20, 25].map(percent => dvAbsoluteHelperCode(percent, 736.73966)),
-  [13, 19, 27],
-  'DV absolute 15/20/25% helper-side patch codes should be full-range ST.2084 targets through the measured-white 2.2 tunnel'
+  /dv_absolute_greyscale_series_active\(\) \{[\s\S]*?return 1[\s\S]*?\}/.test(seriesSource),
+  'DV absolute helper-side greyscale rewrite should stay disabled for standard legal tunnel patches'
 );
 
 const abs50 = context.meterDvAbsoluteChartTargetLuminance(50, 10000);
