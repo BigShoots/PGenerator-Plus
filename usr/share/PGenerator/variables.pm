@@ -71,7 +71,7 @@ sub pg_dv_transport_ll_flag(@) {
 }
 
 sub pg_dv_transport_std_flag(@) {
- return "1";
+ return &pg_is_pi4_family() ? "0" : "1";
 }
 
 sub pg_dv_transport_interface(@) {
@@ -80,11 +80,11 @@ sub pg_dv_transport_interface(@) {
 }
 
 sub pg_dv_transport_color_format(@) {
- return "0";
+ return &pg_is_pi4_family() ? "2" : "0";
 }
 
 sub pg_dv_transport_max_bpc(@) {
- return "8";
+ return &pg_is_pi4_family() ? "12" : "8";
 }
 
 sub pg_dv_standard_interface(@) {
