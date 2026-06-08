@@ -337,7 +337,7 @@ sub load_new_pattern_file (@) {
  }
  &video_program_stop("$program_video_to_kill");
  &pattern_generator_start(1) if(!&pattern_generator_is_running());
- &create_return_file() if($requested_by ne $last_pattern_requested_by || $requested_by eq "");
+ &create_return_file();
  $last_pattern_requested_by=$requested_by;
 }
 
