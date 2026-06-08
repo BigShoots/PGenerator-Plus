@@ -53,6 +53,10 @@ inline bool usesPackedTransportEncoding() {
 	 (!ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi &&
 	  ofxRPI4Window::avi_info.output_format != 0);
 }
+
+inline bool usesDolbyVisionTransport() {
+ return ofxRPI4Window::isDoVi || ofxRPI4Window::is_std_DoVi;
+}
 }
 
 /*
@@ -131,7 +135,8 @@ void ofApp::update(){
    if(el[0] == "BITS") {
     bits=boost::lexical_cast<int>(el[1]);
     ofxRPI4Window::bit_depth = bits;
-    ofxRPI4Window::avi_info.max_bpc = bits;
+    if (!usesDolbyVisionTransport())
+     ofxRPI4Window::avi_info.max_bpc = bits;
  //   ofxRPI4Window::colorspace_on=1;
    }
    /* End Patch RPI P4 */
@@ -378,7 +383,8 @@ void ofApp::set_values () {
  arr_bits[frame][n_draw[frame]]=bits;
  arr_source_range[frame][n_draw[frame]]=source_range;
  ofxRPI4Window::bit_depth=bits;
- ofxRPI4Window::avi_info.max_bpc = bits;
+ if (!usesDolbyVisionTransport())
+  ofxRPI4Window::avi_info.max_bpc = bits;
  /* End Patch RPI P4 */
 }
 
