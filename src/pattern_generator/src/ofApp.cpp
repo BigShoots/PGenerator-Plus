@@ -57,6 +57,13 @@ inline bool usesPackedTransportEncoding() {
 inline bool usesDolbyVisionTransport() {
  return ofxRPI4Window::isDoVi || ofxRPI4Window::is_std_DoVi;
 }
+
+inline bool usesLowLatencyDoVi422Transport() {
+	return ofxRPI4Window::isHDR &&
+		ofxRPI4Window::isDoVi &&
+		!ofxRPI4Window::is_std_DoVi &&
+		ofxRPI4Window::avi_info.output_format == 2;
+}
 }
 
 /*
@@ -518,6 +525,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
  redbg=normalizeSourceValue(redbg,arr_source_range[i][to_draw]);
  greenbg=normalizeSourceValue(greenbg,arr_source_range[i][to_draw]);
  bluebg=normalizeSourceValue(bluebg,arr_source_range[i][to_draw]);
+ int lldv422=usesLowLatencyDoVi422Transport();
  if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
   if (ofxRPI4Window::bit_depth == 10) {  
    if(arr_redbg[i][to_draw] != -1) {
@@ -542,22 +550,30 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
   if (ofxRPI4Window::bit_depth == 10) {  
    if(arr_redbg[i][to_draw] != -1) {
 	if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
-     RGB data = RGB(redbg,greenbg,bluebg);
-     YCbCr bg = RGB2YCbCr(data,10, ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
-     if (ofxRPI4Window::avi_info.output_format == 1) 					of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
-     if (ofxRPI4Window::avi_info.output_format == 2) 					of10bitBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
-	 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on)	ofApp::setDoViBackground(redbg,greenbg,bluebg); //set dovi background only if standard dovi mode and drawing patterns
-    } else                                           					of10bitBackground(redbg,greenbg,bluebg);
+	 if (lldv422) {
+	  of10bitBackground(redbg,greenbg,bluebg);
+	 } else {
+	     RGB data = RGB(redbg,greenbg,bluebg);
+	     YCbCr bg = RGB2YCbCr(data,10, ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
+	     if (ofxRPI4Window::avi_info.output_format == 1) 					of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
+	     if (ofxRPI4Window::avi_info.output_format == 2) 					of10bitBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
+		 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on)	ofApp::setDoViBackground(redbg,greenbg,bluebg); //set dovi background only if standard dovi mode and drawing patterns
+	 }
+	    } else                                           					of10bitBackground(redbg,greenbg,bluebg);
    }
   } else {
    if(arr_redbg[i][to_draw] != -1) {
 		if (ofxRPI4Window::avi_info.output_format != 0 || ofxRPI4Window::is_std_DoVi) {
-     RGB data = RGB(redbg,greenbg,bluebg);
-     YCbCr bg = RGB2YCbCr(data,8,ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
-     if (ofxRPI4Window::avi_info.output_format == 1)					ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
-     if (ofxRPI4Window::avi_info.output_format == 2) 					ofBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
-	 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on) 	ofApp::setDoViBackground(redbg,greenbg,bluebg);  //set dovi background only if standard dovi mode and drawing patterns
-    } else                                          					ofBackground(redbg,greenbg,bluebg);
+		 if (lldv422) {
+		  ofBackground(redbg,greenbg,bluebg);
+		 } else {
+	     RGB data = RGB(redbg,greenbg,bluebg);
+	     YCbCr bg = RGB2YCbCr(data,8,ofxRPI4Window::avi_info.colorimetry, ofxRPI4Window::avi_info.rgb_quant_range);
+	     if (ofxRPI4Window::avi_info.output_format == 1)					ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
+	     if (ofxRPI4Window::avi_info.output_format == 2) 					ofBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
+		 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on) 	ofApp::setDoViBackground(redbg,greenbg,bluebg);  //set dovi background only if standard dovi mode and drawing patterns
+		 }
+	    } else                                          					ofBackground(redbg,greenbg,bluebg);
    }
   }
  }
@@ -696,6 +712,7 @@ void ofApp::shader_begin(int is_image) {
     ofxRPI4Window::shader.setUniform1i("scale", scale);
     ofxRPI4Window::shader.setUniform1i("normalizer", normalizer);
     ofxRPI4Window::shader.setUniform1i("color_format", ofxRPI4Window::avi_info.output_format);
+    ofxRPI4Window::shader.setUniform1i("passthrough_422", usesLowLatencyDoVi422Transport() ? 1 : 0);
     ofxRPI4Window::shader.setUniform1i("is_image", is_image);
 
   }
@@ -779,7 +796,7 @@ int ofApp::dv_color_space=0;
 void ofApp::dovi_metadata_update() {
 
 	int crc;
-	int dv_metadata_map_mode = dv_map_mode;
+	int dv_metadata_map_mode = (dv_map_mode == 1) ? 2 : dv_map_mode;
 	if (dv_metadata_map_mode < 0 || dv_metadata_map_mode > 2) dv_metadata_map_mode = 2;
 	
 	if (dv_map_mode != dv_metadata.dv_map_mode || 
