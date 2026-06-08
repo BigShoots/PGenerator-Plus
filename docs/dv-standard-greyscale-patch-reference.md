@@ -31,6 +31,7 @@ Captured DV standard absolute and relative greyscale runs used 8-bit RGB tunnel 
 ## Notes
 
 - Absolute mode keeps ST 2084 as the target curve; the values above are the RGB tunnel patch codes sent over HDMI.
+- PGenerator's internal DV absolute greyscale series may precompensate inside this same legal range after the first white read when the renderer path needs PQ targets through a gamma-like carrier.
 - Relative mode uses the same legal RGB tunnel patch ramp, with relative/gamma-style target analysis.
 - Full-screen pattern insertion/background events appeared between windowed greyscale patches and should not be treated as greyscale ramp values.
 - Absolute capture path: `/tmp/pgen-calman-absolute-precal-20260607-231852/calman-patches.delta.log`.

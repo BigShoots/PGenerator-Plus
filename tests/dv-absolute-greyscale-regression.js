@@ -172,8 +172,24 @@ assert(step45, 'Missing DV absolute 45% greyscale step');
 assert.strictEqual(step45.r, expectedLegal45, 'DV absolute 45% greyscale series code mismatch');
 
 assert(
-  /dv_absolute_greyscale_series_active\(\) \{[\s\S]*?return 1[\s\S]*?\}/.test(seriesSource),
-  'DV absolute helper-side greyscale rewrite should stay disabled for standard legal tunnel patches'
+  seriesSource.includes('dv_tunnel_gamma = 2.2') &&
+    seriesSource.includes('return 16, 219') &&
+    seriesSource.includes('(target_y / white_y) ** (1 / dv_tunnel_gamma)') &&
+    seriesSource.includes('step["dv_absolute_rolloff_pct"] = pq_encode_normalized(white_y) * 100') &&
+    seriesSource.includes('step["dv_absolute_tunnel_gamma"] = dv_tunnel_gamma'),
+  'DV absolute helper-side greyscale rewrite should use legal RGB tunnel range with the 2.2 carrier exponent'
+);
+
+function dvAbsoluteHelperCode(percent, whiteY) {
+  const targetY = Math.min(whiteY, context.meterChartPqDecodeNormalized(percent / 100));
+  const encoded = targetY <= 0 ? 0 : Math.pow(targetY / whiteY, 1 / 2.2);
+  return Math.max(16, Math.min(235, Math.round(16 + encoded * 219)));
+}
+
+assert.deepStrictEqual(
+  [5, 10, 15, 20, 25].map(percent => dvAbsoluteHelperCode(percent, 733.89)),
+  [19, 23, 27, 32, 39],
+  'DV absolute helper-side patch codes should be legal-range ST.2084 targets through the measured-white 2.2 tunnel'
 );
 
 const abs50 = context.meterDvAbsoluteChartTargetLuminance(50, 10000);
