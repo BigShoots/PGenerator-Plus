@@ -2420,6 +2420,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my $extra="";
     $extra.=",\"point_role\":\"$role\"" if($points==2);
 	    $extra.=",\"series_type\":\"greyscale\",\"signal_r_pct\":$r_stim,\"signal_g_pct\":$g_stim,\"signal_b_pct\":$b_stim";
+	    $extra.=",\"final_white_refresh\":true" if($points==21 && !$lg_greyscale_21 && !$lg_autocal_26 && abs($v-100)<0.001);
 	    $extra.=",\"analysis_ire\":$analysis_ire,\"target_ire\":$analysis_ire,\"transport_stimulus\":$stim" if($points==21 && $lg_greyscale_21);
 		    $extra.=",\"input_max\":1023" if($lg_autocal_26_codes);
 		    $extra.=",\"input_max\":1023" if($dv_series && $dv_series_code_bits == 10);
