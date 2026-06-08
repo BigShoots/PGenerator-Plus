@@ -102,6 +102,18 @@ assert(
   'Read Series should map spectro setup, setup-busy, and awaiting-ready states into the shared setup wizard'
 );
 assert(
+  webui.includes("const isActive=(state==='running'||state==='setup');") &&
+    webui.includes("if(s.status==='running'||s.status==='setup')") &&
+    webui.includes('meterSeriesSpectroSetupApplyFromStatus(s);'),
+  'shared series recovery should treat setup state as an active series and reopen the spectro wizard'
+);
+assert(
+  webui.includes('const recoverStartedSeries=async()=>') &&
+    webui.includes("state==='running'||state==='setup'") &&
+    webui.includes('if(await recoverStartedSeries()) return true;'),
+  'Read Series should recover by polling status if the start request times out after the helper starts'
+);
+assert(
   webui.includes('!meterSeriesSpectroSetupActive') &&
     webui.includes('const readyVisible=meterSeriesAwaitingReady&&meterSelectedMeasurementRequiresReady()&&!meterSeriesSpectroSetupActive;'),
   'legacy Device Ready button should be hidden while the series spectro wizard is active'
