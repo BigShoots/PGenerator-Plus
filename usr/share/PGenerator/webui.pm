@@ -5049,7 +5049,7 @@ sub webui_config_json (@) {
   $json_conf{"is_std_dovi"}=&pg_dv_transport_std_flag($json_dv_transport);
   $json_conf{"dv_interface"}=&pg_dv_transport_interface($json_dv_transport);
   $json_conf{"color_format"}=&pg_dv_transport_color_format($json_dv_transport);
-  $json_conf{"max_bpc"}=&pg_dv_transport_max_bpc($json_dv_transport);
+  $json_conf{"max_bpc"}=&pg_dv_transport_max_bpc($json_conf{"max_bpc"});
  }
  my $json="{";
  my $first=1;
@@ -5071,8 +5071,8 @@ sub webui_apply_config (@) {
  &webui_reload_pgenerator_conf();
  # Parse simple JSON: {"key":"val","key2":"val2"}
  my %changes;
- while($body=~/"(\w+)"\s*:\s*"([^"]*)"/g) {
-  $changes{$1}=$2;
+ while($body=~/"(\w+)"\s*:\s*(?:"([^"]*)"|(-?\d+(?:\.\d+)?))/g) {
+  $changes{$1}=defined $2 ? $2 : $3;
  }
  my $requested_dv_transport=&pg_dv_transport_mode($changes{"dv_transport"} || $pgenerator_conf{"dv_transport"});
  if(defined $changes{"signal_mode"}) {
@@ -5107,7 +5107,7 @@ sub webui_apply_config (@) {
    $changes{"dv_interface"}=&pg_dv_transport_interface($requested_dv_transport);
    $changes{"eotf"}="2";
    $changes{"primaries"}="1";
-   $changes{"max_bpc"}=&pg_dv_transport_max_bpc($requested_dv_transport);
+   $changes{"max_bpc"}=&pg_dv_transport_max_bpc($changes{"max_bpc"} || $pgenerator_conf{"max_bpc"});
    $changes{"color_format"}=&pg_dv_transport_color_format($requested_dv_transport);
    $changes{"colorimetry"}="9";
    $changes{"rgb_quant_range"}="2";
@@ -5153,7 +5153,7 @@ sub webui_apply_config (@) {
    $dv_map_mode="2" if($dv_metadata eq "4");
   }
   $changes{"dv_transport"}=$dv_transport;
-  $changes{"max_bpc"}=&pg_dv_transport_max_bpc($dv_transport);
+  $changes{"max_bpc"}=&pg_dv_transport_max_bpc($changes{"max_bpc"} || $effective{"max_bpc"} || $pgenerator_conf{"max_bpc"});
   $changes{"is_ll_dovi"}=&pg_dv_transport_ll_flag($dv_transport);
   $changes{"is_std_dovi"}=&pg_dv_transport_std_flag($dv_transport);
   $changes{"dv_status"}="1";
@@ -6641,8 +6641,8 @@ sub webui_pattern_effective_bits (@) {
  my $link_bits=int($pgenerator_conf{"max_bpc"} || 8);
  # The native renderer only has distinct 8-bit and 10-bit drawing paths.
  # HDR10 and HLG use the 10-bit rectangle path when the link is above 8 bpc.
- # Dolby Vision patterns are RGB tunnel codes; Standard uses an 8-bit link,
- # while Low-Latency uses the 12-bit RGB transport path.
+ # Dolby Vision patterns are RGB tunnel codes; the link may be 8 or 10 bpc,
+ # but the renderer still emits the 8-bit tunnel pattern payload.
  return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
  return 8 if($signal_mode eq "dv");
  return 8 if($bits != 10 && $bits != 12);
@@ -9002,7 +9002,7 @@ function applyConfigState(nextConfig){
 	  syncDvOutputEotfState();
 	  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
 	  setVal('dv_transport',dvTransport.dv_transport);
-	  setVal('max_bpc',dvTransport.max_bpc);
+	  setVal('max_bpc',dvRgbMaxBpc(config.max_bpc||dvTransport.max_bpc));
 	  setVal('color_format',dvTransport.color_format);
   setVal('dv_interface',dvTransport.dv_interface);
   setVal('colorimetry','9');
@@ -9482,7 +9482,7 @@ function updateDropdowns(){
 	  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
 	  setVal('dv_transport',dvTransport.dv_transport);
 	  setVal('dv_interface',dvTransport.dv_interface);
-  const allowedBpc=[dvTransport.max_bpc];
+  const allowedBpc=['8','10'];
   const targetFmt=dvTransport.color_format;
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!==targetFmt;o.style.display=o.value===targetFmt?'':'none';});
   fmtSel.value=targetFmt;
@@ -10246,6 +10246,9 @@ function dvTransportDefault(configKey,capsKey,fallback){
 function dvTransportMode(value){
  return 'standard';
 }
+function dvRgbMaxBpc(value){
+ return String(value||'').trim()==='10' ? '10' : '8';
+}
 function dvTransportDefaults(mode){
  return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:'0',color_format:'0',max_bpc:'8'};
 }
@@ -10300,7 +10303,7 @@ async function applySettings(){
 	  Object.assign(changes,{is_sdr:'0',is_hdr:'1',
 	   dv_transport:dvTransport.dv_transport,
 	   is_ll_dovi:dvTransport.is_ll_dovi,is_std_dovi:dvTransport.is_std_dovi,
-   dv_status:'1',primaries:'1',color_format:dvTransport.color_format,colorimetry:'9',max_bpc:dvTransport.max_bpc,
+   dv_status:'1',primaries:'1',color_format:dvTransport.color_format,colorimetry:'9',max_bpc:dvRgbMaxBpc(getVal('max_bpc')),
    rgb_quant_range:'2',eotf:'2',
    dv_interface:dvTransport.dv_interface,
    dv_map_mode:getVal('dv_map_mode'),

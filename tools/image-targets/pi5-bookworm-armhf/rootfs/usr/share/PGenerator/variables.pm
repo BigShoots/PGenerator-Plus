@@ -87,6 +87,12 @@ sub pg_dv_transport_color_format(@) {
 }
 
 sub pg_dv_transport_max_bpc(@) {
+ foreach my $candidate (@_) {
+  next if(!defined $candidate || $candidate !~ /^\d+$/);
+  return "10" if(int($candidate) == 10);
+  return "8" if(int($candidate) == 8);
+ }
+ return "10" if(int($pgenerator_conf{"max_bpc"} || 0) == 10);
  return "8";
 }
 
