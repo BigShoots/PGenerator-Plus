@@ -84,7 +84,7 @@ sub pg_dv_transport_color_format(@) {
 }
 
 sub pg_dv_transport_max_bpc(@) {
- return &pg_is_pi4_family() ? "12" : "8";
+ return &pg_is_pi4_family() ? "10" : "8";
 }
 
 sub pg_dv_standard_interface(@) {
