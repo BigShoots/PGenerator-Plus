@@ -1946,12 +1946,68 @@ function lgSignalModeKey(){
  return 'sdr';
 }
 
+function lgPictureModeEntries(){
+ return [
+  ...LG_PICTURE_MODES_BY_SIGNAL.sdr,
+  ...LG_PICTURE_MODES_BY_SIGNAL.hdr10,
+  ...LG_PICTURE_MODES_BY_SIGNAL.dv
+ ];
+}
+
+function lgPictureModeToken(value){
+ return String(value||'').trim().replace(/[\s_-]+/g,'').toLowerCase();
+}
+
+function lgPictureModeCanonicalValue(value){
+ const raw=String(value||'').trim();
+ if(!raw) return '';
+ const exact=lgPictureModeEntries().find(item=>item[0]===raw);
+ if(exact) return exact[0];
+ const token=lgPictureModeToken(raw);
+ const aliases={
+  isfexpert1:'expert1',
+  isfexpertbright:'expert1',
+  expertbright:'expert1',
+  isfexpert2:'expert2',
+  isfexpertdark:'expert2',
+  expertdark:'expert2',
+  technicolorexpert:'technicolorExpert',
+  filmmaker:'filmMaker',
+  filmmakermode:'filmMaker',
+  gameoptimizer:'game',
+  hdrcinema:'hdr_cinema',
+  hdrgame:'hdr_game',
+  hdrgameoptimizer:'hdr_game',
+  hdrstandard:'hdr_standard',
+  hdrvivid:'hdr_vivid',
+  hdrfilmmaker:'hdr_filmMaker',
+  hdrfilmmakermode:'hdr_filmMaker',
+  hdrtechnicolorexpert:'hdr_technicolorExpert',
+  dolbyhdrcinema:'dolby_hdr_cinema',
+  dolbyhdrcinemahome:'dolby_hdr_cinema_bright',
+  dolbyhdrcinemabright:'dolby_hdr_cinema_bright',
+  dolbyhdrgame:'dolby_hdr_game',
+  dolbyhdrgameoptimizer:'dolby_hdr_game',
+  dolbyhdrvivid:'dolby_hdr_vivid'
+ };
+ if(aliases[token]) return aliases[token];
+ const normalized=lgPictureModeEntries().find(item=>lgPictureModeToken(item[0])===token);
+ return normalized?normalized[0]:raw;
+}
+
+function lgPictureModeEffectiveSignal(current){
+ const configured=lgSignalModeKey();
+ const modeSignal=lgPictureModeSignalForValue(current||lgPictureModeValue);
+ if(modeSignal==='hdr10'&&configured==='hlg') return 'hlg';
+ return modeSignal||configured;
+}
+
 function lgPictureModeStorageKey(signalMode){
  return 'lgPictureMode:'+String(signalMode||lgSignalModeKey());
 }
 
 function lgPictureModeSignalForValue(value){
- const mode=String(value||'');
+ const mode=lgPictureModeCanonicalValue(value);
  if(!mode) return '';
  for(const entry of Object.entries(LG_PICTURE_MODES_BY_SIGNAL)){
   const signal=entry[0];
@@ -1960,7 +2016,10 @@ function lgPictureModeSignalForValue(value){
  }
  if(/^dolby_hdr_/i.test(mode)) return 'dv';
  if(/^hdr_/i.test(mode)) return 'hdr10';
- return 'sdr';
+ const token=lgPictureModeToken(mode);
+ if(token.indexOf('dolbyhdr')===0) return 'dv';
+ if(token.indexOf('hdr')===0) return 'hdr10';
+ return '';
 }
 
 function lgPictureModeMatchesSignal(value,signalMode){
@@ -1973,9 +2032,10 @@ function lgPictureModeMatchesSignal(value,signalMode){
 
 function lgRememberPictureMode(value,signalMode){
  if(!value) return;
- const signal=signalMode||lgSignalModeKey();
- if(!lgPictureModeMatchesSignal(value,signal)) return;
- try{localStorage.setItem(lgPictureModeStorageKey(signal),value);}catch(e){}
+ const mode=lgPictureModeCanonicalValue(value);
+ const signal=signalMode||lgPictureModeEffectiveSignal(mode);
+ if(!lgPictureModeMatchesSignal(mode,signal)) return;
+ try{localStorage.setItem(lgPictureModeStorageKey(signal),mode);}catch(e){}
 }
 
 function lgStoredPictureMode(signalMode){
@@ -1983,21 +2043,21 @@ function lgStoredPictureMode(signalMode){
 }
 
 function lgPictureModeLabel(value){
- const mode=String(value||'');
- const signal=lgSignalModeKey();
- const all=[...(LG_PICTURE_MODES_BY_SIGNAL[signal]||[]),...LG_PICTURE_MODES_BY_SIGNAL.sdr,...LG_PICTURE_MODES_BY_SIGNAL.hdr10,...LG_PICTURE_MODES_BY_SIGNAL.dv];
+ const mode=lgPictureModeCanonicalValue(value);
+ const signal=lgPictureModeEffectiveSignal(mode);
+ const all=[...(LG_PICTURE_MODES_BY_SIGNAL[signal]||[]),...lgPictureModeEntries()];
  const found=all.find(item=>item[0]===mode);
  if(found) return found[1];
  return mode.replace(/^hdr_/,'HDR ').replace(/^dolby_hdr_/,'Dolby Vision ').replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/\b\w/g,ch=>ch.toUpperCase());
 }
 
 function lgPictureModeOptions(signalMode,current){
- const mode=signalMode||lgSignalModeKey();
+ const mode=signalMode||lgPictureModeEffectiveSignal(current);
  const options=(LG_PICTURE_MODES_BY_SIGNAL[mode]||LG_PICTURE_MODES_BY_SIGNAL.sdr).map(item=>item.slice());
- const stored=lgStoredPictureMode(mode);
+ const stored=lgPictureModeCanonicalValue(lgStoredPictureMode(mode));
  const extras=[];
  if(stored&&lgPictureModeMatchesSignal(stored,mode)) extras.push(stored);
- if(current) extras.push(current);
+ if(current) extras.push(lgPictureModeCanonicalValue(current));
  extras.forEach(value=>{
   if(value&&!options.some(item=>item[0]===value)) options.unshift([value,lgPictureModeLabel(value)]);
  });
@@ -2008,8 +2068,8 @@ function lgPopulatePictureModeSelect(current){
  const select=document.getElementById('lgPictureMode');
  if(!select) return;
  const state=window.lgStatusState||{};
- const signal=lgSignalModeKey();
- const selected=String(current||'');
+ const selected=lgPictureModeCanonicalValue(current);
+ const signal=lgPictureModeEffectiveSignal(selected);
  const options=lgPictureModeOptions(signal,selected);
  let html='<option value="">Select mode</option>';
  options.forEach(item=>{html+='<option value="'+lgEscapeHtml(item[0])+'">'+lgEscapeHtml(item[1])+'</option>';});
@@ -2294,7 +2354,7 @@ function lgDisplayControlConnected(){
 function lgSelectedPictureModeValue(){
  const select=document.getElementById('lgPictureMode');
  if(select&&select.value) return select.value;
- return lgPictureModeSignalMode===lgSignalModeKey()?lgPictureModeValue:'';
+ return lgPictureModeCanonicalValue(lgPictureModeValue);
 }
 
 function lgDisplayControlPictureMode(){
@@ -2442,7 +2502,7 @@ async function lgDisplayControlRefresh(force){
    lgDisplayControlError='';
    if(r.picture_settings.pictureMode){
     const mode=r.picture_settings.pictureMode;
-    const signal=lgSignalModeKey();
+    const signal=lgPictureModeEffectiveSignal(mode);
     lgPictureModeValue=mode;
     lgPictureModeSignalMode=signal;
     lgRememberPictureMode(mode,signal);
@@ -2490,7 +2550,7 @@ async function lgDisplayControlCommit(key){
    lgDisplayControlValues[key]=(picture[key]!==undefined)?picture[key]:value;
    if(picture.pictureMode){
     lgPictureModeValue=picture.pictureMode;
-    lgPictureModeSignalMode=lgSignalModeKey();
+    lgPictureModeSignalMode=lgPictureModeEffectiveSignal(lgPictureModeValue);
     lgRememberPictureMode(lgPictureModeValue,lgPictureModeSignalMode);
     lgPopulatePictureModeSelect(lgPictureModeValue);
    }
@@ -2645,7 +2705,7 @@ function renderLgStatus(r){
 	   hint.textContent='No LG TV IP is available yet.';
 	  }
 	 }
-	 lgPopulatePictureModeSelect(lgPictureModeSignalMode===lgSignalModeKey()?lgPictureModeValue:'');
+	 lgPopulatePictureModeSelect(lgPictureModeValue);
 	 lgDisplayControlRender();
 	 if(typeof meterUpdateSeriesTabUi==='function') meterUpdateSeriesTabUi();
 	 else if(typeof meterUpdateSeriesLabels==='function') meterUpdateSeriesLabels();
@@ -2812,7 +2872,7 @@ function lgPinKeydown(event){
 
 async function lgRefreshPictureMode(force){
  const state=window.lgStatusState||{};
- const signal=lgSignalModeKey();
+ let signal=lgPictureModeEffectiveSignal(lgPictureModeValue);
 			 if(!lgStatusConnected(state)){
 		  lgPictureModeValue='';
 		  lgPictureModeSignalMode=signal;
@@ -2827,7 +2887,7 @@ async function lgRefreshPictureMode(force){
   return;
  }
  lgPictureModePending=true;
- lgPopulatePictureModeSelect(lgPictureModeSignalMode===signal?lgPictureModeValue:'');
+ lgPopulatePictureModeSelect(lgPictureModeValue);
  try{
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
@@ -2838,6 +2898,7 @@ async function lgRefreshPictureMode(force){
   });
   if(r&&r.status==='ok'&&r.picture_settings){
    const mode=r.picture_settings.pictureMode||'';
+   signal=lgPictureModeEffectiveSignal(mode);
    lgPictureModeValue=mode;
    lgPictureModeSignalMode=signal;
    if(mode){
@@ -2849,7 +2910,7 @@ async function lgRefreshPictureMode(force){
  }catch(e){
 	 }finally{
 	  lgPictureModePending=false;
-	  lgPopulatePictureModeSelect(lgPictureModeSignalMode===signal?lgPictureModeValue:'');
+	  lgPopulatePictureModeSelect(lgPictureModeValue);
 	  lgDisplayControlRender();
 	 }
 }
@@ -2860,7 +2921,7 @@ async function lgSetPictureMode(){
  const value=select.value||'';
  if(!value) return;
  const state=window.lgStatusState||{};
- const signal=lgSignalModeKey();
+ const signal=lgPictureModeEffectiveSignal(value);
  lgRememberPictureMode(value,signal);
 	 if(!lgStatusConnected(state)){
   toast('Connect the LG TV first','err');
@@ -2928,7 +2989,8 @@ async function lgResetPictureMode(){
    toast(r.message||'LG picture mode reset complete');
    if(r.active_picture_mode){
     lgPictureModeValue=r.active_picture_mode;
-    lgRememberPictureMode(r.active_picture_mode,lgSignalModeKey());
+    lgPictureModeSignalMode=lgPictureModeEffectiveSignal(r.active_picture_mode);
+    lgRememberPictureMode(r.active_picture_mode,lgPictureModeSignalMode);
    }
 	   if(typeof meterLgGreySyncForCurrentStep==='function'){
 	    try{meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};}catch(e){}
