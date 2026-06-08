@@ -5042,7 +5042,15 @@ sub webui_reload_pgenerator_conf (@) {
 sub webui_config_json (@) {
  &webui_reload_pgenerator_conf();
  my %json_conf=%pgenerator_conf;
- $json_conf{"dv_transport"}=&pg_dv_transport_mode();
+ my $json_dv_transport=&pg_dv_transport_mode();
+ $json_conf{"dv_transport"}=$json_dv_transport;
+ if(int($json_conf{"dv_status"} || 0) || int($json_conf{"is_ll_dovi"} || 0) || int($json_conf{"is_std_dovi"} || 0)) {
+  $json_conf{"is_ll_dovi"}=&pg_dv_transport_ll_flag($json_dv_transport);
+  $json_conf{"is_std_dovi"}=&pg_dv_transport_std_flag($json_dv_transport);
+  $json_conf{"dv_interface"}=&pg_dv_transport_interface($json_dv_transport);
+  $json_conf{"color_format"}=&pg_dv_transport_color_format($json_dv_transport);
+  $json_conf{"max_bpc"}=&pg_dv_transport_max_bpc($json_dv_transport);
+ }
  my $json="{";
  my $first=1;
  foreach my $k (sort keys %json_conf) {
@@ -5729,7 +5737,7 @@ sub webui_capabilities_json (@) {
 	 my $dv_transport_color_format=&pg_dv_transport_color_format();
 	 my $dv_transport_max_bpc=&pg_dv_transport_max_bpc();
 	 my $dv_transport_mode=&pg_dv_transport_mode();
-	 my $dv_transport_modes=&pg_is_pi4_family() ? '"standard","ll"' : '"standard"';
+	 my $dv_transport_modes='"standard"';
 
 		 return "{\"dc_30bit\":".($dc_30?"true":"false")
 		  .",\"dc_36bit\":".($dc_36?"true":"false")
@@ -7734,9 +7742,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <input type="hidden" id="dv_interface" value="0">
 	   <div class="field">
 	    <label>Transport</label>
-	    <select id="dv_transport">
+	    <select id="dv_transport" disabled>
 	     <option value="standard">Standard</option>
-	     <option value="ll">Low Latency</option>
 	    </select>
 	   </div>
 	   <div class="field">
@@ -9469,8 +9476,9 @@ function updateDropdowns(){
  const modeSel=document.getElementById('mode_idx');
 	 if(sm==='dv'){
 	  const transportSel=document.getElementById('dv_transport');
-	  const modes=Array.isArray(caps&&caps.dv_transport_modes)?caps.dv_transport_modes.map(v=>String(v).toLowerCase()):['standard'];
+	  const modes=['standard'];
 	  Array.from(transportSel.options).forEach(function(o){const ok=modes.includes(String(o.value).toLowerCase());o.disabled=!ok;o.style.display=ok?'':'none';});
+	  transportSel.disabled=true;
 	  const dvTransport=dvTransportDefaults(getVal('dv_transport'));
 	  setVal('dv_transport',dvTransport.dv_transport);
 	  setVal('dv_interface',dvTransport.dv_interface);
@@ -10236,22 +10244,9 @@ function dvTransportDefault(configKey,capsKey,fallback){
  return fallback;
 }
 function dvTransportMode(value){
- let mode=String(value||'').toLowerCase().replace(/[^a-z0-9]/g,'');
- if(!mode){
-  mode=String((config&&config.dv_transport)||(caps&&caps.dv_transport)||'standard').toLowerCase().replace(/[^a-z0-9]/g,'');
-  if(mode!=='ll'&&mode!=='lldv'&&mode!=='lowlatency'&&mode!=='standard'&&mode!=='std'){
-   mode=(config&&config.is_ll_dovi==='1'&&config.is_std_dovi!=='1')?'ll':'standard';
-  }
- }
- mode=(mode==='ll'||mode==='lldv'||mode==='lowlatency')?'ll':'standard';
- const modes=Array.isArray(caps&&caps.dv_transport_modes)?caps.dv_transport_modes.map(v=>String(v).toLowerCase()):['standard'];
- return modes.includes(mode)?mode:'standard';
+ return 'standard';
 }
 function dvTransportDefaults(mode){
- const transport=dvTransportMode(mode||getVal('dv_transport'));
- if(transport==='ll'){
-  return {dv_transport:'ll',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:'1',color_format:'0',max_bpc:'12'};
- }
  return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:'0',color_format:'0',max_bpc:'8'};
 }
 
