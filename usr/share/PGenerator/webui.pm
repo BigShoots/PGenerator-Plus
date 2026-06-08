@@ -6596,7 +6596,7 @@ sub webui_pattern_effective_bits (@) {
  # The native renderer only has distinct 8-bit and 10-bit drawing paths.
  # HDR10 and HLG use the 10-bit rectangle path when the link is above 8 bpc.
  # Dolby Vision uses its own renderer path; keep pattern commands 8-bit even
- # when the HDMI transport is 12-bit YCbCr 4:2:2 on Pi 4-family boards.
+ # when the HDMI transport is 12-bit RGB on Pi 4-family boards.
  return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
  return 8 if($signal_mode eq "dv");
  return 8 if($bits != 10 && $bits != 12);
