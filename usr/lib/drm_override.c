@@ -120,7 +120,7 @@ static uint64_t rgb_qr_override = 0;
 static int rgb_qr_found = 0;
 static uint32_t dovi_meta_prop_id = 0;
 static int dv_status = 0;
-static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency, 2=Pi4 Dolby path */
+static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
 static int dv_map_mode = -1;
 static int conf_read = 0;
 
@@ -292,8 +292,7 @@ static void read_config(void) {
         write_log("DRM_OVERRIDE: config dv_interface=");
         write_log(num);
         write_log(" (");
-        write_log(dv_interface == 2 ? "Dolby-OUI" :
-                  (dv_interface == 0 ? "Standard" : "Low-Latency"));
+        write_log(dv_interface == 0 ? "Standard" : "Low-Latency");
         write_log(")\n");
     }
     if (dv_map_mode >= 0) {
@@ -424,8 +423,8 @@ static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
     if (!metadata || length != 12 || dv_status != 1)
         return 0;
 
-    uint32_t oui = (dv_interface == 2) ? 0x00D046 : 0x000C03;
-    uint8_t iface = (dv_interface == 2) ? 0x01 : (uint8_t)(dv_interface & 0xff);
+    uint32_t oui = dv_interface ? 0x00D046 : 0x000C03;
+    uint8_t iface = dv_interface ? 0x01 : 0x00;
     int changed = 0;
 
     if (metadata[0] != (uint8_t)(oui & 0xff) ||
@@ -457,7 +456,7 @@ static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
             write_log(")");
         }
         write_log(" oui=");
-        write_log(dv_interface == 2 ? "00d046" : "000c03");
+        write_log(dv_interface ? "00d046" : "000c03");
         write_log(" status=1 iface=");
         itoa_simple((uint64_t)iface, num);
         write_log(num);
@@ -476,9 +475,9 @@ static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
  * Create the fallback DOVI_OUTPUT_METADATA blob (one-time).
  * Returns blob_id, or 0 on failure.
  *
- * The 12-byte blob format matches the legacy low-latency blob previously
- * synthesized here. Keep it only as a last-resort fallback for commits that
- * omit DOVI_OUTPUT_METADATA entirely.
+ * Keep this only as a last-resort fallback for commits that omit
+ * DOVI_OUTPUT_METADATA entirely. normalize_dovi_metadata() rewrites the
+ * transport-specific OUI/interface/map-mode bytes before the blob is used.
  *
  * For drm_hdmi_infoframe_set_dovi_source_metadata():
  *   bytes 0-3: header (zeroes)
@@ -491,8 +490,8 @@ static uint32_t create_dovi_blob(int fd) {
 
     uint8_t metadata[12] = {
         0x46, 0xD0, 0x00, 0x00, /* Dolby OUI 00-D0-46 (LE u32) → frame.oui */
-        0x01,  /* always Low-Latency — RPi4 can't do Standard DV */
-        0x01,  /* DV version (vc4 requires == 1 to write VSIF) */
+        0x01,  /* active */
+        0x01,  /* interface, normalized from config */
         0x00, 0x00, 0x00, 0x00, 0x00,
         0xb6
     };
@@ -513,7 +512,7 @@ static uint32_t create_dovi_blob(int fd) {
         itoa_simple(dovi_blob_id, num);
         write_log("DRM_OVERRIDE: created DOVI blob_id=");
         write_log(num);
-        write_log(" (LL)");
+        write_log(dv_interface ? " (Low-Latency)" : " (Standard)");
         write_log(" bytes=");
         for (int i = 0; i < 12; i++) {
             char hex[4];
