@@ -11376,9 +11376,27 @@ function meterReadingUsesAlternateStimulus(reading,step){
  return !!reading.autocal_probe_stimulus;
 }
 
+function meterDvAbsoluteWhiteRefreshMatchesStep(reading,step){
+ if(!reading||!step) return false;
+ if(!meterReadingNominalSlotMatchesStep(reading,step)) return false;
+ if(!meterReadingIsGreyscale(reading)) return false;
+ const stepSeries=String(step.series_type||'').toLowerCase();
+ const readingSeries=String(reading.series_type||'').toLowerCase();
+ if((stepSeries&&stepSeries!=='greyscale')||(readingSeries&&readingSeries!=='greyscale')) return false;
+ const ire=Number(step.ire!=null?step.ire:reading.ire);
+ if(!Number.isFinite(ire)||Math.abs(ire-100)>0.001) return false;
+ if(!(reading.final_white_refresh||step.final_white_refresh)) return false;
+ const activeSignal=(typeof meterActiveSeriesSignalMode!=='undefined')?meterActiveSeriesSignalMode:'';
+ const activeDvMap=(typeof meterActiveSeriesDvMapMode!=='undefined')?meterActiveSeriesDvMapMode:'';
+ const signal=String(reading.signal_mode||step.signal_mode||activeSignal||'').toLowerCase();
+ const dvMap=String(reading.dv_map_mode||step.dv_map_mode||activeDvMap||'');
+ return signal==='dv'&&(dvMap==='1'||reading.dv_absolute_st2084_precomp||step.dv_absolute_st2084_precomp);
+}
+
 function meterReadingMatchesStepForPlot(reading,step){
  if(!reading||!step) return false;
  if(meterReadingCodesMatchStep(reading,step)) return true;
+ if(meterDvAbsoluteWhiteRefreshMatchesStep(reading,step)) return true;
  return meterReadingUsesAlternateStimulus(reading,step);
 }
 
