@@ -14642,9 +14642,16 @@ function meterTargetGammaLabel(){
 	 const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
 	 if(autoPower) return 'Gamma 2.2';
 	 if(meterChartIsHlg()) return 'HLG';
-	 if(!sel) return meterChartIsDv() ? 'ST 2084' : (usesPqTarget ? 'PQ' : 'Gamma');
+	 if(meterChartIsDv()){
+	  const tgt=((typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'';
+	  if(tgt==='2.2') return 'Gamma 2.2';
+	  if(tgt==='2.4') return 'Gamma 2.4';
+	  if(tgt==='bt1886') return 'BT.1886';
+	  if(tgt==='srgb') return 'sRGB';
+	  return 'ST 2084';
+	 }
+	 if(!sel) return usesPqTarget ? 'PQ' : 'Gamma';
  const opt=sel.options[sel.selectedIndex];
- if(meterChartIsDv()) return 'ST 2084';
  if(usesPqTarget) return 'PQ';
  return opt&&opt.textContent?opt.textContent.trim():'Gamma';
 }
