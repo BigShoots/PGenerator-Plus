@@ -322,9 +322,10 @@ for field in (
 	"input_max", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
 	"signal_mode", "target_gamma", "max_luma", "dv_map_mode",
 	"analysis_ire", "target_ire", "transport_stimulus",
-    "target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
-    "dv_absolute_white_y", "dv_absolute_target_y", "dv_absolute_rolloff_pct",
-    "dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
+	"final_white_refresh",
+	"target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
+	"dv_absolute_white_y", "dv_absolute_target_y", "dv_absolute_rolloff_pct",
+	"dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
     "series_target_white_y", "lg_target_white_y",
     "series_type", "series_color", "sat_pct", "point_role", "series_mode",
     "autocal_code", "autocal_white_reference", "autocal_reference_only",
@@ -593,11 +594,13 @@ series_uses_initial_white_reference() {
 
 series_requires_final_white_refresh() {
  [[ "$SERIES_ID" == greyscale_* ]] || return 1
- [[ "$SIGNAL_MODE" == "dv" ]] && return 1
- (( TOTAL > 2 ))
- local first_white_reference
+ (( TOTAL > 2 )) || return 1
+ local first_white_reference final_white_refresh
  first_white_reference=$(get_step_field 0 autocal_white_reference)
  [[ "$first_white_reference" == "True" || "$first_white_reference" == "true" || "$first_white_reference" == "1" ]] && return 1
+ [[ "$SIGNAL_MODE" != "dv" ]] && return 0
+ final_white_refresh=$(get_step_field 0 final_white_refresh)
+ [[ "$final_white_refresh" == "True" || "$final_white_refresh" == "true" || "$final_white_refresh" == "1" ]]
 }
 
 series_uses_first_white_warmup() {
@@ -1414,10 +1417,9 @@ EOJSON
 EOJSON
 done
 
-# Non-2pt SDR/HDR greyscale uses the first 100% read as the live white reference
-# while the sweep is running, then refreshes white once more at the end so the
-# saved 100% result reflects the warmed-up display. DV skips this because
-# Absolute mode rewrites patch codes from the first 100% Y.
+# Greyscale uses the first 100% read as the live white reference while the
+# sweep is running, then refreshes white once more at the end when marked so
+# the saved 100% result reflects the warmed-up display.
 if series_requires_final_white_refresh && (( TOTAL > 0 )); then
 	FIRST_R=$(get_step_field 0 r)
 	FIRST_G=$(get_step_field 0 g)
