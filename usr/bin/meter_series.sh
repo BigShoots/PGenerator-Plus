@@ -400,9 +400,9 @@ PY
 }
 
 dv_absolute_greyscale_series_active() {
- [[ "$SIGNAL_MODE" == "dv" ]] || return 1
- [[ "$DV_MAP_MODE" == "1" ]] || return 1
- [[ "$SERIES_ID" == greyscale_* ]] || return 1
+ # Standard DV absolute greyscale uses legal RGB tunnel codes with ST 2084
+ # targets; rewriting codes after the white read changes that ramp.
+ return 1
 }
 
 reading_luminance_json() {
