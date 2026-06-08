@@ -45,18 +45,18 @@ elements.signal_mode.value = 'sdr';
 assert.strictEqual(context.meterDefaultTargetGamutForMode(), 'bt709', 'SDR should default Target Colorspace to BT.709');
 
 elements.signal_mode.value = 'hdr10';
-assert.strictEqual(context.meterDefaultTargetGamutForMode(), 'p3d65', 'HDR10 should default Target Colorspace to DCI-P3 / D65');
+assert.strictEqual(context.meterDefaultTargetGamutForMode(), 'bt2020', 'HDR10 should default Target Colorspace to BT.2020');
 
 elements.signal_mode.value = 'hlg';
-assert.strictEqual(context.meterDefaultTargetGamutForMode(), 'p3d65', 'HLG should default Target Colorspace to DCI-P3 / D65');
+assert.strictEqual(context.meterDefaultTargetGamutForMode(), 'bt2020', 'HLG should default Target Colorspace to BT.2020');
 
 elements.signal_mode.value = 'dv';
 assert.strictEqual(context.meterDefaultTargetGamutForMode(), 'p3d65', 'DV should default Target Colorspace to DCI-P3 / D65');
 
 elements.signal_mode.value = 'hdr10';
-elements.meterTargetGamut.value = 'bt2020';
+elements.meterTargetGamut.value = 'p3d65';
 context.applyMeterTargetGamutDefault(true);
-assert.strictEqual(elements.meterTargetGamut.value, 'p3d65', 'forced HDR10 signal-mode change should select DCI-P3 / D65');
+assert.strictEqual(elements.meterTargetGamut.value, 'bt2020', 'forced HDR10 signal-mode change should select BT.2020');
 
 elements.signal_mode.value = 'sdr';
 elements.meterTargetGamut.value = '';
