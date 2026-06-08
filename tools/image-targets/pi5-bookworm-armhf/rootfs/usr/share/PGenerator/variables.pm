@@ -67,27 +67,19 @@ sub pg_is_pi4_family(@) {
 }
 
 sub pg_dv_transport_mode(@) {
- my $mode=lc(shift || $pgenerator_conf{"dv_transport"} || "");
- $mode=~s/[^a-z0-9]//g;
- return "ll" if($mode eq "ll" || $mode eq "lldv" || $mode eq "lowlatency");
- return "standard" if($mode eq "standard" || $mode eq "std");
- if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 && int($pgenerator_conf{"is_std_dovi"} || 0) == 0) {
-  return "ll";
- }
  return "standard";
 }
 
 sub pg_dv_transport_ll_flag(@) {
- return (&pg_dv_transport_mode(@_) eq "ll") ? "1" : "0";
+ return "0";
 }
 
 sub pg_dv_transport_std_flag(@) {
- return (&pg_dv_transport_mode(@_) eq "ll") ? "0" : "1";
+ return "1";
 }
 
 sub pg_dv_transport_interface(@) {
- my $mode=&pg_dv_transport_mode(@_);
- return ($mode eq "ll") ? "1" : "0";
+ return "0";
 }
 
 sub pg_dv_transport_color_format(@) {
@@ -95,7 +87,7 @@ sub pg_dv_transport_color_format(@) {
 }
 
 sub pg_dv_transport_max_bpc(@) {
- return (&pg_dv_transport_mode(@_) eq "ll") ? "12" : "8";
+ return "8";
 }
 
 sub pg_dv_standard_interface(@) {
