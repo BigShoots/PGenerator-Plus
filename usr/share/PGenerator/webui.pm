@@ -10258,11 +10258,10 @@ function dvTransportMode(value){
 }
 function dvTransportDefaults(mode){
  const transport=dvTransportMode(mode||getVal('dv_transport'));
- const iface=dvTransportDefault('dv_interface','dv_transport_interface','0');
  if(transport==='ll'){
-  return {dv_transport:'ll',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:iface,color_format:'2',max_bpc:'12'};
+  return {dv_transport:'ll',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:'1',color_format:'2',max_bpc:'12'};
  }
- return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:iface,color_format:'0',max_bpc:'8'};
+ return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:'0',color_format:'0',max_bpc:'8'};
 }
 
 function resetDefaults(){

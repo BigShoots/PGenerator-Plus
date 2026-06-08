@@ -87,7 +87,8 @@ sub pg_dv_transport_std_flag(@) {
 }
 
 sub pg_dv_transport_interface(@) {
- return &pg_is_pi4_family() ? "2" : "0";
+ my $mode=&pg_dv_transport_mode(@_);
+ return ($mode eq "ll") ? "1" : "0";
 }
 
 sub pg_dv_transport_color_format(@) {
