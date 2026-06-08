@@ -66,34 +66,44 @@ sub pg_is_pi4_family(@) {
  return (&pg_device_model() =~/Raspberry Pi 4|Raspberry Pi 400|Raspberry Pi Compute Module 4/) ? 1 : 0;
 }
 
+sub pg_dv_transport_mode(@) {
+ my $mode=lc(shift || $pgenerator_conf{"dv_transport"} || "");
+ $mode=~s/[^a-z0-9]//g;
+ return "ll" if($mode eq "ll" || $mode eq "lldv" || $mode eq "lowlatency");
+ return "standard" if($mode eq "standard" || $mode eq "std");
+ if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 && int($pgenerator_conf{"is_std_dovi"} || 0) == 0) {
+  return "ll";
+ }
+ return "standard";
+}
+
 sub pg_dv_transport_ll_flag(@) {
- return &pg_is_pi4_family() ? "1" : "0";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "1" : "0";
 }
 
 sub pg_dv_transport_std_flag(@) {
- return &pg_is_pi4_family() ? "0" : "1";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "0" : "1";
 }
 
 sub pg_dv_transport_interface(@) {
- # The Pi 4-family patched vc4 DV stack enters DV through its Dolby/LL path.
- return &pg_is_pi4_family() ? "2" : "0";
+ my $mode=&pg_dv_transport_mode(@_);
+ return ($mode eq "ll") ? "1" : "0";
 }
 
 sub pg_dv_transport_color_format(@) {
- # Pi 4 DV LL is transported as YCbCr 4:2:2; Pi 5 Standard DV uses RGB tunneling.
- return &pg_is_pi4_family() ? "2" : "0";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "2" : "0";
 }
 
 sub pg_dv_transport_max_bpc(@) {
- return &pg_is_pi4_family() ? "12" : "8";
+ return (&pg_dv_transport_mode(@_) eq "ll") ? "12" : "8";
 }
 
 sub pg_dv_standard_interface(@) {
- return &pg_dv_transport_interface();
+ return &pg_dv_transport_interface("standard");
 }
 
 sub pg_dv_standard_ll_flag(@) {
- return &pg_dv_transport_ll_flag();
+ return &pg_dv_transport_ll_flag("standard");
 }
 
 

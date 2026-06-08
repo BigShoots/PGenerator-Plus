@@ -3465,7 +3465,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			avi_infoframe.rgb_quant_range = 2; //Full range [0-255]
 			avi_infoframe.output_format = avi_info.output_format; //0 RGB444; //YCrCb422, doesnt work with YCrCb420
 			avi_infoframe.max_bpc = avi_info.max_bpc; // only works in 8 bit
-			avi_infoframe.c_enc = 2; //ITU-R BT.2020 YCbCr 
+			avi_infoframe.c_enc = 0; // RGB tunnel for Standard Dolby Vision
 			avi_infoframe.c_range = (avi_infoframe.rgb_quant_range == 2) ? 1 : 0;
 			updateAVI_Infoframe(HDRplaneId, avi_infoframe);	
 
