@@ -32,21 +32,67 @@ INITIAL_READY_PENDING=0
 [[ "$REQUIRE_DEVICE_READY" == "1" ]] && INITIAL_READY_PENDING=1
 SETUP_STEP_ID=0
 METER_SERIES_FD_OPEN=0
+SERIES_STATE_CLAIM_LOST=0
 
 json_escape() {
  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+series_state_claim_lost() {
+ [[ "${SERIES_STATE_CLAIM_LOST:-0}" == "1" ]] && return 0
+ [[ -f "$STATE_FILE" ]] || return 1
+ local owner
+ owner=$(python - "$STATE_FILE" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        state = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+if isinstance(state, dict):
+    print(state.get("series_id", "") or "")
+PY
+)
+ [[ -z "$owner" || "$owner" == "$SERIES_ID" ]] && return 1
+ SERIES_STATE_CLAIM_LOST=1
+ echo "[$(date '+%H:%M:%S.%3N')] series state ownership moved: own=$SERIES_ID current=$owner" >> /tmp/meter_series_debug.log
+ return 0
+}
+
 write_state_json() {
+ local payload
+ payload=$(cat) || return 1
+ series_state_claim_lost && return 1
  local tmp="${STATE_FILE}.$$.$RANDOM.tmp"
- cat > "$tmp" || return 1
+ printf '%s\n' "$payload" > "$tmp" || return 1
  chmod 666 "$tmp" 2>/dev/null || true
  chown pgenerator:pgenerator "$tmp" 2>/dev/null || true
  mv -f "$tmp" "$STATE_FILE"
 }
 
 series_stop_requested() {
- [[ -f "$STOP_FILE" ]]
+ [[ -f "$STOP_FILE" ]] && return 0
+ series_state_claim_lost && return 0
+ return 1
+}
+
+series_process_tree() {
+ local root="$1"
+ [[ -n "$root" ]] || return 0
+ local all="$root"
+ local parents="$root"
+ local next kids
+ while [[ -n "$parents" ]]; do
+  next=""
+  for p in $parents; do
+   kids=$(pgrep -P "$p" 2>/dev/null || true)
+   [[ -n "$kids" ]] || continue
+   next="$next $kids"
+   all="$all $kids"
+  done
+  parents="$next"
+ done
+ printf '%s\n' "$all" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '
 }
 
 series_quit_spotread() {
@@ -62,8 +108,11 @@ series_quit_spotread() {
    waited=$((waited + 1))
   done
   if kill -0 "$BG_PID" 2>/dev/null; then
-   kill "$BG_PID" 2>/dev/null || true
+   local tree
+   tree=$(series_process_tree "$BG_PID")
+   kill $tree 2>/dev/null || true
    sleep 0.2
+   kill -9 $tree 2>/dev/null || true
   fi
   wait "$BG_PID" 2>/dev/null || true
  fi
@@ -100,7 +149,7 @@ patch_request_body() {
 }
 
 post_patch() {
- curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+ curl -s --max-time 8 "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")" >/dev/null 2>&1
 }
 
@@ -1124,6 +1173,16 @@ for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 IRE=$(get_step_field $i ire)
 	 NAME=$(get_step_field $i name)
 	 STEP_NUM=$((i + 1))
+ if ! [[ "$R" =~ ^[0-9]+$ && "$G" =~ ^[0-9]+$ && "$B" =~ ^[0-9]+$ && "$INPUT_MAX" =~ ^[0-9]+$ ]] || ! is_number "$IRE" || [[ -z "$NAME" ]]; then
+  echo "[$(date '+%H:%M:%S.%3N')] invalid series step: index=$i r=$R g=$G b=$B ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+  BAD_STEP_MESSAGE=$(json_escape "Invalid series step $i")
+  write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$BAD_STEP_MESSAGE","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+  series_quit_spotread
+  rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+  exit 1
+ fi
 
  # Update state: displaying
  write_state_json << EOJSON
