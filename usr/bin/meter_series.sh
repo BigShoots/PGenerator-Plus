@@ -460,7 +460,7 @@ m2 = 2523.0 / 32.0
 c1 = 3424.0 / 4096.0
 c2 = 2413.0 / 128.0
 c3 = 2392.0 / 128.0
-dv_tunnel_gamma = 3.8
+dv_tunnel_gamma = 2.2
 
 def pq_decode_normalized(code):
     code = max(0.0, min(1.0, float(code)))
