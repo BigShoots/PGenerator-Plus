@@ -2042,7 +2042,8 @@ my $request_dv_transport="";
 $request_dv_transport=$1 if($body=~/"dv_transport"\s*:\s*"([^"\\]{1,32})"/);
 $request_dv_transport=&pg_dv_transport_mode($request_dv_transport);
 if($signal_mode eq "dv") {
- $target_gamma="st2084";
+ my $effective_dv_map_mode=$request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2";
+ $target_gamma=($effective_dv_map_mode eq "2") ? "2.2" : "st2084";
 }
  $transport_signal_range=$signal_range if($transport_signal_range eq "");
  $transport_signal_range=&webui_preferred_rgb_quant_range() if($transport_signal_range eq "");
@@ -3468,7 +3469,7 @@ sub webui_meter_settings_load (@) {
  if(($pgenerator_conf{"dv_status"}||"0") eq "1") {
   my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
   $dv_map_mode="2" if(!defined $dv_map_mode || $dv_map_mode eq "");
-  $meter_target_gamma_auto="st2084";
+  $meter_target_gamma_auto=($dv_map_mode eq "2") ? "2.2" : "st2084";
   $meter_target_gamut_auto="p3d65";
  }
  my $boot_id=&_webui_meter_settings_boot_id();
@@ -9202,7 +9203,7 @@ function applyMeterTargetGamutDefault(force){
 }
 
 function meterDvAutoTargetGamma(){
- return 'st2084';
+ return meterDvMapModeValue()==='2' ? '2.2' : 'st2084';
 }
 
 function meterSyncTargetGammaControl(){
@@ -9213,7 +9214,9 @@ function meterSyncTargetGammaControl(){
  if(locked) g.value=meterDvAutoTargetGamma();
  g.disabled=locked;
  g.title=locked
-  ? 'Dolby Vision greyscale targets use ST 2084/PQ for both Relative and Absolute modes.'
+  ? (meterDvMapModeValue()==='2'
+    ? 'Dolby Vision Relative greyscale targets use a standard 2.2 curve.'
+    : 'Dolby Vision Absolute greyscale targets use ST 2084/PQ.')
   : '';
 }
 
@@ -12069,19 +12072,19 @@ function meterGreyChartTargetGammaSelection(){
 
 function meterGreyChartUsesPqTarget(){
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return false;
- if(meterChartIsDv()) return true;
+ if(meterChartIsDv()) return meterDvMapModeValue()!=='2';
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
 
 function meterGreyTargetUsesPq(){
  if(typeof meterGreyChartUsesPqTarget==='function') return meterGreyChartUsesPqTarget();
- if(meterChartIsDv()) return true;
+ if(meterChartIsDv()) return meterDvMapModeValue()!=='2';
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
 
 function meterGreyEotfUsesPqCurve(){
  if(typeof meterGreyChartUsesPqTarget==='function') return meterGreyChartUsesPqTarget();
- return meterChartIsDv() ? true : meterChartIsPq();
+ return meterChartIsDv() ? meterDvMapModeValue()!=='2' : meterChartIsPq();
 }
 
 function meterGreyCodeRange(){
@@ -12198,12 +12201,10 @@ function meterDvAbsoluteChartTargetLuminance(ire, peak, code){
 function meterDvRelativeChartTargetLuminance(ire, peak, code){
  const targetPeak=(peak>0)?peak:100;
  const frac=clampNum((ire||0)/100,0,1);
- const signal=(typeof meterDvTargetSignalFraction==='function')
-  ? meterDvTargetSignalFraction(ire,code)
-  : ((code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
-   ? meterGreySignalFractionFromCode(Number(code))
-   : frac);
- return Math.min(targetPeak,meterChartPqDecodeNormalized(signal));
+ const signal=(code!=null&&code!==''&&typeof meterGreySignalFractionFromCode==='function')
+  ? meterGreySignalFractionFromCode(Number(code))
+  : frac;
+ return Math.min(targetPeak,gammaEotf(signal,2.2)*targetPeak);
 }
 
 function meterCodeFromSignalPercent(percent){
@@ -14061,14 +14062,12 @@ function gammaEotf(v,gamma){return Math.pow(Math.max(0,v),gamma);}
 function srgbEotf(v){return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4);}
 
 function targetEotf(v,Lw,Lb){
- // DV transport is always signalled as HDR; greyscale analysis follows the
- // ST.2084/PQ target while the selected DV mode controls the tunnel response.
- if(meterChartIsDv()){
+ // DV Absolute uses PQ/ST2084. DV Relative uses the normal power-gamma path
+ // below so chart targets follow the standard 2.2 tunnel curve.
+ if(meterChartIsDv() && meterDvMapModeValue()==='1'){
   const peak=(Lw>0)?Lw:meterChartHdrPeak();
   const ire=Math.max(0,Math.min(1,Number(v)||0))*100;
-  return meterDvMapModeValue()==='1'
-   ? meterDvAbsoluteChartTargetLuminance(ire,peak)
-   : meterDvRelativeChartTargetLuminance(ire,peak);
+  return meterDvAbsoluteChartTargetLuminance(ire,peak);
  }
  // Normal HDR10 analysis is PQ. During LG HDR calibration mode, CalMAN-style
  // 1D LUT greyscale adjustment uses a power-gamma workspace; keep that local
@@ -14589,15 +14588,7 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
   return effectiveGamma(tgtLum,peak,analysisIre);
  }
  if(meterChartIsDv() && meterDvMapModeValue()==='2'){
-  const analysisIre=meterDvTargetSignalFraction(ire,code)*100;
-  const prevStepIre=(prevIre>0&&prevIre<100)?prevIre:95;
-  const prevSignalIre=meterDvTargetSignalFraction(prevStepIre,prevCode)*100;
-  const tgtLum=meterDvRelativeChartTargetLuminance(ire,peak,code);
-  if(analysisIre>=99.999){
-   const prevLum=meterDvRelativeChartTargetLuminance(prevStepIre,peak,prevCode);
-   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignalIre);
-  }
-  return effectiveGamma(tgtLum,peak,analysisIre);
+  return 2.2;
  }
  const signal=meterGreyTargetSignal(ire,code);
  if(!(signal>0)) return null;
