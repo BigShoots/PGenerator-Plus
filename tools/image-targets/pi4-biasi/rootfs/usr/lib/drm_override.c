@@ -120,7 +120,7 @@ static uint64_t rgb_qr_override = 0;
 static int rgb_qr_found = 0;
 static uint32_t dovi_meta_prop_id = 0;
 static int dv_status = 0;
-static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency */
+static int dv_interface = 0;     /* 0=Standard, 1=Low-Latency, 2=Pi4 Dolby path */
 static int dv_map_mode = -1;
 static int conf_read = 0;
 
@@ -425,7 +425,7 @@ static int normalize_dovi_metadata(uint8_t *metadata, uint32_t length,
         return 0;
 
     uint32_t oui = (dv_interface == 2) ? 0x00D046 : 0x000C03;
-    uint8_t iface = (uint8_t)(dv_interface & 0xff);
+    uint8_t iface = (dv_interface == 2) ? 0x01 : (uint8_t)(dv_interface & 0xff);
     int changed = 0;
 
     if (metadata[0] != (uint8_t)(oui & 0xff) ||
