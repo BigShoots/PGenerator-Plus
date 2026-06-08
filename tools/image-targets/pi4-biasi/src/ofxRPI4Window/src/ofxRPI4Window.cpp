@@ -1641,6 +1641,7 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		uniform vec4 globalColor;
 
 		uniform int color_format;
+		uniform int passthrough_422;
 
 		uniform int is_image;
 		uniform int scalar1;
@@ -1657,6 +1658,9 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		
 		vec4 RGBtoYCbCr(vec4 rgb)
 		{
+			if (color_format == 2 && passthrough_422 == 1) {
+				return rgb;
+			}
 			float Y, Cb, Cr, a;
 			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
 			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
