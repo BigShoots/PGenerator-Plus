@@ -1579,6 +1579,7 @@ sub webui_meter_read (@) {
 	   if(&webui_meter_series_alive()) {
 	     &log("WebUI: manual meter read requested while series helper still running; stopping stale series first");
 	     &webui_meter_stop();
+	     &webui_pattern_stop_guard_clear();
 	     select(undef,undef,undef,0.5);
    }
   }
@@ -2176,6 +2177,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  };
  # Cancel any running series and clean up
  &webui_meter_stop();
+ &webui_pattern_stop_guard_clear();
  # Brief pause to let killed processes release USB device
  select(undef,undef,undef,0.5);
 
