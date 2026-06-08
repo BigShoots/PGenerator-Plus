@@ -940,8 +940,9 @@ sub pattern_daemon {
       return "2";
      };
      #
-     # Helper: Dolby Vision over Calman is carried as RGB Full 8-bit tunneling.
-     # Later generic Calman format/range/bit-depth commands must not undo this.
+     # Helper: Dolby Vision transport is platform-specific. Pi 5 uses RGB
+     # tunneling; Pi 4-family uses the historical LL YCbCr 4:2:2 path.
+     # Later generic Calman format/range/bit-depth commands must not undo it.
      #
      my $calman_dv_active = sub {
       return 1 if(int($pgenerator_conf{"dv_status"} || 0) == 1);
@@ -954,15 +955,15 @@ sub pattern_daemon {
       $calman_save_setting->("is_sdr","0");
       $calman_save_setting->("is_hdr","1");
       $calman_save_setting->("eotf","2");
-      $calman_save_setting->("is_ll_dovi",&pg_dv_standard_ll_flag());
-      $calman_save_setting->("is_std_dovi","1");
+      $calman_save_setting->("is_ll_dovi",&pg_dv_transport_ll_flag());
+      $calman_save_setting->("is_std_dovi",&pg_dv_transport_std_flag());
       $calman_save_setting->("dv_status","1");
-      $calman_save_setting->("dv_interface",&pg_dv_standard_interface());
+      $calman_save_setting->("dv_interface",&pg_dv_transport_interface());
       $calman_save_setting->("dv_color_space","0");
-      $calman_save_setting->("color_format","0");
+      $calman_save_setting->("color_format",&pg_dv_transport_color_format());
       $calman_save_setting->("colorimetry","9");
       $calman_save_setting->("primaries","1");
-      $calman_save_setting->("max_bpc","8");
+      $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc());
       $calman_save_setting->("rgb_quant_range","2");
       $calman_save_setting->("dv_metadata",$calman_dv_metadata_for_map_mode->($pgenerator_conf{"dv_map_mode"}));
       $calman_rgb_quant_range=2;
@@ -986,10 +987,10 @@ sub pattern_daemon {
       return 0;
      };
     #
-    # Helper: Calman DV calibration uses RGB Full 8-bit tunneling.
+    # Helper: Calman DV calibration uses the platform DV transport.
     # Absolute/Relative select the renderer map mode and matching legacy
     # metadata-mode value; they do not change the HDMI transport away from
-    # RGB 8-bit.
+    # the platform default.
     #
     my $calman_set_dv_rgb = sub {
      my ($dv_map_mode,$dv_metadata)=@_;
@@ -997,15 +998,15 @@ sub pattern_daemon {
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
-     $calman_save_setting->("is_ll_dovi",&pg_dv_standard_ll_flag());
-     $calman_save_setting->("is_std_dovi","1");
+     $calman_save_setting->("is_ll_dovi",&pg_dv_transport_ll_flag());
+     $calman_save_setting->("is_std_dovi",&pg_dv_transport_std_flag());
      $calman_save_setting->("dv_status","1");
-     $calman_save_setting->("dv_interface",&pg_dv_standard_interface());
+     $calman_save_setting->("dv_interface",&pg_dv_transport_interface());
      $calman_save_setting->("dv_color_space","0");
-     $calman_save_setting->("color_format","0");
+     $calman_save_setting->("color_format",&pg_dv_transport_color_format());
      $calman_save_setting->("colorimetry","9");
      $calman_save_setting->("primaries","1");
-     $calman_save_setting->("max_bpc","8");
+     $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc());
      $calman_save_setting->("rgb_quant_range","2");
      $calman_rgb_quant_range=2;
      &apply_source_rgb_quant_range("calman",2);
@@ -1250,11 +1251,13 @@ sub pattern_daemon {
      #
      # BITD — Bit depth per channel
      #
-     if($type eq "BITD") {
-      my $bitd_val=int($pattern_cmd);
-      if($bitd_val == 8 || $bitd_val == 10 || $bitd_val == 12) {
-       $calman_save_setting->("max_bpc","$bitd_val");
-      }
+	     if($type eq "BITD") {
+	      my $bitd_val=int($pattern_cmd);
+	      if($calman_dv_active->()) {
+	       $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc());
+	      } elsif($bitd_val == 8 || $bitd_val == 10 || $bitd_val == 12) {
+	       $calman_save_setting->("max_bpc","$bitd_val");
+	      }
       &send_key_to_client($connection,"");
       last;
      }

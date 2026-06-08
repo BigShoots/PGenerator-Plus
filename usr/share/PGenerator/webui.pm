@@ -2087,7 +2087,7 @@ if($signal_mode eq "dv") {
  # shift outward (measured appears oversaturated vs target xy).
  my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
-my $dv_interface=($signal_mode eq "dv") ? &pg_dv_standard_interface() : 0;
+my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface() : 0;
  my $dv_tunnel_gamma=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 3.8 : 2.2;
  my $target_linear_to_signal=sub {
   my ($v)=@_;
@@ -5058,18 +5058,17 @@ sub webui_apply_config (@) {
    $changes{"dv_metadata"}="0";
    $changes{"eotf"}=($signal_mode eq "hlg") ? "3" : "2";
    $changes{"primaries"}="1";
- } elsif($signal_mode eq "dv") {
-   my $dv_standard_interface=&pg_dv_standard_interface();
+  } elsif($signal_mode eq "dv") {
    $changes{"is_sdr"}="0";
    $changes{"is_hdr"}="1";
-   $changes{"is_ll_dovi"}=&pg_dv_standard_ll_flag();
-   $changes{"is_std_dovi"}="1";
+   $changes{"is_ll_dovi"}=&pg_dv_transport_ll_flag();
+   $changes{"is_std_dovi"}=&pg_dv_transport_std_flag();
    $changes{"dv_status"}="1";
-   $changes{"dv_interface"}=$dv_standard_interface;
+   $changes{"dv_interface"}=&pg_dv_transport_interface();
    $changes{"eotf"}="2";
    $changes{"primaries"}="1";
-   $changes{"max_bpc"}="8";
-   $changes{"color_format"}="0";
+   $changes{"max_bpc"}=&pg_dv_transport_max_bpc();
+   $changes{"color_format"}=&pg_dv_transport_color_format();
    $changes{"colorimetry"}="9";
    $changes{"rgb_quant_range"}="2";
   }
@@ -5112,22 +5111,22 @@ sub webui_apply_config (@) {
    $dv_map_mode="1" if($dv_metadata eq "3");
    $dv_map_mode="2" if($dv_metadata eq "4");
   }
-  $changes{"max_bpc"}="8";
-  $changes{"is_ll_dovi"}=&pg_dv_standard_ll_flag();
-  $changes{"is_std_dovi"}="1";
+  $changes{"max_bpc"}=&pg_dv_transport_max_bpc();
+  $changes{"is_ll_dovi"}=&pg_dv_transport_ll_flag();
+  $changes{"is_std_dovi"}=&pg_dv_transport_std_flag();
   $changes{"dv_status"}="1";
-  $changes{"color_format"}="0";
+  $changes{"color_format"}=&pg_dv_transport_color_format();
   $changes{"colorimetry"}="9";
   $changes{"eotf"}="2";
   $changes{"primaries"}="1";
   $changes{"rgb_quant_range"}="2";
  $changes{"dv_profile"}="1";
  $changes{"dv_color_space"}="0";
-  $changes{"dv_interface"}=&pg_dv_standard_interface();
+  $changes{"dv_interface"}=&pg_dv_transport_interface();
   $changes{"dv_map_mode"}=$dv_map_mode;
   $changes{"dv_metadata"}=$dv_metadata;
-  # Dolby Vision calibration uses RGB Full 8-bit tunneling; reject modes above
-  # HDMI 2.0 TMDS bandwidth (600 MHz).
+  # Dolby Vision calibration uses a platform-specific transport; reject modes
+  # above HDMI 2.0 TMDS bandwidth (600 MHz).
   if($requested_mode_clock > 0) {
    if($requested_mode_clock > 600000) {
     my $result='{"status":"error","message":"This resolution exceeds HDMI bandwidth for the selected Dolby Vision transport. Use 4K@60Hz or lower."}';
@@ -5690,8 +5689,14 @@ sub webui_capabilities_json (@) {
  %vic_420=();
  my @v420=map{"\"$_\""} sort keys %vic_420;
 
-	 return "{\"dc_30bit\":".($dc_30?"true":"false")
-	  .",\"dc_36bit\":".($dc_36?"true":"false")
+	 my $dv_transport_is_ll=&pg_dv_transport_ll_flag();
+	 my $dv_transport_is_std=&pg_dv_transport_std_flag();
+	 my $dv_transport_interface=&pg_dv_transport_interface();
+	 my $dv_transport_color_format=&pg_dv_transport_color_format();
+	 my $dv_transport_max_bpc=&pg_dv_transport_max_bpc();
+
+		 return "{\"dc_30bit\":".($dc_30?"true":"false")
+		  .",\"dc_36bit\":".($dc_36?"true":"false")
 	  .",\"dc_y444\":".($dc_y444?"true":"false")
   .",\"dc_420_10bit\":".($dc_420_10?"true":"false")
   .",\"dc_420_12bit\":".($dc_420_12?"true":"false")
@@ -5703,9 +5708,14 @@ sub webui_capabilities_json (@) {
   .",\"has_ycbcr422\":".($has_422?"true":"false")
   .",\"has_hdr_st2084\":".($has_st2084?"true":"false")
   .",\"has_hdr_hlg\":".($has_hlg?"true":"false")
-	  .",\"has_dv\":".($has_dv?"true":"false")
-	  .",\"dv_444_10b12b\":".($dv_444_10b12b?"true":"false")
-  .",\"edid_decode_available\":".($edid_decode_available?"true":"false")
+		  .",\"has_dv\":".($has_dv?"true":"false")
+		  .",\"dv_444_10b12b\":".($dv_444_10b12b?"true":"false")
+		  .",\"dv_transport_is_ll_dovi\":\"$dv_transport_is_ll\""
+		  .",\"dv_transport_is_std_dovi\":\"$dv_transport_is_std\""
+		  .",\"dv_transport_interface\":\"$dv_transport_interface\""
+		  .",\"dv_transport_color_format\":\"$dv_transport_color_format\""
+		  .",\"dv_transport_max_bpc\":\"$dv_transport_max_bpc\""
+	  .",\"edid_decode_available\":".($edid_decode_available?"true":"false")
   .",\"edid_parsed\":".($edid_parsed?"true":"false")
 	  .",\"vic_420\":[".join(",",@v420)."]}";
 }
@@ -6585,7 +6595,8 @@ sub webui_pattern_effective_bits (@) {
  my $link_bits=int($pgenerator_conf{"max_bpc"} || 8);
  # The native renderer only has distinct 8-bit and 10-bit drawing paths.
  # HDR10 and HLG use the 10-bit rectangle path when the link is above 8 bpc.
- # Dolby Vision calibration uses the 8-bit RGB Full tunnel.
+ # Dolby Vision uses its own renderer path; keep pattern commands 8-bit even
+ # when the HDMI transport is 12-bit YCbCr 4:2:2 on Pi 4-family boards.
  return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
  return 8 if($signal_mode eq "dv");
  return 8 if($bits != 10 && $bits != 12);
@@ -7673,7 +7684,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <!-- Dolby Vision Settings -->
  <div class="card" id="dvCard">
   <h2><span class="dv-badge">DV</span> Dolby Vision</h2>
-  <div style="font-size:.7rem;color:var(--text2);margin-bottom:10px;line-height:1.4">Uses RGB-PC Full 8-bit tunneling for Relative and Absolute calibration modes.</div>
   <div class="grid">
    <input type="hidden" id="dv_interface" value="0">
    <div class="field">
@@ -8929,8 +8939,10 @@ function applyConfigState(nextConfig){
  setVal('dv_map_mode',config.dv_map_mode||'2');
  if(sm==='dv'){
   syncDvOutputEotfState();
-  setVal('max_bpc','8');
-  setVal('color_format','0');
+  const dvTransport=dvTransportDefaults();
+  setVal('max_bpc',dvTransport.max_bpc);
+  setVal('color_format',dvTransport.color_format);
+  setVal('dv_interface',dvTransport.dv_interface);
   setVal('colorimetry','9');
   setVal('primaries','1');
   setVal('rgb_quant_range','2');
@@ -9178,12 +9190,13 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('primaries','1');
   setVal('max_bpc','10');
  }else if(sm==='dv'){
-  setVal('dv_interface','0');
+  const dvTransport=dvTransportDefaults();
+  setVal('dv_interface',dvTransport.dv_interface);
   setVal('eotf','2');
-  setVal('color_format','0');
+  setVal('color_format',dvTransport.color_format);
   setVal('colorimetry','9');
   setVal('primaries','1');
-  setVal('max_bpc','8');
+  setVal('max_bpc',dvTransport.max_bpc);
   setVal('rgb_quant_range','2');
  }
  applyMeterTargetGamutDefault(true);
@@ -9391,23 +9404,24 @@ function updateDropdowns(){
   : {sdr:true,hdr10:true,hlg:true,dv:false};
  Array.from(smSel.options).forEach(function(o){o.disabled=!smOpts[o.value];o.style.display=smOpts[o.value]?'':'none';});
 
- // In DV mode, calibration uses the RGB Full 8-bit Dolby Vision tunnel.
+ // In DV mode, calibration uses the platform Dolby Vision transport.
  const fmtSel=document.getElementById('color_format');
  const bpcSel=document.getElementById('max_bpc');
  const modeSel=document.getElementById('mode_idx');
  if(sm==='dv'){
-  setVal('dv_interface','0');
-  const allowedBpc=['8'];
-  const targetFmt='0';
+  const dvTransport=dvTransportDefaults();
+  setVal('dv_interface',dvTransport.dv_interface);
+  const allowedBpc=[dvTransport.max_bpc];
+  const targetFmt=dvTransport.color_format;
   Array.from(fmtSel.options).forEach(function(o){o.disabled=o.value!==targetFmt;o.style.display=o.value===targetFmt?'':'none';});
   fmtSel.value=targetFmt;
   Array.from(bpcSel.options).forEach(function(o){o.disabled=!allowedBpc.includes(o.value);o.style.display=allowedBpc.includes(o.value)?'':'none';});
-  if(!allowedBpc.includes(bpcSel.value)) bpcSel.value='8';
+  if(!allowedBpc.includes(bpcSel.value)) bpcSel.value=dvTransport.max_bpc;
   const rngSel=document.getElementById('rgb_quant_range');
   const targetRange='2';
   Array.from(rngSel.options).forEach(function(o){o.disabled=o.value!==targetRange;o.style.display=o.value===targetRange?'':'none';});
   rngSel.value=targetRange;
-  // RGB 8-bit tunneling uses normal 8-bit TMDS bandwidth.
+  // The platform DV transport uses its configured TMDS bandwidth.
   const maxTmds=(caps&&caps.max_tmds)?caps.max_tmds*1000:600000;
   let curModeValid=false;
   Array.from(modeSel.options).forEach(function(o){
@@ -10153,6 +10167,21 @@ function buildCalPatterns(){
 }
 buildCalPatterns();
 
+function dvTransportDefault(configKey,capsKey,fallback){
+ if(caps&&caps[capsKey]!=null) return String(caps[capsKey]);
+ if(config&&config[configKey]!=null) return String(config[configKey]);
+ return fallback;
+}
+function dvTransportDefaults(){
+ return {
+  is_ll_dovi:dvTransportDefault('is_ll_dovi','dv_transport_is_ll_dovi','0'),
+  is_std_dovi:dvTransportDefault('is_std_dovi','dv_transport_is_std_dovi','1'),
+  dv_interface:dvTransportDefault('dv_interface','dv_transport_interface','0'),
+  color_format:dvTransportDefault('color_format','dv_transport_color_format','0'),
+  max_bpc:dvTransportDefault('max_bpc','dv_transport_max_bpc','8')
+ };
+}
+
 function resetDefaults(){
  setVal('signal_mode','sdr');
  setVal('max_bpc','8');
@@ -10198,11 +10227,12 @@ async function applySettings(){
    max_cll:meterHdrMetadataFieldValue('max_cll','hdr10'),
    max_fall:meterHdrMetadataFieldValue('max_fall','hdr10')});
  }else if(sm==='dv'){
+  const dvTransport=dvTransportDefaults();
   Object.assign(changes,{is_sdr:'0',is_hdr:'1',
-   is_ll_dovi:'0',is_std_dovi:'1',
-   dv_status:'1',primaries:'1',color_format:'0',colorimetry:'9',max_bpc:'8',
+   is_ll_dovi:dvTransport.is_ll_dovi,is_std_dovi:dvTransport.is_std_dovi,
+   dv_status:'1',primaries:'1',color_format:dvTransport.color_format,colorimetry:'9',max_bpc:dvTransport.max_bpc,
    rgb_quant_range:'2',eotf:'2',
-   dv_interface:'0',
+   dv_interface:dvTransport.dv_interface,
    dv_map_mode:getVal('dv_map_mode'),
    max_luma:meterHdrMetadataFieldValue('max_luma','dv'),
    min_luma:meterHdrMetadataFieldValue('min_luma','dv'),
@@ -18731,9 +18761,10 @@ function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
  body.signal_mode=getVal('signal_mode')||'sdr';
  if(body.signal_mode==='dv'){
+  const dvTransport=dvTransportDefaults();
   body.target_gamma=meterDvAutoTargetGamma();
   body.dv_map_mode=getVal('dv_map_mode')||((config&&config.dv_map_mode)||'2');
-  body.dv_interface='0';
+  body.dv_interface=dvTransport.dv_interface;
  }
  body.max_luma=(document.getElementById('max_luma')||{}).value||((config&&config.max_luma)||'1000');
  if(body.measurement_meter_port==null){
