@@ -7480,7 +7480,6 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display{width:170px;max-width:100%}
 #meterSettingsGrid .field-gamut{width:148px;max-width:100%}
 #meterSettingsGrid .field-gamut > select{width:148px;max-width:100%}
-#meterSettingsGrid .field-display.has-whitepoint{width:360px}
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
@@ -7522,9 +7521,11 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
 	.meter-xyz-gear-popover.open{display:block}
 	.meter-xyz-toggle-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;white-space:nowrap}
-	.meter-xyz-toggle-row .meter-toggle{flex:0 1 auto;min-width:0}
+	.meter-xyz-toggle-row .meter-toggle{flex:0 0 auto;min-width:0}
+	.meter-xyz-gear-wrap.is-hidden,.meter-pattern-insert-wrap.is-hidden{display:none}
 	.meter-field-label{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap}
-.meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:100%;min-width:340px}
+.meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.meter-xyz-gear-popover .meter-xyz-action-row.visible{display:flex;padding-left:0;margin-top:6px}
 .meter-xyz-action-row{display:none;gap:8px;flex-wrap:wrap;padding-left:22px}
 .meter-xyz-action-row.visible{display:flex}
 #meterSettingsGrid .field-display .meter-toggle-row{gap:2px 10px;margin-top:4px}
@@ -7994,7 +7995,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	       <label class="meter-note-toggle" title="Insert neutral patches between measurement patterns to stabilize display response">
 	        <input type="checkbox" id="meterPatchInsert" checked> Pattern Insertion
 	       </label>
-	       <span class="meter-pattern-insert-wrap">
+	       <span class="meter-pattern-insert-wrap is-hidden">
 	        <button type="button" id="meterPatternInsertGear" class="meter-pattern-insert-gear" aria-label="Pattern insertion options" aria-expanded="false" title="Pattern insertion options">&#9881;</button>
 	        <div class="meter-pattern-insert-popover" id="meterPatternInsertPopover" role="dialog" aria-label="Pattern insertion options">
 	         <div class="meter-pattern-insert-grid">
@@ -8003,7 +8004,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	          <label>Duration <input id="meterPatchInsertTimeDuration" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
 	          <label>Level <input id="meterPatchInsertTimeLevel" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
 	          <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertPatchEnabled" checked> Patch</label>
-	          <label>Patches <input id="meterPatchInsertPatchEvery" type="number" min="1" max="999" step="1" value="1"></label>
+	          <label>Patches <input id="meterPatchInsertPatchEvery" type="number" min="1" max="999" step="1" value="1"><span>&nbsp;</span></label>
 	          <label>Duration <input id="meterPatchInsertPatchDuration" type="text" value="1" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1))"><span>sec</span></label>
 	          <label>Level <input id="meterPatchInsertPatchLevel" type="number" min="0" max="100" step="1" value="10"><span>%</span></label>
 	         </div>
@@ -8014,20 +8015,33 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	      <div class="meter-xyz-toggle-block">
        <div class="meter-xyz-toggle-row">
         <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
-        <span class="meter-xyz-gear-wrap">
+        <span class="meter-xyz-gear-wrap is-hidden">
          <button type="button" id="meterXyzGear" class="meter-xyz-gear" aria-label="XYZ correction matrix options" aria-expanded="false" title="XYZ correction matrix options">&#9881;</button>
          <div class="meter-xyz-gear-popover" id="meterXyzGearPopover" role="dialog" aria-label="XYZ correction matrix options">
           <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
            <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
            <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
           </div>
+          <div class="meter-matrix-fields" id="meterXyzMatrixFields" style="margin-top:8px">
+           <div class="meter-matrix-grid">
+            <input type="number" id="meterXyzM11" step="0.0001" placeholder="1">
+            <input type="number" id="meterXyzM12" step="0.0001" placeholder="0">
+            <input type="number" id="meterXyzM13" step="0.0001" placeholder="0">
+            <input type="number" id="meterXyzM21" step="0.0001" placeholder="0">
+            <input type="number" id="meterXyzM22" step="0.0001" placeholder="1">
+            <input type="number" id="meterXyzM23" step="0.0001" placeholder="0">
+            <input type="number" id="meterXyzM31" step="0.0001" placeholder="0">
+            <input type="number" id="meterXyzM32" step="0.0001" placeholder="0">
+            <input type="number" id="meterXyzM33" step="0.0001" placeholder="1">
+           </div>
+          </div>
          </div>
         </span>
        </div>
        <div class="meter-xyz-toggle-row" id="meterCustomD65ToggleWrap">
         <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterCustomD65Enabled"> Custom D65 <span class="meter-help-tip" title="Use a measured or entered whitepoint for D65 target colorspaces only." aria-label="Custom D65 help">?</span></label>
-        <span class="meter-xyz-gear-wrap">
-         <button type="button" id="meterCustomD65Gear" class="meter-xyz-gear" aria-label="Custom D65 options" aria-expanded="false" title="Custom D65 options">&#9881;</button>
+         <span class="meter-xyz-gear-wrap is-hidden">
+          <button type="button" id="meterCustomD65Gear" class="meter-xyz-gear" aria-label="Custom D65 options" aria-expanded="false" title="Custom D65 options">&#9881;</button>
          <div class="meter-xyz-gear-popover" id="meterCustomD65GearPopover" role="dialog" aria-label="Custom D65 options">
           <div class="field-whitepoint" id="meterTargetWhitePointField">
            <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Custom values update the CIE target, greyscale target white, and color analysis for D65 target colorspaces." aria-label="Target white point help">?</span></label>
@@ -8052,20 +8066,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="p3d65">DCI-P3 / D65</option>
       <option value="p3dci">DCI-P3 / DCI</option>
     </select>
-   <div class="meter-matrix-field">
-    <div class="meter-matrix-fields" id="meterXyzMatrixFields">
-     <div class="meter-matrix-grid">
-      <input type="number" id="meterXyzM11" step="0.0001" placeholder="1">
-      <input type="number" id="meterXyzM12" step="0.0001" placeholder="0">
-      <input type="number" id="meterXyzM13" step="0.0001" placeholder="0">
-      <input type="number" id="meterXyzM21" step="0.0001" placeholder="0">
-      <input type="number" id="meterXyzM22" step="0.0001" placeholder="1">
-      <input type="number" id="meterXyzM23" step="0.0001" placeholder="0">
-      <input type="number" id="meterXyzM31" step="0.0001" placeholder="0">
-      <input type="number" id="meterXyzM32" step="0.0001" placeholder="0">
-      <input type="number" id="meterXyzM33" step="0.0001" placeholder="1">
-     </div>
-    </div>
+   <div class="meter-matrix-field" style="display:none">
        <input type="file" id="meterXyzMatrixImportInput" accept=".json,.txt" style="display:none">
    </div>
    </div>
@@ -12040,8 +12041,6 @@ function updateMeterTargetWhitepointVisibility(){
  if(!field) return;
  const enabled=meterTargetWhitePointEnabled();
  field.classList.toggle('visible',enabled);
- const displayField=field.closest('.field-display');
- if(displayField) displayField.classList.toggle('has-whitepoint',enabled);
 }
 
 function meterActiveGamutKey(){
@@ -28872,10 +28871,29 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
   gear.addEventListener('click',e=>{e.stopPropagation();pop.classList.contains('open')?close():open();});
   document.addEventListener('click',e=>{if(!pop.contains(e.target)&&e.target!==gear) close();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
+  return {close};
  };
- setupGear('meterPatternInsertGear','meterPatternInsertPopover');
- setupGear('meterXyzGear','meterXyzGearPopover');
- setupGear('meterCustomD65Gear','meterCustomD65GearPopover');
+ const gears={
+  patternInsert:setupGear('meterPatternInsertGear','meterPatternInsertPopover'),
+  xyz:setupGear('meterXyzGear','meterXyzGearPopover'),
+  customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover')
+ };
+ const gearWrap=id=>{const g=document.getElementById(id);return g&&g.parentElement;};
+ window.meterUpdateGearVisibility=function(){
+  const pi=document.getElementById('meterPatchInsert');
+  if(pi){const w=gearWrap('meterPatternInsertGear');if(w) w.classList.toggle('is-hidden',!pi.checked);if(!pi.checked&&gears.patternInsert) gears.patternInsert.close();}
+  const xy=document.getElementById('meterXyzMatrixEnabled');
+  if(xy){const w=gearWrap('meterXyzGear');if(w) w.classList.toggle('is-hidden',!xy.checked);if(!xy.checked&&gears.xyz) gears.xyz.close();}
+  const d65=document.getElementById('meterCustomD65Enabled');
+  if(d65){const w=gearWrap('meterCustomD65Gear');if(w) w.classList.toggle('is-hidden',!d65.checked);if(!d65.checked&&gears.customD65) gears.customD65.close();}
+ };
+ const piEl=document.getElementById('meterPatchInsert');
+ if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
+ const xyEl=document.getElementById('meterXyzMatrixEnabled');
+ if(xyEl) xyEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();meterRefreshAfterXyzMatrixChange();});
+ const d65El=document.getElementById('meterCustomD65Enabled');
+ if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
+ window.meterUpdateGearVisibility();
 })();
 const meterSimulateSpectroEl=document.getElementById('meterSimulateSpectro');
 if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',async()=>{
@@ -28955,12 +28973,6 @@ document.getElementById('meterTargetGamut').addEventListener('change',()=>{
  meterRefreshActiveSeriesCharts();
 });
 
-document.getElementById('meterCustomD65Enabled').addEventListener('change',()=>{
- updateMeterTargetWhitepointVisibility();
- meterOnGreyRefChange();
- meterRefreshActiveSeriesCharts();
-});
-
 document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(getVal('signal_mode')==='dv'){
   applyMeterTargetGammaDefault();
@@ -28992,9 +29004,6 @@ function meterRefreshAfterXyzMatrixChange(){
  if(!el) return;
  el.addEventListener('input',meterRefreshAfterXyzMatrixChange);
 });
-
-const meterXyzMatrixToggleEl=document.getElementById('meterXyzMatrixEnabled');
-if(meterXyzMatrixToggleEl) meterXyzMatrixToggleEl.addEventListener('change',meterRefreshAfterXyzMatrixChange);
 
 updateMeterTargetWhitepointVisibility();
 meterUpdateXyzMatrixVisibility();
