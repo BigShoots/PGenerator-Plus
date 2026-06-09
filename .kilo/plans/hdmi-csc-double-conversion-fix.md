@@ -116,3 +116,85 @@ The plan does not include a kernel rebuild recipe in this turn. That would be a 
 ## Open question
 
 After Option D, if the lift is unchanged, the next hypothesis to test is the `max_cll=1000, max_fall=400` vs `0/0` metadata difference, which the user can also test with a single-conf change (`max_cll=0; max_fall=0`) before doing any source edits. That step is deliberately NOT in this plan; it will be planned separately if Option D comes back negative.
+
+## New lead (2026-06-09) — Calman RPC pattern path
+
+User observation: lifted shadow detail only appears when Calman uses PGenerator as the pattern source over RPC. Calman driving the TV's internal pattern generator does not show the lift. Option D already proved the lift is range-dependent on the wire (Limited-range YCbCr444 is the failing state). The lift is not in the kernel (the live `vc4.ko` already uses the identity matrix for YUV444). So the new question is: **what does the Calman RPC path do that the WebUI / native-series path does not?**
+
+### Suspected mechanism
+
+The user's hypothesis: Calman's RPC mode sets the pattern range to Limited *and tells PGenerator to do the same* (presumably through an RPC command or a side-effect of the API endpoint Calman calls). PGenerator, already running in Limited range from calibration time, ends up in a double-Limited state where the renderer applies a 16-235 squash on top of an already-16-235 input. The result is that the near-black patches are encoded too low in the framebuffer, the TV receives them as even-darker-than-black, and the TV's tone-mapper pulls the "legal black" range up to maintain an absolute black reference. When Calman then re-reads the patches with the meter, the meter sees the lifted "legal black" floor and reports brighter values at 5% / 10% than the actual stimulus.
+
+A simpler way to say it: **a calibration with double-Limited encoding under-tracks the stimulus at the low end. The TV calibrates against the under-tracked code values. The lift you see in the read-back is the TV honoring the same code values that were used during calibration — they're just wrong because the renderer had range squared somewhere.**
+
+This is a "you calibrate against X but the stimulus is Y" measurement-systematic, not a kernel/HDR-metadata bug.
+
+### Why this fits the data
+
+- **Lifted only when Calman drives PGenerator.** The WebUI meter-read path goes through a different API endpoint and does not re-set the range. The native PGenerator-series path uses `meter_series.sh` and is also range-stable. Only Calman's RPC path apparently toggles range as a side effect.
+- **Limited, not Full, triggers it.** Option D's result table: at 5% Limited the lift is +0.13 cd/m². At 5% Full the lift is 0.0 (panel black floor). The renderer's `signal_range` is a function of `rgb_quant_range`; when the renderer's `signal_range` disagrees with the connector's `c_range` field in the AVI infoframe, the panel may also do its own limited→full or full→limited squashing in the HDMI receiver.
+- **TV internal pattern generator is unaffected.** TV-internal patterns go through the TV's own signal pipeline, no range squashing by an external renderer.
+- **HLG and HDR10 both show it.** Any signal mode that goes through the Calman-RPC path. The mode itself is irrelevant; the issue is the range agreement between renderer and AVI infoframe.
+
+### Cheap confirmation tests (no source edits)
+
+These should be run in order. Each is a single-knob / single-API-call test. The user is the one taking meter reads; the subagent only stages and configures.
+
+#### Test T1 — Read-back without re-setting range
+
+1. Pick a stimulus (5% HDR Y, Limited range, HDR10, on a known LG picture mode).
+2. In Calman, run a normal calibration to completion.
+3. **Read the patches back with the PGenerator WebUI meter (NOT through Calman).** The WebUI meter path does not touch range; it just sets the pattern and reads.
+4. If the lift **disappears** in the WebUI read-back, the hypothesis is confirmed: Calman's RPC path is the source of the lift, and the lift is being introduced by something Calman does on the read-back (e.g. Calman re-asserts Limited range right before each meter read, or sends a "set range to Limited" RPC alongside the read).
+
+#### Test T2 — Compare AVI infoframe during Calman read vs WebUI read
+
+1. Hook `dmesg -w` on the Pi4 so you can see `vc4_hdmi driver : in setup` and AVI IF lines as they happen.
+2. Run a Calman-driven meter read at 5%. Immediately after, run a WebUI-driven meter read at 5%.
+3. Compare the AVI IF bytes between the two events. The `c_range` (YCC Quantization Range) and `c_enc` (Color Encoding) fields should be the same if the range is stable. If they differ, the Calman path is changing the AVI infoframe mid-read and the TV is responding to a different code than the renderer is producing.
+
+#### Test T3 — Calman read with conf already at Full
+
+1. Set `rgb_quant_range=2` (Full) in `/etc/PGenerator/PGenerator.conf` and restart PGenerator (the user already has this set from the Option D test).
+2. Run a normal Calman-driven calibration and read.
+3. If the lift **disappears**, the hypothesis is confirmed: the renderer's `signal_range` was set to Limited somewhere along the Calman RPC path while the framebuffer was already Full-range-encoded. Switching both to Full (or both to Limited, with no double-squash) removes the lift.
+
+#### Test T4 — `pgsethdr` / Calman RPC inspector
+
+1. Tail `/var/log/PGenerator.log` during a Calman-driven read.
+2. Look for lines that mention `rgb_quant_range`, `signal_range`, `transport_signal_range`, `c_range`, or the `set_pattern` / `meter_read` API.
+3. If Calman is sending an RPC that toggles these, the log will show it.
+
+### Plausible fix candidates (only after T1-T4 confirm)
+
+If T1 confirms, the likely root cause is one of:
+
+- **`command.pm`'s `webui_pattern_image_source_range` (line 7097 in webui.pm) or the equivalent Calman-RPC handler** is calling `pgsetpattern` with an explicit `signal_range` that overrides the renderer's current range setting. The Calman path needs to either not pass `signal_range` at all, or pass it consistent with the current connector range.
+- **`pgenerator-lg`'s Calman-RPC handler** is calling a separate range-set RPC before the read, distinct from the WebUI's read path. The Calman path should not need to re-set range; the renderer already has the right range.
+- **The Calman RPC protocol in `webui.pm`** is mismapped: a "set source range" command in Calman's vocabulary is being interpreted as "set transport range" in PGenerator's vocabulary, and the WebUI never has this problem because it never calls the Calman RPC entry point.
+
+Any fix should be minimal: prevent the Calman RPC path from re-asserting range during a read; let the renderer's already-configured range carry through.
+
+### Files this would touch (after confirmation, not before)
+
+- `usr/share/PGenerator/webui.pm` — the Calman RPC handler around line 7094-7272 (`webui_pattern`, `pattern_signal_range`, `transport_signal_range`).
+- `usr/share/PGenerator/command.pm` — the `pgsetpattern` shim and any range-setting helpers.
+- `tests/` — new regression test `pi4-calman-rpc-range-regression.pl` asserting the Calman RPC path does not call the range-setting helpers during a read.
+- Mirror to `tools/image-targets/pi4-biasi/rootfs/usr/share/PGenerator/`.
+
+### Files NOT to touch
+
+- The kernel CSC (already identity for YUV444; not the source).
+- `usr/lib/drm_override.c` (already correct after the BT.2020 fix).
+- The renderer source (`src/ofxRPI4Window/src/ofxRPI4Window.cpp` and Pi4 image copy) — its range handling matches the connector's reported range; the bug is upstream of the renderer.
+- Pi5 target (`tools/image-targets/pi5-bookworm-armhf/`, anything under `tmp/pi5-*`).
+- `drm_vc4.patch` (stale historical; not authoritative).
+
+### Sequencing
+
+1. **Stop testing range conf flips.** Full range crushes blacks on TVs; the user's stated constraint is to fix the lift in Limited range, not accept Full range.
+2. **Run T1 first.** It is the single most informative test: if a WebUI read-back (no range change) shows the lift, the bug is *not* in Calman's RPC path, and we re-examine. If a WebUI read-back does *not* show the lift, T1 is the cleanest confirmation.
+3. **Run T2 alongside T1** to capture the AVI infoframe difference and rule out a panel-side quirk.
+4. **Run T3 only if T1 is positive** — it tells us whether the range mismatch is a single-knob switch or a deeper layering issue.
+5. **T4 in parallel** with T1-T3 to find the RPC call site if T1 is positive.
+6. Only then: implement the fix candidate and add the regression test.
