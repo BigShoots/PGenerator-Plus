@@ -59,6 +59,11 @@ my ($split_type,$split_payload)=&calman_split_command('CONF_FORMAT:Resolution=19
 is($split_type,'CONF_FORMAT','CalMAN command split keeps the type before the first colon');
 is($split_payload,'Resolution=1920x1080,Refresh=24,1_FORMAT=YCbCr 4:4:4 10-bit,Range=Limited,Bits=10,Dolby=Off','CalMAN command split preserves colon-delimited payload values');
 
+is(&calman_choose_bpc(0,8,10,1),'8','HDR metadata preserves current CalMAN 8bpc transport when no explicit source bpc is sent');
+is(&calman_choose_bpc(12,8,10,1),'12','explicit CalMAN bpc wins over current transport bpc');
+is(&calman_choose_bpc(0,8,10,0),'10','non-HDR defaults do not preserve current bpc unless requested');
+is(&calman_choose_bpc(0,0,8,1),'8','fallback bpc is used when current bpc is unavailable');
+
 my $daemon=do {
  open(my $fh,'<',$daemon_path) or die "Failed to read $daemon_path: $!";
  local $/;
@@ -79,7 +84,7 @@ unlike($daemon, qr/my \$calman_set_non_dv_mode = sub \{.*?\$calman_save_setting-
 like($daemon, qr/my \$calman_handle_rpc_source_alias = sub \{.*?\$alias eq "BITDEPTH".*?\$calman_save_setting->\("max_bpc","\$bpc"\).*?\$alias eq "COLORSPACE".*?\$calman_apply_source_payload->\(\$rpc_payload,0\)/s, 'RPC source aliases use the shared source setting apply path');
 like($daemon, qr/SET_PGENERATOR_CONF_MAX_BPC:\(8\|10\|12\).*?\$calman_note_explicit_bpc->\(\$1\).*?\$calman_apply->\(\);/s, 'RPC CMD max_bpc source setting applies immediately');
 like($daemon, qr/SET_PGENERATOR_CONF_COLOR_FORMAT:\(\[0-3\]\).*?\$calman_save_setting->\("color_format","\$1"\).*?\$calman_apply->\(\);/s, 'RPC CMD color format source setting applies immediately');
-like($daemon, qr/\$calman_save_setting->\("max_bpc",\$calman_preferred_bpc->\(\$eotf_val >= 2 \? "10" : "8"\)\);/, 'CONF_HDR preserves an explicit CalMAN bit depth');
+like($daemon, qr/\$calman_preferred_bpc->\(\$eotf_val >= 2 \? "10" : "8",\$eotf_val >= 2\)/, 'CONF_HDR preserves CalMAN source bit depth across HDR metadata');
 like($daemon, qr/\$calman_save_setting->\("max_bpc",\$calman_preferred_bpc->\(&pg_dv_transport_max_bpc\(\$dv_transport\)\)\);/, 'DV setup preserves an explicit CalMAN bit depth');
 
 done_testing();
