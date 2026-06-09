@@ -88,6 +88,65 @@ sub calman_scale_triplet_8bit (@) {
  return &calman_scale_value($r,255).",".&calman_scale_value($g,255).",".&calman_scale_value($b,255);
 }
 
+sub calman_valid_bpc (@) {
+ my $value=int(shift || 0);
+ return "$value" if($value == 8 || $value == 10 || $value == 12);
+ return "";
+}
+
+sub calman_parse_source_format_payload (@) {
+ my $payload=shift || "";
+ my $default_format_bpc=int(shift || 0);
+ my %parsed=(color_format=>"",max_bpc=>"",range=>"");
+ my $format_text="";
+ if($payload =~/(?:^|[,;])\s*(?:1_)?FORMAT\s*=\s*([^,;]+)/i) {
+  $format_text=$1;
+ } elsif($payload =~/(?:^|[,;])\s*Color\s*Format\s*=\s*([^,;]+)/i) {
+  $format_text=$1;
+ } elsif($payload !~/=/) {
+  $format_text=$payload;
+  $format_text=~s/^\s*Format\s+//i;
+ }
+ $format_text=~s/^\s+|\s+$//g;
+ if($format_text ne "") {
+  my $fmt_norm=uc($format_text);
+  $fmt_norm=~s/[^A-Z0-9]//g;
+  if($fmt_norm =~/(?:YCBCR|YCC|YUV)444/) {
+   $parsed{color_format}="1";
+  } elsif($fmt_norm =~/(?:YCBCR|YCC|YUV)422/) {
+   $parsed{color_format}="2";
+  } elsif($fmt_norm =~/(?:YCBCR|YCC|YUV)420/) {
+   $parsed{color_format}="3";
+  } elsif($fmt_norm =~/RGB/) {
+   $parsed{color_format}="0";
+  }
+  if($format_text =~/(?:^|[^0-9])(8|10|12)\s*(?:[-_\s])*(?:bit|bpc)\b/i ||
+     $format_text =~/(?:RGB|YCC|YCBCR|YUV)[A-Z0-9:_\s-]*?(8|10|12)\s*$/i) {
+   $parsed{max_bpc}=&calman_valid_bpc($1);
+  }
+ }
+ if($payload =~/(?:^|[,;])\s*Bits?\s*=\s*(8|10|12)\b/i ||
+    $payload =~/(?:^|\s)Bits?\s+(8|10|12)\b/i) {
+  $parsed{max_bpc}=&calman_valid_bpc($1);
+ }
+ if($default_format_bpc && $parsed{color_format} ne "" && $parsed{max_bpc} eq "") {
+  $parsed{max_bpc}="8";
+ }
+ if($payload =~/(?:^|[,;])\s*Range\s*=\s*([^,;]+)/i ||
+    $payload =~/(?:^|\s)Range\s+(.+)$/i) {
+  my $range_text=$1;
+  $range_text=~s/^\s+|\s+$//g;
+  if($range_text =~/(full|pc)/i) {
+   $parsed{range}="2";
+  } elsif($range_text =~/(limit|video|smpte)/i) {
+   $parsed{range}="1";
+  } elsif($range_text =~/default/i) {
+   $parsed{range}="0";
+  }
+ }
+ return %parsed;
+}
+
 sub calman_apl_bg (@) {
  my $rgb=shift;
  my $win_pct=shift;
@@ -176,6 +235,7 @@ sub calman_reset_pattern_state (@) {
  $calman_apl_enabled=0;
  $calman_bg="0,0,0";
  $calman_win_size=10;
+ $calman_explicit_max_bpc=0;
  $calman_rgb_quant_range=($pgenerator_conf{"rgb_quant_range"}||"2") + 0;
  &calman_clear_last_pattern();
  &log("Calman: reset pattern state ($source)") if($source ne "");
@@ -924,17 +984,59 @@ sub pattern_daemon {
      # Helper: save a PGenerator conf key and mark settings dirty
      # (defers the pattern generator restart until a pattern command arrives)
      #
-     my $calman_save_setting = sub {
-      my ($conf_key,$conf_val)=@_;
-      &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
-      $pgenerator_conf{$conf_key}="$conf_val";
-      &sync_pattern_bits_default();
-      $calman_settings_dirty=1;
-      &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
-     };
-     my $calman_dv_metadata_for_map_mode = sub {
-      my $map_mode=shift;
-      return "2" if(defined $map_mode && $map_mode eq "0");
+	     my $calman_save_setting = sub {
+	      my ($conf_key,$conf_val)=@_;
+	      &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
+	      $pgenerator_conf{$conf_key}="$conf_val";
+	      &sync_pattern_bits_default();
+	      $calman_settings_dirty=1;
+	      &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
+	     };
+	     my $calman_note_explicit_bpc = sub {
+	      my $bpc=&calman_valid_bpc(shift);
+	      return "" if($bpc eq "");
+	      $calman_explicit_max_bpc=$bpc;
+	      &log("Calman: explicit bit depth set to ${bpc}bpc");
+	      return $bpc;
+	     };
+	     my $calman_preferred_bpc = sub {
+	      my $fallback=shift;
+	      my $explicit=&calman_valid_bpc($calman_explicit_max_bpc);
+	      return $explicit if($explicit ne "");
+	      return &calman_valid_bpc($fallback) if(&calman_valid_bpc($fallback) ne "");
+	      return "10";
+	     };
+	     my $calman_apply_source_payload = sub {
+	      my ($payload,$default_format_bpc)=@_;
+	      my %parsed=&calman_parse_source_format_payload($payload,$default_format_bpc);
+	      my $changed=0;
+	      if($parsed{color_format} ne "") {
+	       $calman_save_setting->("color_format",$parsed{color_format});
+	       $changed=1;
+	      }
+	      if($parsed{max_bpc} ne "") {
+	       my $bpc=$calman_note_explicit_bpc->($parsed{max_bpc});
+	       if($bpc ne "") {
+	        $calman_save_setting->("max_bpc",$bpc);
+	        $changed=1;
+	       }
+	      }
+	      if($parsed{range} ne "") {
+	       if($parsed{range} eq "1" || $parsed{range} eq "2") {
+	        $calman_rgb_quant_range=$parsed{range} + 0;
+	        &log("Calman: external range set to $calman_rgb_quant_range via source settings");
+	        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+	       } else {
+	        &log("Calman: releasing external range via source settings");
+	        &release_source_rgb_quant_range("calman");
+	        $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+	       }
+	      }
+	      return $changed;
+	     };
+	     my $calman_dv_metadata_for_map_mode = sub {
+	      my $map_mode=shift;
+	      return "2" if(defined $map_mode && $map_mode eq "0");
       return "3" if(defined $map_mode && $map_mode eq "1");
       return "4" if(defined $map_mode && $map_mode eq "2");
       return "2";
@@ -962,12 +1064,12 @@ sub pattern_daemon {
       $calman_save_setting->("dv_status","1");
       $calman_save_setting->("dv_interface",&pg_dv_transport_interface($dv_transport));
       $calman_save_setting->("dv_color_space","0");
-      $calman_save_setting->("color_format",&pg_dv_transport_color_format($dv_transport));
-      $calman_save_setting->("colorimetry","9");
-      $calman_save_setting->("primaries","1");
-      $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc($dv_transport));
-      $calman_save_setting->("rgb_quant_range","2");
-      $calman_save_setting->("dv_metadata",$calman_dv_metadata_for_map_mode->($pgenerator_conf{"dv_map_mode"}));
+	      $calman_save_setting->("color_format",&pg_dv_transport_color_format($dv_transport));
+	      $calman_save_setting->("colorimetry","9");
+	      $calman_save_setting->("primaries","1");
+	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->(&pg_dv_transport_max_bpc($dv_transport)));
+	      $calman_save_setting->("rgb_quant_range","2");
+	      $calman_save_setting->("dv_metadata",$calman_dv_metadata_for_map_mode->($pgenerator_conf{"dv_map_mode"}));
       $calman_rgb_quant_range=2;
       &apply_source_rgb_quant_range("calman",2);
      };
@@ -1006,11 +1108,11 @@ sub pattern_daemon {
      $calman_save_setting->("dv_status","1");
      $calman_save_setting->("dv_interface",&pg_dv_transport_interface($dv_transport));
      $calman_save_setting->("dv_color_space","0");
-     $calman_save_setting->("color_format",&pg_dv_transport_color_format($dv_transport));
-     $calman_save_setting->("colorimetry","9");
-     $calman_save_setting->("primaries","1");
-     $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc($dv_transport));
-     $calman_save_setting->("rgb_quant_range","2");
+	     $calman_save_setting->("color_format",&pg_dv_transport_color_format($dv_transport));
+	     $calman_save_setting->("colorimetry","9");
+	     $calman_save_setting->("primaries","1");
+	     $calman_save_setting->("max_bpc",$calman_preferred_bpc->(&pg_dv_transport_max_bpc($dv_transport)));
+	     $calman_save_setting->("rgb_quant_range","2");
      $calman_rgb_quant_range=2;
      &apply_source_rgb_quant_range("calman",2);
      $calman_save_setting->("dv_map_mode","$dv_map_mode") if(defined $dv_map_mode && $dv_map_mode ne "");
@@ -1022,18 +1124,18 @@ sub pattern_daemon {
 
     my $calman_set_non_dv_mode = sub {
      my ($mode,$eotf_val,$colorimetry,$max_bpc)=@_;
-     $mode=lc($mode || "sdr");
-     $eotf_val=0 if(!defined $eotf_val || $eotf_val eq "");
-     $colorimetry=($eotf_val >= 2) ? "9" : "2" if(!defined $colorimetry || $colorimetry eq "");
-     $max_bpc=($eotf_val >= 2) ? "10" : "8" if(!defined $max_bpc || $max_bpc eq "");
-     $calman_save_setting->("signal_mode",$mode);
+	     $mode=lc($mode || "sdr");
+	     $eotf_val=0 if(!defined $eotf_val || $eotf_val eq "");
+	     $colorimetry=($eotf_val >= 2) ? "9" : "2" if(!defined $colorimetry || $colorimetry eq "");
+	     $max_bpc=($eotf_val >= 2) ? "10" : "8" if(!defined $max_bpc || $max_bpc eq "");
+	     $max_bpc=$calman_preferred_bpc->($max_bpc);
+	     $calman_save_setting->("signal_mode",$mode);
      $calman_save_setting->("is_sdr",$eotf_val >= 2 ? "0" : "1");
      $calman_save_setting->("is_hdr",$eotf_val >= 2 ? "1" : "0");
      $calman_save_setting->("is_ll_dovi","0");
      $calman_save_setting->("is_std_dovi","0");
      $calman_save_setting->("dv_status","0");
      $calman_save_setting->("eotf","$eotf_val");
-     $calman_save_setting->("color_format","0");
      $calman_save_setting->("colorimetry","$colorimetry");
      $calman_save_setting->("max_bpc","$max_bpc");
      $calman_save_setting->("primaries",$eotf_val >= 2 ? "1" : "0");
@@ -1125,8 +1227,8 @@ sub pattern_daemon {
        $calman_save_setting->("colorimetry","2");
       }
       $calman_save_setting->("primaries","$prim_val");
-      # Set bit depth based on EOTF (PQ/HLG=10bit, SDR=8bit)
-      $calman_save_setting->("max_bpc",$eotf_val >= 2 ? "10" : "8");
+	      # Set bit depth based on EOTF unless Calman sent an explicit source bit depth.
+	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->($eotf_val >= 2 ? "10" : "8"));
       # Luminance metadata
       $calman_save_setting->("min_luma","$hdr_min_luma") if($hdr_min_luma > 0);
       $calman_save_setting->("max_luma","$hdr_max_luma") if($hdr_max_luma > 0);
@@ -1255,28 +1357,23 @@ sub pattern_daemon {
      # BITD — Bit depth per channel
      #
 	     if($type eq "BITD") {
-	      my $bitd_val=int($pattern_cmd);
-	      if($calman_dv_active->()) {
-	       $calman_save_setting->("max_bpc",&pg_dv_transport_max_bpc("standard"));
-	      } elsif($bitd_val == 8 || $bitd_val == 10 || $bitd_val == 12) {
+	      my $bitd_val=$calman_note_explicit_bpc->($pattern_cmd);
+	      if($bitd_val ne "") {
 	       $calman_save_setting->("max_bpc","$bitd_val");
+	       $calman_apply->();
 	      }
-      &send_key_to_client($connection,"");
-      last;
-     }
+	      &send_key_to_client($connection,"");
+	      last;
+	     }
      #
      # COLF — Color Format (RGB, YCbCr444, YCbCr422, YCbCr420)
      # PGenerator: 0=RGB, 1=YCbCr444, 2=YCbCr422, 3=YCbCr420
      #
-     if($type eq "COLF") {
-      my $colf_val="0";
-      $colf_val="1" if($pattern_cmd =~/YCBCR444|YUV444|444/i);
-      $colf_val="2" if($pattern_cmd =~/YCBCR422|YUV422|422/i);
-      $colf_val="3" if($pattern_cmd =~/YCBCR420|YUV420|420/i);
-      $calman_save_setting->("color_format","$colf_val");
-      # Apply immediately — DRM output format must change now
-      $calman_apply->();
-      &send_key_to_client($connection,"");
+	     if($type eq "COLF") {
+	      $calman_apply_source_payload->($pattern_cmd,0);
+	      # Apply immediately — DRM output format must change now
+	      $calman_apply->();
+	      &send_key_to_client($connection,"");
       last;
      }
      #
@@ -1424,12 +1521,13 @@ sub pattern_daemon {
     &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
      # the HDMI output mode via modetest mode index
      #
-     if($type eq "CONF_FORMAT") {
-      my $fmt=$pattern_cmd;
-      $fmt=~s/^\s+|\s+$//g;
-      &log("Calman: CONF_FORMAT=$fmt");
-      # Parse resolution string: <height><p|i><rate> or WxH, with optional Hz/@ spacing.
-      my ($req_w,$req_h,$req_ip,$req_rate);
+	     if($type eq "CONF_FORMAT") {
+	      my $fmt=$pattern_cmd;
+	      $fmt=~s/^\s+|\s+$//g;
+	      &log("Calman: CONF_FORMAT=$fmt");
+	      $calman_apply_source_payload->($fmt,0);
+	      # Parse resolution string: <height><p|i><rate> or WxH, with optional Hz/@ spacing.
+	      my ($req_w,$req_h,$req_ip,$req_rate);
       my $explicit_rate=0;
       my $default_rate=60;
       my %std_w=(2160=>3840,1080=>1920,720=>1280,576=>720,480=>720);
@@ -1517,24 +1615,25 @@ sub pattern_daemon {
       } else {
        &log("Calman: CONF_FORMAT unrecognized format: $fmt");
       }
-      &calman_replay_last_pattern("CONF_FORMAT");
-      &send_key_to_client($connection,"");
-      last;
-     }
+	      $calman_apply->(0);
+	      &calman_replay_last_pattern("CONF_FORMAT");
+	      &send_key_to_client($connection,"");
+	      last;
+	     }
      #
      # CONF_LEVEL — Level/gamma/range/bitdepth configuration
      # Handles: "Bits N", "Range X", "Format X", "Gamma-HDR", "Gamma-SDR"
      #
-     if($type eq "CONF_LEVEL") {
-      my $cl=$pattern_cmd;
-      $cl=~s/^\s+|\s+$//g;
-      if($cl =~/^Bits\s+(\d+)/i) {
-       my $bd=int($1);
-       if($bd == 8 || $bd == 10 || $bd == 12) {
-        $calman_save_setting->("max_bpc","$bd");
-       }
-       # Apply immediately — DRM max_bpc must change now
-       $calman_apply->();
+	     if($type eq "CONF_LEVEL") {
+	      my $cl=$pattern_cmd;
+	      $cl=~s/^\s+|\s+$//g;
+	      if($cl =~/^Bits\s+(\d+)/i) {
+	       my $bd=$calman_note_explicit_bpc->($1);
+	       if($bd ne "") {
+	        $calman_save_setting->("max_bpc","$bd");
+	       }
+	       # Apply immediately — DRM max_bpc must change now
+	       $calman_apply->();
       } elsif($cl =~/^Range\s+(.*)/i) {
        my $rv=lc($1);
        if($rv =~/full/) {
@@ -1553,23 +1652,10 @@ sub pattern_daemon {
         $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
         &calman_replay_last_pattern("CONF_LEVEL range");
        }
-      } elsif($cl =~/^Format\s+(.*)/i) {
-       my $fv=$1;
-       my $colf_val="0";
-       $colf_val="1" if($fv =~/444/i);
-       $colf_val="2" if($fv =~/422/i);
-       $colf_val="3" if($fv =~/420/i);
-       $calman_save_setting->("color_format","$colf_val");
-       # Extract bit depth from format string (e.g. "YCC444_10", "RGB 8-bit")
-       if($fv =~/_(\d+)$/ || $fv =~/(\d+)-bit/i) {
-        my $fmt_bits=int($1);
-        $calman_save_setting->("max_bpc","$fmt_bits") if($fmt_bits == 8 || $fmt_bits == 10 || $fmt_bits == 12);
-       } else {
-        # No bit depth suffix (e.g. "RGB", "YCC420") — default to 8bpc
-        $calman_save_setting->("max_bpc","8");
-       }
-      # Apply immediately — DRM output format must change now
-      $calman_apply->();
+	      } elsif($cl =~/^Format\s+(.*)/i) {
+	       $calman_apply_source_payload->($1,1);
+	      # Apply immediately — DRM output format must change now
+	      $calman_apply->();
      } elsif($cl =~/^Gamma-HDR$/i) {
        $calman_set_non_dv_mode->("hdr",2,"9","10");
      } elsif($cl =~/^Gamma-SDR$/i) {
