@@ -1078,14 +1078,17 @@ sub pattern_daemon {
 	     my $calman_save_setting = sub {
 	      my ($conf_key,$conf_val)=@_;
 	      # Calman GCI plugin (UPGCI 2.0 control plane) must not
-	      # override the user's WebUI signal-mode settings. The only
-	      # Calman-controlled values that affect HDR plane encoding
-	      # are primaries and eotf; everything else (signal_mode,
-	      # color_format, max_bpc, rgb_quant_range, colorimetry,
-	      # is_sdr/is_hdr, dv_*, min_luma/max_luma, etc.) is left
-	      # to the WebUI configuration. The Calman RPC plugin never
-	      # sets $calman_gci, so the RPC path is unaffected.
-	      if($calman_gci{$connection} && $conf_key ne "primaries" && $conf_key ne "eotf") {
+	      # override the user's WebUI signal-mode settings. The
+	      # Calman-controlled values that affect the HDR plane
+	      # encoding are is_hdr, primaries, and eotf; everything
+	      # else (signal_mode, color_format, max_bpc, rgb_quant_range,
+	      # colorimetry, is_sdr, dv_*, min_luma/max_luma, etc.) is
+	      # left to the WebUI configuration. is_hdr is allow-listed
+	      # so the GCI plugin's HDR_ENABLE command actually turns
+	      # HDR on; without it the "check HDR in Calman" toggle is
+	      # silently dropped. The Calman RPC plugin never sets
+	      # $calman_gci, so the RPC path is unaffected.
+	      if($calman_gci{$connection} && $conf_key ne "primaries" && $conf_key ne "eotf" && $conf_key ne "is_hdr") {
 	       &log("Calman GCI: suppressed save $conf_key=$conf_val (WebUI owns this key)");
 	       return;
 	      }
