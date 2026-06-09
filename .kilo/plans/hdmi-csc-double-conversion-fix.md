@@ -140,12 +140,27 @@ This is a "you calibrate against X but the stimulus is Y" measurement-systematic
 
 These should be run in order. Each is a single-knob / single-API-call test. The user is the one taking meter reads; the subagent only stages and configures.
 
-#### Test T1 — Read-back without re-setting range
+#### Test T1 — Pattern-source-controlled swap (user's test, 2026-06-09)
 
-1. Pick a stimulus (5% HDR Y, Limited range, HDR10, on a known LG picture mode).
-2. In Calman, run a normal calibration to completion.
-3. **Read the patches back with the PGenerator WebUI meter (NOT through Calman).** The WebUI meter path does not touch range; it just sets the pattern and reads.
-4. If the lift **disappears** in the WebUI read-back, the hypothesis is confirmed: Calman's RPC path is the source of the lift, and the lift is being introduced by something Calman does on the read-back (e.g. Calman re-asserts Limited range right before each meter read, or sends a "set range to Limited" RPC alongside the read).
+The user wants to isolate whether the lift is introduced during **calibration** or only during **read-back** by holding the read-back constant and varying the calibration pattern source:
+
+1. **Baseline A:** Calibrate the TV using Calman driving the **TV's internal pattern generator**. Complete the full calibration. Run the post-cal series read with **Calman** still driving the TV's internal pattern generator. Record the 5% / 10% / 15% / 20% HDR Y cd/m².
+2. **Treatment A:** Calibrate the TV using Calman driving the **TV's internal pattern generator** (same as Baseline A). Complete the full calibration. **Without recalibrating**, run the post-cal series read with Calman now driving **PGenerator as the pattern source**. Record the same stimuli.
+3. **Treatment B (swap order):** Calibrate the TV using Calman driving **PGenerator as the pattern source**. Complete the full calibration. Run the post-cal series read with Calman still driving **PGenerator**. Record the same stimuli.
+
+Interpretation:
+
+| Baseline A read | Treatment A read | Treatment B read | Interpretation |
+|---|---|---|---|
+| No lift (e.g. 0.0606 at 5%) | Lift appears (e.g. 0.13) | Lift appears (e.g. 0.13) | The lift is on the **read** side. Calman's PGenerator-as-source read path is the cause. |
+| No lift | No lift | Lift appears | The lift is on the **calibration** side. Calman's PGenerator-as-source *calibration* path is the cause. The TV calibrates against wrong code values, and re-reading against the same wrong code values reproduces the lift. |
+| No lift | No lift | No lift | Bug is elsewhere; abort this lead. |
+
+The user's prior observation — that the read through Calman-as-source produces the same lift as a read through the WebUI without Calman — already suggests Treatment B reproduces the lift and Treatment A does not. **Treatment B with the lift present is the "is it on the cal side" answer; Treatment A with the lift absent is the "is it on the read side" answer.**
+
+If Treatment A shows the lift *absent* and Treatment B shows the lift *present*, the bug is on Calman's PGenerator-as-source *calibration* path. This points at the same code area as the previous lead (the Calman RPC handler around `webui.pm:7094-7272`) but on the *write* / *calibration* side rather than the *read* side.
+
+The simplest concrete failure mode consistent with this: when Calman asks PGenerator to display a near-black patch, PGenerator's pattern handler runs the YCbCr-packing shader against a near-black value. If the renderer's `signal_range` is Limited and the shader applies a Limited-to-Limited squash, code value 64 (10-bit limited black) gets encoded as something like code 50, which the TV's HDMI receiver remaps up. The TV's tone mapper then displays a brighter patch than the code value says, and Calman calibrates against the brighter patch. If the read-back uses the same code value with the same encoding, the meter sees the same brightness, and the lift is reproducible end-to-end. (i.e. the lift is self-consistent on PGenerator's path, but inconsistent with the TV-internal path that uses the right code values.)
 
 #### Test T2 — Compare AVI infoframe during Calman read vs WebUI read
 
@@ -167,7 +182,7 @@ These should be run in order. Each is a single-knob / single-API-call test. The 
 
 ### Plausible fix candidates (only after T1-T4 confirm)
 
-If T1 confirms, the likely root cause is one of:
+If T1 Treatment B is the only path that lifts, the likely root cause is one of:
 
 - **`command.pm`'s `webui_pattern_image_source_range` (line 7097 in webui.pm) or the equivalent Calman-RPC handler** is calling `pgsetpattern` with an explicit `signal_range` that overrides the renderer's current range setting. The Calman path needs to either not pass `signal_range` at all, or pass it consistent with the current connector range.
 - **`pgenerator-lg`'s Calman-RPC handler** is calling a separate range-set RPC before the read, distinct from the WebUI's read path. The Calman path should not need to re-set range; the renderer already has the right range.
