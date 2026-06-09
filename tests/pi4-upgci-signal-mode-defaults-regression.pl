@@ -36,9 +36,13 @@ like($daemon,qr/sub\s+calman_set_gci_active\s*\(@\)/,'daemon.pm declares calman_
 like($daemon,qr/sub\s+calman_clear_gci_connection\s*\(@\)/,'daemon.pm declares calman_clear_gci_connection helper');
 
 # 3) $calman_save_setting is gated so that GCI connections only
-#    save primaries and eotf. Every other key is suppressed with a
-#    log line and the function returns without writing PGenerator.conf.
-like($daemon,qr{my\s+\$calman_save_setting\s*=\s*sub\s*\{[\s\S]{0,2000}?if\(\$calman_gci\{\$connection\}\s*&&\s*\$conf_key\s*ne\s*"primaries"\s*&&\s*\$conf_key\s*ne\s*"eotf"\)}s,'daemon.pm calman_save_setting gates non-primaries/non-eotf saves on the GCI flag');
+#    save primaries, eotf, and is_hdr. Every other key is suppressed
+#    with a log line and the function returns without writing
+#    PGenerator.conf. is_hdr is allow-listed so the GCI plugin's
+#    HDR_ENABLE command actually turns HDR on; without it the
+#    "check HDR in Calman" toggle is silently dropped.
+like($daemon,qr{my\s+\$calman_save_setting\s*=\s*sub\s*\{[\s\S]{0,2000}?if\(\$calman_gci\{\$connection\}\s*&&\s*\$conf_key\s*ne\s*"primaries"\s*&&\s*\$conf_key\s*ne\s*"eotf"\s*&&\s*\$conf_key\s*ne\s*"is_hdr"\)}s,'daemon.pm calman_save_setting gates non-primaries/non-eotf/non-is_hdr saves on the GCI flag');
+like($daemon,qr{conf_key\s*ne\s*"is_hdr"}s,'is_hdr is allow-listed in the GCI save gate (Calman HDR_ENABLE works)');
 
 # 4) Runtime range overrides are also gated on the GCI flag at every
 #    call site in the colon-dispatch (source settings, QRNG, SetRange,
