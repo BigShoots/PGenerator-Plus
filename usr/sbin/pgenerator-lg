@@ -13,6 +13,177 @@ use Time::HiRes qw(time);
 $|=1;
 $SIG{PIPE}="IGNORE";
 
+# Mirror of usr/share/PGenerator/command.pm
+# sub map_picture_mode_label_to_ddc_name — translate any user-friendly
+# LG picture-mode label (front-end DisplayCard dropdown, REST body, URL
+# parameter, legacy underscore form, current WebOS camelCase form, or a
+# noisy human label like "isf dark room") into the canonical WebOS
+# setSystemSettings name that the LG TV accepts. Returns "" on miss.
+sub map_picture_mode_label_to_ddc_name (@) {
+ my $label=shift;
+ my $signal_mode=shift;
+ $label="" if(!defined($label));
+ $label=~s/^\s+//;
+ $label=~s/\s+$//;
+ return "" if($label eq "");
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ $signal_mode="" if($signal_mode ne "sdr" && $signal_mode ne "hdr10" && $signal_mode ne "hlg" && $signal_mode ne "dv");
+ my $token=lc($label);
+ $token =~ s/[\s_\-]+//g;
+ return "" if($token eq "");
+ # Remember the original token; we must not mutate the canonical
+ # lookup key (e.g. "hdrcinema" must not become "cinema" just because
+ # the prefix-stripper also matches "hdr" as a substring).
+ my $raw_token=$token;
+ my %map=(
+  "expert1" => "expert1",
+  "expert2" => "expert2",
+  "cinema" => "cinema",
+  "cinemahome" => "cinema",
+  "filmmaker" => "filmMaker",
+  "filmmakermode" => "filmMaker",
+  "filmmak" => "filmMaker",
+  "filmlmak" => "filmMaker",
+  "filmlmaker" => "filmMaker",
+  "filmlmamaker" => "filmMaker",
+  "filmamaker" => "filmMaker",
+  "filmamker" => "filmMaker",
+  "filmMaker" => "filmMaker",
+  "game" => "game",
+  "gameoptimizer" => "game",
+  "standard" => "standard",
+  "vivid" => "vivid",
+  "technicolorexpert" => "technicolorExpert",
+  "isfexpert1" => "expert1",
+  "isfexpertbright" => "expert1",
+  "expertbright" => "expert1",
+  "isfexpert2" => "expert2",
+  "isfexpertdark" => "expert2",
+  "expertdark" => "expert2",
+  "isfdarkroom" => "expert2",
+  "isfdark" => "expert2",
+  "darkroom" => "expert2",
+  "brightroom" => "expert1",
+  "hdrcinema" => "hdrCinema",
+  "hdr_cinema" => "hdrCinema",
+  "hdrfilmamker" => "hdrFilmMaker",
+  "hdrfilmmaker" => "hdrFilmMaker",
+  "hdr_filmmaker" => "hdrFilmMaker",
+  "hdr_filmmakermode" => "hdrFilmMaker",
+  "hdrfilmmakermode" => "hdrFilmMaker",
+  "hdrgame" => "hdrGame",
+  "hdr_game" => "hdrGame",
+  "hdrgameoptimizer" => "hdrGame",
+  "hdrstandard" => "hdrStandard",
+  "hdr_standard" => "hdrStandard",
+  "hdrvivid" => "hdrVivid",
+  "hdr_vivid" => "hdrVivid",
+  "hdrtechnicolorexpert" => "hdrTechnicolorExpert",
+  "hdr_technicolorexpert" => "hdrTechnicolorExpert",
+  "dolbyvisioncinema" => "dolbyVisionCinema",
+  "dolby_hdr_cinema" => "dolbyVisionCinema",
+  "dolbyhdrcinema" => "dolbyVisionCinema",
+  "dolbycinema" => "dolbyVisionCinema",
+  "dolbyvisioncinemahome" => "dolbyVisionCinemaBright",
+  "dolbyvisioncinemabright" => "dolbyVisionCinemaBright",
+  "dolby_hdr_cinema_bright" => "dolbyVisionCinemaBright",
+  "dolbyhdrcinemabright" => "dolbyVisionCinemaBright",
+  "dolbyhdrcinemahome" => "dolbyVisionCinemaBright",
+  "dolbycinemahome" => "dolbyVisionCinemaBright",
+  "dolbycinemabright" => "dolbyVisionCinemaBright",
+  "dolbyvisiongame" => "dolbyVisionGame",
+  "dolby_hdr_game" => "dolbyVisionGame",
+  "dolbyhdrgame" => "dolbyVisionGame",
+  "dolbygame" => "dolbyVisionGame",
+  "dolbygameoptimizer" => "dolbyVisionGame",
+  "dolbyvisiongameoptimizer" => "dolbyVisionGame",
+  "dolbyhdrgameoptimizer" => "dolbyVisionGame",
+  "dolbyvisionvivid" => "dolbyVisionVivid",
+  "dolby_hdr_vivid" => "dolbyVisionVivid",
+  "dolbyhdrvivid" => "dolbyVisionVivid",
+  "dolbyvivid" => "dolbyVisionVivid",
+  "aps" => "standard",
+  "eco" => "standard",
+  "normal" => "standard",
+  "sports" => "vivid",
+ );
+  if($map{$token}) {
+   my $resolved=$map{$token};
+   return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+   return $resolved;
+  }
+  if($raw_token =~ /^(sdrdolby|hdrdolby|sdrhdr|dolbyvisionsdr|dolbyvisionhdr|dolbyvision|dolby|dv)([a-z].*)$/) {
+   my $stripped=$2;
+   my $dolby_try="dolby".$stripped;
+   if(defined($map{$dolby_try})) {
+    my $resolved=$map{$dolby_try};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   if(defined($map{$stripped})) {
+    my $resolved=$map{$stripped};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   return "";
+  }
+  if($raw_token =~ /^(sdr|hdr|hlg)([a-z].*)$/) {
+   my $stripped=$2;
+   if(defined($map{$stripped})) {
+    my $resolved=$map{$stripped};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   return "";
+  }
+  return "";
+}
+
+# Returns the PGenerator signal mode the given canonical LG WebOS
+# picture mode name is bound to. "hdr*" is HDR10-or-HLG; "dolby*"
+# is Dolby Vision; plain names are SDR-only. Empty when unknown.
+sub lg_picture_mode_signal_for_canonical_name (@) {
+ my $canonical=shift;
+ $canonical="" if(!defined($canonical));
+ return "" if($canonical eq "");
+ if($canonical =~ /^dolby/i) { return "dv"; }
+ if($canonical =~ /^hdr/i)  { return "hdr10"; }
+ return "sdr";
+}
+
+# True when the canonical LG WebOS picture mode name is valid in
+# the given PGenerator signal mode. HLG counts as HDR10. Returns 1
+# for empty/unknown inputs so permissive callers are unaffected.
+sub lg_picture_mode_signal_compatible (@) {
+ my ($canonical,$signal_mode)=@_;
+ $canonical="" if(!defined($canonical));
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ return 1 if($canonical eq "" || $signal_mode eq "");
+ my $required=&lg_picture_mode_signal_for_canonical_name($canonical);
+ return 1 if($required eq "");
+ if($required eq "hdr10") {
+  return 1 if($signal_mode eq "hdr10" || $signal_mode eq "hlg");
+  return 0;
+ }
+ return ($required eq $signal_mode) ? 1 : 0;
+}
+
+# Returns a short list of canonical LG WebOS picture mode names
+# that are valid in the given PGenerator signal mode, for use in
+# error messages that nudge the user toward a working choice.
+sub lg_picture_mode_signal_examples (@) {
+ my $signal_mode=shift;
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ return ("cinema","filmMaker","game") if($signal_mode eq "sdr");
+ return ("hdrCinema","hdrFilmMaker","hdrGame") if($signal_mode eq "hdr10" || $signal_mode eq "hlg");
+ return ("dolbyVisionCinema","dolbyVisionCinemaBright","dolbyVisionGame") if($signal_mode eq "dv");
+ return ();
+}
+
+
 $WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 $REQUEST_ENV="PGEN_LG_REQUEST_B64";
 $DEFAULT_CONNECT_TIMEOUT=5;
@@ -1671,7 +1842,7 @@ sub lg_picture_reset_workflow (@) {
 ###############################################
 $DIAG_LOG_PATH="/var/lib/PGenerator/lg/last-write.log";
 $DIAG_LOG_MAX_BYTES=131072;
-$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|game|hdr_(?:technicolorexpert|filmmaker|filmmakermode|cinema|game)|dolby_hdr_(?:cinema|cinema_bright|game))$';
+$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|filmmaker|game|hdrCinema|hdrFilmMaker|hdrGame|hdrTechnicolorExpert|hdr_cinema|hdr_filmMaker|hdr_filmmaker|hdr_filmmakermode|hdr_game|hdr_technicolorexpert|dolbyVisionCinema|dolbyVisionCinemaBright|dolbyVisionGame|dolby_hdr_cinema|dolby_hdr_cinema_bright|dolby_hdr_game)$';
 
 sub diag_log_append (@) {
  my ($label,$data)=@_;
@@ -3731,7 +3902,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 }
 
 sub lg_picture_set_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$fallback_picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance)=@_;
+ my ($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$fallback_picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance,$signal_mode)=@_;
  $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
  $reset_ddc_baseline=$reset_ddc_baseline ? 1 : 0;
@@ -3741,6 +3912,9 @@ sub lg_picture_set_workflow (@) {
  $readback_keys=[] if(ref($readback_keys) ne "ARRAY");
  $tv_input="" if(!defined($tv_input));
  $fallback_picture_mode="" if(!defined($fallback_picture_mode));
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ $signal_mode="" if($signal_mode ne "sdr" && $signal_mode ne "hdr10" && $signal_mode ne "hlg" && $signal_mode ne "dv");
  $tv_input=lc($tv_input);
  $tv_input="" if($tv_input !~ /^hdmi[1-4](?:_pc)?$/);
  return &json_error("No picture settings were provided",{ ip => $ip }) if(!%{$settings});
@@ -3750,6 +3924,30 @@ sub lg_picture_set_workflow (@) {
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
 
  my $caller_picture_mode=$settings->{"pictureMode"}||"";
+ # Normalize the user-friendly / legacy / camelCase label sent by the
+ # DisplayCard front-end into the canonical WebOS setSystemSettings
+ # name. Without this, the TV returns "No matched extended item:
+ # pictureMode" (HTTP 500) for aliases like "isf dark room",
+ # "hdr_cinema", "expertbright", etc. When the WebUI also passes the
+ # current PGenerator signal mode, refuse the request if the resolved
+ # canonical name is not valid in that signal mode (LG WebOS exposes
+ # different picture-mode namespaces for SDR / HDR10 / HLG / DV).
+ my $mapped_caller_picture_mode=($caller_picture_mode ne "") ? &map_picture_mode_label_to_ddc_name($caller_picture_mode,$signal_mode) : "";
+ if($caller_picture_mode ne "" && $mapped_caller_picture_mode eq "") {
+  &websocket_close($session);
+  &diag_log_append("picture_set:invalid-label",{ ip => $ip, requested_picture_mode => $caller_picture_mode, signal_mode => $signal_mode });
+  my $hint=$signal_mode ne ""
+   ? "Switch the renderer to the matching signal mode (e.g. SDR for ISF dark room) or pick a $signal_mode picture mode (e.g. ".join(", ", &lg_picture_mode_signal_examples($signal_mode)).")."
+   : "Use one of the Display dropdown values (e.g. SDR Expert Dark, HDR Cinema, HDR Filmmaker).";
+  return &json_error("LG picture mode '$caller_picture_mode' is not available in the current signal mode".($signal_mode ne "" ? " ($signal_mode)" : "").". $hint",{
+   ip => $ip,
+   requested_picture_mode => $caller_picture_mode,
+   signal_mode => $signal_mode,
+   error_code => "unknown-picture-mode-label",
+  });
+ }
+ $settings->{"pictureMode"}=$mapped_caller_picture_mode if($mapped_caller_picture_mode ne "");
+ $caller_picture_mode=$mapped_caller_picture_mode;
  my $picture_mode_only=($caller_picture_mode ne "" && scalar(keys(%{$settings}))==1) ? 1 : 0;
  my $active_picture_mode=$caller_picture_mode || $fallback_picture_mode;
  if($picture_mode_only && $generation->{"ddc_only_white_balance"}) {
@@ -4089,6 +4287,18 @@ sub lg_picture_set_workflow (@) {
   } elsif($failed) {
    &websocket_close($session);
    return &json_error("LG TV rejected the panel-light control for this picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_error => $failure_message, raw_response => $response }) if($panel_light_only);
+   if($picture_mode_only && $failure_message =~ /no\s+matched\s+extended\s+item/i) {
+    &diag_log_append("picture_set:mode-not-supported",{ ip => $ip, requested_picture_mode => $caller_picture_mode, raw_error => $failure_message, raw_response => $response });
+    return &json_error("LG TV rejected the picture-mode change to '$caller_picture_mode' (WebOS setSystemSettings reports 'No matched extended item: pictureMode' on this generation). Use the LG Magic Remote or the on-screen Settings menu to switch the picture mode, then click Refresh on the Display card.",{
+     ip => $ip,
+     active_picture_mode => $active_picture_mode,
+     requested_picture_mode => $caller_picture_mode,
+     error_code => "picture-mode-change-not-supported",
+     repair_hint => "Use the LG Magic Remote to change the picture mode on the TV, then click Refresh.",
+     raw_error => $failure_message,
+     raw_response => $response,
+    });
+   }
    return &json_error($failure_message,{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $response });
   }
  }
@@ -4625,7 +4835,7 @@ sub main (@) {
 	 } elsif($action eq "picture_get") {
 	  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode,$tv_input,$force_ddc_white_balance);
 	 } elsif($action eq "picture_set") {
-		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance);
+		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance,$signal_mode);
  } elsif($action eq "picture_reset") {
   $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset);
    } elsif($action eq "remote_enter") {

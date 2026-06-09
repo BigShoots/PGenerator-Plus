@@ -1339,7 +1339,8 @@ sub webui_lg_picture_settings_set (@) {
   settings => $settings,
   readback_keys => $readback_keys,
 	  picture_mode => $picture_mode,
-	 tv_input => &lg_input_from_cec(),
+	  signal_mode => $payload->{"signal_mode"}||"",
+	  tv_input => &lg_input_from_cec(),
 		  keep_calibration_mode => $keep_calibration_mode,
 		  calibration_mode_active => $calibration_mode_active,
 		  reset_ddc_baseline => ($payload->{"reset_ddc_baseline"}||$payload->{"clear_ddc_baseline"}) ? &lg_json_true() : &lg_json_false(),
@@ -1871,26 +1872,26 @@ const LG_PICTURE_MODES_BY_SIGNAL={
   ['vivid','SDR Vivid']
  ],
  hdr10:[
-  ['hdr_cinema','HDR Cinema'],
-  ['hdr_filmMaker','HDR Filmmaker'],
-  ['hdr_game','HDR Game Optimizer'],
-  ['hdr_standard','HDR Standard'],
-  ['hdr_vivid','HDR Vivid'],
-  ['hdr_technicolorExpert','HDR Technicolor Expert']
+  ['hdrCinema','HDR Cinema'],
+  ['hdrFilmMaker','HDR Filmmaker'],
+  ['hdrGame','HDR Game Optimizer'],
+  ['hdrStandard','HDR Standard'],
+  ['hdrVivid','HDR Vivid'],
+  ['hdrTechnicolorExpert','HDR Technicolor Expert']
  ],
  hlg:[
-  ['hdr_cinema','HLG Cinema'],
-  ['hdr_filmMaker','HLG Filmmaker'],
-  ['hdr_game','HLG Game Optimizer'],
-  ['hdr_standard','HLG Standard'],
-  ['hdr_vivid','HLG Vivid'],
-  ['hdr_technicolorExpert','HLG Technicolor Expert']
+  ['hdrCinema','HLG Cinema'],
+  ['hdrFilmMaker','HLG Filmmaker'],
+  ['hdrGame','HLG Game Optimizer'],
+  ['hdrStandard','HLG Standard'],
+  ['hdrVivid','HLG Vivid'],
+  ['hdrTechnicolorExpert','HLG Technicolor Expert']
  ],
  dv:[
-  ['dolby_hdr_cinema','DV Cinema'],
-  ['dolby_hdr_cinema_bright','DV Cinema Home'],
-  ['dolby_hdr_game','DV Game Optimizer'],
-  ['dolby_hdr_vivid','DV Vivid']
+  ['dolbyVisionCinema','DV Cinema'],
+  ['dolbyVisionCinemaBright','DV Cinema Home'],
+  ['dolbyVisionGame','DV Game Optimizer'],
+  ['dolbyVisionVivid','DV Vivid']
  ]
 };
 
@@ -1971,24 +1972,52 @@ function lgPictureModeCanonicalValue(value){
   isfexpert2:'expert2',
   isfexpertdark:'expert2',
   expertdark:'expert2',
+  isfdarkroom:'expert2',
+  isfdark:'expert2',
+  darkroom:'expert2',
+  brightroom:'expert1',
   technicolorexpert:'technicolorExpert',
   filmmaker:'filmMaker',
   filmmakermode:'filmMaker',
+  filmlmakermode:'filmMaker',
+  filmlmaker:'filmMaker',
+  filmlmak:'filmMaker',
+  filmlmamaker:'filmMaker',
+  filmamker:'filmMaker',
   gameoptimizer:'game',
-  hdrcinema:'hdr_cinema',
-  hdrgame:'hdr_game',
-  hdrgameoptimizer:'hdr_game',
-  hdrstandard:'hdr_standard',
-  hdrvivid:'hdr_vivid',
-  hdrfilmmaker:'hdr_filmMaker',
-  hdrfilmmakermode:'hdr_filmMaker',
-  hdrtechnicolorexpert:'hdr_technicolorExpert',
-  dolbyhdrcinema:'dolby_hdr_cinema',
-  dolbyhdrcinemahome:'dolby_hdr_cinema_bright',
-  dolbyhdrcinemabright:'dolby_hdr_cinema_bright',
-  dolbyhdrgame:'dolby_hdr_game',
-  dolbyhdrgameoptimizer:'dolby_hdr_game',
-  dolbyhdrvivid:'dolby_hdr_vivid'
+  hdrcinema:'hdrCinema',
+  hdr_cinema:'hdrCinema',
+  hdrfilmamker:'hdrFilmMaker',
+  hdrfilmmaker:'hdrFilmMaker',
+  hdr_filmmaker:'hdrFilmMaker',
+  hdr_filmmakermode:'hdrFilmMaker',
+  hdrfilmmakermode:'hdrFilmMaker',
+  hdrgame:'hdrGame',
+  hdr_game:'hdrGame',
+  hdrgameoptimizer:'hdrGame',
+  hdrstandard:'hdrStandard',
+  hdr_standard:'hdrStandard',
+  hdrvivid:'hdrVivid',
+  hdr_vivid:'hdrVivid',
+  hdrtechnicolorexpert:'hdrTechnicolorExpert',
+  hdr_technicolorexpert:'hdrTechnicolorExpert',
+  dolbyvisioncinema:'dolbyVisionCinema',
+  dolby_hdr_cinema:'dolbyVisionCinema',
+  dolbyvisioncinemahome:'dolbyVisionCinemaBright',
+  dolbyvisioncinemabright:'dolbyVisionCinemaBright',
+  dolby_hdr_cinema_bright:'dolbyVisionCinemaBright',
+  dolbyhdrgame:'dolbyVisionGame',
+  dolby_hdr_game:'dolbyVisionGame',
+  dolbyvisiongame:'dolbyVisionGame',
+  dolbyhdrgameoptimizer:'dolbyVisionGame',
+  dolbyvisiongameoptimizer:'dolbyVisionGame',
+  dolbyvisionvivid:'dolbyVisionVivid',
+  dolbyhdrvivid:'dolbyVisionVivid',
+  dolby_hdr_vivid:'dolbyVisionVivid',
+  aps:'standard',
+  eco:'standard',
+  normal:'standard',
+  sports:'vivid'
  };
  if(aliases[token]) return aliases[token];
  const normalized=lgPictureModeEntries().find(item=>lgPictureModeToken(item[0])===token);
@@ -2057,7 +2086,8 @@ function lgPictureModeOptions(signalMode,current){
  const stored=lgPictureModeCanonicalValue(lgStoredPictureMode(mode));
  const extras=[];
  if(stored&&lgPictureModeMatchesSignal(stored,mode)) extras.push(stored);
- if(current) extras.push(lgPictureModeCanonicalValue(current));
+ const canonicalCurrent=lgPictureModeCanonicalValue(current);
+ if(canonicalCurrent&&lgPictureModeMatchesSignal(canonicalCurrent,mode)) extras.push(canonicalCurrent);
  extras.forEach(value=>{
   if(value&&!options.some(item=>item[0]===value)) options.unshift([value,lgPictureModeLabel(value)]);
  });
@@ -2935,7 +2965,7 @@ async function lgSetPictureMode(){
   const r=await fetchJSON('/api/lg/picture-settings/set',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({settings:{pictureMode:value},picture_mode:value,readback_keys:['pictureMode']}),
+   body:JSON.stringify({settings:{pictureMode:value},picture_mode:value,signal_mode:lgSignalModeKey(),readback_keys:['pictureMode']}),
    _timeoutMs:15000
   });
   if(r&&r.status==='ok'){
