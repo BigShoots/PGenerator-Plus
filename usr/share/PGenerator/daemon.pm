@@ -94,6 +94,19 @@ sub calman_valid_bpc (@) {
  return "";
 }
 
+sub calman_choose_bpc (@) {
+ my ($explicit_bpc,$current_bpc,$fallback_bpc,$preserve_current)=@_;
+ my $explicit=&calman_valid_bpc($explicit_bpc);
+ return $explicit if($explicit ne "");
+ if($preserve_current) {
+  my $current=&calman_valid_bpc($current_bpc);
+  return $current if($current ne "");
+ }
+ my $fallback=&calman_valid_bpc($fallback_bpc);
+ return $fallback if($fallback ne "");
+ return "10";
+}
+
 sub calman_parse_source_format_payload (@) {
  my $payload=shift || "";
  my $default_format_bpc=int(shift || 0);
@@ -1006,11 +1019,8 @@ sub pattern_daemon {
 	      return $bpc;
 	     };
 	     my $calman_preferred_bpc = sub {
-	      my $fallback=shift;
-	      my $explicit=&calman_valid_bpc($calman_explicit_max_bpc);
-	      return $explicit if($explicit ne "");
-	      return &calman_valid_bpc($fallback) if(&calman_valid_bpc($fallback) ne "");
-	      return "10";
+	      my ($fallback,$preserve_current)=@_;
+	      return &calman_choose_bpc($calman_explicit_max_bpc,$pgenerator_conf{"max_bpc"},$fallback,$preserve_current);
 	     };
 	     my $calman_apply_source_payload = sub {
 	      my ($payload,$default_format_bpc)=@_;
@@ -1134,7 +1144,7 @@ sub pattern_daemon {
 	     $eotf_val=0 if(!defined $eotf_val || $eotf_val eq "");
 	     $colorimetry=($eotf_val >= 2) ? "9" : "2" if(!defined $colorimetry || $colorimetry eq "");
 	     $max_bpc=($eotf_val >= 2) ? "10" : "8" if(!defined $max_bpc || $max_bpc eq "");
-	     $max_bpc=$calman_preferred_bpc->($max_bpc);
+	     $max_bpc=$calman_preferred_bpc->($max_bpc,$eotf_val >= 2);
 	     $calman_save_setting->("signal_mode",$mode);
      $calman_save_setting->("is_sdr",$eotf_val >= 2 ? "0" : "1");
      $calman_save_setting->("is_hdr",$eotf_val >= 2 ? "1" : "0");
@@ -1303,8 +1313,8 @@ sub pattern_daemon {
        $calman_save_setting->("colorimetry","2");
       }
       $calman_save_setting->("primaries","$prim_val");
-	      # Set bit depth based on EOTF unless Calman sent an explicit source bit depth.
-	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->($eotf_val >= 2 ? "10" : "8"));
+	      # Set bit depth based on EOTF unless Calman sent or implied a source bit depth.
+	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->($eotf_val >= 2 ? "10" : "8",$eotf_val >= 2));
       # Luminance metadata
       $calman_save_setting->("min_luma","$hdr_min_luma") if($hdr_min_luma > 0);
       $calman_save_setting->("max_luma","$hdr_max_luma") if($hdr_max_luma > 0);
