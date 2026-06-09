@@ -11,15 +11,16 @@
  * DRM_IOCTL_MODE_OBJ_SETPROPERTY calls to override values from
  * PGenerator.conf.
  *
- * CALMAN GCI SUPPRESSION:
- * When the Calman UPGCI 2.0 plugin is driving PGenerator, daemon.pm
- * writes `calman_gci=1` to PGenerator.conf. In that mode the user
- * wants the WebUI signal-mode settings to win, so this library must
- * NOT override max_bpc, output_format, Colorimetry, or rgb_quant_range
- * on the connector. The renderer/TV reports the negotiated values
- * and the InfoFrame storm on those properties is what the user is
- * trying to stop. This applies to GCI only; the Calman RPC plugin
- * never sets calman_gci=1 and keeps the historical override behavior.
+ * NOTE ON CALMAN GCI:
+ * daemon.pm gates the Calman GCI control plane's writes to
+ * PGenerator.conf (calman_save_setting / runtime range overrides
+ * only allow primaries, eotf, and is_hdr on the GCI path). This
+ * library is one-way: read the WebUI conf, enforce it on the wire.
+ * It does not and should not read the calman_gci flag -- doing so
+ * would suppress the connector property overrides and the TV would
+ * receive the renderer's raw (e.g. SDR) values instead of the
+ * WebUI's HDR ones. See commit 91e43783 (gate was first added to
+ * this library) and 63d72a63 (reverted here).
  *
  * DOLBY VISION BLOB HANDLING:
  * The current PGeneratord.dv already creates DOVI_OUTPUT_METADATA blobs when
@@ -145,8 +146,6 @@ static int is_ll_dovi = 0;
 static int is_std_dovi = 0;
 static int dv_map_mode = -1;
 static int conf_read = 0;
-static int calman_gci_active = 0;     /* 1 when daemon wrote calman_gci=1 to PGenerator.conf */
-static int calman_gci_logged = 0;     /* log the GCI short-circuit once per process */
 
 /* DOVI blob injection state */
 static uint32_t dovi_blob_id = 0;       /* fallback blob created by us */
@@ -245,11 +244,6 @@ static void read_config(void) {
             p[4] == 'a' && p[5] == 'p' && p[6] == '_' && p[7] == 'm' &&
             p[8] == 'o' && p[9] == 'd' && p[10] == 'e' && p[11] == '=') {
             dv_map_mode = (p[12] - '0');
-        }
-        if (p[0] == 'c' && p[1] == 'a' && p[2] == 'l' && p[3] == 'm' &&
-            p[4] == 'a' && p[5] == 'n' && p[6] == '_' && p[7] == 'g' &&
-            p[8] == 'c' && p[9] == 'i' && p[10] == '=') {
-            calman_gci_active = (p[11] == '1') ? 1 : 0;
         }
         if (p[0] == 'c' && p[1] == 'o' && p[2] == 'l' && p[3] == 'o' &&
             p[4] == 'r' && p[5] == 'i' && p[6] == 'm' && p[7] == 'e' &&
@@ -355,20 +349,19 @@ static void read_config(void) {
         write_log(num);
         write_log("\n");
     }
-    if (calman_gci_active) {
-        write_log("DRM_OVERRIDE: Calman GCI active — connector property overrides suppressed (max_bpc/output_format/Colorimetry/rgb_quant_range pass through)\n");
-    }
+    /* Note: the Calman GCI control-plane gate is enforced upstream
+     * in daemon.pm (calman_save_setting, runtime range overrides).
+     * drm_override is one-way: read the WebUI conf, enforce it on the
+     * wire. It does not and should not read the calman_gci flag. The
+     * renderer / TV receives the user's WebUI signal-mode values
+     * (colorimetry mapped BT.2020 RGB -> BT.2020 YCC for YCbCr444
+     * output, max_bpc promoted to 10 if conf says so, etc.) regardless
+     * of which Calman source is in use. See commit 91e43783 (gate
+     * was first added) and 63d72a63 (reverted here). */
 }
 
 /* Override helpers -- log only when value actually changes */
 static void override_max_bpc(uint64_t *value, const char *source) {
-    if (calman_gci_active) {
-        if (!calman_gci_logged) {
-            write_log("DRM_OVERRIDE: Calman GCI active — skipping max_bpc override (WebUI owns signal mode)\n");
-            calman_gci_logged = 1;
-        }
-        return;
-    }
     if (max_bpc_prop_id && max_bpc_override > 0 && *value != max_bpc_override) {
         char old_val[24], new_val[24];
         itoa_simple(*value, old_val);
@@ -384,13 +377,6 @@ static void override_max_bpc(uint64_t *value, const char *source) {
 }
 
 static void override_output_fmt(uint64_t *value, const char *source) {
-    if (calman_gci_active) {
-        if (!calman_gci_logged) {
-            write_log("DRM_OVERRIDE: Calman GCI active — skipping output_format override (WebUI owns signal mode)\n");
-            calman_gci_logged = 1;
-        }
-        return;
-    }
     if (output_fmt_prop_id && output_fmt_found && *value != output_fmt_override) {
         char old_val[24], new_val[24];
         itoa_simple(*value, old_val);
@@ -406,13 +392,6 @@ static void override_output_fmt(uint64_t *value, const char *source) {
 }
 
 static void override_colorimetry(uint64_t *value, const char *source) {
-    if (calman_gci_active) {
-        if (!calman_gci_logged) {
-            write_log("DRM_OVERRIDE: Calman GCI active — skipping Colorimetry override (WebUI owns signal mode)\n");
-            calman_gci_logged = 1;
-        }
-        return;
-    }
     if (colorimetry_prop_id && colorimetry_found && *value != colorimetry_override) {
         char old_val[24], new_val[24];
         itoa_simple(*value, old_val);
@@ -428,13 +407,6 @@ static void override_colorimetry(uint64_t *value, const char *source) {
 }
 
 static void override_rgb_qr(uint64_t *value, const char *source) {
-    if (calman_gci_active) {
-        if (!calman_gci_logged) {
-            write_log("DRM_OVERRIDE: Calman GCI active — skipping rgb_quant_range override (WebUI owns signal mode)\n");
-            calman_gci_logged = 1;
-        }
-        return;
-    }
     if (rgb_qr_prop_id && rgb_qr_found && *value != rgb_qr_override) {
         char old_val[24], new_val[24];
         itoa_simple(*value, old_val);

@@ -82,17 +82,23 @@ like($daemon,qr/if\(\$type\s*eq\s*"CommandRGB"\)\s*\{[\s\S]{0,400}?&calman_rende
 like($daemon,qr/if\(\$clean_key\s*eq\s*"ENABLE PATTERNS"/,'ENABLE PATTERNS handshake is unchanged');
 like($daemon,qr/if\(\$clean_key\s*eq\s*"SN"\)/,'SN handshake is unchanged');
 
-# 8) drm_override.c reads the calman_gci=1 conf key.
-like($override,qr{calman_gci_active\s*=\s*\(p\[11\]\s*==\s*'1'\)\s*\?\s*1\s*:\s*0}s,'drm_override.c parses calman_gci=1 from PGenerator.conf');
-like($override,qr/static\s+int\s+calman_gci_active\s*=\s*0;/,'drm_override.c declares calman_gci_active state');
+# 8) drm_override.c is one-way (read WebUI conf, enforce on wire) and
+#    intentionally does NOT read the calman_gci flag. The flag's job is
+#    to gate the Calman INPUT side (in daemon.pm); suppressing the
+#    OUTPUT side here would mean the TV receives the renderer's raw
+#    (e.g. SDR) values instead of the WebUI's HDR ones, and toggling
+#    HDR in Calman's UPnGCI dialog would silently no-op.
+unlike($override,qr/calman_gci_active/,'drm_override.c does not read or short-circuit on calman_gci (gate is upstream in daemon.pm)');
+unlike($override,qr/calman_gci_logged/,'drm_override.c does not log a GCI short-circuit (no gate to log)');
+unlike($override,qr/calman_gci\s*=\s*\(p\[11\]\s*==\s*'1'\)/,'drm_override.c does not parse the calman_gci conf key');
 
-# 9) Every override_* function short-circuits when calman_gci_active
-#    is set, with a one-shot log line for debuggability.
+# 9) Every override_* function still applies the conf values to the
+#    connector (no GCI short-circuit). This is what makes "check HDR
+#    in Calman for UPnGCI" actually flip the TV to HDR.
 for my $name (qw(max_bpc output_fmt colorimetry rgb_qr)) {
  my $fn="override_${name}";
- like($override,qr/static\s+void\s+${fn}\([^)]+\)\s*\{[\s\S]{0,200}?if\s*\(\s*calman_gci_active\s*\)/,"drm_override.c ${fn} short-circuits when Calman GCI is active");
+  like($override,qr/static\s+void\s+${fn}\([^)]+\)\s*\{[\s\S]{0,600}?\*value\s*=\s*${name}_override/,"drm_override.c ${fn} still applies the override from PGenerator.conf");
 }
-like($override,qr/calman_gci_logged\s*=\s*1/,'drm_override.c logs the GCI short-circuit at most once per process');
 
 # 10) RPC path is unchanged: the RPC source-alias handler still has
 #     unconditional saves for the RPC aliases (BITDEPTH / COLORSPACE /
