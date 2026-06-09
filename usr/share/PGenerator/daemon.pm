@@ -311,6 +311,49 @@ sub calman_apply_init_mode (@) {
   &pgenerator_cmd("SET_MODE:$init_mode_idx");
  }
 }
+#
+# Track whether any Calman connection is currently using the GCI
+# (UPGCI 2.0) control plane. The flag is mirrored into PGenerator.conf
+# so that drm_override.so can suppress its connector-property overrides
+# while GCI is driving PGenerator. The flag is per-connection
+# ($calman_gci{$connection}) and global ($calman_gci_active_count) so
+# we can clear the conf key only when the last GCI client disconnects.
+#
+sub calman_set_gci_active (@) {
+ my $active=shift;
+ if($active) {
+  $calman_gci_active_count++ if(!$calman_gci_active_count);
+  $calman_gci_active_count=1 if($calman_gci_active_count < 1);
+  &sudo("SET_PGENERATOR_CONF","calman_gci","1") if(($pgenerator_conf{"calman_gci"} || "") ne "1");
+  $pgenerator_conf{"calman_gci"}="1";
+  &log("Calman GCI: control plane active — drm_override will not override connector properties");
+  return;
+ }
+ $calman_gci_active_count=0 if(!defined $calman_gci_active_count || $calman_gci_active_count < 1);
+ # Caller (close_connection / TERM / SHUTDOWN / QUIT) is responsible
+ # for having decremented $calman_gci_active_count and deleting the
+ # per-connection entry from %calman_gci before calling this with 0.
+ &sudo("SET_PGENERATOR_CONF","calman_gci","0") if(($pgenerator_conf{"calman_gci"} || "") ne "0");
+ $pgenerator_conf{"calman_gci"}="0";
+ &log("Calman GCI: control plane cleared — drm_override may resume overriding connector properties");
+}
+#
+# Drop the per-connection GCI flag and, if this was the last GCI
+# client, clear the global PGenerator.conf flag so drm_override.so
+# resumes overriding connector properties. Safe to call from any
+# teardown path (close_connection, TERM, SHUTDOWN, QUIT).
+#
+sub calman_clear_gci_connection (@) {
+ my $connection=shift;
+ return if(!$connection);
+ return if(!$calman_gci{$connection});
+ delete $calman_gci{$connection};
+ $calman_gci_active_count-- if(defined $calman_gci_active_count && $calman_gci_active_count > 0);
+ if(!defined $calman_gci_active_count || $calman_gci_active_count < 1) {
+  $calman_gci_active_count=0;
+  &calman_set_gci_active(0);
+ }
+}
 
 sub calman_pattern_source_range (@) {
  return "LIMITED" if($calman_rgb_quant_range == 1);
@@ -877,6 +920,7 @@ sub pattern_daemon {
      $calibration_client_ip="";
      $calibration_client_software="";
      &send_key_to_client($connection,"");
+     &calman_clear_gci_connection($connection);
      &close_connection($connection,"calman TERM");
      last;
     }
@@ -943,6 +987,7 @@ sub pattern_daemon {
       $calibration_client_ip="";
       $calibration_client_software="";
       &send_key_to_client($connection,"");
+      &calman_clear_gci_connection($connection);
       &close_connection($connection,"calman $clean_key");
       last;
      }
@@ -996,6 +1041,16 @@ sub pattern_daemon {
      if($type eq "INIT") {
       &calman_reset_pattern_state("INIT");
       &calman_apply_init_mode();
+      # Calman UPGCI 2.0 is the GCI plugin's handshake. The Calman RPC
+      # plugin connects to the RPC socket and never sends INIT:2.0, so
+      # this branch is GCI-only. Mark the connection (and the global
+      # PGenerator.conf) so that drm_override.so can stop overwriting
+      # the user's signal-mode WebUI settings for the lifetime of the
+      # GCI session.
+      if($pattern_cmd =~/\s*2\.0/) {
+       $calman_gci{$connection}=1;
+       &calman_set_gci_active(1);
+      }
       &send_key_to_client($connection,"");
       last;
      }
@@ -1003,8 +1058,37 @@ sub pattern_daemon {
      # Helper: save a PGenerator conf key and mark settings dirty
      # (defers the pattern generator restart until a pattern command arrives)
      #
+	     # Calman GCI control plane: runtime range overrides also
+	     # bypass user WebUI config. Wrap the source-range helpers
+	     # so that GCI connections are no-ops while RPC connections
+	     # keep their existing behavior.
+	     my $calman_apply_source_range = sub {
+	      return 0 if($calman_gci{$connection});
+	      my $range=shift;
+	      $calman_rgb_quant_range=$range + 0;
+	      &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+	      return 1;
+	     };
+	     my $calman_release_source_range = sub {
+	      return 0 if($calman_gci{$connection});
+	      &release_source_rgb_quant_range("calman");
+	      $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+	      return 1;
+	     };
 	     my $calman_save_setting = sub {
 	      my ($conf_key,$conf_val)=@_;
+	      # Calman GCI plugin (UPGCI 2.0 control plane) must not
+	      # override the user's WebUI signal-mode settings. The only
+	      # Calman-controlled values that affect HDR plane encoding
+	      # are primaries and eotf; everything else (signal_mode,
+	      # color_format, max_bpc, rgb_quant_range, colorimetry,
+	      # is_sdr/is_hdr, dv_*, min_luma/max_luma, etc.) is left
+	      # to the WebUI configuration. The Calman RPC plugin never
+	      # sets $calman_gci, so the RPC path is unaffected.
+	      if($calman_gci{$connection} && $conf_key ne "primaries" && $conf_key ne "eotf") {
+	       &log("Calman GCI: suppressed save $conf_key=$conf_val (WebUI owns this key)");
+	       return;
+	      }
 	      &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
 	      $pgenerator_conf{$conf_key}="$conf_val";
 	      &sync_pattern_bits_default();
@@ -1039,13 +1123,21 @@ sub pattern_daemon {
 	      }
 	      if($parsed{range} ne "") {
 	       if($parsed{range} eq "1" || $parsed{range} eq "2") {
-	        $calman_rgb_quant_range=$parsed{range} + 0;
-	        &log("Calman: external range set to $calman_rgb_quant_range via source settings");
-	        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+	        if($calman_gci{$connection}) {
+	         &log("Calman GCI: source-format range=$parsed{range} ignored (WebUI owns rgb_quant_range)");
+	        } else {
+	         $calman_rgb_quant_range=$parsed{range} + 0;
+	         &log("Calman: external range set to $calman_rgb_quant_range via source settings");
+	         &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+	        }
 	       } else {
-	        &log("Calman: releasing external range via source settings");
-	        &release_source_rgb_quant_range("calman");
-	        $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+	        if($calman_gci{$connection}) {
+	         &log("Calman GCI: source-format range release ignored (WebUI owns rgb_quant_range)");
+	        } else {
+	         &log("Calman: releasing external range via source settings");
+	         &release_source_rgb_quant_range("calman");
+	         $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+	        }
 	       }
 	      }
 	      return $changed;
@@ -1086,8 +1178,10 @@ sub pattern_daemon {
 	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->(&pg_dv_transport_max_bpc($dv_transport)));
 	      $calman_save_setting->("rgb_quant_range","2");
 	      $calman_save_setting->("dv_metadata",$calman_dv_metadata_for_map_mode->($pgenerator_conf{"dv_map_mode"}));
-      $calman_rgb_quant_range=2;
-      &apply_source_rgb_quant_range("calman",2);
+      if(!$calman_gci{$connection}) {
+       $calman_rgb_quant_range=2;
+       &apply_source_rgb_quant_range("calman",2);
+      }
      };
      #
      # Helper: apply pending settings — restart pattern generator if dirty
@@ -1129,8 +1223,10 @@ sub pattern_daemon {
 	     $calman_save_setting->("primaries","1");
 	     $calman_save_setting->("max_bpc",$calman_preferred_bpc->(&pg_dv_transport_max_bpc($dv_transport)));
 	     $calman_save_setting->("rgb_quant_range","2");
-     $calman_rgb_quant_range=2;
-     &apply_source_rgb_quant_range("calman",2);
+     if(!$calman_gci{$connection}) {
+      $calman_rgb_quant_range=2;
+      &apply_source_rgb_quant_range("calman",2);
+     }
      $calman_save_setting->("dv_map_mode","$dv_map_mode") if(defined $dv_map_mode && $dv_map_mode ne "");
      if(!defined $dv_metadata || $dv_metadata eq "") {
       $dv_metadata=$calman_dv_metadata_for_map_mode->((defined $dv_map_mode && $dv_map_mode ne "") ? $dv_map_mode : $pgenerator_conf{"dv_map_mode"});
@@ -1206,7 +1302,9 @@ sub pattern_daemon {
       if($rpc_payload =~/^SET_PGENERATOR_CONF_RGB_QUANT_RANGE:([012])$/i) {
        my $range_val=$1;
        $calman_save_setting->("rgb_quant_range","$range_val");
-       if($range_val eq "1" || $range_val eq "2") {
+       if($calman_gci{$connection}) {
+        &log("Calman GCI: RPC CMD rgb_quant_range ignored at runtime (WebUI owns it)");
+       } elsif($range_val eq "1" || $range_val eq "2") {
         $calman_rgb_quant_range=$range_val + 0;
         &log("Calman: external range set to $calman_rgb_quant_range via RPC CMD");
         &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
@@ -1227,27 +1325,29 @@ sub pattern_daemon {
      last;
     }
 
-    if($key =~/^\x02?SPECIALTY:([^\x02\x03]+)\x02CONF_LEVEL:Range\s+([^\x03]+)\x03?$/i) {
-     my ($specialty,$range_val)=($1,$2);
-     $specialty=~s/^\s+|\s+$//g;
-     $range_val=~s/^\s+|\s+$//g;
-     &log("Calman: split combined SPECIALTY=$specialty + CONF_LEVEL=Range $range_val");
-     if($range_val =~/full/i) {
-      $calman_rgb_quant_range=2;
-      &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-     } elsif($range_val =~/limit/i) {
-      $calman_rgb_quant_range=1;
-      &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-     } else {
-      &release_source_rgb_quant_range("calman");
-      $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+     if($key =~/^\x02?SPECIALTY:([^\x02\x03]+)\x02CONF_LEVEL:Range\s+([^\x03]+)\x03?$/i) {
+      my ($specialty,$range_val)=($1,$2);
+      $specialty=~s/^\s+|\s+$//g;
+      $range_val=~s/^\s+|\s+$//g;
+      &log("Calman: split combined SPECIALTY=$specialty + CONF_LEVEL=Range $range_val");
+      if($calman_gci{$connection}) {
+       &log("Calman GCI: combined SPECIALTY+CONF_LEVEL:Range ignored (WebUI owns rgb_quant_range)");
+      } elsif($range_val =~/full/i) {
+       $calman_rgb_quant_range=2;
+       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+      } elsif($range_val =~/limit/i) {
+       $calman_rgb_quant_range=1;
+       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+      } else {
+       &release_source_rgb_quant_range("calman");
+       $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+      }
+      $calman_apply->(0) if(!$calman_gci{$connection});
+      &calman_render_specialty_pattern($specialty);
+      &calman_remember_pattern("SPECIALTY","SPECIALTY",$specialty);
+      &send_key_to_client($connection,"");
+      last;
      }
-     $calman_apply->(0);
-     &calman_render_specialty_pattern($specialty);
-     &calman_remember_pattern("SPECIALTY","SPECIALTY",$specialty);
-     &send_key_to_client($connection,"");
-     last;
-    }
 
     #
     # HDR_ENABLE — external HDR toggle
@@ -1474,7 +1574,9 @@ sub pattern_daemon {
       my $qrng_val="0";
       $qrng_val="2" if($pattern_cmd =~/^FULL$/i);
       $qrng_val="1" if($pattern_cmd =~/^LIMITED$/i);
-      if($qrng_val eq "1" || $qrng_val eq "2") {
+      if($calman_gci{$connection}) {
+       &log("Calman GCI: QRNG ignored (WebUI owns rgb_quant_range)");
+      } elsif($qrng_val eq "1" || $qrng_val eq "2") {
        $calman_rgb_quant_range=$qrng_val + 0;
        &log("Calman: external range set to $calman_rgb_quant_range via QRNG");
        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
@@ -1539,8 +1641,12 @@ sub pattern_daemon {
       } else {
       $calman_rgb_quant_range=2;
       }
+      if($calman_gci{$connection}) {
+       &log("Calman GCI: SetRange=$range_val ignored (WebUI owns rgb_quant_range)");
+      } else {
           &log("Calman: external range set to $calman_rgb_quant_range");
           &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+      }
       &calman_replay_last_pattern("SetRange");
       &send_key_to_client($connection,"");
       last;
@@ -1726,7 +1832,10 @@ sub pattern_daemon {
 	       $calman_apply->();
       } elsif($cl =~/^Range\s+(.*)/i) {
        my $rv=lc($1);
-       if($rv =~/full/) {
+       if($calman_gci{$connection}) {
+        &log("Calman GCI: CONF_LEVEL:Range ignored (WebUI owns rgb_quant_range)");
+        &calman_replay_last_pattern("CONF_LEVEL range");
+       } elsif($rv =~/full/) {
        $calman_rgb_quant_range=2;
         &log("Calman: external range set to $calman_rgb_quant_range via CONF_LEVEL");
         &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
@@ -2160,6 +2269,7 @@ sub close_connection {
  delete $client_ip{$connection};
  delete $hcfr_client_quant_range{$connection};
  delete $rpc_client{$connection};
+ &calman_clear_gci_connection($connection);
  #$connection->send("");
  $select->remove($connection);
  eval { $connection->close(); };
