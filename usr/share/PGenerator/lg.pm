@@ -1397,6 +1397,7 @@ sub webui_lg_picture_reset (@) {
 	  picture_mode => $payload->{"picture_mode"}||"",
 	  signal_mode => $payload->{"signal_mode"}||"",
 	  require_white_balance_reset => $payload->{"require_white_balance_reset"} ? &lg_json_true() : &lg_json_false(),
+	  reset_ddc_state => $payload->{"require_white_balance_reset"} ? 1 : 0,
 	  tv_input => &lg_input_from_cec(),
 	  connect_timeout => 5,
 	 });
@@ -3012,7 +3013,7 @@ async function lgResetPictureMode(){
   const r=await fetchJSON('/api/lg/picture-settings/reset',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({picture_mode:mode,signal_mode:signal}),
+   body:JSON.stringify({picture_mode:mode,signal_mode:signal,require_white_balance_reset:false}),
    _timeoutMs:90000
   });
   if(r&&r.status==='ok'){

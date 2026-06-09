@@ -1400,11 +1400,13 @@ sub lg_picture_reset_ddc_baseline_ok (@) {
 }
 
 sub lg_picture_reset_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset)=@_;
+ my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state)=@_;
  $tv_input="" if(!defined($tv_input));
  $fallback_picture_mode="" if(!defined($fallback_picture_mode));
  $signal_mode="" if(!defined($signal_mode));
  $require_white_balance_reset=$require_white_balance_reset ? 1 : 0;
+ $reset_ddc_state=int($reset_ddc_state||0);
+ $reset_ddc_state=0 if($reset_ddc_state < 0 || $reset_ddc_state > 2);
  $tv_input=lc($tv_input);
  $tv_input="" if($tv_input !~ /^hdmi[1-4](?:_pc)?$/);
  my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
@@ -1663,16 +1665,22 @@ sub lg_picture_reset_workflow (@) {
 	  }
 	 }
 	 my $basic_picture_reset_ok=(($reset_key_succeeded{"brightness"} || $delete_key_reset{"brightness"} || $factory_key_applied{"brightness"} || $builtin_key_applied{"brightness"}) && ($reset_key_succeeded{"contrast"} || $delete_key_reset{"contrast"} || $factory_key_applied{"contrast"} || $builtin_key_applied{"contrast"})) ? 1 : 0;
-	 my @zero=map { 0 } @LG_DDC_1D_LABELS;
- my $ddc_settings={
-  whiteBalanceMethod => "22",
-  whiteBalanceIre => "100",
-  whiteBalanceRed => \@zero,
-  whiteBalanceGreen => \@zero,
-  whiteBalanceBlue => \@zero,
- };
-	 my ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$ddc_settings,$connect_timeout + 4,0,0,1,0,$generation);
-	 &lg_ddc_clear_state($ip,$active_picture_mode);
+	 my $ddc_attempted=0;
+	 my $ddc_result;
+	 if($reset_ddc_state) {
+	  my @zero=map { 0 } @LG_DDC_1D_LABELS;
+	  my $ddc_settings={
+	   whiteBalanceMethod => "22",
+	   whiteBalanceIre => "100",
+	   whiteBalanceRed => \@zero,
+	   whiteBalanceGreen => \@zero,
+	   whiteBalanceBlue => \@zero,
+	  };
+	  ($ddc_attempted,$ddc_result)=&lg_ddc_1d_white_balance_set($session,$ip,$active_picture_mode,$ddc_settings,$connect_timeout + 4,0,0,($reset_ddc_state == 1 ? 1 : 0),0,$generation);
+	  &lg_ddc_clear_state($ip,$active_picture_mode);
+	 } else {
+	  $ddc_result={ ddc_skipped => &json_true(), reason => "clean_picture_mode_reset" };
+	 }
 	 my $picture_settings_after=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
 	 my %readback_seen=();
 	 my @readback_keys=grep { !$readback_seen{$_}++ } ("pictureMode",@{&lg_picture_reset_default_keys()},@{$white_balance_reset_keys});
@@ -1828,6 +1836,7 @@ sub lg_picture_reset_workflow (@) {
 		  white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
 		  clean_picture_mode_reset => &json_bool($basic_picture_reset_ok),
   ddc_attempted => &json_bool($ddc_attempted),
+  ddc_skipped => &json_bool($reset_ddc_state ? 0 : 1),
   ddc_response => $ddc_result,
   hello_info => $auth->{"hello_info"},
   system_info => $auth->{"system_info"},
@@ -4815,6 +4824,8 @@ sub main (@) {
 	 my $verify_ddc_upload=$request->{"verify_ddc_upload"} ? 1 : 0;
 	 my $force_ddc_white_balance=$request->{"force_ddc_white_balance"}||$request->{"ddc_white_balance"} ? 1 : 0;
 	 my $require_white_balance_reset=$request->{"require_white_balance_reset"} ? 1 : 0;
+	 my $reset_ddc_state=int($request->{"reset_ddc_state"}||0);
+	 $reset_ddc_state=0 if($reset_ddc_state < 0 || $reset_ddc_state > 2);
  my $picture_mode=$request->{"picture_mode"}||"";
  my $signal_mode=$request->{"signal_mode"}||"";
  my $command=$request->{"command"}||"";
@@ -4837,7 +4848,7 @@ sub main (@) {
 	 } elsif($action eq "picture_set") {
 		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance,$signal_mode);
  } elsif($action eq "picture_reset") {
-  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset);
+  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state);
    } elsif($action eq "remote_enter") {
     $result=&lg_remote_enter_workflow($ip,$client_key,$connect_timeout);
  } elsif($action eq "remote_control") {
