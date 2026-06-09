@@ -223,9 +223,11 @@ sub apply_drm_properties (@) {
  $colorimetry=9 if($is_dv);
  if($colorimetry ne "" && $colorimetry > 0) {
   my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
-  system("timeout 3 $modetest -w '$connector_id:Colorimetry:$colorimetry' 2>/dev/null");
+  # The legacy Pi4 Colorimetry property uses the same signal-format specific
+  # enums as the newer Colorspace property.
+  system("timeout 3 $modetest -w '$connector_id:Colorimetry:$colorspace' 2>/dev/null");
   system("timeout 3 $modetest -w '$connector_id:Colorspace:$colorspace' 2>/dev/null");
-  &log("DRM: Set Colorimetry=$colorimetry / Colorspace=$colorspace on connector $connector_id");
+  &log("DRM: Set Colorimetry=$colorspace / Colorspace=$colorspace on connector $connector_id");
  }
 }
 
