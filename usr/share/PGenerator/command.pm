@@ -179,6 +179,202 @@ sub map_broadcast_rgb(@) {
 }
 
 ###############################################
+#   LG Picture Mode Label → WebOS DDC Name    #
+###############################################
+# Translates any user-friendly LG picture-mode label (front-end
+# DisplayCard dropdown, REST body, URL parameter, legacy underscore
+# form, current WebOS camelCase form, or a noisy human label like
+# "isf dark room") into the canonical WebOS setSystemSettings name
+# that the LG TV accepts for the pictureMode dimension / setting.
+#
+# Returns the canonical name on success, or "" when the label does
+# not match any known LG picture mode. Callers should fall back to
+# their own validation when this returns "".
+sub map_picture_mode_label_to_ddc_name(@) {
+ my $label=shift;
+ my $signal_mode=shift;
+ $label="" if(!defined($label));
+ $label=~s/^\s+//;
+ $label=~s/\s+$//;
+ return "" if($label eq "");
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ $signal_mode="" if($signal_mode ne "sdr" && $signal_mode ne "hdr10" && $signal_mode ne "hlg" && $signal_mode ne "dv");
+ my $token=lc($label);
+ $token =~ s/[\s_\-]+//g;
+ return "" if($token eq "");
+ # Remember the original token in case the prefix-stripped fallback
+ # needs it. We must NOT mutate the canonical token (e.g. "hdrcinema"
+ # must not become "cinema" just because the prefix-stripper also
+ # matches "hdr" as a substring).
+ my $raw_token=$token;
+ my %map=(
+  # canonical WebOS names (these are what getSystemSettings reports)
+  "expert1" => "expert1",
+  "expert2" => "expert2",
+  "cinema" => "cinema",
+  # In DV context, "cinemahome" / "cinemabright" is the home/bright
+  # variant of DV Cinema. The front-end sends "DV Cinema Home" or
+  # "dolbyvisioncinemahome", which both tokenize to "dvcinemahome"
+  # then strip to "cinemahome" via the signal-prefix fallback.
+  "cinemahome" => "cinema",
+  "cinemabright" => "cinema",
+  "filmmaker" => "filmMaker",
+  "filmmakermode" => "filmMaker",
+  "filmmak" => "filmMaker",
+  "filmlmak" => "filmMaker",
+  "filmlmaker" => "filmMaker",
+  "filmlmamaker" => "filmMaker",
+  "filmamaker" => "filmMaker",
+  "filmamker" => "filmMaker",
+  "filmMaker" => "filmMaker",
+  "game" => "game",
+  "gameoptimizer" => "game",
+  "standard" => "standard",
+  "vivid" => "vivid",
+  "technicolorexpert" => "technicolorExpert",
+  # ISF / Expert aliases (older LG UI exposed these as separate modes)
+  "isfexpert1" => "expert1",
+  "isfexpertbright" => "expert1",
+  "expertbright" => "expert1",
+  "isfexpert2" => "expert2",
+  "isfexpertdark" => "expert2",
+  "expertdark" => "expert2",
+  "isfdarkroom" => "expert2",
+  "isfdark" => "expert2",
+  "darkroom" => "expert2",
+  "brightroom" => "expert1",
+  # HDR modes (canonical WebOS names are camelCase, legacy are
+  # underscore-separated — accept either)
+  "hdrcinema" => "hdrCinema",
+  "hdr_cinema" => "hdrCinema",
+  "hdrfilmamker" => "hdrFilmMaker",
+  "hdrfilmmaker" => "hdrFilmMaker",
+  "hdr_filmmaker" => "hdrFilmMaker",
+  "hdr_filmmakermode" => "hdrFilmMaker",
+  "hdrfilmmakermode" => "hdrFilmMaker",
+  "hdrgame" => "hdrGame",
+  "hdr_game" => "hdrGame",
+  "hdrgameoptimizer" => "hdrGame",
+  "hdrstandard" => "hdrStandard",
+  "hdr_standard" => "hdrStandard",
+  "hdrvivid" => "hdrVivid",
+  "hdr_vivid" => "hdrVivid",
+  "hdrtechnicolorexpert" => "hdrTechnicolorExpert",
+  "hdr_technicolorexpert" => "hdrTechnicolorExpert",
+  # Dolby Vision (DV) modes (accept the legacy "dolby_hdr_*" form, the
+  # modern "dolbyVision*" form, and the no-separator "dolbyhdr*" /
+  # "dolbycinemahome" / "dolbygame" / "dolbyvivid" forms produced by
+  # our token-stripping pass)
+  "dolbyvisioncinema" => "dolbyVisionCinema",
+  "dolby_hdr_cinema" => "dolbyVisionCinema",
+  "dolbyhdrcinema" => "dolbyVisionCinema",
+  "dolbycinema" => "dolbyVisionCinema",
+  "dolbyvisioncinemahome" => "dolbyVisionCinemaBright",
+  "dolbyvisioncinemabright" => "dolbyVisionCinemaBright",
+  "dolby_hdr_cinema_bright" => "dolbyVisionCinemaBright",
+  "dolbyhdrcinemabright" => "dolbyVisionCinemaBright",
+  "dolbyhdrcinemahome" => "dolbyVisionCinemaBright",
+  "dolbycinemahome" => "dolbyVisionCinemaBright",
+  "dolbycinemabright" => "dolbyVisionCinemaBright",
+  "dolbyvisiongame" => "dolbyVisionGame",
+  "dolby_hdr_game" => "dolbyVisionGame",
+  "dolbyhdrgame" => "dolbyVisionGame",
+  "dolbygame" => "dolbyVisionGame",
+  "dolbygameoptimizer" => "dolbyVisionGame",
+  "dolbyvisiongameoptimizer" => "dolbyVisionGame",
+  "dolbyhdrgameoptimizer" => "dolbyVisionGame",
+  "dolbyvisionvivid" => "dolbyVisionVivid",
+  "dolby_hdr_vivid" => "dolbyVisionVivid",
+  "dolbyhdrvivid" => "dolbyVisionVivid",
+  "dolbyvivid" => "dolbyVisionVivid",
+  # Display-card / Display-side panel-only aliases
+  "aps" => "standard",
+  "eco" => "standard",
+  "normal" => "standard",
+  "sports" => "vivid",
+ );
+  if($map{$token}) {
+   my $resolved=$map{$token};
+   return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+   return $resolved;
+  }
+  # The front-end Display card shows labels like "SDR Expert Dark",
+  # "HDR Cinema", "DV Cinema Home", "Dolby Vision Cinema". Strip the
+  # leading signal / source qualifier and try the lookup again, so
+  # those labels map to the same canonical name as the bare token
+  # ("expertdark" / "hdrcinema" / "dolbyvisioncinemahome" etc).
+  if($raw_token =~ /^(sdrdolby|hdrdolby|sdrhdr|dolbyvisionsdr|dolbyvisionhdr|dolbyvision|dolby|dv)([a-z].*)$/) {
+   my $stripped=$2;
+   # When the prefix is a Dolby qualifier (or the "dv" shorthand for
+   # Dolby Vision), the stripped token is a Dolby Vision mode (e.g.
+   # "dvcinemahome" → "cinemahome" → "dolbyVisionCinemaBright").
+   # Look up the "dolby<stripped>" form first, before falling back
+   # to the bare form (which would incorrectly map to plain
+   # "cinema" / "game" / "vivid").
+   my $dolby_try="dolby".$stripped;
+   if(defined($map{$dolby_try})) {
+    my $resolved=$map{$dolby_try};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   if(defined($map{$stripped})) {
+    my $resolved=$map{$stripped};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   return "";
+  }
+  if($raw_token =~ /^(sdr|hdr|hlg)([a-z].*)$/) {
+   my $stripped=$2;
+   if(defined($map{$stripped})) {
+    my $resolved=$map{$stripped};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   return "";
+  }
+  return "";
+}
+
+# Returns the PGenerator signal mode the given canonical LG WebOS
+# picture mode name is bound to. Canonical names that start with
+# "hdr" (e.g. "hdrCinema", "hdrFilmMaker") are HDR10-or-HLG bound;
+# names that start with "dolby" / "dolbyVision" are Dolby Vision
+# bound. Plain SDR names ("cinema", "expert1", "filmMaker", "game",
+# "standard", "vivid", "technicolorExpert") are SDR-only on LG TVs.
+# Returns "" when the canonical name is unknown or has no signal
+# binding.
+sub lg_picture_mode_signal_for_canonical_name(@) {
+ my $canonical=shift;
+ $canonical="" if(!defined($canonical));
+ return "" if($canonical eq "");
+ if($canonical =~ /^dolby/i) { return "dv"; }
+ if($canonical =~ /^hdr/i)  { return "hdr10"; }
+ return "sdr";
+}
+
+# True when the canonical LG WebOS picture mode name is valid in the
+# given PGenerator signal mode context. HLG is treated as a flavor of
+# HDR10 because LG WebOS exposes the same "hdr*" canonical names for
+# both. Returns 1 on match, 0 otherwise. Returns 1 for unknown /
+# empty names so existing permissive callers are not broken.
+sub lg_picture_mode_signal_compatible(@) {
+ my ($canonical,$signal_mode)=@_;
+ $canonical="" if(!defined($canonical));
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ return 1 if($canonical eq "" || $signal_mode eq "");
+ my $required=&lg_picture_mode_signal_for_canonical_name($canonical);
+ return 1 if($required eq "");
+ if($required eq "hdr10") {
+  return 1 if($signal_mode eq "hdr10" || $signal_mode eq "hlg");
+  return 0;
+ }
+ return ($required eq $signal_mode) ? 1 : 0;
+}
+
+###############################################
 #  Apply DRM Connector Properties (KMS only)  #
 ###############################################
 sub apply_drm_properties (@) {
