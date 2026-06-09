@@ -147,6 +147,13 @@ sub calman_parse_source_format_payload (@) {
  return %parsed;
 }
 
+sub calman_split_command (@) {
+ my $key=shift || "";
+ return ("","") if($key !~/:/);
+ my ($type,$payload)=split(/:/,$key,2);
+ return ($type,$payload);
+}
+
 sub calman_apl_bg (@) {
  my $rgb=shift;
  my $win_pct=shift;
@@ -965,9 +972,8 @@ sub pattern_daemon {
       last;
      }
     }
-    if($calman{$connection} && $key=~/(.*):(.*)/) {
-     $type=$1;
-     $pattern_cmd=$2;
+    if($calman{$connection} && $key=~/:/) {
+     ($type,$pattern_cmd)=&calman_split_command($key);
      $type=~s/^\x02//;
      &log("Calman UPGCI: type=$type cmd=$pattern_cmd");
      #
@@ -1140,6 +1146,76 @@ sub pattern_daemon {
      $calman_save_setting->("max_bpc","$max_bpc");
      $calman_save_setting->("primaries",$eotf_val >= 2 ? "1" : "0");
     };
+
+    my $calman_handle_rpc_source_alias = sub {
+     my ($rpc_type,$rpc_payload)=@_;
+     return 0 if(!$rpc_client{$connection});
+     my $alias=uc($rpc_type || "");
+     $rpc_payload="" if(!defined $rpc_payload);
+     if($alias eq "BITDEPTH" || $alias eq "BITS") {
+      my $bpc=$calman_note_explicit_bpc->($rpc_payload);
+      if($bpc ne "") {
+       $calman_save_setting->("max_bpc","$bpc");
+       $calman_apply->();
+      }
+      return 1;
+     }
+     if($alias eq "COLORSPACE" || $alias eq "COLOR_FORMAT" || $alias eq "FORMAT") {
+      $calman_apply_source_payload->($rpc_payload,0);
+      $calman_apply->();
+      return 1;
+     }
+     if($alias eq "RANGE") {
+      my %range_parsed=&calman_parse_source_format_payload("Range=$rpc_payload",0);
+      if($range_parsed{range} eq "1" || $range_parsed{range} eq "2") {
+       $calman_rgb_quant_range=$range_parsed{range} + 0;
+       &log("Calman: external range set to $calman_rgb_quant_range via RPC RANGE");
+       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+      } else {
+       &log("Calman: releasing external range via RPC RANGE=$rpc_payload");
+       &release_source_rgb_quant_range("calman");
+       $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+      }
+      &calman_replay_last_pattern("RPC RANGE");
+      return 1;
+     }
+     if($alias eq "CMD") {
+      if($rpc_payload =~/^SET_PGENERATOR_CONF_MAX_BPC:(8|10|12)$/i) {
+       my $bpc=$calman_note_explicit_bpc->($1);
+       if($bpc ne "") {
+        $calman_save_setting->("max_bpc","$bpc");
+        $calman_apply->();
+       }
+       return 1;
+      }
+      if($rpc_payload =~/^SET_PGENERATOR_CONF_COLOR_FORMAT:([0-3])$/i) {
+       $calman_save_setting->("color_format","$1");
+       $calman_apply->();
+       return 1;
+      }
+      if($rpc_payload =~/^SET_PGENERATOR_CONF_RGB_QUANT_RANGE:([012])$/i) {
+       my $range_val=$1;
+       $calman_save_setting->("rgb_quant_range","$range_val");
+       if($range_val eq "1" || $range_val eq "2") {
+        $calman_rgb_quant_range=$range_val + 0;
+        &log("Calman: external range set to $calman_rgb_quant_range via RPC CMD");
+        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+       } else {
+        &log("Calman: releasing external range via RPC CMD");
+        &release_source_rgb_quant_range("calman");
+        $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+       }
+       &calman_replay_last_pattern("RPC CMD range");
+       return 1;
+      }
+     }
+     return 0;
+    };
+
+    if($calman_handle_rpc_source_alias->($type,$pattern_cmd)) {
+     &send_key_to_client($connection,"");
+     last;
+    }
 
     if($key =~/^\x02?SPECIALTY:([^\x02\x03]+)\x02CONF_LEVEL:Range\s+([^\x03]+)\x03?$/i) {
      my ($specialty,$range_val)=($1,$2);
