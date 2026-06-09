@@ -85,6 +85,13 @@ like($daemon, qr/my \$calman_handle_rpc_source_alias = sub \{.*?\$alias eq "BITD
 like($daemon, qr/SET_PGENERATOR_CONF_MAX_BPC:\(8\|10\|12\).*?\$calman_note_explicit_bpc->\(\$1\).*?\$calman_apply->\(\);/s, 'RPC CMD max_bpc source setting applies immediately');
 like($daemon, qr/SET_PGENERATOR_CONF_COLOR_FORMAT:\(\[0-3\]\).*?\$calman_save_setting->\("color_format","\$1"\).*?\$calman_apply->\(\);/s, 'RPC CMD color format source setting applies immediately');
 like($daemon, qr/\$calman_preferred_bpc->\(\$eotf_val >= 2 \? "10" : "8",\$eotf_val >= 2\)/, 'CONF_HDR preserves CalMAN source bit depth across HDR metadata');
+like($daemon, qr/my \$hdr_min_luma_present=.*?my \$hdr_max_cll_present=.*?my \$hdr_max_fall_present=/s, 'CONF_HDR tracks whether zero-capable HDR metadata fields were present');
+like($daemon, qr/\$calman_save_setting->\("min_luma","\$hdr_min_luma"\) if\(\$hdr_min_luma_present\);/, 'CONF_HDR saves min_luma even when CalMAN sends zero');
+like($daemon, qr/\$calman_save_setting->\("max_cll","\$hdr_max_cll"\) if\(\$hdr_max_cll_present\);/, 'CONF_HDR saves max_cll even when CalMAN sends zero');
+like($daemon, qr/\$calman_save_setting->\("max_fall","\$hdr_max_fall"\) if\(\$hdr_max_fall_present\);/, 'CONF_HDR saves max_fall even when CalMAN sends zero');
+unlike($daemon, qr/\$calman_save_setting->\("min_luma","\$hdr_min_luma"\) if\(\$hdr_min_luma > 0\);/, 'CONF_HDR no longer skips zero min_luma');
+unlike($daemon, qr/\$calman_save_setting->\("max_cll","\$hdr_max_cll"\) if\(\$hdr_max_cll > 0\);/, 'CONF_HDR no longer skips zero max_cll');
+unlike($daemon, qr/\$calman_save_setting->\("max_fall","\$hdr_max_fall"\) if\(\$hdr_max_fall > 0\);/, 'CONF_HDR no longer skips zero max_fall');
 like($daemon, qr/\$calman_save_setting->\("max_bpc",\$calman_preferred_bpc->\(&pg_dv_transport_max_bpc\(\$dv_transport\)\)\);/, 'DV setup preserves an explicit CalMAN bit depth');
 
 done_testing();

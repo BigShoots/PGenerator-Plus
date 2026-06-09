@@ -1283,11 +1283,15 @@ sub pattern_daemon {
       my $hdr_gx=$hdr_f[3]+0; my $hdr_gy=$hdr_f[4]+0;
       my $hdr_bx=$hdr_f[5]+0; my $hdr_by=$hdr_f[6]+0;
       my $hdr_wx=$hdr_f[7]+0; my $hdr_wy=$hdr_f[8]+0;
-      my $hdr_min_luma=$hdr_f[9]+0;
-      my $hdr_max_luma=int($hdr_f[10]);
-      my $hdr_max_cll=int($hdr_f[11]);
+      my $hdr_min_luma_present=(defined($hdr_f[9]) && $hdr_f[9] ne "") ? 1 : 0;
+      my $hdr_max_luma_present=(defined($hdr_f[10]) && $hdr_f[10] ne "") ? 1 : 0;
+      my $hdr_max_cll_present=(defined($hdr_f[11]) && $hdr_f[11] ne "") ? 1 : 0;
+      my $hdr_max_fall_present=(defined($hdr_f[12]) && $hdr_f[12] ne "") ? 1 : 0;
+      my $hdr_min_luma=$hdr_min_luma_present ? $hdr_f[9]+0 : 0;
+      my $hdr_max_luma=$hdr_max_luma_present ? int($hdr_f[10]) : 0;
+      my $hdr_max_cll=$hdr_max_cll_present ? int($hdr_f[11]) : 0;
       # Last field is 5-digit zero-padded MaxFALL + gamma (e.g. "004002.2000" = 400 + γ2.2)
-      my $hdr_max_fall=int(substr($hdr_f[12],0,5));
+      my $hdr_max_fall=$hdr_max_fall_present ? int(substr($hdr_f[12],0,5)) : 0;
       # Map EOTF string
       my $eotf_val=2; # default PQ
       $eotf_val=0 if($hdr_eotf =~/^SDR$/i || $hdr_eotf =~/^Traditional$/i);
@@ -1316,10 +1320,10 @@ sub pattern_daemon {
 	      # Set bit depth based on EOTF unless Calman sent or implied a source bit depth.
 	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->($eotf_val >= 2 ? "10" : "8",$eotf_val >= 2));
       # Luminance metadata
-      $calman_save_setting->("min_luma","$hdr_min_luma") if($hdr_min_luma > 0);
+      $calman_save_setting->("min_luma","$hdr_min_luma") if($hdr_min_luma_present);
       $calman_save_setting->("max_luma","$hdr_max_luma") if($hdr_max_luma > 0);
-      $calman_save_setting->("max_cll","$hdr_max_cll") if($hdr_max_cll > 0);
-      $calman_save_setting->("max_fall","$hdr_max_fall") if($hdr_max_fall > 0);
+      $calman_save_setting->("max_cll","$hdr_max_cll") if($hdr_max_cll_present);
+      $calman_save_setting->("max_fall","$hdr_max_fall") if($hdr_max_fall_present);
       &log("Calman: CONF_HDR parsed — eotf=$eotf_val prim=$prim_val maxL=$hdr_max_luma minL=$hdr_min_luma maxCLL=$hdr_max_cll maxFALL=$hdr_max_fall");
       &send_key_to_client($connection,"");
       last;
