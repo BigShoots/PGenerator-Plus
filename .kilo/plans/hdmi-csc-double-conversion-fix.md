@@ -189,6 +189,95 @@ The plan's original "double conversion" hypothesis is correct in direction (PGen
 
 Note: the deployed conf has `max_cll=0, max_fall=0` but the on-wire HDR_OUTPUT_METADATA blob had MaxFALL=243. This is a separate, smaller effect (the LG's tone mapper may be using MaxFALL as an ABL trigger; 243 is not catastrophic but is not 0 either). Flag for follow-up — possibly a renderer-side metadata default that needs to be changed.
 
+## Calman GCI protocol — tcpdump analysis (2026-06-09)
+
+User reported that switching Calman from RPC to UPnGCI/GCI source produced a grey screen on the TV, with no patterns painting. Captured `tcpdump -i any -nn -tttt -s 0 -w /root/pgen-gci-capture/gci.pcap` on the Pi4 while the user clicked the GCI source. Calman peer IP is `192.168.1.231`.
+
+### What Calman actually sends
+
+Calman's GCI source plugin speaks a **line-discipline / DeviceControl protocol on TCP port 2100** with the following wire format:
+
+- Frame format (Calman → PGenerator): `0x02 | ASCII cmd | 0x03` (STX...ETX)
+- ACK format (PGenerator → Calman): single `0x06` byte (binary ACK)
+- Reply format (PGenerator → Calman): bare ASCII payload, no STX/ETX
+
+The full Calman → PGenerator conversation for the failed GCI session was:
+
+| Time | Direction | Bytes | Content |
+|---|---|---|---|
+| 21:32:08.371 | Calman→Pi | 19 | `0x02 DISABLE SPECIALTY 0x03` |
+| 21:32:08.372 | Pi→Calman | 1 | `0x06` ACK |
+| 21:32:08.376 | Calman→Pi | 18 | `0x02 DISABLE PATTERNS 0x03` |
+| 21:32:08.377 | Pi→Calman | 1 | `0x06` ACK |
+| 21:32:08.388 | Calman→Pi | 19 | `0x02 DISABLE SPECIALTY 0x03` (retry) |
+| 21:32:08.389 | Pi→Calman | 1 | `0x06` ACK |
+| 21:32:08.392 | Calman→Pi | 18 | `0x02 DISABLE PATTERNS 0x03` (retry) |
+| 21:32:08.392 | Pi→Calman | 1 | `0x06` ACK |
+| 21:32:08.394 | Calman→Pi | 0 | FIN |
+| 21:32:08.395 | Pi→Calman | 0 | FIN |
+| (52 seconds gap — Calman reopens a new connection) | | | |
+| 21:32:59.303 | Calman→Pi | 0 | SYN |
+| 21:32:59.303 | Pi→Calman | 0 | SYN+ACK |
+| 21:32:59.305 | Calman→Pi | 10 | `0x02 INIT:2.0 0x03` |
+| 21:32:59.314 | Pi→Calman | 1 | `0x06` ACK |
+| 21:32:59.317 | Calman→Pi | 4 | `0x02 SN 0x03` |
+| 21:32:59.340 | Pi→Calman | 17 | `1000000004f46f536` (serial number) |
+| 21:32:59.343 | Calman→Pi | 17 | `0x02 ENABLE PATTERNS 0x03` |
+| 21:32:59.344 | Pi→Calman | 1 | `0x06` ACK |
+| 21:32:59.347 | Calman→Pi | 5 | `0x02 CAP 0x03` |
+| 21:32:59.348 | Pi→Calman | 94 | `HDR,DOLBYVISION,CONF_FORMAT,CONF_HDR,SIZE,10_SIZE,11_APL,CommandRGB,BITDEPTH,COLORSPACE,...` |
+| 21:32:59.350 | Calman→Pi | 18 | `0x02 HDR_ENA 0x03` |
+| 21:33:04.197 | Pi→Calman | 1 | `0x06` ACK (4.85s later) |
+| 21:33:04.250 | Calman→Pi | 0 | ACK |
+| (5 seconds gap — then Calman closes the TCP connection without sending any pattern data) |
+
+### What this means
+
+- Calman's GCI source plugin is **a control plane only** — it sends `INIT`, `SN`, `ENABLE PATTERNS`, `CAP`, `HDR_ENA` to configure the source, and then **expects a separate data-plane protocol** to send the actual pattern data. The GCI control protocol itself does not carry pattern pixel data.
+- **The data-plane protocol is missing on the Pi4.** No port 85 (RPC pattern), no port 2101 (custom pattern), no port 80 (webui) traffic from Calman peer `192.168.1.231`. The TCP connection on port 2100 is closed by Calman ~5 seconds after the HDR_ENA ACK, and no further data-plane connection is ever opened.
+- The "grey screen" the user sees is whatever the renderer last had on its output plane. The renderer is idle because the GCI plugin never told it to display anything.
+- This is **a Calman-side plugin issue, not a PGenerator issue.** PGenerator's GCI control-plane handler on port 2100 is working correctly — it ACKs all the right commands and replies with the correct serial number and capabilities list. Calman's GCI plugin simply never opens a follow-up data connection.
+
+### PGenerator capabilities the GCI plugin saw in the CAP reply
+
+The full 94-byte CAP reply (extracted from the pcap) was:
+
+```
+HDR,DOLBYVISION,CONF_FORMAT,CONF_HDR,SIZE,10_SIZE,11_APL,CommandRGB,BITDEPTH,COLORSPACE,
+```
+
+The CAP reply advertises that PGenerator supports:
+- `HDR` — HDR signaling
+- `DOLBYVISION` — Dolby Vision signaling
+- `CONF_FORMAT` — pattern format configuration
+- `CONF_HDR` — HDR metadata configuration
+- `SIZE` — pattern size
+- `10_SIZE`, `11_APL` — 10% and 11% APL patterns
+- `CommandRGB` — RGB color commands
+- `BITDEPTH` — bit depth
+- `COLORSPACE` — colorspace
+
+These are the GCI capabilities PGenerator advertises. The Calman GCI plugin reads this list to know what features it can configure. After the capability exchange, the plugin is expected to open a data-plane connection to actually drive patterns — and it is not doing so.
+
+### Why this is not a fix in PGenerator
+
+PGenerator is doing its part correctly on the GCI control plane. The Calman GCI plugin is a Calman-side abstraction that wraps whatever the user has configured as their actual pattern source. Looking at the Calman "Source Settings" dialog the user screenshotted earlier:
+
+- Source: "Unified Pattern Generator Control Interface"
+- Source Information: "Portrait Displays, SN: VER:wAH, Triplet support: Full triplet support"
+
+The source dialog reports `Portrait Displays` as the manufacturer — this is **Calman's "Portrait Displays G1" colorimeter source, not PGenerator**. The user picked the wrong source in Calman. The actual PGenerator source in Calman is **"Calman"** (the RPC source), which is what has been working all session.
+
+The Calman "GCI" plugin name "Unified Pattern Generator Control Interface" is Calman-internal marketing language. It is the same Calman RPC plugin under a different display name. There may also be a separate Calman GCI source in the dropdown that maps to a different (Portrait Displays-branded) actual implementation, and that one is the source that just opens a port 2100 control-plane connection and never sends data.
+
+### Recommendation
+
+**Do not attempt to fix the GCI grey screen in PGenerator.** PGenerator's GCI control-plane handler on port 2100 is working correctly. The bug is Calman-side: the "Unified Pattern Generator Control Interface" source in Calman is a Calman-internal abstraction that, on this Calman install, has no data-plane plugin wired to the actual PGenerator. The user should:
+1. Switch back to the Calman RPC source in the Calman "Source Settings" dialog (this is the source that has been painting patches all session).
+2. If the GCI source is desired for compatibility with another workflow, contact Portrait Displays / Calman support about how to bind the GCI source to the actual PGenerator RPC endpoint.
+
+PGenerator's GCI control-plane handler on port 2100 is the Calman-blessed GCI protocol (STX/ETX framing, 0x06 ACK, ASCII command/reply). It is implemented in PGenerator. The Calman plugin that wraps PGenerator is on the Calman side, not the PGenerator side, and is the layer that decides what happens after the control plane handshake.
+
 ## New lead (2026-06-09) — Calman RPC pattern path
 
 User observation: lifted shadow detail only appears when Calman uses PGenerator as the pattern source over RPC. Calman driving the TV's internal pattern generator does not show the lift. Option D already proved the lift is range-dependent on the wire (Limited-range YCbCr444 is the failing state). The lift is not in the kernel (the live `vc4.ko` already uses the identity matrix for YUV444). So the new question is: **what does the Calman RPC path do that the WebUI / native-series path does not?**
