@@ -15,6 +15,7 @@ my $rootfs_command=read_text('tools/image-targets/pi4-biasi/rootfs/usr/share/PGe
 my $override=read_text('usr/lib/drm_override.c');
 my $rootfs_override=read_text('tools/image-targets/pi4-biasi/rootfs/usr/lib/drm_override.c');
 my $renderer=read_text('tools/image-targets/pi4-biasi/src/ofxRPI4Window/src/ofxRPI4Window.cpp');
+my $shared_renderer=read_text('src/ofxRPI4Window/src/ofxRPI4Window.cpp');
 
 is($rootfs_command,$command,'Pi4 image rootfs command.pm matches shared runtime command.pm');
 is($rootfs_override,$override,'Pi4 image rootfs drm_override.c matches shared runtime drm_override.c');
@@ -47,9 +48,19 @@ like(
  'Pi4 renderer source emits BT.2020 RGB only for RGB output and BT.2020 YCbCr for YCbCr output'
 );
 like(
+ $shared_renderer,
+ qr/avi_infoframe\.colorimetry = \(avi_info\.output_format == 0\) \? 9 : 10;/,
+ 'Shared renderer source emits BT.2020 RGB only for RGB output and BT.2020 YCbCr for YCbCr output'
+);
+like(
  $renderer,
  qr/avi_infoframe\.colorimetry == 9 \|\| avi_infoframe\.colorimetry == 10/,
  'Pi4 renderer source treats both BT.2020 RGB and YCbCr connector enums as BT.2020 plane encoding'
+);
+like(
+ $shared_renderer,
+ qr/avi_infoframe\.colorimetry == 9 \|\| avi_infoframe\.colorimetry == 10/,
+ 'Shared renderer source treats both BT.2020 RGB and YCbCr connector enums as BT.2020 plane encoding'
 );
 
 done_testing();
