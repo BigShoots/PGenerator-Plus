@@ -117,6 +117,78 @@ The plan does not include a kernel rebuild recipe in this turn. That would be a 
 
 After Option D, if the lift is unchanged, the next hypothesis to test is the `max_cll=1000, max_fall=400` vs `0/0` metadata difference, which the user can also test with a single-conf change (`max_cll=0; max_fall=0`) before doing any source edits. That step is deliberately NOT in this plan; it will be planned separately if Option D comes back negative.
 
+## Empirical data from 6 new Calman screenshots (2026-06-09)
+
+User provided 6 screenshots taken during a single Calman HDR AutoCal session on the LG C2, hdrCinema picture mode:
+
+- 2× "Calman HDR autocal During Cal with IPTG.png" — mid-cal, ITPG pattern source (screen grab shows Calman driving the TV's internal pattern generator)
+- 2× "Calman HDR autocal post Cal with IPTG.png" — post-cal grayscale read, ITPG pattern source
+- 2× "Calman HDR autocal post Cal with pgen.png" — post-cal grayscale read, PGenerator external pattern source
+
+The picture mode is the same (hdrCinema) and the TV's calibration state is the same (both post-cal reads are on the same calibrated TV). Only the pattern source differs. This is exactly the controlled comparison the T1 plan described.
+
+### Extracted numbers (post-cal hdrCinema, stimulus 0–50%)
+
+| Stim (%) | Target cd/m² | ITPG cd/m² | PGen cd/m² | PGen − ITPG | PGen/ITPG | ITPG/Target | PGen/Target |
+|---|---|---|---|---|---|---|---|
+| 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | — | — | — |
+| 5 | 0.0606 | **0.0909** | 0.0584 | **−0.0325** | **0.64** | **+50%** | −4% |
+| 10 | 0.3285 | 0.3451 | 0.2997 | −0.0454 | 0.87 | +5% | −9% |
+| 15 | 1.0146 | 1.0218 | 0.9664 | −0.0554 | 0.95 | +1% | −5% |
+| 20 | 2.4653 | 2.5206 | 2.3801 | −0.1405 | 0.94 | +2% | −3% |
+| 25 | 5.2375 | 5.4254 | 4.9653 | −0.4601 | 0.92 | +4% | −5% |
+| 30 | 10.2138 | 10.5956 | 10.1435 | −0.4521 | 0.96 | +4% | −1% |
+| 35 | 18.7807 | 18.8099 | 17.6813 | −1.1286 | 0.94 | 0% | −6% |
+| 40 | 33.1037 | 32.5939 | 31.3152 | −1.2787 | 0.96 | −2% | −5% |
+| 45 | 56.5543 | 56.5819 | 54.2870 | −2.2949 | 0.96 | 0% | −4% |
+| 50 | 94.3784 | 93.7774 | 89.7693 | −4.0081 | 0.96 | −1% | −5% |
+
+### Reading of the data
+
+**PGenerator reads consistently lower than ITPG at every stimulus (0.0325–4.01 cd/m² gap, widening with stimulus).** Critically, the ratio PGen/ITPG is ~0.94–0.96 across the entire range — a roughly constant ~5% offset, with the exception of 5% where the ratio drops to 0.64 (PGen is 36% lower than ITPG at 5% specifically).
+
+**Both sources disagree with the target, in opposite directions:**
+
+- **ITPG reads slightly above target** at the low end (5% is +50% over, 10% is +5% over). This is the "lifted blacks" the user has been chasing. The TV's tone mapper is pushing near-black stimuli brighter than the code value should produce, on the ITPG signal path. The TV then calibrates against this lifted luminance, and when the post-cal ITPG read uses the same path, the lift is reproduced and measured.
+- **PGenerator reads slightly below target** across the range (−3% to −9% with one outlier at 5%). This is a different and more uniform error: the PGen path is doing something that makes every stimulus a bit dimmer than the code value says. Critically, the 5% PGen number (0.0584) is *very close to the actual target* (0.0606), which means the PGen signal path is closer to "what the code value says the luminance should be" than the ITPG path is.
+
+### The user's hypothesis is exactly right, and now we have the mechanism
+
+The user wrote: *"the errors are actually lower when using pgenerator to read because the tvs tone mapping must be lifting the blacks a bit. But this makes sense if pgenerator is showing those patches a bit darker during autocal it will lift them, then the tone mapping after calibration will enhance that lifting even more."*
+
+**Translation into what is actually happening on the wire:**
+
+1. **PGenerator path encodes near-black Y values slightly darker than the code value** (the −3% to −9% PGen/Target ratio). The renderer's YCbCr-packing shader + the Limited-range encoding + the kernel's identity CSC produces a final on-wire luminance that is slightly below the 10-bit code value. Most likely cause: the renderer's `signal_range=1` (Limited) is being applied at the same time the YUV shader does its Limited-to-Limited scaling, double-compressing near-black. (The Option D / A hypothesis is still the right one — it is just that the lift appears in the *opposite direction* when you compare PGenerator to the target. The PGenerator-encoding lift is a downward shift of the same quantity we thought was an upward shift.)
+2. **During autocal, Calman sees the slightly-darker PGen stimulus and asks the TV for more gain to hit the target.** The TV's 1D LUT / 3D LUT gets pushed to make near-black PGen-stimuli brighter. This calibrates the display against an *under-encoded* PGen stimulus.
+3. **The TV's internal tone mapper still applies its "ABL / dynamic contrast / black floor" curve on top of the calibrated LUT.** When the calibrated LUT is asked to produce a near-black value, the tone mapper interprets it as "this is the calibrated black floor" and lifts the absolute output so the panel never goes truly black.
+4. **On the ITPG read-back path, the TV receives a near-black code value directly. The tone mapper applies the same lift (because the LUT is calibrated against the PGen-darker stimulus, not the ITPG-direct stimulus). The meter sees the lifted output.**
+5. **On the PGen read-back path, the PGen stimulus is again slightly darker than the code value says, so the calibrated LUT is over-driven slightly, and the meter sees a luminance slightly below the post-cal target.** Both reads are reproducible end-to-end. The ITPG read shows the lift (because the ITPG signal doesn't go through the PGen under-encoding, but the calibration was done against the PGen path). The PGen read shows the calibration target was set against an under-encoded stimulus, so the calibrated result lands slightly below the target code value.
+
+### Implication for the fix
+
+The plan's original "double conversion" hypothesis is correct in direction (PGen under-encodes the near-black), but the magnitude is small enough that the "lift" seen in ITPG reads is dominated by the TV's tone mapper, not the renderer. The fix is still the same: prevent the renderer's range setting from being applied twice, so the PGen stimulus lands at the right code value on the wire. Once that is fixed:
+
+- During autocal, the PGen stimulus will be at the correct code value, the TV calibrates against the correct luminance, the 1D LUT is set correctly.
+- The ITPG post-cal read will then show a smaller (or no) lift, because the calibration was done against the right code value and the TV's tone mapper is no longer compensating for a renderer-side under-encoding.
+- The PGen post-cal read will land on target (or within meter noise) at every stimulus, because the stimulus code value and the calibration target are now in agreement.
+
+### What this changes in the plan
+
+- The "lift" is real and is on the renderer side, not the kernel. The kernel CSC is already identity for YUV444; that is not the cause. The cause is the renderer's range-doubling somewhere in the YCbCr-packing pipeline.
+- The hypothesis from the plan's "New lead" section is now confirmed by hard data: the bug is on the PGen signal path, the TV calibrates against an under-encoded PGen stimulus, the ITPG read shows the lift, and the PGen read shows the calibration was done against the wrong stimulus.
+- The fix scope: **`webui.pm` around `webui_pattern` (lines 7094-7272) for the Calman RPC pattern set path**, specifically the way `signal_range` and `transport_signal_range` are plumbed into `pgsetpattern`. The Calman RPC path may be passing Limited twice (or passing Limited once but then the renderer interprets it as "the entire pipeline is Limited" and re-applies a Limited-to-Limited squash on the already-Limited YUV shader output). The fix needs to ensure the PGen stimulus arrives at the TV at the same luminance the ITPG stimulus would, at every code value, in Limited YCbCr444.
+- The lift on the **RGB** path (which the user also reports) is likely a separate bug — the RGB path goes through a different code path in the renderer (no YCbCr packing), so the lift there would be the same kernel/AVI-infoframe mechanism, not the same renderer-YCbCr double-squash. Out of scope for the present plan; flag for follow-up.
+
+### Files most likely to need changes (after T1-B confirms the cal-side source)
+
+- `usr/share/PGenerator/webui.pm` — `webui_pattern` shim, `pgsetpattern` body, the place where `signal_range` / `transport_signal_range` get applied
+- `usr/share/PGenerator/command.pm` — the `pgsetpattern` Perl helper, range-setting plumbing
+- `tests/pi4-renderer-range-plumb-regression.pl` — new regression test asserting the Calman RPC path does not double-apply the range
+
+### Open: MaxCLL=243 on the wire
+
+Note: the deployed conf has `max_cll=0, max_fall=0` but the on-wire HDR_OUTPUT_METADATA blob had MaxFALL=243. This is a separate, smaller effect (the LG's tone mapper may be using MaxFALL as an ABL trigger; 243 is not catastrophic but is not 0 either). Flag for follow-up — possibly a renderer-side metadata default that needs to be changed.
+
 ## New lead (2026-06-09) — Calman RPC pattern path
 
 User observation: lifted shadow detail only appears when Calman uses PGenerator as the pattern source over RPC. Calman driving the TV's internal pattern generator does not show the lift. Option D already proved the lift is range-dependent on the wire (Limited-range YCbCr444 is the failing state). The lift is not in the kernel (the live `vc4.ko` already uses the identity matrix for YUV444). So the new question is: **what does the Calman RPC path do that the WebUI / native-series path does not?**
