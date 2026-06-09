@@ -115,6 +115,16 @@ static int output_fmt_found = 0;
 static uint32_t colorimetry_prop_id = 0;
 static uint64_t colorimetry_override = 0;
 static int colorimetry_found = 0;
+
+static uint64_t map_connector_colorimetry(uint64_t colorimetry, uint64_t output_fmt) {
+    if (output_fmt == 0) {
+        return colorimetry;
+    }
+    if (colorimetry == 9) {
+        return 10;
+    }
+    return colorimetry;
+}
 static uint32_t rgb_qr_prop_id = 0;
 static uint64_t rgb_qr_override = 0;
 static int rgb_qr_found = 0;
@@ -276,6 +286,20 @@ static void read_config(void) {
         write_log("DRM_OVERRIDE: config color_format=");
         write_log(num);
         write_log("\n");
+    }
+    if (colorimetry_found && output_fmt_found) {
+        uint64_t mapped_colorimetry = map_connector_colorimetry(colorimetry_override, output_fmt_override);
+        if (mapped_colorimetry != colorimetry_override) {
+            char old_num[24], new_num[24];
+            itoa_simple(colorimetry_override, old_num);
+            itoa_simple(mapped_colorimetry, new_num);
+            write_log("DRM_OVERRIDE: mapped colorimetry ");
+            write_log(old_num);
+            write_log(" -> ");
+            write_log(new_num);
+            write_log("\n");
+            colorimetry_override = mapped_colorimetry;
+        }
     }
     if (colorimetry_found) {
         char num[24];
