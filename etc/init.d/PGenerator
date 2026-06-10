@@ -58,6 +58,18 @@ case "$1" in
         chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $DEVICES_VIDEO 2>/dev/null
         chmod 660 /dev/cec* 2>/dev/null
         chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP /dev/cec* 2>/dev/null
+        # Pre-set the HDR_OUTPUT_METADATA connector property from
+        # /etc/PGenerator/PGenerator.conf so the LG C2 (and other LG OLEDs)
+        # does not apply a near-black lift when min_dml=0 is on the wire.
+        # pgsethdr uses DRM_IOCTL_SET_MASTER/DROP_MASTER so it can run
+        # after the renderer is already up; the call is idempotent. This
+        # runs before the daemon (which forks the renderer) so pgsethdr
+        # is the initial DRM master; subsequent pgsethdr calls from the
+        # WebUI HDR update path run while the renderer holds the master
+        # and steal/release it.
+        if [ -x "/usr/bin/pgsethdr" ]; then
+         /usr/bin/pgsethdr 2>/dev/null || echo "pgsethdr pre-set failed"
+        fi
         setcap cap_net_bind_service=+ep $PERL
         setsid sudo -u $PGENERATOR_USER_GROUP $PROGRAM_DAEMON_SOCKET
         setcap cap_net_bind_service=-ep $PERL
