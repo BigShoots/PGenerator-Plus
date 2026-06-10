@@ -147,14 +147,23 @@ sub normalize_dv_transport_conf(@) {
 sub kms_connector_has_property(@) {
  my $prop_name=shift;
  return 0 if(!$is_kms || $prop_name eq "");
- open(MT_PROP,"timeout 3 $modetest -c 2>/dev/null|");
- while(<MT_PROP>) {
-  if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
-   close(MT_PROP);
-   return 1;
+ # Properties created with DRM_MODE_PROP_ATOMIC (e.g. the Pi5 kernel's
+ # "output format") are hidden from legacy clients, so list with the
+ # atomic cap first and fall back to the legacy listing for older
+ # modetest builds (Pi4 BiasiLinux).
+ for my $mt_flags ("-a","") {
+  open(MT_PROP,"timeout 3 $modetest $mt_flags -c 2>/dev/null|");
+  my $seen_any=0;
+  while(<MT_PROP>) {
+   $seen_any=1;
+   if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
+    close(MT_PROP);
+    return 1;
+   }
   }
+  close(MT_PROP);
+  last if($seen_any);
  }
- close(MT_PROP);
  return 0;
 }
 

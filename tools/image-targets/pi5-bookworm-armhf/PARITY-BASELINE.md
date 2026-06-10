@@ -10,7 +10,7 @@ metadata — with the same fidelity as the Pi4 reference (192.168.1.179).
 
 | # | Gap | Evidence |
 |---|-----|----------|
-| G1 | Loaded vc4 has no `output format` connector property → renderer falls back to RGB while conf says `color_format=1` (YCC444) | `modetest -M vc4 -c \| grep -c "output format"` → 0 |
+| G1 | ~~Loaded vc4 has no `output format` connector property~~ **RESOLVED 2026-06-10 — measurement artifact.** The patched module IS loaded (running srcversion `FE6D3C3FFE4E28A6622CFE8` matches the repo artifact `vc4-6.12.25-rpt-rpi-v8-dv-vsif.ko.xz`) and the property exists on both connectors (`RGB444=0 YCBCR444=1 YCBCR422=2`), but it is created with `DRM_MODE_PROP_ATOMIC` so it is hidden from non-atomic clients — it only shows under `modetest -a -c`. Real fix: all tooling must list/write with the atomic cap (`kms_connector_has_property` and `modetest_connector_write` in command.pm updated accordingly). No kernel install or reboot was needed | `modetest -M vc4 -a -c` shows props 41/48 |
 | G2 | Wire `Broadcast RGB = 1 (Full)` while conf `rgb_quant_range=1` (Limited). Enum semantics differ: conf `1=Limited, 2=Full`; Broadcast RGB `0=Automatic, 1=Full, 2=Limited 16:235`. Repo mapping helpers are correct; the deployed stack is stale | `modetest` value 1 vs conf |
 | G3 | Wire `Colorspace = 9 (BT2020_RGB)` while conf is `colorimetry=9 + color_format=1` (YCC) → should be 10 (BT2020_YCC) once YCC output works | `modetest` value 9 |
 | G4 | Deployed Perl stack stale and three-way diverged (deployed `command.pm` md5 `de038d9a…` ≠ repo `86ee72f5…` ≠ pi5 rootfs overlay `be25315a…`) | md5 capture below |
