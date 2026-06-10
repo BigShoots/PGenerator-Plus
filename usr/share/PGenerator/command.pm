@@ -521,6 +521,15 @@ sub pattern_generator_start(@) {
    # on the splash screen until a later format toggle forces HDMI state back in.
    # Reapply connector properties once the renderer is alive so the first pattern
    # push lands on the intended format without requiring a manual YCbCr detour.
+   # Wait for the renderer process first: the modetest writes below take DRM
+   # master briefly, and doing that while the renderer is still initializing
+   # (before its own drmSetMaster) used to kill it ("failed to set drm
+   # master"). The renderer also retries drmSetMaster now, but waiting here
+   # keeps the reapply out of the critical window entirely.
+   for(my $i=0;$i<20 && !&pattern_generator_is_running();$i++) {
+    usleep(250000);
+   }
+   usleep(500000) if(&pattern_generator_is_running());
    &apply_drm_properties();
  my $startup_color_fmt=$pgenerator_conf{"color_format"};
  $startup_color_fmt=0 if($startup_color_fmt eq "");
