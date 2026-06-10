@@ -66,27 +66,41 @@ sub pg_is_pi4_family(@) {
  return (&pg_device_model() =~/Raspberry Pi 4|Raspberry Pi 400|Raspberry Pi Compute Module 4/) ? 1 : 0;
 }
 
+# Dolby Vision transports:
+#  standard - sink-led DV: metadata embedded in an RGB 8-bit tunnel; the
+#             display parses the tunnel itself. Requires full sink-led DV
+#             support in the TV.
+#  lldv     - low-latency (source-led) DV: PQ-encoded YCbCr 4:2:2 12-bit
+#             with the LL bit set in the Dolby VSIF. Some displays only
+#             decode this form (and may not even advertise a VSVDB).
 sub pg_dv_transport_mode(@) {
+ foreach my $candidate (@_) {
+  next if(!defined $candidate || $candidate eq "");
+  return "lldv" if(lc($candidate) eq "lldv");
+  return "standard" if(lc($candidate) eq "standard");
+ }
+ return "lldv" if(lc($pgenerator_conf{"dv_transport"} || "") eq "lldv");
  return "standard";
 }
 
 sub pg_dv_transport_ll_flag(@) {
- return "0";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "1" : "0";
 }
 
 sub pg_dv_transport_std_flag(@) {
- return "1";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "0" : "1";
 }
 
 sub pg_dv_transport_interface(@) {
- return "0";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "1" : "0";
 }
 
 sub pg_dv_transport_color_format(@) {
- return "0";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "2" : "0";
 }
 
 sub pg_dv_transport_max_bpc(@) {
+ return "12" if(&pg_dv_transport_mode(@_) eq "lldv");
  foreach my $candidate (@_) {
   next if(!defined $candidate || $candidate !~ /^\d+$/);
   return "10" if(int($candidate) == 10);
