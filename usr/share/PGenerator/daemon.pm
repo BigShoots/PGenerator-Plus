@@ -1304,19 +1304,52 @@ sub pattern_daemon {
      #
      # Helper: apply pending settings — restart pattern generator if dirty
      #
+     #
+     # Apply-queue flag: set when calman_apply is called while an
+     # apply is already in progress. When the current apply finishes,
+     # if this flag is set we re-enter apply to pick up the latest
+     # conf (subsequent commands during the in-flight apply may have
+     # updated the conf further). Without this serialization, rapid
+     # Calman setting changes (e.g. CONF_HDR + COLF + BITD in quick
+     # succession) trigger back-to-back pattern_generator_stop/start
+     # cycles that hit the documented DRM-master race persistently
+     # and the renderer stays dead. With serialization only one
+     # stop/start cycle is in flight at a time; further requests
+     # are coalesced into a single follow-up apply.
+     #
+     my $calman_apply_in_progress=0;
      my $calman_apply = sub {
       my $replay_after=shift;
       $replay_after=1 if(!defined $replay_after);
-      if($calman_settings_dirty) {
-       $calman_force_dv_rgb->();
-       &log("Calman: applying pending settings (restarting pattern generator)");
-       &pattern_generator_stop();
-       &pattern_generator_start();
-       $calman_settings_dirty=0;
-       &calman_replay_last_pattern("settings apply") if($replay_after);
-       return 1;
+      # Coalesce: if an apply is already running, mark that another
+      # is needed and return. The in-flight apply will loop and
+      # re-enter calman_apply at the end if dirty stays set.
+      if($calman_apply_in_progress) {
+       $calman_settings_dirty=1;
+       return 0;
       }
-      return 0;
+      my $did_work=0;
+      while($calman_settings_dirty && !$calman_apply_in_progress) {
+       $calman_apply_in_progress=1;
+       # Clear dirty BEFORE the stop/start so any save that happens
+       # during the in-flight work (from a concurrent command or the
+       # coalescing path) sets it back to 1, and the loop re-runs to
+       # apply the latest conf. This coalesces a burst of rapid
+       # setting changes into a bounded number of stop/start cycles,
+       # preventing the documented DRM-master race from being
+       # triggered back-to-back.
+       $calman_settings_dirty=0;
+       eval {
+        $calman_force_dv_rgb->();
+        &log("Calman: applying pending settings (restarting pattern generator)");
+        &pattern_generator_stop();
+        &pattern_generator_start();
+        &calman_replay_last_pattern("settings apply") if($replay_after);
+       };
+       $calman_apply_in_progress=0;
+       $did_work=1;
+      }
+      return ($did_work ? 1 : 0);
      };
     #
     # Helper: Calman DV calibration uses Standard Dolby Vision transport.
