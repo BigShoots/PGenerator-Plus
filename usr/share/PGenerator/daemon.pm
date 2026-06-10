@@ -1177,21 +1177,31 @@ sub pattern_daemon {
 	      # override the user's WebUI signal-mode settings. The
 	      # Calman-controlled values that affect the HDR plane
 	      # encoding are is_hdr, primaries, and eotf; everything
-	      # else (signal_mode, is_sdr, colorimetry, dv_*, min_luma/
-	      # max_luma, etc.) is left to the WebUI configuration.
-	      # is_hdr is allow-listed so the GCI plugin's HDR_ENABLE
-	      # command actually turns HDR on; without it the "check
-	      # HDR in Calman" toggle is silently dropped. color_format
-	      # and max_bpc are also allow-listed so that the Calman
-	      # source-format / bit-depth controls (COLF:YCBCR444,
-	      # BITD:10, etc.) actually take effect on the wire; the
-	      # WebUI's color_format and max_bpc preference is only
-	      # meaningful as a fallback when Calman isn't driving
-	      # these. The Calman RPC plugin never sets $calman_gci,
-	      # so the RPC path is unaffected.
+	      # else (signal_mode, is_sdr, colorimetry, dv_*, etc.) is
+	      # left to the WebUI configuration. is_hdr is allow-listed
+	      # so the GCI plugin's HDR_ENABLE command actually turns
+	      # HDR on; without it the "check HDR in Calman" toggle is
+	      # silently dropped. color_format and max_bpc are also
+	      # allow-listed so that the Calman source-format /
+	      # bit-depth controls (COLF:YCBCR444, BITD:10, etc.)
+	      # actually take effect on the wire; the WebUI's
+	      # color_format and max_bpc preference is only meaningful
+	      # as a fallback when Calman isn't driving these.
+	      # min_luma, max_luma, max_cll and max_fall are
+	      # allow-listed so that Calman's MAXL / MINL / MAXCLL /
+	      # MAXFALL (HDR mastering display luminance metadata)
+	      # actually take effect — the renderer's
+	      # updateHDR_Infoframe() reads these from the conf on
+	      # every page flip, so saving them is harmless and is
+	      # the only way Calman can drive luminance during a
+	      # calibration pass under GCI. rgb_quant_range stays
+	      # WebUI-owned. The Calman RPC plugin never sets
+	      # $calman_gci, so the RPC path is unaffected.
 	      if($calman_gci{$connection} &&
 	        $conf_key ne "primaries" && $conf_key ne "eotf" && $conf_key ne "is_hdr" &&
-	        $conf_key ne "color_format" && $conf_key ne "max_bpc") {
+	        $conf_key ne "color_format" && $conf_key ne "max_bpc" &&
+	        $conf_key ne "min_luma" && $conf_key ne "max_luma" &&
+	        $conf_key ne "max_cll" && $conf_key ne "max_fall") {
 	       &log("Calman GCI: suppressed save $conf_key=$conf_val (WebUI owns this key)");
 	       return;
 	      }
@@ -1318,6 +1328,30 @@ sub pattern_daemon {
      # are coalesced into a single follow-up apply.
      #
      my $calman_apply_in_progress=0;
+     # Snapshot of the mode-affecting conf keys as of the last
+     # successful stop/start apply. If the current conf matches
+     # this snapshot, no renderer restart is needed — the
+     # renderer's updateHDR_Infoframe() reads luminance / primaries
+     # / min_luma from the conf on every page flip, and
+     # drm_override.so re-applies connector properties (Colorimetry,
+     # output_format, max_bpc, rgb_quant_range) on every atomic
+     # commit. Skipping the stop+start cycle for non-mode changes
+     # (the common case: Calman adjusting luminance, primaries, or
+     # rgb_quant_range during a calibration pass) avoids the
+     # documented DRM-master race that was killing the renderer
+     # on every "apply" call. Stored in a package-global hash keyed
+     # by the connection handle because the per-command handler
+     # block is re-entered for every incoming command and a
+     # lexical my() here would be re-initialized each time.
+     my %calman_applied_mode_keys=%{$main::calman_applied_mode_keys{$connection} || {}};
+     my $calman_mode_key_snapshot = sub {
+      my %k=();
+      for my $k (qw(mode_idx signal_mode is_hdr is_sdr eotf colorimetry
+                    color_format max_bpc dv_status is_ll_dovi is_std_dovi)) {
+       $k{$k}="$pgenerator_conf{$k}";
+      }
+      return \%k;
+     };
      my $calman_apply = sub {
       my $replay_after=shift;
       $replay_after=1 if(!defined $replay_after);
@@ -1331,19 +1365,94 @@ sub pattern_daemon {
       my $did_work=0;
       while($calman_settings_dirty && !$calman_apply_in_progress) {
        $calman_apply_in_progress=1;
-       # Clear dirty BEFORE the stop/start so any save that happens
-       # during the in-flight work (from a concurrent command or the
-       # coalescing path) sets it back to 1, and the loop re-runs to
-       # apply the latest conf. This coalesces a burst of rapid
-       # setting changes into a bounded number of stop/start cycles,
-       # preventing the documented DRM-master race from being
-       # triggered back-to-back.
+       # Clear dirty BEFORE the work so any save that happens
+       # during the in-flight apply (from a concurrent command or
+       # the coalescing path) sets it back to 1, and the loop
+       # re-runs to pick up the latest conf.
        $calman_settings_dirty=0;
        eval {
         $calman_force_dv_rgb->();
-        &log("Calman: applying pending settings (restarting pattern generator)");
-        &pattern_generator_stop();
-        &pattern_generator_start();
+        # Compare the current mode-affecting conf to the last
+        # applied snapshot. If they match, the connector mode
+        # (resolution, color format, colorimetry, max_bpc,
+        # signal/eotf/DV flags) is already what the renderer and
+        # wire are showing. The change is limited to luminance,
+        # primaries, rgb_quant_range, or other keys that the
+        # renderer reads on every frame — no stop+start needed,
+        # just refresh the HDR metadata blob and connector props.
+        my $now=$calman_mode_key_snapshot->();
+        my $mode_changed=0;
+        for my $k (keys %$now) {
+         if((defined $calman_applied_mode_keys{$k} && $calman_applied_mode_keys{$k} ne $now->{$k}) ||
+            (!defined $calman_applied_mode_keys{$k} && $now->{$k} ne "")) {
+          $mode_changed=1;
+          last;
+         }
+        }
+        if(!$mode_changed) {
+         # Mode unchanged — only metadata / luminance / range
+         # changed. The renderer's updateHDR_Infoframe() reads
+         # min_luma / max_luma / max_cll / max_fall / primaries
+         # from the conf on every page flip, so the new values
+         # take effect on the next atomic commit without touching
+         # the renderer. We re-apply connector properties
+         # (apply_drm_properties uses modetest_connector_write,
+         # which does NOT touch DRM master) in case colorimetry
+         # / rgb_quant_range were changed via the GCI-allow-listed
+         # keys. We deliberately do NOT call apply_hdr_metadata_helper
+         # (pgsethdr) here because pgsethdr steals DRM master from
+         # the running renderer, which would break the renderer's
+         # atomic commits. pgsethdr is only needed when the
+         # renderer is being (re)started.
+          &log("Calman: applying non-mode changes (no renderer restart) — refreshing connector properties");
+          &apply_drm_properties();
+          %calman_applied_mode_keys=%$now;
+         } else {
+          &log("Calman: applying pending settings (restarting pattern generator)");
+          &pattern_generator_stop();
+          &pattern_generator_start();
+          # The first start attempt may lose the documented
+          # DRM-master race. Retry up to three more times with
+          # increasing delays so the apply itself guarantees the
+          # renderer is alive before returning, rather than
+          # leaving it dead and relying on the next pattern
+          # request to trigger a recovery. This is the same
+          # retry ladder as load_new_pattern_file in pattern.pm.
+          if(!&pattern_generator_is_running()) {
+           select(undef,undef,undef,0.6);
+           if(!&pattern_generator_is_running()) {
+            &log("Calman: apply — renderer not running after first start, retrying (DRM master race)");
+            select(undef,undef,undef,0.4);
+            &pattern_generator_stop();
+            &pattern_generator_start();
+            select(undef,undef,undef,0.6);
+           }
+           if(!&pattern_generator_is_running()) {
+            &log("Calman: apply — renderer not running after second start, final retry");
+            select(undef,undef,undef,1.0);
+            &pattern_generator_stop();
+            &pattern_generator_start();
+            select(undef,undef,undef,0.6);
+           }
+           if(!&pattern_generator_is_running()) {
+            &log("Calman: apply — renderer failed after 3 starts, waiting 3s for DRM master to settle");
+            select(undef,undef,undef,3.0);
+            &pattern_generator_stop();
+            &pattern_generator_start();
+            select(undef,undef,undef,0.8);
+           }
+           if(!&pattern_generator_is_running()) {
+            &log("Calman: apply — renderer failed to start after all retries; wire properties were set but no pattern will render until the next pattern request recovers it");
+           }
+          }
+          %calman_applied_mode_keys=%$now;
+         }
+         # Persist the snapshot in the package-global hash so it
+         # survives across command invocations on the same
+         # connection (the per-command handler block is re-entered
+         # for every incoming command and a lexical my() would be
+         # re-initialized).
+         $main::calman_applied_mode_keys{$connection}={%calman_applied_mode_keys};
         &calman_replay_last_pattern("settings apply") if($replay_after);
        };
        $calman_apply_in_progress=0;
