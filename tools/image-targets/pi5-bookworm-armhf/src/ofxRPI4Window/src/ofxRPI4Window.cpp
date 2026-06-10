@@ -3637,7 +3637,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 			} else {
 
 			updateDoVi_Infoframe(dv_status, dv_interface); // Disable DOVI infoframe if on, for some reason destroying blob doesn't clear the infoframe
-//			updateHDR_Infoframe(ofxRPI4Window::eotf, 0); // Display Gamut Rec709
+			updateHDR_Infoframe(ofxRPI4Window::eotf, 0); // Explicit EOTF=SDR DRM infoframe (kicks sinks out of latched HDR/DV modes)
 			struct avi_infoframe avi_infoframe;
 			avi_infoframe.colorimetry = avi_info.colorimetry; //Default
 			avi_infoframe.rgb_quant_range = avi_info.rgb_quant_range;  //Full range [0-255] = 2
@@ -3784,7 +3784,31 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 		blob_id = 0;
 	
 		struct drm_hdr_output_metadata meta;
-		if (static_cast<int>(eotf) == 3) {
+		if (static_cast<int>(eotf) <= 1) {
+			/* Explicit SDR / traditional-gamma DRM infoframe. Some
+			 * sinks latch their last HDR/Dolby Vision input mode when
+			 * the source simply stops sending infoframes; transmitting
+			 * an explicit EOTF=SDR forces them back to SDR. All
+			 * mastering metadata is zero (none for SDR). */
+			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
+			meta.hdmi_metadata_type1.eotf = eotf;
+			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
+
+			meta.hdmi_metadata_type1.display_primaries[0].x = 0;
+			meta.hdmi_metadata_type1.display_primaries[0].y = 0;
+			meta.hdmi_metadata_type1.display_primaries[1].x = 0;
+			meta.hdmi_metadata_type1.display_primaries[1].y = 0;
+			meta.hdmi_metadata_type1.display_primaries[2].x = 0;
+			meta.hdmi_metadata_type1.display_primaries[2].y = 0;
+			meta.hdmi_metadata_type1.white_point.x = 0;
+			meta.hdmi_metadata_type1.white_point.y = 0;
+
+			meta.hdmi_metadata_type1.max_display_mastering_luminance = 0;
+			meta.hdmi_metadata_type1.min_display_mastering_luminance = 0;
+
+			meta.hdmi_metadata_type1.max_fall = 0;
+			meta.hdmi_metadata_type1.max_cll = 0;
+		} else if (static_cast<int>(eotf) == 3) {
 			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 			meta.hdmi_metadata_type1.eotf = eotf;
 			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
