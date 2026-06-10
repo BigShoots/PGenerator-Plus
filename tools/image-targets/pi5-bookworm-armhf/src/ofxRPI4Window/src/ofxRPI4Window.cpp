@@ -13,6 +13,39 @@
 
 #define CASE_STR(x,y) case x: str = y; break
 
+/* Read HDR mastering metadata from PGenerator.conf on every
+ * updateHDR_Infoframe() call so the wire blob always matches conf
+ * regardless of which side wrote last. Mirrors the Pi4 fix
+ * (commit 84ed1cc7): without this, the blob carries stale or
+ * zero-init values and the LG C2 applies a near-black lift. */
+static double pg_read_conf_double(const char *path, const char *key, double fallback) {
+    FILE *fh = fopen(path, "r");
+    if (!fh) return fallback;
+    char line[256];
+    size_t key_len = strlen(key);
+    double out = fallback;
+    while (fgets(line, sizeof(line), fh)) {
+        if (strncmp(line, key, key_len) == 0 && line[key_len] == '=') {
+            out = atof(line + key_len + 1);
+            break;
+        }
+    }
+    fclose(fh);
+    return out;
+}
+
+static int pg_read_conf_int(const char *path, const char *key, int fallback) {
+    return (int)pg_read_conf_double(path, key, (double)fallback);
+}
+
+static uint16_t pg_min_luma_to_u16(double value) {
+    if (value < 0.0) value = 0.0;
+    if (value > 6.5535) value = 6.5535;
+    return (uint16_t)((value / 0.0001) + 0.5);
+}
+
+#define PG_HDR_CONF_PATH "/etc/PGenerator/PGenerator.conf"
+
 static uint64_t pi5_broadcast_rgb_from_rgb_quant_range(uint64_t rgb_quant_range)
 {
 	switch (rgb_quant_range) {
@@ -3698,8 +3731,19 @@ void ofxRPI4Window::SetActivePlane(uint32_t plane_id, ofRectangle currentWindowR
 void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 {
 	bool ok;
-	uint64_t blob_id = 0;	
-	ofLog() << "DRM: Setting HDR infoframe";	
+	uint64_t blob_id = 0;
+	ofLog() << "DRM: Setting HDR infoframe";
+
+	/* Read mastering metadata from conf on every call (Pi4 fix
+	 * 84ed1cc7 ported): the wire blob must always match conf. The
+	 * conversion factor is units of 0.0001 cd/m^2 per CTA-861-G
+	 * (matches /usr/bin/pgsethdr.c). */
+	double pg_min_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "min_luma", 0.005);
+	double pg_max_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "max_luma", 1000.0);
+	int pg_max_cll = pg_read_conf_int(PG_HDR_CONF_PATH, "max_cll", 0);
+	int pg_max_fall = pg_read_conf_int(PG_HDR_CONF_PATH, "max_fall", 0);
+	uint16_t pg_min_dml = pg_min_luma_to_u16(pg_min_luma);
+	uint16_t pg_max_dml = (uint16_t)(pg_max_luma > 0.0 ? (uint32_t)pg_max_luma : 0);
 
 /*
 	ok = drm_mode_get_property(device, connectorId,	DRM_MODE_OBJECT_CONNECTOR, "DOVI_OUTPUT_METADATA", &prop_id, &blob_id, &prop);
@@ -3736,11 +3780,15 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 			meta.hdmi_metadata_type1.white_point.x = 0;
 			meta.hdmi_metadata_type1.white_point.y = 0;
 
-			meta.hdmi_metadata_type1.max_display_mastering_luminance = 0;
-			meta.hdmi_metadata_type1.min_display_mastering_luminance = 0;
-		
-			meta.hdmi_metadata_type1.max_fall = 0; 
-			meta.hdmi_metadata_type1.max_cll = 0;
+			/* HLG path: also read min/max DML from conf so the LG C2
+			 * does not apply a near-black lift in HLG mode either. The
+			 * display primaries are zero for HLG (LG TV infers from the
+			 * EOTF), but min/max DML are still honored. */
+			meta.hdmi_metadata_type1.max_display_mastering_luminance = pg_max_dml;
+			meta.hdmi_metadata_type1.min_display_mastering_luminance = pg_min_dml;
+
+			meta.hdmi_metadata_type1.max_fall = (uint16_t)(pg_max_fall > 0 ? pg_max_fall : 0);
+			meta.hdmi_metadata_type1.max_cll = (uint16_t)(pg_max_cll > 0 ? pg_max_cll : 0);
 		} else {
 			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 			meta.hdmi_metadata_type1.eotf = eotf;
@@ -3755,11 +3803,11 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 			meta.hdmi_metadata_type1.white_point.x = std::round(DisplayChromacityList[idx].WhiteX * EGL_METADATA_SCALING_EXT);
 			meta.hdmi_metadata_type1.white_point.y = std::round(DisplayChromacityList[idx].WhiteY * EGL_METADATA_SCALING_EXT);
 
-			meta.hdmi_metadata_type1.max_display_mastering_luminance = (uint16_t)((float)hdr_metadata.hdmi_metadata_type1.max_display_mastering_luminance);// * 10000.0f);//(uint16_t)(10000.0f * 10000.0f);
-			meta.hdmi_metadata_type1.min_display_mastering_luminance = (uint16_t)((float)(hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance/10000.0f) * 10000.0f);//(uint16_t)(0.001f    * 10000.0f);
-		
-			meta.hdmi_metadata_type1.max_fall = (float)hdr_metadata.hdmi_metadata_type1.max_fall; 
-			meta.hdmi_metadata_type1.max_cll = (float)hdr_metadata.hdmi_metadata_type1.max_cll;
+			meta.hdmi_metadata_type1.max_display_mastering_luminance = pg_max_dml;
+			meta.hdmi_metadata_type1.min_display_mastering_luminance = pg_min_dml;
+
+			meta.hdmi_metadata_type1.max_fall = (uint16_t)(pg_max_fall > 0 ? pg_max_fall : 0);
+			meta.hdmi_metadata_type1.max_cll = (uint16_t)(pg_max_cll > 0 ? pg_max_cll : 0);
 		}
 			
 		drmModeCreatePropertyBlob(device, &meta, sizeof(meta), (uint32_t*)&blob_id); 
