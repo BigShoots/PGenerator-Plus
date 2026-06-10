@@ -9,6 +9,49 @@
 
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+
+/*
+ * Read a single integer or double key from PGenerator.conf.
+ * The C++ renderer used to have the HDR_OUTPUT_METADATA blob's
+ * min_display_mastering_luminance field hard-zeroed (the file-scope
+ * hdr_metadata struct is never populated from the conf), so the
+ * LG C2 receives min_dml=0 and applies a near-black lift at 5%
+ * stimulus that Calman cannot compensate for via brightness/contrast.
+ *
+ * The /usr/bin/pgsethdr helper binary handles the full conf->blob
+ * conversion (max_luma, min_luma, max_cll, max_fall, primaries,
+ * eotf) and is called from the WebUI HDR update path. The renderer's
+ * own updateHDR_Infoframe() rebuilds the blob from the same conf at
+ * updateHDR_Infoframe() entry. This guarantees the wire blob always
+ * matches conf regardless of which side wrote last.
+ */
+static double pg_read_conf_double(const char *path, const char *key, double fallback) {
+    FILE *fh = fopen(path, "r");
+    if (!fh) return fallback;
+    char line[256];
+    size_t key_len = strlen(key);
+    double out = fallback;
+    while (fgets(line, sizeof(line), fh)) {
+        if (strncmp(line, key, key_len) == 0 && line[key_len] == '=') {
+            out = atof(line + key_len + 1);
+            break;
+        }
+    }
+    fclose(fh);
+    return out;
+}
+
+static int pg_read_conf_int(const char *path, const char *key, int fallback) {
+    return (int)pg_read_conf_double(path, key, (double)fallback);
+}
+
+static uint16_t pg_min_luma_to_u16(double value) {
+    if (value < 0.0) value = 0.0;
+    if (value > 6.5535) value = 6.5535;
+    return (uint16_t)((value / 0.0001) + 0.5);
+}
+
+#define PG_HDR_CONF_PATH "/etc/PGenerator/PGenerator.conf"
 #define __func__ __PRETTY_FUNCTION__
 
 #define CASE_STR(x,y) case x: str = y; break
@@ -3588,8 +3631,26 @@ void ofxRPI4Window::SetActivePlane(uint32_t plane_id, ofRectangle currentWindowR
 void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 {
 	bool ok;
-	uint64_t blob_id = 0;	
-	ofLog() << "DRM: Setting HDR infoframe";	
+	uint64_t blob_id = 0;
+	ofLog() << "DRM: Setting HDR infoframe";
+
+	/*
+	 * Read HDR metadata values from PGenerator.conf every time we
+	 * rebuild the wire blob. The file-scope hdr_metadata struct is
+	 * zero-initialized and the existing code copies the zero-init
+	 * values through to the wire (min_dml=0), which causes the LG C2
+	 * to apply a near-black lift at 5% stimulus. Reading the conf
+	 * here keeps the renderer self-contained -- the WebUI HDR update
+	 * path is no longer the only way to get a non-zero min_dml on
+	 * the wire. The conversion factor is units of 0.0001 cd/m^2
+	 * per CTA-861-G (matches /usr/bin/pgsethdr.c).
+	 */
+	double pg_min_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "min_luma", 0.005);
+	double pg_max_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "max_luma", 1000.0);
+	int pg_max_cll = pg_read_conf_int(PG_HDR_CONF_PATH, "max_cll", 0);
+	int pg_max_fall = pg_read_conf_int(PG_HDR_CONF_PATH, "max_fall", 0);
+	uint16_t pg_min_dml = pg_min_luma_to_u16(pg_min_luma);
+	uint16_t pg_max_dml = (uint16_t)(pg_max_luma > 0.0 ? (uint32_t)pg_max_luma : 0);
 
 /*
 	ok = drm_mode_get_property(device, connectorId,	DRM_MODE_OBJECT_CONNECTOR, "DOVI_OUTPUT_METADATA", &prop_id, &blob_id, &prop);
@@ -3617,39 +3678,47 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 			meta.hdmi_metadata_type1.eotf = eotf;
 			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 
+			/* HLG path: also read min/max DML from conf so the LG C2
+			 * does not apply a near-black lift in HLG mode either. The
+			 * display primaries are zero for HLG (LG TV infers from the
+			 * EOTF), but min/max DML are still honored. */
 			meta.hdmi_metadata_type1.display_primaries[0].x = 0;
 			meta.hdmi_metadata_type1.display_primaries[0].y = 0;
 			meta.hdmi_metadata_type1.display_primaries[1].x = 0;
 			meta.hdmi_metadata_type1.display_primaries[1].y = 0;
 			meta.hdmi_metadata_type1.display_primaries[2].x = 0;
-			meta.hdmi_metadata_type1.display_primaries[2].y = 0;		
+			meta.hdmi_metadata_type1.display_primaries[2].y = 0;
 			meta.hdmi_metadata_type1.white_point.x = 0;
 			meta.hdmi_metadata_type1.white_point.y = 0;
 
-			meta.hdmi_metadata_type1.max_display_mastering_luminance = 0;
-			meta.hdmi_metadata_type1.min_display_mastering_luminance = 0;
-		
-			meta.hdmi_metadata_type1.max_fall = 0; 
-			meta.hdmi_metadata_type1.max_cll = 0;
+			meta.hdmi_metadata_type1.max_display_mastering_luminance = pg_max_dml;
+			meta.hdmi_metadata_type1.min_display_mastering_luminance = pg_min_dml;
+
+			meta.hdmi_metadata_type1.max_fall = (uint16_t)(pg_max_fall > 0 ? pg_max_fall : 0);
+			meta.hdmi_metadata_type1.max_cll = (uint16_t)(pg_max_cll > 0 ? pg_max_cll : 0);
 		} else {
 			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 			meta.hdmi_metadata_type1.eotf = eotf;
 			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 
 			meta.hdmi_metadata_type1.display_primaries[0].x = std::round(DisplayChromacityList[idx].GreenX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[0].y = std::round(DisplayChromacityList[idx].GreenY * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[1].x = std::round(DisplayChromacityList[idx].BlueX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[1].y = std::round(DisplayChromacityList[idx].BlueY * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[2].x = std::round(DisplayChromacityList[idx].RedX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[2].y = std::round(DisplayChromacityList[idx].RedY * EGL_METADATA_SCALING_EXT);		
-			meta.hdmi_metadata_type1.white_point.x = std::round(DisplayChromacityList[idx].WhiteX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.white_point.y = std::round(DisplayChromacityList[idx].WhiteY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[0].y = std::round(DisplayChromalityList[idx].GreenY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[1].x = std::round(DisplayChromalityList[idx].BlueX * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[1].y = std::round(DisplayChromalityList[idx].BlueY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[2].x = std::round(DisplayChromalityList[idx].RedX * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[2].y = std::round(DisplayChromalityList[idx].RedY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.white_point.x = std::round(DisplayChromalityList[idx].WhiteX * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.white_point.y = std::round(DisplayChromalityList[idx].WhiteY * EGL_METADATA_SCALING_EXT);
 
-			meta.hdmi_metadata_type1.max_display_mastering_luminance = (uint16_t)((float)hdr_metadata.hdmi_metadata_type1.max_display_mastering_luminance);// * 10000.0f);//(uint16_t)(10000.0f * 10000.0f);
-			meta.hdmi_metadata_type1.min_display_mastering_luminance = (uint16_t)((float)(hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance/10000.0f) * 10000.0f);//(uint16_t)(0.001f    * 10000.0f);
-		
-			meta.hdmi_metadata_type1.max_fall = (float)hdr_metadata.hdmi_metadata_type1.max_fall; 
-			meta.hdmi_metadata_type1.max_cll = (float)hdr_metadata.hdmi_metadata_type1.max_cll;
+			/* Pull min/max DML, max CLL, max FALL from conf every commit
+			 * so the wire blob always matches the user's conf regardless
+			 * of whether pgsethdr ran first. The file-scope hdr_metadata
+			 * struct (used only for EGL surface attribs at line 2236) is
+			 * left unchanged; we route the new values into `meta` directly. */
+			meta.hdmi_metadata_type1.max_display_mastering_luminance = pg_max_dml;
+			meta.hdmi_metadata_type1.min_display_mastering_luminance = pg_min_dml;
+			meta.hdmi_metadata_type1.max_fall = (uint16_t)(pg_max_fall > 0 ? pg_max_fall : 0);
+			meta.hdmi_metadata_type1.max_cll = (uint16_t)(pg_max_cll > 0 ? pg_max_cll : 0);
 		}
 			
 		drmModeCreatePropertyBlob(device, &meta, sizeof(meta), (uint32_t*)&blob_id); 
