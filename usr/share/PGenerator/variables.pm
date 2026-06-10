@@ -133,11 +133,13 @@ $bluetoothctl=&pg_find_executable("/usr/bin/bluetoothctl","/usr/sbin/bluetoothct
 $hciconfig=&pg_find_executable("/usr/bin/hciconfig","/usr/sbin/hciconfig");
 $hcitool=&pg_find_executable("/usr/bin/hcitool","/usr/sbin/hcitool");
 $vcgencmd="/opt/vc/bin/vcgencmd";
+$vcgencmd="/usr/bin/vcgencmd" if(-x "/usr/bin/vcgencmd");
 $tar="/bin/tar";
 $file_command="/usr/bin/file";
 $setsid="/usr/bin/setsid";
 $unzip="/usr/bin/unzip";
 $tvservice="/opt/vc/bin/tvservice";
+$tvservice="/usr/bin/tvservice" if(-x "/usr/bin/tvservice");
 $modetest="/usr/bin/modetest -M vc4";
 $edidparser="/usr/bin/edid-decode";
 $init_hdmi_command="$tvservice -e";
@@ -145,7 +147,8 @@ $df="/bin/df";
 $convert="/usr/bin/convert";
 $sync="/bin/sync";
 $reboot="/sbin/reboot";
-$halt="/sbin/halt";
+$halt="/sbin/poweroff";
+$halt="/sbin/halt" if(!-x $halt);
 $timeout="/bin/timeout";
 $iptables="/sbin/iptables";
 $pkg="/usr/bin/pkg";
@@ -157,6 +160,7 @@ $identify="identify -ping -format '%w %h'";
 $boot_loader_bin="/usr/bin/bootloader";
 $bootloader_config_file="config.txt";
 $bootloader_file="/boot/loader/boot_dir/$bootloader_config_file";
+$bootloader_file="/boot/firmware/$bootloader_config_file" if(!-f $bootloader_file && -f "/boot/firmware/$bootloader_config_file");
 
 $pg_cmd_env="PG_CMD";
 
@@ -199,6 +203,11 @@ $hdmi_1="HDMI-A-1";
 $hdmi_2="HDMI-A-2";
 $edid_prefix="/sys/devices/platform/gpu/drm";
 # END PI4 VARIABLES
+
+$is_rpi_4=0;
+$is_rpi_kms_model=0;
+$is_kms=0;
+$tvservice_is_working=0;
 
 $var_dir="/var/lib/PGenerator/";
 $pattern_templates="$var_dir/tmp";
