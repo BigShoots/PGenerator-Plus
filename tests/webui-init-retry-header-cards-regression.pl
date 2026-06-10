@@ -84,4 +84,20 @@ unlike($src,
   qr/await\s+loadInfo\(true\)\s*;/,
   'init no longer awaits loadInfo (replaced by non-blocking pgInitialRetry)');
 
+# 12. When syncRemoteConfig detects a config change that affects the
+#     wire (mode_idx, signal_mode, color_format, max_bpc,
+#     colorimetry), it must also trigger loadInfo so the info-grid
+#     resolution display updates within the same poll cycle. Without
+#     this, a Calman-driven mode/format change would leave the
+#     resolution field stale until the 30s loadInfo interval.
+like($src,
+  qr/syncRemoteConfig\s*\(\s*\)\s*\{[\s\S]{0,1500}?modeChanged[\s\S]{0,500}?loadInfo\(true\)/,
+  'syncRemoteConfig triggers loadInfo(true) when mode-affecting config changes');
+# 13. The mode-change detection covers at least mode_idx and
+#     signal_mode (the two that change when Calman switches
+#     display mode or resolution).
+like($src,
+  qr/prev\.mode_idx\s*!==\s*remoteConfig\.mode_idx\s*\|\|\s*prev\.signal_mode\s*!==\s*remoteConfig\.signal_mode/,
+  'syncRemoteConfig detects mode_idx / signal_mode changes');
+
 done_testing();

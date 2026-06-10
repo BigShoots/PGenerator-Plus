@@ -9192,6 +9192,22 @@ async function syncRemoteConfig(){
   const remoteSnapshot=JSON.stringify(remoteConfig);
   if(!window._remoteConfigSnapshot||remoteSnapshot!==window._remoteConfigSnapshot){
    applyConfigState(remoteConfig);
+   // When the config changes (e.g. Calman switches signal mode,
+   // resolution, or color format), also refresh /api/info so the
+   // info-grid resolution display updates within the same poll
+   // cycle. Without this the resolution field would only refresh
+   // on the 30s loadInfo interval and would lag the config change.
+   const prev=window._remoteConfigSnapshot?JSON.parse(window._remoteConfigSnapshot):null;
+   const modeChanged=prev && (
+    prev.mode_idx!==remoteConfig.mode_idx ||
+    prev.signal_mode!==remoteConfig.signal_mode ||
+    prev.color_format!==remoteConfig.color_format ||
+    prev.max_bpc!==remoteConfig.max_bpc ||
+    prev.colorimetry!==remoteConfig.colorimetry
+   );
+   if(modeChanged && typeof loadInfo==='function'){
+    loadInfo(true);
+   }
   }
  }
  finally{

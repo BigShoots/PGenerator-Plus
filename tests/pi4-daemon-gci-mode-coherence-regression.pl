@@ -32,10 +32,14 @@ open(my $fh, '<', $daemon) or BAIL_OUT("can't read $daemon: $!");
 local $/; my $src = <$fh>; close $fh;
 
 # 1. The GCI gate is still in place (fbee7ac3 restoration must be
-#    preserved) and the allow-list is exactly {primaries, eotf, is_hdr}.
+#    preserved). The allow-list includes primaries, eotf, is_hdr
+#    (mode/HDR-plane keys) plus color_format and max_bpc (so the
+#    Calman source-format and bit-depth controls take effect on
+#    the wire). Preference keys (rgb_quant_range, min_luma, etc.)
+#    remain strictly WebUI-owned.
 like($src,
-  qr/if\(\$calman_gci\{\$connection\}\s*&&\s*\$conf_key\s*ne\s*"primaries"\s*&&\s*\$conf_key\s*ne\s*"eotf"\s*&&\s*\$conf_key\s*ne\s*"is_hdr"\)/,
-  'GCI gate still allow-lists only primaries, eotf, is_hdr');
+  qr/if\(\$calman_gci\{\$connection\}\s*&&[\s\S]{0,200}?\$conf_key\s*ne\s*"primaries"[\s\S]{0,100}?\$conf_key\s*ne\s*"eotf"[\s\S]{0,100}?\$conf_key\s*ne\s*"is_hdr"[\s\S]{0,200}?\$conf_key\s*ne\s*"color_format"[\s\S]{0,200}?\$conf_key\s*ne\s*"max_bpc"\s*\)/,
+  'GCI gate allow-lists primaries, eotf, is_hdr, color_format, max_bpc');
 
 # 2. The gate still suppresses preference keys (rgb_quant_range,
 #    max_bpc, color_format, min_luma, max_luma, max_cll, max_fall)
