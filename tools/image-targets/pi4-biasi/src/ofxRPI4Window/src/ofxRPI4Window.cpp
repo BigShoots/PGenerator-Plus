@@ -3702,13 +3702,13 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 
 			meta.hdmi_metadata_type1.display_primaries[0].x = std::round(DisplayChromacityList[idx].GreenX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[0].y = std::round(DisplayChromalityList[idx].GreenY * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[1].x = std::round(DisplayChromalityList[idx].BlueX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[1].y = std::round(DisplayChromalityList[idx].BlueY * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[2].x = std::round(DisplayChromalityList[idx].RedX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[2].y = std::round(DisplayChromalityList[idx].RedY * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.white_point.x = std::round(DisplayChromalityList[idx].WhiteX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.white_point.y = std::round(DisplayChromalityList[idx].WhiteY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[0].y = std::round(DisplayChromacityList[idx].GreenY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[1].x = std::round(DisplayChromacityList[idx].BlueX * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[1].y = std::round(DisplayChromacityList[idx].BlueY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[2].x = std::round(DisplayChromacityList[idx].RedX * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.display_primaries[2].y = std::round(DisplayChromacityList[idx].RedY * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.white_point.x = std::round(DisplayChromacityList[idx].WhiteX * EGL_METADATA_SCALING_EXT);
+			meta.hdmi_metadata_type1.white_point.y = std::round(DisplayChromacityList[idx].WhiteY * EGL_METADATA_SCALING_EXT);
 
 			/* Pull min/max DML, max CLL, max FALL from conf every commit
 			 * so the wire blob always matches the user's conf regardless

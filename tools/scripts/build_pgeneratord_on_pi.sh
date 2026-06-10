@@ -161,13 +161,28 @@ if [[ "$DO_SYNC" -eq 1 ]]; then
   fi
 fi
 
+echo "Checking gstreamer development support on Pi..."
+# Real gstreamer-1.0 dev files (headers + .pc) ship with the BiasiLinux image.
+# Fake/stub .pc files are forbidden.
+remote_run "set -e; \
+  for pkg in gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0; do \
+    pkg-config \$pkg --cflags --libs >/dev/null 2>&1 || { echo \"ERROR: \$pkg dev support missing; the OS image must provide it. Do NOT create fake .pc files.\" >&2; exit 1; }; \
+  done; \
+  echo \"gstreamer-1.0 dev support OK (\$(pkg-config --modversion gstreamer-1.0))\""
+
 echo "Building renderer on Pi..."
+# GST_VERSION=1.0 pins the OF gstreamer selection; PROJECT_CFLAGS adds the
+# old-ABI define without clobbering platform flags (never pass CXXFLAGS= or
+# CFLAGS= on the make command line); PLATFORM_CXXFLAGS bumps to c++17.
 remote_run "set -e; \
   export PATH=/usr/local/bin:\$PATH; \
   export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib; \
-  export PKG_CONFIG_PATH=/tmp/of-pkgconfig:/usr/lib/pkgconfig; \
   cd '$REMOTE_APP_ROOT'; \
-  /usr/local/bin/make PLATFORM_OS=Linux PLATFORM_ARCH=armv6l PLATFORM_LIB_SUBPATH=linuxarmv6l PLATFORM_VARIANT=default -j'$JOBS'"
+  /usr/local/bin/make PLATFORM_OS=Linux PLATFORM_ARCH=armv6l PLATFORM_LIB_SUBPATH=linuxarmv6l PLATFORM_VARIANT=default \
+    GST_VERSION=1.0 \
+    PROJECT_CFLAGS='-D_GLIBCXX_USE_CXX11_ABI=0' \
+    PLATFORM_CXXFLAGS='-Wall -Werror=return-type -std=c++17 -DGCC_HAS_REGEX' \
+    -j'$JOBS'"
 
 echo "Build complete. Remote binary: $REMOTE_APP_ROOT/bin/pattern_generator"
 remote_run "sha256sum '$REMOTE_APP_ROOT/bin/pattern_generator'"
