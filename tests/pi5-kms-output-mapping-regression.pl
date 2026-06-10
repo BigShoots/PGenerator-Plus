@@ -37,5 +37,13 @@ ok($cpp=~/case 2:\s*\n\s*return 1; \/\/ Full/, "renderer maps conf 2 -> Broadcas
 ok($cpp=~/"Colorspace"/, "renderer falls back to Colorspace property name");
 ok($cpp=~/"Broadcast RGB"/, "renderer falls back to Broadcast RGB property name");
 
+# Shader channel packing must match the kernel identity-CSC modes
+# (PGenerator vc4 patch): YCbCr444 packs (Cb,Cr,Y); YCbCr422 packs (Y,Cb,Cr).
+# Regressing 444 to (Y,Cb,Cr) makes black render green (Jun 2026 incident).
+ok($cpp=~/if \(color_format == 1\) \{\s*\n\s*return vec4\(Cb\/float\(normalizer\),Cr\/float\(normalizer\),Y\/float\(normalizer\), a\);/,
+   "active shader packs Cb,Cr,Y for YCbCr444 (identity CSC, no row swap)");
+ok($cpp=~/if \(color_format == 2\) \{\s*\n\s*return vec4\(Y\/float\(normalizer\),Cb\/float\(normalizer\),Cr\/float\(normalizer\), a\);/,
+   "active shader packs Y,Cb,Cr for YCbCr422 (natural row order before 444->422 packer)");
+
 print "\n$pass passed, $fail failed\n";
 exit($fail?1:0);

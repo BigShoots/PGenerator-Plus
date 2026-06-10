@@ -1794,8 +1794,15 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		//	    Cb = dot(rgb.rgb, vec3(-coeffs_num.x/coeffs_div.x,-coeffs_num.y/coeffs_div.x, coeffs_div.z)) + 0.5;
 		//	    Cr = dot(rgb.rgb, vec3(coeffs_div.z, -coeffs_num.y/coeffs_div.y, -coeffs_num.z/coeffs_div.y)) + 0.5;
 
+			/* Channel packing must match the kernel CSC mode set by the
+			 * PGenerator vc4 patch (identity matrix, no row swap):
+			 * - YCbCr444: upstream uses set_csc_coeffs_swap, so the hw
+			 *   expects (ch1,ch2,ch3) = (Cb,Cr,Y) -> pack Cb,Cr,Y.
+			 * - YCbCr422: upstream uses the natural row order, so the hw
+			 *   expects (Y,Cb,Cr) before the 444->422 packer.
+			 * Packing both as Y,Cb,Cr makes black render green in 444. */
 			if (color_format == 1) {
-				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);
+				return vec4(Cb/float(normalizer),Cr/float(normalizer),Y/float(normalizer), a);
 			}
 			if (color_format == 2) {
 				return vec4(Y/float(normalizer),Cb/float(normalizer),Cr/float(normalizer), a);

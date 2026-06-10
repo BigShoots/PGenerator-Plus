@@ -24,7 +24,7 @@ OF_ROOT=/root/pgplus-build/openFrameworks
 DEPLOY=0
 [ "${1:-}" = "--deploy" ] && DEPLOY=1
 
-run() { sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$PI_USER@$PI" "$@"; }
+run() { sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$PI_USER@$PI" "$@"; }
 copy() { sshpass -p "$PI_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$@"; }
 
 # Refuse to deploy while a calibration / meter session is active.
@@ -50,14 +50,16 @@ copy "$SRC_ADDON"/ofxRPI4Window.cpp "$SRC_ADDON"/ofxRPI4Window.h "$SRC_ADDON"/ig
 
 echo "== build (native, incremental) =="
 run "cd $BUILD_DIR && make -j4 OF_ROOT=$OF_ROOT" | tail -5
-run "ldd $BUILD_DIR/bin/pattern_generator | grep -c 'not found'" | grep -q '^0$' || { echo "ldd reports unresolved libraries" >&2; exit 1; }
+[ "$(run "ldd $BUILD_DIR/bin/pattern_generator | grep -c 'not found'" | tail -1 | tr -d '[:space:]')" = "0" ] || { echo "ldd reports unresolved libraries" >&2; exit 1; }
 run "strings $BUILD_DIR/bin/pattern_generator | grep -q '/etc/PGenerator/PGenerator.conf'" || { echo "conf path missing from binary" >&2; exit 1; }
 echo "== built: =="
 run "md5sum $BUILD_DIR/bin/pattern_generator; ls -la $BUILD_DIR/bin/pattern_generator"
 
 if [ "$DEPLOY" = 1 ]; then
  echo "== deploy =="
- run "mkdir -p /root/pgen-backups/$TS && cp -a /usr/sbin/PGeneratord /usr/sbin/PGeneratord.dv /root/pgen-backups/$TS/ && cp $BUILD_DIR/bin/pattern_generator /usr/sbin/PGeneratord && cp $BUILD_DIR/bin/pattern_generator /usr/sbin/PGeneratord.dv && chmod 755 /usr/sbin/PGeneratord /usr/sbin/PGeneratord.dv"
+ # Install via rename: the renderer may be running and a plain cp over a
+ # busy text file fails (ETXTBSY); rename replaces the path atomically.
+ run "mkdir -p /root/pgen-backups/$TS && cp -a /usr/sbin/PGeneratord /usr/sbin/PGeneratord.dv /root/pgen-backups/$TS/ && cp $BUILD_DIR/bin/pattern_generator /usr/sbin/PGeneratord.new && chmod 755 /usr/sbin/PGeneratord.new && cp $BUILD_DIR/bin/pattern_generator /usr/sbin/PGeneratord.dv.new && chmod 755 /usr/sbin/PGeneratord.dv.new && mv -f /usr/sbin/PGeneratord.new /usr/sbin/PGeneratord && mv -f /usr/sbin/PGeneratord.dv.new /usr/sbin/PGeneratord.dv"
  run "/etc/init.d/PGenerator restart >/tmp/PGenerator-restart.log 2>&1 </dev/null & exit" || true
  sleep 8
  PING=$(curl -s --max-time 8 "http://$PI/api/ping" || true)
