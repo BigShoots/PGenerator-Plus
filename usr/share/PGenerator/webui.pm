@@ -16142,7 +16142,12 @@ function syncTopStatusStack(){
 }
 
 async function meterCheckStatus(){
- if(meterContinuousActive||meterContinuousSuspendedForLgWrite||meterLgGreyBusy||meterAutoCalRunning||meterActionPending){
+ // Busy guard. On a cold start (meter not yet detected in this
+ // session) we still probe the meter status so the user can see the
+ // connected meter without waiting for a busy flag to clear. Once the
+ // meter is known, a stale busy flag from a previous tab or in-flight
+ // read won't blank the status card.
+ if(meterDetected && (meterContinuousActive||meterContinuousSuspendedForLgWrite||meterLgGreyBusy||meterAutoCalRunning||meterActionPending)){
   setConnectionBusyStatus('Busy');
   return;
  }
@@ -29119,6 +29124,7 @@ function pgInitialRetry(name,fn,delays){
  meterCheckStatus();
  setTimeout(()=>meterCheckStatus(),2000);
  setTimeout(()=>meterCheckStatus(),5000);
+ setTimeout(()=>meterCheckStatus(),10000);
  meterRestoreAutoCalWorkflows();
  meterAutoCalRepairOverlayPointerState();
  setTimeout(meterAutoCalInitialRecoveryPoll,1200);
