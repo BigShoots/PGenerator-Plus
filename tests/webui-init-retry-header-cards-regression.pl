@@ -100,4 +100,21 @@ like($src,
   qr/prev\.mode_idx\s*!==\s*remoteConfig\.mode_idx\s*\|\|\s*prev\.signal_mode\s*!==\s*remoteConfig\.signal_mode/,
   'syncRemoteConfig detects mode_idx / signal_mode changes');
 
+# 16. meterCheckStatus must trust the server's /api/meter/series/status
+#     and clear the local meterSeriesRunning flag when the server
+#     reports the series is not running. This handles the case where
+#     a renderer restart (e.g. after a mode change + apply) leaves
+#     the client's local flag stale, showing the stop button even
+#     though no series is actually running.
+like($src,
+  qr/serverRunning\s*=\s*\(?s\.status\s*===?\s*['"]running['"]\)?/,
+  'meterCheckStatus checks the server series status string');
+
+# 17. The series sync must NOT be gated by !meterSeriesRunning —
+#     it has to run every poll so a renderer restart can clear
+#     the stale client flag.
+unlike($src,
+  qr/if\(\!meterSeriesRunning\s*&&\s*!meterSeriesPolling[^)]*meterSeriesCacheBootId/,
+  'meterCheckStatus series sync is no longer gated by !meterSeriesRunning');
+
 done_testing();

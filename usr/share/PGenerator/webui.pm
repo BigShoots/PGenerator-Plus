@@ -16235,11 +16235,14 @@ async function meterCheckStatus(){
    meterUpdateReadButtons();
   }
  }
- syncTopStatusStack();
- // Sync shared series state across browsers. First restore any browser-local
- // snapshot from the current session so a manual reread survives refresh and
- // stale backend series JSON cannot immediately overwrite it.
- if(!meterSeriesRunning && !meterSeriesPolling && !meterContinuousActive){
+  syncTopStatusStack();
+  // Sync shared series state across browsers. First restore any browser-local
+  // snapshot from the current session so a manual reread survives refresh and
+  // stale backend series JSON cannot immediately overwrite it.
+  // The series-status sync ALWAYS runs (not gated by !meterSeriesRunning)
+  // so that when the renderer is restarted (e.g. after a mode change +
+  // apply) and the server-side series was cancelled, the client's stale
+  // meterSeriesRunning flag is cleared and the stop button is hidden.
   if(meterAutoCalStatusActive()) return;
   if(!meterSeriesCacheBootId) return;
   let restoredLocal=false;
@@ -16248,17 +16251,28 @@ async function meterCheckStatus(){
   }
   const s=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
   if(s){
+   // Trust the server as the source of truth: if it says the series is
+   // not running, clear the local flag and hide the stop button. This
+   // handles the case where the renderer was restarted and the in-flight
+   // series was implicitly cancelled by the stop+start.
+   const serverRunning=(s.status==='running');
+   if(!serverRunning && (meterSeriesRunning || meterSeriesPolling)){
+    meterSeriesRunning=false;
+    meterSeriesPolling=false;
+    if(typeof meterApplyClearedState==='function'){
+     meterApplyClearedState(false);
+    }
+   }
    if(s.status==='cleared'){
     if(meterSharedSeriesId || !meterActiveSeriesKey){
      meterSharedSeriesId=null;
      meterApplyClearedState(false);
     }
-  } else if(meterSharedSeriesShouldRecover(s,{restoredLocal:restoredLocal})){
+   } else if(meterSharedSeriesShouldRecover(s,{restoredLocal:restoredLocal})){
     meterRecoverSeries(s);
+   }
   }
  }
-}
-}
 
 function meterRecoverSeries(s){
  // Determine series type and points from series_id or the recovered steps.

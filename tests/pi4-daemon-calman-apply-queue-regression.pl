@@ -99,4 +99,13 @@ like($src,
   qr/\$conf_key\s*ne\s*"min_luma"\s*&&\s*\$conf_key\s*ne\s*"max_luma"\s*&&\s*\$conf_key\s*ne\s*"max_cll"\s*&&\s*\$conf_key\s*ne\s*"max_fall"/,
   'GCI gate allow-lists min_luma, max_luma, max_cll, max_fall for Calman luminance changes');
 
+# 11. rgb_quant_range is allow-listed in the GCI gate so Calman's
+#     CONF_LEVEL:Range Limited / QRNG:LIMITED / SetRange:1 actually
+#     stick (otherwise the WebUI can show "Limited" while the
+#     server-side conf stays at the last value Calman sent, and
+#     the next poll flips the UI back to the server value).
+like($src,
+  qr/\$conf_key\s*ne\s*"rgb_quant_range"\s*\)/,
+  'GCI gate allow-lists rgb_quant_range for Calman source-range commands');
+
 done_testing();
