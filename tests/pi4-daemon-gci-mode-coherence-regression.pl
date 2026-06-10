@@ -92,10 +92,17 @@ like($src,
   'coherence helper signal_mode rule: hlg for eotf=3, hdr10 for eotf=2, sdr for eotf<2');
 
 # 9. DV keys (dv_status, is_ll_dovi, is_std_dovi) are reset to 0 on a
-#    non-DV transition (the transition IMPLIES dv_status=0). They
-#    are NOT touched on a DV transition (the existing
-#    calman_set_dv_rgb path handles that, and GCI DV enable is a
-#    pre-existing limitation outside this fix's scope).
+#    non-DV transition (the transition IMPLIES dv_status=0). On a DV
+#    transition the coherence helper writes dv_status=1 and the
+#    standard-transport DV flags as daemon-derived updates, so the
+#    GCI gate does not silently drop the DV enable and leave the
+#    renderer in HDR10 mode.
+like($src,
+  qr/if\(\$calman_dv_transition_active\)\s*\{[\s\S]{0,400}?push\s+\@coherence_writes,\["dv_status","1"\]/,
+  'coherence helper writes dv_status=1 during a DV transition');
+like($src,
+  qr/if\(\$calman_dv_transition_active\)[\s\S]{0,500}?push\s+\@coherence_writes,\["is_std_dovi","1"\]/,
+  'coherence helper writes is_std_dovi=1 during a DV transition (standard transport)');
 like($src,
   qr/if\(\$non_dv\)\s*\{[\s\S]{0,200}?push\s+\@coherence_writes,\["dv_status","0"\]/,
   'coherence helper resets dv_status=0 on non-DV transitions');
@@ -105,6 +112,35 @@ like($src,
 like($src,
   qr/push\s+\@coherence_writes,\["is_std_dovi","0"\]/,
   'coherence helper resets is_std_dovi=0');
+
+# 9b. The DV transition flag is declared and managed by
+#     calman_set_dv_rgb.
+like($src, qr/my\s+\$calman_dv_transition_active\s*=\s*0\b/,
+  '$calman_dv_transition_active flag is declared');
+like($src,
+  qr/\$calman_dv_transition_active\s*=\s*1\s*;[\s\S]{0,200}?\$calman_save_setting->\(\s*"is_hdr"/,
+  'calman_set_dv_rgb sets the DV transition flag before its saves');
+like($src,
+  qr/\$calman_save_setting->\(\s*"dv_metadata"[\s\S]{0,300}?\$calman_dv_transition_active\s*=\s*0\b/,
+  'calman_set_dv_rgb clears the DV transition flag at the end');
+
+# 9c. calman_force_dv_rgb (called from $calman_apply when dv is
+#     already active) must also set the flag, otherwise its
+#     re-application of is_hdr/eotf/primaries would re-trigger
+#     coherence with the flag cleared and reset dv_status back to 0.
+like($src,
+  qr/return\s+if\(\!\$calman_dv_active->\(\)\)\s*;[\s\S]{0,200}?\$calman_dv_transition_active\s*=\s*1\b/,
+  'calman_force_dv_rgb sets the DV transition flag');
+like($src,
+  qr/apply_source_rgb_quant_range\("calman",2\)[\s\S]{0,200}?\$calman_dv_transition_active\s*=\s*0\b/,
+  'calman_force_dv_rgb clears the DV transition flag at the end');
+
+# 9d. The signal_mode entry in the coherence write list must reflect
+#     the DV branch — set BEFORE the list is built, not after, so
+#     the initial hdr10 entry doesn't win.
+like($src,
+  qr/if\(\$calman_dv_transition_active\)\s*\{\s*\$want_signal_mode\s*=\s*"dv"\s*;?\s*\}[\s\S]{0,200}?my\s+\@coherence_writes\s*=/,
+  'coherence helper resolves want_signal_mode to "dv" before building the write list');
 
 # 10. The preference keys (min_luma, max_luma, max_cll, max_fall,
 #     rgb_quant_range, max_bpc, color_format) must NOT appear in
