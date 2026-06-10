@@ -1075,6 +1075,85 @@ sub pattern_daemon {
 	      $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
 	      return 1;
 	     };
+	     #
+	     # Helper: enforce signal-mode coherence on the conf as a
+	     # daemon-derived update, not a Calman write. When the GCI
+	     # gate is active, the helper-mode transition (HDR_ENABLE,
+	     # CONF_HDR, CONF_SDR, DSMD, EOTF) writes eotf/is_hdr/
+	     # primaries via calman_save_setting (allow-listed), but the
+	     # gate suppresses Calman's saves of the mode-coupled keys
+	     # (signal_mode, is_sdr, colorimetry, dv_status,
+	     # is_ll_dovi, is_std_dovi) — which are WebUI-owned
+	     # preferences and must NOT be writable by Calman. Without
+	     # this, the conf is left incoherent (is_hdr=1, eotf=2
+	     # with signal_mode=sdr, is_sdr=1, colorimetry=2), the
+	     # renderer's wire colorimetry (10) is then rewritten back
+	     # to 2 by drm_override.so on every atomic commit, and the
+	     # LG C2 reports BT.709 instead of BT.2020.
+	     #
+	     # This helper recomputes the mode-coupled keys from the
+	     # post-save conf and writes them directly via sudo, so the
+	     # gate is bypassed (it is a daemon write, not a Calman
+	     # write). Preference keys (rgb_quant_range, max_bpc,
+	     # color_format, min_luma, max_luma, max_cll, max_fall)
+	     # are not touched — they remain strictly WebUI-owned and
+	     # Calman's writes of them stay suppressed.
+	     #
+	     # DV keys are reset to 0 on a non-DV transition (the
+	     # transition IMPLIES dv_status=0, same logic as
+	     # calman_set_non_dv_mode). For DV transitions themselves
+	     # we do not touch dv_status — the existing
+	     # calman_set_dv_rgb path will save dv_status=1 and the
+	     # gate will keep suppressing it (pre-existing behavior
+	     # outside the scope of this fix; Calman GCI DV enable
+	     # was never the bug being addressed here).
+	     #
+	     my $calman_enforce_mode_coherence = sub {
+	      return if(!$calman_gci{$connection});
+	      my $eotf_val=int($pgenerator_conf{"eotf"} || 0);
+	      my $prim_val=int($pgenerator_conf{"primaries"} || 0);
+	      my $is_hdr_val=int($pgenerator_conf{"is_hdr"} || 0);
+	      # Treat as a non-DV transition when the post-save eotf
+	      # is one of the SDR/PQ/HLG values (0/2/3). eotf=1 is
+	      # "HDR gamma" which the legacy code mapped to non-DV HDR.
+	      my $non_dv=(defined $eotf_val && $eotf_val >= 0 && $eotf_val <= 3);
+	      my $want_signal_mode="sdr";
+	      $want_signal_mode=($eotf_val == 3) ? "hlg" : "hdr10" if($eotf_val >= 2);
+	      $want_signal_mode="hdr10" if($eotf_val == 1);
+	      my $want_is_sdr=($eotf_val >= 2) ? "0" : "1";
+	      my $want_is_hdr=($eotf_val >= 2) ? "1" : "0";
+	      # Colorimetry: BT.2020 (9) for HDR/HLG; BT.709 (2) for SDR.
+	      # If primaries is BT.709 (0) inside an HDR eotf, Calman
+	      # signaled a non-BT.2020 HDR mode — match the existing
+	      # CONF_HDR primary-detection logic and use BT.709 (2).
+	      my $want_colorimetry=($eotf_val >= 2) ? (($prim_val == 0) ? "2" : "9") : "2";
+	      my @coherence_writes=(
+	       ["signal_mode",$want_signal_mode],
+	       ["is_sdr",$want_is_sdr],
+	       ["is_hdr",$want_is_hdr],
+	       ["colorimetry",$want_colorimetry],
+	      );
+	      if($non_dv) {
+	       push @coherence_writes,["dv_status","0"];
+	       push @coherence_writes,["is_ll_dovi","0"];
+	       push @coherence_writes,["is_std_dovi","0"];
+	      }
+	      my $changed=0;
+	      foreach my $cw (@coherence_writes) {
+	       my ($k,$v)=@$cw;
+	       my $cur="$pgenerator_conf{$k}";
+	       $cur="" if(!defined $cur);
+	       next if($cur eq "$v");
+	       &sudo("SET_PGENERATOR_CONF",$k,$v);
+	       $pgenerator_conf{$k}="$v";
+	       $changed=1;
+	       &log("Calman GCI: coherence update $k=$v (WebUI-owned, but mode transition implied it)");
+	      }
+	      if($changed) {
+	       $calman_settings_dirty=1;
+	       &log("Calman GCI: signal-mode coherence enforced (eotf=$eotf_val primaries=$prim_val is_hdr=$is_hdr_val)");
+	      }
+	     };
 	     my $calman_save_setting = sub {
 	      my ($conf_key,$conf_val)=@_;
 	      # Calman GCI plugin (UPGCI 2.0 control plane) must not
@@ -1097,6 +1176,16 @@ sub pattern_daemon {
 	      &sync_pattern_bits_default();
 	      $calman_settings_dirty=1;
 	      &log("Calman: saved $conf_key=$conf_val (dirty flag set)");
+	      # If the GCI gate just allowed a mode-affecting save
+	      # (eotf/is_hdr/primaries), the helper above that issued
+	      # the save also tried to write the mode-coupled keys
+	      # (signal_mode, is_sdr, colorimetry, dv_*, …) but those
+	      # were suppressed by the same gate. Recompute them here
+	      # as a daemon-derived update so the conf stays coherent
+	      # and drm_override.so stops rewriting the renderer's
+	      # wire colorimetry back to 2.
+	      $calman_enforce_mode_coherence->() if($calman_gci{$connection} &&
+	        ($conf_key eq "eotf" || $conf_key eq "is_hdr" || $conf_key eq "primaries"));
 	     };
 	     my $calman_note_explicit_bpc = sub {
 	      my $bpc=&calman_valid_bpc(shift);
