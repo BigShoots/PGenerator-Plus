@@ -1194,14 +1194,21 @@ sub pattern_daemon {
 	      # updateHDR_Infoframe() reads these from the conf on
 	      # every page flip, so saving them is harmless and is
 	      # the only way Calman can drive luminance during a
-	      # calibration pass under GCI. rgb_quant_range stays
-	      # WebUI-owned. The Calman RPC plugin never sets
-	      # $calman_gci, so the RPC path is unaffected.
+	      # calibration pass under GCI. rgb_quant_range is
+	      # also allow-listed so that Calman's source-range
+	      # commands (CONF_LEVEL:Range Limited, QRNG:LIMITED,
+	      # SetRange:1) actually stick — without it the WebUI
+	      # can show "Limited" while the server-side
+	      # rgb_quant_range stays at the last value Calman
+	      # sent (typically Full for HDR), and the next poll
+	      # flips the UI back. The Calman RPC plugin never
+	      # sets $calman_gci, so the RPC path is unaffected.
 	      if($calman_gci{$connection} &&
 	        $conf_key ne "primaries" && $conf_key ne "eotf" && $conf_key ne "is_hdr" &&
 	        $conf_key ne "color_format" && $conf_key ne "max_bpc" &&
 	        $conf_key ne "min_luma" && $conf_key ne "max_luma" &&
-	        $conf_key ne "max_cll" && $conf_key ne "max_fall") {
+	        $conf_key ne "max_cll" && $conf_key ne "max_fall" &&
+	        $conf_key ne "rgb_quant_range") {
 	       &log("Calman GCI: suppressed save $conf_key=$conf_val (WebUI owns this key)");
 	       return;
 	      }
@@ -1595,27 +1602,31 @@ sub pattern_daemon {
      last;
     }
 
-     if($key =~/^\x02?SPECIALTY:([^\x02\x03]+)\x02CONF_LEVEL:Range\s+([^\x03]+)\x03?$/i) {
-      my ($specialty,$range_val)=($1,$2);
-      $specialty=~s/^\s+|\s+$//g;
-      $range_val=~s/^\s+|\s+$//g;
-      &log("Calman: split combined SPECIALTY=$specialty + CONF_LEVEL=Range $range_val");
-      if($calman_gci{$connection}) {
-       &log("Calman GCI: combined SPECIALTY+CONF_LEVEL:Range ignored (WebUI owns rgb_quant_range)");
-      } elsif($range_val =~/full/i) {
-       $calman_rgb_quant_range=2;
-       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-      } elsif($range_val =~/limit/i) {
-       $calman_rgb_quant_range=1;
-       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-      } else {
-       &release_source_rgb_quant_range("calman");
-       $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
-      }
-      $calman_apply->(0) if(!$calman_gci{$connection});
-      &calman_render_specialty_pattern($specialty);
-      &calman_remember_pattern("SPECIALTY","SPECIALTY",$specialty);
-      &send_key_to_client($connection,"");
+      if($key =~/^\x02?SPECIALTY:([^\x02\x03]+)\x02CONF_LEVEL:Range\s+([^\x03]+)\x03?$/i) {
+       my ($specialty,$range_val)=($1,$2);
+       $specialty=~s/^\s+|\s+$//g;
+       $range_val=~s/^\s+|\s+$//g;
+       &log("Calman: split combined SPECIALTY=$specialty + CONF_LEVEL=Range $range_val");
+       # rgb_quant_range is now in the GCI allow-list, so all
+       # branches (GCI and non-GCI) take the same path: save
+       # the conf and apply the source range.
+       if($range_val =~/full/i) {
+        $calman_rgb_quant_range=2;
+        $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+       } elsif($range_val =~/limit/i) {
+        $calman_rgb_quant_range=1;
+        $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+       } else {
+        &release_source_rgb_quant_range("calman");
+        $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+        $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+       }
+       $calman_apply->(0) if(!$calman_gci{$connection});
+       &calman_render_specialty_pattern($specialty);
+       &calman_remember_pattern("SPECIALTY","SPECIALTY",$specialty);
+       &send_key_to_client($connection,"");
       last;
      }
 
@@ -1855,21 +1866,26 @@ sub pattern_daemon {
      # QRNG — Quantization Range
      # PGenerator: 0=default, 1=limited, 2=full
      #
-     if($type eq "QRNG") {
-      my $qrng_val="0";
-      $qrng_val="2" if($pattern_cmd =~/^FULL$/i);
-      $qrng_val="1" if($pattern_cmd =~/^LIMITED$/i);
-      if($calman_gci{$connection}) {
-       &log("Calman GCI: QRNG ignored (WebUI owns rgb_quant_range)");
-      } elsif($qrng_val eq "1" || $qrng_val eq "2") {
-       $calman_rgb_quant_range=$qrng_val + 0;
-       &log("Calman: external range set to $calman_rgb_quant_range via QRNG");
-       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-      } else {
-       &log("Calman: releasing external range via QRNG=$pattern_cmd");
-       &release_source_rgb_quant_range("calman");
-       $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
-      }
+      if($type eq "QRNG") {
+       my $qrng_val="0";
+       $qrng_val="2" if($pattern_cmd =~/^FULL$/i);
+       $qrng_val="1" if($pattern_cmd =~/^LIMITED$/i);
+       # rgb_quant_range is now in the GCI allow-list, so all
+       # branches take the same path: save the conf and apply
+       # the source range. Previously the GCI branch rejected
+       # the command and the WebUI would flip back to the stale
+       # conf value on the next poll.
+       if($qrng_val eq "1" || $qrng_val eq "2") {
+        $calman_rgb_quant_range=$qrng_val + 0;
+        &log("Calman: external range set to $calman_rgb_quant_range via QRNG");
+        $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+       } else {
+        &log("Calman: releasing external range via QRNG=$pattern_cmd");
+        &release_source_rgb_quant_range("calman");
+        $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
+        $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+       }
       &calman_replay_last_pattern("QRNG");
       &send_key_to_client($connection,"");
       last;
@@ -1919,20 +1935,20 @@ sub pattern_daemon {
      # SetRange — Video/PC quantization range (from UPGCI DispId 18)
      # 0=PC/Full (0-255), 1=Video (16-235)
      #
-     if($type eq "SetRange") {
-      my $range_val=int($pattern_cmd);
-      if($range_val == 1) {
-      $calman_rgb_quant_range=1;
-      } else {
-      $calman_rgb_quant_range=2;
-      }
-      if($calman_gci{$connection}) {
-       &log("Calman GCI: SetRange=$range_val ignored (WebUI owns rgb_quant_range)");
-      } else {
-          &log("Calman: external range set to $calman_rgb_quant_range");
-          &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-      }
-      &calman_replay_last_pattern("SetRange");
+      if($type eq "SetRange") {
+       my $range_val=int($pattern_cmd);
+       if($range_val == 1) {
+       $calman_rgb_quant_range=1;
+       } else {
+       $calman_rgb_quant_range=2;
+       }
+       # rgb_quant_range is now in the GCI allow-list, so all
+       # branches (GCI and non-GCI) take the same path: save
+       # the conf and apply the source range.
+       &log("Calman: external range set to $calman_rgb_quant_range");
+       $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+       &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+       &calman_replay_last_pattern("SetRange");
       &send_key_to_client($connection,"");
       last;
      }
@@ -2115,22 +2131,27 @@ sub pattern_daemon {
 	       }
 	       # Apply immediately — DRM max_bpc must change now
 	       $calman_apply->();
-      } elsif($cl =~/^Range\s+(.*)/i) {
-       my $rv=lc($1);
-       if($calman_gci{$connection}) {
-        &log("Calman GCI: CONF_LEVEL:Range ignored (WebUI owns rgb_quant_range)");
-        &calman_replay_last_pattern("CONF_LEVEL range");
-       } elsif($rv =~/full/) {
-       $calman_rgb_quant_range=2;
-        &log("Calman: external range set to $calman_rgb_quant_range via CONF_LEVEL");
-        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-        &calman_replay_last_pattern("CONF_LEVEL range");
-       } elsif($rv =~/limit/) {
-        $calman_rgb_quant_range=1;
-        &log("Calman: external range set to $calman_rgb_quant_range via CONF_LEVEL");
-        &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
-        &calman_replay_last_pattern("CONF_LEVEL range");
-       } else {
+       } elsif($cl =~/^Range\s+(.*)/i) {
+        my $rv=lc($1);
+        # rgb_quant_range is now in the GCI allow-list (see
+        # $calman_save_setting), so all branches (GCI and
+        # non-GCI) take the same path: save the conf key and
+        # apply the source range. Previously the GCI branch
+        # rejected the command and the WebUI would flip back
+        # to the stale conf value on the next poll.
+        if($rv =~/full/) {
+        $calman_rgb_quant_range=2;
+         &log("Calman: external range set to $calman_rgb_quant_range via CONF_LEVEL");
+         $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+         &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+         &calman_replay_last_pattern("CONF_LEVEL range");
+        } elsif($rv =~/limit/) {
+         $calman_rgb_quant_range=1;
+         &log("Calman: external range set to $calman_rgb_quant_range via CONF_LEVEL");
+         $calman_save_setting->("rgb_quant_range","$calman_rgb_quant_range");
+         &apply_source_rgb_quant_range("calman",$calman_rgb_quant_range);
+         &calman_replay_last_pattern("CONF_LEVEL range");
+        } else {
         &log("Calman: releasing external range via CONF_LEVEL=$cl");
         &release_source_rgb_quant_range("calman");
         $calman_rgb_quant_range=&webui_preferred_rgb_quant_range() + 0;
