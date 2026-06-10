@@ -1099,15 +1099,16 @@ sub pattern_daemon {
 	     # are not touched — they remain strictly WebUI-owned and
 	     # Calman's writes of them stay suppressed.
 	     #
-	     # DV keys are reset to 0 on a non-DV transition (the
-	     # transition IMPLIES dv_status=0, same logic as
-	     # calman_set_non_dv_mode). For DV transitions themselves
-	     # we do not touch dv_status — the existing
-	     # calman_set_dv_rgb path will save dv_status=1 and the
-	     # gate will keep suppressing it (pre-existing behavior
-	     # outside the scope of this fix; Calman GCI DV enable
-	     # was never the bug being addressed here).
+	     # DV transitions (calman_set_dv_rgb / DSMD:DOLBYVISION /
+	     # 21_HDR_MetadataMode 1-4) set the $calman_dv_transition_active
+	     # flag before their saves run. While the flag is set, this
+	     # helper writes dv_status=1 and the standard-transport DV
+	     # flags (is_ll_dovi=0, is_std_dovi=1) as daemon-derived
+	     # updates, so the GCI gate does not silently drop the DV
+	     # enable and leave the renderer in HDR10 mode. The flag is
+	     # unset by the DV handler after all its saves complete.
 	     #
+	     my $calman_dv_transition_active=0;
 	     my $calman_enforce_mode_coherence = sub {
 	      return if(!$calman_gci{$connection});
 	      my $eotf_val=int($pgenerator_conf{"eotf"} || 0);
@@ -1127,13 +1128,29 @@ sub pattern_daemon {
 	      # signaled a non-BT.2020 HDR mode — match the existing
 	      # CONF_HDR primary-detection logic and use BT.709 (2).
 	      my $want_colorimetry=($eotf_val >= 2) ? (($prim_val == 0) ? "2" : "9") : "2";
+	      # Resolve the final signal_mode / DV flags before building
+	      # the write list, so a DV transition overrides the
+	      # eotf-derived signal_mode (otherwise the initial hdr10
+	      # entry would win and the conf would still look like HDR).
+	      if($calman_dv_transition_active) {
+	       $want_signal_mode="dv";
+	      }
 	      my @coherence_writes=(
 	       ["signal_mode",$want_signal_mode],
 	       ["is_sdr",$want_is_sdr],
 	       ["is_hdr",$want_is_hdr],
 	       ["colorimetry",$want_colorimetry],
 	      );
-	      if($non_dv) {
+	      if($calman_dv_transition_active) {
+	       # DV transition: write the standard-transport DV flags
+	       # as daemon-derived updates. The GCI gate would have
+	       # suppressed calman_set_dv_rgb's saves of these, so the
+	       # conf would otherwise stay at dv_status=0 (HDR10) even
+	       # though Calman asked for DV.
+	       push @coherence_writes,["dv_status","1"];
+	       push @coherence_writes,["is_ll_dovi","0"];
+	       push @coherence_writes,["is_std_dovi","1"];
+	      } elsif($non_dv) {
 	       push @coherence_writes,["dv_status","0"];
 	       push @coherence_writes,["is_ll_dovi","0"];
 	       push @coherence_writes,["is_std_dovi","0"];
@@ -1254,6 +1271,7 @@ sub pattern_daemon {
      };
      my $calman_force_dv_rgb = sub {
       return if(!$calman_dv_active->());
+     $calman_dv_transition_active=1;
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
      $calman_save_setting->("eotf","2");
@@ -1274,6 +1292,7 @@ sub pattern_daemon {
        $calman_rgb_quant_range=2;
        &apply_source_rgb_quant_range("calman",2);
       }
+      $calman_dv_transition_active=0;
      };
      #
      # Helper: apply pending settings — restart pattern generator if dirty
@@ -1300,6 +1319,12 @@ sub pattern_daemon {
     my $calman_set_dv_rgb = sub {
      my ($dv_map_mode,$dv_metadata)=@_;
      my $dv_transport="standard";
+     # Mark a DV transition in progress so $calman_enforce_mode_coherence
+     # writes dv_status=1 (and the standard-transport DV flags) as a
+     # daemon-derived update when is_hdr/eotf/primaries are saved below.
+     # Without this, the GCI gate suppresses dv_status=1 and the conf
+     # ends up as HDR10 instead of DV.
+     $calman_dv_transition_active=1;
      $calman_save_setting->("signal_mode","dv");
      $calman_save_setting->("is_sdr","0");
      $calman_save_setting->("is_hdr","1");
@@ -1324,6 +1349,10 @@ sub pattern_daemon {
       $dv_metadata=$calman_dv_metadata_for_map_mode->((defined $dv_map_mode && $dv_map_mode ne "") ? $dv_map_mode : $pgenerator_conf{"dv_map_mode"});
      }
      $calman_save_setting->("dv_metadata","$dv_metadata");
+     # End of DV transition — clear the flag so subsequent non-DV
+     # saves in the same connection fall back to the standard
+     # dv_status=0 reset path.
+     $calman_dv_transition_active=0;
     };
 
     my $calman_set_non_dv_mode = sub {
