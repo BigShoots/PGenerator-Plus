@@ -9119,7 +9119,23 @@ async function loadConfig(quiet){
 function normalizeColorimetryValue(value,signalMode){
  const val=String(value==null?'':value);
  if(val==='2'||val==='9') return val;
- return signalMode==='sdr'?'2':'9';
+ return webuiAutoColorimetryForSignalMode(signalMode);
+}
+
+//
+// Helper: the default Target Colourspace for a given signal mode.
+// BT.2020 (9) for HDR10 / HLG / Dolby Vision; BT.709 (2) for SDR.
+// Used by both the user-driven signal_mode change handler and the
+// polled /api/config refresh path so the dropdown follows the
+// signal mode in both directions and stays user-editable after the
+// auto-set (the next /api/config poll respects the server's
+// persisted colorimetry, so any manual edit survives one poll
+// cycle and the server remains the source of truth).
+//
+function webuiAutoColorimetryForSignalMode(signalMode){
+ const sm=String(signalMode||'').toLowerCase();
+ if(sm==='hdr10'||sm==='hlg'||sm==='dv') return '9';
+ return '2';
 }
 
 function applyConfigState(nextConfig){
@@ -9431,18 +9447,22 @@ document.getElementById('signal_mode').addEventListener('change',function(){
  const sm=this.value;
  // Set sensible defaults per mode. Users can still adjust the fields after
  // switching modes, but picking the mode should land on a working baseline.
+ // Target Colourspace follows the signal mode (BT.2020 for HDR10/HLG/DV,
+ // BT.709 for SDR) and stays user-editable after the auto-set; the
+ // next /api/config poll respects whatever the server has stored.
+ const autoColorimetry=webuiAutoColorimetryForSignalMode(sm);
  if(sm==='sdr'){
   setVal('eotf','0');
-  setVal('colorimetry','2');
+  setVal('colorimetry',autoColorimetry);
   setVal('max_bpc','8');
  }else if(sm==='hdr10'){
   setVal('eotf','2');
-  setVal('colorimetry','9');
+  setVal('colorimetry',autoColorimetry);
   setVal('primaries','1');
   setVal('max_bpc','10');
  }else if(sm==='hlg'){
   setVal('eotf','3');
-  setVal('colorimetry','9');
+  setVal('colorimetry',autoColorimetry);
   setVal('primaries','1');
   setVal('max_bpc','10');
 	 }else if(sm==='dv'){
@@ -9451,7 +9471,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
 	  setVal('dv_interface',dvTransport.dv_interface);
 	  setVal('eotf','2');
   setVal('color_format',dvTransport.color_format);
-  setVal('colorimetry','9');
+  setVal('colorimetry',autoColorimetry);
   setVal('primaries','1');
   setVal('max_bpc',dvTransport.max_bpc);
   setVal('rgb_quant_range','2');
