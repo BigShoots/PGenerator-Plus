@@ -120,4 +120,22 @@ for my $pref (qw(min_luma max_luma max_cll max_fall rgb_quant_range max_bpc colo
   "coherence helper does not write preference key $pref (stays WebUI-owned)");
 }
 
+# 11. Mode-transition handlers must trigger $calman_apply so the
+#     renderer restarts and the TV gets the new mode without waiting
+#     for the next pattern. The user-visible symptom of skipping
+#     this: WebUI and conf show the new mode, but the wire stays on
+#     the old colorimetry until a pattern command forces a restart.
+#     (a) HDR_ENABLE:True path
+like($src,
+  qr/if\(\$pattern_cmd\s*=~\/\^True\$\/i\)\s*\{[\s\S]{0,800}?\$calman_set_non_dv_mode->\(\s*"hdr"[\s\S]{0,400}?\$calman_apply->\(\)/,
+  'HDR_ENABLE:True triggers calman_apply so the renderer restarts immediately');
+#     (b) CONF_HDR path (apply at the end of the handler)
+like($src,
+  qr/Calman: CONF_HDR parsed[\s\S]{0,800}?\$calman_apply->\(\)/,
+  'CONF_HDR handler triggers calman_apply at the end so wire updates');
+#     (c) EOTF / HDR_EOTF path
+like($src,
+  qr/if\(\$type\s*eq\s*"EOTF"\s*\|\|\s*\$type\s*eq\s*"HDR_EOTF"\)\s*\{[\s\S]{0,600}?\$calman_apply->\(\)/,
+  'EOTF/HDR_EOTF handler triggers calman_apply so wire updates');
+
 done_testing();
