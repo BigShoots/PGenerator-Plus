@@ -336,7 +336,50 @@ sub load_new_pattern_file (@) {
   return;
  }
  &video_program_stop("$program_video_to_kill");
- &pattern_generator_start(1) if(!&pattern_generator_is_running());
+ # Ensure the renderer is alive. pattern_generator_start can fail
+ # transiently due to the documented DRM-master race (a helper
+ # such as pgsethdr holds DRM master while the renderer calls
+ # drmSetMaster, so the renderer exits immediately). Retry up to
+ # three more times with increasing delays so the next pattern
+ # request doesn't silently fail to appear on the TV. This covers
+ # the Calman GCI flow where a CONF_HDR / apply sequence followed
+ # by a SPECIALTY pattern hits the race repeatedly. Each retry
+ # also calls pattern_generator_stop first to clear any stale
+ # DRM-master holder before re-starting. We also wait briefly
+ # after each start before checking is_running, because the
+ # background system() in pattern_generator_start returns before
+ # the renderer process has fully initialized. The final retry
+ # uses a 3s delay to let any lingering pgsethdr/drm_override
+ # DRM-master holder fully release before the renderer tries to
+ # acquire master.
+ if(!&pattern_generator_is_running()) {
+  &pattern_generator_start(1);
+  select(undef,undef,undef,0.6);
+  if(!&pattern_generator_is_running()) {
+   &log("load_new_pattern_file: renderer not running after first start, retrying (DRM master race)");
+   select(undef,undef,undef,0.4);
+   &pattern_generator_stop();
+   &pattern_generator_start(1);
+   select(undef,undef,undef,0.6);
+  }
+  if(!&pattern_generator_is_running()) {
+   &log("load_new_pattern_file: renderer still not running after second start, final retry");
+   select(undef,undef,undef,1.0);
+   &pattern_generator_stop();
+   &pattern_generator_start(1);
+   select(undef,undef,undef,0.6);
+  }
+  if(!&pattern_generator_is_running()) {
+   &log("load_new_pattern_file: renderer failed after 3 starts, waiting 3s for DRM master to settle");
+   select(undef,undef,undef,3.0);
+   &pattern_generator_stop();
+   &pattern_generator_start(1);
+   select(undef,undef,undef,0.8);
+  }
+  if(!&pattern_generator_is_running()) {
+   &log("load_new_pattern_file: renderer failed to start after all retries — pattern will not appear on TV; a service restart will recover it");
+  }
+ }
  &create_return_file();
  $last_pattern_requested_by=$requested_by;
 }
