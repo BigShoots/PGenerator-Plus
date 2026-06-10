@@ -18,9 +18,11 @@
 #
 
 ###############################################
-#      Auto-Select 4K 30Hz Mode (KMS)        #
+#   Auto-Select 4K 30Hz Mode (Pi 4 KMS)      #
 ###############################################
-sub find_4k30_mode_idx (@) {
+sub auto_select_4k_mode (@) {
+ return if($pgenerator_conf{"mode_idx"} ne "");
+ return if(!$is_kms);
  my $target_idx="";
  my $found_connector=0;
  open(CMD_MODETEST,"timeout 3 $modetest 2>/dev/null|");
@@ -34,13 +36,6 @@ sub find_4k30_mode_idx (@) {
   }
  }
  close(CMD_MODETEST);
- return $target_idx;
-}
-
-sub auto_select_4k_mode (@) {
- return if($pgenerator_conf{"mode_idx"} ne "");
- return if(!$is_kms);
- my $target_idx=&find_4k30_mode_idx();
  if($target_idx ne "") {
   &sudo("SET_PGENERATOR_CONF","mode_idx","$target_idx");
   $pgenerator_conf{"mode_idx"}="$target_idx";
@@ -92,344 +87,6 @@ sub release_source_rgb_quant_range (@) {
  return &apply_source_rgb_quant_range("webui",&webui_preferred_rgb_quant_range());
 }
 
-###############################################
-#  Apply DRM Connector Properties (KMS only)  #
-###############################################
-sub kms_connector_has_property(@) {
- my $prop_name=shift;
- return 0 if(!$is_kms || $prop_name eq "");
- open(MT_PROP,"timeout 3 $modetest -a -c 2>/dev/null|");
- while(<MT_PROP>) {
-  if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
-   close(MT_PROP);
-   return 1;
-  }
- }
- close(MT_PROP);
- return 0;
-}
-
-sub modetest_connector_write(@) {
- my ($connector_id,$prop_name,$value)=@_;
- return 0 if(!$is_kms || $connector_id eq "" || $prop_name eq "");
- system("timeout 3 $modetest -a -w '$connector_id:$prop_name:$value' 2>/dev/null");
- return ($? == 0) ? 1 : 0;
-}
-
-sub map_kms_colorspace(@) {
- my $colorimetry=shift;
- my $color_fmt=shift;
- $color_fmt=0 if($color_fmt eq "");
- return 0 if($colorimetry eq "" || $colorimetry == 0);
- return 0 if($colorimetry == 2 && $color_fmt == 0);
- return 2 if($colorimetry == 2);
- return 9 if($colorimetry == 9 && $color_fmt == 0);
- return 10 if($colorimetry == 9);
- return $colorimetry;
-}
-
-sub map_broadcast_rgb(@) {
- my $quant_range=shift;
- return 0 if($quant_range eq "");
- return 2 if($quant_range == 1);
- return 1 if($quant_range == 2);
- return 0;
-}
-
-sub drm_mode_info_for_idx(@) {
- my $mode_idx=shift;
- return () if($mode_idx eq "" || $mode_idx !~/^\d+$/);
- open(MT_MODE,"timeout 3 $modetest -c 2>/dev/null|");
- while(<MT_MODE>) {
-  if(/^\s*#\Q$mode_idx\E\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+/) {
-   my @mode=($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11);
-   close(MT_MODE);
-   return @mode;
-  }
- }
- close(MT_MODE);
- return ();
-}
-
-sub requested_hdmi_tmds_khz(@) {
- my ($pixel_clock,$color_fmt,$max_bpc,$is_dv)=@_;
- return 0 if($pixel_clock eq "" || $pixel_clock <= 0);
- return $pixel_clock if($is_dv);
- return $pixel_clock if($color_fmt == 2);
- $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
- return int($pixel_clock * $max_bpc / 8 + 0.5);
-}
-
-sub ensure_hdmi_bandwidth_mode(@) {
- return if(!$is_kms);
- my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
- my $color_fmt=$pgenerator_conf{"color_format"};
- my $max_bpc=$pgenerator_conf{"max_bpc"};
- my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=0 if($color_fmt eq "");
- $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
- return if($mode_idx eq "");
-
- my @mode=&drm_mode_info_for_idx($mode_idx);
- return if(!@mode);
- my $pixel_clock=$mode[10];
- my $tmds=&requested_hdmi_tmds_khz($pixel_clock,$color_fmt,$max_bpc,$is_dv);
- return if($tmds <= 600000);
-
- my $target_idx=&find_4k30_mode_idx();
- if($target_idx ne "" && $target_idx ne $mode_idx) {
-  &sudo("SET_PGENERATOR_CONF","mode_idx","$target_idx");
-  $pgenerator_conf{"mode_idx"}="$target_idx";
-  &log("Adjusted mode_idx from $mode_idx to 4K30 mode_idx=$target_idx for requested HDMI bandwidth ${tmds}kHz");
- } else {
-  &log("Requested HDMI bandwidth ${tmds}kHz exceeds 600000kHz and no 4K30 fallback mode was found");
- }
-}
-
-sub drm_current_crtc_for_connector(@) {
- my $connector_id=shift;
- my $inside=0;
- my $want_value=0;
- return "" if($connector_id eq "");
- open(MT_CONN,"timeout 3 $modetest -a -c 2>/dev/null|");
- while(<MT_CONN>) {
-  if(/^(\d+)\s+\d+\s+(connected|disconnected)\s+/) {
-   $inside=($1 == $connector_id) ? 1 : 0;
-   $want_value=0;
-   next;
-  }
-  next if(!$inside);
-  if(/^\s+\d+\s+CRTC_ID:/) {
-   $want_value=1;
-   next;
-  }
-  if($want_value && /^\s+value:\s+(\d+)/) {
-   my $crtc_id=$1;
-   close(MT_CONN);
-   return $crtc_id;
-  }
- }
- close(MT_CONN);
- return "";
-}
-
-sub drm_primary_plane_for_crtc(@) {
- my $crtc_id=shift;
- return "" if($crtc_id eq "");
- my $mt=`timeout 3 $modetest -a -p 2>/dev/null`;
- my @crtc_ids=();
- my $section="";
- foreach my $line (split(/\n/,$mt)) {
-  if($line=~/^CRTCs:/) { $section="crtcs"; next; }
-  if($line=~/^Planes:/) { last; }
-  if($section eq "crtcs" && $line=~/^(\d+)\s+/) {
-   push(@crtc_ids,$1);
-  }
- }
- my $crtc_bit=-1;
- for(my $i=0;$i<@crtc_ids;$i++) {
-  if($crtc_ids[$i] == $crtc_id) {
-   $crtc_bit=1 << $i;
-   last;
-  }
- }
- return "" if($crtc_bit < 0);
-
- $section="";
- my $candidate_id="";
- my $candidate_possible=0;
- my $fallback_id="";
- my $reading_type=0;
- foreach my $line (split(/\n/,$mt)) {
-  if($line=~/^Planes:/) { $section="planes"; next; }
-  next if($section ne "planes");
-  if($line=~/^(\d+)\s+\d+\s+\d+\s+.*\s(0x[0-9a-fA-F]+)\s*$/) {
-   $candidate_id=$1;
-   $candidate_possible=hex($2);
-   $reading_type=0;
-   if(($candidate_possible & $crtc_bit) && $fallback_id eq "") {
-    $fallback_id=$candidate_id;
-   }
-   next;
-  }
-  if($candidate_id ne "" && $line=~/^\s+\d+\s+type:/) {
-   $reading_type=1;
-   next;
-  }
-  if($reading_type && $line=~/^\s+value:\s+(\d+)/) {
-   if($1 == 1 && ($candidate_possible & $crtc_bit)) {
-    return $candidate_id;
-   }
-   $reading_type=0;
-  }
- }
- return $fallback_id;
-}
-
-sub prearm_drm_mode(@) {
- return if(!$is_kms);
- my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
- my $is_hdr=int($pgenerator_conf{"is_hdr"} || 0);
- my $color_fmt=$pgenerator_conf{"color_format"};
- my $max_bpc=$pgenerator_conf{"max_bpc"};
- my $mode_idx=$pgenerator_conf{"mode_idx"};
- $color_fmt=0 if($color_fmt eq "");
- $max_bpc=8 if($max_bpc eq "" || $max_bpc < 8);
- return if($mode_idx eq "");
- return if($color_fmt == 0 && $max_bpc <= 8 && !$is_hdr && !$is_dv);
-
- my $connector_id="";
- open(MT,"timeout 3 $modetest -a -c 2>/dev/null|");
- while(<MT>) {
-  if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
-   $connector_id=$1;
-   last;
-  }
- }
- close(MT);
- return if($connector_id eq "");
-
- my @mode=&drm_mode_info_for_idx($mode_idx);
- if(!@mode) {
-  &log("DRM: pre-arm skipped; mode_idx=$mode_idx was not found");
-  return;
- }
- my ($mode_name,$refresh,$hdisp,$hss,$hse,$htot,$vdisp,$vss,$vse,$vtot,$clock)=@mode;
- my $crtc_id=&drm_current_crtc_for_connector($connector_id);
- my $plane_id=&drm_primary_plane_for_crtc($crtc_id);
- if($crtc_id eq "" || $plane_id eq "") {
-  &log("DRM: pre-arm skipped; connector=$connector_id crtc=$crtc_id plane=$plane_id");
-  return;
- }
-
- my $colorspace=&map_kms_colorspace($pgenerator_conf{"colorimetry"},$color_fmt);
- my $broadcast_rgb=&map_broadcast_rgb($pgenerator_conf{"rgb_quant_range"});
- my $fb_fmt=($max_bpc > 8) ? "XR30" : "XR24";
- my $refresh_int=int($refresh + 0.5);
- $refresh_int=30 if($refresh_int < 1);
- my $mode_arg="$hdisp,$hss,$hse,$htot,$vdisp,$vss,$vse,$vtot-$refresh_int";
- my $cmd="timeout 3 $modetest -a -v ".
-  "-w '$connector_id:max bpc:$max_bpc' ".
-  "-w '$connector_id:output format:$color_fmt' ".
-  "-w '$connector_id:Colorspace:$colorspace' ".
-  "-w '$connector_id:Broadcast RGB:$broadcast_rgb' ".
-  "-s '$connector_id\@$crtc_id:$mode_arg\@$fb_fmt' ".
-  ">/tmp/pgenerator_prearm.log 2>&1";
- system($cmd);
- &log("DRM: pre-armed connector=$connector_id crtc=$crtc_id plane=$plane_id mode=$mode_name/${refresh}Hz bpc=$max_bpc output_format=$color_fmt fb=$fb_fmt");
-}
-
-###############################################
-#  Apply DRM Connector Properties (KMS only)  #
-###############################################
-sub apply_drm_properties (@) {
- return if(!$is_kms);
- my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
- # Find connected HDMI connector ID
- my $connector_id="";
- open(MT,"timeout 3 $modetest -c 2>/dev/null|");
- while(<MT>) {
-  if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
-   $connector_id=$1;
-   last;
-  }
- }
- close(MT);
- return if($connector_id eq "");
- # Set max bpc — the binary fails to apply this property
- my $max_bpc=$pgenerator_conf{"max_bpc"};
- if($max_bpc ne "" && $max_bpc > 0) {
-  if(&modetest_connector_write($connector_id,"max bpc",$max_bpc)) {
-   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
-  } else {
-   &log("DRM: Failed to set max bpc=$max_bpc on connector $connector_id");
-  }
- }
- # Reset output format — kernel retains previous value across binary
- # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
- # fallback that sticks even after switching back to 8bpc RGB.
- my $color_fmt=$pgenerator_conf{"color_format"};
- $color_fmt=0 if($color_fmt eq "");
- if($color_fmt > 2) {
-  &log("DRM: output format=$color_fmt is unsupported on Pi 5; using RGB output");
-  $color_fmt=0;
- }
- if(&kms_connector_has_property("output format")) {
-  if(&modetest_connector_write($connector_id,"output format",$color_fmt)) {
-   &log("DRM: Set output format=$color_fmt on connector $connector_id");
-  } else {
-   &log("DRM: Failed to set output format=$color_fmt on connector $connector_id");
-  }
- } elsif($color_fmt != 0) {
-  &log("DRM: output format property missing; YCbCr request cannot change HDMI transport");
- }
- # Set quantization range (enums: Default=0 Limited=1 Full=2)
- my $quant_range=$pgenerator_conf{"rgb_quant_range"};
- if($quant_range ne "") {
-  &modetest_connector_write($connector_id,"rgb quant range",$quant_range);
-  my $broadcast_rgb=&map_broadcast_rgb($quant_range);
-  &modetest_connector_write($connector_id,"Broadcast RGB",$broadcast_rgb);
-  &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
- }
- # Set colorimetry / colorspace.
- # Older vc4 exposes "Colorimetry" while Bookworm exposes "Colorspace".
- my $colorimetry=$pgenerator_conf{"colorimetry"};
- $colorimetry=9 if($is_dv);
- if($colorimetry ne "" && $colorimetry > 0) {
-  my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
-  &modetest_connector_write($connector_id,"Colorimetry",$colorimetry);
-  &modetest_connector_write($connector_id,"Colorspace",$colorspace);
-  &log("DRM: Set Colorimetry=$colorimetry / Colorspace=$colorspace on connector $connector_id");
- }
-}
-
-sub apply_hdr_metadata_helper (@) {
- my $helper="/usr/bin/pgsethdr";
- return if(!$is_kms || !-x $helper);
- if(int($pgenerator_conf{"dv_status"} || 0) == 1 || int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 || int($pgenerator_conf{"is_std_dovi"} || 0) == 1) {
-  &log("DRM: skipping HDR metadata helper while Dolby Vision metadata is active");
-  return;
- }
- my $output=`timeout 5 $helper 2>&1`;
- chomp($output);
- if($? != 0) {
-  &log("DRM: pgsethdr failed".($output ne "" ? " — $output" : ""));
-  return;
- }
- &log("DRM: $output") if($output ne "");
-}
-
-sub kms_connector_has_hdr_metadata(@) {
- return 0 if(!$is_kms);
- my $mt=`timeout 3 $modetest -a -c 2>/dev/null`;
- my $inside_connected=0;
- my $in_hdr=0;
- my $lines_left=0;
- foreach my $line (split(/\n/,$mt)) {
-  if($line=~/^(\d+)\s+\d+\s+(connected|disconnected)\s+HDMI/) {
-   $inside_connected=($2 eq "connected") ? 1 : 0;
-   $in_hdr=0;
-   $lines_left=0;
-   next;
-  }
-  next if(!$inside_connected);
-  if($line=~/^\s+\d+\s+HDR_OUTPUT_METADATA:/) {
-   $in_hdr=1;
-   $lines_left=8;
-   next;
-  }
-  if($in_hdr) {
-   return 1 if($line=~/^\s+[0-9a-fA-F]{16,}\s*$/);
-   $lines_left--;
-   if($lines_left <= 0 || $line=~/^\s+\d+\s+\S.*:/) {
-    $in_hdr=0;
-    $lines_left=0;
-   }
-  }
- }
- return 0;
-}
-
 sub set_pgenerator_conf_runtime(@) {
  my ($key,$value)=@_;
  &sudo("SET_PGENERATOR_CONF",$key,$value);
@@ -459,21 +116,23 @@ sub normalize_dv_transport_conf(@) {
  );
  my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
  my $dv_metadata=&dv_metadata_for_map_mode($dv_map_mode);
+ my $dv_transport=&pg_dv_transport_mode();
  my %wanted=(
   is_sdr=>"0",
   is_hdr=>"1",
   eotf=>"2",
-  is_ll_dovi=>&pg_dv_transport_ll_flag(),
-  is_std_dovi=>&pg_dv_transport_std_flag(),
+  dv_transport=>"$dv_transport",
+  is_ll_dovi=>&pg_dv_transport_ll_flag($dv_transport),
+  is_std_dovi=>&pg_dv_transport_std_flag($dv_transport),
   dv_status=>"1",
-  dv_interface=>&pg_dv_transport_interface(),
+  dv_interface=>&pg_dv_transport_interface($dv_transport),
   dv_profile=>"1",
   dv_metadata=>"$dv_metadata",
   dv_color_space=>"0",
-  color_format=>&pg_dv_transport_color_format(),
+  color_format=>&pg_dv_transport_color_format($dv_transport),
   colorimetry=>"9",
   primaries=>"1",
-  max_bpc=>&pg_dv_transport_max_bpc(),
+  max_bpc=>&pg_dv_transport_max_bpc($dv_transport),
   rgb_quant_range=>"2"
  );
  for my $key (sort keys %wanted) {
@@ -482,46 +141,318 @@ sub normalize_dv_transport_conf(@) {
  }
 }
 
-sub warm_hdr_rgb_transport(@) {
- return if(!$is_kms);
- return if(int($pgenerator_conf{"is_hdr"} || 0) != 1);
- return if(int($pgenerator_conf{"dv_status"} || 0) == 1);
- return if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
- return if(int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
- return if(($pgenerator_conf{"color_format"} || "0") ne "0");
- return if(($pgenerator_conf{"max_bpc"} || 8) < 10);
- &log("DRM: HDR metadata is present before warm-up; reasserting anyway") if(&kms_connector_has_hdr_metadata());
-
- my %orig=(
-  color_format => ($pgenerator_conf{"color_format"} || "0"),
-  rgb_quant_range => ($pgenerator_conf{"rgb_quant_range"} || "2"),
-  colorimetry => ($pgenerator_conf{"colorimetry"} || "9"),
-  max_bpc => ($pgenerator_conf{"max_bpc"} || "10")
- );
-
- &log("DRM: warming HDR RGB with temporary YCbCr 4:4:4 10-bit start");
- &set_pgenerator_conf_runtime("color_format","1");
- &set_pgenerator_conf_runtime("rgb_quant_range","1");
- &set_pgenerator_conf_runtime("colorimetry","9");
- &set_pgenerator_conf_runtime("max_bpc","10");
-
- &apply_drm_properties();
- &prearm_drm_mode();
- &apply_hdr_metadata_helper();
- system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $pattern_generator $w_s $h_s >/dev/null 2>&1 &");
- usleep(2200000);
- &apply_drm_properties();
- usleep(800000);
- &process_pid("$pattern_generator","kill");
- usleep(500000);
-
- foreach my $key (keys %orig) {
-  &set_pgenerator_conf_runtime($key,$orig{$key});
+###############################################
+#  Apply DRM Connector Properties (KMS only)  #
+###############################################
+sub kms_connector_has_property(@) {
+ my $prop_name=shift;
+ return 0 if(!$is_kms || $prop_name eq "");
+ open(MT_PROP,"timeout 3 $modetest -c 2>/dev/null|");
+ while(<MT_PROP>) {
+  if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
+   close(MT_PROP);
+   return 1;
+  }
  }
- &apply_drm_properties();
- &prearm_drm_mode();
- &apply_hdr_metadata_helper();
- &log("DRM: restored requested HDR RGB output after warm-up");
+ close(MT_PROP);
+ return 0;
+}
+
+sub modetest_connector_write(@) {
+ my ($connector_id,$prop_name,$value)=@_;
+ return 0 if(!$is_kms || $connector_id eq "" || $prop_name eq "");
+ # Bookworm vc4 (Pi5) needs the atomic API for connector property
+ # writes; try it first and fall back to the legacy write for older
+ # modetest/kernel combinations (Pi4 BiasiLinux).
+ system("timeout 3 $modetest -a -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ return 1 if($? == 0);
+ system("timeout 3 $modetest -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ return ($? == 0) ? 1 : 0;
+}
+
+sub map_kms_colorspace(@) {
+ my $colorimetry=shift;
+ my $color_fmt=shift;
+ $color_fmt=0 if($color_fmt eq "");
+ return 0 if($colorimetry eq "" || $colorimetry == 0);
+ return 0 if($colorimetry == 2 && $color_fmt == 0);
+ return 2 if($colorimetry == 2);
+ return 9 if($colorimetry == 9 && $color_fmt == 0);
+ return 10 if($colorimetry == 9);
+ return $colorimetry;
+}
+
+sub map_broadcast_rgb(@) {
+ my $quant_range=shift;
+ return 0 if($quant_range eq "");
+ return 2 if($quant_range == 1);
+ return 1 if($quant_range == 2);
+ return 0;
+}
+
+###############################################
+#   LG Picture Mode Label → WebOS DDC Name    #
+###############################################
+# Translates any user-friendly LG picture-mode label (front-end
+# DisplayCard dropdown, REST body, URL parameter, legacy underscore
+# form, current WebOS camelCase form, or a noisy human label like
+# "isf dark room") into the canonical WebOS setSystemSettings name
+# that the LG TV accepts for the pictureMode dimension / setting.
+#
+# Returns the canonical name on success, or "" when the label does
+# not match any known LG picture mode. Callers should fall back to
+# their own validation when this returns "".
+sub map_picture_mode_label_to_ddc_name(@) {
+ my $label=shift;
+ my $signal_mode=shift;
+ $label="" if(!defined($label));
+ $label=~s/^\s+//;
+ $label=~s/\s+$//;
+ return "" if($label eq "");
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ $signal_mode="" if($signal_mode ne "sdr" && $signal_mode ne "hdr10" && $signal_mode ne "hlg" && $signal_mode ne "dv");
+ my $token=lc($label);
+ $token =~ s/[\s_\-]+//g;
+ return "" if($token eq "");
+ # Remember the original token in case the prefix-stripped fallback
+ # needs it. We must NOT mutate the canonical token (e.g. "hdrcinema"
+ # must not become "cinema" just because the prefix-stripper also
+ # matches "hdr" as a substring).
+ my $raw_token=$token;
+ my %map=(
+  # canonical WebOS names (these are what getSystemSettings reports)
+  "expert1" => "expert1",
+  "expert2" => "expert2",
+  "cinema" => "cinema",
+  # In DV context, "cinemahome" / "cinemabright" is the home/bright
+  # variant of DV Cinema. The front-end sends "DV Cinema Home" or
+  # "dolbyvisioncinemahome", which both tokenize to "dvcinemahome"
+  # then strip to "cinemahome" via the signal-prefix fallback.
+  "cinemahome" => "cinema",
+  "cinemabright" => "cinema",
+  "filmmaker" => "filmMaker",
+  "filmmakermode" => "filmMaker",
+  "filmmak" => "filmMaker",
+  "filmlmak" => "filmMaker",
+  "filmlmaker" => "filmMaker",
+  "filmlmamaker" => "filmMaker",
+  "filmamaker" => "filmMaker",
+  "filmamker" => "filmMaker",
+  "filmMaker" => "filmMaker",
+  "game" => "game",
+  "gameoptimizer" => "game",
+  "standard" => "standard",
+  "vivid" => "vivid",
+  "technicolorexpert" => "technicolorExpert",
+  # ISF / Expert aliases (older LG UI exposed these as separate modes)
+  "isfexpert1" => "expert1",
+  "isfexpertbright" => "expert1",
+  "expertbright" => "expert1",
+  "isfexpert2" => "expert2",
+  "isfexpertdark" => "expert2",
+  "expertdark" => "expert2",
+  "isfdarkroom" => "expert2",
+  "isfdark" => "expert2",
+  "darkroom" => "expert2",
+  "brightroom" => "expert1",
+  # HDR modes (canonical WebOS names are camelCase, legacy are
+  # underscore-separated — accept either)
+  "hdrcinema" => "hdrCinema",
+  "hdr_cinema" => "hdrCinema",
+  "hdrfilmamker" => "hdrFilmMaker",
+  "hdrfilmmaker" => "hdrFilmMaker",
+  "hdr_filmmaker" => "hdrFilmMaker",
+  "hdr_filmmakermode" => "hdrFilmMaker",
+  "hdrfilmmakermode" => "hdrFilmMaker",
+  "hdrgame" => "hdrGame",
+  "hdr_game" => "hdrGame",
+  "hdrgameoptimizer" => "hdrGame",
+  "hdrstandard" => "hdrStandard",
+  "hdr_standard" => "hdrStandard",
+  "hdrvivid" => "hdrVivid",
+  "hdr_vivid" => "hdrVivid",
+  "hdrtechnicolorexpert" => "hdrTechnicolorExpert",
+  "hdr_technicolorexpert" => "hdrTechnicolorExpert",
+  # Dolby Vision (DV) modes (accept the legacy "dolby_hdr_*" form, the
+  # modern "dolbyVision*" form, and the no-separator "dolbyhdr*" /
+  # "dolbycinemahome" / "dolbygame" / "dolbyvivid" forms produced by
+  # our token-stripping pass)
+  "dolbyvisioncinema" => "dolbyVisionCinema",
+  "dolby_hdr_cinema" => "dolbyVisionCinema",
+  "dolbyhdrcinema" => "dolbyVisionCinema",
+  "dolbycinema" => "dolbyVisionCinema",
+  "dolbyvisioncinemahome" => "dolbyVisionCinemaBright",
+  "dolbyvisioncinemabright" => "dolbyVisionCinemaBright",
+  "dolby_hdr_cinema_bright" => "dolbyVisionCinemaBright",
+  "dolbyhdrcinemabright" => "dolbyVisionCinemaBright",
+  "dolbyhdrcinemahome" => "dolbyVisionCinemaBright",
+  "dolbycinemahome" => "dolbyVisionCinemaBright",
+  "dolbycinemabright" => "dolbyVisionCinemaBright",
+  "dolbyvisiongame" => "dolbyVisionGame",
+  "dolby_hdr_game" => "dolbyVisionGame",
+  "dolbyhdrgame" => "dolbyVisionGame",
+  "dolbygame" => "dolbyVisionGame",
+  "dolbygameoptimizer" => "dolbyVisionGame",
+  "dolbyvisiongameoptimizer" => "dolbyVisionGame",
+  "dolbyhdrgameoptimizer" => "dolbyVisionGame",
+  "dolbyvisionvivid" => "dolbyVisionVivid",
+  "dolby_hdr_vivid" => "dolbyVisionVivid",
+  "dolbyhdrvivid" => "dolbyVisionVivid",
+  "dolbyvivid" => "dolbyVisionVivid",
+  # Display-card / Display-side panel-only aliases
+  "aps" => "standard",
+  "eco" => "standard",
+  "normal" => "standard",
+  "sports" => "vivid",
+ );
+  if($map{$token}) {
+   my $resolved=$map{$token};
+   return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+   return $resolved;
+  }
+  # The front-end Display card shows labels like "SDR Expert Dark",
+  # "HDR Cinema", "DV Cinema Home", "Dolby Vision Cinema". Strip the
+  # leading signal / source qualifier and try the lookup again, so
+  # those labels map to the same canonical name as the bare token
+  # ("expertdark" / "hdrcinema" / "dolbyvisioncinemahome" etc).
+  if($raw_token =~ /^(sdrdolby|hdrdolby|sdrhdr|dolbyvisionsdr|dolbyvisionhdr|dolbyvision|dolby|dv)([a-z].*)$/) {
+   my $stripped=$2;
+   # When the prefix is a Dolby qualifier (or the "dv" shorthand for
+   # Dolby Vision), the stripped token is a Dolby Vision mode (e.g.
+   # "dvcinemahome" → "cinemahome" → "dolbyVisionCinemaBright").
+   # Look up the "dolby<stripped>" form first, before falling back
+   # to the bare form (which would incorrectly map to plain
+   # "cinema" / "game" / "vivid").
+   my $dolby_try="dolby".$stripped;
+   if(defined($map{$dolby_try})) {
+    my $resolved=$map{$dolby_try};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   if(defined($map{$stripped})) {
+    my $resolved=$map{$stripped};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   return "";
+  }
+  if($raw_token =~ /^(sdr|hdr|hlg)([a-z].*)$/) {
+   my $stripped=$2;
+   if(defined($map{$stripped})) {
+    my $resolved=$map{$stripped};
+    return "" if($signal_mode ne "" && !&lg_picture_mode_signal_compatible($resolved,$signal_mode));
+    return $resolved;
+   }
+   return "";
+  }
+  return "";
+}
+
+# Returns the PGenerator signal mode the given canonical LG WebOS
+# picture mode name is bound to. Canonical names that start with
+# "hdr" (e.g. "hdrCinema", "hdrFilmMaker") are HDR10-or-HLG bound;
+# names that start with "dolby" / "dolbyVision" are Dolby Vision
+# bound. Plain SDR names ("cinema", "expert1", "filmMaker", "game",
+# "standard", "vivid", "technicolorExpert") are SDR-only on LG TVs.
+# Returns "" when the canonical name is unknown or has no signal
+# binding.
+sub lg_picture_mode_signal_for_canonical_name(@) {
+ my $canonical=shift;
+ $canonical="" if(!defined($canonical));
+ return "" if($canonical eq "");
+ if($canonical =~ /^dolby/i) { return "dv"; }
+ if($canonical =~ /^hdr/i)  { return "hdr10"; }
+ return "sdr";
+}
+
+# True when the canonical LG WebOS picture mode name is valid in the
+# given PGenerator signal mode context. HLG is treated as a flavor of
+# HDR10 because LG WebOS exposes the same "hdr*" canonical names for
+# both. Returns 1 on match, 0 otherwise. Returns 1 for unknown /
+# empty names so existing permissive callers are not broken.
+sub lg_picture_mode_signal_compatible(@) {
+ my ($canonical,$signal_mode)=@_;
+ $canonical="" if(!defined($canonical));
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ return 1 if($canonical eq "" || $signal_mode eq "");
+ my $required=&lg_picture_mode_signal_for_canonical_name($canonical);
+ return 1 if($required eq "");
+ if($required eq "hdr10") {
+  return 1 if($signal_mode eq "hdr10" || $signal_mode eq "hlg");
+  return 0;
+ }
+ return ($required eq $signal_mode) ? 1 : 0;
+}
+
+###############################################
+#  Apply DRM Connector Properties (KMS only)  #
+###############################################
+sub apply_drm_properties (@) {
+ return if(!$is_kms);
+ my $is_dv=int($pgenerator_conf{"dv_status"} || 0);
+ # Find connected HDMI connector ID
+ my $connector_id="";
+ open(MT,"timeout 3 $modetest -c 2>/dev/null|");
+ while(<MT>) {
+  if(/^(\d+)\s+\d+\s+connected\s+HDMI/) {
+   $connector_id=$1;
+   last;
+  }
+ }
+ close(MT);
+ return if($connector_id eq "");
+ # Set max bpc — the binary fails to apply this property
+ my $max_bpc=$pgenerator_conf{"max_bpc"};
+ if($max_bpc ne "" && $max_bpc > 0) {
+  &modetest_connector_write($connector_id,"max bpc",$max_bpc);
+  &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
+ }
+ # Reset output format — kernel retains previous value across binary
+ # restarts.  A previous 10bpc run may have caused a YCbCr 4:2:2
+ # fallback that sticks even after switching back to 8bpc RGB.
+ my $color_fmt=$pgenerator_conf{"color_format"};
+ $color_fmt=0 if($color_fmt eq "");
+ &modetest_connector_write($connector_id,"output format",$color_fmt);
+ &log("DRM: Set output format=$color_fmt on connector $connector_id");
+ # Set quantization range (enums: Default=0 Limited=1 Full=2)
+ my $quant_range=$pgenerator_conf{"rgb_quant_range"};
+ $quant_range=2 if($is_dv);
+ if($quant_range ne "") {
+  &modetest_connector_write($connector_id,"rgb quant range",$quant_range);
+  my $broadcast_rgb=&map_broadcast_rgb($quant_range);
+  &modetest_connector_write($connector_id,"Broadcast RGB",$broadcast_rgb);
+  &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
+ }
+ # Set colorimetry / colorspace.
+ # Older vc4 exposes "Colorimetry" while Bookworm exposes "Colorspace".
+ my $colorimetry=$pgenerator_conf{"colorimetry"};
+ $colorimetry=9 if($is_dv);
+ if($colorimetry ne "" && $colorimetry > 0) {
+  my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
+  # The legacy Pi4 Colorimetry property uses the same signal-format specific
+  # enums as the newer Colorspace property.
+  &modetest_connector_write($connector_id,"Colorimetry",$colorspace);
+  &modetest_connector_write($connector_id,"Colorspace",$colorspace);
+  &log("DRM: Set Colorimetry=$colorspace / Colorspace=$colorspace on connector $connector_id");
+ }
+}
+
+sub apply_hdr_metadata_helper (@) {
+ my $helper="/usr/bin/pgsethdr";
+ return if(!$is_kms || !-x $helper);
+ if(int($pgenerator_conf{"dv_status"} || 0) == 1 || int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 || int($pgenerator_conf{"is_std_dovi"} || 0) == 1) {
+  &log("DRM: skipping HDR metadata helper while Dolby Vision metadata is active");
+  return;
+ }
+ my $output=`timeout 5 $helper 2>&1`;
+ chomp($output);
+ if($? != 0) {
+  &log("DRM: pgsethdr failed".($output ne "" ? " — $output" : ""));
+  return;
+ }
+ &log("DRM: $output") if($output ne "");
 }
 
 ###############################################
@@ -543,16 +474,11 @@ sub pattern_generator_start(@) {
  }
  &normalize_dv_transport_conf();
  &auto_select_4k_mode();
- &ensure_hdmi_bandwidth_mode();
  &apply_drm_properties();
- &prearm_drm_mode();
- &apply_hdr_metadata_helper();
- &warm_hdr_rgb_transport();
- &apply_hdr_metadata_helper();
  &get_hdmi_info();
- if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry") && !&kms_connector_has_property("output format")) {
+ if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry")) {
   $use_drm_override=0;
-  &log("DRM: Colorspace-only kernel detected; starting renderer without drm_override.so");
+  &log("DRM: Colorspace-based kernel detected; starting renderer without drm_override.so");
  }
  if($is_kms && !&kms_connector_has_property("DOVI_OUTPUT_METADATA")) {
   $has_dovi_metadata=0;
@@ -577,23 +503,24 @@ sub pattern_generator_start(@) {
  # right after GBM init in the SOURCE_RANGE-aware renderer; without it the
  # renderer dies before any IMAGE pattern can be drawn (diagnostics break).
  if($use_drm_override) {
-  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/dev/null 2>&1 &");
+  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
  } else {
-  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/dev/null 2>&1 &");
+  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
  }
- usleep(750000);
- # The renderer performs the real KMS modeset. Reapply connector properties
- # after launch so deep-color RGB/4:4:4 is checked against the new mode.
- &apply_drm_properties();
- if(!$use_drm_override) {
-  &log("DRM: skipping post-launch modetest reapply on Colorspace-only kernel");
-  &apply_hdr_metadata_helper();
-  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
-  &get_pattern($test_template_command,"$pattern_start","$rgb","pattern_generator_start") if(!$no_clean_files);
-  return;
- }
- if(!$no_clean_files && !&pattern_generator_is_running()) {
-  &log("DRM: renderer did not stay running after launch");
+ usleep(250000);
+   # Some displays miss the first pre-launch RGB/colorspace programming and stay
+   # on the splash screen until a later format toggle forces HDMI state back in.
+   # Reapply connector properties once the renderer is alive so the first pattern
+   # push lands on the intended format without requiring a manual YCbCr detour.
+   &apply_drm_properties();
+ my $startup_color_fmt=$pgenerator_conf{"color_format"};
+ $startup_color_fmt=0 if($startup_color_fmt eq "");
+ if($is_kms && ($pgenerator_conf{"dv_status"}||"0") ne "1" && $startup_color_fmt == 0) {
+  # Some monitor-class RGB sinks take longer than TVs to latch the connector
+  # state after the renderer grabs DRM master. Retry once more after the link
+  # has been stable a bit longer so a manual YCbCr toggle is not needed.
+  usleep(1000000);
+  &apply_drm_properties();
  }
  &apply_hdr_metadata_helper();
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
@@ -728,7 +655,7 @@ sub pgenerator_cmd (@) {
   unlink("$info_dir/GET_DISCOVERABLE.info");
   &sudo("SET_DISCOVERABLE","$1");
  }
- if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE|SIGNAL_MODE|CALMAN_MODE_IDX):(.*)/) {
+ if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE|DV_TRANSPORT|SIGNAL_MODE|CALMAN_MODE_IDX):(.*)/) {
   my $conf_key=lc($1);
   my $conf_value=$2;
   &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
@@ -748,7 +675,7 @@ sub pgenerator_cmd (@) {
   }
   if(($conf_key eq "dv_status" && $conf_value eq "1") ||
      ($conf_key=~/^(is_ll_dovi|is_std_dovi)$/ && $conf_value eq "1") ||
-     ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {
+     ($conf_key=~/^(max_bpc|color_format|rgb_quant_range|dv_interface|dv_transport)$/ && int($pgenerator_conf{"dv_status"} || 0) == 1)) {
    &normalize_dv_transport_conf();
   }
   unlink("$info_dir/GET_PGENERATOR_CONF_".uc($1).".info");
@@ -1318,7 +1245,7 @@ sub get_hdmi_info() {
    $found=1           if(/\s+connected/);
    next               if(!$found);
    $found_range=1     if(/quant range/);   
-   $found_output=1    if(/active color format|output format/);
+   $found_output=1    if(/active color format/);   
    $range=$1          if($range  eq "" && $found_range && /value:(.*)/);
    $output=$1         if($output eq "" && $found_output && /value:(.*)/);
    next               if(!/#(\d+) (\d+)x(\d+)(.*)/);
