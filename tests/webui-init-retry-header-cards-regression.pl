@@ -50,10 +50,22 @@ like($src, qr/pgInitialRetry\(\s*['"]loadInfo['"]\s*,\s*loadInfo\s*,\s*\[\s*2000
 like($src, qr/pgInitialRetry\(\s*['"]loadCecStatus['"]\s*,\s*loadCecStatus\s*,\s*\[\s*1500\s*,\s*4000\s*\]\s*\)/,
   'loadCecStatus retry schedule is [1500, 4000] ms');
 
-# 7. The meter gets an extra 5s retry on init (in addition to the
-#    original 0s and 2s) to cover slow USB enumeration.
+# 7. The meter gets an extra 5s and 10s retry on init (in addition to
+#    the original 0s and 2s) to cover slow USB enumeration.
 like($src, qr/setTimeout\(\(\)\s*=>\s*meterCheckStatus\(\)\s*,\s*5000\s*\)/,
   'init schedules an extra meterCheckStatus at 5000ms');
+like($src, qr/setTimeout\(\(\)\s*=>\s*meterCheckStatus\(\)\s*,\s*10000\s*\)/,
+  'init schedules a meterCheckStatus at 10000ms for slow cold starts');
+
+# 7b. The busy guard in meterCheckStatus must NOT skip the first probe
+#     on a cold start. If meterDetected is false (fresh page load), the
+#     function should still hit /api/meter/status regardless of busy
+#     flags — otherwise a stale meterActionPending from a previous tab
+#     would leave the meter card showing "No Meter" until the flag
+#     cleared.
+like($src,
+  qr/if\(\s*meterDetected\s*&&\s*\(\s*meterContinuousActive\s*\|\|/,
+  'meterCheckStatus busy guard is gated on meterDetected (cold-start still probes)');
 
 # 8. The 30s setInterval for loadInfo is preserved (background refresh).
 like($src, qr/setInterval\(\(\)\s*=>\s*loadInfo\(true\)\s*,\s*30000\s*\)/,
