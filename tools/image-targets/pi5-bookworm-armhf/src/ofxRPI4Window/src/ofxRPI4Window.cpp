@@ -1452,7 +1452,18 @@ int foundHDR=0;
 	ofLog() << "DRM: Using HDR PLANE_ID: " << HDRplaneId;
 	ofLog() << "DRM: Using SDR PLANE_ID: " << SDRplaneId;	
 
+    /* The daemon's pattern_generator_start() runs root modetest helpers
+     * (apply_drm_properties) around renderer startup; each helper takes
+     * DRM master briefly. If one holds master at this exact moment,
+     * drmSetMaster fails and the renderer used to exit ("Pattern
+     * renderer failed to start"). Retry with backoff before falling
+     * back to the authorize path. */
     ret = drmSetMaster(device);
+    for (int pg_try = 0; ret < 0 && pg_try < 50; pg_try++)
+    {
+        usleep(100000); /* 100ms, up to ~5s total */
+        ret = drmSetMaster(device);
+    }
     if (ret < 0)
     {
       ofLogError() << "DRM: - failed to set drm master, will try to authorize instead: " << strerror(errno);
