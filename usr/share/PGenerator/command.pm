@@ -158,6 +158,18 @@ sub kms_connector_has_property(@) {
  return 0;
 }
 
+sub modetest_connector_write(@) {
+ my ($connector_id,$prop_name,$value)=@_;
+ return 0 if(!$is_kms || $connector_id eq "" || $prop_name eq "");
+ # Bookworm vc4 (Pi5) needs the atomic API for connector property
+ # writes; try it first and fall back to the legacy write for older
+ # modetest/kernel combinations (Pi4 BiasiLinux).
+ system("timeout 3 $modetest -a -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ return 1 if($? == 0);
+ system("timeout 3 $modetest -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ return ($? == 0) ? 1 : 0;
+}
+
 sub map_kms_colorspace(@) {
  my $colorimetry=shift;
  my $color_fmt=shift;
@@ -394,7 +406,7 @@ sub apply_drm_properties (@) {
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  if($max_bpc ne "" && $max_bpc > 0) {
-  system("timeout 3 $modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
+  &modetest_connector_write($connector_id,"max bpc",$max_bpc);
   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
  }
  # Reset output format — kernel retains previous value across binary
@@ -402,15 +414,15 @@ sub apply_drm_properties (@) {
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
  $color_fmt=0 if($color_fmt eq "");
- system("timeout 3 $modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
+ &modetest_connector_write($connector_id,"output format",$color_fmt);
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
  $quant_range=2 if($is_dv);
  if($quant_range ne "") {
-  system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
+  &modetest_connector_write($connector_id,"rgb quant range",$quant_range);
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
-  system("timeout 3 $modetest -w '$connector_id:Broadcast RGB:$broadcast_rgb' 2>/dev/null");
+  &modetest_connector_write($connector_id,"Broadcast RGB",$broadcast_rgb);
   &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
  }
  # Set colorimetry / colorspace.
@@ -421,8 +433,8 @@ sub apply_drm_properties (@) {
   my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
   # The legacy Pi4 Colorimetry property uses the same signal-format specific
   # enums as the newer Colorspace property.
-  system("timeout 3 $modetest -w '$connector_id:Colorimetry:$colorspace' 2>/dev/null");
-  system("timeout 3 $modetest -w '$connector_id:Colorspace:$colorspace' 2>/dev/null");
+  &modetest_connector_write($connector_id,"Colorimetry",$colorspace);
+  &modetest_connector_write($connector_id,"Colorspace",$colorspace);
   &log("DRM: Set Colorimetry=$colorspace / Colorspace=$colorspace on connector $connector_id");
  }
 }
