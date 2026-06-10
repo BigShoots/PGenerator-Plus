@@ -5194,7 +5194,7 @@ sub webui_apply_config (@) {
    $changes{"dv_interface"}=&pg_dv_transport_interface($requested_dv_transport);
    $changes{"eotf"}="2";
    $changes{"primaries"}="1";
-   $changes{"max_bpc"}=&pg_dv_transport_max_bpc($changes{"max_bpc"} || $pgenerator_conf{"max_bpc"});
+   $changes{"max_bpc"}=&pg_dv_transport_max_bpc($requested_dv_transport, $changes{"max_bpc"} || $pgenerator_conf{"max_bpc"});
    $changes{"color_format"}=&pg_dv_transport_color_format($requested_dv_transport);
    $changes{"colorimetry"}="9";
    $changes{"rgb_quant_range"}="2";
@@ -5830,7 +5830,7 @@ sub webui_capabilities_json (@) {
 	 my $dv_transport_color_format=&pg_dv_transport_color_format();
 	 my $dv_transport_max_bpc=&pg_dv_transport_max_bpc();
 	 my $dv_transport_mode=&pg_dv_transport_mode();
-	 my $dv_transport_modes='"standard"';
+	 my $dv_transport_modes='"standard","lldv"';
 
 		 return "{\"dc_30bit\":".($dc_30?"true":"false")
 		  .",\"dc_36bit\":".($dc_36?"true":"false")
@@ -7858,8 +7858,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <input type="hidden" id="dv_interface" value="0">
 	   <div class="field">
 	    <label>Transport</label>
-	    <select id="dv_transport" disabled>
+	    <select id="dv_transport">
 	     <option value="standard">Standard</option>
+	     <option value="lldv">Low Latency (LLDV)</option>
 	    </select>
 	   </div>
 	   <div class="field">
@@ -10493,6 +10494,10 @@ function dvRgbMaxBpc(value){
  return String(value||'').trim()==='10' ? '10' : '8';
 }
 function dvTransportDefaults(mode){
+ if(String(mode||'').toLowerCase()==='lldv'){
+  // Low-latency (source-led) DV: PQ YCbCr 4:2:2 12-bit, LL bit in the VSIF.
+  return {dv_transport:'lldv',is_ll_dovi:'1',is_std_dovi:'0',dv_interface:'1',color_format:'2',max_bpc:'12'};
+ }
  return {dv_transport:'standard',is_ll_dovi:'0',is_std_dovi:'1',dv_interface:'0',color_format:'0',max_bpc:'8'};
 }
 
@@ -10547,7 +10552,8 @@ async function applySettings(){
 	  Object.assign(changes,{is_sdr:'0',is_hdr:'1',
 	   dv_transport:dvTransport.dv_transport,
 	   is_ll_dovi:dvTransport.is_ll_dovi,is_std_dovi:dvTransport.is_std_dovi,
-   dv_status:'1',primaries:'1',color_format:dvTransport.color_format,colorimetry:'9',max_bpc:dvRgbMaxBpc(getVal('max_bpc')),
+   dv_status:'1',primaries:'1',color_format:dvTransport.color_format,colorimetry:'9',
+   max_bpc:(dvTransport.dv_transport==='lldv'?dvTransport.max_bpc:dvRgbMaxBpc(getVal('max_bpc'))),
    rgb_quant_range:'2',eotf:'2',
    dv_interface:dvTransport.dv_interface,
    dv_map_mode:getVal('dv_map_mode'),
