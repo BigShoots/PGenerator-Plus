@@ -103,7 +103,32 @@ PGeneratord.pl running (pid 5167, since Jun 07)
 
 ## Notes
 - The loaded vc4 module exposes `DOVI_OUTPUT_METADATA` (DV-VSIF patch present)
-  but NOT the `output format` property — any replacement module must keep both.
+  AND the `output format` property — the latter only under `modetest -a -c`
+  (created with DRM_MODE_PROP_ATOMIC; hidden from legacy listings).
 - A completed DV greyscale meter series exists on this Pi5 (series status
   `complete`), so the device is in active calibration use; deploys must check
   idle state first.
+
+# Post-fix state (2026-06-10)
+
+All gaps closed and verified on the live wire (display attached, HDMI-A-1
+connector 33, renderer md5 `2a570a5feb7a6c0140cf510687eba7b7`, perl stack
+deployed from repo, `min_luma` aligned to `0.0005`):
+
+| Check | Result |
+|-------|--------|
+| HDR10 wire: `output format` | **1 (YCBCR444)** ✓ |
+| HDR10 wire: `Broadcast RGB` | **2 (Limited 16:235)** ✓ (conf `rgb_quant_range=1` via `map_broadcast_rgb`) |
+| HDR10 wire: `Colorspace` | **10 (BT2020_YCC)** ✓ (conf `colorimetry=9` + YCC via `map_kms_colorspace`) |
+| HDR10 wire: `max bpc` | **10** ✓ |
+| HDR blob | eotf=2 (PQ), max_dml=1000, **min_dml=5 (0.0005)**, max_cll=1000, max_fall=400 ✓ |
+| Persistence (10 renderer atomic commits, NO drm_override on Pi5) | all values unchanged ✓ |
+| SDR transition (WebUI-shaped: signal_mode+colorimetry) | conf coherent SDR, wire `Colorspace=2` (BT709_YCC), HDR blob cleared ✓ |
+| HDR10 restore | all values return, blob min_dml=5 ✓ |
+| Calman GCI replay (port **2100**, frames `\x02…\x03`): INIT:2.0 → HDR_ENABLE:True → CONF_HDR → RGB_S | conf became fully coherent HDR (`signal_mode=hdr10, is_sdr=0, is_hdr=1, eotf=2, colorimetry=9, primaries=2`) ✓ |
+| GCI preference gate | Calman `CONF_HDR` with min 0.0050 suppressed; `min_luma=0.0005` retained ✓ |
+| Wire blob parity vs Pi4 | **byte-identical** to the Pi4 post-fix blob: `000000000200c233c4864c1db80bd084803e133d4240e8030500e80390010000` ✓ |
+| Plane pipeline | active plane AR30 (10-bit), `YCbCr limited range`, no CTM/gamma transform ✓ |
+
+Outstanding for the human: meter comparison of identical patches on Pi4 vs Pi5
+(final bit-accuracy/luminance confirmation on the display).
