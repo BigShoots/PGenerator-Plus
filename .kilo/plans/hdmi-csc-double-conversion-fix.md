@@ -189,6 +189,39 @@ The plan's original "double conversion" hypothesis is correct in direction (PGen
 
 Note: the deployed conf has `max_cll=0, max_fall=0` but the on-wire HDR_OUTPUT_METADATA blob had MaxFALL=243. This is a separate, smaller effect (the LG's tone mapper may be using MaxFALL as an ABL trigger; 243 is not catastrophic but is not 0 either). Flag for follow-up — possibly a renderer-side metadata default that needs to be changed.
 
+### Lifted blacks: actual cause (2026-06-09 investigation)
+
+The user's most recent screenshots (June 9) showed a +50% lift at 5% stimulus on the LG C2 in HDR10 YCbCr444 BT.2020 10-bit Limited, with dynamic tone mapping turned off on the TV and both Calman and PGenerator set to Limited range. A subagent did an end-to-end trace of a `RGB_S:0064,0064,0064,010` patch and decoded the live HDR_OUTPUT_METADATA blob on the wire. Findings:
+
+- **Renderer shader is correct.** End-to-end math: Calman sends code 64, `operations.txt` writes `RGB=64,64,64` BITS=10, renderer's YCbCr-packing shader (`tools/image-targets/pi4-biasi/src/pattern_generator/src/ofApp.cpp:704`, shader at `ofxRPI4Window.cpp:1623-1695`) outputs Y=64 in the framebuffer, plane commits Y=64 to the wire, drm_override only touches connector properties (max_bpc, color_format, colorimetry, rgb_quant_range) and does not modify pixel data. vc4.ko already uses the identity matrix for YUV444. The 5% code value 64 is on the wire correctly.
+
+- **Live HDR metadata blob on the wire has `min_display_mastering_luminance = 0` despite conf having `min_luma=0.005`.** The 32-byte blob is built at `ofxRPI4Window.cpp:3655` from a file-scope zero-initialized `drm_hdr_output_metadata hdr_metadata` struct (`ofxRPI4Window.cpp:1464`) that is never populated from the conf. Only `max_luma`, `max_cll`, `max_fall` are plumbed into the wire blob (they match conf); `min_luma` is dropped to 0.
+
+- **The 2× lift is caused by the LG C2's near-black handler, not by an encoding mismatch.** With `min_dml=0` on the wire, the LG interprets the metadata as "the signal can go down to true black" but the OLED panel's actual floor is ~0.0001 cd/m², not 0. The LG stretches the bottom 5–10% of the signal to maintain a stable black floor, producing ~2× the expected luminance at 5% stimulus. Even with the user-facing DTM disabled, the panel's black-floor handling still kicks in for HDR10 metadata with `min_dml=0`.
+
+- **This is a long-standing bug, not a Plus regression.** The original PGenerator 1.6 source (`/mnt/homestorage/Projects/PGenerator_reference/PGenerator_Source/pattern_generator/src/ofApp.cpp:29,656-684`) has the same `normalize10bitComponent`, the same Limited-Range scalar constants, and the same `hdr_metadata` zero-init bug. The 1.6 binary also ships with `min_dml=0` on the wire. No commit in the Plus repo's history of `ofxRPI4Window.cpp` or `ofApp.cpp` introduced it.
+
+### Fix candidates (NOT implemented, awaiting user go-ahead)
+
+1. **Plumb `min_luma` from conf into the renderer's HDR metadata blob.** Primary fix. Renderer C++ change to populate `hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance = (uint16_t)(min_luma * 10000.0f)` from a runtime source (read conf directly, pass via a state file the daemon writes, or expose via a runtime getter). Stops telling the LG "min 0 nits" and tells it the panel's actual floor. Conf's `min_luma=0.005` should map to wire `min_dml = 50`. **This is the smallest change with the largest effect — likely to resolve the 2× symptom without touching any other code.** Requires renderer rebuild + re-deploy.
+
+2. **Make the shader emit honest Limited-encoded Y/Cb/Cr.** The current shader writes `Y/1023` (Full-Range semantics) into the framebuffer but the connector advertises Limited. **The user correctly observed that this would not lift blacks; it would change the wire-encoding honesty, not the lift.** The dominant 2× cause is fix #1, not this. After fix #1, a 1.25× secondary residual might remain from the LG decoding Limited Y=64 as Full-Range (a known LG behavior in HDR10 mode where CTA-861-G §5.2 is ambiguous); the cleanup for that is either honest Limited-encoding in the shader or set `rgb_quant_range=2` (Full) in conf for HDR10. **Do not implement fix #2 thinking it addresses the 2× — it does not.**
+
+3. **WebUI control for `min_luma`** (polish). Thread it through daemon → renderer. Lets the user dial in the actual panel floor.
+
+### Files most likely to need changes (after user approval)
+
+- `tools/image-targets/pi4-biasi/src/ofxRPI4Window/src/ofxRPI4Window.cpp:1464,3648-3655` — the `hdr_metadata` struct init and the blob construction
+- `tools/image-targets/pi4-biasi/src/pattern_generator/src/ofApp.cpp` — uniform setters and any place that writes to the metadata struct
+- A new state channel (file or env) between daemon and renderer so the renderer can read min_luma
+- `tests/` — new regression test asserting the wire blob's min_dml matches the conf's min_luma
+- Mirror to `tools/image-targets/pi4-biasi/src/ofxRPI4Window/src/ofxRPI4Window.cpp` and the renderer build artifacts
+
+### Open: live verification
+
+- The LG's near-black behavior with `min_dml=0` vs. `min_dml=50` is **inferred** from the symptom and the renderer code, not **directly measured** on this hardware. A live test that runs a 5% patch with `min_luma=0.005` in the conf and re-measures luminance is the cleanest verification of fix #1.
+- The 1.25× secondary effect (Limited-flag-ignored Full-Range decode) cannot be ruled out without an A/B test on the LG. After fix #1, if the 5% patch is now ~1.25× too bright, fix #2 applies.
+
 ## Calman GCI protocol — tcpdump analysis (2026-06-09)
 
 User reported that switching Calman from RPC to UPnGCI/GCI source produced a grey screen on the TV, with no patterns painting. Captured `tcpdump -i any -nn -tttt -s 0 -w /root/pgen-gci-capture/gci.pcap` on the Pi4 while the user clicked the GCI source. Calman peer IP is `192.168.1.231`.
