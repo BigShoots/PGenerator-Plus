@@ -1446,22 +1446,27 @@ sub pattern_daemon {
     # HDR_ENABLE:True -> prepare for HDR (CONF_HDR follows with details)
     # HDR_ENABLE:False -> switch to SDR. A later CONF_DV command can re-enter DV.
     #
-     if($type eq "HDR_ENABLE") {
-      if($pattern_cmd =~/^False$/i) {
-        &log("Calman: HDR_ENABLE=False — switching to SDR");
-        $calman_set_non_dv_mode->("sdr",0,"2","8");
-        # Apply immediately — DRM properties must change now, not on next pattern
+      if($type eq "HDR_ENABLE") {
+       if($pattern_cmd =~/^False$/i) {
+         &log("Calman: HDR_ENABLE=False — switching to SDR");
+         $calman_set_non_dv_mode->("sdr",0,"2","8");
+         # Apply immediately — DRM properties must change now, not on next pattern
+         $calman_apply->();
+       }
+       if($pattern_cmd =~/^True$/i) {
+        &log("Calman: HDR_ENABLE=True — HDR requested, awaiting CONF_HDR");
+        # Don't set HDR yet; CONF_HDR will follow with full metadata
+        # But mark HDR intent so if no CONF_HDR comes, next pattern apply will enable HDR
+        $calman_set_non_dv_mode->("hdr",2,"9","10");
+        # Apply immediately so the TV gets the new HDR mode without
+        # waiting for the next pattern. If CONF_HDR follows with
+        # refined primaries/luminance, it will trigger a second apply
+        # (idempotent, picks up the refined values).
         $calman_apply->();
+       }
+       &send_key_to_client($connection,"");
+       last;
       }
-      if($pattern_cmd =~/^True$/i) {
-       &log("Calman: HDR_ENABLE=True — HDR requested, awaiting CONF_HDR");
-       # Don't set HDR yet; CONF_HDR will follow with full metadata
-       # But mark HDR intent so if no CONF_HDR comes, next pattern apply will enable HDR
-       $calman_set_non_dv_mode->("hdr",2,"9","10");
-      }
-      &send_key_to_client($connection,"");
-      last;
-     }
      #
     # CONF_HDR — external full HDR metadata configuration
      # Format: CONF_HDR:EOTF,Rx,Ry,Gx,Gy,Bx,By,Wx,Wy,MinL,MaxL,MaxCLL,MaxFALL
@@ -1517,9 +1522,16 @@ sub pattern_daemon {
       $calman_save_setting->("max_cll","$hdr_max_cll") if($hdr_max_cll_present);
       $calman_save_setting->("max_fall","$hdr_max_fall") if($hdr_max_fall_present);
       &log("Calman: CONF_HDR parsed — eotf=$eotf_val prim=$prim_val maxL=$hdr_max_luma minL=$hdr_min_luma maxCLL=$hdr_max_cll maxFALL=$hdr_max_fall");
+      # Apply immediately so the renderer restarts with the new HDR
+      # config and the wire colorimetry / HDR_OUTPUT_METADATA blob
+      # update on the TV. Without this the conf would be correct and
+      # the WebUI would show HDR, but the renderer (and therefore the
+      # TV) would stay on the previous mode until the next pattern
+      # command triggered a restart.
+      $calman_apply->();
       &send_key_to_client($connection,"");
       last;
-     }
+      }
      #
      # UPGCI Display Mode Commands
      #
@@ -1596,6 +1608,9 @@ sub pattern_daemon {
        } else {
         $calman_set_non_dv_mode->("sdr",0,"2","8");
        }
+       # Apply immediately so the renderer restarts with the new
+       # EOTF and the wire updates. Same reasoning as CONF_HDR.
+       $calman_apply->();
       }
       &send_key_to_client($connection,"");
       last;
