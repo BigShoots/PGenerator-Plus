@@ -29054,12 +29054,43 @@ function initCardCollapse(){
  });
 }
 
-// Init
+// Helper: retry a load function with short backoff on the initial page
+// load. The daemon's /api/info, /api/cec/status and meter detection
+// can take several seconds on a cold start (modetest parsing, USB
+// enumeration, CEC adapter init). Without retries the UI stayed blank
+// for the full poll interval (30s for /api/info, 5-10s for CEC/meter)
+// on first page refresh, so the resolution, CEC adapter and meter
+// would not appear until the next interval tick. This wrapper fires
+// the load at 0s, 2s and 5s so a slow first response doesn't leave
+// the header cards empty for a minute.
+function pgInitialRetry(name,fn,delays){
+ const ds=Array.isArray(delays)?delays:[2000,5000];
+ let cancelled=false;
+ const run=(d,i)=>{
+  if(cancelled) return;
+  setTimeout(()=>{ if(!cancelled) fn(true); }, d||0);
+ };
+ ds.forEach((d,i)=>run(d,i));
+ // Cancel the pending retries once the first call's promise resolves
+ // successfully. fn must be an async function; the wrapper detects
+ // the result and short-circuits the remaining delays.
+ try {
+  const p=fn(true);
+  if(p && typeof p.then==='function'){
+   p.then(()=>{ cancelled=true; }).catch(()=>{/* keep retries on failure */});
+  }
+ } catch(e){ /* keep retries */ }
+}
+
+ // Init
 (async()=>{
  initCardCollapse();
  await loadConfig(true);
  await diagRefreshCustomAssets();
- await loadInfo(true);
+ // Fire the header-card loads (resolution, temperature, version) on a
+ // tight retry schedule so the info grid populates within ~5s even
+ // when the daemon is still spinning up its first /api/info response.
+ pgInitialRetry('loadInfo',loadInfo,[2000,5000]);
  await Promise.all([loadModes(true),loadCapabilities(true)]);
  updateDropdowns();
  refreshSavedSettingsSnapshot();
@@ -29067,7 +29098,9 @@ function initCardCollapse(){
  loadMemory();
  setTimeout(()=>loadMeterSettings(),500);
  meterAutoCalLoadTargetYDefault();
- setTimeout(()=>loadCecStatus(),500);
+ // CEC: adapter init can be slow on boot. Retry twice on init so the
+ // status card doesn't sit on "unknown" for the full 5s poll cycle.
+ pgInitialRetry('loadCecStatus',loadCecStatus,[1500,4000]);
  __PG_LG_INIT__
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadBluetooth(),1200);
@@ -29079,9 +29112,13 @@ function initCardCollapse(){
  setInterval(()=>loadInfo(true),30000);
  setInterval(()=>loadCecStatus(),5000);
  setInterval(()=>loadBluetooth(),30000);
- // Meter: check immediately on load, then repoll shortly after and every 10s
+ // Meter: check immediately on load, then repoll shortly after and every 10s.
+ // The retry below covers the case where the first two meter checks race
+ // the USB enumeration; the daemon-side meter/status endpoint can take
+ // 2-4s to return a populated response on cold boot.
  meterCheckStatus();
  setTimeout(()=>meterCheckStatus(),2000);
+ setTimeout(()=>meterCheckStatus(),5000);
  meterRestoreAutoCalWorkflows();
  meterAutoCalRepairOverlayPointerState();
  setTimeout(meterAutoCalInitialRecoveryPoll,1200);
