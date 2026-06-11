@@ -5898,12 +5898,6 @@ sub webui_capabilities_json (@) {
  %vic_420=();
  my @v420=map{"\"$_\""} sort keys %vic_420;
 
- # Some displays decode Dolby Vision but do not advertise the Dolby VSVDB
- # in their EDID (or only on certain inputs). Allow the user to override
- # the EDID detection so the DV signal mode becomes selectable; the DV
- # transport/metadata parameters all come from the conf anyway.
- $has_dv=1 if(($pgenerator_conf{"dv_edid_override"}||"") eq "1");
-
 	 my $dv_transport_is_ll=&pg_dv_transport_ll_flag();
 	 my $dv_transport_is_std=&pg_dv_transport_std_flag();
 	 my $dv_transport_interface=&pg_dv_transport_interface();
@@ -7944,13 +7938,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	    </select>
 	   </div>
 	   <div class="field">
-	    <label>DV Capability</label>
-	    <select id="dv_edid_override">
-	     <option value="0">Auto (EDID VSVDB)</option>
-	     <option value="1">Force supported</option>
-	    </select>
-	   </div>
-	   <div class="field">
 	    <label>Map Mode</label>
     <select id="dv_map_mode">
      <option value="2">Relative (Calibration)</option>
@@ -9242,7 +9229,6 @@ function applyConfigState(nextConfig){
   sm=(config.eotf==='3')?'hlg':'hdr10';
  }
  setVal('mode_idx',config.mode_idx||'');
- setVal('dv_edid_override',config.dv_edid_override||'0');
  setVal('signal_mode',sm);
  setVal('max_bpc',config.max_bpc||'8');
  setVal('color_format',config.color_format||'0');
@@ -9385,8 +9371,7 @@ function captureSettings(){
 	  max_fall:meterHdrMetadataFieldValue('max_fall'),
 	  dv_transport:getVal('dv_transport'),
 	  dv_interface:getVal('dv_interface'),
-	  dv_map_mode:getVal('dv_map_mode'),
-	  dv_edid_override:getVal('dv_edid_override')
+	  dv_map_mode:getVal('dv_map_mode')
 	 });
 }
 
@@ -10613,7 +10598,6 @@ async function applySettings(){
   color_format:getVal('color_format'),
   colorimetry:getVal('colorimetry'),
   rgb_quant_range:getVal('rgb_quant_range'),
-  dv_edid_override:getVal('dv_edid_override'),
  };
  if(sm==='sdr'){
   Object.assign(changes,{is_sdr:'1',is_hdr:'0',eotf:'0',
