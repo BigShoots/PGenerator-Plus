@@ -1375,7 +1375,20 @@ int foundHDR=0;
 	ofLog() << "DRM: Using HDR PLANE_ID: " << HDRplaneId;
 	ofLog() << "DRM: Using SDR PLANE_ID: " << SDRplaneId;	
 
+    /* The daemon's pattern_generator_start() runs root DRM helpers
+     * (apply_drm_properties modetest writes, pgsethdr) around renderer
+     * startup; each takes DRM master briefly. HDR-mode init is slow
+     * enough (10-bit EGL setup) that the first drmSetMaster regularly
+     * lands inside one of those windows and fails with EBUSY - and the
+     * authorize fallback cannot succeed without a master to grant it,
+     * so the renderer exited ("Pattern renderer failed to start").
+     * Retry with backoff before falling back. */
     ret = drmSetMaster(device);
+    for (int pg_try = 0; ret < 0 && pg_try < 50; pg_try++)
+    {
+        usleep(100000); /* 100ms, up to ~5s total */
+        ret = drmSetMaster(device);
+    }
     if (ret < 0)
     {
       ofLogError() << "DRM: - failed to set drm master, will try to authorize instead: " << strerror(errno);
@@ -3519,7 +3532,7 @@ void ofxRPI4Window::FlipPage(bool flip, uint32_t fb_id)
 		} else {
 
 			updateDoVi_Infoframe(dv_status, dv_interface); // Disable DOVI infoframe if on, for some reason destroying blob doesn't clear the infoframe
-//			updateHDR_Infoframe(ofxRPI4Window::eotf, 0); // Display Gamut Rec709
+			updateHDR_Infoframe(ofxRPI4Window::eotf, 0); // Explicit EOTF=SDR DRM infoframe (kicks sinks out of latched HDR/DV modes)
 			struct avi_infoframe avi_infoframe;
 			avi_infoframe.colorimetry = avi_info.colorimetry; //Default
 			avi_infoframe.rgb_quant_range = avi_info.rgb_quant_range;  //Full range [0-255] = 2
@@ -3673,7 +3686,34 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 		blob_id = 0;
 	
 		struct drm_hdr_output_metadata meta;
-		if (static_cast<int>(eotf) == 3) {
+		if (static_cast<int>(eotf) <= 1) {
+			/* Explicit SDR / traditional-gamma DRM infoframe. Some
+			 * sinks latch their last HDR/Dolby Vision input mode when
+			 * the source simply stops sending infoframes; transmitting
+			 * an explicit EOTF=SDR forces them back to SDR. The old
+			 * accidental exit path (pgsethdr clearing the blob after
+			 * an SDR start) no longer runs while a renderer is alive,
+			 * so the renderer must signal the exit itself. All
+			 * mastering metadata is zero (none for SDR). */
+			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
+			meta.hdmi_metadata_type1.eotf = eotf;
+			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
+
+			meta.hdmi_metadata_type1.display_primaries[0].x = 0;
+			meta.hdmi_metadata_type1.display_primaries[0].y = 0;
+			meta.hdmi_metadata_type1.display_primaries[1].x = 0;
+			meta.hdmi_metadata_type1.display_primaries[1].y = 0;
+			meta.hdmi_metadata_type1.display_primaries[2].x = 0;
+			meta.hdmi_metadata_type1.display_primaries[2].y = 0;
+			meta.hdmi_metadata_type1.white_point.x = 0;
+			meta.hdmi_metadata_type1.white_point.y = 0;
+
+			meta.hdmi_metadata_type1.max_display_mastering_luminance = 0;
+			meta.hdmi_metadata_type1.min_display_mastering_luminance = 0;
+
+			meta.hdmi_metadata_type1.max_fall = 0;
+			meta.hdmi_metadata_type1.max_cll = 0;
+		} else if (static_cast<int>(eotf) == 3) {
 			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 			meta.hdmi_metadata_type1.eotf = eotf;
 			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
