@@ -167,15 +167,27 @@ sub kms_connector_has_property(@) {
  return 0;
 }
 
+my $modetest_atomic_writes;
 sub modetest_connector_write(@) {
  my ($connector_id,$prop_name,$value)=@_;
  return 0 if(!$is_kms || $connector_id eq "" || $prop_name eq "");
- # Bookworm vc4 (Pi5) needs the atomic API for connector property
- # writes; try it first and fall back to the legacy write for older
- # modetest/kernel combinations (Pi4 BiasiLinux).
- system("timeout 3 $modetest -a -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ # Platform-keyed write mode, decided once per process:
+ # - Bookworm vc4 (Colorspace property, no Colorimetry - Pi5) needs the
+ #   atomic API for connector property writes (DRM_MODE_PROP_ATOMIC
+ #   properties are invisible/unwritable via the legacy API).
+ # - The legacy Pi4 kernel (Colorimetry property) must use legacy
+ #   writes: an atomic commit from modetest holds DRM master longer and
+ #   can trigger a modeset, which kills a renderer that is starting up
+ #   (observed: SDR applies began failing on the Pi4 when these writes
+ #   were atomic-first).
+ if(!defined $modetest_atomic_writes) {
+  $modetest_atomic_writes=(&kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry")) ? 1 : 0;
+ }
+ my $primary=$modetest_atomic_writes ? "-a" : "";
+ my $fallback=$modetest_atomic_writes ? "" : "-a";
+ system("timeout 3 $modetest $primary -w '$connector_id:$prop_name:$value' 2>/dev/null");
  return 1 if($? == 0);
- system("timeout 3 $modetest -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ system("timeout 3 $modetest $fallback -w '$connector_id:$prop_name:$value' 2>/dev/null");
  return ($? == 0) ? 1 : 0;
 }
 
@@ -455,6 +467,19 @@ sub apply_hdr_metadata_helper (@) {
   &log("DRM: skipping HDR metadata helper while Dolby Vision metadata is active");
   return;
  }
+ # pgsethdr is a pre-set safety net for when NO renderer is alive (boot,
+ # idle). Since commit 84ed1cc7 the renderer reads the HDR conf on every
+ # updateHDR_Infoframe() call and owns the wire blob, so running pgsethdr
+ # alongside a renderer is pointless - and running it while a renderer is
+ # INITIALIZING steals DRM master at the exact moment the renderer calls
+ # drmSetMaster, killing it. This was the root cause of "Pattern renderer
+ # failed to start" on every WebUI HDR apply (SDR applies never call this
+ # helper, which is why they always survived). A/B-proven on the Pi4:
+ # with pgsethdr disabled the HDR apply succeeds on the first attempt.
+ if(&pattern_generator_is_running()) {
+  &log("DRM: skipping pgsethdr while the renderer is running (renderer owns the HDR blob)");
+  return;
+ }
  my $output=`timeout 5 $helper 2>&1`;
  chomp($output);
  if($? != 0) {
@@ -511,10 +536,14 @@ sub pattern_generator_start(@) {
  # MALLOC_CHECK_=0 suppresses a benign glibc double-free abort that fires
  # right after GBM init in the SOURCE_RANGE-aware renderer; without it the
  # renderer dies before any IMAGE pattern can be drawn (diagnostics break).
+ # Keep the renderer's own output: when a start fails, the renderer's
+ # last words (e.g. "failed to set drm master: Device or resource busy")
+ # are the only direct evidence of the cause. Truncated on every spawn
+ # so the file stays small and always shows the most recent attempt.
  if($use_drm_override) {
-  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/tmp/renderer-spawn.log 2>&1 &");
  } else {
-  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/tmp/renderer-spawn.log 2>&1 &");
  }
  usleep(250000);
    # Some displays miss the first pre-launch RGB/colorspace programming and stay
