@@ -1,0 +1,35 @@
+{
+  // Large generated/archival trees (163GB build/, 14GB Backup/, 3.2GB tmp/)
+  // are gitignored but VSCode's file watcher and indexer still crawl them,
+  // which bogs the system. Keep them out of the watcher, search, and the
+  // built-in TypeScript/JS indexer. Reload the window after changes here.
+  "files.watcherExclude": {
+    "**/.git/**": true,
+    "build/**": true,
+    "Backup/**": true,
+    "tmp/**": true,
+    "v2.1/**": true,
+    ".qwen/**": true,
+    ".superpowers/**": true,
+    "tools/image-targets/**/obj/**": true,
+    "tools/image-targets/**/bin/**": true,
+    "tools/image-targets/**/build/**": true,
+    "tools/image-targets/**/rootfs/**": true
+  },
+  "search.exclude": {
+    "build/**": true,
+    "Backup/**": true,
+    "tmp/**": true,
+    "v2.1/**": true,
+    ".qwen/**": true,
+    "tools/image-targets/**/obj/**": true,
+    "tools/image-targets/**/bin/**": true,
+    "tools/image-targets/**/build/**": true
+  },
+  "files.exclude": {
+    "build/": true,
+    "Backup/": true,
+    "v2.1/": true
+  },
+  "git.ignoreLimitWarning": true
+}
