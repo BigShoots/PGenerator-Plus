@@ -3883,6 +3883,12 @@ void ofxRPI4Window::updateDoVi_Infoframe(int enable, int dv_interface)
 		}
 		struct dovi_output_metadata dovi = {};
 		dovi.oui = ofxRPI4Window::is_std_DoVi ? 0x000C03 : 0x00D046;
+		/* dv_vsif_h14b=1 forces the H14b VSIF (OUI 0x000C03, payload
+		 * 0x20 + mode byte) regardless of transport. HDFury-style LLDV
+		 * is PQ YCbCr 4:2:2 12-bit plus exactly this VSIF; some
+		 * displays only engage their DV decode on the H14b form. */
+		if (pg_read_conf_int(PG_HDR_CONF_PATH, "dv_vsif_h14b", 0) == 1)
+			dovi.oui = 0x000C03;
 		dovi.dv_status = enable; //set to 1 to enable dovi infoframe 
 		dovi.dv_interface = ofxRPI4Window::is_std_DoVi ? 0 : (dv_interface ? 1 : 0); 
 		dovi.backlight_metadata = 0;
