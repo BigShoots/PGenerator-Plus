@@ -544,6 +544,13 @@ sub webui_http (@) {
  }
  &log("WebUI: HTTP server started on port $http_port");
 
+ # NOTE: no global $SIG{CHLD} reaper here, deliberately. This process
+ # runs system()/backticks/piped opens all over (modetest, helpers)
+ # and checks $? afterwards; a waitpid(-1,...) reaper steals those
+ # exit statuses and breaks the checks. Renderer-restart workers are
+ # double-forked instead (see the /api/config POST handler) so they
+ # are reparented to init and need no reaping in this process.
+
  while(1) {
   my $client=$http_server->accept();
   next if(!$client);
@@ -603,18 +610,91 @@ sub webui_http (@) {
      my $len=length($json);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$json";
     }
-    elsif($method eq "POST") {
-     # Apply config changes
-     my ($result,$need_restart)=&webui_apply_config($body);
-     my $len=length($result);
-     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
-     if($need_restart) {
-      close($client);
-      undef $client;
-      &pattern_generator_stop();
-      &pattern_generator_start();
+     elsif($method eq "POST") {
+      # Apply config changes
+      my ($result,$need_restart)=&webui_apply_config($body);
+      my $len=length($result);
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+      if($need_restart) {
+       # The renderer restart can take 10+ seconds (the apply
+       # retry ladder in daemon.pm waits 0.6+0.4+1.0+3.0 = 5s of
+       # backoff plus actual start attempts, and pgsethdr steals
+       # DRM master from the running renderer). Forking the
+       # restart into a child keeps the HTTP server responsive
+       # so the user's browser doesn't see "connection errors"
+       # on the next poll, and so subsequent WebUI POSTs (e.g.
+       # pattern requests) are not blocked. The child does
+       # stop+start; the parent closes the client and returns
+       # to the accept loop. If the fork fails (e.g. resource
+       # limits), fall back to an in-process restart so the
+       # user's intent is still honoured.
+       my $pid=fork();
+       if(!defined $pid) {
+        # Fork failed — do the restart in-process as a
+        # last resort. The HTTP client is already closed below.
+        close($client);
+        undef $client;
+        &pattern_generator_stop();
+        &pattern_generator_start();
+       } elsif($pid == 0) {
+        # Intermediate child: double-fork so the actual worker is
+        # reparented to init and reaped there. A $SIG{CHLD} reaper
+        # in the HTTP server would also steal exit statuses from
+        # the system()/backtick/piped-open calls this process makes
+        # everywhere (command.pm checks $? after modetest), so the
+        # daemon must never install one. The intermediate child
+        # exits immediately and the parent reaps it synchronously.
+        my $worker=fork();
+        if(!defined $worker || $worker == 0) {
+         # Worker (or fork-failed fallback running inside the
+         # intermediate child): do the restart with the same retry
+         # ladder as load_new_pattern_file, which handles the
+         # documented DRM-master race (pgsethdr steals DRM master
+         # from the newly-spawned renderer) with up to 4 attempts
+         # and settle delays. This recovers the renderer in the
+         # HDR case where a single stop+start almost always loses
+         # the race. load_new_pattern_file also re-pushes the last
+         # remembered pattern, so the user sees a pattern on the
+         # TV immediately after the apply instead of a frozen
+         # splash framebuffer.
+         close($client);
+         $SIG{CHLD}='DEFAULT';
+         # Serialize apply workers: a failed retry ladder can run for
+         # 30-40s, and a second apply's pattern_generator_stop() would
+         # kill the renderer the first worker just started - the two
+         # ladders then interleave and both fail. The lock makes the
+         # second worker wait; last writer wins with the freshest conf.
+         # The lock is released automatically when the worker exits.
+         &log("WebUI: apply worker started (pid $$)");
+         my $pg_apply_lock;
+         # The daemon runs as the pgenerator user: /var/lock is not
+         # writable, so the lock lives in the daemon's own state dir.
+         if(open($pg_apply_lock,'>',"$var_dir/running/webui-apply.lock")) {
+          flock($pg_apply_lock,2);
+          &log("WebUI: apply worker holds the restart lock (pid $$)");
+         } else {
+          &log("WebUI: apply worker could not open the restart lock: $!");
+         }
+         # Stop first: a signal-mode change requires a full renderer
+         # restart (is_hdr/eotf are baked in at renderer startup),
+         # and load_new_pattern_file only starts the renderer when it
+         # is NOT already running. Without the stop the worker is a
+         # no-op whenever the renderer survived — alive but stuck in
+         # the previous mode with a stale/empty HDR blob.
+         &pattern_generator_stop();
+         &load_new_pattern_file("webui apply");
+        }
+        exit(0);
+       } else {
+        # Parent: reap the intermediate child (it exits at once;
+        # the worker it spawned belongs to init now) and return to
+        # the accept loop.
+        waitpid($pid,0);
+        close($client);
+        undef $client;
+       }
+      }
      }
-    }
    }
    elsif($path eq "/api/ping") {
     my $r='{"ok":1}';
