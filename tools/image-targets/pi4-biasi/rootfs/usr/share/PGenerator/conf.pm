@@ -45,14 +45,39 @@ sub get_conf (@) {
   print("\nOnly on Raspberry Device can be executed this program!\n\n");
   exit(1);
  }
- # Start for RPI p4
- $is_rpi_4=1 if($device_model =~/Raspberry Pi 4|Raspberry Pi Compute Module 4/);
- open(CMD_TVSERVICE,"$tvservice -s 2>/dev/stdout|");
- $is_kms=1 if((<CMD_TVSERVICE>) =~/when using the vc4-kms-v3d driver/);
- close(CMD_TVSERVICE);
- $tvservice_is_working=1 if($? == 0);
- $device_model.=" (KMS)" if($is_rpi_4 && $is_kms);
- # End for RPI p4
+ # Start for Raspberry Pi KMS platforms
+ $is_rpi_kms_model=1 if($device_model =~/Raspberry Pi 4|Raspberry Pi Compute Module 4|Raspberry Pi 5|Raspberry Pi Compute Module 5|BCM2712/);
+ $is_rpi_4=1 if($is_rpi_kms_model);
+ if(-x $tvservice) {
+  open(CMD_TVSERVICE,"$tvservice -s 2>/dev/stdout|");
+  $is_kms=1 if((<CMD_TVSERVICE>) =~/when using the vc4-kms-v3d driver/);
+  close(CMD_TVSERVICE);
+  $tvservice_is_working=1 if($? == 0);
+ }
+ if(!$is_kms && (-e "/dev/dri/card0" || -e "/dev/dri/card1")) {
+  open(CMD_MODETEST,"timeout 3 $modetest -c 2>/dev/null|");
+  while(<CMD_MODETEST>) {
+   if(/\s+connected\s+HDMI/) {
+    $is_kms=1;
+    last;
+   }
+  }
+  close(CMD_MODETEST);
+ }
+ if(!$is_kms && -d "/sys/class/drm" && opendir(DRM_DIR,"/sys/class/drm")) {
+  while(my $entry=readdir(DRM_DIR)) {
+   next if($entry !~/^card\d+-HDMI/);
+   my $status="/sys/class/drm/$entry/status";
+   next if(!-f $status);
+   my $drm_status=&read_from_file($status);
+   $drm_status=~s/\r|\n|\0//g;
+   $is_kms=1 if($drm_status eq "connected");
+   last if($is_kms);
+  }
+  closedir(DRM_DIR);
+ }
+ $device_model.=" (KMS)" if($is_rpi_kms_model && $is_kms);
+ # End for Raspberry Pi KMS platforms
  &get_pgenerator_conf();
  &sync_pattern_bits_default();
 }

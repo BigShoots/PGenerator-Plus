@@ -66,27 +66,41 @@ sub pg_is_pi4_family(@) {
  return (&pg_device_model() =~/Raspberry Pi 4|Raspberry Pi 400|Raspberry Pi Compute Module 4/) ? 1 : 0;
 }
 
+# Dolby Vision transports:
+#  standard - sink-led DV: metadata embedded in an RGB 8-bit tunnel; the
+#             display parses the tunnel itself. Requires full sink-led DV
+#             support in the TV.
+#  lldv     - low-latency (source-led) DV: PQ-encoded YCbCr 4:2:2 12-bit
+#             with the LL bit set in the Dolby VSIF. Some displays only
+#             decode this form (and may not even advertise a VSVDB).
 sub pg_dv_transport_mode(@) {
+ foreach my $candidate (@_) {
+  next if(!defined $candidate || $candidate eq "");
+  return "lldv" if(lc($candidate) eq "lldv");
+  return "standard" if(lc($candidate) eq "standard");
+ }
+ return "lldv" if(lc($pgenerator_conf{"dv_transport"} || "") eq "lldv");
  return "standard";
 }
 
 sub pg_dv_transport_ll_flag(@) {
- return "0";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "1" : "0";
 }
 
 sub pg_dv_transport_std_flag(@) {
- return "1";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "0" : "1";
 }
 
 sub pg_dv_transport_interface(@) {
- return "0";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "1" : "0";
 }
 
 sub pg_dv_transport_color_format(@) {
- return "0";
+ return (&pg_dv_transport_mode(@_) eq "lldv") ? "2" : "0";
 }
 
 sub pg_dv_transport_max_bpc(@) {
+ return "12" if(&pg_dv_transport_mode(@_) eq "lldv");
  foreach my $candidate (@_) {
   next if(!defined $candidate || $candidate !~ /^\d+$/);
   return "10" if(int($candidate) == 10);
@@ -133,11 +147,13 @@ $bluetoothctl=&pg_find_executable("/usr/bin/bluetoothctl","/usr/sbin/bluetoothct
 $hciconfig=&pg_find_executable("/usr/bin/hciconfig","/usr/sbin/hciconfig");
 $hcitool=&pg_find_executable("/usr/bin/hcitool","/usr/sbin/hcitool");
 $vcgencmd="/opt/vc/bin/vcgencmd";
+$vcgencmd="/usr/bin/vcgencmd" if(-x "/usr/bin/vcgencmd");
 $tar="/bin/tar";
 $file_command="/usr/bin/file";
 $setsid="/usr/bin/setsid";
 $unzip="/usr/bin/unzip";
 $tvservice="/opt/vc/bin/tvservice";
+$tvservice="/usr/bin/tvservice" if(-x "/usr/bin/tvservice");
 $modetest="/usr/bin/modetest -M vc4";
 $edidparser="/usr/bin/edid-decode";
 $init_hdmi_command="$tvservice -e";
@@ -145,7 +161,8 @@ $df="/bin/df";
 $convert="/usr/bin/convert";
 $sync="/bin/sync";
 $reboot="/sbin/reboot";
-$halt="/sbin/halt";
+$halt="/sbin/poweroff";
+$halt="/sbin/halt" if(!-x $halt);
 $timeout="/bin/timeout";
 $iptables="/sbin/iptables";
 $pkg="/usr/bin/pkg";
@@ -157,6 +174,7 @@ $identify="identify -ping -format '%w %h'";
 $boot_loader_bin="/usr/bin/bootloader";
 $bootloader_config_file="config.txt";
 $bootloader_file="/boot/loader/boot_dir/$bootloader_config_file";
+$bootloader_file="/boot/firmware/$bootloader_config_file" if(!-f $bootloader_file && -f "/boot/firmware/$bootloader_config_file");
 
 $pg_cmd_env="PG_CMD";
 
@@ -199,6 +217,11 @@ $hdmi_1="HDMI-A-1";
 $hdmi_2="HDMI-A-2";
 $edid_prefix="/sys/devices/platform/gpu/drm";
 # END PI4 VARIABLES
+
+$is_rpi_4=0;
+$is_rpi_kms_model=0;
+$is_kms=0;
+$tvservice_is_working=0;
 
 $var_dir="/var/lib/PGenerator/";
 $pattern_templates="$var_dir/tmp";
@@ -287,6 +310,7 @@ $calman_apl_enabled=0;
 $calman_bg="0,0,0";
 $calman_settings_dirty=0;
 $calman_win_size=10;
+$calman_explicit_max_bpc=0;
 $calman_last_pattern_kind="";
 $calman_last_pattern_type="";
 $calman_last_pattern_cmd="";
@@ -357,6 +381,7 @@ share($calman_apl);
 share($calman_apl_enabled);
 share($calman_settings_dirty);
 share($calman_win_size);
+share($calman_explicit_max_bpc);
 share($calman_last_pattern_kind);
 share($calman_last_pattern_type);
 share($calman_last_pattern_cmd);

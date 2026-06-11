@@ -147,15 +147,48 @@ sub normalize_dv_transport_conf(@) {
 sub kms_connector_has_property(@) {
  my $prop_name=shift;
  return 0 if(!$is_kms || $prop_name eq "");
- open(MT_PROP,"timeout 3 $modetest -c 2>/dev/null|");
- while(<MT_PROP>) {
-  if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
-   close(MT_PROP);
-   return 1;
+ # Properties created with DRM_MODE_PROP_ATOMIC (e.g. the Pi5 kernel's
+ # "output format") are hidden from legacy clients, so list with the
+ # atomic cap first and fall back to the legacy listing for older
+ # modetest builds (Pi4 BiasiLinux).
+ for my $mt_flags ("-a","") {
+  open(MT_PROP,"timeout 3 $modetest $mt_flags -c 2>/dev/null|");
+  my $seen_any=0;
+  while(<MT_PROP>) {
+   $seen_any=1;
+   if(/^[ \t]*[0-9]+[ \t]+\Q$prop_name\E:/) {
+    close(MT_PROP);
+    return 1;
+   }
   }
+  close(MT_PROP);
+  last if($seen_any);
  }
- close(MT_PROP);
  return 0;
+}
+
+my $modetest_atomic_writes;
+sub modetest_connector_write(@) {
+ my ($connector_id,$prop_name,$value)=@_;
+ return 0 if(!$is_kms || $connector_id eq "" || $prop_name eq "");
+ # Platform-keyed write mode, decided once per process:
+ # - Bookworm vc4 (Colorspace property, no Colorimetry - Pi5) needs the
+ #   atomic API for connector property writes (DRM_MODE_PROP_ATOMIC
+ #   properties are invisible/unwritable via the legacy API).
+ # - The legacy Pi4 kernel (Colorimetry property) must use legacy
+ #   writes: an atomic commit from modetest holds DRM master longer and
+ #   can trigger a modeset, which kills a renderer that is starting up
+ #   (observed: SDR applies began failing on the Pi4 when these writes
+ #   were atomic-first).
+ if(!defined $modetest_atomic_writes) {
+  $modetest_atomic_writes=(&kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry")) ? 1 : 0;
+ }
+ my $primary=$modetest_atomic_writes ? "-a" : "";
+ my $fallback=$modetest_atomic_writes ? "" : "-a";
+ system("timeout 3 $modetest $primary -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ return 1 if($? == 0);
+ system("timeout 3 $modetest $fallback -w '$connector_id:$prop_name:$value' 2>/dev/null");
+ return ($? == 0) ? 1 : 0;
 }
 
 sub map_kms_colorspace(@) {
@@ -394,7 +427,7 @@ sub apply_drm_properties (@) {
  # Set max bpc — the binary fails to apply this property
  my $max_bpc=$pgenerator_conf{"max_bpc"};
  if($max_bpc ne "" && $max_bpc > 0) {
-  system("timeout 3 $modetest -w '$connector_id:max bpc:$max_bpc' 2>/dev/null");
+  &modetest_connector_write($connector_id,"max bpc",$max_bpc);
   &log("DRM: Set max bpc=$max_bpc on connector $connector_id");
  }
  # Reset output format — kernel retains previous value across binary
@@ -402,15 +435,15 @@ sub apply_drm_properties (@) {
  # fallback that sticks even after switching back to 8bpc RGB.
  my $color_fmt=$pgenerator_conf{"color_format"};
  $color_fmt=0 if($color_fmt eq "");
- system("timeout 3 $modetest -w '$connector_id:output format:$color_fmt' 2>/dev/null");
+ &modetest_connector_write($connector_id,"output format",$color_fmt);
  &log("DRM: Set output format=$color_fmt on connector $connector_id");
  # Set quantization range (enums: Default=0 Limited=1 Full=2)
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
  $quant_range=2 if($is_dv);
  if($quant_range ne "") {
-  system("timeout 3 $modetest -w '$connector_id:rgb quant range:$quant_range' 2>/dev/null");
+  &modetest_connector_write($connector_id,"rgb quant range",$quant_range);
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
-  system("timeout 3 $modetest -w '$connector_id:Broadcast RGB:$broadcast_rgb' 2>/dev/null");
+  &modetest_connector_write($connector_id,"Broadcast RGB",$broadcast_rgb);
   &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
  }
  # Set colorimetry / colorspace.
@@ -421,8 +454,8 @@ sub apply_drm_properties (@) {
   my $colorspace=&map_kms_colorspace($colorimetry,$color_fmt);
   # The legacy Pi4 Colorimetry property uses the same signal-format specific
   # enums as the newer Colorspace property.
-  system("timeout 3 $modetest -w '$connector_id:Colorimetry:$colorspace' 2>/dev/null");
-  system("timeout 3 $modetest -w '$connector_id:Colorspace:$colorspace' 2>/dev/null");
+  &modetest_connector_write($connector_id,"Colorimetry",$colorspace);
+  &modetest_connector_write($connector_id,"Colorspace",$colorspace);
   &log("DRM: Set Colorimetry=$colorspace / Colorspace=$colorspace on connector $connector_id");
  }
 }
@@ -432,6 +465,19 @@ sub apply_hdr_metadata_helper (@) {
  return if(!$is_kms || !-x $helper);
  if(int($pgenerator_conf{"dv_status"} || 0) == 1 || int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 || int($pgenerator_conf{"is_std_dovi"} || 0) == 1) {
   &log("DRM: skipping HDR metadata helper while Dolby Vision metadata is active");
+  return;
+ }
+ # pgsethdr is a pre-set safety net for when NO renderer is alive (boot,
+ # idle). Since commit 84ed1cc7 the renderer reads the HDR conf on every
+ # updateHDR_Infoframe() call and owns the wire blob, so running pgsethdr
+ # alongside a renderer is pointless - and running it while a renderer is
+ # INITIALIZING steals DRM master at the exact moment the renderer calls
+ # drmSetMaster, killing it. This was the root cause of "Pattern renderer
+ # failed to start" on every WebUI HDR apply (SDR applies never call this
+ # helper, which is why they always survived). A/B-proven on the Pi4:
+ # with pgsethdr disabled the HDR apply succeeds on the first attempt.
+ if(&pattern_generator_is_running()) {
+  &log("DRM: skipping pgsethdr while the renderer is running (renderer owns the HDR blob)");
   return;
  }
  my $output=`timeout 5 $helper 2>&1`;
@@ -490,16 +536,29 @@ sub pattern_generator_start(@) {
  # MALLOC_CHECK_=0 suppresses a benign glibc double-free abort that fires
  # right after GBM init in the SOURCE_RANGE-aware renderer; without it the
  # renderer dies before any IMAGE pattern can be drawn (diagnostics break).
+ # Keep the renderer's own output: when a start fails, the renderer's
+ # last words (e.g. "failed to set drm master: Device or resource busy")
+ # are the only direct evidence of the cause. Truncated on every spawn
+ # so the file stays small and always shows the most recent attempt.
  if($use_drm_override) {
-  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/tmp/renderer-spawn.log 2>&1 &");
  } else {
-  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s &>/dev/null &");
+  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/tmp/renderer-spawn.log 2>&1 &");
  }
  usleep(250000);
    # Some displays miss the first pre-launch RGB/colorspace programming and stay
    # on the splash screen until a later format toggle forces HDMI state back in.
    # Reapply connector properties once the renderer is alive so the first pattern
    # push lands on the intended format without requiring a manual YCbCr detour.
+   # Wait for the renderer process first: the modetest writes below take DRM
+   # master briefly, and doing that while the renderer is still initializing
+   # (before its own drmSetMaster) used to kill it ("failed to set drm
+   # master"). The renderer also retries drmSetMaster now, but waiting here
+   # keeps the reapply out of the critical window entirely.
+   for(my $i=0;$i<20 && !&pattern_generator_is_running();$i++) {
+    usleep(250000);
+   }
+   usleep(500000) if(&pattern_generator_is_running());
    &apply_drm_properties();
  my $startup_color_fmt=$pgenerator_conf{"color_format"};
  $startup_color_fmt=0 if($startup_color_fmt eq "");
