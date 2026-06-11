@@ -588,7 +588,7 @@ index 206ecf4..0088fde 100644
  	u32 reg;
  	int idx;
  
-@@ -1388,22 +1809,41 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
+@@ -1388,22 +1809,34 @@ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
  	switch (state->hdmi.output_bpc) {
  	case 12:
  		gcp = 6;
@@ -606,30 +606,20 @@ index 206ecf4..0088fde 100644
  	}
  
  	/*
--	 * YCC422 is always 36-bit and not considered deep colour so
--	 * doesn't signal in GCP.
-+	 * PGenerator needs the sink to see the requested 10/12-bit link depth
-+	 * for YCC422. Upstream treats 4:2:2 as fixed 36-bit transport and
-+	 * suppresses GCP deep-colour signalling, which leaves some displays
-+	 * reporting the mode as 8-bit despite output_bpc being 10 or 12.
+ 	 * YCC422 is always 36-bit and not considered deep colour so
+ 	 * doesn't signal in GCP.
++	 *
++	 * PGenerator note: an earlier patch revision signalled GCP deep
++	 * colour for YCC422 so displays would report the 10/12-bit link
++	 * depth. That violates the HDMI spec (4:2:2 is a fixed 36-bit
++	 * container at 1x pixel clock) and spec-following sinks derive a
++	 * bogus pixel clock from the CD field (4K60 read as 40Hz at CD=12,
++	 * 48Hz at CD=10), breaking their HDR/DV decode. Keep upstream
++	 * behaviour: never signal GCP deep colour for 4:2:2.
  	 */
  	if (state->hdmi.output_format == HDMI_COLORSPACE_YUV422) {
--		gcp = 0;
-+		switch (state->max_requested_bpc) {
-+		case 12:
-+			gcp = 6;
-+			gcp_en = true;
-+			break;
-+		case 10:
-+			gcp = 5;
-+			gcp_en = true;
-+			break;
-+		case 8:
-+		default:
-+			gcp = 0;
-+			gcp_en = false;
-+			break;
-+		}
+ 		gcp = 0;
++		gcp_en = false;
  	}
  
  	reg = HDMI_READ(HDMI_DEEP_COLOR_CONFIG_1);
