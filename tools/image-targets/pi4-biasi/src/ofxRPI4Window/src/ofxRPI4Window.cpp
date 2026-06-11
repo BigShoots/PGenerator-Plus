@@ -1379,15 +1379,51 @@ int foundHDR=0;
      * (apply_drm_properties modetest writes, pgsethdr) around renderer
      * startup; each takes DRM master briefly. HDR-mode init is slow
      * enough (10-bit EGL setup) that the first drmSetMaster regularly
-     * lands inside one of those windows and fails with EBUSY - and the
-     * authorize fallback cannot succeed without a master to grant it,
-     * so the renderer exited ("Pattern renderer failed to start").
-     * Retry with backoff before falling back. */
+     * lands inside one of those windows and fails with EACCES - and
+     * the authorize fallback cannot succeed without a master to grant
+     * it, so the renderer exited ("Pattern renderer failed to start").
+     *
+     * On this kernel, an unprivileged process only gets DRM master by
+     * AUTO-GRANT at open() when no other master exists. If a root
+     * helper (modetest property write, pgsethdr) is mid-open at this
+     * renderer's open() instant, the renderer becomes a plain client
+     * and drmSetMaster is EACCES FOREVER for that fd - retrying the
+     * ioctl is futile. Close the fd, reopen the device (so the
+     * kernel re-evaluates the auto-grant against the now-idle master
+     * state), then retry. Bounded: 20 tries x 250ms = ~5s of reopen
+     * attempts after the initial 5s of plain retries. */
     ret = drmSetMaster(device);
     for (int pg_try = 0; ret < 0 && pg_try < 50; pg_try++)
     {
         usleep(100000); /* 100ms, up to ~5s total */
         ret = drmSetMaster(device);
+    }
+    if (ret < 0 && (errno == EACCES || errno == EPERM))
+    {
+        ofLogWarning() << "DRM: drmSetMaster EACCES/EPERM on fd " << device
+                       << " (auto-grant race); reopening device and retrying";
+        for (int pg_reopen = 0; pg_reopen < 20; pg_reopen++)
+        {
+            char dev_name[256] = {0};
+            /* drmGetDeviceNameFromFd2 returns a pointer into internal
+             * storage - copy it before closing the fd. */
+            const char *p = drmGetDeviceNameFromFd2(device);
+            if (p) { strncpy(dev_name, p, sizeof(dev_name)-1); dev_name[sizeof(dev_name)-1]=0; }
+            ::close(device);
+            usleep(250000);
+            int new_fd = (dev_name[0] != '\0')
+                ? open(dev_name, O_RDWR | O_CLOEXEC)
+                : -1;
+            if (new_fd < 0) continue;
+            /* re-bind everything that was bound to the old fd.
+             * The renderer's later code uses `device` for drmMode* and
+             * EGL/GBM calls, so we MUST keep the variable name. */
+            device = new_fd;
+            ofLog() << "DRM: reopened device fd=" << device << " (reopen attempt "
+                     << (pg_reopen+1) << "/20)";
+            ret = drmSetMaster(device);
+            if (ret == 0) break;
+        }
     }
     if (ret < 0)
     {
