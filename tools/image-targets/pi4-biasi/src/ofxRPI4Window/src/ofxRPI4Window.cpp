@@ -3738,8 +3738,24 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 		if (blob_id)
 			drmModeDestroyPropertyBlob(device, blob_id);
 		blob_id = 0;
-	
-		struct drm_hdr_output_metadata meta;
+
+		/* Zero-init the whole struct. drm_hdr_output_metadata is
+		 * 32 bytes on this platform: 4 bytes of the outer
+		 * metadata_type, 26 bytes of the inner hdr_metadata_infoframe
+		 * union, and 2 bytes of trailing alignment padding. The
+		 * renderer only writes the first 30 bytes (metadata_type +
+		 * the infoframe fields it cares about). Without `= {}` the
+		 * 2 padding bytes are uninitialised stack data and end up
+		 * in the kernel blob; modetest then shows the wire blob as
+		 * e.g. `00...21 02` even when the HDMI infoframe itself is
+		 * all zero. The TV parses the first 26 bytes of the blob per
+		 * CTA-861-G and ignores the padding, but a strict LLDV sink
+		 * could trip on the unexpected non-zero tail. pgsethdr.c
+		 * has had `memset(meta, 0, sizeof(*meta))` here since the
+		 * helper was written; the renderer was the odd one out.
+		 * Mirrors the same fix the Pi5 renderer source already
+		 * needs. */
+		struct drm_hdr_output_metadata meta = {};
 		if (static_cast<int>(eotf) <= 1) {
 			/* Explicit SDR / traditional-gamma DRM infoframe. Some
 			 * sinks latch their last HDR/Dolby Vision input mode when
