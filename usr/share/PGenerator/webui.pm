@@ -16319,14 +16319,14 @@ async function meterCheckStatus(){
    // not running, clear the local flag and hide the stop button. This
    // handles the case where the renderer was restarted and the in-flight
    // series was implicitly cancelled by the stop+start.
-   const serverRunning=(s.status==='running');
-   if(!serverRunning && (meterSeriesRunning || meterSeriesPolling)){
-    meterSeriesRunning=false;
-    meterSeriesPolling=false;
-    if(typeof meterApplyClearedState==='function'){
-     meterApplyClearedState(false);
+    const serverRunning=(s.status==='running' || s.status==='setup' || s.status==='started');
+    if(!serverRunning && (meterSeriesRunning || meterSeriesPolling)){
+     meterSeriesRunning=false;
+     meterSeriesPolling=false;
+     if(typeof meterApplyClearedState==='function'){
+      meterApplyClearedState(false);
+     }
     }
-   }
    if(s.status==='cleared'){
     if(meterSharedSeriesId || !meterActiveSeriesKey){
      meterSharedSeriesId=null;
@@ -16454,8 +16454,8 @@ function meterRecoverSeries(s){
  } else {
   drawAllChartsPreset(sortedSteps);
  }
- meterCacheSeriesState(s.status||'complete');
- if(s.status==='running'||s.status==='setup'){
+  meterCacheSeriesState(s.status||'complete');
+  if(s.status==='running'||s.status==='setup'||s.status==='started'){
   // Series is still running — start polling and show stop button
   meterSeriesRunning=true;
   meterSeriesAwaitingReady=!!s.awaiting_ready;
@@ -18121,7 +18121,7 @@ function meterAutoCalControlsAllowedForSignal(){
 }
 
 function meterAutoCalSeriesAvailable(){
- return !!(meterDetected&&meterGreyTvControlsActive());
+ return true;
 }
 
 function meterUpdateReadButtons(){
