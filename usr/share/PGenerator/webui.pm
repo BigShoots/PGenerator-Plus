@@ -5238,10 +5238,10 @@ sub webui_apply_config (@) {
  &webui_reload_pgenerator_conf();
  # Parse simple JSON: {"key":"val","key2":"val2"}
  my %changes;
- while($body=~/"(\w+)"\s*:\s*(?:"([^"]*)"|(-?\d+(?:\.\d+)?))/g) {
-  $changes{$1}=defined $2 ? $2 : $3;
- }
- my $requested_dv_transport=&pg_dv_transport_mode($changes{"dv_transport"} || $pgenerator_conf{"dv_transport"});
+  while($body=~/"(\w+)"\s*:\s*(?:"([^"]*)"|(-?\d+(?:\.\d+)?))/g) {
+   $changes{$1}=defined $2 ? $2 : $3;
+  }
+  my $requested_dv_transport=&pg_dv_transport_mode($changes{"dv_transport"} || $pgenerator_conf{"dv_transport"});
  if(defined $changes{"signal_mode"}) {
   my $signal_mode=lc($changes{"signal_mode"});
   if($signal_mode eq "sdr") {
@@ -5369,13 +5369,13 @@ sub webui_apply_config (@) {
   min_luma max_luma max_cll max_fall color_format max_bpc rgb_quant_range
     dv_status is_ll_dovi is_std_dovi dv_interface dv_profile dv_metadata dv_color_space dv_map_mode dv_transport);
 
- foreach my $k (sort keys %changes) {
-  next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
-  &sudo("SET_PGENERATOR_CONF",$k,$changes{$k});
-  $pgenerator_conf{$k}=$changes{$k};
-  $webui_rgb_quant_range_preferred=$changes{$k} if($k eq "rgb_quant_range");
-  $need_restart=1 if($restart_keys{$k});
- }
+  foreach my $k (sort keys %changes) {
+   next if($k eq "ip_pattern" || $k eq "port_pattern"); # read-only
+   &sudo("SET_PGENERATOR_CONF",$k,$changes{$k});
+   $pgenerator_conf{$k}=$changes{$k};
+   $webui_rgb_quant_range_preferred=$changes{$k} if($k eq "rgb_quant_range");
+   $need_restart=1 if($restart_keys{$k});
+  }
  &sync_pattern_bits_default() if(%changes);
  my $result='{"status":"ok","restart":'.($need_restart ? 'true' : 'false').'}';
  return wantarray ? ($result,$need_restart) : $result;

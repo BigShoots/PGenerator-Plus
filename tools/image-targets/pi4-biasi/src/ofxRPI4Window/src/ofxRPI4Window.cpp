@@ -1421,6 +1421,24 @@ int foundHDR=0;
             device = new_fd;
             ofLog() << "DRM: reopened device fd=" << device << " (reopen attempt "
                      << (pg_reopen+1) << "/20)";
+            /* The cap set on the old fd (UNIVERSAL_PLANES, ATOMIC,
+             * STEREO_3D=0, ASPECT_RATIO=0) was lost when we closed it.
+             * Re-apply on the new fd before the drmSetMaster so the
+             * renderer's later drmModeObjectGetProperties() on the plane
+             * IDs it cached during the original query see CRTC_ID/FB_ID
+             * and the rest of the connector properties - without the
+             * caps the kernel returns an empty property list for some
+             * objects, the renderer logs "Unable to find CRTC_ID" on
+             * every plane, and the first atomic commit fails. Symptom:
+             * a fresh DV renderer started by the init script dies in
+             * the first FlipPage while a renderer started manually
+             * (when the auto-grant race does not fire) survives. */
+            drmSetClientCap(device, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+            drmSetClientCap(device, DRM_CLIENT_CAP_ATOMIC, 1);
+            drmSetClientCap(device, DRM_CLIENT_CAP_STEREO_3D, 0);
+#if defined(DRM_CLIENT_CAP_ASPECT_RATIO)
+            drmSetClientCap(device, DRM_CLIENT_CAP_ASPECT_RATIO, 0);
+#endif
             ret = drmSetMaster(device);
             if (ret == 0) break;
         }
