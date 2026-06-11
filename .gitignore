@@ -28,3 +28,15 @@ usr/share/PGenerator/*.bak
 !/tmp/hybrid-topend/
 /tmp/hybrid-topend/*
 !/tmp/hybrid-topend/meter_lg_autocal.pl
+
+# Brainstorming visual companion (local only)
+.superpowers/
+
+# Local agent workspaces
+.qwen/
+
+# On-device / cross build outputs (renderer objects, linked binaries,
+# and the vc4 kernel-module build tree with its extracted kernel source)
+tools/image-targets/*/src/pattern_generator/bin/
+tools/image-targets/*/src/pattern_generator/obj/
+tools/image-targets/*/build/
