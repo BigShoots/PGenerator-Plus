@@ -15433,6 +15433,14 @@ sub read_initial_picture_settings {
  for(my $attempt=1;$attempt<=$attempts;$attempt++) {
   if(ref($state) eq "HASH") {
    $state->{"phase"}="preparing";
+   # Update current_name so the overlay stops displaying the worker-start
+   # "Preparing LG Auto Cal..." sentinel while this DDC read is in flight
+   # (and during its multi-attempt retry loop). Without this the WebUI
+   # reads "Preparing... 0/N step" for the entire 3 x helper_timeout
+   # window even when the worker is actively making progress.
+   $state->{"current_name"}=defined($picture_mode) && $picture_mode ne ""
+    ? "Reading $picture_mode picture settings"
+    : "Reading initial picture settings";
    $state->{"message"}="Reading LG picture settings ($attempt/$attempts)";
    write_state($state);
   }
@@ -15517,6 +15525,15 @@ sub reset_ddc_baseline_for_autocal {
  my ($config,$state)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"reset_ddc_baseline"});
  return undef if(autocal_config_is_touchup($config));
+ # For HDR10 series the JS preflight already resets the 1D DPG identity
+ # via /api/lg/hdr-calman-reset -> lg_hdr_calman_reset_workflow (which
+ # sends 1D_DPG_DATA inside the same CAL_START/END session as the 3D LUT
+ # and 3x3 matrix reset). Running this DDC reset again on hdr10 would
+ # issue a duplicate CAL_START/1D_DPG_DATA upload/CAL_END cycle and race
+ # the first 0% meter read. The JS preflight already gates this, but
+ # guard the worker path too in case a hand-edited config ever passes
+ # reset_ddc_baseline=true for hdr10.
+ return undef if(lc(($config->{"signal_mode"}||"")) eq "hdr10");
 	 my @zero=map { 0 } (1..ddc_slot_count());
  my $picture_mode=$config->{"picture_mode"}||"";
  my $last_message="Unable to reset LG DDC baseline";
