@@ -2011,16 +2011,22 @@ sub lg_ddc_token (@) {
  return $value;
 }
 
+sub lg_ddc_mode_slug (@) {
+ my $picture_mode=shift;
+ my $canonical=&lg_picture_mode_for_calibration($picture_mode);
+ return ($canonical ne "") ? $canonical : ($picture_mode||"");
+}
+
 sub lg_ddc_state_path (@) {
  my ($ip,$picture_mode,$layout)=@_;
  my $suffix=($layout||"") ne "" ? "-".&lg_ddc_token($layout) : "";
- return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).$suffix.".json";
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token(&lg_ddc_mode_slug($picture_mode)).$suffix.".json";
 }
 
 sub lg_ddc_baseline_path (@) {
  my ($ip,$picture_mode,$layout)=@_;
  my $suffix=($layout||"") ne "" ? "-".&lg_ddc_token($layout) : "";
- return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token($picture_mode).$suffix.".baseline.1dlut";
+ return $LG_DDC_DIR."/".&lg_ddc_token($ip)."-".&lg_ddc_token(&lg_ddc_mode_slug($picture_mode)).$suffix.".baseline.1dlut";
 }
 
 sub lg_picture_mode_for_calibration (@) {
