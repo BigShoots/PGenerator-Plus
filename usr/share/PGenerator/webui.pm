@@ -18117,8 +18117,7 @@ function meterHideSeriesControlsForAutoCal(){
 }
 
 function meterAutoCalControlsAllowedForSignal(){
- const mode=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():((document.getElementById('signal_mode')||{}).value||'sdr'))||'sdr').toLowerCase();
- return mode==='sdr';
+ return true;
 }
 
 function meterAutoCalSeriesAvailable(){
