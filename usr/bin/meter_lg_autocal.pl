@@ -3297,13 +3297,52 @@ sub remember_lg_autocal_26_response_model {
 	 return %updates ? \%updates : undef;
 	}
 
+sub lg_autocal_26_neighbor_response_model_for_step {
+ my ($state,$step)= @_;
+ return undef if(ref($state) ne "HASH" || ref($state->{"lg_autocal_26_response_model"}) ne "HASH");
+ return undef if(ref($LG_AUTOCAL_CONFIG) ne "HASH" || !lg_autocal_26_hdr20_seed_enabled($LG_AUTOCAL_CONFIG));
+ return undef if(!autocal_step_is_low_shadow($step));
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : undef;
+ return undef if(!defined($ire) || $ire <= 0);
+ my ($best_key,$best_gap);
+ foreach my $key (keys %{$state->{"lg_autocal_26_response_model"}}) {
+  my $source_ire=$key+0;
+  next if($source_ire <= 0 || abs($source_ire-$ire) < 0.001);
+  next if($source_ire > 15.0001);
+  my $ratio=($source_ire > $ire) ? ($source_ire/$ire) : ($ire/$source_ire);
+  next if($ratio > 3.0001);
+  my $gap=abs($source_ire-$ire);
+  next if(defined($best_gap) && $gap >= $best_gap);
+  my $entry=$state->{"lg_autocal_26_response_model"}{$key};
+  next if(ref($entry) ne "HASH" || !%{$entry});
+  ($best_key,$best_gap)=($key,$gap);
+ }
+ return undef if(!defined($best_key));
+ my $source=$state->{"lg_autocal_26_response_model"}{$best_key};
+ my %inherited;
+ foreach my $group (keys %{$source}) {
+  next if(ref($source->{$group}) ne "HASH");
+  foreach my $axis (keys %{$source->{$group}}) {
+   my $axis_entry=$source->{$group}{$axis};
+   next if(ref($axis_entry) ne "HASH" || !defined($axis_entry->{"slope"}));
+   my %copy=%{$axis_entry};
+   $copy{"samples"}=2;
+   $copy{"source"}="neighbor_inherit";
+   $copy{"inherited_from_ire"}=$best_key+0;
+   $inherited{$group}{$axis}=\%copy;
+  }
+ }
+ return %inherited ? \%inherited : undef;
+}
+
 sub lg_autocal_26_response_model_for_step {
 		 my ($state,$step)=@_;
 		 return undef if(ref($state) ne "HASH" || ref($state->{"lg_autocal_26_response_model"}) ne "HASH");
 		 my $key=lg_autocal_26_best_known_key($step);
 		 return undef if(!defined($key));
 	 my $entry=$state->{"lg_autocal_26_response_model"}{$key};
-		 return (ref($entry) eq "HASH") ? $entry : undef;
+		 return $entry if(ref($entry) eq "HASH");
+		 return lg_autocal_26_neighbor_response_model_for_step($state,$step);
 		}
 
 sub lg_autocal_26_learned_luma_safe_cap {
