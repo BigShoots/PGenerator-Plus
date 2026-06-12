@@ -1712,8 +1712,35 @@ sub lg_picture_reset_workflow (@) {
   }
  }
  &websocket_close($session);
+	 my $white_balance_reset_warning="";
+	 my $white_balance_reset_satisfied_by_ddc=&lg_picture_reset_ddc_baseline_ok($ddc_attempted,$ddc_result);
+	 my $hdr_calman_reset_attempted=0;
+	 my $hdr_calman_reset_ok=0;
+	 my $hdr_calman_reset_result={};
+	 my $hdr_picture_mode=($active_picture_mode ne "" && $active_picture_mode =~ /^hdr(cinema|filmmaker|game|technicolorexpert|standard|vivid|isfexpert|isfbright|isfdark|cinemabright|filmmakermode)\b/i) ? 1 : 0;
+	 # On HDR picture modes some webOS firmwares reject resetSystemSettings
+	 # outright ("Not allowed to call method"), so even the basic picture
+	 # reset fails and we must not bail before trying the externalpq
+	 # calibration reset -- it is the only reset path webOS allows there.
+	 if($hdr_picture_mode && (!$basic_picture_reset_ok || ($require_white_balance_reset && (!$white_balance_reset_ok || !@white_balance_reset_keys_succeeded) && !$white_balance_reset_satisfied_by_ddc))) {
+	  $hdr_calman_reset_attempted=1;
+	  $hdr_calman_reset_result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$active_picture_mode,$tv_input);
+	  if(ref($hdr_calman_reset_result) eq "HASH" && ($hdr_calman_reset_result->{"status"}||"") eq "ok" && $hdr_calman_reset_result->{"hdr_calman_reset"}) {
+	   $hdr_calman_reset_ok=1;
+	   $white_balance_reset_ok=1;
+	   @white_balance_reset_keys_succeeded=@{$white_balance_reset_keys};
+	   %white_balance_reset_key_succeeded=map { $_=>1 } @{$white_balance_reset_keys};
+	   %white_balance_reset_keys_failed=();
+	   $basic_picture_reset_ok=1;
+	   $ok=1 if(!$ok);
+	   $factory_key_applied{$_}=1 for(@{$white_balance_reset_keys});
+	  }
+	 }
  &diag_log_append("picture_reset",{
   ip => $ip,
+	  hdr_calman_reset_attempted => &json_bool($hdr_calman_reset_attempted),
+	  hdr_calman_reset_ok => &json_bool($hdr_calman_reset_ok),
+	  hdr_calman_reset_message => (ref($hdr_calman_reset_result) eq "HASH" ? ($hdr_calman_reset_result->{"message"}||"") : ""),
 	  picture_mode => $active_picture_mode,
 	  tv_input => $tv_input,
 	  signal_mode => $signal_mode,
@@ -1750,6 +1777,9 @@ sub lg_picture_reset_workflow (@) {
 	  return &json_error($last_message||"LG TV rejected the brightness/contrast reset keys for this picture mode.",{
 	   ip => $ip,
 	   active_picture_mode => $active_picture_mode,
+	   hdr_calman_reset_attempted => &json_bool($hdr_calman_reset_attempted),
+	   hdr_calman_reset_ok => &json_bool($hdr_calman_reset_ok),
+	   hdr_calman_reset_response => $hdr_calman_reset_result,
 	   reset_attempts => \@reset_attempts,
 	   reset_keys_requested => $keys,
 	   reset_keys_succeeded => \@reset_keys_succeeded,
@@ -1778,26 +1808,6 @@ sub lg_picture_reset_workflow (@) {
 	   ddc_response => $ddc_result,
 	   lg_generation => $generation,
 	  });
-	 }
-	 my $white_balance_reset_warning="";
-	 my $white_balance_reset_satisfied_by_ddc=&lg_picture_reset_ddc_baseline_ok($ddc_attempted,$ddc_result);
-	 my $hdr_calman_reset_attempted=0;
-	 my $hdr_calman_reset_ok=0;
-	 my $hdr_calman_reset_result={};
-	 my $hdr_picture_mode=($active_picture_mode ne "" && $active_picture_mode =~ /^hdr(cinema|filmmaker|game|technicolorexpert|standard|vivid|isfexpert|isfbright|isfdark|cinemabright|filmmakermode)\b/i) ? 1 : 0;
-	 if($hdr_picture_mode && $require_white_balance_reset && (!$white_balance_reset_ok || !@white_balance_reset_keys_succeeded) && !$white_balance_reset_satisfied_by_ddc) {
-	  $hdr_calman_reset_attempted=1;
-	  $hdr_calman_reset_result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$active_picture_mode,$tv_input);
-	  if(ref($hdr_calman_reset_result) eq "HASH" && ($hdr_calman_reset_result->{"status"}||"") eq "ok" && $hdr_calman_reset_result->{"hdr_calman_reset"}) {
-	   $hdr_calman_reset_ok=1;
-	   $white_balance_reset_ok=1;
-	   @white_balance_reset_keys_succeeded=@{$white_balance_reset_keys};
-	   %white_balance_reset_key_succeeded=map { $_=>1 } @{$white_balance_reset_keys};
-	   %white_balance_reset_keys_failed=();
-	   $basic_picture_reset_ok=1;
-	   $ok=1 if(!$ok);
-	   $factory_key_applied{$_}=1 for(@{$white_balance_reset_keys});
-	  }
 	 }
 	 if($require_white_balance_reset && (!$white_balance_reset_ok || !@white_balance_reset_keys_succeeded)) {
 	  if(!$generation->{"ddc_only_white_balance"} && !$white_balance_reset_satisfied_by_ddc && !$hdr_calman_reset_ok) {
