@@ -21155,6 +21155,16 @@ async function meterAutoCalResetDdc(){
  meterAutoCalResetNotice='';
  let pictureModeReset=null;
  let pictureResetMessage='Unable to reset LG picture mode.';
+ // For HDR picture modes the basic /api/lg/picture-settings/reset path
+ // runs SDR-style resetSystemSettings commands (brightness, contrast,
+ // whiteBalance, ...) that webOS rejects outright on HDR picture modes
+ // (per the helper's own hdr_picture_mode detection in pgenerator-lg,
+ // see lg_picture_reset_workflow) and then falls through to the HDR
+ // Calman reset. That wastes 1-3s of helper round-trips per attempt
+ // and races the first 0% meter read. The HDR Calman reset alone
+ // covers everything needed for HDR -- if the series is hdr10 we
+ // do not bother with the SDR-style reset at all.
+ if(!hdrWorkflow){
  for(let attempt=1;attempt<=3;attempt++){
   meterAutoCalSetOverlay(true,{current_name:'Performing LG picture mode reset...',message:'Resetting the active picture mode before Auto Cal'+(attempt>1?' (retry '+attempt+'/3)':'')});
   try{
@@ -21163,7 +21173,7 @@ async function meterAutoCalResetDdc(){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
      picture_mode:pictureMode,
-     signal_mode:hdrWorkflow?'hdr10':'sdr',
+     signal_mode:'sdr',
      require_white_balance_reset:true,
      helper_timeout:170
     }),
@@ -21181,12 +21191,29 @@ async function meterAutoCalResetDdc(){
  if(!pictureModeReset||pictureModeReset.status!=='ok'){
   throw new Error(pictureResetMessage||'Unable to reset LG picture mode.');
  }
+ }
  let hdrCalmanReset=null;
  if(hdrWorkflow){
   hdrCalmanReset=await meterAutoCalHdrCalmanReset(pictureMode);
  }
  let response=null;
  let lastMessage='Unable to clear LG picture mode calibration state.';
+ // For HDR the /api/lg/picture-settings/set 1D DPG reset is a duplicate
+ // of what the HDR Calman reset above already did (lg_hdr_calman_reset_
+ // workflow sends 1D_DPG_DATA inside the same CAL_START/END session as
+ // the 3D LUT and 3x3 matrix reset). Re-running it on HDR would issue
+ // a duplicate CAL_START/1D_DPG_DATA upload/CAL_END cycle and race the
+ // first 0% meter read. Build the response synthetically from the
+ // HDR Calman reset's confirmation flags instead.
+ if(hdrWorkflow){
+  response={
+   status:'ok',
+   picture_settings:(hdrCalmanReset&&hdrCalmanReset.picture_settings)||{},
+   ddc_baseline_reset:true,
+   ddc_1d_lut:true,
+   ddc_reset_verified:true
+  };
+ } else {
  for(let attempt=1;attempt<=3;attempt++){
   meterAutoCalSetOverlay(true,{current_name:'Performing LG picture mode reset...',message:'Clearing DDC calibration data before Auto Cal'+(attempt>1?' (retry '+attempt+'/3)':'')});
   try{
@@ -21196,8 +21223,8 @@ async function meterAutoCalResetDdc(){
     body:JSON.stringify({
 	     settings:{
 	      whiteBalanceMethod:'22',
-	      whiteBalanceIre:hdrWorkflow?'100':'109',
-	      ddc_layout:hdrWorkflow?'hdr20':'sdr26',
+	      whiteBalanceIre:'109',
+	      ddc_layout:'sdr26',
 	      whiteBalanceRed:zero,
 	      whiteBalanceGreen:zero,
 	      whiteBalanceBlue:zero,
@@ -21228,6 +21255,7 @@ async function meterAutoCalResetDdc(){
  }
  if(response.ddc_reset_verified!==true){
   throw new Error('LG picture mode reset did not verify against the TV 1D LUT readback.');
+ }
  }
  response.picture_mode_reset=pictureModeReset;
  if(hdrCalmanReset) response.hdr_calman_reset=hdrCalmanReset;
