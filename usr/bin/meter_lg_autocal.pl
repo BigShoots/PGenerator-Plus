@@ -4243,6 +4243,7 @@ sub read_timeout_for_step {
 sub low_shadow_sample_count_for_step {
 	 my ($config,$step)=@_;
 		 return 1 if(ref($config) eq "HASH" && $config->{"disable_low_shadow_median"});
+		 return 1 if(ref($step) eq "HASH" && $step->{"autocal_quick_read"});
 		 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
 		 if(autocal_config_is_touchup($config)) {
 		  return 1 if($ire <= 5.1001);
@@ -10011,6 +10012,8 @@ sub probe_responsive_stimulus {
 	 foreach my $probe_step (@probe_steps) {
 	  last if(cancelled());
 	  mark_stimulus_probe_tried($probe_tried,$probe_step);
+	  my $probe_read_step=clone_picture($probe_step);
+	  $probe_read_step->{"autocal_quick_read"}=1;
 	  my $stimulus=format_percent($probe_step->{"stimulus"});
 	  $state->{"phase"}="probing";
 	  $state->{"message"}="Scanning ".$target->{"label"}." response at ".$stimulus."% patch stimulus";
@@ -10021,7 +10024,7 @@ sub probe_responsive_stimulus {
 	  ($picture,$write_error)=set_picture_values($base_picture,$base_write_arrays,$target,$picture_mode,$calibration_mode_active,$state);
 	  return (undef,$reading,$arrays,$picture,$write_error) if($write_error);
 	  sync_state_picture($state,$picture,$picture_mode);
-	  my ($before,$read_error)=read_step($config,$probe_step,$state);
+	  my ($before,$read_error)=read_step($config,$probe_read_step,$state);
 	  return (undef,$reading,$arrays,$picture,$read_error) if($read_error && $read_error ne "cancelled");
 	  last if($read_error && $read_error eq "cancelled");
 		  next if(ref($before) ne "HASH");
@@ -10036,7 +10039,7 @@ sub probe_responsive_stimulus {
 	  ($picture,$write_error)=set_picture_values($picture,$test_arrays,$target,$picture_mode,1,$state);
 	  return (undef,$reading,$arrays,$picture,$write_error) if($write_error);
 	  sync_state_picture($state,$picture,$picture_mode);
-	  my ($after,$after_error)=read_step($config,$probe_step,$state);
+	  my ($after,$after_error)=read_step($config,$probe_read_step,$state);
 	  return (undef,$reading,$test_arrays,$picture,$after_error) if($after_error && $after_error ne "cancelled");
 	  last if($after_error && $after_error eq "cancelled");
 	  next if(ref($after) ne "HASH");
@@ -15577,6 +15580,9 @@ sub read_step_once {
 		 $delay_ms=4200 if($ire > 5 && $ire <= 10 && $delay_ms < 4200);
 		 $delay_ms=3200 if($ire > 10 && $ire <= 25 && $delay_ms < 3200);
 		 $delay_ms=2400 if($ire > 25 && $ire <= 50 && $delay_ms < 2400);
+		 # Relative probe reads measure change between two identical-protocol reads;
+		 # they do not need the full committing-read settle.
+		 $delay_ms=1800 if(ref($step) eq "HASH" && $step->{"autocal_quick_read"} && $delay_ms > 1800);
 	 my $request_id=read_request_id($step);
 	 my $payload={
 	  display_type => $config->{"display_type"}||"lcd",
