@@ -2550,6 +2550,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my @ordered;
   if($points==2) {
    @ordered=((sort { $a <=> $b } @ire_vals)[1], (sort { $a <=> $b } @ire_vals)[0]);
+  } elsif($lg_autocal_26_codes && $signal_mode eq "hdr10") {
+   # The hdr20 ladder ends at a REAL 100% DDC slot, so there is no separate
+   # legal-white reference step (that is an SDR 99/105/109 headroom concept);
+   # the worker derives its white reference from the hdr20 top slot itself.
+   # Emitting the SDR-style reference here duplicated the 100% step and made
+   # the top-slot solve fight a locked twin.
+   @ordered=(0,sort { $a <=> $b } grep { $_>0 } @ire_vals);
   } elsif($lg_autocal_26_codes) {
    @ordered=(100,0,sort { $a <=> $b } grep { $_>0 && abs($_-100)>0.001 } @ire_vals);
   } else {
@@ -2610,7 +2617,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		     $target_Yn_for_step=0 if($target_Yn_for_step < 0);
 		     $extra.=",\"target_Yn\":$target_Yn_for_step";
 		    }
-		    $extra.=",\"autocal_white_reference\":true,\"autocal_reference_only\":true,\"autocal_read_only\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_legal_white_anchor\":true,\"ddc_target_ire\":99,\"autocal_order_ire\":98.95,\"autocal_target_label\":\"100% legal white\"" if($lg_autocal_26_codes && abs($v-100)<0.001);
+		    $extra.=",\"autocal_white_reference\":true,\"autocal_reference_only\":true,\"autocal_read_only\":true,\"autocal_slot_locked\":true,\"ddc_slot_locked\":true,\"autocal_legal_white_anchor\":true,\"ddc_target_ire\":99,\"autocal_order_ire\":98.95,\"autocal_target_label\":\"100% legal white\"" if($lg_autocal_26_codes && $signal_mode ne "hdr10" && abs($v-100)<0.001);
     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$r_code,\"g\":$g_code,\"b\":$b_code,\"name\":\"$name\"$extra}";
    } @ordered;
  } elsif($type eq "colors") {
