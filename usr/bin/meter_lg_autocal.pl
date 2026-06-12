@@ -1325,18 +1325,23 @@ sub low_shadow_iteration_limit_for_step {
 }
 
 sub low_shadow_polish_limit_for_step {
- my ($step,$config)=@_;
+ my ($step,$config,$best_de,$target_delta)=@_;
  return undef if(!autocal_step_is_low_shadow($step));
 	 my $ire=$step->{"ire"}+0;
+	 # R1: when the result is within 0.20 of target delta_e, give the polish
+	 # loop more iterations so it has a chance to push across the threshold.
+	 # This addresses the 5% HDR20 anchor revisit pattern where the result
+	 # lands at delta_e 0.61 and stalls instead of pushing below 0.5.
+	 my $close_to_target=(defined($best_de) && defined($target_delta) && $best_de <= ($target_delta + 0.20));
 	 if(autocal_config_is_touchup($config)) {
 	  return 1 if($ire <= 3.1);
 	  return 3 if($ire <= 5.1);
 	  return 4;
 	 }
- return 2 if($ire <= 3.1);
- return 3 if($ire <= 4.1);
- return 5 if($ire <= 5.1);
- return 4;
+ return ($close_to_target ? 6 : 2) if($ire <= 3.1);
+ return ($close_to_target ? 10 : 3) if($ire <= 4.1);
+ return ($close_to_target ? 12 : 5) if($ire <= 5.1);
+ return ($close_to_target ? 8 : 4);
 }
 
 sub headroom_iteration_limit_for_step {
@@ -2178,17 +2183,23 @@ sub autocal_itp_precision_polish_needed {
 }
 
 sub autocal_itp_precision_stall_limit {
- my ($de,$target_delta,$step)=@_;
+ my ($de,$target_delta,$step,$best_de)=@_;
+	 # R3: when the result is within 0.20 of target delta_e, allow more polish
+	 # stalls so the polish loop has a chance to push across the threshold.
+	 # The default 2-3 stall limits cause the polish loop to give up too
+	 # eagerly on steps that are right at the edge (e.g. 5% revisit landing
+	 # at delta_e 0.61).
+	 my $close_to_target=(defined($best_de) && defined($target_delta) && $best_de <= ($target_delta + 0.20));
 	 if(autocal_step_is_low_shadow($step)) {
 	  my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 5;
-	  return 2 if($ire <= 3.1001);
-	  return 3 if($ire <= 5.1001);
-	  return 4;
+	  return ($close_to_target ? 4 : 2) if($ire <= 3.1001);
+	  return ($close_to_target ? 6 : 3) if($ire <= 5.1001);
+	  return ($close_to_target ? 6 : 4);
 	 }
 	 if(autocal_step_is_hdr20_body($step)) {
 	  $target_delta=0.5 if(!defined($target_delta) || $target_delta <= 0);
-	  return 3 if(defined($de) && $de <= ($target_delta+1.5));
-	  return 5;
+	  return ($close_to_target ? 6 : 3) if(defined($de) && $de <= ($target_delta+1.5));
+	  return ($close_to_target ? 8 : 5);
 	 }
 	 return autocal_itp_precision_polish_needed($de,$target_delta,$step) ? 28 : 14;
 }
@@ -2737,6 +2748,19 @@ sub close_enough_stalled {
 		 return 0 if(!defined($best_de));
 	 my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
 	 return 0 if(near_white_95_luma_needs_fine_tune($step,$best_lum_pct,$best_de,$target_delta,0));
+	 # #7.4: when the result is close to target but the luma model is
+	 # untrusted (low sample count), the default close-enough-stalled
+	 # thresholds fire too early. Give the planner more room to push
+	 # across the threshold so the polish loop can refine the result.
+	 my $close_to_target=defined($best_de) && defined($target_delta) && $best_de <= ($target_delta + 0.20);
+	 if($close_to_target && autocal_step_is_low_shadow($step)) {
+	  return 0 if($ire <= 3.1001);
+	  return 0 if($ire <= 5.1001 && ($iter||0) < 7);
+	  return 0 if($ire > 5.1001 && ($iter||0) < 6);
+	 }
+	 if($close_to_target && autocal_step_is_hdr20_body($step)) {
+	  return 0 if(($iter||0) < 8);
+	 }
 	 if(low_shadow_good_enough($step,$best_de,$best_lum_pct,$target_delta)) {
 	  if(autocal_step_is_low_shadow($step)) {
 	   return 1 if($ire <= 3.1001 && ($iter||0) >= 2 && ($stalls||0) >= 1);
@@ -4197,6 +4221,17 @@ sub iteration_limit_for_step {
 				 return $shadow_limit if(defined($shadow_limit));
 				 if(lg_autocal_26_full_ddc_spine_enabled($config)) {
 				  return 22 if(lg_autocal_26_full_ddc_spine_body_anchor($step));
+				  # #7.8: synthesized intermediate slots (1.4, 2, 2.7, 4, 15) start
+				  # with the 100% anchor's DDC values and no real luma model.
+				  # They typically converge in 4-6 iterations; capping at 8
+				  # saves ~30% of time on these slots without harming quality
+				  # (the anchor revisit at the end of the order refines them).
+				  if(ref($step) eq "HASH" && defined($step->{"ire"})) {
+				   my $ire=$step->{"ire"}+0;
+				   if(($ire <= 4.01 || abs($ire-15) < 0.01) && !lg_autocal_26_full_ddc_spine_body_anchor($step)) {
+				    return 8;
+				   }
+				  }
 				  return 12 if(ref($step) eq "HASH" && defined($step->{"ire"}));
 				 }
 			 return $default;
@@ -18726,7 +18761,10 @@ eval {
 		    write_state($state);
 		    last;
 		   }
-			   my $no_response_stall_limit=$paired_white_step ? 6 : 2;
+			   my $no_response_stall_limit=$paired_white_step ? 6 : (
+			    defined($best_de) && defined($target_delta) && $best_de <= ($target_delta + 0.20)
+			     ? 3 : 2
+			   );
 			   my $no_response_iter_floor=$paired_white_step ? 12 : 4;
 			   if(!$probe_found && $no_response_stalls >= $no_response_stall_limit && $iter >= $no_response_iter_floor && !stimulus_scan_steps($config,$read_step,\%stimulus_probe_tried)) {
 		    $state->{"message"}="$label uncorrectable within stimulus window; closest result kept";
@@ -18832,7 +18870,7 @@ eval {
 				   mark_tried_values(\%polish_tried,$arrays,$target,$de);
 				   my $polish_limit=headroom_polish_limit_for_step($read_step,$config);
 			   $polish_limit=48 if(!defined($polish_limit));
-			   my $shadow_polish_limit=low_shadow_polish_limit_for_step($read_step,$config);
+			   my $shadow_polish_limit=low_shadow_polish_limit_for_step($read_step,$config,$best_de,$target_delta);
 			   $polish_limit=$shadow_polish_limit if(defined($shadow_polish_limit));
 			   my $precision_needed=autocal_itp_precision_polish_needed($best_de,$target_delta,$read_step);
 				   my $precision_polish_limit=config_positive_int($config,"precision_polish_iterations",72,0,72);
@@ -19223,7 +19261,7 @@ eval {
 		      write_state($state);
 		      last;
 		     }
-		     my $precision_stall_limit=$paired_white_step ? legal_white_pair_precision_stall_limit($best_de,$best_pair_de,$target_delta) : autocal_itp_precision_stall_limit($best_de,$target_delta,$read_step);
+		     my $precision_stall_limit=$paired_white_step ? legal_white_pair_precision_stall_limit($best_de,$best_pair_de,$target_delta) : autocal_itp_precision_stall_limit($best_de,$target_delta,$read_step,$best_de);
 		     last if($polish_stalls >= $precision_stall_limit);
 		    }
 		    $state->{"best_delta_e"}=$best_de;
