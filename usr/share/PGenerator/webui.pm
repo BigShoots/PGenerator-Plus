@@ -2550,12 +2550,15 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my @ordered;
   if($points==2) {
    @ordered=((sort { $a <=> $b } @ire_vals)[1], (sort { $a <=> $b } @ire_vals)[0]);
-  } elsif($lg_autocal_26_codes && $signal_mode eq "hdr10") {
+  } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
    # The hdr20 ladder ends at a REAL 100% DDC slot, so there is no separate
    # legal-white reference step (that is an SDR 99/105/109 headroom concept);
    # the worker derives its white reference from the hdr20 top slot itself.
    # Emitting the SDR-style reference here duplicated the 100% step and made
-   # the top-slot solve fight a locked twin.
+   # the top-slot solve fight a locked twin. Note: $lg_autocal_26_codes is
+   # defined as sdr-only, so the prior "&& $lg_autocal_26_codes && hdr10"
+   # form of this branch was dead code; the condition here keys off
+   # $lg_autocal_26 + hdr10 directly so the branch is actually taken.
    @ordered=(0,sort { $a <=> $b } grep { $_>0 } @ire_vals);
   } elsif($lg_autocal_26_codes) {
    @ordered=(100,0,sort { $a <=> $b } grep { $_>0 && abs($_-100)>0.001 } @ire_vals);
@@ -19012,8 +19015,17 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,255),autocal_slot_locked:false,autocal_read_only:true};
 	  const whiteCode=meterCodeFromSignalPercentWithOptions(100,null);
 	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,255),read_delay_ms:3000,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_target_label:'100% HDR white'};
-	  const body=METER_LG_GREY_HDR_AUTOCAL_SLOTS.map(makeHdrStep);
-	  return [...(includeWhiteReference?[white]:[]),zero,...body,...passthrough];
+	  // hdr20 (HDR10) carries a REAL 100% DDC slot at the top of the body
+	  // (METER_LG_GREY_HDR_AUTOCAL_SLOTS[0]===100), so the pre-loop
+	  // "100% HDR white" anchor would duplicate the 100% point in the
+	  // greyscale chart and step strip, and would give the worker a locked
+	  // twin to fight at the top. The worker derives its white reference
+	  // from the top slot step itself (update_white_reference_for_step via
+	  // autocal_step_is_hdr20_top_white), so the anchor is redundant.
+	  // Body is reversed so the step strip is 0 -> ascending -> 100%, not
+	  // 0 -> 100 -> descending.
+	  const body=[...METER_LG_GREY_HDR_AUTOCAL_SLOTS].reverse().map(makeHdrStep);
+	  return [zero,...body,...passthrough];
 	 }
 	 const makeDdcStep=(slot)=>{
 	  const source=inputByDdcSlot[String(slot)];
