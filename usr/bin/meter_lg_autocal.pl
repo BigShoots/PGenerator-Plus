@@ -15509,6 +15509,7 @@ sub reset_ddc_baseline_for_autocal {
    helper_timeout => 170,
    readback_keys => ["pictureMode","ddc_layout","whiteBalanceMethod","whiteBalanceIre","whiteBalanceRed","whiteBalanceGreen","whiteBalanceBlue","adjustingLuminance"],
   },190);
+  autocal_ddc_reset_diag_log($attempt,$response);
   if(ref($response) eq "HASH" && ($response->{"status"}||"") eq "ok") {
    return undef if($response->{"ddc_baseline_reset"} && $response->{"ddc_1d_lut"} && $response->{"ddc_reset_verified"});
    $last_message="LG DDC reset did not verify the 1D LUT baseline";
@@ -15520,6 +15521,46 @@ sub reset_ddc_baseline_for_autocal {
   sleep(1.4*$attempt);
  }
  return $last_message;
+}
+
+sub autocal_ddc_reset_diag_log (@) {
+ my ($attempt,$response)=@_;
+ eval {
+  my @t=localtime(time());
+  my $stamp=sprintf("%04d-%02d-%02dT%02d:%02d:%02d",$t[5]+1900,$t[4]+1,$t[3],$t[2],$t[1],$t[0]);
+  my $data;
+  if(ref($response) eq "HASH") {
+   my $ps=ref($response->{"picture_settings"}) eq "HASH" ? $response->{"picture_settings"} : {};
+   $data={
+    attempt => $attempt,
+    status => $response->{"status"}//"",
+    message => $response->{"message"}//"",
+    ddc_baseline_reset => $response->{"ddc_baseline_reset"}//"",
+    ddc_1d_lut => $response->{"ddc_1d_lut"}//"",
+    ddc_reset_verified => $response->{"ddc_reset_verified"}//"",
+    ddc_reset_verify_contract => $response->{"ddc_reset_verify_contract"}//"",
+    ddc_readback_unavailable => $response->{"ddc_readback_unavailable"}//"",
+    ddc_readback_unavailable_reason => $response->{"ddc_readback_unavailable_reason"}//"",
+    ddc_verify_mismatch => $response->{"ddc_verify_mismatch"}//"",
+    picture_mode => $response->{"picture_mode"}//"",
+    calibration_picture_mode => $response->{"calibration_picture_mode"}//"",
+    ddc_layout => (exists($ps->{"ddc_layout"}) ? $ps->{"ddc_layout"} : $response->{"ddc_layout"})//"",
+   };
+  } else {
+   $data={ attempt => $attempt, status => "no-response" };
+  }
+  my $body=eval { JSON::PP->new->canonical(1)->utf8(1)->encode($data); } || "<encode-failed>";
+  my $line="[$stamp] autocal:ddc-reset $body\n";
+  my $path="/var/lib/PGenerator/lg/last-write.log";
+  if(-f $path && (stat($path))[7] > 131072) {
+   unlink($path);
+  }
+  if(open(my $fh,">>",$path)) {
+   binmode($fh);
+   print $fh $line;
+   close($fh);
+  }
+ };
 }
 
 sub read_step_once {
