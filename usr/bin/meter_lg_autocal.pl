@@ -12099,6 +12099,7 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 	 ? $config->{"lg_autocal_hdr20_1d_dpg_sample_ires"}
 	 : [5, 25, 50, 75, 95];
 	 my @samples;
+	 my @sample_diag;
 	 for my $ire (@{$sample_ires}) {
 	  my $rgb_code=int(($ire/100)*219)+16;
 	  my $step={
@@ -12118,11 +12119,14 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 	   autocal_order_ire=>$ire+0,
 	  };
 	  my ($reading,$err)=read_step($config,$step,$state);
+	  push(@sample_diag,sprintf("ire=%.1f err=%s reading=%s",$ire,($err//""),ref($reading) eq "HASH" ? "ok" : "missing"));
 	  next if($err || ref($reading) ne "HASH");
 	  my $lum=luminance($reading);
+	  push(@sample_diag,sprintf(" ire=%.1f lum=%s",$ire,defined($lum) ? sprintf("%.3f",$lum) : "undef"));
 	  next unless(defined $lum && $lum > 0);
 	  push @samples,{ ire=>$ire+0, lum=>$lum+0 };
 	 }
+	 log_line("HDR20 1D DPG sample reads: ".join(" | ",@sample_diag)." -> samples=".scalar(@samples)) if($samples[0] || @sample_diag);
 	 return undef if(@samples < 3);
 	 my @dpg;
 	 for my $channel (0..2) {
@@ -12147,9 +12151,11 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
+	 log_line("HDR20 1D DPG queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." ddc_layout=".($config->{"ddc_layout"}//"")." white_y=".($white_y//"undef")." defined_compute=".((defined(&lg_autocal_26_compute_hdr20_1d_dpg_data))?"yes":"no"));
 	 return 0 unless(ref($state) eq "HASH");
 	 return 0 unless(($config->{"ddc_layout"}//"") eq "hdr20");
 	 my $dpg_data=lg_autocal_26_compute_hdr20_1d_dpg_data($config,$state,$picture,$picture_mode,$white_y);
+	 log_line("HDR20 1D DPG queue: compute returned ".((defined($dpg_data) && ref($dpg_data) eq "ARRAY") ? scalar(@{$dpg_data})." values" : "undef"));
 	 return 0 unless(defined $dpg_data && ref($dpg_data) eq "ARRAY" && @$dpg_data == 3072);
 	 $state->{"hdr20_1d_dpg_data"}=$dpg_data;
 	 $state->{"hdr20_1d_dpg_data_count"}=scalar(@$dpg_data);
