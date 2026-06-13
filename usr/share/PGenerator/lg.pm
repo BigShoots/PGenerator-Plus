@@ -784,7 +784,7 @@ sub lg_helper_timeout (@) {
  }
  return 180 if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
  return 130 if($action eq "picture_reset");
- return 75 if($action eq "calibration_mode" || $action eq "hdr_tone_map_upload" || $action eq "hdr_calman_reset");
+ return 75 if($action eq "calibration_mode" || $action eq "hdr_tone_map_upload" || $action eq "hdr_calman_reset" || $action eq "1d_dpg_read");
  return 80 if($action eq "1d_dpg_upload");
  return 60 if($action eq "picture_get");
  return 90;
@@ -798,6 +798,7 @@ sub lg_helper_timeout_message (@) {
  return "LG TV did not finish the 3D LUT command within ${timeout}s." if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
  return "LG TV did not finish the HDR tone-map upload within ${timeout}s." if($action eq "hdr_tone_map_upload");
  return "LG TV did not finish the HDR20 1D DPG upload within ${timeout}s." if($action eq "1d_dpg_upload");
+ return "LG TV did not finish the HDR20 1D DPG readback within ${timeout}s." if($action eq "1d_dpg_read");
  return "LG TV did not finish the HDR calibration reset within ${timeout}s." if($action eq "hdr_calman_reset");
  return "LG TV did not finish the picture-mode reset within ${timeout}s." if($action eq "picture_reset");
  return "LG TV did not answer the picture-settings request within ${timeout}s." if($action eq "picture_get");
@@ -1573,6 +1574,32 @@ sub webui_lg_hdr_tone_map_upload (@) {
  return &lg_encode_json($result);
 }
 
+sub webui_lg_1d_dpg_read (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before reading the HDR20 1D DPG.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading the HDR20 1D DPG." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading the HDR20 1D DPG." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before reading the HDR20 1D DPG." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "1d_dpg_read",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_1d_dpg_upload (@) {
  my $body=shift;
  my $payload=&lg_decode_json($body);
@@ -1678,6 +1705,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/1d-dpg/upload" && $method eq "POST") {
   return &webui_lg_1d_dpg_upload($body);
+ }
+ if($path eq "/api/lg/1d-dpg/read" && $method eq "POST") {
+  return &webui_lg_1d_dpg_read($body);
  }
  if($path eq "/api/lg/pair-pin/start" && $method eq "POST") {
   return &webui_lg_pin_pair_start($body);
