@@ -20543,7 +20543,7 @@ eval {
 	 $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
 	 }
 	 write_state($state);
-			 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"}) {
+			 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $calibration_mode_active) {
 			  # Some LG DDC write paths can leave the TV's calibration-mode
 			  # flag active even after the worker state believes CAL_END ran.
 			  # Write the terminal state first so a final cleanup hiccup cannot
