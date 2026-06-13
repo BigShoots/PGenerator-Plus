@@ -12151,9 +12151,10 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
-	 log_line("HDR20 1D DPG queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." ddc_layout=".($config->{"ddc_layout"}//"")." white_y=".($white_y//"undef")." defined_compute=".((defined(&lg_autocal_26_compute_hdr20_1d_dpg_data))?"yes":"no"));
+	 log_line("HDR20 1D DPG queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." config_ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." white_y=".($white_y//"undef")." defined_compute=".((defined(&lg_autocal_26_compute_hdr20_1d_dpg_data))?"yes":"no"));
 	 return 0 unless(ref($state) eq "HASH");
-	 return 0 unless(($config->{"ddc_layout"}//"") eq "hdr20");
+	 my $effective_ddc_layout=$config->{"ddc_layout"} // $state->{"ddc_layout"} // "";
+	 return 0 unless($effective_ddc_layout eq "hdr20");
 	 my $dpg_data=lg_autocal_26_compute_hdr20_1d_dpg_data($config,$state,$picture,$picture_mode,$white_y);
 	 log_line("HDR20 1D DPG queue: compute returned ".((defined($dpg_data) && ref($dpg_data) eq "ARRAY") ? scalar(@{$dpg_data})." values" : "undef"));
 	 return 0 unless(defined $dpg_data && ref($dpg_data) eq "ARRAY" && @$dpg_data == 3072);
