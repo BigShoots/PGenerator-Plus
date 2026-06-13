@@ -3064,6 +3064,63 @@ sub lg_hdr_tone_map_upload_workflow (@) {
  });
 }
 
+sub lg_1d_dpg_read_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode)=@_;
+ return &json_error("Connect / Pair the LG TV before reading HDR20 1D DPG data",{ ip => $ip }) if($client_key eq "");
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+  &websocket_close($session);
+  return &json_error("HDR20 1D DPG read requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ my $start=&lg_calibration_request($session,"1d_dpg_read_cal_start","CAL_START",&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload()),1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG read.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
+ }
+ my $info=&lg_get_current_1d_lut_info($session,$connect_timeout + 8);
+ my $end=&lg_calibration_request($session,"1d_dpg_read_cal_end","CAL_END",&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload()),1,"",$connect_timeout + 4);
+ &websocket_close($session);
+ my $lut=$info->{"lut"};
+ if(ref($lut) ne "ARRAY" || @{$lut} != 3072) {
+  return &json_error($info->{"message"}||"LG TV did not return a readable 1D DPG payload.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   info => $info,
+   cal_start_response => $start,
+   cal_end_response => $end,
+  });
+ }
+ my @sample=( 0, 14, 51, 70, 257, 308, 612, 715, 1023 );
+ my %samples;
+ for my $idx (@sample) {
+  for my $channel (0..2) {
+   my $pos=($channel*1024)+$idx;
+   $samples{"ch${channel}_idx${idx}"}=int($lut->[$pos]||0);
+  }
+ }
+ return &json_ok({
+  readback_ok => &json_true(),
+  data_count => scalar(@{$lut}),
+  data_channels => 3,
+  data_points => 1024,
+  min_value => (sort { $a <=> $b } @{$lut})[0],
+  max_value => (sort { $b <=> $a } @{$lut})[0],
+  samples => \%samples,
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  read_response => $info->{"response"},
+  cal_start_response => $start,
+  cal_end_response => $end,
+  message => "LG HDR20 1D DPG readback captured (3072 values, min=".((sort { $a <=> $b } @{$lut})[0]).", max=".((sort { $b <=> $a } @{$lut})[0]).").",
+ });
+}
+
 sub lg_1d_dpg_upload_workflow (@) {
  my ($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data)=@_;
  return &json_error("Connect / Pair the LG TV before uploading HDR20 1D DPG data",{ ip => $ip }) if($client_key eq "");
@@ -4964,6 +5021,8 @@ sub main (@) {
 	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance);
 	 } elsif($action eq "1d_dpg_upload") {
 	  $result=&lg_1d_dpg_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data);
+	 } elsif($action eq "1d_dpg_read") {
+	  $result=&lg_1d_dpg_read_workflow($ip,$client_key,$connect_timeout,$picture_mode);
 	 } elsif($action eq "connect_pin_wait") {
 	  $result=&lg_connect_pin_wait_workflow($ip,$client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type);
 	 } else {

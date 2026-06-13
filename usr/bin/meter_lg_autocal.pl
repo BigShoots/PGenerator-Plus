@@ -12160,6 +12160,15 @@ sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 $state->{"hdr20_1d_dpg_data"}=$dpg_data;
 	 $state->{"hdr20_1d_dpg_data_count"}=scalar(@$dpg_data);
 	 $state->{"hdr20_1d_dpg_computed_at"}=int(time()*1000);
+	 my $upload_enabled=(ref($config) eq "HASH" && $config->{"lg_autocal_hdr20_1d_dpg_upload_enabled"});
+	 $state->{"hdr20_1d_dpg_upload_enabled"}=$upload_enabled ? JSON::PP::true : JSON::PP::false;
+	 if(!$upload_enabled) {
+	  $state->{"hdr20_1d_dpg_uploaded"}=JSON::PP::false;
+	  $state->{"hdr20_1d_dpg_upload_message"}="upload disabled: lg_autocal_hdr20_1d_dpg_upload_enabled is not set (current autocal DPG formula is experimental and produces values in the wrong scale for LG's [0,32767] 1D_DPG_DATA domain; the array is captured in hdr20_1d_dpg_data for diagnostic, but uploading it dims the panel)";
+	  $state->{"message"}="Final 1D LUT uploaded, verified, calibration mode ended; HDR10 1D DPG computed (3072 values) but upload disabled pending formula review";
+	  write_state($state);
+	  return 0;
+	 }
 	 my $response=api_json("POST","/api/lg/1d-dpg/upload",{
 	  picture_mode=>$picture_mode,
 	  ddc_layout=>"hdr20",
