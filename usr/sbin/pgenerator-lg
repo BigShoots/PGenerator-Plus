@@ -3064,6 +3064,63 @@ sub lg_hdr_tone_map_upload_workflow (@) {
  });
 }
 
+sub lg_1d_dpg_upload_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data)=@_;
+ return &json_error("Connect / Pair the LG TV before uploading HDR20 1D DPG data",{ ip => $ip }) if($client_key eq "");
+ return &json_error("HDR20 1D DPG upload requires a 3072-value 3-channel x 1024-point uint16 array.",{ ip => $ip, data_count => (ref($dpg_data) eq "ARRAY") ? scalar(@{$dpg_data}) : -1, expected_count => 3072 }) if(ref($dpg_data) ne "ARRAY" || @{$dpg_data} != 3072);
+ my @clamped;
+ for my $v (@{$dpg_data}) {
+  my $i=int($v);
+  $i=0 if($i < 0);
+  $i=65535 if($i > 65535);
+  push(@clamped,$i);
+ }
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+  &websocket_close($session);
+  return &json_error("HDR20 1D DPG upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ my $upload=&lg_calibration_request($session,"1d_dpg_upload","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload(\@clamped)),1,$cal_mode,$connect_timeout + 12);
+ my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
+ &websocket_close($session);
+ if($upload_failed || ref($upload) ne "HASH") {
+  return &json_error($upload_message||"LG TV rejected HDR20 1D DPG upload.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   command => "1D_DPG_DATA",
+   data_count => scalar(@clamped),
+   data_channels => 3,
+   data_points => 1024,
+   raw_response => $upload,
+  });
+ }
+ my $min_value=65535;
+ my $max_value=0;
+ my $sum_value=0;
+ for my $v (@clamped) { $min_value=$v if($v < $min_value); $max_value=$v if($v > $max_value); $sum_value+=$v; }
+ my $avg_value=int(($sum_value/scalar(@clamped))+0.5);
+ return &json_ok({
+  dpg_uploaded => &json_true(),
+  data_count => scalar(@clamped),
+  data_channels => 3,
+  data_points => 1024,
+  min_value => $min_value,
+  max_value => $max_value,
+  avg_value => $avg_value,
+  command => "1D_DPG_DATA",
+  endpoint_write => "externalpq/setExternalPqData",
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  upload_response => $upload,
+  message => "LG HDR20 1D DPG uploaded (".scalar(@clamped)." values, min=$min_value, max=$max_value, avg=$avg_value).",
+ });
+}
+
 sub lg_ddc_baseline_lut (@) {
  my ($session,$ip,$picture_mode,$timeout,$reset_to_unity,$layout)=@_;
  my $path=&lg_ddc_baseline_path($ip,$picture_mode,$layout);
@@ -4874,6 +4931,7 @@ sub main (@) {
  my $peak_luminance=$request->{"peak_luminance"};
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
+ my $dpg_data=$request->{"dpg_data"};
  my $result;
 
  if(!$ip || !&valid_ipv4($ip)) {
@@ -4904,6 +4962,8 @@ sub main (@) {
 	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
 	 } elsif($action eq "hdr_tone_map_upload") {
 	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance);
+	 } elsif($action eq "1d_dpg_upload") {
+	  $result=&lg_1d_dpg_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data);
 	 } elsif($action eq "connect_pin_wait") {
 	  $result=&lg_connect_pin_wait_workflow($ip,$client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type);
 	 } else {
