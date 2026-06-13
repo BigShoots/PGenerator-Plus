@@ -12044,7 +12044,8 @@ sub set_picture_values {
 }
 
 sub commit_final_1d_lut {
-	 my ($state,$picture,$arrays,$picture_mode,$ordered,$calibration_mode_active)=@_;
+	 my ($config,$state,$picture,$arrays,$picture_mode,$ordered,$calibration_mode_active,$white_y)=@_;
+	 $white_y=0 unless(defined $white_y);
 	 if(!$calibration_mode_active) {
 	  if(ref($state) eq "HASH" && !($state->{"ddc_picture_write_count"}||0)) {
 	   $state->{"final_1d_lut_uploaded"}=JSON::PP::false;
@@ -12077,6 +12078,7 @@ sub commit_final_1d_lut {
 	 my ($next_picture,$error)=set_picture_values($picture,$arrays,$target,$picture_mode,1,$state,1,0);
 	 return ($picture,$error,0) if($error);
 	 sync_state_picture($state,$next_picture,$picture_mode);
+	 lg_autocal_26_queue_hdr20_1d_dpg_upload($config,$state,$next_picture,$picture_mode,$white_y) if(defined(&lg_autocal_26_queue_hdr20_1d_dpg_upload));
 	 end_calibration_mode($picture_mode);
 	 set_state_calibration_mode($state,0,"");
 	 $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
@@ -12086,6 +12088,88 @@ sub commit_final_1d_lut {
 	 $state->{"message"}="Final 1D LUT uploaded, verified, and calibration mode ended";
 	 write_state($state);
 	 return ($next_picture,undef,1);
+	}
+
+sub lg_autocal_26_compute_hdr20_1d_dpg_data {
+	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
+	 return undef unless(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
+	 return undef unless(($config->{"ddc_layout"}//"") eq "hdr20");
+	 return undef unless(defined($white_y) && $white_y > 0);
+	 my $sample_ires=(ref($config->{"lg_autocal_hdr20_1d_dpg_sample_ires"}) eq "ARRAY" && @{$config->{"lg_autocal_hdr20_1d_dpg_sample_ires"}})
+	 ? $config->{"lg_autocal_hdr20_1d_dpg_sample_ires"}
+	 : [5, 25, 50, 75, 95];
+	 my @samples;
+	 for my $ire (@{$sample_ires}) {
+	  my $rgb_code=int(($ire/100)*219)+16;
+	  my $step={
+	   name=>"hdr20_1d_dpg_${ire}",
+	   ire=>$ire+0,
+	   stimulus=>$ire+0,
+	   signal_r_pct=>$ire+0,
+	   signal_g_pct=>$ire+0,
+	   signal_b_pct=>$ire+0,
+	   r=>$rgb_code,
+	   g=>$rgb_code,
+	   b=>$rgb_code,
+	   ddc_layout=>"hdr20",
+	   ddc_target_ire=>$ire+0,
+	   ddc_array_ire=>$ire+0,
+	   ddc_index=>$ire+0,
+	   autocal_order_ire=>$ire+0,
+	  };
+	  my ($reading,$err)=read_step($config,$step,$state);
+	  next if($err || ref($reading) ne "HASH");
+	  my $lum=luminance($reading);
+	  next unless(defined $lum && $lum > 0);
+	  push @samples,{ ire=>$ire+0, lum=>$lum+0 };
+	 }
+	 return undef if(@samples < 3);
+	 my @dpg;
+	 for my $channel (0..2) {
+	  for my $i (0..1023) {
+	   my $input=$i/1023;
+	   my $target=($input**2.2)*$white_y;
+	   my $uint16=int(($target/10000.0)*65535.0+0.5);
+	   $uint16=65535 if($uint16 > 65535);
+	   $uint16=0 if($uint16 < 0);
+	   push @dpg,$uint16;
+	  }
+	 }
+	 if(ref($state) eq "HASH") {
+	  $state->{"hdr20_1d_dpg_sample_readings"}=\@samples;
+	  $state->{"hdr20_1d_dpg_sample_count"}=scalar(@samples);
+	  $state->{"hdr20_1d_dpg_sample_ires"}=$sample_ires;
+	  $state->{"hdr20_1d_dpg_channel_count"}=3;
+	  $state->{"hdr20_1d_dpg_point_count"}=1024;
+	 }
+	 return \@dpg;
+	}
+
+sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
+	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
+	 return 0 unless(ref($state) eq "HASH");
+	 return 0 unless(($config->{"ddc_layout"}//"") eq "hdr20");
+	 my $dpg_data=lg_autocal_26_compute_hdr20_1d_dpg_data($config,$state,$picture,$picture_mode,$white_y);
+	 return 0 unless(defined $dpg_data && ref($dpg_data) eq "ARRAY" && @$dpg_data == 3072);
+	 $state->{"hdr20_1d_dpg_data"}=$dpg_data;
+	 $state->{"hdr20_1d_dpg_data_count"}=scalar(@$dpg_data);
+	 $state->{"hdr20_1d_dpg_computed_at"}=int(time()*1000);
+	 my $response=api_json("POST","/api/lg/1d-dpg/upload",{
+	  picture_mode=>$picture_mode,
+	  ddc_layout=>"hdr20",
+	  dpg_data=>$dpg_data,
+	  helper_timeout=>90,
+	 },120);
+	 my $uploaded=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+	 $state->{"hdr20_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
+	 $state->{"hdr20_1d_dpg_upload_message"}=(ref($response) eq "HASH" && $response->{message})
+	  ? $response->{message}
+	  : (defined $response ? "unexpected response" : "endpoint unreachable");
+	 $state->{"message"}=$uploaded
+	  ? "Final 1D LUT uploaded, verified, calibration mode ended, and HDR10 1D DPG uploaded (3072 values)"
+	  : "Final 1D LUT uploaded, verified, calibration mode ended; HDR10 1D DPG computed but upload skipped (".($state->{"hdr20_1d_dpg_upload_message"}//"unknown").")";
+	 write_state($state);
+	 return $uploaded;
 	}
 
 sub park_black_for_settle {
@@ -20493,7 +20577,7 @@ eval {
 								    sdr_low_shadow_final_context_reconfirmed_slots=>defined($state->{"sdr_low_shadow_final_context_reconfirmed_slots"}) ? trace_number($state->{"sdr_low_shadow_final_context_reconfirmed_slots"}) : undef,
 								   }
 								  );
-							  ($picture,$commit_error,$commit_ended_calibration)=commit_final_1d_lut($state,$picture,$arrays,$picture_mode,\@ordered,$calibration_mode_active);
+							  ($picture,$commit_error,$commit_ended_calibration)=commit_final_1d_lut($config,$state,$picture,$arrays,$picture_mode,\@ordered,$calibration_mode_active,$white_y);
 							  trace_sdr_low_shadow_ddc_snapshot(
 							   "post_final_commit",$config,$state,$arrays,undef,undef,{
 							    commit_error=>$commit_error,
