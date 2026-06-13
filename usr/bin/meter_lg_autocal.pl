@@ -1001,6 +1001,13 @@ sub target_luminance_for_step {
 	 my $mode=lc($signal_mode||"sdr");
 	 $target_gamma=lc($target_gamma||"bt1886");
 	 my $signal=$stimulus/100;
+	 if(defined($ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
+	  my $trace_fh;
+	  if(open($trace_fh,">>",$ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
+	   printf $trace_fh "%s stim=%.4f target_gamma=%s signal_mode=%s white_y=%.4f\n", scalar(localtime), $stimulus, $target_gamma, $mode, $white_y;
+	   close($trace_fh);
+	  }
+	 }
 	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
 	  $signal=0 if($signal < 0);
 	  $signal=1.1 if($signal > 1.1);
@@ -12079,6 +12086,7 @@ sub commit_final_1d_lut {
 	 return ($picture,$error,0) if($error);
 	 sync_state_picture($state,$next_picture,$picture_mode);
 	 lg_autocal_26_queue_hdr20_1d_dpg_upload($config,$state,$next_picture,$picture_mode,$white_y) if(defined(&lg_autocal_26_queue_hdr20_1d_dpg_upload));
+	 lg_autocal_26_queue_hdr20_1d_tonemap_upload($config,$state,$picture_mode,$white_y) if(defined(&lg_autocal_26_queue_hdr20_1d_tonemap_upload));
 	 end_calibration_mode($picture_mode);
 	 set_state_calibration_mode($state,0,"");
 	 $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
@@ -12184,6 +12192,40 @@ sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 $state->{"message"}=$uploaded
 	  ? "Final 1D LUT uploaded, verified, calibration mode ended, and HDR10 1D DPG uploaded (3072 values)"
 	  : "Final 1D LUT uploaded, verified, calibration mode ended; HDR10 1D DPG computed but upload skipped (".($state->{"hdr20_1d_dpg_upload_message"}//"unknown").")";
+	 write_state($state);
+	 return $uploaded;
+	}
+
+sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
+	 my ($config,$state,$picture_mode,$white_y)=@_;
+	 log_line("HDR20 1D tonemap queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." white_y=".($white_y//"undef"));
+	 return 0 unless(ref($state) eq "HASH");
+	 my $effective_ddc_layout=$config->{"ddc_layout"} // $state->{"ddc_layout"} // "";
+	 return 0 unless($effective_ddc_layout eq "hdr20");
+	 return 0 unless(defined($white_y) && $white_y > 0);
+	 my $upload_enabled=(ref($config) eq "HASH" && $config->{"lg_autocal_hdr20_tonemap_upload_enabled"});
+	 $state->{"hdr20_1d_tonemap_upload_enabled"}=$upload_enabled ? JSON::PP::true : JSON::PP::false;
+	 $state->{"hdr20_1d_tonemap_peak_luminance"}=$white_y+0;
+	 if(!$upload_enabled) {
+	  $state->{"hdr20_1d_tonemap_uploaded"}=JSON::PP::false;
+	  $state->{"hdr20_1d_tonemap_upload_message"}="upload disabled: lg_autocal_hdr20_tonemap_upload_enabled is not set (the HDR tone-mapping curve is what Calman uploads as the last step of the autocal -- skipping it leaves the panel on the picture-mode default rolloff, which mismatches the calibrated peak and is the most likely cause of the U-shape dE in the middle IREs; the array is captured in hdr20_1d_tonemap_peak_luminance for diagnostic)";
+	  $state->{"message"}="Final 1D LUT uploaded, verified, calibration mode ended; HDR10 tone map upload disabled (peak=".($white_y+0)." nits)";
+	  write_state($state);
+	  return 0;
+	 }
+	 my $response=api_json("POST","/api/lg/hdr-tone-map/upload",{
+	  picture_mode=>$picture_mode,
+	  peak_luminance=>$white_y+0,
+	  helper_timeout=>75,
+	 },90);
+	 my $uploaded=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+	 $state->{"hdr20_1d_tonemap_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
+	 $state->{"hdr20_1d_tonemap_upload_message"}=(ref($response) eq "HASH" && $response->{message})
+	  ? $response->{message}
+	  : (defined $response ? "unexpected response" : "endpoint unreachable");
+	 $state->{"message"}=$uploaded
+	  ? "Final 1D LUT uploaded, verified, calibration mode ended, and HDR10 tone map uploaded (peak=".($white_y+0)." nits)"
+	  : "Final 1D LUT uploaded, verified, calibration mode ended; HDR10 tone map upload attempted (peak=".($white_y+0)." nits) but failed (".($state->{"hdr20_1d_tonemap_upload_message"}//"unknown").")";
 	 write_state($state);
 	 return $uploaded;
 	}
