@@ -460,6 +460,67 @@ sub apply_drm_properties (@) {
  }
 }
 
+# Block until the kernel reports no DRM master on the KMS minor, or $timeout
+# seconds elapse. Polls /sys/kernel/debug/dri/<N>/clients; falls back to a
+# short sleep if debugfs isn't mounted.
+#
+# Why this exists: pattern_generator_start() calls &apply_drm_properties()
+# which issues up to 6 modetest -w writes (max bpc, output format, rgb
+# quant range, Broadcast RGB, Colorimetry, Colorspace). Each modetest
+# child opens /dev/dri/card1, takes DRM master, writes its property, and
+# releases master on fd close. In practice the kernel's close->release
+# handoff is not always visible to a fresh drmSetMaster caller in the
+# next few ms - when the renderer was spawned immediately after
+# apply_drm_properties() returned, the renderer's first drmSetMaster raced
+# the just-closed modetest and got EACCES, killing the renderer before it
+# ever drew a frame. On a hot Pi4 boot this race could lose 3+
+# consecutive spawns, defeating the daemons's "retry 3 times" loop and
+# requiring a service restart to recover. The companion comment in
+# modetest_connector_write() describes the same root cause from the
+# modetest side ("an atomic commit from modetest holds DRM master longer
+# and can trigger a modeset, which kills a renderer that is starting up").
+#
+# This helper keeps the renderer spawn out of the critical window. The
+# Pi4 BiasiLinux image always mounts /sys/kernel/debug, so the polling
+# branch is the common path; the sleep fallback is defensive.
+sub wait_for_drm_master_unowned (@) {
+ my $timeout=shift;
+ $timeout=3 if(!defined $timeout || $timeout <= 0);
+ # vc4 KMS is minor 1 on the Pi4 BiasiLinux image (/dev/dri/card1, the
+ # device the renderer opens). Hardcoded because the renderer binary
+ # itself only knows the device path, and a debugfs enumeration here
+ # would itself race concurrent modetest writers.
+ my $path="/sys/kernel/debug/dri/1/clients";
+ if(!-r $path) {
+  &log("DRM: /sys/kernel/debug/dri/1/clients not readable; using 500ms fallback sleep before renderer spawn");
+  select(undef,undef,undef,0.5);
+  return;
+ }
+ my $deadline=time() + $timeout;
+ my $waited_ms=0;
+ while(time() < $deadline) {
+  my $has_master=0;
+  if(open(my $fh,"<",$path)) {
+   while(my $line=<$fh>) {
+    # Header "command pid dev master a uid magic" is skipped because its
+    # 4th field is the literal "master", not 'y'. Data rows look like
+    # "PGeneratord 18473   1   y    y   113          0" - the 4th field
+    # is 'y' when that client holds master, 'n' otherwise. The 5th
+    # column 'a' (authenticated) is irrelevant for master acquisition.
+    if($line =~ /^\s*\S+\s+\S+\s+\S+\s+y\b/) {
+     $has_master=1;
+     last;
+    }
+   }
+   close($fh);
+  }
+  last if(!$has_master);
+  $waited_ms+=50;
+  select(undef,undef,undef,0.05);
+ }
+ &log(sprintf("DRM: master unowned after %dms wait (timeout=%ds)", $waited_ms, $timeout)) if($waited_ms >= 200 || $waited_ms >= $timeout*1000);
+}
+
 sub apply_hdr_metadata_helper (@) {
  my $helper="/usr/bin/pgsethdr";
  return if(!$is_kms || !-x $helper);
@@ -509,6 +570,12 @@ sub pattern_generator_start(@) {
  &normalize_dv_transport_conf();
  &auto_select_4k_mode();
  &apply_drm_properties();
+ # apply_drm_properties() above issued up to 6 modetest -w writes; wait for
+ # the kernel to release DRM master before spawning the renderer (see
+ # wait_for_drm_master_unowned() for the full root-cause story). Without
+ # this, the renderer's first drmSetMaster races the just-closed modetest
+ # and exits with EACCES - "Pattern renderer failed to start" on the WebUI.
+ &wait_for_drm_master_unowned(3);
  &get_hdmi_info();
  if($is_kms && &kms_connector_has_property("Colorspace") && !&kms_connector_has_property("Colorimetry")) {
   $use_drm_override=0;
