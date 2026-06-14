@@ -19270,7 +19270,7 @@ function meterLgAutoCalTransportReady(){
   && getVal('rgb_quant_range')==='1';
  if(!base) return false;
  if(requested==='hdr10'){
-  return getVal('colorimetry')==='9'&&getVal('primaries')==='1'&&getVal('eotf')==='2';
+  return getVal('colorimetry')==='9'&&getVal('primaries')==='2'&&getVal('eotf')==='2';
  }
  return getVal('colorimetry')==='2'&&getVal('eotf')==='0';
 }
@@ -19287,7 +19287,7 @@ function meterSetLgAutoCalTransportValues(){
  setVal('signal_mode',requested);
  if(requested==='hdr10'){
   setVal('eotf','2');
-  setVal('primaries','1');
+  setVal('primaries','2');
   setVal('colorimetry','9');
  }else{
   setVal('eotf','0');
@@ -19307,7 +19307,7 @@ function meterSetLgAutoCalTransportValues(){
  if(requested==='hdr10'){
   setVal('colorimetry','9');
   setVal('eotf','2');
-  setVal('primaries','1');
+  setVal('primaries','2');
  }else{
   setVal('colorimetry','2');
   setVal('eotf','0');
@@ -19320,7 +19320,7 @@ function meterSetLgAutoCalTransportValues(){
 async function meterEnsureLgAutoCalTransport(workflowName){
  if(meterLgAutoCalTransportReady()&&!hasUnsavedSettings()) return true;
  const requested=meterLgAutoCalRequestedSignalMode();
- const transportLabel=requested==='hdr10'?'HDR10 YCbCr 4:4:4 10-bit limited BT.2020':'SDR YCbCr 4:4:4 10-bit limited BT.709';
+ const transportLabel=requested==='hdr10'?'HDR10 YCbCr 4:4:4 10-bit limited Display P3':'SDR YCbCr 4:4:4 10-bit limited BT.709';
  if(!meterLgAutoCalTransportAvailable()){
   toast(transportLabel+' output is not available for the current resolution. Choose a lower-bandwidth display mode, then try AutoCal again.',true);
   return false;
