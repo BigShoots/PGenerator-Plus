@@ -377,6 +377,53 @@ void hdr_output_metadata_info(int fd, uint32_t blob_id)
 
 }
 
+// HDR mastering-metadata conf read. The renderer's updateHDR_Infoframe()
+// rebuilds the wire blob on every page flip, so it must read the conf on
+// each call to stay the source of truth on the wire (matches the
+// /usr/bin/pgsethdr helper, which is now a boot-time seed and WebUI hook
+// rather than the live path).
+#define PG_HDR_CONF_PATH "/etc/PGenerator/PGenerator.conf"
+
+static double pg_read_conf_double(const char *path, const char *key, double fallback) {
+	FILE *fh = fopen(path, "r");
+	if (!fh) return fallback;
+	char line[256];
+	size_t key_len = strlen(key);
+	double out = fallback;
+	while (fgets(line, sizeof(line), fh)) {
+		if (strncmp(line, key, key_len) == 0 && line[key_len] == '=') {
+			out = atof(line + key_len + 1);
+			break;
+		}
+	}
+	fclose(fh);
+	return out;
+}
+
+static int pg_read_conf_int(const char *path, const char *key, int fallback) {
+	FILE *fh = fopen(path, "r");
+	if (!fh) return fallback;
+	char line[256];
+	size_t key_len = strlen(key);
+	int out = fallback;
+	while (fgets(line, sizeof(line), fh)) {
+		if (strncmp(line, key, key_len) == 0 && line[key_len] == '=') {
+			out = atoi(line + key_len + 1);
+			break;
+		}
+	}
+	fclose(fh);
+	return out;
+}
+
+// CTA-861-G: min_dml is in 0.0001 cd/m^2 units. Matches /usr/bin/pgsethdr.c
+// (usr/bin/pgsethdr.c:227-230) and EGL_METADATA_SCALING_EXT (10000).
+static uint16_t pg_min_luma_to_u16(double value) {
+	if (value < 0.0) value = 0.0;
+	if (value > 6.5535) value = 6.5535;
+	return (uint16_t)((value / 0.0001) + 0.5);
+}
+
 void dovi_output_metadata_info(int fd, uint32_t blob_id)
 {
 	drmModePropertyBlobRes *blob = drmModeGetPropertyBlob(fd, blob_id);
@@ -3588,8 +3635,20 @@ void ofxRPI4Window::SetActivePlane(uint32_t plane_id, ofRectangle currentWindowR
 void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 {
 	bool ok;
-	uint64_t blob_id = 0;	
-	ofLog() << "DRM: Setting HDR infoframe";	
+	uint64_t blob_id = 0;
+	ofLog() << "DRM: Setting HDR infoframe";
+
+	// Re-read the HDR mastering-metadata keys from the conf on every
+	// wire-blob rebuild. The renderer is the source of truth on the wire
+	// (per AGENTS.md) and rebuilds this struct on every page flip; reading
+	// from conf each call keeps the live blob in sync with what the user
+	// (or pgsethdr) last wrote to /etc/PGenerator/PGenerator.conf.
+	double pg_min_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "min_luma", 0.005);
+	double pg_max_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "max_luma", 1000.0);
+	int    pg_max_cll  = pg_read_conf_int(PG_HDR_CONF_PATH, "max_cll", 1000);
+	int    pg_max_fall = pg_read_conf_int(PG_HDR_CONF_PATH, "max_fall", 400);
+	uint16_t pg_min_dml = pg_min_luma_to_u16(pg_min_luma);
+	uint16_t pg_max_dml = (uint16_t)pg_max_luma;
 
 /*
 	ok = drm_mode_get_property(device, connectorId,	DRM_MODE_OBJECT_CONNECTOR, "DOVI_OUTPUT_METADATA", &prop_id, &blob_id, &prop);
@@ -3610,51 +3669,44 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 		if (blob_id)
 			drmModeDestroyPropertyBlob(device, blob_id);
 		blob_id = 0;
-	
-		struct drm_hdr_output_metadata meta;
-		if (static_cast<int>(eotf) == 3) {
-			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
-			meta.hdmi_metadata_type1.eotf = eotf;
-			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
 
+		struct drm_hdr_output_metadata meta;
+		meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
+		meta.hdmi_metadata_type1.eotf = eotf;
+		meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
+
+		if (static_cast<int>(eotf) == 3) {
+			// HLG: per CTA-861-G, the static metadata block's
+			// primaries/white_point are zeroed; mastering luminance,
+			// CLL and FALL still come from conf so the panel has a
+			// consistent reference range across EOTF switches.
 			meta.hdmi_metadata_type1.display_primaries[0].x = 0;
 			meta.hdmi_metadata_type1.display_primaries[0].y = 0;
 			meta.hdmi_metadata_type1.display_primaries[1].x = 0;
 			meta.hdmi_metadata_type1.display_primaries[1].y = 0;
 			meta.hdmi_metadata_type1.display_primaries[2].x = 0;
-			meta.hdmi_metadata_type1.display_primaries[2].y = 0;		
+			meta.hdmi_metadata_type1.display_primaries[2].y = 0;
 			meta.hdmi_metadata_type1.white_point.x = 0;
 			meta.hdmi_metadata_type1.white_point.y = 0;
-
-			meta.hdmi_metadata_type1.max_display_mastering_luminance = 0;
-			meta.hdmi_metadata_type1.min_display_mastering_luminance = 0;
-		
-			meta.hdmi_metadata_type1.max_fall = 0; 
-			meta.hdmi_metadata_type1.max_cll = 0;
 		} else {
-			meta.metadata_type = HDMI_STATIC_METADATA_TYPE1;
-			meta.hdmi_metadata_type1.eotf = eotf;
-			meta.hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1;
-
 			meta.hdmi_metadata_type1.display_primaries[0].x = std::round(DisplayChromacityList[idx].GreenX * EGL_METADATA_SCALING_EXT);
 			meta.hdmi_metadata_type1.display_primaries[0].y = std::round(DisplayChromacityList[idx].GreenY * EGL_METADATA_SCALING_EXT);
 			meta.hdmi_metadata_type1.display_primaries[1].x = std::round(DisplayChromacityList[idx].BlueX * EGL_METADATA_SCALING_EXT);
 			meta.hdmi_metadata_type1.display_primaries[1].y = std::round(DisplayChromacityList[idx].BlueY * EGL_METADATA_SCALING_EXT);
 			meta.hdmi_metadata_type1.display_primaries[2].x = std::round(DisplayChromacityList[idx].RedX * EGL_METADATA_SCALING_EXT);
-			meta.hdmi_metadata_type1.display_primaries[2].y = std::round(DisplayChromacityList[idx].RedY * EGL_METADATA_SCALING_EXT);		
+			meta.hdmi_metadata_type1.display_primaries[2].y = std::round(DisplayChromacityList[idx].RedY * EGL_METADATA_SCALING_EXT);
 			meta.hdmi_metadata_type1.white_point.x = std::round(DisplayChromacityList[idx].WhiteX * EGL_METADATA_SCALING_EXT);
 			meta.hdmi_metadata_type1.white_point.y = std::round(DisplayChromacityList[idx].WhiteY * EGL_METADATA_SCALING_EXT);
-
-			meta.hdmi_metadata_type1.max_display_mastering_luminance = (uint16_t)((float)hdr_metadata.hdmi_metadata_type1.max_display_mastering_luminance);// * 10000.0f);//(uint16_t)(10000.0f * 10000.0f);
-			meta.hdmi_metadata_type1.min_display_mastering_luminance = (uint16_t)((float)(hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance/10000.0f) * 10000.0f);//(uint16_t)(0.001f    * 10000.0f);
-		
-			meta.hdmi_metadata_type1.max_fall = (float)hdr_metadata.hdmi_metadata_type1.max_fall; 
-			meta.hdmi_metadata_type1.max_cll = (float)hdr_metadata.hdmi_metadata_type1.max_cll;
 		}
-			
-		drmModeCreatePropertyBlob(device, &meta, sizeof(meta), (uint32_t*)&blob_id); 
+
+		meta.hdmi_metadata_type1.max_display_mastering_luminance = pg_max_dml;
+		meta.hdmi_metadata_type1.min_display_mastering_luminance = pg_min_dml;
+		meta.hdmi_metadata_type1.max_fall = (uint16_t)pg_max_fall;
+		meta.hdmi_metadata_type1.max_cll  = (uint16_t)pg_max_cll;
+
+		drmModeCreatePropertyBlob(device, &meta, sizeof(meta), (uint32_t*)&blob_id);
 		first_req = 1; // allocate for atomic requests
-		last_req = 1; // commit previous atomic requests	
+		last_req = 1; // commit previous atomic requests
 		drm_mode_atomic_set_property(device, req, "HDR_OUTPUT_METADATA", connectorId, prop_id, blob_id, prop, DRM_MODE_ATOMIC_ALLOW_MODESET);
 	}
 
