@@ -498,6 +498,7 @@ sub wait_for_drm_master_unowned (@) {
  }
  my $deadline=time() + $timeout;
  my $waited_ms=0;
+ my $post_clear_grace_ms=200;
  while(time() < $deadline) {
   my $has_master=0;
   if(open(my $fh,"<",$path)) {
@@ -514,11 +515,27 @@ sub wait_for_drm_master_unowned (@) {
    }
    close($fh);
   }
-  last if(!$has_master);
-  $waited_ms+=50;
-  select(undef,undef,undef,0.05);
+  if(!$has_master) {
+   # Debugfs shows no current master. Hold for an extra
+   # $post_clear_grace_ms before returning, because the kernel's
+   # close->release handoff has been observed to lag the debugfs view
+   # by ~100-200ms on the Pi4 vc4 driver (2026-06-12 reproduction:
+   # with the poll alone the renderer still failed ~100% of the time
+   # because the renderer's first drmSetMaster raced the just-closed
+   # modetest). Empirically 200ms after the debugfs clear is enough.
+   $waited_ms+=50;
+   select(undef,undef,undef,0.05);
+   last if($post_clear_left_ms <= 0);
+   $post_clear_left_ms-=50;
+  } else {
+   # A new writer (e.g. a follow-up modetest) re-took master; reset
+   # the grace counter so we don't return prematurely.
+   $post_clear_left_ms=$post_clear_grace_ms;
+   $waited_ms+=50;
+   select(undef,undef,undef,0.05);
+  }
  }
- &log(sprintf("DRM: master unowned after %dms wait (timeout=%ds)", $waited_ms, $timeout)) if($waited_ms >= 200 || $waited_ms >= $timeout*1000);
+ &log(sprintf("DRM: master unowned after %dms wait (timeout=%ds)", $waited_ms, $timeout));
 }
 
 sub apply_hdr_metadata_helper (@) {
