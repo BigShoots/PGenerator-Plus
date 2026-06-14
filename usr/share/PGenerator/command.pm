@@ -484,6 +484,10 @@ sub apply_drm_properties (@) {
 # Pi4 BiasiLinux image always mounts /sys/kernel/debug, so the polling
 # branch is the common path; the sleep fallback is defensive.
 sub wait_for_drm_master_unowned (@) {
+ # Local import: Fcntl isn't loaded at module level (this is a 'require'd
+ # .pm with no use statements) and we need O_RDWR for sysopen().
+ require Fcntl;
+ import Fcntl qw(O_RDWR);
  my $timeout=shift;
  $timeout=3 if(!defined $timeout || $timeout <= 0);
  # Active probe: open /dev/dri/card1 ourselves (the same node the
@@ -510,19 +514,35 @@ sub wait_for_drm_master_unowned (@) {
   # Open the device, try to take master, drop it, close. Each iteration
   # is a fresh drmSetMaster attempt that exercises the same code path
   # the renderer's first drmSetMaster will hit.
-  if(sysopen(my $fh, "+<", $dev)) {
-   my $fd=fileno($fh);
-   my $ret=syscall($DRM_IOCTL_SET_MASTER, $fd);
-   if(defined $ret && $ret == 0) {
+  if(sysopen(my $fh, $dev, O_RDWR)) {
+   # Use ioctl() (not syscall()) - syscall() returned ENOSYS because
+   # the proper entry point on Linux for ioctls goes through the
+   # architecture's ioctl multiplexer, which Perl's syscall() doesn't
+   # route correctly. ioctl() does the right thing.
+   my $set_arg = 0;
+   if(ioctl($fh, $DRM_IOCTL_SET_MASTER, $set_arg) == 0) {
     # We have master; drop it immediately. The kernel will fully
-    # release by the time the next syscall returns.
-    syscall($DRM_IOCTL_DROP_MASTER, $fd);
+    # release by the time the next ioctl returns.
+    my $drop_arg = 0;
+    ioctl($fh, $DRM_IOCTL_DROP_MASTER, $drop_arg);
     close($fh);
+    # Settle: even though ioctl(DROP_MASTER) returned 0, the
+    # kernel's master release is visibly not synchronous with the
+    # next open() on a hot Pi4 vc4 boot. The renderer's
+    # drmSetMaster was returning EBUSY (Device or resource busy)
+    # even 500ms after the drop; 2s is empirically enough.
+    select(undef,undef,undef,2);
     last;
    }
-   # EACCES (or other) - someone is master. Close and retry after a
-   # short wait.
+   if($waited_ms == 0) {
+    &log(sprintf("DRM: probe drmSetMaster failed on first try: errno=%d (%s); will retry",
+      $!, $!));
+   }
    close($fh);
+  } else {
+   if($waited_ms == 0) {
+    &log(sprintf("DRM: probe sysopen(%s) failed: %s", $dev, $!));
+   }
   }
   $waited_ms+=50;
   select(undef,undef,undef,0.05);
