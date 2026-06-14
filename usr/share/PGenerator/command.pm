@@ -550,6 +550,52 @@ sub wait_for_drm_master_unowned (@) {
  &log(sprintf("DRM: master probe took %dms (timeout=%ds)", $waited_ms, $timeout));
 }
 
+# Return true if the pattern renderer (PGeneratord) currently holds DRM master
+# on the KMS minor. Reads /sys/kernel/debug/dri/<N>/clients and looks for a row
+# whose command is the renderer and whose master column is 'y'. This is the
+# positive, stable signal that pattern_generator_start() gates the post-spawn
+# connector reprogramming on: once the renderer owns master its fd is
+# was_master=true, so the brief master steals by the root helpers are safe -
+# the renderer re-acquires master after each helper drops it.
+sub pattern_generator_has_drm_master (@) {
+ # debugfs clients columns: command pid dev master a uid magic
+ foreach my $clients (glob("/sys/kernel/debug/dri/*/clients")) {
+  open(my $fh, '<', $clients) or next;
+  while(my $line=<$fh>) {
+   next if($line =~ /^\s*command\s+pid\b/);
+   my @f=split(' ', $line);
+   next if(@f < 4);
+   if($f[0] =~ /PGeneratord/ && $f[3] eq 'y') {
+    close($fh);
+    return 1;
+   }
+  }
+  close($fh);
+ }
+ return 0;
+}
+
+# Block until the renderer holds DRM master, or $timeout seconds elapse. The
+# renderer drops master transiently during its own EGL/GBM init and re-acquires
+# it, so poll rather than sample once. Returns 1 if it became master, 0 on
+# timeout (caller proceeds anyway).
+sub wait_for_renderer_drm_master (@) {
+ my $timeout=shift;
+ $timeout=8 if(!defined $timeout || $timeout <= 0);
+ my $deadline=time() + $timeout;
+ my $waited_ms=0;
+ while(time() < $deadline) {
+  if(&pattern_generator_has_drm_master()) {
+   &log(sprintf("DRM: renderer holds master after %dms", $waited_ms));
+   return 1;
+  }
+  $waited_ms+=50;
+  select(undef,undef,undef,0.05);
+ }
+ &log(sprintf("DRM: renderer did not take master within %ds; proceeding (helpers may race)", $timeout));
+ return 0;
+}
+
 sub apply_hdr_metadata_helper (@) {
  my $helper="/usr/bin/pgsethdr";
  return if(!$is_kms || !-x $helper);
@@ -644,17 +690,28 @@ sub pattern_generator_start(@) {
  usleep(250000);
    # Some displays miss the first pre-launch RGB/colorspace programming and stay
    # on the splash screen until a later format toggle forces HDMI state back in.
-   # Reapply connector properties once the renderer is alive so the first pattern
-   # push lands on the intended format without requiring a manual YCbCr detour.
-   # Wait for the renderer process first: the modetest writes below take DRM
-   # master briefly, and doing that while the renderer is still initializing
-   # (before its own drmSetMaster) used to kill it ("failed to set drm
-   # master"). The renderer also retries drmSetMaster now, but waiting here
-   # keeps the reapply out of the critical window entirely.
-   for(my $i=0;$i<20 && !&pattern_generator_is_running();$i++) {
+   # Reapply connector properties once the renderer OWNS DRM MASTER so the first
+   # pattern push lands on the intended format without requiring a manual YCbCr
+   # detour.
+   #
+   # CRITICAL ORDERING (DRM master race root cause): apply_drm_properties() and
+   # apply_hdr_metadata_helper() below run root modetest/pgsethdr children that
+   # each take DRM master. The unprivileged renderer opens /dev/dri/card1, is
+   # auto-promoted to master, then DROPS master during its EGL/GBM init and
+   # re-acquires it before its first atomic commit. If any root helper holds
+   # master during that init window, the renderer's open lands as a non-master
+   # client (drmSetMaster -> EACCES) or its re-acquire collides with the helper
+   # (drmSetMaster -> EBUSY); either way the renderer dies ("failed to set drm
+   # master" / "failed to authorize drm magic") and the WebUI reports "Pattern
+   # renderer failed to start". Gating on pattern_generator_is_running() (the
+   # process merely EXISTS) is not enough - the process exists throughout that
+   # init window. Wait until the renderer is observably the DRM master (debugfs
+   # clients: PGeneratord row with master=='y'). Once it is master its fd is
+   # was_master=true, so the brief master steals by the helpers below are safe.
+   for(my $i=0;$i<40 && !&pattern_generator_is_running();$i++) {
     usleep(250000);
    }
-   usleep(500000) if(&pattern_generator_is_running());
+   &wait_for_renderer_drm_master(8) if(&pattern_generator_is_running());
    &apply_drm_properties();
  my $startup_color_fmt=$pgenerator_conf{"color_format"};
  $startup_color_fmt=0 if($startup_color_fmt eq "");
