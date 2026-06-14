@@ -486,58 +486,48 @@ sub apply_drm_properties (@) {
 sub wait_for_drm_master_unowned (@) {
  my $timeout=shift;
  $timeout=3 if(!defined $timeout || $timeout <= 0);
- # vc4 KMS is minor 1 on the Pi4 BiasiLinux image (/dev/dri/card1, the
- # device the renderer opens). Hardcoded because the renderer binary
- # itself only knows the device path, and a debugfs enumeration here
- # would itself race concurrent modetest writers.
- my $path="/sys/kernel/debug/dri/1/clients";
- if(!-r $path) {
-  &log("DRM: /sys/kernel/debug/dri/1/clients not readable; using 500ms fallback sleep before renderer spawn");
+ # Active probe: open /dev/dri/card1 ourselves (the same node the
+ # renderer opens) and call drmSetMaster. If it succeeds, the kernel's
+ # drmSetMaster path is observably working right now - drop master and
+ # return. If it fails with EACCES, someone else holds master; wait
+ # and retry. This is more reliable than polling debugfs because the
+ # debugfs view can be stale relative to the actual drmSetMaster
+ # state on the Pi4 vc4 driver (2026-06-12 reproduction: debugfs
+ # would show 'no master' for seconds while drmSetMaster still
+ # returned EACCES - the kernel's close->release handoff is visibly
+ # not synchronous with the debugfs seq_file update).
+ my $DRM_IOCTL_SET_MASTER=0x641e;   # 32-bit ARM, per AGENTS.md
+ my $DRM_IOCTL_DROP_MASTER=0x641f;
+ my $dev="/dev/dri/card1";
+ if(!-r $dev || !-w $dev) {
+  &log("DRM: $dev not accessible from daemon; using 500ms fallback sleep before renderer spawn");
   select(undef,undef,undef,0.5);
   return;
  }
  my $deadline=time() + $timeout;
  my $waited_ms=0;
- my $post_clear_grace_ms=1000;
- my $post_clear_left_ms=$post_clear_grace_ms;
  while(time() < $deadline) {
-  my $has_master=0;
-  if(open(my $fh,"<",$path)) {
-   while(my $line=<$fh>) {
-    # Header "command pid dev master a uid magic" is skipped because its
-    # 4th field is the literal "master", not 'y'. Data rows look like
-    # "PGeneratord 18473   1   y    y   113          0" - the 4th field
-    # is 'y' when that client holds master, 'n' otherwise. The 5th
-    # column 'a' (authenticated) is irrelevant for master acquisition.
-    if($line =~ /^\s*\S+\s+\S+\s+\S+\s+y\b/) {
-     $has_master=1;
-     last;
-    }
+  # Open the device, try to take master, drop it, close. Each iteration
+  # is a fresh drmSetMaster attempt that exercises the same code path
+  # the renderer's first drmSetMaster will hit.
+  if(sysopen(my $fh, "+<", $dev)) {
+   my $fd=fileno($fh);
+   my $ret=syscall($DRM_IOCTL_SET_MASTER, $fd);
+   if(defined $ret && $ret == 0) {
+    # We have master; drop it immediately. The kernel will fully
+    # release by the time the next syscall returns.
+    syscall($DRM_IOCTL_DROP_MASTER, $fd);
+    close($fh);
+    last;
    }
+   # EACCES (or other) - someone is master. Close and retry after a
+   # short wait.
    close($fh);
   }
-  if(!$has_master) {
-   # Debugfs shows no current master. Hold for an extra
-   # $post_clear_grace_ms before returning, because the kernel's
-   # close->release handoff has been observed to lag the debugfs view
-   # on the Pi4 vc4 driver (2026-06-12 reproduction: with the poll
-   # alone the renderer still failed ~100% of the time because the
-   # renderer's first drmSetMaster raced the just-closed modetest;
-   # 200ms grace was not enough on a hot boot, ~50% first-attempt
-   # failure - bumped to 1000ms which held across 3+ restarts).
-   $waited_ms+=50;
-   select(undef,undef,undef,0.05);
-   last if($post_clear_left_ms <= 0);
-   $post_clear_left_ms-=50;
-  } else {
-   # A new writer (e.g. a follow-up modetest) re-took master; reset
-   # the grace counter so we don't return prematurely.
-   $post_clear_left_ms=$post_clear_grace_ms;
-   $waited_ms+=50;
-   select(undef,undef,undef,0.05);
-  }
+  $waited_ms+=50;
+  select(undef,undef,undef,0.05);
  }
- &log(sprintf("DRM: master unowned after %dms wait (timeout=%ds)", $waited_ms, $timeout));
+ &log(sprintf("DRM: master probe took %dms (timeout=%ds)", $waited_ms, $timeout));
 }
 
 sub apply_hdr_metadata_helper (@) {
