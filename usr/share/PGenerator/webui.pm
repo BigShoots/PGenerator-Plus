@@ -2425,8 +2425,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 				    $lg_autocal_26_stimulus{$key}=($code-64)*100/876;
 			   }
 				   my %lg_hdr20_code=(
-				    "1.4"=>19,"2"=>20,"2.7"=>22,"4"=>25,"5"=>27,"7"=>31,"10"=>38,"15"=>49,"20"=>60,"25"=>71,
-				    "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
+				    "1.4"=>135,"2"=>143,"2.7"=>150,"4"=>159,"5"=>164,"7"=>172,"10"=>181,"15"=>190,"20"=>197,"25"=>203,
+				    "30"=>207,"35"=>211,"40"=>214,"45"=>216,"50"=>219,"60"=>223,"70"=>227,"80"=>230,"90"=>233,"100"=>235
 				   );
 				   my %lg_hdr20_stimulus=();
 					   foreach my $key (keys %lg_hdr20_code) {
@@ -2522,7 +2522,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        last;
       }
      }
-	     $c=exists($lg_hdr20_code{$slot_key}) ? $lg_hdr20_code{$slot_key} : int(16 + $stimulus_pct/100*219 + .5);
+	     $c=exists($lg_hdr20_code{$slot_key}) ? $lg_hdr20_code{$slot_key} : (($stimulus_pct <= 0) ? 16 : int(16 + &webui_pattern_pq_encode_normalized($stimulus_pct/100*10000)*219 + .5));
 	     $c=16 if($c < 16);
 	     $c=235 if($c > 235);
 	     return $c;
