@@ -21656,7 +21656,7 @@ function meterAutoCalStatusChartReadings(status,currentKey){
  return Array.from(byKey.values()).sort((a,b)=>(meterReadingPlotIre(a)||a.ire||0)-(meterReadingPlotIre(b)||b.ire||0));
 }
 
-function meterAutoCalApplyStatus(status){
+async function meterAutoCalApplyStatus(status){
 			 if(!status) return;
 			 meterAutoCalLatestStatus=status;
 		 meterAutoCalSyncLgCalibrationMode(status);
@@ -21739,7 +21739,15 @@ function meterAutoCalApplyStatus(status){
 	  meterAutoCalPhase='complete';
 	  meterAutoCalRunning=true;
 	  meterAutoCalSaveState();
-	  meterAutoCalSetOverlay(true,{...status,phase:'complete'});
+	  // Wizard-owned HDR tone-map prompt: runs BEFORE the "Greyscale Auto
+	  // Cal complete" overlay so the operator gets a single, predictable
+	  // decision moment with a freshly measured peak.
+	  let completeStatus=status;
+	  if(status.hdr20_1d_tonemap_pending){
+	   const promptResult=await meterAutoCalPromptHdrToneMapUpload(status,'greyscale');
+	   if(promptResult&&promptResult.finalStatus) completeStatus=promptResult.finalStatus;
+	  }
+	  meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete'});
 	 }else{
 	  meterAutoCalSetOverlay(status.status==='error',status);
 	 }
@@ -22021,9 +22029,238 @@ function meterFullAutoCalToneMapPeakLuminance(status){
  return null;
 }
 
+// =============================================================================
+// HDR10 tone-map wizard prompt
+// -----------------------------------------------------------------------------
+// The reference-style HDR greyscale autocal measures 100% white AFTER the 1D LUT
+// commit, before uploading the tone map. To match that, the backend now sets
+// hdr20_1d_tonemap_pending=true in status instead of uploading inline. The
+// wizard prompts the operator, does a fresh 100% white read, and uploads the
+// tone map with that freshly measured peak.
+//
+// Test plan (manual):
+//   - SDR greyscale autocal      -> no prompt, no upload (signalMode !== hdr10)
+//   - HDR10 greyscale autocal    -> prompt shown, fresh peak read, Upload performs /api/lg/hdr-tone-map/upload
+//   - HDR10 greyscale Skip       -> choice recorded in report
+//   - HDR10 full autocal         -> prompt shown at end of fullWorkflow (chained before completion overlay)
+//   - Modal click-outside / X    -> treated as Skip (returns false)
+//   - Meter not detected         -> modal shows "could not measure" warning, skipped
+//   - hdr20_1d_tonemap_upload_enabled=false in request body (explicit) -> no prompt, no upload (kill switch)
+// =============================================================================
+const METER_HDR_TONEMAP_PROMPT_KEY='meterHdrToneMapPromptChoice';
+
+function meterShowChoiceModal(options){
+ const opts=options||{};
+ return new Promise(resolve=>{
+  const existing=document.getElementById('meterAutoCalChoiceModal');
+  if(existing) existing.remove();
+  const root=document.createElement('div');
+  root.id='meterAutoCalChoiceModal';
+  root.setAttribute('data-meter-autocal-choice','1');
+  root.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:100001;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box';
+  const card=document.createElement('div');
+  card.style.cssText='background:var(--panel,#0f1320);border:1px solid var(--border,#1d2230);border-radius:10px;max-width:480px;width:100%;padding:20px;color:var(--text,#e3e6ef);box-shadow:0 18px 60px rgba(0,0,0,0.6);font-family:inherit';
+  const title=document.createElement('div');
+  title.style.cssText='font-size:1.0rem;font-weight:700;margin-bottom:10px;color:var(--text,#e3e6ef)';
+  title.textContent=String(opts.title||'Confirm');
+  const body=document.createElement('div');
+  body.style.cssText='font-size:.85rem;color:var(--text2,#a8b0c0);line-height:1.5;margin-bottom:18px;white-space:pre-line';
+  body.textContent=String(opts.body||'');
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap';
+  const cancelBtn=document.createElement('button');
+  cancelBtn.className='btn btn-sm btn-secondary';
+  cancelBtn.textContent=String(opts.cancelLabel||'Skip');
+  const acceptBtn=document.createElement('button');
+  acceptBtn.className='btn btn-sm btn-primary';
+  acceptBtn.textContent=String(opts.acceptLabel||'OK');
+  row.appendChild(cancelBtn);
+  row.appendChild(acceptBtn);
+  card.appendChild(title);
+  card.appendChild(body);
+  card.appendChild(row);
+  root.appendChild(card);
+  document.body.appendChild(root);
+  let resolved=false;
+  const cleanup=(value)=>{
+   if(resolved) return;
+   resolved=true;
+   try{ document.removeEventListener('keydown',onKey,true); }catch(e){}
+   try{ root.remove(); }catch(e){}
+   resolve(value);
+  };
+  acceptBtn.onclick=()=>cleanup(true);
+  cancelBtn.onclick=()=>cleanup(false);
+  root.onclick=(ev)=>{ if(ev.target===root) cleanup(false); };
+  function onKey(ev){ if(ev.key==='Escape') cleanup(false); }
+  document.addEventListener('keydown',onKey,true);
+  try{ acceptBtn.focus(); }catch(e){}
+ });
+}
+
+function meterAutoCalHdrToneMapRunId(status){
+ const r=status||{};
+ return r.full_autocal_run_id||r.run_id||(typeof meterFullAutoCalRunId!=='undefined'?meterFullAutoCalRunId:null)||'standalone';
+}
+
+function meterAutoCalReadHdrToneMapChoice(runId){
+ try{
+  const map=JSON.parse(localStorage.getItem(METER_HDR_TONEMAP_PROMPT_KEY)||'{}');
+  if(map&&typeof map==='object'&&runId&&map[runId]) return map[runId];
+ }catch(e){}
+ return null;
+}
+
+function meterAutoCalPersistHdrToneMapChoice(runId,payload){
+ try{
+  const map=JSON.parse(localStorage.getItem(METER_HDR_TONEMAP_PROMPT_KEY)||'{}');
+  if(typeof map!=='object'||!map) return;
+  map[runId]=Object.assign({},payload||{},{recorded_at:Date.now()});
+  localStorage.setItem(METER_HDR_TONEMAP_PROMPT_KEY,JSON.stringify(map));
+ }catch(e){}
+}
+
+function meterAutoCalRecordHdrToneMapReport(payload){
+ try{
+  if(typeof meterFullAutoCalReportData==='undefined'||!meterFullAutoCalReportData) return;
+  meterFullAutoCalReportData=meterFullAutoCalReportData||(typeof meterFullAutoCalDefaultReportData==='function'?meterFullAutoCalDefaultReportData():null);
+  if(!meterFullAutoCalReportData) return;
+  meterFullAutoCalReportData.stages=meterFullAutoCalReportData.stages||{};
+  const existing=meterFullAutoCalReportData.stages.hdr_tone_map_wizard||{};
+  meterFullAutoCalReportData.stages.hdr_tone_map_wizard=Object.assign({},existing,payload||{},{recorded_at:Date.now()});
+  if(typeof meterFullAutoCalSaveReportData==='function') meterFullAutoCalSaveReportData();
+ }catch(e){}
+}
+
+// Re-measure 100% white with the new 1D LUT in place, using the wizard's
+// existing pattern + meter session. Returns the measured Y in nits (cd/m^2),
+// or null if no usable reading was returned.
+async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
+ const sigMode=String(signalMode||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():'hdr10')||'hdr10').toLowerCase();
+ let step=null;
+ try{
+  if(typeof meterAutoCalWhiteStep==='function') step=meterAutoCalWhiteStep();
+ }catch(e){}
+ if(!step){
+  // Fallback: build a plain 100% white step. For HDR10 use 10-bit PQ; for SDR
+  // use 8-bit limited.
+  if(sigMode==='hdr10'){
+   step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:940,g:940,b:940,input_max:1023,name:'100%'};
+  }else{
+   step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:235,g:235,b:235,input_max:255,name:'100%'};
+  }
+ }
+ // Force-display the white patch so the pattern + meter session are aligned.
+ try{
+  if(typeof meterDisplayPatch==='function') await meterDisplayPatch(step,{fresh:false,allowAfterStop:true});
+ }catch(e){}
+ // Brief settle so the panel luma and meter integration window agree.
+ await new Promise(r=>setTimeout(r,3000));
+ const dtype=(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'';
+ const rr=(typeof getMeterRefreshRate==='function')?getMeterRefreshRate():'';
+ const delay=(typeof meterDelayMs==='function')?meterDelayMs():0;
+ const patternSignalRange=(typeof meterMeasurementPatchSignalRange==='function')?meterMeasurementPatchSignalRange():null;
+ const readContext={dtype,rr,delay,patternSignalRange,requireDeviceReady:false};
+ let peak=null;
+ try{
+  if(typeof meterStartSingleRead==='function'&&typeof meterBuildManualReadPayload==='function'&&typeof meterReadResultOk==='function'&&typeof meterReadingLuminanceNits==='function'){
+   const result=await meterStartSingleRead(meterBuildManualReadPayload(step,readContext));
+   if(meterReadResultOk(result)&&result.readings&&result.readings[0]){
+    peak=meterReadingLuminanceNits(result.readings[0]);
+   }
+  }
+ }catch(e){ peak=null; }
+ // Always return to an idle pattern so we don't leave a 100% white stuck
+ // on the panel while the operator makes the upload decision.
+ try{
+  await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+ }catch(e){}
+ return peak;
+}
+
+// Show the prompt, do the fresh 100% read, upload if accepted, and persist
+// the choice in localStorage + the full-autocal report. Returns a structured
+// result so the caller can chain the rest of the completion flow.
+async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
+ const opts=options||{};
+ const sigMode=String(((status&&(status.signal_mode||status.requested_signal_mode))||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():''))).toLowerCase();
+ if(sigMode!=='hdr10') return {shown:false,reason:'not-hdr10'};
+ if(!(status&&status.hdr20_1d_tonemap_pending)) return {shown:false,reason:'not-pending'};
+ const runId=meterAutoCalHdrToneMapRunId(status);
+ const prior=meterAutoCalReadHdrToneMapChoice(runId);
+ if(prior&&prior.peak_luminance){
+  toast(prior.user_choice==='uploaded'
+   ?'HDR tone map already uploaded (peak='+Number(prior.peak_luminance).toFixed(1)+' nits)'
+   :'HDR tone map upload was skipped (peak='+Number(prior.peak_luminance).toFixed(1)+' nits)');
+  return {shown:false,reason:'already-handled',choice:prior};
+ }
+ const inLoopPeakRaw=Number(status&&status.hdr20_1d_tonemap_peak_luminance);
+ const inLoopPeak=Number.isFinite(inLoopPeakRaw)&&inLoopPeakRaw>0?inLoopPeakRaw:null;
+ // Make sure a meter is attached before promising a fresh read.
+ if(typeof meterEnsureDetected==='function'){
+  try{ await meterEnsureDetected(); }catch(e){}
+ }
+ toast('Measuring 100% white for HDR tone map...');
+ let measuredPeak=null;
+ try{
+  measuredPeak=await meterAutoCalMeasureHdrPeakLuminance(typeof meterLgPictureModeValue==='function'?meterLgPictureModeValue():'',sigMode);
+ }catch(e){ measuredPeak=null; }
+ if(!(Number.isFinite(measuredPeak)&&measuredPeak>0)){
+  toast('Could not measure 100% white peak \u2014 skipping HDR tone map upload',true);
+  const payload={user_choice:'skipped',reason:'no-fresh-peak',peak_luminance:inLoopPeak,in_loop_peak:inLoopPeak,source:source||'wizard'};
+  meterAutoCalPersistHdrToneMapChoice(runId,payload);
+  meterAutoCalRecordHdrToneMapReport(payload);
+  if(typeof opts.onComplete==='function'){ try{ opts.onComplete(payload); }catch(e){} }
+  return {shown:false,reason:'no-fresh-peak',choice:payload};
+ }
+ const pictureMode=(typeof meterLgPictureModeValue==='function')?meterLgPictureModeValue():'';
+ const body='100% white is measured again after the 1D LUT commit, and the HDR tone-map is uploaded with that measured peak. We just re-measured 100% white with the new LUT in place.\n\nUpload HDR tone map with peak = '+Number(measuredPeak).toFixed(1)+' nits?';
+ const choice=await meterShowChoiceModal({
+  title:'Upload HDR tone map',
+  body,
+  acceptLabel:'\u25B6 Upload ('+Number(measuredPeak).toFixed(0)+' nits)',
+  cancelLabel:'Skip'
+ });
+ let choiceRecord=null;
+ let finalStatus=null;
+ if(choice){
+  try{
+   const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({picture_mode:pictureMode,peak_luminance:measuredPeak,helper_timeout:90}),
+    _timeoutMs:100000
+   });
+   if(response&&response.status==='ok'){
+    toast('HDR tone map uploaded (peak='+Number(measuredPeak).toFixed(1)+' nits)');
+    choiceRecord={user_choice:'uploaded',peak_luminance:measuredPeak,in_loop_peak:inLoopPeak,source:source||'wizard',response};
+    finalStatus={...(status||{}),hdr_tone_map_uploaded:true,hdr_tone_map_peak_luminance:measuredPeak,hdr20_1d_tonemap_uploaded:true,hdr20_1d_tonemap_peak_luminance:measuredPeak};
+   }else{
+    toast((response&&response.message)||'HDR tone map upload failed',true);
+    choiceRecord={user_choice:'upload_failed',peak_luminance:measuredPeak,in_loop_peak:inLoopPeak,source:source||'wizard',response};
+   }
+  }catch(e){
+   toast('HDR tone map upload failed: '+e.message,true);
+   choiceRecord={user_choice:'upload_failed',peak_luminance:measuredPeak,in_loop_peak:inLoopPeak,source:source||'wizard',error:String(e&&e.message||e)};
+  }
+ }else{
+  toast('HDR tone map upload skipped (peak='+Number(measuredPeak).toFixed(1)+' nits would have been used)');
+  choiceRecord={user_choice:'skipped',peak_luminance:measuredPeak,in_loop_peak:inLoopPeak,source:source||'wizard'};
+ }
+ meterAutoCalPersistHdrToneMapChoice(runId,choiceRecord);
+ meterAutoCalRecordHdrToneMapReport(choiceRecord);
+ if(typeof opts.onComplete==='function'){ try{ opts.onComplete(choiceRecord); }catch(e){} }
+ return {shown:true,choice:choiceRecord,finalStatus};
+}
+
+
 async function meterFullAutoCalUploadHdrToneMap(status,source){
  if(!meterFullAutoCalHdrWorkflowActive()) return status||{};
  if(status&&status.hdr_tone_map_uploaded) return status;
+ // Wizard-owned path: the operator-confirmed upload already happened (or
+ // was deliberately skipped) in the prompt. The full-workflow completion
+ // caller is responsible for invoking the prompt; we just merge the
+ // updated status fields and return.
+ if(status&&status.hdr20_1d_tonemap_pending) return status;
  const peak=meterFullAutoCalToneMapPeakLuminance(status);
  if(!(Number.isFinite(peak)&&peak>0)) throw new Error('HDR tone-map upload needs a measured 100% peak luminance.');
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Uploading HDR tone map',message:'Writing HDR tone-map parameters from measured peak luminance.'},{workflow:'full',label:'HDR tone map'});
@@ -22058,7 +22295,15 @@ async function meterFullAutoCalUploadHdrToneMap(status,source){
 
 async function meterFullAutoCalCompleteAfterHdrToneMap(status,options,source){
  try{
-  const finalStatus=await meterFullAutoCalUploadHdrToneMap(status,source);
+  // Wizard-owned tone-map upload: prompt FIRST (with a fresh 100% peak
+  // read), then chain to the inline-upload fallback for the rare case the
+  // backend did NOT defer (older runs, hand-rolled callers).
+  let workingStatus=status||{};
+  if(meterFullAutoCalHdrWorkflowActive()&&workingStatus.hdr20_1d_tonemap_pending){
+   const promptResult=await meterAutoCalPromptHdrToneMapUpload(workingStatus,source);
+   if(promptResult&&promptResult.finalStatus) workingStatus=promptResult.finalStatus;
+  }
+  const finalStatus=await meterFullAutoCalUploadHdrToneMap(workingStatus,source);
   meterFullAutoCalComplete(finalStatus,options);
   return true;
  }catch(e){
@@ -23066,10 +23311,19 @@ function meterFullAutoCalTouchupTargetY(){
 		  if(fullWorkflow){
 		   await meterFullAutoCalCompleteAfterHdrToneMap(mergedStatus,undefined,'magic-wand');
 		  }else{
+		   // Wizard-owned HDR tone-map prompt: the original autocal
+		   // commit set hdr20_1d_tonemap_pending; we still need the
+		   // fresh 100% peak read + operator decision before showing
+		   // the final "Greyscale Auto Cal complete" overlay.
+		   let completeStatus=mergedStatus;
+		   if(mergedStatus&&mergedStatus.hdr20_1d_tonemap_pending){
+		    const promptResult=await meterAutoCalPromptHdrToneMapUpload(mergedStatus,'magic-wand-standalone');
+		    if(promptResult&&promptResult.finalStatus) completeStatus=promptResult.finalStatus;
+		   }
 		   meterAutoCalPhase='complete';
 		   meterAutoCalRunning=true;
 	   meterAutoCalClearSavedState();
-	   meterAutoCalSetOverlay(true,{...mergedStatus,phase:'complete',current_name:'Greyscale Auto Cal complete',message:'Greyscale Auto Cal and Magic Wand complete.'});
+	   meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete',current_name:'Greyscale Auto Cal complete',message:'Greyscale Auto Cal and Magic Wand complete.'});
 	   toast('LG Auto Cal complete');
 	  }
 	  return true;
@@ -23624,7 +23878,7 @@ async function meterPollAutoCal(options){
 	   meterAutoCalSetOverlay(false,r);
 	   return;
 	  }
-	  if(r.status==='running'||localAutoCalActive) meterAutoCalApplyStatus(r);
+	  if(r.status==='running'||localAutoCalActive) await meterAutoCalApplyStatus(r);
 		  if(r.status==='running'&&!meterAutoCalPolling){
 		   meterAutoCalPolling=setInterval(meterPollAutoCal,1500);
 		  }
@@ -23683,10 +23937,19 @@ async function meterPollAutoCal(options){
 				     meterAutoCalSetOverlay(false,r);
 				     return;
 				    }
+				    // Wizard-owned HDR tone-map prompt: only for the
+				    // standalone greyscale path. The full-workflow
+				    // path is already covered by
+				    // meterFullAutoCalCompleteAfterHdrToneMap.
+				    let completeStatus=r;
+				    if(!r.full_workflow&&r.hdr20_1d_tonemap_pending){
+				     const promptResult=await meterAutoCalPromptHdrToneMapUpload(r,'greyscale-poller');
+				     if(promptResult&&promptResult.finalStatus) completeStatus=promptResult.finalStatus;
+				    }
 				    meterAutoCalPhase='complete';
 		    meterAutoCalRunning=true;
 	    meterAutoCalPendingConfig=null;
-	    meterAutoCalSetOverlay(true,{...r,phase:'complete'});
+	    meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete'});
 	   }else if(r.status==='error'){
 	    if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
 	    meterAutoCalPhase='error';

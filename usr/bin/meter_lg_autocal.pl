@@ -12217,9 +12217,32 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 	 $state->{"hdr20_1d_tonemap_peak_luminance"}=$white_y+0;
 	 if(!$upload_enabled) {
 	  $state->{"hdr20_1d_tonemap_uploaded"}=JSON::PP::false;
+	  # Explicit kill switch: neither inline upload nor the wizard prompt
+	  # should run. Clear any prior pending flag so a stale "pending" from an
+	  # earlier run can't be picked up by the wizard.
+	  $state->{"hdr20_1d_tonemap_pending"}=JSON::PP::false;
+	  $state->{"hdr20_1d_tonemap_wizard_handled"}=JSON::PP::false;
 	  $state->{"hdr20_1d_tonemap_upload_message"}="upload disabled: lg_autocal_hdr20_tonemap_upload_enabled is not set (the HDR tone-mapping curve is normally uploaded as the last step of the autocal -- skipping it leaves the panel on the picture-mode default rolloff, which mismatches the calibrated peak and is the most likely cause of the U-shape dE in the middle IREs; the array is captured in hdr20_1d_tonemap_peak_luminance for diagnostic)";
 	  $state->{"message"}="Final 1D LUT uploaded, verified, calibration mode ended; HDR10 tone map upload disabled (peak=".($white_y+0)." nits)";
 	  write_state($state);
+	  return 0;
+	 }
+	 # Wizard-owned upload path: by default the wizard prompts the operator
+	 # for confirmation AFTER the 1D LUT commit, using a freshly measured
+	 # 100% white peak. The in-loop $white_y is captured as a fallback in
+	 # case the wizard or page reload loses the pending flag.
+	 my $wizard_owns_explicit=ref($config) eq "HASH" && exists $config->{"lg_autocal_hdr20_tonemap_wizard_owns_upload"};
+	 my $wizard_owns_upload=$wizard_owns_explicit
+	  ? ($config->{"lg_autocal_hdr20_tonemap_wizard_owns_upload"} ? 1 : 0)
+	  : ($is_hdr_greyscale_autocal ? 1 : 0);
+	 $state->{"hdr20_1d_tonemap_wizard_owns_upload"}=$wizard_owns_upload ? JSON::PP::true : JSON::PP::false;
+	 if($wizard_owns_upload) {
+	  $state->{"hdr20_1d_tonemap_pending"}=JSON::PP::true;
+	  $state->{"hdr20_1d_tonemap_uploaded"}=JSON::PP::false;
+	  $state->{"hdr20_1d_tonemap_upload_message"}="deferred to wizard: peak will be re-measured after 1D LUT commit";
+	  $state->{"message"}="Final 1D LUT uploaded, verified, calibration mode ended; HDR10 tone map upload pending wizard confirmation (in-loop peak=".($white_y+0)." nits)";
+	  write_state($state);
+	  log_line("HDR20 1D tonemap queue: deferred to wizard (peak=".($white_y+0)." nits)");
 	  return 0;
 	 }
 	 my $response=api_json("POST","/api/lg/hdr-tone-map/upload",{
@@ -12232,6 +12255,8 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 	 $state->{"hdr20_1d_tonemap_upload_message"}=(ref($response) eq "HASH" && $response->{message})
 	  ? $response->{message}
 	  : (defined $response ? "unexpected response" : "endpoint unreachable");
+	 # Inline upload path: pending is not applicable, clear it defensively.
+	 $state->{"hdr20_1d_tonemap_pending"}=JSON::PP::false;
 	 $state->{"message"}=$uploaded
 	  ? "Final 1D LUT uploaded, verified, calibration mode ended, and HDR10 tone map uploaded (peak=".($white_y+0)." nits)"
 	  : "Final 1D LUT uploaded, verified, calibration mode ended; HDR10 tone map upload attempted (peak=".($white_y+0)." nits) but failed (".($state->{"hdr20_1d_tonemap_upload_message"}//"unknown").")";
