@@ -5273,7 +5273,7 @@ sub webui_apply_config (@) {
    $changes{"dv_interface"}="0";
    $changes{"dv_metadata"}="0";
    $changes{"eotf"}=($signal_mode eq "hlg") ? "3" : "2";
-   $changes{"primaries"}="1";
+   $changes{"primaries"}="2";
   } elsif($signal_mode eq "dv") {
    $changes{"is_sdr"}="0";
    $changes{"is_hdr"}="1";
@@ -5283,7 +5283,7 @@ sub webui_apply_config (@) {
    $changes{"dv_status"}="1";
    $changes{"dv_interface"}=&pg_dv_transport_interface($requested_dv_transport);
    $changes{"eotf"}="2";
-   $changes{"primaries"}="1";
+   $changes{"primaries"}="2";
    $changes{"max_bpc"}=&pg_dv_transport_max_bpc($requested_dv_transport, $changes{"max_bpc"} || $pgenerator_conf{"max_bpc"});
    $changes{"color_format"}=&pg_dv_transport_color_format($requested_dv_transport);
    $changes{"colorimetry"}="9";
@@ -5337,7 +5337,7 @@ sub webui_apply_config (@) {
   $changes{"color_format"}=&pg_dv_transport_color_format($dv_transport);
   $changes{"colorimetry"}="9";
   $changes{"eotf"}="2";
-  $changes{"primaries"}="1";
+  $changes{"primaries"}="2";
   $changes{"rgb_quant_range"}="2";
  $changes{"dv_profile"}="1";
  $changes{"dv_color_space"}="0";
