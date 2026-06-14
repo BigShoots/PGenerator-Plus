@@ -3474,6 +3474,81 @@ sub lg_ddc_interpolated_offset_at_index (@) {
 		 return &lg_ddc_offset_units_for_slot($slots[$#slots],$offsets,$baseline,$channel);
 		}
 
+# HDR20 1D LUT low-end continuity guard. The first four HDR20 anchors
+# (1.4 %, 2 %, 2.7 %, 4 %; LUT indices 14, 19, 28, 42 in the 0-1023 table)
+# sit at meter-noise luma (<= 2 nits on the C2 in HDR Filmmaker). The
+# autocal's per-anchor response model has been observed to over-correct
+# here, pushing the LUT 50-150 % above identity and producing a +36 to
+# +64 % luma error post-cal. Calman treats the low-IRE region the same
+# way: trust the smooth PQ curve, distrust the noisy meter. This guard
+# mirrors lg_ddc_sdr26_top_continuity_guard_settings for the bottom end.
+sub lg_ddc_hdr20_low_continuity_guard_settings (@) {
+		 my ($baseline,$settings)=@_;
+		 my %diagnostics=(
+		  ddc_layout => (ref($settings) eq "HASH" ? ($settings->{"ddc_layout"}||"hdr20") : "hdr20"),
+		  applied => &json_false(),
+		  changes => [],
+		 );
+		 return ($settings,\%diagnostics) if(ref($settings) ne "HASH");
+		 return ($settings,\%diagnostics) if(($settings->{"ddc_layout"}||"hdr20") ne "hdr20");
+		 return ($settings,\%diagnostics) if(@LG_DDC_1D_LABELS_HDR20 < 4);
+		 my @specs=(
+		  [ "whiteBalanceRed", 0 ],
+		  [ "whiteBalanceGreen", 1 ],
+		  [ "whiteBalanceBlue", 2 ],
+		  [ "adjustingLuminance", 1 ],
+		 );
+		 my %guarded=%{$settings};
+		 my @changes=();
+		 for(my $slot=0;$slot<4;$slot++) {
+		  my $ire=$LG_DDC_1D_LABELS_HDR20[$slot];
+		  my $lut_index=$LG_DDC_1D_INDEXES_HDR20[$slot];
+		  my $min_ratio=0.85;
+		  my $max_ratio=1.15;
+		  foreach my $spec (@specs) {
+		   my ($setting,$channel)=@{$spec};
+		   my $values=&lg_ddc_normalize_rgb_array($settings->{$setting});
+		   next if(ref($values) ne "ARRAY" || $slot >= @{$values});
+		   my $base=($lut_index >= 0 && $lut_index < 1024 && ref($baseline) eq "ARRAY" && @{$baseline} == 3072) ? ($baseline->[($channel*1024)+$lut_index]+0) : 0;
+		   next if($base <= 0);
+		   my $offset=$values->[$slot]+0;
+		   my $step_units=&lg_ddc_step_units_for_point($baseline,$channel,$lut_index);
+		   next if($step_units <= 0);
+		   my $units=$offset*$step_units;
+		   my $target_lut=$base+$units;
+		   my $min_lut=$base*$min_ratio;
+		   my $max_lut=$base*$max_ratio;
+		   next if($target_lut >= $min_lut && $target_lut <= $max_lut);
+		   my $clamped_lut=($target_lut < $min_lut) ? $min_lut : $max_lut;
+		   my $clamped_units=$clamped_lut-$base;
+		   my $new_offset=$clamped_units/$step_units;
+		   $new_offset=-50 if($new_offset < -50);
+		   $new_offset=50 if($new_offset > 50);
+		   $new_offset=int($new_offset*100+($new_offset < 0 ? -0.5 : 0.5))/100;
+		   my $before=$values->[$slot]+0;
+		   $values->[$slot]=$new_offset;
+		   $guarded{$setting}=$values;
+		   push(@changes,{
+		    setting => $setting,
+		    channel => $channel+0,
+		    ire => $ire+0,
+		    lut_index => $lut_index+0,
+		    slot_before => $before+0,
+		    slot_after => $new_offset+0,
+		    base_lut => int($base+0.5),
+		    target_lut_before => int($target_lut+0.5),
+		    target_lut_after => int($clamped_lut+0.5),
+		    reason => "hdr20_low_continuity_cap",
+		   });
+		  }
+		 }
+		 if(@changes) {
+		  $diagnostics{"applied"}=&json_true();
+		  $diagnostics{"changes"}=\@changes;
+		 }
+		 return (\%guarded,\%diagnostics);
+		}
+
 sub lg_ddc_sdr26_top_continuity_guard_settings (@) {
 		 my ($baseline,$settings)=@_;
 		 my %diagnostics=(
@@ -3861,6 +3936,7 @@ sub lg_ddc_1d_white_balance_set (@) {
 		 &lg_ddc_clear_state($ip,$picture_mode) if($reset_ddc_baseline);
 			 my $baseline=&lg_ddc_baseline_lut($session,$ip,$picture_mode,$timeout,$reset_ddc_baseline,$ddc_layout);
 			 my ($effective_settings,$top_continuity)=&lg_ddc_sdr26_top_continuity_guard_settings($baseline,$settings);
+			 my ($effective_settings,$low_continuity)=&lg_ddc_hdr20_low_continuity_guard_settings($baseline,$effective_settings) if($ddc_layout eq "hdr20");
 			 my $normalized_state=&lg_ddc_state_from_settings($effective_settings,$picture_mode);
 			 if($ddc_layout eq "sdr26") {
 			  &diag_log_append("ddc1d:normalized-sdr-low-shadow",{
