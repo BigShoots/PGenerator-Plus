@@ -4353,6 +4353,7 @@ sub webui_ccss_create_start (@) {
  return '{"status":"error","message":"A CCSS creation job is already running"}' if(&_webui_ccss_create_alive());
 
  &webui_meter_stop();
+ &webui_pattern_stop_guard_clear();
  system("sudo bash $_meter_wrapper --kill 2>/dev/null");
  # Kill any stray helper/ccxxmake from a prior attempt. If a previous run's
  # python helper was force-killed, its ccxxmake child orphans and keeps the
