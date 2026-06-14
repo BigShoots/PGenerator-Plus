@@ -25,6 +25,17 @@ case "$1" in
         chmod 755 /etc/sudo /etc/sudo/sudoers.d /etc/sudoers.d 2>/dev/null
         chmod 440 /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d/PGenerator 2>/dev/null
         chmod +x /usr/sbin/pgenerator-update /usr/bin/spotread /usr/bin/spotread_wrapper.sh /usr/bin/meter_session.sh /usr/bin/meter_series.sh /usr/bin/ccss_create.py /usr/bin/ccss_create_patch.sh /usr/bin/ccxxmake_interactive 2>/dev/null
+        # Open up /sys/kernel/debug so the renderer-spawn race fix
+        # (wait_for_drm_master_unowned in command.pm) can poll
+        # /sys/kernel/debug/dri/1/clients to wait for the kernel to
+        # release DRM master. The debugfs root defaults to mode 700
+        # (root-only); mode 755 makes the tree traversable for the
+        # pgenerator user, and the per-file mode 444 limits actual
+        # disclosure to read access on the few files the daemon
+        # enumerates (and the file contents are small/ephemeral).
+        # On a Pi4-only image this is acceptable; on a multi-tenant
+        # box, narrow this to a more restrictive ACL.
+        chmod 755 /sys/kernel/debug 2>/dev/null
         mkdir -p $PGENERATOR_VAR_DIR $PGENERATOR_MOUNT_POINT_DIR 2>/dev/null
         chown $PGENERATOR_USER_GROUP.$PGENERATOR_USER_GROUP $PGENERATOR_VAR_DIR $PGENERATOR_MOUNT_POINT_DIR 2>/dev/null
         chmod 775 $PGENERATOR_VAR_DIR 2>/dev/null
