@@ -12203,7 +12203,16 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 	 my $effective_ddc_layout=$config->{"ddc_layout"} // $state->{"ddc_layout"} // "";
 	 return 0 unless($effective_ddc_layout eq "hdr20");
 	 return 0 unless(defined($white_y) && $white_y > 0);
-	 my $upload_enabled=(ref($config) eq "HASH" && $config->{"lg_autocal_hdr20_tonemap_upload_enabled"});
+	 # Greyscale HDR autocal (Calman-style full-cal path) always uploads
+	 # the tone map unless an explicit false is in the request body.
+	 my $config_explicit=ref($config) eq "HASH" && exists $config->{"lg_autocal_hdr20_tonemap_upload_enabled"};
+	 my $is_hdr_greyscale_autocal=(ref($config) eq "HASH"
+	  && ($config->{"type"}//"") eq "greyscale"
+	  && lc(($config->{"signal_mode"}//"")) eq "hdr10"
+	  && $config->{"lg_autocal_26"});
+	 my $upload_enabled=$config_explicit
+	  ? ($config->{"lg_autocal_hdr20_tonemap_upload_enabled"} ? 1 : 0)
+	  : ($is_hdr_greyscale_autocal ? 1 : 0);
 	 $state->{"hdr20_1d_tonemap_upload_enabled"}=$upload_enabled ? JSON::PP::true : JSON::PP::false;
 	 $state->{"hdr20_1d_tonemap_peak_luminance"}=$white_y+0;
 	 if(!$upload_enabled) {
