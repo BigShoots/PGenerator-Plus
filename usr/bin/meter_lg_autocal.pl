@@ -12528,7 +12528,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
-	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 10;
+	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 5;
 	$max_inner_white=1 if($max_inner_white < 1);
 	$max_inner_white=16 if($max_inner_white > 16);
 	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
@@ -12712,19 +12712,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				last;
 			}
 			$last_reading=$reading;
-			# Target luminance: lower anchors track the 2.2 curve against the
-			# calibrated peak; 100% white is AT peak (cannot be pushed higher)
-			# so its target Y is its own measured Y -> dE is chroma-only and
-			# convergence is judged purely on white balance.
-			my $tl=$is_white ? luminance($reading) : target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
-			$tl=$white_ref if($is_white && !(defined($tl) && $tl+0 > 0));
-			# White IS the reference: normalise it to ITSELF so target_Yn=1.0
-			# and its luminance error is exactly zero (with- and without-
-			# luminance dE match). If we normalised white to the provisional
-			# native-peak $white_ref instead, reduce-to-lowest lowering Y would
-			# leave target_Yn<1 and the chart would show a phantom luminance
-			# error at 100%. Lower anchors normalise to the calibrated peak.
-			annotate_reading_target($reading,($is_white ? $tl : $white_ref),$tl,$target_x,$target_y);
+			# Target luminance per anchor on the 2.2 curve vs the peak white_ref,
+			# the SAME way for every anchor including 100% (where the target is
+			# white_ref, i.e. target_Yn=1.0). Luminance is reached purely by RGB
+			# scaling (the gain below) -- there is NO separate luminance setting.
+			# This matches CalMAN: it moves all three DPG channels together to
+			# change luminance and their ratio to correct white balance, and
+			# judges convergence on dE ITP WITH luminance.
+			my $tl=target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
+			$tl=$white_ref if(!(defined($tl) && $tl+0 > 0));
+			annotate_reading_target($reading,$white_ref,$tl,$target_x,$target_y);
 			$state->{"readings"}=merge_reading($state->{"readings"},$reading);
 			$state->{"current_luminance"}=luminance($reading);
 			my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
@@ -12732,17 +12729,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$max_de_overall=$de+0 if(defined($de) && $de+0 > $max_de_overall+0);
 			write_state($state);
 			if(defined($de) && $de+0 <= $target_de+0) { $converged=1; last; }
-			# White: reduce every channel to the lowest-reading channel (peak
-			# balance, gains <= 1.0). Other anchors: per-channel solve toward
-			# D65 at the 2.2 target luminance.
-			my ($rg,$gg,$bg)=$is_white
-				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
-				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
-			# White only reduces (gains <= 1.0) and re-measures each pass, so it
-			# is safe to take larger steps -> a wider floor settles peak balance
-			# in far fewer iterations.
-			my $floor=$is_white ? 0.6 : 0.8;
-			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor),g_gain=>$damp->($gg,$floor),b_gain=>$damp->($bg,$floor)});
+			# Reach the target (luminance AND white balance) with per-channel
+			# RGB gains: scaling all three together moves luminance, their ratio
+			# corrects chroma. Identical path for every anchor incl. 100% -- no
+			# separate luminance adjustment, no reduce-to-lowest.
+			my ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
+			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg),g_gain=>$damp->($gg),b_gain=>$damp->($bg)});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
 				$upload_failed=1; $exit_reason="build_error";
