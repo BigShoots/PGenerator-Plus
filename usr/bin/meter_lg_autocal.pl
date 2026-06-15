@@ -12533,19 +12533,34 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 
 	# DPG index for a step from its actual displayed code (8-bit codes *4 into
 	# the 1024-pt DPG domain; 10-bit codes map 1:1).
+	# DPG index for a step: LG's uploaded 1D_DPG_DATA table is indexed AFTER
+	# the legal range is expanded into the TV's normalized 0-1023 LUT domain,
+	# so the patch IRE -> DPG index mapping is non-linear (a raw code*4 is
+	# only ~right mid-range and badly wrong at the ends, which made 100/90/5%
+	# edit the wrong slot). Use the authoritative HDR20 label->index table
+	# that the proven DDC path uses (pgenerator-lg @LG_DDC_1D_*_HDR20).
+	my @hdr20_idx_labels=(1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100);
+	my @hdr20_idx_values=(14,19,28,42,51,70,103,154,206,257,308,360,411,462,514,612,715,817,920,1023);
 	my $idx_for_step=sub {
 		my ($step)=@_;
 		return undef if(ref($step) ne "HASH");
-		my $im=defined($step->{"input_max"}) ? ($step->{"input_max"}+0) : 255;
-		my $code=defined($step->{"r"}) ? ($step->{"r"}+0) : (defined($step->{"g"}) ? ($step->{"g"}+0) : undef);
-		return undef if(!defined($code));
-		my $idx;
-		if($im==1023) { $idx=int($code+0.5); }
-		elsif($im==255) { $idx=int($code*4+0.5); }
-		else { $idx=int($code*1023/$im+0.5); }
-		$idx=0 if($idx<0);
-		$idx=1023 if($idx>1023);
-		return $idx;
+		my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0)
+			: (defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : undef);
+		return undef if(!defined($ire));
+		for my $k (0..$#hdr20_idx_labels) {
+			return $hdr20_idx_values[$k] if(abs($hdr20_idx_labels[$k]-$ire) < 0.05);
+		}
+		return $hdr20_idx_values[0] if($ire <= $hdr20_idx_labels[0]);
+		return $hdr20_idx_values[-1] if($ire >= $hdr20_idx_labels[-1]);
+		for my $k (0..$#hdr20_idx_labels-1) {
+			if($ire > $hdr20_idx_labels[$k] && $ire < $hdr20_idx_labels[$k+1]) {
+				my $f=($ire-$hdr20_idx_labels[$k])/($hdr20_idx_labels[$k+1]-$hdr20_idx_labels[$k]);
+				my $idx=int($hdr20_idx_values[$k]+($hdr20_idx_values[$k+1]-$hdr20_idx_values[$k])*$f+0.5);
+				$idx=0 if($idx<0); $idx=1023 if($idx>1023);
+				return $idx;
+			}
+		}
+		return undef;
 	};
 
 	my $current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
