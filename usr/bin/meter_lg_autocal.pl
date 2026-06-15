@@ -12059,13 +12059,27 @@ sub commit_final_1d_lut {
 	 # (it would fail readback verification against a DPG-calibrated panel).
 	 # Just end the held calibration session once and report success.
 	 if(ref($state) eq "HASH" && $state->{"hdr20_dpg_greyscale_active"}) {
+	  # Queue the HDR tone-map (rolloff) upload BEFORE ending calibration
+	  # mode, exactly like the normal commit path. CalMAN uploads this as the
+	  # last autocal step; skipping it leaves the panel on its default rolloff
+	  # which mismatches the calibrated peak and produces the U-shape
+	  # mid-IRE luminance error. By default this is wizard-owned: it sets
+	  # hdr20_1d_tonemap_pending so the WebUI prompts the operator to finish
+	  # it (re-measuring the peak) after the greyscale commits.
+	  my $tm_white_y=(defined($state->{"hdr20_1d_dpg_white_ref"}) && $state->{"hdr20_1d_dpg_white_ref"}+0 > 0)
+	   ? $state->{"hdr20_1d_dpg_white_ref"}+0
+	   : $white_y;
+	  lg_autocal_26_queue_hdr20_1d_tonemap_upload($config,$state,$picture_mode,$tm_white_y)
+	   if(defined(&lg_autocal_26_queue_hdr20_1d_tonemap_upload));
 	  end_calibration_mode($picture_mode);
 	  set_state_calibration_mode($state,0,"");
 	  $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
 	  $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
 	  $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	  $state->{"calibration_mode"}=JSON::PP::false;
-	  $state->{"message"}="HDR20 1D DPG calibration committed; calibration mode ended";
+	  $state->{"message"}=($state->{"hdr20_1d_tonemap_pending"})
+	   ? "HDR20 1D DPG calibration committed; calibration mode ended; HDR tone-map upload pending wizard confirmation"
+	   : "HDR20 1D DPG calibration committed; calibration mode ended";
 	  write_state($state);
 	  return ($picture,undef,1);
 	 }
