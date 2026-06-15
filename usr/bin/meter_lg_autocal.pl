@@ -12514,7 +12514,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
-	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : ($max_inner+2);
+	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 10;
 	$max_inner_white=1 if($max_inner_white < 1);
 	$max_inner_white=16 if($max_inner_white > 16);
 	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
@@ -12601,12 +12601,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	};
 
 	# Damping: sqrt(gain) clamped to [0.8,1.25]; bounds per-iteration moves.
+	# Convert a measured LINEAR-LIGHT gain into a DPG DRIVE-code gain. The
+	# panel's drive->light transfer is ~gamma 2 near these levels, so the
+	# sqrt is the (approx) inverse-gamma, not just damping. The clamp bounds
+	# the per-iteration move; white gets a wider floor so peak balance can
+	# settle in fewer iterations.
 	my $damp=sub {
-		my $g=shift;
+		my ($g,$floor,$ceil)=@_;
+		$floor=0.8 unless(defined($floor));
+		$ceil=1.25 unless(defined($ceil));
 		$g=1 unless(defined($g) && $g+0 > 0);
 		my $s=$g**0.5;
-		$s=0.8 if($s+0 < 0.8);
-		$s=1.25 if($s+0 > 1.25);
+		$s=$floor if($s+0 < $floor);
+		$s=$ceil if($s+0 > $ceil);
 		return $s+0;
 	};
 
@@ -12711,7 +12718,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my ($rg,$gg,$bg)=$is_white
 				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
 				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
-			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg),g_gain=>$damp->($gg),b_gain=>$damp->($bg)});
+			# White only reduces (gains <= 1.0) and re-measures each pass, so it
+			# is safe to take larger steps -> a wider floor settles peak balance
+			# in far fewer iterations.
+			my $floor=$is_white ? 0.6 : 0.8;
+			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor),g_gain=>$damp->($gg,$floor),b_gain=>$damp->($bg,$floor)});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
 				$upload_failed=1; $exit_reason="build_error";
