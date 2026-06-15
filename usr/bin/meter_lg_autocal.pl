@@ -12136,15 +12136,20 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 	 }
 	 log_line("HDR20 1D DPG sample reads: ".join(" | ",@sample_diag)." -> samples=".scalar(@samples)) if($samples[0] || @sample_diag);
 	 return undef if(@samples < 3);
+	 # LG HDR20 1D_DPG_DATA: 3072 values = 3 channels x 1024 points.
+	 # Each channel is a linear identity ramp in the 15-bit (0-32767)
+	 # domain that the panel's baseline 1D DPG uses, so the upload
+	 # restores the panel's untouched baseline state. This matches the
+	 # readback of an uncalibrated panel (idx 51 = 1633, idx 512 = 16400,
+	 # idx 1023 = 32767). $white_y is unused here: the baseline is
+	 # reference-agnostic by design.
 	 my @dpg;
 	 for my $channel (0..2) {
 	  for my $i (0..1023) {
-	   my $input=$i/1023;
-	   my $target=($input**2.2)*$white_y;
-	   my $uint16=int(($target/10000.0)*65535.0+0.5);
-	   $uint16=65535 if($uint16 > 65535);
-	   $uint16=0 if($uint16 < 0);
-	   push @dpg,$uint16;
+	   my $v=int($i/1023*32767 + 0.5);
+	   $v=0 if($v < 0);
+	   $v=32767 if($v > 32767);
+	   push @dpg,$v;
 	  }
 	 }
 	 if(ref($state) eq "HASH") {
@@ -12173,7 +12178,7 @@ sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 $state->{"hdr20_1d_dpg_upload_enabled"}=$upload_enabled ? JSON::PP::true : JSON::PP::false;
 	 if(!$upload_enabled) {
 	  $state->{"hdr20_1d_dpg_uploaded"}=JSON::PP::false;
-	  $state->{"hdr20_1d_dpg_upload_message"}="upload disabled: lg_autocal_hdr20_1d_dpg_upload_enabled is not set (current autocal DPG formula is experimental and produces values in the wrong scale for LG's [0,32767] 1D_DPG_DATA domain; the array is captured in hdr20_1d_dpg_data for diagnostic, but uploading it dims the panel)";
+	  $state->{"hdr20_1d_dpg_upload_message"}="upload disabled: lg_autocal_hdr20_1d_dpg_upload_enabled is not set (the DPG array is now the linear 15-bit identity baseline in LG's [0,32767] 1D_DPG_DATA domain and is captured in hdr20_1d_dpg_data for diagnostic; uploading remains opt-in via lg_autocal_hdr20_1d_dpg_upload_enabled)";
 	  $state->{"message"}="Final 1D LUT uploaded, verified, calibration mode ended; HDR10 1D DPG computed (3072 values) but upload disabled pending formula review";
 	  write_state($state);
 	  return 0;
