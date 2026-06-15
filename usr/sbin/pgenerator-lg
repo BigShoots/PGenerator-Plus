@@ -2950,7 +2950,13 @@ sub lg_hdr_calman_reset_workflow (@) {
   return &json_error($start_message||"LG TV rejected HDR calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
  }
 
+ # LG calibration workspace / UI-default setup: reset the 1D 2.2 /
+ # 0.45 gamma workspace (disabled) and the UI controls to their
+ # calibration defaults before the unity LUT resets below. A single
+ # rejection is recorded in @steps but does not abort the workflow.
  foreach my $item (
+  ["1D_2_2_EN",0],
+  ["1D_0_45_EN",0],
   ["BRIGHTNESS_UI_DATA",50],
   ["CONTRAST_UI_DATA",100],
   ["BACKLIGHT_UI_DATA",100],
