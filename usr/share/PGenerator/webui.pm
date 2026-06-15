@@ -2194,10 +2194,6 @@ $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2
  my $request_run_id="";
  $request_run_id=$1 if($body=~/"run_id"\s*:\s*"([^"\\]{1,200})"/);
 my $signal_mode=&webui_pattern_signal_mode($body);
-# HDR10 is always absolute ST.2084 PQ. Force it server-side so a stale config
-# snapshot or a non-UI caller can't drive the autocal/series target with the
-# retired gamma-2.2 workspace value. (DV sets its own target_gamma below.)
-$target_gamma="st2084" if($signal_mode eq "hdr10");
 my $max_luma=&webui_pattern_max_luma($body);
 my $request_dv_map_mode="";
 $request_dv_map_mode=$1 if($body=~/"dv_map_mode"\s*:\s*"?([0-9])"?/);
@@ -12373,11 +12369,32 @@ function meterDvRelativeUsesGammaChartMath(){
 }
 
 function meterHdrAutoCalUsesPowerGammaChartMath(){
- // Retired: HDR10 greyscale autocal now targets absolute ST.2084 PQ
- // (meterLgAutoCalGreyscaleTargetGammaValue returns 'st2084'), so the live
- // AutoCal charts must stay on PQ to match the solved target and the post-cal
- // series read. The former gamma-2.2 "power-gamma workspace" is no longer used.
- return false;
+ const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
+ const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
+ const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
+ if(statusRunning){
+  const target=String(status.target_gamma||'').toLowerCase();
+  const layout=String(status.ddc_layout||'').toLowerCase();
+  const signal=String(status.signal_mode||'').toLowerCase();
+  return (target===''||target==='2.2')&&(layout==='hdr20'||signal==='hdr10');
+ }
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ if(mode!=='hdr10') return false;
+ if(meterActiveSeriesType!=='greyscale') return false;
+ if(typeof meterUseLgAutoCal26==='function'&&!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
+ if(typeof meterHdrAutoCalChartContextHeld!=='undefined'&&meterHdrAutoCalChartContextHeld) return true;
+ const lgCalibrationMode=!!(
+  (typeof window!=='undefined'&&window.lgStatusState&&window.lgStatusState.calibrationMode)||
+  (status&&(status.calibration_mode||status.calibrationMode))
+ );
+ const active=!!((typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning&&phase!=='complete'&&phase!=='error')||
+  (typeof meterAutoCalPolling!=='undefined'&&meterAutoCalPolling)||
+  (typeof meterAutoCalPendingConfig!=='undefined'&&meterAutoCalPendingConfig)||
+  statusRunning);
+ if(!active) return false;
+ if(!lgCalibrationMode&&!(typeof meterAutoCalPendingConfig!=='undefined'&&meterAutoCalPendingConfig)) return false;
+ const requested=(typeof meterLgAutoCalRequestedSignalMode==='function')?meterLgAutoCalRequestedSignalMode():mode;
+ return requested==='hdr10';
 }
 
 function meterGreyChartTargetGammaSelection(){
