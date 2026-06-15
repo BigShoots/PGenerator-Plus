@@ -12162,6 +12162,95 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 	 return \@dpg;
 	}
 
+# Build the LG HDR20 1D DPG LUT (3072 values = 3 channels x 1024 points,
+# channel-major: indices 0..1023 = R, 1024..2047 = G, 2048..3071 = B).
+# The DPG is a per-channel input->output map in the 15-bit domain
+# [0,32767]. Baseline is a linear identity ramp; calibration applies a
+# multiplicative per-channel correction at measured anchor input-indices
+# and linearly interpolates between them. Pure function: no I/O, no
+# network, no global state. Used by callers that need to project
+# calibration-time anchor corrections onto the full 1024-point ramp
+# without going through the full read/upload pipeline.
+sub lg_autocal_26_build_hdr20_1d_dpg {
+	 my ($current_dpg,$anchors)=@_;
+	 my @gain_keys=("r_gain","g_gain","b_gain");
+	 my @cur;
+	 if(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072) {
+	  @cur=@{$current_dpg};
+	 } else {
+	  for my $ch (0..2) {
+	   for my $i (0..1023) {
+	    my $v=int($i/1023*32767 + 0.5);
+	    $v=0 if($v < 0);
+	    $v=32767 if($v > 32767);
+	    push @cur,$v;
+	   }
+	  }
+	 }
+	 my @dpg;
+	 for my $ch (0..2) {
+	  my $gk=$gain_keys[$ch];
+	  my @ctrl_idx;
+	  my %ctrl_val;
+	  push @ctrl_idx,0;
+	  $ctrl_val{0}=0;
+	  my %seen;
+	  for my $a (@{$anchors || []}) {
+	   next unless(ref($a) eq "HASH");
+	   my $idx=$a->{"idx"};
+	   next unless(defined($idx) && $idx >= 0 && $idx <= 1023);
+	   my $gain=$a->{$gk};
+	   next unless(defined($gain) && $gain > 0);
+	   my $cur_at_idx=$cur[$ch*1024 + $idx];
+	   my $new_val=int($cur_at_idx*$gain + 0.5);
+	   $new_val=0 if($new_val < 0);
+	   $new_val=32767 if($new_val > 32767);
+	   if(!exists($seen{$idx})) {
+	    push @ctrl_idx,$idx;
+	    $seen{$idx}=1;
+	   }
+	   $ctrl_val{$idx}=$new_val;
+	  }
+	  if(!exists($seen{1023})) {
+	   push @ctrl_idx,1023;
+	  }
+	  $ctrl_val{1023}=$ctrl_val{1023} // $cur[$ch*1024 + 1023];
+	  @ctrl_idx=sort { $a <=> $b } @ctrl_idx;
+	  for my $i (0..1023) {
+	   my $lo_i=$ctrl_idx[0];
+	   my $hi_i=$ctrl_idx[-1];
+	   my $val;
+	   if($i <= $lo_i) {
+	    $val=$ctrl_val{$lo_i};
+	   } elsif($i >= $hi_i) {
+	    $val=$ctrl_val{$hi_i};
+	   } else {
+	    my $lo=$lo_i;
+	    my $hi=$hi_i;
+	    for my $k (0..$#ctrl_idx-1) {
+	     if($ctrl_idx[$k] <= $i && $i < $ctrl_idx[$k+1]) {
+	      $lo=$ctrl_idx[$k];
+	      $hi=$ctrl_idx[$k+1];
+	      last;
+	     }
+	    }
+	    my $lo_v=$ctrl_val{$lo};
+	    my $hi_v=$ctrl_val{$hi};
+	    if($hi == $lo) {
+	     $val=$lo_v;
+	    } else {
+	     $val=$lo_v + ($hi_v-$lo_v)*($i-$lo)/($hi-$lo);
+	    }
+	   }
+	   $val=int($val + 0.5);
+	   $val=0 if($val < 0);
+	   $val=32767 if($val > 32767);
+	   push @dpg,$val;
+	  }
+	 }
+	 return \@dpg;
+	}
+
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
 	 log_line("HDR20 1D DPG queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." config_ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." white_y=".($white_y//"undef")." defined_compute=".((defined(&lg_autocal_26_compute_hdr20_1d_dpg_data))?"yes":"no"));
@@ -16009,6 +16098,7 @@ sub read_step_once {
 	 return (undef,"Meter read timed out");
 }
 
+unless(caller()) {
 my $config=decode_json_safe(read_file($config_file),{});
 apply_lg_autocal_26_default_modes($config);
 apply_post_commit_verify_gate($config);
@@ -20817,3 +20907,4 @@ eval {
 };
 
 exit 0;
+}
