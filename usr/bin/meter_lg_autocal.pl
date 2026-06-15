@@ -12423,6 +12423,128 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 	 return $uploaded;
 	}
 
+# HDR20 1D-DPG-driven greyscale calibration loop. Reuses the existing
+# pure primitives (target_luminance_for_step, autocal_delta_e_for_step,
+# lg_autocal_26_hdr20_dpg_gain, lg_autocal_26_build_hdr20_1d_dpg) and
+# the same api_json POST /api/lg/1d-dpg/upload call shape as
+# lg_autocal_26_queue_hdr20_1d_dpg_upload, so the wire payload, the
+# convergence math, and the DPG domain ([0,32767] in 3 channels of
+# 1024 entries) all match what the rest of the HDR20 autocal already
+# uses. Reads 10 greyscale patches at the BISECTIVE %s
+# (100,50,25,75,12,37,62,87,6,3) on every iteration, computes a
+# per-channel gain at each, rebuilds the 3072-value DPG, and uploads
+# it. Loops until max dE <= target (default 0.5) or max_iters
+# (default 8) is reached, or cancelled. When the configured flag
+# lg_autocal_hdr20_dpg_mode is true, the caller is expected to
+# invoke this sub INSTEAD of the per-slot 22-point WB loop and to
+# jump straight to the commit/end path. Returns undef on success or
+# an error string on a fatal precondition failure.
+sub lg_autocal_26_run_hdr20_dpg_greyscale {
+	 my ($config,$state,$white_y,$target_x,$target_y,$picture_mode)=@_;
+	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing config" unless(ref($config) eq "HASH");
+	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing state" unless(ref($state) eq "HASH");
+	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing white_y" unless(defined($white_y) && $white_y+0 > 0);
+	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing target chromaticity" unless(defined($target_x) && defined($target_y) && $target_y+0 > 0);
+	 my $max_iters=defined($config->{"lg_autocal_hdr20_dpg_max_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_max_iters"}) : 8;
+	 $max_iters=1 if($max_iters < 1);
+	 $max_iters=32 if($max_iters > 32);
+	 my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
+	 $target_de=0.05 if($target_de < 0.05);
+	 $target_de=5.0 if($target_de > 5.0);
+	 my @levels=(100,50,25,75,12,37,62,87,6,3);
+	 my $current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
+	 return "lg_autocal_26_run_hdr20_dpg_greyscale: identity baseline is not 3072 ints"
+	  unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
+	 my $iter=0;
+	 my $final_de=undef;
+	 my $exit_reason="max_iters";
+	 for($iter=1;$iter<=$max_iters;$iter++) {
+	  last if(cancelled());
+	  my @anchors;
+	  my $max_de=0;
+	  foreach my $level (@levels) {
+	   last if(cancelled());
+	   my $code8=int(16 + ($level/100)*219 + 0.5);
+	   $code8=16 if($code8 < 16);
+	   $code8=235 if($code8 > 235);
+	   my $code10=$code8*4;
+	   $code10=64 if($code10 < 64);
+	   $code10=940 if($code10 > 940);
+	   my $step={
+	    name=>"dpg ".${level}."%",
+	    ire=>$level+0,
+	    stimulus=>$level+0,
+	    r=>$code10,
+	    g=>$code10,
+	    b=>$code10,
+	    input_max=>1023,
+	    ddc_layout=>"hdr20",
+	   };
+	   if(ref($state) eq "HASH") {
+	    $state->{"current_name"}=sprintf("HDR20 1D DPG %d%% (iter %d/%d)",$level,$iter,$max_iters);
+	    $state->{"phase"}="adjusting";
+	    $state->{"message"}=sprintf("Reading %d%% patch for HDR20 1D DPG (iter %d/%d, target dE<=%.2f)",$level,$iter,$max_iters,$target_de);
+	    write_state($state);
+	   }
+	   my ($reading,$err)=read_step($config,$step,$state);
+	   if($err || ref($reading) ne "HASH") {
+	    log_line("HDR20 1D DPG greyscale: read failed at ".$level."% (iter ".$iter."): ".($err||"no reading"));
+	    next;
+	   }
+	   my $tl=target_luminance_for_step($white_y,$step,"2.2","hdr10",undef);
+	   my ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
+	   push @anchors,{idx=>$code10,r_gain=>$rg,g_gain=>$gg,b_gain=>$bg};
+	   my $de=autocal_delta_e_for_step($config,$reading,$step,$white_y,$target_x,$target_y,$tl);
+	   if(defined($de) && $de+0 > $max_de+0) {
+	    $max_de=$de+0;
+	   }
+	  }
+	  last if(cancelled());
+	  $current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors);
+	  return "lg_autocal_26_run_hdr20_dpg_greyscale: build returned wrong length"
+	   unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
+	  $state->{"hdr20_1d_dpg_data"}=$current_dpg;
+	  $state->{"hdr20_1d_dpg_data_count"}=scalar(@{$current_dpg});
+	  $state->{"hdr20_1d_dpg_computed_at"}=int(time()*1000);
+	  $state->{"hdr20_1d_dpg_iteration"}=$iter+0;
+	  $state->{"hdr20_1d_dpg_max_de"}=$max_de+0;
+	  $final_de=$max_de;
+	  my $response=api_json("POST","/api/lg/1d-dpg/upload",{
+	   picture_mode=>$picture_mode,
+	   ddc_layout=>"hdr20",
+	   dpg_data=>$current_dpg,
+	   helper_timeout=>90,
+	  },120);
+	  my $uploaded=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+	  $state->{"hdr20_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
+	  $state->{"hdr20_1d_dpg_upload_message"}=(ref($response) eq "HASH" && $response->{message})
+	   ? $response->{message}
+	   : (defined $response ? "unexpected response" : "endpoint unreachable");
+	  $state->{"message"}=$uploaded
+	   ? sprintf("HDR20 1D DPG iter %d/%d uploaded (max dE=%.3f, target<=%.2f)",$iter,$max_iters,$max_de,$target_de)
+	   : sprintf("HDR20 1D DPG iter %d/%d upload failed (max dE=%.3f)",$iter,$max_iters,$max_de);
+	  write_state($state);
+	  if(!$uploaded) {
+	   $exit_reason="upload_failed";
+	   last;
+	  }
+	  if(defined($max_de) && $max_de+0 <= $target_de+0) {
+	   $exit_reason="converged";
+	   last;
+	  }
+	 }
+	 $state->{"hdr20_1d_dpg_iterations"}=$iter+0;
+	 $state->{"hdr20_1d_dpg_max_iters"}=$max_iters+0;
+	 $state->{"hdr20_1d_dpg_target_de"}=$target_de+0;
+	 $state->{"hdr20_1d_dpg_exit_reason"}=$exit_reason;
+	 $state->{"hdr20_1d_dpg_final_de"}=defined($final_de) ? $final_de+0 : undef;
+	 $state->{"hdr20_1d_dpg_uploaded"}=JSON::PP::true;
+	 $state->{"message"}=sprintf("HDR20 1D DPG greyscale complete: %d iterations, final max dE=%s, target<=%.2f, exit=%s",$iter,(defined($final_de) ? sprintf("%.3f",$final_de) : "undef"),$target_de,$exit_reason);
+	 write_state($state);
+	 log_line("HDR20 1D DPG greyscale: ".$iter." iterations, final max dE=".((defined($final_de)) ? sprintf("%.3f",$final_de) : "undef").", target=".$target_de.", exit=".$exit_reason);
+	 return undef;
+	}
+
 sub park_black_for_settle {
  my ($config,$state,$message,$override_ms)=@_;
  $message||="Settling display on black before committed-state verification";
@@ -17298,8 +17420,24 @@ eval {
 				   1
 				  );
 				 }
+				 my $hdr20_dpg_mode_active=0;
+				 if(!cancelled() && ref($config) eq "HASH" && $config->{"lg_autocal_hdr20_dpg_mode"} && lc($signal_mode) eq "hdr10") {
+				  $state->{"current_name"}="HDR20 1D DPG greyscale";
+				  $state->{"phase"}="adjusting";
+				  $state->{"message"}="Running HDR20 1D DPG-driven greyscale calibration (10 BISECTIVE anchors, 2.2 target gamma)";
+				  write_state($state);
+				  my $hdr20_dpg_error=lg_autocal_26_run_hdr20_dpg_greyscale($config,$state,$white_y,$target_x,$target_y,$picture_mode);
+				  if($hdr20_dpg_error) {
+				   die $hdr20_dpg_error;
+				  }
+				  $hdr20_dpg_mode_active=1;
+				  $state->{"hdr20_dpg_greyscale_active"}=JSON::PP::true;
+				 } else {
+				  $state->{"hdr20_dpg_greyscale_active"}=JSON::PP::false;
+				 }
 				 foreach my $step (@ordered) {
 		  last if(cancelled());
+		  last if($hdr20_dpg_mode_active);
 		  $step_num++;
 		  my $target=ddc_target_for_step($step);
 		  next if(!$target);
