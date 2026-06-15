@@ -15732,6 +15732,65 @@ sub restore_factory_levels_for_autocal {
  return $last_message;
 }
 
+sub reset_hdr20_luminance_baseline_if_needed {
+ my ($config,$state)=@_;
+ return undef if(ref($config) ne "HASH");
+ return undef if(lc(($config->{"signal_mode"}||"")) ne "hdr10");
+ return undef if(autocal_config_is_touchup($config));
+ # The HDR10 preflight (/api/lg/hdr-calman-reset -> lg_hdr_calman_reset_workflow)
+ # resets the 1D DPG / 3D LUT / 3x3 matrix to unity, but it does NOT touch the
+ # 22-point whiteBalance / adjustingLuminance arrays. Those are setSystemSettings
+ # values, written via the same path the autocal uses to calibrate each slot, and
+ # they only persist while an LG calibration session is OPEN. So zero them the same
+ # way the autocal writes them: inside calibration mode, with force_ddc_white_balance,
+ # verified, and WITHOUT reset_ddc_baseline (which would re-issue the DPG/CAL_START
+ # cycle and race the first 0% read). Skipping this leaves the previous run's
+ # adjustingLuminance on the panel (e.g. -30 at the 5% slot -> ~0.06 cd/m2 against a
+ # ~1.0 target -> dE ~80 on the first read, then minutes spent climbing out).
+ my @zero=map { 0 } (1..ddc_slot_count());
+ my $picture_mode=$config->{"picture_mode"}||"";
+ my $last_message="Unable to reset LG HDR luminance baseline";
+ for(my $attempt=1;$attempt<=3;$attempt++) {
+  if(ref($state) eq "HASH") {
+   $state->{"phase"}="preparing";
+   $state->{"current_name"}="Resetting LG DDC";
+   $state->{"message"}="Clearing LG 22-point luminance baseline before Auto Cal".($attempt>1 ? " ($attempt/3)" : "");
+   write_state($state);
+  }
+  my $response=api_json("POST","/api/lg/picture-settings/set",{
+   settings => {
+    whiteBalanceMethod => "22",
+    whiteBalanceIre => "100",
+    ddc_layout => $LG_AUTOCAL_DDC_LAYOUT,
+    whiteBalanceRed => \@zero,
+    whiteBalanceGreen => \@zero,
+    whiteBalanceBlue => \@zero,
+    adjustingLuminance => \@zero,
+   },
+   picture_mode => $picture_mode,
+   calibration_mode_active => JSON::PP::true,
+   keep_calibration_mode => JSON::PP::true,
+   force_ddc_white_balance => JSON::PP::true,
+   verify_ddc_upload => JSON::PP::true,
+   helper_timeout => 170,
+   readback_keys => ["pictureMode","ddc_layout","whiteBalanceMethod","whiteBalanceIre","whiteBalanceRed","whiteBalanceGreen","whiteBalanceBlue","adjustingLuminance"],
+  },190);
+  autocal_ddc_reset_diag_log($attempt,$response);
+  if(ref($response) eq "HASH" && ($response->{"status"}||"") eq "ok" && $response->{"ddc_1d_lut"}) {
+   if(ref($state) eq "HASH") {
+    $state->{"hdr20_luminance_baseline_reset"}=JSON::PP::true;
+    write_state($state);
+   }
+   return undef;
+  }
+  $last_message=(ref($response) eq "HASH") ? ($response->{"message"}||$last_message) : $last_message;
+  log_line("LG HDR luminance baseline reset failed on attempt $attempt/3: $last_message");
+  last if(cancelled() || $attempt >= 3);
+  sleep(1.4*$attempt);
+ }
+ return $last_message;
+}
+
 sub reset_ddc_baseline_for_autocal {
  my ($config,$state)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"reset_ddc_baseline"});
@@ -16048,6 +16107,8 @@ eval {
  die $level_restore_error if($level_restore_error);
  my $reset_error=reset_ddc_baseline_for_autocal($config,$state);
  die $reset_error if($reset_error);
+ my $hdr_lum_reset_error=reset_hdr20_luminance_baseline_if_needed($config,$state);
+ die $hdr_lum_reset_error if($hdr_lum_reset_error);
  my $picture_response=read_initial_picture_settings($config,$state);
  die ($picture_response->{"message"}||"Unable to read LG white-balance settings")
   if(($picture_response->{"status"}||"") ne "ok" || ref($picture_response->{"picture_settings"}) ne "HASH");
