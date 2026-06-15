@@ -12251,6 +12251,71 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
 	 return \@dpg;
 	}
 
+# Compute the per-channel multiplicative correction gains (R,G,B) used
+# to update the HDR20 1D DPG at a single anchor from a measured greyscale
+# patch reading and the neutral target (Display-P3/D65 white at the
+# requested luminance). The target is treated as a single XYZ point;
+# the measured reading can supply X/Y/Z directly, or be reconstructed
+# from chromaticity (x,y) plus luminance via the existing `luminance`
+# helper. Both the measured and the target XYZ are projected to linear
+# Display-P3 RGB using the D65 matrix below; per-channel gains are the
+# target/measured ratio, clamped to [0.5, 2.0] for per-iteration safety
+# and replaced with 1.0 on any NaN/inf/non-positive input. Pure math,
+# no I/O, no global state.
+sub lg_autocal_26_hdr20_dpg_gain {
+	 my ($reading,$target_luminance,$target_x,$target_y)=@_;
+	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+	 return (1.0,1.0,1.0) if(!(defined($target_luminance) && $target_luminance+0 > 0));
+	 return (1.0,1.0,1.0) if(!(defined($target_x) && defined($target_y) && $target_y+0 > 0));
+	 my $mX=$reading->{"X"};
+	 my $mY=$reading->{"Y"};
+	 my $mZ=$reading->{"Z"};
+	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+	  my $rY=luminance($reading);
+	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+	   $mY=$rY+0;
+	   $mX=($rx/$ry)*$mY;
+	   $mZ=((1-$rx-$ry)/$ry)*$mY;
+	  } else {
+	   return (1.0,1.0,1.0);
+	  }
+	 } else {
+	  $mX+=0; $mY+=0; $mZ+=0;
+	 }
+	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+	 my $tx=$target_x+0;
+	 my $ty=$target_y+0;
+	 my $tY=$target_luminance+0;
+	 my $tX=($tx/$ty)*$tY;
+	 my $tZ=((1-$tx-$ty)/$ty)*$tY;
+	 my @mrgb=(
+	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
+	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
+	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
+	 );
+	 my @trgb=(
+	  2.4934969*$tX + -0.9313836*$tY + -0.4027108*$tZ,
+	  -0.8294890*$tX + 1.7626641*$tY +  0.0236247*$tZ,
+	  0.0358458*$tX + -0.0761724*$tY +  0.9568845*$tZ,
+	 );
+	 my @gain;
+	 for my $ch (0..2) {
+	  my $m=$mrgb[$ch];
+	  my $t=$trgb[$ch];
+	  my $g=1.0;
+	  if($m+0 > 0 && $t+0 == $t+0 && $m+0 == $m+0) {
+	   $g=$t/$m;
+	   $g=0.5 if($g+0 < 0.5);
+	   $g=2.0 if($g+0 > 2.0);
+	   $g=1.0 if($g+0 != $g+0);
+	  }
+	  push @gain,$g+0;
+	 }
+	 return ($gain[0],$gain[1],$gain[2]);
+	}
+
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
 	 log_line("HDR20 1D DPG queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." config_ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." white_y=".($white_y//"undef")." defined_compute=".((defined(&lg_autocal_26_compute_hdr20_1d_dpg_data))?"yes":"no"));
