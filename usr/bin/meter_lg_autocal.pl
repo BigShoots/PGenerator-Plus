@@ -12704,7 +12704,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# convergence is judged purely on white balance.
 			my $tl=$is_white ? luminance($reading) : target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
 			$tl=$white_ref if($is_white && !(defined($tl) && $tl+0 > 0));
-			annotate_reading_target($reading,$white_ref,$tl,$target_x,$target_y);
+			# White IS the reference: normalise it to ITSELF so target_Yn=1.0
+			# and its luminance error is exactly zero (with- and without-
+			# luminance dE match). If we normalised white to the provisional
+			# native-peak $white_ref instead, reduce-to-lowest lowering Y would
+			# leave target_Yn<1 and the chart would show a phantom luminance
+			# error at 100%. Lower anchors normalise to the calibrated peak.
+			annotate_reading_target($reading,($is_white ? $tl : $white_ref),$tl,$target_x,$target_y);
 			$state->{"readings"}=merge_reading($state->{"readings"},$reading);
 			$state->{"current_luminance"}=luminance($reading);
 			my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
