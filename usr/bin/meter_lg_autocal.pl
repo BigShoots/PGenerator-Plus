@@ -12332,6 +12332,53 @@ sub lg_autocal_26_hdr20_dpg_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
+# Peak white-balance gains: at 100% the panel is already at peak, so a
+# deficient channel cannot be pushed higher. Bring the two higher channels
+# DOWN to the lowest-reading channel instead, which yields a neutral D65 white
+# (equal linear Display-P3 RGB) at the achievable peak luminance. The lowest
+# channel keeps gain 1.0; the others get gain < 1.0 (never > 1.0). This is the
+# proven peak white-balance approach (reduce-to-lowest), not a target-Y solve.
+sub lg_autocal_26_hdr20_dpg_white_balance_gain {
+	 my ($reading)=@_;
+	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+	 my $mX=$reading->{"X"};
+	 my $mY=$reading->{"Y"};
+	 my $mZ=$reading->{"Z"};
+	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+	  my $rY=luminance($reading);
+	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+	   $mY=$rY+0;
+	   $mX=($rx/$ry)*$mY;
+	   $mZ=((1-$rx-$ry)/$ry)*$mY;
+	  } else {
+	   return (1.0,1.0,1.0);
+	  }
+	 } else {
+	  $mX+=0; $mY+=0; $mZ+=0;
+	 }
+	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+	 my @mrgb=(
+	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
+	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
+	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
+	 );
+	 my $min=$mrgb[0];
+	 for my $ch (1..2) { $min=$mrgb[$ch] if($mrgb[$ch] < $min); }
+	 return (1.0,1.0,1.0) if(!($min+0 > 0));
+	 my @gain;
+	 for my $ch (0..2) {
+	  my $m=$mrgb[$ch];
+	  my $g=($m+0 > 0) ? ($min/$m) : 1.0;
+	  $g=0.5 if($g+0 < 0.5);
+	  $g=1.0 if($g+0 > 1.0);
+	  $g=1.0 if($g+0 != $g+0);
+	  push @gain,$g+0;
+	 }
+	 return ($gain[0],$gain[1],$gain[2]);
+	}
+
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
 	 log_line("HDR20 1D DPG queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." config_ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." white_y=".($white_y//"undef")." defined_compute=".((defined(&lg_autocal_26_compute_hdr20_1d_dpg_data))?"yes":"no"));
@@ -12609,7 +12656,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# ($converged, $last_reading). Uses the closed-over $white_ref live, so the
 	# 100% calibration's refined peak applies to every later target.
 	my $calibrate_anchor=sub {
-		my ($rs,$target,$idx,$label,$snum,$budget)=@_;
+		my ($rs,$target,$idx,$label,$snum,$budget,$is_white)=@_;
 		my $converged=0;
 		my $last_reading=undef;
 		for(my $i=1;$i<=$budget;$i++) {
@@ -12623,13 +12670,18 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			set_state_active_step($state,$rs,$target);
 			clear_state_step_measurements($state) if($i==1);
 			write_state($state);
-			my $tl=target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
 			my ($reading,$err)=read_step($config,$rs,$state);
 			if($err || ref($reading) ne "HASH") {
 				log_line("HDR20 1D DPG greyscale: read failed at ".$label." (".$i."): ".($err||"no reading"));
 				last;
 			}
 			$last_reading=$reading;
+			# Target luminance: lower anchors track the 2.2 curve against the
+			# calibrated peak; 100% white is AT peak (cannot be pushed higher)
+			# so its target Y is its own measured Y -> dE is chroma-only and
+			# convergence is judged purely on white balance.
+			my $tl=$is_white ? luminance($reading) : target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
+			$tl=$white_ref if($is_white && !(defined($tl) && $tl+0 > 0));
 			annotate_reading_target($reading,$white_ref,$tl,$target_x,$target_y);
 			$state->{"readings"}=merge_reading($state->{"readings"},$reading);
 			$state->{"current_luminance"}=luminance($reading);
@@ -12638,7 +12690,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$max_de_overall=$de+0 if(defined($de) && $de+0 > $max_de_overall+0);
 			write_state($state);
 			if(defined($de) && $de+0 <= $target_de+0) { $converged=1; last; }
-			my ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
+			# White: reduce every channel to the lowest-reading channel (peak
+			# balance, gains <= 1.0). Other anchors: per-channel solve toward
+			# D65 at the 2.2 target luminance.
+			my ($rg,$gg,$bg)=$is_white
+				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
+				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
 			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg),g_gain=>$damp->($gg),b_gain=>$damp->($bg)});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
@@ -12680,7 +12737,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $idx=$idx_for_step->($rs);
 		if($target && defined($idx)) {
 			my $label=$rs->{"name"}||($target->{"label"}||"100%");
-			my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$max_inner_white);
+			my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$max_inner_white,1);
 			# Refine the white reference to the calibrated peak luminance.
 			if(ref($last) eq "HASH") {
 				my $wy=luminance($last);
@@ -12708,7 +12765,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $idx=$idx_for_step->($rs);
 		next if(!defined($idx));
 		my $label=$rs->{"name"}||($target->{"label"}||(format_percent($rs->{"ire"})."%"));
-		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$max_inner);
+		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$max_inner,0);
 		push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
 		if(ref($state) eq "HASH") {
 			$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
