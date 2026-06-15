@@ -19236,7 +19236,7 @@ function meterAutoCalTargetGammaValue(){
 }
 
 function meterLgAutoCalGreyscaleTargetGammaValue(){
- return meterLgAutoCalRequestedSignalMode()==='hdr10'?'st2084':meterAutoCalTargetGammaValue();
+ return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();
 }
 
 function meterAutoCalTargetGamutValue(){
