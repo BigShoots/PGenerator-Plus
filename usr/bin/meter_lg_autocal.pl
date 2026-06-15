@@ -12443,13 +12443,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	 my ($config,$state,$white_y,$target_x,$target_y,$picture_mode)=@_;
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing config" unless(ref($config) eq "HASH");
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing state" unless(ref($state) eq "HASH");
-	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing white_y" unless(defined($white_y) && $white_y+0 > 0);
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing target chromaticity" unless(defined($target_x) && defined($target_y) && $target_y+0 > 0);
-	 # $white_y is the CONFIGURED peak, kept as a fallback for the
-	 # effective white reference. The live 100% measurement below
-	 # refines $white_ref when available, but $white_y is required so
-	 # we always have a usable reference (catches caller errors before
-	 # any I/O).
+	 # $white_y is the CONFIGURED peak, kept as a FALLBACK only. The
+	 # effective white reference is re-derived once from a live 100%
+	 # measurement below; if that read fails AND the caller passed no
+	 # usable $white_y, we return "missing white_y" then. We do not
+	 # fail up front on $white_y being undef/0 here — that is the
+	 # spec's "if neither" case at point 4, not a precondition.
 	 my $white_ref=undef;
 	 my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 6;
 	 $max_inner=1 if($max_inner < 1);
@@ -12467,7 +12467,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: identity baseline is not 3072 ints"
 	  unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
 	 # Upload the identity baseline once so the panel starts from a known
-	 # reference state. If this upload fails we cannot proceed safely.
+	 # reference state. We log a warning and continue if this upload
+	 # fails: the per-anchor loop's own uploads will still surface
+	 # upload failures via exit_reason="upload_failed", and a failed
+	 # baseline must not mask the 100% measurement / white_y check below.
 	 if(ref($state) eq "HASH") {
 	  $state->{"current_name"}="HDR20 1D DPG (identity baseline)";
 	  $state->{"phase"}="adjusting";
@@ -12483,8 +12486,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	 my $baseline_ok=(ref($baseline_response) eq "HASH" && ($baseline_response->{status}//"") eq "ok") ? 1 : 0;
 	 if(!$baseline_ok) {
 	  my $bmsg=(ref($baseline_response) eq "HASH" && $baseline_response->{message}) ? $baseline_response->{message} : "endpoint unreachable";
-	  log_line("HDR20 1D DPG greyscale: identity baseline upload failed: ".$bmsg);
-	  return "lg_autocal_26_run_hdr20_dpg_greyscale: identity baseline upload failed: ".$bmsg;
+	  log_line("HDR20 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg);
 	 }
 	 # Measure 100% once to derive the effective white reference. If the
 	 # live read fails, fall back to the passed $white_y; if neither is
