@@ -3260,7 +3260,12 @@ sub webui_meter_lg_autocal_body_with_defaults (@) {
  my ($body)=@_;
  return $body if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  return $body unless($body=~/"type"\s*:\s*"greyscale"/i && $body=~/"points"\s*:\s*26\b/ && $body=~/"lg_autocal_26"\s*:\s*true/i);
- return $body if($body=~/"signal_mode"\s*:\s*"hdr10"/i);
+ # Route HDR10 greyscale autocal through the 1D-DPG path (test/opt-in; no third-party software names)
+ if($body=~/"signal_mode"\s*:\s*"hdr10"/i) {
+  return $body if($body=~/"lg_autocal_hdr20_dpg_mode"\s*:/);
+  $body=~s/\}\s*\z/,"lg_autocal_hdr20_dpg_mode":true}/;
+  return $body;
+ }
  return $body if($body=~/"lg_autocal_26_full_ddc_spine"\s*:/ || $body=~/"lg_autocal_26_anchor_predrive"\s*:/);
  $body=~s/\}\s*\z/,"lg_autocal_26_full_ddc_spine":true,"lg_autocal_26_anchor_predrive":false}/;
  return $body;

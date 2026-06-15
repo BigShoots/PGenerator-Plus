@@ -12443,7 +12443,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	 my ($config,$state,$white_y,$target_x,$target_y,$picture_mode)=@_;
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing config" unless(ref($config) eq "HASH");
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing state" unless(ref($state) eq "HASH");
-	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing white_y" unless(defined($white_y) && $white_y+0 > 0);
+	 # $white_y is the CONFIGURED peak, not the measured panel peak. Keep it as
+	 # a fallback only; the effective white reference is re-derived each
+	 # iteration from the live 100% anchor measured inside the loop (Fix 1).
+	 my $white_ref = (defined($white_y) && $white_y+0 > 0) ? $white_y+0 : undef;
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: missing target chromaticity" unless(defined($target_x) && defined($target_y) && $target_y+0 > 0);
 	 my $max_iters=defined($config->{"lg_autocal_hdr20_dpg_max_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_max_iters"}) : 8;
 	 $max_iters=1 if($max_iters < 1);
@@ -12451,7 +12454,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	 my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
 	 $target_de=0.05 if($target_de < 0.05);
 	 $target_de=5.0 if($target_de > 5.0);
-	 my @levels=(100,50,25,75,12,37,62,87,6,3);
+	 # 100% is read separately at the top of each iteration to set the
+	 # effective white reference; the per-level loop handles the rest.
+	 my @levels=(50,25,75,12,37,62,87,6,3);
 	 my $current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: identity baseline is not 3072 ints"
 	  unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
@@ -12462,6 +12467,53 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	  last if(cancelled());
 	  my @anchors;
 	  my $max_de=0;
+	  # 100% anchor measured ONCE per iteration: sets the effective white
+	  # reference (live panel peak) and doubles as the iteration's own
+	  # gain/dE anchor.  Reusing this single read for both roles avoids
+	  # double-measuring 100% in the per-level loop below (Fix 1).
+	  my $code8_100=int(16 + (100/100)*219 + 0.5);
+	  $code8_100=16 if($code8_100 < 16);
+	  $code8_100=235 if($code8_100 > 235);
+	  my $code10_100=$code8_100*4;
+	  $code10_100=64 if($code10_100 < 64);
+	  $code10_100=940 if($code10_100 > 940);
+	  my $step_100={
+	   name=>"dpg 100%",
+	   ire=>100+0,
+	   stimulus=>100+0,
+	   r=>$code10_100,
+	   g=>$code10_100,
+	   b=>$code10_100,
+	   input_max=>1023,
+	   ddc_layout=>"hdr20",
+	  };
+	  if(ref($state) eq "HASH") {
+	   $state->{"current_name"}=sprintf("HDR20 1D DPG 100%% (iter %d/%d)",$iter,$max_iters);
+	   $state->{"phase"}="adjusting";
+	   $state->{"message"}=sprintf("Reading 100%% patch to derive effective white reference (iter %d/%d, target dE<=%.2f)",$iter,$max_iters,$target_de);
+	   write_state($state);
+	  }
+	  my ($reading_100,$err_100)=read_step($config,$step_100,$state);
+	  if($err_100 || ref($reading_100) ne "HASH") {
+	   log_line("HDR20 1D DPG greyscale: 100% read failed (iter ".$iter."): ".($err_100||"no reading"));
+	   return "lg_autocal_26_run_hdr20_dpg_greyscale: 100% read failed (iter ".$iter."): ".($err_100||"no reading");
+	  }
+	  my $measured_white=luminance($reading_100);
+	  if(defined($measured_white) && $measured_white+0 > 0) {
+	   $white_ref=$measured_white+0;
+	  }
+	  if(!defined($white_ref)) {
+	   log_line("HDR20 1D DPG greyscale: no valid white reference (iter ".$iter."): measured=".((defined $measured_white) ? sprintf("%.4f",$measured_white) : "undef").", fallback=".(defined($white_y) ? sprintf("%.4f",$white_y) : "undef"));
+	   return "lg_autocal_26_run_hdr20_dpg_greyscale: no valid white reference (iter ".$iter.")";
+	  }
+	  $state->{"hdr20_1d_dpg_white_ref"}=$white_ref+0;
+	  my $tl_100=target_luminance_for_step($white_ref,$step_100,"2.2","hdr10",undef);
+	  my ($rg_100,$gg_100,$bg_100)=lg_autocal_26_hdr20_dpg_gain($reading_100,$tl_100,$target_x,$target_y);
+	  push @anchors,{idx=>$code10_100,r_gain=>$rg_100,g_gain=>$gg_100,b_gain=>$bg_100};
+	  my $de_100=autocal_delta_e_for_step($config,$reading_100,$step_100,$white_ref,$target_x,$target_y,$tl_100);
+	  if(defined($de_100) && $de_100+0 > $max_de+0) {
+	   $max_de=$de_100+0;
+	  }
 	  foreach my $level (@levels) {
 	   last if(cancelled());
 	   my $code8=int(16 + ($level/100)*219 + 0.5);
@@ -12491,10 +12543,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	    log_line("HDR20 1D DPG greyscale: read failed at ".$level."% (iter ".$iter."): ".($err||"no reading"));
 	    next;
 	   }
-	   my $tl=target_luminance_for_step($white_y,$step,"2.2","hdr10",undef);
+	   my $tl=target_luminance_for_step($white_ref,$step,"2.2","hdr10",undef);
 	   my ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
 	   push @anchors,{idx=>$code10,r_gain=>$rg,g_gain=>$gg,b_gain=>$bg};
-	   my $de=autocal_delta_e_for_step($config,$reading,$step,$white_y,$target_x,$target_y,$tl);
+	   my $de=autocal_delta_e_for_step($config,$reading,$step,$white_ref,$target_x,$target_y,$tl);
 	   if(defined($de) && $de+0 > $max_de+0) {
 	    $max_de=$de+0;
 	   }
