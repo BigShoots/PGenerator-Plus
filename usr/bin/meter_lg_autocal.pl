@@ -12466,6 +12466,34 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	 my $current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
 	 return "lg_autocal_26_run_hdr20_dpg_greyscale: identity baseline is not 3072 ints"
 	  unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
+	 # Robust DPG upload: LG WebOS SSAP connects are flaky and a single
+	 # transient connect miss must NOT abort the whole greyscale. Re-POST
+	 # the full DPG up to 4 times with linear backoff (each POST spawns a
+	 # fresh helper -> fresh connect attempts). Returns ($ok,$message).
+	 my $upload_dpg=sub {
+	  my ($dpg)=@_;
+	  my $tries=4;
+	  my $ok=0; my $msg=""; my $resp;
+	  for(my $t=1;$t<=$tries;$t++) {
+	   last if(cancelled());
+	   $resp=api_json("POST","/api/lg/1d-dpg/upload",{
+	    picture_mode=>$picture_mode,
+	    ddc_layout=>"hdr20",
+	    dpg_data=>$dpg,
+	    helper_timeout=>90,
+	   },120);
+	   $ok=(ref($resp) eq "HASH" && ($resp->{status}//"") eq "ok") ? 1 : 0;
+	   $msg=(ref($resp) eq "HASH" && $resp->{message}) ? $resp->{message} : (defined $resp ? "unexpected response" : "endpoint unreachable");
+	   last if($ok);
+	   log_line("HDR20 1D DPG greyscale: upload attempt ".$t."/".$tries." failed: ".$msg);
+	   if(ref($state) eq "HASH") {
+	    $state->{"message"}="HDR20 1D DPG upload attempt ".$t."/".$tries." failed; retrying: ".$msg;
+	    write_state($state);
+	   }
+	   select(undef,undef,undef,0.6*$t) unless($t>=$tries || cancelled());
+	  }
+	  return ($ok,$msg);
+	 };
 	 # Upload the identity baseline once so the panel starts from a known
 	 # reference state. We log a warning and continue if this upload
 	 # fails: the per-anchor loop's own uploads will still surface
@@ -12477,15 +12505,8 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	  $state->{"message"}="Uploading identity baseline for HDR20 1D DPG greyscale";
 	  write_state($state);
 	 }
-	 my $baseline_response=api_json("POST","/api/lg/1d-dpg/upload",{
-	  picture_mode=>$picture_mode,
-	  ddc_layout=>"hdr20",
-	  dpg_data=>$current_dpg,
-	  helper_timeout=>90,
-	 },120);
-	 my $baseline_ok=(ref($baseline_response) eq "HASH" && ($baseline_response->{status}//"") eq "ok") ? 1 : 0;
+	 my ($baseline_ok,$bmsg)=$upload_dpg->($current_dpg);
 	 if(!$baseline_ok) {
-	  my $bmsg=(ref($baseline_response) eq "HASH" && $baseline_response->{message}) ? $baseline_response->{message} : "endpoint unreachable";
 	  log_line("HDR20 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg);
 	 }
 	 # Measure 100% once to derive the effective white reference. If the
@@ -12543,6 +12564,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	 my $max_de_overall=0;
 	 my $exit_reason="converged";
 	 my $upload_failed=0;
+	 # Consecutive failed uploads (each already retried internally). Only a
+	 # sustained run of failures means the TV is truly gone -> abort then.
+	 my $upload_fail_streak=0;
 	 # Damping: sqrt(gain), clamped to [0.8, 1.25]. Gamma-agnostic; will
 	 # be tuned on hardware. Defined once and reused for every inner
 	 # step on every anchor.
@@ -12615,26 +12639,27 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	   $state->{"hdr20_1d_dpg_computed_at"}=int(time()*1000);
 	   $state->{"hdr20_1d_dpg_iteration"}=$total_inner_iters+0;
 	   $state->{"hdr20_1d_dpg_max_de"}=$max_de_overall+0;
-	   my $response=api_json("POST","/api/lg/1d-dpg/upload",{
-	    picture_mode=>$picture_mode,
-	    ddc_layout=>"hdr20",
-	    dpg_data=>$current_dpg,
-	    helper_timeout=>90,
-	   },120);
-	   my $uploaded=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+	   my ($uploaded,$umsg)=$upload_dpg->($current_dpg);
 	   $state->{"hdr20_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
-	   $state->{"hdr20_1d_dpg_upload_message"}=(ref($response) eq "HASH" && $response->{message})
-	    ? $response->{message}
-	    : (defined $response ? "unexpected response" : "endpoint unreachable");
+	   $state->{"hdr20_1d_dpg_upload_message"}=$umsg;
 	   $state->{"message"}=$uploaded
 	    ? sprintf("HDR20 1D DPG %d%% inner %d/%d uploaded (max dE=%.3f, target<=%.2f)",$pct,$i,$max_inner,$max_de_overall,$target_de)
-	    : sprintf("HDR20 1D DPG %d%% inner %d/%d upload failed (max dE=%.3f)",$pct,$i,$max_inner,$max_de_overall);
+	    : sprintf("HDR20 1D DPG %d%% inner %d/%d upload failed after retries (max dE=%.3f)",$pct,$i,$max_inner,$max_de_overall);
 	   write_state($state);
 	   if(!$uploaded) {
-	    $upload_failed=1;
-	    $exit_reason="upload_failed";
-	    last;
+	    # A single (already-retried) upload miss must not kill the run.
+	    # Keep iterating this anchor (re-measure + re-upload); only abort
+	    # if uploads keep failing back-to-back (TV genuinely unreachable).
+	    $upload_fail_streak++;
+	    log_line("HDR20 1D DPG greyscale: upload failed after retries at ".$pct."% (streak ".$upload_fail_streak."): ".$umsg);
+	    if($upload_fail_streak >= 3) {
+	     $upload_failed=1;
+	     $exit_reason="upload_failed";
+	     last;
+	    }
+	    next;
 	   }
+	   $upload_fail_streak=0;
 	   if(cancelled()) {
 	    $exit_reason="cancelled";
 	    last;
