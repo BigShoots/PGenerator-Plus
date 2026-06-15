@@ -1626,6 +1626,8 @@ sub webui_lg_1d_dpg_upload (@) {
   dpg_data => \@normalized,
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
+  keep_calibration_mode => ($payload->{"keep_calibration_mode"} ? 1 : 0),
+  calibration_mode_active => ($payload->{"calibration_mode_active"} ? 1 : 0),
  });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
