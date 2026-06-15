@@ -29432,9 +29432,17 @@ document.getElementById('meterTargetGamut').addEventListener('change',()=>{
 document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(getVal('signal_mode')==='dv'){
   applyMeterTargetGammaDefault();
+  meterActiveSeriesTargetGamma=null;
   meterRefreshActiveSeriesCharts();
   return;
  }
+ // Re-grade the currently displayed series against the newly selected target
+ // gamma. meterGreyTargetGammaSelection() prefers meterActiveSeriesTargetGamma
+ // (locked to the loaded snapshot at series-load time), so changing the
+ // dropdown alone would NOT re-grade the charts. Override it with the dropdown
+ // choice so the operator can compare e.g. 2.2 vs ST.2084 grading live.
+ const sel=String((document.getElementById('meterTargetGamma')||{}).value||'').toLowerCase();
+ meterActiveSeriesTargetGamma=sel||null;
  meterRefreshActiveSeriesCharts();
 });
 
