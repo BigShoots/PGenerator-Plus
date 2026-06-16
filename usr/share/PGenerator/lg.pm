@@ -1557,12 +1557,26 @@ sub webui_lg_hdr_tone_map_upload (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading HDR tone-map data." }) if($client_key eq "");
+ # If dpg_data is supplied, upload the 1D DPG first inside the same
+ # CAL_START/CAL_END session as the tone map. the reference workflow binds the DPG and
+ # the tone map inside a single session; PGen previously uploaded them
+ # in separate sessions and the tone-map roll-off did not bind against
+ # the previously-uploaded 1D DPG (5-20% IRE luma collapsed ~10x in the
+ # post-call PQ series read). The autocal commit path passes dpg_data
+ # here so both land in one session.
+ my $dpg_data=$payload->{"dpg_data"};
+ if(defined $dpg_data) {
+  return &lg_encode_json({ status => "error", message => "HDR20 1D DPG upload requires dpg_data." }) if(ref($dpg_data) ne "ARRAY");
+  return &lg_encode_json({ status => "error", message => "HDR20 1D DPG upload requires a 3072-value (3 channels x 1024 points) uint16 array.", expected_count => 3072, received_count => scalar(@{$dpg_data}) }) if(scalar(@{$dpg_data}) != 3072);
+ }
  my $result=&lg_helper_run({
   action => "hdr_tone_map_upload",
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
   peak_luminance => $peak_luminance,
+  dpg_data => $dpg_data,
+  ddc_layout => "hdr20",
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });

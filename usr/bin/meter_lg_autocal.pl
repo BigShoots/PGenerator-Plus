@@ -12680,6 +12680,7 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 	 my $response=api_json("POST","/api/lg/hdr-tone-map/upload",{
 	  picture_mode=>$picture_mode,
 	  peak_luminance=>$white_y+0,
+	  dpg_data=>$state->{"hdr20_1d_dpg_data"},
 	  helper_timeout=>75,
 	 },90);
 	 my $uploaded=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
