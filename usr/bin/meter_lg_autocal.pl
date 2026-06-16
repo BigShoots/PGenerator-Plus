@@ -12721,6 +12721,32 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 6;
 	$max_inner=1 if($max_inner < 1);
 	$max_inner=12 if($max_inner > 12);
+	# 1.4-5% IRE need a larger iteration budget: the panel's PQ EOTF floor
+	# + meter noise at 0.06-1 nits means the DAMP (sqrt(gain) clamped to
+	# [0.8, 1.25]) needs more iterations to converge through the noise.
+	# Field evidence on 2026-06-12: 1.4% IRE at 174% of target after 6 iters
+	# (max_inner exit); 16 iters converges. Default 16; the per-iter
+	# DAMP floor for the low range is separately controlled by
+	# lg_autocal_hdr20_dpg_damp_floor_low below.
+	my $max_inner_low=defined($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) : 16;
+	$max_inner_low=1 if($max_inner_low < 1);
+	$max_inner_low=24 if($max_inner_low > 24);
+	# IRE threshold below which the low-IRE budget + low-IRE DAMP floor apply.
+	# Default 5.0 (matches the lowest HDR20 anchor in the standard
+	# greyscale series; 5% is the threshold where the panel's EOTF starts
+	# to deviate noticeably from the 2.2 power target).
+	my $low_ire_threshold=defined($config->{"lg_autocal_hdr20_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_threshold"}+0) : 5.0;
+	$low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
+	$low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
+	# At low IRE the default 0.8 DAMP floor is too conservative -- the
+	# per-iter move is only 20%, and at 0.06-1 nits the meter noise is
+	# comparable to the per-iter move, so the calibration oscillates
+	# instead of converging. 0.5 lets each iter halve the DPG when
+	# needed; combined with the larger low-IRE budget, the calibration
+	# settles through the noise floor.
+	my $damp_floor_low=defined($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}+0) : 0.5;
+	$damp_floor_low=0.3 if($damp_floor_low < 0.3);
+	$damp_floor_low=0.95 if($damp_floor_low > 0.95);
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
@@ -12947,7 +12973,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
 			# White takes larger steps (it only reduces + re-measures) so peak
 			# balance settles in a few moves instead of many tiny ones.
-			my $floor=$is_white ? 0.6 : 0.8;
+			# For low IRE (default <5%) the DAMP floor is relaxed (default 0.5)
+			# to let each iter halve the DPG when needed; the 0.8 default
+			# floor is too conservative at <1 nit where meter noise is
+			# comparable to the per-iter move, causing oscillation instead
+			# of convergence.
+			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
+			my $floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
 			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor),g_gain=>$damp->($gg,$floor),b_gain=>$damp->($bg,$floor)});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
@@ -13017,7 +13049,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $idx=$idx_for_step->($rs);
 		next if(!defined($idx));
 		my $label=$rs->{"name"}||($target->{"label"}||(format_percent($rs->{"ire"})."%"));
-		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$max_inner,0);
+		# Use the larger low-IRE iteration budget for anchors below the
+		# low-IRE threshold (default 5%). Mid/high anchors (5-100%) keep
+		# the default 6-iter budget which converges in 1-2 iters
+		# (the Akima spline is correct, mid/high errors are 99-100% of
+		# target on the deployed state).
+		my $step_ire_loop=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
+		my $step_budget=(defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : $max_inner;
+		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,0);
 		push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
 		if(ref($state) eq "HASH") {
 			$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
