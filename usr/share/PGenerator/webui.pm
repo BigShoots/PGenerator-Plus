@@ -15407,13 +15407,7 @@ function meterChartHdrCodeLuminance(v,clipPeak){
   const master=meterChartMasterPeak();
   return bt2390Tonemap(raw,master,peak);
  }
- // PQ-encoded mastering peak is 10000 nits; the panel's measured peak is
- // the new scaling reference. Scale (not clip) so a signal at level v on
- // a peak=759 panel shows pq_decode(v) * 759/10000, not min(pq_decode(v),759).
- // Without this, every signal where pq_decode > peak produces a flat
- // target=peak and the chart shows -37% to -90% luma errors on a healthy
- // post-cal panel.
- return raw * peak / 10000;
+ return Math.min(raw,peak);
 }
 
 function meterChartDvClipPeak(){
