@@ -12399,30 +12399,42 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
 	  }
 	  $ctrl_val{1023}=$ctrl_val{1023} // $cur[$ch*1024 + 1023];
 	  @ctrl_idx=sort { $a <=> $b } @ctrl_idx;
+	  my @ctrl_ys=map { $ctrl_val{$_} } @ctrl_idx;
+	  # Akima cubic spline interpolation across the 1024 indices.
+	  # Falls back to linear when the Akima sub returns empty (the
+	  # degenerate case of < 4 anchors; in practice the autocal
+	  # always has 25+ anchors, so Akima is used in production).
+	  my $spline=lg_autocal_26_akima_interpolate(\@ctrl_idx,\@ctrl_ys);
+	  my $use_akima=(ref($spline) eq "ARRAY" && scalar(@$spline) == 1024);
 	  for my $i (0..1023) {
-	   my $lo_i=$ctrl_idx[0];
-	   my $hi_i=$ctrl_idx[-1];
 	   my $val;
-	   if($i <= $lo_i) {
-	    $val=$ctrl_val{$lo_i};
-	   } elsif($i >= $hi_i) {
-	    $val=$ctrl_val{$hi_i};
+	   if($use_akima) {
+	    $val=$spline->[$i];
 	   } else {
-	    my $lo=$lo_i;
-	    my $hi=$hi_i;
-	    for my $k (0..$#ctrl_idx-1) {
-	     if($ctrl_idx[$k] <= $i && $i < $ctrl_idx[$k+1]) {
-	      $lo=$ctrl_idx[$k];
-	      $hi=$ctrl_idx[$k+1];
-	      last;
-	     }
-	    }
-	    my $lo_v=$ctrl_val{$lo};
-	    my $hi_v=$ctrl_val{$hi};
-	    if($hi == $lo) {
-	     $val=$lo_v;
+	    # Linear fallback: same per-index math as before.
+	    my $lo_i=$ctrl_idx[0];
+	    my $hi_i=$ctrl_idx[-1];
+	    if($i <= $lo_i) {
+	     $val=$ctrl_val{$lo_i};
+	    } elsif($i >= $hi_i) {
+	     $val=$ctrl_val{$hi_i};
 	    } else {
-	     $val=$lo_v + ($hi_v-$lo_v)*($i-$lo)/($hi-$lo);
+	     my $lo=$lo_i;
+	     my $hi=$hi_i;
+	     for my $k (0..$#ctrl_idx-1) {
+	      if($ctrl_idx[$k] <= $i && $i < $ctrl_idx[$k+1]) {
+	       $lo=$ctrl_idx[$k];
+	       $hi=$ctrl_idx[$k+1];
+	       last;
+	      }
+	     }
+	     my $lo_v=$ctrl_val{$lo};
+	     my $hi_v=$ctrl_val{$hi};
+	     if($hi == $lo) {
+	      $val=$lo_v;
+	     } else {
+	      $val=$lo_v + ($hi_v-$lo_v)*($i-$lo)/($hi-$lo);
+	     }
 	    }
 	   }
 	   $val=int($val + 0.5);
