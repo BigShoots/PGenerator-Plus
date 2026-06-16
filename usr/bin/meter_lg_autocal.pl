@@ -12761,7 +12761,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# solve toward D65 at the 2.2 target luminance via RGB.
 			my ($rg,$gg,$bg)=$is_white
 				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
-				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
+				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
 			# White takes larger steps (it only reduces + re-measures) so peak
 			# balance settles in a few moves instead of many tiny ones.
 			my $floor=$is_white ? 0.6 : 0.8;
