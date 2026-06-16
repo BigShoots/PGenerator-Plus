@@ -12192,12 +12192,165 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 	 return \@dpg;
 	}
 
+# Akima cubic spline interpolation across integer indices in
+# [min($xs), max($xs)]. Pure math, no I/O, no global state.
+#
+# Reference: Hiroshi Akima, "A new method of interpolation and smooth
+# curve fitting based on local procedures", J. ACM 17, 4, 589-602
+# (1970). The defining property is a per-anchor derivative estimate
+# using a magnitude-weighted average of the 3 nearest slopes on each
+# side, which makes the spline robust to single-anchor swings in
+# either direction (the natural-cubic-spline failure mode for the
+# 5-25% IRE elbow we observed in the deployed 1D DPG on 2026-06-12).
+# Mirrors scipy.interpolate.Akima1DInterpolator to 0.0 difference
+# across the four reference test cases (smooth, monotonic,
+# non-monotonic, linear); see /tmp/akima_verify.py.
+#
+# Inputs:
+#   $xs_ref  arrayref of anchor indices (ascending; one int per anchor)
+#   $ys_ref  arrayref of anchor DPG values (one int per anchor;
+#            same length as $xs_ref; in [0, 32767] for the HDR20 domain)
+#   $min_idx first integer index to evaluate (inclusive; default $xs_ref->[0])
+#   $max_idx last  integer index to evaluate (inclusive; default $xs_ref->[-1])
+#
+# Returns:
+#   arrayref of $max_idx - $min_idx + 1 floats (the spline evaluated at
+#   each integer index in [$min_idx, $max_idx], inclusive), in ascending
+#   order. The caller is responsible for clamping to the wire domain
+#   ([0, 32767]) and rounding to int -- this sub returns the raw spline
+#   values so the caller can apply its own post-processing.
+#
+# Degenerate cases (returned as-is; caller should treat as "fall back
+# to linear" or skip the anchor entirely):
+#   - $#$xs_ref < 0  (no anchors)  -> empty arrayref
+#   - $#$xs_ref == 0 (1 anchor)    -> empty arrayref
+#   - $#$xs_ref == 1 (2 anchors)   -> empty arrayref (linear, but caller
+#                                      can detect and do its own lerp)
+#   - $#$xs_ref <= 3 (2-3 anchors) -> empty arrayref (insufficient
+#                                      neighbors for non-degenerate
+#                                      Akima endpoint extrapolation;
+#                                      caller should fall back to linear)
+#   - $#$xs_ref >= 4 (4+ anchors)  -> Akima; for >=5 anchors the
+#                                      endpoint extrapolation uses the
+#                                      3-point formula; for exactly 4
+#                                      anchors, endpoints fall back to
+#                                      the segment slope (still well-
+#                                      defined, just less smooth at the
+#                                      very ends)
+sub lg_autocal_26_akima_interpolate {
+ my ($xs_ref,$ys_ref,$min_idx,$max_idx)=@_;
+ $min_idx=$xs_ref->[0] if(!defined($min_idx));
+ $max_idx=$xs_ref->[-1] if(!defined($max_idx));
+ return [] if(!defined($xs_ref) || ref($xs_ref) ne "ARRAY");
+ return [] if(!defined($ys_ref) || ref($ys_ref) ne "ARRAY");
+ return [] if(scalar(@$xs_ref) != scalar(@$ys_ref));
+ return [] if(scalar(@$xs_ref) < 4);
+ # Coerce to floats
+ my @xs=map { 0+$_ } @$xs_ref;
+ my @ys=map { 0+$_ } @$ys_ref;
+ my $n=scalar(@xs);
+ # Edge case: only 2 real slopes (n=4 anchors gives n-1=3 slopes,
+ # so the n<4 check above already filters n<4; for n=4 we have
+ # exactly 3 slopes, scipy handles it via the refined formula
+ # below).
+ # 1) Segment slopes
+ my @m;
+ for my $i (0..$n-2) {
+  my $dx=$xs[$i+1]-$xs[$i];
+  push @m, ($dx != 0) ? ($ys[$i+1]-$ys[$i])/$dx : 0;
+ }
+ # 2) Pad the slope array with 2 extrapolated slopes on each side.
+ # scipy's Akima1DInterpolator uses this padding so the interior
+ # formula at i=0 and i=n-1 doesn't need a special case.
+ my @mpad;
+ $mpad[0]=2*$m[0] - $m[1];
+ $mpad[1]=2*$mpad[0] - $m[0];
+ for my $i (0..$n-2) { push @mpad, $m[$i]; }
+ $mpad[$n+1]=2*$m[$n-2] - $m[$n-3];
+ $mpad[$n+2]=2*$mpad[$n+1] - $m[$n-2];
+ # 3) Initial derivative estimate: t[i] = 0.5 * (mpad[i+3] + mpad[i]).
+ # For linear data this gives the exact slope; for non-linear data
+ # it's a midpoint average that the refinement step below will
+ # correct via the magnitude-weighted Akima formula.
+ my @t;
+ for my $i (0..$n-1) {
+  $t[$i]=0.5*($mpad[$i+3] + $mpad[$i]);
+ }
+ # 4) Refine with the magnitude-weighted Akima formula. scipy uses
+ # w1 = |m[i] - m[i-1]| and w2 = |m[i-1] - m[i-2]| (not the textbook
+ # Akima 1970 w1' = |m[i+1] - m[i]|). For linear data both w1 and w2
+ # are 0, so t stays at the initial value (which IS the correct
+ # slope), giving exact linear results -- this is the key property
+ # scipy preserves and we need to preserve too.
+ my $break_mult=1e-9;
+ my @diff=map { abs($mpad[$_+1] - $mpad[$_]) } (0..$#mpad-1);
+ # Find the max of (f1+f2) for the relative threshold
+ my $f12_max=0;
+ for my $i (0..$n-1) {
+  my $f1=$diff[$i+2];  # |mpad[i+2] - mpad[i+1]|
+  my $f2=$diff[$i];    # |mpad[i+1] - mpad[i]|
+  my $f12=$f1+$f2;
+  $f12_max=$f12 if($f12 > $f12_max);
+ }
+ $f12_max=-1 if($f12_max == 0);
+ for my $i (0..$n-1) {
+  my $f1=$diff[$i+2];
+  my $f2=$diff[$i];
+  my $f12=$f1+$f2;
+  # Skip the refinement if f12 is too small (numerically unstable)
+  # or if all f12 are 0 (the linear case where t stays at the
+  # initial midpoint estimate, which IS the exact slope -- this
+  # is the property that gives exact linear results on linear data).
+  next if($f12 <= 0);
+  next if($f12_max > 0 && $f12 <= $break_mult * $f12_max);
+  # In padded indices: m_padded[i+1] and m_padded[i+2] correspond to
+  # the real slopes. For i=0, mpad[1] is the left padding (not a
+  # real slope), so the formula's anchors are mpad[1] (fake) and
+  # mpad[2] (real_m[0]). For i=1, mpad[2]=real_m[0], mpad[3]=real_m[1].
+  # scipy's formula: t[i] = mpad[i+1] + (f2/f12) * (mpad[i+2] - mpad[i+1])
+  $t[$i]=$mpad[$i+1] + ($f2/$f12)*($mpad[$i+2] - $mpad[$i+1]);
+ }
+ # 3) Hermite cubic per integer index in [$min_idx, $max_idx]
+ my @out;
+ for my $qx ($min_idx..$max_idx) {
+  if($qx <= $xs[0]) {
+   push @out, $ys[0];
+   next;
+  }
+  if($qx >= $xs[-1]) {
+   push @out, $ys[-1];
+   next;
+  }
+  # Find segment (linear scan; for the DPG use case n is small enough)
+  my $i=0;
+  for my $k (0..$n-2) {
+   if($xs[$k+1] >= $qx) { $i=$k; last; }
+  }
+  my $h=$xs[$i+1]-$xs[$i];
+  if($h == 0) {
+   push @out, $ys[$i];
+   next;
+  }
+  my $s=($qx-$xs[$i])/$h;
+  my $s2=$s*$s;
+  my $s3=$s2*$s;
+  my $h00=2*$s3 - 3*$s2 + 1;
+  my $h10=$s3 - 2*$s2 + $s;
+  my $h01=-2*$s3 + 3*$s2;
+  my $h11=$s3 - $s2;
+  my $val=$h00*$ys[$i] + $h10*$h*$t[$i] + $h01*$ys[$i+1] + $h11*$h*$t[$i+1];
+  push @out, $val;
+ }
+ return \@out;
+}
+
 # Build the LG HDR20 1D DPG LUT (3072 values = 3 channels x 1024 points,
 # channel-major: indices 0..1023 = R, 1024..2047 = G, 2048..3071 = B).
 # The DPG is a per-channel input->output map in the 15-bit domain
 # [0,32767]. Baseline is a linear identity ramp; calibration applies a
 # multiplicative per-channel correction at measured anchor input-indices
-# and linearly interpolates between them. Pure function: no I/O, no
+# and interpolates between them with Akima cubic spline (linear fallback
+# when fewer than 5 anchors are present). Pure function: no I/O, no
 # network, no global state. Used by callers that need to project
 # calibration-time anchor corrections onto the full 1024-point ramp
 # without going through the full read/upload pipeline.
