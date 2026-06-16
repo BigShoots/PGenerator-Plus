@@ -3033,9 +3033,24 @@ sub lg_hdr_tone_map_upload_workflow (@) {
   return &json_error("HDR tone-map upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
  my @tone_map=($peak,1000,70,4000,60,10000,50);
+ my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
+ # The 1D_TONEMAP_PARAM must be uploaded INSIDE a CAL_START/CAL_END session
+ # to take effect on the wire. the reference workflow orders CAL_START -> 1D_TONEMAP_PARAM ->
+ # CAL_END. The previous order (1D_TONEMAP_PARAM first, then CAL_START/CAL_END
+ # bracketing an empty session) made the TV accept the payload (returnValue=true)
+ # but the tone-map roll-off did not bind, which dropped 5-20% IRE luma by ~10x
+ # in the post-call PQ series read. Re-ordering so the tone map upload is
+ # bracketed by CAL_START/CAL_END makes the roll-off actually apply.
+ my $start=&lg_calibration_request($session,"hdr_tone_map_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected calibration mode start before HDR tone-map upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
+ }
  my $upload=&lg_calibration_request($session,"hdr_tone_map_upload","1D_TONEMAP_PARAM",&lg_typed_uint16_payload(\@tone_map),1,"",$connect_timeout + 6);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
  if($upload_failed || ref($upload) ne "HASH") {
+  my $end_cleanup=&lg_calibration_request($session,"hdr_tone_map_cal_end_cleanup","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
   &websocket_close($session);
   return &json_error($upload_message||"LG TV rejected HDR tone-map upload.",{
    ip => $ip,
@@ -3044,14 +3059,9 @@ sub lg_hdr_tone_map_upload_workflow (@) {
    command => "1D_TONEMAP_PARAM",
    payload => \@tone_map,
    raw_response => $upload,
+   cal_start_response => $start,
+   cal_end_response => $end_cleanup,
   });
- }
- my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
- my $start=&lg_calibration_request($session,"hdr_tone_map_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
- my ($start_failed,$start_message)=&response_is_app_failure($start);
- if($start_failed || ref($start) ne "HASH") {
-  &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start after HDR tone-map upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start, upload_response => $upload });
  }
  my $end=&lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
  &websocket_close($session);
