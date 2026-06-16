@@ -12410,6 +12410,8 @@ function meterGreyChartTargetGammaSelection(){
 function meterGreyChartUsesPqTarget(){
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return false;
  if(meterChartIsDv()) return meterDvMapModeValue()!=='2';
+ const sel=String(((typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'').toLowerCase();
+ if(sel && sel!=='st2084') return false;
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
 
