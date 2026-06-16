@@ -12719,9 +12719,17 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# This matches CalMAN: it moves all three DPG channels together to
 			# change luminance and their ratio to correct white balance, and
 			# judges convergence on dE ITP WITH luminance.
-			my $tl=target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
+			# 100% white is the PEAK REFERENCE: its target Y is its OWN current
+			# reading (it cannot be driven brighter), so it white-balances only
+			# and never chases an impossible luminance. The 2.2 target-Y curve
+			# applies to the lower anchors, referenced to the calibrated peak.
+			# Luminance for the lower anchors is reached via RGB (the gain below),
+			# not a separate luminance setting.
+			my $tl=$is_white ? luminance($reading) : target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
 			$tl=$white_ref if(!(defined($tl) && $tl+0 > 0));
-			annotate_reading_target($reading,$white_ref,$tl,$target_x,$target_y);
+			# White normalises to itself (target_Yn=1.0 -> zero luminance error);
+			# lower anchors normalise to the calibrated peak white_ref.
+			annotate_reading_target($reading,($is_white ? $tl : $white_ref),$tl,$target_x,$target_y);
 			$state->{"readings"}=merge_reading($state->{"readings"},$reading);
 			$state->{"current_luminance"}=luminance($reading);
 			my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
