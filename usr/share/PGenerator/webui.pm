@@ -2420,14 +2420,32 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 				    my $code=$lg_autocal_26_code{$key};
 				    $lg_autocal_26_stimulus{$key}=($code-64)*100/876;
 			   }
+				   # HDR10 autocal 26pt is always 10-bit per project convention (the
+				   # renderer scales to 8-bit transports on the way out). The range
+				   # follows the active transport: Full 10-bit (0..1023) or Limited
+				   # 10-bit (64..940). The 0% step is NOT in the table — the
+				   # 0%-aware fallback below uses the active range's min/span.
 				   my %lg_hdr20_code=(
 				    "1.4"=>19,"2"=>20,"2.7"=>22,"4"=>25,"5"=>27,"7"=>31,"10"=>38,"15"=>49,"20"=>60,"25"=>71,
 				    "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
+				   );
+				   my %lg_hdr20_code_10bit_limited=(
+				    "1.4"=>76,"2"=>82,"2.7"=>88,"4"=>99,"5"=>108,"7"=>125,"10"=>152,"15"=>195,"20"=>239,"25"=>283,
+				    "30"=>327,"35"=>371,"40"=>414,"45"=>458,"50"=>502,"60"=>588,"70"=>677,"80"=>765,"90"=>852,"100"=>940
+				   );
+				   my %lg_hdr20_code_10bit_full=(
+				    "1.4"=>14,"2"=>20,"2.7"=>28,"4"=>41,"5"=>51,"7"=>72,"10"=>102,"15"=>153,"20"=>205,"25"=>256,
+				    "30"=>307,"35"=>358,"40"=>409,"45"=>460,"50"=>512,"60"=>614,"70"=>716,"80"=>818,"90"=>921,"100"=>1023
 				   );
 				   my %lg_hdr20_stimulus=();
 					   foreach my $key (keys %lg_hdr20_code) {
 					    $lg_hdr20_stimulus{$key}=$key+0;
 					   }
+				   my $lg_hdr20_active_table=\%lg_hdr20_code;
+				   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_limited if($lg_hdr20_codes);
+				   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_full if($lg_hdr20_codes && !$greyscale_patch_limited);
+				   my $lg_hdr20_min_code=($lg_hdr20_codes && !$greyscale_patch_limited) ? 0 : 64;
+				   my $lg_hdr20_span_code=($lg_hdr20_codes && !$greyscale_patch_limited) ? 1023 : 876;
 			   if($points==26 && $lg_autocal_26 && $signal_mode eq "sdr") {
 			    foreach my $slot (@ire_vals) {
 			     my $key=$slot;
@@ -2518,9 +2536,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        last;
       }
      }
-	     $c=exists($lg_hdr20_code{$slot_key}) ? $lg_hdr20_code{$slot_key} : int(16 + $stimulus_pct/100*219 + .5);
-	     $c=16 if($c < 16);
-	     $c=235 if($c > 235);
+	     # In-table slot (1.4..100): use the active 10-bit code. The 0% step
+	     # is NOT in the table; fall through to the range-aware formula so
+	     # 0% on Full 10-bit is 0 (true black) and on Limited 10-bit is 64
+	     # (limited black) instead of the old hardcoded 16 (8-bit Limited).
+	     $c=exists($lg_hdr20_active_table->{$slot_key}) ? $lg_hdr20_active_table->{$slot_key} : int($lg_hdr20_min_code + $stimulus_pct/100*$lg_hdr20_span_code + .5);
+	     $c=$lg_hdr20_min_code if($c < $lg_hdr20_min_code);
+	     $c=$lg_hdr20_min_code + $lg_hdr20_span_code if($c > $lg_hdr20_min_code + $lg_hdr20_span_code);
 	     return $c;
 	    }
 	    if($dv_series) {
@@ -2599,6 +2621,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    $extra.=",\"analysis_ire\":$analysis_ire,\"target_ire\":$analysis_ire,\"transport_stimulus\":$stim" if($points==21 && $lg_greyscale_21);
 		    $extra.=",\"input_max\":1023" if($lg_autocal_26_codes);
 		    $extra.=",\"input_max\":1023" if($dv_series && $dv_series_code_bits == 10);
+		    # HDR10 autocal 26pt is always 10-bit per project convention. The
+		    # renderer scales to 8-bit transports on the way out, so the step
+		    # JSON must carry input_max:1023 so the scaling in meter_series.sh
+		    # /patch_request_body keeps the 10-bit codes intact.
+		    $extra.=",\"input_max\":1023" if($lg_hdr20_codes);
 		    if($lg_autocal_26_codes) {
 		     my $step_read_delay_ms=0;
 		     $step_read_delay_ms=3000 if(abs($v-100)<0.001);
