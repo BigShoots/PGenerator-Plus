@@ -12293,7 +12293,7 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
 # and replaced with 1.0 on any NaN/inf/non-positive input. Pure math,
 # no I/O, no global state.
 sub lg_autocal_26_hdr20_dpg_gain {
-	 my ($reading,$target_luminance,$target_x,$target_y)=@_;
+	 my ($reading,$target_luminance,$target_x,$target_y,$ire)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
 	 return (1.0,1.0,1.0) if(!(defined($target_luminance) && $target_luminance+0 > 0));
 	 return (1.0,1.0,1.0) if(!(defined($target_x) && defined($target_y) && $target_y+0 > 0));
@@ -12338,7 +12338,13 @@ sub lg_autocal_26_hdr20_dpg_gain {
 	  if($m+0 > 0 && $t+0 == $t+0 && $m+0 == $m+0) {
 	   $g=$t/$m;
 	   $g=0.5 if($g+0 < 0.5);
-	   $g=2.0 if($g+0 > 2.0);
+	   # At low IREs the panel's PQ EOTF hardware floor prevents reaching the
+	   # 2.2 target. Without this guard, the DAMP applies gain 1.25 per iter
+	   # and the DPG inflates over 6 iters, producing R[1]=47 and R[14]=661
+	   # instead of the identity R[1]=32, R[14]=448 (crushing the 1-3% range
+	   # to a fixed near-black and over-brightening 5-25%).
+	   my $g_max=(defined($ire) && $ire+0 > 0 && $ire+0 < 5.0) ? 1.0 : 2.0;
+	   $g=$g_max if($g+0 > $g_max);
 	   $g=1.0 if($g+0 != $g+0);
 	  }
 	  push @gain,$g+0;
