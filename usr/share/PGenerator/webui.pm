@@ -12437,17 +12437,15 @@ function meterLgHdrHundredPercentCodeForRange(){
 
 function meterGreySignalFractionFromCode(code){
  const numeric=Number(code);
+ const range=meterGreyCodeRange();
  if(meterChartIsDv()){
-  const range=meterGreyCodeRange();
   return Math.max(0,Math.min(1,((numeric||0)-range.min)/range.span));
  }
- if(Number.isFinite(numeric)&&meterGreyAllowsHeadroomTargets()){
-  return Math.max(0,Math.min(1.1,(numeric-64)/876));
+ if(Number.isFinite(numeric) && (meterGreyAllowsHeadroomTargets() || numeric>255)){
+  // 10-bit codes: rely on the live range (Full 10-bit: {min:0, span:1020};
+  // Limited 10-bit: {min:64, span:876}). The DV path is handled above.
+  return Math.max(0,Math.min(1.1,(numeric-range.min)/range.span));
  }
- if(Number.isFinite(numeric)&&numeric>255){
-  return Math.max(0,Math.min(1.1,(numeric-64)/876));
- }
- const range=meterGreyCodeRange();
  return Math.max(0,Math.min(1,((code||0)-range.min)/range.span));
 }
 
