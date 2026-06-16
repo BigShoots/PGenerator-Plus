@@ -383,7 +383,19 @@ mkfifo "$CMDPIPE"
 export HOME="${HOME:-/root}"
 mkdir -p "$HOME/.cache" "$HOME/.local/share" "$HOME/.config" 2>/dev/null
 
-SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
+# i1Display3 low-light handling: the i1D3 supports a 2/3/5-read averaging mode
+# (`-Y a` / `-Y aa` / `-Y aaa` in Argyll) that reduces read noise at dim patches
+# (autocal at 1.4-4% IRE hits 0.07-0.59 nits, where single-read SNR is the
+# dominant error source). Default to 2-read averaging (single `a`); override
+# with METER_AVERAGING=off to disable, or =aa / =aaa for 3 / 5 reads.
+case "${METER_AVERAGING:-a}" in
+ off|OFF|none|NONE) AVG_FLAG="" ;;
+ a)                 AVG_FLAG="-Y a" ;;
+ aa)                AVG_FLAG="-Y aa" ;;
+ aaa)               AVG_FLAG="-Y aaa" ;;
+ *)                 AVG_FLAG="-Y a" ;;
+esac
+SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $AVG_FLAG"
 # A CCSS (Colorimeter Calibration Spectral Sample) only corrects COLORIMETERS.
 # A spectrophotometer (i1 Pro 2, etc.) measures spectrally and rejects -X with
 # "Instrument doesn't have Colorimeter Calibration Spectral Sample capability",
@@ -410,7 +422,7 @@ if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; t
    DISPLAY_TYPE="l"
   fi
  fi
- SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x"
+ SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $AVG_FLAG"
 fi
 [[ -n "$REFRESH_RATE" ]] && SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
 [[ "$DISABLE_AIO" == "1" ]] && export I1D3_DISABLE_AIO=1
