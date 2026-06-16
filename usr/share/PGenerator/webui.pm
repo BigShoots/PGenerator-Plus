@@ -12435,9 +12435,31 @@ function meterLgHdrHundredPercentCodeForRange(){
  return meterIsLimitedRange() ? 940 : 1023;
 }
 
+function meterActiveSeriesCodesAre8Bit(){
+ // True when the current greyscale series' patch codes are 8-bit (white
+ // r_code ~235/255) even though the transport (max_bpc) is 10-bit. The
+ // white/100% patch is read first, so its r_code reliably indicates the
+ // series code bit-depth (235 -> 8-bit, 940/1023 -> 10-bit). Returns false
+ // when unknown so codes that already match the range are left alone.
+ let w=(typeof meterWhiteReading!=='undefined' && meterWhiteReading) ? meterWhiteReading : null;
+ if((!w || w.r_code==null) && Array.isArray(meterReadings)){
+  w=meterReadings.find(function(r){ return r && (Number(r.ire)===100 || r.final_white_refresh) && (r.r_code!=null || r.r!=null); }) || w;
+ }
+ if(!w) return false;
+ const wc=Number(w.r_code!=null?w.r_code:w.r);
+ return Number.isFinite(wc) && wc>0 && wc<=255;
+}
+
 function meterGreySignalFractionFromCode(code){
- const numeric=Number(code);
+ let numeric=Number(code);
  const range=meterGreyCodeRange();
+ // Bit-depth reconciliation: the manual greyscale series read can emit 8-bit
+ // codes (white=235) while max_bpc=10 makes meterGreyCodeRange 10-bit; scale
+ // the 8-bit code to 10-bit so (code-min)/span is correct. No-op for genuinely
+ // 10-bit series (white>255) and for 8-bit transports (max_bpc=8).
+ if(typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10 && Number.isFinite(numeric) && numeric<=255 && meterActiveSeriesCodesAre8Bit()){
+  numeric=numeric*4;
+ }
  if(meterChartIsDv()){
   return Math.max(0,Math.min(1,((numeric||0)-range.min)/range.span));
  }
@@ -12446,7 +12468,7 @@ function meterGreySignalFractionFromCode(code){
   // Limited 10-bit: {min:64, span:876}). The DV path is handled above.
   return Math.max(0,Math.min(1.1,(numeric-range.min)/range.span));
  }
- return Math.max(0,Math.min(1,((code||0)-range.min)/range.span));
+ return Math.max(0,Math.min(1,(numeric-range.min)/range.span));
 }
 
 function meterSignalFractionFromCode(code){
