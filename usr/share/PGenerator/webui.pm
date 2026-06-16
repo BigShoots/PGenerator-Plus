@@ -12360,7 +12360,12 @@ function meterDvRelativeSt2084UsesLegalRange(){
 
 function meterGreyTargetGammaSelection(){
  const active=(typeof meterActiveSeriesTargetGamma!=='undefined')?String(meterActiveSeriesTargetGamma||''):'';
- if(active) return active;
+ // The active-series gamma override carries a snapshot's own transfer for
+ // HDR/HLG/DV/PQ series. For SDR, always honor the operator's TARGET GAMMA
+ // dropdown (as in 2.7.2): a snapshot gamma that is not 'bt1886' would
+ // otherwise bypass the BT.1886 black-level lift and create a low-IRE error
+ // on a calibrated SDR panel.
+ if(active && (typeof meterChartIsHdr==='function') && meterChartIsHdr()) return active;
  const el=document.getElementById('meterTargetGamma');
  const selected=String((el&&el.value) || '');
  if(meterChartIsDv()){
