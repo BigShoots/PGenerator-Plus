@@ -12347,11 +12347,18 @@ sub lg_autocal_26_hdr20_dpg_gain {
 	}
 
 # Peak white-balance gains: at 100% the panel is already at peak, so a
-# deficient channel cannot be pushed higher. Bring the two higher channels
-# DOWN to the lowest-reading channel instead, which yields a neutral D65 white
-# (equal linear Display-P3 RGB) at the achievable peak luminance. The lowest
-# channel keeps gain 1.0; the others get gain < 1.0 (never > 1.0). This is the
-# proven peak white-balance approach (reduce-to-lowest), not a target-Y solve.
+# deficient channel cannot be pushed higher (the panel hardware simply will
+# not go above its native). Hold the MAX channel; do NOT reduce it. The
+# natural gain for channels below max is > 1 (boost above native) which the
+# panel cannot do, so those gains are clamped to 1.0 (no change). For a
+# channel above max (atypical), attenuate it down to the max.
+#
+# This is the user's explicit "hold R, pull blue and green down to meet red,
+# not pull red down" instruction. The chromaticity at 100% will be the
+# panel's native (typically slightly cool on OLED) rather than D65. The
+# trade-off: ~3% more luminance at 100% (~30 nits on a 1000-nit panel) at
+# the cost of a small chromaticity offset, vs the previous "reduce-to-lowest"
+# which lost the luminance for a D65 match at lower brightness.
 sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	 my ($reading)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
@@ -12378,13 +12385,13 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
 	 );
-	 my $min=$mrgb[0];
-	 for my $ch (1..2) { $min=$mrgb[$ch] if($mrgb[$ch] < $min); }
-	 return (1.0,1.0,1.0) if(!($min+0 > 0));
+	 my $max=$mrgb[0];
+	 for my $ch (1..2) { $max=$mrgb[$ch] if($mrgb[$ch] > $max); }
+	 return (1.0,1.0,1.0) if(!($max+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
 	  my $m=$mrgb[$ch];
-	  my $g=($m+0 > 0) ? ($min/$m) : 1.0;
+	  my $g=($m+0 > 0) ? ($max/$m) : 1.0;
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
