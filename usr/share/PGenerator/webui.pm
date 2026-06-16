@@ -19346,27 +19346,12 @@ function meterSetLgAutoCalTransportValues(){
 }
 
 async function meterEnsureLgAutoCalTransport(workflowName){
+ // Popup block removed by user request on 2026-06-13: see the comment
+ // on meterEnsureExtendedVideoTransport above. Same rationale -- the
+ // operator wants to run autocal tests in different signal modes
+ // (RGB 10-bit full, RGB 10-bit limited, YCbCr 4:4:4 limited) without
+ // being forced to switch to YCbCr 4:4:4 10-bit limited.
  if(meterLgAutoCalTransportReady()&&!hasUnsavedSettings()) return true;
- const requested=meterLgAutoCalRequestedSignalMode();
- const transportLabel=requested==='hdr10'?'HDR10 YCbCr 4:4:4 10-bit limited Display P3':'SDR YCbCr 4:4:4 10-bit limited BT.709';
- if(!meterLgAutoCalTransportAvailable()){
-  toast(transportLabel+' output is not available for the current resolution. Choose a lower-bandwidth display mode, then try AutoCal again.',true);
-  return false;
- }
- const label=workflowName||'LG Auto Cal';
- const accepted=window.confirm(label+' works best with '+transportLabel+' output. Switch output and restart PGenerator now?');
- if(!accepted) return false;
- meterSetLgAutoCalTransportValues();
- if(!meterLgAutoCalTransportReady()){
-  toast('Unable to select '+transportLabel+' output for the current display mode.',true);
-  return false;
- }
- const applied=await applySettings();
- if(!applied) return false;
- if(!meterLgAutoCalTransportReady()){
-  toast('PGenerator did not return in the expected AutoCal output mode. Check Display Settings, then try AutoCal again.',true);
-  return false;
- }
  return true;
 }
 // Display a patch on PGenerator without reading
