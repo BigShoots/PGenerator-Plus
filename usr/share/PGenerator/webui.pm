@@ -12410,6 +12410,8 @@ function meterGreyChartTargetGammaSelection(){
 function meterGreyChartUsesPqTarget(){
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return false;
  if(meterChartIsDv()) return meterDvMapModeValue()!=='2';
+ const sel=String(((typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'').toLowerCase();
+ if(sel && sel!=='st2084') return false;
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
 }
 
@@ -12579,6 +12581,46 @@ function meterLgAutoCalTargetMetaForCode(code){
   target_y:wp.y,
   target_Yn:meterLgAutoCalTargetYnForStimulus(stimulus)
  };
+}
+
+// Re-grade a single greyscale reading's luminance target against the
+// CURRENTLY selected target gamma (via meterLgAutoCalTargetYnForStimulus).
+// The reading's original target_Yn is baked at series-load time and the
+// per-step stamp in meterStampReadingStepMeta re-applies that baked value
+// on every meterAttachSeriesMeta pass, so changing the TARGET GAMMA dropdown
+// alone has no visible effect. This helper overwrites the baked value with
+// the live computation, and clears any cached absolute target_X/Y/Z so
+// meterTargetXYZForReading re-derives them from the new target_Yn.
+//
+// Guards:
+//   - non-greyscale readings (colors / saturations have a different
+//     target_Yn meaning - relative color value, not a luminance-gamma
+//     target) are left alone.
+//   - Dolby Vision series use meterDvAutoTargetGamma + absolute-Y target
+//     math; their baked target_Yn is correct, leave it alone.
+function meterRegradeReadingTargetYn(reading){
+ if(!reading) return;
+ if(typeof meterReadingIsGreyscale==='function' && !meterReadingIsGreyscale(reading)) return;
+ if(typeof meterChartIsDv==='function' && meterChartIsDv()) return;
+ const stimulus=(typeof meterReadingAnalysisIre==='function')?meterReadingAnalysisIre(reading):null;
+ if(!Number.isFinite(stimulus)) return;
+ if(typeof meterLgAutoCalTargetYnForStimulus!=='function') return;
+ const liveTargetYn=meterLgAutoCalTargetYnForStimulus(stimulus);
+ if(!Number.isFinite(liveTargetYn)) return;
+ reading.target_Yn=liveTargetYn;
+ // Drop any cached absolute target_X/Y/Z so the chart path falls through
+ // to the recompute branch in meterTargetXYZForReading, which uses the
+ // new normalized target_Yn + the (unchanged) chroma target_x/target_y.
+ if('target_X' in reading) reading.target_X=undefined;
+ if('target_Y' in reading) reading.target_Y=undefined;
+ if('target_Z' in reading) reading.target_Z=undefined;
+}
+
+// Re-grade every greyscale reading in meterReadings against the currently
+// selected target gamma. Safe to call on a non-greyscale series (no-op).
+function meterRegradeActiveSeriesTargets(){
+ if(!Array.isArray(meterReadings)) return;
+ for(const rd of meterReadings) meterRegradeReadingTargetYn(rd);
 }
 
 function meterLgAutoCalBodyLumaBiasPayload(dtype){
@@ -24152,6 +24194,15 @@ async function meterAutoCalConfirmAndStart(){
 	 const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
 	 const signalMode=meterLgAutoCalRequestedSignalMode();
 	 const hdrWorkflow=signalMode==='hdr10';
+	 // HDR greyscale is calibrated to a 2.2 power target -> set the TARGET
+	 // GAMMA selector to 2.2 as the autocal starts so the charts grade against
+	 // the curve we calibrate to. SDR keeps the operator's choice.
+	 if(hdrWorkflow){
+	  const tgEl=document.getElementById('meterTargetGamma');
+	  if(tgEl && tgEl.value!=='2.2'){ tgEl.value='2.2'; }
+	  meterActiveSeriesTargetGamma='2.2';
+	  try{ meterSaveColorPrefs(); }catch(e){}
+	 }
 	 const setupY=hdrWorkflow?undefined:meterAutoCalSetupYValue();
 	 const targetY=hdrWorkflow?undefined:meterAutoCalTargetYValue();
 	 const headroomY=hdrWorkflow?undefined:meterAutoCalHeadroomTargetYValue(setupY);
@@ -29383,6 +29434,11 @@ function meterRefreshActiveSeriesCharts(){
 	 const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
 	 meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(meterReadings||[],meterActiveSeriesType));
+ // The attach step stamps each reading's target_Yn from its matched step,
+ // which carries the value baked at series-load time. Override that with
+ // the live target-gamma computation so any active gamma change (e.g. the
+ // TARGET GAMMA dropdown) is reflected on the charts without a re-read.
+ meterRegradeActiveSeriesTargets();
  const white=meterFindSeriesWhiteReading(meterReadings);
  if(white) meterWhiteReading=white;
  else if(meterWhiteReading&&!meterWhiteReading.synthetic_target) meterNormalizeMeasuredReading(meterWhiteReading);
@@ -29391,6 +29447,8 @@ function meterRefreshActiveSeriesCharts(){
  (meterReadings||[]).forEach(r=>{
   if(r){
    delete r._dE_cache_key;
+   delete r._dE_raw;
+   delete r._dE_lc;
    delete r._gamma_rgb;
    if(r.luminance!=null) done.add(meterStepNameKey(r));
   }
@@ -29432,10 +29490,52 @@ document.getElementById('meterTargetGamut').addEventListener('change',()=>{
 document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(getVal('signal_mode')==='dv'){
   applyMeterTargetGammaDefault();
+  meterActiveSeriesTargetGamma=null;
   meterRefreshActiveSeriesCharts();
   return;
  }
- meterRefreshActiveSeriesCharts();
+ // Re-grade the currently displayed series against the newly selected target
+ // gamma. meterGreyTargetGammaSelection() prefers meterActiveSeriesTargetGamma
+ // (locked to the loaded snapshot at series-load time), so changing the
+ // dropdown alone would NOT re-grade the charts. Override it with the dropdown
+ // choice so the operator can compare e.g. 2.2 vs ST.2084 grading live.
+ const sel=String((document.getElementById('meterTargetGamma')||{}).value||'').toLowerCase();
+ meterActiveSeriesTargetGamma=sel||null;
+ // Persist the new selection alongside the other color-science prefs.
+ try{ meterSaveColorPrefs(); }catch(e){}
+ // Invalidate per-reading analysis caches (the dE cache key includes the
+ // active gamma, but we also drop the cached raw/lc values + per-channel
+ // gamma here so the first chart redraw cannot pick up stale numbers), and
+ // recompute each greyscale reading's target_Yn from the live gamma.
+ if(meterReadings && meterReadings.length){
+  meterReadings.forEach(r=>{
+   if(!r) return;
+   delete r._dE_cache_key;
+   delete r._dE_raw;
+   delete r._dE_lc;
+   delete r._gamma_rgb;
+  });
+  _chartHitZones=[];
+  meterLastChartSignature='';
+  meterLastChartCount=0;
+  meterRegradeActiveSeriesTargets();
+ }
+ // Trigger the chart redraw. If the refresh function would early-return
+ // (autocal running, series in progress, no active series), fall through
+ // to a manual drawAllCharts on the regraded readings so the change is
+ // still visible on a completed manual series read.
+ const refreshWouldEarlyReturn=!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||(typeof meterAutoCalStatusActive==='function'&&meterAutoCalStatusActive());
+ if(refreshWouldEarlyReturn){
+  if(meterReadings && meterReadings.length){
+   const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+   const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   drawAllCharts(sorted);
+  } else {
+   meterRefreshActiveSeriesCharts();
+  }
+ } else {
+  meterRefreshActiveSeriesCharts();
+ }
 });
 
 ['meterTargetWhiteX','meterTargetWhiteY'].forEach(id=>{
