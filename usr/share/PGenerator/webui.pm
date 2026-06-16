@@ -19079,7 +19079,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	    name:meterFormatPercentValue(slot)+'%',
 	    series_type:'greyscale',
 	    autocal_code:code,
-	    input_max:meterPatchBitDepth()===?10?1023:255,
+	    input_max:meterPatchBitDepth()===10?1023:255,
 	    ...previewCodesForCode(code,meterPatchBitDepth()===10?1023:255),
 		    ddc_slot_locked:true,
 		    autocal_slot_locked:true,
@@ -19090,9 +19090,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		   };
 		  };
 	  const zeroCode=meterCodeFromSignalPercentWithOptions(0,null);
-	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchBitDepth()===?10?1023:255,name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchBitDepth()===10?1023:255),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchBitDepth()===?10?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchBitDepth()===10?1023:255),autocal_slot_locked:false,autocal_read_only:true};
+	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchBitDepth()===10?1023:255,name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchBitDepth()===10?1023:255),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchBitDepth()===10?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchBitDepth()===10?1023:255),autocal_slot_locked:false,autocal_read_only:true};
 	  const whiteCode=meterCodeFromSignalPercentWithOptions(100,null);
-	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:meterPatchBitDepth()===?10?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,meterPatchBitDepth()===10?1023:255),read_delay_ms:3000,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_target_label:'100% HDR white'};
+	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:meterPatchBitDepth()===10?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,meterPatchBitDepth()===10?1023:255),read_delay_ms:3000,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_target_label:'100% HDR white'};
 	  // hdr20 (HDR10) carries a REAL 100% DDC slot at the top of the body
 	  // (METER_LG_GREY_HDR_AUTOCAL_SLOTS[0]===100), so the pre-loop
 	  // "100% HDR white" anchor would duplicate the 100% point in the
@@ -20906,7 +20906,7 @@ function meterAutoCalWhiteStep(){
     r:code,
     g:code,
     b:code,
-    input_max:meterPatchBitDepth()===?10?1023:255,
+    input_max:meterPatchBitDepth()===10?1023:255,
     name:'100%',
     series_type:'greyscale',
     autocal_white_reference:true,
@@ -22216,7 +22216,7 @@ async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
    const hdr100=meterLgHdrHundredPercentCodeForRange();
    step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:hdr100,g:hdr100,b:hdr100,input_max:1023,name:'100%'};
   }else{
-   step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:235,g:235,b:235,input_max:meterPatchBitDepth()===?10?1023:255,name:'100%'};
+   step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:235,g:235,b:235,input_max:meterPatchBitDepth()===10?1023:255,name:'100%'};
   }
  }
  // Force-display the white patch so the pattern + meter session are aligned.
