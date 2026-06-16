@@ -24152,6 +24152,15 @@ async function meterAutoCalConfirmAndStart(){
 	 const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
 	 const signalMode=meterLgAutoCalRequestedSignalMode();
 	 const hdrWorkflow=signalMode==='hdr10';
+	 // HDR greyscale is calibrated to a 2.2 power target -> set the TARGET
+	 // GAMMA selector to 2.2 as the autocal starts so the charts grade against
+	 // the curve we calibrate to. SDR keeps the operator's choice.
+	 if(hdrWorkflow){
+	  const tgEl=document.getElementById('meterTargetGamma');
+	  if(tgEl && tgEl.value!=='2.2'){ tgEl.value='2.2'; }
+	  meterActiveSeriesTargetGamma='2.2';
+	  try{ meterSaveColorPrefs(); }catch(e){}
+	 }
 	 const setupY=hdrWorkflow?undefined:meterAutoCalSetupYValue();
 	 const targetY=hdrWorkflow?undefined:meterAutoCalTargetYValue();
 	 const headroomY=hdrWorkflow?undefined:meterAutoCalHeadroomTargetYValue(setupY);
