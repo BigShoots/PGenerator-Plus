@@ -12271,49 +12271,24 @@ function meterExtendedVideoTransportOk(){
 }
 
 function meterEnsureExtendedVideoTransport(){
+ // Popup block removed by user request on 2026-06-13: the operator runs
+ // autocal tests in different signal modes (RGB 10-bit full, RGB 10-bit
+ // limited, YCbCr 4:4:4 limited, etc.) and the YCbCr-only toast was
+ // blocking the test run. The autocal's per-anchor 16-235 patches still
+ // go through correctly in any signal mode (the meter measures whatever
+ // the panel puts out); we just no longer FORCE a switch to YCbCr 4:4:4
+ // limited before the autocal starts. If the headroom is required and
+ // the transport can't carry it, the dE at 95-100% will be visibly off
+ // and the operator can switch manually.
  if(!meterExtendedVideoHeadroomRequired()||meterExtendedVideoTransportOk()) return true;
- const fmtSel=document.getElementById('color_format');
- const rngSel=document.getElementById('rgb_quant_range');
- const ycc444=fmtSel?Array.from(fmtSel.options||[]).find(o=>o.value==='1'&&!o.disabled):null;
- if(ycc444){
-  fmtSel.value='1';
-  if(rngSel) rngSel.value='1';
-  if(typeof updateDropdowns==='function') updateDropdowns();
-  if(rngSel) rngSel.value='1';
-  if(typeof checkSettingsChanged==='function') checkSettingsChanged();
- }
- const applyBar=document.getElementById('applyBar');
- if(applyBar&&applyBar.scrollIntoView){
-  try{ applyBar.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ applyBar.scrollIntoView(); }
- }
-	 toast(ycc444
-		  ? 'LG extended greyscale uses 16-255 video-code patches. Apply & Restart to use YCbCr 4:4:4 limited transport so 236-255 are preserved.'
-		  : 'LG extended greyscale needs YCbCr 4:4:4 limited transport to preserve 236-255 video-code patches, but this mode is not available for the current output.',
-	 true);
-	 return false;
-	}
+ return true;
+}
 
 function meterEnsureLgAutoCalExtendedVideoTransport(){
+ // Popup block removed by user request on 2026-06-13: see the comment
+ // on meterEnsureExtendedVideoTransport above. Same rationale.
  if(!meterLgAutoCalUsesExtendedSdr()||meterExtendedVideoTransportCanCarryHeadroom()) return true;
- const fmtSel=document.getElementById('color_format');
- const rngSel=document.getElementById('rgb_quant_range');
- const ycc444=fmtSel?Array.from(fmtSel.options||[]).find(o=>o.value==='1'&&!o.disabled):null;
- if(ycc444){
-  fmtSel.value='1';
-  if(rngSel) rngSel.value='1';
-  if(typeof updateDropdowns==='function') updateDropdowns();
-  if(rngSel) rngSel.value='1';
-  if(typeof checkSettingsChanged==='function') checkSettingsChanged();
- }
- const applyBar=document.getElementById('applyBar');
- if(applyBar&&applyBar.scrollIntoView){
-  try{ applyBar.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ applyBar.scrollIntoView(); }
- }
- toast(ycc444
-	  ? 'LG Auto Cal uses 16-255 video-code patches. Apply & Restart to use YCbCr 4:4:4 limited transport so 236-255 are preserved.'
-	  : 'LG Auto Cal needs YCbCr 4:4:4 limited transport to preserve 236-255 video-code patches, but this mode is not available for the current output.',
-  true);
- return false;
+ return true;
 }
 
 function meterGreyscaleUsesFullSourceRange(){
