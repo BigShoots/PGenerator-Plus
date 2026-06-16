@@ -12352,19 +12352,26 @@ sub lg_autocal_26_hdr20_dpg_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
-# Peak white-balance gains: at 100% the panel is already at peak, so a
-# deficient channel cannot be pushed higher (the panel hardware simply will
-# not go above its native). Hold the MAX channel; do NOT reduce it. The
-# natural gain for channels below max is > 1 (boost above native) which the
-# panel cannot do, so those gains are clamped to 1.0 (no change). For a
-# channel above max (atypical), attenuate it down to the max.
+# Peak white-balance gains: at 100% the panel cannot boost any channel above
+# its native max (hardware limit), so D65 is only reachable by reducing the
+# channel(s) that EXCEED their D65 target. Compute the D65 target per channel
+# in linear Display-P3: the D65 target has R=G=B in linear P3 coordinates,
+# and the measured total linear-RGB gives the per-channel target as a share of
+# the measured luminance. Any channel ABOVE its D65 target gets attenuated
+# (gain = target/measured, clamped to [0.5, 1.0]). Any channel AT OR BELOW its
+# D65 target is held (gain = 1.0) -- the panel cannot push it higher, and
+# reducing it would only widen the chromaticity gap and lose luminance.
 #
-# This is the user's explicit "hold R, pull blue and green down to meet red,
-# not pull red down" instruction. The chromaticity at 100% will be the
-# panel's native (typically slightly cool on OLED) rather than D65. The
-# trade-off: ~3% more luminance at 100% (~30 nits on a 1000-nit panel) at
-# the cost of a small chromaticity offset, vs the previous "reduce-to-lowest"
-# which lost the luminance for a D65 match at lower brightness.
+# Contrast with the previous "hold max, no boost" rule: that rule clamped
+# every gain to 1.0 on a B-excess panel (B is max, can't be boosted, others
+# can't be boosted either), producing a no-op calibration at 100% (DPG not
+# changed, deltaE not moving). This rule instead reduces the excess channels
+# (B and/or G on a B-excess panel) toward their D65 target, leaving deficient
+# channels (R on a B-excess panel) at 1.0. R is preserved (per the user's
+# "hold R, pull blue and green down" instruction). The trade-off: a moderate
+# luminance drop (e.g. ~2% on a 913-nit B-excess panel vs ~3% on the previous
+# B-deficient run) in exchange for an actually-converging 100% calibration
+# that brings the chromaticity toward D65.
 sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	 my ($reading)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
@@ -12391,13 +12398,21 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
 	 );
-	 my $max=$mrgb[0];
-	 for my $ch (1..2) { $max=$mrgb[$ch] if($mrgb[$ch] > $max); }
-	 return (1.0,1.0,1.0) if(!($max+0 > 0));
+	 # D65 has R=G=B in linear Display-P3, so the per-channel D65 target
+	 # is the mean of @mrgb. Any channel above the mean needs attenuation;
+	 # any at or below the mean is held.
+	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
+	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
+	 my $target=$sum/3.0;
 	 my @gain;
 	 for my $ch (0..2) {
 	  my $m=$mrgb[$ch];
-	  my $g=($m+0 > 0) ? ($max/$m) : 1.0;
+	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
+	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
+	  # (deficient). The panel can't push it above native, so hold (clamp
+	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
+	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
+	  # moves.
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
