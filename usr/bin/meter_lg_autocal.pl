@@ -12528,7 +12528,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
-	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 5;
+	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 8;
 	$max_inner_white=1 if($max_inner_white < 1);
 	$max_inner_white=16 if($max_inner_white > 16);
 	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
@@ -12741,8 +12741,18 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# RGB gains: scaling all three together moves luminance, their ratio
 			# corrects chroma. Identical path for every anchor incl. 100% -- no
 			# separate luminance adjustment, no reduce-to-lowest.
-			my ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
-			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg),g_gain=>$damp->($gg),b_gain=>$damp->($bg)});
+			# 100% white: reduce-to-lowest -- bring the high channels straight
+			# DOWN to the lowest-reading channel (big, direct moves) to neutral
+			# D65 at the achievable peak. Self-targeting (no impossible luminance
+			# to chase); converges in a few moves. Lower anchors: per-channel
+			# solve toward D65 at the 2.2 target luminance via RGB.
+			my ($rg,$gg,$bg)=$is_white
+				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
+				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y);
+			# White takes larger steps (it only reduces + re-measures) so peak
+			# balance settles in a few moves instead of many tiny ones.
+			my $floor=$is_white ? 0.6 : 0.8;
+			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor),g_gain=>$damp->($gg,$floor),b_gain=>$damp->($bg,$floor)});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
 				$upload_failed=1; $exit_reason="build_error";
