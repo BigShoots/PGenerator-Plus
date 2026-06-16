@@ -385,17 +385,17 @@ mkdir -p "$HOME/.cache" "$HOME/.local/share" "$HOME/.config" 2>/dev/null
 
 # i1Display3 averaging mode (low light handling): the i1D3 supports
 # 2/3/5-read averaging (`-Y a` / `-Y aa` / `-Y aaa`) that reduces read
-# noise at dim patches. Default 2-read averaging (single `a`); override
-# with METER_AVERAGING=off to disable, =aa / =aaa for 3 / 5 reads.
-# Critical for HDR autocal at 1.4-4% IRE (0.07-0.59 nits) where single-
-# read SNR is the dominant error source; the per-iter DAMP (sqrt(gain)
-# clamped to [0.8, 1.25]) can otherwise oscillate in the noise floor.
-case "${METER_AVERAGING:-a}" in
+# noise at dim patches. Default OFF (single long read, no -Y flag);
+# override with METER_AVERAGING=a (2 reads) / =aa (3 reads) / =aaa
+# (5 reads) to enable averaging. The HDR autocal still benefits from
+# 2-read averaging at 1.4-4% IRE (0.07-0.59 nits) but the default is
+# the single-read path for the panel/post-cal greyscale series read.
+case "${METER_AVERAGING:-off}" in
  off|OFF|none|NONE) AVG_FLAG="" ;;
  a)                 AVG_FLAG="-Y a" ;;
  aa)                AVG_FLAG="-Y aa" ;;
  aaa)               AVG_FLAG="-Y aaa" ;;
- *)                 AVG_FLAG="-Y a" ;;
+ *)                 AVG_FLAG="" ;;
 esac
 SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $AVG_FLAG"
 # A CCSS (Colorimeter Calibration Spectral Sample) only corrects COLORIMETERS.
