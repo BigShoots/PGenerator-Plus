@@ -12522,13 +12522,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: missing state" unless(ref($state) eq "HASH");
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: missing target chromaticity" unless(defined($target_x) && defined($target_y) && $target_y+0 > 0);
 
-	my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 3;
+	my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 6;
 	$max_inner=1 if($max_inner < 1);
 	$max_inner=12 if($max_inner > 12);
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
-	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 8;
+	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 16;
 	$max_inner_white=1 if($max_inner_white < 1);
 	$max_inner_white=16 if($max_inner_white > 16);
 	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
