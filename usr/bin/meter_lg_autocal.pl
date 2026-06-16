@@ -1885,7 +1885,24 @@ sub patch_code_for_stimulus {
 	 $stimulus=$headroom if($stimulus > $headroom);
 	 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"";
 	 my $limited=($pattern_range ne "" && int($pattern_range)==1) ? 1 : 0;
+	 # HDR10 is always 10-bit. Legal range depends on panel quant range.
+	 # Limited 10-bit -> 64-940. Full 10-bit -> 0-1023. Returns early so the
+	 # SDR-only clamp below (which would clamp 10-bit codes to 255) is
+	 # bypassed.
+	 my $hdr10=lc($config->{"signal_mode"}||"sdr") eq "hdr10";
 	 my $code;
+	 if($hdr10) {
+	  if($limited) {
+	   $code=int(64 + ($stimulus/100)*876 + .5);
+	  } else {
+	   $code=int(($stimulus/100)*1023 + .5);
+	  }
+	  $code=64   if($code < 64   && $limited);
+	  $code=0    if($code < 0    && !$limited);
+	  $code=940  if($code > 940  && $limited);
+	  $code=1023 if($code > 1023 && !$limited);
+	  return $code;
+	 }
 	 if($limited && $sdr_headroom) {
 	  $code=int(64 + ($stimulus/100)*876 + .5);
 	 } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
