@@ -13659,6 +13659,16 @@ function meterTargetXYZForReading(reading){
  }
  if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   let refY=meterColorSeriesReferenceNits();
+  // HDR10 color/sat series carry PQ-absolute target_Yn (normalized to the
+  // 10000-nit peak), so colored patches reference the PQ peak. The neutral
+  // WHITE reference patch (target_Yn=1) must instead reference the display's
+  // achieved white; otherwise the panel's normal peak rolloff reads as a
+  // spurious white luminance error.
+  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&meterActiveChartSignalMode()==='hdr10'&&meterReadingIsGreyscale(reading)){
+   const _whiteRef=meterFindMeasuredWhiteReading();
+   const _whiteRefY=meterReadingLuminanceNits(_whiteRef);
+   if(_whiteRefY>0) refY=_whiteRefY;
+  }
   let greyTargetY=null;
   const activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
 	  if(!activeColorSeries&&meterReadingIsGreyscale(reading)){
