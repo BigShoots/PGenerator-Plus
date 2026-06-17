@@ -8868,7 +8868,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
  <!-- WiFi AP (PAN) -->
  <div class="card" data-widget="ap" draggable="true">
-  <h2><span class="drag-handle">&#9776;</span>WiFi Access Point</h2>
+  <h2><span class="drag-handle">&#9776;</span>WiFi Access Point<label class="pg-switch" data-no-collapse title="Start or stop the WiFi Access Point"><input type="checkbox" id="apEnableToggle" onchange="onApToggle(this)"><span class="pg-switch-track"><span class="pg-switch-thumb"></span></span></label></h2>
   <div class="info-grid" id="apStatus" style="margin-bottom:8px"></div>
   <div class="grid">
    <div class="field">
@@ -8882,8 +8882,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
   <div class="btn-row" style="margin-top:8px">
    <button class="btn btn-sm btn-primary" onclick="applyAP()">Save AP Settings</button>
-   <button class="btn btn-sm btn-success" onclick="controlAP('enable')">Start AP</button>
-   <button class="btn btn-sm btn-danger" onclick="controlAP('disable')">Stop AP</button>
   </div>
   <div style="margin-top:6px;font-size:.7rem;color:var(--text2)">Connect to this AP at 10.10.10.1</div>
  </div>
@@ -11034,6 +11032,8 @@ async function loadAP(){
   addInfo(el,'DHCP',s.dnsmasq_active?'Running':'Stopped');
   addInfo(el,'Gateway',s.gateway_ready?'Ready':'Unavailable');
   addInfo(el,'Address',s.address||((s.ap_net||'10.10.10')+'.1'));
+  const t=document.getElementById('apEnableToggle');
+  if(t&&!t.disabled) t.checked=!!s.active;
  }
 }
 
@@ -11052,6 +11052,12 @@ async function controlAP(action){
  const r=await fetchJSON('/api/wifi/ap/'+action,{method:'POST'});
  if(r&&r.status==='ok'){toast(r.message||'AP '+action+'d');setTimeout(loadAP,1000);}
  else toast(r&&(r.message||r.error)?(r.message||r.error):'AP '+action+' failed','err');
+}
+
+async function onApToggle(el){
+ switchBusy('apEnableToggle',true);
+ await controlAP(el.checked?'enable':'disable');
+ setTimeout(()=>{loadAP();switchBusy('apEnableToggle',false);},1200);
 }
 
 async function loadBluetooth(){
