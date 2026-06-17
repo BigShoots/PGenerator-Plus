@@ -35,6 +35,11 @@ PATCH_INSERT_TIME_ENABLED="${24:-0}"
 PATCH_INSERT_TIME_FREQUENCY_MS="${25:-5000}"
 PATCH_INSERT_TIME_DURATION_MS="${26:-5000}"
 PATCH_INSERT_TIME_LEVEL="${27:-25}"
+# Low-light handler mode (positional arg 28). Passed as an argument rather
+# than an env-var prefix so the daemon's sudo NOPASSWD command match for
+# "/bin/bash /usr/bin/meter_series.sh *" stays intact. Falls back to the
+# LOW_LIGHT_MODE env (legacy) then off. The case statement below consumes it.
+LOW_LIGHT_MODE="${28:-${LOW_LIGHT_MODE:-off}}"
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
