@@ -49,10 +49,10 @@ local $/; my $series_src = <$sh2>; close $sh2;
 # "Calibration" depending on meter connection.
 like($src, qr/<div class="card span2 meter-patterns-only"[\s\S]{0,200}?id="meterCard">/s,
   'calibration card meterCard is present (id="meterCard", meter-patterns-only)');
-like($src, qr/<div class="meter-xyz-toggle-row" id="meterLowLightToggleWrap">/s,
-  'Low Light Handler toggle row is in the meterCard settings grid');
-like($src, qr/<input type="checkbox" id="meterLowLightEnabled">\s*Low Light Handler/s,
-  'Low Light Handler master checkbox is labeled "Low Light Handler"');
+like($src, qr/id="meterProfileLowLight"/s,
+  'Low Light Handler is a flat section in the Meter Settings popover');
+like($src, qr/<div class="meter-profile-section-title">Low Light Handler/s,
+  'Low Light Handler section title present in the popover');
 
 # 2. The gear popover must have all 8 mode options plus the trigger
 # input with the 5.0 cd/m^2 default.
@@ -64,20 +64,16 @@ like($src, qr/<option value="aa"[^>]*>3\s+reads\s+\(aa\)<\/option>/s,
   'mode dropdown has the "3 reads (aa)" option');
 like($src, qr/<option value="aaa"[^>]*>5\s+reads\s+\(aaa\)<\/option>/s,
   'mode dropdown has the "5 reads (aaa)" option');
-like($src, qr/<option value="x"[^>]*>High precision<\/option>/s,
-  'mode dropdown has the "x" (high precision) option');
-like($src, qr/<option value="x_a"[^>]*>High precision \+ 2 reads<\/option>/s,
-  'mode dropdown has the "x_a" option');
-like($src, qr/<option value="x_aa"[^>]*>High precision \+ 3 reads<\/option>/s,
-  'mode dropdown has the "x_aa" option');
-like($src, qr/<option value="x_aaa"[^>]*>High precision \+ 5 reads<\/option>/s,
-  'mode dropdown has the "x_aaa" option');
+like($src, qr/<input type="checkbox" id="meterLowLightHighPrecision"/s,
+  'high precision is a dedicated checkbox');
+unlike($src, qr/<option value="x"[^>]*>/s,
+  'no x* options remain in the Mode dropdown');
 like($src, qr/id="meterLowLightTrigger"[^>]*value="5\.0"/s,
   'trigger defaults to 5.0 cd/m^2');
 
 # 3. The gear must be registered with setupGear so the popover opens.
-like($src, qr/lowLight:setupGear\('meterLowLightGear','meterLowLightGearPopover'\)/s,
-  'gear menu is registered with setupGear');
+like($src, qr/meterProfile:setupGear\('meterProfileGear','meterProfileGearPopover'\)/s,
+  'Meter Settings gear is registered with setupGear');
 
 # 4. The JS helpers must exist with the right shape.
 like($src, qr/function\s+meterSetLowLightHandler\s*\(\s*\)/s,
@@ -113,10 +109,12 @@ like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]off['"]:\s+return\s+['
 # path via meterBuildManualReadPayload.
 like($src, qr/meterBuildManualReadPayload[\s\S]{0,2000}?readPayload\.low_light\s*=/s,
   'meterBuildManualReadPayload sets readPayload.low_light');
-like($src, qr/readPayload\.low_light[\s\S]{0,2000}?mode:\s*String\(mode/s,
-  'low_light payload includes the mode from the dropdown');
-like($src, qr/readPayload\.low_light[\s\S]{0,2000}?trigger:\s*Number\(trigger/s,
-  'low_light payload includes the trigger from the input');
+# Normalization lives in meterLowLightReadState (the payload just attaches
+# its result): mode is the composed effective string, trigger is numeric.
+like($src, qr/function meterLowLightReadState[\s\S]{0,600}?mode:eff/s,
+  'read state returns the composed effective mode in the payload object');
+like($src, qr/function meterLowLightReadState[\s\S]{0,600}?trigger:Number\(trigger\.value\)/s,
+  'read state returns a numeric trigger in the payload object');
 
 # 7. The series start body parser must accept low_light.mode and reject
 # invalid values (fall through to off).
@@ -133,12 +131,13 @@ like($src, qr/\$low_light_mode="off"\s*unless\(\$low_light_mode\s+eq\s+"off"\s*\
 like($src, qr/if\(\$body=~\/"low_light"[\s\S]{0,500}?"mode"[\s\S]{0,500}?unless\(\$low_light_mode\s+eq\s+"off"/s,
   'series start parser only validates low_light when the field is present (unless-clause is gated on the regex match)');
 
-# 8. The meter_series.sh launch must export LOW_LIGHT_MODE when the
-# value is non-empty.
-like($src, qr/\$low_light_env="env LOW_LIGHT_MODE='\$low_light_mode' "[\s\S]{0,200}?if\(\$low_light_mode\s+ne\s+""\)/s,
-  'meter_series.sh is launched with env LOW_LIGHT_MODE when set');
-like($src, qr/setsid\s+sudo\s+\$low_light_env\/bin\/bash\s+\/usr\/bin\/meter_series\.sh/s,
-  'low_light_env is interpolated into the setsid sudo bash command');
+# 8. The meter_series.sh launch must pass $low_light_mode as the final
+# positional argument (not an env-var prefix, so the daemon's sudo
+# NOPASSWD rule still matches and the launch does not stall).
+like($src, qr/\/usr\/bin\/meter_series\.sh[^\n]*'\$low_light_mode' <\/dev\/null/s,
+  'series launch passes low_light_mode as final positional arg');
+unlike($src, qr/env LOW_LIGHT_MODE=/s,
+  'series launch no longer uses an env-var prefix (keeps sudo NOPASSWD match)');
 
 # 9. meter_session.sh must read LOW_LIGHT_MODE and build LOW_LIGHT_FLAGS
 # via a case statement covering all 8 mode values + off.
