@@ -96,6 +96,8 @@ $root_video_pid_file="/tmp/PGenerator_video.pid";
 &wifi_ap_status()         if($action eq "WIFI_AP_STATUS");
 &wifi_ap_enable()         if($action eq "WIFI_AP_ENABLE");
 &wifi_ap_disable()        if($action eq "WIFI_AP_DISABLE");
+&wifi_radio()             if($action eq "WIFI_RADIO");
+&wifi_radio_status()      if($action eq "WIFI_RADIO_STATUS");
 &open_iptables_for_ls()   if($action eq "OPEN_IPTABLES_FOR_LS");
 &set_pgenerator_conf()    if($action eq "SET_PGENERATOR_CONF");
 &set_plugin()             if($action eq "SET_PLUGIN");
@@ -690,6 +692,30 @@ sub wifi_forget (@) {
  &pgen_system_quiet($wpa_cli,"-i",$interface,"disconnect");
  &wifi_release_dhcp($interface);
  print "OK";
+}
+
+sub wifi_radio (@) {
+ my $val=$ARGV[1];
+ return print $error_response if($val ne "on" && $val ne "off");
+ return print "ERR:rfkill not found" if(!(defined $rfkill && &pgen_cmd_exists($rfkill)));
+ if($val eq "on") {
+  &pgen_system_quiet($rfkill,"unblock","wifi");
+  &pgen_system_quiet($ip,"link","set","wlan0","up") if(defined $ip && &pgen_cmd_exists($ip));
+ } else {
+  &pgen_system_quiet($rfkill,"block","wifi");
+ }
+ print $ok_response;
+}
+
+sub wifi_radio_status (@) {
+ my $available=(defined $rfkill && &pgen_cmd_exists($rfkill)) ? 1 : 0;
+ my $blocked=0;
+ if($available) {
+  my $out=&pgen_capture($rfkill,"list","wifi");
+  $blocked=1 if($out=~/soft\s+blocked:\s*yes/i);
+ }
+ print "WIFI_RADIO_AVAILABLE=$available\n";
+ print "WIFI_BLOCKED=$blocked\n";
 }
 
 ###############################################
