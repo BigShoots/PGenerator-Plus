@@ -64,8 +64,8 @@ like($src, qr/<option value="aa"[^>]*>3\s+reads\s+\(aa\)<\/option>/s,
   'mode dropdown has the "3 reads (aa)" option');
 like($src, qr/<option value="aaa"[^>]*>5\s+reads\s+\(aaa\)<\/option>/s,
   'mode dropdown has the "5 reads (aaa)" option');
-like($src, qr/<input type="checkbox" id="meterLowLightHighPrecision"/s,
-  'high precision is a dedicated checkbox');
+unlike($src, qr/id="meterLowLightHighPrecision"/s,
+  'high precision checkbox removed (spotread -x = Yxy output, a no-op for precision)');
 unlike($src, qr/<option value="x"[^>]*>/s,
   'no x* options remain in the Mode dropdown');
 like($src, qr/id="meterLowLightTrigger"[^>]*value="5\.0"/s,
@@ -93,14 +93,11 @@ like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]aa['"]:\s+return\s+['"
   'meterLowLightFlags maps "aa" to "-Y aa"');
 like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]aaa['"]:\s+return\s+['"]-Y aaa['"]/s,
   'meterLowLightFlags maps "aaa" to "-Y aaa"');
-like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]x['"]:\s+return\s+['"]-x['"]/s,
-  'meterLowLightFlags maps "x" to "-x"');
-like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]x_a['"]:\s+return\s+['"]-x -Y a['"]/s,
-  'meterLowLightFlags maps "x_a" to "-x -Y a"');
-like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]x_aa['"]:\s+return\s+['"]-x -Y aa['"]/s,
-  'meterLowLightFlags maps "x_aa" to "-x -Y aa"');
-like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]x_aaa['"]:\s+return\s+['"]-x -Y aaa['"]/s,
-  'meterLowLightFlags maps "x_aaa" to "-x -Y aaa"');
+# High-precision (x / x_*) modes removed: spotread -x is the "Display Yxy
+# instead of Lab" output flag (already always on in every read path), so
+# these mappings were no-ops for measurement precision.
+unlike($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]x['"]:/s,
+  'meterLowLightFlags no longer maps the x / x_* high-precision modes');
 like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]off['"]:\s+return\s+['"]['"]/s,
   'meterLowLightFlags maps "off" to "" (no flag)');
 
@@ -110,9 +107,9 @@ like($src, qr/meterLowLightFlags[\s\S]{0,1500}?case\s+['"]off['"]:\s+return\s+['
 like($src, qr/meterBuildManualReadPayload[\s\S]{0,2000}?readPayload\.low_light\s*=/s,
   'meterBuildManualReadPayload sets readPayload.low_light');
 # Normalization lives in meterLowLightReadState (the payload just attaches
-# its result): mode is the composed effective string, trigger is numeric.
-like($src, qr/function meterLowLightReadState[\s\S]{0,600}?mode:eff/s,
-  'read state returns the composed effective mode in the payload object');
+# its result): mode is the base dropdown value (off/a/aa/aaa), trigger is numeric.
+like($src, qr/function meterLowLightReadState[\s\S]{0,600}?mode:base/s,
+  'read state returns the base mode (off/a/aa/aaa) in the payload object');
 like($src, qr/function meterLowLightReadState[\s\S]{0,600}?trigger:Number\(trigger\.value\)/s,
   'read state returns a numeric trigger in the payload object');
 
