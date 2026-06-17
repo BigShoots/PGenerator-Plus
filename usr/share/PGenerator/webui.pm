@@ -7584,6 +7584,13 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .card.collapsed h2{margin-bottom:0}
 .card.collapsed h2::after{transform:rotate(-90deg)}
 .card.collapsed > *:not(h2){display:none !important}
+.pg-switch{position:relative;display:inline-flex;align-items:center;margin-left:auto;cursor:pointer;flex:0 0 auto;user-select:none}
+.pg-switch input{position:absolute;opacity:0;width:0;height:0;margin:0}
+.pg-switch-track{display:inline-block;position:relative;width:34px;height:18px;border-radius:9px;background:var(--text2);transition:background .2s}
+.pg-switch-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .2s}
+.pg-switch input:checked + .pg-switch-track{background:var(--accent)}
+.pg-switch input:checked + .pg-switch-track .pg-switch-thumb{transform:translateX(16px)}
+.pg-switch input:disabled + .pg-switch-track{opacity:.5;cursor:default}
 #meterCard > h2{align-items:center;gap:10px 12px}
 #meterCard > h2::after{margin-left:auto}
 .meter-card-header-title{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:0 1 auto}
@@ -10203,6 +10210,8 @@ async function loadStats(quiet){
  }
  document.getElementById('memUsageSub').textContent=memText;
 }
+function setSwitch(id,on){const e=document.getElementById(id);if(e)e.checked=!!on;}
+function switchBusy(id,busy){const e=document.getElementById(id);if(e)e.disabled=!!busy;}
 function addInfo(g,label,value){
  const d=document.createElement('div');d.className='info-item';
  const l=document.createElement('div');l.className='label';l.textContent=label;
