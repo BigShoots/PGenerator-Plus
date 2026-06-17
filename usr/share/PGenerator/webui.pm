@@ -2161,6 +2161,16 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
+ # METER_AVERAGING: i1Display3 averaging mode for the spotread invocation.
+ # off  = single long read (default, project convention)
+ # a    = 2-read averaging
+ # aa   = 3-read averaging
+ # aaa  = 5-read averaging
+ # The autocal card exposes this as a dropdown so the operator can switch
+ # modes per-run without redeploying. Invalid values fall through to off.
+ my $meter_averaging="";
+ $meter_averaging=lc($1) if($body=~/"meter_averaging"\s*:\s*"([a-z]+)"/);
+ $meter_averaging="off" unless($meter_averaging eq "off" || $meter_averaging eq "a" || $meter_averaging eq "aa" || $meter_averaging eq "aaa");
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
@@ -3108,7 +3118,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' </dev/null >/dev/null 2>&1 &";
+ # METER_AVERAGING is exported so meter_session.sh's case statement picks
+ # the matching -Y flag (or no flag for off). The autocal card dropdown
+ # is the source of this value; it defaults to off per project convention.
+ my $averaging_env="";
+ $averaging_env="env METER_AVERAGING='$meter_averaging' " if($meter_averaging ne "");
+ my $cmd="setsid sudo $averaging_env/bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -9001,6 +9016,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label id="meterAutoCalTargetRow" style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:150px">Target &Delta;E
 	    <input type="number" id="meterAutoCalTarget" min="0.1" max="10" step="0.1" value="0.5" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
 	   </label>
+	   <label id="meterAutoCalAveragingRow" style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:200px;margin-top:8px">Low-light handler
+	    <select id="meterAutoCalAveraging" onchange="meterSetAutoCalAveraging(this.value)" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
+	     <option value="off" title="Single long read, no -Y flag (default)">Off (single read)</option>
+	     <option value="a" title="2-read averaging (-Y a)">2 reads (a)</option>
+	     <option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option>
+	     <option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option>
+	    </select>
+	   </label>
 	   <div id="meterAutoCalGreyscaleOptionsBox" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
 		    <label style="display:flex;gap:8px;align-items:flex-start">
 		     <input type="checkbox" id="meterAutoCalMagicWandEnabled" style="margin-top:2px">
@@ -9285,6 +9308,10 @@ function applyConfigState(nextConfig){
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
+ // Restore the autocal-card averaging dropdown from localStorage so the
+ // operator's last selection (e.g. 2-read averaging for a noisy panel)
+ // persists across page loads.
+ try{ meterRestoreAutoCalAveraging(); }catch(e){}
 	 // DV settings
 	 setVal('dv_transport',dvTransportMode(config.dv_transport));
 	 setVal('dv_interface',config.dv_interface||'0');
@@ -17285,7 +17312,30 @@ function meterBuildManualReadPayload(step,ctx){
   if(opts.patternSignalRange!=null) readPayload.signal_range=opts.patternSignalRange;
  }
  readPayload.require_device_ready=!!opts.requireDeviceReady;
+ // Pass the autocal-card averaging dropdown through to the server so
+ // meter_session.sh exports METER_AVERAGING for this read. Empty value
+ // (no dropdown) falls through to the server default of "off".
+ const avgSel=document.getElementById('meterAutoCalAveraging');
+ if(avgSel&&avgSel.value) readPayload.meter_averaging=String(avgSel.value);
  return readPayload;
+}
+
+// Persist the autocal-card averaging dropdown selection so the operator
+// does not have to re-pick it on every page load. Server-side default is
+// "off" (single long read); invalid values fall back to off.
+const METER_AUTOCAL_AVERAGING_KEY='pgen.meter.autocalAveraging';
+function meterSetAutoCalAveraging(value){
+ const v=String(value||'off');
+ if(v!=='off'&&v!=='a'&&v!=='aa'&&v!=='aaa') return;
+ try{ localStorage.setItem(METER_AUTOCAL_AVERAGING_KEY,v); }catch(e){}
+}
+function meterRestoreAutoCalAveraging(){
+ const sel=document.getElementById('meterAutoCalAveraging');
+ if(!sel) return;
+ let saved='';
+ try{ saved=localStorage.getItem(METER_AUTOCAL_AVERAGING_KEY)||''; }catch(e){ saved=''; }
+ if(!saved) return;
+ if(Array.from(sel.options).some(o=>o.value===saved)) sel.value=saved;
 }
 
 async function meterRunManualReadStep(step,ctx){
