@@ -40,7 +40,7 @@ unlike($src, qr/<label>Display Type<\/label>/s,
 like($src, qr/id="meterProfileLowLight"/s, 'flat Low Light Handler section is in the popover');
 like($src, qr/<input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler\(\)">/s,
   'single Enabled checkbox persists on change');
-like($src, qr/<input type="checkbox" id="meterLowLightHighPrecision"/s, 'High precision checkbox present');
+unlike($src, qr/meterLowLightHighPrecision/s, 'high precision checkbox + JS refs removed (mapped to -x = Yxy output, a no-op for precision)');
 unlike($src, qr/id="meterLowLightToggleWrap"/s, 'old low-light toggle row is gone');
 unlike($src, qr/id="meterLowLightGear"/s, 'nested low-light gear button is gone');
 unlike($src, qr/id="meterLowLightGearPopover"/s, 'nested low-light gear popover is gone');
@@ -53,14 +53,14 @@ my ($ll_section) = $src =~ /(id="meterProfileLowLight"[\s\S]{0,1800})/;
 unlike($ll_section // '', qr/Calman/, 'new low-light popover section has no Calman wording');
 unlike($src, qr/Calman-style low-light/, 'low-light "Calman-style" comments scrubbed');
 
-# Task 4: high precision checkbox composes the effective mode + persists.
-like($src, qr/function meterLowLightReadState[\s\S]{0,400}?meterLowLightHighPrecision/s,
-  'read-state reads the high precision checkbox');
-like($src, qr/meterLowLightReadState[\s\S]{0,500}?'x_'\s*\+/s,
-  'read-state composes x_<mode> when high precision is on');
-like($src, qr/function meterSetLowLightHandler[\s\S]{0,500}?highPrecision/s,
-  'set-handler persists highPrecision to localStorage');
-like($src, qr/function meterRestoreLowLightHandler[\s\S]{0,800}?highPrecision/s,
-  'restore reads highPrecision back');
+# Task 4: high precision control removed. It mapped to spotread -x, which
+# is the "Display Yxy instead of Lab" output flag (already always on in every
+# read path), so it never changed measurement precision. The low-light
+# read-state no longer composes the x_<mode> variants, and highPrecision is
+# no longer persisted.
+unlike($src, qr/meterLowLightReadState[\s\S]{0,500}?'x_'\s*\+/s,
+  'read-state no longer composes x_<mode>');
+unlike($src, qr/highPrecision/s,
+  'highPrecision no longer persisted/restored by the low-light handler');
 
 done_testing();
