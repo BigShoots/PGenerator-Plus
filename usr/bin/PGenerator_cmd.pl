@@ -694,25 +694,59 @@ sub wifi_forget (@) {
  print "OK";
 }
 
+sub wifi_rfkill_sysfs_node (@) {
+ # Locate the kernel rfkill sysfs node of type "wlan". The rfkill userspace
+ # binary is not present on every image, but /sys/class/rfkill is, so this is
+ # the portable control path. Returns the node dir (e.g. /sys/class/rfkill/rfkill2) or "".
+ my $base="/sys/class/rfkill";
+ return "" if(!-d $base);
+ opendir(my $dh,$base) or return "";
+ my @nodes=sort grep { /^rfkill\d+$/ } readdir($dh);
+ closedir($dh);
+ foreach my $n (@nodes) {
+  my $type=&read_from_file("$base/$n/type");
+  chomp($type);
+  return "$base/$n" if($type eq "wlan");
+ }
+ return "";
+}
+
 sub wifi_radio (@) {
  my $val=$ARGV[1];
  return print $error_response if($val ne "on" && $val ne "off");
- return print "ERR:rfkill not found" if(!(defined $rfkill && &pgen_cmd_exists($rfkill)));
- if($val eq "on") {
-  &pgen_system_quiet($rfkill,"unblock","wifi");
-  &pgen_system_quiet($ip,"link","set","wlan0","up") if(defined $ip && &pgen_cmd_exists($ip));
+ my $did=0;
+ if(defined $rfkill && &pgen_cmd_exists($rfkill)) {
+  if($val eq "on") { &pgen_system_quiet($rfkill,"unblock","wifi"); }
+  else { &pgen_system_quiet($rfkill,"block","wifi"); }
+  $did=1;
  } else {
-  &pgen_system_quiet($rfkill,"block","wifi");
+  my $node=&wifi_rfkill_sysfs_node();
+  if($node ne "" && open(my $fh,">","$node/soft")) {
+   print $fh ($val eq "on" ? "0" : "1")."\n";
+   close($fh);
+   $did=1;
+  }
  }
+ return print "ERR:no rfkill control available" if(!$did);
+ &pgen_system_quiet($ip,"link","set","wlan0","up") if($val eq "on" && defined $ip && &pgen_cmd_exists($ip));
  print $ok_response;
 }
 
 sub wifi_radio_status (@) {
- my $available=(defined $rfkill && &pgen_cmd_exists($rfkill)) ? 1 : 0;
+ my $available=0;
  my $blocked=0;
- if($available) {
+ if(defined $rfkill && &pgen_cmd_exists($rfkill)) {
+  $available=1;
   my $out=&pgen_capture($rfkill,"list","wifi");
   $blocked=1 if($out=~/soft\s+blocked:\s*yes/i);
+ } else {
+  my $node=&wifi_rfkill_sysfs_node();
+  if($node ne "") {
+   $available=1;
+   my $soft=&read_from_file("$node/soft");
+   chomp($soft);
+   $blocked=1 if($soft eq "1");
+  }
  }
  print "WIFI_RADIO_AVAILABLE=$available\n";
  print "WIFI_BLOCKED=$blocked\n";
