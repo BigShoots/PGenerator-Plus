@@ -7627,7 +7627,7 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .card.collapsed h2{margin-bottom:0}
 .card.collapsed h2::after{transform:rotate(-90deg)}
 .card.collapsed > *:not(h2){display:none !important}
-.pg-switch{position:relative;display:inline-flex;align-items:center;margin-left:auto;cursor:pointer;flex:0 0 auto;user-select:none}
+.pg-switch{position:relative;display:inline-flex;align-items:center;cursor:pointer;flex:0 0 auto;user-select:none}
 .pg-switch input{position:absolute;opacity:0;width:0;height:0;margin:0}
 .pg-switch-track{display:inline-block;position:relative;width:34px;height:18px;border-radius:9px;background:var(--text2);transition:background .2s}
 .pg-switch-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .2s}
