@@ -6188,7 +6188,15 @@ sub webui_bluetooth_status_json (@) {
  my ($pan_raw)="";
  if($raw=~/PAN_BEGIN\n(.*?)\nPAN_END/s) { $pan_raw=$1; }
 
- my $powered=($raw=~/\bUP\b/i || $adapter=~/Powered:\s*yes/i) ? "true" : "false";
+ # Derive powered from the bluez adapter "Powered" flag (authoritative) or the
+ # HCI adapter UP/DOWN flag. Scope the UP check to the HCI block only: a raw-wide
+ # /\bUP\b/ match also caught the bnep PAN interface's "UP" and falsely reported
+ # the adapter as powered while hci0 was DOWN.
+ my $hci_block=""; $hci_block=$1 if($raw=~/HCI_BEGIN\n(.*?)\nHCI_END/s);
+ my $powered="false";
+ if($adapter=~/Powered\s*[:=]\s*(?:yes|1)\b/i) { $powered="true"; }
+ elsif($adapter=~/Powered\s*[:=]\s*(?:no|0)\b/i) { $powered="false"; }
+ elsif($hci_block=~/\bUP\b/i) { $powered="true"; }
  $powered="false" if($kv{SOFT_BLOCKED} && $kv{SOFT_BLOCKED} eq "1");
  my $discoverable=($adapter=~/Discoverable:\s*yes/i) ? "true" : "false";
  my $agent=($kv{AGENT} && $kv{AGENT} eq "1") ? "true" : "false";
