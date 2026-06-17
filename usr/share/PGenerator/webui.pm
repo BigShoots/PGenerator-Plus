@@ -8206,6 +8206,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
          <option value="a" title="2-read averaging (-Y a)">2 reads (a)</option>
          <option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option>
          <option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option>
+        </select></label>
+        <label class="meter-toggle"><input type="checkbox" id="meterLowLightHighPrecision" onchange="meterSetLowLightHandler()" title="Add -x (high precision, longer integration) to the spotread invocation. Can be combined with any averaging Mode."> High precision (-x)</label>
          <option value="x" title="High precision, longer integration (-x)">High precision</option>
          <option value="x_a" title="High precision + 2 reads (-x -Y a)">High precision + 2 reads</option>
          <option value="x_aa" title="High precision + 3 reads (-x -Y aa)">High precision + 3 reads</option>
