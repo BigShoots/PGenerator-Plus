@@ -2955,8 +2955,8 @@ sub lg_hdr_calman_reset_workflow (@) {
  # calibration defaults before the unity LUT resets below. A single
  # rejection is recorded in @steps but does not abort the workflow.
  foreach my $item (
-  ["1D_2_2_EN",1],
-  ["1D_0_45_EN",1],
+  ["1D_2_2_EN",0],
+  ["1D_0_45_EN",0],
   ["BRIGHTNESS_UI_DATA",50],
   ["CONTRAST_UI_DATA",100],
   ["BACKLIGHT_UI_DATA",100],
@@ -3740,15 +3740,10 @@ sub lg_ddc_lut_top_sample_snapshot (@) {
 sub lg_ddc_enable_1d_pipeline (@) {
  my ($session,$timeout,$picture_mode)=@_;
  my @responses=();
- # The 2.2/0.45 gamma workspace (degamma+regamma) is required only for the HDR
- # 1D-DPG calibration pipeline. This function is shared with the SDR (sdr26)
- # path, so gate the workspace enable to HDR picture modes (named "hdr*") and
- # keep it disabled for SDR.
- my $is_hdr_mode=(defined($picture_mode) && $picture_mode =~ /hdr/i) ? 1 : 0;
  foreach my $item (
   ["1D_DPG_EN","ddc_enable_1d_lut",1,1],
-  ["1D_2_2_EN","ddc_enable_1d_degamma",0,$is_hdr_mode],
-  ["1D_0_45_EN","ddc_enable_1d_regamma",0,$is_hdr_mode],
+  ["1D_2_2_EN","ddc_enable_1d_degamma",0,0],
+  ["1D_0_45_EN","ddc_enable_1d_regamma",0,0],
  ) {
   my ($command,$id,$required,$enabled)=@{$item};
   my $response=&lg_calibration_request($session,$id,$command,[$enabled],1,$picture_mode,$timeout);
