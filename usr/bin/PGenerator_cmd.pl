@@ -1314,6 +1314,12 @@ sub bt_status (@) {
  print "NAP_RUNNING=$nap_running\n";
  print "BLUETOOTHCTL_AVAILABLE=$bluez_modern\n";
  print "AGENT=$agent_status\n";
+ my $bt_soft_blocked=0;
+ if(defined $rfkill && &pgen_cmd_exists($rfkill)) {
+  my $rf=&pgen_capture($rfkill,"list","bluetooth");
+  $bt_soft_blocked=1 if($rf=~/soft\s+blocked:\s*yes/i);
+ }
+ print "SOFT_BLOCKED=$bt_soft_blocked\n";
 }
 
 sub bt_set_discoverable (@) {
@@ -1352,6 +1358,7 @@ sub bt_set_powered (@) {
     &pgen_system_quiet($bluetoothctl,"power","off");
    }
    &pgen_system_quiet($hciconfig,$hci_interface,"down") if(defined $hciconfig && &pgen_cmd_exists($hciconfig));
+   &pgen_system_quiet($rfkill,"block","bluetooth") if(defined $rfkill && &pgen_cmd_exists($rfkill));
   }
   print $ok_response;
  } else {
