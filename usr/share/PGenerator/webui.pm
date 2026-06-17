@@ -8214,17 +8214,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
          <option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option>
         </select></label>
         <label class="meter-toggle"><input type="checkbox" id="meterLowLightHighPrecision" onchange="meterSetLowLightHandler()" title="Add -x (high precision, longer integration) to the spotread invocation. Can be combined with any averaging Mode."> High precision (-x)</label>
-         <option value="x" title="High precision, longer integration (-x)">High precision</option>
-         <option value="x_a" title="High precision + 2 reads (-x -Y a)">High precision + 2 reads</option>
-         <option value="x_aa" title="High precision + 3 reads (-x -Y aa)">High precision + 3 reads</option>
-         <option value="x_aaa" title="High precision + 5 reads (-x -Y aaa)">High precision + 5 reads</option>
-        </select></label>
         <label>Trigger <input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span>cd/m&sup2;</span></label>
        </div>
       </div>
      </span>
     </div>
-   </div>
   <div class="field field-gamut">
     <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
