@@ -22383,6 +22383,8 @@ function meterFullAutoCalHdrWorkflowActive(){
 function meterFullAutoCalToneMapPeakLuminance(status){
  const candidates=[
   status&&status.hdr_tone_map_peak_luminance,
+  status&&status.hdr20_1d_tonemap_peak_luminance,
+  meterFullAutoCalResults&&meterFullAutoCalResults.first&&meterFullAutoCalResults.first.hdr20_1d_tonemap_peak_luminance,
   status&&status.peak_headroom_luminance,
   status&&status.calibrated_white_luminance,
   status&&status.target_luminance,
@@ -22677,7 +22679,18 @@ async function meterFullAutoCalCompleteAfterHdrToneMap(status,options,source){
   // Wizard-owned tone-map upload: prompt FIRST (with a fresh 100% peak
   // read), then chain to the inline-upload fallback for the rare case the
   // backend did NOT defer (older runs, hand-rolled callers).
-  let workingStatus=status||{};
+  let workingStatus={...(status||{})};
+  // The HDR tone-map upload is owned by the greyscale stage (it measures the
+  // 100% peak and sets hdr20_1d_tonemap_pending). The status handed in here is
+  // from the later 3D-LUT/polish stage and does not carry those fields, so pull
+  // them from the saved greyscale status (meterFullAutoCalResults.first) — else
+  // the wizard-owned upload is skipped and the inline fallback throws.
+  const greyStatus=meterFullAutoCalResults&&meterFullAutoCalResults.first;
+  if(greyStatus){
+   if(workingStatus.hdr20_1d_tonemap_pending==null&&greyStatus.hdr20_1d_tonemap_pending!=null) workingStatus.hdr20_1d_tonemap_pending=greyStatus.hdr20_1d_tonemap_pending;
+   if(workingStatus.hdr20_1d_tonemap_peak_luminance==null&&greyStatus.hdr20_1d_tonemap_peak_luminance!=null) workingStatus.hdr20_1d_tonemap_peak_luminance=greyStatus.hdr20_1d_tonemap_peak_luminance;
+   if(workingStatus.hdr20_1d_tonemap_wizard_owns_upload==null&&greyStatus.hdr20_1d_tonemap_wizard_owns_upload!=null) workingStatus.hdr20_1d_tonemap_wizard_owns_upload=greyStatus.hdr20_1d_tonemap_wizard_owns_upload;
+  }
   if(meterFullAutoCalHdrWorkflowActive()&&workingStatus.hdr20_1d_tonemap_pending){
    const promptResult=await meterAutoCalPromptHdrToneMapUpload(workingStatus,source);
    if(promptResult&&promptResult.finalStatus) workingStatus=promptResult.finalStatus;
