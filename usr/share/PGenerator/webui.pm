@@ -9584,6 +9584,22 @@ function meterDefaultTargetGamutForMode(){
  return sm==='sdr' ? 'bt709' : 'p3d65';
 }
 
+// HDR10 matrix/3D-LUT target gamut = the HDR METADATA (mastering-display)
+// PRIMARIES setting (#primaries), NOT the target-gamut / colorspace controls.
+// Source MUST be #primaries (the "Primaries" select, values 0-3) — never
+// meterTargetGamut (the chart target gamut) and never #colorimetry (the
+// BT.2020 container/colorspace). The signal still rides in the BT.2020
+// container (chart + BT2020_3D_LUT_DATA upload slot are unchanged), but the
+// LUT is solved toward the metadata primaries the content was mastered in.
+// #primaries: 0=custom/BT.709, 1=BT.2020, 2=P3/D65, 3=P3/DCI. Default P3/D65.
+function meterHdrMetadataGamut(){
+ const p=String((document.getElementById('primaries')||{}).value||'2');
+ if(p==='1') return 'bt2020';
+ if(p==='3') return 'p3dci';
+ if(p==='0') return 'bt709';
+ return 'p3d65';
+}
+
 function applyMeterTargetGamutDefault(force){
  const g=document.getElementById('meterTargetGamut');
  if(!g) return;
@@ -24885,7 +24901,7 @@ async function meterStartLg3dAutoCal(options){
  const fullMagicWand=(options&&Object.prototype.hasOwnProperty.call(options,'magicWandEnabled'))?options.magicWandEnabled===true:meterFullAutoCalMagicWandEnabled();
  const rawTargetGamma=meterAutoCalTargetGammaValue();
  const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
- const targetGamut=signalMode==='hdr10'?'bt2020':(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
+ const targetGamut=signalMode==='hdr10'?meterHdrMetadataGamut():(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
  const transportRange=(signalMode==='sdr'&&fullWorkflow)?'1':getVal('rgb_quant_range');
  const payload=meterMeasurementSignalContext({
   method:method,
