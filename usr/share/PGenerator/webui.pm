@@ -2161,16 +2161,13 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
- # METER_AVERAGING: i1Display3 averaging mode for the spotread invocation.
- # off  = single long read (default, project convention)
- # a    = 2-read averaging
- # aa   = 3-read averaging
- # aaa  = 5-read averaging
- # The autocal card exposes this as a dropdown so the operator can switch
- # modes per-run without redeploying. Invalid values fall through to off.
- my $meter_averaging="";
- $meter_averaging=lc($1) if($body=~/"meter_averaging"\s*:\s*"([a-z]+)"/);
- $meter_averaging="off" unless($meter_averaging eq "off" || $meter_averaging eq "a" || $meter_averaging eq "aa" || $meter_averaging eq "aaa");
+ # reference-style low-light handler from the calibration card. When
+ # enabled, the server appends the selected spotread flag set to
+ # meter_session.sh's SR_CMD. The mode is a string the client picks
+ # from the dropdown; invalid values fall through to off (no flag).
+ my $low_light_mode="";
+ $low_light_mode=lc($1) if($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/);
+ $low_light_mode="off" unless($low_light_mode eq "off" || $low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa" || $low_light_mode eq "x" || $low_light_mode eq "x_a" || $low_light_mode eq "x_aa" || $low_light_mode eq "x_aaa");
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
@@ -3118,12 +3115,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- # METER_AVERAGING is exported so meter_session.sh's case statement picks
- # the matching -Y flag (or no flag for off). The autocal card dropdown
- # is the source of this value; it defaults to off per project convention.
- my $averaging_env="";
- $averaging_env="env METER_AVERAGING='$meter_averaging' " if($meter_averaging ne "");
- my $cmd="setsid sudo $averaging_env/bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' </dev/null >/dev/null 2>&1 &";
+ # LOW_LIGHT_MODE is exported so meter_session.sh's case statement picks
+ # the matching spotread flag set (or no flag for off). The calibration
+ # card's gear menu is the source of this value; it defaults to off
+ # (single long read, the project convention from 56c7019a).
+ my $low_light_env="";
+ $low_light_env="env LOW_LIGHT_MODE='$low_light_mode' " if($low_light_mode ne "");
+ my $cmd="setsid sudo $low_light_env/bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -8196,6 +8194,29 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
     </div>
    </div>
+   <div class="meter-xyz-toggle-row" id="meterLowLightToggleWrap">
+    <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterLowLightEnabled"> Low Light Handler <span class="meter-help-tip" title="reference-style low-light handler mapped to spotread flags. When enabled, reads whose expected target luminance is below the Trigger use the selected Mode (averaging, high precision, or both) instead of the default single long read. Applies to all meter reads (autocal, series read, single read). Spotread has no direct integration-time control and maxes at 5-read averaging, so the Mode options cover what spotread actually supports." aria-label="Low light handler help">?</span></label>
+     <span class="meter-xyz-gear-wrap">
+      <button type="button" id="meterLowLightGear" class="meter-xyz-gear" aria-label="Low Light Handler options" aria-expanded="false" title="Low Light Handler options">&#9881;</button>
+      <div class="meter-xyz-gear-popover" id="meterLowLightGearPopover" role="dialog" aria-label="Low Light Handler options">
+       <div class="meter-low-light-grid">
+        <label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabledGear" onchange="document.getElementById('meterLowLightEnabled').checked=this.checked;meterSetLowLightHandler()" checked> Enabled</label>
+        <label>Mode <select id="meterLowLightMode" onchange="meterSetLowLightHandler()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px">
+         <option value="off" title="Single long read, no -Y flag">Off (single read)</option>
+         <option value="a" title="2-read averaging (-Y a)">2 reads (a)</option>
+         <option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option>
+         <option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option>
+         <option value="x" title="High precision, longer integration (-x)">High precision</option>
+         <option value="x_a" title="High precision + 2 reads (-x -Y a)">High precision + 2 reads</option>
+         <option value="x_aa" title="High precision + 3 reads (-x -Y aa)">High precision + 3 reads</option>
+         <option value="x_aaa" title="High precision + 5 reads (-x -Y aaa)">High precision + 5 reads</option>
+        </select></label>
+        <label>Trigger <input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span>cd/m&sup2;</span></label>
+       </div>
+      </div>
+     </span>
+    </div>
+   </div>
   <div class="field field-gamut">
     <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
@@ -9016,14 +9037,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label id="meterAutoCalTargetRow" style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:150px">Target &Delta;E
 	    <input type="number" id="meterAutoCalTarget" min="0.1" max="10" step="0.1" value="0.5" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
 	   </label>
-	   <label id="meterAutoCalAveragingRow" style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:200px;margin-top:8px">Low-light handler
-	    <select id="meterAutoCalAveraging" onchange="meterSetAutoCalAveraging(this.value)" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
-	     <option value="off" title="Single long read, no -Y flag (default)">Off (single read)</option>
-	     <option value="a" title="2-read averaging (-Y a)">2 reads (a)</option>
-	     <option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option>
-	     <option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option>
-	    </select>
-	   </label>
 	   <div id="meterAutoCalGreyscaleOptionsBox" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
 		    <label style="display:flex;gap:8px;align-items:flex-start">
 		     <input type="checkbox" id="meterAutoCalMagicWandEnabled" style="margin-top:2px">
@@ -9308,10 +9321,10 @@ function applyConfigState(nextConfig){
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
- // Restore the autocal-card averaging dropdown from localStorage so the
- // operator's last selection (e.g. 2-read averaging for a noisy panel)
+ // Restore the calibration-card low-light handler from localStorage so
+ // the operator's last selection (e.g. 3-read averaging for 1.4% IRE)
  // persists across page loads.
- try{ meterRestoreAutoCalAveraging(); }catch(e){}
+ try{ meterRestoreLowLightHandler(); }catch(e){}
 	 // DV settings
 	 setVal('dv_transport',dvTransportMode(config.dv_transport));
 	 setVal('dv_interface',config.dv_interface||'0');
@@ -17312,30 +17325,77 @@ function meterBuildManualReadPayload(step,ctx){
   if(opts.patternSignalRange!=null) readPayload.signal_range=opts.patternSignalRange;
  }
  readPayload.require_device_ready=!!opts.requireDeviceReady;
- // Pass the autocal-card averaging dropdown through to the server so
- // meter_session.sh exports METER_AVERAGING for this read. Empty value
- // (no dropdown) falls through to the server default of "off".
- const avgSel=document.getElementById('meterAutoCalAveraging');
- if(avgSel&&avgSel.value) readPayload.meter_averaging=String(avgSel.value);
+ // Pass the calibration-card low-light handler through to the server.
+ // The trigger check (expected target luminance < trigger) is done
+ // at the calibration level, not at the meter_session.sh level, so we
+ // pass the effective mode (default off, low-light when enabled AND
+ // target < trigger). All reads use this path: autocal, series read,
+ // single read.
+ const lowLight=(function(){
+  try{
+   const enabled=document.getElementById('meterLowLightEnabled');
+   const mode=document.getElementById('meterLowLightMode');
+   const trigger=document.getElementById('meterLowLightTrigger');
+   if(!enabled||!mode||!trigger) return null;
+   if(!enabled.checked) return {enabled:false,mode:'off',trigger:0};
+   return {enabled:true,mode:String(mode.value||'off'),trigger:Number(trigger.value)||5.0};
+  }catch(e){ return null; }
+ })();
+ if(lowLight) readPayload.low_light=lowLight;
  return readPayload;
 }
 
-// Persist the autocal-card averaging dropdown selection so the operator
-// does not have to re-pick it on every page load. Server-side default is
-// "off" (single long read); invalid values fall back to off.
-const METER_AUTOCAL_AVERAGING_KEY='pgen.meter.autocalAveraging';
-function meterSetAutoCalAveraging(value){
- const v=String(value||'off');
- if(v!=='off'&&v!=='a'&&v!=='aa'&&v!=='aaa') return;
- try{ localStorage.setItem(METER_AUTOCAL_AVERAGING_KEY,v); }catch(e){}
+// reference-style low-light handler: applies the selected spotread mode
+// to reads whose expected target luminance is below the trigger. The
+// mode is a spotread flag-set built by meterLowLightFlags(). Server-side
+// default is off (no mode), so the existing single-read path is
+// preserved when the handler is disabled or the body is missing.
+const METER_LOW_LIGHT_KEY='pgen.meter.lowLight';
+function meterSetLowLightHandler(){
+ const enabled=document.getElementById('meterLowLightEnabled');
+ const mode=document.getElementById('meterLowLightMode');
+ const trigger=document.getElementById('meterLowLightTrigger');
+ if(!enabled||!mode||!trigger) return;
+ try{
+  localStorage.setItem(METER_LOW_LIGHT_KEY,JSON.stringify({
+   enabled:!!enabled.checked,
+   mode:String(mode.value||'off'),
+   trigger:Number(trigger.value)||5.0
+  }));
+ }catch(e){}
 }
-function meterRestoreAutoCalAveraging(){
- const sel=document.getElementById('meterAutoCalAveraging');
- if(!sel) return;
- let saved='';
- try{ saved=localStorage.getItem(METER_AUTOCAL_AVERAGING_KEY)||''; }catch(e){ saved=''; }
- if(!saved) return;
- if(Array.from(sel.options).some(o=>o.value===saved)) sel.value=saved;
+function meterRestoreLowLightHandler(){
+ const sel=document.getElementById('meterLowLightEnabled');
+ const mode=document.getElementById('meterLowLightMode');
+ const trigger=document.getElementById('meterLowLightTrigger');
+ if(!sel||!mode||!trigger) return;
+ let saved=null;
+ try{ saved=JSON.parse(localStorage.getItem(METER_LOW_LIGHT_KEY)||'null'); }catch(e){ saved=null; }
+ if(!saved||typeof saved!=='object') return;
+ if(typeof saved.enabled==='boolean') sel.checked=saved.enabled;
+ if(typeof saved.mode==='string'&&Array.from(mode.options).some(o=>o.value===saved.mode)) mode.value=saved.mode;
+ if(typeof saved.trigger==='number'&&saved.trigger>0) trigger.value=saved.trigger;
+}
+
+// Map the low-light mode value to the spotread flag set. Returns an
+// empty string for 'off' (no flag). Spotread flags:
+//   -Y a   = 2-read avg
+//   -Y aa  = 3-read avg
+//   -Y aaa = 5-read avg
+//   -x     = high precision (longer integration)
+function meterLowLightFlags(mode){
+ const m=String(mode||'off');
+ switch(m){
+  case 'a':     return '-Y a';
+  case 'aa':    return '-Y aa';
+  case 'aaa':   return '-Y aaa';
+  case 'x':     return '-x';
+  case 'x_a':   return '-x -Y a';
+  case 'x_aa':  return '-x -Y aa';
+  case 'x_aaa': return '-x -Y aaa';
+  case 'off':   return '';
+  default:      return '';
+ }
 }
 
 async function meterRunManualReadStep(step,ctx){
@@ -29546,7 +29606,8 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  const gears={
   patternInsert:setupGear('meterPatternInsertGear','meterPatternInsertPopover'),
   xyz:setupGear('meterXyzGear','meterXyzGearPopover'),
-  customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover')
+  customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover'),
+  lowLight:setupGear('meterLowLightGear','meterLowLightGearPopover')
  };
  const gearWrap=id=>{const g=document.getElementById(id);return g&&g.parentElement;};
  window.meterUpdateGearVisibility=function(){
