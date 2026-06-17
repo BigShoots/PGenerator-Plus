@@ -7664,7 +7664,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-xyz-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
 	.meter-xyz-gear-popover.open{display:block}
-	#meterProfileGearPopover{min-width:300px;max-height:72vh;overflow-y:auto;left:auto;right:0}
+	#meterProfileGearPopover{min-width:300px;max-height:72vh;overflow-y:auto;left:0;right:auto}
 	.meter-profile-title{font-size:.8rem;font-weight:600;color:#dfe6f6;letter-spacing:.02em;margin-bottom:8px}
 	#meterProfileGearPopover .field{margin-bottom:10px;display:flex;flex-direction:column;gap:4px}
 	.meter-profile-section{border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;flex-direction:column;gap:6px}
