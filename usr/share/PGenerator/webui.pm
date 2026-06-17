@@ -8112,7 +8112,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
   <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
   <div class="field field-display">
-    <label>Display Type</label>
     <select id="meterDisplayType">
      <optgroup label="Generic" id="meterDtGeneric">
       <option value="oled_generic">WRGB OLED</option>
@@ -17342,6 +17341,27 @@ function meterBuildManualReadPayload(step,ctx){
  const lowLight=meterLowLightReadState();
  if(lowLight) readPayload.low_light=lowLight;
  return readPayload;
+}
+
+// Relocate the existing meter controls into the Meter Settings popover
+// at runtime. Done by moving live nodes (appendChild) rather than by
+// editing the static markup: the surrounding card HTML is tightly
+// nested, and moving by id keeps every element id stable so existing
+// getters and /api/meter/settings persistence keep working. Idempotent.
+function meterRelocateProfileControls(){
+ const displayField=document.getElementById('meterProfileDisplayField');
+ const slot=document.getElementById('meterProfileRelocSlot');
+ if(!displayField||!slot) return;
+ const dt=document.getElementById('meterDisplayType');
+ if(dt&&dt.parentElement!==displayField) displayField.appendChild(dt);
+ const ccss=document.getElementById('customCcssPanel');
+ if(ccss&&ccss.parentElement!==displayField) displayField.appendChild(ccss);
+ const delay=document.getElementById('meterDelay');
+ const delayField=delay?delay.closest('.field'):null;
+ if(delayField&&delayField.parentElement!==slot) slot.appendChild(delayField);
+ const refresh=document.getElementById('meterRefreshRate');
+ const refreshField=refresh?refresh.closest('.field'):null;
+ if(refreshField&&refreshField.parentElement!==slot) slot.appendChild(refreshField);
 }
 
 // Read the current state of the calibration-card Low Light Handler
@@ -29648,6 +29668,7 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  if(xyEl) xyEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();meterRefreshAfterXyzMatrixChange();});
  const d65El=document.getElementById('meterCustomD65Enabled');
  if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
+ try{ meterRelocateProfileControls(); }catch(e){}
  window.meterUpdateGearVisibility();
 })();
 const meterSimulateSpectroEl=document.getElementById('meterSimulateSpectro');
