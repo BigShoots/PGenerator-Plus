@@ -7633,6 +7633,8 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-select{width:100%;max-width:100%;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 30px 6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
 .meter-card-header-select:focus{border-color:var(--accent)}
 #meterCard.meter-patterns-only .meter-card-header-meter{display:none}
+.meter-header-label{display:block;font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin:0 0 2px}
+#meterCard.meter-patterns-only .meter-header-label{display:none}
 .card.span2{grid-column:span 2}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
@@ -8092,6 +8094,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="font-size:.65rem;color:var(--text2);margin-bottom:6px;line-height:1.4">Visual setup patterns for display calibration. Use these to verify your display&#39;s basic picture settings before running a full calibration.</div>
     <div class="diag-pattern-layout">
      <div class="diag-pattern-column">
+      <div class="diag-pattern-title" id="diagVideoLabel" style="display:none">Videos</div>
       <div id="diagAvsHd709Section" style="display:none">
        <div class="diag-pattern-title">AVS HD 709 Videos (SDR Only)</div>
        <div class="pat-grid">
@@ -8150,6 +8153,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 <!-- Calibration -->
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
+  <label class="meter-header-label">Meter</label>
   <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected Mode (multi-read averaging and/or high precision) instead of the default single long read. Maps to spotread averaging (-Y) and high-precision (-x) flags; applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightHighPrecision" onchange="meterSetLowLightHandler()" title="Add -x (high precision, longer integration) to the spotread invocation. Combines with any averaging Mode."> High precision</label><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
@@ -8273,12 +8277,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="srgb">sRGB</option>
     </select>
    </div>
-  <div class="field field-hdr" id="meterHdrConfig" style="display:none">
-    <label>HDR Roll-off</label>
-    <label class="meter-toggle" title="Apply ITU-R BT.2390 tone-mapping so HDR/PQ targets model display roll-off instead of hard clipping to the selected peak">
-     <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
-    </label>
-   </div>
 	   <div class="field field-delay">
 	    <label>Meter Delay</label>
 	    <div class="meter-inline-value">
@@ -8311,6 +8309,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="apl_25">25% APL (window on grey)</option>
      <option value="apl_50">50% APL (window on grey)</option>
     </select>
+   </div>
+  <div class="field field-hdr" id="meterHdrConfig" style="display:none">
+    <label>HDR Roll-off</label>
+    <label class="meter-toggle" title="Apply ITU-R BT.2390 tone-mapping so HDR/PQ targets model display roll-off instead of hard clipping to the selected peak">
+     <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
+    </label>
    </div>
   <div class="field field-refresh">
     <label>Refresh Rate</label>
@@ -10562,6 +10566,8 @@ function updateDiagAvsHd709Visibility(){
  const el=document.getElementById('diagAvsHd709Section');
  const isSdr=getVal('signal_mode')==='sdr';
  if(el) el.style.display=isSdr?'':'none';
+ const vlabel=document.getElementById('diagVideoLabel');
+ if(vlabel) vlabel.style.display=isSdr?'none':'';
  if(!isSdr&&activePattern&&isAvsHd709Pattern(activePattern)) stopPattern();
 }
 function updateDiagInfo(name){
