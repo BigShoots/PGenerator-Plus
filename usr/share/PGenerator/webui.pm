@@ -3121,13 +3121,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- # LOW_LIGHT_MODE is passed as the FINAL positional argument, not an
- # "env LOW_LIGHT_MODE=..." prefix. The daemon's sudo NOPASSWD rule only
- # authorizes "/bin/bash /usr/bin/meter_series.sh *"; prefixing env makes
- # the sudo command "/usr/bin/env ..." which matches no rule, so sudo
- # demands a password and the launch silently fails ("Process died
- # unexpectedly"). A trailing arg keeps the authorized command intact.
- # Empty value -> meter_series.sh coerces to off (single long read).
+ # LOW_LIGHT_MODE is passed as the FINAL positional argument, not as an
+ # environment-variable prefix on the sudo command. The daemon's sudo
+ # NOPASSWD rule only authorizes "/bin/bash /usr/bin/meter_series.sh *";
+ # any env-prefixed form (e.g. an "env KEY=VAL" prefix on the bash
+ # command) makes the sudo invocation match no rule, so sudo demands a
+ # password and the launch silently fails ("Process died unexpectedly").
+ # A trailing arg keeps the authorized command intact. Empty value ->
+ # meter_series.sh coerces to off (single long read).
  my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
@@ -17350,32 +17351,43 @@ function meterRelocateProfileControls(){
 // card has not been rendered yet), or {enabled,mode,trigger} for the
 // current gear state. Used by every meter read path (single read,
 // autocal, series read) so the server gets a consistent payload.
+// The effective mode is composed from the Mode dropdown (off/a/aa/aaa)
+// and the High precision checkbox: high precision on + base mode
+// becomes x_<mode>; high precision on with off is just x. The composed
+// string is one of the 8 values consumed by meterLowLightFlags() and
+// the server-side parser.
 function meterLowLightReadState(){
  try{
   const enabled=document.getElementById('meterLowLightEnabled');
   const mode=document.getElementById('meterLowLightMode');
+  const hp=document.getElementById('meterLowLightHighPrecision');
   const trigger=document.getElementById('meterLowLightTrigger');
   if(!enabled||!mode||!trigger) return null;
   if(!enabled.checked) return {enabled:false,mode:'off',trigger:0};
-  return {enabled:true,mode:String(mode.value||'off'),trigger:Number(trigger.value)||5.0};
+  const base=String(mode.value||'off');
+  const highPrec=!!(hp&&hp.checked);
+  const eff=highPrec?(base==='off'?'x':'x_'+base):base;
+  return {enabled:true,mode:eff,trigger:Number(trigger.value)||5.0};
  }catch(e){ return null; }
 }
 
-// Low-light handler: applies the selected spotread mode
-// to reads whose expected target luminance is below the trigger. The
-// mode is a spotread flag-set built by meterLowLightFlags(). Server-side
-// default is off (no mode), so the existing single-read path is
-// preserved when the handler is disabled or the body is missing.
+// Calibration-card low-light handler: applies the selected spotread mode
+// to reads whose expected target luminance is below the trigger. The mode
+// is a spotread flag-set built by meterLowLightFlags(). Server-side
+// default is off (no mode), so the single-read path is preserved when the
+// handler is disabled or the body is missing.
 const METER_LOW_LIGHT_KEY='pgen.meter.lowLight';
 function meterSetLowLightHandler(){
  const enabled=document.getElementById('meterLowLightEnabled');
  const mode=document.getElementById('meterLowLightMode');
+ const hp=document.getElementById('meterLowLightHighPrecision');
  const trigger=document.getElementById('meterLowLightTrigger');
  if(!enabled||!mode||!trigger) return;
  try{
   localStorage.setItem(METER_LOW_LIGHT_KEY,JSON.stringify({
    enabled:!!enabled.checked,
    mode:String(mode.value||'off'),
+   highPrecision:!!(hp&&hp.checked),
    trigger:Number(trigger.value)||5.0
   }));
  }catch(e){}
@@ -17383,13 +17395,22 @@ function meterSetLowLightHandler(){
 function meterRestoreLowLightHandler(){
  const sel=document.getElementById('meterLowLightEnabled');
  const mode=document.getElementById('meterLowLightMode');
+ const hp=document.getElementById('meterLowLightHighPrecision');
  const trigger=document.getElementById('meterLowLightTrigger');
  if(!sel||!mode||!trigger) return;
  let saved=null;
  try{ saved=JSON.parse(localStorage.getItem(METER_LOW_LIGHT_KEY)||'null'); }catch(e){ saved=null; }
  if(!saved||typeof saved!=='object') return;
  if(typeof saved.enabled==='boolean') sel.checked=saved.enabled;
- if(typeof saved.mode==='string'&&Array.from(mode.options).some(o=>o.value===saved.mode)) mode.value=saved.mode;
+ // Backward compat: older saves stored the high-precision variants
+ // (x, x_a, x_aa, x_aaa) directly in mode; split them back into the
+ // base mode + the high-precision checkbox.
+ let base=(typeof saved.mode==='string')?saved.mode:'off';
+ let highPrec=(typeof saved.highPrecision==='boolean')?saved.highPrecision:false;
+ if(base==='x'){ base='off'; highPrec=true; }
+ else if(base.indexOf('x_')===0){ base=base.slice(2); highPrec=true; }
+ if(Array.from(mode.options).some(o=>o.value===base)) mode.value=base;
+ if(hp) hp.checked=highPrec;
  if(typeof saved.trigger==='number'&&saved.trigger>0) trigger.value=saved.trigger;
 }
 

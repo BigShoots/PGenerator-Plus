@@ -53,4 +53,14 @@ my ($ll_section) = $src =~ /(id="meterProfileLowLight"[\s\S]{0,1800})/;
 unlike($ll_section // '', qr/Calman/, 'new low-light popover section has no Calman wording');
 unlike($src, qr/Calman-style low-light/, 'low-light "Calman-style" comments scrubbed');
 
+# Task 4: high precision checkbox composes the effective mode + persists.
+like($src, qr/function meterLowLightReadState[\s\S]{0,400}?meterLowLightHighPrecision/s,
+  'read-state reads the high precision checkbox');
+like($src, qr/meterLowLightReadState[\s\S]{0,500}?'x_'\s*\+/s,
+  'read-state composes x_<mode> when high precision is on');
+like($src, qr/function meterSetLowLightHandler[\s\S]{0,500}?highPrecision/s,
+  'set-handler persists highPrecision to localStorage');
+like($src, qr/function meterRestoreLowLightHandler[\s\S]{0,800}?highPrecision/s,
+  'restore reads highPrecision back');
+
 done_testing();
