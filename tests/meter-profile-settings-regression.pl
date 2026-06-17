@@ -36,4 +36,21 @@ like($src, qr/meterRelocateProfileControls\(\);/s, 'relocation is invoked at ini
 unlike($src, qr/<label>Display Type<\/label>/s,
   'old inline "Display Type" label is removed (now "Meter Profile" in the popover)');
 
+# Task 3: Low Light Handler is a flat section in the popover, nested gear gone.
+like($src, qr/id="meterProfileLowLight"/s, 'flat Low Light Handler section is in the popover');
+like($src, qr/<input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler\(\)">/s,
+  'single Enabled checkbox persists on change');
+like($src, qr/<input type="checkbox" id="meterLowLightHighPrecision"/s, 'High precision checkbox present');
+unlike($src, qr/id="meterLowLightToggleWrap"/s, 'old low-light toggle row is gone');
+unlike($src, qr/id="meterLowLightGear"/s, 'nested low-light gear button is gone');
+unlike($src, qr/id="meterLowLightGearPopover"/s, 'nested low-light gear popover is gone');
+unlike($src, qr/id="meterLowLightEnabledGear"/s, 'duplicate gear Enabled checkbox is gone');
+unlike($src, qr/lowLight:setupGear/s, 'gears object no longer registers the nested low-light gear');
+# Scope the Calman check to the low-light feature only: pre-existing
+# unrelated refs (e.g. meterAutoCalHdrCalmanReset, HDR autocal comments)
+# are out of scope for this work and must not be renamed here.
+my ($ll_section) = $src =~ /(id="meterProfileLowLight"[\s\S]{0,1800})/;
+unlike($ll_section // '', qr/Calman/, 'new low-light popover section has no Calman wording');
+unlike($src, qr/Calman-style low-light/, 'low-light "Calman-style" comments scrubbed');
+
 done_testing();

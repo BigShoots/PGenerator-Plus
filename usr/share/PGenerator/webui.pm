@@ -2161,7 +2161,7 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
- # reference-style low-light handler from the calibration card. When
+ # Low-light handler from the calibration card. When
  # enabled, the server appends the selected spotread flag set to
  # meter_session.sh's SR_CMD. The mode is a string the client picks
  # from the dropdown; invalid values fall through to off (no flag).
@@ -8105,7 +8105,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 <!-- Calibration -->
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
-  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected Mode (multi-read averaging and/or high precision) instead of the default single long read. Maps to spotread averaging (-Y) and high-precision (-x) flags; applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><label>Mode <select id="meterLowLightMode" onchange="meterSetLowLightHandler()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></label><label class="meter-toggle"><input type="checkbox" id="meterLowLightHighPrecision" onchange="meterSetLowLightHandler()" title="Add -x (high precision, longer integration) to the spotread invocation. Combines with any averaging Mode."> High precision (-x)</label><label>Trigger <input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span>cd/m&sup2;</span></label></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
@@ -8205,25 +8205,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
     </div>
    </div>
-   <div class="meter-xyz-toggle-row" id="meterLowLightToggleWrap">
-    <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterLowLightEnabled"> Low Light Handler <span class="meter-help-tip" title="reference-style low-light handler mapped to spotread flags. When enabled, reads whose expected target luminance is below the Trigger use the selected Mode (averaging, high precision, or both) instead of the default single long read. Applies to all meter reads (autocal, series read, single read). Spotread has no direct integration-time control and maxes at 5-read averaging, so the Mode options cover what spotread actually supports." aria-label="Low light handler help">?</span></label>
-     <span class="meter-xyz-gear-wrap">
-      <button type="button" id="meterLowLightGear" class="meter-xyz-gear" aria-label="Low Light Handler options" aria-expanded="false" title="Low Light Handler options">&#9881;</button>
-      <div class="meter-xyz-gear-popover" id="meterLowLightGearPopover" role="dialog" aria-label="Low Light Handler options">
-       <div class="meter-low-light-grid">
-        <label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabledGear" onchange="document.getElementById('meterLowLightEnabled').checked=this.checked;meterSetLowLightHandler()" checked> Enabled</label>
-        <label>Mode <select id="meterLowLightMode" onchange="meterSetLowLightHandler()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px">
-         <option value="off" title="Single long read, no -Y flag">Off (single read)</option>
-         <option value="a" title="2-read averaging (-Y a)">2 reads (a)</option>
-         <option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option>
-         <option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option>
-        </select></label>
-        <label class="meter-toggle"><input type="checkbox" id="meterLowLightHighPrecision" onchange="meterSetLowLightHandler()" title="Add -x (high precision, longer integration) to the spotread invocation. Can be combined with any averaging Mode."> High precision (-x)</label>
-        <label>Trigger <input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span>cd/m&sup2;</span></label>
-       </div>
-      </div>
-     </span>
-    </div>
   <div class="field field-gamut">
     <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
@@ -17380,7 +17361,7 @@ function meterLowLightReadState(){
  }catch(e){ return null; }
 }
 
-// reference-style low-light handler: applies the selected spotread mode
+// Low-light handler: applies the selected spotread mode
 // to reads whose expected target luminance is below the trigger. The
 // mode is a spotread flag-set built by meterLowLightFlags(). Server-side
 // default is off (no mode), so the existing single-read path is
@@ -29650,7 +29631,6 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
   patternInsert:setupGear('meterPatternInsertGear','meterPatternInsertPopover'),
   xyz:setupGear('meterXyzGear','meterXyzGearPopover'),
   customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover'),
-  lowLight:setupGear('meterLowLightGear','meterLowLightGearPopover'),
   meterProfile:setupGear('meterProfileGear','meterProfileGearPopover')
  };
  const gearWrap=id=>{const g=document.getElementById(id);return g&&g.parentElement;};
