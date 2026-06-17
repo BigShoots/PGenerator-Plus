@@ -881,6 +881,24 @@ EOJSON
  if [[ -n "$REFRESH_RATE" ]]; then
   SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
  fi
+ # Low-light handler (reference-style) flag set. The webui exports
+ # LOW_LIGHT_MODE for this process when the gear is enabled and the
+ # expected target luminance is below the trigger; default off (no
+ # extra flag) preserves the legacy single-long-read behavior.
+ LOW_LIGHT_FLAGS=""
+ case "${LOW_LIGHT_MODE:-off}" in
+  a)     LOW_LIGHT_FLAGS="-Y a" ;;
+  aa)    LOW_LIGHT_FLAGS="-Y aa" ;;
+  aaa)   LOW_LIGHT_FLAGS="-Y aaa" ;;
+  x)     LOW_LIGHT_FLAGS="-x" ;;
+  x_a)   LOW_LIGHT_FLAGS="-x -Y a" ;;
+  x_aa)  LOW_LIGHT_FLAGS="-x -Y aa" ;;
+  x_aaa) LOW_LIGHT_FLAGS="-x -Y aaa" ;;
+  off|*) LOW_LIGHT_FLAGS="" ;;
+ esac
+ if [[ -n "$LOW_LIGHT_FLAGS" ]]; then
+  SR_CMD="$SR_CMD $LOW_LIGHT_FLAGS"
+ fi
  # Disable AIO mode for i1D3 meters if requested
  if [[ "$DISABLE_AIO" == "1" ]]; then
   export I1D3_DISABLE_AIO=1

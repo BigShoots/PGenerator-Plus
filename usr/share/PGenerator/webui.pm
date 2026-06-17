@@ -2166,8 +2166,14 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  # meter_session.sh's SR_CMD. The mode is a string the client picks
  # from the dropdown; invalid values fall through to off (no flag).
  my $low_light_mode="";
- $low_light_mode=lc($1) if($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/);
- $low_light_mode="off" unless($low_light_mode eq "off" || $low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa" || $low_light_mode eq "x" || $low_light_mode eq "x_a" || $low_light_mode eq "x_aa" || $low_light_mode eq "x_aaa");
+ if($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/){
+  $low_light_mode=lc($1);
+  # If the field was present but the value is unknown, fall through to
+  # "off" (no flag). Keep "" when the field is absent so the env-var
+  # prefix below stays empty and the launched command is identical to
+  # the pre-low-light-handler invocation.
+  $low_light_mode="off" unless($low_light_mode eq "off" || $low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa" || $low_light_mode eq "x" || $low_light_mode eq "x_a" || $low_light_mode eq "x_aa" || $low_light_mode eq "x_aaa");
+ }
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
@@ -17333,18 +17339,25 @@ function meterBuildManualReadPayload(step,ctx){
  // pass the effective mode (default off, low-light when enabled AND
  // target < trigger). All reads use this path: autocal, series read,
  // single read.
- const lowLight=(function(){
-  try{
-   const enabled=document.getElementById('meterLowLightEnabled');
-   const mode=document.getElementById('meterLowLightMode');
-   const trigger=document.getElementById('meterLowLightTrigger');
-   if(!enabled||!mode||!trigger) return null;
-   if(!enabled.checked) return {enabled:false,mode:'off',trigger:0};
-   return {enabled:true,mode:String(mode.value||'off'),trigger:Number(trigger.value)||5.0};
-  }catch(e){ return null; }
- })();
+ const lowLight=meterLowLightReadState();
  if(lowLight) readPayload.low_light=lowLight;
  return readPayload;
+}
+
+// Read the current state of the calibration-card Low Light Handler
+// gear. Returns null if the controls are not on the page (e.g. the
+// card has not been rendered yet), or {enabled,mode,trigger} for the
+// current gear state. Used by every meter read path (single read,
+// autocal, series read) so the server gets a consistent payload.
+function meterLowLightReadState(){
+ try{
+  const enabled=document.getElementById('meterLowLightEnabled');
+  const mode=document.getElementById('meterLowLightMode');
+  const trigger=document.getElementById('meterLowLightTrigger');
+  if(!enabled||!mode||!trigger) return null;
+  if(!enabled.checked) return {enabled:false,mode:'off',trigger:0};
+  return {enabled:true,mode:String(mode.value||'off'),trigger:Number(trigger.value)||5.0};
+ }catch(e){ return null; }
 }
 
 // reference-style low-light handler: applies the selected spotread mode
@@ -24948,8 +24961,16 @@ async function meterRunSeries(){
   return false;
  };
  try{
+	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  // Pass the calibration-card low-light handler through to the
+	  // server so series reads honor the same gear as autocal/single.
+	  // Without this, the series start body has no low_light field and
+	  // the server-side parser coerces the missing value to "off" (and
+	  // the launch command is identical to no-handler at all).
+	  const _ll=meterLowLightReadState();
+	  if(_ll) _seriesBody.low_light=_ll;
 	  const r=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},
-		   body:JSON.stringify(meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady})),_timeoutMs:10000});
+		   body:JSON.stringify(_seriesBody),_timeoutMs:10000});
 	  if(!r||r.status!=='started'){
    if(await recoverStartedSeries()) return true;
 	   toast(r&&r.message?r.message:'Failed to start series',true);
