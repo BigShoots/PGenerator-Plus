@@ -8162,7 +8162,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
   <label class="meter-header-label">Meter</label>
-  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected Mode (multi-read averaging and/or high precision) instead of the default single long read. Maps to spotread averaging (-Y) and high-precision (-x) flags; applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightHighPrecision" onchange="meterSetLowLightHandler()" title="Add -x (high precision, longer integration) to the spotread invocation. Combines with any averaging Mode."> High precision</label><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
@@ -17446,23 +17446,17 @@ function meterRelocateProfileControls(){
 // card has not been rendered yet), or {enabled,mode,trigger} for the
 // current gear state. Used by every meter read path (single read,
 // autocal, series read) so the server gets a consistent payload.
-// The effective mode is composed from the Mode dropdown (off/a/aa/aaa)
-// and the High precision checkbox: high precision on + base mode
-// becomes x_<mode>; high precision on with off is just x. The composed
-// string is one of the 8 values consumed by meterLowLightFlags() and
-// the server-side parser.
+// The mode is the Mode dropdown value (off/a/aa/aaa), consumed by
+// meterLowLightFlags() and the server-side parser.
 function meterLowLightReadState(){
  try{
   const enabled=document.getElementById('meterLowLightEnabled');
   const mode=document.getElementById('meterLowLightMode');
-  const hp=document.getElementById('meterLowLightHighPrecision');
   const trigger=document.getElementById('meterLowLightTrigger');
   if(!enabled||!mode||!trigger) return null;
   if(!enabled.checked) return {enabled:false,mode:'off',trigger:0};
   const base=String(mode.value||'off');
-  const highPrec=!!(hp&&hp.checked);
-  const eff=highPrec?(base==='off'?'x':'x_'+base):base;
-  return {enabled:true,mode:eff,trigger:Number(trigger.value)||5.0};
+  return {enabled:true,mode:base,trigger:Number(trigger.value)||5.0};
  }catch(e){ return null; }
 }
 
@@ -17475,14 +17469,12 @@ const METER_LOW_LIGHT_KEY='pgen.meter.lowLight';
 function meterSetLowLightHandler(){
  const enabled=document.getElementById('meterLowLightEnabled');
  const mode=document.getElementById('meterLowLightMode');
- const hp=document.getElementById('meterLowLightHighPrecision');
  const trigger=document.getElementById('meterLowLightTrigger');
  if(!enabled||!mode||!trigger) return;
  try{
   localStorage.setItem(METER_LOW_LIGHT_KEY,JSON.stringify({
    enabled:!!enabled.checked,
    mode:String(mode.value||'off'),
-   highPrecision:!!(hp&&hp.checked),
    trigger:Number(trigger.value)||5.0
   }));
  }catch(e){}
@@ -17490,22 +17482,20 @@ function meterSetLowLightHandler(){
 function meterRestoreLowLightHandler(){
  const sel=document.getElementById('meterLowLightEnabled');
  const mode=document.getElementById('meterLowLightMode');
- const hp=document.getElementById('meterLowLightHighPrecision');
  const trigger=document.getElementById('meterLowLightTrigger');
  if(!sel||!mode||!trigger) return;
  let saved=null;
  try{ saved=JSON.parse(localStorage.getItem(METER_LOW_LIGHT_KEY)||'null'); }catch(e){ saved=null; }
  if(!saved||typeof saved!=='object') return;
  if(typeof saved.enabled==='boolean') sel.checked=saved.enabled;
- // Backward compat: older saves stored the high-precision variants
- // (x, x_a, x_aa, x_aaa) directly in mode; split them back into the
- // base mode + the high-precision checkbox.
+ // Backward compat: older saves stored high-precision variants
+ // (x, x_a, x_aa, x_aaa) in mode; the high-precision option has been
+ // removed (it mapped to spotread -x = Yxy output, already always on,
+ // a no-op for precision), so collapse those back to the base mode.
  let base=(typeof saved.mode==='string')?saved.mode:'off';
- let highPrec=(typeof saved.highPrecision==='boolean')?saved.highPrecision:false;
- if(base==='x'){ base='off'; highPrec=true; }
- else if(base.indexOf('x_')===0){ base=base.slice(2); highPrec=true; }
+ if(base==='x'){ base='off'; }
+ else if(base.indexOf('x_')===0){ base=base.slice(2); }
  if(Array.from(mode.options).some(o=>o.value===base)) mode.value=base;
- if(hp) hp.checked=highPrec;
  if(typeof saved.trigger==='number'&&saved.trigger>0) trigger.value=saved.trigger;
 }
 
@@ -17514,17 +17504,12 @@ function meterRestoreLowLightHandler(){
 //   -Y a   = 2-read avg
 //   -Y aa  = 3-read avg
 //   -Y aaa = 5-read avg
-//   -x     = high precision (longer integration)
 function meterLowLightFlags(mode){
  const m=String(mode||'off');
  switch(m){
   case 'a':     return '-Y a';
   case 'aa':    return '-Y aa';
   case 'aaa':   return '-Y aaa';
-  case 'x':     return '-x';
-  case 'x_a':   return '-x -Y a';
-  case 'x_aa':  return '-x -Y aa';
-  case 'x_aaa': return '-x -Y aaa';
   case 'off':   return '';
   default:      return '';
  }
