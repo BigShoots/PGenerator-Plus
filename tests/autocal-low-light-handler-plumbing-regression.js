@@ -1,0 +1,15 @@
+const assert=require('assert'); const fs=require('fs');
+const ui=fs.readFileSync('usr/share/PGenerator/webui.pm','utf8');
+const sess=fs.readFileSync('usr/bin/meter_session.sh','utf8');
+const worker=fs.readFileSync('usr/bin/meter_lg_autocal.pl','utf8');
+assert(/METER_AVERAGING="\$\{10:-\$\{METER_AVERAGING:-off\}\}"/.test(sess),'meter_session.sh reads arg10 as averaging');
+const ss=ui.slice(ui.indexOf('sub webui_meter_session_start '),ui.indexOf('sub webui_meter_session_start ')+1700);
+assert(/\$require_device_ready,\$averaging\)= @_/.test(ss),'session_start signature has $averaging');
+assert(/'\$require_device_ready' '\$averaging'/.test(ss),'session_start spawn forwards $averaging as arg10');
+const mr=ui.slice(ui.indexOf('sub webui_meter_read '),ui.indexOf('sub webui_meter_read_result'));
+assert(/\$avg_mode/.test(mr) && /"low_light"/.test(mr),'webui_meter_read parses low_light into $avg_mode');
+assert(/\$want_config="[^"]*\|\$avg_mode"/.test(mr),'want_config includes $avg_mode');
+assert((mr.match(/\$measurement_meter_port,\$require_device_ready,\$avg_mode\)/g)||[]).length>=2,'both session_start calls pass $avg_mode');
+assert(/\$payload->\{"low_light"\}=/.test(worker)&&/\$config->\{"low_light"\}\{"enabled"\}/.test(worker),'worker adds low_light to read payload when handler enabled');
+assert((ui.match(/low_light:meterLowLightReadState\(\)/g)||[]).length>=2,'both lg-autocal start bodies include low_light');
+console.log('autocal low-light handler plumbing regression OK');
