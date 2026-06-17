@@ -16779,6 +16779,13 @@ sub read_step_once {
 		 if(ref($opts) eq "HASH" && defined($opts->{"read_timeout"}) && $opts->{"read_timeout"} > 0) {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
+		 # Route the operator's Low Light Handler (Meter Settings) to autocal
+		 # reads: when enabled, request the selected averaging mode so dim
+		 # patches are read with multi-read averaging instead of a single read.
+		 if(ref($config->{"low_light"}) eq "HASH" && $config->{"low_light"}{"enabled"}) {
+		  my $ll_mode=lc($config->{"low_light"}{"mode"}||"off");
+		  $payload->{"low_light"}={ mode => $ll_mode, enabled => JSON::PP::true } if($ll_mode ne "off");
+		 }
 		 my $read_started=time();
 			 my $step_key=autocal_read_step_key($step);
 			 my $insert_error=apply_pattern_insert_before_read($config,$step,$step_key);
