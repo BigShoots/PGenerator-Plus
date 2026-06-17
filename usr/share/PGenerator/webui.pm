@@ -3121,13 +3121,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- # LOW_LIGHT_MODE is exported so meter_session.sh's case statement picks
- # the matching spotread flag set (or no flag for off). The calibration
- # card's gear menu is the source of this value; it defaults to off
- # (single long read, the project convention from 56c7019a).
- my $low_light_env="";
- $low_light_env="env LOW_LIGHT_MODE='$low_light_mode' " if($low_light_mode ne "");
- my $cmd="setsid sudo $low_light_env/bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' </dev/null >/dev/null 2>&1 &";
+ # LOW_LIGHT_MODE is passed as the FINAL positional argument, not an
+ # "env LOW_LIGHT_MODE=..." prefix. The daemon's sudo NOPASSWD rule only
+ # authorizes "/bin/bash /usr/bin/meter_series.sh *"; prefixing env makes
+ # the sudo command "/usr/bin/env ..." which matches no rule, so sudo
+ # demands a password and the launch silently fails ("Process died
+ # unexpectedly"). A trailing arg keeps the authorized command intact.
+ # Empty value -> meter_series.sh coerces to off (single long read).
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
