@@ -298,7 +298,43 @@ manual_ready_prompt_label() {
 }
 
 rm -f "$READY_FILE" "$STOP_FILE"
-trap 'rm -f "$READY_FILE" "$STOP_FILE"' EXIT
+
+# On unexpected exit, rewrite the state JSON so the poller doesn't report
+# the generic "Process died unexpectedly" string when the script crashes
+# before its normal error path runs (spotread USB fault, bash error, etc.).
+# The TERM/INT trap and the normal completion path already write their own
+# status, so this is a no-op for the well-behaved exits; it only kicks in
+# for crashes where the state is still "running" or "setup".
+write_state_on_exit() {
+ if [[ -z "${STATE_FILE:-}" || ! -f "$STATE_FILE" ]]; then
+  rm -f "${READY_FILE:-}" "${STOP_FILE:-}" 2>/dev/null || true
+  return 0
+ fi
+ local cur=""
+ if command -v cat >/dev/null 2>&1; then
+  cur=$(cat "$STATE_FILE" 2>/dev/null) || cur=""
+ fi
+ if [[ "$cur" == *'"status":"running"'* || "$cur" == *'"status":"setup"'* ]]; then
+  local last_step=0 last_name="Series helper exited unexpectedly"
+  if [[ "$cur" =~ \"current_step\":[[:space:]]*([0-9]+) ]]; then
+   last_step="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$cur" =~ \"current_name\":[[:space:]]*\"([^\"]*)\" ]]; then
+   last_name="${BASH_REMATCH[1]} (exited unexpectedly)"
+  fi
+  local safe_name
+  safe_name=$(printf '%s' "$last_name" | tr -d '\n\r' | head -c 200)
+  local safe_sid="${SERIES_ID:-}"
+  safe_sid=$(printf '%s' "$safe_sid" | tr -cd 'A-Za-z0-9_.-')
+  local total="${TOTAL:-0}"
+  printf '{"status":"error","series_id":"%s","current_step":%s,"total_steps":%s,"current_name":"%s","readings":[],"white_reading":null,"error":"series_helper_exited_unexpectedly"}\n' \
+   "$safe_sid" "$last_step" "$total" "$safe_name" > "$STATE_FILE" 2>/dev/null || true
+  chmod 666 "$STATE_FILE" 2>/dev/null || true
+ fi
+ rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+}
+
+trap 'write_state_on_exit' EXIT
 trap 'series_cancel_exit' TERM INT
 
 get_step_count() {
