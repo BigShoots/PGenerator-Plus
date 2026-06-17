@@ -449,7 +449,7 @@ sub lg_autocal_hdr20_use_sdr_adjustment_method {
 sub lg_autocal_26_full_ddc_spine_anchor_ires_for_layout {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
- return (100,20,40,60,80) if($layout eq "hdr20");
+ return (100,5,20,40,60,80) if($layout eq "hdr20");
  return (109,20,40,60,80);
 }
 
@@ -711,10 +711,8 @@ sub order_autocal_steps {
 	 }
 	 if(ref($config) eq "HASH" && lg_autocal_26_hdr20_seed_enabled($config) && lg_autocal_26_full_ddc_spine_enabled($config)) {
 	  return @valid if($config->{"lg_autocal_preserve_step_order"} || $config->{"preserve_step_order"});
-	  my @hdr_slots=ddc_slots_for_layout("hdr20");
-	  my @hdr_high_down=sort { $b <=> $a } grep { ($_+0) >= 15 } @hdr_slots;
-	  my @hdr_low_up=sort { $a <=> $b } grep { ($_+0) < 15 } @hdr_slots;
-	  my @hdr_autocal_26_order=(lg_autocal_26_full_ddc_spine_anchor_ires_for_layout("hdr20"),@hdr_high_down,@hdr_low_up);
+	  my @top_down=sort { $b <=> $a } ddc_slots_for_layout("hdr20");
+	  my @hdr_autocal_26_order=(lg_autocal_26_full_ddc_spine_anchor_ires_for_layout("hdr20"),@top_down);
 	  my %seen_target;
 	  my @ordered;
 	  my $target_key=sub {
