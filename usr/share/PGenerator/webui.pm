@@ -2699,7 +2699,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # DV ColorChecker patches are target-gamut driven even though the signal
     # rides in a BT.2020 tunnel. Solving them in the container makes DV
     # relative read undersaturated and DV absolute read oversaturated.
-    my $solve_key=(($signal_mode eq "hdr10") || ($signal_mode eq "hlg")) ? $container_key : $target_key;
+    # HDR10 likewise solves in the target gamut so wide-gamut patches are not
+    # desaturated; only HLG stays anchored to the container here.
+    my $solve_key=($signal_mode eq "hlg") ? $container_key : $target_key;
     my @target_white=@{$primaries{$target_key}{WHITE}};
     @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
     my ($target_wx,$target_wy)=@target_white;
@@ -2977,9 +2979,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my @target_white=@{$primaries{$target_key}{WHITE}};
   @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
   my ($target_wx,$target_wy)=@target_white;
-  # DV absolute saturation sweeps follow the selected target hue axis, but
-  # the emitted patch triplet still needs to be solved in the BT.2020 tunnel.
-  my $solve_key=((($signal_mode eq "hdr10") || ($signal_mode eq "hlg"))) ? $container_key : $target_key;
+  # DV and HDR10 saturation sweeps solve the emitted patch in the selected
+  # target gamut; only HLG stays anchored to the BT.2020 container here.
+  my $solve_key=($signal_mode eq "hlg") ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
   @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
