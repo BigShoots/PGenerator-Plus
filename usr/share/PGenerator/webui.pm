@@ -6155,6 +6155,7 @@ sub webui_bluetooth_status_json (@) {
  if($raw=~/PAN_BEGIN\n(.*?)\nPAN_END/s) { $pan_raw=$1; }
 
  my $powered=($raw=~/\bUP\b/i || $adapter=~/Powered:\s*yes/i) ? "true" : "false";
+ $powered="false" if($kv{SOFT_BLOCKED} && $kv{SOFT_BLOCKED} eq "1");
  my $discoverable=($adapter=~/Discoverable:\s*yes/i) ? "true" : "false";
  my $agent=($kv{AGENT} && $kv{AGENT} eq "1") ? "true" : "false";
  my $pan_running=(($kv{NAP_RUNNING} && $kv{NAP_RUNNING} eq "1") || $pan_raw=~/\b(?:pan0|bnep\d+)\b.*\b(?:flags|inet)\b/s) ? "true" : "false";
@@ -8888,11 +8889,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
  <!-- Bluetooth PAN -->
  <div class="card" data-widget="bluetooth" draggable="true">
-  <h2><span class="drag-handle">&#9776;</span>Bluetooth PAN</h2>
+  <h2><span class="drag-handle">&#9776;</span>Bluetooth PAN<label class="pg-switch" data-no-collapse title="Power the Bluetooth radio on or off"><input type="checkbox" id="btPowerToggle" onchange="onBtPowerToggle(this)"><span class="pg-switch-track"><span class="pg-switch-thumb"></span></span></label></h2>
   <div class="info-grid" id="btStatus" style="margin-bottom:8px"></div>
   <div class="btn-row" style="margin-bottom:8px">
-   <button class="btn btn-sm btn-success" onclick="btSet('power',true)">Power On</button>
-   <button class="btn btn-sm btn-danger" onclick="btSet('power',false)">Power Off</button>
    <button class="btn btn-sm btn-secondary" onclick="btSet('discoverable',true)">Discoverable</button>
    <button class="btn btn-sm btn-secondary" onclick="btSet('agent',true)">Pairing Agent</button>
   </div>
@@ -11066,6 +11065,8 @@ async function loadBluetooth(){
  if(!el||!r||r.status!=='ok') return;
  el.innerHTML='';
  addInfo(el,'Power',r.powered?'On':'Off');
+ const bt=document.getElementById('btPowerToggle');
+ if(bt&&!bt.disabled) bt.checked=!!r.powered;
  addInfo(el,'Visible',r.discoverable?'Yes':'No');
  addInfo(el,'Agent',r.agent?'Running':'Stopped');
  addInfo(el,'PAN',r.pan_running?'Running':'Stopped');
@@ -11080,6 +11081,12 @@ async function btSet(kind,enabled){
  const r=await fetchJSON(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
  if(r&&r.status==='ok'){toast(r.message||'Bluetooth updated');setTimeout(loadBluetooth,800);}
  else toast(r&&(r.message||r.error)?(r.message||r.error):'Bluetooth command failed','err');
+}
+
+async function onBtPowerToggle(el){
+ switchBusy('btPowerToggle',true);
+ await btSet('power', el.checked);
+ setTimeout(()=>{loadBluetooth();switchBusy('btPowerToggle',false);},1200);
 }
 
 async function btRestartPan(){
