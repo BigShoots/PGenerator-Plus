@@ -35,11 +35,14 @@ use Test::More;
 
 my $webui = 'usr/share/PGenerator/webui.pm';
 my $shell = 'usr/bin/meter_session.sh';
+my $series_shell = 'usr/bin/meter_series.sh';
 
 open(my $fh, '<', $webui) or BAIL_OUT("can't read $webui: $!");
 local $/; my $src = <$fh>; close $fh;
 open(my $sh, '<', $shell) or BAIL_OUT("can't read $shell: $!");
 local $/; my $sh_src = <$sh>; close $sh;
+open(my $sh2, '<', $series_shell) or BAIL_OUT("can't read $series_shell: $!");
+local $/; my $series_src = <$sh2>; close $sh2;
 
 # 1. The gear menu must be in the calibration card (meterCard, not
 # the autocal card). The card title flips between "Test Patterns" and
@@ -123,6 +126,12 @@ like($src, qr/"low_light".*"mode".*a-z_/s,
   'series start body parses low_light.mode field');
 like($src, qr/\$low_light_mode="off"\s*unless\(\$low_light_mode\s+eq\s+"off"\s*\|\|\s*\$low_light_mode\s+eq\s+"a"\s*\|\|\s*\$low_light_mode\s+eq\s+"aa"\s*\|\|\s*\$low_light_mode\s+eq\s+"aaa"\s*\|\|\s*\$low_light_mode\s+eq\s+"x"\s*\|\|\s*\$low_light_mode\s+eq\s+"x_a"\s*\|\|\s*\$low_light_mode\s+eq\s+"x_aa"\s*\|\|\s*\$low_light_mode\s+eq\s+"x_aaa"\)/s,
   'invalid low_light.mode values fall through to off');
+# The unless-clause must be INSIDE the regex-match conditional, so an
+# absent low_light field leaves $low_light_mode="" and the env-var
+# prefix below stays empty (manual series read bodies don't carry
+# low_light, and the legacy pre-handler command must remain unchanged).
+like($src, qr/if\(\$body=~\/"low_light"[\s\S]{0,500}?"mode"[\s\S]{0,500}?unless\(\$low_light_mode\s+eq\s+"off"/s,
+  'series start parser only validates low_light when the field is present (unless-clause is gated on the regex match)');
 
 # 8. The meter_series.sh launch must export LOW_LIGHT_MODE when the
 # value is non-empty.
@@ -188,5 +197,28 @@ like($src, qr/function\s+meterNormalizeOledBlackReading[\s\S]{0,2000}?return\s+m
   'meterNormalizeOledBlackReading is a pass-through (2306eb45 invariant)');
 like($src, qr/function\s+meterDrawLiftedBlackLabel/s,
   'lifted-black chart label helper still present (4668e285 invariant)');
+
+# 13. End-to-end wiring on the series-read path. The series start
+# body builder at the /api/meter/series call site must attach
+# low_light (via meterLowLightReadState), and meter_series.sh must
+# consume LOW_LIGHT_MODE so the env var actually takes effect on
+# the spotread invocation. Without these, the gear is silently
+# dropped on the wire for manual series reads.
+like($src, qr/function\s+meterLowLightReadState\s*\(\s*\)/s,
+  'meterLowLightReadState helper is defined');
+like($src, qr/meterLowLightReadState\(\)[\s\S]{0,200}?readPayload\.low_light=lowLight/s,
+  'meterBuildManualReadPayload calls meterLowLightReadState and attaches the result');
+# The series start fetch (the one that calls /api/meter/series) must
+# read the gear state and attach it to the body literal.
+like($src, qr/meterLowLightReadState\(\)[\s\S]{0,500}?_seriesBody\.low_light=_ll/s,
+  'series start body attaches low_light from the gear state');
+like($series_src, qr/case\s+"\${LOW_LIGHT_MODE:-off}"\s+in/s,
+  'meter_series.sh has the LOW_LIGHT_MODE case statement (consumes the env var)');
+like($series_src, qr/a\)\s+LOW_LIGHT_FLAGS="-Y a"\s*;;/s,
+  'meter_series.sh case "a" sets "-Y a"');
+like($series_src, qr/off\|\*\)\s+LOW_LIGHT_FLAGS=""/s,
+  'meter_series.sh case "off" sets "" (no flag)');
+like($series_src, qr/SR_CMD="\$SR_CMD \$LOW_LIGHT_FLAGS"/s,
+  'meter_series.sh appends $LOW_LIGHT_FLAGS to $SR_CMD');
 
 done_testing();
