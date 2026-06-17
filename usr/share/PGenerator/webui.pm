@@ -26525,6 +26525,40 @@ function drawDashedLine(ctx,chart,points,color,width){
  ctx.setLineDash([]);
 }
 
+// Annotate the 0% IRE data point on an EOTF/Gamma chart with the actual
+// measured black level (Lb). The chart's Y axis spans 0 to peak, so a lifted
+// black (e.g. 0.05 cd/m^2 on a 1000 nit panel) is plotted at y ~ 0.00005 --
+// visually indistinguishable from true black and labelled "0.0" by the
+// axis. Without this annotation, the only signal of a real black lift is
+// the existing "Min cd/m^2: Lb" footer text, which is easy to miss while
+// the chart is in motion. Draws a small yellow callout next to the 0% dot.
+function meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,scaleFn){
+ if(!(Lb>0) || !ctx || !chart) return;
+ const zeroStep=(measureSteps||[]).find(s=>Math.abs(Number((s&&s.ire!=null)?s.ire:0))<0.5);
+ if(!zeroStep) return;
+ const zeroX=meterGreyEotfLuminanceChartX(zeroStep,measureSteps,measureSteps.indexOf(zeroStep),axisMax);
+ const scaled=scaleFn(Lb);
+ if(!(Number.isFinite(zeroX)) || !(Number.isFinite(scaled))) return;
+ const px=chart.toX(zeroX);
+ const py=chart.toY(Math.max(0,Math.min(1,scaled)));
+ // The 0% point sits on the X axis. Place the label 14px above and offset
+ // right so it doesn't collide with the Y axis tick or the point itself.
+ const labelX=Math.min(ctx.w-chart.pad.r-44, px+10);
+ const labelY=Math.max(chart.pad.t+12, py-8);
+ ctx.save();
+ ctx.font='bold 10px sans-serif';
+ ctx.textAlign='left';
+ ctx.textBaseline='alphabetic';
+ // Filled pill for legibility against grid lines and the measured curve.
+ const text='0% = '+Lb.toFixed(Lb<1?3:1)+' cd/m\u00B2';
+ const w=ctx.measureText(text).width+8;
+ ctx.fillStyle='rgba(255,235,59,0.92)';
+ ctx.fillRect(labelX-4,labelY-9,w,14);
+ ctx.fillStyle='#1a1a22';
+ ctx.fillText(text,labelX,labelY+2);
+ ctx.restore();
+}
+
 function meterGreyscaleRgbBalanceReference(gs){
  let effectiveWhiteRGB=meterEffectiveGreyscaleWhiteReference(gs);
  // For manual single reads before 100% is measured, still plot RGB balance
@@ -26670,6 +26704,14 @@ function drawEOTFChart(gs,allSteps,readingMap){
   if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
   else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
  });
+ // Annotate the 0% IRE point with the actual measured Lb (cd/m^2) so a
+ // lifted black is visible even though the Y axis spans 0 to peak and
+ // the plotted 0% point sits on the X axis.
+ meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,lum=>{
+  const value=Number(lum);
+  if(!Number.isFinite(value)) return null;
+  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
+ });
  // Optional per-channel R/G/B EOTF overlay (mirrors the Gamma chart's
  // per-channel option). Each channel's measured linear value is normalized to
  // the white reference's same channel, rescaled to the chart reference, then
@@ -26772,6 +26814,10 @@ function drawGammaChart(gs,allSteps,readingMap){
   if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
   else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
  });
+ // Annotate the 0% IRE point with the actual measured Lb (cd/m^2) so a
+ // lifted black is visible even though the Y axis spans 0 to peak and
+ // the plotted 0% point sits on the X axis.
+ meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,scaleMeasuredLuminance);
  ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
  ctx.textAlign='left';
  ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
