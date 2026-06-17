@@ -14196,20 +14196,16 @@ function meterReadingIsZeroBlack(reading){
 }
 
 function meterNormalizeOledBlackReading(reading){
+ // Pass-through normalizer for the 0% IRE greyscale reading. The previous
+ // behavior force-zeroed the reading whenever the measured luminance was
+ // not finite or was < 0; that hid real black lift on OLED panels and
+ // made the chart plot 0.0 cd/m^2 at 0% IRE even when the panel was
+ // visibly lifted. The 0% reading must flow through to the chart with
+ // its actual measured value, exactly like any other patch reading, so
+ // the EOTF/Gamma charts (and the lifted-black callout added in 4668e285)
+ // can show the real state of the panel.
  if(!reading||typeof reading!=='object') return reading;
- meterNormalizeMeasuredReading(reading);
- if(!meterDisplayIsOled()||!meterReadingIsGreyscale(reading)||!meterReadingIsZeroBlack(reading)) return reading;
- const lum=(reading.luminance!=null)?Number(reading.luminance):Number(reading.Y);
- if(Number.isFinite(lum)&&lum>=0) return reading;
- reading.luminance=0;
- reading.Y=0;
- if(reading.raw_luminance==null) reading.raw_luminance=0;
- if(reading.raw_Y==null) reading.raw_Y=0;
- if(reading.X==null) reading.X=0;
- if(reading.Z==null) reading.Z=0;
- if(reading.raw_X==null) reading.raw_X=0;
- if(reading.raw_Z==null) reading.raw_Z=0;
- return reading;
+ return meterNormalizeMeasuredReading(reading);
 }
 
 function meterGreyscaleReadings(readings){
