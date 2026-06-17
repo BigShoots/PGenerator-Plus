@@ -818,6 +818,16 @@ sub webui_http (@) {
     my $len=length($json);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$json";
    }
+   elsif($path eq "/api/wifi/radio" && $method eq "GET") {
+    my $json=&webui_wifi_radio_status_json();
+    my $len=length($json);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$json";
+   }
+   elsif($path eq "/api/wifi/radio" && $method eq "POST") {
+    my $result=&webui_wifi_radio_control($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/wifi/ap" && $method eq "POST") {
     my $result=&webui_wifi_ap_apply($body);
     my $len=length($result);
@@ -6141,6 +6151,30 @@ sub webui_wifi_status_json (@) {
  return "{\"status\":\"ok\",\"wpa_state\":\"$state\",\"ssid\":\"$ssid\",\"freq\":\"$freq\",\"band\":\"$band\",\"signal\":\"$signal\",\"ip\":\"$ip\",\"bssid\":\"$bssid\"}";
 }
 
+sub webui_wifi_radio_status_json (@) {
+ my $raw=&sudo("WIFI_RADIO_STATUS");
+ my %kv;
+ foreach my $line (split(/\n/,$raw)) {
+  if($line=~/^([A-Z_]+)=(.*)$/) { $kv{$1}=$2; }
+ }
+ my $available=($kv{WIFI_RADIO_AVAILABLE} && $kv{WIFI_RADIO_AVAILABLE} eq "1") ? "true" : "false";
+ my $blocked=($kv{WIFI_BLOCKED} && $kv{WIFI_BLOCKED} eq "1") ? "true" : "false";
+ return "{\"status\":\"ok\",\"available\":$available,\"blocked\":$blocked}";
+}
+
+sub webui_wifi_radio_control (@) {
+ my ($body)=@_;
+ my $enabled=($body=~/"(?:enabled|value|on)"\s*:\s*(true|1|"true"|"1"|"on")/i) ? "on" : "off";
+ my $raw=&sudo("WIFI_RADIO",$enabled);
+ chomp($raw);
+ if($raw=~/^OK/) {
+  return '{"status":"ok","message":"WiFi radio '.($enabled eq "on" ? "enabled" : "disabled").'"}';
+ }
+ $raw=~s/^ERR:?//;
+ $raw=&_webui_json_escape($raw||"WiFi radio change failed");
+ return '{"status":"error","message":"'.$raw.'"}';
+}
+
 sub webui_bluetooth_status_json (@) {
  my $raw=&sudo("BT_STATUS");
  my %kv;
@@ -8796,7 +8830,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
  <!-- WiFi Client -->
  <div class="card" data-widget="wifi" draggable="true">
-  <h2><span class="drag-handle">&#9776;</span>WiFi Client</h2>
+  <h2><span class="drag-handle">&#9776;</span>WiFi Client<label class="pg-switch" data-no-collapse title="Enable or disable the WiFi radio (also stops the Access Point)"><input type="checkbox" id="wifiRadioToggle" onchange="onWifiRadioToggle(this)"><span class="pg-switch-track"><span class="pg-switch-thumb"></span></span></label></h2>
   <div class="info-grid" id="wifiStatus" style="margin-bottom:8px"></div>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="scanWifi()">Scan Networks</button>
@@ -11034,6 +11068,29 @@ async function loadAP(){
   const t=document.getElementById('apEnableToggle');
   if(t&&!t.disabled) t.checked=!!s.active;
  }
+}
+
+async function onWifiRadioToggle(el){
+ const enable=el.checked;
+ if(!enable){
+  const aps=await fetchJSON('/api/wifi/ap/status',{_quiet:true,_timeoutMs:8000});
+  if(aps&&aps.status==='ok'&&aps.active){
+   if(!window.confirm('Disabling the WiFi radio will also stop the WiFi Access Point (they share one radio). Continue?')){
+    el.checked=true;
+    return;
+   }
+  }
+ }
+ switchBusy('wifiRadioToggle',true);
+ const r=await fetchJSON('/api/wifi/radio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enable})});
+ if(r&&r.status==='ok') toast(r.message||('WiFi radio '+(enable?'enabled':'disabled')));
+ else toast(r&&(r.message||r.error)?(r.message||r.error):'WiFi radio change failed','err');
+ setTimeout(()=>{loadWifiRadio();loadAP();switchBusy('wifiRadioToggle',false);},1500);
+}
+async function loadWifiRadio(){
+ const r=await fetchJSON('/api/wifi/radio',{_quiet:true,_timeoutMs:8000});
+ const t=document.getElementById('wifiRadioToggle');
+ if(t&&!t.disabled&&r&&r.status==='ok') t.checked=!r.blocked;
 }
 
 async function applyAP(){
@@ -29934,6 +29991,7 @@ function pgInitialRetry(name,fn,delays){
  __PG_LG_INIT__
  setTimeout(()=>loadAP(),1000);
  setTimeout(()=>loadBluetooth(),1200);
+ setTimeout(()=>loadWifiRadio(),1300);
  setTimeout(()=>loadInfoframes(),1500);
  setTimeout(()=>checkUpdate(),60000);
  setInterval(checkPing,10000);
@@ -29942,6 +30000,7 @@ function pgInitialRetry(name,fn,delays){
  setInterval(()=>loadInfo(true),30000);
  setInterval(()=>loadCecStatus(),5000);
  setInterval(()=>loadBluetooth(),30000);
+ setInterval(()=>loadWifiRadio(),30000);
  // Meter: check immediately on load, then repoll shortly after and every 10s.
  // The retry below covers the case where the first two meter checks race
  // the USB enumeration; the daemon-side meter/status endpoint can take
