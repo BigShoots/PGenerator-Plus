@@ -1622,7 +1622,8 @@ sub webui_meter_session_stop_only (@) {
 }
 
 sub webui_meter_session_start (@) {
- my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready)=@_;
+ my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready,$averaging)= @_;
+ $averaging="" if(!defined($averaging));
  my $aio_flag=$disable_aio ? "1" : "0";
  $require_device_ready=0 if(!defined($require_device_ready) || $require_device_ready!~/^1$/);
  $signal_mode=&webui_pattern_signal_mode("") if(!defined($signal_mode) || $signal_mode eq "");
@@ -1640,7 +1641,7 @@ sub webui_meter_session_start (@) {
   # Launch detached as root. The daemon writes its own PID/config files once it
   # grabs the lock; wait for an actionable startup state before reporting success.
   my $started_at=time();
-  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '300' '$require_device_ready' </dev/null >/dev/null 2>&1 &");
+  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '300' '$require_device_ready' '$averaging' </dev/null >/dev/null 2>&1 &");
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
   # start and can legitimately take 35-45 seconds before the helper reaches a
@@ -1769,6 +1770,12 @@ sub webui_meter_read (@) {
 		 $transport_signal_range=$1 if($body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/);
 		 my $request_id="";
 		 $request_id=$1 if($body=~/"request_id"\s*:\s*"([A-Za-z0-9_.:-]{1,96})"/);
+			 # Low Light Handler averaging mode for this read (off/a/aa/aaa).
+			 # Passed to the meter session so dim autocal/single reads use
+			 # multi-read averaging instead of a noisy single read.
+			 my $avg_mode="";
+			 $avg_mode=lc($1) if($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa)"/);
+			 $avg_mode="" if($avg_mode eq "off");
 		 if(-f $_meter_diagnostic_read_lock) {
 		  my $diag_token="";
 		  if(open(my $dfh,"<",$_meter_diagnostic_read_lock)) { local $/; $diag_token=<$dfh>; close($dfh); }
@@ -1814,7 +1821,7 @@ sub webui_meter_read (@) {
  # Restart only when the meter config (display type, ccss, refresh, AIO) changes
  # or the daemon isn't running.
  my $aio_flag=$disable_aio ? "1" : "0";
- my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready";
+ my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$avg_mode";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
  if($needs_restart) {
@@ -1847,7 +1854,7 @@ sub webui_meter_read (@) {
    select(undef,undef,undef,0.5);
   }
   &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port, ready_gate=$require_device_ready)");
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$avg_mode)) {
     return &webui_meter_session_start_error_json($want_config);
   }
  }
@@ -1872,7 +1879,7 @@ sub webui_meter_read (@) {
   &log("WebUI: meter session command send failed, restarting daemon");
   &webui_meter_session_stop();
   &webui_meter_read_state_write('{"status":"starting"}');
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$avg_mode)) {
      &log("WebUI: meter session restart failed after FIFO send error");
      return &webui_meter_session_start_error_json($want_config);
   }
@@ -23633,6 +23640,7 @@ function meterFullAutoCalTouchupTargetY(){
 	    post_commit_body_verify:false,
 	    post_commit_final_all_level_verify:false,
 	    post_commit_final_top_window:false,
+	    low_light:meterLowLightReadState(),
 	    steps:autocalSteps
 	   }));
 	  meterAutoCalRunning=true;
@@ -23795,6 +23803,7 @@ function meterFullAutoCalTouchupTargetY(){
    post_commit_body_verify:false,
    post_commit_final_all_level_verify:false,
    post_commit_final_top_window:false,
+   low_light:meterLowLightReadState(),
    steps:autocalSteps
   }));
  let r=null;
@@ -23943,6 +23952,7 @@ function meterFullAutoCalTouchupTargetY(){
     full_autocal_phase:'post-3d-polish',
     full_autocal_post_commit_polish:post3dPostCommitPolishEnabled,
     full_autocal_magic_wand:magicWandEnabled,
+    low_light:meterLowLightReadState(),
     steps:autocalSteps
    }));
   let r=null;
@@ -24100,6 +24110,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     full_autocal_phase:'touchup-greyscale',
     full_autocal_post_commit_polish:touchupPostCommitPolishEnabled,
     full_autocal_magic_wand:meterFullAutoCalMagicWandEnabled(),
+    low_light:meterLowLightReadState(),
     steps:autocalSteps
    }));
   let r=null;
@@ -24646,6 +24657,7 @@ async function meterAutoCalConfirmAndStart(){
     headroom_max_iterations:60,
     max_polish_iterations:16,
     precision_polish_iterations:18,
+    low_light:meterLowLightReadState(),
     steps:autocalSteps
    })),
    _timeoutMs:10000
