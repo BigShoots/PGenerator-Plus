@@ -7663,6 +7663,11 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-xyz-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
 	.meter-xyz-gear-popover.open{display:block}
+	#meterProfileGearPopover{min-width:300px;max-height:72vh;overflow-y:auto;left:auto;right:0}
+	.meter-profile-title{font-size:.8rem;font-weight:600;color:#dfe6f6;letter-spacing:.02em;margin-bottom:8px}
+	#meterProfileGearPopover .field{margin-bottom:10px;display:flex;flex-direction:column;gap:4px}
+	.meter-profile-section{border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;flex-direction:column;gap:6px}
+	.meter-profile-section-title{font-size:.76rem;font-weight:600;color:var(--text2)}
 	.meter-xyz-toggle-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;white-space:nowrap}
 	.meter-xyz-toggle-row .meter-toggle{flex:0 0 auto;min-width:0}
 	.meter-xyz-gear-wrap.is-hidden,.meter-pattern-insert-wrap.is-hidden{display:none}
@@ -8100,7 +8105,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 <!-- Calibration -->
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
-  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
@@ -29625,7 +29630,8 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
   patternInsert:setupGear('meterPatternInsertGear','meterPatternInsertPopover'),
   xyz:setupGear('meterXyzGear','meterXyzGearPopover'),
   customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover'),
-  lowLight:setupGear('meterLowLightGear','meterLowLightGearPopover')
+  lowLight:setupGear('meterLowLightGear','meterLowLightGearPopover'),
+  meterProfile:setupGear('meterProfileGear','meterProfileGearPopover')
  };
  const gearWrap=id=>{const g=document.getElementById(id);return g&&g.parentElement;};
  window.meterUpdateGearVisibility=function(){
