@@ -397,7 +397,29 @@ case "${METER_AVERAGING:-off}" in
  aaa)               AVG_FLAG="-Y aaa" ;;
  *)                 AVG_FLAG="" ;;
 esac
-SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $AVG_FLAG"
+# Calman-style low-light handler from the calibration card. Maps the
+# client-picked mode to the matching spotread flag set:
+#   off   = no flag (single long read, the project convention)
+#   a/aa/aaa = 2/3/5-read averaging (-Y a/-Y aa/-Y aaa)
+#   x     = high precision, longer integration (-x)
+#   x_a/x_aa/x_aaa = combined (-x -Y a / -x -Y aa / -x -Y aaa)
+# Spotread has no direct integration-time control and maxes at 5-read
+# averaging, so the client dropdown covers what spotread actually
+# supports. The mode is selected at the calibration level (autocal,
+# series read, single read) by comparing the expected target luminance
+# to the trigger threshold on the client; meter_session.sh just
+# applies whatever flag set the client asked for.
+case "${LOW_LIGHT_MODE:-off}" in
+ a)     LOW_LIGHT_FLAGS="-Y a" ;;
+ aa)    LOW_LIGHT_FLAGS="-Y aa" ;;
+ aaa)   LOW_LIGHT_FLAGS="-Y aaa" ;;
+ x)     LOW_LIGHT_FLAGS="-x" ;;
+ x_a)   LOW_LIGHT_FLAGS="-x -Y a" ;;
+ x_aa)  LOW_LIGHT_FLAGS="-x -Y aa" ;;
+ x_aaa) LOW_LIGHT_FLAGS="-x -Y aaa" ;;
+ off|*) LOW_LIGHT_FLAGS="" ;;
+esac
+SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $AVG_FLAG $LOW_LIGHT_FLAGS"
 # A CCSS (Colorimeter Calibration Spectral Sample) only corrects COLORIMETERS.
 # A spectrophotometer (i1 Pro 2, etc.) measures spectrally and rejects -X with
 # "Instrument doesn't have Colorimeter Calibration Spectral Sample capability",
@@ -424,7 +446,7 @@ if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; t
    DISPLAY_TYPE="l"
   fi
  fi
- SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $AVG_FLAG"
+ SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $AVG_FLAG $LOW_LIGHT_FLAGS"
 fi
 [[ -n "$REFRESH_RATE" ]] && SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
 [[ "$DISABLE_AIO" == "1" ]] && export I1D3_DISABLE_AIO=1
