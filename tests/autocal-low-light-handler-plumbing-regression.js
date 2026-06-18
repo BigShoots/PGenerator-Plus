@@ -77,4 +77,10 @@ assert(/80\.0/.test(llh),'lg_low_light_mode_for_reading has 80-IRE hard guard (r
 // so without this trace the per-iter trajectory has to be reconstructed from
 // raw XYZ reads.
 assert(/hdr20_1d_dpg_anchor_history/.test(worker),'calibrate_anchor logs per-iter anchor history into hdr20_1d_dpg_anchor_history');
+// measured_Y in the per-iter push must come from the same luminance() helper
+// as the rest of the state (current_luminance, dE, etc.) -- not a hand-computed
+// XYZ->Y or a re-application of the response model. A divergence here would
+// produce a state JSON whose measured_Y disagrees with current_luminance on
+// the same row and break any future automated trajectory analysis.
+assert(/measured_Y=>defined\(\$reading\) \? luminance\(\$reading\) : undef/.test(worker),'per-iter push measured_Y uses luminance($reading) helper (not a hand-computed Y)');
 console.log('autocal low-light handler plumbing regression OK');

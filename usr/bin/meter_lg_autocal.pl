@@ -12976,6 +12976,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"current_delta_e"}=defined($de)?$de:undef;
 			$max_de_overall=$de+0 if(defined($de) && $de+0 > $max_de_overall+0);
 			write_state($state);
+			# Pre-declare the gain/floor locals so the per-iter state push
+			# (which runs on the converged path BEFORE the gain computation)
+			# can reference them under use strict. They remain undef on the
+			# converged path; sprintf("%.4f", undef+0) => "0.0000" and
+			# $damp->(undef, undef) defaults to 1.0, both acceptable
+			# diagnostic values when no gain was computed this iter.
+			my ($rg,$gg,$bg,$floor);
 			# Convergence test split into $conv_now + early exit so the
 			# per-iter state push below can run on BOTH the converged iter
 			# (where rg/gg/bg are still undef and current_dpg is the prior
@@ -13026,7 +13033,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# D65 at the achievable peak. Self-targeting (no impossible luminance
 			# to chase); converges in a few moves. Lower anchors: per-channel
 			# solve toward D65 at the 2.2 target luminance via RGB.
-			my ($rg,$gg,$bg)=$is_white
+			($rg,$gg,$bg)=$is_white
 				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
 				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
 			# White takes larger steps (it only reduces + re-measures) so peak
@@ -13037,7 +13044,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# comparable to the per-iter move, causing oscillation instead
 			# of convergence.
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-			my $floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
+			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
 			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor),g_gain=>$damp->($gg,$floor),b_gain=>$damp->($bg,$floor)});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
@@ -13114,6 +13121,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		if($target && defined($idx)) {
 			my $label=$rs->{"name"}||($target->{"label"}||"100%");
 			my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$max_inner_white,1);
+			# Session-log confirmation: the per-iter trajectory is in
+			# hdr20_1d_dpg_anchor_history{label} but the spotread log does
+			# not show "100% converged" so emit one line that future grep
+			# can match. measured_Y from $last (the final read) -- undef
+			# when the read path returned an error before any success.
+			log_line(sprintf("HDR20 1D DPG greyscale: 100%% white anchor done label=%s converged=%d measured_Y=%s",
+				$label,
+				$conv?1:0,
+				defined($last) && ref($last) eq "HASH" ? sprintf("%.4f",luminance($last)+0) : "undef"
+			));
 			# Refine the white reference to the calibrated peak luminance.
 			if(ref($last) eq "HASH") {
 				my $wy=luminance($last);
