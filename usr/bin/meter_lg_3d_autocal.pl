@@ -1045,6 +1045,47 @@ sub export_lut {
  };
 }
 
+our $lg_low_light_active_mode="off";
+
+# Per-step read deadline for the 3D profile (W/R/G/B at IRE 100, Black at IRE 0).
+# Mirrors the IRE-bucketed table in meter_lg_autocal.pl but with the 3D set
+# in mind: peak (>=80 IRE) gets the standard 110s, low IRE/black gets the long
+# tail so spotread averaging has time to return a clean reading.
+sub read_timeout_for_step {
+ my ($step,$override)=@_;
+ if(defined($override) && $override =~ /^\d+$/ && $override >= 10) {
+  return $override+20;
+ }
+ my $ire=(ref($step) eq "HASH" && defined($step->{"ire"})) ? ($step->{"ire"}+0) : 100;
+ return 240 if($ire <= 5);
+ return 210 if($ire <= 10);
+ return 180 if($ire <= 25);
+ return 150 if($ire <= 50);
+ return 120;
+}
+
+# Pick the per-read Low Light Handler mode based on the AUTOCAL step's IRE.
+# Same hard guards as the 1D worker: IRE >= 80 NEVER engages averaging (peak
+# panels can't be averaged meaningfully), IRE < very_low_ire_threshold (default
+# 2%) ALWAYS engages the strongest averaging (aaa, 5 reads) so a noise-floor
+# black read is reliable. Middle band uses the operator's selected mode if the
+# trigger allows it.
+sub low_light_mode_for_reading {
+ my ($config,$rs)=@_;
+ return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
+ if(ref($rs) eq "HASH") {
+  my $step_ire_guard=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
+  return "off" if(defined($step_ire_guard) && $step_ire_guard+0 >= 80.0);
+  my $vlow=($config->{"low_light"}{"very_low_ire_threshold"}//2.0)+0;
+  if(defined($step_ire_guard) && $step_ire_guard+0 < $vlow) {
+   return "aaa";
+  }
+ }
+ my $mode=lc($config->{"low_light"}{"mode"}||"off");
+ return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
+ return $mode;
+}
+
 sub read_request_id {
  my ($step)=@_;
  my $name=$step->{"phase"}."_".$step->{"kind"}."_".format_percent($step->{"level"});
@@ -1082,10 +1123,41 @@ sub read_step_once {
   request_id => $request_id,
   require_device_ready => $config->{"require_device_ready"} ? json_true() : json_false(),
  };
+ # Per-step read deadline mirrors the 1D autocal worker: dim/peak buckets are
+ # wide so spotread averaging has time to settle without forcing the WebUI to
+ # treat the read as stale (default 150s was too short for black-on-OLED).
+ my $read_timeout=read_timeout_for_step($step,undef)-20;
+ $read_timeout=10 if($read_timeout < 10);
+ $read_timeout=300 if($read_timeout > 300);
+ $payload->{"read_timeout"}=int($read_timeout);
+ # Operator's STATIC low_light config (stable across reads so the session-level
+ # METER_AVERAGING does not churn on every per-read flip). When the operator's
+ # low_light handler is enabled, the WebUI picks the session-level averaging
+ # mode from this field and the per-read low_light field below selects the
+ # spotread -Y flag for THIS specific read.
+ my $session_ll_mode="off";
+ my $session_ll_enabled=json_false();
+ if(ref($config->{"low_light"}) eq "HASH" && $config->{"low_light"}{"enabled"}) {
+  my $_m=lc($config->{"low_light"}{"mode"}||"off");
+  if($_m eq "a" || $_m eq "aa" || $_m eq "aaa" || $_m eq "x" || $_m eq "x_a" || $_m eq "x_aa" || $_m eq "x_aaa") {
+   $session_ll_mode=$_m;
+   $session_ll_enabled=json_true();
+  }
+ }
+ $payload->{"low_light_session"}={ mode => $session_ll_mode, enabled => $session_ll_enabled };
+ # Per-read low_light mode: hard-guarded so the panel-peak profile reads
+ # (W/R/G/B at IRE 100) NEVER average, and the noise-floor black read ALWAYS
+ # gets the strongest averaging (aaa, 5 reads) regardless of the operator's
+ # selected mode. See low_light_mode_for_reading().
+ my $active_mode=low_light_mode_for_reading($config,$step);
+ $lg_low_light_active_mode=$active_mode;
+ if($active_mode ne "off") {
+  $payload->{"low_light"}={ mode => $active_mode, enabled => json_true() };
+ }
  my $started=time();
  my $start=api_json("POST","/api/meter/read",$payload,55);
  return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");
- my $deadline=time()+150;
+ my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"});
  while(time() < $deadline) {
   return (undef,"cancelled") if(cancelled());
   my $result=api_json("GET","/api/meter/read/result",undef,10);
