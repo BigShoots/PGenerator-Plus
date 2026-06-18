@@ -12846,6 +12846,15 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $low_ire_threshold=defined($config->{"lg_autocal_hdr20_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_threshold"}+0) : 5.0;
 	$low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
 	$low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
+	# Very-low-IRE (default <2%, e.g. 1.4% ~0.066 nits) sits at the meter's
+	# noise floor: raise the best-so-far revert budget so a noisy patch keeps
+	# trying longer instead of bailing after 3 reverts. Paired with the -Y aaa
+	# averaging upgrade in lg_low_light_mode_for_reading.
+	my $very_low_ire_threshold=defined($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}) ? ($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}+0) : 2.0;
+	$very_low_ire_threshold=0.5 if($very_low_ire_threshold < 0.5);
+	$very_low_ire_threshold=$low_ire_threshold if($very_low_ire_threshold > $low_ire_threshold);
+	my $very_low_revert_budget=defined($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) ? int($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) : 12;
+	$very_low_revert_budget=3 if($very_low_revert_budget < 3);
 	# At low IRE the default 0.8 DAMP floor is too conservative -- the
 	# per-iter move is only 20%, and at 0.06-1 nits the meter noise is
 	# comparable to the per-iter move, so the calibration oscillates
@@ -13237,8 +13246,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# for most panels, which is why the 3-revert break below fires.
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
 					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
-					if($consecutive_reverts >= 3) {
-						log_line("HDR20 1D DPG greyscale: 3 consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
+					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : 3;
+					if($consecutive_reverts >= $_revert_budget) {
+						log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ""));
 						last;
 					}
 				}
@@ -17208,8 +17218,17 @@ sub lg_low_light_mode_for_reading {
  my $trigger=($config->{"low_light"}{"trigger"}||0)+0;
  $trigger=5.0 if($trigger <= 0);
  my $Y=luminance($reading);
- return "off" if(!defined($Y) || $Y < 0);
- return ($Y < $trigger) ? $mode : "off";
+  return "off" if(!defined($Y) || $Y < 0);
+  # Very-low IRE (default <2%, e.g. 1.4% ~0.066 nits) is at the meter's
+  # noise floor: default to the strongest averaging (-Y aaa) so the read is
+  # reliable, regardless of the operator's selected mode. Everything else
+  # uses whatever the meter settings specify (the operator's $mode below).
+  if(ref($rs) eq "HASH") {
+   my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
+   my $vlow=($config->{"low_light"}{"very_low_ire_threshold"}//2.0)+0;
+   return "aaa" if(defined($step_ire) && $step_ire+0 < $vlow);
+  }
+  return ($Y < $trigger) ? $mode : "off";
 }
 
 sub read_step_once {
