@@ -12976,7 +12976,47 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"current_delta_e"}=defined($de)?$de:undef;
 			$max_de_overall=$de+0 if(defined($de) && $de+0 > $max_de_overall+0);
 			write_state($state);
-			if(defined($de) && $de+0 <= $target_de+0) { $converged=1; last; }
+			# Convergence test split into $conv_now + early exit so the
+			# per-iter state push below can run on BOTH the converged iter
+			# (where rg/gg/bg are still undef and current_dpg is the prior
+			# iter's build) and the non-converged iter (after rg/gg/bg are
+			# computed). On the converged path rg/gg/bg/$floor are undef so
+			# the gain_* / damp_* fields become 0.0000 / damp-default.
+			my $conv_now=defined($de) && $de+0 <= $target_de+0;
+			$converged=1 if($conv_now);
+			# Per-iter state push: lets the next-run investigation see the
+			# full trajectory in the state JSON without reconstructing from
+			# the spotread session log. Each row is one iter; rows accumulate
+			# in @{$hist->{$label}}. Skipped on the read-failed early exit
+			# (which returns before this point) so a row always represents
+			# a SUCCESSFUL read with a measured_Y.
+			{
+			 my $hist=$state->{"hdr20_1d_dpg_anchor_history"};
+			 $hist={} if(ref($hist) ne "HASH");
+			 my $row=$hist->{$label};
+			 $row=[] if(ref($row) ne "ARRAY");
+			 push @$row, {
+			  iter=>$i,
+			  ms=>int(($^T*1000)+0),
+			  measured_Y=>defined($reading) ? luminance($reading) : undef,
+			  target_Y=>$tl,
+			  de=>defined($de) ? sprintf("%.4f",$de+0) : undef,
+			  gain_R=>sprintf("%.4f",$rg+0),
+			  gain_G=>sprintf("%.4f",$gg+0),
+			  gain_B=>sprintf("%.4f",$bg+0),
+			  damp_R=>sprintf("%.4f",$damp->($rg,$floor)+0),
+			  damp_G=>sprintf("%.4f",$damp->($gg,$floor)+0),
+			  damp_B=>sprintf("%.4f",$damp->($bg,$floor)+0),
+			  dpg_idx_R=>$current_dpg->[$idx],
+			  dpg_idx_G=>$current_dpg->[$idx+1024],
+			  dpg_idx_B=>$current_dpg->[$idx+2048],
+			  converged=>$conv_now?JSON::PP::true:JSON::PP::false,
+			 };
+			 $hist->{$label}=$row;
+			 $state->{"hdr20_1d_dpg_anchor_history"}=$hist;
+			 write_state($state);
+			}
+			last if($conv_now);
 			# Reach the target (luminance AND white balance) with per-channel
 			# RGB gains: scaling all three together moves luminance, their ratio
 			# corrects chroma. Identical path for every anchor incl. 100% -- no
@@ -13016,6 +13056,40 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"message"}=$uploaded
 				? sprintf("HDR20 1D DPG %s %d/%d uploaded (max dE=%.3f, target<=%.2f)",$label,$i,$budget,$max_de_overall,$target_de)
 				: sprintf("HDR20 1D DPG %s %d/%d upload failed after retries (max dE=%.3f)",$label,$i,$budget,$max_de_overall);
+			write_state($state);
+			# Per-iter trace: push (iter, measured Y, target Y, dE, gain, damp, DPG idx
+			# values) into the state JSON so a run that stalls at 1.4% / 4% IRE is
+			# diagnosable in seconds. The autocal log only carries errors; the spotread
+			# session log is overwritten on respawn. Without this trace, the per-iter
+			# trajectory has to be reconstructed from raw XYZ reads, which is slow and
+			# error-prone. The history is keyed by anchor IRE label (e.g. "4%", "1.4%")
+			# and the array is appended to, not overwritten, so a single 16-iter anchor
+			# leaves 16 rows in the JSON.
+			my $ahist=$state->{"hdr20_1d_dpg_anchor_history"};
+			$ahist={} if(ref($ahist) ne "HASH");
+			my $arow=$ahist->{$label};
+			$arow=[] if(ref($arow) ne "ARRAY");
+			my $_r_gain=defined($rg)?sprintf("%.4f",$rg):"undef";
+			my $_g_gain=defined($gg)?sprintf("%.4f",$gg):"undef";
+			my $_b_gain=defined($bg)?sprintf("%.4f",$bg):"undef";
+			my $_r_damp=defined($rg)?sprintf("%.4f",$damp->($rg,$floor)):"undef";
+			my $_g_damp=defined($gg)?sprintf("%.4f",$damp->($gg,$floor)):"undef";
+			my $_b_damp=defined($bg)?sprintf("%.4f",$damp->($bg,$floor)):"undef";
+			my $_measured=defined($reading)?sprintf("%.6f",luminance($reading)):"undef";
+			my $_target=defined($tl)?sprintf("%.6f",$tl):"undef";
+			my $_de=defined($de)?sprintf("%.4f",$de):"undef";
+			my $_idx42_r=defined($idx)?sprintf("%d",$current_dpg->[$idx]):"undef";
+			my $_idx42_g=defined($idx)?sprintf("%d",$current_dpg->[$idx+1024]):"undef";
+			my $_idx42_b=defined($idx)?sprintf("%d",$current_dpg->[$idx+2048]):"undef";
+			push @$arow, {
+			 iter=>$i, ms=>int(time()*1000),
+			 measured_Y=>$_measured, target_Y=>$_target, de=>$_de,
+			 gain_R=>$_r_gain, gain_G=>$_g_gain, gain_B=>$_b_gain,
+			 damp_R=>$_r_damp, damp_G=>$_g_damp, damp_B=>$_b_damp,
+			 dpg_idx_R=>$_idx42_r, dpg_idx_G=>$_idx42_g, dpg_idx_B=>$_idx42_b,
+			};
+			$ahist->{$label}=$arow;
+			$state->{"hdr20_1d_dpg_anchor_history"}=$ahist;
 			write_state($state);
 			if(!$uploaded) {
 				$upload_fail_streak++;
