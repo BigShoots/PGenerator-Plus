@@ -13053,6 +13053,21 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"hdr20_1d_dpg_white_converged"}=$conv ? JSON::PP::true : JSON::PP::false;
 			write_state($state);
 			$exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && $exit_reason eq "converged");
+			# 100% white did not converge (meter read failed, iter cap hit, or
+			# the read returned but calibration could not bring dE within target).
+			# The 1.0/1.0/1.0 anchor above is a NO-OP and must NOT be uploaded to
+			# the panel. Mark the upload as failed so the lower-anchor foreach
+			# (which checks `last if(cancelled() || $upload_failed)`) does not
+			# run, and so the function-exit block below leaves
+			# hdr20_1d_dpg_uploaded=JSON::PP::false. A surrounding `last;` is
+			# impossible here because the 100% block is inside an `if`, not a
+			# loop -- the $upload_failed flag is the documented control-flow
+			# break that the lower-anchor foreach already honours.
+			if(!$conv) {
+				log_line("HDR20 1D DPG greyscale: 100% white did not converge (label=".$label." conv=".(defined($conv)?$conv:"undef")."); aborting lower anchors");
+				$upload_failed=1;
+				$exit_reason="white_not_converged";
+			}
 		}
 	}
 
@@ -13090,7 +13105,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$state->{"hdr20_1d_dpg_target_de"}=$target_de+0;
 	$state->{"hdr20_1d_dpg_exit_reason"}=$exit_reason;
 	$state->{"hdr20_1d_dpg_final_de"}=$max_de_overall+0;
+	# Only mark the curve as uploaded to the TV if the white reference actually
+	# converged and the upload didn't fail. A non-converged 100% block leaves
+	# the panel with the identity baseline (or whatever was previously
+	# committed) -- uploading the 1.0/1.0/1.0 no-op DPG would silently wipe the
+	# 1D LUT and break the picture, so the API must report `uploaded: false`.
 	$state->{"hdr20_1d_dpg_uploaded"}=JSON::PP::true;
+	if($upload_failed || !$state->{"hdr20_1d_dpg_white_converged"}) {
+		$state->{"hdr20_1d_dpg_uploaded"}=JSON::PP::false;
+		log_line("HDR20 1D DPG greyscale: skipping wire upload because white did not converge or upload_failed=1 (upload_failed=".($upload_failed?1:0).", white_converged=".($state->{"hdr20_1d_dpg_white_converged"} ? "true" : "false").")");
+	}
 	# Calibration mode is still held ON; the commit/finalise path ends it once
 	# (end_calibration_mode) before the post-cal series read.
 	$state->{"hdr20_dpg_calibration_mode_held"}=($cal_active ? JSON::PP::true : JSON::PP::false);
@@ -16740,8 +16764,23 @@ our $lg_low_light_active_mode="off";
 # Decide the averaging mode ("off"/"a"/"aa"/"aaa") for the NEXT read given the
 # luminance just measured. Returns "off" unless the handler is enabled, a real
 # averaging mode is selected, and the measured Y is below the operator trigger.
+# $rs is the AUTOCAL step hash for the NEXT read (NOT the read just taken).
+# A hard guard forces "off" at high IRE so the Low Light Handler cannot
+# engage averaging on the panel's peak: a stale white reference (e.g. a
+# previous step's bright read bleeding into the trigger) can otherwise
+# drive $Y below the trigger at 100% IRE and silently average the peak
+# white measurement, which is exactly the opposite of what the handler
+# is for.
 sub lg_low_light_mode_for_reading {
- my ($config,$reading)=@_;
+ my ($config,$reading,$rs)=@_;
+ # Hard guard: 100% (and any IRE >= 80) is the panel's peak; the
+ # Low Light Handler is only meaningful for dim patches. Never engage
+ # averaging at high IRE even if the measured Y briefly dips below
+ # the trigger (e.g. due to a stale white reference).
+ if(ref($rs) eq "HASH") {
+  my $step_ire_guard=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
+  return "off" if(defined($step_ire_guard) && $step_ire_guard+0 >= 80.0);
+ }
  return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
  my $mode=lc($config->{"low_light"}{"mode"}||"off");
  return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
@@ -16882,7 +16921,7 @@ sub read_step_once {
 	   # Re-arm/disarm the Low Light Handler for the NEXT read from THIS read's
 	   # measured luminance: below the operator trigger -> average next read;
 	   # at/above -> single-shot next read.
-	   $lg_low_light_active_mode=lg_low_light_mode_for_reading($config,$reading);
+	   $lg_low_light_active_mode=lg_low_light_mode_for_reading($config,$reading,$step);
 	   return ($reading,undef);
 	  }
   return (undef,$result->{"message"}||"Meter read failed") if($status eq "error");
