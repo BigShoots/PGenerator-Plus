@@ -12,6 +12,18 @@ assert(/\$avg_mode/.test(mr) && /"low_light"/.test(mr),'webui_meter_read parses 
 assert(/\$want_config="[^"]*\|\$avg_mode"/.test(mr),'want_config includes $avg_mode');
 assert((mr.match(/\$measurement_meter_port,\$require_device_ready,\$avg_mode\)/g)||[]).length>=2,'both session_start calls pass $avg_mode');
 assert(/\$payload->\{"low_light"\}=/.test(worker)&&/\$config->\{"low_light"\}\{"enabled"\}/.test(worker),'worker adds low_light to read payload when handler enabled');
+// Per-read measured-value trigger: averaging is armed from the previous read's
+// luminance vs the operator cd/m2 trigger, NOT applied unconditionally.
+assert(/our \$lg_low_light_active_mode="off";/.test(worker),'worker declares $lg_low_light_active_mode state (default off)');
+assert(/sub lg_low_light_mode_for_reading \{/.test(worker),'worker defines lg_low_light_mode_for_reading');
+const llh=worker.slice(worker.indexOf('sub lg_low_light_mode_for_reading'),worker.indexOf('sub lg_low_light_mode_for_reading')+700);
+assert(/my \$trigger=\(\$config->\{"low_light"\}\{"trigger"\}\|\|0\)\+0;/.test(llh),'mode helper reads the operator trigger');
+assert(/my \$Y=luminance\(\$reading\);/.test(llh),'mode helper uses the MEASURED luminance');
+assert(/return \(\$Y < \$trigger\) \? \$mode : "off";/.test(llh),'mode helper arms averaging only below trigger');
+// The read payload gates on the armed state, not "enabled" directly.
+assert(/if\(\$lg_low_light_active_mode ne "off"\) \{\s*\$payload->\{"low_light"\}=\{ mode => \$lg_low_light_active_mode/.test(worker),'read payload gates low_light on the armed active mode');
+// The active mode is recomputed after a successful read.
+assert(/\$lg_low_light_active_mode=lg_low_light_mode_for_reading\(\$config,\$reading\);/.test(worker),'worker re-arms the handler from each read result');
 assert((ui.match(/low_light:meterLowLightReadState\(\)/g)||[]).length>=2,'both lg-autocal start bodies include low_light');
 assert(/printf '%s\|%s\|%s\|%s\|%s\|%s\|%s\\n'/.test(sess),'meter_session.sh writes 7-field config string');
 assert(/printf '%s\|%s\|%s\|%s\|%s\|%s\|%s\\n'[^;]*\$\{METER_AVERAGING:-off\}/.test(sess),'meter_session.sh 7th config field is METER_AVERAGING');
