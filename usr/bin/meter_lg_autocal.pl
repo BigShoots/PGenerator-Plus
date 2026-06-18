@@ -12889,6 +12889,23 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$meter_floor=0.0005 if($meter_floor < 0.0005);
 	$meter_floor=0.05 if($meter_floor > 0.05);
 
+	# --- TEST MODE (throwaway harness): calibrate a SINGLE anchor from a
+	# preloaded snapshot DPG, skipping the identity build/upload, the
+	# provisional 100% read, and the 100% white calibration. Used to verify
+	# the probe-up fix for 1.4% IRE. Normal path is 100% unchanged when off.
+	my $test_mode=0;
+	my $test_anchor_ire=undef;
+	my $test_snapshot_dpg=undef;
+	my $test_white_ref=undef;
+	if(ref($config) eq "HASH" && defined($config->{"hdr20_test_anchor_ire"})) {
+		$test_anchor_ire=$config->{"hdr20_test_anchor_ire"}+0;
+		$test_snapshot_dpg=$config->{"hdr20_test_snapshot_dpg"};
+		$test_white_ref=$config->{"hdr20_test_white_ref"};
+		$test_mode=1 if(defined($test_anchor_ire)
+		 && ref($test_snapshot_dpg) eq "ARRAY" && scalar(@$test_snapshot_dpg)==3072
+		 && defined($test_white_ref) && $test_white_ref+0 > 0);
+	}
+
 	# Calibrate the REAL configured greyscale series in the proven bisective
 	# calibration order so every measured point lands on a UI series step (it
 	# plots and the X/N counter advances), exactly like the 22-pt WB loop. The
@@ -12898,6 +12915,22 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $steps=(ref($config->{"steps"}) eq "ARRAY") ? $config->{"steps"} : [];
 	my @ordered=order_autocal_steps($steps,$config);
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: no adjustable greyscale steps" if(!@ordered);
+
+	# TEST MODE: keep only the single requested anchor so the white block, the
+	# 100% recal insertion, and every other anchor are all skipped via the
+	# existing $white_step gating + the series loop's white-skip.
+	if($test_mode) {
+		my @only=();
+		foreach my $s (@ordered) {
+			my $ire=defined($s->{"ire"}) ? ($s->{"ire"}+0)
+				: (defined($s->{"stimulus"}) ? ($s->{"stimulus"}+0) : undef);
+			next unless(defined($ire));
+			push @only,$s if(abs($ire-$test_anchor_ire) < 0.01);
+		}
+		@ordered=@only;
+		return "lg_autocal_26_run_hdr20_dpg_greyscale: test_mode anchor IRE $test_anchor_ire not found in steps" if(!@ordered);
+		log_line("HDR20 1D DPG greyscale: TEST MODE active -- calibrating only anchor IRE=$test_anchor_ire from snapshot (white_ref=".sprintf("%.4f",$test_white_ref).")");
+	}
 
 	# DPG index for a step from its actual displayed code (8-bit codes *4 into
 	# the 1024-pt DPG domain; 10-bit codes map 1:1).
@@ -12931,7 +12964,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		return undef;
 	};
 
-	my $current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
+	my $current_dpg;
+	if($test_mode) {
+		$current_dpg=[ @{$test_snapshot_dpg} ];
+		log_line("HDR20 1D DPG greyscale: TEST MODE preloaded snapshot DPG (".scalar(@$current_dpg)." ints) as current_dpg (identity build skipped)");
+	} else {
+		$current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
+	}
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: identity baseline is not 3072 ints"
 		unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
 
@@ -12994,13 +13033,22 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# Enter calibration mode once and upload the identity baseline so the panel
 	# starts from a known reference and every read (incl. white) is taken in
 	# the same calibration state.
-	$state->{"current_name"}="HDR20 1D DPG (identity baseline)";
-	$state->{"phase"}="writing";
-	$state->{"message"}="Entering calibration mode and uploading identity 1D DPG baseline";
-	write_state($state);
-	{
+	if($test_mode) {
+		$state->{"current_name"}="HDR20 1D DPG (test snapshot)";
+		$state->{"phase"}="writing";
+		$state->{"message"}="Uploading test-mode 1D DPG snapshot (post-2% state) for single-anchor calibration";
+		write_state($state);
 		my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-		log_line("HDR20 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
+		log_line("HDR20 1D DPG greyscale: TEST MODE snapshot upload failed (continuing): ".$bmsg) if(!$bok);
+	} else {
+		$state->{"current_name"}="HDR20 1D DPG (identity baseline)";
+		$state->{"phase"}="writing";
+		$state->{"message"}="Entering calibration mode and uploading identity 1D DPG baseline";
+		write_state($state);
+		{
+			my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+			log_line("HDR20 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
+		}
 	}
 
 	# Provisional white reference: read 100% now to seed $white_ref, then the
@@ -13036,7 +13084,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		}
 	}
 	my $white_ref=undef;
-	if(ref($white_step) eq "HASH" && !cancelled()) {
+	if($test_mode) {
+		$white_ref=$test_white_ref+0;
+		$state->{"hdr20_1d_dpg_white_converged"}=JSON::PP::true;
+		log_line("HDR20 1D DPG greyscale: TEST MODE using snapshot white_ref=".sprintf("%.4f",$white_ref)." (provisional 100% read + white calibration skipped)");
+	} elsif(ref($white_step) eq "HASH" && !cancelled()) {
 		my $rs=fixed_lg_autocal_step($config,$white_step);
 		$state->{"current_name"}="HDR20 1D DPG 100% (white reference)";
 		$state->{"phase"}="reading";
@@ -13628,6 +13680,20 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				# hdr20_1d_dpg_white_ref), so without this they keep plotting the
 				# pre-recal peak after the recal changes it.
 				set_state_white_reference($state,$white_ref);
+				# Re-anchor every accumulated reading to the recalibrated peak so
+				# the charts (which derive the target peak from the readings'
+				# autocal_white_y) show the new 100% Y, not the pre-recal peak
+				# baked into earlier readings (e.g. the black read). Without this
+				# the 100% target line "keeps its old target" after the recal.
+				if(ref($state) eq "HASH" && ref($state->{"readings"}) eq "ARRAY") {
+					for my $rd (@{$state->{"readings"}}) {
+						next unless ref($rd) eq "HASH";
+						my $ire=defined($rd->{"ire"}) ? ($rd->{"ire"}+0) : (defined($rd->{"patch_ire"}) ? ($rd->{"patch_ire"}+0) : (defined($rd->{"stimulus"}) ? ($rd->{"stimulus"}+0) : undef));
+						my $tl_rd=(defined($ire) && $ire+0 >= 99.9) ? $white_ref : (defined($ire) ? target_luminance_for_step($white_ref,{ire=>$ire,stimulus=>$ire},"2.2","hdr10",undef) : $white_ref);
+						annotate_reading_target($rd,$white_ref,$tl_rd,$target_x,$target_y);
+					}
+					write_state($state);
+				}
 			}
 		}
 		if(ref($state) eq "HASH") {
