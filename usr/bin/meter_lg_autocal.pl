@@ -12864,6 +12864,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
 	$target_de=0.05 if($target_de < 0.05);
 	$target_de=5.0 if($target_de > 5.0);
+	# Acceptance threshold: once ANY patch (0-100% IRE) drops below this dE
+	# (default 0.3) it is "good enough" -- snapshot it, try ONE more refinement
+	# move, and if that move worsens dE revert to the best + re-read + move on
+	# to the next patch. Stops fine-tuning past 0.3 into the meter noise floor
+	# (at 4% IRE the same DPG reads 0.6 dE then 1.0 on consecutive reads).
+	my $acceptance_de=defined($config->{"lg_autocal_hdr20_dpg_acceptance_de"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_de"}+0) : 0.3;
+	$acceptance_de=0.05 if($acceptance_de < 0.05);
+	$acceptance_de=$target_de if($acceptance_de > $target_de);
 
 	# Calibrate the REAL configured greyscale series in the proven bisective
 	# calibration order so every measured point lands on a UI series step (it
@@ -13074,6 +13082,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# hashes, wiping @done on every revert.
 		my $best_anchors=[map { +{ %$_ } } @done];
 		my $consecutive_reverts=0;
+		# Acceptance ("good enough"): once a patch's dE drops below
+		# $acceptance_de (default 0.3) it is snapped as the best, given ONE
+		# more refinement move, and if that move worsens dE the best is
+		# restored + re-read + the anchor moves on. Applies to every anchor
+		# (0-100% IRE); suppresses the low-IRE best-so-far revert and the
+		# final-state guard once armed.
+		my $acceptance_pending=0;
+		my $accepted_best_de=undef;
+		my $accepted_best_dpg=undef;
+		my $accepted_best_anchors=undef;
 		# Move-scaling factor: the next iter's damp is scaled toward 1.0 (no
 		# change) by this factor. Reset to 1.0 on every successful iter (dE
 		# improved); halved on every revert. Combined with the best-so-far +
@@ -13197,7 +13215,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# non-low-IRE anchors the block is skipped: $best_de stays undef,
 			# move_scaling stays 1.0 (full moves), and the final-state guard
 			# below (gated on defined($best_de)) is a no-op.
-			if(defined($de) && $_anchor_ire < $low_ire_threshold) {
+			if(defined($de) && $_anchor_ire < $low_ire_threshold && !$acceptance_pending) {
 				if(!defined($best_de) || $de+0 < $best_de+0) {
 					$best_de=$de+0;
 					$best_dpg=[@{$current_dpg}];
@@ -13242,9 +13260,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  measured_Y=>defined($reading) ? luminance($reading) : undef,
 			  target_Y=>$tl,
 			  de=>defined($de) ? sprintf("%.4f",$de+0) : undef,
-			  gain_R=>sprintf("%.4f",$rg+0),
-			  gain_G=>sprintf("%.4f",$gg+0),
-			  gain_B=>sprintf("%.4f",$bg+0),
+			  gain_R=>sprintf("%.4f",defined($rg)?$rg:0),
+			  gain_G=>sprintf("%.4f",defined($gg)?$gg:0),
+			  gain_B=>sprintf("%.4f",defined($bg)?$bg:0),
 			  damp_R=>sprintf("%.4f",$damp->($rg,$floor,$damp_exp)+0),
 			  damp_G=>sprintf("%.4f",$damp->($gg,$floor,$damp_exp)+0),
 			  damp_B=>sprintf("%.4f",$damp->($bg,$floor,$damp_exp)+0),
@@ -13257,7 +13275,45 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 $state->{"hdr20_1d_dpg_anchor_history"}=$hist;
 			 write_state($state);
 			}
-			last if($conv_now);
+			# Acceptance fast-path: any patch (0-100% IRE) that drops below
+			# $acceptance_de (default 0.3) is "good enough". Snapshot it, try
+			# ONE more refinement move; if that move worsens dE, revert to the
+			# best + re-read + move on. This does NOT replace the user's
+			# target_de break below -- it takes precedence only for very-good
+			# patches, and arms $acceptance_pending so the target_de break is
+			# suppressed and the one-more move actually runs.
+			if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_de+0) {
+				$acceptance_pending=1;
+				$accepted_best_de=$de+0;
+				$accepted_best_dpg=[@{$current_dpg}];
+				$accepted_best_anchors=[map { +{ %$_ } } @done];
+				log_line("HDR20 1D DPG greyscale: ".$label." below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move");
+				# fall through: the build below makes the one-more move
+			} elsif($acceptance_pending) {
+				# This read is the result of the one-more move. Decide + move on.
+				if(defined($de) && $de+0 < $accepted_best_de+0) {
+					log_line("HDR20 1D DPG greyscale: ".$label." one-more move improved to dE=".sprintf("%.4f",$de+0).", moving on");
+				} else {
+					# Worse (or equal): restore the accepted best, re-upload + re-read.
+					@{$current_dpg}=@{$accepted_best_dpg};
+					@done=@{$accepted_best_anchors};
+					log_line("HDR20 1D DPG greyscale: ".$label." one-more move worsened (dE=".sprintf("%.4f",$de+0)." vs best ".sprintf("%.4f",$accepted_best_de)."), reverting + rereading + moving on");
+					my ($auk,$aumsg)=$upload_dpg->($current_dpg);
+					if($auk) {
+						my ($arr,$are)=read_step($config,$rs,$state);
+						if(!$are && ref($arr) eq "HASH") {
+							$reading=$arr;
+							$last_reading=$arr;
+							my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$tl);
+							$de=$ade if(defined($ade));
+							$state->{"current_delta_e"}=$de if(defined($de));
+							write_state($state);
+						}
+					}
+				}
+				last;
+			}
+			last if($conv_now && !$acceptance_pending);
 			# Reach the target (luminance AND white balance) with per-channel
 			# RGB gains: scaling all three together moves luminance, their ratio
 			# corrects chroma. Identical path for every anchor incl. 100% -- no
@@ -13374,7 +13430,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# unmeasured new build -- restore the full best snapshot. Revert iters
 		# already keep $current_dpg in sync with $best_dpg, so this is a no-op
 		# for them.
-		if(defined($best_de)) {
+		if(defined($best_de) && !$acceptance_pending) {
 			@{$current_dpg}=@{$best_dpg};
 			@done=@{$best_anchors};
 		}
