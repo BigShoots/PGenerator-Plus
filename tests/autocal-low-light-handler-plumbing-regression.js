@@ -197,7 +197,7 @@ assert(/OK$/.test(_probe),'@done deep-copy idiom preserves all keys (behavioral 
 // (1) The revert+halve logic must be gated to low IRE only; running it at 100%
 // white interrupted a healthy monotonic convergence, left white non-converged,
 // and the fail-fast skipped the whole series.
-assert(/if\(defined\(\$de\) && \$_anchor_ire < \$low_ire_threshold && !\$acceptance_pending\)/.test(calBlock),'best-so-far revert is gated to low IRE AND suppressed once a patch is accepted (<0.3)');
+assert(/if\(defined\(\$de\) && !\$acceptance_pending\)/.test(calBlock) && /elsif\(\$_anchor_ire < \$low_ire_threshold\)/.test(calBlock),'best-so-far tracks the best for ALL anchors; the revert+halve is low-IRE only (elsif) so mid/high convergence is not interrupted');
 // (2) The provisional 100% read is KEPT. It looks redundant with the 100%
 // anchor below, but removing it cancels the autocal before the 100% cal
 // (empirically confirmed); its state transitions / meter-read are required.
