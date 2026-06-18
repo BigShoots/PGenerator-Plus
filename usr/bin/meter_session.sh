@@ -10,7 +10,7 @@
 #   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
-#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max]
+#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode]
 #   STOP
 #
 # settle_ms (optional, default 0) is the post-display settle wait applied
@@ -356,6 +356,102 @@ cleanup() {
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
+
+# Track the spotread averaging/low_light mode of the currently-running
+# pipeline so per-read READ commands that change it can trigger a
+# spotread-only respawn instead of a full session respawn. Initialized
+# from METER_AVERAGING (the session-level averaging) because at startup
+# LOW_LIGHT_FLAGS is empty -- the per-read channel was empty too until
+# the first READ with a low_light field arrived.
+CURRENT_LOW_LIGHT_MODE="${METER_AVERAGING:-off}"
+
+# Rebuild SR_CMD using the current DISPLAY_TYPE, CCSS, AVG_FLAG and
+# REFRESH_RATE/AIO settings, applying $1 as the new low_light mode
+# (-Y a / -Y aa / -Y aaa / -x / -x -Y a / -x -Y aa / -x -Y aaa / "").
+build_sr_cmd () {
+ local new_mode="${1:-off}"
+ local new_ll_flags=""
+ case "$new_mode" in
+  a)     new_ll_flags="-Y a" ;;
+  aa)    new_ll_flags="-Y aa" ;;
+  aaa)   new_ll_flags="-Y aaa" ;;
+  x)     new_ll_flags="-x" ;;
+  x_a)   new_ll_flags="-x -Y a" ;;
+  x_aa)  new_ll_flags="-x -Y aa" ;;
+  x_aaa) new_ll_flags="-x -Y aaa" ;;
+  off|*) new_ll_flags="" ;;
+ esac
+ if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
+  local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $AVG_FLAG $new_ll_flags"
+ else
+  local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $AVG_FLAG $new_ll_flags"
+ fi
+ [[ -n "$REFRESH_RATE" ]] && cmd="$cmd -Y R:$REFRESH_RATE"
+ printf '%s' "$cmd"
+}
+
+# Respawn ONLY the spotread pipeline (NOT the wrapper) with a new
+# low_light mode. The wrapper keeps its command FIFO, PID file, config
+# file, and state file intact so the WebUI does not see a session
+# restart and does not pay the 35-90s OLED bring-up. The new mode
+# applies to this and every subsequent read until it changes again.
+respawn_spotread () {
+ local new_mode="${1:-off}"
+ log "respawn: switching spotread to low_light mode=$new_mode (was $CURRENT_LOW_LIGHT_MODE)"
+ # Close the current spotread cleanly. SIGKILLing it mid-read wedges the
+ # Pi's dwc2 USB controller, so ask politely first and escalate only if
+ # it ignores the quit.
+ printf "Q" >&3 2>/dev/null
+ exec 3>&- 2>/dev/null
+ local _w=0
+ while (( _w < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
+  sleep 0.1
+  _w=$(( _w + 1 ))
+ done
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  kill "$BG_PID" 2>/dev/null
+  pkill -TERM -x spotread 2>/dev/null
+  local _t=0
+  while (( _t < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
+   sleep 0.1
+   _t=$(( _t + 1 ))
+  done
+ fi
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  pkill -9 -P "$BG_PID" 2>/dev/null
+  kill -9 "$BG_PID" 2>/dev/null
+ fi
+ pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
+ # Truncate (NOT unlink) OUTFILE so the readiness wait does not match
+ # the previous session's stale "to take a reading:" line. `script`
+ # would create a new inode if we unlinked, desyncing the read-side cat.
+ : > "$OUTFILE"
+ # Rebuild SR_CMD with the new low_light flags. AVG_FLAG, DISPLAY_TYPE,
+ # CCSS_FILE, REFRESH_RATE, and AIO are unchanged -- the only delta
+ # between this respawn and the initial startup is the averaging flags.
+ SR_CMD=$(build_sr_cmd "$new_mode")
+ cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
+ BG_PID=$!
+ exec 3>"$CMDPIPE"
+ log "respawn: spotread respawned (bg_pid=$BG_PID mode=$new_mode)"
+ # Wait for "to take a reading:" — colorimeters re-ready in <2s; allow
+ # up to 30s in case a spectro does a refresh re-cal.
+ local _rt=0
+ while (( _rt < 300 )); do
+  local _co
+  _co=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+  echo "$_co" | grep -q "to take a reading:" && break
+  sleep 0.1
+  _rt=$(( _rt + 1 ))
+ done
+ if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
+  log "respawn: spotread failed to ready within 30s, surfacing error"
+  write_state '{"status":"error","message":"Meter respawn failed (low-light mode change)"}'
+  return 1
+ fi
+ CURRENT_LOW_LIGHT_MODE="$new_mode"
+ return 0
+}
 trap cleanup EXIT INT TERM
 
 PORT_NUM=""
@@ -420,7 +516,6 @@ case "${LOW_LIGHT_MODE:-off}" in
  x_aaa) LOW_LIGHT_FLAGS="-x -Y aaa" ;;
  off|*) LOW_LIGHT_FLAGS="" ;;
 esac
-SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $AVG_FLAG $LOW_LIGHT_FLAGS"
 # A CCSS (Colorimeter Calibration Spectral Sample) only corrects COLORIMETERS.
 # A spectrophotometer (i1 Pro 2, etc.) measures spectrally and rejects -X with
 # "Instrument doesn't have Colorimeter Calibration Spectral Sample capability",
@@ -447,9 +542,13 @@ if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; t
    DISPLAY_TYPE="l"
   fi
  fi
- SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $AVG_FLAG $LOW_LIGHT_FLAGS"
 fi
-[[ -n "$REFRESH_RATE" ]] && SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
+# Use build_sr_cmd to construct the initial SR_CMD so the respawn path and the
+# startup path share a single source of truth for the flag combination. The
+# initial low_light mode matches the startup LOW_LIGHT_FLAGS (empty by default
+# = "off" = no -Y/-x flags from the low-light handler, which is what
+# CURRENT_LOW_LIGHT_MODE was initialized to above).
+SR_CMD=$(build_sr_cmd "${LOW_LIGHT_MODE:-off}")
 [[ "$DISABLE_AIO" == "1" ]] && export I1D3_DISABLE_AIO=1
 
 cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
@@ -565,8 +664,12 @@ LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA=""
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
   READ\ *)
-	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT]
-	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX CMD_READ_TIMEOUT <<< "$line"
+	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT] [LOW_LIGHT_MODE]
+	    # LOW_LIGHT_MODE (15th, optional) is the PER-READ handler mode. When
+	    # it differs from the currently-running spotread's mode the session
+	    # respawns spotread (NOT the wrapper) so the session-level
+	    # METER_AVERAGING (and the want_config 7th field) stay stable.
+	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX CMD_READ_TIMEOUT CMD_LOW_LIGHT_MODE <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
@@ -578,10 +681,24 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     [[ -z "$REQUEST_ID" ]] && REQUEST_ID=""
 		     [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
 		     [[ -z "$CMD_READ_TIMEOUT" ]] && CMD_READ_TIMEOUT=""
+		     [[ -z "$CMD_LOW_LIGHT_MODE" ]] && CMD_LOW_LIGHT_MODE="off"
 		     [[ "$SIGNAL_RANGE" == "-" ]] && SIGNAL_RANGE=""
 		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
 		     [[ "$CMD_READ_TIMEOUT" == "-" ]] && CMD_READ_TIMEOUT=""
+		     [[ "$CMD_LOW_LIGHT_MODE" == "-" ]] && CMD_LOW_LIGHT_MODE="off"
+
+	   # If the per-read low_light mode differs from the currently-running
+	   # spotread's, respawn ONLY spotread (1-3s) instead of the wrapper
+	   # (35-90s on OLED). The wrapper's command FIFO, PID, config, and
+	   # state files are untouched, so the WebUI does not see a session
+	   # restart and the session config stays stable across reads.
+	   if [[ "$CMD_LOW_LIGHT_MODE" != "$CURRENT_LOW_LIGHT_MODE" ]]; then
+	    if ! respawn_spotread "$CMD_LOW_LIGHT_MODE"; then
+	     # Respawn surfaced an error to the state file; skip this read.
+	     continue
+	    fi
+	   fi
 
 	   # Mark measuring so the polling endpoint knows a read is in flight.
 	   write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\"}"
