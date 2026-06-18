@@ -185,7 +185,7 @@ assert(/OK$/.test(_probe),'@done deep-copy idiom preserves all keys (behavioral 
 // (1) The revert+halve logic must be gated to low IRE only; running it at 100%
 // white interrupted a healthy monotonic convergence, left white non-converged,
 // and the fail-fast skipped the whole series.
-assert(/if\(defined\(\$de\) && \$_anchor_ire < \$low_ire_threshold\)/.test(calBlock),'best-so-far revert is gated to low IRE (< low_ire_threshold); mid/high + 100% white converge naturally');
+assert(/if\(defined\(\$de\) && \$_anchor_ire < \$low_ire_threshold && !\$acceptance_pending\)/.test(calBlock),'best-so-far revert is gated to low IRE AND suppressed once a patch is accepted (<0.3)');
 // (2) The provisional 100% read is KEPT. It looks redundant with the 100%
 // anchor below, but removing it cancels the autocal before the 100% cal
 // (empirically confirmed); its state transitions / meter-read are required.
@@ -193,6 +193,14 @@ assert(/Reading 100% to seed the white reference/.test(worker),'provisional 100%
 // (3) The fail-fast relaxes to "no usable reading" instead of "missed strict
 // target_de", so a near-converged white proceeds to the series + upload.
 assert(/my \$white_usable=0;/.test(worker) && /if\(!\$white_usable\)/.test(worker),'white fail-fast relaxed: abort only on no usable reading, not on missing strict target_de');
+// === Acceptance fast-path: <0.3 dE -> ONE more move -> revert+reread+move on ===
+// This is ADDITIVE: it does NOT replace the user's target_de break, it just gives
+// a very-good (<0.3) patch one refinement then moves on instead of stopping cold.
+assert(/lg_autocal_hdr20_dpg_acceptance_de/.test(worker),'acceptance threshold config declared (default 0.3, additive on top of target_de)');
+assert(/my \$acceptance_pending=0;/.test(calBlock),'calibrate_anchor declares $acceptance_pending state');
+assert(/trying one more move/.test(worker),'acceptance logs "trying one more move" when dE drops below acceptance_de');
+assert(/one-more move worsened/.test(worker),'acceptance reverts + rereads when the one-more move worsens dE');
+assert(/last if\(\$conv_now && !\$acceptance_pending\)/.test(worker),'target_de break is KEPT but suppressed while acceptance is armed (does not replace the user target)');
 // === Drop hardcoded IRE-bucket settle clamps (commit 1) ====================
 // The four $delay_ms=3000/4200/3200/2400 lines that previously shadowed
 // the user's delay_ms have been removed. Only the user-configurable delay_ms
