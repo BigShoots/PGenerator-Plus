@@ -148,6 +148,10 @@ assert(/inserted 100% recalibration into series order after ~80%/.test(worker),'
 assert(/On the 100% recal[\s\S]{0,260}set_state_white_reference/.test(worker),'recal calls set_state_white_reference so the gamma/EOTF/luminance charts track the recalibrated peak (target_luminance/calibrated_white_luminance), not the stale pre-recal peak');
 // === Acceptance display fix: a worsened one-more records the restored best ===
 assert(/reverted_to_best/.test(worker),'acceptance writes reverted_to_best on the history row so the displayed/recorded dE reflects the restore, not the bad one-more');
+// === gamma-blend divide-by-zero guard (all three channels, not just R) ===
+// At very low IRE a channel can be unchanged (ratio=1 -> log=0); dividing by it
+// crashed the autocal ("illegal division by zero" at the gb line). Guard R/G/B.
+assert(/abs\(log\(\$dpg_g_ratio\)\) > 0\.05/.test(calBlock) && /abs\(log\(\$dpg_b_ratio\)\) > 0\.05/.test(calBlock),'gamma-blend guard checks the log magnitude of ALL three channels (R/G/B) + prev>0, so a flat channel (ratio=1) does not divide by zero');
 // The best / reverted / move_scaling markers must be present in the
 // per-iter state push (the row written into hdr20_1d_dpg_anchor_history)
 // so a run that reverts shows up in the state JSON for diagnosis.
