@@ -152,6 +152,11 @@ assert(/reverted_to_best/.test(worker),'acceptance writes reverted_to_best on th
 // At very low IRE a channel can be unchanged (ratio=1 -> log=0); dividing by it
 // crashed the autocal ("illegal division by zero" at the gb line). Guard R/G/B.
 assert(/abs\(log\(\$dpg_g_ratio\)\) > 0\.05/.test(calBlock) && /abs\(log\(\$dpg_b_ratio\)\) > 0\.05/.test(calBlock),'gamma-blend guard checks the log magnitude of ALL three channels (R/G/B) + prev>0, so a flat channel (ratio=1) does not divide by zero');
+// === Probe-up: escape the meter blind zone (1.4% started sub-floor) ===
+// The colorimeter reads ~0 below ~0.003 nits; 1.4% started at ~0.002 nits, so
+// the gain loop had no gradient and quit at dE 30. Probe-up ramps the anchor's
+// DPG above the floor before the normal loop runs.
+assert(/probe-up/.test(worker) && /lg_autocal_hdr20_dpg_meter_floor/.test(worker),'sub-floor anchors (first read < meter_floor, default 0.003 nits) are probe-up ramped above the floor before the gain loop, so 1.4% escapes the colorimeter blind zone');
 // The best / reverted / move_scaling markers must be present in the
 // per-iter state push (the row written into hdr20_1d_dpg_anchor_history)
 // so a run that reverts shows up in the state JSON for diagnosis.
