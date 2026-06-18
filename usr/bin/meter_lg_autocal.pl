@@ -13005,6 +13005,29 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# calibration -- empirically confirmed 2026-06-18. The state transitions /
 	# meter-read here are depended on by the flow; do not remove.
 	my ($white_step)=grep { autocal_step_is_white($_) } @ordered;
+	# Insert a 100% RECALIBRATION into the series order right after the ~80%
+	# step (before 90%): the upper-mid anchors shift the global 1D curve, so
+	# re-touch the peak there. Desired order: 100 (initial) -> 5,20,40,60,80
+	# -> 100 (recal) -> 90 -> descending. The recal clone is flagged so the
+	# series loop calibrates it as white instead of skipping it.
+	if(ref($white_step) eq "HASH") {
+		my $recal={ %{$white_step} };
+		$recal->{"hdr20_white_recal"}=1;
+		my ($insert_at,$best_delta);
+		$best_delta=999;
+		for(my $i=0;$i<@ordered;$i++) {
+			my $s=$ordered[$i];
+			next if(autocal_step_is_white($s));
+			my $ire=(defined($s->{"ire"}) ? $s->{"ire"}+0 : (defined($s->{"stimulus"}) ? $s->{"stimulus"}+0 : undef));
+			next if(!defined($ire));
+			my $d=abs($ire-80.0);
+			if($d < $best_delta) { $best_delta=$d; $insert_at=$i; }
+		}
+		if(defined($insert_at) && $best_delta <= 5.0) {
+			splice(@ordered,$insert_at+1,0,$recal);
+			log_line("HDR20 1D DPG greyscale: inserted 100% recalibration into series order after ~80% (before 90%)");
+		}
+	}
 	my $white_ref=undef;
 	if(ref($white_step) eq "HASH" && !cancelled()) {
 		my $rs=fixed_lg_autocal_step($config,$white_step);
@@ -13308,6 +13331,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					@{$current_dpg}=@{$accepted_best_dpg};
 					@done=@{$accepted_best_anchors};
 					log_line("HDR20 1D DPG greyscale: ".$label." one-more move worsened (dE=".sprintf("%.4f",$de+0)." vs best ".sprintf("%.4f",$accepted_best_de)."), reverting + rereading + moving on");
+					my $_restored_ok=0;
 					my ($auk,$aumsg)=$upload_dpg->($current_dpg);
 					if($auk) {
 						my ($arr,$are)=read_step($config,$rs,$state);
@@ -13316,10 +13340,24 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 							$last_reading=$arr;
 							my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$tl);
 							$de=$ade if(defined($ade));
-							$state->{"current_delta_e"}=$de if(defined($de));
-							write_state($state);
+							$_restored_ok=1;
 						}
 					}
+					# The per-iter push above captured the BAD one-more; make the
+					# recorded/displayed dE reflect the restored best (the re-read
+					# value when the re-upload succeeded, else the known best) so
+					# the UI does not freeze on the bad move.
+					my $_restored_de=($_restored_ok && defined($de)) ? ($de+0) : ($accepted_best_de+0);
+					$state->{"current_delta_e"}=$_restored_de;
+					if(ref($state->{"hdr20_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"hdr20_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
+						my $_r=$state->{"hdr20_1d_dpg_anchor_history"}{$label};
+						if(@$_r) {
+							$_r->[-1]{"de"}=sprintf("%.4f",$_restored_de);
+							$_r->[-1]{"reverted_to_best"}=JSON::PP::true;
+							$_r->[-1]{"best_de"}=sprintf("%.4f",$accepted_best_de+0);
+						}
+					}
+					write_state($state);
 				}
 				last;
 			}
@@ -13505,23 +13543,34 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# --- remaining greyscale anchors (skip the already-calibrated white) ---
 	foreach my $step (@ordered) {
 		last if(cancelled() || $upload_failed);
-		next if(autocal_step_is_white($step));
+		# The original white step is calibrated first (above) and skipped here;
+		# a hdr20_white_recal clone inserted after ~80% is calibrated as white.
+		my $_recal=(autocal_step_is_white($step) && $step->{"hdr20_white_recal"}) ? 1 : 0;
+		next if(autocal_step_is_white($step) && !$_recal);
 		$step_num++;
 		my $rs=fixed_lg_autocal_step($config,$step);
 		my $target=ddc_target_for_step($rs);
 		next if(!$target);
 		my $idx=$idx_for_step->($rs);
 		next if(!defined($idx));
-		my $label=$rs->{"name"}||($target->{"label"}||(format_percent($rs->{"ire"})."%"));
+		my $label=$_recal ? "100% (recal)" : ($rs->{"name"}||($target->{"label"}||(format_percent($rs->{"ire"})."%")));
 		# Use the larger low-IRE iteration budget for anchors below the
 		# low-IRE threshold (default 5%). Mid/high anchors (5-100%) keep
 		# the default 6-iter budget which converges in 1-2 iters
 		# (the Akima spline is correct, mid/high errors are 99-100% of
 		# target on the deployed state).
 		my $step_ire_loop=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-		my $step_budget=(defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : $max_inner;
-		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,0);
+		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : $max_inner);
+		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,$_recal);
 		push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
+		# On the 100% recal, refine the peak reference from the re-measured peak.
+		if($_recal && ref($last) eq "HASH") {
+			my $wy=luminance($last);
+			if(defined($wy) && $wy+0 > 0) {
+				$white_ref=$wy+0;
+				$state->{"hdr20_1d_dpg_white_ref"}=$white_ref+0 if(ref($state) eq "HASH");
+			}
+		}
 		if(ref($state) eq "HASH") {
 			$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
 			$state->{"hdr20_1d_dpg_last_anchor_converged"}=$conv ? JSON::PP::true : JSON::PP::false;

@@ -142,6 +142,11 @@ assert(/\$consecutive_reverts\+\+;/.test(calBlock)&&/\$_revert_budget=.*?\$very_
 assert(/return "aaa" if\(defined\(\$step_ire\)/.test(worker),'very-low-IRE (<2%) defaults to the strongest -Y aaa averaging; all other patches use the meter settings');
 assert(/lg_autocal_hdr20_dpg_very_low_ire_threshold/.test(worker),'very-low-IRE threshold config declared (default 2.0)');
 assert(/lg_autocal_hdr20_dpg_very_low_revert_budget/.test(worker),'very-low-IRE revert-budget config declared (default 12, vs 3 otherwise)');
+// === 100% recalibration inserted into the series order after ~80% (before 90%) ===
+assert(/hdr20_white_recal/.test(worker),'100% recalibration clone flagged (hdr20_white_recal) and inserted into @ordered after ~80% so the peak is re-touched before descending');
+assert(/inserted 100% recalibration into series order after ~80%/.test(worker),'logs the recal insertion into the order');
+// === Acceptance display fix: a worsened one-more records the restored best ===
+assert(/reverted_to_best/.test(worker),'acceptance writes reverted_to_best on the history row so the displayed/recorded dE reflects the restore, not the bad one-more');
 // The best / reverted / move_scaling markers must be present in the
 // per-iter state push (the row written into hdr20_1d_dpg_anchor_history)
 // so a run that reverts shows up in the state JSON for diagnosis.
