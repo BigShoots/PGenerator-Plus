@@ -13188,8 +13188,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				my $dpg_r_ratio=$current_dpg->[$idx]/$dpg_r_prev;
 				my $dpg_g_ratio=$current_dpg->[$idx+1024]/$dpg_g_prev;
 				my $dpg_b_ratio=$current_dpg->[$idx+2048]/$dpg_b_prev;
-				if($y_ratio > 0 && $dpg_r_ratio > 0 && $dpg_g_ratio > 0 && $dpg_b_ratio > 0
+				if($y_ratio > 0 && $dpg_r_prev > 0 && $dpg_g_prev > 0 && $dpg_b_prev > 0
+				 && $dpg_r_ratio > 0 && $dpg_g_ratio > 0 && $dpg_b_ratio > 0
 				 && abs(log($dpg_r_ratio)) > 0.05
+				 && abs(log($dpg_g_ratio)) > 0.05
+				 && abs(log($dpg_b_ratio)) > 0.05
 				 && abs(log($y_ratio)) > 0.05) {
 					my $gr=log($y_ratio)/log($dpg_r_ratio);
 					my $gg=log($y_ratio)/log($dpg_g_ratio);
