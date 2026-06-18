@@ -1641,7 +1641,7 @@ sub webui_meter_session_start (@) {
   # Launch detached as root. The daemon writes its own PID/config files once it
   # grabs the lock; wait for an actionable startup state before reporting success.
   my $started_at=time();
-  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '300' '$require_device_ready' '$averaging' </dev/null >/dev/null 2>&1 &");
+  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' </dev/null >/dev/null 2>&1 &");
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
   # start and can legitimately take 35-45 seconds before the helper reaches a
