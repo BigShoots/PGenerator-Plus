@@ -13063,8 +13063,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $best_dpg_g=$current_dpg->[$idx+1024]+0;
 		my $best_dpg_b=$current_dpg->[$idx+2048]+0;
 		# Deep copy @done so a revert restores the anchor list too. Each element
-		# is a hashref; copy the hash but not the references it holds.
-		my $best_anchors=[map { my $copy={}; $copy->{$_}=$done[$_]->{$_} for keys %{$done[$_]}; $copy; } @done];
+		# is a hashref; copy the hash but not the references it holds. Use $src
+		# so the inner `for keys` does not shadow the outer map's $_ -- a
+		# shadowed $_ makes the hashslice dereference fall back to $done[$_]
+		# in dynamic-scope and emit "Can't use an undefined value as a HASH
+		# reference" warnings once per key, which flood the autocal log when
+		# the meter session is stuck and OOM the worker in minutes.
+		my $best_anchors=[map { my $src=$done[$_]; my $copy={}; $copy->{$_}=$src->{$_} for keys %$src; $copy; } @done];
 		my $consecutive_reverts=0;
 		# Move-scaling factor: the next iter's damp is scaled toward 1.0 (no
 		# change) by this factor. Reset to 1.0 on every successful iter (dE
@@ -13194,7 +13199,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_dpg_r=$current_dpg->[$idx]+0;
 					$best_dpg_g=$current_dpg->[$idx+1024]+0;
 					$best_dpg_b=$current_dpg->[$idx+2048]+0;
-					$best_anchors=[map { my $copy={}; $copy->{$_}=$done[$_]->{$_} for keys %{$done[$_]}; $copy; } @done];
+					# $src holds the hashref so the inner `for keys` does not
+					# shadow $_ -- same rationale as the closure state init above.
+					$best_anchors=[map { my $src=$done[$_]; my $copy={}; $copy->{$_}=$src->{$_} for keys %$src; $copy; } @done];
 					$consecutive_reverts=0;
 					# Successful iter: reset the move-scaling to full. The next gain
 					# is computed fresh from the new Y, so a fresh full-size move is
