@@ -16729,6 +16729,29 @@ sub autocal_ddc_reset_diag_log (@) {
  };
 }
 
+# Tracks whether the NEXT autocal read should engage the operator's Low Light
+# Handler averaging. It is recomputed after every successful read from that
+# read's MEASURED luminance vs the operator's cd/m2 trigger: averaging is armed
+# only once a read lands below the trigger, and disarmed again once a read
+# comes back at/above it. Default "off" so the first read of a patch is a fast
+# single-shot until the panel proves it is in low-light territory.
+our $lg_low_light_active_mode="off";
+
+# Decide the averaging mode ("off"/"a"/"aa"/"aaa") for the NEXT read given the
+# luminance just measured. Returns "off" unless the handler is enabled, a real
+# averaging mode is selected, and the measured Y is below the operator trigger.
+sub lg_low_light_mode_for_reading {
+ my ($config,$reading)=@_;
+ return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
+ my $mode=lc($config->{"low_light"}{"mode"}||"off");
+ return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
+ my $trigger=($config->{"low_light"}{"trigger"}||0)+0;
+ $trigger=5.0 if($trigger <= 0);
+ my $Y=luminance($reading);
+ return "off" if(!defined($Y) || $Y < 0);
+ return ($Y < $trigger) ? $mode : "off";
+}
+
 sub read_step_once {
 		 my ($config,$step,$attempt,$opts)=@_;
 		 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
@@ -16780,11 +16803,12 @@ sub read_step_once {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
 		 # Route the operator's Low Light Handler (Meter Settings) to autocal
-		 # reads: when enabled, request the selected averaging mode so dim
-		 # patches are read with multi-read averaging instead of a single read.
-		 if(ref($config->{"low_light"}) eq "HASH" && $config->{"low_light"}{"enabled"}) {
-		  my $ll_mode=lc($config->{"low_light"}{"mode"}||"off");
-		  $payload->{"low_light"}={ mode => $ll_mode, enabled => JSON::PP::true } if($ll_mode ne "off");
+		 # reads, but ONLY when the previous read armed it (measured below the
+		 # operator's cd/m2 trigger). $lg_low_light_active_mode is recomputed
+		 # after every read, so averaging engages on the read that follows a
+		 # sub-trigger result and disengages once a read climbs back above it.
+		 if($lg_low_light_active_mode ne "off") {
+		  $payload->{"low_light"}={ mode => $lg_low_light_active_mode, enabled => JSON::PP::true };
 		 }
 		 my $read_started=time();
 			 my $step_key=autocal_read_step_key($step);
@@ -16840,6 +16864,10 @@ sub read_step_once {
 		   $reading->{"signal_b_pct"}=$step->{"signal_b_pct"} if(defined($step->{"signal_b_pct"}));
 	   $reading->{"read_delay_ms"}=$delay_ms;
 	   $reading->{"display_type"}=$payload->{"display_type"};
+	   # Re-arm/disarm the Low Light Handler for the NEXT read from THIS read's
+	   # measured luminance: below the operator trigger -> average next read;
+	   # at/above -> single-shot next read.
+	   $lg_low_light_active_mode=lg_low_light_mode_for_reading($config,$reading);
 	   return ($reading,undef);
 	  }
   return (undef,$result->{"message"}||"Meter read failed") if($status eq "error");
