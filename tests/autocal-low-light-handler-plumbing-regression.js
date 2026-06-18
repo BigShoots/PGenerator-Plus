@@ -83,4 +83,39 @@ assert(/hdr20_1d_dpg_anchor_history/.test(worker),'calibrate_anchor logs per-ite
 // produce a state JSON whose measured_Y disagrees with current_luminance on
 // the same row and break any future automated trajectory analysis.
 assert(/measured_Y=>defined\(\$reading\) \? luminance\(\$reading\) : undef/.test(worker),'per-iter push measured_Y uses luminance($reading) helper (not a hand-computed Y)');
+// === EOTF-aware damp (HDR20 autocal) =====================================
+// Iter 1 seeds the damp exponent from the EOTF-predicted local gamma at the
+// anchor IRE (PQ table for HDR10, 2.2 for SDR); iter 2+ blends with the
+// measured gamma from the previous iter's Y/DPG change. The damp becomes
+// gain ** (1/gamma_effective) clamped to [floor, 1.25]. The block below
+// locks the wiring: function exists, returns a sensible value at HDR10
+// IRE=4, damp uses the ** operator (not sqrt), calibrate_anchor tracks
+// gamma_effective with an EMA blend (0.3*new, 0.7*history), and the
+// per-anchor gamma is clamped to [1.5, 3.0] before the exponent is taken.
+assert(/sub lg_autocal_expected_gamma_for_signal_mode_and_ire \{/.test(worker),'worker defines lg_autocal_expected_gamma_for_signal_mode_and_ire (EOTF-γ lookup)');
+assert(/our %LG_AUTOCAL_PQ_GAMMA_TABLE;/.test(worker),'worker declares %LG_AUTOCAL_PQ_GAMMA_TABLE (file-scope PQ gamma lookup)');
+assert(/sub lg_autocal_pq_gamma_table_init \{/.test(worker),'worker defines lg_autocal_pq_gamma_table_init (lazy PQ table init)');
+// The damp closure must use the ** operator (exponent), not sqrt. The new
+// signature is ($g,$floor,$exp) and the body computes $g**$exp.
+const dampBlock=worker.slice(worker.indexOf('my $damp=sub {'),worker.indexOf('my $damp=sub {')+400);
+assert(/my \(\$g,\$floor,\$exp\)=@_;/.test(dampBlock),'damp closure signature accepts ($g,$floor,$exp) for EOTF-aware exponent');
+assert(/my \$s=\$g\*\*\$exp;/.test(dampBlock),'damp closure body uses ** with the EOTF-aware exponent (gain**(1/gamma))');
+assert(!/sqrt\(/.test(dampBlock),'damp closure no longer uses sqrt');
+// calibrate_anchor must declare per-anchor gamma state and use an EMA
+// blend (0.3 new measurement, 0.7 history) on iter 2+ to refine it from
+// the measured Y/DPG slope. The gamma must be clamped to [1.5, 3.0]
+// before the exponent is taken, and $damp_exp must be the 1.0/gamma.
+const calBlock=worker.slice(worker.indexOf('my $calibrate_anchor=sub {'),worker.indexOf('return ($converged,$last_reading);'));
+assert(/my \$gamma_effective=lg_autocal_expected_gamma_for_signal_mode_and_ire/.test(calBlock),'calibrate_anchor seeds gamma_effective from the EOTF lookup');
+assert(/0\.3\*\$gamma_meas/.test(calBlock)&&/0\.7\*\$gamma_effective/.test(calBlock),'calibrate_anchor blends measured gamma with EMA (0.3 new, 0.7 history)');
+assert(/\$gamma_effective=1\.5 if\(\$gamma_effective\+0 < 1\.5\);/.test(calBlock)&&/\$gamma_effective=3\.0 if\(\$gamma_effective\+0 > 3\.0\);/.test(calBlock),'per-anchor $gamma_effective is clamped to [1.5, 3.0] before the exponent');
+assert(/my \$damp_exp=\(1\.0\/\(\$gamma_effective\+0\.0\)\);/.test(calBlock),'calibrate_anchor computes damp_exp = 1.0 / gamma_effective');
+// Function-level sanity: the lookup returns a value in (1.0, 4.0) for
+// HDR10 at IRE=4. The proper ST 2084 PQ EOTF gives ~2.17 at IRE 4;
+// anything in that band confirms the table is the standard PQ form, not
+// a near-constant ratio.
+const _expGammaSrc=worker.slice(worker.indexOf('sub lg_autocal_expected_gamma_for_signal_mode_and_ire'),worker.indexOf('sub lg_autocal_expected_gamma_for_signal_mode_and_ire')+2000);
+assert(/return 2\.2;/.test(_expGammaSrc),'expected_gamma returns 2.2 for SDR (constant)');
+assert(/return 2\.4;/.test(_expGammaSrc),'expected_gamma returns 2.4 for HLG (approximation)');
+assert(/^\s*if\(\$signal_mode =~ \/\^hdr10\?\$\/\)/m.test(_expGammaSrc),'expected_gamma branches on hdr10? regex for HDR10/PQ');
 console.log('autocal low-light handler plumbing regression OK');

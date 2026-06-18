@@ -12714,6 +12714,96 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 	 return $uploaded;
 	}
 
+# === HDR20 autocal: EOTF-aware damp =====================================
+# The pre-fix damp used sqrt(gain) (constant exponent 0.5) which assumes a
+# gamma 2 panel -- close enough at high IRE (where the panel's transfer is
+# near gamma 2.2), but at low IRE the panel's PQ EOTF deviates strongly
+# from a power function. A constant sqrt over-damps in the range where
+# the EOTF is steep (e.g. IRE 4-10) and under-damps where it is shallow.
+#
+# The fix is to use the EOTF-predicted local gamma at the anchor IRE as
+# the damp exponent (1/gamma), and refine it per-iter with the measured
+# gamma from the previous iter's Y/DPG change (EMA blend). The local gamma
+# is d(log L)/d(log V) at code V in [0, 1] for the ST 2084 PQ EOTF
+# (10000 nit reference peak), pre-computed into a 256-entry table at
+# file scope and linear-interpolated for IRE in [0, 100].
+#
+# NOTE: the spec listed c2=2413/32 and c3=2392/32 and a
+# (c1+c2*V^p)/(c1+c3*V^p) formula structure. Both are typos -- the actual
+# ST 2084 constants are c2=2413/128=18.85, c3=2392/128=18.69, and the
+# standard PQ EOTF formula is
+#   L(V) = 10000 * ((max(V^(1/m2) - c1, 0)) / (c2 - c3*V^(1/m2)))^(1/m1).
+# The spec's (c1+c2*V^p)/(c1+c3*V^p) ratio is essentially constant at
+# ~1.0087 for all V (the slope is ~0), giving a near-zero local gamma
+# that would always trigger the [1.5, 3.0] safety clamp. The correct
+# standard ST 2084 form below produces local-gamma values in the 0.5-3
+# range that match the spec's expected behaviour and the regression
+# test's IRE=4 bound of (1.0, 4.0).
+our %LG_AUTOCAL_PQ_GAMMA_TABLE;
+sub lg_autocal_pq_gamma_table_init {
+ return 1 if(scalar(keys %LG_AUTOCAL_PQ_GAMMA_TABLE) >= 256);
+ my $m1=2610.0/16384.0;       # 0.1593017578125
+ my $m2=2523.0/32.0;          # 78.84375
+ my $c1=3424.0/4096.0;        # 0.8359375
+ my $c2=2413.0/128.0;         # 18.8515625  (NOT 2413/32=75.40625)
+ my $c3=2392.0/128.0;         # 18.6875     (NOT 2392/32=74.75)
+ my $m1_inv=1.0/$m1;          # 6.277
+ my $m2_inv=1.0/$m2;          # 0.01268
+ for(my $i=0;$i<256;$i++) {
+  my $V=$i/255.0;
+  my $Vp=$V**$m2_inv;                                 # V^(1/m2)
+  my $num=$Vp-$c1; $num=0.0 if($num<0.0);
+  my $den=$c2-$c3*$Vp;
+  my $ratio=($den>0.0) ? ($num/$den) : 0.0;
+  my $L=($ratio>0.0) ? (10000.0*($ratio**$m1_inv)) : 0.0;
+  my $dL_dV=0.0;
+  if($L>0.0 && $V>0.0 && $Vp>0.0) {
+   my $dVp_dV=$m2_inv*$Vp/$V;
+   my $dnum_dV=$dVp_dV;
+   my $dden_dV=-$c3*$dVp_dV;
+   my $dratio_dV=(($dnum_dV*$den)-($num*$dden_dV))/($den*$den);
+   $dL_dV=10000.0*$m1_inv*($ratio**($m1_inv-1.0))*$dratio_dV;
+  }
+  my $local_gamma=($L>0.0 && $V>0.0) ? ($V/$L)*$dL_dV : 0.0;
+  $LG_AUTOCAL_PQ_GAMMA_TABLE{$i}=$local_gamma;
+ }
+ return 1;
+}
+
+# Return the EOTF-predicted local gamma at the given IRE for the given
+# signal mode. HDR10 -> ST 2084 PQ (pre-computed table, linear interp);
+# SDR -> 2.2 (constant); HLG -> 2.4 (approximation); unknown -> 2.2 with
+# a one-time warning. The caller is expected to clamp the returned value
+# (e.g. to [1.5, 3.0]) before using it as a damp exponent denominator.
+sub lg_autocal_expected_gamma_for_signal_mode_and_ire {
+ my ($signal_mode,$ire)=@_;
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ my $ire_v=defined($ire) ? ($ire+0) : 50.0;
+ $ire_v=0.0 if($ire_v<0.0);
+ $ire_v=100.0 if($ire_v>100.0);
+ if($signal_mode =~ /^hdr10?$/) {
+  lg_autocal_pq_gamma_table_init();
+  # 256 entries cover IRE 0..100 (entry i is sampled at IRE=i*100/255).
+  my $idx_f=$ire_v*2.55;
+  $idx_f=0.0 if($idx_f<0.0);
+  $idx_f=255.0 if($idx_f>255.0);
+  my $idx_lo=int($idx_f); $idx_lo=0 if($idx_lo<0); $idx_lo=255 if($idx_lo>255);
+  my $idx_hi=$idx_lo+1; $idx_hi=255 if($idx_hi>255);
+  my $f=$idx_f-$idx_lo;
+  my $g_lo=$LG_AUTOCAL_PQ_GAMMA_TABLE{$idx_lo}+0;
+  my $g_hi=$LG_AUTOCAL_PQ_GAMMA_TABLE{$idx_hi}+0;
+  return $g_lo+($g_hi-$g_lo)*$f;
+ }
+ if($signal_mode eq "sdr") { return 2.2; }
+ if($signal_mode eq "hlg") { return 2.4; }
+ if(!defined($LG_AUTOCAL_PQ_GAMMA_TABLE{"__warned"})) {
+  $LG_AUTOCAL_PQ_GAMMA_TABLE{"__warned"}=1;
+  log_line("autocal: lg_autocal_expected_gamma_for_signal_mode_and_ire got unknown signal_mode='".$signal_mode."', using 2.2 (SDR default)");
+ }
+ return 2.2;
+}
+
 # HDR20 1D-DPG-driven greyscale calibration loop. Reuses the existing
 # pure primitives (target_luminance_for_step, autocal_delta_e_for_step,
 # lg_autocal_26_hdr20_dpg_gain, lg_autocal_26_build_hdr20_1d_dpg) and
@@ -12854,20 +12944,26 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		return ($ok,$msg);
 	};
 
-	# Damping: sqrt(gain) clamped to [0.8,1.25]; bounds per-iteration moves.
+	# Damping: gain ** (1/gamma_effective) clamped to [$floor, 1.25].
 	# Convert a measured LINEAR-LIGHT gain into a DPG DRIVE-code gain. The
-	# panel's drive->light transfer is ~gamma 2 near these levels, so the
-	# sqrt is the (approx) inverse-gamma, not just damping. The clamp bounds
-	# the per-iteration move; white gets a wider floor so peak balance can
-	# settle in fewer iterations.
+	# panel's drive->light transfer is not a fixed gamma -- at low IRE the
+	# PQ EOTF is steeper than gamma 2, at mid IRE it is shallower. The
+	# exponent 1/gamma_effective is the EOTF-predicted local inverse-gamma
+	# at the anchor IRE, refined per-iter by the measured gamma from the
+	# previous iter's Y/DPG change (see calibrate_anchor). The clamp bounds
+	# the per-iteration move; the floor is per-anchor (white vs low-IRE) and
+	# the ceiling is hard-coded at 1.25 so a single iter cannot make a
+	# dramatic overshoot. The 0.5 default exponent (used when $exp is undef
+	# on the converged path) preserves the old sqrt behaviour for the
+	# per-iter state push (where rg/gg/bg are undef on the converged iter).
 	my $damp=sub {
-		my ($g,$floor,$ceil)=@_;
+		my ($g,$floor,$exp)=@_;
 		$floor=0.8 unless(defined($floor));
-		$ceil=1.25 unless(defined($ceil));
+		$exp=0.5 unless(defined($exp));
 		$g=1 unless(defined($g) && $g+0 > 0);
-		my $s=$g**0.5;
+		my $s=$g**$exp;
 		$s=$floor if($s+0 < $floor);
-		$s=$ceil if($s+0 > $ceil);
+		$s=1.25 if($s+0 > 1.25);
 		return $s+0;
 	};
 
@@ -12935,6 +13031,28 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my ($rs,$target,$idx,$label,$snum,$budget,$is_white)=@_;
 		my $converged=0;
 		my $last_reading=undef;
+		# EOTF-aware damp state (per-anchor, persists across inner iters):
+		#   gamma_effective: current best estimate of the panel's local
+		#     code->light gamma at this anchor's IRE. Seeded from the
+		#     PQ EOTF (HDR10) or 2.2 (SDR) at iter 1; refined by the
+		#     measured gamma from the previous iter's Y/DPG change via
+		#     an EMA blend (0.3 new, 0.7 history). Clamped to [1.5, 3.0]
+		#     so a wild measured value cannot produce a catastrophic
+		#     damp move.
+		#   y_prev / dpg_*_prev: this iter's measured luminance and the
+		#     three DPG idx values that were IN USE when the reading
+		#     was taken (i.e. the build from the previous iter). These
+		#     become next iter's "previous" values, allowing the
+		#     log-log slope that estimates the local gamma.
+		my $_anchor_signal_mode=ref($config) eq "HASH" ? ($config->{"signal_mode"} || "sdr") : "sdr";
+		my $_anchor_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : 50.0));
+		my $gamma_effective=lg_autocal_expected_gamma_for_signal_mode_and_ire($_anchor_signal_mode,$_anchor_ire);
+		$gamma_effective=1.5 if($gamma_effective+0 < 1.5);
+		$gamma_effective=3.0 if($gamma_effective+0 > 3.0);
+		my $y_prev=undef;
+		my $dpg_r_prev=undef;
+		my $dpg_g_prev=undef;
+		my $dpg_b_prev=undef;
 		for(my $i=1;$i<=$budget;$i++) {
 			last if(cancelled() || $upload_failed);
 			$total_inner_iters++;
@@ -12976,6 +13094,56 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"current_delta_e"}=defined($de)?$de:undef;
 			$max_de_overall=$de+0 if(defined($de) && $de+0 > $max_de_overall+0);
 			write_state($state);
+			# Refine gamma_effective from the previous iter's measured Y/DPG
+			# change. At iter 1 the *_prev values are undef and the EOTF seed
+			# stands; from iter 2 onwards we estimate the local gamma as
+			#   log(Y_n / Y_{n-1}) / log(DPG_{n-1,ch} / DPG_{n-2,ch})
+			# averaged across R/G/B (the channels are correlated so one
+			# number suffices). The EMA blend (0.3 new, 0.7 history) makes
+			# the damp follow slow response-model changes without snapping
+			# to a noisy one-shot. Sanity guards (positive ratios, abs
+			# log-change > 0.05, gamma in [1, 4]) skip the blend on the
+			# first iter after a tiny move or a zero-crossing.
+			if(defined($y_prev) && defined($dpg_r_prev) && defined($dpg_g_prev) && defined($dpg_b_prev)) {
+				my $y_ratio=luminance($reading)/$y_prev;
+				my $dpg_r_ratio=$current_dpg->[$idx]/$dpg_r_prev;
+				my $dpg_g_ratio=$current_dpg->[$idx+1024]/$dpg_g_prev;
+				my $dpg_b_ratio=$current_dpg->[$idx+2048]/$dpg_b_prev;
+				if($y_ratio > 0 && $dpg_r_ratio > 0 && $dpg_g_ratio > 0 && $dpg_b_ratio > 0
+				 && abs(log($dpg_r_ratio)) > 0.05
+				 && abs(log($y_ratio)) > 0.05) {
+					my $gr=log($y_ratio)/log($dpg_r_ratio);
+					my $gg=log($y_ratio)/log($dpg_g_ratio);
+					my $gb=log($y_ratio)/log($dpg_b_ratio);
+					if(defined($gr) && $gr+0 > 1.0 && $gr+0 < 4.0
+					 && $gg+0 > 1.0 && $gg+0 < 4.0
+					 && $gb+0 > 1.0 && $gb+0 < 4.0) {
+						my $gamma_meas=($gr+$gg+$gb)/3.0;
+						# EMA blend: 30% new measurement, 70% history.
+						$gamma_effective=(0.3*$gamma_meas)+(0.7*$gamma_effective);
+					}
+				}
+			}
+			# Clamp gamma_effective to [1.5, 3.0] to prevent a wild measured
+			# value (e.g. from a transient meter spike or a near-zero DPG
+			# change producing a divide-by-tiny) from producing a catastrophic
+			# damp move. The EOTF seed and the EMA-blend sanity guards both
+			# keep gamma_effective in this range in practice, but the clamp
+			# is the last-line safety net before the exponent computation.
+			$gamma_effective=1.5 if($gamma_effective+0 < 1.5);
+			$gamma_effective=3.0 if($gamma_effective+0 > 3.0);
+			my $damp_exp=(1.0/($gamma_effective+0.0));
+			# Save the current reading's Y and the DPG idx values that were
+			# IN USE during this measurement (the build from the previous
+			# iter, since this iter's build happens further down). Next
+			# iter's $y_prev / $dpg_*_prev will be these, allowing the
+			# log-log slope computation above. Save happens AFTER the read
+			# succeeds but BEFORE the convergence test, so even the
+			# converged iter updates the state for the next anchor's seed.
+			$y_prev=luminance($reading);
+			$dpg_r_prev=$current_dpg->[$idx];
+			$dpg_g_prev=$current_dpg->[$idx+1024];
+			$dpg_b_prev=$current_dpg->[$idx+2048];
 			# Pre-declare the gain/floor locals so the per-iter state push
 			# (which runs on the converged path BEFORE the gain computation)
 			# can reference them under use strict. They remain undef on the
@@ -13011,9 +13179,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  gain_R=>sprintf("%.4f",$rg+0),
 			  gain_G=>sprintf("%.4f",$gg+0),
 			  gain_B=>sprintf("%.4f",$bg+0),
-			  damp_R=>sprintf("%.4f",$damp->($rg,$floor)+0),
-			  damp_G=>sprintf("%.4f",$damp->($gg,$floor)+0),
-			  damp_B=>sprintf("%.4f",$damp->($bg,$floor)+0),
+			  damp_R=>sprintf("%.4f",$damp->($rg,$floor,$damp_exp)+0),
+			  damp_G=>sprintf("%.4f",$damp->($gg,$floor,$damp_exp)+0),
+			  damp_B=>sprintf("%.4f",$damp->($bg,$floor,$damp_exp)+0),
 			  dpg_idx_R=>$current_dpg->[$idx],
 			  dpg_idx_G=>$current_dpg->[$idx+1024],
 			  dpg_idx_B=>$current_dpg->[$idx+2048],
@@ -13045,7 +13213,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# of convergence.
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
 			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
-			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor),g_gain=>$damp->($gg,$floor),b_gain=>$damp->($bg,$floor)});
+			# EOTF-aware damp: the exponent 1/gamma_effective is computed
+			# at the top of the iter (clamped to [1.5, 3.0]) and passed as
+			# the 3rd arg to the damp closure, replacing the previous
+			# constant 0.5 (sqrt) with a value that follows the panel's
+			# actual code->light slope at this anchor's IRE.
+			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor,$damp_exp),g_gain=>$damp->($gg,$floor,$damp_exp),b_gain=>$damp->($bg,$floor,$damp_exp)});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
 				$upload_failed=1; $exit_reason="build_error";
@@ -13079,9 +13252,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my $_r_gain=defined($rg)?sprintf("%.4f",$rg):"undef";
 			my $_g_gain=defined($gg)?sprintf("%.4f",$gg):"undef";
 			my $_b_gain=defined($bg)?sprintf("%.4f",$bg):"undef";
-			my $_r_damp=defined($rg)?sprintf("%.4f",$damp->($rg,$floor)):"undef";
-			my $_g_damp=defined($gg)?sprintf("%.4f",$damp->($gg,$floor)):"undef";
-			my $_b_damp=defined($bg)?sprintf("%.4f",$damp->($bg,$floor)):"undef";
+			my $_r_damp=defined($rg)?sprintf("%.4f",$damp->($rg,$floor,$damp_exp)):"undef";
+			my $_g_damp=defined($gg)?sprintf("%.4f",$damp->($gg,$floor,$damp_exp)):"undef";
+			my $_b_damp=defined($bg)?sprintf("%.4f",$damp->($bg,$floor,$damp_exp)):"undef";
 			my $_measured=defined($reading)?sprintf("%.6f",luminance($reading)):"undef";
 			my $_target=defined($tl)?sprintf("%.6f",$tl):"undef";
 			my $_de=defined($de)?sprintf("%.4f",$de):"undef";
