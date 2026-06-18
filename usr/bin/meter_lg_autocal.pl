@@ -13053,22 +13053,27 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $dpg_r_prev=undef;
 		my $dpg_g_prev=undef;
 		my $dpg_b_prev=undef;
-		# Best-so-far tracking (per-anchor, persists across inner iters):
-		#   best_de: smallest dE seen on a successful iter this anchor.
-		#   best_dpg / best_done: snapshot of $current_dpg / @done as they
-		#     were BEFORE the gain build that produced the best_de. If a
-		#     later iter makes dE significantly worse (>= 5% relative)
-		#     than best_de, we restore this snapshot and exit the anchor.
-		#     This prevents the "constant adjustment that makes things
-		#     worse" pattern observed at 4% / 1.4% where the autocal
-		#     oscillated around the answer instead of settling.
-		#   revert_count: number of times this anchor reverted (diagnostic
-		#     only; the caller sees the anchor as "not converged" and
-		#     proceeds, but with the best-so-far DPG in place).
+		# Best-so-far state for this anchor. If a new iter's dE is higher than
+		# the best dE seen so far, we revert to the best state and try again.
+		# After 3 consecutive reverts without improvement, the iter loop breaks
+		# out at the best state. This is the same pattern the SDR path uses
+		# and HDR was missing.
 		my $best_de=undef;
-		my $best_dpg=undef;
-		my $best_done=[];
-		my $revert_count=0;
+		my $best_dpg_r=$current_dpg->[$idx]+0;
+		my $best_dpg_g=$current_dpg->[$idx+1024]+0;
+		my $best_dpg_b=$current_dpg->[$idx+2048]+0;
+		# Deep copy @done so a revert restores the anchor list too. Each element
+		# is a hashref; copy the hash but not the references it holds.
+		my $best_anchors=[map { my $copy={}; $copy->{$_}=$done[$_]->{$_} for keys %{$done[$_]}; $copy; } @done];
+		my $consecutive_reverts=0;
+		# Move-scaling factor: the next iter's damp is scaled toward 1.0 (no
+		# change) by this factor. Reset to 1.0 on every successful iter (dE
+		# improved); halved on every revert. Combined with the best-so-far +
+		# revert pattern, this breaks the constant-amplitude oscillation at
+		# 1.4% IRE -- the iter makes a big move, fails, halves, makes a half
+		# move, fails, halves again, etc., until either it succeeds or the
+		# 3-consecutive-reverts break fires.
+		my $move_scaling=1.0;
 		for(my $i=1;$i<=$budget;$i++) {
 			last if(cancelled() || $upload_failed);
 			$total_inner_iters++;
@@ -13175,30 +13180,44 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the gain_* / damp_* fields become 0.0000 / damp-default.
 			my $conv_now=defined($de) && $de+0 <= $target_de+0;
 			$converged=1 if($conv_now);
-			# Best-so-far tracking: if this iter's dE is the best we've seen,
-			# snapshot the pre-adjustment DPG/@done so we can revert if a
-			# later iter makes things worse. If the dE is significantly worse
-			# than the best (>5% relative), the previous iter was a mistake;
-			# revert to the best snapshot and exit this anchor. The 5% gap
-			# avoids false alarms from meter noise (low-IRE iters sit close
-			# to the noise floor and a single noisy read should not trigger
-			# a revert). Only reached for non-converged iters (converged
-			# exited via the `last` above), so the converged iter's dE is
-			# captured as the best and the loop ends before any later iter
-			# can over-write it.
+			# Best-so-far with revert: if this iter made dE worse than the best
+			# we've seen, restore the best DPG[idx] and the best @done list. The
+			# new gain (computed below) will be applied to the best state, not the
+			# bad state. If we've reverted 3 times in a row without improvement,
+			# the calibration is stuck at the best state; break out. The halve-
+			# on-revert pattern (move_scaling *= 0.5) makes each consecutive
+			# revert's damp half the previous one, so after 3 reverts the move
+			# is 1/8 of the original -- effectively no change for most panels.
 			if(defined($de)) {
 				if(!defined($best_de) || $de+0 < $best_de+0) {
 					$best_de=$de+0;
-					$best_dpg=[@{$current_dpg}];
-					$best_done=[@done];
-					$state->{"hdr20_1d_dpg_anchor_history"}{$label}[-1]{best}=JSON::PP::true if(ref($state->{"hdr20_1d_dpg_anchor_history"}{$label}) eq "ARRAY" && @{$state->{"hdr20_1d_dpg_anchor_history"}{$label}});
-				} elsif(defined($best_de) && $de+0 > $best_de+0*1.05) {
-					log_line("HDR20 1D DPG greyscale: ".$label." iter ".$i." dE=".sprintf("%.4f",$de)." > best=".sprintf("%.4f",$best_de)." (1.05x), reverting to best and moving on");
-					@done=@{$best_done};
-					@{$current_dpg}=@{$best_dpg};
-					$state->{"hdr20_1d_dpg_anchor_history"}{$label}[-1]{reverted}=JSON::PP::true if(ref($state->{"hdr20_1d_dpg_anchor_history"}{$label}) eq "ARRAY" && @{$state->{"hdr20_1d_dpg_anchor_history"}{$label}});
-					$revert_count++;
-					last;
+					$best_dpg_r=$current_dpg->[$idx]+0;
+					$best_dpg_g=$current_dpg->[$idx+1024]+0;
+					$best_dpg_b=$current_dpg->[$idx+2048]+0;
+					$best_anchors=[map { my $copy={}; $copy->{$_}=$done[$_]->{$_} for keys %{$done[$_]}; $copy; } @done];
+					$consecutive_reverts=0;
+					# Successful iter: reset the move-scaling to full. The next gain
+					# is computed fresh from the new Y, so a fresh full-size move is
+					# the right starting point.
+					$move_scaling=1.0;
+				} else {
+					# Revert: undo the bad move before computing this iter's new gain.
+					$current_dpg->[$idx]=$best_dpg_r+0;
+					$current_dpg->[$idx+1024]=$best_dpg_g+0;
+					$current_dpg->[$idx+2048]=$best_dpg_b+0;
+					@done=@{$best_anchors};
+					$consecutive_reverts++;
+					# Halve the move-scaling so the next iter makes a smaller move.
+					# Floor at 0.001 so the scaling never underflows or goes to zero
+					# (which would freeze the damp at the floor forever). After 3
+					# consecutive reverts the move is 0.125x -- effectively no change
+					# for most panels, which is why the 3-revert break below fires.
+					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
+					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
+					if($consecutive_reverts >= 3) {
+						log_line("HDR20 1D DPG greyscale: 3 consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
+						last;
+					}
 				}
 			}
 			# Per-iter state push: lets the next-run investigation see the
@@ -13260,7 +13279,22 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the 3rd arg to the damp closure, replacing the previous
 			# constant 0.5 (sqrt) with a value that follows the panel's
 			# actual code->light slope at this anchor's IRE.
-			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$damp->($rg,$floor,$damp_exp),g_gain=>$damp->($gg,$floor,$damp_exp),b_gain=>$damp->($bg,$floor,$damp_exp)});
+			# Apply the per-iter move-scaling: when $move_scaling is 1.0, the
+			# damp is unchanged. When it's 0.5, the move is half-magnitude
+			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
+			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
+			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling;
+			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling;
+			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling;
+			# Clamp to [floor, 1.25] so a tiny move_scaling still respects the
+			# per-IRE minimum step.
+			$sr=$floor if($sr+0 < $floor+0);
+			$sg=$floor if($sg+0 < $floor+0);
+			$sb=$floor if($sb+0 < $floor+0);
+			$sr=1.25 if($sr+0 > 1.25);
+			$sg=1.25 if($sg+0 > 1.25);
+			$sb=1.25 if($sb+0 > 1.25);
+			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
 				$upload_failed=1; $exit_reason="build_error";
@@ -13309,6 +13343,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 gain_R=>$_r_gain, gain_G=>$_g_gain, gain_B=>$_b_gain,
 			 damp_R=>$_r_damp, damp_G=>$_g_damp, damp_B=>$_b_damp,
 			 dpg_idx_R=>$_idx42_r, dpg_idx_G=>$_idx42_g, dpg_idx_B=>$_idx42_b,
+			 best_de=>defined($best_de)?sprintf("%.4f",$best_de+0):undef,
+			 consecutive_reverts=>$consecutive_reverts+0,
+			 reverted=>($consecutive_reverts>0)?JSON::PP::true:JSON::PP::false,
+			 move_scaling=>sprintf("%.4f",$move_scaling+0),
 			};
 			$ahist->{$label}=$arow;
 			$state->{"hdr20_1d_dpg_anchor_history"}=$ahist;
@@ -13320,6 +13358,26 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				next;
 			}
 			$upload_fail_streak=0;
+		}
+		# Surface the best dE in the state JSON so the WebUI can show
+		# the calibration's actual best outcome (which may differ from the
+		# last iter if a revert fired). Also report the final anchor count.
+		$state->{"hdr20_1d_dpg_best_de"}=defined($best_de)?sprintf("%.4f",$best_de+0):undef;
+		$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
+		# After the iter loop, ensure $current_dpg[idx] reflects the best state.
+		# (Revert logic above restores on every bad iter, but the final iter
+		# might exit without a revert if it was the converged one. The best
+		# state is whatever the revert logic + save-best logic ended on.)
+		if(defined($best_de)) {
+			if($current_dpg->[$idx]+0 != $best_dpg_r+0
+			|| $current_dpg->[$idx+1024]+0 != $best_dpg_g+0
+			|| $current_dpg->[$idx+2048]+0 != $best_dpg_b+0) {
+				log_line("HDR20 1D DPG greyscale: final-state guard restoring best DPG (best dE=".sprintf("%.4f",$best_de).")");
+				$current_dpg->[$idx]=$best_dpg_r+0;
+				$current_dpg->[$idx+1024]=$best_dpg_g+0;
+				$current_dpg->[$idx+2048]=$best_dpg_b+0;
+				@done=@{$best_anchors};
+			}
 		}
 		return ($converged,$last_reading);
 	};
