@@ -17165,10 +17165,10 @@ sub read_step_once {
 		 $delay_ms=$step_delay_ms if($step_delay_ms > $delay_ms);
 		 my $target_white_delay_ms=sdr_target_white_reference_read_delay_ms($config,$step);
 		 $delay_ms=$target_white_delay_ms if(defined($target_white_delay_ms) && $target_white_delay_ms > $delay_ms);
-		 $delay_ms=3000 if($ire <= 5 && $delay_ms < 3000);
-		 $delay_ms=4200 if($ire > 5 && $ire <= 10 && $delay_ms < 4200);
-		 $delay_ms=3200 if($ire > 10 && $ire <= 25 && $delay_ms < 3200);
-		 $delay_ms=2400 if($ire > 25 && $ire <= 50 && $delay_ms < 2400);
+# No hardcoded per-IRE settle buckets — only the user-configurable
+# delay_ms (via $config), the per-step read_delay_ms, and the SDR
+# target-white anchor delay apply. IRE-specific settle (e.g. extra
+# wait for very dim patches) is now the operator's responsibility.
 		 # Relative probe reads measure change between two identical-protocol reads;
 		 # they do not need the full committing-read settle.
 		 $delay_ms=1800 if(ref($step) eq "HASH" && $step->{"autocal_quick_read"} && $delay_ms > 1800);

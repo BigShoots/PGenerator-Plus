@@ -179,4 +179,16 @@ const _convNowPos=calBlock.indexOf('$converged=1 if($conv_now);');
 const _bestSoFarPos=calBlock.indexOf('Best-so-far with revert');
 const _gainPos=calBlock.indexOf('lg_autocal_26_hdr20_dpg_gain($reading');
 assert(_convNowPos>=0 && _bestSoFarPos>=0 && _gainPos>=0 && _convNowPos < _bestSoFarPos && _bestSoFarPos < _gainPos,'best-so-far block sits between convergence test and gain computation');
+// === Drop hardcoded IRE-bucket settle clamps (commit 1) ====================
+// The four $delay_ms=3000/4200/3200/2400 lines that previously shadowed
+// the user's delay_ms have been removed. Only the user-configurable delay_ms
+// (via $config), the per-step read_delay_ms, and the SDR target-white anchor
+// delay now apply. These assertions lock the deletion so a future "helpful"
+// re-introduction must update the test (and the operator) too.
+assert(!/\$delay_ms=3000 if\(\$ire <= 5/.test(worker),'3000ms IRE<=5 bucket clamp is removed');
+assert(!/\$delay_ms=4200 if\(\$ire > 5 && \$ire <= 10/.test(worker),'4200ms 5<IRE<=10 bucket clamp is removed');
+assert(!/\$delay_ms=3200 if\(\$ire > 10 && \$ire <= 25/.test(worker),'3200ms 10<IRE<=25 bucket clamp is removed');
+assert(!/\$delay_ms=2400 if\(\$ire > 25 && \$ire <= 50/.test(worker),'2400ms 25<IRE<=50 bucket clamp is removed');
+// The explanatory comment that replaces the four lines must be present.
+assert(/No hardcoded per-IRE settle buckets/.test(worker),'explanatory comment about dropped IRE-bucket clamps is present');
 console.log('autocal low-light handler plumbing regression OK');
