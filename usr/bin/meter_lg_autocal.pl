@@ -13053,6 +13053,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $dpg_r_prev=undef;
 		my $dpg_g_prev=undef;
 		my $dpg_b_prev=undef;
+		# Best-so-far state for this anchor. If a new iter's dE is higher than
+		# the best dE seen so far, we revert to the best state and try again.
+		# After 3 consecutive reverts without improvement, the iter loop breaks
+		# out at the best state. This is the same pattern the SDR path uses
+		# and HDR was missing.
+		my $best_de=undef;
+		my $best_dpg_r=$current_dpg->[$idx]+0;
+		my $best_dpg_g=$current_dpg->[$idx+1024]+0;
+		my $best_dpg_b=$current_dpg->[$idx+2048]+0;
+		# Deep copy @done so a revert restores the anchor list too. Each element
+		# is a hashref; copy the hash but not the references it holds.
+		my $best_anchors=[map { my $copy={}; $copy->{$_}=$done[$_]->{$_} for keys %{$done[$_]}; $copy; } @done];
+		my $consecutive_reverts=0;
 		for(my $i=1;$i<=$budget;$i++) {
 			last if(cancelled() || $upload_failed);
 			$total_inner_iters++;
@@ -13159,6 +13172,33 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the gain_* / damp_* fields become 0.0000 / damp-default.
 			my $conv_now=defined($de) && $de+0 <= $target_de+0;
 			$converged=1 if($conv_now);
+			# Best-so-far with revert: if this iter made dE worse than the best
+			# we've seen, restore the best DPG[idx] and the best @done list. The
+			# new gain (computed below) will be applied to the best state, not the
+			# bad state. If we've reverted 3 times in a row without improvement,
+			# the calibration is stuck at the best state; break out.
+			if(defined($de)) {
+			 if(!defined($best_de) || $de+0 < $best_de+0) {
+			  $best_de=$de+0;
+			  $best_dpg_r=$current_dpg->[$idx]+0;
+			  $best_dpg_g=$current_dpg->[$idx+1024]+0;
+			  $best_dpg_b=$current_dpg->[$idx+2048]+0;
+			  $best_anchors=[map { my $copy={}; $copy->{$_}=$done[$_]->{$_} for keys %{$done[$_]}; $copy; } @done];
+			  $consecutive_reverts=0;
+			 } else {
+			  # Revert: undo the bad move before computing this iter's new gain.
+			  $current_dpg->[$idx]=$best_dpg_r+0;
+			  $current_dpg->[$idx+1024]=$best_dpg_g+0;
+			  $current_dpg->[$idx+2048]=$best_dpg_b+0;
+			  @done=@{$best_anchors};
+			  $consecutive_reverts++;
+			  log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).")");
+			  if($consecutive_reverts >= 3) {
+			   log_line("HDR20 1D DPG greyscale: 3 consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
+			   last;
+			  }
+			 }
+			}
 			# Per-iter state push: lets the next-run investigation see the
 			# full trajectory in the state JSON without reconstructing from
 			# the spotread session log. Each row is one iter; rows accumulate
@@ -13267,6 +13307,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 gain_R=>$_r_gain, gain_G=>$_g_gain, gain_B=>$_b_gain,
 			 damp_R=>$_r_damp, damp_G=>$_g_damp, damp_B=>$_b_damp,
 			 dpg_idx_R=>$_idx42_r, dpg_idx_G=>$_idx42_g, dpg_idx_B=>$_idx42_b,
+			 best_de=>defined($best_de)?sprintf("%.4f",$best_de+0):undef,
+			 consecutive_reverts=>$consecutive_reverts+0,
+			 reverted=>($consecutive_reverts>0)?JSON::PP::true:JSON::PP::false,
 			};
 			$ahist->{$label}=$arow;
 			$state->{"hdr20_1d_dpg_anchor_history"}=$ahist;
@@ -13278,6 +13321,26 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				next;
 			}
 			$upload_fail_streak=0;
+		}
+		# Surface the best dE in the state JSON so the WebUI can show
+		# the calibration's actual best outcome (which may differ from the
+		# last iter if a revert fired). Also report the final anchor count.
+		$state->{"hdr20_1d_dpg_best_de"}=defined($best_de)?sprintf("%.4f",$best_de+0):undef;
+		$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
+		# After the iter loop, ensure $current_dpg[idx] reflects the best state.
+		# (Revert logic above restores on every bad iter, but the final iter
+		# might exit without a revert if it was the converged one. The best
+		# state is whatever the revert logic + save-best logic ended on.)
+		if(defined($best_de)) {
+		 if($current_dpg->[$idx]+0 != $best_dpg_r+0
+		 || $current_dpg->[$idx+1024]+0 != $best_dpg_g+0
+		 || $current_dpg->[$idx+2048]+0 != $best_dpg_b+0) {
+		  log_line("HDR20 1D DPG greyscale: final-state guard restoring best DPG (best dE=".sprintf("%.4f",$best_de).")");
+		  $current_dpg->[$idx]=$best_dpg_r+0;
+		  $current_dpg->[$idx+1024]=$best_dpg_g+0;
+		  $current_dpg->[$idx+2048]=$best_dpg_b+0;
+		  @done=@{$best_anchors};
+		 }
 		}
 		return ($converged,$last_reading);
 	};
