@@ -12881,6 +12881,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $acceptance_de=defined($config->{"lg_autocal_hdr20_dpg_acceptance_de"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_de"}+0) : 0.3;
 	$acceptance_de=0.05 if($acceptance_de < 0.05);
 	$acceptance_de=$target_de if($acceptance_de > $target_de);
+	# Meter luminance floor: below this the colorimeter reads ~0 and the gain
+	# loop has no gradient. (1.4% IRE was starting at ~0.002 nits, under the
+	# i1Display Pro Plus ~0.003-nits floor, so it quit at dE 30.) Sub-floor
+	# anchors are probe-up'd above this before the normal loop runs.
+	my $meter_floor=defined($config->{"lg_autocal_hdr20_dpg_meter_floor"}) ? ($config->{"lg_autocal_hdr20_dpg_meter_floor"}+0) : 0.003;
+	$meter_floor=0.0005 if($meter_floor < 0.0005);
+	$meter_floor=0.05 if($meter_floor > 0.05);
 
 	# Calibrate the REAL configured greyscale series in the proven bisective
 	# calibration order so every measured point lands on a UI series step (it
@@ -13132,6 +13139,33 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# move, fails, halves again, etc., until either it succeeds or the
 		# 3-consecutive-reverts break fires.
 		my $move_scaling=1.0;
+		# Probe-up: if this anchor's first read is below the meter floor (reads
+		# ~0), the gain loop has no gradient and quits -- 1.4% IRE was trapped
+		# here at ~0.002 nits (under the ~0.003-nits colorimeter floor). Ramp
+		# the anchor's DPG up (gain 2,4,8,...) until the meter reads above the
+		# floor, then run the normal loop from that resolvable point.
+		{
+			my ($probe_rd,$probe_err)=read_step($config,$rs,$state);
+			if(!$probe_err && ref($probe_rd) eq "HASH" && defined(luminance($probe_rd)) && luminance($probe_rd)+0 < $meter_floor) {
+				my $probe_gain=2.0;
+				my $probe_ok=0;
+				for(my $probe=1;$probe<=6;$probe++) {
+					last if(cancelled());
+					my @pa=(@done,{idx=>$idx,r_gain=>$probe_gain,g_gain=>$probe_gain,b_gain=>$probe_gain});
+					my $pd=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@pa);
+					last if(ref($pd) ne "ARRAY" || @$pd != 3072);
+					$current_dpg=$pd;
+					my ($puk,$pmsg)=$upload_dpg->($current_dpg);
+					last if(!$puk);
+					($probe_rd,$probe_err)=read_step($config,$rs,$state);
+					last if($probe_err || ref($probe_rd) ne "HASH");
+					my $py=luminance($probe_rd);
+					if(defined($py) && $py+0 >= $meter_floor) { $probe_ok=1; last; }
+					$probe_gain *= 2.0;
+				}
+				log_line("HDR20 1D DPG greyscale: ".$label." probe-up gain=".sprintf("%.2f",$probe_gain)." measured_Y=".sprintf("%.5f",(defined($probe_rd)?(luminance($probe_rd)//0):0)).($probe_ok?" (escaped sub-floor)":" (still sub-floor -- blind zone)"));
+			}
+		}
 		for(my $i=1;$i<=$budget;$i++) {
 			last if(cancelled() || $upload_failed);
 			$total_inner_iters++;
