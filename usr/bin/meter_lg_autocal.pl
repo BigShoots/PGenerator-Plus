@@ -16802,6 +16802,21 @@ sub read_step_once {
 		 if(ref($opts) eq "HASH" && defined($opts->{"read_timeout"}) && $opts->{"read_timeout"} > 0) {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
+		 # Also send the operator's STATIC low_light config (stable across
+		 # reads) so the WebUI/meter session can pick a session-level
+		 # METER_AVERAGING that does NOT churn on every per-read mode flip.
+		 # $config->{"low_light"}{"mode"} is the operator's card setting;
+		 # the per-read $lg_low_light_active_mode is decoupled from it.
+		 my $session_ll_mode="off";
+		 my $session_ll_enabled=JSON::PP::false;
+		 if(ref($config->{"low_light"}) eq "HASH" && $config->{"low_light"}{"enabled"}) {
+		  my $_m=lc($config->{"low_light"}{"mode"}||"off");
+		  if($_m eq "a" || $_m eq "aa" || $_m eq "aaa" || $_m eq "x" || $_m eq "x_a" || $_m eq "x_aa" || $_m eq "x_aaa") {
+		   $session_ll_mode=$_m;
+		   $session_ll_enabled=JSON::PP::true;
+		  }
+		 }
+		 $payload->{"low_light_session"}={ mode => $session_ll_mode, enabled => $session_ll_enabled };
 		 # Route the operator's Low Light Handler (Meter Settings) to autocal
 		 # reads, but ONLY when the previous read armed it (measured below the
 		 # operator's cd/m2 trigger). $lg_low_light_active_mode is recomputed
