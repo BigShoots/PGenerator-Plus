@@ -1772,10 +1772,24 @@ sub webui_meter_read (@) {
 		 $request_id=$1 if($body=~/"request_id"\s*:\s*"([A-Za-z0-9_.:-]{1,96})"/);
 			 # Low Light Handler averaging mode for this read (off/a/aa/aaa).
 			 # Passed to the meter session so dim autocal/single reads use
-			 # multi-read averaging instead of a noisy single read.
+			 # multi-read averaging instead of a noisy single read. The
+			 # per-read mode flows via the READ command so the SESSION-LEVEL
+			 # METER_AVERAGING (and the want_config 7th field) can stay
+			 # stable across reads even when this value flips every read.
 			 my $avg_mode="";
-			 $avg_mode=lc($1) if($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa)"/);
+			 $avg_mode=lc($1) if($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa|x|x_a|x_aa|x_aaa)"/);
 			 $avg_mode="" if($avg_mode eq "off");
+			 # Operator's STATIC low_light setting (the calibration card
+			 # value, NOT the per-read active mode). This stays the same for
+			 # every read in a run, so the session-level METER_AVERAGING
+			 # and want_config 7th field can use it without churning the
+			 # session when the per-read $avg_mode flips. Defaults to "off"
+			 # when the body omits it (manual/single-read paths), so the
+			 # single-read convention is preserved.
+			 my $session_avg_mode="";
+			 $session_avg_mode=lc($1) if($body=~/"low_light_session"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa|x|x_a|x_aa|x_aaa)"/);
+			 $session_avg_mode="" if($session_avg_mode eq "off");
+			 $session_avg_mode=$avg_mode if($session_avg_mode eq "");
 		 if(-f $_meter_diagnostic_read_lock) {
 		  my $diag_token="";
 		  if(open(my $dfh,"<",$_meter_diagnostic_read_lock)) { local $/; $diag_token=<$dfh>; close($dfh); }
@@ -1821,7 +1835,12 @@ sub webui_meter_read (@) {
  # Restart only when the meter config (display type, ccss, refresh, AIO) changes
  # or the daemon isn't running.
  my $aio_flag=$disable_aio ? "1" : "0";
- my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$avg_mode";
+ # $session_avg_mode is the operator's STATIC low_light setting, so the 7th
+ # field (session-level METER_AVERAGING) stays stable across reads within a
+ # run. The per-read $avg_mode flows through the READ command line, not the
+ # session config -- otherwise the persistent session respawns (35-90s on
+ # OLED) every time the per-read mode flips at the 5 cd/m2 trigger.
+ my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
  if($needs_restart) {
@@ -1854,7 +1873,11 @@ sub webui_meter_read (@) {
    select(undef,undef,undef,0.5);
   }
   &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port, ready_gate=$require_device_ready)");
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$avg_mode)) {
+  # $session_avg_mode (operator's static low_light) is the SESSION-LEVEL
+  # METER_AVERAGING, not the per-read $avg_mode -- they have to match the
+  # 7th field of want_config so the new session doesn't immediately look
+  # like a config-changed session to the next request.
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode)) {
     return &webui_meter_session_start_error_json($want_config);
   }
  }
@@ -1868,18 +1891,22 @@ sub webui_meter_read (@) {
 
  # Send the READ command to the daemon. The session helper applies this
  # settle delay before each reading, even when the current patch is reused.
+ # The trailing 15th field is the PER-READ low_light mode: meter_session.sh
+ # uses it to decide whether to respawn spotread with -Y/-x flags for this
+ # specific read (the session-level METER_AVERAGING stays put).
 			 my $read_command="READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
 			 my $cmd_signal_range=($signal_range ne "") ? $signal_range : "-";
 			 my $cmd_transport_signal_range=($transport_signal_range ne "") ? $transport_signal_range : "-";
 			 my $cmd_request_id=($request_id ne "") ? $request_id : "-";
 			 my $cmd_read_timeout=($read_timeout > 0) ? $read_timeout : "-";
-			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout";
+			 my $cmd_low_light_mode=($avg_mode ne "") ? $avg_mode : "-";
+			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode";
 		 $read_command.="\n";
  if(!&webui_meter_session_send_command($read_command)) {
   &log("WebUI: meter session command send failed, restarting daemon");
   &webui_meter_session_stop();
   &webui_meter_read_state_write('{"status":"starting"}');
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$avg_mode)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode)) {
      &log("WebUI: meter session restart failed after FIFO send error");
      return &webui_meter_session_start_error_json($want_config);
   }
