@@ -145,6 +145,7 @@ assert(/lg_autocal_hdr20_dpg_very_low_revert_budget/.test(worker),'very-low-IRE 
 // === 100% recalibration inserted into the series order after ~80% (before 90%) ===
 assert(/hdr20_white_recal/.test(worker),'100% recalibration clone flagged (hdr20_white_recal) and inserted into @ordered after ~80% so the peak is re-touched before descending');
 assert(/inserted 100% recalibration into series order after ~80%/.test(worker),'logs the recal insertion into the order');
+assert(/On the 100% recal[\s\S]{0,260}set_state_white_reference/.test(worker),'recal calls set_state_white_reference so the gamma/EOTF/luminance charts track the recalibrated peak (target_luminance/calibrated_white_luminance), not the stale pre-recal peak');
 // === Acceptance display fix: a worsened one-more records the restored best ===
 assert(/reverted_to_best/.test(worker),'acceptance writes reverted_to_best on the history row so the displayed/recorded dE reflects the restore, not the bad one-more');
 // The best / reverted / move_scaling markers must be present in the
