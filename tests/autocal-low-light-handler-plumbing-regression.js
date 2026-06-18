@@ -186,9 +186,10 @@ assert(/OK$/.test(_probe),'@done deep-copy idiom preserves all keys (behavioral 
 // white interrupted a healthy monotonic convergence, left white non-converged,
 // and the fail-fast skipped the whole series.
 assert(/if\(defined\(\$de\) && \$_anchor_ire < \$low_ire_threshold\)/.test(calBlock),'best-so-far revert is gated to low IRE (< low_ire_threshold); mid/high + 100% white converge naturally');
-// (2) The redundant provisional 100% read is gone; the caller passes the
-// calibrated white_y.
-assert(!/Reading 100% to seed the white reference/.test(worker),'provisional 100% white read removed (caller passes calibrated white_y)');
+// (2) The provisional 100% read is KEPT. It looks redundant with the 100%
+// anchor below, but removing it cancels the autocal before the 100% cal
+// (empirically confirmed); its state transitions / meter-read are required.
+assert(/Reading 100% to seed the white reference/.test(worker),'provisional 100% white read is KEPT (removing it cancels the autocal before the 100% cal)');
 // (3) The fail-fast relaxes to "no usable reading" instead of "missed strict
 // target_de", so a near-converged white proceeds to the series + upload.
 assert(/my \$white_usable=0;/.test(worker) && /if\(!\$white_usable\)/.test(worker),'white fail-fast relaxed: abort only on no usable reading, not on missing strict target_de');
