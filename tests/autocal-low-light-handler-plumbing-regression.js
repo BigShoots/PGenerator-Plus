@@ -49,13 +49,15 @@ assert(/read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RAN
 assert(/respawn_spotread \(\) \{/.test(sess),'meter_session.sh defines respawn_spotread helper');
 assert(/CURRENT_LOW_LIGHT_MODE=/.test(sess),'meter_session.sh tracks CURRENT_LOW_LIGHT_MODE');
 assert(/respawn_spotread "\$CMD_LOW_LIGHT_MODE"/.test(sess),'meter_session.sh respawns spotread when READ mode differs');
-// 100% white non-converge must fail-fast: a no-op 1.0/1.0/1.0 anchor
-// pushed when calibrate_anchor returned conv=0 must NOT be uploaded to
-// the TV. The 100% block now sets $upload_failed=1 with a distinctive
-// exit reason so the lower-anchor foreach (which honours $upload_failed
-// in its `last if(cancelled() || $upload_failed)`) does not run, and so
-// the function-exit block leaves hdr20_1d_dpg_uploaded=JSON::PP::false.
-assert(/white_not_converged/.test(worker),'100% block sets white_not_converged exit reason on non-converge');
+// 100% white fail-fast: a totally failed 100% read (no usable reading -> the
+// identity 1.0/1.0/1.0 anchor) must NOT be uploaded. The block sets
+// $upload_failed=1 with exit reason "white_no_reading" so the lower-anchor
+// foreach (which honours $upload_failed in its `last if(cancelled() || $upload_failed)`)
+// does not run, and so the function-exit block leaves
+// hdr20_1d_dpg_uploaded=JSON::PP::false. A white that produced a usable
+// reading but merely missed the strict target_de PROCEEDS (does not set
+// $upload_failed) so the greyscale series runs.
+assert(/white_no_reading/.test(worker),'100% block sets white_no_reading exit reason only when no usable reading');
 // The final hdr20_1d_dpg_uploaded=JSON::PP::true assignment is now
 // guarded by a follow-up that flips it to JSON::PP::false when
 // $upload_failed is true OR hdr20_1d_dpg_white_converged is false.
@@ -179,6 +181,17 @@ assert(!/\$done\[\$_\]/.test(worker),'no "$done[$_]" remains (indexes @done with
 const _cp=require('child_process');
 const _probe=_cp.execSync("perl -wMstrict -e 'my @d=({a=>1,b=>2},{c=>3,d=>4}); my $b=[map { +{ %$_ } } @d]; die \"BAD0\" unless scalar(keys %{$b->[0]})==2; die \"BAD1\" unless exists $b->[0]{a} && exists $b->[1]{c}; print \"OK\";'").toString();
 assert(/OK$/.test(_probe),'@done deep-copy idiom preserves all keys (behavioral perl probe)');
+// === HDR greyscale series-skip regression (white non-converge + revert at high IRE) ===
+// (1) The revert+halve logic must be gated to low IRE only; running it at 100%
+// white interrupted a healthy monotonic convergence, left white non-converged,
+// and the fail-fast skipped the whole series.
+assert(/if\(defined\(\$de\) && \$_anchor_ire < \$low_ire_threshold\)/.test(calBlock),'best-so-far revert is gated to low IRE (< low_ire_threshold); mid/high + 100% white converge naturally');
+// (2) The redundant provisional 100% read is gone; the caller passes the
+// calibrated white_y.
+assert(!/Reading 100% to seed the white reference/.test(worker),'provisional 100% white read removed (caller passes calibrated white_y)');
+// (3) The fail-fast relaxes to "no usable reading" instead of "missed strict
+// target_de", so a near-converged white proceeds to the series + upload.
+assert(/my \$white_usable=0;/.test(worker) && /if\(!\$white_usable\)/.test(worker),'white fail-fast relaxed: abort only on no usable reading, not on missing strict target_de');
 // === Drop hardcoded IRE-bucket settle clamps (commit 1) ====================
 // The four $delay_ms=3000/4200/3200/2400 lines that previously shadowed
 // the user's delay_ms have been removed. Only the user-configurable delay_ms
