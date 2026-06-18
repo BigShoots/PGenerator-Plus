@@ -24989,11 +24989,17 @@ async function meterStartLg3dAutoCal(options){
   target_gamma:targetGamma,
   picture_mode:pictureMode,
   ...meterLg3dLutCommandPayload(signalMode),
-  refresh_rate:getMeterRefreshRate()||undefined,
- require_device_ready:false,
- requested_signal_mode:signalMode,
- ...meterPatternInsertionPayload(),
- upload:upload,
+refresh_rate:getMeterRefreshRate()||undefined,
+  require_device_ready:false,
+  requested_signal_mode:signalMode,
+  // Pass the operator's Meter Settings low_light card through to the 3D
+  // worker so the noise-floor black read engages the multi-read averaging
+  // and the meter doesn't sit on a single long integration that exceeds
+  // the per-step deadline. Without this the 3D worker sees no low_light
+  // and the meter hits the 150s default timeout on the black read.
+  low_light:meterLowLightReadState(),
+  ...meterPatternInsertionPayload(),
+  upload:upload,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
   full_autocal_phase:fullWorkflow?'3d-lut':undefined,
