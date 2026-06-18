@@ -134,7 +134,14 @@ assert(/^\s*if\(\$signal_mode =~ \/\^hdr10\?\$\/\)/m.test(_expGammaSrc),'expecte
 // (so the revert prevents the bad adjust from being built).
 assert(/my \$consecutive_reverts=0;/.test(calBlock),'calibrate_anchor declares $consecutive_reverts counter (3-revert break fires when this hits 3)');
 assert(/@done=@\{\$best_anchors\};/.test(calBlock),'REVERT branch restores @done from $best_anchors');
-assert(/\$consecutive_reverts\+\+;/.test(calBlock)&&/\$consecutive_reverts >= 3/.test(calBlock),'REVERT branch increments $consecutive_reverts and breaks at 3');
+assert(/\$consecutive_reverts\+\+;/.test(calBlock)&&/\$_revert_budget=.*?\$very_low_revert_budget : 3/.test(calBlock),'REVERT branch increments $consecutive_reverts and breaks at the IRE-dependent revert budget (3 normally, very_low_revert_budget for <2% IRE so 1.4% keeps trying longer)');
+// === Very-low-IRE (<2%, e.g. 1.4%) robustness: max averaging + longer retry ===
+// 1.4% (~0.066 nits) is at the meter noise floor: default it to the strongest
+// -Y aaa averaging (everything else uses whatever the meter settings specify),
+// and let it keep retrying past 3 reverts.
+assert(/return "aaa" if\(defined\(\$step_ire\)/.test(worker),'very-low-IRE (<2%) defaults to the strongest -Y aaa averaging; all other patches use the meter settings');
+assert(/lg_autocal_hdr20_dpg_very_low_ire_threshold/.test(worker),'very-low-IRE threshold config declared (default 2.0)');
+assert(/lg_autocal_hdr20_dpg_very_low_revert_budget/.test(worker),'very-low-IRE revert-budget config declared (default 12, vs 3 otherwise)');
 // The best / reverted / move_scaling markers must be present in the
 // per-iter state push (the row written into hdr20_1d_dpg_anchor_history)
 // so a run that reverts shows up in the state JSON for diagnosis.
