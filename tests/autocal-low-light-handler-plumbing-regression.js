@@ -118,52 +118,45 @@ const _expGammaSrc=worker.slice(worker.indexOf('sub lg_autocal_expected_gamma_fo
 assert(/return 2\.2;/.test(_expGammaSrc),'expected_gamma returns 2.2 for SDR (constant)');
 assert(/return 2\.4;/.test(_expGammaSrc),'expected_gamma returns 2.4 for HLG (approximation)');
 assert(/^\s*if\(\$signal_mode =~ \/\^hdr10\?\$\/\)/m.test(_expGammaSrc),'expected_gamma branches on hdr10? regex for HDR10/PQ');
-// === Best-so-far with revert (HDR20 autocal) =============================
+// === Best-so-far revert (HDR20 autocal) ===================================
 // At low IRE (4% / 1.4% / etc.) the per-iter adjustment can oscillate: the
 // autocal measures a worse dE than the previous iter, but the previous iter
-// has already been uploaded to the TV. The best-so-far + revert pattern
-// snapshots the lowest-dE state (per-channel DPG and @done) on every iter
-// that beats the best, and on any iter that does NOT beat the best it
-// restores the saved snapshot BEFORE the new gain is applied so the bad
-// move never propagates. After 3 consecutive reverts without improvement
-// the iter loop breaks out at the best state. Same pattern the SDR path
-// has used for a while; HDR was missing it.
-// State init (best_de, best_dpg_r/g/b, best_anchors, consecutive_reverts)
-// lives at the top of calibrate_anchor; the check itself sits AFTER the
-// convergence test (so a converged iter is never over-written by a "revert")
-// and BEFORE the gain computation (so the revert prevents the bad adjust).
-assert(/my \$best_de=undef;/.test(calBlock)&&/my \$best_dpg_r=\$current_dpg->\[\$idx\]\+0;/.test(calBlock),'calibrate_anchor declares $best_de and $best_dpg_r state');
-assert(/my \$best_dpg_g=\$current_dpg->\[\$idx\+1024\]\+0;/.test(calBlock)&&/my \$best_dpg_b=\$current_dpg->\[\$idx\+2048\]\+0;/.test(calBlock),'calibrate_anchor declares $best_dpg_g/b (per-channel best DPG snapshot)');
-assert(/my \$best_anchors=\[map \{ my \$copy=\{\}; \$copy->\{\$_\}=\$done\[\$_\]->\{\$_\} for keys %\{\$done\[\$_\]\}; \$copy; \} \@done\];/.test(calBlock),'calibrate_anchor declares $best_anchors via hashref deep copy idiom');
-assert(/my \$consecutive_reverts=0;/.test(calBlock),'calibrate_anchor declares $consecutive_reverts counter');
-// The revert check: when current dE is NOT strictly better than best_de,
-// restore the best DPG[idx]/G/B and the best @done, log the revert, and
-// either retry (consecutive_reverts++) or break out (last). Any new best
-// snapshot is taken via the same per-channel + hashref-copy idiom. The
-// 3-consecutive-reverts exit prevents endless oscillation at the noise floor.
-assert(/if\(\!defined\(\$best_de\) \|\| \$de\+0 < \$best_de\+0\)/.test(calBlock),'revert check uses strict-less-than (any non-improvement reverts)');
-assert(/\$best_dpg_r=\$current_dpg->\[\$idx\]\+0;/.test(calBlock)&&/\$best_dpg_g=\$current_dpg->\[\$idx\+1024\]\+0;/.test(calBlock)&&/\$best_dpg_b=\$current_dpg->\[\$idx\+2048\]\+0;/.test(calBlock),'best snapshot is per-channel (R/G/B saved separately)');
-assert(/@done=\@\{\$best_anchors\};/.test(calBlock)&&/\$current_dpg->\[\$idx\]=\$best_dpg_r\+0;/.test(calBlock),'revert restores @done and the per-channel DPG[idx] from the best snapshot');
-assert(/consecutive reverts, breaking/.test(calBlock),'revert log mentions "consecutive reverts, breaking" on the 3-stall exit');
-assert(/if\(\$consecutive_reverts >= 3\) \{[\s\S]*?last;/.test(calBlock),'revert increments $consecutive_reverts and last; at >= 3 (early-exit-on-stall)');
-// Per-iter state push carries the new fields so the trajectory is visible
-// in the state JSON: best_de (current best so far), consecutive_reverts,
-// and a reverted boolean (true after any revert this iter).
-assert(/best_de=>defined\(\$best_de\)\?sprintf\("%.4f",\$best_de\+0\):undef/.test(calBlock),'per-iter push carries best_de field');
-assert(/consecutive_reverts=>\$consecutive_reverts\+0/.test(calBlock),'per-iter push carries consecutive_reverts counter');
-assert(/reverted=>\(\$consecutive_reverts>0\)\?JSON::PP::true:JSON::PP::false/.test(calBlock),'per-iter push carries reverted boolean (true after any revert)');
-// Final-state guard: after the iter loop, if $current_dpg[idx] diverges
-// from the best snapshot, restore the best. This catches the path where
-// the loop exited via the converged `last` BEFORE a revert fired but the
-// last iter's DPG is still the bad one (e.g. iter cap reached on a bad
-// streak). The guard logs a session-line so a post-mortem can grep it.
-assert(/final-state guard restoring best DPG/.test(calBlock),'calibrate_anchor has a final-state guard that restores best DPG if the post-loop state diverges');
-assert(/hdr20_1d_dpg_best_de/.test(calBlock),'calibrate_anchor surfaces $best_de into hdr20_1d_dpg_best_de in the state JSON');
+// has already been uploaded to the TV. The best-so-far revert pattern
+// snapshots the full DPG and @done of the best iter and, when a later
+// iter's dE is significantly worse (>5% relative), restores the snapshot
+// and exits the anchor loop. The 5% gap avoids false alarms from meter
+// noise at the < 1 nit floor. The state init (best_de, best_dpg, best_done,
+// revert_count) lives at the top of calibrate_anchor; the check itself sits
+// AFTER the convergence test (so a converged iter is never over-written by a
+// "revert") and BEFORE the gain computation (so the revert prevents the bad
+// adjust from being built).
+assert(/my \$best_de=undef;/.test(calBlock)&&/my \$best_dpg=undef;/.test(calBlock),'calibrate_anchor declares best_de + best_dpg state');
+assert(/my \$best_done=\[\];/.test(calBlock),'calibrate_anchor declares best_done = [] (pre-adjustment @done snapshot)');
+assert(/my \$revert_count=0;/.test(calBlock),'calibrate_anchor declares $revert_count diagnostic counter');
+// The 5% relative threshold: 1.05x of best_de. The block must:
+//   1. Snapshot best_dpg / best_done when the current dE beats best_de.
+//   2. Revert @done and @{$current_dpg} when current dE > best_de * 1.05.
+//   3. Increment $revert_count and `last` on the revert path.
+assert(/\$best_dpg=\[@\{\$current_dpg\}\];/.test(calBlock),'best-so-far snapshots $current_dpg via [@{...}] (deep copy)');
+assert(/\$best_done=\[@done\];/.test(calBlock),'best-so-far snapshots @done via [@done] (deep copy)');
+assert(/\$de\+0 > \$best_de\+0\*1\.05/.test(calBlock),'revert threshold is 5% relative (de > best * 1.05)');
+assert(/@done=@\{\$best_done\};/.test(calBlock)&&/@\{\$current_dpg\}=@\{\$best_dpg\};/.test(calBlock),'revert restores @done and @{$current_dpg} from the best snapshot');
+assert(/\$revert_count\+\+;/.test(calBlock)&&/last;/.test(calBlock),'revert increments $revert_count and exits the anchor loop');
+// The best / reverted markers must be written into the per-iter history row
+// at [-1] so a run that reverts shows up in the state JSON for diagnosis.
+assert(/hdr20_1d_dpg_anchor_history"\}\{\$label\}\[-1\]\{best\}=JSON::PP::true/.test(calBlock),'best iter is tagged with {best}=true in anchor history');
+assert(/hdr20_1d_dpg_anchor_history"\}\{\$label\}\[-1\]\{reverted\}=JSON::PP::true/.test(calBlock),'reverted iter is tagged with {reverted}=true in anchor history');
 // The best-so-far block must sit AFTER the convergence test (so a converged
 // iter does not get a false-positive revert on its own exit) and BEFORE the
 // gain computation (so the revert prevents the bad adjust from being built).
-const _convNowPos=calBlock.indexOf('my $conv_now=defined($de) && $de+0 <= $target_de+0;');
-const _bestSoFarPos=calBlock.indexOf('Best-so-far with revert');
+// The convergence test in this closure is split: $conv_now is set first,
+// then $converged=1 if($conv_now);, then the per-iter state push, then
+// `last if($conv_now);`. The best-so-far block is sandwiched between
+// `$converged=1 if($conv_now);` and the per-iter state push, so we use
+// `$converged=1 if($conv_now);` as the AFTER anchor and the gain computation
+// as the BEFORE anchor.
+const _convNowPos=calBlock.indexOf('$converged=1 if($conv_now);');
+const _bestSoFarPos=calBlock.indexOf('reverting to best and moving on');
 const _gainPos=calBlock.indexOf('lg_autocal_26_hdr20_dpg_gain($reading');
 assert(_convNowPos>=0 && _bestSoFarPos>=0 && _gainPos>=0 && _convNowPos < _bestSoFarPos && _bestSoFarPos < _gainPos,'best-so-far block sits between convergence test and gain computation');
 console.log('autocal low-light handler plumbing regression OK');
