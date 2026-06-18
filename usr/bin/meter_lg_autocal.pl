@@ -13241,13 +13241,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# Best-so-far with revert runs ONLY at low IRE (< low_ire_threshold,
 			# default 5%): it was built to break the constant-amplitude
 			# oscillation at 1.4%/4% IRE. At mid/high IRE (incl. 100% white)
-			# convergence is monotonic, and the revert+halve interrupts a healthy
-			# descent -- leaving the anchor non-converged, which then tripped the
-			# white fail-fast and skipped the whole greyscale series. For
-			# non-low-IRE anchors the block is skipped: $best_de stays undef,
-			# move_scaling stays 1.0 (full moves), and the final-state guard
-			# below (gated on defined($best_de)) is a no-op.
-			if(defined($de) && $_anchor_ire < $low_ire_threshold && !$acceptance_pending) {
+			# Track the best-measured dE for EVERY anchor (so the final-state
+			# guard below can leave the TV at the best result, not the last
+			# iter). The mid-loop revert+halve runs ONLY at low IRE -- it breaks
+			# the constant-amplitude oscillation at 1.4%/4% but interrupts a
+			# healthy monotonic descent at mid/high IRE (it left 100% white
+			# non-converged and tripped the fail-fast). At mid/high IRE we just
+			# record the best and keep converging normally.
+			if(defined($de) && !$acceptance_pending) {
 				if(!defined($best_de) || $de+0 < $best_de+0) {
 					$best_de=$de+0;
 					$best_dpg=[@{$current_dpg}];
@@ -13257,8 +13258,8 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# is computed fresh from the new Y, so a fresh full-size move is
 					# the right starting point.
 					$move_scaling=1.0;
-				} else {
-					# Revert: undo the bad move before computing this iter's new gain.
+				} elsif($_anchor_ire < $low_ire_threshold) {
+					# Revert (low-IRE only): undo the bad move before the next gain.
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
@@ -13276,6 +13277,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					}
 				}
 			}
+			# Per-read audit line: lets the operator tail the log in real time and
+			# confirm every read is recorded + which is the running best.
+			log_line("HDR20 1D DPG greyscale: ".$label." i".$i." dE=".sprintf("%.4f",defined($de)?$de+0:-1)." best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($acceptance_pending?" (acceptance)":""));
 			# Per-iter state push: lets the next-run investigation see the
 			# full trajectory in the state JSON without reconstructing from
 			# the spotread session log. Each row is one iter; rows accumulate
@@ -13475,12 +13479,22 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
 		# After the iter loop, leave the TV at the best-measured DPG. The last
 		# iter may have been an improve+build, so $current_dpg is then the
-		# unmeasured new build -- restore the full best snapshot. Revert iters
-		# already keep $current_dpg in sync with $best_dpg, so this is a no-op
-		# for them.
+		# unmeasured new build -- restore the full best snapshot AND re-upload it
+		# so the wire state matches (otherwise the next anchor reads a stale
+		# curve). Skip the re-upload when the last build already WAS the best
+		# (converged/reverted iters) to avoid a redundant WebOS call.
 		if(defined($best_de) && !$acceptance_pending) {
-			@{$current_dpg}=@{$best_dpg};
-			@done=@{$best_anchors};
+			my $_differs=0;
+			for(my $j=0;$j<@{$current_dpg};$j++) {
+				if(($current_dpg->[$j]+0) != ($best_dpg->[$j]+0)) { $_differs=1; last; }
+			}
+			if($_differs) {
+				@{$current_dpg}=@{$best_dpg};
+				@done=@{$best_anchors};
+				my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+				$state->{"current_delta_e"}=$best_de+0;
+				log_line("HDR20 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"));
+			}
 		}
 		return ($converged,$last_reading);
 	};
