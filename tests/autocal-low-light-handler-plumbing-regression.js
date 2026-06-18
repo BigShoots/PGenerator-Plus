@@ -21,14 +21,14 @@ assert(/\$payload->\{"low_light"\}=/.test(worker)&&/\$config->\{"low_light"\}\{"
 // luminance vs the operator cd/m2 trigger, NOT applied unconditionally.
 assert(/our \$lg_low_light_active_mode="off";/.test(worker),'worker declares $lg_low_light_active_mode state (default off)');
 assert(/sub lg_low_light_mode_for_reading \{/.test(worker),'worker defines lg_low_light_mode_for_reading');
-const llh=worker.slice(worker.indexOf('sub lg_low_light_mode_for_reading'),worker.indexOf('sub lg_low_light_mode_for_reading')+700);
+const llh=worker.slice(worker.indexOf('sub lg_low_light_mode_for_reading'),worker.indexOf('sub lg_low_light_mode_for_reading')+2000);
 assert(/my \$trigger=\(\$config->\{"low_light"\}\{"trigger"\}\|\|0\)\+0;/.test(llh),'mode helper reads the operator trigger');
 assert(/my \$Y=luminance\(\$reading\);/.test(llh),'mode helper uses the MEASURED luminance');
 assert(/return \(\$Y < \$trigger\) \? \$mode : "off";/.test(llh),'mode helper arms averaging only below trigger');
 // The read payload gates on the armed state, not "enabled" directly.
 assert(/if\(\$lg_low_light_active_mode ne "off"\) \{\s*\$payload->\{"low_light"\}=\{ mode => \$lg_low_light_active_mode/.test(worker),'read payload gates low_light on the armed active mode');
 // The active mode is recomputed after a successful read.
-assert(/\$lg_low_light_active_mode=lg_low_light_mode_for_reading\(\$config,\$reading\);/.test(worker),'worker re-arms the handler from each read result');
+assert(/\$lg_low_light_active_mode=lg_low_light_mode_for_reading\(\$config,\$reading,\$step\);/.test(worker),'worker re-arms the handler from each read result (passes $step for 80-IRE guard)');
 // Static low_light_session is sent so the WebUI can pin a stable session-level
 // METER_AVERAGING that does not churn on every per-read mode flip.
 assert(/\$payload->\{"low_light_session"\}=\{ mode => \$session_ll_mode/.test(worker),'worker adds low_light_session (static) to read payload');
@@ -49,4 +49,25 @@ assert(/read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RAN
 assert(/respawn_spotread \(\) \{/.test(sess),'meter_session.sh defines respawn_spotread helper');
 assert(/CURRENT_LOW_LIGHT_MODE=/.test(sess),'meter_session.sh tracks CURRENT_LOW_LIGHT_MODE');
 assert(/respawn_spotread "\$CMD_LOW_LIGHT_MODE"/.test(sess),'meter_session.sh respawns spotread when READ mode differs');
+// 100% white non-converge must fail-fast: a no-op 1.0/1.0/1.0 anchor
+// pushed when calibrate_anchor returned conv=0 must NOT be uploaded to
+// the TV. The 100% block now sets $upload_failed=1 with a distinctive
+// exit reason so the lower-anchor foreach (which honours $upload_failed
+// in its `last if(cancelled() || $upload_failed)`) does not run, and so
+// the function-exit block leaves hdr20_1d_dpg_uploaded=JSON::PP::false.
+assert(/white_not_converged/.test(worker),'100% block sets white_not_converged exit reason on non-converge');
+// The final hdr20_1d_dpg_uploaded=JSON::PP::true assignment is now
+// guarded by a follow-up that flips it to JSON::PP::false when
+// $upload_failed is true OR hdr20_1d_dpg_white_converged is false.
+// The two flags must appear in the same block (the gated reassignment)
+// so an upload cannot leak through.
+assert(/\$state->\{"hdr20_1d_dpg_uploaded"\}=JSON::PP::true;[\s\S]{0,400}if\(\$upload_failed \|\| !\$state->\{"hdr20_1d_dpg_white_converged"\}\)/.test(worker),'hdr20_1d_dpg_uploaded is gated on !$upload_failed and white-converged');
+// respawn_spotread now waits 150 iterations (15s) per attempt and
+// retries once on timeout, so a one-shot i1d3 AIO re-init that takes
+// >5s no longer wedges the per-read low_light switch.
+assert(/while \(\( _rt < 150 \)\)/.test(sess),'meter_session.sh respawn wait is 150 iterations (15s) per attempt');
+// The 100% IRE hard guard inside lg_low_light_mode_for_reading forces
+// "off" at IRE >= 80 regardless of the measured Y. The 80.0 literal
+// must live in the LLH function body (slice), not in unrelated code.
+assert(/80\.0/.test(llh),'lg_low_light_mode_for_reading has 80-IRE hard guard (returns "off" at IRE >= 80)');
 console.log('autocal low-light handler plumbing regression OK');
