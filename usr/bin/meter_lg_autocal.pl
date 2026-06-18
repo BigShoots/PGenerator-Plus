@@ -13527,6 +13527,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				if(defined($wy) && $wy+0 > 0) {
 					$white_ref=$wy+0;
 					$state->{"hdr20_1d_dpg_white_ref"}=$white_ref+0;
+					# Sync the chart target-EOTF peak (target_luminance /
+					# calibrated_white_luminance) to the measured peak.
+					set_state_white_reference($state,$white_ref);
 				}
 			}
 			push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
@@ -13583,6 +13586,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			if(defined($wy) && $wy+0 > 0) {
 				$white_ref=$wy+0;
 				$state->{"hdr20_1d_dpg_white_ref"}=$white_ref+0 if(ref($state) eq "HASH");
+				# Keep the chart target-EOTF peak in sync: the gamma/EOTF/luminance
+				# charts read target_luminance/calibrated_white_luminance (not
+				# hdr20_1d_dpg_white_ref), so without this they keep plotting the
+				# pre-recal peak after the recal changes it.
+				set_state_white_reference($state,$white_ref);
 			}
 		}
 		if(ref($state) eq "HASH") {
