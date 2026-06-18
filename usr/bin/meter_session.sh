@@ -422,35 +422,71 @@ respawn_spotread () {
   kill -9 "$BG_PID" 2>/dev/null
  fi
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
- # Truncate (NOT unlink) OUTFILE so the readiness wait does not match
- # the previous session's stale "to take a reading:" line. `script`
- # would create a new inode if we unlinked, desyncing the read-side cat.
- : > "$OUTFILE"
- # Rebuild SR_CMD with the new low_light flags. AVG_FLAG, DISPLAY_TYPE,
- # CCSS_FILE, REFRESH_RATE, and AIO are unchanged -- the only delta
- # between this respawn and the initial startup is the averaging flags.
- SR_CMD=$(build_sr_cmd "$new_mode")
- cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
- BG_PID=$!
- exec 3>"$CMDPIPE"
- log "respawn: spotread respawned (bg_pid=$BG_PID mode=$new_mode)"
- # Wait for "to take a reading:" — colorimeters re-ready in <2s; allow
- # up to 30s in case a spectro does a refresh re-cal.
- local _rt=0
- while (( _rt < 300 )); do
-  local _co
-  _co=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-  echo "$_co" | grep -q "to take a reading:" && break
-  sleep 0.1
-  _rt=$(( _rt + 1 ))
+ # The wait-for-ready loop below is run twice (150 iterations x 0.1s =
+ # 15s per attempt, 30s total). The i1d3 AIO can take >5s to re-init
+ # after a per-read low_light mode change (the previous step's averaging
+ # flags must settle and the new command pipeline must be reopened), and
+ # a single one-shot USB init hiccup is recovered by the second attempt.
+ # The first attempt is the initial respawn; the second is a clean
+ # re-exec (printf Q + kill cycle + new script invocation) so we do not
+ # pay a full session restart.
+ for _retry in 1 2; do
+  # Truncate (NOT unlink) OUTFILE so the readiness wait does not match
+  # the previous session's stale "to take a reading:" line. `script`
+  # would create a new inode if we unlinked, desyncing the read-side cat.
+  : > "$OUTFILE"
+  # Rebuild SR_CMD with the new low_light flags. AVG_FLAG, DISPLAY_TYPE,
+  # CCSS_FILE, REFRESH_RATE, and AIO are unchanged -- the only delta
+  # between this respawn and the initial startup is the averaging flags.
+  SR_CMD=$(build_sr_cmd "$new_mode")
+  cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
+  BG_PID=$!
+  exec 3>"$CMDPIPE"
+  log "respawn: spotread respawned (bg_pid=$BG_PID mode=$new_mode attempt=$_retry)"
+  # Wait for "to take a reading:" — colorimeters re-ready in <2s; allow
+  # up to 15s for the i1d3 AIO to re-init after a mode change. The
+  # second iteration of the outer retry loop gives a second 15s window
+  # after a clean re-exec.
+  local _rt=0
+  while (( _rt < 150 )); do
+   local _co
+   _co=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+   echo "$_co" | grep -q "to take a reading:" && break
+   sleep 0.1
+   _rt=$(( _rt + 1 ))
+  done
+  if sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
+   CURRENT_LOW_LIGHT_MODE="$new_mode"
+   return 0
+  fi
+  log "respawn: spotread failed to ready within 15s on attempt $_retry, will retry with clean re-exec"
+  # Clean quit + kill cycle for the retry. Same logic as the initial
+  # shutdown above but applied to the just-failed spotread.
+  printf "Q" >&3 2>/dev/null
+  exec 3>&- 2>/dev/null
+  local _w2=0
+  while (( _w2 < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
+   sleep 0.1
+   _w2=$(( _w2 + 1 ))
+  done
+  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+   kill "$BG_PID" 2>/dev/null
+   pkill -TERM -x spotread 2>/dev/null
+   local _t2=0
+   while (( _t2 < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
+    sleep 0.1
+    _t2=$(( _t2 + 1 ))
+   done
+  fi
+  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+   pkill -9 -P "$BG_PID" 2>/dev/null
+   kill -9 "$BG_PID" 2>/dev/null
+  fi
+  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  done
- if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
-  log "respawn: spotread failed to ready within 30s, surfacing error"
-  write_state '{"status":"error","message":"Meter respawn failed (low-light mode change)"}'
-  return 1
- fi
- CURRENT_LOW_LIGHT_MODE="$new_mode"
- return 0
+ log "respawn: spotread failed to ready within 15s on both attempts, surfacing error"
+ write_state '{"status":"error","message":"Meter respawn failed (low-light mode change)"}'
+ return 1
 }
 trap cleanup EXIT INT TERM
 
