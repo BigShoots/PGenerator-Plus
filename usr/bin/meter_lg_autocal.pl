@@ -13059,17 +13059,15 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# out at the best state. This is the same pattern the SDR path uses
 		# and HDR was missing.
 		my $best_de=undef;
-		my $best_dpg_r=$current_dpg->[$idx]+0;
-		my $best_dpg_g=$current_dpg->[$idx+1024]+0;
-		my $best_dpg_b=$current_dpg->[$idx+2048]+0;
-		# Deep copy @done so a revert restores the anchor list too. Each element
-		# is a hashref; copy the hash but not the references it holds. Use $src
-		# so the inner `for keys` does not shadow the outer map's $_ -- a
-		# shadowed $_ makes the hashslice dereference fall back to $done[$_]
-		# in dynamic-scope and emit "Can't use an undefined value as a HASH
-		# reference" warnings once per key, which flood the autocal log when
-		# the meter session is stuck and OOM the worker in minutes.
-		my $best_anchors=[map { my $src=$done[$_]; my $copy={}; $copy->{$_}=$src->{$_} for keys %$src; $copy; } @done];
+		# Full 3072-value DPG snapshot of the state that produced the best dE.
+		# build_hdr20_1d_dpg rewrites the whole curve (not just the 3 anchor
+		# slots), so a revert must restore the entire array.
+		my $best_dpg=[@{$current_dpg}];
+		# Shallow copy of each @done hashref so a revert restores the anchor
+		# list too. The earlier idiom indexed @done with the map element (a
+		# hashref, numified to a giant index) and silently produced empty
+		# hashes, wiping @done on every revert.
+		my $best_anchors=[map { +{ %$_ } } @done];
 		my $consecutive_reverts=0;
 		# Move-scaling factor: the next iter's damp is scaled toward 1.0 (no
 		# change) by this factor. Reset to 1.0 on every successful iter (dE
@@ -13196,12 +13194,8 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			if(defined($de)) {
 				if(!defined($best_de) || $de+0 < $best_de+0) {
 					$best_de=$de+0;
-					$best_dpg_r=$current_dpg->[$idx]+0;
-					$best_dpg_g=$current_dpg->[$idx+1024]+0;
-					$best_dpg_b=$current_dpg->[$idx+2048]+0;
-					# $src holds the hashref so the inner `for keys` does not
-					# shadow $_ -- same rationale as the closure state init above.
-					$best_anchors=[map { my $src=$done[$_]; my $copy={}; $copy->{$_}=$src->{$_} for keys %$src; $copy; } @done];
+					$best_dpg=[@{$current_dpg}];
+					$best_anchors=[map { +{ %$_ } } @done];
 					$consecutive_reverts=0;
 					# Successful iter: reset the move-scaling to full. The next gain
 					# is computed fresh from the new Y, so a fresh full-size move is
@@ -13209,9 +13203,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$move_scaling=1.0;
 				} else {
 					# Revert: undo the bad move before computing this iter's new gain.
-					$current_dpg->[$idx]=$best_dpg_r+0;
-					$current_dpg->[$idx+1024]=$best_dpg_g+0;
-					$current_dpg->[$idx+2048]=$best_dpg_b+0;
+					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
 					# Halve the move-scaling so the next iter makes a smaller move.
@@ -13371,20 +13363,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# last iter if a revert fired). Also report the final anchor count.
 		$state->{"hdr20_1d_dpg_best_de"}=defined($best_de)?sprintf("%.4f",$best_de+0):undef;
 		$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
-		# After the iter loop, ensure $current_dpg[idx] reflects the best state.
-		# (Revert logic above restores on every bad iter, but the final iter
-		# might exit without a revert if it was the converged one. The best
-		# state is whatever the revert logic + save-best logic ended on.)
+		# After the iter loop, leave the TV at the best-measured DPG. The last
+		# iter may have been an improve+build, so $current_dpg is then the
+		# unmeasured new build -- restore the full best snapshot. Revert iters
+		# already keep $current_dpg in sync with $best_dpg, so this is a no-op
+		# for them.
 		if(defined($best_de)) {
-			if($current_dpg->[$idx]+0 != $best_dpg_r+0
-			|| $current_dpg->[$idx+1024]+0 != $best_dpg_g+0
-			|| $current_dpg->[$idx+2048]+0 != $best_dpg_b+0) {
-				log_line("HDR20 1D DPG greyscale: final-state guard restoring best DPG (best dE=".sprintf("%.4f",$best_de).")");
-				$current_dpg->[$idx]=$best_dpg_r+0;
-				$current_dpg->[$idx+1024]=$best_dpg_g+0;
-				$current_dpg->[$idx+2048]=$best_dpg_b+0;
-				@done=@{$best_anchors};
-			}
+			@{$current_dpg}=@{$best_dpg};
+			@done=@{$best_anchors};
 		}
 		return ($converged,$last_reading);
 	};
