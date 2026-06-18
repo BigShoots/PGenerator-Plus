@@ -70,4 +70,11 @@ assert(/while \(\( _rt < 150 \)\)/.test(sess),'meter_session.sh respawn wait is 
 // "off" at IRE >= 80 regardless of the measured Y. The 80.0 literal
 // must live in the LLH function body (slice), not in unrelated code.
 assert(/80\.0/.test(llh),'lg_low_light_mode_for_reading has 80-IRE hard guard (returns "off" at IRE >= 80)');
+// calibrate_anchor must log per-iter measured/target Y, dE, gain, damp, and
+// the DPG idx values into hdr20_1d_dpg_anchor_history on the state JSON, so a
+// 4%/1.4% IRE run that stalls is diagnosable in seconds. The autocal log
+// only carries errors and the spotread session log is overwritten on respawn,
+// so without this trace the per-iter trajectory has to be reconstructed from
+// raw XYZ reads.
+assert(/hdr20_1d_dpg_anchor_history/.test(worker),'calibrate_anchor logs per-iter anchor history into hdr20_1d_dpg_anchor_history');
 console.log('autocal low-light handler plumbing regression OK');
