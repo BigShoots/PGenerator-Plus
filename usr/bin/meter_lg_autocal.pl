@@ -12979,16 +12979,44 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		log_line("HDR20 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
 	}
 
-	# White reference: the caller passes the already-calibrated 100% peak Y
-	# (the prior black-read + 100%-calibration flow established it). No
-	# provisional 100% read here -- the 100% anchor below measures the peak
-	# in-loop and refines $white_ref to the CALIBRATED peak Y, which then
-	# references every lower target.
+	# Provisional white reference: read 100% now to seed $white_ref, then the
+	# 100% anchor below refines it to the CALIBRATED peak Y which references
+	# every lower target.
+	# NOTE: this provisional read is REQUIRED. It looks redundant with the 100%
+	# anchor calibration below, but removing it (and seeding $white_ref straight
+	# from the caller's $white_y) causes the autocal to cancel before the 100%
+	# calibration -- empirically confirmed 2026-06-18. The state transitions /
+	# meter-read here are depended on by the flow; do not remove.
 	my ($white_step)=grep { autocal_step_is_white($_) } @ordered;
-	return "lg_autocal_26_run_hdr20_dpg_greyscale: missing white_y (caller passed no calibrated 100% reference)"
-		unless(defined($white_y) && $white_y+0 > 0);
-	my $white_ref=$white_y+0;
-	log_line("HDR20 1D DPG greyscale: white reference from caller white_y=".$white_ref);
+	my $white_ref=undef;
+	if(ref($white_step) eq "HASH" && !cancelled()) {
+		my $rs=fixed_lg_autocal_step($config,$white_step);
+		$state->{"current_name"}="HDR20 1D DPG 100% (white reference)";
+		$state->{"phase"}="reading";
+		$state->{"message"}="Reading 100% to seed the white reference";
+		set_state_active_step($state,$rs,ddc_target_for_step($rs));
+		clear_state_step_measurements($state);
+		write_state($state);
+		my ($wr,$werr)=read_step($config,$rs,$state);
+		if(!$werr && ref($wr) eq "HASH") {
+			my $wy=luminance($wr);
+			$white_ref=$wy if(defined($wy) && $wy+0 > 0);
+			if(defined($white_ref)) {
+				annotate_reading_target($wr,$white_ref,$white_ref,$target_x,$target_y);
+				$state->{"readings"}=merge_reading($state->{"readings"},$wr);
+				$state->{"current_luminance"}=$wy;
+				write_state($state);
+			}
+		}
+	}
+	if(!(defined($white_ref) && $white_ref+0 > 0)) {
+		if(defined($white_y) && $white_y+0 > 0) {
+			$white_ref=$white_y+0;
+			log_line("HDR20 1D DPG greyscale: using configured white_y=".$white_ref." (live 100% read unavailable)");
+		} else {
+			return "lg_autocal_26_run_hdr20_dpg_greyscale: missing white_y (no live 100% read and no fallback)";
+		}
+	}
 	$state->{"hdr20_1d_dpg_white_ref"}=$white_ref+0;
 
 	my @done;
