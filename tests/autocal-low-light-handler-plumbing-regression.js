@@ -122,29 +122,15 @@ assert(/^\s*if\(\$signal_mode =~ \/\^hdr10\?\$\/\)/m.test(_expGammaSrc),'expecte
 // At low IRE (4% / 1.4% / etc.) the per-iter adjustment can oscillate: the
 // autocal measures a worse dE than the previous iter, but the previous iter
 // has already been uploaded to the TV. The best-so-far revert pattern
-// snapshots the per-channel DPG idx values and the @done list of the best
-// iter and, when a later iter's dE is >= best_de, restores the snapshot.
+// snapshots the full DPG curve and the @done list of the best iter and,
+// when a later iter's dE is >= best_de, restores the snapshot.
 // After 3 consecutive reverts without improvement, the iter loop breaks
-// out at the best state. The state init (best_de, best_dpg_r/g/b,
-// best_anchors, consecutive_reverts) lives at the top of calibrate_anchor;
+// out at the best state. The state init (best_de, best_dpg, best_anchors,
+// consecutive_reverts) lives at the top of calibrate_anchor;
 // the check itself sits AFTER the convergence test (so a converged iter
 // is never over-written by a "revert") and BEFORE the gain computation
 // (so the revert prevents the bad adjust from being built).
-assert(/my \$best_de=undef;/.test(calBlock)&&/my \$best_dpg_r=\$current_dpg->\[\$idx\]\+0;/.test(calBlock),'calibrate_anchor declares best_de + per-channel best_dpg_r state');
-assert(/my \$best_dpg_g=\$current_dpg->\[\$idx\+1024\]\+0;/.test(calBlock)&&/my \$best_dpg_b=\$current_dpg->\[\$idx\+2048\]\+0;/.test(calBlock),'calibrate_anchor declares per-channel best_dpg_g + best_dpg_b state');
-assert(/my \$best_anchors=\[map \{ my \$src=\$done\[\$_\]; my \$copy=\{\}; \$copy->\{\$_\}=\$src->\{\$_\} for keys %\$src; \$copy; \} \@done\];/.test(calBlock),'calibrate_anchor declares $best_anchors as a deep copy of @done (uses $src so inner for-keys does not shadow $_)');
 assert(/my \$consecutive_reverts=0;/.test(calBlock),'calibrate_anchor declares $consecutive_reverts counter (3-revert break fires when this hits 3)');
-// The block must:
-//   1. Snapshot per-channel best_dpg_r/g/b + best_anchors when the current
-//      dE beats best_de (the IMPROVE branch).
-//   2. Revert the per-channel DPG[idx] values + @done when the current dE
-//      is not better than best_de (the REVERT branch -- any worse, no 5%
-//      gap, since the halve-on-revert scaling breaks the constant-
-//      amplitude oscillation at low IRE).
-//   3. Increment $consecutive_reverts on revert; break out at 3.
-assert(/\$best_dpg_r=\$current_dpg->\[\$idx\]\+0;/.test(calBlock)&&/\$best_dpg_g=\$current_dpg->\[\$idx\+1024\]\+0;/.test(calBlock)&&/\$best_dpg_b=\$current_dpg->\[\$idx\+2048\]\+0;/.test(calBlock),'IMPROVE branch snapshots per-channel DPG[idx] values');
-assert(/\$best_anchors=\[map \{ my \$src=\$done\[\$_\]; my \$copy=\{\}; \$copy->\{\$_\}=\$src->\{\$_\} for keys %\$src; \$copy; \} \@done\];/.test(calBlock),'IMPROVE branch snapshots @done via $best_anchors deep copy (uses $src so inner for-keys does not shadow $_)');
-assert(/\$current_dpg->\[\$idx\]=\$best_dpg_r\+0;/.test(calBlock)&&/\$current_dpg->\[\$idx\+1024\]=\$best_dpg_g\+0;/.test(calBlock)&&/\$current_dpg->\[\$idx\+2048\]=\$best_dpg_b\+0;/.test(calBlock),'REVERT branch restores per-channel DPG[idx] from best snapshot');
 assert(/@done=@\{\$best_anchors\};/.test(calBlock),'REVERT branch restores @done from $best_anchors');
 assert(/\$consecutive_reverts\+\+;/.test(calBlock)&&/\$consecutive_reverts >= 3/.test(calBlock),'REVERT branch increments $consecutive_reverts and breaks at 3');
 // The best / reverted / move_scaling markers must be present in the
@@ -179,6 +165,20 @@ const _convNowPos=calBlock.indexOf('$converged=1 if($conv_now);');
 const _bestSoFarPos=calBlock.indexOf('Best-so-far with revert');
 const _gainPos=calBlock.indexOf('lg_autocal_26_hdr20_dpg_gain($reading');
 assert(_convNowPos>=0 && _bestSoFarPos>=0 && _gainPos>=0 && _convNowPos < _bestSoFarPos && _bestSoFarPos < _gainPos,'best-so-far block sits between convergence test and gain computation');
+// === best-so-far snapshot: FULL DPG array + correct @done deep copy =========
+// The snapshot must capture the entire 3072-value DPG (build rewrites the whole
+// curve, not just the 3 anchor slots), and @done must be deep-copied with
+// `+{ %$_ }`. The earlier idiom indexed @done with a hashref (the map element)
+// via $done[$_], silently producing empty hashes and wiping @done on every revert.
+assert(/my \$best_dpg=\[@\{\$current_dpg\}\];/.test(calBlock),'calibrate_anchor declares $best_dpg as a FULL copy of $current_dpg (all 3072 values, not just 3 anchor slots)');
+assert(!/\$best_dpg_[rgb]=/.test(worker),'no per-channel $best_dpg_r/g/b remains (a per-channel snapshot misses the 3070 non-anchor slots build also rewrites)');
+assert(/@\{\$current_dpg\}=@\{\$best_dpg\};/.test(worker),'revert restores the FULL DPG array from $best_dpg');
+assert(!/\$done\[\$_\]/.test(worker),'no "$done[$_]" remains (indexes @done with a hashref element -> empty copy -> wipes @done on revert)');
+// Behavioral guard: the deep-copy idiom must actually preserve keys. This
+// FAILS on the old $done[$_] idiom (empty hashes) and PASSES on +{ %$_ }.
+const _cp=require('child_process');
+const _probe=_cp.execSync("perl -wMstrict -e 'my @d=({a=>1,b=>2},{c=>3,d=>4}); my $b=[map { +{ %$_ } } @d]; die \"BAD0\" unless scalar(keys %{$b->[0]})==2; die \"BAD1\" unless exists $b->[0]{a} && exists $b->[1]{c}; print \"OK\";'").toString();
+assert(/OK$/.test(_probe),'@done deep-copy idiom preserves all keys (behavioral perl probe)');
 // === Drop hardcoded IRE-bucket settle clamps (commit 1) ====================
 // The four $delay_ms=3000/4200/3200/2400 lines that previously shadowed
 // the user's delay_ms have been removed. Only the user-configurable delay_ms
@@ -191,17 +191,6 @@ assert(!/\$delay_ms=3200 if\(\$ire > 10 && \$ire <= 25/.test(worker),'3200ms 10<
 assert(!/\$delay_ms=2400 if\(\$ire > 25 && \$ire <= 50/.test(worker),'2400ms 25<IRE<=50 bucket clamp is removed');
 // The explanatory comment that replaces the four lines must be present.
 assert(/No hardcoded per-IRE settle buckets/.test(worker),'explanatory comment about dropped IRE-bucket clamps is present');
-// === $_ shadowing in $best_anchors deep copy (OOM guard) ==================
-// The original idiom `keys %{$done[$_]}` inside the inner `for keys` SHADOWS
-// the outer map's $_, so the hashslice dereference falls back to dynamic-scope
-// $done[$_] -- which is undef for keys beyond @done's length and triggers Perl
-// "Can't use an undefined value as a HASH reference" warnings. At a sustained
-// meter stall (e.g. a 1.4% IRE HDR20 iter where the panel reads back noise)
-// these warnings fire once per key per iter and balloon the autocal log to
-// multi-GB in minutes, OOM-ing the worker. The fix is to bind the hashref to
-// a fresh lexical ($src) so the inner `for keys` does not clobber $_.
-assert(!/keys %\{\$done\[\$_\]\}/.test(worker),'no occurrence of "keys %{$done[$_]}" remains (would shadow outer map $_)');
-assert((worker.match(/my \$src=\$done\[\$_\]; my \$copy=\{\}; \$copy->\{\$_\}=\$src->\{\$_\} for keys %\$src;/g)||[]).length>=2,'both deep-copy sites use $src lexical to avoid $_ shadowing (state init + IMPROVE branch)');
 // === Lengthen meter session idle timeout (OOM guard) =======================
 // The WebUI launches meter_session.sh with the 9th argument as the session
 // idle timeout. Bumped from 300s (5 min) to 900s (15 min) so a sustained
