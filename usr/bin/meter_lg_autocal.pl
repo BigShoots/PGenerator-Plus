@@ -12659,32 +12659,34 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
 	 );
 	 # D65 has R=G=B in linear Display-P3, so the per-channel D65 target
-	 # is the mean of @mrgb. Any channel above the mean needs attenuation;
-	 # any at or below the mean is held.
-	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
-	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
-	 my $target=$sum/3.0;
-	 my @gain;
-	 for my $ch (0..2) {
-	  my $m=$mrgb[$ch];
-	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
-	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
-	  # (deficient). The panel can't push it above native, so hold (clamp
-	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
-	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
-	  # moves.
-	  $g=0.5 if($g+0 < 0.5);
-	  $g=1.0 if($g+0 > 1.0);
-	  $g=1.0 if($g+0 != $g+0);
-	  # Preserve R (channel 0) at 100% white: never reduce R below 1.0.
-	  # On a slightly warm panel the XYZ->P3 matrix makes R the highest
-	  # linear channel, so the mean-based gain would reduce R by 1-3%
-	  # per iter. Each R reduction drops peak luminance (R drives peak
-	  # on OLED) without a commensurate white-balance improvement. Hold
-	  # R and only reduce the excess G/B channels.
-	  $g=1.0 if($ch == 0);
-	  push @gain,$g+0;
-	 }
+ 	 # is the mean of @mrgb. Any channel above the mean needs attenuation;
+ 	 # any at or below the mean is held.
+ 	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
+ 	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
+ 	 my $target=$sum/3.0;
+ 	 # Find the channel with the lowest linear P3 value. This channel is
+ 	 # the panel's peak-driving bottleneck; reducing it would drop peak
+ 	 # luminance without improving white balance. Hold it at 1.0 and only
+ 	 # reduce the channels that read ABOVE it. On some panels the lowest
+ 	 # is Blue, on others Green or Red -- this is dynamic, not hard-coded.
+ 	 my $min_val=$mrgb[0];
+ 	 for my $v (@mrgb) { $min_val=$v if($v < $min_val); }
+ 	 my @gain;
+ 	 for my $ch (0..2) {
+ 	  my $m=$mrgb[$ch];
+ 	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
+ 	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
+ 	  # (deficient). The panel can't push it above native, so hold (clamp
+ 	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
+ 	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
+ 	  # moves.
+ 	  $g=0.5 if($g+0 < 0.5);
+ 	  $g=1.0 if($g+0 > 1.0);
+ 	  $g=1.0 if($g+0 != $g+0);
+ 	  # Never reduce the lowest-reading channel: it sets the peak ceiling.
+ 	  $g=1.0 if($m <= $min_val + 1e-9);
+ 	  push @gain,$g+0;
+ 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
