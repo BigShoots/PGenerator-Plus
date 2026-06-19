@@ -3084,9 +3084,7 @@ sub lg_hdr_tone_map_upload_workflow (@) {
    cal_end_response => $end_cleanup,
   });
  }
- my $end=$keep_calibration_mode
-  ? { type => "skipped", payload => { returnValue => &json_true() }, keep_calibration_mode => &json_true() }
-  : &lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my $end=&lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
  &websocket_close($session);
  return &json_ok({
   tone_map_uploaded => &json_true(),
@@ -3185,27 +3183,6 @@ sub lg_1d_dpg_upload_workflow (@) {
   &websocket_close($session);
   return &json_error("HDR20 1D DPG upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
-# Calman's HDR10 1D DPG flow keeps the gamma LUTs DISABLED throughout
-  # the calibration (calman relay capture calman-20260614-214545.jsonl
-  # lines 10/12 send 1D_2_2_EN=0 and 1D_0_45_EN=0 before uploading
-  # 1D_DPG_DATA in NORMAL mode, line 18). The DPG bytes are calibrated
-  # in code space (input_code -> DPG -> panel_native_PQ -> display) so
-  # they remain correct after the user exits calibration mode at the
-  # end of the run. Our worker previously enabled the gamma LUTs during
-  # calibration, producing DPG values that were correct for the gamma
-  # chain but applied wrong in code space once CAL_END reverted the
-  # gamma toggles. That was the source of the post-cal PQ-vs-2.2
-  # mismatch (5% IRE Y=0.10 nits vs target 1.02; 70% Y=557 vs 339).
-  # Stay on the standard lg_ddc_enable_1d_pipeline (DPG=1, gamma LUTs=0)
-  # so the in-loop calibration matches Calman and the post-cal series
-  # readings track the 2.2-calibrated curve.
-  my ($pipeline_ok,$pipeline_message,$pipeline_responses);
-  if(!$calibration_mode_active) {
-   my ($p_ok,$p_msg,$p_resp)=&lg_ddc_enable_1d_pipeline($session,$connect_timeout + 4,$cal_mode);
-   $pipeline_ok=$p_ok; $pipeline_message=$p_msg; $pipeline_responses=$p_resp;
-  } else {
-   $pipeline_ok=1; $pipeline_message=""; $pipeline_responses=[];
-  }
  my $start;
  if($calibration_mode_active) {
   $start={ type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
@@ -3218,7 +3195,7 @@ sub lg_1d_dpg_upload_workflow (@) {
  }
  if($start_failed || ref($start) ne "HASH") {
   &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start, pipeline_responses => $pipeline_responses });
+  return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
  }
  my $upload=&lg_calibration_request($session,"1d_dpg_upload","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload(\@clamped)),1,$cal_mode,$connect_timeout + 12);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
@@ -3240,10 +3217,10 @@ sub lg_1d_dpg_upload_workflow (@) {
    cal_end_response => $end,
   });
  }
-my $min_value=65535;
+ my $min_value=65535;
  my $max_value=0;
  my $sum_value=0;
- for my $v (@clamped) { $min_value=$v if($v < $min_value); $max_value=$v if($max_value < $v); $sum_value+=$v; }
+ for my $v (@clamped) { $min_value=$v if($v < $min_value); $max_value=$v if($v > $max_value); $sum_value+=$v; }
  my $avg_value=int(($sum_value/scalar(@clamped))+0.5);
  return &json_ok({
   dpg_uploaded => &json_true(),
@@ -3260,9 +3237,7 @@ my $min_value=65535;
   upload_response => $upload,
   cal_start_response => $start,
   cal_end_response => $end,
-  pipeline_responses => $pipeline_responses,
-  pipeline_ok => &json_bool($pipeline_ok),
-  message => "LG HDR20 1D DPG uploaded (".scalar(@clamped)." values, min=$min_value, max=$max_value, avg=$avg_value).".($pipeline_ok ? "" : " HDR20 1D DPG pipeline enable failed: ".($pipeline_message||"unknown")."."),
+  message => "LG HDR20 1D DPG uploaded (".scalar(@clamped)." values, min=$min_value, max=$max_value, avg=$avg_value).",
   calibration_mode => &json_bool($keep_calibration_mode),
  });
 }
