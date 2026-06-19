@@ -3197,6 +3197,29 @@ sub lg_1d_dpg_upload_workflow (@) {
   &websocket_close($session);
   return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
  }
+ # Explicitly disable the 1D 2.2 degamma and 0.45 regamma LUTs inside the
+ # active CAL_START session, exactly as the reference workflow does (reference workflow capture
+ # calman-20260614-214545.jsonl lines 10/12: 1D_2_2_EN=0, 1D_0_45_EN=0).
+ # the reference workflow sends these on EVERY cal session to guarantee the DPG operates in
+ # code space regardless of prior panel state. Without them the panel may
+ # carry gamma LUTs ON from a prior calibration, and the DPG would be applied
+ # through the gamma chain instead of in raw code space -- producing the
+ # PQ-vs-2.2 post-cal mismatch. Only send on the first upload (entering cal
+ # mode); subsequent uploads within the same kept-on session inherit the
+ # state. Note: the reference workflow does NOT send 1D_DPG_EN explicitly -- the 1D_DPG_DATA
+ # upload below implicitly enables the DPG.
+ my @gamma_lut_responses;
+ if(!$calibration_mode_active) {
+  foreach my $item (
+   ["1d_dpg_upload_disable_degamma","1D_2_2_EN",0],
+   ["1d_dpg_upload_disable_regamma","1D_0_45_EN",0],
+  ) {
+   my ($id,$command,$value)=@{$item};
+   my $resp=&lg_calibration_request($session,$id,$command,[$value],1,$cal_mode,$connect_timeout + 4);
+   my ($rf,$rm)=&response_is_app_failure($resp);
+   push(@gamma_lut_responses,{ command => $command, value => $value, failed => &json_bool($rf), message => $rm//"" });
+  }
+ }
  my $upload=&lg_calibration_request($session,"1d_dpg_upload","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload(\@clamped)),1,$cal_mode,$connect_timeout + 12);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
  my $end=$keep_calibration_mode
