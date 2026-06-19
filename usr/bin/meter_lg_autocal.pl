@@ -12639,63 +12639,74 @@ sub lg_autocal_26_hdr20_dpg_gain {
 # luminance drop (e.g. ~2% on a 913-nit B-excess panel vs ~3% on the previous
 # B-deficient run) in exchange for an actually-converging 100% calibration
 # that brings the chromaticity toward D65.
+# Module-level: which channel to hold at 1.0 for the 100% white anchor.
+# Set on the FIRST read of the 100% white calibration loop, based on which
+# linear-P3 channel reads lowest. Persists across all subsequent iters
+# of the same 100% calibration so the same channel is held throughout.
+our $_hdr20_white_hold_channel=-1;
+our $_hdr20_white_hold_min_val=0;
+
 sub lg_autocal_26_hdr20_dpg_white_balance_gain {
-	 my ($reading)=@_;
-	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
-	 my $mX=$reading->{"X"};
-	 my $mY=$reading->{"Y"};
-	 my $mZ=$reading->{"Z"};
-	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
-	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
-	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
-	  my $rY=luminance($reading);
-	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
-	   $mY=$rY+0;
-	   $mX=($rx/$ry)*$mY;
-	   $mZ=((1-$rx-$ry)/$ry)*$mY;
-	  } else {
-	   return (1.0,1.0,1.0);
-	  }
-	 } else {
-	  $mX+=0; $mY+=0; $mZ+=0;
-	 }
-	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
-	 my @mrgb=(
-	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
-	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
-	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
-	 );
-	 # D65 has R=G=B in linear Display-P3, so the per-channel D65 target
- 	 # is the mean of @mrgb. Any channel above the mean needs attenuation;
- 	 # any at or below the mean is held.
+ 	 my ($reading)=@_;
+ 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+ 	 my $mX=$reading->{"X"};
+ 	 my $mY=$reading->{"Y"};
+ 	 my $mZ=$reading->{"Z"};
+ 	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+ 	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+ 	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+ 	  my $rY=luminance($reading);
+ 	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+ 	   $mY=$rY+0;
+ 	   $mX=($rx/$ry)*$mY;
+ 	   $mZ=((1-$rx-$ry)/$ry)*$mY;
+ 	  } else {
+ 	   return (1.0,1.0,1.0);
+ 	  }
+ 	 } else {
+ 	  $mX+=0; $mY+=0; $mZ+=0;
+ 	 }
+ 	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+ 	 my @mrgb=(
+ 	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
+ 	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
+ 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
+ 	 );
  	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
  	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
- 	 my $target=$sum/3.0;
- 	 # Find the channel with the lowest linear P3 value. This channel is
- 	 # the panel's peak-driving bottleneck; reducing it would drop peak
- 	 # luminance without improving white balance. Hold it at 1.0 and only
- 	 # reduce the channels that read ABOVE it. On some panels the lowest
- 	 # is Blue, on others Green or Red -- this is dynamic, not hard-coded.
- 	 my $min_val=$mrgb[0];
- 	 for my $v (@mrgb) { $min_val=$v if($v < $min_val); }
+ 	 # Find the lowest linear-P3 channel. On the FIRST call (before
+ 	 # any DPG correction has been applied), lock that channel in
+ 	 # module-level state so subsequent iters hold the SAME channel --
+ 	 # not whatever happens to read lowest mid-convergence (which can
+ 	 # flip-flop as G/B get reduced and change relative to R).
+ 	 if($_hdr20_white_hold_channel < 0) {
+ 	  $_hdr20_white_hold_channel=0;
+ 	  $_hdr20_white_hold_min_val=$mrgb[0];
+ 	  for my $ch (1..2) {
+ 	   if($mrgb[$ch] < $_hdr20_white_hold_min_val) {
+ 	    $_hdr20_white_hold_channel=$ch;
+ 	    $_hdr20_white_hold_min_val=$mrgb[$ch];
+ 	   }
+ 	  }
+ 	 }
+ 	 my $min_val=$_hdr20_white_hold_min_val;
+ 	 my $hold_ch=$_hdr20_white_hold_channel;
+ 	 # Target: reduce the non-held channels to match the held channel.
+ 	 # Using the held channel's value (not the mean) as the target
+ 	 # preserves the held channel at 1.0 and brings the others down
+ 	 # to match -- no luminance drop from a mean that's pulled up by
+ 	 # excess channels.
+ 	 my $target=$min_val;
  	 my @gain;
  	 for my $ch (0..2) {
- 	  my $m=$mrgb[$ch];
- 	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
- 	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
- 	  # (deficient). The panel can't push it above native, so hold (clamp
- 	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
- 	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
- 	  # moves.
+ 	  my $g=($ch == $hold_ch) ? 1.0 : (($target/($mrgb[$ch]+0) > 0) ? ($target/($mrgb[$ch]+0)) : 1.0);
  	  $g=0.5 if($g+0 < 0.5);
  	  $g=1.0 if($g+0 > 1.0);
  	  $g=1.0 if($g+0 != $g+0);
- 	  # Never reduce the lowest-reading channel: it sets the peak ceiling.
- 	  $g=1.0 if($m <= $min_val + 1e-9);
  	  push @gain,$g+0;
  	 }
-	 return ($gain[0],$gain[1],$gain[2]);
-	}
+ 	 return ($gain[0],$gain[1],$gain[2]);
+ 	}
 
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
@@ -13700,6 +13711,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# luminance reference to the CALIBRATED result before any lower target runs.
 	if(ref($white_step) eq "HASH" && !cancelled() && !$upload_failed) {
 		$step_num++;
+		# Reset the "hold lowest channel" state so this 100% calibration
+		# determines which channel is lowest from its FIRST read, not from
+		# the previous run's state.
+		$_hdr20_white_hold_channel=-1;
+		$_hdr20_white_hold_min_val=0;
 		my $rs=fixed_lg_autocal_step($config,$white_step);
 		my $target=ddc_target_for_step($rs);
 		my $idx=$idx_for_step->($rs);
