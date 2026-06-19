@@ -12090,21 +12090,13 @@ sub commit_final_1d_lut {
 	   if(defined(&lg_autocal_26_queue_hdr20_1d_tonemap_upload));
 	  end_calibration_mode($picture_mode);
 	  set_state_calibration_mode($state,0,"");
-	  # HDR20 1D DPG autocal now matches Calman: DPG is calibrated in
-	  # code space (gamma LUTs disabled throughout), so the DPG bytes
-	  # are valid both inside and outside calibration mode. CAL_END
-	  # reverts calibration mode but the DPG stays in the signal path
-	  # and post-cal Read Series readings track the 2.2-calibrated
-	  # curve. This restores the original commit behaviour (CAL_END
-	  # at the end of the HDR20 commit path) and removes the
-	  # Calman-style "keep cal mode on" workaround.
 	  $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
 	  $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
 	  $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	  $state->{"calibration_mode"}=JSON::PP::false;
 	  $state->{"message"}=($state->{"hdr20_1d_tonemap_pending"})
-	   ? "HDR20 1D DPG calibration committed; calibration mode ended (Calman-style: DPG calibrated in code space, gamma LUTs disabled); HDR tone-map upload pending wizard confirmation"
-	   : "HDR20 1D DPG calibration committed; calibration mode ended (Calman-style: DPG calibrated in code space, gamma LUTs disabled)";
+	   ? "HDR20 1D DPG calibration committed; calibration mode ended; HDR tone-map upload pending wizard confirmation"
+	   : "HDR20 1D DPG calibration committed; calibration mode ended";
 	  write_state($state);
 	  return ($picture,undef,1);
 	 }
