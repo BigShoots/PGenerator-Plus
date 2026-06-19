@@ -4492,6 +4492,12 @@ sub apply_pattern_insert_before_read {
   input_max => 255,
   signal_mode => $config->{"signal_mode"}||"sdr",
   max_luma => $config->{"max_luma"}||1000,
+  # The meter session sets a pattern stop guard (/tmp/webui_pattern_stop_guard)
+  # while a read is in progress. Without this flag the renderer silently
+  # returns {"pattern":"stop"} and never displays the insertion patch --
+  # the grey flash is invisible. allow_after_stop bypasses the guard so
+  # the insertion patches reach the renderer.
+  allow_after_stop => JSON::PP::true,
  };
  $base_payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
  $base_payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
