@@ -1534,8 +1534,6 @@ sub webui_lg_3d_lut_reset (@) {
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
   upload_command => $payload->{"upload_command"}||"",
   get_command => $payload->{"get_command"}||"",
-  keep_calibration_mode => $payload->{"keep_calibration_mode"} ? 1 : 0,
-  calibration_mode_active => $payload->{"calibration_mode_active"} ? 1 : 0,
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
