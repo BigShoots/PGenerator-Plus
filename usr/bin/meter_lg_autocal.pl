@@ -12159,9 +12159,10 @@ sub commit_final_1d_lut {
 	 # Just end the held calibration session once and report success.
 	 if(ref($state) eq "HASH" && $state->{"hdr20_dpg_greyscale_active"}) {
 	  # Calman-style post-DPG: resend identity BT2020 gamut + identity 3D LUT
-	  # AFTER the DPG loop, BEFORE the tone map and CAL_END — but ONLY for the
-	  # full autocal workflow (matches the pre-DPG container upload above).
-	  if(ref($config) eq "HASH" && $config->{"full_workflow"}) {
+	  # AFTER the DPG loop, BEFORE the tone map and CAL_END. This rebinds the
+	  # DPG into the active signal chain (Calman relay capture lines 292-308).
+	  # keep_calibration_mode=true keeps CAL_START active for the tone map upload.
+	  {
 	   my $resp=api_json("POST","/api/lg/3d-lut/reset",{
 	    picture_mode=>$picture_mode,
 	    upload_command=>"BT2020_3D_LUT_DATA",
@@ -13145,18 +13146,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		log_line("HDR20 1D DPG greyscale: TEST MODE snapshot upload failed (continuing): ".$bmsg) if(!$bok);
 	} else {
 		# Calman-style: upload identity BT2020 gamut + identity 3D LUT BEFORE
-		# the DPG loop, inside the same CAL_START session — but ONLY for the
-		# full autocal workflow (greyscale + 3D LUT). The 3D LUT is the
-		# container the DPG binds into. In the full workflow the 3D LUT stage
-		# that follows will replace this identity with the calibrated version.
-		# In greyscale-only mode we skip this (no 3D LUT stage follows, and
-		# uploading a 3D LUT would change the panel state unexpectedly).
-		my $hdr20_full_workflow=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
-		if($hdr20_full_workflow) {
-			$state->{"current_name"}="HDR20 1D DPG (identity 3D LUT container)";
-			$state->{"phase"}="writing";
-			$state->{"message"}="Uploading identity 3D LUT + BT2020 gamut before DPG calibration (Calman-style, full autocal)";
-			write_state($state);
+		# the DPG loop, inside the same CAL_START session. The 3D LUT is the
+		# container the DPG binds into -- without it present during DPG
+		# upload, the panel stores the DPG data but does not apply it in the
+		# display path (confirmed: readback = 0 diff, ddc_1d_lut = true, but
+		# post-cal reads show native PQ instead of the 2.2-calibrated curve).
+		# keep_calibration_mode=true keeps CAL_START active for the DPG uploads.
+		# The 3d_lut_upload_workflow also disables gamma LUTs (1D_2_2_EN=0,
+		# D_0_45_EN=0) inside the CAL_START, matching Calman's relay capture.
+		$state->{"current_name"}="HDR20 1D DPG (identity 3D LUT container)";
+		$state->{"phase"}="writing";
+		$state->{"message"}="Uploading identity 3D LUT + BT2020 gamut before DPG calibration (Calman-style)";
+		write_state($state);
+		{
 			my $resp=api_json("POST","/api/lg/3d-lut/reset",{
 				picture_mode=>$picture_mode,
 				upload_command=>"BT2020_3D_LUT_DATA",
