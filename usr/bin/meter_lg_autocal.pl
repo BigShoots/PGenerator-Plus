@@ -12158,6 +12158,21 @@ sub commit_final_1d_lut {
 	 # (it would fail readback verification against a DPG-calibrated panel).
 	 # Just end the held calibration session once and report success.
 	 if(ref($state) eq "HASH" && $state->{"hdr20_dpg_greyscale_active"}) {
+	  # reference-style post-DPG: resend identity BT2020 gamut + identity 3D LUT
+	  # AFTER the DPG loop, BEFORE the tone map and CAL_END. This rebinds the
+	  # DPG into the active signal chain (reference workflow capture lines 292-308).
+	  # keep_calibration_mode=true keeps CAL_START active for the tone map upload.
+	  {
+	   my $resp=api_json("POST","/api/lg/3d-lut/reset",{
+	    picture_mode=>$picture_mode,
+	    upload_command=>"BT2020_3D_LUT_DATA",
+	    keep_calibration_mode=>JSON::PP::true,
+	    calibration_mode_active=>JSON::PP::true,
+	    helper_timeout=>90,
+	   },120);
+	   my $cok=(ref($resp) eq "HASH" && ($resp->{status}//"") eq "ok") ? 1 : 0;
+	   log_line("HDR20 1D DPG greyscale: post-DPG identity 3D LUT + BT2020 gamut resend ".($cok ? "OK" : "FAILED: ".((ref($resp) eq "HASH" && $resp->{message}) ? $resp->{message} : "unknown")));
+	  }
 	  # Queue the HDR tone-map (rolloff) upload BEFORE ending calibration
 	  # mode, exactly like the normal commit path. CalMAN uploads this as the
 	  # last autocal step; skipping it leaves the panel on its default rolloff
@@ -13130,9 +13145,38 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my ($bok,$bmsg)=$upload_dpg->($current_dpg);
 		log_line("HDR20 1D DPG greyscale: TEST MODE snapshot upload failed (continuing): ".$bmsg) if(!$bok);
 	} else {
+		# reference-style: upload identity BT2020 gamut + identity 3D LUT BEFORE
+		# the DPG loop, inside the same CAL_START session. The 3D LUT is the
+		# container the DPG binds into -- without it present during DPG
+		# upload, the panel stores the DPG data but does not apply it in the
+		# display path (confirmed: readback = 0 diff, ddc_1d_lut = true, but
+		# post-cal reads show native PQ instead of the 2.2-calibrated curve).
+		# keep_calibration_mode=true keeps CAL_START active for the DPG uploads.
+		# The 3d_lut_upload_workflow also disables gamma LUTs (1D_2_2_EN=0,
+		# D_0_45_EN=0) inside the CAL_START, matching the reference workflow capture.
+		$state->{"current_name"}="HDR20 1D DPG (identity 3D LUT container)";
+		$state->{"phase"}="writing";
+		$state->{"message"}="Uploading identity 3D LUT + BT2020 gamut before DPG calibration (reference-style)";
+		write_state($state);
+		{
+			my $resp=api_json("POST","/api/lg/3d-lut/reset",{
+				picture_mode=>$picture_mode,
+				upload_command=>"BT2020_3D_LUT_DATA",
+				keep_calibration_mode=>JSON::PP::true,
+				calibration_mode_active=>JSON::PP::false,
+				helper_timeout=>90,
+			},120);
+			my $cok=(ref($resp) eq "HASH" && ($resp->{status}//"") eq "ok") ? 1 : 0;
+			if($cok) {
+				$cal_active=1;
+				log_line("HDR20 1D DPG greyscale: identity 3D LUT + BT2020 gamut uploaded (CAL_START kept on, gamma LUTs disabled)");
+			} else {
+				log_line("HDR20 1D DPG greyscale: identity 3D LUT + BT2020 gamut upload FAILED (continuing without container): ".((ref($resp) eq "HASH" && $resp->{message}) ? $resp->{message} : "unknown"));
+			}
+		}
 		$state->{"current_name"}="HDR20 1D DPG (identity baseline)";
 		$state->{"phase"}="writing";
-		$state->{"message"}="Entering calibration mode and uploading identity 1D DPG baseline";
+		$state->{"message"}="Uploading identity 1D DPG baseline";
 		write_state($state);
 		{
 			my ($bok,$bmsg)=$upload_dpg->($current_dpg);
