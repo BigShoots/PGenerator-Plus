@@ -12979,6 +12979,17 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $acceptance_de=defined($config->{"lg_autocal_hdr20_dpg_acceptance_de"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_de"}+0) : 0.3;
 	$acceptance_de=0.05 if($acceptance_de < 0.05);
 	$acceptance_de=$target_de if($acceptance_de > $target_de);
+	# Skip-acceptance threshold: fraction of target_de below which the patch
+	# is "definitely good enough" -- stop and move on instantly, NO one-more
+	# refinement move and NO revert dance. Default 0.6 (i.e. below 60% of
+	# target). With target_de=0.5 the instant-skip kicks in below dE=0.30, so
+	# a 0.5 target still gets the one-more try at dE 0.30..0.50 but the meter
+	# noise floor (0.3 dE swing at low IRE) doesn't waste an extra upload +
+	# read on every patch. 1.0 disables the instant-skip path.
+	my $acceptance_skip_fraction=defined($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}+0) : 0.6;
+	$acceptance_skip_fraction=0.0 if($acceptance_skip_fraction < 0.0);
+	$acceptance_skip_fraction=1.0 if($acceptance_skip_fraction > 1.0);
+	my $acceptance_skip_de=$acceptance_skip_fraction*$target_de;
 	# Meter luminance floor: below this the colorimeter reads ~0 and the gain
 	# loop has no gradient. (1.4% IRE was starting at ~0.002 nits, under the
 	# i1Display Pro Plus ~0.003-nits floor, so it quit at dE 30.) Sub-floor
@@ -13537,6 +13548,29 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# target_de break below -- it takes precedence only for very-good
 			# patches, and arms $acceptance_pending so the target_de break is
 			# suppressed and the one-more move actually runs.
+			#
+			# Skip-acceptance: if dE is already below
+			# acceptance_skip_de (= acceptance_skip_fraction * target_de,
+			# default 60% of target -- so 0.30 with target 0.5), the patch
+			# is so close that the one-more refinement + possible revert
+			# would mostly bounce in the meter noise floor. Treat it as
+			# converged directly -- no acceptance_pending, no extra upload,
+			# no revert dance. The target_de break below still applies.
+			if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_skip_de+0 && $acceptance_skip_fraction < 1.0) {
+				$converged=1;
+				$state->{"current_delta_e"}=$de+0;
+				if(ref($state->{"hdr20_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"hdr20_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
+					my $_r=$state->{"hdr20_1d_dpg_anchor_history"}{$label};
+					if(@$_r) {
+						$_r->[-1]{"de"}=sprintf("%.4f",$de+0);
+						$_r->[-1]{"acceptance_skip"}=JSON::PP::true;
+						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$acceptance_skip_de+0);
+					}
+				}
+				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$acceptance_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of target ".sprintf("%.2f",$target_de)."), moving on without one-more move");
+				write_state($state);
+				last;
+			}
 			if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_de+0) {
 				$acceptance_pending=1;
 				$accepted_best_de=$de+0;
