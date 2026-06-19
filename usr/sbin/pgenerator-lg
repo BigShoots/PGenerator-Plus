@@ -3018,7 +3018,8 @@ sub lg_hdr_calman_reset_workflow (@) {
 }
 
 sub lg_hdr_tone_map_upload_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance,$dpg_data)=@_;
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance,$dpg_data,$keep_calibration_mode)=@_;
+ $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  return &json_error("Connect / Pair the LG TV before uploading HDR tone map data",{ ip => $ip }) if($client_key eq "");
  my $peak=int((0+($peak_luminance||0))+0.5);
  return &json_error("HDR tone-map upload requires a measured peak luminance.",{ ip => $ip, peak_luminance => $peak_luminance }) if($peak <= 0);
@@ -3084,7 +3085,9 @@ sub lg_hdr_tone_map_upload_workflow (@) {
    cal_end_response => $end_cleanup,
   });
  }
- my $end=&lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my $end=$keep_calibration_mode
+  ? { type => "skipped", payload => { returnValue => &json_true() }, keep_calibration_mode => &json_true() }
+  : &lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
  &websocket_close($session);
  return &json_ok({
   tone_map_uploaded => &json_true(),
@@ -3100,7 +3103,8 @@ sub lg_hdr_tone_map_upload_workflow (@) {
   dpg_upload_response => $dpg_upload,
   cal_start_response => $start,
   cal_end_response => $end,
-  message => "LG HDR tone-map parameters uploaded.".($dpg_upload_message ne "" ? " ".$dpg_upload_message."." : ""),
+  keep_calibration_mode => &json_bool($keep_calibration_mode),
+  message => "LG HDR tone-map parameters uploaded.".($dpg_upload_message ne "" ? " ".$dpg_upload_message."." : "").($keep_calibration_mode ? " Calibration mode kept on (Calman-style) so the gamma LUT chain stays active for post-cal reads." : ""),
  });
 }
 
@@ -5263,7 +5267,7 @@ sub main (@) {
 	 } elsif($action eq "hdr_picture_reset" || $action eq "hdr_calman_reset") {
 	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
 	 } elsif($action eq "hdr_tone_map_upload") {
-	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance,$dpg_data);
+	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance,$dpg_data,$keep_calibration_mode);
 	 } elsif($action eq "1d_dpg_upload") {
 	  $result=&lg_1d_dpg_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active);
 	 } elsif($action eq "1d_dpg_read") {
