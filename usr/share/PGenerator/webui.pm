@@ -1789,7 +1789,15 @@ sub webui_meter_read (@) {
 			 my $session_avg_mode="";
 			 $session_avg_mode=lc($1) if($body=~/"low_light_session"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa|x|x_a|x_aa|x_aaa)"/);
 			 $session_avg_mode="" if($session_avg_mode eq "off");
-			 $session_avg_mode=$avg_mode if($session_avg_mode eq "");
+			 # Fall back to the per-read mode, then to the literal "off". The "off"
+			 # default is REQUIRED, not cosmetic: meter_session.sh writes its config
+			 # 7th field as ${METER_AVERAGING:-off}, so a null averaging arg becomes
+			 # "off" there. If want_config kept this field empty instead, the strict
+			 # config_matches ($cur eq $want) comparison would see "...|off" vs
+			 # "...|" and never match, so the session start/wait loop would time out
+			 # and the read would fail with "Meter session failed to start" whenever
+			 # the Low Light Handler is OFF. Keeping "off" here aligns both strings.
+			 $session_avg_mode=($avg_mode ne "") ? $avg_mode : "off" if($session_avg_mode eq "");
 		 if(-f $_meter_diagnostic_read_lock) {
 		  my $diag_token="";
 		  if(open(my $dfh,"<",$_meter_diagnostic_read_lock)) { local $/; $diag_token=<$dfh>; close($dfh); }
@@ -8363,7 +8371,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div class="field field-refresh">
     <label>Refresh Rate</label>
     <select id="meterRefreshRate">
-     <option value="" selected>Match Display Setting</option>
+     <option value="auto" selected>Auto (meter detects)</option>
+     <option value="">Match Display Setting</option>
      <option value="23.976">23.976 Hz</option>
      <option value="24">24 Hz</option>
      <option value="25">25 Hz</option>
@@ -29479,10 +29488,21 @@ function meterNormalizeStoredDisplayType(value,ccssFile){
 
 function getMeterRefreshRate(){
  const sel=document.getElementById('meterRefreshRate');
- if(sel.value) return sel.value;
- // "Display Setting" — look up current mode's refresh from modes array
- if(modes&&config.mode_idx!=null){
-  const m=modes.find(m=>String(m.idx)===String(config.mode_idx));
+ // Auto: send no refresh override -- the meter auto-detects (no -Y r|n, no -Y R:rate).
+ if(sel&&sel.value==='auto') return '';
+ if(sel&&sel.value) return sel.value;
+ // "Match Display Setting" (value="") — resolve the current output mode's
+ // refresh so spotread gets -Y R:<rate>, which makes it SKIP its mandatory
+ // (and on a sample-and-hold OLED, unreliable) "read 80% white to calibrate
+ // refresh frequency" step. Try several sources for the current mode index,
+ // since config.mode_idx can be stale/undefined at read time.
+ const arr=(typeof modes!=='undefined'&&Array.isArray(modes))?modes:[];
+ const candidates=[];
+ if(typeof config!=='undefined'&&config.mode_idx!=null) candidates.push(String(config.mode_idx));
+ const selMode=document.getElementById('mode_idx');
+ if(selMode&&selMode.value!=null&&selMode.value!=='') candidates.push(String(selMode.value));
+ for(const c of candidates){
+  const m=arr.find(m=>String(m.idx)===c);
   if(m&&m.refresh) return m.refresh;
  }
  return '';
