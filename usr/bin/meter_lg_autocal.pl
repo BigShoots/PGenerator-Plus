@@ -13693,13 +13693,31 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the 3rd arg to the damp closure, replacing the previous
 			# constant 0.5 (sqrt) with a value that follows the panel's
 			# actual code->light slope at this anchor's IRE.
+			# 100% white move multiplier: the white anchor only REDUCES the
+			# excess channels (G/B held-at-1 R is preserved, see
+			# lg_autocal_26_hdr20_dpg_white_balance_gain) and re-measures, so a
+			# larger per-iter move is safe and converges the peak in ~3-4 iters
+			# instead of 10-13. Field data 2026-06-19: with gamma_effective
+			# pinned at the 3.0 clamp, damp=gain^(1/3) squashes a 22% B
+			# correction down to an 8% move, halving dE only every ~1.5 iters.
+			# M=2.0 turns that into a 16% move (3x the convergence rate) with
+			# ZERO overshoot risk because the overshoot guard below clamps every
+			# reducing channel to never move below its raw gain (the
+			# mathematically-correct target). Lower anchors keep M=1.0.
+			my $white_move_mult=defined($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}+0) : 2.0;
+			$white_move_mult=1.0 if($white_move_mult+0 < 1.0);
+			$white_move_mult=5.0 if($white_move_mult+0 > 5.0);
+			my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
 			# Apply the per-iter move-scaling: when $move_scaling is 1.0, the
 			# damp is unchanged. When it's 0.5, the move is half-magnitude
 			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
 			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
-			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling;
-			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling;
-			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling;
+			# The white move multiplier multiplies the (damp-1.0) move term
+			# BEFORE the move_scaling blend, so both compose: a white iter that
+			# reverted halves the already-doubled move.
+			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
 			# Clamp to [floor, 1.25] so a tiny move_scaling still respects the
 			# per-IRE minimum step.
 			$sr=$floor if($sr+0 < $floor+0);
@@ -13708,6 +13726,21 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$sr=1.25 if($sr+0 > 1.25);
 			$sg=1.25 if($sg+0 > 1.25);
 			$sb=1.25 if($sb+0 > 1.25);
+			# Overshoot guard for the white anchor (where the move multiplier
+			# can exceed 1.0): a REDUCING channel (raw gain < 1.0, i.e. the
+			# channel measured ABOVE the D65 mean and needs attenuation) must
+			# NEVER be driven below its raw gain -- that would push it past the
+			# D65 target and swap which channel is in excess, causing a bounce.
+			# R is always held at 1.0 by lg_autocal_26_hdr20_dpg_white_balance_gain
+			# so it is never a reducing channel; this guard only binds for the
+			# excess G/B channels. max(applied, gain) lands the channel exactly
+			# on target at worst (never past it), so even a huge multiplier is
+			# monotonic and safe.
+			if($is_white) {
+			 $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
+			 $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
+			 $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+			}
 			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
 			if(ref($current_dpg) ne "ARRAY" || @$current_dpg != 3072) {
@@ -13761,6 +13794,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 consecutive_reverts=>$consecutive_reverts+0,
 			 reverted=>($consecutive_reverts>0)?JSON::PP::true:JSON::PP::false,
 			 move_scaling=>sprintf("%.4f",$move_scaling+0),
+			 move_mult=>sprintf("%.4f",$anchor_move_mult+0),
+			 applied_R=>defined($rg)?sprintf("%.4f",$sr):"undef",
+			 applied_G=>defined($gg)?sprintf("%.4f",$sg):"undef",
+			 applied_B=>defined($bg)?sprintf("%.4f",$sb):"undef",
 			};
 			$ahist->{$label}=$arow;
 			$state->{"hdr20_1d_dpg_anchor_history"}=$ahist;
