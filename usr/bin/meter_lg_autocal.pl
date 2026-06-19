@@ -4439,9 +4439,20 @@ sub sanitize_count {
 }
 
 sub _patch_insert_code_for_level {
- my ($level_pct)=@_;
+ my ($level_pct,$signal_mode,$max_luma)=@_;
  $level_pct=0 if($level_pct+0 < 0);
  $level_pct=100 if($level_pct+0 > 100);
+ $max_luma//=1000;
+ # For HDR10 the code must be PQ-encoded so the configured level
+ # percentage maps to the correct visible luminance. Without PQ
+ # encoding, code 26 (10%) through PQ EOTF is only ~0.4 nits --
+ # essentially black on an OLED. PQ-encoding 10% of 1000 nits (100
+ # nits) gives code ~143, which is a clearly visible grey flash.
+ if(defined($signal_mode) && lc($signal_mode) eq "hdr10") {
+  my $target_nits=($level_pct/100.0)*$max_luma;
+  my $pq_signal=pq_encode_normalized($target_nits);
+  return int($pq_signal*255.0 + 0.5);
+ }
  return int(($level_pct/100.0)*255.0 + 0.5);
 }
 
@@ -4484,8 +4495,8 @@ sub apply_pattern_insert_before_read {
  };
  $base_payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
  $base_payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
- for my $ins (@inserts) {
-  my $code=_patch_insert_code_for_level($ins->{"level"});
+  for my $ins (@inserts) {
+   my $code=_patch_insert_code_for_level($ins->{"level"},$config->{"signal_mode"},$config->{"max_luma"});
   my $dur_s=$ins->{"duration_ms"}/1000.0;
   log_line("HDR20 pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code duration=".sprintf("%.3f",$dur_s)."s");
   # Step 1: grey insertion flash at the user-configured level + duration.
@@ -12665,6 +12676,13 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
+	  # Preserve R (channel 0) at 100% white: never reduce R below 1.0.
+	  # On a slightly warm panel the XYZ->P3 matrix makes R the highest
+	  # linear channel, so the mean-based gain would reduce R by 1-3%
+	  # per iter. Each R reduction drops peak luminance (R drives peak
+	  # on OLED) without a commensurate white-balance improvement. Hold
+	  # R and only reduce the excess G/B channels.
+	  $g=1.0 if($ch == 0);
 	  push @gain,$g+0;
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
@@ -13546,17 +13564,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# comparable to the per-iter move, causing oscillation instead
 			# of convergence.
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-			$floor=($is_white ? 0.5 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
-			# 100% white uses damp exponent 1.0 (apply the raw gain directly)
-			# instead of the EOTF-aware 1/gamma_effective (~0.45 for HDR10
-			# at peak). The EOTF-aware exponent pulls the move toward 1.0,
-			# making each iter only a fraction of the needed correction —
-			# e.g. raw gain 0.90 → damped 0.95, a 5% move when a 10% move
-			# is needed. With exp=1.0 the full reduce-to-lowest gain is
-			# applied, converging in 2-3 iters instead of 8-16. This also
-			# reduces time on the white patch (which heats the panel and
-			# raises luminance, biasing subsequent reads).
-			my $effective_damp_exp=$is_white ? 1.0 : $damp_exp;
+			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
 			# EOTF-aware damp: the exponent 1/gamma_effective is computed
 			# at the top of the iter (clamped to [1.5, 3.0]) and passed as
 			# the 3rd arg to the damp closure, replacing the previous
@@ -13566,9 +13574,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# damp is unchanged. When it's 0.5, the move is half-magnitude
 			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
 			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
-			my $sr=1.0+($damp->($rg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
-			my $sg=1.0+($damp->($gg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
-			my $sb=1.0+($damp->($bg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
+			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling;
+			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling;
+			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling;
 			# Clamp to [floor, 1.25] so a tiny move_scaling still respects the
 			# per-IRE minimum step.
 			$sr=$floor if($sr+0 < $floor+0);
