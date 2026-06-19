@@ -24976,6 +24976,12 @@ async function meterStartLg3dAutoCal(options){
  const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
  const targetGamut=signalMode==='hdr10'?meterHdrMetadataGamut():(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
  const transportRange=(signalMode==='sdr'&&fullWorkflow)?'1':getVal('rgb_quant_range');
+ // Pull the greyscale stage's measured peak luminance + DPG array out of
+ // the cached firstStatus so the 3D worker can upload the HDR tone map
+ // after its 3D LUT, all inside the same CAL_START session.
+ const firstStatusResult=(meterFullAutoCalResults&&meterFullAutoCalResults.first)||{};
+ const firstStatusPeak=Number(firstStatusResult.hdr20_1d_tonemap_peak_luminance||firstStatusResult.hdr_tone_map_peak_luminance||0);
+ const firstStatusDpg=firstStatusResult.hdr20_1d_dpg_data;
  const payload=meterMeasurementSignalContext({
   method:method,
   type:'lg-3d-lut',
@@ -25010,9 +25016,18 @@ refresh_rate:getMeterRefreshRate()||undefined,
  preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
   preflight_3d_lut_upload_command:skipPreprofileUnityReset&&preflightLut3d.upload_command?preflightLut3d.upload_command:undefined,
   preflight_3d_lut_get_command:skipPreprofileUnityReset&&preflightLut3d.get_command?preflightLut3d.get_command:undefined,
-  preflight_lg_generation:skipPreprofileUnityReset&&preflightLut3d.lg_generation?preflightLut3d.lg_generation:undefined,
-  post_check:false
- });
+   preflight_lg_generation:skipPreprofileUnityReset&&preflightLut3d.lg_generation?preflightLut3d.lg_generation:undefined,
+   // Full autocal only: pass the greyscale stage's measured peak luminance
+   // and DPG array through to the 3D worker so it can upload the HDR
+   // tone map inside the same CAL_START as the 3D LUT. Calman's relay
+   // capture uploads the tone map LAST in the same CAL_START session;
+   // the 3D worker inherits the greyscale's CAL_START, uploads its 3D
+   // LUT (which resends gamut + 3D LUT, rebinding the DPG), then uploads
+   // the tone map (which sends CAL_END on its own).
+   full_workflow_peak_luminance:fullWorkflow&&firstStatusPeak>0?firstStatusPeak:undefined,
+   full_workflow_dpg_data:fullWorkflow&&Array.isArray(firstStatusDpg)&&firstStatusDpg.length===3072?firstStatusDpg:undefined,
+   post_check:false
+  });
  if(fullWorkflow){
   meterAutoCalRunning=false;
   meterAutoCalPhase='';
