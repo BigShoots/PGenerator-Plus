@@ -4518,10 +4518,28 @@ sub apply_pattern_insert_before_read {
   return $black_result->{"message"}||"Unable to display black insertion patch" if(($black_result->{"status"}||"") eq "error");
   select(undef,undef,undef,0.5);
  }
- # Step 3: restore the actual greyscale measurement patch.
- my $restore_result=api_json("POST","/api/pattern",patch_payload_for_step($config,$step),10);
- return $restore_result->{"message"}||"Unable to restore greyscale patch after pattern insertion" if(($restore_result->{"status"}||"") eq "error");
- return undef;
+  # Step 3: restore the actual greyscale measurement patch.
+  my $restore_result=api_json("POST","/api/pattern",patch_payload_for_step($config,$step),10);
+  return $restore_result->{"message"}||"Unable to restore greyscale patch after pattern insertion" if(($restore_result->{"status"}||"") eq "error");
+  # Pre-meter settle: the webui's /api/pattern handler returns once the
+  # renderer is NOTIFIED (return file written, pattern file renamed) -- it
+  # does NOT wait for the actual frame to be drawn. The renderer's update()
+  # loop polls for the return file and reloads on the next frame; the HDR
+  # shader + post-processing pipeline may then need a few frames to settle
+  # on the new patch. Without this settle, /api/meter/read arrives ~10-50ms
+  # later, meter_session.sh's post_patch then writes the SAME patch
+  # redundantly, and its delay_ms sleep starts IMMEDIATELY -- before the
+  # panel has finished transitioning from the black insertion patch. The
+  # colorimeter reads a transient brightness (sometimes the grey flash's
+  # afterglow, sometimes a mid-transition value) and the 100% (recal) /
+  # 35% anchors' initial reads come back wrong (614 nits / <74 nits).
+  # This settle gives the renderer enough time to land the IRE patch
+  # BEFORE the meter delay starts counting. Configurable; default 400 ms.
+  my $pattern_insert_post_settle_ms=defined($config->{"patch_insert_post_settle_ms"}) ? int($config->{"patch_insert_post_settle_ms"}) : 400;
+  $pattern_insert_post_settle_ms=0 if($pattern_insert_post_settle_ms < 0);
+  $pattern_insert_post_settle_ms=5000 if($pattern_insert_post_settle_ms > 5000);
+  select(undef,undef,undef,$pattern_insert_post_settle_ms/1000.0) if($pattern_insert_post_settle_ms > 0);
+  return undef;
 }
 
 sub rgb_error {
@@ -13331,6 +13349,15 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# floor, then run the normal loop from that resolvable point.
 		{
 			my ($probe_rd,$probe_err)=read_step($config,$rs,$state);
+			# Log the INITIAL probe read separately from the post-probe-up read
+			# so an operator can tell whether the read itself was inaccurate (a
+			# settling / pattern-insertion / DPG-modulation race) or whether the
+			# probe-up legitimately had to fire. Pre-probe read + (post-probe if
+			# it fires) gives a clean A/B for diagnosing the bad-initial-read
+			# cases the 100% (recal) and 35% anchors were hitting in 2026-06.
+			if(!$probe_err && ref($probe_rd) eq "HASH") {
+				log_line("HDR20 1D DPG greyscale: ".$label." probe-read initial measured_Y=".sprintf("%.5f",defined(luminance($probe_rd))?(luminance($probe_rd)//0):0));
+			}
 			# The probe-up should stop when the measured luminance reaches this
 			# anchor's TARGET luminance (not just the meter floor). Using the
 			# meter floor as the exit condition causes the DPG to overshoot by
@@ -13338,7 +13365,24 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# budget fighting back down.
 			my $probe_target=target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
 			$probe_target=$meter_floor if(!(defined($probe_target) && $probe_target+0 > $meter_floor));
-			if(!$probe_err && ref($probe_rd) eq "HASH" && defined(luminance($probe_rd)) && luminance($probe_rd)+0 < $probe_target) {
+			# Floor gate: only probe up when the read is below the FLOOR MARGIN
+			# (= meter_floor * floor_margin_multiple, default 10x = 0.03 nits for
+			# the 0.003 floor). This prevents the probe-up from firing when the
+			# calibrated DPG has legitimately reduced the panel output to a value
+			# well above the colorimeter's noise floor but below the 2.2 target
+			# (e.g. the 100% (recal) anchor reads ~614 nits after the 80% anchor's
+			# DPG modified idx=1023; the 35% anchor can read below its 74 nits
+			# target when the post-WB-cal 1D curve dips there). Without the gate,
+			# probe-up fires for these anchors, applies gain=2, and corrupts
+			# current_dpg -- the subsequent iters must then re-calibrate from a
+			# corrupted state, burning the iteration budget. With the gate, only
+			# the legitimate sub-floor case (1.4%, 2%, 2.7%) triggers probe-up.
+			my $floor_margin_multiple=defined($config->{"lg_autocal_hdr20_dpg_probeup_floor_margin_multiple"}) ? ($config->{"lg_autocal_hdr20_dpg_probeup_floor_margin_multiple"}+0) : 10.0;
+			$floor_margin_multiple=1.0 if($floor_margin_multiple < 1.0);
+			$floor_margin_multiple=1000.0 if($floor_margin_multiple > 1000.0);
+			my $probeup_floor=$meter_floor*$floor_margin_multiple;
+			my $probe_lum=defined(luminance($probe_rd)) ? (luminance($probe_rd)+0) : undef;
+			if(!$probe_err && ref($probe_rd) eq "HASH" && defined($probe_lum) && $probe_lum+0 < $probe_target+0 && $probe_lum+0 < $probeup_floor+0) {
 				my $probe_gain=2.0;
 				my $probe_ok=0;
 				for(my $probe=1;$probe<=6;$probe++) {
@@ -13356,6 +13400,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$probe_gain *= 2.0;
 				}
 				log_line("HDR20 1D DPG greyscale: ".$label." probe-up gain=".sprintf("%.2f",$probe_gain)." measured_Y=".sprintf("%.5f",(defined($probe_rd)?(luminance($probe_rd)//0):0))." target=".sprintf("%.5f",$probe_target).($probe_ok?" (reached target)":" (still below target)"));
+			} elsif(!$probe_err && ref($probe_rd) eq "HASH" && defined($probe_lum) && $probe_lum+0 < $probe_target+0) {
+				# Read is below target but above the floor margin: probe-up
+				# does NOT fire. Log once so the operator can spot legitimate
+				# under-target reads that don't need a probe-up.
+				log_line("HDR20 1D DPG greyscale: ".$label." probe-up skipped (initial read ".sprintf("%.5f",$probe_lum)." is below target ".sprintf("%.5f",$probe_target)." but above floor margin ".sprintf("%.5f",$probeup_floor)."; calibration will converge from here)");
 			}
 		}
 		for(my $i=1;$i<=$budget;$i++) {
