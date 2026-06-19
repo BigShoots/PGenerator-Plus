@@ -17507,11 +17507,23 @@ sub read_step_once {
 		 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
 		 my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : 100;
 		 my $delay_ms=int($config->{"delay_ms"}||1000);
-		 $delay_ms=100 if($delay_ms < 100);
+		 # The 1800ms floor was set for SDR panels that settle slowly. OLED
+		 # panels in HDR10 settle in <1s, so the floor is 1000ms for hdr10
+		 # and 1800ms for SDR. This reduces time on the white patch (which
+		 # heats the panel and raises luminance, biasing subsequent reads).
+		 my $delay_floor=lc($config->{"signal_mode"}||"sdr") eq "hdr10" ? 1000 : 1800;
+		 $delay_ms=$delay_floor if($delay_ms < $delay_floor);
 		 my $step_delay_ms=(ref($step) eq "HASH" && defined($step->{"read_delay_ms"})) ? int($step->{"read_delay_ms"}) : 0;
 		 $delay_ms=$step_delay_ms if($step_delay_ms > $delay_ms);
+		 my $target_white_delay_ms=sdr_target_white_reference_read_delay_ms($config,$step);
+		 $delay_ms=$target_white_delay_ms if(defined($target_white_delay_ms) && $target_white_delay_ms > $delay_ms);
 # No hardcoded per-IRE settle buckets — only the user-configurable
-		 # delay_ms (via $config) and the per-step read_delay_ms apply.
+# delay_ms (via $config), the per-step read_delay_ms, and the SDR
+# target-white anchor delay apply. IRE-specific settle (e.g. extra
+# wait for very dim patches) is now the operator's responsibility.
+		 # Relative probe reads measure change between two identical-protocol reads;
+		 # they do not need the full committing-read settle.
+		 $delay_ms=1800 if(ref($step) eq "HASH" && $step->{"autocal_quick_read"} && $delay_ms > 1800);
 	 my $request_id=read_request_id($step);
 	 my $payload={
 	  display_type => $config->{"display_type"}||"lcd",
