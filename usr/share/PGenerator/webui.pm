@@ -17730,13 +17730,47 @@ function meterClearAutoCalStatusPollingForReport(){
  if(meterAutoCalPhase==='running'||meterAutoCalPhase==='complete'||meterAutoCalPhase==='error') meterAutoCalPhase='';
 }
 
+function meterFullAutoCalStageWeights(){
+ // Expected meter-read count per phase, so the Full Auto Cal bar advances
+ // roughly in proportion to reads done rather than treating every phase as an
+ // equal slice (which made the ~80-read greyscale count the same as the
+ // 0-read tone-map/complete steps, so the bar looked stuck on the short tail).
+ // Report phases measure meterFullAutoCalReportSeries() (e.g. 21+30+24=75);
+ // greyscale runs ~26 anchors with several iterations each (~80 reads); the
+ // HDR 3D LUT is matrix-only (~5 profile + ~10 post-check); tone-map/complete
+ // do no reads. These are estimates -- exact greyscale reads vary with
+ // convergence -- but they make the overall bar far more honest than equal
+ // slices. Within-phase pacing still comes from meterWorkflowPhaseFraction.
+ let reportReads=0;
+ try{ reportReads=meterFullAutoCalReportSeries().reduce(function(n,s){return n+(Number(s.points)||0);},0); }catch(e){ reportReads=0; }
+ if(!(reportReads>0)) reportReads=75;
+ return {
+  'precal-report':reportReads,
+  'first-greyscale':80,
+  'touchup-greyscale':20,
+  '3d-lut':15,
+  'post-3d-polish':20,
+  'magic-wand':15,
+  'postcal-report':reportReads,
+  'complete':0
+ };
+}
+
 function meterWorkflowPercent(status,workflow){
  const fraction=meterWorkflowPhaseFraction(status);
  if(workflow==='full'){
   const stage=meterFullAutoCalStageIndex();
   const stages=meterFullAutoCalStageOrder();
-  const denom=Math.max(1,stages.length-1);
-  return meterWorkflowClamp01((stage+fraction)/denom)*100;
+  const weights=meterFullAutoCalStageWeights();
+  let total=0; for(let i=0;i<stages.length;i++) total+=(Number(weights[stages[i]])||0);
+  // Fall back to equal-slice weighting if weights are unavailable.
+  if(!(total>0)){
+   const denom=Math.max(1,stages.length-1);
+   return meterWorkflowClamp01((stage+fraction)/denom)*100;
+  }
+  let done=0; for(let i=0;i<stage&&i<stages.length;i++) done+=(Number(weights[stages[i]])||0);
+  const cur=(stage>=0&&stage<stages.length)?(Number(weights[stages[stage]])||0):0;
+  return meterWorkflowClamp01((done+fraction*cur)/total)*100;
  }
  return fraction*100;
 }
@@ -22931,6 +22965,13 @@ function meterFullAutoCalResetState(keepResults){
 
 function meterFullAutoCalAbort(message,isError){
  const text=message||'Full Auto Cal stopped';
+ // The greyscale stage HOLDS LG calibration mode open for the 3D-LUT stage,
+ // whose tone-map upload sends the final CAL_END. If the run aborts or stalls
+ // anywhere after that hold (e.g. the 3D/tone-map step), the panel would be
+ // stranded in calibration mode. Best-effort, idempotent CAL_END on every
+ // abort so the TV always returns to normal viewing. Fire-and-forget so the
+ // UI teardown below is not blocked on the TV round-trip.
+ try{ meterFullAutoCalEnsureCalibrationModeOff('Full Auto Cal stop').catch(function(){}); }catch(e){}
  meterFullAutoCalResetState(false);
  meterActionPending=false;
  meterAutoCalRunning=false;
