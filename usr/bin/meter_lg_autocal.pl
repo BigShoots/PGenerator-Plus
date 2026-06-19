@@ -12187,6 +12187,18 @@ sub commit_final_1d_lut {
 	   $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	   $state->{"calibration_mode"}=JSON::PP::true;
 	   $state->{"hdr20_dpg_calibration_mode_held"}=JSON::PP::true;
+	   # Record the measured 100% peak so the full-autocal handoff carries it to
+	   # the 3D LUT stage. The tone-map upload itself is deferred to the 3D stage
+	   # (which holds the same CAL_START), but the WebUI reads this key from the
+	   # greyscale completion status to build full_workflow_peak_luminance for
+	   # the 3D worker. Without it firstStatusPeak=0, full_workflow_peak_luminance
+	   # is omitted, and the 3D worker skips the tone map ("no peak luminance in
+	   # 3D worker config"). The greyscale-only path below sets it via the tonemap
+	   # queue fn; the full path returns before reaching that, so set it here too.
+	   my $tm_peak=(defined($state->{"hdr20_1d_dpg_white_ref"}) && $state->{"hdr20_1d_dpg_white_ref"}+0 > 0)
+	    ? $state->{"hdr20_1d_dpg_white_ref"}+0
+	    : $white_y;
+	   $state->{"hdr20_1d_tonemap_peak_luminance"}=$tm_peak+0 if(defined($tm_peak) && $tm_peak+0 > 0);
 	   $state->{"message"}="HDR20 1D DPG greyscale committed; calibration mode HELD for 3D LUT stage (full autocal)";
 	   write_state($state);
 	   return ($picture,undef,1);
