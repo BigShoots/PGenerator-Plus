@@ -2676,7 +2676,9 @@ sub lg_3d_lut_probe_workflow (@) {
 }
 
 sub lg_3d_lut_upload_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command)=@_;
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active)=@_;
+ $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
+ $calibration_mode_active=$calibration_mode_active ? 1 : 0;
  return &json_error("Connect / Pair the LG TV before uploading a 3D LUT",{ ip => $ip }) if($client_key eq "");
  my $lut=&lg_read_3d_lut_file($payload_path);
  return &json_error("3D LUT payload must be a 33x33x33 little-endian uint16 file with 12-bit RGB values.",{ payload_path => $payload_path }) if(ref($lut) ne "ARRAY");
@@ -2698,12 +2700,38 @@ sub lg_3d_lut_upload_workflow (@) {
   payload_values => scalar(@{$lut}),
   upload_command => $upload_command||"",
   get_command => $get_command||"",
+  keep_calibration_mode => $keep_calibration_mode,
+  calibration_mode_active => $calibration_mode_active,
  });
- my $start=&lg_calibration_request($session,"3d_lut_upload_cal_start","CAL_START",undef,1,$cal_mode,$connect_timeout + 4);
- my ($start_failed,$start_message)=&response_is_app_failure($start);
+ my $start;
+ if($calibration_mode_active) {
+  $start={ type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
+ } else {
+  $start=&lg_calibration_request($session,"3d_lut_upload_cal_start","CAL_START",undef,1,$cal_mode,$connect_timeout + 4);
+ }
+ my ($start_failed,$start_message)=(0,"");
+ if(!$calibration_mode_active) {
+  ($start_failed,$start_message)=&response_is_app_failure($start);
+ }
  if($start_failed || ref($start) ne "HASH") {
   &websocket_close($session);
   return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
+ }
+ # Disable gamma LUTs inside the active CAL_START session, matching Calman's
+ # relay capture (1D_2_2_EN=0, 1D_0_45_EN=0). Only on the first call entering
+ # cal mode; subsequent calls with calibration_mode_active=true inherit the
+ # state.
+ my @gamma_lut_steps;
+ if(!$calibration_mode_active) {
+  foreach my $item (
+   ["3d_lut_upload_disable_degamma","1D_2_2_EN",0],
+   ["3d_lut_upload_disable_regamma","1D_0_45_EN",0],
+  ) {
+   my ($id,$command,$value)=@{$item};
+   my $resp=&lg_calibration_request($session,$id,$command,[$value],1,$cal_mode,$connect_timeout + 4);
+   my ($rf,$rm)=&response_is_app_failure($resp);
+   push(@gamma_lut_steps,{ command => $command, value => $value, failed => &json_bool($rf), message => $rm//"" });
+  }
  }
  my @attempts=();
  my @bt2020_matrix_steps=();
@@ -2810,7 +2838,9 @@ sub lg_3d_lut_upload_workflow (@) {
    $last_message=$matrix_message||"LG TV rejected HDR BT.2020 3x3 setup after 3D LUT upload.";
   }
  }
- my $end=&lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
+ my $end=$keep_calibration_mode
+  ? { type => "skipped", payload => { returnValue => &json_true() }, keep_calibration_mode => &json_true() }
+  : &lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
  &websocket_close($session);
  if(!$uploaded) {
   &diag_log_append("3d_lut_upload:failure",{
@@ -2871,11 +2901,11 @@ sub lg_3d_lut_upload_workflow (@) {
 }
 
 sub lg_3d_lut_reset_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command)=@_;
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active)=@_;
  my $tmp="/tmp/pgenerator_lg_unity_3d_lut_$$.bin";
  my $unity=&lg_unity_3d_lut(33);
  &file_write_text($tmp,pack("v*",@{$unity}));
- my $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tmp,$upload_command,$get_command);
+ my $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tmp,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active);
  unlink($tmp);
  $result->{"reset_to_unity"}=&json_true() if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok");
  if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok") {
@@ -5152,6 +5182,8 @@ sub main (@) {
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
  my $dpg_data=$request->{"dpg_data"};
+ my $keep_calibration_mode=$request->{"keep_calibration_mode"} ? 1 : 0;
+ my $calibration_mode_active=$request->{"calibration_mode_active"} ? 1 : 0;
  my $result;
 
  if(!$ip || !&valid_ipv4($ip)) {
@@ -5175,9 +5207,9 @@ sub main (@) {
  } elsif($action eq "3d_lut_probe") {
   $result=&lg_3d_lut_probe_workflow($ip,$client_key,$connect_timeout,$picture_mode,$write_probe);
  } elsif($action eq "3d_lut_upload") {
-  $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command);
+  $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active);
 	 } elsif($action eq "3d_lut_reset") {
-	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command);
+	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active);
 	 } elsif($action eq "hdr_picture_reset" || $action eq "hdr_calman_reset") {
 	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
 	 } elsif($action eq "hdr_tone_map_upload") {
