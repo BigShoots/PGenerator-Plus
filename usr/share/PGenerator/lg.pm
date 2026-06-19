@@ -1502,6 +1502,8 @@ sub webui_lg_3d_lut_upload (@) {
   payload_path => $payload_path,
   upload_command => $payload->{"upload_command"}||"",
   get_command => $payload->{"get_command"}||"",
+  keep_calibration_mode => $payload->{"keep_calibration_mode"} ? 1 : 0,
+  calibration_mode_active => $payload->{"calibration_mode_active"} ? 1 : 0,
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
@@ -1534,6 +1536,8 @@ sub webui_lg_3d_lut_reset (@) {
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
   upload_command => $payload->{"upload_command"}||"",
   get_command => $payload->{"get_command"}||"",
+  keep_calibration_mode => $payload->{"keep_calibration_mode"} ? 1 : 0,
+  calibration_mode_active => $payload->{"calibration_mode_active"} ? 1 : 0,
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
@@ -1569,17 +1573,19 @@ sub webui_lg_hdr_tone_map_upload (@) {
   return &lg_encode_json({ status => "error", message => "HDR20 1D DPG upload requires dpg_data." }) if(ref($dpg_data) ne "ARRAY");
   return &lg_encode_json({ status => "error", message => "HDR20 1D DPG upload requires a 3072-value (3 channels x 1024 points) uint16 array.", expected_count => 3072, received_count => scalar(@{$dpg_data}) }) if(scalar(@{$dpg_data}) != 3072);
  }
- my $result=&lg_helper_run({
-  action => "hdr_tone_map_upload",
-  ip => $ip,
-  client_key => $client_key,
-  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
-  peak_luminance => $peak_luminance,
-  dpg_data => $dpg_data,
-  ddc_layout => "hdr20",
-  helper_timeout => int($payload->{"helper_timeout"}||0),
-  connect_timeout => 5,
- });
+  my $result=&lg_helper_run({
+   action => "hdr_tone_map_upload",
+   ip => $ip,
+   client_key => $client_key,
+   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+   peak_luminance => $peak_luminance,
+   dpg_data => $dpg_data,
+   ddc_layout => "hdr20",
+   keep_calibration_mode => $payload->{"keep_calibration_mode"} ? 1 : 0,
+   calibration_mode_active => $payload->{"calibration_mode_active"} ? 1 : 0,
+   helper_timeout => int($payload->{"helper_timeout"}||0),
+   connect_timeout => 5,
+  });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the HDR tone-map upload again.";
