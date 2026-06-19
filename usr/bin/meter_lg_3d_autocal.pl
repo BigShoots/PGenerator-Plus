@@ -1310,15 +1310,24 @@ sub neutral_neighborhood_identity_enabled {
 sub reset_3d_lut_to_unity_before_profile {
  my ($config,$state)=@_;
  return undef if(!upload_requested($config) || $config->{"fixture_mode"});
- if($config->{"full_workflow"} && $config->{"skip_preprofile_unity_reset"} && $config->{"preflight_3d_lut_verified"}) {
+ # Full autocal: the greyscale stage already opened CAL_START and uploaded
+ # an identity BT2020 gamut + identity 3D LUT container (Step 1 of the
+ # Calman-matching flow), and the commit path leaves CAL_START active
+ # (Step 2) so this 3D LUT worker inherits it. We MUST NOT open a new
+ # CAL_START/CAL_END here -- that would close the greyscale's session
+ # and break the post-DPG gamut + 3D LUT rebind the tone map depends on.
+ if($config->{"full_workflow"}) {
+  my $source=($config->{"skip_preprofile_unity_reset"} && $config->{"preflight_3d_lut_verified"})
+   ? "full_autocal_preflight"
+   : "full_autocal_greyscale_stage";
   my $reset={
    status => "ok",
    skipped => json_true(),
    upload_verified => json_true(),
-   source => "full_autocal_preflight",
+   source => $source,
    completed_at => $config->{"preflight_3d_lut_completed_at"}||undef,
-   upload_command => $config->{"preflight_3d_lut_upload_command"}||"",
-   get_command => $config->{"preflight_3d_lut_get_command"}||"",
+   upload_command => $config->{"preflight_3d_lut_upload_command"}||$config->{"upload_command"}||"",
+   get_command => $config->{"preflight_3d_lut_get_command"}||$config->{"get_command"}||"",
    lg_generation => (ref($config->{"preflight_lg_generation"}) eq "HASH") ? $config->{"preflight_lg_generation"} : undef,
   };
   $config->{"lg_generation"}=$reset->{"lg_generation"} if(ref($reset->{"lg_generation"}) eq "HASH");
@@ -1467,13 +1476,14 @@ eval {
     helper_timeout => 190,
    },210);
   }
-  $state->{"upload_probe"}=$probe;
+   $state->{"upload_probe"}=$probe;
   if(ref($probe) eq "HASH" && $probe->{"status"} eq "ok" && $probe->{"upload_supported"}) {
    $state->{"phase"}="upload";
    $state->{"current_name"}="Uploading LG 3D LUT";
    $state->{"message"}="Writing generated ".signal_mode_label($config->{"signal_mode"})." ".target_gamut_label($config->{"target_gamut"})." 3D LUT";
    $state->{"upload_status"}="requesting";
    $state->{"upload_started_at"}=int(time()*1000);
+   my $full_workflow_upload=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
    $state->{"upload_request"}={
     picture_mode => $config->{"picture_mode"}||"",
     payload_path => $export->{"payload_path"},
@@ -1481,9 +1491,18 @@ eval {
     get_command => $probe->{"get_command"}||"",
     helper_timeout => 220,
     api_timeout => 240,
+    # Full autocal: the greyscale stage already opened CAL_START and uploaded
+    # an identity 3D LUT container. We must INHERIT that CAL_START (skip our
+    # own CAL_START) and KEEP it active (skip our own CAL_END) so the
+    # subsequent tone-map upload can land inside the same session. Calman's
+    # HDR OLED DPG flow (relay capture) uses a single CAL_START across the
+    # DPG, the 3D LUT, and the tone map -- same pattern.
+    ($full_workflow_upload
+     ? (keep_calibration_mode=>json_true(),calibration_mode_active=>json_true())
+     : ()),
    };
    $state->{"upload_supported"}=json_true();
-   log_line("3D LUT upload request start: payload=".($export->{"payload_path"}||"").", upload=".($probe->{"upload_command"}||"").", get=".($probe->{"get_command"}||""));
+   log_line("3D LUT upload request start: payload=".($export->{"payload_path"}||"").", upload=".($probe->{"upload_command"}||"").", get=".($probe->{"get_command"}||"").", full_workflow=".($full_workflow_upload?1:0));
    write_state($state);
    my $upload=api_json("POST","/api/lg/3d-lut/upload",$state->{"upload_request"},240);
    $state->{"upload"}=$upload;
@@ -1499,13 +1518,69 @@ eval {
    $state->{"upload_api_timeout"}=($upload_message=~/Web UI API timed out/i) ? json_true() : json_false();
    $state->{"upload_helper_timeout"}=($upload_message=~/did not finish .* within \d+s|timed out/i && $upload_message!~/Web UI API timed out/i) ? json_true() : json_false();
    $state->{"upload_json_error"}=($upload_message=~/Invalid Web UI API response|LG helper execution failed/i) ? json_true() : json_false();
-   log_line("3D LUT upload response: status=".($state->{"upload_status"}||"").", verified=".($state->{"upload_verified"}?1:0).", contract=".($state->{"upload_verify_contract"}||"").", readback_unavailable=".($state->{"upload_readback_unavailable"}?1:0).", reason=".($state->{"upload_readback_unavailable_reason"}||"").", message=".$upload_message);
-   write_state($state);
-  } else {
-   $state->{"upload_supported"}=json_false();
-   $state->{"message"}="3D LUT upload probe did not verify; export kept";
+    log_line("3D LUT upload response: status=".($state->{"upload_status"}||"").", verified=".($state->{"upload_verified"}?1:0).", contract=".($state->{"upload_verify_contract"}||"").", readback_unavailable=".($state->{"upload_readback_unavailable"}?1:0).", reason=".($state->{"upload_readback_unavailable_reason"}||"").", message=".$upload_message);
+    write_state($state);
+    # Full autocal: after the 3D LUT upload, upload the HDR tone map inside
+    # the SAME active CAL_START session (the 3D LUT upload used
+    # keep_calibration_mode=true). Calman uploads the tone map LAST in its
+    # single CAL_START -- the tone map helper sends CAL_END on its own.
+    # Source: greyscale stage's hdr20_1d_tonemap_peak_luminance + DPG array
+    # (the WebUI passes them through full_workflow_peak_luminance /
+    # full_workflow_dpg_data so the 3D worker doesn't have to read the
+    # greyscale state file directly).
+    if($full_workflow_upload && ($state->{"upload_status"}||"") eq "ok") {
+     my $tone_peak=0;
+     my $tone_dpg=undef;
+     if(ref($config) eq "HASH") {
+      if(defined($config->{"full_workflow_peak_luminance"}) && $config->{"full_workflow_peak_luminance"}+0 > 0) {
+       $tone_peak=$config->{"full_workflow_peak_luminance"}+0;
+      } elsif(defined($config->{"hdr20_1d_tonemap_peak_luminance"}) && $config->{"hdr20_1d_tonemap_peak_luminance"}+0 > 0) {
+       $tone_peak=$config->{"hdr20_1d_tonemap_peak_luminance"}+0;
+      }
+      if(ref($config->{"full_workflow_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"full_workflow_dpg_data"}}) == 3072) {
+       $tone_dpg=$config->{"full_workflow_dpg_data"};
+      } elsif(ref($config->{"hdr20_1d_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"hdr20_1d_dpg_data"}}) == 3072) {
+       $tone_dpg=$config->{"hdr20_1d_dpg_data"};
+      }
+     }
+     if($tone_peak > 0) {
+      $state->{"phase"}="tone_map_upload";
+      $state->{"current_name"}="Uploading HDR tone map";
+      $state->{"message"}="Uploading 1D_TONEMAP_PARAM (peak=".sprintf("%.2f",$tone_peak)." nits) inside the same CAL_START as the 3D LUT";
+      write_state($state);
+      log_line("3D LUT stage: tone map upload start (peak=".sprintf("%.4f",$tone_peak)." nits, dpg=".((ref($tone_dpg) eq "ARRAY") ? scalar(@{$tone_dpg})." ints" : "none").")");
+      my $tone_req={
+       picture_mode => $config->{"picture_mode"}||"",
+       peak_luminance => $tone_peak+0,
+       ddc_layout => "hdr20",
+       keep_calibration_mode => json_true(),
+       calibration_mode_active => json_true(),
+       helper_timeout => 90,
+      };
+      $tone_req->{"dpg_data"}=$tone_dpg if(ref($tone_dpg) eq "ARRAY");
+      my $tone_resp=api_json("POST","/api/lg/hdr-tone-map/upload",$tone_req,105);
+      $state->{"tone_map_upload"}=$tone_resp;
+      my $tone_status=(ref($tone_resp) eq "HASH") ? ($tone_resp->{status}//"") : "invalid-response";
+      my $tone_message=(ref($tone_resp) eq "HASH") ? ($tone_resp->{message}//"") : "";
+      $state->{"tone_map_upload_status"}=$tone_status;
+      $state->{"tone_map_upload_message"}=$tone_message;
+      $state->{"tone_map_uploaded"}=($tone_status eq "ok") ? json_true() : json_false();
+      $state->{"tone_map_upload_peak_luminance"}=$tone_peak+0;
+      log_line("3D LUT stage: tone map upload response status=".$tone_status.", message=".$tone_message);
+      write_state($state);
+     } else {
+      log_line("3D LUT stage: full_workflow tone map upload skipped -- no peak luminance in config");
+      $state->{"tone_map_upload_status"}="skipped";
+      $state->{"tone_map_upload_message"}="no peak luminance in 3D worker config";
+      $state->{"tone_map_uploaded"}=json_false();
+      write_state($state);
+     }
+    }
+   } else {
+    $state->{"upload_supported"}=json_false();
+    $state->{"message"}="3D LUT upload probe did not verify; export kept";
+   }
   }
- }
 
  if($config->{"post_check"} && !$config->{"fixture_mode"}) {
   my @post=post_check_steps($config);
