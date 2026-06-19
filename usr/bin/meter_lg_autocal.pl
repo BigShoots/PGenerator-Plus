@@ -12088,26 +12088,23 @@ sub commit_final_1d_lut {
 	   : $white_y;
 	  lg_autocal_26_queue_hdr20_1d_tonemap_upload($config,$state,$picture_mode,$tm_white_y)
 	   if(defined(&lg_autocal_26_queue_hdr20_1d_tonemap_upload));
-	  # HDR20 1D DPG autocal does NOT issue CAL_END at the commit. Calman's
-	  # HDR10 1D DPG flow keeps calibration mode on so the panel keeps the
-	  # 1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN toggles active -- they are CAL-
-	  # scoped on LG WebOS, not persisted in picture_settings, so CAL_END
-	  # reverts the gamma LUTs and the post-cal Read Series ends up reading
-	  # the panel's raw PQ response instead of the 2.2-calibrated DPG
-	  # curve (5% IRE post Y = 0.10 nits vs target 1.02; 70% Y = 557 vs
-	  # 339; mid-IRE dE = 7-10). The panel stays in cal mode until the
-	  # operator exits it (the wizard's "Exit calibration mode" button
-	  # issues /api/lg/calibration-mode disable). The "Auto Cal 100%"
-	  # overlay stays on screen, which is the intended Calman behaviour.
-	  $state->{"hdr20_dpg_calibration_mode_kept_on"}=JSON::PP::true;
-	  $state->{"hdr20_dpg_calibration_mode_exit_hint"}="Use Display -> Exit Calibration Mode once you have finished post-cal Read Series verification.";
+	  end_calibration_mode($picture_mode);
+	  set_state_calibration_mode($state,0,"");
+	  # HDR20 1D DPG autocal now matches Calman: DPG is calibrated in
+	  # code space (gamma LUTs disabled throughout), so the DPG bytes
+	  # are valid both inside and outside calibration mode. CAL_END
+	  # reverts calibration mode but the DPG stays in the signal path
+	  # and post-cal Read Series readings track the 2.2-calibrated
+	  # curve. This restores the original commit behaviour (CAL_END
+	  # at the end of the HDR20 commit path) and removes the
+	  # Calman-style "keep cal mode on" workaround.
 	  $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
 	  $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
 	  $state->{"final_1d_lut_skipped"}=JSON::PP::false;
-	  $state->{"calibration_mode"}=JSON::PP::true;
+	  $state->{"calibration_mode"}=JSON::PP::false;
 	  $state->{"message"}=($state->{"hdr20_1d_tonemap_pending"})
-	   ? "HDR20 1D DPG calibration committed; calibration mode kept on (Calman-style) so post-cal reads use the 2.2-calibrated DPG chain; HDR tone-map upload pending wizard confirmation"
-	   : "HDR20 1D DPG calibration committed; calibration mode kept on (Calman-style) so post-cal reads use the 2.2-calibrated DPG chain";
+	   ? "HDR20 1D DPG calibration committed; calibration mode ended (Calman-style: DPG calibrated in code space, gamma LUTs disabled); HDR tone-map upload pending wizard confirmation"
+	   : "HDR20 1D DPG calibration committed; calibration mode ended (Calman-style: DPG calibrated in code space, gamma LUTs disabled)";
 	  write_state($state);
 	  return ($picture,undef,1);
 	 }
@@ -16941,29 +16938,6 @@ sub end_calibration_mode {
   picture_mode => $picture_mode||"",
  },90);
  log_line("CAL_END cleanup: ".($result->{"message"}||$result->{"status"}||"done"));
- return $result;
-}
-
-# Re-enable the HDR20 1D DPG pipeline (1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN)
-# AFTER the panel exits calibration mode. Calman's HDR10 1D DPG calibration
-# order is: enable 1D_2_2_EN + 1D_0_45_EN, upload 1D_DPG_DATA, then keep
-# calibration mode on for post-cal reads. Our flow ends calibration mode
-# before the post-cal series, which makes the panel fall back to the raw
-# PQ signal chain -- the 2.2-calibrated DPG is then applied in the wrong
-# space and post-cal reads show the native PQ response (mid-IRE dE = 7-10)
-# instead of the calibrated 2.2 curve. Re-issuing the three enable toggles
-# AFTER CAL_END keeps the panel on the gamma-corrected chain that the DPG
-# was calibrated in.
-sub re_enable_hdr20_1d_dpg_pipeline_after_cal_end {
- my ($picture_mode)=@_;
- my $result=api_json("POST","/api/lg/hdr20-1d-dpg-pipeline/enable",{
-  picture_mode => $picture_mode||"",
-  enable_degamma => JSON::PP::true,
-  enable_regamma => JSON::PP::true,
-  enable_dpg => JSON::PP::true,
-  helper_timeout => 30,
- },45);
- log_line("HDR20 1D DPG pipeline re-enable (post CAL_END): ".($result->{"message"}||$result->{"status"}||"unknown"));
  return $result;
 }
 

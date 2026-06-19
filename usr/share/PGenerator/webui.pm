@@ -22642,10 +22642,7 @@ async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
   try{
 const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
      method:'POST',headers:{'Content-Type':'application/json'},
-     // Keep calibration mode on across the tone-map upload so the gamma
-     // LUT chain (1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN) stays active for the
-     // post-cal Read Series.
-     body:JSON.stringify({picture_mode:pictureMode,peak_luminance:measuredPeak,helper_timeout:90,keep_calibration_mode:true}),
+     body:JSON.stringify({picture_mode:pictureMode,peak_luminance:measuredPeak,helper_timeout:90}),
      _timeoutMs:100000
     });
    if(response&&response.status==='ok'){
@@ -22688,12 +22685,6 @@ const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
    body:JSON.stringify({
     picture_mode:meterLgPictureModeValue(),
     peak_luminance:peak,
-    // Keep calibration mode on across the tone-map upload so the gamma LUT
-    // chain (1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN) stays active. Calman does
-    // not issue CAL_END between DPG and tone-map; if we do, the panel
-    // reverts to raw PQ and post-cal Read Series readings match the PQ
-    // curve instead of the 2.2-calibrated DPG curve.
-    keep_calibration_mode:true,
     helper_timeout:90
    }),
    _timeoutMs:100000
