@@ -380,14 +380,21 @@ build_sr_cmd () {
   x_aa)  new_ll_flags="-x -Y aa" ;;
   x_aaa) new_ll_flags="-x -Y aaa" ;;
   off|*) new_ll_flags="" ;;
- esac
- if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
-  local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $AVG_FLAG $new_ll_flags"
- else
-  local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $AVG_FLAG $new_ll_flags"
- fi
- [[ -n "$REFRESH_RATE" ]] && cmd="$cmd -Y R:$REFRESH_RATE"
- printf '%s' "$cmd"
+  esac
+  # new_ll_flags is the authoritative -Y source. Do NOT also inject $AVG_FLAG:
+  # stacking e.g. "-Y a -Y A" passes conflicting integration modes to spotread.
+  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
+   local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
+  else
+   local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $new_ll_flags"
+  fi
+  # -Y R:rate overrides spotread's measured refresh rate. Passing it makes
+  # spotread SKIP its mandatory "read an 80% white patch to calibrate refresh
+  # frequency" step -- on a sample-and-hold OLED that auto-cal read is
+  # unreliable (it fails without averaging, leaving the meter uncalibrated so
+  # every subsequent read fails). So always honour an explicit rate.
+  [[ -n "$REFRESH_RATE" ]] && cmd="$cmd -Y R:$REFRESH_RATE"
+  printf '%s' "$cmd"
 }
 
 # Respawn ONLY the spotread pipeline (NOT the wrapper) with a new
@@ -581,10 +588,11 @@ if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; t
 fi
 # Use build_sr_cmd to construct the initial SR_CMD so the respawn path and the
 # startup path share a single source of truth for the flag combination. The
-# initial low_light mode matches the startup LOW_LIGHT_FLAGS (empty by default
-# = "off" = no -Y/-x flags from the low-light handler, which is what
-# CURRENT_LOW_LIGHT_MODE was initialized to above).
-SR_CMD=$(build_sr_cmd "${LOW_LIGHT_MODE:-off}")
+# initial mode is the operator's session-level METER_AVERAGING so it matches
+# CURRENT_LOW_LIGHT_MODE (also METER_AVERAGING) -- a mismatch would mean the
+# first per-read mode equals CURRENT and skips the respawn, leaving spotread
+# running with the wrong -Y flag.
+SR_CMD=$(build_sr_cmd "${METER_AVERAGING:-off}")
 [[ "$DISABLE_AIO" == "1" ]] && export I1D3_DISABLE_AIO=1
 
 cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
