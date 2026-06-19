@@ -4415,28 +4415,92 @@ sub patch_payload_for_step {
  return $payload;
 }
 
+# Pattern insertion state (module-level, persists across reads within a run).
+# Mirrors meter_series.sh's PATCH_INSERT_PATCH_COUNTER / LAST_TIME_TS.
+our $_patch_insert_counter=0;
+our $_patch_insert_last_time_ts=0;
+
+sub sanitize_ms {
+ my ($raw,$fallback,$max)=@_;
+ $fallback//=0; $max//=120000;
+ $raw=int($raw//0);
+ $raw=$fallback if($raw < 0);
+ $raw=$max if($raw > $max);
+ return $raw;
+}
+
+sub sanitize_count {
+ my ($raw,$fallback,$max)=@_;
+ $fallback//=1; $max//=999;
+ $raw=int($raw//1);
+ $raw=$fallback if($raw < 1);
+ $raw=$max if($raw > $max);
+ return $raw;
+}
+
+sub _patch_insert_code_for_level {
+ my ($level_pct)=@_;
+ $level_pct=0 if($level_pct+0 < 0);
+ $level_pct=100 if($level_pct+0 > 100);
+ return int(($level_pct/100.0)*255.0 + 0.5);
+}
+
 sub apply_pattern_insert_before_read {
  my ($config,$step,$step_key)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"});
  $step_key=autocal_read_step_key($step) if(!defined($step_key));
  my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
  my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
-	 my $insert_code=64;
- my $payload={
+ # Read user settings from the PGenerator Meter Settings card. These are
+ # the SAME keys meter_series.sh honours for the series read path.
+ my $patch_enabled=$config->{"patch_insert_patch_enabled"} ? 1 : 0;
+ my $patch_every=sanitize_count($config->{"patch_insert_patch_every"},1,999);
+ my $patch_duration_ms=sanitize_ms($config->{"patch_insert_patch_duration_ms"},1000,30000);
+ my $patch_level=($config->{"patch_insert_patch_level"}//10)+0;
+ my $time_enabled=$config->{"patch_insert_time_enabled"} ? 1 : 0;
+ my $time_frequency_ms=sanitize_ms($config->{"patch_insert_time_frequency_ms"},5000,120000);
+ my $time_duration_ms=sanitize_ms($config->{"patch_insert_time_duration_ms"},5000,30000);
+ my $time_level=($config->{"patch_insert_time_level"}//25)+0;
+ # Decide whether to fire. Either or both insertion types may fire.
+ my @inserts;
+ my $now=int(Time::HiRes::time()*1000);
+ if($time_enabled && ($_patch_insert_last_time_ts == 0 || ($now - $_patch_insert_last_time_ts) >= $time_frequency_ms)) {
+  push @inserts,{ level => $time_level, duration_ms => $time_duration_ms, reason => "time" };
+  $_patch_insert_last_time_ts=$now;
+ }
+ if($patch_enabled) {
+  $_patch_insert_counter++;
+  if(($_patch_insert_counter % $patch_every) == 0) {
+   push @inserts,{ level => $patch_level, duration_ms => $patch_duration_ms, reason => "patch" };
+  }
+ }
+ return undef unless(@inserts);
+ my $base_payload={
   name => "patch",
-  r => $insert_code,
-  g => $insert_code,
-  b => $insert_code,
   size => 100,
   input_max => 255,
   signal_mode => $config->{"signal_mode"}||"sdr",
   max_luma => $config->{"max_luma"}||1000,
  };
- $payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
- $payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
- my $insert_result=api_json("POST","/api/pattern",$payload,10);
- return $insert_result->{"message"}||"Unable to display pattern insertion patch" if(($insert_result->{"status"}||"") eq "error");
- select(undef,undef,undef,1.5);
+ $base_payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
+ $base_payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
+ for my $ins (@inserts) {
+  my $code=_patch_insert_code_for_level($ins->{"level"});
+  my $dur_s=$ins->{"duration_ms"}/1000.0;
+  log_line("HDR20 pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code duration=".sprintf("%.3f",$dur_s)."s");
+  # Step 1: grey insertion flash at the user-configured level + duration.
+  my $insert_payload={%{$base_payload},r=>$code,g=>$code,b=>$code};
+  my $insert_result=api_json("POST","/api/pattern",$insert_payload,10);
+  return $insert_result->{"message"}||"Unable to display pattern insertion patch" if(($insert_result->{"status"}||"") eq "error");
+  select(undef,undef,undef,$dur_s);
+  # Step 2: dead black screen to reset panel ABL / pixel charge between
+  # the insertion flash and the measurement patch.
+  my $black_payload={%{$base_payload},r=>0,g=>0,b=>0};
+  my $black_result=api_json("POST","/api/pattern",$black_payload,10);
+  return $black_result->{"message"}||"Unable to display black insertion patch" if(($black_result->{"status"}||"") eq "error");
+  select(undef,undef,undef,0.5);
+ }
+ # Step 3: restore the actual greyscale measurement patch.
  my $restore_result=api_json("POST","/api/pattern",patch_payload_for_step($config,$step),10);
  return $restore_result->{"message"}||"Unable to restore greyscale patch after pattern insertion" if(($restore_result->{"status"}||"") eq "error");
  return undef;
@@ -13198,7 +13262,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# floor, then run the normal loop from that resolvable point.
 		{
 			my ($probe_rd,$probe_err)=read_step($config,$rs,$state);
-			if(!$probe_err && ref($probe_rd) eq "HASH" && defined(luminance($probe_rd)) && luminance($probe_rd)+0 < $meter_floor) {
+			# The probe-up should stop when the measured luminance reaches this
+			# anchor's TARGET luminance (not just the meter floor). Using the
+			# meter floor as the exit condition causes the DPG to overshoot by
+			# 2x-64x, producing a starting dE of ~32 and burning the convergence
+			# budget fighting back down.
+			my $probe_target=target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
+			$probe_target=$meter_floor if(!(defined($probe_target) && $probe_target+0 > $meter_floor));
+			if(!$probe_err && ref($probe_rd) eq "HASH" && defined(luminance($probe_rd)) && luminance($probe_rd)+0 < $probe_target) {
 				my $probe_gain=2.0;
 				my $probe_ok=0;
 				for(my $probe=1;$probe<=6;$probe++) {
@@ -13212,10 +13283,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					($probe_rd,$probe_err)=read_step($config,$rs,$state);
 					last if($probe_err || ref($probe_rd) ne "HASH");
 					my $py=luminance($probe_rd);
-					if(defined($py) && $py+0 >= $meter_floor) { $probe_ok=1; last; }
+					if(defined($py) && $py+0 >= $probe_target) { $probe_ok=1; last; }
 					$probe_gain *= 2.0;
 				}
-				log_line("HDR20 1D DPG greyscale: ".$label." probe-up gain=".sprintf("%.2f",$probe_gain)." measured_Y=".sprintf("%.5f",(defined($probe_rd)?(luminance($probe_rd)//0):0)).($probe_ok?" (escaped sub-floor)":" (still sub-floor -- blind zone)"));
+				log_line("HDR20 1D DPG greyscale: ".$label." probe-up gain=".sprintf("%.2f",$probe_gain)." measured_Y=".sprintf("%.5f",(defined($probe_rd)?(luminance($probe_rd)//0):0))." target=".sprintf("%.5f",$probe_target).($probe_ok?" (reached target)":" (still below target)"));
 			}
 		}
 		for(my $i=1;$i<=$budget;$i++) {
@@ -13475,7 +13546,17 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# comparable to the per-iter move, causing oscillation instead
 			# of convergence.
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
+			$floor=($is_white ? 0.5 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
+			# 100% white uses damp exponent 1.0 (apply the raw gain directly)
+			# instead of the EOTF-aware 1/gamma_effective (~0.45 for HDR10
+			# at peak). The EOTF-aware exponent pulls the move toward 1.0,
+			# making each iter only a fraction of the needed correction —
+			# e.g. raw gain 0.90 → damped 0.95, a 5% move when a 10% move
+			# is needed. With exp=1.0 the full reduce-to-lowest gain is
+			# applied, converging in 2-3 iters instead of 8-16. This also
+			# reduces time on the white patch (which heats the panel and
+			# raises luminance, biasing subsequent reads).
+			my $effective_damp_exp=$is_white ? 1.0 : $damp_exp;
 			# EOTF-aware damp: the exponent 1/gamma_effective is computed
 			# at the top of the iter (clamped to [1.5, 3.0]) and passed as
 			# the 3rd arg to the damp closure, replacing the previous
@@ -13485,9 +13566,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# damp is unchanged. When it's 0.5, the move is half-magnitude
 			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
 			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
-			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling;
-			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling;
-			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling;
+			my $sr=1.0+($damp->($rg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
+			my $sg=1.0+($damp->($gg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
+			my $sb=1.0+($damp->($bg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
 			# Clamp to [floor, 1.25] so a tiny move_scaling still respects the
 			# per-IRE minimum step.
 			$sr=$floor if($sr+0 < $floor+0);
@@ -17410,7 +17491,12 @@ sub read_step_once {
 		 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
 		 my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : 100;
 		 my $delay_ms=int($config->{"delay_ms"}||1000);
-		 $delay_ms=1800 if($delay_ms < 1800);
+		 # The 1800ms floor was set for SDR panels that settle slowly. OLED
+		 # panels in HDR10 settle in <1s, so the floor is 1000ms for hdr10
+		 # and 1800ms for SDR. This reduces time on the white patch (which
+		 # heats the panel and raises luminance, biasing subsequent reads).
+		 my $delay_floor=lc($config->{"signal_mode"}||"sdr") eq "hdr10" ? 1000 : 1800;
+		 $delay_ms=$delay_floor if($delay_ms < $delay_floor);
 		 my $step_delay_ms=(ref($step) eq "HASH" && defined($step->{"read_delay_ms"})) ? int($step->{"read_delay_ms"}) : 0;
 		 $delay_ms=$step_delay_ms if($step_delay_ms > $delay_ms);
 		 my $target_white_delay_ms=sdr_target_white_reference_read_delay_ms($config,$step);
