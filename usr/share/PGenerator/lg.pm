@@ -1569,6 +1569,7 @@ sub webui_lg_hdr_tone_map_upload (@) {
   return &lg_encode_json({ status => "error", message => "HDR20 1D DPG upload requires dpg_data." }) if(ref($dpg_data) ne "ARRAY");
   return &lg_encode_json({ status => "error", message => "HDR20 1D DPG upload requires a 3072-value (3 channels x 1024 points) uint16 array.", expected_count => 3072, received_count => scalar(@{$dpg_data}) }) if(scalar(@{$dpg_data}) != 3072);
  }
+ my $keep_calibration_mode=$payload->{"keep_calibration_mode"} ? 1 : 0;
  my $result=&lg_helper_run({
   action => "hdr_tone_map_upload",
   ip => $ip,
@@ -1577,6 +1578,7 @@ sub webui_lg_hdr_tone_map_upload (@) {
   peak_luminance => $peak_luminance,
   dpg_data => $dpg_data,
   ddc_layout => "hdr20",
+  keep_calibration_mode => $keep_calibration_mode,
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
