@@ -13579,13 +13579,21 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the 3rd arg to the damp closure, replacing the previous
 			# constant 0.5 (sqrt) with a value that follows the panel's
 			# actual code->light slope at this anchor's IRE.
+			# 100% white uses damp exponent 1.0 (apply the raw gain
+			# directly). The EOTF-aware exponent (~0.45 for HDR10) pulls
+			# the move toward 1.0, applying only ~8% of the needed
+			# correction per iter -- 14 iters to converge from dE=22 to
+			# dE<0.5. With the "hold lowest channel" fix preventing R
+			# from being pulled down, exp=1.0 safely applies the full G/B
+			# correction and converges in 2-3 iters.
+			my $effective_damp_exp=$is_white ? 1.0 : $damp_exp;
 			# Apply the per-iter move-scaling: when $move_scaling is 1.0, the
 			# damp is unchanged. When it's 0.5, the move is half-magnitude
 			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
 			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
-			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling;
-			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling;
-			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling;
+			my $sr=1.0+($damp->($rg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
+			my $sg=1.0+($damp->($gg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
+			my $sb=1.0+($damp->($bg,$floor,$effective_damp_exp)-1.0)*$move_scaling;
 			# Clamp to [floor, 1.25] so a tiny move_scaling still respects the
 			# per-IRE minimum step.
 			$sr=$floor if($sr+0 < $floor+0);
