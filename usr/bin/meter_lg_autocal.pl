@@ -4506,9 +4506,10 @@ sub apply_pattern_insert_before_read {
   my $dur_s=$ins->{"duration_ms"}/1000.0;
   log_line("HDR20 pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code duration=".sprintf("%.3f",$dur_s)."s");
   # Step 1: grey insertion flash at the user-configured level + duration.
-  my $insert_payload={%{$base_payload},r=>$code,g=>$code,b=>$code};
-  my $insert_result=api_json("POST","/api/pattern",$insert_payload,10);
-  return $insert_result->{"message"}||"Unable to display pattern insertion patch" if(($insert_result->{"status"}||"") eq "error");
+   my $insert_payload={%{$base_payload},r=>(0+$code),g=>(0+$code),b=>(0+$code)};
+   my $insert_result=api_json("POST","/api/pattern",$insert_payload,10);
+   log_line("HDR20 pattern insertion POST response: ".($json->encode($insert_result)));
+   return $insert_result->{"message"}||"Unable to display pattern insertion patch" if(($insert_result->{"status"}||"") eq "error");
   select(undef,undef,undef,$dur_s);
   # Step 2: dead black screen to reset panel ABL / pixel charge between
   # the insertion flash and the measurement patch.
