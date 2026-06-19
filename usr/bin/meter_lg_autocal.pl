@@ -12690,13 +12690,8 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
  	  $g=0.5 if($g+0 < 0.5);
  	  $g=1.0 if($g+0 > 1.0);
  	  $g=1.0 if($g+0 != $g+0);
-	 # Never reduce the lowest-reading channel: it sets the peak ceiling.
- 	  # Also hold R (channel 0) at 1.0 on this panel -- the XYZ->P3 matrix
- 	  # projects R as the highest linear channel on a warm panel, so the
- 	  # mean-based gain would reduce R even though R is the peak driver.
- 	  # Holding R + the dynamic lowest channel preserves peak luminance.
+ 	  # Never reduce the lowest-reading channel: it sets the peak ceiling.
  	  $g=1.0 if($m <= $min_val + 1e-9);
- 	  $g=1.0 if($ch == 0);
  	  push @gain,$g+0;
  	 }
 	 return ($gain[0],$gain[1],$gain[2]);
