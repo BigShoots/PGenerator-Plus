@@ -22640,11 +22640,11 @@ async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
  let finalStatus=null;
  if(choice){
   try{
-const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
-     method:'POST',headers:{'Content-Type':'application/json'},
-     body:JSON.stringify({picture_mode:pictureMode,peak_luminance:measuredPeak,helper_timeout:90}),
-     _timeoutMs:100000
-    });
+   const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({picture_mode:pictureMode,peak_luminance:measuredPeak,helper_timeout:90}),
+    _timeoutMs:100000
+   });
    if(response&&response.status==='ok'){
     toast('HDR tone map uploaded (peak='+Number(measuredPeak).toFixed(1)+' nits)');
     choiceRecord={user_choice:'uploaded',peak_luminance:measuredPeak,in_loop_peak:inLoopPeak,source:source||'wizard',response};
@@ -22679,16 +22679,16 @@ async function meterFullAutoCalUploadHdrToneMap(status,source){
  const peak=meterFullAutoCalToneMapPeakLuminance(status);
  if(!(Number.isFinite(peak)&&peak>0)) throw new Error('HDR tone-map upload needs a measured 100% peak luminance.');
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Uploading HDR tone map',message:'Writing HDR tone-map parameters from measured peak luminance.'},{workflow:'full',label:'HDR tone map'});
-const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
-   method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({
-    picture_mode:meterLgPictureModeValue(),
-    peak_luminance:peak,
-    helper_timeout:90
-   }),
-   _timeoutMs:100000
-  });
+ const response=await fetchJSON('/api/lg/hdr-tone-map/upload',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({
+   picture_mode:meterLgPictureModeValue(),
+   peak_luminance:peak,
+   helper_timeout:90
+  }),
+  _timeoutMs:100000
+ });
  if(!response||response.status!=='ok') throw new Error((response&&response.message)||'HDR tone-map upload failed');
  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
  meterFullAutoCalReportData.stages=meterFullAutoCalReportData.stages||{};
