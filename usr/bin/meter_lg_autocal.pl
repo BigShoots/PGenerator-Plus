@@ -12090,13 +12090,21 @@ sub commit_final_1d_lut {
 	   if(defined(&lg_autocal_26_queue_hdr20_1d_tonemap_upload));
 	  end_calibration_mode($picture_mode);
 	  set_state_calibration_mode($state,0,"");
+	  # CAL_END reverts the panel to the raw PQ signal chain by default. The
+	  # HDR20 1D DPG was calibrated inside the 2.2 degamma + 0.45 regamma chain,
+	  # so post-cal reads see the wrong curve (PQ response instead of the 2.2-
+	  # calibrated DPG curve -- mid-IRE dE 7-10). Re-enable the HDR20 1D DPG
+	  # pipeline (1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN) AFTER CAL_END so the
+	  # panel keeps the gamma-corrected chain that the DPG was calibrated in.
+	  re_enable_hdr20_1d_dpg_pipeline_after_cal_end($picture_mode) if(defined(&re_enable_hdr20_1d_dpg_pipeline_after_cal_end));
+	  $state->{"hdr20_dpg_pipeline_re_enabled"}=JSON::PP::true;
 	  $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
 	  $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
 	  $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	  $state->{"calibration_mode"}=JSON::PP::false;
 	  $state->{"message"}=($state->{"hdr20_1d_tonemap_pending"})
-	   ? "HDR20 1D DPG calibration committed; calibration mode ended; HDR tone-map upload pending wizard confirmation"
-	   : "HDR20 1D DPG calibration committed; calibration mode ended";
+	   ? "HDR20 1D DPG calibration committed; calibration mode ended; HDR tone-map upload pending wizard confirmation; HDR20 1D DPG pipeline re-enabled"
+	   : "HDR20 1D DPG calibration committed; calibration mode ended; HDR20 1D DPG pipeline re-enabled";
 	  write_state($state);
 	  return ($picture,undef,1);
 	 }
@@ -16930,6 +16938,29 @@ sub end_calibration_mode {
   picture_mode => $picture_mode||"",
  },90);
  log_line("CAL_END cleanup: ".($result->{"message"}||$result->{"status"}||"done"));
+ return $result;
+}
+
+# Re-enable the HDR20 1D DPG pipeline (1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN)
+# AFTER the panel exits calibration mode. Calman's HDR10 1D DPG calibration
+# order is: enable 1D_2_2_EN + 1D_0_45_EN, upload 1D_DPG_DATA, then keep
+# calibration mode on for post-cal reads. Our flow ends calibration mode
+# before the post-cal series, which makes the panel fall back to the raw
+# PQ signal chain -- the 2.2-calibrated DPG is then applied in the wrong
+# space and post-cal reads show the native PQ response (mid-IRE dE = 7-10)
+# instead of the calibrated 2.2 curve. Re-issuing the three enable toggles
+# AFTER CAL_END keeps the panel on the gamma-corrected chain that the DPG
+# was calibrated in.
+sub re_enable_hdr20_1d_dpg_pipeline_after_cal_end {
+ my ($picture_mode)=@_;
+ my $result=api_json("POST","/api/lg/hdr20-1d-dpg-pipeline/enable",{
+  picture_mode => $picture_mode||"",
+  enable_degamma => JSON::PP::true,
+  enable_regamma => JSON::PP::true,
+  enable_dpg => JSON::PP::true,
+  helper_timeout => 30,
+ },45);
+ log_line("HDR20 1D DPG pipeline re-enable (post CAL_END): ".($result->{"message"}||$result->{"status"}||"unknown"));
  return $result;
 }
 
