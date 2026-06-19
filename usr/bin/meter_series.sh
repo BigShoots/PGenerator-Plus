@@ -918,14 +918,16 @@ EOJSON
   fi
   SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x"
  fi
- # Override refresh rate if specified
+ # Override refresh rate if specified. Passing -Y R:rate makes spotread skip
+ # its mandatory 80% white refresh-calibration read (unreliable on a
+ # sample-and-hold OLED), so always honour an explicit rate.
  if [[ -n "$REFRESH_RATE" ]]; then
   SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
  fi
- # Low-light handler (reference-style) flag set. The webui exports
- # LOW_LIGHT_MODE for this process when the gear is enabled and the
- # expected target luminance is below the trigger; default off (no
- # extra flag) preserves the legacy single-long-read behavior.
+ # Low-light handler (reference-style) flag set. OFF maps to no -Y flag: spotread
+ # uses its default adaptive integration. When the handler is ON, the
+ # operator-selected a/aa/aaa averaging is used (multiple internal reads).
+ # (Refresh-rate calibration is skipped separately via -Y R:rate above.)
  LOW_LIGHT_FLAGS=""
  case "${LOW_LIGHT_MODE:-off}" in
   a)     LOW_LIGHT_FLAGS="-Y a" ;;
