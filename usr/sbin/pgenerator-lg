@@ -3104,6 +3104,55 @@ sub lg_hdr_tone_map_upload_workflow (@) {
  });
 }
 
+sub lg_hdr20_1d_dpg_pipeline_enable_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$enable_degamma,$enable_regamma,$enable_dpg)=@_;
+ $enable_degamma=1 if(!defined($enable_degamma));
+ $enable_regamma=1 if(!defined($enable_regamma));
+ $enable_dpg=1 if(!defined($enable_dpg));
+ return &json_error("Connect / Pair the LG TV before enabling HDR20 1D DPG pipeline",{ ip => $ip }) if($client_key eq "");
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+  &websocket_close($session);
+  return &json_error("HDR20 1D DPG pipeline requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ # Issue the three enable toggles INSIDE a single CAL_START/CAL_END pair so
+ # the panel accepts the LUT-enable commands (the WebOS API rejects 1D_DPG_EN
+ # and the degamma/regamma toggles outside of calibration mode on some
+ # firmware). Then persist the resulting state with a follow-up pictureSet
+ # so the panel keeps the LUT-enable state after CAL_END returns.
+ my $start=&lg_calibration_request($session,"hdr20_1d_dpg_pipeline_cal_start","CAL_START",&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload()),1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected CAL_START for HDR20 1D DPG pipeline enable.",{ ip => $ip, raw_response => $start });
+ }
+ my ($ok,$message,$responses)=&lg_ddc_enable_hdr20_1d_dpg_pipeline($session,$connect_timeout + 4,$cal_mode);
+ my $persist_payload={
+  whiteBalanceMethod => "22",
+  whiteBalanceIre => "100",
+  adjustingLuminance => [(0)x20],
+  ddc_1d_lut => &json_true(),
+ };
+ my $persist_response=&lg_calibration_request($session,"hdr20_1d_dpg_pipeline_persist","setPictureSettings",&lg_force_pic_mode_payload($persist_payload),1,$cal_mode,$connect_timeout + 4);
+ my $end=&lg_calibration_request($session,"hdr20_1d_dpg_pipeline_cal_end","CAL_END",&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload()),1,"",$connect_timeout + 4);
+ &websocket_close($session);
+ return &json_ok({
+  ip => $ip,
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  pipeline_ok => &json_bool($ok),
+  responses => $responses,
+  cal_start_response => $start,
+  persist_response => $persist_response,
+  cal_end_response => $end,
+  message => "HDR20 1D DPG pipeline enabled (degamma=".($enable_degamma?"on":"off").", regamma=".($enable_regamma?"on":"off").", dpg=".($enable_dpg?"on":"off").")".($ok ? "" : " (".($message||"pipeline enable returned non-ok").")"),
+ });
+}
+
 sub lg_1d_dpg_read_workflow (@) {
  my ($ip,$client_key,$connect_timeout,$picture_mode)=@_;
  return &json_error("Connect / Pair the LG TV before reading HDR20 1D DPG data",{ ip => $ip }) if($client_key eq "");
@@ -3183,6 +3232,13 @@ sub lg_1d_dpg_upload_workflow (@) {
   &websocket_close($session);
   return &json_error("HDR20 1D DPG upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
+ # Enable the HDR20 1D DPG pipeline (1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN) before
+ # the upload so the DPG operates INSIDE the gamma chain. Calman's HDR10 DPG
+ # flow enables 1D_2_2_EN + 1D_0_45_EN before uploading 1D_DPG_DATA; the
+ # default WebOS DDC pipeline (lg_ddc_enable_1d_pipeline) disables the gamma
+ # LUTs which is wrong for HDR20 1D DPG -- the panel then applies the DPG in
+ # the raw code space, but the autocal calibrated it in the gamma space.
+ my ($pipeline_ok,$pipeline_message,$pipeline_responses)=&lg_ddc_enable_hdr20_1d_dpg_pipeline($session,$connect_timeout + 4,$cal_mode);
  my $start;
  if($calibration_mode_active) {
   $start={ type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
@@ -3195,7 +3251,7 @@ sub lg_1d_dpg_upload_workflow (@) {
  }
  if($start_failed || ref($start) ne "HASH") {
   &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
+  return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start, pipeline_responses => $pipeline_responses });
  }
  my $upload=&lg_calibration_request($session,"1d_dpg_upload","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload(\@clamped)),1,$cal_mode,$connect_timeout + 12);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
@@ -3217,10 +3273,10 @@ sub lg_1d_dpg_upload_workflow (@) {
    cal_end_response => $end,
   });
  }
- my $min_value=65535;
+my $min_value=65535;
  my $max_value=0;
  my $sum_value=0;
- for my $v (@clamped) { $min_value=$v if($v < $min_value); $max_value=$v if($v > $max_value); $sum_value+=$v; }
+ for my $v (@clamped) { $min_value=$v if($v < $min_value); $max_value=$v if($max_value < $v); $sum_value+=$v; }
  my $avg_value=int(($sum_value/scalar(@clamped))+0.5);
  return &json_ok({
   dpg_uploaded => &json_true(),
@@ -3237,7 +3293,9 @@ sub lg_1d_dpg_upload_workflow (@) {
   upload_response => $upload,
   cal_start_response => $start,
   cal_end_response => $end,
-  message => "LG HDR20 1D DPG uploaded (".scalar(@clamped)." values, min=$min_value, max=$max_value, avg=$avg_value).",
+  pipeline_responses => $pipeline_responses,
+  pipeline_ok => &json_bool($pipeline_ok),
+  message => "LG HDR20 1D DPG uploaded (".scalar(@clamped)." values, min=$min_value, max=$max_value, avg=$avg_value).".($pipeline_ok ? "" : " HDR20 1D DPG pipeline enable failed: ".($pipeline_message||"unknown")."."),
   calibration_mode => &json_bool($keep_calibration_mode),
  });
 }
@@ -3762,6 +3820,43 @@ sub lg_ddc_enable_1d_pipeline (@) {
   });
   if($required && ($failed || ref($response) ne "HASH") && !$ignored) {
    return (0,$message||"LG TV rejected 1D LUT enable.",\@responses);
+  }
+ }
+ return (1,"",\@responses);
+}
+
+# HDR20 1D DPG pipeline: enable the 1D DPG AND the 1D 2.2 degamma + 0.45
+# regamma stages so the DPG operates INSIDE the gamma chain. This matches
+# Calman's HDR10 DPG calibration order:
+#   1D_2_2_EN=true, 1D_0_45_EN=true, then upload 1D_DPG_DATA.
+# Without these toggles the panel falls back to the raw PQ signal chain
+# after CAL_END and the 2.2-calibrated DPG is applied in the wrong space --
+# post-cal reads see native PQ instead of the calibrated 2.2 curve.
+sub lg_ddc_enable_hdr20_1d_dpg_pipeline (@) {
+ my ($session,$timeout,$picture_mode)=@_;
+ my @responses=();
+ foreach my $item (
+  ["1D_2_2_EN","ddc_enable_1d_degamma",1,1],
+  ["1D_0_45_EN","ddc_enable_1d_regamma",1,1],
+  ["1D_DPG_EN","ddc_enable_1d_lut",1,1],
+ ) {
+  my ($command,$id,$required,$enabled)=@{$item};
+  my $response=&lg_calibration_request($session,$id,$command,[$enabled],1,$picture_mode,$timeout);
+  my ($failed,$message)=&response_is_app_failure($response);
+  my $ignored=0;
+  if($required && $command eq "1D_DPG_EN" && ($failed || ref($response) ne "HASH") && ($message||"") =~ /not a string/i) {
+   $ignored=1;
+  }
+  push(@responses,{
+   command => $command,
+   required => &json_bool($required),
+   failed => &json_bool(($failed || ref($response) ne "HASH") && !$ignored),
+   ignored_failure => &json_bool($ignored),
+   message => $ignored ? (($message||"LG TV rejected 1D LUT enable.")." Continuing with LUT upload.") : ($message||""),
+   raw_response => $response,
+  });
+  if($required && ($failed || ref($response) ne "HASH") && !$ignored) {
+   return (0,$message||"LG TV rejected HDR20 1D DPG pipeline enable.",\@responses);
   }
  }
  return (1,"",\@responses);
@@ -5129,6 +5224,9 @@ sub main (@) {
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
  my $dpg_data=$request->{"dpg_data"};
+ my $enable_degamma=$request->{"enable_degamma"} ? 1 : 0;
+ my $enable_regamma=$request->{"enable_regamma"} ? 1 : 0;
+ my $enable_dpg=$request->{"enable_dpg"} ? 1 : 0;
  my $result;
 
  if(!$ip || !&valid_ipv4($ip)) {
@@ -5163,6 +5261,8 @@ sub main (@) {
 	  $result=&lg_1d_dpg_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active);
 	 } elsif($action eq "1d_dpg_read") {
 	  $result=&lg_1d_dpg_read_workflow($ip,$client_key,$connect_timeout,$picture_mode);
+	 } elsif($action eq "hdr20_1d_dpg_pipeline_enable") {
+	  $result=&lg_hdr20_1d_dpg_pipeline_enable_workflow($ip,$client_key,$connect_timeout,$picture_mode,$enable_degamma,$enable_regamma,$enable_dpg);
 	 } elsif($action eq "connect_pin_wait") {
 	  $result=&lg_connect_pin_wait_workflow($ip,$client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type);
 	 } else {

@@ -1614,6 +1614,46 @@ sub webui_lg_1d_dpg_read (@) {
  return &lg_encode_json($result);
 }
 
+# Re-enable the HDR20 1D DPG pipeline (1D_2_2_EN + 1D_0_45_EN + 1D_DPG_EN)
+# AFTER the panel exits calibration mode. The HDR10 1D DPG autocal calibrates
+# the DPG inside the gamma chain (1D_2_2 + DPG + 1D_0_45) so post-cal reads
+# taken outside calibration mode match the 2.2-calibrated curve. By default
+# the panel reverts to the raw PQ signal chain on CAL_END, so this endpoint
+# re-issues the three enable toggles in a CAL_START/CAL_END pair and persists
+# the resulting DDC state with a follow-up pictureSet.
+sub webui_lg_hdr20_1d_dpg_pipeline_enable (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+ if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before toggling the HDR20 1D DPG pipeline.", needs_repair => &lg_json_true() });
+ }
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before toggling the HDR20 1D DPG pipeline." }) if(&lg_clients_disconnected($clients));
+ my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before toggling the HDR20 1D DPG pipeline." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before toggling the HDR20 1D DPG pipeline." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "hdr20_1d_dpg_pipeline_enable",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  enable_degamma => ($payload->{"enable_degamma"} // 1) ? 1 : 0,
+  enable_regamma => ($payload->{"enable_regamma"} // 1) ? 1 : 0,
+  enable_dpg => ($payload->{"enable_dpg"} // 1) ? 1 : 0,
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try toggling the HDR20 1D DPG pipeline again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_1d_dpg_upload (@) {
  my $body=shift;
  my $payload=&lg_decode_json($body);
@@ -1724,6 +1764,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/1d-dpg/read" && $method eq "POST") {
   return &webui_lg_1d_dpg_read($body);
+ }
+ if($path eq "/api/lg/hdr20-1d-dpg-pipeline/enable" && $method eq "POST") {
+  return &webui_lg_hdr20_1d_dpg_pipeline_enable($body);
  }
  if($path eq "/api/lg/pair-pin/start" && $method eq "POST") {
   return &webui_lg_pin_pair_start($body);
