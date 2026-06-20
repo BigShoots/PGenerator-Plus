@@ -3048,6 +3048,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    $sat_frac=1 if($sat_frac > 1);
     return $sat_frac + 0.8*$sat_frac*(1-$sat_frac);
   };
+  # Reference sat-sweep target_Yn to measured white so target_Yn*measured = the
+  # patch's reachable absolute luminance (sweep runs sub-peak/50% so it is
+  # reachable) and the white patch (target_Yn=1) targets the measured peak
+  # instead of 10000. series_target_white_y is the measured white the client
+  # passes; fall back to mastering peak.
+  my $sat_white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):10000);
   foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
    my ($name,$r_mix,$g_mix,$b_mix)=@$color;
 	    my $level_linear=($signal_mode eq "hdr10")
@@ -3074,7 +3080,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
 	     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
 	     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
-	     $target_Yn_for_step=$level_linear/$mx if($mx>0);
+	     $target_Yn_for_step=($level_linear/$mx)*(($sat_white_ref>0)?(10000/$sat_white_ref):1) if($mx>0);
 	     if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
 	     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
 	     $rl*=$level_linear;$gl*=$level_linear;$bl*=$level_linear;
@@ -13424,13 +13430,12 @@ function meterColorSeriesReferenceNits(){
  if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
   const measured=(white.luminance!=null)?white.luminance:white.Y;
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
-  // ColorChecker ("colors") bakes RELATIVE target_Yn (reflectance/Yn), so it
-  // references the display's MEASURED white. The saturation SWEEP runs at a
-  // SUB-PEAK level (50%) so sub-100% saturations don't clip to white, which
-  // means its target_Yn is baked ABSOLUTE (level_linear/mx, level_linear =
-  // PQ_decode(signal)/10000) and must reference the PQ peak (10000). SDR/HLG
-  // are relative everywhere -> measured white.
-  if(meterChartIsPq() && meterActiveSeriesType==='saturations') return 10000;
+  // Both the ColorChecker ("colors") and the saturation SWEEP now bake RELATIVE
+  // target_Yn referenced to measured white: ColorChecker = reflectance/Yn; the
+  // sat sweep bakes target_Yn = (level_linear/mx)*(10000/measured_white) so
+  // target_Yn*measured = the patch's reachable (sub-peak, 50%-level) absolute
+  // luminance, and the sweep's white patch (target_Yn=1) lands on the measured
+  // peak instead of 10000. So both reference measured white. SDR/HLG always were.
   return Math.max(1,measured);
  }
  const lgTarget=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType);
