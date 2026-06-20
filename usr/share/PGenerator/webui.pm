@@ -9790,7 +9790,11 @@ document.getElementById('mode_idx').addEventListener('change',updateModeSelectLa
 
 function meterDefaultTargetGamutForMode(){
  const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
- if(sm==='hdr10'||sm==='hlg') return 'bt2020';
+ // HDR10 post-cal series + chart target = P3-D65 (consumer HDR is mastered to
+ // P3 inside the BT.2020 container), so reads are scored against P3, not the
+ // BT.2020 container. HLG stays on the BT.2020 container.
+ if(sm==='hdr10') return 'p3d65';
+ if(sm==='hlg') return 'bt2020';
  return sm==='sdr' ? 'bt709' : 'p3d65';
 }
 
