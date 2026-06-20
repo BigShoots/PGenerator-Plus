@@ -13414,16 +13414,18 @@ function meterColorSeriesReferenceNits(){
  if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
   const measured=(white.luminance!=null)?white.luminance:white.Y;
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
-  // ColorChecker (the "colors" series) bakes RELATIVE target_Yn: White=1,
-  // grays=reflectance (e.g. 0.198), Macbeth=Yn, and the full-level 100%
-  // colour patches reduce to the gamut mix_Y -- all fractions of white. So
-  // ColorChecker targets reference the display's MEASURED white (CalMAN
-  // "use measured white"): White->~measured peak, Gray 50->~0.198*measured.
-  // The saturation SWEEP instead bakes target_Yn in the 10000-nit PQ space
-  // (target_Yn = level_linear/mx, level_linear = PQ_decode(signal)/10000),
-  // so it must keep the PQ mastering peak (10000) or its targets come out
-  // ~14x too small. SDR + HLG are relative everywhere, so measured white.
-  if(meterChartIsPq()) return (meterActiveSeriesType==='saturations') ? 10000 : Math.max(1,measured);
+  // Both the ColorChecker ("colors") and the saturation SWEEP bake RELATIVE
+  // target_Yn now that HDR patches run at FULL level (100%): ColorChecker
+  // grays/Macbeth = reflectance/Yn; sat patches = level_linear/mx with
+  // level_linear=1.0, which equals the patch's luminance fraction of white
+  // (e.g. blue -> 1/bl = the blue Y-coefficient). So both reference the
+  // display's MEASURED white -- target Y = fraction * measured peak -- NOT
+  // the 10000-nit PQ peak (the white patch lands on the measured peak, a
+  // primary on its measured fraction). The old 10000 reference was only
+  // correct under the previous 50%-level regime where target_Yn was baked as
+  // absolute_nits/10000. SDR/HLG were always relative. NOTE: this assumes the
+  // sat sweep runs at full level (series level_pct=100 for HDR); if that ever
+  // changes, target_Yn baking + this reference must be reconciled together.
   return Math.max(1,measured);
  }
  const lgTarget=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType);
