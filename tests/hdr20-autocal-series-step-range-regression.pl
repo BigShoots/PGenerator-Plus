@@ -42,7 +42,11 @@ like($src, qr/"100"=>940/,
 # 2. The old hardcoded 8-bit Limited fallback `int(16 + x*219 + 0.5)`
 # inside the lg_hdr20_codes branch must NOT appear. The literal
 # `int(16 + $stimulus_pct/100*219 + .5)` was the pre-fix formula.
-my $hdr20_branch_re = qr/if\(\$lg_hdr20_codes\)\s*\{[\s\S]{0,2000}?return\s+\$c;?\s*\}/s;
+# As of the pattern-insertion-mode-correct refactor the closure delegates
+# to webui_grey_code_for_stimulus(), so the lg_hdr20_codes branch body
+# lives in the helper. Match either the legacy in-closure form OR the
+# helper (which preserves the same body).
+my $hdr20_branch_re = qr/(?:if\(\$lg_hdr20_codes\)|hdr20_codes\)\s*\{\s*my\s+\%lg_hdr20_code)[^;]*?[\s\S]{0,3000}?(?:return\s+\$c|return\s+\(\$code,\$input_max\))/s;
 my ($hdr20_body) = $src =~ /($hdr20_branch_re)/;
 ok(defined $hdr20_body, 'hdr20 branch body found') or BAIL_OUT('hdr20 branch missing -- source refactored, update test');
 ok(index($hdr20_body, 'int(16 + $stimulus_pct/100*219 + .5)') == -1,
@@ -59,9 +63,9 @@ like($hdr20_body, qr/\$lg_hdr20_active_table->\{\$slot_key\}/,
   'hdr20 fallback consults the active 10-bit table for in-table slots');
 like($hdr20_body, qr/\$lg_hdr20_min_code\s*\+\s*\$stimulus_pct\/100\s*\*\s*\$lg_hdr20_span_code/s,
   'hdr20 fallback formula uses the range-aware min/span for 0% and out-of-table slots');
-like($hdr20_body, qr/\$c=\$lg_hdr20_min_code if\(\$c\s*<\s*\$lg_hdr20_min_code\)/,
+like($hdr20_body, qr/\$[cC]ode=\$lg_hdr20_min_code if\(\$[cC]ode\s*<\s*\$lg_hdr20_min_code\)/,
   'hdr20 fallback clamps to the active min (0 for Full, 64 for Limited)');
-like($hdr20_body, qr/\$c=\$lg_hdr20_min_code\s*\+\s*\$lg_hdr20_span_code\s+if\(\$c\s*>\s*\$lg_hdr20_min_code\s*\+\s*\$lg_hdr20_span_code\)/,
+like($hdr20_body, qr/\$[cC]ode=\$lg_hdr20_min_code\s*\+\s*\$lg_hdr20_span_code\s+if\(\$[cC]ode\s*>\s*\$lg_hdr20_min_code\s*\+\s*\$lg_hdr20_span_code\)/,
   'hdr20 fallback clamps to the active max (1023 for Full, 940 for Limited)');
 
 # 4. The hdr20 active-table selector must be range-aware. When
