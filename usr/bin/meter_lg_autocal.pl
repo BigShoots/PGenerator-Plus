@@ -13415,23 +13415,79 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my $probeup_floor=$meter_floor*$floor_margin_multiple;
 			my $probe_lum=defined(luminance($probe_rd)) ? (luminance($probe_rd)+0) : undef;
 			if(!$probe_err && ref($probe_rd) eq "HASH" && defined($probe_lum) && $probe_lum+0 < $probe_target+0 && $probe_lum+0 < $probeup_floor+0) {
-				my $probe_gain=2.0;
-				my $probe_ok=0;
-				for(my $probe=1;$probe<=6;$probe++) {
-					last if(cancelled());
-					my @pa=(@done,{idx=>$idx,r_gain=>$probe_gain,g_gain=>$probe_gain,b_gain=>$probe_gain});
-					my $pd=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@pa);
-					last if(ref($pd) ne "ARRAY" || @$pd != 3072);
+				# Bracket-and-bisect probe-up. The old loop stopped at the FIRST
+				# doubling that exceeded target, which at steep low-IRE overshot
+				# ~5x (1.4%: one 2.0x step jumped 0.002 -> 0.31 vs target 0.06),
+				# poisoning the main loop's first iter (dE ~35) and burning iters
+				# recovering. Instead: double to find the bracket [g_lo under,
+				# g_hi over], then geometric-bisect into a [0.7x,1.5x]-of-target
+				# band so the main loop starts near target. Candidates build from
+				# a FIXED base DPG with an ABSOLUTE gain (no compounding).
+				my $probe_base=$current_dpg;
+				my $upper_band=$probe_target*1.5;
+				my $lower_band=$probe_target*0.7;
+				my $g_lo=1.0; my $g_hi=0;
+				my ($best_g,$best_y,$best_rd);
+				my $try_probe_gain=sub {
+					my ($g)=@_;
+					my @pa=(@done,{idx=>$idx,r_gain=>$g,g_gain=>$g,b_gain=>$g});
+					my $pd=lg_autocal_26_build_hdr20_1d_dpg($probe_base,\@pa);
+					return (undef,undef) if(ref($pd) ne "ARRAY" || @$pd != 3072);
 					$current_dpg=$pd;
 					my ($puk,$pmsg)=$upload_dpg->($current_dpg);
-					last if(!$puk);
-					($probe_rd,$probe_err)=read_step($config,$rs,$state);
-					last if($probe_err || ref($probe_rd) ne "HASH");
-					my $py=luminance($probe_rd);
-					if(defined($py) && $py+0 >= $probe_target) { $probe_ok=1; last; }
+					return (undef,undef) if(!$puk);
+					my ($rd,$err)=read_step($config,$rs,$state);
+					return (undef,undef) if($err || ref($rd) ne "HASH");
+					my $y=luminance($rd);
+					return ($rd,(defined($y)?$y+0:undef));
+				};
+				my $consider_probe=sub {
+					my ($g,$rd,$y)=@_;
+					return if(!defined($y));
+					if(!defined($best_y) || abs($y-$probe_target) < abs($best_y-$probe_target)) {
+						$best_g=$g; $best_y=$y; $best_rd=$rd;
+					}
+				};
+				# Phase 1: double until over target (build the bracket).
+				my $probe_gain=2.0;
+				for(my $probe=1;$probe<=6;$probe++) {
+					last if(cancelled());
+					my ($rd,$y)=$try_probe_gain->($probe_gain);
+					last if(!defined($y));
+					$probe_rd=$rd;
+					$consider_probe->($probe_gain,$rd,$y);
+					if($y >= $probe_target) { $g_hi=$probe_gain; last; }
+					$g_lo=$probe_gain;
 					$probe_gain *= 2.0;
 				}
-				log_line("HDR20 1D DPG greyscale: ".$label." probe-up gain=".sprintf("%.2f",$probe_gain)." measured_Y=".sprintf("%.5f",(defined($probe_rd)?(luminance($probe_rd)//0):0))." target=".sprintf("%.5f",$probe_target).($probe_ok?" (reached target)":" (still below target)"));
+				# Phase 2: geometric bisection within the bracket to land in-band.
+				if($g_hi > 0 && defined($best_y) && $best_y > $upper_band) {
+					for(my $b=1;$b<=3;$b++) {
+						last if(cancelled());
+						last if(defined($best_y) && $best_y >= $lower_band && $best_y <= $upper_band);
+						my $g_mid=sqrt($g_lo*$g_hi);
+						last if($g_mid <= $g_lo+1e-9 || $g_mid >= $g_hi-1e-9);
+						my ($rd,$y)=$try_probe_gain->($g_mid);
+						last if(!defined($y));
+						$probe_rd=$rd;
+						$consider_probe->($g_mid,$rd,$y);
+						if($y >= $probe_target) { $g_hi=$g_mid; } else { $g_lo=$g_mid; }
+					}
+				}
+				# Commit the best candidate (closest to target) so the panel and
+				# current_dpg reflect it before the main loop runs.
+				my $probe_ok=0;
+				if(defined($best_g)) {
+					my @pa=(@done,{idx=>$idx,r_gain=>$best_g,g_gain=>$best_g,b_gain=>$best_g});
+					my $pd=lg_autocal_26_build_hdr20_1d_dpg($probe_base,\@pa);
+					if(ref($pd) eq "ARRAY" && @$pd == 3072) {
+						$current_dpg=$pd;
+						$upload_dpg->($current_dpg);
+						$probe_rd=$best_rd if(ref($best_rd) eq "HASH");
+					}
+					$probe_ok=1 if(defined($best_y) && $best_y >= $probe_target);
+				}
+				log_line("HDR20 1D DPG greyscale: ".$label." probe-up best_gain=".sprintf("%.2f",(defined($best_g)?$best_g:0))." measured_Y=".sprintf("%.5f",(defined($best_y)?$best_y:0))." target=".sprintf("%.5f",$probe_target)." band=[".sprintf("%.5f",$lower_band)."-".sprintf("%.5f",$upper_band)."]".($probe_ok?" (reached target)":" (still below target)"));
 			} elsif(!$probe_err && ref($probe_rd) eq "HASH" && defined($probe_lum) && $probe_lum+0 < $probe_target+0) {
 				# Read is below target but above the floor margin: probe-up
 				# does NOT fire. Log once so the operator can spot legitimate
