@@ -24425,6 +24425,12 @@ function meterFullAutoCalComplete(touchupStatus,options){
  meterAutoCalRunning=true;
  meterAutoCalSetOverlay(true,status);
  toast('Full Auto Cal complete');
+ // The greyscale autocal calibrates the 1D DPG against a 2.2 curve, so the
+ // Target Gamma control sits at 2.2 during the run. Once the full workflow is
+ // done, restore it to the signal-mode default (ST 2084/PQ for HDR10) so any
+ // subsequent verification series -- greyscale, ColorChecker, saturation --
+ // computes its target luminance against the correct EOTF instead of 2.2.
+ try{ if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault(); }catch(e){}
 }
 
 async function meterPollAutoCal(options){
