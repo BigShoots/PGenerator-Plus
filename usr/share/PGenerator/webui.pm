@@ -2694,7 +2694,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my $auto_target_key=$container_key;
     if($signal_mode eq "dv") {
      $auto_target_key="p3d65";
-    } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+    } elsif($signal_mode eq "hdr10") {
+      # HDR10 targets P3-D65 by default (consumer HDR is mastered to P3 inside
+      # the BT.2020 container); an explicit DCI primaries pick selects P3-DCI.
+      $auto_target_key="p3d65";
+      $auto_target_key="p3dci" if($primaries_idx == 3);
+    } elsif($signal_mode eq "hlg") {
       $auto_target_key="p3d65" if($primaries_idx == 2);
       $auto_target_key="p3dci" if($primaries_idx == 3);
     }
@@ -2974,7 +2979,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $auto_target_key=$container_key;
   if($signal_mode eq "dv") {
    $auto_target_key="p3d65";
-  } elsif($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+  } elsif($signal_mode eq "hdr10") {
+    # HDR10 targets P3-D65 by default (consumer HDR is mastered to P3 inside
+    # the BT.2020 container); an explicit DCI primaries pick selects P3-DCI.
+    $auto_target_key="p3d65";
+    $auto_target_key="p3dci" if($primaries_idx == 3);
+  } elsif($signal_mode eq "hlg") {
     $auto_target_key="p3d65" if($primaries_idx == 2);
     $auto_target_key="p3dci" if($primaries_idx == 3);
   }
