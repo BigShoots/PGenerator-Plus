@@ -3000,7 +3000,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($solve_wx,$solve_wy)=@solve_white;
   my @MI=@{$primaries{$solve_key}{M}};
   my @AXIS_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
-  my $level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : (($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
+  # Saturation sweep runs at a SUB-PEAK level so sub-100% saturations do not
+  # clip to white. Driving the sweep at full level (100%) pushes every channel
+  # to the top of PQ where the panel clips, crushing the saturation ratio to
+  # white for every patch except the pure 100%-saturation primaries.
+  my $level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : ((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
   my $max_code=$min_code+$span_code;
 	  # White first (reference Y), then saturation sweeps.
 	  push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1}";
@@ -13414,18 +13418,13 @@ function meterColorSeriesReferenceNits(){
  if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
   const measured=(white.luminance!=null)?white.luminance:white.Y;
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
-  // Both the ColorChecker ("colors") and the saturation SWEEP bake RELATIVE
-  // target_Yn now that HDR patches run at FULL level (100%): ColorChecker
-  // grays/Macbeth = reflectance/Yn; sat patches = level_linear/mx with
-  // level_linear=1.0, which equals the patch's luminance fraction of white
-  // (e.g. blue -> 1/bl = the blue Y-coefficient). So both reference the
-  // display's MEASURED white -- target Y = fraction * measured peak -- NOT
-  // the 10000-nit PQ peak (the white patch lands on the measured peak, a
-  // primary on its measured fraction). The old 10000 reference was only
-  // correct under the previous 50%-level regime where target_Yn was baked as
-  // absolute_nits/10000. SDR/HLG were always relative. NOTE: this assumes the
-  // sat sweep runs at full level (series level_pct=100 for HDR); if that ever
-  // changes, target_Yn baking + this reference must be reconciled together.
+  // ColorChecker ("colors") bakes RELATIVE target_Yn (reflectance/Yn), so it
+  // references the display's MEASURED white. The saturation SWEEP runs at a
+  // SUB-PEAK level (50%) so sub-100% saturations don't clip to white, which
+  // means its target_Yn is baked ABSOLUTE (level_linear/mx, level_linear =
+  // PQ_decode(signal)/10000) and must reference the PQ peak (10000). SDR/HLG
+  // are relative everywhere -> measured white.
+  if(meterChartIsPq() && meterActiveSeriesType==='saturations') return 10000;
   return Math.max(1,measured);
  }
  const lgTarget=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType);
