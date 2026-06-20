@@ -128,11 +128,13 @@ like($src, qr/\$low_light_mode="off"\s*unless\(\$low_light_mode\s+eq\s+"off"\s*\
 like($src, qr/if\(\$body=~\/"low_light"[\s\S]{0,500}?"mode"[\s\S]{0,500}?unless\(\$low_light_mode\s+eq\s+"off"/s,
   'series start parser only validates low_light when the field is present (unless-clause is gated on the regex match)');
 
-# 8. The meter_series.sh launch must pass $low_light_mode as the final
-# positional argument (not an env-var prefix, so the daemon's sudo
-# NOPASSWD rule still matches and the launch does not stall).
-like($src, qr/\/usr\/bin\/meter_series\.sh[^\n]*'\$low_light_mode' <\/dev\/null/s,
-  'series launch passes low_light_mode as final positional arg');
+# 8. The meter_series.sh launch must pass $low_light_mode as a positional
+# argument (not an env-var prefix, so the daemon's sudo NOPASSWD rule
+# still matches and the launch does not stall). The pattern-insertion
+# refactor appends two more positional "<code>:<input_max>" pairs after
+# low_light_mode, so accept any trailing args before </dev/null.
+like($src, qr/\/usr\/bin\/meter_series\.sh[^\n]*'\$low_light_mode'[^<]*<\/dev\/null/s,
+  'series launch passes low_light_mode as a positional arg (not env prefix)');
 unlike($src, qr/env LOW_LIGHT_MODE=/s,
   'series launch no longer uses an env-var prefix (keeps sudo NOPASSWD match)');
 
