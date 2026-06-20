@@ -210,6 +210,28 @@ sub sanitize_signal_mode {
  return ("sdr","Unsupported signal mode '$raw' for LG 3D LUT Auto Cal");
 }
 
+# The HDR 1D DPG is calibrated to a display gamma (2.2 by convention here,
+# matching the greyscale calibration domain) while the HDR signal and the
+# post-cal series reads stay PQ (st2084). The 3D LUT sits on top of the
+# DPG-calibrated panel, so it must SOLVE in the DPG's gamma domain: encoding
+# the per-channel correction with PQ (channel_inverse_level via target_gamma)
+# inflates the small cross-channel drive (~25x, PQ is steep near black) and
+# desaturates colours toward yellow. Plumbed from config (dpg_gamma /
+# greyscale_target_gamma); defaults to 2.2 for HDR when not supplied. SDR's
+# DPG matches its target gamma, so SDR is unchanged. The signal EOTF (st2084)
+# is kept separately for reporting and the series reads.
+sub dpg_calibration_gamma {
+ my ($config,$signal_mode,$signal_gamma)=@_;
+ $signal_mode=lc($signal_mode||"sdr");
+ my $raw=compact_token(first_nonempty($config->{"dpg_gamma"},$config->{"greyscale_target_gamma"},$config->{"dpg_calibration_gamma"}));
+ return "2.2" if($raw eq "22" || $raw eq "gamma22");
+ return "2.4" if($raw eq "24" || $raw eq "gamma24");
+ return "bt1886" if($raw eq "bt1886" || $raw eq "1886");
+ return "srgb" if($raw eq "srgb");
+ return "2.2" if($signal_mode eq "hdr10");
+ return $signal_gamma;
+}
+
 sub sanitize_target_gamut {
  my ($raw,$signal_mode)=@_;
  $raw=first_nonempty($raw);
@@ -812,7 +834,11 @@ sub apply_drift_correction {
 sub model_from_readings {
  my ($method,$readings,$config)=@_;
  my $signal_mode=$config->{"signal_mode"}||"sdr";
- my $target_gamma=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
+ my $signal_gamma=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
+ # Solve/encode the cube in the DPG calibration domain (HDR: ~2.2), not the
+ # PQ signal EOTF -- see dpg_calibration_gamma(). signal_gamma (st2084 for HDR)
+ # is retained only for reporting and the post-cal series reads.
+ my $target_gamma=dpg_calibration_gamma($config,$signal_mode,$signal_gamma);
  my $target_gamut=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
  my %by;
  foreach my $entry (@{$readings}) {
@@ -902,6 +928,7 @@ sub model_from_readings {
   method => $method,
   signal_mode => $signal_mode,
   target_gamma => $target_gamma,
+  signal_gamma => $signal_gamma,
   target_gamut => $target_gamut,
   black => $black,
   black_y => $black_y,
@@ -1006,7 +1033,7 @@ sub export_lut {
  my $picture=sanitize_name($config->{"picture_mode"}||"active");
  my ($signal_mode)=sanitize_signal_mode($model->{"signal_mode"}||$config->{"signal_mode"}||"sdr");
  my $gamut=sanitize_target_gamut($model->{"target_gamut"}||$config->{"target_gamut"},$signal_mode);
- my $gamma=sanitize_target_gamma($model->{"target_gamma"}||$config->{"target_gamma"},$signal_mode);
+ my $gamma=sanitize_target_gamma($model->{"signal_gamma"}||$config->{"target_gamma"},$signal_mode);
  my $base="$dir/${stamp}_".sanitize_name($signal_mode)."_${method}_${picture}_".sanitize_name($gamut)."_".sanitize_name($gamma);
  my $title="PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma);
  my $binary=pack("v*",@{$payload_u16});
@@ -1446,7 +1473,8 @@ eval {
  $state->{"export"}=$export;
  $state->{"signal_mode"}=$model->{"signal_mode"};
  $state->{"target_gamut"}=$model->{"target_gamut"};
- $state->{"target_gamma"}=$model->{"target_gamma"};
+ $state->{"target_gamma"}=$model->{"signal_gamma"}||$model->{"target_gamma"};
+ $state->{"lut_solve_gamma"}=$model->{"target_gamma"};
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
  $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
