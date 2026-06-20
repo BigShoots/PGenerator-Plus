@@ -2730,7 +2730,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      }
       my $encoded=0;
       if($signal_mode eq "hdr10") {
-       $encoded=&webui_pattern_pq_encode_normalized($linear*100);
+       # Reference ColorChecker patch luminance to the MEASURED white (passed
+       # by the client as series_target_white_y) instead of a fixed 100-nit
+       # diffuse, so the displayed patch matches the measured-white chart
+       # target and samples the cube at the correct (not dim) drive. Falls
+       # back to the mastering peak, then 100. Yn<=1 so nothing clips.
+       my $cc_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+       $encoded=&webui_pattern_pq_encode_normalized($linear*$cc_ref);
       } elsif($signal_mode eq "dv") {
         $encoded=$linear>0 ? $linear**(1/2.2) : 0;
       } else {
