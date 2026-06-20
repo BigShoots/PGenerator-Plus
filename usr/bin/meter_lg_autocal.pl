@@ -4439,6 +4439,11 @@ sub sanitize_count {
 }
 
 sub _patch_insert_code_for_level {
+ # Legacy fallback only. Modern webui binaries inject a precomputed
+ # "<patch_insert_*_code>:<patch_insert_*_input_max>" pair into the
+ # config so the insertion patch matches the same code the greyscale
+ # ladder would emit for that stimulus in the active output mode. This
+ # remains for older webui binaries that do not inject the fields.
  my ($level_pct,$signal_mode,$max_luma)=@_;
  $level_pct=0 if($level_pct+0 < 0);
  $level_pct=100 if($level_pct+0 > 100);
@@ -4454,6 +4459,21 @@ sub _patch_insert_code_for_level {
   return int($pq_signal*255.0 + 0.5);
  }
  return int(($level_pct/100.0)*255.0 + 0.5);
+}
+
+sub _patch_insert_resolve {
+ # Returns ($code,$input_max) for a single insertion type. Prefers the
+ # webui-precomputed pair (mode-correct, matches the greyscale ladder);
+ # falls back to the legacy _patch_insert_code_for_level + 255 when absent.
+ my ($config,$kind,$level)=@_;
+ my $code_key="patch_insert_".$kind."_code";
+ my $im_key="patch_insert_".$kind."_input_max";
+ if(defined($config->{$code_key}) && $config->{$code_key} ne "") {
+  my $im=int($config->{$im_key} // 255);
+  $im=255 if($im <= 0);
+  return (int($config->{$code_key}+0),$im);
+ }
+ return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
 }
 
 sub apply_pattern_insert_before_read {
@@ -4476,13 +4496,13 @@ sub apply_pattern_insert_before_read {
  my @inserts;
  my $now=int(Time::HiRes::time()*1000);
  if($time_enabled && ($_patch_insert_last_time_ts == 0 || ($now - $_patch_insert_last_time_ts) >= $time_frequency_ms)) {
-  push @inserts,{ level => $time_level, duration_ms => $time_duration_ms, reason => "time" };
+  push @inserts,{ level => $time_level, duration_ms => $time_duration_ms, reason => "time", kind => "time" };
   $_patch_insert_last_time_ts=$now;
  }
  if($patch_enabled) {
   $_patch_insert_counter++;
   if(($_patch_insert_counter % $patch_every) == 0) {
-   push @inserts,{ level => $patch_level, duration_ms => $patch_duration_ms, reason => "patch" };
+   push @inserts,{ level => $patch_level, duration_ms => $patch_duration_ms, reason => "patch", kind => "patch" };
   }
  }
  return undef unless(@inserts);
@@ -4502,18 +4522,18 @@ sub apply_pattern_insert_before_read {
  $base_payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
  $base_payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
   for my $ins (@inserts) {
-   my $code=_patch_insert_code_for_level($ins->{"level"},$config->{"signal_mode"},$config->{"max_luma"});
+   my ($code,$input_max)=_patch_insert_resolve($config,$ins->{"kind"},$ins->{"level"});
   my $dur_s=$ins->{"duration_ms"}/1000.0;
-  log_line("HDR20 pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code duration=".sprintf("%.3f",$dur_s)."s");
+  log_line("HDR20 pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code input_max=$input_max duration=".sprintf("%.3f",$dur_s)."s");
   # Step 1: grey insertion flash at the user-configured level + duration.
-   my $insert_payload={%{$base_payload},r=>(0+$code),g=>(0+$code),b=>(0+$code)};
+   my $insert_payload={%{$base_payload},input_max=>$input_max,r=>(0+$code),g=>(0+$code),b=>(0+$code)};
    my $insert_result=api_json("POST","/api/pattern",$insert_payload,10);
    log_line("HDR20 pattern insertion POST response: ".($json->encode($insert_result)));
    return $insert_result->{"message"}||"Unable to display pattern insertion patch" if(($insert_result->{"status"}||"") eq "error");
   select(undef,undef,undef,$dur_s);
   # Step 2: dead black screen to reset panel ABL / pixel charge between
   # the insertion flash and the measurement patch.
-  my $black_payload={%{$base_payload},r=>0,g=>0,b=>0};
+  my $black_payload={%{$base_payload},input_max=>$input_max,r=>0,g=>0,b=>0};
   my $black_result=api_json("POST","/api/pattern",$black_payload,10);
   return $black_result->{"message"}||"Unable to display black insertion patch" if(($black_result->{"status"}||"") eq "error");
   select(undef,undef,undef,0.5);

@@ -40,6 +40,14 @@ PATCH_INSERT_TIME_LEVEL="${27:-25}"
 # "/bin/bash /usr/bin/meter_series.sh *" stays intact. Falls back to the
 # LOW_LIGHT_MODE env (legacy) then off. The case statement below consumes it.
 LOW_LIGHT_MODE="${28:-${LOW_LIGHT_MODE:-off}}"
+# Precomputed pattern-insertion codes (mode-correct). The webui derives them
+# from the same closure the greyscale ladder uses, so an insertion patch at
+# the user-configured level lands on the same code a step at that stimulus
+# would. Positional args 29/30; empty value triggers a legacy linear
+# fallback below (older webui binaries). "<code>:<input_max>" colon-joined
+# so the daemon's "/usr/bin/meter_series.sh *" arg-count stays minimal.
+PATCH_INSERT_PATCH_PRECOMPUTED="${29:-}"
+PATCH_INSERT_TIME_PRECOMPUTED="${30:-}"
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
@@ -654,7 +662,18 @@ sanitize_level() {
 }
 
 patch_insert_code_for_level() {
- local level="${1:-25}"
+ local level="${1:-25}" precomputed="${2:-}"
+ # Prefer the webui-precomputed "<code>:<input_max>" payload so the insertion
+ # patch matches the greyscale-series code for the same stimulus in the
+ # active output mode (SDR/HDR10/DV/HLG). Fall back to the legacy linear
+ # 0..255 formula only when the precomputed payload is empty (older webui).
+ if [[ -n "$precomputed" && "$precomputed" == *:* ]]; then
+  local pre_code="${precomputed%%:*}"
+  if is_number "$pre_code"; then
+   echo "$pre_code"
+   return 0
+  fi
+ fi
  awk -v level="$level" 'BEGIN {
   value = int((level / 100.0) * 255.0 + 0.5)
   if (value < 0) value = 0
@@ -663,13 +682,26 @@ patch_insert_code_for_level() {
  }'
 }
 
+patch_insert_input_max_for_level() {
+ local precomputed="${1:-}"
+ if [[ -n "$precomputed" && "$precomputed" == *:* ]]; then
+  local im="${precomputed##*:}"
+  if is_number "$im" && (( im > 0 )); then
+   echo "$im"
+   return 0
+  fi
+ fi
+ echo 255
+}
+
 post_insert_patch() {
- local level="${1:-25}" duration_ms="${2:-0}" reason="${3:-patch}"
- local code duration_sec
- code=$(patch_insert_code_for_level "$level")
+ local level="${1:-25}" duration_ms="${2:-0}" reason="${3:-patch}" precomputed="${4:-}"
+ local code input_max duration_sec
+ code=$(patch_insert_code_for_level "$level" "$precomputed")
+ input_max=$(patch_insert_input_max_for_level "$precomputed")
  duration_sec=$(milliseconds_to_seconds "$duration_ms")
- echo "[$(date '+%H:%M:%S.%3N')] pattern insertion: reason=$reason level=${level}% code=$code duration=${duration_sec}s" >> /tmp/meter_series_debug.log
- post_patch "$code" "$code" "$code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" 255
+ echo "[$(date '+%H:%M:%S.%3N')] pattern insertion: reason=$reason level=${level}% code=$code input_max=$input_max duration=${duration_sec}s" >> /tmp/meter_series_debug.log
+ post_patch "$code" "$code" "$code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$input_max"
  sleep "$duration_sec"
 }
 
@@ -684,24 +716,24 @@ maybe_pattern_insert_before_step() {
  local step_index="${1:-0}" ire="${2:-0}"
  (( step_index > 0 )) || return 0
  local now elapsed
- if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
-  now=$(current_millis)
-  elapsed=$(( now - PATCH_INSERT_LAST_TIME_TS ))
-  if (( elapsed >= PATCH_INSERT_TIME_FREQUENCY_MS )); then
-   post_insert_patch "$PATCH_INSERT_TIME_LEVEL" "$PATCH_INSERT_TIME_DURATION_MS" "time"
-   PATCH_INSERT_LAST_TIME_TS=$(current_millis)
-  fi
- fi
- if [[ "$PATCH_INSERT_PATCH_ENABLED" == "1" ]]; then
-  PATCH_INSERT_PATCH_COUNTER=$((PATCH_INSERT_PATCH_COUNTER + 1))
-  if (( PATCH_INSERT_PATCH_COUNTER % PATCH_INSERT_PATCH_EVERY == 0 )); then
-   local duration_ms="$PATCH_INSERT_PATCH_DURATION_MS"
-   if (( PATCH_INSERT_DYNAMIC_SETTLE == 1 )); then
-    duration_ms=$(awk -v seconds="$(patch_insert_settle_seconds "$ire")" 'BEGIN { printf "%d", seconds * 1000 }')
+if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
+   now=$(current_millis)
+   elapsed=$(( now - PATCH_INSERT_LAST_TIME_TS ))
+   if (( elapsed >= PATCH_INSERT_TIME_FREQUENCY_MS )); then
+    post_insert_patch "$PATCH_INSERT_TIME_LEVEL" "$PATCH_INSERT_TIME_DURATION_MS" "time" "$PATCH_INSERT_TIME_PRECOMPUTED"
+    PATCH_INSERT_LAST_TIME_TS=$(current_millis)
    fi
-   post_insert_patch "$PATCH_INSERT_PATCH_LEVEL" "$duration_ms" "patch"
   fi
- fi
+  if [[ "$PATCH_INSERT_PATCH_ENABLED" == "1" ]]; then
+   PATCH_INSERT_PATCH_COUNTER=$((PATCH_INSERT_PATCH_COUNTER + 1))
+   if (( PATCH_INSERT_PATCH_COUNTER % PATCH_INSERT_PATCH_EVERY == 0 )); then
+    local duration_ms="$PATCH_INSERT_PATCH_DURATION_MS"
+    if (( PATCH_INSERT_DYNAMIC_SETTLE == 1 )); then
+     duration_ms=$(awk -v seconds="$(patch_insert_settle_seconds "$ire")" 'BEGIN { printf "%d", seconds * 1000 }')
+    fi
+    post_insert_patch "$PATCH_INSERT_PATCH_LEVEL" "$duration_ms" "patch" "$PATCH_INSERT_PATCH_PRECOMPUTED"
+   fi
+  fi
 }
 
 read_timeout_seconds() {
