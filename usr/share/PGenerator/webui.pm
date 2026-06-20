@@ -2573,63 +2573,24 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     }
    }
      my $lim=$greyscale_patch_limited;
+    # Delegate stimulus->code to the shared helper. Pass the active HDR20
+    # table directly so a custom DDC upload stays in sync with the ladder.
+    my %_opts_for_grey=(
+     hdr20_codes => ($lg_hdr20_codes ? 1 : 0),
+     autocal_26 => (($points==26 && $lg_autocal_26) ? 1 : 0),
+     autocal_26_codes => ($lg_autocal_26_codes ? 1 : 0),
+     extended_sdr_codes => ($lg_extended_sdr_codes ? 1 : 0),
+     legal_sdr_ddc_codes => ($lg_legal_sdr_ddc_codes ? 1 : 0),
+     dv_series => ($dv_series ? 1 : 0),
+     dv_series_code_bits => (defined($dv_series_code_bits) ? $dv_series_code_bits : 8),
+     dv_series_full_range => ($dv_series_full_range ? 1 : 0),
+    );
+    $_opts_for_grey{"active_table"}=$lg_hdr20_active_table if($lg_hdr20_codes && ref($lg_hdr20_active_table) eq "HASH");
     my $grey_code_for_stim=sub {
-    my ($stimulus_pct)=@_;
-    my $c=0;
-	    if($lg_autocal_26_codes) {
-     my $slot_key="";
-     foreach my $slot (@ire_vals) {
-      my $key=$slot;
-      $key=~s/\.0$//;
-      if(exists($lg_autocal_26_stimulus{$key}) && abs(($lg_autocal_26_stimulus{$key}+0)-($stimulus_pct+0)) < 0.01) {
-       $slot_key=$key;
-       last;
-      }
-     }
-	     $c=exists($lg_autocal_26_code{$slot_key}) ? $lg_autocal_26_code{$slot_key} : int(64 + $stimulus_pct/100*876 + .5);
-	     $c=64 if($c < 64);
-	     $c=1023 if($c > 1023);
-	     return $c;
-	    }
-	    if($lg_hdr20_codes) {
-     my $slot_key="";
-     foreach my $slot (@ire_vals) {
-      my $key=$slot;
-      $key=~s/\.0$//;
-      if(exists($lg_hdr20_stimulus{$key}) && abs(($lg_hdr20_stimulus{$key}+0)-($stimulus_pct+0)) < 0.01) {
-       $slot_key=$key;
-       last;
-      }
-     }
-	     # In-table slot (1.4..100): use the active 10-bit code. The 0% step
-	     # is NOT in the table; fall through to the range-aware formula so
-	     # 0% on Full 10-bit is 0 (true black) and on Limited 10-bit is 64
-	     # (limited black) instead of the old hardcoded 16 (8-bit Limited).
-	     $c=exists($lg_hdr20_active_table->{$slot_key}) ? $lg_hdr20_active_table->{$slot_key} : int($lg_hdr20_min_code + $stimulus_pct/100*$lg_hdr20_span_code + .5);
-	     $c=$lg_hdr20_min_code if($c < $lg_hdr20_min_code);
-	     $c=$lg_hdr20_min_code + $lg_hdr20_span_code if($c > $lg_hdr20_min_code + $lg_hdr20_span_code);
-	     return $c;
-	    }
-	    if($dv_series) {
-	      my $stim=$stimulus_pct/100;
-	      $stim=0 if($stim < 0);
-	      $stim=1 if($stim > 1);
-	      $c=int($dv_series_code_min + $stim*$dv_series_code_span + .5);
-	      $c=$dv_series_code_min if($c < $dv_series_code_min);
-	      $c=$dv_series_code_limit if($c > $dv_series_code_limit);
-			    } else {
-			     if($lg_extended_sdr_codes) {
-			      $c=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
-		     } elsif($lg_legal_sdr_ddc_codes) {
-		      $c=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*219 + .5);
-		     } else {
-		      $c=$lim
-		       ? int(16 + $stimulus_pct/100*219 + .5)
-		       : int($stimulus_pct/100*255 + .5);
-		     }
-		    }
-    return $c;
-   };
+     my ($stimulus_pct)=@_;
+     my ($c,$im)=&webui_grey_code_for_stimulus($stimulus_pct,$signal_mode,$target_gamma,$lim,$_opts_for_grey);
+     return $c;
+    };
    # Reference first, then black for contrast, then the remaining LG 26pt
    # steps ascend from near black through headroom. The delayed legal-white
    # read gives post-cal charts a fresh target-Y basis before any low-level
@@ -3176,6 +3137,29 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
  # LOW_LIGHT_MODE is passed as the FINAL positional argument, not as an
+ # Precompute the mode-correct insertion codes via the shared helper so the
+ # worker just SENDS them rather than recomputing. Without this, the
+ # insertion flash used a hard-coded linear 0..255 formula and was wrong on
+ # HDR/DV/HLG wires (way too dim, or in HDR10 too bright). The two args are
+ # colon-joined "<code>:<input_max>" so the authorized
+ # "/usr/bin/meter_series.sh *" arg pattern still matches. Applies to ANY
+ # series type (greyscale, colors, ...) that has the patch_insert flag set
+ # -- the helper handles the SDR/HDR10/DV/HLG mapping from signal_mode.
+ my $insert_patch_code="";
+ my $insert_patch_input_max=255;
+ my $insert_time_code="";
+ my $insert_time_input_max=255;
+ if($patch_insert_patch_enabled || $patch_insert_time_enabled) {
+  my %series_opts=(
+   hdr20_codes => (($type eq "greyscale" && $points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") ? 1 : 0),
+   autocal_26 => (($type eq "greyscale" && $points==26 && $lg_autocal_26) ? 1 : 0),
+   autocal_26_codes => (($type eq "greyscale" && $points==26 && $lg_autocal_26 && $signal_mode eq "sdr") ? 1 : 0),
+   extended_sdr_codes => (($type eq "greyscale" && !$lg_autocal_26_codes && (($points==26 && $lg_autocal_26) || ($points==21 && $lg_greyscale_21)) && $signal_mode eq "sdr") ? 1 : 0),
+   dv_series => (($signal_mode eq "dv") ? 1 : 0),
+  );
+  ($insert_patch_code,$insert_patch_input_max)=&webui_grey_code_for_stimulus($patch_insert_patch_level,$signal_mode,$target_gamma,$greyscale_patch_limited,\%series_opts) if($patch_insert_patch_enabled);
+  ($insert_time_code,$insert_time_input_max)=&webui_grey_code_for_stimulus($patch_insert_time_level,$signal_mode,$target_gamma,$greyscale_patch_limited,\%series_opts) if($patch_insert_time_enabled);
+ }
  # environment-variable prefix on the sudo command. The daemon's sudo
  # NOPASSWD rule only authorizes "/bin/bash /usr/bin/meter_series.sh *";
  # any env-prefixed form (e.g. an "env KEY=VAL" prefix on the bash
@@ -3183,7 +3167,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # password and the launch silently fails ("Process died unexpectedly").
  # A trailing arg keeps the authorized command intact. Empty value ->
  # meter_series.sh coerces to off (single long read).
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -3384,6 +3368,46 @@ sub webui_meter_lg_autocal_start (@) {
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
  &webui_meter_stop();
  unlink($_meter_lg_autocal_stop_file);
+ # Inject precomputed pattern-insertion codes (mode-correct) so the worker
+ # sends the same code the greyscale ladder would emit for that stimulus.
+ # The autocal body does not carry every flag the series closure has, so
+ # derive opts from the body itself (lg_autocal_26, signal_mode, etc.).
+ my $_ac_signal_mode="sdr";
+ $_ac_signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"([^"]+)"/);
+ my $_ac_target_gamma="2.2";
+ $_ac_target_gamma=$1 if($body=~/"target_gamma"\s*:\s*"([^"]+)"/);
+ my $_ac_signal_range="";
+ $_ac_signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
+ my $_ac_pattern_signal_range=$_ac_signal_range;
+ $_ac_pattern_signal_range=$1 if($body=~/"pattern_signal_range"\s*:\s*"?(\d+)"?/);
+ my $_ac_lg_autocal_26=($body=~/"lg_autocal_26"\s*:\s*true/i) ? 1 : 0;
+ my $_ac_lg_greyscale_21=($body=~/"lg_greyscale_21"\s*:\s*true/i) ? 1 : 0;
+ my $_ac_patch_insert_patch_enabled=($body=~/"patch_insert_patch_enabled"\s*:\s*true/i) ? 1 : 0;
+ my $_ac_patch_insert_time_enabled=($body=~/"patch_insert_time_enabled"\s*:\s*true/i) ? 1 : 0;
+ my $_ac_patch_insert_patch_level=10;
+ $_ac_patch_insert_patch_level=$1 if($body=~/"patch_insert_patch_level"\s*:\s*([0-9.]+)/);
+ my $_ac_patch_insert_time_level=25;
+ $_ac_patch_insert_time_level=$1 if($body=~/"patch_insert_time_level"\s*:\s*([0-9.]+)/);
+ my $_ac_lim=(defined($_ac_pattern_signal_range) && $_ac_pattern_signal_range ne "" && int($_ac_pattern_signal_range)==1) ? 1 : 0;
+ $_ac_lim=((defined($_ac_signal_range) && $_ac_signal_range ne "" && int($_ac_signal_range)==1) ? 1 : 0) if(!$_ac_lim && $_ac_signal_mode eq "sdr");
+ my %_ac_opts=(
+  hdr20_codes => (($_ac_lg_autocal_26 && $_ac_signal_mode eq "hdr10") ? 1 : 0),
+  autocal_26 => ($_ac_lg_autocal_26 ? 1 : 0),
+  autocal_26_codes => (($_ac_lg_autocal_26 && $_ac_signal_mode eq "sdr") ? 1 : 0),
+  extended_sdr_codes => (($_ac_lg_autocal_26 || $_ac_lg_greyscale_21) && $_ac_signal_mode eq "sdr" ? 1 : 0),
+  dv_series => (($_ac_signal_mode eq "dv") ? 1 : 0),
+ );
+ my $_ac_insert_patch_code="";
+ my $_ac_insert_patch_input_max=255;
+ my $_ac_insert_time_code="";
+ my $_ac_insert_time_input_max=255;
+ if($_ac_patch_insert_patch_enabled) {
+  ($_ac_insert_patch_code,$_ac_insert_patch_input_max)=&webui_grey_code_for_stimulus($_ac_patch_insert_patch_level,$_ac_signal_mode,$_ac_target_gamma,$_ac_lim,\%_ac_opts);
+ }
+ if($_ac_patch_insert_time_enabled) {
+  ($_ac_insert_time_code,$_ac_insert_time_input_max)=&webui_grey_code_for_stimulus($_ac_patch_insert_time_level,$_ac_signal_mode,$_ac_target_gamma,$_ac_lim,\%_ac_opts);
+ }
+ $body=~s/\}\s*\z/,"patch_insert_patch_code":$_ac_insert_patch_code,"patch_insert_patch_input_max":$_ac_insert_patch_input_max,"patch_insert_time_code":$_ac_insert_time_code,"patch_insert_time_input_max":$_ac_insert_time_input_max}/;
  if(open(my $fh,">",$_meter_lg_autocal_config_file)) {
   print $fh $body;
   close($fh);
@@ -6680,6 +6704,137 @@ sub webui_pattern_pq_encode_normalized (@) {
  my $c3=2392/128;
  my $p=$l**$m1;
  return (($c1 + $c2*$p)/(1 + $c3*$p))**$m2;
+}
+
+# Single source of truth for stimulus-percent -> wire code for the greyscale
+# ladders AND for the pattern-insertion patches. Mirrors the body of the
+# $grey_code_for_stim closure used by webui_meter_series_start so an
+# insertion patch is always visually identical to the greyscale step for the
+# same stimulus in whatever output mode is active.
+#
+# Returns ($code,$input_max). Defaults match the closure:
+#   signal_mode  signal_range  code branch                input_max
+#   sdr          full           linear 0..255              255
+#   sdr          limited        legal 16..235              255
+#   hdr10        (any)          pq-encoded 0..255          255
+#   hdr10 26pt   (any)          hdr20 table (1.4..100)     1023
+#                                  + linear min..min+span for 0%
+#   hdr10 26pt   full           full 10-bit table           1023
+#   hdr10 26pt   limited        limited 10-bit table        1023
+#   dv  greyscale               tunnel (8 or 10)            255/1023
+#   hlg          (any)          container-code-linear       255
+# $opts_hr carries optional knobs used by the hdr20 / DV paths:
+#   active_table    HASH ref   replaces the default hdr20 body table
+#   hdr20_codes     0/1        force hdr20 branch
+#   autocal_26      0/1        use the LG 26pt slot map
+#   autocal_26_codes 0/1       SDR 26pt slot map
+#   extended_sdr_codes 0/1    use extended (16..255) SDR range
+#   legal_sdr_ddc_codes 0/1   use legal (16..235) SDR range
+#   dv_series       0/1        use DV tunnel branch
+#   dv_series_code_bits 8/10  tunnel bit depth
+#   dv_series_full_range 0/1  use full tunnel range
+sub webui_grey_code_for_stimulus (@) {
+ my ($stimulus_pct,$signal_mode,$target_gamma,$signal_range,$opts_hr)=@_;
+ $stimulus_pct+=0;
+ $stimulus_pct=0 if($stimulus_pct < 0);
+ $stimulus_pct=100 if($stimulus_pct > 100);
+ $signal_mode=lc($signal_mode||"sdr");
+ $signal_range+=0 if(defined($signal_range) && $signal_range ne "");
+ $opts_hr={} if(ref($opts_hr) ne "HASH");
+ my $code=0;
+ my $input_max=255;
+ my $lg_hdr20_codes=$opts_hr->{"hdr20_codes"} ? 1 : 0;
+ my $lg_autocal_26=$opts_hr->{"autocal_26"} ? 1 : 0;
+ my $lg_autocal_26_codes=$opts_hr->{"autocal_26_codes"} ? 1 : 0;
+ my $lg_extended_sdr_codes=$opts_hr->{"extended_sdr_codes"} ? 1 : 0;
+ my $lg_legal_sdr_ddc_codes=$opts_hr->{"legal_sdr_ddc_codes"} ? 1 : 0;
+ my $dv_series=$opts_hr->{"dv_series"} ? 1 : 0;
+ my $dv_series_code_bits=$opts_hr->{"dv_series_code_bits"};
+ $dv_series_code_bits=8 if(!defined($dv_series_code_bits) || ($dv_series_code_bits!=8 && $dv_series_code_bits!=10));
+ my $dv_series_full_range=$opts_hr->{"dv_series_full_range"} ? 1 : 0;
+ my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : 16) : 0;
+ my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? ($dv_series_code_bits==10?1023:255) : ($dv_series_code_bits==10?940:219)) : 255;
+ my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
+ $input_max=($dv_series_code_bits==10) ? 1023 : 255 if($dv_series);
+ if($lg_autocal_26_codes) {
+  my %lg_autocal_26_code=(
+   "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
+   "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
+  );
+  my %slot_for_stim;
+  foreach my $k (keys %lg_autocal_26_code) {
+   my $code_val=$lg_autocal_26_code{$k};
+   my $stim_val=($code_val-64)*100/876;
+   $slot_for_stim{$stim_val}=$k;
+  }
+  my $slot_key="";
+  foreach my $sv (keys %slot_for_stim) {
+   if(abs($sv-$stimulus_pct) < 0.01) { $slot_key=$slot_for_stim{$sv}; last; }
+  }
+  $code=exists($lg_autocal_26_code{$slot_key}) ? $lg_autocal_26_code{$slot_key} : int(64 + $stimulus_pct/100*876 + .5);
+  $code=64 if($code < 64);
+  $code=1023 if($code > 1023);
+  $input_max=1023;
+  return ($code,$input_max);
+ }
+ if($lg_hdr20_codes) {
+  my %lg_hdr20_code=(
+   "1.4"=>19,"2"=>20,"2.7"=>22,"4"=>25,"5"=>27,"7"=>31,"10"=>38,"15"=>49,"20"=>60,"25"=>71,
+   "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
+  );
+  my %lg_hdr20_code_10bit_limited=(
+   "1.4"=>76,"2"=>82,"2.7"=>88,"4"=>99,"5"=>108,"7"=>125,"10"=>152,"15"=>195,"20"=>239,"25"=>283,
+   "30"=>327,"35"=>371,"40"=>414,"45"=>458,"50"=>502,"60"=>588,"70"=>677,"80"=>765,"90"=>852,"100"=>940
+  );
+  my %lg_hdr20_code_10bit_full=(
+   "1.4"=>14,"2"=>20,"2.7"=>28,"4"=>41,"5"=>51,"7"=>72,"10"=>102,"15"=>153,"20"=>205,"25"=>256,
+   "30"=>307,"35"=>358,"40"=>409,"45"=>460,"50"=>512,"60"=>614,"70"=>716,"80"=>818,"90"=>921,"100"=>1023
+  );
+  my %lg_hdr20_stimulus=();
+  foreach my $key (keys %lg_hdr20_code) { $lg_hdr20_stimulus{$key}=$key+0; }
+  my $lg_hdr20_active_table=\%lg_hdr20_code;
+  if($opts_hr->{"active_table"} && ref($opts_hr->{"active_table"}) eq "HASH") {
+   $lg_hdr20_active_table=$opts_hr->{"active_table"};
+  } else {
+   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_limited if($opts_hr->{"hdr20_use_limited"});
+   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_full if($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"});
+  }
+  my $lg_hdr20_min_code=($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 0 : 64;
+  my $lg_hdr20_span_code=($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 1023 : 876;
+  my $slot_key="";
+  foreach my $slot (keys %lg_hdr20_stimulus) {
+   if(abs($lg_hdr20_stimulus{$slot}-$stimulus_pct) < 0.01) { $slot_key=$slot; last; }
+  }
+  $code=exists($lg_hdr20_active_table->{$slot_key}) ? $lg_hdr20_active_table->{$slot_key} : int($lg_hdr20_min_code + $stimulus_pct/100*$lg_hdr20_span_code + .5);
+  $code=$lg_hdr20_min_code if($code < $lg_hdr20_min_code);
+  $code=$lg_hdr20_min_code + $lg_hdr20_span_code if($code > $lg_hdr20_min_code + $lg_hdr20_span_code);
+  $input_max=1023;
+  return ($code,$input_max);
+ }
+ if($dv_series) {
+  my $stim=$stimulus_pct/100;
+  $stim=0 if($stim < 0);
+  $stim=1 if($stim > 1);
+  $code=int($dv_series_code_min + $stim*$dv_series_code_span + .5);
+  $code=$dv_series_code_min if($code < $dv_series_code_min);
+  $code=$dv_series_code_limit if($code > $dv_series_code_limit);
+  return ($code,$input_max);
+ }
+ my $lim=(defined($signal_range) && int($signal_range)==1) ? 1 : 0;
+ if($lg_extended_sdr_codes) {
+  $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
+ } elsif($lg_legal_sdr_ddc_codes) {
+  $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*219 + .5);
+ } elsif($signal_mode eq "hdr10") {
+  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
+ } elsif($signal_mode eq "hlg") {
+  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
+ } else {
+  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
+ }
+ $code=0 if($code < 0);
+ $code=255 if($code > 255);
+ return ($code,$input_max);
 }
 
 sub webui_pattern_pq_decode_normalized (@) {
