@@ -13414,15 +13414,16 @@ function meterColorSeriesReferenceNits(){
  if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
   const measured=(white.luminance!=null)?white.luminance:white.Y;
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
-  // HDR10 PQ color/saturation series bake target_Yn in the 10000-nit PQ
-  // space (see saturations generator: target_Yn = level_linear / mx with
-  // level_linear = PQ_decode(signal)/10000), and the chart converts via
-  // Y = tYn * refY. The reference must therefore be the PQ mastering peak
-  // (10000), not the display's measured white - otherwise Target Y for
-  // color patches comes out ~14x too small (e.g. 6.4 nits for a 50% PQ
-  // patch instead of 92 nits). SDR + HLG are relative, so the measured
-  // white remains the right reference for them.
-  if(meterChartIsPq()) return 10000;
+  // ColorChecker (the "colors" series) bakes RELATIVE target_Yn: White=1,
+  // grays=reflectance (e.g. 0.198), Macbeth=Yn, and the full-level 100%
+  // colour patches reduce to the gamut mix_Y -- all fractions of white. So
+  // ColorChecker targets reference the display's MEASURED white (CalMAN
+  // "use measured white"): White->~measured peak, Gray 50->~0.198*measured.
+  // The saturation SWEEP instead bakes target_Yn in the 10000-nit PQ space
+  // (target_Yn = level_linear/mx, level_linear = PQ_decode(signal)/10000),
+  // so it must keep the PQ mastering peak (10000) or its targets come out
+  // ~14x too small. SDR + HLG are relative everywhere, so measured white.
+  if(meterChartIsPq()) return (meterActiveSeriesType==='saturations') ? 10000 : Math.max(1,measured);
   return Math.max(1,measured);
  }
  const lgTarget=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType);
