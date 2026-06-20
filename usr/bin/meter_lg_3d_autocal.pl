@@ -1096,7 +1096,12 @@ sub read_request_id {
 sub read_step_once {
  my ($config,$step)=@_;
  my $delay_ms=int($config->{"delay_ms"}||1000);
- $delay_ms=1800 if($delay_ms < 1800);
+ # Settle-delay floor, signal-mode aware -- mirrors the greyscale 1D autocal
+ # worker (meter_lg_autocal.pl). HDR10 patches stabilise fast, so a 1800ms
+ # floor just leaves the profile patches (W/R/G/B) on screen ~800ms longer per
+ # read than the greyscale stage for no accuracy gain. SDR/other keeps 1800ms.
+ my $delay_floor=lc($config->{"signal_mode"}||"sdr") eq "hdr10" ? 1000 : 1800;
+ $delay_ms=$delay_floor if($delay_ms < $delay_floor);
  my $request_id=read_request_id($step);
  my $payload={
   display_type => $config->{"display_type"}||"lcd",
