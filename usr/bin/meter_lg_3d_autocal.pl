@@ -980,6 +980,7 @@ sub model_from_readings {
   white_y => $white_y,
   chromatic_white_y => $chromatic_white_y,
   wrgb_white_ratio => $wrgb_white_ratio,
+  gamut_drive_matrix => build_gamut_drive_matrix(\%contrib,$target_gamut,$signal_mode,$target_gamma),
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
   drift => $drift,
@@ -988,6 +989,64 @@ sub model_from_readings {
    ? "exact diagonal identity plus adjacent neutral-neighborhood identity after current 1D greyscale path"
    : "exact diagonal identity after current 1D greyscale path",
  };
+}
+
+sub native_rgb_to_xyz_matrix {
+ # White-preserving RGB->XYZ built from the MEASURED native primary
+ # chromaticities, normalized so RGB(1,1,1) maps to D65 (the greyscale
+ # calibration white). Luminance cancels in the downstream gamut matrix.
+ my ($contrib)=@_;
+ my @cols;
+ foreach my $kind (qw(red green blue)) {
+  my $xyz=$contrib->{$kind}{100};
+  return undef if(ref($xyz) ne "ARRAY");
+  my $sum=($xyz->[0]||0)+($xyz->[1]||0)+($xyz->[2]||0);
+  return undef if($sum <= 0);
+  push @cols,xy_to_xyz_unit($xyz->[0]/$sum,$xyz->[1]/$sum);
+ }
+ my $m=matrix_from_columns($cols[0],$cols[1],$cols[2]);
+ my $inv=matrix_inverse($m);
+ return undef if(!$inv);
+ my $w=xy_to_xyz_unit(0.3127,0.3290);
+ my $scale=matrix_mul_vec($inv,$w);
+ return matrix_from_columns(vec_scale($cols[0],$scale->[0]),vec_scale($cols[1],$scale->[1]),vec_scale($cols[2],$scale->[2]));
+}
+
+sub build_gamut_drive_matrix {
+ # CalMAN-matching cube build: a WHITE-PRESERVING 3x3 gamut matrix mapping the
+ # container primaries (BT.2020) onto the panel's MEASURED native primaries,
+ # applied in the DPG calibration gamma domain (2.2 for HDR). Decoded from
+ # CalMAN's own C2 cube, out_gamma = M x in_gamma fits to <3 codes RMS and M's
+ # rows sum to 1.0 (neutral preserved). Our previous per-node XYZ solve produced
+ # a NON-white-preserving matrix (rows summed ~1.08/0.97/0.89) that pushed
+ # colours red-up/blue-down as they leave the neutral axis -- the residual
+ # saturation-sweep skew. Scoped to HDR with a numeric calibration gamma; SDR
+ # keeps the legacy solve (no ground truth to validate a change there).
+ my ($contrib,$target_gamut,$signal_mode,$target_gamma)=@_;
+ return undef unless(lc($signal_mode||"") =~ /^(hdr10|hlg|dv)$/);
+ return undef unless(defined($target_gamma) && ($target_gamma eq "2.2" || $target_gamma eq "2.4"));
+ my $m_native=native_rgb_to_xyz_matrix($contrib);
+ return undef if(!$m_native);
+ my $inv_native=matrix_inverse($m_native);
+ return undef if(!$inv_native);
+ my $m_target=rgb_to_xyz_matrix_for_gamut($target_gamut);
+ return matrix_mul($inv_native,$m_target);
+}
+
+sub gamut_matrix_output {
+ # Node output via the white-preserving gamut matrix in the calibration gamma
+ # domain. Returns per-channel drive PERCENT (0-100), matching solve_output_rgb.
+ my ($model,$ri,$gi,$bi,$size)=@_;
+ my $M=$model->{"gamut_drive_matrix"};
+ my $gamma=$model->{"target_gamma"};
+ my $gexp=($gamma eq "2.4") ? 2.4 : 2.2;
+ my $lin=[
+  target_gamma_linear($ri/($size-1),$gamma),
+  target_gamma_linear($gi/($size-1),$gamma),
+  target_gamma_linear($bi/($size-1),$gamma),
+ ];
+ my $out=matrix_mul_vec($M,$lin);
+ return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
 }
 
 sub generate_lut_cube {
@@ -1002,6 +1061,8 @@ sub generate_lut_cube {
     my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
     if($neutral_identity) {
      $out=$neutral_identity;
+    } elsif($model->{"gamut_drive_matrix"}) {
+     $out=gamut_matrix_output($model,$r,$g,$b,$size);
     } else {
      my $target=target_xyz_for_node($model,$r,$g,$b,$size);
      $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
@@ -1047,6 +1108,8 @@ sub generate_lut_lg_payload {
     my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
     if($neutral_identity) {
      $out=$neutral_identity;
+    } elsif($model->{"gamut_drive_matrix"}) {
+     $out=gamut_matrix_output($model,$r,$g,$b,$size);
     } else {
      my $target=target_xyz_for_node($model,$r,$g,$b,$size);
      $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
