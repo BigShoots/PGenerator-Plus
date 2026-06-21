@@ -17580,9 +17580,14 @@ function meterStepInputMax(step){
  const explicit=Number(step&&step.input_max);
  if(Number.isFinite(explicit)&&explicit>0) return explicit;
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- if(step&&meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints)&&mode==='sdr'&&meterSeriesStepIsGreyscale(step)){
-  return 1023;
- }
+ const isGreyStep=!!(step&&meterActiveSeriesType==='greyscale'&&meterSeriesStepIsGreyscale(step));
+ if(isGreyStep&&meterUseLgAutoCal26(meterActiveSeriesPoints)&&mode==='sdr') return 1023;
+ // 10-bit transport (HDR10/HLG/SDR 10-bit) emits 10-bit codes from
+ // meterGreyCodeRange (0-1023 full, 64-940 limited). Without an explicit
+ // step.input_max the server would interpret e.g. 0%->code 64 as 8-bit and
+ // shift it to 256 (10-bit), which lifts black to ~22% signal. Mirror the
+ // 26pt SDR branch for any greyscale step on a 10-bit transport.
+ if(isGreyStep&&meterPatchBitDepth()===10) return 1023;
  return 255;
 }
 
@@ -19551,18 +19556,37 @@ function meterBuildStepsJS(type,points){
 		     ires.forEach((slot,idx)=>{ entryBySlot[slot]=entries[idx]||meterGreyNormalizeEntry(slot,null); });
    // Measurement order: 100% first (white reference), then 0%→95% ascending
    const ordered=[100,...ires.filter(v=>v!==100).sort((a,b)=>a-b)];
+   // 10-bit transport (HDR10/HLG/SDR-10) emits 10-bit codes from
+   // meterGreyCodeRange. The 26pt HDR10 path sets input_max + preview_*
+   // explicitly via previewCodesForCode; mirror that here so the server
+   // (webui_pattern) doesn't interpret e.g. 0%->code 64 as 8-bit and lift
+   // the black to ~22% signal, and so the patch-thumbnail swatch shows
+   // the correct 0-255 normalized preview instead of the raw 10-bit code.
+   const stepInputMax=meterPatchBitDepth()===10?1023:255;
+   const previewForCode=(code)=>{
+    const numeric=Number(code);
+    if(!Number.isFinite(numeric)) return 0;
+    return stepInputMax>255?Math.max(0,Math.min(255,Math.round(numeric*255/stepInputMax))):Math.max(0,Math.min(255,Math.round(numeric)));
+   };
    ordered.forEach(v=>{
 	    const entry=entryBySlot[v]||meterGreyNormalizeEntry(v,null);
 	    const ddcSlotLocked=lgSlotLocked&&METER_LG_GREY_DDC_SLOTS_22.some(slot=>Math.abs(slot-v)<0.001);
+	    const stepR=meterCodeFromSignalPercentWithOptions(entry.r,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc});
+	    const stepG=meterCodeFromSignalPercentWithOptions(entry.g,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc});
+	    const stepB=meterCodeFromSignalPercentWithOptions(entry.b,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc});
 		    const step={
 		     ire:v,
 		     stimulus:entry.stimulus,
 		     signal_r_pct:entry.r,
 		     signal_g_pct:entry.g,
      signal_b_pct:entry.b,
-	     r:meterCodeFromSignalPercentWithOptions(entry.r,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc}),
-		     g:meterCodeFromSignalPercentWithOptions(entry.g,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc}),
-		     b:meterCodeFromSignalPercentWithOptions(entry.b,{lgExtendedSdr:lgExtendedSdr,lgLegalSdrDdc:lgLegalSdrDdc}),
+	     r:stepR,
+		     g:stepG,
+		     b:stepB,
+		     preview_r:previewForCode(stepR),
+		     preview_g:previewForCode(stepG),
+		     preview_b:previewForCode(stepB),
+		     input_max:stepInputMax,
 		     name:meterFormatPercentValue(v)+'%',
 	     series_type:'greyscale',
 		     ddc_slot_locked:ddcSlotLocked
