@@ -847,6 +847,14 @@ sub model_from_readings {
  # is retained only for reporting and the post-cal series reads.
  my $target_gamma=dpg_calibration_gamma($config,$signal_mode,$signal_gamma);
  my $target_gamut=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
+ # The LG BT2020_3D_LUT operates on the BT.2020-decoded signal: we upload an
+ # IDENTITY 3x3 gamut matrix (lg_bt2020_identity_3x3_payload in pgenerator-lg),
+ # so the cube nodes ARE BT.2020 inputs and MUST be solved in the BT.2020
+ # container. Solving in P3 treated BT.2020 inputs as P3 and compressed
+ # P3-in-BT.2020 content (~72% of BT.2020) down into P3 -> ~Rec.709 sized
+ # (undersaturated, CalMAN-measured). P3 is the panel's achievable gamut and the
+ # series SCORING target -- NOT the cube's solve domain.
+ $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10");
  my %by;
  foreach my $entry (@{$readings}) {
   next if(ref($entry) ne "HASH");
