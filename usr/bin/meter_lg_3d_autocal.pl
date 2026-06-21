@@ -647,7 +647,10 @@ sub target_xyz_for_node {
  if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
   return interpolate_vec_by_level($model->{"white_axis"},$r*100);
  }
- return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$model->{"white_y"},$model->{"black"},$model->{"target_gamut"});
+ # Chromatic nodes reference the additive primary white (WRGB self-detection);
+ # see model_from_readings. Falls back to white_y on additive displays.
+ my $cw=$model->{"chromatic_white_y"} || $model->{"white_y"};
+ return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$cw,$model->{"black"},$model->{"target_gamut"});
 }
 
 sub srgb_to_linear {
@@ -657,19 +660,25 @@ sub srgb_to_linear {
 }
 
 sub post_check_target_xyz {
-	 my ($step,$white_y,$target_gamma,$black,$target_gamut)=@_;
+	 my ($step,$white_y,$target_gamma,$black,$target_gamut,$chromatic_white_y)=@_;
 	 $white_y=100 if(!defined($white_y) || $white_y <= 0);
+	 # Chromatic patches score against the additive primary white (WRGB
+	 # self-detection); neutral patches keep white_y. Mirrors target_xyz_for_node
+	 # so the post-check dE matches what the cube actually calibrated to.
+	 $chromatic_white_y=$white_y if(!defined($chromatic_white_y) || $chromatic_white_y <= 0);
+	 my $pick=sub { my ($r,$g,$b)=@_; return ($r==$g && $g==$b) ? $white_y : $chromatic_white_y; };
 	 $target_gamma||="bt1886";
 	 $target_gamut=sanitize_target_gamut($target_gamut);
 	 my $gamma=lc($target_gamma);
 	 my ($r,$g,$b)=(0,0,0);
 	 if($gamma eq "bt1886" && (defined($step->{"signal_r_pct"}) || defined($step->{"signal_g_pct"}) || defined($step->{"signal_b_pct"}))) {
-	  return target_rgb_to_xyz(($step->{"signal_r_pct"}||0)/100,($step->{"signal_g_pct"}||0)/100,($step->{"signal_b_pct"}||0)/100,$target_gamma,$white_y,$black,$target_gamut);
+	  my ($rr,$gg,$bb)=(($step->{"signal_r_pct"}||0)/100,($step->{"signal_g_pct"}||0)/100,($step->{"signal_b_pct"}||0)/100);
+	  return target_rgb_to_xyz($rr,$gg,$bb,$target_gamma,$pick->($rr,$gg,$bb),$black,$target_gamut);
 	 } elsif(defined($step->{"target_linear_r"}) && defined($step->{"target_linear_g"}) && defined($step->{"target_linear_b"})) {
 	  $r=clamp($step->{"target_linear_r"}+0,0,1);
 	  $g=clamp($step->{"target_linear_g"}+0,0,1);
 	  $b=clamp($step->{"target_linear_b"}+0,0,1);
-	  return rgb_to_xyz_for_gamut($target_gamut,$r,$g,$b,$white_y);
+	  return rgb_to_xyz_for_gamut($target_gamut,$r,$g,$b,$pick->($r,$g,$b));
 	 } elsif(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {
 	  my $color=lc($1);
 	  my $sat=clamp(($2+0)/100,0,1);
@@ -681,7 +690,7 @@ sub post_check_target_xyz {
 	  $g=($step->{"signal_g_pct"}||0)/100;
 	  $b=($step->{"signal_b_pct"}||0)/100;
 	 }
- return target_rgb_to_xyz($r,$g,$b,$target_gamma,$white_y,$black,$target_gamut);
+ return target_rgb_to_xyz($r,$g,$b,$target_gamma,$pick->($r,$g,$b),$black,$target_gamut);
 }
 
 sub lab_f {
@@ -931,6 +940,32 @@ sub model_from_readings {
  foreach my $kind (qw(red green blue)) {
   $peak_y{$kind}=($contrib{$kind}{100} && $contrib{$kind}{100}[1] > 0) ? $contrib{$kind}{100}[1] : 1;
  }
+ # Chromatic-node luminance reference (WRGB self-detection).
+ # A WRGB OLED forms white largely with a dedicated white sub-pixel, so the
+ # measured white (white_y) is brighter than the additive sum of the R+G+B
+ # primaries. Chromatic content is produced WITHOUT the white sub-pixel and can
+ # only reach that additive sum -- referencing chromatic-node targets to white_y
+ # therefore over-drives every sub-saturation node (measured ~1.785x over-target
+ # on the C2, the residual positive skew). Reference chromatic targets to the
+ # measured additive primary luminance instead. On an additive RGB display white
+ # == R+G+B, so add_y == white_y and this is a no-op: the WRGB correction is
+ # auto-detected per panel from its own profile, never hardcoded. The neutral
+ # axis keeps using white_y (grey IS made with the white sub-pixel).
+ my $add_y=0; my $have_primaries=1;
+ foreach my $kind (qw(red green blue)) {
+  my $py=($contrib{$kind}{100} && $contrib{$kind}{100}[1] > 0) ? $contrib{$kind}{100}[1] : 0;
+  $have_primaries=0 if($py <= 0);
+  $add_y+=$py;
+ }
+ my $chromatic_white_y=$white_y;
+ my $wrgb_white_ratio=1;
+ # Only correct when the additive sum is meaningfully below the measured white
+ # (a >2% gap distinguishes a real white sub-pixel from measurement noise on an
+ # additive panel where the two are nominally equal).
+ if($have_primaries && $add_y > 0 && $add_y < $white_y*0.98) {
+  $chromatic_white_y=$add_y;
+  $wrgb_white_ratio=$white_y/$add_y;
+ }
  my $neutral_neighborhood_identity=neutral_neighborhood_identity_enabled($config);
  return {
   method => $method,
@@ -943,6 +978,8 @@ sub model_from_readings {
   contrib => \%contrib,
   white_axis => \%white_axis,
   white_y => $white_y,
+  chromatic_white_y => $chromatic_white_y,
+  wrgb_white_ratio => $wrgb_white_ratio,
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
   drift => $drift,
@@ -1483,6 +1520,10 @@ eval {
  $state->{"target_gamut"}=$model->{"target_gamut"};
  $state->{"target_gamma"}=$model->{"signal_gamma"}||$model->{"target_gamma"};
  $state->{"lut_solve_gamma"}=$model->{"target_gamma"};
+ $state->{"white_y"}=$model->{"white_y"};
+ $state->{"chromatic_white_y"}=$model->{"chromatic_white_y"};
+ $state->{"wrgb_white_ratio"}=$model->{"wrgb_white_ratio"};
+ $state->{"wrgb_compensation_active"}=json_bool(($model->{"wrgb_white_ratio"}||1) > 1.0001);
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
  $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
@@ -1641,7 +1682,7 @@ eval {
    my $post_entry={ %{$reading}, name=>$step->{"name"} };
    eval {
    my $measured=reading_xyz($reading);
-   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709");
+   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709",$model->{"chromatic_white_y"});
    $post_entry->{"target_X"}=$target->[0];
    $post_entry->{"target_Y"}=$target->[1];
    $post_entry->{"target_Z"}=$target->[2];
