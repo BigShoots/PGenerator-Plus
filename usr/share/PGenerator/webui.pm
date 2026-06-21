@@ -2709,7 +2709,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # relative read undersaturated and DV absolute read oversaturated.
     # HDR10 likewise solves in the target gamut so wide-gamut patches are not
     # desaturated; only HLG stays anchored to the container here.
-    my $solve_key=($signal_mode eq "hlg") ? $container_key : $target_key;
+    # HDR10 also encodes in the BT.2020 CONTAINER (the wire colorimetry the TV
+    # is told): express the P3 target chromaticities as BT.2020 RGB so the TV
+    # decodes BT.2020 and the cube (also BT.2020) reproduces them. Solving in
+    # P3 emitted P3 RGB onto a BT.2020 wire -> wrong saturation. target_key
+    # stays the scoring/sweep gamut.
+    my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
     my @target_white=@{$primaries{$target_key}{WHITE}};
     @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
     my ($target_wx,$target_wy)=@target_white;
@@ -3000,7 +3005,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($target_wx,$target_wy)=@target_white;
   # DV and HDR10 saturation sweeps solve the emitted patch in the selected
   # target gamut; only HLG stays anchored to the BT.2020 container here.
-  my $solve_key=($signal_mode eq "hlg") ? $container_key : $target_key;
+  # HDR10 also encodes in the BT.2020 CONTAINER (the wire colorimetry the TV is
+  # told): express the P3 target chromaticities as BT.2020 RGB so the TV decodes
+  # BT.2020 and the cube (also BT.2020) reproduces them. Solving in P3 emitted
+  # P3 RGB onto a BT.2020 wire -> wrong saturation. target_key stays scoring.
+  my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
   @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
