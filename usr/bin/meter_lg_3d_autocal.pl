@@ -647,14 +647,7 @@ sub target_xyz_for_node {
  if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
   return interpolate_vec_by_level($model->{"white_axis"},$r*100);
  }
- # Chromatic nodes reference the RGB-ADDITIVE white (sum of measured R/G/B
- # primary luminances), NOT the WRGB peak white_y. The cube matrix is built
- # from the RGB primaries (sum ~400 nits) while white_y is the white-subpixel
- # peak (~710, ~1.77x); referencing colours to white_y over-drove every colour
- # ~1.6x too bright (CalMAN-confirmed). The neutral axis is handled above via
- # white_axis (keeps the WRGB white), so greyscale is unchanged.
- my $color_white_y=($model->{"color_white_y"} && $model->{"color_white_y"} > 0) ? $model->{"color_white_y"} : $model->{"white_y"};
- return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$color_white_y,$model->{"black"},$model->{"target_gamut"});
+ return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$model->{"white_y"},$model->{"black"},$model->{"target_gamut"});
 }
 
 sub srgb_to_linear {
@@ -938,15 +931,6 @@ sub model_from_readings {
  foreach my $kind (qw(red green blue)) {
   $peak_y{$kind}=($contrib{$kind}{100} && $contrib{$kind}{100}[1] > 0) ? $contrib{$kind}{100}[1] : 1;
  }
- # Additive RGB white = sum of the measured R/G/B primary luminances. On WRGB
- # OLED this is ~1/1.77 of white_y (the white-subpixel-boosted peak). Chromatic
- # cube nodes reference THIS (the colour subpixels' real additive capability)
- # rather than white_y, so the solver does not demand ~1.6x more colour
- # luminance than the panel can produce -- see target_xyz_for_node.
- my $color_white_y=0;
- foreach my $kind (qw(red green blue)) {
-  $color_white_y += ($contrib{$kind}{100} && $contrib{$kind}{100}[1] > 0) ? $contrib{$kind}{100}[1] : 0;
- }
  my $neutral_neighborhood_identity=neutral_neighborhood_identity_enabled($config);
  return {
   method => $method,
@@ -959,7 +943,6 @@ sub model_from_readings {
   contrib => \%contrib,
   white_axis => \%white_axis,
   white_y => $white_y,
-  color_white_y => $color_white_y,
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
   drift => $drift,
