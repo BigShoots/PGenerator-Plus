@@ -9934,7 +9934,11 @@ document.getElementById('signal_mode').addEventListener('change',function(){
  }else if(sm==='hdr10'){
   setVal('eotf','2');
   setVal('colorimetry',autoColorimetry);
-  setVal('primaries','1');
+  // HDR10 mastering-display primaries default to DCI-P3/D65: consumer HDR is
+  // mastered to P3 inside the BT.2020 container, so the HDR static metadata
+  // advertises P3 primaries while the AVI colorimetry stays BT.2020. Matches
+  // the LG AutoCal transport setup (meterSetLgAutoCalTransportValues).
+  setVal('primaries','2');
   setVal('max_bpc','10');
  }else if(sm==='hlg'){
   setVal('eotf','3');
