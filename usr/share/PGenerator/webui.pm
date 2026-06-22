@@ -13724,7 +13724,24 @@ function meterEncodeColorCheckerLinear(linear){
  const span=meterChromaPatchRangeSpan();
  let clamped=Math.max(0,Math.min(1,linear||0));
  if(meterChartIsDv()) clamped*=meterDvClassicColorCheckerScale();
- if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*100)*span);
+ // HDR PQ encode must use the same peak-luminance reference the server uses
+ // (cc_ref = max_luma in webui_meter_series_start, typically 1000). Previously
+ // hardcoded to *100 nits, which produced dimmer preview codes than the actual
+ // patch the panel displayed during the series run -- so the client-side
+ // meterSeriesSteps cache (used for thumbnail refresh, meterDisplayPatch, and
+ // meterFreshSeriesStep on single-reread of a thumbnail) ended up re-sending a
+ // different stimulus than the series, drifting the measured x/y and the
+ // chart dE. The active series peak comes from the server snapshot first
+ // (meterActiveSeriesMaxLuma, stamped when the series started) and falls
+ // back to meterChartHdrPeak() (config/live peak). Without an active series
+ // peak the fallback still uses 100 (the SDR-style assumption), matching the
+ // historical behavior for non-HDR builds.
+ if(meterChartIsPq()&&!meterChartIsDv()){
+  const active=(typeof meterActiveSeriesMaxLuma!=='undefined'&&Number(meterActiveSeriesMaxLuma)>0)?Number(meterActiveSeriesMaxLuma):0;
+  const peak=(active>0)?active:((typeof meterChartHdrPeak==='function')?meterChartHdrPeak():0);
+  const ref=(peak>0)?peak:100;
+  return Math.round(min+meterChartPqEncodeNormalized(clamped*ref)*span);
+ }
  if(meterChartIsDv()) return Math.round(min+Math.pow(clamped,1/2.2)*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
