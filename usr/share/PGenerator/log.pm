@@ -43,11 +43,11 @@ sub log (@) {
 }
 
 ###############################################
-#         Calman Patch Logger                 #
+#         Reference Patch Logger              #
 # Writes one structured line per patch the    #
-# Calman client pushes, regardless of $debug. #
-# Fields: ts, type, raw, scaled, win, bg,     #
-#         range, peer, extra                  #
+# reference client pushes, regardless of      #
+# $debug. Fields: ts, type, raw, scaled, win, #
+# bg, range, peer, extra                      #
 ###############################################
 sub log_calman_patch (@) {
  my %f=@_;
