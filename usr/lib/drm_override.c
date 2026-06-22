@@ -11,8 +11,8 @@
  * DRM_IOCTL_MODE_OBJ_SETPROPERTY calls to override values from
  * PGenerator.conf.
  *
- * NOTE ON CALMAN GCI:
- * daemon.pm gates the Calman GCI control plane's writes to
+ * NOTE ON THE REFERENCE GCI:
+ * daemon.pm gates the reference GCI control plane's writes to
  * PGenerator.conf (calman_save_setting / runtime range overrides
  * only allow primaries, eotf, and is_hdr on the GCI path). This
  * library is one-way: read the WebUI conf, enforce it on the wire.
@@ -349,14 +349,14 @@ static void read_config(void) {
         write_log(num);
         write_log("\n");
     }
-    /* Note: the Calman GCI control-plane gate is enforced upstream
+    /* Note: the reference GCI control-plane gate is enforced upstream
      * in daemon.pm (calman_save_setting, runtime range overrides).
      * drm_override is one-way: read the WebUI conf, enforce it on the
      * wire. It does not and should not read the calman_gci flag. The
      * renderer / TV receives the user's WebUI signal-mode values
      * (colorimetry mapped BT.2020 RGB -> BT.2020 YCC for YCbCr444
      * output, max_bpc promoted to 10 if conf says so, etc.) regardless
-     * of which Calman source is in use. See commit 91e43783 (gate
+     * of which reference source is in use. See commit 91e43783 (gate
      * was first added) and 63d72a63 (reverted here). */
 }
 

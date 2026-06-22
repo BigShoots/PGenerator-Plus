@@ -1,7 +1,7 @@
 #
 # PGenerator+ — Resolve Calibration XML Protocol (Client Mode)
 #
-# Connects outbound to calibration software (CalMAN, HCFR, DisplayCAL)
+# Connects outbound to calibration software (reference, HCFR, DisplayCAL)
 # that is listening on a TCP port (default 20002).
 #
 # Wire format: 4-byte big-endian length prefix + UTF-8 XML payload

@@ -2716,7 +2716,7 @@ sub lg_3d_lut_upload_workflow (@) {
   return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
  }
  # Disable gamma LUTs inside the active CAL_START on first entry, matching
- # the reference workflow capture (1D_2_2_EN=0, 1D_0_45_EN=0).
+ # Reference's relay capture (1D_2_2_EN=0, 1D_0_45_EN=0).
  if(!$calibration_mode_active) {
   foreach my $item (
    ["3d_lut_upload_disable_degamma","1D_2_2_EN",0],
@@ -3060,7 +3060,7 @@ sub lg_hdr_tone_map_upload_workflow (@) {
  my @tone_map=($peak,1000,70,4000,60,10000,50);
  my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
  # Both 1D_DPG_DATA (if supplied) and 1D_TONEMAP_PARAM must be uploaded
- # INSIDE a single CAL_START/CAL_END session, the same order the reference workflow uses.
+ # INSIDE a single CAL_START/CAL_END session, the same order the reference uses.
  # In the autocal commit path, the helper is called with the autocal-built
  # 1D DPG; uploading it here first means the tone-map roll-off binds
  # against the 1D DPG that the post-call PQ series read will measure.
@@ -3071,7 +3071,7 @@ sub lg_hdr_tone_map_upload_workflow (@) {
  # calibration_mode_active=true (and the 3D LUT upload used
  # keep_calibration_mode=true), so the CAL_START the greyscale stage
  # opened is still active. We skip our own CAL_START in that case but
- # ALWAYS send CAL_END -- the tone map is the LAST write the reference workflow does in
+ # ALWAYS send CAL_END -- the tone map is the LAST write the reference does in
  # its single CAL_START session.
  # `keep_calibration_mode` is accepted for API symmetry with the other
  # helpers but is intentionally ignored: the tone map is always the
@@ -3239,15 +3239,15 @@ sub lg_1d_dpg_upload_workflow (@) {
   return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
  }
  # Explicitly disable the 1D 2.2 degamma and 0.45 regamma LUTs inside the
- # active CAL_START session, exactly as the reference workflow does (reference workflow capture
- # calman-20260614-214545.jsonl lines 10/12: 1D_2_2_EN=0, 1D_0_45_EN=0).
- # the reference workflow sends these on EVERY cal session to guarantee the DPG operates in
+ # active CAL_START session, exactly as the reference does (reference relay capture
+ # dated 2026-06-14 lines 10/12: 1D_2_2_EN=0, 1D_0_45_EN=0).
+ # The reference sends these on EVERY cal session to guarantee the DPG operates in
  # code space regardless of prior panel state. Without them the panel may
  # carry gamma LUTs ON from a prior calibration, and the DPG would be applied
  # through the gamma chain instead of in raw code space -- producing the
  # PQ-vs-2.2 post-cal mismatch. Only send on the first upload (entering cal
  # mode); subsequent uploads within the same kept-on session inherit the
- # state. Note: the reference workflow does NOT send 1D_DPG_EN explicitly -- the 1D_DPG_DATA
+ # state. Note: the reference does NOT send 1D_DPG_EN explicitly -- the 1D_DPG_DATA
  # upload below implicitly enables the DPG.
  my @gamma_lut_responses;
  if(!$calibration_mode_active) {
@@ -3596,7 +3596,7 @@ sub lg_ddc_interpolated_offset_at_index (@) {
 # sit at meter-noise luma (<= 2 nits on the C2 in HDR Filmmaker). The
 # autocal's per-anchor response model has been observed to over-correct
 # here, pushing the LUT 50-150 % above identity and producing a +36 to
-# +64 % luma error post-cal. the reference workflow treats the low-IRE region the same
+# +64 % luma error post-cal. The reference treats the low-IRE region the same
 # way: trust the smooth PQ curve, distrust the noisy meter. This guard
 # mirrors lg_ddc_sdr26_top_continuity_guard_settings for the bottom end.
 sub lg_ddc_hdr20_low_continuity_guard_settings (@) {

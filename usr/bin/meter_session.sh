@@ -537,7 +537,7 @@ case "${METER_AVERAGING:-off}" in
  aaa)               AVG_FLAG="-Y aaa" ;;
  *)                 AVG_FLAG="" ;;
 esac
-# Calman-style low-light handler from the calibration card. Maps the
+# Reference-style low-light handler from the calibration card. Maps the
 # client-picked mode to the matching spotread flag set:
 #   off   = no flag (single long read, the project convention)
 #   a/aa/aaa = 2/3/5-read averaging (-Y a/-Y aa/-Y aaa)

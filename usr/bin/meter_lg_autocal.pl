@@ -12691,7 +12691,7 @@ sub lg_autocal_26_hdr20_dpg_gain {
 	   # further limits the per-iter move to ~1.25x, and the per-anchor
 	   # budget (default 6) limits the total accumulated gain. A previous
 	   # IRE-based freeze at IRE<5 (gain=1.0) was masking calibration errors
-	   # as a 'hardware floor' -- the reference workflow capture shows it
+	   # as a 'hardware floor' -- the reference relay capture shows it
 	   # calibrates 1.4-4% IREs normally, so the panel can reach 2.2 at
 	   # those codes when the DPG is allowed to adjust.
 	   $g=2.0 if($g+0 > 2.0);
@@ -13226,7 +13226,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	} else {
 		# Full autocal only: upload identity BT2020 gamut + identity 3D LUT
 		# BEFORE the DPG loop, inside the same CAL_START session. The 3D LUT
-		# is the container the DPG binds into. reference workflow capture lines
+		# is the container the DPG binds into. Reference relay capture lines
 		# 50-52 show this order. The subsequent 3D LUT stage replaces the
 		# identity with the calibrated version. Greyscale-only skips this.
 		if(ref($config) eq "HASH" && $config->{"full_workflow"}) {
@@ -13540,7 +13540,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the SAME way for every anchor including 100% (where the target is
 			# white_ref, i.e. target_Yn=1.0). Luminance is reached purely by RGB
 			# scaling (the gain below) -- there is NO separate luminance setting.
-			# This matches CalMAN: it moves all three DPG channels together to
+			# This matches the reference: it moves all three DPG channels together to
 			# change luminance and their ratio to correct white balance, and
 			# judges convergence on dE ITP WITH luminance.
 			# 100% white is the PEAK REFERENCE: its target Y is its OWN current
