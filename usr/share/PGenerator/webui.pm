@@ -2901,36 +2901,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my $g=$encode_linear->($gl);
       my $b=$encode_linear->($bl);
       my $ire=int($Yn*100 + .5);
-      # The chart compares measured against the chromaticity the panel
-      # ACTUALLY reproduces. Patches are solved in $solve_key (BT.2020
-      # container for HDR10) and the wire is BT.2020 colorimetry. The panel's
-      # reproducer gamut is $target_key (P3-D65 by default). To get the
-      # chromaticity the panel emits, express the solved linear RGB values
-      # through $target_key's RGB_TO_XYZ instead of BT.2020's. For
-      # $target_key == bt2020 the conversion is identity (chart target ==
-      # spec); for P3 the chart target shifts to match the panel's P3
-      # primaries (mirrors what meterSaturationTargetXYZ already does for
-      # the 100% primaries on the same chart).
       my ($chart_tx,$chart_ty)=($target_x,$target_y);
-      # The chart compares measured against the chromaticity the panel ACTUALLY
-      # reproduces. The ColorChecker source chromaticities are BT.2020 spec
-      # values; the panel renders BT.2020 transport through its own primaries
-      # (close to P3-D65 on the LG C2 with autocal). When target_gamut=p3,
-      # express the solved linear RGB values through P3's RGB_TO_XYZ to get
-      # the panel-reproducer chromaticity (mirrors how the 100% primaries
-      # already work via meterSaturationTargetXYZ). For target_gamut=bt2020
-      # the conversion is identity (chart target stays at spec).
-      if($target_key ne "bt2020"){
-       my $tg_rgb_to_xyz=$primaries{$target_key}{RGB_TO_XYZ};
-       my $cx=$tg_rgb_to_xyz->[0][0]*$rl+$tg_rgb_to_xyz->[0][1]*$gl+$tg_rgb_to_xyz->[0][2]*$bl;
-       my $cy=$tg_rgb_to_xyz->[1][0]*$rl+$tg_rgb_to_xyz->[1][1]*$gl+$tg_rgb_to_xyz->[1][2]*$bl;
-       my $cz=$tg_rgb_to_xyz->[2][0]*$rl+$tg_rgb_to_xyz->[2][1]*$gl+$tg_rgb_to_xyz->[2][2]*$bl;
-       my $sum=$cx+$cy+$cz;
-       if($sum>0 && $cy>0){
-        $chart_tx=$cx/$sum;
-        $chart_ty=$cy/$sum;
-       }
-      }
         my $target_Yn_for_step=$Yn;
        if($signal_mode eq "dv" && $span_code>0) {
         my $r_norm=($r-$min_code)/$span_code;
