@@ -7945,12 +7945,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
-#meterSettingsGrid .meter-target-grid{flex:1 1 100%;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;align-items:start}
-#meterSettingsGrid .meter-target-grid .field{width:auto;min-width:0}
-#meterSettingsGrid .meter-target-grid .field-gamut,
-#meterSettingsGrid .meter-target-grid .field-gamma{grid-column:auto}
-#meterSettingsGrid .meter-target-grid .field-target-white,
-#meterSettingsGrid .meter-target-grid .field-target-black{grid-column:auto}
+#meterSettingsGrid .field-target-row{flex:1 1 100%;display:flex;gap:10px 12px;align-items:flex-start;flex-wrap:wrap}
+#meterSettingsGrid .field-target-row .field{flex:1 1 200px;min-width:180px}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
 #meterSettingsGrid .field-patch{width:150px}
@@ -8539,7 +8535,30 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
     </div>
    </div>
-	   <div class="field field-delay">
+   <div class="field field-gamut">
+    <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
+    <select id="meterTargetGamut">
+     <option value="auto">Auto (match signal)</option>
+     <option value="bt709" selected>BT.709</option>
+     <option value="bt2020">BT.2020</option>
+     <option value="p3d65">DCI-P3 / D65</option>
+      <option value="p3dci">DCI-P3 / DCI</option>
+    </select>
+   <div class="meter-matrix-field" style="display:none">
+       <input type="file" id="meterXyzMatrixImportInput" accept=".json,.txt" style="display:none">
+   </div>
+   </div>
+  <div class="field field-gamma">
+    <label>Target Gamma</label>
+    <select id="meterTargetGamma" onchange="meterOnGreyRefChange()">
+     <option value="bt1886">BT.1886 (2.4)</option>
+     <option value="2.2">Gamma 2.2</option>
+     <option value="2.4">Gamma 2.4</option>
+       <option value="st2084">ST 2084</option>
+     <option value="srgb">sRGB</option>
+     </select>
+    </div>
+  	   <div class="field field-delay">
 	    <label>Pattern Delay</label>
 	    <div class="meter-inline-value">
 	     <input id="meterPatternDelay" type="text" value="0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied after each pattern is displayed and before meter delay" aria-label="Pattern Delay in seconds" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,0))">
@@ -8571,30 +8590,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
     </label>
    </div>
-    <div class="meter-target-grid">
-   <div class="field field-gamut">
-    <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
-    <select id="meterTargetGamut">
-     <option value="auto">Auto (match signal)</option>
-     <option value="bt709" selected>BT.709</option>
-     <option value="bt2020">BT.2020</option>
-     <option value="p3d65">DCI-P3 / D65</option>
-      <option value="p3dci">DCI-P3 / DCI</option>
-    </select>
-   <div class="meter-matrix-field" style="display:none">
-       <input type="file" id="meterXyzMatrixImportInput" accept=".json,.txt" style="display:none">
-   </div>
-   </div>
-  <div class="field field-gamma">
-    <label>Target Gamma</label>
-    <select id="meterTargetGamma" onchange="meterOnGreyRefChange()">
-     <option value="bt1886">BT.1886 (2.4)</option>
-     <option value="2.2">Gamma 2.2</option>
-     <option value="2.4">Gamma 2.4</option>
-       <option value="st2084">ST 2084</option>
-     <option value="srgb">sRGB</option>
-     </select>
-    </div>
+   <div class="field-target-row">
    <div class="field field-target-white">
     <label>Target White <span class="meter-help-tip" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Check 'Use measured' to follow the latest 100% white reading; uncheck and enter a value to force that reference for all read targets (charts, series, and autocal)." aria-label="Target white help">?</span></label>
     <div class="meter-inline-value">
