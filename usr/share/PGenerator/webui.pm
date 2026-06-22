@@ -7945,6 +7945,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
+#meterSettingsGrid .field-target-white{width:200px}
+#meterSettingsGrid .field-target-black{width:200px}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
 #meterSettingsGrid .field-patch{width:150px}
@@ -8127,6 +8129,8 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterSettingsGrid .field-display,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamut,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamma,
+#meterCard.meter-patterns-only #meterSettingsGrid .field-target-white,
+#meterCard.meter-patterns-only #meterSettingsGrid .field-target-black,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-hdr,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-delay,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-refresh{display:none !important}
