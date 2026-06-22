@@ -13537,6 +13537,34 @@ function meterWrgbChromaticReferenceNits(){
  return null;
 }
 
+// Target luminance derived from the patch STIMULUS rather than a measured
+// reference (additive primary sum / measured white). On a WRGB OLED the panel
+// tracks the PQ signal for sub-peak content (reflectance, mid-grey, and
+// sub-saturation chromatic patches), so the correct, panel-independent target
+// is the absolute luminance the patch SIGNAL encodes: PQ-decode each channel
+// code and form XYZ in the analysis gamut (targetColorXYZAbs already does
+// exactly this for PQ). Returns the decoded target Y (cd/m^2), or null when not
+// applicable (non-PQ signal, or the stimulus codes cannot be resolved). The
+// caller excludes full-saturation primaries/secondaries and clamps greys to
+// measured white, both of which roll off below the PQ-encoded value.
+function meterWrgbStimulusTargetY(reading){
+ if(!reading||!meterChartIsPq()) return null;
+ let r=(reading.r_code!=null)?reading.r_code:reading.r;
+ let g=(reading.g_code!=null)?reading.g_code:reading.g;
+ let b=(reading.b_code!=null)?reading.b_code:reading.b;
+ if((r==null||g==null||b==null) && typeof meterCanonicalSeriesStep==='function'){
+  const st=meterCanonicalSeriesStep(reading);
+  if(st){
+   if(r==null) r=(st.r_code!=null)?st.r_code:st.r;
+   if(g==null) g=(st.g_code!=null)?st.g_code:st.g;
+   if(b==null) b=(st.b_code!=null)?st.b_code:st.b;
+  }
+ }
+ if(r==null||g==null||b==null) return null;
+ const xyz=targetColorXYZAbs(r,g,b);
+ return (xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)?xyz.Y:null;
+}
+
 function meterBlackReadingY(){
  return meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]);
 }
@@ -13982,20 +14010,42 @@ function meterTargetXYZForReading(reading){
  }
  if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   let refY=meterColorSeriesReferenceNits();
+  let _wrgbStimY=null;
   const _activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
-  // WRGB OLED: chromatic content can only reach the additive R+G+B sum, so
-  // reference it (meterWrgbChromaticReferenceNits) instead of measured white
-  // when a white subpixel is auto-detected. Neutral/grey stays on white.
-  if(_activeColorSeries && meterChartIsHdr() && !meterReadingIsGreyscale(reading)){
-   const _wrgbRef=meterWrgbChromaticReferenceNits();
-   if(_wrgbRef>0) refY=_wrgbRef;
+  const _greyReading=meterReadingIsGreyscale(reading);
+  // WRGB OLED chromatic luminance. A white-subpixel panel's additive R+G+B sum
+  // is far below its measured white, so referencing chromatic targets to that
+  // sum (meterWrgbChromaticReferenceNits) is only correct at FULL saturation,
+  // where the panel rolls off to the achievable primary sum. Reflectance /
+  // sub-saturation / mid-grey patches stay within the panel's capability and
+  // TRACK the PQ signal, so on a PQ panel their luminance target is the absolute
+  // value the STIMULUS encodes (meterWrgbStimulusTargetY) -- chromaticity stays
+  // on target_x/target_y, only luminance comes from the decoded signal. Full-sat
+  // primaries/secondaries keep the additive reference; greys clamp to measured
+  // white because the peak-white patch (code 235) rolls off below PQ peak.
+  if(_activeColorSeries && meterChartIsHdr() && meterWrgbChromaticReferenceNits()>0){
+   const _fullSat=(reading.series_color!=null && Number(reading.sat_pct)>=99.5);
+   if(!_greyReading){
+    const _wrgbRef=meterWrgbChromaticReferenceNits();
+    if(_wrgbRef>0) refY=_wrgbRef;
+   }
+   if(meterChartIsPq() && !_fullSat){
+    let _sy=meterWrgbStimulusTargetY(reading);
+    if(_sy!=null){
+     if(_greyReading){
+      const _gw=meterColorSeriesReferenceNits();
+      if(_gw>0) _sy=Math.min(_sy,_gw);
+     }
+     _wrgbStimY=_sy;
+    }
+   }
   }
   // HDR10 color/sat series carry PQ-absolute target_Yn (normalized to the
   // 10000-nit peak), so colored patches reference the PQ peak. The neutral
   // WHITE reference patch (target_Yn=1) must instead reference the display's
   // achieved white; otherwise the panel's normal peak rolloff reads as a
   // spurious white luminance error.
-  if(_activeColorSeries&&meterActiveChartSignalMode()==='hdr10'&&meterReadingIsGreyscale(reading)){
+  if(_activeColorSeries&&meterActiveChartSignalMode()==='hdr10'&&_greyReading){
    const _whiteRef=meterFindMeasuredWhiteReading();
    const _whiteRefY=meterReadingLuminanceNits(_whiteRef);
    if(_whiteRefY>0) refY=_whiteRefY;
@@ -14037,11 +14087,11 @@ function meterTargetXYZForReading(reading){
    const cs=clipped.X+clipped.Y+clipped.Z;
    if(cs>0&&clipped.Y>0){
     const cx=clipped.X/cs,cy=clipped.Y/cs;
-    const Y=greyTargetY!=null?greyTargetY:tYn*refY;
+    const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:tYn*refY);
     return {X:(cx/cy)*Y,Y:Y,Z:((1-cx-cy)/cy)*Y};
    }
   }
-	  const Y=greyTargetY!=null?greyTargetY:tYn*refY;
+	  const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:tYn*refY);
 	  return {X:(tx/ty)*Y,Y:Y,Z:((1-tx-ty)/ty)*Y};
 	 }
 	 if(meterActiveSeriesType==='colors' && reading.series_color && reading.sat_pct!=null){
