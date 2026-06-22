@@ -7945,9 +7945,12 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
-#meterSettingsGrid .field-target-levels{flex:1 1 100%;display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-start}
-#meterSettingsGrid .field-target-white{width:200px}
-#meterSettingsGrid .field-target-black{width:200px}
+#meterSettingsGrid .meter-target-grid{flex:1 1 100%;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;align-items:start}
+#meterSettingsGrid .meter-target-grid .field{width:auto;min-width:0}
+#meterSettingsGrid .meter-target-grid .field-gamut,
+#meterSettingsGrid .meter-target-grid .field-gamma{grid-column:auto}
+#meterSettingsGrid .meter-target-grid .field-target-white,
+#meterSettingsGrid .meter-target-grid .field-target-black{grid-column:auto}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
 #meterSettingsGrid .field-patch{width:150px}
@@ -8536,7 +8539,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
     </div>
    </div>
-  <div class="field field-gamut">
+   <div class="meter-target-grid">
+   <div class="field field-gamut">
     <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
      <option value="auto">Auto (match signal)</option>
@@ -8559,7 +8563,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="srgb">sRGB</option>
      </select>
     </div>
-   <div class="field-target-levels">
    <div class="field field-target-white">
     <label>Target White <span class="meter-help-tip" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Check 'Use measured' to follow the latest 100% white reading; uncheck and enter a value to force that reference for all read targets (charts, series, and autocal)." aria-label="Target white help">?</span></label>
     <div class="meter-inline-value">
@@ -8579,7 +8582,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     </div>
    </div>
    </div>
- 	   <div class="field field-delay">
+  	   <div class="field field-delay">
 	    <label>Meter Delay</label>
 	    <div class="meter-inline-value">
 	     <input id="meterDelay" type="text" value="1.0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied before each meter reading" aria-label="Meter Delay in seconds" oninput="meterDelaySyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,1.0))">
