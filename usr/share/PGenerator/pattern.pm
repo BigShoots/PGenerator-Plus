@@ -93,7 +93,7 @@ sub create_pattern_file (@) {
  my $new_rgb="";
  my $pattern_string="";
  return if($#el_rgb != 2);
- # HCFR, DeviceControl Simple Template,Calman
+ # HCFR, DeviceControl Simple Template,reference flow
  if($simple) {
   ($draw_type,$bits)=$draw=~/([A-Z]+)(\d+)bit/;
   $draw=$draw_type             if($draw_type ne "");
@@ -342,7 +342,7 @@ sub load_new_pattern_file (@) {
  # drmSetMaster, so the renderer exits immediately). Retry up to
  # three more times with increasing delays so the next pattern
  # request doesn't silently fail to appear on the TV. This covers
- # the Calman GCI flow where a CONF_HDR / apply sequence followed
+ # the reference GCI flow where a CONF_HDR / apply sequence followed
  # by a SPECIALTY pattern hits the race repeatedly. Each retry
  # also calls pattern_generator_stop first to clear any stale
  # DRM-master holder before re-starting. We also wait briefly

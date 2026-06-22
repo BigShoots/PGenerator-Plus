@@ -9668,7 +9668,7 @@ async function syncRemoteConfig(){
   const remoteSnapshot=JSON.stringify(remoteConfig);
   if(!window._remoteConfigSnapshot||remoteSnapshot!==window._remoteConfigSnapshot){
    applyConfigState(remoteConfig);
-   // When the config changes (e.g. the reference workflow switches signal mode,
+   // When the config changes (e.g. reference switches signal mode,
    // resolution, or color format), also refresh /api/info so the
    // info-grid resolution display updates within the same poll
    // cycle. Without this the resolution field would only refresh
@@ -14961,7 +14961,7 @@ function targetEotf(v,Lw,Lb){
   const ire=Math.max(0,Math.min(1,Number(v)||0))*100;
   return meterDvAbsoluteChartTargetLuminance(ire,peak);
  }
- // Normal HDR10 analysis is PQ. During LG HDR calibration mode, CalMAN-style
+ // Normal HDR10 analysis is PQ. During LG HDR calibration mode, reference-style
  // 1D LUT greyscale adjustment uses a power-gamma workspace; keep that local
  // to the live AutoCal charts so post-cal series reads remain PQ.
  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr();
@@ -22060,8 +22060,8 @@ async function meterAutoCalResetDdc(){
  // whiteBalance, ...) that webOS rejects outright on HDR picture modes
  // (per the helper's own hdr_picture_mode detection in pgenerator-lg,
  // see lg_picture_reset_workflow) and then falls through to the HDR
- // the reference workflow reset. That wastes 1-3s of helper round-trips per attempt
- // and races the first 0% meter read. The HDR the reference workflow reset alone
+ // reference reset. That wastes 1-3s of helper round-trips per attempt
+ // and races the first 0% meter read. The HDR reference reset alone
  // covers everything needed for HDR -- if the series is hdr10 we
  // do not bother with the SDR-style reset at all.
  if(!hdrWorkflow){
@@ -22099,12 +22099,12 @@ async function meterAutoCalResetDdc(){
  let response=null;
  let lastMessage='Unable to clear LG picture mode calibration state.';
  // For HDR the /api/lg/picture-settings/set 1D DPG reset is a duplicate
- // of what the HDR the reference workflow reset above already did (lg_hdr_calman_reset_
+ // of what the HDR reference reset above already did (lg_hdr_calman_reset_
  // workflow sends 1D_DPG_DATA inside the same CAL_START/END session as
  // the 3D LUT and 3x3 matrix reset). Re-running it on HDR would issue
  // a duplicate CAL_START/1D_DPG_DATA upload/CAL_END cycle and race the
  // first 0% meter read. Build the response synthetically from the
- // HDR the reference workflow reset's confirmation flags instead.
+ // HDR reference reset's confirmation flags instead.
  if(hdrWorkflow){
   response={
    status:'ok',
@@ -25528,7 +25528,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
    preflight_lg_generation:skipPreprofileUnityReset&&preflightLut3d.lg_generation?preflightLut3d.lg_generation:undefined,
    // Full autocal only: pass the greyscale stage's measured peak luminance
    // and DPG array through to the 3D worker so it can upload the HDR
-   // tone map inside the same CAL_START as the 3D LUT. the reference workflow's relay
+   // tone map inside the same CAL_START as the 3D LUT. The reference's relay
    // capture uploads the tone map LAST in the same CAL_START session;
    // the 3D worker inherits the greyscale's CAL_START, uploads its 3D
    // LUT (which resends gamut + 3D LUT, rebinding the DPG), then uploads
