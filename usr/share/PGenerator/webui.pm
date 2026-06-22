@@ -7945,6 +7945,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
+#meterSettingsGrid .field-target-levels{flex:1 1 100%;display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-start}
 #meterSettingsGrid .field-target-white{width:200px}
 #meterSettingsGrid .field-target-black{width:200px}
 #meterSettingsGrid .field-hdr{width:auto}
@@ -8558,6 +8559,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <option value="srgb">sRGB</option>
      </select>
     </div>
+   <div class="field-target-levels">
    <div class="field field-target-white">
     <label>Target White <span class="meter-help-tip" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Check 'Use measured' to follow the latest 100% white reading; uncheck and enter a value to force that reference for all read targets (charts, series, and autocal)." aria-label="Target white help">?</span></label>
     <div class="meter-inline-value">
@@ -8575,6 +8577,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
      <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
     </div>
+   </div>
    </div>
  	   <div class="field field-delay">
 	    <label>Meter Delay</label>
