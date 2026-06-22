@@ -9049,9 +9049,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <table id="colorReadingsTable" style="width:100%;border-collapse:collapse;font-size:11px;color:#ccc;white-space:nowrap">
        <thead><tr style="border-bottom:1px solid #333;color:#888;text-align:right">
         <th style="text-align:left;padding:6px 8px">Color</th>
-        <th style="padding:6px 6px">Tgt x</th><th style="padding:6px 6px">Tgt y</th>
-        <th style="padding:6px 6px">x</th><th style="padding:6px 6px">y</th>
-        <th style="padding:6px 6px">Y cd/m&sup2;</th>
+        <th style="padding:6px 6px">Tgt x</th><th style="padding:6px 6px">x</th>
+        <th style="padding:6px 6px">Tgt y</th><th style="padding:6px 6px">y</th>
+        <th style="padding:6px 6px">Tgt Y</th><th style="padding:6px 6px">Y cd/m&sup2;</th>
         <th style="padding:6px 6px">&Delta;x</th><th style="padding:6px 6px">&Delta;y</th>
         <th style="padding:6px 6px">&Delta;E 2000</th>
        </tr></thead>
@@ -27962,9 +27962,10 @@ function drawColorReadingsTable(readings){
   html+='<tr data-name=\"'+(rd.name||'').replace(/"/g,'&quot;')+'\" style=\"border-bottom:1px solid #1a1a28;cursor:pointer\" onclick=\"colorTableRowClick(this)\">';
   html+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+pc+';vertical-align:middle;margin-right:5px"></span>'+(rd.name||'')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.x.toFixed(4):'--')+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.y.toFixed(4):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.x.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.y.toFixed(4):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.y.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:#888">'+((targetXYZ&&targetXYZ.Y>0)?targetXYZ.Y.toFixed(1):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right">'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td>';
@@ -27975,7 +27976,7 @@ function drawColorReadingsTable(readings){
   const avg=deSum/deCount;
   const avgCol=avg<1?'#4caf50':avg<3?'#ff9800':'#f44';
   html+='<tr style="border-top:2px solid #333;font-weight:600">';
-  html+='<td style="padding:5px 8px;text-align:left;color:#aaa" colspan="8">Average</td>';
+  html+='<td style="padding:5px 8px;text-align:left;color:#aaa" colspan="9">Average</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:'+avgCol+'">'+avg.toFixed(2)+'</td>';
   html+='</tr>';
  }
