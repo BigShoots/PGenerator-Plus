@@ -18126,12 +18126,12 @@ function meterSetTargetLevelsStateOnly(){
  if(bUm.checked){ black.removeAttribute('placeholder'); }
  else { black.setAttribute('placeholder','auto'); }
 }
-// Determine whether the selected display type is OLED-class (defaults
-// Target Black = 0 instead of measured). Covers the generic OLED options
-// and any display-specific CCSS whose technology resolves to OLED.
+// Determine whether the selected display type is self-emissive (defaults
+// Target Black = 0 instead of measured). Covers OLED, QD-OLED, Plasma and
+// CRT, plus any display-specific CCSS whose technology resolves to OLED.
 function meterDisplayTypeIsOledClass(value){
  const v=String(value||((document.getElementById('meterDisplayType')||{}).value)||'').toLowerCase();
- if(v.indexOf('oled')!==-1||v==='qdoled') return true;
+ if(v.indexOf('oled')!==-1||v==='qdoled'||v==='plasma'||v==='crt') return true;
  if(v.startsWith('ccss_')||v.startsWith('custom_')){
   try{
    const meta=(typeof meterDisplayTypeMetaText==='function')?meterDisplayTypeMetaText(v):'';
@@ -18155,7 +18155,7 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
  if(forceAll||!wOver){
   wUm.checked=true; if(white) white.value='';
  }
- // Target Black: OLED-class -> 0 (manual), else measured.
+ // Target Black: self-emissive -> 0 (manual), else measured.
  if(forceAll||!bOver){
   if(oled){
    bUm.checked=false; if(black) black.value='0';
@@ -18175,7 +18175,7 @@ function meterTargetWhiteLevel(){
 function meterTargetBlackLevel(){
  const s=meterReadTargetLevelsState();
  if(s){
-  // OLED-class with no saved override defaults black to 0.
+  // Self-emissive with no saved override defaults black to 0.
   if(!s.black.overridden&&meterDisplayTypeIsOledClass()) return {useMeasured:false,value:0};
   return {useMeasured:!!s.black.useMeasured,value:s.black.value};
  }
