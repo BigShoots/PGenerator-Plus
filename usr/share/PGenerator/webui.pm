@@ -12501,7 +12501,17 @@ function meterNormalizeMeasuredReading(reading){
  reading.X=corrected.X;
  reading.Y=corrected.Y;
  reading.Z=corrected.Z;
- if(enabled&&(reading.luminance!=null||reading.raw_luminance!=null)) reading.luminance=corrected.Y;
+ // Luminance is the same physical quantity as CIE Y (cd/m^2). Always mirror
+ // the corrected Y into reading.luminance so downstream predicates
+ // (isWhiteReading / isSeriesWhite) and chart references see the same value
+ // whether or not the XYZ correction matrix is enabled and regardless of
+ // whether the raw read populated a `luminance` field. Previously gated on
+ // `enabled && (luminance!=null || raw_luminance!=null)`, which left
+ // reading.luminance at 0 for color/sat series reads when the matrix was off
+ // and the raw field was missing -- causing the ColorChecker / Sat Sweep
+ // white-reference lookup to reject the measured White patch and fall through
+ // to the 100-nit SDR default (massive dE for every color patch).
+ reading.luminance=corrected.Y;
  const sum=corrected.X+corrected.Y+corrected.Z;
  if(sum>0){
   reading.x=corrected.X/sum;
@@ -13175,7 +13185,7 @@ function meterFindMeasuredWhiteReading(){
   // implausibly high white luminance snapshots that are almost certainly
   // stale HDR/DV references.
   if(currentMode==='sdr'){
-   const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
+   const lum=((rd.luminance!=null && rd.luminance>0)?rd.luminance:rd.Y);
    if(lum>300) return false;
   }
   return true;
@@ -13186,7 +13196,7 @@ function meterFindMeasuredWhiteReading(){
   if(lgAutoCalChartRef&&meterReadingDisablesAutoCalTargetReference(rd)) return false;
   if(activeLgAutoCal&&meterReadingIsAutoCalReferenceOnly(rd)) return false;
   if(!readingMatchesMode(rd)) return false;
-  const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
+  const lum=((rd.luminance!=null && rd.luminance>0)?rd.luminance:rd.Y);
   if(!(lum>0)) return false;
   const name=String(rd.name||'').toLowerCase();
   const r=(rd.r_code!=null)?rd.r_code:rd.r;
@@ -13461,7 +13471,7 @@ function meterColorSeriesReferenceNits(){
  if(explicitLgTarget>0) return Math.max(1,explicitLgTarget);
  const isSeriesWhite=(rd)=>{
   if(!rd) return false;
-  const lum=(rd.luminance!=null)?rd.luminance:rd.Y;
+  const lum=((rd.luminance!=null && rd.luminance>0)?rd.luminance:rd.Y);
   if(!(lum>0)) return false;
   const name=String(rd.name||'').toLowerCase();
   const r=(rd.r_code!=null)?rd.r_code:rd.r;
@@ -13477,7 +13487,7 @@ function meterColorSeriesReferenceNits(){
   (Array.isArray(meterReadings)?meterReadings.find(isSeriesWhite):null) ||
   meterFindMeasuredWhiteReading();
  if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
-  const measured=(white.luminance!=null)?white.luminance:white.Y;
+  const measured=(white.luminance!=null && white.luminance>0)?white.luminance:white.Y;
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
   // Both the ColorChecker ("colors") and the saturation SWEEP now bake RELATIVE
   // target_Yn referenced to measured white: ColorChecker = reflectance/Yn; the
@@ -13485,7 +13495,12 @@ function meterColorSeriesReferenceNits(){
   // target_Yn*measured = the patch's reachable (sub-peak, 50%-level) absolute
   // luminance, and the sweep's white patch (target_Yn=1) lands on the measured
   // peak instead of 10000. So both reference measured white. SDR/HLG always were.
-  return Math.max(1,measured);
+  // Return the measured value directly (no Math.max(1, ...) clamp) so a dim
+  // measured white (e.g. 0.59 nits from a real read) anchors the target
+  // curve honestly. The previous clamp forced 0.59 -> 1, which silently
+  // mis-targeted every color patch. Operators who want a mastering-100
+  // reference for a dim read can set Target White = 100 (calibration card).
+  return measured;
  }
  const lgTarget=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType);
  if(lgTarget>0) return Math.max(1,lgTarget);
@@ -15181,7 +15196,7 @@ function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
  const allowHeadroomPeak=meterReadingsUseLgHeadroomReference(list)&&!meterLgAutoCal26SeriesReadUsesInitialWhite(list);
  const hasMeasuredWhite=referenceList.some(rd=>{
   if(!rd || rd.synthetic_target) return false;
-  const y=Number((rd.luminance!=null)?rd.luminance:rd.Y);
+  const y=Number(((rd.luminance!=null && rd.luminance>0)?rd.luminance:rd.Y));
   if(!(y>0)) return false;
   const raw=(rd.ire!=null)?rd.ire:(rd.plot_ire!=null?rd.plot_ire:rd.stimulus);
   const name=String(rd.name||'').toLowerCase();
