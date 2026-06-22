@@ -12247,21 +12247,61 @@ sub commit_final_1d_lut {
 	   write_state($state);
 	   return ($picture,undef,1);
 	  }
-	  # Greyscale-only: queue tone map + CAL_END as before.
+	  # Greyscale-only: the convergence loop uploaded the converged 1D DPG
+	  # many times across many helper invocations (= many websockets) with
+	  # keep_calibration_mode=1, so each helper call skipped its own
+	  # CAL_END and the held CAL_START lived only on that upload's socket.
+	  # The held-session end_calibration_mode below would land CAL_END on
+	  # a DIFFERENT socket from the original CAL_START -- the LG TV only
+	  # commits a calibration to the picture-mode profile when CAL_START
+	  # and CAL_END share ONE continuous websocket, so the held-session
+	  # CAL_END does NOT bind and the panel reverts to a stale prior DPG
+	  # curve after CAL_END (proven on 2026-06-21: post-CAL_END Y(30/50/70)
+	  # = 2.74/25.11/154.59 cd/m^2 vs in-session 13.52/40.99/85.53).
+	  #
+	  # To make the converged DPG persist, do ONE final single-socket commit
+	  # here: open a new helper invocation with keep_calibration_mode=0 AND
+	  # calibration_mode_active=0 so the helper sends CAL_START, the gamma
+	  # LUT disables, 1D_DPG_DATA, and CAL_END all on its own socket. The
+	  # TV binds the DPG to the picture-mode profile on that socket's
+	  # CAL_END.
+	  #
+	  # GATED to greyscale-only: the full_workflow branch above holds
+	  # calibration mode for the 3D LUT stage, so closing it here would
+	  # break that handoff (the 3D LUT stage needs the held CAL_START).
 	  my $tm_white_y=(defined($state->{"hdr20_1d_dpg_white_ref"}) && $state->{"hdr20_1d_dpg_white_ref"}+0 > 0)
 	   ? $state->{"hdr20_1d_dpg_white_ref"}+0
 	   : $white_y;
+	  my $single_socket_committed=0;
+	  if(defined(&lg_autocal_26_commit_hdr20_1d_dpg_single_socket)) {
+	   $single_socket_committed=lg_autocal_26_commit_hdr20_1d_dpg_single_socket($config,$state,$picture_mode);
+	  }
 	  lg_autocal_26_queue_hdr20_1d_tonemap_upload($config,$state,$picture_mode,$tm_white_y)
 	   if(defined(&lg_autocal_26_queue_hdr20_1d_tonemap_upload));
-	  end_calibration_mode($picture_mode);
-	  set_state_calibration_mode($state,0,"");
+	  if($single_socket_committed) {
+	   # The single-socket helper already sent CAL_END on its own
+	   # websocket, so a separate end_calibration_mode would land
+	   # CAL_END on a DIFFERENT socket and (per the same-socket commit
+	   # rule) be ignored or split a different held session. Skip the
+	   # held-session cleanup.
+	   set_state_calibration_mode($state,0,"");
+	  } else {
+	   # Single-socket commit failed: fall back to the held-session
+	   # CAL_END (same behavior as before this fix) so the autocal still
+	   # ends cal mode on the TV even if the DPG does not persist.
+	   end_calibration_mode($picture_mode);
+	   set_state_calibration_mode($state,0,"");
+	  }
 	  $state->{"final_1d_lut_uploaded"}=JSON::PP::true;
 	  $state->{"final_1d_lut_upload_verified"}=JSON::PP::true;
 	  $state->{"final_1d_lut_skipped"}=JSON::PP::false;
 	  $state->{"calibration_mode"}=JSON::PP::false;
+	  my $commit_msg=$single_socket_committed
+	   ? "HDR20 1D DPG calibration committed on single socket; calibration mode ended"
+	   : "HDR20 1D DPG calibration committed (single-socket commit FAILED: held-session CAL_END was used as fallback)";
 	  $state->{"message"}=($state->{"hdr20_1d_tonemap_pending"})
-	   ? "HDR20 1D DPG calibration committed; calibration mode ended; HDR tone-map upload pending wizard confirmation"
-	   : "HDR20 1D DPG calibration committed; calibration mode ended";
+	   ? $commit_msg."; HDR tone-map upload pending wizard confirmation"
+	   : $commit_msg;
 	  write_state($state);
 	  return ($picture,undef,1);
 	 }
@@ -12815,6 +12855,71 @@ sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	  : "Final 1D LUT uploaded, verified, calibration mode ended; HDR10 1D DPG computed but upload skipped (".($state->{"hdr20_1d_dpg_upload_message"}//"unknown").")";
 	 write_state($state);
 	 return $uploaded;
+	}
+
+# Single-socket HDR20 1D DPG commit: re-upload the converged 3072-value
+# DPG via ONE helper invocation with keep_calibration_mode=0 AND
+# calibration_mode_active=0 so the helper (pgenerator-lg
+# lg_1d_dpg_upload_workflow) opens one websocket and sends CAL_START,
+# 1D_2_2_EN=0, 1D_0_45_EN=0, 1D_DPG_DATA, CAL_END on that same socket.
+#
+# Why this exists: the convergence loop in
+# lg_autocal_26_run_hdr20_dpg_greyscale uploads the DPG many times across
+# many helper invocations (= many websockets), each with
+# keep_calibration_mode=1 and (after the first) calibration_mode_active=1,
+# so each helper call SKIPS its own CAL_END and the held CAL_START lives
+# only on that upload's websocket. When the held session is later closed
+# via end_calibration_mode (a fresh helper invocation = fresh socket), the
+# CAL_END lands on a DIFFERENT websocket from the CAL_START. The LG TV
+# commits a calibration to the picture-mode profile ONLY when CAL_START
+# and CAL_END share one continuous websocket, so the held-session CAL_END
+# does NOT bind and the panel reverts to a stale prior DPG curve after
+# CAL_END. Proven on 2026-06-21 on OLED65C2PUA: post-CAL_END Y(30/50/70)
+# = 2.74/25.11/154.59 cd/m^2 vs in-session 13.52/40.99/85.53 cd/m^2. The
+# single-socket commit re-uploads the converged DPG one final time with
+# both flags false so the helper's CAL_END is on its own CAL_START's
+# socket and the DPG persists.
+#
+# IMPORTANT: uses the converged DPG already in $state->{hdr20_1d_dpg_data}
+# (set by the convergence loop on every upload), NOT the linear identity
+# baseline that lg_autocal_26_compute_hdr20_1d_dpg_data would produce.
+# That function is a sample-only baseline, not the converged curve.
+sub lg_autocal_26_commit_hdr20_1d_dpg_single_socket {
+	 my ($config,$state,$picture_mode)=@_;
+	 log_line("HDR20 1D DPG single-socket commit: entered state=".((ref($state) eq "HASH")?"ok":"missing")." config_ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." picture_mode=".($picture_mode//"undef"));
+	 return 0 unless(ref($state) eq "HASH");
+	 my $effective_ddc_layout=$config->{"ddc_layout"} // $state->{"ddc_layout"} // "";
+	 return 0 unless($effective_ddc_layout eq "hdr20");
+	 my $dpg_data=$state->{"hdr20_1d_dpg_data"};
+	 return 0 unless(defined $dpg_data && ref($dpg_data) eq "ARRAY" && @$dpg_data == 3072);
+	 my $response=api_json("POST","/api/lg/1d-dpg/upload",{
+	  picture_mode=>$picture_mode,
+	  ddc_layout=>"hdr20",
+	  dpg_data=>$dpg_data,
+	  keep_calibration_mode=>JSON::PP::false,
+	  calibration_mode_active=>JSON::PP::false,
+	  helper_timeout=>90,
+	 },120);
+	 # Real CAL_START / CAL_END responses have type=>"response"; the
+	 # "skipped" placeholder would mean the helper did NOT do its own
+	 # CAL_START or CAL_END on this socket -- in that case the DPG would
+	 # not commit and we MUST fall back to a held-session CAL_END (or
+	 # treat as failure). With both flags false the helper is supposed
+	 # to send both on its own socket, so anything else is a bug.
+	 my $status_ok=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+	 my $cal_start_real=(ref($response) eq "HASH" && ref($response->{"cal_start_response"}) eq "HASH"
+	  && ($response->{"cal_start_response"}{"type"}//"") eq "response") ? 1 : 0;
+	 my $cal_end_real=(ref($response) eq "HASH" && ref($response->{"cal_end_response"}) eq "HASH"
+	  && ($response->{"cal_end_response"}{"type"}//"") eq "response") ? 1 : 0;
+	 my $committed=($status_ok && $cal_start_real && $cal_end_real) ? 1 : 0;
+	 $state->{"hdr20_1d_dpg_single_socket_commit"}=$committed ? JSON::PP::true : JSON::PP::false;
+	 my $resp_msg=(ref($response) eq "HASH" && $response->{"message"}) ? $response->{"message"} : (defined $response ? "unexpected response" : "endpoint unreachable");
+	 $state->{"hdr20_1d_dpg_single_socket_commit_message"}=$committed
+	  ? "committed on one socket (CAL_START and CAL_END both real responses): ".$resp_msg
+	  : sprintf("commit NOT made: status_ok=%d cal_start_real=%d cal_end_real=%d %s",$status_ok,$cal_start_real,$cal_end_real,$resp_msg);
+	 log_line("HDR20 1D DPG single-socket commit: ".$state->{"hdr20_1d_dpg_single_socket_commit_message"});
+	 write_state($state);
+	 return $committed;
 	}
 
 sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
