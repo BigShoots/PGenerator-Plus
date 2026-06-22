@@ -3024,10 +3024,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($target_wx,$target_wy)=@target_white;
   # DV and HDR10 saturation sweeps solve the emitted patch in the selected
   # target gamut; only HLG stays anchored to the BT.2020 container here.
-  # HDR10 chromaticity values are generated against the user-selected target
-  # gamut (P3 when target_colorspace=p3, BT.2020 when bt2020) so the spec
-  # chromaticity lives inside the same gamut the chart references.
-  my $solve_key=($signal_mode eq "hlg") ? $container_key : $target_key;
+  my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
   @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
