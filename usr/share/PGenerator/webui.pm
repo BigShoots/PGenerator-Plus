@@ -18103,6 +18103,10 @@ function meterSetTargetLevelsStateOnly(){
  white.disabled=!!wUm.checked; black.disabled=!!bUm.checked;
  white.classList.toggle('meter-input-disabled',!!wUm.checked);
  black.classList.toggle('meter-input-disabled',!!bUm.checked);
+ if(wUm.checked){ white.removeAttribute('placeholder'); }
+ else { white.setAttribute('placeholder','auto'); }
+ if(bUm.checked){ black.removeAttribute('placeholder'); }
+ else { black.setAttribute('placeholder','auto'); }
 }
 // Determine whether the selected display type is OLED-class (defaults
 // Target Black = 0 instead of measured). Covers the generic OLED options
