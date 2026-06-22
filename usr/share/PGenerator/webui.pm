@@ -8539,7 +8539,39 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </div>
     </div>
    </div>
-   <div class="meter-target-grid">
+	   <div class="field field-delay">
+	    <label>Pattern Delay</label>
+	    <div class="meter-inline-value">
+	     <input id="meterPatternDelay" type="text" value="0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied after each pattern is displayed and before meter delay" aria-label="Pattern Delay in seconds" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,0))">
+	     <span class="meter-inline-unit">sec</span>
+	    </div>
+	   </div>
+  <div class="field field-patch">
+    <label>Patch Size</label>
+    <select id="meterPatchSize">
+     <option value="2">2% Window</option>
+     <option value="5">5% Window</option>
+     <option value="10" selected>10% Window</option>
+     <option value="18">18% Window</option>
+     <option value="25">25% Window</option>
+     <option value="50">50% Window</option>
+     <option value="75">75% Window</option>
+     <option value="100">100% Full Field</option>
+     <option disabled>─── APL ───</option>
+     <option value="apl_5">5% APL (window on black)</option>
+     <option value="apl_10">10% APL (window on black)</option>
+     <option value="apl_18">18% APL (window on grey)</option>
+     <option value="apl_25">25% APL (window on grey)</option>
+     <option value="apl_50">50% APL (window on grey)</option>
+    </select>
+   </div>
+  <div class="field field-hdr" id="meterHdrConfig" style="display:none">
+    <label>HDR Roll-off</label>
+    <label class="meter-toggle" title="Apply ITU-R BT.2390 tone-mapping so HDR/PQ targets model display roll-off instead of hard clipping to the selected peak">
+     <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
+    </label>
+   </div>
+    <div class="meter-target-grid">
    <div class="field field-gamut">
     <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
@@ -8589,38 +8621,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	     <span class="meter-inline-unit">sec</span>
 	    </div>
 	   </div>
-	   <div class="field field-delay">
-	    <label>Pattern Delay</label>
-	    <div class="meter-inline-value">
-	     <input id="meterPatternDelay" type="text" value="0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied after each pattern is displayed and before meter delay" aria-label="Pattern Delay in seconds" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,0))">
-	     <span class="meter-inline-unit">sec</span>
-	    </div>
-	   </div>
-  <div class="field field-patch">
-    <label>Patch Size</label>
-    <select id="meterPatchSize">
-     <option value="2">2% Window</option>
-     <option value="5">5% Window</option>
-     <option value="10" selected>10% Window</option>
-     <option value="18">18% Window</option>
-     <option value="25">25% Window</option>
-     <option value="50">50% Window</option>
-     <option value="75">75% Window</option>
-     <option value="100">100% Full Field</option>
-     <option disabled>─── APL ───</option>
-     <option value="apl_5">5% APL (window on black)</option>
-     <option value="apl_10">10% APL (window on black)</option>
-     <option value="apl_18">18% APL (window on grey)</option>
-     <option value="apl_25">25% APL (window on grey)</option>
-     <option value="apl_50">50% APL (window on grey)</option>
-    </select>
-   </div>
-  <div class="field field-hdr" id="meterHdrConfig" style="display:none">
-    <label>HDR Roll-off</label>
-    <label class="meter-toggle" title="Apply ITU-R BT.2390 tone-mapping so HDR/PQ targets model display roll-off instead of hard clipping to the selected peak">
-     <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
-    </label>
-   </div>
   <div class="field field-refresh">
     <label>Refresh Rate</label>
     <select id="meterRefreshRate">
@@ -14092,20 +14092,23 @@ function meterTargetXYZForReading(reading){
   // Greys are clamped to measured white (white uses the W subpixel and exceeds
   // the primary sum). The additive reference (meterWrgbChromaticReferenceNits)
   // remains only as the non-PQ / no-codes fallback for chromatic patches.
-  if(_activeColorSeries && meterChartIsHdr() && meterWrgbChromaticReferenceNits()>0){
-   if(!_greyReading){
-    const _wrgbRef=meterWrgbChromaticReferenceNits();
-    if(_wrgbRef>0) refY=_wrgbRef;
-   }
-   if(meterChartIsPq()){
-    let _sy=meterWrgbStimulusTargetY(reading);
-    if(_sy!=null){
-     if(_greyReading){
-      const _gw=meterColorSeriesReferenceNits();
-      if(_gw>0) _sy=Math.min(_sy,_gw);
-     }
-     _wrgbStimY=_sy;
+  // WRGB OLED chromatic refY (additive primary sum) is ONLY used by the
+  // chromatic-target fallback path (no stimulus codes / non-PQ). The
+  // PQ stimulus-decode path below is independent of any measurement so it
+  // produces correct target Y from the first read, before the WRGB white
+  // and 100% primaries have been measured.
+  if(_activeColorSeries && meterChartIsHdr() && !_greyReading && meterWrgbChromaticReferenceNits()>0){
+   const _wrgbRef=meterWrgbChromaticReferenceNits();
+   if(_wrgbRef>0) refY=_wrgbRef;
+  }
+  if(_activeColorSeries && meterChartIsHdr() && meterChartIsPq()){
+   let _sy=meterWrgbStimulusTargetY(reading);
+   if(_sy!=null){
+    if(_greyReading){
+     const _gw=meterColorSeriesReferenceNits();
+     if(_gw>0) _sy=Math.min(_sy,_gw);
     }
+    _wrgbStimY=_sy;
    }
   }
   // HDR10 color/sat series carry PQ-absolute target_Yn (normalized to the
