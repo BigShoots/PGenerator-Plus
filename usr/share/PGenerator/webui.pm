@@ -2243,6 +2243,24 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  $series_target_white_y=$1 if($body=~/"series_target_white_y"\s*:\s*"?([0-9.]+)"?/);
  my $series_target_white_y_provided=($body=~/"series_target_white_y"\s*:/) ? 1 : 0;
  my $series_target_white_y_num=($series_target_white_y ne "") ? ($series_target_white_y+0) : 0;
+ # Target White / Target Black overrides from the calibration card. A manual
+ # white value forces the series white reference; a manual black value is
+ # stamped onto every step so chart/server target math anchors to it.
+ my $target_white_luminance="";
+ $target_white_luminance=$1 if($body=~/"target_white_luminance"\s*:\s*"?([0-9.]+)"?/);
+ my $target_black_luminance="";
+ $target_black_luminance=$1 if($body=~/"target_black_luminance"\s*:\s*"?([0-9.]+)"?/);
+ my $target_white_use_measured=($body=~/"target_white_use_measured"\s*:\s*true/i) ? 1 : 0;
+ my $target_black_use_measured=($body=~/"target_black_use_measured"\s*:\s*true/i) ? 1 : 0;
+ # Manual white override takes precedence over the measured/autocal reference.
+ if(!$target_white_use_measured && $target_white_luminance ne "" && ($target_white_luminance+0)>0) {
+  $series_target_white_y_num=$target_white_luminance+0;
+  $series_target_white_y_provided=1;
+ }
+ my $series_target_black_y_num="";
+ if(!$target_black_use_measured && $target_black_luminance ne "") {
+  $series_target_black_y_num=$target_black_luminance+0;
+ }
  my $custom_target_white;
  if($custom_d65_enabled && $target_white_x ne "" && $target_white_y ne "") {
   my $x=$target_white_x+0;
@@ -3122,15 +3140,29 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   $series_target_white_audit=",".join(",",@audit_fields) if(@audit_fields);
  }
 	 if($stamp_series_target_white_y && $series_target_white_y_num>0) {
+ 	  @steps=map {
+ 	   my $step=$_;
+ 	   if($step!~/"series_target_white_y"\s*:/) {
+ 	    $step=~s/\}\s*$//;
+ 	    $step.=",\"series_target_white_y\":$series_target_white_y_num,\"lg_target_white_y\":$series_target_white_y_num$series_target_white_audit}";
+ 	   }
+ 	   $step;
+ 	  } @steps;
+ 	 }
+	 # Stamp a manual Target Black override onto every step so chart/server
+	 # target math anchors the black floor to the operator's value.
+	 if($series_target_black_y_num ne "" && $series_target_black_y_num>=0) {
 	  @steps=map {
 	   my $step=$_;
-	   if($step!~/"series_target_white_y"\s*:/) {
+	   if($step!~/"series_target_black_y"\s*:/) {
 	    $step=~s/\}\s*$//;
-	    $step.=",\"series_target_white_y\":$series_target_white_y_num,\"lg_target_white_y\":$series_target_white_y_num$series_target_white_audit}";
+	    $step.=",\"series_target_black_y\":$series_target_black_y_num";
+	    $step.="}";
 	   }
 	   $step;
 	  } @steps;
 	 }
+
 
 	 my $series_id="${type}_".int(Time::HiRes::time()*1000)."_".int(rand(1000000));
 	 my $total=scalar(@steps);
@@ -7957,6 +7989,9 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-profile-section-title{font-size:.65rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px}
 	#meterProfileGearPopover .meter-profile-section .field{margin-bottom:0}
 	#meterProfileGearPopover .meter-profile-section label.meter-toggle{font-size:.72rem;color:var(--text);display:flex;align-items:center;gap:6px}
+	#meterProfileGearPopover .meter-profile-section .meter-toggle-label{font-size:.72rem;color:var(--text2);user-select:none;cursor:pointer}
+	#meterProfileGearPopover .meter-profile-section .meter-inline-value{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+	#meterProfileGearPopover .meter-profile-section input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
 	.meter-xyz-toggle-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;white-space:nowrap}
 	.meter-xyz-toggle-row .meter-toggle{flex:0 0 auto;min-width:0}
 	.meter-xyz-gear-wrap.is-hidden,.meter-pattern-insert-wrap.is-hidden{display:none}
@@ -8396,7 +8431,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
   <label class="meter-header-label">Meter</label>
-  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+  <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile <span class="meter-help-tip" title="Spectro/CCSS panel correction profile applied to the meter for its readings. Display-specific CCSS profiles appear below the generic types." aria-label="Meter profile help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div><div class="meter-profile-section" id="meterProfileTargetLevels"><div class="meter-profile-section-title">Target Levels <span class="meter-help-tip" title="White-peak and black-floor luminance used to compute the target Y for reads and charts. Check 'Use measured' to follow the latest 100% white / 0% black reading; uncheck and enter a value to force that reference for all read targets (charts, series, and autocal)." aria-label="Target levels help">?</span></div><div class="field"><label>Target White</label><div class="meter-inline-value"><input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked><label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label><input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="measured" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled><span class="meter-inline-unit">cd/m&sup2;</span></div></div><div class="field"><label>Target Black</label><div class="meter-inline-value"><input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked><label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label><input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="measured" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
@@ -9601,6 +9636,7 @@ function applyConfigState(nextConfig){
  // the operator's last selection (e.g. 3-read averaging for 1.4% IRE)
  // persists across page loads.
  try{ meterRestoreLowLightHandler(); }catch(e){}
+ try{ meterRestoreTargetLevels(); }catch(e){}
 	 // DV settings
 	 setVal('dv_transport',dvTransportMode(config.dv_transport));
 	 setVal('dv_interface',config.dv_interface||'0');
@@ -13498,6 +13534,9 @@ function meterDisplayIsOled(){
 // Infer chart black level. On OLED, true black can time out and be missing;
 // use only true 0% greyscale reading (or 0 fallback) in every mode.
 function meterChartBlackLevel(readings){
+ // Operator Target Black override forces the black-floor reference.
+ const _tb=(typeof meterTargetBlackLevel==='function')?meterTargetBlackLevel():null;
+ if(_tb&&!_tb.useMeasured&&_tb.value!=null&&_tb.value>=0) return _tb.value;
  const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
  const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
@@ -15475,6 +15514,12 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
 }
 
 function meterGreyTargetPeak(refWhite){
+ // Operator Target White override replaces the measured white reference
+ // (the entered value becomes the top of the target EOTF curve). Only
+ // applies where the code uses a measured white; authored mastering-peak
+ // constants are left intact.
+ const _tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+ if(_tw&&!_tw.useMeasured&&_tw.value!=null&&_tw.value>0) refWhite=_tw.value;
  // DV absolute and DV relative both anchor the chart target to the measured
  // 100% white so the target curve tracks what the display actually produces
  // rather than the authored mastering-peak label.
@@ -17073,6 +17118,7 @@ function meterStampReadingStepMeta(reading,step){
  if(step.dv_absolute_st2084_precomp!=null) reading.dv_absolute_st2084_precomp=step.dv_absolute_st2084_precomp;
  if(step.series_target_white_y!=null) reading.series_target_white_y=step.series_target_white_y;
  if(step.lg_target_white_y!=null) reading.lg_target_white_y=step.lg_target_white_y;
+ if(step.series_target_black_y!=null) reading.series_target_black_y=step.series_target_black_y;
  if(step.autocal_code!=null) reading.autocal_code=step.autocal_code;
  if(step.series_mode!=null) reading.series_mode=step.series_mode;
  if(step.autocal_white_reference!=null) reading.autocal_white_reference=step.autocal_white_reference;
@@ -17832,6 +17878,153 @@ function meterLowLightFlags(mode){
   case 'off':   return '';
   default:      return '';
  }
+}
+
+// Target White / Target Black override state (white-peak and black-floor
+// luminance used to compute target Y for reads and charts). Mirrors the
+// Low Light Handler persistence pattern. When a "Use measured" checkbox is
+// checked the matching number input is disabled (greyed) and the measured
+// reference is used internally; uncheck + enter a value to force that
+// reference for all read targets (charts, series, autocal).
+const METER_TARGET_LEVELS_KEY='pgen.meter.targetLevels';
+function getEl(id){ return document.getElementById(id); }
+function meterReadTargetLevelsState(){
+ let saved=null;
+ try{ saved=JSON.parse(localStorage.getItem(METER_TARGET_LEVELS_KEY)||'null'); }catch(e){ saved=null; }
+ if(!saved||typeof saved!=='object') return null;
+ const w=(saved.white&&typeof saved.white==='object')?saved.white:{};
+ const b=(saved.black&&typeof saved.black==='object')?saved.black:{};
+ return {
+  white:{
+   useMeasured:(typeof w.useMeasured==='boolean')?w.useMeasured:true,
+   value:(typeof w.value==='number'&&Number.isFinite(w.value))?w.value:null,
+   overridden:(typeof w.overridden==='boolean')?w.overridden:false
+  },
+  black:{
+   useMeasured:(typeof b.useMeasured==='boolean')?b.useMeasured:true,
+   value:(typeof b.value==='number'&&Number.isFinite(b.value))?b.value:null,
+   overridden:(typeof b.overridden==='boolean')?b.overridden:false
+  }
+ };
+}
+function meterSetTargetLevels(){
+ const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
+ const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
+ if(!wUm||!white||!bUm||!black) return;
+ white.disabled=!!wUm.checked; black.disabled=!!bUm.checked;
+ white.classList.toggle('meter-input-disabled',!!wUm.checked);
+ black.classList.toggle('meter-input-disabled',!!bUm.checked);
+ const wVal=Number(white.value); const bVal=Number(black.value);
+ const state={
+  white:{useMeasured:!!wUm.checked,value:(!wUm.checked&&Number.isFinite(wVal))?wVal:null,overridden:true},
+  black:{useMeasured:!!bUm.checked,value:(!bUm.checked&&Number.isFinite(bVal))?bVal:null,overridden:true}
+ };
+ try{ localStorage.setItem(METER_TARGET_LEVELS_KEY,JSON.stringify(state)); }catch(e){}
+ // Live target math depends on these; refresh charts if a redraw hook exists.
+ try{ if(typeof meterRefreshTargetCurves==='function') meterRefreshTargetCurves(); }catch(e){}
+}
+function meterRestoreTargetLevels(){
+ const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
+ const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
+ if(!wUm||!white||!bUm||!black) return;
+ const s=meterReadTargetLevelsState();
+ if(!s){
+  // No saved state: apply the display-type defaults.
+  meterApplyTargetLevelsDisplayDefaults(true);
+  meterSetTargetLevelsStateOnly();
+  return;
+ }
+ wUm.checked=!!s.white.useMeasured;
+ if(!s.white.useMeasured&&s.white.value!=null) white.value=s.white.value; else white.value='';
+ bUm.checked=!!s.black.useMeasured;
+ if(!s.black.useMeasured&&s.black.value!=null) black.value=s.black.value; else black.value='';
+ // Re-apply display-type defaults only for whichever side the operator has
+ // not yet overridden.
+ if(!s.white.overridden||!s.black.overridden) meterApplyTargetLevelsDisplayDefaults(false,s);
+ meterSetTargetLevelsStateOnly();
+}
+// Apply the DOM checkbox/input state to the disabled/grey styling without
+// re-persisting (used during restore before the user edits anything).
+function meterSetTargetLevelsStateOnly(){
+ const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
+ const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
+ if(!wUm||!white||!bUm||!black) return;
+ white.disabled=!!wUm.checked; black.disabled=!!bUm.checked;
+ white.classList.toggle('meter-input-disabled',!!wUm.checked);
+ black.classList.toggle('meter-input-disabled',!!bUm.checked);
+}
+// Determine whether the selected display type is OLED-class (defaults
+// Target Black = 0 instead of measured). Covers the generic OLED options
+// and any display-specific CCSS whose technology resolves to OLED.
+function meterDisplayTypeIsOledClass(value){
+ const v=String(value||((document.getElementById('meterDisplayType')||{}).value)||'').toLowerCase();
+ if(v.indexOf('oled')!==-1||v==='qdoled') return true;
+ if(v.startsWith('ccss_')||v.startsWith('custom_')){
+  try{
+   const meta=(typeof meterDisplayTypeMetaText==='function')?meterDisplayTypeMetaText(v):'';
+   if(/\b(?:qd[-\s]*oled|wrgb[-\s]*oled|rgb[-\s]*oled|woled|amoled|oled)\b/i.test(meta)) return true;
+  }catch(e){}
+ }
+ return false;
+}
+// Apply display-type-based defaults. when forceAll is true both white and
+// black are reset to defaults (first selection / no saved state); otherwise
+// only sides not marked overridden are touched.
+function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
+ const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
+ const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
+ if(!wUm||!bUm) return;
+ const oled=meterDisplayTypeIsOledClass();
+ const s=saved||meterReadTargetLevelsState();
+ const wOver=s&&s.white&&s.white.overridden;
+ const bOver=s&&s.black&&s.black.overridden;
+ // Target White defaults to measured for every display type.
+ if(forceAll||!wOver){
+  wUm.checked=true; if(white) white.value='';
+ }
+ // Target Black: OLED-class -> 0 (manual), else measured.
+ if(forceAll||!bOver){
+  if(oled){
+   bUm.checked=false; if(black) black.value='0';
+  }else{
+   bUm.checked=true; if(black) black.value='';
+  }
+ }
+}
+// Resolve the effective Target White level. Returns {useMeasured,value}.
+function meterTargetWhiteLevel(){
+ const s=meterReadTargetLevelsState();
+ if(s) return {useMeasured:!!s.white.useMeasured,value:s.white.value};
+ const oled=meterDisplayTypeIsOledClass();
+ return {useMeasured:true,value:null};
+}
+// Resolve the effective Target Black level. Returns {useMeasured,value}.
+function meterTargetBlackLevel(){
+ const s=meterReadTargetLevelsState();
+ if(s){
+  // OLED-class with no saved override defaults black to 0.
+  if(!s.black.overridden&&meterDisplayTypeIsOledClass()) return {useMeasured:false,value:0};
+  return {useMeasured:!!s.black.useMeasured,value:s.black.value};
+ }
+ const oled=meterDisplayTypeIsOledClass();
+ return oled?{useMeasured:false,value:0}:{useMeasured:true,value:null};
+}
+// Build the override payload spread into meter request bodies. Only emits
+// keys when the operator has entered a manual value.
+function meterTargetLevelsPayload(){
+ const w=meterTargetWhiteLevel(), b=meterTargetBlackLevel();
+ const p={};
+ if(!w.useMeasured&&w.value!=null&&w.value>0){ p.target_white_luminance=Number(w.value); }
+ else { p.target_white_use_measured=true; }
+ if(!b.useMeasured&&b.value!=null&&b.value>=0){ p.target_black_luminance=Number(b.value); }
+ else { p.target_black_use_measured=true; }
+ return p;
+}
+// Redraw the greyscale target curves so a Target White/Black change is
+// reflected immediately without re-reading.
+function meterRefreshTargetCurves(){
+ try{ if(typeof meterRedrawEotfChart==='function') meterRedrawEotfChart(); }catch(e){}
+ try{ if(typeof meterRedrawLuminanceChart==='function') meterRedrawLuminanceChart(); }catch(e){}
 }
 
 async function meterRunManualReadStep(step,ctx){
@@ -19937,13 +20130,15 @@ function meterMeasurementSignalContext(payload){
  if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
  if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
-  if(meterTargetWhitePointEnabled()){
-   body.custom_d65_enabled=true;
-   body.target_white_x=(document.getElementById('meterTargetWhiteX')||{}).value||'';
-   body.target_white_y=(document.getElementById('meterTargetWhiteY')||{}).value||'';
-  }
- return body;
-}
+   if(meterTargetWhitePointEnabled()){
+    body.custom_d65_enabled=true;
+    body.target_white_x=(document.getElementById('meterTargetWhiteX')||{}).value||'';
+    body.target_white_y=(document.getElementById('meterTargetWhiteY')||{}).value||'';
+   }
+  // Target White / Target Black overrides for read/series/autocal target math.
+  try{ Object.assign(body,meterTargetLevelsPayload()); }catch(e){}
+  return body;
+ }
 
 function meterLgAutoCalRequestedSignalMode(){
  const mode=String((meterChartSignalMode&&meterChartSignalMode())||'sdr').toLowerCase();
@@ -29130,6 +29325,9 @@ function meterApplyDisplayTypeSelection(v,opts){
  if(showCcssPanel) loadCustomCcssList();
  if(v.startsWith('ccss_')) ccssPreviewLoadByValue('system\t'+v.slice(5),true);
  else if(v.startsWith('custom_')) ccssPreviewLoadByValue('custom\t'+v.slice(7),true);
+ // Re-apply Target White/Black display-type defaults for any side the
+ // operator has not manually overridden (e.g. OLED-class -> black = 0).
+ try{ if(typeof meterApplyTargetLevelsDisplayDefaults==='function') meterApplyTargetLevelsDisplayDefaults(false); }catch(e){}
 }
 
 function meterUpdateCustomCcssPanel(value){
