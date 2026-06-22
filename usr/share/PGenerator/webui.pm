@@ -2727,12 +2727,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # relative read undersaturated and DV absolute read oversaturated.
     # HDR10 likewise solves in the target gamut so wide-gamut patches are not
     # desaturated; only HLG stays anchored to the container here.
-    # HDR10 also encodes in the BT.2020 CONTAINER (the wire colorimetry the TV
-    # is told): express the P3 target chromaticities as BT.2020 RGB so the TV
-    # decodes BT.2020 and the cube (also BT.2020) reproduces them. Solving in
-    # P3 emitted P3 RGB onto a BT.2020 wire -> wrong saturation. target_key
-    # stays the scoring/sweep gamut.
-    my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
+    # The patch's spec chromaticity is solved against the user-selected target
+    # colorspace (P3 when target_colorspace=p3, BT.2020 when bt2020, etc.) so
+    # the chart target lies inside the gamut the panel actually reproduces.
+    # Only HLG keeps the BT.2020 container anchor (HLG doesn't run the 3BY3
+    # matrix the same way HDR10 does).
+    my $solve_key=($signal_mode eq "hlg") ? $container_key : $target_key;
     my @target_white=@{$primaries{$target_key}{WHITE}};
     @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
     my ($target_wx,$target_wy)=@target_white;
@@ -3023,11 +3023,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($target_wx,$target_wy)=@target_white;
   # DV and HDR10 saturation sweeps solve the emitted patch in the selected
   # target gamut; only HLG stays anchored to the BT.2020 container here.
-  # HDR10 also encodes in the BT.2020 CONTAINER (the wire colorimetry the TV is
-  # told): express the P3 target chromaticities as BT.2020 RGB so the TV decodes
-  # BT.2020 and the cube (also BT.2020) reproduces them. Solving in P3 emitted
-  # P3 RGB onto a BT.2020 wire -> wrong saturation. target_key stays scoring.
-  my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
+  # Same reasoning as the ColorChecker block above: solve against the
+  # user-selected target colorspace so the spec chromaticity lands inside
+  # the reproducible gamut. HLG keeps the container anchor.
+  my $solve_key=($signal_mode eq "hlg") ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
   @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
@@ -14554,11 +14553,15 @@ function meterColorCheckerClassicSource(){
 }
 
 function meterBuildColorCheckerStepsJS(){
-	 const steps=[];
-	 const min=meterChromaPatchRangeMin();
-	 const max=min+meterChromaPatchRangeSpan();
-	 const solveGamut=meterChartIsDv()?meterAnalysisGamut():meterStimulusSolveGamut();
-	 const wp=meterTargetWhitePoint();
+ const steps=[];
+ const min=meterChromaPatchRangeMin();
+ const max=min+meterChromaPatchRangeSpan();
+ // Solve chromatic patches in the user-selected target colorspace (P3,
+ // BT.2020, BT.709, etc.) so the spec chromaticity lands inside the
+ // panel's reproducible gamut. HLG stays anchored to its BT.2020
+ // container; DV uses the analysis gamut.
+ const solveGamut=(meterChartIsHlg())?meterStimulusSolveGamut():meterTargetSolveGamut();
+ const wp=meterTargetWhitePoint();
 	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1});
 	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0});
 	 meterColorCheckerClassicSource().forEach(src=>{
