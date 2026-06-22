@@ -2743,8 +2743,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
     my $dv_classic_scale=0.68;
+    # BT.2408 HDR Reference White for chromatic ColorChecker patches in HDR10
+    # and DV-Absolute. Greys keep tracking the measured white; chromatic
+    # patches are anchored to 203 cd/m^2 so the chart stimulus is the
+    # recognized HDR reference rather than the panel's measured white.
+    my $bt2408_ref_white_nits=203;
     my $encode_linear=sub {
-     my ($linear)=@_;
+     my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
      $linear=1 if($linear > 1);
      if($signal_mode eq "dv") {
@@ -2758,8 +2763,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        # diffuse, so the displayed patch matches the measured-white chart
        # target and samples the cube at the correct (not dim) drive. Falls
        # back to the mastering peak, then 100. Yn<=1 so nothing clips.
+       # Chromatic HDR10 patches pass an explicit $ref_nits_override (BT.2408
+       # 203 cd/m^2); greys leave it undef and use the measured-white cascade.
        my $cc_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-       $encoded=&webui_pattern_pq_encode_normalized($linear*$cc_ref);
+       my $ref=(defined $ref_nits_override && $ref_nits_override>0)?$ref_nits_override:$cc_ref;
+       $encoded=&webui_pattern_pq_encode_normalized($linear*$ref);
       } elsif($signal_mode eq "dv") {
         $encoded=$linear>0 ? $linear**(1/2.2) : 0;
       } else {
@@ -2897,12 +2905,41 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
      if($mx>1){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
      $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
-      my $r=$encode_linear->($rl);
-      my $g=$encode_linear->($gl);
-      my $b=$encode_linear->($bl);
-      my $ire=int($Yn*100 + .5);
-      my ($chart_tx,$chart_ty)=($target_x,$target_y);
-        my $target_Yn_for_step=$Yn;
+      # BT.2408 HDR ColorChecker: greys track the measured-white cascade
+      # (unchanged) and chromatic patches anchor to 203 cd/m^2 in HDR10 and
+      # DV-Absolute. SDR / DV-Relative / HLG keep the original behavior.
+      my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+      my $dv_peak=(($max_luma+0)>0)?($max_luma+0):10000;
+      my $r;
+      my $g;
+      my $b;
+      my $target_Yn_for_step=$Yn;
+      if($signal_mode eq "hdr10") {
+       # HDR10 chromatic: anchor encode to 203 cd/m^2 (BT.2408 HDR Ref White)
+       # so the chart stimulus is the recognized HDR reference rather than
+       # the measured white. Bake target_Yn so target_Yn * measured_white
+       # still equals the absolute luminance the stimulus drives (Yn * 203).
+       $r=$encode_linear->($rl,$bt2408_ref_white_nits);
+       $g=$encode_linear->($gl,$bt2408_ref_white_nits);
+       $b=$encode_linear->($bl,$bt2408_ref_white_nits);
+       $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$cc_white;
+      } elsif($signal_mode eq "dv" && $dv_map_mode eq "1") {
+       # DV Absolute chromatic: drive patches to Yn*203 nits as a fraction
+       # of the mastering peak (matching DV-Absolute sat-sweep encoding).
+       # Bake target_Yn so target_Yn * peak = Yn * 203.
+       my $rf=$rl*$bt2408_ref_white_nits/$dv_peak; $rf=0 if($rf<0); $rf=1 if($rf>1);
+       my $gf=$gl*$bt2408_ref_white_nits/$dv_peak; $gf=0 if($gf<0); $gf=1 if($gf>1);
+       my $bf=$bl*$bt2408_ref_white_nits/$dv_peak; $bf=0 if($bf<0); $bf=1 if($bf>1);
+       $r=int($min_code+$rf*$span_code+.5);
+       $g=int($min_code+$gf*$span_code+.5);
+       $b=int($min_code+$bf*$span_code+.5);
+       $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$dv_peak;
+      } else {
+       # SDR / HLG / DV-Relative: unchanged chromatic encoding, with the
+       # existing DV-Relative target_Yn recompute block below.
+       $r=$encode_linear->($rl);
+       $g=$encode_linear->($gl);
+       $b=$encode_linear->($bl);
        if($signal_mode eq "dv" && $span_code>0) {
         my $r_norm=($r-$min_code)/$span_code;
         my $g_norm=($g-$min_code)/$span_code;
@@ -2919,6 +2956,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
          $RGB_TO_XYZ[1][2]*$b_lin;
         $target_Yn_for_step=0 if($target_Yn_for_step < 0);
        }
+      }
+      my $ire=int($Yn*100 + .5);
+      my ($chart_tx,$chart_ty)=($target_x,$target_y);
        push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step}";
      }
   my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
