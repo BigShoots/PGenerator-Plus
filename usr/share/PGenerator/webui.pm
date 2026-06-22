@@ -7947,7 +7947,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-gamma{width:140px}
 #meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;margin-top:4px}
 #meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 auto;min-width:88px}
-#meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:60px}
+#meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:72px}
 #meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
@@ -8536,14 +8536,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         </div>
         <div class="meter-target-white-row">
          <label class="meter-target-inline-label">Target White</label>
-         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="measured" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="auto" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
         </div>
         <div class="meter-target-black-row">
          <label class="meter-target-inline-label">Target Black</label>
-         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="measured" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="auto" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
@@ -18061,6 +18061,10 @@ function meterSetTargetLevels(){
  white.disabled=!!wUm.checked; black.disabled=!!bUm.checked;
  white.classList.toggle('meter-input-disabled',!!wUm.checked);
  black.classList.toggle('meter-input-disabled',!!bUm.checked);
+ if(wUm.checked){ white.placeholder=''; white.removeAttribute('placeholder'); }
+ else if(!white.hasAttribute('placeholder')){ white.setAttribute('placeholder','auto'); }
+ if(bUm.checked){ black.placeholder=''; black.removeAttribute('placeholder'); }
+ else if(!black.hasAttribute('placeholder')){ black.setAttribute('placeholder','auto'); }
  const wVal=Number(white.value); const bVal=Number(black.value);
  const state={
   white:{useMeasured:!!wUm.checked,value:(!wUm.checked&&Number.isFinite(wVal))?wVal:null,overridden:true},
