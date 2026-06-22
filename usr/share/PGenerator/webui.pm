@@ -13537,16 +13537,46 @@ function meterWrgbChromaticReferenceNits(){
  return null;
 }
 
+// Per-primary luminance ceilings (in the analysis gamut's linear-RGB space)
+// taken from FULL-DRIVE primary reads in the current series -- a series_color
+// red/green/blue patch driven to ~full code. A WRGB panel cannot emit more of a
+// primary than its full-drive output, so these cap the stimulus-decoded target
+// (a full-code secondary like 100% cyan PQ-decodes to ~peak per channel, far
+// beyond the panel's achievable primary sum). Returns {0?:R,1?:G,2?:B} holding
+// only primaries that have a full-drive read; empty when none qualify (e.g. a
+// saturation sweep, whose 100% endpoints sit at a sub-peak stimulus level and
+// therefore do NOT roll off and need no clamp).
+function meterWrgbPrimaryCeilings(){
+ const gamut=meterAnalysisGamut();
+ const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
+ const idx={red:0,green:1,blue:2};
+ const maxCode=meterPatchRangeMin()+meterPatchRangeSpan();
+ const out={};
+ (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
+  if(!rd||!rd.series_color) return;
+  const c=String(rd.series_color).toLowerCase();
+  if(!(c in idx)) return;
+  if(Number(rd.sat_pct)<99.5) return;
+  const codes=[(rd.r_code!=null)?rd.r_code:rd.r,(rd.g_code!=null)?rd.g_code:rd.g,(rd.b_code!=null)?rd.b_code:rd.b];
+  if(codes.some(v=>v==null)) return;
+  if(Math.max(codes[0],codes[1],codes[2]) < maxCode*0.9) return; // not full-drive
+  const i=idx[c];
+  const y=meterReadingLuminanceNits(rd);
+  if(y>0 && Yrow[i]>0 && !(out[i]>0)) out[i]=y/Yrow[i];
+ });
+ return out;
+}
+
 // Target luminance derived from the patch STIMULUS rather than a measured
 // reference (additive primary sum / measured white). On a WRGB OLED the panel
-// tracks the PQ signal for sub-peak content (reflectance, mid-grey, and
-// sub-saturation chromatic patches), so the correct, panel-independent target
-// is the absolute luminance the patch SIGNAL encodes: PQ-decode each channel
-// code and form XYZ in the analysis gamut (targetColorXYZAbs already does
-// exactly this for PQ). Returns the decoded target Y (cd/m^2), or null when not
-// applicable (non-PQ signal, or the stimulus codes cannot be resolved). The
-// caller excludes full-saturation primaries/secondaries and clamps greys to
-// measured white, both of which roll off below the PQ-encoded value.
+// tracks the PQ signal, so the correct, panel-independent target is the
+// absolute luminance the patch SIGNAL encodes: PQ-decode each channel code,
+// clamp each to the panel's measured per-primary ceiling (so a full-code
+// secondary does not exceed the achievable primary sum -- greys are exempt and
+// clamped to measured white by the caller, since white is made with the W
+// subpixel and exceeds the primary sum), then form XYZ in the analysis gamut.
+// Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
+// signal, or the stimulus codes cannot be resolved).
 function meterWrgbStimulusTargetY(reading){
  if(!reading||!meterChartIsPq()) return null;
  let r=(reading.r_code!=null)?reading.r_code:reading.r;
@@ -13561,7 +13591,17 @@ function meterWrgbStimulusTargetY(reading){
   }
  }
  if(r==null||g==null||b==null) return null;
- const xyz=targetColorXYZAbs(r,g,b);
+ let dr=meterDecodeColorTargetChannel(r);
+ let dg=meterDecodeColorTargetChannel(g);
+ let db=meterDecodeColorTargetChannel(b);
+ if(!meterReadingIsGreyscale(reading)){
+  const ceil=meterWrgbPrimaryCeilings();
+  if(ceil[0]>0) dr=Math.min(dr,ceil[0]);
+  if(ceil[1]>0) dg=Math.min(dg,ceil[1]);
+  if(ceil[2]>0) db=Math.min(db,ceil[2]);
+ }
+ const gamut=meterAnalysisGamut();
+ const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  return (xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)?xyz.Y:null;
 }
 
@@ -14013,23 +14053,23 @@ function meterTargetXYZForReading(reading){
   let _wrgbStimY=null;
   const _activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
   const _greyReading=meterReadingIsGreyscale(reading);
-  // WRGB OLED chromatic luminance. A white-subpixel panel's additive R+G+B sum
-  // is far below its measured white, so referencing chromatic targets to that
-  // sum (meterWrgbChromaticReferenceNits) is only correct at FULL saturation,
-  // where the panel rolls off to the achievable primary sum. Reflectance /
-  // sub-saturation / mid-grey patches stay within the panel's capability and
-  // TRACK the PQ signal, so on a PQ panel their luminance target is the absolute
-  // value the STIMULUS encodes (meterWrgbStimulusTargetY) -- chromaticity stays
-  // on target_x/target_y, only luminance comes from the decoded signal. Full-sat
-  // primaries/secondaries keep the additive reference; greys clamp to measured
-  // white because the peak-white patch (code 235) rolls off below PQ peak.
+  // WRGB OLED luminance. A white-subpixel panel TRACKS the PQ signal, so on a PQ
+  // panel EVERY color/sat patch (ColorChecker reflectance, saturation sweep, and
+  // the full-saturation primaries/secondaries alike) targets the absolute value
+  // the STIMULUS encodes (meterWrgbStimulusTargetY) -- chromaticity stays on
+  // target_x/target_y, only luminance comes from the decoded signal. The decode
+  // is clamped per-channel to the panel's measured primary ceilings, which is
+  // what keeps a full-code secondary (ColorChecker 100% cyan) from exceeding the
+  // achievable primary sum while leaving sub-peak sweep endpoints untouched.
+  // Greys are clamped to measured white (white uses the W subpixel and exceeds
+  // the primary sum). The additive reference (meterWrgbChromaticReferenceNits)
+  // remains only as the non-PQ / no-codes fallback for chromatic patches.
   if(_activeColorSeries && meterChartIsHdr() && meterWrgbChromaticReferenceNits()>0){
-   const _fullSat=(reading.series_color!=null && Number(reading.sat_pct)>=99.5);
    if(!_greyReading){
     const _wrgbRef=meterWrgbChromaticReferenceNits();
     if(_wrgbRef>0) refY=_wrgbRef;
    }
-   if(meterChartIsPq() && !_fullSat){
+   if(meterChartIsPq()){
     let _sy=meterWrgbStimulusTargetY(reading);
     if(_sy!=null){
      if(_greyReading){
