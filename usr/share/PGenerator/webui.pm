@@ -2897,29 +2897,59 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
      if($mx>1){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
      $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
-     my $r=$encode_linear->($rl);
-     my $g=$encode_linear->($gl);
-     my $b=$encode_linear->($bl);
-     my $ire=int($Yn*100 + .5);
-      my $target_Yn_for_step=$Yn;
-      if($signal_mode eq "dv" && $span_code>0) {
-       my $r_norm=($r-$min_code)/$span_code;
-       my $g_norm=($g-$min_code)/$span_code;
-       my $b_norm=($b-$min_code)/$span_code;
-       $r_norm=0 if($r_norm < 0); $r_norm=1 if($r_norm > 1);
-       $g_norm=0 if($g_norm < 0); $g_norm=1 if($g_norm > 1);
-       $b_norm=0 if($b_norm < 0); $b_norm=1 if($b_norm > 1);
-      my $r_lin=$decode_linear->($r_norm);
-      my $g_lin=$decode_linear->($g_norm);
-      my $b_lin=$decode_linear->($b_norm);
-       $target_Yn_for_step=
-        $RGB_TO_XYZ[1][0]*$r_lin+
-        $RGB_TO_XYZ[1][1]*$g_lin+
-        $RGB_TO_XYZ[1][2]*$b_lin;
-       $target_Yn_for_step=0 if($target_Yn_for_step < 0);
+      my $r=$encode_linear->($rl);
+      my $g=$encode_linear->($gl);
+      my $b=$encode_linear->($bl);
+      my $ire=int($Yn*100 + .5);
+      # The chart compares measured against the chromaticity the panel
+      # ACTUALLY reproduces. Patches are solved in $solve_key (BT.2020
+      # container for HDR10) and the wire is BT.2020 colorimetry. The panel's
+      # reproducer gamut is $target_key (P3-D65 by default). To get the
+      # chromaticity the panel emits, express the solved linear RGB values
+      # through $target_key's RGB_TO_XYZ instead of BT.2020's. For
+      # $target_key == bt2020 the conversion is identity (chart target ==
+      # spec); for P3 the chart target shifts to match the panel's P3
+      # primaries (mirrors what meterSaturationTargetXYZ already does for
+      # the 100% primaries on the same chart).
+      my ($chart_tx,$chart_ty)=($target_x,$target_y);
+      # The chart compares measured against the chromaticity the panel ACTUALLY
+      # reproduces. The ColorChecker source chromaticities are BT.2020 spec
+      # values; the panel renders BT.2020 transport through its own primaries
+      # (close to P3-D65 on the LG C2 with autocal). When target_gamut=p3,
+      # express the solved linear RGB values through P3's RGB_TO_XYZ to get
+      # the panel-reproducer chromaticity (mirrors how the 100% primaries
+      # already work via meterSaturationTargetXYZ). For target_gamut=bt2020
+      # the conversion is identity (chart target stays at spec).
+      if($target_key ne "bt2020"){
+       my $tg_rgb_to_xyz=$primaries{$target_key}{RGB_TO_XYZ};
+       my $cx=$tg_rgb_to_xyz->[0][0]*$rl+$tg_rgb_to_xyz->[0][1]*$gl+$tg_rgb_to_xyz->[0][2]*$bl;
+       my $cy=$tg_rgb_to_xyz->[1][0]*$rl+$tg_rgb_to_xyz->[1][1]*$gl+$tg_rgb_to_xyz->[1][2]*$bl;
+       my $cz=$tg_rgb_to_xyz->[2][0]*$rl+$tg_rgb_to_xyz->[2][1]*$gl+$tg_rgb_to_xyz->[2][2]*$bl;
+       my $sum=$cx+$cy+$cz;
+       if($sum>0 && $cy>0){
+        $chart_tx=$cx/$sum;
+        $chart_ty=$cy/$sum;
+       }
       }
-      push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$target_x,\"target_y\":$target_y,\"target_Yn\":$target_Yn_for_step}";
-    }
+        my $target_Yn_for_step=$Yn;
+       if($signal_mode eq "dv" && $span_code>0) {
+        my $r_norm=($r-$min_code)/$span_code;
+        my $g_norm=($g-$min_code)/$span_code;
+        my $b_norm=($b-$min_code)/$span_code;
+        $r_norm=0 if($r_norm < 0); $r_norm=1 if($r_norm > 1);
+        $g_norm=0 if($g_norm < 0); $g_norm=1 if($g_norm > 1);
+        $b_norm=0 if($b_norm < 0); $b_norm=1 if($b_norm > 1);
+       my $r_lin=$decode_linear->($r_norm);
+       my $g_lin=$decode_linear->($g_norm);
+       my $b_lin=$decode_linear->($b_norm);
+        $target_Yn_for_step=
+         $RGB_TO_XYZ[1][0]*$r_lin+
+         $RGB_TO_XYZ[1][1]*$g_lin+
+         $RGB_TO_XYZ[1][2]*$b_lin;
+        $target_Yn_for_step=0 if($target_Yn_for_step < 0);
+       }
+       push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step}";
+     }
   my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
   my $series_level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : (($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
    my $encode_saturation_linear=sub {
