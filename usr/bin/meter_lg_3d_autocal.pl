@@ -875,6 +875,19 @@ sub model_from_readings {
  my $fallback_white=rgb_to_xyz_for_gamut($target_gamut,1,1,1,100);
  my $profile_white=$by{"profile"}{"white"}{100}{xyz} || $fallback_white;
  my $profile_white_y=$profile_white->[1] || 100;
+ # Calibration-card Target White / Target Black overrides: anchor the target
+ # gamma-curve reference (target_relative_luminance) to the operator's entered
+ # white-peak / black-floor instead of the measured profile endpoints. The
+ # measured black XYZ and measured white matrix are retained for the physical
+ # drift / additive-primary math.
+ if(ref($config) eq "HASH") {
+  if(defined($config->{"target_white_luminance"}) && !$config->{"target_white_use_measured"} && ($config->{"target_white_luminance"}+0) > 0) {
+   $profile_white_y = $config->{"target_white_luminance"}+0;
+  }
+  if(defined($config->{"target_black_luminance"}) && !$config->{"target_black_use_measured"} && ($config->{"target_black_luminance"}+0) >= 0) {
+   $black_y = $config->{"target_black_luminance"}+0;
+  }
+ }
  my %start; my %end;
  foreach my $kind (qw(white red green blue)) {
   my $sx=$by{"drift_start"}{$kind}{100}{xyz} || $by{"profile"}{$kind}{100}{xyz};
@@ -1504,6 +1517,16 @@ sub reset_3d_lut_to_unity_before_profile {
 }
 
 my $config=decode_json_safe(read_file($config_file),{});
+# Calibration-card Target White / Target Black overrides flow into the
+# fixture-mode synthetic readings and the profile target curve.
+if(ref($config) eq "HASH") {
+ if(defined($config->{"target_white_luminance"}) && !$config->{"target_white_use_measured"} && ($config->{"target_white_luminance"}+0) > 0) {
+  $config->{"fixture_white_y"} = $config->{"target_white_luminance"}+0;
+ }
+ if(defined($config->{"target_black_luminance"}) && !$config->{"target_black_use_measured"} && ($config->{"target_black_luminance"}+0) >= 0) {
+  $config->{"fixture_black_y"} = $config->{"target_black_luminance"}+0;
+ }
+}
 unlink($stop_file);
 my $method=lc($config->{"method"}||"matrix");
 $method="matrix" unless($method eq "matrix" || $method eq "ramp");

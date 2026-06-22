@@ -24,6 +24,25 @@ our $LG_AUTOCAL_CONFIG;
 our $LG_AUTOCAL_STATE;
 our $LG_AUTOCAL_LAST_FULL_DDC_SPINE_SEED_DETAILS = [];
 
+# Target White / Target Black overrides from the calibration card. When set
+# (manual value, not "use measured"), these replace the measured white-peak
+# and black-floor references used by target_luminance_for_step so every read
+# target anchors to the operator's entered values. Populated from $config
+# after the config file is loaded.
+my $_target_white_override = undef;
+my $_target_black_override = undef;
+
+# Test/runtime hook: set the Target White / Target Black overrides
+# explicitly (numeric to override, undef to use measured). Returns the
+# effective (white,black) tuple.
+sub autocal_set_target_overrides {
+ my ($white,$black)=@_;
+ $_target_white_override = (defined($white) && $white =~ /^[0-9.]+$/ && $white+0 > 0) ? ($white+0) : undef;
+ $_target_black_override = (defined($black) && $black =~ /^[0-9.]+$/ && $black+0 >= 0) ? ($black+0) : undef;
+ return ($_target_white_override, $_target_black_override);
+}
+sub autocal_target_overrides { return ($_target_white_override, $_target_black_override); }
+
 $SIG{TERM} = sub { $cancelled = 1; };
 $SIG{INT} = sub { $cancelled = 1; };
 
@@ -995,6 +1014,11 @@ sub bt1886_eotf_luminance {
 
 sub target_luminance_for_step {
 	 my ($white_y,$step,$target_gamma,$signal_mode,$black_y)=@_;
+	 # Apply calibration-card Target White / Target Black overrides so the
+	 # target Y curve anchors to the operator's entered values instead of the
+	 # measured white-peak / black-floor. Undef when "use measured".
+	 $white_y = $_target_white_override if(defined($_target_white_override));
+	 $black_y = $_target_black_override if(defined($_target_black_override));
 	 return undef if(ref($step) ne "HASH" || !defined($white_y) || $white_y <= 0);
 	 my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : (defined($step->{"ire"}) ? ($step->{"ire"}+0) : undef);
 	 return undef if(!defined($stimulus));
@@ -17891,6 +17915,15 @@ my $config=decode_json_safe(read_file($config_file),{});
 apply_lg_autocal_26_default_modes($config);
 apply_post_commit_verify_gate($config);
 $LG_AUTOCAL_CONFIG=$config;
+# Calibration-card Target White / Target Black overrides.
+if(ref($config) eq "HASH") {
+ if(defined($config->{"target_white_luminance"}) && !$config->{"target_white_use_measured"} && ($config->{"target_white_luminance"}+0) > 0) {
+  $_target_white_override = $config->{"target_white_luminance"}+0;
+ }
+ if(defined($config->{"target_black_luminance"}) && !$config->{"target_black_use_measured"} && ($config->{"target_black_luminance"}+0) >= 0) {
+  $_target_black_override = $config->{"target_black_luminance"}+0;
+ }
+}
 my $steps=(ref($config->{"steps"}) eq "ARRAY") ? $config->{"steps"} : [];
 unlink($trace_109_file) if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
 $LG_AUTOCAL_DELTA_E_FORMULA=autocal_delta_e_formula($config);
