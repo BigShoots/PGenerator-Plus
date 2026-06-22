@@ -1562,7 +1562,7 @@ sub webui_lg_hdr_tone_map_upload (@) {
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading HDR tone-map data." }) if($client_key eq "");
  # If dpg_data is supplied, upload the 1D DPG first inside the same
- # CAL_START/CAL_END session as the tone map. Calman binds the DPG and
+ # CAL_START/CAL_END session as the tone map. The reference binds the DPG and
  # the tone map inside a single session; PGen previously uploaded them
  # in separate sessions and the tone-map roll-off did not bind against
  # the previously-uploaded 1D DPG (5-20% IRE luma collapsed ~10x in the

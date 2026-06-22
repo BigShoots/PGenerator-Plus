@@ -42,7 +42,7 @@ sub fork_pattern_daemon (@) {
 }
 
 ###############################################
-#            Calman APL Helpers               #
+#            Reference APL Helpers            #
 ###############################################
 sub calman_apl_levels (@) {
  my $bits=int($bits_default || 8);
@@ -312,7 +312,7 @@ sub calman_apply_init_mode (@) {
  }
 }
 #
-# Track whether any Calman connection is currently using the GCI
+# Track whether any reference connection is currently using the GCI
 # (UPGCI 2.0) control plane. The flag is mirrored into PGenerator.conf
 # so that drm_override.so can suppress its connector-property overrides
 # while GCI is driving PGenerator. The flag is per-connection
@@ -767,7 +767,7 @@ sub pattern_daemon {
     #
     $scaling_done=0;
     #
-    # Calman Unified Pattern Generator Control Interface Init Request
+    # Reference Unified Pattern Generator Control Interface Init Request
     # INIT:1.2
     #
     $calman{$connection}=0;
@@ -911,7 +911,7 @@ sub pattern_daemon {
      last;
     }
     #
-    # Calman Unified Pattern Generator Control Interface Command Request
+    # Reference Unified Pattern Generator Control Interface Command Request
     # TERM — graceful disconnect (no colon, handle separately)
     #
     if($calman{$connection} && $key=~/TERM/) {
@@ -925,7 +925,7 @@ sub pattern_daemon {
      last;
     }
     #
-    # Calman Unified Pattern Generator Control Interface Command Request
+    # Reference Unified Pattern Generator Control Interface Command Request
     # RGB_S|B|A:0512,0512,0512,0512
     # Display mode: DSMD:SDR|HDR10|HLG|DOLBYVISION
     # EOTF:0-3  PRIM:0-3  BITD:8|10|12  CLSP:BT709|BT2020
@@ -1035,13 +1035,13 @@ sub pattern_daemon {
      $type=~s/^\x02//;
      &log("Calman UPGCI: type=$type cmd=$pattern_cmd");
      #
-    # INIT — client handshake. Calman does not always send its selected
-    # resolution on connect, so apply the remembered/default Calman mode.
+    # INIT — client handshake. The reference does not always send its selected
+    # resolution on connect, so apply the remembered/default reference mode.
      #
      if($type eq "INIT") {
       &calman_reset_pattern_state("INIT");
       &calman_apply_init_mode();
-      # Calman UPGCI 2.0 is the GCI plugin's handshake. The Calman RPC
+      # The reference's UPGCI 2.0 is the GCI plugin's handshake. The reference RPC
       # plugin connects to the RPC socket and never sends INIT:2.0, so
       # this branch is GCI-only. Mark the connection (and the global
       # PGenerator.conf) so that drm_override.so can stop overwriting
@@ -1058,7 +1058,7 @@ sub pattern_daemon {
      # Helper: save a PGenerator conf key and mark settings dirty
      # (defers the pattern generator restart until a pattern command arrives)
      #
-	     # Calman GCI control plane: runtime range overrides also
+	     # Reference GCI control plane: runtime range overrides also
 	     # bypass user WebUI config. Wrap the source-range helpers
 	     # so that GCI connections are no-ops while RPC connections
 	     # keep their existing behavior.
@@ -1077,14 +1077,14 @@ sub pattern_daemon {
 	     };
 	     #
 	     # Helper: enforce signal-mode coherence on the conf as a
-	     # daemon-derived update, not a Calman write. When the GCI
+	     # daemon-derived update, not a reference write. When the GCI
 	     # gate is active, the helper-mode transition (HDR_ENABLE,
 	     # CONF_HDR, CONF_SDR, DSMD, EOTF) writes eotf/is_hdr/
 	     # primaries via calman_save_setting (allow-listed), but the
-	     # gate suppresses Calman's saves of the mode-coupled keys
+	     # gate suppresses reference saves of the mode-coupled keys
 	     # (signal_mode, is_sdr, colorimetry, dv_status,
 	     # is_ll_dovi, is_std_dovi) — which are WebUI-owned
-	     # preferences and must NOT be writable by Calman. Without
+	     # preferences and must NOT be writable by the reference. Without
 	     # this, the conf is left incoherent (is_hdr=1, eotf=2
 	     # with signal_mode=sdr, is_sdr=1, colorimetry=2), the
 	     # renderer's wire colorimetry (10) is then rewritten back
@@ -1093,11 +1093,11 @@ sub pattern_daemon {
 	     #
 	     # This helper recomputes the mode-coupled keys from the
 	     # post-save conf and writes them directly via sudo, so the
-	     # gate is bypassed (it is a daemon write, not a Calman
+	     # gate is bypassed (it is a daemon write, not a reference
 	     # write). Preference keys (rgb_quant_range, max_bpc,
 	     # color_format, min_luma, max_luma, max_cll, max_fall)
 	     # are not touched — they remain strictly WebUI-owned and
-	     # Calman's writes of them stay suppressed.
+	     # reference writes of them stay suppressed.
 	     #
 	     # DV transitions (calman_set_dv_rgb / DSMD:DOLBYVISION /
 	     # 21_HDR_MetadataMode 1-4) set the $calman_dv_transition_active
@@ -1124,7 +1124,7 @@ sub pattern_daemon {
 	      my $want_is_sdr=($eotf_val >= 2) ? "0" : "1";
 	      my $want_is_hdr=($eotf_val >= 2) ? "1" : "0";
 	      # Colorimetry: BT.2020 (9) for HDR/HLG; BT.709 (2) for SDR.
-	      # If primaries is BT.709 (0) inside an HDR eotf, Calman
+	      # If primaries is BT.709 (0) inside an HDR eotf, the reference
 	      # signaled a non-BT.2020 HDR mode — match the existing
 	      # CONF_HDR primary-detection logic and use BT.709 (2).
 	      my $want_colorimetry=($eotf_val >= 2) ? (($prim_val == 0) ? "2" : "9") : "2";
@@ -1146,7 +1146,7 @@ sub pattern_daemon {
 	       # as daemon-derived updates. The GCI gate would have
 	       # suppressed calman_set_dv_rgb's saves of these, so the
 	       # conf would otherwise stay at dv_status=0 (HDR10) even
-	       # though Calman asked for DV.
+	       # though the reference asked for DV.
 	       push @coherence_writes,["dv_status","1"];
 	       push @coherence_writes,["is_ll_dovi","0"];
 	       push @coherence_writes,["is_std_dovi","1"];
@@ -1173,35 +1173,35 @@ sub pattern_daemon {
 	     };
 	     my $calman_save_setting = sub {
 	      my ($conf_key,$conf_val)=@_;
-	      # Calman GCI plugin (UPGCI 2.0 control plane) must not
+	      # The reference GCI plugin (UPGCI 2.0 control plane) must not
 	      # override the user's WebUI signal-mode settings. The
-	      # Calman-controlled values that affect the HDR plane
+	      # reference-controlled values that affect the HDR plane
 	      # encoding are is_hdr, primaries, and eotf; everything
 	      # else (signal_mode, is_sdr, colorimetry, dv_*, etc.) is
 	      # left to the WebUI configuration. is_hdr is allow-listed
 	      # so the GCI plugin's HDR_ENABLE command actually turns
-	      # HDR on; without it the "check HDR in Calman" toggle is
+	      # HDR on; without it the GCI HDR enable toggle is
 	      # silently dropped. color_format and max_bpc are also
-	      # allow-listed so that the Calman source-format /
+	      # allow-listed so that the reference source-format /
 	      # bit-depth controls (COLF:YCBCR444, BITD:10, etc.)
 	      # actually take effect on the wire; the WebUI's
 	      # color_format and max_bpc preference is only meaningful
-	      # as a fallback when Calman isn't driving these.
+	      # as a fallback when the reference isn't driving these.
 	      # min_luma, max_luma, max_cll and max_fall are
-	      # allow-listed so that Calman's MAXL / MINL / MAXCLL /
+	      # allow-listed so that the MAXL / MINL / MAXCLL /
 	      # MAXFALL (HDR mastering display luminance metadata)
 	      # actually take effect — the renderer's
 	      # updateHDR_Infoframe() reads these from the conf on
 	      # every page flip, so saving them is harmless and is
-	      # the only way Calman can drive luminance during a
-	      # calibration pass under GCI. rgb_quant_range is
-	      # also allow-listed so that Calman's source-range
+	      # the only way the GCI client can drive luminance during
+	      # a calibration pass under GCI. rgb_quant_range is
+	      # also allow-listed so that the source-range
 	      # commands (CONF_LEVEL:Range Limited, QRNG:LIMITED,
 	      # SetRange:1) actually stick — without it the WebUI
 	      # can show "Limited" while the server-side
-	      # rgb_quant_range stays at the last value Calman
+	      # rgb_quant_range stays at the last value the reference
 	      # sent (typically Full for HDR), and the next poll
-	      # flips the UI back. The Calman RPC plugin never
+	      # flips the UI back. The reference RPC plugin never
 	      # sets $calman_gci, so the RPC path is unaffected.
 	      if($calman_gci{$connection} &&
 	        $conf_key ne "primaries" && $conf_key ne "eotf" && $conf_key ne "is_hdr" &&
@@ -1285,7 +1285,7 @@ sub pattern_daemon {
      #
      # Helper: Dolby Vision transport is platform-specific. Pi 5 uses RGB
      # tunneling; Pi 4-family keeps the historical 2.6.x RGB/full/12b path.
-     # Later generic Calman format/range/bit-depth commands must not undo it.
+     # Later generic reference format/range/bit-depth commands must not undo it.
      #
      my $calman_dv_active = sub {
       return 1 if(int($pgenerator_conf{"dv_status"} || 0) == 1);
@@ -1327,7 +1327,7 @@ sub pattern_daemon {
      # if this flag is set we re-enter apply to pick up the latest
      # conf (subsequent commands during the in-flight apply may have
      # updated the conf further). Without this serialization, rapid
-     # Calman setting changes (e.g. CONF_HDR + COLF + BITD in quick
+     # reference setting changes (e.g. CONF_HDR + COLF + BITD in quick
      # succession) trigger back-to-back pattern_generator_stop/start
      # cycles that hit the documented DRM-master race persistently
      # and the renderer stays dead. With serialization only one
@@ -1343,7 +1343,7 @@ sub pattern_daemon {
      # drm_override.so re-applies connector properties (Colorimetry,
      # output_format, max_bpc, rgb_quant_range) on every atomic
      # commit. Skipping the stop+start cycle for non-mode changes
-     # (the common case: Calman adjusting luminance, primaries, or
+     # (the common case: reference adjusting luminance, primaries, or
      # rgb_quant_range during a calibration pass) avoids the
      # documented DRM-master race that was killing the renderer
      # on every "apply" call. Stored in a package-global hash keyed
@@ -1468,7 +1468,7 @@ sub pattern_daemon {
       return ($did_work ? 1 : 0);
      };
     #
-    # Helper: Calman DV calibration uses Standard Dolby Vision transport.
+    # Helper: The reference's DV calibration uses Standard Dolby Vision transport.
     # Absolute/Relative select the renderer map mode and matching legacy
     # metadata-mode value; they do not switch to Low Latency transport.
     #
@@ -1703,7 +1703,7 @@ sub pattern_daemon {
        $calman_save_setting->("colorimetry","2");
       }
       $calman_save_setting->("primaries","$prim_val");
-	      # Set bit depth based on EOTF unless Calman sent or implied a source bit depth.
+	      # Set bit depth based on EOTF unless the reference sent or implied a source bit depth.
 	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->($eotf_val >= 2 ? "10" : "8",$eotf_val >= 2));
       # Luminance metadata
       $calman_save_setting->("min_luma","$hdr_min_luma") if($hdr_min_luma_present);
@@ -1762,7 +1762,7 @@ sub pattern_daemon {
        # NoMetadata — SDR mode
        $calman_set_non_dv_mode->("sdr",0,"2","8");
 	      } elsif($mm_val >= 1 && $mm_val <= 4) {
-	       # Dolby Vision modes — drive both the renderer map mode and Calman's
+	       # Dolby Vision modes — drive both the renderer map mode and the reference's
 	       # legacy metadata-mode bookkeeping.
 	       if($mm_val == 2) {
 	        $calman_set_dv_rgb->("0","2"); # Perceptual
@@ -2082,7 +2082,7 @@ sub pattern_daemon {
         # Match interlaced/progressive
         my $m_ip=($m_i eq "i") ? "i" : "p";
         next if($m_ip ne $req_ip);
-        # Match refresh rate; tolerate Calman integer labels for fractional HDMI modes.
+        # Match refresh rate; tolerate reference integer labels for fractional HDMI modes.
         my $m_rate_num=$m_rate + 0;
         my $rate_match=(int($m_rate_num) == int($req_rate)) || (abs($m_rate_num - ($req_rate + 0)) < 0.25);
         next if(!$rate_match);
@@ -2187,7 +2187,7 @@ sub pattern_daemon {
          #   1 = Absolute
          #   2 = Relative
          # Keep dv_metadata aligned for clients that key off the legacy
-         # Calman metadata mode values:
+         # reference metadata mode values:
          #   2 = Perceptual, 3 = Absolute, 4 = Relative
          if($dv_mode eq "PERCEPTUAL") {
           $calman_set_dv_rgb->("0","2");
@@ -2534,7 +2534,7 @@ sub send_key_to_client (@) {
 }
 
 ###############################################
-#        Send Calman Payload To Client        #
+#        Send Reference Payload To Client     #
 ###############################################
 sub send_calman_payload_to_client (@) {
  my $connection = shift;

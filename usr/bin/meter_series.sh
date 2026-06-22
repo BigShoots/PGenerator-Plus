@@ -956,7 +956,7 @@ EOJSON
  if [[ -n "$REFRESH_RATE" ]]; then
   SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
  fi
- # Low-light handler (Calman-style) flag set. OFF maps to no -Y flag: spotread
+ # Low-light handler (reference-style) flag set. OFF maps to no -Y flag: spotread
  # uses its default adaptive integration. When the handler is ON, the
  # operator-selected a/aa/aaa averaging is used (multiple internal reads).
  # (Refresh-rate calibration is skipped separately via -Y R:rate above.)

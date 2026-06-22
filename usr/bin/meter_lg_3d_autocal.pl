@@ -854,7 +854,7 @@ sub model_from_readings {
  # so the cube nodes ARE BT.2020 inputs and MUST be solved in the BT.2020
  # container. Solving in P3 treated BT.2020 inputs as P3 and compressed
  # P3-in-BT.2020 content (~72% of BT.2020) down into P3 -> ~Rec.709 sized
- # (undersaturated, CalMAN-measured). P3 is the panel's achievable gamut and the
+ # (undersaturated, per the reference relay capture). P3 is the panel's achievable gamut and the
  # series SCORING target -- NOT the cube's solve domain.
  $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10");
  my %by;
@@ -1026,10 +1026,10 @@ sub native_rgb_to_xyz_matrix {
 }
 
 sub build_gamut_drive_matrix {
- # CalMAN-matching cube build: a WHITE-PRESERVING 3x3 gamut matrix mapping the
+ # Reference-matching cube build: a WHITE-PRESERVING 3x3 gamut matrix mapping the
  # container primaries (BT.2020) onto the panel's MEASURED native primaries,
  # applied in the DPG calibration gamma domain (2.2 for HDR). Decoded from
- # CalMAN's own C2 cube, out_gamma = M x in_gamma fits to <3 codes RMS and M's
+ # the reference's own C2 cube, out_gamma = M x in_gamma fits to <3 codes RMS and M's
  # rows sum to 1.0 (neutral preserved). Our previous per-node XYZ solve produced
  # a NON-white-preserving matrix (rows summed ~1.08/0.97/0.89) that pushed
  # colours red-up/blue-down as they leave the neutral axis -- the residual
@@ -1465,7 +1465,7 @@ sub reset_3d_lut_to_unity_before_profile {
  return undef if(!upload_requested($config) || $config->{"fixture_mode"});
  # Full autocal: the greyscale stage already opened CAL_START and uploaded
  # an identity BT2020 gamut + identity 3D LUT container (Step 1 of the
- # Calman-matching flow), and the commit path leaves CAL_START active
+ # Reference-matching flow), and the commit path leaves CAL_START active
  # (Step 2) so this 3D LUT worker inherits it. We MUST NOT open a new
  # CAL_START/CAL_END here -- that would close the greyscale's session
  # and break the post-DPG gamut + 3D LUT rebind the tone map depends on.
@@ -1662,7 +1662,7 @@ eval {
     # Full autocal: the greyscale stage already opened CAL_START and uploaded
     # an identity 3D LUT container. We must INHERIT that CAL_START (skip our
     # own CAL_START) and KEEP it active (skip our own CAL_END) so the
-    # subsequent tone-map upload can land inside the same session. Calman's
+    # subsequent tone-map upload can land inside the same session. The reference's
     # HDR OLED DPG flow (relay capture) uses a single CAL_START across the
     # DPG, the 3D LUT, and the tone map -- same pattern.
     ($full_workflow_upload
@@ -1690,7 +1690,7 @@ eval {
     write_state($state);
     # Full autocal: after the 3D LUT upload, upload the HDR tone map inside
     # the SAME active CAL_START session (the 3D LUT upload used
-    # keep_calibration_mode=true). Calman uploads the tone map LAST in its
+    # keep_calibration_mode=true). The reference uploads the tone map LAST in its
     # single CAL_START -- the tone map helper sends CAL_END on its own.
     # Source: greyscale stage's hdr20_1d_tonemap_peak_luminance + DPG array
     # (the WebUI passes them through full_workflow_peak_luminance /
