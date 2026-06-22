@@ -18084,9 +18084,18 @@ function meterSetTargetLevels(){
  if(bUm.checked){ black.placeholder=''; black.removeAttribute('placeholder'); }
  else if(!black.hasAttribute('placeholder')){ black.setAttribute('placeholder','auto'); }
  const wVal=Number(white.value); const bVal=Number(black.value);
+ const oled=meterDisplayTypeIsOledClass();
+ const wDef={useMeasured:true,value:null};
+ const bDef=oled?{useMeasured:false,value:0}:{useMeasured:true,value:null};
+ const wUseMeasured=!!wUm.checked;
+ const wValue=(!wUseMeasured&&Number.isFinite(wVal))?wVal:null;
+ const bUseMeasured=!!bUm.checked;
+ const bValue=(!bUseMeasured&&Number.isFinite(bVal))?bVal:null;
+ const wOver=(wUseMeasured!==wDef.useMeasured||wValue!==wDef.value);
+ const bOver=(bUseMeasured!==bDef.useMeasured||bValue!==bDef.value);
  const state={
-  white:{useMeasured:!!wUm.checked,value:(!wUm.checked&&Number.isFinite(wVal))?wVal:null,overridden:true},
-  black:{useMeasured:!!bUm.checked,value:(!bUm.checked&&Number.isFinite(bVal))?bVal:null,overridden:true}
+  white:{useMeasured:wUseMeasured,value:wValue,overridden:wOver},
+  black:{useMeasured:bUseMeasured,value:bValue,overridden:bOver}
  };
  try{ localStorage.setItem(METER_TARGET_LEVELS_KEY,JSON.stringify(state)); }catch(e){}
  // Live target math depends on these; refresh charts if a redraw hook exists.
