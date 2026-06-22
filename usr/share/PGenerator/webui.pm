@@ -7945,8 +7945,10 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
-#meterSettingsGrid .field-target-row{flex:1 1 100%;display:flex;gap:10px 12px;align-items:flex-start;flex-wrap:wrap}
-#meterSettingsGrid .field-target-row .field{flex:1 1 200px;min-width:180px}
+#meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;margin-top:4px}
+#meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 auto;min-width:88px}
+#meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:60px}
+#meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
 #meterSettingsGrid .field-patch{width:150px}
@@ -8127,10 +8129,10 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterProgress,
 #meterCard.meter-patterns-only #meterStopBtn{display:none !important}
 #meterCard.meter-patterns-only #meterSettingsGrid .field-display,
+#meterCard.meter-patterns-only #meterSettingsGrid .meter-target-white-row,
+#meterCard.meter-patterns-only #meterSettingsGrid .meter-target-black-row,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamut,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamma,
-#meterCard.meter-patterns-only #meterSettingsGrid .field-target-white,
-#meterCard.meter-patterns-only #meterSettingsGrid .field-target-black,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-hdr,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-delay,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-refresh{display:none !important}
@@ -8516,25 +8518,39 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
          </div>
         </span>
        </div>
-       <div class="meter-xyz-toggle-row" id="meterCustomD65ToggleWrap">
-        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterCustomD65Enabled"> Custom D65 <span class="meter-help-tip" title="Use a measured or entered whitepoint for D65 target colorspaces only." aria-label="Custom D65 help">?</span></label>
-         <span class="meter-xyz-gear-wrap is-hidden">
-          <button type="button" id="meterCustomD65Gear" class="meter-xyz-gear" aria-label="Custom D65 options" aria-expanded="false" title="Custom D65 options">&#9881;</button>
-         <div class="meter-xyz-gear-popover" id="meterCustomD65GearPopover" role="dialog" aria-label="Custom D65 options">
-          <div class="field-whitepoint" id="meterTargetWhitePointField">
-           <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Custom values update the CIE target, greyscale target white, and color analysis for D65 target colorspaces." aria-label="Target white point help">?</span></label>
-           <div class="meter-whitepoint-row">
-            <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
-            <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
-            <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
+        <div class="meter-xyz-toggle-row" id="meterCustomD65ToggleWrap">
+         <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterCustomD65Enabled"> Custom D65 <span class="meter-help-tip" title="Use a measured or entered whitepoint for D65 target colorspaces only." aria-label="Custom D65 help">?</span></label>
+          <span class="meter-xyz-gear-wrap is-hidden">
+           <button type="button" id="meterCustomD65Gear" class="meter-xyz-gear" aria-label="Custom D65 options" aria-expanded="false" title="Custom D65 options">&#9881;</button>
+          <div class="meter-xyz-gear-popover" id="meterCustomD65GearPopover" role="dialog" aria-label="Custom D65 options">
+           <div class="field-whitepoint" id="meterTargetWhitePointField">
+            <label class="meter-field-label">Target White x / y <span class="meter-help-tip" title="Custom values update the CIE target, greyscale target white, and color analysis for D65 target colorspaces." aria-label="Target white point help">?</span></label>
+            <div class="meter-whitepoint-row">
+             <input type="number" id="meterTargetWhiteX" min="0.001" max="0.999" step="0.0001" placeholder="0.3127">
+             <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
+             <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
+            </div>
            </div>
           </div>
-         </div>
-        </span>
+         </span>
+        </div>
+        <div class="meter-target-white-row">
+         <label class="meter-target-inline-label">Target White</label>
+         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="measured" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <span class="meter-inline-unit">cd/m&sup2;</span>
+         <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
+         <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
+        </div>
+        <div class="meter-target-black-row">
+         <label class="meter-target-inline-label">Target Black</label>
+         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="measured" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <span class="meter-inline-unit">cd/m&sup2;</span>
+         <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
+         <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
+        </div>
        </div>
-      </div>
+     </div>
     </div>
-   </div>
    <div class="field field-gamut">
     <label>Target Colorspace <span class="meter-help-tip" title="Affects meter target math and chart references. Dolby Vision patterns still use BT.2020 container signalling; this setting changes the analysis target, not the DV transport primaries." aria-label="Target colorspace help">?</span></label>
     <select id="meterTargetGamut">
@@ -8589,26 +8605,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <label class="meter-toggle" title="Apply ITU-R BT.2390 tone-mapping so HDR/PQ targets model display roll-off instead of hard clipping to the selected peak">
      <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
     </label>
-   </div>
-   <div class="field-target-row">
-   <div class="field field-target-white">
-    <label>Target White <span class="meter-help-tip" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Check 'Use measured' to follow the latest 100% white reading; uncheck and enter a value to force that reference for all read targets (charts, series, and autocal)." aria-label="Target white help">?</span></label>
-    <div class="meter-inline-value">
-     <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="measured" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
-     <span class="meter-inline-unit">cd/m&sup2;</span>
-     <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
-     <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
-    </div>
-   </div>
-   <div class="field field-target-black">
-    <label>Target Black <span class="meter-help-tip" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Check 'Use measured' to follow the latest 0% black reading; uncheck and enter a value to force that reference for all read targets (charts, series, and autocal)." aria-label="Target black help">?</span></label>
-    <div class="meter-inline-value">
-     <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="measured" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
-     <span class="meter-inline-unit">cd/m&sup2;</span>
-     <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
-     <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
-    </div>
-   </div>
    </div>
   	   <div class="field field-delay">
 	    <label>Meter Delay</label>
