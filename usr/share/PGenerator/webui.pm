@@ -13594,11 +13594,15 @@ function meterWrgbPrimaryCeilings(){
 // Target luminance derived from the patch STIMULUS rather than a measured
 // reference (additive primary sum / measured white). On a WRGB OLED the panel
 // tracks the PQ signal, so the correct, panel-independent target is the
-// absolute luminance the patch SIGNAL encodes: PQ-decode each channel code,
-// clamp each to the panel's measured per-primary ceiling (so a full-code
-// secondary does not exceed the achievable primary sum -- greys are exempt and
-// clamped to measured white by the caller, since white is made with the W
-// subpixel and exceeds the primary sum), then form XYZ in the analysis gamut.
+// absolute luminance the patch SIGNAL encodes: PQ-decode each channel code and
+// form XYZ in the analysis gamut. The per-primary ceiling clamp is ONLY
+// applied to full-saturation primaries/secondaries (the one case where the
+// decoded per-channel nits exceed the achievable primary sum); mid-saturation
+// and ColorChecker chromaticity patches must NOT be clamped, because doing so
+// shifts chromaticity and produces dE explosions on bright ColorChecker
+// patches (Yellow, Orange Yellow) once the 100% R/G/B primaries have populated
+// the ceiling cache. Greys are clamped to measured white by the caller (W
+// subpixel makes white exceed the primary sum), not here.
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
 function meterWrgbStimulusTargetY(reading){
@@ -13618,7 +13622,22 @@ function meterWrgbStimulusTargetY(reading){
  let dr=meterDecodeColorTargetChannel(r);
  let dg=meterDecodeColorTargetChannel(g);
  let db=meterDecodeColorTargetChannel(b);
- if(!meterReadingIsGreyscale(reading)){
+ // Per-primary ceiling clamp. ONLY applied to full-saturation primaries and
+ // secondaries (sat_pct>=99.5) whose chromaticity sits on the gamut boundary
+ // (a full-code 100% Cyan in HDR PQ would otherwise decode to ~peak per
+ // channel, far beyond the panel's achievable additive primary sum). Color-
+ // Checker chromaticity patches and saturation-sweep mid-points do NOT qualify:
+ // their chromaticity lies inside the BT.2020/P3 gamut, the panel reproduces
+ // them by tracking the PQ signal, and clamping them to the linear-RGB-space
+ // ceilings shifts chromaticity, producing the post-series dE explosion on
+ // bright ColorChecker patches (Yellow, Orange Yellow) once the 100% R/G/B
+ // primaries have populated the ceiling cache. Restricting the clamp to the
+ // full-saturation case makes the chart target stable across the series run
+ // and across reread vs. fresh-read -- the ceiling depends on whether the 100%
+ // primaries have been measured yet, but a chromaticity patch should never be
+ // affected by that. Greys are clamped to measured white by the caller (W
+ // subpixel makes white exceed the primary sum), not here.
+ if(!meterReadingIsGreyscale(reading) && (reading.series_color!=null) && Number(reading.sat_pct)>=99.5){
   const ceil=meterWrgbPrimaryCeilings();
   if(ceil[0]>0) dr=Math.min(dr,ceil[0]);
   if(ceil[1]>0) dg=Math.min(dg,ceil[1]);
