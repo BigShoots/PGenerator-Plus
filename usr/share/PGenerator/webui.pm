@@ -13456,6 +13456,36 @@ function meterColorSeriesReferenceNits(){
  return Math.max(1,meterColorReferenceNits());
 }
 
+function meterWrgbChromaticReferenceNits(){
+ // WRGB OLED self-detection for HDR chromatic targets (mirrors
+ // meter_lg_3d_autocal.pl's chromatic_white_y). A white-subpixel OLED forms
+ // white with its W subpixel, so measured white is brighter than the additive
+ // R+G+B sum. Chromatic content is produced WITHOUT the W subpixel and can
+ // only reach that additive sum; referencing chromatic targets to measured
+ // white over-drives every sub-saturation node (~1.785x on the C2). On an
+ // additive RGB panel add_y == white_y and this returns null (no correction).
+ if(!meterChartIsHdr()) return null;
+ const white=meterFindMeasuredWhiteReading();
+ const whiteY=white?meterReadingLuminanceNits(white):0;
+ if(!(whiteY>0)) return null;
+ const prim={};
+ const curMode=String(meterActiveChartSignalMode()||'').toLowerCase();
+ (Array.isArray(meterReadings)?meterReadings:[]).forEach(r=>{
+  if(!r||!r.series_color) return;
+  const c=String(r.series_color).toLowerCase();
+  if(c!=='red'&&c!=='green'&&c!=='blue') return;
+  if(Number(r.sat_pct) < 99.5) return;
+  const rdMode=String(r.signal_mode||'').toLowerCase();
+  if(rdMode && rdMode!==curMode) return;
+  const y=meterReadingLuminanceNits(r);
+  if(y>0 && !(prim[c]>0)) prim[c]=y;
+ });
+ const addY=(prim.red||0)+(prim.green||0)+(prim.blue||0);
+ if(!(addY>0)) return null;
+ if(addY < whiteY*0.98) return addY;
+ return null;
+}
+
 function meterBlackReadingY(){
  return meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]);
 }
@@ -13777,9 +13807,10 @@ function meterInferSdrSatReferenceNits(){
 function meterSaturationTargetXYZ(colorName,satPercent){
  const rgb=meterBuildSaturationTargetLinearRgb(colorName,satPercent);
  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
- // Use the same per-mode luminance reference as target_Yn-based color
- // patches so saturation sweeps and color series stay aligned.
- let scale=meterColorSeriesReferenceNits();
+  // Use the same per-mode luminance reference as target_Yn-based color
+  // patches so saturation sweeps and color series stay aligned.
+  let scale=meterWrgbChromaticReferenceNits();
+  if(!(scale>0)) scale=meterColorSeriesReferenceNits();
  if(!(meterChartIsPq()&&!meterChartIsDv()) && !meterChartIsHdr()){
   const white=meterFindMeasuredWhiteReading();
   if(!(white&&white.Y>0)){
@@ -13897,12 +13928,20 @@ function meterTargetXYZForReading(reading){
  }
  if(Number.isFinite(tx)&&Number.isFinite(ty)&&ty>0&&Number.isFinite(tYn)&&tYn>=0){
   let refY=meterColorSeriesReferenceNits();
+  const _activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+  // WRGB OLED: chromatic content can only reach the additive R+G+B sum, so
+  // reference it (meterWrgbChromaticReferenceNits) instead of measured white
+  // when a white subpixel is auto-detected. Neutral/grey stays on white.
+  if(_activeColorSeries && meterChartIsHdr() && !meterReadingIsGreyscale(reading)){
+   const _wrgbRef=meterWrgbChromaticReferenceNits();
+   if(_wrgbRef>0) refY=_wrgbRef;
+  }
   // HDR10 color/sat series carry PQ-absolute target_Yn (normalized to the
   // 10000-nit peak), so colored patches reference the PQ peak. The neutral
   // WHITE reference patch (target_Yn=1) must instead reference the display's
   // achieved white; otherwise the panel's normal peak rolloff reads as a
   // spurious white luminance error.
-  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&meterActiveChartSignalMode()==='hdr10'&&meterReadingIsGreyscale(reading)){
+  if(_activeColorSeries&&meterActiveChartSignalMode()==='hdr10'&&meterReadingIsGreyscale(reading)){
    const _whiteRef=meterFindMeasuredWhiteReading();
    const _whiteRefY=meterReadingLuminanceNits(_whiteRef);
    if(_whiteRefY>0) refY=_whiteRefY;
