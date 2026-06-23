@@ -13150,6 +13150,24 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
 	$target_de=0.05 if($target_de < 0.05);
 	$target_de=5.0 if($target_de > 5.0);
+	# Per-anchor target_de multiplier at low IRE. The panel's PQ EOTF floor
+	# + meter noise at very low stimulus (1.4-2% IRE) make the set target
+	# physically unreachable: e.g. target=0.5 means dE<=0.5, but the best
+	# achievable on the OLED65C2PUA / OLED48C1AUB at 1.4% is ~0.7-0.9 dE.
+	# Without relaxation the best-so-far revert logic catches every
+	# oscillation cycle, but the running best dE never crosses the unrelaxed
+	# threshold, so the worker keeps "trying" after every revert -- the
+	# 2026-06-23 1.4% slot ran 16 iters / 8.6 min for ~4 useless post-best
+	# iterations per cycle. Default 2.0 at very-low IRE matches the operator
+	# directive "double the set target": with set target 0.5 the effective
+	# target at 1.4% is 1.0; a best-so-far dE of 0.72 then converges.
+	my $target_de_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}+0) : 1.5;
+	$target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
+	$target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
+	my $target_de_very_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}+0) : 2.0;
+	$target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
+	$target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
+	$target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
 	# Acceptance threshold: once ANY patch (0-100% IRE) drops below this dE
 	# (default 0.3) it is "good enough" -- snapshot it, try ONE more refinement
 	# move, and if that move worsens dE revert to the best + re-read + move on
@@ -13465,6 +13483,23 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $gamma_effective=lg_autocal_expected_gamma_for_signal_mode_and_ire($_anchor_signal_mode,$_anchor_ire);
 		$gamma_effective=1.5 if($gamma_effective+0 < 1.5);
 		$gamma_effective=3.0 if($gamma_effective+0 > 3.0);
+		# Per-anchor effective target_de: the set $target_de is the operator's
+		# intent, but at very-low IRE the panel floor + meter noise make it
+		# unreachable. Apply the IRE-tier multiplier so a best-so-far dE like
+		# 0.72 at 1.4% IRE counts as converged when the operator set 0.5 with
+		# default 2x very-low multiplier (effective 1.0). The skip-acceptance
+		# threshold must scale with the same effective target so the
+		# "instant-skip when already below 60% of target" path stays
+		# consistent with the convergence check.
+		my $_effective_target_de=$target_de;
+		my $_effective_skip_de=$acceptance_skip_de;
+		if($_anchor_ire <= $very_low_ire_threshold) {
+		 $_effective_target_de=$target_de*$target_de_very_low_multiplier;
+		 $_effective_skip_de=$_effective_target_de*$acceptance_skip_fraction;
+		} elsif($_anchor_ire <= $low_ire_threshold) {
+		 $_effective_target_de=$target_de*$target_de_low_multiplier;
+		 $_effective_skip_de=$_effective_target_de*$acceptance_skip_fraction;
+		}
 		my $y_prev=undef;
 		my $dpg_r_prev=undef;
 		my $dpg_g_prev=undef;
@@ -13731,7 +13766,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# iter's build) and the non-converged iter (after rg/gg/bg are
 			# computed). On the converged path rg/gg/bg/$floor are undef so
 			# the gain_* / damp_* fields become 0.0000 / damp-default.
-			my $conv_now=defined($de) && $de+0 <= $target_de+0;
+			my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
 			$converged=1 if($conv_now);
 			# Best-so-far with revert runs ONLY at low IRE (< low_ire_threshold,
 			# default 5%): it was built to break the constant-amplitude
@@ -13822,7 +13857,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# would mostly bounce in the meter noise floor. Treat it as
 			# converged directly -- no acceptance_pending, no extra upload,
 			# no revert dance. The target_de break below still applies.
-			if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_skip_de+0 && $acceptance_skip_fraction < 1.0) {
+			if(!$acceptance_pending && defined($de) && $de+0 < $_effective_skip_de+0 && $acceptance_skip_fraction < 1.0) {
 				$converged=1;
 				$state->{"current_delta_e"}=$de+0;
 				if(ref($state->{"hdr20_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"hdr20_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
