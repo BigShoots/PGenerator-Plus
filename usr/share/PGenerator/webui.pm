@@ -1111,11 +1111,16 @@ sub webui_http (@) {
      my $len=length($result);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
     }
-    elsif($path eq "/api/diagnostic/video-sequence" && $method eq "POST") {
-     my $result=&webui_diag_video_sequence_upload($body);
-     my $len=length($result);
-     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
-    }
+     elsif($path eq "/api/diagnostic/video-sequence" && $method eq "POST") {
+      my $result=&webui_diag_video_sequence_upload($body);
+      my $len=length($result);
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+     }
+     elsif($path eq "/api/diagnostic/delete" && $method eq "POST") {
+      my $result=&webui_diag_asset_delete($body);
+      my $len=length($result);
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+     }
   elsif($path eq "/api/ccss/create/start" && $method eq "POST") {
    my $result=&webui_ccss_create_start($body);
    my $len=length($result);
@@ -4188,8 +4193,30 @@ sub webui_diag_video_sequence_upload (@) {
   &_webui_diag_asset_reset_dir($tmp_dir);
   return '{"status":"error","message":"Failed to finalize video sequence"}';
  }
- &log("WebUI: diagnostic video sequence uploaded: $safe_name ($frame_total frames)");
- return '{"status":"ok","filename":"'.&_webui_json_escape($safe_name).'","frame_total":'.$frame_total.',"message":"Prepared diagnostic video renderer sequence"}';
+  &log("WebUI: diagnostic video sequence uploaded: $safe_name ($frame_total frames)");
+  return '{"status":"ok","filename":"'.&_webui_json_escape($safe_name).'","frame_total":'.$frame_total.',"message":"Prepared diagnostic video renderer sequence"}';
+}
+
+sub webui_diag_asset_delete (@) {
+ my ($body)=@_;
+ my $kind="";
+ $kind=lc($1) if($body =~ /"kind"\s*:\s*"(video|image)"/i);
+ my $fname="";
+ $fname=$1 if($body =~ /"filename"\s*:\s*"([^"]{1,240})"/);
+ my ($resolved_kind,$dir)=&_webui_diag_asset_kind_info($kind);
+ return '{"status":"error","message":"Invalid asset type"}' if($resolved_kind eq "" || $dir eq "");
+ my $safe_name=&_webui_diag_asset_safe_filename($fname,$resolved_kind);
+ return '{"status":"error","message":"Invalid filename"}' if($safe_name eq "");
+ my $path="$dir/$safe_name";
+ return '{"status":"error","message":"File not found"}' if(!-f $path);
+ my $deleted=unlink($path) ? 1 : 0;
+ if($resolved_kind eq "video") {
+  my $seq_dir=&_webui_diag_asset_video_sequence_dir($safe_name);
+  &_webui_diag_asset_reset_dir($seq_dir) if($seq_dir ne "");
+ }
+ return '{"status":"error","message":"Delete failed"}' if(!$deleted);
+ &log("WebUI: custom diagnostic $resolved_kind deleted: $safe_name");
+ return '{"status":"ok","filename":"'.&_webui_json_escape($safe_name).'"}';
 }
 
 sub _webui_ccss_meta (@) {
@@ -8136,13 +8163,17 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .pat-section.collapsed .pat-content{display:none}
 .diag-custom-assets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:min(100%,570px)}
 .diag-custom-asset{min-width:0}
-.diag-custom-picker{display:grid;grid-template-columns:minmax(0,1fr) 32px 32px;gap:6px;align-items:center}
+.diag-custom-picker{display:grid;grid-template-columns:minmax(0,1fr) 32px 32px 32px;gap:6px;align-items:center}
 .diag-custom-picker .btn{height:36px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1rem;line-height:1;padding:0}
 .diag-custom-picker .diag-asset-icon-btn{height:28px;min-height:28px;width:32px;padding:0;align-self:stretch}
 .diag-custom-picker .diag-asset-icon-btn{font-size:0!important}
 .diag-custom-picker .diag-asset-icon{display:none}
 .diag-custom-picker button[onclick^="diagPlaySelectedAsset"]::before{content:'';display:block;width:0;height:0;border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:10px solid currentColor;transform:translateX(1px)}
 .diag-custom-picker button[onclick="stopPattern()"]::before{content:'';display:block;width:10px;height:10px;border-radius:1px;background:currentColor}
+.diag-custom-picker button[onclick^="diagDeleteSelectedAsset"]::before{content:'';display:block;width:11px;height:12px;border:1.5px solid currentColor;border-top-left-radius:2px;border-top-right-radius:2px;box-sizing:border-box}
+.diag-custom-picker button[onclick^="diagDeleteSelectedAsset"]::after{content:'';position:absolute;width:7px;height:1.5px;border:1.5px solid currentColor;border-bottom:none;box-sizing:border-box;border-top-left-radius:2px;border-top-right-radius:2px;top:0;left:50%;transform:translateX(-50%) translateY(1px)}
+.diag-custom-picker .diag-asset-icon-btn-delete:disabled{opacity:.35;cursor:not-allowed}
+.diag-custom-picker .diag-asset-icon-btn-delete:not(:disabled):hover{color:var(--red);border-color:var(--red)}
 @media (max-width:720px){.diag-pattern-layout{grid-template-columns:1fr}}
 @media (hover:hover) and (pointer:fine){.pat-btn:hover{border-color:var(--accent);background:#1a1a2e;transform:translateY(-1px)}}
 .sat-row{display:flex;align-items:center;gap:4px;margin-bottom:4px}
@@ -8437,6 +8468,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         </select>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="diagPlaySelectedAsset('video')" title="Play custom diagnostic video" aria-label="Play custom diagnostic video"><span class="diag-asset-icon diag-play-icon"></span></button>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="stopPattern()" title="Stop custom diagnostic video" aria-label="Stop custom diagnostic video"><span class="diag-asset-icon diag-stop-icon"></span></button>
+        <button id="diagCustomVideoDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('video')" title="Delete selected custom diagnostic video" aria-label="Delete selected custom diagnostic video" disabled><span class="diag-asset-icon diag-delete-icon"></span></button>
        </div>
        <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded videos play through the legacy video playback path.</div>
       </div>
@@ -8458,6 +8490,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         </select>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="diagPlaySelectedAsset('image')" title="Play custom diagnostic image" aria-label="Play custom diagnostic image"><span class="diag-asset-icon diag-play-icon"></span></button>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="stopPattern()" title="Stop custom diagnostic image" aria-label="Stop custom diagnostic image"><span class="diag-asset-icon diag-stop-icon"></span></button>
+        <button id="diagCustomImageDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('image')" title="Delete selected custom diagnostic image" aria-label="Delete selected custom diagnostic image" disabled><span class="diag-asset-icon diag-delete-icon"></span></button>
        </div>
        <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded images render through the IMAGE pattern path.</div>
       </div>
@@ -10692,6 +10725,44 @@ function diagRenderAssetSelect(kind,selectedValue){
  else if(sel.dataset.lastSelected&&files.includes(sel.dataset.lastSelected)) sel.value=sel.dataset.lastSelected;
  else sel.value='';
  if(sel.value!==DIAG_UPLOAD_SENTINEL) sel.dataset.lastSelected=sel.value;
+ diagUpdateDeleteButtonState(kind);
+}
+function diagUpdateDeleteButtonState(kind){
+ const sel=document.getElementById(diagAssetSelectId(kind));
+ const btn=document.getElementById(kind==='video'?'diagCustomVideoDelete':'diagCustomImageDelete');
+ if(!sel||!btn) return;
+ const v=sel.value||'';
+ const files=Array.isArray(diagCustomAssets[kind])?diagCustomAssets[kind]:[];
+ btn.disabled=!(v && v!==DIAG_UPLOAD_SENTINEL && files.includes(v));
+}
+async function diagDeleteSelectedAsset(kind){
+ const sel=document.getElementById(diagAssetSelectId(kind));
+ if(!sel) return;
+ const filename=sel.value||'';
+ if(!filename || filename===DIAG_UPLOAD_SENTINEL) return;
+ const files=Array.isArray(diagCustomAssets[kind])?diagCustomAssets[kind]:[];
+ if(!files.includes(filename)) return;
+ if(!confirm('Delete custom diagnostic '+kind+' "'+diagAssetDisplayLabel(filename)+'"?')) return;
+ const btn=document.getElementById(kind==='video'?'diagCustomVideoDelete':'diagCustomImageDelete');
+ if(btn) btn.disabled=true;
+ try{
+  if(activePattern===diagAssetPatternToken(kind,filename)) await stopPattern();
+  const r=await fetchJSON('/api/diagnostic/delete',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({kind:kind,filename:filename}),
+   _timeoutMs:8000
+  });
+  if(!r||r.status!=='ok') throw new Error(r&&r.message?r.message:'Delete failed');
+  sel.dataset.lastSelected='';
+  sel.value='';
+  await diagLoadAssetCatalog(kind,'');
+  toast('Deleted '+diagAssetDisplayLabel(filename));
+ }catch(e){
+  toast(e&&e.message?e.message:'Delete failed',true);
+ } finally {
+  diagUpdateDeleteButtonState(kind);
+ }
 }
 async function diagPlaySelectedAsset(kind){
  const sel=document.getElementById(diagAssetSelectId(kind));
@@ -10881,9 +10952,10 @@ async function diagHandleAssetSelect(kind){
   if(activePattern&&activePattern.indexOf('uploaded_diag_'+kind+':')===0) await stopPattern();
   return;
  }
- sel.dataset.lastSelected=value;
- diagBlurElement(sel);
- diagSetInfoHtml(diagAssetInfoHtml(kind,value));
+  sel.dataset.lastSelected=value;
+  diagBlurElement(sel);
+  diagSetInfoHtml(diagAssetInfoHtml(kind,value));
+  diagUpdateDeleteButtonState(kind);
 }
 async function diagHandleAssetUpload(kind,evt){
  const input=evt&&evt.target?evt.target:null;
