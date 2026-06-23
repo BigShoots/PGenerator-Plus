@@ -2982,10 +2982,9 @@ sub lg_hdr_picture_reset_apply_dynamic_contrast_off (@) {
  # apply — record that fact on every attempt and report success so the HDR
  # reset workflow is not aborted by a preference write the TV cannot honour.
  if($all_unsupported && @attempts) {
-  my $skip_msg="dynamicContrast key not supported on this picture mode; skipped.";
   my @annotated=map {
    my %a=%{$_};
-   $a{"message"}=$skip_msg if(!defined($a{"message"}) || $a{"message"} eq "");
+   $a{"skipped"}=&json_true();
    \%a;
   } @attempts;
   return (1,\@annotated);
@@ -3039,7 +3038,7 @@ sub lg_hdr_calman_reset_workflow (@) {
  if(ref($dc_attempts) eq "ARRAY") {
   foreach my $dc_a (@{$dc_attempts}) {
    next if(ref($dc_a) ne "HASH");
-   if(($dc_a->{"message"}||"") eq $dc_skip_msg) { $dc_skipped=1; last; }
+   if($dc_a->{"skipped"}) { $dc_skipped=1; last; }
   }
  }
  my $dc_message=$dc_ok
