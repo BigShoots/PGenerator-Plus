@@ -29709,7 +29709,6 @@ meterDisplayTypeEl.addEventListener('change',function(){
  }
  this.dataset.lastStableValue=v;
  meterApplyDisplayTypeSelection(v,{patchSizeDefault:true});
- if(v==='custom'||String(v).toLowerCase().startsWith('custom_')) meterOpenCustomCcssEditor();
 });
 
 // Custom CCSS file input
