@@ -100,6 +100,13 @@ like($src, qr/id="diagCustomImageDelete"[\s\S]{0,400}?onclick="diagDeleteSelecte
 like($src, qr/diag-asset-icon-btn-delete/,
      'delete buttons carry the .diag-asset-icon-btn-delete class');
 
+# Both buttons render an X glyph (U+2716) as their visible content so
+# they cannot regress to an empty/blank button.
+like($src, qr/diagCustomVideoDelete[^>]*>&#10006;</,
+     'video delete button renders a visible X glyph');
+like($src, qr/diagCustomImageDelete[^>]*>&#10006;</,
+     'image delete button renders a visible X glyph');
+
 # Sanity: still has play and stop buttons on both pickers (regression
 # guard so the new button doesn't accidentally replace one of them).
 like($src, qr/diagPlaySelectedAsset\('video'\)/,
@@ -123,7 +130,7 @@ like($src, qr/diag-custom-picker\{display:grid;grid-template-columns:minmax\(0,1
 like($src, qr/diag-asset-icon-btn-delete:disabled\{opacity:\.35;cursor:not-allowed/,
      'delete button has a disabled visual state (opacity + cursor)');
 # Hover-red so the destructive intent is telegraphed.
-like($src, qr/diag-asset-icon-btn-delete:not\(:disabled\):hover\{color:var\(--red\);border-color:var\(--red\)/,
+like($src, qr/diag-asset-icon-btn-delete:not\(:disabled\):hover\{color:#fff;background:var\(--red\)/,
      'delete button hovers red when enabled');
 
 # ---------------------------------------------------------------------------
@@ -183,5 +190,17 @@ like($delete_js, qr/!files\.includes\(filename\)\)\s*return/,
 # ---------------------------------------------------------------------------
 unlike($src, qr/diag-custom-picker\{display:grid;grid-template-columns:minmax\(0,1fr\) 32px 32px(?! 32px)/,
      'old 3-column diag-custom-picker grid is gone');
+
+# ---------------------------------------------------------------------------
+# 8. The first attempt at a trash glyph used CSS pseudo-elements and
+#    rendered as an empty square. Lock in the U+2716 ✕ glyph + the
+#    matching red+hover styles so we don't regress to that.
+# ---------------------------------------------------------------------------
+unlike($src, qr/diag-custom-picker button\[onclick\^="diagDeleteSelectedAsset"\]::before/,
+     'old trash pseudo-element (::before body) is gone');
+unlike($src, qr/diag-custom-picker button\[onclick\^="diagDeleteSelectedAsset"\]::after/,
+     'old trash pseudo-element (::after handle) is gone');
+like($src, qr/diag-custom-picker button\[onclick\^="diagDeleteSelectedAsset"\]\{font-size:1rem!important;color:var\(--red\)/,
+     'delete button uses font-size:1rem with red colour for the X glyph');
 
 done_testing();
