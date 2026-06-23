@@ -844,9 +844,11 @@ sub lg_picture_response_settings (@) {
 }
 
 sub lg_picture_get_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$keys,$requested_picture_mode,$tv_input,$force_ddc_white_balance)=@_;
+ my ($ip,$client_key,$connect_timeout,$keys,$requested_picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode)=@_;
  $keys=[] if(ref($keys) ne "ARRAY");
  $requested_picture_mode="" if(!defined($requested_picture_mode));
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
  $tv_input="" if(!defined($tv_input));
  $tv_input=lc($tv_input);
  $tv_input="" if($tv_input !~ /^hdmi[1-4](?:_pc)?$/);
@@ -938,7 +940,7 @@ sub lg_picture_get_workflow (@) {
 	   !&lg_picture_key_forbidden_on_ddc_only($_) &&
 	   !(($generation->{"ddc_only_white_balance"} || $force_ddc_white_balance) && $_ eq "adjustingLuminance")
 	  } @{$keys};
-	  my $picture_mode=&lg_resolve_ddc_picture_mode($ip,$requested_picture_mode);
+	  my $picture_mode=&lg_resolve_ddc_picture_mode($ip,$requested_picture_mode,$signal_mode);
 	  my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$picture_mode);
 	  my %native_settings=();
 	  my $allowed_response={};
@@ -3954,10 +3956,12 @@ sub lg_keys_include_ddc_only_forbidden (@) {
 }
 
 sub lg_find_latest_ddc_picture_mode (@) {
- my $ip=shift;
+ my ($ip,$signal_mode)=@_;
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
  return "" if(!&valid_ipv4($ip) || !-d $LG_DDC_DIR);
  my $prefix=&lg_ddc_token($ip)."-";
- my $best_path="";
+ my $best_mode="";
  my $best_mtime=0;
  if(opendir(my $dh,$LG_DDC_DIR)) {
   foreach my $name (readdir($dh)) {
@@ -3965,22 +3969,36 @@ sub lg_find_latest_ddc_picture_mode (@) {
    my $path="$LG_DDC_DIR/$name";
    my $mtime=(stat($path))[9]||0;
    next if($mtime <= $best_mtime);
+   my $state=&file_read_json($path);
+   my $mode=(ref($state) eq "HASH") ? ($state->{"pictureMode"}||"") : "";
+   next if($mode eq "");
+   # When the current output signal is known (e.g. the Pi is putting out
+   # HDR), skip saved calibrations whose picture mode belongs to a different
+   # signal. Otherwise an older SDR calibration shadows the live HDR output on
+   # DDC-only generations (C1/B1/G1/Z1) that cannot read the live pictureMode
+   # back from the TV, and the WebUI offers the wrong (SDR) picture-mode list.
+   next if($signal_mode ne "" && &map_picture_mode_label_to_ddc_name($mode,$signal_mode) eq "");
    $best_mtime=$mtime;
-   $best_path=$path;
+   $best_mode=$mode;
   }
   closedir($dh);
  }
- return "" if($best_path eq "");
- my $state=&file_read_json($best_path);
- return (ref($state) eq "HASH") ? ($state->{"pictureMode"}||"") : "";
+ return $best_mode;
 }
 
 sub lg_resolve_ddc_picture_mode (@) {
- my ($ip,$requested)=@_;
+ my ($ip,$requested,$signal_mode)=@_;
  $requested="" if(!defined($requested));
  return $requested if($requested ne "");
- my $latest=&lg_find_latest_ddc_picture_mode($ip);
+ $signal_mode="" if(!defined($signal_mode));
+ $signal_mode=lc($signal_mode);
+ my $latest=&lg_find_latest_ddc_picture_mode($ip,$signal_mode);
  return $latest if($latest ne "");
+ # No saved calibration matches the current output signal. Default to that
+ # signal's canonical picture mode instead of always assuming SDR "cinema",
+ # so a DDC-only TV outputting HDR shows the HDR/DV picture-mode list.
+ return "hdrCinema" if($signal_mode eq "hdr10" || $signal_mode eq "hlg");
+ return "dolbyVisionCinema" if($signal_mode eq "dv");
  return "cinema";
 }
 
@@ -5204,7 +5222,7 @@ sub main (@) {
  } elsif($action eq "connect" || $action eq "pair") {
   $result=&lg_connect_workflow($ip,$client_key,$connect_timeout,$pair_timeout);
 	 } elsif($action eq "picture_get") {
-	  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode,$tv_input,$force_ddc_white_balance);
+	  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode);
 	 } elsif($action eq "picture_set") {
 		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance,$signal_mode);
  } elsif($action eq "picture_reset") {
