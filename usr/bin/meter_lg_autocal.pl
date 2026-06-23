@@ -893,8 +893,22 @@ sub luminance {
 sub normalize_final_sdr_oled_black_reading {
  my ($config,$step,$reading,$target_luminance)=@_;
  return (0,undef) if(ref($config) ne "HASH" || ref($step) ne "HASH" || ref($reading) ne "HASH");
- return (0,undef) if(lc($config->{"signal_mode"}||"sdr") ne "sdr");
  return (0,undef) if(($config->{"display_type"}||"") !~ /oled/i && ($reading->{"display_type"}||"") !~ /oled/i);
+ my $_norm_mode=lc($config->{"signal_mode"}||"sdr");
+ my $_norm_reason="sdr_oled_final_zero_target";
+ if($_norm_mode ne "sdr") {
+  # HDR/HLG OLED: unlike SDR (which zeroes the 0% read unconditionally), only
+  # treat 0% as true black when the measured luminance is at/below a small
+  # floor, so ordinary ambient leak isn't recorded as panel emission. Above the
+  # floor the measured value is preserved (genuine emission / heavy ambient).
+  # Floor configurable via lg_autocal_oled_black_floor_nits (default 0.03 nits).
+  my $_blk_floor=defined($config->{"lg_autocal_oled_black_floor_nits"}) ? ($config->{"lg_autocal_oled_black_floor_nits"}+0) : 0.03;
+  $_blk_floor=0 if($_blk_floor < 0);
+  $_blk_floor=0.2 if($_blk_floor > 0.2);
+  my $_meas=defined($reading->{"luminance"}) ? ($reading->{"luminance"}+0) : (defined($reading->{"Y"}) ? ($reading->{"Y"}+0) : undef);
+  return (0,undef) if(!defined($_meas) || $_meas > $_blk_floor);
+  $_norm_reason="hdr_oled_black_floor";
+ }
  return (0,undef) if(defined($target_luminance) && abs($target_luminance+0) > 0.000001);
  my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : (defined($reading->{"ire"}) ? ($reading->{"ire"}+0) : undef);
  my $stimulus=defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : (defined($reading->{"stimulus"}) ? ($reading->{"stimulus"}+0) : undef);
@@ -922,7 +936,7 @@ sub normalize_final_sdr_oled_black_reading {
  delete($reading->{"y"});
  $reading->{"synthetic_black"}=JSON::PP::true;
  $reading->{"normalized_black"}=JSON::PP::true;
- $reading->{"black_normalization_reason"}="sdr_oled_final_zero_target";
+ $reading->{"black_normalization_reason"}=$_norm_reason;
  return (1,$original);
 }
 
