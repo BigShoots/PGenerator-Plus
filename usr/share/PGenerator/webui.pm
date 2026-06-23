@@ -3520,6 +3520,18 @@ sub webui_meter_lg_autocal_start (@) {
  if($_ac_patch_insert_time_enabled) {
   ($_ac_insert_time_code,$_ac_insert_time_input_max)=&webui_grey_code_for_stimulus($_ac_patch_insert_time_level,$_ac_signal_mode,$_ac_target_gamma,$_ac_lim,\%_ac_opts);
  }
+ # Guard against empty/invalid insertion codes. When pattern insertion is
+ # disabled the *_code vars stay "" (and webui_grey_code_for_stimulus can
+ # return "" even when enabled); interpolating "" below produced invalid
+ # JSON ("patch_insert_patch_code":,) which made the autocal worker fail to
+ # parse the config and report "No greyscale steps were supplied". Normalise
+ # all four interpolated values to valid JSON integers. The worker only
+ # consumes the codes when the matching *_enabled flag is set, so the
+ # fallback value is never used as a real insertion code.
+ $_ac_insert_patch_code=0 if(!defined($_ac_insert_patch_code) || $_ac_insert_patch_code !~ /^-?\d+$/);
+ $_ac_insert_time_code=0 if(!defined($_ac_insert_time_code) || $_ac_insert_time_code !~ /^-?\d+$/);
+ $_ac_insert_patch_input_max=255 if(!defined($_ac_insert_patch_input_max) || $_ac_insert_patch_input_max !~ /^-?\d+$/);
+ $_ac_insert_time_input_max=255 if(!defined($_ac_insert_time_input_max) || $_ac_insert_time_input_max !~ /^-?\d+$/);
  $body=~s/\}\s*\z/,"patch_insert_patch_code":$_ac_insert_patch_code,"patch_insert_patch_input_max":$_ac_insert_patch_input_max,"patch_insert_time_code":$_ac_insert_time_code,"patch_insert_time_input_max":$_ac_insert_time_input_max}/;
  if(open(my $fh,">",$_meter_lg_autocal_config_file)) {
   print $fh $body;
