@@ -1938,6 +1938,23 @@ sub response_is_app_failure (@) {
  return (0,"");
 }
 
+# LG's settings/setSystemSettings (and the per-category wrapper) reject keys
+# the firmware does not expose in the current picture/category with the
+# payload errorText "category, <name> doesn't support the key(s): <key>".
+# Callers that issue "best-practice" preference writes (e.g. force
+# dynamicContrast=off before a calibration reset) can use this fingerprint
+# to decide that the call is a no-op rather than a fatal failure: if the TV
+# does not expose the key at all, there is nothing to apply.
+sub lg_settings_error_is_unsupported_key (@) {
+ my $message=shift;
+ return 0 if(!defined($message) || $message eq "");
+ return 1 if(index($message,"doesn't support the key") >= 0);
+ return 1 if(index($message,"not support the key") >= 0);
+ return 1 if(index($message,"doesn't support key") >= 0);
+ return 1 if(index($message,"not support key") >= 0);
+ return 0;
+}
+
 ###############################################
 #        LG Calibration / 1D LUT DDC          #
 ###############################################
@@ -2935,11 +2952,16 @@ sub lg_force_pic_mode_payload (@) {
 sub lg_hdr_picture_reset_apply_dynamic_contrast_off (@) {
  my ($session,$active_picture_mode,$tv_input,$timeout)=@_;
  my @attempts=();
+ my $all_unsupported=1;
  my $plain_payload={ category => "picture", settings => { dynamicContrast => "off" } };
  my $plain_response=&lg_request($session,"hdr_calman_reset_dynamic_contrast_off_plain","settings/setSystemSettings",$plain_payload,$timeout);
  my ($plain_failed,$plain_message)=&response_is_app_failure($plain_response);
- push(@attempts,{ path => "settings/setSystemSettings", payload => $plain_payload, response => $plain_response, failed => &json_bool($plain_failed), message => $plain_message||"" });
- return (1,\@attempts) if(!$plain_failed && ref($plain_response) eq "HASH");
+ my $plain_unsupported=&lg_settings_error_is_unsupported_key($plain_message);
+ push(@attempts,{ path => "settings/setSystemSettings", payload => $plain_payload, response => $plain_response, failed => &json_bool($plain_failed && !$plain_unsupported), message => $plain_message||"" });
+ if(!$plain_failed && ref($plain_response) eq "HASH") {
+  return (1,\@attempts);
+ }
+ $all_unsupported=0 if(!$plain_unsupported);
  foreach my $attempt (&lg_picture_apply_settings_payloads({ dynamicContrast => "off" },$active_picture_mode,$tv_input,"hdr10")) {
   my $path=$attempt->{"path"}||"settings/setSystemSettings";
   next if(index($path,"settings/setSystemSettings") < 0);
@@ -2947,8 +2969,26 @@ sub lg_hdr_picture_reset_apply_dynamic_contrast_off (@) {
    ? &lg_luna_request($session,"hdr_calman_reset_dynamic_contrast_off_luna",$path,$attempt->{"payload"},$timeout)
    : &lg_request($session,"hdr_calman_reset_dynamic_contrast_off",$path,$attempt->{"payload"},$timeout);
   my ($failed,$message)=&response_is_app_failure($response);
-  push(@attempts,{ path => $path, payload => $attempt->{"payload"}, response => $response, failed => &json_bool($failed), message => $message||"" });
-  return (1,\@attempts) if(!$failed && ref($response) eq "HASH");
+  my $unsupported=&lg_settings_error_is_unsupported_key($message);
+  push(@attempts,{ path => $path, payload => $attempt->{"payload"}, response => $response, failed => &json_bool($failed && !$unsupported), message => $message||"" });
+  if(!$failed && ref($response) eq "HASH") {
+   return (1,\@attempts);
+  }
+  $all_unsupported=0 if(!$unsupported);
+ }
+ # If every attempt came back with the "doesn't support the key(s)" error
+ # (or returned nothing to evaluate), the firmware does not expose the
+ # dynamicContrast key for the active picture mode. There is nothing to
+ # apply — record that fact on every attempt and report success so the HDR
+ # reset workflow is not aborted by a preference write the TV cannot honour.
+ if($all_unsupported && @attempts) {
+  my $skip_msg="dynamicContrast key not supported on this picture mode; skipped.";
+  my @annotated=map {
+   my %a=%{$_};
+   $a{"message"}=$skip_msg if(!defined($a{"message"}) || $a{"message"} eq "");
+   \%a;
+  } @attempts;
+  return (1,\@annotated);
  }
  return (0,\@attempts);
 }
@@ -2994,7 +3034,18 @@ sub lg_hdr_calman_reset_workflow (@) {
  }
 
  my ($dc_ok,$dc_attempts)=&lg_hdr_picture_reset_apply_dynamic_contrast_off($session,$active_picture_mode,$tv_input,$connect_timeout + 3);
- push(@steps,{ command => "dynamicContrast", value => "off", response => $dc_attempts, failed => &json_bool(!$dc_ok), message => $dc_ok ? "" : "LG TV rejected dynamicContrast off." });
+ my $dc_skip_msg="dynamicContrast key not supported on this picture mode; skipped.";
+ my $dc_skipped=0;
+ if(ref($dc_attempts) eq "ARRAY") {
+  foreach my $dc_a (@{$dc_attempts}) {
+   next if(ref($dc_a) ne "HASH");
+   if(($dc_a->{"message"}||"") eq $dc_skip_msg) { $dc_skipped=1; last; }
+  }
+ }
+ my $dc_message=$dc_ok
+  ? ($dc_skipped ? $dc_skip_msg : "")
+  : "LG TV rejected dynamicContrast off.";
+ push(@steps,{ command => "dynamicContrast", value => "off", response => $dc_attempts, failed => &json_bool(!$dc_ok), message => $dc_message });
 
  my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
  my $matrix_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3by3","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
