@@ -8170,10 +8170,9 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .diag-custom-picker .diag-asset-icon{display:none}
 .diag-custom-picker button[onclick^="diagPlaySelectedAsset"]::before{content:'';display:block;width:0;height:0;border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:10px solid currentColor;transform:translateX(1px)}
 .diag-custom-picker button[onclick="stopPattern()"]::before{content:'';display:block;width:10px;height:10px;border-radius:1px;background:currentColor}
-.diag-custom-picker button[onclick^="diagDeleteSelectedAsset"]::before{content:'';display:block;width:11px;height:12px;border:1.5px solid currentColor;border-top-left-radius:2px;border-top-right-radius:2px;box-sizing:border-box}
-.diag-custom-picker button[onclick^="diagDeleteSelectedAsset"]::after{content:'';position:absolute;width:7px;height:1.5px;border:1.5px solid currentColor;border-bottom:none;box-sizing:border-box;border-top-left-radius:2px;border-top-right-radius:2px;top:0;left:50%;transform:translateX(-50%) translateY(1px)}
-.diag-custom-picker .diag-asset-icon-btn-delete:disabled{opacity:.35;cursor:not-allowed}
-.diag-custom-picker .diag-asset-icon-btn-delete:not(:disabled):hover{color:var(--red);border-color:var(--red)}
+.diag-custom-picker button[onclick^="diagDeleteSelectedAsset"]{font-size:1rem!important;color:var(--red);font-weight:700;line-height:1}
+.diag-custom-picker .diag-asset-icon-btn-delete:disabled{opacity:.35;cursor:not-allowed;color:#fff;border-color:var(--border)}
+.diag-custom-picker .diag-asset-icon-btn-delete:not(:disabled):hover{color:#fff;background:var(--red);border-color:var(--red)}
 @media (max-width:720px){.diag-pattern-layout{grid-template-columns:1fr}}
 @media (hover:hover) and (pointer:fine){.pat-btn:hover{border-color:var(--accent);background:#1a1a2e;transform:translateY(-1px)}}
 .sat-row{display:flex;align-items:center;gap:4px;margin-bottom:4px}
@@ -8468,7 +8467,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         </select>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="diagPlaySelectedAsset('video')" title="Play custom diagnostic video" aria-label="Play custom diagnostic video"><span class="diag-asset-icon diag-play-icon"></span></button>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="stopPattern()" title="Stop custom diagnostic video" aria-label="Stop custom diagnostic video"><span class="diag-asset-icon diag-stop-icon"></span></button>
-        <button id="diagCustomVideoDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('video')" title="Delete selected custom diagnostic video" aria-label="Delete selected custom diagnostic video" disabled><span class="diag-asset-icon diag-delete-icon"></span></button>
+        <button id="diagCustomVideoDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('video')" title="Delete selected custom diagnostic video" aria-label="Delete selected custom diagnostic video" disabled>&#10006;</button>
        </div>
        <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded videos play through the legacy video playback path.</div>
       </div>
@@ -8490,7 +8489,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         </select>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="diagPlaySelectedAsset('image')" title="Play custom diagnostic image" aria-label="Play custom diagnostic image"><span class="diag-asset-icon diag-play-icon"></span></button>
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="stopPattern()" title="Stop custom diagnostic image" aria-label="Stop custom diagnostic image"><span class="diag-asset-icon diag-stop-icon"></span></button>
-        <button id="diagCustomImageDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('image')" title="Delete selected custom diagnostic image" aria-label="Delete selected custom diagnostic image" disabled><span class="diag-asset-icon diag-delete-icon"></span></button>
+        <button id="diagCustomImageDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('image')" title="Delete selected custom diagnostic image" aria-label="Delete selected custom diagnostic image" disabled>&#10006;</button>
        </div>
        <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded images render through the IMAGE pattern path.</div>
       </div>
