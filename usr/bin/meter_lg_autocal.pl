@@ -893,21 +893,29 @@ sub luminance {
 sub normalize_final_sdr_oled_black_reading {
  my ($config,$step,$reading,$target_luminance)=@_;
  return (0,undef) if(ref($config) ne "HASH" || ref($step) ne "HASH" || ref($reading) ne "HASH");
- return (0,undef) if(($config->{"display_type"}||"") !~ /oled/i && ($reading->{"display_type"}||"") !~ /oled/i);
+ my $_is_oled=(($config->{"display_type"}||"") =~ /oled/i || ($reading->{"display_type"}||"") =~ /oled/i) ? 1 : 0;
  my $_norm_mode=lc($config->{"signal_mode"}||"sdr");
  my $_norm_reason="sdr_oled_final_zero_target";
  if($_norm_mode ne "sdr") {
-  # HDR/HLG OLED: unlike SDR (which zeroes the 0% read unconditionally), only
-  # treat 0% as true black when the measured luminance is at/below a small
-  # floor, so ordinary ambient leak isn't recorded as panel emission. Above the
-  # floor the measured value is preserved (genuine emission / heavy ambient).
-  # Floor configurable via lg_autocal_oled_black_floor_nits (default 0.03 nits).
+  # HDR/HLG: collapse the 0% read to true black ONLY when the (now multi-
+  # sampled) measurement is at/below a small ambient-noise floor, so genuine
+  # low-level emission is preserved while ambient leak is treated as black.
+  # The floor IS the safety here, so this no longer requires display_type to
+  # literally contain "oled": custom-ccss OLED cals (display_type = the .ccss
+  # filename) were silently skipping this and keeping a raw, un-retried 0%. A
+  # real panel's HDR black above the floor is left untouched. Floor via
+  # lg_autocal_oled_black_floor_nits (default 0.03 nits; set 0 to disable).
   my $_blk_floor=defined($config->{"lg_autocal_oled_black_floor_nits"}) ? ($config->{"lg_autocal_oled_black_floor_nits"}+0) : 0.03;
   $_blk_floor=0 if($_blk_floor < 0);
   $_blk_floor=0.2 if($_blk_floor > 0.2);
   my $_meas=defined($reading->{"luminance"}) ? ($reading->{"luminance"}+0) : (defined($reading->{"Y"}) ? ($reading->{"Y"}+0) : undef);
   return (0,undef) if(!defined($_meas) || $_meas > $_blk_floor);
-  $_norm_reason="hdr_oled_black_floor";
+  $_norm_reason="hdr_black_floor";
+ } else {
+  # SDR: keep the historical unconditional zero of the 0% read, but only for
+  # displays known to be OLED (true 0 black). Non-OLED SDR black is genuinely
+  # non-zero, so leave it measured.
+  return (0,undef) if(!$_is_oled);
  }
  return (0,undef) if(defined($target_luminance) && abs($target_luminance+0) > 0.000001);
  my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0) : (defined($reading->{"ire"}) ? ($reading->{"ire"}+0) : undef);
@@ -18695,9 +18703,27 @@ eval {
 			  }
 			  set_state_active_step($state,$black_read_step,undef);
 			  write_state($state);
-			  my ($black_reading,$black_error)=read_step($config,$black_read_step,$state);
-			  die $black_error if($black_error && $black_error ne "cancelled");
-			  return undef if($black_error && $black_error eq "cancelled");
+			  # OLED black sits at the meter's noise floor, so a single shot can
+			  # return an unreliable 0.0 (or a stray ambient spike). Read several
+			  # samples and median them so the black level is trustworthy BEFORE we
+			  # decide (below) whether it is true black or ambient-light noise. Count
+			  # via lg_autocal_black_reference_samples (default 3, clamped 1..5).
+			  my $_blk_samples=defined($config->{"lg_autocal_black_reference_samples"}) ? int($config->{"lg_autocal_black_reference_samples"}) : 3;
+			  $_blk_samples=1 if($_blk_samples < 1);
+			  $_blk_samples=5 if($_blk_samples > 5);
+			  my @_blk_samples_read; my $black_error;
+			  for(my $_bs=1;$_bs<=$_blk_samples;$_bs++) {
+			   if($_blk_samples > 1 && ref($state) eq "HASH") {
+			    $state->{"message"}=($message||"Reading 0% black reference")." (sample $_bs/$_blk_samples)";
+			    write_state($state);
+			   }
+			   my ($_br,$_be)=read_step($config,$black_read_step,$state);
+			   if($_be) { $black_error=$_be; last if($_be eq "cancelled"); next; }
+			   push @_blk_samples_read,$_br if(ref($_br) eq "HASH");
+			  }
+			  my $black_reading=(@_blk_samples_read >= 2) ? median_autocal_readings(\@_blk_samples_read) : $_blk_samples_read[0];
+			  die $black_error if($black_error && $black_error ne "cancelled" && ref($black_reading) ne "HASH");
+			  return undef if($black_error && $black_error eq "cancelled" && ref($black_reading) ne "HASH");
 			  return undef if(ref($black_reading) ne "HASH");
 			  my $black_target_y=target_luminance_for_step($white_y,$black_read_step,$target_gamma,$signal_mode,autocal_state_black_luminance($state));
 			  annotate_reading_target($black_reading,$white_y,$black_target_y,$target_x,$target_y);
