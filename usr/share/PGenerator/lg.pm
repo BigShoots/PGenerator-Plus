@@ -180,19 +180,70 @@ sub lg_reconcile_pin_pairing (@) {
  return ($clients,{});
 }
 
+# Forget a single saved TV. $target_ip selects which set (by its device-list
+# IP) to forget; when empty - or when it matches the active/flat set - the
+# active TV is forgotten. Every OTHER set's key in the per-TV keyring is kept,
+# so forgetting one TV can no longer wipe the rest (this no longer unlinks the
+# whole store).
 sub lg_clear_pairing (@) {
+ my ($target_ip)=@_;
+ $target_ip="" if(!defined($target_ip));
  my $clients=&lg_load_clients();
- my $manual_ip=$clients->{"manual_ip"}||"";
  my $pin_pairing=$clients->{"pin_pairing"};
  if(ref($pin_pairing) eq "HASH" && ($pin_pairing->{"token"}||"") ne "") {
   &lg_clear_pin_session_files($pin_pairing->{"token"});
  }
- my $file=&lg_clients_file();
- if($manual_ip eq "") {
-  unlink($file) if(-f $file);
-  return 1;
+ delete($clients->{"pin_pairing"});
+
+ my ($act_uuid,$act_mac)=&lg_device_identity($clients);
+ my $act_ip=$clients->{"ip"}||"";
+
+ # Decide which set to forget: the active TV (matched by its stable identity)
+ # when no target IP is given or the target is the active set; otherwise the
+ # keyring entry whose last-known IP matches the selected list row.
+ my ($t_uuid,$t_mac)=("","");
+ my $forget_active=0;
+ if($target_ip eq "" || ($act_ip ne "" && $target_ip eq $act_ip)) {
+  ($t_uuid,$t_mac)=($act_uuid,$act_mac);
+  $forget_active=1;
+ } else {
+  if(ref($clients->{"devices"}) eq "ARRAY") {
+   foreach my $e (@{$clients->{"devices"}}) {
+    next if(ref($e) ne "HASH");
+    if(($e->{"last_ip"}||"") eq $target_ip) {
+     ($t_uuid,$t_mac)=(lc($e->{"uuid"}||""),lc($e->{"mac"}||""));
+     last;
+    }
+   }
+  }
+  $forget_active=1 if($t_uuid ne "" && $act_uuid ne "" && $t_uuid eq $act_uuid);
+  $forget_active=1 if($t_mac ne "" && $act_mac ne "" && $t_mac eq $act_mac);
  }
- return &lg_save_clients({ manual_ip => $manual_ip });
+
+ # Drop the matching keyring entry (by identity).
+ if(ref($clients->{"devices"}) eq "ARRAY" && ($t_uuid ne "" || $t_mac ne "")) {
+  @{$clients->{"devices"}}=grep {
+   !(ref($_) eq "HASH" &&
+     (($t_uuid ne "" && lc($_->{"uuid"}||"") eq $t_uuid) ||
+      ($t_mac ne "" && lc($_->{"mac"}||"") eq $t_mac)))
+  } @{$clients->{"devices"}};
+ }
+
+ # If the forgotten set is the active one, clear its flat connection fields.
+ # manual_ip and the rest of the keyring are intentionally preserved.
+ if($forget_active) {
+  foreach my $k ("client_key","client-key","ip","name","model_name",
+                 "software_version","transport","hello_info","system_info",
+                 "software_info","last_seen","calibration_mode",
+                 "calibration_picture_mode","disconnected","disconnected_at",
+                 "last_error") {
+   delete($clients->{$k});
+  }
+ }
+
+ delete($clients->{"devices"}) if(ref($clients->{"devices"}) eq "ARRAY" && !@{$clients->{"devices"}});
+
+ return &lg_save_clients($clients);
 }
 
 ###############################################
@@ -1233,8 +1284,12 @@ sub webui_lg_manual_ip (@) {
 }
 
 sub webui_lg_forget (@) {
- return &lg_encode_json({ status => "error", message => "Unable to clear stored LG pairing" }) if(!&lg_clear_pairing());
- return &webui_lg_status_json("Stored LG pairing metadata cleared.");
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $target_ip=(ref($payload) eq "HASH") ? ($payload->{"ip"}||"") : "";
+ $target_ip="" if($target_ip ne "" && !&lg_valid_ipv4($target_ip));
+ return &lg_encode_json({ status => "error", message => "Unable to clear stored LG pairing" }) if(!&lg_clear_pairing($target_ip));
+ return &webui_lg_status_json("Stored LG pairing cleared for the selected TV.");
 }
 
 sub webui_lg_disconnect (@) {
@@ -1853,7 +1908,7 @@ sub webui_lg_api (@) {
   return &webui_lg_picture_reset($body);
  }
  if($path eq "/api/lg/forget" && $method eq "POST") {
-  return &webui_lg_forget();
+  return &webui_lg_forget($body);
  }
  return &lg_encode_json({ status => "error", message => "Unknown LG route" });
 }
@@ -3281,7 +3336,10 @@ async function lgSetCalibrationMode(){
 }
 
 async function lgForgetClient(){
- const r=await fetchJSON('/api/lg/forget',{method:'POST'});
+ // Forget only the set selected in the device list (falls back to the active
+ // TV when nothing is selected). Other paired TVs keep their saved keys.
+ const selectedIp=(typeof lgSelectedDeviceIp==='function'?(lgSelectedDeviceIp('lgDeviceList')||''):'');
+ const r=await fetchJSON('/api/lg/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:selectedIp})});
  if(r&&r.status==='ok'){
 	  lgPictureModeValue='';
 	  lgPictureModeSignalMode='';
