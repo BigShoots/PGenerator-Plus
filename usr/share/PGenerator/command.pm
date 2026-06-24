@@ -714,7 +714,22 @@ sub pattern_generator_start(@) {
    for(my $i=0;$i<40 && !&pattern_generator_is_running();$i++) {
     usleep(250000);
    }
-   &wait_for_renderer_drm_master(8) if(&pattern_generator_is_running());
+   my $renderer_is_master=0;
+   $renderer_is_master=&wait_for_renderer_drm_master(8) if(&pattern_generator_is_running());
+ # Post-spawn connector reprogramming exists for sinks that miss the
+ # pre-launch programming. But once the renderer holds DRM master it already
+ # sets output format / Colorimetry / rgb quant range / max bpc / COLOR_RANGE
+ # itself on every updateAVI_Infoframe() atomic commit (renderer is the wire
+ # source of truth). Running apply_drm_properties() then is not just
+ # redundant: each modetest -w has to grab DRM master while the renderer
+ # floods 60fps atomic commits, so every write hits its 3s timeout (x2
+ # legacy+atomic paths, x~6 props, x2 invocations) and blocks PGeneratord for
+ # up to ~70s per HDR apply - the "WebUI showed for a minute then went
+ # offline" symptom. Skip it when the renderer owns master; mirrors the
+ # pgsethdr skip in apply_hdr_metadata_helper().
+ if($renderer_is_master) {
+  &log("DRM: skipping post-spawn apply_drm_properties (renderer holds master and owns connector properties)");
+ } else {
    &apply_drm_properties();
  my $startup_color_fmt=$pgenerator_conf{"color_format"};
  $startup_color_fmt=0 if($startup_color_fmt eq "");
@@ -724,6 +739,7 @@ sub pattern_generator_start(@) {
   # has been stable a bit longer so a manual YCbCr toggle is not needed.
   usleep(1000000);
   &apply_drm_properties();
+ }
  }
  &apply_hdr_metadata_helper();
  unlink("$info_dir/GET_PGENERATOR_IS_EXECUTED.info");
