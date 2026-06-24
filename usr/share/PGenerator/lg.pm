@@ -918,6 +918,74 @@ sub lg_pin_pair_submit (@) {
  return &lg_status_response("error",$message,$state);
 }
 
+# Per-TV client-key ring.
+#
+# Each LG WebOS set has a stable deviceUUID (hello payload) and device_id MAC
+# (getCurrentSWInformation). We key saved client keys on those so switching
+# between several TVs reuses each set's key instead of overwriting a single
+# shared key and forcing a re-pair on every switch. The keyring lives in
+# $clients->{"devices"} (an array of { uuid, mac, client_key, name,
+# model_name, software_version, last_ip, last_seen }); the flat top-level
+# fields stay as the "active" TV mirror for the WebUI and backward compat.
+
+# Extract (uuid, mac) - both lower-cased - from a connect/probe result or a
+# stored client hash (checks hello_info/software_info and top-level fallbacks).
+sub lg_device_identity (@) {
+ my $src=shift;
+ return ("","") if(ref($src) ne "HASH");
+ my $hello=ref($src->{"hello_info"}) eq "HASH" ? $src->{"hello_info"} : {};
+ my $sw=ref($src->{"software_info"}) eq "HASH" ? $src->{"software_info"} : {};
+ my $uuid=$hello->{"deviceUUID"}||$src->{"deviceUUID"}||$src->{"uuid"}||"";
+ my $mac=$sw->{"device_id"}||$src->{"device_id"}||$src->{"mac"}||"";
+ return (lc($uuid||""),lc($mac||""));
+}
+
+# Find the keyring entry for a TV by uuid (preferred) or mac. Returns the
+# entry hashref (live, editable) or undef.
+sub lg_keyring_find (@) {
+ my ($clients,$uuid,$mac)=@_;
+ return undef if(ref($clients) ne "HASH" || ref($clients->{"devices"}) ne "ARRAY");
+ $uuid=lc($uuid||""); $mac=lc($mac||"");
+ return undef if($uuid eq "" && $mac eq "");
+ foreach my $e (@{$clients->{"devices"}}) {
+  next if(ref($e) ne "HASH");
+  return $e if($uuid ne "" && lc($e->{"uuid"}||"") eq $uuid);
+ }
+ foreach my $e (@{$clients->{"devices"}}) {
+  next if(ref($e) ne "HASH");
+  return $e if($mac ne "" && lc($e->{"mac"}||"") eq $mac);
+ }
+ return undef;
+}
+
+# Saved client key for a TV identity, or "" if none stored.
+sub lg_keyring_client_key (@) {
+ my ($clients,$uuid,$mac)=@_;
+ my $entry=&lg_keyring_find($clients,$uuid,$mac);
+ return (ref($entry) eq "HASH") ? ($entry->{"client_key"}||"") : "";
+}
+
+# Insert or update a keyring entry. Only stores when we have an identity to key
+# on and a real client key. Mutates and returns $clients.
+sub lg_keyring_upsert (@) {
+ my ($clients,$fields)=@_;
+ return $clients if(ref($clients) ne "HASH" || ref($fields) ne "HASH");
+ my ($uuid,$mac)=(lc($fields->{"uuid"}||""),lc($fields->{"mac"}||""));
+ return $clients if($uuid eq "" && $mac eq "");
+ return $clients if(($fields->{"client_key"}||"") eq "");
+ $clients->{"devices"}=[] if(ref($clients->{"devices"}) ne "ARRAY");
+ my $entry=&lg_keyring_find($clients,$uuid,$mac);
+ if(!defined $entry) { $entry={}; push(@{$clients->{"devices"}},$entry); }
+ $entry->{"uuid"}=$uuid if($uuid ne "");
+ $entry->{"mac"}=$mac if($mac ne "");
+ foreach my $k ("client_key","name","model_name","software_version") {
+  $entry->{$k}=$fields->{$k} if(defined($fields->{$k}) && $fields->{$k} ne "");
+ }
+ $entry->{"last_ip"}=$fields->{"ip"} if(($fields->{"ip"}||"") ne "");
+ $entry->{"last_seen"}=time();
+ return $clients;
+}
+
 sub lg_update_connect_metadata (@) {
  my ($result,$manual_ip)=@_;
  my $clients=&lg_load_clients();
@@ -941,6 +1009,18 @@ sub lg_update_connect_metadata (@) {
     $clients->{"system_info"}=$result->{"system_info"} if(ref($result->{"system_info"}) eq "HASH");
     $clients->{"software_info"}=$result->{"software_info"} if(ref($result->{"software_info"}) eq "HASH");
     $clients->{"last_seen"}=time();
+    # Remember this set's key under its own identity so switching TVs never
+    # forces a re-pair of a previously paired set.
+    my ($id_uuid,$id_mac)=&lg_device_identity($result);
+    &lg_keyring_upsert($clients,{
+     uuid => $id_uuid,
+     mac => $id_mac,
+     client_key => $result->{"client_key"}||"",
+     name => $result->{"name"}||"",
+     model_name => $result->{"model_name"}||"",
+     software_version => $result->{"software_version"}||"",
+     ip => $ip,
+    });
     delete($clients->{"disconnected"});
     delete($clients->{"disconnected_at"});
     delete($clients->{"last_error"});
@@ -1202,8 +1282,21 @@ sub webui_lg_connect (@) {
  }
  my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json(&lg_status_response("error","Enter and save the LG TV IP before connecting.",{})) if($ip eq "");
- my $client=&lg_primary_client($clients);
- my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ # Identify which set is at this IP (hello-only, no pairing prompt) so we can
+ # reuse that set's saved client key from the per-TV keyring. This is what lets
+ # the user switch between several paired TVs without re-pairing each time. If
+ # the probe fails (TV unreachable, etc.) we fall back to the active/flat key
+ # and the original behaviour.
+ my $client_key="";
+ my $probe=&lg_helper_run({ action => "probe", ip => $ip, connect_timeout => 5 });
+ if(ref($probe) eq "HASH" && ($probe->{"status"}||"") eq "ok") {
+  my ($p_uuid,$p_mac)=&lg_device_identity($probe);
+  $client_key=&lg_keyring_client_key($clients,$p_uuid,$p_mac);
+ }
+ if($client_key eq "") {
+  my $client=&lg_primary_client($clients);
+  $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ }
  my $result=&lg_helper_run({
   action => "connect",
   ip => $ip,
@@ -1244,6 +1337,7 @@ sub webui_lg_calibration_mode (@) {
  });
  if(($result->{"status"}||"") eq "ok") {
   $clients=&lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip);
+  &lg_calmode_trace("calmode_endpoint: enabled=$enabled picture_mode=".($payload->{"picture_mode"}||"")); # TEMP DEBUG CALMODE
   $clients->{"calibration_mode"}=$enabled ? &lg_json_true() : &lg_json_false();
   if($enabled) {
    $clients->{"calibration_picture_mode"}=$result->{"calibration_picture_mode"}||$result->{"active_picture_mode"}||"";
@@ -1253,6 +1347,14 @@ sub webui_lg_calibration_mode (@) {
   &lg_save_clients($clients);
  }
  return &lg_encode_json(&lg_status_response($result->{"status"}||"error",$result->{"message"}||"Unable to change LG calibration mode.",$result));
+}
+
+# TEMP DEBUG CALMODE — remove after pinning the greyscale cal-mode trigger
+sub lg_calmode_trace (@) {
+ my ($msg)=@_;
+ if(open(my $f,">>","/tmp/lg_calmode_trace.log")) {
+  print $f scalar(localtime).": $msg\n"; close($f);
+ }
 }
 
 sub webui_lg_picture_settings (@) {
@@ -1274,12 +1376,14 @@ sub webui_lg_picture_settings (@) {
  my $ignore_calibration_picture_mode=$payload->{"ignore_calibration_picture_mode"} ? 1 : 0;
  my $picture_mode=$payload->{"picture_mode"}||"";
  $picture_mode=$clients->{"calibration_picture_mode"}||"" if($picture_mode eq "" && !$ignore_calibration_picture_mode);
+&lg_calmode_trace("picture_get: force_ddc=".($payload->{"force_ddc_white_balance"}?1:0)." pmode=$picture_mode"); # TEMP DEBUG CALMODE
 my $result=&lg_helper_run({
  action => "picture_get",
  ip => $ip,
  client_key => $client_key,
   keys => $keys,
 	  picture_mode => $picture_mode,
+	  signal_mode => $payload->{"signal_mode"}||"",
 	  tv_input => &lg_input_from_cec(),
 	  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
 	  helper_timeout => int($payload->{"helper_timeout"}||0),
@@ -1335,6 +1439,7 @@ sub webui_lg_picture_settings_set (@) {
 	  : (($clients->{"calibration_mode"}||$ddc_white_balance) ? 1 : 0);
  my $calibration_mode_active=($payload->{"calibration_mode_active"}||($ddc_white_balance&&$keep_calibration_mode&&$clients->{"calibration_mode"})) ? 1 : 0;
  $calibration_mode_active=0 if($payload->{"reset_ddc_baseline"}||$payload->{"clear_ddc_baseline"});
+ &lg_calmode_trace("picture_set: ddc_wb=$ddc_white_balance keep=$keep_calibration_mode active=$calibration_mode_active force=".($payload->{"force_ddc_white_balance"}?1:0)." method=".($settings->{"whiteBalanceMethod"}||"")." pmode=$picture_mode skip_readback=".($payload->{"skip_readback"}?1:0)); # TEMP DEBUG CALMODE
  my $result=&lg_helper_run({
   action => "picture_set",
   ip => $ip,
@@ -1355,6 +1460,7 @@ sub webui_lg_picture_settings_set (@) {
  my $updated_clients=$clients;
  $updated_clients=&lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
 	 if(($result->{"status"}||"") eq "ok" && $ddc_white_balance && ($result->{"ddc_1d_lut"} || exists($result->{"calibration_mode"}))) {
+	  &lg_calmode_trace("picture_set APPLIED calibration_mode=".($keep_calibration_mode?"true":"false")." ddc_1d_lut=".($result->{"ddc_1d_lut"}?1:0)); # TEMP DEBUG CALMODE
 	  $updated_clients->{"calibration_mode"}=$keep_calibration_mode ? &lg_json_true() : &lg_json_false();
 	  my $cal_mode=$result->{"calibration_picture_mode"}||$result->{"active_picture_mode"}||$payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"";
 	  if($keep_calibration_mode) {
@@ -2611,7 +2717,7 @@ async function lgDisplayControlRefresh(force){
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode(),ignore_calibration_picture_mode:true}),
+   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode(),signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true}),
    _quiet:true,
    _timeoutMs:18000
   });
@@ -2665,7 +2771,7 @@ async function lgDisplayControlCommit(key){
   const r=await fetchJSON('/api/lg/picture-settings/set',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({settings:settings,picture_mode:lgDisplayControlPictureMode(),ignore_calibration_picture_mode:true,readback_keys:[key,'pictureMode']}),
+   body:JSON.stringify({settings:settings,picture_mode:lgDisplayControlPictureMode(),signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true,readback_keys:[key,'pictureMode']}),
    _timeoutMs:30000
   });
   if(r&&r.status==='ok'){
@@ -3015,7 +3121,7 @@ async function lgRefreshPictureMode(force){
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({keys:['pictureMode'],picture_mode:'',ignore_calibration_picture_mode:true}),
+   body:JSON.stringify({keys:['pictureMode'],picture_mode:'',signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true}),
    _quiet:true,
    _timeoutMs:9000
   });
