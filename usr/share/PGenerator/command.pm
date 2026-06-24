@@ -198,8 +198,11 @@ sub map_kms_colorspace(@) {
  return 0 if($colorimetry eq "" || $colorimetry == 0);
  return 0 if($colorimetry == 2 && $color_fmt == 0);
  return 2 if($colorimetry == 2);
- return 9 if($colorimetry == 9 && $color_fmt == 0);
- return 10 if($colorimetry == 9);
+ # 2026-06-23 TEST: signal BT2020_RGB (9) for YCbCr too, matching PGen 1.6
+ # (which has no Perl layer and never remapped YCbCr -> BT2020_YCC). We are
+ # testing whether the LG's BT2020_YCC HDR path lifts low-IRE shadows on
+ # YCbCr while RGB (BT2020_RGB) stays clean. Previously: $color_fmt!=0 -> 10.
+ return 9 if($colorimetry == 9);
  return $colorimetry;
 }
 
