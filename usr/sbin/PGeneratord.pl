@@ -69,6 +69,18 @@ do "serial.pm"        || die "Error";
 &get_conf();
 
 #############################################
+#        LG: no auto-reconnect on boot      #
+#############################################
+# On every daemon start (boot or restart) drop any saved LG TV connection to
+# the "disconnected" state so the WebUI never auto-dials a stored TV on load.
+# The saved pairing/client_key is kept, so reconnecting is a single explicit
+# Connect click. Rationale: the daemon is single-threaded, and auto-connecting
+# to a TV that is powered off, has a new DHCP address, or has been swapped for
+# a different set blocks every request for up to the LG helper timeout (~60s)
+# - the "WebUI keeps going offline" symptom. Reconnect is now user-initiated.
+&lg_mark_disconnected();
+
+#############################################
 #                  Bash                     #
 #############################################
 &bash();
