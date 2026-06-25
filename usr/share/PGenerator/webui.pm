@@ -2263,8 +2263,41 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
   $series_target_white_y_provided=1;
  }
  my $series_target_black_y_num="";
+ my $series_target_black_y_source="";
  if(!$target_black_use_measured && $target_black_luminance ne "") {
   $series_target_black_y_num=$target_black_luminance+0;
+  $series_target_black_y_source="manual";
+ }
+ # "Use measured" path: the worker's 0% IRE step is the LAST step to
+ # complete (after patch_insert + 100% white + the 90->1.4 sweep), so the
+ # chart would sit at 0 nits from series start until step 1 lands. Look up
+ # the most recent measured 0% black from the per-signal-mode cache (the
+ # worker writes /var/lib/PGenerator/cache/last_black_<sig>_<bpc>_<cf>_<rr>.json
+ # at series completion) and stamp it on every step so the chart target
+ # is correct from t=0.
+ if($target_black_use_measured && $series_target_black_y_num eq "") {
+  my $_lb_sig=lc($signal_mode||"");
+  my $_lb_bpc=(defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? int($pgenerator_conf{"max_bpc"}) : 10;
+  $_lb_bpc=10 if($_lb_bpc != 8 && $_lb_bpc != 12);
+  my $_lb_cf=$series_color_format ne "" ? int($series_color_format) : (int($pgenerator_conf{"color_format"} || 1));
+  my $_lb_rr=$transport_signal_range ne "" ? int($transport_signal_range) : 1;
+  my $_lb_path="/var/lib/PGenerator/cache/last_black_${_lb_sig}_${_lb_bpc}_${_lb_cf}_${_lb_rr}.json";
+  if(-f $_lb_path) {
+   my $_lb_json="";
+   if(open(my $_lb_fh,"<",$_lb_path)) { local $/; $_lb_json=<$_lb_fh>; close($_lb_fh); }
+   if($_lb_json ne "") {
+    my $_lb_d=eval { require JSON::PP; JSON::PP::decode_json($_lb_json); };
+    if(ref($_lb_d) eq "HASH" && defined $_lb_d->{"luminance"}) {
+     my $_lb_y=$_lb_d->{"luminance"}+0;
+     if($_lb_y>=0) {
+      $series_target_black_y_num=$_lb_y;
+      # Record provenance so the autocal report and chart debug show this
+      # is a cached measured black, not a manual override.
+      $series_target_black_y_source="cached_measured:" . $_lb_path;
+     }
+    }
+   }
+  }
  }
  my $custom_target_white;
  if($custom_d65_enabled && $target_white_x ne "" && $target_white_y ne "") {
@@ -3310,7 +3343,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # password and the launch silently fails ("Process died unexpectedly").
  # A trailing arg keeps the authorized command intact. Empty value ->
  # meter_series.sh coerces to off (single long read).
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
