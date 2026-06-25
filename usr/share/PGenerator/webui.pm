@@ -27858,6 +27858,7 @@ function drawDashedLine(ctx,chart,points,color,width){
 // the existing "Min cd/m^2: Lb" footer text, which is easy to miss while
 // the chart is in motion. Draws a small yellow callout next to the 0% dot.
 function meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,scaleFn){
+ return; // operator opted to hide the 0% black callout (no-op stub)
  if(!(Lb>0) || !ctx || !chart) return;
  const zeroStep=(measureSteps||[]).find(s=>Math.abs(Number((s&&s.ire!=null)?s.ire:0))<0.5);
  if(!zeroStep) return;
