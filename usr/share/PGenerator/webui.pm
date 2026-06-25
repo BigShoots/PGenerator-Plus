@@ -2277,11 +2277,14 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  # is correct from t=0.
  if($target_black_use_measured && $series_target_black_y_num eq "") {
   my $_lb_sig=lc($signal_mode||"");
+  # Worker names the cache by input_max (1023=10b, 255=8b, 4095=12b), not
+  # by max_bpc. Derive input_max from the conf so the keys line up.
   my $_lb_bpc=(defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? int($pgenerator_conf{"max_bpc"}) : 10;
   $_lb_bpc=10 if($_lb_bpc != 8 && $_lb_bpc != 12);
+  my $_lb_input_max=($_lb_bpc == 8) ? 255 : (($_lb_bpc == 12) ? 4095 : 1023);
   my $_lb_cf=$series_color_format ne "" ? int($series_color_format) : (int($pgenerator_conf{"color_format"} || 1));
   my $_lb_rr=$transport_signal_range ne "" ? int($transport_signal_range) : 1;
-  my $_lb_path="/var/lib/PGenerator/cache/last_black_${_lb_sig}_${_lb_bpc}_${_lb_cf}_${_lb_rr}.json";
+  my $_lb_path="/var/lib/PGenerator/cache/last_black_${_lb_sig}_${_lb_input_max}_${_lb_cf}_${_lb_rr}.json";
   if(-f $_lb_path) {
    my $_lb_json="";
    if(open(my $_lb_fh,"<",$_lb_path)) { local $/; $_lb_json=<$_lb_fh>; close($_lb_fh); }
