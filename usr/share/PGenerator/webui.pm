@@ -2640,7 +2640,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     $_opts_for_grey{"active_table"}=$lg_hdr20_active_table if($lg_hdr20_codes && ref($lg_hdr20_active_table) eq "HASH");
     my $grey_code_for_stim=sub {
      my ($stimulus_pct)=@_;
-     my ($c,$im)=&webui_grey_code_for_stimulus($stimulus_pct,$signal_mode,$target_gamma,$lim,$_opts_for_grey);
+     my ($c,$im)=&webui_grey_code_for_stimulus($stimulus_pct,$signal_mode,$target_gamma,$lim,\%_opts_for_grey);
      return $c;
     };
    # Reference first, then black for contrast, then the remaining LG 26pt
