@@ -13907,6 +13907,14 @@ function meterChartBlackLevel(readings){
  if(_tb&&!_tb.useMeasured&&_tb.value!=null&&_tb.value>=0) return _tb.value;
  const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
+ // "Use measured" path: each reading carries the cached 0% IRE black floor
+ // (stamped server-side via reading.series_target_black_y) so the chart
+ // target anchors to the operator's chosen value even when the in-series
+ // 0% patch meter-times-out to luminance=0 on OLED. Honor the stamp first.
+ if(_tb&&_tb.useMeasured){
+  const stamped=gs.map(r=>r.series_target_black_y).filter(v=>v!=null&&Number.isFinite(v)&&v>=0);
+  if(stamped.length>0) return Math.min(...stamped);
+ }
  const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
  if(trueBlack.length>0) return Math.min(...trueBlack);
  if(meterDisplayIsOled()) return 0;
