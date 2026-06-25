@@ -13911,19 +13911,24 @@ function meterChartBlackLevel(readings){
  if(_manualNonZero) return _tb.value;
  const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
- // "Use measured" + server-side cache stamp: each reading carries the
- // cached 0% IRE black floor (stamped at series start via reading.series_target_black_y)
- // so the chart target anchors to the operator's chosen value even when the
- // in-series 0% patch meter-times-out to luminance=0 on OLED. Honor the
- // stamp first whenever it's present, so OLED's "default value=0 manual
- // override" (which sets _tb={useMeasured:false,value:0} when the operator
- // hasn't explicitly overridden the OLED class default) does NOT silently
- // hide the cached measured black. The operator's explicit non-zero value
- // is preserved by the _manualNonZero check above.
+ // Prefer the CURRENT series's 0% IRE measurement. If it has a real
+ // luminance, the operator's "Use measured" intent is satisfied by the
+ // actual measurement — don't keep the chart target locked to a stale
+ // value from the previous series's cache. The server stamp is only used
+ // when the in-series 0% patch meter-times-out (luminance=0 on OLED) and
+ // no other 0% reading is available.
+ const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0).filter(v=>v>0);
+ if(trueBlack.length>0) return Math.min(...trueBlack);
+ // Fall back to the server-stamped cached 0% black. The webui stamps this
+ // on every step at series start so the chart has a sensible target even
+ // before any 0% reading lands in the current series (or when that reading
+ // is timed-out to 0 on OLED).
  const stamped=gs.map(r=>r.series_target_black_y).filter(v=>v!=null&&Number.isFinite(v)&&v>=0);
  if(stamped.length>0) return Math.min(...stamped);
- const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
- if(trueBlack.length>0) return Math.min(...trueBlack);
+ // Last 0% IRE measurement in the series (even timed-out ones) — keeps the
+ // chart target at least non-negative even on the OLED black-out path.
+ const anyZeroBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
+ if(anyZeroBlack.length>0) return Math.min(...anyZeroBlack);
  if(meterDisplayIsOled()) return 0;
  if(!meterChartIsHdr()) return 0;
  const nearBlack=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||0);
