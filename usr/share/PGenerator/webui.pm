@@ -2508,11 +2508,17 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 				    my $code=$lg_autocal_26_code{$key};
 				    $lg_autocal_26_stimulus{$key}=($code-64)*100/876;
 			   }
-				   # HDR10 autocal 26pt is always 10-bit per project convention (the
-				   # renderer scales to 8-bit transports on the way out). The range
-				   # follows the active transport: Full 10-bit (0..1023) or Limited
-				   # 10-bit (64..940). The 0% step is NOT in the table — the
-				   # 0%-aware fallback below uses the active range's min/span.
+				   # HDR10 26pt table selection follows the live max_bpc
+				   # (the WebUI Bit Depth dropdown / PGenerator.conf).
+				   # max_bpc=8 → 8-bit codes (limited 16..235 or full 0..255)
+				   # and 8-bit link; max_bpc=10 → 10-bit codes (limited
+				   # 64..940 or full 0..1023). The 0% step is NOT in the table —
+				   # the 0%-aware fallback below uses the active range's
+				   # min/span. JS HDR20 build at meterBuildLgAutoCalSteps
+				   # honors the same max_bpc so the JS-built steps and the
+				   # server-built series read stay in sync.
+				   my $_hdr20_bits=(defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? int($pgenerator_conf{"max_bpc"}) : 10;
+				   $_hdr20_bits=10 if($_hdr20_bits != 8 && $_hdr20_bits != 10);
 				   my %lg_hdr20_code=(
 				    "1.4"=>19,"2"=>20,"2.7"=>22,"4"=>25,"5"=>27,"7"=>31,"10"=>38,"15"=>49,"20"=>60,"25"=>71,
 				    "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
@@ -2525,15 +2531,35 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 				    "1.4"=>14,"2"=>20,"2.7"=>28,"4"=>41,"5"=>51,"7"=>72,"10"=>102,"15"=>153,"20"=>205,"25"=>256,
 				    "30"=>307,"35"=>358,"40"=>409,"45"=>460,"50"=>512,"60"=>614,"70"=>716,"80"=>818,"90"=>921,"100"=>1023
 				   );
+				   # HDR10 8-bit full table (0..255 range), slot codes are
+				   # int(stimulus_pct/100*255+0.5). 100% -> 255, 1.4% -> 4.
+				   my %lg_hdr20_code_8bit_full=(
+				    "1.4"=>4,"2"=>5,"2.7"=>7,"4"=>10,"5"=>13,"7"=>18,"10"=>26,"15"=>38,"20"=>51,"25"=>64,
+				    "30"=>77,"35"=>89,"40"=>102,"45"=>115,"50"=>128,"60"=>153,"70"=>179,"80"=>204,"90"=>230,"100"=>255
+				   );
 				   my %lg_hdr20_stimulus=();
 					   foreach my $key (keys %lg_hdr20_code) {
 					    $lg_hdr20_stimulus{$key}=$key+0;
 					   }
 				   my $lg_hdr20_active_table=\%lg_hdr20_code;
-				   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_limited if($lg_hdr20_codes);
-				   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_full if($lg_hdr20_codes && !$greyscale_patch_limited);
-				   my $lg_hdr20_min_code=($lg_hdr20_codes && !$greyscale_patch_limited) ? 0 : 64;
-				   my $lg_hdr20_span_code=($lg_hdr20_codes && !$greyscale_patch_limited) ? 1023 : 876;
+				   if($lg_hdr20_codes && $_hdr20_bits == 10) {
+				    $lg_hdr20_active_table=\%lg_hdr20_code_10bit_limited;
+				    $lg_hdr20_active_table=\%lg_hdr20_code_10bit_full if(!$greyscale_patch_limited);
+				   } elsif($lg_hdr20_codes && $_hdr20_bits == 8) {
+				    # 8-bit limited (16..235) shares the numeric table with
+				    # %lg_hdr20_code, so that selection is already correct for
+				    # Limited panels. For Full panels, switch to the 8-bit
+				    # full table (0..255).
+				    $lg_hdr20_active_table=\%lg_hdr20_code_8bit_full if(!$greyscale_patch_limited);
+				   }
+				   my $lg_hdr20_min_code=(!$lg_hdr20_codes) ? 64
+				    : ($_hdr20_bits == 10 && !$greyscale_patch_limited) ? 0
+				    : ($_hdr20_bits == 8) ? 0
+				    : 64;
+				   my $lg_hdr20_span_code=(!$lg_hdr20_codes) ? 876
+				    : ($_hdr20_bits == 10 && !$greyscale_patch_limited) ? 1023
+				    : ($_hdr20_bits == 10) ? 876
+				    : 255;
 			   if($points==26 && $lg_autocal_26 && $signal_mode eq "sdr") {
 			    foreach my $slot (@ire_vals) {
 			     my $key=$slot;
@@ -2598,8 +2624,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my $lim=$greyscale_patch_limited;
     # Delegate stimulus->code to the shared helper. Pass the active HDR20
     # table directly so a custom DDC upload stays in sync with the ladder.
+    # max_bpc flows through so the HDR20 branch picks 8-bit codes when the
+    # operator has the link at 8-bit (1.6 WORKING A/B test).
     my %_opts_for_grey=(
      hdr20_codes => ($lg_hdr20_codes ? 1 : 0),
+     max_bpc => (defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? $pgenerator_conf{"max_bpc"} : "",
      autocal_26 => (($points==26 && $lg_autocal_26) ? 1 : 0),
      autocal_26_codes => ($lg_autocal_26_codes ? 1 : 0),
      extended_sdr_codes => ($lg_extended_sdr_codes ? 1 : 0),
@@ -2670,11 +2699,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    $extra.=",\"analysis_ire\":$analysis_ire,\"target_ire\":$analysis_ire,\"transport_stimulus\":$stim" if($points==21 && $lg_greyscale_21);
 		    $extra.=",\"input_max\":1023" if($lg_autocal_26_codes);
 		    $extra.=",\"input_max\":1023" if($dv_series && $dv_series_code_bits == 10);
-		    # HDR10 autocal 26pt is always 10-bit per project convention. The
-		    # renderer scales to 8-bit transports on the way out, so the step
-		    # JSON must carry input_max:1023 so the scaling in meter_series.sh
-		    # /patch_request_body keeps the 10-bit codes intact.
-		    $extra.=",\"input_max\":1023" if($lg_hdr20_codes);
+		    # HDR10 26pt: input_max follows max_bpc. 10 → input_max=1023 (10-bit codes);
+		    # 8 → input_max=255 (8-bit codes; matches the 1.6 WORKING
+		    # YCbCr limited 8-bit A/B test). meter_series.sh / patch_request_body
+		    # read input_max to decide the scale-on-the-wire conversion.
+		    $extra.=",\"input_max\":1023" if($lg_hdr20_codes && $_hdr20_bits == 10);
+		    $extra.=",\"input_max\":255" if($lg_hdr20_codes && $_hdr20_bits == 8);
 		    if($lg_autocal_26_codes) {
 		     my $step_read_delay_ms=0;
 		     $step_read_delay_ms=3000 if(abs($v-100)<0.001);
@@ -3503,8 +3533,25 @@ sub webui_meter_lg_autocal_start (@) {
  $_ac_patch_insert_time_level=$1 if($body=~/"patch_insert_time_level"\s*:\s*([0-9.]+)/);
  my $_ac_lim=(defined($_ac_pattern_signal_range) && $_ac_pattern_signal_range ne "" && int($_ac_pattern_signal_range)==1) ? 1 : 0;
  $_ac_lim=((defined($_ac_signal_range) && $_ac_signal_range ne "" && int($_ac_signal_range)==1) ? 1 : 0) if(!$_ac_lim && $_ac_signal_mode eq "sdr");
+ # HDR10 fallback: when the body omits both pattern_signal_range and
+ # signal_range, resolve the effective range from the active output
+ # (rgb_quant_range). Mirrors webui_meter_series_start at lines ~2298-2302
+ # so a limited-configured TV (rgb_quant_range=1) yields $_ac_lim=1 even
+ # if the JS did not POST signal_range. A JS that DOES post signal_range
+ # still wins (the body field is set first above).
+ if(!$_ac_lim && $_ac_signal_mode eq "hdr10") {
+  my $_ac_conf_range=&webui_preferred_rgb_quant_range();
+  $_ac_lim=1 if(defined($_ac_conf_range) && $_ac_conf_range ne "" && int($_ac_conf_range)==1);
+ }
  my %_ac_opts=(
   hdr20_codes => (($_ac_lg_autocal_26 && $_ac_signal_mode eq "hdr10") ? 1 : 0),
+  # Wire $_ac_lim into the HDR20 table selection so a limited/full autocal
+  # uses the matching 10-bit table (limited 100%->940, full 100%->1023)
+  # instead of falling through to the 8-bit HDR20 table. Only meaningful
+  # when hdr20_codes is set in webui_grey_code_for_stimulus; harmless for
+  # SDR/DV/HLG because the HDR20 branch is skipped for those modes.
+  hdr20_use_limited => (($_ac_signal_mode eq "hdr10") ? 1 : 0),
+  hdr20_full => (($_ac_signal_mode eq "hdr10" && !$_ac_lim) ? 1 : 0),
   autocal_26 => ($_ac_lg_autocal_26 ? 1 : 0),
   autocal_26_codes => (($_ac_lg_autocal_26 && $_ac_signal_mode eq "sdr") ? 1 : 0),
   extended_sdr_codes => (($_ac_lg_autocal_26 || $_ac_lg_greyscale_21) && $_ac_signal_mode eq "sdr" ? 1 : 0),
@@ -5646,8 +5693,14 @@ sub webui_apply_config (@) {
   return wantarray ? ($result,0) : $result;
  }
  if(($effective_signal_mode eq "hdr10" || $effective_signal_mode eq "hlg") && $effective_rgb_quant_range == 1 && !$dv_on) {
-  # HDR/HLG Limited range requires 10-bit transport on the Pi 5 HDMI path.
-  $changes{"max_bpc"}="10";
+  # Honor max_bpc end-to-end: when the operator sets max_bpc=8 (via the
+  # WebUI Bit Depth dropdown or directly in PGenerator.conf), the link
+  # is 8-bit, the autocal wizard emits 8-bit codes, and the renderer
+  # receives 8-bit values that go out 8-bit to the TV. This supports the
+  # 1.6 WORKING YCbCr limited 8-bit A/B test. The previous
+  # "force 10-bit for HDR/HLG limited" rule was Pi5-specific; Pi4 honors
+  # the operator's choice. YCbCr 4:2:2 (handled below) is the one path
+  # that still has a renderer-side 10-bit requirement.
  }
  if($effective_color_format == 2 && !$dv_on) {
   # YCbCr 4:2:2 renderer path is supported at 10-bit only.
@@ -6937,17 +6990,35 @@ sub webui_grey_code_for_stimulus (@) {
    "1.4"=>14,"2"=>20,"2.7"=>28,"4"=>41,"5"=>51,"7"=>72,"10"=>102,"15"=>153,"20"=>205,"25"=>256,
    "30"=>307,"35"=>358,"40"=>409,"45"=>460,"50"=>512,"60"=>614,"70"=>716,"80"=>818,"90"=>921,"100"=>1023
   );
+  # HDR10 8-bit full table (0..255). The 8-bit limited case reuses
+  # %lg_hdr20_code (the 16..235 numeric values are identical).
+  my %lg_hdr20_code_8bit_full=(
+   "1.4"=>4,"2"=>5,"2.7"=>7,"4"=>10,"5"=>13,"7"=>18,"10"=>26,"15"=>38,"20"=>51,"25"=>64,
+   "30"=>77,"35"=>89,"40"=>102,"45"=>115,"50"=>128,"60"=>153,"70"=>179,"80"=>204,"90"=>230,"100"=>255
+  );
   my %lg_hdr20_stimulus=();
   foreach my $key (keys %lg_hdr20_code) { $lg_hdr20_stimulus{$key}=$key+0; }
   my $lg_hdr20_active_table=\%lg_hdr20_code;
+  # HDR10 26pt table selection follows max_bpc: 8 -> 8-bit codes (limited
+  # 16..235 by reusing %lg_hdr20_code, or full 0..255 via
+  # %lg_hdr20_code_8bit_full) and input_max=255; 10 -> 10-bit codes (limited
+  # 64..940 or full 0..1023) and input_max=1023. Caller supplies the active
+  # max_bpc via $opts_hr->{"max_bpc"}; default 10 keeps the original
+  # behavior when the option is absent.
+  my $_wb_hdr20_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
   if($opts_hr->{"active_table"} && ref($opts_hr->{"active_table"}) eq "HASH") {
    $lg_hdr20_active_table=$opts_hr->{"active_table"};
+  } elsif($_wb_hdr20_bits == 8) {
+   $lg_hdr20_active_table=\%lg_hdr20_code if($opts_hr->{"hdr20_use_limited"});
+   $lg_hdr20_active_table=\%lg_hdr20_code_8bit_full if($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"});
   } else {
    $lg_hdr20_active_table=\%lg_hdr20_code_10bit_limited if($opts_hr->{"hdr20_use_limited"});
    $lg_hdr20_active_table=\%lg_hdr20_code_10bit_full if($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"});
   }
-  my $lg_hdr20_min_code=($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 0 : 64;
-  my $lg_hdr20_span_code=($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 1023 : 876;
+  my $lg_hdr20_min_code=($_wb_hdr20_bits == 10 && $opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 0 : ($_wb_hdr20_bits == 8 ? 0 : 64);
+  my $lg_hdr20_span_code=($_wb_hdr20_bits == 10)
+   ? (($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 1023 : 876)
+   : 255;
   my $slot_key="";
   foreach my $slot (keys %lg_hdr20_stimulus) {
    if(abs($lg_hdr20_stimulus{$slot}-$stimulus_pct) < 0.01) { $slot_key=$slot; last; }
@@ -6955,7 +7026,7 @@ sub webui_grey_code_for_stimulus (@) {
   $code=exists($lg_hdr20_active_table->{$slot_key}) ? $lg_hdr20_active_table->{$slot_key} : int($lg_hdr20_min_code + $stimulus_pct/100*$lg_hdr20_span_code + .5);
   $code=$lg_hdr20_min_code if($code < $lg_hdr20_min_code);
   $code=$lg_hdr20_min_code + $lg_hdr20_span_code if($code > $lg_hdr20_min_code + $lg_hdr20_span_code);
-  $input_max=1023;
+  $input_max=($_wb_hdr20_bits == 8) ? 255 : 1023;
   return ($code,$input_max);
  }
  if($dv_series) {
@@ -12957,6 +13028,14 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
  const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
  const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
  const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
+ // Plain meter series in HDR greyscale with target_gamma=2.2 must use 2.2 chart math
+ // for EOTF/luminance/dE/gamma regardless of autocal running state or lg_autocal_26 flag.
+ // The 2.2 target is the series contract; chart math has to honor it.
+ {
+  const seriesTarget=String((typeof meterActiveSeriesTargetGamma!=='undefined'&&meterActiveSeriesTargetGamma)||'').toLowerCase();
+  const seriesMode=String((typeof meterActiveSeriesSignalMode!=='undefined'&&meterActiveSeriesSignalMode)||'').toLowerCase();
+  if(seriesTarget==='2.2' && seriesMode==='hdr10' && meterActiveSeriesType==='greyscale') return true;
+ }
  if(statusRunning){
   const target=String(status.target_gamma||'').toLowerCase();
   const layout=String(status.ddc_layout||'').toLowerCase();
@@ -13811,7 +13890,7 @@ function meterTargetLinearToSignal(v){
   return c;
  }
  if(meterChartIsHlg()) return hlgOetf(c);
- const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'bt1886'));
  if(sel==='srgb') return c<=0.0031308 ? 12.92*c : 1.055*Math.pow(c,1/2.4)-0.055;
  const g=(sel==='bt1886')?2.4:(parseFloat(sel)||2.2);
  return Math.pow(c,1/g);
@@ -13827,7 +13906,7 @@ function meterTargetSignalToLinear(v){
   const minY=meterChartMasterMin();
   return hlgSignalToDisplayLinear(c,minY,peak);
  }
- const sel=(document.getElementById('meterTargetGamma')||{}).value||'bt1886';
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'bt1886'));
  if(sel==='srgb') return c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055,2.4);
  const g=(sel==='bt1886')?2.4:(parseFloat(sel)||2.2);
  return Math.pow(c,g);
@@ -19443,6 +19522,11 @@ const METER_LG_GREY_MANUAL_22_ENABLED=false;
 				// where the renderer expects 51 (10-bit-full 5% of 1023),
 				// over-driving the low anchor.
 				const METER_LG_GREY_HDR_AUTOCAL_CODES_8BIT_LIMITED=[235,213,191,169,147,126,115,104,93,82,71,60,49,38,31,27,25,22,20,19];
+				// HDR10 8-bit full table (0..255). Used when max_bpc=8 and the
+				// panel is RGB Full (the WebUI Bit Depth dropdown drives this).
+				// Values are int(IRE%/100*255+0.5) for slots 100, 90, ..., 1.4
+				// in the same order as the other HDR20 tables.
+				const METER_LG_GREY_HDR_AUTOCAL_CODES_8BIT_FULL=[255,230,204,179,153,128,115,102,89,77,64,51,38,26,18,13,10,7,5,4];
 				const METER_LG_GREY_HDR_AUTOCAL_CODES_10BIT_LIMITED=[940,852,764,676,588,504,460,416,372,328,284,240,196,152,124,108,100,88,80,76];
 				const METER_LG_GREY_HDR_AUTOCAL_CODES_10BIT_FULL=[1023,921,818,716,614,512,460,409,358,307,256,205,153,102,72,51,41,28,20,14];
 				const METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES=[100,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4];
@@ -20195,10 +20279,17 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		   // definitions at webui.pm ~18305.
 		   let code;
 		   if(hdrIdx>=0){
+		    // HDR20 step code table selection follows meterPatchBitDepth(),
+		    // which reads the WebUI Bit Depth dropdown (max_bpc). 8-bit
+		    // → 8-bit codes (limited 16..235 or full 0..255); 10-bit →
+		    // 10-bit codes (limited 64..940 or full 0..1023). Matches the
+		    // 1.6 WORKING YCbCr limited 8-bit run when max_bpc=8.
 		    if(meterPatchBitDepth()===10 && !meterIsLimitedRange()){
 		     code=METER_LG_GREY_HDR_AUTOCAL_CODES_10BIT_FULL[hdrIdx];
 		    } else if(meterPatchBitDepth()===10 && meterIsLimitedRange()){
 		     code=METER_LG_GREY_HDR_AUTOCAL_CODES_10BIT_LIMITED[hdrIdx];
+		    } else if(!meterIsLimitedRange()){
+		     code=METER_LG_GREY_HDR_AUTOCAL_CODES_8BIT_FULL[hdrIdx];
 		    } else {
 		     code=METER_LG_GREY_HDR_AUTOCAL_CODES_8BIT_LIMITED[hdrIdx];
 		    }
