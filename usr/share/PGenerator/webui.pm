@@ -2276,7 +2276,9 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  # at series completion) and stamp it on every step so the chart target
  # is correct from t=0.
  if($target_black_use_measured && $series_target_black_y_num eq "") {
-  my $_lb_sig=lc($signal_mode||"");
+  # $signal_mode is parsed further down in this handler. Pull the cache-key
+  # variant inline so this lookup doesn't see undef.
+  my $_lb_sig=lc(&webui_pattern_signal_mode($body) || "");
   # Worker names the cache by input_max (1023=10b, 255=8b, 4095=12b), not
   # by max_bpc. Derive input_max from the conf so the keys line up.
   my $_lb_bpc=(defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? int($pgenerator_conf{"max_bpc"}) : 10;
@@ -2285,6 +2287,10 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
   my $_lb_cf=$series_color_format ne "" ? int($series_color_format) : (int($pgenerator_conf{"color_format"} || 1));
   my $_lb_rr=$transport_signal_range ne "" ? int($transport_signal_range) : 1;
   my $_lb_path="/var/lib/PGenerator/cache/last_black_${_lb_sig}_${_lb_input_max}_${_lb_cf}_${_lb_rr}.json";
+  if(open(my $_lb_dbg,">>/tmp/webui_series_debug.log")) {
+   print $_lb_dbg "[".scalar(localtime())."] TargetBlack lookup: use_measured=1 signal_mode=$_lb_sig max_bpc=$_lb_bpc color_format=$_lb_cf rgb_quant_range=$_lb_rr path=$_lb_path exists=".(-f $_lb_path ? "yes" : "no")."\n";
+   close($_lb_dbg);
+  }
   if(-f $_lb_path) {
    my $_lb_json="";
    if(open(my $_lb_fh,"<",$_lb_path)) { local $/; $_lb_json=<$_lb_fh>; close($_lb_fh); }
