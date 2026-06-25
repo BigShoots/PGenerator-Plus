@@ -16372,12 +16372,18 @@ function meterChartDvClipPeak(){
 function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
  const signal=Math.max(0,Number(v)||0);
  const clamped=Math.min(1,signal);
+ const Lblack=Math.max(0,Number(Lb)||0);
  if(meterChartIsDv()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
   return meterGreyTargetLuminance(clamped*100,peak,Lb||0,null);
  }
+ // PQ path: the canonical PQ EOTF maps 0 -> 0 regardless of black floor, but
+ // the operator's "Use measured" override wants the chart to anchor 0 IRE
+ // to the cached measured black (Lb). Honor Lb at signal<=0 so the dE chart
+ // reads target=Lb for 0% IRE instead of forcing target=0.
  if(meterChartIsPq()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
+  if(clamped<=0) return Lblack;
   return meterChartHdrCodeLuminance(clamped,peak);
  }
  if(meterChartIsHlg()){
