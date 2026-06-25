@@ -438,7 +438,7 @@ for field in (
 	"target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
 	"dv_absolute_white_y", "dv_absolute_target_y", "dv_absolute_rolloff_pct",
 	"dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
-    "series_target_white_y", "lg_target_white_y",
+    "series_target_white_y", "lg_target_white_y", "series_target_black_y",
     "series_type", "series_color", "sat_pct", "point_role", "series_mode",
     "autocal_code", "autocal_white_reference", "autocal_reference_only",
     "autocal_read_only", "autocal_slot_locked", "ddc_slot_locked",
