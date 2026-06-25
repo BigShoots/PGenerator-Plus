@@ -2407,7 +2407,13 @@ if($signal_mode eq "dv") {
  # Stimulus must invert the display's target EOTF so the decoded linear on a
  # tracking display lands on the target linear — otherwise chromaticities
  # shift outward (measured appears oversaturated vs target xy).
- my $target_gamma_exp_resolved=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
+ # NOTE: a non-numeric / non-standard gamma label (e.g. "st2084", "hlg", or a
+ # stray string) MUST NOT collapse to exponent 0 (Perl's "st2084"+0 == 0),
+ # or $v**0 == 1 bakes target_Yn=1 onto every greyscale step (every IRE then
+ # targets the white value). Fall back to the SDR default 2.4 in that case;
+ # the dedicated PQ/HLG branches below handle their real transfer functions.
+ my $_tge=($target_gamma eq "bt1886")?2.4:(($target_gamma eq "srgb")?2.4:($target_gamma+0.0));
+ my $target_gamma_exp_resolved=($_tge>0)?$_tge:2.4;
 my $dv_map_mode=($signal_mode eq "dv") ? ($request_dv_map_mode || $pgenerator_conf{"dv_map_mode"} || "2") : "";
 my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv_transport) : 0;
  my $target_linear_to_signal=sub {
@@ -2420,7 +2426,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   if($target_gamma eq "srgb") {
    return ($v<=0.0031308) ? 12.92*$v : 1.055*($v**(1/2.4))-0.055;
   }
-  if($signal_mode eq "hdr10" && $target_gamma eq "st2084") {
+  if($target_gamma eq "st2084") {
    return &webui_pattern_pq_encode_normalized($v*10000);
   }
   return $v**(1/$target_gamma_exp_resolved);
@@ -2435,7 +2441,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   if($target_gamma eq "srgb") {
    return ($v<=0.04045) ? $v/12.92 : ((($v+0.055)/1.055)**2.4);
   }
-  if($signal_mode eq "hdr10" && $target_gamma eq "st2084") {
+  if($target_gamma eq "st2084") {
    return &webui_pattern_pq_decode_normalized($v)/10000;
   }
   return $v**$target_gamma_exp_resolved;
@@ -2754,7 +2760,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		     my $target_Yn_for_step=$lg_autocal_26_target_yn_for_stimulus->($stim);
 		     $extra.=",\"target_x\":0.3127,\"target_y\":0.329,\"target_Yn\":$target_Yn_for_step";
 		    }
-		    if(!$lg_autocal_26_codes && $signal_mode eq "sdr" && $r_code==$g_code && $g_code==$b_code) {
+		    if(!$lg_autocal_26_codes && ($signal_mode eq "sdr" || $signal_mode eq "hdr10" || $signal_mode eq "hlg") && $r_code==$g_code && $g_code==$b_code) {
 		     my $target_min_code=$dv_series ? 16 : ($lg_extended_sdr_codes ? 16 : ($lg_legal_sdr_ddc_codes ? 16 : ($lim ? 16 : 0)));
 		     my $target_span_code=$dv_series ? 219 : ($lg_extended_sdr_codes ? 239 : ($lg_legal_sdr_ddc_codes ? 219 : ($lim ? 219 : 255)));
 		     my $target_signal=$target_span_code>0 ? (($g_code-$target_min_code)/$target_span_code) : 0;
@@ -8730,14 +8736,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         </div>
         <div class="meter-target-white-row">
          <label class="meter-target-inline-label">Target White</label>
-         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="auto" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="auto" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()">
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
         </div>
         <div class="meter-target-black-row">
          <label class="meter-target-inline-label">Target Black</label>
-         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="auto" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="auto" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()">
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
@@ -13312,6 +13318,17 @@ function meterLgAutoCalTargetYnForStimulus(stimulus){
  if(signal<=0) return 0;
  const sel=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''))||'bt1886';
  if(sel==='srgb') return signal<=0.04045 ? signal/12.92 : Math.pow((signal+0.055)/1.055,2.4);
+ // PQ (ST2084): match the server's $target_signal_to_linear hdr10+st2084
+ // branch and the chart's PQ path. Decode the normalized signal as a PQ
+ // code value to absolute nits, then normalize to the 10000-nit peak.
+ if(sel==='st2084' && typeof meterChartPqDecodeNormalized==='function'){
+  const y=meterChartPqDecodeNormalized(signal);
+  return y>0 ? y/10000 : 0;
+ }
+ // HLG: approximate the scene-linear->display transfer with the same
+ // power-law the server uses for hlg (the chart's HLG path uses the full
+ // OETF+OOTF; for a normalized target_Yn the power-law is the accepted
+ // approximation). Falls through to the power-law below.
  const gamma=sel==='2.2'?2.2:2.4;
  return Math.pow(signal,gamma);
 }
@@ -14329,6 +14346,13 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
   const signal=Math.pow(Math.max(0,tYn),1/2.4);
   const y=bt1886Eotf(signal,peak,Lb);
   if(Number.isFinite(y)&&y>=0) return y;
+ }
+ // Anchor the SDR sRGB / power-gamma target to the black floor (BT.1886-style)
+ // so the dE/table path matches the chart curve (meterGreyTargetLuminance),
+ // which also anchors to Lb. target = Lb + (peak-Lb)*tYn. BT.1886 above already
+ // uses Lb; the Lb==0 case reduces to tYn*peak (pure law), unchanged.
+ if(!meterChartIsHdr()&&!meterChartIsDv()&&(targetGamma==='srgb'||targetGamma==='2.2'||targetGamma==='2.4')){
+  return Lb+(peak-Lb)*tYn;
  }
  // HDR / HLG / DV: anchor the relative target to the black floor the same way
  // the SDR power branches do. The server bakes tYn as a relative 0..1 fraction
@@ -15511,9 +15535,13 @@ function meterGreyTargetLuminance(ire,Lw,Lb,code){
  if(usesPqTarget||meterChartIsHlg()) return meterChartTargetLuminance(signal,peak,Lb||0);
  const tgt=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
  if(tgt==='bt1886') return bt1886Eotf(signal,peak,Lb||0);
- if(tgt==='srgb') return srgbEotf(signal)*peak;
+ // Anchor the SDR target curves to the black floor (BT.1886-style) so the
+ // 0% IRE target tracks the measured/set black (target = Lb + (peak-Lb)*eotf)
+ // instead of always starting at 0. BT.1886 above already uses Lb.
+ const _lb=Math.max(0,Number(Lb)||0);
+ if(tgt==='srgb') return _lb+(peak-_lb)*srgbEotf(signal);
  const gamma=parseFloat(tgt);
- return gammaEotf(signal,(gamma>0&&isFinite(gamma))?gamma:2.2)*peak;
+ return _lb+(peak-_lb)*gammaEotf(signal,(gamma>0&&isFinite(gamma))?gamma:2.2);
 }
 
 function meterReadingsUseLgHeadroomReference(readings){
@@ -17612,7 +17640,7 @@ function meterStampReadingStepMeta(reading,step){
 
 function meterAttachSeriesMeta(readings){
  if(!Array.isArray(readings)||!meterSeriesSteps) return readings||[];
- return readings.map(rd=>{
+ const out=readings.map(rd=>{
   const matches=meterSeriesSteps.filter(s=>(meterStepNameKey(s)===meterStepNameKey(rd)||((s.name||'')===(rd.name||'')))&&meterReadingMatchesStepForPlot(rd,s));
   const wantsReference=!!(rd&&(rd.autocal_white_reference||rd.autocal_reference_only||rd.autocal_read_only)&&rd.ddc_target_ire==null);
   const step=wantsReference
@@ -17621,6 +17649,18 @@ function meterAttachSeriesMeta(readings){
   const reading=step?meterStampReadingStepMeta(rd,step):rd;
   return meterNormalizeOledBlackReading(meterNormalizeMeasuredReading(reading));
  });
+ // Re-grade each greyscale reading's target_Yn to the CURRENTLY selected
+ // target gamma. The step stamp above carries the value baked at series-load
+ // time, which can be stale (e.g. an older series baked target_Yn=1 for every
+ // IRE before the HDR greyscale target_Yn fix, or the series ran under a
+ // different gamma). Regrading here -- the single chokepoint every
+ // meterReadings assignment passes through -- ensures the dE/table target_Y
+ // always reflects the live gamma selection on every view, including a
+ // cached/completed series, instead of showing every IRE at the white target.
+ if(typeof meterRegradeReadingTargetYn==='function'){
+  for(const rd of out){ try{ meterRegradeReadingTargetYn(rd); }catch(e){} }
+ }
+ return out;
 }
 
 function meterFindSeriesWhiteReading(readings){
@@ -17850,7 +17890,7 @@ function drawGammaContrastLabel(ctx,chart,readings){
  ctx.fillStyle='#aaa';
  ctx.font='11px sans-serif';
  ctx.textAlign='right';
- ctx.fillText('Contrast Ratio: '+meterLuminanceContrastText(readings||[]),ctx.w-chart.pad.r,chart.pad.t+14);
+ ctx.fillText('Contrast Ratio: '+meterLuminanceContrastText(readings||[]),ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
 // Convert the meterLiveRgbData() output into a uniform "delta from target"
@@ -18422,6 +18462,7 @@ function meterRestoreTargetLevels(){
   // No saved state: apply the display-type defaults.
   meterApplyTargetLevelsDisplayDefaults(true);
   meterSetTargetLevelsStateOnly();
+  meterBindTargetLevelsInputs();
   return;
  }
  wUm.checked=!!s.white.useMeasured;
@@ -18432,6 +18473,14 @@ function meterRestoreTargetLevels(){
  // not yet overridden.
  if(!s.white.overridden||!s.black.overridden) meterApplyTargetLevelsDisplayDefaults(false,s);
  meterSetTargetLevelsStateOnly();
+ meterBindTargetLevelsInputs();
+}
+function meterBindTargetLevelsInputs(){
+ ['meterTargetWhite','meterTargetBlack'].forEach(id=>{
+  const el=getEl(id); if(!el||el._pgenTargetLevelsBound) return;
+  el._pgenTargetLevelsBound=true;
+  el.addEventListener('change',()=>{ try{ meterSetTargetLevels(); }catch(e){} });
+ });
 }
 // Apply the DOM checkbox/input state to the disabled/grey styling without
 // re-persisting (used during restore before the user edits anything).
@@ -28145,7 +28194,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  yTop=meterApplyTopYZoom('chartGamma',yTop,0).max;
  const _ax=meterNiceAxisTop(yTop,50,10); yTop=_ax.top;
  const chart=drawChartGrid(ctx,{
-  pad:{t:20,r:15,b:30,l:55},
+  pad:{t:34,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:_ax.steps,
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterLuminanceAxisLabel(meterLuminanceUnscaleValue(i/n,yTop))
@@ -28190,7 +28239,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
  const diffuse=meterHdrDiffuseWhiteOverride();
  const targetLabel='100% target: '+targetPeak.toFixed(1)+' cd/m\u00B2'+((diffuse!=null&&meterChartIsPq())?' (DW '+diffuse.toFixed(1)+')':'');
- ctx.fillText(targetLabel,chart.pad.l,chart.pad.t+14);
+ ctx.fillText(targetLabel,chart.pad.l,chart.pad.t-8);
  ctx.textAlign='right';
  ctx.fillText('Max cd/m\u00B2: '+measuredMax.toFixed(2),ctx.w-chart.pad.r,ctx.h-2);
 }
