@@ -14330,7 +14330,13 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
   const y=bt1886Eotf(signal,peak,Lb);
   if(Number.isFinite(y)&&y>=0) return y;
  }
- return tYn*peak;
+ // HDR / HLG / DV: anchor the relative target to the black floor the same way
+ // the SDR power branches do. The server bakes tYn as a relative 0..1 fraction
+ // of the 0..10000-nit PQ peak (PQ_decode(signal)/10000), so the chart math
+ // must rescale that fraction between Lb and peak -- not just multiply by peak,
+ // which leaves in-between IREs untouched when custom White/Black are set.
+ const _lb=Math.max(0,Number(blackLevel)||0);
+ return _lb+(peak-_lb)*tYn;
 }
 
 function meterGreyChartTargetXYZForReading(reading){
@@ -15700,6 +15706,10 @@ const METER_LUMINANCE_LOG_FLOOR_DIVISOR=1000000;
 // EOTF log scale uses a much larger knee (smaller divisor) so the curve starts
 // gradually and the first gridline above 0 isn't crushed against the axis.
 const METER_EOTF_LOG_KNEE_DIVISOR=16;
+// EOTF log scale floor divisor mirrors the luminance chart's so a 0/near-black
+// point renders at a visible height on the log axis instead of collapsing into
+// the bottom-left corner.
+const METER_EOTF_LOG_FLOOR_DIVISOR=1000000;
 
 function meterEotfLuminanceLogScaleEnabledForMode(mode){
  if(mode==='eotf') return meterEotfLogScaleEnabled();
@@ -15730,14 +15740,34 @@ function meterLogUnscaleValue(norm,yTop,floorValue,kneeDivisor){
 function meterEotfScaleValue(v,yTop){
  const top=Math.max(1e-6,yTop||1);
  const val=Math.max(0,Math.min(top,v||0));
- if(meterEotfLogScaleEnabled()) return meterLogScaleValue(val,top,0,METER_EOTF_LOG_KNEE_DIVISOR);
+ if(meterEotfLogScaleEnabled()){
+  const floor=meterEotfLogFloor(top);
+  if(val<=floor){
+   // A 0/near-black point should sit at a visible floor height on the log axis,
+   // not collapse into the bottom corner. Map it to the floor's normalized
+   // position. Above the floor, behavior is unchanged (curve shape identical).
+   const knee=Math.max(top/METER_EOTF_LOG_KNEE_DIVISOR,1e-9);
+   const lo=Math.log1p(floor/knee);
+   const hi=Math.log1p(top/knee);
+   return lo/Math.max(1e-9,hi-lo);
+  }
+  return meterLogScaleValue(val,top,0,METER_EOTF_LOG_KNEE_DIVISOR);
+ }
  return val/top;
 }
 
 function meterEotfUnscaleValue(norm,yTop){
  const top=Math.max(1e-6,yTop||1);
  const n=Math.max(0,Math.min(1,norm||0));
- if(meterEotfLogScaleEnabled()) return meterLogUnscaleValue(n,top,0,METER_EOTF_LOG_KNEE_DIVISOR);
+ if(meterEotfLogScaleEnabled()){
+  const floor=meterEotfLogFloor(top);
+  const knee=Math.max(top/METER_EOTF_LOG_KNEE_DIVISOR,1e-9);
+  const lo=Math.log1p(floor/knee);
+  const hi=Math.log1p(top/knee);
+  const floorPos=lo/Math.max(1e-9,hi-lo);
+  if(n<=floorPos+1e-9) return floor;
+  return meterLogUnscaleValue(n,top,0,METER_EOTF_LOG_KNEE_DIVISOR);
+ }
  return n*top;
 }
 
@@ -15770,6 +15800,11 @@ function meterLuminanceUnscaleValue(norm,yTop){
 function meterLuminanceLogFloor(yTop){
  const top=Math.max(1e-6,yTop||1);
  return Math.max(1e-6,top/METER_LUMINANCE_LOG_FLOOR_DIVISOR);
+}
+
+function meterEotfLogFloor(yTop){
+ const top=Math.max(1e-6,yTop||1);
+ return Math.max(1e-6,top/METER_EOTF_LOG_FLOOR_DIVISOR);
 }
 
 function meterEotfLuminanceLogPointAllowed(mode,value,plot,signal){
@@ -16389,7 +16424,13 @@ function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
  if(meterChartIsPq()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
   if(clamped<=0) return Lblack;
-  return meterChartHdrCodeLuminance(clamped,peak);
+  // Relative black-floor-anchored PQ formula: meterChartPqDecodeNormalized
+  // returns the absolute ST2084 luminance in 0..10000-nit space, so dividing
+  // by 10000 gives the server's baked 0..1 fraction of the PQ peak. Rescale
+  // that fraction between Lb and peak so 0% IRE -> Lb and 100% IRE -> peak,
+  // matching the relative semantics of the server-baked target_Yn used in
+  // the dE/table path. The relative formula naturally tops out at peak.
+  return Lblack + (peak-Lblack) * (meterChartPqDecodeNormalized(clamped)/10000);
  }
  if(meterChartIsHlg()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
