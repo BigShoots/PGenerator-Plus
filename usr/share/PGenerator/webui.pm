@@ -2287,10 +2287,6 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
   my $_lb_cf=$series_color_format ne "" ? int($series_color_format) : (int($pgenerator_conf{"color_format"} || 1));
   my $_lb_rr=$transport_signal_range ne "" ? int($transport_signal_range) : 1;
   my $_lb_path="/var/lib/PGenerator/cache/last_black_${_lb_sig}_${_lb_input_max}_${_lb_cf}_${_lb_rr}.json";
-  if(open(my $_lb_dbg,">>/tmp/webui_series_debug.log")) {
-   print $_lb_dbg "[".scalar(localtime())."] TargetBlack lookup: use_measured=1 signal_mode=$_lb_sig max_bpc=$_lb_bpc color_format=$_lb_cf rgb_quant_range=$_lb_rr path=$_lb_path exists=".(-f $_lb_path ? "yes" : "no")."\n";
-   close($_lb_dbg);
-  }
   if(-f $_lb_path) {
    my $_lb_json="";
    if(open(my $_lb_fh,"<",$_lb_path)) { local $/; $_lb_json=<$_lb_fh>; close($_lb_fh); }
