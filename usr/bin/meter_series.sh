@@ -48,6 +48,9 @@ LOW_LIGHT_MODE="${28:-${LOW_LIGHT_MODE:-off}}"
 # so the daemon's "/usr/bin/meter_series.sh *" arg-count stays minimal.
 PATCH_INSERT_PATCH_PRECOMPUTED="${29:-}"
 PATCH_INSERT_TIME_PRECOMPUTED="${30:-}"
+# Color format (0=RGB, 1=YCbCr). Used as part of the last_black_<sig> cache
+# key because the panel-side 0% IRE black depends on colorimetry.
+COLOR_FORMAT="${31:-}"
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
@@ -1809,3 +1812,62 @@ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
 write_state_json << EOJSON
 {"status":"complete","series_id":"$SERIES_ID","current_step":$TOTAL,"total_steps":$TOTAL,"current_name":"Done","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
+
+# Cache the 0% IRE measured black from the just-finished series so the
+# next series (with target_black_use_measured=true) can stamp the cached
+# value onto every step before the 0% reading actually completes in
+# the new series. The chart math uses reading.series_target_black_y
+# directly, so without the cache the chart sits at 0 nits from series
+# start until the 0% reading arrives several seconds later.
+# Color format and rgb_quant_range are part of the key because the
+# panel-side pipeline maps the same wire code to a different 0% IRE
+# black for different (colorimetry, quant-range) combos (the
+# 8b-vs-10b-YCbCr-Ltd panel-side divergence).
+BLACK_CACHE_DIR="/var/lib/PGenerator/cache"
+BLACK_CACHE="$BLACK_CACHE_DIR/last_black_${SIGNAL_MODE}_${INPUT_MAX}_${COLOR_FORMAT}_${TRANSPORT_SIGNAL_RANGE}.json"
+if [[ "$SIGNAL_MODE" == "hdr10" || "$SIGNAL_MODE" == "sdr" || "$SIGNAL_MODE" == "hlg" ]] && command -v python >/dev/null 2>&1; then
+ mkdir -p "$BLACK_CACHE_DIR" 2>/dev/null || true
+ python -c "
+import json, os, sys, time
+state_file = '$STATE_FILE'
+cache_file = '$BLACK_CACHE'
+signal_mode = '$SIGNAL_MODE'
+input_max = '$INPUT_MAX'
+color_format = '$COLOR_FORMAT'
+rgb_quant_range = '$TRANSPORT_SIGNAL_RANGE'
+try:
+    with open(state_file) as f:
+        state = json.load(f)
+except Exception:
+    sys.exit(0)
+readings = state.get('readings') or []
+# Find the 0% IRE greyscale reading (some series have multiple 0% entries
+# from patch_insert; take the minimum).
+black_candidates = []
+for r in readings:
+    if not r.get('luminance') or r.get('luminance') <= 0:
+        continue
+    name = (r.get('name') or '').strip()
+    if name.startswith('0%') or r.get('ire') == 0:
+        black_candidates.append(r['luminance'])
+if black_candidates:
+    payload = {
+        'signal_mode': signal_mode,
+        'input_max': input_max,
+        'color_format': color_format,
+        'rgb_quant_range': rgb_quant_range,
+        'luminance': min(black_candidates),
+        'ts': int(time.time()),
+    }
+    tmp = cache_file + '.tmp'
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(payload, f)
+        if hasattr(os, 'replace'):
+            os.replace(tmp, cache_file)
+        else:
+            os.rename(tmp, cache_file)
+    except Exception:
+        pass
+" 2>/dev/null || true
+fi
