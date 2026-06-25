@@ -13005,13 +13005,18 @@ function meterDvRelativeSt2084UsesLegalRange(){
 }
 
 function meterGreyTargetGammaSelection(){
- const active=(typeof meterActiveSeriesTargetGamma!=='undefined')?String(meterActiveSeriesTargetGamma||''):'';
- // The active-series gamma override carries a snapshot's own transfer for
- // HDR/HLG/DV/PQ series. For SDR, always honor the operator's TARGET GAMMA
- // dropdown (as in 2.7.2): a snapshot gamma that is not 'bt1886' would
- // otherwise bypass the BT.1886 black-level lift and create a low-IRE error
- // on a calibrated SDR panel.
- if(active && (typeof meterChartIsHdr==='function') && meterChartIsHdr()) return active;
+ // Active-series snapshot wins during an LG HDR autocal (the solver pins a
+ // 2.2 power target and the chart has to grade against the same curve).
+ // Outside autocal, the operator's TARGET GAMMA dropdown is the source of
+ // truth: changing it must immediately retarget the chart math even if an
+ // older series snapshot is still cached. For SDR, always honor the dropdown
+ // (2.7.2 behaviour) so a non-bt1886 snapshot cannot bypass the BT.1886
+ // black-level lift on a calibrated SDR panel.
+ if((typeof meterChartIsHdr==='function') && meterChartIsHdr() &&
+    (typeof meterHdrAutoCalUsesPowerGammaChartMath==='function') &&
+    meterHdrAutoCalUsesPowerGammaChartMath()){
+  return '2.2';
+ }
  const el=document.getElementById('meterTargetGamma');
  const selected=String((el&&el.value) || '');
  if(meterChartIsDv()){
@@ -20542,10 +20547,20 @@ function meterLgAutoCalRequestedSignalMode(){
 }
 
 function meterAutoCalTargetGammaValue(){
- return meterLgAutoCalRequestedSignalMode()==='hdr10'?'st2084':((document.getElementById('meterTargetGamma')||{}).value||'bt1886');
+ // Honor the operator's TARGET GAMMA dropdown. The previous code hardcoded
+ // 'st2084' for HDR10, which overrode the dropdown whenever the operator
+ // wanted a 2.2 power-gamma chart view and silently forced PQ target lines.
+ // Fall back to a mode-appropriate default only when the dropdown is empty
+ // (first paint before any user selection).
+ const el=document.getElementById('meterTargetGamma');
+ const selected=String((el&&el.value) || '');
+ if(selected) return selected;
+ return meterLgAutoCalRequestedSignalMode()==='hdr10'?'st2084':'bt1886';
 }
 
 function meterLgAutoCalGreyscaleTargetGammaValue(){
+ // LG HDR autocal always calibrates against a 2.2 power target; SDR
+ // series honor the dropdown like meterAutoCalTargetGammaValue().
  return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();
 }
 
