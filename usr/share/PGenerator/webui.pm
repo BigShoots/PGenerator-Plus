@@ -13904,17 +13904,24 @@ function meterDisplayIsOled(){
 function meterChartBlackLevel(readings){
  // Operator Target Black override forces the black-floor reference.
  const _tb=(typeof meterTargetBlackLevel==='function')?meterTargetBlackLevel():null;
- if(_tb&&!_tb.useMeasured&&_tb.value!=null&&_tb.value>=0) return _tb.value;
+ // If the operator has explicitly entered a non-zero manual Target Black
+ // value, respect it and ignore any server-stamped value (the operator's
+ // number always wins over the cached reading).
+ const _manualNonZero=(_tb&&!_tb.useMeasured&&_tb.value!=null&&_tb.value>0);
+ if(_manualNonZero) return _tb.value;
  const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
- // "Use measured" path: each reading carries the cached 0% IRE black floor
- // (stamped server-side via reading.series_target_black_y) so the chart
- // target anchors to the operator's chosen value even when the in-series
- // 0% patch meter-times-out to luminance=0 on OLED. Honor the stamp first.
- if(_tb&&_tb.useMeasured){
-  const stamped=gs.map(r=>r.series_target_black_y).filter(v=>v!=null&&Number.isFinite(v)&&v>=0);
-  if(stamped.length>0) return Math.min(...stamped);
- }
+ // "Use measured" + server-side cache stamp: each reading carries the
+ // cached 0% IRE black floor (stamped at series start via reading.series_target_black_y)
+ // so the chart target anchors to the operator's chosen value even when the
+ // in-series 0% patch meter-times-out to luminance=0 on OLED. Honor the
+ // stamp first whenever it's present, so OLED's "default value=0 manual
+ // override" (which sets _tb={useMeasured:false,value:0} when the operator
+ // hasn't explicitly overridden the OLED class default) does NOT silently
+ // hide the cached measured black. The operator's explicit non-zero value
+ // is preserved by the _manualNonZero check above.
+ const stamped=gs.map(r=>r.series_target_black_y).filter(v=>v!=null&&Number.isFinite(v)&&v>=0);
+ if(stamped.length>0) return Math.min(...stamped);
  const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
  if(trueBlack.length>0) return Math.min(...trueBlack);
  if(meterDisplayIsOled()) return 0;
