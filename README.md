@@ -4,7 +4,23 @@
   <img src="Pgen+_Logo_black_bg_slim.png" alt="PGenerator+ Logo" width="720"/>
 </p>
 
-A Raspberry Pi–based HDMI test pattern generator for display calibration. PGenerator+ outputs precision color patches and test patterns over HDMI — including HDR10, HLG, and Dolby Vision — controlled remotely by calibration software over TCP/IP. Current releases also add a local web dashboard, OTA updates, and integrated meter-driven validation workflows using ArgyllCMS `spotread`.
+## Use Case
+
+PGenerator+ is a Raspberry Pi–based display calibration suite built around a precision HDMI test pattern generator. It targets display calibrators, TV reviewers, and image-quality engineers who need a stable, scriptable signal source capable of producing accurate SDR, HDR10, HLG, and Dolby Vision test patterns on demand.
+
+The Pi outputs calibrated color patches and full-screen test patterns over HDMI and exposes them to calibration software running on a laptop or workstation over TCP/IP. Current releases also turn the Pi into a self-contained calibration tool: a local web dashboard, over-the-air updates, on-device meter-driven validation against the displayed patches using ArgyllCMS `spotread`, and closed-loop SDR and LG SDR/HDR autocal workflows that drive the display's picture-mode adjustments directly from the Pi.
+
+## Features
+
+- **Precision HDMI pattern generation** — full-screen patches, grayscale ramps, windows, color bars, custom RGB triplets, and user-defined patch sizes, driven directly through DRM/KMS on the Pi.
+- **HDR and Dolby Vision output** — HDR10 (ST.2084 PQ with full mastering display metadata), HLG, and Dolby Vision Low-Latency with proper AVI, DRM, and DOVI infoframes, plus EDID-based capability detection.
+- **Network-controlled** — TCP pattern source for Calman (UPGCI, port 2100), ColourSpace / LightSpace (XML, port 85), HCFR, DeviceControl, and the Resolve XML protocol (port 20002, outbound client mode); UDP auto-discovery on port 1977.
+- **Local web dashboard** — responsive single-page UI for HDMI signal settings, manual pattern injection, a live AVI/DRM infoframe decoder, HDMI-CEC TV control, WiFi management, OTA updates, and meter measurements.
+- **SDR and LG SDR/HDR autocal** — on-device closed-loop calibration via the LG 1D (`meter_lg_autocal.pl`) and 3D LUT (`meter_lg_3d_autocal.pl`) autocal workers, covering both SDR (Rec.709, `sdr26` DDC layout) and HDR10 (Rec.2020, `hdr20` DDC layout) signal modes. Runs the full greyscale, 1D LUT, color checker, 3D LUT, and magic-wand polish pipeline from the Pi without needing Calman or a separate PC, over the supported X-Rite, Calibrite, Datacolor, ColorVision, and Sequel USB meters.
+- **Meter-driven validation** — integrated ArgyllCMS `spotread` workflow with persistent meter sessions, on-device greyscale, color, and saturation sweeps, bundled and custom CCSS profile management, and live Delta E / chromaticity charts in the browser.
+- **Over-the-air updates** — self-updates from GitHub Releases via the web UI or `pgenerator-update`, with cumulative overlays and versioned migration scripts for users who skip releases.
+- **mDNS / Bonjour** — reachable at `pgenerator.local` with no DNS configuration.
+- **Headless and out-of-band networking** — Bluetooth PAN, WiFi AP mode, wired Ethernet, and ad-hoc wireless connections for field use without a router.
 
 Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasiotto.
 
