@@ -13077,19 +13077,7 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
  const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
  const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
  const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
- // Gate the running-status branch on a GENUINE active-autocal execution flag.
- // meterAutoCalLatestStatus can linger as a stale {status:'running',...} after
- // an autocal is aborted/finishes, which would otherwise force the chart math
- // to 2.2 during a plain HDR10 ST2084 greyscale series read (drawing a 2.2-
- // shaped target instead of PQ). Only an autocal that is actually executing
- // (running flag, polling, or the held chart-context used mid 1D-LUT solve)
- // may grade the chart against 2.2.
- const autocalActive=!!(
-  (typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning) ||
-  (typeof meterAutoCalPolling!=='undefined'&&meterAutoCalPolling) ||
-  (typeof meterHdrAutoCalChartContextHeld!=='undefined'&&meterHdrAutoCalChartContextHeld)
- );
- if(statusRunning && autocalActive){
+ if(statusRunning){
   const target=String(status.target_gamma||'').toLowerCase();
   const layout=String(status.ddc_layout||'').toLowerCase();
   const signal=String(status.signal_mode||'').toLowerCase();
@@ -16749,17 +16737,7 @@ function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight, targetYOverrid
  } else if(mode==='eotf'){
   const targetPeak = meterChartIsHdr() ? meterGreyTargetPeak(measuredPeak) : measuredPeak;
   const stampedY=Number(targetYOverride);
-  // PQ-consistency gate: in HDR ST2084 / DV-absolute mode the chart TARGET
-  // curve is drawn from the live PQ EOTF (meterGreyTargetLuminance ->
-  // meterChartTrackingLuminance). The stamped targetYOverride can diverge from
-  // that when a reading carries a stale/wrong target_Yn (e.g. a 2.2 stamp left
-  // by a prior autocal, or a generic linear stamp). To keep the ΔE reference
-  // on exactly the same PQ curve as the drawn target line, ignore the stamp
-  // and recompute the live PQ luminance whenever the chart is in PQ-target
-  // mode. The genuine-2.2 autocal path has meterGreyChartUsesPqTarget()==false
-  // there, so its stamped 2.2 target_Yn is still honored below.
-  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function') && meterGreyChartUsesPqTarget();
-  const tgtY = (!usesPqTarget && Number.isFinite(stampedY)&&stampedY>=0) ? stampedY : meterGreyTargetLuminance(ire, targetPeak, Lb||0, code);
+  const tgtY = (Number.isFinite(stampedY)&&stampedY>=0) ? stampedY : meterGreyTargetLuminance(ire, targetPeak, Lb||0, code);
   refVy = measuredPeak>0 ? tgtY/measuredPeak : 0;
  }
  return {
