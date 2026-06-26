@@ -4015,9 +4015,11 @@ sub webui_meter_settings_load (@) {
       $json=~s/\{\s*/{"delay_user_set":true,"delay_explicit":true,/;
      }
   if($meter_target_gamma_auto ne "") {
-   if($json=~/"target_gamma"\s*:/) {
-    $json=~s/"target_gamma"\s*:\s*"[^"]*"/"target_gamma":"$meter_target_gamma_auto"/g;
-   } else {
+   # Only seed the DV target gamma as a first-run default when none is
+   # stored. Do NOT overwrite an operator-chosen value — the dropdown is
+   # selectable for DV (2.2 or ST 2084); the calibration solver still
+   # pins the curve from the DV map mode at run time.
+   if($json!~/"target_gamma"\s*:/) {
     $json=~s/\{\s*/{"target_gamma":"$meter_target_gamma_auto",/;
    }
   }
@@ -10166,14 +10168,14 @@ function meterSyncTargetGammaControl(){
 function applyMeterTargetGammaDefault(){
  const g=document.getElementById('meterTargetGamma');
  if(!g) return;
+ // Never clobber an operator-chosen target gamma. Only seed a default
+ // when the dropdown has no current value. DV is freely selectable
+ // (2.2 or ST 2084); the calibration solver pins the curve at run time.
+ if(g.value) { meterSyncTargetGammaControl(); return; }
  const sm=document.getElementById('signal_mode').value;
  const displayType=document.getElementById('meterDisplayType').value;
- if(sm==='dv'){
-  g.value=meterDvAutoTargetGamma();
-  meterSyncTargetGammaControl();
-  return;
- }
- if(sm==='hdr10') g.value='st2084';
+ if(sm==='dv') g.value=meterDvAutoTargetGamma();
+ else if(sm==='hdr10') g.value='st2084';
  else if(displayType.startsWith('projector')) g.value='2.2';
  else g.value='bt1886';
  meterSyncTargetGammaControl();
@@ -30845,7 +30847,6 @@ async function loadMeterSettings(){
  }else{
   applyMeterTargetGammaDefault();
  }
- if(getVal('signal_mode')==='dv') applyMeterTargetGammaDefault();
  meterSyncTargetGammaControl();
  setChk('meterCustomD65Enabled', s.custom_d65_enabled);
  setVal('meterTargetWhiteX', s.target_white_x);
