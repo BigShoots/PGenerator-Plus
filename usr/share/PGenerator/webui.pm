@@ -10146,23 +10146,19 @@ function meterSyncTargetGammaControl(){
  const g=document.getElementById('meterTargetGamma');
  if(!g) return;
  const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
- // Only lock the DV Target Gamma dropdown to its auto value while an LG
- // AutoCal / meter series is actually running — the solver pins the curve.
- // Outside calibration the operator is free to pick 2.2 or ST 2084.
- const calActive=(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
-  ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
-  ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
-  ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning);
- const locked=sm==='dv'&&calActive;
- if(sm==='dv'&&calActive) g.value=meterDvAutoTargetGamma();
- g.disabled=locked;
- g.title=locked
-  ? (meterDvMapModeValue()==='2'
-    ? 'Locked: Dolby Vision Relative greyscale calibration uses a standard 2.2 curve.'
-    : 'Locked: Dolby Vision Absolute greyscale calibration uses ST 2084/PQ.')
-  : (sm==='dv'
-    ? 'Select 2.2 (Relative) or ST 2084 (Absolute) as the greyscale target curve.'
-    : '');
+ // The Target Gamma dropdown is always selectable. The chart math and the
+ // calibration solver pin their own curve from dv_map_mode during an active
+ // calibration (meterHdrAutoCalUsesPowerGammaChartMath + solver config), so
+ // disabling the control here only caused it to grey out on phantom/stale
+ // running states after a service restart. Keep it enabled; just annotate.
+ g.disabled=false;
+ if(sm==='dv'){
+  g.title=(meterDvMapModeValue()==='2')
+   ? 'Dolby Vision Relative default is 2.2; ST 2084 renders the PQ target curve.'
+   : 'Dolby Vision Absolute default is ST 2084; 2.2 renders the standard EOTF.';
+ }else{
+  g.title='';
+ }
 }
 
 function applyMeterTargetGammaDefault(){
