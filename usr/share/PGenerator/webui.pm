@@ -10163,13 +10163,14 @@ function meterSyncTargetGammaControl(){
  }
 }
 
-function applyMeterTargetGammaDefault(){
+function applyMeterTargetGammaDefault(force){
  const g=document.getElementById('meterTargetGamma');
  if(!g) return;
- // Never clobber an operator-chosen target gamma. Only seed a default
- // when the dropdown has no current value. DV is freely selectable
+ // Never clobber an operator-chosen target gamma unless force=true (used by
+ // the signal_mode change handler to land on the mode-appropriate default
+ // when the operator switches modes). DV is freely selectable
  // (2.2 or ST 2084); the calibration solver pins the curve at run time.
- if(g.value) { meterSyncTargetGammaControl(); return; }
+ if(!force && g.value) { meterSyncTargetGammaControl(); return; }
  const sm=document.getElementById('signal_mode').value;
  const displayType=document.getElementById('meterDisplayType').value;
  if(sm==='dv') g.value='st2084';
@@ -10217,7 +10218,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
   setVal('rgb_quant_range','2');
 	 }
 	 applyMeterTargetGamutDefault(true);
-	 applyMeterTargetGammaDefault();
+	 applyMeterTargetGammaDefault(true);
 	 meterApplyPatternInsertionDefaults(false);
 	 updateModeVisibility();
  updateDropdowns();
