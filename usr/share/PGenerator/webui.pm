@@ -14331,7 +14331,13 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
   const y=bt1886Eotf(signal,peak,Lb);
   if(Number.isFinite(y)&&y>=0) return y;
  }
- return tYn*peak;
+ // Floor the target at the operator's black level so the curve and dE honor
+ // the Target Black override across all IREs, not just 0%. When Lb=0 this is
+ // a no-op (Math.max(tYn*peak,0)==tYn*peak). For Lb>0, low-signal IREs whose
+ // PQ target would fall below the black floor are clamped to Lb, matching the
+ // physical constraint that the display cannot produce less than its black
+ // floor. This is analogous to how the BT.1886 path above maps to [Lb,peak].
+ return Math.max(tYn*peak,Lb);
 }
 
 function meterGreyChartTargetXYZForReading(reading){
@@ -14619,7 +14625,7 @@ function meterColorDeltaEForm(){
 
 function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  const xyz=meterReadingXYZ(reading);
- if(!reading||!xyz||!(xyz.Y>0)) return {value:0,de2000:0};
+ if(!reading||!xyz) return {value:0,de2000:0};
  form = form || meterDeltaEForm();
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
  const mode=meterResolveGreyRefMode(modeOrIncl);
@@ -14627,6 +14633,11 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  const _gw=(gwWeight>0&&gwWeight<=1)?gwWeight:1;
  if(_gw<1) wR={X:wR.X*_gw,Y:wR.Y*_gw,Z:wR.Z*_gw};
  const target=meterGreyDeltaTargetXYZ(reading, mode==='eotf');
+ // Black-on-black: measured Y=0 with target Y=0 (or no target) = no error.
+ // But when the operator set a Target Black override (target Y>0), compute the
+ // dE against {0,0,0} measured so the luminance gap is reported even when the
+ // meter read 0 on OLED true black.
+ if(!(xyz.Y>0) && !(target&&target.Y>0)) return {value:0,de2000:0};
  if(mode==='absolute'){
   const stepY=Math.max(xyz.Y||0,target.Y||0,0);
   if(stepY>0 && wR.Y>0){
@@ -14653,7 +14664,7 @@ function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
  const useColorForm=meterReadingUsesColorDeltaForm(reading);
  form = form || (useColorForm ? meterColorDeltaEForm() : meterDeltaEForm());
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
- if(!useColorForm && meterReadingIsGreyscale(reading) && xyz && xyz.Y>0){
+ if(!useColorForm && meterReadingIsGreyscale(reading) && xyz && xyz.Y>=0){
   return meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight).value;
  }
  const mode=meterResolveGreyRefMode(modeOrIncl);
@@ -16384,13 +16395,14 @@ function meterChartTrackingLuminance(v,clipPeak,Lw,Lb){
   return meterGreyTargetLuminance(clamped*100,peak,Lb||0,null);
  }
  // PQ path: the canonical PQ EOTF maps 0 -> 0 regardless of black floor, but
- // the operator's "Use measured" override wants the chart to anchor 0 IRE
- // to the cached measured black (Lb). Honor Lb at signal<=0 so the dE chart
- // reads target=Lb for 0% IRE instead of forcing target=0.
+ // the operator's Target Black override wants the chart to anchor the black
+ // floor at Lb. Honor Lb at signal<=0, and floor all PQ targets at Lb so the
+ // curve does not dip below the operator's black target for low-signal IREs.
+ // When Lb=0 this is a no-op (Math.max(pqLum,0)==pqLum).
  if(meterChartIsPq()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
   if(clamped<=0) return Lblack;
-  return meterChartHdrCodeLuminance(clamped,peak);
+  return Math.max(meterChartHdrCodeLuminance(clamped,peak),Lblack);
  }
  if(meterChartIsHlg()){
   const peak=(clipPeak>0)?clipPeak:(Lw>0?Lw:meterChartHdrPeak());
