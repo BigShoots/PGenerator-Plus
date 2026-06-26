@@ -3980,7 +3980,9 @@ sub webui_meter_settings_load (@) {
  if(($pgenerator_conf{"dv_status"}||"0") eq "1") {
   my $dv_map_mode=$pgenerator_conf{"dv_map_mode"};
   $dv_map_mode="2" if(!defined $dv_map_mode || $dv_map_mode eq "");
-  $meter_target_gamma_auto=($dv_map_mode eq "2") ? "2.2" : "st2084";
+  # DV Target Gamma defaults to ST 2084 (PQ target curve) for the chart/series
+  # UI; the calibration solver pins 2.2 for relative (map mode 2) at run time.
+  $meter_target_gamma_auto="st2084";
   $meter_target_gamut_auto="p3d65";
  }
  my $boot_id=&_webui_meter_settings_boot_id();
@@ -10154,7 +10156,7 @@ function meterSyncTargetGammaControl(){
  g.disabled=false;
  if(sm==='dv'){
   g.title=(meterDvMapModeValue()==='2')
-   ? 'Dolby Vision Relative default is 2.2; ST 2084 renders the PQ target curve.'
+   ? 'Dolby Vision Relative default is ST 2084 (PQ target curve); calibration pins 2.2.'
    : 'Dolby Vision Absolute default is ST 2084; 2.2 renders the standard EOTF.';
  }else{
   g.title='';
@@ -10170,7 +10172,7 @@ function applyMeterTargetGammaDefault(){
  if(g.value) { meterSyncTargetGammaControl(); return; }
  const sm=document.getElementById('signal_mode').value;
  const displayType=document.getElementById('meterDisplayType').value;
- if(sm==='dv') g.value=meterDvAutoTargetGamma();
+ if(sm==='dv') g.value='st2084';
  else if(sm==='hdr10') g.value='st2084';
  else if(displayType.startsWith('projector')) g.value='2.2';
  else g.value='bt1886';
