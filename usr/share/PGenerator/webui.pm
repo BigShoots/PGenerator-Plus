@@ -13991,10 +13991,30 @@ function meterColorLabWhite(){
 // Forward/inverse of the active SDR/DV target signal model used by the meter
 // series builders. DV greyscale patches use the same direct 16-235 ramp for
 // Absolute and Relative; chart targets still analyze Relative against gamma 2.2.
+// Does the Dolby Vision greyscale target curve use ST 2084/PQ right now?
+// Honors the operator's Target Gamma dropdown outside an active calibration;
+// during a calibration the solver pins the curve from dv_map_mode (relative=2.2,
+// absolute=st2084).
+function meterDvUsesPqTargetCurve(){
+ if(typeof meterChartIsDv!=='function' || !meterChartIsDv()) return false;
+ const calActive=(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
+  ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+  ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
+  ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning);
+ if(calActive) return meterDvMapModeValue()!=='2';
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||''));
+ return String(sel||'').toLowerCase()==='st2084';
+}
+
 function meterTargetLinearToSignal(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
  if(meterChartIsDv()){
+  // Relative DV treats the signal fraction as the linear target directly
+  // (the DV engine applies its own tonemap on top of a 2.2-encoded signal).
+  // ST 2084 / absolute DV should follow the PQ OETF, so honor the operator's
+  // Target Gamma dropdown selection outside an active calibration.
+  if(meterDvUsesPqTargetCurve()) return meterChartPqEncodeNormalized(c*10000);
   return c;
  }
  if(meterChartIsHlg()) return hlgOetf(c);
@@ -14007,6 +14027,9 @@ function meterTargetSignalToLinear(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
  if(meterChartIsDv()){
+  // See meterTargetLinearToSignal: relative DV is identity; ST 2084/absolute
+  // follows the PQ EOTF when the operator selects it (outside calibration).
+  if(meterDvUsesPqTargetCurve()) return meterChartPqDecodeNormalized(c);
   return c;
  }
  if(meterChartIsHlg()){
