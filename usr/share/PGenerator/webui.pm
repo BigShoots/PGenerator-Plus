@@ -20758,7 +20758,9 @@ function meterLgAutoCalGreyscaleTargetGammaValue(){
 
 function meterAutoCalTargetGamutValue(){
  const mode=meterLgAutoCalRequestedSignalMode();
- if(mode==='hdr10') return 'bt2020';
+ // HDR10 AutoCal + post-cal series solve in the P3-D65 target gamut
+ // (consumer HDR is mastered to P3, not the BT.2020 container).
+ if(mode==='hdr10') return 'p3d65';
  const raw=String((document.getElementById('meterTargetGamut')||{}).value||'auto').toLowerCase();
  if(raw==='bt709'||raw==='bt2020'||raw==='p3d65'||raw==='p3dci') return raw;
  return 'bt709';
@@ -25623,6 +25625,13 @@ async function meterStartAutoCal(options){
  meterLastChartCount=0;
  meterLastChartSignature='';
  meterActiveSeriesType='greyscale';
+ // HDR10 AutoCal + post-cal series solve in the P3-D65 target gamut
+ // (consumer HDR is mastered to P3, not the BT.2020 container). Set the
+ // dropdown so every series read (autocal, post-cal report, manual) uses P3.
+ if((getVal('signal_mode')||'sdr')==='hdr10'){
+  setVal('meterTargetGamut','p3d65');
+  if(typeof saveMeterSettings==='function') saveMeterSettings();
+ }
  meterSetActiveSeriesChartContext();
  document.getElementById('meterExportRow').style.display='';
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:adjustable.length||26,current_name:'LG Auto Cal setup...'},{workflow:fullWorkflow?'full':'greyscale',label:'LG Auto Cal setup...'});
