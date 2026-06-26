@@ -2908,7 +2908,7 @@ void ofxRPI4Window::update()
 					ofLogError() << "DRM: input bit_depth of " << bit_depth << " bits not compatible with output bpc of " << avi_info.max_bpc << " bits, switching output bpc to 10 bits"; 
 					avi_info.max_bpc = 10;
 				}
-				if (!colorspace_on) bit_depth=8;
+				if (!colorspace_on) ofLog() << "DRM: input bit_depth of " << bit_depth << " but colorspace_on is false; keeping bit_depth=" << bit_depth;
 			break;
 			case 12:
 				if (bit_depth != avi_info.max_bpc) {
