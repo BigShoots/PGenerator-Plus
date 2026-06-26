@@ -10144,14 +10144,23 @@ function meterSyncTargetGammaControl(){
  const g=document.getElementById('meterTargetGamma');
  if(!g) return;
  const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
- const locked=sm==='dv';
- if(locked) g.value=meterDvAutoTargetGamma();
+ // Only lock the DV Target Gamma dropdown to its auto value while an LG
+ // AutoCal / meter series is actually running — the solver pins the curve.
+ // Outside calibration the operator is free to pick 2.2 or ST 2084.
+ const calActive=(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
+  ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+  ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
+  ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning);
+ const locked=sm==='dv'&&calActive;
+ if(sm==='dv'&&calActive) g.value=meterDvAutoTargetGamma();
  g.disabled=locked;
  g.title=locked
   ? (meterDvMapModeValue()==='2'
-    ? 'Dolby Vision Relative greyscale targets use a standard 2.2 curve.'
-    : 'Dolby Vision Absolute greyscale targets use ST 2084/PQ.')
-  : '';
+    ? 'Locked: Dolby Vision Relative greyscale calibration uses a standard 2.2 curve.'
+    : 'Locked: Dolby Vision Absolute greyscale calibration uses ST 2084/PQ.')
+  : (sm==='dv'
+    ? 'Select 2.2 (Relative) or ST 2084 (Absolute) as the greyscale target curve.'
+    : '');
 }
 
 function applyMeterTargetGammaDefault(){
@@ -19504,11 +19513,22 @@ function meterHideSeriesControlsForAutoCal(){
 }
 
 function meterAutoCalControlsAllowedForSignal(){
- return true;
+ // Dolby Vision and HLG have no supported AutoCal pipeline (no DV/HLG
+ // greyscale/3D-LUT calibration workspace). Hide every AutoCal control —
+ // the Auto Cal / Full Auto Cal / LG 3D buttons and the AutoCal tab.
+ const sm=(getVal('signal_mode')||'sdr');
+ return sm!=='dv' && sm!=='hlg';
 }
 
 function meterAutoCalSeriesAvailable(){
- return true;
+ // LG AutoCal requires a paired LG TV. Also gate on signal mode — only
+ // SDR/HDR10 have a calibration workspace (DV/HLG are excluded by
+ // meterAutoCalControlsAllowedForSignal, but mirror it here so the tab
+ // and series choice controls hide too).
+ const lgPaired=(typeof meterGreyTvControlsActive==='function')&&meterGreyTvControlsActive();
+ const sm=(getVal('signal_mode')||'sdr');
+ const signalAllowed=(sm!=='dv'&&sm!=='hlg');
+ return !!(lgPaired&&signalAllowed);
 }
 
 function meterUpdateReadButtons(){
