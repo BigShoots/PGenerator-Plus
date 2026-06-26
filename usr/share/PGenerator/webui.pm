@@ -12377,7 +12377,20 @@ function meterFilterReadingsForSteps(readings,type,steps,options){
 
 function meterResolveSeriesSnapshotFromCache(key,options){
  if((!meterSeriesCache||Object.keys(meterSeriesCache).length===0) && key) meterLoadSeriesCache();
- const clone=(value)=>JSON.parse(JSON.stringify(value));
+ // Deep-clone while stripping volatile per-reading analysis caches. The
+ // cached readings carry _dE_raw/_dE_lc/_dE_cache_key/_gamma_rgb computed
+ // against the chart context (white reference / target black / target
+ // gamma / max_luma) that was live at cache time. If those are left on the
+ // restored readings, meterEnsureDeltaECache can reuse stale ΔE values
+ // (or a matching key can short-circuit a recompute) whenever the live
+ // context differs after restore — e.g. switching back to the greyscale
+ // series after an HDR AutoCal. Stripping forces a fresh compute against
+ // the restored context, matching meterRefreshActiveSeriesCharts.
+ const clone=(value)=>{
+  const out=JSON.parse(JSON.stringify(value));
+  if(Array.isArray(out)) out.forEach(rd=>{ if(rd&&typeof rd==='object'){ delete rd._dE_raw; delete rd._dE_lc; delete rd._dE_cache_key; delete rd._gamma_rgb; } });
+  return out;
+ };
  const opts=options||{};
  const exact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
  const parsed=meterParseSeriesKey(key)||null;
@@ -17443,6 +17456,10 @@ function meterRecoverSeries(s){
  meterWhiteReading=null;
 	 if(s.readings&&s.readings.length>0){
 	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(s.readings,type));
+  // Invalidate any carried-over per-reading analysis caches (ΔE/gamma)
+  // so charts recompute against the restored chart context rather than a
+  // value cached under a prior white reference / target black / gamma.
+  if(Array.isArray(meterReadings)) meterReadings.forEach(rd=>{ if(rd){ delete rd._dE_raw; delete rd._dE_lc; delete rd._dE_cache_key; delete rd._gamma_rgb; } });
   const white=meterReadings.find(rd=>rd.ire===100&&rd.r_code===rd.g_code&&rd.g_code===rd.b_code&&rd.luminance!=null);
   if(white) meterWhiteReading=white;
  }
