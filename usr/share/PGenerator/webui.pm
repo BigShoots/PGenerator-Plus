@@ -13077,19 +13077,11 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
  const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
  const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
  const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
- // Plain meter series in HDR greyscale with target_gamma=2.2 must use 2.2 chart math
- // for EOTF/luminance/dE/gamma regardless of autocal running state or lg_autocal_26 flag.
- // The 2.2 target is the series contract; chart math has to honor it.
- {
-  const seriesTarget=String((typeof meterActiveSeriesTargetGamma!=='undefined'&&meterActiveSeriesTargetGamma)||'').toLowerCase();
-  const seriesMode=String((typeof meterActiveSeriesSignalMode!=='undefined'&&meterActiveSeriesSignalMode)||'').toLowerCase();
-  if(seriesTarget==='2.2' && seriesMode==='hdr10' && meterActiveSeriesType==='greyscale') return true;
- }
  if(statusRunning){
   const target=String(status.target_gamma||'').toLowerCase();
   const layout=String(status.ddc_layout||'').toLowerCase();
   const signal=String(status.signal_mode||'').toLowerCase();
-  return (target===''||target==='2.2')&&(layout==='hdr20'||signal==='hdr10');
+  return (target==='2.2') && (layout==='hdr20'||signal==='hdr10');
  }
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  if(mode!=='hdr10') return false;
