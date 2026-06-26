@@ -30864,18 +30864,7 @@ async function loadMeterSettings(){
  setVal('meterColorDeltaEForm', s.color_de_form||'de2000');
  setChk('meterColorIncludeLumError', s.color_incl_lum);
  const savedTargetGamma=(s.target_gamma!=null)?String(s.target_gamma):'';
- // 'bt1886' is an SDR-only transfer function. An HDR10/HLG PQ series must not
- // inherit a stale 'bt1886' from the server-saved meter settings (left over
- // from an SDR session or the page-load default) -- doing so makes
- // meterGreyChartUsesPqTarget() resolve false and ALL four greyscale charts
- // draw a gamma-2.4 ("2.2") target curve instead of PQ on every page load.
- // Genuine HDR power-gamma autocal targets ('2.2'/'2.4'/'srgb') are still
- // honored; only the SDR 'bt1886' label is rejected for a PQ signal, falling
- // through to applyMeterTargetGammaDefault (hdr10->st2084, hlg->st2084).
- const _liveSig=String(getVal('signal_mode')||'sdr').toLowerCase();
- const _savedIsSdrBt1886=(String(savedTargetGamma).toLowerCase()==='bt1886');
- const _pqSignal=(_liveSig==='hdr10'||_liveSig==='hlg');
- if(savedTargetGamma!=='' && !(_savedIsSdrBt1886 && _pqSignal)){
+ if(savedTargetGamma!==''){
   setVal('meterTargetGamma', savedTargetGamma);
   const gammaEl=document.getElementById('meterTargetGamma');
   if(gammaEl&&!gammaEl.value) applyMeterTargetGammaDefault();
