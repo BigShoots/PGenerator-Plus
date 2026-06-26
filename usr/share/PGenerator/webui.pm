@@ -13107,13 +13107,22 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
  const phase=String((typeof meterAutoCalPhase!=='undefined'&&meterAutoCalPhase)||'');
  const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
  const statusRunning=!!(status&&String(status.status||'').toLowerCase()==='running');
- // Plain meter series in HDR greyscale with target_gamma=2.2 must use 2.2 chart math
- // for EOTF/luminance/dE/gamma regardless of autocal running state or lg_autocal_26 flag.
- // The 2.2 target is the series contract; chart math has to honor it.
+ // During an active HDR10 calibration the series is stamped target_gamma=2.2
+ // and the chart math must grade against 2.2. But once calibration completes
+ // and the operator switches Target Gamma back to ST 2084 (the HDR10 default),
+ // the chart must follow the dropdown -- the stale 2.2 series stamp cannot
+ // pin the curve forever. Only honor the series stamp while the dropdown is
+ // also 2.2, or while a calibration/series is actively running.
+ const calActive=(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning&&phase!=='complete'&&phase!=='error')
+  ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+  ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
+  ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning)
+  ||statusRunning;
+ const dropdownGamma=String((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value)||'')).toLowerCase();
  {
   const seriesTarget=String((typeof meterActiveSeriesTargetGamma!=='undefined'&&meterActiveSeriesTargetGamma)||'').toLowerCase();
   const seriesMode=String((typeof meterActiveSeriesSignalMode!=='undefined'&&meterActiveSeriesSignalMode)||'').toLowerCase();
-  if(seriesTarget==='2.2' && seriesMode==='hdr10' && meterActiveSeriesType==='greyscale') return true;
+  if(seriesTarget==='2.2' && seriesMode==='hdr10' && meterActiveSeriesType==='greyscale' && (calActive||dropdownGamma==='2.2')) return true;
  }
  if(statusRunning){
   const target=String(status.target_gamma||'').toLowerCase();
@@ -22043,6 +22052,13 @@ function meterAutoCalCloseComplete(){
 	 meterAutoCalStandaloneMagicWandEnabled=false;
 	 meterFullAutoCalClearReportData();
 	 meterAutoCalSetOverlay(false,null);
+	 // Calibration pinned Target Gamma to 2.2; restore the HDR10 default
+	 // (ST 2084 / PQ) so post-cal reads and charts target the PQ curve.
+	 if((getVal('signal_mode')||'sdr')==='hdr10'){
+	  setVal('meterTargetGamma','st2084');
+	  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+	  if(typeof saveMeterSettings==='function') saveMeterSettings();
+	 }
 	}
 
 async function meterAutoCalCloseCompleteAction(){
@@ -24480,6 +24496,15 @@ async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalPhase='postcal-report';
  meterFullAutoCalSaveState();
  meterClearAutoCalStatusPollingForReport();
+ // The calibration pinned Target Gamma to 2.2; the post-cal report series
+ // must read against the HDR10 default (ST 2084 / PQ target). Restore the
+ // dropdown before the series launches so it stamps target_gamma=st2084.
+ const _sm=(getVal('signal_mode')||'sdr');
+ if(_sm==='hdr10'){
+  setVal('meterTargetGamma','st2084');
+  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+  if(typeof saveMeterSettings==='function') saveMeterSettings();
+ }
  let reportCompleted=false;
  try{
   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:series.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
