@@ -8730,14 +8730,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         </div>
         <div class="meter-target-white-row">
          <label class="meter-target-inline-label">Target White</label>
-         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="auto" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="auto" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
         </div>
         <div class="meter-target-black-row">
          <label class="meter-target-inline-label">Target Black</label>
-         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="auto" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." disabled>
+         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="auto" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
@@ -18475,10 +18475,32 @@ function meterTargetLevelsPayload(){
  return p;
 }
 // Redraw the greyscale target curves so a Target White/Black change is
-// reflected immediately without re-reading.
+// reflected immediately without re-reading. Mirrors the cache bookkeeping
+// in meterOnGreyRefChange (this is bookkeeping, not curve math) so the
+// Gamma / Delta E / RGB charts pick up the new target endpoints too.
 function meterRefreshTargetCurves(){
+ // Invalidate per-reading greyscale analysis caches so the Delta E and
+ // per-channel gamma recomputes against the new target White/Black.
+ try{
+  if(meterReadings&&meterReadings.length){
+   meterReadings.forEach(r=>{
+    if(!r) return;
+    delete r._dE_cache_key;
+    delete r._dE_raw;
+    delete r._dE_lc;
+    delete r._gamma_rgb;
+   });
+   _chartHitZones=[];
+   meterLastChartSignature='';
+   meterLastChartCount=0;
+  }
+ }catch(e){}
+ // Existing single-chart redraws (kept intact).
  try{ if(typeof meterRedrawEotfChart==='function') meterRedrawEotfChart(); }catch(e){}
  try{ if(typeof meterRedrawLuminanceChart==='function') meterRedrawLuminanceChart(); }catch(e){}
+ // Redraw ALL greyscale charts (RGB / Delta E / Gamma, plus EOTF/Luminance)
+ // via the single redraw-all entry point so every target curve rescales.
+ try{ if(typeof drawAllCharts==='function' && meterReadings&&meterReadings.length) drawAllCharts(meterReadings); }catch(e){}
 }
 
 async function meterRunManualReadStep(step,ctx){
