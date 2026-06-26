@@ -13921,11 +13921,12 @@ function meterDisplayIsOled(){
 function meterChartBlackLevel(readings){
  // Operator Target Black override forces the black-floor reference.
  const _tb=(typeof meterTargetBlackLevel==='function')?meterTargetBlackLevel():null;
- // If the operator has explicitly entered a non-zero manual Target Black
- // value, respect it and ignore any server-stamped value (the operator's
- // number always wins over the cached reading).
- const _manualNonZero=(_tb&&!_tb.useMeasured&&_tb.value!=null&&_tb.value>0);
- if(_manualNonZero) return _tb.value;
+ // If the operator has explicitly entered a manual Target Black value
+ // (including 0, which is the OLED-class default), respect it and ignore
+ // any series/stamped measurement — the operator's number always wins over
+ // the cached reading. `_tb.value>=0` covers the OLED default of 0 that the
+ // earlier `_tb.value>0` check silently bypassed in favour of "measured".
+ if(_tb && !_tb.useMeasured && _tb.value!=null && _tb.value>=0) return _tb.value;
  const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
  // Prefer the CURRENT series's 0% IRE measurement. If it has a real
