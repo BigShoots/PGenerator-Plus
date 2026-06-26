@@ -6,7 +6,7 @@
 
 ## Use Case
 
-PGenerator+ is a Raspberry Pi–based display calibration suite built around a precision HDMI test pattern generator. It targets display calibrators, TV reviewers, and image-quality engineers who need a stable, scriptable signal source capable of producing accurate SDR, HDR10, HLG, and Dolby Vision test patterns on demand.
+PGenerator+ is a free, open-source Raspberry Pi–based display calibration suite built around a precision HDMI test pattern generator. It is aimed at home users and display enthusiasts who want a stable, scriptable signal source capable of producing accurate SDR, HDR10, HLG, and Dolby Vision test patterns on demand.
 
 The Pi outputs calibrated color patches and full-screen test patterns over HDMI and exposes them to calibration software running on a laptop or workstation over TCP/IP. Current releases also turn the Pi into a self-contained calibration tool: a local web dashboard, over-the-air updates, on-device meter-driven validation against the displayed patches using ArgyllCMS `spotread`, and closed-loop SDR and LG SDR/HDR autocal workflows that drive the display's picture-mode adjustments directly from the Pi.
 
