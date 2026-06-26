@@ -13119,7 +13119,7 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
   ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
   ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning)
   ||statusRunning;
- const dropdownGamma=String((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value)||'')).toLowerCase();
+ const dropdownGamma=String(((document.getElementById('meterTargetGamma')||{}).value)||'').toLowerCase();
  {
   const seriesTarget=String((typeof meterActiveSeriesTargetGamma!=='undefined'&&meterActiveSeriesTargetGamma)||'').toLowerCase();
   const seriesMode=String((typeof meterActiveSeriesSignalMode!=='undefined'&&meterActiveSeriesSignalMode)||'').toLowerCase();
