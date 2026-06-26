@@ -23676,10 +23676,9 @@ async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
   if(typeof meterDisplayPatch==='function') await meterDisplayPatch(step,{fresh:false,allowAfterStop:true});
  }catch(e){}
  // Brief settle so the panel luma and meter integration window agree.
- // 6s total: the previous 3s settle plus 3s extra so the panel's ABL /
- // thermal foldback has fully unwound from the previous patch before the
- // peak nits are captured for the HDR tone-map upload.
- await new Promise(r=>setTimeout(r,6000));
+ // 1s settle on the white patch before the peak nits read for the HDR
+ // tone-map upload.
+ await new Promise(r=>setTimeout(r,1000));
  const dtype=(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'';
  const rr=(typeof getMeterRefreshRate==='function')?getMeterRefreshRate():'';
  const delay=(typeof meterDelayMs==='function')?meterDelayMs():0;

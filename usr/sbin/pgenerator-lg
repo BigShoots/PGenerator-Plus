@@ -5261,8 +5261,6 @@ sub main (@) {
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
  my $dpg_data=$request->{"dpg_data"};
- my $keep_calibration_mode=$request->{"keep_calibration_mode"} ? 1 : 0;
- my $calibration_mode_active=$request->{"calibration_mode_active"} ? 1 : 0;
  my $result;
 
  if(!$ip || !&valid_ipv4($ip)) {
