@@ -189,6 +189,25 @@ normalize_version() {
  printf '%s' "$version"
 }
 
+# Return the MAJOR.MINOR prefix (first two dotted segments) of a version
+# string. OTA updates are gated on this: a device on 2.7.x can only OTA to
+# another 2.7.x release; 2.8.x stays within 2.8.x. Crossing a MAJOR.MINOR
+# boundary requires re-flashing the image (e.g. a new kernel driver).
+major_version() {
+ local v major minor
+ v=$(normalize_version "${1:-0}")
+ major=$(printf '%s' "$v" | cut -d. -f1)
+ minor=$(printf '%s' "$v" | cut -d. -f2)
+ [ -n "$major" ] || major="0"
+ [ -n "$minor" ] || minor="0"
+ printf '%s.%s' "$major" "$minor"
+}
+
+# True if current and target share the same MAJOR.MINOR OTA family.
+same_ota_family() {
+ [ "$(major_version "${1:-0}")" = "$(major_version "${2:-0}")" ]
+}
+
 is_prerelease_version() {
  local version
  version=$(normalize_version "$1")
@@ -302,6 +321,15 @@ case "$cmd" in
    update_available=false
   fi
 
+  # OTA family gate: only offer OTA updates within the same MAJOR.MINOR
+  # family (e.g. 2.7.x -> 2.7.x). Crossing to a new family (2.7.x -> 2.8.x)
+  # requires re-flashing because the release may ship a new kernel driver
+  # or other changes that cannot be expressed as a tar overlay.
+  if ! same_ota_family "$current" "$latest"; then
+   update_available=false
+   changelog="A newer image release ($latest) is available, but it is outside the OTA family of your current version ($current). OTA updates only apply within the same major.minor series (e.g. 2.7.x -> 2.7.x). To move to $latest, download the full image and re-flash your SD card."
+  fi
+
   printf '{"status":"ok","current":%s,"latest":%s,"update_available":%s,"published":%s,"changelog":%s,"asset_url":%s}\n' \
    "$(json_escape "$current")" \
    "$(json_escape "$latest")" \
@@ -343,6 +371,17 @@ case "$cmd" in
    log_msg "Already up to date ($current)"
    echo "Already up to date ($current)"
    exit 0
+  fi
+
+  # OTA family gate: refuse to apply an update that crosses a MAJOR.MINOR
+  # boundary. Such releases may ship a new kernel driver or other changes
+  # that cannot be delivered as a tar overlay; the user must re-flash.
+  if ! same_ota_family "$current" "$latest"; then
+   log_msg "ERROR: $latest is outside the OTA family of $current -- re-flash the image"
+   echo "ERROR: Release $latest is outside the OTA family of your current version $current."
+   echo "OTA updates only apply within the same major.minor series (e.g. 2.7.x -> 2.7.x)."
+   echo "To install $latest, download the full image and re-flash your SD card."
+   exit 1
   fi
 
   if [ -z "$asset_url" ]; then
