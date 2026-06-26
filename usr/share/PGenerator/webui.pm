@@ -6173,10 +6173,11 @@ sub webui_modes_json (@) {
  return ($_modes_cache ne "" ? $_modes_cache : "[]") if(!&webui_hdmi_connected());
  my $output=`timeout 3 $modetest -c 2>/dev/null`;
  return ($_modes_cache ne "" ? $_modes_cache : "[]") if(!defined($output) || $output eq "");
- # Parse modes from modetest output — capture index, resolution, refresh, and pixel clock (kHz)
- while($output=~/^\s*#(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+/gm) {
-  my ($idx,$res,$hz,$clock)=($1,$2,$3,$4);
-  push @modes, "{\"idx\":$idx,\"resolution\":\"$res\",\"refresh\":\"$hz\",\"clock\":$clock}";
+ # Parse modes from modetest output — capture index, resolution, refresh, pixel clock (kHz), and sync polarity flags
+ while($output=~/^\s*#(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+flags:\s+([^;]+)/gm) {
+  my ($idx,$res,$hz,$clock,$flags)=($1,$2,$3,$4,$5);
+  $flags=~s/^\s+|\s+$//g;
+  push @modes, "{\"idx\":$idx,\"resolution\":\"$res\",\"refresh\":\"$hz\",\"clock\":$clock,\"flags\":\"$flags\"}";
  }
  my $json="[".join(",",@modes)."]";
  if(@modes) {
@@ -10250,7 +10251,13 @@ function formatModeLabel(m){
  if(!Number.isNaN(refresh)){
   hz=(Math.abs(refresh-Math.round(refresh))<0.01)?String(Math.round(refresh)):String(refresh).replace(/0+$/,'').replace(/\.$/,'');
  }
- return String((m&&m.resolution)||'')+' '+hz+'Hz';
+ let label=String((m&&m.resolution)||'')+' '+hz+'Hz';
+ // Append vsync polarity when present so same WxH/refresh modes that differ
+ // only in sync polarity (e.g. the two 1080p60 timings) are distinguishable.
+ const flags=String((m&&m.flags)||'');
+ const vsync=(flags.match(/\bpvsync\b/))?'pvsync':((flags.match(/\bnvsync\b/))?'nvsync':'');
+ if(vsync) label+=' ('+vsync+')';
+ return label;
 }
 
 function parseResolutionLabel(value){
