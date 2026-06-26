@@ -320,6 +320,22 @@ The current Web UI includes an integrated measurement workflow built around Argy
 - **Headless Argyll Runtime Path:** Cross-compiled or imported armhf builds of `ccxxmake` and its matching headless helpers (`spotread`, `chartread`, `colprof`, `i1d3ccss`, `oeminst`) can be staged into the repo with [tools/import_argyll_runtime.sh](tools/import_argyll_runtime.sh) and folded into a test image via [tools/build_pgenerator_plus_image.sh](tools/build_pgenerator_plus_image.sh#L1) `--argyll-runtime-dir`.
 - **Driver Model:** Meter support uses the standard Linux USB/HID stack plus bundled udev permission rules; no extra proprietary driver packages or out-of-tree kernel modules are required.
 
+#### LG Auto Calibration (SDR & HDR)
+
+On-device closed-loop calibration of LG (and compatible) displays, driven entirely from the Pi — no PC-side Calman required.
+
+- **Two Workers:**
+  - **`meter_lg_autocal.pl`** — 1D greyscale + 2-point / 20-point white balance autocal. Tunes the display's picture-mode high/low controls and per-channel RGB gains against measured luminance and chroma targets, then runs an optional commit-and-polish pass to flatten residual Delta E.
+  - **`meter_lg_3d_autocal.pl`** — 3D LUT autocal. Probes a structured color cube through the picture mode, fits the residual errors into the display's 3D LUT, and re-measures to verify the fit.
+- **SDR and HDR10 Signal Modes:** Runs in SDR (Rec.709, `sdr26` DDC layout) and HDR10 (Rec.2020, `hdr20` DDC layout). The Pi switches the HDMI output between the two modes automatically based on the chosen signal mode — no manual relaunch needed.
+- **Pipeline Stages:** Greyscale → 1D LUT → Color Checker → 3D LUT → Magic-Wand polish → optional post-commit polish. Each stage can be run standalone or chained.
+- **Live Status from the Web UI:** The Meter & Measurements card surfaces per-stage progress, current patch, Delta E (ITP / CIEDE2000), luminance error, accepted vs. rejected DDC moves, and run IDs, with start/stop and "skip stage" controls.
+- **Display-Type Presets:** Built-in defaults for common LG panel types (OLED, QD-OLED, LCD WLED/CCFL/RGB LED) drive target luminance, gamma, color space, and tone-curve choices.
+- **Manual Target Overrides:** Target White and Target Black can be pinned to a fixed value instead of "use measured peak / floor", so every read anchors to the same reference.
+- **Meter Compatibility:** Uses the same supported X-Rite, Calibrite, Datacolor, ColorVision, and Sequel USB meters as the spotread workflow; no extra drivers required.
+- **Reports and Export:** Each autocal run produces an on-disk report (HTML + JSON) with the full stage log, per-step readings, accepted/rejected moves, and final Delta E summary that can be downloaded from the Web UI.
+- **Restart-Safe:** Active runs survive a WebUI reload and can be stopped cleanly; partial state is preserved on crash so the next run can resume from the last accepted step.
+
 #### CCSS Profile Management
 Meter correction files are now part of the runtime:
 
