@@ -13089,7 +13089,14 @@ function meterGreyTargetGammaSelection(){
  const el=document.getElementById('meterTargetGamma');
  const selected=String((el&&el.value) || '');
  if(meterChartIsDv()){
-  return meterDvAutoTargetGamma();
+  // During an active calibration the solver pins the DV curve to the
+  // map-mode-appropriate gamma; otherwise honor the operator's dropdown
+  // selection so a DV ST 2084 target renders the PQ charts.
+  const calActive=(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
+   ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+   ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
+   ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning);
+  return calActive ? meterDvAutoTargetGamma() : (selected||meterDvAutoTargetGamma());
  }
  return selected;
 }
@@ -13142,7 +13149,17 @@ function meterGreyChartTargetGammaSelection(){
 
 function meterGreyChartUsesPqTarget(){
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return false;
- if(meterChartIsDv()) return meterDvMapModeValue()!=='2';
+ if(meterChartIsDv()){
+  // Honor the operator's Target Gamma dropdown: ST 2084 -> PQ charts,
+  // anything else -> standard EOTF. During an active calibration the
+  // solver pins the curve, so fall back to the map-mode-appropriate path.
+  const calActive=(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
+   ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+   ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
+   ||(typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning);
+  if(calActive) return meterDvMapModeValue()!=='2';
+  return ((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():'')==='st2084';
+ }
  const sel=String(((typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'').toLowerCase();
  if(sel && sel!=='st2084') return false;
  return (typeof meterChartIsPq==='function') && meterChartIsPq();
