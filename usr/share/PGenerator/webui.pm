@@ -15933,21 +15933,29 @@ function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
 
 function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		const row=point||{};
-		// SDR26 1D-DPG autocal step rows: bypass the baked target_Yn path so
-		// the chart's target line follows the operator's Target Gamma dropdown
-		// like the 21pt greyscale series does. The step's tYn was computed at
-		// series-build time and is locked to whatever gamma was active then;
-		// using it here pins the chart's target line to a static gamma. The
-		// active dropdown drives the chart's gamma via targetEotf, and the
-		// chart signal normalizes to the SDR26 calibrated peak IRE (=109) for
-		// headroom anchors so 105 lands BELOW peak on the curve.
-		if(row && (typeof meterSeriesStepHasLgAutoCal26Marker==='function') && meterSeriesStepHasLgAutoCal26Marker(row) && row.stimulus!=null){
+		// SDR26 1D-DPG autocal series rows (both the discrete step rows AND the
+		// dense-curve interpolated mid points): derive the chart target from
+		// the step's stimulus through targetEotf using the active Target Gamma
+		// dropdown, instead of going through meterGreyTargetSignal which would
+		// re-derive signal from the step's 10-bit code against the chart's
+		// current bit-depth range (an 8-bit transport reading a 10-bit
+		// extended SDR26 code table produces signal values that saturate to
+		// 1.1 around IRE 27, drawing a flat-to-peak plateau from 25% to 109%
+		// that looks like a PQ rolloff). The active dropdown drives the gamma
+		// via targetEotf; chart signal normalizes to the calibrated peak IRE
+		// (=109) for headroom anchors so 105 lands BELOW peak.
+		const activeSeriesIsSdr26=(typeof meterActiveSeriesType!=='undefined')&&meterActiveSeriesType==='greyscale'
+		 &&Number(meterActiveSeriesPoints)===26
+		 &&String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='sdr'
+		 &&(typeof meterUseLgAutoCal26==='function')&&meterUseLgAutoCal26(meterActiveSeriesPoints);
+		if(activeSeriesIsSdr26 && row && row.stimulus!=null){
 		 const stimulus=Number(row.stimulus);
 		 if(Number.isFinite(stimulus)){
 		  const peakIre=109;
 		  const chartSig=stimulus<=100 ? stimulus/100 : stimulus/peakIre;
 		  return targetEotf(Math.max(0,chartSig),Lw,Lb||0);
 		 }
+		}
 		}
 		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
 		if(Number.isFinite(metadataY)&&metadataY>=0) return metadataY;
