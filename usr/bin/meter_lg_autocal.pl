@@ -14907,6 +14907,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # ... slot 25 = IRE 109 (idx 1023).
  my @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
  my @sdr26_indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+ # 10-bit limited-range RGB codes the renderer must display for each SDR26
+ # anchor. The limited-range formula is code = int(ire/100*219 + 16 + 0.5)*4
+ # for IRE <= 100 (clamped to the 940 ceiling); the two headroom anchors
+ # above 100% use the full-range codes (105->981, 109->1023) that match the
+ # SDR26 DPG index table. These are the exact codes the reference SDR
+ # workflow emits on the wire; without them read_step posts a payload with
+ # r=g=b=0 and the renderer shows black, so every meter read comes back
+ # Y=0 and the autocal spins on identity.
+ my @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,981,1023);
  my $idx_for_sdr=sub {
   my ($step)=@_;
   return undef if(ref($step) ne "HASH");
@@ -14936,6 +14945,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  my @ordered;
  for(my $k=0;$k<@sdr26_labels;$k++) {
   my $ire=$sdr26_labels[$k]+0;
+  my $rgb_code=$sdr26_codes[$k];
   my $step={
    name=>"sdr26_".$ire."%",
    ire=>$ire,
@@ -14943,6 +14953,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    signal_r_pct=>$ire,
    signal_g_pct=>$ire,
    signal_b_pct=>$ire,
+   r=>$rgb_code,
+   g=>$rgb_code,
+   b=>$rgb_code,
+   input_max=>1023,
    ddc_layout=>"sdr26",
   };
   push @ordered,$step;
