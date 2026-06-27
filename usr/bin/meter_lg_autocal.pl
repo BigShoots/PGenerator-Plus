@@ -15252,11 +15252,29 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  @white_first=sort { ($b->{"ire"}//0) <=> ($a->{"ire"}//0) } @white_first;
  # Mark the 109 step so the per-anchor loop can skip it as "already done".
  $white_first[0]->{"sdr26_white_peak_done"}=1 if(scalar(@white_first) > 0);
- # Within @rest: explicit top-down body then low-shadows-last order,
- # matching the old SDR DDC full_ddc_spine order (line ~680). 105 and 99
- # land here (after the 109 step in IRE-descending order) so they get
- # their own white_balance_gain iteration each.
- my @sdr26_body_order=(95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
+ # Within @rest: anchor order per the user's SDR26 spec:
+ #   50, 25, 75          -- mid-range anchors (calibrate DPG spline shape
+ #                            between 109 and the body extremes). 50 is
+ #                            first so the 109->50 spline gives 75 a
+ #                            small initial dE (linear interpolation
+ #                            lands near 75's target). 25 next sets the
+ #                            low-IRE anchor; 75 next completes the
+ #                            trio with proper mid-range coverage.
+ #   105, 99              -- headroom (calibrated individually via the
+ #                            regular per-channel gain with target Y
+ #                            from the 109-calibrated curve; NOT
+ #                            reduce-to-lowest because the curve can
+ #                            still drive them)
+ #   95, 90, ..., 2.3     -- top-down body then low-shadows-last,
+ #                            matching the old SDR DDC full_ddc_spine
+ #                            order (line ~680) for the rest of the
+ #                            anchors. The cumulative Akima spline
+ #                            rebuilds after each anchor (109 + 50 + 25
+ #                            + 75 are the spline's control points; the
+ #                            remaining anchors sit on the
+ #                            interpolated curve and only need chroma
+ #                            fine-tuning + target-Y tracking).
+ my @sdr26_body_order=(50,25,75,105,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
  {
   my %by_ire=map { defined($_->{"ire"}) ? (($_->{"ire"}+0) => $_) : () } @rest;
   my @reordered;
@@ -19441,6 +19459,19 @@ eval {
  my $picture_response=read_initial_picture_settings($config,$state);
  die ($picture_response->{"message"}||"Unable to read LG white-balance settings")
   if(($picture_response->{"status"}||"") ne "ok" || ref($picture_response->{"picture_settings"}) ne "HASH");
+ # Clear the "Reading $picture_mode picture settings" label that
+ # read_initial_picture_settings sets while in flight. Without this
+ # clear the WebUI overlay stays stuck on that label during the
+ # interval between the picture-settings return and the next phase
+ # (lg_autocal_26_run_sdr_1d_dpg_greyscale) writing its own
+ # current_name -- which causes the wizard to show "Reading cinema
+ # picture settings" instead of "Reading 0%" / "SDR26 1D DPG ...".
+ if(ref($state) eq "HASH") {
+  $state->{"current_name"}="";
+  $state->{"phase"}="preparing";
+  $state->{"message"}="Picture settings captured";
+  write_state($state);
+ }
  if(ref($picture_response->{"lg_generation"}) eq "HASH") {
   $config->{"lg_generation"}=$picture_response->{"lg_generation"};
   $state->{"lg_generation"}=$picture_response->{"lg_generation"};
