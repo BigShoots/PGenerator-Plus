@@ -2932,6 +2932,21 @@ sub lg_bt2020_identity_3x3_payload (@) {
  return { values => [1,0,0,0,1,0,0,0,1], data_type => "float" };
 }
 
+# BT.709 (SDR) identity 3x3 gamut matrix payload for the
+# BT709_3BY3_GAMUT_DATA externalpq command. The reference SDR workflow
+# restores the active 3x3 matrix to BT.709 identity on every SDR
+# calibration cycle. Without this, a prior HDR autocal that uploaded
+# BT2020_3BY3_GAMUT_DATA leaves the matrix in BT.2020 mode, and the C2
+# then applies every 1D DPG delta through the BT.2020 matrix in SDR -- the
+# deltas are color-transformed and no longer track the meter, so the SDR
+# autocal spins forever at best=all-zeros. The values are the mathematical
+# identity matrix (identical to the BT.2020 identity above); only the
+# command name differs and tells the TV which gamut space the matrix
+# belongs to.
+sub lg_bt709_identity_3x3_payload (@) {
+ return { values => [1,0,0,0,1,0,0,0,1], data_type => "float" };
+}
+
 sub lg_hdr_calman_float_payload (@) {
  return { values => [0,0,0,0,0,0,0.0044,-0.0453,1.0410], data_type => "float" };
 }
@@ -4168,6 +4183,41 @@ sub lg_ddc_1d_white_balance_set (@) {
  if(!$enable_ok) {
   &lg_calibration_request($session,"ddc_cal_end_after_enable_fail","CAL_END",undef,1,"",$timeout) if(!$keep_calibration_mode);
   return (1,&json_error($enable_message||"LG TV rejected 1D LUT enable.",{ active_picture_mode => $picture_mode, pipeline_responses => $enable_responses, late_start_response => $late_start }));
+ }
+
+ # SDR-only (sdr26) BT.709 3x3 gamut matrix restore. The reference SDR
+ # workflow sends BT709_3BY3_GAMUT_DATA = identity on every SDR cycle so the
+ # 1D DPG deltas are applied in BT.709 code space. A prior HDR autocal leaves
+ # BT2020_3BY3_GAMUT_DATA active; without this restore the C2 applies the
+ # SDR DPG deltas through the BT.2020 matrix and they stop tracking the meter
+ # (regression: SDR autocal stuck at best=all-zeros after any HDR run).
+ #
+ # Gating:
+ #  - sdr26 only: never touch HDR (hdr20 keeps its BT2020 matrix).
+ #  - native-capable generations only (ddc_only_white_balance == false):
+ #    DDC-only TVs (C1/B1/G1/Z1) are left untouched per the project's
+ #    instruction not to change their behavior.
+ # Non-fatal: if a TV rejects the command, log it but proceed with the DPG
+ # upload (the matrix was best-effort, the DPG write is the required step).
+ # Sent for ALL SDR generations (no ddc_only gate): the ddc_only_white_balance
+ # heuristic is a known false positive (the C1 accepts externalpq/DPG), and a
+ # TV that does not support BT709_3BY3_GAMUT_DATA will simply return an app
+ # error which we log and ignore.
+ my $bt709_matrix_response=undef;
+ my $bt709_matrix_sent=0;
+ if($ddc_layout eq "sdr26") {
+  my $bt709_matrix=&lg_force_pic_mode_payload(&lg_bt709_identity_3x3_payload());
+  $bt709_matrix_response=&lg_calibration_request($session,"ddc_bt709_3by3_gamut","BT709_3BY3_GAMUT_DATA",$bt709_matrix,0,$cal_mode,$timeout);
+  $bt709_matrix_sent=1;
+  my ($bt709_failed,$bt709_message)=&response_is_app_failure($bt709_matrix_response);
+  &diag_log_append("ddc1d:bt709-3by3-gamut",{
+   ddc_layout => $ddc_layout,
+   picture_mode => $picture_mode,
+   sent => &json_bool($bt709_matrix_sent),
+   failed => &json_bool($bt709_failed),
+   message => $bt709_message//"",
+   raw_response => $bt709_matrix_response,
+  }) if($bt709_matrix_sent);
  }
 
 	my $upload=&lg_calibration_request($session,"ddc_upload_1d_lut","1D_DPG_DATA",$lut,1,$cal_mode,$timeout);
