@@ -14451,6 +14451,20 @@ function meterTargetXYZForReading(reading){
 	 if(Number.isFinite(absX)&&Number.isFinite(absY)&&Number.isFinite(absZ)&&absY>=0){
 	  return {X:absX,Y:absY,Z:absZ};
 	 }
+	 // Honour the per-reading target_luminance field when set. The autocal
+	 // sets this for the 109% legal peak (= its own measured Y, so the
+	 // dE formula reports zero luminance error and the chart shows the
+	 // correct target Y -- the gamma-curve fallback below would otherwise
+	 // return a gamma-shaped 158-ish nits for a 109 IRE 10-bit code, which
+	 // is the wrong target for a chroma-only peak read).
+	 const _tgtLum=Number(reading.target_luminance);
+	 if(Number.isFinite(_tgtLum)&&_tgtLum>=0){
+	  const _tx=(reading.target_x!=null)?Number(reading.target_x):(meterTargetWhitePoint().x);
+	  const _ty=(reading.target_y!=null)?Number(reading.target_y):(meterTargetWhitePoint().y);
+	  const _X=(_tx/_ty)*_tgtLum;
+	  const _Z=((1-_tx-_ty)/_ty)*_tgtLum;
+	  return {X:_X,Y:_tgtLum,Z:_Z};
+	 }
 	 let targetMeta=null;
 	 let targetStep=null;
 	 if((reading.target_x==null||reading.target_y==null||reading.target_Yn==null) && typeof meterCanonicalSeriesStep==='function'){

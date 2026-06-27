@@ -2281,6 +2281,30 @@ sub autocal_delta_e {
 	 return delta_e_luv_gamma($reading,$white_y,$target_x,$target_y,$target_luminance);
 }
 
+# Chroma-only dE ITP (no luminance/I term). Used for the SDR26 109% legal
+# peak -- the peak is its own measured Y, so the dE has zero luminance
+# component and only chroma (CT/CP) drives the score. The full dE ITP
+# formula's dI^2 term is dropped: 720 * sqrt(0.25*dT^2 + dP^2). This
+# matches the user's "chroma only at 109, with luminance everywhere else"
+# requirement: the calibration at 109 is purely about pulling the
+# higher-RGB channels down to the lowest one, and any luminance delta in
+# the dE would be a tautology (target = measured).
+sub delta_e_itp_chroma_only {
+ my ($reading,$target_x,$target_y,$target_luminance)=@_;
+ my ($X,$Y,$Z)=reading_xyz($reading);
+ return undef if(!defined($X) || !defined($Y) || !defined($Z));
+ my $targetY=(defined($target_luminance) && $target_luminance > 0) ? ($target_luminance+0) : $Y;
+ my ($Xr,$Yr,$Zr)=xyz_from_xy_y($target_x,$target_y,$targetY);
+ return undef if(!defined($Xr) || !defined($Yr) || !defined($Zr));
+ my $a=xyz_to_ictcp($X,$Y,$Z);
+ my $b=xyz_to_ictcp($Xr,$Yr,$Zr);
+ my $dT=$a->{"T"}-$b->{"T"};
+ my $dP=$a->{"P"}-$b->{"P"};
+ # Match the full dE ITP scale factor (720) so the magnitude is comparable
+ # to the surrounding anchors. Drop the dI^2 term.
+ return 720*sqrt(0.25*$dT*$dT+$dP*$dP);
+}
+
 sub autocal_delta_target_luminance_for_step {
 		 my ($reading,$step,$target_luminance)=@_;
 		 if(autocal_step_ignores_luminance_error($step)) {
@@ -2293,6 +2317,20 @@ sub autocal_delta_target_luminance_for_step {
 sub autocal_delta_e_for_step {
 	 my ($config,$reading,$step,$white_y,$target_x,$target_y,$target_luminance)=@_;
 	 my $delta_target_luminance=autocal_delta_target_luminance_for_step($reading,$step,$target_luminance);
+	 # SDR26 109% legal peak: chroma-only dE (no luminance term). The peak
+	 # targets its own measured Y so the dE ITP's dI (intensity) is zero by
+	 # construction -- the reduce-to-lowest calibration is about pulling
+	 # the higher-RGB channels down to the lowest, and a luminance term in
+	 # the dE would be a tautology that masks chroma progress. All other
+	 # anchors use the full dE ITP (with luminance). The "chroma only at
+	 # peak, with luminance everywhere else" rule is the user's spec.
+	 if(autocal_delta_e_formula($config) eq "deitp"
+	  && ref($step) eq "HASH"
+	  && defined($step->{"ire"})
+	  && abs(($step->{"ire"}+0)-109.0) < 0.05
+	  && (lc($step->{"ddc_layout"}||"") eq "sdr26")) {
+	  return delta_e_itp_chroma_only($reading,$target_x,$target_y,$delta_target_luminance);
+	 }
 	 return autocal_delta_e($config,$reading,$white_y,$target_x,$target_y,$delta_target_luminance);
 }
 
@@ -15361,6 +15399,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # SDR26 table). The flag is the only reliable signal that the step
   # has already been calibrated in @white_first.
   next if($step->{"sdr26_white_peak_done"});
+  # Update the wizard "current patch" indicator BEFORE entering the inner
+  # loop so the chart + WebUI reflect the actual patch being calibrated.
+  # Without this, the indicator stays stuck on "SDR26 1D DPG (identity
+  # baseline)" forever (the HDR path sets current_name="Auto Cal ".$label
+  # in its calibrate_anchor closure -- the SDR path never did).
+  my $_step_ire_skip_local=(defined($step->{"ire"}) ? ($step->{"ire"}+0) : 0);
+  my $_step_label_local=$step->{"name"}||(format_percent($step->{"ire"})."%");
+  $state->{"current_name"}="SDR26 1D DPG ".$_step_label_local if(ref($state) eq "HASH");
+  $state->{"current_ire"}=$_step_ire_skip_local if(ref($state) eq "HASH");
+  write_state($state);
   $step_num++;
   my $rs=fixed_lg_autocal_step($config,$step);
   my $idx=$idx_for_sdr->($rs);
