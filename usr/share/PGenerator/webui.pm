@@ -15956,6 +15956,7 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		  return targetEotf(Math.max(0,chartSig),Lw,Lb||0);
 		 }
 		}
+		}
 		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
 		if(Number.isFinite(metadataY)&&metadataY>=0) return metadataY;
 		if(row&&('stimulus' in row || 'code' in row)){
