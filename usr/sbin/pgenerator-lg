@@ -3107,6 +3107,123 @@ sub lg_hdr_calman_reset_workflow (@) {
  });
 }
 
+# SDR reference reset workflow. Mirrors the reference SDR workflow captured
+# in the reference workflow capture relay-20260626-212816-nosni.jsonl (Session 1 +
+# the outside-cal-mode identity uploads):
+#
+#   Session 1 (short, inside CAL_START):
+#     CAL_START (data_type=float, dataCount=9, all-zeros 3x3 matrix, picMode)
+#     1D_2_2_EN = 0
+#     1D_0_45_EN = 0
+#     CAL_END    (same 9-float all-zeros payload as CAL_START)
+#   Outside cal mode (no active CAL_START, picMode still set per command):
+#     BT709_3D_LUT_DATA      (unity 33^3 x 3 = 107811 values)
+#     1D_DPG_DATA            (unity 3 x 1024 = 3072 values)
+#     BT709_3BY3_GAMUT_DATA  (identity 3x3 matrix, data_type=float)
+#
+# This differs from lg_hdr_calman_reset_workflow in two ways: (1) it targets
+# an SDR picture mode and uses the BT.709 identity matrix / 3D LUT rather
+# than the BT.2020 ones; (2) the identity 3D LUT + 1D DPG + 3x3 matrix are
+# uploaded OUTSIDE the CAL_START/CAL_END bracket, exactly as the reference
+# does. The previous SDR reset only zeroed the DDC white-balance arrays and
+# let the greyscale stage upload its own identity DPG inside a held CAL_START;
+# that did not clear a prior HDR cycle's BT2020 3x3 matrix / 3D LUT, so the
+# SDR DPG deltas were applied through the BT.2020 chain and the autocal spun.
+sub lg_sdr_calman_reset_workflow (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$tv_input)=@_;
+ return &json_error("Connect / Pair the LG TV before resetting SDR calibration data",{ ip => $ip }) if($client_key eq "");
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ if($cal_mode eq "") {
+  &websocket_close($session);
+  return &json_error("SDR reset requires a writable picture mode (cinema/expert/filmmaker/game/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ # An HDR picture mode should never reach this path (the caller only wires
+ # SDR signal mode here), but guard explicitly so an HDR picMode is not
+ # accidentally treated as SDR (the BT709 identity matrix on an HDR picMode
+ # would short-circuit the HDR gamut). The HDR reference reset owns hdr_*.
+ if($cal_mode =~ /^(hdr_|dolby_hdr_)/) {
+  &websocket_close($session);
+  return &json_error("SDR reset requires an SDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+ }
+ my @steps=();
+ # The reference CAL_START/CAL_END payload is a 9-float all-zeros 3x3 matrix
+ # (data_type=float, dataCount=9). Same shape as the SDR CAL_START payload
+ # in lg_1d_dpg_upload_workflow.
+ my $cal_payload=&lg_force_pic_mode_payload({ values => [0,0,0,0,0,0,0,0,0], data_type => "float" });
+
+ # --- Session 1: short CAL_START with the gamma-LUT disables, then CAL_END ---
+ my $start=&lg_calibration_request($session,"sdr_calman_reset_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($start_failed,$start_message)=&response_is_app_failure($start);
+ push(@steps,{ command => "CAL_START", response => $start, failed => &json_bool($start_failed), message => $start_message||"" });
+ if($start_failed || ref($start) ne "HASH") {
+  &websocket_close($session);
+  return &json_error($start_message||"LG TV rejected SDR calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
+ }
+ foreach my $item (
+  ["1D_2_2_EN",0],
+  ["1D_0_45_EN",0],
+ ) {
+  my ($command,$value)=@{$item};
+  my $response=&lg_calibration_request($session,"sdr_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
+  my ($failed,$message)=&response_is_app_failure($response);
+  push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
+ }
+ my $end=&lg_calibration_request($session,"sdr_calman_reset_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($end_failed,$end_message)=&response_is_app_failure($end);
+ push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
+
+ # --- Outside cal mode: identity 3D LUT + identity 1D DPG + BT.709 3x3 matrix.
+ # The reference sends these with picMode set per command but NO active
+ # CAL_START session. force_pic_mode keeps picMode on the payload so webOS
+ # targets the right picture mode; the (now empty) cal bracket means the
+ # writes are applied directly without re-entering calibration mode.
+ my $unity3d=&lg_unity_3d_lut(33);
+ my $lut3d_response=&lg_calibration_request($session,"sdr_calman_reset_bt709_3d_lut","BT709_3D_LUT_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity3d)),1,$cal_mode,$connect_timeout + 18);
+ my ($lut3d_failed,$lut3d_message)=&response_is_app_failure($lut3d_response);
+ push(@steps,{ command => "BT709_3D_LUT_DATA", response => $lut3d_response, failed => &json_bool($lut3d_failed), message => $lut3d_message||"" });
+
+ my $unity1d=&lg_unity_1d_lut();
+ my $lut1d_response=&lg_calibration_request($session,"sdr_calman_reset_1d_dpg","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity1d)),1,$cal_mode,$connect_timeout + 10);
+ my ($lut1d_failed,$lut1d_message)=&response_is_app_failure($lut1d_response);
+ push(@steps,{ command => "1D_DPG_DATA", response => $lut1d_response, failed => &json_bool($lut1d_failed), message => $lut1d_message||"" });
+
+ my $matrix=&lg_force_pic_mode_payload(&lg_bt709_identity_3x3_payload());
+ my $matrix_response=&lg_calibration_request($session,"sdr_calman_reset_bt709_3by3","BT709_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
+ my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+ push(@steps,{ command => "BT709_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
+
+ &websocket_close($session);
+
+ my @failed=grep { $_->{"failed"} } @steps;
+ if(@failed) {
+  return &json_error("LG SDR reset completed with one or more rejected commands.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   steps => \@steps,
+  });
+ }
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  active_picture_mode => $active_picture_mode,
+  calibration_picture_mode => $cal_mode,
+  sdr_calman_reset => &json_true(),
+  bt709_matrix_identity => &json_true(),
+  bt709_3d_lut_unity => &json_true(),
+  dpg_1d_unity => &json_true(),
+  steps => \@steps,
+  hello_info => $auth->{"hello_info"},
+  system_info => $auth->{"system_info"},
+  software_info => $auth->{"software_info"},
+  message => "LG SDR calibration data reset (gamma disables + identity 3D LUT / 1D DPG / BT.709 matrix).",
+ });
+}
+
 sub lg_hdr_tone_map_upload_workflow (@) {
  my ($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance,$dpg_data,$keep_calibration_mode,$calibration_mode_active)=@_;
  $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
@@ -5376,6 +5493,8 @@ sub main (@) {
 	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active);
 	 } elsif($action eq "hdr_picture_reset" || $action eq "hdr_calman_reset") {
 	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
+	 } elsif($action eq "sdr_calman_reset") {
+	  $result=&lg_sdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
 	 } elsif($action eq "hdr_tone_map_upload") {
 	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance,$dpg_data,$keep_calibration_mode,$calibration_mode_active);
 	 } elsif($action eq "1d_dpg_upload") {

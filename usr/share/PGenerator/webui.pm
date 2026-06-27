@@ -11995,6 +11995,7 @@ const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
 const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
 const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=true;
 const METER_LG_HDR_CALMAN_RESET_ENDPOINT='/api/lg/hdr-calman-reset';
+const METER_LG_SDR_CALMAN_RESET_ENDPOINT='/api/lg/sdr-calman-reset';
 const METER_AUTOCAL_STATE_KEY='meterAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_SERIES=[
  {key:'greyscale-21',type:'greyscale',points:21,label:'Greyscale 21pt'},
@@ -22714,6 +22715,7 @@ async function meterAutoCalResetDdc(){
  }
  }
  let hdrCalmanReset=null;
+ let sdrCalmanReset=null;
  if(hdrWorkflow){
   hdrCalmanReset=await meterAutoCalHdrCalmanReset(pictureMode);
  }
@@ -22778,9 +22780,17 @@ async function meterAutoCalResetDdc(){
  if(response.ddc_reset_verified!==true){
   throw new Error('LG picture mode reset did not verify against the TV 1D LUT readback.');
  }
+ // SDR reference reset: after the DDC white-balance / 1D LUT baseline is
+ // cleared, run the reference SDR workflow (gamma-disable CAL_START/CAL_END
+ // + identity BT.709 3D LUT / 1D DPG / 3x3 matrix outside cal mode). This
+ // clears any prior HDR cycle's BT.2020 3x3 matrix / 3D LUT so the SDR DPG
+ // deltas are applied in BT.709 code space. Mirrors the HDR path's
+ // meterAutoCalHdrCalmanReset; non-fatal if the TV rejects any step.
+ sdrCalmanReset=await meterAutoCalSdrCalmanReset(pictureMode);
  }
  response.picture_mode_reset=pictureModeReset;
  if(hdrCalmanReset) response.hdr_calman_reset=hdrCalmanReset;
+ if(sdrCalmanReset) response.sdr_calman_reset=sdrCalmanReset;
  if(typeof lgDisplayControlInvalidate==='function') lgDisplayControlInvalidate();
  const resetPicture={...((pictureModeReset&&pictureModeReset.picture_settings)||{}),...((response&&response.picture_settings)||{})};
  let panel=meterAutoCalPanelLightFromPicture(resetPicture);
@@ -22823,6 +22833,35 @@ async function meterAutoCalHdrCalmanReset(pictureMode){
   if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
  }
  throw new Error(lastMessage||'Unable to run the LG HDR calibration reset.');
+}
+
+async function meterAutoCalSdrCalmanReset(pictureMode){
+ let response=null;
+ let lastMessage='Unable to run the LG SDR calibration reset.';
+ for(let attempt=1;attempt<=3;attempt++){
+  meterAutoCalSetOverlay(true,{current_name:'Performing LG SDR reset...',message:'Preparing SDR calibration state'+(attempt>1?' (retry '+attempt+'/3)':'')});
+  try{
+   response=await fetchJSON(METER_LG_SDR_CALMAN_RESET_ENDPOINT,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+     picture_mode:pictureMode||meterLgPictureModeValue(),
+     action:'sdr_calman_reset',
+     ddc_layout:'sdr26',
+     helper_timeout:170
+    }),
+    _quiet:true,
+    _timeoutMs:180000
+   });
+  }catch(e){
+   response=null;
+   lastMessage=(e&&e.message)?e.message:lastMessage;
+  }
+  if(response&&response.status==='ok') return response;
+  lastMessage=(response&&(response.repair_hint||response.message))||lastMessage;
+  if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
+ }
+ throw new Error(lastMessage||'Unable to run the LG SDR calibration reset.');
 }
 
 async function meterAutoCalReset3dLutBaseline(){
