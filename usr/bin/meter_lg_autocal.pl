@@ -14857,6 +14857,596 @@ sub lg_autocal_26_commit_sdr_1d_dpg_single_socket {
  return $committed;
 }
 
+# SDR26 1D DPG per-anchor inner loop. Mirrors the structure of the HDR inline
+# calibrate_anchor closure in lg_autocal_26_run_hdr20_dpg_greyscale (the
+# read -> compute gain -> DAMP -> compute target -> build LUT -> upload
+# cycle), simplified for SDR:
+#   - No probe-up: SDR gamma 2.2 doesn't drop below the meter floor like
+#     PQ does at 1.4% IRE. The 2.3% SDR anchor (slot 0) lands well above
+#     the colorimeter's ~0.003-nit noise floor on every panel tested.
+#   - No EOTF-aware gamma refinement: gamma 2.2 is constant (the EOTF
+#     gamma fn returns 2.2 for SDR; there is no per-iter EMA blend to
+#     refine it).
+#   - No white reduce-to-lowest special case: SDR with gamma 2.2 doesn't
+#     have the PQ ceiling issue that drives the HDR 100% reduce-to-lowest
+#     path. Every anchor (incl. 99/105/109) uses the regular
+#     lg_autocal_26_sdr26_dpg_gain fn.
+#   - Anchor budgets: 6 default, 12 for IRE < 5%, 6 for white cluster
+#     (99/105/109).
+#   - Acceptance dE: 0.3 default (tighter than HDR's 0.4).
+#   - Revert-to-best: same as HDR, 3 consecutive reverts at low IRE.
+#
+# Args: ($config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,$current_dpg_ref,\@done_ref,$state_ref)
+# Returns: ($converged,$last_reading,$final_dpg). On a fatal precondition
+# returns (undef, undef, undef) and sets $state->{message} to the error.
+sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
+ my ($config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,$current_dpg_ref,$done_ref)=@_;
+ my $converged=0;
+ my $last_reading=undef;
+ my $_anchor_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : 50.0));
+ my $low_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}+0) : 5.0;
+ $low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
+ $low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
+ my $damp_floor_low=defined($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}+0) : 0.5;
+ $damp_floor_low=0.3 if($damp_floor_low < 0.3);
+ $damp_floor_low=0.95 if($damp_floor_low > 0.95);
+ my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
+ $target_de=0.05 if($target_de < 0.05);
+ $target_de=5.0 if($target_de > 5.0);
+ my $acceptance_de=lg_autocal_26_sdr26_dpg_accept_skip_threshold($config);
+ # Acceptance must not exceed target (otherwise we accept patches that
+ # haven't actually converged to the operator's set target).
+ $acceptance_de=$target_de if($acceptance_de+0 > $target_de+0);
+ my $skip_fraction=defined($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}+0) : 0.6;
+ $skip_fraction=0.0 if($skip_fraction < 0.0);
+ $skip_fraction=1.0 if($skip_fraction > 1.0);
+ my $skip_de=$skip_fraction*$target_de;
+ my $black_y=$config->{"black_y"};
+ $black_y=0 unless(defined($black_y) && $black_y+0 >= 0);
+
+ # Best-so-far state for revert (low IRE only, same as HDR).
+ my $best_de=undef;
+ my $best_dpg=[@{$current_dpg_ref}];
+ my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
+ my $consecutive_reverts=0;
+ my $move_scaling=1.0;
+ my $acceptance_pending=0;
+ my $accepted_best_de=undef;
+ my $accepted_best_dpg=undef;
+ my $accepted_best_anchors=undef;
+
+ my $total_inner_iters=0;
+ my $upload_failed=0;
+ my $upload_fail_streak=0;
+ my $max_de_anchor=0;
+
+ # Persistent calibration mode within the inner loop: enter CAL_START on
+ # the FIRST upload only (calibration_mode_active=0); subsequent uploads
+ # keep it on (calibration_mode_active=1, keep_calibration_mode=1). The
+ # inner loop's $cal_active flag is closed-over by $upload_dpg.
+ my $cal_active_inner=0;
+ my $upload_dpg=sub {
+  my ($dpg)=@_;
+  my $tries=4;
+  my $ok=0; my $msg=""; my $resp;
+  for(my $t=1;$t<=$tries;$t++) {
+   last if(cancelled());
+   $resp=api_json("POST","/api/lg/1d-dpg/upload",{
+    picture_mode=>$picture_mode,
+    ddc_layout=>"sdr26",
+    signal_mode=>"sdr",
+    dpg_data=>$dpg,
+    keep_calibration_mode=>JSON::PP::true,
+    calibration_mode_active=>($cal_active_inner ? JSON::PP::true : JSON::PP::false),
+    helper_timeout=>75,
+   },90);
+   $ok=(ref($resp) eq "HASH" && ($resp->{status}//"") eq "ok") ? 1 : 0;
+   $msg=(ref($resp) eq "HASH" && $resp->{message}) ? $resp->{message} : (defined $resp ? "unexpected response" : "endpoint unreachable");
+   if($ok) { $cal_active_inner=1; last; }
+   log_line("SDR26 1D DPG greyscale: upload attempt ".$t."/".$tries." failed: ".$msg);
+   if(ref($state) eq "HASH") {
+    $state->{"message"}="SDR26 1D DPG upload attempt ".$t."/".$tries." failed; retrying: ".$msg;
+    write_state($state);
+   }
+   select(undef,undef,undef,0.6*$t) unless($t>=$tries || cancelled());
+  }
+  return ($ok,$msg);
+ };
+
+ for(my $i=1;$i<=$budget;$i++) {
+  last if(cancelled() || $upload_failed);
+  $total_inner_iters++;
+  $state->{"phase"}="reading";
+  $state->{"message"}=sprintf("Reading %s for SDR26 1D DPG (%d/%d, target dE<=%.2f)",$label,$i,$budget,$target_de);
+  set_state_active_step($state,$rs,ddc_target_for_step($rs));
+  clear_state_step_measurements($state) if($i==1);
+  write_state($state);
+  my ($reading,$err)=read_step($config,$rs,$state);
+  if($err || ref($reading) ne "HASH") {
+   log_line("SDR26 1D DPG greyscale: read failed at ".$label." (".$i."): ".($err||"no reading"));
+   last;
+  }
+  $last_reading=$reading;
+  my $tl=lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$black_y);
+  $tl=$white_ref if(!(defined($tl) && $tl+0 > 0));
+  annotate_reading_target($reading,$white_ref,$tl,$target_x,$target_y);
+  $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+  $state->{"current_luminance"}=luminance($reading);
+  my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
+  $state->{"current_delta_e"}=defined($de)?$de:undef;
+  $max_de_anchor=$de+0 if(defined($de) && $de+0 > $max_de_anchor+0);
+  write_state($state);
+  my $conv_now=defined($de) && $de+0 <= $target_de+0;
+  $converged=1 if($conv_now);
+  # Best-so-far with revert: same pattern as HDR. Revert runs at low IRE
+  # only (the constant-amplitude oscillation that the revert-and-halve
+  # loop is designed to break doesn't happen at mid/high IRE on SDR).
+  if(defined($de) && !$acceptance_pending) {
+   if(!defined($best_de) || $de+0 < $best_de+0) {
+    $best_de=$de+0;
+    $best_dpg=[@{$current_dpg_ref}];
+    $best_anchors=[map { +{ %$_ } } @{$done_ref}];
+    $consecutive_reverts=0;
+    $move_scaling=1.0;
+   } elsif($_anchor_ire < $low_ire_threshold) {
+    @{$current_dpg_ref}=@{$best_dpg};
+    @{$done_ref}=@{$best_anchors};
+    $consecutive_reverts++;
+    $move_scaling*=0.5 if($move_scaling+0 > 0.001);
+    log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
+    if($consecutive_reverts >= 3) {
+     log_line("SDR26 1D DPG greyscale: 3 consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
+     last;
+    }
+   }
+  }
+  log_line("SDR26 1D DPG greyscale: ".$label." i".$i." dE=".sprintf("%.4f",defined($de)?$de+0:-1)." best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($acceptance_pending?" (acceptance)":""));
+  # Per-iter state push for diagnostic parity with HDR.
+  {
+   my $hist=$state->{"sdr_1d_dpg_anchor_history"};
+   $hist={} if(ref($hist) ne "HASH");
+   my $row=$hist->{$label};
+   $row=[] if(ref($row) ne "ARRAY");
+   push @$row, {
+    iter=>$i,
+    ms=>int(($^T*1000)+0),
+    measured_Y=>defined($reading) ? luminance($reading) : undef,
+    target_Y=>$tl,
+    de=>defined($de) ? sprintf("%.4f",$de+0) : undef,
+    best_de=>defined($best_de)?sprintf("%.4f",$best_de+0):undef,
+    consecutive_reverts=>$consecutive_reverts+0,
+    move_scaling=>sprintf("%.4f",$move_scaling+0),
+    converged=>$conv_now?JSON::PP::true:JSON::PP::false,
+   };
+   $hist->{$label}=$row;
+   $state->{"sdr_1d_dpg_anchor_history"}=$hist;
+   write_state($state);
+  }
+  # Skip-acceptance fast-path: if dE is already below skip_de, treat as
+  # converged directly. Same logic as HDR.
+  if(!$acceptance_pending && defined($de) && $de+0 < $skip_de+0 && $skip_fraction < 1.0) {
+   $converged=1;
+   $state->{"current_delta_e"}=$de+0;
+   if(ref($state->{"sdr_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"sdr_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
+    my $_r=$state->{"sdr_1d_dpg_anchor_history"}{$label};
+    if(@$_r) {
+     $_r->[-1]{"de"}=sprintf("%.4f",$de+0);
+     $_r->[-1]{"acceptance_skip"}=JSON::PP::true;
+     $_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$skip_de+0);
+    }
+   }
+   log_line("SDR26 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$skip_de)." = ".sprintf("%.0f%%",$skip_fraction*100)." of target ".sprintf("%.2f",$target_de)."), moving on without one-more move");
+   write_state($state);
+   last;
+  }
+  # Acceptance fast-path: snap the best, try ONE more refinement move;
+  # if the move worsens dE, revert to the best + re-read + move on.
+  if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_de+0) {
+   $acceptance_pending=1;
+   $accepted_best_de=$de+0;
+   $accepted_best_dpg=[@{$current_dpg_ref}];
+   $accepted_best_anchors=[map { +{ %$_ } } @{$done_ref}];
+   log_line("SDR26 1D DPG greyscale: ".$label." below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move");
+   # fall through: the build below makes the one-more move
+  } elsif($acceptance_pending) {
+   if(defined($de) && $de+0 < $accepted_best_de+0) {
+    log_line("SDR26 1D DPG greyscale: ".$label." one-more move improved to dE=".sprintf("%.4f",$de+0).", moving on");
+   } else {
+    @{$current_dpg_ref}=@{$accepted_best_dpg};
+    @{$done_ref}=@{$accepted_best_anchors};
+    log_line("SDR26 1D DPG greyscale: ".$label." one-more move worsened (dE=".sprintf("%.4f",$de+0)." vs best ".sprintf("%.4f",$accepted_best_de)."), reverting + rereading + moving on");
+    my $_restored_ok=0;
+    my ($auk,$aumsg)=$upload_dpg->($current_dpg_ref);
+    if($auk) {
+     my ($arr,$are)=read_step($config,$rs,$state);
+     if(!$are && ref($arr) eq "HASH") {
+      $reading=$arr;
+      $last_reading=$arr;
+      my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$tl);
+      $de=$ade if(defined($ade));
+      $_restored_ok=1;
+     }
+    }
+    my $_restored_de=($_restored_ok && defined($de)) ? ($de+0) : ($accepted_best_de+0);
+    $state->{"current_delta_e"}=$_restored_de;
+    if(ref($state->{"sdr_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"sdr_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
+     my $_r=$state->{"sdr_1d_dpg_anchor_history"}{$label};
+     if(@$_r) {
+      $_r->[-1]{"de"}=sprintf("%.4f",$_restored_de);
+      $_r->[-1]{"reverted_to_best"}=JSON::PP::true;
+      $_r->[-1]{"best_de"}=sprintf("%.4f",$accepted_best_de+0);
+     }
+    }
+    write_state($state);
+   }
+   last;
+  }
+  last if($conv_now && !$acceptance_pending);
+  # Compute the per-channel gain via the BT.709/D65 fn (every anchor uses
+  # this fn; no white special case for SDR). Floor: 0.5 at low IRE
+  # (default <5%), 0.6 for the white cluster (99/105/109), 0.8 for body.
+  my ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
+  my $is_white=(autocal_step_is_white($rs) || $_anchor_ire >= 99.0);
+  my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
+  my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
+  my $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling;
+  my $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling;
+  my $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling;
+  $sr=$floor if($sr+0 < $floor+0);
+  $sg=$floor if($sg+0 < $floor+0);
+  $sb=$floor if($sb+0 < $floor+0);
+  $sr=1.25 if($sr+0 > 1.25);
+  $sg=1.25 if($sg+0 > 1.25);
+  $sb=1.25 if($sb+0 > 1.25);
+  my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
+  my $new_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg_ref,\@anchors_for_build);
+  if(ref($new_dpg) ne "ARRAY" || @$new_dpg != 3072) {
+   $upload_failed=1;
+   log_line("SDR26 1D DPG greyscale: build returned wrong length at ".$label);
+   last;
+  }
+  @{$current_dpg_ref}=@{$new_dpg};
+  if(ref($state) eq "HASH") {
+   $state->{"sdr_1d_dpg_data"}=$current_dpg_ref;
+   $state->{"sdr_1d_dpg_data_count"}=scalar(@{$current_dpg_ref});
+   $state->{"sdr_1d_dpg_computed_at"}=int(time()*1000);
+  }
+  my ($uploaded,$umsg)=$upload_dpg->($current_dpg_ref);
+  if(ref($state) eq "HASH") {
+   $state->{"sdr_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
+   $state->{"sdr_1d_dpg_upload_message"}=$umsg;
+   $state->{"message"}=$uploaded
+    ? sprintf("SDR26 1D DPG %s %d/%d uploaded (max dE=%.3f, target<=%.2f)",$label,$i,$budget,$max_de_anchor,$target_de)
+    : sprintf("SDR26 1D DPG %s %d/%d upload failed after retries (max dE=%.3f)",$label,$i,$budget,$max_de_anchor);
+   write_state($state);
+  }
+  if(!$uploaded) {
+   $upload_fail_streak++;
+   log_line("SDR26 1D DPG greyscale: upload failed after retries at ".$label." (streak ".$upload_fail_streak."): ".$umsg);
+   if($upload_fail_streak >= 3) { $upload_failed=1; last; }
+   next;
+  }
+  $upload_fail_streak=0;
+  # Push the converged anchor onto @done so subsequent anchors interpolate
+  # through the calibrated value. The build fn uses @done to drive the
+  # Akima spline, so a freshly-calibrated anchor at gain (sr,sg,sb) should
+  # land in the spline with that exact gain, not 1.0 (which would re-introduce
+  # the pre-calibration curve error at the next anchor's interpolation).
+  push @{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb};
+ }
+ # Final-state restore: leave the TV at the best-measured DPG. The last
+ # iter may have been an improve+build, so $current_dpg is then the
+ # unmeasured new build -- restore the full best snapshot AND re-upload it
+ # so the wire state matches.
+ if(defined($best_de) && !$acceptance_pending) {
+  my $_differs=0;
+  for(my $j=0;$j<@{$current_dpg_ref};$j++) {
+   if(($current_dpg_ref->[$j]+0) != ($best_dpg->[$j]+0)) { $_differs=1; last; }
+  }
+  if($_differs) {
+   @{$current_dpg_ref}=@{$best_dpg};
+   @{$done_ref}=@{$best_anchors};
+   my ($bok,$bmsg)=$upload_dpg->($current_dpg_ref);
+   $state->{"current_delta_e"}=$best_de+0 if(ref($state) eq "HASH");
+   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"));
+  }
+ }
+ return ($converged,$last_reading,$current_dpg_ref,$total_inner_iters,$max_de_anchor,$cal_active_inner,$upload_failed);
+}
+
+# SDR26 1D-DPG-driven greyscale calibration loop. Mirrors the structure of
+# lg_autocal_26_run_hdr20_dpg_greyscale (lines 13597-14731) but scoped to
+# SDR26. Reads 26 greyscale patches at the SDR26 IRE labels
+# (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109)
+# with the 10-bit anchor indexes (21,30,38,47,64,94,141,188,235,282,329,375,
+# 422,469,512,559,606,653,700,747,794,841,888,926,981,1023), computes a
+# per-channel BT.709/D65 gain at each via lg_autocal_26_sdr26_dpg_gain,
+# rebuilds the 3072-value DPG via lg_autocal_26_build_hdr20_1d_dpg (layout-
+# agnostic Akima spline), and uploads it. Loops until max dE <= target or
+# the per-anchor budget is exhausted, or cancelled.
+#
+# When the configured flag lg_autocal_sdr_1d_dpg_mode is true, the caller
+# is expected to invoke this sub INSTEAD of the per-slot 22-point WB loop
+# and to jump straight to the commit/end path. Returns undef on success
+# or an error string on a fatal precondition failure.
+sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
+ my ($config,$state,$white_y,$target_x,$target_y,$picture_mode)=@_;
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: missing config" unless(ref($config) eq "HASH");
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: missing state" unless(ref($state) eq "HASH");
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: missing target chromaticity" unless(defined($target_x) && defined($target_y) && $target_y+0 > 0);
+
+ # Eligible signal mode: SDR only. The HDR20 path owns signal_mode=hdr10
+ # via lg_autocal_26_run_hdr20_dpg_greyscale; this sub is exclusively for
+ # signal_mode=sdr with ddc_layout=sdr26.
+ my $_sig=lc(($config->{"signal_mode"}//""));
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: wrong signal_mode '".$_sig."' (need 'sdr')" unless($_sig eq "sdr");
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: wrong ddc_layout '".($config->{"ddc_layout"}//"")."' (need 'sdr26')" unless(($config->{"ddc_layout"}//"") eq "sdr26");
+
+ # Top-level target_dE (operator's set target). Mirrors the HDR top-level
+ # config knob lg_autocal_hdr20_dpg_target_de. Default 0.5.
+ my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
+ $target_de=0.05 if($target_de+0 < 0.05);
+ $target_de=5.0 if($target_de+0 > 5.0);
+
+ # SDR26 26-anchor table -- matches @LG_DDC_1D_LABELS and
+ # @LG_DDC_1D_INDEXES in usr/sbin/pgenerator-lg. Slot 0 = IRE 2.3 (idx 21),
+ # ... slot 25 = IRE 109 (idx 1023).
+ my @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+ my @sdr26_indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+ my $idx_for_sdr=sub {
+  my ($step)=@_;
+  return undef if(ref($step) ne "HASH");
+  my $ire=defined($step->{"ire"}) ? ($step->{"ire"}+0)
+   : (defined($step->{"stimulus"}) ? ($step->{"stimulus"}+0) : undef);
+  return undef if(!defined($ire));
+  for(my $k=0;$k<@sdr26_labels;$k++) {
+   return $sdr26_indexes[$k] if(abs($sdr26_labels[$k]-$ire) < 0.05);
+  }
+  return $sdr26_indexes[0] if($ire <= $sdr26_labels[0]);
+  return $sdr26_indexes[-1] if($ire >= $sdr26_labels[-1]);
+  for(my $k=0;$k<@sdr26_labels-1;$k++) {
+   if($ire > $sdr26_labels[$k] && $ire < $sdr26_labels[$k+1]) {
+    my $f=($ire-$sdr26_labels[$k])/($sdr26_labels[$k+1]-$sdr26_labels[$k]);
+    my $idx=int($sdr26_indexes[$k]+($sdr26_indexes[$k+1]-$sdr26_indexes[$k])*$f+0.5);
+    $idx=0 if($idx<0); $idx=1023 if($idx>1023);
+    return $idx;
+   }
+  }
+  return undef;
+ };
+
+ # Build the ordered anchor list: 26 SDR26 anchors in IRE order (low to
+ # high). The HDR top-level fn calibrates 100% first to seed the white
+ # reference; SDR does the same to anchor the peak at the calibrated white
+ # before lower anchors interpolate through it.
+ my @ordered;
+ for(my $k=0;$k<@sdr26_labels;$k++) {
+  my $ire=$sdr26_labels[$k]+0;
+  my $step={
+   name=>"sdr26_".$ire."%",
+   ire=>$ire,
+   stimulus=>$ire,
+   signal_r_pct=>$ire,
+   signal_g_pct=>$ire,
+   signal_b_pct=>$ire,
+   ddc_layout=>"sdr26",
+  };
+  push @ordered,$step;
+ }
+ # Sort by IRE ascending so the loop walks low-to-high (the HDR convention
+ # is to start at 100% because it must be calibrated first to seed the
+ # white ref; for SDR we calibrate the same way -- white first -- but the
+ # iteration order is otherwise low-to-high). Find the white step and move
+ # it to the front.
+ my @white_first;
+ my @rest;
+ for my $s (@ordered) {
+  if(autocal_step_is_white($s) || (defined($s->{"ire"}) && $s->{"ire"}+0 >= 99.0)) {
+   push @white_first,$s;
+  } else {
+   push @rest,$s;
+  }
+ }
+ # Within @rest, sort by IRE ascending.
+ @rest=sort { ($a->{"ire"}//0) <=> ($b->{"ire"}//0) } @rest;
+ @ordered=(@white_first,@rest);
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: no adjustable greyscale steps" if(!@ordered);
+
+ # Identity baseline: the SDR path starts from the linear 15-bit identity
+ # in LG's [0,32767] 1D_DPG_DATA domain, just like HDR.
+ my $current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: identity baseline is not 3072 ints"
+  unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
+
+ # Provisional 100% white reference: read the white step first (BEFORE the
+ # ordered loop runs) to seed $white_ref. Then the ordered loop calibrates
+ # the white step with this seed and refines it to the calibrated peak.
+ my $white_step=(scalar(@white_first) > 0) ? $white_first[0] : undef;
+ my $white_ref=undef;
+ if(ref($white_step) eq "HASH" && !cancelled()) {
+  my $rs=fixed_lg_autocal_step($config,$white_step);
+  $state->{"current_name"}="SDR26 1D DPG 100% (white reference)";
+  $state->{"phase"}="reading";
+  $state->{"message"}="Reading 100% to seed the white reference";
+  set_state_active_step($state,$rs,ddc_target_for_step($rs));
+  clear_state_step_measurements($state);
+  write_state($state);
+  my ($wr,$werr)=read_step($config,$rs,$state);
+  if(!$werr && ref($wr) eq "HASH") {
+   my $wy=luminance($wr);
+   $white_ref=$wy if(defined($wy) && $wy+0 > 0);
+   if(defined($white_ref)) {
+    annotate_reading_target($wr,$white_ref,$white_ref,$target_x,$target_y);
+    $state->{"readings"}=merge_reading($state->{"readings"},$wr);
+    $state->{"current_luminance"}=$wy;
+    write_state($state);
+   }
+  }
+ }
+ if(!(defined($white_ref) && $white_ref+0 > 0)) {
+  if(defined($white_y) && $white_y+0 > 0) {
+   $white_ref=$white_y+0;
+   log_line("SDR26 1D DPG greyscale: using configured white_y=".$white_ref." (live 100% read unavailable)");
+  } else {
+   return "lg_autocal_26_run_sdr_1d_dpg_greyscale: missing white_y (no live 100% read and no fallback)";
+  }
+ }
+ $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0;
+
+ # Persistent calibration mode: enter CAL_START on the FIRST upload only
+ # (calibration_mode_active=0), keep it on for every subsequent upload
+ # (calibration_mode_active=1, keep_calibration_mode=1), and leave it on
+ # at sub exit so the single-socket commit at the end can re-bind it.
+ my $cal_active=0;
+ my $upload_dpg=sub {
+  my ($dpg)=@_;
+  my $tries=4;
+  my $ok=0; my $msg=""; my $resp;
+  for(my $t=1;$t<=$tries;$t++) {
+   last if(cancelled());
+   $resp=api_json("POST","/api/lg/1d-dpg/upload",{
+    picture_mode=>$picture_mode,
+    ddc_layout=>"sdr26",
+    signal_mode=>"sdr",
+    dpg_data=>$dpg,
+    keep_calibration_mode=>JSON::PP::true,
+    calibration_mode_active=>($cal_active ? JSON::PP::true : JSON::PP::false),
+    helper_timeout=>75,
+   },90);
+   $ok=(ref($resp) eq "HASH" && ($resp->{status}//"") eq "ok") ? 1 : 0;
+   $msg=(ref($resp) eq "HASH" && $resp->{message}) ? $resp->{message} : (defined $resp ? "unexpected response" : "endpoint unreachable");
+   if($ok) { $cal_active=1; last; }
+   log_line("SDR26 1D DPG greyscale: upload attempt ".$t."/".$tries." failed: ".$msg);
+   if(ref($state) eq "HASH") {
+    $state->{"message"}="SDR26 1D DPG upload attempt ".$t."/".$tries." failed; retrying: ".$msg;
+    write_state($state);
+   }
+   select(undef,undef,undef,0.6*$t) unless($t>=$tries || cancelled());
+  }
+  return ($ok,$msg);
+ };
+
+ # Upload the identity baseline BEFORE the per-anchor loop runs, inside
+ # the same CAL_START session. This seeds the panel at a known reference
+ # so every read (incl. white) is taken in the same calibration state.
+ $state->{"current_name"}="SDR26 1D DPG (identity baseline)";
+ $state->{"phase"}="writing";
+ $state->{"message"}="Entering calibration mode and uploading identity 1D DPG baseline";
+ write_state($state);
+ {
+  my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+  log_line("SDR26 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
+ }
+
+ my @done;
+ my $total_steps=scalar(@ordered);
+ my $total_inner_iters=0;
+ my $max_de_overall=0;
+ my $exit_reason="converged";
+ my $upload_failed=0;
+
+ my $step_num=0;
+ # --- 100% white first: calibrate its white balance, then anchor the peak
+ # luminance reference to the CALIBRATED result before any lower target runs.
+ if(ref($white_step) eq "HASH" && !cancelled() && !$upload_failed) {
+  $step_num++;
+  my $rs=fixed_lg_autocal_step($config,$white_step);
+  my $idx=$idx_for_sdr->($rs);
+  if(defined($idx)) {
+   my $label=$rs->{"name"}||"100%";
+   my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$label =~ /(\d+(?:\.\d+)?)/ ? ($1+0) : 100.0);
+   my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
+    $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
+   );
+   $total_inner_iters+=$inner_iters;
+   $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
+   $cal_active=1 if($cal_active_inner);
+   $upload_failed=1 if($inner_upload_failed);
+   log_line(sprintf("SDR26 1D DPG greyscale: 100%% white anchor done label=%s converged=%d measured_Y=%s",
+    $label,
+    $conv?1:0,
+    defined($last) && ref($last) eq "HASH" ? sprintf("%.4f",luminance($last)+0) : "undef"
+   ));
+   # Refine the white reference to the calibrated peak luminance.
+   if(ref($last) eq "HASH") {
+    my $wy=luminance($last);
+    if(defined($wy) && $wy+0 > 0) {
+     $white_ref=$wy+0;
+     $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0;
+     set_state_white_reference($state,$white_ref);
+    }
+   }
+   push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
+   $state->{"sdr_1d_dpg_anchors_done"}=scalar(@done);
+   my $white_usable=0;
+   if(ref($last) eq "HASH") {
+    my $wy=luminance($last);
+    $white_usable=1 if(defined($wy) && $wy+0 > 0);
+   }
+   $state->{"sdr_1d_dpg_white_converged"}=($conv || $white_usable) ? JSON::PP::true : JSON::PP::false;
+   write_state($state);
+   $exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && $exit_reason eq "converged");
+   if(!$white_usable) {
+    log_line("SDR26 1D DPG greyscale: 100% white produced no usable reading (label=".$label."); aborting lower anchors");
+    $upload_failed=1;
+    $exit_reason="white_no_reading";
+   }
+  }
+ }
+
+ # --- remaining greyscale anchors in IRE order (low to high) ---
+ foreach my $step (@ordered) {
+  last if(cancelled() || $upload_failed);
+  # Skip the already-calibrated white step.
+  next if(autocal_step_is_white($step) || (defined($step->{"ire"}) && $step->{"ire"}+0 >= 99.0));
+  $step_num++;
+  my $rs=fixed_lg_autocal_step($config,$step);
+  my $idx=$idx_for_sdr->($rs);
+  next if(!defined($idx));
+  my $_step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : 50.0));
+  my $label=$rs->{"name"}||(format_percent($rs->{"ire"})."%");
+  my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$_step_ire);
+  my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
+   $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
+  );
+  $total_inner_iters+=$inner_iters;
+  $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
+  $cal_active=1 if($cal_active_inner);
+  $upload_failed=1 if($inner_upload_failed);
+  push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
+  if(ref($state) eq "HASH") {
+   $state->{"sdr_1d_dpg_anchors_done"}=scalar(@done);
+   $state->{"sdr_1d_dpg_last_anchor_converged"}=$conv ? JSON::PP::true : JSON::PP::false;
+   write_state($state);
+  }
+  $exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && $exit_reason eq "converged");
+ }
+ $exit_reason="cancelled" if(cancelled());
+
+ $state->{"sdr_1d_dpg_iterations"}=$total_inner_iters+0;
+ $state->{"sdr_1d_dpg_target_de"}=$target_de+0;
+ $state->{"sdr_1d_dpg_exit_reason"}=$exit_reason;
+ $state->{"sdr_1d_dpg_final_de"}=$max_de_overall+0;
+ # Only mark the curve as uploaded to the TV if the white reference actually
+ # converged and the upload didn't fail. A non-converged 100% block leaves
+ # the panel with the identity baseline -- uploading the 1.0/1.0/1.0 no-op
+ # DPG would silently wipe the 1D LUT and break the picture, so the API must
+ # report uploaded: false.
+ $state->{"sdr_1d_dpg_uploaded"}=JSON::PP::true;
+ if($upload_failed || !$state->{"sdr_1d_dpg_white_converged"}) {
+  $state->{"sdr_1d_dpg_uploaded"}=JSON::PP::false;
+  log_line("SDR26 1D DPG greyscale: skipping wire upload because white did not converge or upload_failed=1 (upload_failed=".($upload_failed?1:0).", white_converged=".($state->{"sdr_1d_dpg_white_converged"} ? "true" : "false").")");
+ }
+ # Calibration mode is still held ON; the commit/finalise path ends it once
+ # (single-socket commit) before the post-cal series read.
+ $state->{"sdr_dpg_calibration_mode_held"}=($cal_active ? JSON::PP::true : JSON::PP::false);
+ $state->{"calibration_mode"}=$cal_active ? JSON::PP::true : JSON::PP::false;
+ $state->{"message"}=sprintf("SDR26 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall,$target_de,$exit_reason);
+ write_state($state);
+ log_line("SDR26 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall).", target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
+ return undef;
+}
+
 sub park_black_for_settle {
  my ($config,$state,$message,$override_ms)=@_;
  $message||="Settling display on black before committed-state verification";
