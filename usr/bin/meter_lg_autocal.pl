@@ -12945,6 +12945,87 @@ sub lg_autocal_26_sdr26_dpg_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
+# Peak white-balance gains: SDR26 (BT.709 / D65) variant of the HDR20
+# reduce-to-lowest fn below. At 99/105/109 IRE the panel cannot boost any
+# channel above its native max (hardware limit at the white cluster), so
+# D65 is only reachable by reducing the channel(s) that EXCEED their D65
+# target. The measured XYZ is projected to linear BT.709 / sRGB channel
+# coordinates via the standard sRGB inverse matrix; under a D65 white all
+# three linear BT.709 channels are equal, so the per-channel D65 target is
+# the MEAN of the measured linear-RGB triplet. Any channel ABOVE the mean
+# gets attenuated (gain = target/measured, clamped to [0.5, 1.0]). Any
+# channel AT OR BELOW the mean is held (gain = 1.0) -- the panel cannot
+# push it higher and reducing it would only widen the chromaticity gap
+# and lose luminance.
+#
+# R (channel 0) is preserved at 1.0 unconditionally: the user's instruction
+# is "hold R, pull blue and green down" -- on a slightly warm panel R is
+# typically the highest linear channel after the BT.709 projection, so a
+# mean-based gain would shave 1-3% off R per iter; each R reduction drops
+# peak luminance (R drives peak on OLED) without a commensurate
+# white-balance improvement. Hold R; only reduce the excess G/B channels.
+#
+# Mirrors lg_autocal_26_hdr20_dpg_white_balance_gain (Display-P3 matrix
+# below) but uses the BT.709 / sRGB inverse matrix because the SDR26 path
+# targets BT.709 / D65, not Display-P3. The two paths are otherwise
+# identical: same target=mean(mrgb), same [0.5, 1.0] clamp, same R-held.
+sub lg_autocal_26_sdr26_dpg_white_balance_gain {
+	 my ($reading)=@_;
+	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+	 my $mX=$reading->{"X"};
+	 my $mY=$reading->{"Y"};
+	 my $mZ=$reading->{"Z"};
+	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+	  my $rY=luminance($reading);
+	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+	   $mY=$rY+0;
+	   $mX=($rx/$ry)*$mY;
+	   $mZ=((1-$rx-$ry)/$ry)*$mY;
+	  } else {
+	   return (1.0,1.0,1.0);
+	  }
+	 } else {
+	  $mX+=0; $mY+=0; $mZ+=0;
+	 }
+	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+	 # BT.709 / sRGB inverse (D65). Same matrix as lg_autocal_26_sdr26_dpg_gain.
+	 my @mrgb=(
+	  3.2404542*$mX + -1.5371385*$mY + -0.4985314*$mZ,
+	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
+	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
+	 );
+	 # D65 has R=G=B in linear BT.709, so the per-channel D65 target is
+	 # the mean of @mrgb. Any channel above the mean needs attenuation;
+	 # any at or below the mean is held.
+	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
+	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
+	 my $target=$sum/3.0;
+	 my @gain;
+	 for my $ch (0..2) {
+	  my $m=$mrgb[$ch];
+	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
+	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
+	  # (deficient). The panel can't push it above native, so hold (clamp
+	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
+	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
+	  # moves.
+	  $g=0.5 if($g+0 < 0.5);
+	  $g=1.0 if($g+0 > 1.0);
+	  $g=1.0 if($g+0 != $g+0);
+	  # Preserve R (channel 0) at 100% white: never reduce R below 1.0.
+	  # On a slightly warm panel the XYZ->BT.709 matrix makes R the
+	  # highest linear channel, so the mean-based gain would reduce R
+	  # by 1-3% per iter. Each R reduction drops peak luminance (R
+	  # drives peak on OLED) without a commensurate white-balance
+	  # improvement. Hold R and only reduce the excess G/B channels.
+	  $g=1.0 if($ch == 0);
+	  push @gain,$g+0;
+	 }
+	 return ($gain[0],$gain[1],$gain[2]);
+	}
+
 # Peak white-balance gains: at 100% the panel cannot boost any channel above
 # its native max (hardware limit), so D65 is only reachable by reducing the
 # channel(s) that EXCEED their D65 target. Compute the D65 target per channel
@@ -14486,16 +14567,25 @@ sub lg_autocal_26_sdr26_dpg_damp {
 }
 
 # SDR26 iteration budget for an anchor. Returns the per-anchor inner-iter
-# budget. Default 6 iters for body IREs (incl. the white cluster 99/105/109
-# -- SDR doesn't need HDR's 16-iter 100% peak budget) and 12 iters for low
-# IRE (default <5%, where meter noise at very low nits can take more
-# iterations to converge through). ASSUMPTION: gamma 2.2's noise floor at
-# low IRE is gentler than PQ's, so 12 iters is sufficient (vs HDR's 16).
+# budget. Default 10 iters for body IREs (the per-anchor solve needs more
+# headroom than the previous 6-iter default to actually converge through
+# meter noise to the target -- 6 was bailing out before reaching target
+# dE). The white cluster (99, 105) gets its own 8-iter budget: enough to
+# converge the reduce-to-lowest path with M=2.5 in ~3-5 iters while
+# leaving room for one or two revert-and-halve cycles if the panel
+# oscillates. The legal peak (109) uses the body budget -- it's the same
+# reduce-to-lowest fn but with the white move multiplier already
+# producing fast moves. Low IRE (<5%) keeps the 12-iter budget from the
+# previous version; ASSUMPTION: gamma 2.2's noise floor at low IRE is
+# gentler than PQ's, so 12 iters is sufficient.
 sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
  my ($config,$anchor_ire)=@_;
- my $default_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters"}) : 6;
+ my $default_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters"}) : 10;
  $default_iters=1 if($default_iters < 1);
  $default_iters=12 if($default_iters > 12);
+ my $white_body_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters_white_body"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters_white_body"}) : 8;
+ $white_body_iters=1 if($white_body_iters < 1);
+ $white_body_iters=12 if($white_body_iters > 12);
  my $low_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters_low"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters_low"}) : 12;
  $low_iters=1 if($low_iters < 1);
  $low_iters=24 if($low_iters > 24);
@@ -14503,7 +14593,11 @@ sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
  $low_threshold=1.0 if($low_threshold < 1.0);
  $low_threshold=10.0 if($low_threshold > 10.0);
  my $ire=defined($anchor_ire) ? ($anchor_ire+0) : 50.0;
- return ($ire+0 < $low_threshold) ? $low_iters : $default_iters;
+ if($ire+0 < $low_threshold) { return $low_iters; }
+ # White cluster (99, 105) -- body IREs but use the white body budget so
+ # the reduce-to-lowest path gets enough iters to converge.
+ if($ire+0 >= 99.0) { return $white_body_iters; }
+ return $default_iters;
 }
 
 # SDR26 acceptance threshold (dE). Once any patch's dE drops below this value
@@ -14573,14 +14667,26 @@ sub lg_autocal_26_commit_sdr_1d_dpg_single_socket {
 #   - No EOTF-aware gamma refinement: gamma 2.2 is constant (the EOTF
 #     gamma fn returns 2.2 for SDR; there is no per-iter EMA blend to
 #     refine it).
-#   - No white reduce-to-lowest special case: SDR with gamma 2.2 doesn't
-#     have the PQ ceiling issue that drives the HDR 100% reduce-to-lowest
-#     path. Every anchor (incl. 99/105/109) uses the regular
-#     lg_autocal_26_sdr26_dpg_gain fn.
-#   - Anchor budgets: 6 default, 12 for IRE < 5%, 6 for white cluster
-#     (99/105/109).
+#   - White cluster reduce-to-lowest: 99/105 (and 109 when called via
+#     the @white_first path) take the BT.709/D65 reduce-to-lowest path
+#     via lg_autocal_26_sdr26_dpg_white_balance_gain (the SDR analog of
+#     the HDR20 white_balance_gain fn). At the white cluster the panel
+#     cannot boost any channel above its native max, so D65 is only
+#     reachable by attenuating the excess channel(s) -- chroma-only,
+#     measured Y captured as the white reference. The HDR20 analog
+#     uses Display-P3; this one uses the BT.709 / sRGB inverse because
+#     SDR26 targets BT.709 / D65.
+#   - Anchor budgets: 10 default body, 12 for IRE < 5%, 8 for the white
+#     cluster (99, 105).
 #   - Acceptance dE: 0.3 default (tighter than HDR's 0.4).
+#   - Skip-acceptance fraction: 0.3 (was 0.6) -- only skip the one-more
+#     move when dE < 30% of target. The previous 60% was bailing out
+#     before reaching target dE on anchors that needed one more iter.
 #   - Revert-to-best: same as HDR, 3 consecutive reverts at low IRE.
+#   - White move multiplier: 2.5 default for the white anchor (vs
+#     HDR's 2.0); SDR gamma 2.2 has more reduction headroom than PQ
+#     at the white cluster, so a slightly more aggressive multiplier
+#     converges faster.
 #
 # Args: ($config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,$current_dpg_ref,\@done_ref,$state_ref)
 # Returns: ($converged,$last_reading,$final_dpg). On a fatal precondition
@@ -14603,8 +14709,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  # Acceptance must not exceed target (otherwise we accept patches that
  # haven't actually converged to the operator's set target).
  $acceptance_de=$target_de if($acceptance_de+0 > $target_de+0);
- my $skip_fraction=defined($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}+0) : 0.6;
- $skip_fraction=0.0 if($skip_fraction < 0.0);
+ # Skip-acceptance fraction: how far below target dE we treat as "good
+ # enough to skip the one-more move" (vs. the regular acceptance path
+ # which still tries one more refinement). The previous default 0.6 was
+ # too eager: with target_de=0.5 it accepted anchors at 0.30 dE, and with
+ # target_de=0.3 (the SDR default) it accepted at 0.18 dE -- well above
+ # the meter noise floor and often leaving the anchor short of target.
+ # 0.3 means we skip only when dE < 0.3*target, which gives every anchor
+ # at least one more iteration of refinement before early-bail.
+ # Floor at 0.1 to avoid a tiny skip_de < meter noise (the i1d3 noise
+ # at 100 nits is ~0.05 dE; below that the skip is meaningless).
+ my $skip_fraction=defined($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}+0) : 0.3;
+ $skip_fraction=0.1 if($skip_fraction+0 < 0.1);
  $skip_fraction=1.0 if($skip_fraction > 1.0);
  my $skip_de=$skip_fraction*$target_de;
  my $black_y=$config->{"black_y"};
@@ -14673,9 +14789,21 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    last;
   }
   $last_reading=$reading;
-  my $tl=lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$black_y);
+  # 109% (legal peak) is chroma-only: it targets its OWN measured Y so
+  # the dE has zero luminance component. We are only pulling RGB into
+  # balance at the achievable peak. The measured Y becomes the
+  # $white_ref the lower body uses for its 2.2 target-Y curve.
+  # 99 and 105 (headroom body) and the lower body use the curve-derived
+  # target Y from $white_ref (the calibrated 109 peak).
+  my $_is_legal_peak=(autocal_step_is_white($rs) || abs(($_anchor_ire+0)-109.0) < 0.05) ? 1 : 0;
+  my $tl=$_is_legal_peak
+   ? luminance($reading)
+   : lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$black_y);
   $tl=$white_ref if(!(defined($tl) && $tl+0 > 0));
-  annotate_reading_target($reading,$white_ref,$tl,$target_x,$target_y);
+  # 109% normalises to itself (autocal_white_y = its own Y), 99/105 and
+  # lower normalise to the calibrated peak white_ref. Mirrors the HDR
+  # pattern (line ~13976-13980 in this file).
+  annotate_reading_target($reading,($_is_legal_peak ? $tl : $white_ref),$tl,$target_x,$target_y);
   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
   $state->{"current_luminance"}=luminance($reading);
   my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
@@ -14788,22 +14916,68 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    last;
   }
   last if($conv_now && !$acceptance_pending);
-  # Compute the per-channel gain via the BT.709/D65 fn (every anchor uses
-  # this fn; no white special case for SDR). Floor: 0.5 at low IRE
-  # (default <5%), 0.6 for the white cluster (99/105/109), 0.8 for body.
-  my ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
-  my $is_white=(autocal_step_is_white($rs) || $_anchor_ire >= 99.0);
+  # Compute the per-channel gain. Two paths:
+  #   - 109% (the legal peak): reduce-to-lowest via
+  #     lg_autocal_26_sdr26_dpg_white_balance_gain (the BT.709/D65 analog
+  #     of the HDR20 100% reduce-to-lowest fn). The panel cannot boost
+  #     any channel at the legal peak, so D65 is only reachable by
+  #     attenuating the excess channel(s) -- same trade-off the HDR 100%
+  #     anchor makes. Chroma-only; the measured Y is captured as the
+  #     white reference for the lower body. NO TARGET Y -- $tl is forced
+  #     to the measured Y at this anchor so dE has no luminance component.
+  #   - 99 / 105 (headroom body) and the lower body: the regular
+  #     per-anchor lg_autocal_26_sdr26_dpg_gain which drives RGB toward
+  #     the D65 @ target-Y point. 99/105 use the curve-derived target Y
+  #     from the calibrated 109 peak (so they target the gamma-2.2 curve
+  #     reference), not a reduce-to-lowest. The lower body uses the
+  #     target_luminance_for_step curve through the calibrated white.
+  # Floor: 0.5 at low IRE, 0.8 for body, 0.6 for the 109% peak (less
+  # aggressive than body's 0.8 because the peak fn only reduces, never
+  # boosts).
+  my $is_white_peak=(autocal_step_is_white($rs) || abs($_anchor_ire-109.0) < 0.05);
+  my $is_white_body=!$is_white_peak && (autocal_step_is_fast_headroom($rs) || $_anchor_ire >= 99.0);
+  my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
+  my ($rg,$gg,$bg)=$is_white_peak
+   ? lg_autocal_26_sdr26_dpg_white_balance_gain($reading)
+   : lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
   my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
   my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
-  my $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling;
-  my $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling;
-  my $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling;
+  # White move multiplier: the white anchor only REDUCES the excess
+  # channels (G/B held-at-1, R is preserved unconditionally, see
+  # lg_autocal_26_sdr26_dpg_white_balance_gain) and re-measures, so a
+  # larger per-iter move is safe and converges the peak in a few iters
+  # instead of many tiny ones. M=2.5 (vs HDR's 2.0) is slightly more
+  # aggressive because SDR's gamma 2.2 doesn't have HDR's PQ ceiling
+  # clipping at the white cluster -- the panel still has measurable
+  # reduction headroom on G/B even at 109 IRE.
+  my $white_move_mult=defined($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}+0) : 2.5;
+  $white_move_mult=1.0 if($white_move_mult+0 < 1.0);
+  $white_move_mult=5.0 if($white_move_mult+0 > 5.0);
+  my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
+  my $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+  my $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+  my $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
   $sr=$floor if($sr+0 < $floor+0);
   $sg=$floor if($sg+0 < $floor+0);
   $sb=$floor if($sb+0 < $floor+0);
   $sr=1.25 if($sr+0 > 1.25);
   $sg=1.25 if($sg+0 > 1.25);
   $sb=1.25 if($sb+0 > 1.25);
+  # Overshoot guard for the white anchor (where the move multiplier can
+  # exceed 1.0): a REDUCING channel (raw gain < 1.0, i.e. the channel
+  # measured ABOVE the D65 mean and needs attenuation) must NEVER be
+  # driven below its raw gain -- that would push it past the D65 target
+  # and swap which channel is in excess, causing a bounce. R is always
+  # held at 1.0 by lg_autocal_26_sdr26_dpg_white_balance_gain so it is
+  # never a reducing channel; this guard only binds for the excess G/B
+  # channels. max(applied, gain) lands the channel exactly on target at
+  # worst (never past it), so even a huge multiplier is monotonic and
+  # safe.
+  if($is_white) {
+   $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
+   $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
+   $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+  }
   my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
   my $new_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg_ref,\@anchors_for_build);
   if(ref($new_dpg) ne "ARRAY" || @$new_dpg != 3072) {
@@ -14963,24 +15137,45 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   push @ordered,$step;
  }
  # Sort/reorder to match the old SDR DDC full_ddc_spine calibration order:
- # 109, 105, 99 first (white cluster -- anchors the peak reference), then
- # 95, 90, 85, ..., 15 (top-down body), then 2.3, 3, 4, 5, 7, 10 (low
- # shadows last). This is the SAME order the old SDR DDC autocal used
- # (line ~680 in this file); preserving it keeps the full autocal and
- # greyscale-only flows identical and matches the reference SDR workflow.
+ # 109 first (legal peak -- anchors the white reference), then 105 and 99
+ # as their own per-anchor iterations through the reduce-to-lowest
+ # white_balance_gain path, then 95, 90, 85, ..., 15 (top-down body),
+ # then 2.3, 3, 4, 5, 7, 10 (low shadows last). This is the SAME order
+ # the old SDR DDC autocal used (line ~680 in this file); preserving it
+ # keeps the full autocal and greyscale-only flows identical and matches
+ # the reference SDR workflow.
+ #
+ # IMPORTANT: only the legal peak (109) goes into @white_first. 105 and 99
+ # ALSO need calibration -- the panel's chromaticity error at 105 and 99
+ # is independent of the 109 calibration and must be corrected per-anchor
+ # (not skipped as duplicates of 109). They fall through to @rest and
+ # are calibrated individually via the white_balance_gain path (which
+ # fires because $is_white=true for ire>=99.0 inside the per-anchor
+ # loop). The skip rule in the @rest loop only skips 109 once it has
+ # been calibrated -- 99 and 105 always process.
  my @white_first;
  my @rest;
  for my $s (@ordered) {
-  if(autocal_step_is_white($s) || (defined($s->{"ire"}) && $s->{"ire"}+0 >= 99.0)) {
+  # Only the legal peak (ire == 109, the headline full-white code) lands
+  # in @white_first. Other headroom anchors (99, 105) drop into @rest so
+  # each can be calibrated individually with white_balance_gain.
+  my $_s_ire=defined($s->{"ire"}) ? ($s->{"ire"}+0) : 0;
+  if(autocal_step_is_white($s) && abs($_s_ire - 109.0) < 0.05) {
    push @white_first,$s;
   } else {
    push @rest,$s;
   }
  }
- # Within @white_first: 109, 105, 99 (descending -- peak reference first).
+ # Within @white_first: legal peak (109). Single-element by construction
+ # but kept sorted for safety in case future autocal configs add more
+ # legal peaks.
  @white_first=sort { ($b->{"ire"}//0) <=> ($a->{"ire"}//0) } @white_first;
+ # Mark the 109 step so the per-anchor loop can skip it as "already done".
+ $white_first[0]->{"sdr26_white_peak_done"}=1 if(scalar(@white_first) > 0);
  # Within @rest: explicit top-down body then low-shadows-last order,
- # matching the old SDR DDC full_ddc_spine order (line ~680).
+ # matching the old SDR DDC full_ddc_spine order (line ~680). 105 and 99
+ # land here (after the 109 step in IRE-descending order) so they get
+ # their own white_balance_gain iteration each.
  my @sdr26_body_order=(95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
  {
   my %by_ire=map { defined($_->{"ire"}) ? (($_->{"ire"}+0) => $_) : () } @rest;
@@ -15132,6 +15327,11 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
     $white_usable=1 if(defined($wy) && $wy+0 > 0);
    }
    $state->{"sdr_1d_dpg_white_converged"}=($conv || $white_usable) ? JSON::PP::true : JSON::PP::false;
+   # Flag the calibrated 109 step so the @rest loop skips it (per-anchor
+   # loop skip rule: `autocal_step_is_white($step) && $step->{sdr26_white_peak_done}`).
+   # 99 and 105 do NOT get this flag and are processed individually below
+   # with the regular per-channel gain (target Y from the 109-calibrated curve).
+   $white_step->{"sdr26_white_peak_done"}=1;
    write_state($state);
    $exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && $exit_reason eq "converged");
    if(!$white_usable) {
@@ -15145,8 +15345,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # --- remaining greyscale anchors in IRE order (low to high) ---
  foreach my $step (@ordered) {
   last if(cancelled() || $upload_failed);
-  # Skip the already-calibrated white step.
-  next if(autocal_step_is_white($step) || (defined($step->{"ire"}) && $step->{"ire"}+0 >= 99.0));
+  # Skip the already-calibrated 109 peak (flagged in @white_first). The
+  # OTHER headroom anchors (99, 105) intentionally do NOT match this
+  # skip -- they need their own per-anchor iteration through the
+  # white_balance_gain path because the panel's chromaticity error at
+  # 105 and 99 is independent of the 109 calibration. The bare
+  # `ire>=99.0` check used here previously was skipping all three.
+  # NOTE: skip is purely flag-based here (NOT `is_white && flag`).
+  # `autocal_step_is_white` checks `abs(ire-100) < 0.001` and so is
+  # FALSE for the SDR26 109 anchor (which is the legal peak in the
+  # SDR26 table). The flag is the only reliable signal that the step
+  # has already been calibrated in @white_first.
+  next if($step->{"sdr26_white_peak_done"});
   $step_num++;
   my $rs=fixed_lg_autocal_step($config,$step);
   my $idx=$idx_for_sdr->($rs);
