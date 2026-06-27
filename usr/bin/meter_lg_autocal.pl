@@ -13045,7 +13045,7 @@ sub lg_autocal_26_sdr26_dpg_gain {
 # targets BT.709 / D65, not Display-P3. The two paths are otherwise
 # identical: same target=mean(mrgb), same [0.5, 1.0] clamp, same R-held.
 sub lg_autocal_26_sdr26_dpg_white_balance_gain {
-	 my ($reading)=@_;
+	 my ($reading,$original_lowest_ref)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
 	 my $mX=$reading->{"X"};
 	 my $mY=$reading->{"Y"};
@@ -13071,37 +13071,49 @@ sub lg_autocal_26_sdr26_dpg_white_balance_gain {
 	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
-	 # TRUE reduce-to-lowest: at the 109% legal peak the panel cannot
-	 # boost any channel above its native max, so D65 is only reachable
-	 # by attenuating the EXCESS channels toward the LOWEST. Pick the
-	 # lowest linear-light value of @mrgb as the target -- that channel
-	 # already lands at D65 (or below) and is held at gain=1.0; the
-	 # other two are reduced with gain = lowest/measured so they meet
-	 # the lowest channel exactly. The previous mean-of-three approach
-	 # was wrong: it assumed R=G=B in BT.709 (true for D65) and held R
-	 # at 1.0 unconditionally, which on a warm panel leaves a permanent
-	 # R-excess residual that no number of iterations can close (R can't
-	 # go below 1.0 to chase D65).
-	 my $lowest_idx=0;
-	 my $lowest=$mrgb[0];
-	 for my $ch (1..2) {
-	  if($mrgb[$ch]+0 < $lowest+0) {
-	   $lowest=$mrgb[$ch]+0;
-	   $lowest_idx=$ch;
+	 # Reduce-to-lowest with FIRST-ITER-ONLY reference. The previous
+	 # version re-identified the lowest on every iteration, which let
+	 # the "held" channel switch between iters (e.g. iter 1 holds G,
+	 # iter 2 holds B, iter 3 holds R...) and each iter reduced a
+	 # different channel, compounding the attenuation past the
+	 # achievable D65 floor. With an $original_lowest_ref carrying
+	 # the FIRST iter's lowest channel + value, every iter targets
+	 # the SAME channel (the one that was lowest in the identity-
+	 # baseline read), and the OTHER channels are driven toward the
+	 # FIRST-iter's lowest value, not the current-iter's lowest.
+	 # Result: the held channel never changes, the reducing channels
+	 # converge monotonically to the held channel, and the panel's
+	 # peak luminance settles at ~3 * held_value in BT.709 linear
+	 # (the natural cost of pulling the excess channels down to the
+	 # lowest).
+	 my ($lowest_idx,$lowest_target);
+	 if(ref($original_lowest_ref) eq "HASH" && defined($original_lowest_ref->{"idx"}) && defined($original_lowest_ref->{"value"})) {
+	  $lowest_idx=int($original_lowest_ref->{"idx"});
+	  $lowest_target=$original_lowest_ref->{"value"}+0;
+	 } else {
+	  # First call: identify the lowest from the identity-baseline read.
+	  $lowest_idx=0;
+	  $lowest_target=$mrgb[0]+0;
+	  for my $ch (1..2) {
+	   if($mrgb[$ch]+0 < $lowest_target+0) {
+	    $lowest_target=$mrgb[$ch]+0;
+	    $lowest_idx=$ch;
+	   }
 	  }
 	 }
-	 return (1.0,1.0,1.0) if(!($lowest+0 > 0));
+	 return (1.0,1.0,1.0) if(!($lowest_target+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
-	  my $m=$mrgb[$ch]+0;
 	  if($ch == $lowest_idx) {
-	   # Hold the lowest channel at 1.0 -- no DPG change for it.
+	   # Hold the originally-lowest channel at 1.0 -- no DPG change.
 	   push @gain,1.0;
 	   next;
 	  }
-	  # Reducing channel: gain = lowest/measured, so the post-DPG value
-	  # equals the lowest. Floor at 0.5 to bound per-iter moves.
-	  my $g=($m+0 > 0) ? ($lowest/$m) : 1.0;
+	  my $m=$mrgb[$ch]+0;
+	  # Reducing channel: gain = original_lowest / current_measured,
+	  # so the post-DPG value equals the originally-lowest channel.
+	  # Floor at 0.5 to bound per-iter moves.
+	  my $g=($m+0 > 0) ? ($lowest_target/$m) : 1.0;
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
@@ -14820,25 +14832,27 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $skip_de=$skip_fraction*$target_de;
  my $black_y=$config->{"black_y"};
  $black_y=0 unless(defined($black_y) && $black_y+0 >= 0);
+ # Legal-peak (109%) persistent state. The "original lowest" reference
+ # captures the first-iter lowest linear-BT.709 channel + its value so
+ # every subsequent iter targets the SAME channel (not the current
+ # iter's lowest). Prevents the per-iter lowest-channel oscillation
+ # that compounded past the achievable D65 floor.
+ my $_legal_peak_lowest_ref=undef;
+ my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
 
  # Best-so-far state for revert (low IRE only, same as HDR).
  my $best_de=undef;
  my $best_dpg=[@{$current_dpg_ref}];
  my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
  my $consecutive_reverts=0;
- # Warmup for the legal peak (109%): start move_scaling at 0.5 so the
- # first-iter move is half-magnitude. The identity-baseline chromaticity
- # distance to D65 is large at this anchor (x=0.3269, y=0.3256 vs D65
- # x=0.3127, y=0.329 on the user's panel), so the first damp would
- # otherwise make a near-50% channel reduction in one step, which can
- # bounce the calibration past the achievable D65-R-held-at-1.0 floor.
- # A halved first iter applies the natural gain gently, then iter 2
- # resumes full move_scaling if the calibration continues to improve.
- # Lower anchors keep the full M=1.0 start because their chromaticity
- # gaps are small and the first damp lands within the convergence
- # envelope naturally.
- my $_is_legal_peak_warmup=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
- my $move_scaling=$_is_legal_peak_warmup ? 0.5 : 1.0;
+ # Legal peak: move_scaling stays at 1.0 throughout -- the gain is
+ # applied at full strength on every iter because the target is stable
+ # (first-iter lowest reference). Warmup at 0.5 was for the previous
+ # design where the per-iter target drifted; with a stable target the
+ # natural DPG response is monotonic and one full-strength move lands
+ # within meter noise. Lower anchors also use full M=1.0 start since
+ # their per-anchor target is computed against a stable white_ref.
+ my $move_scaling=1.0;
  my $acceptance_pending=0;
  my $accepted_best_de=undef;
  my $accepted_best_dpg=undef;
@@ -15065,46 +15079,69 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $is_white_peak=(autocal_step_is_white($rs) || abs($_anchor_ire-109.0) < 0.05);
   my $is_white_body=!$is_white_peak && (autocal_step_is_fast_headroom($rs) || $_anchor_ire >= 99.0);
   my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
-  my ($rg,$gg,$bg)=$is_white_peak
-   ? lg_autocal_26_sdr26_dpg_white_balance_gain($reading)
-   : lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
+  my ($rg,$gg,$bg);
+  if($is_white_peak) {
+   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_white_balance_gain($reading,$_legal_peak_lowest_ref);
+   # Lock the first-iter lowest as the persistent reference. Subsequent
+   # iters reuse this ref so the held channel does not flip (which
+   # compounded past the achievable D65 floor in the previous design).
+   if(!defined($_legal_peak_lowest_ref)) {
+    my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
+    my @_rgb_first=(
+     3.2404542*$_rX + -1.5371385*$_rY + -0.4985314*$_rZ,
+     -0.9692660*$_rX + 1.8760108*$_rY +  0.0415560*$_rZ,
+     0.0556434*$_rX + -0.2040259*$_rY +  1.0572252*$_rZ,
+    );
+    my $_li=0; my $_lv=$_rgb_first[0]+0;
+    for my $k (1..2) {
+     if($_rgb_first[$k]+0 < $_lv+0) { $_lv=$_rgb_first[$k]+0; $_li=$k; }
+    }
+    $_legal_peak_lowest_ref={ idx=>$_li, value=>$_lv };
+   }
+  } else {
+   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
+  }
   my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
   my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
-  # White move multiplier: the white anchor only REDUCES the excess
-  # channels (G/B held-at-1, R is preserved unconditionally, see
-  # lg_autocal_26_sdr26_dpg_white_balance_gain) and re-measures, so a
-  # larger per-iter move is safe and converges the peak in a few iters
-  # instead of many tiny ones. M=2.5 (vs HDR's 2.0) is slightly more
-  # aggressive because SDR's gamma 2.2 doesn't have HDR's PQ ceiling
-  # clipping at the white cluster -- the panel still has measurable
-  # reduction headroom on G/B even at 109 IRE.
-  my $white_move_mult=defined($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}+0) : 2.5;
-  $white_move_mult=1.0 if($white_move_mult+0 < 1.0);
-  $white_move_mult=5.0 if($white_move_mult+0 > 5.0);
-  my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
-  my $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-  my $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-  my $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-  $sr=$floor if($sr+0 < $floor+0);
-  $sg=$floor if($sg+0 < $floor+0);
-  $sb=$floor if($sb+0 < $floor+0);
-  $sr=1.25 if($sr+0 > 1.25);
-  $sg=1.25 if($sg+0 > 1.25);
-  $sb=1.25 if($sb+0 > 1.25);
-  # Overshoot guard for the white anchor (where the move multiplier can
-  # exceed 1.0): a REDUCING channel (raw gain < 1.0, i.e. the channel
-  # measured ABOVE the D65 mean and needs attenuation) must NEVER be
-  # driven below its raw gain -- that would push it past the D65 target
-  # and swap which channel is in excess, causing a bounce. R is always
-  # held at 1.0 by lg_autocal_26_sdr26_dpg_white_balance_gain so it is
-  # never a reducing channel; this guard only binds for the excess G/B
-  # channels. max(applied, gain) lands the channel exactly on target at
-  # worst (never past it), so even a huge multiplier is monotonic and
-  # safe.
-  if($is_white) {
-   $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
-   $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
-   $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+  # Legal peak: apply the reduce-to-lowest gain at FULL strength (no
+  # damp, no white move multiplier). The gain is computed against a
+  # STABLE reference (the first-iter lowest channel) so it is already
+  # monotonic -- each iter's gain is exactly "how much do I need to
+  # reduce channel C to land at the originally-lowest" -- and a single
+  # full-strength application lands within meter noise. The previous
+  # damp + M=2.5 path was for designs where each iter chose a DIFFERENT
+  # target; with a stable target that scaling overcorrects and
+  # compounds past the achievable D65 floor (this was the bug that
+  # dropped the panel from 198 nits to 1.7 nits on the user's setup).
+  my $sr;
+  my $sg;
+  my $sb;
+  if($is_white_peak) {
+   $sr=$rg+0;
+   $sg=$gg+0;
+   $sb=$bg+0;
+   $sr=$floor if($sr+0 < $floor+0);
+   $sg=$floor if($sg+0 < $floor+0);
+   $sb=$floor if($sb+0 < $floor+0);
+   $sr=1.0 if($sr+0 > 1.0);
+   $sg=1.0 if($sg+0 > 1.0);
+   $sb=1.0 if($sb+0 > 1.0);
+  } else {
+   my $anchor_move_mult=1.0; # body only
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sr=$floor if($sr+0 < $floor+0);
+   $sg=$floor if($sg+0 < $floor+0);
+   $sb=$floor if($sb+0 < $floor+0);
+   $sr=1.25 if($sr+0 > 1.25);
+   $sg=1.25 if($sg+0 > 1.25);
+   $sb=1.25 if($sb+0 > 1.25);
+   if($is_white_body) {
+    $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
+    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
+    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+   }
   }
   my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
   my $new_dpg=lg_autocal_26_build_sdr26_1d_dpg($current_dpg_ref,\@anchors_for_build);
