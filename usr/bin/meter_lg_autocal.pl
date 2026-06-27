@@ -13045,7 +13045,7 @@ sub lg_autocal_26_sdr26_dpg_gain {
 # targets BT.709 / D65, not Display-P3. The two paths are otherwise
 # identical: same target=mean(mrgb), same [0.5, 1.0] clamp, same R-held.
 sub lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain {
-	 my ($reading)=@_;
+	 my ($reading,$original_lowest_ref)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
 	 my $mX=$reading->{"X"};
 	 my $mY=$reading->{"Y"};
@@ -13071,33 +13071,65 @@ sub lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain {
 	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
-	 # Mean-based gain toward D65 (BT.709). D65 has R=G=B in linear BT.709
-	 # RGB, so the per-channel D65 target is the mean of the measured
-	 # linear RGB. Excess channels (above mean) get reduced toward the
-	 # mean; deficient channels (below mean) are held at 1.0 because the
-	 # panel cannot push them above native. This mirrors the HDR20 mean-
-	 # based approach (lg_autocal_26_hdr20_dpg_white_balance_gain) and
-	 # converges on the same kind of bias-balanced white.
-	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
-	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
-	 my $target=$sum/3.0;
+	 # Reduce-to-lowest with FIRST-ITER-ONLY reference. Whichever channel
+	 # is measured lowest on the first read becomes the persistent target:
+	 # gain=1.0 for that channel (no DPG change, displayed as 100% on
+	 # the run-log breadcrumb), and the OTHER channels are driven toward
+	 # its first-read value across every subsequent iter (each iter's gain
+	 # = first-iter-lowest / current-iter-measured, floor at 0.5). The held
+	 # channel is whatever the panel produced lowest on the identity-
+	 # baseline read -- typically R on a properly WB'd OLED cinema mode
+	 # (R is the least efficient sub-pixel), but on a slightly warm panel
+	 # it could be G or B. The previous design held whichever channel was
+	 # lowest on the CURRENT iter, which let the held channel flip between
+	 # iters (iter 1 holds G, iter 2 holds B, iter 3 holds R...) and each
+	 # iter reduced a DIFFERENT channel, compounding past the achievable
+	 # D65 floor. With the first-iter ref frozen, the held channel never
+	 # changes and the reducing channels converge monotonically.
+	 #
+	 # R is NOT held unconditionally -- R is held only if R is the lowest
+	 # measured channel on the first read. The user's panel may show R as
+	 # the naturally lowest (OLED R is the least efficient sub-pixel) so
+	 # the held channel is typically R; on a slightly warm panel G or B
+	 # might be the lowest. The damp + overshoot guard at the callsite
+	 # ensures the panel cannot be pushed past the target even with a
+	 # multi-iter damp schedule, so the user's "if they overshoot and
+	 # lower too much they can recover" requirement is met by the
+	 # best-state restore at the end of the anchor (best_dpg is the
+	 # snapshot of the iter with the lowest measured dE -- if any iter
+	 # overshoots, the next iter's read will show a worse dE and the
+	 # anchor ends at the best iter).
+	 my ($lowest_idx,$lowest_target);
+	 if(ref($original_lowest_ref) eq "HASH" && defined($original_lowest_ref->{"idx"}) && defined($original_lowest_ref->{"value"})) {
+	  $lowest_idx=int($original_lowest_ref->{"idx"});
+	  $lowest_target=$original_lowest_ref->{"value"}+0;
+	 } else {
+	  # First call: identify the lowest from the identity-baseline read.
+	  $lowest_idx=0;
+	  $lowest_target=$mrgb[0]+0;
+	  for my $ch (1..2) {
+	   if($mrgb[$ch]+0 < $lowest_target+0) {
+	    $lowest_target=$mrgb[$ch]+0;
+	    $lowest_idx=$ch;
+	   }
+	  }
+	 }
+	 return (1.0,1.0,1.0) if(!($lowest_target+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
+	  if($ch == $lowest_idx) {
+	   # Held channel: gain = 1.0, no DPG change.
+	   push @gain,1.0;
+	   next;
+	  }
 	  my $m=$mrgb[$ch]+0;
-	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
-	  # Deficient channels (natural gain > 1.0) are held at 1.0; the
-	  # panel cannot lift a deficient channel above its native level.
+	  # Reducing channel: gain = original_lowest / current_measured, so
+	  # the post-DPG value lands at the originally-lowest channel. Floor
+	  # at 0.5 to bound per-iter moves.
+	  my $g=($m+0 > 0) ? ($lowest_target/$m) : 1.0;
+	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
-	  # Preserve R (channel 0) at 100% white: on a slightly warm panel the
-	  # BT.709 projection makes R the highest linear channel, so a mean-based
-	  # gain would reduce R by 1-3% per iter. Each R reduction drops peak
-	  # luminance (R drives peak on OLED) without a commensurate
-	  # white-balance improvement. Hold R and only reduce the excess G/B
-	  # channels. Mirrors lg_autocal_26_hdr20_dpg_white_balance_gain.
-	  $g=1.0 if($ch == 0);
-	  # Floor at 0.5 to bound per-iter moves (mirrors HDR20).
-	  $g=0.5 if($g+0 < 0.5);
 	  push @gain,$g+0;
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
@@ -15063,9 +15095,44 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $is_white_peak=(autocal_step_is_white($rs) || abs($_anchor_ire-109.0) < 0.05);
 my $is_white_body=!$is_white_peak && (autocal_step_is_fast_headroom($rs) || $_anchor_ire >= 99.0);
  my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
+ # Reduce-to-lowest reference for the 109% legal peak: capture the first-iter
+ # lowest channel + its linear-BT.709 value, then reuse it across every
+ # subsequent iter so the held channel does not flip (which compounded past
+ # the achievable D65 floor in earlier designs). On a properly WB'd OLED
+ # cinema mode this is R (the least efficient sub-pixel); on a slightly warm
+ # panel it could be G or B. The reference is persisted to the state JSON
+ # so a partial-run restart reuses the same held channel.
+ my $_legal_peak_lowest_ref=(defined($state->{"sdr_1d_dpg_lowest_ref"}) && ref($state->{"sdr_1d_dpg_lowest_ref"}) eq "HASH")
+  ? $state->{"sdr_1d_dpg_lowest_ref"}
+  : undef;
  my ($rg,$gg,$bg);
  if($is_white_peak) {
-  ($rg,$gg,$bg)=lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain($reading);
+  ($rg,$gg,$bg)=lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain($reading,$_legal_peak_lowest_ref);
+  # Lock the first-iter lowest as the persistent reference. Subsequent
+  # iters reuse this ref so the held channel does not flip. Re-derive
+  # here too (not just inside the gain fn) so the state JSON persists it
+  # across outer reruns (the function-internal $_legal_peak_lowest_ref
+  # would only live within one calibration run).
+  if(!defined($_legal_peak_lowest_ref) && ref($reading) eq "HASH") {
+   my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
+   my @_rgb_first=(
+    3.2404542*$_rX + -1.5371385*$_rY + -0.4985314*$_rZ,
+    -0.9692660*$_rX + 1.8760108*$_rY +  0.0415560*$_rZ,
+    0.0556434*$_rX + -0.2040259*$_rY +  1.0572252*$_rZ,
+   );
+   my $_li=0; my $_lv=$_rgb_first[0]+0;
+   for my $k (1..2) {
+    if($_rgb_first[$k]+0 < $_lv+0) { $_lv=$_rgb_first[$k]+0; $_li=$k; }
+   }
+   $_legal_peak_lowest_ref={ idx=>$_li, value=>$_lv };
+   if(ref($state) eq "HASH") {
+    $state->{"sdr_1d_dpg_lowest_ref"}={
+     idx=>$_li+0,
+     value=>sprintf("%.6f",$_lv+0),
+    };
+    write_state($state);
+   }
+  }
  } else {
   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
  }
