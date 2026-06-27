@@ -12744,8 +12744,25 @@ sub lg_autocal_26_akima_interpolate {
 # network, no global state. Used by callers that need to project
 # calibration-time anchor corrections onto the full 1024-point ramp
 # without going through the full read/upload pipeline.
-sub lg_autocal_26_build_hdr20_1d_dpg {
-	 my ($current_dpg,$anchors)=@_;
+# SDR26-specific 1D DPG build. The math is identical to the HDR20 build
+# (Akima spline across control indices for per-channel correction),
+# but the function exists separately so the SDR26 path can be modified
+# independently of the HDR20 path (per-channel gain math, anchor
+# ordering, identity-ramp formula) without affecting HDR. The shared
+# internals are factored into lg_autocal_26_build_dpg_core.
+sub lg_autocal_26_build_sdr26_1d_dpg {
+ my ($current_dpg,$anchors)=@_;
+ return lg_autocal_26_build_dpg_core($current_dpg,$anchors);
+}
+
+# Shared 1D DPG build core. Takes the previous DPG (or undef for the
+# identity baseline) and a list of anchor corrections (each a hash with
+# idx + r_gain/g_gain/b_gain). Returns a 3072-value array (3 channels
+# of 1024 entries) using Akima cubic spline interpolation between
+# anchors. Pure function: no I/O. This is the shared internals for
+# lg_autocal_26_build_hdr20_1d_dpg and lg_autocal_26_build_sdr26_1d_dpg.
+sub lg_autocal_26_build_dpg_core {
+ my ($current_dpg,$anchors)=@_;
 	 my @gain_keys=("r_gain","g_gain","b_gain");
 	 my @cur;
 	 if(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072) {
@@ -15038,7 +15055,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   }
   my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
-  my $new_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg_ref,\@anchors_for_build);
+  my $new_dpg=lg_autocal_26_build_sdr26_1d_dpg($current_dpg_ref,\@anchors_for_build);
   if(ref($new_dpg) ne "ARRAY" || @$new_dpg != 3072) {
    $upload_failed=1;
    log_line("SDR26 1D DPG greyscale: build returned wrong length at ".$label);
@@ -15260,7 +15277,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
 
  # Identity baseline: the SDR path starts from the linear 15-bit identity
  # in LG's [0,32767] 1D_DPG_DATA domain, just like HDR.
- my $current_dpg=lg_autocal_26_build_hdr20_1d_dpg(undef,[]);
+ my $current_dpg=lg_autocal_26_build_sdr26_1d_dpg(undef,[]);
  return "lg_autocal_26_run_sdr_1d_dpg_greyscale: identity baseline is not 3072 ints"
   unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
 
@@ -15360,6 +15377,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   my $idx=$idx_for_sdr->($rs);
   if(defined($idx)) {
    my $label=$rs->{"name"}||"100%";
+   my $_white_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : 109.0);
+   # Update the wizard's "current patch" indicator BEFORE entering the inner
+   # loop. The SDR26 109% legal peak gets a chroma-only label here; the
+   # full-body anchors are named "SDR26 1D DPG sdr26_XX%" in the per-anchor
+   # loop below. Without this, the indicator stays stuck on "SDR26 1D DPG
+   # (identity baseline)" through the entire 109% peak run.
+   $state->{"current_name"}="SDR26 1D DPG sdr26_".sprintf("%g",$_white_ire)."%" if(ref($state) eq "HASH");
+   $state->{"current_ire"}=$_white_ire if(ref($state) eq "HASH");
+   write_state($state);
    my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$label =~ /(\d+(?:\.\d+)?)/ ? ($1+0) : 100.0);
    my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
     $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
