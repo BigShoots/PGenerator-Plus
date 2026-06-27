@@ -14885,7 +14885,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # signal_mode=sdr with ddc_layout=sdr26.
  my $_sig=lc(($config->{"signal_mode"}//""));
  return "lg_autocal_26_run_sdr_1d_dpg_greyscale: wrong signal_mode '".$_sig."' (need 'sdr')" unless($_sig eq "sdr");
- return "lg_autocal_26_run_sdr_1d_dpg_greyscale: wrong ddc_layout '".($config->{"ddc_layout"}//"")."' (need 'sdr26')" unless(($config->{"ddc_layout"}//"") eq "sdr26");
+ # ddc_layout may be implicit (config only carries signal_mode="sdr"); fall
+ # back through ddc_layout_for_signal_mode so the SDR path doesn't require
+ # the JS to also POST ddc_layout. The HDR path is unchanged because its
+ # caller already passes ddc_layout="hdr20" explicitly.
+ my $_layout=lc(($config->{"ddc_layout"}//""));
+ $_layout=ddc_layout_for_signal_mode($_sig) if($_layout eq "");
+ return "lg_autocal_26_run_sdr_1d_dpg_greyscale: wrong ddc_layout '".$_layout."' (need 'sdr26')" unless($_layout eq "sdr26");
+ # Backfill so downstream callers (per-anchor upload, single-socket commit)
+ # see the same $config->{ddc_layout} the routing implied.
+ $config->{"ddc_layout"}=$_layout;
 
  # Top-level target_dE (operator's set target). Mirrors the HDR top-level
  # config knob lg_autocal_hdr20_dpg_target_de. Default 0.5.
