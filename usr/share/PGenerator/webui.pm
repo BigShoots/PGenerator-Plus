@@ -24807,12 +24807,24 @@ async function meterFullAutoCalGeneratePostReport(){
 // The calibration pinned Target Gamma to 2.2; the post-cal report series
   // must read against the HDR10 default (ST 2084 / PQ target). Restore the
   // dropdown before the series launches so it stamps target_gamma=st2084.
-  const _sm=(getVal('signal_mode')||'sdr');
-  if(_sm==='hdr10'){
-   setVal('meterTargetGamma','st2084');
+const _sm=(getVal('signal_mode')||'sdr');
+ if(_sm==='hdr10'){
+  setVal('meterTargetGamma','st2084');
+  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+  if(typeof saveMeterSettings==='function') saveMeterSettings();
+ } else if(_sm==='sdr'){
+  // SDR26 1D-DPG full autocal: the calibration was pinned to gamma 2.2 during
+  // the run (matching the worker's 1D_2_2_EN reference); switch back to
+  // BT.1886 for the post-cal verification read so the report series reads
+  // against the operator's standard SDR verification curve. Only set when the
+  // operator hasn't already chosen explicitly.
+  const _cur=String(getVal('meterTargetGamma')||'');
+  if(_cur==='2.2' || _cur==='' || _cur==null){
+   setVal('meterTargetGamma','bt1886');
    if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
    if(typeof saveMeterSettings==='function') saveMeterSettings();
   }
+ }
  let reportCompleted=false;
  try{
   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:series.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
@@ -25811,10 +25823,24 @@ async function meterPollAutoCal(options){
 				    // standalone greyscale path. The full-workflow
 				    // path is already covered by
 				    // meterFullAutoCalCompleteAfterHdrToneMap.
-				    let completeStatus=r;
+let completeStatus=r;
 				    if(!r.full_workflow&&r.hdr20_1d_tonemap_pending){
 				     const promptResult=await meterAutoCalPromptHdrToneMapUpload(r,'greyscale-poller');
 				     if(promptResult&&promptResult.finalStatus) completeStatus=promptResult.finalStatus;
+				    }
+				    // SDR26 1D-DPG greyscale-only autocal: the calibration ran
+				    // against gamma 2.2; switch the dropdown back to BT.1886
+				    // so the post-cal verification read uses the operator's
+				    // standard SDR verification curve. Only when the operator
+				    // hasn't explicitly chosen otherwise (delay_user_set pattern).
+				    const _compSm=String((getVal('signal_mode')||'sdr')).toLowerCase();
+				    if(_compSm==='sdr'){
+				     const _cur=String(getVal('meterTargetGamma')||'');
+				     if(_cur==='2.2' || _cur==='' || _cur==null){
+				      setVal('meterTargetGamma','bt1886');
+				      if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+				      if(typeof saveMeterSettings==='function') saveMeterSettings();
+				     }
 				    }
 				    meterAutoCalPhase='complete';
 		    meterAutoCalRunning=true;
@@ -25904,6 +25930,20 @@ async function meterStartAutoCal(options){
  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
  meterSetActiveSeriesChartContext();
+ // SDR26 1D-DPG autocal + post-cal: the worker calibrates against gamma 2.2
+ // (the reference workflow's 1D_2_2_EN reference workflow). Pin the Target Gamma dropdown to
+ // 2.2 BEFORE building the chart series steps so the steps' baked target_Yn
+ // uses signal^2.2 (the gamma curve the worker actually calibrates against)
+ // and not signal^2.4 (the BT.1886 default). Only set when the operator
+ // hasn't already chosen explicitly (mirrors the delay_user_set flag
+ // pattern). The post-cal report entry point flips it back to BT.1886 for
+ // the verification pass.
+ const _autocalGamma=String(getVal('meterTargetGamma')||'');
+ if(_autocalGamma==='bt1886' || _autocalGamma==='' || _autocalGamma==null){
+  setVal('meterTargetGamma','2.2');
+  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+  if(typeof saveMeterSettings==='function') saveMeterSettings();
+ }
  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
  if(!adjustable.length) return fail('No LG-adjustable greyscale points are available');
