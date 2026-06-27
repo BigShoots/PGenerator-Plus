@@ -15159,8 +15159,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # Only the legal peak (ire == 109, the headline full-white code) lands
   # in @white_first. Other headroom anchors (99, 105) drop into @rest so
   # each can be calibrated individually with white_balance_gain.
+  # NOTE: do NOT use autocal_step_is_white here -- that fn returns true
+  # ONLY for ire==100.0 (the HDR legal peak). SDR26's legal peak is 109
+  # (the SDR full-white code that matches the BT.709 109% headroom), so
+  # the white check is the explicit ire==109 match below.
   my $_s_ire=defined($s->{"ire"}) ? ($s->{"ire"}+0) : 0;
-  if(autocal_step_is_white($s) && abs($_s_ire - 109.0) < 0.05) {
+  if(abs($_s_ire - 109.0) < 0.05) {
    push @white_first,$s;
   } else {
    push @rest,$s;
