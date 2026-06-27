@@ -15795,7 +15795,23 @@ function meterGreyTargetLuminance(ire,Lw,Lb,code){
   const peak=(Lw>0)?Lw:100;
   return meterDvRelativeChartTargetLuminance(ire,peak,code);
  }
+ // SDR26 1D-DPG autocal: the worker calibrates against gamma 2.2 with
+ // signal = stimulus/100 clamped to 1.0 (so 105 and 109 both target peak).
+ // Mirror that math here so the chart's dE bars + target line agree with
+ // what the worker actually calibrated against. Without this gate, the
+ // dE for body anchors computes against the dropdown's gamma (which the
+ // post-cal switch flips to BT.1886) while the worker still uses 2.2 --
+ // the chart's dE for 50 IRE shows ~37 nits target while the worker
+ // calibrated to 43, a delta that inflates the displayed dE ITP.
  const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():1);
+ const activeSeriesIsSdr26=(typeof meterActiveSeriesType!=='undefined')&&meterActiveSeriesType==='greyscale'
+  &&Number(meterActiveSeriesPoints)===26
+  &&String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='sdr'
+  &&(typeof meterUseLgAutoCal26==='function')&&meterUseLgAutoCal26(meterActiveSeriesPoints);
+ if(activeSeriesIsSdr26 && Number.isFinite(Number(ire))){
+  const workerSignal=Math.max(0,Math.min(1,Number(ire)/100));
+  return targetEotf(workerSignal,peak,Lb||0);
+ }
  const signal=meterGreyTargetSignal(ire,code);
  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr();
  if(usesPqTarget||meterChartIsHlg()) return meterChartTargetLuminance(signal,peak,Lb||0);
@@ -15962,9 +15978,10 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		// current bit-depth range (an 8-bit transport reading a 10-bit
 		// extended SDR26 code table produces signal values that saturate to
 		// 1.1 around IRE 27, drawing a flat-to-peak plateau from 25% to 109%
-		// that looks like a PQ rolloff). The active dropdown drives the gamma
-		// via targetEotf; chart signal normalizes to the calibrated peak IRE
-		// (=109) for headroom anchors so 105 lands BELOW peak.
+		// that looks like a PQ rolloff). Match the worker's
+		// target_luminance_for_step math: signal = stimulus/100 clamped to 1.0,
+		// so the chart's target line, dE bar target Y, and post-cal verification
+		// read all agree with what the worker actually calibrated against.
 		const activeSeriesIsSdr26=(typeof meterActiveSeriesType!=='undefined')&&meterActiveSeriesType==='greyscale'
 		 &&Number(meterActiveSeriesPoints)===26
 		 &&String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='sdr'
@@ -15972,15 +15989,8 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		if(activeSeriesIsSdr26 && row && row.stimulus!=null){
 		 const stimulus=Number(row.stimulus);
 		 if(Number.isFinite(stimulus)){
-		  // SDR26 headroom is a single continuous curve from 0 to 109 (the
-		  // calibrated peak). 100 IRE sits at 100/109 of the peak and 105 at
-		  // 105/109; normalize the WHOLE chart signal to the calibrated peak
-		  // IRE so the curve is monotonic across the 100->105 boundary
-		  // (otherwise the split at stimulus=100 makes chartSig jump from
-		  // 1.0 down to 100/109=0.917, producing a visible kink).
-		  const peakIre=109;
-		  const chartSig=stimulus/peakIre;
-		  return targetEotf(Math.max(0,Math.min(1,chartSig)),Lw,Lb||0);
+		  const chartSig=Math.max(0,Math.min(1,stimulus/100));
+		  return targetEotf(chartSig,Lw,Lb||0);
 		 }
 		}
 		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
