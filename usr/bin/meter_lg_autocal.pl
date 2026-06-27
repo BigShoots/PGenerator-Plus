@@ -14641,6 +14641,9 @@ sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
  my $white_body_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters_white_body"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters_white_body"}) : 8;
  $white_body_iters=1 if($white_body_iters < 1);
  $white_body_iters=12 if($white_body_iters > 12);
+ my $legal_peak_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters_legal_peak"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters_legal_peak"}) : 12;
+ $legal_peak_iters=1 if($legal_peak_iters < 1);
+ $legal_peak_iters=24 if($legal_peak_iters > 24);
  my $low_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters_low"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters_low"}) : 12;
  $low_iters=1 if($low_iters < 1);
  $low_iters=24 if($low_iters > 24);
@@ -14649,6 +14652,14 @@ sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
  $low_threshold=10.0 if($low_threshold > 10.0);
  my $ire=defined($anchor_ire) ? ($anchor_ire+0) : 50.0;
  if($ire+0 < $low_threshold) { return $low_iters; }
+ # SDR26 109% legal peak: dedicated budget (default 12). The reduce-to-
+ # lowest path on this anchor starts from the identity baseline with a
+ # large chromaticity gap (x ~ 0.327 vs D65 0.3127 on the user's panel),
+ # so it needs more iters than the white-body cluster to land at the
+ # R-held-at-1.0 convergence floor. The first iter uses move_scaling=0.5
+ # warmup to avoid a 50% channel-reduction overshoot; subsequent iters
+ # resume the full M=1.0/2.5 damp path.
+ if(abs($ire-109.0) < 0.05) { return $legal_peak_iters; }
  # White cluster (99, 105) -- body IREs but use the white body budget so
  # the reduce-to-lowest path gets enough iters to converge.
  if($ire+0 >= 99.0) { return $white_body_iters; }
@@ -14786,7 +14797,19 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $best_dpg=[@{$current_dpg_ref}];
  my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
  my $consecutive_reverts=0;
- my $move_scaling=1.0;
+ # Warmup for the legal peak (109%): start move_scaling at 0.5 so the
+ # first-iter move is half-magnitude. The identity-baseline chromaticity
+ # distance to D65 is large at this anchor (x=0.3269, y=0.3256 vs D65
+ # x=0.3127, y=0.329 on the user's panel), so the first damp would
+ # otherwise make a near-50% channel reduction in one step, which can
+ # bounce the calibration past the achievable D65-R-held-at-1.0 floor.
+ # A halved first iter applies the natural gain gently, then iter 2
+ # resumes full move_scaling if the calibration continues to improve.
+ # Lower anchors keep the full M=1.0 start because their chromaticity
+ # gaps are small and the first damp lands within the convergence
+ # envelope naturally.
+ my $_is_legal_peak_warmup=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
+ my $move_scaling=$_is_legal_peak_warmup ? 0.5 : 1.0;
  my $acceptance_pending=0;
  my $accepted_best_de=undef;
  my $accepted_best_dpg=undef;

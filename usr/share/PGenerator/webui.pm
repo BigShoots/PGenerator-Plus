@@ -14466,7 +14466,16 @@ function meterTargetXYZForReading(reading){
 	 //   - reading name pattern sdr26_* (the SDR26 26-anchor table)
 	 //   - the autocal_white_y + ire==109 combo (the autocal worker tags
 	 //     the 109 reading with autocal_white_y = its own measured Y)
-	 // Returning {X:0,Y:0,Z:0} suppresses the Y-error line entirely.
+	 //
+	 // Return the D65 chromaticity at the MEASURED luminance (not {0,0,0}).
+	 // Returning {0,0,0} would make any ITP formula read the entire
+	 // measured XYZ as error (a 109 reading with Y=198 vs Y=0 is a
+	 // massive luminance delta that would dwarf the chroma error the
+	 // calibration is actually closing). With the D65-chromaticity-at-
+	 // measured-Y target + the chroma-only dE ITP dispatch in
+	 // meterDeltaE (which drops the dI term), the chart reads as the
+	 // actual chromaticity gap to D65, matching the autocal worker's
+	 // delta_e_itp_chroma_only result.
 	 try{
 	  const _ire=Number(reading.ire!=null?reading.ire:(reading.patch_ire!=null?reading.patch_ire:reading.stimulus));
 	  const _layout=String(reading.series_mode||reading.ddc_layout||'');
@@ -14475,7 +14484,12 @@ function meterTargetXYZForReading(reading){
 	  const _isSdr26Name=_name.startsWith('sdr26_');
 	  const _is109AutocalWhite=(reading.autocal_white_y!=null && Number(reading.autocal_white_y)>0 && Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05);
 	  if(Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05 && (_hasSdrLayout || _isSdr26Name || _is109AutocalWhite)){
-	   return {X:0,Y:0,Z:0};
+	   const _mY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(reading):(reading.Y||0);
+	   const _wp=(typeof meterTargetWhitePoint==='function')?meterTargetWhitePoint():{x:0.3127,y:0.329};
+	   if(Number.isFinite(_mY) && _mY>0){
+	    return {X:_wp.X*_mY, Y:_mY, Z:_wp.Z*_mY};
+	   }
+	   return {X:0, Y:0, Z:0};
 	  }
 	 }catch(e){}
 	 const absX=Number(reading.target_X);
@@ -14490,6 +14504,15 @@ function meterTargetXYZForReading(reading){
 	  targetStep=meterCanonicalSeriesStep(reading);
 	  if(targetStep&&(targetStep.target_x!=null||targetStep.target_y!=null||targetStep.target_Yn!=null)) targetMeta=targetStep;
 	 }
+ // SDR26 109% legal-peak fallback: when the target XYZ lookup returned
+ // {0,0,0} (the no-target-Y sentinel from the early-return above) but
+ // the operator has the "Include luminance error" toggle on, we still
+ // need a usable target so the dE chart doesn't blow up to 400+. The
+ // chroma-only dE path (deltaEITPChromaOnly) uses this target's X/Y/Z
+ // purely for the Ct/Cp rotation -- the dI term is dropped, so the
+ // absolute target Y doesn't matter for the dE. Returning the target
+ // chromaticity at the calibrated peak Y keeps the chart target line
+ // visible at the legal peak without re-introducing a luminance error.
  let tx=parseFloat(reading.target_x!=null?reading.target_x:(targetMeta?targetMeta.target_x:null));
  let ty=parseFloat(reading.target_y!=null?reading.target_y:(targetMeta?targetMeta.target_y:null));
  const tYn=parseFloat(reading.target_Yn!=null?reading.target_Yn:(targetMeta?targetMeta.target_Yn:null));
@@ -14779,7 +14802,8 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
   isGrey:true,
   Ym:xyz.Y, Yref:target.Y||0,
   X:xyz.X, Y:xyz.Y, Z:xyz.Z, YWhite:wR.Y,
-  Xr:target.X, Yr:target.Y, Zr:target.Z, YWhiteRef:wR.Y
+  Xr:target.X, Yr:target.Y, Zr:target.Z, YWhiteRef:wR.Y,
+  reading:reading
  };
  return {value:meterDeltaE(labM,labT,form,ctx),de2000:deltaE2000(labM,labT)};
 }
@@ -16454,6 +16478,38 @@ function deltaEITP(X1,Y1,Z1,X2,Y2,Z2){
  return 720*Math.sqrt(dI*dI+0.25*dT*dT+dP*dP);
 }
 
+// Chroma-only dE ITP -- same scale (720) and ITP transform, but with the
+// luminance / intensity term (dI) dropped. Used for the SDR26 109% legal
+// peak in the chart so its dE mirrors what the autocal worker computes
+// (chrominance-only, since the peak calibrates its own RGB balance to
+// pull the higher channels down to the lowest). Without this the chart
+// dE includes the dI term against a (correctly suppressed) {0,0,0}
+// target reference and reads as a huge number; with this it reads as
+// the actual chromaticity gap to D65 the calibration is closing.
+function deltaEITPChromaOnly(X1,Y1,Z1,X2,Y2,Z2){
+ const a=xyzToICtCp(X1,Y1,Z1);
+ const b=xyzToICtCp(X2,Y2,Z2);
+ const dT=a.T-b.T;
+ const dP=a.P-b.P;
+ return 720*Math.sqrt(0.25*dT*dT+dP*dP);
+}
+
+// SDR26 109% legal-peak detector for the chart path. Mirrors the
+// autocal worker's three signals (ire==109, name starts with 'sdr26_',
+// autocal_white_y set) so the chart and the worker agree on which
+// readings are chroma-only / no-target-Y.
+function meterReadingIsSdr26LegalPeak(rd){
+ if(!rd) return false;
+ const _ire=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:(rd.nominal_ire!=null?rd.nominal_ire:(rd.stimulus!=null?rd.stimulus:null))));
+ if(!Number.isFinite(_ire) || Math.abs(_ire-109.0)>=0.05) return false;
+ const _layout=String(rd.series_mode||rd.ddc_layout||'').toLowerCase();
+ const _name=String(rd.name||'').toLowerCase();
+ if(_layout.indexOf('sdr')>=0) return true;
+ if(_name.startsWith('sdr26_')) return true;
+ if(rd.autocal_white_y!=null && Number(rd.autocal_white_y)>0) return true;
+ return false;
+}
+
 function hlgOotf(maxY){
  const peak=maxY>0?maxY:1000;
  if(peak<400 || peak>2000) return 1.2*Math.pow(1.111,Math.log(peak/1000)/Math.log(2));
@@ -17385,6 +17441,15 @@ function meterDeltaE(labM,labT,form,ctx){
   const Xr=(ctx.itpXr!=null)?ctx.itpXr:ctx.Xr;
   const Yr=(ctx.itpYr!=null)?ctx.itpYr:ctx.Yr;
   const Zr=(ctx.itpZr!=null)?ctx.itpZr:ctx.Zr;
+  // SDR26 109% legal peak: chroma-only dE ITP. The peak calibrates its
+  // own RGB balance, so the dE has no luminance component -- matching
+  // the autocal worker's delta_e_itp_chroma_only dispatch. The full dE
+  // ITP against a (correctly suppressed) {0,0,0} target would read as
+  // a huge number; chroma-only reads as the chromaticity gap to D65
+  // the calibration is closing.
+  if(ctx.reading && meterReadingIsSdr26LegalPeak(ctx.reading)){
+   return deltaEITPChromaOnly(X,Y,Z,Xr,Yr,Zr);
+  }
   return deltaEITP(X,Y,Z,Xr,Yr,Zr);
  }
  return deltaE2000(labM,labT);
@@ -28446,8 +28511,14 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  // Compute deltaE for available readings
  const deMap={};
  gs.forEach(rd=>{
-  if((rd.Y||0)<=0){deMap[rd.ire]=0;return;}
-  deMap[rd.ire]=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
+  if((rd.Y||0)<=0){deMap[Number(rd.ire)]=0;return;}
+  // Coerce to numeric IRE so the lookup matches the numeric keys in
+  // xSteps (which come from the canonical series step table). Without
+  // this, an SDR26 reading's ire arrives as a JSON string and the
+  // xStep lookup at the same numeric IRE misses the bar entirely.
+  const _ireKey=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:rd.stimulus));
+  if(!Number.isFinite(_ireKey)) return;
+  deMap[_ireKey]=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
  });
  const deValues=Object.values(deMap);
  // Auto-scale Y: zoom to fit tightest range
