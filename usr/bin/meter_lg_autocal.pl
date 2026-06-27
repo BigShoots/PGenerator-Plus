@@ -1047,6 +1047,21 @@ sub target_luminance_for_step {
 	 my $mode=lc($signal_mode||"sdr");
 	 $target_gamma=lc($target_gamma||"bt1886");
 	 my $signal=$stimulus/100;
+	 # Clamp signals > 1.0 to 1.0 for ALL modes (SDR and HDR). The
+	 # previous code only clamped for HDR (`$signal=1 if($signal > 1 &&
+	 # $mode ne "sdr")`), which produced broken target Y for SDR
+	 # headroom anchors: 105 IRE gave signal=1.05 -> 1.05^2.2 = 1.213 ->
+	 # target = white_ref * 1.213, ABOVE the achievable peak (e.g.
+	 # white_ref=198 with 109 measured = 198 gave 105 target = 240,
+	 # which is unreachable -- the panel can never push 105 above the
+	 # 109 peak in SDR BT.709). Signals > 1.0 encode headroom/over-peak
+	 # at the source; the EOTF never lifts them above peak white. The
+	 # legal peak itself (109 IRE in SDR26, 100 IRE in HDR20) gets a
+	 # separate path via autocal_step_ignores_luminance_error that
+	 # returns measured-Y as the target; the per-anchor dE for 109/105
+	 # thus references the actual achievable luminance, not an
+	 # unattainable extrapolation.
+	 $signal=1 if($signal+0 > 1);
 	 if(defined($ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
 	  my $trace_fh;
 	  if(open($trace_fh,">>",$ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
@@ -1056,7 +1071,12 @@ sub target_luminance_for_step {
 	 }
 	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
 	  $signal=0 if($signal < 0);
-	  $signal=1.1 if($signal > 1.1);
+	  # BT.1886 also clamps signal to 1.0 for the same reason as the
+	  # gamma-2.2 path above: SDR signals > 1.0 encode headroom that the
+	  # panel cannot lift above peak white. The previous 1.1 cap let
+	  # 105 IRE through as signal=1.05, which BT.1886 then mapped to a
+	  # target > peak -- the same unattainable-target bug as gamma 2.2.
+	  $signal=1 if($signal+0 > 1);
 	  return bt1886_eotf_luminance($signal,$white_y,$black_y+0);
 	 }
 	 return 0 if($stimulus <= 0);
@@ -13051,31 +13071,40 @@ sub lg_autocal_26_sdr26_dpg_white_balance_gain {
 	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
-	 # D65 has R=G=B in linear BT.709, so the per-channel D65 target is
-	 # the mean of @mrgb. Any channel above the mean needs attenuation;
-	 # any at or below the mean is held.
-	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
-	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
-	 my $target=$sum/3.0;
+	 # TRUE reduce-to-lowest: at the 109% legal peak the panel cannot
+	 # boost any channel above its native max, so D65 is only reachable
+	 # by attenuating the EXCESS channels toward the LOWEST. Pick the
+	 # lowest linear-light value of @mrgb as the target -- that channel
+	 # already lands at D65 (or below) and is held at gain=1.0; the
+	 # other two are reduced with gain = lowest/measured so they meet
+	 # the lowest channel exactly. The previous mean-of-three approach
+	 # was wrong: it assumed R=G=B in BT.709 (true for D65) and held R
+	 # at 1.0 unconditionally, which on a warm panel leaves a permanent
+	 # R-excess residual that no number of iterations can close (R can't
+	 # go below 1.0 to chase D65).
+	 my $lowest_idx=0;
+	 my $lowest=$mrgb[0];
+	 for my $ch (1..2) {
+	  if($mrgb[$ch]+0 < $lowest+0) {
+	   $lowest=$mrgb[$ch]+0;
+	   $lowest_idx=$ch;
+	  }
+	 }
+	 return (1.0,1.0,1.0) if(!($lowest+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
-	  my $m=$mrgb[$ch];
-	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
-	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
-	  # (deficient). The panel can't push it above native, so hold (clamp
-	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
-	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
-	  # moves.
+	  my $m=$mrgb[$ch]+0;
+	  if($ch == $lowest_idx) {
+	   # Hold the lowest channel at 1.0 -- no DPG change for it.
+	   push @gain,1.0;
+	   next;
+	  }
+	  # Reducing channel: gain = lowest/measured, so the post-DPG value
+	  # equals the lowest. Floor at 0.5 to bound per-iter moves.
+	  my $g=($m+0 > 0) ? ($lowest/$m) : 1.0;
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
-	  # Preserve R (channel 0) at 100% white: never reduce R below 1.0.
-	  # On a slightly warm panel the XYZ->BT.709 matrix makes R the
-	  # highest linear channel, so the mean-based gain would reduce R
-	  # by 1-3% per iter. Each R reduction drops peak luminance (R
-	  # drives peak on OLED) without a commensurate white-balance
-	  # improvement. Hold R and only reduce the excess G/B channels.
-	  $g=1.0 if($ch == 0);
 	  push @gain,$g+0;
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
