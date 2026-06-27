@@ -13161,6 +13161,21 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
 
 function meterGreyChartTargetGammaSelection(){
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return '2.2';
+ // SDR26 1D-DPG autocal: the worker persists sdr_1d_dpg_target_gamma on the
+ // polled autocal status (currently always '2.2', matching the reference workflow's
+ // 1D_2_2_EN reference workflow). Honor it so the chart's target line
+ // matches the curve the worker actually calibrated against, instead of
+ // falling back to the BT.1886 dropdown default that produces a PQ-shaped
+ // curve when the worker stored signal^2.2.
+ try{
+  const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:null;
+  const storedGamma=status&&(status.sdr_1d_dpg_target_gamma||status.target_gamma);
+  const seriesMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+  const usingLg26=(typeof meterUseLgAutoCal26==='function')&&meterUseLgAutoCal26(meterActiveSeriesPoints);
+  if(storedGamma && seriesMode==='sdr' && usingLg26){
+   return String(storedGamma);
+  }
+ }catch(e){}
  return meterGreyTargetGammaSelection();
 }
 
@@ -15933,22 +15948,6 @@ function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
 
 function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		const row=point||{};
-		// SDR26 1D-DPG autocal step rows: bypass the baked target_Yn path so
-		// the chart's target line follows the operator's Target Gamma dropdown
-		// like the 21pt greyscale series does. The step's tYn was computed at
-		// series-build time and is locked to whatever gamma was active then;
-		// using it here pins the chart's target line to a static gamma. The
-		// active dropdown drives the chart's gamma via targetEotf, and the
-		// chart signal normalizes to the SDR26 calibrated peak IRE (=109) for
-		// headroom anchors so 105 lands BELOW peak on the curve.
-		if(row && (typeof meterSeriesStepHasLgAutoCal26Marker==='function') && meterSeriesStepHasLgAutoCal26Marker(row) && row.stimulus!=null){
-		 const stimulus=Number(row.stimulus);
-		 if(Number.isFinite(stimulus)){
-		  const peakIre=109;
-		  const chartSig=stimulus<=100 ? stimulus/100 : stimulus/peakIre;
-		  return targetEotf(Math.max(0,chartSig),Lw,Lb||0);
-		 }
-		}
 		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
 		if(Number.isFinite(metadataY)&&metadataY>=0) return metadataY;
 		if(row&&('stimulus' in row || 'code' in row)){
@@ -24799,6 +24798,15 @@ async function meterFullAutoCalGeneratePostReport(){
    setVal('meterTargetGamma','st2084');
    if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
    if(typeof saveMeterSettings==='function') saveMeterSettings();
+  } else if(_sm==='sdr' && meterActiveSeriesPoints===26
+     && (typeof meterUseLgAutoCal26==='function') && meterUseLgAutoCal26(meterActiveSeriesPoints)){
+   // SDR26 post-cal: switch the dropdown back to BT.1886 so the verification
+   // series read stamps target_gamma=bt1886 (matches the operator's standard
+   // SDR verification curve, separate from the 2.2 curve the 1D-DPG
+   // calibration actually applied to the panel).
+   setVal('meterTargetGamma','bt1886');
+   if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+   if(typeof saveMeterSettings==='function') saveMeterSettings();
   }
  let reportCompleted=false;
  try{
@@ -25928,6 +25936,21 @@ async function meterStartAutoCal(options){
   if((getVal('signal_mode')||'sdr')==='hdr10'){
    setVal('meterTargetGamut','p3d65');
    if(typeof saveMeterSettings==='function') saveMeterSettings();
+  }
+  // SDR26 1D-DPG autocal + post-cal: the worker calibrates against gamma 2.2
+  // (the reference workflow's 1D_2_2_EN reference workflow). Pin the Target Gamma dropdown to
+  // 2.2 so the autocal-time charts render the matching 2.2 target line and
+  // not the BT.1886 default. Only set when the operator hasn't already chosen
+  // explicitly (mirrors the delay_user_set flag pattern). The post-cal report
+  // entry point flips it back to BT.1886 for the verification pass.
+  if((getVal('signal_mode')||'sdr')==='sdr' && meterActiveSeriesPoints===26
+     && (typeof meterUseLgAutoCal26==='function') && meterUseLgAutoCal26(meterActiveSeriesPoints)){
+   const cur=getVal('meterTargetGamma')||'';
+   if(cur==='bt1886' || cur==='' || cur==null){
+    setVal('meterTargetGamma','2.2');
+    if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+    if(typeof saveMeterSettings==='function') saveMeterSettings();
+   }
   }
  meterSetActiveSeriesChartContext();
  document.getElementById('meterExportRow').style.display='';
