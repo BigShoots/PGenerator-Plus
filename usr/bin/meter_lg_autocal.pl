@@ -14962,11 +14962,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   };
   push @ordered,$step;
  }
- # Sort by IRE ascending so the loop walks low-to-high (the HDR convention
- # is to start at 100% because it must be calibrated first to seed the
- # white ref; for SDR we calibrate the same way -- white first -- but the
- # iteration order is otherwise low-to-high). Find the white step and move
- # it to the front.
+ # Sort/reorder to match the old SDR DDC full_ddc_spine calibration order:
+ # 109, 105, 99 first (white cluster -- anchors the peak reference), then
+ # 95, 90, 85, ..., 15 (top-down body), then 2.3, 3, 4, 5, 7, 10 (low
+ # shadows last). This is the SAME order the old SDR DDC autocal used
+ # (line ~680 in this file); preserving it keeps the full autocal and
+ # greyscale-only flows identical and matches the reference SDR workflow.
  my @white_first;
  my @rest;
  for my $s (@ordered) {
@@ -14976,8 +14977,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    push @rest,$s;
   }
  }
- # Within @rest, sort by IRE ascending.
- @rest=sort { ($a->{"ire"}//0) <=> ($b->{"ire"}//0) } @rest;
+ # Within @white_first: 109, 105, 99 (descending -- peak reference first).
+ @white_first=sort { ($b->{"ire"}//0) <=> ($a->{"ire"}//0) } @white_first;
+ # Within @rest: explicit top-down body then low-shadows-last order,
+ # matching the old SDR DDC full_ddc_spine order (line ~680).
+ my @sdr26_body_order=(95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
+ {
+  my %by_ire=map { defined($_->{"ire"}) ? (($_->{"ire"}+0) => $_) : () } @rest;
+  my @reordered;
+  for my $target_ire (@sdr26_body_order) {
+   my $step=$by_ire{$target_ire+0};
+   push @reordered,$step if(defined $step);
+  }
+  # Safety: any leftover steps not matched go at the end (shouldn't happen).
+  for my $step (@rest) {
+   my $ire=($step->{"ire"}//0)+0;
+   next if(grep { abs(($_+0)-$ire) < 0.001 } @sdr26_body_order);
+   push @reordered,$step;
+  }
+  @rest=@reordered;
+ }
  @ordered=(@white_first,@rest);
  return "lg_autocal_26_run_sdr_1d_dpg_greyscale: no adjustable greyscale steps" if(!@ordered);
 
