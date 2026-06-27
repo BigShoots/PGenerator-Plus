@@ -13044,8 +13044,8 @@ sub lg_autocal_26_sdr26_dpg_gain {
 # below) but uses the BT.709 / sRGB inverse matrix because the SDR26 path
 # targets BT.709 / D65, not Display-P3. The two paths are otherwise
 # identical: same target=mean(mrgb), same [0.5, 1.0] clamp, same R-held.
-sub lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain {
-	 my ($reading)=@_;
+sub lg_autocal_26_sdr26_dpg_white_balance_gain {
+	 my ($reading,$original_lowest_ref)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
 	 my $mX=$reading->{"X"};
 	 my $mY=$reading->{"Y"};
@@ -13071,33 +13071,52 @@ sub lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain {
 	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
-	 # Mean-based gain toward D65 (BT.709). D65 has R=G=B in linear BT.709
-	 # RGB, so the per-channel D65 target is the mean of the measured
-	 # linear RGB. Excess channels (above mean) get reduced toward the
-	 # mean; deficient channels (below mean) are held at 1.0 because the
-	 # panel cannot push them above native. This mirrors the HDR20 mean-
-	 # based approach (lg_autocal_26_hdr20_dpg_white_balance_gain) and
-	 # converges on the same kind of bias-balanced white.
-	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
-	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
-	 my $target=$sum/3.0;
+	 # Reduce-to-lowest with FIRST-ITER-ONLY reference. The previous
+	 # version re-identified the lowest on every iteration, which let
+	 # the "held" channel switch between iters (e.g. iter 1 holds G,
+	 # iter 2 holds B, iter 3 holds R...) and each iter reduced a
+	 # different channel, compounding the attenuation past the
+	 # achievable D65 floor. With an $original_lowest_ref carrying
+	 # the FIRST iter's lowest channel + value, every iter targets
+	 # the SAME channel (the one that was lowest in the identity-
+	 # baseline read), and the OTHER channels are driven toward the
+	 # FIRST-iter's lowest value, not the current-iter's lowest.
+	 # Result: the held channel never changes, the reducing channels
+	 # converge monotonically to the held channel, and the panel's
+	 # peak luminance settles at ~3 * held_value in BT.709 linear
+	 # (the natural cost of pulling the excess channels down to the
+	 # lowest).
+	 my ($lowest_idx,$lowest_target);
+	 if(ref($original_lowest_ref) eq "HASH" && defined($original_lowest_ref->{"idx"}) && defined($original_lowest_ref->{"value"})) {
+	  $lowest_idx=int($original_lowest_ref->{"idx"});
+	  $lowest_target=$original_lowest_ref->{"value"}+0;
+	 } else {
+	  # First call: identify the lowest from the identity-baseline read.
+	  $lowest_idx=0;
+	  $lowest_target=$mrgb[0]+0;
+	  for my $ch (1..2) {
+	   if($mrgb[$ch]+0 < $lowest_target+0) {
+	    $lowest_target=$mrgb[$ch]+0;
+	    $lowest_idx=$ch;
+	   }
+	  }
+	 }
+	 return (1.0,1.0,1.0) if(!($lowest_target+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
+	  if($ch == $lowest_idx) {
+	   # Hold the originally-lowest channel at 1.0 -- no DPG change.
+	   push @gain,1.0;
+	   next;
+	  }
 	  my $m=$mrgb[$ch]+0;
-	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
-	  # Deficient channels (natural gain > 1.0) are held at 1.0; the
-	  # panel cannot lift a deficient channel above its native level.
+	  # Reducing channel: gain = original_lowest / current_measured,
+	  # so the post-DPG value equals the originally-lowest channel.
+	  # Floor at 0.5 to bound per-iter moves.
+	  my $g=($m+0 > 0) ? ($lowest_target/$m) : 1.0;
+	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
-	  # Preserve R (channel 0) at 100% white: on a slightly warm panel the
-	  # BT.709 projection makes R the highest linear channel, so a mean-based
-	  # gain would reduce R by 1-3% per iter. Each R reduction drops peak
-	  # luminance (R drives peak on OLED) without a commensurate
-	  # white-balance improvement. Hold R and only reduce the excess G/B
-	  # channels. Mirrors lg_autocal_26_hdr20_dpg_white_balance_gain.
-	  $g=1.0 if($ch == 0);
-	  # Floor at 0.5 to bound per-iter moves (mirrors HDR20).
-	  $g=0.5 if($g+0 < 0.5);
 	  push @gain,$g+0;
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
@@ -14674,8 +14693,8 @@ sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
  $low_threshold=10.0 if($low_threshold > 10.0);
  my $ire=defined($anchor_ire) ? ($anchor_ire+0) : 50.0;
  if($ire+0 < $low_threshold) { return $low_iters; }
- # SDR26 109% legal peak: dedicated budget (default 12). The mean-based
- # gain path on this anchor starts from the identity baseline with a
+ # SDR26 109% legal peak: dedicated budget (default 12). The reduce-to-
+ # lowest path on this anchor starts from the identity baseline with a
  # large chromaticity gap (x ~ 0.327 vs D65 0.3127 on the user's panel),
  # so it needs more iters than the white-body cluster to land at the
  # R-held-at-1.0 convergence floor. The first iter uses move_scaling=0.5
@@ -14683,7 +14702,7 @@ sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
  # resume the full M=1.0/2.5 damp path.
  if(abs($ire-109.0) < 0.05) { return $legal_peak_iters; }
  # White cluster (99, 105) -- body IREs but use the white body budget so
- # the mean-based gain path gets enough iters to converge.
+ # the reduce-to-lowest path gets enough iters to converge.
  if($ire+0 >= 99.0) { return $white_body_iters; }
  return $default_iters;
 }
@@ -14755,16 +14774,11 @@ sub lg_autocal_26_commit_sdr_1d_dpg_single_socket {
 #   - No EOTF-aware gamma refinement: gamma 2.2 is constant (the EOTF
 #     gamma fn returns 2.2 for SDR; there is no per-iter EMA blend to
 #     refine it).
-#   - White cluster mean-based gain: 99/105/109 (the white cluster) take
-#     the BT.709/D65 mean-based path via
-#     lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain (the SDR analog
-#     of the HDR20 white_balance_gain fn). D65 has R=G=B in linear BT.709,
-#     so the per-channel D65 target is the mean of the measured linear-
-#     RGB triplet; excess channels get reduced toward the mean,
-#     deficient channels are held at 1.0 (panel can't boost above native).
-#     R (channel 0) is always preserved at 1.0 to avoid dropping peak
-#     luminance. At the white cluster the panel cannot boost any channel
-#     above its native max, so D65 is only
+#   - White cluster reduce-to-lowest: 99/105 (and 109 when called via
+#     the @white_first path) take the BT.709/D65 reduce-to-lowest path
+#     via lg_autocal_26_sdr26_dpg_white_balance_gain (the SDR analog of
+#     the HDR20 white_balance_gain fn). At the white cluster the panel
+#     cannot boost any channel above its native max, so D65 is only
 #     reachable by attenuating the excess channel(s) -- chroma-only,
 #     measured Y captured as the white reference. The HDR20 analog
 #     uses Display-P3; this one uses the BT.709 / sRGB inverse because
@@ -14818,6 +14832,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $skip_de=$skip_fraction*$target_de;
  my $black_y=$config->{"black_y"};
  $black_y=0 unless(defined($black_y) && $black_y+0 >= 0);
+ # Legal-peak (109%) persistent state. The "original lowest" reference
+ # captures the first-iter lowest linear-BT.709 channel + its value so
+ # every subsequent iter targets the SAME channel (not the current
+ # iter's lowest). Prevents the per-iter lowest-channel oscillation
+ # that compounded past the achievable D65 floor.
+ my $_legal_peak_lowest_ref=undef;
  my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
 
  # Best-so-far state for revert (low IRE only, same as HDR).
@@ -15040,15 +15060,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   }
   last if($conv_now && !$acceptance_pending);
   # Compute the per-channel gain. Two paths:
-  #   - 109% (the legal peak): mean-based BT.709/D65 gain via
-  #     lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain (the SDR
-  #     analog of the HDR20 100% white_balance_gain fn). The mean-based
-  #     approach targets D65 directly: under D65 R=G=B in linear BT.709,
-  #     so the per-channel D65 target is the mean of the measured linear-
-  #     RGB. Excess channels get reduced toward the mean, deficient
-  #     channels are held at 1.0 (panel can't boost above native), and R
-  #     is always preserved at 1.0 to avoid dropping peak luminance.
-  #     Chroma-only; the measured Y is captured as the
+  #   - 109% (the legal peak): reduce-to-lowest via
+  #     lg_autocal_26_sdr26_dpg_white_balance_gain (the BT.709/D65 analog
+  #     of the HDR20 100% reduce-to-lowest fn). The panel cannot boost
+  #     any channel at the legal peak, so D65 is only reachable by
+  #     attenuating the excess channel(s) -- same trade-off the HDR 100%
+  #     anchor makes. Chroma-only; the measured Y is captured as the
   #     white reference for the lower body. NO TARGET Y -- $tl is forced
   #     to the measured Y at this anchor so dE has no luminance component.
   #   - 99 / 105 (headroom body) and the lower body: the regular
@@ -15061,16 +15078,32 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # aggressive than body's 0.8 because the peak fn only reduces, never
   # boosts).
   my $is_white_peak=(autocal_step_is_white($rs) || abs($_anchor_ire-109.0) < 0.05);
-my $is_white_body=!$is_white_peak && (autocal_step_is_fast_headroom($rs) || $_anchor_ire >= 99.0);
- my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
- my ($rg,$gg,$bg);
- if($is_white_peak) {
-  ($rg,$gg,$bg)=lg_autocal_26_sdr26_sdr_bt709_d65_white_balance_gain($reading);
- } else {
-  ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
- }
- my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
- my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
+  my $is_white_body=!$is_white_peak && (autocal_step_is_fast_headroom($rs) || $_anchor_ire >= 99.0);
+  my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
+  my ($rg,$gg,$bg);
+  if($is_white_peak) {
+   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_white_balance_gain($reading,$_legal_peak_lowest_ref);
+   # Lock the first-iter lowest as the persistent reference. Subsequent
+   # iters reuse this ref so the held channel does not flip (which
+   # compounded past the achievable D65 floor in the previous design).
+   if(!defined($_legal_peak_lowest_ref)) {
+    my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
+    my @_rgb_first=(
+     3.2404542*$_rX + -1.5371385*$_rY + -0.4985314*$_rZ,
+     -0.9692660*$_rX + 1.8760108*$_rY +  0.0415560*$_rZ,
+     0.0556434*$_rX + -0.2040259*$_rY +  1.0572252*$_rZ,
+    );
+    my $_li=0; my $_lv=$_rgb_first[0]+0;
+    for my $k (1..2) {
+     if($_rgb_first[$k]+0 < $_lv+0) { $_lv=$_rgb_first[$k]+0; $_li=$k; }
+    }
+    $_legal_peak_lowest_ref={ idx=>$_li, value=>$_lv };
+   }
+  } else {
+   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
+  }
+  my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
+  my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
   # Legal peak: apply the reduce-to-lowest gain at FULL strength (no
   # damp, no white move multiplier). The gain is computed against a
   # STABLE reference (the first-iter lowest channel) so it is already
