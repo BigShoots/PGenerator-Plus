@@ -63,9 +63,10 @@ ok(defined(&main::lg_autocal_26_sdr26_dpg_accept_skip_threshold),
  is(ref($dpg), 'ARRAY', 'Test 1: identity baseline returns an arrayref');
  is(scalar(@$dpg), 3072, 'Test 1: identity baseline has 3072 elements (3 channels x 1024 entries)');
  is($dpg->[0], 0, 'Test 1: R[0] == 0 (identity floor)');
- is($dpg->[1023], 32767, 'Test 1: R[1023] == 32767 (identity ceiling)');
- is($dpg->[1024 + 1023], 32767, 'Test 1: G[1023] == 32767 (channel 1)');
- is($dpg->[2048 + 1023], 32767, 'Test 1: B[1023] == 32767 (channel 2)');
+ is($dpg->[1], 32, 'Test 1: R[1] == 32 (identity step)');
+ is($dpg->[1023], 32736, 'Test 1: R[1023] == 32736 (identity ceiling int(1023*32+0.5))');
+ is($dpg->[1024 + 1023], 32736, 'Test 1: G[1023] == 32736 (channel 1)');
+ is($dpg->[2048 + 1023], 32736, 'Test 1: B[1023] == 32736 (channel 2)');
 }
 
 # --- Test 2: precondition errors reject bad callers ---

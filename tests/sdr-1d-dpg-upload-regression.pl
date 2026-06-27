@@ -155,17 +155,25 @@ ok(defined(&main::lg_autocal_26_sdr26_dpg_gain),
 {
  ok(defined(&main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget),
    'lg_autocal_26_sdr26_dpg_low_ire_iter_budget is defined');
- # IRE=50 (body) -> 6 default
- is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 50), 6, 'Test 9a: IRE=50 -> 6 default iters');
- # IRE=4 (< 5%) -> 12 low
+ # IRE=50 (body) -> 10 default (was 6 in the previous version; raised so
+ # the per-anchor solve actually converges to the target dE).
+ is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 50), 10, 'Test 9a: IRE=50 -> 10 default iters');
+ # IRE=4 (< 5%) -> 12 low (unchanged)
  is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 4), 12, 'Test 9b: IRE=4 -> 12 low-IRE iters');
- # IRE=2.3 -> 12 low (2.3 < 5.0)
+ # IRE=2.3 -> 12 low (2.3 < 5.0; unchanged)
  is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 2.3), 12, 'Test 9c: IRE=2.3 -> 12 low-IRE iters');
- # IRE=100 -> 6 default (white not in low range)
- is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 100), 6, 'Test 9d: IRE=100 -> 6 default iters');
+ # IRE=100 -> 8 white-body iters (the white cluster 99/105 takes the
+ # white_body budget; the previous version returned 6 default here).
+ is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 100), 8, 'Test 9d: IRE=100 -> 8 white-body iters');
+ # IRE=109 -> 8 white-body (same bucket as 99/105)
+ is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 109), 8, 'Test 9d-2: IRE=109 -> 8 white-body iters');
+ # IRE=99 -> 8 white-body
+ is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({}, 99), 8, 'Test 9d-3: IRE=99 -> 8 white-body iters');
  # Override via config
  is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({ lg_autocal_sdr26_dpg_inner_iters=>3, lg_autocal_sdr26_dpg_inner_iters_low=>8 }, 50), 3, 'Test 9e: config override body=3');
  is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({ lg_autocal_sdr26_dpg_inner_iters=>3, lg_autocal_sdr26_dpg_inner_iters_low=>8 }, 4), 8, 'Test 9f: config override low=8');
+ # White body override
+ is(main::lg_autocal_26_sdr26_dpg_low_ire_iter_budget({ lg_autocal_sdr26_dpg_inner_iters_white_body=>5 }, 100), 5, 'Test 9g: config override white-body=5');
 }
 
 # --- Test 9b: lg_autocal_26_sdr26_dpg_accept_skip_threshold default 0.3 ---
