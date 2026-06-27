@@ -12764,6 +12764,77 @@ sub lg_autocal_26_hdr20_dpg_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
+# SDR26 (BT.709/D65) variant of the HDR20 1D DPG gain function. Identical
+# shape to lg_autocal_26_hdr20_dpg_gain, only the linear-RGB projection
+# matrix differs: SDR targets BT.709 / sRGB primaries with D65 white point,
+# not Display-P3. The matrix below is the standard BT.709 XYZ->linear-RGB
+# transform (sRGB inverse, D65), so an input XYZ is mapped to linear BT.709
+# channel coordinates; the per-channel gain is then target/measured, clamped
+# to [0.5, 2.0]. The reference SDR workflow applies the same target/measured
+# ratio pattern with BT.709 targets, which is what the LG TV's BT.709 gamut
+# expects when BT709_3BY3_GAMUT_DATA is the active 3x3 matrix (which the
+# SDR direct-DPG upload path now ensures on every cycle).
+sub lg_autocal_26_sdr26_dpg_gain {
+	 my ($reading,$target_luminance,$target_x,$target_y,$ire)=@_;
+	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+	 return (1.0,1.0,1.0) if(!(defined($target_luminance) && $target_luminance+0 > 0));
+	 return (1.0,1.0,1.0) if(!(defined($target_x) && defined($target_y) && $target_y+0 > 0));
+	 my $mX=$reading->{"X"};
+	 my $mY=$reading->{"Y"};
+	 my $mZ=$reading->{"Z"};
+	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+	  my $rY=luminance($reading);
+	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+	   $mY=$rY+0;
+	   $mX=($rx/$ry)*$mY;
+	   $mZ=((1-$rx-$ry)/$ry)*$mY;
+	  } else {
+	   return (1.0,1.0,1.0);
+	  }
+	 } else {
+	  $mX+=0; $mY+=0; $mZ+=0;
+	 }
+	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+	 my $tx=$target_x+0;
+	 my $ty=$target_y+0;
+	 my $tY=$target_luminance+0;
+	 my $tX=($tx/$ty)*$tY;
+	 my $tZ=((1-$tx-$ty)/$ty)*$tY;
+	 # BT.709 XYZ -> linear sRGB (D65 white point). Standard sRGB inverse:
+	 # the inverse of the BT.709 RGB->XYZ matrix with primaries (0.64,0.33),
+	 # (0.30,0.60), (0.15,0.06), white (0.3127,0.3290).
+	 my @mrgb=(
+	  3.2404542*$mX + -1.5371385*$mY + -0.4985314*$mZ,
+	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
+	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
+	 );
+	 my @trgb=(
+	  3.2404542*$tX + -1.5371385*$tY + -0.4985314*$tZ,
+	  -0.9692660*$tX + 1.8760108*$tY +  0.0415560*$tZ,
+	  0.0556434*$tX + -0.2040259*$tY +  1.0572252*$tZ,
+	 );
+	 my @gain;
+	 for my $ch (0..2) {
+	  my $m=$mrgb[$ch];
+	  my $t=$trgb[$ch];
+	  my $g=1.0;
+	  if($m+0 > 0 && $t+0 == $t+0 && $m+0 == $m+0) {
+	   $g=$t/$m;
+	   # SDR gain clamps: floor at 0.5 (panel cannot pull a channel below
+	   # half without visibly crushing shadow detail), ceiling at 2.0
+	   # (panel cannot meaningfully boost a channel above 2x without
+	   # clipping or rolling into the panel's native white at low IRE).
+	   $g=0.5 if($g+0 < 0.5);
+	   $g=2.0 if($g+0 > 2.0);
+	   $g=1.0 if($g+0 != $g+0);
+	  }
+	  push @gain,$g+0;
+	 }
+	 return ($gain[0],$gain[1],$gain[2]);
+	}
+
 # Peak white-balance gains: at 100% the panel cannot boost any channel above
 # its native max (hardware limit), so D65 is only reachable by reducing the
 # channel(s) that EXCEED their D65 target. Compute the D65 target per channel
