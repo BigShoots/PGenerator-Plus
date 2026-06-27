@@ -4570,11 +4570,11 @@ sub apply_pattern_insert_before_read {
   for my $ins (@inserts) {
    my ($code,$input_max)=_patch_insert_resolve($config,$ins->{"kind"},$ins->{"level"});
   my $dur_s=$ins->{"duration_ms"}/1000.0;
-  log_line("HDR20 pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code input_max=$input_max duration=".sprintf("%.3f",$dur_s)."s");
+  log_line(($config->{"signal_mode"}||"sdr")." pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code input_max=$input_max duration=".sprintf("%.3f",$dur_s)."s");
   # Step 1: grey insertion flash at the user-configured level + duration.
    my $insert_payload={%{$base_payload},input_max=>$input_max,r=>(0+$code),g=>(0+$code),b=>(0+$code)};
    my $insert_result=api_json("POST","/api/pattern",$insert_payload,10);
-   log_line("HDR20 pattern insertion POST response: ".($json->encode($insert_result)));
+   log_line(($config->{"signal_mode"}||"sdr")." pattern insertion POST response: ".($json->encode($insert_result)));
    return $insert_result->{"message"}||"Unable to display pattern insertion patch" if(($insert_result->{"status"}||"") eq "error");
   select(undef,undef,undef,$dur_s);
   # Step 2: dead black screen to reset panel ABL / pixel charge between
