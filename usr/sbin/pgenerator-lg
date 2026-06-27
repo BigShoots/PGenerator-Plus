@@ -2140,10 +2140,13 @@ sub lg_calibration_get (@) {
 }
 
 sub lg_unity_1d_lut (@) {
+ # Identity ramp matching the reference SDR workflow: fixed step of 32
+ # per index (int(i*32+0.5)). idx 0=0, idx 1=32, ..., idx 1023=32736.
+ # Verified against relay capture relay-20260626-212816-nosni.jsonl.
  my @lut=();
  for(my $channel=0;$channel<3;$channel++) {
   for(my $i=0;$i<1024;$i++) {
-   push(@lut,int(($i*32767/1023)+0.5));
+   push(@lut,int($i*32+0.5));
   }
  }
  return \@lut;

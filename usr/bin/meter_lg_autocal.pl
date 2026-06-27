@@ -12519,17 +12519,16 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 	 }
 	 log_line("HDR20 1D DPG sample reads: ".join(" | ",@sample_diag)." -> samples=".scalar(@samples)) if($samples[0] || @sample_diag);
 	 return undef if(@samples < 3);
-	 # LG HDR20 1D_DPG_DATA: 3072 values = 3 channels x 1024 points.
-	 # Each channel is a linear identity ramp in the 15-bit (0-32767)
-	 # domain that the panel's baseline 1D DPG uses, so the upload
-	 # restores the panel's untouched baseline state. This matches the
-	 # readback of an uncalibrated panel (idx 51 = 1633, idx 512 = 16400,
-	 # idx 1023 = 32767). $white_y is unused here: the baseline is
-	 # reference-agnostic by design.
+	 # LG 1D_DPG_DATA: 3072 values = 3 channels x 1024 points.
+	 # Each channel is a linear identity ramp. The reference SDR
+	 # workflow uses a fixed step of 32 per index (int(i*32+0.5)),
+	 # so idx 0=0, idx 1=32, ..., idx 1023=32736. This matches the
+	 # reference relay capture exactly (verified 2026-06-27).
+	 # $white_y is unused here: the baseline is reference-agnostic.
 	 my @dpg;
 	 for my $channel (0..2) {
 	  for my $i (0..1023) {
-	   my $v=int($i/1023*32767 + 0.5);
+	   my $v=int($i*32 + 0.5);
 	   $v=0 if($v < 0);
 	   $v=32767 if($v > 32767);
 	   push @dpg,$v;
@@ -12714,9 +12713,11 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
 	 if(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072) {
 	  @cur=@{$current_dpg};
 	 } else {
+	  # Identity ramp matching the reference workflow: fixed step of 32
+	  # per index (int(i*32+0.5)). idx 0=0, idx 1023=32736.
 	  for my $ch (0..2) {
 	   for my $i (0..1023) {
-	    my $v=int($i/1023*32767 + 0.5);
+	    my $v=int($i*32 + 0.5);
 	    $v=0 if($v < 0);
 	    $v=32767 if($v > 32767);
 	    push @cur,$v;
