@@ -12292,6 +12292,127 @@ sub lg_autocal_26_attempt_sdr_1d_dpg_upload {
  return ($uploaded ? 1 : 0,$resp_msg,$uploaded ? $lut : undef);
 }
 
+# Thin wrapper for the SDR26 1D DPG build. The HDR20 builder is
+# layout/mode agnostic (3 channels x 1024 points, Akima spline over the
+# anchor set), so the SDR path delegates directly rather than maintaining
+# a duplicate. Kept as its own symbol so the SDR caller doesn't need to
+# import the HDR-named entry point -- the function name advertises the
+# intent, and a future HDR/SDR split only needs to swap the body, not
+# chase SDR callers.
+sub lg_autocal_26_build_sdr_1d_dpg {
+ my ($current_dpg,$anchors)=@_;
+ return &lg_autocal_26_build_hdr20_1d_dpg($current_dpg,$anchors);
+}
+
+# SDR26 1D DPG upload queue. Mirrors lg_autocal_26_queue_hdr20_1d_dpg_upload:
+# takes the converged 3072-value DPG from $state->{sdr_1d_dpg_data} (set by
+# the per-iter attempt_sdr_1d_dpg_upload function), uploads it via the
+# same /api/lg/1d-dpg/upload endpoint the HDR path uses, with the SDR
+# signal_mode + ddc_layout flags so the helper sends the SDR CAL_START
+# payload and the BT709 identity 3x3 matrix (instead of the HDR float
+# payload and BT2020).
+#
+# Returns 1 if the helper reported status:ok, 0 otherwise. Sets
+# $state->{sdr_1d_dpg_uploaded} / $state->{sdr_1d_dpg_upload_message} /
+# $state->{message} for diagnostic parity with the HDR queue.
+sub lg_autocal_26_queue_sdr_1d_dpg_upload {
+ my ($config,$state,$picture_mode)=@_;
+ return 0 unless(ref($state) eq "HASH");
+ return 0 unless(($config->{"ddc_layout"}//"") eq "sdr26");
+ my $dpg_data=$state->{"sdr_1d_dpg_data"};
+ return 0 unless(defined $dpg_data && ref($dpg_data) eq "ARRAY" && @$dpg_data == 3072);
+ my $upload_enabled=(ref($config) eq "HASH" && $config->{"lg_autocal_sdr_1d_dpg_upload_enabled"});
+ $state->{"sdr_1d_dpg_upload_enabled"}=$upload_enabled ? JSON::PP::true : JSON::PP::false;
+ if(!$upload_enabled) {
+  $state->{"sdr_1d_dpg_uploaded"}=JSON::PP::false;
+  $state->{"sdr_1d_dpg_upload_message"}="upload disabled: lg_autocal_sdr_1d_dpg_upload_enabled is not set";
+  $state->{"message"}="Final SDR 1D LUT computed but upload disabled (toggle via lg_autocal_sdr_1d_dpg_upload_enabled)";
+  write_state($state);
+  return 0;
+ }
+ my $response=api_json("POST","/api/lg/1d-dpg/upload",{
+  picture_mode=>$picture_mode,
+  ddc_layout=>"sdr26",
+  signal_mode=>"sdr",
+  dpg_data=>$dpg_data,
+  helper_timeout=>75,
+ },90);
+ my $uploaded=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+ $state->{"sdr_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
+ $state->{"sdr_1d_dpg_upload_message"}=(ref($response) eq "HASH" && $response->{message})
+  ? $response->{message}
+  : (defined $response ? "unexpected response" : "endpoint unreachable");
+ $state->{"message"}=$uploaded
+  ? "Final SDR 1D LUT computed and uploaded (3072 values)"
+  : "Final SDR 1D LUT computed but upload failed (".($state->{"sdr_1d_dpg_upload_message"}//"unknown").")";
+ write_state($state);
+ return $uploaded;
+}
+
+# Smart dispatcher for the SDR adjustment write path. Same signature as
+# set_picture_values plus an explicit $config and an optional $reading so
+# the per-anchor DPG upload can be attempted BEFORE the DDC whiteBalance
+# write when all the eligibility gates pass:
+#
+#   - $config->{lg_autocal_sdr_1d_dpg_upload_enabled} is true
+#   - $config->{ddc_layout} eq "sdr26" (signal_mode sdr, not hdr)
+#   - the per-run fallback flag $state->{sdr_1d_dpg_fallback_to_ddc}
+#     has not been tripped (TV rejected direct-DPG earlier in the run)
+#   - $reading + $target carry the IRE/luminance/x/y to compute the gain
+#
+# On a successful DPG upload, returns ($picture, undef) WITHOUT doing the
+# DDC whiteBalance write (the DPG IS the adjustment, the DDC write would
+# only move the panel off the uploaded curve). On DPG disabled or
+# upload failure, falls through to the existing set_picture_values path
+# unchanged. The attempt function itself sets the per-run fallback flag
+# on a TV-side rejection so subsequent calls skip the DPG attempt and
+# use DDC for the rest of the run.
+sub set_picture_values_smart {
+ my ($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state,$verify_ddc_upload,$keep_calibration_mode,$config,$reading)=@_;
+ $keep_calibration_mode=1 if(!defined($keep_calibration_mode));
+ # Only the SDR26 layout participates; HDR20 uses its own per-iter DPG
+ # mechanism in lg_autocal_26_run_hdr20_dpg_greyscale.
+ if(ref($config) eq "HASH"
+  && ($config->{"ddc_layout"}//"") eq "sdr26"
+  && $config->{"lg_autocal_sdr_1d_dpg_upload_enabled"}
+  && ref($state) eq "HASH"
+  && !$state->{"sdr_1d_dpg_fallback_to_ddc"}
+  && ref($reading) eq "HASH") {
+  # The DPG attempt needs ire/target_luminance/target_x/target_y on the
+  # target hash. ddc_target_for_step does NOT return those directly;
+  # callers that use the smart dispatcher must populate them on the
+  # target hash (matching the HDR20 convergence-loop pattern).
+  my $dpg_target={
+   ire=>$target->{"ire"},
+   target_luminance=>$target->{"target_luminance"} // $target->{"write_luminance"},
+   target_x=>$target->{"target_x"} // $target->{"white_x"},
+   target_y=>$target->{"target_y"} // $target->{"white_y"},
+  };
+  my ($dpg_ok,$dpg_msg,$dpg_lut)=lg_autocal_26_attempt_sdr_1d_dpg_upload($config,$state,$reading,$dpg_target,$picture_mode);
+  if($dpg_ok) {
+   # Mirror the success branch of set_picture_values: refresh the
+   # whiteBalance arrays from the readback (the readback now reflects the
+   # DPG-applied panel state, not the proposed arrays) and return. Skip
+   # the DDC whiteBalance write entirely -- the DPG IS the adjustment.
+   my $next_picture=clone_picture($picture);
+   $next_picture->{"pictureMode"}=$picture_mode if(defined($picture_mode) && $picture_mode ne "");
+   $next_picture->{"whiteBalanceMethod"}=22;
+   $next_picture->{"whiteBalanceIre"}=$target->{"write_ire"}||$target->{"array_ire"}||$target->{"ire"};
+   $next_picture->{"whiteBalanceRed"}=numeric_array($arrays->{"whiteBalanceRed"},ddc_slot_count());
+   $next_picture->{"whiteBalanceGreen"}=numeric_array($arrays->{"whiteBalanceGreen"},ddc_slot_count());
+   $next_picture->{"whiteBalanceBlue"}=numeric_array($arrays->{"whiteBalanceBlue"},ddc_slot_count());
+   $next_picture->{"adjustingLuminance"}=numeric_array($arrays->{"adjustingLuminance"},ddc_slot_count());
+   return ($next_picture,undef);
+  }
+  # DPG attempt returned failure (not eligible, or TV rejected). Fall
+  # through to the standard DDC write. The attempt function has already
+  # set sdr_1d_dpg_fallback_to_ddc on a TV-side rejection, so subsequent
+  # smart-dispatcher calls in this run will skip the DPG attempt entirely.
+  log_line("sdr smart dispatcher: DPG attempt failed (".($dpg_msg//"unknown")."), falling through to DDC write");
+ }
+ return &set_picture_values($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state,$verify_ddc_upload,$keep_calibration_mode);
+}
+
 sub set_picture_values {
  my ($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state,$verify_ddc_upload,$keep_calibration_mode)=@_;
  $keep_calibration_mode=1 if(!defined($keep_calibration_mode));
