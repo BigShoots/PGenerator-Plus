@@ -14924,6 +14924,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # 109% normalises to itself (autocal_white_y = its own Y), 99/105 and
   # lower normalise to the calibrated peak white_ref. Mirrors the HDR
   # pattern (line ~13976-13980 in this file).
+  log_line("SDR26 1D DPG greyscale: legal_peak_check anchor_ire=".sprintf("%.4f",$_anchor_ire+0)." is_legal_peak=".($_is_legal_peak?1:0)." target_Yn_will_equal_measured=".($_is_legal_peak?1:0)." tl_source=".($_is_legal_peak?"measured_luminance":"2.2_curve_via_white_ref")) if($_is_legal_peak);
   annotate_reading_target($reading,($_is_legal_peak ? $tl : $white_ref),$tl,$target_x,$target_y);
   # Tag the 109% legal peak with the same flags the SDR/HDR autocal workers
   # set on the 100% legal peak (autocal_legal_white_anchor, autocal_white_
@@ -15255,7 +15256,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # workflow emits on the wire; without them read_step posts a payload with
  # r=g=b=0 and the renderer shows black, so every meter read comes back
  # Y=0 and the autocal spins on identity.
- my @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,981,1023);
+ my @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
  my $idx_for_sdr=sub {
   my ($step)=@_;
   return undef if(ref($step) ne "HASH");
@@ -15570,6 +15571,19 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   my $_step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : 50.0));
   my $label=$rs->{"name"}||(format_percent($rs->{"ire"})."%");
   my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$_step_ire);
+  # Confirmation log: print the body target curve's expected target Y for the
+  # FIRST body anchor after the 109 peak has converged (sdr_1d_dpg_white_ref
+  # is now the calibrated peak white, not the provisional seed). This makes it
+  # obvious from the run log that sub-109 body targets use the 2.2 curve
+  # through the calibrated 109 peak, not a curve through an un-calibrated
+  # 100% reference.
+  if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"})) {
+   my $_black_y=(ref($config) eq "HASH" && defined($config->{"black_y"})) ? ($config->{"black_y"}+0) : 0;
+   my $_body_tl=lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$_black_y);
+   log_line(sprintf("SDR26 1D DPG greyscale: body_target_curve=2.2 white_ref=%.4f first_body_ire=%.4f expected_tl=%.4f (sub-109 anchors use this calibrated 109 peak as the curve reference)",$white_ref+0,$_step_ire+0,(defined($_body_tl)?$_body_tl+0:0)));
+   $state->{"sdr_1d_dpg_body_target_logged"}=JSON::PP::true;
+   write_state($state);
+  }
   my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
    $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
   );
@@ -15591,6 +15605,11 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  $state->{"sdr_1d_dpg_target_de"}=$target_de+0;
  $state->{"sdr_1d_dpg_exit_reason"}=$exit_reason;
  $state->{"sdr_1d_dpg_final_de"}=$max_de_overall+0;
+ # SDR26 always calibrates against gamma 2.2 (the LG 1D_2_2_EN reference
+ # workflow uses the DPG hardware gamma 2.2 path). Persist on the state so
+ # the WebUI chart can render the matching 2.2 target line via
+ # meterGreyChartTargetGammaSelection rather than the BT.1886 dropdown default.
+ $state->{"sdr_1d_dpg_target_gamma"}="2.2";
  # Only mark the curve as uploaded to the TV if the white reference actually
  # converged and the upload didn't fail. A non-converged 100% block leaves
  # the panel with the identity baseline -- uploading the 1.0/1.0/1.0 no-op
