@@ -20429,6 +20429,27 @@ eval {
 				  );
 				 }
 				 my $hdr20_dpg_mode_active=0;
+				 # SDR26 1D DPG mode: when the configured flag is set AND the
+				 # signal is SDR, the SDR26 convergence loop replaces the per-
+				 # slot 22-pt DDC WB loop entirely (mirrors the HDR20 short-
+				 # circuit below). The HDR20 branch only fires for HDR10
+				 # signal, so the SDR branch above must run FIRST to win the
+				 # signal_mode eq "sdr" path.
+				 my $sdr26_dpg_mode_active=0;
+				 if(!cancelled() && ref($config) eq "HASH" && $config->{"lg_autocal_sdr_1d_dpg_mode"} && lc($signal_mode) eq "sdr") {
+				  $state->{"current_name"}="SDR26 1D DPG greyscale";
+				  $state->{"phase"}="adjusting";
+				  $state->{"message"}="Running SDR26 1D DPG-driven greyscale calibration (26 anchors, gamma 2.2)";
+				  write_state($state);
+				  my $sdr26_dpg_error=lg_autocal_26_run_sdr_1d_dpg_greyscale($config,$state,$white_y,$target_x,$target_y,$picture_mode);
+				  if($sdr26_dpg_error) {
+				   die $sdr26_dpg_error;
+				  }
+				  $sdr26_dpg_mode_active=1;
+				  $state->{"sdr_dpg_greyscale_active"}=JSON::PP::true;
+				 } else {
+				  $state->{"sdr_dpg_greyscale_active"}=JSON::PP::false;
+				 }
 				 if(!cancelled() && ref($config) eq "HASH" && $config->{"lg_autocal_hdr20_dpg_mode"} && lc($signal_mode) eq "hdr10") {
 				  $state->{"current_name"}="HDR20 1D DPG greyscale";
 				  $state->{"phase"}="adjusting";
@@ -20445,6 +20466,7 @@ eval {
 				 }
 				 foreach my $step (@ordered) {
 		  last if(cancelled());
+		  last if($sdr26_dpg_mode_active);
 		  last if($hdr20_dpg_mode_active);
 		  $step_num++;
 		  my $target=ddc_target_for_step($step);

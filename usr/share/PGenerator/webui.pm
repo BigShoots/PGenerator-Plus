@@ -3533,6 +3533,14 @@ sub webui_meter_lg_autocal_body_with_defaults (@) {
   $body=~s/\}\s*\z/,"lg_autocal_hdr20_dpg_mode":true}/;
   return $body;
  }
+ # Route SDR26 greyscale autocal through the 1D-DPG convergence loop
+ # (test/opt-in; no third-party software names). Mirrors the HDR20 routing
+ # above; SDR26 uses BT.709/D65 + gamma 2.2 instead of HDR's BT.2020/PQ.
+ if($body=~/"signal_mode"\s*:\s*"sdr"/i) {
+  return $body if($body=~/"lg_autocal_sdr_1d_dpg_mode"\s*:/);
+  $body=~s/\}\s*\z/,"lg_autocal_sdr_1d_dpg_mode":true}/;
+  return $body;
+ }
  return $body if($body=~/"lg_autocal_26_full_ddc_spine"\s*:/ || $body=~/"lg_autocal_26_anchor_predrive"\s*:/);
  $body=~s/\}\s*\z/,"lg_autocal_26_full_ddc_spine":true,"lg_autocal_26_anchor_predrive":false}/;
  return $body;
