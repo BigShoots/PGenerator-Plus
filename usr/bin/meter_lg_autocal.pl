@@ -14842,6 +14842,27 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # lower normalise to the calibrated peak white_ref. Mirrors the HDR
   # pattern (line ~13976-13980 in this file).
   annotate_reading_target($reading,($_is_legal_peak ? $tl : $white_ref),$tl,$target_x,$target_y);
+  # Tag the 109% legal peak with the same flags the SDR/HDR autocal workers
+  # set on the 100% legal peak (autocal_legal_white_anchor, autocal_white_
+  # reference, autocal_reference_only, autocal_read_only, ddc_target_ire).
+  # The webui's chart, peak-reference detection, and tooltips all key off
+  # these flags -- without them, the 109 reading is treated as a generic
+  # high-luminance step and the chart shows a gamma-derived "Target Y"
+  # line that drifts as the panel responds to each move.
+  if($_is_legal_peak) {
+   $reading->{"autocal_legal_white_anchor"}=JSON::PP::true;
+   $reading->{"autocal_white_reference"}=JSON::PP::true;
+   $reading->{"autocal_reference_only"}=JSON::PP::true;
+   $reading->{"autocal_read_only"}=JSON::PP::true;
+   $reading->{"autocal_slot_locked"}=JSON::PP::true;
+   $reading->{"ddc_slot_locked"}=JSON::PP::true;
+   $reading->{"ddc_target_ire"}=108;
+   $reading->{"autocal_order_ire"}=108.0;
+   $reading->{"autocal_target_label"}="109% legal white";
+   $reading->{"autocal_white_y"}=sprintf("%.6f",luminance($reading)+0) if(!defined($reading->{"autocal_white_y"}));
+   $reading->{"lg_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
+   $reading->{"series_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
+  }
   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
   $state->{"current_luminance"}=luminance($reading);
   my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);

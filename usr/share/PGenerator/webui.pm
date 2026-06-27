@@ -14446,19 +14446,21 @@ function meterGreyChartTargetXYZForReading(reading){
 function meterTargetXYZForReading(reading){
 	 if(!reading) return {X:0,Y:0,Z:0};
 	 // SDR26 109% legal peak: there is NO target Y -- the peak calibrates
-	 // its own RGB balance, chroma only. The chart must not display a
-	 // target Y for 109 (the user sees a wrong/changing "Target Y" line
-	 // otherwise because the gamma-curve fallback below yields a code-
-	 // derived value that drifts as the panel responds to each move).
-	 // Returning {X:0,Y:0,Z:0} suppresses the Y-error line entirely;
-	 // the dE/chroma series continue to work because they use the
-	 // reading's measured x/y directly. The legal-peak flag is set by
-	 // the autocal worker (step.autocal_legal_white_anchor or
-	 // step.autocal_white_reference) for HDR's 100% / SDR's 109%.
+	 // its own RGB balance, chroma only. Same rule HDR applies to its
+	 // 100% peak (no target Y displayed; chroma-only dE). Detect via:
+	 //   - explicit ddc_layout / series_mode containing 'sdr' AND ire==109
+	 //   - reading name pattern sdr26_* (the SDR26 26-anchor table)
+	 //   - the autocal_white_y + ire==109 combo (the autocal worker tags
+	 //     the 109 reading with autocal_white_y = its own measured Y)
+	 // Returning {X:0,Y:0,Z:0} suppresses the Y-error line entirely.
 	 try{
 	  const _ire=Number(reading.ire!=null?reading.ire:(reading.patch_ire!=null?reading.patch_ire:reading.stimulus));
-	  const _layout=(reading.series_mode||reading.ddc_layout||'');
-	  if(Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05 && String(_layout).toLowerCase().indexOf('sdr')>=0){
+	  const _layout=String(reading.series_mode||reading.ddc_layout||'');
+	  const _name=String(reading.name||'').toLowerCase();
+	  const _hasSdrLayout=_layout.toLowerCase().indexOf('sdr')>=0;
+	  const _isSdr26Name=_name.startsWith('sdr26_');
+	  const _is109AutocalWhite=(reading.autocal_white_y!=null && Number(reading.autocal_white_y)>0 && Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05);
+	  if(Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05 && (_hasSdrLayout || _isSdr26Name || _is109AutocalWhite)){
 	   return {X:0,Y:0,Z:0};
 	  }
 	 }catch(e){}
