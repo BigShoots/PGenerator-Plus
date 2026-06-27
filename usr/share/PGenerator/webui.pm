@@ -14459,57 +14459,30 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
  const isSdrMode=!(typeof meterChartIsHdr==='function'&&meterChartIsHdr())&&!(typeof meterChartIsDv==='function'&&meterChartIsDv());
  const tYnClamped=(isSdrMode && tYn>1.0) ? 1.0 : tYn;
  const targetGamma=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
- // Gamma-aware decode. The worker stores target_Yn as the LINEAR luminance
- // ratio (target_luminance / white_y) which already encodes the chosen gamma
- // curve -- SDR26 with gamma 2.2 stores signal^2.2, SDR with BT.1886 stores
- // bt1886Eotf(signal,white,black)/white, HDR/PQ stores the PQ-decoded ratio.
- // The chart must therefore decode through the SAME gamma curve the worker
- // used, not a hard-coded BT.1886 path. Round-trip for each gamma:
- //   2.2:  worker tYn = (ire/100)^2.2 ; chart y = pow(tYn, 1/2.2) * peak
- //   2.4:  worker tYn = (ire/100)^2.4 ; chart y = pow(tYn, 1/2.4) * peak
- //   srgb: worker tYn = srgbEotf(signal) ; chart y = srgbEotfInv(tYn) * peak
- //   bt1886 (Lb>0): worker tYn = bt1886Eotf(signal,peak,Lb)/peak is not
- //                   separable into peak * f(signal), so use the inverse path.
- // HDR/PQ: handled by meterChartTargetLuminance upstream; this fn is the
- // SDR / post-cal path only.
- if(!meterChartIsHdr()&&!meterChartIsDv()){
-  if(targetGamma==='2.2'){
-   const y=Math.pow(Math.max(0,tYnClamped),1/2.2)*peak;
-   if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
-  } else if(targetGamma==='2.4'){
-   const y=Math.pow(Math.max(0,tYnClamped),1/2.4)*peak;
-   if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
-  } else if(targetGamma==='srgb'){
-   // sRGB inverse: tYn is the linear ratio; convert back to the signal
-   // (sRGB transfer inverse), then re-apply sRGB EOTF scaled to peak.
-   const lin=Math.max(0,Math.min(1,tYnClamped));
-   const signal=lin<=0.0031308?lin*12.92:1.055*Math.pow(lin,1/2.4)-0.055;
-   const y=srgbEotf(Math.max(0,Math.min(1,signal)))*peak;
-   if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
-  } else if(targetGamma==='bt1886'&&Lb>0){
-   // BT.1886 with Lb>0: tYn is NOT separable into peak * f(signal), so
-   // invert through bt1886Eotf's signal dimension. The worker computed
-   // tYn = bt1886Eotf(signal,peak,Lb)/peak for a given signal; we
-   // recover signal via the inverse path (same math as
-   // meterGreyInverseEotfSignalFromLuminance).
-   const g=2.4;
-   const lwRoot=Math.pow(peak,1/g);
-   const lbRoot=Math.pow(Lb,1/g);
-   const denom=lwRoot-lbRoot;
-   if(denom>0){
-    const a=Math.pow(denom,g);
-    const b=lbRoot/denom;
-    const y=a*Math.pow(Math.max(0,tYnClamped)+b,g);
-    if(Number.isFinite(y)&&y>=0) return y;
-   }
+ // Round-trip from target_Yn to target luminance. The worker stores
+ // target_Yn as the LINEAR luminance ratio (target_luminance / white_y)
+ // computed in the same gamma the worker used. For SDR gamma 2.2 / 2.4 /
+ // sRGB, that ratio is already proportional to the gamma-encoded luminance
+ // (signal^2.2 etc.) so the round-trip is just tYn * peak. Only BT.1886 with
+ // a non-zero black floor (Lb > 0) is non-separable into peak * f(signal),
+ // and needs the inverse path through bt1886Eotf's signal dimension.
+ if(!meterChartIsHdr()&&!meterChartIsDv() && targetGamma==='bt1886' && Lb>0){
+  const g=2.4;
+  const lwRoot=Math.pow(peak,1/g);
+  const lbRoot=Math.pow(Lb,1/g);
+  const denom=lwRoot-lbRoot;
+  if(denom>0){
+   const a=Math.pow(denom,g);
+   const b=lbRoot/denom;
+   const y=a*Math.pow(Math.max(0,tYnClamped)+b,g);
+   if(Number.isFinite(y)&&y>=0) return y;
   }
  }
- // Floor the target at the operator's black level so the curve and dE honor
- // the Target Black override across all IREs, not just 0%. When Lb=0 this is
- // a no-op (Math.max(tYn*peak,0)==tYn*peak). For Lb>0, low-signal IREs whose
- // PQ target would fall below the black floor are clamped to Lb, matching the
- // physical constraint that the display cannot produce less than its black
- // floor. This is analogous to how the BT.1886 path above maps to [Lb,peak].
+ // SDR 2.2 / 2.4 / sRGB / BT.1886 with Lb=0: tYn is already the linear
+ // luminance ratio. Multiply by peak and floor at Lb for the
+ // Target Black override (no-op when Lb=0). For Lb>0 and gammas other
+ // than bt1886, this is the conservative floor path (the bt1886 branch
+ // above handles that case).
  return Math.max(tYnClamped*peak,Lb);
 }
 
@@ -14807,6 +14780,16 @@ function meterReadingXYZ(reading){
 
 function meterColorLuminanceInfo(reading){
  if(!reading) return {measuredY:null,targetY:null,deltaY:null,deltaPct:null};
+ // SDR26 109% legal peak: chroma-only -- the peak calibrates its own RGB
+ // balance, so there is NO target Y. Hide the target Y in the color-detail
+ // panel and the chart tooltip so the operator does not see a Target Y
+ // matching the measured Y. meterDeltaE (deitp) already dispatches to
+ // deltaEITPChromaOnly for the same reading via meterReadingIsSdr26LegalPeak,
+ // so the dE bar still reads as the chromaticity gap.
+ if(typeof meterReadingIsSdr26LegalPeak==='function' && meterReadingIsSdr26LegalPeak(reading)){
+  const measuredY=meterReadingLuminanceNits(reading);
+  return {measuredY,targetY:null,deltaY:null,deltaPct:null};
+ }
  let targetY=null;
  try{
   const targetXYZ=meterTargetXYZForReading(reading);
@@ -15948,16 +15931,35 @@ function meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code){
 
 function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		const row=point||{};
-		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
-		if(Number.isFinite(metadataY)&&metadataY>=0) return metadataY;
-		if(row&&('stimulus' in row || 'code' in row)){
+		// Prefer the live-gamma target_Yn when the step carries an lg-autocal
+		// code + stimulus: recompute via meterLgAutoCalTargetYnForStimulus
+		// using the CURRENT meterGreyTargetGammaSelection() (the active
+		// dropdown / chart selection) so the dotted target line tracks the
+		// gamma the operator is actually grading against, not the gamma
+		// baked into the step at series-load time. Falling back to the
+		// baked target_Yn preserves series that don't have a stimulus/code
+		// (manual / injected readings) and the call shape from older
+		// caller paths.
+		if(row && ('stimulus' in row || 'code' in row)){
+		 const liveStimulus=(row.stimulus!=null)?Number(row.stimulus):null;
+		 const liveCode=(row.code!=null)?Number(row.code):null;
+		 const activeGamma=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():null;
+		 const liveYn=(typeof meterLgAutoCalTargetYnForStimulus==='function' && Number.isFinite(liveStimulus))
+		  ? meterLgAutoCalTargetYnForStimulus(liveStimulus)
+		  : null;
+		 if(Number.isFinite(liveYn) && liveYn>=0 && activeGamma){
+		  const y=(typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(liveYn,Lw,Lb||0):(liveYn*(Lw||0));
+		  if(Number.isFinite(y)&&y>=0) return y;
+		 }
 		 const stimulus=Number(row.stimulus);
 		 const ire=Number.isFinite(stimulus) ? stimulus : (Number.isFinite(Number(signal)) ? Number(signal)*100 : 0);
 		 const code=(row.code!=null)?row.code:null;
-	 return meterGreyTargetLuminance(ire,Lw,Lb||0,code);
-	}
-	const frac=Number(signal);
-	return meterGreyTargetLuminance(Number.isFinite(frac)?frac*100:0,Lw,Lb||0,null);
+		 return meterGreyTargetLuminance(ire,Lw,Lb||0,code);
+		}
+		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
+		if(Number.isFinite(metadataY)&&metadataY>=0) return metadataY;
+		const frac=Number(signal);
+		return meterGreyTargetLuminance(Number.isFinite(frac)?frac*100:0,Lw,Lb||0,null);
 }
 
 function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
@@ -25037,8 +25039,25 @@ function meterFullAutoCalTouchupTargetY(){
 	  meterResetSeriesButtons();
 	  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
 	  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
-	  meterSetActiveSeriesChartContext();
-	  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
+meterSetActiveSeriesChartContext();
+ // SDR26 1D-DPG autocal + post-cal: the worker calibrates against gamma 2.2
+ // (the reference workflow's 1D_2_2_EN reference workflow). Pin the Target Gamma dropdown to
+ // 2.2 BEFORE building the chart series steps so the steps' baked target_Yn
+ // uses signal^2.2 (the gamma curve the worker actually calibrates against)
+ // and not signal^2.4 (the BT.1886 default). Only set when the operator
+ // hasn't already chosen explicitly (mirrors the delay_user_set flag
+ // pattern). The post-cal report entry point flips it back to BT.1886 for
+ // the verification pass.
+ if((getVal('signal_mode')||'sdr')==='sdr' && meterActiveSeriesPoints===26
+    && (typeof meterUseLgAutoCal26==='function') && meterUseLgAutoCal26(meterActiveSeriesPoints)){
+  const cur=getVal('meterTargetGamma')||'';
+  if(cur==='bt1886' || cur==='' || cur==null){
+   setVal('meterTargetGamma','2.2');
+   if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+   if(typeof saveMeterSettings==='function') saveMeterSettings();
+  }
+ }
+ meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	  const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
 	  if(!adjustable.length) throw new Error('No LG-adjustable greyscale points are available');
 	  const whiteStep=meterAutoCalWhiteStep();
@@ -25936,21 +25955,6 @@ async function meterStartAutoCal(options){
   if((getVal('signal_mode')||'sdr')==='hdr10'){
    setVal('meterTargetGamut','p3d65');
    if(typeof saveMeterSettings==='function') saveMeterSettings();
-  }
-  // SDR26 1D-DPG autocal + post-cal: the worker calibrates against gamma 2.2
-  // (the reference workflow's 1D_2_2_EN reference workflow). Pin the Target Gamma dropdown to
-  // 2.2 so the autocal-time charts render the matching 2.2 target line and
-  // not the BT.1886 default. Only set when the operator hasn't already chosen
-  // explicitly (mirrors the delay_user_set flag pattern). The post-cal report
-  // entry point flips it back to BT.1886 for the verification pass.
-  if((getVal('signal_mode')||'sdr')==='sdr' && meterActiveSeriesPoints===26
-     && (typeof meterUseLgAutoCal26==='function') && meterUseLgAutoCal26(meterActiveSeriesPoints)){
-   const cur=getVal('meterTargetGamma')||'';
-   if(cur==='bt1886' || cur==='' || cur==null){
-    setVal('meterTargetGamma','2.2');
-    if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
-    if(typeof saveMeterSettings==='function') saveMeterSettings();
-   }
   }
  meterSetActiveSeriesChartContext();
  document.getElementById('meterExportRow').style.display='';
