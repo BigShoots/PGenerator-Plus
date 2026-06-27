@@ -15951,15 +15951,9 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		if(activeSeriesIsSdr26 && row && row.stimulus!=null){
 		 const stimulus=Number(row.stimulus);
 		 if(Number.isFinite(stimulus)){
-		  // SDR26 headroom is a single continuous curve from 0 to 109 (the
-		  // calibrated peak). 100 IRE sits at 100/109 of the peak and 105 at
-		  // 105/109; normalize the WHOLE chart signal to the calibrated peak
-		  // IRE so the curve is monotonic across the 100->105 boundary
-		  // (otherwise the split at stimulus=100 makes chartSig jump from
-		  // 1.0 down to 100/109=0.917, producing a visible kink).
 		  const peakIre=109;
-		  const chartSig=stimulus/peakIre;
-		  return targetEotf(Math.max(0,Math.min(1,chartSig)),Lw,Lb||0);
+		  const chartSig=stimulus<=100 ? stimulus/100 : stimulus/peakIre;
+		  return targetEotf(Math.max(0,chartSig),Lw,Lb||0);
 		 }
 		}
 		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
