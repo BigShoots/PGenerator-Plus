@@ -14445,25 +14445,28 @@ function meterGreyChartTargetXYZForReading(reading){
 
 function meterTargetXYZForReading(reading){
 	 if(!reading) return {X:0,Y:0,Z:0};
+	 // SDR26 109% legal peak: there is NO target Y -- the peak calibrates
+	 // its own RGB balance, chroma only. The chart must not display a
+	 // target Y for 109 (the user sees a wrong/changing "Target Y" line
+	 // otherwise because the gamma-curve fallback below yields a code-
+	 // derived value that drifts as the panel responds to each move).
+	 // Returning {X:0,Y:0,Z:0} suppresses the Y-error line entirely;
+	 // the dE/chroma series continue to work because they use the
+	 // reading's measured x/y directly. The legal-peak flag is set by
+	 // the autocal worker (step.autocal_legal_white_anchor or
+	 // step.autocal_white_reference) for HDR's 100% / SDR's 109%.
+	 try{
+	  const _ire=Number(reading.ire!=null?reading.ire:(reading.patch_ire!=null?reading.patch_ire:reading.stimulus));
+	  const _layout=(reading.series_mode||reading.ddc_layout||'');
+	  if(Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05 && String(_layout).toLowerCase().indexOf('sdr')>=0){
+	   return {X:0,Y:0,Z:0};
+	  }
+	 }catch(e){}
 	 const absX=Number(reading.target_X);
 	 const absY=Number(reading.target_Y);
 	 const absZ=Number(reading.target_Z);
 	 if(Number.isFinite(absX)&&Number.isFinite(absY)&&Number.isFinite(absZ)&&absY>=0){
 	  return {X:absX,Y:absY,Z:absZ};
-	 }
-	 // Honour the per-reading target_luminance field when set. The autocal
-	 // sets this for the 109% legal peak (= its own measured Y, so the
-	 // dE formula reports zero luminance error and the chart shows the
-	 // correct target Y -- the gamma-curve fallback below would otherwise
-	 // return a gamma-shaped 158-ish nits for a 109 IRE 10-bit code, which
-	 // is the wrong target for a chroma-only peak read).
-	 const _tgtLum=Number(reading.target_luminance);
-	 if(Number.isFinite(_tgtLum)&&_tgtLum>=0){
-	  const _tx=(reading.target_x!=null)?Number(reading.target_x):(meterTargetWhitePoint().x);
-	  const _ty=(reading.target_y!=null)?Number(reading.target_y):(meterTargetWhitePoint().y);
-	  const _X=(_tx/_ty)*_tgtLum;
-	  const _Z=((1-_tx-_ty)/_ty)*_tgtLum;
-	  return {X:_X,Y:_tgtLum,Z:_Z};
 	 }
 	 let targetMeta=null;
 	 let targetStep=null;
@@ -14696,7 +14699,14 @@ function meterColorLuminanceInfo(reading){
  let targetY=null;
  try{
   const targetXYZ=meterTargetXYZForReading(reading);
-  if(targetXYZ&&targetXYZ.Y!=null&&targetXYZ.Y>=0) targetY=targetXYZ.Y;
+  // The 109% SDR26 legal-peak anchor returns {X:0,Y:0,Z:0} from
+  // meterTargetXYZForReading (chroma-only: no target Y). Treat all-zero
+  // XYZ as "no target" so the chart suppresses the Y-error line entirely
+  // instead of showing (measuredY - 0) / 0.
+  if(targetXYZ && targetXYZ.Y!=null && targetXYZ.Y>0
+     && (targetXYZ.X>0 || targetXYZ.Y>0 || targetXYZ.Z>0)){
+   targetY=targetXYZ.Y;
+  }
  }catch(e){}
  const measuredY=meterReadingLuminanceNits(reading);
  let deltaY=null,deltaPct=null;
@@ -29373,7 +29383,8 @@ function chartHandleHover(e,canvasId){
  if(canvasId==='chartGammaValue') gammaReferenceReadings=meterFilterLgAutoCalChartItems(gammaReferenceReadings);
  const gamma=meterGreyscaleGammaValue(rd,meterGammaValueReferenceY(gammaReferenceReadings));
  let html='<b>'+rd.ire+'%</b><br>';
- html+='<span>Read Y: '+readY+' cd/m\u00B2</span> &nbsp; <span>Target Y: '+targetY+' cd/m\u00B2</span>';
+ html+='<span>Read Y: '+readY+' cd/m\u00B2</span>';
+ if(targetY!=='--') html+=' &nbsp; <span>Target Y: '+targetY+' cd/m\u00B2</span>';
  if(rd.cct) html+='<br>CCT: '+rd.cct+'K';
  html+='<br>x: '+(rd.x!=null?rd.x.toFixed(4):'--')+' &nbsp;y: '+(rd.y!=null?rd.y.toFixed(4):'--');
  html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
