@@ -3270,11 +3270,13 @@ sub lg_1d_dpg_read_workflow (@) {
 }
 
 sub lg_1d_dpg_upload_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active)=@_;
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active,$signal_mode)=@_;
  $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
- return &json_error("Connect / Pair the LG TV before uploading HDR20 1D DPG data",{ ip => $ip }) if($client_key eq "");
- return &json_error("HDR20 1D DPG upload requires a 3072-value 3-channel x 1024-point uint16 array.",{ ip => $ip, data_count => (ref($dpg_data) eq "ARRAY") ? scalar(@{$dpg_data}) : -1, expected_count => 3072 }) if(ref($dpg_data) ne "ARRAY" || @{$dpg_data} != 3072);
+ $signal_mode=lc($signal_mode||"");
+ $signal_mode="" if($signal_mode ne "sdr" && $signal_mode ne "hdr10" && $signal_mode ne "hlg");
+ return &json_error("Connect / Pair the LG TV before uploading 1D DPG data",{ ip => $ip }) if($client_key eq "");
+ return &json_error("1D DPG upload requires a 3072-value 3-channel x 1024-point uint16 array.",{ ip => $ip, data_count => (ref($dpg_data) eq "ARRAY") ? scalar(@{$dpg_data}) : -1, expected_count => 3072 }) if(ref($dpg_data) ne "ARRAY" || @{$dpg_data} != 3072);
  my @clamped;
  for my $v (@{$dpg_data}) {
   my $i=int($v);
@@ -3287,15 +3289,31 @@ sub lg_1d_dpg_upload_workflow (@) {
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
  my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
- if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+ if($cal_mode eq "") {
   &websocket_close($session);
-  return &json_error("HDR20 1D DPG upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
+  return &json_error("1D DPG upload requires a writable picture mode (cinema/expert/filmmaker/game/hdr_cinema/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
+ # Auto-detect SDR if the caller didn't declare signal_mode. The cal_mode string
+ # is the canonical signal: anything starting with "hdr_" or "dolby_hdr_" is HDR;
+ # otherwise SDR.
+ my $effective_signal=$signal_mode;
+ if($effective_signal eq "") {
+  $effective_signal=($cal_mode =~ /^(hdr_|dolby_hdr_)/) ? "hdr10" : "sdr";
+ }
+ # CAL_START payload differs by signal mode. The reference protocol sends the
+ # HDR the reference workflow float payload on HDR cycles and a plain CAL_START (no payload) on
+ # SDR cycles -- the SDR picMode is already set on the active picture mode and
+ # doesn't need the extra HDR float boost. Using the HDR float payload for an
+ # SDR CAL_START would re-inject a tiny HDR-like adjustment into the SDR chain.
+ my $cal_start_payload=($effective_signal eq "sdr")
+  ? undef
+  : &lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
+ my $cal_end_payload=$cal_start_payload;
  my $start;
  if($calibration_mode_active) {
   $start={ type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
  } else {
-  $start=&lg_calibration_request($session,"1d_dpg_upload_cal_start","CAL_START",&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload()),1,$cal_mode,$connect_timeout + 4);
+  $start=&lg_calibration_request($session,"1d_dpg_upload_cal_start","CAL_START",$cal_start_payload,1,$cal_mode,$connect_timeout + 4);
  }
  my ($start_failed,$start_message)=(0,"");
  if(!$calibration_mode_active) {
@@ -3303,7 +3321,7 @@ sub lg_1d_dpg_upload_workflow (@) {
  }
  if($start_failed || ref($start) ne "HASH") {
   &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for HDR20 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
+  return &json_error($start_message||"LG TV rejected calibration mode start for 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, signal_mode => $effective_signal, raw_response => $start });
  }
  # Explicitly disable the 1D 2.2 degamma and 0.45 regamma LUTs inside the
  # active CAL_START session, exactly as the reference does (reference relay capture
@@ -3328,17 +3346,27 @@ sub lg_1d_dpg_upload_workflow (@) {
    push(@gamma_lut_responses,{ command => $command, value => $value, failed => &json_bool($rf), message => $rm//"" });
   }
  }
+ # For SDR, also send the BT.709 identity 3x3 gamut matrix BEFORE the DPG upload
+ # so any prior HDR cycle's BT.2020 matrix doesn't shadow the SDR DPG deltas.
+ # Mirrors the BT709 send in lg_ddc_1d_white_balance_set. The reference SDR
+ # workflow does the same on every cycle (non-fatal if the TV rejects).
+ my $bt709_response=undef;
+ if($effective_signal eq "sdr" && !$calibration_mode_active) {
+  my $bt709_payload=&lg_force_pic_mode_payload(&lg_bt709_identity_3x3_payload());
+  $bt709_response=&lg_calibration_request($session,"1d_dpg_upload_bt709_3by3_gamut","BT709_3BY3_GAMUT_DATA",$bt709_payload,0,$cal_mode,$connect_timeout + 4);
+ }
  my $upload=&lg_calibration_request($session,"1d_dpg_upload","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload(\@clamped)),1,$cal_mode,$connect_timeout + 12);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
  my $end=$keep_calibration_mode
   ? { type => "skipped", payload => { returnValue => &json_true() }, keep_calibration_mode => &json_true() }
-  : &lg_calibration_request($session,"1d_dpg_upload_cal_end","CAL_END",&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload()),1,"",$connect_timeout + 4);
+  : &lg_calibration_request($session,"1d_dpg_upload_cal_end","CAL_END",$cal_end_payload,1,"",$connect_timeout + 4);
  &websocket_close($session);
  if($upload_failed || ref($upload) ne "HASH") {
-  return &json_error($upload_message||"LG TV rejected HDR20 1D DPG upload.",{
+  return &json_error($upload_message||"LG TV rejected 1D DPG upload.",{
    ip => $ip,
    active_picture_mode => $active_picture_mode,
    calibration_picture_mode => $cal_mode,
+   signal_mode => $effective_signal,
    command => "1D_DPG_DATA",
    data_count => scalar(@clamped),
    data_channels => 3,
@@ -3365,10 +3393,11 @@ sub lg_1d_dpg_upload_workflow (@) {
   endpoint_write => "externalpq/setExternalPqData",
   active_picture_mode => $active_picture_mode,
   calibration_picture_mode => $cal_mode,
+  signal_mode => $effective_signal,
   upload_response => $upload,
   cal_start_response => $start,
   cal_end_response => $end,
-  message => "LG HDR20 1D DPG uploaded (".scalar(@clamped)." values, min=$min_value, max=$max_value, avg=$avg_value).",
+  message => "LG ".($effective_signal eq "sdr" ? "SDR" : "HDR")." 1D DPG uploaded (".scalar(@clamped)." values, min=$min_value, max=$max_value, avg=$avg_value).",
   calibration_mode => &json_bool($keep_calibration_mode),
  });
 }
@@ -5342,7 +5371,7 @@ sub main (@) {
 	 } elsif($action eq "hdr_tone_map_upload") {
 	  $result=&lg_hdr_tone_map_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$peak_luminance,$dpg_data,$keep_calibration_mode,$calibration_mode_active);
 	 } elsif($action eq "1d_dpg_upload") {
-	  $result=&lg_1d_dpg_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active);
+	  $result=&lg_1d_dpg_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
 	 } elsif($action eq "1d_dpg_read") {
 	  $result=&lg_1d_dpg_read_workflow($ip,$client_key,$connect_timeout,$picture_mode);
 	 } elsif($action eq "connect_pin_wait") {
