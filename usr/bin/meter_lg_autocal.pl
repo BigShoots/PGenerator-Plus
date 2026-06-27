@@ -12160,6 +12160,138 @@ sub lg_write_error_is_transient {
  return ($message =~ /(?:Unable to connect to LG WebOS TV|unexpected hello response|no hello response|connection|connect|timed?\s*out|timeout|closed|broken pipe|reset by peer|no route|network is unreachable|temporar|did not finish the white-balance write|Web UI API timed out)/i) ? 1 : 0;
 }
 
+# SDR 26-point direct-DPG attempt: rebuilds the full 3072-entry 1D DPG LUT
+# from the accumulated per-IRE anchor gains (BT.709/D65) and uploads via
+# the same /api/lg/1d-dpg/upload endpoint the HDR path uses, just with
+# ddc_layout=>"sdr26" and signal_mode=>"sdr". The baseline 1D DPG is
+# seeded from /var/lib/PGenerator/lg/ddc/<ip>-<picture>-sdr26.baseline.1dlut
+# if that on-disk file exists (3072 little-endian uint16), else from a
+# linear identity ramp.
+#
+# Returns:
+#   ($ok, $message, $uploaded_lut_or_undef)
+#     $ok = 1 if the upload committed
+#     $ok = 0 if direct-DPG is disabled for this run, or the upload failed
+#     $message = diagnostic string
+#     $uploaded_lut_or_undef = the 3072 LUT actually uploaded, or undef
+#
+# State side-effects (when $state is a HASH):
+#   $state->{sdr_1d_dpg_anchors}  : [{idx,r_gain,g_gain,b_gain}, ...]
+#   $state->{sdr_1d_dpg_data}     : 3072-entry LUT (last successful upload)
+#   $state->{sdr_1d_dpg_uploaded} : true|false
+#   $state->{sdr_1d_dpg_upload_message} : string
+#   $state->{sdr_1d_dpg_fallback_to_ddc} : true once we know direct-DPG is
+#     rejected by this TV (then we skip the DPG attempt for the rest of
+#     this run and use the DDC whiteBalance path)
+sub lg_autocal_26_attempt_sdr_1d_dpg_upload {
+ my ($config,$state,$reading,$target,$picture_mode)=@_;
+ # Eligibility gates.
+ return (0,"sdr direct-DPG disabled: lg_autocal_sdr_1d_dpg_upload_enabled is not set in config",undef)
+  unless(ref($config) eq "HASH" && $config->{"lg_autocal_sdr_1d_dpg_upload_enabled"});
+ return (0,"sdr direct-DPG: ddc_layout is not sdr26 (config says ".($config->{"ddc_layout"}//"undef").")",undef)
+  unless(($config->{"ddc_layout"}//"") eq "sdr26");
+ # Once we know this TV rejects direct-DPG (first upload returned a TV
+ # app-level rejection), skip the attempt for the rest of the run. The
+ # DDC whiteBalance path is the only remaining write mechanism.
+ return (0,"sdr direct-DPG: previously fell back to DDC for this run",undef)
+  if(ref($state) eq "HASH" && $state->{"sdr_1d_dpg_fallback_to_ddc"});
+ # We need a measurement + target to compute the anchor gain.
+ return (0,"sdr direct-DPG: missing reading",undef) unless(ref($reading) eq "HASH");
+ return (0,"sdr direct-DPG: missing target ire/luminance/x/y",undef)
+  unless(defined($target->{"ire"}) && defined($target->{"target_luminance"}) && defined($target->{"target_x"}) && defined($target->{"target_y"}));
+ # Map IRE -> 0..1023 anchor index. The LG SDR 26-point patch set uses the
+ # 10-bit sample positions in @LG_DDC_1D_INDEXES_SDR (pgenerator-lg), with
+ # slot 0 = IRE 2.3 (idx 21) ... slot 25 = IRE 109 (idx 1023). For IREs
+ # outside the 26-point set, snap to the nearest legal slot.
+ my $ire=$target->{"ire"}+0;
+ my @labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+ my @indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+ my $best_slot=0;
+ my $best_dist=1e9;
+ for(my $s=0;$s<@labels;$s++) {
+  my $d=abs($labels[$s]-$ire);
+  if($d < $best_dist) { $best_dist=$d; $best_slot=$s; }
+ }
+ my $anchor_idx=$indexes[$best_slot];
+ # Per-channel gain via the BT.709/D65 gain fn.
+ my ($rg,$gg,$bg)=&lg_autocal_26_sdr26_dpg_gain(
+  $reading,
+  $target->{"target_luminance"},
+  $target->{"target_x"},
+  $target->{"target_y"},
+  $ire
+ );
+ # Accumulate anchor (replace any prior anchor at the same idx so the
+ # build fn sees only the latest gain -- the autocal re-measures at
+ # each step, so newer gains are the correct ones).
+ my $anchors=[];
+ if(ref($state) eq "HASH" && ref($state->{"sdr_1d_dpg_anchors"}) eq "ARRAY") {
+  $anchors=$state->{"sdr_1d_dpg_anchors"};
+  @$anchors=grep { ref($_) eq "HASH" && $_->{"idx"} != $anchor_idx } @$anchors;
+ }
+ push @$anchors,{ idx=>$anchor_idx, r_gain=>$rg+0, g_gain=>$gg+0, b_gain=>$bg+0 };
+ if(ref($state) eq "HASH") {
+  $state->{"sdr_1d_dpg_anchors"}=$anchors;
+  $state->{"sdr_1d_dpg_anchor_count"}=scalar(@$anchors);
+ }
+ # Read baseline LUT from disk if present, else identity. The file
+ # layout is 3072 little-endian uint16 (3 channels x 1024 points). On
+ # the Pi this path is /var/lib/PGenerator/lg/ddc/<ip>-<picture>-sdr26.baseline.1dlut;
+ # the host-side dev layout is build/usr/var/lib/PGenerator/lg/ddc/.
+ my @baseline;
+ my $baseline_path=undef;
+ my $ip=$config->{"ip"}||($config->{"lg_tv_ip"}||"");
+ if($ip ne "" && $picture_mode ne "") {
+  my $safe_ip=$ip; $safe_ip =~ s/[^A-Za-z0-9_.-]/_/g;
+  my $safe_mode=$picture_mode; $safe_mode =~ s/[^A-Za-z0-9_.-]/_/g;
+  $baseline_path="/var/lib/PGenerator/lg/ddc/".$safe_ip."-".$safe_mode."-sdr26.baseline.1dlut";
+ }
+ if(defined($baseline_path) && -r $baseline_path) {
+  if(open(my $bfh,"<",$baseline_path)) {
+   binmode($bfh);
+   my $raw; my $got=sysread($bfh,$raw,6144);
+   close($bfh);
+   if(defined($got) && $got >= 3072*2) {
+    for(my $i=0;$i<3072;$i++) {
+     my $lo=ord(substr($raw,$i*2,1));
+     my $hi=ord(substr($raw,$i*2+1,1));
+     push @baseline,$lo+($hi<<8);
+    }
+   }
+  }
+ }
+ my $lut=&lg_autocal_26_build_hdr20_1d_dpg(\@baseline,$anchors);
+ if(ref($lut) ne "ARRAY" || @$lut != 3072) {
+  return (0,"sdr direct-DPG: build function returned invalid LUT",undef);
+ }
+ # Upload.
+ my $response=api_json("POST","/api/lg/1d-dpg/upload",{
+  picture_mode=>$picture_mode,
+  ddc_layout=>"sdr26",
+  signal_mode=>"sdr",
+  dpg_data=>$lut,
+  helper_timeout=>75,
+ },90);
+ my $uploaded=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+ my $resp_msg=(ref($response) eq "HASH" && $response->{"message"}) ? $response->{"message"} : (defined $response ? "unexpected response" : "endpoint unreachable");
+ if(ref($state) eq "HASH") {
+  $state->{"sdr_1d_dpg_data"}=$lut;
+  $state->{"sdr_1d_dpg_data_count"}=scalar(@$lut);
+  $state->{"sdr_1d_dpg_uploaded"}=$uploaded ? JSON::PP::true : JSON::PP::false;
+  $state->{"sdr_1d_dpg_upload_message"}=$resp_msg;
+  $state->{"sdr_1d_dpg_last_attempt_at"}=int(time()*1000);
+  $state->{"sdr_1d_dpg_fallback_to_ddc"}=JSON::PP::false;
+  if(!$uploaded) {
+   # Treat this as a permanent fallback for the rest of the run: a TV
+   # that rejected direct-DPG once will keep rejecting it.
+   $state->{"sdr_1d_dpg_fallback_to_ddc"}=JSON::PP::true;
+   $state->{"sdr_1d_dpg_upload_message"}="rejected by TV -- falling back to DDC whiteBalance for this run: ".$resp_msg;
+  }
+ }
+ log_line("sdr direct-DPG upload: ire=".($ire+0)." slot=$best_slot idx=$anchor_idx gain=(".(sprintf("%.3f",$rg)).",".(sprintf("%.3f",$gg)).",".(sprintf("%.3f",$bg)).") uploaded=".($uploaded?"yes":"no")." msg=$resp_msg");
+ return ($uploaded ? 1 : 0,$resp_msg,$uploaded ? $lut : undef);
+}
+
 sub set_picture_values {
  my ($picture,$arrays,$target,$picture_mode,$calibration_mode_active,$state,$verify_ddc_upload,$keep_calibration_mode)=@_;
  $keep_calibration_mode=1 if(!defined($keep_calibration_mode));
