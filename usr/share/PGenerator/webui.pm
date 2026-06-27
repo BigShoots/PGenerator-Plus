@@ -13702,6 +13702,16 @@ function meterEffectiveGreyscaleWhiteReference(readings){
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
  const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
  const activeAutoCalReference=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
+ // SDR26 1D-DPG autocal: prefer the headroom-derived peak from the measured
+ // 109% reading whenever one is present, even if the active-cal polling gate
+ // is momentarily false (between status polls). The chart redraws continuously
+ // and would otherwise briefly fall back to the stored target while the
+ // worker is still iterating, hiding the new calibrated peak.
+ const headroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
+ if(lgAutoCalChartRef && !activeAutoCalReference && headroomTargetY>0){
+  const synthetic=meterSyntheticGreyWhiteReading(headroomTargetY);
+  if(synthetic) return synthetic;
+ }
  const referenceList=(lgAutoCalChartRef&&activeAutoCalReference&&!magicWandPhase)?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
  if(lgAutoCalChartRef&&magicWandPhase){
   const magicWandWhite=meterFindSeriesWhiteReading(list);
@@ -13772,6 +13782,17 @@ function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
 }
 
 function meterAutoCalGreyscaleTargetWhiteReferenceNits(readings){
+ // SDR26 1D-DPG autocal: prefer the headroom-derived peak from the
+ // measured 109% reading whenever one is present, even if the active-cal
+ // polling gate is momentarily false (between status polls). The chart
+ // redraws continuously and would otherwise briefly fall back to the
+ // stored target (e.g. 161.4) while the worker is still iterating,
+ // hiding the new calibrated peak (e.g. 199.1) from the chart label.
+ if(meterActiveSeriesType==='greyscale' && (typeof meterUseLgAutoCal26==='function') && meterUseLgAutoCal26(meterActiveSeriesPoints)){
+  const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
+  const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
+  if(headroomTargetY>0) return headroomTargetY;
+ }
  if(!meterAutoCalGreyscaleTargetWhiteReferenceActive(readings)) return null;
  const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
  const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
@@ -28612,7 +28633,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  ctx.textAlign='left';
  ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
  const diffuse=meterHdrDiffuseWhiteOverride();
- const targetLabel='100% target: '+targetPeak.toFixed(1)+' cd/m\u00B2'+((diffuse!=null&&meterChartIsPq())?' (DW '+diffuse.toFixed(1)+')':'');
+ const targetLabel='100% target: '+targetPeak.toFixed(1)+' cd/m\u00B2'+((diffuse!=null&&meterChartIsPq())?' (DW '+diffuse.toFixed(1))':'');
  ctx.fillText(targetLabel,chart.pad.l,chart.pad.t+14);
  ctx.textAlign='right';
  ctx.fillText('Max cd/m\u00B2: '+measuredMax.toFixed(2),ctx.w-chart.pad.r,ctx.h-2);
