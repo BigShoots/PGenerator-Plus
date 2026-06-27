@@ -3391,6 +3391,59 @@ sub lg_1d_dpg_read_workflow (@) {
 
 sub lg_1d_dpg_upload_workflow (@) {
  my ($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active,$signal_mode)=@_;
+ # Retry wrapper: the WebOS TV's websocket occasionally rejects the very
+ # first CAL_START message after an idle period (the panel's calibration
+ # workspace hasn't been touched in a while and the first command after
+ # the session handshake times out / fails). The TV is reachable -- the
+ # session handshake worked -- so retry the CAL_START inside a fresh
+ # session (and on a second retry, re-open the websocket) before giving
+ # up. Each retry attempts up to MAX_LG_DPG_UPLOAD_RETRIES times.
+ my $attempt=0;
+ my $max_attempts=&LG_DPG_UPLOAD_CAL_START_RETRIES();
+ my $last_error=undef;
+ my $result=undef;
+ while($attempt < $max_attempts) {
+  $attempt++;
+  $result=&lg_1d_dpg_upload_workflow_inner($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
+  last if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok");
+  $last_error=$result;
+  # Retry on:
+  #   - connection failures ("Unable to connect to LG WebOS TV")
+  #   - explicit "LG TV rejected" errors (CAL_START / command failures
+  #     due to transient calibration-workspace state)
+  my $msg="";
+  if(ref($last_error) eq "HASH") {
+   $msg=$last_error->{"message"} || "";
+  }
+  last if($attempt >= $max_attempts);
+  if($msg =~ /Unable to connect/i
+   || $msg =~ /rejected calibration/i
+   || $msg =~ /rejected calibration mode start/i
+   || $msg =~ /timed?[\s_-]?out/i
+   || $msg =~ /connection (?:closed|reset|refused)/i) {
+   &diag_log_append("dpg_upload:retry",{ attempt => $attempt, max_attempts => $max_attempts, message => $msg });
+   select(undef,undef,undef,0.6 * $attempt); # backoff
+   next;
+  }
+  last;
+ }
+ return $result if(ref($result) eq "HASH");
+ return $last_error if(ref($last_error) eq "HASH");
+ return &json_error("LG 1D DPG upload failed.",{ ip => $ip, attempts => $attempt });
+}
+
+# Default retry count for lg_1d_dpg_upload_workflow. The TV's WebOS
+# websocket occasionally drops the first CAL_START message after an idle
+# period (the C2 panel's calibration workspace hasn't been touched in
+# 30+ minutes), but the panel itself is healthy on the second attempt.
+# 3 attempts covers the typical recovery window; the autocal's caller
+# has its own upload-retry loop, so this only fires for the first
+# CAL_START of a fresh series (subsequent uploads in the same series
+# are already inside an active calibration session).
+sub LG_DPG_UPLOAD_CAL_START_RETRIES () { return 3; }
+
+sub lg_1d_dpg_upload_workflow_inner (@) {
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$dpg_data,$keep_calibration_mode,$calibration_mode_active,$signal_mode)=@_;
  $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
  $signal_mode=lc($signal_mode||"");
