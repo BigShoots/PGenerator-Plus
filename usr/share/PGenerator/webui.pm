@@ -13534,9 +13534,23 @@ function meterFindMeasuredWhiteReading(){
   const g=(rd.g_code!=null)?rd.g_code:rd.g;
   const b=(rd.b_code!=null)?rd.b_code:rd.b;
   if(r!=null && g!=null && b!=null){
-   return ((rd.ire||0)===100 || name==='white') && Number(r)===Number(g) && Number(g)===Number(b);
+   // Treat the 109% legal peak as white for SDR26 charts. The autocal
+   // worker tags 109 with autocal_legal_white_anchor + autocal_white_
+   // reference; honour those flags AND match by ire/name. SDR autocal
+   // stores rd.ire as a STRING ('109') in some builds, so coerce.
+   const _rdIre=Number(rd.ire);
+   const _isLegalPeak=(rd.autocal_legal_white_anchor||rd.autocal_white_reference) ? 1 : 0;
+   const _isIre100=(Number.isFinite(_rdIre) && Math.abs(_rdIre-100)<0.05);
+   const _isIre109Legal=(_isLegalPeak||(Number.isFinite(_rdIre) && Math.abs(_rdIre-109)<0.05));
+   if(!(_isIre100 || name==='white' || _isIre109Legal)) return false;
+   return Number(r)===Number(g) && Number(g)===Number(b);
   }
-  return (rd.ire==null || Number(rd.ire)===100 || name==='white') && ((rd.Y||0)>0 || (rd.X||0)>0 || (rd.Z||0)>0);
+  const _rdIre2=Number(rd.ire);
+  const _isLegalPeak2=(rd.autocal_legal_white_anchor||rd.autocal_white_reference) ? 1 : 0;
+  const _isIre100_2=(Number.isFinite(_rdIre2) && Math.abs(_rdIre2-100)<0.05);
+  const _isIre109Legal2=(_isLegalPeak2||(Number.isFinite(_rdIre2) && Math.abs(_rdIre2-109)<0.05));
+  if(_isIre100_2 || name==='white' || _isIre109Legal2) return ((rd.Y||0)>0 || (rd.X||0)>0 || (rd.Z||0)>0);
+  return false;
  };
  if(isWhiteReading(meterWhiteReading)) return meterWhiteReading;
  if(Array.isArray(meterReadings)){
@@ -17718,7 +17732,20 @@ function meterFindSeriesWhiteReading(readings){
  return list.find(rd=>{
   if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
   const name=String(rd.name||'').toLowerCase();
-  return meterReadingIsGreyscale(rd) && (((rd.ire||0)===100) || name==='white');
+  // Standard ire==100 / name==='white' match. Plus SDR26's 109% legal
+  // peak (the SDR26 table's "full white" code -- 109 IRE @ 10-bit 1023
+  // is the SDR equivalent of HDR's 100%; the autocal calibrates it as
+  // the white reference and the chart's target-curve must use its Y
+  // as the peak, otherwise every lower patch shows a wrong target Y).
+  // The autocal worker tags 109 with autocal_legal_white_anchor /
+  // autocal_white_reference; honour those flags AND a direct ire==109
+  // match (some builds store rd.ire as a STRING '109', so coerce).
+  if(!meterReadingIsGreyscale(rd)) return false;
+  const _rdIre=Number(rd.ire);
+  if(((rd.ire||0)===100) || name==='white') return true;
+  if(rd.autocal_legal_white_anchor||rd.autocal_white_reference) return true;
+  if(Number.isFinite(_rdIre) && Math.abs(_rdIre-109)<0.05) return true;
+  return false;
  });
 }
 
