@@ -13534,19 +13534,9 @@ function meterFindMeasuredWhiteReading(){
   const g=(rd.g_code!=null)?rd.g_code:rd.g;
   const b=(rd.b_code!=null)?rd.b_code:rd.b;
   if(r!=null && g!=null && b!=null){
-   if(!(((rd.ire||0)===100) || name==='white')) {
-    // SDR26 legal-peak match: ire==109 on an SDR layout is the table's
-    // full-white code. Same RGB-equality check as the 100% case.
-    const _layout=(rd.ddc_layout||rd.series_mode||'');
-    if(!(String(_layout).toLowerCase().indexOf('sdr')>=0 && Math.abs((rd.ire||0)-109)<0.05)) return false;
-   }
-   return Number(r)===Number(g) && Number(g)===Number(b);
+   return ((rd.ire||0)===100 || name==='white') && Number(r)===Number(g) && Number(g)===Number(b);
   }
-  if(((rd.ire||0)===100) || name==='white') return ((rd.Y||0)>0 || (rd.X||0)>0 || (rd.Z||0)>0);
-  // SDR26 109 path: also accept when no codes are present
-  const _layout2=(rd.ddc_layout||rd.series_mode||'');
-  if(String(_layout2).toLowerCase().indexOf('sdr')>=0 && Math.abs((rd.ire||0)-109)<0.05) return ((rd.Y||0)>0 || (rd.X||0)>0 || (rd.Z||0)>0);
-  return false;
+  return (rd.ire==null || Number(rd.ire)===100 || name==='white') && ((rd.Y||0)>0 || (rd.X||0)>0 || (rd.Z||0)>0);
  };
  if(isWhiteReading(meterWhiteReading)) return meterWhiteReading;
  if(Array.isArray(meterReadings)){
@@ -17726,17 +17716,7 @@ function meterFindSeriesWhiteReading(readings){
  return list.find(rd=>{
   if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
   const name=String(rd.name||'').toLowerCase();
-  // Standard ire==100 / name==='white' match. Plus SDR26's 109% legal
-  // peak (the SDR26 table's "full white" code -- 109 IRE @ 10-bit 1023
-  // is the SDR equivalent of HDR's 100%; the autocal calibrates it as
-  // the white reference and the chart's target-curve must use its Y
-  // as the peak, otherwise every lower patch shows a wrong target Y).
-  if(meterReadingIsGreyscale(rd)){
-   if(((rd.ire||0)===100) || name==='white') return true;
-   const _layout=(rd.ddc_layout||rd.series_mode||'');
-   if(String(_layout).toLowerCase().indexOf('sdr')>=0 && Math.abs((rd.ire||0)-109)<0.05) return true;
-  }
-  return false;
+  return meterReadingIsGreyscale(rd) && (((rd.ire||0)===100) || name==='white');
  });
 }
 
