@@ -14427,9 +14427,25 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
  if(!Number.isFinite(tYn)||tYn<0||!(peak>0)) return null;
  const Lb=Math.max(0,Number(blackLevel)||0);
  if(tYn<=0) return Lb>0?Lb:0;
+ // SDR headroom clamp: signals > 1.0 encode headroom that the panel
+ // cannot lift above peak white. The SDR26 step table bakes the
+ // OLD gamma-2.2 target_Yn for the 105 anchor as (105/100)^2.2 =
+ // 1.1133, which a chart that reads target_Yn through this fn then
+	// scales by the calibrated 109 peak -- producing a target line
+	// that SPIKES ABOVE the 109 peak at 105 IRE (e.g. 1.1133 * 188
+	// = 209 nits on a panel that maxes at 188 nits at 109). The chart
+	// renders that spike as a "PQ curve" -- sharp rise at low IRE,
+	// plateau near top -- even though the actual target_gamma is
+	// bt1886. Clamp tYn to 1.0 for SDR signals above 1.0 so the
+	// chart's target line stays at or below the calibrated peak.
+ // (HDR/DV signals above 1.0 are meaningful -- 109% headroom codes
+	// higher than peak-white for HDR tone mapping -- and are NOT
+	// clamped here.)
+ const isSdrMode=!(typeof meterChartIsHdr==='function'&&meterChartIsHdr())&&!(typeof meterChartIsDv==='function'&&meterChartIsDv());
+ const tYnClamped=(isSdrMode && tYn>1.0) ? 1.0 : tYn;
  const targetGamma=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
  if(!meterChartIsHdr()&&!meterChartIsDv()&&targetGamma==='bt1886'&&Lb>0){
-  const signal=Math.pow(Math.max(0,tYn),1/2.4);
+  const signal=Math.pow(Math.max(0,tYnClamped),1/2.4);
   const y=bt1886Eotf(signal,peak,Lb);
   if(Number.isFinite(y)&&y>=0) return y;
  }
@@ -14439,7 +14455,7 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
  // PQ target would fall below the black floor are clamped to Lb, matching the
  // physical constraint that the display cannot produce less than its black
  // floor. This is analogous to how the BT.1886 path above maps to [Lb,peak].
- return Math.max(tYn*peak,Lb);
+ return Math.max(tYnClamped*peak,Lb);
 }
 
 function meterGreyChartTargetXYZForReading(reading){
