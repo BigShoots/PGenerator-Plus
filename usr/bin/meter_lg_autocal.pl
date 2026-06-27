@@ -14728,6 +14728,135 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	return undef;
 }
 
+# === SDR26 autocal: 1D DPG-driven greyscale convergence loop =============
+# Mirror of lg_autocal_26_run_hdr20_dpg_greyscale above, scoped to the SDR26
+# layout. The convergence math is the same (read -> compute gain -> DAMP ->
+# build LUT -> upload), but:
+#   - the gain fn is lg_autocal_26_sdr26_dpg_gain (BT.709/D65 XYZ->linear-RGB
+#     projection) instead of the HDR20 Display-P3 projection.
+#   - the upload carries ddc_layout=>"sdr26" and signal_mode=>"sdr" so the
+#     pgenerator-lg helper sends the SDR CAL_START payload (no HDR float)
+#     and the BT.709 identity 3x3 gamut matrix.
+#   - gamma is plain 2.2 (no PQ EOTF), so there is no probe-up at low IRE,
+#     no EOTF-aware gamma refinement, no white reduce-to-lowest special case
+#     (SDR doesn't have the PQ ceiling issue that drives the HDR 100%
+#     reduce-to-lowest). Anchor budgets: 6 default, 12 for IRE<5%,
+#     6 for the white cluster (99/105/109). Acceptance dE 0.3 (tighter than
+#     HDR's 0.4 -- SDR with gamma 2.2 and a tighter anchor mapping converges
+#     into the meter noise floor faster).
+# State-key prefix is sdr_1d_dpg_ (matching the existing SDR DPG helpers) so
+# the SDR path's JSON state is distinguishable from the HDR path's
+# hdr20_1d_dpg_ keys when both are loaded into the WebUI.
+
+# Compute the target luminance for an SDR26 anchor. SDR uses plain gamma 2.2
+# (no PQ EOTF, no BT.1886 unless an explicit BT.1886 target_gamma is
+# configured -- the reference SDR workflow uses 2.2 across all 26 anchors).
+# This is a thin wrapper around target_luminance_for_step that pins the
+# signal_mode to "sdr" and the gamma to 2.2; the heavy lifting (BT.1886
+# black-floor handling, stimulus > 100% clamping, signal clipping) is already
+# in target_luminance_for_step.
+sub lg_autocal_26_sdr26_dpg_compute_target {
+ my ($white_y,$rs,$black_y)=@_;
+ return undef unless(defined($white_y) && $white_y+0 > 0);
+ return undef unless(ref($rs) eq "HASH");
+ return target_luminance_for_step($white_y,$rs,"2.2","sdr",$black_y);
+}
+
+# SDR26 damp fn. Identical envelope to the HDR inline $damp closure: sqrt(gain)
+# clamped to [floor, 1.25]. ASSUMPTION: SDR with plain gamma 2.2 does not have
+# the PQ-vs-2.2 mismatch that motivates HDR's EOTF-aware damp; the simple
+# sqrt(gain) is well-suited for gamma 2.2 anchors. The floor default is 0.8
+# for body IREs and 0.5 for low IRE (default <5%); the ceiling is hard-coded
+# at 1.25 so a single iter cannot overshoot.
+sub lg_autocal_26_sdr26_dpg_damp {
+ my ($g,$floor,$exp)=@_;
+ $floor=0.8 unless(defined($floor));
+ $exp=0.5 unless(defined($exp));
+ $g=1 unless(defined($g) && $g+0 > 0);
+ my $s=$g**$exp;
+ $s=$floor if($s+0 < $floor);
+ $s=1.25 if($s+0 > 1.25);
+ return $s+0;
+}
+
+# SDR26 iteration budget for an anchor. Returns the per-anchor inner-iter
+# budget. Default 6 iters for body IREs (incl. the white cluster 99/105/109
+# -- SDR doesn't need HDR's 16-iter 100% peak budget) and 12 iters for low
+# IRE (default <5%, where meter noise at very low nits can take more
+# iterations to converge through). ASSUMPTION: gamma 2.2's noise floor at
+# low IRE is gentler than PQ's, so 12 iters is sufficient (vs HDR's 16).
+sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
+ my ($config,$anchor_ire)=@_;
+ my $default_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters"}) : 6;
+ $default_iters=1 if($default_iters < 1);
+ $default_iters=12 if($default_iters > 12);
+ my $low_iters=defined($config->{"lg_autocal_sdr26_dpg_inner_iters_low"}) ? int($config->{"lg_autocal_sdr26_dpg_inner_iters_low"}) : 12;
+ $low_iters=1 if($low_iters < 1);
+ $low_iters=24 if($low_iters > 24);
+ my $low_threshold=defined($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}+0) : 5.0;
+ $low_threshold=1.0 if($low_threshold < 1.0);
+ $low_threshold=10.0 if($low_threshold > 10.0);
+ my $ire=defined($anchor_ire) ? ($anchor_ire+0) : 50.0;
+ return ($ire+0 < $low_threshold) ? $low_iters : $default_iters;
+}
+
+# SDR26 acceptance threshold (dE). Once any patch's dE drops below this value
+# the patch is "good enough" -- snapshot it, try ONE more refinement move, and
+# if that move worsens dE revert to the best + re-read + move on. TIGHTER
+# than HDR's 0.4 (default 0.3): SDR with plain gamma 2.2 and the SDR26
+# 26-point anchor mapping converges into the meter noise floor faster than
+# HDR with PQ, so a tighter acceptance threshold saves iterations on anchors
+# that are already inside their target.
+sub lg_autocal_26_sdr26_dpg_accept_skip_threshold {
+ my ($config)=@_;
+ my $t=defined($config->{"lg_autocal_sdr26_dpg_acceptance_de"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_de"}+0) : 0.3;
+ $t=0.05 if($t+0 < 0.05);
+ $t=5.0 if($t+0 > 5.0);
+ return $t;
+}
+
+# Single-socket SDR26 commit: open a fresh helper invocation with
+# keep_calibration_mode=0 AND calibration_mode_active=0 so the helper sends
+# CAL_START, gamma LUT disables, 1D_DPG_DATA, and CAL_END all on its own
+# socket. The TV binds the DPG to the picture-mode profile on that socket's
+# CAL_END. Mirrors lg_autocal_26_commit_hdr20_1d_dpg_single_socket (lines
+# 13384-13422) but with ddc_layout=>"sdr26" and signal_mode=>"sdr" so the
+# helper takes the SDR branch (no HDR float payload, BT.709 matrix).
+# Uses the converged DPG already in $state->{sdr_1d_dpg_data} (set by the
+# convergence loop on every upload).
+sub lg_autocal_26_commit_sdr_1d_dpg_single_socket {
+ my ($config,$state,$picture_mode)=@_;
+ log_line("SDR26 1D DPG single-socket commit: entered state=".((ref($state) eq "HASH")?"ok":"missing")." config_ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." picture_mode=".($picture_mode//"undef"));
+ return 0 unless(ref($state) eq "HASH");
+ my $effective_ddc_layout=$config->{"ddc_layout"} // $state->{"ddc_layout"} // "";
+ return 0 unless($effective_ddc_layout eq "sdr26");
+ my $dpg_data=$state->{"sdr_1d_dpg_data"};
+ return 0 unless(defined $dpg_data && ref($dpg_data) eq "ARRAY" && @$dpg_data == 3072);
+ my $response=api_json("POST","/api/lg/1d-dpg/upload",{
+  picture_mode=>$picture_mode,
+  ddc_layout=>"sdr26",
+  signal_mode=>"sdr",
+  dpg_data=>$dpg_data,
+  keep_calibration_mode=>JSON::PP::false,
+  calibration_mode_active=>JSON::PP::false,
+  helper_timeout=>90,
+ },120);
+ my $status_ok=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+ my $cal_start_real=(ref($response) eq "HASH" && ref($response->{"cal_start_response"}) eq "HASH"
+  && ($response->{"cal_start_response"}{"type"}//"") eq "response") ? 1 : 0;
+ my $cal_end_real=(ref($response) eq "HASH" && ref($response->{"cal_end_response"}) eq "HASH"
+  && ($response->{"cal_end_response"}{"type"}//"") eq "response") ? 1 : 0;
+ my $committed=($status_ok && $cal_start_real && $cal_end_real) ? 1 : 0;
+ $state->{"sdr_1d_dpg_single_socket_commit"}=$committed ? JSON::PP::true : JSON::PP::false;
+ my $resp_msg=(ref($response) eq "HASH" && $response->{"message"}) ? $response->{"message"} : (defined $response ? "unexpected response" : "endpoint unreachable");
+ $state->{"sdr_1d_dpg_single_socket_commit_message"}=$committed
+  ? "committed on one socket (CAL_START and CAL_END both real responses): ".$resp_msg
+  : sprintf("commit NOT made: status_ok=%d cal_start_real=%d cal_end_real=%d %s",$status_ok,$cal_start_real,$cal_end_real,$resp_msg);
+ log_line("SDR26 1D DPG single-socket commit: ".$state->{"sdr_1d_dpg_single_socket_commit_message"});
+ write_state($state);
+ return $committed;
+}
+
 sub park_black_for_settle {
  my ($config,$state,$message,$override_ms)=@_;
  $message||="Settling display on black before committed-state verification";
