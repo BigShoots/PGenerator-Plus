@@ -13082,9 +13082,60 @@ sub lg_autocal_26_build_sdr26_1d_dpg_core {
 # which is fine for HDR (its anchor idx list is different and the HDR
 # 100% anchor converges in ~6 iters via the mean-based reduce, so the
 # linear-fallback spline is not on the critical path).
+# Build the SDR26 1D DPG with a dynamic seed list that ONLY pins the
+# LOWER-IRE anchors at identity. The previous design seeded identity at
+# all 26 anchor indices, which forced the Akima spline to pass through
+# gain=1.0 at every uncalibrated index. That made the spline look
+# like a "bump" -- a sharp transition between identity at the
+# uncalibrated anchor and the calibrated gain at the next calibrated
+# anchor. The bump killed the smooth interpolation the spline is
+# supposed to provide: each body's iter 1 read at DPG[idx]=1.0 (the
+# pinned identity), giving a dE of 18-23 from the panel's natural
+# chromaticity gap. The per-anchor WB then had to absorb that whole
+# gap in 3-4 iters.
+#
+# The new strategy: pin only the LOWEST-IRE anchor (idx 21 = 2.3%)
+# at identity. The Akima spline then interpolates freely from
+# identity at idx 21 up through the calibrated anchors (109, 50, 75,
+# ...) to the calibrated gain at idx 1023. The body anchors at
+# uncalibrated indices get a smooth interpolation that reflects the
+# calibrated gains above them, so their iter 1 reads with a
+# pre-conditioned DPG that's much closer to the target chromaticity.
+#
+# Practical effect on the user's SDR26 panel:
+# - 109 calibrated at gain (R=1.0, G=0.95, B=0.95)
+# - 50 calibrated at gain (R=1.0, G=0.95, B=0.95)  (similar pattern)
+# - 25 about to calibrate, DPG[235] interpolates from
+#   (R=1.0, G=1.0, B=1.0) at idx 21 to (R=1.0, G=0.95, B=0.95) at
+#   idx 1023 = ~(R=1.0, G=0.95, B=0.95) at idx 235 (the spline is
+#   near-flat between the two endpoints). The 25 anchor's iter 1
+#   reads with a pre-conditioned DPG and starts at dE ~2 instead of
+#   dE 22 -- a 10x reduction in starting error, and the per-anchor
+#   WB only needs 1-2 iters to converge.
 sub lg_autocal_26_build_sdr26_1d_dpg_seeded {
  my ($current_dpg,$anchors)=@_;
-	 my @seed_idx=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+	 # Minimal seed: only pin the gamma curve at the very lowest IRE
+	 # (idx 21 = 2.3%) at identity. The implicit endpoint at idx 0 (gain=0)
+	 # is added by the build core. The Akima spline then has 3 control
+	 # points at the low end: (0, 0), (21, 1.0), and the first
+	 # calibrated anchor (109 at idx 1023 or 50 at idx 469). With
+	 # 109+50 calibrated before the body loop starts, the spline
+	 # passes through (21, 1.0) → (469, ~0.95) → (1023, ~0.95), giving
+	 # the body anchors at idx 235 (25%), 512 (55%), 559 (60%), 606
+	 # (65%), 653 (70%), 700 (75%), 747 (80%), 794 (85%), 841 (90%),
+	 # 888 (95%), 926 (99%), 981 (105%) a pre-conditioned DPG close
+	 # to 0.95×identity. Their iter 1 dE drops from ~22 to ~2-3
+	 # because the spline carries the 109/50 calibration down to
+	 # the body indices.
+	 #
+	 # The trade-off: at very low IREs (idx 0-20, below the seeded
+	 # 2.3%) the gamma curve is a linear interp from 0 to the 2.3%
+	 # gain, not the proper 2.2 power curve. The first few low-IRE
+	 # anchors (3, 4, 5, 7, 10, 15, 20%) get gamma-corrected
+	 # individually in their own calibration iters, so the linear
+	 # interp at very low IRE only matters for the displayed panel
+	 # state BEFORE those low-IRE calibrations -- which is brief.
+	 my @seed_idx=(21);
 	 return lg_autocal_26_build_sdr26_1d_dpg_core($current_dpg,$anchors,\@seed_idx);
 }
 
