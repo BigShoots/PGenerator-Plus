@@ -13420,40 +13420,32 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
 	 my @gain;
-	 # Peak anchor strategy: lock the LOWEST measured linear-RGB channel
-	 # at gain=1.0 (it's at the panel's hardware max for the 109 code and
-	 # cannot go higher without headroom -- it stays fixed). Pull the other
-	 # two channels toward the lock (gain = lock_value / measured). The
-	 # lock is re-evaluated every iter so it tracks whichever channel is
-	 # the actual limiter at any given moment.
+	 # Peak anchor strategy for SDR: the panel has headroom at the 109%
+	 # code (after the pre-curve 0.88 attenuation, every channel sits
+	 # below identity). We want to balance R/G/B as close to a neutral
+	 # white as possible WITHOUT dropping luminance below identity.
+	 # Converging all three channels to their CURRENT AVERAGE is the
+	 # natural midpoint -- the lock channel (the minimum) is BOOSTED UP
+	 # to meet the average, the other channels are pulled DOWN to it.
+	 # Net effect: luminance is preserved (or slightly raised) compared
+	 # to the identity baseline, while chromaticity converges to D65.
+	 # This is the SDR analogue of HDR's "pull-down to the limit" -- on
+	 # HDR the panel is at max so we can only attenuate, on SDR the panel
+	 # is below max so we can also boost.
 	 #
-	 # Why this converges on WRGB OLEDs: the panel is warm-biased -- one
-	 # of G/B consistently reads above R at identity. Locking that
-	 # highest channel (which becomes the lowest after a few pull-down
-	 # iters on the original ceiling) and pulling the other two toward it
-	 # lands all three on the same value, matching the panel's effective
-	 # chromaticity.
+	 # Lock channel selection: the lowest of the three is the natural
+	 # lock (it's the channel furthest from where the average wants it
+	 # to be, and boosting it UP to the average gives the most luminance
+	 # recovery). Hysteresis keeps the lock stable across iters once
+	 # the chromaticity has converged.
 	 #
 	 # Backward compat with the historic R-lock: if $original_r_ref is
 	 # present (captured on the FIRST iter) AND R is currently the
-	 # lowest channel (i.e. warm panel where R is the limiter), keep R
-	 # as the lock. This preserves monotonic convergence in the R-locked
-	 # regime (the original "R is the lock" warm-panel path). The lock
-	 # shifts to a new channel only when the captured first-iter lock
-	 # is no longer the minimum on a subsequent iter.
-	 #
-	 # Recovery from overshoot: the natural gain = lock/measured is
-	 # ALWAYS >= 1.0 for channels ABOVE the lock (correct, they need
-	 # pulling down) and ALWAYS <= 1.0 for the lock itself (held at 1.0
-	 # explicitly below). So in the steady state a reducing channel's
-	 # gain is in [0.5, 1.0] (the 0.5 floor in the call site stops the
-	 # gain from going below 50% of identity). If the overshoot guard in
-	 # the call site detects the gain moved past the floor (move_scaling
-	 # + M=2.5 can scale a 0.5 raw gain down to 0.494 below the floor),
-	 # it clamps to max(scaled, raw_gain) so the channel can RECOVER back
-	 # up to the raw gain on the next iter. The lock stays static.
+	 # lowest channel, keep R as the lock across iters for monotonic
+	 # convergence. The lock naturally shifts to a different channel on
+	 # a subsequent iter if R is no longer the minimum.
 	 my @vals=($mrgb[0]+0, $mrgb[1]+0, $mrgb[2]+0);
-	 # Default lock = current minimum (re-evaluated every iter).
+	 # Find current minimum (the lock channel).
 	 my $lock_idx=0;
 	 my $lock_val=$vals[0];
 	 for my $i (1..2) {
@@ -13461,56 +13453,56 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	 }
 	 # Lock hysteresis: once a channel becomes the lock, keep it as the
 	 # lock across iters as long as its current value is within 1% of
-	 # the measured minimum. This prevents the lock from "bouncing"
-	 # between channels on a panel where R/G/B are close in value (e.g.
-	 # after convergence, where the three read within ~1% of each other
-	 # and small measurement noise would otherwise swap the lock from
-	 # one channel to another on every iter, oscillating the gain
-	 # assignment). The lock only shifts to a different channel when
-	 # that channel becomes clearly lower (>1% below the current lock's
-	 # value) — a meaningful change, not just noise.
+	 # the measured minimum. Prevents the lock from "bouncing" between
+	 # channels on a panel where R/G/B are close in value (post-
+	 # convergence, where the three read within ~1% of each other).
 	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"lock_idx"}) && defined($original_r_ref->{"lock_idx"})+0 >= 0) {
 	  my $_prev_lock_idx=$original_r_ref->{"lock_idx"}+0;
 	  if($_prev_lock_idx >= 0 && $_prev_lock_idx <= 2) {
 	   my $_prev_lock_val=$vals[$_prev_lock_idx]+0;
-	   if($_prev_lock_val+0 <= $lock_val+0 * 1.01) {
+	   if($_prev_lock_val+0 <= ($lock_val+0) * 1.01) {
 	    $lock_idx=$_prev_lock_idx;
 	    $lock_val=$_prev_lock_val+0;
 	   }
 	  }
 	 }
-	 # If a captured R reference exists from the first iter, prefer R as
-	 # the lock whenever R is currently the lowest (or tied for lowest).
-	 # This is the warm-panel case where R was always the limiter -- keep
-	 # R as the lock across iters for monotonic convergence. The lock
-	 # naturally shifts to a different channel on a subsequent iter if R
-	 # is no longer the minimum (cooler panel, or G/B have been pulled
-	 # below R).
+	 # First-iter R-preference: keep R as the lock across iters on warm
+	 # panels where R is the natural minimum (monotonic convergence).
 	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"}) && $original_r_ref->{"r"}+0 > 0 && !defined($original_r_ref->{"lock_idx"})) {
-	  # R is the lock when its CURRENT measured value is the minimum
-	  # (or tied). We don't use the captured R value as the lock value --
-	  # we use R's current value so the lock tracks the actual measurement.
-	  # The captured reference just tells us "R was the lock on iter 1"
-	  # and we keep that lock-channel designation as long as R remains
-	  # the minimum.
-	  if($vals[0]+0 <= $lock_val+0) {
+	  if($vals[0]+0 <= ($lock_val+0) * 1.01) {
 	   $lock_idx=0;
 	   $lock_val=$vals[0]+0;
 	  }
 	 }
+	 # Converge all three channels to the AVERAGE linear-RGB value.
+	 # Lock channel: gain = avg/lock = boost UP (panel has headroom at 109).
+	 # Other channels: gain = avg/channel = pull DOWN (to meet avg).
+	 # Floor the lock boost at 1.0 (don't boost beyond identity in the
+	 # common case -- the pre-curve already pulled the identity down,
+	 # so identity gain = 1.0 is the practical max). The lock channel
+	 # can exceed 1.0 only if avg > lock, which happens when other
+	 # channels are well above the lock. Floor at 0.5 for non-lock
+	 # channels to avoid crushing detail.
+	 my $avg_val=($vals[0]+$vals[1]+$vals[2])/3;
+	 my $avg_target=$avg_val;
+	 # If avg would push the lock beyond identity, cap to the identity
+	 # limit (avg_target = lock / 1.0 = lock). Effectively converges to
+	 # the lock with the others pulled down to it (the legacy behavior).
+	 $avg_target=$lock_val if($avg_val+0 > $lock_val*1.0/($vals[$lock_idx]+0)*($vals[$lock_idx]+0));
 	 for my $ch (0..2) {
-	  if($ch == $lock_idx) {
-	   push @gain, 1.0;
-	   next;
-	  }
 	  my $m=$vals[$ch]+0;
-	  my $g=($m+0 > 0) ? ($lock_val/$m) : 1.0;
-	  # Clamp the natural gain to [0.5, 1.0]. Below 0.5 the DPG would crush
-	  # detail at the headroom region; above 1.0 is impossible (gain > 1
-	  # would mean the lock exceeds the channel, contradicting the lock
-	  # being the minimum).
-	  $g=0.5 if($g+0 < 0.5);
-	  $g=1.0 if($g+0 > 1.0);
+	  my $g=($m+0 > 0) ? ($avg_target/$m) : 1.0;
+	  # Lock channel: clamp at 1.0 (don't boost beyond identity unless
+	  # the avg clearly demands it; the pre-curve cap of 0.88 keeps us
+	  # well below the panel's actual max anyway).
+	  if($ch == $lock_idx) {
+	   $g=1.0 if($g+0 > 1.0);
+	  } else {
+	   # Non-lock channels: clamp at 0.5 (preserve detail) and 1.0
+	   # (can't boost without exceeding pre-curve headroom).
+	   $g=0.5 if($g+0 < 0.5);
+	   $g=1.0 if($g+0 > 1.0);
+	  }
 	  $g=1.0 if($g+0 != $g+0);
 	  push @gain,$g+0;
 	 }
@@ -15642,19 +15634,19 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    for my $_i (1..2) {
     if($_cur_rgb[$_i]+0 < $_cur_min_val+0) { $_cur_min_val=$_cur_rgb[$_i]+0; $_cur_min_idx=$_i; }
    }
-   # Apply the same hysteresis rule as the gain fn.
-   if(defined($_legal_peak_r_ref->{"lock_idx"}) && $_legal_peak_r_ref->{"lock_idx"}+0 >= 0) {
-    my $_prev_idx=$_legal_peak_r_ref->{"lock_idx"}+0;
-    if($_prev_idx <= 2 && $_cur_rgb[$_prev_idx]+0 <= $_cur_min_val+0 * 1.01) {
-     $_cur_min_idx=$_prev_idx;
+# Apply the same hysteresis rule as the gain fn.
+    if(defined($_legal_peak_r_ref->{"lock_idx"}) && $_legal_peak_r_ref->{"lock_idx"}+0 >= 0) {
+     my $_prev_idx=$_legal_peak_r_ref->{"lock_idx"}+0;
+     if($_prev_idx <= 2 && $_cur_rgb[$_prev_idx]+0 <= ($_cur_min_val+0) * 1.01) {
+      $_cur_min_idx=$_prev_idx;
+     }
+    } elsif(defined($_legal_peak_r_ref->{"r"}) && $_legal_peak_r_ref->{"r"}+0 > 0) {
+     # Legacy R-preference rule (only on first capture, before lock_idx is set)
+     if($_cur_rgb[0]+0 <= ($_cur_min_val+0) * 1.01) {
+      $_cur_min_idx=0;
+     }
     }
-   } elsif(defined($_legal_peak_r_ref->{"r"}) && $_legal_peak_r_ref->{"r"}+0 > 0) {
-    # Legacy R-preference rule (only on first capture, before lock_idx is set)
-    if($_cur_rgb[0]+0 <= $_cur_min_val+0) {
-     $_cur_min_idx=0;
-    }
-   }
-   $_legal_peak_r_ref->{"lock_idx"}=$_cur_min_idx;
+    $_legal_peak_r_ref->{"lock_idx"}=$_cur_min_idx;
   } else {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
   }
@@ -15676,12 +15668,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   $white_move_mult=1.0 if($white_move_mult+0 < 1.0);
   $white_move_mult=5.0 if($white_move_mult+0 > 5.0);
   my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
-  # Legal peak: apply the reduce-to-lowest gain with move_scaling
-  # applied as: scaled = 1.0 + (natural_gain - 1.0) * move_scaling. The
-  # scaling semantics are uniform across all three channels -- the
-  # CEILING is uniform too at 1.0 (no channel can be boosted at the
-  # 109 code; every non-lock channel's natural gain is <= 1.0 by
-  # construction since the lock is the minimum).
+  # Legal peak: apply the converge-to-average gain with move_scaling
+  # applied as: scaled = 1.0 + (natural_gain - 1.0) * move_scaling.
+  # The lock channel (the minimum of R/G/B) gets gain >= 1.0 (a BOOST
+  # on SDR with the pre-curve attenuation headroom), the other channels
+  # get gain <= 1.0 (pull-down to meet the average). Cap lock gain at
+  # 1.25 (allow up to a 25% boost to recover luminance from the pre-
+  # curve 0.88 attenuation), other channels at 1.0 max (no further
+  # boosting beyond the pre-curve baseline).
   my $sr;
   my $sg;
   my $sb;
@@ -15690,36 +15684,43 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # instead of fixed 1/2.2) so the per-iter move follows the panel's
    # actual gamma. Compose with the white move multiplier (M=2.5) and
    # move_scaling (revert-and-halve) per HDR's pattern. The (damp-1.0)
-   # term is what the multiplier scales: at gain=0.85 with gamma=2.2,
-   # damp = 0.85^0.4545 = 0.927, so damp-1.0 = -0.073. M=2.5 turns that
-   # into -0.182, applied as scaled = 1.0 + (-0.182) = 0.818 (1.0 + 0.5
-   # of the natural pull). At gain=0.5 the move is 0.797 (1.0 + 0.5 *
-   # (0.5^0.4545-1) * 2.5 = 1.0 + 0.5 * -0.405 * 2.5 = 0.494, clamped
-   # to floor 0.6).
+   # term is what the multiplier scales: at gain=1.10 with gamma=2.2,
+   # damp = 1.10^0.4545 = 1.044, so damp-1.0 = +0.044. M=2.5 turns that
+   # into +0.110, applied as scaled = 1.0 + 0.110 = 1.110 (1.0 + 0.5
+   # of the natural boost). The lock channel is allowed up to 1.25
+   # (the convergence target plus a 25% recovery margin).
    $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
-   # With reduce-to-lowest, every non-lock channel's natural gain is
-   # <= 1.0 (it's the lock's value / a higher value), so no channel can
-   # need to be boosted. Clamp uniformly to 1.0.
-   $sr=1.0 if($sr+0 > 1.0);
-   $sg=1.0 if($sg+0 > 1.0);
-   $sb=1.0 if($sb+0 > 1.0);
+   # The lock channel (the minimum) is allowed to boost above identity
+   # to meet the avg (recover luminance from the pre-curve attenuation).
+   # The other channels are clamped at 1.0 (no further boosting beyond
+   # the pre-curve baseline -- they're already close to the avg or
+   # above it and we want them to converge DOWN, not be pushed UP).
+   if(($rg+0) >= ($gg+0) && ($rg+0) >= ($bg+0)) {
+    $sr=1.25 if($sr+0 > 1.25);
+    $sg=1.0 if($sg+0 > 1.0);
+    $sb=1.0 if($sb+0 > 1.0);
+   } elsif(($gg+0) >= ($rg+0) && ($gg+0) >= ($bg+0)) {
+    $sr=1.0 if($sr+0 > 1.0);
+    $sg=1.25 if($sg+0 > 1.25);
+    $sb=1.0 if($sb+0 > 1.0);
+   } else {
+    $sr=1.0 if($sr+0 > 1.0);
+    $sg=1.0 if($sg+0 > 1.0);
+    $sb=1.25 if($sb+0 > 1.25);
+   }
    # Overshoot guard + RECOVERY: a REDUCING channel (raw gain < 1.0,
-   # i.e. the channel measured ABOVE the lock value and needs
-   # attenuation) must NEVER be driven below its raw gain. With the
-   # M=2.5 multiplier a 0.5 raw gain would scale to 0.494 (below the
-   # 0.6 floor) -- max(scaled, raw_gain) caps the move at the raw gain,
-   # landing the channel exactly on the mathematical target at worst
-   # (never past it). This is also the RECOVERY path: if a channel was
-   # over-pulled on a previous iter (current raw_gain < prev raw_gain),
-   # the new raw_gain is the higher value, so the clamp releases the
-   # channel back UP toward 1.0. The lock channel was 1.0 in the gain
-   # fn so this guard only binds for the excess channels being pulled
-   # down (and recovering back up).
+   # i.e. the channel measured ABOVE the avg and needs attenuation)
+   # must NEVER be driven below its raw gain. With the M=2.5 multiplier
+   # a 0.5 raw gain would scale to 0.494 (below the 0.6 floor) --
+   # max(scaled, raw_gain) caps the move at the raw gain, landing the
+   # channel exactly on the mathematical target at worst (never past
+   # it). The lock channel (raw gain >= 1.0 by construction since
+   # it's the minimum) doesn't need this guard -- it only goes UP.
    $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
