@@ -6677,11 +6677,21 @@ sub webui_cec_direct_status (@) {
  # directly to /dev/cec0 without requiring cec-ctl). On Biasi images
  # cec-ctl is not installed, so pgenerator-cec is the only path that
  # actually returns real TV power state.
+ #
+ # Pass --no-power so pgenerator-cec skips the blocking GIVE_DEVICE_POWER_STATUS
+ # ioctl (which can stall 200-2000ms when the TV is off or unresponsive).
+ # The power cache is updated only when the webui explicitly requests it
+ # (see webui_cec_direct_status_power).
  my $output=`timeout $timeout $cec_bin status 2>/dev/null`;
  if((!defined($output) || $output eq "" || $output !~ /^tv_power:/m) && -x "/usr/sbin/pgenerator-cec") {
-  $output=`timeout $timeout /usr/sbin/pgenerator-cec status 2>/dev/null`;
+  $output=`timeout $timeout /usr/sbin/pgenerator-cec status --no-power 2>/dev/null`;
  }
  return undef if(!defined($output) || $output eq "");
+ # When --no-power is used pgenerator-cec prints "tv_power:  (skipped)"
+ # Treat that as "use the cache" — don't pretend we have new info.
+ if($output =~ /^tv_power:\s+\(skipped\)/m) {
+  return undef;
+ }
  my ($power)=($output =~ /^tv_power:\s*([^\r\n]+)/m);
  $power=&webui_cec_power_label($power);
  return undef if($power eq "unknown");
@@ -6748,23 +6758,47 @@ sub webui_cec (@) {
  if($cmd!~/^(status|power|on|off|active|inactive|volup|voldown|mute|input|scan)$/) {
   return '{"status":"error","message":"Invalid CEC command: '.$cmd.'"}';
  }
- # scan returns JSON directly from pgcec scan-json
- if($cmd eq "scan") {
-  my $json=`timeout 5 $cec_bin scan-json 2>/dev/null`;
-  my $rc=$?>>8;
-  chomp($json);
-  $json=~s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g;
-  if($rc == 0 && $json=~/^\{/) {
-   if(open(my $fh,">",$cec_scan_cache)) {
-    print $fh $json;
-    close($fh);
-   }
-   return "{\"status\":\"ok\",\"data\":$json}";
+# scan returns JSON directly from pgcec scan-json
+  if($cmd eq "scan") {
+   my $json=`timeout 5 $cec_bin scan-json 2>/dev/null`;
+   my $rc=$?>>8;
+   chomp($json);
+   $json=~s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g;
+   if($rc == 0 && $json=~/^\{/) {
+    if(open(my $fh,">",$cec_scan_cache)) {
+     print $fh $json;
+     close($fh);
+    }
+    return "{\"status\":\"ok\",\"data\":$json}";
 	  } else {
+	   # pgcec scan-json is broken on Biasi (no python3 + missing --list-devices
+	   # in cec-ctl 1.12). Fall back to a quick pgenerator-cec status scan
+	   # which always works and gives us phys_addr/log_addrs/osd_name.
+	   my $scan_out=`timeout 3 /usr/sbin/pgenerator-cec status --no-power 2>/dev/null`;
+	   my $fallback="";
+	   if(defined($scan_out) && $scan_out ne "") {
+	    my ($phys)=($scan_out =~ /^phys_addr:\s*([^\s]+)/m);
+	    my ($la)=($scan_out =~ /^log_addrs:\s*\d+\s*\[\s*(\d+)\s*\]\s*\(mask=0x[0-9a-fA-F]+\)/m);
+	    my ($osd)=($scan_out =~ /^osd_name:\s*([^\r\n]+)/m);
+	    $phys="" if(!defined($phys));
+	    $la="" if(!defined($la));
+	    $osd="" if(!defined($osd));
+	    # Build a minimal pgcec-style JSON for the cache
+	    $fallback=sprintf('{"self":{"phys":"%s","log":%s,"osd":"%s"},"tv":{"addr":0,"phys":"%s","log":0,"name":"%s","type":0}}',
+	                     $phys||"0.0.0.0", $la||"15", $osd||"PGenerator",
+	                     $phys||"0.0.0.0", $osd||"PGenerator");
+	    if($fallback=~/^\{/) {
+	     if(open(my $fh,">",$cec_scan_cache)) {
+	      print $fh $fallback;
+	      close($fh);
+	     }
+	     return "{\"status\":\"ok\",\"data\":$fallback}";
+	    }
+	   }
 	   $json=&_webui_json_escape($json);
 	   return "{\"status\":\"error\",\"message\":\"Scan failed\",\"output\":\"$json\"}";
 	  }
- }
+  }
 	 # status returns structured JSON
 	 if($cmd eq "status") {
 	  my ($cached_phys,$cached_log,$cached_osd,$cached_power,$cache_age)=&webui_cec_scan_cache_info($cec_scan_cache);
