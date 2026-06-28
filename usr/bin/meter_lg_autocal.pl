@@ -20146,8 +20146,8 @@ eval {
 			  # return an unreliable 0.0 (or a stray ambient spike). Read several
 			  # samples and median them so the black level is trustworthy BEFORE we
 			  # decide (below) whether it is true black or ambient-light noise. Count
-			  # via lg_autocal_black_reference_samples (default 3, clamped 1..5).
-			  my $_blk_samples=defined($config->{"lg_autocal_black_reference_samples"}) ? int($config->{"lg_autocal_black_reference_samples"}) : 3;
+			  # via lg_autocal_black_reference_samples (default 1, clamped 1..5).
+			  my $_blk_samples=defined($config->{"lg_autocal_black_reference_samples"}) ? int($config->{"lg_autocal_black_reference_samples"}) : 1;
 			  $_blk_samples=1 if($_blk_samples < 1);
 			  $_blk_samples=5 if($_blk_samples > 5);
 			  my @_blk_samples_read; my $black_error;
