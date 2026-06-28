@@ -24928,21 +24928,7 @@ eval {
 	 }
 	 write_state($state);
 	 autocal_completion_pattern_cleanup($config,$state) if(!cancelled());
-	 # CEC off after autocal (user-controllable, default OFF). Burns no
-	 # patches + turns the TV off when the calibration succeeds. Disabled
-	 # by default to avoid surprising operators; enable via
-	 # lg_autocal_26_cec_off_after=1 in the body. The cleanup pattern
-	 # is already on screen (stop/black) before this fires, so the TV
-	 # is in a safe state when it powers down.
-	 if(!cancelled() && $config->{"lg_autocal_26_cec_off_after"}) {
-	  log_line("autocal: CEC off requested (lg_autocal_26_cec_off_after=1)");
-	  my $cec_off=api_json("POST","/api/cec/off",{},15);
-	  if(ref($cec_off) eq "HASH" && ($cec_off->{"status"}||"") eq "ok") {
-	   log_line("autocal: CEC off sent OK");
-	  } else {
-	   log_line("autocal: CEC off failed: ".((ref($cec_off) eq "HASH" && $cec_off->{"message"}) ? $cec_off->{"message"} : "unknown"));
-	  }
-	 }
+
    1;
 } or do {
  my $err=$@ || "Auto Cal failed";
@@ -24953,12 +24939,6 @@ eval {
   $calibration_mode_active=0;
   set_state_calibration_mode($state,0,"");
  }
- # Burn-in protection: even on error/cancel, clear the patch to
- # stop/black so the panel doesn't sit on a bright calibration-state
- # patch indefinitely. The autocal_completion_pattern_cleanup fn is
- # no-op when patch_insert is disabled in the body (it always posts the
- # cleanup pattern regardless), so this is safe to call here.
- autocal_completion_pattern_cleanup($config,$state) if(ref($config) eq "HASH");
  $state->{"status"}=cancelled() ? "cancelled" : "error";
  $state->{"current_name"}=cancelled() ? "Auto Cal cancelled" : "Auto Cal error";
  $state->{"message"}=cancelled() ? "Auto Cal stopped" : $err;
