@@ -835,7 +835,7 @@ sub lg_helper_timeout (@) {
  }
  return 180 if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
  return 130 if($action eq "picture_reset");
- return 75 if($action eq "calibration_mode" || $action eq "hdr_tone_map_upload" || $action eq "hdr_calman_reset" || $action eq "sdr_calman_reset" || $action eq "1d_dpg_read");
+ return 75 if($action eq "calibration_mode" || $action eq "hdr_tone_map_upload" || $action eq "hdr_calman_reset" || $action eq "1d_dpg_read");
  return 80 if($action eq "1d_dpg_upload");
  return 60 if($action eq "picture_get");
  return 90;
@@ -851,7 +851,6 @@ sub lg_helper_timeout_message (@) {
  return "LG TV did not finish the HDR20 1D DPG upload within ${timeout}s." if($action eq "1d_dpg_upload");
  return "LG TV did not finish the HDR20 1D DPG readback within ${timeout}s." if($action eq "1d_dpg_read");
  return "LG TV did not finish the HDR calibration reset within ${timeout}s." if($action eq "hdr_calman_reset");
- return "LG TV did not finish the SDR calibration reset within ${timeout}s." if($action eq "sdr_calman_reset");
  return "LG TV did not finish the picture-mode reset within ${timeout}s." if($action eq "picture_reset");
  return "LG TV did not answer the picture-settings request within ${timeout}s." if($action eq "picture_get");
  return "LG TV command timed out after ${timeout}s.";
@@ -1850,37 +1849,6 @@ sub webui_lg_hdr_calman_reset (@) {
  return &lg_encode_json($result);
 }
 
-sub webui_lg_sdr_calman_reset (@) {
- my $body=shift;
- my $payload=&lg_decode_json($body);
- my $clients=&lg_load_clients();
- ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
-	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
-	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before resetting SDR calibration state.", needs_repair => &lg_json_true() });
-	 }
-	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting SDR calibration state." }) if(&lg_clients_disconnected($clients));
-	 my $ip=&lg_target_ip($payload,$clients);
- return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting SDR calibration state." }) if($ip eq "");
- my $client=&lg_primary_client($clients);
- my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
- return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting SDR calibration state." }) if($client_key eq "");
- my $result=&lg_helper_run({
-  action => "sdr_calman_reset",
-  ip => $ip,
-  client_key => $client_key,
-  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
-  ddc_layout => $payload->{"ddc_layout"}||"sdr26",
-  helper_timeout => int($payload->{"helper_timeout"}||0),
-  connect_timeout => 5,
- });
- &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
- if(&lg_picture_needs_repair($result)) {
-  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the SDR calibration reset again.";
-  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
- }
- return &lg_encode_json($result);
-}
-
 sub webui_lg_api (@) {
  my $path=shift;
  my $method=shift;
@@ -1917,9 +1885,6 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/hdr-calman-reset" && $method eq "POST") {
   return &webui_lg_hdr_calman_reset($body);
- }
- if($path eq "/api/lg/sdr-calman-reset" && $method eq "POST") {
-  return &webui_lg_sdr_calman_reset($body);
  }
  if($path eq "/api/lg/1d-dpg/upload" && $method eq "POST") {
   return &webui_lg_1d_dpg_upload($body);
