@@ -3570,8 +3570,8 @@ sub webui_meter_lg_autocal_start (@) {
  # derive opts from the body itself (lg_autocal_26, signal_mode, etc.).
  my $_ac_signal_mode="sdr";
  $_ac_signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"([^"]+)"/);
- my $_ac_target_gamma="2.2";
- $_ac_target_gamma=$1 if($body=~/"target_gamma"\s*:\s*"([^"]+)"/);
+my $_ac_target_gamma="bt1886";
+  $_ac_target_gamma=$1 if($body=~/"target_gamma"\s*:\s*"([^"]+)"/);
  my $_ac_signal_range="";
  $_ac_signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
  my $_ac_pattern_signal_range=$_ac_signal_range;
@@ -3653,7 +3653,14 @@ sub webui_meter_lg_autocal_status (@) {
   my $json="";
   if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
 	  if($json ne "") {
-	   if($json=~/"status"\s*:\s*"cancelled"/ && !&webui_meter_lg_autocal_running()) {
+	   # When the autocal worker has finished (status=complete or cancelled)
+	   # and isn't actually running anymore, the persisted state can still
+	   # have stale autocal=true / calibration_mode=true (the meter_lg_autocal.pl
+	   # worker exits before clearing these flags in some code paths). Force
+	   # them to false so the WebUI checkbox and "Busy" indicator update
+	   # without waiting for the next request to overwrite the file.
+	   if(($json=~/"status"\s*:\s*"cancelled"/ || $json=~/"status"\s*:\s*"complete"/)
+	      && !&webui_meter_lg_autocal_running()) {
 	    my $changed=0;
 	    if($json=~/"autocal"\s*:\s*true/) {
 	     $json=~s/"autocal"\s*:\s*true/"autocal":false/;

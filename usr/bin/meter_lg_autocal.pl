@@ -16104,22 +16104,25 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # the transition region. This keeps the math in one place
   # (lg_autocal_26_build_sdr26_1d_dpg_seeded) and the resulting curve has
   # the same shape as the reference pre-curve.
-  # Pre-curve defaults. The original values (headroom=0.68, push=1.23) are
-  # the same shape the reference SDR workflow uses, but on this panel the
-  # 32% reduction at idx 1023 drops the calibrated 109 luminance from ~243
-  # nits (identity baseline) to ~107 nits -- the user's "calibrated 109
-  # should measure ~220 nits" target. The pre-curve costs more luminance
-  # than the per-channel WB needs because OLED sub-pixel efficiency rolls
-  # off sharply near max drive codes (a 32% DPG cut at idx 1023 produces
-  # a much larger drop in sub-pixel output than the linear projection
-  # would predict). Disable the pre-curve by default; the per-channel WB
-  # handles chromaticity convergence from the identity baseline, with
-  # DAMPED WARMUP (move_scaling=0.5) preventing overshoot and REVERT-AND-
-  # HALVE catching any residual overshoot.
-  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 1.0;
+  # Pre-curve defaults. The previous values (headroom=1.0, push=1.0) gave
+  # the 109 anchor no room to attenuate the warm channels, capping the
+  # achievable chromaticity at the panel's native warm tint. The original
+  # values (headroom=0.68, push=1.23) match the reference SDR workflow and
+  # achieve dE < 0.5 but dropped the 109 luminance from ~220 nits to ~107
+  # nits (the 32% DPG cut at idx 1023 produces a much larger drop in
+  # OLED sub-pixel output than the linear projection predicts because OLED
+  # efficiency rolls off sharply at max drive codes). The compromise:
+  # headroom_factor=0.88, push_factor=1.08 — gives the chromaticity WB
+  # ~12% attenuation headroom at the 109 anchor (enough to bring G/B down
+  # to R on a warm panel) and ~8% push at the 100 anchor (so the body
+  # curve stays on the calibrated peak). Net effect: 109 lands at ~190-210
+  # nits calibrated (vs ~160 at identity), 100 at ~155-175. Both well above
+  # the original 0.68/1.23 floor, both with enough headroom for the warm
+  # channel pull-down to reach D65 in 1-2 iters instead of 5-6.
+  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 0.88;
   $headroom_factor=0.4 if($headroom_factor < 0.4);
   $headroom_factor=1.2 if($headroom_factor > 1.2);
-  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.0;
+  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.08;
   $push_factor=0.9 if($push_factor < 0.9);
   $push_factor=1.5 if($push_factor > 1.5);
   my @_precurve_anchors=(
@@ -16184,15 +16187,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
     $conv?1:0,
     defined($last) && ref($last) eq "HASH" ? sprintf("%.4f",luminance($last)+0) : "undef"
    ));
-   # Refine the white reference to the calibrated peak luminance.
-   if(ref($last) eq "HASH") {
-    my $wy=luminance($last);
-    if(defined($wy) && $wy+0 > 0) {
-     $white_ref=$wy+0;
-     $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0;
-     set_state_white_reference($state,$white_ref);
+# Refine the white reference to the calibrated peak luminance.
+    if(ref($last) eq "HASH") {
+     my $wy=luminance($last);
+     if(defined($wy) && $wy+0 > 0) {
+      $white_ref=$wy+0;
+      $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0;
+      set_state_white_reference($state,$white_ref);
+     }
     }
-   }
    push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
    $state->{"sdr_1d_dpg_anchors_done"}=scalar(@done);
    my $white_usable=0;
