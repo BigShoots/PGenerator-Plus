@@ -83,8 +83,23 @@ class _result:
 
 
 def cec_device():
-    if len(sys.argv) > 2:
-        return sys.argv[2]
+    # Walk argv[1:] looking for an optional positional device path.
+    # Flags like --no-power / --help are filtered out so they don't get
+    # interpreted as the device name (e.g. `pgcec status --no-power`
+    # previously tried to open a device called "--no-power").
+    positional = []
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("--no-power", "-P", "--help", "-h", "--version", "-V"):
+            continue
+        if arg.startswith("-"):
+            continue
+        positional.append(arg)
+    if len(positional) >= 2:
+        return positional[1]
     env_dev = os.environ.get("PGCEC_DEVICE", "")
     if env_dev:
         return env_dev
@@ -176,12 +191,15 @@ def query_tv_power(dev, timeout=3):
     return None
 
 
-def status(dev):
+def status(dev, query_power=True):
     self_info = quick_self_info(dev)
-    power = query_tv_power(dev)
-    power_text = "unknown"
-    if power is not None and power in POWER_STATE_NAME:
-        power_text = POWER_STATE_NAME[power]
+    if query_power:
+        power = query_tv_power(dev)
+        power_text = "unknown"
+        if power is not None and power in POWER_STATE_NAME:
+            power_text = POWER_STATE_NAME[power]
+    else:
+        power_text = "(skipped)"
 
     print("driver: %s" % self_info.get("driver", ""))
     print("adapter: %s" % self_info.get("adapter", ""))
@@ -246,18 +264,28 @@ def audio_or_tv(dev):
 
 
 def main():
-    cmd = sys.argv[1].lower() if len(sys.argv) > 1 else "status"
+    # Parse positional args, skipping any flag arguments like --no-power.
+    positional = []
+    query_power = True
+    for arg in sys.argv[1:]:
+        if arg in ("--no-power", "-P"):
+            query_power = False
+        elif arg.startswith("-"):
+            continue
+        else:
+            positional.append(arg)
+    cmd = positional[0].lower() if positional else "status"
     dev = cec_device()
 
     if not os.path.exists(dev):
         sys.stderr.write("CEC device not found: %s\n" % dev)
-        return 1
+        sys.exit(1)
     if not os.path.exists(CEC_CTL):
         sys.stderr.write("cec-ctl not found\n")
-        return 1
+        sys.exit(1)
 
     if cmd in ("status", "power"):
-        return status(dev)
+        return status(dev, query_power=query_power)
     if cmd in ("scan", "scan-json"):
         return scan_json(dev)
 

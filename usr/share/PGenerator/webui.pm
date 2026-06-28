@@ -6678,11 +6678,16 @@ sub webui_cec_direct_status (@) {
  # cec-ctl is not installed, so pgenerator-cec is the only path that
  # actually returns real TV power state.
  #
- # Pass --no-power so pgenerator-cec skips the blocking GIVE_DEVICE_POWER_STATUS
- # ioctl (which can stall 200-2000ms when the TV is off or unresponsive).
+ # CRITICAL: always pass --no-power on both paths. The GIVE_DEVICE_POWER_STATUS
+ # ioctl can stall 200-2000ms when the TV is off or unresponsive -- and
+ # because the PGenerator daemon is single-threaded, every blocked status
+ # poll stalls the entire webui (the user sees "WebUI keeps going offline").
+ # --no-power skips the power query and returns the cached power state from
+ # /tmp/pgenerator-cec-power.json instead, which is instant.
+ #
  # The power cache is updated only when the webui explicitly requests it
  # (see webui_cec_direct_status_power).
- my $output=`timeout $timeout $cec_bin status 2>/dev/null`;
+ my $output=`timeout $timeout $cec_bin status --no-power 2>/dev/null`;
  if((!defined($output) || $output eq "" || $output !~ /^tv_power:/m) && -x "/usr/sbin/pgenerator-cec") {
   $output=`timeout $timeout /usr/sbin/pgenerator-cec status --no-power 2>/dev/null`;
  }
