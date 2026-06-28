@@ -13419,29 +13419,76 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
-	 # Lock = R's linear-BT.709 value, captured from the FIRST iter's
-	 # measurement (when the panel is at the pre-curve DPG) and held
-	 # constant across subsequent iters. The G/B reducing channels
-	 # land at this R value, closing the chromaticity gap to D65.
-	 my $r_target;
-	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"})) {
-	  $r_target=$original_r_ref->{"r"}+0;
-	 } else {
-	  $r_target=$mrgb[0]+0;
-	 }
-	 return (1.0,1.0,1.0) if(!($r_target+0 > 0));
 	 my @gain;
+	 # Peak anchor strategy: lock the LOWEST measured linear-RGB channel
+	 # at gain=1.0 (it's at the panel's hardware max for the 109 code and
+	 # cannot go higher without headroom -- it stays fixed). Pull the other
+	 # two channels toward the lock (gain = lock_value / measured). The
+	 # lock is re-evaluated every iter so it tracks whichever channel is
+	 # the actual limiter at any given moment.
+	 #
+	 # Why this converges on WRGB OLEDs: the panel is warm-biased -- one
+	 # of G/B consistently reads above R at identity. Locking that
+	 # highest channel (which becomes the lowest after a few pull-down
+	 # iters on the original ceiling) and pulling the other two toward it
+	 # lands all three on the same value, matching the panel's effective
+	 # chromaticity.
+	 #
+	 # Backward compat with the historic R-lock: if $original_r_ref is
+	 # present (captured on the FIRST iter) AND R is currently the
+	 # lowest channel (i.e. warm panel where R is the limiter), keep R
+	 # as the lock. This preserves monotonic convergence in the R-locked
+	 # regime (the original "R is the lock" warm-panel path). The lock
+	 # shifts to a new channel only when the captured first-iter lock
+	 # is no longer the minimum on a subsequent iter.
+	 #
+	 # Recovery from overshoot: the natural gain = lock/measured is
+	 # ALWAYS >= 1.0 for channels ABOVE the lock (correct, they need
+	 # pulling down) and ALWAYS <= 1.0 for the lock itself (held at 1.0
+	 # explicitly below). So in the steady state a reducing channel's
+	 # gain is in [0.5, 1.0] (the 0.5 floor in the call site stops the
+	 # gain from going below 50% of identity). If the overshoot guard in
+	 # the call site detects the gain moved past the floor (move_scaling
+	 # + M=2.5 can scale a 0.5 raw gain down to 0.494 below the floor),
+	 # it clamps to max(scaled, raw_gain) so the channel can RECOVER back
+	 # up to the raw gain on the next iter. The lock stays static.
+	 my @vals=($mrgb[0]+0, $mrgb[1]+0, $mrgb[2]+0);
+	 # Default lock = current minimum (re-evaluated every iter).
+	 my $lock_idx=0;
+	 my $lock_val=$vals[0];
+	 for my $i (1..2) {
+	  if($vals[$i]+0 < $lock_val+0) { $lock_val=$vals[$i]+0; $lock_idx=$i; }
+	 }
+	 # If a captured R reference exists from the first iter, prefer R as
+	 # the lock whenever R is currently the lowest (or tied for lowest).
+	 # This is the warm-panel case where R was always the limiter -- keep
+	 # R as the lock across iters for monotonic convergence. The lock
+	 # naturally shifts to a different channel on a subsequent iter if R
+	 # is no longer the minimum (cooler panel, or G/B have been pulled
+	 # below R).
+	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"}) && $original_r_ref->{"r"}+0 > 0) {
+	  # R is the lock when its CURRENT measured value is the minimum
+	  # (or tied). We don't use the captured R value as the lock value --
+	  # we use R's current value so the lock tracks the actual measurement.
+	  # The captured reference just tells us "R was the lock on iter 1"
+	  # and we keep that lock-channel designation as long as R remains
+	  # the minimum.
+	  if($vals[0]+0 <= $lock_val+0) {
+	   $lock_idx=0;
+	   $lock_val=$vals[0]+0;
+	  }
+	 }
 	 for my $ch (0..2) {
-	  my $m=$mrgb[$ch]+0;
-	  # All three channels compute their natural gain as r_target / m.
-	  # For R this is typically 1.0 (r_target == first-iter R value, so
-	  # the ratio on the first iter is 1.0). For G/B it's the pull-down
-	  # ratio. The CALL SITE applies the ceiling: R can boost up to 1.25
-	  # (to close residual chromaticity gaps when R reads below D65),
-	  # G/B clamp to 1.0 (cannot push above native max at the 109 code).
-	  # The call site also applies move_scaling for damped warmup and
-	  # revert-and-halve.
-	  my $g=($m+0 > 0) ? ($r_target/$m) : 1.0;
+	  if($ch == $lock_idx) {
+	   push @gain, 1.0;
+	   next;
+	  }
+	  my $m=$vals[$ch]+0;
+	  my $g=($m+0 > 0) ? ($lock_val/$m) : 1.0;
+	  # Clamp the natural gain to [0.5, 1.0]. Below 0.5 the DPG would crush
+	  # detail at the headroom region; above 1.0 is impossible (gain > 1
+	  # would mean the lock exceeds the channel, contradicting the lock
+	  # being the minimum).
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
@@ -15516,14 +15563,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   }
   last if($conv_now && !$acceptance_pending);
   # Compute the per-channel gain. Three paths:
-  #   - 109% (the legal peak): R-held + G/B-pulled-to-R via
-  #     lg_autocal_26_sdr26_dpg_peak_r_hold_gain. R is unconditionally
-  #     held at 1.0 (no DPG change), G and B are attenuated to match R's
-  #     linear-BT.709 value, closing the chromaticity gap to D65 on warm
-  #     panels. The R reference is captured from the FIRST iter (when the
-  #     panel is at the headroom pre-curve) and held constant so the G/B
-  #     convergence is monotonic. This is the SDR-specific analog of the
-  #     HDR20 path's reduce-to-mean + R-held fn.
+  #   - 109% (the legal peak): REDUCE-TO-LOWEST via
+  #     lg_autocal_26_sdr26_dpg_peak_r_hold_gain (now a misnomer — the
+  #     function evaluates which of the three measured linear-RGB values is
+  #     LOWEST on every iteration, holds that channel at gain=1.0 (it cannot
+  #     be pushed above the panel's hardware max at the 109 code), and pulls
+  #     the other two channels down toward it (gain = lowest / measured).
+  #     The lock is STATIC — once captured as the lowest, it stays the lock
+  #     across iters via the original_r_ref mechanism (we keep R as the lock
+  #     on warm panels where R is the limiter, matching the historic
+  #     "R-held" behavior for monotonic convergence in that regime).
+  #     On cooler panels or after G/B have been pulled below R, the lock
+  #     naturally shifts to whichever channel is currently the minimum.
   #     Chroma-only -- $tl is forced to the measured Y at this anchor so
   #     dE has no luminance component.
   #   - 99 / 105 (headroom body) and the lower body: the regular
@@ -15541,15 +15592,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my ($rg,$gg,$bg);
   if($is_white_peak) {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_peak_r_hold_gain($reading,$_legal_peak_r_ref);
-   # Lock the first-iter R linear-BT.709 value as the persistent reference
-   # for G/B attenuation. Subsequent iters reuse the FIRST-iter R value
-   # so the G/B pull-down converges monotonically without flipping which
-   # channel is held (the previous reduce-to-lowest design held whatever
-   # channel was lowest on the current iter, which oscillated and never
-   # settled when the panel's chromaticity was warm). With R held, G/B
-   # land at R's value -- the chromaticity approaches D65 along the
-   # green/blue axis without disturbing R (which drives peak luminance
-   # on the OLED's R sub-pixel).
+   # Capture the first-iter R linear-BT.709 value as the persistent
+   # reference. The function uses this to keep R as the lock across
+   # iters on warm panels where R was the limiting channel at first read
+   # (the lock stays on R until R's current value exceeds the captured
+   # value, at which point the lock naturally re-evaluates to the new
+   # minimum on the next iter).
    if(!defined($_legal_peak_r_ref)) {
     my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
     my @_rgb_first=(
@@ -15580,28 +15628,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   $white_move_mult=1.0 if($white_move_mult+0 < 1.0);
   $white_move_mult=5.0 if($white_move_mult+0 > 5.0);
   my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
-  # Legal peak: apply the R-held + G/B-pull-down gain with move_scaling
+  # Legal peak: apply the reduce-to-lowest gain with move_scaling
   # applied as: scaled = 1.0 + (natural_gain - 1.0) * move_scaling. The
-  # scaling semantics are uniform across all three channels -- but the
-  # CEILING differs. R can boost up to 1.25 (allowing R to move up to
-  # close a residual chromaticity gap when R's measured BT.709 value is
-  # below the target); G and B are clamped to 1.0 (the panel cannot push
-  # a channel above its native max at the 109% code without headroom).
-  # The floor is 0.6 for all three (panel cannot pull a channel below
-  # 60% of identity at the headroom region without crushing detail).
-  #
-  # Why allow R to boost (and not G/B): the user's spec is "R is the lock,
-  # G and B are pulled to match it" -- but on a panel where R's measured
-  # linear-BT.709 value lands BELOW G/B's at identity DPG (which is what
-  # the chromaticity gap indicates -- the panel is YELLOW-biased, with G
-  # over-shooting), pulling G and B down to R's value lands the chromaticity
-  # at R's BT.709 = D65 if R==G==B. On this specific panel R reads at
-  # 219.6 (D65=237), G at 247.3, B at 188.3 -- so pulling G/B to R gives
-  # R=219.6, G=219.6, B=188.3 (B can't reach 219.6, it's already below).
-  # To close the residual 7% gap on R, R needs to BOOST, which the DPG
-  # supports (gain > 1.0) up to 1.25. Without the R-boost, the chromaticity
-  # is stuck at the dE floor where G/B hit R's value but R itself never
-  # moves (dE ~2 on this panel).
+  # scaling semantics are uniform across all three channels -- the
+  # CEILING is uniform too at 1.0 (no channel can be boosted at the
+  # 109 code; every non-lock channel's natural gain is <= 1.0 by
+  # construction since the lock is the minimum).
   my $sr;
   my $sg;
   my $sb;
@@ -15622,20 +15654,24 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
-   # R can boost up to 1.25 to close a residual chromaticity gap; G and
-   # B are clamped to <=1.0 (the panel cannot push them above native max
-   # at 109 without headroom, and the pre-curve is OFF by default).
-   $sr=1.25 if($sr+0 > 1.25);
+   # With reduce-to-lowest, every non-lock channel's natural gain is
+   # <= 1.0 (it's the lock's value / a higher value), so no channel can
+   # need to be boosted. Clamp uniformly to 1.0.
+   $sr=1.0 if($sr+0 > 1.0);
    $sg=1.0 if($sg+0 > 1.0);
    $sb=1.0 if($sb+0 > 1.0);
-   # Overshoot guard (HDR pattern): a REDUCING channel (raw gain < 1.0,
-   # i.e. the channel measured ABOVE D65's per-channel target and needs
+   # Overshoot guard + RECOVERY: a REDUCING channel (raw gain < 1.0,
+   # i.e. the channel measured ABOVE the lock value and needs
    # attenuation) must NEVER be driven below its raw gain. With the
    # M=2.5 multiplier a 0.5 raw gain would scale to 0.494 (below the
    # 0.6 floor) -- max(scaled, raw_gain) caps the move at the raw gain,
    # landing the channel exactly on the mathematical target at worst
-   # (never past it). R is held at 1.0 by the gain fn so this guard
-   # only binds for the excess G/B channels.
+   # (never past it). This is also the RECOVERY path: if a channel was
+   # over-pulled on a previous iter (current raw_gain < prev raw_gain),
+   # the new raw_gain is the higher value, so the clamp releases the
+   # channel back UP toward 1.0. The lock channel was 1.0 in the gain
+   # fn so this guard only binds for the excess channels being pulled
+   # down (and recovering back up).
    $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
