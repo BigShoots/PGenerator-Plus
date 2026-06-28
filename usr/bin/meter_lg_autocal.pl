@@ -15734,20 +15734,24 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
-   # The lock channel (the minimum) is allowed to boost above identity
-   # to meet the avg (recover luminance from the pre-curve attenuation).
-   # The other channels are clamped at 1.0 (no further boosting beyond
-   # the pre-curve baseline -- they're already close to the avg or
-   # above it and we want them to converge DOWN, not be pushed UP).
-   if(($rg+0) >= ($gg+0) && ($rg+0) >= ($bg+0)) {
+   # The lock channel (the MINIMUM raw gain) is allowed to boost above
+   # identity to meet the avg (recover luminance from the pre-curve
+   # attenuation). The other channels are clamped at 1.0 (no further
+   # boosting beyond the pre-curve baseline -- they're already close
+   # to the avg or above it and we want them to converge DOWN, not be
+   # pushed UP).
+   if(($rg+0) <= ($gg+0) && ($rg+0) <= ($bg+0)) {
+    # R is the lock (smallest raw gain) -- allow it to boost up to 1.25.
     $sr=1.25 if($sr+0 > 1.25);
     $sg=1.0 if($sg+0 > 1.0);
     $sb=1.0 if($sb+0 > 1.0);
-   } elsif(($gg+0) >= ($rg+0) && ($gg+0) >= ($bg+0)) {
+   } elsif(($gg+0) <= ($rg+0) && ($gg+0) <= ($bg+0)) {
+    # G is the lock.
     $sr=1.0 if($sr+0 > 1.0);
     $sg=1.25 if($sg+0 > 1.25);
     $sb=1.0 if($sb+0 > 1.0);
    } else {
+    # B is the lock.
     $sr=1.0 if($sr+0 > 1.0);
     $sg=1.0 if($sg+0 > 1.0);
     $sb=1.25 if($sb+0 > 1.25);
