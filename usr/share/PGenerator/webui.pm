@@ -13707,9 +13707,9 @@ function meterEffectiveGreyscaleWhiteReference(readings){
  // is momentarily false (between status polls). The chart redraws continuously
  // and would otherwise briefly fall back to the stored target while the
  // worker is still iterating, hiding the new calibrated peak.
- const headroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
- if(lgAutoCalChartRef && !activeAutoCalReference && headroomTargetY>0){
-  const synthetic=meterSyntheticGreyWhiteReading(headroomTargetY);
+ const earlyHeadroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
+ if(lgAutoCalChartRef && !activeAutoCalReference && earlyHeadroomTargetY>0){
+  const synthetic=meterSyntheticGreyWhiteReading(earlyHeadroomTargetY);
   if(synthetic) return synthetic;
  }
  const referenceList=(lgAutoCalChartRef&&activeAutoCalReference&&!magicWandPhase)?list.filter(rd=>!meterReadingIsAutoCalReferenceOnly(rd)):list;
@@ -13795,8 +13795,6 @@ function meterAutoCalGreyscaleTargetWhiteReferenceNits(readings){
  }
  if(!meterAutoCalGreyscaleTargetWhiteReferenceActive(readings)) return null;
  const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
- const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
- if(headroomTargetY>0) return headroomTargetY;
  const targetY=meterLgTargetWhiteReferenceNits(list);
  return targetY>0?targetY:null;
 }
