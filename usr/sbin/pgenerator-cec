@@ -145,7 +145,7 @@ def claim_log_addr(fd):
                 return addr
     return 0xFF
 
-def transmit(fd, src, dst, opcode, params=None):
+def transmit(fd, src, dst, opcode, params=None, timeout_ms=500):
     """Send a CEC message. Returns tx_status byte or None on ioctl error."""
     if params is None:
         params = []
@@ -154,7 +154,7 @@ def transmit(fd, src, dst, opcode, params=None):
     hdr = ((src & 0x0F) << 4) | (dst & 0x0F)
     msg_len = 2 + len(params)
     struct.pack_into('<I', msg, 16, msg_len)     # len
-    struct.pack_into('<I', msg, 20, 1500)        # timeout ms
+    struct.pack_into('<I', msg, 20, timeout_ms)  # per-attempt timeout ms
     msg[32] = hdr
     msg[33] = opcode
     for i, b in enumerate(params):
@@ -184,8 +184,10 @@ def transmit(fd, src, dst, opcode, params=None):
         return None
     return msg[50]
 
-def transmit_retry(fd, src, dst, opcode, params=None, retries=2):
-    """Transmit with retries on failure."""
+def transmit_retry(fd, src, dst, opcode, params=None, retries=0):
+    """Transmit with retries on failure. Default retries=0 (single attempt)
+    because the kernel already retries once on NACK internally (~200ms each)
+    so a successful transmit takes at most ~700ms even if the TV is off."""
     for attempt in range(retries + 1):
         st = transmit(fd, src, dst, opcode, params)
         if st is not None and (st & CEC_TX_STATUS_OK):
