@@ -15688,7 +15688,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # move on the next iter). The overshoot guard below clamps each
   # reducing channel to never move below its raw gain, so even a huge
   # multiplier is monotonic and safe.
-  my $white_move_mult=defined($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}+0) : 2.5;
+  my $white_move_mult=defined($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}+0) : 1.0;
   $white_move_mult=1.0 if($white_move_mult+0 < 1.0);
   $white_move_mult=5.0 if($white_move_mult+0 > 5.0);
   my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
