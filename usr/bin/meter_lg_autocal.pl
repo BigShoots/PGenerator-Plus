@@ -12808,6 +12808,21 @@ sub lg_autocal_26_build_sdr26_1d_dpg {
  return lg_autocal_26_build_dpg_core($current_dpg,$anchors);
 }
 
+# HDR20 thin wrapper. lg_autocal_26_run_hdr20_dpg_greyscale was committed
+# before the SDR26 refactor that factored the shared internals into
+# lg_autocal_26_build_dpg_core and dropped the standalone HDR20 build fn.
+# Without this wrapper the HDR20 path dies with
+# "Undefined subroutine &main::lg_autocal_26_build_hdr20_1d_dpg called at
+# /usr/bin/meter_lg_autocal.pl line 13692" the moment it tries to build
+# the identity baseline on entry -- which is what the user's HDR full
+# autocal was hitting after the 0% black reference read. The HDR20 build
+# is identity to the SDR26 build (same Akima spline, same identity ramp),
+# so it delegates directly.
+sub lg_autocal_26_build_hdr20_1d_dpg {
+ my ($current_dpg,$anchors)=@_;
+ return lg_autocal_26_build_dpg_core($current_dpg,$anchors);
+}
+
 # Shared 1D DPG build core. Takes the previous DPG (or undef for the
 # identity baseline) and a list of anchor corrections (each a hash with
 # idx + r_gain/g_gain/b_gain). Returns a 3072-value array (3 channels
