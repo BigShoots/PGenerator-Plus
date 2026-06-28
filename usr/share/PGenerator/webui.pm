@@ -6783,10 +6783,21 @@ sub webui_cec (@) {
 	    $phys="" if(!defined($phys));
 	    $la="" if(!defined($la));
 	    $osd="" if(!defined($osd));
-	    # Build a minimal pgcec-style JSON for the cache
-	    $fallback=sprintf('{"self":{"phys":"%s","log":%s,"osd":"%s"},"tv":{"addr":0,"phys":"%s","log":0,"name":"%s","type":0}}',
-	                     $phys||"0.0.0.0", $la||"15", $osd||"PGenerator",
-	                     $phys||"0.0.0.0", $osd||"PGenerator");
+	    $osd =~ s/\s+$//;
+	    # Build a minimal pgcec-style JSON for the cache. The frontend's
+	    # cecScan() iterates over data.devices; we include just ourselves
+	    # plus a placeholder TV entry (the kernel doesn't enumerate other
+	    # devices from a single CEC_TRANSMIT poll, but we know our own
+	    # LA and the TV's LA is always 0).
+	    my $self_la=($la ne "") ? $la : 15;
+	    my $self_phys=($phys ne "") ? $phys : "0.0.0.0";
+	    $fallback=sprintf(
+	      '{"self":{"phys":"%s","log":%s,"osd":"%s"},' .
+	      '"tv":{"addr":0,"phys":"%s","log":0,"name":"%s","type":0},' .
+	      '"devices":[{"addr":%s,"type":4,"name":"%s","phys":"%s","vendor":"","power":1}]}',
+	      $self_phys, $self_la, ($osd||"PGenerator"),
+	      $self_phys, ($osd||"PGenerator"),
+	      $self_la, ($osd||"PGenerator"), $self_phys);
 	    if($fallback=~/^\{/) {
 	     if(open(my $fh,">",$cec_scan_cache)) {
 	      print $fh $fallback;
