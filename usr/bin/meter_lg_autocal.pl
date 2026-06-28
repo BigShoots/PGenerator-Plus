@@ -13310,6 +13310,81 @@ sub lg_autocal_26_sdr26_dpg_white_balance_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
+# Peak white-balance gains for the SDR26 109% legal-peak anchor: R is
+# unconditionally held at 1.0 (no DPG change to R), G and B are pulled
+# toward R's linear-BT.709 value. The R target is captured at first iter
+# from the post-pre-curve measurement and held constant across subsequent
+# iters so the G/B convergence is monotonic.
+#
+# The linear BT.709 inverse of measured XYZ gives per-channel linear
+# coordinates. Under a D65 white, R=G=B (the BT.709 D65 invariant). The
+# user's panel at the 109 patch has mrgb = [R, G, B] with G typically
+# over-shooting (warm panel -- yellow bias from the WRGB sub-pixel
+# routing). Holding R and reducing G and B toward R pulls the chromaticity
+# toward D65 along the green/blue pull-down axis without disturbing the
+# dominant R channel that drives peak luminance on the OLED's R sub-pixel.
+#
+# This is the SDR-specific analog of the HDR20 path's reduce-to-mean +
+# R-held fn (lg_autocal_26_hdr20_dpg_white_balance_gain below). Same
+# intent (R locked, G/B pulled toward it), different gamut matrix
+# (BT.709/sRGB here vs Display-P3 there).
+sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
+	 my ($reading,$original_r_ref)=@_;
+	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+	 my $mX=$reading->{"X"};
+	 my $mY=$reading->{"Y"};
+	 my $mZ=$reading->{"Z"};
+	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+	  my $rY=luminance($reading);
+	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+	   $mY=$rY+0;
+	   $mX=($rx/$ry)*$mY;
+	   $mZ=((1-$rx-$ry)/$ry)*$mY;
+	  } else {
+	   return (1.0,1.0,1.0);
+	  }
+	 } else {
+	  $mX+=0; $mY+=0; $mZ+=0;
+	 }
+	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+	 # BT.709 / sRGB inverse (D65). Same matrix as the other SDR fns.
+	 my @mrgb=(
+	  3.2404542*$mX + -1.5371385*$mY + -0.4985314*$mZ,
+	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
+	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
+	 );
+	 # Lock = R's linear-BT.709 value, captured from the FIRST iter's
+	 # measurement (when the panel is at the pre-curve DPG) and held
+	 # constant across subsequent iters. The G/B reducing channels
+	 # land at this R value, closing the chromaticity gap to D65.
+	 my $r_target;
+	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"})) {
+	  $r_target=$original_r_ref->{"r"}+0;
+	 } else {
+	  $r_target=$mrgb[0]+0;
+	 }
+	 return (1.0,1.0,1.0) if(!($r_target+0 > 0));
+	 my @gain;
+	 for my $ch (0..2) {
+	  if($ch == 0) {
+	   # R is unconditionally held at 1.0 -- no DPG change to R.
+	   push @gain,1.0;
+	   next;
+	  }
+	  my $m=$mrgb[$ch]+0;
+	  # G/B reducing channels: gain = locked_R / current_measured, so the
+	  # post-DPG value matches the locked R value (target chromaticity).
+	  my $g=($m+0 > 0) ? ($r_target/$m) : 1.0;
+	  $g=0.5 if($g+0 < 0.5);
+	  $g=1.0 if($g+0 > 1.0);
+	  $g=1.0 if($g+0 != $g+0);
+	  push @gain,$g+0;
+	 }
+	 return ($gain[0],$gain[1],$gain[2]);
+	}
+
 # Peak white-balance gains: at 100% the panel cannot boost any channel above
 # its native max (hardware limit), so D65 is only reachable by reducing the
 # channel(s) that EXCEED their D65 target. Compute the D65 target per channel
@@ -15028,7 +15103,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # drift that compounded past the achievable D65 floor in the previous
   # design (which held the lowest channel at 1.0 instead of using the
   # mean, and let the held channel flip between iters).
-  my $_legal_peak_lowest_ref=undef;
+  my $_legal_peak_r_ref=undef;
   my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
 
  # Best-so-far state for revert (low IRE only, same as HDR).
@@ -15169,16 +15244,6 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    }
   }
   log_line("SDR26 1D DPG greyscale: ".$label." i".$i." dE=".sprintf("%.4f",defined($de)?$de+0:-1)." best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($acceptance_pending?" (acceptance)":""));
-  # Chromaticity log on the 109% legal peak: the dE is chroma-only so
-  # without seeing x/y the trajectory of the reduce-to-mean iteration is
-  # invisible. Surface x/y/dE per iter so the next failing 109 calibration
-  # leaves a fingerprint directly in the log without requiring the user
-  # to dig through the per-anchor history in the state file.
-  if($_is_legal_peak && ref($reading) eq "HASH") {
-   my $_lx=defined($reading->{"x"}) ? sprintf("%.4f",$reading->{"x"}+0) : "undef";
-   my $_ly=defined($reading->{"y"}) ? sprintf("%.4f",$reading->{"y"}+0) : "undef";
-   log_line("SDR26 1D DPG greyscale: sdr26_109% i".$i." chromaticity x=".$_lx." y=".$_ly." dE=".sprintf("%.4f",defined($de)?$de+0:-1));
-  }
   # Per-iter state push for diagnostic parity with HDR.
   {
    my $hist=$state->{"sdr_1d_dpg_anchor_history"};
@@ -15260,15 +15325,17 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    last;
   }
   last if($conv_now && !$acceptance_pending);
-  # Compute the per-channel gain. Two paths:
-  #   - 109% (the legal peak): reduce-to-lowest via
-  #     lg_autocal_26_sdr26_dpg_white_balance_gain (the BT.709/D65 analog
-  #     of the HDR20 100% reduce-to-lowest fn). The panel cannot boost
-  #     any channel at the legal peak, so D65 is only reachable by
-  #     attenuating the excess channel(s) -- same trade-off the HDR 100%
-  #     anchor makes. Chroma-only; the measured Y is captured as the
-  #     white reference for the lower body. NO TARGET Y -- $tl is forced
-  #     to the measured Y at this anchor so dE has no luminance component.
+  # Compute the per-channel gain. Three paths:
+  #   - 109% (the legal peak): R-held + G/B-pulled-to-R via
+  #     lg_autocal_26_sdr26_dpg_peak_r_hold_gain. R is unconditionally
+  #     held at 1.0 (no DPG change), G and B are attenuated to match R's
+  #     linear-BT.709 value, closing the chromaticity gap to D65 on warm
+  #     panels. The R reference is captured from the FIRST iter (when the
+  #     panel is at the headroom pre-curve) and held constant so the G/B
+  #     convergence is monotonic. This is the SDR-specific analog of the
+  #     HDR20 path's reduce-to-mean + R-held fn.
+  #     Chroma-only -- $tl is forced to the measured Y at this anchor so
+  #     dE has no luminance component.
   #   - 99 / 105 (headroom body) and the lower body: the regular
   #     per-anchor lg_autocal_26_sdr26_dpg_gain which drives RGB toward
   #     the D65 @ target-Y point. 99/105 use the curve-derived target Y
@@ -15283,26 +15350,24 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
   my ($rg,$gg,$bg);
   if($is_white_peak) {
-   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_white_balance_gain($reading,$_legal_peak_lowest_ref);
-   # Lock the first-iter LOWEST linear-BT.709 channel + its value as the
-   # persistent reference. Subsequent iters reuse the FIRST-iter choice
-   # so the held channel does not flip between iters (which compounded
-   # past the achievable D65 floor in the previous per-iter re-identification
-   # design). "Lowest is the lock, the other two are pulled to match it"
-   # is the user's SDR26 spec -- the held channel is whichever linear-BT.709
-   # channel reads lowest on the identity-baseline (first) read at 109.
-   if(!defined($_legal_peak_lowest_ref)) {
+   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_peak_r_hold_gain($reading,$_legal_peak_r_ref);
+   # Lock the first-iter R linear-BT.709 value as the persistent reference
+   # for G/B attenuation. Subsequent iters reuse the FIRST-iter R value
+   # so the G/B pull-down converges monotonically without flipping which
+   # channel is held (the previous reduce-to-lowest design held whatever
+   # channel was lowest on the current iter, which oscillated and never
+   # settled when the panel's chromaticity was warm). With R held, G/B
+   # land at R's value -- the chromaticity approaches D65 along the
+   # green/blue axis without disturbing R (which drives peak luminance
+   # on the OLED's R sub-pixel).
+   if(!defined($_legal_peak_r_ref)) {
     my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
     my @_rgb_first=(
      3.2404542*$_rX + -1.5371385*$_rY + -0.4985314*$_rZ,
      -0.9692660*$_rX + 1.8760108*$_rY +  0.0415560*$_rZ,
      0.0556434*$_rX + -0.2040259*$_rY +  1.0572252*$_rZ,
     );
-    my $_li=0; my $_lv=$_rgb_first[0]+0;
-    for my $k (1..2) {
-     if($_rgb_first[$k]+0 < $_lv+0) { $_lv=$_rgb_first[$k]+0; $_li=$k; }
-    }
-    $_legal_peak_lowest_ref={ idx=>$_li, value=>$_lv };
+    $_legal_peak_r_ref={ r=>$_rgb_first[0]+0 };
    }
   } else {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
@@ -15343,13 +15408,28 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sr=1.25 if($sr+0 > 1.25);
    $sg=1.25 if($sg+0 > 1.25);
    $sb=1.25 if($sb+0 > 1.25);
-   if($is_white_body) {
-    $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
-    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
-    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+    if($is_white_body) {
+     $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
+     $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
+     $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+    }
    }
-  }
-  my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
+   # Chromaticity log on the 109% legal peak: the dE is chroma-only so
+   # without seeing x/y the trajectory of the R-held + G/B-pull-down
+   # iteration is invisible. Surface x/y/dE/per-channel-gain per iter so
+   # the next failing 109 calibration leaves a fingerprint directly in the
+   # log without requiring the user to dig through the per-anchor history
+   # in the state file. The per-channel gains show whether the algorithm
+   # is actually moving G/B toward R (the algorithm's whole point) -- if
+   # the gains stay at 1.0 across iters, the headroom pre-curve or upload
+   # path is broken; if the gains converge, the chromaticity should too.
+   if($_is_legal_peak && ref($reading) eq "HASH") {
+    my $_lx=defined($reading->{"x"}) ? sprintf("%.4f",$reading->{"x"}+0) : "undef";
+    my $_ly=defined($reading->{"y"}) ? sprintf("%.4f",$reading->{"y"}+0) : "undef";
+    log_line(sprintf("SDR26 1D DPG greyscale: sdr26_109%% i%d chromaticity x=%s y=%s dE=%.4f gains R=%.3f G=%.3f B=%.3f",
+     $i,$_lx,$_ly,defined($de)?$de+0:-1,$sr+0,$sg+0,$sb+0));
+   }
+   my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
   my $new_dpg=lg_autocal_26_build_sdr26_1d_dpg_seeded($current_dpg_ref,\@anchors_for_build);
   if(ref($new_dpg) ne "ARRAY" || @$new_dpg != 3072) {
    $upload_failed=1;
@@ -15662,19 +15742,74 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   return ($ok,$msg);
  };
 
- # Upload the identity baseline BEFORE the per-anchor loop runs, inside
- # the same CAL_START session. This seeds the panel at a known reference
- # so every read (incl. white) is taken in the same calibration state.
- $state->{"current_name"}="SDR26 1D DPG (identity baseline)";
- $state->{"phase"}="writing";
- $state->{"message"}="Entering calibration mode and uploading identity 1D DPG baseline";
- write_state($state);
- {
-  my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-  log_line("SDR26 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
- }
+  # Upload the identity baseline BEFORE the per-anchor loop runs, inside
+  # the same CAL_START session. This seeds the panel at a known reference
+  # so every read (incl. white) is taken in the same calibration state.
+  $state->{"current_name"}="SDR26 1D DPG (identity baseline)";
+  $state->{"phase"}="writing";
+  $state->{"message"}="Entering calibration mode and uploading identity 1D DPG baseline";
+  write_state($state);
+  {
+   my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+   log_line("SDR26 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
+  }
 
- my @done;
+  # Headroom pre-curve: the SDR26 reference workflow reduces the 109% legal
+  # peak code (idx 1023) by ~32% relative to identity AND pushes the 100%
+  # code (idx 940) up by ~23% BEFORE the per-anchor white-balance iteration
+  # runs. This creates ~32% headroom at idx 1023 that the per-channel WB
+  # iteration uses when it pulls the warm/cool channels DOWN to match the
+  # locked channel. Without this pre-curve, the per-channel WB at 109 has
+  # no room to attenuate without crushing the 109 patch toward black --
+  # the dE floor stays around 10-12 because the chromaticity error is
+  # bounded by the 1D DPG's max attenuation headroom (none). With the
+  # pre-curve, the per-channel WB has room to bring the chromaticity close
+  # to D65 (the reference workflow achieves dE < 0.5 with this pre-curve).
+  #
+  # The pre-curve is a static shape applied to the seeded identity ramp.
+  # The body anchors (idx 0..920) are untouched (the gamma curve is
+  # unmodified at low IREs -- only the headroom codes 940..1023 get the
+  # pre-curve applied). The transition region (920..940) smooths via the
+  # Akima spline so the 99% anchor sits on a well-conditioned curve.
+  #
+  # Implementation: instead of writing the pre-curve DPG from scratch, we
+  # BUILD it through the same build path used by per-anchor WB -- by
+  # adding a synthetic anchor at idx 1023 with gain=headroom_factor (~0.68)
+  # and at idx 940 with gain=push_factor (~1.23). The Akima spline interpolates
+  # the transition region. This keeps the math in one place
+  # (lg_autocal_26_build_sdr26_1d_dpg_seeded) and the resulting curve has
+  # the same shape as the reference pre-curve.
+  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 0.68;
+  $headroom_factor=0.4 if($headroom_factor < 0.4);
+  $headroom_factor=1.0 if($headroom_factor > 1.0);
+  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.23;
+  $push_factor=1.0 if($push_factor < 1.0);
+  $push_factor=1.5 if($push_factor > 1.5);
+  my @_precurve_anchors=(
+   { idx=>940, r_gain=>$push_factor, g_gain=>$push_factor, b_gain=>$push_factor },
+   { idx=>1023, r_gain=>$headroom_factor, g_gain=>$headroom_factor, b_gain=>$headroom_factor },
+  );
+  my $precurve_dpg=lg_autocal_26_build_sdr26_1d_dpg_seeded($current_dpg,\@_precurve_anchors);
+  if(ref($precurve_dpg) eq "ARRAY" && @$precurve_dpg == 3072) {
+   $state->{"current_name"}="SDR26 1D DPG (headroom pre-curve)";
+   $state->{"phase"}="writing";
+   $state->{"message"}=sprintf("Uploading headroom pre-curve (109%% -> %.0f%%%%, 100%% -> %.0f%%%%)",
+    $headroom_factor*100,
+    $push_factor*100);
+   write_state($state);
+   {
+    my ($pbok,$pbmsg)=$upload_dpg->($precurve_dpg);
+    if($pbok) {
+     $current_dpg=$precurve_dpg;
+     log_line(sprintf("SDR26 1D DPG greyscale: headroom pre-curve uploaded (109%% idx1023 gain=%.3f, 100%% idx940 gain=%.3f)",
+      $headroom_factor,$push_factor));
+    } else {
+     log_line("SDR26 1D DPG greyscale: headroom pre-curve upload failed (continuing with identity): ".$pbmsg);
+    }
+   }
+  }
+
+  my @done;
  my $total_steps=scalar(@ordered);
  my $total_inner_iters=0;
  my $max_de_overall=0;
