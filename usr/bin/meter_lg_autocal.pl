@@ -15141,18 +15141,19 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
   $target_de=0.05 if($target_de < 0.05);
   $target_de=5.0 if($target_de > 5.0);
-  # Per-anchor target_de multiplier at low IRE (HDR pattern). The panel's
-  # 2.2 EOTF + meter noise at very low stimulus (2.3-4% IRE) make the set
-  # target physically unreachable -- a best-so-far dE of 0.6-0.9 is the
-  # best achievable. Without relaxation the worker keeps "trying" after
-  # every revert, wasting the iteration budget fighting back down to a
-  # target the panel can't hit. 1.5x at low IRE (default 5%) and 2.0x at
-  # very-low IRE (default 2.3%) match the operator directive "double the
-  # set target" at the noise floor.
-  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.5;
+  # Per-anchor target_de multiplier at low IRE. The user spec is "keep
+  # adjusting until below target_de for each patch" -- so the multiplier
+  # defaults to 1.0 (no relaxation). HDR uses 1.5x/2.0x because PQ EOTF
+  # makes low-IRE physically unreachable, but SDR's 2.2 EOTF + the new
+  # EOTF-aware damp + "keep going until converged" extension can usually
+  # land every patch at dE <= 0.5. Operators can set the multipliers
+  # via lg_autocal_sdr26_dpg_target_de_low_multiplier /
+  # _very_low_multiplier if a particular panel physically cannot reach
+  # the set target.
+  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.0;
   $target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
   $target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
-  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 2.0;
+  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 1.0;
   $target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
   $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
   $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
@@ -16087,10 +16088,25 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    $state->{"current_name"}="SDR26 1D DPG sdr26_".sprintf("%g",$_white_ire)."%" if(ref($state) eq "HASH");
    $state->{"current_ire"}=$_white_ire if(ref($state) eq "HASH");
    write_state($state);
-   my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$label =~ /(\d+(?:\.\d+)?)/ ? ($1+0) : 100.0);
-   my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
-    $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
-   );
+    my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$label =~ /(\d+(?:\.\d+)?)/ ? ($1+0) : 100.0);
+    # "Keep going until converged" extension. If the inner loop exhausts
+    # the budget without reaching target_de (operator's set target), call
+    # the inner fn again with an extended budget. This catches the rare
+    # case where the per-iter moves were too small or the panel needed
+    # more iterations than the default budget. Capped at 4 extensions
+    # to bound total runtime.
+    my $max_extensions=4;
+    my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=(0,undef,undef,0,0,0,0);
+    for(my $ext=0;$ext<=$max_extensions;$ext++) {
+     my $ext_budget=$budget+($ext*3);
+     ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
+      $config,$state,$rs,$idx,$label,$ext_budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
+     );
+     last if($conv || $inner_upload_failed || cancelled());
+     last if($ext >= $max_extensions);
+     log_line(sprintf("SDR26 1D DPG greyscale: %s not converged after %d iters (dE=%.4f > target %.2f), extending budget by 3 iters (ext %d/%d)",
+      $label,$ext_budget,($max_de_anchor+0),$target_de,$ext+1,$max_extensions));
+    }
    $total_inner_iters+=$inner_iters;
    $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
    $cal_active=1 if($cal_active_inner);
@@ -16177,9 +16193,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    $state->{"sdr_1d_dpg_body_target_logged"}=JSON::PP::true;
    write_state($state);
   }
-  my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
-   $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
-  );
+   # Body anchor: same "keep going until converged" extension as the
+   # 109% legal peak. Catches the case where the body anchor's iter
+   # budget exhausts without reaching target_de, extending by 3 iters
+   # up to 4 extensions (12 extra iters total).
+   my $max_body_extensions=4;
+   my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=(0,undef,undef,0,0,0,0);
+   for(my $ext=0;$ext<=$max_body_extensions;$ext++) {
+    my $ext_budget=$budget+($ext*3);
+    ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
+     $config,$state,$rs,$idx,$label,$ext_budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
+    );
+    last if($conv || $inner_upload_failed || cancelled());
+    last if($ext >= $max_body_extensions);
+    log_line(sprintf("SDR26 1D DPG greyscale: %s not converged after %d iters (dE=%.4f > target %.2f), extending budget by 3 iters (ext %d/%d)",
+     $label,$ext_budget,($max_de_anchor+0),$target_de,$ext+1,$max_body_extensions));
+   }
   $total_inner_iters+=$inner_iters;
   $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
   $cal_active=1 if($cal_active_inner);
