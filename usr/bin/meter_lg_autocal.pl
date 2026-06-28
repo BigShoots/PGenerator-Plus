@@ -13473,7 +13473,7 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	  my $_prev_lock_idx=$original_r_ref->{"lock_idx"}+0;
 	  if($_prev_lock_idx >= 0 && $_prev_lock_idx <= 2) {
 	   my $_prev_lock_val=$vals[$_prev_lock_idx]+0;
-	   if($_prev_lock_val+0 <= $lock_val+0 * 1.01) {
+	   if($_prev_lock_val+0 <= ($lock_val+0) * 1.01) {
 	    $lock_idx=$_prev_lock_idx;
 	    $lock_val=$_prev_lock_val+0;
 	   }
@@ -13488,12 +13488,12 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	 # below R).
 	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"}) && $original_r_ref->{"r"}+0 > 0 && !defined($original_r_ref->{"lock_idx"})) {
 	  # R is the lock when its CURRENT measured value is the minimum
-	  # (or tied). We don't use the captured R value as the lock value --
-	  # we use R's current value so the lock tracks the actual measurement.
-	  # The captured reference just tells us "R was the lock on iter 1"
-	  # and we keep that lock-channel designation as long as R remains
-	  # the minimum.
-	  if($vals[0]+0 <= $lock_val+0) {
+	  # (or tied within 1%). We don't use the captured R value as the
+	  # lock value -- we use R's current value so the lock tracks the
+	  # actual measurement. The captured reference just tells us "R was
+	  # the lock on iter 1" and we keep that lock-channel designation
+	  # as long as R remains within 1% of the minimum.
+	  if($vals[0]+0 <= ($lock_val+0) * 1.01) {
 	   $lock_idx=0;
 	   $lock_val=$vals[0]+0;
 	  }
@@ -15642,19 +15642,19 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    for my $_i (1..2) {
     if($_cur_rgb[$_i]+0 < $_cur_min_val+0) { $_cur_min_val=$_cur_rgb[$_i]+0; $_cur_min_idx=$_i; }
    }
-   # Apply the same hysteresis rule as the gain fn.
-   if(defined($_legal_peak_r_ref->{"lock_idx"}) && $_legal_peak_r_ref->{"lock_idx"}+0 >= 0) {
-    my $_prev_idx=$_legal_peak_r_ref->{"lock_idx"}+0;
-    if($_prev_idx <= 2 && $_cur_rgb[$_prev_idx]+0 <= $_cur_min_val+0 * 1.01) {
-     $_cur_min_idx=$_prev_idx;
+# Apply the same hysteresis rule as the gain fn.
+    if(defined($_legal_peak_r_ref->{"lock_idx"}) && $_legal_peak_r_ref->{"lock_idx"}+0 >= 0) {
+     my $_prev_idx=$_legal_peak_r_ref->{"lock_idx"}+0;
+     if($_prev_idx <= 2 && $_cur_rgb[$_prev_idx]+0 <= $_cur_min_val+0 * 1.01) {
+      $_cur_min_idx=$_prev_idx;
+     }
+    } elsif(defined($_legal_peak_r_ref->{"r"}) && $_legal_peak_r_ref->{"r"}+0 > 0) {
+     # Legacy R-preference rule (only on first capture, before lock_idx is set)
+     if($_cur_rgb[0]+0 <= $_cur_min_val+0 * 1.01) {
+      $_cur_min_idx=0;
+     }
     }
-   } elsif(defined($_legal_peak_r_ref->{"r"}) && $_legal_peak_r_ref->{"r"}+0 > 0) {
-    # Legacy R-preference rule (only on first capture, before lock_idx is set)
-    if($_cur_rgb[0]+0 <= $_cur_min_val+0) {
-     $_cur_min_idx=0;
-    }
-   }
-   $_legal_peak_r_ref->{"lock_idx"}=$_cur_min_idx;
+    $_legal_peak_r_ref->{"lock_idx"}=$_cur_min_idx;
   } else {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
   }
@@ -16194,6 +16194,90 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
       $white_ref=$wy+0;
       $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0;
       set_state_white_reference($state,$white_ref);
+     }
+    }
+    # Luminance drive loop: the SDR26 1D-DPG autocal converges from whatever
+    # initial Y the panel lands at (which depends on the picture mode's
+    # OLED Light setting). On most panels this is well below the 109%
+    # headroom target -- e.g. cinema mode on a C2 lands around 130-160
+    # nits at identity 109, dropping to 115-145 after the 0.88 pre-curve.
+    # The user wants 109% to land at ~220 nits (so 100% lands at ~180
+    # under bt1886 gamma 2.4). Push OLED Light via adjustingLuminance
+    # in fixed steps until the 109% measurement crosses a threshold,
+    # then re-run the anchor WB iteration. Capped at 8 steps so a stuck
+    # loop (panel at max output, OSD clamping) terminates cleanly.
+    #
+    # Threshold = 180 nits measured AT 109% with the 0.88 pre-curve
+    # applied (= ~205 nits identity). The 109 anchor converges at this
+    # point; body anchors (which use the calibrated 109 as their curve
+    # reference) land at the matching 100% Y of ~180 / 1.222 = ~147
+    # for gamma 2.4. Headroom above the threshold costs luminance without
+    # buying more WB convergence (the panel is at its 100%-normalized
+    # response already), so we cap at 180 nits.
+    if(ref($last) eq "HASH" && $white_ref+0 > 0 && !$upload_failed && !cancelled()) {
+     my $_lum_target=$config->{"lg_autocal_sdr26_dpg_luminance_target_nits"}+0;
+     $_lum_target=180 if($_lum_target <= 0);
+     my $_lum_min=$_lum_target*0.85;  # accept within 15% below
+     my $_drive_iters=0;
+     while($white_ref+0 < $_lum_min && $_drive_iters < 8 && !$upload_failed && !cancelled()) {
+      my $_ratio=$_lum_target/$white_ref;
+      $_ratio=1.40 if($_ratio > 1.40);
+      $_ratio=0.80 if($_ratio < 0.80);
+      log_line(sprintf("SDR26 1D DPG greyscale: luminance drive iter %d: Y=%.2f target=%.2f ratio=%.3f (push adjustingLuminance)",
+       $_drive_iters+1, $white_ref, $_lum_target, $_ratio));
+      # Read the current TV picture settings so we can scale just the
+      # adjustingLuminance channel (white-balance channels stay as-is).
+      my $_drive_resp=api_json("POST","/api/lg/picture-settings",{
+       keys=>["adjustingLuminance","whiteBalanceMethod","whiteBalanceIre"],
+       picture_mode=>$picture_mode,
+       force_ddc_white_balance=>JSON::PP::true,
+       helper_timeout=>60,
+      });
+      my $_drive_pic=(ref($_drive_resp) eq "HASH" && ($_drive_resp->{"status"}||"") eq "ok")
+       ? $_drive_resp->{"picture_settings"} : undef;
+      if(!ref($_drive_pic) eq "HASH" || !defined($_drive_pic->{"adjustingLuminance"})) {
+       log_line("SDR26 1D DPG greyscale: luminance drive could not read picture_settings; aborting drive loop");
+       last;
+      }
+      my @_lum_new=map { int(($_+0)*$_ratio+0.5) } @{$_drive_pic->{"adjustingLuminance"}};
+      @_lum_new=map { ($_<0)?0:(($_>1023)?1023:$_) } @_lum_new;
+      $_drive_pic->{"adjustingLuminance"}=\@_lum_new;
+      my $_drive_set_resp=api_json("POST","/api/lg/picture-settings/set",{
+       picture_settings=>$_drive_pic,
+       picture_mode=>$picture_mode,
+       calibration_mode=>$cal_active?1:0,
+       calibration_picture_mode=>$picture_mode,
+       helper_timeout=>60,
+      });
+      my $_drive_ok=(ref($_drive_set_resp) eq "HASH" && ($_drive_set_resp->{"status"}||"") eq "ok") ? 1 : 0;
+      if(!$_drive_ok) {
+       log_line("SDR26 1D DPG greyscale: luminance drive upload failed: ".
+        (ref($_drive_set_resp) eq "HASH" ? ($_drive_set_resp->{"message"}||"unknown") : "no response"));
+       last;
+      }
+      # Re-run the 109 anchor with the new luminance.
+      my ($_conv2,$_last2,$_final_dpg2,$_inner_iters2,$_max_de2,$_cal_inner2,$_upload_inner2)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
+       $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
+      );
+      $total_inner_iters+=$_inner_iters2;
+      $max_de_overall=$_max_de2 if($_max_de2+0 > $max_de_overall+0);
+      $upload_failed=1 if($_upload_inner2);
+      if(ref($_last2) eq "HASH") {
+       my $_wy2=luminance($_last2);
+       if(defined($_wy2) && $_wy2+0 > 0) {
+        $white_ref=$_wy2+0;
+        $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0;
+        set_state_white_reference($state,$white_ref);
+       }
+      }
+      $_drive_iters++;
+     }
+     if($white_ref+0 >= $_lum_min) {
+      log_line(sprintf("SDR26 1D DPG greyscale: luminance drive reached Y=%.2f (target=%.2f, %d iters)",
+       $white_ref, $_lum_target, $_drive_iters));
+     } elsif($_drive_iters >= 8) {
+      log_line(sprintf("SDR26 1D DPG greyscale: luminance drive cap reached at Y=%.2f (target=%.2f, 8 iters exhausted)",
+       $white_ref, $_lum_target));
      }
     }
    push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
