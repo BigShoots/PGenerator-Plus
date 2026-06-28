@@ -6672,13 +6672,30 @@ sub webui_cec_scan_cache_info (@) {
 sub webui_cec_direct_status (@) {
  my ($cec_bin,$timeout)=@_;
  $timeout=2 if(!defined($timeout) || $timeout !~ /^\d+$/ || $timeout < 1);
+ # Try the configured CEC binary first (pgcec), then fall back to
+ # pgenerator-cec (the python2 self-contained CEC helper that talks
+ # directly to /dev/cec0 without requiring cec-ctl). On Biasi images
+ # cec-ctl is not installed, so pgenerator-cec is the only path that
+ # actually returns real TV power state.
  my $output=`timeout $timeout $cec_bin status 2>/dev/null`;
+ if((!defined($output) || $output eq "" || $output !~ /^tv_power:/m) && -x "/usr/sbin/pgenerator-cec") {
+  $output=`timeout $timeout /usr/sbin/pgenerator-cec status 2>/dev/null`;
+ }
  return undef if(!defined($output) || $output eq "");
  my ($power)=($output =~ /^tv_power:\s*([^\r\n]+)/m);
  $power=&webui_cec_power_label($power);
  return undef if($power eq "unknown");
- my ($phys)=($output =~ /^physical_addr:\s*([^\r\n]+)/m);
- my ($log)=($output =~ /^logical_addr:\s*([^\r\n]+)/m);
+ # Accept both "physical_addr" (pgcec) and "phys_addr" (pgenerator-cec).
+ my ($phys)=($output =~ /^(?:physical_addr|phys_addr):\s*([^\r\n]+)/m);
+ # Accept both "logical_addr" (pgcec) and "log_addrs" (pgenerator-cec);
+ # for "log_addrs" the value may include a mask like "1 [1] (mask=0x2)" so
+ # we extract just the leading address.
+ my ($log)="";
+ if($output =~ /^logical_addr:\s*(\d+)/m) {
+  $log=$1;
+ } elsif($output =~ /^log_addrs:\s*(\d+)/m) {
+  $log=$1;
+ }
  my ($osd)=($output =~ /^osd_name:\s*([^\r\n]+)/m);
  $phys="" if(!defined($phys));
  $log="" if(!defined($log));
@@ -6797,9 +6814,31 @@ sub webui_cec (@) {
    });
   }
  }
- # action commands
- my $output=`timeout 8 $cec_bin $cmd 2>&1`;
- my $rc=$?>>8;
+  # action commands. Try the configured CEC binary first (pgcec -> cec-ctl),
+  # then fall back to pgenerator-cec (the python2 self-contained CEC helper
+  # that uses the Linux CEC ioctl API directly). On Biasi images cec-ctl
+  # is not installed, so pgenerator-cec is the path that actually sends
+  # the CEC frames. Only `on`/`off` are routed to pgenerator-cec; the
+  # more exotic commands (`volup`/`voldown`/`mute`) require cec-ctl and
+  # are unreachable on Biasi images.
+  my $output;
+  my $rc;
+  if($cmd =~ /^(?:on|off|as|wake)$/ && -x "/usr/sbin/pgenerator-cec") {
+   my $pgc_cmd=$cmd;
+   $pgc_cmd="on" if($cmd eq "wake");
+   $pgc_cmd="as" if($cmd eq "active");
+   $output=`timeout 8 /usr/sbin/pgenerator-cec $pgc_cmd 2>&1`;
+   $rc=$?>>8;
+   # pgenerator-cec returns plain "OK" on success or an error message.
+   if($rc == 0) {
+    $output="OK\n";
+   } else {
+    $rc=1;
+   }
+  } else {
+   $output=`timeout 8 $cec_bin $cmd 2>&1`;
+   $rc=$?>>8;
+  }
  $output=&_webui_json_escape($output);
  if($rc == 0) {
   my $response_power="";
