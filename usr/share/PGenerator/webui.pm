@@ -28633,7 +28633,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  ctx.textAlign='left';
  ctx.fillText('Min cd/m\u00B2: '+Lb.toFixed(2),chart.pad.l,ctx.h-2);
  const diffuse=meterHdrDiffuseWhiteOverride();
- const targetLabel='100% target: '+targetPeak.toFixed(1)+' cd/m\u00B2'+((diffuse!=null&&meterChartIsPq())?' (DW '+diffuse.toFixed(1))':'');
+ const targetLabel='100% target: '+targetPeak.toFixed(1)+' cd/m\u00B2'+((diffuse!=null&&meterChartIsPq())?' (DW '+diffuse.toFixed(1)+')':'');
  ctx.fillText(targetLabel,chart.pad.l,chart.pad.t+14);
  ctx.textAlign='right';
  ctx.fillText('Max cd/m\u00B2: '+measuredMax.toFixed(2),ctx.w-chart.pad.r,ctx.h-2);
