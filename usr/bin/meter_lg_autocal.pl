@@ -1047,21 +1047,22 @@ sub target_luminance_for_step {
 	 my $mode=lc($signal_mode||"sdr");
 	 $target_gamma=lc($target_gamma||"bt1886");
 	 my $signal=$stimulus/100;
-	 # Clamp signals > 1.0 to 1.0 for ALL modes (SDR and HDR). The
-	 # previous code only clamped for HDR (`$signal=1 if($signal > 1 &&
-	 # $mode ne "sdr")`), which produced broken target Y for SDR
-	 # headroom anchors: 105 IRE gave signal=1.05 -> 1.05^2.2 = 1.213 ->
-	 # target = white_ref * 1.213, ABOVE the achievable peak (e.g.
-	 # white_ref=198 with 109 measured = 198 gave 105 target = 240,
-	 # which is unreachable -- the panel can never push 105 above the
-	 # 109 peak in SDR BT.709). Signals > 1.0 encode headroom/over-peak
-	 # at the source; the EOTF never lifts them above peak white. The
-	 # legal peak itself (109 IRE in SDR26, 100 IRE in HDR20) gets a
-	 # separate path via autocal_step_ignores_luminance_error that
-	 # returns measured-Y as the target; the per-anchor dE for 109/105
-	 # thus references the actual achievable luminance, not an
-	 # unattainable extrapolation.
-	 $signal=1 if($signal+0 > 1);
+	 # HDR clamps signals > 1.0 to 1.0 (HDR10 has no headroom codes above
+	 # 100 IRE -- the PQ EOTF saturates at 100% by spec). SDR preserves
+	 # signal > 1.0 so the 26-anchor SDR26 series (99/105/109 headroom
+	 # cluster) targets the extended gamma-2.2 / BT.1886 curve at those
+	 # codes -- 99 -> 193, 105 -> 220, 109 -> 234 nits on a 197-nit
+	 # peak. The 109 (legal peak) anchor uses autocal_step_ignores_
+	 # luminance_error so its dE is chroma-only and ignores the
+	 # unachievable luminance gap; 105 and 99 use the curve target and
+	 # fail to converge (panel capped at peak) with dE that surfaces the
+	 # achievable gap. The chart shows the correct exponential target
+	 # curve and the unattainability is visible as "fail to adjust" in
+	 # the wizard -- which is the intended behavior. The previous
+	 # "clamp signal to 1.0 for all modes" change (ce1a637f) flattened
+	 # the headroom cluster's target curve to a single value and made
+	 # the dE chart lie about what the calibration was attempting to do.
+	 $signal=1 if($signal+0 > 1 && $mode ne "sdr");
 	 if(defined($ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
 	  my $trace_fh;
 	  if(open($trace_fh,">>",$ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
@@ -1071,17 +1072,20 @@ sub target_luminance_for_step {
 	 }
 	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
 	  $signal=0 if($signal < 0);
-	  # BT.1886 also clamps signal to 1.0 for the same reason as the
-	  # gamma-2.2 path above: SDR signals > 1.0 encode headroom that the
-	  # panel cannot lift above peak white. The previous 1.1 cap let
-	  # 105 IRE through as signal=1.05, which BT.1886 then mapped to a
-	  # target > peak -- the same unattainable-target bug as gamma 2.2.
-	  $signal=1 if($signal+0 > 1);
+	  # SDR BT.1886 also keeps signal > 1.0 free so the 99/105 headroom
+	  # cluster targets the BT.1886 extended curve (the gamma-2.2 shape
+	  # with the BT.1886 black floor). Same rationale as the gamma-2.2
+	  # path above.
 	  return bt1886_eotf_luminance($signal,$white_y,$black_y+0);
 	 }
 	 return 0 if($stimulus <= 0);
+	 # Old HDR legacy clamp: HDR clamps signals > 1.0 to 1.0 (the PQ
+	 # EOTF saturates there by spec). SDR has already passed through the
+	 # $mode ne "sdr" gate above, so this only affects HDR. The 1.1 cap
+	 # was the pre-ce1a637f SDR fallback for stimulus > 110% (the old
+	 # SDR limit); SDR is no longer capped here because the SDR26
+	 # 26-anchor table tops out at 109.
 	 $signal=1 if($signal > 1 && $mode ne "sdr");
-	 $signal=1.1 if($signal > 1.1);
 	 if($mode eq "hdr10" && $target_gamma eq "st2084") {
 	  my $pq_y=pq_decode_nits($signal);
 	  return ($pq_y > $white_y) ? $white_y : $pq_y;
@@ -12923,6 +12927,152 @@ sub lg_autocal_26_build_dpg_core {
 	 return \@dpg;
 	}
 
+# SDR26-specific 1D DPG build core. Self-contained copy of the build math
+# with implicit-identity seed anchors at every SDR26 idx. The shared
+# lg_autocal_26_build_dpg_core above is HDR/HDR-20's core and stays
+# unchanged -- the SDR side maintains its own copy per the SDR/HDR
+# separation requirement (modifying this fn does NOT affect HDR builds).
+#
+# Why the seed: the shared core falls back to linear interpolation when
+# it has fewer than 4 anchors (Akima's minimum). The SDR26 1D-DPG path
+# starts from the identity baseline (no anchors) and adds ONE anchor
+# per calibrated greyscale step. After the 109 anchor alone, the core
+# has 3 control points (0, 1023, 1023) and goes linear -- linearly
+# scaling the whole curve from 0 at idx=0 to gain*cur at idx=1023,
+# breaking the gamma-2.2 shape across every intermediate idx. The
+# subsequent body anchors (50, 25, 75, 95, 90, ...) then read a
+# DPG that doesn't match their gamma-2.2 target and fail to converge.
+# Seeding the spline with implicit-identity anchors at every SDR26
+# anchor idx from iter 1 gives the spline 26+ control points from the
+# start, keeps Akima interpolation in play, and preserves the gamma-2.2
+# shape across the whole curve. The real calibrated anchors override
+# the seed at their own idx; the seed only fills in the rest.
+sub lg_autocal_26_build_sdr26_1d_dpg_core {
+ my ($current_dpg,$anchors)=@_;
+	 my @gain_keys=("r_gain","g_gain","b_gain");
+	 my @cur;
+	 if(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072) {
+	  @cur=@{$current_dpg};
+	 } else {
+	  for my $ch (0..2) {
+	   for my $i (0..1023) {
+	    my $v=int($i*32 + 0.5);
+	    $v=0 if($v < 0);
+	    $v=32767 if($v > 32767);
+	    push @cur,$v;
+	   }
+	  }
+	 }
+	 # SDR26 26-anchor idx list -- the 26 IRE labels map to these 1024-pt
+	 # DPG indices. Listed at the call site (lg_autocal_26_run_sdr_1d_
+	 # dpg_greyscale) so this fn doesn't have to import them. We accept
+	 # them as an optional second arg; when absent, no seed.
+	 my ($seed_idx_aref)=();
+	 if(@_ >= 3) { $seed_idx_aref=$_[2]; }
+	 my @seed_idx=();
+	 if(ref($seed_idx_aref) eq "ARRAY") {
+	  @seed_idx=@{$seed_idx_aref};
+	 }
+	 my @dpg;
+	 for my $ch (0..2) {
+	  my $gk=$gain_keys[$ch];
+	  my @ctrl_idx;
+	  my %ctrl_val;
+	  push @ctrl_idx,0;
+	  $ctrl_val{0}=0;
+	  my %seen;
+	  # Seed: add implicit identity-gain anchors at every SDR26 idx that
+	  # isn't already in @anchors. This guarantees the Akima spline has
+	  # 27 control points from the first call so the gamma-2.2 curve
+	  # shape is preserved between calibrated anchors.
+	  for my $seed_i (@seed_idx) {
+	   next unless(defined($seed_i) && $seed_i+0 >= 0 && $seed_i+0 <= 1023);
+	   my $seed_idx_int=int($seed_i+0);
+	   next if($seen{$seed_idx_int});
+	   my $seed_cur=$cur[$ch*1024 + $seed_idx_int];
+	   my $seed_val=int($seed_cur*1.0 + 0.5);
+	   $seed_val=0 if($seed_val < 0);
+	   $seed_val=32767 if($seed_val > 32767);
+	   push @ctrl_idx,$seed_idx_int;
+	   $seen{$seed_idx_int}=1;
+	   $ctrl_val{$seed_idx_int}=$seed_val;
+	  }
+	  for my $a (@{$anchors || []}) {
+	   next unless(ref($a) eq "HASH");
+	   my $idx=$a->{"idx"};
+	   next unless(defined($idx) && $idx >= 0 && $idx <= 1023);
+	   my $gain=$a->{$gk};
+	   next unless(defined($gain) && $gain > 0);
+	   my $cur_at_idx=$cur[$ch*1024 + $idx];
+	   my $new_val=int($cur_at_idx*$gain + 0.5);
+	   $new_val=0 if($new_val < 0);
+	   $new_val=32767 if($new_val > 32767);
+	   if(!exists($seen{$idx})) {
+	    push @ctrl_idx,$idx;
+	    $seen{$idx}=1;
+	   }
+	   $ctrl_val{$idx}=$new_val;
+	  }
+	  if(!exists($seen{1023})) {
+	   push @ctrl_idx,1023;
+	  }
+	  $ctrl_val{1023}=$ctrl_val{1023} // $cur[$ch*1024 + 1023];
+	  @ctrl_idx=sort { $a <=> $b } @ctrl_idx;
+	  my @ctrl_ys=map { $ctrl_val{$_} } @ctrl_idx;
+	  my $spline=lg_autocal_26_akima_interpolate(\@ctrl_idx,\@ctrl_ys);
+	  my $use_akima=(ref($spline) eq "ARRAY" && scalar(@$spline) == 1024);
+	  for my $i (0..1023) {
+	   my $val;
+	   if($use_akima) {
+	    $val=$spline->[$i];
+	   } else {
+	    my $lo_i=$ctrl_idx[0];
+	    my $hi_i=$ctrl_idx[-1];
+	    if($i <= $lo_i) {
+	     $val=$ctrl_val{$lo_i};
+	    } elsif($i >= $hi_i) {
+	     $val=$ctrl_val{$hi_i};
+	    } else {
+	     my $lo=$lo_i;
+	     my $hi=$hi_i;
+	     for my $k (0..$#ctrl_idx-1) {
+	      if($ctrl_idx[$k] <= $i && $i < $ctrl_idx[$k+1]) {
+	       $lo=$ctrl_idx[$k];
+	       $hi=$ctrl_idx[$k+1];
+	       last;
+	      }
+	     }
+	     my $lo_v=$ctrl_val{$lo};
+	     my $hi_v=$ctrl_val{$hi};
+	     if($hi == $lo) {
+	      $val=$lo_v;
+	     } else {
+	      $val=$lo_v + ($hi_v-$lo_v)*($i-$lo)/($hi-$lo);
+	     }
+	    }
+	   }
+	   $val=int($val + 0.5);
+	   $val=0 if($val < 0);
+	   $val=32767 if($val > 32767);
+	   push @dpg,$val;
+	  }
+	 }
+	 return \@dpg;
+	}
+
+# SDR26 build wrapper that seeds with the 26-anchor idx list before
+# delegating to the SDR-specific build core. The HDR wrapper
+# (lg_autocal_26_build_hdr20_1d_dpg) above stays unchanged -- it
+# delegates to the shared lg_autocal_26_build_dpg_core without seeds,
+# which is fine for HDR (its anchor idx list is different and the HDR
+# 100% anchor converges in ~6 iters via the mean-based reduce, so the
+# linear-fallback spline is not on the critical path).
+sub lg_autocal_26_build_sdr26_1d_dpg_seeded {
+ my ($current_dpg,$anchors)=@_;
+	 my @seed_idx=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+	 return lg_autocal_26_build_sdr26_1d_dpg_core($current_dpg,$anchors,\@seed_idx);
+}
+
 # Compute the per-channel multiplicative correction gains (R,G,B) used
 # to update the HDR20 1D DPG at a single anchor from a measured greyscale
 # patch reading and the neutral target (Display-P3/D65 white at the
@@ -13069,7 +13219,7 @@ sub lg_autocal_26_sdr26_dpg_gain {
 	}
 
 # Peak white-balance gains: SDR26 (BT.709 / D65) variant of the HDR20
-# reduce-to-lowest fn below. At 99/105/109 IRE the panel cannot boost any
+# reduce-to-mean fn below. At 99/105/109 IRE the panel cannot boost any
 # channel above its native max (hardware limit at the white cluster), so
 # D65 is only reachable by reducing the channel(s) that EXCEED their D65
 # target. The measured XYZ is projected to linear BT.709 / sRGB channel
@@ -13092,8 +13242,18 @@ sub lg_autocal_26_sdr26_dpg_gain {
 # below) but uses the BT.709 / sRGB inverse matrix because the SDR26 path
 # targets BT.709 / D65, not Display-P3. The two paths are otherwise
 # identical: same target=mean(mrgb), same [0.5, 1.0] clamp, same R-held.
+#
+# The previous version of this fn used REDUCE-TO-LOWEST (hold the lowest
+# channel at 1.0, reduce the other two toward it). That algorithm stuck on
+# warm panels because the held channel is typically B or R -- the side of
+# the chromaticity gap AWAY from D65 -- so reducing the other channels
+# toward it actually pulled the chromaticity FURTHER from D65 on every iter.
+# The 109 anchor's best dE stayed around 20-28 for 10 iters instead of
+# converging to <0.5. The mean-based algorithm (the one HDR's 100% has
+# used successfully since the 2026-06 work) lands at the panel's achievable
+# chromaticity because mean is closer to D65 than the lowest on warm panels.
 sub lg_autocal_26_sdr26_dpg_white_balance_gain {
-	 my ($reading,$original_lowest_ref)=@_;
+	 my ($reading,$original_target_ref)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
 	 my $mX=$reading->{"X"};
 	 my $mY=$reading->{"Y"};
@@ -13119,52 +13279,42 @@ sub lg_autocal_26_sdr26_dpg_white_balance_gain {
 	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
-	 # Reduce-to-lowest with FIRST-ITER-ONLY reference. The previous
-	 # version re-identified the lowest on every iteration, which let
-	 # the "held" channel switch between iters (e.g. iter 1 holds G,
-	 # iter 2 holds B, iter 3 holds R...) and each iter reduced a
-	 # different channel, compounding the attenuation past the
-	 # achievable D65 floor. With an $original_lowest_ref carrying
-	 # the FIRST iter's lowest channel + value, every iter targets
-	 # the SAME channel (the one that was lowest in the identity-
-	 # baseline read), and the OTHER channels are driven toward the
-	 # FIRST-iter's lowest value, not the current-iter's lowest.
-	 # Result: the held channel never changes, the reducing channels
-	 # converge monotonically to the held channel, and the panel's
-	 # peak luminance settles at ~3 * held_value in BT.709 linear
-	 # (the natural cost of pulling the excess channels down to the
-	 # lowest).
-	 my ($lowest_idx,$lowest_target);
-	 if(ref($original_lowest_ref) eq "HASH" && defined($original_lowest_ref->{"idx"}) && defined($original_lowest_ref->{"value"})) {
-	  $lowest_idx=int($original_lowest_ref->{"idx"});
-	  $lowest_target=$original_lowest_ref->{"value"}+0;
+	 # Reduce-to-mean with FIRST-ITER-ONLY reference. The mean of @mrgb
+	 # is the per-channel D65 target (R=G=B in linear BT.709). Anchoring on
+	 # the first iter's mean (rather than re-identifying it every iter)
+	 # gives a stable target that the reducing channels converge to
+	 # monotonically, the same way HDR20's 100% anchor does. Without the
+	 # first-iter ref, the mean shifts slightly each iter as the channel
+	 # gains land off-target and the algorithm never settles.
+	 my $mean_target;
+	 if(ref($original_target_ref) eq "HASH" && defined($original_target_ref->{"mean"})) {
+	  $mean_target=$original_target_ref->{"mean"}+0;
 	 } else {
-	  # First call: identify the lowest from the identity-baseline read.
-	  $lowest_idx=0;
-	  $lowest_target=$mrgb[0]+0;
-	  for my $ch (1..2) {
-	   if($mrgb[$ch]+0 < $lowest_target+0) {
-	    $lowest_target=$mrgb[$ch]+0;
-	    $lowest_idx=$ch;
-	   }
-	  }
+	  my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
+	  return (1.0,1.0,1.0) if(!($sum+0 > 0));
+	  $mean_target=$sum/3.0;
 	 }
-	 return (1.0,1.0,1.0) if(!($lowest_target+0 > 0));
+	 return (1.0,1.0,1.0) if(!($mean_target+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
-	  if($ch == $lowest_idx) {
-	   # Hold the originally-lowest channel at 1.0 -- no DPG change.
-	   push @gain,1.0;
-	   next;
-	  }
 	  my $m=$mrgb[$ch]+0;
-	  # Reducing channel: gain = original_lowest / current_measured,
-	  # so the post-DPG value equals the originally-lowest channel.
-	  # Floor at 0.5 to bound per-iter moves.
-	  my $g=($m+0 > 0) ? ($lowest_target/$m) : 1.0;
+	  my $g=($m+0 > 0) ? ($mean_target/$m) : 1.0;
+	  # Channels above mean: attenuate. Channels at/below mean: hold.
+	  # The clamp floor is 0.5 (panel cannot pull a channel below half
+	  # without visibly crushing detail). The clamp ceiling is 1.0
+	  # (panel cannot boost above native at the 109% max code).
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
+	  # R is held at 1.0 unconditionally -- the user's "hold R, pull
+	  # G/B down" instruction is what makes this converge on warm panels.
+	  # On a warm panel the BT.709 matrix maps the measured XYZ to a
+	  # high-R linear channel, so the mean-based natural gain for R would
+	  # be 0.85-0.95 (a 5-15% reduction). Each reduction costs 5-15% of
+	  # peak luminance on OLED without a corresponding white-balance
+	  # improvement (the chromaticity gap to D65 closes mostly via G/B).
+	  # The HDR20 path uses the same R-held rule for the same reason.
+	  $g=1.0 if($ch == 0);
 	  push @gain,$g+0;
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
@@ -14881,13 +15031,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $skip_de=$skip_fraction*$target_de;
  my $black_y=$config->{"black_y"};
  $black_y=0 unless(defined($black_y) && $black_y+0 >= 0);
- # Legal-peak (109%) persistent state. The "original lowest" reference
- # captures the first-iter lowest linear-BT.709 channel + its value so
- # every subsequent iter targets the SAME channel (not the current
- # iter's lowest). Prevents the per-iter lowest-channel oscillation
- # that compounded past the achievable D65 floor.
- my $_legal_peak_lowest_ref=undef;
- my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
+  # Legal-peak (109%) persistent state. The "original target" reference
+  # captures the first-iter mean of the linear-BT.709 R/G/B triplet (the
+  # per-channel D65 target in BT.709) so every subsequent iter targets the
+  # SAME mean. Anchoring on the first iter prevents the per-iter target
+  # drift that compounded past the achievable D65 floor in the previous
+  # design (which held the lowest channel at 1.0 instead of using the
+  # mean, and let the held channel flip between iters).
+  my $_legal_peak_target_ref=undef;
+  my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
 
  # Best-so-far state for revert (low IRE only, same as HDR).
  my $best_de=undef;
@@ -15027,6 +15179,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    }
   }
   log_line("SDR26 1D DPG greyscale: ".$label." i".$i." dE=".sprintf("%.4f",defined($de)?$de+0:-1)." best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($acceptance_pending?" (acceptance)":""));
+  # Chromaticity log on the 109% legal peak: the dE is chroma-only so
+  # without seeing x/y the trajectory of the reduce-to-mean iteration is
+  # invisible. Surface x/y/dE per iter so the next failing 109 calibration
+  # leaves a fingerprint directly in the log without requiring the user
+  # to dig through the per-anchor history in the state file.
+  if($_is_legal_peak && ref($reading) eq "HASH") {
+   my $_lx=defined($reading->{"x"}) ? sprintf("%.4f",$reading->{"x"}+0) : "undef";
+   my $_ly=defined($reading->{"y"}) ? sprintf("%.4f",$reading->{"y"}+0) : "undef";
+   log_line("SDR26 1D DPG greyscale: sdr26_109% i".$i." chromaticity x=".$_lx." y=".$_ly." dE=".sprintf("%.4f",defined($de)?$de+0:-1));
+  }
   # Per-iter state push for diagnostic parity with HDR.
   {
    my $hist=$state->{"sdr_1d_dpg_anchor_history"};
@@ -15131,22 +15293,21 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
   my ($rg,$gg,$bg);
   if($is_white_peak) {
-   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_white_balance_gain($reading,$_legal_peak_lowest_ref);
-   # Lock the first-iter lowest as the persistent reference. Subsequent
-   # iters reuse this ref so the held channel does not flip (which
-   # compounded past the achievable D65 floor in the previous design).
-   if(!defined($_legal_peak_lowest_ref)) {
+   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_white_balance_gain($reading,$_legal_peak_target_ref);
+   # Lock the first-iter mean (per-channel D65 target in linear BT.709)
+   # as the persistent reference. Subsequent iters reuse the FIRST-iter
+   # mean so the target doesn't drift (which would let the held R
+   # channel and the reducing G/B channels oscillate past the achievable
+   # D65 floor). Mirrors the HDR20 100% anchor's first-iter reference.
+   if(!defined($_legal_peak_target_ref)) {
     my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
     my @_rgb_first=(
      3.2404542*$_rX + -1.5371385*$_rY + -0.4985314*$_rZ,
      -0.9692660*$_rX + 1.8760108*$_rY +  0.0415560*$_rZ,
      0.0556434*$_rX + -0.2040259*$_rY +  1.0572252*$_rZ,
     );
-    my $_li=0; my $_lv=$_rgb_first[0]+0;
-    for my $k (1..2) {
-     if($_rgb_first[$k]+0 < $_lv+0) { $_lv=$_rgb_first[$k]+0; $_li=$k; }
-    }
-    $_legal_peak_lowest_ref={ idx=>$_li, value=>$_lv };
+    my $_first_mean=($_rgb_first[0]+$_rgb_first[1]+$_rgb_first[2])/3.0;
+    $_legal_peak_target_ref={ mean=>$_first_mean };
    }
   } else {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
@@ -15194,7 +15355,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    }
   }
   my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
-  my $new_dpg=lg_autocal_26_build_sdr26_1d_dpg($current_dpg_ref,\@anchors_for_build);
+  my $new_dpg=lg_autocal_26_build_sdr26_1d_dpg_seeded($current_dpg_ref,\@anchors_for_build);
   if(ref($new_dpg) ne "ARRAY" || @$new_dpg != 3072) {
    $upload_failed=1;
    log_line("SDR26 1D DPG greyscale: build returned wrong length at ".$label);
@@ -15434,7 +15595,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
 
  # Identity baseline: the SDR path starts from the linear 15-bit identity
  # in LG's [0,32767] 1D_DPG_DATA domain, just like HDR.
- my $current_dpg=lg_autocal_26_build_sdr26_1d_dpg(undef,[]);
+ my $current_dpg=lg_autocal_26_build_sdr26_1d_dpg_seeded(undef,[]);
  return "lg_autocal_26_run_sdr_1d_dpg_greyscale: identity baseline is not 3072 ints"
   unless(ref($current_dpg) eq "ARRAY" && @$current_dpg == 3072);
 
