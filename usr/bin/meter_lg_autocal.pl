@@ -1046,22 +1046,26 @@ sub target_luminance_for_step {
 	 return undef if(!defined($stimulus));
 	 my $mode=lc($signal_mode||"sdr");
 	 $target_gamma=lc($target_gamma||"bt1886");
-	 my $signal=$stimulus/100;
-	 # HDR clamps signals > 1.0 to 1.0 (HDR10 has no headroom codes above
-	 # 100 IRE -- the PQ EOTF saturates at 100% by spec). SDR preserves
-	 # signal > 1.0 so the 26-anchor SDR26 series (99/105/109 headroom
-	 # cluster) targets the extended gamma-2.2 / BT.1886 curve at those
-	 # codes -- 99 -> 193, 105 -> 220, 109 -> 234 nits on a 197-nit
-	 # peak. The 109 (legal peak) anchor uses autocal_step_ignores_
-	 # luminance_error so its dE is chroma-only and ignores the
-	 # unachievable luminance gap; 105 and 99 use the curve target and
-	 # fail to converge (panel capped at peak) with dE that surfaces the
-	 # achievable gap. The chart shows the correct exponential target
-	 # curve and the unattainability is visible as "fail to adjust" in
-	 # the wizard -- which is the intended behavior. The previous
-	 # "clamp signal to 1.0 for all modes" change (ce1a637f) flattened
-	 # the headroom cluster's target curve to a single value and made
-	 # the dE chart lie about what the calibration was attempting to do.
+	 # SDR26 normalises the target curve against the LEGAL PEAK (109 IRE),
+	 # not against 100 IRE. The LG SDR26 panel can only produce luminance
+	 # up to its 109% peak (call it L_max); the 100 IRE code is just one
+	 # point on the way up. Normalising signal = stimulus / 109 makes the
+	 # curve sit with 109 -> 1.0 -> L_max, 105 -> 0.963 -> L_max * 0.963^2.2
+	 # = ~93% of L_max, 99 -> 0.908 -> ~83% of L_max, 50 -> 0.459 -> ~21% of
+	 # L_max. The 100 IRE code therefore targets L_max * (100/109)^2.2 =
+	 # ~90% of L_max -- below the peak, as the user spec requires. Normalising
+	 # against 100 (the previous behaviour) instead demanded 105 -> L_max *
+	 # 1.05^2.2 = ~112% of L_max, which is physically unachievable and
+	 # produced a flat target curve at the headroom cluster.
+	 #
+	 # HDR10 keeps signal = stimulus / 100 because the PQ EOTF saturates
+	 # at 100% by spec -- HDR has no headroom codes above 100 IRE.
+	 my $signal_peak=($mode eq "sdr") ? 109.0 : 100.0;
+	 my $signal=$stimulus/$signal_peak;
+	 # HDR clamps signals > 1.0 to 1.0 (HDR10 PQ saturates there by spec).
+	 # SDR preserves signal > 1.0 only within reason -- anything above
+	 # 1.0 (e.g. stimulus > 109 on a non-standard label) is clamped to 1.0
+	 # so the gamma curve doesn't extrapolate past the legal peak.
 	 $signal=1 if($signal+0 > 1 && $mode ne "sdr");
 	 if(defined($ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
 	  my $trace_fh;
@@ -1072,10 +1076,8 @@ sub target_luminance_for_step {
 	 }
 	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
 	  $signal=0 if($signal < 0);
-	  # SDR BT.1886 also keeps signal > 1.0 free so the 99/105 headroom
-	  # cluster targets the BT.1886 extended curve (the gamma-2.2 shape
-	  # with the BT.1886 black floor). Same rationale as the gamma-2.2
-	  # path above.
+	  # SDR BT.1886 also normalises against the 109 legal peak. Same
+	  # rationale as the gamma-2.2 path above.
 	  return bt1886_eotf_luminance($signal,$white_y,$black_y+0);
 	 }
 	 return 0 if($stimulus <= 0);
