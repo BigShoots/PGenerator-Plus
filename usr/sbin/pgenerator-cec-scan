@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# pgenerator-cec-scan — Enumerate the CEC bus by polling every LA (0..14, 15=broadcast)
+# and asking each for GIVE_OSD_NAME + GIVE_DEVICE_VENDOR_ID + GIVE_PHYSICAL_ADDR.
+# Talks to /dev/cecN via the Linux CEC ioctl API. Does not need cec-ctl.
+#
+# Usage: pgenerator-cec-scan [/dev/cecN]
+# Output: JSON to stdout {"self": {...}, "devices": [...]}
+#
+import os, sys, fcntl, struct, array, json, time, errno
+
+M = 0x61  # 'a' from linux/cec.h
+def _IOC(d,t,nr,sz): return (d<<30)|(sz<<16)|(t<<8)|nr
+def _IOR(t,nr,sz): return _IOC(2,t,nr,sz)
+def _IOWR(t,nr,sz): return _IOC(3,t,nr,sz)
+
+CEC_MSG_SZ       = 56
+CEC_CAPS_SZ      = 76
+CEC_LOG_ADDRS_SZ = 92
+CEC_ADAP_G_CAPS    = _IOWR(M, 0, CEC_CAPS_SZ)
+CEC_ADAP_G_PHYS    = _IOR(M, 1, 2)
+CEC_ADAP_G_LOG     = _IOR(M, 3, CEC_LOG_ADDRS_SZ)
+CEC_ADAP_S_LOG     = _IOWR(M, 4, CEC_LOG_ADDRS_SZ)
+CEC_TRANSMIT       = _IOWR(M, 5, CEC_MSG_SZ)
+CEC_RECEIVE        = _IOWR(M, 6, CEC_MSG_SZ)
+
+CEC_MSG_GIVE_PHYSICAL_ADDR    = 0x83
+CEC_MSG_REPORT_PHYSICAL_ADDR  = 0x84
+CEC_MSG_GIVE_OSD_NAME         = 0x46
+CEC_MSG_SET_OSD_NAME          = 0x47
+CEC_MSG_GIVE_VENDOR_ID        = 0x8C
+CEC_MSG_DEVICE_VENDOR_ID      = 0x87
+CEC_MSG_GIVE_DEVICE_POWER     = 0x8F
+CEC_MSG_REPORT_POWER_STATUS   = 0x90
+
+CEC_TX_STATUS_OK = 0x01
+CEC_TX_STATUS_NACK = 0x02
+CEC_TX_STATUS_ERROR = 0x04
+CEC_TX_STATUS_TIMEOUT = 0x08
+CEC_TX_STATUS_MAX_RETRIES = 0x10
+CEC_TX_STATUS_ABORTED = 0x20
+
+CEC_RX_STATUS_OK = 0x01
+
+LOG_ADDR_NAMES = {
+    0: "TV", 1: "Recording Device 1", 2: "Recording Device 2",
+    3: "Tuner 1", 4: "Playback Device 1", 5: "Audio System",
+    6: "Tuner 2", 7: "Tuner 3", 8: "Playback Device 2",
+    9: "Recording Device 3", 10: "Tuner 4", 11: "Playback Device 3",
+    12: "Reserved", 13: "Reserved", 14: "Specific Use",
+    15: "Unregistered/Broadcast",
+}
+
+def ioctl(fd, req, buf):
+    try:
+        fcntl.ioctl(fd, req, buf); return True
+    except IOError:
+        return False
+
+def cec_array_to_bytes(buf):
+    return buf.tobytes() if hasattr(buf, 'tobytes') else buf.tostring()
+
+def get_caps(fd):
+    buf = array.array('B', [0]*CEC_CAPS_SZ)
+    if not ioctl(fd, CEC_ADAP_G_CAPS, buf): return None
+    data = cec_array_to_bytes(buf)
+    driver = data[0:32].split(b'\x00')[0].decode(errors='replace')
+    name   = data[32:64].split(b'\x00')[0].decode(errors='replace')
+    avail, caps, ver = struct.unpack_from('<III', data, 64)
+    return {'driver': driver, 'name': name, 'avail': avail, 'caps': caps, 'version': ver}
+
+def get_phys(fd):
+    buf = array.array('B', [0xFF, 0xFF])
+    if not ioctl(fd, CEC_ADAP_G_PHYS, buf): return 0xFFFF
+    return struct.unpack('<H', cec_array_to_bytes(buf))[0]
+
+def get_log_addrs(fd):
+    buf = array.array('B', [0]*CEC_LOG_ADDRS_SZ)
+    if not ioctl(fd, CEC_ADAP_G_LOG, buf): return None
+    return {'addrs': [buf[i] for i in range(4)], 'mask': buf[4]|(buf[5]<<8),
+            'ver': buf[6], 'num': buf[7], 'osd': cec_array_to_bytes(buf[16:31]).split(b'\x00')[0].decode(errors='replace')}
+
+def claim(fd, osd='PGenerator'):
+    """Claim LA 4 (Playback Device 1)."""
+    buf = array.array('B', [0]*CEC_LOG_ADDRS_SZ)
+    buf[0] = 0xFF; buf[1] = 0xFF; buf[2] = 0xFF; buf[3] = 0xFF
+    buf[6] = 5  # CEC 1.4
+    buf[7] = 1  # 1 LA
+    for i, c in enumerate(osd[:14]):
+        buf[16+i] = ord(c)
+    buf[31] = 4  # Playback
+    buf[35] = 4
+    buf[39] = 0x08
+    if not ioctl(fd, CEC_ADAP_S_LOG, buf): return None
+    return buf[0]
+
+def transmit(fd, src, dst, opcode, params=None, timeout_ms=400):
+    """Send a CEC message and wait for reply. Returns (tx_status, rx_status, payload bytes).
+    payload is the bytes of the reply message including the CEC header byte."""
+    if params is None: params = []
+    msg = array.array('B', [0]*CEC_MSG_SZ)
+    hdr = ((src&0xF)<<4)|(dst&0xF)
+    msg_len = 2 + len(params)
+    struct.pack_into('<I', msg, 16, msg_len)
+    struct.pack_into('<I', msg, 20, timeout_ms)
+    msg[32] = hdr; msg[33] = opcode
+    for i, b in enumerate(params): msg[34+i] = b
+    # reply field at byte 48: tell kernel which opcode to expect
+    if opcode == CEC_MSG_GIVE_OSD_NAME: msg[48] = CEC_MSG_SET_OSD_NAME
+    elif opcode == CEC_MSG_GIVE_PHYSICAL_ADDR: msg[48] = CEC_MSG_REPORT_PHYSICAL_ADDR
+    elif opcode == CEC_MSG_GIVE_VENDOR_ID: msg[48] = CEC_MSG_DEVICE_VENDOR_ID
+    elif opcode == CEC_MSG_GIVE_DEVICE_POWER: msg[48] = CEC_MSG_REPORT_POWER_STATUS
+    try:
+        fcntl.ioctl(fd, CEC_TRANSMIT, msg)
+    except IOError:
+        return None, None, b''
+    tx_status = msg[50]
+    rx_status = msg[49]
+    # IMPORTANT: after the ioctl, the kernel updates msg[16:20] to the
+    # length of the reply (which may be longer than what we sent).
+    # Read it back instead of using our local msg_len.
+    if (rx_status & CEC_RX_STATUS_OK):
+        reply_len = struct.unpack_from('<I', msg, 16)[0]
+        if reply_len > 0 and reply_len <= CEC_MSG_SZ - 32:
+            payload = cec_array_to_bytes(msg[32:32+reply_len])
+        else:
+            payload = b''
+    else:
+        payload = b''
+    return tx_status, rx_status, payload
+
+def poll_device(fd, src, dst, quick=False):
+    """Poll device at LA=dst for vendor + phys + osd + power. Returns dict or None.
+
+    If `quick=True`, only do GIVE_PHYSICAL_ADDR — used to skip the OSD/vendor/
+    power queries for empty LAs after the first scan round found nothing."""
+    info = {'addr': dst, 'name': LOG_ADDR_NAMES.get(dst, 'Unknown')}
+    found_any = False
+    # GIVE_PHYSICAL_ADDR
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_PHYSICAL_ADDR, timeout_ms=100)
+    if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 4 and payload[1] == CEC_MSG_REPORT_PHYSICAL_ADDR:
+        info['phys'] = '%d.%d.%d.%d' % ((payload[2]>>4)&0xF, payload[2]&0xF, (payload[3]>>4)&0xF, payload[3]&0xF)
+        found_any = True
+    if quick and not found_any:
+        return None
+    # GIVE_OSD_NAME
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_OSD_NAME, timeout_ms=100)
+    if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 3 and payload[1] == CEC_MSG_SET_OSD_NAME:
+        name = payload[2:].rstrip(b'\x00').decode(errors='replace').strip()
+        if name: info['osd'] = name; found_any = True
+    # GIVE_VENDOR_ID
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_VENDOR_ID, timeout_ms=100)
+    if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 5 and payload[1] == CEC_MSG_DEVICE_VENDOR_ID:
+        info['vendor_id'] = '0x%06x' % ((payload[2]<<16)|(payload[3]<<8)|payload[4])
+        info['vendor'] = vendor_name((payload[2]<<16)|(payload[3]<<8)|payload[4])
+        found_any = True
+    # GIVE_DEVICE_POWER
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_DEVICE_POWER, timeout_ms=100)
+    if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 3 and payload[1] == CEC_MSG_REPORT_POWER_STATUS:
+        info['power'] = payload[2]
+        found_any = True
+    return info if found_any else None
+
+VENDORS = {
+    0x0000e091: "LG",
+    0x00008046: "Panasonic/Matsushita",
+    0x0006d723: "Panasonic",
+    0x00003974: "Roku",
+    0x00128246: "Vizio",
+    0x0009b07a: "Sony",
+    0x000c03: "HDMI",
+    0x0006789b: "Samsung",
+}
+
+def vendor_name(vid):
+    return VENDORS.get(vid, '')
+
+def main():
+    dev = '/dev/cec0'
+    if len(sys.argv) > 1: dev = sys.argv[1]
+    try:
+        fd = os.open(dev, os.O_RDWR)
+    except OSError as e:
+        sys.stderr.write('Cannot open %s: %s\n' % (dev, e))
+        sys.exit(1)
+    caps = get_caps(fd)
+    if not caps:
+        sys.stderr.write('Cannot get CEC caps\n')
+        os.close(fd); sys.exit(1)
+    phys = get_phys(fd)
+    la_info = get_log_addrs(fd)
+    src = 15  # Unregistered (broadcast) — kernel will pick
+    if la_info and la_info['mask'] != 0:
+        for a in la_info['addrs']:
+            if a != 0xFF:
+                src = a; break
+    if src == 15:
+        # Try to claim a LA
+        claimed = claim(fd, 'PGenerator')
+        if claimed is not None and claimed != 0xFF:
+            src = claimed
+    # Build self info
+    self_info = {
+        'driver': caps['driver'],
+        'adapter': caps['name'],
+        'phys': '%d.%d.%d.%d' % ((phys>>12)&0xF, (phys>>8)&0xF, (phys>>4)&0xF, phys&0xF),
+        'addr': src if src != 15 else '',
+        'osd': (la_info or {}).get('osd', 'PGenerator'),
+    }
+    # Poll all LAs 0..14 (skip 15 which is broadcast). Round 1: quick
+    # GIVE_PHYSICAL_ADDR only — empty LAs return immediately on NACK with
+    # a 100ms timeout. Round 2: full OSD/vendor/power query only on LAs
+    # that responded in round 1. This brings a typical 1-device scan
+    # down from ~7s to ~2s.
+    candidates = []
+    for dst in range(15):
+        info = poll_device(fd, src, dst, quick=True)
+        if info and dst != src:
+            candidates.append(dst)
+        time.sleep(0.02)
+    devices = []
+    for dst in candidates:
+        info = poll_device(fd, src, dst, quick=False)
+        if info and dst != src:
+            devices.append(info)
+        time.sleep(0.02)
+    os.close(fd)
+    print(json.dumps({'self': self_info, 'devices': devices}, separators=(',',':')))
+
+if __name__ == '__main__':
+    main()
