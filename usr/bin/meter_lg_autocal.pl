@@ -15107,18 +15107,34 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
 
  # Best-so-far state for revert (low IRE only, same as HDR).
- my $best_de=undef;
- my $best_dpg=[@{$current_dpg_ref}];
- my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
- my $consecutive_reverts=0;
- # Legal peak: move_scaling stays at 1.0 throughout -- the gain is
- # applied at full strength on every iter because the target is stable
- # (first-iter lowest reference). Warmup at 0.5 was for the previous
- # design where the per-iter target drifted; with a stable target the
- # natural DPG response is monotonic and one full-strength move lands
- # within meter noise. Lower anchors also use full M=1.0 start since
- # their per-anchor target is computed against a stable white_ref.
- my $move_scaling=1.0;
+  my $best_de=undef;
+  my $best_dpg=[@{$current_dpg_ref}];
+  my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
+  my $consecutive_reverts=0;
+  my $revert_budget=defined($config->{"lg_autocal_sdr26_dpg_revert_budget"}) ? int($config->{"lg_autocal_sdr26_dpg_revert_budget"}) : 4;
+  $revert_budget=2 if($revert_budget < 2);
+  $revert_budget=10 if($revert_budget > 10);
+  # Initial move_scaling: 0.5 for the 109 legal peak (damped warmup so the
+  # first iter doesn't overshoot), 1.0 for body anchors (their target Y is
+  # computed against a stable white_ref so the natural DPG response is
+  # already monotonic and full-strength lands within meter noise).
+  #
+  # The previous "move_scaling=1.0 throughout for legal peak" design
+  # overshot on the user's panel: iter 1 moved G/B to (1.0, 0.907, 0.624)
+  # at idx 1023, which dropped the 109 luminance from 108 nits (pre-curve
+  # baseline) to 86 nits and pulled the chromaticity AWAY from D65 (from
+  # cold 0.282/0.287 at pre-curve to warm 0.357/0.381 after the move).
+  # Every subsequent iter then computed gain=1.0 because G/B were already
+  # at or below R -- no degree of freedom remained and the chromaticity
+  # was stuck at the overshoot value. With the initial move_scaling=0.5,
+  # iter 1 applies only half the natural pull-down (G/B to ~0.95/~0.81),
+  # the chromaticity moves partway toward D65, and subsequent iters can
+  # refine without overshoot. The revert-and-halve path (below) catches
+  # any remaining overshoot by snapping back to the best DPG.
+  my $initial_move_scaling=defined($config->{"lg_autocal_sdr26_dpg_initial_move_scaling"}) ? ($config->{"lg_autocal_sdr26_dpg_initial_move_scaling"}+0) : (($_is_legal_peak_anchor) ? 0.5 : 1.0);
+  $initial_move_scaling=0.05 if($initial_move_scaling < 0.05);
+  $initial_move_scaling=1.0 if($initial_move_scaling > 1.0);
+  my $move_scaling=$initial_move_scaling;
  my $acceptance_pending=0;
  my $accepted_best_de=undef;
  my $accepted_best_dpg=undef;
@@ -15230,15 +15246,32 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $best_dpg=[@{$current_dpg_ref}];
     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
     $consecutive_reverts=0;
-    $move_scaling=1.0;
-   } elsif($_anchor_ire < $low_ire_threshold) {
+    $move_scaling=$initial_move_scaling;
+   } elsif($consecutive_reverts < $revert_budget) {
+    # Revert-and-halve: when a move overshoots (dE worsens from the best
+    # seen so far), snap the DPG back to the best snapshot and halve the
+    # move scaling. The next iter applies the same natural gain at half
+    # strength, which keeps the chromaticity trajectory inside the best
+    # state's "good" neighborhood while still making progress.
+    #
+    # Previously this was gated to low-IRE anchors only (the constant-
+    # amplitude oscillation that the revert-and-halve loop is designed to
+    # break doesn't happen at mid/high IRE on SDR). That was wrong -- the
+    # 109 legal peak ALSO oscillates when the natural pull-down at full
+    # strength overshoots the D65 chromaticity (the chromaticity crosses
+    # through D65 and lands warm, then the next iter clamps G/B to 1.0
+    # because they're already below R, and the iter can't recover). The
+    # revert-and-halve loop snaps back to the pre-overshoot state and
+    # tries again at half strength. With $initial_move_scaling=0.5 at
+    # the 109 anchor and full revert-and-halve coverage, the overshoot
+    # is caught immediately and the iteration converges.
     @{$current_dpg_ref}=@{$best_dpg};
     @{$done_ref}=@{$best_anchors};
     $consecutive_reverts++;
     $move_scaling*=0.5 if($move_scaling+0 > 0.001);
     log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
-    if($consecutive_reverts >= 3) {
-     log_line("SDR26 1D DPG greyscale: 3 consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
+    if($consecutive_reverts >= $revert_budget) {
+     log_line("SDR26 1D DPG greyscale: ".$revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
      last;
     }
    }
@@ -15374,23 +15407,31 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   }
   my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
   my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
-  # Legal peak: apply the reduce-to-lowest gain at FULL strength (no
-  # damp, no white move multiplier). The gain is computed against a
-  # STABLE reference (the first-iter lowest channel) so it is already
-  # monotonic -- each iter's gain is exactly "how much do I need to
-  # reduce channel C to land at the originally-lowest" -- and a single
-  # full-strength application lands within meter noise. The previous
-  # damp + M=2.5 path was for designs where each iter chose a DIFFERENT
-  # target; with a stable target that scaling overcorrects and
-  # compounds past the achievable D65 floor (this was the bug that
-  # dropped the panel from 198 nits to 1.7 nits on the user's setup).
+  # Legal peak: apply the R-held + G/B-pull-down gain with move_scaling
+  # applied as: scaled = 1.0 + (natural_gain - 1.0) * move_scaling. The R
+  # held channel has natural gain=1.0, so the scaled value stays at 1.0
+  # regardless of move_scaling (no spurious R change from the damp).
+  # The G/B natural gains < 1.0 (we're pulling them down toward R), so
+  # scaled_gain = 1.0 + (natural - 1.0) * move_scaling = 1.0 - (1 -
+  # natural) * move_scaling. At move_scaling=1.0 the full natural gain
+  # is applied; at move_scaling=0.5 only half the pull-down is applied
+  # (e.g. natural 0.85 -> scaled 0.925). This is the same move_scaling
+  # semantics the body path uses, just on the R-held gain fn output.
+  #
+  # Why dampen the legal peak (and not the body): the 109 anchor is the
+  # LAST point a chromaticity fix can be applied at full code (idx 1023).
+  # An overshoot here is hard to recover from -- clamping clamps all three
+  # channels to 1.0 and the chromaticity is stuck. A damped first move
+  # (move_scaling=0.5 by default for the 109 anchor) lets the iteration
+  # approach the converged state gradually, and the revert-and-halve path
+  # catches any residual overshoot.
   my $sr;
   my $sg;
   my $sb;
   if($is_white_peak) {
-   $sr=$rg+0;
-   $sg=$gg+0;
-   $sb=$bg+0;
+   $sr=1.0+(($rg+0)-1.0)*$move_scaling;
+   $sg=1.0+(($gg+0)-1.0)*$move_scaling;
+   $sb=1.0+(($bg+0)-1.0)*$move_scaling;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
