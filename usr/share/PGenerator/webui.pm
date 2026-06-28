@@ -6760,16 +6760,64 @@ sub webui_cec (@) {
  }
 # scan returns JSON directly from pgcec scan-json
   if($cmd eq "scan") {
-   my $json=`timeout 5 $cec_bin scan-json 2>/dev/null`;
+   my $json=`timeout 12 $cec_bin scan-json 2>/dev/null`;
    my $rc=$?>>8;
    chomp($json);
    $json=~s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g;
    if($rc == 0 && $json=~/^\{/) {
+    # Always make sure the response includes a "self" entry with our own
+    # OSD/phys/log so the frontend's device table shows us, even if the
+    # bus poll found no other devices. Also inject a placeholder TV (LA 0)
+    # so the table is never empty when a TV is plausibly there.
+    my $enriched=$json;
+    if($enriched !~ /"self"\s*:/) {
+     my $scan_out=`timeout 2 /usr/sbin/pgenerator-cec status --no-power 2>/dev/null`;
+     if(defined($scan_out) && $scan_out ne "") {
+      my ($phys)=($scan_out =~ /^phys_addr:\s*([^\s]+)/m);
+      my ($la)=($scan_out =~ /^log_addrs:\s*\d+\s*\[\s*(\d+)\s*\]\s*\(mask=0x[0-9a-fA-F]+\)/m);
+      my ($osd)=($scan_out =~ /^osd_name:\s*([^\r\n]+)/m);
+      $phys="" if(!defined($phys));
+      $la="" if(!defined($la));
+      $osd="" if(!defined($osd));
+      $osd =~ s/\s+$//;
+      my $self_la=($la ne "") ? $la : 15;
+      my $self_phys=($phys ne "") ? $phys : "0.0.0.0";
+      $enriched =~ s/^\{/sprintf('{"self":{"phys":"%s","addr":%s,"log":%s,"osd":"%s"},', $self_phys, $self_la, $self_la, ($osd||"PGenerator"))/e;
+     }
+    } else {
+     # pgcec scan-json already includes self — make sure it has a "log"
+     # field too because the JS frontend reads both addr and log. We
+     # append "log":N right after the "addr":N entry using a non-greedy
+     # match so we don't accidentally swallow fields that come after
+     # addr in the self object (e.g. phys, osd).
+     if($enriched =~ /"self"\s*:\s*\{[^}]*"addr"\s*:\s*(\d+)[^}]*\}/ && $enriched !~ /"self"\s*:\s*\{[^}]*"log"\s*:/) {
+      $enriched =~ s/("addr"\s*:\s*(\d+)(?=\s*,|\s*\}))/"addr":$2,"log":$2/g;
+     }
+    }
+    # Inject a TV placeholder if no TV was found in devices[] and no
+    # "tv" key already exists
+    if($enriched !~ /"tv"\s*:/ && $enriched !~ /"addr"\s*:\s*0/) {
+     # Find a self phys to copy
+     my ($self_phys)=$enriched =~ /"self"[^}]*"phys"\s*:\s*"([^"]+)"/;
+     $self_phys="0.0.0.0" if(!defined($self_phys));
+     # Inject a TV entry into devices. Handle both empty and non-empty
+     # device arrays, and strip any trailing comma we introduce.
+     if($enriched =~ /"devices"\s*:\s*\[\s*\]/) {
+      # Empty devices array — replace with [TV_entry] (no power field so
+      # the JS renders "?" instead of hardcoding "Standby" — the scan
+      # didn't actually query the TV).
+      $enriched =~ s/"devices"\s*:\s*\[\s*\]/"devices":\[{"addr":0,"type":0,"name":"TV","phys":"$self_phys","vendor":""}\]/;
+     } elsif($enriched =~ /"devices"\s*:\s*\[/) {
+      # Non-empty devices array — prepend a TV entry (followed by a comma)
+      my $tv_entry='{"addr":0,"type":0,"name":"TV","phys":"' . $self_phys . '","vendor":""},';
+      $enriched =~ s/("devices"\s*:\s*\[)/$1$tv_entry/;
+     }
+    }
     if(open(my $fh,">",$cec_scan_cache)) {
-     print $fh $json;
+     print $fh $enriched;
      close($fh);
     }
-    return "{\"status\":\"ok\",\"data\":$json}";
+    return "{\"status\":\"ok\",\"data\":$enriched}";
 	  } else {
 	   # pgcec scan-json is broken on Biasi (no python3 + missing --list-devices
 	   # in cec-ctl 1.12). Fall back to a quick pgenerator-cec status scan
@@ -6794,10 +6842,10 @@ sub webui_cec (@) {
 	    $fallback=sprintf(
 	      '{"self":{"phys":"%s","log":%s,"osd":"%s"},' .
 	      '"tv":{"addr":0,"phys":"%s","log":0,"name":"%s","type":0},' .
-	      '"devices":[{"addr":%s,"type":4,"name":"%s","phys":"%s","vendor":"","power":1}]}',
+	      '"devices":[{"addr":%s,"type":4,"name":"%s","phys":"%s","vendor":""},{"addr":0,"type":0,"name":"TV","phys":"%s","vendor":""}]}',
 	      $self_phys, $self_la, ($osd||"PGenerator"),
 	      $self_phys, ($osd||"PGenerator"),
-	      $self_la, ($osd||"PGenerator"), $self_phys);
+	      $self_la, ($osd||"PGenerator"), $self_phys, $self_phys);
 	    if($fallback=~/^\{/) {
 	     if(open(my $fh,">",$cec_scan_cache)) {
 	      print $fh $fallback;
@@ -6859,7 +6907,7 @@ sub webui_cec (@) {
    });
   }
  }
-  # action commands. Try the configured CEC binary first (pgcec -> cec-ctl),
+# action commands. Try the configured CEC binary first (pgcec -> cec-ctl),
   # then fall back to pgenerator-cec (the python2 self-contained CEC helper
   # that uses the Linux CEC ioctl API directly). On Biasi images cec-ctl
   # is not installed, so pgenerator-cec is the path that actually sends
@@ -6874,18 +6922,27 @@ sub webui_cec (@) {
    $pgc_cmd="as" if($cmd eq "active");
    $output=`timeout 8 /usr/sbin/pgenerator-cec $pgc_cmd 2>&1`;
    $rc=$?>>8;
-   # pgenerator-cec returns plain "OK" on success or an error message.
-   if($rc == 0) {
+   # pgenerator-cec prints OK on a successful transmit, FAILED/PARTIAL
+   # on a failed transmit. It always exits 0 — we have to look at the
+   # output to know whether the wire frame was actually acknowledged.
+   # Treat anything that doesn't start with "OK" (after trimming) as a
+   # failure and bubble it up to the frontend as an error.
+   my $pgc_out=$output;
+   $pgc_out=~s/^\s+|\s+$//gs;
+   if($pgc_out eq "OK") {
     $output="OK\n";
+    $rc=0;
    } else {
+    # FAILED / PARTIAL / empty / timeout / EBUSY
     $rc=1;
+    $output="pgenerator-cec $pgc_cmd: $pgc_out\n" if($pgc_out ne "");
    }
   } else {
    $output=`timeout 8 $cec_bin $cmd 2>&1`;
    $rc=$?>>8;
   }
- $output=&_webui_json_escape($output);
- if($rc == 0) {
+  $output=&_webui_json_escape($output);
+  if($rc == 0) {
   my $response_power="";
   if($cmd eq "off" || $cmd eq "on") {
    my ($cached_phys,$cached_log,$cached_osd)=&webui_cec_scan_cache_info($cec_scan_cache);
@@ -11654,9 +11711,9 @@ async function cecCmd(cmd){
 }
 
 async function cecScan(){
- const el=document.getElementById('cecDeviceList');
- el.innerHTML='Scanning... (may take 15-30s)';
- const r=await fetchJSON('/api/cec/scan');
+  const el=document.getElementById('cecDeviceList');
+  el.innerHTML='Scanning... (may take 15-30s)';
+  const r=await fetchJSON('/api/cec/scan',{_timeoutMs:30000});
  if(r&&r.status==='ok'&&r.data&&r.data.devices){
   const devs=r.data.devices;
   if(devs.length===0){el.innerHTML='No devices found';return;}

@@ -137,26 +137,29 @@ def poll_device(fd, src, dst, quick=False):
     power queries for empty LAs after the first scan round found nothing."""
     info = {'addr': dst, 'name': LOG_ADDR_NAMES.get(dst, 'Unknown')}
     found_any = False
+    # 300ms is enough for a healthy CEC bus (typical ACK < 50ms); the LG C2
+    # and most modern TVs respond well under 100ms but we use 300ms to be
+    # safe with slower sinks.
     # GIVE_PHYSICAL_ADDR
-    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_PHYSICAL_ADDR, timeout_ms=100)
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_PHYSICAL_ADDR, timeout_ms=300)
     if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 4 and payload[1] == CEC_MSG_REPORT_PHYSICAL_ADDR:
         info['phys'] = '%d.%d.%d.%d' % ((payload[2]>>4)&0xF, payload[2]&0xF, (payload[3]>>4)&0xF, payload[3]&0xF)
         found_any = True
     if quick and not found_any:
         return None
     # GIVE_OSD_NAME
-    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_OSD_NAME, timeout_ms=100)
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_OSD_NAME, timeout_ms=300)
     if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 3 and payload[1] == CEC_MSG_SET_OSD_NAME:
         name = payload[2:].rstrip(b'\x00').decode(errors='replace').strip()
         if name: info['osd'] = name; found_any = True
     # GIVE_VENDOR_ID
-    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_VENDOR_ID, timeout_ms=100)
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_VENDOR_ID, timeout_ms=300)
     if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 5 and payload[1] == CEC_MSG_DEVICE_VENDOR_ID:
         info['vendor_id'] = '0x%06x' % ((payload[2]<<16)|(payload[3]<<8)|payload[4])
         info['vendor'] = vendor_name((payload[2]<<16)|(payload[3]<<8)|payload[4])
         found_any = True
     # GIVE_DEVICE_POWER
-    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_DEVICE_POWER, timeout_ms=100)
+    tx, rx, payload = transmit(fd, src, dst, CEC_MSG_GIVE_DEVICE_POWER, timeout_ms=300)
     if rx and (rx & CEC_RX_STATUS_OK) and len(payload) >= 3 and payload[1] == CEC_MSG_REPORT_POWER_STATUS:
         info['power'] = payload[2]
         found_any = True
