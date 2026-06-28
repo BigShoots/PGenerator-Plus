@@ -13446,31 +13446,16 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	 # a subsequent iter if R is no longer the minimum.
 my @vals=($mrgb[0]+0, $mrgb[1]+0, $mrgb[2]+0);
 	 # Lock selection: ABSOLUTE lock based on first-measurement floor.
-	 # Once a channel becomes the lock (the minimum on first iter),
-	 # it stays the lock for the ENTIRE patch session -- across all
-	 # subsequent iters and across all body anchors. The user spec is
-	 # 'the locked RGB value should not change' (i.e. once R is captured
-	 # as the natural minimum, R stays the lock regardless of what
-	 # G/B do on later iters, even if B reads lower after a few pull-
-	 # down iters). This gives monotonic convergence: pull the warmer
-	 # channels down to match the locked channel across iters without
-	 # the lock swapping mid-session. Without the absolute lock the
-	 # algorithm oscillates between R and B as the lock (visible in
-	 # the autocal log: 'gains R=1.000 G=0.937 B=0.751' on i1, then
-	 # 'R=0.878 G=0.913 B=1.000' on i2 -- lock swapped from R to B),
-	 # which never converges because each iter pulls the OTHER channel
-	 # down, then the next iter sees the wrong channel as the min.
-	 #
-	 # Selection priority:
-	 #   1. First iter (no original_r_ref captured yet): pick the
-	 #      current minimum (R/G/B whichever reads lowest). This is
-	 #      the panel's natural limit and the right channel to lock.
-	 #   2. R-preferred if R was the lock on first iter: even if G or B
-	 #      reads lower after pull-down, keep R as the lock for
-	 #      monotonic convergence (the user confirmed R should stay
-	 #      locked on warm panels).
-	 #   3. Existing lock in original_r_ref: keep that channel as the
-	 #      lock for the rest of the session (no swapping).
+	 # Once R is captured as the natural minimum on first iter, R stays
+	 # the lock for the ENTIRE patch session -- across all subsequent
+	 # iters and across all body anchors. The user spec is 'the locked
+	 # RGB value should not change' -- R is captured as the natural
+	 # minimum and used as the convergence target for G and B. Every
+	 # other channel converges to R's locked value: gain = R/G (pull G
+	 # down to R if G > R, or boost G back up to R if G went below R on
+	 # a previous iter -- recovery from overshoot). The lock channel
+	 # itself stays at gain=1.0 (no change -- it's the convergence
+	 # anchor, not the convergence target).
 	 my $lock_idx=0;
 	 my $lock_val=$vals[0];
 	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"lock_idx"}) && $original_r_ref->{"lock_idx"}+0 >= 0 && $original_r_ref->{"lock_idx"}+0 <= 2) {
@@ -13513,34 +13498,34 @@ my @vals=($mrgb[0]+0, $mrgb[1]+0, $mrgb[2]+0);
 	   $lock_val=$vals[0]+0;
 	  }
 	 }
-	 # Converge all three channels to the AVERAGE linear-RGB value.
-	 # Lock channel: gain = avg/lock = boost UP (panel has headroom at 109).
-	 # Other channels: gain = avg/channel = pull DOWN (to meet avg).
-	 # Floor the lock boost at 1.0 (don't boost beyond identity in the
-	 # common case -- the pre-curve already pulled the identity down,
-	 # so identity gain = 1.0 is the practical max). The lock channel
-	 # can exceed 1.0 only if avg > lock, which happens when other
-	 # channels are well above the lock. Floor at 0.5 for non-lock
-	 # channels to avoid crushing detail.
-	 my $avg_val=($vals[0]+$vals[1]+$vals[2])/3;
-	 my $avg_target=$avg_val;
-	 # If avg would push the lock beyond identity, cap to the identity
-	 # limit (avg_target = lock / 1.0 = lock). Effectively converges to
-	 # the lock with the others pulled down to it (the legacy behavior).
-	 $avg_target=$lock_val if($avg_val+0 > $lock_val*1.0/($vals[$lock_idx]+0)*($vals[$lock_idx]+0));
+	 # Converge all three channels to the LOCKED value (R if R is the
+	 # lock). The lock channel stays at gain=1.0 (the convergence
+	 # anchor, NOT the convergence target). The other channels get
+	 # gain = lock/channel -- if the other channel is ABOVE the lock,
+	 # this pulls it DOWN to meet the lock; if it went BELOW the lock
+	 # on a previous iter (overshoot from damp + move_scaling), the
+	 # gain becomes > 1.0 and brings the channel back UP to the lock.
+	 # This is the recovery path the user spec'd: 'they should get
+	 # brought back up a specific amount to get them as close to red
+	 # as possible. not become the lock.' The lock is permanent --
+	 # never swapped, never re-evaluated once captured.
+	 my $lock_target=$lock_val;
 	 for my $ch (0..2) {
 	  my $m=$vals[$ch]+0;
-	  my $g=($m+0 > 0) ? ($avg_target/$m) : 1.0;
-	  # Lock channel: clamp at 1.0 (don't boost beyond identity unless
-	  # the avg clearly demands it; the pre-curve cap of 0.88 keeps us
-	  # well below the panel's actual max anyway).
+	  my $g=($m+0 > 0) ? ($lock_target/$m) : 1.0;
+	  # Lock channel: stay at gain=1.0 (the convergence anchor).
 	  if($ch == $lock_idx) {
-	   $g=1.0 if($g+0 > 1.0);
+	   $g=1.0;
 	  } else {
-	   # Non-lock channels: clamp at 0.5 (preserve detail) and 1.0
-	   # (can't boost without exceeding pre-curve headroom).
+	   # Non-lock channels: clamp at 0.5 (preserve detail). No upper
+	   # clamp -- if the channel went below the lock on a previous iter
+	   # (overshoot) we need gain > 1.0 to bring it back UP to the lock.
+	   # The call-site ceiling for the non-lock channels still applies
+	   # (max=1.0 at the convergence target level), but that's a soft
+	   # cap from above -- the convergence path can still overshoot if
+	   # damp + move_scaling produces a value > 1.0, which is correct
+	   # recovery behavior for an overshot channel.
 	   $g=0.5 if($g+0 < 0.5);
-	   $g=1.0 if($g+0 > 1.0);
 	  }
 	  $g=1.0 if($g+0 != $g+0);
 	  push @gain,$g+0;
@@ -15735,11 +15720,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
    # The lock channel (the MINIMUM raw gain) is allowed to boost above
-   # identity to meet the avg (recover luminance from the pre-curve
-   # attenuation). The other channels are clamped at 1.0 (no further
-   # boosting beyond the pre-curve baseline -- they're already close
-   # to the avg or above it and we want them to converge DOWN, not be
-   # pushed UP).
+   # identity up to 1.25 (recover luminance from the pre-curve
+   # attenuation if the panel has headroom at 109%). The non-lock
+   # channels are clamped at 1.0 max for the FORWARD direction (no
+   # further boosting beyond the pre-curve baseline -- they should
+   # converge DOWN to the lock). However the natural gain for a non-
+   # lock channel can exceed 1.0 (recovery: if the channel went BELOW
+   # the lock on a previous iter, the natural gain brings it back UP
+   # to the lock), and the damp + move_scaling preserves that sign
+   # direction. So the ceiling check below only fires for FORWARD
+   # movement (pull-down); the recovery path can still push > 1.0.
    if(($rg+0) <= ($gg+0) && ($rg+0) <= ($bg+0)) {
     # R is the lock (smallest raw gain) -- allow it to boost up to 1.25.
     $sr=1.25 if($sr+0 > 1.25);
