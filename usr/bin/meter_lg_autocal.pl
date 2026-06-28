@@ -15138,9 +15138,30 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $damp_floor_low=defined($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}+0) : 0.5;
  $damp_floor_low=0.3 if($damp_floor_low < 0.3);
  $damp_floor_low=0.95 if($damp_floor_low > 0.95);
- my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
- $target_de=0.05 if($target_de < 0.05);
- $target_de=5.0 if($target_de > 5.0);
+  my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
+  $target_de=0.05 if($target_de < 0.05);
+  $target_de=5.0 if($target_de > 5.0);
+  # Per-anchor target_de multiplier at low IRE (HDR pattern). The panel's
+  # 2.2 EOTF + meter noise at very low stimulus (2.3-4% IRE) make the set
+  # target physically unreachable -- a best-so-far dE of 0.6-0.9 is the
+  # best achievable. Without relaxation the worker keeps "trying" after
+  # every revert, wasting the iteration budget fighting back down to a
+  # target the panel can't hit. 1.5x at low IRE (default 5%) and 2.0x at
+  # very-low IRE (default 2.3%) match the operator directive "double the
+  # set target" at the noise floor.
+  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.5;
+  $target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
+  $target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
+  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 2.0;
+  $target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
+  $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
+  $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
+  my $_effective_target_de=$target_de;
+  if($_anchor_ire+0 < 2.0) {
+   $_effective_target_de=$target_de*$target_de_very_low_multiplier;
+  } elsif($_anchor_ire+0 < $low_ire_threshold) {
+   $_effective_target_de=$target_de*$target_de_low_multiplier;
+  }
  my $acceptance_de=lg_autocal_26_sdr26_dpg_accept_skip_threshold($config);
  # Acceptance must not exceed target (otherwise we accept patches that
  # haven't actually converged to the operator's set target).
@@ -15158,7 +15179,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $skip_fraction=defined($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}+0) : 0.3;
  $skip_fraction=0.1 if($skip_fraction+0 < 0.1);
  $skip_fraction=1.0 if($skip_fraction > 1.0);
- my $skip_de=$skip_fraction*$target_de;
+ my $skip_de=$skip_fraction*$_effective_target_de;
  my $black_y=$config->{"black_y"};
  $black_y=0 unless(defined($black_y) && $black_y+0 >= 0);
   # Legal-peak (109%) persistent state. The "original target" reference
@@ -15200,6 +15221,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   $initial_move_scaling=0.05 if($initial_move_scaling < 0.05);
   $initial_move_scaling=1.0 if($initial_move_scaling > 1.0);
   my $move_scaling=$initial_move_scaling;
+ # SDR26 EOTF-aware gamma refinement: ported from HDR (which tracks
+ # gamma_effective via log-log slope of (Y_n/Y_{n-1}) / (DPG_n/DPG_{n-1})).
+ # Even though SDR's target gamma is 2.2, the actual panel gamma at each
+ # IRE differs (OLED efficiency curves, ABL, sub-pixel routing) -- using
+ # the fixed 1/2.2 = 0.4545 exponent in the damp produced under-damped
+ # moves at low IRE (panel's gamma < 2) and over-damped moves at high IRE
+ # (panel's gamma > 2.2 due to gamma-2.2 EOTF + ABL).
+ # The same EMA blend + [1.5, 3.0] clamp logic as HDR, with the 2.2
+ # target_gamma as the seed value (vs HDR's ST.2084/PQ seed).
+ my $gamma_effective=2.2;
+ $gamma_effective=defined($config->{"lg_autocal_sdr26_dpg_initial_gamma"}) ? ($config->{"lg_autocal_sdr26_dpg_initial_gamma"}+0) : 2.2 if(!defined($gamma_effective));
+ $gamma_effective=1.5 if($gamma_effective+0 < 1.5);
+ $gamma_effective=3.0 if($gamma_effective+0 > 3.0);
+ # DPG Y/dpg_*_prev: per-iter tracking for the log-log slope. Saved AFTER
+ # each read but BEFORE the next iter's build, so iter N+1 can compute
+ # the slope from iter N's read.
+ my $y_prev=undef;
+ my $dpg_r_prev=undef;
+ my $dpg_g_prev=undef;
+ my $dpg_b_prev=undef;
  my $acceptance_pending=0;
  my $accepted_best_de=undef;
  my $accepted_best_dpg=undef;
@@ -15294,14 +15335,65 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $reading->{"lg_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
    $reading->{"series_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
   }
-  $state->{"readings"}=merge_reading($state->{"readings"},$reading);
-  $state->{"current_luminance"}=luminance($reading);
-  my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
-  $state->{"current_delta_e"}=defined($de)?$de:undef;
-  $max_de_anchor=$de+0 if(defined($de) && $de+0 > $max_de_anchor+0);
-  write_state($state);
-  my $conv_now=defined($de) && $de+0 <= $target_de+0;
-  $converged=1 if($conv_now);
+   $state->{"readings"}=merge_reading($state->{"readings"},$reading);
+   $state->{"current_luminance"}=luminance($reading);
+   my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
+   $state->{"current_delta_e"}=defined($de)?$de:undef;
+   $max_de_anchor=$de+0 if(defined($de) && $de+0 > $max_de_anchor+0);
+   write_state($state);
+   # Refine gamma_effective from the previous iter's measured Y/DPG change
+   # (port from HDR's lg_autocal_26_run_hdr20_dpg_greyscale). At iter 1
+   # the *_prev values are undef and the 2.2 seed stands; from iter 2 onwards
+   # we estimate the local gamma as
+   #   log(Y_n / Y_{n-1}) / log(DPG_{n-1,ch} / DPG_{n-2,ch})
+   # averaged across R/G/B. The EMA blend (0.3 new, 0.7 history) makes the
+   # damp follow slow response-model changes without snapping to a noisy
+   # one-shot. Sanity guards skip the blend on tiny moves or near-zero
+   # crossings. The 2.2 seed (vs HDR's PQ seed) reflects the SDR target
+   # EOTF; the measured value is what the panel actually does at this IRE.
+   if(defined($y_prev) && defined($dpg_r_prev) && defined($dpg_g_prev) && defined($dpg_b_prev)) {
+    my $y_ratio=luminance($reading)/$y_prev;
+    my $dpg_r_ratio=$current_dpg_ref->[$idx]/$dpg_r_prev;
+    my $dpg_g_ratio=$current_dpg_ref->[$idx+1024]/$dpg_g_prev;
+    my $dpg_b_ratio=$current_dpg_ref->[$idx+2048]/$dpg_b_prev;
+    if($y_ratio > 0 && $dpg_r_prev > 0 && $dpg_g_prev > 0 && $dpg_b_prev > 0
+     && $dpg_r_ratio > 0 && $dpg_g_ratio > 0 && $dpg_b_ratio > 0
+     && abs(log($dpg_r_ratio)) > 0.05
+     && abs(log($dpg_g_ratio)) > 0.05
+     && abs(log($dpg_b_ratio)) > 0.05
+     && abs(log($y_ratio)) > 0.05) {
+     my $gr=log($y_ratio)/log($dpg_r_ratio);
+     my $gg=log($y_ratio)/log($dpg_g_ratio);
+     my $gb=log($y_ratio)/log($dpg_b_ratio);
+     if(defined($gr) && $gr+0 > 1.0 && $gr+0 < 4.0
+      && $gg+0 > 1.0 && $gg+0 < 4.0
+      && $gb+0 > 1.0 && $gb+0 < 4.0) {
+      my $gamma_meas=($gr+$gg+$gb)/3.0;
+      # EMA blend: 30% new measurement, 70% history.
+      $gamma_effective=(0.3*$gamma_meas)+(0.7*$gamma_effective);
+     }
+    }
+   }
+   # Clamp to [1.5, 3.0] to prevent wild measured values (transient
+   # meter spike, near-zero DPG change producing divide-by-tiny) from
+   # producing catastrophic damp moves. The 2.2 seed and the EMA-blend
+   # sanity guards keep gamma_effective in this range in practice.
+   $gamma_effective=1.5 if($gamma_effective+0 < 1.5);
+   $gamma_effective=3.0 if($gamma_effective+0 > 3.0);
+   my $damp_exp=(1.0/($gamma_effective+0.0));
+   # Save the current reading's Y and the DPG idx values that were IN USE
+   # during this measurement (the build from the previous iter, since
+   # this iter's build happens further down). Next iter's $y_prev /
+   # $dpg_*_prev will be these, allowing the log-log slope computation
+   # above. Save happens AFTER the read succeeds but BEFORE the
+   # convergence test, so even the converged iter updates the state
+   # for the next anchor's seed.
+   $y_prev=luminance($reading);
+   $dpg_r_prev=$current_dpg_ref->[$idx];
+   $dpg_g_prev=$current_dpg_ref->[$idx+1024];
+   $dpg_b_prev=$current_dpg_ref->[$idx+2048];
+   my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
+   $converged=1 if($conv_now);
   # Best-so-far with revert: same pattern as HDR. Revert runs at low IRE
   # only (the constant-amplitude oscillation that the revert-and-halve
   # loop is designed to break doesn't happen at mid/high IRE on SDR).
@@ -15471,7 +15563,23 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
   }
   my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
-  my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
+  # White-cluster (109%) move multiplier: the white anchor only REDUCES
+  # the excess channels (G/B held, R preserved, see
+  # lg_autocal_26_sdr26_dpg_peak_r_hold_gain) and re-measures, so a larger
+  # per-iter move is safe and converges the peak in fewer iters. Ported
+  # from HDR's lg_autocal_26_run_hdr20_dpg_greyscale where M=2.0 brings
+  # the 100% white anchor in 3-4 iters instead of 10-13. SDR with gamma
+  # 2.2 has more reduction headroom than HDR's PQ at the white cluster,
+  # so the multiplier is slightly higher (2.5 default). The multiplier
+  # applies to ALL three channels (R is naturally 1.0 = unchanged) and
+  # composes with move_scaling (revert-and-halve halves the multiplied
+  # move on the next iter). The overshoot guard below clamps each
+  # reducing channel to never move below its raw gain, so even a huge
+  # multiplier is monotonic and safe.
+  my $white_move_mult=defined($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_white_move_multiplier"}+0) : 2.5;
+  $white_move_mult=1.0 if($white_move_mult+0 < 1.0);
+  $white_move_mult=5.0 if($white_move_mult+0 > 5.0);
+  my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
   # Legal peak: apply the R-held + G/B-pull-down gain with move_scaling
   # applied as: scaled = 1.0 + (natural_gain - 1.0) * move_scaling. The
   # scaling semantics are uniform across all three channels -- but the
@@ -15498,9 +15606,19 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $sg;
   my $sb;
   if($is_white_peak) {
-   $sr=1.0+(($rg+0)-1.0)*$move_scaling;
-   $sg=1.0+(($gg+0)-1.0)*$move_scaling;
-   $sb=1.0+(($bg+0)-1.0)*$move_scaling;
+   # Legal peak: use the EOTF-aware DAMP (gamma_effective-derived exponent
+   # instead of fixed 1/2.2) so the per-iter move follows the panel's
+   # actual gamma. Compose with the white move multiplier (M=2.5) and
+   # move_scaling (revert-and-halve) per HDR's pattern. The (damp-1.0)
+   # term is what the multiplier scales: at gain=0.85 with gamma=2.2,
+   # damp = 0.85^0.4545 = 0.927, so damp-1.0 = -0.073. M=2.5 turns that
+   # into -0.182, applied as scaled = 1.0 + (-0.182) = 0.818 (1.0 + 0.5
+   # of the natural pull). At gain=0.5 the move is 0.797 (1.0 + 0.5 *
+   # (0.5^0.4545-1) * 2.5 = 1.0 + 0.5 * -0.405 * 2.5 = 0.494, clamped
+   # to floor 0.6).
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
@@ -15510,8 +15628,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sr=1.25 if($sr+0 > 1.25);
    $sg=1.0 if($sg+0 > 1.0);
    $sb=1.0 if($sb+0 > 1.0);
+   # Overshoot guard (HDR pattern): a REDUCING channel (raw gain < 1.0,
+   # i.e. the channel measured ABOVE D65's per-channel target and needs
+   # attenuation) must NEVER be driven below its raw gain. With the
+   # M=2.5 multiplier a 0.5 raw gain would scale to 0.494 (below the
+   # 0.6 floor) -- max(scaled, raw_gain) caps the move at the raw gain,
+   # landing the channel exactly on the mathematical target at worst
+   # (never past it). R is held at 1.0 by the gain fn so this guard
+   # only binds for the excess G/B channels.
+   $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
+   $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
+   $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   my $anchor_move_mult=1.0; # body only
    $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
@@ -24800,7 +24928,22 @@ eval {
 	 }
 	 write_state($state);
 	 autocal_completion_pattern_cleanup($config,$state) if(!cancelled());
-  1;
+	 # CEC off after autocal (user-controllable, default OFF). Burns no
+	 # patches + turns the TV off when the calibration succeeds. Disabled
+	 # by default to avoid surprising operators; enable via
+	 # lg_autocal_26_cec_off_after=1 in the body. The cleanup pattern
+	 # is already on screen (stop/black) before this fires, so the TV
+	 # is in a safe state when it powers down.
+	 if(!cancelled() && $config->{"lg_autocal_26_cec_off_after"}) {
+	  log_line("autocal: CEC off requested (lg_autocal_26_cec_off_after=1)");
+	  my $cec_off=api_json("POST","/api/cec/off",{},15);
+	  if(ref($cec_off) eq "HASH" && ($cec_off->{"status"}||"") eq "ok") {
+	   log_line("autocal: CEC off sent OK");
+	  } else {
+	   log_line("autocal: CEC off failed: ".((ref($cec_off) eq "HASH" && $cec_off->{"message"}) ? $cec_off->{"message"} : "unknown"));
+	  }
+	 }
+   1;
 } or do {
  my $err=$@ || "Auto Cal failed";
  $err=~s/[\r\n]+/ /g;
@@ -24810,6 +24953,12 @@ eval {
   $calibration_mode_active=0;
   set_state_calibration_mode($state,0,"");
  }
+ # Burn-in protection: even on error/cancel, clear the patch to
+ # stop/black so the panel doesn't sit on a bright calibration-state
+ # patch indefinitely. The autocal_completion_pattern_cleanup fn is
+ # no-op when patch_insert is disabled in the body (it always posts the
+ # cleanup pattern regardless), so this is safe to call here.
+ autocal_completion_pattern_cleanup($config,$state) if(ref($config) eq "HASH");
  $state->{"status"}=cancelled() ? "cancelled" : "error";
  $state->{"current_name"}=cancelled() ? "Auto Cal cancelled" : "Auto Cal error";
  $state->{"message"}=cancelled() ? "Auto Cal stopped" : $err;
