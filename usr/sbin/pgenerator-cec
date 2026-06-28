@@ -194,14 +194,16 @@ def transmit_retry(fd, src, dst, opcode, params=None, retries=2):
             time.sleep(0.3)
     return st
 
-def query_power_status(fd, src):
+def query_power_status(fd, src, timeout_ms=500):
     """Send Give Device Power Status to TV and wait for reply.
-    Returns power status string or None on failure."""
+    Returns power status string or None on failure.
+    Default timeout 500ms — long enough for a normal CEC reply,
+    short enough to not stall the webui if the TV is off."""
     POWER_NAMES = {0: 'on', 1: 'standby', 2: 'standby-to-on', 3: 'on-to-standby'}
     msg = array.array('B', [0] * CEC_MSG_SZ)
     hdr = ((src & 0x0F) << 4) | CEC_LOG_ADDR_TV
     struct.pack_into('<I', msg, 16, 2)       # len = header + opcode
-    struct.pack_into('<I', msg, 20, 2000)    # timeout ms
+    struct.pack_into('<I', msg, 20, timeout_ms)
     msg[32] = hdr
     msg[33] = CEC_MSG_GIVE_DEVICE_POWER
     # reply field at byte 48: set to expected reply opcode so kernel waits
@@ -245,10 +247,19 @@ def cap_names(caps):
 def main():
     cmd = 'status'
     dev = '/dev/cec0'
-    if len(sys.argv) > 1:
-        cmd = sys.argv[1].lower()
-    if len(sys.argv) > 2:
-        dev = sys.argv[2]
+    query_power = True
+    args = sys.argv[1:]
+    # Filter out flags (--no-power) from args; positional args are cmd + optional dev
+    filtered = []
+    for a in args:
+        if a in ('--no-power', '-P'):
+            query_power = False
+        else:
+            filtered.append(a)
+    if len(filtered) > 0:
+        cmd = filtered[0].lower()
+    if len(filtered) > 1:
+        dev = filtered[1]
 
     try:
         fd = os.open(dev, os.O_RDWR)
@@ -296,8 +307,11 @@ def main():
             claimed = claim_log_addr(fd)
             if claimed != 0xFF:
                 src = claimed
-        ps = query_power_status(fd, src)
-        print('tv_power:  %s' % (ps if ps else 'unknown'))
+        ps = query_power_status(fd, src) if query_power else None
+        if query_power:
+            print('tv_power:  %s' % (ps if ps else 'unknown'))
+        else:
+            print('tv_power:  (skipped)')
         os.close(fd)
         sys.exit(0)
 
