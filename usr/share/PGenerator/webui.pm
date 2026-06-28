@@ -577,8 +577,15 @@ sub webui_http (@) {
    }
 
    my ($method,$path)=$req=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
-   $path="" if(!defined $path);
-   &log("WebUI: $method $path");
+    $path="" if(!defined $path);
+    # Strip the query string from the path. The HTTP request line is
+    # "METHOD /path?query HTTP/1.1" but our regex captures the full "/path?query"
+    # as $path, which then doesn't match `eq "/"` for the main HTML route.
+    # The "WebUI keeps going offline" symptom was this: any navigation
+    # with a cache-buster query (e.g. the browser's "?_=12345") would
+    # fall through to the 404 handler instead of serving the page.
+    $path=~s/\?.*$// if(defined($path));
+    &log("WebUI: $method $path");
 
    # CORS headers for API
    my $cors="Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n";
