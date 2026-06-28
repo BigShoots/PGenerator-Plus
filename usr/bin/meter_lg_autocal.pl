@@ -13444,12 +13444,51 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	 # lowest channel, keep R as the lock across iters for monotonic
 	 # convergence. The lock naturally shifts to a different channel on
 	 # a subsequent iter if R is no longer the minimum.
-	 my @vals=($mrgb[0]+0, $mrgb[1]+0, $mrgb[2]+0);
-	 # Find current minimum (the lock channel).
+my @vals=($mrgb[0]+0, $mrgb[1]+0, $mrgb[2]+0);
+	 # Lock selection: ABSOLUTE lock based on first-measurement floor.
+	 # Once a channel becomes the lock (the minimum on first iter),
+	 # it stays the lock for the ENTIRE patch session -- across all
+	 # subsequent iters and across all body anchors. The user spec is
+	 # 'the locked RGB value should not change' (i.e. once R is captured
+	 # as the natural minimum, R stays the lock regardless of what
+	 # G/B do on later iters, even if B reads lower after a few pull-
+	 # down iters). This gives monotonic convergence: pull the warmer
+	 # channels down to match the locked channel across iters without
+	 # the lock swapping mid-session. Without the absolute lock the
+	 # algorithm oscillates between R and B as the lock (visible in
+	 # the autocal log: 'gains R=1.000 G=0.937 B=0.751' on i1, then
+	 # 'R=0.878 G=0.913 B=1.000' on i2 -- lock swapped from R to B),
+	 # which never converges because each iter pulls the OTHER channel
+	 # down, then the next iter sees the wrong channel as the min.
+	 #
+	 # Selection priority:
+	 #   1. First iter (no original_r_ref captured yet): pick the
+	 #      current minimum (R/G/B whichever reads lowest). This is
+	 #      the panel's natural limit and the right channel to lock.
+	 #   2. R-preferred if R was the lock on first iter: even if G or B
+	 #      reads lower after pull-down, keep R as the lock for
+	 #      monotonic convergence (the user confirmed R should stay
+	 #      locked on warm panels).
+	 #   3. Existing lock in original_r_ref: keep that channel as the
+	 #      lock for the rest of the session (no swapping).
 	 my $lock_idx=0;
 	 my $lock_val=$vals[0];
-	 for my $i (1..2) {
-	  if($vals[$i]+0 < $lock_val+0) { $lock_val=$vals[$i]+0; $lock_idx=$i; }
+	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"lock_idx"}) && $original_r_ref->{"lock_idx"}+0 >= 0 && $original_r_ref->{"lock_idx"}+0 <= 2) {
+	  # Lock already established from a prior iter: ABSOLUTE lock.
+	  $lock_idx=$original_r_ref->{"lock_idx"}+0;
+	  $lock_val=$vals[$lock_idx]+0;
+	 } elsif(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"}) && $original_r_ref->{"r"}+0 > 0) {
+	  # First iter (only the captured R exists, no lock_idx yet): R was
+	  # measured on the panel as a reference; keep R as the lock across
+	  # all iters of this patch (per the user spec 'R should stay
+	  # locked for the entire patch session').
+	  $lock_idx=0;
+	  $lock_val=$vals[0]+0;
+	 } else {
+	  # First iter with no captured R: pick the actual minimum.
+	  for my $i (1..2) {
+	   if($vals[$i]+0 < $lock_val+0) { $lock_val=$vals[$i]+0; $lock_idx=$i; }
+	  }
 	 }
 	 # Lock hysteresis: once a channel becomes the lock, keep it as the
 	 # lock across iters as long as its current value is within 1% of
