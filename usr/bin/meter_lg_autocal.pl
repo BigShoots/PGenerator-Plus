@@ -4598,10 +4598,23 @@ sub apply_pattern_insert_before_read {
  my $patch_every=sanitize_count($config->{"patch_insert_patch_every"},1,999);
  my $patch_duration_ms=sanitize_ms($config->{"patch_insert_patch_duration_ms"},1000,30000);
  my $patch_level=($config->{"patch_insert_patch_level"}//10)+0;
- my $time_enabled=$config->{"patch_insert_time_enabled"} ? 1 : 0;
- my $time_frequency_ms=sanitize_ms($config->{"patch_insert_time_frequency_ms"},5000,120000);
- my $time_duration_ms=sanitize_ms($config->{"patch_insert_time_duration_ms"},5000,30000);
- my $time_level=($config->{"patch_insert_time_level"}//25)+0;
+  my $time_enabled=$config->{"patch_insert_time_enabled"} ? 1 : 0;
+  # Cap the time-insertion frequency at 15s for autocal inner loops. The
+  # user-side knob (default 45-120s) is tuned for the wizard's spotread
+  # progress display, where 1 insertion per anchor is plenty. The SDR26
+  # 1D-DPG inner loop runs 10-15 iters inside 60-90 seconds and needs
+  # insertions between iters to reset OLED ABL / pixel charge -- without
+  # those, the panel's ABL hysteresis accumulates across iters and the
+  # chromaticity trajectory drifts by 0.01-0.02 per skipped insertion.
+  # 15s gives 4-6 insertions per inner loop, which matches the HDR path's
+  # insertion frequency. Cap is bypassed when the user sets
+  # patch_insert_time_frequency_max_ms to 0 (explicit "no cap").
+  my $_time_freq_max=15000;
+  $_time_freq_max=int($config->{"patch_insert_time_frequency_max_ms"}) if(defined($config->{"patch_insert_time_frequency_max_ms"}) && $config->{"patch_insert_time_frequency_max_ms"}+0 == 0);
+  my $time_frequency_ms=sanitize_ms($config->{"patch_insert_time_frequency_ms"},5000,120000);
+  $time_frequency_ms=$_time_freq_max if($time_frequency_ms+0 > $_time_freq_max+0 && $_time_freq_max+0 > 0);
+  my $time_duration_ms=sanitize_ms($config->{"patch_insert_time_duration_ms"},5000,30000);
+  my $time_level=($config->{"patch_insert_time_level"}//25)+0;
  # Decide whether to fire. Either or both insertion types may fire.
  my @inserts;
  my $now=int(Time::HiRes::time()*1000);
@@ -13368,14 +13381,15 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	 return (1.0,1.0,1.0) if(!($r_target+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
-	  if($ch == 0) {
-	   # R is unconditionally held at 1.0 -- no DPG change to R.
-	   push @gain,1.0;
-	   next;
-	  }
 	  my $m=$mrgb[$ch]+0;
-	  # G/B reducing channels: gain = locked_R / current_measured, so the
-	  # post-DPG value matches the locked R value (target chromaticity).
+	  # All three channels compute their natural gain as r_target / m.
+	  # For R this is typically 1.0 (r_target == first-iter R value, so
+	  # the ratio on the first iter is 1.0). For G/B it's the pull-down
+	  # ratio. The CALL SITE applies the ceiling: R can boost up to 1.25
+	  # (to close residual chromaticity gaps when R reads below D65),
+	  # G/B clamp to 1.0 (cannot push above native max at the 109 code).
+	  # The call site also applies move_scaling for damped warmup and
+	  # revert-and-halve.
 	  my $g=($m+0 > 0) ? ($r_target/$m) : 1.0;
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
@@ -15408,23 +15422,27 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
   my $damp_exp=(1.0/2.2); # SDR gamma is constant 2.2; exp = 1/2.2 = 0.4545
   # Legal peak: apply the R-held + G/B-pull-down gain with move_scaling
-  # applied as: scaled = 1.0 + (natural_gain - 1.0) * move_scaling. The R
-  # held channel has natural gain=1.0, so the scaled value stays at 1.0
-  # regardless of move_scaling (no spurious R change from the damp).
-  # The G/B natural gains < 1.0 (we're pulling them down toward R), so
-  # scaled_gain = 1.0 + (natural - 1.0) * move_scaling = 1.0 - (1 -
-  # natural) * move_scaling. At move_scaling=1.0 the full natural gain
-  # is applied; at move_scaling=0.5 only half the pull-down is applied
-  # (e.g. natural 0.85 -> scaled 0.925). This is the same move_scaling
-  # semantics the body path uses, just on the R-held gain fn output.
+  # applied as: scaled = 1.0 + (natural_gain - 1.0) * move_scaling. The
+  # scaling semantics are uniform across all three channels -- but the
+  # CEILING differs. R can boost up to 1.25 (allowing R to move up to
+  # close a residual chromaticity gap when R's measured BT.709 value is
+  # below the target); G and B are clamped to 1.0 (the panel cannot push
+  # a channel above its native max at the 109% code without headroom).
+  # The floor is 0.6 for all three (panel cannot pull a channel below
+  # 60% of identity at the headroom region without crushing detail).
   #
-  # Why dampen the legal peak (and not the body): the 109 anchor is the
-  # LAST point a chromaticity fix can be applied at full code (idx 1023).
-  # An overshoot here is hard to recover from -- clamping clamps all three
-  # channels to 1.0 and the chromaticity is stuck. A damped first move
-  # (move_scaling=0.5 by default for the 109 anchor) lets the iteration
-  # approach the converged state gradually, and the revert-and-halve path
-  # catches any residual overshoot.
+  # Why allow R to boost (and not G/B): the user's spec is "R is the lock,
+  # G and B are pulled to match it" -- but on a panel where R's measured
+  # linear-BT.709 value lands BELOW G/B's at identity DPG (which is what
+  # the chromaticity gap indicates -- the panel is YELLOW-biased, with G
+  # over-shooting), pulling G and B down to R's value lands the chromaticity
+  # at R's BT.709 = D65 if R==G==B. On this specific panel R reads at
+  # 219.6 (D65=237), G at 247.3, B at 188.3 -- so pulling G/B to R gives
+  # R=219.6, G=219.6, B=188.3 (B can't reach 219.6, it's already below).
+  # To close the residual 7% gap on R, R needs to BOOST, which the DPG
+  # supports (gain > 1.0) up to 1.25. Without the R-boost, the chromaticity
+  # is stuck at the dE floor where G/B hit R's value but R itself never
+  # moves (dE ~2 on this panel).
   my $sr;
   my $sg;
   my $sb;
@@ -15435,7 +15453,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
-   $sr=1.0 if($sr+0 > 1.0);
+   # R can boost up to 1.25 to close a residual chromaticity gap; G and
+   # B are clamped to <=1.0 (the panel cannot push them above native max
+   # at 109 without headroom, and the pre-curve is OFF by default).
+   $sr=1.25 if($sr+0 > 1.25);
    $sg=1.0 if($sg+0 > 1.0);
    $sb=1.0 if($sb+0 > 1.0);
   } else {
@@ -15820,11 +15841,23 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # the transition region. This keeps the math in one place
   # (lg_autocal_26_build_sdr26_1d_dpg_seeded) and the resulting curve has
   # the same shape as the reference pre-curve.
-  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 0.68;
+  # Pre-curve defaults. The original values (headroom=0.68, push=1.23) are
+  # the same shape the reference SDR workflow uses, but on this panel the
+  # 32% reduction at idx 1023 drops the calibrated 109 luminance from ~243
+  # nits (identity baseline) to ~107 nits -- the user's "calibrated 109
+  # should measure ~220 nits" target. The pre-curve costs more luminance
+  # than the per-channel WB needs because OLED sub-pixel efficiency rolls
+  # off sharply near max drive codes (a 32% DPG cut at idx 1023 produces
+  # a much larger drop in sub-pixel output than the linear projection
+  # would predict). Disable the pre-curve by default; the per-channel WB
+  # handles chromaticity convergence from the identity baseline, with
+  # DAMPED WARMUP (move_scaling=0.5) preventing overshoot and REVERT-AND-
+  # HALVE catching any residual overshoot.
+  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 1.0;
   $headroom_factor=0.4 if($headroom_factor < 0.4);
-  $headroom_factor=1.0 if($headroom_factor > 1.0);
-  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.23;
-  $push_factor=1.0 if($push_factor < 1.0);
+  $headroom_factor=1.2 if($headroom_factor > 1.2);
+  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.0;
+  $push_factor=0.9 if($push_factor < 0.9);
   $push_factor=1.5 if($push_factor > 1.5);
   my @_precurve_anchors=(
    { idx=>940, r_gain=>$push_factor, g_gain=>$push_factor, b_gain=>$push_factor },
