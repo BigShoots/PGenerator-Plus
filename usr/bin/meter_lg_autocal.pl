@@ -13459,6 +13459,26 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	 for my $i (1..2) {
 	  if($vals[$i]+0 < $lock_val+0) { $lock_val=$vals[$i]+0; $lock_idx=$i; }
 	 }
+	 # Lock hysteresis: once a channel becomes the lock, keep it as the
+	 # lock across iters as long as its current value is within 1% of
+	 # the measured minimum. This prevents the lock from "bouncing"
+	 # between channels on a panel where R/G/B are close in value (e.g.
+	 # after convergence, where the three read within ~1% of each other
+	 # and small measurement noise would otherwise swap the lock from
+	 # one channel to another on every iter, oscillating the gain
+	 # assignment). The lock only shifts to a different channel when
+	 # that channel becomes clearly lower (>1% below the current lock's
+	 # value) — a meaningful change, not just noise.
+	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"lock_idx"}) && defined($original_r_ref->{"lock_idx"})+0 >= 0) {
+	  my $_prev_lock_idx=$original_r_ref->{"lock_idx"}+0;
+	  if($_prev_lock_idx >= 0 && $_prev_lock_idx <= 2) {
+	   my $_prev_lock_val=$vals[$_prev_lock_idx]+0;
+	   if($_prev_lock_val+0 <= $lock_val+0 * 1.01) {
+	    $lock_idx=$_prev_lock_idx;
+	    $lock_val=$_prev_lock_val+0;
+	   }
+	  }
+	 }
 	 # If a captured R reference exists from the first iter, prefer R as
 	 # the lock whenever R is currently the lowest (or tied for lowest).
 	 # This is the warm-panel case where R was always the limiter -- keep
@@ -13466,7 +13486,7 @@ sub lg_autocal_26_sdr26_dpg_peak_r_hold_gain {
 	 # naturally shifts to a different channel on a subsequent iter if R
 	 # is no longer the minimum (cooler panel, or G/B have been pulled
 	 # below R).
-	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"}) && $original_r_ref->{"r"}+0 > 0) {
+	 if(ref($original_r_ref) eq "HASH" && defined($original_r_ref->{"r"}) && $original_r_ref->{"r"}+0 > 0 && !defined($original_r_ref->{"lock_idx"})) {
 	  # R is the lock when its CURRENT measured value is the minimum
 	  # (or tied). We don't use the captured R value as the lock value --
 	  # we use R's current value so the lock tracks the actual measurement.
@@ -15597,7 +15617,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # iters on warm panels where R was the limiting channel at first read
    # (the lock stays on R until R's current value exceeds the captured
    # value, at which point the lock naturally re-evaluates to the new
-   # minimum on the next iter).
+   # minimum on the next iter). Also store the resolved lock channel's
+   # index from this iter so the hysteresis check on the next iter can
+   # keep the lock static across small measurement noise.
    if(!defined($_legal_peak_r_ref)) {
     my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
     my @_rgb_first=(
@@ -15607,6 +15629,32 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     );
     $_legal_peak_r_ref={ r=>$_rgb_first[0]+0 };
    }
+   # Compute the current lock channel index for hysteresis tracking.
+   # We need the same view the gain function had, so derive it from
+   # the raw measurement here.
+   my $_curR=$reading->{X}+0; my $_curY=$reading->{Y}+0; my $_curZ=$reading->{Z}+0;
+   my @_cur_rgb=(
+    3.2404542*$_curR + -1.5371385*$_curY + -0.4985314*$_curZ,
+    -0.9692660*$_curR + 1.8760108*$_curY +  0.0415560*$_curZ,
+    0.0556434*$_curR + -0.2040259*$_curY +  1.0572252*$_curZ,
+   );
+   my $_cur_min_idx=0; my $_cur_min_val=$_cur_rgb[0];
+   for my $_i (1..2) {
+    if($_cur_rgb[$_i]+0 < $_cur_min_val+0) { $_cur_min_val=$_cur_rgb[$_i]+0; $_cur_min_idx=$_i; }
+   }
+   # Apply the same hysteresis rule as the gain fn.
+   if(defined($_legal_peak_r_ref->{"lock_idx"}) && $_legal_peak_r_ref->{"lock_idx"}+0 >= 0) {
+    my $_prev_idx=$_legal_peak_r_ref->{"lock_idx"}+0;
+    if($_prev_idx <= 2 && $_cur_rgb[$_prev_idx]+0 <= $_cur_min_val+0 * 1.01) {
+     $_cur_min_idx=$_prev_idx;
+    }
+   } elsif(defined($_legal_peak_r_ref->{"r"}) && $_legal_peak_r_ref->{"r"}+0 > 0) {
+    # Legacy R-preference rule (only on first capture, before lock_idx is set)
+    if($_cur_rgb[0]+0 <= $_cur_min_val+0) {
+     $_cur_min_idx=0;
+    }
+   }
+   $_legal_peak_r_ref->{"lock_idx"}=$_cur_min_idx;
   } else {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
   }
