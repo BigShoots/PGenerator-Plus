@@ -13220,42 +13220,34 @@ sub lg_autocal_26_sdr26_dpg_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
-# Peak white-balance gains: SDR26 (BT.709 / D65) variant of the HDR20
-# reduce-to-mean fn below. At 99/105/109 IRE the panel cannot boost any
-# channel above its native max (hardware limit at the white cluster), so
-# D65 is only reachable by reducing the channel(s) that EXCEED their D65
-# target. The measured XYZ is projected to linear BT.709 / sRGB channel
-# coordinates via the standard sRGB inverse matrix; under a D65 white all
-# three linear BT.709 channels are equal, so the per-channel D65 target is
-# the MEAN of the measured linear-RGB triplet. Any channel ABOVE the mean
-# gets attenuated (gain = target/measured, clamped to [0.5, 1.0]). Any
-# channel AT OR BELOW the mean is held (gain = 1.0) -- the panel cannot
-# push it higher and reducing it would only widen the chromaticity gap
-# and lose luminance.
+# Peak white-balance gains: SDR26 (BT.709 / D65) -- "lowest is the lock,
+# the other two are pulled to match it" per user spec. The measured XYZ
+# is projected to linear BT.709 / sRGB channel coordinates via the
+# standard sRGB inverse matrix. The first-iter LOWEST linear-BT.709
+# channel becomes the LOCK for every subsequent iter -- its gain is held
+# at 1.0 unconditionally, the DPG never touches it at the 109 legal
+# peak. The other two channels each get gain = locked_value /
+# current_measured so the post-DPG values match the locked channel.
+# Clamp to [0.5, 1.0]: the floor is 0.5 because the panel cannot pull a
+# channel below half without visibly crushing shadow detail; the
+# ceiling is 1.0 because channels above the locked value need
+# attenuation, not boosting.
 #
-# R (channel 0) is preserved at 1.0 unconditionally: the user's instruction
-# is "hold R, pull blue and green down" -- on a slightly warm panel R is
-# typically the highest linear channel after the BT.709 projection, so a
-# mean-based gain would shave 1-3% off R per iter; each R reduction drops
-# peak luminance (R drives peak on OLED) without a commensurate
-# white-balance improvement. Hold R; only reduce the excess G/B channels.
+# First-iter reference: the LOWEST channel + its value are captured from
+# the identity-baseline read and held constant for every subsequent iter.
+# Re-identifying the lowest on every iter would let the held channel flip
+# between iters (e.g. iter 1 holds B, iter 2 holds R as B and R converge),
+# compounding past the achievable D65 floor and never settling. Locking on
+# the first iter's choice is what makes the algorithm monotonic.
 #
-# Mirrors lg_autocal_26_hdr20_dpg_white_balance_gain (Display-P3 matrix
-# below) but uses the BT.709 / sRGB inverse matrix because the SDR26 path
-# targets BT.709 / D65, not Display-P3. The two paths are otherwise
-# identical: same target=mean(mrgb), same [0.5, 1.0] clamp, same R-held.
-#
-# The previous version of this fn used REDUCE-TO-LOWEST (hold the lowest
-# channel at 1.0, reduce the other two toward it). That algorithm stuck on
-# warm panels because the held channel is typically B or R -- the side of
-# the chromaticity gap AWAY from D65 -- so reducing the other channels
-# toward it actually pulled the chromaticity FURTHER from D65 on every iter.
-# The 109 anchor's best dE stayed around 20-28 for 10 iters instead of
-# converging to <0.5. The mean-based algorithm (the one HDR's 100% has
-# used successfully since the 2026-06 work) lands at the panel's achievable
-# chromaticity because mean is closer to D65 than the lowest on warm panels.
+# Mirrors the HDR20 reduce-to-mean in spirit (both project measured XYZ
+# to a linear-RGB space and reduce excess channels toward a stable
+# target) but uses the BT.709 / sRGB inverse matrix because the SDR26
+# path targets BT.709 / D65, not Display-P3. The two paths are
+# independent: this fn is SDR-only and the HDR20 fn is HDR-only. No
+# shared state.
 sub lg_autocal_26_sdr26_dpg_white_balance_gain {
-	 my ($reading,$original_target_ref)=@_;
+	 my ($reading,$original_lowest_ref)=@_;
 	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
 	 my $mX=$reading->{"X"};
 	 my $mY=$reading->{"Y"};
@@ -13281,42 +13273,38 @@ sub lg_autocal_26_sdr26_dpg_white_balance_gain {
 	  -0.9692660*$mX + 1.8760108*$mY +  0.0415560*$mZ,
 	  0.0556434*$mX + -0.2040259*$mY +  1.0572252*$mZ,
 	 );
-	 # Reduce-to-mean with FIRST-ITER-ONLY reference. The mean of @mrgb
-	 # is the per-channel D65 target (R=G=B in linear BT.709). Anchoring on
-	 # the first iter's mean (rather than re-identifying it every iter)
-	 # gives a stable target that the reducing channels converge to
-	 # monotonically, the same way HDR20's 100% anchor does. Without the
-	 # first-iter ref, the mean shifts slightly each iter as the channel
-	 # gains land off-target and the algorithm never settles.
-	 my $mean_target;
-	 if(ref($original_target_ref) eq "HASH" && defined($original_target_ref->{"mean"})) {
-	  $mean_target=$original_target_ref->{"mean"}+0;
+	 # Lock = first-iter lowest linear-BT.709 channel + value. Subsequent
+	 # iters reuse this ref so the held channel does not flip (which
+	 # compounded past the achievable D65 floor in the previous design).
+	 my ($lowest_idx,$lowest_target);
+	 if(ref($original_lowest_ref) eq "HASH" && defined($original_lowest_ref->{"idx"}) && defined($original_lowest_ref->{"value"})) {
+	  $lowest_idx=int($original_lowest_ref->{"idx"});
+	  $lowest_target=$original_lowest_ref->{"value"}+0;
 	 } else {
-	  my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
-	  return (1.0,1.0,1.0) if(!($sum+0 > 0));
-	  $mean_target=$sum/3.0;
+	  $lowest_idx=0;
+	  $lowest_target=$mrgb[0]+0;
+	  for my $ch (1..2) {
+	   if($mrgb[$ch]+0 < $lowest_target+0) {
+	    $lowest_target=$mrgb[$ch]+0;
+	    $lowest_idx=$ch;
+	   }
+	  }
 	 }
-	 return (1.0,1.0,1.0) if(!($mean_target+0 > 0));
+	 return (1.0,1.0,1.0) if(!($lowest_target+0 > 0));
 	 my @gain;
 	 for my $ch (0..2) {
+	  if($ch == $lowest_idx) {
+	   # Held channel: gain 1.0, no DPG change.
+	   push @gain,1.0;
+	   next;
+	  }
 	  my $m=$mrgb[$ch]+0;
-	  my $g=($m+0 > 0) ? ($mean_target/$m) : 1.0;
-	  # Channels above mean: attenuate. Channels at/below mean: hold.
-	  # The clamp floor is 0.5 (panel cannot pull a channel below half
-	  # without visibly crushing detail). The clamp ceiling is 1.0
-	  # (panel cannot boost above native at the 109% max code).
+	  # Reducing channel: gain = locked_value / current_measured, so the
+	  # post-DPG value matches the locked channel.
+	  my $g=($m+0 > 0) ? ($lowest_target/$m) : 1.0;
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
-	  # R is held at 1.0 unconditionally -- the user's "hold R, pull
-	  # G/B down" instruction is what makes this converge on warm panels.
-	  # On a warm panel the BT.709 matrix maps the measured XYZ to a
-	  # high-R linear channel, so the mean-based natural gain for R would
-	  # be 0.85-0.95 (a 5-15% reduction). Each reduction costs 5-15% of
-	  # peak luminance on OLED without a corresponding white-balance
-	  # improvement (the chromaticity gap to D65 closes mostly via G/B).
-	  # The HDR20 path uses the same R-held rule for the same reason.
-	  $g=1.0 if($ch == 0);
 	  push @gain,$g+0;
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
@@ -15040,7 +15028,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # drift that compounded past the achievable D65 floor in the previous
   # design (which held the lowest channel at 1.0 instead of using the
   # mean, and let the held channel flip between iters).
-  my $_legal_peak_target_ref=undef;
+  my $_legal_peak_lowest_ref=undef;
   my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
 
  # Best-so-far state for revert (low IRE only, same as HDR).
@@ -15295,21 +15283,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
   my ($rg,$gg,$bg);
   if($is_white_peak) {
-   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_white_balance_gain($reading,$_legal_peak_target_ref);
-   # Lock the first-iter mean (per-channel D65 target in linear BT.709)
-   # as the persistent reference. Subsequent iters reuse the FIRST-iter
-   # mean so the target doesn't drift (which would let the held R
-   # channel and the reducing G/B channels oscillate past the achievable
-   # D65 floor). Mirrors the HDR20 100% anchor's first-iter reference.
-   if(!defined($_legal_peak_target_ref)) {
+   ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_white_balance_gain($reading,$_legal_peak_lowest_ref);
+   # Lock the first-iter LOWEST linear-BT.709 channel + its value as the
+   # persistent reference. Subsequent iters reuse the FIRST-iter choice
+   # so the held channel does not flip between iters (which compounded
+   # past the achievable D65 floor in the previous per-iter re-identification
+   # design). "Lowest is the lock, the other two are pulled to match it"
+   # is the user's SDR26 spec -- the held channel is whichever linear-BT.709
+   # channel reads lowest on the identity-baseline (first) read at 109.
+   if(!defined($_legal_peak_lowest_ref)) {
     my $_rX=$reading->{X}+0; my $_rY=$reading->{Y}+0; my $_rZ=$reading->{Z}+0;
     my @_rgb_first=(
      3.2404542*$_rX + -1.5371385*$_rY + -0.4985314*$_rZ,
      -0.9692660*$_rX + 1.8760108*$_rY +  0.0415560*$_rZ,
      0.0556434*$_rX + -0.2040259*$_rY +  1.0572252*$_rZ,
     );
-    my $_first_mean=($_rgb_first[0]+$_rgb_first[1]+$_rgb_first[2])/3.0;
-    $_legal_peak_target_ref={ mean=>$_first_mean };
+    my $_li=0; my $_lv=$_rgb_first[0]+0;
+    for my $k (1..2) {
+     if($_rgb_first[$k]+0 < $_lv+0) { $_lv=$_rgb_first[$k]+0; $_li=$k; }
+    }
+    $_legal_peak_lowest_ref={ idx=>$_li, value=>$_lv };
    }
   } else {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);

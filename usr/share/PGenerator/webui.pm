@@ -14491,21 +14491,36 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
  //                   separable into peak * f(signal), so use the inverse path.
  // HDR/PQ: handled by meterChartTargetLuminance upstream; this fn is the
  // SDR / post-cal path only.
- if(!meterChartIsHdr()&&!meterChartIsDv()){
-  if(targetGamma==='2.2'){
-   const y=Math.pow(Math.max(0,tYnClamped),1/2.2)*peak;
-   if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
-  } else if(targetGamma==='2.4'){
-   const y=Math.pow(Math.max(0,tYnClamped),1/2.4)*peak;
-   if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
-  } else if(targetGamma==='srgb'){
-   // sRGB inverse: tYn is the linear ratio; convert back to the signal
-   // (sRGB transfer inverse), then re-apply sRGB EOTF scaled to peak.
-   const lin=Math.max(0,Math.min(1,tYnClamped));
-   const signal=lin<=0.0031308?lin*12.92:1.055*Math.pow(lin,1/2.4)-0.055;
-   const y=srgbEotf(Math.max(0,Math.min(1,signal)))*peak;
-   if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
-  } else if(targetGamma==='bt1886'&&Lb>0){
+  if(!meterChartIsHdr()&&!meterChartIsDv()){
+   if(targetGamma==='2.2'){
+    // tYn already encodes gamma 2.2 (= signal^2.2 = target_luminance /
+    // white_y). Multiplying by peak recovers target_luminance directly.
+    // The previous `pow(tYn, 1/2.2) * peak` round-tripped BACK to signal
+    // first (giving peak * signal, e.g. 108 on a 237-peak panel at 50%
+    // IRE -- signal = 0.459, target = 42.7, but the chart showed 108).
+    // SDR26 (signal = stimulus/109) and the legacy SDR (signal =
+    // stimulus/100) both use the same tYn encoding -- the worker
+    // normalises the input signal against its own peak divisor before
+    // applying the EOTF, so tYn is gamma-encoded in either case and
+    // multiplying by peak gives the correct target.
+    const y=Math.max(0,tYnClamped)*peak;
+    if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
+   } else if(targetGamma==='2.4'){
+    const y=Math.max(0,tYnClamped)*peak;
+    if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
+   } else if(targetGamma==='srgb'){
+    // sRGB inverse: tYn is the linear ratio (worker stores
+    // srgbEotf(signal) = target_luminance / white_y). To recover the
+    // signal, apply the sRGB inverse EOTF, then re-apply sRGB EOTF
+    // scaled to peak. The previous `srgbEotf(signal) * peak` was right
+    // structurally but the `signal = srgbEotfInv(tYn)` round-trip was
+    // correctly applied -- the sRGB branch had the right round-trip
+    // shape. Leave as is.
+    const lin=Math.max(0,Math.min(1,tYnClamped));
+    const signal=lin<=0.0031308?lin*12.92:1.055*Math.pow(lin,1/2.4)-0.055;
+    const y=srgbEotf(Math.max(0,Math.min(1,signal)))*peak;
+    if(Number.isFinite(y)&&y>=0) return Math.max(y,Lb);
+   } else if(targetGamma==='bt1886'&&Lb>0){
    // BT.1886 with Lb>0: tYn is NOT separable into peak * f(signal), so
    // invert through bt1886Eotf's signal dimension. The worker computed
    // tYn = bt1886Eotf(signal,peak,Lb)/peak for a given signal; we
@@ -15637,7 +15652,16 @@ function meterLiveRgbData(reading){
 }
 
 function effectiveGamma(Y,Yw,ire,prevY,prevIre){
- const frac=(ire>1)?(ire/100):ire;
+ // SDR26 normalises the gamma reference against the 109% legal peak, not
+ // 100 IRE. The worker stores target_Yn = (ire/109)^2.2 (gamma 2.2 encoded
+ // against 109) so the measured-vs-target gamma reading must use the same
+ // divisor to recover the gamma exponent. SDR26 / BT.1886 / sRGB all share
+ // this 109-divisor convention; HDR (PQ) keeps 100 because the PQ EOTF
+ // saturates at 100% by spec. The HDR path is gated by meterChartIsHdr /
+ // meterChartIsPq callers of meterGreyscaleGammaValue -- effectiveGamma is
+ // shared so the divisor is selected here.
+ const fracBase=(typeof meterChartSignalMode==='function'&&meterChartSignalMode()==='sdr')?109:100;
+ const frac=(ire>1)?(ire/fracBase):ire;
  if(!(frac>0) || !(Y>0) || !(Yw>0)) return null;
  if(frac>=0.999999) return null;
  const g=Math.log(Y/Yw)/Math.log(frac);
