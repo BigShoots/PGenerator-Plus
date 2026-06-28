@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# pgcec — CEC control for PGenerator+
+#
+# Wraps cec-ctl for status, scan, power on/off, input switch, and volume.
+# Patched to work with v4l-utils 1.12 (which lacks --list-devices, --show-topology
+# in non-monitor mode, --to-standby, and the pwr-state: line in
+# --give-device-power-status output) and with python 3.5+ (no text=True).
+#
+# Supports: status, scan-json, on, off, active, input, inactive, volup,
+#           voldown, mute
+#
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+CEC_CTL = shutil.which("cec-ctl") or "/usr/bin/cec-ctl"
+DEFAULT_OSD = "PGenerator"
+TOPOLOGY_RETRIES = 3
+
+DEVICE_TYPE = {
+    "TV": 0,
+    "Recording Device": 1,
+    "Recording": 1,
+    "Tuner": 3,
+    "Playback Device": 4,
+    "Playback": 4,
+    "Audio System": 5,
+}
+
+POWER_STATUS = {
+    "on": 0,
+    "standby": 1,
+    "standby-to-on": 2,
+    "to-on": 2,
+    "on-to-standby": 3,
+    "to-standby": 3,
+}
+
+# Reverse: numeric power state -> string
+POWER_STATE_NAME = {0: "on", 1: "standby", 2: "powering-on", 3: "powering-off"}
+
+
+def run(args, timeout=8):
+    """Run cec-ctl with the given args, return CompletedProcess-like object
+    that has .stdout (str), .stderr (str), .returncode (int). Compatible with
+    python 3.5+ (no text=True kwarg)."""
+    cmd = [CEC_CTL] + list(args)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+            return _result(cmd, 124, out)
+        try:
+            text = out.decode("utf-8", errors="replace")
+        except Exception:
+            text = str(out)
+        return _result(cmd, proc.returncode, text)
+    except OSError as e:
+        return _result(cmd, 127, "cec-ctl failed: %s\n" % e)
+
+
+class _result:
+    __slots__ = ("args", "returncode", "stdout")
+    def __init__(self, args, returncode, stdout):
+        self.args = args
+        self.returncode = returncode
+        # Allow .stdout to be either str (preferred) or bytes — both .stdout
+        # and exc.stdout may be checked by callers.
+        self.stdout = stdout
+
+
+def cec_device():
+    if len(sys.argv) > 2:
+        return sys.argv[2]
+    env_dev = os.environ.get("PGCEC_DEVICE", "")
+    if env_dev:
+        return env_dev
+    for dev in ("/dev/cec0", "/dev/cec1"):
+        if os.path.exists(dev):
+            return dev
+    return "/dev/cec0"
+
+
+def claim(dev):
+    """Claim a logical address so other devices see us on the bus. cec-ctl
+    with --osd-name and --playback (or similar) both claim a LA and set OSD."""
+    return run(["-d", dev, "--playback", "--osd-name", DEFAULT_OSD], timeout=3)
+
+
+def normalize_power(text):
+    value = (text or "").strip().lower().replace(" ", "-")
+    if value in POWER_STATUS:
+        return POWER_STATUS[value]
+    if value.isdigit() and int(value) in POWER_STATE_NAME:
+        return int(value)
+    return None
+
+
+def parse_topology(output):
+    """Parse `cec-ctl -d0 -n` (driver info) and a separately-queried power
+    status into the same self_info/devices shape the rest of the script uses.
+    cec-ctl 1.12 has no --show-topology in non-monitor mode and no
+    --list-devices, so we can't enumerate other devices; the TV is always
+    reported from a GIVE_DEVICE_POWER_STATUS poll."""
+    self_info = {"phys": "", "addr": "", "log": "", "name": "", "driver": "", "adapter": ""}
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = re.match(r"Driver Name\s*:\s*(.*)", line)
+        if m:
+            self_info["driver"] = m.group(1).strip()
+            continue
+        m = re.match(r"Adapter Name\s*:\s*(.*)", line)
+        if m:
+            self_info["adapter"] = m.group(1).strip()
+            continue
+        m = re.match(r"Physical Address\s*:\s*([0-9a-fA-F.]+)", line)
+        if m:
+            self_info["phys"] = m.group(1)
+            continue
+        m = re.match(r"Logical Address\s*:\s*(\d+)", line)
+        if m:
+            self_info["addr"] = int(m.group(1))
+            self_info["log"] = int(m.group(1))
+            continue
+        m = re.match(r"OSD Name\s*:\s*'?(.*?)'?$", line)
+        if m:
+            self_info["name"] = m.group(1).strip()
+            continue
+    return self_info, []
+
+
+def quick_self_info(dev):
+    """Get our own phys/log/name from cec-ctl -d0 -n (driver info). This works
+    in 1.12 unlike --list-devices which was added later."""
+    result = run(["-d", dev, "-n"], timeout=3)
+    self_info, _ = parse_topology(result.stdout or "")
+    return self_info
+
+
+def query_tv_power(dev, timeout=3):
+    """Query the TV's power state. cec-ctl 1.12's --give-device-power-status
+    output doesn't include a pwr-state: line — it just prints a transmit
+    trace and the REPORT_POWER_STATUS reply bytes if the TV ACKs. We have
+    to look at the verbose trace to find the reply.
+
+    Returns 0=on, 1=standby, 2=to-on, 3=to-standby, or None if no reply.
+    """
+    result = run(["-d", dev, "--to", "0", "--give-device-power-status"], timeout=timeout)
+    output = result.stdout or ""
+    # Look for any of: "pwr-state:", "(0)", "(1)", etc. after the
+    # REPORT_POWER_STATUS opcode
+    m = re.search(r"pwr-state:\s*([a-zA-Z-]+|\d+)", output)
+    if m:
+        return normalize_power(m.group(1))
+    # cec-ctl 1.12 prints the reply bytes inline. Look for CEC_MSG_REPORT_POWER_STATUS
+    # and capture the next byte (the report payload).
+    m = re.search(r"REPORT_POWER_STATUS.*?\(([0-3])\)", output, re.S)
+    if m:
+        return int(m.group(1))
+    # No reply → unknown
+    return None
+
+
+def status(dev):
+    self_info = quick_self_info(dev)
+    power = query_tv_power(dev)
+    power_text = "unknown"
+    if power is not None and power in POWER_STATE_NAME:
+        power_text = POWER_STATE_NAME[power]
+
+    print("driver: %s" % self_info.get("driver", ""))
+    print("adapter: %s" % self_info.get("adapter", ""))
+    print("physical_addr: %s" % self_info.get("phys", ""))
+    print("phys_addr: %s" % self_info.get("phys", ""))
+    print("logical_addr: %s" % self_info.get("addr", ""))
+    print("osd_name: %s" % self_info.get("name", ""))
+    print("tv_power: %s" % power_text)
+    return 0
+
+
+def scan_json(dev):
+    """Enumerate the CEC bus by polling every logical address (0..14) with
+    GIVE_PHYSICAL_ADDR, GIVE_OSD_NAME, GIVE_VENDOR_ID, GIVE_DEVICE_POWER.
+    The work is done by /usr/sbin/pgenerator-cec-scan which uses the kernel
+    CEC ioctl API directly (no cec-ctl). cec-ctl 1.12 doesn't support
+    --show-topology or --list-devices from a non-monitor session, so we
+    can't get this list any other way.
+
+    Falls back to the old self+TV-only behavior if pgenerator-cec-scan
+    isn't installed (e.g. on older images that didn't get the helper)."""
+    scan_helper = "/usr/sbin/pgenerator-cec-scan"
+    if os.path.exists(scan_helper) and os.access(scan_helper, os.X_OK):
+        out = subprocess.check_output([scan_helper], stderr=subprocess.STDOUT, timeout=10)
+        sys.stdout.write(out.decode("utf-8", errors="replace"))
+        return 0
+    # Fallback: just self + TV
+    self_info = quick_self_info(dev)
+    power = query_tv_power(dev)
+    devices = []
+    if power is not None:
+        devices.append({
+            "addr": 0,
+            "type": 0,
+            "type_name": "TV",
+            "phys": self_info.get("phys", "0.0.0.0"),
+            "vendor": "",
+            "vendor_id": "",
+            "name": "TV",
+            "power": power,
+        })
+    print(json.dumps({"self": self_info, "devices": devices}, separators=(",", ":")))
+    return 0
+
+
+def tx(dev, args, timeout=8):
+    """Send a CEC transmit via cec-ctl. Prints the cec-ctl output and
+    returns the cec-ctl return code (0 on success)."""
+    result = run(["-d", dev] + list(args), timeout=timeout)
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    return result.returncode
+
+
+def self_phys(dev):
+    self_info = quick_self_info(dev)
+    return self_info.get("phys") or "0.0.0.0"
+
+
+def audio_or_tv(dev):
+    return os.environ.get("PGCEC_AUDIO_ADDR", "0")
+
+
+def main():
+    cmd = sys.argv[1].lower() if len(sys.argv) > 1 else "status"
+    dev = cec_device()
+
+    if not os.path.exists(dev):
+        sys.stderr.write("CEC device not found: %s\n" % dev)
+        return 1
+    if not os.path.exists(CEC_CTL):
+        sys.stderr.write("cec-ctl not found\n")
+        return 1
+
+    if cmd in ("status", "power"):
+        return status(dev)
+    if cmd in ("scan", "scan-json"):
+        return scan_json(dev)
+
+    if cmd in ("on", "wake"):
+        claim(dev)
+        rc = tx(dev, ["--to", "0", "--image-view-on"])
+        time.sleep(0.4)
+        phys = self_phys(dev)
+        rc2 = tx(dev, ["--active-source", "phys-addr=%s" % phys])
+        return 0 if rc == 0 and rc2 == 0 else 1
+    if cmd == "off":
+        claim(dev)
+        return tx(dev, ["--to", "0", "--standby"])
+    if cmd in ("active", "input", "as"):
+        claim(dev)
+        phys = self_phys(dev)
+        # Also send IMAGE_VIEW_ON so the TV wakes from standby if it's
+        # currently off — otherwise the SET_STREAM_PATH broadcast below
+        # is silently ignored. IMAGE_VIEW_ON is a no-op for a TV that's
+        # already on.
+        rc0 = tx(dev, ["--to", "0", "--image-view-on"], timeout=4)
+        time.sleep(0.3)
+        rc = tx(dev, ["--active-source", "phys-addr=%s" % phys])
+        rc2 = tx(dev, ["--set-stream-path", "phys-addr=%s" % phys])
+        return 0 if rc == 0 and rc2 == 0 else 1
+    if cmd == "inactive":
+        phys = self_phys(dev)
+        return tx(dev, ["--inactive-source", "phys-addr=%s" % phys])
+    if cmd in ("volup", "voldown", "mute"):
+        ui_cmd = {"volup": "volume-up", "voldown": "volume-down", "mute": "mute"}[cmd]
+        dst = audio_or_tv(dev)
+        rc = tx(dev, ["--to", dst, "--user-control-pressed", "ui-cmd=%s" % ui_cmd])
+        time.sleep(0.1)
+        rc2 = tx(dev, ["--to", dst, "--user-control-released"])
+        return 0 if rc == 0 and rc2 == 0 else 1
+
+    sys.stderr.write("Usage: pgcec <status|scan-json|scan|on|off|active|input|inactive|volup|voldown|mute> [/dev/cecN]\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
