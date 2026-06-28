@@ -16105,25 +16105,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # the transition region. This keeps the math in one place
   # (lg_autocal_26_build_sdr26_1d_dpg_seeded) and the resulting curve has
   # the same shape as the reference pre-curve.
-  # Pre-curve defaults. The previous values (headroom=1.0, push=1.0) gave
-  # the 109 anchor no room to attenuate the warm channels, capping the
-  # achievable chromaticity at the panel's native warm tint. The original
-  # values (headroom=0.68, push=1.23) match the reference SDR workflow and
-  # achieve dE < 0.5 but dropped the 109 luminance from ~220 nits to ~107
-  # nits (the 32% DPG cut at idx 1023 produces a much larger drop in
-  # OLED sub-pixel output than the linear projection predicts because OLED
-  # efficiency rolls off sharply at max drive codes). The compromise:
-  # headroom_factor=0.88, push_factor=1.08 — gives the chromaticity WB
-  # ~12% attenuation headroom at the 109 anchor (enough to bring G/B down
-  # to R on a warm panel) and ~8% push at the 100 anchor (so the body
-  # curve stays on the calibrated peak). Net effect: 109 lands at ~190-210
-  # nits calibrated (vs ~160 at identity), 100 at ~155-175. Both well above
-  # the original 0.68/1.23 floor, both with enough headroom for the warm
-  # channel pull-down to reach D65 in 1-2 iters instead of 5-6.
-  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 0.88;
+  # Pre-curve defaults. NO pre-curve at all (headroom=1.0, push=1.0):
+  # the panel can only produce up to identity at any code, so a push_factor
+  # > 1.0 doesn't actually lift the panel's output -- the panel caps at
+  # identity and the extra push_factor gain is a no-op. The result of
+  # push=1.08 + headroom=0.88 was that 109% read at 0.88*identity (post
+  # pre-curve) while 100% read at identity (panel caps the push), so the
+  # user saw 109 < 100 even though bt1886 gamma says 109 should be
+  # 1.262*100. Removing the pre-curve entirely (headroom=1.0, push=1.0)
+  # makes 109 and 100 both read at identity -- the user's "109 must be >=
+  # 100" expectation is met. Chromaticity convergence happens from the
+  # identity baseline via the per-channel WB iteration (the warm/cool
+  # channels get pulled down to match the lock channel, and the lock
+  # channel sits at identity). With the SDR's natural headroom available
+  # (the lock channel has unused hardware headroom at identity), the
+  # boost-to-average strategy can lift the lock channel above identity
+  # if needed for chromaticity convergence.
+  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 1.0;
   $headroom_factor=0.4 if($headroom_factor < 0.4);
   $headroom_factor=1.2 if($headroom_factor > 1.2);
-  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.08;
+  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.0;
   $push_factor=0.9 if($push_factor < 0.9);
   $push_factor=1.5 if($push_factor > 1.5);
   my @_precurve_anchors=(
