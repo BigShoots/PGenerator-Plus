@@ -2788,6 +2788,33 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		    if(!$lg_autocal_26_codes && $signal_mode eq "sdr" && $r_code==$g_code && $g_code==$b_code) {
 		     my $target_min_code=$dv_series ? 16 : ($lg_extended_sdr_codes ? 16 : ($lg_legal_sdr_ddc_codes ? 16 : ($lim ? 16 : 0)));
 		     my $target_span_code=$dv_series ? 219 : ($lg_extended_sdr_codes ? 239 : ($lg_legal_sdr_ddc_codes ? 219 : ($lim ? 219 : 255)));
+		     # Greyscale target_Yn is the relative signal (code-min)/span
+		     # converted to linear via the active EOTF; chart then scales it
+		     # to measured white. After the 10-bit code fix above the codes
+		     # are 10-bit Limited (min=64 span=876), 10-bit Full (min=0
+		     # span=1023), or 10-bit extended-sdr (min=64 span=956) when
+		     # max_bpc=10, so the legacy 8-bit (min=16 span=219) formula
+		     # produces target_signal = 4.22 at 100% IRE → clamped to 1.0
+		     # (and ~0.42 at 5% IRE, which then chart-scales to ~28 nits
+		     # on a 244-nit panel). Mirror the bit-depth scaling from
+		     # webui_grey_code_for_stimulus so target_Yn == 1.0 at 100%
+		     # IRE, ~0.05^2.4 at 5% IRE, regardless of the active max_bpc.
+		     # $series_input_max is the bit-depth probe sampled from the
+		     # helper at series-build time (1023 at 10-bit, 255 at 8-bit).
+		     # DV's target math is its own 8/10-bit ladder via
+		     # $dv_series_code_bits; the existing 16/219 formula was a
+		     # pre-existing approximation we leave untouched.
+		     if(!$dv_series && $series_input_max == 1023) {
+		      if($lg_extended_sdr_codes) {
+		       $target_min_code=64; $target_span_code=956;
+		      } elsif($lg_legal_sdr_ddc_codes) {
+		       $target_min_code=64; $target_span_code=876;
+		      } elsif($lim) {
+		       $target_min_code=64; $target_span_code=876;
+		      } else {
+		       $target_min_code=0; $target_span_code=1023;
+		      }
+		     }
 		     my $target_signal=$target_span_code>0 ? (($g_code-$target_min_code)/$target_span_code) : 0;
 		     $target_signal=0 if($target_signal < 0);
 		     $target_signal=1 if($target_signal > 1);
