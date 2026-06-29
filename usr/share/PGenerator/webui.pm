@@ -3606,6 +3606,55 @@ sub webui_meter_lg_autocal_body_with_defaults (@) {
  return $body;
 }
 
+# Promote the active link to 10-bit before launching an SDR autocal.
+# The LG 26pt autocal ladder (SDR + HDR10) and the 3D LUT autocal's
+# greyscale anchors are bit-depth-aware: the SDR 26pt code table is
+# intrinsically 10-bit (codes 64..1023) and the HDR20 10-bit Limited /
+# Full tables top out at 940 / 1023. When the operator has the link at
+# max_bpc=8 those 10-bit codes get scaled back down to 8-bit on the wire
+# (or, in the case the user reported, ship as 8-bit and land as 23% of
+# full signal on a 10-bit link). Auto-bump to max_bpc=10 + restart the
+# renderer so the worker spawns against a 10-bit link.
+#
+# Returns 1 if a promotion happened (caller should surface
+# max_bpc_promoted:true to the UI), 0 if no-op, -1 on error.
+sub webui_meter_lg_autocal_ensure_10b (@) {
+ my ($signal_mode)=@_;
+ $signal_mode=lc($signal_mode||"");
+ # Only SDR is auto-promoted here. HDR10/HLG/DV paths already have their
+ # own 10-bit ladders in webui_grey_code_for_stimulus and the existing
+ # HDR10 26pt table selection follows max_bpc via $_hdr20_bits; the
+ # legacy 8-bit YCbCr limited HDR10 test deliberately pins
+ # max_bpc=8 and would be broken by an auto-promote.
+ return 0 if($signal_mode ne "sdr");
+ &webui_reload_pgenerator_conf();
+ my $cur_bpc=int($pgenerator_conf{"max_bpc"} || 0);
+ return 0 if($cur_bpc >= 10);
+ my $restart_log="/tmp/pgen-autocal-10b-promote.log";
+ if(open(my $lfh,">>",$restart_log)) {
+  print $lfh "[".scalar(localtime())."] promoting max_bpc $cur_bpc -> 10 for SDR autocal (signal_mode=$signal_mode)\n";
+  close($lfh);
+ }
+ # set_pgenerator_conf_runtime() (command.pm) writes /etc/PGenerator/
+ # PGenerator.conf via SET_PGENERATOR_CONF and updates the in-memory
+ # $pgenerator_conf hash so the same-process call sites below see the
+ # new value without a separate reload.
+ &set_pgenerator_conf_runtime("max_bpc","10");
+ # Restart the renderer so it picks up the new link bit-depth. Same pair
+ # /api/restart uses; pattern_generator_start() blocks until the
+ # renderer is up and holds DRM master.
+ &pattern_generator_stop();
+ &pattern_generator_start();
+ # Reload in-memory conf so any subsequent reader in this request sees
+ # max_bpc=10. The renderer's restart already re-reads the conf itself.
+ &webui_reload_pgenerator_conf();
+ if(open(my $lfh,">>",$restart_log)) {
+  print $lfh "[".scalar(localtime())."] restart done; renderer should be on max_bpc=10 now\n";
+  close($lfh);
+ }
+ return 1;
+}
+
 sub webui_meter_lg_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG Auto Cal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
@@ -3623,6 +3672,13 @@ sub webui_meter_lg_autocal_start (@) {
  # derive opts from the body itself (lg_autocal_26, signal_mode, etc.).
  my $_ac_signal_mode="sdr";
  $_ac_signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"([^"]+)"/);
+ # Auto-promote the link to max_bpc=10 for SDR autocal starts. The 26pt
+ # autocal ladder is intrinsically 10-bit (codes 64..1023); running it on
+ # an 8-bit link lands as ~25% of full signal (the 2026-06-29 series-read
+ # regression). The helper no-ops when max_bpc is already 10 and refuses
+ # to promote HDR10/HLG/DV (those have their own 10-bit ladders and the
+ # HDR10 8-bit A/B test deliberately pins max_bpc=8).
+ my $_ac_max_bpc_promoted=&webui_meter_lg_autocal_ensure_10b($_ac_signal_mode);
 my $_ac_target_gamma="bt1886";
   $_ac_target_gamma=$1 if($body=~/"target_gamma"\s*:\s*"([^"]+)"/);
  my $_ac_signal_range="";
@@ -3705,7 +3761,11 @@ my $_ac_target_gamma="bt1886";
 	 my $log_file=&webui_prepare_tmp_worker_log($_meter_lg_autocal_log_file,"meter_lg_autocal");
 	 my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_autocal.pl '$_meter_lg_autocal_config_file' '$_meter_lg_autocal_file' '$_meter_lg_autocal_stop_file' </dev/null >'$log_file' 2>&1 &";
 	 system($cmd);
-	 return '{"status":"started","message":"LG Auto Cal started"}';
+	 my $resp='{"status":"started","message":"LG Auto Cal started"}';
+	 if($_ac_max_bpc_promoted) {
+	  $resp='{"status":"started","message":"LG Auto Cal started (display link promoted to 10-bit)","max_bpc_promoted":true}';
+	 }
+	 return $resp;
 	}
 
 sub webui_meter_lg_autocal_status (@) {
@@ -3865,6 +3925,24 @@ sub webui_meter_lg_3d_autocal_start (@) {
  system("mkdir -p /var/lib/PGenerator/lg/luts 2>/dev/null");
  system("chmod 0777 /var/lib/PGenerator/lg /var/lib/PGenerator/lg/luts 2>/dev/null");
  unlink($_meter_lg_3d_autocal_stop_file);
+ # The 3D LUT body may or may not carry signal_mode (it usually inherits
+ # from the active display state). Resolve signal_mode the same way the
+ # server-side greyscale path does: body first, then the active conf's
+ # signal_mode (dv_status/is_hdr/eotf). Same helper as the greyscale
+ # autocal — promotes the link to max_bpc=10 when SDR + max_bpc<10.
+ my $_ac3_signal_mode="";
+ $_ac3_signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"([^"]+)"/);
+ if($_ac3_signal_mode eq "") {
+  &webui_reload_pgenerator_conf();
+  if(int($pgenerator_conf{"dv_status"} || 0) || int($pgenerator_conf{"is_std_dovi"} || 0) || int($pgenerator_conf{"is_ll_dovi"} || 0)) {
+   $_ac3_signal_mode="dv";
+  } elsif(int($pgenerator_conf{"is_hdr"} || 0)) {
+   $_ac3_signal_mode=(int($pgenerator_conf{"eotf"} || 0) == 3) ? "hlg" : "hdr10";
+  } else {
+   $_ac3_signal_mode="sdr";
+  }
+ }
+ my $_ac3_max_bpc_promoted=&webui_meter_lg_autocal_ensure_10b($_ac3_signal_mode);
  if(open(my $fh,">",$_meter_lg_3d_autocal_config_file)) {
   print $fh $body;
   close($fh);
@@ -3877,7 +3955,11 @@ sub webui_meter_lg_3d_autocal_start (@) {
 	 my $log_file=&webui_prepare_tmp_worker_log($_meter_lg_3d_autocal_log_file,"meter_lg_3d_autocal");
 	 my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_3d_autocal.pl '$_meter_lg_3d_autocal_config_file' '$_meter_lg_3d_autocal_file' '$_meter_lg_3d_autocal_stop_file' </dev/null >'$log_file' 2>&1 &";
 	 system($cmd);
-	 return '{"status":"started","message":"LG 3D LUT AutoCal started"}';
+	 my $resp='{"status":"started","message":"LG 3D LUT AutoCal started"}';
+	 if($_ac3_max_bpc_promoted) {
+	  $resp='{"status":"started","message":"LG 3D LUT AutoCal started (display link promoted to 10-bit)","max_bpc_promoted":true}';
+	 }
+	 return $resp;
 	}
 
 sub webui_meter_lg_3d_autocal_compact_status_json (@) {
