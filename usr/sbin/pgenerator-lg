@@ -1627,7 +1627,8 @@ foreach my $attempt (@panel_payloads) {
 	 # or no-op), and the C1+C2 resetSystemSettings path doesn't reliably
 	 # reset oledLight/oledPixelBrightness either (the C2 leaves them at
 	 # the prior calibration's value). The reference SDR workflow capture
-	 # captures the panel-light reset as BACKLIGHT_UI_DATA=100 inside a
+	 # records the panel-light reset as BACKLIGHT_UI_DATA=80 (the
+	 # C2 cinema factory default -- the reference's exact value, not 100)
 	 # CAL_START session (frames 27-35 of relay-20260626-212816-nosni.jsonl);
 	 # that command lands on both C1 and C2 because the cal session grants
 	 # externalpq write permission. Emitting the same UI_DATA writes here
@@ -1656,9 +1657,18 @@ foreach my $attempt (@panel_payloads) {
 	 push(@{$ui_data_reset_attempts},{ command => "CAL_START", response => $ui_data_start, failed => &json_bool($ui_data_start_failed), message => $ui_data_start_message||"" });
 	 if(!$ui_data_start_failed && ref($ui_data_start) eq "HASH") {
 	  foreach my $ui_item (
+	   # Defaults match the reference SDR workflow capture at
+	   # relay-20260626-212816-nosni.jsonl frames 29-35 (BRIGHTNESS=50,
+	   # CONTRAST=85, BACKLIGHT=80, COLOR=50). BACKLIGHT=80 is the user's
+	   # C2 factory-default for the cinema picture mode (builtin_default_values
+	   # in this helper returns backlight=80 for cinema, not 100). Setting
+	   # BACKLIGHT_UI_DATA=100 would lift the C2 to a non-factory brightness
+	   # before the autocal's 100% luminance setup kicks in, which is why the
+	   # reference workflow uses 80 even though 100 is the "logical full"
+	   # value.
 	   ["BRIGHTNESS_UI_DATA",50],
-	   ["CONTRAST_UI_DATA",100],
-	   ["BACKLIGHT_UI_DATA",100],
+	   ["CONTRAST_UI_DATA",85],
+	   ["BACKLIGHT_UI_DATA",80],
 	   ["COLOR_UI_DATA",50],
 	  ) {
 	   my ($ui_command,$ui_value)=@{$ui_item};
@@ -3223,19 +3233,22 @@ sub lg_sdr_calman_reset_workflow (@) {
   return &json_error($start_message||"LG TV rejected SDR calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
  }
 foreach my $item (
-   ["1D_2_2_EN",0],
-   ["1D_0_45_EN",0],
-   # UI_DATA defaults from the reference SDR workflow capture -- the C2 OLED
-   # rejects setSystemSettings(backlight=...) outside CAL mode, so reset
-   # the panel light / brightness / contrast / color to defaults via the
-   # in-session UI_DATA writes that the reference uses (BRIGHTNESS=50,
-   # CONTRAST=100, BACKLIGHT=100, COLOR=50). Single-rejection per item;
-   # does not abort the rest of the reset.
-   ["BRIGHTNESS_UI_DATA",50],
-   ["CONTRAST_UI_DATA",100],
-   ["BACKLIGHT_UI_DATA",100],
-   ["COLOR_UI_DATA",50],
-  ) {
+["1D_2_2_EN",0],
+    ["1D_0_45_EN",0],
+    # UI_DATA defaults from the reference SDR workflow capture -- the C2 OLED
+    # rejects setSystemSettings(backlight=...) outside CAL mode, so reset
+    # the panel light / brightness / contrast / color to defaults via the
+    # in-session UI_DATA writes that the reference uses (BRIGHTNESS=50,
+    # CONTRAST=85, BACKLIGHT=80, COLOR=50). BACKLIGHT=80 is the C2
+    # cinema factory default; the reference writes these values before
+    # the calibration dial-in rewrites BACKLIGHT_UI_DATA to the live
+    # luminance setpoint. Single-rejection per item; does not abort
+    # the rest of the reset.
+    ["BRIGHTNESS_UI_DATA",50],
+    ["CONTRAST_UI_DATA",85],
+    ["BACKLIGHT_UI_DATA",80],
+    ["COLOR_UI_DATA",50],
+   ) {
    my ($command,$value)=@{$item};
    my $response=&lg_calibration_request($session,"sdr_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
    my ($failed,$message)=&response_is_app_failure($response);
