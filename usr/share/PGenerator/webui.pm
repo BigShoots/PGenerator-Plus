@@ -26679,11 +26679,29 @@ async function meterAutoCalConfirmAndStart(){
    toast(r&&r.message?r.message:'Unable to start LG Auto Cal',true);
    return;
   }
+  // The server may have auto-promoted max_bpc 8 -> 10 (SDR autocal path;
+  // see webui_meter_lg_autocal_ensure_10b in webui.pm). Reflect that in the
+  // UI so the operator sees the Bit Depth dropdown change. Without this
+  // refresh, the dropdown keeps showing 8 and the operator concludes the
+  // wizard is "still running in 8b" (the actual patches and DDC writes
+  // are already 10-bit; only the dropdown was stale). Refetch /api/config
+  // and update the dropdown rather than guessing: the server is the
+  // source of truth.
+  if(r.max_bpc_promoted){
+   try{
+    const cfg=await fetchJSON('/api/config',{_quiet:true,_timeoutMs:5000});
+    if(cfg&&cfg.max_bpc){
+     setVal('max_bpc',String(cfg.max_bpc));
+     if(typeof updateDropdowns==='function') updateDropdowns();
+     if(typeof checkSettingsChanged==='function') checkSettingsChanged();
+    }
+   }catch(_e){}
+  }
   meterAutoCalRunning=true;
   meterAutoCalPollErrors=0;
   meterActionPending=false;
   meterAutoCalSaveState();
-  toast('LG Auto Cal started');
+  toast(r.message||'LG Auto Cal started');
   meterAutoCalSetOverlay(false,{phase:'running',current_name:'LG Auto Cal started',message:'Showing live charts'});
   if(meterAutoCalPolling) clearInterval(meterAutoCalPolling);
 	  meterAutoCalPolling=setInterval(meterPollAutoCal,1500);
@@ -27039,9 +27057,24 @@ refresh_rate:getMeterRefreshRate()||undefined,
    meterHideWorkflowProgress();
    return fail(r&&r.message?r.message:'Unable to start LG 3D LUT AutoCal');
   }
+ // Reflect a server-side max_bpc auto-promotion in the UI dropdown
+ // (see webui_meter_lg_autocal_ensure_10b in webui.pm). Without this
+ // refresh the dropdown keeps showing 8 even though the patches and
+ // DDC writes are already 10-bit, so the operator thinks the wizard
+ // "isn't switching to 10b".
+ if(r.max_bpc_promoted){
+  try{
+   const cfg=await fetchJSON('/api/config',{_quiet:true,_timeoutMs:5000});
+   if(cfg&&cfg.max_bpc){
+    setVal('max_bpc',String(cfg.max_bpc));
+    if(typeof updateDropdowns==='function') updateDropdowns();
+    if(typeof checkSettingsChanged==='function') checkSettingsChanged();
+   }
+  }catch(_e){}
+ }
  meterActionPending=false;
   meterLg3dAutoCalPollErrors=0;
-  toast('LG 3D LUT AutoCal started');
+  toast(r.message||'LG 3D LUT AutoCal started');
   if(meterLg3dAutoCalPolling) clearInterval(meterLg3dAutoCalPolling);
   meterLg3dAutoCalPolling=setInterval(meterPollLg3dAutoCal,1500);
   await meterPollLg3dAutoCal();
