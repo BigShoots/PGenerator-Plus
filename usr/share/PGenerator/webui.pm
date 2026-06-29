@@ -2488,6 +2488,24 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   $greyscale_patch_limited=(int($pattern_signal_range)==1) ? 1 : 0;
  }
  my $chroma_patch_limited=$patch_limited;
+ # Color / saturation patches must honor the active max_bpc the same way
+ # the greyscale ladder does (see the bit-depth plumbing in
+ # webui_grey_code_for_stimulus and the target_Yn stamp in
+ # webui_meter_series_start). The colors and saturations builders
+ # hardcoded 8-bit min/span (16..235 Limited / 0..255 Full); on a
+ # max_bpc=10 link those 8-bit codes shipped at ~23% of full signal
+ # and every patch crushed (the 2026-06-29 SDR greyscale series-read
+ # regression, applied here to color / saturation). Mirror the JS
+ # bit-depth scaling (meterGreyCodeRange + meterPatchBitDepth): 10-bit
+ # Limited min=64 span=876 (matches the HDR10 10-bit Limited table
+ # 100%->940 = 64 + 876), 10-bit Full min=0 span=1023 (matches the
+ # HDR10 10-bit Full table 100%->1023). 12-bit links are coerced to
+ # 10-bit here, matching meterPatchBitDepth().
+ my $_chroma_max_bpc=(defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "" && int($pgenerator_conf{"max_bpc"}) >= 10) ? 10 : 8;
+ my $chroma_min_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 64 : 16) : 0;
+ my $chroma_span_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 876 : 219) : ($_chroma_max_bpc==10 ? 1023 : 255);
+ my $chroma_max_code=$chroma_min_code + $chroma_span_code;
+ my $chroma_input_max=($_chroma_max_bpc==10) ? 1023 : 255;
 
  # Build step list as JSON array for the helper script
  # Measurement order: WHITE first (reference), then 0%→95% ascending
@@ -2826,9 +2844,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     "{\"ire\":$v,\"stimulus\":$stim,\"r\":$r_code,\"g\":$g_code,\"b\":$b_code,\"name\":\"$name\"$extra}";
    } @ordered;
  } elsif($type eq "colors") {
-  my $min_code=$chroma_patch_limited?16:0;
-  my $span_code=$chroma_patch_limited?219:255;
-    my $max_code=$min_code+$span_code;
+  # min/span/max_code are computed bit-depth-aware in the outer scope
+  # (chroma_min_code etc., set just above the step-build) so the colors
+  # ladder honors max_bpc like the greyscale ladder. See comment above
+  # on $_chroma_max_bpc for the 10-bit Limited / Full math.
+  my $min_code=$chroma_min_code;
+  my $span_code=$chroma_span_code;
+    my $max_code=$chroma_max_code;
       my %primaries=%{&webui_meter_gamut_definitions()};
     my $colorimetry=int($series_colorimetry);
     my $primaries_idx=int($series_primaries);
@@ -3005,8 +3027,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      ["Magenta","xyYn",0.371346,0.24177,0.187509],
      ["Cyan","xyYn",0.19619,0.266985,0.193415]
     );
-    push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1}";
-    push @steps, "{\"ire\":0,\"r\":$min_code,\"g\":$min_code,\"b\":$min_code,\"name\":\"Black\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":0}";
+    push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1,\"input_max\":$chroma_input_max}";
+    push @steps, "{\"ire\":0,\"r\":$min_code,\"g\":$min_code,\"b\":$min_code,\"name\":\"Black\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":0,\"input_max\":$chroma_input_max}";
     foreach my $src (@classic) {
      my ($name,$kind,@vals)=@$src;
 	     if($kind eq "gray") {
@@ -3020,7 +3042,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	       $target_Yn_for_step=$decode_linear->($norm);
 	       $target_Yn_for_step=0 if($target_Yn_for_step < 0);
 	      }
-	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step}";
+	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
 	      next;
 	     }
       my ($target_x,$target_y,$Yn)=@vals;
@@ -3090,7 +3112,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       }
       my $ire=int($Yn*100 + .5);
       my ($chart_tx,$chart_ty)=($target_x,$target_y);
-       push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step}";
+       push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
      }
   my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
   my $series_level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : (($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
@@ -3161,11 +3183,17 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $target_y=$target_mix_sum>0?$target_mix_Y/$target_mix_sum:$target_wy;
 	     my $target_Yn_for_step=$series_level_linear*$target_mix_Y;
 	     $target_Yn_for_step=0 if($target_Yn_for_step < 0);
-	     push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"series_color\":\"$series_color\",\"sat_pct\":100,\"target_x\":$target_x,\"target_y\":$target_y,\"target_Yn\":$target_Yn_for_step}";
+	     push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"series_color\":\"$series_color\",\"sat_pct\":100,\"target_x\":$target_x,\"target_y\":$target_y,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
 	    }
  } elsif($type eq "saturations") {
-  my $min_code=$chroma_patch_limited?16:0;
-  my $span_code=$chroma_patch_limited?219:255;
+  # min/span/max_code are computed bit-depth-aware in the outer scope
+  # (chroma_min_code etc., set just above the step-build) so the
+  # saturation sweep honors max_bpc like the greyscale ladder. See
+  # comment above on $_chroma_max_bpc for the 10-bit Limited / Full
+  # math.
+  my $min_code=$chroma_min_code;
+  my $span_code=$chroma_span_code;
+  my $max_code=$chroma_max_code;
   my %primaries=%{&webui_meter_gamut_definitions()};
   my $colorimetry=int($series_colorimetry);
   my $primaries_idx=int($series_primaries);
@@ -3210,9 +3238,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # to the top of PQ where the panel clips, crushing the saturation ratio to
   # white for every patch except the pure 100%-saturation primaries.
   my $level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : ((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
-  my $max_code=$min_code+$span_code;
+  # $max_code is the outer-scope bit-depth-aware $chroma_max_code set
+  # at the top of the step-build; no need to recompute here.
 	  # White first (reference Y), then saturation sweeps.
-	  push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1}";
+	  push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1,\"input_max\":$chroma_input_max}";
 	  my $encode_channel=sub {
    my ($linear,$color_name)=@_;
    $linear=0 if(!defined $linear || $linear < 0);
@@ -3289,7 +3318,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    $b=$encode_channel->($bl,$name);
 	    }
 	    $target_Yn_for_step=0 if($target_Yn_for_step < 0);
-	    push @steps, "{\"ire\":$sat,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name $sat%\",\"series_color\":\"$name\",\"sat_pct\":$sat,\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn_for_step}";
+	    push @steps, "{\"ire\":$sat,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name $sat%\",\"series_color\":\"$name\",\"sat_pct\":$sat,\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
 	   }
 	  }
 	 }
