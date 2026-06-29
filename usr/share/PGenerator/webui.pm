@@ -18206,7 +18206,6 @@ function meterFindSeriesWhiteReading(readings){
   return false;
  });
 }
-}
 
 function meterCanonicalSeriesStep(step){
  if(!step||!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return step||null;
