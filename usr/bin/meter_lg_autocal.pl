@@ -14323,6 +14323,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# out at the best state. This is the same pattern the SDR path uses
 		# and HDR was missing.
 		my $best_de=undef;
+		# Previous iter's measured dE for the descent-style revert check. The
+		# original revert condition was "de >= best_de" (revert whenever this
+		# iter didn't beat the all-time best), which is the right pattern at
+		# low IRE where the meter floor pins responses, but at high IRE it's
+		# too eager: with the per-iter DPG move (~0.35% at high IRE) smaller
+		# than the panel's sub-linear response AND the i1 Pro noise floor,
+		# the very first iter that lands on a low-noise reading becomes
+		# best_de forever and every subsequent iter (which can no longer
+		# beat it) triggers revert. The fix is a local descent check: revert
+		# only when the move made dE WORSE than the previous iter (where we
+		# were just before applying the move). best_de is still tracked for
+		# the final-state restore, but it no longer gates the revert.
+		my $prev_de=undef;
 		# Full 3072-value DPG snapshot of the state that produced the best dE.
 		# build_hdr20_1d_dpg rewrites the whole curve (not just the 3 anchor
 		# slots), so a revert must restore the entire array.
@@ -14601,15 +14614,21 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# is computed fresh from the new Y, so a fresh full-size move is
 					# the right starting point.
 					$move_scaling=1.0;
-				} elsif($_anchor_ire < $low_ire_threshold || $_anchor_ire+0 >= $high_ire_threshold) {
-					# Revert (low IRE <5% OR high IRE >=80%): the panel response
-					# at the PQ shoulder is sub-linear so each iter's move can
-					# overshoot in either direction; halving the move gives the
-					# next gain a smaller step to resolve the actual response.
-					# Symmetric to the low-IRE rationale: low IRE has the move
-					# lost in meter noise, high IRE has the move lost in panel
-					# response sub-linearity. Both need revert-and-halve to find
-					# a step size the panel can actually resolve.
+				} elsif((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
+					&& defined($prev_de) && $de+0 > $prev_de+0) {
+					# Descent-style revert: this iter's move made dE WORSE than the
+					# previous iter's dE (the state we were just at before applying
+					# the move). The earlier "de >= best_de" condition reverted on
+					# any non-improvement against the all-time best, which is right
+					# at low IRE (meter floor) but too eager at high IRE (panel
+					# sub-linear response + meter noise = the first iter that hits a
+					# lucky low-noise reading becomes best_de forever and every
+					# subsequent iter triggers revert). The new condition gates on
+					# a LOCAL direction change: the move had to have actually
+					# worsened the result, not just failed to improve the record.
+					# Low IRE (<5%) and high IRE (>=80%) both enable this; mid IRE
+					# (5-80%) uses the monotonic best_de improvement pattern instead,
+					# matching the prior behavior.
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
@@ -14619,13 +14638,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# consecutive reverts the move is 0.125x -- effectively no change
 					# for most panels, which is why the 3-revert break below fires.
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
-					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
+					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
 					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
 					if($consecutive_reverts >= $_revert_budget) {
 						log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
 						last;
 					}
 				}
+				# Update prev_de for the next iter's descent check, regardless of
+				# whether this iter improved best or reverted. After a revert the
+				# state is back at best, but prev_de is the dE we just measured
+				# (the overshoot value) -- so iter N+1's descent check compares
+				# against the most recent measurement, not best_de.
+				$prev_de=$de+0;
 			}
 			# Per-read audit line: lets the operator tail the log in real time and
 			# confirm every read is recorded + which is the running best.
