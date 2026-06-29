@@ -27087,6 +27087,13 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // and the meter hits the 150s default timeout on the black read.
   low_light:meterLowLightReadState(),
   ...meterPatternInsertionPayload(),
+  // Push the Bit Depth dropdown (max_bpc) through so the 3D worker
+  // generates 8-bit codes (input_max=255) when the link is 8-bit and
+  // 10-bit codes (input_max=1023) when the link is 10-bit. Without
+  // this the worker ignores the dropdown and always emits 8-bit codes,
+  // which on a 10-bit link land at ~23% of full signal and crush the
+  // stimulus range (same bug the greyscale worker fixed in 79b2c2c9).
+  max_bpc:getVal('max_bpc'),
   upload:upload,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,

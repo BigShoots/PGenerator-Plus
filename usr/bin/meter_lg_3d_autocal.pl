@@ -284,31 +284,49 @@ sub target_gamma_label {
  return $target_gamma;
 }
 
+# Bit-depth aware patch code generation: when max_bpc >= 10 (10-bit link),
+# the 8-bit codes below would land on a 10-bit wire as ~23% signal (e.g.
+# 8-bit 235 / 1023 = 23%), crushing the entire stimulus range. Mirror the
+# webui.pm greyscale fix (commit 79b2c2c9): 10-bit Limited = min 64, span 876
+# (matches the HDR10 10-bit Limited table: 100% -> 940), 10-bit Full = min 0,
+# span 1023 (matches the HDR10 10-bit Full table: 100% -> 1023). Default
+# to 8-bit when max_bpc is missing or empty so legacy callers keep their
+# existing wire format.
 sub patch_code_for_percent {
-	 my ($pct,$signal_range)=@_;
-	 $pct=clamp($pct,0,100);
-	 my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
-	 return $limited ? int(16 + ($pct/100)*219 + 0.5) : int(($pct/100)*255 + 0.5);
+ my ($pct,$signal_range,$max_bpc)=@_;
+ $pct=clamp($pct,0,100);
+ my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
+ my $bits=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 10 : 8;
+ if($bits == 10) {
+  return $limited ? int(64 + ($pct/100)*876 + 0.5) : int(($pct/100)*1023 + 0.5);
+ }
+ return $limited ? int(16 + ($pct/100)*219 + 0.5) : int(($pct/100)*255 + 0.5);
 }
 
 sub patch_code_for_8bit_value {
-	 my ($value,$signal_range)=@_;
-	 $value=clamp($value,0,255);
-	 my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
-	 return $limited ? int(16 + ($value/255)*219 + 0.5) : int($value + 0.5);
+ my ($value,$signal_range,$max_bpc)=@_;
+ $value=clamp($value,0,255);
+ my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
+ my $bits=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 10 : 8;
+ if($bits == 10) {
+  return $limited ? int(64 + ($value/255)*876 + 0.5) : int(($value/255)*1023 + 0.5);
+ }
+ return $limited ? int(16 + ($value/255)*219 + 0.5) : int($value + 0.5);
 }
 
 sub patch_step {
-	 my ($kind,$level,$phase,$config)=@_;
-	 my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
-	 my $code=patch_code_for_percent($level,$signal_range);
-	 my $black_code=patch_code_for_percent(0,$signal_range);
-	 my %rgb=(r=>$black_code,g=>$black_code,b=>$black_code);
-	 if($kind eq "white") { %rgb=(r=>$code,g=>$code,b=>$code); }
-	 elsif($kind eq "red") { $rgb{r}=$code; }
-	 elsif($kind eq "green") { $rgb{g}=$code; }
-	 elsif($kind eq "blue") { $rgb{b}=$code; }
+ my ($kind,$level,$phase,$config)=@_;
+ my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
+ my $max_bpc=$config->{"max_bpc"}||"";
+ my $code=patch_code_for_percent($level,$signal_range,$max_bpc);
+ my $black_code=patch_code_for_percent(0,$signal_range,$max_bpc);
+ my %rgb=(r=>$black_code,g=>$black_code,b=>$black_code);
+ if($kind eq "white") { %rgb=(r=>$code,g=>$code,b=>$code); }
+ elsif($kind eq "red") { $rgb{r}=$code; }
+ elsif($kind eq "green") { $rgb{g}=$code; }
+ elsif($kind eq "blue") { $rgb{b}=$code; }
  my $name=($phase ? "$phase " : "").uc(substr($kind,0,1))." ".format_percent($level)."%";
+ my $input_max=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 1023 : 255;
  return {
   kind => $kind,
   level => $level+0,
@@ -322,7 +340,7 @@ sub patch_step {
   r => $rgb{r},
   g => $rgb{g},
   b => $rgb{b},
-  input_max => 255,
+  input_max => $input_max,
  };
 }
 
@@ -1390,6 +1408,8 @@ sub post_check_steps {
 	 my @steps;
 	 my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
 	 my $target_gamma=$config->{"target_gamma"}||"bt1886";
+	 my $max_bpc=$config->{"max_bpc"}||"";
+	 my $input_max=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 1023 : 255;
 	 my @cc=(
 	  ["Dark Skin",115,82,68],["Light Skin",194,150,130],["Blue Sky",98,122,157],["Foliage",87,108,67],
 	  ["Blue Flower",133,128,177],["Bluish Green",103,189,170],["Orange",214,126,44],["Purplish Blue",80,91,166],
@@ -1403,18 +1423,18 @@ sub post_check_steps {
 	  push @steps,{
 	   kind=>"post", phase=>"post_check", level=>0, name=>"CC24 ".$name, ire=>0, stimulus=>0,
 	   signal_r_pct=>$r/255*100, signal_g_pct=>$g/255*100, signal_b_pct=>$b/255*100,
-	   r=>patch_code_for_8bit_value($r,$signal_range),
-	   g=>patch_code_for_8bit_value($g,$signal_range),
-	   b=>patch_code_for_8bit_value($b,$signal_range),
+	   r=>patch_code_for_8bit_value($r,$signal_range,$max_bpc),
+	   g=>patch_code_for_8bit_value($g,$signal_range,$max_bpc),
+	   b=>patch_code_for_8bit_value($b,$signal_range,$max_bpc),
 	   target_linear_r=>target_gamma_linear($r/255,$target_gamma),
 	   target_linear_g=>target_gamma_linear($g/255,$target_gamma),
 	   target_linear_b=>target_gamma_linear($b/255,$target_gamma),
-	   input_max=>255
+	   input_max=>$input_max
 	  };
 	 }
 	 foreach my $sat (25,50,75,100) {
-	  my $c=patch_code_for_percent($sat,$signal_range);
-	  my $k=patch_code_for_percent(0,$signal_range);
+	  my $c=patch_code_for_percent($sat,$signal_range,$max_bpc);
+	  my $k=patch_code_for_percent(0,$signal_range,$max_bpc);
 	  my $linear=target_gamma_linear($sat/100,$target_gamma);
 	  my @defs=(
 	   ["Red",$c,$k,$k,$linear,0,0],["Green",$k,$c,$k,0,$linear,0],["Blue",$k,$k,$c,0,0,$linear],
@@ -1426,7 +1446,7 @@ sub post_check_steps {
 	    signal_r_pct=>($d->[4] > 0 ? $sat : 0), signal_g_pct=>($d->[5] > 0 ? $sat : 0), signal_b_pct=>($d->[6] > 0 ? $sat : 0),
 	    r=>$d->[1], g=>$d->[2], b=>$d->[3],
 	    target_linear_r=>$d->[4], target_linear_g=>$d->[5], target_linear_b=>$d->[6],
-	    input_max=>255
+	    input_max=>$input_max
 	   };
 	  }
 	 }
