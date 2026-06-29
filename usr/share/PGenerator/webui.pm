@@ -18914,6 +18914,17 @@ function drawRGBBars(bal){
 
 async function meterStartSingleReadWithTimeout(readPayload,timeoutMs,shouldCancel){
 		 meterPingBusy=true;
+	 // Raise the shared spectro setup modal in 'Working…' mode immediately so
+	 // the operator sees feedback that the click registered while the backend
+	 // boots the meter session (1-5+ s for a spectro cold start). The poll
+	 // below replaces this with the actual setup step (calibrate_tile /
+	 // position_screen) when the backend reports it, or hides the modal when
+	 // the read completes without needing a setup step. Gated on the
+	 // selected meter being a spectro so colorimeter users don't see the
+	 // "Spectrophotometer Setup" modal flash on every read.
+	 if(meterSelectedMeasurementRequiresReady()){
+	  meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/setup/ack');
+	 }
 	 try{
 	  const initR=await fetchJSON('/api/meter/read',{method:'POST',headers:{'Content-Type':'application/json'},
 	   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
@@ -19606,6 +19617,11 @@ async function meterFinishSingleRead(){
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
  meterClearManualPromptAwaiting(false);
+ // Hide the shared spectro setup modal if we raised it preemptively at the
+ // start of the read. Normal single reads hide it via the poll result, but
+ // the POST-throws-before-poll path (e.g. /api/meter/read connection error)
+ // skips the poll entirely and would otherwise leave the modal visible.
+ meterSpectroSetupApply(null);
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
  meterUpdateReadButtons();
  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
@@ -19906,6 +19922,16 @@ async function meterContinuousLoop(){
   document.getElementById('meterProgress').style.display='';
   document.getElementById('meterProgressLabel').textContent=(meterCurrentPatchStep.name||meterCurrentPatchStep.ire+'%')+' (reading)';
  }
+ // Raise the shared spectro setup modal in 'Working…' mode at the start of
+ // each iteration. The first iteration may take 1-5+ s while the spectro
+ // boots; the operator would otherwise be staring at a blank screen waiting
+ // for the white-tile prompt. Subsequent iterations also flash the modal
+ // briefly (until polling sees no setup state and hides it), which doubles
+ // as per-read click feedback. Gated on the selected meter being a spectro
+ // so colorimeter users don't see the "Spectrophotometer Setup" flash.
+ if(meterSelectedMeasurementRequiresReady()&&!meterContinuousReadInFlight){
+  meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/setup/ack');
+ }
  try{
   const dtype=getEffectiveDisplayType();
   const rr=getMeterRefreshRate();
@@ -20016,6 +20042,11 @@ function meterStopContinuous(options){
  meterClearManualPromptAwaiting(true);
  if(meterContinuousTimer) clearTimeout(meterContinuousTimer);
  meterContinuousTimer=null;
+ // Hide the shared spectro setup modal when continuous stops. Normal per-
+ // iteration polls hide it on success, but the terminal "too many startup
+ // errors" branch in meterContinuousLoop calls meterStopContinuous() without
+ // ever returning a polled result, leaving the preemptively-raised modal up.
+ meterSpectroSetupApply(null);
  if(!silent){
   document.getElementById('meterContinuous').classList.remove('btn-success');
   document.getElementById('meterContinuous').classList.add('btn-secondary');
@@ -27159,6 +27190,17 @@ async function meterRunSeries(){
  document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
+ // Raise the shared spectro setup modal in 'Working…' mode immediately so
+ // the operator sees feedback that the click registered while the backend
+ // launches the series scan (and, for a spectro, while the meter boots and
+ // the white-tile prompt becomes available). The series poll below replaces
+ // this with the actual setup step (calibrate_tile / position_screen) when
+ // the backend reports it, or hides the modal when the run completes
+ // without needing a setup step. Gated on the selected meter being a
+ // spectro so colorimeter users don't see the modal flash.
+ if(meterSelectedMeasurementRequiresReady()){
+  meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
+ }
  const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
  meterBuildPatchThumbs(sortedSteps,new Set(),null);
  drawAllChartsPreset(sortedSteps);
