@@ -9951,15 +9951,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label id="meterAutoCalTargetRow" style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:150px">Target &Delta;E
 	    <input type="number" id="meterAutoCalTarget" min="0.1" max="10" step="0.1" value="0.5" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
 	   </label>
-	   <div id="meterAutoCalGreyscaleOptionsBox" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
-		    <label style="display:flex;gap:8px;align-items:flex-start">
-		     <input type="checkbox" id="meterAutoCalMagicWandEnabled" style="margin-top:2px">
-		     <span>
-		      <span style="display:block;font-weight:700">Magic Wand (experimental)</span>
-		      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Experimental feature: reads the committed LG 26pt greyscale with calibration mode off, applies one learned DDC correction pass, then verifies and reverts any worse slots.</span>
-		     </span>
-		    </label>
-	   </div>
 	   <div id="meterAutoCalConfirmSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
 	  <div id="meterAutoCalResultsBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
@@ -9971,15 +9962,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
 		   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT so the first greyscale pass stays fast.</div>
-		   <div id="meterFullAutoCalTouchupChoiceRow" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#080a11;color:var(--text);font-size:.78rem;line-height:1.35">
-		    <label style="display:flex;gap:8px;align-items:flex-start">
-		     <input type="checkbox" id="meterFullAutoCalMagicWandEnabled" style="margin-top:2px">
-		     <span>
-		      <span style="display:block;font-weight:700">Magic Wand (experimental)</span>
-		      <span style="display:block;color:var(--text2);font-size:.72rem;margin-top:3px">Experimental feature: reads the committed LG 26pt greyscale with calibration mode off, applies one learned DDC correction pass, then verifies and reverts any worse slots.</span>
-		     </span>
-		    </label>
-		   </div>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
 		  <div class="btn-row" style="justify-content:flex-end;margin:0">
@@ -23092,8 +23074,8 @@ function meterAutoCalShowPreflightOptions(){
  const targetRow=document.getElementById('meterAutoCalTargetRow');
  const summary=document.getElementById('meterAutoCalConfirmSummary');
  if(description) description.textContent=needsLuminanceSetup
-	  ? 'Choose whether the experimental Magic Wand feature should run after the greyscale Auto Cal. This choice will be carried through reset, luminance setup, and the final Auto Cal payload.'
-	  : 'Choose whether the experimental Magic Wand feature should run after the greyscale Auto Cal. HDR uses the calibrated 100% point as its peak reference, so no SDR luminance setup is required.';
+	  ? 'The picture mode reset and 100% luminance setup will follow. SDR uses the measured 100% white as the calibration peak; the wizard reads the active 100% patch to seed the 109% headroom reference and the greyscale DDC ladder.'
+	  : 'The picture mode reset will follow. HDR uses the calibrated 100% point as its peak reference, so no SDR luminance setup is required.';
  if(targetRow) targetRow.style.display='none';
  if(summary) summary.textContent=needsLuminanceSetup?'The picture mode reset and 100% luminance setup will follow.':'The picture mode reset will follow.';
  meterAutoCalSetOverlay(true,{phase:'options',current_name:'Greyscale Auto Cal options',message:'Choose post-cal cleanup before reset.'});
@@ -23102,7 +23084,10 @@ function meterAutoCalShowPreflightOptions(){
 function meterAutoCalAcceptPreflightOptions(){
 	 if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow){toast('Auto Cal setup is not ready',true);return;}
 	 meterAutoCalPendingConfig.postCommitPolishEnabled=false;
-	 meterAutoCalPendingConfig.magicWandEnabled=meterAutoCalMagicWandChoiceValue();
+	 // Gated off 2026-06-29: the Magic Wand checkbox was removed from
+	 // the preflight options dialog; force magicWandEnabled to false
+	 // so a stale config or a recomputed choice value cannot enable it.
+	 meterAutoCalPendingConfig.magicWandEnabled=false;
 	 meterAutoCalPendingConfig.greyscaleOptionsCaptured=true;
  meterAutoCalPhase='disclaimer';
  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
@@ -24291,10 +24276,13 @@ function meterFullAutoCalPostCommitPolishEnabled(){
 	}
 
 	function meterFullAutoCalMagicWandEnabled(){
-	 if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'magicWandEnabled')){
-	  return meterFullAutoCalConfig.magicWandEnabled!==false;
-	 }
-	 return meterFullAutoCalRunConfigFlag('postSeriesAdjustEnabled',false);
+	 // Gated off 2026-06-29: the Magic Wand experimental feature is no
+	 // longer used. The UI checkboxes were removed from both the SDR/HDR
+	 // greyscale autocal wizard and the full autocal wizard, and the
+	 // feature is forced off here so a stale config or a serialized
+	 // meterFullAutoCalConfig.magicWandEnabled=true does not run the
+	 // post-series-adjust / meterAutoCalStartMagicWand path.
+	 return false;
 	}
 
 	function meterFullAutoCalPostSeriesAdjustEnabled(){
@@ -24334,13 +24322,19 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 	}
 
 	function meterAutoCalMagicWandChoiceValue(){
-	 const cb=document.getElementById('meterAutoCalMagicWandEnabled');
-	 return cb ? !!cb.checked : false;
+	 // Gated off 2026-06-29: the standalone-greyscale Magic Wand checkbox
+	 // was removed from the preflight options dialog; force the choice
+	 // to false here so the dialog's captured config still produces a
+	 // non-magic-wand payload even if some code path queries the value.
+	 return false;
 	}
 
 	function meterFullAutoCalMagicWandChoiceValue(){
-	 const cb=document.getElementById('meterFullAutoCalMagicWandEnabled');
-	 return cb ? !!cb.checked : meterFullAutoCalMagicWandEnabled();
+	 // Gated off 2026-06-29: the full-autocal Magic Wand checkbox was
+	 // removed from the confirm dialog; force the choice to false here
+	 // so the captured config still produces a non-magic-wand payload
+	 // even if some code path queries the value.
+	 return false;
 	}
 
 		function meterFullAutoCalPostSeriesAdjustChoiceValue(){
@@ -26603,7 +26597,14 @@ async function meterAutoCalConfirmAndStart(){
 		 const capturedGreyscaleOptions=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.greyscaleOptionsCaptured);
 		 const postCommitPolishEnabled=firstFullGreyscalePass?false:(capturedGreyscaleOptions?meterAutoCalPendingConfig.postCommitPolishEnabled!==false:meterAutoCalPostCommitPolishChoiceValue());
 		 const postCommitVerifyEnabled=false;
-		 const magicWandEnabled=(!fullWorkflow&&capturedGreyscaleOptions&&meterAutoCalPendingConfig.magicWandEnabled!==false)?true:false;
+		 // Gated off 2026-06-29: the Magic Wand experimental feature is
+		 // no longer used. Force magicWandEnabled to false so a stale
+		 // captured option cannot re-enable the post-series-adjust /
+		 // meterAutoCalStartMagicWand path. The Magic Wand checkbox was
+		 // removed from both the greyscale and full autocal wizards; this
+		 // is the JS gate that prevents the feature from running even if
+		 // some serialized config still carries magicWandEnabled=true.
+		 const magicWandEnabled=false;
 		 meterAutoCalPendingConfig.postCommitPolishEnabled=postCommitPolishEnabled;
 		 meterAutoCalPendingConfig.magicWandEnabled=magicWandEnabled;
 		 meterAutoCalStandaloneMagicWandEnabled=magicWandEnabled;
