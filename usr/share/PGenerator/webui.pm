@@ -13425,11 +13425,20 @@ function meterGreySignalFractionFromCode(code){
  if(meterChartIsDv()){
   return Math.max(0,Math.min(1,((numeric||0)-range.min)/range.span));
  }
- if(Number.isFinite(numeric) && (meterGreyAllowsHeadroomTargets() || numeric>255)){
-  // 10-bit codes: rely on the live range (Full 10-bit: {min:0, span:1020};
-  // Limited 10-bit: {min:64, span:876}). The DV path is handled above.
-  return Math.max(0,Math.min(1.1,(numeric-range.min)/range.span));
- }
+if(Number.isFinite(numeric) && (meterGreyAllowsHeadroomTargets() || numeric>255)){
+   // 10-bit codes: rely on the live range (Full 10-bit: {min:0, span:1020};
+   // Limited 10-bit: {min:64, span:876}). The DV path is handled above.
+   // SDR26 headroom codes (code=1023 on a Limited range with min=64 span=956
+   // would otherwise return 1.003, not 1.0 -- the legal peak must clamp to
+   // exactly 1.0 because the chart's grey target Y for 109 = peak * signal^γ
+   // and signal MUST be 1.0 for the peak anchor. Without the clamp the
+   // bisection in meterGreySolvePeakFromHeadroomReading solves for peak =
+   // measured_Y / 1.003^γ which is ~0.75% below the actual 109 luminance,
+   // and every body anchor (50-105) then shows a target Y that's
+   // proportionally low, inflating ΔE ITP across the upper greyscale.
+   const headroomPeak=(numeric-range.min>=range.span*0.95) && numeric>=range.min+range.span;
+   return Math.max(0,Math.min(headroomPeak?1.0:1.1,(numeric-range.min)/range.span));
+  }
  return Math.max(0,Math.min(1,(numeric-range.min)/range.span));
 }
 
