@@ -13683,6 +13683,26 @@ function meterFindMeasuredWhiteReading(){
  const currentMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
  const activeLgAutoCal=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive();
+ // SDR26 robustness fix: prefer the headroom-encoded 109% legal peak
+ // (r_code == 1023, ire == 109) over the 100% reading whenever both are
+ // present. The autocal worker uses 109's measured Y as the target-curve
+ // peak for every body anchor; the chart must match that reference,
+ // otherwise the 1-2 nit gap between 109 and 100 is PQ-amplified into
+ // ~0.5 dE ITP -- ~7x over the worker's actual per-anchor dE, producing
+ // the "70-99 patches fail to hit target" false alarm). The headroom
+ // encoding (r_code == 1023) is the unambiguous signal that a 109
+ // reading is the legal peak even before the autocal worker has stamped
+ // autocal_white_reference.
+ if(lgAutoCalChartRef && Array.isArray(meterReadings)){
+  const sdr109=meterReadings.find(rd=>{
+   if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
+   if(!meterReadingIsGreyscale(rd)) return false;
+   const _ire=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:null));
+   const _code=Number(rd.r_code!=null?rd.r_code:(rd.r!=null?rd.r:0));
+   return Number.isFinite(_ire) && Math.abs(_ire-109)<0.05 && Number.isFinite(_code) && _code>255;
+  });
+  if(sdr109) return sdr109;
+ }
  const readingMatchesMode=(rd)=>{
   if(!rd) return false;
   const rdMode=String((rd.signal_mode||'')).toLowerCase();
@@ -18152,6 +18172,21 @@ function meterAttachSeriesMeta(readings){
 
 function meterFindSeriesWhiteReading(readings){
  const list=Array.isArray(readings)?readings:[];
+ // SDR26 robustness fix: scan twice, prefer the headroom-encoded 109
+ // legal peak (r_code == 1023) over the 100% reading whenever BOTH are
+ // present. The autocal worker uses 109's measured Y as the target-curve
+ // peak for every body anchor; the chart must match that reference,
+ // otherwise the 1-2 nit gap between 109 and 100 is PQ-amplified into
+ // ~0.5 dE ITP (~7x over the worker's actual per-anchor dE, producing
+ // the "70-99 patches fail to hit target" false alarm).
+ const _sdr109=list.find(rd=>{
+  if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
+  if(!meterReadingIsGreyscale(rd)) return false;
+  const _rdIre=Number(rd.ire);
+  const _rdCode=Number(rd.r_code!=null?rd.r_code:rd.r);
+  return Number.isFinite(_rdIre) && Math.abs(_rdIre-109)<0.05 && Number.isFinite(_rdCode) && _rdCode>255;
+ });
+ if(_sdr109) return _sdr109;
  return list.find(rd=>{
   if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
   const name=String(rd.name||'').toLowerCase();
@@ -18170,6 +18205,7 @@ function meterFindSeriesWhiteReading(readings){
   if(Number.isFinite(_rdIre) && Math.abs(_rdIre-109)<0.05) return true;
   return false;
  });
+}
 }
 
 function meterCanonicalSeriesStep(step){
