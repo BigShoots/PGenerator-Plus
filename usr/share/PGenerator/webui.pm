@@ -12373,6 +12373,8 @@ let meterActionPending=false;
 let meterPingBusy=false;
 let meterSeriesAwaitingReady=false;
 let meterSeriesSpectroSetupActive=false;
+let meterAutoCalSpectroSetupActive=false;
+let meterLg3dAutoCalSpectroSetupActive=false;
 let meterReadySignalPending=false;
 let meterPendingDeviceReadyAction=null;
 let meterManualPromptAwaiting=false;
@@ -26232,6 +26234,16 @@ async function meterPollAutoCal(options){
 	   meterAutoCalPendingConfig=null;
 	   meterAutoCalStopRequested=false;
 	  }
+	  // Close the preemptively-raised spectro setup modal when the worker
+	  // has moved past the preflight (phase!='preparing' OR a non-preparing
+	  // current_name like "Reading X%" / "Auto Cal 0%"). Once the worker is
+	  // actively reading or adjusting, the per-step modal logic (if any)
+	  // takes over and the 'Working…' placeholder would only obscure the
+	  // real progress label.
+	  if(meterAutoCalSpectroSetupActive && r && r.status==='running' && r.phase && r.phase!=='preparing'){
+	   meterAutoCalSpectroSetupActive=false;
+	   meterSpectroSetupApply(null);
+	  }
 	  const setupOverlayActive=meterAutoCalSetupOverlayActive();
 	  if(setupOverlayActive&&!fullGreyscaleBackendActive) return;
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'first-greyscale')){
@@ -26287,6 +26299,10 @@ async function meterPollAutoCal(options){
 	  if(recover&&r.status==='running') meterSetWorkflowProgress(r,{workflow:meterFullAutoCalRunning?'full':'greyscale',label:r.current_name||r.message||'Reconnected to LG Auto Cal'});
 	  if(r.status==='complete'||r.status==='cancelled'||r.status==='error'||r.status==='idle'){
 	   const notify=localAutoCalActive||r.status==='complete';
+	   if(meterAutoCalSpectroSetupActive){
+	    meterAutoCalSpectroSetupActive=false;
+	    meterSpectroSetupApply(null);
+	   }
 	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
 	   meterActionPending=false;
 		   if(r.status==='complete'){
@@ -26641,6 +26657,20 @@ async function meterAutoCalConfirmAndStart(){
   current_step:0
  });
  try{
+  // Raise the shared spectro setup modal in 'Working…' mode immediately so
+  // the operator sees feedback that the click registered while the backend
+  // launches the autocal worker (and, for a spectro, while the meter boots
+  // and the white-tile prompt becomes available). The autocal status poll
+  // below hides this modal when the worker has moved past the preflight
+  // (phase!='preparing') and the autocal error/complete branches also hide
+  // it on terminal states. Mirrors the meterRunSeries spectro popup fix
+  // (commit fac59852) which only covered single, continuous, and series
+  // reads; the autocal wizard had the same gap. Gated on the selected meter
+  // being a spectro so colorimeter users don't see the modal flash.
+  if(meterSelectedMeasurementRequiresReady()){
+   meterAutoCalSpectroSetupActive=true;
+   meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
+  }
   const r=await fetchJSON('/api/meter/lg-autocal',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
@@ -26703,6 +26733,10 @@ async function meterAutoCalConfirmAndStart(){
    _timeoutMs:10000
   });
   if(!r||r.status!=='started'){
+   if(meterAutoCalSpectroSetupActive){
+    meterAutoCalSpectroSetupActive=false;
+    meterSpectroSetupApply(null);
+   }
    meterActionPending=false;
    meterAutoCalPhase='error';
    meterAutoCalClearSavedState();
@@ -26739,6 +26773,10 @@ async function meterAutoCalConfirmAndStart(){
 	  meterAutoCalPolling=setInterval(meterPollAutoCal,1500);
  await meterPollAutoCal();
  }catch(e){
+ if(meterAutoCalSpectroSetupActive){
+  meterAutoCalSpectroSetupActive=false;
+  meterSpectroSetupApply(null);
+ }
  meterAutoCalRunning=false;
  meterActionPending=false;
  meterAutoCalPhase='error';
@@ -26752,6 +26790,10 @@ async function meterAutoCalConfirmAndStart(){
 }
 
 async function meterStopAutoCal(){
+ if(meterAutoCalSpectroSetupActive){
+  meterAutoCalSpectroSetupActive=false;
+  meterSpectroSetupApply(null);
+ }
  meterFullAutoCalResetState(false);
  meterAutoCalClearSavedState();
  meterAutoCalStopRequested=true;
@@ -26909,6 +26951,15 @@ async function meterPollLg3dAutoCal(options){
   if(r.status==='running'&&!meterLg3dAutoCalPolling){
    meterLg3dAutoCalPolling=setInterval(meterPollLg3dAutoCal,1500);
   }
+  // Close the preemptively-raised spectro setup modal when the worker has
+  // moved past the preflight (phase!='preparing' or status moves off running).
+  // Mirrors the autocal-wizard fix in meterPollAutoCal.
+  if(meterLg3dAutoCalSpectroSetupActive && r){
+   if(r.status!=='running' || (r.phase && r.phase!=='preparing')){
+    meterLg3dAutoCalSpectroSetupActive=false;
+    meterSpectroSetupApply(null);
+   }
+  }
   if(r.status==='complete'||r.status==='cancelled'||r.status==='error'||r.status==='idle'){
    if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
    meterActionPending=false;
@@ -27064,6 +27115,16 @@ refresh_rate:getMeterRefreshRate()||undefined,
   meterAutoCalPhase='';
   meterAutoCalSetOverlay(false,null);
  }
+ // Raise the shared spectro setup modal in 'Working…' mode immediately so
+  // the operator sees feedback that the click registered while the 3D
+  // worker boots. The 3D status poll below hides this modal when the
+  // worker moves past the preflight. Mirrors the meterRunSeries fix
+  // (commit fac59852) and the autocal-wizard fix at
+  // meterAutoCalConfirmAndStart.
+ if(meterSelectedMeasurementRequiresReady()){
+  meterLg3dAutoCalSpectroSetupActive=true;
+  meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
+ }
  meterActionPending=true;
  meterLg3dAutoCalRunning=true;
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:5),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
@@ -27087,6 +27148,10 @@ refresh_rate:getMeterRefreshRate()||undefined,
    meterLg3dAutoCalRunning=false;
    meterActionPending=false;
    meterHideWorkflowProgress();
+   if(meterLg3dAutoCalSpectroSetupActive){
+    meterLg3dAutoCalSpectroSetupActive=false;
+    meterSpectroSetupApply(null);
+   }
    return fail(r&&r.message?r.message:'Unable to start LG 3D LUT AutoCal');
   }
  // Reflect a server-side max_bpc auto-promotion in the UI dropdown
@@ -27112,6 +27177,10 @@ refresh_rate:getMeterRefreshRate()||undefined,
   await meterPollLg3dAutoCal();
   return true;
  }catch(e){
+  if(meterLg3dAutoCalSpectroSetupActive){
+   meterLg3dAutoCalSpectroSetupActive=false;
+   meterSpectroSetupApply(null);
+  }
   meterLg3dAutoCalRunning=false;
   meterActionPending=false;
   meterHideWorkflowProgress();
@@ -27122,6 +27191,10 @@ refresh_rate:getMeterRefreshRate()||undefined,
 }
 
 async function meterStopLg3dAutoCal(){
+ if(meterLg3dAutoCalSpectroSetupActive){
+  meterLg3dAutoCalSpectroSetupActive=false;
+  meterSpectroSetupApply(null);
+ }
  if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
  meterFullAutoCalResetState(false);
  meterLg3dAutoCalRunning=false;
