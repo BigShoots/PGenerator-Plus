@@ -784,20 +784,26 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	  fi
    READ_START=$SECONDS
    GOT_RESULT=false
-   RETRIED_COMM=0
    while (( SECONDS - READ_START < READ_TIMEOUT )); do
       NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
       if [[ -n "$NEW_OUTPUT" ]]; then
        CUR_SIZE=$(output_size)
        READ_OUTPUT+="$NEW_OUTPUT"
-       if [[ $RETRIED_COMM -eq 0 && "$READ_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
-        log "spotread communication problem during read - retrying once"
-        printf " " >&3
-        RETRIED_COMM=1
-        READ_TIMEOUT=$((READ_TIMEOUT + 30))
-        READ_OUTPUT=""
-        SCAN_OFFSET=$(output_size)
-        continue
+       # Fail fast on spotread's "communication problem": spotread reports this
+       # when its USB/serial link or the meter integration can not produce a
+       # clean reading -- exactly the "stuck on a black screen" condition
+       # where the panel isn't displaying the patch and spotread is integrating
+       # against nothing. The previous retry-once path added +30s to the
+       # timeout and then waited the full extension; on a truly stuck panel
+       # that produced a "still reading" UI for 100-130s per read before any
+       # error surfaced. Removing the retry and breaking immediately makes
+       # the failure visible to the operator (and to the autocal orchestrator)
+       # within seconds, so the run can abort instead of limping through
+       # 4913 cube reads with each one stuck on black.
+       if [[ "$READ_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+        log "spotread communication problem during read - failing fast (panel likely not displaying)"
+        write_state '{"status":"error","message":"Spot read failed: communication problem with meter (panel likely not displaying expected patch)"}'
+        break
        fi
        # Result first: once spotread returns a reading we're done. spotread
        # reprints its normal "Place instrument on spot ... to take a reading"
