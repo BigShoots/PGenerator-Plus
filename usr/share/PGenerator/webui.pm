@@ -25042,22 +25042,23 @@ async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalPhase='postcal-report';
  meterFullAutoCalSaveState();
  meterClearAutoCalStatusPollingForReport();
-// The calibration pinned Target Gamma to 2.2; the post-cal report series
-  // must read against the HDR10 default (ST 2084 / PQ target). Restore the
-  // dropdown before the series launches so it stamps target_gamma=st2084.
+// Post-cal report series: stamp the right target gamma for the verification
+  // read. SDR26 now keeps the operator's chosen Target Gamma throughout the
+  // calibration (was previously pinned to 2.2 during the run, then flipped
+  // to BT.1886 here); we just need to ensure the dropdown reflects the right
+  // curve for whatever signal mode the report runs in. Only set when the
+  // operator hasn't already chosen explicitly (mirrors the
+  // delay_user_set-style flag pattern).
   const _sm=(getVal('signal_mode')||'sdr');
+  const _cur=String(getVal('meterTargetGamma')||'');
   if(_sm==='hdr10'){
-   setVal('meterTargetGamma','st2084');
-   if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
-   if(typeof saveMeterSettings==='function') saveMeterSettings();
+   if(_cur==='' || _cur==null){
+    setVal('meterTargetGamma','st2084');
+    if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+    if(typeof saveMeterSettings==='function') saveMeterSettings();
+   }
   } else if(_sm==='sdr'){
-   // SDR26 1D-DPG full autocal: the calibration was pinned to gamma 2.2 during
-   // the run (matching the worker's 1D_2_2_EN reference); switch back to
-   // BT.1886 for the post-cal verification read so the report series reads
-   // against the operator's standard SDR verification curve. Only set when the
-   // operator hasn't already chosen explicitly.
-   const _cur=String(getVal('meterTargetGamma')||'');
-   if(_cur==='2.2' || _cur==='' || _cur==null){
+   if(_cur==='' || _cur==null){
     setVal('meterTargetGamma','bt1886');
     if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
     if(typeof saveMeterSettings==='function') saveMeterSettings();
@@ -26074,7 +26075,7 @@ let completeStatus=r;
 				   const _compSm=String((getVal('signal_mode')||'sdr')).toLowerCase();
 				   if(_compSm==='sdr'){
 				    const _cur=String(getVal('meterTargetGamma')||'');
-				    if(_cur==='2.2' || _cur==='' || _cur==null){
+				    if(_cur==='' || _cur==null){
 				     setVal('meterTargetGamma','bt1886');
 				     if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
 				     if(typeof saveMeterSettings==='function') saveMeterSettings();
@@ -26168,21 +26169,21 @@ async function meterStartAutoCal(options){
  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
  meterSetActiveSeriesChartContext();
- // SDR26 1D-DPG autocal + post-cal: the worker calibrates against gamma 2.2
- // (the reference workflow's 1D_2_2_EN reference workflow). Pin the Target Gamma dropdown to
- // 2.2 BEFORE building the chart series steps so the steps' baked target_Yn
- // uses signal^2.2 (the gamma curve the worker actually calibrates against)
- // and not signal^2.4 (the BT.1886 default). Only set when the operator
- // hasn't already chosen explicitly (mirrors the delay_user_set flag
- // pattern). The post-cal report entry point flips it back to BT.1886 for
- // the verification pass.
- const _autocalGamma=String(getVal('meterTargetGamma')||'');
- if(_autocalGamma==='bt1886' || _autocalGamma==='' || _autocalGamma==null){
-  setVal('meterTargetGamma','2.2');
-  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
-  if(typeof saveMeterSettings==='function') saveMeterSettings();
- }
- meterSeriesSteps=meterBuildStepsJS('greyscale',26);
+// SDR26 1D-DPG autocal: respect the operator's selected Target Gamma. The
+  // worker reads target_gamma from the config (default BT.1886 / gamma 2.4
+  // to match the reference's curve), so the dropdown value flows through
+  // unchanged. The previous code pinned the dropdown to 2.2 which forced
+  // the worker to calibrate against signal^2.2 instead of BT.1886's
+  // signal^2.4 -- ~14% lower target Y at the 50% anchor and a noticeable
+  // greenish tint after calibration. Defaults to BT.1886 only when the
+  // operator has never picked one (matches the helper's config default).
+  const _autocalGamma=String(getVal('meterTargetGamma')||'');
+  if(_autocalGamma==='' || _autocalGamma==null){
+   setVal('meterTargetGamma','bt1886');
+   if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+   if(typeof saveMeterSettings==='function') saveMeterSettings();
+  }
+  meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
  if(!adjustable.length) return fail('No LG-adjustable greyscale points are available');
  const whiteStep=meterAutoCalWhiteStep();

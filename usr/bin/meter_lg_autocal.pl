@@ -15051,10 +15051,23 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 # black-floor handling, stimulus > 100% clamping, signal clipping) is already
 # in target_luminance_for_step.
 sub lg_autocal_26_sdr26_dpg_compute_target {
- my ($white_y,$rs,$black_y)=@_;
+ my ($white_y,$rs,$black_y,$target_gamma)=@_;
  return undef unless(defined($white_y) && $white_y+0 > 0);
  return undef unless(ref($rs) eq "HASH");
- return target_luminance_for_step($white_y,$rs,"2.2","sdr",$black_y);
+ # Default to BT.1886 (gamma 2.4) so the SDR26 1D-DPG autocal uses the same
+ # target curve the user picked in the webUI's Target Gamma dropdown. The
+ # previous hardcoded "2.2" ignored the operator's selection and forced
+ # gamma 2.2, which diverges from the reference's BT.1886 curve (gamma
+ # 2.4) by ~14% at the 50% anchor and produced a noticeable greenish
+ # green-tinted greyscale on warm panels after the calibration. The
+ # override path ($_target_white_override / $_target_black_override set
+ # by the calibration card) still wins inside target_luminance_for_step
+ # so per-cal target entries take precedence.
+ $target_gamma="bt1886" if(!defined($target_gamma) || $target_gamma eq "");
+ $target_gamma=lc($target_gamma);
+ $target_gamma="2.2" if($target_gamma eq "2.4"); # accept "2.4" as explicit BT.1886 alias
+ $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
+ return target_luminance_for_step($white_y,$rs,$target_gamma,"sdr",$black_y);
 }
 
 # SDR26 damp fn. Identical envelope to the HDR inline $damp closure: sqrt(gain)
@@ -15388,9 +15401,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # 99 and 105 (headroom body) and the lower body use the curve-derived
   # target Y from $white_ref (the calibrated 109 peak).
   my $_is_legal_peak=(autocal_step_is_white($rs) || abs(($_anchor_ire+0)-109.0) < 0.05) ? 1 : 0;
+  # Use the operator's selected Target Gamma (BT.1886 default) so the SDR26
+  # 1D-DPG autocal targets the same curve as the post-cal verification pass
+  # and the user's saved LUT files. The legal-peak (109%) path uses its own
+  # measured Y and bypasses the curve; only body anchors go through here.
+  my $_sdr26_tg=defined($config->{"target_gamma"}) ? $config->{"target_gamma"} : "bt1886";
   my $tl=$_is_legal_peak
    ? luminance($reading)
-   : lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$black_y);
+   : lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$black_y,$_sdr26_tg);
   $tl=$white_ref if(!(defined($tl) && $tl+0 > 0));
   # 109% normalises to itself (autocal_white_y = its own Y), 99/105 and
   # lower normalise to the calibrated peak white_ref. Mirrors the HDR
@@ -16292,13 +16310,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # obvious from the run log that sub-109 body targets use the 2.2 curve
   # through the calibrated 109 peak, not a curve through an un-calibrated
   # 100% reference.
-  if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"})) {
-   my $_black_y=(ref($config) eq "HASH" && defined($config->{"black_y"})) ? ($config->{"black_y"}+0) : 0;
-   my $_body_tl=lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$_black_y);
-   log_line(sprintf("SDR26 1D DPG greyscale: body_target_curve=2.2 white_ref=%.4f first_body_ire=%.4f expected_tl=%.4f (sub-109 anchors use this calibrated 109 peak as the curve reference)",$white_ref+0,$_step_ire+0,(defined($_body_tl)?$_body_tl+0:0)));
-   $state->{"sdr_1d_dpg_body_target_logged"}=JSON::PP::true;
-   write_state($state);
-  }
+if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"})) {
+    my $_black_y=(ref($config) eq "HASH" && defined($config->{"black_y"})) ? ($config->{"black_y"}+0) : 0;
+    my $_sdr26_tg=(ref($config) eq "HASH" && defined($config->{"target_gamma"})) ? $config->{"target_gamma"} : "bt1886";
+    my $_body_tl=lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$_black_y,$_sdr26_tg);
+    log_line(sprintf("SDR26 1D DPG greyscale: body_target_curve=%s white_ref=%.4f first_body_ire=%.4f expected_tl=%.4f (sub-109 anchors use this calibrated 109 peak as the curve reference)",$_sdr26_tg,$white_ref+0,$_step_ire+0,(defined($_body_tl)?$_body_tl+0:0)));
+    $state->{"sdr_1d_dpg_body_target_logged"}=JSON::PP::true;
+    write_state($state);
+   }
   my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
    $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
   );
