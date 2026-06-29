@@ -15849,7 +15849,18 @@ function effectiveGamma(Y,Yw,ire,prevY,prevIre){
  // saturates at 100% by spec. The HDR path is gated by meterChartIsHdr /
  // meterChartIsPq callers of meterGreyscaleGammaValue -- effectiveGamma is
  // shared so the divisor is selected here.
- const fracBase=(typeof meterChartSignalMode==='function'&&meterChartSignalMode()==='sdr')?109:100;
+ // The 109 headroom divisor is correct ONLY for a series that actually has a
+ // >100% headroom anchor (the SDR26 26-point autocal). The standard 21-point
+ // post-cal/verification greyscale is anchored at 100, so dividing its IRE by
+ // 109 (while Yw is the measured 100% reading) makes the per-point gamma
+ // collapse toward 0 as IRE rises. Use 109 only when a >100 IRE greyscale
+ // reading is actually present in the data being charted.
+ let _gammaHasHeadroomAnchor=false;
+ try{
+  const _gl=Array.isArray(meterReadings)?meterReadings:[];
+  _gammaHasHeadroomAnchor=_gl.some(function(rd){return rd&&(typeof meterReadingIsGreyscale!=='function'||meterReadingIsGreyscale(rd))&&Number(rd.ire)>100.5;});
+ }catch(e){}
+ const fracBase=((typeof meterChartSignalMode==='function'&&meterChartSignalMode()==='sdr')&&_gammaHasHeadroomAnchor)?109:100;
  const frac=(ire>1)?(ire/fracBase):ire;
  if(!(frac>0) || !(Y>0) || !(Yw>0)) return null;
  if(frac>=0.999999) return null;
