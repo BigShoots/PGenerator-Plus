@@ -1029,6 +1029,16 @@ HANDLED_OFFSET=0
  if echo "$CLEAN_OUT" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
    break
   fi
+  # Catch meter-model mismatches: spotread exits cleanly when the meter
+  # doesn't support the requested flags (e.g. -X WRGB_OLED_LG.ccss on a
+  # colorimeter that has no Colorimeter Calibration Spectral Sample
+  # capability) or when spotread simply ignores an unsupported option.
+  # Without this, the loop runs the full 120s before timing out, and 3
+  # attempts => ~6 minutes of "Initializing meter..." before the series
+  # errors out. See meter-selection-empty-port-bug-2026-06-29.md.
+  if echo "$CLEAN_OUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|Display/calibration type ignored|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
+   break
+  fi
   sleep 0.5
   WAITED=$((WAITED + 1))
  done
@@ -1044,6 +1054,19 @@ HANDLED_OFFSET=0
  METER_SERIES_FD_OPEN=0
  kill -9 "$BG_PID" 2>/dev/null; wait "$BG_PID" 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE"
+
+ # Meter-model mismatch is not recoverable by retrying: the requested flags
+ # (e.g. -X CCSS) are simply incompatible with the meter at this port. Skip
+ # straight to the error path so the operator doesn't wait 6 minutes for 3
+ # identical retries. Mirrors the 2026-06-29 series hang (CCSS on a
+ # colorimeter); see meter-selection-empty-port-bug-2026-06-29.md.
+ if echo "$DBGOUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|Display/calibration type ignored|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
+  write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter does not support requested mode","debug":"$DBGOUT","readings":[]}
+EOJSON
+  pkill -9 -x spotread 2>/dev/null
+  exit 1
+ fi
 
  if (( INIT_ATTEMPT < MAX_INIT_ATTEMPTS )); then
   write_state_json << EOJSON
@@ -1478,11 +1501,19 @@ EOJSON
  SCAN_OFFSET=$(output_size)
  printf " " >&3
 
- # Wait for result, retrying once if spotread reports a transient
- # communication problem with the meter.
+ # Wait for result. Fail fast on spotread's "communication problem": spotread
+ # reports this when its USB/serial link or the meter integration can not
+ # produce a clean reading -- exactly the "stuck on a black screen"
+ # condition where the panel isn't displaying the patch and spotread is
+ # integrating against nothing. The previous retry-once path added +15s to
+ # the timeout and then waited the full extension; on a truly stuck panel
+ # that produced a "still reading" UI for ~30s per read before any error
+ # surfaced. Removing the retry and breaking immediately makes the failure
+ # visible to the operator within seconds, so a series run aborts instead
+ # of limping through N cube reads with each one stuck on black.
+ # (Same fix as commit ccd81070 applied to meter_session.sh.)
  READ_START=$SECONDS
  GOT_RESULT=false
- RETRIED_COMM=0
  while (( SECONDS - READ_START < READ_TIMEOUT )); do
   series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
@@ -1493,12 +1524,13 @@ EOJSON
   NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
   if [[ -n "$NEW_OUTPUT" ]]; then
    CUR_SIZE=$(output_size)
-   if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
-    printf " " >&3
-    RETRIED_COMM=1
-    READ_TIMEOUT=$((READ_TIMEOUT + 15))
-    SCAN_OFFSET=$(output_size)
-    continue
+   if [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+    echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during read - failing fast (panel likely not displaying) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+    write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"Spot read failed: communication problem with meter (panel likely not displaying expected patch)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+    pkill -9 -x spotread 2>/dev/null
+    exit 1
    fi
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -1542,7 +1574,6 @@ EOJSON
    READ_START=$SECONDS
    RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
    GOT_RETRY=false
-   RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
     series_stop_requested && series_cancel_exit
     CUR_COUNT=$(count_results)
@@ -1553,12 +1584,13 @@ EOJSON
     NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
     if [[ -n "$NEW_OUTPUT" ]]; then
      CUR_SIZE=$(output_size)
-     if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
-      printf " " >&3
-      RETRIED_COMM=1
-      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
-      SCAN_OFFSET=$(output_size)
-      continue
+     if [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+      echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during no-reading retry - failing fast step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+      write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"Spot read failed: communication problem with meter (panel likely not displaying expected patch)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+      pkill -9 -x spotread 2>/dev/null
+      exit 1
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -1610,7 +1642,6 @@ EOJSON
    READ_START=$SECONDS
    RETRY_TIMEOUT=$(read_timeout_seconds "$IRE")
    GOT_RETRY=false
-   RETRIED_COMM=0
    while (( SECONDS - READ_START < RETRY_TIMEOUT )); do
     series_stop_requested && series_cancel_exit
     CUR_COUNT=$(count_results)
@@ -1621,12 +1652,13 @@ EOJSON
     NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
     if [[ -n "$NEW_OUTPUT" ]]; then
      CUR_SIZE=$(output_size)
-     if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
-      printf " " >&3
-      RETRIED_COMM=1
-      RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
-      SCAN_OFFSET=$(output_size)
-      continue
+     if [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+      echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during zero retry - failing fast step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+      write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"Spot read failed: communication problem with meter (panel likely not displaying expected patch)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+      pkill -9 -x spotread 2>/dev/null
+      exit 1
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during zero retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
@@ -1732,7 +1764,6 @@ EOJSON
   READ_TIMEOUT=$(read_timeout_seconds "$FIRST_IRE")
   READ_START=$SECONDS
   GOT_RESULT=false
-  RETRIED_COMM=0
   while (( SECONDS - READ_START < READ_TIMEOUT )); do
    series_stop_requested && series_cancel_exit
    CUR_COUNT=$(count_results)
@@ -1743,12 +1774,13 @@ EOJSON
    NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
    if [[ -n "$NEW_OUTPUT" ]]; then
     CUR_SIZE=$(output_size)
-    if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
-     printf " " >&3
-     RETRIED_COMM=1
-     READ_TIMEOUT=$((READ_TIMEOUT + 15))
-     SCAN_OFFSET=$(output_size)
-     continue
+    if [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
+     echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during refresh reading - failing fast step=1 ire=$FIRST_IRE name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
+     write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"Spot read failed: communication problem with meter (panel likely not displaying expected patch)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+     pkill -9 -x spotread 2>/dev/null
+     exit 1
     fi
     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=1 ire=$FIRST_IRE reason=$PROMPT_REASON name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
