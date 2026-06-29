@@ -13820,30 +13820,13 @@ function meterExplicitLgTargetWhiteReferenceNits(readings){
   const whiteY=white?meterReadingLuminanceNits(white):null;
   if(activeLgAutoCal&&white&&!white.synthetic_target&&whiteY>0) return null;
  }
-let _best_white_y=0;
-  let _best_reading=null;
-  for(const rd of list){
-   if(meterReadingDisablesAutoCalTargetReference(rd)) continue;
-   if(activeLgAutoCal&&meterReadingIsAutoCalReferenceOnly(rd)) continue;
-   // Skip the 0% (black) anchor when picking a white reference. The 0%
-   // anchor carries an autocal_white_y stamped from a prior run's config;
-   // its value is the previous calibration's peak, not the current
-   // calibration's. Skipping it lets the loop fall through to the
-   // freshly-stamped 109% reading whose autocal_white_y is the active
-   // reference. Without this skip, an earlier run that ended at 200.70
-   // would leak through and corrupt the ColorChecker / Sat Sweep target
-   // Y for the current run (whose reference is 221.49).
-   const _rd_ire=Number(rd&&rd.ire);
-   if(Number.isFinite(_rd_ire) && Math.abs(_rd_ire) < 0.05) continue;
-   const _rd_name=String((rd&&rd.name)||'').toLowerCase();
-   if(_rd_name==='black'||_rd_name==='0%'||_rd_name==='0.0%') continue;
-   const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
-   if(Number.isFinite(y)&&y>0 && y > _best_white_y){
-    _best_white_y=y;
-    _best_reading=rd;
-   }
-  }
-  return _best_reading ? _best_white_y : null;
+ for(const rd of list){
+  if(meterReadingDisablesAutoCalTargetReference(rd)) continue;
+  if(activeLgAutoCal&&meterReadingIsAutoCalReferenceOnly(rd)) continue;
+  const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
+  if(Number.isFinite(y)&&y>0) return y;
+ }
+ return null;
 }
 
 function meterLgTargetWhiteReferenceNits(readings){
@@ -14067,23 +14050,10 @@ function meterColorSeriesReferenceNits(){
   }
   return name==='white' || Number(rd.ire)===100;
  };
-// Prefer a fresh SDR26 109% calibrated reading over a stale meterWhiteReading
-  // cache. The ColorChecker / Sat Sweep chart's target Y is anchored to
-  // the calibrated white; using a stale 100% cache (e.g. 180 nits from a
-  // previous manual run) makes the chart's HDR-flavor target Y leak into
-  // the color patches (835/900/950 nits instead of the calibrated 221
-  // peak) and inflates dE across every patch. Order: live meterReadings
-  // first (where the active autocal stamps series_target_white_y on the
-  // freshest 109%), then meterWhiteReading cache, then the measured-white
-  // fall-through. The isSeriesWhite filter matches 100% / "white" name /
-  // the SDR26 109% legal peak (because the SDR26 read has r=g=b=1023 at
-  // the 109 anchor, satisfying the all-channels-equal filter).
-  const _live_white=(Array.isArray(meterReadings)?meterReadings.find(isSeriesWhite):null);
-  const white=
-   (_live_white && Number(_live_white.luminance||_live_white.Y) > Number((meterWhiteReading&&meterWhiteReading.luminance)||0) ? _live_white : null) ||
-   (isSeriesWhite(meterWhiteReading)?meterWhiteReading:null) ||
-   _live_white ||
-   meterFindMeasuredWhiteReading();
+ const white=
+  (isSeriesWhite(meterWhiteReading)?meterWhiteReading:null) ||
+  (Array.isArray(meterReadings)?meterReadings.find(isSeriesWhite):null) ||
+  meterFindMeasuredWhiteReading();
  if(white&&((white.luminance!=null&&white.luminance>0)||(white.Y>0))){
   const measured=(white.luminance!=null && white.luminance>0)?white.luminance:white.Y;
   if(meterChartIsDv()) return Math.max(1,Math.min(Math.max(1,meterChartMasterPeak()),measured));
@@ -26158,38 +26128,6 @@ let completeStatus=r;
 				   meterAutoCalPhase='complete';
 				   meterAutoCalRunning=true;
 				   meterAutoCalPendingConfig=null;
-				   // SDR26 calibration just completed: stamp the calibrated
-				   // 109% peak (r.sdr_1d_dpg_white_ref) into meterWhiteReading
-				   // so the ColorChecker / Sat Sweep chart anchor their target
-				   // Y to the FRESH calibrated peak instead of a stale 100%
-				   // cache from a previous manual read. Without this stamp the
-				   // ColorChecker chart's target_Y = stale 100% Y (often
-				   // 80-180 nits) while the worker used the calibrated 109
-				   // peak (221 nits on the user's C2), inflating dE across
-				   // every color patch by a factor of 4-10x.
-				   const _sdrWhiteRef=Number(completeStatus.sdr_1d_dpg_white_ref||completeStatus.calibrated_white_luminance||0);
-				   if(_sdrWhiteRef > 0){
-				    meterWhiteReading={
-				     name:'Auto Cal 109% peak',
-				     ire:'109',
-				     plot_ire:'109',
-				     luminance:_sdrWhiteRef,
-				     X:0,Y:_sdrWhiteRef,Z:0,
-				     r_code:1023,g_code:1023,b_code:1023,
-				     r:255,g:255,b:255,
-				     target_x:0.3127,target_y:0.3290,
-				     target_Yn:1,target_luminance:_sdrWhiteRef,
-				     series_target_white_y:_sdrWhiteRef,
-				     autocal_white_reference:true,
-				     autocal_white_y:_sdrWhiteRef,
-				     autocal_legal_white_anchor:true,
-				     signal_mode:'sdr',
-				     series_type:'greyscale',
-				     is_synthetic:true,
-				     synthetic_target:true,
-				     source:'sdr26-calibrated-peak'
-				    };
-				   }
 				   meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete'});
 	   }else if(r.status==='error'){
 	    if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
