@@ -3228,7 +3228,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
 	     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
 	     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
-	     $target_Yn_for_step=($level_linear/$mx)*(($sat_white_ref>0)?(10000/$sat_white_ref):1) if($mx>0);
+	     # SDR references measured white directly: target_Yn = level_linear/mx (the patch's luminance relative to white), so target_Yn*measured_white = the reachable absolute luminance. The 10000/sat_white_ref PQ normalization is for PQ-absolute (hdr10 / DV-Absolute) only; applying it to SDR produced HDR-scale (hundreds-of-nits) sweep targets.
+	     $target_Yn_for_step=($level_linear/$mx)*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1)) if($mx>0);
 	     if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
 	     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
 	     $rl*=$level_linear;$gl*=$level_linear;$bl*=$level_linear;
