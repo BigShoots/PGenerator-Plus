@@ -26204,20 +26204,18 @@ async function meterStartAutoCal(options){
  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
  meterSetActiveSeriesChartContext();
-// SDR26 1D-DPG autocal: respect the operator's selected Target Gamma. The
-  // worker reads target_gamma from the config (default BT.1886 / gamma 2.4
-  // to match the reference's curve), so the dropdown value flows through
-  // unchanged. The previous code pinned the dropdown to 2.2 which forced
-  // the worker to calibrate against signal^2.2 instead of BT.1886's
-  // signal^2.4 -- ~14% lower target Y at the 50% anchor and a noticeable
-  // greenish tint after calibration. Defaults to BT.1886 only when the
-  // operator has never picked one (matches the helper's config default).
-  const _autocalGamma=String(getVal('meterTargetGamma')||'');
-  if(_autocalGamma==='' || _autocalGamma==null){
-   setVal('meterTargetGamma','bt1886');
-   if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
-   if(typeof saveMeterSettings==='function') saveMeterSettings();
-  }
+// SDR26 1D-DPG autocal: ALWAYS force the Target Gamma dropdown to BT.1886
+  // at wizard start, regardless of the operator's saved selection. The chart
+  // math and the reference SDR workflow capture both use BT.1886 (gamma 2.4) on
+  // SDR; the previous "respect the dropdown" code let a stale 2.2 selection
+  // pass through, which made the worker calibrate against signal^2.2 while
+  // the chart showed signal^2.4 -- the per-anchor dE diverged by ~2x and
+  // reported anchor "failure" against the 0.5 target when the worker's view
+  // said the anchor was well below it. The dropdown is restored after the
+  // calibration completes (see meterAutoCalCompleteComps).
+  setVal('meterTargetGamma','bt1886');
+  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault(true);
+  if(typeof saveMeterSettings==='function') saveMeterSettings();
   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
  if(!adjustable.length) return fail('No LG-adjustable greyscale points are available');
