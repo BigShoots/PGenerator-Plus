@@ -12292,6 +12292,7 @@ let meterStatusMisses=0;
 let meterLastKnownName='Meter';
 let meterInventory=[];
 let meterMeasurementPort='';
+let meterSavedMeasurementPort='';
 let meterResolvedMeasurementPort='';
 let meterProfilingPort='';
 let meterContinuousActive=false;
@@ -12340,6 +12341,8 @@ let meterAutoCalPreflightLgGeneration=null;
 let meterAutoCalResetInProgress=false;
 let meterAutoCalSetupReading=null;
 let meterAutoCalPendingConfig=null;
+let meterAutoCalCapturedMeasurementPort='';
+let meterAutoCalCapturedMeasurementLabel='';
 let meterAutoCalCapturedTargetY=0;
 let meterAutoCalLuminanceScaleMax=0;
 let meterAutoCalLevelPreflight=null;
@@ -17727,7 +17730,22 @@ function meterPopulateRoleSelects(meters,detectedPort){
 }
 
 function meterSelectedMeasurementPort(){
- return meterStoredMeasurementPort()||meterNormalizePortValue(meterResolvedMeasurementPort);
+ // SELECT may be on the "" Auto option. Order of preference when it is:
+ //   1. The SELECT value itself (meterStoredMeasurementPort).
+ //   2. The server-saved `measurement_meter_port` we mirrored into
+ //      meterSavedMeasurementPort on /api/config sync. This is the
+ //      operator's durable preference -- it survives page reloads and
+ //      meter reconnect jitters. We deliberately do NOT read from
+ //      meterMeasurementPort here because meterPopulateRoleSelects
+ //      overwrites that var with the SELECT value (which can be ""), and
+ //      the empty fallback would re-introduce the 2026-06-29 bug.
+ //   3. The autodetect port (meterResolvedMeasurementPort), which can hop
+ //      between USB-hub slots as meters come and go and is the wrong thing
+ //      to pick when the operator has explicitly saved a preference.
+ // Without step 2, the empty SELECT silently fell through to autodetect
+ // (Bug 1 of the 2026-06-29 series-hang incident), and a series read could
+ // spawn spotread against a colorimeter that didn't support -X CCSS.
+ return meterStoredMeasurementPort()||meterNormalizePortValue(meterSavedMeasurementPort)||meterNormalizePortValue(meterResolvedMeasurementPort);
 }
 
 function meterSelectedMeasurementLabel(fallbackMeter){
@@ -22854,6 +22872,44 @@ function meterAutoCalOverlayVisible(){
  return !!(overlay&&overlay.getAttribute('aria-hidden')==='false');
 }
 
+function meterAutoCalRestoreMeasurementPort(){
+ // If the Measurement Port SELECT drifted away from the port the operator
+ // had selected when they kicked off the autocal, restore it. This catches
+ // the 2026-06-29 case where the SELECT dropped to "" (Auto) mid-run
+ // because meterInventory refreshed and meterPopulateRoleSelects reseeded
+ // the SELECT options while the SELECT was already on a port no longer in
+ // inventory. Without this, post-cal series reads spawned spotread against
+ // a different meter and could hang on a CCSS-not-supported error.
+ const captured=meterNormalizePortValue(meterAutoCalCapturedMeasurementPort);
+ if(!captured) return;
+ const select=document.getElementById('meterMeasurementPort');
+ if(!select) return;
+ const currentSelect=meterNormalizePortValue(select.value);
+ const currentJs=meterNormalizePortValue(meterMeasurementPort);
+ if(currentSelect===captured && currentJs===captured){
+  meterAutoCalCapturedMeasurementPort='';
+  meterAutoCalCapturedMeasurementLabel='';
+  return;
+ }
+ const opt=Array.from(select.options||[]).find(o=>meterNormalizePortValue(o.value)===captured);
+ if(!opt){
+  // The captured meter is no longer in the inventory. Don't pretend to
+  // restore it -- the operator should see the disconnect and plug the meter
+  // back in. Just clear the snapshot so we don't try again.
+  meterAutoCalCapturedMeasurementPort='';
+  meterAutoCalCapturedMeasurementLabel='';
+  return;
+ }
+ select.value=captured;
+ meterMeasurementPort=meterNormalizePortValue(meterStoredMeasurementPort());
+ if(typeof saveMeterSettings==='function'){
+  try{ saveMeterSettings(); }catch(e){}
+ }
+ toast('Restored measurement meter to '+meterAutoCalCapturedMeasurementLabel+' (port '+captured+')');
+ meterAutoCalCapturedMeasurementPort='';
+ meterAutoCalCapturedMeasurementLabel='';
+}
+
 function meterAutoCalRepairOverlayPointerState(){
  if(!document.body.classList.contains('meter-autocal-active')) return;
  if(!meterAutoCalOverlayVisible()) document.body.classList.remove('meter-autocal-active');
@@ -22924,6 +22980,10 @@ function meterAutoCalSetOverlay(active,status){
  if(postReportBtn&&postReportAvailable) postReportBtn.textContent='\uD83D\uDCC4 Generate Post-Cal Report';
  if(stopBtn) stopBtn.style.display=showComplete?'none':'';
  if(showComplete){
+  // Restore the Measurement Port SELECT to the port the operator had
+  // selected when they kicked off the autocal. See the 2026-06-29 comment
+  // block in meterAutoCalRestoreMeasurementPort for context.
+  try{ meterAutoCalRestoreMeasurementPort(); }catch(e){}
   meterAutoCalRenderResults(status||{status:'complete'});
   if(status&&status.full_autocal) meterAutoCalClearCompleteAutoClose();
   else meterAutoCalScheduleCompleteAutoClose(postReportAvailable);
@@ -24872,6 +24932,10 @@ function meterFullAutoCalAbort(message,isError){
  meterAutoCalMagicWandActive=false;
  meterAutoCalMagicWandBaseStatus=null;
  meterAutoCalMagicWandFullWorkflow=false;
+ // Drop the captured measurement port -- abort path, the user wants their
+ // pre-run SELECT state back, not a mid-run snapshot.
+ meterAutoCalCapturedMeasurementPort='';
+ meterAutoCalCapturedMeasurementLabel='';
  meterClearSeriesRunUiState();
  meterHideWorkflowProgress();
  if(isError){
@@ -26533,8 +26597,23 @@ async function meterStartAutoCal(options){
 	  whiteStep,
 	  fullWorkflow:fullWorkflow,
 	  postCommitPolishEnabled:fullWorkflow?meterFullAutoCalPostCommitPolishEnabled():true,
-	  magicWandEnabled:false
+	  magicWandEnabled:false,
+	  // Snapshot the meter port that was active when the operator kicked off
+	  // the autocal. If the SELECT drifted (e.g. saved port changed, a meter
+	  // reconnected, the user toggled to Auto) while the run was in flight,
+	  // restore the captured port so the post-cal reads don't suddenly switch
+	  // to a different meter. Bug surfaced 2026-06-29: post-autocal series
+	  // reads were being spawned against the colorimeter while the operator
+	  // had intended the spectrophotometer, hanging on a CCSS-not-supported
+	  // error for ~6 minutes.
+	  measurementMeterPort:meterNormalizePortValue(meterSelectedMeasurementPort()),
+	  measurementMeterLabel:meterSelectedMeasurementLabel(null)
 	 };
+ // Mirror the snapshot into top-level vars that survive `meterAutoCalPendingConfig=null`
+ // at the polling-complete sites; the restore in meterAutoCalSetOverlay
+ // (showComplete) reads from these.
+ meterAutoCalCapturedMeasurementPort=meterAutoCalPendingConfig.measurementMeterPort||'';
+ meterAutoCalCapturedMeasurementLabel=meterAutoCalPendingConfig.measurementMeterLabel||'';
  if(fullWorkflow) meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
  else meterAutoCalShowPreflightOptions();
  meterActionPending=true;
@@ -26808,6 +26887,10 @@ async function meterStopAutoCal(){
  meterAutoCalPanelLightWritePending=false;
 	 meterAutoCalPhase='';
 	 meterAutoCalPendingConfig=null;
+	 // Drop the captured measurement port -- we're aborting the run, so the
+	 // user's pre-run SELECT state is what they want back.
+	 meterAutoCalCapturedMeasurementPort='';
+	 meterAutoCalCapturedMeasurementLabel='';
 	 meterAutoCalSetupReading=null;
 	 meterAutoCalLevelPreflight=null;
 	 meterAutoCalMagicWandActive=false;
@@ -31782,6 +31865,12 @@ function saveMeterSettings(){
  const val=(id,def)=>{ const e=document.getElementById(id); return e?(e.value||def||''):(def||''); };
  const chk=(id)=>{ const e=document.getElementById(id); return !!(e&&e.checked); };
  meterMeasurementPort=meterStoredMeasurementPort();
+ // Keep the saved-preference mirror in sync. If the operator picked a
+ // specific port from the SELECT, that's now the durable preference; if
+ // they left it on "" (Auto), the saved value stays whatever it was
+ // before so the empty-SELECT fallback in meterSelectedMeasurementPort
+ // still resolves to the last explicit choice instead of autodetect.
+ if(meterMeasurementPort) meterSavedMeasurementPort=meterMeasurementPort;
  meterProfilingPort=meterSelectedProfilingPort();
  const displayTypeValue=val('meterDisplayType');
  const s={
@@ -31863,6 +31952,13 @@ async function loadMeterSettings(){
   try{ meterGreyPatchProfiles=JSON.parse(s.grey_patch_profiles_json); }catch(e){}
  }
  meterMeasurementPort=meterNormalizePortValue(s.measurement_meter_port);
+ // Distinct copy of the server-saved value that survives meterPopulateRoleSelects
+ // (which overwrites meterMeasurementPort with whatever the SELECT shows, including
+ // the empty "Auto" option). The fallback chain in meterSelectedMeasurementPort
+ // reads this so an empty SELECT + a saved preference still resolves to the
+ // preference, instead of falling through to autodetect. See
+ // meter-selection-empty-port-bug-2026-06-29.md.
+ meterSavedMeasurementPort=meterMeasurementPort;
  meterProfilingPort=meterNormalizePortValue(s.profiling_meter_port);
  meterPopulateRoleSelects(meterInventory);
  meterGreyNormalizeProfilesState();
