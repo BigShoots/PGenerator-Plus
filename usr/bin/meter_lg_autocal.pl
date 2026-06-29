@@ -13924,6 +13924,27 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$very_low_ire_threshold=$low_ire_threshold if($very_low_ire_threshold > $low_ire_threshold);
 	my $very_low_revert_budget=defined($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) ? int($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) : 12;
 	$very_low_revert_budget=3 if($very_low_revert_budget < 3);
+	# High-IRE (default >=80%): the panel's drive->light transfer at the
+	# PQ shoulder is sub-linear AND comparable to the i1 Pro noise floor
+	# (~0.2% of reading), so the per-iter DPG move (~0.35% from the
+	# EOTF-seeded damp) is too small to resolve. Live data 2026-06-29 on
+	# OLED65C2PUA at 90% IRE: best_de=0.6818 after 6 iters (target 0.5),
+	# DPG reduced 0.30-0.47% per iter but measured_Y stayed in noise
+	# (std dev 1.16 nits at 595 nits). Mirror the white anchor's pattern:
+	# larger per-iter move (M=2.0), longer budget (10 iters), and the
+	# revert-and-halve logic that was previously gated to low IRE.
+	my $high_ire_threshold=defined($config->{"lg_autocal_hdr20_dpg_high_ire_threshold"}) ? ($config->{"lg_autocal_hdr20_dpg_high_ire_threshold"}+0) : 80.0;
+	$high_ire_threshold=50.0 if($high_ire_threshold < 50.0);
+	$high_ire_threshold=99.0 if($high_ire_threshold > 99.0);
+	my $high_ire_move_mult=defined($config->{"lg_autocal_hdr20_dpg_high_ire_move_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_high_ire_move_multiplier"}+0) : 2.0;
+	$high_ire_move_mult=1.0 if($high_ire_move_mult < 1.0);
+	$high_ire_move_mult=5.0 if($high_ire_move_mult > 5.0);
+	my $high_ire_revert_budget=defined($config->{"lg_autocal_hdr20_dpg_high_ire_revert_budget"}) ? int($config->{"lg_autocal_hdr20_dpg_high_ire_revert_budget"}) : 3;
+	$high_ire_revert_budget=1 if($high_ire_revert_budget < 1);
+	$high_ire_revert_budget=8 if($high_ire_revert_budget > 8);
+	my $high_ire_iters=defined($config->{"lg_autocal_hdr20_dpg_inner_iters_high"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters_high"}) : 10;
+	$high_ire_iters=$max_inner if($high_ire_iters < $max_inner);
+	$high_ire_iters=20 if($high_ire_iters > 20);
 	# At low IRE the default 0.8 DAMP floor is too conservative -- the
 	# per-iter move is only 20%, and at 0.06-1 nits the meter noise is
 	# comparable to the per-iter move, so the calibration oscillates
@@ -14580,8 +14601,15 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# is computed fresh from the new Y, so a fresh full-size move is
 					# the right starting point.
 					$move_scaling=1.0;
-				} elsif($_anchor_ire < $low_ire_threshold) {
-					# Revert (low-IRE only): undo the bad move before the next gain.
+				} elsif($_anchor_ire < $low_ire_threshold || $_anchor_ire+0 >= $high_ire_threshold) {
+					# Revert (low IRE <5% OR high IRE >=80%): the panel response
+					# at the PQ shoulder is sub-linear so each iter's move can
+					# overshoot in either direction; halving the move gives the
+					# next gain a smaller step to resolve the actual response.
+					# Symmetric to the low-IRE rationale: low IRE has the move
+					# lost in meter noise, high IRE has the move lost in panel
+					# response sub-linearity. Both need revert-and-halve to find
+					# a step size the panel can actually resolve.
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
@@ -14591,10 +14619,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# consecutive reverts the move is 0.125x -- effectively no change
 					# for most panels, which is why the 3-revert break below fires.
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
-					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
-					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : 3;
+					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
+					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
 					if($consecutive_reverts >= $_revert_budget) {
-						log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ""));
+						log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
 						last;
 					}
 				}
@@ -14751,14 +14779,17 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my $white_move_mult=defined($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}+0) : 2.0;
 			$white_move_mult=1.0 if($white_move_mult+0 < 1.0);
 			$white_move_mult=5.0 if($white_move_mult+0 > 5.0);
-			my $anchor_move_mult=($is_white ? ($white_move_mult+0.0) : 1.0);
+			my $anchor_move_mult=($is_white ? ($white_move_mult+0.0)
+				: (($_anchor_ire+0 >= $high_ire_threshold) ? ($high_ire_move_mult+0.0)
+				: 1.0));
 			# Apply the per-iter move-scaling: when $move_scaling is 1.0, the
 			# damp is unchanged. When it's 0.5, the move is half-magnitude
 			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
 			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
 			# The white move multiplier multiplies the (damp-1.0) move term
 			# BEFORE the move_scaling blend, so both compose: a white iter that
-			# reverted halves the already-doubled move.
+			# reverted halves the already-doubled move. The high-IRE
+			# multiplier does the same composition for the >=80% anchors.
 			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
 			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
 			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
@@ -14874,8 +14905,48 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				@{$current_dpg}=@{$best_dpg};
 				@done=@{$best_anchors};
 				my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-				$state->{"current_delta_e"}=$best_de+0;
-				log_line("HDR20 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"));
+				# Re-read after restoring best_dpg so the chart shows the actual
+				# measured dE at the panel's CURRENT state, not the last iter's
+				# dE (which may be the overshoot that triggered the restore).
+				# Without this, the operator sees the last-iter number (often
+				# the worst one in the trajectory) on the chart while the panel
+				# is sitting at the best state -- a misleading divergence that
+				# has to be diagnosed by reading the per-anchor history.
+				# Mirrors the acceptance fast-path pattern (the post-revert
+				# re-read at line ~14683) but at the final-state-restore level
+				# rather than per-iter.
+				# Recompute $tl the same way the iter loop does ($is_white
+				# uses luminance($last_reading); lower anchors use the 2.2
+				# curve via white_ref + rs). At this point $last_reading is
+				# still the LAST iter's reading, not the re-read, so for white
+				# anchors $tl will be the previous iter's Y -- acceptable: the
+				# re-read uses the same $tl so the dE ITP is consistent with
+				# how the iter loop evaluated it.
+				my $_tl_restore=$is_white ? luminance($last_reading) : target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
+				$_tl_restore=$white_ref if(!(defined($_tl_restore) && $_tl_restore+0 > 0));
+				my $_restored_de=$best_de+0;
+				my $_restored_ok=0;
+				if($bok && !cancelled()) {
+					my ($arr,$are)=read_step($config,$rs,$state);
+					if(!$are && ref($arr) eq "HASH") {
+						$last_reading=$arr;
+						my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_restore);
+						$_restored_de=$ade+0 if(defined($ade));
+						$_restored_ok=1;
+					}
+				}
+				$state->{"current_delta_e"}=$_restored_de;
+				if(ref($state->{"hdr20_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"hdr20_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
+					my $_r=$state->{"hdr20_1d_dpg_anchor_history"}{$label};
+					if(@$_r) {
+						$_r->[-1]{"de"}=sprintf("%.4f",$_restored_de);
+						$_r->[-1]{"reverted_to_best"}=JSON::PP::true;
+						$_r->[-1]{"best_de"}=sprintf("%.4f",$best_de+0);
+						$_r->[-1]{"restored_re_read_ok"}=$_restored_ok ? JSON::PP::true : JSON::PP::false;
+					}
+				}
+				write_state($state);
+				log_line("HDR20 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")").($_restored_ok?" (re-read dE=".sprintf("%.4f",$_restored_de).")":" (re-read failed or skipped)"));
 			}
 		}
 		return ($converged,$last_reading);
@@ -14959,7 +15030,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# (the Akima spline is correct, mid/high errors are 99-100% of
 		# target on the deployed state).
 		my $step_ire_loop=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : $max_inner);
+		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : ((defined($step_ire_loop) && $step_ire_loop+0 >= $high_ire_threshold) ? $high_ire_iters : $max_inner));
 		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,$_recal);
 		push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
 		# On the 100% recal, refine the peak reference from the re-measured peak.
@@ -15845,7 +15916,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  # Final-state restore: leave the TV at the best-measured DPG. The last
  # iter may have been an improve+build, so $current_dpg is then the
  # unmeasured new build -- restore the full best snapshot AND re-upload it
- # so the wire state matches.
+ # so the wire state matches. Then re-read so the chart shows the actual
+ # measured dE at the panel's CURRENT state, not the last iter's dE
+ # (which may be the overshoot that triggered the restore). Mirror of the
+ # HDR20 final-state restore re-read at line ~14921 -- same chart-fidelity
+ # bug existed here (the operator saw the bad iter's dE on the chart while
+ # the panel was sitting at best_de).
  if(defined($best_de) && !$acceptance_pending) {
   my $_differs=0;
   for(my $j=0;$j<@{$current_dpg_ref};$j++) {
@@ -15855,8 +15931,33 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    @{$current_dpg_ref}=@{$best_dpg};
    @{$done_ref}=@{$best_anchors};
    my ($bok,$bmsg)=$upload_dpg->($current_dpg_ref);
-   $state->{"current_delta_e"}=$best_de+0 if(ref($state) eq "HASH");
-   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"));
+   # Recompute the anchor's $tl the same way the iter loop does (legal-peak
+   # uses its own measured Y; body uses the 2.2 curve via white_ref + black_y).
+   # Note: at this point $last_reading is still the LAST iter's reading, not
+   # the re-read, so for legal-peak anchors $tl will be luminance($last_reading)
+   # which is the previous iter's Y. Acceptable: the re-read uses the same
+   # $tl so the dE ITP is consistent with how the iter loop evaluated it.
+   # (If we computed $tl from the re-read's Y, the dE would be a mix of the
+   # restored-build reading + the new curve-target -- confusing.)
+   my $_is_legal_peak_restore=(autocal_step_is_white($rs) || abs(($_anchor_ire+0)-109.0) < 0.05) ? 1 : 0;
+   my $_sdr26_tg_restore=defined($config->{"target_gamma"}) ? $config->{"target_gamma"} : "bt1886";
+   my $_tl_restore=$_is_legal_peak_restore
+    ? luminance($last_reading)
+    : lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$black_y,$_sdr26_tg_restore);
+   $_tl_restore=$white_ref if(!(defined($_tl_restore) && $_tl_restore+0 > 0));
+   my $_restored_de=$best_de+0;
+   my $_restored_ok=0;
+   if($bok && !cancelled()) {
+    my ($arr,$are)=read_step($config,$rs,$state);
+    if(!$are && ref($arr) eq "HASH") {
+     $last_reading=$arr;
+     my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_restore);
+     $_restored_de=$ade+0 if(defined($ade));
+     $_restored_ok=1;
+    }
+   }
+   $state->{"current_delta_e"}=$_restored_de if(ref($state) eq "HASH");
+   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")").($_restored_ok?" (re-read dE=".sprintf("%.4f",$_restored_de).")":" (re-read failed or skipped)"));
   }
  }
  return ($converged,$last_reading,$current_dpg_ref,$total_inner_iters,$max_de_anchor,$cal_active_inner,$upload_failed);
