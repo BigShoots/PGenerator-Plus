@@ -22176,7 +22176,11 @@ function meterAutoCalUpdatePanelLightUi(){
  }
  const text=document.getElementById('meterAutoCalBrightnessText');
  if(!text) return;
- text.textContent=label+': '+displayValue+(panelBusy?' (updating...)':(queued?' (queued...)':''));
+ let suffix='';
+ if(panelBusy) suffix=' (updating...)';
+ else if(queued) suffix=' (queued...)';
+ else if(!meterAutoCalPanelLight.key&&meterAutoCalPanelLight.lastError) suffix=' ('+meterAutoCalPanelLight.lastError+')';
+ text.textContent=label+': '+displayValue+suffix;
 }
 
 function meterAutoCalPanelLightOverlayMessage(message,isError){
@@ -22195,27 +22199,43 @@ async function meterAutoCalLoadPanelLightValue(force,alreadyPending){
  if(meterAutoCalLuminanceSetupActive&&!force&&!alreadyPending&&!meterAutoCalPanelLightWritePending) return meterAutoCalPanelLight;
  if(!alreadyPending){
   meterAutoCalPanelLightReadPending=true;
+  meterAutoCalPanelLight.lastError='';
   meterAutoCalSyncPanelLightPending();
   meterAutoCalUpdatePanelLightUi();
  }
  meterAutoCalPanelLight.candidates=meterAutoCalPanelLightCandidates();
  const commandHandle=(!alreadyPending&&typeof lgBeginCommand==='function')?lgBeginCommand('LG TV panel-light read'):null;
  try{
-  for(const item of meterAutoCalPanelLight.candidates){
-   const r=await fetchJSON('/api/lg/picture-settings',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({keys:[item.key],picture_mode:meterLgPictureModeValue()}),
-    _quiet:true,
-    _timeoutMs:10000
-   });
-   const found=meterAutoCalPanelLightFromPicture((r&&r.status==='ok'&&r.picture_settings)?r.picture_settings:{});
-   if(found){
-    meterAutoCalSetPanelLight(found);
-    break;
+  for(let attempt=1;attempt<=2&&!(meterAutoCalPanelLight.key&&meterAutoCalPanelLight.value!=null);attempt++){
+   if(attempt>1) await new Promise(r=>setTimeout(r,400));
+   for(const item of meterAutoCalPanelLight.candidates){
+    const r=await fetchJSON('/api/lg/picture-settings',{
+     method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({keys:[item.key],picture_mode:meterLgPictureModeValue()}),
+     _quiet:true,
+     _timeoutMs:10000
+    });
+    if(!r||r.status!=='ok'){
+     meterAutoCalPanelLight.lastError=(r&&(r.message||r.error))||'no response from LG TV';
+     continue;
+    }
+    const found=meterAutoCalPanelLightFromPicture(r.picture_settings||{});
+    if(found){
+     meterAutoCalSetPanelLight(found);
+     meterAutoCalPanelLight.lastError='';
+     break;
+    }
    }
- }
+  }
+  if(!(meterAutoCalPanelLight.key&&meterAutoCalPanelLight.value!=null)){
+   /* fall back to whatever's already in lgDisplayControlValues cache */
+   if(typeof lgDisplayControlCurrentValue==='function'&&meterAutoCalSeedPanelLightFromDisplayControl()){
+    meterAutoCalPanelLight.lastError='';
+   }
+  }
  }catch(e){
+  meterAutoCalPanelLight.lastError=(e&&e.message)||String(e);
  }finally{
   if(commandHandle&&typeof lgEndCommand==='function') lgEndCommand(commandHandle);
   if(!alreadyPending){
