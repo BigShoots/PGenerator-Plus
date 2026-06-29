@@ -2688,6 +2688,18 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($c,$im)=&webui_grey_code_for_stimulus($stimulus_pct,$signal_mode,$target_gamma,$lim,\%_opts_for_grey);
      return $c;
     };
+   # Sample the helper once to discover the series-level input_max. The
+   # standard SDR/HDR10/HLG/extended/legal-SDR-DDC branches now honor the
+   # conf max_bpc (was hardcoded 255), and webui_meter_series_start must
+   # stamp the matching input_max on every step so meter_series.sh +
+   # pattern_request_body dispatch a bit-perfect pattern over the wire.
+   # The autocal-26 / DV / HDR20 branches above stamp their own input_max
+   # via the $extra lines below; this default branch covers everything
+   # else. Sample at 50% IRE — mid-range, inside the bit-depth math —
+   # and stash the returned input_max for the $extra stamp below.
+   my $series_input_max=255;
+   my ($_sample_c,$_sample_im)=&webui_grey_code_for_stimulus(50,$signal_mode,$target_gamma,$lim,\%_opts_for_grey);
+   $series_input_max=$_sample_im if(defined $_sample_im && $_sample_im >= 0 && ($_sample_im == 255 || $_sample_im == 1023));
    # Reference first, then black for contrast, then the remaining LG 26pt
    # steps ascend from near black through headroom. The delayed legal-white
    # read gives post-cal charts a fresh target-Y basis before any low-level
@@ -2750,6 +2762,18 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		    # read input_max to decide the scale-on-the-wire conversion.
 		    $extra.=",\"input_max\":1023" if($lg_hdr20_codes && $_hdr20_bits == 10);
 		    $extra.=",\"input_max\":255" if($lg_hdr20_codes && $_hdr20_bits == 8);
+		    # Standard SDR / HDR10 / HLG / extended-SDR / legal-SDR-DDC greyscale:
+		    # stamp the bit-depth-aware input_max ($series_input_max, sampled
+		    # from the helper above) so meter_series.sh + pattern_request_body
+		    # dispatch a bit-perfect pattern. Mutually exclusive with the
+		    # autocal-26 / DV / HDR20 stamps above; this branch only fires
+		    # when none of those are active. Skip on the 2pt series to keep
+		    # the two-point helper / insertion-flash path unchanged — those
+		    # helpers call webui_grey_code_for_stimulus directly and read
+		    # the returned input_max there.
+		    if(!$lg_autocal_26_codes && !$dv_series && !$lg_hdr20_codes && $points != 2) {
+		     $extra.=",\"input_max\":$series_input_max";
+		    }
 		    if($lg_autocal_26_codes) {
 		     my $step_read_delay_ms=0;
 		     $step_read_delay_ms=3000 if(abs($v-100)<0.001);
@@ -3341,6 +3365,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  if($patch_insert_patch_enabled || $patch_insert_time_enabled) {
   my %series_opts=(
    hdr20_codes => (($type eq "greyscale" && $points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") ? 1 : 0),
+   max_bpc => (defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? $pgenerator_conf{"max_bpc"} : "",
    autocal_26 => (($type eq "greyscale" && $points==26 && $lg_autocal_26) ? 1 : 0),
    autocal_26_codes => (($type eq "greyscale" && $points==26 && $lg_autocal_26 && $signal_mode eq "sdr") ? 1 : 0),
    extended_sdr_codes => (($type eq "greyscale" && !$lg_autocal_26_codes && (($points==26 && $lg_autocal_26) || ($points==21 && $lg_greyscale_21)) && $signal_mode eq "sdr") ? 1 : 0),
@@ -3609,6 +3634,13 @@ my $_ac_target_gamma="bt1886";
   autocal_26 => ($_ac_lg_autocal_26 ? 1 : 0),
   autocal_26_codes => (($_ac_lg_autocal_26 && $_ac_signal_mode eq "sdr") ? 1 : 0),
   extended_sdr_codes => (($_ac_lg_autocal_26 || $_ac_lg_greyscale_21) && $_ac_signal_mode eq "sdr" ? 1 : 0),
+  # Push the conf max_bpc through to webui_grey_code_for_stimulus so the
+  # insertion-flash codes the autocal helper emits are bit-depth-aware
+  # (matches the new bit-depth scaling in the standard / extended-SDR /
+  # legal-SDR-DDC branches). Previously the helper unconditionally returned
+  # 8-bit codes for these branches and the autocal insertion flash landed
+  # as ~23% signal on a 10-bit wire.
+  max_bpc => (defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? $pgenerator_conf{"max_bpc"} : "",
   dv_series => (($_ac_signal_mode eq "dv") ? 1 : 0),
  );
  my $_ac_insert_patch_code="";
@@ -7266,19 +7298,49 @@ sub webui_grey_code_for_stimulus (@) {
   return ($code,$input_max);
  }
  my $lim=(defined($signal_range) && int($signal_range)==1) ? 1 : 0;
+ # Greyscale bit-depth plumbing: when max_bpc>=10 (10-bit link), the 8-bit
+ # codes below would land on a 10-bit wire as ~23% signal (e.g. 8-bit 235
+ # = 10-bit 235 / 1023 = 23%), crushing the entire stimulus range. Before
+ # this fix the standard SDR/HDR10/HLG/extended/legal-DDC branches always
+ # returned 8-bit codes with $input_max=255, and webui_meter_series_start
+ # never stamped `input_max` for those branches, so meter_series.sh /
+ # pattern_request_body saw no input_max + codes <=255 and dispatched an
+ # 8-bit pattern over the 10-bit wire. Mirror the JS bit-depth scaling in
+ # meterGreyCodeRange(): 10-bit limited min=64 span=876 (matches the
+ # HDR10 10-bit Limited table: 100% -> 940 = 64 + 876), 10-bit full
+ # min=0 span=1023 (matches the HDR10 10-bit Full table: 100% -> 1023),
+ # 10-bit extended-sdr min=64 span=956 (matches the JS extended branch).
+ # 12-bit links are coerced to 10-bit here, matching meterPatchBitDepth().
+ my $_wb_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) >= 10) ? 10 : 8;
  if($lg_extended_sdr_codes) {
   $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
+  if($_wb_bits == 10) {
+   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*956 + .5);
+  }
  } elsif($lg_legal_sdr_ddc_codes) {
   $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*219 + .5);
+  if($_wb_bits == 10) {
+   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*876 + .5);
+  }
  } elsif($signal_mode eq "hdr10") {
   $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
+  if($_wb_bits == 10) {
+   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
+  }
  } elsif($signal_mode eq "hlg") {
   $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
+  if($_wb_bits == 10) {
+   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
+  }
  } else {
   $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
+  if($_wb_bits == 10) {
+   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
+  }
  }
+ $input_max=($_wb_bits == 10) ? 1023 : 255;
  $code=0 if($code < 0);
- $code=255 if($code > 255);
+ $code=$input_max if($code > $input_max);
  return ($code,$input_max);
 }
 
