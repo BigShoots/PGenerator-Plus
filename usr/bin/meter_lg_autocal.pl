@@ -1985,6 +1985,12 @@ sub patch_code_for_stimulus {
 	 }
 	 if($limited && $sdr_headroom) {
 	  $code=int(64 + ($stimulus/100)*876 + .5);
+	 } elsif($sdr_headroom) {
+	  # Full-range 10-bit: linear 0..1023. Full range has no >100% headroom
+	  # (1023 is the ceiling), so 105/109 clamp to peak like 8-bit clamps to
+	  # 255. Without this, full 10-bit fell through to the 8-bit branch below
+	  # (codes maxing ~255) while input_max stayed 1023 -> ~25% signal.
+	  $code=int(($stimulus/100)*1023 + .5);
 	 } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
 	  $code=($stimulus <= 0) ? 0 : int(16 + ($stimulus/100)*239 + .5);
 	 } else {

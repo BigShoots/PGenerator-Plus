@@ -7461,6 +7461,13 @@ sub webui_grey_code_for_stimulus (@) {
    $input_max=255;
    return ($code,$input_max);
   }
+  if(!$signal_range) {
+   # 10-bit full: linear 0..1023 to match the worker's full-range drive code.
+   # (The legal-expanded table below is the standard 10-bit *limited* path.)
+   $code=int(($stimulus_pct/100)*1023 + .5); $code=0 if($code < 0); $code=1023 if($code > 1023);
+   $input_max=1023;
+   return ($code,$input_max);
+  }
   my %lg_autocal_26_code=(
    "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
    "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
