@@ -1297,7 +1297,7 @@ sub webui_meter_status_apply_overrides (@) {
    : ($age<90) ? "just now"
    : ($age<5400) ? sprintf("%dm ago",int($age/60+.5))
    : sprintf("%.1fh ago",$age/3600);
-  my $detail=sprintf("Meter USB power/comms errors this session (%d events, last %s). The Pi power supply may not deliver enough current for the meter - use a higher-amp PSU or a powered USB hub.", $h->{total}, $when);
+  my $detail=sprintf("USB ports overloaded - the connected meters draw more current than the shared USB hub can supply (%d USB errors this session, last %s). Disconnect the meter you are not using, or use a powered USB hub.", $h->{total}, $when);
   $detail=~s/(["\\])/\\$1/g;
   $json=~s/\}\s*$/,"usb_power_warning":true,"usb_power_detail":"$detail"}/;
  }
@@ -8697,6 +8697,28 @@ padding:10px 16px;border-radius:6px;font-size:.85rem;opacity:0;transform:transla
 transition:all .3s;z-index:999;pointer-events:none}
 .toast.show{opacity:1;transform:translateY(0)}
 .toast.error{background:var(--red)}
+/* Apply Settings modal: full-screen mask with a small centered card.
+   Shown when the operator clicks "Apply & Restart" on the display-settings
+   card. Replaces the prior 3-5s of silence (the corner toast only landed
+   AFTER the renderer restart completed). The card transitions from a
+   spinner to a check mark when the apply flow finishes successfully;
+   auto-dismisses ~1.5s after the success state. */
+.apply-settings-mask{position:fixed;inset:0;z-index:9100;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
+body.apply-settings-active .apply-settings-mask{display:flex}
+body.apply-settings-active .dashboard,body.apply-settings-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
+.apply-settings-card{width:min(420px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:22px 20px;text-align:center}
+.apply-settings-icon{position:relative;width:54px;height:54px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center}
+.apply-settings-spinner{width:38px;height:38px;border:3px solid rgba(255,255,255,.18);border-top-color:var(--accent);border-radius:50%;animation:apply-settings-spin .9s linear infinite}
+body.apply-settings-success .apply-settings-spinner{display:none}
+.apply-settings-check{display:none;font-size:42px;line-height:1;color:var(--green);font-weight:700}
+body.apply-settings-success .apply-settings-check{display:inline}
+.apply-settings-title{font-size:1.05rem;font-weight:700;color:var(--text);margin-bottom:6px}
+.apply-settings-status{font-size:.85rem;color:var(--text2);line-height:1.4;min-height:2.4em}
+.apply-settings-hint{font-size:.72rem;color:var(--text2);margin-top:10px;line-height:1.4;opacity:.85}
+body.apply-settings-success .apply-settings-title{color:var(--green)}
+body.apply-settings-success .apply-settings-status{color:var(--text)}
+body.apply-settings-error .apply-settings-title{color:var(--red)}
+@keyframes apply-settings-spin{to{transform:rotate(360deg)}}
 .info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:6px}
 .info-item{background:#0d0d15;padding:8px;border-radius:6px;min-width:0}
 .info-item .label{font-size:.6rem;color:var(--text2);text-transform:uppercase}
@@ -10057,6 +10079,25 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 
 <div class="toast" id="toast"></div>
 
+<!-- Apply Settings modal: shown when the operator clicks "Apply & Restart" on
+     the display-settings card and the daemon is restarting the renderer.
+     Replaces the silent "Applying settings..." corner toast that left the
+     operator wondering whether their click registered (the small green
+     banner only appears AFTER the restart completes, ~3-5s later). The
+     modal stays up until the apply flow finishes (success or error) and
+     auto-dismisses on success. -->
+<div class="apply-settings-mask" id="applySettingsOverlay" aria-hidden="true">
+ <div class="apply-settings-card">
+  <div class="apply-settings-icon" id="applySettingsIcon" aria-hidden="true">
+   <span class="apply-settings-spinner" aria-hidden="true"></span>
+   <span class="apply-settings-check" aria-hidden="true" style="display:none">&#10003;</span>
+  </div>
+  <div class="apply-settings-title" id="applySettingsTitle">Apply Settings</div>
+  <div class="apply-settings-status" id="applySettingsStatus">Saving and restarting the renderer&hellip;</div>
+  <div class="apply-settings-hint" id="applySettingsHint" style="display:none">The display will go black for a moment while the new signal mode is applied.</div>
+ </div>
+</div>
+
 <script>
 const API=window.location.origin;
 let config={};
@@ -10076,6 +10117,53 @@ function toast(msg,err){
  const t=document.getElementById('toast');
  t.textContent=msg;t.className='toast'+(err?' error':'')+' show';
  setTimeout(()=>t.className='toast',3000);
+}
+
+// Apply Settings modal: full-screen mask + spinner/check card. The corner
+// toast is too easy to miss when the operator just clicked "Apply &
+// Restart" and the renderer is about to black out for 3-5s while it
+// re-initializes. The modal stays up until the apply flow finishes and
+// auto-dismisses on success.
+function applySettingsModalShow(){
+ const overlay=document.getElementById('applySettingsOverlay');
+ if(!overlay) return;
+ document.body.classList.add('apply-settings-active');
+ document.body.classList.remove('apply-settings-success','apply-settings-error');
+ const title=document.getElementById('applySettingsTitle');
+ const status=document.getElementById('applySettingsStatus');
+ const hint=document.getElementById('applySettingsHint');
+ if(title) title.textContent='Apply Settings';
+ if(status) status.textContent='Saving and restarting the renderer\u2026';
+ if(hint) hint.style.display='';
+ overlay.setAttribute('aria-hidden','false');
+}
+function applySettingsModalSuccess(detail){
+ const overlay=document.getElementById('applySettingsOverlay');
+ if(!overlay) return;
+ document.body.classList.add('apply-settings-success');
+ const title=document.getElementById('applySettingsTitle');
+ const status=document.getElementById('applySettingsStatus');
+ if(title) title.textContent='Settings applied';
+ if(status) status.textContent=detail||'New signal mode is live on the display.';
+ setTimeout(()=>applySettingsModalHide(),1500);
+}
+function applySettingsModalError(detail){
+ const overlay=document.getElementById('applySettingsOverlay');
+ if(!overlay) return;
+ document.body.classList.add('apply-settings-error');
+ document.body.classList.remove('apply-settings-success');
+ const title=document.getElementById('applySettingsTitle');
+ const status=document.getElementById('applySettingsStatus');
+ if(title) title.textContent='Apply failed';
+ if(status) status.textContent=detail||'The renderer did not accept the new settings.';
+ // Leave the modal up so the operator can read the error -- the corner
+ // toast often scrolls off the visible area on long autocal sessions.
+}
+function applySettingsModalHide(){
+ const overlay=document.getElementById('applySettingsOverlay');
+ if(!overlay) return;
+ overlay.setAttribute('aria-hidden','true');
+ document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
 }
 
 let _pingFailCount=0;
@@ -11767,7 +11855,13 @@ async function applySettings(){
  const r=await fetchJSON('/api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(changes),_timeoutMs:30000});
  if(r&&r.status==='ok'){
-  toast('Applying settings...');
+  // Surface the apply flow in a centered modal (spinner -> check) so the
+  // operator gets immediate feedback that the click registered. The
+  // corner toast only lands AFTER the renderer restart completes, which
+  // leaves a 3-5s silence during which the display goes black and the
+  // user wonders whether their click was lost. Auto-dismisses 1.5s after
+  // the success state so the operator sees the confirmation.
+  applySettingsModalShow();
   document.getElementById('applyBar').style.display='none';
 	  try{
 	   await new Promise(resolve=>setTimeout(resolve,3000));
@@ -11775,16 +11869,20 @@ async function applySettings(){
    updateDropdowns();
    await loadInfo();
    if(typeof lgRefreshPictureModeAfterOutputApply==='function') lgRefreshPictureModeAfterOutputApply();
-   toast('Settings applied');
+   applySettingsModalSuccess();
+  }catch(e){
+   applySettingsModalError((e&&e.message)||'Apply failed while reloading config.');
+   // Fall through to finally so _configApplyPending clears and the modal
+   // stays open for the operator to read.
   }finally{
    window._configApplyPending=false;
    meterUpdateReadButtons();
   }
   return true;
  }else{
+  applySettingsModalError((r&&r.message)||'The daemon rejected the new settings.');
   window._configApplyPending=false;
   meterUpdateReadButtons();
-  toast(r&&r.message?r.message:'Failed to apply','err');
   return false;
  }
 }
