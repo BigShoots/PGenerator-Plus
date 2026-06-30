@@ -1988,7 +1988,19 @@ sub patch_code_for_stimulus {
 	  return $code;
 	 }
 	 if($limited && $sdr_headroom) {
-	  $code=int(64 + ($stimulus/100)*876 + .5);
+	  # Canonical 10-bit LIMITED stimulus->code. For S<=100 use the linear
+	  # legal-range formula round(64 + S/100*876) (50%->502, 100%->940).
+	  # For S>100 (legal-expanded super-white), remap from the legal
+	  # white (940) to the legal peak (1023) over the 9-step 100%..109%
+	  # ladder: round(940 + (S-100)/9*(1023-940)). This makes 105%->986
+	  # and 109%->1023 instead of the prior linear extension (984, 1019)
+	  # which left a 4-code gap between 109% and the panel peak. Below
+	  # 100%, the linear formula and the S<=100 split are unchanged.
+	  if($stimulus <= 100) {
+	   $code=int(64 + ($stimulus/100)*876 + .5);
+	  } else {
+	   $code=int(940 + ($stimulus-100)/9*(1023-940) + .5);
+	  }
 	 } elsif($sdr_headroom) {
 	  # Full-range 10-bit: linear 0..1023. Full range has no >100% headroom
 	  # (1023 is the ceiling), so 105/109 clamp to peak like 8-bit clamps to
