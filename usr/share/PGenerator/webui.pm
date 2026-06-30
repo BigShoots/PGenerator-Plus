@@ -23856,14 +23856,6 @@ function meterAutoCalWhiteStep(){
   const wizardIsLimited=wizardBits===10;
   const whiteCode=wizardIsLimited?940:235;
   const whiteInputMax=wizardIsLimited?1023:255;
-  // DEBUG (REMOVE-ME): record what we are about to send so the user can
-  // confirm against the live 100% reading.
-  if(typeof console!=='undefined'&&console.log){
-   console.log('[autocal-wizard] 100% white step: bits='+wizardBits+
-    ' transport=limited (forced by wizard) code='+whiteCode+
-    ' input_max='+whiteInputMax+' rgb_quant_range='+
-    (document.getElementById('rgb_quant_range')||{}).value);
-  }
   return {
    ire:100,
    stimulus:100,
