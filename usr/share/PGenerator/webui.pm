@@ -14412,7 +14412,44 @@ function meterLgAutoCalBodyLumaBiasPayload(dtype){
 
 function meterLgAutoCalCodeForSlot(slot){
  const idx=METER_LG_GREY_AUTOCAL_26_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
- return idx>=0?METER_LG_GREY_AUTOCAL_26_CODES[idx]:meterLgSdrLegalHeadroomCodeFromPercent(slot);
+ const bits=meterPatchBitDepth();
+ const max=bits===10?1023:255;
+ const numSlot=Number(slot);
+ // Full range: linear S/100 * max, super-white clamps to peak.
+ if(!meterPatchUsesVideoRange()){
+  const clamped=Math.max(0,Math.min(100,numSlot))/100;
+  return Math.round(clamped*max);
+ }
+ // Limited range: dispatch on bit depth.
+ if(bits===10){
+  // 10-bit Limited legal-expanded (64..940, super-white 941..1023).
+  // 105/109 use the hardcoded super-white codes so the chart shows
+  // the actual autocal-ladder super-white anchors.
+  if(idx>=0) return METER_LG_GREY_AUTOCAL_26_CODES[idx];
+  return Math.max(64,Math.min(1023,Math.round(64+numSlot/100*876)));
+ }
+ // 8-bit Limited extended (16..239..255). No super-white in 8-bit
+ // -- peak is 255 and 105/109 clamp to it. Matches the 21-pt
+ // Extended-SDR ladder's mapping for the chart.
+ const clamped=Math.max(0,Math.min(100,numSlot))/100;
+ return Math.round(16+clamped*239);
+ }
+ // The hardcoded METER_LG_GREY_AUTOCAL_26_CODES table is 10-bit
+ // Limited legal-expanded (64..1023, super-white at 105/109%).
+ // For Full range transports the chart step must show
+ // Full-range codes so the displayed patches match the active
+ // rgb_quant_range and the operator is not misled into thinking
+ // the ladder is sending Limited codes. Full range has no
+ // super-white headroom -- 105/109% clamp to peak. 8-bit Full
+ // uses 0..255; 10-bit Full uses 0..1023.
+ if(!meterPatchUsesVideoRange()){
+  const bits=meterPatchBitDepth();
+  const max=bits===10?1023:255;
+  const clamped=Math.max(0,Math.min(100,Number(slot)))/100;
+  return Math.round(clamped*max);
+ }
+ return METER_LG_GREY_AUTOCAL_26_CODES[idx];
+ }
 }
 
 function meterLgSdrLegalDdcCodeFromPercent(percent){
@@ -21867,6 +21904,13 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		  const preview=Math.max(0,Math.min(255,Math.round(max>255?Number(code||0)*255/max:Number(code||0))));
 		  return {preview_r:preview,preview_g:preview,preview_b:preview,series_mode:'lg-autocal-26'};
 		 };
+ // SDR autocal26 chart step input_max + preview follow the link's bit
+ // depth (8-bit -> 255, 10-bit -> 1023) so Full-range codes in 8-bit
+ // are not scaled to ~24% on a 10-bit wire.
+ const stepInputMax=meterPatchBitDepth()===10?1023:255;
+ // Full-range SDR replaces the Limited legal-expanded ladder with a linear
+ // 0..peak ladder; Limited keeps the super-white 105/109% anchors.
+ const isFullRange=!meterPatchUsesVideoRange();
  const inputByDdcSlot={};
 	 input.forEach(step=>{
 	  if(!step||!meterSeriesStepIsGreyscale(step)) return;
@@ -21959,9 +22003,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		    b:code,
 		    name:meterFormatPercentValue(slot)+'%',
 		    autocal_code:code,
-		    input_max:1023,
+		    input_max:stepInputMax,
 		    ...targetMeta,
-		    ...previewCodesForCode(code,1023),
+		    ...previewCodesForCode(code,stepInputMax),
 		    ddc_slot_locked:true,
 	    autocal_slot_locked:true
 	   };
@@ -21978,18 +22022,18 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	   name:meterFormatPercentValue(slot)+'%',
 	   series_type:'greyscale',
 		   autocal_code:code,
-		   input_max:1023,
+		   input_max:stepInputMax,
 	   ...targetMeta,
-	   ...previewCodesForCode(code,1023),
+	   ...previewCodesForCode(code,stepInputMax),
 	   ddc_slot_locked:true,
 	   autocal_slot_locked:true
 	  };
 	 };
-			 const zeroCode=mode==='sdr'?64:meterCodeFromSignalPercentWithOptions(0,null);
+			 const zeroCode=mode==='sdr'?(isFullRange?0:64):meterCodeFromSignalPercentWithOptions(0,null);
 			 const zeroMeta=meterLgAutoCalTargetMetaForCode(zeroCode);
 			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?1023:(black.input_max||255)),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?1023:255),autocal_slot_locked:false,autocal_read_only:true};
- const whiteCode=mode==='sdr'?meterLgSdrLegalHeadroomCodeFromPercent(100):meterCodeFromSignalPercentWithOptions(100,null);
- const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?1023:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
+ const whiteCode=mode==='sdr'?(isFullRange?stepInputMax:meterLgSdrLegalHeadroomCodeFromPercent(100)):meterCodeFromSignalPercentWithOptions(100,null);
+ const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
  const body=[...METER_LG_GREY_AUTOCAL_26_SLOTS]
   .sort((a,b)=>a-b)
   .map(makeDdcStep);
