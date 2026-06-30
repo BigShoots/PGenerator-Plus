@@ -8765,6 +8765,11 @@ body.apply-settings-error .apply-settings-status{color:#e08184}
 .apply-settings-pin-hint{font-size:.72rem;color:var(--text2);line-height:1.4;margin-top:2px;opacity:.85;text-align:center}
 body.apply-settings-error .apply-settings-pin-input{border-color:var(--red)}
 body.apply-settings-error .apply-settings-pin-hint{color:#e08184}
+/* Cancel button row on the LG Connect modal. Centered below the PIN
+   row; hidden during the brief success-to-check animation since the
+   modal auto-hides 2s after success anyway. */
+.apply-settings-actions{display:flex;justify-content:center;gap:8px;margin-top:16px}
+body.apply-settings-success .apply-settings-actions{display:none}
 .info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:6px}
 .info-item{background:#0d0d15;padding:8px;border-radius:6px;min-width:0}
 .info-item .label{font-size:.6rem;color:var(--text2);text-transform:uppercase}
@@ -10179,6 +10184,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
    <div class="apply-settings-pin-hint">Watch the LG TV for a PIN, then type it here.</div>
   </div>
+  <!-- Cancel button: dismiss the modal at any state. During the
+       spinner/check state the modal is owned by an in-flight lgConnect()
+       flow and clicking Cancel wakes up the deferred _lgPinResolver with
+       null so the connect aborts cleanly. On error this is the operator's
+       only escape hatch if they don't want to refresh the page. -->
+  <div class="apply-settings-actions" id="lgConnectActions">
+   <button class="btn btn-sm btn-secondary" id="lgConnectCancelBtn" type="button" onclick="lgConnectModalHide()">Cancel</button>
+  </div>
  </div>
 </div>
 
@@ -10211,6 +10224,13 @@ function toast(msg,err){
 function applySettingsModalShow(){
  const overlay=document.getElementById('applySettingsOverlay');
  if(!overlay) return;
+ // Defensive: hide any stale LG Connect modal before popping the Apply
+ // Settings modal. Without this, an errored LG Connect flow from a
+ // previous click can leave #lgConnectOverlay visible, and because both
+ // modals share z-index 9100 and #lgConnectOverlay is later in the DOM,
+ // it stacks on top -- the operator sees "Connect to LG TV" instead of
+ // "Apply Settings" while the renderer is restarting.
+ if(typeof lgConnectModalHide==='function') lgConnectModalHide();
  document.body.classList.add('apply-settings-active');
  document.body.classList.remove('apply-settings-success','apply-settings-error');
  const title=document.getElementById('applySettingsTitle');
@@ -10323,7 +10343,21 @@ function lgConnectModalError(detail){
  const title=document.getElementById('lgConnectTitle');
  const status=document.getElementById('lgConnectStatus');
  if(title) title.textContent='Connect failed';
- if(status) status.textContent=detail||'Unable to connect to the LG TV.';
+ // Translate a few opaque LG library errors into something the operator
+ // can act on. The raw "User rejected pairing" / "403 Error: ..."
+ // messages from the WebOS pairing helper make it sound like the LG
+ // service is talking to a different user, when in practice the cause
+ // is either: (a) the pairing prompt timed out on the TV before the
+ // operator submitted, (b) the operator dismissed the prompt on the TV
+ // remote, or (c) the PIN they typed didn't match what the TV showed.
+ if(status){
+  const raw=String(detail||'');
+  if(/user\s*rejected\s*pairing/i.test(raw)||/^\s*403\b/.test(raw)){
+   status.textContent='The LG TV rejected the pairing (the prompt may have timed out, been dismissed on the TV, or the PIN didn\'t match). Click Connect to try again.';
+  }else{
+   status.textContent=raw||'Unable to connect to the LG TV.';
+  }
+ }
  // Leave the modal up so the operator can read the error -- the corner
  // toast often scrolls off the visible area on long autocal sessions.
 }
