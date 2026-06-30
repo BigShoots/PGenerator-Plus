@@ -3780,13 +3780,14 @@ sub webui_meter_lg_autocal_start (@) {
  # derive opts from the body itself (lg_autocal_26, signal_mode, etc.).
  my $_ac_signal_mode="sdr";
  $_ac_signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"([^"]+)"/);
- # Auto-promote the link to max_bpc=10 for SDR autocal starts. The 26pt
- # autocal ladder is intrinsically 10-bit (codes 64..1023); running it on
- # an 8-bit link lands as ~25% of full signal (the 2026-06-29 series-read
- # regression). The helper no-ops when max_bpc is already 10 and refuses
- # to promote HDR10/HLG/DV (those have their own 10-bit ladders and the
- # HDR10 8-bit A/B test deliberately pins max_bpc=8).
- my $_ac_max_bpc_promoted=&webui_meter_lg_autocal_ensure_10b($_ac_signal_mode);
+ # Honor the selected bit depth -- do NOT force-promote SDR to 10-bit. The
+ # 26pt worker now drives proper 8-bit codes when max_bpc=8 (see
+ # lg_autocal_26_sdr_headroom_enabled in meter_lg_autocal.pl), so the prior
+ # ~25% under-signal regression that the forced promotion guarded against no
+ # longer applies. A 10-bit selection already sets max_bpc=10 in the conf, so
+ # no promotion is needed; an 8-bit selection now stays 8-bit (full or
+ # limited per the Range selector) instead of being silently bumped to 10-bit.
+ my $_ac_max_bpc_promoted=0;
 my $_ac_target_gamma="bt1886";
   $_ac_target_gamma=$1 if($body=~/"target_gamma"\s*:\s*"([^"]+)"/);
  my $_ac_signal_range="";
@@ -7443,6 +7444,23 @@ sub webui_grey_code_for_stimulus (@) {
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
  $input_max=($dv_series_code_bits==10) ? 1023 : 255 if($dv_series);
  if($lg_autocal_26_codes) {
+  # 8-bit link: no headroom and no 10-bit legal-expanded ladder. Drive plain
+  # 8-bit codes that match the worker's patch_code_for_stimulus 8-bit path
+  # (full 0..255, limited 16..235) so the displayed/inserted codes agree with
+  # what is actually sent. >100% has no 8-bit headroom, so it clamps to peak.
+  # The DPG slot indexing is unaffected (it is keyed by IRE via @sdr26_indexes
+  # in the worker, not by this drive code).
+  my $_ac26_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
+  if($_ac26_bits == 8) {
+   my $s=$stimulus_pct; $s=100 if($s > 100);
+   if($signal_range) {
+    $code=int(16 + ($s/100)*219 + .5); $code=16 if($code < 16); $code=235 if($code > 235);
+   } else {
+    $code=int(($s/100)*255 + .5); $code=0 if($code < 0); $code=255 if($code > 255);
+   }
+   $input_max=255;
+   return ($code,$input_max);
+  }
   my %lg_autocal_26_code=(
    "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
    "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
