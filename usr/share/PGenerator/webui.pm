@@ -14434,23 +14434,6 @@ function meterLgAutoCalCodeForSlot(slot){
  const clamped=Math.max(0,Math.min(100,numSlot))/100;
  return Math.round(16+clamped*239);
  }
- // The hardcoded METER_LG_GREY_AUTOCAL_26_CODES table is 10-bit
- // Limited legal-expanded (64..1023, super-white at 105/109%).
- // For Full range transports the chart step must show
- // Full-range codes so the displayed patches match the active
- // rgb_quant_range and the operator is not misled into thinking
- // the ladder is sending Limited codes. Full range has no
- // super-white headroom -- 105/109% clamp to peak. 8-bit Full
- // uses 0..255; 10-bit Full uses 0..1023.
- if(!meterPatchUsesVideoRange()){
-  const bits=meterPatchBitDepth();
-  const max=bits===10?1023:255;
-  const clamped=Math.max(0,Math.min(100,Number(slot)))/100;
-  return Math.round(clamped*max);
- }
- return METER_LG_GREY_AUTOCAL_26_CODES[idx];
- }
-}
 
 function meterLgSdrLegalDdcCodeFromPercent(percent){
  const clamped=clampNum(percent,0,100)/100;
