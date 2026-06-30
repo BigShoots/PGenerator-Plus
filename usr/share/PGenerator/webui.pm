@@ -26498,7 +26498,7 @@ function meterFullAutoCalTouchupTargetY(){
 	 const statusHeadroomY=Number(status&&status.headroom_target_luminance);
 	 const headroomY=(Number.isFinite(configuredHeadroomY)&&configuredHeadroomY>0)?configuredHeadroomY:((Number.isFinite(statusHeadroomY)&&statusHeadroomY>0)?statusHeadroomY:NaN);
 	 const dtype=(cfg&&cfg.dtype)||(status&&status.display_type)||getEffectiveDisplayType();
-	 const patternSignalRange=(cfg&&cfg.patternSignalRange)||(status&&status.pattern_signal_range)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
+	 const patternSignalRange=(cfg&&cfg.patternSignalRange)||(status&&status.pattern_signal_range)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
 	 const wp=(cfg&&cfg.wp)||(status&&status.target_white)||meterTargetWhitePoint();
 	 return {target,targetY,setupY,headroomY,dtype,patternSignalRange,wp};
 	}
@@ -26844,7 +26844,7 @@ function meterFullAutoCalTouchupTargetY(){
   const setupY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.setupY);
   const headroomY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY);
   const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
-  const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
+  const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
   meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
@@ -27000,7 +27000,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
 	  const touchupPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
 	  const touchupPostCommitVerifyEnabled=meterFullAutoCalPostCommitVerifyEnabled();
 	  const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
-  const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange());
+  const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
   meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowTouchup:true};
@@ -27486,7 +27486,7 @@ async function meterStartAutoCal(options){
  meterBuildPatchThumbs(sortedSteps,new Set(),null);
  drawAllChartsPreset(sortedSteps);
  const dtype=getEffectiveDisplayType();
- const patternSignalRange=meterLgAutoCalUsesExtendedSdr()?'1':meterMeasurementPatchSignalRange();
+ const patternSignalRange=meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange();
  const wp=meterTargetWhitePoint();
  meterAutoCalPendingConfig={
   dtype,
