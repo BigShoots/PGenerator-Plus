@@ -16082,15 +16082,53 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # ... slot 25 = IRE 109 (idx 1023).
  my @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
  my @sdr26_indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
- # 10-bit limited-range RGB codes the renderer must display for each SDR26
- # anchor. The limited-range formula is code = int(ire/100*219 + 16 + 0.5)*4
- # for IRE <= 100 (clamped to the 940 ceiling); the two headroom anchors
- # above 100% use the full-range codes (105->981, 109->1023) that match the
- # SDR26 DPG index table. These are the exact codes the reference SDR
- # workflow emits on the wire; without them read_step posts a payload with
- # r=g=b=0 and the renderer shows black, so every meter read comes back
- # Y=0 and the autocal spins on identity.
- my @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
+ # Per-slot RGB wire codes for each SDR26 anchor. Dispatch on the
+ # active transport (rgb_quant_range) and bit depth (max_bpc) so the
+ # codes the worker emits match the chart (webui.pm
+ # meterLgAutoCalCodeForSlot) AND what the renderer/panel will actually
+ # decode in the user's transport. Without this, SDR autocal on RGB Full
+ # sends 10-bit Limited codes (e.g. 84 for 2.3% IRE) which the renderer
+ # scales down to 8-bit (84>>2=21) and the panel decodes as ~8% IRE in
+ # Full mode, so the meter reads the wrong brightness for the anchor the
+ # worker thinks it's calibrating -- which fails the lower patches and
+ # corrupts the DPG edits.
+ #
+ #   Full 8-bit      0..255 linear, 105/109 clamp to peak (255)
+ #   Full 10-bit     0..1023 linear, 105/109 clamp to peak (1023)
+ #   Limited 10-bit  empirical legal-expanded table (MATCHES reference)
+ #   Limited 8-bit   extended round(16 + S/100*239) (16..255)
+ #
+ # NOTE: the Limited 10-bit table is intentionally NOT derived from
+ # int(ire/100*876+64+0.5); that formula gives off-by-codes against the
+ # hand-tuned reference values (e.g. 50% -> 502 vs table 504, 3% -> 90 vs
+ # table 92, 4% -> 99 vs table 100, 105% -> 986 vs table 984) which would
+ # break LG DDC calibration. We must use the empirical table here.
+ my $sdr26_bits=defined($config->{"max_bpc"}) && $config->{"max_bpc"} ne "" ? int($config->{"max_bpc"}) : 10;
+ $sdr26_bits=10 if($sdr26_bits == 12);
+ my $sdr26_max=$sdr26_bits==10 ? 1023 : 255;
+ my $sdr26_pattern_range=(ref($config) eq "HASH" ? ($config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"") : "");
+ my $sdr26_limited=($sdr26_pattern_range ne "" && int($sdr26_pattern_range)==1) ? 1 : 0;
+ my @sdr26_codes;
+ if(!$sdr26_limited) {
+  for(my $k=0;$k<@sdr26_labels;$k++) {
+   my $ire=$sdr26_labels[$k]+0;
+   my $code=int($ire/100*$sdr26_max+0.5);
+   $code=$sdr26_max if($code > $sdr26_max);
+   $code=0 if($code < 0);
+   push @sdr26_codes,$code;
+  }
+ } elsif($sdr26_bits==10) {
+  @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
+ } else {
+  for(my $k=0;$k<@sdr26_labels;$k++) {
+   my $ire=$sdr26_labels[$k]+0;
+   my $code=int($ire/100*239+16+0.5);
+   $code=255 if($code > 255);
+   $code=16 if($code < 16);
+   push @sdr26_codes,$code;
+  }
+ }
+ my $sdr26_input_max=($sdr26_limited && $sdr26_bits==10) ? 1023 : $sdr26_max;
  my $idx_for_sdr=sub {
   my ($step)=@_;
   return undef if(ref($step) ne "HASH");
@@ -16131,7 +16169,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    r=>$rgb_code,
    g=>$rgb_code,
    b=>$rgb_code,
-   input_max=>1023,
+   input_max=>$sdr26_input_max,
    ddc_layout=>"sdr26",
   };
   push @ordered,$step;
