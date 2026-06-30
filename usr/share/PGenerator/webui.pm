@@ -10168,7 +10168,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <div style="font-size:.82rem;color:var(--text2);line-height:1.45">Click Reset to reset the active LG picture mode and clear greyscale DDC calibration state. After reset, leave this screen open while you adjust any TV settings needed before Auto Cal, then click Continue.</div>
   </div>
 	  <div id="meterAutoCalLuminanceBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+   <div id="meterAutoCalLuminanceNote" style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">
+    Set the panel light so the live 100% white luminance reads at your target peak.
+    After Auto Cal completes the calibrated 100% brightness typically lands ~15% lower
+    than the value you set here as the greyscale DPG adjusts around the target gamma,
+    so set the peak a bit higher than your post-cal goal if that matters.
+   </div>
    <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap">
+
     <div style="flex:1 1 240px;min-width:220px">
      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px">
       <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">100% white luminance</div>
@@ -23830,17 +23837,43 @@ function meterAutoCalWhiteStep(){
     autocal_target_label:'100% HDR white'
    };
   }
-  const code=meterLgSdrLegalHeadroomCodeFromPercent(100);
+  // For the wizard's interactive 100% white setup step, send the code that
+  // produces 100% SIGNAL on the active transport (max_bpc + rgb_quant_range),
+  // not the autocal ladder's headroom-extended 109% anchor (which is always
+  // 940 = 10-bit Limited). The previous version always sent 940 with
+  // input_max=1023, which lands at 940/1023*255 = 234/255 = 91.76% of full
+  // signal on an 8-bit Full transport, so the operator's panel-light slider
+  // was calibrating against a 92% patch instead of 100%.
+  //
+  // Correct 100% code by transport:
+  //   8-bit Limited -> 235  (input_max 255)
+  //   8-bit Full    -> 255  (input_max 255)
+  //   10-bit Limited-> 940  (input_max 1023)
+  //   10-bit Full   -> 1023 (input_max 1023)
+  const bits=meterPatchBitDepth();
+  const isFullRange=!meterPatchUsesVideoRange();
+  let whiteCode, whiteInputMax;
+  if(isFullRange){
+   // Full range has no super-white headroom -- 100% is at the top of the range.
+   whiteCode=(bits===10)?1023:255;
+   whiteInputMax=(bits===10)?1023:255;
+  } else {
+   // Limited range: 100% white is 235 (8-bit) or 940 (10-bit). The super-white
+   // codes 236-255 / 941-1023 are reserved for the ladder's 101-109% anchors,
+   // not the 100% setup reference.
+   whiteCode=(bits===10)?940:235;
+   whiteInputMax=(bits===10)?1023:255;
+  }
   return {
    ire:100,
    stimulus:100,
    signal_r_pct:100,
    signal_g_pct:100,
    signal_b_pct:100,
-	   r:code,
-	   g:code,
-	   b:code,
-	   input_max:1023,
+	   r:whiteCode,
+	   g:whiteCode,
+	   b:whiteCode,
+	   input_max:whiteInputMax,
    name:'100%',
    series_type:'greyscale',
    autocal_white_reference:true,
@@ -23852,6 +23885,7 @@ function meterAutoCalWhiteStep(){
    autocal_target_label:'100% legal white'
   };
  }
+
  return null;
 }
 
