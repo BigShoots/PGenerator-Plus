@@ -3046,19 +3046,55 @@ async function lgConnect(){
 	 const state=window.lgStatusState||{};
 	 const hasSavedKey=lgStatusHasSavedKey(state);
  if(ip&&!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){toast('Enter a valid LG TV IP','err');return;}
+ // Pop the LG Connect modal IMMEDIATELY (synchronously, before any
+ // blocking POST). The WebOS WSS handshake can take 5-70s; if we waited
+ // for the POST to return the operator would see a dead "Connect" button
+ // for that whole window. The modal carries the spinner through the
+ // entire flow, with the PIN field shown inline on first-time pairing
+ // so the operator doesn't have to leave the modal to find the input
+ // in the LG card behind. Helpers live in webui.pm; if absent (older
+ // webui.pm deployed) we fall back to the corner toast so the function
+ // is still usable.
+ const showModal=typeof lgConnectModalShow==='function';
+ if(showModal){
+  // First-time pairing needs a PIN -- show the field; otherwise hide it.
+  lgConnectModalShow(!hasSavedKey, hasSavedKey
+   ? 'Contacting the LG TV with the saved key\u2026'
+   : 'Starting LG PIN pairing. Watch the TV for a PIN.');
+ }else{
+  toast(hasSavedKey
+   ? 'Connecting to the LG TV with the saved key.'
+   : 'Starting LG PIN pairing. Watch the TV for a PIN.');
+ }
  if(!hasSavedKey){
+  // First-time pairing: /api/lg/pair-pin/start triggers the TV to show
+  // its PIN. The modal stays up with the PIN field visible; the operator
+  // types the PIN and hits Submit, which calls lgConnectSubmitPinFromModal
+  // -> lgSubmitPin (existing flow). When that succeeds, the saved-key
+  // branch below completes the connect.
   if(button){button.disabled=true;button.textContent='Starting Pairing...';}
+  const commandHandle=lgBeginCommand('Starting LG PIN pairing');
   try{
    await lgStartPinPairing();
+   // After lgStartPinPairing, if status now reports a saved key + paired,
+   // the operator has finished the PIN step. Fall through to the saved-key
+   // POST that actually opens the WebOS session.
+   const postState=window.lgStatusState||{};
+   if(!lgStatusHasSavedKey(postState)||postState.pinPending){
+    if(showModal) lgConnectModalHide();
+    return;
+   }
   }finally{
+   lgEndCommand(commandHandle);
    if(button){button.disabled=false;button.textContent='Pair With PIN';}
   }
-  return;
-	 }
-	 if(button){button.disabled=true;button.textContent='Connecting...';}
-	 const commandHandle=lgBeginCommand('Connecting to LG TV');
-	 try{
-	  toast('Connecting to the LG TV with the saved key.');
+ }
+ // Saved-key path: open the WebOS session. The modal is still up
+ // (showing the spinner) from the show() above; transition to success or
+ // error after the POST.
+ if(button){button.disabled=true;button.textContent='Connecting...';}
+ const commandHandle2=lgBeginCommand('Connecting to LG TV');
+ try{
   const r=await fetchJSON('/api/lg/connect',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
@@ -3067,17 +3103,24 @@ async function lgConnect(){
   });
   if(r){
    renderLgStatus(r);
-   if(r.status==='ok') toast(r.message||'LG TV connected');
-   else toast(r.message||'Unable to connect to LG TV','err');
+   if(r.status==='ok'){
+    if(showModal) lgConnectModalSuccess(r.message);
+    else toast(r.message||'LG TV connected');
+   }else{
+    if(showModal) lgConnectModalError(r.message);
+    else toast(r.message||'Unable to connect to LG TV','err');
+   }
   }else{
-   toast('Unable to connect to LG TV','err');
+   if(showModal) lgConnectModalError('The daemon returned no response.');
+   else toast('Unable to connect to LG TV','err');
   }
-	 }catch(e){
-	  toast('Unable to connect to LG TV','err');
-	 }finally{
-	  lgEndCommand(commandHandle);
-	  if(button){button.disabled=false;button.textContent='Connect';}
-	 }
+ }catch(e){
+  if(showModal) lgConnectModalError((e&&e.message)||'Connect request failed.');
+  else toast('Unable to connect to LG TV','err');
+ }finally{
+  lgEndCommand(commandHandle2);
+  if(button){button.disabled=false;button.textContent='Connect';}
+ }
 }
 
 async function lgStartPinPairing(){
