@@ -8898,7 +8898,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <span id="lgTopStatusWrap" class="status-line status-line-sub" style="display:none" title="Display"><span class="status-dot" id="lgTopDot" style="background:var(--text2)"></span><span class="status-label" id="lgTopStatusText" style="color:var(--text2)">Display</span></span>
    </span>
    <span id="hdmiWarnBadge" onclick="hdmiShowOverlay()" title="HDMI cable is on the wrong port">&#9888; Wrong HDMI Port</span>
-   <span id="meterUsbWarnBadge" title="Meter USB power/communication errors detected">&#9888; Meter USB Power</span>
+   <span id="meterUsbWarnBadge" title="USB ports overloaded">&#9888; USB Overloaded</span>
   </div>
  </div>
 </div>
@@ -18298,7 +18298,7 @@ function meterUpdateUsbPowerWarning(r){
  if(!badge) return;
  const warn=!!(r&&r.usb_power_warning);
  if(warn){
-  const detail=(r&&r.usb_power_detail)||'Meter USB power/communication errors detected. The Pi power supply may not deliver enough current for the meter - use a higher-amp PSU or a powered USB hub.';
+  const detail=(r&&r.usb_power_detail)||'USB ports overloaded - the connected meters draw more current than the shared USB hub can supply. Disconnect the meter you are not using, or use a powered USB hub.';
   badge.style.display='inline';
   badge.title=detail;
   if(!_meterUsbPowerWarned){ _meterUsbPowerWarned=true; toast(detail,true); }
