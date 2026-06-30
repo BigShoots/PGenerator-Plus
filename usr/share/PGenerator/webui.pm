@@ -14803,8 +14803,29 @@ function meterParseSaturationReading(reading){
  return null;
 }
 
+// Bit-depth-aware code range for COLOR / SATURATION target decode, mirroring
+// meterGreyCodeRange. Since the 2026-06-29 max_bpc fix (commit 45c0ea3d) the
+// color/saturation series builders emit 10-bit patch codes (Limited 64..940,
+// Full 0..1023, with input_max=1023 stamped on every step) on a max_bpc=10
+// link. Those codes MUST be normalized against the 10-bit range: decoding them
+// with the 8-bit range (16..235 / 0..255) clamps every chromatic channel to
+// signal 1.0, which on a PQ chart decodes to the panel peak -- so every HDR
+// ColorChecker / saturation patch target collapsed to ~1000 cd/m^2 instead of
+// its 203-nit-referenced per-patch value. 12-bit links coerce to 10-bit
+// (meterPatchBitDepth). The meterActiveSeriesCodesAre8Bit() guard keeps a
+// genuinely 8-bit series (white code <=255) on the 8-bit range even when the
+// conf reports max_bpc=10, matching the greyscale path.
+function meterColorTargetCodeRange(){
+ const limited=meterPatchUsesVideoRange();
+ const tenBit=(meterPatchBitDepth()===10) &&
+  !(typeof meterActiveSeriesCodesAre8Bit==='function' && meterActiveSeriesCodesAre8Bit());
+ if(tenBit) return limited?{min:64,span:876}:{min:0,span:1023};
+ return limited?{min:16,span:219}:{min:0,span:255};
+}
+
 function meterDecodeColorTargetChannel(code){
- const norm=meterSignalFractionFromCode(code);
+ const rng=meterColorTargetCodeRange();
+ const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.min(meterChartPqDecodeNormalized(norm),meterChartHdrPeak());
  // SDR/DV: decode with the active target EOTF so the reconstructed target
  // XYZ for r/g/b-code patches matches the chromaticity the display actually
