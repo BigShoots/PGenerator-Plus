@@ -1211,6 +1211,64 @@ sub webui_meter_usb_present (@) {
  return ($lsusb =~ /\b\Q$usb_id\E\b/i) ? 1 : 0;
 }
 
+# Pure parser: scan kernel-ring-buffer (dmesg) text for the USB
+# current-starvation / enumeration-failure fingerprints that show up when the
+# Pi power supply cannot deliver enough current for the meter (a bus-powered
+# colorimeter behind a hub is the classic case). Voltage sag would trip the
+# rpi_volt under-voltage flag; a CURRENT shortfall does NOT -- the USB port
+# browns out locally (failed enumeration / port power-cycle) while the SoC
+# voltage detector stays quiet. So we key on the USB events, not under-voltage.
+# Factored out (takes dmesg text + uptime seconds) so it is unit-testable.
+# dmesg timestamps are seconds-since-boot (monotonic); age = uptime - ts lets
+# us separate a one-off cold-plug enumeration retry from active-session faults.
+sub webui_meter_usb_power_parse (@) {
+ my ($dmesg,$uptime)=@_;
+ $dmesg="" if(!defined $dmesg);
+ $uptime=(defined $uptime && $uptime=~/^[0-9.]+$/) ? ($uptime+0) : 0;
+ # Strong = power-specific (port could not be powered / over-current / dead link).
+ my @strong=(qr/attempt power cycle/i, qr/over-?current/i, qr/cannot enable.*(?:cable|hub)/i);
+ # Moderate = enumeration faults that, in a cluster, indicate a marginal/under-fed link.
+ my @moderate=(qr/not responding to setup address/i,
+   qr/not accepting address.*error\s*-71/i,
+   qr/device descriptor read.*error\s*-(?:32|71|110)/i,
+   qr/unable to enumerate USB device/i);
+ my ($strong_n,$moderate_n,$recent_n,$last_age)=(0,0,0,undef);
+ for my $line (split /\n/, $dmesg) {
+  my $is_strong   = (grep { $line =~ $_ } @strong) ? 1 : 0;
+  my $is_moderate = (!$is_strong && (grep { $line =~ $_ } @moderate)) ? 1 : 0;
+  next unless($is_strong || $is_moderate);
+  $strong_n++   if($is_strong);
+  $moderate_n++ if($is_moderate);
+  my ($ts)=$line=~/^\[\s*([0-9.]+)\]/;
+  next unless defined $ts;
+  my $age=$uptime-$ts; $age=0 if($age<0);
+  $recent_n++ if($age < 900);
+  $last_age=$age if(!defined $last_age || $age < $last_age);
+ }
+ my $total=$strong_n+$moderate_n;
+ # Warn when the meter's USB link showed current-starvation this session: any
+ # strong (power-specific) hit, or a cluster (>=4) of enumeration faults.
+ my $warning=($strong_n>0 || $moderate_n>=4) ? 1 : 0;
+ return {warning=>$warning, total=>$total, strong=>$strong_n, moderate=>$moderate_n,
+   recent=>$recent_n, last_age=>(defined $last_age ? int($last_age) : -1)};
+}
+
+my %_meter_usb_power_cache;
+# Cached gatherer: reads dmesg + /proc/uptime (cheap, but the meter status is
+# polled often, so cache for 20s). dmesg_restrict=0 on this image, so the
+# unprivileged daemon can read the ring buffer directly.
+sub webui_meter_usb_power_health (@) {
+ my $now=time();
+ return $_meter_usb_power_cache{result}
+  if($_meter_usb_power_cache{ts} && ($now-$_meter_usb_power_cache{ts})<20 && $_meter_usb_power_cache{result});
+ my $up=0;
+ if(open(my $uf,"<","/proc/uptime")){ my $l=<$uf>; close($uf); ($up)=split /\s+/, ($l||""); }
+ my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
+ my $res=&webui_meter_usb_power_parse($dmesg,$up);
+ %_meter_usb_power_cache=(ts=>$now, result=>$res);
+ return $res;
+}
+
 sub webui_meter_simulate_spectro_enabled (@) {
  foreach my $path ("/tmp/meter_settings.json", "/var/lib/PGenerator/meter_settings.json", "/usr/share/PGenerator/meter_settings.json") {
   next unless(-f $path);
@@ -1227,6 +1285,21 @@ sub webui_meter_status_apply_overrides (@) {
  return $json if(!defined($json) || $json eq "");
  if(&webui_meter_simulate_spectro_enabled()) {
   $json =~ s/"meter_type"\s*:\s*"[^"]*"/"meter_type":"spectro"/g;
+ }
+ # Surface meter USB current-starvation / comms instability seen in the kernel
+ # log so the operator knows a failed/garbage read is the PSU not delivering
+ # enough current for the meter (not a calibration fault). Only added when a
+ # warning is active so a healthy link does not bloat every status poll.
+ my $h=&webui_meter_usb_power_health();
+ if(ref($h) eq 'HASH' && $h->{warning} && $json=~/\}\s*$/) {
+  my $age=$h->{last_age};
+  my $when=($age<0) ? "this session"
+   : ($age<90) ? "just now"
+   : ($age<5400) ? sprintf("%dm ago",int($age/60+.5))
+   : sprintf("%.1fh ago",$age/3600);
+  my $detail=sprintf("Meter USB power/comms errors this session (%d events, last %s). The Pi power supply may not deliver enough current for the meter - use a higher-amp PSU or a powered USB hub.", $h->{total}, $when);
+  $detail=~s/(["\\])/\\$1/g;
+  $json=~s/\}\s*$/,"usb_power_warning":true,"usb_power_detail":"$detail"}/;
  }
  return $json;
 }
@@ -8753,6 +8826,7 @@ font-size:.75rem;text-decoration:underline;opacity:.6}
 #hdmiOverlay .hdmi-ignore:hover{opacity:1}
 #hdmiWarnBadge{display:none;color:#e53935;font-size:.75rem;font-weight:700;
 cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
+#meterUsbWarnBadge{display:none;color:#fb8c00;font-size:.75rem;font-weight:700;cursor:help}
 .hdmi-note{color:var(--text2);font-size:.8rem;line-height:1.4;margin-bottom:16px;font-style:italic}
 .hdmi-downtime{color:var(--text2);font-size:.75rem;margin-top:12px;opacity:.8}
 .site-footer{max-width:1200px;margin:0 auto 18px;padding:0 12px}
@@ -8802,6 +8876,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <span id="lgTopStatusWrap" class="status-line status-line-sub" style="display:none" title="Display"><span class="status-dot" id="lgTopDot" style="background:var(--text2)"></span><span class="status-label" id="lgTopStatusText" style="color:var(--text2)">Display</span></span>
    </span>
    <span id="hdmiWarnBadge" onclick="hdmiShowOverlay()" title="HDMI cable is on the wrong port">&#9888; Wrong HDMI Port</span>
+   <span id="meterUsbWarnBadge" title="Meter USB power/communication errors detected">&#9888; Meter USB Power</span>
   </div>
  </div>
 </div>
@@ -18115,6 +18190,26 @@ function syncTopStatusStack(){
  stack.classList.toggle('active',visible);
 }
 
+let _meterUsbPowerWarned=false;
+// Show/hide the persistent "Meter USB Power" badge (and a one-shot toast on
+// transition) from the /api/meter/status usb_power_warning field. The badge
+// stays up while the kernel log shows meter USB current-starvation errors so
+// the operator attributes failed/garbage reads to the PSU, not the calibration.
+function meterUpdateUsbPowerWarning(r){
+ const badge=document.getElementById('meterUsbWarnBadge');
+ if(!badge) return;
+ const warn=!!(r&&r.usb_power_warning);
+ if(warn){
+  const detail=(r&&r.usb_power_detail)||'Meter USB power/communication errors detected. The Pi power supply may not deliver enough current for the meter - use a higher-amp PSU or a powered USB hub.';
+  badge.style.display='inline';
+  badge.title=detail;
+  if(!_meterUsbPowerWarned){ _meterUsbPowerWarned=true; toast(detail,true); }
+ }else{
+  badge.style.display='none';
+  _meterUsbPowerWarned=false;
+ }
+}
+
 async function meterCheckStatus(){
  // Busy guard. On a cold start (meter not yet detected in this
  // session) we still probe the meter status so the user can see the
@@ -18127,6 +18222,7 @@ async function meterCheckStatus(){
  }
 
  const r=await fetchJSON('/api/meter/status',{_quiet:true,_timeoutMs:5000});
+ meterUpdateUsbPowerWarning(r);
  const busy=meterSeriesRunning||meterContinuousActive||meterAutoCalRunning||meterActionPending||meterLgGreyBusy||(typeof lgIsCommandBusy==='function'&&lgIsCommandBusy())||document.getElementById('meterDot').style.background==='var(--orange)';
  if(r&&r.detected){
   meterStatusMisses=0;
