@@ -11870,19 +11870,23 @@ async function applySettings(){
  }
  clearActive();
  var di=document.getElementById('diagInfo');if(di)di.style.display='none';
+ // Pop the spinner modal IMMEDIATELY (synchronously, before the blocking
+ // POST). The POST takes ~3-5s because the daemon restarts the renderer
+ // mid-request, so if we waited for it the operator would see a dead
+ // "Apply & Restart" button for that whole window. Showing the modal up
+ // front (and the .apply-settings-active body class that greys out the
+ // rest of the dashboard) means the click reads as a click at the
+ // frame the user lets go of the mouse -- the long POST just keeps the
+ // spinner spinning. If the POST rejects, applySettingsModalError()
+ // below transitions the already-visible modal to the red error state
+ // instead of popping a new one.
+ applySettingsModalShow();
+ document.getElementById('applyBar').style.display='none';
  const r=await fetchJSON('/api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(changes),_timeoutMs:30000});
  if(r&&r.status==='ok'){
-  // Surface the apply flow in a centered modal (spinner -> check) so the
-  // operator gets immediate feedback that the click registered. The
-  // corner toast only lands AFTER the renderer restart completes, which
-  // leaves a 3-5s silence during which the display goes black and the
-  // user wonders whether their click was lost. Auto-dismisses 1.5s after
-  // the success state so the operator sees the confirmation.
-  applySettingsModalShow();
-  document.getElementById('applyBar').style.display='none';
-	  try{
-	   await new Promise(resolve=>setTimeout(resolve,3000));
+  try{
+   await new Promise(resolve=>setTimeout(resolve,3000));
    await loadConfig();
    updateDropdowns();
    await loadInfo();
