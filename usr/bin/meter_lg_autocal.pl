@@ -1112,11 +1112,12 @@ sub target_luminance_for_step {
 	 # at 100% by spec -- HDR has no headroom codes above 100 IRE.
 	 my $signal_peak=($mode eq "sdr") ? autocal_sdr_signal_peak() : 100.0;
 	 my $signal=$stimulus/$signal_peak;
-	 # HDR clamps signals > 1.0 to 1.0 (HDR10 PQ saturates there by spec).
-	 # SDR preserves signal > 1.0 only within reason -- anything above
-	 # 1.0 (e.g. stimulus > 109 on a non-standard label) is clamped to 1.0
-	 # so the gamma curve doesn't extrapolate past the legal peak.
-	 $signal=1 if($signal+0 > 1 && $mode ne "sdr");
+	 # Clamp >1.0 for HDR (PQ saturates at 100% by spec) AND for SDR
+	 # transports with NO super-white (signal_peak==100: Full / RGB-Limited),
+	 # where 100/105/109% all clamp to the same peak wire code -- their target
+	 # is the peak, not an unreachable >peak value. Only YCbCr-Limited
+	 # (signal_peak==109) keeps genuine super-white above 1.0.
+	 $signal=1 if($signal+0 > 1 && ($mode ne "sdr" || (defined($signal_peak) && $signal_peak == 100)));
 	 if(defined($ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
 	  my $trace_fh;
 	  if(open($trace_fh,">>",$ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
