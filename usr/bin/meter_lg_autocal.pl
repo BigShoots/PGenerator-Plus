@@ -428,7 +428,15 @@ sub lg_autocal_26_sdr_headroom_enabled {
  my ($config)=@_;
  return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
  my $signal_mode=lc($config->{"signal_mode"}||"sdr");
- return ($signal_mode eq "sdr") ? 1 : 0;
+ return 0 if($signal_mode ne "sdr");
+ # SDR headroom drives the 10-bit legal-expanded ladder (codes 64..1023,
+ # peak at 109%). That is only valid on a 10-bit link -- an 8-bit link
+ # cannot carry those codes or any >100% headroom -- so honor the selected
+ # bit depth: enable headroom only when max_bpc is 10. At 8-bit the caller
+ # falls back to the plain 8-bit code path (0..255 full / 16..235 limited).
+ # Default to headroom when max_bpc is unspecified (preserves prior default).
+ my $bpc=(defined($config->{"max_bpc"}) && $config->{"max_bpc"} ne "") ? int($config->{"max_bpc"}) : 10;
+ return ($bpc >= 10) ? 1 : 0;
 }
 
 sub lg_autocal_26_hdr20_seed_enabled {
