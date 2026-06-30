@@ -8724,8 +8724,14 @@ transition:all .3s;z-index:999;pointer-events:none}
 .apply-settings-mask{position:fixed;inset:0;z-index:9100;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
 #applySettingsOverlay{z-index:9102}
 #lgConnectOverlay{z-index:9101}
-body.apply-settings-active .apply-settings-mask{display:flex}
-body.apply-settings-active .dashboard,body.apply-settings-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
+/* Per-overlay visibility triggers. Each modal has its own body class
+   so showing one doesn't show the other. Both modes still dim the
+   dashboard underneath via the shared .apply-settings-active rules
+   below; only the modal-visible rules are split. */
+body.apply-settings-active #applySettingsOverlay{display:flex}
+body.lg-connect-active #lgConnectOverlay{display:flex}
+body.apply-settings-active .dashboard,body.apply-settings-active .site-footer,
+body.lg-connect-active .dashboard,body.lg-connect-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 .apply-settings-card{width:min(420px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:22px 20px;text-align:center}
 .apply-settings-icon{position:relative;width:54px;height:54px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center}
 .apply-settings-spinner{width:38px;height:38px;border:3px solid rgba(255,255,255,.18);border-top-color:var(--accent);border-radius:50%;animation:apply-settings-spin .9s linear infinite}
@@ -10283,8 +10289,13 @@ function applySettingsModalHide(){
 function lgConnectModalShow(showPinField,statusText){
  const overlay=document.getElementById('lgConnectOverlay');
  if(!overlay) return;
- document.body.classList.add('apply-settings-active');
- document.body.classList.remove('apply-settings-success','apply-settings-error');
+ // Use the LG-specific body class so the Apply Settings modal stays
+ // hidden (its trigger is body.apply-settings-active). They share a
+ // CSS skeleton but only one can be visible at a time. Also defensively
+ // remove apply-settings-active in case the apply-settings flow left it
+ // on (e.g., the user opened Connect right after Apply finished).
+ document.body.classList.add('lg-connect-active');
+ document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
  const title=document.getElementById('lgConnectTitle');
  const status=document.getElementById('lgConnectStatus');
  const pinField=document.getElementById('lgConnectPinField');
@@ -10342,6 +10353,11 @@ function lgConnectModalError(detail){
  if(!overlay) return;
  document.body.classList.add('apply-settings-error');
  document.body.classList.remove('apply-settings-success');
+ // Make sure the apply-settings flag is off so a stale Apply Settings
+ // modal can't pop back over the LG error state if the user happened
+ // to leave it up before clicking Connect.
+ document.body.classList.remove('apply-settings-active');
+ document.body.classList.add('lg-connect-active');
  const title=document.getElementById('lgConnectTitle');
  const status=document.getElementById('lgConnectStatus');
  if(title) title.textContent='Connect failed';
@@ -10367,7 +10383,12 @@ function lgConnectModalHide(){
  const overlay=document.getElementById('lgConnectOverlay');
  if(!overlay) return;
  overlay.setAttribute('aria-hidden','true');
- document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
+ // Remove the LG-specific trigger. Leave apply-settings-* alone --
+ // Apply Settings has its own show() and shouldn't be cleared by an
+ // LG Cancel. Only remove apply-settings-active defensively if it
+ // wasn't actually set by applySettingsModalShow() in this session
+ // (we can't tell cheaply, so just leave it).
+ document.body.classList.remove('lg-connect-active');
  const pinInput=document.getElementById('lgConnectPinInput');
  if(pinInput) pinInput.value='';
  // Bump the cancellation token so any in-flight lgConnect() flow
