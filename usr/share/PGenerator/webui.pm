@@ -8749,6 +8749,22 @@ body.apply-settings-error .apply-settings-title{color:var(--red)}
 body.apply-settings-error .apply-settings-status{color:#e08184}
 @keyframes apply-settings-spin{to{transform:rotate(360deg)}}
 @keyframes apply-settings-draw{to{stroke-dashoffset:0}}
+/* LG Connect modal: reuses the .apply-settings-* skeleton above (same
+   mask, card, spinner, check). The PIN field is hidden by default and
+   shown only during first-time pairing (lgConnect() sets the visible
+   state when there's no saved client key). The input is sized to fit
+   a 4-8 digit PIN with a Submit button on the same line; the wider
+   card gives the row enough room without cramping the field. The
+   field picks up the green/red modal state for visual consistency. */
+.lg-connect-card{width:min(480px,calc(100vw - 36px))}
+.apply-settings-pin{margin-top:14px;display:flex;flex-direction:column;align-items:stretch;gap:6px}
+.apply-settings-pin-label{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;text-align:left}
+.apply-settings-pin-input{flex:1;min-width:0;min-height:34px;background:#080a11;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:1.05rem;font-weight:600;letter-spacing:.18em;padding:6px 12px;box-sizing:border-box;color-scheme:dark;text-align:center;outline:none}
+.apply-settings-pin-input:focus{border-color:var(--accent)}
+.apply-settings-pin-input:disabled{opacity:.55;cursor:not-allowed}
+.apply-settings-pin-hint{font-size:.72rem;color:var(--text2);line-height:1.4;margin-top:2px;opacity:.85;text-align:center}
+body.apply-settings-error .apply-settings-pin-input{border-color:var(--red)}
+body.apply-settings-error .apply-settings-pin-hint{color:#e08184}
 .info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:6px}
 .info-item{background:#0d0d15;padding:8px;border-radius:6px;min-width:0}
 .info-item .label{font-size:.6rem;color:var(--text2);text-transform:uppercase}
@@ -10132,6 +10148,40 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 </div>
 
+<!-- LG Connect modal: shown when the operator clicks "Connect" on the LG
+     display card. The POST to /api/lg/connect (or /api/lg/pair-pin/start
+     on first-time pairing) takes 5-70s because the daemon round-trips
+     through the WebOS WSS handshake. Like the Apply Settings modal, the
+     spinner must pop at the click frame, not after the POST returns --
+     see 6eda2d5c for the same lesson. On first-time connect the
+     operator also has to read a PIN off the TV and type it; this modal
+     exposes that PIN field inline so they don't have to hunt the LG
+     card around in the background. On success the spinner flips to
+     the same large green check used by the Apply Settings modal. On
+     error the modal stays red so the operator can read the message. -->
+<div class="apply-settings-mask" id="lgConnectOverlay" aria-hidden="true">
+ <div class="apply-settings-card lg-connect-card">
+  <div class="apply-settings-icon" id="lgConnectIcon" aria-hidden="true">
+   <span class="apply-settings-spinner" aria-hidden="true"></span>
+   <span class="apply-settings-check" aria-hidden="true"><svg viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg"><path d="M14 36 L28 50 L56 18"/></svg></span>
+  </div>
+  <div class="apply-settings-title" id="lgConnectTitle">Connect to LG TV</div>
+  <div class="apply-settings-status" id="lgConnectStatus">Contacting the LG TV&hellip;</div>
+  <!-- PIN field: only visible during first-time pairing (no saved key).
+       The field is rendered inline so the operator doesn't lose the
+       modal context when they go read the PIN off the TV. The
+       Submit PIN button is wired by lgConnect() in lg.pm. -->
+  <div class="apply-settings-pin" id="lgConnectPinField" style="display:none">
+   <label class="apply-settings-pin-label" for="lgConnectPinInput">PIN shown on TV</label>
+   <div style="display:flex;gap:8px;align-items:center;justify-content:center">
+    <input type="text" id="lgConnectPinInput" class="apply-settings-pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="4-8 digits" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter'){event.preventDefault();lgConnectSubmitPinFromModal();}">
+    <button class="btn btn-sm btn-primary" id="lgConnectPinSubmit" type="button" onclick="lgConnectSubmitPinFromModal()">Submit</button>
+   </div>
+   <div class="apply-settings-pin-hint">Watch the LG TV for a PIN, then type it here.</div>
+  </div>
+ </div>
+</div>
+
 <script>
 const API=window.location.origin;
 let config={};
@@ -10198,6 +10248,87 @@ function applySettingsModalHide(){
  if(!overlay) return;
  overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
+}
+
+// LG Connect modal helpers: the same modal skeleton (mask + spinner ->
+// green check) as applySettings, but the success/error states stick
+// around long enough for the operator to read the message because the
+// WebOS WSS handshake can take 30-70s and the success/failure is the
+// only feedback they'll get. The PIN field is only shown when
+// lgConnect() detects a first-time pairing (no saved client key);
+// lgConnectSubmitPinFromModal() reads the input and forwards to the
+// existing lgSubmitPin() flow.
+function lgConnectModalShow(showPinField,statusText){
+ const overlay=document.getElementById('lgConnectOverlay');
+ if(!overlay) return;
+ document.body.classList.add('apply-settings-active');
+ document.body.classList.remove('apply-settings-success','apply-settings-error');
+ const title=document.getElementById('lgConnectTitle');
+ const status=document.getElementById('lgConnectStatus');
+ const pinField=document.getElementById('lgConnectPinField');
+ const pinInput=document.getElementById('lgConnectPinInput');
+ if(title) title.textContent='Connect to LG TV';
+ if(status) status.textContent=statusText||'Contacting the LG TV\u2026';
+ if(pinField) pinField.style.display=showPinField?'flex':'none';
+ if(pinInput){
+  pinInput.value='';
+  pinInput.disabled=!showPinField;
+  if(showPinField){
+   // Defer focus a tick so the modal transition completes first --
+   // focus() on a display:none element is a no-op.
+   setTimeout(()=>{try{pinInput.focus({preventScroll:true});}catch(e){}},50);
+  }
+ }
+ overlay.setAttribute('aria-hidden','false');
+}
+function lgConnectModalPinStatus(statusText){
+ const status=document.getElementById('lgConnectStatus');
+ if(status) status.textContent=statusText;
+}
+function lgConnectModalSuccess(detail){
+ const overlay=document.getElementById('lgConnectOverlay');
+ if(!overlay) return;
+ document.body.classList.add('apply-settings-success');
+ const title=document.getElementById('lgConnectTitle');
+ const status=document.getElementById('lgConnectStatus');
+ const pinField=document.getElementById('lgConnectPinField');
+ if(title) title.textContent='Connected to LG TV';
+ if(status) status.textContent=detail||'The LG TV is now paired and reachable.';
+ if(pinField) pinField.style.display='none';
+ setTimeout(()=>lgConnectModalHide(),2000);
+}
+function lgConnectModalError(detail){
+ const overlay=document.getElementById('lgConnectOverlay');
+ if(!overlay) return;
+ document.body.classList.add('apply-settings-error');
+ document.body.classList.remove('apply-settings-success');
+ const title=document.getElementById('lgConnectTitle');
+ const status=document.getElementById('lgConnectStatus');
+ if(title) title.textContent='Connect failed';
+ if(status) status.textContent=detail||'Unable to connect to the LG TV.';
+ // Leave the modal up so the operator can read the error -- the corner
+ // toast often scrolls off the visible area on long autocal sessions.
+}
+function lgConnectModalHide(){
+ const overlay=document.getElementById('lgConnectOverlay');
+ if(!overlay) return;
+ overlay.setAttribute('aria-hidden','true');
+ document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
+ const pinInput=document.getElementById('lgConnectPinInput');
+ if(pinInput) pinInput.value='';
+}
+// Reads the modal PIN input and forwards to the existing lgSubmitPin()
+// handler. Also bridges Enter -> submit. Defined here (not in lg.pm)
+// so the onclick="..." attribute on the Submit button can find it.
+function lgConnectSubmitPinFromModal(){
+ const input=document.getElementById('lgConnectPinInput');
+ if(!input) return;
+ const pin=String(input.value||'').replace(/\D+/g,'');
+ if(!/^\d{4,8}$/.test(pin)){
+  input.focus();
+  return;
+ }
+ if(typeof lgSubmitPin==='function') lgSubmitPin();
 }
 
 let _pingFailCount=0;
