@@ -311,6 +311,12 @@ my $_INFO_CACHE_TTL=5;
 my $_cec_cache="";
 my $_cec_cache_time=0;
 my $_CEC_CACHE_TTL=30;
+# Throttle for live TV power queries from the status path. The single-threaded
+# webui must not pay a CEC power query (~500ms worst case when the TV is off)
+# on every poll, so we do at most one live query per this many seconds and
+# serve the cached reading in between.
+my $_cec_last_power_query=0;
+my $_CEC_POWER_QUERY_THROTTLE=4;
 
 my $_caps_cache="";
 my $_caps_cache_time=0;
@@ -6928,7 +6934,7 @@ sub webui_cec_scan_cache_info (@) {
 }
 
 sub webui_cec_direct_status (@) {
- my ($cec_bin,$timeout)=@_;
+ my ($cec_bin,$timeout,$want_power)=@_;
  $timeout=2 if(!defined($timeout) || $timeout !~ /^\d+$/ || $timeout < 1);
  # Try the configured CEC binary first (pgcec), then fall back to
  # pgenerator-cec (the python2 self-contained CEC helper that talks
@@ -6936,18 +6942,18 @@ sub webui_cec_direct_status (@) {
  # cec-ctl is not installed, so pgenerator-cec is the only path that
  # actually returns real TV power state.
  #
- # CRITICAL: always pass --no-power on both paths. The GIVE_DEVICE_POWER_STATUS
- # ioctl can stall 200-2000ms when the TV is off or unresponsive -- and
- # because the PGenerator daemon is single-threaded, every blocked status
- # poll stalls the entire webui (the user sees "WebUI keeps going offline").
- # --no-power skips the power query and returns the cached power state from
- # /tmp/pgenerator-cec-power.json instead, which is instant.
- #
- # The power cache is updated only when the webui explicitly requests it
- # (see webui_cec_direct_status_power).
- my $output=`timeout $timeout $cec_bin status --no-power 2>/dev/null`;
+ # $want_power controls the blocking GIVE_DEVICE_POWER_STATUS query. With
+ # $want_power FALSE we pass --no-power (instant, returns "(skipped)") for
+ # callers that only need phys/log/osd. With $want_power TRUE we let the
+ # helper query real power; its internal timeout is now 500ms (commit
+ # 32978694), so a live query returns in well under a second even when the
+ # TV is off. The status path gates real-power queries with a per-process
+ # throttle ($_CEC_POWER_QUERY_THROTTLE) so the single-threaded webui never
+ # pays more than one such query every few seconds.
+ my $power_arg=$want_power ? "" : " --no-power";
+ my $output=`timeout $timeout $cec_bin status$power_arg 2>/dev/null`;
  if((!defined($output) || $output eq "" || $output !~ /^tv_power:/m) && -x "/usr/sbin/pgenerator-cec") {
-  $output=`timeout $timeout /usr/sbin/pgenerator-cec status --no-power 2>/dev/null`;
+  $output=`timeout $timeout /usr/sbin/pgenerator-cec status$power_arg 2>/dev/null`;
  }
  return undef if(!defined($output) || $output eq "");
  # When --no-power is used pgenerator-cec prints "tv_power:  (skipped)"
@@ -7125,7 +7131,17 @@ sub webui_cec (@) {
 	 if($cmd eq "status") {
 	  my ($cached_phys,$cached_log,$cached_osd,$cached_power,$cache_age)=&webui_cec_scan_cache_info($cec_scan_cache);
 	  my $cached_status=&webui_cec_power_cache_read($cec_power_cache,60);
-	  my $direct=&webui_cec_direct_status($cec_bin,4);
+	  my $direct=undef;
+	  # Live TV power query, throttled so the single-threaded webui pays at
+	  # most one ~500ms CEC power query every few seconds; between queries (or
+	  # when the query gets no reply) we fall through to the cached reading
+	  # below. The prior --no-power-only status path could never read live
+	  # power, so the label was stuck "unknown" whenever the scan/power caches
+	  # went cold (e.g. after a reboot cleared /tmp), even with the TV on.
+	  if(time() - $_cec_last_power_query >= $_CEC_POWER_QUERY_THROTTLE) {
+	   $_cec_last_power_query=time();
+	   $direct=&webui_cec_direct_status($cec_bin,2,1);
+	  }
 	  if(ref($direct) eq "HASH") {
 	   my $phys=($direct->{"phys_addr"}||$cached_phys||"");
 	   my $log=($direct->{"log_addr"}||$cached_log||"");
