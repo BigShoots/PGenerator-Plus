@@ -2008,16 +2008,14 @@ sub webui_lg_card_html (@) {
 	    <button type="button" class="btn btn-sm btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="lgScanTvs(true)">Scan</button>
 	   </div>
 	  </div>
-	   <div class="grid" id="lgPinRow" style="display:none;margin-top:8px">
-    <div class="field">
-      <label>TV PIN</label>
-         <input type="text" id="lgPairPin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="one-time-code" placeholder="Enter PIN shown on TV" onkeydown="lgPinKeydown(event)">
-    </div>
-   </div>
+	  <!-- The PIN entry row used to live here, but the LG Connect modal
+	       is now the only PIN entry point (see lgConnectModalShow/Submit).
+	       The modal pops when the operator clicks Connect and the field
+	       appears inline as soon as the TV starts showing a PIN, so the
+	       operator never has to hunt around the LG card behind the modal. -->
 	  <div class="btn-row" style="margin-top:8px">
 	      <button class="btn btn-sm btn-success" id="lgConnectBtn" onclick="lgConnect()">Connect</button>
 	    <button class="btn btn-sm btn-secondary" id="lgDisconnectBtn" onclick="lgDisconnectClient()" disabled>Disconnect</button>
-	    <button class="btn btn-sm btn-warning" id="lgPinSubmitBtn" style="display:none" onclick="lgSubmitPin()">Submit PIN</button>
    <button class="btn btn-sm btn-primary" onclick="loadLgStatus()">Refresh</button>
    <button class="btn btn-sm btn-secondary" onclick="lgSaveManualIp()">Save IP</button>
    <button class="btn btn-sm btn-danger" onclick="lgForgetClient()">Forget Pairing</button>
@@ -2369,8 +2367,24 @@ function lgSelectedPairingMode(){
 }
 
 function lgRevealPinEntry(){
- const pinInput=document.getElementById('lgPairPin');
- const card=(pinInput&&pinInput.closest('.card'))||document.querySelector('.card[data-widget="lg"]');
+ // The PIN field lives inside the LG Connect modal -- that is the only
+ // PIN entry point in the new flow (see lgConnectModalShow / Submit).
+ // Focus the modal input if the modal is open. If the modal isn't open
+ // (e.g., the operator opened the page with a stale pinPending status
+ // from a previous session), fall back to a legacy no-op: there is no
+ // longer an inline lgPairPin input in the display card to scroll to.
+ const overlay=document.getElementById('lgConnectOverlay');
+ const modalOpen=overlay&&overlay.getAttribute('aria-hidden')!=='true';
+ const modalInput=document.getElementById('lgConnectPinInput');
+ if(modalOpen&&modalInput){
+  try{modalInput.focus({preventScroll:true});}catch(e){modalInput.focus();}
+  if(modalInput.select) modalInput.select();
+  return;
+ }
+ // No modal -- if the legacy input is somehow still present (it isn't
+ // in production), scroll/focus it as a last resort.
+ const legacyInput=document.getElementById('lgPairPin');
+ const card=(legacyInput&&legacyInput.closest('.card'))||document.querySelector('.card[data-widget="lg"]');
  if(card&&card.classList.contains('collapsed')){
   card.classList.remove('collapsed');
   try{
@@ -2383,9 +2397,9 @@ function lgRevealPinEntry(){
   }catch(e){}
  }
  if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'center'});
- if(pinInput){
-  try{ pinInput.focus({preventScroll:true}); }catch(e){ pinInput.focus(); }
-  if(pinInput.select) pinInput.select();
+ if(legacyInput){
+  try{legacyInput.focus({preventScroll:true});}catch(e){legacyInput.focus();}
+  if(legacyInput.select) legacyInput.select();
  }
 }
 
@@ -2863,14 +2877,11 @@ function renderLgStatus(r){
  const text=document.getElementById('lgStatusText');
  const meta=document.getElementById('lgStatusMeta');
  const input=document.getElementById('lgManualIp');
- const pinInput=document.getElementById('lgPairPin');
  const pairingModeSelect=document.getElementById('lgPairingMode');
  const connectBtn=document.getElementById('lgConnectBtn');
  const disconnectBtn=document.getElementById('lgDisconnectBtn');
  const pinStartBtn=document.getElementById('lgPinStartBtn');
- const pinSubmitBtn=document.getElementById('lgPinSubmitBtn');
  const resetButtons=lgPictureResetButtons();
- const pinRow=document.getElementById('lgPinRow');
  const calibrationMode=document.getElementById('lgCalibrationMode');
  const hint=document.getElementById('lgWorkflowHint');
  if(!badge||!text||!meta) return;
@@ -2956,11 +2967,12 @@ function renderLgStatus(r){
   if(pairingMode && pairingModeSelect.value!==pairingMode) pairingModeSelect.value=pairingMode;
   pairingModeSelect.disabled=pinPending;
  }
- if(pinRow) pinRow.style.display=pinPending?'grid':'none';
- if(pinInput){
-  pinInput.disabled=!pinPending;
-  if(!pinPending && document.activeElement!==pinInput) pinInput.value='';
- }
+ // The PIN entry row/button used to live in the display card and was
+ // toggled here on pinPending. Both have been removed -- the LG Connect
+ // modal is now the only PIN entry point (see lgConnectModalShow /
+ // lgConnectSubmitPinFromModal). renderLgStatus() no longer needs to
+ // touch any inline PIN UI; lgRevealPinEntry() below focuses the modal
+ // input when a status refresh confirms pinPending.
 	 if(calibrationMode){
 	  calibrationMode.disabled=lgCalibrationModePending||pinPending||!connected;
 	  calibrationMode.checked=!!r.calibration_mode;
@@ -2970,7 +2982,6 @@ function renderLgStatus(r){
 	  pinStartBtn.disabled=pinPending;
 	  pinStartBtn.textContent=pinPending?'Pairing Active':'Pair With PIN';
 	 }
- if(pinSubmitBtn) pinSubmitBtn.style.display=pinPending?'':'none';
 	 resetButtons.forEach(button=>{button.disabled=pinPending||!connected||lgPictureModePending||lgCalibrationModePending;});
 	 if(hint){
 	  if(pinPending){
@@ -3050,15 +3061,19 @@ async function lgConnect(){
  // blocking POST). The WebOS WSS handshake can take 5-70s; if we waited
  // for the POST to return the operator would see a dead "Connect" button
  // for that whole window. The modal carries the spinner through the
- // entire flow, with the PIN field shown inline on first-time pairing
- // so the operator doesn't have to leave the modal to find the input
- // in the LG card behind. Helpers live in webui.pm; if absent (older
- // webui.pm deployed) we fall back to the corner toast so the function
- // is still usable.
+ // entire flow. The PIN field stays HIDDEN initially because the TV
+ // isn't showing a PIN yet -- it is revealed (and focused) by
+ // lgConnectModalRevealPinField() once /api/lg/pair-pin/start reports
+ // pin_pending. This keeps the operator from typing into a blank field
+ // while the TV is still booting its pairing prompt.
+ //
+ // Helpers live in webui.pm; if absent (older webui.pm deployed) we
+ // fall back to the corner toast so the function is still usable.
  const showModal=typeof lgConnectModalShow==='function';
  if(showModal){
-  // First-time pairing needs a PIN -- show the field; otherwise hide it.
-  lgConnectModalShow(!hasSavedKey, hasSavedKey
+  // Always start with the PIN field hidden -- it is revealed only if
+  // the post-pair-pin/start status reports pin_pending.
+  lgConnectModalShow(false, hasSavedKey
    ? 'Contacting the LG TV with the saved key\u2026'
    : 'Starting LG PIN pairing. Watch the TV for a PIN.');
  }else{
@@ -3066,61 +3081,149 @@ async function lgConnect(){
    ? 'Connecting to the LG TV with the saved key.'
    : 'Starting LG PIN pairing. Watch the TV for a PIN.');
  }
+
+ // POSTs the PIN to /api/lg/pair-pin/submit and reports success/failure
+ // via the modal. Returns true on success so the caller can fall through
+ // to the saved-key connect POST below.
+ async function submitPinThenConnect(pin){
+  const commandHandle=lgBeginCommand('Submitting LG TV PIN');
+  try{
+   const r=await fetchJSON('/api/lg/pair-pin/submit',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({pin}),
+    _timeoutMs:70000
+   });
+   if(r){
+    renderLgStatus(r);
+    if(r.status==='ok'){
+     // Saved key is now in place. The modal flips to a "Connecting..."
+     // status while the saved-key POST runs.
+     if(showModal) lgConnectModalPinStatus('PIN accepted. Connecting\u2026');
+     return true;
+    }
+    if(showModal) lgConnectModalError(r.message||'PIN was not accepted.');
+    else toast(r.message||'PIN was not accepted.','err');
+    return false;
+   }
+   if(showModal) lgConnectModalError('The daemon returned no response.');
+   else toast('Unable to submit PIN','err');
+   return false;
+  }catch(e){
+   if(showModal) lgConnectModalError((e&&e.message)||'PIN submission failed.');
+   else toast('Unable to submit PIN','err');
+   return false;
+  }finally{
+   lgEndCommand(commandHandle);
+  }
+ }
+
+ // POSTs to /api/lg/connect to open the WebOS session. Modal is
+ // already up (show() ran synchronously above); transitions to
+ // success/error on the result.
+ async function runSavedKeyConnect(){
+  if(button){button.disabled=true;button.textContent='Connecting...';}
+  const commandHandle=lgBeginCommand('Connecting to LG TV');
+  try{
+   const r=await fetchJSON('/api/lg/connect',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ip}),
+    _timeoutMs:70000
+   });
+   if(r){
+    renderLgStatus(r);
+    if(r.status==='ok'){
+     if(showModal) lgConnectModalSuccess(r.message);
+     else toast(r.message||'LG TV connected');
+    }else{
+     if(showModal) lgConnectModalError(r.message);
+     else toast(r.message||'Unable to connect to LG TV','err');
+    }
+   }else{
+    if(showModal) lgConnectModalError('The daemon returned no response.');
+    else toast('Unable to connect to LG TV','err');
+   }
+  }catch(e){
+   if(showModal) lgConnectModalError((e&&e.message)||'Connect request failed.');
+   else toast('Unable to connect to LG TV','err');
+  }finally{
+   lgEndCommand(commandHandle);
+   if(button){button.disabled=false;button.textContent='Connect';}
+  }
+ }
+
  if(!hasSavedKey){
   // First-time pairing: /api/lg/pair-pin/start triggers the TV to show
-  // its PIN. The modal stays up with the PIN field visible; the operator
-  // types the PIN and hits Submit, which calls lgConnectSubmitPinFromModal
-  // -> lgSubmitPin (existing flow). When that succeeds, the saved-key
-  // branch below completes the connect.
+  // its PIN. After it succeeds, the modal reveals the PIN field and
+  // waits (via _lgPinResolver) for the operator to type and submit.
+  // On PIN success we fall through to runSavedKeyConnect() below.
   if(button){button.disabled=true;button.textContent='Starting Pairing...';}
   const commandHandle=lgBeginCommand('Starting LG PIN pairing');
   try{
    await lgStartPinPairing();
-   // After lgStartPinPairing, if status now reports a saved key + paired,
-   // the operator has finished the PIN step. Fall through to the saved-key
-   // POST that actually opens the WebOS session.
    const postState=window.lgStatusState||{};
    if(!lgStatusHasSavedKey(postState)||postState.pinPending){
-    if(showModal) lgConnectModalHide();
-    return;
+    // PIN is required. Reveal the modal's inline PIN field and wait
+    // for the operator to submit. The modal stays up the entire time;
+    // it transitions to success/error after submitPinThenConnect +
+    // runSavedKeyConnect below.
+    if(showModal){
+     lgConnectModalPinStatus('Enter the PIN shown on the TV.');
+     if(typeof lgConnectModalRevealPinField==='function') lgConnectModalRevealPinField();
+    }else{
+     toast('Enter the PIN shown on the TV.');
+    }
+    if(button){button.disabled=false;button.textContent='Connect';}
+    const pin=await lgWaitForModalPin();
+    if(!pin){
+     // Modal closed without a PIN (safety timeout or hide() call).
+     if(button){button.disabled=false;button.textContent='Pair With PIN';}
+     return;
+    }
+    const ok=await submitPinThenConnect(pin);
+    if(!ok){
+     if(button){button.disabled=false;button.textContent='Pair With PIN';}
+     return;
+    }
+    // PIN accepted; saved key is now in place. Fall through to the
+    // saved-key connect POST below.
    }
+  }catch(e){
+   if(showModal) lgConnectModalError((e&&e.message)||'LG PIN pairing failed to start.');
+   else toast('LG PIN pairing failed to start.','err');
+   if(button){button.disabled=false;button.textContent='Pair With PIN';}
+   return;
   }finally{
    lgEndCommand(commandHandle);
-   if(button){button.disabled=false;button.textContent='Pair With PIN';}
   }
  }
- // Saved-key path: open the WebOS session. The modal is still up
- // (showing the spinner) from the show() above; transition to success or
- // error after the POST.
- if(button){button.disabled=true;button.textContent='Connecting...';}
- const commandHandle2=lgBeginCommand('Connecting to LG TV');
- try{
-  const r=await fetchJSON('/api/lg/connect',{
-   method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({ip}),
-   _timeoutMs:70000
-  });
-  if(r){
-   renderLgStatus(r);
-   if(r.status==='ok'){
-    if(showModal) lgConnectModalSuccess(r.message);
-    else toast(r.message||'LG TV connected');
-   }else{
-    if(showModal) lgConnectModalError(r.message);
-    else toast(r.message||'Unable to connect to LG TV','err');
-   }
-  }else{
-   if(showModal) lgConnectModalError('The daemon returned no response.');
-   else toast('Unable to connect to LG TV','err');
-  }
- }catch(e){
-  if(showModal) lgConnectModalError((e&&e.message)||'Connect request failed.');
-  else toast('Unable to connect to LG TV','err');
- }finally{
-  lgEndCommand(commandHandle2);
-  if(button){button.disabled=false;button.textContent='Connect';}
- }
+ // Saved-key path (or post-PIN-submit continuation): open the WebOS
+ // session. The modal is still up (showing the spinner) from the
+ // synchronous show() at the top; transition to success/error after.
+ await runSavedKeyConnect();
+}
+
+// Resolves with the PIN when the operator submits the modal's PIN
+// input (via Submit button or Enter key). Resolves with null if the
+// modal is hidden before submission (lgConnectModalHide() resolves
+// with null as a safety), so the connect flow doesn't hang.
+function lgWaitForModalPin(){
+ return new Promise((resolve)=>{
+  let done=false;
+  const finish=(val)=>{
+   if(done) return;
+   done=true;
+   clearInterval(check);
+   window._lgPinResolver=null;
+   resolve(val);
+  };
+  window._lgPinResolver=finish;
+  const check=setInterval(()=>{
+   const overlay=document.getElementById('lgConnectOverlay');
+   if(!overlay||overlay.getAttribute('aria-hidden')==='true') finish(null);
+  },500);
+ });
 }
 
 async function lgStartPinPairing(){
@@ -3160,41 +3263,6 @@ async function lgStartPinPairing(){
 	    button.textContent=(badgeText==='Enter PIN'||badgeText==='Pairing')?'Pairing Active':'Pair With PIN';
    }
  }
-}
-
-async function lgSubmitPin(){
- const pinInput=document.getElementById('lgPairPin');
- const button=document.getElementById('lgPinSubmitBtn');
-	 const pin=pinInput?pinInput.value.replace(/\D+/g,''):'';
-	 if(!/^\d{4,8}$/.test(pin)){toast('Enter the numeric PIN shown on the TV','err');return;}
-	 if(button){button.disabled=true;button.textContent='Submitting PIN...';}
-	 const commandHandle=lgBeginCommand('Submitting LG TV PIN');
-	 try{
-  const r=await fetchJSON('/api/lg/pair-pin/submit',{
-   method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({pin}),
-   _timeoutMs:70000
-  });
-  if(r){
-   renderLgStatus(r);
-   if(r.status==='ok') toast(r.message||'LG TV paired using PIN');
-   else toast(r.message||'Unable to complete LG PIN pairing','err');
-  }else{
-   toast('Unable to complete LG PIN pairing','err');
-  }
-	 }catch(e){
-	  toast('Unable to complete LG PIN pairing','err');
-	 }finally{
-	  lgEndCommand(commandHandle);
-	  if(button){button.disabled=false;button.textContent='Submit PIN';}
-	 }
-}
-
-function lgPinKeydown(event){
- if(!event||event.key!=='Enter') return;
- event.preventDefault();
- lgSubmitPin();
 }
 
 async function lgRefreshPictureMode(force){

@@ -10281,6 +10281,24 @@ function lgConnectModalShow(showPinField,statusText){
  }
  overlay.setAttribute('aria-hidden','false');
 }
+// Reveal the LG Connect modal's PIN field after /api/lg/pair-pin/start
+// has succeeded and the TV is actually showing a PIN. The initial
+// lgConnectModalShow() call passes showPinField=false so the operator
+// doesn't see an input they can't fill yet; this helper flips the field
+// on and focuses it when the TV is ready. The modal stays up through
+// this transition -- the spinner/check carries the wait.
+function lgConnectModalRevealPinField(){
+ const pinField=document.getElementById('lgConnectPinField');
+ const pinInput=document.getElementById('lgConnectPinInput');
+ if(pinField) pinField.style.display='flex';
+ if(pinInput){
+  pinInput.disabled=false;
+  setTimeout(()=>{
+   try{pinInput.focus({preventScroll:true});}catch(e){pinInput.focus();}
+   if(pinInput.select) pinInput.select();
+  },50);
+ }
+}
 function lgConnectModalPinStatus(statusText){
  const status=document.getElementById('lgConnectStatus');
  if(status) status.textContent=statusText;
@@ -10316,10 +10334,22 @@ function lgConnectModalHide(){
  document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
  const pinInput=document.getElementById('lgConnectPinInput');
  if(pinInput) pinInput.value='';
+ // Wake up any pending lgConnect() flow waiting for a PIN so it can
+ // bail out instead of hanging on a now-hidden modal.
+ if(window._lgPinResolver){
+  const r=window._lgPinResolver;
+  window._lgPinResolver=null;
+  r(null);
+ }
 }
-// Reads the modal PIN input and forwards to the existing lgSubmitPin()
-// handler. Also bridges Enter -> submit. Defined here (not in lg.pm)
-// so the onclick="..." attribute on the Submit button can find it.
+// Reads the modal PIN input and resolves the pending lgConnect() flow
+// (window._lgPinResolver). The modal is the only PIN entry point in the
+// new flow -- the old lgSubmitPin() handler in lg.pm read from the
+// removed lgPairPin input in the display card, so calling it would
+// always see an empty value. Instead, lgConnect() registers a one-shot
+// resolver when it enters the PIN-waiting state, and this helper wakes
+// it up with the typed PIN. Enter-to-submit is bridged inline by the
+// onkeydown attribute on the input.
 function lgConnectSubmitPinFromModal(){
  const input=document.getElementById('lgConnectPinInput');
  if(!input) return;
@@ -10328,7 +10358,18 @@ function lgConnectSubmitPinFromModal(){
   input.focus();
   return;
  }
- if(typeof lgSubmitPin==='function') lgSubmitPin();
+ if(window._lgPinResolver){
+  const r=window._lgPinResolver;
+  window._lgPinResolver=null;
+  r(pin);
+  return;
+ }
+ // No pending connect flow. The Submit button only appears inside the
+ // modal, and the modal is only opened by lgConnect() which always
+ // registers a resolver when the PIN field is visible, so this branch
+ // should not be reachable in normal use. Fall back to a toast so a
+ // stale modal can't submit a PIN into a closed pairing session.
+ if(typeof toast==='function') toast('No pending LG Connect flow. Click Connect to start.','err');
 }
 
 let _pingFailCount=0;
