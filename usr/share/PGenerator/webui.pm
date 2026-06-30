@@ -2371,7 +2371,14 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
   $_lb_bpc=10 if($_lb_bpc != 8 && $_lb_bpc != 12);
   my $_lb_input_max=($_lb_bpc == 8) ? 255 : (($_lb_bpc == 12) ? 4095 : 1023);
   my $_lb_cf=$series_color_format ne "" ? int($series_color_format) : (int($pgenerator_conf{"color_format"} || 1));
-  my $_lb_rr=$transport_signal_range ne "" ? int($transport_signal_range) : 1;
+  # Default the cache-key range to FULL (2) when the request omits
+  # transport_signal_range. The legacy default of 1 (limited) silently
+  # bifurcated the cache between limited and full reads, so a full read
+  # after a limited session would miss the stored black and refall
+  # through to a meter-floor estimate. The canonical SDR stimulus->code
+  # model treats FULL as the source of truth, so FULL is the natural
+  # default when no range is specified.
+  my $_lb_rr=$transport_signal_range ne "" ? int($transport_signal_range) : 2;
   my $_lb_path="/var/lib/PGenerator/cache/last_black_${_lb_sig}_${_lb_input_max}_${_lb_cf}_${_lb_rr}.json";
   if(-f $_lb_path) {
    my $_lb_json="";
@@ -7448,6 +7455,12 @@ sub webui_pattern_pq_encode_normalized (@) {
 #   dv_series_full_range 0/1  use full tunnel range
 sub webui_grey_code_for_stimulus (@) {
  my ($stimulus_pct,$signal_mode,$target_gamma,$signal_range,$opts_hr)=@_;
+ # Preserve the unclamped stimulus for the 10-bit LIMITED lg_autocal_26_codes
+ # sub-branch so the legal-expanded super-white ladder (105% / 109%) can
+ # reach the canonical super-white formula instead of being flattened to
+ # 100% by the function-level clamp below. All other branches observe the
+ # clamp.
+ my $raw_stim_for_ac26_ltd=defined($stimulus_pct) ? ($stimulus_pct+0) : 0;
  $stimulus_pct+=0;
  $stimulus_pct=0 if($stimulus_pct < 0);
  $stimulus_pct=100 if($stimulus_pct > 100);
@@ -7500,17 +7513,23 @@ sub webui_grey_code_for_stimulus (@) {
    "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
    "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
   );
-  my %slot_for_stim;
-  foreach my $k (keys %lg_autocal_26_code) {
-   my $code_val=$lg_autocal_26_code{$k};
-   my $stim_val=($code_val-64)*100/876;
-   $slot_for_stim{$stim_val}=$k;
+  # 10-bit LIMITED canonical compute. The legacy hardcoded table above is
+  # retained in-scope (unused) so external readers can still cross-reference
+  # it during the transition; we now derive the code via the SAME canonical
+  # model the worker uses (patch_code_for_stimulus in meter_lg_autocal.pl),
+  # so the displayed code matches the driven code for every combo:
+  #   S<=100 -> round(64 + S/100*876)                     (50%->502, 100%->940)
+  #   S>100  -> round(940 + (S-100)/9*(1023-940))        (105%->986, 109%->1023)
+  # $raw_stim_for_ac26_ltd bypasses the function-level 100% clamp so the
+  # super-white formula can fire on the legal-expanded 105/109 stimuli.
+  my $_ac26_s=$raw_stim_for_ac26_ltd+0;
+  $_ac26_s=0 if($_ac26_s < 0);
+  $_ac26_s=109 if($_ac26_s > 109);
+  if($_ac26_s <= 100) {
+   $code=int(64 + $_ac26_s/100*876 + .5);
+  } else {
+   $code=int(940 + ($_ac26_s-100)/9*(1023-940) + .5);
   }
-  my $slot_key="";
-  foreach my $sv (keys %slot_for_stim) {
-   if(abs($sv-$stimulus_pct) < 0.01) { $slot_key=$slot_for_stim{$sv}; last; }
-  }
-  $code=exists($lg_autocal_26_code{$slot_key}) ? $lg_autocal_26_code{$slot_key} : int(64 + $stimulus_pct/100*876 + .5);
   $code=64 if($code < 64);
   $code=1023 if($code > 1023);
   $input_max=1023;
