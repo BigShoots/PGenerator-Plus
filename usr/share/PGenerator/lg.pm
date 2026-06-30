@@ -1849,6 +1849,46 @@ sub webui_lg_hdr_calman_reset (@) {
  return &lg_encode_json($result);
 }
 
+sub webui_lg_sdr_calman_reset (@) {
+ # SDR counterpart of webui_lg_hdr_calman_reset. The auto-cal wizard
+ # calls /api/lg/sdr-calman-reset after the SDR picture-mode reset
+ # to clear any prior HDR cycle's BT.2020 3x3 matrix / 3D LUT so the
+ # SDR DPG deltas are applied in BT.709 code space. Without this
+ # route the dispatcher falls through to the generic "Unknown LG
+ # route" error and the wizard surfaces it as "Reset failed - Unknown
+ # LG route." The helper (pgenerator-lg lg_sdr_calman_reset_workflow)
+ # has been there since the SDR reference reset was added; the webui
+ # endpoint to reach it was not.
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before resetting SDR calibration state.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting SDR calibration state." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting SDR calibration state." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting SDR calibration state." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "sdr_calman_reset",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  ddc_layout => $payload->{"ddc_layout"}||"sdr26",
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the SDR calibration reset again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_api (@) {
  my $path=shift;
  my $method=shift;
@@ -1885,6 +1925,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/hdr-calman-reset" && $method eq "POST") {
   return &webui_lg_hdr_calman_reset($body);
+ }
+ if($path eq "/api/lg/sdr-calman-reset" && $method eq "POST") {
+  return &webui_lg_sdr_calman_reset($body);
  }
  if($path eq "/api/lg/1d-dpg/upload" && $method eq "POST") {
   return &webui_lg_1d_dpg_upload($body);
