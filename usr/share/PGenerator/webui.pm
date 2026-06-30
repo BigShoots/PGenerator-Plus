@@ -8701,8 +8701,10 @@ transition:all .3s;z-index:999;pointer-events:none}
    Shown when the operator clicks "Apply & Restart" on the display-settings
    card. Replaces the prior 3-5s of silence (the corner toast only landed
    AFTER the renderer restart completed). The card transitions from a
-   spinner to a check mark when the apply flow finishes successfully;
-   auto-dismisses ~1.5s after the success state. */
+   spinner to a large green check mark when the apply flow finishes
+   successfully; auto-dismisses ~1.5s after the success state. The check
+   SVG fills the 54x54 icon container (the same space the spinner was
+   in) with a thick green stroke so the success state reads at a glance. */
 .apply-settings-mask{position:fixed;inset:0;z-index:9100;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
 body.apply-settings-active .apply-settings-mask{display:flex}
 body.apply-settings-active .dashboard,body.apply-settings-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
@@ -8710,15 +8712,27 @@ body.apply-settings-active .dashboard,body.apply-settings-active .site-footer{fi
 .apply-settings-icon{position:relative;width:54px;height:54px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center}
 .apply-settings-spinner{width:38px;height:38px;border:3px solid rgba(255,255,255,.18);border-top-color:var(--accent);border-radius:50%;animation:apply-settings-spin .9s linear infinite}
 body.apply-settings-success .apply-settings-spinner{display:none}
-.apply-settings-check{display:none;font-size:42px;line-height:1;color:var(--green);font-weight:700}
-body.apply-settings-success .apply-settings-check{display:inline}
+/* Success check: SVG fills the full 54x54 icon area (same space the spinner
+   was in). The stroke is 5px thick so it reads at a glance, and a
+   draw-in animation runs once via stroke-dasharray so the check paints
+   itself in when the success state activates. The 70x70 viewBox + 90%
+   scale gives some padding around the stroke so the tips of the check
+   don't visually clip the icon edge. */
+.apply-settings-check{display:none;width:54px;height:54px;color:var(--green)}
+.apply-settings-check svg{width:100%;height:100%;display:block;overflow:visible}
+.apply-settings-check svg path{fill:none;stroke:currentColor;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:60;stroke-dashoffset:60;animation:apply-settings-draw .45s ease-out forwards}
+body.apply-settings-success .apply-settings-check{display:block}
+body.apply-settings-success .apply-settings-spinner{display:none}
 .apply-settings-title{font-size:1.05rem;font-weight:700;color:var(--text);margin-bottom:6px}
 .apply-settings-status{font-size:.85rem;color:var(--text2);line-height:1.4;min-height:2.4em}
 .apply-settings-hint{font-size:.72rem;color:var(--text2);margin-top:10px;line-height:1.4;opacity:.85}
-body.apply-settings-success .apply-settings-title{color:var(--green)}
-body.apply-settings-success .apply-settings-status{color:var(--text)}
+/* Success state: title + status both turn green so the confirmation reads
+   as a single block. Error state: title red, status dimmer red. */
+body.apply-settings-success .apply-settings-title,body.apply-settings-success .apply-settings-status{color:var(--green)}
 body.apply-settings-error .apply-settings-title{color:var(--red)}
+body.apply-settings-error .apply-settings-status{color:#e08184}
 @keyframes apply-settings-spin{to{transform:rotate(360deg)}}
+@keyframes apply-settings-draw{to{stroke-dashoffset:0}}
 .info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:6px}
 .info-item{background:#0d0d15;padding:8px;border-radius:6px;min-width:0}
 .info-item .label{font-size:.6rem;color:var(--text2);text-transform:uppercase}
@@ -10090,7 +10104,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <div class="apply-settings-card">
   <div class="apply-settings-icon" id="applySettingsIcon" aria-hidden="true">
    <span class="apply-settings-spinner" aria-hidden="true"></span>
-   <span class="apply-settings-check" aria-hidden="true" style="display:none">&#10003;</span>
+   <!-- Success check: inline SVG so the stroke can be sized to fill the
+        icon area and painted in via stroke-dasharray. Path traced in a
+        70x70 viewBox (origin top-left, tip at ~56,18) so a 54x54 render
+        leaves 8px padding around the check tips. -->
+   <span class="apply-settings-check" aria-hidden="true"><svg viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg"><path d="M14 36 L28 50 L56 18"/></svg></span>
   </div>
   <div class="apply-settings-title" id="applySettingsTitle">Apply Settings</div>
   <div class="apply-settings-status" id="applySettingsStatus">Saving and restarting the renderer&hellip;</div>
