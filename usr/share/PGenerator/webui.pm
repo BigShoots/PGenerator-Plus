@@ -2653,14 +2653,78 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 			   my $lg_legal_sdr_ddc_codes=0;
 				   # LG manual greyscale follows the TV's 22-point white-balance menu.
 				   # Auto Cal builds its own extended 26-point sequence separately.
-				   my %lg_autocal_26_code=(
+				   # SDR26 26-anchor table selection dispatches on bit-depth
+				   # (max_bpc) AND transport (rgb_quant_range) the same way
+				   # the HDR20 ladder below does, so the chart's stimulus
+				   # label, the wire code the panel decodes, and the
+				   # worker's autocal-26 patch are all consistent for every
+				   # combo. The 0% IRE anchor is NOT in the tables -- the
+				   # 0%-aware fallback below handles 0% via the active
+				   # range's min/span.
+				   my %lg_autocal_26_code_10bit_limited=(
 				    "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
 				    "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
 				   );
+				   # 10-bit Full: linear 0..1023, super-white clamps to peak.
+				   my %lg_autocal_26_code_10bit_full=();
+				   # 8-bit Limited: legal-expanded (16..235) extended ladder.
+				   my %lg_autocal_26_code_8bit_limited=();
+				   # 8-bit Full: linear 0..255, super-white clamps to peak.
+				   my %lg_autocal_26_code_8bit_full=();
+				   foreach my $k (@ire_vals) {
+				    next if($k+0 == 0);
+				    my $s=$k+0;
+				    my $key=sprintf("%.1f",$k);
+				    # 10-bit Full
+				    my $sclamp=$s; $sclamp=100 if($sclamp > 100);
+				    $lg_autocal_26_code_10bit_full{$key}=int($sclamp/100*1023+0.5);
+				    # 10-bit Limited already in the table above.
+				    # 8-bit Full
+				    $lg_autocal_26_code_8bit_full{$key}=int($sclamp/100*255+0.5);
+				    # 8-bit Limited
+				    my $code;
+				    if($s <= 100) {
+				     $code=int(16 + $s/100*219 + 0.5);
+				    } else {
+				     $code=int(235 + ($s-100)/9*(255-235) + 0.5);
+				    }
+				    $lg_autocal_26_code_8bit_limited{$key}=$code;
+				   }
+				   # SDR26 bit-depth + transport dispatch. Mirrors the
+				   # HDR20 4-table pattern below so the chart stimulus
+				   # label maps correctly on every (max_bpc ×
+				   # rgb_quant_range) combination.
+				   my $_ac26_bits=(defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? int($pgenerator_conf{"max_bpc"}) : 10;
+				   $_ac26_bits=10 if($_ac26_bits == 12);
+				   my %lg_autocal_26_code;
+				   if($_ac26_bits == 10 && $greyscale_patch_limited) {
+				    %lg_autocal_26_code=%lg_autocal_26_code_10bit_limited;
+				   } elsif($_ac26_bits == 10 && !$greyscale_patch_limited) {
+				    %lg_autocal_26_code=%lg_autocal_26_code_10bit_full;
+				   } elsif($_ac26_bits == 8 && $greyscale_patch_limited) {
+				    %lg_autocal_26_code=%lg_autocal_26_code_8bit_limited;
+				   } else {
+				    %lg_autocal_26_code=%lg_autocal_26_code_8bit_full;
+				   }
 				   my %lg_autocal_26_stimulus=();
 				   foreach my $key (keys %lg_autocal_26_code) {
 				    my $code=$lg_autocal_26_code{$key};
-				    $lg_autocal_26_stimulus{$key}=($code-64)*100/876;
+				    # Inverse-map the wire code back to stimulus %.
+				    # Dispatch on the same bit-depth + transport axes as
+				    # the active table (not always the 10-bit Limited
+				    # formula) so the chart's stimulus label matches
+				    # what the panel actually decoded.
+				    my $inv;
+				    if($_ac26_bits == 10 && $greyscale_patch_limited) {
+				     $inv=($code-64)*100/876;
+				    } elsif($_ac26_bits == 10 && !$greyscale_patch_limited) {
+				     $inv=($code/1023)*100;
+				    } elsif($_ac26_bits == 8 && $greyscale_patch_limited) {
+				     $inv=($code-16)*100/219;
+				    } else {
+				     $inv=($code/255)*100;
+				    }
+				    $lg_autocal_26_stimulus{$key}=$inv;
 			   }
 				   # HDR10 26pt table selection follows the live max_bpc
 				   # (the WebUI Bit Depth dropdown / PGenerator.conf).
@@ -14302,14 +14366,45 @@ function meterLgSdrExtendedCodeFromPercent(percent){
 }
 
 function meterLgSdrLegalHeadroomCodeFromPercent(percent){
-	 const clamped=clampNum(percent,0,109.5)/100;
-	 return Math.max(64,Math.min(1023,Math.round(64+clamped*876)));
+	 const s=clampNum(percent,0,109.5);
+	 const bits=meterPatchBitDepth();
+	 const limited=meterIsLimitedRange();
+	 if(!limited){
+		// Full range: no headroom above 100% -- clamp to peak.
+		const peak=bits===10?1023:255;
+		const clamped=Math.max(0,Math.min(100,s))/100;
+		return Math.round(clamped*peak);
+	 }
+	 if(bits===10){
+		// 10-bit Limited legal-expanded ladder (matches the worker).
+		const c=64+s/100*876;
+		return Math.max(64,Math.min(1023,Math.round(c)));
+	 }
+	 // 8-bit Limited extended ladder (16..255 super-white).
+	 const c=s<=100 ? 16+s/100*219 : 235+(s-100)/9*(255-235);
+	 return Math.max(16,Math.min(255,Math.round(c)));
 }
 
 function meterLgAutoCalStimulusFromCode(code){
 	 const numeric=Number(code);
 	 if(!Number.isFinite(numeric)) return 0;
-	 return Math.max(0,(numeric-64)*100/876);
+	 const bits=meterPatchBitDepth();
+	 const limited=meterIsLimitedRange();
+	 const peak=bits===10?1023:255;
+	 if(!limited){
+		// Full range: linear code/peak clamp. >100% clamps to peak.
+		return Math.max(0,Math.min(100,(numeric/peak)*100));
+	 }
+	 if(bits===10){
+		// 10-bit Limited legal-expanded: legal 64..1023 maps to 0..100%.
+		if(numeric<=64) return 0;
+		if(numeric>=940) return 100;
+		return Math.max(0,Math.min(100,(numeric-64)*100/876));
+	 }
+	 // 8-bit Limited extended: legal 16..235 maps to 0..100%.
+	 if(numeric<=16) return 0;
+	 if(numeric>=235) return 100;
+	 return Math.max(0,Math.min(100,(numeric-16)*100/219));
 }
 
 function meterLgAutoCalTargetYnForStimulus(stimulus){
@@ -22014,7 +22109,15 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	 };
 			 const zeroCode=mode==='sdr'?(isFullRange?0:64):meterCodeFromSignalPercentWithOptions(0,null);
 			 const zeroMeta=meterLgAutoCalTargetMetaForCode(zeroCode);
-			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?1023:(black.input_max||255)),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?1023:255),autocal_slot_locked:false,autocal_read_only:true};
+			 // 0% SDR step input_max MUST match the body's stepInputMax
+			 // (8-bit -> 255, 10-bit -> 1023) so the renderer/worker see
+			 // the same input_max for the same patch across the series
+			 // build. Without this the 0% step on a Full 8-bit link was
+			 // stamped with input_max=1023 while the body used 255,
+			 // making the chart-thumbnail and the driven-wire code
+			 // inconsistent (visible as a lifted 0% thumbnail in
+			 // Full-RGB modes).
+			 const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?stepInputMax:(black.input_max||255),name:'0%',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?stepInputMax:(black.input_max||255)),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:mode==='sdr'?stepInputMax:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...zeroMeta,...previewCodesForCode(zeroCode,mode==='sdr'?stepInputMax:255),autocal_slot_locked:false,autocal_read_only:true};
  const whiteCode=mode==='sdr'?(isFullRange?stepInputMax:meterLgSdrLegalHeadroomCodeFromPercent(100)):meterCodeFromSignalPercentWithOptions(100,null);
  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
  const body=[...METER_LG_GREY_AUTOCAL_26_SLOTS]
