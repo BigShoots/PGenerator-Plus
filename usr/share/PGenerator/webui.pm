@@ -16709,7 +16709,18 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  if(ire!=null&&ire>0){
  // Target: D65 white at the active grey-target luminance.
   const Lw=meterChartIsHdr()?meterGreyTargetPeak(whiteXYZ.Y):whiteXYZ.Y, Lb=0;
-  const tgtLum=(meterReadingIsPeakHeadroom(reading)&&mode!=='eotf') ? readingXYZ.Y : meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code);
+  // Route the gamma target through meterGreyTargetLuminanceForChartPoint so the
+  // RGB-balance luminance-error bars share the SAME stimulus-based target the
+  // gamma/EOTF chart and the per-point tooltip use. For SDR26 that path derives
+  // the target from stimulus/109 (transport-independent) instead of re-decoding
+  // the wire code through meterGreyCodeRange, whose range is limited-only and
+  // skews the gamma error on full-range output (min=0 codes decoded through a
+  // min=16 range -> wildly wrong signal at low/mid IRE, the "unbalanced lines").
+  // Non-SDR26 modes fall straight back to meterGreyTargetLuminance(ire,...,code).
+  const tgtLum=(meterReadingIsPeakHeadroom(reading)&&mode!=='eotf') ? readingXYZ.Y :
+   ((typeof meterGreyTargetLuminanceForChartPoint==='function')
+    ? meterGreyTargetLuminanceForChartPoint(ire/100,Lw,Lb,{stimulus:ire,code:reading.r_code})
+    : meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code));
   const tYn=tgtLum/whiteXYZ.Y;
   const tXn=wXn*tYn;
   const tZn=wZn*tYn;
@@ -16756,7 +16767,11 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
   const Lb = meterBlackReadingY();
   const targetPeak = meterChartIsHdr() ? meterGreyTargetPeak(whiteXYZ.Y) : whiteXYZ.Y;
   const targetIre=meterReadingAnalysisIre(reading)||reading.ire;
-  const tgtY = meterGreyTargetLuminance(targetIre, targetPeak, Lb, reading.r_code);
+  // Same stimulus-based target as the gamma chart (see rgbBalancePerceptual):
+  // avoids the limited-only meterGreyCodeRange skewing full-range gamma error.
+  const tgtY = (typeof meterGreyTargetLuminanceForChartPoint==='function')
+   ? meterGreyTargetLuminanceForChartPoint(targetIre/100, targetPeak, Lb, {stimulus:targetIre,code:reading.r_code})
+   : meterGreyTargetLuminance(targetIre, targetPeak, Lb, reading.r_code);
   fact = (tgtY>0 && whiteXYZ.Y>0 && readingXYZ.Y>0) ? readingXYZ.Y / tgtY : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
