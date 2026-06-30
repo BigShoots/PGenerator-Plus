@@ -14082,11 +14082,13 @@ function meterSdrRgbChromaUsesFullSourceRange(){
 }
 
 function meterChromaPatchRangeMin(){
- return meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+ const base=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+ return meterPatchBitDepth()===10?Math.round(base*4):base;
 }
 
 function meterChromaPatchRangeSpan(){
- return meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
+ const base=meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
+ return meterPatchBitDepth()===10?Math.round(base*4):base;
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
@@ -19800,7 +19802,7 @@ function meterStepInputMax(step){
  // shift it to 256 (10-bit), which lifts black to ~22% signal. Mirror the
  // 26pt SDR branch for any greyscale step on a 10-bit transport.
  if(isGreyStep&&meterPatchBitDepth()===10) return 1023;
- return 255;
+ return meterPatchBitDepth()===10?1023:255;
 }
 
 function meterApplySingleReadResult(result,requestedStep){
@@ -22466,8 +22468,8 @@ async function meterEnsureLgAutoCalTransport(workflowName){
 }
 // Display a patch on PGenerator without reading
 function meterMeasurementPatchSignalRange(){
- if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return '1';
- if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return '1';
+ if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return meterIsLimitedRange()?'1':'2';
+ if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return meterIsLimitedRange()?'1':'2';
  if(meterGreyscaleUsesFullSourceRange()) return '2';
  return null;
 }
@@ -28037,7 +28039,7 @@ async function meterStartLg3dAutoCal(options){
  const rawTargetGamma=meterAutoCalTargetGammaValue();
  const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
  const targetGamut=signalMode==='hdr10'?meterHdrMetadataGamut():(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
- const transportRange=(signalMode==='sdr'&&fullWorkflow)?'1':getVal('rgb_quant_range');
+ const transportRange=getVal('rgb_quant_range');
  // Pull the greyscale stage's measured peak luminance + DPG array out of
  // the cached firstStatus so the 3D worker can upload the HDR tone map
  // after its 3D LUT, all inside the same CAL_START session.
@@ -28051,7 +28053,7 @@ async function meterStartLg3dAutoCal(options){
   delay_ms:meterDelayMs(),
   patch_size:getMeterPatchSize(),
   signal_range:transportRange,
-  pattern_signal_range:'1',
+  pattern_signal_range:transportRange,
   transport_signal_range:transportRange,
   target_gamut:targetGamut,
   target_gamma:targetGamma,
