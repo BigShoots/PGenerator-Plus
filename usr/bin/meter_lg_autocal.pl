@@ -15349,7 +15349,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
   $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
   my $_effective_target_de=$target_de;
-  if($_anchor_ire+0 < 2.0) {
+  # Very-low IRE band: 2.5 (was 2.0). The comment above documents the 2.0x
+  # relaxation as applying to "very-low IRE (default 2.3%)", but a strict
+  # < 2.0 excluded the 2.3% anchor (it fell into the 1.5x low band). 2.5
+  # captures 2.3% as intended so the deepest-shadow anchor gets the full
+  # very-low treatment (relaxed target + strongest read averaging below).
+  if($_anchor_ire+0 < 2.5) {
    $_effective_target_de=$target_de*$target_de_very_low_multiplier;
   } elsif($_anchor_ire+0 < $low_ire_threshold) {
    $_effective_target_de=$target_de*$target_de_low_multiplier;
@@ -15600,7 +15605,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $best_dpg=[@{$current_dpg_ref}];
     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
     $consecutive_reverts=0;
-    $move_scaling=$initial_move_scaling;
+    # Gentle step-size recovery instead of a hard reset to
+    # $initial_move_scaling. At very low IRE the measured signal sits in the
+    # meter noise floor, so a "new best" is frequently just a lucky read.
+    # Snapping move_scaling straight back to full strength makes the very next
+    # move overshoot, and the anchor oscillates (1.0->0.5->0.25->reset->1.0...)
+    # without ever settling -- exactly the failure seen on the 2.3% anchor.
+    # Doubling toward the initial cap lets a genuinely-improving anchor recover
+    # its step over a couple of iters, while a noise-dominated low anchor keeps
+    # ratcheting down into the noise band where it can converge.
+    my $_recovered=$move_scaling*2.0;
+    $_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
+    $move_scaling=$_recovered;
    } elsif($consecutive_reverts < $revert_budget) {
     # Revert-and-halve: when a move overshoots (dE worsens from the best
     # seen so far), snap the DPG back to the best snapshot and halve the
@@ -20159,7 +20175,7 @@ sub lg_low_light_mode_for_reading {
   # uses whatever the meter settings specify (the operator's $mode below).
   if(ref($rs) eq "HASH") {
    my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-   my $vlow=($config->{"low_light"}{"very_low_ire_threshold"}//2.0)+0;
+   my $vlow=($config->{"low_light"}{"very_low_ire_threshold"}//2.5)+0;
    return "aaa" if(defined($step_ire) && $step_ire+0 < $vlow);
   }
   return ($Y < $trigger) ? $mode : "off";
