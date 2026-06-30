@@ -24782,8 +24782,43 @@ function meterAutoCalRestoreSavedState(){
 }
 
 function meterRestoreAutoCalWorkflows(){
- const restoredFull=meterFullAutoCalRestoreSavedState();
- if(!restoredFull) meterAutoCalRestoreSavedState();
+ // A page reload must NEVER resurrect a calibration the backend is not
+ // actually running. The saved localStorage workflow is only an early-UI
+ // hint; the authoritative reconnect is the live-status polling
+ // (meterFullAutoCalEnsureStatusPhase), which adopts a genuinely-running
+ // backend on its own. The previous code trusted localStorage blindly within
+ // a 12h window and re-engaged the saved phase (e.g. 3d-lut) on load -- so a
+ // refresh hours after a FINISHED run, with the TV just powered on, kicked
+ // off a 3D-LUT pass that read against a black/handshaking display, timed out
+ // on the meter, and stalled the daemon ("device offline"). Gate the restore
+ // on a backend that really reports a live autocal/3D-LUT; otherwise discard
+ // the stale browser state and resume nothing.
+ let hasSaved=false;
+ try{
+  const f=JSON.parse(localStorage.getItem(METER_FULL_AUTOCAL_STATE_KEY)||'null');
+  const g=JSON.parse(localStorage.getItem(METER_AUTOCAL_STATE_KEY)||'null');
+  hasSaved=!!((f&&f.active)||(g&&g.active));
+ }catch(e){ hasSaved=false; }
+ if(!hasSaved) return;
+ Promise.all([
+  fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:5000}).catch(()=>null),
+  fetchJSON('/api/meter/lg-3d-autocal/status',{_quiet:true,_timeoutMs:5000}).catch(()=>null)
+ ]).then(function(res){
+  const gs=res&&res[0], lut=res&&res[1];
+  const gsRunning=!!(gs&&gs.autocal&&String(gs.status||'').toLowerCase()==='running');
+  const lutRunning=!!(lut&&String(lut.status||'').toLowerCase()==='running');
+  if(!(gsRunning||lutRunning)){
+   // Backend idle (or unreachable): the saved run is finished/stale. A
+   // genuinely-running backend is still re-adopted by the live polls/
+   // watchdogs, so discarding here is safe and prevents the
+   // refresh-resurrection that read against a not-ready TV.
+   meterFullAutoCalClearSavedState();
+   meterAutoCalClearSavedState();
+   return;
+  }
+  const restoredFull=meterFullAutoCalRestoreSavedState();
+  if(!restoredFull) meterAutoCalRestoreSavedState();
+ });
 }
 
 function meterFullAutoCalSnapshotForKey(key){
