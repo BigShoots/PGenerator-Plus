@@ -13749,6 +13749,18 @@ function meterLgAutoCalTargetYnForStimulus(stimulus){
  if(signal<=0) return 0;
  const sel=((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''))||'bt1886';
  if(sel==='srgb') return signal<=0.04045 ? signal/12.92 : Math.pow((signal+0.055)/1.055,2.4);
+ // PQ (ST2084): match the server's $target_signal_to_linear hdr10+st2084
+ // branch and the chart's PQ path. Decode the normalized signal as a PQ
+ // code value to absolute nits, then normalize to the 10000-nit peak so
+ // the chart's target_Yn * peak math gives the same PQ EOTF target the
+ // server bakes. Without this branch, 'st2084' falls through to the
+ // 2.4 power-law and stamps a BT.1886-shaped target_Yn on HDR PQ steps
+ // -- which on a PQ-calibrated panel makes the dE chart blow up by
+ // ~100x (see 2026-06-29 memory note on the Include-luminance toggle).
+ if(sel==='st2084' && typeof meterChartPqDecodeNormalized==='function'){
+  const y=meterChartPqDecodeNormalized(signal);
+  return y>0 ? y/10000 : 0;
+ }
  const gamma=sel==='2.2'?2.2:2.4;
  return Math.pow(signal,gamma);
 }
@@ -17307,7 +17319,18 @@ function meterOnGreyRefChange(src){
    const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
    drawAllCharts(sorted);
   } else if(meterActiveSeriesType && meterActiveSeriesPoints && typeof meterRefreshActiveSeriesCharts==='function'){
-   meterRefreshActiveSeriesCharts();
+   // Post-autocal greyscale/color toggle: route through the lighter
+   // drawAllCharts path instead of meterRefreshActiveSeriesCharts. The
+   // refresh path re-stamps target_Yn via meterRegradeActiveSeriesTargets
+   // using meterLgAutoCalTargetYnForStimulus (which has no ST2084 PQ
+   // branch -- see the 2026-06-29 memory note), so a sequence of
+   // check/uncheck/check toggles between the autocal-pinned '2.2' stamp
+   // and a post-autocal 'st2084' stamp and the dE ITP chart jumps from
+   // near 1 to 95+. The toggle is a chart-display change, not a gamma
+   // change -- leaving target_Yn alone keeps the chart consistent across
+   // toggles. (operator-initiated Target Gamma dropdown changes still go
+   // through meterRefreshActiveSeriesCharts from meterOnTargetGammaChange.)
+   drawAllCharts(meterReadings);
   } else {
    drawAllCharts(meterReadings);
   }
