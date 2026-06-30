@@ -7493,9 +7493,26 @@ sub webui_grey_code_for_stimulus (@) {
   if($_ac26_bits == 8) {
    if($signal_range) {
     # Limited: super-white headroom maps 105/109 into 236..255 (0%=16, 100%=235).
-    $code=int(16 + ($stimulus_pct/100)*219 + .5); $code=16 if($code < 16); $code=255 if($code > 255);
+    # Use the unclamped $raw_stim_for_ac26_ltd (clamped to [0,109]) so the
+    # legal-expanded 105%/109% reach the canonical super-white formula
+    # instead of being flattened to 100% by the function-level clamp above.
+    # Mirrors the worker's patch_code_for_stimulus 8-bit limited branch
+    # (meter_lg_autocal.pl):
+    #   S<=100 -> round(16 + S/100*219)                      (50%->126, 100%->235)
+    #   S>100  -> round(235 + (S-100)/9*(255-235)), clamped  (105%->246, 109%->255)
+    my $_ac26_s=$raw_stim_for_ac26_ltd+0;
+    $_ac26_s=0 if($_ac26_s < 0);
+    $_ac26_s=109 if($_ac26_s > 109);
+    if($_ac26_s <= 100) {
+     $code=int(16 + ($_ac26_s/100)*219 + .5);
+    } else {
+     $code=int(235 + ($_ac26_s-100)/9*(255-235) + .5);
+    }
+    $code=16 if($code < 16); $code=255 if($code > 255);
    } else {
     # Full: no codes above white -- 100% is the peak (255), so >100% clamps to 255.
+    # Full range has no super-white headroom, so the clamped $stimulus_pct is
+    # the right input here (the legal-expanded raw ladder is limited-only).
     my $s=$stimulus_pct; $s=100 if($s > 100);
     $code=int(($s/100)*255 + .5); $code=0 if($code < 0); $code=255 if($code > 255);
    }
