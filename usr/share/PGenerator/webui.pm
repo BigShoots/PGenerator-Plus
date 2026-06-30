@@ -7554,25 +7554,39 @@ sub webui_grey_code_for_stimulus (@) {
   # The DPG slot indexing is unaffected (it is keyed by IRE via @sdr26_indexes
   # in the worker, not by this drive code).
   my $_ac26_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
+  # Limited transport has TWO sub-modes that must NOT be conflated
+  # (per user direction):
+  #   RGB Limited    -> codes 16..235 ONLY (109% clamps to 235).
+  #   YCbCr Limited  -> codes 16..255, 100%=235, 109%=255 via super-white.
+  # 10-bit follows the same axis rules scaled ×4.
+  my $_ac26_cf=(defined $opts_hr->{"color_format"} && $opts_hr->{"color_format"} ne "")
+   ? int($opts_hr->{"color_format"})
+   : (defined $pgenerator_conf{"color_format"} && $pgenerator_conf{"color_format"} ne ""
+      ? int($pgenerator_conf{"color_format"}) : 0);
+  my $_ac26_is_ycbcr=(($_ac26_cf == 1) || ($_ac26_cf == 2)) ? 1 : 0;
   if($_ac26_bits == 8) {
    if($signal_range) {
-    # Limited: super-white headroom maps 105/109 into 236..255 (0%=16, 100%=235).
-    # Use the unclamped $raw_stim_for_ac26_ltd (clamped to [0,109]) so the
-    # legal-expanded 105%/109% reach the canonical super-white formula
-    # instead of being flattened to 100% by the function-level clamp above.
-    # Mirrors the worker's patch_code_for_stimulus 8-bit limited branch
-    # (meter_lg_autocal.pl):
-    #   S<=100 -> round(16 + S/100*219)                      (50%->126, 100%->235)
-    #   S>100  -> round(235 + (S-100)/9*(255-235)), clamped  (105%->246, 109%->255)
-    my $_ac26_s=$raw_stim_for_ac26_ltd+0;
-    $_ac26_s=0 if($_ac26_s < 0);
-    $_ac26_s=109 if($_ac26_s > 109);
-    if($_ac26_s <= 100) {
-     $code=int(16 + ($_ac26_s/100)*219 + .5);
+    if($_ac26_is_ycbcr) {
+     # YCbCr Limited 8-bit: legal ramp <=100% (16..235 via 16+S/100*219),
+     # super-white ramp >100% (235+(S-100)/9*20 -> 109%=255).
+     my $_ac26_s=$raw_stim_for_ac26_ltd+0;
+     $_ac26_s=0 if($_ac26_s < 0);
+     $_ac26_s=109 if($_ac26_s > 109);
+     if($_ac26_s <= 100) {
+      $code=int(16 + ($_ac26_s/100)*219 + .5);
+     } else {
+      $code=int(235 + ($_ac26_s-100)/9*(255-235) + .5);
+     }
+     $code=16 if($code < 16); $code=255 if($code > 255);
     } else {
-     $code=int(235 + ($_ac26_s-100)/9*(255-235) + .5);
+     # RGB Limited 8-bit: codes 16..235 only. 105/109% clamp to 235 (no
+     # super-white headroom).
+     my $_ac26_s=$raw_stim_for_ac26_ltd+0;
+     $_ac26_s=0 if($_ac26_s < 0);
+     $_ac26_s=100 if($_ac26_s > 100);
+     $code=int(16 + ($_ac26_s/100)*219 + .5);
+     $code=16 if($code < 16); $code=235 if($code > 235);
     }
-    $code=16 if($code < 16); $code=255 if($code > 255);
    } else {
     # Full: no codes above white -- 100% is the peak (255), so >100% clamps to 255.
     # Full range has no super-white headroom, so the clamped $stimulus_pct is
@@ -7594,25 +7608,28 @@ sub webui_grey_code_for_stimulus (@) {
    "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
    "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
   );
-  # 10-bit LIMITED canonical compute. The legacy hardcoded table above is
-  # retained in-scope (unused) so external readers can still cross-reference
-  # it during the transition; we now derive the code via the SAME canonical
-  # model the worker uses (patch_code_for_stimulus in meter_lg_autocal.pl),
-  # so the displayed code matches the driven code for every combo:
-  #   S<=100 -> round(64 + S/100*876)                     (50%->502, 100%->940)
-  #   S>100  -> round(940 + (S-100)/9*(1023-940))        (105%->986, 109%->1023)
-  # $raw_stim_for_ac26_ltd bypasses the function-level 100% clamp so the
-  # super-white formula can fire on the legal-expanded 105/109 stimuli.
+  # 10-bit LIMITED canonical compute. RGB Limited clamps super-white at 940;
+  # YCbCr Limited uses the full 64..1023 ladder with the super-white ramp
+  # 940+(S-100)/9*83. $raw_stim_for_ac26_ltd bypasses the function-level
+  # 100% clamp so the super-white formula can fire on 105/109 stimuli.
   my $_ac26_s=$raw_stim_for_ac26_ltd+0;
   $_ac26_s=0 if($_ac26_s < 0);
-  $_ac26_s=109 if($_ac26_s > 109);
-  if($_ac26_s <= 100) {
-   $code=int(64 + $_ac26_s/100*876 + .5);
+  if($_ac26_is_ycbcr) {
+   $_ac26_s=109 if($_ac26_s > 109);
+   if($_ac26_s <= 100) {
+    $code=int(64 + $_ac26_s/100*876 + .5);
+   } else {
+    $code=int(940 + ($_ac26_s-100)/9*(1023-940) + .5);
+   }
+   $code=64 if($code < 64);
+   $code=1023 if($code > 1023);
   } else {
-   $code=int(940 + ($_ac26_s-100)/9*(1023-940) + .5);
+   # RGB Limited 10-bit: legal ladder <=100%, super-white clamps at 940.
+   $_ac26_s=100 if($_ac26_s > 100);
+   $code=int(64 + $_ac26_s/100*876 + .5);
+   $code=64 if($code < 64);
+   $code=940 if($code > 940);
   }
-  $code=64 if($code < 64);
-  $code=1023 if($code > 1023);
   $input_max=1023;
   return ($code,$input_max);
  }
@@ -14375,14 +14392,26 @@ function meterLgSdrLegalHeadroomCodeFromPercent(percent){
 		const clamped=Math.max(0,Math.min(100,s))/100;
 		return Math.round(clamped*peak);
 	 }
+	 // Limited: dispatch on RGB vs YCbCr (RGB clamps at legal peak,
+	 // YCbCr ramps into super-white).
+	 const fmt=meterOutputFormatValue();
+	 const isYcbcr=(fmt==='1'||fmt==='2');
 	 if(bits===10){
-		// 10-bit Limited legal-expanded ladder (matches the worker).
-		const c=64+s/100*876;
-		return Math.max(64,Math.min(1023,Math.round(c)));
+		if(isYcbcr){
+			// YCbCr Limited 10-bit: 64..1023 with super-white ramp.
+			const c=s<=100 ? 64+s/100*876 : 940+(s-100)/9*83;
+			return Math.max(64,Math.min(1023,Math.round(c)));
+		}
+		// RGB Limited 10-bit: 64..940 only.
+		return Math.max(64,Math.min(940,Math.round(64+s/100*876)));
 	 }
-	 // 8-bit Limited extended ladder (16..255 super-white).
-	 const c=s<=100 ? 16+s/100*219 : 235+(s-100)/9*(255-235);
-	 return Math.max(16,Math.min(255,Math.round(c)));
+	 if(isYcbcr){
+		// YCbCr Limited 8-bit: 16..255 with super-white ramp.
+		const c=s<=100 ? 16+s/100*219 : 235+(s-100)/9*20;
+		return Math.max(16,Math.min(255,Math.round(c)));
+	 }
+	 // RGB Limited 8-bit: 16..235 only.
+	 return Math.max(16,Math.min(235,Math.round(16+s/100*219)));
 }
 
 function meterLgAutoCalStimulusFromCode(code){
@@ -14395,15 +14424,29 @@ function meterLgAutoCalStimulusFromCode(code){
 		// Full range: linear code/peak clamp. >100% clamps to peak.
 		return Math.max(0,Math.min(100,(numeric/peak)*100));
 	 }
+	 const fmt=meterOutputFormatValue();         // '0'=RGB, '1'=YCbCr 4:2:2, '2'=YCbCr 4:4:4
+	 const isYcbcr=(fmt==='1'||fmt==='2');
 	 if(bits===10){
-		// 10-bit Limited legal-expanded: legal 64..1023 maps to 0..100%.
+		if(isYcbcr){
+			// YCbCr Limited 10-bit: 64..940 -> 0..100%, 941..1023 ->
+			// 100..109% via super-white ramp 940+(S-100)/9*83.
+			if(numeric<=64) return 0;
+			if(numeric<=940) return Math.max(0,Math.min(100,(numeric-64)*100/876));
+			return Math.max(100,Math.min(109,100+(numeric-940)*(109-100)/(1023-940)));
+		}
+		// RGB Limited 10-bit: 64..940 -> 0..100%. >940 -> 100% (clamped).
 		if(numeric<=64) return 0;
-		if(numeric>=940) return 100;
 		return Math.max(0,Math.min(100,(numeric-64)*100/876));
 	 }
-	 // 8-bit Limited extended: legal 16..235 maps to 0..100%.
+	 // 8-bit Limited
+	 if(isYcbcr){
+		// YCbCr Limited 8-bit: 16..235 -> 0..100%, 236..255 -> 100..109%.
+		if(numeric<=16) return 0;
+		if(numeric<=235) return Math.max(0,Math.min(100,(numeric-16)*100/219));
+		return Math.max(100,Math.min(109,100+(numeric-235)*(109-100)/(255-235)));
+	 }
+	 // RGB Limited 8-bit: 16..235 -> 0..100%. >235 -> 100% (clamped).
 	 if(numeric<=16) return 0;
-	 if(numeric>=235) return 100;
 	 return Math.max(0,Math.min(100,(numeric-16)*100/219));
 }
 
@@ -14505,30 +14548,52 @@ function meterLgAutoCalBodyLumaBiasPayload(dtype){
  };
 }
 
+// SDR26 forward code: IRE% → wire code. Dispatches on (transport ×
+// bit-depth × colorspace). Limited transport has TWO sub-modes that must
+// NOT be conflated:
+//   - RGB Limited has codes 16..235 ONLY (109% clamps to 235).
+//   - YCbCr Limited (4:2:2 or 4:4:4) has codes 16..255 with 235 at 100%
+//     and 255 at 109% via the legal super-white ramp.
 function meterLgAutoCalCodeForSlot(slot){
  const idx=METER_LG_GREY_AUTOCAL_26_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
  const bits=meterPatchBitDepth();
  const max=bits===10?1023:255;
  const numSlot=Number(slot);
- // Full range: linear S/100 * max, super-white clamps to peak.
+ // Full range (RGB Full or YCbCr Full): linear S/100 * max. Super-white
+ // clamps to peak -- Full transport has no headroom above 100%.
  if(!meterPatchUsesVideoRange()){
   const clamped=Math.max(0,Math.min(100,numSlot))/100;
   return Math.round(clamped*max);
  }
- // Limited range: dispatch on bit depth.
+ // Limited transport: dispatch on colorspace + bit-depth.
+ const fmt=meterOutputFormatValue();          // '0' = RGB, '1' = YCbCr 4:2:2, '2' = YCbCr 4:4:4
+ const isYcbcr=(fmt==='1'||fmt==='2');
  if(bits===10){
-  // 10-bit Limited legal-expanded (64..940, super-white 941..1023).
-  // 105/109 use the hardcoded super-white codes so the chart shows
-  // the actual autocal-ladder super-white anchors.
-  if(idx>=0) return METER_LG_GREY_AUTOCAL_26_CODES[idx];
-  return Math.max(64,Math.min(1023,Math.round(64+numSlot/100*876)));
+  if(isYcbcr){
+   // YCbCr Limited 10-bit: codes 64..1023 (100=940, 109=1023, super-white
+   // ramp 940+(S-100)/9*83). Use the empirical 26-entry table for the
+   // exact ladder slots; formula for in-between.
+   if(idx>=0) return METER_LG_GREY_AUTOCAL_26_CODES[idx];
+   const s=numSlot;
+   if(s<=100) return Math.max(64,Math.min(940,Math.round(64+s/100*876)));
+   return Math.max(64,Math.min(1023,Math.round(940+(s-100)/9*83)));
+  }
+  // RGB Limited 10-bit: codes 64..940 ONLY (109% clamps to 940). Use
+  // the table for the ladder, with super-white slots capped at 940.
+  if(idx>=0) return Math.min(940, METER_LG_GREY_AUTOCAL_26_CODES[idx]);
+  return Math.max(64,Math.min(940,Math.round(64+numSlot/100*876)));
  }
- // 8-bit Limited extended (16..239..255). No super-white in 8-bit
- // -- peak is 255 and 105/109 clamp to it. Matches the 21-pt
- // Extended-SDR ladder's mapping for the chart.
- const clamped=Math.max(0,Math.min(100,numSlot))/100;
- return Math.round(16+clamped*239);
+ // 8-bit Limited
+ if(isYcbcr){
+  // YCbCr Limited 8-bit: legal ramp ≤100% (16..235 via 16+S/100*219),
+  // super-white ramp >100% (235+(S-100)/9*20 → 109%=255).
+  const s=numSlot;
+  if(s<=100) return Math.max(16,Math.min(235,Math.round(16+s/100*219)));
+  return Math.max(16,Math.min(255,Math.round(235+(s-100)/9*20)));
  }
+ // RGB Limited 8-bit: codes 16..235 only (109% clamps to 235).
+ return Math.max(16,Math.min(235,Math.round(16+numSlot/100*219)));
+}
 
 function meterLgSdrLegalDdcCodeFromPercent(percent){
  const clamped=clampNum(percent,0,100)/100;
