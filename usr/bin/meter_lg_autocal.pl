@@ -1042,6 +1042,40 @@ sub bt1886_eotf_luminance {
  return $a * ($v ** $gamma);
 }
 
+sub autocal_sdr_signal_peak {
+ # The SDR target curve's reference divisor. With super-white usable
+ # (Limited YCbCr -- codes 235..255 / 940..1023 sit above 100% on the
+ # wire), the 109% legal peak is the brightest code the panel can show,
+ # so 109.0 normalises the curve so 100% sits ~18% below peak (per
+ # BT.709). Without super-white (RGB Limited or any Full-range transport),
+ # 100% is the brightest code the panel can show -- codes 105% and 109%
+ # clamp to the same peak as 100%. Normalising against 109 in those
+ # cases would force the body to ~90% of peak instead of 100%, so the
+ # calibrated white sits dim and the gamma curve rolls over too high.
+ # Reads the active transport from $LG_AUTOCAL_CONFIG (mirrors how
+ # patch_code_for_stimulus reads its pattern_signal_range fallback
+ # chain). Pass a $config hash to override (used by tests).
+ my ($config)=@_;
+ $config=$LG_AUTOCAL_CONFIG if(ref($config) ne "HASH");
+ my $range="";
+ my $color_format=0;
+ if(ref($config) eq "HASH") {
+  $range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"";
+  $color_format=(defined($config->{"color_format"}) && $config->{"color_format"} ne "") ? int($config->{"color_format"}) : 0;
+ }
+ my $limited=(int($range)==1) ? 1 : 0;
+ # Limited + RGB (color_format 0) -- legal peak is 940/235 (no headroom
+ # above 100% because the renderer clamps 101..109% to legal-white); the
+ # 100% code IS the peak, so normalize against 100.
+ # Limited + YCbCr (color_format 1 or 2) -- legal-expanded ladder carries
+ # 101..109% as super-white codes; 109 is the genuine wire peak, so
+ # normalize against 109.
+ # Full (any color_format) -- no super-white at all, 100% clamps to peak;
+ # normalize against 100.
+ return 109.0 if($limited && $color_format != 0);
+ return 100.0;
+}
+
 sub target_luminance_for_step {
 	 my ($white_y,$step,$target_gamma,$signal_mode,$black_y)=@_;
 	 # Apply calibration-card Target White / Target Black overrides so the
@@ -1066,9 +1100,17 @@ sub target_luminance_for_step {
 	 # 1.05^2.2 = ~112% of L_max, which is physically unachievable and
 	 # produced a flat target curve at the headroom cluster.
 	 #
+	 # The 109-normalisation is only valid for transports that carry
+	 # genuine super-white above 100%. Full range and RGB Limited have NO
+	 # usable super-white -- 100% is the brightest wire code and the
+	 # peak anchors there. autocal_sdr_signal_peak() returns 109.0 only
+	 # for Limited + YCbCr; 100.0 otherwise (Full, or Limited + RGB).
+	 # Without this, Full-range SDR autocal converges against body
+	 # targets ~18% too dim and the body sits below the achievable peak.
+	 #
 	 # HDR10 keeps signal = stimulus / 100 because the PQ EOTF saturates
 	 # at 100% by spec -- HDR has no headroom codes above 100 IRE.
-	 my $signal_peak=($mode eq "sdr") ? 109.0 : 100.0;
+	 my $signal_peak=($mode eq "sdr") ? autocal_sdr_signal_peak() : 100.0;
 	 my $signal=$stimulus/$signal_peak;
 	 # HDR clamps signals > 1.0 to 1.0 (HDR10 PQ saturates there by spec).
 	 # SDR preserves signal > 1.0 only within reason -- anything above
@@ -1084,8 +1126,9 @@ sub target_luminance_for_step {
 	 }
 	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
 	  $signal=0 if($signal < 0);
-	  # SDR BT.1886 also normalises against the 109 legal peak. Same
-	  # rationale as the gamma-2.2 path above.
+	  # SDR BT.1886 normalises against the same legal peak the gamma-2.2
+	  # path uses (109 for Limited YCbCr, 100 otherwise -- see
+	  # autocal_sdr_signal_peak). The $signal divisor was set above.
 	  return bt1886_eotf_luminance($signal,$white_y,$black_y+0);
 	 }
 	 return 0 if($stimulus <= 0);
