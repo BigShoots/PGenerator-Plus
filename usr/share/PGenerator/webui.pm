@@ -23838,31 +23838,31 @@ function meterAutoCalWhiteStep(){
    };
   }
   // For the wizard's interactive 100% white setup step, send the code that
-  // produces 100% SIGNAL on the active transport (max_bpc + rgb_quant_range),
-  // not the autocal ladder's headroom-extended 109% anchor (which is always
-  // 940 = 10-bit Limited). The previous version always sent 940 with
-  // input_max=1023, which lands at 940/1023*255 = 234/255 = 91.76% of full
-  // signal on an 8-bit Full transport, so the operator's panel-light slider
-  // was calibrating against a 92% patch instead of 100%.
-  //
-  // Correct 100% code by transport:
-  //   8-bit Limited -> 235  (input_max 255)
-  //   8-bit Full    -> 255  (input_max 255)
-  //   10-bit Limited-> 940  (input_max 1023)
-  //   10-bit Full   -> 1023 (input_max 1023)
-  const bits=meterPatchBitDepth();
-  const isFullRange=!meterPatchUsesVideoRange();
-  let whiteCode, whiteInputMax;
-  if(isFullRange){
-   // Full range has no super-white headroom -- 100% is at the top of the range.
-   whiteCode=(bits===10)?1023:255;
-   whiteInputMax=(bits===10)?1023:255;
-  } else {
-   // Limited range: 100% white is 235 (8-bit) or 940 (10-bit). The super-white
-   // codes 236-255 / 941-1023 are reserved for the ladder's 101-109% anchors,
-   // not the 100% setup reference.
-   whiteCode=(bits===10)?940:235;
-   whiteInputMax=(bits===10)?1023:255;
+  // produces 100% signal in LIMITED range (the transport the wizard forces
+  // for SDR autocal26 via meterMeasurementPatchSignalRange()='1' on the
+  // patch payload, which in turn triggers apply_source_rgb_quant_range
+  // on the server and switches the renderer to Limited regardless of the
+  // user's rgb_quant_range). The previous attempt dispatched on
+  // rgb_quant_range and sent Full-range 100% codes (255 / 1023) on Full
+  // panels; in the Limited transport the wizard actually displays, code
+  // 255 (8-bit) is super-white 109% IRE, not 100%, which threw off the
+  // operator's panel-light slider. Stay on the Limited 100% code:
+  //   8-bit  -> 235  (input_max 255)
+  //   10-bit -> 940  (input_max 1023)
+  // The autocal ladder's 101-109% super-white anchors are unchanged --
+  // they are computed by the worker (patch_code_for_stimulus honors
+  // max_bpc) and only live in Limited transport.
+  const wizardBits=meterPatchBitDepth();
+  const wizardIsLimited=wizardBits===10;
+  const whiteCode=wizardIsLimited?940:235;
+  const whiteInputMax=wizardIsLimited?1023:255;
+  // DEBUG (REMOVE-ME): record what we are about to send so the user can
+  // confirm against the live 100% reading.
+  if(typeof console!=='undefined'&&console.log){
+   console.log('[autocal-wizard] 100% white step: bits='+wizardBits+
+    ' transport=limited (forced by wizard) code='+whiteCode+
+    ' input_max='+whiteInputMax+' rgb_quant_range='+
+    (document.getElementById('rgb_quant_range')||{}).value);
   }
   return {
    ire:100,
