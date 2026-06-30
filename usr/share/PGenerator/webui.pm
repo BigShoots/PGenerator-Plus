@@ -8722,6 +8722,8 @@ transition:all .3s;z-index:999;pointer-events:none}
    SVG fills the 54x54 icon container (the same space the spinner was
    in) with a thick green stroke so the success state reads at a glance. */
 .apply-settings-mask{position:fixed;inset:0;z-index:9100;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
+#applySettingsOverlay{z-index:9102}
+#lgConnectOverlay{z-index:9101}
 body.apply-settings-active .apply-settings-mask{display:flex}
 body.apply-settings-active .dashboard,body.apply-settings-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 .apply-settings-card{width:min(420px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:22px 20px;text-align:center}
@@ -10368,12 +10370,37 @@ function lgConnectModalHide(){
  document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
  const pinInput=document.getElementById('lgConnectPinInput');
  if(pinInput) pinInput.value='';
+ // Bump the cancellation token so any in-flight lgConnect() flow
+ // (especially the 15s lgStartPinPairing() wait that has no resolver
+ // to wake up) aborts at its next await boundary without stomping on
+ // a follow-up click.
+ if(typeof window._lgConnectToken==='number') window._lgConnectToken++;
  // Wake up any pending lgConnect() flow waiting for a PIN so it can
  // bail out instead of hanging on a now-hidden modal.
  if(window._lgPinResolver){
   const r=window._lgPinResolver;
   window._lgPinResolver=null;
   r(null);
+ }
+ // Re-enable the connect button so the operator can click it again
+ // immediately. lgConnect() disables the button at the top of the
+ // flow ("Starting Pairing..." / "Connecting...") and only re-enables
+ // it at the end -- which can take 15+ seconds if the user clicks
+ // Cancel mid-pair-pin/start. Without this the button is dead for
+ // the whole wait and the operator has to refresh the page. The
+ // flow's own re-enable paths are idempotent (they set textContent
+ // + disabled=false again), so it's safe to flip it here as soon
+ // as the modal goes away.
+ const connectBtn=document.getElementById('lgConnectBtn');
+ if(connectBtn&&connectBtn.disabled){
+  connectBtn.disabled=false;
+  // Mirror the same label rule renderLgStatus uses so the two stay
+  // in sync: "Connect" if paired||clientKeyPresent, otherwise
+  // "Pair With PIN". Read the live status state from
+  // window.lgStatusState (kept current by renderLgStatus).
+  const state=window.lgStatusState||{};
+  const pairedOrKey=!!(state.paired||state.clientKeyPresent||state.client_key_present);
+  connectBtn.textContent=pairedOrKey?'Connect':'Pair With PIN';
  }
 }
 // Reads the modal PIN input and resolves the pending lgConnect() flow
@@ -10785,6 +10812,13 @@ function checkSettingsChanged(){
  var changed=captureSettings()!==window._savedConfig;
  document.getElementById('applyBar').style.display=changed?'':'none';
  if(typeof meterUpdateReadButtons==='function') meterUpdateReadButtons();
+ // Defensive: a stale or in-flight LG Connect modal from a previous
+ // click must not obstruct the display-settings card. The operator's
+ // intent at this moment is to tweak display settings; clear any LG
+ // modal up front so they don't see "Connect to LG TV" over the
+ // dropdowns. Also wakes up any pending _lgPinResolver so an
+ // orphaned lgConnect() doesn't hang in the background.
+ if(typeof lgConnectModalHide==='function') lgConnectModalHide();
 }
 
 function updateModeVisibility(){

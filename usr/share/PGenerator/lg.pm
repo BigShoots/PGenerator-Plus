@@ -3050,13 +3050,38 @@ async function lgSaveManualIp(){
  }
 }
 
+// Cancellation token for lgConnect(). lgConnectModalHide() in
+// webui.pm bumps this when the operator clicks Cancel or dismisses the
+// modal, so any in-flight lgConnect() await points check
+// _lgConnectToken === myToken and bail out without re-entering the
+// modal or stomping on a newer lgConnect() call. Without this, a
+// Cancel during the 15s lgStartPinPairing() wait leaves the connect
+// button disabled until the flow eventually unwinds, and a follow-up
+// click races against the still-running first call.
+window._lgConnectToken=window._lgConnectToken||0;
+
 async function lgConnect(){
+ const myToken=++window._lgConnectToken;
  const input=document.getElementById('lgManualIp');
  const button=document.getElementById('lgConnectBtn');
 	 const ip=input?input.value.trim():'';
 	 const state=window.lgStatusState||{};
 	 const hasSavedKey=lgStatusHasSavedKey(state);
  if(ip&&!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){toast('Enter a valid LG TV IP','err');return;}
+ // Helper: bail out if a newer lgConnect() call or a Cancel has
+ // invalidated this run. Restores the button label so the operator
+ // isn't left staring at "Starting Pairing..." forever. Default label
+ // matches renderLgStatus's rule: "Connect" if paired||clientKeyPresent,
+ // otherwise "Pair With PIN".
+ const aborted=()=>myToken!==window._lgConnectToken;
+ const bail=()=>{
+  if(button){
+   button.disabled=false;
+   const state=window.lgStatusState||{};
+   const pairedOrKey=!!(state.paired||state.clientKeyPresent||state.client_key_present);
+   button.textContent=pairedOrKey?'Connect':'Pair With PIN';
+  }
+ };
  // Pop the LG Connect modal IMMEDIATELY (synchronously, before any
  // blocking POST). The WebOS WSS handshake can take 5-70s; if we waited
  // for the POST to return the operator would see a dead "Connect" button
@@ -3094,6 +3119,10 @@ async function lgConnect(){
     body:JSON.stringify({pin}),
     _timeoutMs:70000
    });
+   // If a Cancel or a newer lgConnect() call invalidated this run
+   // while we were waiting, swallow the result silently -- the new
+   // flow owns the modal now.
+   if(aborted()) return false;
    if(r){
     renderLgStatus(r);
     if(r.status==='ok'){
@@ -3110,6 +3139,7 @@ async function lgConnect(){
    else toast('Unable to submit PIN','err');
    return false;
   }catch(e){
+   if(aborted()) return false;
    if(showModal) lgConnectModalError((e&&e.message)||'PIN submission failed.');
    else toast('Unable to submit PIN','err');
    return false;
@@ -3131,6 +3161,7 @@ async function lgConnect(){
     body:JSON.stringify({ip}),
     _timeoutMs:70000
    });
+   if(aborted()) return;
    if(r){
     renderLgStatus(r);
     if(r.status==='ok'){
@@ -3145,11 +3176,13 @@ async function lgConnect(){
     else toast('Unable to connect to LG TV','err');
    }
   }catch(e){
+   if(aborted()) return;
    if(showModal) lgConnectModalError((e&&e.message)||'Connect request failed.');
    else toast('Unable to connect to LG TV','err');
   }finally{
    lgEndCommand(commandHandle);
-   if(button){button.disabled=false;button.textContent='Connect';}
+   if(button&&!aborted()){button.disabled=false;button.textContent='Connect';}
+   else if(button){bail();}
   }
  }
 
@@ -3162,6 +3195,9 @@ async function lgConnect(){
   const commandHandle=lgBeginCommand('Starting LG PIN pairing');
   try{
    await lgStartPinPairing();
+   // If the operator hit Cancel during the 15s pair-pin/start wait,
+   // bail out without touching the (now-owned-by-elsewhere) modal.
+   if(aborted()){bail();return;}
    const postState=window.lgStatusState||{};
    if(!lgStatusHasSavedKey(postState)||postState.pinPending){
     // PIN is required. Reveal the modal's inline PIN field and wait
@@ -3176,23 +3212,26 @@ async function lgConnect(){
     }
     if(button){button.disabled=false;button.textContent='Connect';}
     const pin=await lgWaitForModalPin();
-    if(!pin){
-     // Modal closed without a PIN (safety timeout or hide() call).
-     if(button){button.disabled=false;button.textContent='Pair With PIN';}
+    if(aborted()||!pin){
+     // Modal closed without a PIN (safety timeout, hide() call, or
+     // a newer lgConnect() took over).
+     bail();
      return;
     }
     const ok=await submitPinThenConnect(pin);
+    if(aborted()){bail();return;}
     if(!ok){
-     if(button){button.disabled=false;button.textContent='Pair With PIN';}
+     bail();
      return;
     }
     // PIN accepted; saved key is now in place. Fall through to the
     // saved-key connect POST below.
    }
   }catch(e){
+   if(aborted()){bail();return;}
    if(showModal) lgConnectModalError((e&&e.message)||'LG PIN pairing failed to start.');
    else toast('LG PIN pairing failed to start.','err');
-   if(button){button.disabled=false;button.textContent='Pair With PIN';}
+   bail();
    return;
   }finally{
    lgEndCommand(commandHandle);
