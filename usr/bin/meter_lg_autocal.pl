@@ -1961,10 +1961,14 @@ sub patch_code_for_stimulus {
 	 $stimulus=0 if(!defined($stimulus));
 	 $stimulus=0 if($stimulus < 0);
 	 my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
-	 my $headroom=$sdr_headroom ? 109.5 : 100;
-	 $stimulus=$headroom if($stimulus > $headroom);
 	 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"";
 	 my $limited=($pattern_range ne "" && int($pattern_range)==1) ? 1 : 0;
+	 # Super-white headroom (>100%) exists only in LIMITED range (codes
+	 # 236..255 in 8-bit, 941..1023 in 10-bit) regardless of bit depth -- the
+	 # 105/109 ladder anchors live there. Full range has no codes above white,
+	 # so cap stimulus at 100% (peak) only when full.
+	 my $headroom=($sdr_headroom || $limited) ? 109.5 : 100;
+	 $stimulus=$headroom if($stimulus > $headroom);
 	 # HDR10 is always 10-bit. Legal range depends on panel quant range.
 	 # Limited 10-bit -> 64-940. Full 10-bit -> 0-1023. Returns early so the
 	 # SDR-only clamp below (which would clamp 10-bit codes to 255) is
