@@ -2434,7 +2434,12 @@ if($signal_mode eq "dv") {
 				 my $lg_autocal_26=0;
 				 $lg_autocal_26=1 if($body=~/"lg_autocal_26"\s*:\s*true/i);
 				 if($type eq "greyscale" && $signal_mode eq "sdr" && (($points==21 && $lg_greyscale_21) || ($points==26 && $lg_autocal_26))) {
-				  $pattern_signal_range="1";
+				  # Align the pattern range to the output range (rgb_quant_range, via
+				  # signal_range/transport) instead of hardcoding limited. The renderer
+				  # outputs per rgb_quant_range, so limited pattern codes on a full
+				  # output read dim at 100%. Limited displays still resolve to 1.
+				  $pattern_signal_range=$signal_range if($signal_range=~/^[12]$/);
+				  $pattern_signal_range=$transport_signal_range if($pattern_signal_range !~ /^[12]$/ && $transport_signal_range=~/^[12]$/);
 				 }
  my $series_target_white_reference;
  if(!$series_target_white_y_provided) {
@@ -3813,6 +3818,27 @@ my $_ac_target_gamma="bt1886";
  if(!$_ac_lim && $_ac_signal_mode eq "hdr10") {
   my $_ac_conf_range=&webui_preferred_rgb_quant_range();
   $_ac_lim=1 if(defined($_ac_conf_range) && $_ac_conf_range ne "" && int($_ac_conf_range)==1);
+ }
+ # SDR: the renderer outputs per rgb_quant_range, so the autocal PATTERN codes
+ # must use the SAME range. The JS pins pattern_signal_range=1 for the SDR26
+ # ladder (legacy "always limited legal-expanded" assumption) even when the
+ # display is full -- that makes the worker emit limited codes (100%->235),
+ # which a full renderer then sends as ~92% so 100% reads dim. Align the
+ # pattern range to the effective output range (signal_range, which the JS
+ # sets from rgb_quant_range; fall back to the conf) and rewrite the body so
+ # the worker config (written from $body) is consistent.
+ if($_ac_signal_mode eq "sdr") {
+  my $_ac_eff_range=$_ac_signal_range;
+  $_ac_eff_range=&webui_preferred_rgb_quant_range() if(!defined($_ac_eff_range) || $_ac_eff_range !~ /^[12]$/);
+  if(defined($_ac_eff_range) && $_ac_eff_range=~/^[12]$/) {
+   $_ac_pattern_signal_range=$_ac_eff_range;
+   $_ac_lim=(int($_ac_eff_range)==1) ? 1 : 0;
+   if($body=~/"pattern_signal_range"\s*:/) {
+    $body=~s/"pattern_signal_range"\s*:\s*"?\d+"?/"pattern_signal_range":"$_ac_eff_range"/;
+   } else {
+    $body=~s/\}\s*\z/,"pattern_signal_range":"$_ac_eff_range"}/;
+   }
+  }
  }
  my %_ac_opts=(
   hdr20_codes => (($_ac_lg_autocal_26 && $_ac_signal_mode eq "hdr10") ? 1 : 0),
@@ -7452,10 +7478,12 @@ sub webui_grey_code_for_stimulus (@) {
   # in the worker, not by this drive code).
   my $_ac26_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
   if($_ac26_bits == 8) {
-   my $s=$stimulus_pct; $s=100 if($s > 100);
    if($signal_range) {
-    $code=int(16 + ($s/100)*219 + .5); $code=16 if($code < 16); $code=235 if($code > 235);
+    # Limited: super-white headroom maps 105/109 into 236..255 (0%=16, 100%=235).
+    $code=int(16 + ($stimulus_pct/100)*219 + .5); $code=16 if($code < 16); $code=255 if($code > 255);
    } else {
+    # Full: no codes above white -- 100% is the peak (255), so >100% clamps to 255.
+    my $s=$stimulus_pct; $s=100 if($s > 100);
     $code=int(($s/100)*255 + .5); $code=0 if($code < 0); $code=255 if($code > 255);
    }
    $input_max=255;
