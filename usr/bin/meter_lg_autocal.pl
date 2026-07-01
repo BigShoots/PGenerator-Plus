@@ -15422,6 +15422,21 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $low_ire_max_escalations=defined($config->{"lg_autocal_sdr26_dpg_low_ire_max_escalations"}) ? int($config->{"lg_autocal_sdr26_dpg_low_ire_max_escalations"}) : 2;
  $low_ire_max_escalations=0 if($low_ire_max_escalations < 0);
  $low_ire_max_escalations=4 if($low_ire_max_escalations > 4);
+ # Re-escalation (full-step retry) must fire ONLY when the anchor is still
+ # FAR from its (relaxed) target -- a genuinely crushed/black anchor. When it
+ # is already close, a full-step re-escalation just scatters a noise-limited
+ # anchor with large bad moves (dE jumping 5-10) instead of settling. Gate it
+ # behind best_de > effective_target * this factor.
+ my $low_ire_reescalate_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_reescalate_factor"}+0) : 4.0;
+ $low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
+ $low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
+ # A very-low-IRE anchor sitting within this multiple of its (relaxed) target
+ # is meter-noise-limited (e.g. 0.01 cd/m2 reads scatter dE 1-5): extra
+ # reverts only scatter the dE without beating the best, so keep the best and
+ # stop early instead of thrashing the whole revert budget.
+ my $low_ire_close_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}+0) : 1.5;
+ $low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
+ $low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
   my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
   $target_de=0.05 if($target_de < 0.05);
   $target_de=5.0 if($target_de > 5.0);
@@ -15736,6 +15751,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $consecutive_reverts++;
     $move_scaling*=0.5 if($move_scaling+0 > 0.001);
     log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
+    # Noise-limited early stop: a very-low-IRE anchor already near its
+    # (relaxed) target is meter-noise-limited -- once a move has failed to
+    # beat the best twice, further reverts only scatter the dE (and the
+    # final restore re-reads the best anyway). Keep the best and move on
+    # instead of burning the whole revert budget on large bad moves.
+    if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
+     log_line("SDR26 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
+     last;
+    }
     if($consecutive_reverts >= $revert_budget) {
      # Low-IRE re-escalation: when a deep-shadow anchor is STILL short of its
      # (relaxed) target after exhausting the revert budget, the problem is
@@ -15744,7 +15768,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      # again, bounded by low_ire_max_escalations. best_dpg/best_anchors were
      # already restored above and best is always kept, so a converged anchor
      # is never regressed.
-     if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > $_effective_target_de+0 && $low_ire_escalations < $low_ire_max_escalations) {
+     if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor && $low_ire_escalations < $low_ire_max_escalations) {
       $low_ire_escalations++;
       $consecutive_reverts=0;
       $move_scaling=$initial_move_scaling;
@@ -16095,18 +16119,21 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   for(my $j=0;$j<@{$current_dpg_ref};$j++) {
    if(($current_dpg_ref->[$j]+0) != ($best_dpg->[$j]+0)) { $_differs=1; last; }
   }
-  if($_differs) {
-   @{$current_dpg_ref}=@{$best_dpg};
-   @{$done_ref}=@{$best_anchors};
-   my ($bok,$bmsg)=$upload_dpg->($current_dpg_ref);
+  # Re-read + re-chart the best state whenever the DPG had to be restored OR
+  # the anchor did not converge. A reverted/broke anchor's LAST charted
+  # reading is a bad move even when current_dpg already == best_dpg (the last
+  # iter reverted after merging its overshoot reading), so gating only on
+  # $_differs left the ugly dE on the chart. Re-reading the committed best and
+  # merging it guarantees the chart shows a fresh measurement of the state the
+  # panel is actually sitting at.
+  if($_differs || !$converged) {
+   if($_differs) {
+    @{$current_dpg_ref}=@{$best_dpg};
+    @{$done_ref}=@{$best_anchors};
+   }
+   my ($bok,$bmsg)=$_differs ? $upload_dpg->($current_dpg_ref) : (1,undef);
    # Recompute the anchor's $tl the same way the iter loop does (legal-peak
    # uses its own measured Y; body uses the 2.2 curve via white_ref + black_y).
-   # Note: at this point $last_reading is still the LAST iter's reading, not
-   # the re-read, so for legal-peak anchors $tl will be luminance($last_reading)
-   # which is the previous iter's Y. Acceptable: the re-read uses the same
-   # $tl so the dE ITP is consistent with how the iter loop evaluated it.
-   # (If we computed $tl from the re-read's Y, the dE would be a mix of the
-   # restored-build reading + the new curve-target -- confusing.)
    my $_is_legal_peak_restore=(autocal_step_is_white($rs) || abs(($_anchor_ire+0)-109.0) < 0.05) ? 1 : 0;
    my $_sdr26_tg_restore=defined($config->{"target_gamma"}) ? $config->{"target_gamma"} : "bt1886";
    my $_tl_restore=$_is_legal_peak_restore
@@ -16122,10 +16149,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_restore);
      $_restored_de=$ade+0 if(defined($ade));
      $_restored_ok=1;
+     # Merge the re-read into the charted readings (annotated exactly as the
+     # iter loop does before its own merge) so the chart reflects the restored
+     # best state's ACTUAL measurement, not the last reverted bad move.
+     annotate_reading_target($arr,($_is_legal_peak_restore ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
+     $state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
     }
    }
    $state->{"current_delta_e"}=$_restored_de if(ref($state) eq "HASH");
-   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")").($_restored_ok?" (re-read dE=".sprintf("%.4f",$_restored_de).")":" (re-read failed or skipped)"));
+   write_state($state) if(ref($state) eq "HASH");
+   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($_differs?($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"):" (already at best)").($_restored_ok?" (re-read dE=".sprintf("%.4f",$_restored_de).", re-charted)":" (re-read failed or skipped)"));
   }
  }
  return ($converged,$last_reading,$current_dpg_ref,$total_inner_iters,$max_de_anchor,$cal_active_inner,$upload_failed);
