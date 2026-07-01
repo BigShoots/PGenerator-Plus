@@ -16070,7 +16070,22 @@ function meterColorDeltaEForm(){
 }
 
 function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
- const xyz=meterReadingXYZ(reading);
+ let xyz=meterReadingXYZ(reading);
+ // A non-0% patch that measured true black (Y=0) returns null from
+ // meterReadingXYZ (which only hands back {0,0,0} for black-TARGETING
+ // readings). Bailing here with dE 0 wrongly reports a crushed shadow as
+ // perfect. Treat a genuine black read (Y=0, X~0, Z~0) as measured {0,0,0}
+ // so the black-on-black guard below decides: it still returns 0 when the
+ // target is also ~0 (the 0% / target-black case), but for any lit patch
+ // with a non-zero target it now computes the full luminance-gap dE.
+ if(!xyz && reading){
+  const _Yb=meterReadingLuminanceNits(reading);
+  const _Xb=(reading.X!=null)?Number(reading.X):0;
+  const _Zb=(reading.Z!=null)?Number(reading.Z):0;
+  if(Number(_Yb)===0 && Number.isFinite(_Xb) && Number.isFinite(_Zb) && Math.abs(_Xb)<1e-9 && Math.abs(_Zb)<1e-9){
+   xyz={X:0,Y:0,Z:0};
+  }
+ }
  if(!reading||!xyz) return {value:0,de2000:0};
  form = form || meterDeltaEForm();
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
