@@ -1238,7 +1238,14 @@ sub webui_meter_usb_power_parse (@) {
    qr/not accepting address.*error\s*-71/i,
    qr/device descriptor read.*error\s*-(?:32|71|110)/i,
    qr/unable to enumerate USB device/i);
- my ($strong_n,$moderate_n,$recent_n,$last_age)=(0,0,0,undef);
+ # RECENT = age < 900s window. We base the warning on RECENT activity rather
+ # than all-session totals: a "device descriptor read/8" or "unable to enumerate"
+ # from 2 hours ago (when a spectro was unplugged) does NOT mean the hub is
+ # unhealthy RIGHT NOW, but the old code latched onto stale totals so the badge
+ # stayed lit indefinitely. Track recent counts separately per class so the
+ # caller can distinguish a genuine power fault from a pure link/enumeration
+ # fault for the operator-facing detail string.
+ my ($strong_n,$moderate_n,$recent_n,$recent_strong,$recent_moderate,$last_age)=(0,0,0,0,0,undef);
  for my $line (split /\n/, $dmesg) {
   my $is_strong   = (grep { $line =~ $_ } @strong) ? 1 : 0;
   my $is_moderate = (!$is_strong && (grep { $line =~ $_ } @moderate)) ? 1 : 0;
@@ -1248,15 +1255,24 @@ sub webui_meter_usb_power_parse (@) {
   my ($ts)=$line=~/^\[\s*([0-9.]+)\]/;
   next unless defined $ts;
   my $age=$uptime-$ts; $age=0 if($age<0);
-  $recent_n++ if($age < 900);
+  if($age < 900) {
+   $recent_n++;
+   $recent_strong++   if($is_strong);
+   $recent_moderate++ if($is_moderate);
+  }
   $last_age=$age if(!defined $last_age || $age < $last_age);
  }
  my $total=$strong_n+$moderate_n;
- # Warn when the meter's USB link showed current-starvation this session: any
- # strong (power-specific) hit, or a cluster (>=4) of enumeration faults.
- my $warning=($strong_n>0 || $moderate_n>=4) ? 1 : 0;
+ # Warn ONLY on recent activity: any recent strong (power-specific) hit, or a
+ # fresh cluster (>=4) of recent enumeration faults. Once the offending device
+ # is gone and the 900s window slides past, the badge clears on its own.
+ # 'kind' drives the detail copy: 'power' = over-current/power-cycle (rare),
+ # 'link' = enumeration/signal-integrity cluster (common; NOT a current story).
+ my $warning=($recent_strong>0 || $recent_moderate>=4) ? 1 : 0;
+ my $kind=($recent_strong>0) ? 'power' : 'link';
  return {warning=>$warning, total=>$total, strong=>$strong_n, moderate=>$moderate_n,
-   recent=>$recent_n, last_age=>(defined $last_age ? int($last_age) : -1)};
+   recent=>$recent_n, recent_strong=>$recent_strong, recent_moderate=>$recent_moderate,
+   last_age=>(defined $last_age ? int($last_age) : -1), kind=>$kind};
 }
 
 my %_meter_usb_power_cache;
@@ -1303,9 +1319,22 @@ sub webui_meter_status_apply_overrides (@) {
    : ($age<90) ? "just now"
    : ($age<5400) ? sprintf("%dm ago",int($age/60+.5))
    : sprintf("%.1fh ago",$age/3600);
-  my $detail=sprintf("USB ports overloaded - the connected meters draw more current than the shared USB hub can supply (%d USB errors this session, last %s). Disconnect the meter you are not using, or use a powered USB hub.", $h->{total}, $when);
+  # Pick the detail copy + emitted kind from the parser's classification.
+  # 'power' (rare) = genuine over-current/power-cycle -> blame current.
+  # 'link' (default) = enumeration/signal-integrity cluster -> do NOT blame
+  # current; it is almost always a cable/hub-port/signal-integrity issue.
+  # Use the RECENT count (last 900s) so the number reflects what the hub is
+  # doing now, not stale session totals from before the offending device was
+  # unplugged.
+  my $kind=(defined $h->{kind} && $h->{kind} eq 'power') ? 'power' : 'link';
+  my $detail;
+  if($kind eq 'power') {
+   $detail=sprintf("USB ports overloaded - the connected meters draw more current than the shared USB hub can supply (%d recent USB errors, last %s). Disconnect the meter you are not using, or use a powered USB hub.", $h->{recent}, $when);
+  } else {
+   $detail=sprintf("USB link unstable - a device is not enumerating reliably on the hub (%d recent USB errors, last %s). This is usually a cable, hub port, or signal-integrity issue, not power - try a different port/cable or a powered hub.", $h->{recent}, $when);
+  }
   $detail=~s/(["\\])/\\$1/g;
-  $json=~s/\}\s*$/,"usb_power_warning":true,"usb_power_detail":"$detail"}/;
+  $json=~s/\}\s*$/,"usb_power_warning":true,"usb_power_detail":"$detail","usb_power_kind":"$kind"}/;
  }
  return $json;
 }
@@ -18890,8 +18919,21 @@ function meterUpdateUsbPowerWarning(r){
  if(!badge) return;
  const warn=!!(r&&r.usb_power_warning);
  if(warn){
-  const detail=(r&&r.usb_power_detail)||'USB ports overloaded - the connected meters draw more current than the shared USB hub can supply. Disconnect the meter you are not using, or use a powered USB hub.';
+  // 'kind' from the server picks the badge label + fallback copy:
+  //   power = genuine over-current/power-cycle (rare); keep the "Overloaded"
+  //           wording so the operator knows current is the problem.
+  //   link  (default) = enumeration/signal-integrity cluster (common). Do NOT
+  //           label this as "USB Overloaded" -- the kernel log lines driving
+  //           it (-71/-32/-110, "unable to enumerate") are link faults, not
+  //           current faults, and the old wording sent the operator chasing
+  //           a powered hub when the real fix was a different port/cable.
+  const kind=(r&&r.usb_power_kind)==='power' ? 'power' : 'link';
+  const fallback=(kind==='power')
+   ? 'USB ports overloaded - the connected meters draw more current than the shared USB hub can supply. Disconnect the meter you are not using, or use a powered USB hub.'
+   : 'USB link unstable - check the cable, hub port, or try a powered hub.';
+  const detail=(r&&r.usb_power_detail)||fallback;
   badge.style.display='inline';
+  badge.textContent=(kind==='power') ? '\u26a0 USB Overloaded' : '\u26a0 USB Unstable';
   badge.title=detail;
   if(!_meterUsbPowerWarned){ _meterUsbPowerWarned=true; toast(detail,true); }
  }else{
