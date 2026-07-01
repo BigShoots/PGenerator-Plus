@@ -12916,6 +12916,49 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
  return lg_autocal_26_build_dpg_core($current_dpg,$anchors);
 }
 
+# Curvature-preserving smoother for 1D-DPG control points. For each
+# interior point, fits a quadratic y=a+b*x+c*x*x by least squares over a
+# window of up to 5 nearest control points (clamped at the ends), evaluates
+# the fit at the point's x, and blends the point toward the fit by
+# $strength (0..1). A quadratic fit preserves the smooth gamma convexity
+# while removing higher-frequency wiggle. Endpoints are left untouched;
+# monotonic non-decreasing is re-enforced. $strength<=0 returns the input
+# unchanged. Returns a new arrayref. Used by lg_autocal_26_build_dpg_core
+# for the HDR20 path (opt-in via lg_autocal_hdr20_dpg_smooth_strength).
+sub lg_autocal_26_smooth_control_points {
+ my ($idx_ref,$ys_ref,$strength)= @_;
+ return [ @{$ys_ref} ] if(!defined($strength) || $strength <= 0 || ref($idx_ref) ne "ARRAY" || ref($ys_ref) ne "ARRAY" || @{$idx_ref} < 3 || @{$idx_ref} != @{$ys_ref});
+ $strength=1 if($strength > 1);
+ my $n=scalar( @{$idx_ref});
+ my @out=@{$ys_ref};
+ for(my $p=1;$p<$n-1;$p++) {
+  # window of up to 5 points centered on p, clamped to [0,n-1]
+  my $lo=$p-2; $lo=0 if($lo<0);
+  my $hi=$p+2; $hi=$n-1 if($hi>$n-1);
+  # weighted-least-squares quadratic fit over window (weights=1); solve
+  # normal equations for a+b*x+c*x*x. Use x offset by idx[p] for numerical
+  # stability.
+  my ($S0,$S1,$S2,$S3,$S4,$T0,$T1,$T2)=(0,0,0,0,0,0,0,0);
+  for(my $k=$lo;$k<=$hi;$k++) {
+   my $x=$idx_ref->[$k]-$idx_ref->[$p];
+   my $y=$ys_ref->[$k];
+   my $x2=$x*$x;
+   $S0+=1; $S1+=$x; $S2+=$x2; $S3+=$x2*$x; $S4+=$x2*$x2;
+   $T0+=$y; $T1+=$x*$y; $T2+=$x2*$y;
+  }
+  # solve 3x3 [[S0,S1,S2],[S1,S2,S3],[S2,S3,S4]] * [a,b,c] = [T0,T1,T2]
+  my $det=$S0*($S2*$S4-$S3*$S3)-$S1*($S1*$S4-$S3*$S2)+$S2*($S1*$S3-$S2*$S2);
+  next if(abs($det) < 1e-9);
+  my $a=($T0*($S2*$S4-$S3*$S3)-$S1*($T1*$S4-$S3*$T2)+$S2*($T1*$S3-$S2*$T2))/$det;
+  # fit value at x=0 (i.e. at idx[p]) is just $a
+  my $fit=$a;
+  $out[$p]=$ys_ref->[$p] + $strength*($fit-$ys_ref->[$p]);
+ }
+ # re-enforce monotone non-decreasing
+ for(my $p=1;$p<$n;$p++) { $out[$p]=$out[$p-1] if($out[$p] < $out[$p-1]); }
+ return \@out;
+}
+
 # Shared 1D DPG build core. Takes the previous DPG (or undef for the
 # identity baseline) and a list of anchor corrections (each a hash with
 # idx + r_gain/g_gain/b_gain). Returns a 3072-value array (3 channels
@@ -12970,6 +13013,13 @@ sub lg_autocal_26_build_dpg_core {
 	  $ctrl_val{1023}=$ctrl_val{1023} // $cur[$ch*1024 + 1023];
 	  @ctrl_idx=sort { $a <=> $b } @ctrl_idx;
 	  my @ctrl_ys=map { $ctrl_val{$_} } @ctrl_idx;
+	  # HDR-only optional control-point smoothing (default off). Reduces
+	  # per-anchor over-fit wiggle that the panel's 2.2->PQ reconstruction
+	  # amplifies at low/mid IRE. strength 0 = exact prior behavior.
+	  my $_dpg_smooth=(ref($LG_AUTOCAL_CONFIG) eq "HASH" && defined($LG_AUTOCAL_CONFIG->{"lg_autocal_hdr20_dpg_smooth_strength"})) ? ($LG_AUTOCAL_CONFIG->{"lg_autocal_hdr20_dpg_smooth_strength"}+0) : 0;
+	  if($_dpg_smooth > 0) {
+	   @ctrl_ys=@{ lg_autocal_26_smooth_control_points(\@ctrl_idx,\@ctrl_ys,$_dpg_smooth) };
+	  }
 	  # Akima cubic spline interpolation across the 1024 indices.
 	  # Falls back to linear when the Akima sub returns empty (the
 	  # degenerate case of < 4 anchors; in practice the autocal
