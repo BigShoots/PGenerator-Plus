@@ -14609,8 +14609,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the damp follow slow response-model changes without snapping
 			# to a noisy one-shot. Sanity guards (positive ratios, abs
 			# log-change > 0.05, gamma in [1, 4]) skip the blend on the
-			# first iter after a tiny move or a zero-crossing.
-			if(defined($y_prev) && defined($dpg_r_prev) && defined($dpg_g_prev) && defined($dpg_b_prev)) {
+			# first iter after a tiny move or a zero-crossing. The
+			# "> 0" guards prevent an Illegal division by zero when a
+			# patch reads pure black (Y_prev = 0) — without them perl
+			# dies on the four log() / divide operations below and the
+			# whole iter aborts.
+			if(defined($y_prev) && $y_prev+0 > 0 && defined($dpg_r_prev) && $dpg_r_prev+0 > 0 && defined($dpg_g_prev) && $dpg_g_prev+0 > 0 && defined($dpg_b_prev) && $dpg_b_prev+0 > 0) {
 				my $y_ratio=luminance($reading)/$y_prev;
 				my $dpg_r_ratio=$current_dpg->[$idx]/$dpg_r_prev;
 				my $dpg_g_ratio=$current_dpg->[$idx+1024]/$dpg_g_prev;
@@ -15642,7 +15646,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # one-shot. Sanity guards skip the blend on tiny moves or near-zero
    # crossings. The 2.2 seed (vs HDR's PQ seed) reflects the SDR target
    # EOTF; the measured value is what the panel actually does at this IRE.
-   if(defined($y_prev) && defined($dpg_r_prev) && defined($dpg_g_prev) && defined($dpg_b_prev)) {
+   # The "> 0" guards prevent an Illegal division by zero when a patch
+   # reads pure black (Y_prev = 0) — without them perl dies on the
+   # log()/divide ops below and the whole iter aborts.
+   if(defined($y_prev) && $y_prev+0 > 0 && defined($dpg_r_prev) && $dpg_r_prev+0 > 0 && defined($dpg_g_prev) && $dpg_g_prev+0 > 0 && defined($dpg_b_prev) && $dpg_b_prev+0 > 0) {
     my $y_ratio=luminance($reading)/$y_prev;
     my $dpg_r_ratio=$current_dpg_ref->[$idx]/$dpg_r_prev;
     my $dpg_g_ratio=$current_dpg_ref->[$idx+1024]/$dpg_g_prev;
@@ -15906,6 +15913,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $_legal_peak_r_ref->{"lock_idx"}=$_cur_min_idx;
   } else {
    ($rg,$gg,$bg)=lg_autocal_26_sdr26_dpg_gain($reading,$tl,$target_x,$target_y,$_anchor_ire);
+   # Zero/near-black read lift: the gain fn returns unity (1.0,1.0,1.0) when
+   # measured Y is ~0 because it cannot derive a per-channel gain from black.
+   # A near-black read on a low-IRE anchor whose target is above the floor
+   # means the node is far too dark and MUST be boosted, not left unmoved
+   # (unity = no move = the anchor stays crushed). Force a strong uniform
+   # boost toward the low-IRE ceiling so the DPG node climbs out of black;
+   # the damp + move_scaling + ceiling clamp below still bound the move.
+   my $_meas_y=luminance($reading);
+   my $_near_black=0.003;
+   if($_anchor_ire+0 < $low_ire_threshold+0 && !$is_white_peak && defined($tl) && $tl+0 > $_near_black && defined($_meas_y) && $_meas_y+0 <= $_near_black) {
+    $rg=$low_ire_boost_ceiling; $gg=$low_ire_boost_ceiling; $bg=$low_ire_boost_ceiling;
+   }
   }
   my $floor=$is_white ? 0.6 : (($_anchor_ire+0 < $low_ire_threshold) ? $damp_floor_low : 0.8);
   # White-cluster (109%) move multiplier: the white anchor only REDUCES
