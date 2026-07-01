@@ -26381,8 +26381,15 @@ async function meterFullAutoCalGeneratePostReport(){
   const _sm=(getVal('signal_mode')||'sdr');
   const _cur=String(getVal('meterTargetGamma')||'');
   if(_sm==='hdr10'){
-   if(_cur==='' || _cur==null){
+   // The HDR greyscale autocal PINS Target Gamma to 2.2 for the cal-mode 2.2
+   // space (meterAutoCalConfirmAndStart). Once cal mode is turned off (below)
+   // the TV re-applies its PQ processing, so the post-cal verification MUST
+   // grade against ST 2084. Always restore it -- the prior `_cur===''` guard
+   // never fired because the pin left _cur==='2.2', so the post-cal report
+   // graded HDR against the 2.2 curve and read wrong (shadows too bright).
+   if(_cur!=='st2084'){
     setVal('meterTargetGamma','st2084');
+    meterActiveSeriesTargetGamma='st2084';
     if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
     if(typeof saveMeterSettings==='function') saveMeterSettings();
    }
