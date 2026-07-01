@@ -4213,12 +4213,38 @@ sub webui_meter_lg_3d_autocal_status (@) {
   if(open(my $fh,"<",$_meter_lg_3d_autocal_file)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "") {
    if($json=~/"status"\s*:\s*"running"/ && !&webui_meter_lg_3d_autocal_running()) {
-    $json=~s/"status"\s*:\s*"running"/"status":"error"/;
-    if($json=~/"current_name"\s*:\s*"[^"]*"/) {
-     $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"3D LUT AutoCal process died"/;
-    }
-    if($json=~/"message"\s*:\s*"[^"]*"/) {
-     $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG 3D LUT AutoCal stopped unexpectedly"/;
+    # The worker process is gone while still marked "running". Mirror the 1D
+    # monitor's verified-marker fallback: if the 3D LUT was uploaded AND
+    # verified (and the tone-map step, when present, succeeded or was skipped),
+    # the calibration actually landed on the TV -- the tone-map helper sends
+    # CAL_END as part of its upload, so a verified upload means the cal
+    # persisted. The worker was just killed at the very end (e.g. a meter read
+    # stall during finalize) before it could write status=complete. Report
+    # that as complete instead of a spurious "process died". Only fall back to
+    # the died/error path when the LUT did not verify (a genuine failure) or
+    # the worker left its own specific error message.
+    my $_uv=($json=~/"upload_verified"\s*:\s*true/) ? 1 : 0;
+    my $_tm_status=($json=~/"tone_map_upload_status"\s*:\s*"([^"]*)"/) ? $1 : "";
+    my $_tm_ok=($_tm_status eq "" || $_tm_status eq "ok" || $_tm_status eq "skipped") ? 1 : 0;
+    if($_uv && $_tm_ok) {
+     my $now=int(time()*1000);
+     $json=~s/"status"\s*:\s*"running"/"status":"complete"/;
+     $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"LG 3D LUT Auto Cal complete"/ if($json=~/"current_name"\s*:\s*"[^"]*"/);
+     my $_msg="3D LUT exported, uploaded, and verified";
+     if($json=~/"message"\s*:\s*"[^"]*"/) { $json=~s/"message"\s*:\s*"[^"]*"/"message":"$_msg"/; } else { $json=~s/\}$/,"message":"$_msg"}/; }
+     if($json=~/"phase"\s*:\s*"[^"]*"/) { $json=~s/"phase"\s*:\s*"[^"]*"/"phase":"complete"/; } else { $json=~s/\}$/,"phase":"complete"}/; }
+     $json=~s/\}$/,"completed_at":$now}/ if($json!~/"completed_at"\s*:/);
+    } else {
+     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+     if($json=~/"current_name"\s*:\s*"[^"]*"/) {
+      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"3D LUT AutoCal process died"/;
+     }
+     # Preserve a real worker error message; only fall back to the generic
+     # string when empty/placeholder/the generic itself.
+     my $_em=""; $_em=$1 if($json=~/"message"\s*:\s*"([^"]*)"/);
+     if($_em eq "" || $_em eq "Starting" || $_em=~/^Starting LG 3D/ || $_em eq "LG 3D LUT AutoCal stopped unexpectedly") {
+      $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG 3D LUT AutoCal stopped unexpectedly"/;
+     }
     }
     if(open(my $wf,">",$_meter_lg_3d_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_3d_autocal_file); }
    }
