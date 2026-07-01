@@ -15404,6 +15404,20 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $damp_floor_low=defined($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}+0) : 0.5;
  $damp_floor_low=0.3 if($damp_floor_low < 0.3);
  $damp_floor_low=0.95 if($damp_floor_low > 0.95);
+ # Low-IRE per-node BOOST ceiling: at deep shadow a crushed node can read
+ # ~20x below target and the default 1.25x/iter ceiling cannot lift it in
+ # the few iters before the revert-break. Raise the ceiling for low-IRE
+ # anchors only (higher IRE keeps 1.25). Reductions are bounded by the
+ # damp floor and never approach this ceiling.
+ my $low_ire_boost_ceiling=defined($config->{"lg_autocal_sdr26_dpg_low_ire_boost_ceiling"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_boost_ceiling"}+0) : 2.0;
+ $low_ire_boost_ceiling=1.25 if($low_ire_boost_ceiling < 1.25);
+ $low_ire_boost_ceiling=4.0 if($low_ire_boost_ceiling > 4.0);
+ # Low-IRE step re-escalation budget: how many times a stuck deep-shadow
+ # anchor may reset move_scaling to full strength (instead of breaking)
+ # when it exhausts the revert budget while still short of target.
+ my $low_ire_max_escalations=defined($config->{"lg_autocal_sdr26_dpg_low_ire_max_escalations"}) ? int($config->{"lg_autocal_sdr26_dpg_low_ire_max_escalations"}) : 2;
+ $low_ire_max_escalations=0 if($low_ire_max_escalations < 0);
+ $low_ire_max_escalations=4 if($low_ire_max_escalations > 4);
   my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
   $target_de=0.05 if($target_de < 0.05);
   $target_de=5.0 if($target_de > 5.0);
@@ -15468,6 +15482,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $best_dpg=[@{$current_dpg_ref}];
   my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
   my $consecutive_reverts=0;
+  my $low_ire_escalations=0;
   my $revert_budget=defined($config->{"lg_autocal_sdr26_dpg_revert_budget"}) ? int($config->{"lg_autocal_sdr26_dpg_revert_budget"}) : 4;
   $revert_budget=2 if($revert_budget < 2);
   $revert_budget=10 if($revert_budget > 10);
@@ -15715,8 +15730,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $move_scaling*=0.5 if($move_scaling+0 > 0.001);
     log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
     if($consecutive_reverts >= $revert_budget) {
-     log_line("SDR26 1D DPG greyscale: ".$revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
-     last;
+     # Low-IRE re-escalation: when a deep-shadow anchor is STILL short of its
+     # (relaxed) target after exhausting the revert budget, the problem is
+     # reach/undershoot, not overshoot -- halving move_scaling into the noise
+     # floor is exactly wrong. Instead of breaking, restore full step and try
+     # again, bounded by low_ire_max_escalations. best_dpg/best_anchors were
+     # already restored above and best is always kept, so a converged anchor
+     # is never regressed.
+     if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > $_effective_target_de+0 && $low_ire_escalations < $low_ire_max_escalations) {
+      $low_ire_escalations++;
+      $consecutive_reverts=0;
+      $move_scaling=$initial_move_scaling;
+      log_line("SDR26 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
+     } else {
+      log_line("SDR26 1D DPG greyscale: ".$revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
+      last;
+     }
     }
    }
   }
@@ -15968,9 +15997,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
-   $sr=1.25 if($sr+0 > 1.25);
-   $sg=1.25 if($sg+0 > 1.25);
-   $sb=1.25 if($sb+0 > 1.25);
+   # Low-IRE anchors may need a larger per-node BOOST to lift a crushed
+   # shadow node; raise the upper clamp for low-IRE only. Higher IRE keeps
+   # the 1.25 ceiling. Reducing channels are bounded by $floor and never
+   # reach this ceiling.
+   my $_node_ceiling=($_anchor_ire+0 < $low_ire_threshold+0) ? $low_ire_boost_ceiling : 1.25;
+   $sr=$_node_ceiling if($sr+0 > $_node_ceiling);
+   $sg=$_node_ceiling if($sg+0 > $_node_ceiling);
+   $sb=$_node_ceiling if($sb+0 > $_node_ceiling);
     if($is_white_body) {
      $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
      $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
