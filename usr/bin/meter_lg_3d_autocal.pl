@@ -2152,7 +2152,22 @@ sub run_hdr20_postcal_shadow_correction {
  # grey anchors the HDR20 ladder runs through; each anchor's lift
  # drives its OWN magnitude of roll-down in the new piecewise profile.
  my @anchor_ire=(5,10,15,20,25);
- my @anchor_idx=(51,103,154,206,257);
+ # Post-cal (cal-mode OFF) DPG index mapping. The legal-expanded table
+ # (ire/100*1023: 51/103/154/206/257) is only valid while cal mode is ON
+ # (panel linearized to 2.2, DPG indexed by expanded video code). With PQ
+ # processing re-applied the panel samples the DPG in a COMPRESSED domain
+ # at ~half the expanded index. Proven on the C1 by a shelf probe: pulling
+ # idx<=154 down dropped the series read all the way to 30% (idx154 ==
+ # video-30%, not 15%), and per-anchor corrections at half indices
+ # (26/51/77/102/128) landed every 5-30% read within a few percent while
+ # the expanded indices over-pulled 2x-high IREs. Scale is config-tunable
+ # per panel; 0.5 is the C1-validated default.
+ my $idx_scale=$config->{"lg_autocal_hdr20_postcal_shadow_index_scale"};
+ $idx_scale=0.5 if(!defined($idx_scale) || $idx_scale+0 <= 0);
+ $idx_scale=$idx_scale+0;
+ $idx_scale=0.25 if($idx_scale < 0.25);
+ $idx_scale=1.0 if($idx_scale > 1.0);
+ my @anchor_idx=map { int(($_/100)*1023*$idx_scale+0.5) } @anchor_ire;
  # Build a probe step per anchor from the 5% probe step. The probe
  # carries input_max + pattern_signal_range + ire + stimulus + name;
  # only r=g=b change. Code math mirrors webui.pm's _pcode derivation:
