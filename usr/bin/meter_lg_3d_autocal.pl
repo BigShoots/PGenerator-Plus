@@ -1038,6 +1038,12 @@ sub model_from_readings {
   chromatic_white_y => $chromatic_white_y,
   wrgb_white_ratio => $wrgb_white_ratio,
   wrgb_comp_source => $wrgb_comp_source,
+  # Chromatic LUMINANCE compensation in the gamut-matrix cube path
+  # (gamut_matrix_output): on whenever the chromatic reference is the
+  # additive sum, config-defeatable via lg_autocal_3dlut_chroma_luma_comp=0.
+  wrgb_chroma_luma_comp => (($chromatic_white_y < $white_y*0.98)
+   && !(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp"})
+        && !($config->{"lg_autocal_3dlut_chroma_luma_comp"}+0))) ? 1 : 0,
   gamut_drive_matrix => build_gamut_drive_matrix(\%contrib,$target_gamut,$signal_mode,$target_gamma),
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
@@ -1104,6 +1110,29 @@ sub gamut_matrix_output {
   target_gamma_linear($bi/($size-1),$gamma),
  ];
  my $out=matrix_mul_vec($M,$lin);
+ # WRGB chromatic luminance compensation, saturation-weighted. On a WRGB
+ # panel chromatic content is made WITHOUT the white sub-pixel and only
+ # reaches the additive R+G+B sum, but the pure 3x3 passes interior
+ # chromatic nodes through with no luminance normalization -- measured
+ # ~1.5x over the diffuse-referenced targets on warm interiors (C1:
+ # Yellow +55%, Orange Yellow +53%). Scale each node's LINEAR output by
+ # ratio^sat where ratio = chromatic_white_y/white_y (additive/WRGB,
+ # ~0.55 on the C1) and sat = (max-min)/max of the node input: neutral
+ # nodes (sat 0) are untouched, fully saturated nodes land on the
+ # additive reference. Equal per-channel scaling preserves chromaticity.
+ if($model->{"wrgb_chroma_luma_comp"}) {
+  my $wy=$model->{"white_y"}||0;
+  my $cw=$model->{"chromatic_white_y"}||0;
+  if($wy > 0 && $cw > 0 && $cw < $wy*0.98) {
+   my $mx=$ri; $mx=$gi if($gi > $mx); $mx=$bi if($bi > $mx);
+   my $mn=$ri; $mn=$gi if($gi < $mn); $mn=$bi if($bi < $mn);
+   if($mx > 0 && $mx > $mn) {
+    my $sat=($mx-$mn)/$mx;
+    my $scale=($cw/$wy) ** $sat;
+    $out=[ map { $_*$scale } @{$out} ];
+   }
+  }
+ }
  return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
 }
 
@@ -2572,6 +2601,7 @@ eval {
  $state->{"wrgb_white_ratio"}=$model->{"wrgb_white_ratio"};
  $state->{"wrgb_compensation_active"}=json_bool(($model->{"wrgb_white_ratio"}||1) > 1.0001);
  $state->{"wrgb_comp_source"}=$model->{"wrgb_comp_source"}||"auto";
+ $state->{"wrgb_chroma_luma_comp"}=json_bool($model->{"wrgb_chroma_luma_comp"});
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
  $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
