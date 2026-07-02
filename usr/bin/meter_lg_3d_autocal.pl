@@ -1044,6 +1044,9 @@ sub model_from_readings {
   wrgb_chroma_luma_comp => (($chromatic_white_y < $white_y*0.98)
    && !(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp"})
         && !($config->{"lg_autocal_3dlut_chroma_luma_comp"}+0))) ? 1 : 0,
+  wrgb_chroma_luma_comp_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"})
+   && ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) > 0)
+   ? ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) : 0.8,
   gamut_drive_matrix => build_gamut_drive_matrix(\%contrib,$target_gamut,$signal_mode,$target_gamma),
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
@@ -1110,16 +1113,20 @@ sub gamut_matrix_output {
   target_gamma_linear($bi/($size-1),$gamma),
  ];
  my $out=matrix_mul_vec($M,$lin);
- # WRGB chromatic luminance compensation, saturation-weighted. On a WRGB
- # panel chromatic content is made WITHOUT the white sub-pixel and only
- # reaches the additive R+G+B sum, but the pure 3x3 passes interior
- # chromatic nodes through with no luminance normalization -- measured
- # ~1.5x over the diffuse-referenced targets on warm interiors (C1:
- # Yellow +55%, Orange Yellow +53%). Scale each node's LINEAR output by
- # ratio^sat where ratio = chromatic_white_y/white_y (additive/WRGB,
- # ~0.55 on the C1) and sat = (max-min)/max of the node input: neutral
- # nodes (sat 0) are untouched, fully saturated nodes land on the
- # additive reference. Equal per-channel scaling preserves chromaticity.
+ # WRGB chromatic luminance compensation, MID-saturation weighted. The
+ # panel's W sub-pixel over-brightens PARTIALLY saturated colors: the
+ # neutral axis is DPG-calibrated (no error) and fully saturated colors
+ # are made without W (native additive ~= the additive-referenced
+ # targets; measured 100% yellow -3%), but interiors engage W partially
+ # and measured ~1.3-1.55x over target (C1: CC Yellow +55%, Orange
+ # Yellow +53%, Orange +50%). Scale each node's LINEAR output by
+ # ratio^(w(sat)*strength) with ratio = chromatic_white_y/white_y
+ # (~0.55 C1), sat = (max-min)/max of the node input, and
+ # w(sat) = sat^2*(1-sat)*6.75 (0 at both ends, peak 1 at sat=2/3 --
+ # rises slowly from neutral so near-neutrals/skin stay untouched).
+ # Validated against the measured C1 patches at strength 0.8:
+ # CC Yellow 91->57 (tgt ~59), Orange 45->30 (~30), Orange Yellow
+ # 67->42 (~44). Equal per-channel scaling preserves chromaticity.
  if($model->{"wrgb_chroma_luma_comp"}) {
   my $wy=$model->{"white_y"}||0;
   my $cw=$model->{"chromatic_white_y"}||0;
@@ -1128,7 +1135,14 @@ sub gamut_matrix_output {
    my $mn=$ri; $mn=$gi if($gi < $mn); $mn=$bi if($bi < $mn);
    if($mx > 0 && $mx > $mn) {
     my $sat=($mx-$mn)/$mx;
-    my $scale=($cw/$wy) ** $sat;
+    my $w=$sat*$sat*(1-$sat)*6.75;
+    $w=1 if($w > 1);
+    $w=0 if($w < 0);
+    my $strength=$model->{"wrgb_chroma_luma_comp_strength"};
+    $strength=0.8 if(!defined($strength) || $strength+0 <= 0);
+    $strength=$strength+0;
+    $strength=1.5 if($strength > 1.5);
+    my $scale=($cw/$wy) ** ($w*$strength);
     $out=[ map { $_*$scale } @{$out} ];
    }
   }
