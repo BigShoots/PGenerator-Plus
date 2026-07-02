@@ -4189,6 +4189,63 @@ sub webui_meter_lg_3d_autocal_start (@) {
   }
  }
  my $_ac3_max_bpc_promoted=&webui_meter_lg_autocal_ensure_10b($_ac3_signal_mode);
+ # HDR20 post-cal shadow correction (terminal sub-phase of the 3D LUT
+ # autocal). Append the config knobs from PGenerator.conf and the 5%
+ # grey probe step so the 3D worker can run the correction loop after
+ # the tone-map upload completes. Only active on HDR/HDR20 runs --
+ # SDR and DV are untouched. See
+ # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
+ if(lc($_ac3_signal_mode) eq "hdr10") {
+  &webui_reload_pgenerator_conf();
+  my %_hdr20_shadow_knobs=(
+   "lg_autocal_hdr20_postcal_shadow_enable" => ["int", 0],
+   "lg_autocal_hdr20_postcal_shadow_band_top_ire" => ["int", 25],
+   "lg_autocal_hdr20_postcal_shadow_taper_top_ire" => ["int", 30],
+   "lg_autocal_hdr20_postcal_shadow_tol" => ["num", 0.15],
+   "lg_autocal_hdr20_postcal_shadow_max_passes" => ["int", 4],
+   "lg_autocal_hdr20_postcal_shadow_damp" => ["num", 0.5],
+   "lg_autocal_hdr20_postcal_shadow_gain" => ["int", 150],
+   "lg_autocal_hdr20_postcal_shadow_seed_counts" => ["int", 0],
+   "lg_autocal_hdr20_postcal_shadow_matrix_path" => ["str", "/etc/PGenerator/hdr20_postcal_shadow_matrix.json"],
+  );
+  foreach my $k (sort keys %_hdr20_shadow_knobs) {
+   next if($body =~ /"${k}"/);
+   my ($type,$default)=@{$_hdr20_shadow_knobs{$k}};
+   my $v=$pgenerator_conf{$k};
+   $v=$default if(!defined($v) || $v eq "");
+   my $literal;
+   if($type eq "str") {
+    $v=~s/\\/\\\\/g; $v=~s/"/\\"/g;
+    $literal='"'.$v.'"';
+   } elsif($type eq "num") {
+    $v+=0;
+    $literal=sprintf("%.4f",$v);
+    $literal=~s/0+$//; $literal=~s/\.$//;
+    $literal=$literal+0;
+   } else {
+    $v+=0; $v=0 if($v < 0);
+    $literal=int($v);
+   }
+   $body=~s/\}\s*\z/,"${k}":${literal}}/;
+  }
+  # Build the 5% grey probe step (r=g=b grey) from THIS run's
+  # bit-depth + range so codes always match the greyscale stage's 5%
+  # anchor. The 3D worker's read_step reads whatever r/g/b it gets.
+  if($body !~ /"postcal_shadow_probe_step"/) {
+   my $_psr=""; $_psr=$1 if($body=~/"pattern_signal_range"\s*:\s*"([12])"/);
+   $_psr="1" if($_psr ne "1" && $_psr ne "2");
+   my $_pmb=""; $_pmb=$1 if($body=~/"max_bpc"\s*:\s*"([0-9]+)"/);
+   $_pmb="10" if($_pmb ne "8" && $_pmb ne "10");
+   my $_pcode;
+   if($_pmb eq "10") {
+    $_pcode=($_psr eq "2") ? int((5/100)*1023+0.5) : int(64 + (5/100)*876 + 0.5);
+   } else {
+    $_pcode=($_psr eq "2") ? int((5/100)*255+0.5) : int(16 + (5/100)*219 + 0.5);
+   }
+   my $_pinput_max=($_pmb eq "10") ? 1023 : 255;
+   $body=~s/\}\s*\z/,"postcal_shadow_probe_step":{"r":$_pcode,"g":$_pcode,"b":$_pcode,"input_max":$_pinput_max,"pattern_signal_range":"$_psr","ire":5,"stimulus":5,"name":"5% grey (post-cal shadow)","signal_r_pct":5,"signal_g_pct":5,"signal_b_pct":5,"kind":"white","phase":"postcal_shadow"}}/;
+  }
+ }
  if(open(my $fh,">",$_meter_lg_3d_autocal_config_file)) {
   print $fh $body;
   close($fh);

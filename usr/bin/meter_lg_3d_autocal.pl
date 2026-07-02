@@ -1536,6 +1536,544 @@ sub reset_3d_lut_to_unity_before_profile {
  return $reset;
 }
 
+# --- HDR20 post-cal shadow correction (PQ EOTF + ICtCp delta-E) ---
+# Ported from usr/bin/meter_lg_autocal.pl (pq_encode_normalized +
+# xyz_to_ictcp + delta_e_itp_xyz). Used to compute a ΔE(ITP) for the 5%
+# grey probe so revert-if-worse has a perceptually uniform comparator
+# instead of a luminance-only one.
+sub pq_encode_normalized {
+ my ($nits)=@_;
+ $nits=0 if(!defined($nits));
+ $nits+=0;
+ return 0 if($nits <= 0);
+ $nits=10000 if($nits > 10000);
+ my $l=$nits/10000;
+ my $m1=2610/16384;
+ my $m2=2523/32;
+ my $c1=3424/4096;
+ my $c2=2413/128;
+ my $c3=2392/128;
+ my $p=$l ** $m1;
+ return (($c1+$c2*$p)/(1+$c3*$p)) ** $m2;
+}
+
+sub xyz_to_ictcp {
+ my ($X,$Y,$Z)=@_;
+ $X=0 if(!defined($X)); $Y=0 if(!defined($Y)); $Z=0 if(!defined($Z));
+ my $R= 1.7166511880*$X -0.3556707838*$Y -0.2533662814*$Z;
+ my $G=-0.6666843518*$X +1.6164812366*$Y +0.0157685458*$Z;
+ my $B= 0.0176398574*$X -0.0427706133*$Y +0.9421031212*$Z;
+ $R=0 if($R < 0); $G=0 if($G < 0); $B=0 if($B < 0);
+ my $L=(1688*$R+2146*$G+262*$B)/4096;
+ my $M=(683*$R+2951*$G+462*$B)/4096;
+ my $S=(99*$R+309*$G+3688*$B)/4096;
+ my $Lp=pq_encode_normalized($L);
+ my $Mp=pq_encode_normalized($M);
+ my $Sp=pq_encode_normalized($S);
+ return {
+  I=>0.5*$Lp+0.5*$Mp,
+  T=>(6610*$Lp-13613*$Mp+7003*$Sp)/4096,
+  P=>(17933*$Lp-17390*$Mp-543*$Sp)/4096
+ };
+}
+
+sub delta_e_itp_xyz {
+ my ($X1,$Y1,$Z1,$X2,$Y2,$Z2)=@_;
+ return undef if(!defined($X1) || !defined($Y1) || !defined($Z1) || !defined($X2) || !defined($Y2) || !defined($Z2));
+ my $a=xyz_to_ictcp($X1,$Y1,$Z1);
+ my $b=xyz_to_ictcp($X2,$Y2,$Z2);
+ my $dI=$a->{"I"}-$b->{"I"};
+ my $dT=$a->{"T"}-$b->{"T"};
+ my $dP=$a->{"P"}-$b->{"P"};
+ return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
+}
+
+# Taper for the HDR20 post-cal shadow correction. 0 at index 0 (true
+# black pinned); linear 0->1 for 0 < i < 14 (ramp up from black;
+# protects sub-1.4% IRE); 1.0 for 14 <= i <= band_top; linear 1->0 for
+# band_top < i <= taper_top (tapering back to 0); 0 beyond taper_top.
+# band_top / taper_top are 1024-point DPG-domain indices mapping to
+# the spec's band_top_ire / taper_top_ire knobs (defaults 25 / 30 IRE
+# -> indices 257 / 308). The band START is fixed at idx 14 (1.4% IRE)
+# -- that anchor is a hard constraint of the HDR20 26-pt ladder and
+# must not move with the band/taper knobs.
+sub hdr20_postcal_taper {
+ my ($i,$band_top,$taper_top)=@_;
+ $band_top=257 if(!defined($band_top) || $band_top+0 <= 0);
+ $band_top=$band_top+0;
+ $taper_top=308 if(!defined($taper_top) || $taper_top+0 <= 0);
+ $taper_top=$taper_top+0;
+ $i=int($i+0) if(defined($i));
+ return 0 if(!defined($i) || $i <= 0);
+ return 0 if($i > $taper_top);
+ my $band_start=14;
+ if($i < $band_start) { return ($i+0)/$band_start; }
+ if($i <= $band_top) { return 1.0; }
+ my $denom=$taper_top-$band_top;
+ return ($denom <= 0) ? 0 : (1.0 - (($i-$band_top)+0)/$denom);
+}
+
+# Build the corrected 3x1024 DPG array from the committed base + magnitude
+# M (in DPG counts, luminance-neutral: same subtraction on R, G, B).
+# DPG_base is the array the 3D worker received from the WebUI in
+# full_workflow_dpg_data (or hdr20_1d_dpg_data). The output keeps the
+# base's index 0 = 0 (true black pinned) and stays ascending by the
+# caller's choice of monotone-clamp afterwards.
+sub hdr20_postcal_apply_correction {
+ # DPG_base is the planar 3072-element array committed by the worker:
+ # R = [0..1023], G = [1024..2047], B = [2048..3071]. This matches the
+ # identity build in usr/sbin/pgenerator-lg (channel-major push) and the
+ # readback checks that key off my $base = $channel*1024.
+ # Apply the same magnitude `sub` to R/G/B (luminance-neutral) and
+ # return a NEW 3072-element planar array; do not mutate the input.
+ # The loop walks channel-major so the output ordering matches the
+ # spec: out[0..1023] = R block, out[1024..2047] = G block,
+ # out[2048..3071] = B block. The taper is per-index `k` (a single
+ # channel-independent shadow band), so we compute `sub` once per k and
+ # apply it to all three channels.
+ my ($dpg_base,$M,$band_top,$taper_top)=@_;
+ return undef if(ref($dpg_base) ne "ARRAY" || scalar(@{$dpg_base}) != 3072);
+ $M=0 if(!defined($M));
+ $M=$M+0;
+ my @out=(0) x 3072;
+ for(my $channel=0;$channel<3;$channel++) {
+  my $base=$channel*1024;
+  for(my $k=0;$k<1024;$k++) {
+   my $t=($k == 0) ? 0 : hdr20_postcal_taper($k,$band_top,$taper_top);
+   my $sub=int($M*$t+0.5);
+   my $v=$dpg_base->[$base+$k]-$sub;
+   $v=0 if($v < 0);
+   $out[$base+$k]=$v;
+  }
+ }
+ # Pin true black at index 0 of EACH channel block.
+ $out[0]=0;
+ $out[1024]=0;
+ $out[2048]=0;
+ return \@out;
+}
+
+# Monotone-clamp each channel block of a planar 3072-element DPG
+# array ascending, floor at 0, and pin block index 0 = 0 (true black).
+# Block layout: R = [0..1023], G = [1024..2047], B = [2048..3071].
+# Each channel's ascending walk resets at its own block boundary -- the
+# "previous" value MUST NOT cross channel boundaries (B[0] must not be
+# forced >= R[1023]). Returns a NEW array; does not mutate the input.
+sub hdr20_postcal_monotone_clamp {
+ my ($dpg)=@_;
+ return undef if(ref($dpg) ne "ARRAY" || scalar(@{$dpg}) != 3072);
+ my @out=(0) x 3072;
+ for(my $channel=0;$channel<3;$channel++) {
+  my $base=$channel*1024;
+  my $prev=0;
+  for(my $k=0;$k<1024;$k++) {
+   my $v=$dpg->[$base+$k]+0;
+   $v=0 if($k == 0);
+   $v=0 if($v < 0);
+   if($k > 0 && $v < $prev) { $v=$prev; }
+   $out[$base+$k]=$v;
+   $prev=$v;
+  }
+ }
+ return \@out;
+}
+
+# One converge-step: given the current magnitude M, the measured lift
+# (measY / targetY), the damper, gain, and tolerance, return the next M.
+# Pushes DOWN while lift > 1 (panel lifted); clamp M >= 0. Returns undef
+# if abs(lift-1) <= tol (caller treats as "converged, exit loop").
+sub hdr20_postcal_converge_step {
+ my ($M,$lift,$damp,$gain,$tol)=@_;
+ $M=0 if(!defined($M));
+ $M=$M+0;
+ $lift=1 if(!defined($lift) || $lift+0 == 0);
+ $lift=$lift+0;
+ $damp=0.5 if(!defined($damp) || $damp+0 == 0);
+ $damp=$damp+0;
+ $gain=150 if(!defined($gain));
+ $gain=$gain+0;
+ $tol=0.15 if(!defined($tol));
+ $tol=$tol+0;
+ return undef if(abs($lift-1) <= $tol);
+ my $delta=$damp*($lift-1)*$gain;
+ my $next=$M+$delta;
+ $next=0 if($next < 0);
+ return $next+0;
+}
+
+# Load the per-TV seed matrix from disk. Returns the seed magnitude in
+# DPG counts (>= 0). Keys the file by both lg_generation series (preferred
+# when present) and a model string (fallback). Falls back to the
+# configured _seed_counts when no entry matches. No-op when the file is
+# missing/unreadable -- the caller treats "no seed" as 0, which still
+# allows the loop to converge from the live read alone.
+sub hdr20_postcal_load_matrix {
+ my ($path,$lg_generation,$model,$seed_counts)=@_;
+ $path="" if(!defined($path));
+ $path="/etc/PGenerator/hdr20_postcal_shadow_matrix.json" if($path eq "");
+ $seed_counts=0 if(!defined($seed_counts) || $seed_counts+0 < 0);
+ $seed_counts=$seed_counts+0;
+ return $seed_counts if($path eq "" || !-f $path);
+ my $raw=read_file($path);
+ return $seed_counts if($raw eq "");
+ my $data=decode_json_safe($raw,undef);
+ return $seed_counts if(!defined($data) || ref($data) ne "HASH");
+ my $hdr=$data->{"hdr20"};
+ return $seed_counts if(ref($hdr) ne "HASH");
+ my $series="";
+ if(ref($lg_generation) eq "HASH") {
+  $series=lc($lg_generation->{"series"}||"");
+  $series=~s/[^a-z0-9]+//g;
+ }
+ my $model_str="";
+ if(defined($model)) {
+  $model_str=lc($model);
+  $model_str=~s/[^a-z0-9]+//g;
+ }
+ # Lookup order: series key first, then model string key, then the
+ # explicit _seed_counts fallback. Unknown TV falls through to seed_counts
+ # so the loop still converges from the live read.
+ foreach my $key ($series,$model_str) {
+  next if($key eq "");
+  if(ref($hdr->{$key}) eq "HASH" && defined($hdr->{$key}->{"seed_counts"})) {
+   my $entry_seed=$hdr->{$key}->{"seed_counts"}+0;
+   return $entry_seed if($entry_seed >= 0);
+  }
+ }
+ return $seed_counts;
+}
+
+# Persist the converged M back into the matrix for this TV. Loads the
+# existing file (or starts fresh), updates the matching series/model
+# entry, writes atomically. Missing directories are created. The write
+# is best-effort: a failure is logged but never fatal -- the seed is a
+# performance optimization, not a correctness requirement.
+sub hdr20_postcal_save_matrix {
+ my ($path,$lg_generation,$model,$m_counts,$band_top,$taper_top)=@_;
+ $path="/etc/PGenerator/hdr20_postcal_shadow_matrix.json" if(!defined($path) || $path eq "");
+ $m_counts=0 if(!defined($m_counts));
+ $m_counts=$m_counts+0;
+ $band_top=25 if(!defined($band_top) || $band_top+0 <= 0);
+ $band_top=$band_top+0;
+ $taper_top=30 if(!defined($taper_top) || $taper_top+0 <= 0);
+ $taper_top=$taper_top+0;
+ my $key="";
+ if(ref($lg_generation) eq "HASH") {
+  $key=lc($lg_generation->{"series"}||"");
+  $key=~s/[^a-z0-9]+//g;
+ }
+ if($key eq "" && defined($model)) {
+  $key=lc($model);
+  $key=~s/[^a-z0-9]+//g;
+ }
+ return 0 if($key eq "");
+ my $raw=(-f $path) ? read_file($path) : "";
+ my $data={};
+ if($raw ne "") { $data=decode_json_safe($raw,{}); }
+ $data={} if(ref($data) ne "HASH");
+ my $hdr=$data->{"hdr20"};
+ $hdr={} if(ref($hdr) ne "HASH");
+ my $entry=$hdr->{$key};
+ $entry={} if(ref($entry) ne "HASH");
+ $entry->{"seed_counts"}=int($m_counts+0.5);
+ $entry->{"band_top_ire"}=$band_top;
+ $entry->{"taper_top_ire"}=$taper_top;
+ $entry->{"tol"}=0.15;
+ $hdr->{$key}=$entry;
+ $data->{"hdr20"}=$hdr;
+ my $encoded=$json->encode($data);
+ return 0 if(!write_file($path,$encoded,0));
+ chmod(0666,$path) if(-f $path);
+ return 1;
+}
+
+# PQ target luminance for the 5% grey probe step. Limited-range PQ at
+# code 108 (the 5% HDR20 10-bit limited anchor the WebUI sends), clipped
+# to the measured 100% white peak (PQ can't ask the panel for more than
+# its calibrated peak). peak_luminance <= 0 falls back to 10000 nits
+# (un-clipped target).
+sub hdr20_postcal_target5_for_step {
+ my ($step,$peak_luminance)=@_;
+ my $r=defined($step->{"r"}) ? ($step->{"r"}+0) : 108;
+ my $g=defined($step->{"g"}) ? ($step->{"g"}+0) : $r;
+ my $b=defined($step->{"b"}) ? ($step->{"b"}+0) : $r;
+ # Step codes differ across runs (8-bit Ltd=27, 10-bit Ltd=108, 10-bit
+ # Full=51, etc.). The spec gives a single anchor (code 108, 10-bit Ltd)
+ # but the WebUI sends THIS run's actual 5% code via postcal_shadow_probe_step,
+ # so we derive the normalized limited-range fraction from whichever code
+ # we got. Limited = (code - black_code)/span, Full = code/max. The probe
+ # step carries input_max and pattern_signal_range so we can be precise.
+ my $input_max=(defined($step->{"input_max"}) && $step->{"input_max"}+0 > 0) ? ($step->{"input_max"}+0) : 1023;
+ my $signal_range=(defined($step->{"pattern_signal_range"}) && $step->{"pattern_signal_range"} eq "2") ? "full" : "limited";
+ my $black=($signal_range eq "limited") ? 64 : 0;
+ my $span=($signal_range eq "limited") ? 876 : 1023;
+ my $code=$r; # grey: r=g=b, just use r
+ my $norm=$input_max > 0 ? ($code/$input_max) : 0;
+ my $fraction=($signal_range eq "limited") ? (($code-$black)/$span) : $norm;
+ $fraction=0 if($fraction < 0);
+ $fraction=1 if($fraction > 1);
+ my $target_nits=st2084_pq_to_linear($fraction)*10000;
+ my $peak=$peak_luminance+0;
+ $peak=10000 if(!defined($peak) || $peak <= 0);
+ $target_nits=$peak if($target_nits > $peak);
+ return $target_nits;
+}
+
+# The main HDR20 post-cal shadow correction subroutine. Snapshots the
+# committed DPG, reads the 5% grey probe (cal-off, PQ), iteratively
+# rolls the 0..25% DPG band down and re-commits until the 5% lift lands
+# inside tol. Self-gating: an 8-bit run already reads ~1.0x so the loop
+# exits on pass 1 with no change. NEVER blocks status=complete on
+# failure -- every error path is eval-guarded and recorded in $state.
+sub run_hdr20_postcal_shadow_correction {
+ my ($config,$state,$model)=@_;
+ my $status={
+  status => "skipped",
+  passes => 0,
+  lift_before => undef,
+  lift_after => undef,
+  m_counts => 0,
+  reverted => json_false(),
+  note => "",
+ };
+ return $status if(ref($config) ne "HASH");
+ return $status if(lc(($config->{"signal_mode"}||"")) ne "hdr10");
+ return $status if(!$config->{"lg_autocal_hdr20_postcal_shadow_enable"});
+ my $matrix_path=$config->{"lg_autocal_hdr20_postcal_shadow_matrix_path"} || "/etc/PGenerator/hdr20_postcal_shadow_matrix.json";
+ my $band_top_ire=$config->{"lg_autocal_hdr20_postcal_shadow_band_top_ire"};
+ $band_top_ire=25 if(!defined($band_top_ire) || $band_top_ire+0 <= 0);
+ $band_top_ire=$band_top_ire+0;
+ my $taper_top_ire=$config->{"lg_autocal_hdr20_postcal_shadow_taper_top_ire"};
+ $taper_top_ire=30 if(!defined($taper_top_ire) || $taper_top_ire+0 <= 0);
+ $taper_top_ire=$taper_top_ire+0;
+ my $tol=$config->{"lg_autocal_hdr20_postcal_shadow_tol"};
+ $tol=0.15 if(!defined($tol) || $tol+0 <= 0);
+ $tol=$tol+0;
+ my $max_passes=$config->{"lg_autocal_hdr20_postcal_shadow_max_passes"};
+ $max_passes=4 if(!defined($max_passes) || $max_passes+0 < 1);
+ $max_passes=int($max_passes+0);
+ my $damp=$config->{"lg_autocal_hdr20_postcal_shadow_damp"};
+ $damp=0.5 if(!defined($damp) || $damp+0 <= 0);
+ $damp=$damp+0;
+ my $gain=$config->{"lg_autocal_hdr20_postcal_shadow_gain"};
+ $gain=150 if(!defined($gain));
+ $gain=$gain+0;
+ my $seed_counts_cfg=$config->{"lg_autocal_hdr20_postcal_shadow_seed_counts"};
+ $seed_counts_cfg=0 if(!defined($seed_counts_cfg) || $seed_counts_cfg+0 < 0);
+ $seed_counts_cfg=$seed_counts_cfg+0;
+
+ # 0% IRE row of the DPG array. The HDR20 ladder's index 14 is 1.4%
+ # IRE, so band_top in DPG-domain = 14 (1.4%->25% spans DPG indices
+ # 14..257 in the standard HDR20 anchor map). Use the configured
+ # band/taper *IRE* values to derive approximate DPG-domain edges:
+ # 1023 indices cover 0..100%, so index = ire/100 * 1023.
+ my $band_top=int(($band_top_ire/100)*1023+0.5);
+ my $taper_top=int(($taper_top_ire/100)*1023+0.5);
+ $band_top=14 if($band_top < 14);
+ $taper_top=$band_top if($taper_top < $band_top);
+ $taper_top=308 if($taper_top > 308);
+
+ my $step=$config->{"postcal_shadow_probe_step"};
+ return $status if(ref($step) ne "HASH" || !defined($step->{"r"}));
+ $step->{"r"}+=0; $step->{"g"}+=0; $step->{"b"}+=0;
+ $step->{"input_max"}=1023 if(!defined($step->{"input_max"}) || $step->{"input_max"}+0 <= 0);
+ $step->{"input_max"}+=0;
+ $step->{"pattern_signal_range"}=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
+ $step->{"kind"}="white";
+ $step->{"name"}="5% grey probe (post-cal shadow)";
+ $step->{"ire"}=5;
+ $step->{"stimulus"}=5;
+ $step->{"signal_r_pct"}=5;
+ $step->{"signal_g_pct"}=5;
+ $step->{"signal_b_pct"}=5;
+ $step->{"phase"}="postcal_shadow";
+
+ # Snapshot the committed DPG (full_workflow_dpg_data preferred,
+ # hdr20_1d_dpg_data as the legacy fallback). No snapshot = no correction.
+ my $dpg_base=undef;
+ if(ref($config->{"full_workflow_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"full_workflow_dpg_data"}}) == 3072) {
+  $dpg_base=$config->{"full_workflow_dpg_data"};
+ } elsif(ref($config->{"hdr20_1d_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"hdr20_1d_dpg_data"}}) == 3072) {
+  $dpg_base=$config->{"hdr20_1d_dpg_data"};
+ }
+ if(!defined($dpg_base)) {
+  $status->{"status"}="skipped";
+  $status->{"note"}="no committed DPG snapshot in config";
+  return $status;
+ }
+ my $peak=0;
+ if(defined($config->{"full_workflow_peak_luminance"}) && $config->{"full_workflow_peak_luminance"}+0 > 0) {
+  $peak=$config->{"full_workflow_peak_luminance"}+0;
+ } elsif(defined($config->{"hdr20_1d_tonemap_peak_luminance"}) && $config->{"hdr20_1d_tonemap_peak_luminance"}+0 > 0) {
+  $peak=$config->{"hdr20_1d_tonemap_peak_luminance"}+0;
+ } elsif(ref($model) eq "HASH" && defined($model->{"white_y"}) && $model->{"white_y"}+0 > 0) {
+  $peak=$model->{"white_y"}+0;
+ }
+ $status->{"peak_luminance"}=$peak;
+
+ my $target5=hdr20_postcal_target5_for_step($step,$peak);
+ my $lg_generation=(ref($config->{"lg_generation"}) eq "HASH") ? $config->{"lg_generation"} : undef;
+ my $model_str=(ref($state) eq "HASH") ? ($state->{"signal_mode"}||"hdr10") : "hdr10";
+ my $M=hdr20_postcal_load_matrix($matrix_path,$lg_generation,$model_str,$seed_counts_cfg);
+
+ # Baseline 5% read so we have a ΔE(ITP) to beat (revert-if-worse).
+ my ($base_reading,$base_error)=read_step($config,$step,$state);
+ if($base_error || !$base_reading) {
+  $status->{"status"}="skipped";
+  $status->{"note"}="baseline 5% read failed: ".($base_error||"no reading");
+  return $status;
+ }
+ my $base_xyz=reading_xyz($base_reading);
+ my $base_y=(ref($base_xyz) eq "ARRAY") ? ($base_xyz->[1]+0) : 0;
+ my $base_lift=$target5 > 0 ? ($base_y/$target5) : 0;
+ $status->{"lift_before"}=$base_lift;
+ # Target XYZ (D65 neutral at the measured luminance, then by
+ # post_check_target_xyz's white-y pick) so the ITP delta uses the
+ # neutral chromaticity target the rest of the worker already uses.
+ my $base_target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
+ my $base_de_itp=(ref($base_xyz) eq "ARRAY" && ref($base_target_xyz) eq "ARRAY")
+  ? delta_e_itp_xyz(@{$base_xyz},@{$base_target_xyz}) : undef;
+ $status->{"delta_e_itp_before"}=$base_de_itp;
+
+ # Self-gating: if the first read is already inside tol, do nothing.
+ # Same code path the 8-bit run lands on; no upload, no further reads.
+ if(abs($base_lift-1) <= $tol) {
+  $status->{"status"}="self_gated";
+  $status->{"passes"}=0;
+  $status->{"lift_after"}=$base_lift;
+  $status->{"m_counts"}=int($M+0.5);
+  $status->{"note"}="baseline already within tol; no correction needed";
+  return $status;
+ }
+
+ my $best_M=0;
+ my $best_de=$base_de_itp if(defined($base_de_itp) && $base_de_itp+0 > 0);
+ $best_de=abs($base_lift-1)*100 if(!defined($best_de) || $best_de+0 == 0); # fallback: 100x lift-excess as proxy score
+ my $best_dpg=[ @{$dpg_base} ];
+ my $best_lift=$base_lift;
+ my $current_M=$M;
+ my $last_lift=$base_lift;
+ my $current_dpg=[ @{$dpg_base} ];
+
+ for(my $pass=1; $pass<=$max_passes; $pass++) {
+  die "cancelled\n" if(cancelled());
+  my $next_M=hdr20_postcal_converge_step($current_M,$last_lift,$damp,$gain,$tol);
+  if(!defined($next_M)) {
+   # Already converged by the math; shouldn't happen past pass 1 (we
+   # self-gated on pass 0), but treat it as the loop end.
+   $status->{"note"}=($status->{"note"}||"")." pass $pass: converge_step returned undef; exiting.";
+   last;
+  }
+  $current_M=$next_M;
+  my $candidate=hdr20_postcal_apply_correction($dpg_base,$current_M,$band_top,$taper_top);
+  $candidate=hdr20_postcal_monotone_clamp($candidate);
+  $current_dpg=$candidate;
+
+  # Re-commit via the same single-CAL_START/DPG/CAL_END helper the
+  # tone-map upload at line 1743 uses. Same fields, same payload, same
+  # timeout (105s). keep_calibration_mode=false so the helper sends its
+  # own CAL_END on its own CAL_START's socket (single-socket commit).
+  $state->{"phase"}="postcal_shadow";
+  $state->{"current_name"}="HDR20 post-cal shadow correction pass $pass";
+  $state->{"message"}=sprintf("Re-committing DPG (M=%d counts, lift=%.3f)",int($current_M+0.5),$last_lift);
+  write_state($state);
+  my $req={
+   picture_mode => $config->{"picture_mode"}||"",
+   peak_luminance => $peak+0,
+   ddc_layout => "hdr20",
+   keep_calibration_mode => json_false(),
+   calibration_mode_active => json_false(),
+   helper_timeout => 90,
+   dpg_data => $current_dpg,
+  };
+  my $resp=api_json("POST","/api/lg/hdr-tone-map/upload",$req,105);
+  my $resp_ok=(ref($resp) eq "HASH" && ($resp->{status}//"") eq "ok") ? 1 : 0;
+  $state->{"postcal_shadow_pass_".$pass."_upload_ok"}=$resp_ok ? json_true() : json_false();
+  $state->{"postcal_shadow_pass_".$pass."_m_counts"}=int($current_M+0.5);
+  if(!$resp_ok) {
+   $status->{"note"}=($status->{"note"}||"")." pass $pass: upload not ok (".((ref($resp) eq "HASH") ? ($resp->{message}//"") : "no response")."); ";
+   last;
+  }
+  # Settle before the next read (the helper sends CAL_END inside the
+  # helper's own socket, but the panel takes a moment to settle into
+  # the new DPG). Use the same post_commit_read_cal_off_settle_ms the
+  # spec calls out; default 3500ms.
+  my $settle_ms=$config->{"postcal_shadow_settle_ms"};
+  $settle_ms=3500 if(!defined($settle_ms) || $settle_ms+0 < 100);
+  $settle_ms=$settle_ms+0;
+  select(undef,undef,undef,$settle_ms/1000.0);
+
+  my ($reading,$error)=read_step($config,$step,$state);
+  if($error || !$reading) {
+   $status->{"note"}=($status->{"note"}||"")." pass $pass: read failed (".($error||"no reading")."); ";
+   last;
+  }
+  my $xyz=reading_xyz($reading);
+  my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+  my $lift=$target5 > 0 ? ($y/$target5) : 0;
+  my $target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
+  my $de_itp=(ref($xyz) eq "ARRAY" && ref($target_xyz) eq "ARRAY")
+   ? delta_e_itp_xyz(@{$xyz},@{$target_xyz}) : undef;
+  my $score=defined($de_itp) ? $de_itp : abs($lift-1)*100;
+  $state->{"postcal_shadow_pass_".$pass."_lift"}=$lift;
+  $state->{"postcal_shadow_pass_".$pass."_delta_e_itp"}=$de_itp if(defined($de_itp));
+  $status->{"passes"}=$pass;
+
+  if($score+0 < $best_de+0) {
+   $best_M=$current_M;
+   $best_de=$score;
+   $best_dpg=[ @{$current_dpg} ];
+   $best_lift=$lift;
+  }
+
+  if(abs($lift-1) <= $tol) {
+   # Converged.
+   $status->{"status"}="converged";
+   last;
+  }
+  $last_lift=$lift;
+ }
+ $status->{"lift_after"}=$best_lift;
+ $status->{"m_counts"}=int($best_M+0.5);
+
+ # Revert-if-worse: if no pass beat the baseline, keep DPG_base.
+ if($best_de+0 >= ($base_de_itp+0)) {
+  $status->{"reverted"}=json_true();
+  $status->{"status"}="reverted";
+  $status->{"note"}=($status->{"note"}||"")."best pass did not improve on baseline; reverted to committed DPG.";
+  # Re-commit DPG_base so the on-panel state matches the report. Same
+  # helper as above; this is the spec's "revert" step.
+  $state->{"phase"}="postcal_shadow_revert";
+  $state->{"current_name"}="HDR20 post-cal shadow revert";
+  $state->{"message"}="Reverting to committed DPG (no pass improved on baseline)";
+  write_state($state);
+  my $rev_req={
+   picture_mode => $config->{"picture_mode"}||"",
+   peak_luminance => $peak+0,
+   ddc_layout => "hdr20",
+   keep_calibration_mode => json_false(),
+   calibration_mode_active => json_false(),
+   helper_timeout => 90,
+   dpg_data => [ @{$dpg_base} ],
+  };
+  my $rev_resp=api_json("POST","/api/lg/hdr-tone-map/upload",$rev_req,105);
+  my $rev_ok=(ref($rev_resp) eq "HASH" && ($rev_resp->{status}//"") eq "ok") ? 1 : 0;
+  $state->{"postcal_shadow_revert_upload_ok"}=$rev_ok ? json_true() : json_false();
+ } else {
+  # Best pass's DPG is already on the panel (we re-committed at the
+  # top of every pass that improved on best). Nothing to re-commit.
+  # Persist the converged magnitude back into the matrix for this TV.
+  if($best_M+0 > 0) {
+   my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$best_M,$band_top_ire,$taper_top_ire);
+   $state->{"postcal_shadow_matrix_saved"}=$saved ? json_true() : json_false();
+  }
+  $status->{"status"}="converged" if($status->{"status"} ne "converged");
+ }
+ $state->{"hdr20_postcal_shadow"}=$status;
+ return $status;
+}
+
+unless(caller()) {
 my $config=decode_json_safe(read_file($config_file),{});
 # Calibration-card Target White / Target Black overrides flow into the
 # fixture-mode synthetic readings and the profile target curve.
@@ -1817,6 +2355,37 @@ eval {
   $state->{"post_check_summary"}=summarize_post_check($state->{"post_check_readings"});
  }
 
+ # HDR20 post-cal shadow correction. Reads 5% in PQ (cal-off) and
+ # iteratively rolls the 0..25% DPG band down + re-commits until 5%
+ # lands on the PQ target. Self-gating: an 8-bit run already reads
+ # ~1.0x so the loop exits on pass 1 with no change. NEVER blocks
+ # status=complete on a correction failure -- eval-guarded, all
+ # errors are recorded in $state->{"hdr20_postcal_shadow"} for the
+ # WebUI monitor / report. See
+ # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
+ eval {
+  if(lc(($config->{"signal_mode"}||"")) eq "hdr10" && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}) {
+   $state->{"phase"}="postcal_shadow";
+   $state->{"current_name"}="HDR20 post-cal shadow correction";
+   $state->{"message"}="Reading 5% in PQ and rolling the 0..25% DPG band";
+   write_state($state);
+   run_hdr20_postcal_shadow_correction($config,$state,$model);
+   my $_sb=$state->{"hdr20_postcal_shadow"};
+   if(ref($_sb) eq "HASH") {
+    $state->{"message"}=($_sb->{"status"}||"unknown").": 5% lift ".sprintf("%.3f",($_sb->{"lift_before"}||0))." -> ".sprintf("%.3f",($_sb->{"lift_after"}||0)).", M=".($_sb->{"m_counts"}||0)." counts";
+   }
+  }
+  1;
+ } or do {
+  my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
+  $shadow_err=~s/[\r\n]+/ /g;
+  if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
+  $state->{"hdr20_postcal_shadow"}->{"status"}=($shadow_err =~ /^cancelled$/i) ? "cancelled" : "error";
+  $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
+  write_state($state);
+  log_line("HDR20 post-cal shadow correction eval error: ".$shadow_err);
+ };
+
  $state->{"status"}="complete";
  $state->{"phase"}="complete";
  $state->{"current_name"}="LG 3D LUT Auto Cal complete";
@@ -1836,3 +2405,4 @@ eval {
  write_state($state);
  log_line($err);
 };
+}
