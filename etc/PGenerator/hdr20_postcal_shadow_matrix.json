@@ -1,7 +1,7 @@
 {
  "hdr20": {
   "c1": {
-   "seed_counts": 200,
+   "seed_counts": 180,
    "band_top_ire": 25,
    "taper_top_ire": 30,
    "tol": 0.15,
