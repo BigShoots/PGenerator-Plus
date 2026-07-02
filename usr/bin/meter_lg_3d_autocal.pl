@@ -1819,12 +1819,31 @@ sub hdr20_postcal_target5_for_step {
  return $target_nits;
 }
 
-# The main HDR20 post-cal shadow correction subroutine. Snapshots the
-# committed DPG, reads the 5% grey probe (cal-off, PQ), iteratively
-# rolls the 0..25% DPG band down and re-commits until the 5% lift lands
-# inside tol. Self-gating: an 8-bit run already reads ~1.0x so the loop
-# exits on pass 1 with no change. NEVER blocks status=complete on
-# failure -- every error path is eval-guarded and recorded in $state.
+# The main HDR20 post-cal shadow correction subroutine. Runs early in the
+# 3D worker (right before reset_3d_lut_to_unity_before_profile) so the
+# corrected DPG is staged into the held cal session the 3D profiling +
+# final tone-map upload both inherit. The panel-side flow it coordinates:
+#   1. Greyscale left a held CAL_START with identity BT2020 gamut +
+#      identity 3D LUT container + the converged DPG staged.
+#   2. This sub BREAKS the held session with a single-socket BIND of
+#      the base DPG (keep=false, cal_active=false) so the panel commits
+#      the DPG and exits cal mode into PQ. Then it reads the 5% grey
+#      probe in PQ (cal OFF), iteratively rolls the 0..25% DPG band down
+#      and re-commits until the 5% lift lands inside tol.
+#   3. ALWAYS RE-ESTABLISHES the held session before returning (unless
+#      cancelled): opens a fresh CAL_START via 3d-lut/reset with identity
+#      BT2020 gamut + identity 3D LUT container (held, cal_active=false),
+#      then stages the corrected DPG via 1d-dpg/upload with
+#      keep=true + cal_active=true. After this, the 3D profiling +
+#      subsequent 3D LUT upload + final tone-map upload inherit a held
+#      session with the corrected DPG staged -- the 3D LUT upload
+#      replaces the identity container, and the final tone-map upload
+#      binds the corrected DPG into the panel.
+# Self-gating: an 8-bit run already reads ~1.0x so the loop exits on pass
+# 1 with no change. NEVER blocks status=complete on failure -- every
+# error path is eval-guarded and recorded in $state. Cancellation dies
+# "cancelled\n" and propagates (no re-establish -- the whole cal is
+# aborting).
 sub run_hdr20_postcal_shadow_correction {
  my ($config,$state,$model)=@_;
  my $status={
@@ -1834,11 +1853,15 @@ sub run_hdr20_postcal_shadow_correction {
   lift_after => undef,
   m_counts => 0,
   reverted => json_false(),
+  reestablished => json_false(),
   note => "",
  };
  return $status if(ref($config) ne "HASH");
  return $status if(lc(($config->{"signal_mode"}||"")) ne "hdr10");
  return $status if(!$config->{"lg_autocal_hdr20_postcal_shadow_enable"});
+ # HDR20/full_workflow only -- this sub lives inside the 3D worker's
+ # full autocal path. Standalone greyscale runs don't reach it.
+ return $status if(!$config->{"full_workflow"});
  my $matrix_path=$config->{"lg_autocal_hdr20_postcal_shadow_matrix_path"} || "/etc/PGenerator/hdr20_postcal_shadow_matrix.json";
  my $band_top_ire=$config->{"lg_autocal_hdr20_postcal_shadow_band_top_ire"};
  $band_top_ire=25 if(!defined($band_top_ire) || $band_top_ire+0 <= 0);
@@ -1889,7 +1912,8 @@ sub run_hdr20_postcal_shadow_correction {
  $step->{"phase"}="postcal_shadow";
 
  # Snapshot the committed DPG (full_workflow_dpg_data preferred,
- # hdr20_1d_dpg_data as the legacy fallback). No snapshot = no correction.
+ # hdr20_1d_dpg_data as the legacy fallback). No snapshot = no correction
+ # (and no re-establish -- nothing to stage back into the held session).
  my $dpg_base=undef;
  if(ref($config->{"full_workflow_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"full_workflow_dpg_data"}}) == 3072) {
   $dpg_base=$config->{"full_workflow_dpg_data"};
@@ -1899,6 +1923,7 @@ sub run_hdr20_postcal_shadow_correction {
  if(!defined($dpg_base)) {
   $status->{"status"}="skipped";
   $status->{"note"}="no committed DPG snapshot in config";
+  $state->{"hdr20_postcal_shadow"}=$status;
   return $status;
  }
  my $peak=0;
@@ -1910,164 +1935,256 @@ sub run_hdr20_postcal_shadow_correction {
   $peak=$model->{"white_y"}+0;
  }
  $status->{"peak_luminance"}=$peak;
+ $state->{"hdr20_postcal_shadow"}=$status;
+
+ # Helper closure: single-socket DPG BIND. Helper sends its own
+ # CAL_START + DPG + CAL_END on its own websocket; the panel binds the
+ # DPG and exits cal mode into PQ. Returns the response hash (or undef).
+ # Real bind requires status "ok" AND both cal_start_response / cal_end_response
+ # are real type=>"response" entries (the same proven check in
+ # usr/bin/meter_lg_autocal.pl:15391).
+ my $bind_dpg=sub {
+  my ($dpg)=@_;
+  return (undef,0,"invalid dpg") if(ref($dpg) ne "ARRAY" || scalar(@{$dpg}) != 3072);
+  my $resp=api_json("POST","/api/lg/1d-dpg/upload",{
+   picture_mode => $config->{"picture_mode"}||"",
+   ddc_layout => "hdr20",
+   signal_mode => "hdr10",
+   dpg_data => $dpg,
+   keep_calibration_mode => json_false(),
+   calibration_mode_active => json_false(),
+   helper_timeout => 90,
+  },120);
+  my $ok=0;
+  my $bound=0;
+  my $msg="";
+  if(ref($resp) eq "HASH") {
+   $ok=(($resp->{status}//"") eq "ok") ? 1 : 0;
+   $msg=(ref($resp->{message}) eq "ARRAY") ? join(" ",@{$resp->{message}}) : ($resp->{message}||"");
+   my $cs=(ref($resp->{"cal_start_response"}) eq "HASH" && ($resp->{"cal_start_response"}{"type"}//"") eq "response") ? 1 : 0;
+   my $ce=(ref($resp->{"cal_end_response"}) eq "HASH" && ($resp->{"cal_end_response"}{"type"}//"") eq "response") ? 1 : 0;
+   $bound=($ok && $cs && $ce) ? 1 : 0;
+  } else {
+   $msg="no response";
+  }
+  return ($resp,$bound,$msg);
+ };
+
+ # Helper closure: re-establish the held cal session the 3D profiling
+ # needs. (1) 3d-lut/reset with BT2020_3D_LUT_DATA + keep=true +
+ # cal_active=false -> opens CAL_START + uploads identity gamut + identity
+ # 3D container, held. (2) 1d-dpg/upload with ddc_layout=hdr20 +
+ # dpg_data=$corrected + keep=true + cal_active=true -> stages the
+ # corrected DPG in the held session. After (1)+(2) the TV is back in
+ # the held cal-ON state the 3D profiling + final tone-map upload both
+ # expect, with the corrected DPG staged.
+ my $reestablish=sub {
+  my ($dpg)=@_;
+  my $r_ok=0;
+  my $d_ok=0;
+  my $r_msg="";
+  my $d_msg="";
+  my $reset_resp=api_json("POST","/api/lg/3d-lut/reset",{
+   picture_mode => $config->{"picture_mode"}||"",
+   upload_command => "BT2020_3D_LUT_DATA",
+   keep_calibration_mode => json_true(),
+   calibration_mode_active => json_false(),
+   helper_timeout => 90,
+  },120);
+  if(ref($reset_resp) eq "HASH") {
+   $r_ok=(($reset_resp->{status}//"") eq "ok") ? 1 : 0;
+   $r_msg=(ref($reset_resp->{message}) eq "ARRAY") ? join(" ",@{$reset_resp->{message}}) : ($reset_resp->{message}||"");
+  } else {
+   $r_msg="no response";
+  }
+  my $dpg_resp=api_json("POST","/api/lg/1d-dpg/upload",{
+   picture_mode => $config->{"picture_mode"}||"",
+   ddc_layout => "hdr20",
+   dpg_data => $dpg,
+   keep_calibration_mode => json_true(),
+   calibration_mode_active => json_true(),
+   helper_timeout => 90,
+  },120);
+  if(ref($dpg_resp) eq "HASH") {
+   $d_ok=(($dpg_resp->{status}//"") eq "ok") ? 1 : 0;
+   $d_msg=(ref($dpg_resp->{message}) eq "ARRAY") ? join(" ",@{$dpg_resp->{message}}) : ($dpg_resp->{message}||"");
+  } else {
+   $d_msg="no response";
+  }
+  $state->{"postcal_shadow_reestablish_reset_ok"}=$r_ok ? json_true() : json_false();
+  $state->{"postcal_shadow_reestablish_reset_message"}=$r_msg;
+  $state->{"postcal_shadow_reestablish_dpg_ok"}=$d_ok ? json_true() : json_false();
+  $state->{"postcal_shadow_reestablish_dpg_message"}=$d_msg;
+  return ($r_ok && $d_ok) ? 1 : 0;
+ };
 
  my $target5=hdr20_postcal_target5_for_step($step,$peak);
  my $lg_generation=(ref($config->{"lg_generation"}) eq "HASH") ? $config->{"lg_generation"} : undef;
  my $model_str=(ref($state) eq "HASH") ? ($state->{"signal_mode"}||"hdr10") : "hdr10";
  my $M=hdr20_postcal_load_matrix($matrix_path,$lg_generation,$model_str,$seed_counts_cfg);
 
- # Baseline 5% read so we have a ΔE(ITP) to beat (revert-if-worse).
- my ($base_reading,$base_error)=read_step($config,$step,$state);
- if($base_error || !$base_reading) {
-  $status->{"status"}="skipped";
-  $status->{"note"}="baseline 5% read failed: ".($base_error||"no reading");
-  return $status;
- }
- my $base_xyz=reading_xyz($base_reading);
- my $base_y=(ref($base_xyz) eq "ARRAY") ? ($base_xyz->[1]+0) : 0;
- my $base_lift=$target5 > 0 ? ($base_y/$target5) : 0;
- $status->{"lift_before"}=$base_lift;
- # Target XYZ (D65 neutral at the measured luminance, then by
- # post_check_target_xyz's white-y pick) so the ITP delta uses the
- # neutral chromaticity target the rest of the worker already uses.
- my $base_target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
- my $base_de_itp=(ref($base_xyz) eq "ARRAY" && ref($base_target_xyz) eq "ARRAY")
-  ? delta_e_itp_xyz(@{$base_xyz},@{$base_target_xyz}) : undef;
- $status->{"delta_e_itp_before"}=$base_de_itp;
-
- # Self-gating: if the first read is already inside tol, do nothing.
- # Same code path the 8-bit run lands on; no upload, no further reads.
- if(abs($base_lift-1) <= $tol) {
-  $status->{"status"}="self_gated";
-  $status->{"passes"}=0;
-  $status->{"lift_after"}=$base_lift;
-  $status->{"m_counts"}=int($M+0.5);
-  $status->{"note"}="baseline already within tol; no correction needed";
-  return $status;
- }
-
+ # Measure + converge work lives inside an inner eval so any error in
+ # this block leaves $corrected = $dpg_base (revert-safe default) and
+ # the sub can still proceed to re-establish. Cancellation (die
+ # "cancelled\n") propagates -- the whole cal is aborting and we don't
+ # want to re-establish a session we're about to tear down.
+ my $corrected=[ @{$dpg_base} ]; # default: corrected = base (revert-safe)
  my $best_M=0;
- my $best_de=$base_de_itp if(defined($base_de_itp) && $base_de_itp+0 > 0);
- $best_de=abs($base_lift-1)*100 if(!defined($best_de) || $best_de+0 == 0); # fallback: 100x lift-excess as proxy score
- my $best_dpg=[ @{$dpg_base} ];
- my $best_lift=$base_lift;
- my $current_M=$M;
- my $last_lift=$base_lift;
- my $current_dpg=[ @{$dpg_base} ];
-
- for(my $pass=1; $pass<=$max_passes; $pass++) {
-  die "cancelled\n" if(cancelled());
-  my $next_M=hdr20_postcal_converge_step($current_M,$last_lift,$damp,$gain,$tol);
-  if(!defined($next_M)) {
-   # Already converged by the math; shouldn't happen past pass 1 (we
-   # self-gated on pass 0), but treat it as the loop end.
-   $status->{"note"}=($status->{"note"}||"")." pass $pass: converge_step returned undef; exiting.";
-   last;
-  }
-  $current_M=$next_M;
-  my $candidate=hdr20_postcal_apply_correction($dpg_base,$current_M,$band_top,$taper_top);
-  $candidate=hdr20_postcal_monotone_clamp($candidate);
-  $current_dpg=$candidate;
-
-  # Re-commit via the same single-CAL_START/DPG/CAL_END helper the
-  # tone-map upload at line 1743 uses. Same fields, same payload, same
-  # timeout (105s). keep_calibration_mode=false so the helper sends its
-  # own CAL_END on its own CAL_START's socket (single-socket commit).
-  $state->{"phase"}="postcal_shadow";
-  $state->{"current_name"}="HDR20 post-cal shadow correction pass $pass";
-  $state->{"message"}=sprintf("Re-committing DPG (M=%d counts, lift=%.3f)",int($current_M+0.5),$last_lift);
+ my $best_de=undef;
+ my $best_lift=undef;
+ my $improved=0;
+ eval {
+  # Baseline BIND -> commit base DPG and exit cal mode -> read 5%.
+  $state->{"phase"}="postcal_shadow_bind";
+  $state->{"current_name"}="HDR20 post-cal shadow BIND baseline";
+  $state->{"message"}="Binding committed DPG (single socket, cal off) and reading 5% probe";
   write_state($state);
-  my $req={
-   picture_mode => $config->{"picture_mode"}||"",
-   peak_luminance => $peak+0,
-   ddc_layout => "hdr20",
-   keep_calibration_mode => json_false(),
-   calibration_mode_active => json_false(),
-   helper_timeout => 90,
-   dpg_data => $current_dpg,
-  };
-  my $resp=api_json("POST","/api/lg/hdr-tone-map/upload",$req,105);
-  my $resp_ok=(ref($resp) eq "HASH" && ($resp->{status}//"") eq "ok") ? 1 : 0;
-  $state->{"postcal_shadow_pass_".$pass."_upload_ok"}=$resp_ok ? json_true() : json_false();
-  $state->{"postcal_shadow_pass_".$pass."_m_counts"}=int($current_M+0.5);
-  if(!$resp_ok) {
-   $status->{"note"}=($status->{"note"}||"")." pass $pass: upload not ok (".((ref($resp) eq "HASH") ? ($resp->{message}//"") : "no response")."); ";
-   last;
+  my ($bind_resp,$bound,$bind_msg)=$bind_dpg->($dpg_base);
+  if(!$bound) {
+   # Bind failed: record note; corrected stays at base; skip correction
+   # but still re-establish below.
+   $status->{"status"}="skipped";
+   $status->{"note"}="baseline bind not real (".$bind_msg."); correction skipped";
+   return 1; # exit the eval cleanly (true) so re-establish still runs; not an error
   }
-  # Settle before the next read (the helper sends CAL_END inside the
-  # helper's own socket, but the panel takes a moment to settle into
-  # the new DPG). Use the same post_commit_read_cal_off_settle_ms the
-  # spec calls out; default 3500ms.
+  # Settle, then read the 5% grey probe (cal off, PQ).
   my $settle_ms=$config->{"postcal_shadow_settle_ms"};
   $settle_ms=3500 if(!defined($settle_ms) || $settle_ms+0 < 100);
   $settle_ms=$settle_ms+0;
   select(undef,undef,undef,$settle_ms/1000.0);
-
-  my ($reading,$error)=read_step($config,$step,$state);
-  if($error || !$reading) {
-   $status->{"note"}=($status->{"note"}||"")." pass $pass: read failed (".($error||"no reading")."); ";
-   last;
+  my ($base_reading,$base_error)=read_step($config,$step,$state);
+  if($base_error || !$base_reading) {
+   $status->{"status"}="skipped";
+   $status->{"note"}="baseline 5% read failed: ".($base_error||"no reading");
+   return 1; # exit the eval cleanly (true) so re-establish still runs; not an error
   }
-  my $xyz=reading_xyz($reading);
-  my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
-  my $lift=$target5 > 0 ? ($y/$target5) : 0;
-  my $target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
-  my $de_itp=(ref($xyz) eq "ARRAY" && ref($target_xyz) eq "ARRAY")
-   ? delta_e_itp_xyz(@{$xyz},@{$target_xyz}) : undef;
-  my $score=defined($de_itp) ? $de_itp : abs($lift-1)*100;
-  $state->{"postcal_shadow_pass_".$pass."_lift"}=$lift;
-  $state->{"postcal_shadow_pass_".$pass."_delta_e_itp"}=$de_itp if(defined($de_itp));
-  $status->{"passes"}=$pass;
+  my $base_xyz=reading_xyz($base_reading);
+  my $base_y=(ref($base_xyz) eq "ARRAY") ? ($base_xyz->[1]+0) : 0;
+  my $base_lift=$target5 > 0 ? ($base_y/$target5) : 0;
+  $status->{"lift_before"}=$base_lift;
+  # Target XYZ (D65 neutral at the measured luminance, then by
+  # post_check_target_xyz's white-y pick) so the ITP delta uses the
+  # neutral chromaticity target the rest of the worker already uses.
+  my $base_target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
+  my $base_de_itp=(ref($base_xyz) eq "ARRAY" && ref($base_target_xyz) eq "ARRAY")
+   ? delta_e_itp_xyz(@{$base_xyz},@{$base_target_xyz}) : undef;
+  $status->{"delta_e_itp_before"}=$base_de_itp;
 
-  if($score+0 < $best_de+0) {
-   $best_M=$current_M;
-   $best_de=$score;
-   $best_dpg=[ @{$current_dpg} ];
-   $best_lift=$lift;
+  # Self-gating: if the first read is already inside tol, do nothing.
+  # Same code path the 8-bit run lands on; no upload, no further reads.
+  if(abs($base_lift-1) <= $tol) {
+   $status->{"status"}="self_gated";
+   $status->{"passes"}=0;
+   $status->{"lift_after"}=$base_lift;
+   $status->{"m_counts"}=int($M+0.5);
+   $status->{"note"}="baseline already within tol; no correction needed";
+   return 1; # exit the eval cleanly (true) so re-establish still runs; not an error
   }
 
-  if(abs($lift-1) <= $tol) {
-   # Converged.
-   $status->{"status"}="converged";
-   last;
-  }
-  $last_lift=$lift;
- }
- $status->{"lift_after"}=$best_lift;
- $status->{"m_counts"}=int($best_M+0.5);
+  $best_M=0;
+  $best_de=$base_de_itp if(defined($base_de_itp) && $base_de_itp+0 > 0);
+  $best_de=abs($base_lift-1)*100 if(!defined($best_de) || $best_de+0 == 0); # fallback: 100x lift-excess as proxy score
+  $best_lift=$base_lift;
+  my $current_M=$M;
+  my $last_lift=$base_lift;
 
- # Revert-if-worse: if no pass beat the baseline, keep DPG_base.
- if($best_de+0 >= ($base_de_itp+0)) {
-  $status->{"reverted"}=json_true();
-  $status->{"status"}="reverted";
-  $status->{"note"}=($status->{"note"}||"")."best pass did not improve on baseline; reverted to committed DPG.";
-  # Re-commit DPG_base so the on-panel state matches the report. Same
-  # helper as above; this is the spec's "revert" step.
-  $state->{"phase"}="postcal_shadow_revert";
-  $state->{"current_name"}="HDR20 post-cal shadow revert";
-  $state->{"message"}="Reverting to committed DPG (no pass improved on baseline)";
-  write_state($state);
-  my $rev_req={
-   picture_mode => $config->{"picture_mode"}||"",
-   peak_luminance => $peak+0,
-   ddc_layout => "hdr20",
-   keep_calibration_mode => json_false(),
-   calibration_mode_active => json_false(),
-   helper_timeout => 90,
-   dpg_data => [ @{$dpg_base} ],
-  };
-  my $rev_resp=api_json("POST","/api/lg/hdr-tone-map/upload",$rev_req,105);
-  my $rev_ok=(ref($rev_resp) eq "HASH" && ($rev_resp->{status}//"") eq "ok") ? 1 : 0;
-  $state->{"postcal_shadow_revert_upload_ok"}=$rev_ok ? json_true() : json_false();
- } else {
-  # Best pass's DPG is already on the panel (we re-committed at the
-  # top of every pass that improved on best). Nothing to re-commit.
-  # Persist the converged magnitude back into the matrix for this TV.
-  if($best_M+0 > 0) {
-   my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$best_M,$band_top_ire,$taper_top_ire);
-   $state->{"postcal_shadow_matrix_saved"}=$saved ? json_true() : json_false();
+  for(my $pass=1; $pass<=$max_passes; $pass++) {
+   die "cancelled\n" if(cancelled());
+   my $next_M=hdr20_postcal_converge_step($current_M,$last_lift,$damp,$gain,$tol);
+   if(!defined($next_M)) {
+    # Already converged by the math; shouldn't happen past pass 1 (we
+    # self-gated on pass 0), but treat it as the loop end.
+    $status->{"note"}=($status->{"note"}||"")." pass $pass: converge_step returned undef; exiting.";
+    last;
+   }
+   $current_M=$next_M;
+   my $candidate=hdr20_postcal_apply_correction($dpg_base,$current_M,$band_top,$taper_top);
+   $candidate=hdr20_postcal_monotone_clamp($candidate);
+
+   $state->{"phase"}="postcal_shadow";
+   $state->{"current_name"}="HDR20 post-cal shadow correction pass $pass";
+   $state->{"message"}=sprintf("Re-committing DPG (M=%d counts, lift=%.3f)",int($current_M+0.5),$last_lift);
+   write_state($state);
+   my ($cand_resp,$cand_bound,$cand_msg)=$bind_dpg->($candidate);
+   $state->{"postcal_shadow_pass_".$pass."_m_counts"}=int($current_M+0.5);
+   if(!$cand_bound) {
+    $status->{"note"}=($status->{"note"}||"")." pass $pass: bind not real (".$cand_msg."); ";
+    last;
+   }
+   # Settle, then read 5% in PQ.
+   select(undef,undef,undef,$settle_ms/1000.0);
+   my ($reading,$error)=read_step($config,$step,$state);
+   if($error || !$reading) {
+    $status->{"note"}=($status->{"note"}||"")." pass $pass: read failed (".($error||"no reading")."); ";
+    last;
+   }
+   my $xyz=reading_xyz($reading);
+   my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+   my $lift=$target5 > 0 ? ($y/$target5) : 0;
+   my $target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
+   my $de_itp=(ref($xyz) eq "ARRAY" && ref($target_xyz) eq "ARRAY")
+    ? delta_e_itp_xyz(@{$xyz},@{$target_xyz}) : undef;
+   my $score=defined($de_itp) ? $de_itp : abs($lift-1)*100;
+   $state->{"postcal_shadow_pass_".$pass."_lift"}=$lift;
+   $state->{"postcal_shadow_pass_".$pass."_delta_e_itp"}=$de_itp if(defined($de_itp));
+   $status->{"passes"}=$pass;
+
+   if($score+0 < $best_de+0) {
+    $best_M=$current_M;
+    $best_de=$score;
+    $corrected=[ @{$candidate} ];
+    $best_lift=$lift;
+    $improved=1;
+   }
+
+   if(abs($lift-1) <= $tol) {
+    # Converged.
+    $status->{"status"}="converged";
+    last;
+   }
+   $last_lift=$lift;
   }
-  $status->{"status"}="converged" if($status->{"status"} ne "converged");
+  $status->{"lift_after"}=$best_lift;
+  $status->{"m_counts"}=int($best_M+0.5);
+
+  # Revert-if-worse: if no pass beat the baseline, corrected stays at
+  # base (the panel is already on base DPG from the baseline BIND).
+  if(!$improved) {
+   $status->{"reverted"}=json_true();
+   $status->{"status"}="reverted" if(($status->{"status"}||"") ne "converged");
+   $status->{"note"}=($status->{"note"}||"")."no pass improved on baseline; corrected=base DPG.";
+  } else {
+   # Persist the converged magnitude back into the matrix for this TV.
+   if($best_M+0 > 0) {
+    my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$best_M,$band_top_ire,$taper_top_ire);
+    $state->{"postcal_shadow_matrix_saved"}=$saved ? json_true() : json_false();
+   }
+   $status->{"status"}="converged" if(($status->{"status"}||"") ne "converged");
+  }
+  1;
+ } or do {
+  my $inner_err=$@ || "HDR20 post-cal shadow inner eval failed";
+  $inner_err=~s/[\r\n]+/ /g;
+  die $inner_err if($inner_err =~ /^cancelled$/i); # let cancellation propagate
+  # Any non-cancellation error: corrected stays at base DPG, record note,
+  # still re-establish below.
+  $status->{"status"}="error" if(($status->{"status"}||"") ne "skipped" && ($status->{"status"}||"") ne "self_gated" && ($status->{"status"}||"") ne "converged" && ($status->{"status"}||"") ne "reverted");
+  $status->{"note"}=($status->{"note"}||"")."inner eval error: ".$inner_err."; corrected=base DPG.";
+ };
+
+ # Store $corrected back into config so the final 3D commit (3D LUT +
+ # tone map upload) carries it. The panel-side BIND happens later, in
+ # the held session the re-establish just staged.
+ $config->{"full_workflow_dpg_data"}=$corrected;
+ $config->{"hdr20_1d_dpg_data"}=$corrected;
+
+ # ALWAYS RE-ESTABLISH the held cal session before returning. The
+ # sub BROKE the held session at the baseline BIND; without this, the
+ # 3D worker would try to profile / upload against a stale session.
+ my $re_ok=$reestablish->($corrected);
+ $status->{"reestablished"}=$re_ok ? json_true() : json_false();
+ if(!$re_ok) {
+  $status->{"note"}=($status->{"note"}||"")."re-establish reported failure; 3D profiling will likely fail.";
  }
  $state->{"hdr20_postcal_shadow"}=$status;
  return $status;
@@ -2127,6 +2244,39 @@ my $upload_requested=upload_requested($config);
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
  die "LG 3D LUT Auto Cal HDR10 runs are matrix-only in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix");
+ # HDR20 post-cal shadow correction. Runs BEFORE the unity reset /
+ # profile / 3D LUT upload so the corrected DPG is staged into the
+ # held cal session the 3D profiling + final tone-map upload both
+ # inherit. The sub itself breaks (single-socket BIND) and re-establishes
+ # the held session; we just call it. Eval-guarded so a failure never
+ # aborts the 3D cal -- all errors are recorded in $state->{"hdr20_postcal_shadow"}
+ # for the WebUI monitor / report. Pass undef for $model (it isn't
+ # computed yet at this point). See
+ # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
+ eval {
+  if(lc(($config->{"signal_mode"}||"")) eq "hdr10"
+   && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}
+   && $config->{"full_workflow"}) {
+   $state->{"phase"}="postcal_shadow";
+   $state->{"current_name"}="HDR20 post-cal shadow correction";
+   $state->{"message"}="Reading 5% in PQ and rolling the 0..25% DPG band";
+   write_state($state);
+   run_hdr20_postcal_shadow_correction($config,$state,undef);
+   my $_sb=$state->{"hdr20_postcal_shadow"};
+   if(ref($_sb) eq "HASH") {
+    $state->{"message"}=($_sb->{"status"}||"unknown").": 5% lift ".sprintf("%.3f",($_sb->{"lift_before"}||0))." -> ".sprintf("%.3f",($_sb->{"lift_after"}||0)).", M=".($_sb->{"m_counts"}||0)." counts, reestablished=".($_sb->{"reestablished"}||"false");
+   }
+  }
+  1;
+ } or do {
+  my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
+  $shadow_err=~s/[\r\n]+/ /g;
+  if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
+  $state->{"hdr20_postcal_shadow"}->{"status"}=($shadow_err =~ /^cancelled$/i) ? "cancelled" : "error";
+  $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
+  write_state($state);
+  log_line("HDR20 post-cal shadow correction eval error: ".$shadow_err);
+ };
  my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
  for(my $i=0;$i<@steps;$i++) {
@@ -2354,37 +2504,6 @@ eval {
   }
   $state->{"post_check_summary"}=summarize_post_check($state->{"post_check_readings"});
  }
-
- # HDR20 post-cal shadow correction. Reads 5% in PQ (cal-off) and
- # iteratively rolls the 0..25% DPG band down + re-commits until 5%
- # lands on the PQ target. Self-gating: an 8-bit run already reads
- # ~1.0x so the loop exits on pass 1 with no change. NEVER blocks
- # status=complete on a correction failure -- eval-guarded, all
- # errors are recorded in $state->{"hdr20_postcal_shadow"} for the
- # WebUI monitor / report. See
- # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
- eval {
-  if(lc(($config->{"signal_mode"}||"")) eq "hdr10" && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}) {
-   $state->{"phase"}="postcal_shadow";
-   $state->{"current_name"}="HDR20 post-cal shadow correction";
-   $state->{"message"}="Reading 5% in PQ and rolling the 0..25% DPG band";
-   write_state($state);
-   run_hdr20_postcal_shadow_correction($config,$state,$model);
-   my $_sb=$state->{"hdr20_postcal_shadow"};
-   if(ref($_sb) eq "HASH") {
-    $state->{"message"}=($_sb->{"status"}||"unknown").": 5% lift ".sprintf("%.3f",($_sb->{"lift_before"}||0))." -> ".sprintf("%.3f",($_sb->{"lift_after"}||0)).", M=".($_sb->{"m_counts"}||0)." counts";
-   }
-  }
-  1;
- } or do {
-  my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
-  $shadow_err=~s/[\r\n]+/ /g;
-  if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
-  $state->{"hdr20_postcal_shadow"}->{"status"}=($shadow_err =~ /^cancelled$/i) ? "cancelled" : "error";
-  $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
-  write_state($state);
-  log_line("HDR20 post-cal shadow correction eval error: ".$shadow_err);
- };
 
  $state->{"status"}="complete";
  $state->{"phase"}="complete";
