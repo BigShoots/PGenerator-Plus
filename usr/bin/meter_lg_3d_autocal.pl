@@ -990,10 +990,29 @@ sub model_from_readings {
  }
  my $chromatic_white_y=$white_y;
  my $wrgb_white_ratio=1;
- # Only correct when the additive sum is meaningfully below the measured white
- # (a >2% gap distinguishes a real white sub-pixel from measurement noise on an
- # additive panel where the two are nominally equal).
- if($have_primaries && $add_y > 0 && $add_y < $white_y*0.98) {
+ # WRGB detection is driven by the operator's selected display technology
+ # (the CCSS/display_type choice) FIRST: a WRGB WOLED selection forces the
+ # chromatic-white compensation ON so an anomalous white read can never
+ # silently suppress it (seen on the C1: a half-peak profile white made
+ # add_y ~= white_y and the auto-detect turned the compensation off,
+ # mis-referencing every chromatic node). A known-additive selection
+ # (QD-OLED, LCD, ...) forces it OFF. Only an unknown/empty display_type
+ # falls back to the measured auto-detect (>2% white-vs-sum gap).
+ my $display_type=lc((ref($config) eq "HASH" ? ($config->{"display_type"}||"") : ""));
+ my $wrgb_force="";
+ $wrgb_force="wrgb" if($display_type =~ /oled_generic|woled|wrgb/);
+ $wrgb_force="additive" if($display_type =~ /qdoled|qd_oled|lcd|crt|plasma|projector/);
+ my $wrgb_comp_source="auto";
+ if($wrgb_force eq "wrgb" && $have_primaries && $add_y > 0) {
+  $chromatic_white_y=$add_y;
+  $wrgb_white_ratio=$white_y/$add_y;
+  $wrgb_comp_source="ccss_forced_wrgb";
+ } elsif($wrgb_force eq "additive") {
+  $wrgb_comp_source="ccss_forced_additive";
+ } elsif($have_primaries && $add_y > 0 && $add_y < $white_y*0.98) {
+  # Auto-detect: only correct when the additive sum is meaningfully below
+  # the measured white (a >2% gap distinguishes a real white sub-pixel
+  # from measurement noise on an additive panel).
   $chromatic_white_y=$add_y;
   $wrgb_white_ratio=$white_y/$add_y;
  }
@@ -1011,6 +1030,7 @@ sub model_from_readings {
   white_y => $white_y,
   chromatic_white_y => $chromatic_white_y,
   wrgb_white_ratio => $wrgb_white_ratio,
+  wrgb_comp_source => $wrgb_comp_source,
   gamut_drive_matrix => build_gamut_drive_matrix(\%contrib,$target_gamut,$signal_mode,$target_gamma),
   peak_y => \%peak_y,
   peak_inverse => $peak_inverse,
@@ -2465,39 +2485,6 @@ my $upload_requested=upload_requested($config);
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
  die "LG 3D LUT Auto Cal HDR10 runs are matrix-only in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix");
- # HDR20 post-cal shadow correction. Runs BEFORE the unity reset /
- # profile / 3D LUT upload so the corrected DPG is staged into the
- # held cal session the 3D profiling + final tone-map upload both
- # inherit. The sub itself breaks (single-socket BIND) and re-establishes
- # the held session; we just call it. Eval-guarded so a failure never
- # aborts the 3D cal -- all errors are recorded in $state->{"hdr20_postcal_shadow"}
- # for the WebUI monitor / report. Pass undef for $model (it isn't
- # computed yet at this point). See
- # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
- eval {
-  if(lc(($config->{"signal_mode"}||"")) eq "hdr10"
-   && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}
-   && $config->{"full_workflow"}) {
-   $state->{"phase"}="postcal_shadow";
-   $state->{"current_name"}="HDR20 post-cal shadow correction";
-   $state->{"message"}="Reading 5% in PQ and rolling the 0..25% DPG band";
-   write_state($state);
-   run_hdr20_postcal_shadow_correction($config,$state,undef);
-   my $_sb=$state->{"hdr20_postcal_shadow"};
-   if(ref($_sb) eq "HASH") {
-    $state->{"message"}=($_sb->{"status"}||"unknown").": 5% lift ".sprintf("%.3f",($_sb->{"lift_before"}||0))." -> ".sprintf("%.3f",($_sb->{"lift_after"}||0)).", M=".($_sb->{"m_counts"}||0)." counts, reestablished=".($_sb->{"reestablished"}||"false");
-   }
-  }
-  1;
- } or do {
-  my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
-  $shadow_err=~s/[\r\n]+/ /g;
-  if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
-  $state->{"hdr20_postcal_shadow"}->{"status"}=($shadow_err =~ /^cancelled$/i) ? "cancelled" : "error";
-  $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
-  write_state($state);
-  log_line("HDR20 post-cal shadow correction eval error: ".$shadow_err);
- };
  my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
  for(my $i=0;$i<@steps;$i++) {
@@ -2519,6 +2506,45 @@ eval {
  }
 
  die "cancelled\n" if(cancelled());
+ # HDR20 post-cal shadow correction. Runs AFTER the profile reads and
+ # BEFORE the 3D LUT build/upload. Ordering is deliberate: the profile
+ # W/R/G/B/black reads MUST happen in the original held cal session the
+ # greyscale stage left active -- the shadow correction's single-socket
+ # BINDs end that session, and the re-established session does not fully
+ # restore the profiling state on ddc-only generations (C1: profile white
+ # read HALF peak, 373 vs 711 nits, which zeroed the WRGB white ratio and
+ # mis-referenced every chromatic cube node). The shadow band (DPG idx
+ # <=~180) does not overlap the 100% profile patches, so profiling before
+ # the DPG trim reads identically. The corrected DPG is staged into
+ # config for the 3D upload + tone-map commit that follow. Eval-guarded
+ # so a failure never aborts the 3D cal. Pass undef for $model. See
+ # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
+ eval {
+  if(lc(($config->{"signal_mode"}||"")) eq "hdr10"
+   && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}
+   && $config->{"full_workflow"}) {
+   $state->{"phase"}="postcal_shadow";
+   $state->{"current_name"}="HDR20 post-cal shadow correction";
+   $state->{"message"}="Reading the low band in PQ and trimming the DPG per anchor";
+   write_state($state);
+   run_hdr20_postcal_shadow_correction($config,$state,undef);
+   my $_sb=$state->{"hdr20_postcal_shadow"};
+   if(ref($_sb) eq "HASH") {
+    $state->{"message"}=($_sb->{"status"}||"unknown").": 5% lift ".sprintf("%.3f",($_sb->{"lift_before"}||0))." -> ".sprintf("%.3f",($_sb->{"lift_after"}||0)).", M=".($_sb->{"m_counts"}||0)." counts, reestablished=".($_sb->{"reestablished"}||"false");
+   }
+  }
+  1;
+ } or do {
+  my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
+  $shadow_err=~s/[\r\n]+/ /g;
+  die $shadow_err if($shadow_err =~ /^cancelled$/i);
+  if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
+  $state->{"hdr20_postcal_shadow"}->{"status"}="error";
+  $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
+  write_state($state);
+  log_line("HDR20 post-cal shadow correction eval error: ".$shadow_err);
+ };
+
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
  $state->{"message"}=($method eq "ramp")
@@ -2539,6 +2565,7 @@ eval {
  $state->{"chromatic_white_y"}=$model->{"chromatic_white_y"};
  $state->{"wrgb_white_ratio"}=$model->{"wrgb_white_ratio"};
  $state->{"wrgb_compensation_active"}=json_bool(($model->{"wrgb_white_ratio"}||1) > 1.0001);
+ $state->{"wrgb_comp_source"}=$model->{"wrgb_comp_source"}||"auto";
  $state->{"drift"}=$model->{"drift"};
  $state->{"neutral_axis_source"}=$model->{"neutral_axis_source"};
  $state->{"neutral_neighborhood_identity_enabled"}=json_bool($model->{"neutral_neighborhood_identity_enabled"});
