@@ -1678,6 +1678,125 @@ sub hdr20_postcal_monotone_clamp {
  return \@out;
 }
 
+# Build the corrected 3x1024 DPG array from the committed base + a list
+# of per-anchor counts. Replaces the single-M flat-taper
+# (hdr20_postcal_apply_correction) approach with a PER-ANCHOR piecewise
+# correction: each anchor's measured lift drives its OWN magnitude of
+# roll-down, so mids don't get over-corrected when only the 5% anchor
+# was lifted. Luminance-neutral: same sub on R, G, B (PQ-lifted panels
+# typically lift all three channels uniformly).
+#
+# Shape (per DPG index k):
+#   k = 0            -> 0  (true black pinned)
+#   0 < k < 14       -> ramp from 0 up to c0 over k=0..14
+#                      (smooth rise from black to the 1.4%-onward plateau)
+#   14 <= k <= 51    -> c0 (1.4%..5% plateau at the first/5% anchor count)
+#   51 < k <= 103    -> linear interp c0..c1 (between first and second anchors)
+#   ...between any two anchors a..b, linear interp ca..cb...
+#   lastIdx < k <= lastIdx+51 -> ramp cl down to 0
+#                                 (257 < k <= 308: smooth fall from the last
+#                                  anchor's count back to zero)
+#   k > lastIdx+51   -> 0  (no correction above ~30% IRE)
+#
+# $anchors is an arrayref of [dpg_index, counts] pairs, sorted ascending
+# by index, counts >= 0. The DPG base and output are planar
+# channel-major: R = [0..1023], G = [1024..2047], B = [2048..3071].
+# After this returns, the caller MUST run hdr20_postcal_monotone_clamp
+# to enforce ascending-by-channel and pin true black.
+sub hdr20_postcal_apply_profile {
+ my ($dpg_base,$anchors)=@_;
+ return undef if(ref($dpg_base) ne "ARRAY" || scalar(@{$dpg_base}) != 3072);
+ return undef if(ref($anchors) ne "ARRAY" || scalar(@{$anchors}) == 0);
+ # Normalize: drop malformed entries (not arrayref, bad index/counts),
+ # floor counts at 0 (pull-DOWN only -- a sub-zero count would lift the
+ # band, which the design rejects). Sort ascending by dpg index.
+ my @sorted;
+ for my $entry (@{$anchors}) {
+  next if(ref($entry) ne "ARRAY" || scalar(@{$entry}) < 2);
+  my $idx=$entry->[0];
+  next if(!defined($idx) || $idx+0 < 0);
+  my $cnt=$entry->[1];
+  next if(!defined($cnt));
+  $cnt=$cnt+0;
+  $cnt=0 if($cnt < 0);
+  push @sorted, [$idx+0,$cnt];
+ }
+ @sorted=sort { $a->[0] <=> $b->[0] } @sorted;
+ return undef if(scalar(@sorted) == 0);
+ my $first_idx=$sorted[0]->[0];
+ my $last_idx=$sorted[-1]->[0];
+ my $first_count=$sorted[0]->[1];
+ my $last_count=$sorted[-1]->[1];
+ # Ramp-out end-index (lastIdx + 51): beyond this is untouched.
+ my $ramp_end=$last_idx+51;
+ # Edge cases: first_idx==0 -> no leading ramp. first_idx==14 -> ramp
+ # from 0 to first_count over k=1..14. first_idx<14 is also handled
+ # (the ramp formula clamps at 0 below first_idx).
+ my $leading_ramp_end=14;
+ $leading_ramp_end=$first_idx if($first_idx < $leading_ramp_end);
+ # Per-index correction: walk k=0..1023, compute counts_at(k), subtract
+ # from each channel's block at index k.
+ my @out=(0) x 3072;
+ for(my $k=0;$k<1024;$k++) {
+  my $ck=0;
+  if($k <= 0) {
+   $ck=0;
+  } elsif($k > $ramp_end) {
+   $ck=0;
+  } elsif($k < $leading_ramp_end) {
+   # Ramp from 0 at k=0 (k=1 below) up to first_count at k=leading_ramp_end.
+   # ck = first_count * k / leading_ramp_end. With leading_ramp_end=14
+   # this gives 0 at k=0 and first_count at k=14.
+   $ck=$first_count * ($k+0) / ($leading_ramp_end+0);
+  } elsif($k <= $first_idx) {
+   # Plateau at first_count from leading_ramp_end up to first_idx.
+   $ck=$first_count;
+  } elsif($k > $last_idx) {
+   # Ramp from last_count at k=last_idx+1 down to 0 at k=ramp_end.
+   # Note: k > $last_idx but k <= $ramp_end so we are on the tail.
+   $ck=$last_count * (($ramp_end - $k)+0) / ($ramp_end - $last_idx);
+  } else {
+   # Between two anchors a..b: linear interpolate ca..cb.
+   # Find the anchor pair that brackets k.
+   my $ca=$first_count;
+   my $cb=$first_count;
+   my $ia=$first_idx;
+   my $ib=$first_idx;
+   for(my $j=0;$j<scalar(@sorted)-1;$j++) {
+    my $a=$sorted[$j]->[0];
+    my $b=$sorted[$j+1]->[0];
+    if($k >= $a && $k <= $b) {
+     $ia=$a; $ib=$b;
+     $ca=$sorted[$j]->[1];
+     $cb=$sorted[$j+1]->[1];
+     last;
+    }
+   }
+   if($ib == $ia) {
+    $ck=$ca;
+   } else {
+    $ck=$ca + ($cb - $ca) * (($k - $ia)+0) / ($ib - $ia);
+   }
+  }
+  # Floor counts at 0 (pull-down only). The piecewise shape is non-
+  # negative everywhere, but clamp defensively.
+  $ck=0 if($ck < 0);
+  my $sub=int($ck+0.5);
+  for(my $channel=0;$channel<3;$channel++) {
+   my $base=$channel*1024;
+   my $v=$dpg_base->[$base+$k]-$sub;
+   $v=0 if($v < 0);
+   $out[$base+$k]=$v;
+  }
+ }
+ # Pin true black at index 0 of EACH channel block (must stay 0 even
+ # if dpg_base is somehow non-zero there -- shouldn't be, but defensive).
+ $out[0]=0;
+ $out[1024]=0;
+ $out[2048]=0;
+ return \@out;
+}
+
 # One converge-step: given the current magnitude M, the measured lift
 # (measY / targetY), the damper, gain, and tolerance, return the next M.
 # Pushes DOWN while lift > 1 (panel lifted); clamp M >= 0. Returns undef
@@ -1879,7 +1998,7 @@ sub run_hdr20_postcal_shadow_correction {
  $damp=0.5 if(!defined($damp) || $damp+0 <= 0);
  $damp=$damp+0;
  my $gain=$config->{"lg_autocal_hdr20_postcal_shadow_gain"};
- $gain=150 if(!defined($gain));
+ $gain=180 if(!defined($gain));
  $gain=$gain+0;
  my $seed_counts_cfg=$config->{"lg_autocal_hdr20_postcal_shadow_seed_counts"};
  $seed_counts_cfg=0 if(!defined($seed_counts_cfg) || $seed_counts_cfg+0 < 0);
@@ -2029,15 +2148,63 @@ sub run_hdr20_postcal_shadow_correction {
  # "cancelled\n") propagates -- the whole cal is aborting and we don't
  # want to re-establish a session we're about to tear down.
  my $corrected=[ @{$dpg_base} ]; # default: corrected = base (revert-safe)
- my $best_M=0;
- my $best_de=undef;
- my $best_lift=undef;
+ # Per-anchor HDR20 low-band anchors: IRE -> DPG index. These are the
+ # grey anchors the HDR20 ladder runs through; each anchor's lift
+ # drives its OWN magnitude of roll-down in the new piecewise profile.
+ my @anchor_ire=(5,10,15,20,25);
+ my @anchor_idx=(51,103,154,206,257);
+ # Build a probe step per anchor from the 5% probe step. The probe
+ # carries input_max + pattern_signal_range + ire + stimulus + name;
+ # only r=g=b change. Code math mirrors webui.pm's _pcode derivation:
+ #   10-bit: code = (range=="2") ? round(ire/100*1023)
+ #                          : round(64 + ire/100*876)
+ #   8-bit:  code = (range=="2") ? round(ire/100*255)
+ #                          : round(16 + ire/100*219)
+ my $signal_range_eq="";
+ $signal_range_eq="2" if(defined($step->{"pattern_signal_range"}) && $step->{"pattern_signal_range"} eq "2");
+ my $anchor_input_max=(defined($step->{"input_max"}) && $step->{"input_max"}+0 > 0) ? ($step->{"input_max"}+0) : 1023;
+ my @anchor_steps;
+ for(my $ai=0; $ai<scalar(@anchor_ire); $ai++) {
+  my $ire=$anchor_ire[$ai]+0;
+  my $code;
+  if($anchor_input_max+0 >= 1023) {
+   $code=($signal_range_eq eq "2") ? int($ire/100*$anchor_input_max+0.5) : int(64 + $ire/100*876 + 0.5);
+  } else {
+   $code=($signal_range_eq eq "2") ? int($ire/100*$anchor_input_max+0.5) : int(16 + $ire/100*219 + 0.5);
+  }
+  my $astep={ %{$step} };
+  $astep->{"r"}=$code; $astep->{"g"}=$code; $astep->{"b"}=$code;
+  $astep->{"ire"}=$ire;
+  $astep->{"stimulus"}=$ire;
+  $astep->{"signal_r_pct"}=$ire;
+  $astep->{"signal_g_pct"}=$ire;
+  $astep->{"signal_b_pct"}=$ire;
+  $astep->{"name"}="HDR20 post-cal shadow ".$ire."% grey probe";
+  $astep->{"phase"}="postcal_shadow";
+  push @anchor_steps, $astep;
+ }
+ # Per-anchor PQ targets (peak-clipped). Use the existing helper so
+ # limited-range PQ math + peak-clip stays in one place.
+ my @anchor_targets;
+ for my $astep (@anchor_steps) {
+  push @anchor_targets, hdr20_postcal_target5_for_step($astep,$peak);
+ }
+ my $best_worst=1e9;
+ my $best_dpg=[ @{$dpg_base} ];
+ my %best_counts;
+ my %baseline_lifts;
  my $improved=0;
+ my $baseline_worst=1e9;
+ my $best_m_counts=0;
+ my $best_first_lift=undef;
  eval {
-  # Baseline BIND -> commit base DPG and exit cal mode -> read 5%.
+  # Baseline BIND -> commit base DPG and exit cal mode. Pass 1 with
+  # counts=0 reads each anchor on the BASE DPG (the corrected profile
+  # with all-zero counts equals base), giving us the baseline lifts
+  # for both the self-gate and the revert-if-worse comparison.
   $state->{"phase"}="postcal_shadow_bind";
   $state->{"current_name"}="HDR20 post-cal shadow BIND baseline";
-  $state->{"message"}="Binding committed DPG (single socket, cal off) and reading 5% probe";
+  $state->{"message"}="Binding committed DPG (single socket, cal off) and reading anchors";
   write_state($state);
   my ($bind_resp,$bound,$bind_msg)=$bind_dpg->($dpg_base);
   if(!$bound) {
@@ -2045,121 +2212,160 @@ sub run_hdr20_postcal_shadow_correction {
    # but still re-establish below.
    $status->{"status"}="skipped";
    $status->{"note"}="baseline bind not real (".$bind_msg."); correction skipped";
-   return 1; # exit the eval cleanly (true) so re-establish still runs; not an error
+   return 1;
   }
-  # Settle, then read the 5% grey probe (cal off, PQ).
   my $settle_ms=$config->{"postcal_shadow_settle_ms"};
   $settle_ms=3500 if(!defined($settle_ms) || $settle_ms+0 < 100);
   $settle_ms=$settle_ms+0;
-  select(undef,undef,undef,$settle_ms/1000.0);
-  my ($base_reading,$base_error)=read_step($config,$step,$state);
-  if($base_error || !$base_reading) {
-   $status->{"status"}="skipped";
-   $status->{"note"}="baseline 5% read failed: ".($base_error||"no reading");
-   return 1; # exit the eval cleanly (true) so re-establish still runs; not an error
-  }
-  my $base_xyz=reading_xyz($base_reading);
-  my $base_y=(ref($base_xyz) eq "ARRAY") ? ($base_xyz->[1]+0) : 0;
-  my $base_lift=$target5 > 0 ? ($base_y/$target5) : 0;
-  $status->{"lift_before"}=$base_lift;
-  # Target XYZ (D65 neutral at the measured luminance, then by
-  # post_check_target_xyz's white-y pick) so the ITP delta uses the
-  # neutral chromaticity target the rest of the worker already uses.
-  my $base_target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
-  my $base_de_itp=(ref($base_xyz) eq "ARRAY" && ref($base_target_xyz) eq "ARRAY")
-   ? delta_e_itp_xyz(@{$base_xyz},@{$base_target_xyz}) : undef;
-  $status->{"delta_e_itp_before"}=$base_de_itp;
 
-  # Self-gating: if the first read is already inside tol, do nothing.
-  # Same code path the 8-bit run lands on; no upload, no further reads.
-  if(abs($base_lift-1) <= $tol) {
-   $status->{"status"}="self_gated";
-   $status->{"passes"}=0;
-   $status->{"lift_after"}=$base_lift;
-   $status->{"m_counts"}=int($M+0.5);
-   $status->{"note"}="baseline already within tol; no correction needed";
-   return 1; # exit the eval cleanly (true) so re-establish still runs; not an error
-  }
-
-  $best_M=0;
-  $best_de=$base_de_itp if(defined($base_de_itp) && $base_de_itp+0 > 0);
-  $best_de=abs($base_lift-1)*100 if(!defined($best_de) || $best_de+0 == 0); # fallback: 100x lift-excess as proxy score
-  $best_lift=$base_lift;
-  my $current_M=$M;
-  my $last_lift=$base_lift;
+  # Per-anchor counts hash: anchor index -> counts. Initialize to 0
+  # (counts >= 0: pull-DOWN only, overshoot-to-dark self-corrects).
+  my %counts;
+  for my $idx (@anchor_idx) { $counts{$idx}=0; }
 
   for(my $pass=1; $pass<=$max_passes; $pass++) {
    die "cancelled\n" if(cancelled());
-   my $next_M=hdr20_postcal_converge_step($current_M,$last_lift,$damp,$gain,$tol);
-   if(!defined($next_M)) {
-    # Already converged by the math; shouldn't happen past pass 1 (we
-    # self-gated on pass 0), but treat it as the loop end.
-    $status->{"note"}=($status->{"note"}||"")." pass $pass: converge_step returned undef; exiting.";
-    last;
-   }
-   $current_M=$next_M;
-   my $candidate=hdr20_postcal_apply_correction($dpg_base,$current_M,$band_top,$taper_top);
+
+   # Build the corrected DPG from the current counts and clamp to
+   # ascending-by-channel + pinned black. The apply_profile helper
+   # handles the ramp/plateau/interp/ramp-out shape; monotone_clamp
+   # keeps the array ascending per channel block.
+   my @anchor_list;
+   for my $idx (@anchor_idx) { push @anchor_list, [$idx,$counts{$idx}]; }
+   my $candidate=hdr20_postcal_apply_profile($dpg_base,\@anchor_list);
    $candidate=hdr20_postcal_monotone_clamp($candidate);
 
    $state->{"phase"}="postcal_shadow";
    $state->{"current_name"}="HDR20 post-cal shadow correction pass $pass";
-   $state->{"message"}=sprintf("Re-committing DPG (M=%d counts, lift=%.3f)",int($current_M+0.5),$last_lift);
+   $state->{"message"}=sprintf("Re-committing DPG (per-anchor trim, worst=%.3f)",($pass==1 ? 1e9 : 0));
    write_state($state);
    my ($cand_resp,$cand_bound,$cand_msg)=$bind_dpg->($candidate);
-   $state->{"postcal_shadow_pass_".$pass."_m_counts"}=int($current_M+0.5);
+   $state->{"postcal_shadow_pass_".$pass."_counts"}=\{ %counts };
    if(!$cand_bound) {
     $status->{"note"}=($status->{"note"}||"")." pass $pass: bind not real (".$cand_msg."); ";
     last;
    }
-   # Settle, then read 5% in PQ.
+   # Settle, then read each anchor.
    select(undef,undef,undef,$settle_ms/1000.0);
-   my ($reading,$error)=read_step($config,$step,$state);
-   if($error || !$reading) {
-    $status->{"note"}=($status->{"note"}||"")." pass $pass: read failed (".($error||"no reading")."); ";
+   my $worst=0;
+   my %lift_for;
+   for(my $ai=0; $ai<scalar(@anchor_steps); $ai++) {
+    my $astep=$anchor_steps[$ai];
+    my $atarget=$anchor_targets[$ai];
+    my ($reading,$error)=read_step($config,$astep,$state);
+    if($error || !$reading) {
+     $status->{"note"}=($status->{"note"}||"")." pass $pass anchor ".$astep->{"ire"}."%: read failed (".($error||"no reading")."); ";
+     last;
+    }
+    my $xyz=reading_xyz($reading);
+    my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+    my $lift=($atarget > 0) ? ($y/$atarget) : 0;
+    $lift_for{$anchor_idx[$ai]}=$lift;
+    my $excess=abs($lift-1);
+    $worst=$excess if($excess > $worst);
+    $state->{"postcal_shadow_pass_".$pass."_IRE_".$astep->{"ire"}."_lift"}=$lift;
+   }
+   # If any anchor failed to read, the inner loop bailed with $worst
+   # reflecting only the partial set; treat as a hard fail for this
+   # pass and bail the outer loop below.
+   # If the inner anchor loop bailed out (read failure), break the
+   # outer pass loop too.
+   if($status->{"note"} =~ / pass $pass anchor /) {
     last;
    }
-   my $xyz=reading_xyz($reading);
-   my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
-   my $lift=$target5 > 0 ? ($y/$target5) : 0;
-   my $target_xyz=post_check_target_xyz($step,$peak,"st2084",[0,0,0],($config->{"target_gamut"}||"bt2020"),$peak);
-   my $de_itp=(ref($xyz) eq "ARRAY" && ref($target_xyz) eq "ARRAY")
-    ? delta_e_itp_xyz(@{$xyz},@{$target_xyz}) : undef;
-   my $score=defined($de_itp) ? $de_itp : abs($lift-1)*100;
-   $state->{"postcal_shadow_pass_".$pass."_lift"}=$lift;
-   $state->{"postcal_shadow_pass_".$pass."_delta_e_itp"}=$de_itp if(defined($de_itp));
    $status->{"passes"}=$pass;
+   $state->{"postcal_shadow_pass_".$pass."_worst"}=$worst;
 
-   if($score+0 < $best_de+0) {
-    $best_M=$current_M;
-    $best_de=$score;
-    $corrected=[ @{$candidate} ];
-    $best_lift=$lift;
-    $improved=1;
+   # Track pass-1 lifts for the lift_before status field (the 5%
+   # anchor is representative of the lifted shadow region).
+   if($pass == 1) {
+    $baseline_worst=$worst;
+    my $first_lift=$lift_for{$anchor_idx[0]};
+    $status->{"lift_before"}=$first_lift if(defined($first_lift));
+    foreach my $idx (@anchor_idx) {
+     $baseline_lifts{$idx}=$lift_for{$idx} if(defined($lift_for{$idx}));
+    }
+    # Self-gating: if pass 1 (counts=0 -> correction=base) is already
+    # inside tol across all anchors, do nothing. The 8-bit run lands
+    # here; no upload, no further reads.
+    if($worst <= $tol) {
+     $status->{"status"}="self_gated";
+     $status->{"lift_after"}=$first_lift if(defined($first_lift));
+     $status->{"m_counts"}=0;
+     $status->{"note"}=($status->{"note"}||"")." baseline already within tol on all anchors; no correction needed.";
+     return 1;
+    }
    }
 
-   if(abs($lift-1) <= $tol) {
-    # Converged.
+   # Best-tracking: any pass whose worst is below the best so far wins.
+   # Capture the 5%-anchor lift of the best pass so lift_after can be
+   # reported accurately (single-anchor implementation had this for
+   # free; per-anchor tracking has to remember explicitly).
+   if($worst+0 < $best_worst+0) {
+    $best_worst=$worst;
+    $best_dpg=[ @{$candidate} ];
+    %best_counts=%counts;
+    $improved=1;
+    $best_first_lift=$lift_for{$anchor_idx[0]};
+   }
+
+   # Converged across all anchors.
+   if($worst <= $tol) {
     $status->{"status"}="converged";
     last;
    }
-   $last_lift=$lift;
-  }
-  $status->{"lift_after"}=$best_lift;
-  $status->{"m_counts"}=int($best_M+0.5);
 
-  # Revert-if-worse: if no pass beat the baseline, corrected stays at
-  # base (the panel is already on base DPG from the baseline BIND).
-  if(!$improved) {
+   # Update counts: pull-DOWN only (counts >= 0). counts[idx] +=
+   # gain * (lift-1). When lift > 1 (panel lifted): positive delta ->
+   # bigger roll-down. When lift < 1 (overshot-dark): negative delta
+   # -> counts shrink toward 0 (self-correcting).
+   for(my $ai=0; $ai<scalar(@anchor_idx); $ai++) {
+    my $idx=$anchor_idx[$ai];
+    my $lift=$lift_for{$idx};
+    next if(!defined($lift));
+    my $delta=$gain*($lift-1);
+    my $next=$counts{$idx}+$delta;
+    $next=0 if($next < 0);
+    $counts{$idx}=$next+0;
+   }
+  }
+
+  # best-tracking fallback: if no pass beat large (e.g. all reads
+  # failed), best_dpg stays at base. The lift_after / m_counts fields
+  # are populated from best_counts if any pass ran.
+  my $best_5=$best_counts{$anchor_idx[0]};
+  $best_m_counts=int(($best_5+0)+0.5) if(defined($best_5));
+  # lift_after: the 5%-anchor lift of the best pass (or the baseline
+  # 5% lift if no pass improved on the baseline).
+  if(defined($best_first_lift)) {
+   $status->{"lift_after"}=$best_first_lift;
+  } elsif(defined($baseline_lifts{$anchor_idx[0]})) {
+   $status->{"lift_after"}=$baseline_lifts{$anchor_idx[0]};
+  }
+  $status->{"m_counts"}=$best_m_counts;
+
+  # Revert-if-worse: if no pass's worst beat the baseline worst
+  # (pass-1 worst), keep corrected=base. The panel is already on base
+  # DPG from the baseline BIND, so no rollback is needed.
+  if(!$improved || $best_worst+0 >= $baseline_worst+0) {
    $status->{"reverted"}=json_true();
    $status->{"status"}="reverted" if(($status->{"status"}||"") ne "converged");
-   $status->{"note"}=($status->{"note"}||"")."no pass improved on baseline; corrected=base DPG.";
+   $status->{"note"}=($status->{"note"}||"")."best pass worst (".sprintf("%.3f",$best_worst).") did not improve on baseline (".sprintf("%.3f",$baseline_worst)."); corrected=base DPG.";
+   $corrected=[ @{$dpg_base} ];
   } else {
-   # Persist the converged magnitude back into the matrix for this TV.
-   if($best_M+0 > 0) {
-    my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$best_M,$band_top_ire,$taper_top_ire);
+   # Apply best_counts to compute final corrected DPG and persist the
+   # 5% anchor's count as the matrix seed for next time.
+   my @best_anchor_list;
+   for my $idx (@anchor_idx) { push @best_anchor_list, [$idx,$best_counts{$idx}]; }
+   $corrected=hdr20_postcal_apply_profile($dpg_base,\@best_anchor_list);
+   $corrected=hdr20_postcal_monotone_clamp($corrected);
+   my $seed=$best_counts{$anchor_idx[0]};
+   if(defined($seed) && $seed+0 > 0) {
+    my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$seed,$band_top_ire,$taper_top_ire);
     $state->{"postcal_shadow_matrix_saved"}=$saved ? json_true() : json_false();
    }
    $status->{"status"}="converged" if(($status->{"status"}||"") ne "converged");
+   $status->{"note"}=($status->{"note"}||"")."converged (worst ".sprintf("%.3f",$best_worst)." vs baseline ".sprintf("%.3f",$baseline_worst).").";
   }
   1;
  } or do {
