@@ -2485,39 +2485,18 @@ my $upload_requested=upload_requested($config);
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
  die "LG 3D LUT Auto Cal HDR10 runs are matrix-only in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix");
- my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
- my @profile_readings;
- for(my $i=0;$i<@steps;$i++) {
-  die "cancelled\n" if(cancelled());
-  my $step=$steps[$i];
-  $state->{"current_step"}=$i+1;
-  $state->{"current_name"}=$step->{"name"};
-  my $profile_total=scalar(@steps);
-  $state->{"profile_current"}=$i+1;
-  $state->{"profile_total"}=$profile_total;
-  $state->{"message"}=($method eq "matrix" ? "Matrix profile " : "3D LUT profile ").($i+1)."/".$profile_total." - Reading ".($step->{"name"}||"patch");
-  write_state($state);
-  my ($reading,$error)=read_step($config,$step,$state);
-  die "$error\n" if($error);
-  my $entry={ step=>$step, reading=>$reading, read_time=>time() };
-  push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
-  push @{$state->{"readings"}},{ %{$reading}, name=>$step->{"name"}, phase=>$step->{"phase"}, kind=>$step->{"kind"}, level=>$step->{"level"} };
-  write_state($state);
- }
-
- die "cancelled\n" if(cancelled());
- # HDR20 post-cal shadow correction. Runs AFTER the profile reads and
- # BEFORE the 3D LUT build/upload. Ordering is deliberate: the profile
- # W/R/G/B/black reads MUST happen in the original held cal session the
- # greyscale stage left active -- the shadow correction's single-socket
- # BINDs end that session, and the re-established session does not fully
- # restore the profiling state on ddc-only generations (C1: profile white
- # read HALF peak, 373 vs 711 nits, which zeroed the WRGB white ratio and
- # mis-referenced every chromatic cube node). The shadow band (DPG idx
- # <=~180) does not overlap the 100% profile patches, so profiling before
- # the DPG trim reads identically. The corrected DPG is staged into
- # config for the 3D upload + tone-map commit that follow. Eval-guarded
- # so a failure never aborts the 3D cal. Pass undef for $model. See
+ # HDR20 post-cal shadow correction. Runs at 3D-worker start (after the
+ # greyscale stage, before profiling / 3D LUT build) -- operator-chosen
+ # order. The sub breaks the held cal session (single-socket BINDs to
+ # read the low band in PQ), trims the DPG per anchor, then re-establishes
+ # the held session and stages the corrected DPG into config for the 3D
+ # upload + tone-map commit. NOTE: on ddc-only generations (C1) the
+ # re-established session profiled white at ~half peak (373 vs 711 nits)
+ # in one observed run; the chromatic cube reference is defended against
+ # that by the CCSS-forced WRGB compensation in model_from_readings
+ # (chromatic_white_y = additive primary sum regardless of the measured
+ # white gap). Eval-guarded so a failure never aborts the 3D cal;
+ # cancellation propagates. Pass undef for $model (not computed yet). See
  # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
  eval {
   if(lc(($config->{"signal_mode"}||"")) eq "hdr10"
@@ -2544,7 +2523,27 @@ eval {
   write_state($state);
   log_line("HDR20 post-cal shadow correction eval error: ".$shadow_err);
  };
+ my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
+ my @profile_readings;
+ for(my $i=0;$i<@steps;$i++) {
+  die "cancelled\n" if(cancelled());
+  my $step=$steps[$i];
+  $state->{"current_step"}=$i+1;
+  $state->{"current_name"}=$step->{"name"};
+  my $profile_total=scalar(@steps);
+  $state->{"profile_current"}=$i+1;
+  $state->{"profile_total"}=$profile_total;
+  $state->{"message"}=($method eq "matrix" ? "Matrix profile " : "3D LUT profile ").($i+1)."/".$profile_total." - Reading ".($step->{"name"}||"patch");
+  write_state($state);
+  my ($reading,$error)=read_step($config,$step,$state);
+  die "$error\n" if($error);
+  my $entry={ step=>$step, reading=>$reading, read_time=>time() };
+  push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
+  push @{$state->{"readings"}},{ %{$reading}, name=>$step->{"name"}, phase=>$step->{"phase"}, kind=>$step->{"kind"}, level=>$step->{"level"} };
+  write_state($state);
+ }
 
+ die "cancelled\n" if(cancelled());
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
  $state->{"message"}=($method eq "ramp")
