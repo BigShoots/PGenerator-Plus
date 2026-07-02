@@ -31785,9 +31785,16 @@ async function meterGenerateReport(){
 }
 
 function meterExportCSV(){
+ try{
  if(!meterReadings||meterReadings.length===0){toast('No data to export',true);return;}
- const filename=meterPromptExportFilename('csv','pgenerator_measurements','csv','Enter a file name for the CSV export');
- if(!filename) return;
+ let filename=meterPromptExportFilename('csv','pgenerator_measurements','csv','Enter a file name for the CSV export');
+ if(!filename){
+  // window.prompt returned null: either the user cancelled, or the browser
+  // suppressed the dialog (kiosk/embedded webviews, or "prevent this page from
+  // creating additional dialogs"). Don't silently dead-end — fall back to a
+  // default timestamped name so the export still produces a file.
+  filename=meterDefaultExportFilename('csv','pgenerator_measurements','csv');
+ }
  const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
  const whiteR=meterWhiteReading||sorted.find(r=>r.ire===100);
  if(!whiteR){toast('No 100% white reading \u2014 run a full series first',true);return;}
@@ -31843,6 +31850,7 @@ function meterExportCSV(){
  });
  const blob=new Blob([csv],{type:'text/csv'});
    meterDownloadBlob(blob,filename);
+ }catch(e){ toast('CSV export failed: '+((e&&e.message)?e.message:e),true); }
 }
 
 let meterSharedSeriesId=null;
