@@ -1004,9 +1004,9 @@ sub model_from_readings {
  # WRGB match takes precedence over the additive tokens.
  my $display_type=lc((ref($config) eq "HASH" ? ($config->{"display_type"}||"") : ""));
  my $wrgb_force="";
- if($display_type =~ /oled_generic|woled|wrgb/) {
+ if($display_type eq "oled_generic" || $display_type =~ /woled|wrgb/) {
   $wrgb_force="wrgb";
- } elsif($display_type =~ /qdoled|qd_oled|lcd|crt|plasma|projector/) {
+ } elsif($display_type =~ /qdoled|qd[-_]oled|lcd|crt|plasma|projector/) {
   $wrgb_force="additive";
  }
  my $wrgb_comp_source="auto";
