@@ -998,10 +998,17 @@ sub model_from_readings {
  # mis-referencing every chromatic node). A known-additive selection
  # (QD-OLED, LCD, ...) forces it OFF. Only an unknown/empty display_type
  # falls back to the measured auto-detect (>2% white-vs-sum gap).
+ # display_type carries the CCSS selection: builtin keys (oled_generic,
+ # qdoled, lcd_wled, ...) or ccss_FILENAME / custom_FILENAME for operator
+ # CCSS files -- so matching the string covers ANY wrgb/woled-named CCSS.
+ # WRGB match takes precedence over the additive tokens.
  my $display_type=lc((ref($config) eq "HASH" ? ($config->{"display_type"}||"") : ""));
  my $wrgb_force="";
- $wrgb_force="wrgb" if($display_type =~ /oled_generic|woled|wrgb/);
- $wrgb_force="additive" if($display_type =~ /qdoled|qd_oled|lcd|crt|plasma|projector/);
+ if($display_type =~ /oled_generic|woled|wrgb/) {
+  $wrgb_force="wrgb";
+ } elsif($display_type =~ /qdoled|qd_oled|lcd|crt|plasma|projector/) {
+  $wrgb_force="additive";
+ }
  my $wrgb_comp_source="auto";
  if($wrgb_force eq "wrgb" && $have_primaries && $add_y > 0) {
   $chromatic_white_y=$add_y;
