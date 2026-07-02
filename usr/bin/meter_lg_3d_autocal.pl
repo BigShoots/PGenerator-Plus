@@ -1039,11 +1039,12 @@ sub model_from_readings {
   wrgb_white_ratio => $wrgb_white_ratio,
   wrgb_comp_source => $wrgb_comp_source,
   # Chromatic LUMINANCE compensation in the gamut-matrix cube path
-  # (gamut_matrix_output): on whenever the chromatic reference is the
-  # additive sum, config-defeatable via lg_autocal_3dlut_chroma_luma_comp=0.
+  # (gamut_matrix_output). OPT-IN ONLY (lg_autocal_3dlut_chroma_luma_comp=1):
+  # the mid-saturation-weighted variant measured WORSE on the C1 panel
+  # (2026-07-03 A/B) despite matching the chart targets offline -- do not
+  # enable by default until the interior model is validated on-panel.
   wrgb_chroma_luma_comp => (($chromatic_white_y < $white_y*0.98)
-   && !(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp"})
-        && !($config->{"lg_autocal_3dlut_chroma_luma_comp"}+0))) ? 1 : 0,
+   && ref($config) eq "HASH" && ($config->{"lg_autocal_3dlut_chroma_luma_comp"}||0)+0) ? 1 : 0,
   wrgb_chroma_luma_comp_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"})
    && ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) > 0)
    ? ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) : 0.8,
