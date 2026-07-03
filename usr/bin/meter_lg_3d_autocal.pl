@@ -2077,10 +2077,10 @@ sub run_hdr20_postcal_shadow_correction {
  $taper_top_ire=30 if(!defined($taper_top_ire) || $taper_top_ire+0 <= 0);
  $taper_top_ire=$taper_top_ire+0;
  my $tol=$config->{"lg_autocal_hdr20_postcal_shadow_tol"};
- $tol=0.15 if(!defined($tol) || $tol+0 <= 0);
+ $tol=0.05 if(!defined($tol) || $tol+0 <= 0);
  $tol=$tol+0;
  my $max_passes=$config->{"lg_autocal_hdr20_postcal_shadow_max_passes"};
- $max_passes=4 if(!defined($max_passes) || $max_passes+0 < 1);
+ $max_passes=6 if(!defined($max_passes) || $max_passes+0 < 1);
  $max_passes=int($max_passes+0);
  my $damp=$config->{"lg_autocal_hdr20_postcal_shadow_damp"};
  $damp=0.5 if(!defined($damp) || $damp+0 <= 0);
@@ -2325,6 +2325,10 @@ sub run_hdr20_postcal_shadow_correction {
   # (counts >= 0: pull-DOWN only, overshoot-to-dark self-corrects).
   my %counts;
   for my $idx (@anchor_idx) { $counts{$idx}=0; }
+  # Previous pass's (counts, lift) per anchor -- the second point the
+  # secant update needs from pass 2 onward.
+  my %prev_counts;
+  my %prev_lifts;
 
   for(my $pass=1; $pass<=$max_passes; $pass++) {
    die "cancelled\n" if(cancelled());
@@ -2363,6 +2367,20 @@ sub run_hdr20_postcal_shadow_correction {
     my $xyz=reading_xyz($reading);
     my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
     my $lift=($atarget > 0) ? ($y/$atarget) : 0;
+    # Single reads carry ~+-3% luminance noise at these levels (a 25%
+    # anchor moved 0.993 -> 1.024 between passes with ZERO count
+    # change). Once an anchor is near target the noise dominates the
+    # convergence/update decision, so confirm with a second read and
+    # average. Far-from-target reads skip this -- the move is much
+    # bigger than the noise.
+    if($pass >= 2 && $atarget > 0 && abs($lift-1) <= 2*$tol) {
+     my ($reading2,$error2)=read_step($config,$astep,$state);
+     if(!$error2 && $reading2) {
+      my $xyz2=reading_xyz($reading2);
+      my $y2=(ref($xyz2) eq "ARRAY") ? ($xyz2->[1]+0) : 0;
+      $lift=(($y+$y2)/2)/$atarget if($y2 > 0);
+     }
+    }
     $lift_for{$anchor_idx[$ai]}=$lift;
     my $excess=abs($lift-1);
     $worst=$excess if($excess > $worst);
@@ -2418,17 +2436,63 @@ sub run_hdr20_postcal_shadow_correction {
     last;
    }
 
-   # Update counts: pull-DOWN only (counts >= 0). counts[idx] +=
-   # gain * (lift-1). When lift > 1 (panel lifted): positive delta ->
-   # bigger roll-down. When lift < 1 (overshot-dark): negative delta
-   # -> counts shrink toward 0 (self-correcting).
+   # Update counts: pull-DOWN only (counts >= 0).
+   # Pass 1 (baseline, counts all 0) has no slope information, so it
+   # takes the coarse gain step: counts[idx] += gain * (lift-1).
+   # Pass >= 2 solves a per-anchor SECANT from the last two
+   # (counts, lift) points -- the measured sensitivity of THIS anchor
+   # on THIS panel -- so refinement lands on target instead of
+   # stair-stepping at a fixed gain that only matches one anchor's
+   # true sensitivity. Rails:
+   #  - a usable slope must be negative (more roll-down => less
+   #    light); wrong-sign / near-flat slopes are read noise, not
+   #    physics;
+   #  - an anchor slope flatter than half the median of its peers is
+   #    replaced by the median (adjacent anchors share the same DPG
+   #    band; a 5x sensitivity cliff between neighbours is noise --
+   #    seen at the 20% anchor on the C1);
+   #  - the per-pass move is capped so one bad slope can't blow an
+   #    anchor into deep overshoot.
+   my %slope_for;
+   my @valid_slopes;
+   for my $idx (@anchor_idx) {
+    next if(!defined($lift_for{$idx}) || !defined($prev_lifts{$idx}) || !defined($prev_counts{$idx}));
+    my $dc=$counts{$idx}-$prev_counts{$idx};
+    next if(abs($dc) < 1);
+    my $s=($lift_for{$idx}-$prev_lifts{$idx})/$dc;
+    next if($s >= -0.0002);
+    $slope_for{$idx}=$s;
+    push @valid_slopes, $s;
+   }
+   my $median_slope=undef;
+   if(scalar(@valid_slopes)) {
+    my @ss=sort { $a <=> $b } @valid_slopes;
+    $median_slope=$ss[int(scalar(@ss)/2)];
+   }
    for(my $ai=0; $ai<scalar(@anchor_idx); $ai++) {
     my $idx=$anchor_idx[$ai];
     my $lift=$lift_for{$idx};
     next if(!defined($lift));
-    my $delta=$gain*($lift-1);
-    my $next=$counts{$idx}+$delta;
+    my $slope=$slope_for{$idx};
+    if(defined($median_slope) && (!defined($slope) || abs($slope) < 0.5*abs($median_slope))) {
+     $slope=$median_slope;
+    }
+    my $next;
+    if(defined($slope)) {
+     $next=$counts{$idx} + (1-$lift)/$slope;
+    } else {
+     $next=$counts{$idx} + $gain*($lift-1);
+    }
+    # Cap the secant move per pass; the pass-1 gain step stays uncapped
+    # (it is the coarse jump and $slope is never defined on pass 1).
+    if(defined($slope)) {
+     my $max_move=60;
+     $next=$counts{$idx}+$max_move if($next > $counts{$idx}+$max_move);
+     $next=$counts{$idx}-$max_move if($next < $counts{$idx}-$max_move);
+    }
     $next=0 if($next < 0);
+    $prev_counts{$idx}=$counts{$idx};
+    $prev_lifts{$idx}=$lift;
     $counts{$idx}=$next+0;
    }
   }
