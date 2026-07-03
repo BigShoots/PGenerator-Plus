@@ -4207,6 +4207,7 @@ sub webui_meter_lg_3d_autocal_start (@) {
    "lg_autocal_hdr20_postcal_shadow_gain" => ["int", 150],
    "lg_autocal_hdr20_postcal_shadow_seed_counts" => ["int", 0],
    "lg_autocal_hdr20_postcal_shadow_index_scale" => ["num", 0.5],
+   "lg_autocal_hdr20_postcal_shadow_zone_scales" => ["str", "5:0.505,10:0.50,15:0.423,20:0.41,25:0.41,30:0.41"],
    "lg_autocal_hdr20_postcal_shadow_matrix_path" => ["str", "/etc/PGenerator/hdr20_postcal_shadow_matrix.json"],
   );
   foreach my $k (sort keys %_hdr20_shadow_knobs) {
@@ -10419,6 +10420,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
 		   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT so the first greyscale pass stays fast.</div>
+	   <label id="meterFullAutoCalShadowFixRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px">
+	    <input type="checkbox" id="meterFullAutoCalShadowFixEnabled" style="accent-color:var(--accent)">
+	    LG Tone Mapping Shadow Fix
+	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: measures the 5&ndash;30% greyscale after the tone map is staged and trims the DPG shadow band to remove PQ re-apply lift)</span>
+	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
 		  <div class="btn-row" style="justify-content:flex-end;margin:0">
@@ -25366,7 +25372,8 @@ function meterFullAutoCalDefaultConfig(){
   wp:null,
 	  preCalSkipped:false,
 	  postCommitPolishEnabled:false,
-	  magicWandEnabled:false
+	  magicWandEnabled:false,
+	  shadowFixEnabled:true
 	 };
 	}
 
@@ -25448,6 +25455,16 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 	 // so the captured config still produces a non-magic-wand payload
 	 // even if some code path queries the value.
 	 return false;
+	}
+
+	function meterFullAutoCalShadowFixChoiceValue(){
+	 const el=document.getElementById('meterFullAutoCalShadowFixEnabled');
+	 return el?el.checked===true:true;
+	}
+
+	function meterFullAutoCalShadowFixEnabled(){
+	 if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'shadowFixEnabled')) return meterFullAutoCalConfig.shadowFixEnabled!==false;
+	 return true;
 	}
 
 		function meterFullAutoCalPostSeriesAdjustChoiceValue(){
@@ -26025,13 +26042,14 @@ function meterFullAutoCalResolveConfirm(accepted){
 	   postCommitPolishEnabled:meterFullAutoCalPostCommitPolishChoiceValue(),
 	   magicWandEnabled:meterFullAutoCalMagicWandChoiceValue()
 	  };
+	  if(opts.showShadowFixChoice) result.shadowFixEnabled=meterFullAutoCalShadowFixChoiceValue();
 	 }
  meterFullAutoCalConfirmResolver=null;
  meterFullAutoCalConfirmOptions=null;
  const overlay=document.getElementById('meterAutoCalOverlay');
  if(overlay) overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('meter-autocal-active');
- ['meterFullAutoCalConfirmBox','meterFullAutoCalTouchupChoiceRow','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
+ ['meterFullAutoCalConfirmBox','meterFullAutoCalTouchupChoiceRow','meterFullAutoCalShadowFixRow','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.style.display='none';
  });
@@ -26067,6 +26085,12 @@ function meterFullAutoCalConfirmDialog(options){
 	 if(touchupChoiceRow){
 	  touchupChoiceRow.style.display=opts.showPostCalTouchupChoice?'':'none';
 	  if(magicChoice) magicChoice.checked=meterFullAutoCalMagicWandEnabled();
+	 }
+	 const shadowFixRow=document.getElementById('meterFullAutoCalShadowFixRow');
+	 const shadowFixChoice=document.getElementById('meterFullAutoCalShadowFixEnabled');
+	 if(shadowFixRow){
+	  shadowFixRow.style.display=opts.showShadowFixChoice?'flex':'none';
+	  if(shadowFixChoice&&opts.showShadowFixChoice) shadowFixChoice.checked=opts.shadowFixDefault!==false;
 	 }
  if(fullConfirmBox) fullConfirmBox.style.display='';
  if(progressBox) progressBox.style.display='none';
@@ -26531,7 +26555,7 @@ async function meterStartFullAutoCal(){
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const signalMode=meterLgAutoCalRequestedSignalMode();
-	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true});
+	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:signalMode==='hdr10',shadowFixDefault:true});
 	 if(!accepted) return;
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
 		  ? accepted.postCommitPolishEnabled===true
@@ -26539,6 +26563,9 @@ async function meterStartFullAutoCal(){
 		 const magicWandEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'magicWandEnabled'))
 		  ? accepted.magicWandEnabled!==false
 		  : meterFullAutoCalMagicWandChoiceValue();
+		 const shadowFixEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'shadowFixEnabled'))
+		  ? accepted.shadowFixEnabled!==false
+		  : true;
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
   message:'Before calibration, PGenerator will measure '+meterFullAutoCalReportSeries().map(item=>item.label).join(', ')+' and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
@@ -26560,7 +26587,8 @@ async function meterStartFullAutoCal(){
 		  signalMode:signalMode,
 		  preCalSkipped:skipPreCal,
 		  postCommitPolishEnabled:postCommitPolishEnabled,
-		  magicWandEnabled:magicWandEnabled
+		  magicWandEnabled:magicWandEnabled,
+		  shadowFixEnabled:shadowFixEnabled
 		 };
  meterFullAutoCalBeginReportData(skipPreCal);
  meterFullAutoCalSaveState();
@@ -28241,6 +28269,11 @@ refresh_rate:getMeterRefreshRate()||undefined,
   full_autocal_phase:fullWorkflow?'3d-lut':undefined,
   full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
   full_autocal_magic_wand:fullWorkflow?fullMagicWand:undefined,
+  // Explicit 1/0 from the wizard's "LG Tone Mapping Shadow Fix" checkbox.
+  // Presence of this key in the payload makes the server-side conf merge
+  // (webui_meter_lg_3d_autocal_start) skip its PGenerator.conf fallback,
+  // so the wizard choice wins over the conf knob.
+  lg_autocal_hdr20_postcal_shadow_enable:fullWorkflow?(meterFullAutoCalShadowFixEnabled()?1:0):undefined,
   skip_preprofile_unity_reset:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_verified:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
