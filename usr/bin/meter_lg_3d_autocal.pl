@@ -2964,44 +2964,14 @@ my $upload_requested=upload_requested($config);
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
  die "LG 3D LUT Auto Cal HDR10 runs are matrix-only in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix");
- # HDR20 post-cal shadow correction. Runs at 3D-worker start (after the
- # greyscale stage, before profiling / 3D LUT build) -- operator-chosen
- # order. The sub breaks the held cal session (single-socket BINDs to
- # read the low band in PQ), trims the DPG per anchor, then re-establishes
- # the held session and stages the corrected DPG into config for the 3D
- # upload + tone-map commit. NOTE: on ddc-only generations (C1) the
- # re-established session profiled white at ~half peak (373 vs 711 nits)
- # in one observed run; the chromatic cube reference is defended against
- # that by the CCSS-forced WRGB compensation in model_from_readings
- # (chromatic_white_y = additive primary sum regardless of the measured
- # white gap). Eval-guarded so a failure never aborts the 3D cal;
- # cancellation propagates. Pass undef for $model (not computed yet). See
- # docs/superpowers/specs/2026-07-02-hdr20-postcal-shadow-correction-design.md.
- eval {
-  if(lc(($config->{"signal_mode"}||"")) eq "hdr10"
-   && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}
-   && $config->{"full_workflow"}) {
-   $state->{"phase"}="postcal_shadow";
-   $state->{"current_name"}="HDR20 post-cal shadow correction";
-   $state->{"message"}="Reading the low band in PQ and trimming the DPG per anchor";
-   write_state($state);
-   run_hdr20_postcal_shadow_correction($config,$state,undef);
-   my $_sb=$state->{"hdr20_postcal_shadow"};
-   if(ref($_sb) eq "HASH") {
-    $state->{"message"}=($_sb->{"status"}||"unknown").": 5% lift ".sprintf("%.3f",($_sb->{"lift_before"}||0))." -> ".sprintf("%.3f",($_sb->{"lift_after"}||0)).", M=".($_sb->{"m_counts"}||0)." counts, reestablished=".($_sb->{"reestablished"}||"false");
-   }
-  }
-  1;
- } or do {
-  my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
-  $shadow_err=~s/[\r\n]+/ /g;
-  die $shadow_err if($shadow_err =~ /^cancelled$/i);
-  if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
-  $state->{"hdr20_postcal_shadow"}->{"status"}="error";
-  $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
-  write_state($state);
-  log_line("HDR20 post-cal shadow correction eval error: ".$shadow_err);
- };
+ # HDR20 post-cal shadow correction was MOVED to after the 3D LUT +
+ # tone-map commit (operator-approved reorder, 2026-07-03). Running it
+ # here (before profiling) made the trim converge against a mid-workflow
+ # state -- identity 3D container, unstabilized panel -- and the
+ # committed result then charted +4-10% off with residual chroma error.
+ # The order test (base DPG -> 3D cal -> shadow after -> re-commit)
+ # verified within +-2% luminance and dxy <= 0.0016 at 15-35% on the C1.
+ # Profiling now always sees the greyscale stage's converged base DPG.
  my $unity_reset=reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
  for(my $i=0;$i<@steps;$i++) {
@@ -3184,6 +3154,78 @@ eval {
     $state->{"message"}="3D LUT upload probe did not verify; export kept";
    }
   }
+
+ # HDR20 post-cal shadow correction -- runs AFTER the 3D LUT + tone-map
+ # commit (operator-approved reorder, 2026-07-03) so the trim converges
+ # against the final viewing state: real cube + tone map committed, cal
+ # mode off. The order test on the C1 verified +-2% luminance and
+ # dxy <= 0.0016 at 15-35% where the pre-profile order left +4-10%
+ # residuals and chroma error. The sub trims via single-socket binds
+ # (the cube + tone-map slots persist through DPG-only sessions), then
+ # re-establishes a held session with the corrected DPG and an identity
+ # container staged; the re-commit below uploads the REAL cube back into
+ # that session and re-sends the tone map with the corrected DPG --
+ # CAL_END lands everything. Eval-guarded: a shadow failure leaves the
+ # already-committed base calibration intact.
+ if(lc(($config->{"signal_mode"}||"")) eq "hdr10"
+   && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}
+   && $config->{"full_workflow"}
+   && ($state->{"tone_map_upload_status"}||"") eq "ok"
+   && ref($export) eq "HASH" && ($export->{"payload_path"}||"") ne "" && -f $export->{"payload_path"}) {
+  eval {
+   $state->{"phase"}="postcal_shadow";
+   $state->{"current_name"}="HDR20 post-cal shadow correction";
+   $state->{"message"}="Trimming the DPG shadow band against the committed calibration";
+   write_state($state);
+   run_hdr20_postcal_shadow_correction($config,$state,undef);
+   my $_sb=$state->{"hdr20_postcal_shadow"};
+   if(ref($_sb) eq "HASH") {
+    $state->{"message"}=($_sb->{"status"}||"unknown").": 5% lift ".sprintf("%.3f",($_sb->{"lift_before"}||0))." -> ".sprintf("%.3f",($_sb->{"lift_after"}||0)).", M=".($_sb->{"m_counts"}||0)." counts";
+   }
+   # Re-commit: the sub left a held session (corrected DPG + identity
+   # container staged). Upload the real cube into it, then the tone map
+   # with the corrected DPG (the sub stored it in full_workflow_dpg_data).
+   my $shadow_lut=api_json("POST","/api/lg/3d-lut/upload",{
+    picture_mode => $config->{"picture_mode"}||"",
+    payload_path => $export->{"payload_path"},
+    upload_command => $config->{"upload_command"}||"BT2020_3D_LUT_DATA",
+    get_command => $config->{"get_command"}||"GET_3D_LUT_DATA",
+    helper_timeout => 220,
+    api_timeout => 240,
+    keep_calibration_mode => json_true(),
+    calibration_mode_active => json_true(),
+   },240);
+   my $sl_status=(ref($shadow_lut) eq "HASH") ? ($shadow_lut->{status}//"") : "invalid-response";
+   $state->{"postcal_shadow_recommit_lut_status"}=$sl_status;
+   log_line("HDR20 shadow-after re-commit: 3D LUT upload status=".$sl_status);
+   my $shadow_peak=0;
+   $shadow_peak=$config->{"full_workflow_peak_luminance"}+0 if(defined($config->{"full_workflow_peak_luminance"}) && $config->{"full_workflow_peak_luminance"}+0 > 0);
+   my $shadow_tone_req={
+    picture_mode => $config->{"picture_mode"}||"",
+    peak_luminance => $shadow_peak,
+    ddc_layout => "hdr20",
+    keep_calibration_mode => json_true(),
+    calibration_mode_active => json_true(),
+    helper_timeout => 90,
+   };
+   $shadow_tone_req->{"dpg_data"}=$config->{"full_workflow_dpg_data"} if(ref($config->{"full_workflow_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"full_workflow_dpg_data"}}) == 3072);
+   my $shadow_tone=api_json("POST","/api/lg/hdr-tone-map/upload",$shadow_tone_req,105);
+   my $st_status=(ref($shadow_tone) eq "HASH") ? ($shadow_tone->{status}//"") : "invalid-response";
+   $state->{"postcal_shadow_recommit_tonemap_status"}=$st_status;
+   log_line("HDR20 shadow-after re-commit: tone map upload status=".$st_status);
+   write_state($state);
+   1;
+  } or do {
+   my $shadow_err=$@ || "HDR20 post-cal shadow correction failed";
+   $shadow_err=~s/[\r\n]+/ /g;
+   die $shadow_err if($shadow_err =~ /^cancelled$/i);
+   if(ref($state->{"hdr20_postcal_shadow"}) ne "HASH") { $state->{"hdr20_postcal_shadow"}={}; }
+   $state->{"hdr20_postcal_shadow"}->{"status"}="error";
+   $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
+   write_state($state);
+   log_line("HDR20 post-cal shadow correction (after commit) eval error: ".$shadow_err);
+  };
+ }
 
  if($config->{"post_check"} && !$config->{"fixture_mode"}) {
   my @post=post_check_steps($config);
