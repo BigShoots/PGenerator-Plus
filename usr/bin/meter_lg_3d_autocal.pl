@@ -1869,10 +1869,21 @@ sub hdr20_postcal_apply_profile {
   # Floor counts at 0 (pull-down only). The piecewise shape is non-
   # negative everywhere, but clamp defensively.
   $ck=0 if($ck < 0);
-  my $sub=int($ck+0.5);
+  # RATIO-PRESERVING subtraction: the greyscale cal leaves the three
+  # channel curves deliberately unequal in the shadow band (grey
+  # balance -- e.g. B ~13% under G on the C1), so subtracting the SAME
+  # count from R/G/B cuts the smallest channel proportionally hardest
+  # and skews post-cal chroma (measured: equal-count trim moved B:G at
+  # idx 26 from 0.867 to 0.848 => 5% grey went yellow while cal-time
+  # chroma read clean). Scale each channel's subtraction by its share
+  # of the local channel mean instead: same total roll-down, R:G:B
+  # ratio (and therefore the calibrated grey balance) preserved.
+  my $mean=($dpg_base->[$k]+$dpg_base->[1024+$k]+$dpg_base->[2048+$k])/3;
   for(my $channel=0;$channel<3;$channel++) {
    my $base=$channel*1024;
-   my $v=$dpg_base->[$base+$k]-$sub;
+   my $bv=$dpg_base->[$base+$k];
+   my $sub=($mean > 0) ? int($ck*$bv/$mean+0.5) : int($ck+0.5);
+   my $v=$bv-$sub;
    $v=0 if($v < 0);
    $out[$base+$k]=$v;
   }
