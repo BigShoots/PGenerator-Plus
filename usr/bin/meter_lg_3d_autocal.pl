@@ -1896,6 +1896,36 @@ sub hdr20_postcal_apply_profile {
  return \@out;
 }
 
+# Prefix shelf for the dynamic zone probe: subtract `depth` counts
+# (ratio-preserving per channel, like apply_profile) from every index in
+# 14..x_end, with the standard 0->depth ramp over 1..14 protecting true
+# black. The shelf ENDS with an up-jump at x_end+1, which is monotone-
+# compatible (ascending is preserved), unlike a mid-curve notch whose
+# leading edge the monotone clamp would flatten. Caller must still run
+# hdr20_postcal_monotone_clamp on the result.
+sub hdr20_postcal_prefix_shelf {
+ my ($dpg_base,$x_end,$depth)=@_;
+ return undef if(ref($dpg_base) ne "ARRAY" || scalar(@{$dpg_base}) != 3072);
+ $x_end=int($x_end+0);
+ $depth=$depth+0;
+ return undef if($x_end < 14 || $depth <= 0);
+ my @out=@{$dpg_base};
+ for(my $k=1;$k<=$x_end && $k<1024;$k++) {
+  my $ck=($k < 14) ? $depth*$k/14 : $depth;
+  my $mean=($dpg_base->[$k]+$dpg_base->[1024+$k]+$dpg_base->[2048+$k])/3;
+  for(my $channel=0;$channel<3;$channel++) {
+   my $base=$channel*1024;
+   my $bv=$dpg_base->[$base+$k];
+   my $sub=($mean > 0) ? int($ck*$bv/$mean+0.5) : int($ck+0.5);
+   my $v=$bv-$sub;
+   $v=0 if($v < 0);
+   $out[$base+$k]=$v;
+  }
+ }
+ $out[0]=0; $out[1024]=0; $out[2048]=0;
+ return \@out;
+}
+
 # One converge-step: given the current magnitude M, the measured lift
 # (measY / targetY), the damper, gain, and tolerance, return the next M.
 # Pushes DOWN while lift > 1 (panel lifted); clamp M >= 0. Returns undef
@@ -2112,6 +2142,14 @@ sub run_hdr20_postcal_shadow_correction {
  $target_lift=$target_lift+0;
  $target_lift=0.90 if($target_lift < 0.90);
  $target_lift=1.10 if($target_lift > 1.10);
+ # Dynamic per-run zone probe (default ON): discover each anchor's true
+ # post-cal sampling index on THIS panel in THIS run instead of trusting
+ # the static zone-scale table. The table remains the prior (ladder
+ # boundary placement + within-bracket placement) and the fallback when
+ # a probe read fails or an anchor never responds.
+ my $zone_probe=$config->{"lg_autocal_hdr20_postcal_shadow_zone_probe"};
+ $zone_probe=1 if(!defined($zone_probe) || $zone_probe eq "");
+ $zone_probe=$zone_probe+0 ? 1 : 0;
 
  # 0% IRE row of the DPG array. The HDR20 ladder's index 14 is 1.4%
  # IRE, so band_top in DPG-domain = 14 (1.4%->25% spans DPG indices
@@ -2369,6 +2407,99 @@ sub run_hdr20_postcal_shadow_correction {
   my $settle_ms=$config->{"postcal_shadow_settle_ms"};
   $settle_ms=3500 if(!defined($settle_ms) || $settle_ms+0 < 100);
   $settle_ms=$settle_ms+0;
+
+  # --- Dynamic zone probe -----------------------------------------
+  # Measured on the C1: the post-cal sampling index is NOT a constant
+  # fraction of the expanded index, and the loop-state zone can differ
+  # from the static table (an anchor placed off-zone eats counts with
+  # no effect -- the dead-anchor symptom). Discover the zones on THIS
+  # panel each run: bind the base with a deep prefix shelf ending at a
+  # ladder of boundary indices placed between the prior zones, read the
+  # anchors after each bind, and bracket each anchor's zone by the
+  # FIRST shelf end that crushes it (zones are ordered by IRE, so one
+  # ascending ladder serves all anchors; already-crushed anchors are
+  # not re-read). Priors place the anchor within its bracket. An anchor
+  # that never responds keeps its prior and is noted.
+  if($zone_probe) {
+   $state->{"phase"}="postcal_shadow_probe";
+   $state->{"current_name"}="HDR20 post-cal shadow zone probe";
+   $state->{"message"}="Probing the panel's post-cal DPG sampling zones";
+   write_state($state);
+   # Reference read per anchor on the bound base.
+   my %probe_base_y;
+   select(undef,undef,undef,$settle_ms/1000.0);
+   for(my $ai=0; $ai<scalar(@anchor_steps); $ai++) {
+    die "cancelled\n" if(cancelled());
+    my ($reading,$error)=read_step($config,$anchor_steps[$ai],$state);
+    next if($error || !$reading);
+    my $xyz=reading_xyz($reading);
+    my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+    $probe_base_y{$ai}=$y if($y > 0);
+   }
+   # Ladder: boundaries between consecutive prior zones, plus one top
+   # boundary past the last prior so the last anchor can be confirmed.
+   my @ladder;
+   for(my $ai=0; $ai<scalar(@anchor_idx)-1; $ai++) {
+    push @ladder, int(($anchor_idx[$ai]+$anchor_idx[$ai+1])/2+0.5);
+   }
+   push @ladder, int($anchor_idx[-1]*1.35+0.5);
+   my %resolved;   # anchor index in @anchor_ire -> first ladder X that crushed it
+   my $probe_depth=300;
+   my $lo_prev=13;
+   my %bracket_lo;
+   for(my $li=0; $li<scalar(@ladder); $li++) {
+    my $X=$ladder[$li];
+    my @todo=grep { !exists($resolved{$_}) && exists($probe_base_y{$_}) } (0..scalar(@anchor_steps)-1);
+    last if(!scalar(@todo));
+    die "cancelled\n" if(cancelled());
+    my $shelf=hdr20_postcal_prefix_shelf($dpg_base,$X,$probe_depth);
+    $shelf=hdr20_postcal_monotone_clamp($shelf) if($shelf);
+    if(!$shelf) { last; }
+    my ($p_resp,$p_bound,$p_msg)=$bind_dpg->($shelf);
+    if(!$p_bound) {
+     $status->{"note"}=($status->{"note"}||"")." zone probe X=$X bind not real (".$p_msg."); probe stopped; ";
+     last;
+    }
+    select(undef,undef,undef,$settle_ms/1000.0);
+    for my $ai (@todo) {
+     my ($reading,$error)=read_step($config,$anchor_steps[$ai],$state);
+     next if($error || !$reading);
+     my $xyz=reading_xyz($reading);
+     my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+     next if($y <= 0);
+     if($y < 0.88*$probe_base_y{$ai}) {
+      $resolved{$ai}=$X;
+      $bracket_lo{$ai}=$lo_prev;
+     }
+    }
+    $lo_prev=$X;
+   }
+   # Assign zones: clamp the prior into the measured bracket; keep the
+   # prior when the anchor never responded. Enforce strictly ascending.
+   my @probed_idx;
+   my $probe_note="";
+   for(my $ai=0; $ai<scalar(@anchor_idx); $ai++) {
+    my $zone=$anchor_idx[$ai];
+    if(exists($resolved{$ai})) {
+     my $lo=($bracket_lo{$ai}||13)+1;
+     my $hi=$resolved{$ai};
+     $zone=$lo if($zone < $lo);
+     $zone=$hi if($zone > $hi);
+    } else {
+     $probe_note.=$anchor_ire[$ai]."% unresolved(prior kept) ";
+    }
+    $zone=int($zone+0.5);
+    $zone=$probed_idx[-1]+2 if(scalar(@probed_idx) && $zone <= $probed_idx[-1]);
+    push @probed_idx, $zone;
+    $state->{"postcal_shadow_zone_IRE_".$anchor_ire[$ai]}=$zone;
+   }
+   @anchor_idx=@probed_idx;
+   log_line("HDR20 post-cal shadow zone probe: zones ".join("/",@anchor_idx)." for IRE ".join("/",@anchor_ire).($probe_note ne "" ? " (".$probe_note.")" : ""));
+   $status->{"zone_probe"}=join(",",@anchor_idx);
+   # No base re-bind needed here: pass 1 below binds the all-zero-counts
+   # candidate, which IS the base.
+  }
+  # -----------------------------------------------------------------
 
   # Per-anchor counts hash: anchor index -> counts. Initialize to 0
   # (counts >= 0: pull-DOWN only, overshoot-to-dark self-corrects).
