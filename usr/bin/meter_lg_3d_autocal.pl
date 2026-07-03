@@ -1347,6 +1347,129 @@ sub read_request_id {
  return "autocal3d_".$$."_".int(time()*1000)."_".$name."_".int(rand(1000000));
 }
 
+# --- Pattern insertion (OLED stabilization) -------------------------
+# Ported from usr/bin/meter_lg_autocal.pl: the 1D greyscale worker and
+# meter_series.sh both honour the user's Meter Settings insertion knobs
+# (grey flash + black reset between reads) to hold the OLED's ABL /
+# pixel-charge state steady across long dim-patch sequences. The 3D
+# worker's reads (profile patches, shadow-fix anchors, zone probe) ran
+# WITHOUT insertion, letting the panel's near-black state drift across
+# the loop. Same config keys, same behaviour; the "restore measurement
+# patch" step is omitted because /api/meter/read displays the
+# measurement patch itself and its delay_ms settle covers the
+# black-to-patch transition.
+our $_patch_insert_counter=0;
+our $_patch_insert_last_time_ts=0;
+
+sub _pi_sanitize_ms {
+ my ($raw,$fallback,$max)=@_;
+ $fallback//=0; $max//=120000;
+ $raw=int($raw//0);
+ $raw=$fallback if($raw < 0);
+ $raw=$max if($raw > $max);
+ return $raw;
+}
+
+sub _pi_sanitize_count {
+ my ($raw,$fallback,$max)=@_;
+ $fallback//=1; $max//=999;
+ $raw=int($raw//1);
+ $raw=$fallback if($raw < 1);
+ $raw=$max if($raw > $max);
+ return $raw;
+}
+
+sub _patch_insert_code_for_level {
+ # Fallback when the webui did not inject precomputed code/input_max
+ # pairs (the 3D worker config does not carry them). HDR10 codes must
+ # be PQ-encoded so the configured level maps to a visible luminance.
+ my ($level_pct,$signal_mode,$max_luma)=@_;
+ $level_pct=0 if($level_pct+0 < 0);
+ $level_pct=100 if($level_pct+0 > 100);
+ $max_luma//=1000;
+ if(defined($signal_mode) && lc($signal_mode) eq "hdr10") {
+  my $target_nits=($level_pct/100.0)*$max_luma;
+  my $pq_signal=pq_encode_normalized($target_nits);
+  return int($pq_signal*255.0 + 0.5);
+ }
+ return int(($level_pct/100.0)*255.0 + 0.5);
+}
+
+sub _patch_insert_resolve {
+ my ($config,$kind,$level)=@_;
+ my $code_key="patch_insert_".$kind."_code";
+ my $im_key="patch_insert_".$kind."_input_max";
+ if(defined($config->{$code_key}) && $config->{$code_key} ne "") {
+  my $im=int($config->{$im_key} // 255);
+  $im=255 if($im <= 0);
+  return (int($config->{$code_key}+0),$im);
+ }
+ return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
+}
+
+sub apply_pattern_insert_before_read {
+ my ($config,$step)=@_;
+ return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"});
+ my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
+ my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
+ my $patch_enabled=$config->{"patch_insert_patch_enabled"} ? 1 : 0;
+ my $patch_every=_pi_sanitize_count($config->{"patch_insert_patch_every"},1,999);
+ my $patch_duration_ms=_pi_sanitize_ms($config->{"patch_insert_patch_duration_ms"},1000,30000);
+ my $patch_level=($config->{"patch_insert_patch_level"}//10)+0;
+ my $time_enabled=$config->{"patch_insert_time_enabled"} ? 1 : 0;
+ # Same 15s frequency cap as the 1D worker's inner loops: the shadow
+ # fix reads 6 anchors back-to-back per pass and needs insertions
+ # BETWEEN anchors, not once per wizard step.
+ my $_time_freq_max=15000;
+ $_time_freq_max=int($config->{"patch_insert_time_frequency_max_ms"}) if(defined($config->{"patch_insert_time_frequency_max_ms"}) && $config->{"patch_insert_time_frequency_max_ms"}+0 == 0);
+ my $time_frequency_ms=_pi_sanitize_ms($config->{"patch_insert_time_frequency_ms"},5000,120000);
+ $time_frequency_ms=$_time_freq_max if($time_frequency_ms+0 > $_time_freq_max+0 && $_time_freq_max+0 > 0);
+ my $time_duration_ms=_pi_sanitize_ms($config->{"patch_insert_time_duration_ms"},5000,30000);
+ my $time_level=($config->{"patch_insert_time_level"}//25)+0;
+ my @inserts;
+ my $now=int(time()*1000);
+ if($time_enabled && ($_patch_insert_last_time_ts == 0 || ($now - $_patch_insert_last_time_ts) >= $time_frequency_ms)) {
+  push @inserts,{ level => $time_level, duration_ms => $time_duration_ms, reason => "time", kind => "time" };
+  $_patch_insert_last_time_ts=$now;
+ }
+ if($patch_enabled) {
+  $_patch_insert_counter++;
+  if(($_patch_insert_counter % $patch_every) == 0) {
+   push @inserts,{ level => $patch_level, duration_ms => $patch_duration_ms, reason => "patch", kind => "patch" };
+  }
+ }
+ return undef unless(@inserts);
+ my $base_payload={
+  name => "patch",
+  size => 100,
+  input_max => 255,
+  signal_mode => $config->{"signal_mode"}||"sdr",
+  max_luma => $config->{"max_luma"}||1000,
+  # The meter session arms /tmp/webui_pattern_stop_guard during reads;
+  # without allow_after_stop the renderer silently replaces the
+  # insertion patch with "stop" and the flash never displays.
+  allow_after_stop => json_true(),
+ };
+ $base_payload->{"signal_range"}=$pattern_range if($pattern_range ne "");
+ $base_payload->{"transport_signal_range"}=$transport_range if($transport_range ne "");
+ for my $ins (@inserts) {
+  my ($code,$input_max)=_patch_insert_resolve($config,$ins->{"kind"},$ins->{"level"});
+  my $dur_s=$ins->{"duration_ms"}/1000.0;
+  log_line(($config->{"signal_mode"}||"sdr")." pattern insertion: reason=$ins->{reason} level=$ins->{level}% code=$code input_max=$input_max duration=".sprintf("%.3f",$dur_s)."s");
+  my $insert_payload={%{$base_payload},input_max=>$input_max,r=>(0+$code),g=>(0+$code),b=>(0+$code)};
+  my $insert_result=api_json("POST","/api/pattern",$insert_payload,10);
+  return $insert_result->{"message"}||"Unable to display pattern insertion patch" if(($insert_result->{"status"}||"") eq "error");
+  select(undef,undef,undef,$dur_s);
+  # Black reset between the flash and the measurement patch.
+  my $black_payload={%{$base_payload},input_max=>$input_max,r=>0,g=>0,b=>0};
+  my $black_result=api_json("POST","/api/pattern",$black_payload,10);
+  return $black_result->{"message"}||"Unable to display black insertion patch" if(($black_result->{"status"}||"") eq "error");
+  select(undef,undef,undef,0.5);
+ }
+ return undef;
+}
+# ---------------------------------------------------------------------
+
 sub read_step_once {
  my ($config,$step)=@_;
  my $delay_ms=int($config->{"delay_ms"}||1000);
@@ -1471,6 +1594,10 @@ sub read_step {
   $fixture->{"target_gamma"}=$config->{"target_gamma"}||"bt1886";
   return ($fixture,undef);
  }
+ # OLED stabilization per the user's Meter Settings insertion knobs --
+ # once per logical read (not per retry attempt).
+ my $insert_error=apply_pattern_insert_before_read($config,$step);
+ log_line("pattern insertion failed (continuing to read): ".$insert_error) if(defined($insert_error));
  my $attempts=3;
  my $last="";
  for(my $i=1;$i<=$attempts;$i++) {
