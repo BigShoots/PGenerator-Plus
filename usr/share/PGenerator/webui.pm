@@ -4207,7 +4207,8 @@ sub webui_meter_lg_3d_autocal_start (@) {
    "lg_autocal_hdr20_postcal_shadow_gain" => ["int", 150],
    "lg_autocal_hdr20_postcal_shadow_seed_counts" => ["int", 0],
    "lg_autocal_hdr20_postcal_shadow_index_scale" => ["num", 0.5],
-   "lg_autocal_hdr20_postcal_shadow_zone_scales" => ["str", "5:0.505,10:0.50,15:0.423,20:0.41,25:0.41,30:0.41"],
+   "lg_autocal_hdr20_postcal_shadow_zone_scales" => ["str", "5:0.505,10:0.50,15:0.36,20:0.41,25:0.41,30:0.41"],
+   "lg_autocal_hdr20_postcal_shadow_target_lift" => ["num", 1.0],
    "lg_autocal_hdr20_postcal_shadow_matrix_path" => ["str", "/etc/PGenerator/hdr20_postcal_shadow_matrix.json"],
   );
   foreach my $k (sort keys %_hdr20_shadow_knobs) {
