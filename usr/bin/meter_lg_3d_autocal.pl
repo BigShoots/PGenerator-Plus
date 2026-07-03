@@ -2102,6 +2102,16 @@ sub run_hdr20_postcal_shadow_correction {
  my $seed_counts_cfg=$config->{"lg_autocal_hdr20_postcal_shadow_seed_counts"};
  $seed_counts_cfg=0 if(!defined($seed_counts_cfg) || $seed_counts_cfg+0 < 0);
  $seed_counts_cfg=$seed_counts_cfg+0;
+ # Optional aim-low bias: the trim runs on a HOT panel (right after the
+ # greyscale stage's ~50 min of reads) and OLED low-IRE output rises a
+ # few % as the panel cools, so a trim that converges at exactly 1.00
+ # tends to chart +3-4% bright later. target_lift < 1 pre-compensates
+ # (e.g. 0.97). Default 1.0 = off.
+ my $target_lift=$config->{"lg_autocal_hdr20_postcal_shadow_target_lift"};
+ $target_lift=1.0 if(!defined($target_lift) || $target_lift+0 <= 0);
+ $target_lift=$target_lift+0;
+ $target_lift=0.90 if($target_lift < 0.90);
+ $target_lift=1.10 if($target_lift > 1.10);
 
  # 0% IRE row of the DPG array. The HDR20 ladder's index 14 is 1.4%
  # IRE, so band_top in DPG-domain = 14 (1.4%->25% spans DPG indices
@@ -2275,7 +2285,12 @@ sub run_hdr20_postcal_shadow_correction {
  $idx_scale=$idx_scale+0;
  $idx_scale=0.25 if($idx_scale < 0.25);
  $idx_scale=1.0 if($idx_scale > 1.0);
- my %zone_scale=(5=>0.505,10=>0.50,15=>0.423,20=>0.41,25=>0.41,30=>0.41);
+ # 15% zone revised 0.423 -> 0.36 after the first zone-table run: the
+ # loop pushed the idx-65 anchor to 101 counts with ~zero 15% response
+ # (1.043 -> 1.037) while all real 15% movement tracked the idx-51
+ # anchor's spillover -- the 15% patch samples ~idx 55, just above the
+ # 10% zone.
+ my %zone_scale=(5=>0.505,10=>0.50,15=>0.36,20=>0.41,25=>0.41,30=>0.41);
  my $zone_cfg=$config->{"lg_autocal_hdr20_postcal_shadow_zone_scales"};
  if(defined($zone_cfg) && $zone_cfg ne "") {
   foreach my $pair (split(/,/,$zone_cfg)) {
@@ -2363,6 +2378,9 @@ sub run_hdr20_postcal_shadow_correction {
   # secant update needs from pass 2 onward.
   my %prev_counts;
   my %prev_lifts;
+  # Anchors whose zone estimate proved wrong for this panel (big count
+  # move, no lift response) -- frozen by the dead-anchor guard below.
+  my %dead_anchor;
 
   for(my $pass=1; $pass<=$max_passes; $pass++) {
    die "cancelled\n" if(cancelled());
@@ -2400,23 +2418,42 @@ sub run_hdr20_postcal_shadow_correction {
     }
     my $xyz=reading_xyz($reading);
     my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
-    my $lift=($atarget > 0) ? ($y/$atarget) : 0;
-    # Single reads carry ~+-3% luminance noise at these levels (a 25%
-    # anchor moved 0.993 -> 1.024 between passes with ZERO count
-    # change). Once an anchor is near target the noise dominates the
-    # convergence/update decision, so confirm with a second read and
-    # average. Far-from-target reads skip this -- the move is much
-    # bigger than the noise.
-    if($pass >= 2 && $atarget > 0 && abs($lift-1) <= 2*$tol) {
+    # Adaptive multi-read: single reads carry ~+-3% luminance noise at
+    # these levels (0.06-10 nits), which is the same magnitude as the
+    # residuals the later passes are correcting. Every anchor gets a
+    # second sample; if the two disagree by more than 2% a third is
+    # taken and the median used, so one outlier read cannot steer a
+    # secant move or a convergence decision.
+    if($atarget > 0 && $y > 0) {
      my ($reading2,$error2)=read_step($config,$astep,$state);
      if(!$error2 && $reading2) {
       my $xyz2=reading_xyz($reading2);
       my $y2=(ref($xyz2) eq "ARRAY") ? ($xyz2->[1]+0) : 0;
-      $lift=(($y+$y2)/2)/$atarget if($y2 > 0);
+      if($y2 > 0) {
+       my $hi=($y > $y2) ? $y : $y2;
+       my $lo=($y > $y2) ? $y2 : $y;
+       if($lo > 0 && ($hi-$lo)/$lo > 0.02) {
+        my ($reading3,$error3)=read_step($config,$astep,$state);
+        my $y3=0;
+        if(!$error3 && $reading3) {
+         my $xyz3=reading_xyz($reading3);
+         $y3=(ref($xyz3) eq "ARRAY") ? ($xyz3->[1]+0) : 0;
+        }
+        if($y3 > 0) {
+         my @ys=sort { $a <=> $b } ($y,$y2,$y3);
+         $y=$ys[1];
+        } else {
+         $y=($y+$y2)/2;
+        }
+       } else {
+        $y=($y+$y2)/2;
+       }
+      }
      }
     }
+    my $lift=($atarget > 0) ? ($y/$atarget) : 0;
     $lift_for{$anchor_idx[$ai]}=$lift;
-    my $excess=abs($lift-1);
+    my $excess=abs($lift-$target_lift);
     $worst=$excess if($excess > $worst);
     $state->{"postcal_shadow_pass_".$pass."_IRE_".$astep->{"ire"}."_lift"}=$lift;
    }
@@ -2507,15 +2544,33 @@ sub run_hdr20_postcal_shadow_correction {
     my $idx=$anchor_idx[$ai];
     my $lift=$lift_for{$idx};
     next if(!defined($lift));
-    my $slope=$slope_for{$idx};
+    # Dead-anchor guard: if this anchor's counts already moved a lot
+    # and its lift barely responded (own measured slope rejected as
+    # near-flat over a >=25-count move), the anchor's zone estimate is
+    # wrong for this panel -- do NOT let the median-slope substitution
+    # keep inflating it (the first zone-table run pushed a dead 15%
+    # anchor to 101 counts with zero effect, leaving an orphan bump in
+    # the DPG). Freeze it at its current value instead.
+    my $own_slope=$slope_for{$idx};
+    if(!defined($own_slope) && defined($prev_counts{$idx}) && defined($prev_lifts{$idx})
+       && abs($counts{$idx}-$prev_counts{$idx}) >= 25) {
+     $dead_anchor{$idx}=($dead_anchor{$idx}||0)+1;
+    }
+    if(($dead_anchor{$idx}||0) >= 1) {
+     $state->{"postcal_shadow_dead_anchor_".$idx}=json_true();
+     $prev_counts{$idx}=$counts{$idx};
+     $prev_lifts{$idx}=$lift;
+     next;
+    }
+    my $slope=$own_slope;
     if(defined($median_slope) && (!defined($slope) || abs($slope) < 0.5*abs($median_slope))) {
      $slope=$median_slope;
     }
     my $next;
     if(defined($slope)) {
-     $next=$counts{$idx} + (1-$lift)/$slope;
+     $next=$counts{$idx} + ($target_lift-$lift)/$slope;
     } else {
-     $next=$counts{$idx} + $gain*($lift-1);
+     $next=$counts{$idx} + $gain*($lift-$target_lift);
     }
     # Cap the secant move per pass; the pass-1 gain step stays uncapped
     # (it is the coarse jump and $slope is never defined on pass 1).
