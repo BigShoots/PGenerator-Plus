@@ -739,6 +739,50 @@ sub lg_webos_port_sweep_devices (@) {
  return \@devices;
 }
 
+# Append every TV with a stored pairing key -- online or not, no
+# reachability probe. The operator must be able to see (and forget) a
+# saved pairing immediately, without waiting for network discovery. The
+# active flat set is also in the keyring (upserted on connect), so
+# %seen dedupes it.
+sub lg_add_saved_pairing_devices (@) {
+ my ($devices,$seen,$clients)=@_;
+ return if(ref($devices) ne "ARRAY" || ref($seen) ne "HASH");
+ $clients=&lg_load_clients() if(ref($clients) ne "HASH");
+ my $client=&lg_primary_client($clients);
+ my $stored_name=$client->{"name"}||$client->{"model_name"}||"";
+ if((($clients->{"client_key"}||$clients->{"client-key"}||"") ne "") && &lg_valid_ipv4($clients->{"ip"}||"")) {
+  &lg_scan_add_device($devices,$seen,$clients->{"ip"},"paired-saved",$stored_name,$client->{"model_name"}||"");
+  $devices->[-1]{"saved"}=1 if(@{$devices});
+ }
+ if(ref($clients->{"devices"}) eq "ARRAY") {
+  foreach my $entry (@{$clients->{"devices"}}) {
+   next if(ref($entry) ne "HASH");
+   next if(($entry->{"client_key"}||$entry->{"client-key"}||"") eq "");
+   my $eip=$entry->{"last_ip"}||"";
+   next if(!&lg_valid_ipv4($eip) || $seen->{$eip});
+   &lg_scan_add_device($devices,$seen,$eip,"saved-pairing",$entry->{"name"}||$entry->{"model_name"}||"Saved LG TV",$entry->{"model_name"}||"");
+   $devices->[-1]{"saved"}=1 if(@{$devices});
+  }
+ }
+}
+
+# Instant saved-pairings list for the display card: no probes, no
+# sweep, returns in milliseconds. The card renders this first so saved
+# TVs are visible immediately; the full scan then merges in whatever
+# discovery finds.
+sub lg_scan_saved_devices (@) {
+ my @devices=();
+ my %seen=();
+ &lg_add_saved_pairing_devices(\@devices,\%seen,undef);
+ return {
+  status => "ok",
+  devices => \@devices,
+  count => scalar(@devices),
+  saved_only => 1,
+  message => @devices ? "Saved LG TV pairings." : "No saved LG TV pairings.",
+ };
+}
+
 sub lg_scan_devices (@) {
  $_LG_PROBE_CACHE={};
  my $clients=&lg_load_clients();
@@ -747,18 +791,26 @@ sub lg_scan_devices (@) {
  my @devices=();
  my %seen=();
  my $stored_name=$client->{"name"}||$client->{"model_name"}||"";
+ &lg_add_saved_pairing_devices(\@devices,\%seen,$clients);
+ # Overall time budget: the daemon serves HTTP requests from a single
+ # loop, so an unbounded sweep (80 neighbor probes with TVs powered
+ # off) wedges the whole WebUI for minutes. Saved pairings are already
+ # in the list; discovery gets ~10s and returns whatever it found.
+ my $scan_deadline=time()+10;
  &lg_scan_add_probe_device(\@devices,\%seen,$clients->{"manual_ip"}||"","saved",$stored_name,$client->{"model_name"}||"");
  &lg_scan_add_probe_device(\@devices,\%seen,$client->{"ip"}||"","paired",$stored_name,$client->{"model_name"}||"");
  my $auto=&lg_autodetect_info($clients,1);
  &lg_scan_add_probe_device(\@devices,\%seen,$auto->{"ip"}||"",$auto->{"source"}||"mdns","LG WebOS TV","");
  foreach my $device (@{&lg_webos_port_sweep_devices()}) {
   next if(ref($device) ne "HASH");
+  last if(time() > $scan_deadline);
   &lg_scan_add_probe_device(\@devices,\%seen,$device->{"ip"}||"",$device->{"source"}||"webos-sweep",$device->{"name"}||"LG WebOS TV",$device->{"model_name"}||"");
  }
  &lg_prime_neighbor_table();
  my $count=0;
  foreach my $ip (&lg_neighbor_ips()) {
   last if($count > 80);
+  last if(time() > $scan_deadline);
   next if($seen{$ip});
   my $port=&lg_webos_port_open($ip);
   next if(!$port);
@@ -1908,6 +1960,9 @@ sub webui_lg_api (@) {
 	 if($path eq "/api/lg/scan" && $method eq "GET") {
   return &webui_lg_scan();
  }
+ if($path eq "/api/lg/scan/saved" && $method eq "GET") {
+  return &lg_encode_json(&lg_scan_saved_devices());
+ }
  if($path eq "/api/lg/calibration-mode" && $method eq "POST") {
   return &webui_lg_calibration_mode($body);
  }
@@ -2060,7 +2115,6 @@ sub webui_lg_card_html (@) {
 	      <button class="btn btn-sm btn-success" id="lgConnectBtn" onclick="lgConnect()">Connect</button>
 	    <button class="btn btn-sm btn-secondary" id="lgDisconnectBtn" onclick="lgDisconnectClient()" disabled>Disconnect</button>
    <button class="btn btn-sm btn-primary" onclick="loadLgStatus()">Refresh</button>
-   <button class="btn btn-sm btn-secondary" onclick="lgSaveManualIp()">Save IP</button>
    <button class="btn btn-sm btn-danger" onclick="lgForgetClient()">Forget Pairing</button>
   </div>
     <div id="lgWorkflowHint" style="font-size:.75rem;color:var(--text2);margin-top:8px;line-height:1.45">Display detection is checking for an LG TV.</div>
@@ -2569,7 +2623,7 @@ function lgDismissDetectedPrompt(){
 		 let cardHtml='';
 		 devices.forEach((d,idx)=>{
 		  const ip=String(d.ip||'');
-		  const label=String(d.label||((d.name||d.model_name||'LG WebOS TV')+' ('+ip+')'));
+		  const label=String(d.label||((d.name||d.model_name||'LG WebOS TV')+' ('+ip+')'))+(d.saved?' — saved pairing':'');
 		  html+='<option value="'+lgEscapeHtml(ip)+'" '+(idx===0?'selected':'')+'>'+lgEscapeHtml(label)+'</option>';
 		  cardHtml+='<button type="button" data-lg-tv-ip="'+lgEscapeHtml(ip)+'" role="option" aria-selected="'+(idx===0?'true':'false')+'" class="lg-device-item '+(idx===0?'selected':'')+'" onclick="lgCardDeviceClicked(\''+lgEscapeHtml(ip)+'\')" style="display:flex;align-items:center;width:100%;height:30px;min-height:30px;padding:0 10px;text-align:left;background:'+(idx===0?'#10131d':'transparent')+';box-shadow:'+(idx===0?'inset 3px 0 0 var(--green)':'none')+';border:0;border-bottom:1px solid var(--border);color:var(--text);font-size:.82rem;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer">'+lgEscapeHtml(label)+'</button>';
 			 });
@@ -2606,14 +2660,33 @@ function lgDismissDetectedPrompt(){
 			 if(promptSelect) { promptSelect.size=1; promptSelect.style.minHeight=''; }
 	 if(promptStatus) promptStatus.textContent='Scanning the local network for LG WebOS TVs...';
 	 if(cardStatus) cardStatus.textContent='Scanning the local network for LG WebOS TVs...';
+	 // Saved pairings render instantly (no probes) so the operator can
+	 // see and forget stored TVs without waiting for discovery; the full
+	 // scan below then replaces the list (it includes the saved entries).
+	 let savedShown=false;
 	 try{
-	  const r=await fetchJSON('/api/lg/scan',{_quiet:true,_timeoutMs:12000});
-	  lgRenderScanResults(r);
+	  const s=await fetchJSON('/api/lg/scan/saved',{_quiet:true,_timeoutMs:4000});
+	  if(s&&Array.isArray(s.devices)&&s.devices.length){
+	   lgRenderScanResults(s);
+	   savedShown=true;
+	   if(promptStatus) promptStatus.textContent='Saved TVs shown. Scanning for more...';
+	   if(cardStatus) cardStatus.textContent='Saved TVs shown. Scanning the network for more...';
+	  }
+	 }catch(e){}
+	 try{
+	  const r=await fetchJSON('/api/lg/scan',{_quiet:true,_timeoutMs:20000});
+	  if(r&&Array.isArray(r.devices)&&(r.devices.length||!savedShown)) lgRenderScanResults(r);
+	  else if(savedShown&&cardStatus) cardStatus.textContent='Showing saved TVs. Network scan found nothing new.';
 	 }catch(e){
+	  if(savedShown){
+	   if(promptStatus) promptStatus.textContent='Network scan timed out; showing saved TVs.';
+	   if(cardStatus) cardStatus.textContent='Network scan timed out; showing saved TVs.';
+	  }else{
 		  if(promptSelect) promptSelect.innerHTML='<option value="">Scan failed</option>';
 		  if(cardSelect) cardSelect.innerHTML='<div style="height:30px;display:flex;align-items:center;padding:0 10px;color:#f7b0b0">Scan failed</div>';
 	  if(promptStatus) promptStatus.textContent='Scan failed. Enter the TV IP manually.';
 	  if(cardStatus) cardStatus.textContent='Scan failed. Enter the TV IP manually.';
+	  }
 	 }finally{
 	  lgScanPending=false;
 	 }
@@ -3079,19 +3152,9 @@ async function loadLgStatus(quiet){
  }
 }
 
-async function lgSaveManualIp(){
- const input=document.getElementById('lgManualIp');
- if(!input) return;
- const ip=input.value.trim();
- if(ip&&!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){toast('Enter a valid LG TV IP','err');return;}
- const r=await fetchJSON('/api/lg/manual-ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});
- if(r&&r.status==='ok'){
-  renderLgStatus(r);
-  toast(ip?'LG TV IP saved':'LG TV IP cleared');
- }else{
-  toast(r&&r.message?r.message:'Unable to save LG TV IP','err');
- }
-}
+// The manual "Save IP" button was removed: the TV IP is saved
+// automatically -- lg_update_connect_metadata persists manual_ip on
+// every successful connect/pair, and saved pairings are always listed.
 
 // Cancellation token for lgConnect(). lgConnectModalHide() in
 // webui.pm bumps this when the operator clicks Cancel or dismisses the
@@ -3540,6 +3603,9 @@ async function lgForgetClient(){
 	  lgMarkDetectedPromptHandled(r);
   renderLgStatus(r);
   toast('Stored LG pairing cleared');
+  // Refresh the device list so the forgotten pairing disappears
+  // immediately (saved pairings are listed from the keyring).
+  lgScanTvs(true);
  }else{
   toast(r&&r.message?r.message:'Unable to clear LG pairing','err');
  }
