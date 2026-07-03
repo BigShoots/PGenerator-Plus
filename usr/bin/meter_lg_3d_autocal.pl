@@ -102,7 +102,24 @@ sub decode_json_safe {
 
 sub write_state {
  my ($state)=@_;
- return write_file($state_file,$json->encode($state),0);
+ # Never let an unencodable value (scalar/code ref) in $state kill the
+ # worker: the error handlers themselves call write_state, so an encode
+ # die here cascades straight to process death (seen 2026-07-03: a
+ # ref-to-hashref in a pass field killed a full autocal mid-shadow).
+ my $encoded;
+ eval { $encoded=$json->encode($state); 1; } or do {
+  my $err=$@; $err=~s/[\r\n]+/ /g;
+  log_line("write_state: state not encodable, writing minimal state: ".$err);
+  my %fallback;
+  foreach my $k (keys %{$state}) {
+   my $v=$state->{$k};
+   next if(ref($v) && ref($v) !~ /^(HASH|ARRAY|JSON::PP::Boolean)$/);
+   eval { $json->encode({ $k => $v }); $fallback{$k}=$v; 1; } or next;
+  }
+  $fallback{"state_encode_error"}=$err;
+  $encoded=$json->encode(\%fallback);
+ };
+ return write_file($state_file,$encoded,0);
 }
 
 sub cancelled {
@@ -2326,7 +2343,7 @@ sub run_hdr20_postcal_shadow_correction {
    $state->{"message"}=sprintf("Re-committing DPG (per-anchor trim, worst=%.3f)",($pass==1 ? 1e9 : 0));
    write_state($state);
    my ($cand_resp,$cand_bound,$cand_msg)=$bind_dpg->($candidate);
-   $state->{"postcal_shadow_pass_".$pass."_counts"}=\{ %counts };
+   $state->{"postcal_shadow_pass_".$pass."_counts"}={ %counts };
    if(!$cand_bound) {
     $status->{"note"}=($status->{"note"}||"")." pass $pass: bind not real (".$cand_msg."); ";
     last;
