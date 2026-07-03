@@ -20426,6 +20426,12 @@ function meterWorkflowClamp01(value){
 function meterWorkflowPhaseFraction(status){
  if(!status) return 0;
  const phase=String(status.phase||'').toLowerCase();
+ // The HDR20 shadow correction runs AFTER the 3D LUT + tone-map commit
+ // (worker reorder 2026-07-03). The state still carries the profile's
+ // 5/5 step counts at that point, so without this the bar would show
+ // 100% for the whole trim. Pin the late phases just under complete.
+ if(phase.indexOf('postcal_shadow')===0) return 0.975;
+ if(phase==='tone_map_upload') return 0.97;
  let total=Number(status.total_steps)||0;
  let current=Number(status.current_step)||0;
  if(status.autocal3d&&phase==='post_check'){
@@ -20521,11 +20527,20 @@ function meterFullAutoCalStageWeights(){
  let reportReads=0;
  try{ reportReads=meterFullAutoCalReportSeries().reduce(function(n,s){return n+(Number(s.points)||0);},0); }catch(e){ reportReads=0; }
  if(!(reportReads>0)) reportReads=75;
+ // The HDR20 shadow fix now runs inside the 3D-LUT phase, after the
+ // cube + tone-map commit: zone probe (~25 reads) plus up to 6 trim
+ // passes over 6 anchors with confirm re-reads (~60-90 reads). Weight
+ // the 3D phase accordingly when it is enabled so the full bar does not
+ // stall near the end for half an hour.
+ let shadowReads=0;
+ try{
+  if(meterFullAutoCalShadowFixEnabled()&&String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'')==='hdr10') shadowReads=95;
+ }catch(e){ shadowReads=0; }
  return {
   'precal-report':reportReads,
   'first-greyscale':80,
   'touchup-greyscale':20,
-  '3d-lut':15,
+  '3d-lut':15+shadowReads,
   'post-3d-polish':20,
   'magic-wand':15,
   'postcal-report':reportReads,
