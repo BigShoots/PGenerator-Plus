@@ -316,7 +316,13 @@ my $_CEC_CACHE_TTL=30;
 # on every poll, so we do at most one live query per this many seconds and
 # serve the cached reading in between.
 my $_cec_last_power_query=0;
-my $_CEC_POWER_QUERY_THROTTLE=4;
+# 15s, not 4s: with the TV powered OFF a live power query costs the
+# single-threaded daemon ~2s of wall time (pgcec tries first and gives
+# nothing, then pgenerator-cec's GIVE_DEVICE_POWER_STATUS hangs until
+# the outer timeout kills it). At a 4s throttle that was ~50-100% of
+# the request loop consumed by CEC spawns whenever any status endpoint
+# was polled -- the WebUI starved and looked "down" with the TV off.
+my $_CEC_POWER_QUERY_THROTTLE=15;
 
 my $_caps_cache="";
 my $_caps_cache_time=0;
@@ -7395,7 +7401,11 @@ sub webui_cec (@) {
 	  # went cold (e.g. after a reboot cleared /tmp), even with the TV on.
 	  if(time() - $_cec_last_power_query >= $_CEC_POWER_QUERY_THROTTLE) {
 	   $_cec_last_power_query=time();
-	   $direct=&webui_cec_direct_status($cec_bin,2,1);
+	   # 1s spawn bound (was 2s): with the TV off both helpers run to
+	   # their timeout, and this path executes inside the daemon's only
+	   # request thread -- every extra second here is a second the whole
+	   # WebUI is frozen.
+	   $direct=&webui_cec_direct_status($cec_bin,1,1);
 	  }
 	  if(ref($direct) eq "HASH") {
 	   my $phys=($direct->{"phys_addr"}||$cached_phys||"");
