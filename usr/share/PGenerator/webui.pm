@@ -4209,6 +4209,7 @@ sub webui_meter_lg_3d_autocal_start (@) {
    "lg_autocal_hdr20_postcal_shadow_index_scale" => ["num", 0.5],
    "lg_autocal_hdr20_postcal_shadow_zone_scales" => ["str", "5:0.505,10:0.50,15:0.36,20:0.41,25:0.41,30:0.41"],
    "lg_autocal_hdr20_postcal_shadow_target_lift" => ["num", 1.0],
+   "lg_autocal_hdr20_postcal_shadow_zone_probe" => ["int", 1],
    "lg_autocal_hdr20_postcal_shadow_matrix_path" => ["str", "/etc/PGenerator/hdr20_postcal_shadow_matrix.json"],
   );
   foreach my $k (sort keys %_hdr20_shadow_knobs) {
@@ -10424,7 +10425,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label id="meterFullAutoCalShadowFixRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px">
 	    <input type="checkbox" id="meterFullAutoCalShadowFixEnabled" style="accent-color:var(--accent)">
 	    LG Tone Mapping Shadow Fix
-	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: measures the 5&ndash;30% greyscale after the tone map is staged and trims the DPG shadow band to remove PQ re-apply lift)</span>
+	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re-apply lift)</span>
 	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
