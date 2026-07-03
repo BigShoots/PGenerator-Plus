@@ -6546,6 +6546,36 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- Meter Series Debug Log (/tmp/meter_series_debug.log, last 500 lines) ---";
  my $series_debug=`tail -n 500 /tmp/meter_series_debug.log 2>/dev/null`; chomp($series_debug);
  push @out, ($series_debug ne "") ? $series_debug : "(none found)";
+
+ # LG AutoCal — the last session's worker state and logs. The state
+ # JSONs carry the per-IRE adjustment trail (greyscale per-anchor
+ # iterations; 3D worker postcal_shadow_pass_N_IRE_X_lift / _counts and
+ # the postcal_shadow_zone_IRE_* probe results); the logs carry the
+ # per-iteration dE lines. The full-autocal report state is the saved
+ # pre/post-cal series reads of the most recent run.
+ push @out, "", "--- LG Greyscale AutoCal State (/tmp/meter_lg_autocal.json) ---";
+ my $ac1_state=`cat /tmp/meter_lg_autocal.json 2>/dev/null`; chomp($ac1_state);
+ push @out, ($ac1_state ne "") ? $ac1_state : "(none found)";
+ push @out, "", "--- LG Greyscale AutoCal Log (/tmp/meter_lg_autocal.log, last 2000 lines) ---";
+ my $ac1_log=`tail -n 2000 /tmp/meter_lg_autocal.log 2>/dev/null`; chomp($ac1_log);
+ push @out, ($ac1_log ne "") ? $ac1_log : "(none found)";
+ push @out, "", "--- LG 3D LUT AutoCal State (/tmp/meter_lg_3d_autocal.json) ---";
+ my $ac3_state=`cat /tmp/meter_lg_3d_autocal.json 2>/dev/null`; chomp($ac3_state);
+ push @out, ($ac3_state ne "") ? $ac3_state : "(none found)";
+ push @out, "", "--- LG 3D LUT AutoCal Log (/tmp/meter_lg_3d_autocal.log, last 1000 lines) ---";
+ my $ac3_log=`tail -n 1000 /tmp/meter_lg_3d_autocal.log 2>/dev/null`; chomp($ac3_log);
+ push @out, ($ac3_log ne "") ? $ac3_log : "(none found)";
+ push @out, "", "--- Full AutoCal Report State (latest run: pre/post-cal series reads) ---";
+ my @report_files=sort { ((stat($b))[9]||0) <=> ((stat($a))[9]||0) }
+  (glob("/var/lib/PGenerator/reports/full-autocal/*.json"),glob("/tmp/PGenerator_full_autocal_reports/*.json"));
+ if(scalar(@report_files)) {
+  push @out, "File: ".$report_files[0];
+  my $report=`cat "$report_files[0]" 2>/dev/null`; chomp($report);
+  push @out, ($report ne "") ? $report : "(unreadable)";
+ } else {
+  push @out, "(no full-autocal report state found)";
+ }
+
  push @out, "", "--- USB / Serial ---";
  my $lsusb=`lsusb 2>/dev/null`; chomp($lsusb);
  push @out, ($lsusb ne "") ? $lsusb : "(none found)";
