@@ -2258,18 +2258,38 @@ sub run_hdr20_postcal_shadow_correction {
  # (ire/100*1023: 51/103/154/206/257) is only valid while cal mode is ON
  # (panel linearized to 2.2, DPG indexed by expanded video code). With PQ
  # processing re-applied the panel samples the DPG in a COMPRESSED domain
- # at ~half the expanded index. Proven on the C1 by a shelf probe: pulling
- # idx<=154 down dropped the series read all the way to 30% (idx154 ==
- # video-30%, not 15%), and per-anchor corrections at half indices
- # (26/51/77/102/128) landed every 5-30% read within a few percent while
- # the expanded indices over-pulled 2x-high IREs. Scale is config-tunable
- # per panel; 0.5 is the C1-validated default.
+ # well below the expanded index -- and the compression is NOT a constant
+ # ratio. Narrow-notch probes on the C1 (200-count notch, +-12 idx, read
+ # per level) measured the true sampled zone per video level:
+ #   5% -> idx ~26 (0.505x)   10% -> ~51 (0.50x)   15% -> ~65 (0.423x)
+ #   20% -> ~84 (0.41x)       25% -> ~105 (0.41x)  30% -> ~126 (0.41x)
+ # A notch at the old constant-0.5 index for 20% (102) crushed the 25%
+ # read and left 20% untouched -- the constant scale places the 15-30%
+ # anchors in the WRONG zones. Per-IRE zone scales below are the
+ # C1-measured defaults; lg_autocal_hdr20_postcal_shadow_zone_scales
+ # ("ire:scale,ire:scale,...") overrides per panel, and the legacy
+ # lg_autocal_hdr20_postcal_shadow_index_scale remains the fallback for
+ # any IRE missing from the table.
  my $idx_scale=$config->{"lg_autocal_hdr20_postcal_shadow_index_scale"};
  $idx_scale=0.5 if(!defined($idx_scale) || $idx_scale+0 <= 0);
  $idx_scale=$idx_scale+0;
  $idx_scale=0.25 if($idx_scale < 0.25);
  $idx_scale=1.0 if($idx_scale > 1.0);
- my @anchor_idx=map { int(($_/100)*1023*$idx_scale+0.5) } @anchor_ire;
+ my %zone_scale=(5=>0.505,10=>0.50,15=>0.423,20=>0.41,25=>0.41,30=>0.41);
+ my $zone_cfg=$config->{"lg_autocal_hdr20_postcal_shadow_zone_scales"};
+ if(defined($zone_cfg) && $zone_cfg ne "") {
+  foreach my $pair (split(/,/,$zone_cfg)) {
+   my ($z_ire,$z_scale)=split(/:/,$pair);
+   next if(!defined($z_ire) || !defined($z_scale));
+   $z_ire=$z_ire+0; $z_scale=$z_scale+0;
+   next if($z_ire <= 0 || $z_scale < 0.25 || $z_scale > 1.0);
+   $zone_scale{$z_ire}=$z_scale;
+  }
+ }
+ my @anchor_idx=map {
+  my $scale=defined($zone_scale{$_}) ? $zone_scale{$_} : $idx_scale;
+  int(($_/100)*1023*$scale+0.5);
+ } @anchor_ire;
  # Build a probe step per anchor from the 5% probe step. The probe
  # carries input_max + pattern_signal_range + ire + stimulus + name;
  # only r=g=b change. Code math mirrors webui.pm's _pcode derivation:
