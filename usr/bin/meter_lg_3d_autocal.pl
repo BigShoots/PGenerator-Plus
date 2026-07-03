@@ -2250,7 +2250,10 @@ sub run_hdr20_postcal_shadow_correction {
  # Per-anchor HDR20 low-band anchors: IRE -> DPG index. These are the
  # grey anchors the HDR20 ladder runs through; each anchor's lift
  # drives its OWN magnitude of roll-down in the new piecewise profile.
- my @anchor_ire=(5,10,15,20,25);
+ # 30% is included because a C1 committed-state series read showed +3.8%
+ # residual lift at 30% video with the band ending at 25% -- the lift
+ # tail extends past the old band edge (35% read +1.3%, 40% +0.4%).
+ my @anchor_ire=(5,10,15,20,25,30);
  # Post-cal (cal-mode OFF) DPG index mapping. The legal-expanded table
  # (ire/100*1023: 51/103/154/206/257) is only valid while cal mode is ON
  # (panel linearized to 2.2, DPG indexed by expanded video code). With PQ
