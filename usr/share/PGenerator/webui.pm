@@ -16807,7 +16807,18 @@ function meterGreyscaleReadingMap(readings){
 
 function meterSignalPreviewColor(r,g,b){
  if(r==null||g==null||b==null) return '#aaa';
- if(r===g&&g===b) return 'rgb('+r+','+g+','+b+')';
+ if(r===g&&g===b){
+  // Normalize grey codes through the bit-depth/range-aware grey code
+  // range instead of painting the raw code as an 8-bit sRGB value. A
+  // 10-bit Limited black (code 64) painted as rgb(64,64,64) showed
+  // every HDR Limited grey thumbnail lifted; normalizing maps code 64
+  // -> 0 and 940 -> 255, and is a no-op for 8-bit full-range codes.
+  const f=(typeof meterGreySignalFractionFromCode==='function')
+   ? meterGreySignalFractionFromCode(r)
+   : Math.max(0,Math.min(1,(r||0)/255));
+  const v=Math.round(Math.max(0,Math.min(1,f))*255);
+  return 'rgb('+v+','+v+','+v+')';
+ }
  const xyz=linRgbToXyz(
   meterDecodeSignalChannel(r),
   meterDecodeSignalChannel(g),
