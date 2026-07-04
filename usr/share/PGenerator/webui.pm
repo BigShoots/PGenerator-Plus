@@ -16854,6 +16854,15 @@ function meterPreviewColorForReading(reading,mode){
 
 function meterPreviewColorForStep(step){
  if(!step) return '#aaa';
+ // Grey steps use their NATIVE codes: meterSignalPreviewColor normalizes
+ // them through the bit-depth/range-aware grey code range. The preview_*
+ // fields are 8-bit-SCALED codes (code*255/input_max, pedestal included:
+ // 10-bit white 940 -> 234) meant for direct painting in the old raw-code
+ // path -- running them through the 10-bit range math drew 100% white as
+ // a ~50% grey.
+ if(step.r!=null&&step.g!=null&&step.b!=null&&step.r===step.g&&step.g===step.b){
+  return meterSignalPreviewColor(step.r,step.g,step.b);
+ }
  return meterPreviewColorForReading({
   r_code:step.preview_r!=null?step.preview_r:step.r,
   g_code:step.preview_g!=null?step.preview_g:step.g,
