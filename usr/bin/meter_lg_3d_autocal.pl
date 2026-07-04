@@ -2842,14 +2842,30 @@ sub run_hdr20_postcal_shadow_correction {
     # anchor to 101 counts with zero effect, leaving an orphan bump in
     # the DPG). Freeze it at its current value instead.
     my $own_slope=$slope_for{$idx};
+    # Dead-anchor detection: a big count move with a rejected (near-flat)
+    # slope means the zone estimate is wrong -- but ONLY freeze when the
+    # anchor sits at/above target. Freezing a too-DARK anchor locks a
+    # visible dimming in (seen: 10% frozen at 0.968 after the guard
+    # tripped on a flat-looking overshoot-recovery move). On the dark
+    # side, walk counts down 30% per pass instead -- less trim can only
+    # move it toward target.
     if(!defined($own_slope) && defined($prev_counts{$idx}) && defined($prev_lifts{$idx})
        && abs($counts{$idx}-$prev_counts{$idx}) >= 25) {
      $dead_anchor{$idx}=($dead_anchor{$idx}||0)+1;
     }
-    if(($dead_anchor{$idx}||0) >= 1) {
+    if(($dead_anchor{$idx}||0) >= 1 && $lift >= $target_lift) {
      $state->{"postcal_shadow_dead_anchor_".$idx}=json_true();
      $prev_counts{$idx}=$counts{$idx};
      $prev_lifts{$idx}=$lift;
+     next;
+    }
+    if(($dead_anchor{$idx}||0) >= 1 && $lift < $target_lift) {
+     $state->{"postcal_shadow_dead_anchor_".$idx}=json_true();
+     $prev_counts{$idx}=$counts{$idx};
+     $prev_lifts{$idx}=$lift;
+     my $reduced=$counts{$idx}*0.7;
+     $reduced=0 if($reduced < 0);
+     $counts{$idx}=$reduced+0;
      next;
     }
     my $slope=$own_slope;
@@ -2858,11 +2874,16 @@ sub run_hdr20_postcal_shadow_correction {
     }
     # First update with no measured history: use the probe-measured
     # slope for this anchor's zone (its response to the 300-count probe
-    # shelf) instead of the fixed gain -- the coarse jump then lands
-    # near target and the loop typically saves a pass.
+    # shelf) instead of the fixed gain. The 300-count AVERAGE slope is
+    # shallower than the local slope near zero counts (the response is
+    # concave -- early counts bite harder), so an unscaled seed jump
+    # overshoots to the DARK side, which the pull-down-only loop is
+    # slow to recover from (seen: pass-2 lifts 0.91 and 5 passes vs 4).
+    # Derate the seeded move to ~60% so the jump lands slightly BRIGHT
+    # of target -- the side one cheap secant pass fixes.
     my $seeded=0;
     if(!defined($slope) && defined($probe_seed_slope{$idx})) {
-     $slope=$probe_seed_slope{$idx};
+     $slope=$probe_seed_slope{$idx}/0.6;
      $seeded=1;
     }
     my $next;
