@@ -22669,8 +22669,20 @@ function meterMeasurementSignalContext(payload){
   const profilingPort=meterSelectedProfilingPort();
   if(profilingPort) body.profiling_meter_port=profilingPort;
  }
- if(body.signal_range==null) body.signal_range=getVal('rgb_quant_range');
- if(body.transport_signal_range==null) body.transport_signal_range=getVal('rgb_quant_range');
+ // Use the COMMITTED (applied) range, not the live dropdown. The server
+ // applies transport_signal_range to the wire on every patch push and
+ // restarts the renderer when it changes; sourcing the live dropdown here
+ // meant that changing the Range dropdown DURING a continuous read leaked the
+ // new range each iteration and restarted PGenerator before the operator
+ // clicked Apply & Restart. New single reads are gated on settings being
+ // applied (so committed==dropdown there), and the range only reaches the wire
+ // via Apply & Restart. Fall back to the dropdown only before the first config
+ // load populates `config`.
+ const committedRange=(typeof config!=='undefined'&&config&&config.rgb_quant_range!=null&&String(config.rgb_quant_range)!=='')
+  ? String(config.rgb_quant_range)
+  : getVal('rgb_quant_range');
+ if(body.signal_range==null) body.signal_range=committedRange;
+ if(body.transport_signal_range==null) body.transport_signal_range=committedRange;
  if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
  if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
