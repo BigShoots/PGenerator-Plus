@@ -139,6 +139,35 @@ class Runner:
         self.write_state("error", message, detail=detail)
         return 1
 
+    def blank_screen(self):
+        # ccxxmake's last displayed patch is white; leaving it on an emissive
+        # panel risks burn-in. Drive a black patch through the same patch
+        # command ccxxmake used for the sweep so the run always ends on black.
+        # Best-effort with a hard timeout (py2/py3 safe, no subprocess timeout=).
+        if not getattr(self.args, "patch_cmd", None):
+            return
+        try:
+            env = os.environ.copy()
+            env["PG_CCSS_PATCH_SIZE"] = str(self.args.patch_size)
+            env["PG_CCSS_SIGNAL_MODE"] = self.args.signal_mode
+            env["PG_CCSS_MAX_LUMA"] = str(self.args.max_luma)
+            env["PG_CCSS_SETTLE_SEC"] = "0"
+            devnull = io.open(os.devnull, "wb")
+            proc = subprocess.Popen(
+                [self.args.patch_cmd, "0", "0", "0"],
+                env=env, stdout=devnull, stderr=devnull,
+            )
+            deadline = time.time() + 10
+            while time.time() < deadline and proc.poll() is None:
+                time.sleep(0.1)
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def send(self, text):
         if self.master_fd is None:
             return
@@ -229,7 +258,7 @@ class Runner:
                     self.positioned = True
                     self.await_setup_step(
                         "position_screen",
-                        "Aim the meter at where the test patches appear on the screen, then click Ready.",
+                        "Aim the meter at the center of the screen, then click Ready.",
                     )
                     self.recent = ""
                     self.send("\n")
@@ -455,6 +484,9 @@ def main():
         runner.write_state("error", "CCSS create helper crashed", detail=utf8_text(exc))
         return 1
     finally:
+        # Always leave the panel on black (burn-in safety) regardless of how
+        # the run ended: complete, cancelled, failed, or crashed.
+        runner.blank_screen()
         try:
             os.unlink(args.pid_file)
         except OSError:
