@@ -28861,30 +28861,29 @@ async function meterPollSeries(){
   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
-  // On completion, select and display the LAST patch that was actually read.
-  // r.readings arrives in the worker's read order, so the last entry with a
-  // luminance value is the final patch (e.g. 0% black, which reads 0.0 on an
-  // OLED -- 0.0 is a valid reading, not "unread", so it must not be skipped).
-  // Previously the live readout kept the status-current step (the 2nd-last
-  // patch) and no thumb was selected.
-  let lastReadReading=null;
-  if(r.status==='complete'&&meterReadings&&meterReadings.length>0){
-   lastReadReading=[...meterReadings].reverse().find(rd=>rd&&meterReadingHasLuminance(rd))||null;
-   if(lastReadReading){
-    const lastStep=meterCanonicalSeriesStep(lastReadReading)||lastReadReading;
-    if(lastStep){
-     meterCurrentPatchStep=meterClonePatchStep(lastStep)||lastStep;
-     meterSelectedThumbIre=meterStepNameKey(lastStep);
-    }
-   }
+  // On completion the series worker blanks the panel to black (a "stop"
+  // pattern) so no bright patch is left burning into an emissive display.
+  // Match that in the UI: deselect every thumbnail and clear the live readout
+  // so no stale Luminance / CCT / CIE from the last patch is shown while the
+  // screen is black. Completed-patch checkmarks and the charts are preserved.
+  if(r.status==='complete'){
+   meterSelectedThumbIre=null;
+   meterCurrentPatchStep=null;
+   _selectedColorReadingName=null;
+   _colorDetailPinned=false;
   }
-  // Clear the "currently reading" pulse; keep the last-read thumb selected.
+  // Clear the "currently reading" pulse (selection was cleared above on complete).
   if(meterSeriesSteps){
    const isColor3=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
    const sortedSteps2=isColor3?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
    meterBuildPatchThumbs(sortedSteps2,completedIres,null);
   }
-  if(lastReadReading) updateLiveReading(lastReadReading);
+  if(r.status==='complete'){
+   meterResetLiveReadingDisplay();
+   const liveEl=document.getElementById('meterLiveReading');
+   if(liveEl) liveEl.style.display='none';
+   if(typeof showColorReadingDetail==='function') showColorReadingDetail(null,{pin:false});
+  }
   if(!(meterInternalSeriesWorkflow&&meterFullAutoCalRunning)){
    document.getElementById('meterProgress').style.display='none';
   }
