@@ -7,7 +7,7 @@
 # patch series; this is the per-patch equivalent for ad-hoc reads.
 #
 # Usage:
-#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready]
+#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready] [averaging] [meter_usb_id]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
 #   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode]
@@ -32,6 +32,10 @@ METER_PORT="${7:-}"
 IDLE_TIMEOUT="${8:-300}"
 REQUIRE_DEVICE_READY="${9:-0}"
 METER_AVERAGING="${10:-${METER_AVERAGING:-off}}"
+# USB vid:pid of the operator-selected meter. When set, find_port resolves the
+# spotread -c index from THIS device instead of trusting the requested index,
+# which goes stale whenever meters are plugged/unplugged (enumeration order).
+METER_USB_ID="${11:-}"
 
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
@@ -215,17 +219,37 @@ if ! flock -n 9; then
  exit 0
 fi
 echo $$ > "$PID_FILE"
-printf '%s|%s|%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" "$REQUIRE_DEVICE_READY" "${METER_AVERAGING:-off}" > "$CONFIG_FILE"
-log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT ready_gate=$REQUIRE_DEVICE_READY averaging=${METER_AVERAGING:-off} idle=${IDLE_TIMEOUT}s)"
+printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" "$REQUIRE_DEVICE_READY" "${METER_AVERAGING:-off}" "$METER_USB_ID" > "$CONFIG_FILE"
+log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT usb_id=$METER_USB_ID ready_gate=$REQUIRE_DEVICE_READY averaging=${METER_AVERAGING:-off} idle=${IDLE_TIMEOUT}s)"
 startup_marker "pid/config written"
 
 # --- spotread bring-up (mirrors meter_series.sh) ---
 
 find_port() {
  local requested_port="$1"
+ local requested_usb_id="$2"
  local cache="/tmp/spotread_port_cache"
  local help_out
  help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
+ # Resolve by USB vid:pid first: the spotread -c index is enumeration order
+ # and shifts when meters come and go, so a remembered index can silently
+ # land on the WRONG meter. The vid:pid identifies the physical device.
+ if [[ -n "$requested_usb_id" ]]; then
+  local lsusb_out
+  lsusb_out=$(lsusb 2>/dev/null)
+  local _line _pnum _bus _dev
+  while IFS= read -r _line; do
+   if [[ "$_line" =~ ^[[:space:]]*([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/([0-9]+)/([0-9]+) ]]; then
+    _pnum="${BASH_REMATCH[1]}"; _bus="${BASH_REMATCH[2]}"; _dev="${BASH_REMATCH[3]}"
+    if printf '%s\n' "$lsusb_out" | grep -qiE "^Bus[[:space:]]+${_bus}[[:space:]]+Device[[:space:]]+${_dev}:[[:space:]]+ID[[:space:]]+${requested_usb_id}\b"; then
+     echo "$_pnum" > "$cache"
+     sleep 2
+     echo "$_pnum"
+     return
+    fi
+   fi
+  done <<< "$help_out"
+ fi
  if [[ -n "$requested_port" ]]; then
   if printf '%s\n' "$help_out" | grep -qE "^[[:space:]]*${requested_port}[[:space:]]*=[[:space:]]*'/dev/bus/usb/"; then
    echo "$requested_port" > "$cache"
@@ -383,10 +407,16 @@ build_sr_cmd () {
   esac
   # new_ll_flags is the authoritative -Y source. Do NOT also inject $AVG_FLAG:
   # stacking e.g. "-Y a -Y A" passes conflicting integration modes to spotread.
-  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
-   local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
+  # Spectrophotometers (REQUIRE_DEVICE_READY=1) get neither -X (CCSS is a
+  # colorimeter correction) nor -y (display type selection is a colorimeter
+  # concept; spotread emits "Display/calibration type ignored" for a spectro).
+  local cmd
+  if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+   cmd="$SPOTREAD_BIN -e -c $PORT_NUM -x $new_ll_flags"
+  elif [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
+   cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
   else
-   local cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $new_ll_flags"
+   cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $new_ll_flags"
   fi
   # -Y R:rate overrides spotread's measured refresh rate. Passing it makes
   # spotread SKIP its mandatory "read an 80% white patch to calibrate refresh
@@ -499,7 +529,7 @@ trap cleanup EXIT INT TERM
 
 PORT_NUM=""
 for _try in 1 2 3; do
- PORT_NUM=$(find_port "$METER_PORT")
+ PORT_NUM=$(find_port "$METER_PORT" "$METER_USB_ID")
  [[ -n "$PORT_NUM" ]] && break
  sleep 2
 done

@@ -51,6 +51,10 @@ PATCH_INSERT_TIME_PRECOMPUTED="${30:-}"
 # Color format (0=RGB, 1=YCbCr). Used as part of the last_black_<sig> cache
 # key because the panel-side 0% IRE black depends on colorimetry.
 COLOR_FORMAT="${31:-}"
+# USB vid:pid of the operator-selected meter (arg 32). When set, find_port
+# resolves the spotread -c index from THIS device instead of trusting the
+# requested index, which goes stale when meters are plugged/unplugged.
+METER_USB_ID="${32:-}"
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
@@ -754,9 +758,29 @@ read_timeout_seconds() {
 
 find_port() {
  local requested_port="$1"
+ local requested_usb_id="${2:-$METER_USB_ID}"
  local cache="/tmp/spotread_port_cache"
  local help_out
  help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
+ # Resolve by USB vid:pid first: the spotread -c index is enumeration order
+ # and shifts when meters come and go, so a remembered index can silently
+ # land on the WRONG meter. The vid:pid identifies the physical device.
+ if [[ -n "$requested_usb_id" ]]; then
+  local lsusb_out
+  lsusb_out=$(lsusb 2>/dev/null)
+  local _line _pnum _bus _dev
+  while IFS= read -r _line; do
+   if [[ "$_line" =~ ^[[:space:]]*([0-9]+)[[:space:]]*=[[:space:]]*\'/dev/bus/usb/([0-9]+)/([0-9]+) ]]; then
+    _pnum="${BASH_REMATCH[1]}"; _bus="${BASH_REMATCH[2]}"; _dev="${BASH_REMATCH[3]}"
+    if printf '%s\n' "$lsusb_out" | grep -qiE "^Bus[[:space:]]+${_bus}[[:space:]]+Device[[:space:]]+${_dev}:[[:space:]]+ID[[:space:]]+${requested_usb_id}\b"; then
+     echo "$_pnum" > "$cache"
+     sleep 2
+     echo "$_pnum"
+     return
+    fi
+   fi
+  done <<< "$help_out"
+ fi
  if [[ -n "$requested_port" ]]; then
   if printf '%s\n' "$help_out" | grep -qE "^[[:space:]]*${requested_port}[[:space:]]*=[[:space:]]*'/dev/bus/usb/"; then
    echo "$requested_port" > "$cache"
@@ -929,8 +953,14 @@ EOJSON
  mkfifo "$CMDPIPE"
 
  SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
- if [[ "$REQUIRE_DEVICE_READY" == "1" && -n "$CCSS_FILE" ]]; then
-  echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
+ if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+  # Spectrophotometer: no -X (CCSS is a colorimeter correction) and no -y
+  # (display type selection is a colorimeter concept). Passing -y makes
+  # spotread print "Display/calibration type ignored", which the init-error
+  # classifier below used to treat as fatal ("Meter does not support
+  # requested mode") even though the read would have worked.
+  SR_CMD="$SPOTREAD_BIN -e -c $PORT_NUM -x"
+  [[ -n "$CCSS_FILE" ]] && echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
  fi
  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
   # Read the actual DISPLAY_TYPE_REFRESH value line, not the KEYWORD declaration.
@@ -1036,7 +1066,7 @@ HANDLED_OFFSET=0
   # Without this, the loop runs the full 120s before timing out, and 3
   # attempts => ~6 minutes of "Initializing meter..." before the series
   # errors out. See meter-selection-empty-port-bug-2026-06-29.md.
-  if echo "$CLEAN_OUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|Display/calibration type ignored|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
+  if echo "$CLEAN_OUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
    break
   fi
   sleep 0.5
@@ -1060,7 +1090,7 @@ HANDLED_OFFSET=0
  # straight to the error path so the operator doesn't wait 6 minutes for 3
  # identical retries. Mirrors the 2026-06-29 series hang (CCSS on a
  # colorimeter); see meter-selection-empty-port-bug-2026-06-29.md.
- if echo "$DBGOUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|Display/calibration type ignored|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
+ if echo "$DBGOUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
   write_state_json << EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter does not support requested mode","debug":"$DBGOUT","readings":[]}
 EOJSON

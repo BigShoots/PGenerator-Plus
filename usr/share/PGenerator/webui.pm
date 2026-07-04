@@ -1345,11 +1345,50 @@ sub webui_meter_status_apply_overrides (@) {
  return $json;
 }
 
+# Drop cached meters whose USB device is no longer present. The status cache
+# is served while a meter session is alive (a live probe would disturb the
+# running spotread), which previously meant an unplugged meter stayed listed
+# - and selectable - indefinitely, even across page reloads. lsusb does not
+# touch the meters, so presence pruning is safe mid-session.
+sub webui_meter_status_prune_disconnected (@) {
+ my ($json)=@_;
+ return $json if(!defined($json) || $json!~/"detected"\s*:\s*true/);
+ my @entries;
+ while($json=~/(\{"port_num":"[^"]*","port":"[^"]*","usb_id":(?:null|"([^"]*)"),"name":"[^"]*","meter_type":"[^"]*"\})/g) {
+  push @entries,{raw=>$1,usb_id=>(defined($2)?$2:"")};
+ }
+ return $json if(!@entries);
+ my $lsusb=`lsusb 2>/dev/null`;
+ my @kept=grep { $_->{usb_id} eq "" || $lsusb=~/\b\Q$_->{usb_id}\E\b/i } @entries;
+ return $json if(scalar(@kept)==scalar(@entries));
+ if(!@kept) {
+  return '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false}';
+ }
+ my $meters=join(",",map { $_->{raw} } @kept);
+ my $first=$kept[0]->{raw};
+ my ($port_num)=$first=~/"port_num":"([^"]*)"/;
+ my ($port)=$first=~/"port":"([^"]*)"/;
+ my ($usb_id)=$first=~/"usb_id":(?:null|"([^"]*)")/;
+ my ($name)=$first=~/"name":"([^"]*)"/;
+ my ($mtype)=$first=~/"meter_type":"([^"]*)"/;
+ my $spot=($json=~/"spotread_available"\s*:\s*true/)?"true":"false";
+ my $usb_field=defined($usb_id)?'"'.$usb_id.'"':"null";
+ return '{"detected":true,"name":"'.($name||"").'","usb_id":'.$usb_field.',"port":"'.($port||"").'","port_num":"'.($port_num||"").'","meter_type":"'.($mtype||"").'","meters":['.$meters.'],"spotread_available":'.$spot.'}';
+}
+
 sub webui_meter_status (@) {
  my $spotread_running=`pgrep -x spotread 2>/dev/null`;
  my $session_alive=&webui_meter_session_alive();
  my $busy=(&webui_meter_series_alive() || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
  if($busy && $_meter_last_good_status =~ /"detected"\s*:\s*true/) {
+  my $pruned=&webui_meter_status_prune_disconnected($_meter_last_good_status);
+  if($pruned ne $_meter_last_good_status) {
+   $_meter_last_good_status=$pruned;
+   if($pruned!~/"detected"\s*:\s*true/) {
+    $_meter_was_detected=0;
+    $_meter_last_seen_time=0;
+   }
+  }
   return &webui_meter_status_apply_overrides($_meter_last_good_status);
  }
  my $json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
@@ -1748,8 +1787,10 @@ sub webui_meter_session_stop_only (@) {
 }
 
 sub webui_meter_session_start (@) {
- my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready,$averaging)= @_;
+ my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready,$averaging,$meter_usb_id)= @_;
  $averaging="" if(!defined($averaging));
+ $meter_usb_id="" if(!defined($meter_usb_id));
+ $meter_usb_id="" if($meter_usb_id!~/^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$/);
  my $aio_flag=$disable_aio ? "1" : "0";
  $require_device_ready=0 if(!defined($require_device_ready) || $require_device_ready!~/^1$/);
  $signal_mode=&webui_pattern_signal_mode("") if(!defined($signal_mode) || $signal_mode eq "");
@@ -1767,7 +1808,7 @@ sub webui_meter_session_start (@) {
   # Launch detached as root. The daemon writes its own PID/config files once it
   # grabs the lock; wait for an actionable startup state before reporting success.
   my $started_at=time();
-  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' </dev/null >/dev/null 2>&1 &");
+  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' '$meter_usb_id' </dev/null >/dev/null 2>&1 &");
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
   # start and can legitimately take 35-45 seconds before the helper reaches a
@@ -1864,6 +1905,8 @@ sub webui_meter_read (@) {
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
  my $measurement_meter_port="";
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
+ my $measurement_meter_usb_id="";
+ $measurement_meter_usb_id=lc($1) if($body=~/"measurement_meter_usb_id"\s*:\s*"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})"/);
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
@@ -1974,7 +2017,7 @@ sub webui_meter_read (@) {
  # run. The per-read $avg_mode flows through the READ command line, not the
  # session config -- otherwise the persistent session respawns (35-90s on
  # OLED) every time the per-read mode flips at the 5 cd/m2 trigger.
- my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode";
+ my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
  if($needs_restart) {
@@ -2011,7 +2054,7 @@ sub webui_meter_read (@) {
   # METER_AVERAGING, not the per-read $avg_mode -- they have to match the
   # 7th field of want_config so the new session doesn't immediately look
   # like a config-changed session to the next request.
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id)) {
     return &webui_meter_session_start_error_json($want_config);
   }
  }
@@ -2040,7 +2083,7 @@ sub webui_meter_read (@) {
   &log("WebUI: meter session command send failed, restarting daemon");
   &webui_meter_session_stop();
   &webui_meter_read_state_write('{"status":"starting"}');
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id)) {
      &log("WebUI: meter session restart failed after FIFO send error");
      return &webui_meter_session_start_error_json($want_config);
   }
@@ -2352,6 +2395,8 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
   # the pre-low-light-handler invocation.
   $low_light_mode="off" unless($low_light_mode eq "off" || $low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa" || $low_light_mode eq "x" || $low_light_mode eq "x_a" || $low_light_mode eq "x_aa" || $low_light_mode eq "x_aaa");
  }
+ my $measurement_meter_usb_id="";
+ $measurement_meter_usb_id=lc($1) if($body=~/"measurement_meter_usb_id"\s*:\s*"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})"/);
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
@@ -3627,7 +3672,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # password and the launch silently fails ("Process died unexpectedly").
  # A trailing arg keeps the authorized command intact. Empty value ->
  # meter_series.sh coerces to off (single long read).
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -12455,6 +12500,15 @@ function resetDefaults(){
 
 async function applySettings(){
  if(window._configApplyPending) return false;
+ // A running continuous/series read measures the CURRENT signal mode; applying
+ // new output settings mid-read would silently restart the generator under it.
+ // Mirror the series-selector behavior: ask, then stop the read before applying.
+ if(meterContinuousActive||meterSeriesRunning){
+  const what=meterSeriesRunning?'series read':'continuous read';
+  if(!window.confirm('A '+what+' is running. Stop it and apply the new signal settings?')) return false;
+  if(meterSeriesRunning) meterStop();
+  else meterStopContinuous();
+ }
  window._configApplyPending=true;
  meterUpdateReadButtons();
  const sm=getVal('signal_mode');
@@ -13123,6 +13177,7 @@ let meterContinuousStartupErrors=0;
 let meterContinuousSuspendedForLgWrite=false;
 let meterContinuousSuspendToken=0;
 let meterContinuousReadInFlight=false;
+let meterContinuousHadFirstRead=false;
 let meterSeriesPolling=null;
 const meterSeriesPollIntervalMs=500;
 let meterSeriesPollInFlight=false;
@@ -18751,6 +18806,7 @@ function meterPopulateRoleSelects(meters,detectedPort){
  meterResolvedMeasurementPort=resolvedPort;
  meterProfilingPort=meterNormalizePortValue(meterProfilingPort);
  meterRenderCcssCreateChoices();
+ meterUpdateProfileFieldVisibility();
 }
 
 function meterSelectedMeasurementPort(){
@@ -19631,7 +19687,11 @@ function updateLiveReading(reading){
  const liveLabel=document.getElementById('meterLiveReadingLabel');
  if(liveLabel) liveLabel.textContent=meterLiveReadingLabel(reading);
  document.getElementById('meterLum').textContent=measured&&measured.Y!=null?measured.Y.toFixed(2):'--';
- document.getElementById('meterCCT').textContent=reading.cct||'--';
+ // CCT (correlated colour temperature) is only meaningful for near-neutral
+ // (greyscale/white) patches. For a saturated colour patch the "temperature"
+ // is a nonsense number, so suppress it rather than mislead the operator.
+ const cctEl=document.getElementById('meterCCT');
+ if(cctEl) cctEl.textContent=(reading.cct&&meterReadingIsGreyscale(reading))?reading.cct:'--';
  document.getElementById('meterCIEx').textContent=reading.x!=null?reading.x.toFixed(4):'--';
  document.getElementById('meterCIEy').textContent=reading.y!=null?reading.y.toFixed(4):'--';
 
@@ -20148,6 +20208,20 @@ function meterRelocateProfileControls(){
  const refresh=document.getElementById('meterRefreshRate');
  const refreshField=refresh?refresh.closest('.field'):null;
  if(refreshField&&refreshField.parentElement!==slot) slot.appendChild(refreshField);
+ meterUpdateProfileFieldVisibility();
+}
+
+// The "Meter Profile" field (display type + CCSS correction) is a COLORIMETER
+// concept: a spectrophotometer measures the spectrum directly and needs no
+// CCSS/display-type correction (the read paths drop -X/-y for a spectro). Hide
+// the whole field when the selected measurement meter is a spectro so the
+// operator isn't presented with a control that has no effect on their reads.
+function meterUpdateProfileFieldVisibility(){
+ const field=document.getElementById('meterProfileDisplayField');
+ if(!field) return;
+ let isSpectro=false;
+ try{ isSpectro=meterIsSpectrophotometer(meterSelectedMeasurementMeter()); }catch(e){ isSpectro=false; }
+ field.style.display=isSpectro?'none':'';
 }
 
 // Read the current state of the calibration-card Low Light Handler
@@ -20965,6 +21039,7 @@ async function meterToggleContinuous(){
 	  meterContinuousActive=true;
 	  meterContinuousRetryDelayMs=50;
 	  meterContinuousStartupErrors=0;
+	  meterContinuousHadFirstRead=false;
 	  meterSeriesAwaitingReady=false;
 	  meterReadySignalPending=false;
   document.getElementById('meterContinuous').classList.remove('btn-secondary');
@@ -21004,7 +21079,10 @@ async function meterContinuousLoop(){
  // briefly (until polling sees no setup state and hides it), which doubles
  // as per-read click feedback. Gated on the selected meter being a spectro
  // so colorimeter users don't see the "Spectrophotometer Setup" flash.
- if(meterSelectedMeasurementRequiresReady()&&!meterContinuousReadInFlight){
+ // Only while the meter is still coming up (before the FIRST reading): once a
+ // reading has landed the session is up, and re-raising the modal every
+ // iteration produced a perpetual "Preparing the meter" flash on a spectro.
+ if(meterSelectedMeasurementRequiresReady()&&!meterContinuousReadInFlight&&!meterContinuousHadFirstRead){
   meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/setup/ack');
  }
  try{
@@ -21056,6 +21134,7 @@ async function meterContinuousLoop(){
 	  if(r&&r.status==='ok'&&r.readings&&r.readings.length>0){
 	    meterContinuousRetryDelayMs=50;
 	    meterContinuousStartupErrors=0;
+	    meterContinuousHadFirstRead=true;
 	    nextDelay=50;
    const rd=r.readings[0];
     meterNormalizeMeasuredReading(rd);
@@ -22577,6 +22656,15 @@ function meterMeasurementSignalContext(payload){
   const measurementPort=meterSelectedMeasurementPort();
   if(measurementPort) body.measurement_meter_port=measurementPort;
  }
+ if(body.measurement_meter_usb_id==null&&body.measurement_meter_port!=null){
+  // Pin the read to the physical meter, not just its spotread index: the
+  // -c index is enumeration order and silently shifts when meters are
+  // plugged/unplugged, which made a stale index land on the WRONG meter
+  // (e.g. the colorimeter despite the spectro being selected). The scripts
+  // resolve the current index from this usb_id at read time.
+  const selectedMeter=meterFindByPort(body.measurement_meter_port);
+  if(selectedMeter&&selectedMeter.usb_id) body.measurement_meter_usb_id=String(selectedMeter.usb_id);
+ }
  if(body.profiling_meter_port==null){
   const profilingPort=meterSelectedProfilingPort();
   if(profilingPort) body.profiling_meter_port=profilingPort;
@@ -22723,6 +22811,10 @@ async function meterDisplayPatch(step,options){
 	 const freshStep=(options&&options.fresh===false)?step:(meterFreshSeriesStep(step)||step);
 	 if(!freshStep) return;
 	 if(displayToken!==meterPatternDisplayToken) return;
+	 // A calibration patch supersedes any diagnostic pattern on the wire, so
+	 // clear the highlighted Diagnostic Patterns button -- otherwise it stays
+	 // lit as if it were still displayed after switching to Calibration.
+	 if(typeof activePattern!=='undefined'&&activePattern!=null) clearActive();
 	 meterCurrentPatchStep=freshStep;
 	 const psize=getMeterPatchSize();
  const signalRange=meterMeasurementPatchSignalRange();
@@ -28757,12 +28849,30 @@ async function meterPollSeries(){
   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
-  // Clear the "currently reading" pulse on the last-polled thumb.
+  // On completion, select and display the LAST patch that was actually read.
+  // r.readings arrives in the worker's read order, so the last entry with a
+  // luminance value is the final patch (e.g. 0% black, which reads 0.0 on an
+  // OLED -- 0.0 is a valid reading, not "unread", so it must not be skipped).
+  // Previously the live readout kept the status-current step (the 2nd-last
+  // patch) and no thumb was selected.
+  let lastReadReading=null;
+  if(r.status==='complete'&&meterReadings&&meterReadings.length>0){
+   lastReadReading=[...meterReadings].reverse().find(rd=>rd&&meterReadingHasLuminance(rd))||null;
+   if(lastReadReading){
+    const lastStep=meterCanonicalSeriesStep(lastReadReading)||lastReadReading;
+    if(lastStep){
+     meterCurrentPatchStep=meterClonePatchStep(lastStep)||lastStep;
+     meterSelectedThumbIre=meterStepNameKey(lastStep);
+    }
+   }
+  }
+  // Clear the "currently reading" pulse; keep the last-read thumb selected.
   if(meterSeriesSteps){
    const isColor3=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
    const sortedSteps2=isColor3?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
    meterBuildPatchThumbs(sortedSteps2,completedIres,null);
   }
+  if(lastReadReading) updateLiveReading(lastReadReading);
   if(!(meterInternalSeriesWorkflow&&meterFullAutoCalRunning)){
    document.getElementById('meterProgress').style.display='none';
   }
@@ -29183,7 +29293,9 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
    thumb.style.zIndex='1';
   } else if(isSelected){
    thumb.style.animation='none';
-    thumb.style.boxShadow='inset 0 0 0 3px #fff';
+    // Dark + light double ring so the selection is visible on ANY patch,
+    // including the 100% white thumb where a plain white ring vanished.
+    thumb.style.boxShadow='inset 0 0 0 2px #0a0a0f, inset 0 0 0 4px #fff';
    thumb.style.zIndex='1';
   } else if(done){
    thumb.style.animation='none';
@@ -30998,7 +31110,7 @@ function colorHighlightThumb(name){
   const t=container.children[i];
   const isMatch=t.dataset.name===name;
   const done=completedNames.has(t.dataset.name);
-  t.style.boxShadow=isMatch?'inset 0 0 0 3px #fff':(done?'inset 0 0 0 2px #4caf50':'none');
+  t.style.boxShadow=isMatch?'inset 0 0 0 2px #0a0a0f, inset 0 0 0 4px #fff':(done?'inset 0 0 0 2px #4caf50':'none');
   t.style.animation='none';
   t.style.zIndex=isMatch?'1':'';
  }
@@ -32446,7 +32558,11 @@ function ccssIsGenericProfile(entry){
 }
 
 function ccssFormatNameFromFilename(name){
- const base=String(name||'').replace(/\.ccss$/i,'').replace(/_-_.*/,'');
+ // Strip only the trailing meter suffix ("_-_JETI_1511_HiRes_2nm"). The
+ // suffix match must not contain a ')' after it, otherwise a '_-_' INSIDE
+ // the parenthesised mode part ("(Lamp_Projector_-_High_Lamp_-_Filter_Off)")
+ // truncates the name mid-parenthesis and drops the model number.
+ const base=String(name||'').replace(/\.ccss$/i,'').replace(/_-_[^)]*$/,'');
  let match=base.match(/^(.*)_\(([^)]+)\)$/);
  if(match){
   return ccssCleanLabelPart(match[1])+' ('+ccssPrettyTechnology(match[2])+')';
@@ -33262,6 +33378,7 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  meterLastKnownName=meterSelectedMeasurementLabel();
  const label=document.getElementById('meterStatusText');
  if(label) label.textContent=meterLastKnownName;
+ meterUpdateProfileFieldVisibility();
  meterUpdateReadButtons();
 });
 (function(){
