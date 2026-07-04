@@ -1586,7 +1586,7 @@ sub fixture_reading_for_step {
 }
 
 sub read_step {
- my ($config,$step,$state,$no_insert)=@_;
+ my ($config,$step,$state)=@_;
  my $fixture=fixture_reading_for_step($step,$config);
  if($fixture) {
   $fixture->{"signal_mode"}=$config->{"signal_mode"}||"sdr";
@@ -1595,14 +1595,9 @@ sub read_step {
   return ($fixture,undef);
  }
  # OLED stabilization per the user's Meter Settings insertion knobs --
- # once per logical read (not per retry attempt). $no_insert skips it
- # for immediate confirm re-reads of the SAME patch: the panel was
- # stabilized seconds ago and the re-read exists to average METER
- # noise, so a second flash+black cycle adds ~7-12s for nothing.
- if(!$no_insert) {
-  my $insert_error=apply_pattern_insert_before_read($config,$step);
-  log_line("pattern insertion failed (continuing to read): ".$insert_error) if(defined($insert_error));
- }
+ # once per logical read (not per retry attempt).
+ my $insert_error=apply_pattern_insert_before_read($config,$step);
+ log_line("pattern insertion failed (continuing to read): ".$insert_error) if(defined($insert_error));
  my $attempts=3;
  my $last="";
  for(my $i=1;$i<=$attempts;$i++) {
@@ -2540,10 +2535,6 @@ sub run_hdr20_postcal_shadow_correction {
   $settle_ms=3500 if(!defined($settle_ms) || $settle_ms+0 < 100);
   $settle_ms=$settle_ms+0;
 
-  # Probe-measured per-anchor slope (dpg idx -> d(lift)/d(count)), used
-  # to seed the first count update in place of the fixed gain step.
-  # Empty when the probe is disabled or an anchor never crushed.
-  my %probe_seed_slope;
   # --- Dynamic zone probe -----------------------------------------
   # Measured on the C1: the post-cal sampling index is NOT a constant
   # fraction of the expanded index, and the loop-state zone can differ
@@ -2583,12 +2574,6 @@ sub run_hdr20_postcal_shadow_correction {
    my $probe_depth=300;
    my $lo_prev=13;
    my %bracket_lo;
-   # Per-anchor sensitivity measured by the probe itself: the crush read
-   # is the anchor's response to a known 300-count trim at (or past) its
-   # zone, so (crushed - base)/target/300 is a free slope estimate. The
-   # trim loop seeds its first count update from this instead of the
-   # fixed gain, which typically saves a full pass.
-   my %probe_slope;
    for(my $li=0; $li<scalar(@ladder); $li++) {
     my $X=$ladder[$li];
     my @todo=grep { !exists($resolved{$_}) && exists($probe_base_y{$_}) } (0..scalar(@anchor_steps)-1);
@@ -2603,12 +2588,7 @@ sub run_hdr20_postcal_shadow_correction {
      last;
     }
     select(undef,undef,undef,$settle_ms/1000.0);
-    # Zones ascend with IRE, so the unresolved anchors are checked in
-    # order and the sweep stops at the FIRST one the shelf does not
-    # crush -- no higher anchor can crush at this boundary either. This
-    # roughly halves the probe's meter reads (a >=12% crush against
-    # +-3% read noise makes the early-stop decision safe).
-    for my $ai (sort { $a <=> $b } @todo) {
+    for my $ai (@todo) {
      my ($reading,$error)=read_step($config,$anchor_steps[$ai],$state);
      next if($error || !$reading);
      my $xyz=reading_xyz($reading);
@@ -2617,13 +2597,6 @@ sub run_hdr20_postcal_shadow_correction {
      if($y < 0.88*$probe_base_y{$ai}) {
       $resolved{$ai}=$X;
       $bracket_lo{$ai}=$lo_prev;
-      my $atarget=$anchor_targets[$ai];
-      if(defined($atarget) && $atarget > 0) {
-       my $s=(($y-$probe_base_y{$ai})/$atarget)/$probe_depth;
-       $probe_slope{$ai}=$s if($s < -0.0002);
-      }
-     } else {
-      last;
      }
     }
     $lo_prev=$X;
@@ -2646,7 +2619,6 @@ sub run_hdr20_postcal_shadow_correction {
     $zone=$probed_idx[-1]+2 if(scalar(@probed_idx) && $zone <= $probed_idx[-1]);
     push @probed_idx, $zone;
     $state->{"postcal_shadow_zone_IRE_".$anchor_ire[$ai]}=$zone;
-    $probe_seed_slope{$zone}=$probe_slope{$ai} if(defined($probe_slope{$ai}));
    }
    @anchor_idx=@probed_idx;
    log_line("HDR20 post-cal shadow zone probe: zones ".join("/",@anchor_idx)." for IRE ".join("/",@anchor_ire).($probe_note ne "" ? " (".$probe_note.")" : ""));
@@ -2705,17 +2677,13 @@ sub run_hdr20_postcal_shadow_correction {
     my $xyz=reading_xyz($reading);
     my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
     # Adaptive multi-read: single reads carry ~+-3% luminance noise at
-    # these levels (0.06-10 nits), the same magnitude as the residuals
-    # the LATER passes correct. Confirm-read only when the noise can
-    # actually change a decision: within 4x tol of the target (secant
-    # refinement + convergence tests live there). Far from target the
-    # move is many times the noise and a single sample is enough --
-    # this halves the read cost of the early passes with no effect on
-    # where the loop lands. Confirm re-reads skip pattern insertion
-    # (same patch, stabilized seconds ago).
-    my $lift1=($atarget > 0) ? ($y/$atarget) : 0;
-    if($atarget > 0 && $y > 0 && abs($lift1-$target_lift) <= 4*$tol) {
-     my ($reading2,$error2)=read_step($config,$astep,$state,1);
+    # these levels (0.06-10 nits), which is the same magnitude as the
+    # residuals the later passes are correcting. Every anchor gets a
+    # second sample; if the two disagree by more than 2% a third is
+    # taken and the median used, so one outlier read cannot steer a
+    # secant move or a convergence decision.
+    if($atarget > 0 && $y > 0) {
+     my ($reading2,$error2)=read_step($config,$astep,$state);
      if(!$error2 && $reading2) {
       my $xyz2=reading_xyz($reading2);
       my $y2=(ref($xyz2) eq "ARRAY") ? ($xyz2->[1]+0) : 0;
@@ -2723,7 +2691,7 @@ sub run_hdr20_postcal_shadow_correction {
        my $hi=($y > $y2) ? $y : $y2;
        my $lo=($y > $y2) ? $y2 : $y;
        if($lo > 0 && ($hi-$lo)/$lo > 0.02) {
-        my ($reading3,$error3)=read_step($config,$astep,$state,1);
+        my ($reading3,$error3)=read_step($config,$astep,$state);
         my $y3=0;
         if(!$error3 && $reading3) {
          my $xyz3=reading_xyz($reading3);
@@ -2856,26 +2824,15 @@ sub run_hdr20_postcal_shadow_correction {
     if(defined($median_slope) && (!defined($slope) || abs($slope) < 0.5*abs($median_slope))) {
      $slope=$median_slope;
     }
-    # First update with no measured history: use the probe-measured
-    # slope for this anchor's zone (its response to the 300-count probe
-    # shelf) instead of the fixed gain -- the coarse jump then lands
-    # near target and the loop typically saves a pass.
-    my $seeded=0;
-    if(!defined($slope) && defined($probe_seed_slope{$idx})) {
-     $slope=$probe_seed_slope{$idx};
-     $seeded=1;
-    }
     my $next;
     if(defined($slope)) {
      $next=$counts{$idx} + ($target_lift-$lift)/$slope;
     } else {
      $next=$counts{$idx} + $gain*($lift-$target_lift);
     }
-    # Cap the per-pass move for measured-slope REFINEMENTS only. The
-    # coarse first jump (gain step or probe-seeded slope) needs its
-    # full magnitude -- capping it would just re-introduce the extra
-    # passes the seed exists to remove.
-    if(defined($slope) && !$seeded && $pass >= 2) {
+    # Cap the secant move per pass; the pass-1 gain step stays uncapped
+    # (it is the coarse jump and $slope is never defined on pass 1).
+    if(defined($slope)) {
      my $max_move=60;
      $next=$counts{$idx}+$max_move if($next > $counts{$idx}+$max_move);
      $next=$counts{$idx}-$max_move if($next < $counts{$idx}-$max_move);
