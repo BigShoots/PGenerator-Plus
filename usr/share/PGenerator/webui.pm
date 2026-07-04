@@ -16813,10 +16813,18 @@ function meterSignalPreviewColor(r,g,b){
   // 10-bit Limited black (code 64) painted as rgb(64,64,64) showed
   // every HDR Limited grey thumbnail lifted; normalizing maps code 64
   // -> 0 and 940 -> 255, and is a no-op for 8-bit full-range codes.
-  const f=(typeof meterGreySignalFractionFromCode==='function')
+  const f=Math.max(0,Math.min(1,(typeof meterGreySignalFractionFromCode==='function')
    ? meterGreySignalFractionFromCode(r)
-   : Math.max(0,Math.min(1,(r||0)/255));
-  const v=Math.round(Math.max(0,Math.min(1,f))*255);
+   : Math.max(0,Math.min(1,(r||0)/255))));
+  // SDR/gamma signals: paint the fraction linearly -- the signal's own
+  // gamma and the browser's display gamma cancel, matching the accepted
+  // SDR thumbnail look. PQ/HLG signals are already perceptually encoded,
+  // and the browser's ~2.2 display gamma on top double-darkens them
+  // (10% drew as rgb(26) = near black); counter it with 1/2.2 so the
+  // painted lightness tracks the HDR signal's perceptual spacing.
+  const isHdrCurve=(typeof meterChartIsPq==='function'&&meterChartIsPq())
+   ||(typeof meterChartIsHlg==='function'&&meterChartIsHlg());
+  const v=Math.round((isHdrCurve?Math.pow(f,1/2.2):f)*255);
   return 'rgb('+v+','+v+','+v+')';
  }
  const xyz=linRgbToXyz(
