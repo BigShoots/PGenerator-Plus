@@ -104,18 +104,15 @@ manual_initial_measurement_prompt() {
 
 manual_ready_prompt_reason() {
  local clean_out="$1"
- local normalized
- normalized=$(printf '%s' "$clean_out" | tr '[:upper:]' '[:lower:]')
- if printf '%s' "$normalized" | grep -qiE 'incorrect position|meter is in incorrect position'; then
-  echo "incorrect_position"
-  return 0
- fi
+ # The Device Ready wizard must ONLY surface a genuine spotread calibration
+ # request (white-tile / "needs calibration"). Other spotread lines -- the
+ # normal "Place instrument on spot to be measured" per-reading prompt,
+ # "incorrect position", refresh-rate prompts, etc. -- are NOT operator-action
+ # calibration prompts and must not pop the wizard mid-read (a "place
+ # .*instrument" race on the normal prompt previously fired a spurious wizard
+ # that skipped the white-tile step). Applies to all read types (continuous).
  if manual_calibration_setup_prompt "$clean_out"; then
   echo "calibration_setup"
-  return 0
- fi
- if manual_initial_measurement_prompt "$clean_out"; then
-  echo "initial_measurement"
   return 0
  fi
  return 1
@@ -410,10 +407,18 @@ build_sr_cmd () {
   # Spectrophotometers (REQUIRE_DEVICE_READY=1) get neither -X (CCSS is a
   # colorimeter correction) nor -y (display type selection is a colorimeter
   # concept; spotread emits "Display/calibration type ignored" for a spectro).
-  local cmd
-  if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-   cmd="$SPOTREAD_BIN -e -c $PORT_NUM -x $new_ll_flags"
-  elif [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
+   local cmd
+   if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+    # Spectrophotometer (i1 Pro 2 etc.). -N disables Argyll's PROACTIVE
+    # re-calibration so the instrument reuses its stored wavelength cal
+    # instead of demanding a white-tile read on every (re)spawn. -N only
+    # suppresses the auto re-cal -- when the stored cal is genuinely
+    # invalid/missing, spotread still emits the mandatory
+    # "Spot read needs a calibration before continuing" prompt, which the
+    # calibrate_tile / calibrate_retry steps below surface to the operator.
+    # So -N is safe unconditionally for spectros; colorimeters never use it.
+    cmd="$SPOTREAD_BIN -N -e -c $PORT_NUM -x $new_ll_flags"
+   elif [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
    cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
   else
    cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $new_ll_flags"
@@ -642,6 +647,7 @@ startup_marker "command FIFO created"
 # manual read after a Pi restart doesn't fail during slow USB bring-up.
 WAITED=0
 REFRESH_CAL_DONE=0
+WHITE_REF_DONE=0
 HANDLED_OFFSET=0
 STARTUP_HINT=""
 # Spectros such as the i1 Pro 2 need a multi-step interactive bring-up (place on
@@ -670,6 +676,7 @@ while (( WAITED < 900 )); do
  if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
   log "calibration failed during startup, surfacing retry"
   STARTUP_HINT="interactive_setup"
+  WHITE_REF_DONE=1
   await_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectro flat on its white tile, then click Retry." "Re-calibrating the meter - please wait..."
   printf " " >&3
   HANDLED_OFFSET=$(output_size)
@@ -680,6 +687,7 @@ while (( WAITED < 900 )); do
   log "calibrate_tile prompt during startup"
   startup_marker "calibrate_tile prompt seen"
   STARTUP_HINT="interactive_setup"
+  WHITE_REF_DONE=1
   await_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait a few seconds..."
   printf " " >&3
   HANDLED_OFFSET=$(output_size)
@@ -722,10 +730,13 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
  sleep 2
 fi
 
-# Spectros are on the calibration tile after init; have the operator aim at the
-# screen ONCE before reads begin. Colorimeters (REQUIRE_DEVICE_READY=0) skip this.
-if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
- await_setup_step "position_screen" "Aim the meter at where the test patches appear on the screen, then click Ready."
+# Spectros only need to re-aim at the screen when a white-tile calibration
+# actually happened this startup (the meter was on the tile). When no
+# calibration was needed (cal reused via -N, meter never left the screen) skip
+# this so no wizard appears -- the startup wait loop above already showed the
+# "preparing" status and surfaced calibrate_tile only when spotread requested it.
+if [[ "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ]]; then
+ await_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
 
 signal_startup_ready
@@ -851,13 +862,12 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
         fi
        fi
        if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-        # Only surface a genuine re-calibration (white tile) or reposition
-        # prompt -- never the normal ready-to-read prompt.
+        # Only surface a genuine re-calibration (white tile) prompt -- never
+        # the normal ready-to-read prompt and never a generic "incorrect
+        # position" line (those are not operator calibration steps).
         PROMPT_REASON=""
         if manual_calibration_setup_prompt "$READ_OUTPUT"; then
          PROMPT_REASON="calibration_setup"
-        elif printf '%s' "$READ_OUTPUT" | grep -qiE 'incorrect position|meter is in incorrect position'; then
-         PROMPT_REASON="incorrect_position"
         fi
         if [[ -n "$PROMPT_REASON" ]]; then
          log "manual prompt during read: reason=$PROMPT_REASON name=$NAME"

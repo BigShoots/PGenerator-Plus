@@ -231,6 +231,7 @@ find_port() {
  local help_out
  help_out=$(spotread_help_output)
  if [[ -n "$requested_port" ]] && spotread_port_exists "$requested_port" "$help_out"; then
+  SELECTED_METER_TYPE=$(meter_type_for_port "$requested_port" "$help_out")
   echo "$requested_port" > "$cache"
   sleep 2
   echo "$requested_port"
@@ -241,6 +242,7 @@ find_port() {
   cached=$(cat "$cache" 2>/dev/null)
   age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
   if (( age < 86400 )) && [[ -n "$cached" ]] && spotread_port_exists "$cached" "$help_out"; then
+   SELECTED_METER_TYPE=$(meter_type_for_port "$cached" "$help_out")
    echo "$cached"
    return
   fi
@@ -252,11 +254,35 @@ find_port() {
    break
   fi
  done <<< "$help_out"
+ SELECTED_METER_TYPE=$(meter_type_for_port "$port_num" "$help_out")
  echo "$port_num" > "$cache"
  # Allow USB device to fully release after spotread -? probe
  sleep 2
  echo "$port_num"
 }
+
+# Resolve the meter_type (spectro|colorimeter|unknown) for a spotread port
+# index, reusing an existing spotread -? help_out so no second USB probe is
+# needed. Honours the forced meter-type override (/tmp/pg_meter_type_override).
+meter_type_for_port() {
+ local want="$1" help_out="$2" forced
+ LSUSB_CACHE=$(lsusb 2>/dev/null || true)
+ forced=$(meter_type_override)
+ local entry pnum devpath usb_id name mtype
+ while IFS= read -r entry; do
+  IFS='|' read -r pnum devpath usb_id name mtype <<< "$entry"
+  if [[ "$pnum" == "$want" ]]; then
+   [[ -n "$forced" ]] && mtype="$forced"
+   printf '%s' "${mtype:-unknown}"
+   return 0
+  fi
+ done < <(spotread_usb_ports "$help_out" "")
+ [[ -n "$forced" ]] && printf '%s' "$forced" || printf 'unknown'
+}
+
+# Default if find_port never ran (defensive).
+SELECTED_METER_TYPE="${SELECTED_METER_TYPE:-unknown}"
+
 
 take_readings() {
  ensure_runtime_exec
@@ -269,10 +295,16 @@ take_readings() {
  touch "$outfile"
 
  # Build spotread command
- local sr_cmd="$SPOTREAD_BIN -e -y $display_type -c $port_num -x"
- if [[ -n "$ccss_file" && -f "$ccss_file" ]]; then
-  sr_cmd="$SPOTREAD_BIN -e -y $display_type -X '$ccss_file' -c $port_num -x"
- fi
+  # -N for spectrophotometers: disables Argyll's proactive re-calibration so
+  # the i1 Pro 2 reuses its stored wavelength cal instead of re-calibrating on
+  # every Read Once. Mandatory re-cal (stale/missing cal) still triggers, so
+  # -N is safe; colorimeters (SELECTED_METER_TYPE != spectro) never get it.
+  local n_flag=""
+  [[ "$SELECTED_METER_TYPE" == "spectro" ]] && n_flag="-N"
+  local sr_cmd="$SPOTREAD_BIN $n_flag -e -y $display_type -c $port_num -x"
+  if [[ -n "$ccss_file" && -f "$ccss_file" ]]; then
+   sr_cmd="$SPOTREAD_BIN $n_flag -e -y $display_type -X '$ccss_file' -c $port_num -x"
+  fi
  # Override refresh rate if specified
  if [[ -n "$refresh_rate" ]]; then
   sr_cmd="$sr_cmd -Y R:$refresh_rate"

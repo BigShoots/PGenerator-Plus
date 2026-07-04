@@ -14002,6 +14002,13 @@ function meterApplyXyzCorrectionMatrix(X,Y,Z,matrix){
  };
 }
 
+// Black-floor epsilon (cd/m²): a black (0%) read at or below this luminance is
+// treated as true zero (normalized to {0,0,0}) instead of reporting the small
+// ambient-leakage value a spectro picks up on a true-black OLED. Set just above
+// the observed i1 Pro 2 ambient (~0.004) and well under the lowest real
+// greyscale step, so only the 0% patch is affected (gate is meterReadingTargetsBlack).
+const METER_BLACK_FLOOR_NITS=0.02;
+
 function meterNormalizeMeasuredReading(reading){
  if(!reading||typeof reading!=='object'||reading.synthetic_target) return reading;
  if(reading.raw_X==null&&reading.X!=null) reading.raw_X=Number(reading.X);
@@ -14029,9 +14036,23 @@ function meterNormalizeMeasuredReading(reading){
  if(!base) return reading;
  const enabled=meterXyzCorrectionEnabled();
  const corrected=enabled?meterApplyXyzCorrectionMatrix(base.X,base.Y,base.Z):base;
- reading.X=corrected.X;
- reading.Y=corrected.Y;
- reading.Z=corrected.Z;
+  reading.X=corrected.X;
+  reading.Y=corrected.Y;
+  reading.Z=corrected.Z;
+  // Black-floor normalize: a true-black (0%) patch on an OLED reads exactly
+  // 0 with a colorimeter but a small POSITIVE ambient-leakage value with a
+  // spectro (observed ~0.004 cd/m² on the i1 Pro 2). Route that through the
+  // same zero path used for the exact-0 case: when this is a black-targeted
+  // read (meterReadingTargetsBlack) and the measured luminance is at/below the
+  // black-floor epsilon (just above the observed ambient, well under the
+  // lowest real greyscale step), snap X/Y/Z to 0. raw_* above are preserved
+  // for diagnostics, and a genuinely elevated black (>epsilon, e.g. an LCD) is
+  // left untouched. Applies to single/continuous/series reads (all flow here).
+  if(meterReadingTargetsBlack(reading)
+     && Number.isFinite(corrected.Y) && corrected.Y>=0 && corrected.Y<=METER_BLACK_FLOOR_NITS){
+   reading.X=0; reading.Y=0; reading.Z=0;
+   corrected.X=0; corrected.Y=0; corrected.Z=0;
+  }
  // Luminance is the same physical quantity as CIE Y (cd/m^2). Always mirror
  // the corrected Y into reading.luminance so downstream predicates
  // (isWhiteReading / isSeriesWhite) and chart references see the same value
@@ -18784,24 +18805,29 @@ function meterPopulateRoleSelects(meters,detectedPort){
  const autoPort=meterNormalizePortValue(autoMeter&&autoMeter.port_num);
  const resolvedPort=currentMeter?current:autoPort;
  const useAutoSelection=!!(autoPort && (!currentMeter || (current===autoPort && meterInventory.length===1)));
- if(select){
-  select.innerHTML='';
-  const empty=document.createElement('option');
-  empty.value='';
-  empty.textContent=meterAutoMeasurementOptionLabel(autoMeter);
-  select.appendChild(empty);
-  meterInventory.forEach(meter=>{
-   const port=meterNormalizePortValue(meter.port_num);
-   if(useAutoSelection && autoPort && port===autoPort) return;
-   const option=document.createElement('option');
-   option.value=port;
-   option.textContent=meterOptionLabel(meter);
-   select.appendChild(option);
-  });
-  select.disabled=meterInventory.length===0;
-  select.value=useAutoSelection?'':current;
-  if(select.value!==(useAutoSelection?'':current)) select.value='';
- }
+  if(select){
+   select.innerHTML='';
+   // No "Auto" option: list only connected meters, each directly selectable.
+   // The previously-deduplicated "Auto: <meter>" entry caused duplicate
+   // listings and resolution mismatches; a plain list of connected meters is
+   // unambiguous and always has one selected.
+   meterInventory.forEach(meter=>{
+    const port=meterNormalizePortValue(meter.port_num);
+    const option=document.createElement('option');
+    option.value=port;
+    option.textContent=meterOptionLabel(meter);
+    select.appendChild(option);
+   });
+   select.disabled=meterInventory.length===0;
+   // Keep the operator's current meter selected if it is still connected;
+   // otherwise fall back to the detected meter, then the first listed.
+   const desired=currentMeter?current:autoPort;
+   if(desired && meterInventory.some(m=>meterNormalizePortValue(m.port_num)===desired)){
+    select.value=desired;
+   } else if(select.options.length>0){
+    select.value=select.options[0].value;
+   }
+  }
  meterMeasurementPort=meterStoredMeasurementPort();
  meterResolvedMeasurementPort=resolvedPort;
  meterProfilingPort=meterNormalizePortValue(meterProfilingPort);
@@ -18810,21 +18836,10 @@ function meterPopulateRoleSelects(meters,detectedPort){
 }
 
 function meterSelectedMeasurementPort(){
- // SELECT may be on the "" Auto option. Order of preference when it is:
- //   1. The SELECT value itself (meterStoredMeasurementPort).
- //   2. The server-saved `measurement_meter_port` we mirrored into
- //      meterSavedMeasurementPort on /api/config sync. This is the
- //      operator's durable preference -- it survives page reloads and
- //      meter reconnect jitters. We deliberately do NOT read from
- //      meterMeasurementPort here because meterPopulateRoleSelects
- //      overwrites that var with the SELECT value (which can be ""), and
- //      the empty fallback would re-introduce the 2026-06-29 bug.
- //   3. The autodetect port (meterResolvedMeasurementPort), which can hop
- //      between USB-hub slots as meters come and go and is the wrong thing
- //      to pick when the operator has explicitly saved a preference.
- // Without step 2, the empty SELECT silently fell through to autodetect
- // (Bug 1 of the 2026-06-29 series-hang incident), and a series read could
- // spawn spotread against a colorimeter that didn't support -X CCSS.
+ // The dropdown lists only connected meters (no "Auto" option) and always has
+ // one selected, so the live SELECT value is authoritative. The saved-preference
+ // and autodetect fallbacks only matter before the first populate or if the
+ // SELECT is transiently empty.
  return meterStoredMeasurementPort()||meterNormalizePortValue(meterSavedMeasurementPort)||meterNormalizePortValue(meterResolvedMeasurementPort);
 }
 
@@ -20219,8 +20234,17 @@ function meterRelocateProfileControls(){
 function meterUpdateProfileFieldVisibility(){
  const field=document.getElementById('meterProfileDisplayField');
  if(!field) return;
+ // Resolve the operator's SELECTED meter directly. Do NOT fall back to
+ // meterInventory[0] (meterSelectedMeasurementMeter does): that fallback can
+ // resolve to a spectro when the selected port's meter isn't yet in the
+ // (stale) inventory, leaving a colorimeter's display-type/CCSS field hidden
+ // until a page refresh. Only HIDE when we can positively confirm the selected
+ // meter is a spectro; an unresolved selection defaults to visible.
  let isSpectro=false;
- try{ isSpectro=meterIsSpectrophotometer(meterSelectedMeasurementMeter()); }catch(e){ isSpectro=false; }
+ try{
+  const meter=meterFindByPort(meterSelectedMeasurementPort());
+  isSpectro=!!(meter&&meterIsSpectrophotometer(meter));
+ }catch(e){ isSpectro=false; }
  field.style.display=isSpectro?'none':'';
 }
 
@@ -28642,10 +28666,16 @@ async function meterRunSeries(){
  // the backend reports it, or hides the modal when the run completes
  // without needing a setup step. Gated on the selected meter being a
  // spectro so colorimeter users don't see the modal flash.
- if(meterSelectedMeasurementRequiresReady()){
-  meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
- }
- const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
+  if(meterSelectedMeasurementRequiresReady()){
+   // Ownership flag MUST be set here (not just inside applyFromStatus) so the
+   // series poll can dismiss this modal once the run moves to readings with no
+   // setup step. Without it, meterSeriesSpectroSetupApplyFromStatus's hide
+   // branch (gated on meterSeriesSpectroSetupActive) never fires and the
+   // "Preparing the meter" popup stays up behind the running series.
+   meterSeriesSpectroSetupActive=true;
+   meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
+  }
+  const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
  meterBuildPatchThumbs(sortedSteps,new Set(),null);
  drawAllChartsPreset(sortedSteps);
  meterClearLiveReading();
@@ -33386,11 +33416,19 @@ if(meterXyzMatrixImportInputEl) meterXyzMatrixImportInputEl.addEventListener('ch
 const meterMeasurementPortEl=document.getElementById('meterMeasurementPort');
 if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>{
  meterMeasurementPort=meterStoredMeasurementPort();
+ // Persist the operator's explicit selection as the durable preference so
+ // meterSelectedMeasurementPort's saved/autodetect fallback chain -- used by
+ // the status poll, profile-field visibility, and every read path -- agrees
+ // with the dropdown immediately instead of only after a page refresh. Without
+ // this, switching meter left meterSavedMeasurementPort on the previous meter
+ // (the spectro), so the status readout and CCSS field kept showing it.
+ if(meterMeasurementPort) meterSavedMeasurementPort=meterMeasurementPort;
  meterLastKnownName=meterSelectedMeasurementLabel();
  const label=document.getElementById('meterStatusText');
  if(label) label.textContent=meterLastKnownName;
  meterUpdateProfileFieldVisibility();
  meterUpdateReadButtons();
+ saveMeterSettings();
 });
 (function(){
  const setupGear=(gearId,popId)=>{
@@ -33398,7 +33436,7 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
   const pop=document.getElementById(popId);
   if(!gear||!pop) return;
   const close=()=>{pop.classList.remove('open');gear.classList.remove('active');gear.setAttribute('aria-expanded','false');};
-  const open=()=>{pop.classList.add('open');gear.classList.add('active');gear.setAttribute('aria-expanded','true');};
+  const open=()=>{pop.classList.add('open');gear.classList.add('active');gear.setAttribute('aria-expanded','true');if(gearId==='meterProfileGear'){try{meterUpdateProfileFieldVisibility();}catch(e){}}};
   gear.addEventListener('click',e=>{e.stopPropagation();pop.classList.contains('open')?close():open();});
   document.addEventListener('click',e=>{if(!pop.contains(e.target)&&e.target!==gear) close();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});

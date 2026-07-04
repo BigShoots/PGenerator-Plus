@@ -281,18 +281,15 @@ manual_initial_measurement_prompt() {
 
 manual_ready_prompt_reason() {
  local clean_out="$1"
- local normalized
- normalized=$(printf '%s' "$clean_out" | tr '[:upper:]' '[:lower:]')
- if printf '%s' "$normalized" | grep -qiE 'incorrect position|meter is in incorrect position'; then
-  echo "incorrect_position"
-  return 0
- fi
+ # The Device Ready wizard must ONLY surface a genuine spotread calibration
+ # request (white-tile / "needs calibration"). Other spotread lines -- the
+ # normal "Place instrument on spot to be measured" per-reading prompt,
+ # "incorrect position", refresh-rate prompts, etc. -- are NOT operator-action
+ # calibration prompts and must not pop the wizard mid-read (a "place
+ # .*instrument" race on the normal prompt previously fired a spurious wizard
+ # that skipped the white-tile step). Applies to all read types (series).
  if manual_calibration_setup_prompt "$clean_out"; then
   echo "calibration_setup"
-  return 0
- fi
- if manual_initial_measurement_prompt "$clean_out"; then
-  echo "initial_measurement"
   return 0
  fi
  return 1
@@ -953,15 +950,19 @@ EOJSON
  mkfifo "$CMDPIPE"
 
  SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
- if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-  # Spectrophotometer: no -X (CCSS is a colorimeter correction) and no -y
-  # (display type selection is a colorimeter concept). Passing -y makes
-  # spotread print "Display/calibration type ignored", which the init-error
-  # classifier below used to treat as fatal ("Meter does not support
-  # requested mode") even though the read would have worked.
-  SR_CMD="$SPOTREAD_BIN -e -c $PORT_NUM -x"
-  [[ -n "$CCSS_FILE" ]] && echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
- fi
+  if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+   # Spectrophotometer: no -X (CCSS is a colorimeter correction) and no -y
+   # (display type selection is a colorimeter concept). Passing -y makes
+   # spotread print "Display/calibration type ignored", which the init-error
+   # classifier below used to treat as fatal ("Meter does not support
+   # requested mode") even though the read would have worked.
+   # -N disables Argyll's proactive re-calibration so the i1 Pro 2 reuses its
+   # stored wavelength cal instead of re-calibrating on every series launch.
+   # Mandatory re-cal (stale/missing cal) still triggers and is surfaced via
+   # the calibrate_tile / calibrate_retry steps below, so -N is safe here.
+   SR_CMD="$SPOTREAD_BIN -N -e -c $PORT_NUM -x"
+   [[ -n "$CCSS_FILE" ]] && echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
+  fi
  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
   # Read the actual DISPLAY_TYPE_REFRESH value line, not the KEYWORD declaration.
   # If the field is missing, fall back to the CCSS metadata so OLED/Plasma/CRT
@@ -1131,10 +1132,16 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
 fi
 
 series_stop_requested && series_cancel_exit
-if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
- series_setup_step "position_screen" "Aim the meter at where the test patches appear on the screen, then click Ready."
- INITIAL_READY_PENDING=0
+if [[ "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ]]; then
+ # Only re-prompt "aim at the screen" when a white-tile calibration actually
+ # happened this startup -- the meter was on the tile and must be moved back to
+ # the screen. When no calibration was needed (cal reused via -N, meter never
+ # left the screen) skip this step entirely so no wizard appears. The startup
+ # wait loop above already shows "Connecting to meter..." (the preparing popup)
+ # and surfaces the calibrate_tile wizard only when spotread requests it.
+ series_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
+INITIAL_READY_PENDING=0
 
 # Helper: count result lines
 count_results() {
