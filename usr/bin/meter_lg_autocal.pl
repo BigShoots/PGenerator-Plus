@@ -14327,16 +14327,29 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# calibration -- empirically confirmed 2026-06-18. The state transitions /
 	# meter-read here are depended on by the flow; do not remove.
 	my ($white_step)=grep { autocal_step_is_white($_) } @ordered;
-	# The 100% RECALIBRATION step (a flagged white clone spliced in after
-	# the ~80% anchor, order 100 -> 5,20,40,60,80 -> 100 recal -> 90 ->
-	# descending) was REMOVED 2026-07-04 (operator test: the second 100%
-	# pass re-anchors the peak reference mid-ladder and every accumulated
-	# reading gets re-scaled to the new peak, which the operator suspects
-	# does more harm than good on some panels). The downstream
-	# hdr20_white_recal handling in the series loop is kept intact -- to
-	# restore the step, re-add the splice of a { %$white_step,
-	# hdr20_white_recal=>1 } clone after the anchor nearest 80 IRE.
-	log_line("HDR20 1D DPG greyscale: 100% mid-ladder recalibration step is disabled (removed 2026-07-04)");
+	# Insert a 100% RECALIBRATION into the series order right after the ~80%
+	# step (before 90%): the upper-mid anchors shift the global 1D curve, so
+	# re-touch the peak there. Desired order: 100 (initial) -> 5,20,40,60,80
+	# -> 100 (recal) -> 90 -> descending. The recal clone is flagged so the
+	# series loop calibrates it as white instead of skipping it.
+	if(ref($white_step) eq "HASH") {
+		my $recal={ %{$white_step} };
+		$recal->{"hdr20_white_recal"}=1;
+		my ($insert_at,$best_delta);
+		$best_delta=999;
+		for(my $i=0;$i<@ordered;$i++) {
+			my $s=$ordered[$i];
+			next if(autocal_step_is_white($s));
+			my $ire=(defined($s->{"ire"}) ? $s->{"ire"}+0 : (defined($s->{"stimulus"}) ? $s->{"stimulus"}+0 : undef));
+			next if(!defined($ire));
+			my $d=abs($ire-80.0);
+			if($d < $best_delta) { $best_delta=$d; $insert_at=$i; }
+		}
+		if(defined($insert_at) && $best_delta <= 5.0) {
+			splice(@ordered,$insert_at+1,0,$recal);
+			log_line("HDR20 1D DPG greyscale: inserted 100% recalibration into series order after ~80% (before 90%)");
+		}
+	}
 	my $white_ref=undef;
 	if($test_mode) {
 		$white_ref=$test_white_ref+0;
