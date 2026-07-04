@@ -9232,7 +9232,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .drag-handle:hover{opacity:.7}
 .update-pulse{animation:updatePulse 2s ease-in-out infinite}
 @keyframes updatePulse{0%,100%{opacity:1}50%{opacity:.6}}
-@keyframes thumbPulse{0%,100%{box-shadow:inset 0 0 0 3px #fff}50%{box-shadow:inset 0 0 0 3px rgba(255,255,255,.25)}}
+@keyframes thumbPulse{0%,100%{box-shadow:inset 0 0 0 3px #5b7fff}50%{box-shadow:inset 0 0 0 3px rgba(91,127,255,.25)}}
 @keyframes meterProgressShimmer{0%{transform:translateX(-115%)}100%{transform:translateX(115%)}}
 #meterCard.meter-patterns-only #meterLiveReading,
 #meterCard.meter-patterns-only #meterReadSeriesBtn,
@@ -29293,9 +29293,9 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
    thumb.style.zIndex='1';
   } else if(isSelected){
    thumb.style.animation='none';
-    // Dark + light double ring so the selection is visible on ANY patch,
-    // including the 100% white thumb where a plain white ring vanished.
-    thumb.style.boxShadow='inset 0 0 0 2px #0a0a0f, inset 0 0 0 4px #fff';
+    // Solid blue ring: visible on ANY patch (incl. the 100% white thumb where
+    // a plain white ring vanished) and matches the pulsing blue read indicator.
+    thumb.style.boxShadow='inset 0 0 0 3px #5b7fff';
    thumb.style.zIndex='1';
   } else if(done){
    thumb.style.animation='none';
@@ -31110,7 +31110,7 @@ function colorHighlightThumb(name){
   const t=container.children[i];
   const isMatch=t.dataset.name===name;
   const done=completedNames.has(t.dataset.name);
-  t.style.boxShadow=isMatch?'inset 0 0 0 2px #0a0a0f, inset 0 0 0 4px #fff':(done?'inset 0 0 0 2px #4caf50':'none');
+  t.style.boxShadow=isMatch?'inset 0 0 0 3px #5b7fff':(done?'inset 0 0 0 2px #4caf50':'none');
   t.style.animation='none';
   t.style.zIndex=isMatch?'1':'';
  }
