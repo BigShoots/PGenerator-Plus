@@ -2676,39 +2676,13 @@ sub run_hdr20_postcal_shadow_correction {
     }
     my $xyz=reading_xyz($reading);
     my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
-    # Adaptive multi-read: single reads carry ~+-3% luminance noise at
-    # these levels (0.06-10 nits), which is the same magnitude as the
-    # residuals the later passes are correcting. Every anchor gets a
-    # second sample; if the two disagree by more than 2% a third is
-    # taken and the median used, so one outlier read cannot steer a
-    # secant move or a convergence decision.
-    if($atarget > 0 && $y > 0) {
-     my ($reading2,$error2)=read_step($config,$astep,$state);
-     if(!$error2 && $reading2) {
-      my $xyz2=reading_xyz($reading2);
-      my $y2=(ref($xyz2) eq "ARRAY") ? ($xyz2->[1]+0) : 0;
-      if($y2 > 0) {
-       my $hi=($y > $y2) ? $y : $y2;
-       my $lo=($y > $y2) ? $y2 : $y;
-       if($lo > 0 && ($hi-$lo)/$lo > 0.02) {
-        my ($reading3,$error3)=read_step($config,$astep,$state);
-        my $y3=0;
-        if(!$error3 && $reading3) {
-         my $xyz3=reading_xyz($reading3);
-         $y3=(ref($xyz3) eq "ARRAY") ? ($xyz3->[1]+0) : 0;
-        }
-        if($y3 > 0) {
-         my @ys=sort { $a <=> $b } ($y,$y2,$y3);
-         $y=$ys[1];
-        } else {
-         $y=($y+$y2)/2;
-        }
-       } else {
-        $y=($y+$y2)/2;
-       }
-      }
-     }
-    }
+    # Single read per anchor (operator choice 2026-07-04): the
+    # unconditional double-read predates the pattern-insertion port --
+    # with insertion stabilizing the panel between reads the second
+    # sample bought little, and the operator judged shadow detail
+    # better without it. The revert-if-worse gate and best-pass
+    # tracking still protect the committed result from a single noisy
+    # read.
     my $lift=($atarget > 0) ? ($y/$atarget) : 0;
     $lift_for{$anchor_idx[$ai]}=$lift;
     my $excess=abs($lift-$target_lift);
