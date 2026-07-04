@@ -16,7 +16,7 @@ The Pi outputs calibrated color patches and full-screen test patterns over HDMI 
 - **HDR and Dolby Vision output** — HDR10 (ST.2084 PQ with full mastering display metadata), HLG, and Dolby Vision Low-Latency with proper AVI, DRM, and DOVI infoframes, plus EDID-based capability detection.
 - **Network-controlled** — TCP pattern source for Calman (UPGCI, port 2100), ColourSpace / LightSpace (XML, port 85), HCFR, DeviceControl, and the Resolve XML protocol (port 20002, outbound client mode); UDP auto-discovery on port 1977.
 - **Local web dashboard** — responsive single-page UI for HDMI signal settings, manual pattern injection, a live AVI/DRM infoframe decoder, HDMI-CEC TV control, WiFi management, OTA updates, and meter measurements.
-- **LG autocal (SDR and HDR)** — on-device closed-loop calibration of LG and compatible displays covering 1D greyscale + RGB balance and 3D LUT profiling, in both SDR and HDR10 modes. Drives the full greyscale → 1D LUT → color checker → 3D LUT → magic-wand polish pipeline from the Pi with no PC-side calibration software required.
+- **LG autocal (SDR and HDR)** — on-device closed-loop calibration of LG displays covering 26-point greyscale + RGB balance, 3D LUT profiling, and HDR tone mapping, in both SDR and HDR10 modes. SDR runs honor the selected transport end to end (RGB Full/Limited, YCbCr, 8/10-bit); HDR runs can enable the LG Tone Mapping Shadow Fix, which probes each panel's post-calibration shadow response and trims residual PQ shadow lift against the final viewing state. Fully driven from the Pi with no PC-side calibration software required.
 - **Meter-driven validation** — integrated ArgyllCMS `spotread` workflow with persistent meter sessions, on-device greyscale, color, and saturation sweeps, bundled and custom CCSS profile management, and live Delta E / chromaticity charts in the browser.
 - **Over-the-air updates** — self-updates from GitHub Releases via the web UI or `pgenerator-update`, with cumulative overlays and versioned migration scripts for users who skip releases.
 - **mDNS / Bonjour** — reachable at `pgenerator.local` with no DNS configuration.
@@ -28,7 +28,7 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
 
 ### How to Flash the Image
 
-1. Download the latest full image release parts (`PGenerator_Plus_vX.Y.Z.img.7z.001` and `.002`) from the GitHub Releases page and place both files in the same folder.
+1. Download the latest full image release parts (`PGenerator_Plus_vX.Y.Z_pi4.img.7z.001` and `.002`) from the GitHub Releases page and place both files in the same folder.
 2. Extract the first part with [7-Zip](https://www.7-zip.org/) to reconstruct the full `.img` file, then flash it with a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to a microSD card or USB flash drive (minimum 8GB).
 3. Insert the microSD card or USB flash drive into your Raspberry Pi and power it on.
 4. Connect to the Pi using one of the following methods:
@@ -68,6 +68,8 @@ PGenerator+ includes a built-in Over-The-Air (OTA) update system that pulls the 
 2. Scroll down to the **Software Update** card.
 3. Click **Check for Updates**. If a new version is available, the changelog will appear.
 4. Click **Install Update**. The device will download the update, apply it, and restart the PGenerator service automatically.
+
+> Note: OTA updates apply within the same major.minor family only (e.g. 2.8.x → 2.8.x). Releases that change kernel modules start a new family and require re-flashing the image — the release notes always say when a flash is required.
 
 **Via Command Line:**
 You can also trigger updates via SSH (`root` / `PGenerator!!$`):
@@ -322,13 +324,15 @@ The current Web UI includes an integrated measurement workflow built around Argy
 
 #### LG Auto Calibration (SDR & HDR)
 
-On-device closed-loop calibration of LG (and compatible) displays, driven entirely from the Pi — no PC-side calibration software required.
+On-device closed-loop calibration of LG displays, driven entirely from the Pi — no PC-side calibration software required. AutoCal is LG-only at this time (it drives the LG webOS calibration API and requires a paired LG TV).
 
 - **Two Workers:**
   - **`meter_lg_autocal.pl`** — 1D greyscale + 2-point / 20-point white balance autocal. Tunes the display's picture-mode high/low controls and per-channel RGB gains against measured luminance and chroma targets, then runs an optional commit-and-polish pass to flatten residual Delta E.
   - **`meter_lg_3d_autocal.pl`** — 3D LUT autocal. Probes a structured color cube through the picture mode, fits the residual errors into the display's 3D LUT, and re-measures to verify the fit.
 - **SDR and HDR10 Signal Modes:** Runs in SDR (Rec.709, `sdr26` DDC layout) and HDR10 (Rec.2020, `hdr20` DDC layout). The Pi switches the HDMI output between the two modes automatically based on the chosen signal mode — no manual relaunch needed.
-- **Pipeline Stages:** Greyscale → 1D LUT → Color Checker → 3D LUT → Magic-Wand polish → optional post-commit polish. Each stage can be run standalone or chained.
+- **Pipeline Stages (Full AutoCal):** Pre-cal report reads → 26-point greyscale (1D DPG) → 3D LUT profiling and upload → HDR tone-map upload → optional LG Tone Mapping Shadow Fix → post-cal report reads. Greyscale and 3D LUT stages can also run standalone.
+- **LG Tone Mapping Shadow Fix (HDR):** optional Full AutoCal stage (wizard checkbox) that removes post-calibration PQ shadow lift. It probes the panel's true post-cal DPG sampling zones per run — the cal-off sampling map is panel-specific — then iteratively trims the 0–30% shadow band with chroma-neutral per-anchor corrections, converging against the final committed state with revert-if-worse protection.
+- **Panel Stabilization:** all AutoCal read paths honor the operator's pattern-insertion settings (grey stabilization flash + black reset between reads) to hold OLED panel state steady during long dim-patch sequences.
 - **Live Status from the Web UI:** The Meter & Measurements card surfaces per-stage progress, current patch, Delta E (ITP / CIEDE2000), luminance error, accepted vs. rejected DDC moves, and run IDs, with start/stop and "skip stage" controls.
 - **Display-Type Presets:** Built-in defaults for common LG panel types (OLED, QD-OLED, LCD WLED/CCFL/RGB LED) drive target luminance, gamma, color space, and tone-curve choices.
 - **Manual Target Overrides:** Target White and Target Black can be pinned to a fixed value instead of "use measured peak / floor", so every read anchors to the same reference.
