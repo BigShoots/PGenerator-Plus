@@ -678,15 +678,20 @@ sub pattern_generator_start(@) {
  # MALLOC_CHECK_=0 suppresses a benign glibc double-free abort that fires
  # right after GBM init in the SOURCE_RANGE-aware renderer; without it the
  # renderer dies before any IMAGE pattern can be drawn (diagnostics break).
- # Keep the renderer's own output: when a start fails, the renderer's
- # last words (e.g. "failed to set drm master: Device or resource busy")
- # are the only direct evidence of the cause. Truncated on every spawn
- # so the file stays small and always shows the most recent attempt.
- if($use_drm_override) {
-  system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/tmp/renderer-spawn.log 2>&1 &");
- } else {
-  system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s >/tmp/renderer-spawn.log 2>&1 &");
- }
+  # Keep the renderer's own output: when a start fails, the renderer's
+  # last words (e.g. "failed to set drm master: Device or resource busy")
+  # are the only direct evidence of the cause. The renderer runs at
+  # OF_LOG_VERBOSE and spews a DRM notice line on EVERY page flip
+  # (~180 KB/s), so a plain redirect would fill the root disk (~15 GB/day)
+  # while a single renderer instance stays alive. Cap it: keep the first
+  # 512 KB (more than enough for startup diagnostics) then drain the rest
+  # to /dev/null. The `exec cat >/dev/null` keeps the pipe's read end open
+  # so the renderer never gets SIGPIPE once the cap is reached.
+  if($use_drm_override) {
+   system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s 2>&1 | ( head -c 524288 > /tmp/renderer-spawn.log; exec cat >/dev/null ) &");
+  } else {
+   system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s 2>&1 | ( head -c 524288 > /tmp/renderer-spawn.log; exec cat >/dev/null ) &");
+  }
  usleep(250000);
    # Some displays miss the first pre-launch RGB/colorspace programming and stay
    # on the splash screen until a later format toggle forces HDMI state back in.
