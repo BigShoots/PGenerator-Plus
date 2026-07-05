@@ -21474,6 +21474,30 @@ function meterClearInteractiveSelection(keepLiveReading){
  meterUpdateReadButtons();
 }
 
+function meterIsPatchStepSelected(step){
+ if(!meterCurrentPatchStep||!step) return false;
+ const cur=meterCanonicalSeriesStep(meterCurrentPatchStep)||meterCurrentPatchStep;
+ const sel=meterCanonicalSeriesStep(step)||step;
+ return meterStepNameKey(cur)===meterStepNameKey(sel);
+}
+function meterDeselectCurrentPatch(){
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ const container=document.getElementById('meterPatchThumbs');
+ if(container&&container.children.length>0){
+  const completed=new Set((meterReadings||[]).filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
+  meterUpdateThumbStyles(container,completed,null);
+ }
+ if(typeof colorHighlightThumb==='function') colorHighlightThumb('');
+ if(typeof colorHighlightTableRow==='function') colorHighlightTableRow('');
+ meterResetLiveReadingDisplay();
+ const liveEl=document.getElementById('meterLiveReading');
+ if(liveEl) liveEl.style.display='none';
+ meterUpdateReadButtons();
+ try{ fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(_e){}
+}
 function meterSelectPatchFromInteraction(step,reading,opts){
 	 if(!step) return;
 	 const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -29341,6 +29365,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
 	  thumb.dataset.colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
 	   thumb.addEventListener('click',function(){
 	    if(meterSeriesRunning||meterAutoCalStatusActive()) return;
+	    if(meterIsPatchStepSelected(step)){ meterDeselectCurrentPatch(); return; }
 	    meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true});
 	   });
    container.appendChild(thumb);
