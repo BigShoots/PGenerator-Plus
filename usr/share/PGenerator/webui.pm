@@ -26641,24 +26641,56 @@ async function meterFullAutoCalEnsureCalibrationModeOff(reason){
 	 const canSend=!!(((typeof lgStatusConnected==='function')?lgStatusConnected(state):((state.paired||state.clientKeyPresent)&&!state.pinPending&&!state.disconnected))||meterFullAutoCalAvailable());
 	 if(!canSend) return true;
  const label=reason||'Full AutoCal report';
- try{
-  const r=await fetchJSON('/api/lg/calibration-mode',{
-   method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({enabled:false,picture_mode:meterLgPictureModeValue()}),
-   _quiet:true,
-   _timeoutMs:18000
-  });
-  if(r&&r.status==='ok'){
-   if(typeof renderLgStatus==='function') renderLgStatus(r);
-   else if(window.lgStatusState) window.lgStatusState.calibrationMode=false;
+ // The LG webOS socket is often busy (or slow to ACK) right after an autocal
+ // run, so a single disable attempt can fail or time out even though the TV
+ // eventually turns calibration mode off. Retry the command and verify the
+ // actual state via a fresh status read each time before giving up.
+ const MAX_ATTEMPTS=3;
+ for(let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
+  let turnedOff=false;
+  try{
+   const r=await fetchJSON('/api/lg/calibration-mode',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({enabled:false,picture_mode:meterLgPictureModeValue()}),
+    _quiet:true,
+    _timeoutMs:35000
+   });
+   if(r&&r.status==='ok') turnedOff=true;
+   // The disable may have actually taken effect on the TV even when the
+   // helper returns an error or a stale status; trust the flag it carries.
+   if(r&&r.calibration_mode===false) turnedOff=true;
+   if(r){
+    if(typeof renderLgStatus==='function') renderLgStatus(r);
+    else if(window.lgStatusState) window.lgStatusState.calibrationMode=!!r.calibration_mode;
+   }
+  }catch(e){
+   // fetch threw (timeout/abort) -- fall through to the verification poll.
+  }
+  if(turnedOff){
    await meterFullAutoCalSleep(1500);
    return true;
   }
-  toast((r&&r.message)?r.message:'Unable to turn LG calibration mode off before '+label,true);
- }catch(e){
-  toast('Unable to turn LG calibration mode off before '+label,true);
+  // Verify via a fresh status read: the TV may have disabled cal mode even
+  // though the command response was lost or errored.
+  let confirmed=false;
+  try{
+   const s=await fetchJSON('/api/lg/status',{_quiet:true,_timeoutMs:8000});
+   if(s&&s.calibration_mode===false){
+    if(typeof renderLgStatus==='function') renderLgStatus(s);
+    else if(window.lgStatusState) window.lgStatusState.calibrationMode=false;
+    confirmed=true;
+   }
+  }catch(_e){}
+  if(confirmed){
+   await meterFullAutoCalSleep(1500);
+   return true;
+  }
+  if(attempt<MAX_ATTEMPTS){
+   await meterFullAutoCalSleep(2000*attempt);
+  }
  }
+ toast('Unable to turn LG calibration mode off before '+label,true);
  return false;
 }
 
