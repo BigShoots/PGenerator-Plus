@@ -6768,15 +6768,35 @@ sub webui_modes_json (@) {
  my $now=time();
  return $_modes_cache if($_modes_cache ne "" && ($now - $_modes_cache_time) < $_MODES_CACHE_TTL);
  return ($_modes_cache ne "" ? $_modes_cache : "[]") if(!&webui_hdmi_connected());
- my $output=`timeout 3 $modetest -c 2>/dev/null`;
- return ($_modes_cache ne "" ? $_modes_cache : "[]") if(!defined($output) || $output eq "");
- # Parse modes from modetest output — capture index, resolution, refresh, pixel clock (kHz), and sync polarity flags
- while($output=~/^\s*#(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+flags:\s+([^;]+)/gm) {
-  my ($idx,$res,$hz,$clock,$flags)=($1,$2,$3,$4,$5);
-  $flags=~s/^\s+|\s+$//g;
-  push @modes, "{\"idx\":$idx,\"resolution\":\"$res\",\"refresh\":\"$hz\",\"clock\":$clock,\"flags\":\"$flags\"}";
- }
- my $json="[".join(",",@modes)."]";
+  my $output=`timeout 3 $modetest -c 2>/dev/null`;
+  return ($_modes_cache ne "" ? $_modes_cache : "[]") if(!defined($output) || $output eq "");
+  my %seen;
+  # Strict parse: the classic modetest column layout
+  # (#idx WxH[i] refresh hdisp hss hse htot vdisp vss vse vtot clock flags:...).
+  # This is what every CEA/VIC-advertising display produces, so working
+  # monitors are unaffected.
+  while($output=~/^\s*#(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+flags:\s+([^;\n]+)/gm) {
+   my ($idx,$res,$hz,$clock,$flags)=($1,$2,$3,$4,$5);
+   next if($seen{$idx}++);
+   $flags=~s/^\s+|\s+$//g;
+   push @modes, "{\"idx\":$idx,\"resolution\":\"$res\",\"refresh\":\"$hz\",\"clock\":$clock,\"flags\":\"$flags\"}";
+  }
+  # Lenient fallback parse: only when the strict pass found nothing. Some
+  # displays (e.g. pure DVI/DMT monitors that advertise no CEA VICs, or
+  # different libdrm modetest builds) emit mode lines the strict regex
+  # misses, which left the resolution dropdown empty even though real KMS
+  # modes exist. Match the same fields loosely: the last integer before
+  # "flags:" is the pixel clock. These are still REAL connector-mode
+  # indices, so selecting one actually switches the display.
+  if(!@modes){
+   while($output=~/^\s*#?(\d+)\s+(\d+x\d+i?)\s+([\d.]+)\s+[^\n]*?(\d+)\s+flags:\s+([^;\n]+)/gm) {
+    my ($idx,$res,$hz,$clock,$flags)=($1,$2,$3,$4,$5);
+    next if($seen{$idx}++);
+    $flags=~s/^\s+|\s+$//g;
+    push @modes, "{\"idx\":$idx,\"resolution\":\"$res\",\"refresh\":\"$hz\",\"clock\":$clock,\"flags\":\"$flags\"}";
+   }
+  }
+  my $json="[".join(",",@modes)."]";
  if(@modes) {
   $_modes_cache=$json;
   $_modes_cache_time=$now;
