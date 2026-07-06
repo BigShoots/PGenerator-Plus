@@ -1696,8 +1696,6 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		uniform int offset;
 		uniform int scale;
 		uniform int normalizer;
-		uniform int rgb_quant_range;
-		uniform int bits;
 		uniform vec3 coeffs_num;
 		uniform vec3 coeffs_div;
 		uniform sampler2D tex0;
@@ -1712,19 +1710,6 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 			}
 			float Y, Cb, Cr, a;
 			Y = round(coeffs_num.x * rgb.r*float(scale) + coeffs_num.y* rgb.g*float(scale) + coeffs_num.z * rgb.b*float(scale));
-			// YCbCr luma must be limited-range (16..235) on the wire. Consumer
-			// displays treat YCbCr Y as limited regardless of signaling, so an
-			// uncompressed full-range Y crushes near-black image content (e.g.
-			// the AVS HD 709 black-clipping bars at Y 17..25 land below black).
-			// Apply ONLY to the image path: diagnostic image assets (DRAW=IMAGE)
-			// are authored full-range RGB (0=black), so they need compression.
-			// Calibration patches / solid rectangles (is_image==0) are authored
-			// as limited-range codes already, so compressing them would lift
-			// near-black readings. Full-range YCbCr keeps Y full, as configured.
-			if (rgb_quant_range == 1 && is_image == 1) {
-				int yshift = max(0, bits-8);
-				Y = round(Y * float(scalar2) / float(255 << yshift)) + float(16 << yshift);
-			}
 			Cb = round(((-coeffs_num.x/coeffs_div.x) * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.x) * rgb.g*float(scale) + coeffs_div.z * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Blue
 			Cr = round((coeffs_div.z * rgb.r*float(scale) - (coeffs_num.y/coeffs_div.y) * rgb.g*float(scale) - (coeffs_num.z/coeffs_div.y) * rgb.b*float(scale))*float(scalar1)/float(scalar2) + float(offset)); // Chrominance Red
 			a = 1.0;
@@ -1867,18 +1852,8 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		//		a = 1.0;
 				/* Pack YUV for tunneling -- to do?? */
 		//	} else {		
-			Y = round(coeffs[idx][0] * rgb.r*scale + coeffs[idx][1]* rgb.g*scale + coeffs[idx][2] * rgb.b*scale);
-			// YCbCr luma must be limited-range (16..235) on the wire. Consumer
-			// displays treat YCbCr Y as limited regardless of the signaled
-			// quantization, so emitting an uncompressed full-range Y crushes
-			// near-black content (e.g. the AVS HD 709 black-clipping bars at
-			// Y 17..25 land below black). Cb/Cr already get scalar1/scalar2
-			// below; apply the matching compression + black offset to Y on a
-			// limited link. Full-range YCbCr keeps Y full, as configured.
-			if (rgb_quant_range == 1) {
-				Y = round(Y * scalar2 / scalar_full2) + float(16 << max(0, bits-8));
-			}
-			Cb = round(((-coeffs[idx][0]/d) * rgb.r*scale - (coeffs[idx][1]/d) * rgb.g*scale + float(f1) * rgb.b*scale)*scalar1/scalar2 + offset); // Chrominance Blue
+				Y = round(coeffs[idx][0] * rgb.r*scale + coeffs[idx][1]* rgb.g*scale + coeffs[idx][2] * rgb.b*scale);
+				Cb = round(((-coeffs[idx][0]/d) * rgb.r*scale - (coeffs[idx][1]/d) * rgb.g*scale + float(f1) * rgb.b*scale)*scalar1/scalar2 + offset); // Chrominance Blue
 				Cr = round((float(f2) * rgb.r*scale - (coeffs[idx][1]/e) * rgb.g*scale - (coeffs[idx][2]/e) * rgb.b*scale)*scalar1/scalar2 + offset); // Chrominance Red
 				a = 1.0;
 		//	}

@@ -710,8 +710,6 @@ void ofApp::shader_begin(int is_image) {
     ofxRPI4Window::shader.setUniform1i("normalizer", normalizer);
     ofxRPI4Window::shader.setUniform1i("color_format", ofxRPI4Window::avi_info.output_format);
     ofxRPI4Window::shader.setUniform1i("passthrough_422", usesLowLatencyDoVi422Transport() ? 1 : 0);
-    ofxRPI4Window::shader.setUniform1i("rgb_quant_range", ofxRPI4Window::avi_info.rgb_quant_range);
-    ofxRPI4Window::shader.setUniform1i("bits", ofxRPI4Window::bit_depth);
     ofxRPI4Window::shader.setUniform1i("is_image", is_image);
 
   }
