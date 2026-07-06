@@ -30981,34 +30981,21 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
    const color=dE<1?'#4caf50':dE<3?'#ff9800':'#ff4444';
    const chromaDE=sepLum?chromaMap[step.ire]:null;
    if(sepLum&&chromaDE!=null&&dE>0){
-    // Solid chroma-only base; the luminance cap above it shimmers like
-    // light — a glow gradient brightening toward the bar top with
-    // diagonal white sheen streaks — plus a 1px white divider.
+    // Whole bar in the threshold color; the luminance segment above the
+    // divider gets a white gradient overlay (transparent at the divider,
+    // brightening toward the bar top) so it reads as light on the same hue.
     const chromaH=Math.min(Math.max(chromaDE,0)/yMax,barH)*chart.h;
     const yChroma=chart.pad.t+chart.h-chromaH;
     const capH=Math.max(0,yChroma-y);
+    ctx.fillStyle=color;
+    ctx.fillRect(px,y,barW,fullH);
     if(capH>0.5){
      const grad=ctx.createLinearGradient(0,yChroma,0,y);
-     grad.addColorStop(0,color+'66');
-     grad.addColorStop(1,'#ffffffcc');
+     grad.addColorStop(0,'#ffffff26');
+     grad.addColorStop(1,'#ffffffd9');
      ctx.fillStyle=grad;
      ctx.fillRect(px,y,barW,capH);
-     ctx.save();
-     ctx.beginPath();
-     ctx.rect(px,y,barW,capH);
-     ctx.clip();
-     ctx.strokeStyle='#ffffff59';
-     ctx.lineWidth=1.5;
-     for(let sx=px-capH;sx<px+barW;sx+=6){
-      ctx.beginPath();
-      ctx.moveTo(sx,yChroma+1);
-      ctx.lineTo(sx+capH,y-1);
-      ctx.stroke();
-     }
-     ctx.restore();
     }
-    ctx.fillStyle=color;
-    ctx.fillRect(px,yChroma,barW,Math.max(1,chromaH));
     ctx.fillStyle='#ffffffd0';
     ctx.fillRect(px,Math.max(y,yChroma-1),barW,1);
    } else {
