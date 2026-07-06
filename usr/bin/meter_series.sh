@@ -1215,6 +1215,10 @@ else:
 
 nonblack_zero_reading() {
  local reading="$1" ire="$2" r="$3" g="$4" b="$5"
+ # A black target is expected to read ~0; do not treat its zero reading as a
+ # meter failure. Check IRE (the 0% greyscale step sends the limited-range
+ # black code, e.g. 64, not r=g=b=0, so the r=g=b=0 test below alone misses it).
+ awk -v ire="$ire" 'BEGIN { exit !(ire+0 <= 0) }' && return 1
  awk -v r="$r" -v g="$g" -v b="$b" 'BEGIN { exit !((r+0)==0 && (g+0)==0 && (b+0)==0) }' && return 1
  local X Y Z lum
  X=$(printf '%s' "$reading" | sed -n 's/.*"X":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')

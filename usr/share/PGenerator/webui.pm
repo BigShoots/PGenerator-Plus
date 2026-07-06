@@ -14121,15 +14121,15 @@ function meterNormalizeMeasuredReading(reading){
   reading.X=corrected.X;
   reading.Y=corrected.Y;
   reading.Z=corrected.Z;
-  // Black-floor normalize: a true-black (0%) patch on an OLED reads exactly
-  // 0 with a colorimeter but a small POSITIVE ambient-leakage value with a
-  // spectro (observed ~0.004 cd/m² on the i1 Pro 2). Route that through the
-  // same zero path used for the exact-0 case: when this is a black-targeted
-  // read (meterReadingTargetsBlack) and the measured luminance is at/below the
+  // Black-floor normalize: a true-black (0%) patch reads exactly 0 with a
+  // colorimeter but a small POSITIVE ambient-leakage value with a spectro
+  // (observed ~0.004 cd/m² on the i1 Pro 2). Route that through the same
+  // zero path used for the exact-0 case: when this is a black-targeted read
+  // (meterReadingTargetsBlack) and the measured luminance is at/below the
   // black-floor epsilon (just above the observed ambient, well under the
   // lowest real greyscale step), snap X/Y/Z to 0. raw_* above are preserved
-  // for diagnostics, and a genuinely elevated black (>epsilon, e.g. an LCD) is
-  // left untouched. Applies to single/continuous/series reads (all flow here).
+  // for diagnostics, and a genuinely elevated black (>epsilon) is left
+  // untouched. Applies to single/continuous/series reads (all flow here).
   if(meterReadingTargetsBlack(reading)
      && Number.isFinite(corrected.Y) && corrected.Y>=0 && corrected.Y<=METER_BLACK_FLOOR_NITS){
    reading.X=0; reading.Y=0; reading.Z=0;
