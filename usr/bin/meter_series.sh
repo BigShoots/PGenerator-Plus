@@ -1511,24 +1511,6 @@ EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (reading)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
- # Absolute black on emissive displays (OLED/QD-OLED/CRT/plasma) often
- # has no usable meter response. Treat it as a valid 0.0 read immediately so
- # the series continues instead of sitting through a timeout.
- if [[ "$DISPLAY_TYPE" == "c" && "$R" == "$G" && "$G" == "$B" ]] && float_le "$IRE" 0; then
-  TS=$(date +%s)
-  READING=$(build_step_reading_json "$i" "{\"X\":0,\"Y\":0,\"Z\":0,\"x\":0,\"y\":0,\"luminance\":0.0,\"cct\":0,\"timestamp\":$TS}" 2>/dev/null || echo "")
-  if [[ $READING_COUNT -gt 0 ]]; then
-   READINGS="$READINGS,$READING"
-  else
-   READINGS="$READING"
-  fi
-  READING_COUNT=$((READING_COUNT + 1))
-  write_state_json << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME","readings":[$READINGS],"white_reading":$WHITE_READING}
-EOJSON
-  continue
- fi
-
  # Near-black reads can take much longer than mid/high greys. Match the
  # manual-read tolerance here so the low end does not time out prematurely.
  READ_TIMEOUT=$(read_timeout_seconds "$IRE")
