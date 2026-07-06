@@ -9537,7 +9537,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="stopPattern()" title="Stop custom diagnostic video" aria-label="Stop custom diagnostic video"><span class="diag-asset-icon diag-stop-icon"></span></button>
         <button id="diagCustomVideoDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('video')" title="Delete selected custom diagnostic video" aria-label="Delete selected custom diagnostic video" disabled>&#10006;</button>
        </div>
-       <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded videos play through the legacy video playback path.</div>
+       <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <label for="diagVideoRangeSelect" style="margin:0">Frame range:</label>
+        <select id="diagVideoRangeSelect" class="inline-select" style="font-size:.64rem;max-width:unset;flex:0 0 auto" title="Renderer range to author extracted frames at. Limited matches the calibrated YCbCr/RGB-Limited signal path; Full is for RGB-Full only.">
+         <option value="limited" selected>Limited (16-235, recommended)</option>
+         <option value="full">Full (0-255)</option>
+        </select>
+        <span>Frames extracted in-browser before upload.</span>
+       </div>
       </div>
      </div>
      <div class="diag-pattern-column">
@@ -12178,6 +12185,24 @@ function diagCanvasToBlob(canvas,type){
   canvas.toBlob(blob=>blob?resolve(blob):reject(new Error('Failed to encode video frame')),type||'image/png');
  });
 }
+// Author extracted frames at limited range (16..235) so they match the
+// renderer's limited-authored convention and display correctly on a limited
+// YCbCr/RGB link. The browser decodes video to full-range RGB (0=black), so
+// without this a limited signal crushes near-black content. No-op for Full.
+function diagCanvasApplyLimitedRange(ctx,w,h){
+ try{
+  const img=ctx.getImageData(0,0,w,h);
+  const d=img.data;
+  for(let i=0;i<d.length;i+=4){
+   d[i]  =16+Math.round(d[i]*219/255);
+   d[i+1]=16+Math.round(d[i+1]*219/255);
+   d[i+2]=16+Math.round(d[i+2]*219/255);
+  }
+  ctx.putImageData(img,0,0);
+ }catch(_e){
+  // tainted canvas (cross-origin source) — leave pixels untouched
+ }
+}
 function diagVideoLoadFile(file){
  return new Promise((resolve,reject)=>{
   const video=document.createElement('video');
@@ -12236,9 +12261,10 @@ function diagVideoSeek(video,time){
   try{video.currentTime=target;}catch(e){cleanup();reject(e);}
  });
 }
-async function diagUploadVideoSequence(videoFilename,file){
+async function diagUploadVideoSequence(videoFilename,file,range){
  const uploadedName=String(videoFilename||file&&file.name||'');
  if(!uploadedName||!file) throw new Error('Video file is unavailable for renderer preparation');
+ const useLimited=range!=='full';
  const loaded=await diagVideoLoadFile(file);
  const video=loaded.video;
  const url=loaded.url;
@@ -12256,9 +12282,10 @@ async function diagUploadVideoSequence(videoFilename,file){
   for(let i=0;i<frameCount;i++){
    const time=(frameCount<=1||sequenceSeconds<=0)?0:(sequenceSeconds*(i/(frameCount-1)));
    if(i>0 || video.readyState<2) await diagVideoSeek(video,time);
-   ctx.clearRect(0,0,canvas.width,canvas.height);
-   ctx.drawImage(video,0,0,canvas.width,canvas.height);
-   const blob=await diagCanvasToBlob(canvas,'image/png');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    if(useLimited) diagCanvasApplyLimitedRange(ctx,canvas.width,canvas.height);
+    const blob=await diagCanvasToBlob(canvas,'image/png');
    const b64=await diagBlobToBase64(blob);
    const percent=Math.min(100,Math.round(((i+1)/frameCount)*100));
    diagUpdateUploadStatus('Preparing video frames... '+percent+'%');
@@ -12339,10 +12366,12 @@ async function diagHandleAssetUpload(kind,evt){
  try{
   const r=await diagUploadAsset(kind,file);
   let statusMessage=r&&r.message?r.message:'Upload complete';
-  if(kind==='video'){
-   try{
-    const seq=await diagUploadVideoSequence(r&&r.filename?r.filename:file.name,file);
-    statusMessage='Uploaded diagnostic video and '+seq.frameCount+' renderer frames';
+   if(kind==='video'){
+    try{
+     const rangeSel=document.getElementById('diagVideoRangeSelect');
+     const range=rangeSel?rangeSel.value:'limited';
+     const seq=await diagUploadVideoSequence(r&&r.filename?r.filename:file.name,file,range);
+     statusMessage='Uploaded diagnostic video and '+seq.frameCount+' renderer frames ('+(range==='full'?'full':'limited')+' range)';
    }catch(seqErr){
     const seqMessage='Uploaded diagnostic video; using Pi video player';
     await diagLoadAssetCatalog(kind,r.filename||file.name);
