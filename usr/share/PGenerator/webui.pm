@@ -29809,6 +29809,16 @@ function meterMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,targetValue
  return meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance,mode);
 }
 
+// Marker positions for each actual measured reading on the EOTF/Luminance
+// charts. The target-shaped measured curve densifies between samples, so the
+// per-read markers must be derived from the raw measured steps instead of the
+// plotted segments; the direct-segment builder already yields exactly one
+// [x,y] per readable step.
+function meterMeasuredEotfLuminanceDotPoints(steps,readingMap,axisMax,scaleLuminance,mode){
+ const segs=meterDirectMeasuredEotfLuminanceSegments(steps,readingMap,axisMax,scaleLuminance,mode);
+ return [].concat(...segs);
+}
+
 function meterGammaPlotAnchorStep(steps,idx){
  if(!Array.isArray(steps)||idx<0||idx>=steps.length) return null;
  return idx>0 ? steps[idx-1] : steps[idx];
@@ -30177,6 +30187,10 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  });
  if(tgtPts.length>1) drawDashedLine(ctx,chart,tgtPts,'#ffb74d');
  if(mPts.length>1) drawLine(ctx,chart,mPts,'#7ecbff',2);
+ // Marker on every measured gamma point: without these the first interior
+ // read of a series (e.g. 5% right after 100%/0%) has no neighbour to draw
+ // a line to and the chart stays blank until the next patch lands.
+ if(mPts.length) drawDots(ctx,chart,mPts,'#7ecbff',2.5);
  // Optional per-channel gamma overlay (R/G/B from the cached
  // meterPerChannelGamma computed in drawAllCharts).
  const pcToggle=document.getElementById('meterPerChannelGamma');
@@ -30728,12 +30742,17 @@ function drawEOTFChart(gs,allSteps,readingMap){
    return Number.isFinite(value)?value:null;
   }
  );
- // Draw measured EOTF curve. HDR/DV live AutoCal spine anchors are sparse,
- // so single-point segments still need visible dots until adjacent anchors exist.
+ // Draw measured EOTF curve with a marker on every actual read so a lone
+ // reading (e.g. the first interior patch of a manual series) is visible
+ // before a neighbour exists to draw a line to.
  mSegments.forEach(seg=>{
   if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
-  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
  });
+ drawDots(ctx,chart,meterMeasuredEotfLuminanceDotPoints(measureSteps,readingMap,axisMax,lum=>{
+  const value=Number(lum);
+  if(!Number.isFinite(value)) return null;
+  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
+ },'eotf'),'#ffeb3b',2.2);
  // Annotate the 0% IRE point with the actual measured Lb (cd/m^2) so a
  // lifted black is visible even though the Y axis spans 0 to peak and
  // the plotted 0% point sits on the X axis.
@@ -30842,8 +30861,10 @@ function drawGammaChart(gs,allSteps,readingMap){
  );
  mSegments.forEach(seg=>{
   if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
-  else drawDots(ctx,chart,seg,'#ffeb3b',2.5);
  });
+ // Marker on every actual read so a lone reading is visible before a
+ // neighbour exists to draw a line to.
+ drawDots(ctx,chart,meterMeasuredEotfLuminanceDotPoints(measureSteps,readingMap,axisMax,scaleMeasuredLuminance,'luminance'),'#ffeb3b',2.2);
  // Annotate the 0% IRE point with the actual measured Lb (cd/m^2) so a
  // lifted black is visible even though the Y axis spans 0 to peak and
  // the plotted 0% point sits on the X axis.
