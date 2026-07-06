@@ -237,6 +237,36 @@ migration_script_version() {
  printf '%s' "$base" | sed -E 's/^v?([0-9]+(\.[0-9]+)*).*/\1/'
 }
 
+# OTA tarballs ship factory defaults as PGenerator.conf.dist and never
+# overwrite the device's live /etc/PGenerator/PGenerator.conf (it holds
+# operator state: signal mode, HDR metadata, DV transport, ...). After
+# extraction, append any NEW default keys the release introduced so code
+# that expects them always finds a value, while existing values are kept.
+merge_conf_defaults() {
+ local dist="/etc/PGenerator/PGenerator.conf.dist"
+ local conf="/etc/PGenerator/PGenerator.conf"
+ local line key added
+ [ -f "$dist" ] || return 0
+ if [ ! -f "$conf" ]; then
+  cp -a "$dist" "$conf"
+  log_msg "conf: installed factory defaults (no existing PGenerator.conf)"
+  return 0
+ fi
+ added=0
+ while IFS= read -r line; do
+  case "$line" in ''|'#'*) continue ;; esac
+  key="${line%%=*}"
+  [ -n "$key" ] || continue
+  case "$key" in *[!A-Za-z0-9_]* ) continue ;; esac
+  if ! grep -q "^${key}=" "$conf"; then
+   printf '%s\n' "$line" >> "$conf"
+   added=$((added + 1))
+   log_msg "conf: added new default key ${key}"
+  fi
+ done < "$dist"
+ [ "$added" -gt 0 ] && sync || true
+}
+
 run_update_migrations() {
  local from_version target_version migration_count path script_version base
  from_version=$(normalize_version "${1:-0}")
@@ -436,6 +466,8 @@ case "$cmd" in
   chown root:root /etc/sudo/sudoers /etc/sudo/sudoers.d /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d /etc/sudoers.d/PGenerator 2>/dev/null || true
   chmod 755 /etc/sudo /etc/sudo/sudoers.d /etc/sudoers.d 2>/dev/null || true
   chmod 440 /etc/sudo/sudoers /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d/PGenerator 2>/dev/null || true
+
+  merge_conf_defaults
 
   run_update_migrations "$current" "$latest"
 
