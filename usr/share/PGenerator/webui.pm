@@ -9537,14 +9537,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
         <button class="btn btn-sm btn-secondary diag-asset-icon-btn" type="button" onclick="stopPattern()" title="Stop custom diagnostic video" aria-label="Stop custom diagnostic video"><span class="diag-asset-icon diag-stop-icon"></span></button>
         <button id="diagCustomVideoDelete" class="btn btn-sm btn-secondary diag-asset-icon-btn diag-asset-icon-btn-delete" type="button" onclick="diagDeleteSelectedAsset('video')" title="Delete selected custom diagnostic video" aria-label="Delete selected custom diagnostic video" disabled>&#10006;</button>
        </div>
-       <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        <label for="diagVideoRangeSelect" style="margin:0">Frame range:</label>
-        <select id="diagVideoRangeSelect" class="inline-select" style="font-size:.64rem;max-width:unset;flex:0 0 auto" title="Renderer range to author extracted frames at. Limited matches the calibrated YCbCr/RGB-Limited signal path; Full is for RGB-Full only.">
-         <option value="limited" selected>Limited (16-235, recommended)</option>
-         <option value="full">Full (0-255)</option>
-        </select>
-        <span>Frames extracted in-browser before upload.</span>
-       </div>
+       <div style="font-size:.64rem;color:var(--text2);margin:4px 0 0 2px">Uploaded videos extract to renderer frames in-browser before playback.</div>
       </div>
      </div>
      <div class="diag-pattern-column">
@@ -12203,6 +12196,47 @@ function diagCanvasApplyLimitedRange(ctx,w,h){
   // tainted canvas (cross-origin source) — leave pixels untouched
  }
 }
+function diagVideoRangePref(){
+ try{
+  const v=localStorage.getItem('diagVideoRange');
+  if(v==='full'||v==='limited') return v;
+ }catch(_e){}
+ return 'limited';
+}
+function diagVideoRangePrefSet(v){
+ try{ localStorage.setItem('diagVideoRange', v==='full'?'full':'limited'); }catch(_e){}
+}
+// Ask the user (only at upload time) which range to author the extracted
+// frames at. Remembers the last choice. Renders into the upload-status area.
+function diagPromptVideoRange(){
+ return new Promise(resolve=>{
+  const pref=diagVideoRangePref();
+  const host=document.getElementById('diagUploadStatus');
+  if(!host){ resolve(pref); return; }
+  host.style.display='';
+  host.innerHTML='';
+  const wrap=document.createElement('div');
+  wrap.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+  const label=document.createElement('span');
+  label.textContent='Frame range for extracted frames:';
+  const sel=document.createElement('select');
+  sel.className='inline-select';
+  sel.style.cssText='font-size:.68rem;max-width:unset';
+  sel.innerHTML='<option value="limited">Limited (16-235, recommended)</option><option value="full">Full (0-255)</option>';
+  sel.value=pref;
+  const btn=document.createElement('button');
+  btn.className='btn btn-sm btn-primary';
+  btn.textContent='Prepare frames';
+  btn.onclick=()=>{
+   const v=sel.value==='full'?'full':'limited';
+   diagVideoRangePrefSet(v);
+   host.innerHTML='';
+   resolve(v);
+  };
+  wrap.appendChild(label); wrap.appendChild(sel); wrap.appendChild(btn);
+  host.appendChild(wrap);
+ });
+}
 function diagVideoLoadFile(file){
  return new Promise((resolve,reject)=>{
   const video=document.createElement('video');
@@ -12368,8 +12402,7 @@ async function diagHandleAssetUpload(kind,evt){
   let statusMessage=r&&r.message?r.message:'Upload complete';
    if(kind==='video'){
     try{
-     const rangeSel=document.getElementById('diagVideoRangeSelect');
-     const range=rangeSel?rangeSel.value:'limited';
+     const range=await diagPromptVideoRange();
      const seq=await diagUploadVideoSequence(r&&r.filename?r.filename:file.name,file,range);
      statusMessage='Uploaded diagnostic video and '+seq.frameCount+' renderer frames ('+(range==='full'?'full':'limited')+' range)';
    }catch(seqErr){
