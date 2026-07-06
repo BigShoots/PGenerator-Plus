@@ -30982,19 +30982,21 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
    const chromaDE=sepLum?chromaMap[step.ire]:null;
    if(sepLum&&chromaDE!=null&&dE>0){
     // Whole bar in the threshold color; the luminance segment above the
-    // divider gets a white gradient overlay (transparent at the divider,
-    // brightening toward the bar top) so it reads as light on the same hue.
+    // divider is lit with a soft self-colored glow, matching the RGB
+    // bar-chart fill glow (box-shadow 0 0 8px currentColor).
     const chromaH=Math.min(Math.max(chromaDE,0)/yMax,barH)*chart.h;
     const yChroma=chart.pad.t+chart.h-chromaH;
     const capH=Math.max(0,yChroma-y);
     ctx.fillStyle=color;
     ctx.fillRect(px,y,barW,fullH);
     if(capH>0.5){
-     const grad=ctx.createLinearGradient(0,yChroma,0,y);
-     grad.addColorStop(0,'#ffffff26');
-     grad.addColorStop(1,'#ffffffd9');
-     ctx.fillStyle=grad;
+     ctx.save();
+     ctx.shadowColor=color;
+     ctx.shadowBlur=8;
+     ctx.fillStyle=color;
      ctx.fillRect(px,y,barW,capH);
+     ctx.fillRect(px,y,barW,capH);
+     ctx.restore();
     }
     ctx.fillStyle='#ffffffd0';
     ctx.fillRect(px,Math.max(y,yChroma-1),barW,1);
