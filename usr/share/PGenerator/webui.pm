@@ -30992,9 +30992,8 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
     if(capH>0.5){
      ctx.save();
      ctx.shadowColor=color;
-     ctx.shadowBlur=8;
+     ctx.shadowBlur=6;
      ctx.fillStyle=color;
-     ctx.fillRect(px,y,barW,capH);
      ctx.fillRect(px,y,barW,capH);
      ctx.restore();
     }
