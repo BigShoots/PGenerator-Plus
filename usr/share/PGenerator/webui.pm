@@ -4967,9 +4967,190 @@ sub _webui_ccss_from_ti3 (@) {
  rmdir($tmp_root);
 
  return ($ok,$message,$content);
-}
+ }
 
-sub _webui_ccss_resolve_named_path (@) {
+ sub _webui_ccss_from_edr (@) {
+  my ($raw,$profile_name,$orig_filename)=@_;
+
+  # Argyll EDR DATA1 container. This is the format produced by Argyll's
+  # ccxxmake/ccss2edr and by this WebUI's own EDR export, and it is also the
+  # on-disk container used by genuine X-Rite i1d3 .edr corrections. Layout is
+  # reverse-engineered from Argyll's parse_EDR() in spectro/oemarch.c.
+  if(length($raw)>=600 && substr($raw,0,9) eq "EDR DATA1") {
+   return &_webui_ccss_from_edr_argyll($raw,$profile_name,$orig_filename);
+  }
+
+  # Anything else (X-Rite setup.exe / .dll / .cab archives wrapping EDR data)
+  # is handled by oeminst, which can crack those containers.
+  return &_webui_ccss_from_edr_oeminst($raw,$profile_name);
+ }
+
+ sub _webui_ccss_from_edr_argyll (@) {
+  my ($raw,$profile_name,$orig_filename)=@_;
+  $profile_name="" if(!defined($profile_name));
+  $orig_filename="" if(!defined($orig_filename));
+
+  my $len=length($raw);
+  if($len<600 || substr($raw,0,9) ne "EDR DATA1") {
+   return (0,"Not an Argyll EDR DATA1 file","");
+  }
+
+  my $nsets=unpack("L<",substr($raw,0x164,4));
+  my $nmstart=unpack("d<",substr($raw,0x230,8));
+  my $nmend=unpack("d<",substr($raw,0x238,8));
+  my $nmspace=unpack("d<",substr($raw,0x240,8));
+
+  if($nsets<3 || $nsets>100) {
+   return (0,"EDR has invalid data set count ($nsets)","");
+  }
+  if($nmspace<=0 || $nmend<=$nmstart) {
+   return (0,"EDR has invalid wavelength range","");
+  }
+  my $spec_n=int(1.0+($nmend-$nmstart)/$nmspace+0.5);
+  if($spec_n<10 || $spec_n>2000) {
+   return (0,"EDR has invalid band count ($spec_n)","");
+  }
+
+  my $has_white=($nsets>=4)?1:0;
+  my @sets;
+  my $off=600;
+  for my $set (0..$nsets-1) {
+   last if($off+128+28+8*$spec_n>$len);
+   if(substr($raw,$off,12) ne "DISPLAY DATA") {
+    return (0,"EDR set $set missing DISPLAY DATA header","");
+   }
+   $off+=128;
+   if(substr($raw,$off,13) ne "SPECTRAL DATA") {
+    return (0,"EDR set $set missing SPECTRAL DATA header","");
+   }
+   my $nsamples=unpack("L<",substr($raw,$off+0x10,4));
+   if($nsamples!=$spec_n) {
+    return (0,"EDR set $set band count $nsamples != $spec_n","");
+   }
+   $off+=28;
+   my @vals;
+   for my $j (0..$spec_n-1) {
+    push @vals,(unpack("d<",substr($raw,$off+8*$j,8))*1000.0);
+   }
+   $off+=8*$spec_n;
+   push @sets,\@vals;
+  }
+
+  if(scalar(@sets)<3) {
+   return (0,"EDR did not contain enough spectral sets","");
+  }
+
+  # Optional CORRECTION DATA section (present in genuine X-Rite i1d3 EDRs;
+  # absent from Argyll ccss2edr files such as those shared on calibration
+  # forums). When present, Argyll multiplies each spectral sample by the
+  # interpolated correction curve (parse_EDR in spectro/oemarch.c).
+  if($off+92<=$len && substr($raw,$off,15) eq "CORRECTION DATA") {
+   my $cns=unpack("L<",substr($raw,$off+0x50,4));
+   if(($cns==351 || $cns==401) && $off+92+8*$cns<=$len) {
+    my $cstart=380.0;
+    my $cend=($cns==401)?780.0:730.0;
+    my $coff=$off+92;
+    my @cor;
+    for my $j (0..$cns-1) {
+     push @cor,unpack("d<",substr($raw,$coff+8*$j,8));
+    }
+    my $den=($spec_n>1)?$spec_n-1:1;
+    for my $s (@sets) {
+     for my $j (0..$spec_n-1) {
+      my $wl=$nmstart+($j*($nmend-$nmstart)/$den);
+      my $cv;
+      if($wl<=$cstart) { $cv=$cor[0]; }
+      elsif($wl>=$cend) { $cv=$cor[-1]; }
+      else {
+       my $t=($wl-$cstart)/($cend-$cstart)*($cns-1);
+       my $i=int($t);
+       my $f=$t-$i;
+       $i=$cns-2 if($i>$cns-2);
+       $cv=$cor[$i]+$f*($cor[$i+1]-$cor[$i]);
+      }
+      $s->[$j]*=$cv;
+     }
+    }
+    $off=$coff+8*$cns;
+   }
+  }
+
+  # Build the per-wavelength data structure used by the shared CCSS builder.
+  my @data;
+  for my $j (0..$spec_n-1) {
+   my $wl=$nmstart+($j*($nmend-$nmstart)/($spec_n>1?$spec_n-1:1));
+   my %pt=(wl=>$wl,r=>$sets[0]->[$j],g=>$sets[1]->[$j],b=>$sets[2]->[$j]);
+   $pt{w}=$sets[3]->[$j] if($has_white);
+   push @data,\%pt;
+  }
+
+  my $ccss_content=&_webui_csv_data_to_ccss(\@data,$profile_name,$orig_filename,$has_white);
+  if(!$ccss_content) {
+   return (0,"Failed to build CCSS from EDR spectral data","");
+  }
+  return (1,"EDR converted to CCSS",$ccss_content);
+ }
+
+ sub _webui_ccss_from_edr_oeminst (@) {
+  my ($raw,$profile_name)=@_;
+  my $oeminst_bin="/usr/bin/oeminst";
+  return (0,"oeminst is not installed on this image","") if(!-x $oeminst_bin);
+
+  my $tmp_root="/tmp/pg_ccss_edr_$$"."_".time();
+  my $in_path="$tmp_root/input.edr";
+  my $log_path="$tmp_root/oeminst.log";
+
+  if(!mkdir($tmp_root,0700)) {
+   return (0,"Failed to create temporary workspace","");
+  }
+
+  my $ok=0;
+  my $message="Unknown oeminst failure";
+  my $content="";
+
+  eval {
+   open(my $in_fh,">:raw",$in_path) or die "write input failed";
+   print $in_fh $raw;
+   close($in_fh);
+
+   # oeminst -c reads the EDR and writes the translated .ccss to the cwd.
+   # /usr/ref does not exist on this image, so no stock reference profiles
+   # are emitted alongside the converted file.
+   my $cmd="cd '$tmp_root' && $oeminst_bin -c '$in_path' >'$log_path' 2>&1";
+   my $rc=system($cmd);
+
+   my @ccss=sort { -M $a <=> -M $b } glob("$tmp_root/*.ccss");
+   my $log="";
+   if(open(my $log_fh,"<:raw",$log_path)) {
+    local $/;
+    $log=<$log_fh>;
+    close($log_fh);
+   }
+
+   if($rc != 0 || !@ccss) {
+    $log=~s/\r/ /g;
+    $log=~s/\n+/ /g;
+    $log=~s/\s+/ /g;
+    $log=~s/^\s+|\s+$//g;
+    $message=$log ne "" ? $log : "oeminst failed to convert the EDR file";
+    die "oeminst failed";
+   }
+
+   open(my $out_fh,"<:raw",$ccss[0]) or die "read output failed";
+   local $/;
+   $content=<$out_fh>;
+   close($out_fh);
+   $ok=1;
+   $message="EDR converted to CCSS";
+  };
+
+  unlink(glob("$tmp_root/*"));
+  rmdir($tmp_root);
+
+  return ($ok,$message,$content);
+ }
+
+ sub _webui_ccss_resolve_named_path (@) {
  my ($fname,$source)=@_;
  $fname="" if(!defined($fname));
  $source=lc(defined($source) ? $source : "");
@@ -5139,10 +5320,29 @@ sub webui_ccss_upload (@) {
   return '{"status":"error","message":"Failed to write converted CCSS file"}';
  }
 
+ # EDR (binary X-Rite/i1Display correction) — convert via oeminst.
+ # CCSS/TI3 are text and handled above; any remaining binary payload is an EDR.
+ if($orig_filename=~/\.edr$/i || $raw=~ /\x00/) {
+  my ($ok,$message,$ccss_content)=&_webui_ccss_from_edr($raw,$name,$orig_filename);
+  if(!$ok) {
+   $message=&_webui_json_escape($message);
+   return "{\"status\":\"error\",\"message\":\"$message\"}";
+  }
+  my $out_path="$custom_storage_dir/$safe_name";
+  if(open(my $fh,">",$out_path)) {
+   print $fh &_webui_ccss_normalize_keywords($ccss_content);
+   close($fh);
+   &_webui_ccss_repair_file($out_path);
+   &log("WebUI: custom CCSS converted from EDR: $safe_name");
+   return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"message\":\"EDR converted to CCSS\"}";
+  }
+  return '{"status":"error","message":"Failed to write converted CCSS file"}';
+ }
+
  # Assume CSV — try to convert
  my $ccss_content=&csv_to_ccss($raw,$name,$orig_filename);
  if(!$ccss_content) {
-  return '{"status":"error","message":"Failed to parse upload. Supported formats: CCSS, TI3, CSV with wavelength,R,G,B,W columns, or raw 3/4-row spectral CSV (380-780nm)"}';
+   return '{"status":"error","message":"Failed to parse upload. Supported formats: CCSS, EDR, TI3, CSV with wavelength,R,G,B,W columns, or raw 3/4-row spectral CSV (380-780nm)"}';
  }
 
  my $out_path="$custom_storage_dir/$safe_name";
@@ -9963,7 +10163,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
       <div style="font-size:1rem;font-weight:700;color:#eee">CCSS Editor</div>
-      <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">PGenerator+ supports importing existing CCSS, TI3, or spectral CSV files, then choosing the active custom profile and inspecting its spectral curves.</div>
+       <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">PGenerator+ supports importing existing CCSS, EDR, TI3, or spectral CSV files, then choosing the active custom profile and inspecting its spectral curves.</div>
      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
        <button class="btn btn-sm btn-secondary" onclick="meterOpenCcssCreateModal()">Create With Spectro</button>
@@ -9972,8 +10172,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     </div>
     <div style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
      <div style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px">
-      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Import CCSS, TI3, or spectral CSV</label>
-      <input type="file" id="ccssFileInput" accept=".ccss,.csv,.ti3" style="font-size:.74rem;width:100%;margin-bottom:8px">
+       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Import CCSS, EDR, TI3, or spectral CSV</label>
+       <input type="file" id="ccssFileInput" accept=".ccss,.edr,.csv,.ti3" style="font-size:.74rem;width:100%;margin-bottom:8px">
       <div style="display:flex;gap:6px;align-items:center">
        <input type="text" id="ccssName" placeholder="Profile name" style="flex:1;font-size:.8rem;padding:5px 7px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
        <button id="ccssUploadBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap;font-size:.74rem;padding:5px 10px" disabled>Upload</button>
