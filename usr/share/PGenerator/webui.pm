@@ -10090,8 +10090,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      </div>
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartDeltaELabel">&Delta;E ITP</div>
-      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none" title="Split each greyscale &Delta;E bar: solid bottom = chroma-only error, faded top = added luminance error up to the Absolute Y w/gamma total. Forces Grey ref to Absolute Y w/o gamma.">
-       <input type="checkbox" id="meterSeparateLumError" onchange="meterOnSeparateLumErrorChange()" style="vertical-align:middle"> Separate Luminance Error
+      <label id="meterSeparateLumErrorWrap" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:none" title="Split each greyscale &Delta;E bar: solid bottom = chroma-only error, shimmering top = added luminance error. Available with Grey ref = Absolute Y w/gamma.">
+       <input type="checkbox" id="meterSeparateLumError" onchange="meterOnGreyRefChange()" style="vertical-align:middle"> Separate Luminance Error
       </label>
      </div>
 	    <div id="meterDeltaEScroller" class="meter-scroll-sync" style="background:#0d0d15;border-radius:6px">
@@ -18447,31 +18447,33 @@ function meterIncludeLum(){
 }
 
 // Separate-luminance-error split for the greyscale ΔE chart: when ticked
-// the bars grow to the Absolute-Y-w/gamma total ΔE with a faded cap above
-// the luminance-cancelled (chroma-only) portion. The split is defined
-// against the Absolute Y w/o gamma reference, so ticking it forces the
-// Grey ref select there; it is meaningless when Grey ref already includes
-// luminance ('eotf').
+// the bars show the Absolute-Y-w/gamma total ΔE with a shimmering cap
+// above the luminance-cancelled (chroma-only) portion. The split is only
+// meaningful when Grey ref = Absolute Y w/gamma, so the checkbox is shown
+// (and its state honored) only in that mode.
 function meterSeparateLumEnabled(){
  const el=document.getElementById('meterSeparateLumError');
  return !!(el && el.checked);
 }
 
-function meterOnSeparateLumErrorChange(){
- const sep=document.getElementById('meterSeparateLumError');
+// Shows the Separate Luminance Error checkbox only while Grey ref =
+// Absolute Y w/gamma; hiding it also unticks it so a stale checked state
+// can't survive a mode change.
+function meterUpdateSeparateLumVisibility(){
  const sel=document.getElementById('meterGreyRefMode');
- if(sep && sep.checked && sel && sel.value!=='relative') sel.value='relative';
- meterOnGreyRefChange();
+ const cb=document.getElementById('meterSeparateLumError');
+ const wrap=document.getElementById('meterSeparateLumErrorWrap');
+ if(!cb||!wrap) return;
+ const show=!!(sel&&sel.value==='eotf');
+ wrap.style.display=show?'':'none';
+ if(!show&&cb.checked) cb.checked=false;
 }
 
 // Unified handler for the grey-ref / gray-world / RGB balance / greyscale
-// ΔE / color ΔE selectors. Persists selections and redraws charts.
+// ΔE / color ΔE selectors and the Separate Luminance Error checkbox.
+// Persists selections and redraws charts.
 function meterOnGreyRefChange(src){
- // A manual Grey ref change away from Absolute Y w/o gamma wins over the
- // Separate-luminance split, which is defined against that reference.
- const sel=document.getElementById('meterGreyRefMode');
- const sep=document.getElementById('meterSeparateLumError');
- if(sep && sep.checked && sel && sel.value!=='relative') sep.checked=false;
+ meterUpdateSeparateLumVisibility();
  try{ meterSaveColorPrefs(); }catch(e){}
  if(meterReadings && meterReadings.length){
   // Invalidate any per-reading greyscale analysis cache (mode/form/gw changed).
@@ -18569,7 +18571,8 @@ function meterLoadColorPrefs(){
   setVal('meterDeltaEForm',  meterNormalizeSavedGreyDeltaEForm(p.de_form));
   setVal('meterColorDeltaEForm', p.color_de_form);
   setChk('meterColorIncludeLumError', p.color_incl_lum);
-    setChk('meterSeparateLumError', greyMode==='relative' ? p.sep_lum : '0');
+    setChk('meterSeparateLumError', greyMode==='eotf' ? p.sep_lum : '0');
+    meterUpdateSeparateLumVisibility();
   setVal('meterTargetGamma', p.target_gamma);
   setChk('meterHdrApplyBT2390', p.hdr_bt2390);
   setChk('meterEotfAbsolute', p.eotf_absolute);
@@ -30896,7 +30899,7 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  if(!ctx) return;
  const greyMode=meterGreyRefMode();
  const inclLum=(greyMode==='eotf');
- const sepLum=meterSeparateLumEnabled()&&!inclLum;
+ const sepLum=meterSeparateLumEnabled()&&inclLum;
  const deForm=meterDeltaEForm();
  const deLabel=meterDeltaEFormLabel(deForm);
  const gw=meterGrayWorldWeight();
@@ -30922,10 +30925,11 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  const gwWeight=meterGrayWorldWeight();
  // Use all series steps for x-axis
  const xSteps=allSteps||[...gs].sort((a,b)=>a.ire-b.ire);
- // Compute deltaE for available readings. With the luminance split active,
- // deMap holds the Absolute-Y-w/gamma total (bar height) and chromaMap the
- // luminance-cancelled portion (divider). The two modes use slightly
- // different references, so clamp: chroma never exceeds the drawn total.
+ // Compute deltaE for available readings. With the luminance split active
+ // (Grey ref forced to Absolute Y w/gamma), deMap holds the selected-mode
+ // total (bar height) and chromaMap the luminance-cancelled portion
+ // (divider). The two modes use slightly different references, so clamp:
+ // chroma never exceeds the drawn total.
  const deMap={},chromaMap={};
  gs.forEach(rd=>{
   if((rd.Y||0)<=0){deMap[Number(rd.ire)]=0;return;}
@@ -30936,13 +30940,8 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
   const _ireKey=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:rd.stimulus));
   if(!Number.isFinite(_ireKey)) return;
   const modeDE=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
-  if(sepLum){
-   const totalDE=meterGreyDeltaResult(rd,'eotf',deForm,gwWeight).value;
-   deMap[_ireKey]=Math.max(totalDE,modeDE);
-   chromaMap[_ireKey]=modeDE;
-  } else {
-   deMap[_ireKey]=modeDE;
-  }
+  deMap[_ireKey]=modeDE;
+  if(sepLum) chromaMap[_ireKey]=Math.min(meterGreyDeltaResult(rd,'relative',deForm,gwWeight).value,modeDE);
  });
  const deValues=Object.values(deMap);
  // Auto-scale Y: zoom to fit tightest range
@@ -30982,11 +30981,32 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
    const color=dE<1?'#4caf50':dE<3?'#ff9800':'#ff4444';
    const chromaDE=sepLum?chromaMap[step.ire]:null;
    if(sepLum&&chromaDE!=null&&dE>0){
-    // Solid chroma-only base, ~45%-alpha luminance cap, 1px white divider.
+    // Solid chroma-only base; the luminance cap above it shimmers like
+    // light — a glow gradient brightening toward the bar top with
+    // diagonal white sheen streaks — plus a 1px white divider.
     const chromaH=Math.min(Math.max(chromaDE,0)/yMax,barH)*chart.h;
     const yChroma=chart.pad.t+chart.h-chromaH;
-    ctx.fillStyle=color+'73';
-    ctx.fillRect(px,y,barW,fullH);
+    const capH=Math.max(0,yChroma-y);
+    if(capH>0.5){
+     const grad=ctx.createLinearGradient(0,yChroma,0,y);
+     grad.addColorStop(0,color+'66');
+     grad.addColorStop(1,'#ffffffcc');
+     ctx.fillStyle=grad;
+     ctx.fillRect(px,y,barW,capH);
+     ctx.save();
+     ctx.beginPath();
+     ctx.rect(px,y,barW,capH);
+     ctx.clip();
+     ctx.strokeStyle='#ffffff59';
+     ctx.lineWidth=1.5;
+     for(let sx=px-capH;sx<px+barW;sx+=6){
+      ctx.beginPath();
+      ctx.moveTo(sx,yChroma+1);
+      ctx.lineTo(sx+capH,y-1);
+      ctx.stroke();
+     }
+     ctx.restore();
+    }
     ctx.fillStyle=color;
     ctx.fillRect(px,yChroma,barW,Math.max(1,chromaH));
     ctx.fillStyle='#ffffffd0';
@@ -31854,17 +31874,18 @@ function chartRegisterInteraction(){
  const readingByIre={};
  gs.forEach(r=>{readingByIre[r.ire]=r;});
  // Pre-compute selected + reference ΔE values for tooltips. With the
- // Separate-luminance split active, also compute the Absolute-Y-w/gamma
- // total so the tooltip can show the chroma/luminance breakdown.
- const sepLum=meterSeparateLumEnabled()&&greyMode!=='eotf';
- const deSelected={},de2000={},deTotal={};
+ // Separate-luminance split active (Grey ref = w/gamma total), also
+ // compute the luminance-cancelled chroma-only ΔE so the tooltip can show
+ // the chroma/luminance breakdown.
+ const sepLum=meterSeparateLumEnabled()&&greyMode==='eotf';
+ const deSelected={},de2000={},deChroma={};
  const deForm=meterDeltaEForm();
  const deLabel=meterDeltaEFormLabel(deForm);
  gs.forEach(rd=>{
   const result=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight);
   deSelected[rd.ire]=result.value;
   de2000[rd.ire]=result.de2000;
-  if(sepLum) deTotal[rd.ire]=meterGreyDeltaResult(rd,'eotf',deForm,gwWeight).value;
+  if(sepLum) deChroma[rd.ire]=meterGreyDeltaResult(rd,'relative',deForm,gwWeight).value;
  });
  // Register hit zones for each chart canvas
  const canvasIds=['chartRGB','chartDeltaE','chartGammaValue','chartEOTF','chartGamma'];
@@ -31890,7 +31911,7 @@ function chartRegisterInteraction(){
    const cx=pad.l+xInset+xNorm*dw;
    const bal=effectiveWhiteRGB?rgbBalance(rd,effectiveWhiteRGB,greyMode):{R:100,G:100,B:100};
    _chartHitZones.push({canvasId:cid, cx:cx, cy:cH/2, radius:isBarChart?18:8, ire:step.ire, reading:rd,
-    rgbBalance:bal, deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deTotal:sepLum?deTotal[rd.ire]:null, deLabel:deLabel});
+    rgbBalance:bal, deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deChroma:sepLum?deChroma[rd.ire]:null, deLabel:deLabel});
   });
   // Attach event handlers (remove old ones first)
   canvas.onmousemove=function(e){chartHandleHover(e,cid);};
@@ -31935,11 +31956,11 @@ function chartHandleHover(e,canvasId){
  html+='<br>x: '+(rd.x!=null?rd.x.toFixed(4):'--')+' &nbsp;y: '+(rd.y!=null?rd.y.toFixed(4):'--');
  html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
  if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);
- if(hit.deTotal!=null&&hit.deSelected!=null){
+ if(hit.deChroma!=null&&hit.deSelected!=null){
   // Separate-luminance split: bar total with its chroma/luminance parts.
-  const _tot=Math.max(hit.deTotal,hit.deSelected);
-  html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+_tot.toFixed(2)
-   +' (chroma '+hit.deSelected.toFixed(2)+' + luminance '+(_tot-hit.deSelected).toFixed(2)+')';
+  const _chroma=Math.min(hit.deChroma,hit.deSelected);
+  html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+hit.deSelected.toFixed(2)
+   +' (chroma '+_chroma.toFixed(2)+' + luminance '+(hit.deSelected-_chroma).toFixed(2)+')';
  } else if(hit.deSelected!=null){
   html+='<br>'+(hit.deLabel||meterDeltaEFormLabel())+': '+hit.deSelected.toFixed(2);
  }
@@ -33589,7 +33610,8 @@ async function loadMeterSettings(){
  setVal('meterXyzM33', s.xyz_m33);
  setChk('meterXyzMatrixEnabled', meterStoredXyzMatrixEnabled(s));
  meterUpdateXyzMatrixVisibility();
- setChk('meterSeparateLumError', (greyMode==='relative') ? s.sep_lum : false);
+ setChk('meterSeparateLumError', (greyMode==='eotf') ? s.sep_lum : false);
+ meterUpdateSeparateLumVisibility();
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
  meterSyncHdrMetadata();
  meterUpdateCustomCcssPanel(meterNormalizeStoredDisplayType(s.display_type,s.ccss_file));
