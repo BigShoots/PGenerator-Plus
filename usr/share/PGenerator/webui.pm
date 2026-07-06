@@ -9029,6 +9029,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-inline-unit{font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
 .meter-chart-inline-input{width:62px;height:22px;min-height:0;padding:2px 6px;border:1px solid var(--border);background:#0d0d15;color:var(--text);border-radius:5px;font-size:.68rem;box-sizing:border-box}
 .meter-chart-inline-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.25)}
+/* Muted per-field target readout in the live Patch Reading box. */
+.meter-live-tgt{font-size:.72rem;color:var(--text2);font-weight:400;white-space:nowrap}
 .meter-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);text-transform:none !important;letter-spacing:0 !important;cursor:pointer;line-height:1.25}
 .meter-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
 	.meter-note-toggle{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;line-height:1.25}
@@ -9854,10 +9856,10 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div id="meterLiveReadingLabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Patch Reading</div>
    <div style="background:#0d0d15;padding:10px;border-radius:6px">
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:.82rem">
-     <span>Luminance: <strong id="meterLum">--</strong> cd/m&sup2;</span>
-     <span>CCT: <strong id="meterCCT">--</strong>K</span>
-     <span>CIE x: <strong id="meterCIEx">--</strong></span>
-     <span>CIE y: <strong id="meterCIEy">--</strong></span>
+     <span>Luminance: <strong id="meterLum">--</strong> cd/m&sup2; <span class="meter-live-tgt" id="meterLumTgt" title="Target luminance"></span></span>
+     <span>CCT: <strong id="meterCCT">--</strong>K <span class="meter-live-tgt" id="meterCCTTgt" title="Target CCT (from target white point)"></span></span>
+     <span>CIE x: <strong id="meterCIEx">--</strong> <span class="meter-live-tgt" id="meterCIExTgt" title="Target CIE x"></span></span>
+     <span>CIE y: <strong id="meterCIEy">--</strong> <span class="meter-live-tgt" id="meterCIEyTgt" title="Target CIE y"></span></span>
     </div>
     <!-- Vertical live-RGB bars render inside the active chart (greyscale: left of RGB Balance; color/sat: right of CIE). -->
     <canvas id="meterRGBCanvas" width="1" height="1" style="display:none"></canvas>
@@ -16227,6 +16229,18 @@ function meterTargetChromaticityForReading(reading){
  return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
 }
 
+// Approximate correlated colour temperature from CIE xy (McCamy 1992).
+// Good to a few K near the blackbody locus, which is all the live-reading
+// target readout needs. Returns null outside a sane display range.
+function meterCctFromXy(x,y){
+ if(!(Number.isFinite(x)&&Number.isFinite(y))) return null;
+ const d=0.1858-y;
+ if(Math.abs(d)<1e-9) return null;
+ const n=(x-0.3320)/d;
+ const cct=449*n*n*n+3525*n*n+6823.3*n+5520.33;
+ return (cct>1000&&cct<25000)?cct:null;
+}
+
 function meterIreIsPeakHeadroom(ire){
  ire=Number(ire);
  return Number.isFinite(ire) && ire>=108.5;
@@ -19766,6 +19780,9 @@ function meterClearLiveReading(step){
  document.getElementById('meterCCT').textContent='--';
  document.getElementById('meterCIEx').textContent='--';
  document.getElementById('meterCIEy').textContent='--';
+ // Selected-but-unread patch: still show its targets so the operator knows
+ // what the read should land on.
+ meterUpdateLiveReadingTargets(targetStep);
  drawRGBBars(null);
  meterRenderGreyTvControls(null);
  drawDeltaBarsVertical('meterRGBCanvasGrey',null);
@@ -19788,6 +19805,37 @@ function meterFindReadingForStep(step){
  return null;
 }
 
+// Populates the muted "→ target" suffixes in the live Patch Reading box.
+// Accepts a measured reading OR an unread canonical series step (targets
+// show as soon as a patch is selected, before it is read). Pass null to
+// clear. CCT target only renders for near-neutral (greyscale) patches,
+// mirroring the measured-CCT suppression rule; CIE x/y come from the same
+// target math the charts use, so the pair always agrees with the ΔE view.
+function meterUpdateLiveReadingTargets(src){
+ const set=(id,txt)=>{ const e=document.getElementById(id); if(e) e.textContent=txt; };
+ let tY=null,tXY=null,tCct=null,isGrey=false;
+ if(src){
+  try{ isGrey=meterReadingIsGreyscale(src); }catch(e){}
+  try{
+   const info=meterColorLuminanceInfo(src);
+   if(info&&info.targetY!=null&&Number.isFinite(Number(info.targetY))) tY=Number(info.targetY);
+  }catch(e){}
+  try{
+   const t=meterTargetXYZForReading(src);
+   const s=t?(t.X+t.Y+t.Z):0;
+   if(s>0) tXY={x:t.X/s,y:t.Y/s};
+   // Chroma-only targets (e.g. the SDR26 109% legal peak) return {0,0,0}:
+   // no target Y, but the chromaticity target is still the white point.
+   else if(isGrey){ const wp=meterTargetWhitePoint(); tXY={x:wp.x,y:wp.y}; }
+  }catch(e){}
+  if(tXY&&isGrey) tCct=meterCctFromXy(tXY.x,tXY.y);
+ }
+ set('meterLumTgt', tY!=null?('→ '+tY.toFixed(2)):'');
+ set('meterCCTTgt', tCct!=null?('→ '+Math.round(tCct)+'K'):'');
+ set('meterCIExTgt', tXY?('→ '+tXY.x.toFixed(4)):'');
+ set('meterCIEyTgt', tXY?('→ '+tXY.y.toFixed(4)):'');
+}
+
 function updateLiveReading(reading){
  meterNormalizeMeasuredReading(reading);
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_colorDetailPinned&&_selectedColorReadingName&&Array.isArray(meterReadings)){
@@ -19806,6 +19854,7 @@ function updateLiveReading(reading){
  if(cctEl) cctEl.textContent=(reading.cct&&meterReadingIsGreyscale(reading))?reading.cct:'--';
  document.getElementById('meterCIEx').textContent=reading.x!=null?reading.x.toFixed(4):'--';
  document.getElementById('meterCIEy').textContent=reading.y!=null?reading.y.toFixed(4):'--';
+ meterUpdateLiveReadingTargets(reading);
 
  const liveRgb=meterLiveRgbData(reading);
  drawRGBBars(liveRgb);
@@ -32409,6 +32458,7 @@ function meterResetLiveReadingDisplay(){
  document.getElementById('meterCCT').textContent='--';
  document.getElementById('meterCIEx').textContent='--';
  document.getElementById('meterCIEy').textContent='--';
+ meterUpdateLiveReadingTargets(null);
  if(liveLabel) liveLabel.textContent='Patch Reading';
  drawRGBBars(null);
  drawDeltaBarsVertical('meterRGBCanvasGrey',null);
