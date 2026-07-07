@@ -1105,11 +1105,20 @@ sub build_gamut_drive_matrix {
  # rows sum to 1.0 (neutral preserved). Our previous per-node XYZ solve produced
  # a NON-white-preserving matrix (rows summed ~1.08/0.97/0.89) that pushed
  # colours red-up/blue-down as they leave the neutral axis -- the residual
- # saturation-sweep skew. Scoped to HDR with a numeric calibration gamma; SDR
- # keeps the legacy solve (no ground truth to validate a change there).
+ # saturation-sweep skew. Covers HDR with a numeric calibration gamma and
+ # SDR/bt1886 (pure 2.4 power domain, black=0 in target_gamma_linear): the
+ # SDR legacy solve showed the same non-white-preserving rows
+ # (1.046/0.989/0.981 on a C2) and the matching interior-patch skew
+ # (post-cal Blue Sky lin R +7.5%, G -7.3%).
  my ($contrib,$target_gamut,$signal_mode,$target_gamma)=@_;
- return undef unless(lc($signal_mode||"") =~ /^(hdr10|hlg|dv)$/);
- return undef unless(defined($target_gamma) && ($target_gamma eq "2.2" || $target_gamma eq "2.4"));
+ my $mode=lc($signal_mode||"");
+ my $gamma=lc($target_gamma//"");
+ if($mode eq "sdr") {
+  return undef unless($gamma eq "bt1886" || $gamma eq "2.2" || $gamma eq "2.4");
+ } else {
+  return undef unless($mode =~ /^(hdr10|hlg|dv)$/);
+  return undef unless($gamma eq "2.2" || $gamma eq "2.4");
+ }
  my $m_native=native_rgb_to_xyz_matrix($contrib);
  return undef if(!$m_native);
  my $inv_native=matrix_inverse($m_native);
@@ -1124,7 +1133,9 @@ sub gamut_matrix_output {
  my ($model,$ri,$gi,$bi,$size)=@_;
  my $M=$model->{"gamut_drive_matrix"};
  my $gamma=$model->{"target_gamma"};
- my $gexp=($gamma eq "2.4") ? 2.4 : 2.2;
+ # bt1886 maps to a pure 2.4 power in target_gamma_linear (black=0), so the
+ # inverse must be 2.4 as well or the matrix domain would be asymmetric.
+ my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
  my $lin=[
   target_gamma_linear($ri/($size-1),$gamma),
   target_gamma_linear($gi/($size-1),$gamma),
