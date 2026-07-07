@@ -14046,24 +14046,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $very_low_ire_threshold=defined($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}) ? ($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}+0) : 2.0;
 	$very_low_ire_threshold=0.5 if($very_low_ire_threshold < 0.5);
 	$very_low_ire_threshold=$low_ire_threshold if($very_low_ire_threshold > $low_ire_threshold);
-	# Tier-aware deep-shadow gamma bounds. Near the OLED floor the panel's local
-	# code->light slope is far steeper than the generic [1.5,3.0] clamp allows:
-	# the measured local gamma at 2% IRE (log-log slope of the per-iter Y vs
-	# DPG-code change) is ~3.4-4.5. With gamma_effective clamped to 3.0 the damp
-	# exponent 1/gamma is too large, so damp=gain**(1/gamma) yields a DPG code
-	# move that OVERSHOOTS the target luminance (field: 2% iter1 jumped
-	# 0.088->0.199 nits, ~63% past a 0.135 target, then oscillated dE 8.6->15.3).
-	# Below the very-low IRE threshold, raise the ceiling so the per-iter EMA can
-	# track the true steep slope (producing smaller, correctly-sized moves) and
-	# seed the first iter above the shallow PQ-EOTF value (~2.0 at 2%) so even
-	# iter 1 does not overshoot. Anchors at/above the very-low threshold
-	# (2.7%, 4%, 5%, 7%, ...) keep the historical 3.0 ceiling untouched.
-	my $gamma_clamp_very_low=defined($config->{"lg_autocal_hdr20_dpg_gamma_clamp_very_low"}) ? ($config->{"lg_autocal_hdr20_dpg_gamma_clamp_very_low"}+0) : 5.0;
-	$gamma_clamp_very_low=3.0 if($gamma_clamp_very_low < 3.0);
-	$gamma_clamp_very_low=8.0 if($gamma_clamp_very_low > 8.0);
-	my $gamma_seed_very_low=defined($config->{"lg_autocal_hdr20_dpg_gamma_seed_very_low"}) ? ($config->{"lg_autocal_hdr20_dpg_gamma_seed_very_low"}+0) : 3.5;
-	$gamma_seed_very_low=1.5 if($gamma_seed_very_low < 1.5);
-	$gamma_seed_very_low=$gamma_clamp_very_low if($gamma_seed_very_low > $gamma_clamp_very_low);
 	my $very_low_revert_budget=defined($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) ? int($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) : 12;
 	$very_low_revert_budget=3 if($very_low_revert_budget < 3);
 	# High-IRE (default >=80%): the panel's drive->light transfer at the
@@ -14096,28 +14078,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $damp_floor_low=defined($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}+0) : 0.5;
 	$damp_floor_low=0.3 if($damp_floor_low < 0.3);
 	$damp_floor_low=0.95 if($damp_floor_low > 0.95);
-	# Low-IRE stuck-anchor escape hatches (SDR26 port). Re-escalation: when a
-	# deep-shadow anchor exhausts its revert budget while still FAR from its
-	# (relaxed) target, the problem is reach/undershoot, not overshoot --
-	# halving move_scaling into the noise floor is exactly wrong. Retry at
-	# full step, bounded by max_escalations; total work stays bounded by the
-	# per-anchor iteration budget regardless.
-	my $low_ire_max_escalations=defined($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) ? int($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) : 2;
-	$low_ire_max_escalations=0 if($low_ire_max_escalations < 0);
-	$low_ire_max_escalations=4 if($low_ire_max_escalations > 4);
-	# Re-escalation fires ONLY when best_de > effective_target * this factor
-	# (a genuinely crushed anchor); a close anchor re-escalated at full step
-	# just scatters noise-limited reads with large bad moves.
-	my $low_ire_reescalate_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}+0) : 4.0;
-	$low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
-	$low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
-	# Noise-limited early stop: a low-IRE anchor already within this multiple
-	# of its (relaxed) target is meter-noise-limited -- further reverts only
-	# scatter the dE, so keep the best and stop after 2 consecutive reverts
-	# instead of thrashing the whole (very-low: 12) revert budget.
-	my $low_ire_close_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}+0) : 1.5;
-	$low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
-	$low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
@@ -14155,14 +14115,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$acceptance_de=$target_de if($acceptance_de > $target_de);
 	# Skip-acceptance threshold: fraction of target_de below which the patch
 	# is "definitely good enough" -- stop and move on instantly, NO one-more
-	# refinement move and NO revert dance. Default 0.3 (below 30% of the
-	# tier-scaled effective target: 0.15 mid, 0.225 low, 0.30 very-low with
-	# target 0.5) -- matching the SDR26 band layout. The previous 0.6 default
-	# made the instant-skip band swallow the whole acceptance band
-	# (acceptance_de=0.3): dE<0.30 skipped at every tier, so the one-more
-	# refinement machinery below never fired. 1.0 disables the instant-skip
-	# path.
-	my $acceptance_skip_fraction=defined($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}+0) : 0.3;
+	# refinement move and NO revert dance. Default 0.6 (i.e. below 60% of
+	# target). With target_de=0.5 the instant-skip kicks in below dE=0.30, so
+	# a 0.5 target still gets the one-more try at dE 0.30..0.50 but the meter
+	# noise floor (0.3 dE swing at low IRE) doesn't waste an extra upload +
+	# read on every patch. 1.0 disables the instant-skip path.
+	my $acceptance_skip_fraction=defined($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}+0) : 0.6;
 	$acceptance_skip_fraction=0.0 if($acceptance_skip_fraction < 0.0);
 	$acceptance_skip_fraction=1.0 if($acceptance_skip_fraction > 1.0);
 	my $acceptance_skip_de=$acceptance_skip_fraction*$target_de;
@@ -14449,10 +14407,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		#     code->light gamma at this anchor's IRE. Seeded from the
 		#     PQ EOTF (HDR10) or 2.2 (SDR) at iter 1; refined by the
 		#     measured gamma from the previous iter's Y/DPG change via
-		#     an EMA blend (0.3 new, 0.7 history). Clamped to
-		#     [1.5, $_gamma_ceiling] (ceiling 3.0, raised to
-		#     gamma_clamp_very_low below the very-low IRE threshold) so a
-		#     wild measured value cannot produce a catastrophic damp move.
+		#     an EMA blend (0.3 new, 0.7 history). Clamped to [1.5, 3.0]
+		#     so a wild measured value cannot produce a catastrophic
+		#     damp move.
 		#   y_prev / dpg_*_prev: this iter's measured luminance and the
 		#     three DPG idx values that were IN USE when the reading
 		#     was taken (i.e. the build from the previous iter). These
@@ -14460,20 +14417,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		#     log-log slope that estimates the local gamma.
 		my $_anchor_signal_mode=ref($config) eq "HASH" ? ($config->{"signal_mode"} || "sdr") : "sdr";
 		my $_anchor_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : 50.0));
-		# Per-anchor gamma ceiling: raised below the very-low IRE threshold so the
-		# damp exponent can track the panel's steep deep-shadow slope; mid/low
-		# anchors keep the historical 3.0. The EMA-blend acceptance guard's upper
-		# bound is widened to match (else a measured 4.3 would be rejected as
-		# >4.0 and the raised ceiling would be inert).
-		my $_gamma_ceiling=($_anchor_ire+0 <= $very_low_ire_threshold+0) ? $gamma_clamp_very_low+0 : 3.0;
-		my $_gamma_guard_hi=($_gamma_ceiling+0 > 4.0) ? ($_gamma_ceiling+0) : 4.0;
 		my $gamma_effective=lg_autocal_expected_gamma_for_signal_mode_and_ire($_anchor_signal_mode,$_anchor_ire);
-		# Very-low tier: seed above the shallow PQ-EOTF gamma (~2.0 at 2% IRE) so
-		# the FIRST move is not oversized (a sqrt-damp move overshoots ~60% when
-		# the true slope is ~4.3). The per-iter EMA then tracks the measured slope.
-		$gamma_effective=$gamma_seed_very_low if($_anchor_ire+0 <= $very_low_ire_threshold+0 && $gamma_effective+0 < $gamma_seed_very_low+0);
 		$gamma_effective=1.5 if($gamma_effective+0 < 1.5);
-		$gamma_effective=$_gamma_ceiling if($gamma_effective+0 > $_gamma_ceiling+0);
+		$gamma_effective=3.0 if($gamma_effective+0 > 3.0);
 		# Per-anchor effective target_de: the set $target_de is the operator's
 		# intent, but at very-low IRE the panel floor + meter noise make it
 		# unreachable. Apply the IRE-tier multiplier so a best-so-far dE like
@@ -14524,9 +14470,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# hashes, wiping @done on every revert.
 		my $best_anchors=[map { +{ %$_ } } @done];
 		my $consecutive_reverts=0;
-		# Per-anchor count of low-IRE full-step re-escalations (see the
-		# revert-budget branch below); bounded by $low_ire_max_escalations.
-		my $low_ire_escalations=0;
 		# Acceptance ("good enough"): once a patch's dE drops below
 		# $acceptance_de (default 0.3) it is snapped as the best, given ONE
 		# more refinement move, and if that move worsens dE the best is
@@ -14735,25 +14678,23 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					my $gr=log($y_ratio)/log($dpg_r_ratio);
 					my $gg=log($y_ratio)/log($dpg_g_ratio);
 					my $gb=log($y_ratio)/log($dpg_b_ratio);
-					if(defined($gr) && $gr+0 > 1.0 && $gr+0 < $_gamma_guard_hi+0
-					 && $gg+0 > 1.0 && $gg+0 < $_gamma_guard_hi+0
-					 && $gb+0 > 1.0 && $gb+0 < $_gamma_guard_hi+0) {
+					if(defined($gr) && $gr+0 > 1.0 && $gr+0 < 4.0
+					 && $gg+0 > 1.0 && $gg+0 < 4.0
+					 && $gb+0 > 1.0 && $gb+0 < 4.0) {
 						my $gamma_meas=($gr+$gg+$gb)/3.0;
 						# EMA blend: 30% new measurement, 70% history.
 						$gamma_effective=(0.3*$gamma_meas)+(0.7*$gamma_effective);
 					}
 				}
 			}
-			# Clamp gamma_effective to [1.5, $_gamma_ceiling] (ceiling 3.0,
-			# raised to gamma_clamp_very_low below the very-low IRE threshold)
-			# to prevent a wild measured value (e.g. from a transient meter
-			# spike or a near-zero DPG change producing a divide-by-tiny) from
-			# producing a catastrophic damp move. The EOTF seed and the
-			# EMA-blend sanity guards both keep gamma_effective in this range in
-			# practice, but the clamp is the last-line safety net before the
-			# exponent computation.
+			# Clamp gamma_effective to [1.5, 3.0] to prevent a wild measured
+			# value (e.g. from a transient meter spike or a near-zero DPG
+			# change producing a divide-by-tiny) from producing a catastrophic
+			# damp move. The EOTF seed and the EMA-blend sanity guards both
+			# keep gamma_effective in this range in practice, but the clamp
+			# is the last-line safety net before the exponent computation.
 			$gamma_effective=1.5 if($gamma_effective+0 < 1.5);
-			$gamma_effective=$_gamma_ceiling if($gamma_effective+0 > $_gamma_ceiling+0);
+			$gamma_effective=3.0 if($gamma_effective+0 > 3.0);
 			my $damp_exp=(1.0/($gamma_effective+0.0));
 			# Save the current reading's Y and the DPG idx values that were
 			# IN USE during this measurement (the build from the previous
@@ -14781,7 +14722,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the gain_* / damp_* fields become 0.0000 / damp-default.
 			my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
 			$converged=1 if($conv_now);
-			# Best-so-far with revert runs ONLY at low IRE (<= low_ire_threshold,
+			# Best-so-far with revert runs ONLY at low IRE (< low_ire_threshold,
 			# default 5%): it was built to break the constant-amplitude
 			# oscillation at 1.4%/4% IRE. At mid/high IRE (incl. 100% white)
 			# Track the best-measured dE for EVERY anchor (so the final-state
@@ -14797,22 +14738,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_dpg=[@{$current_dpg}];
 					$best_anchors=[map { +{ %$_ } } @done];
 					$consecutive_reverts=0;
-					# Gentle step-size recovery instead of a hard reset to 1.0
-					# (port of the SDR26 fix). At low IRE the measured signal sits
-					# in the meter noise floor, so a "new best" is frequently just
-					# a lucky read. Snapping move_scaling straight back to full
-					# strength makes the very next move overshoot and the anchor
-					# oscillates (1.0->0.5->0.25->reset->1.0...) without settling
-					# -- exactly the live-run failure at 2% (i4 new best -> full-
-					# size move -> two reverts) and 1.4% (i5 best 1.16 -> i6/i7
-					# blowups to 2.1/5.0). Doubling toward the 1.0 cap lets a
-					# genuinely-improving anchor recover its step over a couple of
-					# iters, while a noise-dominated anchor keeps ratcheting down
-					# into the band where it can converge.
-					my $_recovered=$move_scaling*2.0;
-					$_recovered=1.0 if($_recovered+0 > 1.0);
-					$move_scaling=$_recovered;
-				} elsif((($_anchor_ire+0 <= $low_ire_threshold+0) || ($_anchor_ire+0 >= $high_ire_threshold))
+					# Successful iter: reset the move-scaling to full. The next gain
+					# is computed fresh from the new Y, so a fresh full-size move is
+					# the right starting point.
+					$move_scaling=1.0;
+				} elsif((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
 					&& defined($prev_de) && $de+0 > $prev_de+0) {
 					# Descent-style revert: this iter's move made dE WORSE than the
 					# previous iter's dE (the state we were just at before applying
@@ -14824,7 +14754,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# subsequent iter triggers revert). The new condition gates on
 					# a LOCAL direction change: the move had to have actually
 					# worsened the result, not just failed to improve the record.
-					# Low IRE (<=5%) and high IRE (>=80%) both enable this; mid IRE
+					# Low IRE (<5%) and high IRE (>=80%) both enable this; mid IRE
 					# (5-80%) uses the monotonic best_de improvement pattern instead,
 					# matching the prior behavior.
 					@{$current_dpg}=@{$best_dpg};
@@ -14837,44 +14767,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# for most panels, which is why the 3-revert break below fires.
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
 					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
-					# Noise-limited early stop (SDR26 port): a VERY-low-IRE anchor
-					# already near its (relaxed) target is meter-noise-limited --
-					# once a move has failed to beat the best twice, further reverts
-					# only scatter the dE (live run: 1.4% sat at best 1.16 vs relaxed
-					# target 1.0 and thrashed 4 more iters). Keep the best and move
-					# on; the final-state restore re-commits + re-reads the best
-					# state. Gated to the very-low tier (<= very_low_ire_threshold,
-					# default 2%) ONLY: above the meter floor (2.7%,4%,5% read
-					# 0.26-1.0 nits) the dE bounce is thrash/read-noise, not a floor
-					# limit, so an anchor still descending must NOT be bailed here --
-					# 4% was moving on at best 1.05 (1.4x its 0.75 target) after just
-					# 2 early-thrash reverts, well short of the ~0.37 it reaches
-					# through the normal revert/re-escalation loop. The mid/low tiers
-					# fall through to that loop; only the genuinely floor-limited
-					# 1.4%/2% anchors keep this bail (matching the "very-low-IRE"
-					# intent the SDR26 comment documents).
-					if($_anchor_ire+0 <= $very_low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
-						log_line("HDR20 1D DPG greyscale: very-low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
-						last;
-					}
 					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
 					if($consecutive_reverts >= $_revert_budget) {
-						# Low-IRE re-escalation (SDR26 port): still FAR from the
-						# (relaxed) target after exhausting the revert budget means
-						# reach/undershoot, not overshoot -- restore full step and
-						# retry, bounded by $low_ire_max_escalations (and by the
-						# per-anchor iteration budget). best_dpg/best_anchors were
-						# already restored above and best is always kept, so a
-						# converged anchor is never regressed.
-						if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de) && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor && $low_ire_escalations < $low_ire_max_escalations) {
-							$low_ire_escalations++;
-							$consecutive_reverts=0;
-							$move_scaling=1.0;
-							log_line("HDR20 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$_revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to 1.0000)");
-						} else {
-							log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
-							last;
-						}
+						log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
+						last;
 					}
 				}
 				# Update prev_de for the next iter's descent check, regardless of
@@ -14942,34 +14838,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					if(@$_r) {
 						$_r->[-1]{"de"}=sprintf("%.4f",$de+0);
 						$_r->[-1]{"acceptance_skip"}=JSON::PP::true;
-						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$_effective_skip_de+0);
+						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$acceptance_skip_de+0);
 					}
 				}
-				# Log the TIER-SCALED threshold the comparison actually used;
-				# printing the base skip_de produced impossible-looking lines at
-				# low IRE ("dE=0.4287 < 0.3000") when the effective value was 0.60.
-				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$_effective_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of effective target ".sprintf("%.2f",$_effective_target_de)."), moving on without one-more move");
+				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$acceptance_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of target ".sprintf("%.2f",$target_de)."), moving on without one-more move");
 				write_state($state);
 				last;
 			}
-			# Early-converged refinement (port of the SDR26 gate): an anchor
-			# landing in the (acceptance_de, effective_target] band on an EARLY
-			# iteration (<=3) got there off a single large move and is still
-			# carrying that move's banked residual (live HDR run: 90% stopped
-			# at i1/dE 0.4538, 50% at i2/0.4985, 7% at i3/0.4908). Route it
-			# through the SAME one-more refinement path instead of stopping.
-			# Band arrivals at i>=4 are at their noise floor -- forcing more
-			# moves there oscillates -- so they keep the stop-immediately
-			# behavior via the target_de `last` below.
-			my $_refine_converged=($conv_now && !$acceptance_pending && defined($de) && $de+0 >= $acceptance_de+0 && $i <= 3) ? 1 : 0;
-			if(!$acceptance_pending && defined($de) && ($de+0 < $acceptance_de+0 || $_refine_converged)) {
+			if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_de+0) {
 				$acceptance_pending=1;
 				$accepted_best_de=$de+0;
 				$accepted_best_dpg=[@{$current_dpg}];
 				$accepted_best_anchors=[map { +{ %$_ } } @done];
-				log_line("HDR20 1D DPG greyscale: ".$label.($_refine_converged
-					? " converged early (dE=".sprintf("%.4f",$de+0)." <= ".sprintf("%.2f",$_effective_target_de+0)." at i".$i."), trying one more refinement move"
-					: " below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move"));
+				log_line("HDR20 1D DPG greyscale: ".$label." below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move");
 				# fall through: the build below makes the one-more move
 			} elsif($acceptance_pending) {
 				# This read is the result of the one-more move. Decide + move on.
@@ -15033,8 +14914,8 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
 			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
 			# EOTF-aware damp: the exponent 1/gamma_effective is computed
-			# at the top of the iter (clamped to [1.5, $_gamma_ceiling]) and
-			# passed as the 3rd arg to the damp closure, replacing the previous
+			# at the top of the iter (clamped to [1.5, 3.0]) and passed as
+			# the 3rd arg to the damp closure, replacing the previous
 			# constant 0.5 (sqrt) with a value that follows the panel's
 			# actual code->light slope at this anchor's IRE.
 			# 100% white move multiplier: the white anchor only REDUCES the
@@ -15131,16 +15012,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my $_idx42_r=defined($idx)?sprintf("%d",$current_dpg->[$idx]):"undef";
 			my $_idx42_g=defined($idx)?sprintf("%d",$current_dpg->[$idx+1024]):"undef";
 			my $_idx42_b=defined($idx)?sprintf("%d",$current_dpg->[$idx+2048]):"undef";
-			# Merge into the row the pre-gain push above already appended for
-			# THIS iteration instead of pushing a second row -- the two-push
-			# layout left every move iteration duplicated in the history (one
-			# row with converged/no-gains, one with gains/no-converged), which
-			# doubled the JSON and made trajectory dumps confusing. The merge
-			# keeps the early row's fields (converged) and overlays the move
-			# fields; dpg_idx_* become the POST-move node values (the late
-			# row's semantics). Fallback push keeps a row if the early push
-			# was skipped for any reason.
-			my %_move_fields=(
+			push @$arow, {
 			 iter=>$i, ms=>int(time()*1000),
 			 measured_Y=>$_measured, target_Y=>$_target, de=>$_de,
 			 gain_R=>$_r_gain, gain_G=>$_g_gain, gain_B=>$_b_gain,
@@ -15154,12 +15026,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 applied_R=>defined($rg)?sprintf("%.4f",$sr):"undef",
 			 applied_G=>defined($gg)?sprintf("%.4f",$sg):"undef",
 			 applied_B=>defined($bg)?sprintf("%.4f",$sb):"undef",
-			);
-			if(@$arow && ref($arow->[-1]) eq "HASH" && defined($arow->[-1]{"iter"}) && ($arow->[-1]{"iter"}+0)==($i+0)) {
-			 $arow->[-1]{$_}=$_move_fields{$_} for(keys %_move_fields);
-			} else {
-			 push @$arow, { %_move_fields };
-			}
+			};
 			$ahist->{$label}=$arow;
 			$state->{"hdr20_1d_dpg_anchor_history"}=$ahist;
 			write_state($state);
