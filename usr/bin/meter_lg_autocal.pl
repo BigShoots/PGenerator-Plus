@@ -14078,6 +14078,28 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $damp_floor_low=defined($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}+0) : 0.5;
 	$damp_floor_low=0.3 if($damp_floor_low < 0.3);
 	$damp_floor_low=0.95 if($damp_floor_low > 0.95);
+	# Low-IRE stuck-anchor escape hatches (SDR26 port). Re-escalation: when a
+	# deep-shadow anchor exhausts its revert budget while still FAR from its
+	# (relaxed) target, the problem is reach/undershoot, not overshoot --
+	# halving move_scaling into the noise floor is exactly wrong. Retry at
+	# full step, bounded by max_escalations; total work stays bounded by the
+	# per-anchor iteration budget regardless.
+	my $low_ire_max_escalations=defined($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) ? int($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) : 2;
+	$low_ire_max_escalations=0 if($low_ire_max_escalations < 0);
+	$low_ire_max_escalations=4 if($low_ire_max_escalations > 4);
+	# Re-escalation fires ONLY when best_de > effective_target * this factor
+	# (a genuinely crushed anchor); a close anchor re-escalated at full step
+	# just scatters noise-limited reads with large bad moves.
+	my $low_ire_reescalate_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}+0) : 4.0;
+	$low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
+	$low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
+	# Noise-limited early stop: a low-IRE anchor already within this multiple
+	# of its (relaxed) target is meter-noise-limited -- further reverts only
+	# scatter the dE, so keep the best and stop after 2 consecutive reverts
+	# instead of thrashing the whole (very-low: 12) revert budget.
+	my $low_ire_close_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}+0) : 1.5;
+	$low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
+	$low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
@@ -14472,6 +14494,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# hashes, wiping @done on every revert.
 		my $best_anchors=[map { +{ %$_ } } @done];
 		my $consecutive_reverts=0;
+		# Per-anchor count of low-IRE full-step re-escalations (see the
+		# revert-budget branch below); bounded by $low_ire_max_escalations.
+		my $low_ire_escalations=0;
 		# Acceptance ("good enough"): once a patch's dE drops below
 		# $acceptance_de (default 0.3) it is snapped as the best, given ONE
 		# more refinement move, and if that move worsens dE the best is
@@ -14780,10 +14805,34 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# for most panels, which is why the 3-revert break below fires.
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
 					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
+					# Noise-limited early stop (SDR26 port): a low-IRE anchor already
+					# near its (relaxed) target is meter-noise-limited -- once a move
+					# has failed to beat the best twice, further reverts only scatter
+					# the dE (live run: 1.4% sat at best 1.16 vs relaxed target 1.0
+					# and thrashed 4 more iters). Keep the best and move on; the
+					# final-state restore re-commits + re-reads the best state.
+					if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
+						log_line("HDR20 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
+						last;
+					}
 					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
 					if($consecutive_reverts >= $_revert_budget) {
-						log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
-						last;
+						# Low-IRE re-escalation (SDR26 port): still FAR from the
+						# (relaxed) target after exhausting the revert budget means
+						# reach/undershoot, not overshoot -- restore full step and
+						# retry, bounded by $low_ire_max_escalations (and by the
+						# per-anchor iteration budget). best_dpg/best_anchors were
+						# already restored above and best is always kept, so a
+						# converged anchor is never regressed.
+						if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor && $low_ire_escalations < $low_ire_max_escalations) {
+							$low_ire_escalations++;
+							$consecutive_reverts=0;
+							$move_scaling=1.0;
+							log_line("HDR20 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$_revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to 1.0000)");
+						} else {
+							log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
+							last;
+						}
 					}
 				}
 				# Update prev_de for the next iter's descent check, regardless of
