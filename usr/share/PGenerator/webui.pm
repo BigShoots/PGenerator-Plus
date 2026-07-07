@@ -29357,12 +29357,23 @@ async function meterPollSeries(){
    const sortedSteps2=isColor3?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
    meterBuildPatchThumbs(sortedSteps2,completedIres,null);
   }
-  if(r.status==='complete'){
-   meterResetLiveReadingDisplay();
-   const liveEl=document.getElementById('meterLiveReading');
-   if(liveEl) liveEl.style.display='none';
-   if(typeof showColorReadingDetail==='function') showColorReadingDetail(null,{pin:false});
-  }
+   if(r.status==='complete'){
+    meterResetLiveReadingDisplay();
+    const liveEl=document.getElementById('meterLiveReading');
+    if(liveEl) liveEl.style.display='none';
+    if(typeof showColorReadingDetail==='function') showColorReadingDetail(null,{pin:false});
+    // meterResetLiveReadingDisplay() also blanks the greyscale/2-point
+    // delta-bar canvases (meterTwoPointLow/HighCanvas, meterRGBCanvasGrey,
+    // ...). Those ARE the series charts and must survive completion (see the
+    // "charts are preserved" note above), so redraw them from the readings
+    // that are still held. Without this a completed 2-point greyscale read
+    // would blank its charts the moment the series finished.
+    if(meterReadings&&meterReadings.length){
+     const _isCFin=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+     const _sortedFin=_isCFin?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+     try{ drawAllCharts(_sortedFin); }catch(e){}
+    }
+   }
   if(!(meterInternalSeriesWorkflow&&meterFullAutoCalRunning)){
    document.getElementById('meterProgress').style.display='none';
   }
