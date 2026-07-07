@@ -14740,10 +14740,21 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_dpg=[@{$current_dpg}];
 					$best_anchors=[map { +{ %$_ } } @done];
 					$consecutive_reverts=0;
-					# Successful iter: reset the move-scaling to full. The next gain
-					# is computed fresh from the new Y, so a fresh full-size move is
-					# the right starting point.
-					$move_scaling=1.0;
+					# Gentle step-size recovery instead of a hard reset to 1.0
+					# (port of the SDR26 fix). At low IRE the measured signal sits
+					# in the meter noise floor, so a "new best" is frequently just
+					# a lucky read. Snapping move_scaling straight back to full
+					# strength makes the very next move overshoot and the anchor
+					# oscillates (1.0->0.5->0.25->reset->1.0...) without settling
+					# -- exactly the live-run failure at 2% (i4 new best -> full-
+					# size move -> two reverts) and 1.4% (i5 best 1.16 -> i6/i7
+					# blowups to 2.1/5.0). Doubling toward the 1.0 cap lets a
+					# genuinely-improving anchor recover its step over a couple of
+					# iters, while a noise-dominated anchor keeps ratcheting down
+					# into the band where it can converge.
+					my $_recovered=$move_scaling*2.0;
+					$_recovered=1.0 if($_recovered+0 > 1.0);
+					$move_scaling=$_recovered;
 				} elsif((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
 					&& defined($prev_de) && $de+0 > $prev_de+0) {
 					# Descent-style revert: this iter's move made dE WORSE than the
