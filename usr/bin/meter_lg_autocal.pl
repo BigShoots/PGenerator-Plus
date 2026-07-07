@@ -14837,14 +14837,24 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# for most panels, which is why the 3-revert break below fires.
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
 					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
-					# Noise-limited early stop (SDR26 port): a low-IRE anchor already
-					# near its (relaxed) target is meter-noise-limited -- once a move
-					# has failed to beat the best twice, further reverts only scatter
-					# the dE (live run: 1.4% sat at best 1.16 vs relaxed target 1.0
-					# and thrashed 4 more iters). Keep the best and move on; the
-					# final-state restore re-commits + re-reads the best state.
-					if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
-						log_line("HDR20 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
+					# Noise-limited early stop (SDR26 port): a VERY-low-IRE anchor
+					# already near its (relaxed) target is meter-noise-limited --
+					# once a move has failed to beat the best twice, further reverts
+					# only scatter the dE (live run: 1.4% sat at best 1.16 vs relaxed
+					# target 1.0 and thrashed 4 more iters). Keep the best and move
+					# on; the final-state restore re-commits + re-reads the best
+					# state. Gated to the very-low tier (<= very_low_ire_threshold,
+					# default 2%) ONLY: above the meter floor (2.7%,4%,5% read
+					# 0.26-1.0 nits) the dE bounce is thrash/read-noise, not a floor
+					# limit, so an anchor still descending must NOT be bailed here --
+					# 4% was moving on at best 1.05 (1.4x its 0.75 target) after just
+					# 2 early-thrash reverts, well short of the ~0.37 it reaches
+					# through the normal revert/re-escalation loop. The mid/low tiers
+					# fall through to that loop; only the genuinely floor-limited
+					# 1.4%/2% anchors keep this bail (matching the "very-low-IRE"
+					# intent the SDR26 comment documents).
+					if($_anchor_ire+0 <= $very_low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
+						log_line("HDR20 1D DPG greyscale: very-low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
 						last;
 					}
 					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
