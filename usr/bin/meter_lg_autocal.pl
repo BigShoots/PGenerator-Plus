@@ -14781,7 +14781,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the gain_* / damp_* fields become 0.0000 / damp-default.
 			my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
 			$converged=1 if($conv_now);
-			# Best-so-far with revert runs ONLY at low IRE (< low_ire_threshold,
+			# Best-so-far with revert runs ONLY at low IRE (<= low_ire_threshold,
 			# default 5%): it was built to break the constant-amplitude
 			# oscillation at 1.4%/4% IRE. At mid/high IRE (incl. 100% white)
 			# Track the best-measured dE for EVERY anchor (so the final-state
@@ -14812,7 +14812,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					my $_recovered=$move_scaling*2.0;
 					$_recovered=1.0 if($_recovered+0 > 1.0);
 					$move_scaling=$_recovered;
-				} elsif((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
+				} elsif((($_anchor_ire+0 <= $low_ire_threshold+0) || ($_anchor_ire+0 >= $high_ire_threshold))
 					&& defined($prev_de) && $de+0 > $prev_de+0) {
 					# Descent-style revert: this iter's move made dE WORSE than the
 					# previous iter's dE (the state we were just at before applying
@@ -14824,7 +14824,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# subsequent iter triggers revert). The new condition gates on
 					# a LOCAL direction change: the move had to have actually
 					# worsened the result, not just failed to improve the record.
-					# Low IRE (<5%) and high IRE (>=80%) both enable this; mid IRE
+					# Low IRE (<=5%) and high IRE (>=80%) both enable this; mid IRE
 					# (5-80%) uses the monotonic best_de improvement pattern instead,
 					# matching the prior behavior.
 					@{$current_dpg}=@{$best_dpg};
@@ -14843,7 +14843,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# the dE (live run: 1.4% sat at best 1.16 vs relaxed target 1.0
 					# and thrashed 4 more iters). Keep the best and move on; the
 					# final-state restore re-commits + re-reads the best state.
-					if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
+					if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
 						log_line("HDR20 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
 						last;
 					}
@@ -14856,7 +14856,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 						# per-anchor iteration budget). best_dpg/best_anchors were
 						# already restored above and best is always kept, so a
 						# converged anchor is never regressed.
-						if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor && $low_ire_escalations < $low_ire_max_escalations) {
+						if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de) && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor && $low_ire_escalations < $low_ire_max_escalations) {
 							$low_ire_escalations++;
 							$consecutive_reverts=0;
 							$move_scaling=1.0;
