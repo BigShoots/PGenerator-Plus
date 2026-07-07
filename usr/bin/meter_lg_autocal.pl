@@ -14847,12 +14847,24 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				write_state($state);
 				last;
 			}
-			if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_de+0) {
+			# Early-converged refinement (port of the SDR26 gate): an anchor
+			# landing in the (acceptance_de, effective_target] band on an EARLY
+			# iteration (<=3) got there off a single large move and is still
+			# carrying that move's banked residual (live HDR run: 90% stopped
+			# at i1/dE 0.4538, 50% at i2/0.4985, 7% at i3/0.4908). Route it
+			# through the SAME one-more refinement path instead of stopping.
+			# Band arrivals at i>=4 are at their noise floor -- forcing more
+			# moves there oscillates -- so they keep the stop-immediately
+			# behavior via the target_de `last` below.
+			my $_refine_converged=($conv_now && !$acceptance_pending && defined($de) && $de+0 >= $acceptance_de+0 && $i <= 3) ? 1 : 0;
+			if(!$acceptance_pending && defined($de) && ($de+0 < $acceptance_de+0 || $_refine_converged)) {
 				$acceptance_pending=1;
 				$accepted_best_de=$de+0;
 				$accepted_best_dpg=[@{$current_dpg}];
 				$accepted_best_anchors=[map { +{ %$_ } } @done];
-				log_line("HDR20 1D DPG greyscale: ".$label." below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move");
+				log_line("HDR20 1D DPG greyscale: ".$label.($_refine_converged
+					? " converged early (dE=".sprintf("%.4f",$de+0)." <= ".sprintf("%.2f",$_effective_target_de+0)." at i".$i."), trying one more refinement move"
+					: " below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move"));
 				# fall through: the build below makes the one-more move
 			} elsif($acceptance_pending) {
 				# This read is the result of the one-more move. Decide + move on.
