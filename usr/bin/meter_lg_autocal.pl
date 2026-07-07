@@ -14115,12 +14115,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$acceptance_de=$target_de if($acceptance_de > $target_de);
 	# Skip-acceptance threshold: fraction of target_de below which the patch
 	# is "definitely good enough" -- stop and move on instantly, NO one-more
-	# refinement move and NO revert dance. Default 0.6 (i.e. below 60% of
-	# target). With target_de=0.5 the instant-skip kicks in below dE=0.30, so
-	# a 0.5 target still gets the one-more try at dE 0.30..0.50 but the meter
-	# noise floor (0.3 dE swing at low IRE) doesn't waste an extra upload +
-	# read on every patch. 1.0 disables the instant-skip path.
-	my $acceptance_skip_fraction=defined($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}+0) : 0.6;
+	# refinement move and NO revert dance. Default 0.3 (below 30% of the
+	# tier-scaled effective target: 0.15 mid, 0.225 low, 0.30 very-low with
+	# target 0.5) -- matching the SDR26 band layout. The previous 0.6 default
+	# made the instant-skip band swallow the whole acceptance band
+	# (acceptance_de=0.3): dE<0.30 skipped at every tier, so the one-more
+	# refinement machinery below never fired. 1.0 disables the instant-skip
+	# path.
+	my $acceptance_skip_fraction=defined($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}+0) : 0.3;
 	$acceptance_skip_fraction=0.0 if($acceptance_skip_fraction < 0.0);
 	$acceptance_skip_fraction=1.0 if($acceptance_skip_fraction > 1.0);
 	my $acceptance_skip_de=$acceptance_skip_fraction*$target_de;
