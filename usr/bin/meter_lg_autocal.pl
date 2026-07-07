@@ -15871,12 +15871,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   }
   # Acceptance fast-path: snap the best, try ONE more refinement move;
   # if the move worsens dE, revert to the best + re-read + move on.
-  if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_de+0) {
+  #
+  # Early-converged refinement: an anchor that lands in the
+  # (acceptance_de, effective_target] band on an EARLY iteration (<=3)
+  # got there off a single large move and is still carrying that move's
+  # banked residual (25% shipped -0.87% Y at i2/dE 0.4668, 50% at
+  # i3/0.4525 -- both became the post-cal chart's worst greyscale
+  # points). Route it through the SAME one-more refinement path instead
+  # of stopping. Anchors that only reach the band at i>=4 are at their
+  # noise floor -- forcing more moves there oscillates -- so they keep
+  # the stop-immediately behavior via the `last` below. SDR26-only:
+  # this sub is not shared with the HDR loop.
+  my $_refine_converged=($conv_now && !$acceptance_pending && defined($de) && $de+0 >= $acceptance_de+0 && $i <= 3) ? 1 : 0;
+  if(!$acceptance_pending && defined($de) && ($de+0 < $acceptance_de+0 || $_refine_converged)) {
    $acceptance_pending=1;
    $accepted_best_de=$de+0;
    $accepted_best_dpg=[@{$current_dpg_ref}];
    $accepted_best_anchors=[map { +{ %$_ } } @{$done_ref}];
-   log_line("SDR26 1D DPG greyscale: ".$label." below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move");
+   log_line("SDR26 1D DPG greyscale: ".$label.($_refine_converged
+    ? " converged early (dE=".sprintf("%.4f",$de+0)." <= ".sprintf("%.2f",$_effective_target_de+0)." at i".$i."), trying one more refinement move"
+    : " below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move"));
    # fall through: the build below makes the one-more move
   } elsif($acceptance_pending) {
    if(defined($de) && $de+0 < $accepted_best_de+0) {
