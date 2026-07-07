@@ -12924,7 +12924,7 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
 # while removing higher-frequency wiggle. Endpoints are left untouched;
 # monotonic non-decreasing is re-enforced. $strength<=0 returns the input
 # unchanged. Returns a new arrayref. Used by lg_autocal_26_build_dpg_core
-# for the HDR20 path (opt-in via lg_autocal_hdr20_dpg_smooth_strength).
+# for the HDR20 path (baked at a fixed 0.15 strength; not user-tunable).
 sub lg_autocal_26_smooth_control_points {
  my ($idx_ref,$ys_ref,$strength)= @_;
  return [ @{$ys_ref} ] if(!defined($strength) || $strength <= 0 || ref($idx_ref) ne "ARRAY" || ref($ys_ref) ne "ARRAY" || @{$idx_ref} < 3 || @{$idx_ref} != @{$ys_ref});
@@ -13013,10 +13013,14 @@ sub lg_autocal_26_build_dpg_core {
 	  $ctrl_val{1023}=$ctrl_val{1023} // $cur[$ch*1024 + 1023];
 	  @ctrl_idx=sort { $a <=> $b } @ctrl_idx;
 	  my @ctrl_ys=map { $ctrl_val{$_} } @ctrl_idx;
-	  # HDR-only optional control-point smoothing (default off). Reduces
-	  # per-anchor over-fit wiggle that the panel's 2.2->PQ reconstruction
-	  # amplifies at low/mid IRE. strength 0 = exact prior behavior.
-	  my $_dpg_smooth=(ref($LG_AUTOCAL_CONFIG) eq "HASH" && defined($LG_AUTOCAL_CONFIG->{"lg_autocal_hdr20_dpg_smooth_strength"})) ? ($LG_AUTOCAL_CONFIG->{"lg_autocal_hdr20_dpg_smooth_strength"}+0) : 0;
+	  # HDR-only control-point (curvature) smoothing, baked at a FIXED 0.15.
+	  # Reduces per-anchor over-fit wiggle that the panel's 2.2->PQ
+	  # reconstruction amplifies at low/mid IRE. Intentionally NOT user-tunable:
+	  # the strength is hardcoded here and no conf key is consulted, so no
+	  # PGenerator.conf edit or request field can change it. This is the
+	  # curvature smoother (quadratic control-point fit), NOT the per-iter
+	  # move-damp (the gain**(1/gamma_effective) closure), which is untouched.
+	  my $_dpg_smooth=0.15;
 	  if($_dpg_smooth > 0) {
 	   @ctrl_ys=@{ lg_autocal_26_smooth_control_points(\@ctrl_idx,\@ctrl_ys,$_dpg_smooth) };
 	  }
