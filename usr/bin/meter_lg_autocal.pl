@@ -14900,10 +14900,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					if(@$_r) {
 						$_r->[-1]{"de"}=sprintf("%.4f",$de+0);
 						$_r->[-1]{"acceptance_skip"}=JSON::PP::true;
-						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$acceptance_skip_de+0);
+						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$_effective_skip_de+0);
 					}
 				}
-				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$acceptance_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of target ".sprintf("%.2f",$target_de)."), moving on without one-more move");
+				# Log the TIER-SCALED threshold the comparison actually used;
+				# printing the base skip_de produced impossible-looking lines at
+				# low IRE ("dE=0.4287 < 0.3000") when the effective value was 0.60.
+				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$_effective_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of effective target ".sprintf("%.2f",$_effective_target_de)."), moving on without one-more move");
 				write_state($state);
 				last;
 			}
@@ -15086,7 +15089,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my $_idx42_r=defined($idx)?sprintf("%d",$current_dpg->[$idx]):"undef";
 			my $_idx42_g=defined($idx)?sprintf("%d",$current_dpg->[$idx+1024]):"undef";
 			my $_idx42_b=defined($idx)?sprintf("%d",$current_dpg->[$idx+2048]):"undef";
-			push @$arow, {
+			# Merge into the row the pre-gain push above already appended for
+			# THIS iteration instead of pushing a second row -- the two-push
+			# layout left every move iteration duplicated in the history (one
+			# row with converged/no-gains, one with gains/no-converged), which
+			# doubled the JSON and made trajectory dumps confusing. The merge
+			# keeps the early row's fields (converged) and overlays the move
+			# fields; dpg_idx_* become the POST-move node values (the late
+			# row's semantics). Fallback push keeps a row if the early push
+			# was skipped for any reason.
+			my %_move_fields=(
 			 iter=>$i, ms=>int(time()*1000),
 			 measured_Y=>$_measured, target_Y=>$_target, de=>$_de,
 			 gain_R=>$_r_gain, gain_G=>$_g_gain, gain_B=>$_b_gain,
@@ -15100,7 +15112,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 applied_R=>defined($rg)?sprintf("%.4f",$sr):"undef",
 			 applied_G=>defined($gg)?sprintf("%.4f",$sg):"undef",
 			 applied_B=>defined($bg)?sprintf("%.4f",$sb):"undef",
-			};
+			);
+			if(@$arow && ref($arow->[-1]) eq "HASH" && defined($arow->[-1]{"iter"}) && ($arow->[-1]{"iter"}+0)==($i+0)) {
+			 $arow->[-1]{$_}=$_move_fields{$_} for(keys %_move_fields);
+			} else {
+			 push @$arow, { %_move_fields };
+			}
 			$ahist->{$label}=$arow;
 			$state->{"hdr20_1d_dpg_anchor_history"}=$ahist;
 			write_state($state);
