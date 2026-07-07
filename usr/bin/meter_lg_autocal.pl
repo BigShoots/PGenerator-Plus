@@ -14026,10 +14026,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# + meter noise at 0.06-1 nits means the DAMP (sqrt(gain) clamped to
 	# [0.8, 1.25]) needs more iterations to converge through the noise.
 	# Field evidence on 2026-06-12: 1.4% IRE at 174% of target after 6 iters
-	# (max_inner exit); 16 iters converges. Default 16; the per-iter
-	# DAMP floor for the low range is separately controlled by
+	# (max_inner exit); 16 iters converges. Default trimmed to 12 to match the
+	# SDR26 low-IRE budget (lg_autocal_sdr26_dpg_inner_iters_low): the extra
+	# iterations mostly scattered noise-limited reads rather than converging.
+	# The per-iter DAMP floor for the low range is separately controlled by
 	# lg_autocal_hdr20_dpg_damp_floor_low below.
-	my $max_inner_low=defined($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) : 16;
+	my $max_inner_low=defined($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) : 12;
 	$max_inner_low=1 if($max_inner_low < 1);
 	$max_inner_low=24 if($max_inner_low > 24);
 	# IRE threshold below which the low-IRE budget + low-IRE DAMP floor apply.
@@ -14040,13 +14042,15 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
 	$low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
 	# Very-low-IRE (default <2%, e.g. 1.4% ~0.066 nits) sits at the meter's
-	# noise floor: raise the best-so-far revert budget so a noisy patch keeps
-	# trying longer instead of bailing after 3 reverts. Paired with the -Y aaa
-	# averaging upgrade in lg_low_light_mode_for_reading.
+	# noise floor: the best-so-far revert budget lets a noisy patch try a little
+	# longer than the default 3 reverts. Trimmed to 4 (from 12) toward the SDR26
+	# revert budget -- 12 reverts mostly thrashed noise-limited reads and cost
+	# time without lowering dE. Paired with the -Y aaa averaging upgrade in
+	# lg_low_light_mode_for_reading.
 	my $very_low_ire_threshold=defined($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}) ? ($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}+0) : 2.0;
 	$very_low_ire_threshold=0.5 if($very_low_ire_threshold < 0.5);
 	$very_low_ire_threshold=$low_ire_threshold if($very_low_ire_threshold > $low_ire_threshold);
-	my $very_low_revert_budget=defined($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) ? int($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) : 12;
+	my $very_low_revert_budget=defined($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) ? int($config->{"lg_autocal_hdr20_dpg_very_low_revert_budget"}) : 4;
 	$very_low_revert_budget=3 if($very_low_revert_budget < 3);
 	# High-IRE (default >=80%): the panel's drive->light transfer at the
 	# PQ shoulder is sub-linear AND comparable to the i1 Pro noise floor
