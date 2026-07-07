@@ -476,7 +476,7 @@ sub lg_autocal_hdr20_use_sdr_adjustment_method {
 sub lg_autocal_26_full_ddc_spine_anchor_ires_for_layout {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
- return (100,5,20,40,60,80) if($layout eq "hdr20");
+ return (100,5,50,25,75) if($layout eq "hdr20");
  return (109,20,40,60,80);
 }
 
