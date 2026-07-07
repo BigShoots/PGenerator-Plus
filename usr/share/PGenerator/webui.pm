@@ -4035,17 +4035,9 @@ my $_ac_target_gamma="bt1886";
  $_ac_insert_patch_input_max=255 if(!defined($_ac_insert_patch_input_max) || $_ac_insert_patch_input_max !~ /^-?\d+$/);
  $_ac_insert_time_input_max=255 if(!defined($_ac_insert_time_input_max) || $_ac_insert_time_input_max !~ /^-?\d+$/);
  $body=~s/\}\s*\z/,"patch_insert_patch_code":$_ac_insert_patch_code,"patch_insert_patch_input_max":$_ac_insert_patch_input_max,"patch_insert_time_code":$_ac_insert_time_code,"patch_insert_time_input_max":$_ac_insert_time_input_max}/;
- # Route the HDR20 DPG smoother strength (curvature-preserving low/mid-IRE
- # de-wiggle applied in the HDR20 DPG build) from PGenerator.conf into the
- # autocal config. Default 0 (off). Only appended when the request body did
- # not already supply it. Harmless for SDR (the worker only applies it on the
- # HDR20 build core). Value clamped to [0,1].
- if($body !~ /"lg_autocal_hdr20_dpg_smooth_strength"/) {
-  my $_dpg_smooth=(defined $pgenerator_conf{"lg_autocal_hdr20_dpg_smooth_strength"} && $pgenerator_conf{"lg_autocal_hdr20_dpg_smooth_strength"} ne "") ? ($pgenerator_conf{"lg_autocal_hdr20_dpg_smooth_strength"}+0) : 0;
-  $_dpg_smooth=0 if($_dpg_smooth < 0);
-  $_dpg_smooth=1 if($_dpg_smooth > 1);
-  $body=~s/\}\s*\z/,"lg_autocal_hdr20_dpg_smooth_strength":$_dpg_smooth}/;
- }
+ # The HDR20 DPG curvature smoother is baked at a FIXED 0.15 in the worker
+ # (meter_lg_autocal.pl) and is intentionally NOT user-tunable: no smoother
+ # strength is routed from PGenerator.conf, so no conf edit can change it.
  if(open(my $fh,">",$_meter_lg_autocal_config_file)) {
   print $fh $body;
   close($fh);
