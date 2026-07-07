@@ -4099,56 +4099,81 @@ sub webui_meter_lg_autocal_status (@) {
 	    }
 	    if($changed && open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
 	   }
-	   if($json=~/"status"\s*:\s*"running"/ && !&webui_meter_lg_autocal_running()) {
-	    if(
-	     $json=~/"final_1d_lut_uploaded"\s*:\s*true/ &&
-	     $json=~/"final_1d_lut_upload_verified"\s*:\s*true/ &&
-	     $json=~/"calibration_mode"\s*:\s*false/
-	    ) {
-	     my $now=int(time()*1000);
-	     $json=~s/"status"\s*:\s*"running"/"status":"complete"/;
-	     if($json=~/"current_name"\s*:\s*"[^"]*"/) {
-	      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal complete"/;
+	   if($json=~/"status"\s*:\s*"running"/) {
+	    # Debounce "process died". webui_meter_lg_autocal_running() is a single
+	    # pgrep of meter_lg_autocal.pl, and the worker is momentarily out of
+	    # pgrep's view during every meter-session teardown/restart (each
+	    # restart re-acquires the i1d3 colorimeter, which briefly drops the
+	    # worker). A one-shot miss must not flip a healthy run to
+	    # "process died", so we persist the first-miss time in a sidecar
+	    # (across the per-request forks) and only declare death after a grace
+	    # window of sustained absence. The timer is cleared as soon as the
+	    # worker reappears or the status leaves "running".
+	    my $_dmf="$_meter_lg_autocal_file.misses";
+	    if(!&webui_meter_lg_autocal_running()) {
+	     my $_now=int(time()*1000);
+	     my $_first_miss=0;
+	     if(open(my $mf,"<",$_dmf)) { local $/; my $m=<$mf>; close($mf); $_first_miss=($m=~/(\d+)/?$1:0); }
+	     $_first_miss=$_now if($_first_miss<=0 || $_first_miss>$_now);
+	     if(($_now-$_first_miss) < 15000) {
+	      if(open(my $mf,">",$_dmf)) { print $mf $_first_miss; close($mf); chmod(0666,$_dmf); }
+	      return $json;
+	     }
+	     unlink($_dmf);
+	     if(
+	      $json=~/"final_1d_lut_uploaded"\s*:\s*true/ &&
+	      $json=~/"final_1d_lut_upload_verified"\s*:\s*true/ &&
+	      $json=~/"calibration_mode"\s*:\s*false/
+	     ) {
+	      my $now=$_now;
+	      $json=~s/"status"\s*:\s*"running"/"status":"complete"/;
+	      if($json=~/"current_name"\s*:\s*"[^"]*"/) {
+	       $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal complete"/;
+	      } else {
+	       $json=~s/\}$/,"current_name":"Auto Cal complete"}/;
+	      }
+	      if($json=~/"message"\s*:\s*"[^"]*"/) {
+	       $json=~s/"message"\s*:\s*"[^"]*"/"message":"Auto Cal complete"/;
+	      } else {
+	       $json=~s/\}$/,"message":"Auto Cal complete"}/;
+	      }
+	      $json=~s/\}$/,"completed_at":$now}/ if($json!~/"completed_at"\s*:/);
+	      if($json!~/"elapsed_ms"\s*:/) {
+	       my $elapsed=0;
+	       $elapsed=$now-($1+0) if($json=~/"started_at"\s*:\s*(\d+)/);
+	       $elapsed=0 if($elapsed<0);
+	       $json=~s/\}$/,"elapsed_ms":$elapsed}/;
+	      }
 	     } else {
-	      $json=~s/\}$/,"current_name":"Auto Cal complete"}/;
+	      $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+	      if($json=~/"current_name"\s*:\s*"[^"]*"/) {
+	       $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal process died"/;
+	      }
+	      # Preserve any real error message the worker already wrote (the
+	      # eval `or do {}` block writes $state->{message}=$err before
+	      # exit). Only fall back to the generic "stopped unexpectedly"
+	      # rewrite when the existing message is empty, the default
+	      # "Starting" placeholder, or itself the generic string from a
+	      # prior rewrite (which would otherwise loop). Without this guard
+	      # the rewrite silently overwrites the actual die() error string,
+	      # making "auto cal died" indistinguishable from "auto cal
+	      # completed with an unreported exception".
+	      my $_existing_msg="";
+	      $_existing_msg=$1 if($json=~/"message"\s*:\s*"([^"]*)"/);
+	      if($_existing_msg eq ""
+	       || $_existing_msg eq "Starting"
+	       || $_existing_msg eq "Starting LG Auto Cal..."
+	       || $_existing_msg eq "Auto Cal complete"
+	       || $_existing_msg eq "LG Auto Cal stopped unexpectedly") {
+	       $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG Auto Cal stopped unexpectedly"/;
+	      }
 	     }
-	     if($json=~/"message"\s*:\s*"[^"]*"/) {
-	      $json=~s/"message"\s*:\s*"[^"]*"/"message":"Auto Cal complete"/;
-	     } else {
-	      $json=~s/\}$/,"message":"Auto Cal complete"}/;
-	     }
-	     $json=~s/\}$/,"completed_at":$now}/ if($json!~/"completed_at"\s*:/);
-	     if($json!~/"elapsed_ms"\s*:/) {
-	      my $elapsed=0;
-	      $elapsed=$now-($1+0) if($json=~/"started_at"\s*:\s*(\d+)/);
-	      $elapsed=0 if($elapsed<0);
-	      $json=~s/\}$/,"elapsed_ms":$elapsed}/;
-	     }
+	     if(open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
 	    } else {
-	     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
-	     if($json=~/"current_name"\s*:\s*"[^"]*"/) {
-	      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Auto Cal process died"/;
-	     }
-	     # Preserve any real error message the worker already wrote (the
-	     # eval `or do {}` block writes $state->{message}=$err before
-	     # exit). Only fall back to the generic "stopped unexpectedly"
-	     # rewrite when the existing message is empty, the default
-	     # "Starting" placeholder, or itself the generic string from a
-	     # prior rewrite (which would otherwise loop). Without this guard
-	     # the rewrite silently overwrites the actual die() error string,
-	     # making "auto cal died" indistinguishable from "auto cal
-	     # completed with an unreported exception".
-	     my $_existing_msg="";
-	     $_existing_msg=$1 if($json=~/"message"\s*:\s*"([^"]*)"/);
-	     if($_existing_msg eq ""
-	      || $_existing_msg eq "Starting"
-	      || $_existing_msg eq "Starting LG Auto Cal..."
-	      || $_existing_msg eq "Auto Cal complete"
-	      || $_existing_msg eq "LG Auto Cal stopped unexpectedly") {
-	      $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG Auto Cal stopped unexpectedly"/;
-	     }
+	     unlink($_dmf);
 	    }
-	    if(open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
+	   } else {
+	    unlink("$_meter_lg_autocal_file.misses");
 	   }
 	   return $json;
   }
@@ -4335,42 +4360,64 @@ sub webui_meter_lg_3d_autocal_status (@) {
   my $json="";
   if(open(my $fh,"<",$_meter_lg_3d_autocal_file)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "") {
-   if($json=~/"status"\s*:\s*"running"/ && !&webui_meter_lg_3d_autocal_running()) {
-    # The worker process is gone while still marked "running". Mirror the 1D
-    # monitor's verified-marker fallback: if the 3D LUT was uploaded AND
-    # verified (and the tone-map step, when present, succeeded or was skipped),
-    # the calibration actually landed on the TV -- the tone-map helper sends
-    # CAL_END as part of its upload, so a verified upload means the cal
-    # persisted. The worker was just killed at the very end (e.g. a meter read
-    # stall during finalize) before it could write status=complete. Report
-    # that as complete instead of a spurious "process died". Only fall back to
-    # the died/error path when the LUT did not verify (a genuine failure) or
-    # the worker left its own specific error message.
-    my $_uv=($json=~/"upload_verified"\s*:\s*true/) ? 1 : 0;
-    my $_tm_status=($json=~/"tone_map_upload_status"\s*:\s*"([^"]*)"/) ? $1 : "";
-    my $_tm_ok=($_tm_status eq "" || $_tm_status eq "ok" || $_tm_status eq "skipped") ? 1 : 0;
-    if($_uv && $_tm_ok) {
-     my $now=int(time()*1000);
-     $json=~s/"status"\s*:\s*"running"/"status":"complete"/;
-     $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"LG 3D LUT Auto Cal complete"/ if($json=~/"current_name"\s*:\s*"[^"]*"/);
-     my $_msg="3D LUT exported, uploaded, and verified";
-     if($json=~/"message"\s*:\s*"[^"]*"/) { $json=~s/"message"\s*:\s*"[^"]*"/"message":"$_msg"/; } else { $json=~s/\}$/,"message":"$_msg"}/; }
-     if($json=~/"phase"\s*:\s*"[^"]*"/) { $json=~s/"phase"\s*:\s*"[^"]*"/"phase":"complete"/; } else { $json=~s/\}$/,"phase":"complete"}/; }
-     $json=~s/\}$/,"completed_at":$now}/ if($json!~/"completed_at"\s*:/);
+    if($json=~/"status"\s*:\s*"running"/) {
+     # Debounce "process died" (see the 1D monitor for rationale): the worker
+     # is momentarily out of pgrep's view during meter-session teardown/restart
+     # (each restart re-acquires the i1d3 colorimeter), so ride out a grace
+     # window of sustained absence before declaring death. Persist the
+     # first-miss time in a sidecar; clear it when the worker reappears or the
+     # status leaves "running".
+     my $_dmf="$_meter_lg_3d_autocal_file.misses";
+     if(!&webui_meter_lg_3d_autocal_running()) {
+      my $_now=int(time()*1000);
+      my $_first_miss=0;
+      if(open(my $mf,"<",$_dmf)) { local $/; my $m=<$mf>; close($mf); $_first_miss=($m=~/(\d+)/?$1:0); }
+      $_first_miss=$_now if($_first_miss<=0 || $_first_miss>$_now);
+      if(($_now-$_first_miss) < 15000) {
+       if(open(my $mf,">",$_dmf)) { print $mf $_first_miss; close($mf); chmod(0666,$_dmf); }
+       return &webui_meter_lg_3d_autocal_compact_status_json($json);
+      }
+      unlink($_dmf);
+      # The worker process is gone while still marked "running". Mirror the 1D
+      # monitor's verified-marker fallback: if the 3D LUT was uploaded AND
+      # verified (and the tone-map step, when present, succeeded or was skipped),
+      # the calibration actually landed on the TV -- the tone-map helper sends
+      # CAL_END as part of its upload, so a verified upload means the cal
+      # persisted. The worker was just killed at the very end (e.g. a meter read
+      # stall during finalize) before it could write status=complete. Report
+      # that as complete instead of a spurious "process died". Only fall back to
+      # the died/error path when the LUT did not verify (a genuine failure) or
+      # the worker left its own specific error message.
+      my $_uv=($json=~/"upload_verified"\s*:\s*true/) ? 1 : 0;
+      my $_tm_status=($json=~/"tone_map_upload_status"\s*:\s*"([^"]*)"/) ? $1 : "";
+      my $_tm_ok=($_tm_status eq "" || $_tm_status eq "ok" || $_tm_status eq "skipped") ? 1 : 0;
+      if($_uv && $_tm_ok) {
+       my $now=$_now;
+       $json=~s/"status"\s*:\s*"running"/"status":"complete"/;
+       $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"LG 3D LUT Auto Cal complete"/ if($json=~/"current_name"\s*:\s*"[^"]*"/);
+       my $_msg="3D LUT exported, uploaded, and verified";
+       if($json=~/"message"\s*:\s*"[^"]*"/) { $json=~s/"message"\s*:\s*"[^"]*"/"message":"$_msg"/; } else { $json=~s/\}$/,"message":"$_msg"}/; }
+       if($json=~/"phase"\s*:\s*"[^"]*"/) { $json=~s/"phase"\s*:\s*"[^"]*"/"phase":"complete"/; } else { $json=~s/\}$/,"phase":"complete"}/; }
+       $json=~s/\}$/,"completed_at":$now}/ if($json!~/"completed_at"\s*:/);
+      } else {
+       $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+       if($json=~/"current_name"\s*:\s*"[^"]*"/) {
+        $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"3D LUT AutoCal process died"/;
+       }
+       # Preserve a real worker error message; only fall back to the generic
+       # string when empty/placeholder/the generic itself.
+       my $_em=""; $_em=$1 if($json=~/"message"\s*:\s*"([^"]*)"/);
+       if($_em eq "" || $_em eq "Starting" || $_em=~/^Starting LG 3D/ || $_em eq "LG 3D LUT AutoCal stopped unexpectedly") {
+        $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG 3D LUT AutoCal stopped unexpectedly"/;
+       }
+      }
+      if(open(my $wf,">",$_meter_lg_3d_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_3d_autocal_file); }
+     } else {
+      unlink($_dmf);
+     }
     } else {
-     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
-     if($json=~/"current_name"\s*:\s*"[^"]*"/) {
-      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"3D LUT AutoCal process died"/;
-     }
-     # Preserve a real worker error message; only fall back to the generic
-     # string when empty/placeholder/the generic itself.
-     my $_em=""; $_em=$1 if($json=~/"message"\s*:\s*"([^"]*)"/);
-     if($_em eq "" || $_em eq "Starting" || $_em=~/^Starting LG 3D/ || $_em eq "LG 3D LUT AutoCal stopped unexpectedly") {
-      $json=~s/"message"\s*:\s*"[^"]*"/"message":"LG 3D LUT AutoCal stopped unexpectedly"/;
-     }
+     unlink("$_meter_lg_3d_autocal_file.misses");
     }
-    if(open(my $wf,">",$_meter_lg_3d_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_3d_autocal_file); }
-   }
    return &webui_meter_lg_3d_autocal_compact_status_json($json);
   }
  }
