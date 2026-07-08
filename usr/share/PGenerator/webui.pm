@@ -13917,6 +13917,20 @@ function meterGreyscaleTargetSlotIre(item){
  return meterGreyChartStimulusIre(item);
 }
 
+// Runtime gate for the user-facing custom greyscale feature (the per-point
+// stimulus table edited via "Edit Values"). When active, the target must NOT
+// move with the custom stimulus/code -- it stays anchored to the nominal slot
+// IRE. Excludes LG 22pt manual greyscale (METER_LG_GREY_MANUAL_22_ENABLED is
+// false) and LG AutoCal 26pt headroom, whose targets are intentionally
+// stimulus/code-derived.
+function meterGreyscaleCustomTargetActive(){
+ if(typeof meterActiveSeriesType==='undefined'||meterActiveSeriesType!=='greyscale') return false;
+ const useLg21=(typeof meterUseLgGreyscale21==='function')&&meterUseLgGreyscale21(meterActiveSeriesPoints);
+ const useLg26=(typeof meterUseLgAutoCal26==='function')&&meterUseLgAutoCal26(meterActiveSeriesPoints);
+ if(useLg21||useLg26) return false;
+ return (typeof meterGreyCustomEnabled==='function')&&meterGreyCustomEnabled();
+}
+
 function meterGreyscaleTargetIreForStep(step,readingMap){
  if(!step) return 0;
  const rd=(readingMap&&step.ire!=null)?readingMap[step.ire]:null;
@@ -17602,8 +17616,15 @@ function meterGreyCodeLooksHeadroom(code){
 function meterGreyTargetSignal(ire,code){
  const headroomIre=Number(ire)>100;
  const nominal=Math.max(0,Math.min((meterGreyAllowsHeadroomTargets()||headroomIre)?1.1:1,(ire||0)/100));
- const headroomCode=meterGreyCodeLooksHeadroom(code);
  if(meterChartIsDv()) return nominal;
+ // Custom greyscale: the target must follow the nominal IRE only. Ignore the
+ // passed code so a custom 10-bit code (which can look headroom >255, or trip
+ // the HDR/PQ code-decode branch) does not re-bend the target signal.
+ if((typeof meterGreyscaleCustomTargetActive==='function')&&meterGreyscaleCustomTargetActive()){
+  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
+  return nominal;
+ }
+ const headroomCode=meterGreyCodeLooksHeadroom(code);
  if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets()||headroomCode)) return meterGreySignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
@@ -17870,6 +17891,14 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		}
 		const metadataY=(row&&row.target_Yn!=null&&typeof meterGreyscaleTargetYFromYn==='function')?meterGreyscaleTargetYFromYn(row.target_Yn,Lw,Lb||0):null;
 		if(Number.isFinite(metadataY)&&metadataY>=0) return metadataY;
+		// Custom greyscale: row.stimulus / row.code are the CUSTOM patch values,
+		// which must NOT move the target. The caller (curve builder / per-reading
+		// target) already reduced the position to the nominal slot and passed it
+		// as `signal`; use that and ignore the row so the target line is smooth.
+		if((typeof meterGreyscaleCustomTargetActive==='function')&&meterGreyscaleCustomTargetActive()){
+		 const frac=Number(signal);
+		 return meterGreyTargetLuminance(Number.isFinite(frac)?frac*100:0,Lw,Lb||0,null);
+		}
 		if(row&&('stimulus' in row || 'code' in row)){
 		 const stimulus=Number(row.stimulus);
 		 const ire=Number.isFinite(stimulus) ? stimulus : (Number.isFinite(Number(signal)) ? Number(signal)*100 : 0);
