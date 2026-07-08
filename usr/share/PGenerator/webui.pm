@@ -25545,7 +25545,7 @@ async function meterAutoCalRunPreflightReset(){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({
     ip:(cfg.ip||''),
-    workflow:(meterFullAutoCalActive?'full':'greyscale2pt'),
+    workflow:(cfg.fullWorkflow?'full':'greyscale2pt'),
     config:{
      signal_mode:meterLgAutoCalRequestedSignalMode(),
      picture_mode:meterLgPictureModeValue(),
@@ -26787,7 +26787,7 @@ function meterFullAutoCalAbort(message,isError){
  // abort so the TV always returns to normal viewing. Fire-and-forget so the
  // UI teardown below is not blocked on the TV round-trip.
  try{ meterFullAutoCalEnsureCalibrationModeOff('Full Auto Cal stop').catch(function(){}); }catch(e){}
- try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:text}),_quiet:true,_timeoutMs:8000}); }catch(e){}
+ try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:text}),_quiet:true,_timeoutMs:8000}).catch(function(){}); }catch(e){}
  meterFullAutoCalResetState(false);
  meterActionPending=false;
  meterAutoCalRunning=false;
@@ -28162,7 +28162,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
  // subsequent verification series -- greyscale, ColorChecker, saturation --
  // computes its target luminance against the correct EOTF instead of 2.2.
  try{ if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault(); }catch(e){}
- try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
+ try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}).catch(function(){}); }catch(e){}
 }
 
 async function meterPollAutoCal(options){
