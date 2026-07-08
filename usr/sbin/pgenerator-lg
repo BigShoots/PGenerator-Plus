@@ -1969,7 +1969,7 @@ sub diag_log_append (@) {
  my $body=eval { JSON::PP->new->canonical(1)->utf8(1)->encode($data); } || "<encode-failed>";
  my $line="[$stamp] $label $body\n";
  if(-f $DIAG_LOG_PATH && (stat($DIAG_LOG_PATH))[7] > $DIAG_LOG_MAX_BYTES) {
-  unlink($DIAG_LOG_PATH);
+  rename($DIAG_LOG_PATH, "$DIAG_LOG_PATH.1");
  }
  if(open(my $fh,">>",$DIAG_LOG_PATH)) {
   binmode($fh);
