@@ -9185,7 +9185,14 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
-align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;
+/* Pin the top status bar while scrolling. position:sticky keeps it in normal
+   flow at the top of the page and glues it to the viewport once it would
+   scroll off, so the status indicators (temp, cal, meter, USB/HDMI warnings)
+   stay visible. The header already has an opaque gradient background, so no
+   extra backdrop is needed. z-index sits above dashboard cards but well
+   below the modal/HDMI overlays (9000-10001). */
+position:sticky;top:0;z-index:60}
 .logo{display:flex;align-items:center;gap:10px}
 .logo img{height:40px;width:auto}
 .logo h1{font-size:1.3rem;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));
