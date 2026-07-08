@@ -11397,6 +11397,10 @@ async function syncRemoteConfig(){
 
 function setVal(id,v){const el=document.getElementById(id);if(el)el.value=v;}
 function getVal(id){const el=document.getElementById(id);return el?el.value:'';}
+// Human-readable label of the currently-selected <option> for a <select> id.
+// Falls back to the raw value if the element/option is missing so this never
+// throws and degrades gracefully in headless/test contexts.
+function meterSelectLabel(id){const el=document.getElementById(id);if(!el)return getVal(id)||'';const o=el.options&&el.options[el.selectedIndex];return o?(o.textContent||'').trim():(el.value||'');}
 
 function dvMetadataForMapMode(mapMode){
  mapMode=String(mapMode||'');
@@ -22523,11 +22527,33 @@ function meterGreyModeSignature(){
  return [
   getVal('signal_mode')||'sdr',
   'fmt:'+(getVal('color_format')||'0'),
+  'bpc:'+(getVal('max_bpc')||'8'),
   'range:'+(getVal('rgb_quant_range')||'0'),
   'color:'+(getVal('colorimetry')||'0'),
   'prim:'+(getVal('primaries')||'0'),
   'eotf:'+(getVal('eotf')||'0')
  ].join('|');
+}
+// Human-readable version of the active mode signature, derived from the live
+// <select> option text so it can never drift from the dropdowns. Used by the
+// custom-greyscale status labels (which previously dumped the raw numeric
+// signature, e.g. "sdr|fmt:1|range:1|..."). Omits EOTF/primaries when they are
+// the plain SDR defaults to keep the label short; always includes signal mode,
+// color format, bit depth, range and colorimetry since those actually scope a
+// custom greyscale profile.
+function meterGreyModeSignatureLabel(){
+ const parts=[
+  meterSelectLabel('signal_mode')||'SDR',
+  meterSelectLabel('color_format'),
+  meterSelectLabel('max_bpc'),
+  meterSelectLabel('rgb_quant_range'),
+  meterSelectLabel('colorimetry')
+ ].filter(p=>p&&String(p).length);
+ const eotf=getVal('eotf')||'0';
+ const primaries=getVal('primaries')||'0';
+ if(eotf!=='0') parts.push(meterSelectLabel('eotf'));
+ if(primaries!=='0') parts.push(meterSelectLabel('primaries'));
+ return parts.join(' \u00b7 ');
 }
 
 function meterGreyNormalizeProfilesState(){
@@ -22535,6 +22561,35 @@ function meterGreyNormalizeProfilesState(){
  meterGreyPatchProfiles.format='pgenerator-greyscale-profile-v2';
  meterGreyPatchProfiles.apply_to_all_modes=!!meterGreyPatchProfiles.apply_to_all_modes;
  if(!meterGreyPatchProfiles.profiles||typeof meterGreyPatchProfiles.profiles!=='object') meterGreyPatchProfiles.profiles={};
+ // One-time migration: older builds keyed profiles WITHOUT a bpc: segment, so
+ // 8-bit and 10-bit shared one table. The key now includes bpc:<max_bpc>; re-
+ // key any legacy entry under the current bit depth (inserting the bpc: segment
+ // in the SAME position meterGreyModeSignature builds it -- after fmt:) so the
+ // migrated key resolves correctly. Existing custom values keep working where
+ // they were last seen; the other bit depth starts fresh. Runs once per bundle.
+ if(!meterGreyPatchProfiles.migrated_bpc_keys){
+  const curBpc=getVal('max_bpc')||'8';
+  const legacy={};
+  Object.keys(meterGreyPatchProfiles.profiles).forEach(key=>{
+   if(key==='__all__') return;
+   if(!/\bbpc:/.test(key)) legacy[key]=meterGreyPatchProfiles.profiles[key];
+  });
+  Object.keys(legacy).forEach(key=>{
+   delete meterGreyPatchProfiles.profiles[key];
+   // Reconstruct with bpc: after fmt:, matching meterGreyModeSignature order.
+   const segs=key.split('|');
+   const out=[];
+   let inserted=false;
+   for(let si=0;si<segs.length;si++){
+    out.push(segs[si]);
+    if(!inserted && /^fmt:/.test(segs[si])){ out.push('bpc:'+curBpc); inserted=true; }
+   }
+   if(!inserted) out.push('bpc:'+curBpc);
+   const nk=out.join('|');
+   if(!meterGreyPatchProfiles.profiles[nk]) meterGreyPatchProfiles.profiles[nk]=legacy[key];
+  });
+  meterGreyPatchProfiles.migrated_bpc_keys=true;
+ }
  const normalize=(profile)=>{
   const base=meterGreyProfileTemplate();
   const src=(profile&&typeof profile==='object')?profile:{};
@@ -22642,7 +22697,7 @@ function meterGreySyncUi(){
  const chk=document.getElementById('meterUseCustomGreyscale');
  if(chk) chk.checked=enabled;
  const label=document.getElementById('meterGreyProfileModeLabel');
- if(label) label.textContent=meterGreyPatchProfiles.apply_to_all_modes?'All modes':meterGreyModeSignature();
+ if(label) label.textContent=meterGreyPatchProfiles.apply_to_all_modes?'All modes':meterGreyModeSignatureLabel();
  const actions=document.getElementById('meterGreyProfileActions');
  if(actions) actions.style.display=enabled?'flex':'none';
 }
@@ -22698,7 +22753,7 @@ function meterOpenGreyProfileEditor(points){
  const applyAll=document.getElementById('meterGreyApplyAll');
  if(applyAll) applyAll.checked=!!meterGreyPatchProfiles.apply_to_all_modes;
  const label=document.getElementById('meterGreyModalModeLabel');
- if(label) label.textContent=meterGreyModeSignature();
+ if(label) label.textContent=meterGreyModeSignatureLabel();
  meterRenderGreyProfileEditor();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
