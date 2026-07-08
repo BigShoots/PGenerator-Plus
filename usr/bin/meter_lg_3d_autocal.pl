@@ -3281,7 +3281,7 @@ eval {
      tv_message    => $state->{'message'} || '',
      worker_status => $state->{'status'} || '',
     });
-    PGAutoCalRun::run_merge_manifest($rid, { config => {
+    PGAutoCalRun::run_merge_manifest($rid, { emitted_lut => {
      lut_grid       => 33,
      lut_data_count => 35937,
      lut_bit_depth  => 12,
