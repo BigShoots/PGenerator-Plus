@@ -163,6 +163,22 @@ sub pgen_service_action(@) {
  return 127;
 }
 
+# Is a process with the given exact name (comm) currently running? Used to
+# verify a service stop actually killed the daemon (the hostapd init script
+# silently no-ops when its pidfile is stale/missing). Uses pgrep -x so it
+# matches the process comm exactly, not a substring. Resolve pgrep to a full
+# path because pgen_capture->pgen_cmd_exists uses -x on the literal arg, so a
+# bare "pgrep" (relative) is treated as not-found.
+sub pgen_process_alive(@) {
+ my ($name)=@_;
+ return 0 if(!defined $name || $name eq "");
+ my $pgrep="/usr/bin/pgrep";
+ $pgrep="/bin/pgrep" unless(-x $pgrep);
+ return 0 unless(-x $pgrep);
+ my $out=&pgen_capture($pgrep,"-x",$name);
+ return ($out=~/^\s*\d+/m) ? 1 : 0;
+}
+
 sub pgen_service_active(@) {
  my ($process,$service)=@_;
  if(defined $systemctl && &pgen_cmd_exists($systemctl) && defined $service && $service ne "") {
@@ -170,8 +186,13 @@ sub pgen_service_active(@) {
   chomp($active);
   return 1 if($active eq "active");
  }
- my $ps=`ps aux 2>/dev/null`;
- return ($ps=~/\b\Q$process\E\b/) ? 1 : 0;
+ # Fall back to an exact-comm process check (pgrep -x). The old "ps aux" +
+ # /\bname\b/ regex falsely matched ANY process whose command line mentioned
+ # the service name -- including this very PGenerator_cmd.pl invocation (its
+ # args contain "hostapd"), so AP_ACTIVE read 1 even after hostapd was killed
+ # and the WebUI toggle stayed "on" after a disable. pgrep -x matches the
+ # process comm (15-char kernel name), not the argument list.
+ return &pgen_process_alive($process);
 }
 
 sub pgen_service_exists(@) {
@@ -608,9 +629,23 @@ sub wifi_ap_disable (@) {
  }
  if($stop==127) {
   print "ERR:hostapd service not available";
- } else {
-  print "OK";
+  return;
  }
+ # The init script's stop reads /var/run/hostapd/hostapd.pid and SIGTERMs that
+ # PID. The pidfile is wiped on stop, so after any kill/crash/restart cycle that
+ # bypassed the init script the pidfile is missing and `stop` silently no-ops
+ # (returns 0, prints "done", hostapd keeps running) -- the WebUI then reports
+ # success while the AP stays up. Verify the process is actually gone and fall
+ # back to pkill (-TERM then -KILL) if it survived.
+ if(&pgen_process_alive("hostapd")) {
+  system("/usr/bin/pkill","-TERM","-x","hostapd");
+  my $wait; for($wait=0;$wait<5;$wait++){ last unless(&pgen_process_alive("hostapd")); select(undef,undef,undef,0.3); }
+  if(&pgen_process_alive("hostapd")) {
+   system("/usr/bin/pkill","-KILL","-x","hostapd");
+   select(undef,undef,undef,0.5);
+  }
+ }
+ print &pgen_process_alive("hostapd") ? "ERR:hostapd could not be stopped" : "OK";
 }
 
 ###############################################
