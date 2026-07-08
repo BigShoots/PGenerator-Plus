@@ -476,7 +476,7 @@ sub lg_autocal_hdr20_use_sdr_adjustment_method {
 sub lg_autocal_26_full_ddc_spine_anchor_ires_for_layout {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
- return (100,5,50,25,75) if($layout eq "hdr20");
+ return (100,5,50,25) if($layout eq "hdr20");
  return (109,20,40,60,80);
 }
 
@@ -14335,9 +14335,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# calibration -- empirically confirmed 2026-06-18. The state transitions /
 	# meter-read here are depended on by the flow; do not remove.
 	my ($white_step)=grep { autocal_step_is_white($_) } @ordered;
-	# Insert a 100% RECALIBRATION into the series order right after the ~80%
-	# step (before 90%): the upper-mid anchors shift the global 1D curve, so
-	# re-touch the peak there. Desired order: 100 (initial) -> 5,20,40,60,80
+	# Insert a 100% RECALIBRATION into the series order right after the spine
+	# seed (before the descent begins at ~90%): once the 5/50/25 seed has
+	# shaped the curve, re-touch the peak so the whole descent references the
+	# freshly calibrated peak. Desired order: 100 (initial) -> 5,50,25
 	# -> 100 (recal) -> 90 -> descending. The recal clone is flagged so the
 	# series loop calibrates it as white instead of skipping it.
 	if(ref($white_step) eq "HASH") {
@@ -14350,12 +14351,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			next if(autocal_step_is_white($s));
 			my $ire=(defined($s->{"ire"}) ? $s->{"ire"}+0 : (defined($s->{"stimulus"}) ? $s->{"stimulus"}+0 : undef));
 			next if(!defined($ire));
-			my $d=abs($ire-80.0);
+			my $d=abs($ire-90.0);
 			if($d < $best_delta) { $best_delta=$d; $insert_at=$i; }
 		}
 		if(defined($insert_at) && $best_delta <= 5.0) {
-			splice(@ordered,$insert_at+1,0,$recal);
-			log_line("HDR20 1D DPG greyscale: inserted 100% recalibration into series order after ~80% (before 90%)");
+			splice(@ordered,$insert_at,0,$recal);
+			log_line("HDR20 1D DPG greyscale: inserted 100% recalibration into series order after the spine seed (before the ~90% descent start)");
 		}
 	}
 	my $white_ref=undef;
