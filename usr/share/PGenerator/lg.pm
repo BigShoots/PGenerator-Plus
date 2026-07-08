@@ -9,6 +9,9 @@ use IO::Socket::INET ();
 use MIME::Base64 ();
 use Socket qw(inet_aton sockaddr_in);
 
+our $PGAC_LOADED = 0;
+eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
+
 my $_LG_CEC_LG_DEVICE_CACHE={};
 my $_LG_CEC_LG_DEVICE_CACHE_TIME=0;
 
@@ -2008,7 +2011,57 @@ sub webui_lg_api (@) {
  if($path eq "/api/lg/forget" && $method eq "POST") {
   return &webui_lg_forget($body);
  }
+ if($path eq "/api/lg/autocal/run/begin" && $method eq "POST") { return &webui_lg_autocal_run_begin($body); }
+ if($path eq "/api/lg/autocal/run/end"   && $method eq "POST") { return &webui_lg_autocal_run_end($body); }
  return &lg_encode_json({ status => "error", message => "Unknown LG route" });
+}
+
+sub webui_lg_autocal_run_begin (@) {
+ my $body = shift;
+ my $payload = &lg_decode_json($body);
+ $payload = {} if(ref($payload) ne "HASH");
+ my $run_id = "";
+ if($PGAC_LOADED) {
+  eval {
+   my $clients = &lg_load_clients();
+   my $ip = $payload->{"ip"} || "";
+   my $tv = {};
+   if(ref($clients) eq "HASH" && ref($clients->{$ip}) eq "HASH") {
+    my $c = $clients->{$ip};
+    $tv = {
+     model_name       => $c->{"model_name"} || "",
+     software_version => $c->{"software_version"} || "",
+     paired           => ($c->{"client_key"} ? &lg_json_true() : &lg_json_false()),
+    };
+   }
+   my $manifest = {
+    workflow           => $payload->{"workflow"} || "",
+    config             => (ref($payload->{"config"}) eq "HASH") ? $payload->{"config"} : {},
+    pgenerator_version => $payload->{"pgenerator_version"} || "",
+    tv                 => $tv,
+   };
+   $run_id = PGAutoCalRun::run_begin($manifest);
+   1;
+  };
+ }
+ return &lg_encode_json({ status => "ok", run_id => $run_id });
+}
+
+sub webui_lg_autocal_run_end (@) {
+ my $body = shift;
+ my $payload = &lg_decode_json($body);
+ $payload = {} if(ref($payload) ne "HASH");
+ if($PGAC_LOADED) {
+  eval {
+   my $run_id = $payload->{"run_id"} || PGAutoCalRun::current();
+   PGAutoCalRun::run_end($run_id, {
+    status => $payload->{"status"} || "complete",
+    note   => $payload->{"note"}   || "",
+   });
+   1;
+  };
+ }
+ return &lg_encode_json({ status => "ok" });
 }
 
 ###############################################
