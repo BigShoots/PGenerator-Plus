@@ -25342,6 +25342,15 @@ async function meterAutoCalResetDdc(){
  if(!pictureModeReset||pictureModeReset.status!=='ok'){
   throw new Error(pictureResetMessage||'Unable to reset LG picture mode.');
  }
+ // Phase 3 Task 2: surface best-effort. When webOS forbids the
+ // picture-settings reset on a DDC/CAL generation the helper returns
+ // status:'ok' with picture_reset_best_effort='not_permitted'; the
+ // DDC/CAL identity clear + reference reset is the real success path,
+ // so we proceed to the DDC baseline reset + reference reset and just
+ // surface a non-fatal note for the operator.
+ if(pictureModeReset && pictureModeReset.picture_reset_best_effort==='not_permitted'){
+  meterAutoCalResetNotice='TV does not allow a picture-settings reset on this model; calibration reset applied via the DDC/CAL path instead.';
+ }
  }
  let hdrCalmanReset=null;
  let sdrCalmanReset=null;
