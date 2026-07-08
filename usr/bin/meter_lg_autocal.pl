@@ -15301,7 +15301,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$state->{"calibration_mode"}=$cal_active ? JSON::PP::true : JSON::PP::false;
 	$state->{"message"}=sprintf("HDR20 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall_committed,$target_de,$exit_reason);
 	write_state($state);
-	log_line("HDR20 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall_committed)." (committed; trajectory=".sprintf("%.3f",$max_de_overall).", target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active.")");
+	log_line("HDR20 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall_committed)." (committed; trajectory=".sprintf("%.3f",$max_de_overall)."), target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
 	return undef;
 }
 
