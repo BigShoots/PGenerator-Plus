@@ -3068,7 +3068,20 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		       $target_min_code=0; $target_span_code=1023;
 		      }
 		     }
-		     my $target_signal=$target_span_code>0 ? (($g_code-$target_min_code)/$target_span_code) : 0;
+		     # Custom greyscale must only change the patch code that is sent
+		     # ($r/$g/$b above, derived from $stim), NOT the target. The target
+		     # signal is the nominal slot position on the EOTF ($v/100), so the
+		     # stamped target_Yn and the chart target line stay anchored to the
+		     # slot regardless of the custom stimulus value. The code-derived
+		     # formula below is preserved for every other path (autocal-26 uses
+		     # its own branch above; DV/HDR20/2-point/non-custom all need the
+		     # emitted code's signal).
+		     my $target_signal;
+		     if($grey_custom_allowed && !$lg_autocal_26_codes && !$lg_hdr20_codes && !$dv_series && $points!=2) {
+		      $target_signal=($v+0)/100;
+		     } else {
+		      $target_signal=$target_span_code>0 ? (($g_code-$target_min_code)/$target_span_code) : 0;
+		     }
 		     $target_signal=0 if($target_signal < 0);
 		     $target_signal=1 if($target_signal > 1);
 		     my $target_Yn_for_step=$target_signal_to_linear->($target_signal);
@@ -13881,10 +13894,33 @@ function meterGreyChartPlotIre(item){
  return null;
 }
 
+// Target-slot IRE resolver for the greyscale TARGET math (target Y, chart
+// target lines, RGB-balance target). Custom greyscale must only change which
+// patch code is sent (stimulus / signal_*_pct / the r/g/b codes), NOT the
+// target. So for the user-facing custom-greyscale series the target follows the
+// NOMINAL slot IRE (plot_ire/nominal_ire/slot_ire/ire), not the custom stimulus.
+// Two intentionally-stimulus-derived paths keep their old behaviour:
+//   - LG 22pt manual greyscale stamps analysis_ire/target_ire from the decoded
+//     legal stimulus (its target must track what the TV's menu slot decodes to).
+//   - LG AutoCal 26pt headroom (105/109%) derives the target from the code.
+// Both are detected by an explicit analysis_ire/target_ire stamp, so when either
+// is present we delegate to meterGreyChartStimulusIre (unchanged). For plain
+// and custom greyscale neither is stamped, so we fall through to the slot IRE.
+function meterGreyscaleTargetSlotIre(item){
+ if(!item) return null;
+ if(item.analysis_ire!=null||item.target_ire!=null) return meterGreyChartStimulusIre(item);
+ const candidates=[item.plot_ire,item.nominal_ire,item.slot_ire,item.ire];
+ for(const value of candidates){
+  const ire=Number(value);
+  if(Number.isFinite(ire)) return ire;
+ }
+ return meterGreyChartStimulusIre(item);
+}
+
 function meterGreyscaleTargetIreForStep(step,readingMap){
  if(!step) return 0;
  const rd=(readingMap&&step.ire!=null)?readingMap[step.ire]:null;
- const ire=meterReadingAnalysisIre(rd||step);
+ const ire=(typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(rd||step):null;
  return ire!=null?ire:(step.ire||0);
 }
 
@@ -15073,7 +15109,7 @@ function meterRegradeReadingTargetYn(reading){
  if(!reading) return;
  if(typeof meterReadingIsGreyscale==='function' && !meterReadingIsGreyscale(reading)) return;
  if(typeof meterChartIsDv==='function' && meterChartIsDv()) return;
- const stimulus=(typeof meterReadingAnalysisIre==='function')?meterReadingAnalysisIre(reading):null;
+ const stimulus=(typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):((typeof meterReadingAnalysisIre==='function')?meterReadingAnalysisIre(reading):null);
  if(!Number.isFinite(stimulus)) return;
  if(typeof meterLgAutoCalTargetYnForStimulus!=='function') return;
  const liveTargetYn=meterLgAutoCalTargetYnForStimulus(stimulus);
@@ -16286,7 +16322,7 @@ function meterGreyChartTargetXYZForReading(reading){
  const peak=meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits());
  const black=meterBlackReadingY();
  const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
- const ire=meterReadingAnalysisIre(reading)||(step?meterGreyChartStimulusIre(step):null);
+ const ire=meterGreyscaleTargetSlotIre(reading)||(step?meterGreyscaleTargetSlotIre(step):null);
  const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
  const measuredDvTargetY=meterDvAbsoluteReadingTargetY(reading);
  const Y=measuredDvTargetY!=null?measuredDvTargetY:meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code);
@@ -16411,8 +16447,8 @@ function meterTargetXYZForReading(reading){
    const greyY=meterReadingLuminanceNits(greyWhite);
    if(greyY>0) refY=greyY;
    const step=targetStep||((typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null);
-   const stepIre=(step&&typeof meterGreyChartStimulusIre==='function')?meterGreyChartStimulusIre(step):null;
-   const ire=meterReadingAnalysisIre(reading);
+   const stepIre=(step&&typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(step):null;
+   const ire=(typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null;
    const targetIre=ire!=null?ire:(stepIre!=null?stepIre:(reading&&reading.ire||0));
    const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
    const peak=(typeof meterGreyTargetPeak==='function')?meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits()):((refY>0)?refY:meterColorReferenceNits());
@@ -17332,7 +17368,7 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  const wZn = wp.Z;
  // Measured XYZ normalized by white Y
  const mXn=readingXYZ.X/whiteXYZ.Y, mYn=readingXYZ.Y/whiteXYZ.Y, mZn=readingXYZ.Z/whiteXYZ.Y;
- const ire=meterReadingAnalysisIre(reading)||reading.ire;
+ const ire=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
  let lcXn,lcYn,lcZn;
  if(ire!=null&&ire>0){
  // Target: D65 white at the active grey-target luminance.
@@ -17394,7 +17430,7 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
  if(mode==='eotf'){
   const Lb = meterBlackReadingY();
   const targetPeak = meterChartIsHdr() ? meterGreyTargetPeak(whiteXYZ.Y) : whiteXYZ.Y;
-  const targetIre=meterReadingAnalysisIre(reading)||reading.ire;
+  const targetIre=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
   // Same stimulus-based target as the gamma chart (see rgbBalancePerceptual):
   // avoids the limited-only meterGreyCodeRange skewing full-range gamma error.
   const tgtY = (typeof meterGreyTargetLuminanceForChartPoint==='function')
@@ -18166,7 +18202,10 @@ function meterGreyTargetChartPoints(steps,Lw,Lb,scale){
   pts.push([meterGreyInputFraction(ire,code),meterGreyTargetChartValue(ire,Lw,Lb,code)/scale]);
  };
  addPoint(0,0);
- (steps||[]).forEach(s=>addPoint(s.ire||0,s.r_code!=null?s.r_code:s.r));
+ (steps||[]).forEach(s=>{
+  const slotIre=Number(meterGreyscaleTargetSlotIre(s));
+  addPoint(Number.isFinite(slotIre)?slotIre:(s.ire||0),s.r_code!=null?s.r_code:s.r);
+ });
  addPoint(100,meterPatchRangeMin()+meterPatchRangeSpan());
  pts.sort((a,b)=>a[0]-b[0]);
  return pts;
@@ -18180,7 +18219,7 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
  const rows=[];
  stepList.forEach(s=>{
   if(!s) return;
-  const stimulus=Number(meterGreyChartStimulusIre(s));
+  const stimulus=Number(meterGreyscaleTargetSlotIre(s));
   const plot=Number(meterGreyEotfLuminancePlotIre(s));
   if(!Number.isFinite(plot)) return;
   const code=meterGreyChartTargetCode(s);
@@ -18236,10 +18275,10 @@ function meterGreyNominalTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps)
  const end=Math.max(1,Number(maxPct)||100);
  const stepList=Array.isArray(steps)?steps:[];
  const coded=stepList
-  .filter(s=>s&&Number.isFinite(Number(meterGreyChartStimulusIre(s))))
+  .filter(s=>s&&Number.isFinite(Number(meterGreyscaleTargetSlotIre(s))))
   .map((s,idx)=>{
    const code=meterGreyChartTargetCode(s);
-   const ire=Number(meterGreyChartStimulusIre(s));
+   const ire=Number(meterGreyscaleTargetSlotIre(s));
    const x=meterGreyEotfLuminanceChartX(s,stepList,idx,end);
    const signal=meterGreyTargetSignal(ire,code);
 	   const rawValue=(mode==='eotf')
@@ -30385,10 +30424,10 @@ function drawGammaValuePreset(gsSteps){
  const gammaFixedAxis=meterUseLgAutoCal26GammaAxis();
  const sourceSteps=Array.isArray(gsSteps)?gsSteps:[];
  const steps=meterFilterGammaChartItems(sourceSteps).filter(s=>{
-  const targetIre=meterGreyChartStimulusIre(s);
+  const targetIre=meterGreyscaleTargetSlotIre(s);
   return (targetIre||0)>0&&(targetIre||0)<100;
  });
- const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyChartStimulusIre(s),100,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
+ const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyscaleTargetSlotIre(s),100,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
 	 const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterGreyTargetUsesPq()||meterChartIsHlg());
  let yMin=axis.min;
  let yMax=axis.max;
@@ -30404,7 +30443,7 @@ function drawGammaValuePreset(gsSteps){
  });
  const tgtPts=[];
  chartSteps.forEach((s,idx)=>{
-  const targetIre=meterGreyChartStimulusIre(s);
+  const targetIre=meterGreyscaleTargetSlotIre(s);
   if(!((targetIre||0)>0&&(targetIre||0)<100)) return;
   const g=meterGreyTargetGamma(targetIre,100,0,s.r_code!=null?s.r_code:s.r);
   if(g!=null&&isFinite(g)) tgtPts.push([meterGammaChartX(s,chartSteps,idx),Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
@@ -30453,17 +30492,18 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 	      : meterGreyscaleGammaValue(rd,chartYw));
 	   if(g!=null&&isFinite(g)) gammaMap[rd.ire]=g;
 	  }
-	  const tg=meterGreyTargetGamma(analysisIre,chartYw,Lb,rd.r_code,prevIre,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
+		  const targetIreForRd=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(rd):null)||analysisIre;
+		  const tg=meterGreyTargetGamma(targetIreForRd,chartYw,Lb,rd.r_code,prevIre,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
 	  if(tg!=null&&isFinite(tg)) targetMap[rd.ire]=tg;
 	 });
  xSteps.forEach((step,idx)=>{
 	  const prev=idx>0?xSteps[idx-1]:null;
 	  const rd=readingMap?readingMap[step.ire]:null;
 	  const prevRd=(readingMap&&prev)?readingMap[prev.ire]:null;
-	  const targetIre=rd?(meterReadingGammaAnalysisIre(rd)||step.ire):meterGreyscaleTargetIreForStep(step,readingMap);
-	  if((Number(step.ire)||0)>=100 || (targetIre||0)>=100) return;
-	  const targetCode=rd&&rd.r_code!=null?rd.r_code:meterGreyscaleTargetCodeForStep(step,readingMap);
-	  const prevIre=prevRd?(meterReadingGammaAnalysisIre(prevRd)||prev.ire):(prev?meterGreyscaleTargetIreForStep(prev,readingMap):null);
+		  const targetIre=rd?(((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(rd):null)||step.ire):meterGreyscaleTargetIreForStep(step,readingMap);
+		  if((Number(step.ire)||0)>=100 || (targetIre||0)>=100) return;
+		  const targetCode=rd&&rd.r_code!=null?rd.r_code:meterGreyscaleTargetCodeForStep(step,readingMap);
+		  const prevIre=prevRd?(((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(prevRd):null)||prev.ire):(prev?meterGreyscaleTargetIreForStep(prev,readingMap):null);
 	  const prevCode=prevRd&&prevRd.r_code!=null?prevRd.r_code:(prev?meterGreyscaleTargetCodeForStep(prev,readingMap):null);
 	  const tg=meterGreyTargetGamma(targetIre,chartYw,Lb,targetCode,prevIre,prevCode);
 	  if(tg!=null&&isFinite(tg)) targetMap[step.ire]=tg;
