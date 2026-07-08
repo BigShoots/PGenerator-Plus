@@ -5716,7 +5716,10 @@ sub main (@) {
       if(ref($result) eq "HASH" && defined($result->{"readback_delta"}));
      PGAutoCalRun::run_stage($rid, $stage, $rec);
      if($action eq "picture_reset" && ref($result) eq "HASH" && ref($result->{"lg_generation"}) eq "HASH") {
-      PGAutoCalRun::run_merge_manifest($rid, { lg_generation => $result->{"lg_generation"} });
+      PGAutoCalRun::run_merge_manifest($rid, {
+       lg_generation      => $result->{"lg_generation"},
+       generation_profile => &lg_generation_profile($result->{"lg_generation"}),
+      });
      }
     }
    }
