@@ -10,6 +10,9 @@ use File::Path qw(make_path);
 use MIME::Base64 qw(encode_base64 decode_base64);
 use Time::HiRes qw(time);
 
+our $PGAC_LOADED = 0;
+eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
+
 $|=1;
 $SIG{PIPE}="IGNORE";
 
@@ -5640,6 +5643,42 @@ sub main (@) {
 	  $result=&lg_connect_pin_wait_workflow($ip,$client_key,$connect_timeout,$pair_timeout,$pin_wait_timeout,$state_file,$pin_file,$token,$pairing_type);
 	 } else {
   $result=&json_error("Unknown LG helper action: $action",{ action => $action, ip => $ip });
+ }
+
+ if($PGAC_LOADED) {
+  eval {
+   my %stage_for = (
+    picture_reset        => "reset",
+    sdr_calman_reset     => "sdr_calman_reset",
+    hdr_calman_reset     => "hdr_calman_reset",
+    hdr_picture_reset    => "hdr_calman_reset",
+    "3d_lut_reset"       => "3d_lut_reset",
+    "3d_lut_upload"      => "3d_lut_upload",
+    hdr_tone_map_upload  => "tone_map",
+    "1d_dpg_upload"      => "1d_dpg_upload",
+   );
+   my $stage = $stage_for{$action};
+   if(defined($stage)) {
+    my $rid = $request->{"run_id"};
+    $rid = PGAutoCalRun::current() if(!defined($rid) || $rid eq "");
+    if(defined($rid) && $rid ne "") {
+     my $status = (ref($result) eq "HASH") ? ($result->{"status"} || "") : "";
+     my $rec = {
+      ok         => ($status eq "ok") ? &json_true() : &json_false(),
+      tv_message => (ref($result) eq "HASH") ? ($result->{"message"} || "") : "",
+      picture_mode => $picture_mode,
+      signal_mode  => $signal_mode,
+     };
+     $rec->{"readback_delta"} = $result->{"readback_delta"}
+      if(ref($result) eq "HASH" && defined($result->{"readback_delta"}));
+     PGAutoCalRun::run_stage($rid, $stage, $rec);
+     if($action eq "picture_reset" && ref($result) eq "HASH" && ref($result->{"lg_generation"}) eq "HASH") {
+      PGAutoCalRun::run_merge_manifest($rid, { lg_generation => $result->{"lg_generation"} });
+     }
+    }
+   }
+   1;
+  };
  }
 
  print &json_encode($result);
