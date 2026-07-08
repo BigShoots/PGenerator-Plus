@@ -2464,7 +2464,10 @@ sub lg_1d_write_accepted_readback_unavailable_ok (@) {
  return 0 if(ref($verify_info) ne "HASH");
  return 0 if(ref($verify_info->{"lut"}) eq "ARRAY");
  return 0 if(&lg_1d_lut_readback_unavailable_reason($verify_info) eq "");
- return &lg_generation_write_accepted_readback_unavailable_ok($generation);
+ # Phase 3 Task 3: readback leniency unified via the generation profile
+ # (readback_supported=false => write was accepted but the readback came
+ # back empty/unavailable). Replaces the ad-hoc ddc_only/webos<=6 checks.
+ return &lg_readback_leniency_ok($generation);
 }
 
 sub lg_3d_lut_readback_unavailable_reason (@) {
@@ -2492,7 +2495,9 @@ sub lg_3d_write_accepted_readback_unavailable_ok (@) {
  return 0 if(ref($expected_lut) ne "ARRAY");
  return 0 if($read_ok && ref($read_lut) eq "ARRAY");
  return 0 if(&lg_3d_lut_readback_unavailable_reason($read_response) eq "");
- return 1;
+ # Phase 3 Task 3: readback leniency unified via the generation profile
+ # (same source of truth as the 1D gate).
+ return &lg_readback_leniency_ok($generation);
 }
 
 sub lg_lut_linear_unity_readback (@) {
