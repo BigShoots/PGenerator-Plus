@@ -229,10 +229,33 @@ sub ensure_wifi_conf(@) {
  chmod 0600, $wifi_conf if(-f $wifi_conf);
 }
 
+# Read the persisted WiFi-radio intent from /etc/PGenerator/PGenerator.conf.
+# The WebUI status poll (wifi_status -> ensure_wlan_client_ready) used to run
+# `rfkill unblock wifi` unconditionally, so a user who toggled the radio off
+# (wifi_radio=0, rfkill soft-blocked) would see it silently re-enabled a moment
+# later -- the toggle then reads the live rfkill state and snaps back to "on".
+# Callers that need the radio for an explicit user action (e.g. bringing the AP
+# up) must force the unblock themselves.
+sub wifi_radio_user_disabled () {
+ return 0 if(!-f $pattern_conf);
+ my $val="";
+ if(open(my $fh,"<",$pattern_conf)) {
+  while(<$fh>) {
+   next unless(/^\s*wifi_radio\s*=\s*(\S+)/);
+   $val=$1;
+   last;
+  }
+  close($fh);
+ }
+ return (defined $val && $val eq "0") ? 1 : 0;
+}
+
 sub ensure_wlan_client_ready(@) {
  my $interface=shift;
  &ensure_wifi_conf();
- &pgen_system_quiet($rfkill,"unblock","wifi") if(defined $rfkill && &pgen_cmd_exists($rfkill));
+ # Honor the persisted radio-off intent: do NOT unblock here. This runs on every
+ # status poll and would otherwise clobber a user's wifi_radio=0 toggle.
+ &pgen_system_quiet($rfkill,"unblock","wifi") if(defined $rfkill && &pgen_cmd_exists($rfkill) && !&wifi_radio_user_disabled());
  &pgen_system_quiet($ip,"link","set",$interface,"up") if(defined $ip && &pgen_cmd_exists($ip));
  &pgen_service_action("","wpa_supplicant","start");
  if(defined $wpa_supplicant && &pgen_cmd_exists($wpa_supplicant) && !-S "$dir_wpa/$interface") {
