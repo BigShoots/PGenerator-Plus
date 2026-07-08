@@ -9,3 +9,23 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="085c", MODE="0666"
 SUBSYSTEM=="usb", ATTR{idVendor}=="04db", MODE="0666"
 # Sequel Chroma 5
 SUBSYSTEM=="usb", ATTR{idVendor}=="0670", MODE="0666"
+
+# Keep colorimeters and the shared internal USB hub awake at all times.
+# The Pi 400 routes the colorimeter and the built-in keyboard through one
+# internal VL817 hub (2109:3431). The kernel default (usbcore.autosuspend=2)
+# lets idle devices runtime-suspend; when that races with enumeration or a
+# SET_ADDRESS handshake you get "error -71/-32", "not responding to setup
+# address", and "attempt power cycle" log spam -- which is a signal-integrity
+# / timing race, NOT real over-current, but it was being surfaced as a
+# "USB Overloaded" badge. Pinning power/control=on removes the race at the
+# source. This is defense-in-depth alongside usbcore.autosuspend=-1 set in
+# rcPGenerator; the rule re-applies on hotplug and rebind.
+# Meters: pin the device itself awake so a read never resumes a suspended HID.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0765", TEST=="power/control", ATTR{power/control}="on"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0971", TEST=="power/control", ATTR{power/control}="on"
+SUBSYSTEM=="usb", ATTR{idVendor}=="085c", TEST=="power/control", ATTR{power/control}="on"
+SUBSYSTEM=="usb", ATTR{idVendor}=="04db", TEST=="power/control", ATTR{power/control}="on"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0670", TEST=="power/control", ATTR{power/control}="on"
+# Internal hub on the Pi 400 / Pi 4 keyboard daughterboard (VIA VL817).
+# Pin it awake so the shared upstream link never autosuspends mid-transfer.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2109", TEST=="power/control", ATTR{power/control}="on"

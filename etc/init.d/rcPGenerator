@@ -265,6 +265,24 @@ rc_PGenerator_start () {
    bluetoothctl power off >/dev/null 2>&1
   fi
 
+  # USB reliability: kill the runtime-PM race that masquerades as "USB
+  # Overloaded". On the Pi 400 the colorimeter and the internal keyboard
+  # share one VL817 hub. The kernel default (usbcore.autosuspend=2) lets
+  # idle devices runtime-suspend; when that races with enumeration or a
+  # SET_ADDRESS handshake you get "error -71/-32", "not responding to setup
+  # address", and "attempt power cycle" log lines. Those are timing /
+  # signal-integrity faults, NOT real over-current, but they were being
+  # surfaced as a "USB Overloaded" badge. Disabling autosuspend and pinning
+  # the hub + children awake removes the race at the source. The 99-colorimeter
+  # udev rule re-applies power/control=on on hotplug; this covers the global
+  # module param and any device that enumerates before udev settles.
+  if [ -w /sys/module/usbcore/parameters/autosuspend ]; then
+   echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null
+  fi
+  for ctl in /sys/bus/usb/devices/*/power/control; do
+   [ -w "$ctl" ] && echo on > "$ctl" 2>/dev/null
+  done
+
   # scaling governor mode
   /bin/echo $SCALING_GOVERNOR > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
  

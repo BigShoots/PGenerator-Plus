@@ -1223,13 +1223,18 @@ sub webui_meter_usb_present (@) {
  return ($lsusb =~ /\b\Q$usb_id\E\b/i) ? 1 : 0;
 }
 
-# Pure parser: scan kernel-ring-buffer (dmesg) text for the USB
-# current-starvation / enumeration-failure fingerprints that show up when the
-# Pi power supply cannot deliver enough current for the meter (a bus-powered
-# colorimeter behind a hub is the classic case). Voltage sag would trip the
-# rpi_volt under-voltage flag; a CURRENT shortfall does NOT -- the USB port
-# browns out locally (failed enumeration / port power-cycle) while the SoC
-# voltage detector stays quiet. So we key on the USB events, not under-voltage.
+# Pure parser: scan kernel-ring-buffer (dmesg) text for the USB enumeration /
+# link-failure fingerprints that show up when a colorimeter (often behind the
+# Pi's internal hub) drops off the bus. These lines -- "attempt power cycle",
+# "over-current", "error -71/-32/-110", "not responding to setup address",
+# "unable to enumerate" -- are almost always a signal-integrity / timing /
+# runtime-PM race, NOT a genuine current overload: on the Pi 400 the meter
+# shares a VL817 hub with the keyboard, and a usbcore.autosuspend race or a
+# marginal SET_ADDRESS handshake produces exactly this log signature while the
+# SoC voltage detector stays quiet. We therefore surface them as a single
+# "USB link unstable" story rather than blaming current. (The autosuspend race
+# is now suppressed at the source in rcPGenerator + the 99-colorimeter udev
+# rule; this badge is the backstop for the residual cases.)
 # Factored out (takes dmesg text + uptime seconds) so it is unit-testable.
 # dmesg timestamps are seconds-since-boot (monotonic); age = uptime - ts lets
 # us separate a one-off cold-plug enumeration retry from active-session faults.
@@ -1237,9 +1242,15 @@ sub webui_meter_usb_power_parse (@) {
  my ($dmesg,$uptime)=@_;
  $dmesg="" if(!defined $dmesg);
  $uptime=(defined $uptime && $uptime=~/^[0-9.]+$/) ? ($uptime+0) : 0;
- # Strong = power-specific (port could not be powered / over-current / dead link).
+ # Strong = link-down events (port power-cycled, over-current status bit
+ # toggled, or the host gave up enabling the port). Historically these were
+ # called "power-specific"; on this hardware they are still link/enumeration
+ # failures (the over-current "change" is a PORTSC bit transition, read by the
+ # xHCI driver, that fires on marginal signal/timing), so they all map to the
+ # single 'link' kind now. We still count them separately only to let the
+ # detail copy mention a port power-cycle when one happened.
  my @strong=(qr/attempt power cycle/i, qr/over-?current/i, qr/cannot enable.*(?:cable|hub)/i);
- # Moderate = enumeration faults that, in a cluster, indicate a marginal/under-fed link.
+ # Moderate = enumeration faults that, in a cluster, indicate a marginal link.
  my @moderate=(qr/not responding to setup address/i,
    qr/not accepting address.*error\s*-71/i,
    qr/device descriptor read.*error\s*-(?:32|71|110)/i,
@@ -1249,8 +1260,7 @@ sub webui_meter_usb_power_parse (@) {
  # from 2 hours ago (when a spectro was unplugged) does NOT mean the hub is
  # unhealthy RIGHT NOW, but the old code latched onto stale totals so the badge
  # stayed lit indefinitely. Track recent counts separately per class so the
- # caller can distinguish a genuine power fault from a pure link/enumeration
- # fault for the operator-facing detail string.
+ # caller can tailor the detail copy to what actually happened.
  my ($strong_n,$moderate_n,$recent_n,$recent_strong,$recent_moderate,$last_age)=(0,0,0,0,0,undef);
  for my $line (split /\n/, $dmesg) {
   my $is_strong   = (grep { $line =~ $_ } @strong) ? 1 : 0;
@@ -1269,16 +1279,18 @@ sub webui_meter_usb_power_parse (@) {
   $last_age=$age if(!defined $last_age || $age < $last_age);
  }
  my $total=$strong_n+$moderate_n;
- # Warn ONLY on recent activity: any recent strong (power-specific) hit, or a
- # fresh cluster (>=4) of recent enumeration faults. Once the offending device
- # is gone and the 900s window slides past, the badge clears on its own.
- # 'kind' drives the detail copy: 'power' = over-current/power-cycle (rare),
- # 'link' = enumeration/signal-integrity cluster (common; NOT a current story).
+ # Warn ONLY on recent activity: any recent strong (link-down) hit, or a fresh
+ # cluster (>=4) of recent enumeration faults. Once the offending device is
+ # gone and the 900s window slides past, the badge clears on its own. 'kind'
+ # is always 'link' now: the strong-class patterns are link/enumeration faults
+ # on this hardware, not current faults, so the operator-facing copy never
+ # blames "overloaded". 'power_cycle' is reported as a separate boolean so the
+ # detail string can mention a port reset when one actually happened.
  my $warning=($recent_strong>0 || $recent_moderate>=4) ? 1 : 0;
- my $kind=($recent_strong>0) ? 'power' : 'link';
  return {warning=>$warning, total=>$total, strong=>$strong_n, moderate=>$moderate_n,
    recent=>$recent_n, recent_strong=>$recent_strong, recent_moderate=>$recent_moderate,
-   last_age=>(defined $last_age ? int($last_age) : -1), kind=>$kind};
+   last_age=>(defined $last_age ? int($last_age) : -1), kind=>'link',
+   power_cycle=>($recent_strong>0)?1:0};
 }
 
 my %_meter_usb_power_cache;
@@ -1314,10 +1326,13 @@ sub webui_meter_status_apply_overrides (@) {
  if(&webui_meter_simulate_spectro_enabled()) {
   $json =~ s/"meter_type"\s*:\s*"[^"]*"/"meter_type":"spectro"/g;
  }
- # Surface meter USB current-starvation / comms instability seen in the kernel
- # log so the operator knows a failed/garbage read is the PSU not delivering
- # enough current for the meter (not a calibration fault). Only added when a
- # warning is active so a healthy link does not bloat every status poll.
+ # Surface meter USB link/enumeration instability seen in the kernel log so
+ # the operator knows a failed/garbage read is a USB link issue (not a
+ # calibration fault). On this hardware the "over-current"/"power cycle"/
+ # "error -71" log lines are almost always a signal-integrity / runtime-PM
+ # race on the shared internal hub, NOT real over-current, so the copy never
+ # blames current. Only added when a warning is active so a healthy link does
+ # not bloat every status poll.
  my $h=&webui_meter_usb_power_health();
  if(ref($h) eq 'HASH' && $h->{warning} && $json=~/\}\s*$/) {
   my $age=$h->{last_age};
@@ -1325,22 +1340,14 @@ sub webui_meter_status_apply_overrides (@) {
    : ($age<90) ? "just now"
    : ($age<5400) ? sprintf("%dm ago",int($age/60+.5))
    : sprintf("%.1fh ago",$age/3600);
-  # Pick the detail copy + emitted kind from the parser's classification.
-  # 'power' (rare) = genuine over-current/power-cycle -> blame current.
-  # 'link' (default) = enumeration/signal-integrity cluster -> do NOT blame
-  # current; it is almost always a cable/hub-port/signal-integrity issue.
-  # Use the RECENT count (last 900s) so the number reflects what the hub is
-  # doing now, not stale session totals from before the offending device was
-  # unplugged.
-  my $kind=(defined $h->{kind} && $h->{kind} eq 'power') ? 'power' : 'link';
-  my $detail;
-  if($kind eq 'power') {
-   $detail=sprintf("USB ports overloaded - the connected meters draw more current than the shared USB hub can supply (%d recent USB errors, last %s). Disconnect the meter you are not using, or use a powered USB hub.", $h->{recent}, $when);
-  } else {
-   $detail=sprintf("USB link unstable - a device is not enumerating reliably on the hub (%d recent USB errors, last %s). This is usually a cable, hub port, or signal-integrity issue, not power - try a different port/cable or a powered hub.", $h->{recent}, $when);
-  }
+  # Single 'link' story. Mention a port power-cycle when one actually happened
+  # (it is the most dramatic symptom and worth flagging) but frame it as a link
+  # reset, not a current overload. Use the RECENT count (last 900s) so the
+  # number reflects what the hub is doing now, not stale session totals.
+  my $pc=(defined $h->{power_cycle} && $h->{power_cycle}) ? 'The hub even power-cycled a port - ' : '';
+  my $detail=sprintf("USB link unstable - a device is not enumerating reliably on the hub (%d recent USB errors, last %s). %sThis is usually a cable, hub port, or signal-integrity issue, not a power overload - try a different port/cable or a powered USB hub.", $h->{recent}, $when, $pc);
   $detail=~s/(["\\])/\\$1/g;
-  $json=~s/\}\s*$/,"usb_power_warning":true,"usb_power_detail":"$detail","usb_power_kind":"$kind"}/;
+  $json=~s/\}\s*$/,"usb_power_warning":true,"usb_power_detail":"$detail","usb_power_kind":"link"}/;
  }
  return $json;
 }
@@ -9645,7 +9652,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <span id="lgTopStatusWrap" class="status-line status-line-sub" style="display:none" title="Display"><span class="status-dot" id="lgTopDot" style="background:var(--text2)"></span><span class="status-label" id="lgTopStatusText" style="color:var(--text2)">Display</span></span>
    </span>
    <span id="hdmiWarnBadge" onclick="hdmiShowOverlay()" title="HDMI cable is on the wrong port">&#9888; Wrong HDMI Port</span>
-   <span id="meterUsbWarnBadge" title="USB ports overloaded">&#9888; USB Overloaded</span>
+   <span id="meterUsbWarnBadge" title="USB link unstable">&#9888; USB Unstable</span>
   </div>
  </div>
 </div>
@@ -19621,30 +19628,23 @@ function syncTopStatusStack(){
 }
 
 let _meterUsbPowerWarned=false;
-// Show/hide the persistent "Meter USB Power" badge (and a one-shot toast on
+// Show/hide the persistent "Meter USB Unstable" badge (and a one-shot toast on
 // transition) from the /api/meter/status usb_power_warning field. The badge
-// stays up while the kernel log shows meter USB current-starvation errors so
-// the operator attributes failed/garbage reads to the PSU, not the calibration.
+// stays up while the kernel log shows meter USB link/enumeration errors so the
+// operator attributes failed/garbage reads to the USB link, not the calibration.
+// The server always emits usb_power_kind='link' now: the log lines driving this
+// (over-current change / power cycle / -71 / -32 / "unable to enumerate") are
+// signal-integrity / runtime-PM faults on the Pi's shared internal hub, not
+// genuine current overloads, so we never label it "Overloaded".
 function meterUpdateUsbPowerWarning(r){
  const badge=document.getElementById('meterUsbWarnBadge');
  if(!badge) return;
  const warn=!!(r&&r.usb_power_warning);
  if(warn){
-  // 'kind' from the server picks the badge label + fallback copy:
-  //   power = genuine over-current/power-cycle (rare); keep the "Overloaded"
-  //           wording so the operator knows current is the problem.
-  //   link  (default) = enumeration/signal-integrity cluster (common). Do NOT
-  //           label this as "USB Overloaded" -- the kernel log lines driving
-  //           it (-71/-32/-110, "unable to enumerate") are link faults, not
-  //           current faults, and the old wording sent the operator chasing
-  //           a powered hub when the real fix was a different port/cable.
-  const kind=(r&&r.usb_power_kind)==='power' ? 'power' : 'link';
-  const fallback=(kind==='power')
-   ? 'USB ports overloaded - the connected meters draw more current than the shared USB hub can supply. Disconnect the meter you are not using, or use a powered USB hub.'
-   : 'USB link unstable - check the cable, hub port, or try a powered hub.';
+  const fallback='USB link unstable - a device is not enumerating reliably. Try a different cable/port or a powered USB hub.';
   const detail=(r&&r.usb_power_detail)||fallback;
   badge.style.display='inline';
-  badge.textContent=(kind==='power') ? '\u26a0 USB Overloaded' : '\u26a0 USB Unstable';
+  badge.textContent='\u26a0 USB Unstable';
   badge.title=detail;
   if(!_meterUsbPowerWarned){ _meterUsbPowerWarned=true; toast(detail,true); }
  }else{
