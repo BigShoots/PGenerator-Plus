@@ -14400,7 +14400,18 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my @done;
 	my $total_steps=scalar(@ordered);
 	my $total_inner_iters=0;
+	# $max_de_overall tracks the full trajectory including reverted overshoots
+	# and is useful for diagnostic logs (it shows the worst move the worker
+	# tried). $max_de_overall_committed is the parallel accumulator used for
+	# the reported headline max dE: it is updated ONLY inside the new-best
+	# branch and on convergence of any calibrate_anchor closure, so a single
+	# noise outlier landing on a reverted iter cannot become the headline max
+	# and propagate to $state->{hdr20_1d_dpg_final_de} and the run summary
+	# "final max dE=..." log line. The wire state ($best_dpg/$best_anchors)
+	# is unaffected -- it is already restored correctly at the end of each
+	# anchor's loop.
 	my $max_de_overall=0;
+	my $max_de_overall_committed=0;
 	my $exit_reason="converged";
 	my $upload_failed=0;
 	my $upload_fail_streak=0;
@@ -14660,6 +14671,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"current_luminance"}=luminance($reading);
 			my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
 			$state->{"current_delta_e"}=defined($de)?$de:undef;
+			# Trajectory max (kept as-is, includes reverted overshoots). Useful in
+			# transient / per-iter logs so the operator can see the worst move the
+			# worker tried. The HEADLINE max dE reported to $state's
+			# hdr20_1d_dpg_final_de + run summary is driven by
+			# $max_de_overall_committed (updated only inside the new-best /
+			# converged branches below), NOT by this value.
 			$max_de_overall=$de+0 if(defined($de) && $de+0 > $max_de_overall+0);
 			write_state($state);
 			# Refine gamma_effective from the previous iter's measured Y/DPG
@@ -14734,6 +14751,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the gain_* / damp_* fields become 0.0000 / damp-default.
 			my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
 			$converged=1 if($conv_now);
+			# Committed-max accumulator -- convergence path. A converging iter
+			# that tied the existing best (i.e. $de == $best_de so the new-best
+			# branch below does NOT fire) would otherwise miss the headline
+			# accumulator: this explicit convergence feed closes that gap. The
+			# value is the same one the new-best branch will write (the dedup
+			# is intentional), so when the new-best branch fires on a
+			# converging iter this is a no-op-equivalent update.
+			$max_de_overall_committed=$de+0 if($conv_now && defined($de) && $de+0 > $max_de_overall_committed+0);
 			# Best-so-far with revert runs ONLY at low IRE (< low_ire_threshold,
 			# default 5%): it was built to break the constant-amplitude
 			# oscillation at 1.4%/4% IRE. At mid/high IRE (incl. 100% white)
@@ -14750,6 +14775,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_dpg=[@{$current_dpg}];
 					$best_anchors=[map { +{ %$_ } } @done];
 					$consecutive_reverts=0;
+					# Committed-max accumulator -- new-best path. A new best means
+					# this dE is the trajectory landmark for the anchor -- it is by
+					# construction WORSE than the previous best was, but it is the
+					# new committed worst case (so far). Feed it into the headline
+					# accumulator so the caller's "$max_de_overall_committed"
+					# reflects the worst case among committed (best-tracking)
+					# iters only across all anchors. A reverted iter downstream of
+					# this new best will NOT lower this value, so a single noise
+					# outlier on a reverted iter cannot poison it.
+					$max_de_overall_committed=$de+0 if(defined($de) && $de+0 > $max_de_overall_committed+0);
 					# Successful iter: reset the move-scaling to full. The next gain
 					# is computed fresh from the new Y, so a fresh full-size move is
 					# the right starting point.
@@ -15238,7 +15273,18 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$state->{"hdr20_1d_dpg_max_iters"}=$max_inner+0;
 	$state->{"hdr20_1d_dpg_target_de"}=$target_de+0;
 	$state->{"hdr20_1d_dpg_exit_reason"}=$exit_reason;
-	$state->{"hdr20_1d_dpg_final_de"}=$max_de_overall+0;
+	# Headline max dE: committed-only (excludes reverted overshoots so a
+	# single noise outlier landing on a reverted iter cannot become the
+	# reported "final max dE"). Mirrors the SDR26 sibling's Change-B guard
+	# so the two paths report consistently. The trajectory max
+	# $max_de_overall is intentionally NOT used here -- it is still
+	# available via $state->{hdr20_1d_dpg_anchor_history} for any
+	# operator who needs to see the worst move the worker tried.
+	$state->{"hdr20_1d_dpg_final_de"}=$max_de_overall_committed+0;
+	# Persist the trajectory max alongside the committed one so the
+	# operator can see both -- "final_de" is the headline (committed),
+	# "final_de_trajectory" is the diagnostic (includes reverts).
+	$state->{"hdr20_1d_dpg_final_de_trajectory"}=$max_de_overall+0;
 	# Only mark the curve as uploaded to the TV if the white reference actually
 	# converged and the upload didn't fail. A non-converged 100% block leaves
 	# the panel with the identity baseline (or whatever was previously
@@ -15253,9 +15299,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# (end_calibration_mode) before the post-cal series read.
 	$state->{"hdr20_dpg_calibration_mode_held"}=($cal_active ? JSON::PP::true : JSON::PP::false);
 	$state->{"calibration_mode"}=$cal_active ? JSON::PP::true : JSON::PP::false;
-	$state->{"message"}=sprintf("HDR20 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall,$target_de,$exit_reason);
+	$state->{"message"}=sprintf("HDR20 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall_committed,$target_de,$exit_reason);
 	write_state($state);
-	log_line("HDR20 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall).", target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
+	log_line("HDR20 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall_committed)." (committed; trajectory=".sprintf("%.3f",$max_de_overall).", target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active.")");
 	return undef;
 }
 
@@ -15499,6 +15545,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $low_ire_close_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}+0) : 1.5;
  $low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
  $low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
+ # Final-state restore re-read guard (default ON). When ENABLED, a low-IRE
+ # re-read that lands ABOVE the confirmation tolerance is treated as
+ # rejected and the chart keeps the last committed-best reading. When
+ # DISABLED the re-read is skipped entirely (treat as rejected without
+ # bothering to read). Kept as an escape hatch so an operator who wants
+ # the raw re-read path (with the noise-clobber risk) can still get it.
+ my $low_ire_restore_re_read=defined($config->{"lg_autocal_sdr26_dpg_low_ire_restore_re_read"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_restore_re_read"}+0) : 1;
+ $low_ire_restore_re_read=0 if($low_ire_restore_re_read+0 < 0);
+ $low_ire_restore_re_read=1 if($low_ire_restore_re_read+0 > 1);
   my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
   $target_de=0.05 if($target_de < 0.05);
   $target_de=5.0 if($target_de > 5.0);
@@ -15616,7 +15671,17 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $total_inner_iters=0;
  my $upload_failed=0;
  my $upload_fail_streak=0;
+ # Per-anchor max-dE accumulator (committed-only). $max_de_anchor tracks the
+ # full trajectory including reverted overshoots and is useful for diagnostic
+ # logs (it shows the worst move the worker tried). $max_de_anchor_committed
+ # is the parallel accumulator used for the reported headline max dE: it is
+ # updated ONLY inside the new-best branch and on convergence, so a single
+ # noise outlier landing on a reverted iter cannot become the per-anchor max
+ # and propagate to the caller's "$max_de_overall" / "$state final_de" /
+ # run summary. The wire state ($best_dpg/$best_anchors) is unaffected -- it
+ # is already restored correctly at the end of the loop.
  my $max_de_anchor=0;
+ my $max_de_anchor_committed=0;
 
  # Persistent calibration mode within the inner loop: enter CAL_START on
  # the FIRST upload only (calibration_mode_active=0); subsequent uploads
@@ -15711,6 +15776,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $state->{"current_luminance"}=luminance($reading);
    my $de=autocal_delta_e_for_step($config,$reading,$rs,$white_ref,$target_x,$target_y,$tl);
    $state->{"current_delta_e"}=defined($de)?$de:undef;
+   # Trajectory max (kept as-is, includes reverted overshoots). Useful in
+   # transient / per-iter logs so the operator can see the worst move the
+   # worker tried. The HEADLINE max dE reported to the caller (and ultimately
+   # to the WebUI / state file / "final max dE" log line) is driven by
+   # $max_de_anchor_committed (updated only inside the new-best / converged
+   # branches below), NOT by this value.
    $max_de_anchor=$de+0 if(defined($de) && $de+0 > $max_de_anchor+0);
    write_state($state);
    # Refine gamma_effective from the previous iter's measured Y/DPG change
@@ -15769,6 +15840,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $dpg_b_prev=$current_dpg_ref->[$idx+2048];
    my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
    $converged=1 if($conv_now);
+   # Committed-max accumulator -- convergence path. A converging iter that
+   # tied the existing best (i.e. $de == $best_de so the new-best branch
+   # below does NOT fire) would otherwise miss the headline accumulator: this
+   # explicit convergence feed closes that gap. The value is the same one the
+   # new-best branch will write (the dedup is intentional), so when the new-
+   # best branch fires on a converging iter this is a no-op-equivalent update.
+   $max_de_anchor_committed=$de+0 if($conv_now && defined($de) && $de+0 > $max_de_anchor_committed+0);
   # Best-so-far with revert: same pattern as HDR. Revert runs at low IRE
   # only (the constant-amplitude oscillation that the revert-and-halve
   # loop is designed to break doesn't happen at mid/high IRE on SDR).
@@ -15778,6 +15856,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $best_dpg=[@{$current_dpg_ref}];
     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
     $consecutive_reverts=0;
+    # Committed-max accumulator: a new best means this dE is the trajectory
+    # landmark for the anchor -- it is by construction WORSE than the
+    # previous best was, but it is the new committed worst case (so far).
+    # Feed it into the headline accumulator so the caller's "$max_de_overall"
+    # reflects the worst case among committed (best-tracking) iters only.
+    # A reverted iter downstream of this new best will NOT lower this value,
+    # so a single noise outlier on a reverted iter cannot poison it.
+    $max_de_anchor_committed=$de+0 if(defined($de) && $de+0 > $max_de_anchor_committed+0);
     # Gentle step-size recovery instead of a hard reset to
     # $initial_move_scaling. At very low IRE the measured signal sits in the
     # meter noise floor, so a "new best" is frequently just a lucky read.
@@ -16218,26 +16304,101 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $_tl_restore=$white_ref if(!(defined($_tl_restore) && $_tl_restore+0 > 0));
    my $_restored_de=$best_de+0;
    my $_restored_ok=0;
-   if($bok && !cancelled()) {
+   # Chart-fidelity guard for the final-state restore re-read at low IRE.
+   # At very low IRE the meter noise floor is wide, so a single re-read of
+   # the committed best state frequently lands WELL above the best_de we
+   # already have -- because the noise, not the panel, moved the reading.
+   # Merging the noisy re-read clobbers a good charted point with a fake
+   # "final-state" measurement (the operator saw chart ~3.8 vs committed
+   # dE=1.04 at 2.3% IRE on a converged-2.0 anchor). The guard has 3 modes:
+   #   default ($low_ire_restore_re_read=1): take the re-read; merge into
+   #     chart only if it CONFIRMS best within $low_ire_close_factor
+   #     tolerance (default 1.5 -- a re-read above best*1.5 is rejected).
+   #     Rejected re-reads keep the charted best reading and annotate the
+   #     anchor-history row with the noisy dE so the operator can still
+   #     see it for diagnostics.
+   #   escape hatch ($low_ire_restore_re_read=0): skip the re-read entirely
+   #     on a non-converged low-IRE anchor; $_restored_ok stays 0, chart
+   #     and state already reflect committed best.
+   #   mid/high IRE OR a converged anchor: take + merge the re-read as
+   #     before (the noise floor is narrow enough that the re-read is
+   #     faithful).
+   my $_skip_low_ire_reread=(!$low_ire_restore_re_read && $_anchor_ire+0 < $low_ire_threshold+0 && !$converged && !$acceptance_pending) ? 1 : 0;
+   my $_low_ire_reread_rejected=0;
+   my $_low_ire_reread_noisy=$_restored_de+0;
+   if($_skip_low_ire_reread) {
+    # Operator escape hatch: do not even attempt the re-read at low IRE on
+    # a non-converged anchor. Record it as rejected, keep the charted best.
+    $_restored_de=$best_de+0;
+    log_line("SDR26 1D DPG greyscale: ".$label." final-state restore re-read skipped (operator escape hatch, low IRE ".sprintf("%.4f",$_anchor_ire+0).", best dE=".sprintf("%.4f",$best_de+0).")");
+   } elsif($bok && !cancelled()) {
     my ($arr,$are)=read_step($config,$rs,$state);
     if(!$are && ref($arr) eq "HASH") {
      $last_reading=$arr;
      my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_restore);
-     $_restored_de=$ade+0 if(defined($ade));
-     $_restored_ok=1;
-     # Merge the re-read into the charted readings (annotated exactly as the
-     # iter loop does before its own merge) so the chart reflects the restored
-     # best state's ACTUAL measurement, not the last reverted bad move.
-     annotate_reading_target($arr,($_is_legal_peak_restore ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
-     $state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
+     if(defined($ade)) {
+      $_restored_de=$ade+0;
+      $_restored_ok=1;
+      $_low_ire_reread_noisy=$ade+0;
+      # Low-IRE confirmation gate. A re-read that lands ABOVE
+      # best*low_ire_close_factor is treated as a noise-dominated outlier
+      # (the panel is sitting at best, the noise moved the reading) and
+      # rejected for charting. Convergence is irrelevant here -- this
+      # gate fires on any non-converged low-IRE re-read regardless of
+      # the iter-time convergence verdict, because the only signal that
+      # matters is whether the fresh measurement AGREE with the committed
+      # best within the noise band.
+      if($_anchor_ire+0 < $low_ire_threshold+0 && !$converged && !$acceptance_pending && $ade+0 > ($best_de+0)*$low_ire_close_factor+0) {
+       $_low_ire_reread_rejected=1;
+       $_restored_de=$best_de+0;
+       log_line("SDR26 1D DPG greyscale: ".$label." final-state restore re-read rejected (low IRE ".sprintf("%.4f",$_anchor_ire+0).", re-read dE=".sprintf("%.4f",$ade+0)." > best ".sprintf("%.4f",$best_de+0)." * close_factor ".sprintf("%.4f",$low_ire_close_factor)."), keeping charted best");
+      } else {
+       # Merge the re-read into the charted readings (annotated exactly as
+       # the iter loop does before its own merge) so the chart reflects
+       # the restored best state's ACTUAL measurement, not the last
+       # reverted bad move.
+       annotate_reading_target($arr,($_is_legal_peak_restore ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
+       $state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
+      }
+     }
     }
    }
    $state->{"current_delta_e"}=$_restored_de if(ref($state) eq "HASH");
+   # Anchor-history row annotation: when the re-read was rejected, stamp
+   # the last (final-state) row with the committed-best dE and the
+   # noisy-rejected dE so the operator can see the rejected measurement
+   # in the per-anchor diagnostic without it poisoning the main chart.
+   if($_low_ire_reread_rejected && ref($state) eq "HASH" && ref($state->{"sdr_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"sdr_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
+    my $_r=$state->{"sdr_1d_dpg_anchor_history"}{$label};
+    if(@$_r) {
+     $_r->[-1]{"de"}=sprintf("%.4f",$best_de+0);
+     $_r->[-1]{"best_de"}=sprintf("%.4f",$best_de+0);
+     $_r->[-1]{"reverted_to_best"}=JSON::PP::true;
+     $_r->[-1]{"low_ire_re_read_rejected"}=JSON::PP::true;
+     $_r->[-1]{"rejected_re_read_de"}=sprintf("%.4f",$_low_ire_reread_noisy+0);
+    }
+   }
    write_state($state) if(ref($state) eq "HASH");
-   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($_differs?($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"):" (already at best)").($_restored_ok?" (re-read dE=".sprintf("%.4f",$_restored_de).", re-charted)":" (re-read failed or skipped)"));
+   my $_reread_suffix="";
+   if($_low_ire_reread_rejected) {
+    $_reread_suffix=" (re-read REJECTED: re-read dE=".sprintf("%.4f",$_low_ire_reread_noisy+0)." > best ".sprintf("%.4f",$best_de+0)." * close_factor ".sprintf("%.4f",$low_ire_close_factor).", chart kept best)";
+   } elsif($_skip_low_ire_reread) {
+    $_reread_suffix=" (re-read SKIPPED: operator escape hatch active, chart kept best)";
+   } elsif($_restored_ok) {
+    $_reread_suffix=" (re-read dE=".sprintf("%.4f",$_restored_de).", re-charted)";
+   } else {
+    $_reread_suffix=" (re-read failed or skipped)";
+   }
+   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($_differs?($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"):" (already at best)").$_reread_suffix);
   }
  }
- return ($converged,$last_reading,$current_dpg_ref,$total_inner_iters,$max_de_anchor,$cal_active_inner,$upload_failed);
+ # Return the headline-committed max (not the trajectory max). The caller
+ # binds this to its own $max_de_overall, which then feeds $state's final_de
+ # and the run summary's "final max dE=..." log line. The trajectory max
+ # $max_de_anchor is intentionally NOT leaked -- it is still available in
+ # the per-anchor history via state->{sdr_1d_dpg_anchor_history} for any
+ # operator who needs to see the worst move the worker tried.
+ return ($converged,$last_reading,$current_dpg_ref,$total_inner_iters,$max_de_anchor_committed,$cal_active_inner,$upload_failed);
 }
 
 # SDR26 1D-DPG-driven greyscale calibration loop. Mirrors the structure of
@@ -16754,6 +16915,11 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}))
  $state->{"sdr_1d_dpg_iterations"}=$total_inner_iters+0;
  $state->{"sdr_1d_dpg_target_de"}=$target_de+0;
  $state->{"sdr_1d_dpg_exit_reason"}=$exit_reason;
+ # Headline max dE: the inner sub now returns $max_de_anchor_committed
+ # (excludes reverted overshoots), so $max_de_overall's max-of-anchors
+ # aggregation is already the committed worst case. "$max_de_overall" is
+ # now the headline-committed max; the trajectory-only diagnostic is
+ # still available via $state->{sdr_1d_dpg_anchor_history} per anchor.
  $state->{"sdr_1d_dpg_final_de"}=$max_de_overall+0;
  # SDR26 always calibrates against gamma 2.2 (the LG 1D_2_2_EN reference
  # workflow uses the DPG hardware gamma 2.2 path). Persist on the state so
@@ -16776,7 +16942,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}))
  $state->{"calibration_mode"}=$cal_active ? JSON::PP::true : JSON::PP::false;
  $state->{"message"}=sprintf("SDR26 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall,$target_de,$exit_reason);
  write_state($state);
- log_line("SDR26 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall).", target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
+ log_line("SDR26 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall)." (committed; per-anchor trajectory available in sdr_1d_dpg_anchor_history), target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
  return undef;
 }
 
