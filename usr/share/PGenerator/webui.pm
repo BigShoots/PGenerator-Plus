@@ -6868,6 +6868,24 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- LG 3D LUT AutoCal Log (/tmp/meter_lg_3d_autocal.log, last 1000 lines) ---";
  my $ac3_log=`tail -n 1000 /tmp/meter_lg_3d_autocal.log 2>/dev/null`; chomp($ac3_log);
  push @out, ($ac3_log ne "") ? $ac3_log : "(none found)";
+ push @out, "", "--- LG Auto Cal Run Record (latest) ---";
+ my @run_dirs = sort { ((stat($b))[9]||0) <=> ((stat($a))[9]||0) }
+  grep { -d $_ } glob("/var/lib/PGenerator/lg/autocal-runs/*");
+ if(@run_dirs) {
+  my $rundir = $run_dirs[0];
+  push @out, "run dir: $rundir";
+  for my $f (qw(manifest.json summary.json stages.ndjson grey-state.json 3d-state.json grey-log.txt 3d-log.txt)) {
+   my $path = "$rundir/$f";
+   next if(!-f $path);
+   my $content = `cat '$path' 2>/dev/null`;
+   chomp($content);
+   $content = &webui_redact_sensitive_log_text($content);
+   push @out, "", "[$f]";
+   push @out, ($content ne "") ? $content : "(empty)";
+  }
+ } else {
+  push @out, "(no autocal run records found)";
+ }
  push @out, "", "--- Full AutoCal Report State (latest run: pre/post-cal series reads) ---";
  my @report_files=sort { ((stat($b))[9]||0) <=> ((stat($a))[9]||0) }
   (glob("/var/lib/PGenerator/reports/full-autocal/*.json"),glob("/tmp/PGenerator_full_autocal_reports/*.json"));
