@@ -4324,6 +4324,28 @@ sub lg_picture_key_forbidden_on_ddc_only (@) {
  return ($key =~ /^(?:pictureMode|colorTemperature|whiteBalance.*)$/) ? 1 : 0;
 }
 
+# Phase 2 step 2: capability profile for a given generation_info hash. The
+# on-wire protocol is uniform across LG generations — only the parameters
+# differ — so consumers (Phase 3 reset + readback paths) can branch on a
+# parameters-only table instead of `ddc_only_white_balance` ad-hoc booleans.
+sub lg_generation_profile (@) {
+ my ($g)=@_;
+ $g={} if(ref($g) ne "HASH");
+ my $year=$g->{"platform_year"} || 0;
+ my $ddc_only=$g->{"ddc_only_white_balance"} ? 1 : 0;
+ return {
+  generation_id         => $g->{"generation_id"} || "lg_unknown",
+  reset_method          => "ddc_cal_identity",
+  white_balance_channel => "ddc_1d",
+  picturemode_readable  => ($g->{"picture_mode_read_forbidden"} ? &json_false() : &json_true()),
+  readback_supported    => (($year && $year <= 2020) ? &json_false() : &json_true()),
+  hdr_tonemap           => &json_true(),
+  dv_mode               => "1d_only",
+  lut_grid              => 33,
+  lut_bit_depth         => 12,
+ };
+}
+
 sub lg_keys_include_ddc_only_forbidden (@) {
  my $keys=shift;
  return 0 if(ref($keys) ne "ARRAY");
