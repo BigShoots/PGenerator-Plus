@@ -25539,6 +25539,24 @@ async function meterAutoCalRunPreflightReset(){
  meterAutoCalPhase='disclaimer';
  meterAutoCalResetInProgress=true;
  meterActionPending=true;
+ try{
+  const cfg=meterAutoCalPendingConfig||{};
+  await fetchJSON('/api/lg/autocal/run/begin',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({
+    ip:(cfg.ip||''),
+    workflow:(meterFullAutoCalActive?'full':'greyscale2pt'),
+    config:{
+     signal_mode:meterLgAutoCalRequestedSignalMode(),
+     picture_mode:meterLgPictureModeValue(),
+     target_gamma:(cfg.gamma||''),
+     target_gamut:(cfg.gamut||''),
+     luminance_target:(cfg.luminanceTarget||cfg.whiteLevelTarget||null),
+    }
+   }),
+   _quiet:true,_timeoutMs:8000
+  });
+ }catch(e){/* diagnostics only: never block cal */}
  let resetErrorMessage='';
  try{
   const ddcReset=await meterAutoCalResetDdc();
@@ -26769,6 +26787,7 @@ function meterFullAutoCalAbort(message,isError){
  // abort so the TV always returns to normal viewing. Fire-and-forget so the
  // UI teardown below is not blocked on the TV round-trip.
  try{ meterFullAutoCalEnsureCalibrationModeOff('Full Auto Cal stop').catch(function(){}); }catch(e){}
+ try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:text}),_quiet:true,_timeoutMs:8000}); }catch(e){}
  meterFullAutoCalResetState(false);
  meterActionPending=false;
  meterAutoCalRunning=false;
@@ -28143,6 +28162,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
  // subsequent verification series -- greyscale, ColorChecker, saturation --
  // computes its target luminance against the correct EOTF instead of 2.2.
  try{ if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault(); }catch(e){}
+ try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
 }
 
 async function meterPollAutoCal(options){
