@@ -10390,7 +10390,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      </div>
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartDeltaELabel">&Delta;E ITP</div>
-      <label id="meterSeparateLumErrorWrap" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:none" title="Split each greyscale &Delta;E bar: solid bottom = chroma-only error, shimmering top = added luminance error. Available with Grey ref = Absolute Y w/gamma.">
+      <label id="meterSeparateLumErrorWrap" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:none" title="Split each greyscale &Delta;E bar: the bottom segment is colored by the chroma-only &Delta;E and the shimmering top by the added luminance error. Available with Grey ref = Absolute Y w/gamma.">
        <input type="checkbox" id="meterSeparateLumError" onchange="meterOnGreyRefChange()" style="vertical-align:middle"> Separate Luminance Error
       </label>
      </div>
@@ -31472,14 +31472,19 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
    const color=dE<1?'#4caf50':dE<3?'#ff9800':'#ff4444';
    const chromaDE=sepLum?chromaMap[step.ire]:null;
    if(sepLum&&chromaDE!=null&&dE>0){
-    // Whole bar in the threshold color; the luminance segment above the
-    // divider is lit with a soft self-colored glow, matching the RGB
-    // bar-chart fill glow (box-shadow 0 0 8px currentColor).
+    // Split bar: the luminance segment (top, above the divider) is colored by
+    // the TOTAL dE (luminance error makes the whole-bar error), and the
+    // chroma segment (bottom, below the divider) is colored by the chroma-
+    // only dE on the same green/amber/red thresholds. So e.g. chroma 0.5
+    // paints the lower half green while a total 1.8 paints the luminance cap
+    // amber. The top cap keeps its soft self-colored glow.
+    const chromaColor=chromaDE<1?'#4caf50':chromaDE<3?'#ff9800':'#ff4444';
     const chromaH=Math.min(Math.max(chromaDE,0)/yMax,barH)*chart.h;
     const yChroma=chart.pad.t+chart.h-chromaH;
     const capH=Math.max(0,yChroma-y);
-    ctx.fillStyle=color;
-    ctx.fillRect(px,y,barW,fullH);
+    // Chroma (bottom) segment first so the cap glow sits cleanly on top.
+    ctx.fillStyle=chromaColor;
+    ctx.fillRect(px,yChroma,barW,Math.max(0,chart.pad.t+chart.h-yChroma));
     if(capH>0.5){
      ctx.save();
      ctx.shadowColor=color;
