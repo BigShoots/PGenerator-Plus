@@ -1404,6 +1404,35 @@ sub lg_picture_reset_ddc_baseline_ok (@) {
  return ($ddc_result->{"ddc_baseline_reset"} && $ddc_result->{"ddc_reset_verified"}) ? 1 : 0;
 }
 
+# Phase 3 step 1: decide whether a !basic_picture_reset_ok is a blocking
+# failure or a best-effort skip. On generations that webOS forbids
+# resetSystemSettings (e.g. 2019 C9), the brightness/contrast reset keys
+# are rejected outright and the DDC/CAL clear + reference reset is the real
+# success path. Returns 1 when the workflow MUST json_error and 0 when it
+# should proceed and surface picture_reset_best_effort=not_permitted.
+sub lg_picture_reset_is_blocking (@) {
+ my ($generation,$basic_ok,$ddc_ok,$last_message)=@_;
+ return 0 if($basic_ok);
+ $generation={} if(ref($generation) ne "HASH");
+ $last_message="" if(!defined($last_message));
+ my $profile=&lg_generation_profile($generation);
+ my $reset_method=($profile->{"reset_method"}||"");
+ my $forbidden=($last_message =~ /Not allowed to call method|resetSystemSettings/i) ? 1 : 0;
+ return 0 if($reset_method eq "ddc_cal_identity" && $forbidden);
+ return 0 if($reset_method eq "ddc_cal_identity" && $generation->{"ddc_only_white_balance"});
+ return 0 if($ddc_ok);
+ return 1;
+}
+
+sub lg_readback_leniency_ok (@) {
+ my ($generation)=@_;
+ $generation={} if(ref($generation) ne "HASH");
+ my $profile=&lg_generation_profile($generation);
+ # Truthy "false" JSON booleans serialize to 0 ("false"); normalize.
+ my $rb=(defined($profile->{"readback_supported"}) && ((ref($profile->{"readback_supported"}) eq "JSON::PP::Boolean") ? ($profile->{"readback_supported"} ? 1 : 0) : ($profile->{"readback_supported"} ? 1 : 0)));
+ return $rb ? 0 : 1;
+}
+
 sub lg_picture_reset_workflow (@) {
  my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state)=@_;
  $tv_input="" if(!defined($tv_input));
@@ -1418,6 +1447,7 @@ sub lg_picture_reset_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my $profile=&lg_generation_profile($generation);
  my $active_picture_mode=$fallback_picture_mode;
  if($active_picture_mode eq "" && !$generation->{"picture_mode_read_forbidden"}) {
   my $probe=&lg_request($session,"get_picture_mode_for_reset","settings/getSystemSettings",{
@@ -1802,6 +1832,23 @@ foreach my $attempt (@panel_payloads) {
 	   $factory_key_applied{$_}=1 for(@{$white_balance_reset_keys});
 	  }
 	 }
+	 # Phase 3: best-effort path. If webOS forbids the picture-settings reset
+	 # for a ddc_cal_identity generation AND the DDC/CAL baseline cleared,
+	 # the brightness/contrast reset rejection is no longer blocking -- the
+	 # DDC/CAL identity clear + reference reset is the real success path.
+	 # Preserve working generations (C1/C2): the DDC/CAL reset + reference
+	 # reset still gates success; only the resetSystemSettings HARD
+	 # dependency is removed.
+	 my $reset_forbidden=($last_message||"") =~ /Not allowed to call method|resetSystemSettings/i ? 1 : 0;
+	 my $ddc_cal_reset_ok=&lg_picture_reset_ddc_baseline_ok($ddc_attempted,$ddc_result);
+	 my $best_effort=0;
+	 if(!$basic_picture_reset_ok
+	    && (($profile->{"reset_method"}||"") eq "ddc_cal_identity")
+	    && ($reset_forbidden || $generation->{"ddc_only_white_balance"})
+	    && ($ddc_cal_reset_ok || $white_balance_reset_satisfied_by_ddc)) {
+	  $best_effort=1;
+	  $basic_picture_reset_ok=1;
+	 }
  &diag_log_append("picture_reset",{
   ip => $ip,
 	  hdr_calman_reset_attempted => &json_bool($hdr_calman_reset_attempted),
@@ -1837,10 +1884,11 @@ foreach my $attempt (@panel_payloads) {
 	  panel_light_reset_ok => &json_bool($panel_reset_ok),
   panel_light_ui_data_reset_ok => &json_bool($ui_data_reset_ok),
   panel_light_attempts => \@panel_reset_attempts,
+  picture_reset_best_effort => ($best_effort ? "not_permitted" : ""),
   ddc_attempted => $ddc_attempted,
   ddc_response => $ddc_result,
  });
-	 if(!$basic_picture_reset_ok) {
+	 if(!$basic_picture_reset_ok && &lg_picture_reset_is_blocking($generation,$basic_picture_reset_ok,$ddc_cal_reset_ok || $white_balance_reset_satisfied_by_ddc,$last_message)) {
 	  return &json_error($last_message||"LG TV rejected the brightness/contrast reset keys for this picture mode.",{
 	   ip => $ip,
 	   active_picture_mode => $active_picture_mode,
@@ -1874,6 +1922,7 @@ foreach my $attempt (@panel_payloads) {
 	   white_balance_reset_attempts => \@white_balance_reset_attempts,
 	   ddc_attempted => &json_bool($ddc_attempted),
 	   ddc_response => $ddc_result,
+	   picture_reset_best_effort => ($best_effort ? "not_permitted" : ""),
 	   lg_generation => $generation,
 	  });
 	 }
@@ -1942,6 +1991,7 @@ foreach my $attempt (@panel_payloads) {
   ddc_attempted => &json_bool($ddc_attempted),
   ddc_skipped => &json_bool($reset_ddc_state ? 0 : 1),
   ddc_response => $ddc_result,
+  picture_reset_best_effort => ($best_effort ? "not_permitted" : ""),
   hello_info => $auth->{"hello_info"},
   system_info => $auth->{"system_info"},
   software_info => $auth->{"software_info"},
