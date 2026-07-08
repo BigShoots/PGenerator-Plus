@@ -4284,6 +4284,25 @@ sub lg_generation_info (@) {
  $ddc_only=1 if($platform_year && $platform_year <= 2021);
  $ddc_only=1 if($series =~ /^[BCGZ]1$/);
  $ddc_only=1 if($webos_major && $webos_major <= 6);
+ # When nothing resolved, default to conservative: assume the LG cannot be
+ # classified and behave like a DDC/CAL-only generation. Phase 2 step 1.
+ $ddc_only=1 if(!$platform_year && $series eq "" && !$webos_major);
+
+ # Derive the generation_id + classification_source. Phase 2 step 1.
+ # classification_source: which signal resolved first ("platform_year" >
+ # "series" > "webos_major" > "fallback"). generation_id: short human-readable
+ # bucket matching those sources. Unknown models emit lg_unknown / fallback.
+ my $classification_source = "fallback";
+ $classification_source = "platform_year" if($platform_year);
+ $classification_source = "series"        if(!$platform_year && $series ne "");
+ $classification_source = "webos_major"   if($classification_source eq "fallback" && $webos_major);
+
+ my $generation_id = "lg_unknown";
+ if($platform_year >= 2022) { $generation_id = "lg2022plus_oled"; }
+ elsif($platform_year == 2021 || $series =~ /^[BCGZ]1$/) { $generation_id = "lg2021_oled"; }
+ elsif($platform_year >= 2019 && $platform_year <= 2020) { $generation_id = "lg".$platform_year."_oled"; }
+ elsif($webos_major && $webos_major <= 6) { $generation_id = "lg_pre2022_oled"; }
+
  return {
   model_name => $model,
   platform_model => $platform,
@@ -4294,6 +4313,8 @@ sub lg_generation_info (@) {
   webos_major => $webos_major,
   ddc_only_white_balance => &json_bool($ddc_only),
   picture_mode_read_forbidden => &json_bool($ddc_only),
+  generation_id => $generation_id,
+  classification_source => $classification_source,
  };
 }
 
