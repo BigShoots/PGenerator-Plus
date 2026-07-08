@@ -7274,6 +7274,8 @@ sub webui_wifi_ap_control (@) {
  }
  chomp($raw);
  if($raw=~/^OK/) {
+  # Persist the desired AP state so it survives reboot (issue #22).
+  &sudo("SET_PGENERATOR_CONF","wifi_ap",($action eq "enable")?"1":"0");
   return '{"status":"ok","message":"WiFi AP '.$action.'d"}';
  }
  $raw=~s/^ERR:?//;
@@ -7344,6 +7346,15 @@ sub webui_wifi_radio_control (@) {
  my $raw=&sudo("WIFI_RADIO",$enabled);
  chomp($raw);
  if($raw=~/^OK/) {
+  # Persist the desired radio state so it survives reboot (issue #22).
+  &sudo("SET_PGENERATOR_CONF","wifi_radio",($enabled eq "on")?"1":"0");
+  # Disabling the WiFi radio also stops the AP (they share one radio).
+  # The AP can't beacon on a blocked radio; stop hostapd and persist the
+  # AP state too so both stay off across reboot.
+  if($enabled eq "off") {
+   &sudo("WIFI_AP_DISABLE");
+   &sudo("SET_PGENERATOR_CONF","wifi_ap","0");
+  }
   return '{"status":"ok","message":"WiFi radio '.($enabled eq "on" ? "enabled" : "disabled").'"}';
  }
  $raw=~s/^ERR:?//;
@@ -7403,6 +7414,9 @@ sub webui_bluetooth_bool_control (@) {
  my $raw=&sudo($cmd,$enabled);
  chomp($raw);
  if($raw=~/^OK/) {
+  # Persist the BT power state so it survives reboot (issue #22). Only the
+  # power toggle is persisted; discoverable/agent are session settings.
+  &sudo("SET_PGENERATOR_CONF","bt_powered",($enabled eq "on")?"1":"0") if($cmd eq "BT_SET_POWERED");
   return '{"status":"ok","message":"'.&_webui_json_escape($label)." ".$enabled.'"}';
  }
  $raw=~s/^ERR:?//;

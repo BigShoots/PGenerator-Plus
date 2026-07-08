@@ -47,6 +47,13 @@ if [ "$ACTION" == "add" ];then
  # Restart DHCP immediately after bridge is created, before BT is
  # discoverable, so dhcpd binds to the bnep interface in time.
  /etc/init.d/dhcp restart
+ # Respect the persisted BT power state (issue #22): if the user disabled
+ # BT, leave the adapter powered off instead of forcing it back on.
+ if grep -q '^bt_powered=0' /etc/PGenerator/PGenerator.conf 2>/dev/null; then
+  /usr/bin/hciconfig $DEVICE down
+  /usr/bin/bluetoothctl power off >/dev/null 2>&1
+  exit 0
+ fi
  /usr/bin/bluez-test-adapter powered on
  /usr/bin/bluez-test-adapter discoverabletimeout 0
  /usr/bin/bluez-test-adapter discoverable on

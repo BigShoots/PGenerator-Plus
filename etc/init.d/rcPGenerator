@@ -239,6 +239,32 @@ rc_PGenerator_start () {
    # end for wifi
   fi
 
+  # Re-apply persisted WiFi/AP/BT disabled state (issue #22).
+  # The bring-up above unconditionally starts hostapd and loads the wifi/bt
+  # modules; restore the user's desired radio state afterwards. Uses rfkill
+  # sysfs soft-block nodes (writing 1 = block) so it works on images that
+  # don't ship the rfkill binary. Defaults to enabled when the key is absent.
+  PGEN_CONF=/etc/PGenerator/PGenerator.conf
+  for t in /sys/class/rfkill/rfkill*/type; do
+   [ -e "$t" ] || continue
+   d=$(dirname "$t")
+   case "$(cat "$t" 2>/dev/null)" in
+    wlan) wifi_rfkill="$d/soft" ;;
+    bluetooth) bt_rfkill="$d/soft" ;;
+   esac
+  done
+  if grep -q '^wifi_radio=0' "$PGEN_CONF" 2>/dev/null; then
+   [ -n "$wifi_rfkill" ] && echo 1 > "$wifi_rfkill" 2>/dev/null
+  fi
+  if grep -q '^wifi_ap=0' "$PGEN_CONF" 2>/dev/null; then
+   /etc/init.d/hostapd stop >/dev/null 2>&1
+  fi
+  if grep -q '^bt_powered=0' "$PGEN_CONF" 2>/dev/null; then
+   [ -n "$bt_rfkill" ] && echo 1 > "$bt_rfkill" 2>/dev/null
+   hciconfig hci0 down 2>/dev/null
+   bluetoothctl power off >/dev/null 2>&1
+  fi
+
   # scaling governor mode
   /bin/echo $SCALING_GOVERNOR > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
  
