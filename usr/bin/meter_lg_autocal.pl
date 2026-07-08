@@ -9,6 +9,9 @@ use IO::Socket::INET ();
 use MIME::Base64 ();
 use Time::HiRes qw(sleep time);
 
+our $PGAC_LOADED = 0;
+eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
+
 my $config_file = shift || "/tmp/meter_lg_autocal_config.json";
 my $state_file = shift || "/tmp/meter_lg_autocal.json";
 my $stop_file = shift || "/tmp/meter_lg_autocal.stop";
@@ -25482,6 +25485,22 @@ eval {
 	 }
 	 write_state($state);
 	 autocal_completion_pattern_cleanup($config,$state) if(!cancelled());
+
+ if($PGAC_LOADED) {
+  eval {
+   my $rid = (ref($config) eq 'HASH' ? $config->{'run_id'} : '') || PGAutoCalRun::current();
+   if(defined($rid) && $rid ne '') {
+    PGAutoCalRun::run_snapshot($rid, 'grey-state.json', $state_file, 0);
+    PGAutoCalRun::run_snapshot($rid, 'grey-log.txt', '/tmp/meter_lg_autocal.log', 2000);
+    PGAutoCalRun::run_stage($rid, '1d_generate', {
+     ok           => (($state->{'status'}||'') eq 'complete') ? JSON::PP::true : JSON::PP::false,
+     tv_message   => $state->{'message'} || '',
+     worker_status=> $state->{'status'} || '',
+    });
+   }
+   1;
+  };
+ }
 
    1;
 } or do {

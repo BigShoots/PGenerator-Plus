@@ -11,6 +11,9 @@ use MIME::Base64 ();
 use POSIX qw(strftime);
 use Time::HiRes qw(sleep time);
 
+our $PGAC_LOADED = 0;
+eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
+
 my $config_file = shift || "/tmp/meter_lg_3d_autocal_config.json";
 my $state_file = shift || "/tmp/meter_lg_3d_autocal.json";
 my $stop_file = shift || "/tmp/meter_lg_3d_autocal.stop";
@@ -3267,6 +3270,26 @@ eval {
  $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
  $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
  write_state($state);
+ if($PGAC_LOADED) {
+  eval {
+   my $rid = (ref($config) eq 'HASH' ? $config->{'run_id'} : '') || PGAutoCalRun::current();
+   if(defined($rid) && $rid ne '') {
+    PGAutoCalRun::run_snapshot($rid, '3d-state.json', $state_file, 0);
+    PGAutoCalRun::run_snapshot($rid, '3d-log.txt', '/tmp/meter_lg_3d_autocal.log', 1000);
+    PGAutoCalRun::run_stage($rid, '3d_generate', {
+     ok            => (($state->{'status'}||'') eq 'complete') ? JSON::PP::true : JSON::PP::false,
+     tv_message    => $state->{'message'} || '',
+     worker_status => $state->{'status'} || '',
+    });
+    PGAutoCalRun::run_merge_manifest($rid, { config => {
+     lut_grid       => 33,
+     lut_data_count => 35937,
+     lut_bit_depth  => 12,
+    }});
+   }
+   1;
+  };
+ }
  1;
 } or do {
  my $err=$@ || "LG 3D LUT Auto Cal failed";
