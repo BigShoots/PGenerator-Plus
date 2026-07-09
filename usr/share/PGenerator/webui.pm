@@ -26666,7 +26666,7 @@ async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
 // result so the caller can chain the rest of the completion flow.
 async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
  const opts=options||{};
- const sigMode=String(((status&&(status.signal_mode||status.requested_signal_mode))||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():''))).toLowerCase());
+ const sigMode=String(((status&&(status.signal_mode||status.requested_signal_mode))||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():''))).toLowerCase();
  if(sigMode!=='hdr10') return {shown:false,reason:'not-hdr10'};
  if(!(status&&status.hdr20_1d_tonemap_pending)) return {shown:false,reason:'not-pending'};
  // Once the operator has been shown the prompt (or we determined it was
