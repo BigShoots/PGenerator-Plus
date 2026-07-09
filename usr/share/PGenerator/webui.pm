@@ -10564,8 +10564,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartColorDELabel">&Delta;E 2000 (Color Accuracy)</div>
-      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Include luminance error in color-series and saturation-sweep ΔE calculations.">
-       <input type="checkbox" id="meterColorIncludeLumError" onchange="meterOnGreyRefChange()" style="vertical-align:middle"> Include luminance error
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Include luminance error in color-series and saturation-sweep ΔE calculations. Also shows ΔY% halo rings on the CIE chart.">
+       <input type="checkbox" id="meterColorIncludeLumError" onchange="meterOnColorIncludeLumChange()" style="vertical-align:middle"> Include luminance error
       </label>
       <label id="meterColorDeltaEFormWrap" style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px;margin-left:auto" title="Changes the color and saturation-sweep ΔE calculation.">
        Color ΔE
@@ -16733,6 +16733,27 @@ function meterColorIncludeLum(){
  return !!(el&&el.checked);
 }
 
+// Color-series "Include luminance error" toggle: updates ΔE mode, CIE ΔY%
+// halo rings, tables, and prefs. Dedicated handler so the CIE canvas always
+// fully redraws when the rings should appear/disappear.
+function meterOnColorIncludeLumChange(){
+ try{ meterSaveColorPrefs(); }catch(e){}
+ if(meterReadings && meterReadings.length){
+  meterReadings.forEach(r=>{
+   if(!r) return;
+   delete r._dE_cache_key;
+   delete r._dE_raw;
+   delete r._dE_lc;
+  });
+ }
+ // Hard-clear CIE so stale halo strokes cannot survive a partial redraw.
+ try{
+  const c=document.getElementById('chartCIE');
+  if(c){ const w=c.width,h=c.height; c.width=w; c.height=h; }
+ }catch(e){}
+ meterOnGreyRefChange();
+}
+
 // Color and saturation ΔE use their own luminance toggle so they do not leak
 // state from the greyscale controls.
 function meterColorRefMode(){
@@ -16944,7 +16965,9 @@ function meterEnsureDeltaECache(readings){
 		 greyWhite.synthetic_target?'synthetic':'measured',
 		 greyWhite.autocal_target_reference_disabled?'disabled':'active'
 		].join('@'):'none';
-		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp;
+		// Include color_incl_lum so toggling CIE ΔY% / color ΔE mode never reuses a stale pair.
+		const colorInclLum=meterColorIncludeLum()?'1':'0';
+		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+colorInclLum+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp;
 	readings.forEach(rd=>{
 	 if(!rd) return;
 	 if(rd._dE_cache_key===key) return;
@@ -32124,7 +32147,11 @@ function meterSelectedCIETargetColor(rd,baseColor){
 // Canvas-2D software projection: floor = chromaticity (x,y), vertical = Y nits.
 // Left-drag orbit, wheel zoom, Shift/middle/right-drag pan, double-click reset.
 const CIE3D_XMIN=0, CIE3D_XMAX=0.8, CIE3D_YMIN=0, CIE3D_YMAX=0.9;
-const CIE3D_DEFAULT={yaw:0.85,pitch:0.55,dist:2.4,panX:0,panY:0.05,scale:1};
+// pitch: 0 = edge-on side view, ~π/2 = top-down looking down at the floor.
+// Positive pitch elevates the camera ABOVE the chromaticity plane (not under it).
+const CIE3D_DEFAULT={yaw:0.85,pitch:0.72,dist:2.4,panX:0,panY:0.02,scale:1};
+const CIE3D_PITCH_MIN=0.05;
+const CIE3D_PITCH_MAX=1.52; // just shy of π/2 so axes stay readable
 let _cie3d={
  yaw:CIE3D_DEFAULT.yaw,pitch:CIE3D_DEFAULT.pitch,dist:CIE3D_DEFAULT.dist,
  panX:CIE3D_DEFAULT.panX,panY:CIE3D_DEFAULT.panY,scale:CIE3D_DEFAULT.scale,
@@ -32146,6 +32173,9 @@ function meterOnCie3dViewChange(){
  meterUpdateCie3dLabel();
  const canvas=document.getElementById('chartCIE');
  if(meterCie3dViewEnabled()){
+  // Reset to a known elevated view so a previous "under the floor" angle
+  // cannot leave the operator stuck after re-enabling 3D.
+  cie3dResetCamera();
   cie3dBindHandlers(canvas);
  } else {
   cie3dUnbindHandlers(canvas);
@@ -32197,17 +32227,22 @@ function cie3dProject(x,y,Y,layout){
  const pz=(y-y0)/(ySpan*0.5);
  const py=(Y/(layout.yMax||1))*1.6;
  const cyaw=Math.cos(_cie3d.yaw), syaw=Math.sin(_cie3d.yaw);
- const cp=Math.cos(_cie3d.pitch), sp=Math.sin(_cie3d.pitch);
- // Yaw around vertical
+ const pitch=Math.max(CIE3D_PITCH_MIN,Math.min(CIE3D_PITCH_MAX,_cie3d.pitch));
+ const cp=Math.cos(pitch), sp=Math.sin(pitch);
+ // Yaw around vertical (world Y)
  const x1=px*cyaw-pz*syaw;
  const z1=px*syaw+pz*cyaw;
  const y1=py;
- // Pitch around X
- const y2=y1*cp-z1*sp;
- const z2=y1*sp+z1*cp;
+ // Pitch around X: POSITIVE pitch tips the camera ABOVE the floor looking down.
+ // (Negated vs a plain object-X rotation so height maps toward the camera, not away.)
+ // At pitch=π/2: y2≈z1, z2≈-y1  → taller points are nearer (smaller z).
+ const y2=y1*cp+z1*sp;
+ const z2=-y1*sp+z1*cp;
  const x2=x1;
  const baseScale=Math.min(layout.w,layout.h)*0.28*_cie3d.scale;
- const persp=_cie3d.dist/(Math.max(0.35,_cie3d.dist+z2));
+ // Depth: larger z = further. Guard so perspective never flips through the camera.
+ const depth=Math.max(-_cie3d.dist+0.45,z2);
+ const persp=_cie3d.dist/( _cie3d.dist+depth );
  const sx=layout.cx+x2*baseScale*persp+_cie3d.panX*layout.w;
  const sy=layout.cy-y2*baseScale*persp-_cie3d.panY*layout.h;
  return {sx:sx,sy:sy,z:z2,persp:persp};
@@ -32393,8 +32428,8 @@ function drawCIEChart3D(readings,opts){
    hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:12,reading:rd});
   }
  });
- // Painter's algorithm: far → near
- prims.sort((a,b)=>a.z-b.z);
+ // Painter's algorithm: far (large z) → near (small z)
+ prims.sort((a,b)=>b.z-a.z);
  prims.forEach(p=>{ try{ p.draw(); }catch(e){} });
  // Overlay labels (always on top)
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';
@@ -32455,8 +32490,9 @@ function cie3dOnPointerMove(e){
    _cie3d.panY-=dy/rect.height;
   } else {
    _cie3d.yaw+=dx*0.01;
-   _cie3d.pitch+=dy*0.01;
-   _cie3d.pitch=Math.max(0.08,Math.min(1.45,_cie3d.pitch));
+   // Drag up → more elevated / top-down; drag down → more edge-on side view.
+   _cie3d.pitch-=dy*0.01;
+   _cie3d.pitch=Math.max(CIE3D_PITCH_MIN,Math.min(CIE3D_PITCH_MAX,_cie3d.pitch));
   }
   cie3dRedraw();
   const tip=document.getElementById('chartTooltip');
@@ -32574,7 +32610,13 @@ function drawCIEChart(readings){
  if(canvas) cie3dUnbindHandlers(canvas);
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
- const colorInclLum=meterColorIncludeLum();
+ // Always wipe the full canvas first so disabling ΔY% halos cannot leave
+ // previous ring strokes (partial redraw / DPR edge cases).
+ ctx.setTransform(1,0,0,1,0,0);
+ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+ const dpr=window.devicePixelRatio||1;
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ const colorInclLum=!!meterColorIncludeLum();
  const pad={t:15,r:15,b:35,l:45};
  const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
  const xMin=0,xMax=0.8,yMin=0,yMax=0.9;
@@ -32680,7 +32722,7 @@ function drawCIEChart(readings){
 // patch in the series. Rendered in the top-right corner of the CIE chart.
 function drawCIETargetInset(ctx,readings,pad){
  if(!readings||!readings.length) return;
- const colorInclLum=meterColorIncludeLum();
+ const colorInclLum=!!meterColorIncludeLum();
  let focus=null;
  if(_selectedColorReadingName){
   focus=readings.find(r=>r&&r.name===_selectedColorReadingName)||null;
