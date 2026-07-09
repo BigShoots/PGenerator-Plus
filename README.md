@@ -29,10 +29,11 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
 ### How to Flash the Image
 
 1. Download the latest full image release parts (`PGenerator_Plus_vX.Y.Z_pi4.img.7z.001` and `.002`) from the GitHub Releases page and place both files in the same folder.
-2. Extract the first part with [7-Zip](https://www.7-zip.org/) to reconstruct the full `.img` file, then flash it with a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to a microSD card or USB flash drive (minimum 8GB).
+2. Extract the first part with [7-Zip](https://www.7-zip.org/) to reconstruct the full `.img` file, then flash it with a tool like [Balena Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) to a microSD card or USB flash drive (minimum 8GB). MacOS users can use a tool such as [Keka](https://www.keka.io/en/) or [BetterZip ](https://macitbetter.com/downloads/)to extract and [Raspberry Pi Imager ](https://www.raspberrypi.com/software/)to flash.
 3. Insert the microSD card or USB flash drive into your Raspberry Pi and power it on.
 4. Connect to the Pi using one of the following methods:
    - **Bluetooth PAN:**
+
      1. First connect to the Bluetooth device on your computer.
 
         <p align="left">
@@ -41,13 +42,11 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
           <img src="screenshots/select_bluetooth.png" alt="Select Bluetooth" width="240"/>
           <img src="screenshots/select_pgenerator.png" alt="Select PGenerator" width="240"/>
         </p>
-
      2. Join its PAN in Windows settings.
 
         <p align="left">
           <img src="screenshots/join_bt_pan.png" alt="Join Bluetooth PAN" width="240"/>
         </p>
-
    - **Wired PAN:** Connect an Ethernet cable directly between your device and the Pi.
    - **Wired LAN:** Connect the Pi to your local network router or switch via Ethernet.
    - **Wireless PAN:** Connect your device to the Pi's default WiFi Access Point (SSID: `PGenerator`, Password: `PGenerator`).
@@ -55,7 +54,6 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
      <p align="left">
        <img src="screenshots/join_wifi_pan.png" alt="Join WiFi PAN" width="240"/>
      </p>
-
    - **Wireless LAN:** Connect the Pi to your existing WiFi network (can be configured via the Web UI after using one of the other methods).
 5. Access the web UI at `http://pgenerator.local` or the device's IP address.
 
@@ -64,6 +62,7 @@ Built on [PGenerator](https://github.com/Biasiolo/PGenerator) by Riccardo Biasio
 PGenerator+ includes a built-in Over-The-Air (OTA) update system that pulls the latest releases directly from GitHub.
 
 **Via Web UI (Recommended):**
+
 1. Open the PGenerator+ web dashboard.
 2. Scroll down to the **Software Update** card.
 3. Click **Check for Updates**. If a new version is available, the changelog will appear.
@@ -73,6 +72,7 @@ PGenerator+ includes a built-in Over-The-Air (OTA) update system that pulls the 
 
 **Via Command Line:**
 You can also trigger updates via SSH (`root` / `PGenerator!!$`):
+
 ```bash
 # Check for updates
 /usr/sbin/pgenerator-update check
@@ -209,12 +209,12 @@ make
 
 ### Signal Modes
 
-| Mode | Description |
-|------|-------------|
-| **SDR** | Standard Dynamic Range (Rec.709), 8-bit |
-| **HDR10** | Static HDR with PQ (ST.2084) EOTF, 10-bit, full DRM InfoFrame metadata |
-| **HLG** | Hybrid Log-Gamma for broadcast HDR, 10-bit |
-| **Dolby Vision (Low Latency)** | LLDV with RPU metadata, 12-bit — recommended for DV calibration |
+| Mode                                 | Description                                                            |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| **SDR**                        | Standard Dynamic Range (Rec.709), 8-bit                                |
+| **HDR10**                      | Static HDR with PQ (ST.2084) EOTF, 10-bit, full DRM InfoFrame metadata |
+| **HLG**                        | Hybrid Log-Gamma for broadcast HDR, 10-bit                             |
+| **Dolby Vision (Low Latency)** | LLDV with RPU metadata, 12-bit — recommended for DV calibration       |
 
 The Raspberry Pi 4's KMS driver is used to set HDMI InfoFrames directly:
 
@@ -227,6 +227,7 @@ The Raspberry Pi 4's KMS driver is used to set HDMI InfoFrames directly:
 PGenerator+ acts as a TCP-controlled pattern generator, compatible with many major calibration software packages.
 
 **1. Calman (Portrait Displays)**
+
 - **Protocol:** SpectraCal Unified Pattern Generator Control Interface (Port `2100`)
 - **How to Connect:** In your workflow, click **Find Source** → Manufacturer: `SpectraCal` (or `Portrait Displays` in some versions) → Model: `SpectraCal - Unified Pattern Generator Control Interface`. Enter the PGenerator's IP address and click Connect.
   - *Calman Control:* When connected via UPGCI, Calman can directly command the PGenerator to switch between SDR, HDR10 and HLG signal modes, set the EOTF, colorimetry, color format, mastering display metadata, and other InfoFrame parameters from its generator settings. PGenerator executes these commands in real time, eliminating the need to manually configure the signal on the device.
@@ -239,20 +240,24 @@ PGenerator+ acts as a TCP-controlled pattern generator, compatible with many maj
   - *Deprecation Notice:* Portrait Displays removed the UPGCI protocol from Calman "Home" licenses starting with version 5.15.x (the 2024 releases) to push users toward their own generator hardware. There is no official add-on to re-enable it for Home users. If calibration with PGenerator is required, you must either remain on Calman 5.14.x or older, upgrade to a professional license tier (Calman Video Pro or higher), or use alternative software (like ColourSpace or HCFR).
 
 **2. ColourSpace / LightSpace CMS**
+
 - **Protocol:** XML Network Calibration Protocol (Port `85`)
 - **How to Connect:** Open **Hardware Options** → Hardware: `Network` (or `PGenerator` if listed). Enter the PGenerator's IP address in the Network Address field and click Connect.
 
 **3. HCFR**
+
 - **Protocol:** Network Pattern Generator Commands (Port `85`)
 - **How to Connect:** Go to **Measures** > **Generator** > **Configure** → Select `Network` from the dropdown and enter the PGenerator's IP address.
 - **Implementation Note:** HCFR compatibility work in PGenerator+ has been cross-checked against the upstream [HCFR](https://github.com/hcfr/hcfr) source so generator behavior, grayscale reference handling, and related measurement logic can be aligned to HCFR's actual application behavior where practical. HCFR remains a separate upstream project; PGenerator+ uses it as a reference and does not bundle the HCFR application itself.
 
 **4. Resolve Protocol (CalMAN/HCFR/DisplayCAL)**
+
 - **Protocol:** XML Calibration Protocol (Port `20002`) — PGenerator+ acts as a *client*, connecting outbound to calibration software. This is useful when the calibration PC cannot reach the PGenerator directly (e.g., different subnets).
 - **How to Connect:** In the PGenerator+ Web UI, find the **Resolve Protocol** card, enter the calibration PC's IP address and port, and click **Connect**. PGenerator+ will establish a TCP connection and begin accepting XML-encoded pattern commands.
 - **Windows Redirect Helper:** For CalMAN workflows that expect a local Resolve connection, use the included `tools/PGenerator-Resolve-Redirect.bat` to set up a Windows port proxy that forwards CalMAN's local port 20002 to the PGenerator's IP.
 
 **5. DeviceControl**
+
 - **Protocol:** UDP discovery + TCP pattern control
 
 *Device Discovery:* Calibration software can often discover the device automatically via UDP broadcast on port `1977` (`"Who is a PGenerator"` → `"I am a PGenerator <name>"`), allowing you to select your device from a list instead of entering the IP address manually. On PGenerator+, the advertised discovery name defaults to `PGenerator+` when the system hostname is still the stock `pgenerator` value.
@@ -268,7 +273,9 @@ PGenerator+ features a responsive, mobile-friendly single-page settings dashboar
 The UI is divided into drag-and-drop functional cards that save your layout preferences locally.
 
 #### Device Information
+
 Monitor the real-time health and connectivity of your PGenerator+:
+
 - **System Metrics:** Uptime, CPU temperature, and active HDMI output resolution.
 - **Network Interfaces:** View all assigned IP addresses (Ethernet, WiFi, WiFi AP, and Bluetooth PAN).
 - **WiFi Status:** Detailed metrics on the current wireless network connection including SSID, band, and signal strength.
@@ -276,7 +283,9 @@ Monitor the real-time health and connectivity of your PGenerator+:
 - **Latency Indicator:** Live ping response time to the device with a color-coded status.
 
 #### HDMI Signal Settings
+
 Complete control over the HDMI output parameters, InfoFrames, and DRMs without needing to use terminal commands:
+
 - **Signal Mode:** Instantly switch between SDR, HDR10, HLG, and Dolby Vision.
 - **Custom Resolutions:** Auto-detects available modes from the connected display's EDID.
 - **Base Video Parameters:** Configure Color Format (RGB/YCbCr), Colorimetry (BT.709/BT.2020), and Bit Depth (8/10/12-bit).
@@ -284,30 +293,39 @@ Complete control over the HDMI output parameters, InfoFrames, and DRMs without n
 - **Dolby Vision Metadata:** Dolby Vision Low Latency (LLDV) is supported, configure specific DOVI Interface, Color Space, and Metadata details.
 
 #### Manual Pattern Injection
+
 A full suite of test patterns that can be manually injected on-screen for spot-checking and fast visual validation.
+
 - **Solid Colors:** White, Black, Red, Green, Blue, Cyan, Magenta, Yellow, and generic Grays.
 - **Ramps & Steps:** Grayscale ramps and varying steps (2% to 10% increments).
 - **Calibration Checks:** Window patterns, Overscan borders, and Color Bars.
 - **Custom RGB Patch:** Enter specific RGB triplets and pick a patch size (10%, 18%, 25%, 50%, or 100%) to instantly display a custom color window.
 
 #### InfoFrame Decoder
+
 Troubleshoot your display chain by reading exactly what InfoFrames the Raspberry Pi is writing to the HDMI port:
+
 - Live readout of active AVI and DRM InfoFrame hex data.
 - Decoded human-readable translation of the current signal flags (colorimetry, VIC, EOTF, and luminance).
 
 #### HDMI-CEC TV Control
+
 Direct display control using HDMI-CEC:
+
 - **TV Power Status:** Indicates if the TV is detected and turned On/Standby.
 - **Actions:** Wake, Turn On, Send to Standby, or force the TV to switch to the Active Input.
 
 #### System & Updates
+
 Manage the device directly from the interface:
+
 - **Network Management:** Configure the active WiFi client connection or manage the local WiFi Access Point (reachable at `10.10.10.1`).
 - **Power Options:** Restart the PGenerator backend service or safely reboot the entire Raspberry Pi.
 - **Boot GPU Split:** Adjust the boot-time GPU memory split from the UI and trigger the required reboot.
 - **OTA Updates:** Check GitHub for new PGenerator+ releases, view changelogs, and install the latest cumulative OTA overlay with a single click.
 
 #### Meter & Measurements
+
 The current Web UI includes an integrated measurement workflow built around ArgyllCMS `spotread`:
 
 - **USB Meter Detection:** Detects supported colorimeters attached over USB and reports whether `spotread` is available.
@@ -341,6 +359,7 @@ On-device closed-loop calibration of LG displays, driven entirely from the Pi �
 - **Restart-Safe:** Active runs survive a WebUI reload and can be stopped cleanly; partial state is preserved on crash so the next run can resume from the last accepted step.
 
 #### CCSS Profile Management
+
 Meter correction files are now part of the runtime:
 
 - **Bundled Library:** `/usr/share/PGenerator/ccss/` ships a large set of generic and display-specific CCSS profiles.
@@ -478,18 +497,18 @@ libraries, and renderer executables.
 
 ### Key Modules
 
-| Module | Purpose |
-|--------|---------|
-| [daemon.pm](usr/share/PGenerator/daemon.pm) | TCP socket server, fork + thread management, request routing |
-| [pattern.pm](usr/share/PGenerator/pattern.pm) | Pattern DSL file creation, LUT application, resolution scaling |
-| [client.pm](usr/share/PGenerator/client.pm) | LightSpace XML protocol, Calman protocol handling |
-| [resolve.pm](usr/share/PGenerator/resolve.pm) | Resolve calibration XML protocol (outbound client to CalMAN/HCFR/DisplayCAL) |
-| [discovery.pm](usr/share/PGenerator/discovery.pm) | UDP broadcast discovery for DeviceControl, LightSpace, and RPC |
-| [webui.pm](usr/share/PGenerator/webui.pm) | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app |
-| `tools/image-targets/*/rootfs/usr/share/PGenerator/command.pm` | Target-specific HDMI/KMS/tvservice, renderer startup, and process management |
-| `tools/image-targets/*/rootfs/usr/share/PGenerator/conf.pm` | Target-specific runtime/platform detection around shared `key=value` config |
-| `tools/image-targets/*/rootfs/usr/share/PGenerator/variables.pm` | Target-specific paths, display defaults, and hardware flags |
-| [version.pm](usr/share/PGenerator/version.pm) | Version string (`2.4.1`) and product name (`PGenerator+`) |
+| Module                                                             | Purpose                                                                      |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| [daemon.pm](usr/share/PGenerator/daemon.pm)                         | TCP socket server, fork + thread management, request routing                 |
+| [pattern.pm](usr/share/PGenerator/pattern.pm)                       | Pattern DSL file creation, LUT application, resolution scaling               |
+| [client.pm](usr/share/PGenerator/client.pm)                         | LightSpace XML protocol, Calman protocol handling                            |
+| [resolve.pm](usr/share/PGenerator/resolve.pm)                       | Resolve calibration XML protocol (outbound client to CalMAN/HCFR/DisplayCAL) |
+| [discovery.pm](usr/share/PGenerator/discovery.pm)                   | UDP broadcast discovery for DeviceControl, LightSpace, and RPC               |
+| [webui.pm](usr/share/PGenerator/webui.pm)                           | Full web dashboard: HTTP server, REST API, single-page HTML/CSS/JS app       |
+| `tools/image-targets/*/rootfs/usr/share/PGenerator/command.pm`   | Target-specific HDMI/KMS/tvservice, renderer startup, and process management |
+| `tools/image-targets/*/rootfs/usr/share/PGenerator/conf.pm`      | Target-specific runtime/platform detection around shared`key=value` config |
+| `tools/image-targets/*/rootfs/usr/share/PGenerator/variables.pm` | Target-specific paths, display defaults, and hardware flags                  |
+| [version.pm](usr/share/PGenerator/version.pm)                       | Version string (`2.4.1`) and product name (`PGenerator+`)                |
 
 ### Meter Runtime Notes
 
@@ -506,24 +525,24 @@ libraries, and renderer executables.
 
 `/etc/PGenerator/PGenerator.conf` — flat `key=value` format, no sections:
 
-| Key | Values | Description |
-|-----|--------|-------------|
-| `port_pattern` | `85` | TCP port for pattern protocol (read-only) |
-| `color_format` | `0`=RGB, `1`=YCbCr444, `2`=YCbCr422 | HDMI output color format |
-| `colorimetry` | `0`=BT.709, `1`=BT.2020 | AVI InfoFrame colorimetry |
-| `rgb_quant_range` | `0`=Auto, `1`=Limited, `2`=Full | RGB quantization range |
-| `max_bpc` | `8`, `10`, `12` | Bits per channel |
-| `eotf` | `0`=SDR, `2`=PQ, `3`=HLG | Electro-optical transfer function |
-| `primaries` | `1`=Rec.2020, `2`=P3/D65, `3`=P3/DCI | Mastering display primaries |
-| `max_luma` / `min_luma` | nits (min is ×0.0001) | Mastering display luminance |
-| `max_cll` / `max_fall` | nits | Content light level metadata |
-| `dv_status` | `0`=off, `1`=on | Enable Dolby Vision binary |
-| `is_hdr` / `is_sdr` | `0` / `1` | Signal mode flags |
-| `is_ll_dovi` / `is_std_dovi` | `0` / `1` | Dolby Vision mode flags |
-| `dv_interface` | `0`=Standard, `1`=Low Latency | DV interface type |
-| `dv_map_mode` | `1`=Absolute, `2`=Relative | DV source-mapping mode used by the current `.dv` renderer |
-| `dv_metadata` | `2`=Perceptual, `3`=Absolute, `4`=Relative | Calman metadata-mode bookkeeping; Pi5 keeps this aligned with `dv_map_mode` so legacy and renderer paths select the same DV mode |
-| `dv_color_space` | `0`=YCbCr422, `1`=RGB444, `2`=YCbCr444 | DV color space |
+| Key                              | Values                                           | Description                                                                                                                       |
+| -------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `port_pattern`                 | `85`                                           | TCP port for pattern protocol (read-only)                                                                                         |
+| `color_format`                 | `0`=RGB, `1`=YCbCr444, `2`=YCbCr422        | HDMI output color format                                                                                                          |
+| `colorimetry`                  | `0`=BT.709, `1`=BT.2020                      | AVI InfoFrame colorimetry                                                                                                         |
+| `rgb_quant_range`              | `0`=Auto, `1`=Limited, `2`=Full            | RGB quantization range                                                                                                            |
+| `max_bpc`                      | `8`, `10`, `12`                            | Bits per channel                                                                                                                  |
+| `eotf`                         | `0`=SDR, `2`=PQ, `3`=HLG                   | Electro-optical transfer function                                                                                                 |
+| `primaries`                    | `1`=Rec.2020, `2`=P3/D65, `3`=P3/DCI       | Mastering display primaries                                                                                                       |
+| `max_luma` / `min_luma`      | nits (min is ×0.0001)                           | Mastering display luminance                                                                                                       |
+| `max_cll` / `max_fall`       | nits                                             | Content light level metadata                                                                                                      |
+| `dv_status`                    | `0`=off, `1`=on                              | Enable Dolby Vision binary                                                                                                        |
+| `is_hdr` / `is_sdr`          | `0` / `1`                                    | Signal mode flags                                                                                                                 |
+| `is_ll_dovi` / `is_std_dovi` | `0` / `1`                                    | Dolby Vision mode flags                                                                                                           |
+| `dv_interface`                 | `0`=Standard, `1`=Low Latency                | DV interface type                                                                                                                 |
+| `dv_map_mode`                  | `1`=Absolute, `2`=Relative                   | DV source-mapping mode used by the current`.dv` renderer                                                                        |
+| `dv_metadata`                  | `2`=Perceptual, `3`=Absolute, `4`=Relative | Calman metadata-mode bookkeeping; Pi5 keeps this aligned with`dv_map_mode` so legacy and renderer paths select the same DV mode |
+| `dv_color_space`               | `0`=YCbCr422, `1`=RGB444, `2`=YCbCr444     | DV color space                                                                                                                    |
 
 ---
 
@@ -543,50 +562,50 @@ All endpoints are served on port 80. Responses are JSON.
 
 ### Core API
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/ping` | Health check, returns `{"ok":1}` |
-| GET | `/api/info` | Device info (hostname, temp, IPs, WiFi, resolution, calibration status) |
-| GET | `/api/config` | Current configuration as JSON |
-| POST | `/api/config` | Apply configuration changes (JSON body) |
-| GET | `/api/modes` | Available HDMI output modes from display EDID |
-| POST | `/api/restart` | Restart pattern generator |
-| POST | `/api/reboot` | Reboot device |
-| GET | `/api/wifi/scan` | Scan for WiFi networks |
-| GET | `/api/wifi/status` | WiFi connection status |
-| POST | `/api/wifi/connect` | Connect to WiFi (JSON: ssid, psk) |
-| GET | `/api/wifi/ap` | Get AP settings |
-| POST | `/api/wifi/ap` | Set AP SSID and password |
-| GET | `/api/infoframes` | Read AVI and DRM InfoFrame hex data from HDMI output |
-| GET | `/api/cec/status` | HDMI-CEC TV power status |
-| GET | `/api/cec/{cmd}` | Send CEC command (`wake`, `on`, `off`, `as`) |
-| POST | `/api/pattern` | Display a test pattern (JSON body with pattern name, RGB, and size) |
-| POST | `/api/resolve/connect` | Connect outbound to a Resolve-compatible calibration server |
-| POST | `/api/resolve/disconnect` | Disconnect Resolve client mode |
-| GET | `/api/resolve/status` | Resolve connection status |
-| GET | `/api/update/check` | Check GitHub Releases for a newer OTA package |
-| POST | `/api/update/apply` | Start OTA download and install |
-| GET | `/api/boot/memory` | Read current boot GPU memory split |
-| POST | `/api/boot/memory` | Set boot GPU memory split and reboot |
+| Method | Endpoint                    | Description                                                             |
+| ------ | --------------------------- | ----------------------------------------------------------------------- |
+| GET    | `/api/ping`               | Health check, returns`{"ok":1}`                                       |
+| GET    | `/api/info`               | Device info (hostname, temp, IPs, WiFi, resolution, calibration status) |
+| GET    | `/api/config`             | Current configuration as JSON                                           |
+| POST   | `/api/config`             | Apply configuration changes (JSON body)                                 |
+| GET    | `/api/modes`              | Available HDMI output modes from display EDID                           |
+| POST   | `/api/restart`            | Restart pattern generator                                               |
+| POST   | `/api/reboot`             | Reboot device                                                           |
+| GET    | `/api/wifi/scan`          | Scan for WiFi networks                                                  |
+| GET    | `/api/wifi/status`        | WiFi connection status                                                  |
+| POST   | `/api/wifi/connect`       | Connect to WiFi (JSON: ssid, psk)                                       |
+| GET    | `/api/wifi/ap`            | Get AP settings                                                         |
+| POST   | `/api/wifi/ap`            | Set AP SSID and password                                                |
+| GET    | `/api/infoframes`         | Read AVI and DRM InfoFrame hex data from HDMI output                    |
+| GET    | `/api/cec/status`         | HDMI-CEC TV power status                                                |
+| GET    | `/api/cec/{cmd}`          | Send CEC command (`wake`, `on`, `off`, `as`)                    |
+| POST   | `/api/pattern`            | Display a test pattern (JSON body with pattern name, RGB, and size)     |
+| POST   | `/api/resolve/connect`    | Connect outbound to a Resolve-compatible calibration server             |
+| POST   | `/api/resolve/disconnect` | Disconnect Resolve client mode                                          |
+| GET    | `/api/resolve/status`     | Resolve connection status                                               |
+| GET    | `/api/update/check`       | Check GitHub Releases for a newer OTA package                           |
+| POST   | `/api/update/apply`       | Start OTA download and install                                          |
+| GET    | `/api/boot/memory`        | Read current boot GPU memory split                                      |
+| POST   | `/api/boot/memory`        | Set boot GPU memory split and reboot                                    |
 
 ### Meter & CCSS API
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/meter/status` | Detect connected meter and `spotread` availability |
-| POST | `/api/meter/read` | Start a manual meter read using the current meter settings |
-| GET | `/api/meter/read/result` | Poll the latest single-read result |
-| POST | `/api/meter/series` | Start a greyscale, color, or saturation measurement series |
-| GET | `/api/meter/series/status` | Poll active series progress and collected readings |
-| POST | `/api/meter/stop` | Stop the active meter session or series |
-| POST | `/api/meter/clear` | Clear cached meter results in the UI/backend |
-| POST | `/api/meter/reset` | Force meter cleanup/reset when the USB session is stuck |
-| GET | `/api/meter/settings` | Load saved meter settings |
-| POST | `/api/meter/settings` | Save meter settings such as display type, delay, patch size, insertion, refresh rate, AIO mode, and CCSS selection |
-| GET | `/api/ccss/list` | List custom uploaded CCSS profiles |
-| GET | `/api/ccss/all` | List bundled and custom CCSS profiles with metadata |
-| POST | `/api/ccss/upload` | Upload a `.ccss` file or compatible spectral `.csv` for conversion/import |
-| POST | `/api/ccss/delete/{filename}` | Delete a custom uploaded CCSS profile |
+| Method | Endpoint                        | Description                                                                                                        |
+| ------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| GET    | `/api/meter/status`           | Detect connected meter and`spotread` availability                                                                |
+| POST   | `/api/meter/read`             | Start a manual meter read using the current meter settings                                                         |
+| GET    | `/api/meter/read/result`      | Poll the latest single-read result                                                                                 |
+| POST   | `/api/meter/series`           | Start a greyscale, color, or saturation measurement series                                                         |
+| GET    | `/api/meter/series/status`    | Poll active series progress and collected readings                                                                 |
+| POST   | `/api/meter/stop`             | Stop the active meter session or series                                                                            |
+| POST   | `/api/meter/clear`            | Clear cached meter results in the UI/backend                                                                       |
+| POST   | `/api/meter/reset`            | Force meter cleanup/reset when the USB session is stuck                                                            |
+| GET    | `/api/meter/settings`         | Load saved meter settings                                                                                          |
+| POST   | `/api/meter/settings`         | Save meter settings such as display type, delay, patch size, insertion, refresh rate, AIO mode, and CCSS selection |
+| GET    | `/api/ccss/list`              | List custom uploaded CCSS profiles                                                                                 |
+| GET    | `/api/ccss/all`               | List bundled and custom CCSS profiles with metadata                                                                |
+| POST   | `/api/ccss/upload`            | Upload a`.ccss` file or compatible spectral `.csv` for conversion/import                                       |
+| POST   | `/api/ccss/delete/{filename}` | Delete a custom uploaded CCSS profile                                                                              |
 
 ---
 

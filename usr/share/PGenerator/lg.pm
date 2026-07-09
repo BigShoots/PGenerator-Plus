@@ -2061,6 +2061,21 @@ sub webui_lg_autocal_run_end (@) {
    1;
   };
  }
+ # The full workflow (or a standalone-greyscale run) has reached a
+ # terminal state. Clear the full-workflow + HDR tone-map metadata from
+ # the persisted autocal state so a FRESH browser session (no
+ # localStorage completion-token) no longer reads full_workflow=true /
+ # hdr20_1d_tonemap_pending=true on its first status poll and fires a
+ # phantom 3D-LUT autocal restart or a phantom "Upload HDR tone map"
+ # popup. This is the non-racy place to clear: the status endpoint is
+ # read mid-workflow by the active session to advance greyscale -> 3D-LUT,
+ # so it cannot distinguish a stage boundary from a finished run. The JS
+ # calls /api/lg/autocal/run/end exactly once with status:complete
+ # (meterFullAutoCalComplete) or status:aborted (meterFullAutoCalAbort),
+ # and the standalone-greyscale completion (meterAutoCalCloseCompleteAction).
+ if(defined &webui_meter_lg_autocal_clear_full_workflow_state) {
+  eval { &webui_meter_lg_autocal_clear_full_workflow_state(); };
+ }
  return &lg_encode_json({ status => "ok" });
 }
 
