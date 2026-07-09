@@ -10567,7 +10567,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartColorDELabel">&Delta;E 2000 (Color Accuracy)</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;margin-left:auto">
        <input type="checkbox" id="meterColorIncludeLumError" onchange="meterOnColorIncludeLumChange()" style="vertical-align:middle"> Include luminance error
-       <span class="meter-help-tip" title="Off = chroma-only ΔE (target Y matched to measured so pure luminance error is cancelled). On = full ΔE including luminance, and CIE shows cyan/orange ΔY% rings around measured points (cyan = brighter than target, orange = dimmer). The small filled dots are always the measured xy — they are not luminance rings." aria-label="Include luminance error help">?</span>
+       <span class="meter-help-tip" title="Off = chroma-only ΔE and 3D (target Y matched to measured). On = full ΔE including luminance; 2D/3D CIE show cyan/orange ΔY% rings (cyan = brighter, orange = dimmer) and 3D adds vertical ΔY stems. Small filled dots are always measured xy, not luminance rings." aria-label="Include luminance error help">?</span>
       </label>
       <label id="meterColorDeltaEFormWrap" style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px;margin-left:auto" title="Changes the color and saturation-sweep ΔE calculation.">
        Color ΔE
@@ -32382,10 +32382,13 @@ function drawCIEChart3D(readings,opts){
   }
  }});
  // Points
+ // Include luminance error ON  → true target/measured Y + visible ΔY rings/stems
+ // Include luminance error OFF → chroma-only: target lifted to measured Y so only xy error remains
+ const colorInclLum=!!meterColorIncludeLum();
  const hitZones=[];
  items.forEach(rd=>{
   if(!rd||meterIsWhiteReferenceReading(rd)) return;
-  let tx=null,ty=null,tY=null,mx=null,my=null,mY=null;
+  let tx=null,ty=null,tY=null,mx=null,my=null,mY=null,deltaPct=null;
   if(isPreset){
    const tgt=((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
     ? meterTargetChromaticityForReading(rd)
@@ -32405,7 +32408,11 @@ function drawCIEChart3D(readings,opts){
    const lum=meterColorLuminanceInfo(rd);
    if(tgt){ tx=tgt.x; ty=tgt.y; tY=(lum.targetY!=null)?lum.targetY:0; }
    if(hasMeasuredXY){ mx=rd.x; my=rd.y; mY=(lum.measuredY!=null)?lum.measuredY:0; }
+   deltaPct=lum.deltaPct;
   }
+  // Chroma-only: cancel Y error by plotting target at measured luminance.
+  let plotTY=tY, plotMY=mY;
+  if(!colorInclLum&&plotTY!=null&&plotMY!=null) plotTY=plotMY;
   const targetColor=meterBoostPlotColor(isPreset
    ? meterPreviewColorForStep(rd)
    : meterPreviewColorForReading(rd,'target'));
@@ -32413,9 +32420,9 @@ function drawCIEChart3D(readings,opts){
   const selected=meterIsSelectedColorReading(rd);
   const targetStroke=meterSelectedCIETargetColor(rd,targetColor);
 
-  if(tx!=null&&ty!=null&&tY!=null){
+  if(tx!=null&&ty!=null&&plotTY!=null){
    const p0=cie3dProject(tx,ty,0,layout);
-   const pT=cie3dProject(tx,ty,tY,layout);
+   const pT=cie3dProject(tx,ty,plotTY,layout);
    prims.push({z:Math.min(p0.z,pT.z), draw:()=>{
     ctx.strokeStyle=meterColorWithAlpha(targetColor,0.45);ctx.lineWidth=1;
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
@@ -32429,20 +32436,70 @@ function drawCIEChart3D(readings,opts){
    }});
    hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:12,reading:rd});
   }
-  if(mx!=null&&my!=null&&mY!=null){
+  if(mx!=null&&my!=null&&plotMY!=null){
    const p0=cie3dProject(mx,my,0,layout);
-   const pM=cie3dProject(mx,my,mY,layout);
+   const pM=cie3dProject(mx,my,plotMY,layout);
    prims.push({z:Math.min(p0.z,pM.z), draw:()=>{
     ctx.strokeStyle=meterColorWithAlpha(measuredColor,0.5);ctx.lineWidth=1;
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
    }});
-   if(tx!=null&&ty!=null&&tY!=null){
-    const pT=cie3dProject(tx,ty,tY,layout);
+   if(tx!=null&&ty!=null&&plotTY!=null){
+    const pT=cie3dProject(tx,ty,plotTY,layout);
+    // Chromaticity error segment (target → measured at plot heights)
     prims.push({z:(pT.z+pM.z)/2, draw:()=>{
      ctx.save();
      ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);
      ctx.beginPath();ctx.moveTo(pT.sx,pT.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
      ctx.restore();
+    }});
+   }
+   // Luminance-error visuals (only when Include luminance error is on).
+   // Absolute Y is scaled to series peak (often 800+ nits), so a few-% ΔY is
+   // invisible as pure height — add screen-space rings + a min-length ΔY stem.
+   if(colorInclLum&&tY!=null&&mY!=null&&(Math.abs(tY-mY)>1e-6||(deltaPct!=null&&Math.abs(deltaPct)>=0.75))){
+    const pTtrue=cie3dProject(tx!=null?tx:mx,ty!=null?ty:my,tY,layout);
+    const pMtrue=cie3dProject(mx,my,mY,layout);
+    // Vertical ΔY stem at measured xy between true target Y and measured Y
+    const pYlo=cie3dProject(mx,my,Math.min(tY,mY),layout);
+    const pYhi=cie3dProject(mx,my,Math.max(tY,mY),layout);
+    const dYcol=(deltaPct!=null&&deltaPct>=0)||(mY>=tY)?'rgba(82,196,255,0.95)':'rgba(255,176,84,0.95)';
+    prims.push({z:Math.min(pYlo.z,pYhi.z)-0.01, draw:()=>{
+     ctx.save();
+     ctx.strokeStyle=dYcol;
+     ctx.lineWidth=2.4;
+     ctx.setLineDash([]);
+     // Ensure a minimum on-screen length so small % errors still read as a stem
+     let x0=pYlo.sx,y0=pYlo.sy,x1=pYhi.sx,y1=pYhi.sy;
+     let dx=x1-x0, dy=y1-y0;
+     let len=Math.sqrt(dx*dx+dy*dy);
+     const minLen=10+Math.min(48,Math.abs(deltaPct!=null?deltaPct:0)*0.7);
+     if(len<minLen){
+      // Extend along the projected vertical direction (or straight up if degenerate)
+      if(len<0.5){ dx=0; dy=-1; len=1; }
+      const ux=dx/len, uy=dy/len;
+      const midX=(x0+x1)/2, midY=(y0+y1)/2;
+      x0=midX-ux*minLen/2; y0=midY-uy*minLen/2;
+      x1=midX+ux*minLen/2; y1=midY+uy*minLen/2;
+     }
+     ctx.beginPath();ctx.moveTo(x0,y0);ctx.lineTo(x1,y1);ctx.stroke();
+     // End caps
+     ctx.lineWidth=2;
+     ctx.beginPath();ctx.moveTo(x0-3,y0);ctx.lineTo(x0+3,y0);ctx.stroke();
+     ctx.beginPath();ctx.moveTo(x1-3,y1);ctx.lineTo(x1+3,y1);ctx.stroke();
+     ctx.restore();
+    }});
+    // True 3D connector when heights differ (target true → measured true)
+    if(tx!=null&&ty!=null){
+     prims.push({z:(pTtrue.z+pMtrue.z)/2+0.01, draw:()=>{
+      ctx.save();
+      ctx.strokeStyle=dYcol;ctx.lineWidth=1.6;ctx.setLineDash([3,2]);
+      ctx.beginPath();ctx.moveTo(pTtrue.sx,pTtrue.sy);ctx.lineTo(pMtrue.sx,pMtrue.sy);ctx.stroke();
+      ctx.restore();
+     }});
+    }
+    // Screen-space ΔY% ring (same language as 2D CIE)
+    prims.push({z:pM.z+0.05, draw:()=>{
+     meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,deltaPct!=null?deltaPct:((mY-tY)/Math.max(Math.abs(tY),1e-9)*100),pM.persp);
     }});
    }
    prims.push({z:pM.z+0.03, draw:()=>{
@@ -32467,6 +32524,13 @@ function drawCIEChart3D(readings,opts){
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';
  ctx.fillText('3D xyY  ·  drag orbit · wheel zoom · shift-drag pan',ctx.w-12,28);
+ if(colorInclLum){
+  ctx.fillStyle='#7ec8ff';ctx.font='9px sans-serif';
+  ctx.fillText('\u0394Y on: cyan/orange rings + stems (bright / dim)',ctx.w-12,42);
+ } else {
+  ctx.fillStyle='#6a7690';ctx.font='9px sans-serif';
+  ctx.fillText('Chroma only: target Y matched to measured',ctx.w-12,42);
+ }
  ctx.textAlign='left';
  ctx.fillStyle='#aab6cb';ctx.font='9px sans-serif';
  ctx.fillText('Y max '+(_cie3d.yMax>=100?_cie3d.yMax.toFixed(0):_cie3d.yMax.toFixed(1))+' cd/m\u00B2',12,ctx.h-10);
