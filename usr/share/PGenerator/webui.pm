@@ -1049,11 +1049,16 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
-   elsif($path eq "/api/meter/lg-autocal/stop" && $method eq "POST") {
-    my $result=&webui_meter_lg_autocal_stop();
-    my $len=length($result);
-    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
-   }
+	   elsif($path eq "/api/meter/lg-autocal/stop" && $method eq "POST") {
+	    my $result=&webui_meter_lg_autocal_stop();
+	    my $len=length($result);
+	    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+	   }
+	   elsif($path eq "/api/meter/lg-autocal/clear-tonemap-pending" && $method eq "POST") {
+	    my $result=&webui_meter_lg_autocal_clear_tonemap_pending();
+	    my $len=length($result);
+	    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+	   }
    elsif($path eq "/api/meter/lg-3d-autocal/start" && $method eq "POST") {
     my $result=&webui_meter_lg_3d_autocal_start($body);
     my $len=length($result);
@@ -3923,6 +3928,33 @@ sub webui_meter_lg_autocal_clear_full_workflow_state (@) {
  $json=~s/,(\s*\})/$1/g if($changed);
  if($changed && open(my $fh,">",$_meter_lg_autocal_file)) { print $fh $json; close($fh); chmod(0666,$_meter_lg_autocal_file); }
  return $changed;
+}
+
+# Clear ONLY the HDR tone-map pending/decision keys from the persisted
+# autocal state -- NOT the full_workflow / full_autocal_phase / peak
+# keys (those drive the mid-workflow advance and must survive). Called
+# the moment the operator resolves the wizard tone-map prompt (Upload
+# OR Skip) via /api/meter/lg-autocal/clear-tonemap-pending, so the
+# transient hdr20_1d_tonemap_pending flag -- which only the
+# standalone-greyscale HDR path sets (the full-workflow HDR20 path
+# returns early and never sets it) -- can never linger in /tmp across a
+# PGenerator restart to re-fire the "Upload HDR tone map" popup on a
+# fresh browser. Safe mid-full-workflow: it touches none of the
+# full-workflow advance keys.
+sub webui_meter_lg_autocal_clear_tonemap_pending (@) {
+ return unless(-f $_meter_lg_autocal_file);
+ my $json="";
+ if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
+ return if($json eq "");
+ my $changed=0;
+ for my $k (qw(hdr20_1d_tonemap_pending hdr20_1d_tonemap_wizard_handled hdr20_1d_tonemap_wizard_owns_upload)) {
+  next if($json!~/"\Q$k\E"\s*:/);
+  $json=~s/"\Q$k\E"\s*:\s*(?:true|false|null|"[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?)\s*,?\s*//;
+  $changed=1;
+ }
+ $json=~s/,(\s*\})/$1/g if($changed);
+ if($changed && open(my $fh,">",$_meter_lg_autocal_file)) { print $fh $json; close($fh); chmod(0666,$_meter_lg_autocal_file); }
+ return &webui_meter_lg_autocal_status();
 }
 
 sub webui_meter_lg_autocal_kill (@) {
@@ -9273,6 +9305,14 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	 #meterGreyRgbLegacyWrap,#meterRGBColorWrap{flex:1 1 100%!important;width:100%!important;height:112px!important}
 	 #meterRGBCanvasGrey,#meterRGBCanvasColor{height:72px!important}
 	}
+/* CIE 3D view: grow the plot into free horizontal space beside RGB/XyY/detail */
+#colorTopLayout.cie-3d-layout{width:100%;align-items:stretch}
+#colorTopLayout.cie-3d-layout #chartCIE{
+ flex:1 1 auto!important;width:auto!important;min-width:520px;height:520px!important;max-width:none
+}
+#colorTopLayout.cie-3d-layout #meterRGBColorWrap,
+#colorTopLayout.cie-3d-layout #meterXYYColorWrap,
+#colorTopLayout.cie-3d-layout #colorReadingDetail{height:520px!important;flex-shrink:0}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
 align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;
@@ -10547,7 +10587,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Left-drag = rotate · Mouse wheel = zoom · Shift-drag (or middle/right-drag) = pan · Double-click = reset camera." aria-label="3D View camera controls help">?</span>
       </label>
      </div>
-     <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+     <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
       <canvas id="chartCIE" width="600" height="600" style="flex:0 0 450px;width:450px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
@@ -19083,7 +19123,7 @@ function meterLoadColorPrefs(){
   setChk('meterLuminanceLogScale', p.luminance_log);
   setChk('meterCie3dView', p.cie_3d);
   setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white);
-  try{ meterUpdateCie3dLabel(); }catch(e2){}
+  try{ meterUpdateCie3dLabel(); meterApplyCie3dLayout(); }catch(e2){}
  }catch(e){}
 }
 
@@ -26626,15 +26666,27 @@ async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
 // result so the caller can chain the rest of the completion flow.
 async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
  const opts=options||{};
- const sigMode=String(((status&&(status.signal_mode||status.requested_signal_mode))||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():''))).toLowerCase();
+ const sigMode=String(((status&&(status.signal_mode||status.requested_signal_mode))||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():''))).toLowerCase());
  if(sigMode!=='hdr10') return {shown:false,reason:'not-hdr10'};
  if(!(status&&status.hdr20_1d_tonemap_pending)) return {shown:false,reason:'not-pending'};
+ // Once the operator has been shown the prompt (or we determined it was
+ // already handled in a prior session), clear the transient
+ // hdr20_1d_tonemap_pending flag server-side so it can never linger in
+ // /tmp across a PGenerator restart and re-fire this popup on a fresh
+ // browser. The flag is set only by the standalone-greyscale HDR path
+ // and is meant to be consumed once; clearing it touches NONE of the
+ // full-workflow advance keys. Fire-and-forget.
+ const _clearTmPending=()=>{ try{ fetchJSON('/api/meter/lg-autocal/clear-tonemap-pending',{method:'POST',_quiet:true,_timeoutMs:5000}).catch(()=>{}); }catch(e){} };
  const runId=meterAutoCalHdrToneMapRunId(status);
  const prior=meterAutoCalReadHdrToneMapChoice(runId);
  if(prior&&prior.peak_luminance){
   toast(prior.user_choice==='uploaded'
    ?'HDR tone map already uploaded (peak='+Number(prior.peak_luminance).toFixed(1)+' nits)'
    :'HDR tone map upload was skipped (peak='+Number(prior.peak_luminance).toFixed(1)+' nits)');
+  // The server flag is still true (a prior session only recorded the
+  // choice in localStorage), so clear it now or every fresh browser
+  // session will re-show this popup.
+  _clearTmPending();
   return {shown:false,reason:'already-handled',choice:prior};
  }
  const inLoopPeakRaw=Number(status&&status.hdr20_1d_tonemap_peak_luminance);
@@ -26653,6 +26705,7 @@ async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
   const payload={user_choice:'skipped',reason:'no-fresh-peak',peak_luminance:inLoopPeak,in_loop_peak:inLoopPeak,source:source||'wizard'};
   meterAutoCalPersistHdrToneMapChoice(runId,payload);
   meterAutoCalRecordHdrToneMapReport(payload);
+  _clearTmPending();
   if(typeof opts.onComplete==='function'){ try{ opts.onComplete(payload); }catch(e){} }
   return {shown:false,reason:'no-fresh-peak',choice:payload};
  }
@@ -26691,6 +26744,7 @@ async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
  }
  meterAutoCalPersistHdrToneMapChoice(runId,choiceRecord);
  meterAutoCalRecordHdrToneMapReport(choiceRecord);
+ _clearTmPending();
  if(typeof opts.onComplete==='function'){ try{ opts.onComplete(choiceRecord); }catch(e){} }
  return {shown:true,choice:choiceRecord,finalStatus};
 }
@@ -32157,19 +32211,14 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
  const abs=Math.abs(deltaPct);
  if(abs<0.75) return false; // ignore sub-1% Y noise — looks like "always on" otherwise
  const s=(scale!=null&&scale>0)?scale:1;
- // Aggressive radius so rings are obvious vs the r≈4.6 measured dot.
- const haloRadius=(11+Math.min(34,abs*0.55))*s;
- const haloColor=deltaPct>=0?'rgba(82,196,255,0.95)':'rgba(255,176,84,0.95)';
+ // Thin ring, radius still scales with |ΔY%| so it stays readable without clutter.
+ const haloRadius=(9+Math.min(26,abs*0.4))*s;
+ const haloColor=deltaPct>=0?'rgba(82,196,255,0.85)':'rgba(255,176,84,0.85)';
  ctx.save();
- // Soft outer wash so it reads as a ring, not a second data point.
  ctx.strokeStyle=haloColor;
- ctx.lineWidth=(2.2+Math.min(3.5,abs*0.03))*s;
- ctx.setLineDash(deltaPct>=0?[]:[5,3]);
+ ctx.lineWidth=Math.max(0.9,1.0*s); // keep thin on HiDPI / 3D persp scale
+ ctx.setLineDash(deltaPct>=0?[]:[4,3]);
  ctx.beginPath();ctx.arc(px,py,haloRadius,0,Math.PI*2);ctx.stroke();
- ctx.setLineDash([]);
- ctx.globalAlpha=0.18;
- ctx.fillStyle=haloColor;
- ctx.beginPath();ctx.arc(px,py,haloRadius,0,Math.PI*2);ctx.fill();
  ctx.restore();
  return true;
 }
@@ -32199,9 +32248,18 @@ function meterUpdateCie3dLabel(){
  if(!lab) return;
  lab.textContent=meterCie3dViewEnabled()?'CIE xyY (3D)':'CIE 1931 Chromaticity';
 }
+// Expand CIE into free row width when 3D is on; restore fixed 450² for 2D.
+function meterApplyCie3dLayout(){
+ const layout=document.getElementById('colorTopLayout');
+ const canvas=document.getElementById('chartCIE');
+ if(!layout||!canvas) return;
+ layout.classList.toggle('cie-3d-layout',meterCie3dViewEnabled());
+ void canvas.offsetWidth; // reflow before getChartCtx measures the box
+}
 function meterOnCie3dViewChange(){
  try{ meterSaveColorPrefs(); }catch(e){}
  meterUpdateCie3dLabel();
+ meterApplyCie3dLayout();
  const canvas=document.getElementById('chartCIE');
  if(meterCie3dViewEnabled()){
   // Reset to a known elevated view so a previous "under the floor" angle
@@ -32466,13 +32524,13 @@ function drawCIEChart3D(readings,opts){
     prims.push({z:Math.min(pYlo.z,pYhi.z)-0.01, draw:()=>{
      ctx.save();
      ctx.strokeStyle=dYcol;
-     ctx.lineWidth=2.4;
+     ctx.lineWidth=1.15;
      ctx.setLineDash([]);
      // Ensure a minimum on-screen length so small % errors still read as a stem
      let x0=pYlo.sx,y0=pYlo.sy,x1=pYhi.sx,y1=pYhi.sy;
      let dx=x1-x0, dy=y1-y0;
      let len=Math.sqrt(dx*dx+dy*dy);
-     const minLen=10+Math.min(48,Math.abs(deltaPct!=null?deltaPct:0)*0.7);
+     const minLen=8+Math.min(36,Math.abs(deltaPct!=null?deltaPct:0)*0.55);
      if(len<minLen){
       // Extend along the projected vertical direction (or straight up if degenerate)
       if(len<0.5){ dx=0; dy=-1; len=1; }
@@ -32482,17 +32540,17 @@ function drawCIEChart3D(readings,opts){
       x1=midX+ux*minLen/2; y1=midY+uy*minLen/2;
      }
      ctx.beginPath();ctx.moveTo(x0,y0);ctx.lineTo(x1,y1);ctx.stroke();
-     // End caps
-     ctx.lineWidth=2;
-     ctx.beginPath();ctx.moveTo(x0-3,y0);ctx.lineTo(x0+3,y0);ctx.stroke();
-     ctx.beginPath();ctx.moveTo(x1-3,y1);ctx.lineTo(x1+3,y1);ctx.stroke();
+     // Thin end caps
+     ctx.lineWidth=1;
+     ctx.beginPath();ctx.moveTo(x0-2.5,y0);ctx.lineTo(x0+2.5,y0);ctx.stroke();
+     ctx.beginPath();ctx.moveTo(x1-2.5,y1);ctx.lineTo(x1+2.5,y1);ctx.stroke();
      ctx.restore();
     }});
     // True 3D connector when heights differ (target true → measured true)
     if(tx!=null&&ty!=null){
      prims.push({z:(pTtrue.z+pMtrue.z)/2+0.01, draw:()=>{
       ctx.save();
-      ctx.strokeStyle=dYcol;ctx.lineWidth=1.6;ctx.setLineDash([3,2]);
+      ctx.strokeStyle=dYcol;ctx.lineWidth=1.0;ctx.setLineDash([3,2]);
       ctx.beginPath();ctx.moveTo(pTtrue.sx,pTtrue.sy);ctx.lineTo(pMtrue.sx,pMtrue.sy);ctx.stroke();
       ctx.restore();
      }});
@@ -32697,6 +32755,7 @@ function cie3dUnbindHandlers(canvas){
 }
 
 function drawCIEChart(readings){
+ try{ meterApplyCie3dLayout(); }catch(e){}
  if(meterCie3dViewEnabled()){
   drawCIEChart3D(readings);
   return;
