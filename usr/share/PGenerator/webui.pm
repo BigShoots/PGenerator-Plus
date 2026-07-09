@@ -10593,7 +10593,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <div id="chartCIELabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase">CIE 1931 Chromaticity</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
        <input type="checkbox" id="meterCie3dView" onchange="meterOnCie3dViewChange()" style="vertical-align:middle"> 3D View
-       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Left-drag = rotate · Mouse wheel = zoom · Shift-drag (or middle/right-drag) = pan · Double-click = reset camera." aria-label="3D View camera controls help">?</span>
+       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Right-drag = rotate · Left-drag = pan · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
       </label>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
@@ -32387,7 +32387,7 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
 
 // ── CIE xyY 3D view ──────────────────────────────────────────────────────────
 // Canvas-2D software projection: floor = chromaticity (x,y), vertical = Y nits.
-// Left-drag orbit, wheel zoom, Shift/middle/right-drag pan, double-click reset.
+// Right-drag orbit, left-drag pan, wheel zoom, double-click reset.
 const CIE3D_XMIN=0, CIE3D_XMAX=0.8, CIE3D_YMIN=0, CIE3D_YMAX=0.9;
 // pitch: 0 = edge-on side view, ~π/2 = top-down looking down at the floor.
 // Positive pitch elevates the camera ABOVE the chromaticity plane (not under it).
@@ -32743,7 +32743,7 @@ function drawCIEChart3D(readings,opts){
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';
- ctx.fillText('3D xyY  ·  drag orbit · wheel zoom · shift-drag pan',ctx.w-12,28);
+ ctx.fillText('3D xyY  ·  right-drag orbit · left-drag pan · wheel zoom',ctx.w-12,28);
  if(colorInclLum){
   ctx.fillStyle='#7ec8ff';ctx.font='9px sans-serif';
   ctx.fillText('\u0394Y on: cyan/orange rings + stems (bright / dim)',ctx.w-12,42);
@@ -32786,8 +32786,9 @@ function cie3dOnPointerDown(e){
  _cie3d.moved=false;
  _cie3d.lastX=e.clientX;
  _cie3d.lastY=e.clientY;
- const isPan=(e.button===1||e.button===2||e.shiftKey||(e.buttons&4));
- _cie3d.mode=isPan?'pan':'orbit';
+ // Left / middle / Shift = pan; right = orbit (reversed from earlier left=orbit).
+ const isOrbit=(e.button===2||(e.buttons&2));
+ _cie3d.mode=isOrbit?'orbit':'pan';
  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
  e.preventDefault();
 }
