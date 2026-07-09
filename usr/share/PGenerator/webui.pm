@@ -13821,6 +13821,7 @@ let meterAutoCalPanelLightQueuedValue=null;
 let meterAutoCalPanelLightCommitTimer=null;
 let meterAutoCalLuminanceReadBusy=false;
 let meterAutoCalResetNotice='';
+let meterAutoCalResetSkipped='';
 let meterAutoCalPreflightResetDone=false;
 let meterAutoCalPreflightLgGeneration=null;
 let meterAutoCalResetInProgress=false;
@@ -25829,6 +25830,43 @@ function meterAutoCalPreflightResetPrompt(){
   : 'Click Reset to reset the LG picture mode before Auto Cal.';
 }
 
+// Wraps an async reset function so a terminal failure (after the reset's own
+// internal retries are exhausted) does not abort the whole Auto Cal. Offers the
+// operator Continue (proceed without this reset), Retry (re-run it), or Cancel
+// (stop Auto Cal). A skipped reset is recorded in meterAutoCalResetSkipped so it
+// is surfaced in the run report and never silent. Reuses the existing
+// Promise+resolver confirm dialog; its three buttons map to the choices.
+async function meterAutoCalResetWithRecovery(name,fn,hint){
+ for(;;){
+  try{
+   return await fn();
+  }catch(e){
+   const msg=(e&&e.message)?e.message:String(e);
+   // A user-initiated stop (or the stop sentinel from Cancel below) is always
+   // honored — never trapped behind the recovery dialog.
+   if(meterAutoCalStopRequested||msg==='LG Auto Cal stopped') throw e;
+   meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:name+' failed',message:msg});
+   const choice=await meterFullAutoCalConfirmDialog({
+    title:name+' failed',
+    message:(hint?hint+' ':'')+'('+msg+'). You can retry the reset, continue Auto Cal without it, or cancel.',
+    continueText:'Continue anyway',
+    skipText:'Retry',
+    cancelText:'Cancel',
+    statusText:name+' did not complete.'
+   });
+   // resolver returns: true=Continue, 'skip'=the skipText button (here: Retry), false=Cancel
+   if(choice===false){
+    meterAutoCalStopRequested=true;
+    throw new Error('LG Auto Cal stopped');
+   }
+   if(choice==='skip') continue;        // Retry -> re-run fn() (including its own 3 internal attempts)
+   meterAutoCalResetSkipped=name;       // Continue anyway -> record non-silently
+   toast(name+' skipped — continuing Auto Cal.',true);
+   return null;
+  }
+ }
+}
+
 async function meterAutoCalRunPreflightReset(){
  if(!meterAutoCalPendingConfig||!meterAutoCalPendingConfig.whiteStep){toast('Auto Cal setup is not ready',true);return;}
  if(meterAutoCalResetInProgress) return;
@@ -25855,12 +25893,13 @@ async function meterAutoCalRunPreflightReset(){
  }catch(e){/* diagnostics only: never block cal */}
  let resetErrorMessage='';
  try{
-  const ddcReset=await meterAutoCalResetDdc();
+  meterAutoCalResetSkipped='';
+  const ddcReset=await meterAutoCalResetWithRecovery('LG picture-mode reset',meterAutoCalResetDdc,'Check the TV connection and picture mode.');
   meterAutoCalPreflightLgGeneration=(ddcReset&&ddcReset.lg_generation)||(ddcReset&&ddcReset.picture_mode_reset&&ddcReset.picture_mode_reset.lg_generation)||null;
   let lutReset=null;
   if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow){
    if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
-   lutReset=await meterAutoCalReset3dLutBaseline();
+   lutReset=await meterAutoCalResetWithRecovery('LG 3D LUT reset',meterAutoCalReset3dLutBaseline,'Check the TV connection.');
   }
   if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow){
    const resetSummary={
@@ -25870,6 +25909,7 @@ async function meterAutoCalRunPreflightReset(){
      ddc_baseline_reset:!!(ddcReset&&ddcReset.ddc_baseline_reset),
      ddc_1d_lut:!!(ddcReset&&ddcReset.ddc_1d_lut),
      ddc_reset_verified:!!(ddcReset&&ddcReset.ddc_reset_verified),
+     skipped:!!(ddcReset===null),
      lg_generation:meterAutoCalPreflightLgGeneration||null,
      hdr_calman_reset:ddcReset&&ddcReset.hdr_calman_reset?{
       status:ddcReset.hdr_calman_reset.status||null,
@@ -25880,13 +25920,18 @@ async function meterAutoCalRunPreflightReset(){
     lut3d:lutReset?{
      status:lutReset.status||null,
      upload_verified:!!lutReset.upload_verified,
+     skipped:!!(lutReset===null),
      picture_mode:lutReset.picture_mode||meterLgPictureModeValue(),
      lg_generation:lutReset.lg_generation||null,
      completed_at:Date.now(),
      upload_command:lutReset.upload_command||'',
      get_command:lutReset.get_command||''
-    }:null
+    }:null,
+    skipped:(meterAutoCalResetSkipped!=='')?meterAutoCalResetSkipped:null
    };
+   if(meterAutoCalResetSkipped!==''){
+    meterAutoCalResetNotice=(meterAutoCalResetSkipped+' was skipped — Auto Cal is continuing, but the calibration may build on prior data.');
+   }
    meterFullAutoCalConfig={...(meterFullAutoCalConfig||meterFullAutoCalDefaultConfig()),preflightReset:resetSummary};
    meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
    meterFullAutoCalReportData.reset=resetSummary;
@@ -25895,7 +25940,7 @@ async function meterAutoCalRunPreflightReset(){
   }
   if(meterAutoCalStopRequested) throw new Error('LG Auto Cal stopped');
   meterAutoCalPreflightResetDone=true;
-  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:meterAutoCalPreflightResetCompleteTitle(),message:'Click Continue when ready.'});
+  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:meterAutoCalPreflightResetCompleteTitle(),message:(meterAutoCalResetNotice?(meterAutoCalResetNotice+' '):'')+'Click Continue when ready.'});
  }catch(e){
   meterAutoCalPreflightResetDone=false;
   meterAutoCalPreflightLgGeneration=null;
@@ -25917,7 +25962,7 @@ async function meterAutoCalRunPreflightReset(){
   meterUpdateReadButtons();
   if(meterAutoCalRunning&&meterAutoCalPhase==='disclaimer'){
    const title=meterAutoCalPreflightResetDone?meterAutoCalPreflightResetCompleteTitle():(resetErrorMessage?'Reset failed':'Before LG Auto Cal');
-   const message=meterAutoCalPreflightResetDone?'Click Continue when ready.':(resetErrorMessage?(resetErrorMessage+'. Check the TV connection, then click Reset to try again.'):meterAutoCalPreflightResetPrompt());
+   const message=meterAutoCalPreflightResetDone?('Click Continue when ready.'+(meterAutoCalResetNotice?(' '+meterAutoCalResetNotice):'')):(resetErrorMessage?(resetErrorMessage+'. Check the TV connection, then click Reset to try again.'):meterAutoCalPreflightResetPrompt());
    meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:title,message:message});
   }
  }
