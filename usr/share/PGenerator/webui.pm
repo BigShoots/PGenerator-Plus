@@ -13567,17 +13567,17 @@ async function loadInfoframes(){
  }else{de.textContent='-';dd.innerHTML='';}
 }
 
-// Widget drag-and-drop reordering — drag ONLY from the ☰ .drag-handle.
-// Whole-card draggable=true used to start accidental greys/lockups when
-// click-dragging charts or controls; dragend cleanup was also easy to miss.
+// Widget drag-and-drop reordering — only the ☰ .drag-handle may start a move.
+// Cards stay draggable="true" (native HTML5 needs that). We record which
+// widget the handle was pressed on, and reject dragstart for any other
+// origin so click-drags on charts/controls never grey-out or freeze the UI.
 (function(){
  const dash=document.querySelector('.dashboard');
  if(!dash) return;
  const widgets=()=>[...dash.querySelectorAll('[data-widget]')];
  let dragEl=null;
- // dragstart's event target is the draggable card, not the handle — arm on
- // pointerdown so only handle-initiated presses can start a reorder.
- let handleArmed=false;
+ // Widget that received mousedown/pointerdown on its .drag-handle (or null).
+ let armedWidget=null;
  function saveOrder(){
   const order=widgets().map(w=>w.dataset.widget);
   localStorage.setItem('pg_widget_order',JSON.stringify(order));
@@ -13595,63 +13595,45 @@ async function loadInfoframes(){
   if(dragEl) dragEl.classList.remove('dragging');
   widgets().forEach(w=>w.classList.remove('dragging','drag-over'));
   dragEl=null;
-  handleArmed=false;
+  armedWidget=null;
+  try{ document.body.style.cursor=''; }catch(e){}
  }
- function setAllDraggable(on){
-  widgets().forEach(w=>w.setAttribute('draggable',on?'true':'false'));
+ // Capture phase so we see the handle before any stopPropagation on controls.
+ function armFromEvent(e){
+  const handle=e.target&&e.target.closest?e.target.closest('.drag-handle'):null;
+  armedWidget=handle?handle.closest('[data-widget]'):null;
  }
- // pointercancel often fires when HTML5 drag begins — defer disarm so
- // dragstart still sees handleArmed=true and the card stays draggable.
- function scheduleDisarm(){
-  if(dragEl) return;
-  setTimeout(()=>{
-   if(dragEl) return;
-   handleArmed=false;
-   setAllDraggable(false);
-  },50);
- }
- dash.addEventListener('pointerdown',e=>{
-  const handle=e.target.closest('.drag-handle');
-  const w=handle?handle.closest('[data-widget]'):null;
-  if(w){
-   handleArmed=true;
-   // Only this card becomes draggable for the upcoming gesture.
-   widgets().forEach(c=>c.setAttribute('draggable',c===w?'true':'false'));
-  } else {
-   handleArmed=false;
-   setAllDraggable(false);
-  }
- });
- dash.addEventListener('pointerup',scheduleDisarm);
- dash.addEventListener('pointercancel',scheduleDisarm);
+ dash.addEventListener('pointerdown',armFromEvent,true);
+ dash.addEventListener('mousedown',armFromEvent,true);
  dash.addEventListener('dragstart',e=>{
-  const w=e.target.closest('[data-widget]');
-  if(!w||!handleArmed){
+  const w=e.target.closest?e.target.closest('[data-widget]'):null;
+  // dragstart target is the card (draggable element), not the handle.
+  // Only allow if this card was armed via its ☰ handle.
+  if(!w||armedWidget!==w){
    e.preventDefault();
+   // Do not leave a half-started drag visual around.
    clearDragState();
-   setAllDraggable(false);
    return;
   }
   dragEl=w;
   w.classList.add('dragging');
-  e.dataTransfer.effectAllowed='move';
-  try{ e.dataTransfer.setData('text/plain',w.dataset.widget||''); }catch(err){}
+  try{
+   e.dataTransfer.effectAllowed='move';
+   e.dataTransfer.setData('text/plain',w.dataset.widget||'');
+  }catch(err){}
  });
- dash.addEventListener('dragend',()=>{
-  clearDragState();
-  setAllDraggable(false);
- });
+ dash.addEventListener('dragend',clearDragState);
  dash.addEventListener('dragover',e=>{
   if(!dragEl) return;
   e.preventDefault();
-  e.dataTransfer.dropEffect='move';
-  const w=e.target.closest('[data-widget]');
+  try{ e.dataTransfer.dropEffect='move'; }catch(err){}
+  const w=e.target.closest?e.target.closest('[data-widget]'):null;
   widgets().forEach(c=>c.classList.remove('drag-over'));
   if(w&&w!==dragEl) w.classList.add('drag-over');
  });
  dash.addEventListener('drop',e=>{
   e.preventDefault();
-  const target=e.target.closest('[data-widget]');
+  const target=e.target.closest?e.target.closest('[data-widget]'):null;
   if(target&&dragEl&&target!==dragEl){
    const all=widgets();
    const di=all.indexOf(dragEl),ti=all.indexOf(target);
@@ -13661,17 +13643,19 @@ async function loadInfoframes(){
    }
   }
   clearDragState();
-  setAllDraggable(false);
  });
- // Safety nets: interrupted drags must not leave opacity:.4 .dragging stuck.
- window.addEventListener('blur',()=>{ clearDragState(); setAllDraggable(false); });
- document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){ clearDragState(); setAllDraggable(false); }
- });
- document.addEventListener('keydown',e=>{
-  if(e.key==='Escape'){ clearDragState(); setAllDraggable(false); }
- });
- setAllDraggable(false);
+ // If the user pressed the handle but never started a drag, clear arming.
+ function clearArmIfIdle(){
+  if(!dragEl) armedWidget=null;
+ }
+ window.addEventListener('pointerup',clearArmIfIdle,true);
+ window.addEventListener('mouseup',clearArmIfIdle,true);
+ // Safety nets for interrupted/cancelled HTML5 drags.
+ window.addEventListener('blur',clearDragState);
+ document.addEventListener('visibilitychange',()=>{ if(document.hidden) clearDragState(); });
+ document.addEventListener('keydown',e=>{ if(e.key==='Escape') clearDragState(); });
+ // Ensure every widget card is natively draggable (handle gate is in dragstart).
+ widgets().forEach(w=>{ if(w.getAttribute('draggable')!=='true') w.setAttribute('draggable','true'); });
  restoreOrder();
 })();
 
