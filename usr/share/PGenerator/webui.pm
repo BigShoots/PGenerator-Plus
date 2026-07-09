@@ -9305,14 +9305,20 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	 #meterGreyRgbLegacyWrap,#meterRGBColorWrap{flex:1 1 100%!important;width:100%!important;height:112px!important}
 	 #meterRGBCanvasGrey,#meterRGBCanvasColor{height:72px!important}
 	}
-/* CIE 3D view: grow the plot into free horizontal space beside RGB/XyY/detail */
-#colorTopLayout.cie-3d-layout{width:100%;align-items:stretch}
+/* CIE 3D view: use leftover row width only — never wrap RGB/XyY/detail below */
+#colorTopLayout.cie-3d-layout{
+ width:100%;align-items:stretch;flex-wrap:nowrap!important
+}
 #colorTopLayout.cie-3d-layout #chartCIE{
- flex:1 1 auto!important;width:auto!important;min-width:520px;height:520px!important;max-width:none
+ flex:1 1 0%!important;width:auto!important;min-width:0;height:480px!important;max-width:none
 }
 #colorTopLayout.cie-3d-layout #meterRGBColorWrap,
-#colorTopLayout.cie-3d-layout #meterXYYColorWrap,
-#colorTopLayout.cie-3d-layout #colorReadingDetail{height:520px!important;flex-shrink:0}
+#colorTopLayout.cie-3d-layout #meterXYYColorWrap{
+ flex:0 0 126px!important;width:126px!important;height:480px!important;flex-shrink:0
+}
+#colorTopLayout.cie-3d-layout #colorReadingDetail{
+ flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
+}
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
 align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;
