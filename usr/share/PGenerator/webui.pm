@@ -4299,18 +4299,6 @@ sub webui_meter_lg_3d_autocal_start (@) {
    "lg_autocal_hdr20_postcal_shadow_target_lift" => ["num", 1.0],
    "lg_autocal_hdr20_postcal_shadow_zone_probe" => ["int", 1],
    "lg_autocal_hdr20_postcal_shadow_matrix_path" => ["str", "/etc/PGenerator/hdr20_postcal_shadow_matrix.json"],
-   # Phase 2 (roll-off pull-up) knobs. Gated by the same
-   # lg_autocal_hdr20_postcal_shadow_enable above -- rename-only, not a
-   # separate toggle. The roll-off_* knobs tune the scan range, the
-   # bump geometry, and the convergence of the upper-IRE correction.
-   "lg_autocal_hdr20_postcal_shadow_rolloff_enable" => ["int", 1],
-   "lg_autocal_hdr20_postcal_shadow_rolloff_tol" => ["num", 0.05],
-   "lg_autocal_hdr20_postcal_shadow_rolloff_max_passes" => ["int", 4],
-   "lg_autocal_hdr20_postcal_shadow_rolloff_gain" => ["int", 150],
-   "lg_autocal_hdr20_postcal_shadow_rolloff_damp" => ["num", 0.5],
-   "lg_autocal_hdr20_postcal_shadow_rolloff_index_scale" => ["num", 0.5],
-   "lg_autocal_hdr20_postcal_shadow_rolloff_ramp" => ["int", 30],
-   "lg_autocal_hdr20_postcal_shadow_rolloff_step_ires" => ["str", "60,65,70,75,80,85"],
   );
   foreach my $k (sort keys %_hdr20_shadow_knobs) {
    next if($body =~ /"${k}"/);
@@ -4335,18 +4323,6 @@ sub webui_meter_lg_3d_autocal_start (@) {
   # Build the 5% grey probe step (r=g=b grey) from THIS run's
   # bit-depth + range so codes always match the greyscale stage's 5%
   # anchor. The 3D worker's read_step reads whatever r/g/b it gets.
-  # Phase 2 (roll-off pull-up) needs the HDMI infoframe peak
-  # (max_cll) to compute its scan range: candidates are placed between
-  # the stim where the PQ curve demands the measured peak and the
-  # stim where it demands the infoframe max. Default to 1000 nits when
-  # the conf key is absent/garbage; the 3D worker self-gates if
-  # infoframe_max <= measured peak (no compression to correct).
-  if($body !~ /"hdr_infoframe_max_cll"/) {
-   my $_ifm=$pgenerator_conf{"max_cll"};
-   $_ifm=1000 if(!defined($_ifm) || $_ifm eq "" || $_ifm+0 <= 0);
-   $_ifm=int($_ifm+0);
-   $body=~s/\}\s*\z/,"hdr_infoframe_max_cll":$_ifm}/;
-  }
   if($body !~ /"postcal_shadow_probe_step"/) {
    my $_psr=""; $_psr=$1 if($body=~/"pattern_signal_range"\s*:\s*"([12])"/);
    $_psr="1" if($_psr ne "1" && $_psr ne "2");
@@ -10853,8 +10829,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 		   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT so the first greyscale pass stays fast.</div>
 	   <label id="meterFullAutoCalShadowFixRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px">
 	    <input type="checkbox" id="meterFullAutoCalShadowFixEnabled" style="accent-color:var(--accent)">
-	    LG Tone Mapping Fix
-	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: probes this panel&#39;s shadow sampling zones and the upper IRE roll-off region, then trims the 5&ndash;30% DPG shadow band and brightens the roll-off anchor to remove both PQ re-apply lift and tonemap dimming)</span>
+	    LG Tone Mapping Shadow Fix
+	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re-apply lift)</span>
 	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
@@ -29138,12 +29114,8 @@ refresh_rate:getMeterRefreshRate()||undefined,
   full_autocal_phase:fullWorkflow?'3d-lut':undefined,
   full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
   full_autocal_magic_wand:fullWorkflow?fullMagicWand:undefined,
-  // Explicit 1/0 from the wizard's "LG Tone Mapping Fix" checkbox. The
-  // shadow-fix toggle gates the existing knob -- the new roll-off phase
-  // rides on the same wizard checkbox and the same
-  // lg_autocal_hdr20_postcal_shadow_enable conf knob (its scope is
-  // "post-cal HDR20 tone-map correction", not "shadow-only"). Presence
-  // of this key in the payload makes the server-side conf merge
+  // Explicit 1/0 from the wizard's "LG Tone Mapping Shadow Fix" checkbox.
+  // Presence of this key in the payload makes the server-side conf merge
   // (webui_meter_lg_3d_autocal_start) skip its PGenerator.conf fallback,
   // so the wizard choice wins over the conf knob.
   lg_autocal_hdr20_postcal_shadow_enable:fullWorkflow?(meterFullAutoCalShadowFixEnabled()?1:0):undefined,
