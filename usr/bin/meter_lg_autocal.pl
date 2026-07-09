@@ -14041,6 +14041,15 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $max_inner_low=defined($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters_low"}) : 12;
 	$max_inner_low=1 if($max_inner_low < 1);
 	$max_inner_low=24 if($max_inner_low > 24);
+	# Very-low IRE (1.4% and 2.0% slots, IRE <= 2.0) gets its own iteration
+	# budget. Field evidence 2026-07-08: at 1.4% and 2% the panel's PQ floor +
+	# meter noise still leave the anchor converging slowly with 12 iters; the
+	# two lowest slots need two more iters than the rest of the low-IRE range
+	# (2.7%, 4%, 5%) which already converge cleanly inside 12. Bumped to 14
+	# (was 12) by operator request 2026-07-08.
+	my $max_inner_very_low=defined($config->{"lg_autocal_hdr20_dpg_inner_iters_very_low"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters_very_low"}) : 14;
+	$max_inner_very_low=1 if($max_inner_very_low < 1);
+	$max_inner_very_low=24 if($max_inner_very_low > 24);
 	# IRE threshold below which the low-IRE budget + low-IRE DAMP floor apply.
 	# Default 5.0 (matches the lowest HDR20 anchor in the standard
 	# greyscale series; 5% is the threshold where the panel's EOTF starts
@@ -15238,7 +15247,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# (the Akima spline is correct, mid/high errors are 99-100% of
 		# target on the deployed state).
 		my $step_ire_loop=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : ((defined($step_ire_loop) && $step_ire_loop+0 >= $high_ire_threshold) ? $high_ire_iters : $max_inner));
+		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 <= $very_low_ire_threshold) ? $max_inner_very_low : ((defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : ((defined($step_ire_loop) && $step_ire_loop+0 >= $high_ire_threshold) ? $high_ire_iters : $max_inner)));
 		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,$_recal);
 		push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
 		# On the 100% recal, refine the peak reference from the re-measured peak.
