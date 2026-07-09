@@ -13570,12 +13570,13 @@ async function loadInfoframes(){
 }
 
 // Widget reorder via POINTER drag on the ☰ .drag-handle only.
-// HTML5 DnD was abandoned: accidental whole-card greys, stuck dragend, and
-// handle-gating races left the UI frozen until refresh.
+// Pointer-based (not HTML5 DnD). Grid is 2-column, so placement uses both
+// X and Y against each card's center (row-major), not Y-only sibling checks
+// which left side-by-side cards stuck with only a highlight.
 (function(){
  const dash=document.querySelector('.dashboard');
  if(!dash) return;
- const widgets=()=>[...dash.querySelectorAll('[data-widget]')];
+ const widgets=()=>[...dash.querySelectorAll(':scope > [data-widget]')];
  let dragEl=null;
  let moved=false;
  let pointerId=null;
@@ -13604,19 +13605,55 @@ async function loadInfoframes(){
   document.body.classList.remove('is-widget-dragging');
   try{ document.body.style.cursor=''; document.documentElement.style.cursor=''; }catch(e){}
  }
- // Kill legacy HTML5 drag on cards — pointer path owns reorder.
+ // Disable native HTML5 card drag — pointer path owns reorder.
  widgets().forEach(w=>w.setAttribute('draggable','false'));
- // Also block any residual native dragstart on the dashboard.
  dash.addEventListener('dragstart',e=>{
   if(e.target.closest&&e.target.closest('[data-widget]')){
    e.preventDefault();
-   clearDragState();
   }
  },true);
 
- dash.addEventListener('pointerdown',e=>{
+ // Insert dragEl before the first other widget whose center is "after" the
+ // pointer in row-major order; otherwise after the last widget.
+ function placeDragElAtPoint(clientX,clientY){
+  if(!dragEl) return;
+  const others=widgets().filter(w=>w!==dragEl);
+  widgets().forEach(c=>c.classList.remove('drag-over'));
+  if(!others.length) return;
+
+  let insertBeforeNode=null;
+  for(let i=0;i<others.length;i++){
+   const w=others[i];
+   const r=w.getBoundingClientRect();
+   const cx=(r.left+r.right)/2;
+   const cy=(r.top+r.bottom)/2;
+   // Pointer is above this card's center, or in its row and left of center.
+   if(clientY<cy||(clientY>=r.top&&clientY<=r.bottom&&clientX<cx)){
+    insertBeforeNode=w;
+    break;
+   }
+  }
+
+  if(insertBeforeNode){
+   insertBeforeNode.classList.add('drag-over');
+   if(dragEl.nextElementSibling!==insertBeforeNode){
+    dash.insertBefore(dragEl,insertBeforeNode);
+    moved=true;
+   }
+  } else {
+   const last=others[others.length-1];
+   last.classList.add('drag-over');
+   // After the last other widget (not necessarily last child of dashboard).
+   if(last.nextElementSibling!==dragEl){
+    last.after(dragEl);
+    moved=true;
+   }
+  }
+ }
+
+ function onPointerDown(e){
   if(e.button!=null&&e.button!==0) return;
-  const handle=e.target.closest('.drag-handle');
+  const handle=e.target.closest&&e.target.closest('.drag-handle');
   if(!handle) return;
   const w=handle.closest('[data-widget]');
   if(!w||!dash.contains(w)) return;
@@ -13629,41 +13666,28 @@ async function loadInfoframes(){
   document.body.classList.add('is-widget-dragging');
   document.body.style.cursor='grabbing';
   try{ w.setPointerCapture(e.pointerId); }catch(err){}
- });
+ }
 
- dash.addEventListener('pointermove',e=>{
-  if(!dragEl||(pointerId!=null&&e.pointerId!==pointerId)) return;
-  moved=true;
-  // Hit-test under the cursor; ignore the dragged card itself.
-  const prev=dragEl.style.pointerEvents;
-  dragEl.style.pointerEvents='none';
-  const under=document.elementFromPoint(e.clientX,e.clientY);
-  dragEl.style.pointerEvents=prev;
-  const target=under&&under.closest?under.closest('[data-widget]'):null;
-  widgets().forEach(c=>c.classList.remove('drag-over'));
-  if(!target||target===dragEl||!dash.contains(target)) return;
-  target.classList.add('drag-over');
-  const all=widgets();
-  const di=all.indexOf(dragEl), ti=all.indexOf(target);
-  if(di<0||ti<0||di===ti) return;
-  // Place relative to target midpoint so reorder feels natural in the grid.
-  const rect=target.getBoundingClientRect();
-  const before=e.clientY<rect.top+rect.height/2;
-  if(before){
-   if(target.previousElementSibling!==dragEl) target.before(dragEl);
-  } else {
-   if(target.nextElementSibling!==dragEl) target.after(dragEl);
-  }
- });
-
- function endDrag(e){
+ function onPointerMove(e){
   if(!dragEl) return;
-  if(pointerId!=null&&e&&e.pointerId!=null&&e.pointerId!==pointerId) return;
+  if(pointerId!=null&&e.pointerId!=null&&e.pointerId!==pointerId) return;
+  placeDragElAtPoint(e.clientX,e.clientY);
+ }
+
+ function onPointerUp(e){
+  if(!dragEl) return;
+  if(pointerId!=null&&e.pointerId!=null&&e.pointerId!==pointerId) return;
+  // Final snap under the release point (covers last-frame misses).
+  placeDragElAtPoint(e.clientX,e.clientY);
   if(moved) saveOrder();
   clearDragState();
  }
- dash.addEventListener('pointerup',endDrag);
- dash.addEventListener('pointercancel',endDrag);
+
+ // Window-level move/up so capture + grid reflows cannot drop events.
+ dash.addEventListener('pointerdown',onPointerDown);
+ window.addEventListener('pointermove',onPointerMove,{passive:true});
+ window.addEventListener('pointerup',onPointerUp);
+ window.addEventListener('pointercancel',onPointerUp);
  window.addEventListener('blur',clearDragState);
  document.addEventListener('visibilitychange',()=>{ if(document.hidden) clearDragState(); });
  document.addEventListener('keydown',e=>{ if(e.key==='Escape') clearDragState(); });
