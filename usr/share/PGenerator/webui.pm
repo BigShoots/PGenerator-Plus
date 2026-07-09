@@ -9684,8 +9684,9 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 .patch-size-bar{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
 .patch-size-bar .field{flex-direction:row;align-items:center;gap:8px}
 .patch-size-bar .field label{white-space:nowrap}
-.drag-handle{cursor:grab;opacity:.3;margin-right:6px;font-size:.8rem;vertical-align:middle}
+.drag-handle{cursor:grab;opacity:.3;margin-right:6px;font-size:.8rem;vertical-align:middle;touch-action:none}
 .drag-handle:hover{opacity:.7}
+.drag-handle:active{cursor:grabbing;opacity:1}
 .update-pulse{animation:updatePulse 2s ease-in-out infinite}
 @keyframes updatePulse{0%,100%{opacity:1}50%{opacity:.6}}
 @keyframes thumbPulse{0%,100%{box-shadow:inset 0 0 0 3px #5b7fff}50%{box-shadow:inset 0 0 0 3px rgba(91,127,255,.25)}}
@@ -9710,7 +9711,7 @@ cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
 #meterCard.meter-patterns-only #meterSettingsGrid .field-delay,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-refresh{display:none !important}
 [data-widget].drag-over{outline:2px dashed var(--accent);outline-offset:-2px}
-[data-widget].dragging{opacity:.4}
+[data-widget].dragging{opacity:.4;cursor:grabbing}
 @media(max-width:800px){.dashboard{grid-template-columns:1fr}
 .card.span2{grid-column:span 1}.grid3{grid-template-columns:1fr 1fr}
 #meterCard > h2::after{margin-left:auto}
@@ -13566,11 +13567,17 @@ async function loadInfoframes(){
  }else{de.textContent='-';dd.innerHTML='';}
 }
 
-// Widget drag-and-drop reordering
+// Widget drag-and-drop reordering — drag ONLY from the ☰ .drag-handle.
+// Whole-card draggable=true used to start accidental greys/lockups when
+// click-dragging charts or controls; dragend cleanup was also easy to miss.
 (function(){
  const dash=document.querySelector('.dashboard');
+ if(!dash) return;
  const widgets=()=>[...dash.querySelectorAll('[data-widget]')];
  let dragEl=null;
+ // dragstart's event target is the draggable card, not the handle — arm on
+ // pointerdown so only handle-initiated presses can start a reorder.
+ let handleArmed=false;
  function saveOrder(){
   const order=widgets().map(w=>w.dataset.widget);
   localStorage.setItem('pg_widget_order',JSON.stringify(order));
@@ -13584,33 +13591,87 @@ async function loadInfoframes(){
    order.forEach(id=>{if(map[id])dash.insertBefore(map[id],end);});
   }catch(e){}
  }
+ function clearDragState(){
+  if(dragEl) dragEl.classList.remove('dragging');
+  widgets().forEach(w=>w.classList.remove('dragging','drag-over'));
+  dragEl=null;
+  handleArmed=false;
+ }
+ function setAllDraggable(on){
+  widgets().forEach(w=>w.setAttribute('draggable',on?'true':'false'));
+ }
+ // pointercancel often fires when HTML5 drag begins — defer disarm so
+ // dragstart still sees handleArmed=true and the card stays draggable.
+ function scheduleDisarm(){
+  if(dragEl) return;
+  setTimeout(()=>{
+   if(dragEl) return;
+   handleArmed=false;
+   setAllDraggable(false);
+  },50);
+ }
+ dash.addEventListener('pointerdown',e=>{
+  const handle=e.target.closest('.drag-handle');
+  const w=handle?handle.closest('[data-widget]'):null;
+  if(w){
+   handleArmed=true;
+   // Only this card becomes draggable for the upcoming gesture.
+   widgets().forEach(c=>c.setAttribute('draggable',c===w?'true':'false'));
+  } else {
+   handleArmed=false;
+   setAllDraggable(false);
+  }
+ });
+ dash.addEventListener('pointerup',scheduleDisarm);
+ dash.addEventListener('pointercancel',scheduleDisarm);
  dash.addEventListener('dragstart',e=>{
   const w=e.target.closest('[data-widget]');
-  if(!w)return;
-  dragEl=w;w.classList.add('dragging');
+  if(!w||!handleArmed){
+   e.preventDefault();
+   clearDragState();
+   setAllDraggable(false);
+   return;
+  }
+  dragEl=w;
+  w.classList.add('dragging');
   e.dataTransfer.effectAllowed='move';
-  e.dataTransfer.setData('text/plain',w.dataset.widget);
+  try{ e.dataTransfer.setData('text/plain',w.dataset.widget||''); }catch(err){}
  });
- dash.addEventListener('dragend',e=>{
-  if(dragEl)dragEl.classList.remove('dragging');
-  widgets().forEach(w=>w.classList.remove('drag-over'));
-  dragEl=null;
+ dash.addEventListener('dragend',()=>{
+  clearDragState();
+  setAllDraggable(false);
  });
  dash.addEventListener('dragover',e=>{
-  e.preventDefault();e.dataTransfer.dropEffect='move';
+  if(!dragEl) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect='move';
   const w=e.target.closest('[data-widget]');
   widgets().forEach(c=>c.classList.remove('drag-over'));
-  if(w&&w!==dragEl)w.classList.add('drag-over');
+  if(w&&w!==dragEl) w.classList.add('drag-over');
  });
  dash.addEventListener('drop',e=>{
   e.preventDefault();
   const target=e.target.closest('[data-widget]');
-  if(!target||!dragEl||target===dragEl)return;
-  const all=widgets();
-  const di=all.indexOf(dragEl),ti=all.indexOf(target);
-  if(di<ti)target.after(dragEl);else target.before(dragEl);
-  saveOrder();
+  if(target&&dragEl&&target!==dragEl){
+   const all=widgets();
+   const di=all.indexOf(dragEl),ti=all.indexOf(target);
+   if(di>=0&&ti>=0){
+    if(di<ti) target.after(dragEl); else target.before(dragEl);
+    saveOrder();
+   }
+  }
+  clearDragState();
+  setAllDraggable(false);
  });
+ // Safety nets: interrupted drags must not leave opacity:.4 .dragging stuck.
+ window.addEventListener('blur',()=>{ clearDragState(); setAllDraggable(false); });
+ document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){ clearDragState(); setAllDraggable(false); }
+ });
+ document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ clearDragState(); setAllDraggable(false); }
+ });
+ setAllDraggable(false);
  restoreOrder();
 })();
 
