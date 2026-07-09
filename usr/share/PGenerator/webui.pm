@@ -4130,24 +4130,46 @@ sub webui_meter_lg_autocal_status (@) {
 	    # greyscale -> 3D-LUT -> touchup chain -- it only prevents
 	    # the post-completion phantom restart.
 	    #
-	    # The same lifecycle applies to the hdr20_1d_tonemap_* group:
-	    # the worker stamps hdr20_1d_tonemap_pending=true (plus six
-	    # sibling metadata fields) on the wizard-owns-upload branch
-	    # of `lg_autocal_26_queue_hdr20_1d_tonemap_upload` (see
-	    # usr/bin/meter_lg_autocal.pl around line 13847-13912) and
-	    # never clears them on completion (only the kill-switch and
-	    # inline-upload branches clear pending:false; the wizard-
-	    # owns path, which is the dominant HDR20 path, leaves
-	    # pending:true). A fresh browser session reads that on the
-	    # next status poll and the standalone-greyscale poller at
-	    # webui.pm around line 28424 fires `meterAutoCalPromptHdrToneMapUpload`
-	    # -- a "Upload HDR tone map" choice modal the operator has
-	    # to dismiss with Stop. The Stop button only hides the modal
-	    # client-side; `webui_meter_lg_autocal_mark_cancelled` at
-	    # webui.pm around line 3822 returns early on status:complete
-	    # and never touches the field, so every fresh browser
-	    # session re-fires the same prompt. Strip the whole group
-	    # on terminal+idle for the same reason as the full_* group.
+	    # The same lifecycle applies to most of the hdr20_1d_tonemap_*
+	    # group: the worker stamps hdr20_1d_tonemap_pending=true (plus
+	    # sibling metadata fields) on the wizard-owns-upload branch of
+	    # `lg_autocal_26_queue_hdr20_1d_tonemap_upload` (see
+	    # usr/bin/meter_lg_autocal.pl around line 13847-13912) and never
+	    # clears them on completion (only the kill-switch and inline-
+	    # upload branches clear pending:false; the wizard-owns path,
+	    # which is the dominant HDR20 path, leaves pending:true). A fresh
+	    # browser session reads that on the next status poll and the
+	    # standalone-greyscale poller at webui.pm around line 28424 fires
+	    # `meterAutoCalPromptHdrToneMapUpload` -- a "Upload HDR tone map"
+	    # choice modal the operator has to dismiss with Stop. The Stop
+	    # button only hides the modal client-side;
+	    # `webui_meter_lg_autocal_mark_cancelled` at webui.pm around line
+	    # 3822 returns early on status:complete and never touches the
+	    # field, so every fresh browser session re-fires the same prompt.
+	    # Strip those decision-driving members on terminal+idle for the
+	    # same reason as the full_* group.
+	    #
+	    # IMPORTANT: do NOT strip hdr20_1d_tonemap_peak_luminance. Unlike
+	    # the others, it is pure DATA, not a decision flag: nothing on a
+	    # fresh browser reads it to decide whether to start a phantom
+	    # workflow or popup (those gates key on full_workflow /
+	    # full_autocal_phase / hdr20_1d_tonemap_pending). But the ACTIVE
+	    # same-session full-workflow handoff DOES need it: this status
+	    # response IS the data the JS uses to advance greyscale -> 3D-LUT.
+	    # meterFullAutoCalStart3d stores it as meterFullAutoCalResults.first
+	    # (webui.pm around line 27554), and meterStartLg3dAutoCal reads
+	    # meterFullAutoCalResults.first.hdr20_1d_tonemap_peak_luminance
+	    # (webui.pm around line 29171) to build full_workflow_peak_luminance
+	    # for the 3D worker. The 3D worker needs that peak to upload the
+	    # HDR tone map (usr/bin/meter_lg_3d_autocal.pl around line 3096);
+	    # without it the tone-map upload is skipped (tone_map_upload_status
+	    # ="skipped") and -- because the HDR20 post-cal shadow correction
+	    # is gated on tone_map_upload_status eq "ok" (line ~3161) -- the
+	    # shadow fix is skipped too, all while the 3D worker still reports
+	    # status=complete. Stripping the peak on the terminal+idle path
+	    # therefore silently drops the tone map + shadow fix from a full
+	    # HDR20 autocal. Keeping it is safe: it drives no fresh-browser
+	    # decision.
 	    my @_pgen_full_wf_keys=(
 	     "full_workflow",
 	     "full_autocal_phase",
@@ -4162,7 +4184,6 @@ sub webui_meter_lg_autocal_status (@) {
 	     "hdr20_1d_tonemap_uploaded",
 	     "hdr20_1d_tonemap_upload_enabled",
 	     "hdr20_1d_tonemap_upload_message",
-	     "hdr20_1d_tonemap_peak_luminance",
 	     "hdr20_1d_tonemap_wizard_handled",
 	     "hdr20_1d_tonemap_wizard_owns_upload",
 	    );
