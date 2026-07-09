@@ -4129,6 +4129,25 @@ sub webui_meter_lg_autocal_status (@) {
 	    # keys, so dropping them here does not break the seamless
 	    # greyscale -> 3D-LUT -> touchup chain -- it only prevents
 	    # the post-completion phantom restart.
+	    #
+	    # The same lifecycle applies to the hdr20_1d_tonemap_* group:
+	    # the worker stamps hdr20_1d_tonemap_pending=true (plus six
+	    # sibling metadata fields) on the wizard-owns-upload branch
+	    # of `lg_autocal_26_queue_hdr20_1d_tonemap_upload` (see
+	    # usr/bin/meter_lg_autocal.pl around line 13847-13912) and
+	    # never clears them on completion (only the kill-switch and
+	    # inline-upload branches clear pending:false; the wizard-
+	    # owns path, which is the dominant HDR20 path, leaves
+	    # pending:true). A fresh browser session reads that on the
+	    # next status poll and the standalone-greyscale poller at
+	    # webui.pm around line 28424 fires `meterAutoCalPromptHdrToneMapUpload`
+	    # -- a "Upload HDR tone map" choice modal the operator has
+	    # to dismiss with Stop. The Stop button only hides the modal
+	    # client-side; `webui_meter_lg_autocal_mark_cancelled` at
+	    # webui.pm around line 3822 returns early on status:complete
+	    # and never touches the field, so every fresh browser
+	    # session re-fires the same prompt. Strip the whole group
+	    # on terminal+idle for the same reason as the full_* group.
 	    my @_pgen_full_wf_keys=(
 	     "full_workflow",
 	     "full_autocal_phase",
@@ -4139,6 +4158,13 @@ sub webui_meter_lg_autocal_status (@) {
 	     "full_autocal_post_3d_polish",
 	     "full_autocal_post_series_adjust",
 	     "full_autocal_post_series_revert",
+	     "hdr20_1d_tonemap_pending",
+	     "hdr20_1d_tonemap_uploaded",
+	     "hdr20_1d_tonemap_upload_enabled",
+	     "hdr20_1d_tonemap_upload_message",
+	     "hdr20_1d_tonemap_peak_luminance",
+	     "hdr20_1d_tonemap_wizard_handled",
+	     "hdr20_1d_tonemap_wizard_owns_upload",
 	    );
 	    for my $_fk (@_pgen_full_wf_keys) {
 	     next if($json!~/"\Q$_fk\E"\s*:/);
