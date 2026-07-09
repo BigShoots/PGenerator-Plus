@@ -4109,6 +4109,49 @@ sub webui_meter_lg_autocal_status (@) {
 	     $json=~s/"phase"\s*:\s*"restoring"/"phase":"cancelled"/;
 	     $changed=1;
 	    }
+	    # Strip the full-workflow metadata once the worker has exited.
+	    # The greyscale worker stamps `full_workflow` /
+	    # `full_autocal_phase` / `full_autocal_run_id` /
+	    # `full_autocal_post_*` / `full_autocal_magic_wand` /
+	    # `full_autocal_touchup` at run start (see
+	    # usr/bin/meter_lg_autocal.pl around line 20838) and never
+	    # clears them on completion. After a full HDR autocal the
+	    # persisted file reads status=complete, full_workflow=true,
+	    # full_autocal_phase=<last-stage>. A fresh browser session
+	    # (no localStorage completion-token) reads that on the next
+	    # status poll, sees the workflow metadata, and the JS treats
+	    # the completed phase as a 'ready to start next phase' signal
+	    # -- dispatching POST /api/meter/lg-3d-autocal/start with
+	    # skipConfirm:true and kicking off a phantom 3D-LUT pass.
+	    # Mid-workflow auto-advance is driven by the JS's in-memory
+	    # `meterFullAutoCalRunning` flag (set in
+	    # `meterFullAutoCalConfirmAndStart`), not by these server-side
+	    # keys, so dropping them here does not break the seamless
+	    # greyscale -> 3D-LUT -> touchup chain -- it only prevents
+	    # the post-completion phantom restart.
+	    my @_pgen_full_wf_keys=(
+	     "full_workflow",
+	     "full_autocal_phase",
+	     "full_autocal_run_id",
+	     "full_autocal_touchup",
+	     "full_autocal_post_commit_polish",
+	     "full_autocal_magic_wand",
+	     "full_autocal_post_3d_polish",
+	     "full_autocal_post_series_adjust",
+	     "full_autocal_post_series_revert",
+	    );
+	    for my $_fk (@_pgen_full_wf_keys) {
+	     next if($json!~/"\Q$_fk\E"\s*:/);
+	     # Match `"key": <value>` where value is one of: true/false/null,
+	     # a JSON string (with escapes), or a JSON number. Eat the
+	     # trailing comma if present.
+	     $json=~s/"\Q$_fk\E"\s*:\s*(?:true|false|null|"[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?)\s*,?\s*//;
+	     $changed=1;
+	    }
+	    # Clean up any comma left dangling before the closing brace
+	    # after the last key-value pair was stripped (e.g.
+	    # {"a":1, "b":2} -> {"a":1, } if "b" was removed).
+	    $json =~ s/,(\s*\})/$1/g if($changed);
 	    if($changed && open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
 	   }
 	   if($json=~/"status"\s*:\s*"running"/) {
