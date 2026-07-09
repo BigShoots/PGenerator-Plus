@@ -3858,6 +3858,73 @@ sub webui_meter_lg_autocal_mark_cancelled (@) {
  if(open(my $fh,">",$_meter_lg_autocal_file)) { print $fh $json; close($fh); chmod(0666,$_meter_lg_autocal_file); }
 }
 
+# Clear the full-workflow + HDR tone-map metadata from the persisted
+# autocal state. Called from the dedicated completion signals
+# (/api/lg/autocal/run/end on full-workflow complete/abort, and the
+# standalone-greyscale completion path) -- NOT from the status endpoint,
+# which is read mid-workflow by the active session to advance
+# greyscale -> 3D-LUT.
+#
+# Two phantom fresh-browser bugs are defused by clearing these keys once
+# the workflow (or standalone greyscale run) is genuinely finished:
+#
+#  * full_workflow / full_autocal_phase / full_autocal_run_id /
+#    full_autocal_post_* / full_autocal_magic_wand /
+#    full_autocal_touchup: the greyscale worker stamps these at run
+#    start and never clears them. A fresh browser (no localStorage
+#    completion-token) reads them on its first status poll and the JS's
+#    meterFullAutoCalEnsureStatusPhase treats the completed phase as
+#    'ready to start next phase', dispatching a phantom 3D-LUT autocal
+#    with skipConfirm:true.
+#
+#  * hdr20_1d_tonemap_pending (+ siblings except peak_luminance): the
+#    worker stamps pending=true on the wizard-owns-upload branch and
+#    only the inline/kill-switch branches clear it. A fresh browser
+#    reads pending=true and the standalone-greyscale poller fires
+#    meterAutoCalPromptHdrToneMapUpload -- a "Upload HDR tone map" modal
+#    that only hides client-side, so every fresh browser re-fires it.
+#
+# hdr20_1d_tonemap_peak_luminance is intentionally KEPT (it is pure
+# data, drives no fresh-browser decision, and is harmless once the
+# decision flags above are cleared).
+sub webui_meter_lg_autocal_clear_full_workflow_state (@) {
+ return unless(-f $_meter_lg_autocal_file);
+ my $json="";
+ if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
+ return if($json eq "");
+ my $changed=0;
+ # Keys whose persistence drives a phantom fresh-browser decision. Keep
+ # hdr20_1d_tonemap_peak_luminance (data, not a decision flag).
+ my @keys=(
+  "full_workflow",
+  "full_autocal_phase",
+  "full_autocal_run_id",
+  "full_autocal_touchup",
+  "full_autocal_post_commit_polish",
+  "full_autocal_magic_wand",
+  "full_autocal_post_3d_polish",
+  "full_autocal_post_series_adjust",
+  "full_autocal_post_series_revert",
+  "hdr20_1d_tonemap_pending",
+  "hdr20_1d_tonemap_uploaded",
+  "hdr20_1d_tonemap_upload_enabled",
+  "hdr20_1d_tonemap_upload_message",
+  "hdr20_1d_tonemap_wizard_handled",
+  "hdr20_1d_tonemap_wizard_owns_upload",
+ );
+ for my $k (@keys) {
+  next if($json!~/"\Q$k\E"\s*:/);
+  # Match `"key": <value>` for true/false/null/string/number; eat a
+  # trailing comma.
+  $json=~s/"\Q$k\E"\s*:\s*(?:true|false|null|"[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?)\s*,?\s*//;
+  $changed=1;
+ }
+ # Collapse a comma left dangling before the closing brace.
+ $json=~s/,(\s*\})/$1/g if($changed);
+ if($changed && open(my $fh,">",$_meter_lg_autocal_file)) { print $fh $json; close($fh); chmod(0666,$_meter_lg_autocal_file); }
+ return $changed;
+}
+
 sub webui_meter_lg_autocal_kill (@) {
  my $mark=shift;
  if(open(my $fh,">",$_meter_lg_autocal_stop_file)) { print $fh time(); close($fh); chmod(0666,$_meter_lg_autocal_stop_file); }
@@ -4105,101 +4172,34 @@ sub webui_meter_lg_autocal_status (@) {
 	     $json=~s/\}$/,"calibration_mode":false}/;
 	     $changed=1;
 	    }
-	    if($json=~/"phase"\s*:\s*"restoring"/) {
-	     $json=~s/"phase"\s*:\s*"restoring"/"phase":"cancelled"/;
-	     $changed=1;
-	    }
-	    # Strip the full-workflow metadata once the worker has exited.
-	    # The greyscale worker stamps `full_workflow` /
-	    # `full_autocal_phase` / `full_autocal_run_id` /
-	    # `full_autocal_post_*` / `full_autocal_magic_wand` /
-	    # `full_autocal_touchup` at run start (see
-	    # usr/bin/meter_lg_autocal.pl around line 20838) and never
-	    # clears them on completion. After a full HDR autocal the
-	    # persisted file reads status=complete, full_workflow=true,
-	    # full_autocal_phase=<last-stage>. A fresh browser session
-	    # (no localStorage completion-token) reads that on the next
-	    # status poll, sees the workflow metadata, and the JS treats
-	    # the completed phase as a 'ready to start next phase' signal
-	    # -- dispatching POST /api/meter/lg-3d-autocal/start with
-	    # skipConfirm:true and kicking off a phantom 3D-LUT pass.
-	    # Mid-workflow auto-advance is driven by the JS's in-memory
-	    # `meterFullAutoCalRunning` flag (set in
-	    # `meterFullAutoCalConfirmAndStart`), not by these server-side
-	    # keys, so dropping them here does not break the seamless
-	    # greyscale -> 3D-LUT -> touchup chain -- it only prevents
-	    # the post-completion phantom restart.
-	    #
-	    # The same lifecycle applies to most of the hdr20_1d_tonemap_*
-	    # group: the worker stamps hdr20_1d_tonemap_pending=true (plus
-	    # sibling metadata fields) on the wizard-owns-upload branch of
-	    # `lg_autocal_26_queue_hdr20_1d_tonemap_upload` (see
-	    # usr/bin/meter_lg_autocal.pl around line 13847-13912) and never
-	    # clears them on completion (only the kill-switch and inline-
-	    # upload branches clear pending:false; the wizard-owns path,
-	    # which is the dominant HDR20 path, leaves pending:true). A fresh
-	    # browser session reads that on the next status poll and the
-	    # standalone-greyscale poller at webui.pm around line 28424 fires
-	    # `meterAutoCalPromptHdrToneMapUpload` -- a "Upload HDR tone map"
-	    # choice modal the operator has to dismiss with Stop. The Stop
-	    # button only hides the modal client-side;
-	    # `webui_meter_lg_autocal_mark_cancelled` at webui.pm around line
-	    # 3822 returns early on status:complete and never touches the
-	    # field, so every fresh browser session re-fires the same prompt.
-	    # Strip those decision-driving members on terminal+idle for the
-	    # same reason as the full_* group.
-	    #
-	    # IMPORTANT: do NOT strip hdr20_1d_tonemap_peak_luminance. Unlike
-	    # the others, it is pure DATA, not a decision flag: nothing on a
-	    # fresh browser reads it to decide whether to start a phantom
-	    # workflow or popup (those gates key on full_workflow /
-	    # full_autocal_phase / hdr20_1d_tonemap_pending). But the ACTIVE
-	    # same-session full-workflow handoff DOES need it: this status
-	    # response IS the data the JS uses to advance greyscale -> 3D-LUT.
-	    # meterFullAutoCalStart3d stores it as meterFullAutoCalResults.first
-	    # (webui.pm around line 27554), and meterStartLg3dAutoCal reads
-	    # meterFullAutoCalResults.first.hdr20_1d_tonemap_peak_luminance
-	    # (webui.pm around line 29171) to build full_workflow_peak_luminance
-	    # for the 3D worker. The 3D worker needs that peak to upload the
-	    # HDR tone map (usr/bin/meter_lg_3d_autocal.pl around line 3096);
-	    # without it the tone-map upload is skipped (tone_map_upload_status
-	    # ="skipped") and -- because the HDR20 post-cal shadow correction
-	    # is gated on tone_map_upload_status eq "ok" (line ~3161) -- the
-	    # shadow fix is skipped too, all while the 3D worker still reports
-	    # status=complete. Stripping the peak on the terminal+idle path
-	    # therefore silently drops the tone map + shadow fix from a full
-	    # HDR20 autocal. Keeping it is safe: it drives no fresh-browser
-	    # decision.
-	    my @_pgen_full_wf_keys=(
-	     "full_workflow",
-	     "full_autocal_phase",
-	     "full_autocal_run_id",
-	     "full_autocal_touchup",
-	     "full_autocal_post_commit_polish",
-	     "full_autocal_magic_wand",
-	     "full_autocal_post_3d_polish",
-	     "full_autocal_post_series_adjust",
-	     "full_autocal_post_series_revert",
-	     "hdr20_1d_tonemap_pending",
-	     "hdr20_1d_tonemap_uploaded",
-	     "hdr20_1d_tonemap_upload_enabled",
-	     "hdr20_1d_tonemap_upload_message",
-	     "hdr20_1d_tonemap_wizard_handled",
-	     "hdr20_1d_tonemap_wizard_owns_upload",
-	    );
-	    for my $_fk (@_pgen_full_wf_keys) {
-	     next if($json!~/"\Q$_fk\E"\s*:/);
-	     # Match `"key": <value>` where value is one of: true/false/null,
-	     # a JSON string (with escapes), or a JSON number. Eat the
-	     # trailing comma if present.
-	     $json=~s/"\Q$_fk\E"\s*:\s*(?:true|false|null|"[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?)\s*,?\s*//;
-	     $changed=1;
-	    }
-	    # Clean up any comma left dangling before the closing brace
-	    # after the last key-value pair was stripped (e.g.
-	    # {"a":1, "b":2} -> {"a":1, } if "b" was removed).
-	    $json =~ s/,(\s*\})/$1/g if($changed);
-	    if($changed && open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
+		    if($json=~/"phase"\s*:\s*"restoring"/) {
+		     $json=~s/"phase"\s*:\s*"restoring"/"phase":"cancelled"/;
+		     $changed=1;
+		    }
+		    # NOTE: the full-workflow metadata (full_workflow /
+		    # full_autocal_phase / full_autocal_run_id / full_autocal_post_*
+		    # / full_autocal_magic_wand / full_autocal_touchup) and the
+		    # hdr20_1d_tonemap_* group MUST NOT be stripped here. This
+		    # status endpoint is read by BOTH (a) the active full-workflow
+		    # session -- which uses full_workflow / full_autocal_phase /
+		    # hdr20_1d_tonemap_peak_luminance on the greyscale->3D-LUT
+		    # advance -- and (b) a fresh browser that would otherwise
+		    # see a phantom 3D-LUT restart / phantom tone-map popup.
+		    # Stripping on terminal+idle cannot distinguish a mid-workflow
+		    # stage boundary from a genuinely-finished workflow, so it
+		    # races the auto-advance: the greyscale completion status is
+		    # stripped before the JS can read full_workflow to dispatch
+		    # the 3D-LUT stage, so the workflow stalls after greyscale
+		    # (and the HDR tone-map upload + HDR20 post-cal shadow fix,
+		    # which run in the 3D stage, never execute). The phantom
+		    # fresh-browser bugs are defused instead at the dedicated
+		    # completion signals: see
+		    # webui_meter_lg_autocal_clear_full_workflow_state(), called
+		    # from /api/lg/autocal/run/end (full-workflow complete/abort)
+		    # and the standalone-greyscale completion path. That clears
+		     # the keys exactly once, after the whole workflow (or the
+		     # standalone greyscale run) is truly done.
+		    if($changed && open(my $wf,">",$_meter_lg_autocal_file)) { print $wf $json; close($wf); chmod(0666,$_meter_lg_autocal_file); }
 	   }
 	   if($json=~/"status"\s*:\s*"running"/) {
 	    # Debounce "process died". webui_meter_lg_autocal_running() is a single
@@ -24760,6 +24760,14 @@ function meterAutoCalCloseComplete(){
 
 async function meterAutoCalCloseCompleteAction(){
  try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
+ // Tell the backend the run is over so it clears the full-workflow +
+ // HDR tone-map metadata from the persisted autocal state. This is the
+ // non-racy hook for the STANDALONE greyscale path (the full-workflow
+ // path calls /api/lg/autocal/run/end from meterFullAutoCalComplete /
+ // meterFullAutoCalAbort). Without it a standalone HDR10 greyscale run
+ // leaves hdr20_1d_tonemap_pending=true on the server, and a fresh
+ // browser session re-fires the "Upload HDR tone map" popup forever.
+ try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
  meterAutoCalCloseComplete();
 }
 
