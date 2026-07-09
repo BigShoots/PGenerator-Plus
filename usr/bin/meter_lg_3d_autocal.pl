@@ -2208,6 +2208,108 @@ sub hdr20_postcal_target5_for_step {
  return $target_nits;
 }
 
+# Inverse-PQ helper: given a target luminance in nits, return the PQ
+# stimulus (in [0..1]) where the EOTF curve maps to that luminance.
+# Used by Phase 2 to derive the roll-off scan range from a panel's
+# measured peak and the HDMI infoframe max_cll (e.g. given peak=740
+# and infoframe max=1000, the scan range is the stim where the PQ
+# curve demands 740 nits through the stim where it demands 1000).
+# Solves st2084_pq_to_linear(x) == nits/10000 for x via bisection over
+# [0,1] -- the EOTF is strictly monotonic so bisection is monotonic-
+# safe and 40 iterations converges to ~1e-12.
+sub hdr20_postcal_find_pq_stimulus_for_nits {
+ my ($nits)=@_;
+ $nits=0 if(!defined($nits) || $nits+0 < 0);
+ $nits=0 if($nits > 10000);
+ my $target_lin=$nits/10000;
+ $target_lin=0 if($target_lin < 0);
+ $target_lin=1 if($target_lin > 1);
+ my $lo=0;
+ my $hi=1;
+ for(my $i=0;$i<40;$i++) {
+  my $mid=($lo+$hi)/2;
+  my $v=st2084_pq_to_linear($mid);
+  if($v < $target_lin) { $lo=$mid; } else { $hi=$mid; }
+ }
+ return ($lo+$hi)/2;
+}
+
+# Build the Phase 2 roll-off pull-up corrector: starting from a base
+# 3x1024 DPG array, ADD counts (per-channel ratio-preserving with
+# input_max cap) inside a symmetric ramped window centered on the
+# anchor index. The geometry is a downward-opening triangle (peak at
+# the anchor, ramping to 0 at anchor-ramp and anchor+ramp), not the
+# contiguous "band" shape used by Phase 1 -- Phase 1 smears across
+# 14..last+51 which would bend the entire mid-band if applied at a
+# 70% IRE anchor. The narrower ramped window targets the roll-off
+# spot without disturbing adjacent patches.
+#
+# Each channel's added count is scaled by its share of the local
+# channel mean (mirror apply_profile's ratio-preserving math) so
+# calibrated grey balance survives. Each channel is capped at
+# input_max (1023 for 10-bit, 255 for 8-bit) so codes stay legal.
+#
+# Output is a NEW array. The caller MUST run hdr20_postcal_monotone_clamp
+# on the result -- adding counts to an already-ascending DPG preserves
+# ascending order, but the cap at input_max on the leading edge of
+# the bump (where the curve is steepest) can produce non-monotone
+# regions if input_max is hit, which monotone_clamp cleans up by
+# forward-pinning.
+#
+# Anchors expected as [dpg_index, magnitude] pairs sorted ascending
+# by index. Magnitudes are pull-UP counts (>= 0). The current
+# implementation applies ONE anchor; the loop signature is anchored
+# to the apply_profile shape so multiple anchors can be added later
+# without changing the caller.
+sub hdr20_postcal_apply_rolloff_bump {
+ my ($dpg_base,$anchor,$ramp,$input_max)=@_;
+ return undef if(ref($dpg_base) ne "ARRAY" || scalar(@{$dpg_base}) != 3072);
+ return [ @{$dpg_base} ] if(!defined($anchor) || ref($anchor) ne "ARRAY" || scalar(@{$anchor}) < 2);
+ my $idx=$anchor->[0]+0;
+ my $mag=$anchor->[1]+0;
+ $mag=0 if($mag < 0);
+ $ramp=int($ramp+0);
+ $ramp=30 if(!defined($ramp) || $ramp < 1);
+ $ramp=$ramp+0;
+ $input_max=(defined($input_max) && $input_max+0 > 0) ? int($input_max+0) : 1023;
+ $idx=0 if($idx < 0);
+ $idx=1023 if($idx > 1023);
+ return [ @{$dpg_base} ] if($mag <= 0);
+ my @out=(0) x 3072;
+ for(my $k=0;$k<1024;$k++) {
+  my $ck=0;
+  my $dist=($k >= $idx) ? ($k - $idx) : ($idx - $k);
+  if($dist <= $ramp) {
+   # Triangle: linear ramp from 0 at the edges to $mag at the anchor.
+   $ck=$mag*(1 - $dist/($ramp+0));
+  }
+  $ck=0 if($ck < 0);
+  if($ck > 0) {
+   my $mean=($dpg_base->[$k]+$dpg_base->[1024+$k]+$dpg_base->[2048+$k])/3;
+   for(my $channel=0;$channel<3;$channel++) {
+    my $base=$channel*1024;
+    my $bv=$dpg_base->[$base+$k]+0;
+    my $add=($mean > 0) ? int($ck*$bv/$mean+0.5) : int($ck+0.5);
+    my $v=$bv+$add;
+    $v=$input_max if($v > $input_max);
+    $out[$base+$k]=$v+0;
+   }
+  } else {
+   # Outside the bump window: copy through unchanged.
+   $out[$k]=$dpg_base->[$k]+0;
+   $out[1024+$k]=$dpg_base->[1024+$k]+0;
+   $out[2048+$k]=$dpg_base->[2048+$k]+0;
+  }
+ }
+ # Pin true black at index 0 of EACH channel block (defensive -- the
+ # bump never overlaps index 0 in practice, but a config-driven ramp
+ # could in theory).
+ $out[0]=0;
+ $out[1024]=0;
+ $out[2048]=0;
+ return \@out;
+}
+
 # The main HDR20 post-cal shadow correction subroutine. Runs early in the
 # 3D worker (right before reset_3d_lut_to_unity_before_profile) so the
 # corrected DPG is staged into the held cal session the 3D profiling +
@@ -2878,6 +2980,333 @@ sub run_hdr20_postcal_shadow_correction {
   # still re-establish below.
   $status->{"status"}="error" if(($status->{"status"}||"") ne "skipped" && ($status->{"status"}||"") ne "self_gated" && ($status->{"status"}||"") ne "converged" && ($status->{"status"}||"") ne "reverted");
   $status->{"note"}=($status->{"note"}||"")."inner eval error: ".$inner_err."; corrected=base DPG.";
+ };
+
+ # ----- Phase 2: roll-off pull-up correction -----------------------
+ # Brightens the panel's tone-map roll-off anchor in the upper IRE
+ # region. Runs AFTER Phase 1, ON the Phase-1-corrected DPG ($corrected
+ # is set correctly above). Phase 2 is fully isolated behind its own
+ # eval{} -- on any error $corrected stays as Phase 1's output and the
+ # sub still re-establishes below.
+ #
+ # Scan range: derived from $peak (measured) and the HDMI infoframe
+ # max_cll. For peak=740 / max_cll=1000 the scan is [75, 80, 85, 90]
+ # (the stim where PQ demands peak ~72% rounded UP to next 5%, through
+ # peak+25 rounded UP and capped at 90%). The knob
+ # rolloff_step_ires overrides the default ladder when set.
+ # Self-gates when infoframe_max <= $peak (no compression to correct).
+ #
+ # Converges by adding counts to a symmetric triangular window around
+ # the detected anchor (apply_rolloff_bump). Per-channel ratio-
+ # preserving with input_max cap preserves grey balance. On panel
+ # clipping (zero luminance response for 2 consecutive passes) it
+ # bails and keeps the best achieved state.
+ eval {
+  # Skip when Phase 1 self-gated or errored out -- the DPG we have is
+  # already known to be fine, and there is no late-stage roll-off
+  # correction worth adding.
+  my $_p1_status=$status->{"status"}||"";
+  if($_p1_status eq "self_gated" || $_p1_status eq "skipped" || $_p1_status eq "error") {
+   $status->{"rolloff_status"}="skipped";
+   $status->{"rolloff_note"}="phase 1 status=$_p1_status; roll-off correction skipped";
+   return 1;
+  }
+  my $_rolloff_enable=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_enable"};
+  $_rolloff_enable=1 if(!defined($_rolloff_enable) || $_rolloff_enable eq "");
+  $_rolloff_enable=$_rolloff_enable+0 ? 1 : 0;
+  unless($_rolloff_enable) {
+   $status->{"rolloff_status"}="skipped";
+   $status->{"rolloff_note"}="roll-off enable knob is off";
+   return 1;
+  }
+  my $infoframe_max=$config->{"hdr_infoframe_max_cll"};
+  $infoframe_max=1000 if(!defined($infoframe_max) || $infoframe_max eq "" || $infoframe_max+0 <= 0);
+  $infoframe_max=$infoframe_max+0;
+  # Self-gate: panel can match the infoframe demand without tone-map
+  # compression -- there's nothing for Phase 2 to correct.
+  if($infoframe_max+0 <= $peak+0) {
+   $status->{"rolloff_status"}="self_gated";
+   $status->{"rolloff_note"}="infoframe_max (".sprintf("%.1f",$infoframe_max).") <= measured peak (".sprintf("%.1f",$peak)."); no compression to correct";
+   return 1;
+  }
+  # Phase 2 tunables.
+  my $rolloff_tol=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_tol"};
+  $rolloff_tol=0.05 if(!defined($rolloff_tol) || $rolloff_tol+0 <= 0);
+  $rolloff_tol=$rolloff_tol+0;
+  my $rolloff_max_passes=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_max_passes"};
+  $rolloff_max_passes=4 if(!defined($rolloff_max_passes) || $rolloff_max_passes+0 < 1);
+  $rolloff_max_passes=int($rolloff_max_passes+0);
+  my $rolloff_gain=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_gain"};
+  $rolloff_gain=150 if(!defined($rolloff_gain));
+  $rolloff_gain=$rolloff_gain+0;
+  my $rolloff_damp=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_damp"};
+  $rolloff_damp=0.5 if(!defined($rolloff_damp) || $rolloff_damp+0 <= 0);
+  $rolloff_damp=$rolloff_damp+0;
+  my $rolloff_idx_scale=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_index_scale"};
+  $rolloff_idx_scale=0.5 if(!defined($rolloff_idx_scale) || $rolloff_idx_scale+0 <= 0);
+  $rolloff_idx_scale=$rolloff_idx_scale+0;
+  my $rolloff_ramp=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_ramp"};
+  $rolloff_ramp=30 if(!defined($rolloff_ramp) || $rolloff_ramp+0 < 1);
+  $rolloff_ramp=int($rolloff_ramp+0);
+  # Anchor input_max for the bump corrector's per-channel cap.
+  my $rolloff_input_max=(defined($step->{"input_max"}) && $step->{"input_max"}+0 > 0) ? int($step->{"input_max"}+0) : 1023;
+
+  # Compute the scan range. The stim where PQ asks for measured peak
+  # is the floor (below this the panel CAN match PQ). The ceiling is
+  # the stim where PQ asks for infoframe_max when the compression
+  # band is wide (peak-to-infoframe stim gap > 20%); for narrow
+  # compression bands the rolling-off region extends upward past
+  # infoframe_max so we widen by 25% on top of the peak-onset stim
+  # instead. Always capped at [50%, 90%] and rounded to 5% steps.
+  my $_ceil5=sub { my $v=shift; return int(($v+4.9999)/5)*5; };
+  my $_floor5=sub { my $v=shift; return int($v/5)*5; };
+  my $peak_stim=hdr20_postcal_find_pq_stimulus_for_nits($peak)*100;
+  my $infoframe_stim=hdr20_postcal_find_pq_stimulus_for_nits($infoframe_max)*100;
+  my $diff_pct=$infoframe_stim-$peak_stim;
+  my $scan_lo=$_ceil5->($peak_stim);    # next 5% above where panel CAN match PQ
+  my $scan_hi;
+  if($diff_pct > 20) {
+   $scan_hi=$_floor5->($infoframe_stim);
+  } else {
+   # Narrow band: roll-off curve extends past infoframe_max upward;
+   # widen by 25% on top of peak-onset stim so the dim region is
+   # covered, not just the immediate clip point.
+   $scan_hi=$_ceil5->($peak_stim+25);
+  }
+  $scan_lo=50 if($scan_lo < 50);
+  $scan_hi=90 if($scan_hi > 90);
+  $scan_hi=$scan_lo+10 if($scan_hi < $scan_lo+10);  # always span at least 2 steps
+  $scan_lo=$scan_hi if($scan_lo > $scan_hi);        # high-peak degenerate case
+  # Override ladder when the knob sets an explicit list.
+  my @scan_ires;
+  my $step_ires_cfg=$config->{"lg_autocal_hdr20_postcal_shadow_rolloff_step_ires"};
+  if(defined($step_ires_cfg) && $step_ires_cfg ne "") {
+   foreach my $v (split(/,/,$step_ires_cfg)) {
+    next if(!defined($v) || $v eq "");
+    my $iv=$v+0;
+    next if($iv < 50 || $iv > 90);
+    push @scan_ires, $iv;
+   }
+   @scan_ires=sort { $a <=> $b } @scan_ires;
+  }
+  if(!scalar(@scan_ires)) {
+   for(my $i=$scan_lo; $i<=$scan_hi; $i+=5) { push @scan_ires, $i; }
+  }
+  unless(scalar(@scan_ires)) {
+   $status->{"rolloff_status"}="self_gated";
+   $status->{"rolloff_note"}="computed scan range empty (infoframe_max=$infoframe_max, peak=$peak, scan_lo=$scan_lo, scan_hi=$scan_hi)";
+   return 1;
+  }
+  # Map each candidate IRE to a step using the same code math as
+  # Phase 1's anchor probe (lines 2487-2516).
+  my $signal_range_eq="";
+  $signal_range_eq="2" if(defined($step->{"pattern_signal_range"}) && $step->{"pattern_signal_range"} eq "2");
+  my @scan_steps;
+  my @scan_targets;
+  my @scan_idx;
+  for my $ire (@scan_ires) {
+   my $code;
+   if($rolloff_input_max+0 >= 1023) {
+    $code=($signal_range_eq eq "2") ? int($ire/100*$rolloff_input_max+0.5) : int(64 + $ire/100*876 + 0.5);
+   } else {
+    $code=($signal_range_eq eq "2") ? int($ire/100*$rolloff_input_max+0.5) : int(16 + $ire/100*219 + 0.5);
+   }
+   my $s={ %{$step} };
+   $s->{"r"}=$code; $s->{"g"}=$code; $s->{"b"}=$code;
+   $s->{"ire"}=$ire;
+   $s->{"stimulus"}=$ire;
+   $s->{"signal_r_pct"}=$ire;
+   $s->{"signal_g_pct"}=$ire;
+   $s->{"signal_b_pct"}=$ire;
+   $s->{"name"}="HDR20 post-cal roll-off ".$ire."% grey probe";
+   $s->{"phase"}="postcal_rolloff";
+   push @scan_steps, $s;
+   push @scan_targets, hdr20_postcal_target5_for_step($s,$peak);
+   # DPG-domain index: post-cal compressed domain. Use the same
+   # compressed-scale convention as Phase 1 (default 0.5x), so the
+   # bump's window sits at the same compressed DPG position the
+   # anchor samples from.
+   push @scan_idx, int(($ire/100)*1023*$rolloff_idx_scale+0.5);
+  }
+  $status->{"rolloff_scan_ires"}=join(",",@scan_ires);
+
+  # Re-bind the Phase-1-corrected DPG so the baseline reads land on
+  # what Phase 1 produced (not whatever the last Phase-1 pass
+  # happened to bind). Independent of whether Phase 1 reverted or
+  # converged.
+  $state->{"phase"}="postcal_rolloff_bind";
+  $state->{"current_name"}="HDR20 post-cal roll-off BIND baseline";
+  $state->{"message"}="Re-binding Phase 1-corrected DPG and scanning upper IRE roll-off candidates";
+  write_state($state);
+  my ($rb_resp,$rb_bound,$rb_msg)=$bind_dpg->($corrected);
+  unless($rb_bound) {
+   $status->{"rolloff_status"}="skipped";
+   $status->{"rolloff_note"}="re-bind Phase 1-corrected DPG not real (".$rb_msg."); roll-off skipped";
+   log_line("HDR20 post-cal roll-off: re-bind failed (".$rb_msg."); skipping.");
+   return 1;
+  }
+  my $settle_ms=$config->{"postcal_shadow_settle_ms"};
+  $settle_ms=3500 if(!defined($settle_ms) || $settle_ms+0 < 100);
+  $settle_ms=$settle_ms+0;
+  # Baseline reads: lift[ire] = measured_Y / pq_target_Y for each
+  # candidate, on the Phase-1-corrected DPG (no bump yet).
+  select(undef,undef,undef,$settle_ms/1000.0);
+  my %baseline_y;
+  my %baseline_lift;
+  for(my $ci=0;$ci<scalar(@scan_steps);$ci++) {
+   die "cancelled\n" if(cancelled());
+   my $cstep=$scan_steps[$ci];
+   my $ctarget=$scan_targets[$ci];
+   my ($reading,$error)=read_step($config,$cstep,$state);
+   next if($error || !$reading);
+   my $xyz=reading_xyz($reading);
+   my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+   next if($y <= 0 || $ctarget <= 0);
+   $baseline_y{$scan_ires[$ci]}=$y;
+   $baseline_lift{$scan_ires[$ci]}=$y/$ctarget;
+   $state->{"postcal_rolloff_baseline_IRE_".$scan_ires[$ci]."_lift"}=$y/$ctarget;
+   $state->{"postcal_rolloff_baseline_IRE_".$scan_ires[$ci]."_Y"}=$y;
+  }
+  # Pick the IRE with the LARGEST deficit (lowest lift below target).
+  # Tie-break toward the lower IRE (roll-off onset first) for stability.
+  my $best_ire=undef;
+  my $best_deficit=0;
+  foreach my $ire (@scan_ires) {
+   next if(!exists($baseline_lift{$ire}));
+   my $deficit=1-$baseline_lift{$ire};
+   if(!defined($best_ire) || $deficit > $best_deficit+1e-6) {
+    $best_ire=$ire;
+    $best_deficit=$deficit;
+   }
+  }
+  # If the panel is already within tol at every scanned IRE, no
+  # roll-off problem -- skip correction entirely.
+  unless(defined($best_ire) && $best_deficit > $rolloff_tol) {
+   $status->{"rolloff_status"}="self_gated";
+   $status->{"rolloff_note"}="baseline roll-off anchor within tol at every scanned IRE (worst deficit ".sprintf("%.3f",$best_deficit)."); no correction needed";
+   return 1;
+  }
+  # Translate the chosen IRE into a DPG index and start the
+  # pull-up convergence loop from magnitude=0.
+  my $anchor_ire=$best_ire;
+  my $anchor_idx=$scan_idx[0];
+  for(my $ci=0;$ci<scalar(@scan_ires);$ci++) {
+   if($scan_ires[$ci]+0 == $anchor_ire+0) {
+    $anchor_idx=$scan_idx[$ci];
+    last;
+   }
+  }
+  my $mag=0;
+  my $best_mag=0;
+  my $best_lift=$baseline_lift{$anchor_ire};
+  my $improved_p2=0;
+  my $zero_response_streak=0;
+  $status->{"rolloff_ire"}=$anchor_ire;
+  $status->{"rolloff_anchor_idx"}=$anchor_idx;
+  $status->{"rolloff_lift_before"}=$best_lift;
+  for(my $pass=1;$pass<=$rolloff_max_passes;$pass++) {
+   die "cancelled\n" if(cancelled());
+   # Build candidate = corrected + bump at anchor_idx with $mag.
+   my $bump=hdr20_postcal_apply_rolloff_bump($corrected,[$anchor_idx,$mag],$rolloff_ramp,$rolloff_input_max);
+   $bump=hdr20_postcal_monotone_clamp($bump) if($bump);
+   unless($bump) {
+    $status->{"rolloff_note"}=($status->{"rolloff_note"}||"")." pass $pass: apply_rolloff_bump returned undef; ";
+    last;
+   }
+   $state->{"phase"}="postcal_rolloff";
+   $state->{"current_name"}="HDR20 post-cal roll-off pull-up pass $pass";
+   $state->{"message"}=sprintf("Bumping DPG at idx %d (IRE %d%%), mag=%d",$anchor_idx,$anchor_ire,int($mag+0.5));
+   write_state($state);
+   my ($b_resp,$b_bound,$b_msg)=$bind_dpg->($bump);
+   unless($b_bound) {
+    $status->{"rolloff_note"}=($status->{"rolloff_note"}||"")." pass $pass: bind not real (".$b_msg."); ";
+    last;
+   }
+   select(undef,undef,undef,$settle_ms/1000.0);
+   my $_anchor_step=$scan_steps[0];
+   my $_anchor_target=0;
+   for(my $ci=0;$ci<scalar(@scan_ires);$ci++) {
+    if($scan_ires[$ci]+0 == $anchor_ire+0) {
+     $_anchor_step=$scan_steps[$ci];
+     $_anchor_target=$scan_targets[$ci];
+     last;
+    }
+   }
+   my ($reading,$error)=read_step($config,$_anchor_step,$state);
+   if($error || !$reading) {
+    $status->{"rolloff_note"}=($status->{"rolloff_note"}||"")." pass $pass anchor read failed (".($error||"no reading")."); ";
+    last;
+   }
+   my $xyz=reading_xyz($reading);
+   my $y=(ref($xyz) eq "ARRAY") ? ($xyz->[1]+0) : 0;
+   my $ctarget=$_anchor_target;
+   my $lift=($ctarget > 0 && $y > 0) ? ($y/$ctarget) : 0;
+   $state->{"postcal_rolloff_pass_".$pass."_lift"}=$lift;
+   $state->{"postcal_rolloff_pass_".$pass."_Y"}=$y;
+   $state->{"postcal_rolloff_pass_".$pass."_mag"}=int($mag+0.5);
+   $status->{"rolloff_passes"}=$pass;
+
+   # Self-protection: zero-response (panel clipping at peak, no head-
+   # room left for added counts to brighten the anchor). Two
+   # consecutive zero-response passes while $mag keeps increasing
+   # means the panel cannot give us any more light at this anchor --
+   # bail and keep best.
+   if($y+0 <= 0.99*$baseline_y{$anchor_ire} && $mag+0 > 0) {
+    $zero_response_streak++;
+    if($zero_response_streak >= 2) {
+     $status->{"rolloff_status"}="clipping_bail";
+     $status->{"rolloff_note"}=($status->{"rolloff_note"}||"")." pass $pass: zero luminance response for $zero_response_streak consecutive passes; panel clipping at peak; ";
+     last;
+    }
+   } else {
+    $zero_response_streak=0;
+   }
+   # Best-tracking: any pass that lifts the anchor above best.
+   if($lift+0 > $best_lift+0 + 1e-6) {
+    $best_lift=$lift;
+    $best_mag=$mag;
+    $improved_p2=1;
+   }
+   # Converged.
+   if(abs($lift-1) <= $rolloff_tol) {
+    $status->{"rolloff_status"}="converged";
+    last;
+   }
+   # Coarse gain step (pass 1 has no slope, use linear gain like
+   # Phase 1's pass 1).
+   my $delta=$rolloff_damp*(1-$lift)*$rolloff_gain;
+   my $next=$mag+$delta;
+   $next=0 if($next < 0);
+   $mag=$next+0;
+  }
+  $status->{"rolloff_lift_after"}=$best_lift;
+  # Revert-if-worse: if no pass beat baseline, keep $corrected as-is.
+  if(!$improved_p2 || $best_lift+0 <= $baseline_lift{$anchor_ire}+0) {
+   $status->{"rolloff_reverted"}=json_true();
+   $status->{"rolloff_status"}="reverted" if(($status->{"rolloff_status"}||"") ne "converged" && ($status->{"rolloff_status"}||"") ne "clipping_bail");
+   $status->{"rolloff_note"}=($status->{"rolloff_note"}||"")."best lift (".sprintf("%.3f",$best_lift).") did not improve on baseline (".sprintf("%.3f",$baseline_lift{$anchor_ire})."); bumped DPG discarded.";
+   log_line("HDR20 post-cal roll-off: revert (best lift ".sprintf("%.3f",$best_lift)." <= baseline ".sprintf("%.3f",$baseline_lift{$anchor_ire}).").");
+  } else {
+   # Apply best bump to $corrected.
+   my $final_bump=hdr20_postcal_apply_rolloff_bump($corrected,[$anchor_idx,$best_mag],$rolloff_ramp,$rolloff_input_max);
+   if($final_bump) {
+    $final_bump=hdr20_postcal_monotone_clamp($final_bump);
+    $corrected=$final_bump;
+   }
+   $status->{"rolloff_status"}="converged" if(($status->{"rolloff_status"}||"") ne "converged" && ($status->{"rolloff_status"}||"") ne "clipping_bail");
+   log_line("HDR20 post-cal roll-off: anchor IRE ".$anchor_ire."% idx ".$anchor_idx." mag ".int($best_mag+0.5)." -> lift ".sprintf("%.3f",$baseline_lift{$anchor_ire})." -> ".sprintf("%.3f",$best_lift).".");
+  }
+  $status->{"rolloff_best_mag"}=int($best_mag+0.5);
+  1;
+ } or do {
+  my $p2_err=$@ || "HDR20 post-cal roll-off inner eval failed";
+  $p2_err=~s/[\r\n]+/ /g;
+  die $p2_err if($p2_err =~ /^cancelled$/i); # propagate cancellation
+  # Any non-cancellation error: $corrected stays as Phase 1's
+  # output, the phase 1 DPG flows through to re-establish below.
+  $status->{"rolloff_status"}="error" if(($status->{"rolloff_status"}||"") ne "skipped" && ($status->{"rolloff_status"}||"") ne "self_gated" && ($status->{"rolloff_status"}||"") ne "converged" && ($status->{"rolloff_status"}||"") ne "reverted" && ($status->{"rolloff_status"}||"") ne "clipping_bail");
+  $status->{"rolloff_note"}=($status->{"rolloff_note"}||"")."inner eval error: ".$p2_err."; roll-off correction skipped, corrected=Phase 1 DPG.";
+  log_line("HDR20 post-cal roll-off: inner eval error: ".$p2_err);
  };
 
  # Store $corrected back into config so the final 3D commit (3D LUT +
