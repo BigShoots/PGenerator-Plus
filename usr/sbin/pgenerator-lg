@@ -4719,11 +4719,48 @@ sub lg_ddc_1d_white_balance_set (@) {
 		   $ddc_readback_unavailable=1;
 		   $upload_verified=1;
 		  }
+		  # Reference-faithful leniency for readback_supported=false
+		  # generations (e.g. 2019/2020 OLED). The reference library sends the
+		  # 1D DPG and never reads it back (fire-and-forget; no getExternalPqData
+		  # exists on the wire), so on these generations a populated-but-
+		  # mismatched readback is not a reason to fail the reset — the 1D_DPG_DATA
+		  # upload already returned returnValue:true (reaching this block requires
+		  # !$upload_failed, i.e. response_is_app_failure passed). Keep the
+		  # uploaded unity LUT as the baseline (do NOT adopt the readback) so
+		  # future offsets are measured against what we wrote, matching the
+		  # reference's contract. C1/C2 (readback_supported=true) keep strict
+		  # matching via the branches above and never reach here.
+		  if(!$upload_verified && ($reset_ddc_baseline || $verify_ddc_upload) && &lg_readback_leniency_ok($generation)) {
+		   $ddc_verify_mismatch=&lg_lut_mismatch_summary($verify_lut,$lut);
+		   $reset_linear_diagnostics=&lg_lut_linear_unity_diagnostics($verify_lut);
+		   if($reset_ddc_baseline) {
+		    $reset_readback_contract="write-accepted-readback-untrusted";
+		   } else {
+		    $upload_readback_contract="write-accepted-readback-untrusted";
+		   }
+		   $upload_verified=1;
+		  }
 		  if(!$upload_verified) {
 		   &lg_calibration_request($session,"ddc_cal_end_after_verify_fail","CAL_END",undef,1,"",$timeout) if(!$keep_calibration_mode);
 		   my $verify_message=$reset_ddc_baseline
 		    ? "LG DDC reset upload did not verify against the TV 1D LUT readback."
 		    : "LG DDC 1D LUT upload did not verify against the TV readback.";
+		   # Carry the raw session responses + a compact sampled readback so the
+		   # failure diag can distinguish a getter artifact (1D_DPG_DATA returned
+		   # returnValue:true but the readback carries a near-black lift) from a
+		   # write that never bound (returnValue:false / app error). The full
+		   # readback can be 3072 entries; sample the diagnostic indices on
+		   # channel 0 against the uploaded unity (32*i) baseline.
+		   my @rb_sample_idx=(0,1,2,3,4,5,6,7,8,9,10,16,17,18,24,32,48,64,128,256,512,768,926,1023);
+		   my @rb_samples=();
+		   if(ref($verify_lut) eq "ARRAY" && @{$verify_lut} >= 1024) {
+		    @rb_samples=map { {
+		     sample => int($_),
+		     actual => int($verify_lut->[$_]||0),
+		     expected_unity => int($_*32+0.5),
+		     delta => int(($verify_lut->[$_]||0) - int($_*32+0.5)),
+		    } } @rb_sample_idx;
+		   }
 		   return (1,&json_error($verify_message,{
 		    active_picture_mode => $picture_mode,
 		    ddc_baseline_reset => &json_bool($reset_ddc_baseline),
@@ -4731,6 +4768,15 @@ sub lg_ddc_1d_white_balance_set (@) {
 		    ddc_upload_verified => &json_false(),
 		    ddc_verify_mismatch => &lg_lut_mismatch_summary($verify_lut,$lut),
 		    ddc_linear_unity_diagnostics => &lg_lut_linear_unity_diagnostics($verify_lut),
+		    ddc_readback_sampled => { channel => 0, samples => \@rb_samples },
+		    ddc_response => $upload,
+		    ddc_start_response => $start,
+		    ddc_end_response => $end,
+		    ddc_late_start_response => $late_start,
+		    pipeline_responses => $enable_responses,
+		    verify_response => (ref($verify_info) eq "HASH") ? ($verify_info->{"response"}||undef) : undef,
+		    verify_readback_ok => &json_bool(ref($verify_info) eq "HASH" ? ($verify_info->{"ok"} ? 1 : 0) : 0),
+		    verify_readback_empty => &json_bool(ref($verify_info) eq "HASH" ? ($verify_info->{"readback_empty"} ? 1 : 0) : 0),
 		   }));
 		  }
 		 }
@@ -4769,8 +4815,8 @@ sub lg_ddc_1d_white_balance_set (@) {
 			  ddc_upload_readback_unavailable => &json_bool($upload_readback_unavailable),
 			  ddc_readback_unavailable => &json_bool($ddc_readback_unavailable),
 			  ddc_readback_unavailable_reason => $ddc_readback_unavailable_reason,
-			  ddc_verify_mismatch => $ddc_readback_unavailable ? $ddc_verify_mismatch : undef,
-			  ddc_linear_unity_diagnostics => $reset_readback_unavailable ? $reset_linear_diagnostics : undef,
+			  ddc_verify_mismatch => ($ddc_readback_unavailable || ($reset_readback_contract eq "write-accepted-readback-untrusted") || ($upload_readback_contract eq "write-accepted-readback-untrusted")) ? $ddc_verify_mismatch : undef,
+			  ddc_linear_unity_diagnostics => ($reset_readback_unavailable || ($reset_readback_contract eq "write-accepted-readback-untrusted")) ? $reset_linear_diagnostics : undef,
 			  calibration_mode => &json_bool($keep_calibration_mode),
 			 }));
 }
