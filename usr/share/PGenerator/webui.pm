@@ -10540,10 +10540,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      </div>
    <div id="chartsColorWrap" style="display:none">
     <div style="margin-bottom:10px">
-     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+     <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
       <div id="chartCIELabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase">CIE 1931 Chromaticity</div>
-      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Interactive xyY view: rotate, pan, and zoom to compare measured vs target luminance (Y). Left-drag rotate, wheel zoom, Shift-drag pan, double-click reset.">
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
        <input type="checkbox" id="meterCie3dView" onchange="meterOnCie3dViewChange()" style="vertical-align:middle"> 3D View
+       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Left-drag = rotate · Mouse wheel = zoom · Shift-drag (or middle/right-drag) = pan · Double-click = reset camera." aria-label="3D View camera controls help">?</span>
       </label>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
@@ -10564,8 +10565,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartColorDELabel">&Delta;E 2000 (Color Accuracy)</div>
-      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Include luminance error in color-series and saturation-sweep ΔE calculations. Also shows ΔY% halo rings on the CIE chart.">
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;margin-left:auto">
        <input type="checkbox" id="meterColorIncludeLumError" onchange="meterOnColorIncludeLumChange()" style="vertical-align:middle"> Include luminance error
+       <span class="meter-help-tip" title="Off = chroma-only ΔE (target Y matched to measured so pure luminance error is cancelled). On = full ΔE including luminance, and CIE shows cyan/orange ΔY% rings around measured points (cyan = brighter than target, orange = dimmer). The small filled dots are always the measured xy — they are not luminance rings." aria-label="Include luminance error help">?</span>
       </label>
       <label id="meterColorDeltaEFormWrap" style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px;margin-left:auto" title="Changes the color and saturation-sweep ΔE calculation.">
        Color ΔE
@@ -31781,6 +31783,10 @@ function drawColorReadingsTable(readings){
  }
  const colorRefMode=meterColorRefMode();
  const colorForm=meterColorDeltaEForm();
+ const colorInclLum=(colorRefMode==='eotf');
+ const deLabel=meterDeltaEFormLabel(colorForm)+(colorInclLum?' + Y':' (chroma)');
+ const deHead=document.querySelector('#colorReadingsTable thead th:last-child');
+ if(deHead) deHead.innerHTML=deLabel;
  let html='';
  let deSum=0,deCount=0;
  readings.forEach(rd=>{
@@ -32141,6 +32147,31 @@ function meterIsSelectedColorReading(rd){
 function meterSelectedCIETargetColor(rd,baseColor){
  if(meterReadingTargetsBlack(rd)) return meterIsSelectedColorReading(rd)?'#ffffff':'#aab6cb';
  return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
+}
+
+// CIE ΔY% luminance-error ring. Only drawn when Include luminance error is on.
+// Distinct from the always-drawn measured filled dot (chroma position).
+// Returns false when |ΔY%| is negligible so tiny Y errors don't look like rings.
+function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
+ if(px==null||py==null||deltaPct==null||!isFinite(deltaPct)) return false;
+ const abs=Math.abs(deltaPct);
+ if(abs<0.75) return false; // ignore sub-1% Y noise — looks like "always on" otherwise
+ const s=(scale!=null&&scale>0)?scale:1;
+ // Aggressive radius so rings are obvious vs the r≈4.6 measured dot.
+ const haloRadius=(11+Math.min(34,abs*0.55))*s;
+ const haloColor=deltaPct>=0?'rgba(82,196,255,0.95)':'rgba(255,176,84,0.95)';
+ ctx.save();
+ // Soft outer wash so it reads as a ring, not a second data point.
+ ctx.strokeStyle=haloColor;
+ ctx.lineWidth=(2.2+Math.min(3.5,abs*0.03))*s;
+ ctx.setLineDash(deltaPct>=0?[]:[5,3]);
+ ctx.beginPath();ctx.arc(px,py,haloRadius,0,Math.PI*2);ctx.stroke();
+ ctx.setLineDash([]);
+ ctx.globalAlpha=0.18;
+ ctx.fillStyle=haloColor;
+ ctx.beginPath();ctx.arc(px,py,haloRadius,0,Math.PI*2);ctx.fill();
+ ctx.restore();
+ return true;
 }
 
 // ── CIE xyY 3D view ──────────────────────────────────────────────────────────
@@ -32665,7 +32696,12 @@ function drawCIEChart(readings){
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,ctx.w-pad.r,pad.t+10);
  if(colorInclLum){
-  ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';ctx.textAlign='right';ctx.fillText('Halo size = |\u0394Y|%',ctx.w-pad.r,pad.t+22);
+  ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';ctx.textAlign='right';
+  ctx.fillText('Ring = |\u0394Y|%  (cyan bright / orange dim)',ctx.w-pad.r,pad.t+22);
+  ctx.fillText('Filled dots = measured xy (always)',ctx.w-pad.r,pad.t+34);
+ } else {
+  ctx.fillStyle='#6a7690';ctx.font='9px sans-serif';ctx.textAlign='right';
+  ctx.fillText('Chroma only \u2014 no \u0394Y% rings',ctx.w-pad.r,pad.t+22);
  }
  // Plot target and measured points
  readings.forEach(rd=>{
@@ -32683,7 +32719,7 @@ function drawCIEChart(readings){
   const tx=tgt?toX(tgt.x):null, ty=tgt?toY(tgt.y):null;
   const px=hasMeasuredXY?toX(mx):null, py=hasMeasuredXY?toY(my):null;
   if(tgt&&hasMeasuredXY){
-   // Error line
+   // Chromaticity error line (xy only — always shown)
    ctx.save();
    ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(px,py);ctx.stroke();
    ctx.restore();
@@ -32695,17 +32731,11 @@ function drawCIEChart(readings){
    ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
    ctx.restore();
   }
-  if(hasMeasuredXY&&colorInclLum&&lumInfo.deltaPct!=null&&isFinite(lumInfo.deltaPct)){
-   const haloRadius=6+Math.min(16,Math.abs(lumInfo.deltaPct)*0.12);
-   const haloColor=lumInfo.deltaPct>=0?'rgba(82,196,255,0.9)':'rgba(255,176,84,0.9)';
-   ctx.save();
-   ctx.strokeStyle=haloColor;
-   ctx.lineWidth=1.2+Math.min(2.4,Math.abs(lumInfo.deltaPct)*0.015);
-   ctx.setLineDash(lumInfo.deltaPct>=0?[]:[4,3]);
-   ctx.beginPath();ctx.arc(px,py,haloRadius,0,Math.PI*2);ctx.stroke();
-   ctx.restore();
+  // Luminance-error ring ONLY when Include luminance error is checked.
+  if(hasMeasuredXY&&colorInclLum){
+   meterCieDrawLumErrorHalo(ctx,px,py,lumInfo.deltaPct,1);
   }
-  // Measured: solid circle
+  // Measured: solid circle at xy (chroma). Always drawn — not a luminance ring.
   if(hasMeasuredXY){
    ctx.save();
    ctx.fillStyle=measuredColor;ctx.beginPath();
@@ -32802,14 +32832,8 @@ function drawCIETargetInset(ctx,readings,pad){
     ctx.strokeStyle=tStrokeColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
    ctx.restore();
   }
-  if(isFocus&&colorInclLum&&lumInfo.deltaPct!=null&&isFinite(lumInfo.deltaPct)&&mInside){
-   const haloRadius=5.5+Math.min(12,Math.abs(lumInfo.deltaPct)*0.14);
-   const haloColor=lumInfo.deltaPct>=0?'rgba(82,196,255,0.92)':'rgba(255,176,84,0.92)';
-   ctx.save();
-   ctx.strokeStyle=haloColor;ctx.lineWidth=1.2+Math.min(2,Math.abs(lumInfo.deltaPct)*0.02);
-   ctx.setLineDash(lumInfo.deltaPct>=0?[]:[4,3]);
-   ctx.beginPath();ctx.arc(ZtoX(rd.x),ZtoY(rd.y),haloRadius,0,Math.PI*2);ctx.stroke();
-   ctx.restore();
+  if(isFocus&&colorInclLum&&mInside){
+   meterCieDrawLumErrorHalo(ctx,ZtoX(rd.x),ZtoY(rd.y),lumInfo.deltaPct,0.85);
   }
   if(mInside){
    ctx.save();
