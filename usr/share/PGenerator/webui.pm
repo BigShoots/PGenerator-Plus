@@ -6704,6 +6704,15 @@ sub webui_apply_config (@) {
    $webui_rgb_quant_range_preferred=$changes{$k} if($k eq "rgb_quant_range");
    $need_restart=1 if($restart_keys{$k});
   }
+ # A mode change (mode_idx or any signal-attribute restart key) re-negotiates
+ # the HDMI link, so the connector's available modes and the sink's advertised
+ # capabilities can change. Drop the cached mode list and EDID/caps so the next
+ # /api/modes and /api/capabilities calls re-read them live instead of serving a
+ # stale snapshot that desyncs the WebUI dropdown from the actual output.
+ if(%changes && $need_restart) {
+  $_modes_cache=""; $_modes_cache_time=0;
+  $_caps_cache=""; $_caps_cache_time=0;
+ }
  &sync_pattern_bits_default() if(%changes);
  my $result='{"status":"ok","restart":'.($need_restart ? 'true' : 'false').'}';
  return wantarray ? ($result,$need_restart) : $result;
@@ -13102,6 +13111,10 @@ async function applySettings(){
    await loadConfig();
    updateDropdowns();
    await loadInfo();
+   // Re-fetch the mode list: a mode change re-negotiates the HDMI link and the
+   // server invalidated its modes/caps caches, so the dropdown must rebuild from
+   // the live connector modes instead of the pre-apply snapshot.
+   await loadModes(true);
    if(typeof lgRefreshPictureModeAfterOutputApply==='function') lgRefreshPictureModeAfterOutputApply();
    applySettingsModalSuccess();
   }catch(e){
