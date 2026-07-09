@@ -13569,85 +13569,104 @@ async function loadInfoframes(){
  }else{de.textContent='-';dd.innerHTML='';}
 }
 
-// Widget reorder via POINTER drag on the ☰ .drag-handle only.
-// Pointer-based (not HTML5 DnD). Grid is 2-column, so placement uses both
-// X and Y against each card's center (row-major), not Y-only sibling checks
-// which left side-by-side cards stuck with only a highlight.
+// Widget reorder: POINTER drag on ☰ .drag-handle only (no HTML5 DnD).
+// Drop target = card under the cursor; insert before/after by midpoint.
+// Avoid setPointerCapture + moving the capture node (that combo was a no-op).
 (function(){
  const dash=document.querySelector('.dashboard');
  if(!dash) return;
- const widgets=()=>[...dash.querySelectorAll(':scope > [data-widget]')];
+ // Direct children only (reliable without :scope).
+ const widgets=()=>[...dash.children].filter(el=>el&&el.getAttribute&&el.getAttribute('data-widget'));
  let dragEl=null;
  let moved=false;
- let pointerId=null;
+ let startX=0,startY=0;
+ let active=false; // true once past drag threshold
+ let lastTarget=null;
+ let lastBefore=true;
+
  function saveOrder(){
-  const order=widgets().map(w=>w.dataset.widget);
-  localStorage.setItem('pg_widget_order',JSON.stringify(order));
+  try{
+   localStorage.setItem('pg_widget_order',JSON.stringify(widgets().map(w=>w.dataset.widget)));
+  }catch(e){}
  }
  function restoreOrder(){
   try{
    const order=JSON.parse(localStorage.getItem('pg_widget_order'));
-   if(!order||!Array.isArray(order))return;
-   const map={};widgets().forEach(w=>{map[w.dataset.widget]=w;});
+   if(!order||!Array.isArray(order)) return;
+   const map={}; widgets().forEach(w=>{ map[w.dataset.widget]=w; });
    const end=dash.querySelector('.toast')||null;
-   order.forEach(id=>{if(map[id])dash.insertBefore(map[id],end);});
+   order.forEach(id=>{ if(map[id]) dash.insertBefore(map[id],end); });
   }catch(e){}
  }
  function clearDragState(){
   if(dragEl){
    dragEl.classList.remove('dragging');
-   try{ if(pointerId!=null) dragEl.releasePointerCapture(pointerId); }catch(e){}
+   dragEl.style.pointerEvents='';
   }
   widgets().forEach(w=>w.classList.remove('dragging','drag-over'));
   dragEl=null;
   moved=false;
-  pointerId=null;
+  active=false;
+  lastTarget=null;
   document.body.classList.remove('is-widget-dragging');
   try{ document.body.style.cursor=''; document.documentElement.style.cursor=''; }catch(e){}
  }
- // Disable native HTML5 card drag — pointer path owns reorder.
- widgets().forEach(w=>w.setAttribute('draggable','false'));
+
+ // Kill native HTML5 drag on every widget card (markup still has draggable=true).
+ function disableNativeDrag(){
+  dash.querySelectorAll('[data-widget]').forEach(w=>w.setAttribute('draggable','false'));
+ }
+ disableNativeDrag();
  dash.addEventListener('dragstart',e=>{
-  if(e.target.closest&&e.target.closest('[data-widget]')){
-   e.preventDefault();
-  }
+  if(e.target.closest&&e.target.closest('[data-widget]')) e.preventDefault();
  },true);
 
- // Insert dragEl before the first other widget whose center is "after" the
- // pointer in row-major order; otherwise after the last widget.
- function placeDragElAtPoint(clientX,clientY){
-  if(!dragEl) return;
-  const others=widgets().filter(w=>w!==dragEl);
-  widgets().forEach(c=>c.classList.remove('drag-over'));
-  if(!others.length) return;
+ function cardUnderPoint(x,y){
+  // Prefer elementsFromPoint so we skip the translucent dragged card.
+  let list=[];
+  try{ list=document.elementsFromPoint(x,y)||[]; }catch(e){
+   const one=document.elementFromPoint(x,y);
+   if(one) list=[one];
+  }
+  for(let i=0;i<list.length;i++){
+   const el=list[i];
+   if(!el||!el.closest) continue;
+   const w=el.closest('[data-widget]');
+   if(w&&w!==dragEl&&dash.contains(w)&&w.parentNode===dash) return w;
+  }
+  return null;
+ }
 
-  let insertBeforeNode=null;
-  for(let i=0;i<others.length;i++){
-   const w=others[i];
-   const r=w.getBoundingClientRect();
-   const cx=(r.left+r.right)/2;
-   const cy=(r.top+r.bottom)/2;
-   // Pointer is above this card's center, or in its row and left of center.
-   if(clientY<cy||(clientY>=r.top&&clientY<=r.bottom&&clientX<cx)){
-    insertBeforeNode=w;
-    break;
+ // Move dragEl next to target (before if pointer in top/left half, else after).
+ function placeRelativeTo(target,clientX,clientY){
+  if(!dragEl||!target||target===dragEl) return;
+  const r=target.getBoundingClientRect();
+  const sameRow=clientY>=r.top&&clientY<=r.bottom;
+  let before;
+  if(sameRow) before=clientX<(r.left+r.right)/2;
+  else before=clientY<(r.top+r.bottom)/2;
+
+  lastTarget=target;
+  lastBefore=before;
+  widgets().forEach(c=>c.classList.remove('drag-over'));
+  target.classList.add('drag-over');
+
+  // Always re-insert (no nextElementSibling short-circuit — that blocked swaps).
+  if(before){
+   if(dragEl.nextSibling!==target) target.parentNode.insertBefore(dragEl,target);
+  } else {
+   // insert after target
+   const ref=target.nextSibling;
+   if(ref!==dragEl){
+    if(ref) target.parentNode.insertBefore(dragEl,ref);
+    else target.parentNode.appendChild(dragEl);
    }
   }
-
-  if(insertBeforeNode){
-   insertBeforeNode.classList.add('drag-over');
-   if(dragEl.nextElementSibling!==insertBeforeNode){
-    dash.insertBefore(dragEl,insertBeforeNode);
-    moved=true;
-   }
+  // Verify we actually changed something relative to target
+  if(before){
+   if(dragEl.nextElementSibling===target||target.previousElementSibling===dragEl) moved=true;
   } else {
-   const last=others[others.length-1];
-   last.classList.add('drag-over');
-   // After the last other widget (not necessarily last child of dashboard).
-   if(last.nextElementSibling!==dragEl){
-    last.after(dragEl);
-    moved=true;
-   }
+   if(target.nextElementSibling===dragEl||dragEl.previousElementSibling===target) moved=true;
   }
  }
 
@@ -13656,42 +13675,54 @@ async function loadInfoframes(){
   const handle=e.target.closest&&e.target.closest('.drag-handle');
   if(!handle) return;
   const w=handle.closest('[data-widget]');
-  if(!w||!dash.contains(w)) return;
+  if(!w||w.parentNode!==dash) return;
+  // Don't capture — moving the capture target breaks the gesture.
   e.preventDefault();
-  e.stopPropagation();
   dragEl=w;
   moved=false;
-  pointerId=e.pointerId;
+  active=false;
+  startX=e.clientX;
+  startY=e.clientY;
+  lastTarget=null;
   w.classList.add('dragging');
+  w.style.pointerEvents='none'; // so elementFromPoint sees cards underneath
   document.body.classList.add('is-widget-dragging');
   document.body.style.cursor='grabbing';
-  try{ w.setPointerCapture(e.pointerId); }catch(err){}
  }
 
  function onPointerMove(e){
   if(!dragEl) return;
-  if(pointerId!=null&&e.pointerId!=null&&e.pointerId!==pointerId) return;
-  placeDragElAtPoint(e.clientX,e.clientY);
+  const dx=e.clientX-startX, dy=e.clientY-startY;
+  if(!active&&(dx*dx+dy*dy)<25) return; // 5px threshold
+  active=true;
+  const target=cardUnderPoint(e.clientX,e.clientY);
+  if(target) placeRelativeTo(target,e.clientX,e.clientY);
  }
 
  function onPointerUp(e){
   if(!dragEl) return;
-  if(pointerId!=null&&e.pointerId!=null&&e.pointerId!==pointerId) return;
-  // Final snap under the release point (covers last-frame misses).
-  placeDragElAtPoint(e.clientX,e.clientY);
-  if(moved) saveOrder();
+  if(active){
+   const target=cardUnderPoint(e.clientX,e.clientY)||lastTarget;
+   if(target) placeRelativeTo(target,e.clientX,e.clientY);
+   if(moved) saveOrder();
+  }
   clearDragState();
  }
 
- // Window-level move/up so capture + grid reflows cannot drop events.
- dash.addEventListener('pointerdown',onPointerDown);
- window.addEventListener('pointermove',onPointerMove,{passive:true});
- window.addEventListener('pointerup',onPointerUp);
- window.addEventListener('pointercancel',onPointerUp);
+ // Capture phase on document so nothing inside cards eats the events.
+ document.addEventListener('pointerdown',onPointerDown,true);
+ document.addEventListener('pointermove',onPointerMove,true);
+ document.addEventListener('pointerup',onPointerUp,true);
+ document.addEventListener('pointercancel',onPointerUp,true);
  window.addEventListener('blur',clearDragState);
  document.addEventListener('visibilitychange',()=>{ if(document.hidden) clearDragState(); });
  document.addEventListener('keydown',e=>{ if(e.key==='Escape') clearDragState(); });
  restoreOrder();
+ // Late-injected widgets (e.g. Display/LG card) — re-disable native drag.
+ try{
+  const mo=new MutationObserver(()=>disableNativeDrag());
+  mo.observe(dash,{childList:true,subtree:true});
+ }catch(e){}
 })();
 
 async function checkUpdate(){
