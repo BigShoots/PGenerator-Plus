@@ -13913,7 +13913,17 @@ function meterReadingGammaAnalysisIre(reading){
  if(!reading) return null;
  if(meterReadingIsGreyscale(reading)&&(meterChartIsDv()||meterChartIsHdr()||meterChartIsHlg())){
   const analysis=meterReadingAnalysisIre(reading);
-  if(meterChartIsDv()&&analysis!=null) return analysis;
+  // Honor an explicit analysis_ire / target_ire stamp on the reading so
+  // the chart's measured gamma uses the same signal basis the worker
+  // stamped into target_Yn. Without this gate the helper falls through
+  // to meterGreySignalFractionFromCode(r_code), which produces a
+  // code-derived signal that can differ noticeably from the slot value
+  // (e.g. 0.01826 vs 0.020 for code 80 in 10-bit Limited at slot 2.0%)
+  // and makes a near-converged reading plot visibly below the gamma
+  // target line. DV is treated explicitly above; for HDR/HLG, the HDR20
+  // makeHdrStep path stamps analysis_ire / target_ire from the slot
+  // value, mirroring the LG 22pt manual greyscale pattern.
+  if(analysis!=null && (meterChartIsDv() || reading.analysis_ire!=null || reading.target_ire!=null)) return analysis;
   const code=reading.r_code!=null?reading.r_code:reading.r;
   if(code!=null){
    const signal=meterGreySignalFractionFromCode(code);
@@ -23024,12 +23034,25 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		   }
 		   const stimulus=Number(slot);
 		   const ddcArrayIre=hdrIdx>=0?METER_LG_GREY_HDR_AUTOCAL_DDC_ARRAY_IRES[hdrIdx]:stimulus;
+		   // Stamp analysis_ire / target_ire with the slot value so the
+		   // chart's measured gamma (meterReadingGammaAnalysisIre) and the
+		   // worker-stamped target_Yn share the same slot-based signal
+		   // basis. Otherwise the chart would compute measured gamma
+		   // against the code-derived signal (e.g. 0.01826 for code 80
+		   // in 10-bit Limited at slot 2%) while the target stays on the
+		   // slot-based curve (0.020), producing a visible gamma offset
+		   // below the target line on slots where code quantization
+		   // diverges from slot/100 (notably 2.0% and the LG autocal-26
+		   // SDR 26-point body, which already stamps these via the
+		   // makeDdcStep branch above).
 		   return {
 		    ire:slot,
 	    stimulus:stimulus,
 	    signal_r_pct:stimulus,
 	    signal_g_pct:stimulus,
 	    signal_b_pct:stimulus,
+	    analysis_ire:stimulus,
+	    target_ire:stimulus,
 	    r:code,
 	    g:code,
 	    b:code,
