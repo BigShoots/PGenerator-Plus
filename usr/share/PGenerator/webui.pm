@@ -32995,6 +32995,7 @@ function drawCIETargetInset(ctx,readings,pad){
 }
 
 function drawCIEChartPreset(steps){
+ try{ meterApplyCie3dLayout(); }catch(e){}
  if(meterCie3dViewEnabled()){
   drawCIEChart3D(steps||[],{preset:true});
   return;
