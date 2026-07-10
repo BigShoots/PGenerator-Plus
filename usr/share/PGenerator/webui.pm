@@ -15802,22 +15802,73 @@ function meterStoredLgTargetWhiteReferenceNits(){
  }catch(e){ return null; }
 }
 
+// Live SDR26 peak white (Limited 109 / Full 100). Prefers the latest
+// measured peak reading so the target curve tracks each 100%/109% re-read
+// during reduce-to-lowest peak calibration (Y falls as chroma balances).
+function meterFindSdr26PeakWhiteReading(readings){
+ const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
+ let best109=null,best100=null;
+ list.forEach(rd=>{
+  if(!rd||typeof meterReadingIsGreyscale==='function'&&!meterReadingIsGreyscale(rd)) return;
+  const y=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(rd):(Number(rd.luminance!=null?rd.luminance:rd.Y)||0);
+  if(!(y>0)) return;
+  const ire=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:rd.stimulus));
+  if(!Number.isFinite(ire)) return;
+  const ts=Number(rd.timestamp)||0;
+  if(Math.abs(ire-109)<0.05){
+   if(!best109||ts>=(best109.ts||0)) best109={rd,y,ts};
+   return;
+  }
+  if(Math.abs(ire-100)<0.05){
+   // Skip Limited legal-white reference at 100 (ddc_target_ire 99) — peak is 109.
+   if(rd.autocal_legal_white_anchor||(rd.ddc_target_ire!=null&&Number(rd.ddc_target_ire)<100.5&&Number(rd.ddc_target_ire)>90)){
+    if(typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange()) return;
+   }
+   const isFullPeak=(typeof meterReadingIsSdr26LegalPeak==='function'&&meterReadingIsSdr26LegalPeak(rd))
+    ||String(rd.name||'').toLowerCase().indexOf('sdr26_')===0
+    ||String(rd.autocal_target_label||'').toLowerCase().indexOf('full peak')>=0
+    ||(rd.autocal_white_reference&&!rd.autocal_legal_white_anchor&&rd.ddc_target_ire==null);
+   const isFullRange=(typeof meterPatchUsesVideoRange==='function'&&!meterPatchUsesVideoRange());
+   if(!isFullPeak&&!isFullRange) return;
+   if(!best100||ts>=(best100.ts||0)) best100={rd,y,ts};
+  }
+ });
+ if(best109) return best109.rd;
+ if(best100) return best100.rd;
+ return null;
+}
+
 function meterExplicitLgTargetWhiteReferenceNits(readings){
  const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
  const activeLgAutoCal=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
+ // Prefer live peak measured Y (updates every 100%/109% peak iter). Do NOT
+ // take the first autocal_white_y stamp — 0%/body rows keep the INITIAL
+ // peak Y and freeze the target curve while measured peak drops.
  if(lgAutoCalChartRef){
+  const peakRd=(typeof meterFindSdr26PeakWhiteReading==='function')?meterFindSdr26PeakWhiteReading(list):null;
+  const peakY=peakRd?(typeof meterReadingLuminanceNits==='function'?meterReadingLuminanceNits(peakRd):Number(peakRd.luminance!=null?peakRd.luminance:peakRd.Y)):null;
+  if(peakY>0) return peakY;
   const white=(typeof meterFindLgAutoCalLegalWhiteReference==='function')?meterFindLgAutoCalLegalWhiteReference(list):((typeof meterFindSeriesWhiteReading==='function')?meterFindSeriesWhiteReading(list):null);
   const whiteY=white?meterReadingLuminanceNits(white):null;
-  if(activeLgAutoCal&&white&&!white.synthetic_target&&whiteY>0) return null;
+  if(activeLgAutoCal&&white&&!white.synthetic_target&&whiteY>0) return whiteY;
  }
+ let bestStamp=null;
  for(const rd of list){
   if(meterReadingDisablesAutoCalTargetReference(rd)) continue;
   if(activeLgAutoCal&&meterReadingIsAutoCalReferenceOnly(rd)) continue;
   const y=Number(rd&&(rd.autocal_white_y!=null?rd.autocal_white_y:(rd.lg_target_white_y!=null?rd.lg_target_white_y:rd.series_target_white_y)));
-  if(Number.isFinite(y)&&y>0) return y;
+  if(!(Number.isFinite(y)&&y>0)) continue;
+  const ts=Number(rd.timestamp)||0;
+  // Prefer stamps on the peak reading itself; otherwise newest stamp.
+  const onPeak=(typeof meterReadingIsSdr26LegalPeak==='function'&&meterReadingIsSdr26LegalPeak(rd))
+   ||Math.abs(Number(rd.ire)-109)<0.05
+   ||(Math.abs(Number(rd.ire)-100)<0.05&&String(rd.name||'').toLowerCase().indexOf('sdr26_')===0);
+  if(!bestStamp||(onPeak&&!bestStamp.onPeak)||(onPeak===bestStamp.onPeak&&ts>=bestStamp.ts)){
+   bestStamp={y,ts,onPeak:!!onPeak};
+  }
  }
- return null;
+ return bestStamp?bestStamp.y:null;
 }
 
 function meterLgTargetWhiteReferenceNits(readings){
@@ -15897,11 +15948,18 @@ function meterEffectiveGreyscaleWhiteReference(readings){
  const lgAutoCalChartRef=(meterActiveSeriesType==='greyscale'&&meterUseLgAutoCal26(meterActiveSeriesPoints));
  const magicWandPhase=String(meterFullAutoCalPhase||'')==='magic-wand'||meterAutoCalMagicWandActive===true;
  const activeAutoCalReference=lgAutoCalChartRef&&meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
- // SDR26 1D-DPG autocal: prefer the headroom-derived peak from the measured
- // 109% reading whenever one is present, even if the active-cal polling gate
- // is momentarily false (between status polls). The chart redraws continuously
- // and would otherwise briefly fall back to the stored target while the
- // worker is still iterating, hiding the new calibrated peak.
+ // SDR26 peak (Limited 109 / Full 100): always prefer the LIVE measured peak
+ // reading so EOTF/gamma/luma target curves re-scale as peak Y updates each
+ // reduce-to-lowest iter (e.g. Full 100: 198 → 183 nits). Stale first-read
+ // stamps must not freeze the curve.
+ if(lgAutoCalChartRef){
+  const peakRd=(typeof meterFindSdr26PeakWhiteReading==='function')?meterFindSdr26PeakWhiteReading(list):null;
+  if(peakRd&&!peakRd.synthetic_target){
+   const peakY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(peakRd):0;
+   if(peakY>0) return peakRd;
+  }
+ }
+ // SDR26 1D-DPG Limited: headroom-derived peak from 109 when no live peak row.
  const earlyHeadroomTargetY=lgAutoCalChartRef?meterLgHeadroomDerivedWhiteReferenceNits(list):null;
  if(lgAutoCalChartRef && !activeAutoCalReference && earlyHeadroomTargetY>0){
   const synthetic=meterSyntheticGreyWhiteReading(earlyHeadroomTargetY);
@@ -15977,14 +16035,13 @@ function meterAutoCalGreyscaleTargetWhiteReferenceActive(readings){
 }
 
 function meterAutoCalGreyscaleTargetWhiteReferenceNits(readings){
- // SDR26 1D-DPG autocal: prefer the headroom-derived peak from the
- // measured 109% reading whenever one is present, even if the active-cal
- // polling gate is momentarily false (between status polls). The chart
- // redraws continuously and would otherwise briefly fall back to the
- // stored target (e.g. 161.4) while the worker is still iterating,
- // hiding the new calibrated peak (e.g. 199.1) from the chart label.
+ // Prefer LIVE measured peak (Full 100 / Limited 109) so the target curve
+ // tracks each peak re-read. Headroom-derived 109 is Limited-only fallback.
  if(meterActiveSeriesType==='greyscale' && (typeof meterUseLgAutoCal26==='function') && meterUseLgAutoCal26(meterActiveSeriesPoints)){
   const list=Array.isArray(readings)?readings:(Array.isArray(meterReadings)?meterReadings:[]);
+  const peakRd=(typeof meterFindSdr26PeakWhiteReading==='function')?meterFindSdr26PeakWhiteReading(list):null;
+  const peakY=peakRd?(typeof meterReadingLuminanceNits==='function'?meterReadingLuminanceNits(peakRd):0):0;
+  if(peakY>0) return peakY;
   const headroomTargetY=meterLgHeadroomDerivedWhiteReferenceNits(list);
   if(headroomTargetY>0) return headroomTargetY;
  }
@@ -20398,13 +20455,15 @@ function meterAttachSeriesMeta(readings){
 
 function meterFindSeriesWhiteReading(readings){
  const list=Array.isArray(readings)?readings:[];
+ // Prefer live SDR26 peak (Limited 109 / Full 100 latest measured Y).
+ if(typeof meterFindSdr26PeakWhiteReading==='function'){
+  const peak=meterFindSdr26PeakWhiteReading(list);
+  if(peak) return peak;
+ }
  // SDR26 robustness fix: scan twice, prefer the headroom-encoded 109
  // legal peak (r_code == 1023) over the 100% reading whenever BOTH are
  // present. The autocal worker uses 109's measured Y as the target-curve
- // peak for every body anchor; the chart must match that reference,
- // otherwise the 1-2 nit gap between 109 and 100 is PQ-amplified into
- // ~0.5 dE ITP (~7x over the worker's actual per-anchor dE, producing
- // the "70-99 patches fail to hit target" false alarm).
+ // peak for every body anchor; the chart must match that reference.
  const _sdr109=list.find(rd=>{
   if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
   if(!meterReadingIsGreyscale(rd)) return false;
@@ -20413,24 +20472,22 @@ function meterFindSeriesWhiteReading(readings){
   return Number.isFinite(_rdIre) && Math.abs(_rdIre-109)<0.05 && Number.isFinite(_rdCode) && _rdCode>255;
  });
  if(_sdr109) return _sdr109;
- return list.find(rd=>{
-  if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
+ // Prefer latest 100% (by timestamp) over first-in-list so Full peak
+ // re-reads replace the initial white on the chart.
+ let best100=null;
+ list.forEach(rd=>{
+  if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return;
+  if(!meterReadingIsGreyscale(rd)) return;
   const name=String(rd.name||'').toLowerCase();
-  // Standard ire==100 / name==='white' match. Plus SDR26's 109% legal
-  // peak (the SDR26 table's "full white" code -- 109 IRE @ 10-bit 1023
-  // is the SDR equivalent of HDR's 100%; the autocal calibrates it as
-  // the white reference and the chart's target-curve must use its Y
-  // as the peak, otherwise every lower patch shows a wrong target Y).
-  // The autocal worker tags 109 with autocal_legal_white_anchor /
-  // autocal_white_reference; honour those flags AND a direct ire==109
-  // match (some builds store rd.ire as a STRING '109', so coerce).
-  if(!meterReadingIsGreyscale(rd)) return false;
   const _rdIre=Number(rd.ire);
-  if(((rd.ire||0)===100) || name==='white') return true;
-  if(rd.autocal_legal_white_anchor||rd.autocal_white_reference) return true;
-  if(Number.isFinite(_rdIre) && Math.abs(_rdIre-109)<0.05) return true;
-  return false;
+  const is100=(_rdIre===100)||Math.abs(_rdIre-100)<0.05||name==='white'
+   ||rd.autocal_legal_white_anchor||rd.autocal_white_reference
+   ||(Number.isFinite(_rdIre)&&Math.abs(_rdIre-109)<0.05);
+  if(!is100) return;
+  const ts=Number(rd.timestamp)||0;
+  if(!best100||ts>=(best100.ts||0)) best100={rd,ts};
  });
+ return best100?best100.rd:null;
 }
 
 function meterCanonicalSeriesStep(step){
