@@ -13237,6 +13237,7 @@ sub lg_autocal_26_build_sdr26_1d_dpg_core {
 	  my @ctrl_ys=map { $ctrl_val{$_} } @ctrl_idx;
 	  my $spline=lg_autocal_26_akima_interpolate(\@ctrl_idx,\@ctrl_ys);
 	  my $use_akima=(ref($spline) eq "ARRAY" && scalar(@$spline) == 1024);
+	  my @ch_vals;
 	  for my $i (0..1023) {
 	   my $val;
 	   if($use_akima) {
@@ -13270,8 +13271,21 @@ sub lg_autocal_26_build_sdr26_1d_dpg_core {
 	   $val=int($val + 0.5);
 	   $val=0 if($val < 0);
 	   $val=32767 if($val > 32767);
-	   push @dpg,$val;
+	   push @ch_vals,$val;
 	  }
+	  # Re-assert exact control-point values after Akima. Numerical
+	  # spline fill can drift knots by a few codes; for mid-body IRE
+	  # that already sits on a dense pin (75/80/85) that drift meant
+	  # per-iter gains at dpg_idx never fully landed on the wire sample
+	  # the pattern uses (55%/80% looked "stuck" while 50/70/75 moved).
+	  for my $ci (@ctrl_idx) {
+	   next unless(defined($ci) && $ci+0 >= 0 && $ci+0 <= 1023 && exists($ctrl_val{$ci}));
+	   my $v=int($ctrl_val{$ci}+0);
+	   $v=0 if($v < 0);
+	   $v=32767 if($v > 32767);
+	   $ch_vals[int($ci+0)]=$v;
+	  }
+	  push @dpg,@ch_vals;
 	 }
 	 return \@dpg;
 	}
@@ -16360,13 +16374,27 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   # Mid-body: classic EOTF damp only. Do NOT stack pure-luma extras on
-   # top — that rang 25% Y 7.57→5.95→7.08→6.18 for 9+ iters (slow). The
-   # 80% "Y stuck after chroma ok" case is handled by luma-progress keep
-   # in the revert gate, not by a second Y gain stage.
-   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   # Mid-body classic EOTF damp. When the three channel gains are nearly
+   # equal (chroma already close) but |Y-target| is still >1.2%, classic
+   # exp≈0.45 under-moves pure-Y (0.98^0.45≈0.99) — 55%/80% class. Raise
+   # exp toward linear for THAT case only; leave normal chroma solves on
+   # the fast classic path so 50/70/75 keep converging in 1–2 iters.
+   my $_y_meas_body=luminance($reading);
+   my $_exp_use=$damp_exp+0;
+   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0
+      && $_anchor_ire+0 >= $low_ire_threshold+0 && !$_is_legal_peak) {
+    my $_gmax=$rg; $_gmax=$gg if($gg+0 > $_gmax+0); $_gmax=$bg if($bg+0 > $_gmax+0);
+    my $_gmin=$rg; $_gmin=$gg if($gg+0 < $_gmin+0); $_gmin=$bg if($bg+0 < $_gmin+0);
+    my $_y_err_abs=abs(($_y_meas_body+0)/($tl+0)-1.0);
+    if(($_gmax-$_gmin) < 0.03 && $_y_err_abs+0 > 0.012) {
+     # exp 0.82 ≈ stronger pure-Y step without full-linear first-move thrash
+     $_exp_use=0.82;
+     $_exp_use=$damp_exp if($_exp_use+0 < $damp_exp+0);
+    }
+   }
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$_exp_use)-1.0)*$move_scaling*$anchor_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$_exp_use)-1.0)*$move_scaling*$anchor_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$_exp_use)-1.0)*$move_scaling*$anchor_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
@@ -16408,10 +16436,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    log_line("SDR26 1D DPG greyscale: build returned wrong length at ".$label);
    last;
   }
-  log_line(sprintf("SDR26 1D DPG greyscale: %s i%d dpg_idx=%d gains_scaled R=%.4f G=%.4f B=%.4f Y=%.6f target_Y=%.6f",
-   $label,$i,$idx+0,$sr+0,$sg+0,$sb+0,
-   (defined(luminance($reading))?luminance($reading)+0:0),
-   (defined($tl)?$tl+0:0))) if($i <= 2 || (defined($de) && $de+0 > $target_de+0));
+  {
+   my $_y_log=(defined(luminance($reading))?luminance($reading)+0:0);
+   my $_tl_log=(defined($tl)?$tl+0:0);
+   my $_before=(ref($current_dpg_ref) eq "ARRAY" && defined($idx)) ? int($current_dpg_ref->[$idx]+0) : -1;
+   my $_after=(ref($new_dpg) eq "ARRAY" && defined($idx)) ? int($new_dpg->[$idx]+0) : -1;
+   if($i <= 2 || (defined($de) && $de+0 > $target_de+0) || ($_before >= 0 && $_after >= 0 && $_before != $_after)) {
+    log_line(sprintf("SDR26 1D DPG greyscale: %s i%d dpg_idx=%d gains_scaled R=%.4f G=%.4f B=%.4f Y=%.6f target_Y=%.6f dpg_at_idx %d->%d",
+     $label,$i,$idx+0,$sr+0,$sg+0,$sb+0,$_y_log,$_tl_log,$_before,$_after));
+   }
+  }
   @{$current_dpg_ref}=@{$new_dpg};
   if(ref($state) eq "HASH") {
    $state->{"sdr_1d_dpg_data"}=$current_dpg_ref;
