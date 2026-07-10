@@ -10251,7 +10251,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      </div>
     </div>
     <div id="meterToneMapPanel" style="display:none;margin:0 0 10px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15;max-width:520px">
-     <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">HDR tone-map upload uses a single 100% white measurement as peak luminance, then writes the tone map to the TV (same path as Full AutoCal).</div>
+     <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">HDR tone-map upload uses a short 100% white flash for peak luminance (white is turned off before upload) so the panel does not heat-soak, then writes the tone map to the TV (same path as Full AutoCal).</div>
      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px">
       <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">100% white luminance</div>
       <div style="font-size:1.35rem;font-weight:700;color:var(--text)"><span id="meterToneMapLiveY">--</span> <span style="font-size:.78rem;font-weight:500;color:var(--text2)">cd/m&sup2;</span></div>
@@ -22446,7 +22446,7 @@ function meterUpdateReadButtons(){
     continuousBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(stopBtn){
-    const showStop=meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||continuousUiActive||meterSeriesAwaitingReady||meterManualPromptAwaiting;
+    const showStop=meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||!!window._meterToneMapBusy||continuousUiActive||meterSeriesAwaitingReady||meterManualPromptAwaiting;
   stopBtn.style.display=showStop?'':'none';
   stopBtn.disabled=!showStop;
  }
@@ -22747,8 +22747,9 @@ function meterSelectAutoCalToneMap(){
  meterSeriesTab='autocal';
  meterSetAutoCalSeriesChoice('tone-map');
  meterUpdateSeriesTabUi();
- // Minimal series context: single 100% white patch for pattern/meter alignment.
- // Does not start greyscale or color series measurement.
+ // Minimal series context: single 100% white step for the measure path.
+ // Do NOT park full-field white on the panel here — that over-heats OLEDs
+ // before Measure & Upload and inflates peak nits. White only flashes during measure.
  meterActiveSeriesType='greyscale';
  meterActiveSeriesPoints=1;
  try{
@@ -22759,9 +22760,12 @@ function meterSelectAutoCalToneMap(){
    :{ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:235,g:235,b:235,input_max:255,name:'100% White',series_mode:'tone-map'};
   meterSeriesSteps=[white];
   meterCurrentPatchStep=white;
-  if(typeof meterDisplayPatch==='function') meterDisplayPatch(white,{fresh:false,allowAfterStop:true}).catch(()=>{});
   if(typeof meterBuildPatchThumbs==='function') meterBuildPatchThumbs([white],new Set(),'100% White');
+  // Idle/stop so the panel is not sitting on 100% white while the operator waits.
+  fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(()=>{});
  }catch(e){}
+ meterToneMapSetLiveY(null);
+ meterToneMapSetStatus('Idle — press Measure & Upload for a short white flash + peak read, then tone-map upload.');
  meterUpdateToneMapPanelVisibility();
  meterUpdateReadButtons();
  if(typeof meterUpdateSeriesTabUi==='function') meterUpdateSeriesTabUi();
@@ -22793,7 +22797,47 @@ function meterToneMapSetStatus(text,isError){
  el.style.color=isError?'var(--red,#f66)':'var(--text2)';
 }
 
-// Standalone HDR tone-map: measure 100% white peak, then upload via the same
+// Fast peak-only white measure for standalone Tone Map series.
+// Keeps full-field white on for a short settle + one read, then stops immediately
+// so OLED ABL/warm-up does not inflate the peak uploaded to the tone map.
+async function meterToneMapMeasurePeakFast(){
+ const hdr100=(typeof meterLgHdrHundredPercentCodeForRange==='function')?meterLgHdrHundredPercentCodeForRange():1023;
+ const step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:hdr100,g:hdr100,b:hdr100,input_max:1023,name:'100% White',series_mode:'tone-map'};
+ let peak=null;
+ try{
+  if(typeof meterDisplayPatch==='function') await meterDisplayPatch(step,{fresh:false,allowAfterStop:true});
+  // Short settle only — long white dwell (multi-second meter delay + low-light
+  // averaging) heats WRGB OLEDs and raises the peak used for tone-map upload.
+  await new Promise(r=>setTimeout(r,250));
+  const dtype=(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'';
+  const rr=(typeof getMeterRefreshRate==='function')?getMeterRefreshRate():'';
+  // Cap integration delay; white peak does not need multi-second meter delay.
+  const userDelay=(typeof meterDelayMs==='function')?Number(meterDelayMs())||0:0;
+  const delay=Math.min(Math.max(userDelay,0),350);
+  const patternSignalRange=(typeof meterMeasurementPatchSignalRange==='function')?meterMeasurementPatchSignalRange():null;
+  const readContext={dtype,rr,delay,patternSignalRange,requireDeviceReady:false};
+  if(typeof meterStartSingleRead==='function'&&typeof meterBuildManualReadPayload==='function'){
+   const payload=meterBuildManualReadPayload(step,readContext);
+   // Force single-shot high-luma read (no low-light multi-average).
+   if(payload&&payload.low_light) delete payload.low_light;
+   payload.delay_ms=delay;
+   const result=await meterStartSingleRead(payload);
+   if(typeof meterReadResultOk==='function'&&meterReadResultOk(result)&&result.readings&&result.readings[0]){
+    peak=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(result.readings[0]):(result.readings[0].luminance||result.readings[0].Y);
+   }
+  }
+ }catch(e){
+  peak=null;
+ }finally{
+  // Always kill white ASAP — never leave peak white up during the LG upload.
+  try{
+   await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+  }catch(e2){}
+ }
+ return peak;
+}
+
+// Standalone HDR tone-map: quick peak measure, then upload via the same
 // /api/lg/hdr-tone-map/upload path used by Full AutoCal / greyscale wizard.
 async function meterStartToneMapMeasureUpload(){
  if(window._meterToneMapBusy) return;
@@ -22815,14 +22859,11 @@ async function meterStartToneMapMeasureUpload(){
  try{ meterUpdateReadButtons(); }catch(e){}
  const btn=document.getElementById('meterToneMapMeasureUploadBtn');
  if(btn){ btn.disabled=true; btn.textContent='Measuring...'; }
- meterToneMapSetStatus('Displaying 100% white and measuring peak luminance...');
+ meterToneMapSetStatus('Short white flash — measuring peak (then off immediately)...');
  meterToneMapSetLiveY(null);
  let peak=null;
  try{
-  peak=await meterAutoCalMeasureHdrPeakLuminance(
-   (typeof meterLgPictureModeValue==='function')?meterLgPictureModeValue():'',
-   'hdr10'
-  );
+  peak=await meterToneMapMeasurePeakFast();
  }catch(e){
   peak=null;
  }
@@ -22835,7 +22876,7 @@ async function meterStartToneMapMeasureUpload(){
   return;
  }
  meterToneMapSetLiveY(peak);
- meterToneMapSetStatus('Measured '+peak.toFixed(1)+' cd/m\u00B2 — uploading HDR tone map...');
+ meterToneMapSetStatus('Measured '+peak.toFixed(1)+' cd/m\u00B2 (white off) — uploading HDR tone map...');
  if(btn) btn.textContent='Uploading...';
  const pictureMode=(typeof meterLgPictureModeValue==='function')?meterLgPictureModeValue():'';
  // Optional DPG from last greyscale/full-autocal state (same session binding as Full AutoCal).
@@ -26969,26 +27010,27 @@ async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
  try{
   if(typeof meterDisplayPatch==='function') await meterDisplayPatch(step,{fresh:false,allowAfterStop:true});
  }catch(e){}
- // Brief settle so the panel luma and meter integration window agree.
- // 1s settle on the white patch before the peak nits read for the HDR
- // tone-map upload.
- await new Promise(r=>setTimeout(r,1000));
+ // Keep white brief: long dwell heats OLEDs and inflates tone-map peak nits.
+ await new Promise(r=>setTimeout(r,300));
  const dtype=(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'';
  const rr=(typeof getMeterRefreshRate==='function')?getMeterRefreshRate():'';
- const delay=(typeof meterDelayMs==='function')?meterDelayMs():0;
+ const userDelay=(typeof meterDelayMs==='function')?Number(meterDelayMs())||0:0;
+ const delay=Math.min(Math.max(userDelay,0),400);
  const patternSignalRange=(typeof meterMeasurementPatchSignalRange==='function')?meterMeasurementPatchSignalRange():null;
  const readContext={dtype,rr,delay,patternSignalRange,requireDeviceReady:false};
  let peak=null;
  try{
   if(typeof meterStartSingleRead==='function'&&typeof meterBuildManualReadPayload==='function'&&typeof meterReadResultOk==='function'&&typeof meterReadingLuminanceNits==='function'){
-   const result=await meterStartSingleRead(meterBuildManualReadPayload(step,readContext));
+   const payload=meterBuildManualReadPayload(step,readContext);
+   if(payload&&payload.low_light) delete payload.low_light;
+   payload.delay_ms=delay;
+   const result=await meterStartSingleRead(payload);
    if(meterReadResultOk(result)&&result.readings&&result.readings[0]){
     peak=meterReadingLuminanceNits(result.readings[0]);
    }
   }
  }catch(e){ peak=null; }
- // Always return to an idle pattern so we don't leave a 100% white stuck
- // on the panel while the operator makes the upload decision.
+ // Always return to idle so 100% white is not left up during upload/prompt.
  try{
   await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
  }catch(e){}
