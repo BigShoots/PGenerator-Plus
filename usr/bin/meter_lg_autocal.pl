@@ -1126,6 +1126,39 @@ sub lg_autocal_sdr26_dpg_full_index_for_ire {
  return $idx;
 }
 
+# Full-range DPG SAMPLE index for an IRE stimulus. Hardware-probed
+# (2026-07-10, LG C1): in Full range the panel first maps the wire code to
+# its Limited-equivalent code (64 + c*876/1023) and then samples the 1D DPG
+# on the SAME empirical legal-expanded ladder as Limited mode. A x0.5 band
+# at idx 747 crushed a Full 80% patch (Y ratio 0.224) while bands at the
+# wire code 816 and at 700 did nothing; Full 100% samples at ~935 and idx
+# 936..1023 is unreachable from Full-range signals.
+# NOTE: lg_autocal_sdr26_dpg_full_index_for_ire() stays as-is for WIRE codes.
+sub lg_autocal_sdr26_dpg_full_sample_index_for_ire {
+ my ($ire,$max_idx)= @_;
+ $max_idx=1023 if(!defined($max_idx) || $max_idx+0 <= 0);
+ return 0 if(!defined($ire) || $ire+0 <= 0);
+ # Wire code actually emitted by the Full path (must match the pattern code).
+ my $full_code=lg_autocal_sdr26_dpg_full_index_for_ire($ire,$max_idx);
+ # Limited-equivalent 10-bit code the panel derives internally.
+ my $lim_code=64.0 + ($full_code+0)*876.0/1023.0;
+ # Empirical Limited ladder (10-bit legal codes -> DPG indexes), identical to
+ # the Limited-mode @sdr26_codes/@sdr26_indexes tables.
+ my @lc=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
+ my @li=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+ return $li[0] if($lim_code <= $lc[0]);
+ return $li[-1] if($lim_code >= $lc[-1]);
+ for(my $k=0;$k< @lc-1;$k++) {
+  if($lim_code >= $lc[$k] && $lim_code <= $lc[$k+1]) {
+   my $f=($lim_code-$lc[$k])/($lc[$k+1]-$lc[$k]);
+   my $idx=int($li[$k]+($li[$k+1]-$li[$k])*$f+0.5);
+   $idx=0 if($idx<0); $idx=int($max_idx) if($idx>$max_idx);
+   return $idx;
+  }
+ }
+ return int($max_idx);
+}
+
 # SDR26 DPG peak anchor: chroma-only, no luminance target; measured Y becomes
 # white_ref for body anchors. Limited peak is 109 legal; Full peak is 100.
 # (Limited DPG labels never include 100 -- that slot is Full-only.)
@@ -16690,18 +16723,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  } else {
   # Full: body 2.3..95 + peak 100. No 99/105/109.
   # Flow after peak: 50 → 25 → 75 → descend 95..2.3 (see body_order).
-  # 10-bit Full: wire code == DPG sample index == 8bit<<2 (not *1023).
-  # 8-bit Full: wire code is 0..255; DPG index is still 8bit<<2 in 0..1023.
+  # 10-bit Full: wire codes stay 8bit<<2 (100% -> peak code), but DPG SAMPLE
+  # indexes use the hardware-probed empirical Limited ladder because the
+  # panel range-normalises before the DPG (Full 80% code 816 samples ~idx
+  # 746; Full 100% samples ~idx 935; idx 936..1023 unreachable in Full).
+  # 8-bit Full: wire code is 0..255; DPG sample index still on the
+  # empirical ladder via the Full->Limited code conversion.
   @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
   $sdr26_peak_ire=100.0;
   for(my $k=0;$k<@sdr26_labels;$k++) {
    my $ire=$sdr26_labels[$k]+0;
-   my $idx=lg_autocal_sdr26_dpg_full_index_for_ire($ire,$sdr26_dpg_max_idx);
+   my $idx=lg_autocal_sdr26_dpg_full_sample_index_for_ire($ire,$sdr26_dpg_max_idx);
    push @sdr26_indexes,$idx;
    my $code;
    if($sdr26_bits >= 10) {
-    # Match DPG sample so pattern and solver share one index.
-    $code=$idx;
+    # Wire code: same 8bit<<2 map as the DPG index used to use (100% -> peak).
+    $code=lg_autocal_sdr26_dpg_full_index_for_ire($ire,$sdr26_max);
    } else {
     $code=int($ire/100*$sdr26_max+0.5);
     $code=$sdr26_max if($code > $sdr26_max);
@@ -16724,7 +16761,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   $sdr26_bits,
   $sdr26_input_max+0,
   $sdr26_indexes[0]+0,
-  lg_autocal_sdr26_dpg_full_index_for_ire(2.3,1023)+0));
+  lg_autocal_sdr26_dpg_full_sample_index_for_ire(2.3,1023)+0));
  my $idx_for_sdr=sub {
   my ($step)=@_;
   return undef if(ref($step) ne "HASH");
