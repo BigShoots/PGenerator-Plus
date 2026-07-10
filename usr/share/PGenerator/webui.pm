@@ -12072,8 +12072,16 @@ function syncModeSelectValue(){
  const sel=document.getElementById('mode_idx');
  if(!sel||!sel.options.length)return;
  let target=(config&&config.mode_idx!=null&&config.mode_idx!=='')?String(config.mode_idx):'';
- const liveTarget=(!isSettingsFieldActive()&&!hasUnsavedSettings())?chooseModeIdxForInfo():'';
- if(liveTarget)target=liveTarget;
+ // Only fall back to an info-derived match when the configured mode_idx is
+ // absent/invalid. When mode_idx is a real option, keep it: the reported
+ // resolution's refresh is rounded to an integer (/api/info), so re-deriving
+ // from it can silently flip a 119.88 selection to the 120.00 option next to
+ // it (both round to "120Hz", and the nearest-match picks 120.00). Honoring
+ // the explicit selection avoids that desync.
+ if(!target||!modeOptionExists(sel,target)){
+  const liveTarget=(!isSettingsFieldActive()&&!hasUnsavedSettings())?chooseModeIdxForInfo():'';
+  if(liveTarget)target=liveTarget;
+ }
  if(target&&!modeOptionExists(sel,target))target='';
  if(!target)target=chooseDefaultModeIdx()||chooseFallbackModeIdx();
  if(target)setModeSelectValue(target);
