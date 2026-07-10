@@ -16360,35 +16360,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   # Mid-body: classic EOTF damp only (linear under/over path removed —
-   # it caused one brutal first move then thrash-reverts on 50/25/75).
-   my $_y_meas_body=luminance($reading);
+   # Mid-body: classic EOTF damp only. Do NOT stack pure-luma extras on
+   # top — that rang 25% Y 7.57→5.95→7.08→6.18 for 9+ iters (slow). The
+   # 80% "Y stuck after chroma ok" case is handled by luma-progress keep
+   # in the revert gate, not by a second Y gain stage.
    $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-   # Pure-luma assist: when the three channel gains are nearly equal
-   # (chroma already close) but Y is still >1.5% off target, classic damp
-   # alone under-moves (0.98^0.45≈0.99) and 80% burned the budget with Y
-   # stuck ~2% hot. Scale all channels by a moderate (tl/Y)^(1/γ) factor.
-   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0
-      && $_anchor_ire+0 >= $low_ire_threshold+0 && !$_is_legal_peak) {
-    my $_gmax=$rg; $_gmax=$gg if($gg+0 > $_gmax+0); $_gmax=$bg if($bg+0 > $_gmax+0);
-    my $_gmin=$rg; $_gmin=$gg if($gg+0 < $_gmin+0); $_gmin=$bg if($bg+0 < $_gmin+0);
-    my $_y_ratio=($tl+0)/($_y_meas_body+0);
-    my $_y_err_abs=abs($_y_ratio-1.0);
-    if(($_gmax-$_gmin) < 0.025 && $_y_err_abs+0 > 0.015) {
-     my $_g_eff=(defined($gamma_effective) && $gamma_effective+0 > 0.5) ? ($gamma_effective+0) : 2.2;
-     my $_extra=$_y_ratio ** (1.0/$_g_eff);
-     # 55% of the remaining pure-Y correction — enough to move 80% without
-     # reintroducing the brutal first-move overshoot of full linear damp.
-     $_extra=1.0+(($_extra-1.0)*0.55);
-     $_extra=0.85 if($_extra+0 < 0.85);
-     $_extra=1.15 if($_extra+0 > 1.15);
-     $sr*=$_extra; $sg*=$_extra; $sb*=$_extra;
-     log_line(sprintf("SDR26 1D DPG greyscale: %s pure-luma assist extra=%.4f Y=%.4f target=%.4f (channel span %.4f)",
-      $label,$_extra+0,$_y_meas_body+0,$tl+0,($_gmax-$_gmin)+0)) if($i <= 3 || $_y_err_abs+0 > 0.03);
-    }
-   }
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
