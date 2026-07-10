@@ -16432,65 +16432,6 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    log_line("SDR26 1D DPG greyscale: build returned wrong length at ".$label);
    last;
   }
-  # Full-range body only: force per-iter gains onto a WIDE local sample
-  # window. Field proof (Full 80%): gains correctly ~0.98, dpg_idx 816
-  # fell 25324→20598 (~19%) while Y stuck ~107 (target ~104). Same run:
-  # 50/75/85 tracked Y; Limited is fine. So the gain path is NOT broken.
-  #
-  # Dense Full pins (every ~50 codes: 75@764, 80@816, 85@868) make a
-  # single-knot Akima edit a narrow notch. Early anchors (50 after peak)
-  # change a wide curve region and work. If the panel/LUT path smooths
-  # or the true sample sits a few codes off (8bit<<2 vs *1023 is 2–4
-  # codes), a 1-sample edit is invisible. Stamp a flat gain window sized
-  # from the distance to neighboring done anchors (min ±8, max ±20) so
-  # the edit is wide enough to move measured Y. Limited unchanged.
-  if(!lg_autocal_sdr26_dpg_is_limited_range($config)
-     && !$_is_legal_peak
-     && defined($idx) && $idx+0 >= 0 && $idx+0 <= 1023) {
-   my $_c0=int($idx+0);
-   my $_lo=0;
-   my $_hi=1023;
-   if(ref($done_ref) eq "ARRAY") {
-    for my $_a (@{$done_ref}) {
-     next unless(ref($_a) eq "HASH" && defined($_a->{"idx"}));
-     my $_ai=int($_a->{"idx"}+0);
-     next if($_ai == $_c0);
-     $_lo=$_ai if($_ai < $_c0 && $_ai > $_lo);
-     $_hi=$_ai if($_ai > $_c0 && $_ai < $_hi);
-    }
-   }
-   # Also include linear*1023 candidate as a second center when it differs.
-   my $_lin=int(($_anchor_ire+0)/100.0*1023.0 + 0.5);
-   $_lin=0 if($_lin < 0); $_lin=1023 if($_lin > 1023);
-   my $_span=$_hi - $_lo;
-   my $_half=int($_span/4);
-   $_half=8 if($_half < 8);
-   $_half=20 if($_half > 20);
-   my %_stamp;
-   for my $_c ($_c0, $_lin) {
-    for(my $_j=$_c-$_half; $_j<=$_c+$_half; $_j++) {
-     next if($_j < 0 || $_j > 1023);
-     # Do not stomp neighboring done anchors' exact samples.
-     next if($_j == $_lo || $_j == $_hi);
-     $_stamp{$_j}=1;
-    }
-   }
-   my @_ch_g=($sr+0,$sg+0,$sb+0);
-   for my $_j (keys %_stamp) {
-    for my $_ch (0..2) {
-     my $_p=$_ch*1024 + $_j;
-     my $_cur=(defined($current_dpg_ref->[$_p]) ? ($current_dpg_ref->[$_p]+0) : 0);
-     my $_v=int($_cur * $_ch_g[$_ch] + 0.5);
-     $_v=0 if($_v < 0);
-     $_v=32767 if($_v > 32767);
-     $new_dpg->[$_p]=$_v;
-    }
-   }
-   if($i <= 2 || (defined($de) && $de+0 > $target_de+0)) {
-    log_line(sprintf("SDR26 1D DPG greyscale: %s i%d full-body gain window idx=%d lin=%d neigh=[%d,%d] half=%d nstamp=%d gains R=%.4f G=%.4f B=%.4f",
-     $label,$i,$_c0,$_lin,$_lo,$_hi,$_half,scalar(keys %_stamp),$_ch_g[0],$_ch_g[1],$_ch_g[2]));
-   }
-  }
   {
    my $_y_log=(defined(luminance($reading))?luminance($reading)+0:0);
    my $_tl_log=(defined($tl)?$tl+0:0);
