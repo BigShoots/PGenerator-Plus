@@ -21121,7 +21121,19 @@ my $run_id=(ref($config) eq "HASH" && defined($config->{"full_autocal_run_id"}) 
  : ("lg-grey-".$$."-".int(time()*1000));
 my $started_at=int(time()*1000);
 
+# Clear stale stop before any cancelled() check. Sticky /tmp + root-owned
+# leftovers (manual touch, prior root kill path) make plain unlink fail when
+# the worker is not root; without a force remove the run dies on the first
+# picture-settings read with status=cancelled and an empty charts session.
 unlink($stop_file);
+if(defined($stop_file) && $stop_file ne "" && -e $stop_file) {
+ system("rm -f ".quotemeta($stop_file)." 2>/dev/null");
+ system("sudo rm -f ".quotemeta($stop_file)." 2>/dev/null") if(-e $stop_file);
+ unlink($stop_file);
+ if(-e $stop_file) {
+  log_line("WARNING: could not remove stop file '$stop_file' (stale cancel will abort this run)");
+ }
+}
 my $state={
  run_id=>$run_id,
  full_autocal_run_id=>$full_workflow ? $run_id : undef,

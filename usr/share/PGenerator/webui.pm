@@ -4107,7 +4107,16 @@ sub webui_meter_lg_autocal_start (@) {
  }
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
  &webui_meter_stop();
+ # Drop any stale stop file before launch. A root-owned leftover in sticky
+ # /tmp cannot be unlinked by the pgenerator webui user, and the worker
+ # treats -f stop as cancelled -- wizard completes, charts open, cal dies
+ # instantly with "Auto Cal stopped". Force-remove via sudo when plain
+ # unlink leaves the file behind.
  unlink($_meter_lg_autocal_stop_file);
+ if(-e $_meter_lg_autocal_stop_file) {
+  system("sudo rm -f ".quotemeta($_meter_lg_autocal_stop_file)." 2>/dev/null");
+  unlink($_meter_lg_autocal_stop_file);
+ }
  # Inject precomputed pattern-insertion codes (mode-correct) so the worker
  # sends the same code the greyscale ladder would emit for that stimulus.
  # The autocal body does not carry every flag the series closure has, so
@@ -4481,6 +4490,10 @@ sub webui_meter_lg_3d_autocal_start (@) {
  system("mkdir -p /var/lib/PGenerator/lg/luts 2>/dev/null");
  system("chmod 0777 /var/lib/PGenerator/lg /var/lib/PGenerator/lg/luts 2>/dev/null");
  unlink($_meter_lg_3d_autocal_stop_file);
+ if(-e $_meter_lg_3d_autocal_stop_file) {
+  system("sudo rm -f ".quotemeta($_meter_lg_3d_autocal_stop_file)." 2>/dev/null");
+  unlink($_meter_lg_3d_autocal_stop_file);
+ }
  # The 3D LUT body may or may not carry signal_mode (it usually inherits
  # from the active display state). Resolve signal_mode the same way the
  # server-side greyscale path does: body first, then the active conf's
