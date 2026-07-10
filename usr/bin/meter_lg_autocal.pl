@@ -1107,6 +1107,24 @@ sub lg_autocal_sdr26_dpg_full_index_for_ire {
  return $idx;
 }
 
+# SDR26 DPG peak anchor: chroma-only, no luminance target; measured Y becomes
+# white_ref for body anchors. Limited peak is 109 legal; Full peak is 100.
+# (Limited DPG labels never include 100 -- that slot is Full-only.)
+sub lg_autocal_sdr26_dpg_is_peak_ire {
+ my ($ire)=@_;
+ return 0 if(!defined($ire));
+ $ire=$ire+0;
+ return 1 if(abs($ire-109.0) < 0.05);
+ return 1 if(abs($ire-100.0) < 0.05);
+ return 0;
+}
+
+sub lg_autocal_sdr26_dpg_is_peak_step {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
+ return lg_autocal_sdr26_dpg_is_peak_ire($step->{"ire"});
+}
+
 sub target_luminance_for_step {
 	 my ($white_y,$step,$target_gamma,$signal_mode,$black_y)=@_;
 	 # Apply calibration-card Target White / Target Black overrides so the
@@ -2448,17 +2466,14 @@ sub autocal_delta_target_luminance_for_step {
 sub autocal_delta_e_for_step {
 	 my ($config,$reading,$step,$white_y,$target_x,$target_y,$target_luminance)=@_;
 	 my $delta_target_luminance=autocal_delta_target_luminance_for_step($reading,$step,$target_luminance);
-	 # SDR26 109% legal peak: chroma-only dE (no luminance term). The peak
-	 # targets its own measured Y so the dE ITP's dI (intensity) is zero by
-	 # construction -- the reduce-to-lowest calibration is about pulling
-	 # the higher-RGB channels down to the lowest, and a luminance term in
-	 # the dE would be a tautology that masks chroma progress. All other
-	 # anchors use the full dE ITP (with luminance). The "chroma only at
-	 # peak, with luminance everywhere else" rule is the user's spec.
+	 # SDR26 peak (Limited 109 legal / Full 100): chroma-only dE (no
+	 # luminance term). Peak targets its own measured Y so dI is zero by
+	 # construction -- reduce-to-lowest only balances RGB; a luminance term
+	 # would be a tautology that masks chroma progress. Body anchors use
+	 # full dE ITP (with luminance). Same path for Full 100 as Limited 109.
 	 if(autocal_delta_e_formula($config) eq "deitp"
 	  && ref($step) eq "HASH"
-	  && defined($step->{"ire"})
-	  && abs(($step->{"ire"}+0)-109.0) < 0.05
+	  && lg_autocal_sdr26_dpg_is_peak_step($step)
 	  && (lc($step->{"ddc_layout"}||"") eq "sdr26")) {
 	  return delta_e_itp_chroma_only($reading,$target_x,$target_y,$delta_target_luminance);
 	 }
@@ -15681,7 +15696,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # design (which held the lowest channel at 1.0 instead of using the
   # mean, and let the held channel flip between iters).
   my $_legal_peak_r_ref=undef;
-  my $_is_legal_peak_anchor=(abs($_anchor_ire-109.0) < 0.05) ? 1 : 0;
+  # Peak = Limited 109 legal OR Full 100. Same damped warmup for both.
+  my $_is_legal_peak_anchor=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
 
  # Best-so-far state for revert (low IRE only, same as HDR).
   my $best_de=undef;
@@ -15692,10 +15708,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $revert_budget=defined($config->{"lg_autocal_sdr26_dpg_revert_budget"}) ? int($config->{"lg_autocal_sdr26_dpg_revert_budget"}) : 4;
   $revert_budget=2 if($revert_budget < 2);
   $revert_budget=10 if($revert_budget > 10);
-  # Initial move_scaling: 0.5 for the 109 legal peak (damped warmup so the
-  # first iter doesn't overshoot), 1.0 for body anchors (their target Y is
-  # computed against a stable white_ref so the natural DPG response is
-  # already monotonic and full-strength lands within meter noise).
+  # Initial move_scaling: 0.5 for the peak (Limited 109 / Full 100 -- damped
+  # warmup so the first iter doesn't overshoot), 1.0 for body anchors (their
+  # target Y is computed against a stable white_ref so the natural DPG
+  # response is already monotonic and full-strength lands within meter noise).
   #
   # The previous "move_scaling=1.0 throughout for legal peak" design
   # overshot on the user's panel: iter 1 moved G/B to (1.0, 0.907, 0.624)
@@ -15800,47 +15816,47 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    last;
   }
   $last_reading=$reading;
-  # 109% (legal peak) is chroma-only: it targets its OWN measured Y so
-  # the dE has zero luminance component. We are only pulling RGB into
-  # balance at the achievable peak. The measured Y becomes the
-  # $white_ref the lower body uses for its 2.2 target-Y curve.
-  # 99 and 105 (headroom body) and the lower body use the curve-derived
-  # target Y from $white_ref (the calibrated 109 peak).
-  my $_is_legal_peak=(autocal_step_is_white($rs) || abs(($_anchor_ire+0)-109.0) < 0.05) ? 1 : 0;
+  # Peak is chroma-only (Limited 109 legal / Full 100): targets OWN measured Y
+  # so dE has zero luminance component -- only pull RGB into balance. Measured
+  # Y becomes $white_ref for body anchors' gamma target-Y curve. Limited
+  # headroom body (99/105) and lower body use curve-derived Y from that peak.
+  my $_is_legal_peak=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
   # Use the operator's selected Target Gamma (BT.1886 default) so the SDR26
   # 1D-DPG autocal targets the same curve as the post-cal verification pass
-  # and the user's saved LUT files. The legal-peak (109%) path uses its own
-  # measured Y and bypasses the curve; only body anchors go through here.
+  # and the user's saved LUT files. Peak path uses its own measured Y and
+  # bypasses the curve; only body anchors go through here.
   my $_sdr26_tg=defined($config->{"target_gamma"}) ? $config->{"target_gamma"} : "bt1886";
   my $tl=$_is_legal_peak
    ? luminance($reading)
    : lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$black_y,$_sdr26_tg);
   $tl=$white_ref if(!(defined($tl) && $tl+0 > 0));
-  # 109% normalises to itself (autocal_white_y = its own Y), 99/105 and
-  # lower normalise to the calibrated peak white_ref. Mirrors the HDR
-  # pattern (line ~13976-13980 in this file).
-  log_line("SDR26 1D DPG greyscale: legal_peak_check anchor_ire=".sprintf("%.4f",$_anchor_ire+0)." is_legal_peak=".($_is_legal_peak?1:0)." target_Yn_will_equal_measured=".($_is_legal_peak?1:0)." tl_source=".($_is_legal_peak?"measured_luminance":"2.2_curve_via_white_ref")) if($_is_legal_peak);
+  # Peak normalises to itself (autocal_white_y = its own Y); body normalises
+  # to the calibrated peak white_ref. Mirrors the HDR pattern.
+  log_line("SDR26 1D DPG greyscale: legal_peak_check anchor_ire=".sprintf("%.4f",$_anchor_ire+0)." is_legal_peak=".($_is_legal_peak?1:0)." target_Yn_will_equal_measured=".($_is_legal_peak?1:0)." tl_source=".($_is_legal_peak?"measured_luminance":"curve_via_white_ref")." chroma_only=".($_is_legal_peak?1:0)) if($_is_legal_peak);
   annotate_reading_target($reading,($_is_legal_peak ? $tl : $white_ref),$tl,$target_x,$target_y);
-  # Tag the 109% legal peak with the same flags the SDR/HDR autocal workers
-  # set on the 100% legal peak (autocal_legal_white_anchor, autocal_white_
-  # reference, autocal_reference_only, autocal_read_only, ddc_target_ire).
-  # The webui's chart, peak-reference detection, and tooltips all key off
-  # these flags -- without them, the 109 reading is treated as a generic
-  # high-luminance step and the chart shows a gamma-derived "Target Y"
-  # line that drifts as the panel responds to each move.
+  # Tag the peak reading so charts/tooltips treat it as the white reference
+  # (no gamma-derived target Y line that drifts with each move). Limited 109
+  # keeps legal-white metadata; Full 100 is true peak (no ddc_target_ire 99/108).
   if($_is_legal_peak) {
-   $reading->{"autocal_legal_white_anchor"}=JSON::PP::true;
    $reading->{"autocal_white_reference"}=JSON::PP::true;
-   $reading->{"autocal_reference_only"}=JSON::PP::true;
-   $reading->{"autocal_read_only"}=JSON::PP::true;
    $reading->{"autocal_slot_locked"}=JSON::PP::true;
    $reading->{"ddc_slot_locked"}=JSON::PP::true;
-   $reading->{"ddc_target_ire"}=108;
-   $reading->{"autocal_order_ire"}=108.0;
-   $reading->{"autocal_target_label"}="109% legal white";
    $reading->{"autocal_white_y"}=sprintf("%.6f",luminance($reading)+0) if(!defined($reading->{"autocal_white_y"}));
    $reading->{"lg_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
    $reading->{"series_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
+   if(abs(($_anchor_ire+0)-109.0) < 0.05) {
+    # Limited legal peak: reference-only chart hide + legal-white labels.
+    $reading->{"autocal_legal_white_anchor"}=JSON::PP::true;
+    $reading->{"autocal_reference_only"}=JSON::PP::true;
+    $reading->{"autocal_read_only"}=JSON::PP::true;
+    $reading->{"ddc_target_ire"}=108;
+    $reading->{"autocal_order_ire"}=108.0;
+    $reading->{"autocal_target_label"}="109% legal white";
+   } else {
+    # Full peak 100%: chroma-only, measured Y is the body white_ref. Charted.
+    $reading->{"autocal_order_ire"}=100;
+    $reading->{"autocal_target_label"}="100% full peak";
+   }
   }
    $state->{"readings"}=merge_reading($state->{"readings"},$reading);
    $state->{"current_luminance"}=luminance($reading);
@@ -16118,7 +16134,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # Floor: 0.5 at low IRE, 0.8 for body, 0.6 for the 109% peak (less
   # aggressive than body's 0.8 because the peak fn only reduces, never
   # boosts).
-  my $is_white_peak=(autocal_step_is_white($rs) || abs($_anchor_ire-109.0) < 0.05);
+  # Peak path (reduce-to-lowest / R-hold): Limited 109 and Full 100.
+  my $is_white_peak=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
   my $is_white_body=!$is_white_peak && (autocal_step_is_fast_headroom($rs) || $_anchor_ire >= 99.0);
   my $is_white=$is_white_peak; # back-compat alias for floor / overshoot-guard paths below
   my ($rg,$gg,$bg);
@@ -16366,7 +16383,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    my ($bok,$bmsg)=$_differs ? $upload_dpg->($current_dpg_ref) : (1,undef);
    # Recompute the anchor's $tl the same way the iter loop does (legal-peak
    # uses its own measured Y; body uses the 2.2 curve via white_ref + black_y).
-   my $_is_legal_peak_restore=(autocal_step_is_white($rs) || abs(($_anchor_ire+0)-109.0) < 0.05) ? 1 : 0;
+   my $_is_legal_peak_restore=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
    my $_sdr26_tg_restore=defined($config->{"target_gamma"}) ? $config->{"target_gamma"} : "bt1886";
    my $_tl_restore=$_is_legal_peak_restore
     ? luminance($last_reading)
