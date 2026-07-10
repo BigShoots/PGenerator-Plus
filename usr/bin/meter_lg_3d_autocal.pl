@@ -361,6 +361,8 @@ sub patch_step {
   g => $rgb{g},
   b => $rgb{b},
   input_max => $input_max,
+  pattern_signal_range => "$signal_range",
+  signal_range => "$signal_range",
  };
 }
 
@@ -2948,9 +2950,29 @@ my ($signal_mode,$signal_mode_error)=sanitize_signal_mode($config->{"requested_s
 $config->{"signal_mode"}=$signal_mode;
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
 $config->{"target_gamma"}=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
-$config->{"signal_range"}=$config->{"signal_range"}||"1";
-$config->{"pattern_signal_range"}=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
-$config->{"transport_signal_range"}=$config->{"transport_signal_range"}||$config->{"signal_range"}||"1";
+# Quant range: 1=Limited, 2=Full. Prefer explicit body fields; never silently
+# invent limited when the start path already aligned to conf. Empty still
+# defaults to limited only as a last-resort legacy fallback (pre-fix callers).
+sub _normalize_signal_range_field {
+ my ($v)=@_;
+ return "" if(!defined($v));
+ $v="$v";
+ return $v if($v eq "1" || $v eq "2");
+ return "1" if(lc($v) eq "limited" || lc($v) eq "legal");
+ return "2" if(lc($v) eq "full");
+ return "";
+}
+{
+ my $sr=_normalize_signal_range_field($config->{"signal_range"});
+ my $psr=_normalize_signal_range_field($config->{"pattern_signal_range"});
+ my $tsr=_normalize_signal_range_field($config->{"transport_signal_range"});
+ # Prefer transport (HDMI out) then pattern then signal; last resort limited.
+ my $eff=$tsr || $psr || $sr || "1";
+ $config->{"signal_range"}=$eff;
+ $config->{"pattern_signal_range"}=$eff;
+ $config->{"transport_signal_range"}=$eff;
+ log_line("LG 3D LUT AutoCal quant range: signal_range=$eff (1=Limited 2=Full) method=$method signal_mode=".($config->{"signal_mode"}||""));
+}
 my @steps=($method eq "matrix") ? build_matrix_steps($config) : build_ramp_steps($config);
 my $started_at=int(time()*1000);
 

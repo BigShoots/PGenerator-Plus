@@ -4436,6 +4436,27 @@ sub webui_meter_lg_3d_autocal_start (@) {
   }
  }
  my $_ac3_max_bpc_promoted=&webui_meter_lg_autocal_ensure_10b($_ac3_signal_mode);
+ # Range alignment (SDR + HDR10): pattern codes MUST match the live HDMI
+ # quant range (rgb_quant_range). Defaulting missing/wrong body fields to
+ # limited ("1") made Full-range Full AutoCal profile 3D LUTs against 16-235
+ # / 64-940 codes while the renderer was Full 0-255 / 0-1023 -- the matrix
+ # then baked the wrong legal-range crush into the LUT. Same intent as
+ # greyscale autocal (webui_meter_lg_autocal_start): conf wins over stale
+ # body defaults (e.g. Full AutoCal patternSignalRange leftover "1").
+ {
+  &webui_reload_pgenerator_conf();
+  my $_ac3_eff=&webui_preferred_rgb_quant_range();
+  $_ac3_eff="2" if(!defined($_ac3_eff) || $_ac3_eff !~ /^[12]$/);
+  if($_ac3_eff =~ /^[12]$/) {
+   foreach my $key ("signal_range","pattern_signal_range","transport_signal_range") {
+    if($body =~ /"${key}"\s*:/) {
+     $body =~ s/"${key}"\s*:\s*"?\d+"?/"${key}":"$_ac3_eff"/;
+    } else {
+     $body =~ s/\}\s*\z/,"${key}":"$_ac3_eff"}/;
+    }
+   }
+  }
+ }
  # HDR20 post-cal shadow correction (terminal sub-phase of the 3D LUT
  # autocal). Append the config knobs from PGenerator.conf and the 5%
  # grey probe step so the 3D worker can run the correction loop after
@@ -27578,7 +27599,19 @@ function meterFullAutoCalMergeConfigFromGreyscaleStatus(status){
  const headroomY=Number(status.headroom_target_luminance);
  if(Number.isFinite(headroomY)&&headroomY>0) next.headroomY=headroomY;
  if(status.display_type) next.dtype=status.display_type;
- if(!next.patternSignalRange) next.patternSignalRange='1';
+ // Track the live HDMI quant range for later 3D LUT / polish stages.
+ // Never default to limited ("1") -- that made Full-range Full AutoCal
+ // hand a limited patternSignalRange into 3D LUT profiling.
+ if(status.pattern_signal_range==='1'||status.pattern_signal_range==='2'){
+  next.patternSignalRange=String(status.pattern_signal_range);
+ }else if(status.signal_range==='1'||status.signal_range==='2'){
+  next.patternSignalRange=String(status.signal_range);
+ }else{
+  const liveRange=(typeof config!=='undefined'&&config&&config.rgb_quant_range!=null&&String(config.rgb_quant_range)!=='')
+   ? String(config.rgb_quant_range)
+   : String(getVal('rgb_quant_range')||'');
+  if(liveRange==='1'||liveRange==='2') next.patternSignalRange=liveRange;
+ }
  meterFullAutoCalConfig=next;
  meterFullAutoCalSaveState();
 }
@@ -29947,7 +29980,12 @@ async function meterStartLg3dAutoCal(options){
  const rawTargetGamma=meterAutoCalTargetGammaValue();
  const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
  const targetGamut=signalMode==='hdr10'?meterHdrMetadataGamut():(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
- const transportRange=getVal('rgb_quant_range');
+ // Committed (applied) quant range — same source as meterMeasurementSignalContext.
+ // Dropdown-only getVal('rgb_quant_range') can lag Apply & Restart and wrongly
+ // profile a Full link with limited 16-235 / 64-940 codes (or the reverse).
+ const transportRange=(typeof config!=='undefined'&&config&&config.rgb_quant_range!=null&&String(config.rgb_quant_range)!=='')
+  ? String(config.rgb_quant_range)
+  : String(getVal('rgb_quant_range')||'2');
  // Pull the greyscale stage's measured peak luminance + DPG array out of
  // the cached firstStatus so the 3D worker can upload the HDR tone map
  // after its 3D LUT, all inside the same CAL_START session.
