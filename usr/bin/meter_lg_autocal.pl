@@ -16957,7 +16957,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   }
 
   my @done;
+ # Progress bar total: every ordered step including peak + mid-spine revisits
+ # + Full 100% recal. current_step was never written on the SDR path (only
+ # HDR sets it), so the WebUI sat at 0/N for the whole greyscale pass.
  my $total_steps=scalar(@ordered);
+ $total_steps=1 if($total_steps < 1);
+ if(ref($state) eq "HASH") {
+  $state->{"total_steps"}=$total_steps+0;
+  $state->{"current_step"}=0;
+  write_state($state);
+ }
  my $total_inner_iters=0;
  my $max_de_overall=0;
  my $exit_reason="converged";
@@ -16976,9 +16985,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    # Update the wizard's "current patch" indicator BEFORE entering the inner
    # loop. Peak is Limited 109% or Full 100%; body anchors are named
    # "SDR26 1D DPG sdr26_XX%" in the per-anchor loop below.
-   $state->{"current_name"}="SDR26 1D DPG sdr26_".sprintf("%g",$_white_ire)."%" if(ref($state) eq "HASH");
-   $state->{"current_ire"}=$_white_ire if(ref($state) eq "HASH");
-   write_state($state);
+   if(ref($state) eq "HASH") {
+    $state->{"current_name"}="SDR26 1D DPG sdr26_".sprintf("%g",$_white_ire)."%";
+    $state->{"current_ire"}=$_white_ire;
+    $state->{"current_step"}=$step_num+0;
+    $state->{"total_steps"}=$total_steps+0;
+    write_state($state);
+   }
    my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$label =~ /(\d+(?:\.\d+)?)/ ? ($1+0) : 100.0);
    my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
     $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
@@ -17040,10 +17053,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # in its calibrate_anchor closure -- the SDR path never did).
   my $_step_ire_skip_local=(defined($step->{"ire"}) ? ($step->{"ire"}+0) : 0);
   my $_step_label_local=$_recal ? "sdr26_100% (recal)" : ($step->{"name"}||(format_percent($step->{"ire"})."%"));
-  $state->{"current_name"}="SDR26 1D DPG ".$_step_label_local if(ref($state) eq "HASH");
-  $state->{"current_ire"}=$_step_ire_skip_local if(ref($state) eq "HASH");
-  write_state($state);
   $step_num++;
+  if(ref($state) eq "HASH") {
+   $state->{"current_name"}="SDR26 1D DPG ".$_step_label_local;
+   $state->{"current_ire"}=$_step_ire_skip_local;
+   $state->{"current_step"}=$step_num+0;
+   $state->{"total_steps"}=$total_steps+0;
+   write_state($state);
+  }
   my $rs=fixed_lg_autocal_step($config,$step);
   my $idx=$idx_for_sdr->($rs);
   next if(!defined($idx));
