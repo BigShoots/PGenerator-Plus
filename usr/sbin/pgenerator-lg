@@ -1458,6 +1458,13 @@ sub lg_picture_reset_workflow (@) {
 	  $active_picture_mode=$probe->{"payload"}{"settings"}{"pictureMode"}||"";
 	 }
 	}
+ # C9 / pre-2022 DDC-only sets: webOS will not report pictureMode. Prefer the
+ # operator-selected mode, then the last saved DDC calibration mode, then the
+ # signal-default (cinema / hdrCinema / ...). Without this the Display Card
+ # "Reset Picture Mode" button fails hard whenever the dropdown was empty.
+ if($active_picture_mode eq "") {
+  $active_picture_mode=&lg_resolve_ddc_picture_mode($ip,"",$signal_mode);
+ }
  if($active_picture_mode eq "" && $generation->{"picture_mode_read_forbidden"}) {
   &websocket_close($session);
   return &json_error("Select the LG picture mode before resetting picture settings on this TV. This LG generation does not allow us to read the active picture mode reliably.",{
@@ -1715,6 +1722,23 @@ foreach my $attempt (@panel_payloads) {
 	  push(@{$ui_data_reset_attempts},{ command => "CAL_END", response => $ui_data_end, failed => &json_bool($ui_data_end_failed), message => $ui_data_end_message||"" });
 	 }
 	 @panel_reset_attempts=(@panel_reset_attempts,@{$ui_data_reset_attempts});
+	 # UI_DATA CAL path above writes BRIGHTNESS/CONTRAST/BACKLIGHT/COLOR.
+	 # On generations that forbid resetSystemSettings (2019 C9 and friends)
+	 # that is often the only path that actually lands core picture defaults
+	 # when the Display Card reset runs WITHOUT a DDC wipe. Count successful
+	 # UI_DATA brightness+contrast commands toward basic_picture_reset_ok.
+	 my %ui_data_key_applied=();
+	 if($ui_data_reset_ok && ref($ui_data_reset_attempts) eq "ARRAY") {
+	  foreach my $ui_entry (@{$ui_data_reset_attempts}) {
+	   next if(ref($ui_entry) ne "HASH");
+	   next if($ui_entry->{"failed"});
+	   my $cmd=uc($ui_entry->{"command"}||"");
+	   $ui_data_key_applied{"brightness"}=1 if($cmd eq "BRIGHTNESS_UI_DATA");
+	   $ui_data_key_applied{"contrast"}=1 if($cmd eq "CONTRAST_UI_DATA");
+	   $ui_data_key_applied{"backlight"}=1 if($cmd eq "BACKLIGHT_UI_DATA");
+	   $ui_data_key_applied{"color"}=1 if($cmd eq "COLOR_UI_DATA");
+	  }
+	 }
 	 my $factory_default_settings={};
 	 my $factory_default_attempts=[];
 	 my $factory_apply_attempts=[];
@@ -1760,7 +1784,10 @@ foreach my $attempt (@panel_payloads) {
 	   }
 	  }
 	 }
-	 my $basic_picture_reset_ok=(($reset_key_succeeded{"brightness"} || $delete_key_reset{"brightness"} || $factory_key_applied{"brightness"} || $builtin_key_applied{"brightness"}) && ($reset_key_succeeded{"contrast"} || $delete_key_reset{"contrast"} || $factory_key_applied{"contrast"} || $builtin_key_applied{"contrast"})) ? 1 : 0;
+	 my $basic_picture_reset_ok=(
+	  ($reset_key_succeeded{"brightness"} || $delete_key_reset{"brightness"} || $factory_key_applied{"brightness"} || $builtin_key_applied{"brightness"} || $ui_data_key_applied{"brightness"})
+	  && ($reset_key_succeeded{"contrast"} || $delete_key_reset{"contrast"} || $factory_key_applied{"contrast"} || $builtin_key_applied{"contrast"} || $ui_data_key_applied{"contrast"})
+	 ) ? 1 : 0;
 	 my $ddc_attempted=0;
 	 my $ddc_result;
 	 if($reset_ddc_state) {
@@ -1996,7 +2023,17 @@ foreach my $attempt (@panel_payloads) {
   system_info => $auth->{"system_info"},
   software_info => $auth->{"software_info"},
   lg_generation => $generation,
-		  message => (@reset_keys_succeeded == @{$keys}) ? "LG picture mode reset complete." : ($delete_reset_ok ? "LG picture mode defaults restored." : ($factory_apply_ok ? "LG picture mode factory defaults applied." : ($builtin_apply_ok ? "LG picture mode core defaults applied." : "LG picture mode reset partially complete; the TV did not accept every reset key."))),
+		  message => (@reset_keys_succeeded == @{$keys})
+		   ? "LG picture mode reset complete."
+		   : ($delete_reset_ok
+		    ? "LG picture mode defaults restored."
+		    : ($factory_apply_ok
+		     ? "LG picture mode factory defaults applied."
+		     : ($builtin_apply_ok
+		      ? "LG picture mode core defaults applied."
+		      : (($ui_data_reset_ok && $basic_picture_reset_ok)
+		       ? "LG picture mode core defaults applied via calibration UI data."
+		       : "LG picture mode reset partially complete; the TV did not accept every reset key.")))),
 	 });
 	}
 

@@ -3573,28 +3573,42 @@ async function lgSetPictureMode(){
 async function lgResetPictureMode(){
  const state=window.lgStatusState||{};
 	 if(!lgStatusConnected(state)){
-  toast('Connect the LG TV first','err');
+  toast('Connect the LG TV first',true);
   return;
 	 }
 	 const signal=lgSignalModeKey();
-	 const mode=lgSelectedPictureModeValue();
+	 // Prefer the Display card dropdown; fall back to last remembered mode.
+	 // Pre-2022 OLEDs (C9 etc.) cannot read the live picture mode from the TV.
+	 let mode=lgSelectedPictureModeValue()||lgPictureModeCanonicalValue(lgPictureModeValue)||'';
 	 if(!mode){
-	  toast('Select the LG picture mode before resetting picture settings','err');
+	  toast('Select the LG picture mode on the Display card first, then try Reset Picture Mode again.',true);
 	  return;
  }
  const label=mode?lgPictureModeLabel(mode):'the active mode';
- if(!confirm('Reset '+label+' picture settings? This resets the mode before calibration.')) return;
+ if(!confirm('Reset '+label+' picture settings?\n\nThis restores core picture defaults (brightness, contrast, backlight, etc.) for the mode. Greyscale DDC calibration is NOT wiped (use Auto Cal preflight for that).')) return;
  lgSetPictureResetButtonsDisabled(true);
  const commandHandle=lgBeginCommand('Resetting LG picture mode');
  try{
+  // Display Card intent: TV-menu style picture reset, no DDC wipe
+  // (require_white_balance_reset:false). C9 and other ddc_cal_identity
+  // sets use the CAL UI_DATA + factory/builtin fallback path when webOS
+  // rejects resetSystemSettings.
   const r=await fetchJSON('/api/lg/picture-settings/reset',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify({picture_mode:mode,signal_mode:signal,require_white_balance_reset:false}),
-   _timeoutMs:90000
+   _timeoutMs:120000
   });
   if(r&&r.status==='ok'){
-   toast(r.message||'LG picture mode reset complete');
+   const basicOk=!!(r.basic_picture_reset_ok||r.clean_picture_mode_reset);
+   const bestEffort=String(r.picture_reset_best_effort||'')==='not_permitted';
+   let msg=r.message||'LG picture mode reset complete';
+   if(bestEffort){
+    msg='Picture-settings reset is limited on this TV model; core defaults were applied via the calibration path.';
+   }else if(!basicOk){
+    msg=r.message||'LG picture mode reset only partially applied. Check picture mode selection and try again.';
+   }
+   toast(msg,!basicOk&&!bestEffort);
    if(r.active_picture_mode){
     lgPictureModeValue=r.active_picture_mode;
     lgPictureModeSignalMode=lgPictureModeEffectiveSignal(r.active_picture_mode);
@@ -3608,12 +3622,13 @@ async function lgResetPictureMode(){
 	   lgDisplayControlInvalidate();
 	   lgDisplayControlRefresh(true);
 	  }else{
-   toast(r&&r.message?r.message:'Unable to reset LG picture mode','err');
+   toast(r&&(r.repair_hint||r.message)?(r.repair_hint||r.message):'Unable to reset LG picture mode',true);
   }
  }catch(e){
-  toast('Unable to reset LG picture mode','err');
+  toast((e&&e.message)?e.message:'Unable to reset LG picture mode',true);
  }finally{
   lgEndCommand(commandHandle);
+  lgSetPictureResetButtonsDisabled(false);
   await loadLgStatus(true);
   lgDisplayControlRender();
  }
