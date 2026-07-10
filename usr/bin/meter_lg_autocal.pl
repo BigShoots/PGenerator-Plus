@@ -15633,10 +15633,12 @@ sub lg_autocal_26_commit_sdr_1d_dpg_single_socket {
 #     SDR26 targets BT.709 / D65.
 #   - Anchor budgets: 10 default body, 12 for IRE < 5%, 8 for the white
 #     cluster (99, 105).
-#   - Acceptance dE: 0.3 default (tighter than HDR's 0.4).
-#   - Skip-acceptance fraction: 0.3 (was 0.6) -- only skip the one-more
-#     move when dE < 30% of target. The previous 60% was bailing out
-#     before reaching target dE on anchors that needed one more iter.
+#   - Acceptance dE: 0.3 default. At or below this, stop immediately --
+#     no one-more polish. (Target 0.5 is the converge line; 0.3 is the
+#     "good enough, don't keep squeezing" line.)
+#   - Skip-acceptance fraction: legacy fast-path for very-low dE
+#     (default 0.3 * target). Redundant with the 0.3 acceptance stop
+#     when target is 0.5, but still used if acceptance_de is raised.
 #   - Revert-to-best: same as HDR, 3 consecutive reverts at low IRE.
 #   - White move multiplier: 2.5 default for the white anchor (vs
 #     HDR's 2.0); SDR gamma 2.2 has more reduction headroom than PQ
@@ -15737,16 +15739,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  # Acceptance must not exceed target (otherwise we accept patches that
  # haven't actually converged to the operator's set target).
  $acceptance_de=$target_de if($acceptance_de+0 > $target_de+0);
- # Skip-acceptance fraction: how far below target dE we treat as "good
- # enough to skip the one-more move" (vs. the regular acceptance path
- # which still tries one more refinement). The previous default 0.6 was
- # too eager: with target_de=0.5 it accepted anchors at 0.30 dE, and with
- # target_de=0.3 (the SDR default) it accepted at 0.18 dE -- well above
- # the meter noise floor and often leaving the anchor short of target.
- # 0.3 means we skip only when dE < 0.3*target, which gives every anchor
- # at least one more iteration of refinement before early-bail.
- # Floor at 0.1 to avoid a tiny skip_de < meter noise (the i1d3 noise
- # at 100 nits is ~0.05 dE; below that the skip is meaningless).
+ # Skip-acceptance fraction: legacy very-low-dE instant stop
+ # (default 0.3*target). Primary "stop, no polish" gate is acceptance_de
+ # (default 0.3) below -- once dE is under that, we do NOT one-more.
+ # Floor at 0.1 to avoid a tiny skip_de < meter noise.
  my $skip_fraction=defined($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}+0) : 0.3;
  $skip_fraction=0.1 if($skip_fraction+0 < 0.1);
  $skip_fraction=1.0 if($skip_fraction > 1.0);
@@ -16113,8 +16109,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $state->{"sdr_1d_dpg_anchor_history"}=$hist;
    write_state($state);
   }
-  # Skip-acceptance fast-path: if dE is already below skip_de, treat as
-  # converged directly. Same logic as HDR.
+  # Below acceptance_de (default 0.3): good enough -- stop immediately.
+  # Do NOT run a one-more polish move; operators with target 0.5 do not want
+  # the loop grinding toward 0.05-0.15 once the patch is already well under
+  # target. skip_de is a tighter legacy gate (kept for conf override).
+  if(!$acceptance_pending && defined($de) && $de+0 < $acceptance_de+0) {
+   $converged=1;
+   $state->{"current_delta_e"}=$de+0;
+   if(ref($state->{"sdr_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"sdr_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
+    my $_r=$state->{"sdr_1d_dpg_anchor_history"}{$label};
+    if(@$_r) {
+     $_r->[-1]{"de"}=sprintf("%.4f",$de+0);
+     $_r->[-1]{"acceptance_stop"}=JSON::PP::true;
+     $_r->[-1]{"acceptance_de"}=sprintf("%.4f",$acceptance_de+0);
+    }
+   }
+   log_line("SDR26 1D DPG greyscale: ".$label." below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), moving on without one-more move");
+   write_state($state);
+   last;
+  }
+  # Legacy very-low skip (stricter than acceptance_de when acceptance is raised).
   if(!$acceptance_pending && defined($de) && $de+0 < $skip_de+0 && $skip_fraction < 1.0) {
    $converged=1;
    $state->{"current_delta_e"}=$de+0;
@@ -16130,28 +16144,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    write_state($state);
    last;
   }
-  # Acceptance fast-path: snap the best, try ONE more refinement move;
-  # if the move worsens dE, revert to the best + re-read + move on.
-  #
-  # Early-converged refinement: an anchor that lands in the
-  # (acceptance_de, effective_target] band on an EARLY iteration (<=3)
-  # got there off a single large move and is still carrying that move's
-  # banked residual (25% shipped -0.87% Y at i2/dE 0.4668, 50% at
-  # i3/0.4525 -- both became the post-cal chart's worst greyscale
-  # points). Route it through the SAME one-more refinement path instead
-  # of stopping. Anchors that only reach the band at i>=4 are at their
-  # noise floor -- forcing more moves there oscillates -- so they keep
-  # the stop-immediately behavior via the `last` below. SDR26-only:
-  # this sub is not shared with the HDR loop.
+  # Early-converged refinement ONLY: anchor landed in
+  # [acceptance_de, effective_target] on an EARLY iteration (i<=3) -- still
+  # above the 0.3 stop line but already "converged" to the user target.
+  # One more move can clear a large residual Y error; if it worsens, revert.
+  # Below acceptance_de never enters this path (stopped above).
   my $_refine_converged=($conv_now && !$acceptance_pending && defined($de) && $de+0 >= $acceptance_de+0 && $i <= 3) ? 1 : 0;
-  if(!$acceptance_pending && defined($de) && ($de+0 < $acceptance_de+0 || $_refine_converged)) {
+  if(!$acceptance_pending && $_refine_converged) {
    $acceptance_pending=1;
    $accepted_best_de=$de+0;
    $accepted_best_dpg=[@{$current_dpg_ref}];
    $accepted_best_anchors=[map { +{ %$_ } } @{$done_ref}];
-   log_line("SDR26 1D DPG greyscale: ".$label.($_refine_converged
-    ? " converged early (dE=".sprintf("%.4f",$de+0)." <= ".sprintf("%.2f",$_effective_target_de+0)." at i".$i."), trying one more refinement move"
-    : " below acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.2f",$acceptance_de)."), trying one more move"));
+   log_line("SDR26 1D DPG greyscale: ".$label." converged early (dE=".sprintf("%.4f",$de+0)." <= ".sprintf("%.2f",$_effective_target_de+0)." at i".$i."), trying one more refinement move");
    # fall through: the build below makes the one-more move
   } elsif($acceptance_pending) {
    if(defined($de) && $de+0 < $accepted_best_de+0) {
