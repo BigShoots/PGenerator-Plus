@@ -15605,6 +15605,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $low_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}+0) : 5.0;
  $low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
  $low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
+ # High-IRE band for mid-loop revert (HDR port). Mid IRE [low, high) does
+ # NOT mid-loop revert-and-halve -- only track best + final restore. Low and
+ # high use descent-style revert (de > prev_de). Default high=80 matches HDR.
+ my $high_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_high_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_high_ire_threshold"}+0) : 80.0;
+ $high_ire_threshold=50.0 if($high_ire_threshold < 50.0);
+ $high_ire_threshold=109.0 if($high_ire_threshold > 109.0);
  my $damp_floor_low=defined($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_sdr26_dpg_damp_floor_low"}+0) : 0.5;
  $damp_floor_low=0.3 if($damp_floor_low < 0.3);
  $damp_floor_low=0.95 if($damp_floor_low > 0.95);
@@ -15706,8 +15712,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # Peak = Limited 109 legal OR Full 100. Same damped warmup for both.
   my $_is_legal_peak_anchor=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
 
- # Best-so-far state for revert.
+ # Best-so-far state for revert. prev_de drives HDR-style descent check
+  # (revert only when this iter made dE worse than the previous reading).
   my $best_de=undef;
+  my $prev_de=undef;
   my $best_dpg=[@{$current_dpg_ref}];
   my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
   my $consecutive_reverts=0;
@@ -15959,9 +15967,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # new-best branch will write (the dedup is intentional), so when the new-
    # best branch fires on a converging iter this is a no-op-equivalent update.
    $max_de_anchor_committed=$de+0 if($conv_now && defined($de) && $de+0 > $max_de_anchor_committed+0);
-  # Best-so-far with revert: classic mid-body path. On a non-improving dE,
-  # snap back to the best DPG snapshot and halve move_scaling. Low-IRE keeps
-  # its noise-limited early stop + re-escalation; body does not re-escalate.
+  # Best-so-far + mid-loop revert: HDR-style tiered policy.
+  # - Always track best_de/best_dpg for final-state restore.
+  # - Mid IRE [low_ire, high_ire): NO mid-loop revert. Eager best_de-based
+  #   revert starved mid-body luminance progress (55%/etc.) and halved
+  #   move_scaling into the noise. Mid just keeps applying classic damp;
+  #   final restore lands on the best snapshot.
+  # - Low IRE (<low) and high IRE (>=high, incl. peak 100/109): descent-
+  #   style revert only when this iter's dE is WORSE than prev_de (local
+  #   overshoot), not when it merely failed to beat all-time best_de.
   if(defined($de) && !$acceptance_pending) {
    if(!defined($best_de) || $de+0 < $best_de+0) {
     $best_de=$de+0;
@@ -15988,15 +16002,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     my $_recovered=$move_scaling*2.0;
     $_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
     $move_scaling=$_recovered;
-   } elsif($consecutive_reverts < $revert_budget) {
-    # Revert-and-halve: when a move does not beat the best dE, snap the DPG
-    # back to the best snapshot and halve the move scaling. The next iter
-    # applies the same natural gain at half strength.
+   } elsif((($_anchor_ire+0 < $low_ire_threshold+0) || ($_anchor_ire+0 >= $high_ire_threshold+0))
+           && defined($prev_de) && $de+0 > $prev_de+0
+           && $consecutive_reverts < $revert_budget) {
+    # Descent-style revert+halve (HDR port): only when the move made dE
+    # worse than the previous iter, and only in the low/high tiers.
     @{$current_dpg_ref}=@{$best_dpg};
     @{$done_ref}=@{$best_anchors};
     $consecutive_reverts++;
     $move_scaling*=0.5 if($move_scaling+0 > 0.001);
-    log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0).", move_scaling=".sprintf("%.4f",$move_scaling).")");
+    log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".(($_anchor_ire+0 >= $high_ire_threshold+0)?"high-IRE":"low-IRE").")");
     # Noise-limited early stop: a very-low-IRE anchor already near its
     # (relaxed) target is meter-noise-limited -- once a move has failed to
     # beat the best twice, further reverts only scatter the dE (and the
@@ -16007,7 +16022,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      last;
     }
     if($consecutive_reverts >= $revert_budget) {
-     # Low-IRE re-escalation only (body stays on classic break-at-budget).
+     # Low-IRE re-escalation only (high-IRE / mid break at budget).
      if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor && $low_ire_escalations < $low_ire_max_escalations) {
       $low_ire_escalations++;
       $consecutive_reverts=0;
@@ -16019,6 +16034,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      }
     }
    }
+   # Always advance prev_de for the next iter's descent check (even mid,
+   # where mid-loop revert is disabled -- keeps the series coherent if
+   # the high-band threshold is lowered via conf).
+   $prev_de=$de+0;
   }
   log_line("SDR26 1D DPG greyscale: ".$label." i".$i." dE=".sprintf("%.4f",defined($de)?$de+0:-1)." best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($acceptance_pending?" (acceptance)":""));
   # Per-iter state push for diagnostic parity with HDR.
