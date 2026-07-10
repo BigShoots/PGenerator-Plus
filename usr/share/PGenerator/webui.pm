@@ -3935,13 +3935,12 @@ sub webui_meter_lg_autocal_mark_cancelled (@) {
 # data, drives no fresh-browser decision, and is harmless once the
 # decision flags above are cleared).
 sub webui_meter_lg_autocal_clear_full_workflow_state (@) {
- return unless(-f $_meter_lg_autocal_file);
- my $json="";
- if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $json=<$fh>; close($fh); }
- return if($json eq "");
- my $changed=0;
- # Keys whose persistence drives a phantom fresh-browser decision. Keep
- # hdr20_1d_tonemap_peak_luminance (data, not a decision flag).
+ # Clear full-workflow decision keys from BOTH greyscale and 3D status
+ # files. Leaving full_workflow=true on a terminal 3D complete status is
+ # what resurrects the "Full Auto Cal complete / Generate Post-Cal Report"
+ # popup after Stop + page refresh (the JS ensureStatusPhase re-adopts the
+ # finished run). Keep hdr20_1d_tonemap_peak_luminance (data, not a
+ # decision flag).
  my @keys=(
   "full_workflow",
   "full_autocal_phase",
@@ -3959,17 +3958,25 @@ sub webui_meter_lg_autocal_clear_full_workflow_state (@) {
   "hdr20_1d_tonemap_wizard_handled",
   "hdr20_1d_tonemap_wizard_owns_upload",
  );
- for my $k (@keys) {
-  next if($json!~/"\Q$k\E"\s*:/);
-  # Match `"key": <value>` for true/false/null/string/number; eat a
-  # trailing comma.
-  $json=~s/"\Q$k\E"\s*:\s*(?:true|false|null|"[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?)\s*,?\s*//;
-  $changed=1;
+ my $any=0;
+ for my $file ($_meter_lg_autocal_file,$_meter_lg_3d_autocal_file) {
+  next unless(defined($file) && $file ne "" && -f $file);
+  my $json="";
+  if(open(my $fh,"<",$file)) { local $/; $json=<$fh>; close($fh); }
+  next if($json eq "");
+  my $changed=0;
+  for my $k (@keys) {
+   next if($json!~/"\Q$k\E"\s*:/);
+   # Match `"key": <value>` for true/false/null/string/number; eat a
+   # trailing comma.
+   $json=~s/"\Q$k\E"\s*:\s*(?:true|false|null|"[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?)\s*,?\s*//;
+   $changed=1;
+  }
+  # Collapse a comma left dangling before the closing brace.
+  $json=~s/,(\s*\})/$1/g if($changed);
+  if($changed && open(my $fh,">",$file)) { print $fh $json; close($fh); chmod(0666,$file); $any=1; }
  }
- # Collapse a comma left dangling before the closing brace.
- $json=~s/,(\s*\})/$1/g if($changed);
- if($changed && open(my $fh,">",$_meter_lg_autocal_file)) { print $fh $json; close($fh); chmod(0666,$_meter_lg_autocal_file); }
- return $changed;
+ return $any;
 }
 
 # Clear ONLY the HDR tone-map pending/decision keys from the persisted
@@ -4388,6 +4395,12 @@ sub webui_meter_lg_autocal_status (@) {
 
 sub webui_meter_lg_autocal_stop (@) {
  &webui_meter_lg_autocal_kill(1);
+ # Full Auto Cal may already have finished greyscale (status=complete +
+ # full_workflow) and be in/after the 3D stage. Kill 3D too and strip the
+ # full-workflow keys so a refresh cannot re-adopt the finished run and
+ # open the Generate Post-Cal Report popup.
+ &webui_meter_lg_3d_autocal_kill(1);
+ &webui_meter_lg_autocal_clear_full_workflow_state();
  &webui_meter_stop();
  return '{"status":"ok","message":"LG Auto Cal stopped"}';
 }
@@ -4416,8 +4429,14 @@ sub webui_meter_lg_3d_autocal_mark_cancelled (@) {
  return unless(-f $_meter_lg_3d_autocal_file);
  my $json="";
  if(open(my $fh,"<",$_meter_lg_3d_autocal_file)) { local $/; $json=<$fh>; close($fh); }
- return if($json eq "" || $json!~/"status"\s*:\s*"running"/);
- $json=~s/"status"\s*:\s*"running"/"status":"cancelled"/;
+ return if($json eq "");
+ # Force cancelled over running/complete (same race as greyscale: process-
+ # died or a finished 3D stage left status=complete with full_workflow).
+ if($json=~/"status"\s*:\s*"[^"]*"/) {
+  $json=~s/"status"\s*:\s*"[^"]*"/"status":"cancelled"/;
+ } else {
+  $json=~s/\}$/,"status":"cancelled"}/;
+ }
  if($json=~/"current_name"\s*:\s*"[^"]*"/) {
   $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"3D LUT AutoCal cancelled"/;
  } else {
@@ -4652,6 +4671,9 @@ sub webui_meter_lg_3d_autocal_status (@) {
 
 sub webui_meter_lg_3d_autocal_stop (@) {
  &webui_meter_lg_3d_autocal_kill(1);
+ # Strip full-workflow keys from greyscale+3D status so a refresh after
+ # Stop cannot re-adopt a finished 3D stage as "Full Auto Cal complete".
+ &webui_meter_lg_autocal_clear_full_workflow_state();
  &webui_meter_stop();
  return '{"status":"ok","message":"LG 3D LUT AutoCal stopped"}';
 }
@@ -27772,6 +27794,12 @@ function meterFullAutoCalEnsureStatusPhase(status,phase){
  if(meterFullAutoCalRunning&&meterFullAutoCalPhase===phase) return true;
  if(status&&status.full_workflow&&!meterFullAutoCalStatusMatchesRun(status)) return false;
  if(!(status&&status.full_workflow&&meterFullAutoCalStatusPhase(status)===phase)) return false;
+ // Never re-adopt a terminal full-workflow status from a fresh browser
+ // (Stop + refresh left status=complete + full_workflow on the 3D file and
+ // this would open the Generate Post-Cal Report popup). Mid-session
+ // greyscale→3D advance already has meterFullAutoCalRunning true.
+ const st=String((status&&status.status)||'').toLowerCase();
+ if(!meterFullAutoCalRunning && st!=='running') return false;
  meterFullAutoCalRunning=true;
  meterFullAutoCalPhase=phase;
  meterFullAutoCalRunId=status.full_autocal_run_id||status.run_id||meterFullAutoCalRunId||null;
@@ -29852,6 +29880,7 @@ async function meterStopAutoCal(){
  // on screen, then block the UI until the worker is actually dead.
  meterAutoCalSetOverlay(false,null);
  meterStopModalShow(meterFullAutoCalRunning?'full-autocal':'autocal');
+ const wasFullWorkflow=!!meterFullAutoCalRunning;
  meterFullAutoCalResetState(false);
  meterAutoCalClearSavedState();
  meterAutoCalStopRequested=true;
@@ -29882,6 +29911,10 @@ async function meterStopAutoCal(){
  try{
   await fetchJSON('/api/meter/lg-autocal/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
  }catch(e){}
+ // Always clear full-workflow server metadata on stop (even standalone
+ // greyscale may leave hdr20/full keys). Prevents refresh from re-firing
+ // the Full Auto Cal complete / Generate Report popup.
+ try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'Auto Cal stopped'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
  finally{
   meterActionPending=false;
   meterStopModalHide();
@@ -30288,12 +30321,14 @@ async function meterStopLg3dAutoCal(){
  meterAutoCalSetOverlay(false,null);
  meterStopModalShow(meterFullAutoCalRunning?'full-autocal':'3d-autocal');
  if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
+ const wasFullWorkflow=!!meterFullAutoCalRunning;
  meterFullAutoCalResetState(false);
  meterLg3dAutoCalRunning=false;
  meterActionPending=true;
  try{
   await fetchJSON('/api/meter/lg-3d-autocal/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
  }catch(e){}
+ try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'3D LUT AutoCal stopped'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
  finally{
   meterActionPending=false;
   meterStopModalHide();
