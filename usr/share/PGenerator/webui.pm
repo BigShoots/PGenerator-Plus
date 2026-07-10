@@ -17647,7 +17647,7 @@ function meterGreyscaleReadingMap(readings){
    && (typeof meterActiveSeriesSignalMode!=='undefined')&&String(meterActiveSeriesSignalMode).toLowerCase()==='sdr'){
    const status=(typeof meterAutoCalLatestStatus!=='undefined')?meterAutoCalLatestStatus:(meterAutoCalLatestStatus={});
    if(!status.__sdr26_audit_done){
-    const expectedIres=[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
+    const expectedIres=(typeof meterLgAutoCalSdr26BodySlots==='function')?meterLgAutoCalSdr26BodySlots():[2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109];
     const missing=[];
     expectedIres.forEach(ire=>{
      const key=String(ire);
