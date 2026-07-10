@@ -15446,19 +15446,30 @@ sub lg_autocal_26_sdr26_dpg_damp {
  return $s+0;
 }
 
-# Body-anchor damp: EOTF (g^1/gamma) is right for REDUCTIONS (avoid crushing
-# shadows). For BOOSTS it is wrong -- a 3.6% Y shortfall becomes ~1.6% after
-# g^0.45, then revert-and-halve shrinks that to noise and the anchor never
-# climbs (Full 55% logged gains 1.015/1.007/1.003 while needing ~1.036).
-# Under-luma body: apply most of the raw linear gain on boosts; keep classic
-# damp on reductions.
+# Body-anchor damp: classic EOTF (g^1/gamma ≈ g^0.45) is for *gentle*
+# shadow-safe moves. On mid-body it starves both directions of a real Y
+# error:
+#   under-luma boost  -- 3.6% shortfall → ~1.6% after g^0.45, then
+#     revert-and-halve shrinks to noise (Full 55% gains 1.015→1.003).
+#   over-luma pull-down -- 1.3% excess at 80% → gains 0.996→0.999 with
+#     Y stuck ~106 vs 104.7 for a full 10-iter budget of tiny crawls.
+# When the measured Y is clearly under/over target, apply most of the
+# raw linear gain on the matching direction; keep classic damp otherwise.
 sub lg_autocal_26_sdr26_dpg_body_damp {
- my ($g,$floor,$exp,$under_luma)=@_;
+ my ($g,$floor,$exp,$under_luma,$over_luma)=@_;
  $g=1 unless(defined($g) && $g+0 > 0);
  if($under_luma && $g+0 > 1.0) {
   # 90% of the needed linear boost (still damped a little for stability).
   my $s=1.0+($g-1.0)*0.90;
   $s=1.35 if($s+0 > 1.35);
+  return $s+0;
+ }
+ if($over_luma && $g+0 < 1.0) {
+  # 90% of the needed linear pull-down. g^0.45 shrinks reductions toward
+  # 1.0 (0.987 → ~0.994), which is why 80% made microscopic moves.
+  my $s=1.0+($g-1.0)*0.90;
+  $floor=0.8 unless(defined($floor));
+  $s=$floor if($s+0 < $floor+0);
   return $s+0;
  }
  return lg_autocal_26_sdr26_dpg_damp($g,$floor,$exp);
@@ -16331,17 +16342,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   # Under-luma body: need a real boost (see body_damp). Detect from this
-   # reading vs target Y before damp so 55%-class shortfalls can climb.
+   # Body Y bias (see body_damp): under needs a real boost, over needs a
+   # real pull-down. Detect from this reading vs target Y before damp.
    my $_y_meas_body=luminance($reading);
    my $_under_luma=0;
-   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0
-      && $_y_meas_body+0 < ($tl+0)*0.985) {
-    $_under_luma=1;
+   my $_over_luma=0;
+   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0) {
+    if($_y_meas_body+0 < ($tl+0)*0.985) {
+     $_under_luma=1;
+    } elsif($_y_meas_body+0 > ($tl+0)*1.015) {
+     # Symmetric to under: >1.5% hot on Y (80% logged ~1.3% and crawled).
+     $_over_luma=1;
+    }
    }
-   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$damp_exp,$_under_luma)-1.0)*$move_scaling*$anchor_move_mult;
-   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$damp_exp,$_under_luma)-1.0)*$move_scaling*$anchor_move_mult;
-   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$damp_exp,$_under_luma)-1.0)*$move_scaling*$anchor_move_mult;
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$damp_exp,$_under_luma,$_over_luma)-1.0)*$move_scaling*$anchor_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$damp_exp,$_under_luma,$_over_luma)-1.0)*$move_scaling*$anchor_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$damp_exp,$_under_luma,$_over_luma)-1.0)*$move_scaling*$anchor_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
