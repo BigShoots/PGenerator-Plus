@@ -16687,9 +16687,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  $white_first[0]->{"sdr26_white_peak_done"}=1 if(scalar(@white_first) > 0);
  # Within @rest after peak:
  #  Limited: mid-spine 50/25/75, headroom 105/99, then descend 95..2.3
- #  Full:    mid-spine 50/25/75, then descend 95..2.3
- #           (overall Full flow is 100 → 50 → 25 → 75 → descend; series
- #           measurement also puts 0 first -- see webui ordered list)
+ #  Full:    mid-spine 50/25/75, 100% recal, then descend 95..2.3
+ #           (overall Full flow is 100 → 50 → 25 → 75 → 100(recal) → 95…;
+ #           series measurement also puts 0 first -- see webui ordered list)
  my @sdr26_body_order=$sdr26_limited
   ? (50,25,75,105,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3)
   : (50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
@@ -16707,6 +16707,41 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    push @reordered,$step;
   }
   @rest=@reordered;
+ }
+ # Full only: second 100% peak pass after mid-spine (75%), before descend
+ # (95…). Upper-mid anchors warp the global 1D curve; re-touch peak so the
+ # remaining body targets sit on a warm, post-spine white_ref (HDR already
+ # does this after ~80% via hdr20_white_recal).
+ if(!$sdr26_limited && ref($white_first[0]) eq "HASH") {
+  my $recal={ %{$white_first[0]} };
+  delete $recal->{"sdr26_white_peak_done"};
+  $recal->{"sdr26_white_recal"}=1;
+  $recal->{"name"}="sdr26_100% (recal)";
+  $recal->{"autocal_target_label"}="100% full peak (recal)";
+  my @with_recal;
+  my $inserted=0;
+  for my $s (@rest) {
+   push @with_recal,$s;
+   if(!$inserted && defined($s->{"ire"}) && abs(($s->{"ire"}+0)-75.0) < 0.05) {
+    push @with_recal,$recal;
+    $inserted=1;
+   }
+  }
+  if(!$inserted) {
+   # No 75% step: still re-touch peak before first >=95 descend anchor.
+   my @before_descend;
+   my @descend;
+   my $hit_descend=0;
+   for my $s (@rest) {
+    my $ire=defined($s->{"ire"}) ? ($s->{"ire"}+0) : 0;
+    if(!$hit_descend && $ire+0 >= 94.5) { $hit_descend=1; }
+    if($hit_descend) { push @descend,$s; } else { push @before_descend,$s; }
+   }
+   @with_recal=(@before_descend,$recal,@descend);
+   $inserted=1;
+  }
+  @rest=@with_recal if($inserted);
+  log_line("SDR26 1D DPG greyscale: Full path inserted 100% recal after 75% (before 95%)") if($inserted);
  }
  @ordered=(@white_first,@rest);
  return "lg_autocal_26_run_sdr_1d_dpg_greyscale: no adjustable greyscale steps" if(!@ordered);
@@ -16910,28 +16945,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   }
  }
 
- # --- remaining greyscale anchors in IRE order (low to high) ---
+ # --- remaining greyscale anchors (body + Full optional 100% recal) ---
  foreach my $step (@ordered) {
   last if(cancelled() || $upload_failed);
-  # Skip the already-calibrated 109 peak (flagged in @white_first). The
-  # OTHER headroom anchors (99, 105) intentionally do NOT match this
-  # skip -- they need their own per-anchor iteration through the
-  # white_balance_gain path because the panel's chromaticity error at
-  # 105 and 99 is independent of the 109 calibration. The bare
-  # `ire>=99.0` check used here previously was skipping all three.
-  # NOTE: skip is purely flag-based here (NOT `is_white && flag`).
-  # `autocal_step_is_white` checks `abs(ire-100) < 0.001` and so is
-  # FALSE for the SDR26 109 anchor (which is the legal peak in the
-  # SDR26 table). The flag is the only reliable signal that the step
-  # has already been calibrated in @white_first.
-  next if($step->{"sdr26_white_peak_done"});
+  # Skip the initial peak already calibrated in @white_first. Full may
+  # insert a sdr26_white_recal clone after 75% -- that MUST run (like HDR
+  # hdr20_white_recal). Limited headroom 99/105 never get peak_done.
+  # NOTE: skip is flag-based; autocal_step_is_white is false for 109.
+  my $_recal=($step->{"sdr26_white_recal"} ? 1 : 0);
+  next if($step->{"sdr26_white_peak_done"} && !$_recal);
   # Update the wizard "current patch" indicator BEFORE entering the inner
   # loop so the chart + WebUI reflect the actual patch being calibrated.
   # Without this, the indicator stays stuck on "SDR26 1D DPG (identity
   # baseline)" forever (the HDR path sets current_name="Auto Cal ".$label
   # in its calibrate_anchor closure -- the SDR path never did).
   my $_step_ire_skip_local=(defined($step->{"ire"}) ? ($step->{"ire"}+0) : 0);
-  my $_step_label_local=$step->{"name"}||(format_percent($step->{"ire"})."%");
+  my $_step_label_local=$_recal ? "sdr26_100% (recal)" : ($step->{"name"}||(format_percent($step->{"ire"})."%"));
   $state->{"current_name"}="SDR26 1D DPG ".$_step_label_local if(ref($state) eq "HASH");
   $state->{"current_ire"}=$_step_ire_skip_local if(ref($state) eq "HASH");
   write_state($state);
@@ -16940,15 +16969,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   my $idx=$idx_for_sdr->($rs);
   next if(!defined($idx));
   my $_step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : 50.0));
-  my $label=$rs->{"name"}||(format_percent($rs->{"ire"})."%");
-  my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$_step_ire);
+  my $label=$_recal ? "sdr26_100% (recal)" : ($rs->{"name"}||(format_percent($rs->{"ire"})."%"));
+  # Recal uses the same peak iteration budget as the initial 100%/109%.
+  my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$_recal ? 100.0 : $_step_ire);
   # Confirmation log: print the body target curve's expected target Y for the
-  # FIRST body anchor after the 109 peak has converged (sdr_1d_dpg_white_ref
-  # is now the calibrated peak white, not the provisional seed). This makes it
-  # obvious from the run log that sub-109 body targets use the 2.2 curve
-  # through the calibrated 109 peak, not a curve through an un-calibrated
-  # 100% reference.
-if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"})) {
+  # FIRST body anchor after the peak has converged (sdr_1d_dpg_white_ref
+  # is now the calibrated peak white, not the provisional seed).
+if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) && !$_recal) {
     my $_black_y=(ref($config) eq "HASH" && defined($config->{"black_y"})) ? ($config->{"black_y"}+0) : 0;
     my $_sdr26_tg=(ref($config) eq "HASH" && defined($config->{"target_gamma"})) ? $config->{"target_gamma"} : "bt1886";
     my $_body_tl=lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$_black_y,$_sdr26_tg);
@@ -16963,6 +16990,25 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}))
   $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
   $cal_active=1 if($cal_active_inner);
   $upload_failed=1 if($inner_upload_failed);
+  # Full 100% recal: refresh white_ref so 95%..2.3% targets track the
+  # post-spine peak (chroma-only path still updates measured Y each iter).
+  if($_recal && ref($last) eq "HASH") {
+   my $wy=luminance($last);
+   if(defined($wy) && $wy+0 > 0) {
+    $white_ref=$wy+0;
+    if(ref($state) eq "HASH") {
+     $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0;
+     set_state_white_reference($state,$white_ref);
+     if(ref($state->{"readings"}) eq "ARRAY") {
+      for my $rd (@{$state->{"readings"}}) {
+       next unless ref($rd) eq "HASH";
+       $rd->{"autocal_white_y"}=sprintf("%.6f",$white_ref+0);
+      }
+     }
+     log_line(sprintf("SDR26 1D DPG greyscale: 100%% recal done measured_Y=%.4f white_ref updated for remaining body", $white_ref+0));
+    }
+   }
+  }
   push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
   if(ref($state) eq "HASH") {
    $state->{"sdr_1d_dpg_anchors_done"}=scalar(@done);

@@ -3003,7 +3003,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # Limited: legal white first, black, then ascending body/headroom.
     @ordered=(100,0,sort { $a <=> $b } grep { $_>0 && abs($_-100)>0.001 } @ire_vals);
    } else {
-    # Full: 0 → 100 → 50 → 25 → 75 → descend 95..2.3 (no 99/105/109).
+    # Full: 0 → 100 → 50 → 25 → 75 → 100(recal) → descend 95..2.3 (no 99/105/109).
+    # Series list cannot duplicate IRE 100 as two thumbs; worker still runs a
+    # second peak pass after 75% (sdr26_white_recal). Flow shows single 100.
     my @full_flow=(0,100,50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
     my %have=map { (0+$_) => 1 } @ire_vals;
     $have{0}=1; # always allow black even if missing from @ire_vals
@@ -23866,7 +23868,8 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  const bodySlots=(mode==='sdr' && isFullRange)?METER_LG_GREY_AUTOCAL_26_SLOTS_FULL:METER_LG_GREY_AUTOCAL_26_SLOTS;
  const bodyAsc=[...bodySlots].sort((a,b)=>a-b).map(makeDdcStep);
  if(mode==='sdr' && isFullRange){
-  // Full measurement/thumb flow: 0 → 100 → 50 → 25 → 75 → descend 95..2.3
+  // Full measurement/thumb flow: 0 → 100 → 50 → 25 → 75 → descend 95..2.3.
+  // Worker also re-runs 100% peak after 75% (sdr26_white_recal) before 95%.
   const flow=[0,100,50,25,75,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3];
   const byIre={};
   byIre[0]=zero;
