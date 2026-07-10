@@ -16749,6 +16749,12 @@ function meterGreyscaleTargetYFromYn(targetYn,refY,blackLevel){
 
 function meterGreyChartTargetXYZForReading(reading){
  const wp=meterTargetWhitePoint();
+ // SDR26 peak (Limited 109 / Full 100): chroma-only — target at measured Y.
+ if(typeof meterReadingIsSdr26LegalPeak==='function' && meterReadingIsSdr26LegalPeak(reading)){
+  const mY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(reading):(reading&&reading.Y)||0;
+  if(Number.isFinite(mY) && mY>0) return {X:wp.X*mY,Y:mY,Z:wp.Z*mY};
+  return {X:0,Y:0,Z:0};
+ }
  let refWhite=null;
  try{ refWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
  const refY=refWhite?meterReadingLuminanceNits(refWhite):null;
@@ -16764,32 +16770,15 @@ function meterGreyChartTargetXYZForReading(reading){
 
 function meterTargetXYZForReading(reading){
 	 if(!reading) return {X:0,Y:0,Z:0};
-	 // SDR26 109% legal peak: there is NO target Y -- the peak calibrates
-	 // its own RGB balance, chroma only. Same rule HDR applies to its
-	 // 100% peak (no target Y displayed; chroma-only dE). Detect via:
-	 //   - explicit ddc_layout / series_mode containing 'sdr' AND ire==109
-	 //   - reading name pattern sdr26_* (the SDR26 26-anchor table)
-	 //   - the autocal_white_y + ire==109 combo (the autocal worker tags
-	 //     the 109 reading with autocal_white_y = its own measured Y)
-	 //
-	 // Return the D65 chromaticity at the MEASURED luminance (not {0,0,0}).
-	 // Returning {0,0,0} would make any ITP formula read the entire
-	 // measured XYZ as error (a 109 reading with Y=198 vs Y=0 is a
-	 // massive luminance delta that would dwarf the chroma error the
-	 // calibration is actually closing). With the D65-chromaticity-at-
-	 // measured-Y target + the chroma-only dE ITP dispatch in
-	 // meterDeltaE (which drops the dI term), the chart reads as the
-	 // actual chromaticity gap to D65, matching the autocal worker's
-	 // delta_e_itp_chroma_only result.
+	 // SDR26 peak (Limited 109 legal / Full 100): NO luminance target --
+	 // peak calibrates RGB balance, chroma only. Same rule HDR applies to
+	 // its 100% peak. Return D65 chromaticity at the MEASURED luminance
+	 // (not {0,0,0}) so ITP dE is the chromaticity gap to D65; meterDeltaE
+	 // drops the dI term via meterReadingIsSdr26LegalPeak. Matches worker
+	 // delta_e_itp_chroma_only. Limited 100% legal-white (ddc_target_ire 99)
+	 // is NOT a peak and must not take this path.
 	 try{
-	  const _ire=Number(reading.ire!=null?reading.ire:(reading.patch_ire!=null?reading.patch_ire:reading.stimulus));
-	  const _layout=String(reading.series_mode||reading.ddc_layout||'');
-	  const _name=String(reading.name||'').toLowerCase();
-	  const _hasSdrLayout=_layout.toLowerCase().indexOf('sdr')>=0;
-	  const _isSdr26Name=_name.startsWith('sdr26_');
-	  const _is109AutocalWhite=(reading.autocal_white_y!=null && Number(reading.autocal_white_y)>0 && Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05);
-	  const _hasLegalWhiteAnchor=(reading.autocal_legal_white_anchor===true||reading.autocal_legal_white_anchor===JSON?.PP?.true);
-	  if(Number.isFinite(_ire) && Math.abs(_ire-109.0)<0.05 && (_hasSdrLayout || _isSdr26Name || _is109AutocalWhite || _hasLegalWhiteAnchor)){
+	  if(typeof meterReadingIsSdr26LegalPeak==='function' && meterReadingIsSdr26LegalPeak(reading)){
 	   const _mY=(typeof meterReadingLuminanceNits==='function')?meterReadingLuminanceNits(reading):(reading.Y||0);
 	   const _wp=(typeof meterTargetWhitePoint==='function')?meterTargetWhitePoint():{x:0.3127,y:0.329};
 	   if(Number.isFinite(_mY) && _mY>0){
@@ -17074,19 +17063,24 @@ function meterReadingXYZ(reading){
 
 function meterColorLuminanceInfo(reading){
  if(!reading) return {measuredY:null,targetY:null,deltaY:null,deltaPct:null};
+ const measuredY=meterReadingLuminanceNits(reading);
+ // SDR26 peak (Limited 109 / Full 100): chroma-only -- no luminance target
+ // and no Y-error. Target Y must not be a gamma curve value (that inflated
+ // Full 100% error against a stale pre-peak white).
+ if(typeof meterReadingIsSdr26LegalPeak==='function' && meterReadingIsSdr26LegalPeak(reading)){
+  return {measuredY,targetY:null,deltaY:null,deltaPct:null,chromaOnlyPeak:true};
+ }
  let targetY=null;
  try{
   const targetXYZ=meterTargetXYZForReading(reading);
-  // The 109% SDR26 legal-peak anchor returns {X:0,Y:0,Z:0} from
-  // meterTargetXYZForReading (chroma-only: no target Y). Treat all-zero
-  // XYZ as "no target" so the chart suppresses the Y-error line entirely
-  // instead of showing (measuredY - 0) / 0.
+  // Peak path may still return measured-Y D65 XYZ; treat equal-to-measured
+  // as no target for display. All-zero is the no-target sentinel.
   if(targetXYZ && targetXYZ.Y!=null && targetXYZ.Y>0
      && (targetXYZ.X>0 || targetXYZ.Y>0 || targetXYZ.Z>0)){
    targetY=targetXYZ.Y;
+   if(measuredY!=null && Math.abs(targetY-measuredY)<1e-6) targetY=null;
   }
  }catch(e){}
- const measuredY=meterReadingLuminanceNits(reading);
  let deltaY=null,deltaPct=null;
  if(measuredY!=null&&targetY!=null){
   deltaY=measuredY-targetY;
@@ -19024,19 +19018,36 @@ function deltaEITPChromaOnly(X1,Y1,Z1,X2,Y2,Z2){
  return 720*Math.sqrt(0.25*dT*dT+dP*dP);
 }
 
-// SDR26 109% legal-peak detector for the chart path. Mirrors the
-// autocal worker's three signals (ire==109, name starts with 'sdr26_',
-// autocal_white_y set) so the chart and the worker agree on which
-// readings are chroma-only / no-target-Y.
+// SDR26 peak detector for the chart path (chroma-only / no luminance target).
+// Limited legal peak = 109; Full peak = 100. Must NOT match Limited's
+// legal-white reference at 100% (ddc_target_ire 99 / legal_white_anchor).
+// Mirrors worker lg_autocal_sdr26_dpg_is_peak_ire + Full labels.
 function meterReadingIsSdr26LegalPeak(rd){
  if(!rd) return false;
  const _ire=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:(rd.nominal_ire!=null?rd.nominal_ire:(rd.stimulus!=null?rd.stimulus:null))));
- if(!Number.isFinite(_ire) || Math.abs(_ire-109.0)>=0.05) return false;
+ if(!Number.isFinite(_ire)) return false;
  const _layout=String(rd.series_mode||rd.ddc_layout||'').toLowerCase();
  const _name=String(rd.name||'').toLowerCase();
- if(_layout.indexOf('sdr')>=0) return true;
- if(_name.startsWith('sdr26_')) return true;
- if(rd.autocal_white_y!=null && Number(rd.autocal_white_y)>0) return true;
+ const _label=String(rd.autocal_target_label||'').toLowerCase();
+ const _sdrish=(_layout.indexOf('sdr')>=0) || _name.startsWith('sdr26_') || (rd.autocal_white_y!=null && Number(rd.autocal_white_y)>0);
+ // Limited 109 legal peak
+ if(Math.abs(_ire-109.0)<0.05){
+  if(_sdrish) return true;
+  if(rd.autocal_legal_white_anchor) return true;
+  return false;
+ }
+ // Full 100 peak (not Limited 100 legal-white reference)
+ if(Math.abs(_ire-100.0)<0.05){
+  // Worker Full peak label
+  if(_label.indexOf('full peak')>=0) return true;
+  // DPG greyscale step name sdr26_100%
+  if(_name.startsWith('sdr26_')) return true;
+  // Full-range white_reference without Limited legal-white markers
+  if(rd.autocal_white_reference && !rd.autocal_legal_white_anchor && rd.ddc_target_ire==null){
+   if(typeof meterPatchUsesVideoRange==='function' && !meterPatchUsesVideoRange()) return true;
+  }
+  return false;
+ }
  return false;
 }
 
@@ -20010,12 +20021,8 @@ function meterDeltaE(labM,labT,form,ctx){
   const Xr=(ctx.itpXr!=null)?ctx.itpXr:ctx.Xr;
   const Yr=(ctx.itpYr!=null)?ctx.itpYr:ctx.Yr;
   const Zr=(ctx.itpZr!=null)?ctx.itpZr:ctx.Zr;
-  // SDR26 109% legal peak: chroma-only dE ITP. The peak calibrates its
-  // own RGB balance, so the dE has no luminance component -- matching
-  // the autocal worker's delta_e_itp_chroma_only dispatch. The full dE
-  // ITP against a (correctly suppressed) {0,0,0} target would read as
-  // a huge number; chroma-only reads as the chromaticity gap to D65
-  // the calibration is closing.
+  // SDR26 peak (Limited 109 / Full 100): chroma-only dE ITP. Peak
+  // calibrates RGB balance only -- matching worker delta_e_itp_chroma_only.
   if(ctx.reading && meterReadingIsSdr26LegalPeak(ctx.reading)){
    return deltaEITPChromaOnly(X,Y,Z,Xr,Yr,Zr);
   }
