@@ -26698,22 +26698,39 @@ async function meterAutoCalApplyStatus(status){
 		 if(statusChartReadings.length){
 	  meterReadings=statusChartReadings;
 	  const white=meterFindSeriesWhiteReading(meterReadings);
+	  // Prefer LIVE measured peak (Full 100 / Limited 109) while cal is
+	  // running. status.target_luminance / calibrated_white_luminance can
+	  // lag the reduce-to-lowest iters, and a synthetic white built from a
+	  // stale status freezes EOTF/gamma/RGB-balance targets until stop.
+	  // After stop the same live peak is still preferred when present.
+	  const livePeakRd=(typeof meterFindSdr26PeakWhiteReading==='function')
+	   ? meterFindSdr26PeakWhiteReading(meterReadings) : null;
+	  const livePeakY=livePeakRd
+	   ? ((typeof meterReadingLuminanceNits==='function')
+	      ? meterReadingLuminanceNits(livePeakRd)
+	      : Number(livePeakRd.luminance!=null?livePeakRd.luminance:livePeakRd.Y))
+	   : 0;
 	  const statusTargetY=Number(status.target_luminance||status.calibrated_white_luminance);
-	  if(Number.isFinite(statusTargetY)&&statusTargetY>0){
+	  const chartWhiteY=(livePeakY>0)?livePeakY:statusTargetY;
+	  if(Number.isFinite(chartWhiteY)&&chartWhiteY>0){
 	   meterStoreLgTargetWhiteReference(
-	    statusTargetY,
+	    chartWhiteY,
 	    status.full_workflow?'full-autocal':'greyscale-autocal',
 	    status.full_autocal_run_id||status.run_id||meterFullAutoCalRunId||null
 	   );
 	  }
-	  const synthetic=meterSyntheticGreyWhiteReading(statusTargetY);
-	  if(synthetic){
-	   synthetic.name='Auto Cal 100% target';
-	   synthetic.ire=100;
-	   synthetic.autocal_reference_only=true;
-	   meterWhiteReading=synthetic;
+	  if(livePeakRd&&livePeakY>0){
+	   meterWhiteReading=livePeakRd;
+	  } else {
+	   const synthetic=meterSyntheticGreyWhiteReading(statusTargetY);
+	   if(synthetic){
+	    synthetic.name='Auto Cal 100% target';
+	    synthetic.ire=100;
+	    synthetic.autocal_reference_only=true;
+	    meterWhiteReading=synthetic;
+	   }
+	   else if(white) meterWhiteReading=white;
 	  }
-	  else if(white) meterWhiteReading=white;
 	  const completed=new Set(meterReadings.filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
   const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
 	  if(sorted.length) {

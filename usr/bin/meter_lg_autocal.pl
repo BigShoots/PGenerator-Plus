@@ -15838,12 +15838,31 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # (no gamma-derived target Y line that drifts with each move). Limited 109
   # keeps legal-white metadata; Full 100 is true peak (no ddc_target_ire 99/108).
   if($_is_legal_peak) {
+   my $peak_y=luminance($reading);
    $reading->{"autocal_white_reference"}=JSON::PP::true;
    $reading->{"autocal_slot_locked"}=JSON::PP::true;
    $reading->{"ddc_slot_locked"}=JSON::PP::true;
-   $reading->{"autocal_white_y"}=sprintf("%.6f",luminance($reading)+0) if(!defined($reading->{"autocal_white_y"}));
-   $reading->{"lg_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
-   $reading->{"series_target_white_y"}=sprintf("%.6f",luminance($reading)+0);
+   # Always overwrite with this iter's measured peak Y. A "set if undef"
+   # guard froze the first reduce-to-lowest read on the peak row and left
+   # 0%/body autocal_white_y stamps on the provisional seed white.
+   if(defined($peak_y) && $peak_y+0 > 0) {
+    $reading->{"autocal_white_y"}=sprintf("%.6f",$peak_y+0);
+    $reading->{"lg_target_white_y"}=sprintf("%.6f",$peak_y+0);
+    $reading->{"series_target_white_y"}=sprintf("%.6f",$peak_y+0);
+    # Publish live peak to status so WebUI target curves re-scale every
+    # reduce-to-lowest iter (not only after the peak anchor finishes).
+    $white_ref=$peak_y+0;
+    set_state_white_reference($state,$white_ref);
+    $state->{"sdr_1d_dpg_white_ref"}=$white_ref+0 if(ref($state) eq "HASH");
+    # Re-stamp earlier accumulated rows (e.g. 0% seed) so chart paths that
+    # still read autocal_white_y do not keep the provisional first white.
+    if(ref($state) eq "HASH" && ref($state->{"readings"}) eq "ARRAY") {
+     for my $rd (@{$state->{"readings"}}) {
+      next unless ref($rd) eq "HASH";
+      $rd->{"autocal_white_y"}=sprintf("%.6f",$white_ref+0);
+     }
+    }
+   }
    if(abs(($_anchor_ire+0)-109.0) < 0.05) {
     # Limited legal peak: reference-only chart hide + legal-white labels.
     $reading->{"autocal_legal_white_anchor"}=JSON::PP::true;
