@@ -1569,6 +1569,7 @@ sub read_step_once {
    $reading->{"r_code"}=$step->{"r"};
    $reading->{"g_code"}=$step->{"g"};
    $reading->{"b_code"}=$step->{"b"};
+   reset_meter_session_success();
    return ($reading,undef);
   }
   return (undef,$result->{"message"}||"Meter read failed") if($status eq "error");
@@ -1599,6 +1600,36 @@ sub fixture_reading_for_step {
  return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>0, y=>0, luminance=>$xyz->[1], timestamp=>time() };
 }
 
+# Consecutive-transient-failure counter for the meter session (mirrors the
+# greyscale worker's logic). A single read timeout is usually a poll hiccup
+# that clears by re-reading on the EXISTING spotread session. Tearing the
+# session down (/api/meter/session/stop) forces a fresh spotread to reopen +
+# reclaim the i1Display3 USB interface, and that reopen races the kernel/usbhid
+# state ("did not claim interface 0 before use") -> kernel device reset -> meter
+# offline -> WebUI drops. So only tear down after repeated consecutive transient
+# failures, not the first one. Reset to 0 on any successful read.
+my $_meter_session_consecutive_transient_failures=0;
+my $_METER_SESSION_TEARDOWN_THRESHOLD=2;
+
+sub reset_meter_session_success {
+ $_meter_session_consecutive_transient_failures=0;
+}
+
+sub maybe_reset_meter_session_after_read_error {
+ my ($error)=@_;
+ $error="" if(!defined($error));
+ $error=~s/[\r\n]+/ /g;
+ return unless($error =~ /timeout|session|spotread|unavailable/i);
+ $_meter_session_consecutive_transient_failures++;
+ if($_meter_session_consecutive_transient_failures < $_METER_SESSION_TEARDOWN_THRESHOLD) {
+  log_line("Transient meter read error (attempt $_meter_session_consecutive_transient_failures/$_METER_SESSION_TEARDOWN_THRESHOLD), keeping session for retry: $error");
+  return;
+ }
+ log_line("Resetting meter session after $_meter_session_consecutive_transient_failures consecutive transient read errors: $error");
+ api_json("POST","/api/meter/session/stop",undef,25);
+ $_meter_session_consecutive_transient_failures=0;
+}
+
 sub read_step {
  my ($config,$step,$state)=@_;
  my $fixture=fixture_reading_for_step($step,$config);
@@ -1626,7 +1657,7 @@ sub read_step {
   $last=$error;
   $state->{"message"}="Retrying ".($step->{"name"}||"patch")." ($i/$attempts)";
   write_state($state);
-  api_json("POST","/api/meter/session/stop",undef,25) if($error =~ /timeout|session|spotread|unavailable/i);
+  maybe_reset_meter_session_after_read_error($error);
   sleep(1+$i);
  }
  return (undef,$last||"Meter read failed");
