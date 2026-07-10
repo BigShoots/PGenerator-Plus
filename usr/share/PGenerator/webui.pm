@@ -10995,10 +10995,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
 	  <div id="meterAutoCalLuminanceBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
    <div id="meterAutoCalLuminanceNote" style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">
-    Set the panel light so the live 100% white luminance reads at your target peak.
-    After Auto Cal completes the calibrated 100% brightness typically lands ~15% lower
-    than the value you set here as the greyscale DPG adjusts around the target gamma,
-    so set the peak a bit higher than your post-cal goal if that matters.
+    Set OLED pixel brightness (OLED) or Backlight (LCD) so the live 100% white
+    luminance reads at your target peak. After Auto Cal completes the calibrated
+    100% brightness typically lands ~15% lower than the value you set here as the
+    greyscale DPG adjusts around the target gamma, so set the peak a bit higher
+    than your post-cal goal if that matters.
    </div>
    <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap">
 
@@ -24873,14 +24874,46 @@ async function meterGreyTvInputKeydown(event,channel,input){
 function initMeterGreyCanvasEditing(){
 }
 
-function meterAutoCalPanelLightCandidates(){
+// Panel light for luminance setup: OLED pixel light vs LCD backlight.
+// Prefer the TV model name over meter display_type (CCSS) — operators often
+// leave meter type as oled_generic while calibrating an LCD, which used to
+// mis-label backlight as "OLED pixel brightness".
+function meterAutoCalIsOledPanel(){
  const state=window.lgStatusState||{};
- const model=String(state.modelName||state.model_name||'').toLowerCase();
+ const model=String(state.modelName||state.model_name||state.productName||state.product_name||'').toLowerCase();
+ // Explicit LCD / non-emissive product lines first.
+ if(/\b(qned|nanocell|nano\s*cell|uhd|lcd|led|mini-?led|nano\d{2}|qn\d{2}|uq\d{2}|ut\d{2}|um\d{2})\b/.test(model)
+  || model.indexOf('nanocell')!==-1
+  || model.indexOf('qned')!==-1){
+  return false;
+ }
+ if(model.indexOf('oled')!==-1 || model.indexOf('qdoled')!==-1) return true;
  const display=String((typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'').toLowerCase();
- const oled=(model.indexOf('oled')!==-1||display.indexOf('oled')!==-1||display.indexOf('qdoled')!==-1);
- return oled
-  ? [{key:'backlight',label:'OLED pixel brightness'},{key:'oledLight',label:'OLED light'},{key:'oledPixelBrightness',label:'OLED pixel brightness'}]
-  : [{key:'backlight',label:'Backlight'},{key:'oledPixelBrightness',label:'OLED pixel brightness'},{key:'oledLight',label:'OLED light'}];
+ if(display.indexOf('lcd')!==-1 || display.indexOf('wled')!==-1
+  || display.indexOf('ccfl')!==-1 || display.indexOf('rgbled')!==-1){
+  return false;
+ }
+ if(display.indexOf('oled')!==-1 || display.indexOf('qdoled')!==-1) return true;
+ // Unknown panel: prefer Backlight (works on most LG LCDs; OLED also accepts
+ // the same SSAP key but we only reach here without model/display hints).
+ return false;
+}
+
+function meterAutoCalPanelLightCandidates(){
+ // LG SSAP uses key "backlight" for BOTH LCD backlight and OLED pixel
+ // brightness; the label is what differs. OLED also has oledLight /
+ // oledPixelBrightness on some generations as fallbacks.
+ if(meterAutoCalIsOledPanel()){
+  return [
+   {key:'backlight',label:'OLED pixel brightness'},
+   {key:'oledLight',label:'OLED light'},
+   {key:'oledPixelBrightness',label:'OLED pixel brightness'}
+  ];
+ }
+ return [
+  {key:'backlight',label:'Backlight'},
+  {key:'brightness',label:'Brightness'}
+ ];
 }
 
 function meterAutoCalPanelLightLabel(key){
@@ -25133,7 +25166,9 @@ async function meterAutoCalApplyPanelLightValue(value,skipMeterStop){
     if(offset===candidates.length-1) meterAutoCalPanelLightOverlayMessage((e&&e.message)||'Unable to adjust display panel light',true);
 	   }
 	  }
- meterAutoCalPanelLightOverlayMessage('This LG TV did not expose an OLED/backlight control.',true);
+ meterAutoCalPanelLightOverlayMessage(meterAutoCalIsOledPanel()
+  ? 'This LG TV did not expose an OLED pixel brightness control.'
+  : 'This LG TV did not expose a Backlight control.',true);
  }finally{
   if(commandHandle&&typeof lgEndCommand==='function') lgEndCommand(commandHandle);
   meterAutoCalPanelLightWritePending=false;
@@ -26429,6 +26464,20 @@ async function meterAutoCalRunPreflightReset(){
  }
 }
 
+// Settle used by the interactive 100% luminance wizard. Calibration still
+// uses the full meter delay; this loop only needs responsive feedback while
+// the operator dials OLED pixel brightness / LCD backlight on a static 100%
+// patch. First read uses a moderate settle so the initial patch has time to
+// display; later reads and post-slider reads stay short.
+function meterAutoCalLuminanceSetupSettleMs(opts){
+ const full=Math.max(0,Number(typeof meterDelayMs==='function'?meterDelayMs():1000)||1000);
+ const first=!!(opts&&opts.first);
+ const afterPanel=!!(opts&&opts.afterPanelLight);
+ if(first) return Math.min(full,Math.max(400,Math.min(800,full)));
+ if(afterPanel) return Math.min(full,350);
+ return Math.min(full,150);
+}
+
 async function meterAutoCalLuminanceSetupLoop(whiteStep){
  meterAutoCalPhase='luminance';
  meterAutoCalLuminanceSetupActive=true;
@@ -26441,10 +26490,11 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
  meterAutoCalSetupReading=null;
  const continueBtn=document.getElementById('meterAutoCalContinueBtn');
  if(continueBtn) continueBtn.disabled=true;
- meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Watch the live 100% white reading, then click Continue when ready.'});
+ const panelKind=meterAutoCalIsOledPanel()?'OLED pixel brightness':'Backlight';
+ meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Watch the live 100% white reading, adjust '+panelKind+', then click Continue when ready.'});
  meterAutoCalResetPanelLightState();
  meterAutoCalUpdatePanelLightUi();
- meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Loading the LG panel-light control before the live white read...'});
+ meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Loading the LG '+panelKind+' control before the live white read...'});
  await meterAutoCalLoadPanelLightValue(true);
  meterAutoCalUpdatePanelLightUi();
  await meterDisplayPatch(whiteStep,{fresh:false});
@@ -26452,21 +26502,28 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
  meterLgGreyLoadToken++;
  meterRenderGreyTvControls(null);
  let lastReading=null;
+ let afterPanelLight=false;
  while(meterAutoCalLuminanceSetupActive&&!meterAutoCalLuminanceContinue&&!meterAutoCalStopRequested){
   const startedPanelLightWrite=meterAutoCalProcessQueuedPanelLight();
   meterAutoCalUpdatePanelLightUi();
   if(startedPanelLightWrite||meterAutoCalPanelLightBlocksMeterRead()){
-   meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Waiting for panel light change to finish before the next meter read...'});
+   meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:'Waiting for '+panelKind+' change before the next meter read...'});
    await meterAutoCalWaitForPanelLightIdle(30000);
-   await meterAutoCalSleep(300);
+   // Brief TV settle only — the next meter read uses a short delay_ms too.
+   await meterAutoCalSleep(120);
+   afterPanelLight=true;
    continue;
   }
   const live=document.getElementById('meterAutoCalLiveY');
   const fill=document.getElementById('meterAutoCalLuminanceFill');
+  // Interactive setup: short settle so each slider tick gets a fresh Y
+  // quickly. Full meterDelayMs is for autocal accuracy, not this wizard.
+  const settleMs=meterAutoCalLuminanceSetupSettleMs({first:!lastReading,afterPanelLight:afterPanelLight});
+  afterPanelLight=false;
 	  const readPayload=meterMeasurementSignalContext({
 	   display_type:getEffectiveDisplayType(),
 	   refresh_rate:getMeterRefreshRate()||undefined,
-	   delay_ms:meterDelayMs(),
+	   delay_ms:settleMs,
 	   patch_r:whiteStep.r,
 	   patch_g:whiteStep.g,
 	   patch_b:whiteStep.b,
@@ -26512,7 +26569,7 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
    updateLiveReading(rd);
    meterUpsertSeriesReading(rd,whiteStep);
    meterCacheSeriesState('running');
-   const msg=(y!=null&&Number.isFinite(y))?('Live white is '+y.toFixed(2)+' cd/m\u00B2. Continue when this is the luminance you want.'):('Continue when live white is the luminance you want.');
+   const msg=(y!=null&&Number.isFinite(y))?('Live white is '+y.toFixed(2)+' cd/m\u00B2. Adjust '+panelKind+', then Continue when ready.'):('Continue when live white is the luminance you want.');
    meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:msg});
    meterAutoCalUpdatePanelLightUi();
   }else if(result&&result.status==='cancelled'){
@@ -26520,7 +26577,8 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
   }else if(result&&result.status==='error'){
    meterAutoCalSetOverlay(true,{phase:'luminance',current_name:'Set 100% luminance',message:result.message||'Waiting for luminance reading'});
   }
-  await new Promise(resolve=>setTimeout(resolve,250));
+  // Tight loop gap — meter settle already happened in delay_ms.
+  await new Promise(resolve=>setTimeout(resolve,50));
  }
  meterAutoCalLuminanceSetupActive=false;
  meterAutoCalLuminanceReadBusy=false;
