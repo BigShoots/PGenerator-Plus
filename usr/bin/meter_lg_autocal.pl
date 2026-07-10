@@ -1079,6 +1079,34 @@ sub autocal_sdr_signal_peak {
  return 100.0;
 }
 
+# True when SDR 1D-DPG greyscale must use the Limited legal-expanded model
+# (empirical 26-pt codes + DPG indexes, 105/109 headroom). False for Full
+# range: wire codes and DPG samples share the 0..1023 domain 1:1 and there
+# is no super-white ladder. Scoped to the SDR26 1D-DPG greyscale path only
+# -- multipoint DDC, HDR20, and Limited SDR are unaffected when callers
+# keep pattern_signal_range=1.
+sub lg_autocal_sdr26_dpg_is_limited_range {
+ my ($config)=@_;
+ $config=$LG_AUTOCAL_CONFIG if(ref($config) ne "HASH");
+ return 0 if(ref($config) ne "HASH");
+ my $range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"";
+ return (defined($range) && $range ne "" && int($range)==1) ? 1 : 0;
+}
+
+# Full-range SDR 1D DPG sample index for an IRE label. On Full the uploaded
+# 1D_DPG_DATA table is addressed by the same 0..1023 domain as the 10-bit
+# wire code (not the Limited legal-expanded map). 8-bit Full patches still
+# map into this 1024-pt domain via the IRE fraction so 100% lands on peak.
+sub lg_autocal_sdr26_dpg_full_index_for_ire {
+ my ($ire,$max_idx)=@_;
+ $max_idx=1023 if(!defined($max_idx) || $max_idx+0 <= 0);
+ return 0 if(!defined($ire) || $ire+0 <= 0);
+ my $idx=int(($ire+0)/100.0*$max_idx + 0.5);
+ $idx=0 if($idx < 0);
+ $idx=int($max_idx) if($idx > $max_idx);
+ return $idx;
+}
+
 sub target_luminance_for_step {
 	 my ($white_y,$step,$target_gamma,$signal_mode,$black_y)=@_;
 	 # Apply calibration-card Target White / Target Black overrides so the
@@ -15448,9 +15476,10 @@ sub lg_autocal_26_sdr26_dpg_low_ire_iter_budget {
  # R-held-at-1.0 convergence floor. The first iter uses move_scaling=0.5
  # warmup to avoid a 50% channel-reduction overshoot; subsequent iters
  # resume the full M=1.0/2.5 damp path.
- if(abs($ire-109.0) < 0.05) { return $legal_peak_iters; }
- # White cluster (99, 105) -- body IREs but use the white body budget so
- # the reduce-to-lowest path gets enough iters to converge.
+ # Limited legal peak (109) and Full peak (100) share the peak budget.
+ if(abs($ire-109.0) < 0.05 || abs($ire-100.0) < 0.05) { return $legal_peak_iters; }
+ # White cluster (99, 105 on Limited) -- body IREs but use the white body
+ # budget so the reduce-to-lowest path gets enough iters to converge.
  if($ire+0 >= 99.0) { return $white_body_iters; }
  return $default_iters;
 }
@@ -16269,8 +16298,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    if($_is_legal_peak && ref($reading) eq "HASH") {
     my $_lx=defined($reading->{"x"}) ? sprintf("%.4f",$reading->{"x"}+0) : "undef";
     my $_ly=defined($reading->{"y"}) ? sprintf("%.4f",$reading->{"y"}+0) : "undef";
-    log_line(sprintf("SDR26 1D DPG greyscale: sdr26_109%% i%d chromaticity x=%s y=%s dE=%.4f gains R=%.3f G=%.3f B=%.3f",
-     $i,$_lx,$_ly,defined($de)?$de+0:-1,$sr+0,$sg+0,$sb+0));
+    log_line(sprintf("SDR26 1D DPG greyscale: %s i%d chromaticity x=%s y=%s dE=%.4f gains R=%.3f G=%.3f B=%.3f",
+     $label,$i,$_lx,$_ly,defined($de)?$de+0:-1,$sr+0,$sg+0,$sb+0));
    }
    my @anchors_for_build=(@{$done_ref},{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
   my $new_dpg=lg_autocal_26_build_sdr26_1d_dpg_seeded($current_dpg_ref,\@anchors_for_build);
@@ -16485,58 +16514,68 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  $target_de=0.05 if($target_de+0 < 0.05);
  $target_de=5.0 if($target_de+0 > 5.0);
 
- # SDR26 26-anchor table -- matches @LG_DDC_1D_LABELS and
- # @LG_DDC_1D_INDEXES in usr/sbin/pgenerator-lg. Slot 0 = IRE 2.3 (idx 21),
- # ... slot 25 = IRE 109 (idx 1023).
- my @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
- my @sdr26_indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
- # Per-slot RGB wire codes for each SDR26 anchor. Dispatch on the
- # active transport (rgb_quant_range) and bit depth (max_bpc) so the
- # codes the worker emits match the chart (webui.pm
- # meterLgAutoCalCodeForSlot) AND what the renderer/panel will actually
- # decode in the user's transport. Without this, SDR autocal on RGB Full
- # sends 10-bit Limited codes (e.g. 84 for 2.3% IRE) which the renderer
- # scales down to 8-bit (84>>2=21) and the panel decodes as ~8% IRE in
- # Full mode, so the meter reads the wrong brightness for the anchor the
- # worker thinks it's calibrating -- which fails the lower patches and
- # corrupts the DPG edits.
+ # SDR26 anchor tables. Two mutually exclusive models:
  #
- #   Full 8-bit      0..255 linear, 105/109 clamp to peak (255)
- #   Full 10-bit     0..1023 linear, 105/109 clamp to peak (1023)
- #   Limited 10-bit  empirical legal-expanded table (MATCHES reference)
- #   Limited 8-bit   extended round(16 + S/100*239) (16..255)
+ #  * Limited (pattern_signal_range=1): empirical legal-expanded 26-pt
+ #    ladder matching @LG_DDC_1D_LABELS / @LG_DDC_1D_INDEXES in
+ #    pgenerator-lg (2.3..109, DPG idx 21..1023). Super-white 105/109
+ #    and the headroom pre-curve stay on this path only.
+ #  * Full (any other range, typically pattern_signal_range=2): wire
+ #    codes and DPG samples share the 0..1023 domain 1:1. No super-white
+ #    -- peak is 100% at idx 1023. 105/109 are omitted so we never edit
+ #    a headroom slot that Full cannot address separately from peak.
  #
- # NOTE: the Limited 10-bit table is intentionally NOT derived from
- # int(ire/100*876+64+0.5); that formula gives off-by-codes against the
- # hand-tuned reference values (e.g. 50% -> 502 vs table 504, 3% -> 90 vs
- # table 92, 4% -> 99 vs table 100, 105% -> 986 vs table 984) which would
- # break LG DDC calibration. We must use the empirical table here.
+ # Limited multipoint DDC, HDR20, and non-DPG series are untouched: this
+ # branch is only consumed by lg_autocal_26_run_sdr_1d_dpg_greyscale.
  my $sdr26_bits=defined($config->{"max_bpc"}) && $config->{"max_bpc"} ne "" ? int($config->{"max_bpc"}) : 10;
  $sdr26_bits=10 if($sdr26_bits == 12);
  my $sdr26_max=$sdr26_bits==10 ? 1023 : 255;
- my $sdr26_pattern_range=(ref($config) eq "HASH" ? ($config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"") : "");
- my $sdr26_limited=($sdr26_pattern_range ne "" && int($sdr26_pattern_range)==1) ? 1 : 0;
+ my $sdr26_limited=lg_autocal_sdr26_dpg_is_limited_range($config);
+ my @sdr26_labels;
+ my @sdr26_indexes;
  my @sdr26_codes;
- if(!$sdr26_limited) {
+ my $sdr26_peak_ire;
+ my $sdr26_dpg_max_idx=1023; # 1D_DPG_DATA is always a 1024-pt table
+ if($sdr26_limited) {
+  # Limited legal-expanded 26-pt -- MUST stay byte-identical to the
+  # historical table (empirical, not formula-derived).
+  @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+  @sdr26_indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
+  $sdr26_peak_ire=109.0;
+  if($sdr26_bits==10) {
+   @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
+  } else {
+   for(my $k=0;$k<@sdr26_labels;$k++) {
+    my $ire=$sdr26_labels[$k]+0;
+    my $code=int($ire/100*239+16+0.5);
+    $code=255 if($code > 255);
+    $code=16 if($code < 16);
+    push @sdr26_codes,$code;
+   }
+  }
+ } else {
+  # Full: body through 99% plus a single peak at 100%. No 105/109.
+  @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,100);
+  $sdr26_peak_ire=100.0;
   for(my $k=0;$k<@sdr26_labels;$k++) {
    my $ire=$sdr26_labels[$k]+0;
+   my $idx=lg_autocal_sdr26_dpg_full_index_for_ire($ire,$sdr26_dpg_max_idx);
+   push @sdr26_indexes,$idx;
    my $code=int($ire/100*$sdr26_max+0.5);
    $code=$sdr26_max if($code > $sdr26_max);
    $code=0 if($code < 0);
    push @sdr26_codes,$code;
   }
- } elsif($sdr26_bits==10) {
-  @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
- } else {
-  for(my $k=0;$k<@sdr26_labels;$k++) {
-   my $ire=$sdr26_labels[$k]+0;
-   my $code=int($ire/100*239+16+0.5);
-   $code=255 if($code > 255);
-   $code=16 if($code < 16);
-   push @sdr26_codes,$code;
-  }
  }
  my $sdr26_input_max=($sdr26_limited && $sdr26_bits==10) ? 1023 : $sdr26_max;
+ $state->{"sdr_1d_dpg_range"}=$sdr26_limited ? "limited" : "full";
+ $state->{"sdr_1d_dpg_peak_ire"}=$sdr26_peak_ire+0;
+ log_line(sprintf("SDR26 1D DPG greyscale: range=%s peak_ire=%.0f anchors=%d bits=%d pattern_max=%d",
+  $sdr26_limited ? "limited" : "full",
+  $sdr26_peak_ire+0,
+  scalar(@sdr26_labels),
+  $sdr26_bits,
+  $sdr26_input_max+0));
  my $idx_for_sdr=sub {
   my ($step)=@_;
   return undef if(ref($step) ne "HASH");
@@ -16582,69 +16621,30 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   };
   push @ordered,$step;
  }
- # Sort/reorder to match the old SDR DDC full_ddc_spine calibration order:
- # 109 first (legal peak -- anchors the white reference), then 105 and 99
- # as their own per-anchor iterations through the reduce-to-lowest
- # white_balance_gain path, then 95, 90, 85, ..., 15 (top-down body),
- # then 2.3, 3, 4, 5, 7, 10 (low shadows last). This is the SAME order
- # the old SDR DDC autocal used (line ~680 in this file); preserving it
- # keeps the full autocal and greyscale-only flows identical and matches
- # the reference SDR workflow.
+ # Sort/reorder. Peak first (Limited: 109 legal peak; Full: 100% peak --
+ # no super-white). Body order for Limited keeps 105/99 headroom after
+ # the mid-spine; Full drops 105 entirely (and has no 109).
  #
- # IMPORTANT: only the legal peak (109) goes into @white_first. 105 and 99
- # ALSO need calibration -- the panel's chromaticity error at 105 and 99
- # is independent of the 109 calibration and must be corrected per-anchor
- # (not skipped as duplicates of 109). They fall through to @rest and
- # are calibrated individually via the white_balance_gain path (which
- # fires because $is_white=true for ire>=99.0 inside the per-anchor
- # loop). The skip rule in the @rest loop only skips 109 once it has
- # been calibrated -- 99 and 105 always process.
+ # IMPORTANT: only the peak IRE goes into @white_first. Limited headroom
+ # anchors (105, 99) ALSO need calibration and fall through to @rest.
  my @white_first;
  my @rest;
  for my $s (@ordered) {
-  # Only the legal peak (ire == 109, the headline full-white code) lands
-  # in @white_first. Other headroom anchors (99, 105) drop into @rest so
-  # each can be calibrated individually with white_balance_gain.
-  # NOTE: do NOT use autocal_step_is_white here -- that fn returns true
-  # ONLY for ire==100.0 (the HDR legal peak). SDR26's legal peak is 109
-  # (the SDR full-white code that matches the BT.709 109% headroom), so
-  # the white check is the explicit ire==109 match below.
   my $_s_ire=defined($s->{"ire"}) ? ($s->{"ire"}+0) : 0;
-  if(abs($_s_ire - 109.0) < 0.05) {
+  if(abs($_s_ire - $sdr26_peak_ire) < 0.05) {
    push @white_first,$s;
   } else {
    push @rest,$s;
   }
  }
- # Within @white_first: legal peak (109). Single-element by construction
- # but kept sorted for safety in case future autocal configs add more
- # legal peaks.
  @white_first=sort { ($b->{"ire"}//0) <=> ($a->{"ire"}//0) } @white_first;
- # Mark the 109 step so the per-anchor loop can skip it as "already done".
+ # Mark the peak step so the per-anchor loop can skip it as "already done".
  $white_first[0]->{"sdr26_white_peak_done"}=1 if(scalar(@white_first) > 0);
- # Within @rest: anchor order per the user's SDR26 spec:
- #   50, 25, 75          -- mid-range anchors (calibrate DPG spline shape
- #                            between 109 and the body extremes). 50 is
- #                            first so the 109->50 spline gives 75 a
- #                            small initial dE (linear interpolation
- #                            lands near 75's target). 25 next sets the
- #                            low-IRE anchor; 75 next completes the
- #                            trio with proper mid-range coverage.
- #   105, 99              -- headroom (calibrated individually via the
- #                            regular per-channel gain with target Y
- #                            from the 109-calibrated curve; NOT
- #                            reduce-to-lowest because the curve can
- #                            still drive them)
- #   95, 90, ..., 2.3     -- top-down body then low-shadows-last,
- #                            matching the old SDR DDC full_ddc_spine
- #                            order (line ~680) for the rest of the
- #                            anchors. The cumulative Akima spline
- #                            rebuilds after each anchor (109 + 50 + 25
- #                            + 75 are the spline's control points; the
- #                            remaining anchors sit on the
- #                            interpolated curve and only need chroma
- #                            fine-tuning + target-Y tracking).
- my @sdr26_body_order=(50,25,75,105,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
+ # Within @rest: mid-spine first, then (Limited only) headroom 105/99,
+ # then top-down body and low shadows last.
+ my @sdr26_body_order=$sdr26_limited
+  ? (50,25,75,105,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3)
+  : (50,25,75,99,95,90,85,80,70,65,60,55,45,40,35,30,20,15,10,7,5,4,3,2.3);
  {
   my %by_ire=map { defined($_->{"ire"}) ? (($_->{"ire"}+0) => $_) : () } @rest;
   my @reordered;
@@ -16749,75 +16749,48 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    log_line("SDR26 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
   }
 
-  # Headroom pre-curve: the SDR26 reference workflow reduces the 109% legal
-  # peak code (idx 1023) by ~32% relative to identity AND pushes the 100%
-  # code (idx 940) up by ~23% BEFORE the per-anchor white-balance iteration
-  # runs. This creates ~32% headroom at idx 1023 that the per-channel WB
-  # iteration uses when it pulls the warm/cool channels DOWN to match the
-  # locked channel. Without this pre-curve, the per-channel WB at 109 has
-  # no room to attenuate without crushing the 109 patch toward black --
-  # the dE floor stays around 10-12 because the chromaticity error is
-  # bounded by the 1D DPG's max attenuation headroom (none). With the
-  # pre-curve, the per-channel WB has room to bring the chromaticity close
-  # to D65 (the reference workflow achieves dE < 0.5 with this pre-curve).
-  #
-  # The pre-curve is a static shape applied to the seeded identity ramp.
-  # The body anchors (idx 0..920) are untouched (the gamma curve is
-  # unmodified at low IREs -- only the headroom codes 940..1023 get the
-  # pre-curve applied). The transition region (920..940) smooths via the
-  # Akima spline so the 99% anchor sits on a well-conditioned curve.
-  #
-  # Implementation: instead of writing the pre-curve DPG from scratch, we
-  # BUILD it through the same build path used by per-anchor WB -- by
-  # adding a synthetic anchor at idx 1023 with gain=headroom_factor (~0.68)
-  # and at idx 940 with gain=push_factor (~1.23). The Akima spline interpolates
-  # the transition region. This keeps the math in one place
-  # (lg_autocal_26_build_sdr26_1d_dpg_seeded) and the resulting curve has
-  # the same shape as the reference pre-curve.
-  # Pre-curve defaults. NO pre-curve at all (headroom=1.0, push=1.0):
-  # the panel can only produce up to identity at any code, so a push_factor
-  # > 1.0 doesn't actually lift the panel's output -- the panel caps at
-  # identity and the extra push_factor gain is a no-op. The result of
-  # push=1.08 + headroom=0.88 was that 109% read at 0.88*identity (post
-  # pre-curve) while 100% read at identity (panel caps the push), so the
-  # user saw 109 < 100 even though bt1886 gamma says 109 should be
-  # 1.262*100. Removing the pre-curve entirely (headroom=1.0, push=1.0)
-  # makes 109 and 100 both read at identity -- the user's "109 must be >=
-  # 100" expectation is met. Chromaticity convergence happens from the
-  # identity baseline via the per-channel WB iteration (the warm/cool
-  # channels get pulled down to match the lock channel, and the lock
-  # channel sits at identity). With the SDR's natural headroom available
-  # (the lock channel has unused hardware headroom at identity), the
-  # boost-to-average strategy can lift the lock channel above identity
-  # if needed for chromaticity convergence.
-  my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 1.0;
-  $headroom_factor=0.4 if($headroom_factor < 0.4);
-  $headroom_factor=1.2 if($headroom_factor > 1.2);
-  my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.0;
-  $push_factor=0.9 if($push_factor < 0.9);
-  $push_factor=1.5 if($push_factor > 1.5);
-  my @_precurve_anchors=(
-   { idx=>940, r_gain=>$push_factor, g_gain=>$push_factor, b_gain=>$push_factor },
-   { idx=>1023, r_gain=>$headroom_factor, g_gain=>$headroom_factor, b_gain=>$headroom_factor },
-  );
-  my $precurve_dpg=lg_autocal_26_build_sdr26_1d_dpg_seeded($current_dpg,\@_precurve_anchors);
-  if(ref($precurve_dpg) eq "ARRAY" && @$precurve_dpg == 3072) {
-   $state->{"current_name"}="SDR26 1D DPG (headroom pre-curve)";
-   $state->{"phase"}="writing";
-   $state->{"message"}=sprintf("Uploading headroom pre-curve (109%% -> %.0f%%%%, 100%% -> %.0f%%%%)",
-    $headroom_factor*100,
-    $push_factor*100);
-   write_state($state);
-   {
-    my ($pbok,$pbmsg)=$upload_dpg->($precurve_dpg);
-    if($pbok) {
-     $current_dpg=$precurve_dpg;
-     log_line(sprintf("SDR26 1D DPG greyscale: headroom pre-curve uploaded (109%% idx1023 gain=%.3f, 100%% idx940 gain=%.3f)",
-      $headroom_factor,$push_factor));
-    } else {
-     log_line("SDR26 1D DPG greyscale: headroom pre-curve upload failed (continuing with identity): ".$pbmsg);
+  # Headroom pre-curve is Limited-only. It seeds idx 940 (legal 100%) and
+  # idx 1023 (109% peak) for the legal-expanded super-white model. Full
+  # range has no separate 100/109 samples (peak is 100% @ 1023) -- applying
+  # this pre-curve on Full would write the wrong domain and is skipped.
+  if($sdr26_limited) {
+   # Pre-curve defaults. NO pre-curve at all (headroom=1.0, push=1.0):
+   # the panel can only produce up to identity at any code, so a push_factor
+   # > 1.0 doesn't actually lift the panel's output -- the panel caps at
+   # identity and the extra push_factor gain is a no-op. Chromaticity
+   # convergence happens from the identity baseline via the per-channel
+   # WB iteration.
+   my $headroom_factor=defined($config->{"lg_autocal_sdr26_dpg_headroom_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_headroom_factor"}+0) : 1.0;
+   $headroom_factor=0.4 if($headroom_factor < 0.4);
+   $headroom_factor=1.2 if($headroom_factor > 1.2);
+   my $push_factor=defined($config->{"lg_autocal_sdr26_dpg_push_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_push_factor"}+0) : 1.0;
+   $push_factor=0.9 if($push_factor < 0.9);
+   $push_factor=1.5 if($push_factor > 1.5);
+   my @_precurve_anchors=(
+    { idx=>940, r_gain=>$push_factor, g_gain=>$push_factor, b_gain=>$push_factor },
+    { idx=>1023, r_gain=>$headroom_factor, g_gain=>$headroom_factor, b_gain=>$headroom_factor },
+   );
+   my $precurve_dpg=lg_autocal_26_build_sdr26_1d_dpg_seeded($current_dpg,\@_precurve_anchors);
+   if(ref($precurve_dpg) eq "ARRAY" && @$precurve_dpg == 3072) {
+    $state->{"current_name"}="SDR26 1D DPG (headroom pre-curve)";
+    $state->{"phase"}="writing";
+    $state->{"message"}=sprintf("Uploading headroom pre-curve (109%% -> %.0f%%%%, 100%% -> %.0f%%%%)",
+     $headroom_factor*100,
+     $push_factor*100);
+    write_state($state);
+    {
+     my ($pbok,$pbmsg)=$upload_dpg->($precurve_dpg);
+     if($pbok) {
+      $current_dpg=$precurve_dpg;
+      log_line(sprintf("SDR26 1D DPG greyscale: headroom pre-curve uploaded (109%% idx1023 gain=%.3f, 100%% idx940 gain=%.3f)",
+       $headroom_factor,$push_factor));
+     } else {
+      log_line("SDR26 1D DPG greyscale: headroom pre-curve upload failed (continuing with identity): ".$pbmsg);
+     }
     }
    }
+  } else {
+   log_line("SDR26 1D DPG greyscale: full-range path -- skipping Limited headroom pre-curve (peak=100% idx1023)");
   }
 
   my @done;
@@ -16836,12 +16809,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   my $idx=$idx_for_sdr->($rs);
   if(defined($idx)) {
    my $label=$rs->{"name"}||"100%";
-   my $_white_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : 109.0);
+   my $_white_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : $sdr26_peak_ire);
    # Update the wizard's "current patch" indicator BEFORE entering the inner
-   # loop. The SDR26 109% legal peak gets a chroma-only label here; the
-   # full-body anchors are named "SDR26 1D DPG sdr26_XX%" in the per-anchor
-   # loop below. Without this, the indicator stays stuck on "SDR26 1D DPG
-   # (identity baseline)" through the entire 109% peak run.
+   # loop. Peak is Limited 109% or Full 100%; body anchors are named
+   # "SDR26 1D DPG sdr26_XX%" in the per-anchor loop below.
    $state->{"current_name"}="SDR26 1D DPG sdr26_".sprintf("%g",$_white_ire)."%" if(ref($state) eq "HASH");
    $state->{"current_ire"}=$_white_ire if(ref($state) eq "HASH");
    write_state($state);
@@ -16932,7 +16903,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}))
     my $_black_y=(ref($config) eq "HASH" && defined($config->{"black_y"})) ? ($config->{"black_y"}+0) : 0;
     my $_sdr26_tg=(ref($config) eq "HASH" && defined($config->{"target_gamma"})) ? $config->{"target_gamma"} : "bt1886";
     my $_body_tl=lg_autocal_26_sdr26_dpg_compute_target($white_ref,$rs,$_black_y,$_sdr26_tg);
-    log_line(sprintf("SDR26 1D DPG greyscale: body_target_curve=%s white_ref=%.4f first_body_ire=%.4f expected_tl=%.4f (sub-109 anchors use this calibrated 109 peak as the curve reference)",$_sdr26_tg,$white_ref+0,$_step_ire+0,(defined($_body_tl)?$_body_tl+0:0)));
+    log_line(sprintf("SDR26 1D DPG greyscale: body_target_curve=%s white_ref=%.4f first_body_ire=%.4f expected_tl=%.4f (body anchors use this calibrated peak as the curve reference)",$_sdr26_tg,$white_ref+0,$_step_ire+0,(defined($_body_tl)?$_body_tl+0:0)));
     $state->{"sdr_1d_dpg_body_target_logged"}=JSON::PP::true;
     write_state($state);
    }
