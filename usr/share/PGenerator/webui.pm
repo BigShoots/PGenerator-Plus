@@ -33327,8 +33327,8 @@ function drawCIETargetInset(ctx,readings,geom){
  const pad=g.pad;
  const insetSize=130, margin=8;
  // Overlay on the CIE plot top-right (over the chart, not a side gutter).
- // Position from the plot box so it sits over chromaticity, not outside axes.
- const ix=pad.l+g.w-insetSize-margin;
+ // Nudge left/down a touch so it sits clear of the gamut legend labels.
+ const ix=pad.l+g.w-insetSize-margin-18;
  // Autoscale the zoom to fit the target + measured point of the focused
  // reading. Enforce a minimum half-range so close measurements stay readable.
  const span=Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y));
@@ -33349,8 +33349,8 @@ function drawCIETargetInset(ctx,readings,geom){
  let lx=ix+insetSize-lw;
  if(lx<2) lx=2;
  if(lx+lw>ctx.w-2){ lw=Math.max(1,ctx.w-2-lx); }
- // Place frame below caption; caption sits under the gamut legend.
- const ly=pad.t+26;
+ // Place frame below caption; sit a bit lower under the gamut legend.
+ const ly=pad.t+40;
  const iy=ly+labelH+2;
  // Caption box sized exactly to the measured text.
  ctx.fillStyle='#0d0d15';
