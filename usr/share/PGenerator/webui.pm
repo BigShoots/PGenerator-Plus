@@ -11202,7 +11202,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    <span class="apply-settings-check" aria-hidden="true"><svg viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg"><path d="M14 36 L28 50 L56 18"/></svg></span>
   </div>
   <div class="apply-settings-title" id="meterStopTitle">Stopping</div>
-  <div class="apply-settings-status" id="meterStopStatus">Waiting for the meter to finish stopping&hellip;</div>
+  <div class="apply-settings-status" id="meterStopStatus">Waiting for the meter to stop&hellip;</div>
  </div>
 </div>
 
@@ -11298,12 +11298,12 @@ function meterStopModalShow(kind,statusText){
  const title=document.getElementById('meterStopTitle');
  const status=document.getElementById('meterStopStatus');
  const labels={
-  series:{title:'Stopping Series Read',status:'Waiting for the series and meter to finish stopping\u2026'},
-  continuous:{title:'Stopping Continuous Read',status:'Waiting for the meter to finish stopping\u2026'},
-  meter:{title:'Stopping Meter',status:'Waiting for the meter to finish stopping\u2026'},
-  autocal:{title:'Stopping Auto Cal',status:'Waiting for Auto Cal to finish stopping\u2026'},
-  '3d-autocal':{title:'Stopping 3D LUT AutoCal',status:'Waiting for 3D LUT AutoCal to finish stopping\u2026'},
-  'full-autocal':{title:'Stopping Full Auto Cal',status:'Waiting for Full Auto Cal to finish stopping\u2026'}
+  series:{title:'Stopping Series Read',status:'Waiting for the series and meter to stop\u2026'},
+  continuous:{title:'Stopping Continuous Read',status:'Waiting for the meter to stop\u2026'},
+  meter:{title:'Stopping Meter',status:'Waiting for the meter to stop\u2026'},
+  autocal:{title:'Stopping Auto Cal',status:'Waiting for Auto Cal to stop\u2026'},
+  '3d-autocal':{title:'Stopping 3D LUT AutoCal',status:'Waiting for 3D LUT AutoCal to stop\u2026'},
+  'full-autocal':{title:'Stopping Full Auto Cal',status:'Waiting for Full Auto Cal to stop\u2026'}
  };
  const pack=labels[meterStopModalKind]||labels.meter;
  if(title) title.textContent=pack.title;
