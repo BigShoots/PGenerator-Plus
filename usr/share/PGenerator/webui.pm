@@ -33425,7 +33425,7 @@ function drawCIETargetInset(ctx,readings,geom){
  ctx.save();
  ctx.font='9px sans-serif';
  const textW=ctx.measureText(labelText).width;
- const labelPadX=10, labelH=15;
+ const labelPadX=10;
  const idealW=Math.max(insetSize,textW+labelPadX*2);
  // Keep caption in the gutter under/over the zoom frame — clamp to gutter.
  const maxLeft=g.plotRight+4, maxRight=ctx.w-pad.r;
