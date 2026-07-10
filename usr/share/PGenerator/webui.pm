@@ -24605,10 +24605,13 @@ function meterGreyscaleRgbPanelReading(reading){
  return null;
 }
 
-function meterRenderGreyRgbReadOnly(reading){
+function meterRenderGreyRgbReadOnly(reading,metaText){
  const host=document.getElementById('meterGreyTvWidget');
  const meta=document.getElementById('meterGreyTvMeta');
  if(!host) return;
+ // Always show live RGB balance bars from the meter reading — even when
+ // the greyscale step has no LG white-balance DDC mapping (100% RECAL,
+ // 2.3% Full-path edge cases, etc.). Controls stay off (read-only columns).
  const panelReading=meterGreyscaleRgbPanelReading(reading);
  const liveRgb=panelReading?meterLiveRgbData(panelReading):null;
  const spec=meterRgbDeltasForLive(panelReading,liveRgb);
@@ -24620,8 +24623,13 @@ function meterRenderGreyRgbReadOnly(reading){
  ];
  host.innerHTML='<div class="meter-lg-rgb-host meter-lg-rgb-readonly-host">'+columns.join('')+'</div>';
  if(meta){
-  meta.textContent='';
-  meta.style.display='none';
+  if(metaText){
+   meta.textContent=String(metaText);
+   meta.style.display='';
+  }else{
+   meta.textContent='';
+   meta.style.display='none';
+  }
  }
 }
 
@@ -24661,9 +24669,12 @@ function meterRenderGreyTvControls(reading){
   return;
  }
  if(target.unsupported){
-  host.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;color:var(--text2);padding:8px">'+target.reason+'</div>';
+  // No DDC white-balance slot for this step (e.g. SDR26 100% RECAL is a
+  // pattern/peak anchor, not a 22pt WB index). Still render the live RGB
+  // balance bars so the operator can see R/G/B error; omit +/- controls.
   const unsupportedLabel=String(target.key||'').replace(/^unsupported:/,'');
-  if(meta) meta.textContent=unsupportedLabel?('LG '+unsupportedLabel+'%'):'LG TV';
+  const label=unsupportedLabel?('LG '+unsupportedLabel+'% · no WB control'):'LG · no WB control';
+  meterRenderGreyRgbReadOnly(reading||meterFindReadingForStep(renderStep),label);
   return;
  }
  const state=meterLgGreyState||{status:'idle',picture:null,message:'',needsRepair:false};
