@@ -15460,17 +15460,6 @@ sub lg_autocal_26_sdr26_dpg_damp {
  return $s+0;
 }
 
-# Body-anchor damp: always classic EOTF (g^exp). A prior "90% linear when
-# under/over Y" path made every mid patch's first move brutal (Full 50%
-# i1 gains ~0.85, Y 41→29 on a 34 target) then thrash-reverted. Classic
-# sqrt-style damp was the fast, stable mid-body behaviour; keep it.
-# Luma progress is handled separately in the revert gate (keep a move that
-# clearly improves |Y-target| even if dE ticks up slightly).
-sub lg_autocal_26_sdr26_dpg_body_damp {
- my ($g,$floor,$exp)=@_;
- return lg_autocal_26_sdr26_dpg_damp($g,$floor,$exp);
-}
-
 # SDR26 iteration budget for an anchor. Returns the per-anchor inner-iter
 # budget. Default 10 iters for body IREs (the per-anchor solve needs more
 # headroom than the previous 6-iter default to actually converge through
@@ -15719,15 +15708,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
 
  # Best-so-far state for revert.
   my $best_de=undef;
-  my $best_y_err=undef; # abs(Y/target_Y - 1) at best_de snapshot; used for luma-progress keep
   my $best_dpg=[@{$current_dpg_ref}];
   my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
   my $consecutive_reverts=0;
   my $low_ire_escalations=0;
-  my $body_escalations=0;
-  my $body_max_escalations=defined($config->{"lg_autocal_sdr26_dpg_body_max_escalations"}) ? int($config->{"lg_autocal_sdr26_dpg_body_max_escalations"}) : 2;
-  $body_max_escalations=0 if($body_max_escalations < 0);
-  $body_max_escalations=4 if($body_max_escalations > 4);
   my $revert_budget=defined($config->{"lg_autocal_sdr26_dpg_revert_budget"}) ? int($config->{"lg_autocal_sdr26_dpg_revert_budget"}) : 4;
   $revert_budget=2 if($revert_budget < 2);
   $revert_budget=10 if($revert_budget > 10);
@@ -15975,20 +15959,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # new-best branch will write (the dedup is intentional), so when the new-
    # best branch fires on a converging iter this is a no-op-equivalent update.
    $max_de_anchor_committed=$de+0 if($conv_now && defined($de) && $de+0 > $max_de_anchor_committed+0);
-  # Best-so-far with revert: same pattern as HDR. Revert runs at low IRE
-  # only (the constant-amplitude oscillation that the revert-and-halve
-  # loop is designed to break doesn't happen at mid/high IRE on SDR).
-  # Relative Y error for luma-progress keep (80% class: chroma nearly
-  # done, Y still ~2% hot — dE-only reverts undid every useful pull-down).
-  my $_y_now=(defined($reading) ? luminance($reading) : undef);
-  my $_y_err_now=undef;
-  if(defined($_y_now) && $_y_now+0 > 0 && defined($tl) && $tl+0 > 0) {
-   $_y_err_now=abs(($_y_now+0)/($tl+0)-1.0);
-  }
+  # Best-so-far with revert: classic mid-body path. On a non-improving dE,
+  # snap back to the best DPG snapshot and halve move_scaling. Low-IRE keeps
+  # its noise-limited early stop + re-escalation; body does not re-escalate.
   if(defined($de) && !$acceptance_pending) {
    if(!defined($best_de) || $de+0 < $best_de+0) {
     $best_de=$de+0;
-    $best_y_err=$_y_err_now;
     $best_dpg=[@{$current_dpg_ref}];
     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
     $consecutive_reverts=0;
@@ -16012,54 +15988,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     my $_recovered=$move_scaling*2.0;
     $_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
     $move_scaling=$_recovered;
-   } elsif(defined($de) && defined($best_de) && $de+0 > $best_de+0 + 0.02 && $consecutive_reverts < $revert_budget) {
-    # Luma-progress keep (mid-body only): if |Y-target| improved by >=0.4%
-    # of target and dE only regressed modestly (<=0.18), accept the move as
-    # the new best instead of reverting. Full 80% logged uniform ~0.98 gains
-    # that never stuck because every pull-down slightly raised dE and was
-    # reverted while Y stayed ~2% hot.
-    my $_luma_keep=0;
-    if(!$_is_legal_peak_anchor
-       && $_anchor_ire+0 >= $low_ire_threshold+0
-       && defined($_y_err_now) && defined($best_y_err)
-       && ($_y_err_now+0) + 0.004 < ($best_y_err+0)
-       && ($de+0) <= ($best_de+0) + 0.18) {
-     $_luma_keep=1;
-    }
-    if($_luma_keep) {
-     log_line(sprintf("SDR26 1D DPG greyscale: iter %d luma-progress keep (Y err %.4f -> %.4f, dE %.4f vs best %.4f) — not reverting",
-      $i,$best_y_err+0,$_y_err_now+0,$de+0,$best_de+0));
-     $best_de=$de+0;
-     $best_y_err=$_y_err_now;
-     $best_dpg=[@{$current_dpg_ref}];
-     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
-     $consecutive_reverts=0;
-     $max_de_anchor_committed=$de+0 if(defined($de) && $de+0 > $max_de_anchor_committed+0);
-     my $_recovered=$move_scaling*2.0;
-     $_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
-     $move_scaling=$_recovered;
-    } else {
-    # Revert-and-halve: ONLY on a meaningful overshoot (dE worse than best
-    # by >0.02). Treating dE == best as a "revert" undoes a no-op/plateau
-    # move and halves step size forever (Full 55% i1/i2 both dE=2.4283 →
-    # false reverts, gains 1.015→1.007→1.003, never climbs the Y gap).
-    #
-    # When a move overshoots, snap the DPG back to the best snapshot and
-    # halve the move scaling. The next iter applies the same natural gain
-    # at half strength, which keeps the chromaticity trajectory inside the
-    # best state's "good" neighborhood while still making progress.
-    #
-    # Previously this was gated to low-IRE anchors only (the constant-
-    # amplitude oscillation that the revert-and-halve loop is designed to
-    # break doesn't happen at mid/high IRE on SDR). That was wrong -- the
-    # 109 legal peak ALSO oscillates when the natural pull-down at full
-    # strength overshoots the D65 chromaticity (the chromaticity crosses
-    # through D65 and lands warm, then the next iter clamps G/B to 1.0
-    # because they're already below R, and the iter can't recover). The
-    # revert-and-halve loop snaps back to the pre-overshoot state and
-    # tries again at half strength. With $initial_move_scaling=0.5 at
-    # the 109 anchor and full revert-and-halve coverage, the overshoot
-    # is caught immediately and the iteration converges.
+   } elsif($consecutive_reverts < $revert_budget) {
+    # Revert-and-halve: when a move does not beat the best dE, snap the DPG
+    # back to the best snapshot and halve the move scaling. The next iter
+    # applies the same natural gain at half strength.
     @{$current_dpg_ref}=@{$best_dpg};
     @{$done_ref}=@{$best_anchors};
     $consecutive_reverts++;
@@ -16075,33 +16007,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      last;
     }
     if($consecutive_reverts >= $revert_budget) {
-     # Low-IRE re-escalation: when a deep-shadow anchor is STILL short of its
-     # (relaxed) target after exhausting the revert budget, the problem is
-     # reach/undershoot, not overshoot -- halving move_scaling into the noise
-     # floor is exactly wrong. Instead of breaking, restore full step and try
-     # again, bounded by low_ire_max_escalations. best_dpg/best_anchors were
-     # already restored above and best is always kept, so a converged anchor
-     # is never regressed.
+     # Low-IRE re-escalation only (body stays on classic break-at-budget).
      if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor && $low_ire_escalations < $low_ire_max_escalations) {
       $low_ire_escalations++;
       $consecutive_reverts=0;
       $move_scaling=$initial_move_scaling;
       log_line("SDR26 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
-     } elsif(!$_is_legal_peak_anchor
-             && defined($best_de) && $best_de+0 > ($_effective_target_de+0)
-             && $body_escalations < $body_max_escalations) {
-      # Mid/high body (e.g. Full 55%): same trap -- first move is too small
-      # after EOTF damp, every "worse" iter halves into noise, never climbs
-      # the remaining luminance gap. Re-escalate full step a few times.
-      $body_escalations++;
-      $consecutive_reverts=0;
-      $move_scaling=$initial_move_scaling;
-      log_line("SDR26 1D DPG greyscale: body anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$revert_budget." reverts; re-escalating step (escalation ".$body_escalations."/".$body_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
      } else {
       log_line("SDR26 1D DPG greyscale: ".$revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
       last;
      }
-    }
     }
    }
   }
@@ -16374,27 +16289,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
    $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
   } else {
-   # Mid-body classic EOTF damp. When the three channel gains are nearly
-   # equal (chroma already close) but |Y-target| is still >1.2%, classic
-   # exp≈0.45 under-moves pure-Y (0.98^0.45≈0.99) — 55%/80% class. Raise
-   # exp toward linear for THAT case only; leave normal chroma solves on
-   # the fast classic path so 50/70/75 keep converging in 1–2 iters.
-   my $_y_meas_body=luminance($reading);
-   my $_exp_use=$damp_exp+0;
-   if(defined($_y_meas_body) && $_y_meas_body+0 > 0 && defined($tl) && $tl+0 > 0
-      && $_anchor_ire+0 >= $low_ire_threshold+0 && !$_is_legal_peak) {
-    my $_gmax=$rg; $_gmax=$gg if($gg+0 > $_gmax+0); $_gmax=$bg if($bg+0 > $_gmax+0);
-    my $_gmin=$rg; $_gmin=$gg if($gg+0 < $_gmin+0); $_gmin=$bg if($bg+0 < $_gmin+0);
-    my $_y_err_abs=abs(($_y_meas_body+0)/($tl+0)-1.0);
-    if(($_gmax-$_gmin) < 0.03 && $_y_err_abs+0 > 0.012) {
-     # exp 0.82 ≈ stronger pure-Y step without full-linear first-move thrash
-     $_exp_use=0.82;
-     $_exp_use=$damp_exp if($_exp_use+0 < $damp_exp+0);
-    }
-   }
-   $sr=1.0+(lg_autocal_26_sdr26_dpg_body_damp($rg,$floor,$_exp_use)-1.0)*$move_scaling*$anchor_move_mult;
-   $sg=1.0+(lg_autocal_26_sdr26_dpg_body_damp($gg,$floor,$_exp_use)-1.0)*$move_scaling*$anchor_move_mult;
-   $sb=1.0+(lg_autocal_26_sdr26_dpg_body_damp($bg,$floor,$_exp_use)-1.0)*$move_scaling*$anchor_move_mult;
+   # Mid-body: classic EOTF damp only (g^damp_exp).
+   $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sg=1.0+(lg_autocal_26_sdr26_dpg_damp($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+   $sb=1.0+(lg_autocal_26_sdr26_dpg_damp($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
    $sr=$floor if($sr+0 < $floor+0);
    $sg=$floor if($sg+0 < $floor+0);
    $sb=$floor if($sb+0 < $floor+0);
