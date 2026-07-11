@@ -11133,22 +11133,22 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  <div id="meterAutoCalUseCaseBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">What will this display be used for?</div>
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">This sets the HDMI output format the calibration will be built on. Pick the one that matches how the display is normally fed.</div>
-	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="pc"> PC Monitor <span style="color:var(--text2)">&nbsp;— RGB, Full range (0-255), 10-bit</span></label>
-	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="tv"> TV / Movies <span style="color:var(--text2)">&nbsp;— YCbCr 4:4:4, Limited range (16-235), 10-bit</span></label>
-	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;— RGB, Limited range (16-235), 10-bit</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="pc"> PC Monitor <span style="color:var(--text2)">&nbsp;(RGB, Full range 0-255, 10-bit)</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="tv"> TV / Movies <span style="color:var(--text2)">&nbsp;(YCbCr 4:4:4, Limited 16-235 video with super-white to 254, 10-bit)</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;(RGB, Limited 16-235, 10-bit)</span></label>
 	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalUseCase" value="keep" checked> Keep current output settings</label>
 	   <div id="meterAutoCalUseCaseStatus" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
 	  <div id="meterAutoCalGammaBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Choose the gamma target</div>
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">The greyscale will be calibrated to this curve. Post-cal verification in other software must grade against the same target.</div>
-	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="bt1886"> BT.1886 <span style="color:var(--text2)">&nbsp;— the SDR video standard; on an OLED this is a pure 2.4 power curve. Best for movies/TV in a dim room.</span></label>
-	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="2.2"> Gamma 2.2 <span style="color:var(--text2)">&nbsp;— brighter shadows; the common choice for PC monitors, consoles and brighter rooms.</span></label>
-	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalGammaTarget" value="srgb"> sRGB <span style="color:var(--text2)">&nbsp;— the sRGB spec curve (near 2.2 with a linear toe); for PC desktop/color-managed work.</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="bt1886"> BT.1886 <span style="color:var(--text2)">&nbsp;(the SDR video standard; on an OLED this is a pure 2.4 power curve. Best for movies/TV in a dim room.)</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="2.2"> Gamma 2.2 <span style="color:var(--text2)">&nbsp;(brighter shadows; the common choice for PC monitors, consoles and brighter rooms.)</span></label>
+	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalGammaTarget" value="srgb"> sRGB <span style="color:var(--text2)">&nbsp;(the sRGB spec curve with a linear toe, near 2.2; for PC desktop and color-managed work.)</span></label>
 	  </div>
 	  <div id="meterAutoCalDisplayTypeBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
-	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the meter profile (CCSS) that matches this panel. Per the LG AutoCal guide, OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from this choice.</div>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the meter profile (CCSS) that matches this panel. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from this choice.</div>
 	   <div class="field" style="max-width:420px">
 	    <label>Display Type / Meter Profile</label>
 	    <select id="meterAutoCalDisplayTypeSelect"></select>
@@ -13856,7 +13856,7 @@ async function resolveConnect(){
  }
  meterStopModalHide();
  if(connected){toast('Resolve connected to '+ip+':'+port);loadInfo();}
- else{toast('Resolve connect timed out — check the calibration software is listening on '+ip+':'+port,'err');loadInfo();}
+ else{toast('Resolve connect timed out. Check the calibration software is listening on '+ip+':'+port,'err');loadInfo();}
 }
 async function resolvePatchSizeChanged(v){
  try{
@@ -29925,7 +29925,7 @@ async function meterAutoCalUseCaseContinue(){
     r=await fetchJSON('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(want)});
    }catch(e){ r=null; }
    if(!(r&&r.status==='ok')){
-    if(statusEl) statusEl.textContent='Failed to apply output settings — check Display Settings and try again.';
+    if(statusEl) statusEl.textContent='Failed to apply output settings. Check Display Settings and try again.';
     if(btn) btn.disabled=false;
     return;
    }
