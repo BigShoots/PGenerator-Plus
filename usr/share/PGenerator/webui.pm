@@ -26006,7 +26006,7 @@ function meterAutoCalShowConfirm(){
   const levelText=(levels&&!levels.skipped)?(' Levels: brightness '+(levels.brightness!=null?levels.brightness:'--')+', contrast '+(levels.contrast!=null?levels.contrast:'--')+'.'):'';
   summary.textContent=hdrWorkflow
    ? 'HDR uses 100% panel light. The first calibrated 100% read sets the ST 2084 peak reference.'+levelText
-   : 'Setup 100%: '+setupY.toFixed(2)+' cd/m\u00B2. Cal target 100%: '+targetY.toFixed(2)+' cd/m\u00B2. 109% target: '+headroomY.toFixed(2)+' cd/m\u00B2. Panel light: '+((meterAutoCalPanelLight.label||'Panel light')+' '+(meterAutoCalPanelLight.value!=null?Math.round(Number(meterAutoCalPanelLight.value)):'--'))+'.'+levelText;
+   : 'Setup 100%: '+setupY.toFixed(2)+' cd/m\u00B2. Panel light: '+((meterAutoCalPanelLight.label||'Panel light')+' '+(meterAutoCalPanelLight.value!=null?Math.round(Number(meterAutoCalPanelLight.value)):'--'))+'.'+levelText;
  }
  meterAutoCalSetOverlay(true,{phase:'confirm',current_name:'Ready to start LG Auto Cal',message:'Review the workflow and choose the target error.'});
 }
@@ -29844,7 +29844,7 @@ async function meterAutoCalConfirmAndStart(){
   current_name:'Starting RGB Auto Cal...',
   message:hdrWorkflow
    ? 'HDR 100% will set the ST 2084 peak reference'
-   : 'Using 100% target '+targetY.toFixed(2)+' cd/m\u00B2 and 109% target '+headroomY.toFixed(2)+' cd/m\u00B2',
+   : 'Launching the greyscale calibration\u2026',
   total_steps:meterAutoCalPendingConfig.adjustable.length,
   current_step:0
  });
