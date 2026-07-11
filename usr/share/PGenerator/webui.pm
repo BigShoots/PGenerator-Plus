@@ -18576,7 +18576,21 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 		  // 1.0 down to 100/109=0.917, producing a visible kink).
 		  // Full -> peak 100; Limited super-white ladder -> peak 109.
 		  const peakIre=(typeof meterSdr26ChartPeakIre==='function')?meterSdr26ChartPeakIre():109;
-		  const chartSig=stimulus/peakIre;
+		  let chartSig=stimulus/peakIre;
+		  // Full range (peak 100): reference the target to the EMITTED code
+		  // fraction — the 8bit<<2 wire codes quantize the nominal IRE by up
+		  // to ~2% relative at 10%, and the panel is calibrated onto the
+		  // curve at the emitted signal. Limited keeps the nominal /109
+		  // ladder reference. Neutral rows only (r==g==b) with a usable
+		  // input_max; synthesized mid-curve rows without codes fall back to
+		  // the nominal stimulus.
+		  if(peakIre<=100.01){
+		   const rc=Number(row.r_code), gc=Number(row.g_code), bc=Number(row.b_code);
+		   const im=Number(row.input_max);
+		   if(Number.isFinite(rc)&&rc===gc&&gc===bc&&Number.isFinite(im)&&im>0){
+		    chartSig=rc/im;
+		   }
+		  }
 		  return targetEotf(Math.max(0,Math.min(1,chartSig)),Lw,Lb||0);
 		 }
 		}

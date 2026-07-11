@@ -15476,6 +15476,18 @@ sub lg_autocal_26_sdr26_dpg_compute_target {
  my ($white_y,$rs,$black_y,$target_gamma)=@_;
  return undef unless(defined($white_y) && $white_y+0 > 0);
  return undef unless(ref($rs) eq "HASH");
+ # Full-range steps carry target_stimulus = emitted wire-code fraction *100
+ # (quantized 8bit<<2 codes sit up to ~2% relative off the nominal label at
+ # low IRE). Target the curve at the EMITTED signal so the panel lands on
+ # the continuous curve; external reference tools target EOTF(code/full-
+ # scale) the same way. Limited steps have no target_stimulus (no change).
+ if(defined($rs->{"target_stimulus"})) {
+  my %rs2=%$rs;
+  my $ts=$rs->{"target_stimulus"}+0;
+  $rs2{"stimulus"}=$ts; $rs2{"ire"}=$ts;
+  $rs2{"signal_r_pct"}=$ts; $rs2{"signal_g_pct"}=$ts; $rs2{"signal_b_pct"}=$ts;
+  $rs=\%rs2;
+ }
  # Default to BT.1886 (gamma 2.4) so the SDR26 1D-DPG autocal uses the same
  # target curve the user picked in the webUI's Target Gamma dropdown. The
  # previous hardcoded "2.2" ignored the operator's selection and forced
@@ -15988,12 +16000,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      }
     }
    }
-   # Clamp to [1.5, 3.0] to prevent wild measured values (transient
+   # Clamp to [1.5, 5.5] to prevent wild measured values (transient
    # meter spike, near-zero DPG change producing divide-by-tiny) from
    # producing catastrophic damp moves. The 2.2 seed and the EMA-blend
    # sanity guards keep gamma_effective in this range in practice.
+   # Ceiling 5.5 (was 3.0): hardware data 2026-07-10 (LG C1, Full-range 10%
+   # anchor) shows local response exponents ~4.5 near-black; clamping the
+   # measured gamma at 3.0 forced damp_exp >= 1/3, every move overshot ~2x
+   # and the anchor limit-cycled around its target without converging.
    $gamma_effective=1.5 if($gamma_effective+0 < 1.5);
-   $gamma_effective=3.0 if($gamma_effective+0 > 3.0);
+   $gamma_effective=5.5 if($gamma_effective+0 > 5.5);
    my $damp_exp=(1.0/($gamma_effective+0.0));
    # Save the current reading's Y and the DPG idx values that were IN USE
    # during this measurement (the build from the previous iter, since
@@ -16389,12 +16405,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # pushes harder. The ceiling raise below then lets the larger move land.
    # Only body anchors; well-conditioned ones converge before i>=3.
    my $_stuck_move_mult=1.0;
+   # gamma>3.5 = hypersensitive (overshoot regime), never boost; 3.0..3.5 treated as 3.0 (legacy max).
+   my $_g_rescue=($gamma_effective+0 > 3.0) ? 3.0 : ($gamma_effective+0);
    if($_anchor_ire+0 >= $low_ire_threshold+0
       && $i+0 >= 3
       && defined($de) && $de+0 > $_effective_target_de+0
-      && $gamma_effective+0 > 2.6
+      && $_g_rescue > 2.6 && $gamma_effective+0 <= 3.5
       && !$is_white_body) {
-    $_stuck_move_mult=1.0 + 0.5*(($gamma_effective+0 - 2.6)/0.4);
+    $_stuck_move_mult=1.0 + 0.5*(($_g_rescue - 2.6)/0.4);
     $_stuck_move_mult=1.5 if($_stuck_move_mult+0 > 1.5);
    }
    $sr=1.0+(lg_autocal_26_sdr26_dpg_damp($rg,$floor,$_exp_body)-1.0)*$move_scaling*$anchor_move_mult*$_stuck_move_mult;
@@ -16422,12 +16440,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    if($_anchor_ire+0 >= $low_ire_threshold+0
       && $i+0 >= 3
       && defined($de) && $de+0 > $_effective_target_de+0
-      && $gamma_effective+0 > 2.6
+      && $_g_rescue > 2.6 && $gamma_effective+0 <= 3.5
       && !$is_white_body) {
     # Scale the ceiling up with how unresponsive the panel has proven to be.
     # gamma_effective 2.6 (mild weakness) -> ~1.33; 3.0 (very flat) -> ~1.5.
     # Hard cap at 1.5 so a stuck anchor can push harder but cannot run away.
-    my $_stuck_ceiling=1.25 + 0.25*(($gamma_effective+0 - 2.6)/0.4);
+    my $_stuck_ceiling=1.25 + 0.25*(($_g_rescue - 2.6)/0.4);
     $_stuck_ceiling=1.5 if($_stuck_ceiling+0 > 1.5);
     $_stuck_ceiling=1.25 if($_stuck_ceiling+0 < 1.25);
     if($_stuck_ceiling+0 > $_node_ceiling+0) {
@@ -16705,6 +16723,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  my @sdr26_labels;
  my @sdr26_indexes;
  my @sdr26_codes;
+ my @sdr26_target_stims;
  my $sdr26_peak_ire;
  my $sdr26_dpg_max_idx=1023; # 1D_DPG_DATA is always a 1024-pt table
  if($sdr26_limited) {
@@ -16749,7 +16768,17 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
     $code=0 if($code < 0);
    }
    push @sdr26_codes,$code;
+   # Emitted signal fraction of the quantized wire code, as a stimulus %.
+   # 10-bit Full: 104/1023 = 10.166% for the "10%" anchor. Targets must
+   # reference the curve at the EMITTED signal, not the nominal label,
+   # or the calibrated table carries a systematic luma bend at 10-20%.
+   push @sdr26_target_stims,(($code+0)/($sdr26_max+0))*100.0;
   }
+ }
+ # Limited branch leaves @sdr26_target_stims empty; fill with undef entries
+ # so the step-builder below can index it and find nothing to stamp.
+ if(!@sdr26_target_stims) {
+  @sdr26_target_stims=(undef) x scalar(@sdr26_labels);
  }
  my $sdr26_input_max=($sdr26_limited && $sdr26_bits==10) ? 1023 : $sdr26_max;
  $state->{"sdr_1d_dpg_range"}=$sdr26_limited ? "limited" : "full";
@@ -16810,6 +16839,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    ddc_layout=>"sdr26",
   };
   push @ordered,$step;
+  $step->{"target_stimulus"}=$sdr26_target_stims[$k]+0 if(defined($sdr26_target_stims[$k]));
  }
  # Sort/reorder. Peak first (Limited: 109 legal peak; Full: 100% peak --
  # no super-white). Body order for Limited keeps 105/99 headroom after
