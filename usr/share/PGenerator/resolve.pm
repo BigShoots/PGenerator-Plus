@@ -207,6 +207,11 @@ sub resolve_connect (@) {
    my $pos_str="$pos_x,$pos_y";
    # Center the window if caller specified origin 0,0 for a non-fullscreen window
    $pos_str=$position_default if($pos_x == 0 && $pos_y == 0);
+   # Operator override (WebUI Resolve card "Force centered patch"): ignore
+   # the sent window position entirely — DisplayCAL mirrors its measurement
+   # frame position here, which is easy to leave off-center without
+   # noticing. Size still follows the sent geometry.
+   $pos_str=$position_default if(($pgenerator_conf{"resolve_force_center"}||"") eq "1");
    &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$rgb_str","$bg_str","$pos_str","","",1,"resolve");
   }
  }

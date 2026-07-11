@@ -10960,6 +10960,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <input type="number" id="resolvePort" value="20002" min="1" max="65535">
    </div>
   </div>
+  <label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--text);margin-top:8px">
+   <input type="checkbox" id="resolveForceCenter" onchange="resolveForceCenterChanged(this.checked)" style="accent-color:var(--accent)">
+   Force centered patch
+   <span style="font-size:.68rem;color:var(--text2)">(ignore the sent window position; size still follows the software)</span>
+  </label>
   <div class="btn-row" style="margin-top:8px">
    <button class="btn btn-sm btn-success" id="resolveConnectBtn" onclick="resolveConnect()">&#9654; Connect</button>
    <button class="btn btn-sm btn-danger" id="resolveDisconnectBtn" onclick="resolveDisconnect()" style="display:none">&#9724; Disconnect</button>
@@ -11740,6 +11745,8 @@ function webuiAutoColorimetryForSignalMode(signalMode){
 function applyConfigState(nextConfig){
  config=nextConfig;
  window._remoteConfigSnapshot=JSON.stringify(nextConfig);
+ const rfc=document.getElementById('resolveForceCenter');
+ if(rfc) rfc.checked=String(config.resolve_force_center||'0')==='1';
  // Derive signal mode from flags
  let sm='sdr';
  if(config.dv_status==='1'||config.is_ll_dovi==='1'||config.is_std_dovi==='1') sm='dv';
@@ -13778,6 +13785,14 @@ async function resolveConnect(){
  meterStopModalHide();
  if(connected){toast('Resolve connected to '+ip+':'+port);loadInfo();}
  else{toast('Resolve connect timed out — check the calibration software is listening on '+ip+':'+port,'err');loadInfo();}
+}
+async function resolveForceCenterChanged(on){
+ try{
+  const r=await fetchJSON('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({resolve_force_center:on?'1':'0'})});
+  if(r&&r.status==='ok') toast(on?'Resolve patches will be centered':'Resolve patches follow the sent position');
+  else toast('Failed to save setting','err');
+ }catch(e){ toast('Failed to save setting','err'); }
 }
 async function resolveDisconnect(){
  const r=await fetchJSON('/api/resolve/disconnect',{method:'POST'});
