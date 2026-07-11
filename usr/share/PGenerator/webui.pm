@@ -14206,6 +14206,14 @@ let meterAutoCalLuminanceContinue=false;
 let meterAutoCalStopRequested=false;
 let meterAutoCalPhase='';
 let meterAutoCalPendingNextEntry='';
+// True from LG Auto Cal wizard entry (after the availability gates verified
+// a live TV connection) until the run is launched or the wizard closes.
+// While set, meterGreyTvControlsActive() reports active even if the TV
+// websocket bounces mid-wizard: the cached lgStatusState is not refreshed
+// during calibration workflows, and a stale "disconnected" snapshot made
+// the SDR26 step builder silently fall back to the 21-point LG list (and
+// once to the stale YCbCr super-white set) for the worker payload/chart.
+let meterAutoCalWizardContextActive=false;
 let meterAutoCalPanelLight={key:'',value:null,label:'Panel light',pending:false,candidates:[]};
 let meterAutoCalPanelLightReadPending=false;
 let meterAutoCalPanelLightWritePending=false;
@@ -24841,6 +24849,10 @@ function meterGreyTvColumnHtml(channelKey,label,color,tvValue,liveEntry,halfRang
 }
 
 	function meterGreyTvControlsActive(){
+	 // Wizard context: connection was verified at wizard entry; do not let a
+	 // stale mid-wizard snapshot flip the SDR26 anchor set (see the
+	 // meterAutoCalWizardContextActive declaration).
+	 if(typeof meterAutoCalWizardContextActive!=='undefined'&&meterAutoCalWizardContextActive) return true;
 	 const state=window.lgStatusState||{};
 	 return (typeof lgStatusConnected==='function')?lgStatusConnected(state):!!((state.paired||state.clientKeyPresent)&&!state.pinPending&&!state.disconnected);
 	}
@@ -25798,6 +25810,7 @@ function meterAutoCalClearCompleteAutoClose(){
 }
 
 function meterAutoCalCloseComplete(){
+ meterAutoCalWizardContextActive=false;
  if(meterFullAutoCalRunning){
   try{
    const crumb={at:Date.now(),via:'meterAutoCalCloseComplete',phase:meterFullAutoCalPhase,runId:meterFullAutoCalRunId,stack:String(new Error().stack||'')};
@@ -28153,6 +28166,7 @@ function meterFullAutoCalResetState(keepResults){
 }
 
 function meterFullAutoCalAbort(message,isError){
+ meterAutoCalWizardContextActive=false;
  const text=message||'Full Auto Cal stopped';
  // The greyscale stage HOLDS LG calibration mode open for the 3D-LUT stage,
  // whose tone-map upload sends the final CAL_END. If the run aborts or stalls
@@ -29833,6 +29847,7 @@ async function meterAutoCalInitialRecoveryPoll(){
 async function meterStartAutoCal(options){
  const fullWorkflow=!!(options&&options.fullWorkflow);
  const fail=(message)=>{
+  meterAutoCalWizardContextActive=false;
   if(message) toast(message,true);
   if(fullWorkflow) meterFullAutoCalResetState(false);
   return false;
@@ -29846,6 +29861,7 @@ async function meterStartAutoCal(options){
   meterSetActiveSeriesChartContext();
  }
 	 if(!meterAutoCalAvailable()) return fail(fullWorkflow?'Connect an LG TV before starting Full Auto Cal':'Connect an LG TV and select Greyscale LG 26pt AutoCal first');
+	 meterAutoCalWizardContextActive=true;
 	 if(!(await meterEnsureLgAutoCalTransport(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
 	 if(!meterEnsureLgAutoCalExtendedVideoTransport()) return fail('');
 	 if(!meterEnsureAppliedGeneratorSettings()) return fail('');
@@ -30280,6 +30296,7 @@ async function meterAutoCalConfirmAndStart(){
    meterAutoCalSpectroSetupActive=true;
    meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
   }
+  meterAutoCalWizardContextActive=false;
   const r=await fetchJSON('/api/meter/lg-autocal',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
@@ -30399,6 +30416,7 @@ async function meterAutoCalConfirmAndStart(){
 }
 
 async function meterStopAutoCal(){
+ meterAutoCalWizardContextActive=false;
  if(meterAutoCalSpectroSetupActive){
   meterAutoCalSpectroSetupActive=false;
   meterSpectroSetupApply(null);
