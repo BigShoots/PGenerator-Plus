@@ -10962,7 +10962,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
   <label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--text);margin-top:8px">
    <input type="checkbox" id="resolveForceCenter" onchange="resolveForceCenterChanged(this.checked)" style="accent-color:var(--accent)">
-   Always Center DisplayCal Patch
+   Force Center DisplayCal Patch
    <span style="font-size:.68rem;color:var(--text2)">(ignore the sent window position; size still follows the software)</span>
   </label>
   <div class="btn-row" style="margin-top:8px">
