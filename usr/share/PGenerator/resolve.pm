@@ -129,6 +129,7 @@ sub resolve_connect (@) {
   #
   my ($r_p,$g_p,$b_p,$r_bg,$g_bg,$b_bg,$bits)=(0,0,0,0,0,0,8);
   my ($geom_x,$geom_y,$geom_cx,$geom_cy)=(0,0,1,1);
+  my $from_displaycal=0;
   if(ref($hash->{color}) eq 'HASH') {
    $r_p=int($hash->{color}{red}||0);
    $g_p=int($hash->{color}{green}||0);
@@ -139,6 +140,11 @@ sub resolve_connect (@) {
    $r_bg=int($hash->{background}{red}||0);
    $g_bg=int($hash->{background}{green}||0);
    $b_bg=int($hash->{background}{blue}||0);
+   # DisplayCAL fingerprint: its Resolve sender is the only standard-format
+   # client that stamps a bits attribute on <background> (LightSpace uses
+   # the <shapes> format, Resolve/CalMAN-style senders send background
+   # without bits). Used to scope the force-center override to DisplayCAL.
+   $from_displaycal=1 if(ref($hash->{color}) eq 'HASH' && defined($hash->{background}{bits}));
   }
   if(ref($hash->{geometry}) eq 'HASH') {
    $geom_x=&resolve_float($hash->{geometry}{x});
@@ -207,11 +213,13 @@ sub resolve_connect (@) {
    my $pos_str="$pos_x,$pos_y";
    # Center the window if caller specified origin 0,0 for a non-fullscreen window
    $pos_str=$position_default if($pos_x == 0 && $pos_y == 0);
-   # Operator override (WebUI Resolve card "Force centered patch"): ignore
-   # the sent window position entirely — DisplayCAL mirrors its measurement
+   # Operator override (WebUI Resolve card "Force Center DisplayCal Patch"):
+   # ignore the sent window position — DisplayCAL mirrors its measurement
    # frame position here, which is easy to leave off-center without
-   # noticing. Size still follows the sent geometry.
-   $pos_str=$position_default if(($pgenerator_conf{"resolve_force_center"}||"") eq "1");
+   # noticing. Size still follows the sent geometry. Scoped to DisplayCAL
+   # traffic only (see $from_displaycal fingerprint); other Resolve-protocol
+   # clients keep faithful positioning.
+   $pos_str=$position_default if($from_displaycal && ($pgenerator_conf{"resolve_force_center"}||"") eq "1");
    &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$rgb_str","$bg_str","$pos_str","","",1,"resolve");
   }
  }
