@@ -15982,18 +15982,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     my $dpg_r_ratio=$current_dpg_ref->[$idx]/$dpg_r_prev;
     my $dpg_g_ratio=$current_dpg_ref->[$idx+1024]/$dpg_g_prev;
     my $dpg_b_ratio=$current_dpg_ref->[$idx+2048]/$dpg_b_prev;
+    # Gates (2026-07-11, LG C2 limited 10%): the loop's own damped writes
+    # are +-2-4% (|log| 0.02-0.04), so a 0.05 DPG gate skipped refinement
+    # on almost every iter; and the panel's true near-black exponent is
+    # 5-7, so a <4.0 acceptance window rejected every estimate that DID
+    # compute. gamma_effective then never left the 2.2 seed, moves stayed
+    # ~2x too big and 10% limit-cycled. DPG gate 0.015 (Y gate stays 0.05
+    # so noise-only reads still skip); acceptance (1.0, 7.0) -- the 0.3
+    # EMA blend plus the final [1.5, 5.5] clamp absorb one-shot spikes.
     if($y_ratio > 0 && $dpg_r_prev > 0 && $dpg_g_prev > 0 && $dpg_b_prev > 0
      && $dpg_r_ratio > 0 && $dpg_g_ratio > 0 && $dpg_b_ratio > 0
-     && abs(log($dpg_r_ratio)) > 0.05
-     && abs(log($dpg_g_ratio)) > 0.05
-     && abs(log($dpg_b_ratio)) > 0.05
+     && abs(log($dpg_r_ratio)) > 0.015
+     && abs(log($dpg_g_ratio)) > 0.015
+     && abs(log($dpg_b_ratio)) > 0.015
      && abs(log($y_ratio)) > 0.05) {
      my $gr=log($y_ratio)/log($dpg_r_ratio);
      my $gg=log($y_ratio)/log($dpg_g_ratio);
      my $gb=log($y_ratio)/log($dpg_b_ratio);
-     if(defined($gr) && $gr+0 > 1.0 && $gr+0 < 4.0
-      && $gg+0 > 1.0 && $gg+0 < 4.0
-      && $gb+0 > 1.0 && $gb+0 < 4.0) {
+     if(defined($gr) && $gr+0 > 1.0 && $gr+0 < 7.0
+      && $gg+0 > 1.0 && $gg+0 < 7.0
+      && $gb+0 > 1.0 && $gb+0 < 7.0) {
       my $gamma_meas=($gr+$gg+$gb)/3.0;
       # EMA blend: 30% new measurement, 70% history.
       $gamma_effective=(0.3*$gamma_meas)+(0.7*$gamma_effective);
