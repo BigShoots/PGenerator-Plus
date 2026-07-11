@@ -11166,6 +11166,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 		   <button class="btn btn-sm btn-success" id="meterAutoCalStartConfirmBtn" onclick="meterAutoCalConfirmAndStart()" style="display:none">&#9654; Start</button>
 	   <button class="btn btn-sm btn-secondary" id="meterFullAutoCalSkipBtn" onclick="meterFullAutoCalResolveConfirm('skip')" style="display:none">Skip Pre-Cal</button>
 		   <button class="btn btn-sm btn-success" id="meterFullAutoCalContinueBtn" onclick="meterFullAutoCalResolveConfirm(true)" style="display:none">&#9654; Continue</button>
+	   <button class="btn btn-sm btn-primary" id="meterAutoCalPostSeriesBtn" onclick="meterAutoCalReadPostCalSeries()" style="display:none">&#128200; Read Post-Cal Series</button>
 	   <button class="btn btn-sm btn-primary" id="meterFullAutoCalPostReportBtn" onclick="meterFullAutoCalGeneratePostReport()" style="display:none">&#128196; Generate Post-Cal Report</button>
 	   <button class="btn btn-sm btn-secondary" id="meterFullAutoCalSkipReportBtn" onclick="meterAutoCalCloseCompleteAction()" style="display:none">Close</button>
 	   <button class="btn btn-sm btn-danger" id="meterAutoCalStopOverlayBtn" onclick="meterStopAutoCal()">&#9632; Stop</button>
@@ -25690,6 +25691,11 @@ async function meterAutoCalCloseCompleteAction(){
  meterAutoCalCloseComplete();
 }
 
+async function meterAutoCalReadPostCalSeries(){
+ meterAutoCalCloseCompleteAction();
+ try{ await meterRunSeries(); }catch(e){}
+}
+
 function meterAutoCalScheduleCompleteAutoClose(postReportAvailable){
  meterAutoCalClearCompleteAutoClose();
 }
@@ -25770,6 +25776,7 @@ function meterAutoCalSetOverlay(active,status){
  const fullCancelBtn=document.getElementById('meterFullAutoCalCancelBtn');
  const fullContinueBtn=document.getElementById('meterFullAutoCalContinueBtn');
  const postReportBtn=document.getElementById('meterFullAutoCalPostReportBtn');
+ const postSeriesBtn=document.getElementById('meterAutoCalPostSeriesBtn');
  const skipReportBtn=document.getElementById('meterFullAutoCalSkipReportBtn');
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
  const fullSkipBtn=document.getElementById('meterFullAutoCalSkipBtn');
@@ -25805,7 +25812,13 @@ function meterAutoCalSetOverlay(active,status){
  if(fullSkipBtn) fullSkipBtn.style.display='none';
  if(fullContinueBtn) fullContinueBtn.style.display='none';
  const postReportAvailable=!!(showComplete&&status&&status.full_autocal);
+ // Post-cal series reads must not depend on the client-side Full AutoCal
+ // wizard state (a page refresh or daemon restart mid-run loses it and
+ // downgrades the popup): when the fancier Generate Post-Cal Report path
+ // is unavailable, offer a plain series read straight from the popup.
+ const postSeriesAvailable=!!(showComplete&&!postReportAvailable);
  if(postReportBtn) postReportBtn.style.display=postReportAvailable?'':'none';
+ if(postSeriesBtn) postSeriesBtn.style.display=postSeriesAvailable?'':'none';
  if(skipReportBtn) skipReportBtn.style.display=showComplete?'':'none';
  if(skipReportBtn&&showComplete) skipReportBtn.textContent='Close';
  if(postReportBtn&&postReportAvailable) postReportBtn.textContent='\uD83D\uDCC4 Generate Post-Cal Report';

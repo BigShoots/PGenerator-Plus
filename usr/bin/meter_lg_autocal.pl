@@ -15439,6 +15439,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# (end_calibration_mode) before the post-cal series read.
 	$state->{"hdr20_dpg_calibration_mode_held"}=($cal_active ? JSON::PP::true : JSON::PP::false);
 	$state->{"calibration_mode"}=$cal_active ? JSON::PP::true : JSON::PP::false;
+	$state->{"full_workflow"}=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
 	$state->{"message"}=sprintf("HDR20 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall_committed,$target_de,$exit_reason);
 	write_state($state);
 	log_line("HDR20 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall_committed)." (committed; trajectory=".sprintf("%.3f",$max_de_overall)."), target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
@@ -17264,6 +17265,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  # (single-socket commit) before the post-cal series read.
  $state->{"sdr_dpg_calibration_mode_held"}=($cal_active ? JSON::PP::true : JSON::PP::false);
  $state->{"calibration_mode"}=$cal_active ? JSON::PP::true : JSON::PP::false;
+ $state->{"full_workflow"}=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
  $state->{"message"}=sprintf("SDR26 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall,$target_de,$exit_reason);
  write_state($state);
  log_line("SDR26 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall)." (committed; per-anchor trajectory available in sdr_1d_dpg_anchor_history), target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
