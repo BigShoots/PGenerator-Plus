@@ -11130,6 +11130,31 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  <div class="meter-autocal-card">
 	  <div class="meter-autocal-title">LG Auto Cal</div>
 	  <div class="meter-autocal-status" id="meterAutoCalStatusText">Preparing...</div>
+	  <div id="meterAutoCalUseCaseBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">What will this display be used for?</div>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">This sets the HDMI output format the calibration will be built on. Pick the one that matches how the display is normally fed.</div>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="pc"> PC Monitor <span style="color:var(--text2)">&nbsp;— RGB, Full range (0-255), 10-bit</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="tv"> TV / Movies <span style="color:var(--text2)">&nbsp;— YCbCr 4:4:4, Limited range (16-235), 10-bit</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;— RGB, Limited range (16-235), 10-bit</span></label>
+	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalUseCase" value="keep" checked> Keep current output settings</label>
+	   <div id="meterAutoCalUseCaseStatus" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
+	  </div>
+	  <div id="meterAutoCalGammaBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Choose the gamma target</div>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">The greyscale will be calibrated to this curve. Post-cal verification in other software must grade against the same target.</div>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="bt1886"> BT.1886 <span style="color:var(--text2)">&nbsp;— the SDR video standard; on an OLED this is a pure 2.4 power curve. Best for movies/TV in a dim room.</span></label>
+	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="2.2"> Gamma 2.2 <span style="color:var(--text2)">&nbsp;— brighter shadows; the common choice for PC monitors, consoles and brighter rooms.</span></label>
+	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalGammaTarget" value="srgb"> sRGB <span style="color:var(--text2)">&nbsp;— the sRGB spec curve (near 2.2 with a linear toe); for PC desktop/color-managed work.</span></label>
+	  </div>
+	  <div id="meterAutoCalDisplayTypeBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the meter profile (CCSS) that matches this panel. Per the LG AutoCal guide, OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from this choice.</div>
+	   <div class="field" style="max-width:420px">
+	    <label>Display Type / Meter Profile</label>
+	    <select id="meterAutoCalDisplayTypeSelect"></select>
+	   </div>
+	   <div id="meterAutoCalDisplayTypeSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
+	  </div>
 	  <div id="meterAutoCalDisclaimerBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Picture mode reset required</div>
 	   <div style="font-size:.82rem;color:var(--text2);line-height:1.45">Click Reset to reset the active LG picture mode and clear greyscale DDC calibration state. After reset, leave this screen open while you adjust any TV settings needed before Auto Cal, then click Continue.</div>
@@ -11193,6 +11218,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 			   <button class="btn btn-sm btn-secondary" id="meterAutoCalBackBtn" onclick="meterAutoCalBackToLuminance()" style="display:none">Back</button>
 	   <button class="btn btn-sm btn-secondary" id="meterFullAutoCalCancelBtn" onclick="meterFullAutoCalResolveConfirm(false)" style="display:none">Cancel</button>
 	   <button class="btn btn-sm btn-success" id="meterAutoCalResetBtn" onclick="meterAutoCalRunPreflightReset()" style="display:none">Reset</button>
+		   <button class="btn btn-sm btn-success" id="meterAutoCalUseCaseContinueBtn" onclick="meterAutoCalUseCaseContinue()" style="display:none">&#9654; Continue</button>
+		   <button class="btn btn-sm btn-success" id="meterAutoCalDisplayTypeContinueBtn" onclick="meterAutoCalDisplayTypeContinue()" style="display:none">&#9654; Continue</button>
+		   <button class="btn btn-sm btn-success" id="meterAutoCalGammaContinueBtn" onclick="meterAutoCalGammaTargetContinue()" style="display:none">&#9654; Continue</button>
 		   <button class="btn btn-sm btn-success" id="meterAutoCalDisclaimerContinueBtn" onclick="meterAutoCalAcceptDisclaimer()" style="display:none">&#9654; Continue</button>
 		   <button class="btn btn-sm btn-success" id="meterAutoCalContinueBtn" onclick="meterAutoCalContinueFromLuminanceSetup()" style="display:none">&#9654; Continue</button>
 		   <button class="btn btn-sm btn-success" id="meterAutoCalStartConfirmBtn" onclick="meterAutoCalConfirmAndStart()" style="display:none">&#9654; Start</button>
@@ -11796,6 +11824,7 @@ function applyConfigState(nextConfig){
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
+ try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  // Restore the calibration-card low-light handler from localStorage so
  // the operator's last selection (e.g. 3-read averaging for 1.4% IRE)
  // persists across page loads.
@@ -12119,6 +12148,18 @@ function meterSyncTargetGammaControl(){
  }
 }
 
+function meterSyncTargetGammaOptionsForSignal(){
+ const g=document.getElementById('meterTargetGamma');
+ if(!g) return;
+ const sm=String((typeof getVal==='function'?getVal('signal_mode'):'')||'sdr').toLowerCase();
+ const isSdr=(sm==='sdr');
+ for(const opt of g.options){
+  if(opt.value==='st2084'){ opt.hidden=isSdr; opt.disabled=isSdr; }
+ }
+ // ST 2084 is an HDR EOTF; never leave it selected for SDR.
+ if(isSdr&&g.value==='st2084'){ g.value='bt1886'; if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl(); }
+}
+
 function applyMeterTargetGammaDefault(force){
  const g=document.getElementById('meterTargetGamma');
  if(!g) return;
@@ -12179,6 +12220,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
 	 updateModeVisibility();
  updateDropdowns();
  meterRefreshActiveSeriesCharts();
+ try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  saveMeterSettings();
  checkSettingsChanged();
 });
@@ -12188,6 +12230,7 @@ document.getElementById('dv_map_mode').addEventListener('change',function(){
  syncDvOutputEotfState();
  applyMeterTargetGammaDefault();
  meterRefreshActiveSeriesCharts();
+ try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  saveMeterSettings();
  checkSettingsChanged();
 });
@@ -14162,6 +14205,7 @@ let meterAutoCalLuminanceSetupActive=false;
 let meterAutoCalLuminanceContinue=false;
 let meterAutoCalStopRequested=false;
 let meterAutoCalPhase='';
+let meterAutoCalPendingNextEntry='';
 let meterAutoCalPanelLight={key:'',value:null,label:'Panel light',pending:false,candidates:[]};
 let meterAutoCalPanelLightReadPending=false;
 let meterAutoCalPanelLightWritePending=false;
@@ -25842,9 +25886,15 @@ function meterAutoCalSetOverlay(active,status){
  const confirmBox=document.getElementById('meterAutoCalConfirmBox');
  const resultsBox=document.getElementById('meterAutoCalResultsBox');
  const fullConfirmBox=document.getElementById('meterFullAutoCalConfirmBox');
+ const useCaseBox=document.getElementById('meterAutoCalUseCaseBox');
+ const gammaBox=document.getElementById('meterAutoCalGammaBox');
+ const displayTypeBox=document.getElementById('meterAutoCalDisplayTypeBox');
  const progressBox=document.getElementById('meterAutoCalProgressBox');
  const resetBtn=document.getElementById('meterAutoCalResetBtn');
  const disclaimerBtn=document.getElementById('meterAutoCalDisclaimerContinueBtn');
+ const useCaseBtn=document.getElementById('meterAutoCalUseCaseContinueBtn');
+ const gammaBtn=document.getElementById('meterAutoCalGammaContinueBtn');
+ const displayTypeBtn=document.getElementById('meterAutoCalDisplayTypeContinueBtn');
  const continueBtn=document.getElementById('meterAutoCalContinueBtn');
  const startBtn=document.getElementById('meterAutoCalStartConfirmBtn');
  const backBtn=document.getElementById('meterAutoCalBackBtn');
@@ -25860,6 +25910,9 @@ function meterAutoCalSetOverlay(active,status){
  const showLuminance=phase==='luminance';
  const showOptions=phase==='options';
  const showConfirm=phase==='confirm';
+ const showUseCase=phase==='usecase';
+ const showGamma=phase==='gammatarget';
+ const showDisplayType=phase==='displaytype';
  // Success popup only — never for cancelled/error, and never from a
  // stale phase=complete left behind after Stop (status may be cancelled
  // while phase still says complete for one paint).
@@ -25869,7 +25922,10 @@ function meterAutoCalSetOverlay(active,status){
  if(confirmBox) confirmBox.style.display=(showConfirm||showOptions)?'':'none';
  if(resultsBox) resultsBox.style.display=showComplete?'':'none';
  if(fullConfirmBox) fullConfirmBox.style.display='none';
- if(progressBox) progressBox.style.display=(showConfirm||showOptions||showDisclaimer||showComplete)?'none':'';
+ if(useCaseBox) useCaseBox.style.display=showUseCase?'':'none';
+ if(gammaBox) gammaBox.style.display=showGamma?'':'none';
+ if(displayTypeBox) displayTypeBox.style.display=showDisplayType?'':'none';
+ if(progressBox) progressBox.style.display=(showConfirm||showOptions||showDisclaimer||showComplete||showUseCase||showGamma||showDisplayType)?'none':'';
  if(resetBtn){
   resetBtn.style.display=(showDisclaimer&&!meterAutoCalPreflightResetDone)?'':'none';
   resetBtn.disabled=!!meterAutoCalResetInProgress;
@@ -25877,6 +25933,9 @@ function meterAutoCalSetOverlay(active,status){
  }
  if(disclaimerBtn) disclaimerBtn.style.display=(showDisclaimer&&meterAutoCalPreflightResetDone)?'':'none';
  if(continueBtn) continueBtn.style.display=showLuminance?'':'none';
+ if(useCaseBtn) useCaseBtn.style.display=showUseCase?'':'none';
+ if(gammaBtn) gammaBtn.style.display=showGamma?'':'none';
+ if(displayTypeBtn) displayTypeBtn.style.display=showDisplayType?'':'none';
  if(startBtn){
   startBtn.style.display=(showConfirm||showOptions)?'':'none';
   startBtn.textContent=showOptions?'\u25B6 Continue':'\u25B6 Start';
@@ -25921,7 +25980,7 @@ function meterAutoCalSetupOverlayActive(){
  if(meterFullAutoCalConfirmOverlayActive()) return true;
  const phase=String(meterAutoCalPhase||'');
  if(phase==='running'||phase==='complete'||phase==='error') return false;
- return !!(meterAutoCalPendingConfig||meterAutoCalResetInProgress||meterAutoCalLuminanceSetupActive||phase==='options'||phase==='disclaimer'||phase==='preflight'||phase==='luminance'||phase==='confirm');
+ return !!(meterAutoCalPendingConfig||meterAutoCalResetInProgress||meterAutoCalLuminanceSetupActive||phase==='options'||phase==='disclaimer'||phase==='preflight'||phase==='luminance'||phase==='confirm'||phase==='usecase'||phase==='gammatarget');
 }
 
 function meterAutoCalRequiresLuminanceSetup(){
@@ -29741,18 +29800,17 @@ async function meterStartAutoCal(options){
  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
  meterSetActiveSeriesChartContext();
-// SDR26 1D-DPG autocal: ALWAYS force the Target Gamma dropdown to BT.1886
-  // at wizard start, regardless of the operator's saved selection. The chart
-  // math and the reference SDR workflow capture both use BT.1886 (gamma 2.4) on
-  // SDR; the previous "respect the dropdown" code let a stale 2.2 selection
-  // pass through, which made the worker calibrate against signal^2.2 while
-  // the chart showed signal^2.4 -- the per-anchor dE diverged by ~2x and
-  // reported anchor "failure" against the 0.5 target when the worker's view
-  // said the anchor was well below it. The dropdown is restored after the
-  // calibration completes (see meterAutoCalCompleteComps).
-  setVal('meterTargetGamma','bt1886');
-  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault(true);
-  if(typeof saveMeterSettings==='function') saveMeterSettings();
+// SDR target gamma is the operator's choice (wizard gamma step / Target
+  // Gamma dropdown): bt1886, 2.2, 2.4 or srgb. Only sanitize invalid or
+  // HDR-only values (st2084) to BT.1886 so the worker and the charts can
+  // never diverge onto different curves.
+  {
+   const tg=document.getElementById('meterTargetGamma');
+   const ok=['bt1886','2.2','2.4','srgb'];
+   if(tg&&!ok.includes(tg.value)) tg.value='bt1886';
+   if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl();
+   if(typeof saveMeterSettings==='function') saveMeterSettings();
+  }
   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
  if(!adjustable.length) return fail('No LG-adjustable greyscale points are available');
@@ -29825,11 +29883,165 @@ async function meterStartAutoCal(options){
  // (showComplete) reads from these.
  meterAutoCalCapturedMeasurementPort=meterAutoCalPendingConfig.measurementMeterPort||'';
  meterAutoCalCapturedMeasurementLabel=meterAutoCalPendingConfig.measurementMeterLabel||'';
- if(fullWorkflow) meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
- else meterAutoCalShowPreflightOptions();
+ const hdrWorkflowLocal=meterLgAutoCalRequestedSignalMode()==='hdr10';
+ meterAutoCalPendingNextEntry=fullWorkflow?'disclaimer':'options';
+ if(!hdrWorkflowLocal){
+  meterAutoCalPhase='usecase';
+  meterAutoCalSetOverlay(true,{phase:'usecase',current_name:'Display Use Case',message:'Choose how this display is normally used.'});
+ } else {
+  // HDR runs keep their pinned gamma and canonical YCbCr/Limited output but
+  // still benefit from the display-type picker so the patch size and pattern
+  // insertion match the panel (OLED 10% window + insertion, LCD 10% APL).
+  meterAutoCalDisplayTypePopulate();
+  meterAutoCalPhase='displaytype';
+  meterAutoCalSetOverlay(true,{phase:'displaytype',current_name:'Display Type',message:'Select the panel type / meter profile.'});
+ }
  meterActionPending=true;
  meterUpdateReadButtons();
  return true;
+}
+
+const METER_AUTOCAL_USECASE_OUTPUT={
+ pc:{color_format:'0',rgb_quant_range:'2',max_bpc:'10'},
+ tv:{color_format:'1',rgb_quant_range:'1',max_bpc:'10'},
+ console:{color_format:'0',rgb_quant_range:'1',max_bpc:'10'}
+};
+const METER_AUTOCAL_USECASE_GAMMA={pc:'2.2',tv:'bt1886',console:'2.2'};
+async function meterAutoCalUseCaseContinue(){
+ const sel=document.querySelector('input[name="meterAutoCalUseCase"]:checked');
+ const choice=sel?sel.value:'keep';
+ const statusEl=document.getElementById('meterAutoCalUseCaseStatus');
+ const btn=document.getElementById('meterAutoCalUseCaseContinueBtn');
+ if(choice!=='keep'){
+  const want=METER_AUTOCAL_USECASE_OUTPUT[choice];
+  const differs=want&&(String(getVal('color_format')||'0')!==want.color_format
+   ||String(getVal('rgb_quant_range')||'0')!==want.rgb_quant_range
+   ||String(getVal('max_bpc')||'8')!==want.max_bpc);
+  if(differs){
+   if(btn) btn.disabled=true;
+   if(statusEl) statusEl.textContent='Applying output settings and restarting the signal…';
+   let r=null;
+   try{
+    r=await fetchJSON('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(want)});
+   }catch(e){ r=null; }
+   if(!(r&&r.status==='ok')){
+    if(statusEl) statusEl.textContent='Failed to apply output settings — check Display Settings and try again.';
+    if(btn) btn.disabled=false;
+    return;
+   }
+   if(r.restart){
+    // Renderer restart forked server-side; give the link time to renegotiate.
+    const t0=Date.now();
+    while(Date.now()-t0<25000){
+     await new Promise(res=>setTimeout(res,1500));
+     const ping=await fetchJSON('/api/ping',{_quiet:true,_timeoutMs:3000}).catch(()=>null);
+     if(ping&&ping.ok&&(Date.now()-t0)>=8000) break;
+    }
+   }
+   try{ await loadConfig(true); }catch(e){}
+   if(statusEl) statusEl.textContent='Output settings applied.';
+   if(btn) btn.disabled=false;
+  }
+ }
+ // Store the operator's use-case choice for the Display Type / Gamma Target steps
+ // (e.g. window._meterAutoCalUseCaseChoice === 'pc' picks 2.2 as the recommended
+ // SDR gamma in DisplayTypeContinue). 'keep' falls through to the existing
+ // dropdown value.
+ window._meterAutoCalUseCaseChoice=choice;
+ meterAutoCalDisplayTypePopulate();
+ meterAutoCalPhase='displaytype';
+ meterAutoCalSetOverlay(true,{phase:'displaytype',current_name:'Display Type',message:'Select the panel type / meter profile.'});
+}
+// OLED vs LCD classification for the LG AutoCal guide mappings (OLED: 10%
+// window + pattern insertion; QNED/LCD: 10% APL, no insertion).
+function meterAutoCalDisplayTypeIsOled(value,label){
+ const s=(String(value||'')+' '+String(label||'')).toLowerCase();
+ return /oled|wrgb/.test(s);
+}
+// The Display Type select is cloned from the operator-facing meterDisplayType
+// at phase entry so the wizard copy includes the latest display-specific CCSS
+// entries that may have been populated asynchronously after page load.
+function meterAutoCalDisplayTypePopulate(){
+ const src=document.getElementById('meterDisplayType');
+ const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
+ if(!src||!dst) return;
+ dst.innerHTML='';
+ for(const node of src.children){
+  // cloneNode preserves optgroup + option nodes; setting dst.value after
+  // appending children resolves the option regardless of which optgroup it
+  // lives in (select.value matches against any <option> descendant).
+  dst.appendChild(node.cloneNode(true));
+ }
+ dst.value=src.value;
+ if(dst.selectedIndex<0) dst.selectedIndex=0;
+ dst.onchange=meterAutoCalDisplayTypeUpdateSummary;
+ meterAutoCalDisplayTypeUpdateSummary();
+}
+function meterAutoCalDisplayTypeUpdateSummary(){
+ const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
+ const out=document.getElementById('meterAutoCalDisplayTypeSummary');
+ if(!dst||!out) return;
+ const opt=dst.options[dst.selectedIndex];
+ const oled=meterAutoCalDisplayTypeIsOled(dst.value,opt?opt.textContent:'');
+ out.textContent=oled
+  ? 'OLED profile: patch size 10% Window, pattern insertion enabled (level 25%, 5s).'
+  : 'LCD/QNED profile: patch size 10% APL (window on black), pattern insertion disabled.';
+}
+function meterAutoCalDisplayTypeContinue(){
+ const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
+ if(dst&&dst.value){
+  // Mirror the wizard selection back to the main meterDisplayType dropdown
+  // so the rest of the wizard / worker / chart pipeline reads from a single
+  // source of truth.
+  const src=document.getElementById('meterDisplayType');
+  if(src) src.value=dst.value;
+  const opt=dst.options[dst.selectedIndex];
+  const oled=meterAutoCalDisplayTypeIsOled(dst.value,opt?opt.textContent:'');
+  const ps=document.getElementById('meterPatchSize');
+  if(ps&&ps.value!==(oled?'10':'apl_10')){
+   ps.value=oled?'10':'apl_10';
+   // meterPatchSize has a 'change' auto-save listener; dispatching it makes
+   // the new value persist immediately so a reload doesn't revert it.
+   try{ ps.dispatchEvent(new Event('change')); }catch(e){}
+  }
+  const ins=document.getElementById('meterPatchInsert');
+  if(ins&&ins.checked!==oled){
+   ins.checked=oled;
+   try{ ins.dispatchEvent(new Event('change')); }catch(e){}
+  }
+  if(typeof saveMeterSettings==='function') saveMeterSettings();
+ }
+ const sdrWizard=(meterLgAutoCalRequestedSignalMode()!=='hdr10');
+ if(sdrWizard){
+  // SDR runs walk through the gamma target step too. Pre-select the radio
+  // from the earlier use-case choice (window._meterAutoCalUseCaseChoice) or
+  // the existing dropdown value as the fallback.
+  const rec=METER_AUTOCAL_USECASE_GAMMA[window._meterAutoCalUseCaseChoice]||String(getVal('meterTargetGamma')||'bt1886');
+  const target=['bt1886','2.2','srgb'].includes(rec)?rec:'bt1886';
+  const radio=document.querySelector('input[name="meterAutoCalGammaTarget"][value="'+target+'"]');
+  if(radio) radio.checked=true;
+  meterAutoCalPhase='gammatarget';
+  meterAutoCalSetOverlay(true,{phase:'gammatarget',current_name:'Gamma Target',message:'Pick the curve the greyscale will be calibrated to.'});
+ } else {
+  // HDR keeps its pinned gamma; skip the gamma step and proceed.
+  meterAutoCalGammaTargetProceed();
+ }
+}
+function meterAutoCalGammaTargetContinue(){
+ const sel=document.querySelector('input[name="meterAutoCalGammaTarget"]:checked');
+ const choice=sel?sel.value:'bt1886';
+ setVal('meterTargetGamma',choice);
+ if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl();
+ if(typeof saveMeterSettings==='function') saveMeterSettings();
+ meterAutoCalGammaTargetProceed();
+}
+function meterAutoCalGammaTargetProceed(){
+ if(meterAutoCalPendingNextEntry==='disclaimer'){
+  meterAutoCalPhase='disclaimer';
+  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
+ } else {
+  meterAutoCalShowPreflightOptions();
+ }
 }
 
 async function meterAutoCalAcceptDisclaimer(){
