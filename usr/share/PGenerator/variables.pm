@@ -395,6 +395,12 @@ $resolve_request_ip="";
 $resolve_request_port="";
 share($resolve_request_ip);
 share($resolve_request_port);
+# Last pattern received over the Resolve protocol (raw, pre-override):
+# "r,g,b;bgr,bgg,bgb;x,y,cx,cy;bits". Lets the WebUI redraw the live patch
+# immediately when the Resolve card knobs (force-center / size override)
+# change, instead of waiting for the calibration software's next message.
+$resolve_last_pattern="";
+share($resolve_last_pattern);
 
 $webui_info_cache="";
 $webui_info_cache_time=0;

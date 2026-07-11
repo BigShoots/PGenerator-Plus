@@ -49,6 +49,10 @@ sub resolve_connection_thread (@) {
   $calibration_client_ip="";
   $calibration_client_software="";
     &release_source_rgb_quant_range("resolve");
+  {
+   lock($resolve_last_pattern);
+   $resolve_last_pattern="";
+  }
   # Show black pattern when disconnected
   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$bg_default","","","","",1,"resolve");
  }
@@ -178,31 +182,6 @@ sub resolve_connect (@) {
    }
   }
   #
-  # Operator patch-size override (WebUI Resolve card "Patch Size Override"):
-  # N% of screen AREA, same convention as the meter Patch Size dropdown
-  # (linear scale = sqrt(pct/100)). Keeps the sent window's centre and
-  # resizes around it (clamped to the screen), so it composes with the
-  # software's positioning and with "Force centered patch". Applies from
-  # the next received pattern; empty/invalid conf = follow the software.
-  #
-  my $size_ovr=defined($pgenerator_conf{"resolve_patch_size"}) ? $pgenerator_conf{"resolve_patch_size"} : "";
-  $size_ovr="" if($size_ovr!~/^\d+$/ || $size_ovr+0 < 1 || $size_ovr+0 > 100);
-  if($size_ovr ne "") {
-   if($size_ovr+0 >= 100) {
-    ($geom_x,$geom_y,$geom_cx,$geom_cy)=(0,0,1,1);
-   } else {
-    my $s=sqrt(($size_ovr+0)/100.0);
-    my $ctr_x=$geom_x+$geom_cx/2.0;
-    my $ctr_y=$geom_y+$geom_cy/2.0;
-    ($geom_cx,$geom_cy)=($s,$s);
-    $geom_x=$ctr_x-$s/2.0;
-    $geom_y=$ctr_y-$s/2.0;
-    $geom_x=0 if($geom_x < 0); $geom_y=0 if($geom_y < 0);
-    $geom_x=1.0-$s if($geom_x > 1.0-$s);
-    $geom_y=1.0-$s if($geom_y > 1.0-$s);
-   }
-  }
-  #
   # Sync bit depth from XML to PGenerator config if changed
   #
   if($bits > 0 && $bits != $bits_default) {
@@ -211,35 +190,22 @@ sub resolve_connect (@) {
    &pattern_generator_start();
   }
   #
-  # Create pattern from color/background/geometry
+  # Create pattern from color/background/geometry. Dedupe on the RAW sent
+  # values PLUS the operator override knobs, so a knob change redraws even
+  # when the software re-sends the same pattern. The raw pattern is also
+  # stored so the WebUI can redraw it immediately when a knob changes
+  # (resolve_redraw_last) without waiting for the next message.
   #
-  my $bg_str="$r_bg,$g_bg,$b_bg";
-  my $rgb_str="$r_p,$g_p,$b_p";
-  my $pattern_key="$rgb_str;$bg_str;$geom_x;$geom_y;$geom_cx;$geom_cy;$bits";
+  my $pattern_key="$r_p,$g_p,$b_p;$r_bg,$g_bg,$b_bg;$geom_x;$geom_y;$geom_cx;$geom_cy;$bits;"
+   .($pgenerator_conf{"resolve_force_center"}||"")."/".($pgenerator_conf{"resolve_patch_size"}||"");
   next if($pattern_key eq $last_pattern_key);
   $last_pattern_key=$pattern_key;
-    &apply_source_rgb_quant_range("resolve",2);
-  &clean_pattern_files();
-  # Full field pattern (geometry covers entire screen)
-  if($geom_cx >= 0.99 && $geom_cy >= 0.99) {
-   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$rgb_str","$bg_str","","","",1,"resolve");
-  } else {
-   # Windowed pattern — compute pixel dimensions from geometry fractions
-   my $win_w=int($geom_cx*$w_s+0.5);
-   my $win_h=int($geom_cy*$h_s+0.5);
-   my $pos_x=int($geom_x*$w_s+0.5);
-   my $pos_y=int($geom_y*$h_s+0.5);
-   my $pos_str="$pos_x,$pos_y";
-   # Center the window if caller specified origin 0,0 for a non-fullscreen window
-   $pos_str=$position_default if($pos_x == 0 && $pos_y == 0);
-   # Operator override (WebUI Resolve card "Force centered patch"): ignore
-   # the sent window position — DisplayCAL mirrors its measurement frame
-   # position here, which is easy to leave off-center without noticing.
-   # The protocol carries no client identity, so this applies to every
-   # Resolve-protocol sender. Size still follows the sent geometry.
-   $pos_str=$position_default if(($pgenerator_conf{"resolve_force_center"}||"") eq "1");
-   &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$rgb_str","$bg_str","$pos_str","","",1,"resolve");
+  {
+   lock($resolve_last_pattern);
+   $resolve_last_pattern="$r_p,$g_p,$b_p;$r_bg,$g_bg,$b_bg;$geom_x,$geom_y,$geom_cx,$geom_cy;$bits";
   }
+  &apply_source_rgb_quant_range("resolve",2);
+  &resolve_draw_pattern($r_p,$g_p,$b_p,$r_bg,$g_bg,$b_bg,$geom_x,$geom_y,$geom_cx,$geom_cy);
  }
  $socket->close();
 }
@@ -279,6 +245,87 @@ sub resolve_float (@) {
  my $val=shift||"0";
  $val=~s/,/\./g;
  return $val+0;
+}
+
+
+###############################################
+#      Resolve Draw Pattern (with overrides)  #
+###############################################
+# Applies the operator override knobs to a RAW received pattern and draws it.
+sub resolve_draw_pattern (@) {
+ my ($r_p,$g_p,$b_p,$r_bg,$g_bg,$b_bg,$geom_x,$geom_y,$geom_cx,$geom_cy)=@_;
+ #
+ # Patch-size override (WebUI Resolve card "Patch Size Override"): N% of
+ # screen AREA, same convention as the meter Patch Size dropdown (linear
+ # scale = sqrt(pct/100)). Keeps the sent window's centre and resizes
+ # around it (clamped to the screen), so it composes with the software's
+ # positioning and with "Force centered patch". Empty/invalid conf =
+ # follow the software.
+ #
+ my $size_ovr=defined($pgenerator_conf{"resolve_patch_size"}) ? $pgenerator_conf{"resolve_patch_size"} : "";
+ $size_ovr="" if($size_ovr!~/^\d+$/ || $size_ovr+0 < 1 || $size_ovr+0 > 100);
+ if($size_ovr ne "") {
+  if($size_ovr+0 >= 100) {
+   ($geom_x,$geom_y,$geom_cx,$geom_cy)=(0,0,1,1);
+  } else {
+   my $s=sqrt(($size_ovr+0)/100.0);
+   my $ctr_x=$geom_x+$geom_cx/2.0;
+   my $ctr_y=$geom_y+$geom_cy/2.0;
+   ($geom_cx,$geom_cy)=($s,$s);
+   $geom_x=$ctr_x-$s/2.0;
+   $geom_y=$ctr_y-$s/2.0;
+   $geom_x=0 if($geom_x < 0); $geom_y=0 if($geom_y < 0);
+   $geom_x=1.0-$s if($geom_x > 1.0-$s);
+   $geom_y=1.0-$s if($geom_y > 1.0-$s);
+  }
+ }
+ my $rgb_str="$r_p,$g_p,$b_p";
+ my $bg_str="$r_bg,$g_bg,$b_bg";
+ &clean_pattern_files();
+ # Full field pattern (geometry covers entire screen)
+ if($geom_cx >= 0.99 && $geom_cy >= 0.99) {
+  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$rgb_str","$bg_str","","","",1,"resolve");
+ } else {
+  # Windowed pattern -- compute pixel dimensions from geometry fractions
+  my $win_w=int($geom_cx*$w_s+0.5);
+  my $win_h=int($geom_cy*$h_s+0.5);
+  my $pos_x=int($geom_x*$w_s+0.5);
+  my $pos_y=int($geom_y*$h_s+0.5);
+  my $pos_str="$pos_x,$pos_y";
+  # Center the window if caller specified origin 0,0 for a non-fullscreen window
+  $pos_str=$position_default if($pos_x == 0 && $pos_y == 0);
+  # Operator override (WebUI Resolve card "Force centered patch"): ignore
+  # the sent window position -- DisplayCAL mirrors its measurement frame
+  # position here, which is easy to leave off-center without noticing.
+  # The protocol carries no client identity, so this applies to every
+  # Resolve-protocol sender. Size still follows the sent geometry.
+  $pos_str=$position_default if(($pgenerator_conf{"resolve_force_center"}||"") eq "1");
+  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$rgb_str","$bg_str","$pos_str","","",1,"resolve");
+ }
+}
+
+###############################################
+#      Resolve Redraw Last Pattern            #
+###############################################
+# Redraw the last received Resolve pattern with the CURRENT override knobs.
+# Called from the WebUI config-apply path so toggling the Resolve card
+# settings updates the on-screen patch immediately instead of waiting for
+# the calibration software's next pattern message.
+sub resolve_redraw_last (@) {
+ my $last;
+ {
+  lock($resolve_last_pattern);
+  $last=$resolve_last_pattern;
+ }
+ return 0 if(!defined($last) || $last eq "");
+ my ($rgb,$bg,$geom,$bits)=split(";",$last);
+ my ($r_p,$g_p,$b_p)=split(",",$rgb||"");
+ my ($r_bg,$g_bg,$b_bg)=split(",",$bg||"");
+ my ($gx,$gy,$gcx,$gcy)=split(",",$geom||"");
+ return 0 if(!defined($b_p) || !defined($gcy));
+ &log("Resolve: redrawing last pattern with updated override settings");
+ &resolve_draw_pattern($r_p,$g_p,$b_p,$r_bg,$g_bg,$b_bg,$gx,$gy,$gcx,$gcy);
+ return 1;
 }
 
 return 1;

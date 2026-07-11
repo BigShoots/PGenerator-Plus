@@ -6841,6 +6841,13 @@ sub webui_apply_config (@) {
    $webui_rgb_quant_range_preferred=$changes{$k} if($k eq "rgb_quant_range");
    $need_restart=1 if($restart_keys{$k});
   }
+ # Resolve card knobs: redraw the live Resolve patch immediately so the
+ # operator sees the change without waiting for the calibration software's
+ # next pattern message.
+ if((exists($changes{"resolve_patch_size"}) || exists($changes{"resolve_force_center"}))
+    && $calibration_client_software eq "Resolve") {
+  eval { &resolve_redraw_last(); };
+ }
  # A mode change (mode_idx or any signal-attribute restart key) re-negotiates
  # the HDMI link, so the connector's available modes and the sink's advertised
  # capabilities can change. Drop the cached mode list and EDID/caps so the next
