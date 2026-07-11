@@ -28833,14 +28833,39 @@ async function meterFullAutoCalStart3d(firstStatus){
  meterAutoCalSetOverlay(false,null);
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Starting 3D LUT AutoCal'},{workflow:'full',label:'Starting 3D LUT AutoCal'});
  meterUpdateReadButtons();
- const started=await meterStartLg3dAutoCal({
+ const start3dOptions={
   fullWorkflow:true,
   skipConfirm:true,
   method:(meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||meterFullAutoCalMethodValue(),
   upload:meterFullAutoCalConfig?!!meterFullAutoCalConfig.upload:meterFullAutoCalUploadValue(),
   postCommitPolishEnabled:postCommitPolishEnabled,
   magicWandEnabled:magicWandEnabled
- });
+ };
+ // Snapshot the wizard state: a failed start attempt calls fail() ->
+ // meterFullAutoCalResetState, which clears it before we can retry.
+ const start3dConfigSnapshot=meterFullAutoCalConfig?{...meterFullAutoCalConfig}:null;
+ const start3dRunIdSnapshot=meterFullAutoCalRunId;
+ const start3dResultsSnapshot=meterFullAutoCalResults;
+ let started=await meterStartLg3dAutoCal(start3dOptions);
+ if(!started){
+  // The client's LG connection snapshot (window.lgStatusState) can be
+  // stale: status refresh pauses during calibration workflows, so a TV
+  // websocket bounce mid-run leaves "disconnected" cached while the
+  // daemon's link is fine - meterLg3dAutoCalAvailable() then fails the
+  // start. Refresh the snapshot from the server and retry once.
+  try{
+   const s=await fetchJSON('/api/lg/status',{_quiet:true,_timeoutMs:8000});
+   if(s&&typeof renderLgStatus==='function') renderLgStatus(s);
+  }catch(e){}
+  await new Promise(res=>setTimeout(res,4000));
+  meterFullAutoCalRunning=true;
+  meterFullAutoCalPhase='3d-lut';
+  if(start3dConfigSnapshot&&!meterFullAutoCalConfig) meterFullAutoCalConfig=start3dConfigSnapshot;
+  if(start3dRunIdSnapshot&&!meterFullAutoCalRunId) meterFullAutoCalRunId=start3dRunIdSnapshot;
+  if(start3dResultsSnapshot&&(!meterFullAutoCalResults||!meterFullAutoCalResults.first)) meterFullAutoCalResults=start3dResultsSnapshot;
+  meterFullAutoCalSaveState();
+  started=await meterStartLg3dAutoCal(start3dOptions);
+ }
  if(!started) meterFullAutoCalAbort('Full Auto Cal could not start 3D LUT AutoCal',true);
 }
 
@@ -30161,15 +30186,33 @@ async function meterAutoCalConfirmAndStart(){
 	 // the final output settings.
 	 if(!hdrWorkflow){
 	  try{
-	   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
-	   const rebuiltAdjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
-	   if(rebuiltAdjustable.length) meterAutoCalPendingConfig.adjustable=rebuiltAdjustable;
-	   const rebuiltWhite=meterAutoCalWhiteStep();
-	   if(rebuiltWhite) meterAutoCalPendingConfig.whiteStep=rebuiltWhite;
-	   meterAutoCalPendingConfig.patternSignalRange=meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange();
-	   const rebuiltSorted=meterGreyscaleSeriesSteps(meterSeriesSteps);
-	   meterBuildPatchThumbs(rebuiltSorted,new Set(),null);
-	   drawAllChartsPreset(rebuiltSorted);
+	   // Re-assert the SDR26 series context first: mid-wizard state (LG
+	   // picture-mode reset, TV-control probes) can leave meterUseLgAutoCal26
+	   // momentarily false, and meterBuildStepsJS then silently falls back
+	   // to the 21-point LG list (no 2.3/3/4/7 rows -> the worker's shadow
+	   // readings have nothing to plot onto). Only swap in the rebuilt set
+	   // when it carries the SDR26 signature (a 2.3% row); otherwise keep
+	   // the wizard-start snapshot.
+	   meterActiveSeriesType='greyscale';
+	   meterActiveSeriesPoints=26;
+	   meterActiveSeriesKey='greyscale-26';
+	   meterSetActiveSeriesChartContext();
+	   const rebuiltSteps=meterBuildStepsJS('greyscale',26);
+	   const looksSdr26=Array.isArray(rebuiltSteps)&&rebuiltSteps.length>=22
+	    &&rebuiltSteps.some(s=>Math.abs((Number(s&&s.ire)||0)-2.3)<0.05);
+	   if(looksSdr26){
+	    meterSeriesSteps=rebuiltSteps;
+	    const rebuiltAdjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
+	    if(rebuiltAdjustable.length) meterAutoCalPendingConfig.adjustable=rebuiltAdjustable;
+	    const rebuiltWhite=meterAutoCalWhiteStep();
+	    if(rebuiltWhite) meterAutoCalPendingConfig.whiteStep=rebuiltWhite;
+	    meterAutoCalPendingConfig.patternSignalRange=meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange();
+	    const rebuiltSorted=meterGreyscaleSeriesSteps(meterSeriesSteps);
+	    meterBuildPatchThumbs(rebuiltSorted,new Set(),null);
+	    drawAllChartsPreset(rebuiltSorted);
+	   } else {
+	    try{ console.warn('SDR26 step rebuild skipped: builder returned non-SDR26 set',rebuiltSteps&&rebuiltSteps.length); }catch(e2){}
+	   }
 	  }catch(e){}
 	 }
 	 const setupY=hdrWorkflow?undefined:meterAutoCalSetupYValue();
