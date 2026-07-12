@@ -11137,6 +11137,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="tv"> TV / Movies <span style="color:var(--text2)">&nbsp;(YCbCr 4:4:4, Limited 16-235 video with super-white to 254, 10-bit)</span></label>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="console"> Game Console <span style="color:var(--text2)">&nbsp;(RGB, Limited 16-235, 10-bit)</span></label>
 	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalUseCase" value="keep" checked> Keep current output settings</label>
+	   <div id="meterAutoCalUseCaseHdrNote" style="display:none;font-size:.72rem;color:var(--text2);margin-top:8px">HDR10 note: YCbCr 4:4:4 Limited is the panel's native HDR signalling mode and the recommended choice. RGB modes are supported for PC and console sources. The HDR gamma target is fixed and not part of this wizard.</div>
 	   <div id="meterAutoCalUseCaseStatus" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
 	  <div id="meterAutoCalGammaBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
@@ -29964,17 +29965,15 @@ async function meterStartAutoCal(options){
  meterAutoCalCapturedMeasurementLabel=meterAutoCalPendingConfig.measurementMeterLabel||'';
  const hdrWorkflowLocal=meterLgAutoCalRequestedSignalMode()==='hdr10';
  meterAutoCalPendingNextEntry=fullWorkflow?'disclaimer':'options';
- if(!hdrWorkflowLocal){
-  meterAutoCalPhase='usecase';
-  meterAutoCalSetOverlay(true,{phase:'usecase',current_name:'Display Use Case',message:'Choose how this display is normally used.'});
- } else {
-  // HDR runs keep their pinned gamma and canonical YCbCr/Limited output but
-  // still benefit from the display-type picker so the patch size and pattern
-  // insertion match the panel (OLED 10% window + insertion, LCD 10% APL).
-  meterAutoCalDisplayTypePopulate();
-  meterAutoCalPhase='displaytype';
-  meterAutoCalSetOverlay(true,{phase:'displaytype',current_name:'Display Type',message:'Select the panel type / meter profile.'});
+ // Both SDR and HDR wizards start with the use-case (output format) step,
+ // then display type. HDR skips the gamma step - its target curve is fixed
+ // (2.2 cal-time / PQ verify) and is not operator-selectable.
+ {
+  const hdrNote=document.getElementById('meterAutoCalUseCaseHdrNote');
+  if(hdrNote) hdrNote.style.display=hdrWorkflowLocal?'':'none';
  }
+ meterAutoCalPhase='usecase';
+ meterAutoCalSetOverlay(true,{phase:'usecase',current_name:'Display Use Case',message:'Choose how this display is normally used.'});
  meterActionPending=true;
  meterUpdateReadButtons();
  return true;
@@ -30206,22 +30205,26 @@ async function meterAutoCalConfirmAndStart(){
 	 // were snapshotted at wizard start, BEFORE the pre-steps ran - rebuild
 	 // them now so the worker and the chart get the anchor set that matches
 	 // the final output settings.
-	 if(!hdrWorkflow){
+	 {
 	  try{
-	   // Re-assert the SDR26 series context first: mid-wizard state (LG
+	   // Re-assert the autocal-26 series context first: mid-wizard state (LG
 	   // picture-mode reset, TV-control probes) can leave meterUseLgAutoCal26
 	   // momentarily false, and meterBuildStepsJS then silently falls back
-	   // to the 21-point LG list (no 2.3/3/4/7 rows -> the worker's shadow
-	   // readings have nothing to plot onto). Only swap in the rebuilt set
-	   // when it carries the SDR26 signature (a 2.3% row); otherwise keep
-	   // the wizard-start snapshot.
+	   // to the 21-point LG list (no shadow rows -> the worker's readings
+	   // have nothing to plot onto). The rebuild runs for BOTH SDR and HDR:
+	   // the use-case step can change the output format, and the builder
+	   // picks the code tables from the live bit depth + range. Only swap in
+	   // the rebuilt set when it carries the mode's autocal signature (its
+	   // lowest anchor row); otherwise keep the wizard-start snapshot.
 	   meterActiveSeriesType='greyscale';
 	   meterActiveSeriesPoints=26;
 	   meterActiveSeriesKey='greyscale-26';
 	   meterSetActiveSeriesChartContext();
 	   const rebuiltSteps=meterBuildStepsJS('greyscale',26);
-	   const looksSdr26=Array.isArray(rebuiltSteps)&&rebuiltSteps.length>=22
-	    &&rebuiltSteps.some(s=>Math.abs((Number(s&&s.ire)||0)-2.3)<0.05);
+	   const rebuildLowIre=hdrWorkflow?1.4:2.3;
+	   const rebuildMinRows=hdrWorkflow?20:22;
+	   const looksSdr26=Array.isArray(rebuiltSteps)&&rebuiltSteps.length>=rebuildMinRows
+	    &&rebuiltSteps.some(s=>Math.abs((Number(s&&s.ire)||0)-rebuildLowIre)<0.05);
 	   if(looksSdr26){
 	    meterSeriesSteps=rebuiltSteps;
 	    const rebuiltAdjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
