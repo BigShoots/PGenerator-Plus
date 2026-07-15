@@ -35495,9 +35495,9 @@ function drawCIEChart3D(readings,opts){
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
    }});
    prims.push({z:pT.z+0.02, draw:()=>{
-    const sq=5.5*pT.persp*markerScale;
+    const sq=3.2*pT.persp*markerScale;
     ctx.save();
-    ctx.strokeStyle=targetStroke;ctx.lineWidth=Math.max(0.6,(selected?2.4:2.0)*markerScale);
+    ctx.strokeStyle=targetStroke;ctx.lineWidth=Math.max(0.5,(selected?1.8:1.4)*markerScale);
     ctx.strokeRect(pT.sx-sq,pT.sy-sq,sq*2,sq*2);
     ctx.restore();
    }});
@@ -35570,7 +35570,7 @@ function drawCIEChart3D(readings,opts){
     }});
    }
    prims.push({z:pM.z+0.03, draw:()=>{
-    const r=4.6*pM.persp*markerScale;
+    const r=2.8*pM.persp*markerScale;
     ctx.save();
     ctx.fillStyle=measuredColor;
     ctx.beginPath();ctx.arc(pM.sx,pM.sy,r,0,Math.PI*2);ctx.fill();
@@ -35860,9 +35860,9 @@ function drawCIEChart(readings){
   }
   // Target: crisp hollow square
   if(tgt){
-   const sq=6;
+   const sq=3.5;
    ctx.save();
-   ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=2.0;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+   ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
    ctx.restore();
   }
   // Luminance-error ring ONLY when Include luminance error is checked.
@@ -35873,7 +35873,7 @@ function drawCIEChart(readings){
   if(hasMeasuredXY){
    ctx.save();
    ctx.fillStyle=measuredColor;ctx.beginPath();
-   ctx.arc(px,py,4.6,0,Math.PI*2);
+   ctx.arc(px,py,2.8,0,Math.PI*2);
    ctx.fill();
    ctx.restore();
   }
