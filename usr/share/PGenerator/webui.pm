@@ -596,6 +596,8 @@ sub webui_http (@) {
     # The "WebUI keeps going offline" symptom was this: any navigation
     # with a cache-buster query (e.g. the browser's "?_=12345") would
     # fall through to the 404 handler instead of serving the page.
+    my $request_query="";
+    $request_query=$1 if(defined($path) && $path=~/\?(.*)$/);
     $path=~s/\?.*$// if(defined($path));
     &log("WebUI: $method $path");
 
@@ -1111,7 +1113,7 @@ sub webui_http (@) {
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/3d-lut/cube") {
-    my ($fname,$content)=&webui_lg_lut_download(undef,$query);
+    my ($fname,$content)=&webui_lg_lut_download(undef,$request_query);
     my $len=length($content);
     if($fname ne "") {
      print $client "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: $len\r\n$cors\r\n";
