@@ -1112,6 +1112,11 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/3d-lut/delete" && $method eq "POST") {
+    my $result=&webui_lg_lut_delete(undef,$body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/3d-lut/cube") {
     my ($fname,$content)=&webui_lg_lut_download(undef,$request_query);
     my $len=length($content);
@@ -5049,6 +5054,27 @@ sub webui_lg_lut_download (@) {
  my $data="";
  if(open(my $fh,"<",$path)) { local $/; $data=<$fh>; close($fh); }
  return ($file,$data);
+}
+
+# Delete a solved LUT from the history: the .cube plus its same-basename
+# .bin/.json companions (export_lut always writes the triple together). The
+# display keeps whatever payload was already uploaded — this only prunes the
+# on-disk history. Same strict name whitelist as the download route.
+sub webui_lg_lut_delete (@) {
+ my ($dir,$body)=@_;
+ $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
+ my $file="";
+ $file=$1 if(defined($body) && $body=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.cube)"/);
+ return '{"status":"error","message":"Invalid LUT file name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ return '{"status":"error","message":"LUT file not found"}' unless(-f "$dir/$file");
+ my $base=$file;
+ $base=~s/\.cube$//;
+ my $removed=0;
+ foreach my $ext (qw(cube bin json)) {
+  my $path="$dir/$base.$ext";
+  $removed++ if(-f $path && unlink($path));
+ }
+ return "{\"status\":\"ok\",\"removed\":$removed}";
 }
 
 sub webui_meter_settings_load (@) {
@@ -9923,7 +9949,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSeriesGroupGreyscale,#meterSeriesGroupColor,#meterSeriesGroupAutoCal{min-width:0}
 #meterReadBtnRow{width:100%;justify-content:flex-end;min-width:0}
 .btn{padding:7px 14px;border:none;border-radius:6px;font-size:.8rem;cursor:pointer;
-font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap}
+font-weight:600;transition:all .2s;display:flex;align-items:center;gap:4px;white-space:nowrap;flex-shrink:0}
 .btn-sm{padding:5px 10px;font-size:.75rem;border-radius:5px}
 .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
 .btn-primary:hover{opacity:.9;transform:translateY(-1px)}
@@ -24677,12 +24703,12 @@ function meterRenderCustomSeriesManager(){
    +'<td style="padding:6px">'+(series.category==='color'?'Color':'Greyscale')+'</td>'
    +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px">'+series.mode.toUpperCase()+'</span></td>'
    +'<td style="padding:6px">'+patchInfo+'</td>'
-   +'<td style="padding:6px;white-space:nowrap">'
-    +'<button class="btn btn-sm btn-secondary" onclick="meterManagerEditSeries('+series.id+')">Edit</button> '
-    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'calman\')" title="Export as CalMAN 8-bit CSV">CalMAN</button> '
-    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'colourspace\')" title="Export as ColourSpace CSV">CSpace</button> '
+   +'<td style="padding:6px"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterManagerEditSeries('+series.id+')">Edit</button>'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'calman\')" title="Export as CalMAN 8-bit CSV">CalMAN</button>'
+    +'<button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeriesById('+series.id+',\'colourspace\')" title="Export as ColourSpace CSV">CSpace</button>'
     +'<button class="btn btn-sm btn-danger" onclick="meterManagerDeleteSeries('+series.id+')">Delete</button>'
-   +'</td>'
+   +'</div></td>'
   +'</tr>';
  }).join('');
 }
@@ -24969,9 +24995,10 @@ async function meterLoadSolvedLutList(){
   const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
   panel.innerHTML=luts.map(l=>{
    const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
-   return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0">'
-    +'<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(l.name)+' <span style="color:var(--text2)">'+esc(when)+'</span></span>'
+   return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
+    +'<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(l.name)+'">'+esc(l.name)+' <span style="color:var(--text2)">'+esc(when)+'</span></span>'
     +'<button class="btn btn-sm btn-secondary" onclick="meterDownloadSolvedLut(\''+esc(l.name)+'\')">Download</button>'
+    +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+esc(l.name)+'\')">&#10005;</button>'
    +'</div>';
   }).join('');
  }catch(e){
@@ -24987,6 +25014,22 @@ async function meterDownloadSolvedLut(name){
   meterDownloadBlob(blob,name);
  }catch(e){
   toast('LUT download failed',true);
+ }
+}
+
+async function meterDeleteSolvedLut(name){
+ const ok=await meterShowChoiceModal({title:'Delete LUT?',body:'Delete "'+String(name)+'" and its companion .bin/.json files from the LUT history? The TV keeps whatever is already uploaded. This cannot be undone.',acceptLabel:'Delete',cancelLabel:'Keep'});
+ if(!ok) return;
+ try{
+  const r=await fetchJSON('/api/3d-lut/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:name}),_timeoutMs:8000});
+  if(r&&r.status==='ok'){
+   toast('LUT deleted');
+   meterLoadSolvedLutList();
+  } else {
+   toast((r&&r.message)?r.message:'LUT delete failed',true);
+  }
+ }catch(e){
+  toast('LUT delete failed',true);
  }
 }
 
