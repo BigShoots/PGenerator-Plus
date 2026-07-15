@@ -24159,12 +24159,15 @@ function meterCustomSeriesNormalizeState(){
   const id=Math.round(Number(s.id));
   const valid=Number.isFinite(id)&&id>=1001&&!seen[id];
   if(valid){seen[id]=true;if(id>maxId) maxId=id;}
+  const kind=(s.kind==='lattice')?'lattice':'manual';
   return {
    id:valid?id:0,
    name:String(s.name==null?'':s.name).replace(/[\[\]{}"\\]/g,'').slice(0,48).trim()||('Custom '+(si+1)),
-   category:(s.category==='color')?'color':'greyscale',
+   category:(kind==='lattice')?'color':((s.category==='color')?'color':'greyscale'),
    mode:meterCustomSeriesModeKey(s.mode),
-   patches:(Array.isArray(s.patches)?s.patches:[]).slice(0,200).map((p,pi)=>meterCustomSeriesSanitizePatch(p,pi))
+   kind:kind,
+   params:(kind==='lattice')?meterLatticeSanitizeParams(s.params):undefined,
+   patches:(kind==='lattice')?[]:((Array.isArray(s.patches)?s.patches:[]).slice(0,200).map((p,pi)=>meterCustomSeriesSanitizePatch(p,pi)))
   };
  });
  meterCustomSeriesState.series.forEach(s=>{
@@ -24198,6 +24201,109 @@ function meterActiveSeriesIsCustom(){
  return !!meterCustomSeriesById(meterActiveSeriesPoints);
 }
 
+// ---- Parameter-defined lattice series ----
+// A kind:'lattice' series stores only generator params; patches are expanded
+// deterministically here AND in the server's webui_lattice_series_steps_from_body.
+// Any change to this algorithm must be mirrored there (locked by shared fixtures
+// in tests/lattice-expansion-regression.js + tests/lattice-server-steps-regression.pl).
+function meterLatticeGcd(a,b){ while(b){ const t=a%b; a=b; b=t; } return a; }
+
+function meterLatticeSpreadOrder(count){
+ const total=Math.max(0,Math.round(Number(count)||0));
+ if(total===0) return [];
+ if(total===1) return [0];
+ let stride=Math.floor(total*0.618034);
+ if(stride<1) stride=1;
+ while(meterLatticeGcd(stride,total)!==1) stride++;
+ const out=[];
+ let idx=0;
+ for(let k=0;k<total;k++){ out.push(idx); idx=(idx+stride)%total; }
+ return out;
+}
+
+function meterLatticeSanitizeParams(raw){
+ const src=(raw&&typeof raw==='object')?raw:{};
+ const num=(v,def,min,max)=>{ const n=Math.round(Number(v)); return Number.isFinite(n)?Math.max(min,Math.min(max,n)):def; };
+ let grey=num(src.grey_points,0,0,101);
+ if(grey<2) grey=0;
+ let threshold=Number(src.threshold_pct);
+ if(!Number.isFinite(threshold)) threshold=0;
+ threshold=Math.max(0,Math.min(50,threshold));
+ return {
+  size:num(src.size,9,3,50),
+  grey_points:grey,
+  threshold_pct:threshold,
+  order:(src.order==='grid')?'grid':'spread',
+  reverse:!!src.reverse
+ };
+}
+
+function meterLatticePct(f){
+ const v=Math.round(f*1000)/10;
+ return String(v);
+}
+
+function meterLatticeKeepNode(fr,fg,fb,thresholdPct){
+ if(!(thresholdPct>0)) return true;
+ return (0.2126*fr+0.7152*fg+0.0722*fb)*100>=thresholdPct;
+}
+
+function meterLatticeExpandPatches(rawParams){
+ const params=meterLatticeSanitizeParams(rawParams);
+ const N=params.size;
+ const div=N-1;
+ const makePatch=(name,fr,fg,fb)=>({
+  name:name,frac_r:fr,frac_g:fg,frac_b:fb,
+  r8:Math.round(fr*255),g8:Math.round(fg*255),b8:Math.round(fb*255),
+  r10:Math.round(fr*1023),g10:Math.round(fg*1023),b10:Math.round(fb*1023),
+  target_nits:null
+ });
+ const patches=[];
+ if(params.grey_points>=2){
+  const G=params.grey_points;
+  patches.push(makePatch('G 100%',1,1,1));
+  for(let i=0;i<G;i++){
+   const f=i/(G-1);
+   if(f>=1) continue;
+   patches.push(makePatch('G '+meterLatticePct(f)+'%',f,f,f));
+  }
+ }
+ const nodes=[];
+ for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
+  const fr=ri/div,fg=gi/div,fb=bi/div;
+  if(!meterLatticeKeepNode(fr,fg,fb,params.threshold_pct)) continue;
+  nodes.push(makePatch(meterLatticePct(fr)+'/'+meterLatticePct(fg)+'/'+meterLatticePct(fb),fr,fg,fb));
+ }
+ let ordered=nodes;
+ if(params.order==='spread') ordered=meterLatticeSpreadOrder(nodes.length).map(i=>nodes[i]);
+ if(params.reverse) ordered=ordered.slice().reverse();
+ patches.push(...ordered);
+ return patches;
+}
+
+function meterLatticeCountForParams(rawParams){
+ const params=meterLatticeSanitizeParams(rawParams);
+ const N=params.size;
+ const div=N-1;
+ let count=(params.grey_points>=2)?params.grey_points:0;
+ for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
+  if(meterLatticeKeepNode(ri/div,gi/div,bi/div,params.threshold_pct)) count++;
+ }
+ return count;
+}
+
+function meterCustomSeriesPatches(series){
+ if(series&&series.kind==='lattice') return meterLatticeExpandPatches(series.params);
+ return (series&&Array.isArray(series.patches))?series.patches:[];
+}
+
+function meterLatticeWireRange(){
+ const tenBit=meterPatchBitDepth()===10;
+ const limited=(typeof meterPatchUsesVideoRange==='function')&&meterPatchUsesVideoRange();
+ if(tenBit) return limited?{min:64,span:876,max:1023}:{min:0,span:1023,max:1023};
+ return limited?{min:16,span:219,max:255}:{min:0,span:255,max:255};
+}
+
 function meterCustomSeriesStepTargets(step,series,patch){
  const out={};
  try{
@@ -24226,20 +24332,24 @@ function meterCustomSeriesStepTargets(step,series,patch){
 }
 
 function meterBuildCustomSeriesSteps(series){
- if(!series||!Array.isArray(series.patches)) return [];
+ if(!series) return [];
+ const sourcePatches=meterCustomSeriesPatches(series);
+ if(!Array.isArray(sourcePatches)||!sourcePatches.length) return [];
  const tenBit=meterPatchBitDepth()===10;
  const inputMax=tenBit?1023:255;
+ const isLattice=series.kind==='lattice';
+ const wire=isLattice?meterLatticeWireRange():null;
  const previewForCode=(code)=>{
   const numeric=Number(code)||0;
   return inputMax>255?Math.max(0,Math.min(255,Math.round(numeric*255/inputMax))):Math.max(0,Math.min(255,Math.round(numeric)));
  };
- const isGrey=series.category!=='color';
+ const isGrey=!isLattice&&series.category!=='color';
  const fractionPct=(code)=>Math.round(meterGreySignalFractionFromCode(code)*1000)/10;
  const steps=[];
- series.patches.forEach((patch,idx)=>{
-  const r=meterCustomSeriesClampCode(tenBit?patch.r10:patch.r8,inputMax);
-  const g=meterCustomSeriesClampCode(tenBit?patch.g10:patch.g8,inputMax);
-  const b=meterCustomSeriesClampCode(tenBit?patch.b10:patch.b8,inputMax);
+ sourcePatches.forEach((patch,idx)=>{
+  const r=isLattice?Math.round(wire.min+patch.frac_r*wire.span):meterCustomSeriesClampCode(tenBit?patch.r10:patch.r8,inputMax);
+  const g=isLattice?Math.round(wire.min+patch.frac_g*wire.span):meterCustomSeriesClampCode(tenBit?patch.g10:patch.g8,inputMax);
+  const b=isLattice?Math.round(wire.min+patch.frac_b*wire.span):meterCustomSeriesClampCode(tenBit?patch.b10:patch.b8,inputMax);
   const greyIre=isGrey?fractionPct(g):(idx+1);
   const step={
    ire:greyIre,
@@ -24256,7 +24366,7 @@ function meterBuildCustomSeriesSteps(series){
    series_type:isGrey?'greyscale':'colors',
    custom_series_id:series.id
   };
-  Object.assign(step,meterCustomSeriesStepTargets(step,series,patch));
+  if(!isLattice) Object.assign(step,meterCustomSeriesStepTargets(step,series,patch));
   steps.push(step);
  });
  return steps;
@@ -24441,7 +24551,7 @@ async function meterDeleteCustomSeries(){
 }
 
 function meterCustomSeriesCsv(series,format){
- const rows=(series&&Array.isArray(series.patches))?series.patches:[];
+ const rows=(typeof meterCustomSeriesPatches==='function')?meterCustomSeriesPatches(series):((series&&Array.isArray(series.patches))?series.patches:[]);
  if(!rows.length) return '';
  if(format==='colourspace'){
   // Light Illusion ColourSpace layout: "# Bitdepth"/"# Range" comment header,
