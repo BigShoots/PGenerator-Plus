@@ -2321,6 +2321,52 @@ sub webui_meter_lg_autocal_series_target_reference (@) {
  return undef;
 }
 
+# Custom user-defined series: the client sends the fully-built patch list
+# (codes already in the wire bit depth) as "custom_steps". Rebuild each step
+# from a strict field whitelist so nothing from the request body reaches the
+# steps file verbatim. Downstream stampers (series white/black, signal-mode
+# meta) regex-append to these strings, so the shape must match the derived
+# step strings exactly.
+sub webui_custom_series_steps_from_body (@) {
+ my ($body)=@_;
+ return () unless($body=~/"custom_series"\s*:\s*true/i);
+ return () unless($body=~/"custom_steps"\s*:\s*\[(.*?)\](?=\s*[,}])/s);
+ my $list=$1;
+ my @out;
+ while($list=~/\{([^{}]*)\}/g) {
+  last if(scalar(@out)>=200);
+  my $obj=$1;
+  my %num;
+  foreach my $key (qw(ire r g b input_max target_x target_y target_Yn custom_target_nits)) {
+   $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
+  }
+  next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
+  my $input_max=(defined $num{"input_max"} && int($num{"input_max"})==1023) ? 1023 : 255;
+  foreach my $ch (qw(r g b)) {
+   $num{$ch}=int($num{$ch}+0.5);
+   $num{$ch}=0 if($num{$ch}<0);
+   $num{$ch}=$input_max if($num{$ch}>$input_max);
+  }
+  my $name="";
+  $name=$1 if($obj=~/"name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  $name=~s/\\(.)/$1/g;
+  $name=~s/[^A-Za-z0-9 ._%#()+-]//g;
+  $name=substr($name,0,40);
+  $name="Patch ".(scalar(@out)+1) if($name eq "");
+  my $ire=(defined $num{"ire"})?$num{"ire"}+0:0;
+  $ire=0 if($ire<0);
+  $ire=110 if($ire>110);
+  my $step="{\"ire\":$ire,\"r\":$num{r},\"g\":$num{g},\"b\":$num{b},\"name\":\"".&_webui_json_escape($name)."\",\"input_max\":$input_max";
+  $step.=",\"target_x\":".($num{"target_x"}+0) if(defined $num{"target_x"});
+  $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
+  $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
+  $step.=",\"custom_target_nits\":".($num{"custom_target_nits"}+0) if(defined $num{"custom_target_nits"});
+  $step.="}";
+  push @out,$step;
+ }
+ return @out;
+}
+
 sub webui_meter_series_start (@) {
  my ($body)=@_;
  # A series run owns its own persistent spotread process. Read Once /
@@ -2710,7 +2756,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : 16) : 0;
  my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? 255 : 219) : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
- if($type eq "greyscale") {
+ my @custom_series_steps=&webui_custom_series_steps_from_body($body);
+ if($body=~/"custom_series"\s*:\s*true/i && !scalar(@custom_series_steps)) {
+  return "{\"status\":\"error\",\"message\":\"Custom series has no valid patches\"}";
+ }
+ if(scalar(@custom_series_steps)) {
+  @steps=@custom_series_steps;
+ } elsif($type eq "greyscale") {
    my @ire_vals;
    my %step_names;
    if($points==2) {
@@ -31172,6 +31224,10 @@ async function meterRunSeries(){
  };
  try{
 	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+		  if(meterActiveSeriesIsCustom()&&Array.isArray(meterSeriesSteps)){
+		   _seriesBody.custom_series=true;
+		   _seriesBody.custom_steps=meterSeriesSteps.map(step=>({ire:step.ire,r:step.r,g:step.g,b:step.b,input_max:step.input_max,name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,custom_target_nits:step.custom_target_nits}));
+		  }
 	  // Pass the calibration-card low-light handler through to the
 	  // server so series reads honor the same gear as autocal/single.
 	  // Without this, the series start body has no low_light field and
