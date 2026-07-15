@@ -261,14 +261,15 @@ sub resolve_connect (@) {
 sub resolve_force_close_socket (@) {
  my $socket=shift;
  return if(!$socket);
+ # Do NOT shutdown() first: that can send a graceful FIN and leave the peer
+ # in CLOSE_WAIT. DisplayCAL never reads the socket, so FIN-only often leaves
+ # its next sendall succeeding. SO_LINGER+close alone produces RST.
  &log("Resolve: forcing TCP RST close (SO_LINGER=0)");
  eval {
   $socket->setsockopt(SOL_SOCKET, SO_LINGER, pack("ii",1,0))
    or die "setsockopt SO_LINGER: $!";
  };
  &log("Resolve: SO_LINGER set failed: $@") if($@);
- eval { shutdown($socket, 2); };
- &log("Resolve: shutdown failed: $@") if($@);
  eval { $socket->close(); };
  &log("Resolve: close failed: $@") if($@);
 }
