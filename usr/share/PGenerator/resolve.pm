@@ -114,6 +114,14 @@ sub resolve_connect (@) {
   return;
  }
  &log("Resolve: connected to $ip:$port");
+ # Arm SO_LINGER so any close path (requested or peer EOF) issues TCP RST.
+ # DisplayCAL never reads the socket and only re-arms its wait() popup after
+ # a failed sendall; graceful FIN can leave Windows sockets still "connected".
+ eval {
+  $socket->setsockopt(SOL_SOCKET, SO_LINGER, pack("ii",1,0))
+   or die "setsockopt SO_LINGER: $!";
+ };
+ &log("Resolve: SO_LINGER=0 arm failed: $@") if($@);
  my $last_pattern_key="";
  my $was_disconnect=0;
  while(1) {
@@ -236,12 +244,33 @@ sub resolve_connect (@) {
  if($was_disconnect) {
   &log("Resolve: disconnect requested, closing socket");
  }
- eval { shutdown($socket, 2); };
- eval { $socket->close(); };
+ &resolve_force_close_socket($socket);
  {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=0;
  }
+}
+
+###############################################
+#   Force TCP RST close (DisplayCAL re-arm)   #
+###############################################
+# DisplayCAL's Resolve path never reads the socket and only re-shows its
+# connection wait popup after the next sendall fails (no peer-disconnect
+# watch). A graceful FIN can leave the peer socket half-open on Windows;
+# SO_LINGER onoff=1 linger=0 + close produces RST so the next send fails.
+sub resolve_force_close_socket (@) {
+ my $socket=shift;
+ return if(!$socket);
+ &log("Resolve: forcing TCP RST close (SO_LINGER=0)");
+ eval {
+  $socket->setsockopt(SOL_SOCKET, SO_LINGER, pack("ii",1,0))
+   or die "setsockopt SO_LINGER: $!";
+ };
+ &log("Resolve: SO_LINGER set failed: $@") if($@);
+ eval { shutdown($socket, 2); };
+ &log("Resolve: shutdown failed: $@") if($@);
+ eval { $socket->close(); };
+ &log("Resolve: close failed: $@") if($@);
 }
 
 ###############################################
@@ -265,7 +294,7 @@ sub resolve_read_exact (@) {
 #   Resolve Read Exact (interruptible)        #
 ###############################################
 # Like resolve_read_exact, but wakes every 0.5s to honor
-# $resolve_disconnect_request so WebUI disconnect can FIN the TCP session.
+# $resolve_disconnect_request so WebUI disconnect can RST the TCP session.
 # Returns: $wanted on success, 0..$wanted-1 on EOF/error, -1 if disconnect
 # was requested.
 sub resolve_read_exact_interruptible (@) {
