@@ -10654,6 +10654,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="btn-row" id="meterSeriesTabRow" style="margin:0">
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
+     <button class="btn btn-sm btn-secondary" data-series-tab="cube" onclick="meterSetSeriesTab('cube')">3D Cube</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesManagerBtn" onclick="meterOpenCustomSeriesManager()" style="margin-left:auto" title="Create, edit, delete, import and export custom patch series">Custom Series&hellip;</button>
      <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" title="Preview .cube LUT files and download solved 3D LUTs">LUT Tools&hellip;</button>
@@ -10672,6 +10673,10 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
      <span id="meterCustomSeriesColorSlot" style="display:contents"></span>
+     </div>
+     <div id="meterSeriesGroupCube" style="display:none;gap:4px;flex-wrap:wrap">
+      <span id="meterCustomSeriesCubeSlot" style="display:contents"></span>
+      <button class="btn btn-sm btn-secondary" onclick="meterOpenLatticeGenerator()" title="Generate a new lattice cube series for the current signal mode">+ Generate</button>
      </div>
      <div id="meterSeriesGroupAutoCal" style="display:none;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
@@ -11183,7 +11188,16 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the CIE spectral locus (horseshoe) outline">
         <input type="checkbox" id="meterCieOptLocus" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Locus
        </label>
+       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the luminance-error rings and stems (applies when Include luminance error is on)">
+        <input type="checkbox" id="meterCieOptLumRings" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> &Delta;Y rings
+       </label>
       </span>
+     </div>
+     <div id="meterCubeViewWrap" style="display:none;margin-bottom:10px">
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">RGB Cube (signal space)
+       <span class="meter-help-tip" title="Lattice nodes at their signal RGB positions. Hollow = not measured yet, filled = measured. Drag = rotate, wheel = zoom." aria-label="RGB cube view help">?</span>
+      </div>
+      <canvas id="chartCubeView" width="640" height="480" style="width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;cursor:grab"></canvas>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
       <canvas id="chartCIE" width="640" height="600" style="flex:0 0 600px;width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
@@ -23607,8 +23621,14 @@ function meterSeriesTabForType(type){
  return (type==='colors'||type==='saturations')?'color':'greyscale';
 }
 
+function meterSeriesTabForSeries(type,points){
+ const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
+ if(series&&series.kind==='lattice') return 'cube';
+ return meterSeriesTabForType(type);
+}
+
 function meterNormalizeSeriesTab(tab){
- return tab==='autocal'?'autocal':(tab==='color'?'color':'greyscale');
+ return tab==='autocal'?'autocal':(tab==='cube'?'cube':(tab==='color'?'color':'greyscale'));
 }
 
 function meterTwoPointValues(){
@@ -23693,11 +23713,12 @@ function meterUpdateSeriesTabUi(){
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
  const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
  if(tab==='autocal'&&!(autoCalSignalAllowed&&autoCalSeriesAvailable)){
-  tab=meterSeriesTabForType(meterActiveSeriesType);
+  tab=meterSeriesTabForSeries(meterActiveSeriesType,meterActiveSeriesPoints);
   meterSeriesTab=tab;
  }
  const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
  const colorGroup=document.getElementById('meterSeriesGroupColor');
+ const cubeGroup=document.getElementById('meterSeriesGroupCube');
  const autoCalGroup=document.getElementById('meterSeriesGroupAutoCal');
 	 const greyBar=document.getElementById('meterGreyProfileBar');
 	 const twoPointControls=document.getElementById('meterTwoPointControls');
@@ -23717,6 +23738,7 @@ function meterUpdateSeriesTabUi(){
  meterRenderCustomSeriesButtons();
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
+ if(cubeGroup) cubeGroup.style.display=tab==='cube'?'flex':'none';
  if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable)?'flex':'none';
  if(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
@@ -23740,7 +23762,7 @@ function meterPreserveAutoCalTabForSeries(type,points){
 
 function meterShowSeriesTabForSeries(type,points){
  if(meterPreserveAutoCalTabForSeries(type,points)) return;
- meterSetSeriesTab(meterSeriesTabForType(type),true);
+ meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
 }
 
 function meterShowGreyscaleAutoCalContext(){
@@ -23754,7 +23776,7 @@ function meterShow3dLutAutoCalContext(){
 }
 
 function meterDefaultSeriesButtonForTab(tab){
- const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':'meterSeriesGroupGreyscale');
+ const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':(tab==='cube'?'meterSeriesGroupCube':'meterSeriesGroupGreyscale'));
  if(!group) return null;
  return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
 }
@@ -25192,12 +25214,15 @@ function meterBuildCustomSeriesSteps(series){
 let meterCustomSeriesEditor=null;
 
 function meterRenderCustomSeriesButtons(){
+ const modeKey=meterCustomSeriesModeKey();
+ const state=meterCustomSeriesNormalizeState();
  [
-  {el:document.getElementById('meterCustomSeriesGreySlot'),category:'greyscale',type:'greyscale'},
-  {el:document.getElementById('meterCustomSeriesColorSlot'),category:'color',type:'colors'}
+  {el:document.getElementById('meterCustomSeriesGreySlot'),type:'greyscale',filter:s=>s.kind!=='lattice'&&s.category!=='color'},
+  {el:document.getElementById('meterCustomSeriesColorSlot'),type:'colors',filter:s=>s.kind!=='lattice'&&s.category==='color'},
+  {el:document.getElementById('meterCustomSeriesCubeSlot'),type:'colors',filter:s=>s.kind==='lattice'}
  ].forEach(slot=>{
   if(!slot.el) return;
-  const list=meterCustomSeriesForMode(slot.category);
+  const list=state.series.filter(s=>s.mode===modeKey&&slot.filter(s));
   slot.el.innerHTML=list.map(series=>{
    const key=slot.type+'-'+series.id;
    const active=meterActiveSeriesKey===key;
@@ -25756,7 +25781,7 @@ async function meterSelectSeries(type,points,opts){
   return;
  }
  const key=type+'-'+points;
- if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
+ if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
  if(meterSeriesRunning){
   if(meterActiveSeriesKey===key){
    toast('Series scan is running — stop it before reloading this chart',true);
@@ -25810,7 +25835,7 @@ async function meterSelectSeries(type,points,opts){
  meterActiveSeriesPoints=points;
  meterSetActiveSeriesChartContext();
  meterLastChartCount=0;
- if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForType(type),true);
+ if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
  // Highlight the clicked button
  meterResetSeriesButtons();
  meterActiveSeriesKey=key;
@@ -33577,6 +33602,7 @@ function drawTwoPointCharts(gs,allSteps){
 }
 
 function drawAllChartsPreset(sortedSteps){
+ try{ if(typeof meterDrawCubeView==='function') meterDrawCubeView(sortedSteps,true); }catch(e){}
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(sortedSteps));
   if(gsSteps.length===0) return;
@@ -33891,6 +33917,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 //           Canvas Chart Drawing            //
 ///////////////////////////////////////////////
 function drawAllCharts(readings){
+ try{ if(typeof meterDrawCubeView==='function') meterDrawCubeView(readings,false); }catch(e){}
  if(!readings||readings.length===0) return;
  meterUpdateHdrConfigVisibility();
  meterEnsureDeltaECache(readings);
@@ -35249,19 +35276,19 @@ function cie3dResetCamera(){
 // CIE chart display options (2D + 3D views). Persisted per-browser — these
 // are view preferences, not measurement settings.
 const METER_CIE_VIEW_OPTS_KEY='pgen.meter.cieViewOpts';
-let meterCieViewOpts={targets:true,dropLines:true,gamut:true,locus:true};
+let meterCieViewOpts={targets:true,dropLines:true,gamut:true,locus:true,lumRings:true};
 
 function meterCieViewOptsLoad(){
  try{
   const raw=localStorage.getItem(METER_CIE_VIEW_OPTS_KEY);
   if(raw){
    const parsed=JSON.parse(raw);
-   ['targets','dropLines','gamut','locus'].forEach(key=>{
+   ['targets','dropLines','gamut','locus','lumRings'].forEach(key=>{
     if(typeof parsed[key]==='boolean') meterCieViewOpts[key]=parsed[key];
    });
   }
  }catch(e){}
- const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus'};
+ const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus',lumRings:'meterCieOptLumRings'};
  Object.keys(map).forEach(key=>{
   const el=document.getElementById(map[key]);
   if(el) el.checked=meterCieViewOpts[key];
@@ -35269,7 +35296,7 @@ function meterCieViewOptsLoad(){
 }
 
 function meterCieViewOptChange(){
- const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus'};
+ const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus',lumRings:'meterCieOptLumRings'};
  Object.keys(map).forEach(key=>{
   const el=document.getElementById(map[key]);
   if(el) meterCieViewOpts[key]=!!el.checked;
@@ -35281,6 +35308,121 @@ function meterCieViewOptChange(){
  } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
   drawAllChartsPreset(isColorSeries?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps));
  }
+}
+
+// ---- RGB cube view (lattice series) ----
+// Plots lattice nodes at their SIGNAL RGB positions (R->x, G->up, B->depth),
+// which is the only space where a cube lattice actually looks like a cube.
+// Hollow node = not measured yet, filled = measured; the cube fills in as a
+// series run progresses.
+let _cube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2};
+let meterCubeViewLast=null;
+
+function meterActiveLatticeSeries(){
+ const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ return (series&&series.kind==='lattice')?series:null;
+}
+
+function cubeViewProject(fr,fg,fb,layout){
+ const px=fr-0.5,py=fg-0.5,pz=fb-0.5;
+ const cy=Math.cos(_cube3d.yaw),sy=Math.sin(_cube3d.yaw);
+ const cp=Math.cos(_cube3d.pitch),sp=Math.sin(_cube3d.pitch);
+ const x1=px*cy-pz*sy,z1=px*sy+pz*cy,y1=py;
+ const y2=y1*cp+z1*sp,z2=-y1*sp+z1*cp;
+ const persp=_cube3d.dist/(_cube3d.dist+z2);
+ const base=Math.min(layout.w,layout.h)*0.36*_cube3d.scale;
+ return {sx:layout.cx+x1*base*persp,sy:layout.cy-y2*base*persp,z:z2,persp:persp};
+}
+
+function cubeViewBindHandlers(canvas){
+ if(!canvas||canvas._cubeBound) return;
+ canvas._cubeBound=true;
+ let drag=null;
+ canvas.addEventListener('mousedown',e=>{
+  if(!meterActiveLatticeSeries()) return;
+  drag={x:e.clientX,y:e.clientY};
+  canvas.style.cursor='grabbing';
+  e.preventDefault();
+ });
+ window.addEventListener('mousemove',e=>{
+  if(!drag) return;
+  _cube3d.yaw+=(e.clientX-drag.x)*0.01;
+  _cube3d.pitch=Math.max(-1.2,Math.min(1.2,_cube3d.pitch+(e.clientY-drag.y)*0.01));
+  drag={x:e.clientX,y:e.clientY};
+  meterRedrawCubeView();
+ });
+ window.addEventListener('mouseup',()=>{ drag=null; canvas.style.cursor='grab'; });
+ canvas.addEventListener('wheel',e=>{
+  if(!meterActiveLatticeSeries()) return;
+  e.preventDefault();
+  _cube3d.scale=Math.max(0.3,Math.min(4,_cube3d.scale*(e.deltaY<0?1.1:0.9)));
+  meterRedrawCubeView();
+ },{passive:false});
+ canvas.addEventListener('dblclick',()=>{ _cube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterRedrawCubeView(); });
+}
+
+function meterRedrawCubeView(){
+ if(meterCubeViewLast) meterDrawCubeView(meterCubeViewLast.items,meterCubeViewLast.isPreset);
+}
+
+function meterDrawCubeView(items,isPreset){
+ const wrap=document.getElementById('meterCubeViewWrap');
+ if(!wrap) return;
+ const series=meterActiveLatticeSeries();
+ if(!series){ wrap.style.display='none'; meterCubeViewLast=null; return; }
+ wrap.style.display='';
+ meterCubeViewLast={items:items,isPreset:!!isPreset};
+ const ctx=getChartCtx('chartCubeView');
+ if(!ctx) return;
+ cubeViewBindHandlers(document.getElementById('chartCubeView'));
+ ctx.setTransform(1,0,0,1,0,0);
+ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+ const dpr=window.devicePixelRatio||1;
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
+ const markerScale=Math.max(0.35,Math.min(3,_cube3d.scale));
+ // wireframe
+ const corners=[[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]].map(c=>cubeViewProject(c[0],c[1],c[2],layout));
+ const edges=[[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+ ctx.strokeStyle='rgba(132,148,178,0.45)';ctx.lineWidth=1;
+ edges.forEach(e=>{
+  ctx.beginPath();ctx.moveTo(corners[e[0]].sx,corners[e[0]].sy);ctx.lineTo(corners[e[1]].sx,corners[e[1]].sy);ctx.stroke();
+ });
+ ctx.font='10px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle='#ff7a7a';ctx.fillText('R',corners[1].sx+8,corners[1].sy+4);
+ ctx.fillStyle='#7aff9b';ctx.fillText('G',corners[2].sx-8,corners[2].sy-6);
+ ctx.fillStyle='#8fb2ff';ctx.fillText('B',corners[4].sx-8,corners[4].sy+10);
+ ctx.fillStyle='#e8ecf6';ctx.fillText('W',corners[7].sx+8,corners[7].sy-6);
+ // nodes from the expanded lattice patches; sampled above 4096 for draw speed
+ let patches=meterCustomSeriesPatches(series).filter(p=>Number.isFinite(p.frac_r)&&Number.isFinite(p.frac_g)&&Number.isFinite(p.frac_b));
+ const total=patches.length;
+ if(patches.length>4096&&typeof meterSampleSteps==='function') patches=meterSampleSteps(patches,4096);
+ const measured=new Set();
+ if(!isPreset&&Array.isArray(items)){
+  items.forEach(rd=>{ if(rd&&rd.name) measured.add(rd.name); });
+ }
+ const nodes=patches.map(p=>{
+  const pt=cubeViewProject(p.frac_r,p.frac_g,p.frac_b,layout);
+  return {pt:pt,p:p,done:measured.has(p.name)};
+ });
+ nodes.sort((a,b)=>b.pt.z-a.pt.z);
+ nodes.forEach(n=>{
+  const sq=Math.max(1,2.6*n.pt.persp*markerScale);
+  const col='rgb('+n.p.r8+','+n.p.g8+','+n.p.b8+')';
+  if(n.done){
+   ctx.fillStyle=col;
+   ctx.fillRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
+   ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=0.6;
+   ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
+  } else {
+   ctx.strokeStyle=col;ctx.lineWidth=Math.max(0.6,1*markerScale);
+   ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
+  }
+ });
+ ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+ const label=(total>patches.length?('showing '+patches.length+' of '+total+' nodes'):(total+' nodes'))+(isPreset?'':' · '+measured.size+' measured');
+ ctx.fillText(label,8,ctx.h-8);
 }
 
 function cie3dComputeYMax(items,isPreset){
@@ -35523,7 +35665,7 @@ function drawCIEChart3D(readings,opts){
    // Luminance-error visuals (only when Include luminance error is on).
    // Absolute Y is scaled to series peak (often 800+ nits), so a few-% ΔY is
    // invisible as pure height — add screen-space rings + a min-length ΔY stem.
-   if(colorInclLum&&tY!=null&&mY!=null&&(Math.abs(tY-mY)>1e-6||(deltaPct!=null&&Math.abs(deltaPct)>=0.75))){
+   if(meterCieViewOpts.lumRings&&colorInclLum&&tY!=null&&mY!=null&&(Math.abs(tY-mY)>1e-6||(deltaPct!=null&&Math.abs(deltaPct)>=0.75))){
     const pTtrue=cie3dProject(tx!=null?tx:mx,ty!=null?ty:my,tY,layout);
     const pMtrue=cie3dProject(mx,my,mY,layout);
     // Vertical ΔY stem at measured xy between true target Y and measured Y
@@ -35866,7 +36008,7 @@ function drawCIEChart(readings){
    ctx.restore();
   }
   // Luminance-error ring ONLY when Include luminance error is checked.
-  if(hasMeasuredXY&&colorInclLum){
+  if(meterCieViewOpts.lumRings&&hasMeasuredXY&&colorInclLum){
    meterCieDrawLumErrorHalo(ctx,px,py,lumInfo.deltaPct,1);
   }
   // Measured: solid circle at xy (chroma). Always drawn — not a luminance ring.
@@ -35985,7 +36127,7 @@ function drawCIETargetInset(ctx,readings,geom){
    ctx.strokeStyle=tStrokeColor;ctx.lineWidth=1.8;ctx.strokeRect(ZtoX(rt.x)-sq,ZtoY(rt.y)-sq,sq*2,sq*2);
    ctx.restore();
   }
-  if(isFocus&&colorInclLum&&mInside){
+  if(meterCieViewOpts.lumRings&&isFocus&&colorInclLum&&mInside){
    meterCieDrawLumErrorHalo(ctx,ZtoX(rd.x),ZtoY(rd.y),lumInfo.deltaPct,0.85);
   }
   if(mInside){
