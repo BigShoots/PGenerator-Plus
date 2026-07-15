@@ -15282,6 +15282,21 @@ function meterApplyXyzMatrixEdits(){
  meterUpdateXyzMatrixApplyButton();
 }
 
+// Enable/disable applies immediately (refresh + persist). Matrix number cells stay deferred until Apply.
+// Only the enabled flag is written into the applied snapshot; draft matrix cells keep their dirty state.
+function meterApplyXyzMatrixEnableFromDraft(){
+ const enabled=meterDraftXyzMatrixEnabled();
+ if(!window._meterXyzMatrixApplied){
+  meterSnapshotXyzMatrixAppliedFromDom();
+ }else{
+  window._meterXyzMatrixApplied.enabled=enabled;
+ }
+ meterRefreshAfterXyzMatrixChange();
+ saveMeterSettings();
+ meterUpdateXyzMatrixApplyButton();
+ return window._meterXyzMatrixApplied;
+}
+
 function meterXyzCorrectionEnabled(){
  if(window._meterXyzMatrixApplied) return !!window._meterXyzMatrixApplied.enabled;
  return meterDraftXyzMatrixEnabled();
@@ -37669,7 +37684,8 @@ async function loadMeterSettings(){
  meterSetSeriesTab(meterSeriesTab,true);
 }
 // Add change listeners for auto-save
-// Note: XYZ matrix cells/enable are deferred — they save only via meterApplyXyzMatrixEdits().
+// Note: XYZ matrix number cells are deferred — they save only via meterApplyXyzMatrixEdits().
+// The enable checkbox applies immediately via meterApplyXyzMatrixEnableFromDraft().
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatternDelay','meterPatchSize','meterRefreshRate',
 	 'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
 	 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
@@ -37744,10 +37760,10 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
  const xyEl=document.getElementById('meterXyzMatrixEnabled');
  if(xyEl) xyEl.addEventListener('change',()=>{
-  // Gear visibility follows the draft checkbox immediately; analysis/save wait for Apply.
+  // Enable applies immediately (gear, charts, persist); matrix numbers stay deferred.
   window.meterUpdateGearVisibility();
   meterUpdateXyzMatrixVisibility();
-  meterUpdateXyzMatrixApplyButton();
+  meterApplyXyzMatrixEnableFromDraft();
  });
  const d65El=document.getElementById('meterCustomD65Enabled');
  if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
@@ -37760,7 +37776,7 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await saveMeterSettings();
  await meterCheckStatus();
 });
-// meterXyzMatrixEnabled is deferred with the matrix cells (Apply button).
+// meterXyzMatrixEnabled applies immediately (meterApplyXyzMatrixEnableFromDraft); only cells are deferred.
 ['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
