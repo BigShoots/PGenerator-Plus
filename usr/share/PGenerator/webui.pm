@@ -24657,6 +24657,28 @@ function meterSaveLatticeGenerator(){
  toast('Lattice series saved');
 }
 
+// UI safety caps for very large (lattice) series: thumbnails and preset charts
+// are O(n) DOM/canvas work, and the status poll payload grows with readings.
+function meterSeriesUiCaps(stepCount){
+ const count=Math.max(0,Number(stepCount)||0);
+ return {
+  thumbs:count<=500,
+  presetSample:(count>2000)?2000:0,
+  pollScale:count>20000?5:(count>5000?3:(count>2000?2:1)),
+  confirmStart:count>2000
+ };
+}
+
+function meterSampleSteps(steps,max){
+ const list=Array.isArray(steps)?steps:[];
+ const cap=Math.max(2,Number(max)||0);
+ if(list.length<=cap) return list;
+ const out=[];
+ for(let i=0;i<cap;i++) out.push(list[Math.floor(i*list.length/cap)]);
+ out[out.length-1]=list[list.length-1];
+ return out;
+}
+
 function meterCustomSeriesStepTargets(step,series,patch){
  const out={};
  try{
@@ -25383,11 +25405,12 @@ async function meterSelectSeries(type,points,opts){
  document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterReadSeriesBtn').style.display='';
- meterSetThumbsVisible(true);
  meterHideWorkflowProgress();
  // Build thumbnails and pre-populate all charts
- meterBuildPatchThumbs(sortedSteps,null);
- drawAllChartsPreset(sortedSteps);
+ const uiCaps=meterSeriesUiCaps(sortedSteps.length);
+ if(uiCaps.thumbs) meterBuildPatchThumbs(sortedSteps,null);
+ meterSetThumbsVisible(uiCaps.thumbs);
+ drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
  // No default patch selection — user must click a thumbnail
  meterUpdateThumbStyles(document.getElementById('meterPatchThumbs'),null,null);
  meterUpdateReadButtons();
@@ -31975,8 +31998,21 @@ async function meterRunSeries(){
    meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
   }
   const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
- meterBuildPatchThumbs(sortedSteps,new Set(),null);
- drawAllChartsPreset(sortedSteps);
+ const uiCaps=meterSeriesUiCaps(sortedSteps.length);
+ if(uiCaps.thumbs) meterBuildPatchThumbs(sortedSteps,new Set(),null);
+ meterSetThumbsVisible(uiCaps.thumbs);
+ drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
+ if(uiCaps.confirmStart){
+  const estimate=meterLatticeFormatDuration(meterLatticeEstimateSeconds(meterSeriesSteps.length));
+  const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+meterSeriesSteps.length+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
+  if(!proceed){
+   meterSeriesRunning=false;
+   document.getElementById('meterReadSeriesBtn').innerHTML='&#9654; Read Series';
+   document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
+   document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
+   return false;
+  }
+ }
  meterClearLiveReading();
  showColorReadingDetail(null,{pin:false});
  meterActionPending=true;
@@ -31994,7 +32030,7 @@ async function meterRunSeries(){
     meterSetActiveSeriesChartContext(s);
     meterSharedSeriesId=String(s.series_id);
     if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-    meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
+    meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*meterSeriesUiCaps((meterSeriesSteps||[]).length).pollScale);
     await meterPollSeries();
     return true;
    }
@@ -32036,7 +32072,7 @@ async function meterRunSeries(){
 	  meterSetActiveSeriesChartContext(r);
 	  if(r.series_id) meterSharedSeriesId=String(r.series_id);
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs);
+  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*meterSeriesUiCaps((meterSeriesSteps||[]).length).pollScale);
 	  await meterPollSeries();
 	  return true;
  }catch(e){
