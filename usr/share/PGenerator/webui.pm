@@ -10439,6 +10439,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
           <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
            <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
            <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
+           <button type="button" id="meterXyzMatrixApply" class="btn btn-sm btn-primary" style="display:none" onclick="meterApplyXyzMatrixEdits()">Apply</button>
           </div>
           <div class="meter-matrix-fields" id="meterXyzMatrixFields" style="margin-top:8px">
            <div class="meter-matrix-grid">
@@ -15231,9 +15232,59 @@ function meterIdentityXyzCorrectionMatrix(){
  return METER_XYZ_MATRIX_DEFAULT.map(row=>row.slice());
 }
 
-function meterXyzCorrectionEnabled(){
+// Applied snapshot used for analysis; draft edits live in the DOM until Apply.
+window._meterXyzMatrixApplied=null; // {enabled:bool, matrix:[[...],[...],[...]]}
+
+function meterDraftXyzMatrixEnabled(){
  const el=document.getElementById('meterXyzMatrixEnabled');
- return el ? !!el.checked : true;
+ return !!(el&&el.checked);
+}
+
+function meterSnapshotXyzMatrixAppliedFromDom(){
+ const matrix=meterConfiguredXyzCorrectionMatrix().map(row=>row.slice());
+ window._meterXyzMatrixApplied={
+  enabled:meterDraftXyzMatrixEnabled(),
+  matrix:matrix
+ };
+ return window._meterXyzMatrixApplied;
+}
+
+function meterXyzMatrixDraftDirty(){
+ const applied=window._meterXyzMatrixApplied;
+ if(!applied) return true;
+ if(!!applied.enabled!==meterDraftXyzMatrixEnabled()) return true;
+ const draft=meterConfiguredXyzCorrectionMatrix();
+ const tol=1e-6;
+ for(let r=0;r<3;r++){
+  for(let c=0;c<3;c++){
+   const a=Number(applied.matrix&&applied.matrix[r]?applied.matrix[r][c]:NaN);
+   const d=Number(draft[r][c]);
+   if(!Number.isFinite(a)||!Number.isFinite(d)||Math.abs(a-d)>tol) return true;
+  }
+ }
+ return false;
+}
+
+function meterUpdateXyzMatrixApplyButton(){
+ const btn=document.getElementById('meterXyzMatrixApply');
+ if(!btn) return;
+ const dirty=meterXyzMatrixDraftDirty();
+ btn.style.display=dirty?'':'none';
+ // Gear / action-row visibility depend on dirty so Apply stays reachable.
+ try{ meterUpdateXyzMatrixVisibility(); }catch(e){}
+ try{ if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility(); }catch(e){}
+}
+
+function meterApplyXyzMatrixEdits(){
+ meterSnapshotXyzMatrixAppliedFromDom();
+ meterRefreshAfterXyzMatrixChange();
+ saveMeterSettings();
+ meterUpdateXyzMatrixApplyButton();
+}
+
+function meterXyzCorrectionEnabled(){
+ if(window._meterXyzMatrixApplied) return !!window._meterXyzMatrixApplied.enabled;
+ return meterDraftXyzMatrixEnabled();
 }
 
 function meterStoredXyzMatrixEnabled(settings){
@@ -15245,10 +15296,13 @@ function meterUpdateXyzMatrixVisibility(){
  const wrap=document.getElementById('meterXyzMatrixFields');
  const field=wrap&&wrap.closest('.meter-matrix-field');
  const actionRow=document.getElementById('meterXyzMatrixActionRow');
- const enabled=meterXyzCorrectionEnabled();
+ // Matrix fields follow the draft enable checkbox; action row also stays open
+ // while dirty so Apply remains reachable after unchecking enable.
+ const enabled=meterDraftXyzMatrixEnabled();
+ const showActions=enabled||meterXyzMatrixDraftDirty();
  if(field) field.classList.toggle('visible',enabled);
  if(wrap) wrap.classList.toggle('visible',enabled);
- if(actionRow) actionRow.classList.toggle('visible',enabled);
+ if(actionRow) actionRow.classList.toggle('visible',showActions);
  ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.disabled=!enabled;
@@ -15290,7 +15344,7 @@ function meterExportXyzMatrix(){
  const payload={
   format:'pgenerator-xyz-correction-matrix',
   version:1,
-  enabled:meterXyzCorrectionEnabled(),
+  enabled:meterDraftXyzMatrixEnabled(),
   matrix:meterConfiguredXyzCorrectionMatrix()
  };
  const filename=meterPromptExportFilename('xyz-matrix','pgenerator-xyz-correction-matrix','json','Enter a file name for the XYZ correction matrix export');
@@ -15333,8 +15387,11 @@ function meterImportXyzMatrix(evt){
   try{
    const imported=meterParseImportedXyzMatrix(reader.result);
    meterSetXyzCorrectionMatrix(imported.matrix, imported.enabled);
+   // Import is intentional: auto-apply draft into the analysis snapshot.
+   meterSnapshotXyzMatrixAppliedFromDom();
    meterRefreshAfterXyzMatrixChange();
    saveMeterSettings();
+   meterUpdateXyzMatrixApplyButton();
    toast('XYZ correction matrix imported');
   }catch(e){
    toast('Invalid XYZ correction matrix file',true);
@@ -15345,6 +15402,8 @@ function meterImportXyzMatrix(evt){
 
 function meterXyzCorrectionMatrix(){
  if(!meterXyzCorrectionEnabled()) return meterIdentityXyzCorrectionMatrix();
+ if(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)
+  return window._meterXyzMatrixApplied.matrix.map(row=>row.slice());
  return meterConfiguredXyzCorrectionMatrix();
 }
 
@@ -37455,16 +37514,17 @@ function saveMeterSettings(){
     custom_d65_enabled:chk('meterCustomD65Enabled'),
     target_white_x:val('meterTargetWhiteX'),
     target_white_y:val('meterTargetWhiteY'),
-    xyz_matrix_enabled:chk('meterXyzMatrixEnabled'),
-    xyz_m11:val('meterXyzM11'),
-    xyz_m12:val('meterXyzM12'),
-    xyz_m13:val('meterXyzM13'),
-    xyz_m21:val('meterXyzM21'),
-    xyz_m22:val('meterXyzM22'),
-    xyz_m23:val('meterXyzM23'),
-    xyz_m31:val('meterXyzM31'),
-    xyz_m32:val('meterXyzM32'),
-    xyz_m33:val('meterXyzM33'),
+    // Persist the applied XYZ matrix only — draft edits stay in the DOM until Apply.
+    xyz_matrix_enabled:(window._meterXyzMatrixApplied!=null)?!!window._meterXyzMatrixApplied.enabled:chk('meterXyzMatrixEnabled'),
+    xyz_m11:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][0]):val('meterXyzM11'),
+    xyz_m12:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][1]):val('meterXyzM12'),
+    xyz_m13:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][2]):val('meterXyzM13'),
+    xyz_m21:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][0]):val('meterXyzM21'),
+    xyz_m22:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][1]):val('meterXyzM22'),
+    xyz_m23:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][2]):val('meterXyzM23'),
+    xyz_m31:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][0]):val('meterXyzM31'),
+    xyz_m32:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][1]):val('meterXyzM32'),
+    xyz_m33:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][2]):val('meterXyzM33'),
   sep_lum:chk('meterSeparateLumError'),
   // HDR tone-mapping config
   hdr_bt2390:chk('meterHdrApplyBT2390')
@@ -37591,7 +37651,9 @@ async function loadMeterSettings(){
  setVal('meterXyzM32', s.xyz_m32);
  setVal('meterXyzM33', s.xyz_m33);
  setChk('meterXyzMatrixEnabled', meterStoredXyzMatrixEnabled(s));
+ meterSnapshotXyzMatrixAppliedFromDom();
  meterUpdateXyzMatrixVisibility();
+ meterUpdateXyzMatrixApplyButton();
  setChk('meterSeparateLumError', (greyMode==='eotf') ? s.sep_lum : false);
  meterUpdateSeparateLumVisibility();
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
@@ -37607,12 +37669,13 @@ async function loadMeterSettings(){
  meterSetSeriesTab(meterSeriesTab,true);
 }
 // Add change listeners for auto-save
+// Note: XYZ matrix cells/enable are deferred — they save only via meterApplyXyzMatrixEdits().
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatternDelay','meterPatchSize','meterRefreshRate',
 	 'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
 	 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
 	 'meterPatchInsertPatchEvery','meterPatchInsertPatchDuration','meterPatchInsertPatchLevel',
 	 'meterPatchInsertTimeFrequency','meterPatchInsertTimeDuration','meterPatchInsertTimeLevel',
-	 'meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33','meterSimulateSpectro'].forEach(id=>{
+	 'meterSimulateSpectro'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -37667,14 +37730,25 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
   const pi=document.getElementById('meterPatchInsert');
   if(pi){const w=gearWrap('meterPatternInsertGear');if(w) w.classList.toggle('is-hidden',!pi.checked);if(!pi.checked&&gears.patternInsert) gears.patternInsert.close();}
   const xy=document.getElementById('meterXyzMatrixEnabled');
-  if(xy){const w=gearWrap('meterXyzGear');if(w) w.classList.toggle('is-hidden',!xy.checked);if(!xy.checked&&gears.xyz) gears.xyz.close();}
+  if(xy){
+   // Keep the gear available while dirty so Apply is reachable after unchecking enable.
+   const showXyz=xy.checked||(typeof meterXyzMatrixDraftDirty==='function'&&meterXyzMatrixDraftDirty());
+   const w=gearWrap('meterXyzGear');
+   if(w) w.classList.toggle('is-hidden',!showXyz);
+   if(!showXyz&&gears.xyz) gears.xyz.close();
+  }
   const d65=document.getElementById('meterCustomD65Enabled');
   if(d65){const w=gearWrap('meterCustomD65Gear');if(w) w.classList.toggle('is-hidden',!d65.checked);if(!d65.checked&&gears.customD65) gears.customD65.close();}
  };
  const piEl=document.getElementById('meterPatchInsert');
  if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
  const xyEl=document.getElementById('meterXyzMatrixEnabled');
- if(xyEl) xyEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();meterRefreshAfterXyzMatrixChange();});
+ if(xyEl) xyEl.addEventListener('change',()=>{
+  // Gear visibility follows the draft checkbox immediately; analysis/save wait for Apply.
+  window.meterUpdateGearVisibility();
+  meterUpdateXyzMatrixVisibility();
+  meterUpdateXyzMatrixApplyButton();
+ });
  const d65El=document.getElementById('meterCustomD65Enabled');
  if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
  try{ meterRelocateProfileControls(); }catch(e){}
@@ -37686,7 +37760,8 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await saveMeterSettings();
  await meterCheckStatus();
 });
-['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterXyzMatrixEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
+// meterXyzMatrixEnabled is deferred with the matrix cells (Apply button).
+['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
@@ -37837,11 +37912,15 @@ function meterRefreshAfterXyzMatrixChange(){
  if(live) updateLiveReading(live);
 }
 
+// Draft edits only mark the Apply button dirty — charts/live analysis stay on the applied snapshot.
 ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
  const el=document.getElementById(id);
  if(!el) return;
- el.addEventListener('input',meterRefreshAfterXyzMatrixChange);
+ el.addEventListener('input',meterUpdateXyzMatrixApplyButton);
 });
+// Seed applied snapshot from DOM defaults if settings have not loaded yet.
+if(!window._meterXyzMatrixApplied) meterSnapshotXyzMatrixAppliedFromDom();
+meterUpdateXyzMatrixApplyButton();
 
 updateMeterTargetWhitepointVisibility();
 meterUpdateXyzMatrixVisibility();
