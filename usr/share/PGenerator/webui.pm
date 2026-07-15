@@ -24679,6 +24679,103 @@ function meterSampleSteps(steps,max){
  return out;
 }
 
+// Parse an Adobe/Resolve-style .cube 3D LUT for preview/validation only.
+// Never throws; malformed input lands in .errors. Neutral diagonal uses index
+// i*(S^2+S+1), which addresses r=g=b nodes in either axis ordering.
+function meterCubeLutParse(text){
+ const out={ok:false,title:'',size:0,nodes:0,domainMin:[0,0,0],domainMax:[1,1,1],valueMin:null,valueMax:null,neutral:[],monotonic:true,errors:[]};
+ const lines=String(text||'').split(/\r\n|\r|\n/);
+ const values=[];
+ for(let li=0;li<lines.length;li++){
+  const line=lines[li].trim();
+  if(!line||line.charAt(0)==='#') continue;
+  const m3=line.match(/^([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)$/);
+  if(m3){
+   const r=Number(m3[1]),g=Number(m3[2]),b=Number(m3[3]);
+   if(Number.isFinite(r)&&Number.isFinite(g)&&Number.isFinite(b)){ values.push([r,g,b]); continue; }
+  }
+  const kw=line.match(/^([A-Z_0-9]+)\s*(.*)$/);
+  if(!kw){ out.errors.push('Unrecognised line '+(li+1)); continue; }
+  const key=kw[1],rest=kw[2].trim();
+  if(key==='TITLE') out.title=rest.replace(/^"+|"+$/g,'');
+  else if(key==='LUT_3D_SIZE') out.size=parseInt(rest,10)||0;
+  else if(key==='LUT_1D_SIZE') out.errors.push('1D LUTs are not supported');
+  else if(key==='DOMAIN_MIN'||key==='DOMAIN_MAX'){
+   const parts=rest.split(/\s+/).map(Number);
+   if(parts.length===3&&parts.every(Number.isFinite)){ if(key==='DOMAIN_MIN') out.domainMin=parts; else out.domainMax=parts; }
+   else out.errors.push(key+' malformed');
+  }
+ }
+ if(!out.size||out.size<2) out.errors.push('Missing or invalid LUT_3D_SIZE');
+ out.nodes=values.length;
+ if(out.size>=2&&values.length!==out.size*out.size*out.size){
+  out.errors.push('Node count '+values.length+' != '+out.size+'^3 ('+(out.size*out.size*out.size)+')');
+ }
+ if(values.length){
+  let vmin=values[0][0],vmax=values[0][0];
+  for(let i=0;i<values.length;i++){
+   for(let c=0;c<3;c++){ const v=values[i][c]; if(v<vmin) vmin=v; if(v>vmax) vmax=v; }
+  }
+  out.valueMin=vmin;
+  out.valueMax=vmax;
+  const dmin=Math.min(out.domainMin[0],out.domainMin[1],out.domainMin[2]);
+  const dmax=Math.max(out.domainMax[0],out.domainMax[1],out.domainMax[2]);
+  if(vmin<dmin-0.001||vmax>dmax+0.001) out.errors.push('Values outside DOMAIN range ('+vmin.toFixed(4)+' .. '+vmax.toFixed(4)+')');
+ }
+ if(!out.errors.length){
+  const stepIdx=out.size*out.size+out.size+1;
+  for(let i=0;i<out.size;i++) out.neutral.push(values[i*stepIdx]);
+  for(let i=1;i<out.neutral.length;i++){
+   for(let c=0;c<3;c++){
+    if(out.neutral[i][c]<out.neutral[i-1][c]-0.0005) out.monotonic=false;
+   }
+  }
+  out.ok=true;
+ }
+ return out;
+}
+
+function meterRenderCubePreview(parsed,filename){
+ const panel=document.getElementById('meterCubePreviewPanel');
+ if(!panel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const fmt3=(t)=>Array.isArray(t)?t.map(v=>Number(v).toFixed(4)).join(' / '):'--';
+ let html='<div style="font-weight:700;color:var(--text);margin-bottom:6px">.cube preview: '+esc(filename||'')+'</div>';
+ if(parsed.errors.length){
+  html+='<div style="color:var(--red);margin-bottom:6px">'+parsed.errors.map(esc).join('<br>')+'</div>';
+ }
+ if(parsed.ok){
+  const mid=parsed.neutral[Math.floor(parsed.neutral.length/2)];
+  html+='<div>Title: '+esc(parsed.title||'(none)')+' &middot; Size: '+parsed.size+'&sup3; ('+parsed.nodes+' nodes)</div>'
+   +'<div>Domain: '+fmt3(parsed.domainMin)+' &rarr; '+fmt3(parsed.domainMax)+' &middot; Values: '+Number(parsed.valueMin).toFixed(4)+' .. '+Number(parsed.valueMax).toFixed(4)+'</div>'
+   +'<div>Neutral axis: black '+fmt3(parsed.neutral[0])+' &middot; mid '+fmt3(mid)+' &middot; white '+fmt3(parsed.neutral[parsed.neutral.length-1])+'</div>'
+   +'<div>Neutral monotonic: '+(parsed.monotonic?'<span style="color:var(--green)">yes</span>':'<span style="color:var(--red)">NO</span>')+'</div>'
+   +'<div style="margin-top:6px;color:var(--text2)">Preview only &mdash; this LUT is not applied to the display.</div>';
+ }
+ panel.innerHTML=html;
+ panel.style.display='';
+}
+
+function meterOpenCubeImport(){
+ const input=document.getElementById('meterCubeImportInput');
+ if(!input) return;
+ input.value='';
+ input.click();
+}
+
+function meterImportCubeFile(evt){
+ const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
+ if(!file) return;
+ const reader=new FileReader();
+ reader.onload=()=>{
+  const parsed=meterCubeLutParse(String(reader.result||''));
+  meterRenderCubePreview(parsed,file.name);
+  if(parsed.ok) toast('.cube parsed: '+parsed.size+'³, '+(parsed.monotonic?'neutral OK':'neutral NOT monotonic'),!parsed.monotonic);
+  else toast('.cube file is invalid — see preview panel',true);
+ };
+ reader.readAsText(file);
+}
+
 function meterCustomSeriesStepTargets(step,series,patch){
  const out={};
  try{
@@ -37521,6 +37618,8 @@ const meterGreyImportInput=document.getElementById('meterGreyProfileImportInput'
 if(meterGreyImportInput) meterGreyImportInput.addEventListener('change',meterImportGreyProfile);
 const meterCustomSeriesImportInput=document.getElementById('meterCustomSeriesImportInput');
 if(meterCustomSeriesImportInput) meterCustomSeriesImportInput.addEventListener('change',meterImportCustomSeriesCsv);
+const meterCubeImportInputEl=document.getElementById('meterCubeImportInput');
+if(meterCubeImportInputEl) meterCubeImportInputEl.addEventListener('change',meterImportCubeFile);
 initMeterGreyCanvasEditing();
 meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
