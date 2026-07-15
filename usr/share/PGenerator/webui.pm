@@ -10624,8 +10624,10 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
      <div class="btn-row" id="meterCustomSeriesExportRow" style="margin:0">
       <button class="btn btn-sm btn-danger" id="meterCustomSeriesDeleteBtn" onclick="meterDeleteCustomSeries()" style="display:none">Delete Series</button>
+      <button class="btn btn-sm btn-secondary" onclick="meterOpenCustomSeriesImport()" title="Import a CalMAN or ColourSpace patch list CSV into this editor">Import CSV</button>
       <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('calman')" title="Export the patch list as 8-bit RGB triplets (CalMAN import)">Export CalMAN CSV</button>
-      <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('colourspace')" title="Export the patch list as percent RGB triplets (ColourSpace import)">Export ColourSpace CSV</button>
+      <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('colourspace')" title="Export the patch list as a ColourSpace CSV (10-bit, # Bitdepth/# Range header)">Export ColourSpace CSV</button>
+      <input type="file" id="meterCustomSeriesImportInput" accept="text/csv,.csv,.txt" style="display:none">
      </div>
      <div class="btn-row" style="margin:0">
       <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesEditor()">Cancel</button>
@@ -24442,10 +24444,15 @@ function meterCustomSeriesCsv(series,format){
  const rows=(series&&Array.isArray(series.patches))?series.patches:[];
  if(!rows.length) return '';
  if(format==='colourspace'){
-  return rows.map(p=>[p.r10,p.g10,p.b10].map(c=>{
-   const pct=meterCustomSeriesClampCode(c,1023)/1023*100;
-   return String(Math.round(pct*10000)/10000);
-  }).join(',')).join('\r\n')+'\r\n';
+  // Light Illusion ColourSpace layout: "# Bitdepth"/"# Range" comment header,
+  // then "index,R,G,B,name" with integer code values at the declared bit depth.
+  // We store full-range codes, so emit 10-bit Full.
+  const header='# Bitdepth 10\r\n# Range Full\r\n';
+  const body=rows.map((p,i)=>{
+   const name=String(p.name||('Patch '+(i+1))).replace(/[\r\n,]/g,' ').trim();
+   return [(i+1),meterCustomSeriesClampCode(p.r10,1023),meterCustomSeriesClampCode(p.g10,1023),meterCustomSeriesClampCode(p.b10,1023),name].join(',');
+  }).join('\r\n');
+  return header+body+'\r\n';
  }
  return rows.map(p=>[p.r8,p.g8,p.b8].map(c=>String(meterCustomSeriesClampCode(c,255))).join(',')).join('\r\n')+'\r\n';
 }
@@ -24463,6 +24470,78 @@ function meterExportCustomSeries(format){
  if(!filename) return;
  const blob=new Blob([meterCustomSeriesCsv(draft,fmt)],{type:'text/csv'});
  meterDownloadBlob(blob,filename);
+}
+
+// Parse a CalMAN- or ColourSpace-style CSV patch list into sanitised patches.
+// ColourSpace files carry "# Bitdepth N" / "# Range X" comment headers and an
+// index column; CalMAN/generic files are bare "R,G,B" 8-bit triplets. Bit depth
+// comes from the header when present, else is inferred from the value magnitude
+// (any code > 255 => 10-bit). Returns {patches, bits}.
+function meterCustomSeriesParseCsv(text){
+ const lines=String(text||'').split(/\r\n|\r|\n/);
+ let headerBits=0;
+ const rows=[];
+ lines.forEach(line=>{
+  const trimmed=String(line||'').trim();
+  if(!trimmed) return;
+  if(trimmed.charAt(0)==='#'){
+   const bm=trimmed.match(/bit\s*depth\s*[:=]?\s*(\d+)/i);
+   if(bm){ const b=parseInt(bm[1],10); headerBits=(b>=10)?10:8; }
+   return;
+  }
+  const fields=trimmed.split(',').map(f=>f.trim());
+  const nums=[];
+  for(let i=0;i<fields.length;i++){
+   const n=Number(fields[i]);
+   if(fields[i]!==''&&Number.isFinite(n)) nums.push(n); else break;
+  }
+  // 3 leading numbers => R,G,B; 4+ => index,R,G,B (ColourSpace shape).
+  let rgb=null,nameIdx=-1;
+  if(nums.length>=4){ rgb=[nums[1],nums[2],nums[3]]; nameIdx=4; }
+  else if(nums.length===3){ rgb=[nums[0],nums[1],nums[2]]; nameIdx=3; }
+  if(!rgb) return;
+  const name=(fields.length>nameIdx)?fields.slice(nameIdx).join(' ').trim():'';
+  rows.push({rgb:rgb,name:name});
+ });
+ let bits=headerBits;
+ if(!bits){
+  const maxCode=rows.reduce((m,r)=>Math.max(m,r.rgb[0],r.rgb[1],r.rgb[2]),0);
+  bits=(maxCode>255)?10:8;
+ }
+ const tenBit=(bits===10);
+ const patches=rows.slice(0,200).map((r,idx)=>{
+  const raw=tenBit
+   ?{name:r.name,r10:r.rgb[0],g10:r.rgb[1],b10:r.rgb[2]}
+   :{name:r.name,r8:r.rgb[0],g8:r.rgb[1],b8:r.rgb[2]};
+  return meterCustomSeriesSanitizePatch(raw,idx);
+ });
+ return {patches:patches,bits:bits};
+}
+
+function meterOpenCustomSeriesImport(){
+ const input=document.getElementById('meterCustomSeriesImportInput');
+ if(!input) return;
+ input.value='';
+ input.click();
+}
+
+function meterImportCustomSeriesCsv(evt){
+ const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
+ if(!file) return;
+ if(!meterCustomSeriesEditor){ toast('Open a custom series editor first',true); return; }
+ const reader=new FileReader();
+ reader.onload=()=>{
+  try{
+   const parsed=meterCustomSeriesParseCsv(String(reader.result||''));
+   if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
+   meterCustomSeriesEditor.patches=parsed.patches;
+   meterRenderCustomSeriesEditor();
+   toast('Imported '+parsed.patches.length+' patches ('+parsed.bits+'-bit) — review and Save');
+  }catch(e){
+   toast('Could not read that CSV',true);
+  }
+ };
+ reader.readAsText(file);
 }
 
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
@@ -36946,6 +37025,8 @@ meterPatternInsertionControlIds().forEach(id=>{
 });
 const meterGreyImportInput=document.getElementById('meterGreyProfileImportInput');
 if(meterGreyImportInput) meterGreyImportInput.addEventListener('change',meterImportGreyProfile);
+const meterCustomSeriesImportInput=document.getElementById('meterCustomSeriesImportInput');
+if(meterCustomSeriesImportInput) meterCustomSeriesImportInput.addEventListener('change',meterImportCustomSeriesCsv);
 initMeterGreyCanvasEditing();
 meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
