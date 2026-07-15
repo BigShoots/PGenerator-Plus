@@ -2327,6 +2327,84 @@ sub webui_meter_lg_autocal_series_target_reference (@) {
 # steps file verbatim. Downstream stampers (series white/black, signal-mode
 # meta) regex-append to these strings, so the shape must match the derived
 # step strings exactly.
+# Parameter-defined lattice series: expand generator params into measurement
+# steps. MUST stay algorithm-identical to the client's meterLatticeExpandPatches
+# (grid order r-slowest/b-fastest, golden-ratio spread stride, Rec.709-signal
+# threshold, grey ramp 100%-first, percent names, ire from 1). Locked by
+# tests/lattice-server-steps-regression.pl + tests/lattice-expansion-regression.js.
+sub webui_lattice_series_steps_from_body (@) {
+ my ($body,$chroma_min,$chroma_span,$input_max)=@_;
+ return () unless($body=~/"custom_series"\s*:\s*true/i);
+ return () unless($body=~/"lattice_params"\s*:\s*\{([^{}]*)\}/s);
+ my $obj=$1;
+ my %p;
+ foreach my $key (qw(size grey_points threshold_pct)) {
+  $p{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
+ }
+ my $order=($obj=~/"order"\s*:\s*"grid"/)?"grid":"spread";
+ my $reverse=($obj=~/"reverse"\s*:\s*true/i)?1:0;
+ my $size=defined($p{"size"})?int($p{"size"}):9;
+ $size=3 if($size<3);
+ $size=50 if($size>50);
+ my $grey=defined($p{"grey_points"})?int($p{"grey_points"}):0;
+ $grey=0 if($grey<2);
+ $grey=101 if($grey>101);
+ my $threshold=defined($p{"threshold_pct"})?$p{"threshold_pct"}+0:0;
+ $threshold=0 if($threshold<0);
+ $threshold=50 if($threshold>50);
+ my @steps;
+ my $ire=1;
+ my $pctf=sub {
+  my($f)=@_;
+  my $v=int($f*1000+0.5)/10;
+  return ($v==int($v))?int($v):$v;
+ };
+ my $push_step=sub {
+  my($name,$fr,$fg,$fb)=@_;
+  my $r=int($chroma_min+$fr*$chroma_span+0.5);
+  my $g=int($chroma_min+$fg*$chroma_span+0.5);
+  my $b=int($chroma_min+$fb*$chroma_span+0.5);
+  push @steps,"{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"".&_webui_json_escape($name)."\",\"input_max\":$input_max}";
+  $ire++;
+ };
+ if($grey>=2) {
+  $push_step->("G 100%",1,1,1);
+  for(my $i=0;$i<$grey;$i++) {
+   my $f=$i/($grey-1);
+   next if($f>=1);
+   $push_step->("G ".$pctf->($f)."%",$f,$f,$f);
+  }
+ }
+ my @nodes;
+ my $div=$size-1;
+ for(my $ri=0;$ri<$size;$ri++) {
+  for(my $gi=0;$gi<$size;$gi++) {
+   for(my $bi=0;$bi<$size;$bi++) {
+    my ($fr,$fg,$fb)=($ri/$div,$gi/$div,$bi/$div);
+    next if($threshold>0 && (0.2126*$fr+0.7152*$fg+0.0722*$fb)*100 < $threshold);
+    push @nodes,[$fr,$fg,$fb];
+   }
+  }
+ }
+ my @ordered=@nodes;
+ if($order eq "spread" && scalar(@nodes)>1) {
+  my $total=scalar(@nodes);
+  my $stride=int($total*0.618034);
+  $stride=1 if($stride<1);
+  my $a=$stride; my $b2=$total;
+  my $gcd=sub { my($x,$y)=@_; while($y){ my $t=$x%$y; $x=$y; $y=$t; } return $x; };
+  $stride++ while($gcd->($stride,$total)!=1);
+  @ordered=();
+  my $idx=0;
+  for(my $k=0;$k<$total;$k++) { push @ordered,$nodes[$idx]; $idx=($idx+$stride)%$total; }
+ }
+ @ordered=reverse(@ordered) if($reverse);
+ foreach my $node (@ordered) {
+  my($fr,$fg,$fb)=@$node;
+  $push_step->($pctf->($fr)."/".$pctf->($fg)."/".$pctf->($fb),$fr,$fg,$fb);
+ }
+ return @steps;
+}
 sub webui_custom_series_steps_from_body (@) {
  my ($body)=@_;
  return () unless($body=~/"custom_series"\s*:\s*true/i);
@@ -2756,7 +2834,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : 16) : 0;
  my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? 255 : 219) : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
- my @custom_series_steps=&webui_custom_series_steps_from_body($body);
+ my @custom_series_steps=&webui_lattice_series_steps_from_body($body,$chroma_min_code,$chroma_span_code,$chroma_input_max);
+ @custom_series_steps=&webui_custom_series_steps_from_body($body) if(!scalar(@custom_series_steps));
  if($body=~/"custom_series"\s*:\s*true/i && !scalar(@custom_series_steps)) {
   return "{\"status\":\"error\",\"message\":\"Custom series has no valid patches\"}";
  }
@@ -31662,7 +31741,12 @@ async function meterRunSeries(){
 	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
 		  if(meterActiveSeriesIsCustom()&&Array.isArray(meterSeriesSteps)){
 		   _seriesBody.custom_series=true;
-		   _seriesBody.custom_steps=meterSeriesSteps.map(step=>({ire:step.ire,r:step.r,g:step.g,b:step.b,input_max:step.input_max,name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,custom_target_nits:step.custom_target_nits}));
+		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
+		   if(_activeCustom&&_activeCustom.kind==='lattice'){
+		    _seriesBody.lattice_params=meterLatticeSanitizeParams(_activeCustom.params);
+		   } else {
+		    _seriesBody.custom_steps=meterSeriesSteps.map(step=>({ire:step.ire,r:step.r,g:step.g,b:step.b,input_max:step.input_max,name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,custom_target_nits:step.custom_target_nits}));
+		   }
 		  }
 	  // Pass the calibration-card low-light handler through to the
 	  // server so series reads honor the same gear as autocal/single.
