@@ -24668,6 +24668,12 @@ function meterLatticeWireRange(){
 }
 
 let meterCustomSeriesReturnToManager=false;
+// True once THIS session has created/edited/deleted a custom series. Guards
+// the settings save: a tab that loaded while the blob was empty must not post
+// its stale empty state over data a newer tab saved (the server preserves the
+// stored blob when the key is omitted). Deletions set this flag, so wiping
+// the last series still persists.
+let meterCustomSeriesDirty=false;
 
 function meterOpenCustomSeriesManager(){
  const modal=document.getElementById('meterCustomSeriesManagerModal');
@@ -24753,6 +24759,7 @@ async function meterManagerDeleteSeries(id){
 async function meterDeleteCustomSeriesById(id){
  const series=meterCustomSeriesById(id);
  if(!series) return false;
+ meterCustomSeriesDirty=true;
  const ok=await meterShowChoiceModal({title:'Delete series?',body:'Delete "'+series.name+'" and all its patches? This cannot be undone.',acceptLabel:'Delete',cancelLabel:'Keep'});
  if(!ok) return false;
  const state=meterCustomSeriesNormalizeState();
@@ -24852,6 +24859,7 @@ function meterCloseLatticeGenerator(){
 
 function meterSaveLatticeGenerator(){
  const nameInput=document.getElementById('meterLatticeName');
+ meterCustomSeriesDirty=true;
  const params=meterLatticeGenParamsFromForm();
  let name=String((nameInput&&nameInput.value)||'').replace(/[\[\]{}"\\]/g,'').trim();
  if(!name) name='Lattice '+params.size+'³';
@@ -25300,6 +25308,7 @@ function meterCustomSeriesEditorRemoveRow(index){
 function meterSaveCustomSeriesEditor(){
  const editor=meterCustomSeriesEditor;
  if(!editor) return;
+ meterCustomSeriesDirty=true;
  const nameInput=document.getElementById('meterCustomSeriesNameInput');
  const name=String((nameInput&&nameInput.value)||'').replace(/[\[\]{}"\\]/g,'').trim();
  if(!name){ toast('Enter a series name',true); return; }
@@ -37737,7 +37746,9 @@ function saveMeterSettings(){
 	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
-  custom_series_json:JSON.stringify(meterCustomSeriesState),
+  ...(meterCustomSeriesDirty||(meterCustomSeriesState&&Array.isArray(meterCustomSeriesState.series)&&meterCustomSeriesState.series.length)
+   ? {custom_series_json:JSON.stringify(meterCustomSeriesState)}
+   : {}),
   // Color-science selections
   grey_ref_mode:val('meterGreyRefMode'),
   gray_world:val('meterGrayWorld'),
