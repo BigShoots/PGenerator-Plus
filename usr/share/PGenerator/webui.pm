@@ -11155,6 +11155,20 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
        <input type="checkbox" id="meterCie3dView" onchange="meterOnCie3dViewChange()" style="vertical-align:middle"> 3D View
        <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Right-drag = rotate · Left-drag = pan · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
       </label>
+      <span id="meterCieViewOptRow" style="display:inline-flex;gap:10px;flex-wrap:wrap;margin-left:6px;padding-left:10px;border-left:1px solid var(--border)">
+       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show target boxes on the chart">
+        <input type="checkbox" id="meterCieOptTargets" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Targets
+       </label>
+       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="3D view: show the vertical lines connecting each point to the chart floor">
+        <input type="checkbox" id="meterCieOptDropLines" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Drop lines
+       </label>
+       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the target colourspace triangle">
+        <input type="checkbox" id="meterCieOptGamut" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Gamut
+       </label>
+       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the CIE spectral locus (horseshoe) outline">
+        <input type="checkbox" id="meterCieOptLocus" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Locus
+       </label>
+      </span>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
       <canvas id="chartCIE" width="640" height="600" style="flex:0 0 600px;width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px"></canvas>
@@ -24939,9 +24953,32 @@ function meterCubeLutParse(text){
     if(out.neutral[i][c]<out.neutral[i-1][c]-0.0005) out.monotonic=false;
    }
   }
+  out.values=values;
   out.ok=true;
  }
  return out;
+}
+
+// Convert a parsed .cube (standard red-fastest node order) to Autodesk/Kodak
+// .3dl text: a shaper line of N input codes on the 0..1023 scale, then N^3
+// "R G B" lines of 12-bit outputs with BLUE fastest / red slowest (the .3dl
+// node order is the reverse of .cube, so the walk transposes).
+function meterCubeTo3dl(parsed){
+ if(!parsed||!parsed.ok||!Array.isArray(parsed.values)) return '';
+ const N=parsed.size;
+ const shaper=[];
+ for(let i=0;i<N;i++) shaper.push(i===0?0:Math.floor(i*1023/(N-1)));
+ const lines=[shaper.join(' ')];
+ const to12=(v)=>Math.round(Math.max(0,Math.min(1,Number(v)||0))*4095);
+ for(let r=0;r<N;r++){
+  for(let g=0;g<N;g++){
+   for(let b=0;b<N;b++){
+    const node=parsed.values[(b*N+g)*N+r];
+    lines.push(to12(node[0])+' '+to12(node[1])+' '+to12(node[2]));
+   }
+  }
+ }
+ return lines.join('\n')+'\n';
 }
 
 function meterRenderCubePreview(parsed,filename){
@@ -24959,7 +24996,8 @@ function meterRenderCubePreview(parsed,filename){
    +'<div>Domain: '+fmt3(parsed.domainMin)+' &rarr; '+fmt3(parsed.domainMax)+' &middot; Values: '+Number(parsed.valueMin).toFixed(4)+' .. '+Number(parsed.valueMax).toFixed(4)+'</div>'
    +'<div>Neutral axis: black '+fmt3(parsed.neutral[0])+' &middot; mid '+fmt3(mid)+' &middot; white '+fmt3(parsed.neutral[parsed.neutral.length-1])+'</div>'
    +'<div>Neutral monotonic: '+(parsed.monotonic?'<span style="color:var(--green)">yes</span>':'<span style="color:var(--red)">NO</span>')+'</div>'
-   +'<div style="margin-top:6px;color:var(--text2)">Preview only &mdash; this LUT is not applied to the display.</div>';
+   +'<div style="margin-top:6px;color:var(--text2)">Preview only &mdash; this LUT is not applied to the display.</div>'
+   +'<div style="margin-top:8px"><button class="btn btn-sm btn-secondary" onclick="meterDownloadPreviewedCubeAs3dl()" title="Convert the previewed LUT and download as Autodesk/Kodak .3dl">Download as .3dl</button></div>';
  }
  panel.innerHTML=html;
  panel.style.display='';
@@ -24972,12 +25010,23 @@ function meterOpenCubeImport(){
  input.click();
 }
 
+let meterLastCubePreview=null;
+
+function meterDownloadPreviewedCubeAs3dl(){
+ const preview=meterLastCubePreview;
+ if(!preview||!preview.parsed||!preview.parsed.ok){ toast('Import a valid .cube first',true); return; }
+ const text=meterCubeTo3dl(preview.parsed);
+ if(!text){ toast('.3dl conversion failed',true); return; }
+ meterDownloadBlob(new Blob([text],{type:'text/plain'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dl');
+}
+
 function meterImportCubeFile(evt){
  const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
  if(!file) return;
  const reader=new FileReader();
  reader.onload=()=>{
   const parsed=meterCubeLutParse(String(reader.result||''));
+  meterLastCubePreview={parsed:parsed,filename:file.name};
   meterRenderCubePreview(parsed,file.name);
   if(parsed.ok) toast('.cube parsed: '+parsed.size+'³, '+(parsed.monotonic?'neutral OK':'neutral NOT monotonic'),!parsed.monotonic);
   else toast('.cube file is invalid — see preview panel',true);
@@ -24997,7 +25046,8 @@ async function meterLoadSolvedLutList(){
    const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
    return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
     +'<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(l.name)+'">'+esc(l.name)+' <span style="color:var(--text2)">'+esc(when)+'</span></span>'
-    +'<button class="btn btn-sm btn-secondary" onclick="meterDownloadSolvedLut(\''+esc(l.name)+'\')">Download</button>'
+    +'<button class="btn btn-sm btn-secondary" title="Download the .cube file" onclick="meterDownloadSolvedLut(\''+esc(l.name)+'\')">.cube</button>'
+    +'<button class="btn btn-sm btn-secondary" title="Convert and download as Autodesk/Kodak .3dl (Lustre, Flame)" onclick="meterDownloadSolvedLutAs3dl(\''+esc(l.name)+'\')">.3dl</button>'
     +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+esc(l.name)+'\')">&#10005;</button>'
    +'</div>';
   }).join('');
@@ -25014,6 +25064,20 @@ async function meterDownloadSolvedLut(name){
   meterDownloadBlob(blob,name);
  }catch(e){
   toast('LUT download failed',true);
+ }
+}
+
+async function meterDownloadSolvedLutAs3dl(name){
+ try{
+  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
+  if(!resp.ok){ toast('LUT download failed',true); return; }
+  const parsed=meterCubeLutParse(await resp.text());
+  if(!parsed.ok){ toast('.cube could not be parsed for conversion',true); return; }
+  const text=meterCubeTo3dl(parsed);
+  if(!text){ toast('.3dl conversion failed',true); return; }
+  meterDownloadBlob(new Blob([text],{type:'text/plain'}),String(name).replace(/\.cube$/,'')+'.3dl');
+ }catch(e){
+  toast('.3dl conversion failed',true);
  }
 }
 
@@ -35158,6 +35222,43 @@ function cie3dResetCamera(){
  _cie3d.panY=CIE3D_DEFAULT.panY;
  _cie3d.scale=CIE3D_DEFAULT.scale;
 }
+// CIE chart display options (2D + 3D views). Persisted per-browser — these
+// are view preferences, not measurement settings.
+const METER_CIE_VIEW_OPTS_KEY='pgen.meter.cieViewOpts';
+let meterCieViewOpts={targets:true,dropLines:true,gamut:true,locus:true};
+
+function meterCieViewOptsLoad(){
+ try{
+  const raw=localStorage.getItem(METER_CIE_VIEW_OPTS_KEY);
+  if(raw){
+   const parsed=JSON.parse(raw);
+   ['targets','dropLines','gamut','locus'].forEach(key=>{
+    if(typeof parsed[key]==='boolean') meterCieViewOpts[key]=parsed[key];
+   });
+  }
+ }catch(e){}
+ const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus'};
+ Object.keys(map).forEach(key=>{
+  const el=document.getElementById(map[key]);
+  if(el) el.checked=meterCieViewOpts[key];
+ });
+}
+
+function meterCieViewOptChange(){
+ const map={targets:'meterCieOptTargets',dropLines:'meterCieOptDropLines',gamut:'meterCieOptGamut',locus:'meterCieOptLocus'};
+ Object.keys(map).forEach(key=>{
+  const el=document.getElementById(map[key]);
+  if(el) meterCieViewOpts[key]=!!el.checked;
+ });
+ try{ localStorage.setItem(METER_CIE_VIEW_OPTS_KEY,JSON.stringify(meterCieViewOpts)); }catch(e){}
+ const isColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ if(Array.isArray(meterReadings)&&meterReadings.length){
+  drawAllCharts(isColorSeries?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0)));
+ } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  drawAllChartsPreset(isColorSeries?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps));
+ }
+}
+
 function cie3dComputeYMax(items,isPreset){
  let maxY=1;
  (items||[]).forEach(it=>{
@@ -35260,27 +35361,31 @@ function drawCIEChart3D(readings,opts){
   }});
  }
  // Spectral locus on floor
- const locusPts=CIE_LOCUS.map(p=>cie3dProject(p[0],p[1],0,layout));
- prims.push({z:cie3dAvgZ(locusPts), draw:()=>{
-  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;
-  cie3dStrokePoly(ctx,locusPts,true);
- }});
+ if(meterCieViewOpts.locus){
+  const locusPts=CIE_LOCUS.map(p=>cie3dProject(p[0],p[1],0,layout));
+  prims.push({z:cie3dAvgZ(locusPts), draw:()=>{
+   ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;
+   cie3dStrokePoly(ctx,locusPts,true);
+  }});
+ }
  // Gamut triangle
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- const gPts=[
-  cie3dProject(prim.R.x,prim.R.y,0,layout),
-  cie3dProject(prim.G.x,prim.G.y,0,layout),
-  cie3dProject(prim.B.x,prim.B.y,0,layout)
- ];
- prims.push({z:cie3dAvgZ(gPts), draw:()=>{
-  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
-  cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
-  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
-  ctx.textAlign='left';ctx.fillText('R',gPts[0].sx+4,gPts[0].sy-4);
-  ctx.fillText('G',gPts[1].sx-12,gPts[1].sy-6);
-  ctx.textAlign='right';ctx.fillText('B',gPts[2].sx-4,gPts[2].sy+12);
- }});
+ if(meterCieViewOpts.gamut){
+  const gPts=[
+   cie3dProject(prim.R.x,prim.R.y,0,layout),
+   cie3dProject(prim.G.x,prim.G.y,0,layout),
+   cie3dProject(prim.B.x,prim.B.y,0,layout)
+  ];
+  prims.push({z:cie3dAvgZ(gPts), draw:()=>{
+   ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+   cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
+   ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+   ctx.textAlign='left';ctx.fillText('R',gPts[0].sx+4,gPts[0].sy-4);
+   ctx.fillText('G',gPts[1].sx-12,gPts[1].sy-6);
+   ctx.textAlign='right';ctx.fillText('B',gPts[2].sx-4,gPts[2].sy+12);
+  }});
+ }
  // D65
  const d65=cie3dProject(0.3127,0.329,0,layout);
  prims.push({z:d65.z, draw:()=>{
@@ -35324,9 +35429,9 @@ function drawCIEChart3D(readings,opts){
   if(!rd||meterIsWhiteReferenceReading(rd)) return;
   let tx=null,ty=null,tY=null,mx=null,my=null,mY=null,deltaPct=null;
   if(isPreset){
-   const tgt=((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
+   const tgt=!meterCieViewOpts.targets?null:(((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
     ? meterTargetChromaticityForReading(rd)
-    : targetChromaticityXY(rd.r,rd.g,rd.b);
+    : targetChromaticityXY(rd.r,rd.g,rd.b));
    if(tgt){ tx=tgt.x; ty=tgt.y; }
    try{
     const tXYZ=meterTargetXYZForReading(rd);
@@ -35338,7 +35443,7 @@ function drawCIEChart3D(readings,opts){
    const targetXYZ=meterTargetXYZForReading(rd);
    const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
    if(!hasMeasuredXY&&!hasTarget) return;
-   const tgt=hasTarget?meterTargetChromaticityForReading(rd):null;
+   const tgt=(hasTarget&&meterCieViewOpts.targets)?meterTargetChromaticityForReading(rd):null;
    const lum=meterColorLuminanceInfo(rd);
    if(tgt){ tx=tgt.x; ty=tgt.y; tY=(lum.targetY!=null)?lum.targetY:0; }
    if(hasMeasuredXY){ mx=rd.x; my=rd.y; mY=(lum.measuredY!=null)?lum.measuredY:0; }
@@ -35357,7 +35462,7 @@ function drawCIEChart3D(readings,opts){
   if(tx!=null&&ty!=null&&plotTY!=null){
    const p0=cie3dProject(tx,ty,0,layout);
    const pT=cie3dProject(tx,ty,plotTY,layout);
-   prims.push({z:Math.min(p0.z,pT.z), draw:()=>{
+   if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pT.z), draw:()=>{
     ctx.strokeStyle=meterColorWithAlpha(targetColor,0.45);ctx.lineWidth=1;
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
    }});
@@ -35373,7 +35478,7 @@ function drawCIEChart3D(readings,opts){
   if(mx!=null&&my!=null&&plotMY!=null){
    const p0=cie3dProject(mx,my,0,layout);
    const pM=cie3dProject(mx,my,plotMY,layout);
-   prims.push({z:Math.min(p0.z,pM.z), draw:()=>{
+   if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pM.z), draw:()=>{
     ctx.strokeStyle=meterColorWithAlpha(measuredColor,0.5);ctx.lineWidth=1;
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
    }});
@@ -35676,18 +35781,22 @@ function drawCIEChart(readings){
  ctx.fillText('x',pad.l+w/2,ctx.h-2);
  ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
  // CIE spectral locus
- ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
- CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
- ctx.closePath();ctx.stroke();
+ if(meterCieViewOpts.locus){
+  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
+  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+  ctx.closePath();ctx.stroke();
+ }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
- ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
- ctx.setLineDash([]);
- ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
- ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
- ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
- ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ if(meterCieViewOpts.gamut){
+  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+  ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
+  ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
+  ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ }
  // D65 white point
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
@@ -35707,7 +35816,7 @@ function drawCIEChart(readings){
   const targetXYZ=meterTargetXYZForReading(rd);
   const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
   if(!hasMeasuredXY&&!hasTarget) return;
-  const tgt=hasTarget?meterTargetChromaticityForReading(rd):null;
+  const tgt=(hasTarget&&meterCieViewOpts.targets)?meterTargetChromaticityForReading(rd):null;
   const lumInfo=meterColorLuminanceInfo(rd);
   const mx=hasMeasuredXY?rd.x:null, my=hasMeasuredXY?rd.y:null;
   const targetColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
@@ -37902,6 +38011,7 @@ const meterCustomSeriesImportInput=document.getElementById('meterCustomSeriesImp
 if(meterCustomSeriesImportInput) meterCustomSeriesImportInput.addEventListener('change',meterImportCustomSeriesCsv);
 const meterCubeImportInputEl=document.getElementById('meterCubeImportInput');
 if(meterCubeImportInputEl) meterCubeImportInputEl.addEventListener('change',meterImportCubeFile);
+meterCieViewOptsLoad();
 initMeterGreyCanvasEditing();
 meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);

@@ -45,6 +45,7 @@ sub describe_and_exit {
   payload_endianness => "little-endian uint16",
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
+  cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   signal_modes => ["sdr","hdr10"],
   hdr10_methods => ["matrix"],
   target_gamuts => ["bt709","p3d65","p3dci","bt2020"],
@@ -1262,8 +1263,17 @@ sub cube_text {
  my $text="TITLE \"".$title."\"\n";
  $text.="LUT_3D_SIZE $size\n";
  $text.="DOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n";
- for(my $i=0;$i<@{$u16};$i+=3) {
-  $text.=sprintf("%.9f %.9f %.9f\n",$u16->[$i]/4095,$u16->[$i+1]/4095,$u16->[$i+2]/4095);
+ # Standard .cube node order is RED fastest / BLUE slowest. generate_lut_cube
+ # fills @$u16 red-slowest (r outer loop), so emit through a transposed index
+ # walk — a straight dump hands external tools an R<->B swapped lattice
+ # (neutral axis looks fine, chromatic corrections land on the wrong axes).
+ for(my $b=0;$b<$size;$b++) {
+  for(my $g=0;$g<$size;$g++) {
+   for(my $r=0;$r<$size;$r++) {
+    my $i=(($r*$size+$g)*$size+$b)*3;
+    $text.=sprintf("%.9f %.9f %.9f\n",$u16->[$i]/4095,$u16->[$i+1]/4095,$u16->[$i+2]/4095);
+   }
+  }
  }
  return $text;
 }
@@ -1297,6 +1307,7 @@ sub export_lut {
   payload_endianness => "little-endian uint16",
   payload_axis_order => "R fastest, G middle, B slowest",
   payload_channel_order => "RGB values per node",
+  cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   neutral_axis_source => $model->{"neutral_axis_source"},
   neutral_axis_protection => $model->{"neutral_neighborhood_identity_enabled"}
    ? "exact diagonal and adjacent neutral-neighborhood identity"
