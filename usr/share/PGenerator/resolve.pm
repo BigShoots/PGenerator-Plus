@@ -65,6 +65,16 @@ sub resolve_trigger_connect (@) {
  my ($ip,$port)=@_;
  $port=$port_resolve if(!$port);
  &log("Resolve: trigger connect to $ip:$port");
+ # Force-close any existing session first so the thread is free to accept
+ # a new connect request (session loop is blocked on interruptible read).
+ {
+  lock($resolve_disconnect_request);
+  $resolve_disconnect_request=1 if($calibration_client_software eq "Resolve");
+ }
+ for(my $i=0; $i<30; $i++) {
+  last if($calibration_client_software ne "Resolve");
+  select(undef,undef,undef,0.1);
+ }
  {
   lock($resolve_request_ip);
   $resolve_request_ip=$ip;
@@ -80,6 +90,11 @@ sub resolve_connect (@) {
  my $ip=shift;
  my $port=shift;
  my $socket;
+ # Clear any stale disconnect flag from a previous session
+ {
+  lock($resolve_disconnect_request);
+  $resolve_disconnect_request=0;
+ }
  # Use alarm-based timeout since IO::Socket::INET Timeout uses non-blocking
  # mode which breaks in threaded Perl on this platform
  eval {
@@ -100,12 +115,18 @@ sub resolve_connect (@) {
  }
  &log("Resolve: connected to $ip:$port");
  my $last_pattern_key="";
+ my $was_disconnect=0;
  while(1) {
   #
-  # Read 4-byte big-endian length prefix
+  # Read 4-byte big-endian length prefix (interruptible for disconnect)
   #
   my $hdr;
-  last if(&resolve_read_exact($socket,\$hdr,4) != 4);
+  my $n=&resolve_read_exact_interruptible($socket,\$hdr,4);
+  if($n == -1) {
+   $was_disconnect=1;
+   last;
+  }
+  last if($n != 4);
   my $len=unpack("N",$hdr);
   if($len <= 0 || $len > 65536) {
    &log("Resolve: bad message length: $len");
@@ -115,7 +136,12 @@ sub resolve_connect (@) {
   # Read XML payload
   #
   my $xml;
-  last if(&resolve_read_exact($socket,\$xml,$len) != $len);
+  $n=&resolve_read_exact_interruptible($socket,\$xml,$len);
+  if($n == -1) {
+   $was_disconnect=1;
+   last;
+  }
+  last if($n != $len);
   &log("Resolve RECV: $xml");
   #
   # Parse XML
@@ -207,7 +233,15 @@ sub resolve_connect (@) {
   &apply_source_rgb_quant_range("resolve",2);
   &resolve_draw_pattern($r_p,$g_p,$b_p,$r_bg,$g_bg,$b_bg,$geom_x,$geom_y,$geom_cx,$geom_cy);
  }
- $socket->close();
+ if($was_disconnect) {
+  &log("Resolve: disconnect requested, closing socket");
+ }
+ eval { shutdown($socket, 2); };
+ eval { $socket->close(); };
+ {
+  lock($resolve_disconnect_request);
+  $resolve_disconnect_request=0;
+ }
 }
 
 ###############################################
@@ -218,6 +252,44 @@ sub resolve_read_exact (@) {
  $$buf_ref="";
  my $got=0;
  while($got < $wanted) {
+  my $chunk;
+  my $n=$sock->sysread($chunk,$wanted-$got);
+  return $got if(!defined($n) || $n == 0);
+  $$buf_ref.=$chunk;
+  $got+=$n;
+ }
+ return $got;
+}
+
+###############################################
+#   Resolve Read Exact (interruptible)        #
+###############################################
+# Like resolve_read_exact, but wakes every 0.5s to honor
+# $resolve_disconnect_request so WebUI disconnect can FIN the TCP session.
+# Returns: $wanted on success, 0..$wanted-1 on EOF/error, -1 if disconnect
+# was requested.
+sub resolve_read_exact_interruptible (@) {
+ my ($sock,$buf_ref,$wanted)=@_;
+ $$buf_ref="";
+ my $got=0;
+ while($got < $wanted) {
+  {
+   lock($resolve_disconnect_request);
+   if($resolve_disconnect_request) {
+    return -1;
+   }
+  }
+  my $rvec='';
+  my $fn=fileno($sock);
+  return $got if(!defined($fn) || $fn < 0);
+  vec($rvec, $fn, 1)=1;
+  my $nready=select(my $rout=$rvec, undef, undef, 0.5);
+  if(!defined($nready) || $nready < 0) {
+   return $got;
+  }
+  if($nready == 0) {
+   next; # timeout — re-check disconnect flag
+  }
   my $chunk;
   my $n=$sock->sysread($chunk,$wanted-$got);
   return $got if(!defined($n) || $n == 0);

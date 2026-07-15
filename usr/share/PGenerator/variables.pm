@@ -395,6 +395,11 @@ $resolve_request_ip="";
 $resolve_request_port="";
 share($resolve_request_ip);
 share($resolve_request_port);
+# Set by WebUI/API disconnect (or reconnect) so the Resolve session loop
+# can abort a blocking read and close the TCP socket. DisplayCAL has no
+# protocol-level bye — only TCP FIN/close re-arms its listener.
+$resolve_disconnect_request=0;
+share($resolve_disconnect_request);
 # Last pattern received over the Resolve protocol (raw, pre-override):
 # "r,g,b;bgr,bgg,bgb;x,y,cx,cy;bits". Lets the WebUI redraw the live patch
 # immediately when the Resolve card knobs (force-center / size override)

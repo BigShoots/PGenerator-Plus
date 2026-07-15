@@ -8343,11 +8343,20 @@ sub webui_resolve_connect (@) {
 }
 
 sub webui_resolve_disconnect (@) {
- # Setting request IP to a special value that the thread recognizes as disconnect
- # Actually, we just kill the TCP connection by setting a flag
- # For now, the simplest approach: write to the shared var to signal disconnect
- $calibration_client_ip="";
- $calibration_client_software="";
+ # Signal the Resolve session loop to abort its timed read and close the
+ # TCP socket. Client IP/software are cleared by resolve_connection_thread
+ # after the socket is shut down so status stays accurate until FIN goes out.
+ if($calibration_client_software ne "Resolve") {
+  {
+   lock($resolve_disconnect_request);
+   $resolve_disconnect_request=0;
+  }
+  return '{"status":"ok","message":"Not connected"}';
+ }
+ {
+  lock($resolve_disconnect_request);
+  $resolve_disconnect_request=1;
+ }
  return '{"status":"ok","message":"Disconnect requested"}';
 }
 
