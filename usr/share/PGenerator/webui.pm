@@ -11210,8 +11210,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </span>
      </div>
      <div id="meterCubeViewWrap" style="display:none;margin-bottom:10px">
-      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">RGB Cube (signal space)
+      <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">RGB Cube (signal space)
        <span class="meter-help-tip" title="Lattice nodes at their signal RGB positions. Hollow = not measured yet, filled = measured. Drag = rotate, wheel = zoom." aria-label="RGB cube view help">?</span>
+       <select id="meterCubeReference" class="inline-select" onchange="meterCubeReferenceChanged()" style="text-transform:none" title="Display: judge the panel against what it can do (BT.2390 roll-off to the measured peak plus additive colour ceilings from the cube's own 100% corners). Mastering: raw absolute PQ stimulus targets, for mastering-monitor QC.">
+        <option value="display" selected>Ref: Display (tone-mapped)</option>
+        <option value="mastering">Ref: Mastering (absolute)</option>
+       </select>
       </div>
       <div id="chartCubeViewBox" style="position:relative;display:inline-block;max-width:100%">
        <canvas id="chartCubeView" width="640" height="480" style="width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
@@ -17161,6 +17165,20 @@ function meterLatticeDisplayTargetY(rawY,reading){
  const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():0;
  if(peak>0&&master>0&&typeof bt2390Tonemap==='function') y=bt2390Tonemap(y,master,peak);
  return y;
+}
+
+// Redraw everything under the newly-selected target reference. Cached per-
+// reading dE values key on target context, but they are invalidated here so
+// the dE chart recomputes against the new reference rather than a stale one.
+function meterCubeReferenceChanged(){
+ try{
+  if(Array.isArray(meterReadings)&&meterReadings.length){
+   meterReadings.forEach(rd=>{ if(rd){ delete rd._dE_raw; delete rd._dE_lc; delete rd._dE_cache_key; } });
+   drawAllCharts([...meterReadings]);
+  } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+   drawAllChartsPreset([...meterSeriesSteps]);
+  }
+ }catch(e){}
 }
 
 function meterBlackReadingY(){
