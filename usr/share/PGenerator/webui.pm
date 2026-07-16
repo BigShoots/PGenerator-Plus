@@ -35644,6 +35644,28 @@ function meterCubeMeasuredFrac(rd,W){
  }catch(e){ return null; }
 }
 
+// Display-referenced cube position: subtract the EXPECTED displacement (the
+// display-referenced target mapped through the same measured pipeline) so the
+// panel's legitimate tone-map does not read as spatial error -- the dot shows
+// pure calibration deviation from the node. Mastering mode (or a node with no
+// usable expectation) keeps the raw measured mapping.
+function meterCubeDisplayFrac(rd,W,node){
+ const mf=meterCubeMeasuredFrac(rd,W);
+ if(!mf||!node) return mf;
+ if(typeof meterLatticeDisplayReference==='function'&&meterLatticeDisplayReference()!=='display') return mf;
+ let t=null;
+ try{ t=(typeof meterTargetXYZForReading==='function')?meterTargetXYZForReading(rd):null; }catch(e){}
+ if(!t||!(t.Y>0)) return mf;
+ const ef=meterCubeMeasuredFrac({X:t.X,Y:t.Y,Z:t.Z},W);
+ if(!ef) return mf;
+ const c=v=>Math.max(0,Math.min(1,v));
+ return {
+  r:c(Number(node.frac_r)+(mf.r-ef.r)),
+  g:c(Number(node.frac_g)+(mf.g-ef.g)),
+  b:c(Number(node.frac_b)+(mf.b-ef.b))
+ };
+}
+
 // Expand toggle for the two 3D charts (RGB cube + 3D CIE). Collapsed = fixed
 // 600px; expanded = full card width (side panels wrap below via flex-wrap).
 let meterChartExpanded={cie:false,cube:false};
@@ -35743,7 +35765,7 @@ function meterDrawCubeViewNow(){
   const rd=measuredMap.get(p.name)||null;
   let mpt=null;
   if(rd){
-   const mf=meterCubeMeasuredFrac(rd,whiteLum);
+   const mf=meterCubeDisplayFrac(rd,whiteLum,p);
    if(mf) mpt=cubeViewProject(mf.r,mf.g,mf.b,layout);
   }
   return {pt:pt,p:p,done:!!rd,mpt:mpt};
