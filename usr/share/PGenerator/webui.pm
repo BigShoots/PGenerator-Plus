@@ -23644,7 +23644,11 @@ function meterSeriesTabForType(type){
 }
 
 function meterCubeSeriesAvailable(){
- return Array.isArray(meterInventory)&&meterInventory.length>0;
+ // "Connected" == the status bar shows a live meter (green dot / not "No
+ // Meter"), which is meterDetected. meterInventory is only populated after an
+ // explicit inventory fetch, so it read empty even with a meter attached and
+ // wrongly hid the 3D Cube tab.
+ return !!meterDetected;
 }
 
 function meterSeriesTabForSeries(type,points){
