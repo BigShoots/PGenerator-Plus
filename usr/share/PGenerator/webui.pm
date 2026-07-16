@@ -10928,6 +10928,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <input type="file" id="meterCubeImportInput" accept=".cube,text/plain" style="display:none">
     </div>
     <div id="meterCubePreviewPanel" style="display:none;margin-bottom:12px;padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)"></div>
+    <div id="lutCubeViewWrap" style="display:none;margin-bottom:12px">
+     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">3D LUT Cube &mdash; <span id="lutCubeViewName" style="text-transform:none"></span>
+      <span class="meter-help-tip" title="The LUT's contents in signal RGB space: hollow box = input lattice node, filled dot = where the LUT sends it. Connector length shows how far the LUT moves that node (an identity LUT shows dots centred in their boxes). Drag = rotate, wheel = zoom, double-click = reset camera." aria-label="LUT cube view help">?</span>
+     </div>
+     <canvas id="lutCubeView" width="640" height="480" style="width:100%;max-width:640px;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
+    </div>
     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs (3D LUT AutoCal output)</div>
     <div id="meterSolvedLutList" style="padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)">Loading&hellip;</div>
    </div>
@@ -25298,7 +25304,7 @@ function meterRenderCubePreview(parsed,filename){
    +'<div>Neutral axis: black '+fmt3(parsed.neutral[0])+' &middot; mid '+fmt3(mid)+' &middot; white '+fmt3(parsed.neutral[parsed.neutral.length-1])+'</div>'
    +'<div>Neutral monotonic: '+(parsed.monotonic?'<span style="color:var(--green)">yes</span>':'<span style="color:var(--red)">NO</span>')+'</div>'
    +'<div style="margin-top:6px;color:var(--text2)">Preview only &mdash; this LUT is not applied to the display.</div>'
-   +'<div style="margin-top:8px"><button class="btn btn-sm btn-secondary" onclick="meterDownloadPreviewedCubeAs3dl()" title="Convert the previewed LUT and download as Autodesk/Kodak .3dl">Download as .3dl</button></div>';
+   +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm btn-secondary" onclick="meterViewImportedLutIn3d()" title="Render the previewed LUT as a 3D cube (input lattice vs LUT output positions)">View in 3D</button><button class="btn btn-sm btn-secondary" onclick="meterDownloadPreviewedCubeAs3dl()" title="Convert the previewed LUT and download as Autodesk/Kodak .3dl">Download as .3dl</button></div>';
  }
  panel.innerHTML=html;
  panel.style.display='';
@@ -25347,6 +25353,7 @@ async function meterLoadSolvedLutList(){
    const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
    return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
     +'<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(l.name)+'">'+esc(l.name)+' <span style="color:var(--text2)">'+esc(when)+'</span></span>'
+    +'<button class="btn btn-sm btn-secondary" title="Render this LUT as a 3D cube (input lattice vs LUT output positions)" onclick="meterViewSolvedLutIn3d(\''+esc(l.name)+'\')">3D</button>'
     +'<button class="btn btn-sm btn-secondary" title="Download the .cube file" onclick="meterDownloadSolvedLut(\''+esc(l.name)+'\')">.cube</button>'
     +'<button class="btn btn-sm btn-secondary" title="Convert and download as Autodesk/Kodak .3dl (Lustre, Flame)" onclick="meterDownloadSolvedLutAs3dl(\''+esc(l.name)+'\')">.3dl</button>'
     +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+esc(l.name)+'\')">&#10005;</button>'
@@ -25396,6 +25403,143 @@ async function meterDeleteSolvedLut(name){
  }catch(e){
   toast('LUT delete failed',true);
  }
+}
+
+// ---- LUT Tools 3D cube viewer ----
+// Renders a parsed .cube's CONTENTS in signal RGB space: hollow box = input
+// lattice node, filled dot = where the LUT sends it, faint connector = the
+// node's displacement. An identity LUT shows every dot centred in its box.
+// This is the ONLY place the RGB cube visual lives — measurement series plot
+// on the CIE charts (profiling is characterization, not verification).
+let _lutCube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2};
+let meterLutCubeState=null; // {parsed, name}
+
+function lutCubeProject(fr,fg,fb,layout){
+ const px=fr-0.5,py=fg-0.5,pz=fb-0.5;
+ const cy=Math.cos(_lutCube3d.yaw),sy=Math.sin(_lutCube3d.yaw);
+ const cp=Math.cos(_lutCube3d.pitch),sp=Math.sin(_lutCube3d.pitch);
+ const x1=px*cy-pz*sy,z1=px*sy+pz*cy,y1=py;
+ const y2=y1*cp+z1*sp,z2=-y1*sp+z1*cp;
+ const persp=_lutCube3d.dist/(_lutCube3d.dist+z2);
+ const base=Math.min(layout.w,layout.h)*0.36*_lutCube3d.scale;
+ return {sx:layout.cx+x1*base*persp,sy:layout.cy-y2*base*persp,z:z2,persp:persp};
+}
+
+function meterViewImportedLutIn3d(){
+ const pv=meterLastCubePreview;
+ if(!pv||!pv.parsed||!pv.parsed.ok){ toast('Import a valid .cube first',true); return; }
+ meterLutCubeShow(pv.parsed,pv.filename||'imported .cube');
+}
+
+async function meterViewSolvedLutIn3d(name){
+ try{
+  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
+  if(!resp.ok){ toast('LUT download failed',true); return; }
+  const parsed=meterCubeLutParse(await resp.text());
+  if(!parsed.ok){ toast('.cube could not be parsed',true); return; }
+  meterLutCubeShow(parsed,name);
+ }catch(e){
+  toast('LUT view failed',true);
+ }
+}
+
+function meterLutCubeShow(parsed,name){
+ meterLutCubeState={parsed:parsed,name:String(name||'')};
+ const wrap=document.getElementById('lutCubeViewWrap');
+ const label=document.getElementById('lutCubeViewName');
+ if(label) label.textContent=meterLutCubeState.name+' ('+parsed.size+'³)';
+ if(wrap) wrap.style.display='';
+ meterLutCubeBindHandlers();
+ requestAnimationFrame(meterLutCubeDraw);
+}
+
+function meterLutCubeBindHandlers(){
+ const canvas=document.getElementById('lutCubeView');
+ if(!canvas||canvas._lutCubeBound) return;
+ canvas._lutCubeBound=true;
+ let drag=null;
+ canvas.addEventListener('mousedown',e=>{
+  if(!meterLutCubeState) return;
+  drag={x:e.clientX,y:e.clientY};
+  canvas.style.cursor='grabbing';
+  e.preventDefault();
+ });
+ window.addEventListener('mousemove',e=>{
+  if(!drag) return;
+  _lutCube3d.yaw+=(e.clientX-drag.x)*0.01;
+  _lutCube3d.pitch=Math.max(-1.2,Math.min(1.2,_lutCube3d.pitch+(e.clientY-drag.y)*0.01));
+  drag={x:e.clientX,y:e.clientY};
+  meterLutCubeDraw();
+ });
+ window.addEventListener('mouseup',()=>{ drag=null; canvas.style.cursor='grab'; });
+ canvas.addEventListener('wheel',e=>{
+  if(!meterLutCubeState) return;
+  e.preventDefault();
+  _lutCube3d.scale=Math.max(0.3,Math.min(4,_lutCube3d.scale*(e.deltaY<0?1.1:0.9)));
+  meterLutCubeDraw();
+ },{passive:false});
+ canvas.addEventListener('dblclick',()=>{ _lutCube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterLutCubeDraw(); });
+}
+
+function meterLutCubeDraw(){
+ if(!meterLutCubeState) return;
+ const parsed=meterLutCubeState.parsed;
+ const N=parsed.size;
+ const values=parsed.values;
+ if(!(N>=2)||!Array.isArray(values)) return;
+ const ctx=getChartCtx('lutCubeView');
+ if(!ctx||!(ctx.w>10)) return;
+ ctx.setTransform(1,0,0,1,0,0);
+ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+ const dpr=window.devicePixelRatio||1;
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
+ const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
+ // wireframe
+ const corners=[[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]].map(c=>lutCubeProject(c[0],c[1],c[2],layout));
+ const edges=[[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+ ctx.strokeStyle='rgba(132,148,178,0.45)';ctx.lineWidth=1;
+ edges.forEach(e=>{ ctx.beginPath();ctx.moveTo(corners[e[0]].sx,corners[e[0]].sy);ctx.lineTo(corners[e[1]].sx,corners[e[1]].sy);ctx.stroke(); });
+ ctx.font='10px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle='#ff7a7a';ctx.fillText('R',corners[1].sx+8,corners[1].sy+4);
+ ctx.fillStyle='#7aff9b';ctx.fillText('G',corners[2].sx-8,corners[2].sy-6);
+ ctx.fillStyle='#8fb2ff';ctx.fillText('B',corners[4].sx-8,corners[4].sy+10);
+ ctx.fillStyle='#e8ecf6';ctx.fillText('W',corners[7].sx+8,corners[7].sy-6);
+ // Sample the lattice down to <=9 indices per axis for legibility (33/65-cube
+ // LUTs draw as a 9x9x9 subset that always includes both ends of each axis).
+ const per=Math.min(9,N);
+ const axis=[];
+ for(let k=0;k<per;k++){ const idx=Math.round(k*(N-1)/(per-1)); if(axis.indexOf(idx)<0) axis.push(idx); }
+ const clamp01=v=>Math.max(0,Math.min(1,Number(v)||0));
+ const nodes=[];
+ for(let bi=0;bi<axis.length;bi++) for(let gi=0;gi<axis.length;gi++) for(let ri=0;ri<axis.length;ri++){
+  const r=axis[ri],g=axis[gi],b=axis[bi];
+  const fr=r/(N-1),fg=g/(N-1),fb=b/(N-1);
+  const out=values[r+g*N+b*N*N]||[fr,fg,fb];
+  nodes.push({fr:fr,fg:fg,fb:fb,or:clamp01(out[0]),og:clamp01(out[1]),ob:clamp01(out[2])});
+ }
+ const scale=Math.max(0.35,Math.min(3,_lutCube3d.scale));
+ const drawn=nodes.map(n=>({n:n,pin:lutCubeProject(n.fr,n.fg,n.fb,layout),pout:lutCubeProject(n.or,n.og,n.ob,layout)}));
+ drawn.sort((a,b)=>b.pin.z-a.pin.z);
+ drawn.forEach(d=>{
+  const col='rgb('+Math.round(d.n.fr*255)+','+Math.round(d.n.fg*255)+','+Math.round(d.n.fb*255)+')';
+  const moved=Math.abs(d.n.or-d.n.fr)+Math.abs(d.n.og-d.n.fg)+Math.abs(d.n.ob-d.n.fb)>0.004;
+  const sq=Math.max(1,2.4*d.pin.persp*scale);
+  ctx.strokeStyle=col;ctx.lineWidth=Math.max(0.5,0.9*scale);
+  ctx.strokeRect(d.pin.sx-sq,d.pin.sy-sq,sq*2,sq*2);
+  if(moved){
+   ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=Math.max(0.4,0.7*scale);
+   ctx.beginPath();ctx.moveTo(d.pin.sx,d.pin.sy);ctx.lineTo(d.pout.sx,d.pout.sy);ctx.stroke();
+  }
+  const mr=Math.max(1.1,2.5*d.pout.persp*scale);
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=0.6;
+  ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.stroke();
+ });
+ ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+ const shown=axis.length;
+ ctx.fillText(N+'³ LUT'+(shown<N?(' · showing '+shown+'³ subset'):'')+' · hollow = input node, filled = LUT output',8,ctx.h-8);
 }
 
 function meterCustomSeriesStepTargets(step,series,patch){
