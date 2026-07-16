@@ -2422,6 +2422,23 @@ sub webui_lattice_series_steps_from_body (@) {
   for(my $k=0;$k<$total;$k++) { push @ordered,$nodes[$idx]; $idx=($idx+$stride)%$total; }
  }
  @ordered=reverse(@ordered) if($reverse);
+ # Reference corners first: W, R, G, B (then K when present) lead the run so
+ # the client's display-referenced chart targets have their measured white
+ # peak + additive per-channel ceilings from the first handful of patches.
+ # MUST stay algorithm-identical to the client's meterLatticeExpandPatches
+ # (parity-locked by the lattice tests).
+ my $corner_rank=sub {
+  my($fr,$fg,$fb)=@_;
+  my $one=sub { $_[0]>=1 }; my $zero=sub { $_[0]<=0 };
+  return 0 if($one->($fr) && $one->($fg) && $one->($fb));
+  return 1 if($one->($fr) && $zero->($fg) && $zero->($fb));
+  return 2 if($zero->($fr) && $one->($fg) && $zero->($fb));
+  return 3 if($zero->($fr) && $zero->($fg) && $one->($fb));
+  return 4 if($zero->($fr) && $zero->($fg) && $zero->($fb));
+  return -1;
+ };
+ my @corner_lead=sort { $corner_rank->(@$a) <=> $corner_rank->(@$b) } grep { $corner_rank->(@$_)>=0 } @ordered;
+ @ordered=(@corner_lead, grep { $corner_rank->(@$_)<0 } @ordered) if(scalar(@corner_lead));
  foreach my $node (@ordered) {
   my($fr,$fg,$fb)=@$node;
   $push_step->($pctf->($fr)."/".$pctf->($fg)."/".$pctf->($fb),$fr,$fg,$fb);
@@ -17157,6 +17174,12 @@ function meterLatticeDisplayTargetY(rawY,reading){
   }
  }
  let peak=refs.white;
+ // Mid-run fallback chain: the run's own white reading (worker measures white
+ // for target Y before the lattice), then any measured white in the readings.
+ if(!(peak>0)&&typeof meterWhiteReading!=='undefined'&&meterWhiteReading&&!meterWhiteReading.synthetic_target&&!meterWhiteReading.autocal_reference_only){
+  const wy=meterReadingLuminanceNits(meterWhiteReading);
+  if(wy>0) peak=wy;
+ }
  if(!(peak>0)&&typeof meterFindMeasuredWhiteReading==='function'){
   const w=meterFindMeasuredWhiteReading();
   const wy=w?meterReadingLuminanceNits(w):0;
@@ -24832,6 +24855,23 @@ function meterLatticeExpandPatches(rawParams){
  let ordered=nodes;
  if(params.order==='spread') ordered=meterLatticeSpreadOrder(nodes.length).map(i=>nodes[i]);
  if(params.reverse) ordered=ordered.slice().reverse();
+ // Reference corners first: W, R, G, B (then K when present) lead the run so
+ // the display-referenced chart targets (measured white peak + additive
+ // per-channel ceilings from the cube's own corners) are live from the first
+ // handful of patches instead of engaging only when the spread order happens
+ // to reach them. MUST stay algorithm-identical to the server expansion in
+ // webui_lattice_series_steps_from_body (parity-locked by the lattice tests).
+ const latticeCornerRank=(p)=>{
+  const one=v=>v>=1, zero=v=>v<=0;
+  if(one(p.frac_r)&&one(p.frac_g)&&one(p.frac_b)) return 0;
+  if(one(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 1;
+  if(zero(p.frac_r)&&one(p.frac_g)&&zero(p.frac_b)) return 2;
+  if(zero(p.frac_r)&&zero(p.frac_g)&&one(p.frac_b)) return 3;
+  if(zero(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 4;
+  return -1;
+ };
+ const cornerLead=ordered.filter(p=>latticeCornerRank(p)>=0).sort((a,b)=>latticeCornerRank(a)-latticeCornerRank(b));
+ if(cornerLead.length) ordered=[...cornerLead,...ordered.filter(p=>latticeCornerRank(p)<0)];
  patches.push(...ordered);
  return patches;
 }
@@ -25999,6 +26039,16 @@ async function meterSelectSeries(type,points,opts){
  if(opts.preserveTab&&meterSeriesTab==='autocal'){
   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
  }
+ // Lattice series default the CIE chart to the 3D xyY view on selection:
+ // neutral-ratio cube nodes share chromaticity and stack in 2D, but separate
+ // vertically by luminance in 3D (one-shot default; the operator can uncheck).
+ try{
+  const cubeSeries=meterCustomSeriesById(points);
+  if(cubeSeries&&cubeSeries.kind==='lattice'){
+   const view3d=document.getElementById('meterCie3dView');
+   if(view3d&&!view3d.checked){ view3d.checked=true; meterOnCie3dViewChange(); }
+  }
+ }catch(e){}
  // Build steps
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
@@ -35602,68 +35652,29 @@ function cubeViewBindHandlers(canvas){
  canvas.addEventListener('dblclick',()=>{ _cube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterRedrawCubeView(); });
 }
 
-// Lattice (cube) series show ONLY the RGB cube view: the CIE chart, its
-// CIE-specific options and the colour dE chart are hidden, since chromaticity
-// collapses same-ratio cube nodes onto each other.
+// Lattice (cube) series plot MEASUREMENTS on the CIE charts + ΔE table like
+// every other colour series (industry model: measurements live in perceptual
+// space; same-chromaticity neutral-ratio nodes separate by luminance in the
+// 3D xyY view, which lattice series default to on selection). The RGB cube is
+// a signal-space lattice preview / read-progress view (and the LUT display).
+// All colour-chart sections therefore stay visible for lattice series.
 function meterUpdateColorChartMode(isLattice){
  // Restore each element's ORIGINAL inline display value — colorTopLayout is
  // an inline flex row and the option labels are inline-flex; clearing to ''
  // dropped them to block and stacked the colour charts vertically.
- const set=(id,vis,shown)=>{ const el=document.getElementById(id); if(el) el.style.display=vis?shown:'none'; };
- set('colorTopLayout',!isLattice,'flex');
- set('meterColorDeltaESection',!isLattice,'');
- set('chartCIELabel',!isLattice,'');
- set('meterCie3dViewLabel',!isLattice,'inline-flex');
- set('meterCieOptDropLinesLabel',!isLattice,'inline-flex');
- set('meterCieOptGamutLabel',!isLattice,'inline-flex');
- set('meterCieOptLocusLabel',!isLattice,'inline-flex');
- set('meterCieOptLumRingsLabel',!isLattice,'inline-flex');
+ const set=(id,shown)=>{ const el=document.getElementById(id); if(el) el.style.display=shown; };
+ set('colorTopLayout','flex');
+ set('meterColorDeltaESection','');
+ set('chartCIELabel','');
+ set('meterCie3dViewLabel','inline-flex');
+ set('meterCieOptDropLinesLabel','inline-flex');
+ set('meterCieOptGamutLabel','inline-flex');
+ set('meterCieOptLocusLabel','inline-flex');
+ set('meterCieOptLumRingsLabel','inline-flex');
 }
 
 function meterRedrawCubeView(){
  if(meterCubeViewLast) meterDrawCubeView(meterCubeViewLast.items,meterCubeViewLast.isPreset);
-}
-
-// Map a MEASURED reading back into the cube's signal RGB space so error shows
-// as spatial deviation from the target lattice node. Measured XYZ is
-// normalised by the white luminance, converted to linear RGB in the analysis
-// gamut, then run through the inverse EOTF (meterTargetLinearToSignal) — a
-// perfect display reproduces the sent signal so the marker sits on the node;
-// error pulls it off. W = measured-white luminance (falls back to the color
-// reference nits). Returns clamped 0..1 fractions, or null if unmappable.
-function meterCubeMeasuredFrac(rd,W){
- try{
-  const xyz=meterReadingXYZ(rd);
-  if(!xyz) return null;
-  const wl=(W>0)?W:((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100);
-  if(!(wl>0)) return null;
-  const g=meterAnalysisGamut();
-  const lin=xyzToLinRgb(xyz.X/wl,xyz.Y/wl,xyz.Z/wl,g.xyzToRgb);
-  const toSig=(v)=>meterTargetLinearToSignal(Math.max(0,Math.min(1,v)));
-  return {r:toSig(lin[0]),g:toSig(lin[1]),b:toSig(lin[2])};
- }catch(e){ return null; }
-}
-
-// Display-referenced cube position: subtract the EXPECTED displacement (the
-// display-referenced target mapped through the same measured pipeline) so the
-// panel's legitimate tone-map does not read as spatial error -- the dot shows
-// pure calibration deviation from the node. Mastering mode (or a node with no
-// usable expectation) keeps the raw measured mapping.
-function meterCubeDisplayFrac(rd,W,node){
- const mf=meterCubeMeasuredFrac(rd,W);
- if(!mf||!node) return mf;
- if(typeof meterLatticeDisplayReference==='function'&&meterLatticeDisplayReference()!=='display') return mf;
- let t=null;
- try{ t=(typeof meterTargetXYZForReading==='function')?meterTargetXYZForReading(rd):null; }catch(e){}
- if(!t||!(t.Y>0)) return mf;
- const ef=meterCubeMeasuredFrac({X:t.X,Y:t.Y,Z:t.Z},W);
- if(!ef) return mf;
- const c=v=>Math.max(0,Math.min(1,v));
- return {
-  r:c(Number(node.frac_r)+(mf.r-ef.r)),
-  g:c(Number(node.frac_g)+(mf.g-ef.g)),
-  b:c(Number(node.frac_b)+(mf.b-ef.b))
- };
 }
 
 // Expand toggle for the two 3D charts (RGB cube + 3D CIE). Collapsed = fixed
@@ -35754,21 +35765,11 @@ function meterDrawCubeViewNow(){
  if(!isPreset&&Array.isArray(items)){
   items.forEach(rd=>{ if(rd&&rd.name) measuredMap.set(rd.name,rd); });
  }
- // White luminance for measured→signal normalisation: prefer the measured
- // white node so a perfectly-tracked neutral lands on the diagonal.
- let whiteLum=0;
- const wr=measuredMap.get('100/100/100')||measuredMap.get('G 100%');
- if(wr){ const wy=meterReadingLuminanceNits(wr); if(wy>0) whiteLum=wy; }
  const showTargets=meterCieViewOpts.targets;
  let nodes=patches.map(p=>{
   const pt=cubeViewProject(p.frac_r,p.frac_g,p.frac_b,layout);
   const rd=measuredMap.get(p.name)||null;
-  let mpt=null;
-  if(rd){
-   const mf=meterCubeDisplayFrac(rd,whiteLum,p);
-   if(mf) mpt=cubeViewProject(mf.r,mf.g,mf.b,layout);
-  }
-  return {pt:pt,p:p,done:!!rd,mpt:mpt};
+  return {pt:pt,p:p,done:!!rd};
  });
  // With targets off, show only the measured markers (hide the lattice grid).
  if(!showTargets) nodes=nodes.filter(n=>n.done);
@@ -35782,29 +35783,18 @@ function meterDrawCubeViewNow(){
    ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
    return;
   }
-  if(n.mpt){
-   // Measured: filled marker at the MEASURED position; when targets are on,
-   // draw the faint target box + a connector so the deviation is visible.
-   if(showTargets){
-    ctx.strokeStyle='rgba(200,208,225,0.4)';ctx.lineWidth=Math.max(0.5,0.8*markerScale);
-    ctx.strokeRect(n.pt.sx-sq,n.pt.sy-sq,sq*2,sq*2);
-    ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=Math.max(0.5,0.8*markerScale);
-    ctx.beginPath();ctx.moveTo(n.pt.sx,n.pt.sy);ctx.lineTo(n.mpt.sx,n.mpt.sy);ctx.stroke();
-   }
-   const mr=Math.max(1.2,2.8*n.mpt.persp*markerScale);
-   ctx.fillStyle=col;
-   ctx.beginPath();ctx.arc(n.mpt.sx,n.mpt.sy,mr,0,Math.PI*2);ctx.fill();
-   ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=0.7;
-   ctx.beginPath();ctx.arc(n.mpt.sx,n.mpt.sy,mr,0,Math.PI*2);ctx.stroke();
-  } else {
-   // Measured but unmappable (e.g. bad read): filled dot at the lattice node.
-   const mr=Math.max(1.2,2.8*n.pt.persp*markerScale);
-   ctx.fillStyle=col;
-   ctx.beginPath();ctx.arc(n.pt.sx,n.pt.sy,mr,0,Math.PI*2);ctx.fill();
-  }
+  // Measured: filled dot AT the lattice node — the cube shows read PROGRESS
+  // and signal-space structure only. Measured-vs-target analysis lives on the
+  // CIE charts + ΔE table (measurement deviations plotted in signal space were
+  // dominated by legitimate tone-mapping and read as huge errors).
+  const mr=Math.max(1.2,2.8*n.pt.persp*markerScale);
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.arc(n.pt.sx,n.pt.sy,mr,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=0.7;
+  ctx.beginPath();ctx.arc(n.pt.sx,n.pt.sy,mr,0,Math.PI*2);ctx.stroke();
  });
  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
- const label=(total>patches.length?('showing '+patches.length+' of '+total+' nodes'):(total+' nodes'))+(isPreset?'':' · '+measuredMap.size+' measured · filled = measured position');
+ const label=(total>patches.length?('showing '+patches.length+' of '+total+' nodes'):(total+' nodes'))+(isPreset?'':' · '+measuredMap.size+' measured · filled = measured');
  ctx.fillText(label,8,ctx.h-8);
 }
 
