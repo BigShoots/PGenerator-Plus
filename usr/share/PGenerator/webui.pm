@@ -21292,6 +21292,7 @@ function meterRecoverSeries(s){
  meterActiveSeriesDvInterface=String((s.dv_interface||metaStep.dv_interface||metaReading.dv_interface||'')).toLowerCase()||null;
  meterActiveSeriesKey=type+'-'+points;
  meterSharedSeriesId=s.series_id||null;
+ if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView(points);
    meterCurrentPatchStep=null;
    meterSelectedThumbIre=null;
    _selectedColorReadingName=null;
@@ -25967,6 +25968,19 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  return [...(includeWhiteReference?[white]:[]),zero,...bodyAsc,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
+// Lattice series default the CIE chart to the 3D xyY view when they become
+// active: neutral-ratio cube nodes share chromaticity and stack in 2D, but
+// separate vertically by luminance in 3D (one-shot default per activation;
+// the operator can uncheck). Called from series selection AND recovery.
+function meterLatticeDefault3dView(points){
+ try{
+  const cubeSeries=meterCustomSeriesById(points);
+  if(!cubeSeries||cubeSeries.kind!=='lattice') return;
+  const view3d=document.getElementById('meterCie3dView');
+  if(view3d&&!view3d.checked){ view3d.checked=true; meterOnCie3dViewChange(); }
+ }catch(e){}
+}
+
 async function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
@@ -25988,6 +26002,7 @@ async function meterSelectSeries(type,points,opts){
  clearActive();
  if(meterSeriesRunning) meterStop();
  else meterStopContinuous();
+ meterLatticeDefault3dView(points);
  if(meterActiveSeriesKey===key){
   if(opts.preserveTab&&meterSeriesTab==='autocal'){
    meterUpdateSeriesTabUi();
@@ -26039,16 +26054,6 @@ async function meterSelectSeries(type,points,opts){
  if(opts.preserveTab&&meterSeriesTab==='autocal'){
   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
  }
- // Lattice series default the CIE chart to the 3D xyY view on selection:
- // neutral-ratio cube nodes share chromaticity and stack in 2D, but separate
- // vertically by luminance in 3D (one-shot default; the operator can uncheck).
- try{
-  const cubeSeries=meterCustomSeriesById(points);
-  if(cubeSeries&&cubeSeries.kind==='lattice'){
-   const view3d=document.getElementById('meterCie3dView');
-   if(view3d&&!view3d.checked){ view3d.checked=true; meterOnCie3dViewChange(); }
-  }
- }catch(e){}
  // Build steps
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
