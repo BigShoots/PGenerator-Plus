@@ -10717,7 +10717,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="3D LUT profiling lattice: 9x9x9 RGB cube (729 patches)">Cube 9&sup3;</button>
       <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="3D LUT profiling lattice: 17x17x17 RGB cube (4913 patches)">Cube 17&sup3;</button>
       <span id="meterCustomSeriesCubeSlot" style="display:contents"></span>
-      <button class="btn btn-sm btn-secondary" onclick="meterOpenLatticeGenerator()" title="Generate a new lattice cube series for the current signal mode">+ Generate</button>
      </div>
      <div id="meterSeriesGroupAutoCal" style="display:none;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
@@ -24781,6 +24780,19 @@ function meterCustomSeriesSanitizePatch(raw,index){
  });
  const nits=Number(src.target_nits);
  patch.target_nits=(Number.isFinite(nits)&&nits>0)?Math.min(10000,nits):null;
+ // Optional EXPLICIT target chromaticity. Without it the chart derives the
+ // target from the patch codes — which is faithful to the signal but, in PQ,
+ // pins nearly every code-defined mix to the gamut edge (small code
+ // differences are huge linear-light ratios). Operators who want a specific
+ // verification target enter it here and it is used verbatim.
+ const tx=Number(src.target_x), ty=Number(src.target_y);
+ if(Number.isFinite(tx)&&Number.isFinite(ty)&&tx>0&&tx<1&&ty>0&&ty<1){
+  patch.target_x=Math.round(tx*10000)/10000;
+  patch.target_y=Math.round(ty*10000)/10000;
+ } else {
+  patch.target_x=null;
+  patch.target_y=null;
+ }
  return patch;
 }
 
@@ -25553,6 +25565,12 @@ function meterLutCubeDraw(){
 
 function meterCustomSeriesStepTargets(step,series,patch){
  const out={};
+ // Explicit per-patch target chromaticity (operator-entered) is authoritative;
+ // code-derived chroma is the fallback for patches without one.
+ if(patch&&Number.isFinite(Number(patch.target_x))&&Number.isFinite(Number(patch.target_y))&&Number(patch.target_x)>0&&Number(patch.target_y)>0){
+  out.target_x=Number(patch.target_x);
+  out.target_y=Number(patch.target_y);
+ } else {
  try{
   const xy=targetChromaticityXY(step.r,step.g,step.b);
   if(xy&&Number.isFinite(xy.x)&&Number.isFinite(xy.y)){
@@ -25560,6 +25578,7 @@ function meterCustomSeriesStepTargets(step,series,patch){
    out.target_y=Math.round(xy.y*10000)/10000;
   }
  }catch(e){}
+ }
  const refNits=(typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():0;
  const isHdr=(typeof meterChartIsHdr==='function')&&meterChartIsHdr();
  const isNeutralGrey=series.category!=='color'&&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b);
@@ -25684,6 +25703,7 @@ function meterRenderCustomSeriesEditor(){
  const th=(label)=>'<th style="text-align:left;padding:6px">'+label+'</th>';
  head.innerHTML=th('Patch')
   +(isColor?th('R 8-bit')+th('G 8-bit')+th('B 8-bit')+th('R 10-bit')+th('G 10-bit')+th('B 10-bit'):th('8-bit')+th('10-bit'))
+  +(isColor?th('Tgt x')+th('Tgt y'):'')
   +(isHdr?th('Target Y (cd/m²)'):'')
   +th('');
  const inputStyle='width:72px;background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:6px;box-sizing:border-box';
@@ -25695,6 +25715,10 @@ function meterRenderCustomSeriesEditor(){
    cells+=codeInput(i,'r10',p.r10,1023)+codeInput(i,'g10',p.g10,1023)+codeInput(i,'b10',p.b10,1023);
   } else {
    cells+=codeInput(i,'grey8',p.g8,255)+codeInput(i,'grey10',p.g10,1023);
+  }
+  if(isColor){
+   cells+='<td style="padding:6px"><input type="number" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity x. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_x" value="'+(p.target_x!=null?p.target_x:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
+   cells+='<td style="padding:6px"><input type="number" min="0" max="1" step="0.0001" placeholder="auto" title="Explicit target chromaticity y. Blank = derive from the patch codes." data-cs-row="'+i+'" data-cs-field="target_y" value="'+(p.target_y!=null?p.target_y:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
   }
   if(isHdr) cells+='<td style="padding:6px"><input type="number" min="0" max="10000" step="0.1" placeholder="auto" data-cs-row="'+i+'" data-cs-field="target_nits" value="'+(p.target_nits!=null?p.target_nits:'')+'" oninput="meterCustomSeriesEditorSync(this)" style="'+inputStyle+'"></td>';
   cells+='<td style="padding:6px"><button class="btn btn-sm btn-danger" onclick="meterCustomSeriesEditorRemoveRow('+i+')" title="Remove patch">&#10005;</button></td>';
@@ -25718,6 +25742,11 @@ function meterCustomSeriesEditorSync(input){
  if(field==='target_nits'){
   const v=parseFloat(input.value);
   patch.target_nits=(Number.isFinite(v)&&v>0)?Math.min(10000,v):null;
+  return;
+ }
+ if(field==='target_x'||field==='target_y'){
+  const v=parseFloat(input.value);
+  patch[field]=(Number.isFinite(v)&&v>0&&v<1)?Math.round(v*10000)/10000:null;
   return;
  }
  const raw=parseInt(input.value,10);
