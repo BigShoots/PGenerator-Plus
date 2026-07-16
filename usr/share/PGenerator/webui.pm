@@ -15107,6 +15107,17 @@ function meterRecoveredStepsDifferInCodes(a,b){
 
 function meterCanonicalRecoveredSteps(type,points,steps,status){
 	 const existing=Array.isArray(steps)?steps:[];
+	 // Lattice series: server-shaped steps carry no chart targets (the server
+	 // expansion computes none). The client expansion is name-identical
+	 // (parity-locked) and stamps target_x/y/Yn — always prefer it so target
+	 // resolution never falls back to the raw absolute stimulus decode.
+	 try{
+	  const latSeries=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
+	  if(latSeries&&latSeries.kind==='lattice'){
+	   const freshLat=meterBuildStepsJS(type,points);
+	   if(Array.isArray(freshLat)&&freshLat.length&&(existing.length===0||freshLat.length===existing.length)) return freshLat;
+	  }
+	 }catch(e){}
 	 if(type!=='greyscale'||String(status||'')==='running') return existing;
 	 if(!(meterUseLgGreyscale21(points)||meterUseLgAutoCal26(points))) return existing;
 	 const fresh=meterBuildStepsJS(type,points);
@@ -26071,6 +26082,23 @@ async function meterSelectSeries(type,points,opts){
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
  if(meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
+  // Lattice cache snapshots can carry server-shaped steps (the server
+  // expansion computes no chart targets). The freshly built client steps are
+  // name-identical (parity-locked) and DO carry target_x/y/Yn — prefer them,
+  // otherwise target resolution falls through to the raw absolute stimulus
+  // decode and every bright node charts against an unachievable target.
+  try{
+   const lat=meterActiveLatticeSeries();
+   if(lat&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length===steps.length&&meterSeriesSteps.some(s=>s&&s.target_x==null)){
+    meterSeriesSteps=steps;
+    if(Array.isArray(meterReadings)&&meterReadings.length){
+     meterReadings.forEach(rd=>{ if(rd){ delete rd._dE_raw; delete rd._dE_lc; delete rd._dE_cache_key; } });
+     drawAllCharts([...meterReadings]);
+    } else {
+     drawAllChartsPreset([...meterSeriesSteps]);
+    }
+   }
+  }catch(e){}
   if(opts.preserveTab&&meterSeriesTab==='autocal'){
    meterUpdateSeriesTabUi();
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
