@@ -17079,6 +17079,90 @@ function meterWrgbStimulusTargetY(reading){
  return (xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)?xyz.Y:null;
 }
 
+// Reference mode for lattice/cube chart targets. 'display' (default) judges
+// the panel against what it CAN do -- BT.2390 roll-off toward the measured
+// white peak plus per-channel additive ceilings from the cube's own 100%
+// corners. 'mastering' keeps the raw absolute stimulus decode for
+// mastering-monitor QC. Lattice series only; ColorChecker/sat targets are
+// governed by their own locked rules and never take this path.
+function meterLatticeDisplayReference(){
+ const el=document.getElementById('meterCubeReference');
+ const v=el?String(el.value||'').toLowerCase():'';
+ return v==='mastering'?'mastering':'display';
+}
+
+// Lattice corner readings from the current run. A cube lattice always
+// includes the 100% W/R/G/B corners, so the run carries its own reference
+// data: measured white peak + per-channel linear-RGB luminance ceilings
+// (Y / Yrow, same construction as meterWrgbPrimaryCeilings). Only entries
+// whose corner has actually been measured are present.
+function meterLatticeCornerRefs(){
+ const out={white:0,ceil:{}};
+ const series=(typeof meterActiveLatticeSeries==='function')?meterActiveLatticeSeries():null;
+ if(!series) return out;
+ let wire=null;
+ try{ wire=meterLatticeWireRange(); }catch(e){}
+ if(!wire||!(wire.max>wire.min)) return out;
+ const tol=Math.max(2,(wire.max-wire.min)*0.002);
+ const lo=v=>Math.abs(Number(v)-wire.min)<=tol;
+ const hi=v=>Math.abs(Number(v)-wire.max)<=tol;
+ const gamut=meterAnalysisGamut();
+ const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
+ (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
+  if(!rd) return;
+  const r=(rd.r_code!=null)?rd.r_code:rd.r;
+  const g=(rd.g_code!=null)?rd.g_code:rd.g;
+  const b=(rd.b_code!=null)?rd.b_code:rd.b;
+  if(r==null||g==null||b==null) return;
+  const y=meterReadingLuminanceNits(rd);
+  if(!(y>0)) return;
+  if(hi(r)&&hi(g)&&hi(b)){ if(!(out.white>0)) out.white=y; return; }
+  if(hi(r)&&lo(g)&&lo(b)&&Yrow[0]>0){ if(!(out.ceil[0]>0)) out.ceil[0]=y/Yrow[0]; return; }
+  if(lo(r)&&hi(g)&&lo(b)&&Yrow[1]>0){ if(!(out.ceil[1]>0)) out.ceil[1]=y/Yrow[1]; return; }
+  if(lo(r)&&lo(g)&&hi(b)&&Yrow[2]>0){ if(!(out.ceil[2]>0)) out.ceil[2]=y/Yrow[2]; }
+ });
+ return out;
+}
+
+// Display-referenced target Y for a lattice node in HDR PQ. The raw stimulus
+// decode assumes the panel tracks PQ all the way to the encoded value; a real
+// panel BT.2390-rolls toward its peak, and chromatic output is capped by the
+// additive per-channel ceilings (the WRGB W subpixel does not light for
+// colour). 'mastering' mode and non-lattice series return the raw value; a
+// run with no corner data yet also falls back to raw (never guess).
+function meterLatticeDisplayTargetY(rawY,reading){
+ if(!(rawY>0)) return rawY;
+ if(!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())) return rawY;
+ if(meterLatticeDisplayReference()!=='display') return rawY;
+ const refs=meterLatticeCornerRefs();
+ let y=rawY;
+ if(!meterReadingIsGreyscale(reading)){
+  const r=(reading&&reading.r_code!=null)?reading.r_code:(reading?reading.r:null);
+  const g=(reading&&reading.g_code!=null)?reading.g_code:(reading?reading.g:null);
+  const b=(reading&&reading.b_code!=null)?reading.b_code:(reading?reading.b:null);
+  if(r!=null&&g!=null&&b!=null&&(refs.ceil[0]>0||refs.ceil[1]>0||refs.ceil[2]>0)){
+   let dr=meterDecodeColorTargetChannel(r);
+   let dg=meterDecodeColorTargetChannel(g);
+   let db=meterDecodeColorTargetChannel(b);
+   if(refs.ceil[0]>0) dr=Math.min(dr,refs.ceil[0]);
+   if(refs.ceil[1]>0) dg=Math.min(dg,refs.ceil[1]);
+   if(refs.ceil[2]>0) db=Math.min(db,refs.ceil[2]);
+   const gamut=meterAnalysisGamut();
+   const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
+   if(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0) y=Math.min(y,xyz.Y);
+  }
+ }
+ let peak=refs.white;
+ if(!(peak>0)&&typeof meterFindMeasuredWhiteReading==='function'){
+  const w=meterFindMeasuredWhiteReading();
+  const wy=w?meterReadingLuminanceNits(w):0;
+  if(wy>0) peak=wy;
+ }
+ const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():0;
+ if(peak>0&&master>0&&typeof bt2390Tonemap==='function') y=bt2390Tonemap(y,master,peak);
+ return y;
+}
+
 function meterBlackReadingY(){
  return meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]);
 }
@@ -17757,6 +17841,7 @@ function meterTargetXYZForReading(reading){
      const _gw=meterColorSeriesReferenceNits();
      if(_gw>0) _sy=Math.min(_sy,_gw);
     }
+    _sy=meterLatticeDisplayTargetY(_sy,reading);
     _wrgbStimY=_sy;
    }
   }
