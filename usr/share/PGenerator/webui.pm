@@ -15311,7 +15311,9 @@ function meterSharedSeriesStatusKey(status){
   const m=String(status.series_id||'').match(/^(greyscale|colors|saturations)_/);
   if(m) type=m[1];
  }
- if(type==='colors') points=30;
+ // Custom/lattice color series ride on type 'colors' with points>=900 (900-999
+ // built-in cubes, >=1001 user series); only the stock ColorChecker is 30.
+ if(type==='colors') points=(points>=900)?points:30;
  else if(type==='saturations') points=24;
  else if(type==='greyscale'){
   const total=Number(status.total_steps||0)||0;
@@ -21117,7 +21119,8 @@ function meterRecoverSeries(s){
 	 const normalizePoints=(seriesType,total,steps)=>{
 	  const count=Number(total||0)||0;
 	  const stepCount=Array.isArray(steps)?steps.length:0;
-	  if(seriesType==='colors') return 30;
+	  // Preserve custom/lattice color-series ids (>=900); only stock ColorChecker is 30.
+	  if(seriesType==='colors') return (points>=900)?points:30;
 	  if(seriesType==='saturations') return 24;
 	  if(seriesType==='greyscale'&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) return 26;
 	  const basis=count||stepCount;
