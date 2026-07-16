@@ -15870,9 +15870,10 @@ function meterIsLimitedRange(){
 }
 
 // Quant-range rules for the selected colour format: YCbCr is always
-// Limited on the wire, so the Full option is only selectable for RGB and a
-// Full selection is coerced back to Limited when switching to YCbCr. The
-// Default option label reflects what it resolves to.
+// Limited on the wire, so the Full option is REMOVED from the dropdown for
+// YCbCr (not merely greyed out) and a Full selection is coerced back to
+// Limited when switching to YCbCr. The Default option label reflects what it
+// resolves to.
 function uiEnforceQuantRangeForColorFormat(){
  const fmtEl=document.getElementById('color_format');
  const sel=document.getElementById('rgb_quant_range');
@@ -15880,8 +15881,9 @@ function uiEnforceQuantRangeForColorFormat(){
  const isYcc=fmtEl.value==='1'||fmtEl.value==='2';
  const fullOpt=sel.querySelector('option[value="2"]');
  if(fullOpt){
+  fullOpt.hidden=isYcc;
   fullOpt.disabled=isYcc;
-  fullOpt.title=isYcc?'Full range is only available with RGB output':'';
+  fullOpt.style.display=isYcc?'none':'';
  }
  const defOpt=sel.querySelector('option[value="0"]');
  if(defOpt) defOpt.textContent=isYcc?'Default (Limited)':'Default';
