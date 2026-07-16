@@ -17209,8 +17209,18 @@ function meterLatticeDisplayTargetY(rawY,reading){
   const wy=w?meterReadingLuminanceNits(w):0;
   if(wy>0) peak=wy;
  }
- const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():0;
- if(peak>0&&master>0&&typeof bt2390Tonemap==='function') y=bt2390Tonemap(y,master,peak);
+ if(peak>0){
+  if(meterReadingIsGreyscale(reading)){
+   // Neutral nodes: the panel tracks the signal then clips at ITS peak, and
+   // the measured white IS the reference — a plain cap keeps the white corner
+   // targeting itself (BT.2390 here would re-roll an already-white-clamped
+   // value below the measured peak and charge white a phantom dY).
+   y=Math.min(y,peak);
+  } else {
+   const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():0;
+   if(master>0&&typeof bt2390Tonemap==='function') y=bt2390Tonemap(y,master,peak);
+  }
+ }
  return y;
 }
 
