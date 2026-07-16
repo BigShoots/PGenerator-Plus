@@ -7074,6 +7074,14 @@ sub webui_apply_config (@) {
   my $result='{"status":"error","message":"YCbCr 4:2:0 is not supported by the current HDMI driver. Use RGB, YCbCr 4:4:4, or YCbCr 4:2:2."}';
   return wantarray ? ($result,0) : $result;
  }
+ if(($effective_color_format == 1 || $effective_color_format == 2) && $effective_rgb_quant_range == 2) {
+  # YCbCr transports are Limited-range on the wire; Full range is an
+  # RGB-only concept. Coerce (rather than error) so older saved configs
+  # normalize on their next apply. The UI mirrors this by disabling the
+  # Full option whenever a YCbCr colour format is selected.
+  $changes{"rgb_quant_range"}="1";
+  $effective_rgb_quant_range=1;
+ }
  if(($effective_signal_mode eq "hdr10" || $effective_signal_mode eq "hlg") && $effective_rgb_quant_range == 1 && !$dv_on) {
   # Honor max_bpc end-to-end: when the operator sets max_bpc=8 (via the
   # WebUI Bit Depth dropdown or directly in PGenerator.conf), the link
@@ -10300,7 +10308,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   <div class="field field-display">
     <label>Color Format</label>
-    <select id="color_format">
+    <select id="color_format" onchange="uiEnforceQuantRangeForColorFormat()">
      <option value="0">RGB</option>
      <option value="1">YCbCr 4:4:4</option>
      <option value="2">YCbCr 4:2:2</option>
@@ -12269,6 +12277,7 @@ function applyConfigState(nextConfig){
  setVal('color_format',config.color_format||'0');
  setVal('colorimetry',normalizeColorimetryValue(config.colorimetry,sm));
  setVal('rgb_quant_range',config.rgb_quant_range||'0');
+ try{ uiEnforceQuantRangeForColorFormat(); }catch(e){}
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
  applyMeterTargetGamutDefault(false);
@@ -15850,7 +15859,36 @@ function linRgbToXyz(R,G,B,matrix){
 
 function meterIsLimitedRange(){
  const rangeEl=document.getElementById('rgb_quant_range');
- return !!(rangeEl&&rangeEl.value==='1');
+ const v=String((rangeEl&&rangeEl.value)||'0');
+ if(v==='1') return true;
+ if(v==='2') return false;
+ // Default: YCbCr transports are Limited on the wire (Full range is an
+ // RGB-only concept), so Default resolves to Limited whenever a YCbCr
+ // colour format is selected. RGB Default keeps the historical
+ // full-range interpretation.
+ return !meterOutputIsRgb();
+}
+
+// Quant-range rules for the selected colour format: YCbCr is always
+// Limited on the wire, so the Full option is only selectable for RGB and a
+// Full selection is coerced back to Limited when switching to YCbCr. The
+// Default option label reflects what it resolves to.
+function uiEnforceQuantRangeForColorFormat(){
+ const fmtEl=document.getElementById('color_format');
+ const sel=document.getElementById('rgb_quant_range');
+ if(!fmtEl||!sel) return;
+ const isYcc=fmtEl.value==='1'||fmtEl.value==='2';
+ const fullOpt=sel.querySelector('option[value="2"]');
+ if(fullOpt){
+  fullOpt.disabled=isYcc;
+  fullOpt.title=isYcc?'Full range is only available with RGB output':'';
+ }
+ const defOpt=sel.querySelector('option[value="0"]');
+ if(defOpt) defOpt.textContent=isYcc?'Default (Limited)':'Default';
+ if(isYcc&&sel.value==='2'){
+  sel.value='1';
+  try{ sel.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
+ }
 }
 
 function meterOutputFormatValue(){
@@ -17651,10 +17689,19 @@ function meterColorTargetCodeRange(){
  return limited?{min:16,span:219}:{min:0,span:255};
 }
 
-function meterDecodeColorTargetChannel(code){
+function meterDecodeColorTargetChannel(code,opts){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
- if(meterChartIsPq()&&!meterChartIsDv()) return Math.min(meterChartPqDecodeNormalized(norm),meterChartHdrPeak());
+ if(meterChartIsPq()&&!meterChartIsDv()){
+  const nits=meterChartPqDecodeNormalized(norm);
+  // The per-channel clamp to the HDR peak keeps LUMINANCE targets bounded,
+  // but it DISTORTS THE HUE of any mix with a channel above the mastering
+  // peak: 100/75/25 truly encodes ~10:1 R:G linear light (orange), yet with
+  // R clamped 10000->1000 and G (981) untouched the "target" said ~1:1
+  // (yellow) — nowhere near what the signal means or what a panel shows.
+  // Chromaticity consumers pass unclamped:true to keep the encoded ratios.
+  return (opts&&opts.unclamped)?nits:Math.min(nits,meterChartHdrPeak());
+ }
  // SDR/DV: decode with the active target EOTF so the reconstructed target
  // XYZ for r/g/b-code patches matches the chromaticity the display actually
  // produces when tracking that EOTF (previously hardcoded γ=2.2).
@@ -17675,7 +17722,16 @@ function targetColorXYZAbs(r,g,b){
 }
 
 function targetChromaticityXY(r,g,b){
- const xyz=targetColorXYZAbs(r,g,b);
+ // Hue from the UNCLAMPED per-channel decode — the signal's true encoded
+ // ratios (see meterDecodeColorTargetChannel). Luminance targets stay on the
+ // clamped path via targetColorXYZAbs.
+ const gamut=meterAnalysisGamut();
+ const xyz=linRgbToXyz(
+  meterDecodeColorTargetChannel(r,{unclamped:true}),
+  meterDecodeColorTargetChannel(g,{unclamped:true}),
+  meterDecodeColorTargetChannel(b,{unclamped:true}),
+  gamut.rgbToXyz
+ );
  const s=xyz.X+xyz.Y+xyz.Z;
  const wp=meterTargetWhitePoint();
  return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
